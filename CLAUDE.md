@@ -1,3 +1,15 @@
+## ⛔ NEVER WORK ON MAIN — READ THIS FIRST
+
+**Do not write code, edit files, stage changes, commit, or push while on `main`. Ever.**
+
+Run `git branch --show-current` at the start of every session, before doing anything. If the output is `main`, **STOP**. Do not edit a single file. Create a feature branch first: `git checkout -b issue-N-short-description`. Only then begin work.
+
+This means: no "quick fixes" on main, no "I'll branch later", no editing files with the intent to branch afterward. The branch must exist **before** any file is touched. No exceptions, every agent, every session, every repo.
+
+If multiple agents are working on the same repo simultaneously, each MUST be on its own separate feature branch. Two agents on `main` will overwrite each other's work.
+
+---
+
 ## PR & Issue Workflow
 
 ### Issues
@@ -15,7 +27,7 @@
 - When verifying, read the relevant source files and confirm the logic satisfies each criterion.
 
 ### Branching & Merging
-- **NEVER commit to `main` — local or remote.** Do not commit on local main, do not push to remote main, do not `git push origin main`. All work happens on feature branches.
+- **NEVER work on `main` — not editing, not committing, not pushing.** All code changes happen on feature branches. If `git branch --show-current` returns `main`, do not touch any files — create a feature branch first.
 - **Every change requires: GitHub issue → feature branch → PR → squash merge.** No exceptions.
 - Branch naming: `issue-N-short-description` (e.g. `issue-10-nav-welcome-header`).
 - Always **squash and merge** via `gh pr merge --squash --delete-branch`, then delete the branch.
