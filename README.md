@@ -64,6 +64,8 @@ Claude Code loads `CLAUDE.md` from the project root first, then `~/.claude/CLAUD
 
 ## Key design decisions
 
+**Worktrees by default.** Every session starts by creating a git worktree — an isolated working directory with its own branch. This means multiple Claude Code agents can work on the same repo simultaneously without stepping on each other. The root repo stays clean on `main` and is never touched.
+
 **Local first, GitHub as safety net.** The CodeRabbit CLI runs reviews instantly in your terminal — no pushing, no polling, no PR noise. Claude fixes everything locally before the PR is ever created. The GitHub-based review loop stays as a fallback for anything the local review misses (cross-file interactions, CI-only context, etc.).
 
 **Batch fixes, single push.** If the GitHub fallback loop does find issues, every push consumes a CodeRabbit review from your hourly quota. The config instructs Claude to fix all findings from a round in one commit rather than pushing per-finding.
@@ -146,6 +148,9 @@ Ask user: merge or review diff first?
 ```
 
 ## FAQ
+
+**Why does the config require worktrees?**
+Without worktrees, all Claude Code sessions share a single working directory. If two agents are working on the same repo, they see each other's uncommitted changes, overwrite each other's edits, and fight over `git status`. Worktrees give each agent its own isolated directory and branch, backed by the same `.git` database. Push and pull work normally. The only maintenance is occasional cleanup of stale worktrees via `git worktree list` and `git worktree remove`.
 
 **What's the difference between local and GitHub reviews?**
 Local reviews run the CodeRabbit CLI in your terminal via `coderabbit review --prompt-only`. They're instant, produce no PR noise, and don't consume your GitHub-based review quota. GitHub reviews happen automatically after you create a PR — CodeRabbit comments directly on the PR, and Claude polls the GitHub API to process findings. The local loop is the primary workflow; GitHub is the safety net.

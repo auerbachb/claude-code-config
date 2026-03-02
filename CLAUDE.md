@@ -1,12 +1,18 @@
-## ⛔ NEVER WORK ON MAIN — READ THIS FIRST
+## ⛔ ALWAYS USE A WORKTREE — READ THIS FIRST
 
-**Do not write code, edit files, stage changes, commit, or push while on `main`. Ever.**
+**At the start of every session, before doing anything else, create a worktree.**
 
-Run `git branch --show-current` at the start of every session, before doing anything. If the output is `main`, **STOP**. Do not edit a single file. Create a feature branch first: `git checkout -b issue-N-short-description`. Only then begin work.
+Tell the user: "I'll create a worktree for isolated work." Then use the `EnterWorktree` tool (or ask the user to say "use a worktree"). This gives you your own working directory and branch — completely isolated from the root repo and from any other agents.
 
-This means: no "quick fixes" on main, no "I'll branch later", no editing files with the intent to branch afterward. The branch must exist **before** any file is touched. No exceptions, every agent, every session, every repo.
+**Why this is mandatory:**
+- The root repo directory stays clean on `main`. You never touch it.
+- Multiple agents get separate worktrees — no shared working directory, no overwriting each other's files.
+- Each worktree has its own branch, its own staged files, its own uncommitted changes.
+- Push and pull work normally — worktrees share the same remote.
 
-If multiple agents are working on the same repo simultaneously, each MUST be on its own separate feature branch. Two agents on `main` will overwrite each other's work.
+**Do not write code, edit files, stage changes, commit, or push while on `main`. Ever.** If for any reason you cannot create a worktree, fall back to creating a feature branch manually (`git checkout -b issue-N-short-description`) before touching any files.
+
+**Worktree cleanup:** After your PR is merged, remove the worktree via `git worktree remove <path>` or let the session exit prompt handle it. Periodically run `git worktree list` to check for stale worktrees.
 
 ---
 
@@ -27,7 +33,7 @@ If multiple agents are working on the same repo simultaneously, each MUST be on 
 - When verifying, read the relevant source files and confirm the logic satisfies each criterion.
 
 ### Branching & Merging
-- **NEVER work on `main` — not editing, not committing, not pushing.** All code changes happen on feature branches. If `git branch --show-current` returns `main`, do not touch any files — create a feature branch first.
+- **NEVER work on `main` — not editing, not committing, not pushing.** All code changes happen in worktrees on feature branches. If you're not in a worktree, create one first. If `git branch --show-current` returns `main`, do not touch any files.
 - **Every change requires: GitHub issue → feature branch → PR → squash merge.** No exceptions.
 - Branch naming: `issue-N-short-description` (e.g. `issue-10-nav-welcome-header`).
 - Always **squash and merge** via `gh pr merge --squash --delete-branch`, then delete the branch.
