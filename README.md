@@ -163,7 +163,7 @@ Local CLI reviews are separate from GitHub PR reviews. The 8-reviews/hour and 50
 Yes. The CLI and Claude Code plugin work on the free tier. The GitHub-based rate limits in the config are tuned for Pro (8 reviews/hour, 50 chats/hour). Free tier limits are lower — you may want to increase polling timeouts for the GitHub fallback loop.
 
 **What happens when CodeRabbit is slow or down?**
-Both the local and GitHub review loops have hard timeouts (2 minutes for CLI, 15 minutes for GitHub polling). When CR times out, Claude runs a self-review — checking the diff for bugs, security issues, error handling, types, and edge cases. This prevents sessions from stalling or timing out while waiting for CR. If CR responds later (e.g., comments on the PR after the timeout), those findings are processed in the next round.
+Both the local and GitHub review loops have hard timeouts (2 minutes for CLI, 8 minutes for GitHub polling). When CR times out, Claude runs a self-review — checking the diff for bugs, security issues, error handling, types, and edge cases. This prevents sessions from stalling or timing out while waiting for CR. If CR responds later (e.g., comments on the PR after the timeout), those findings are processed in the next round.
 
 **Can I use this without CodeRabbit?**
 Yes. The config auto-detects CodeRabbit. Without it, Claude uses the self-review fallback and you still get the PR workflow, branch naming, acceptance criteria verification, and squash-merge flow.

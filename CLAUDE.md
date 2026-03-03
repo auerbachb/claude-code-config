@@ -159,9 +159,9 @@ After pushing a commit to a PR, automatically enter the CR review loop:
 - **Poll for at least 10 minutes** (10 cycles) before giving up. CR regularly takes 6-8 minutes to review larger diffs — a 5-minute timeout will miss reviews that arrive at minute 6-7. Only after 10 minutes with no response, post `@coderabbitai full review` and resume polling for another **5 minutes** (5 cycles). Total wait ceiling is ~15 minutes. This second shorter window counts against the 8/hour review limit — be aware.
 
 ### Timeout & Fallback
-- **Hard timeout: 15 minutes total.** If CR has not responded after 15 minutes of polling (including the retry), stop waiting. Do NOT keep polling — it wastes tokens and risks session timeout.
+- **Hard timeout: 8 minutes total.** If CR has not responded after 8 minutes of polling (including the retry), stop waiting. Do NOT keep polling — it wastes tokens and risks session timeout.
 - When CR times out, run a **self-review** instead (see below) and proceed with the flow.
-- Tell the user: "CR didn't respond within 15 minutes. I ran a self-review instead. CR may still comment on the PR later — check back after merge if needed."
+- Tell the user: "CR didn't respond within 8 minutes. I ran a self-review instead. CR may still comment on the PR later — check back after merge if needed."
 
 ### Processing CR Feedback
 1. Fetch the latest CR comments via `gh api`
@@ -215,7 +215,7 @@ When CodeRabbit is unavailable (CLI timeout, GitHub timeout, rate-limited, or no
 
 ### When to trigger
 - CR CLI hangs or errors out twice during the local review loop
-- GitHub CR polling exceeds the 15-minute hard timeout
+- GitHub CR polling exceeds the 8-minute hard timeout
 - CR is rate-limited and not responding after the retry protocol
 - CR is not configured for the repo
 
