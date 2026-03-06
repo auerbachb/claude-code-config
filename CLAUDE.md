@@ -90,6 +90,11 @@ This is the **primary** review workflow. Run CodeRabbit locally in your terminal
   curl -fsSL https://cli.coderabbit.ai/install.sh | sh
   coderabbit auth login
   ```
+- **Config:** `.coderabbit.yaml` in repo root (if the repo uses CodeRabbit)
+- **Verify installation:** `coderabbit --version` or `which coderabbit`
+- **Default install location:** `~/.local/bin/coderabbit`
+- If `coderabbit` is not in PATH, use the full path: `~/.local/bin/coderabbit`
+- **Always prefer local** `coderabbit review --prompt-only` over GitHub CR polling. Do NOT fall back to the GitHub CR polling loop unless local review explicitly fails.
 
 ### When to run
 - After finishing implementation on a feature branch, **before pushing or creating a PR**
