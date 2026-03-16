@@ -161,15 +161,27 @@ After pushing a commit to a PR, automatically enter the CR review loop:
   2. `repos/{owner}/{repo}/pulls/{N}/comments` — inline comments on specific lines of code in the diff
   3. `repos/{owner}/{repo}/issues/{N}/comments` — **main PR conversation thread** (where CR posts its summary review, the "✅ Actions performed" ack, and general findings)
   - **⚠️ The third endpoint (`issues/` not `pulls/`) is important.** When CR reviews with findings, it posts review objects on `pulls/{N}/reviews` (which you'll see). But CR also posts its summary and the "✅ Actions performed" ack as issue comments on `issues/{N}/comments`. Missing this endpoint means you'll catch reviews with findings but miss the ack and summary — causing indefinite polling on **clean passes** where CR has no findings to post as review objects.
-- **Check the commit status to detect review completion** — this is the **primary completion signal**: `repos/{owner}/{repo}/commits/{SHA}/check-runs` (filter for `name == "CodeRabbit"` or `app.slug == "coderabbitai"`). When CR's check shows `status: "completed"` with `conclusion: "success"` (visible as "CodeRabbit — Review completed" in the PR's CI checks box), the review is done. This is the definitive signal, especially for clean passes where CR found no issues.
+- **Check the commit status on EVERY poll cycle** — this serves two purposes:
+  ```
+  gh api "repos/{owner}/{repo}/commits/{SHA}/check-runs" \
+    --jq '.check_runs[] | select(.name == "CodeRabbit") | {name, status, conclusion, title: .output.title}'
+  ```
+  If check-runs returns empty for CodeRabbit, fall back to the commit statuses endpoint:
+  ```
+  gh api "repos/{owner}/{repo}/commits/{SHA}/statuses" \
+    --jq '.[] | select(.context | test("CodeRabbit"; "i")) | {context, state, description}'
+  ```
+  - **Completion signal:** `status: "completed"` with `conclusion: "success"` = review done (visible as "CodeRabbit — Review completed" in the PR's CI checks box). This is the definitive signal, especially for clean passes.
+  - **⚠️ Fast-path rate limit detection:** If EITHER endpoint shows rate limiting — check-run has `conclusion: "failure"` with `output.title` containing "rate limit" (case-insensitive), OR commit status has `state: "failure"`/`state: "error"` with `description` containing "rate limit" — **trigger Macroscope IMMEDIATELY.** Do not wait 8 minutes. This catches rate limits within ~60-120 seconds of pushing.
   - **⚠️ Do NOT confuse the ack with completion.** The "✅ Actions performed — Full review triggered" issue comment means CR **started** reviewing — it does NOT mean the review is finished. The CI check "CodeRabbit — Review completed" is what signals actual completion.
 - **⚠️ CR's GitHub username is `coderabbitai[bot]` (with the `[bot]` suffix).** Always filter by `.user.login == "coderabbitai[bot]"` — NOT bare `coderabbitai`. Using the wrong username will silently miss all CR comments.
 - Track the **highest comment ID** seen so far across all three endpoints. Any comment from `coderabbitai[bot]` with an ID greater than the watermark is a new finding that needs attention.
 - If CR responds, process immediately
 - **Hard timeout: 8 minutes.** If CR has not delivered a review after 8 minutes of polling, stop waiting and trigger **Macroscope** (see below). Do NOT keep polling — it wastes tokens and risks session timeout.
 
-### Timeout & Fallback
-- **After 8 minutes with no CR review: ALWAYS trigger Macroscope.** It does not matter whether you see an explicit rate-limit signal. If 8 minutes pass and CR has not delivered review content, fall back to Macroscope immediately. The distinction between "rate-limited" and "slow" is irrelevant — the action is the same.
+### Timeout & Fallback — Two Trigger Paths to Macroscope
+- **Fast path (~1-2 min):** The check-runs or commit statuses API shows "Review rate limit exceeded" → trigger Macroscope immediately on that poll cycle. Do not wait.
+- **Slow path (8 min):** No rate-limit signal visible, but CR has not delivered review content after 8 minutes → trigger Macroscope. The distinction between "rate-limited" and "slow" is irrelevant at this point — the action is the same.
 - **If Macroscope also fails** (10-minute timeout with no response): fall back to **self-review** (see below).
 - Tell the user which fallback was used and why.
 
@@ -204,6 +216,7 @@ After pushing a commit to a PR, automatically enter the CR review loop:
   - ❌ 2 clean Macroscope reviews (need at least 1 CR)
   - ❌ 2 clean self-reviews (need at least 1 CR)
 - After a clean Macroscope or self-review, always re-trigger `@coderabbitai full review` to get the required CR clean pass. If CR is still rate-limited, wait 15 minutes and try again.
+  - **Exception:** If you just pushed new code (e.g., Macroscope fixes), CR auto-triggers on the new SHA — no need to manually re-trigger or wait 15 minutes. Just enter the polling loop on the new commit.
 - Once the 2-review requirement is met, proceed immediately to Step 2.
 
 **Step 2 — Verify every Test Plan checkbox (MANDATORY — do NOT skip):**
@@ -232,8 +245,8 @@ When CodeRabbit is rate-limited on GitHub, fall back to Macroscope for code revi
 
 ### When to trigger Macroscope
 Trigger Macroscope when **any** of these are true — check ALL of them every polling cycle:
-- **8 minutes have passed since pushing or triggering `@coderabbitai full review` and no review content has appeared.** This is the primary trigger — it fires regardless of whether you see an explicit rate-limit signal.
-- The CodeRabbit check shows "Review rate limit exceeded" with a failing ❌ status
+- **🚀 FAST PATH (check every cycle):** The commit's check-runs or statuses API shows CodeRabbit rate limiting (see "Fast-path rate limit detection" in Polling above). This catches rate limits within ~60-120 seconds — **trigger Macroscope immediately, do not wait 8 minutes.**
+- **⏱️ SLOW PATH (8-minute timeout):** 8 minutes have passed since pushing or triggering `@coderabbitai full review` and no review content has appeared. This fires regardless of whether you see an explicit rate-limit signal.
 - CR's review comment explicitly mentions rate limiting or throttling
 - CR's issue comment (on `issues/{N}/comments`) contains the text "Rate limit exceeded"
 - CR posts a "✅ Actions performed" ack but **no actual review body or inline comments appear within 8 minutes** — the ack alone is NOT a review
@@ -268,12 +281,16 @@ When a CodeRabbit rate limit is detected:
 - **Macroscope has no CLI.** It only operates via GitHub PR comments — there is no local pre-push review fallback from Macroscope.
 - **Macroscope counts as 1 of the 2 required clean reviews**, but at least 1 must come from CodeRabbit (see Completion criteria above).
 
-### Switching back to CodeRabbit
-After completing a Macroscope review cycle:
-1. Wait at least **15 minutes** from the last CodeRabbit rate limit message
-2. Re-trigger `@coderabbitai full review` on the PR
-3. If CR responds normally, resume the standard CR review loop
-4. If CR is still rate-limited, trigger another `@macroscope-app review` cycle
+### After Macroscope: Always Try CR Next
+After fixing Macroscope findings and pushing a new commit:
+1. **Do NOT wait 15 minutes.** The push creates a new commit with fresh check-runs — the old "Review rate limit exceeded" was on the previous SHA and is irrelevant. CR auto-triggers on every push, so the new commit gets a fresh CR review attempt.
+2. Enter the normal polling loop on the **new** commit's SHA (fast-path + 8-minute slow-path).
+3. On each poll cycle, check the **new** commit's check-runs for rate limit (fast path). The new commit won't have a stale rate-limit message — it's a clean slate.
+4. If CR reviews successfully → process findings normally. This counts toward the required "at least 1 CR review."
+5. If CR rate-limits again on the new commit (fast-path detects within ~2 min) → trigger Macroscope again.
+6. **The alternation is automatic:** push → try CR (fresh SHA) → rate-limited? → Macroscope → fix + push (new SHA) → try CR → etc. Each push gives CR a fresh chance.
+
+> **The 15-minute wait only applies when requesting a re-review of the SAME SHA** (e.g., `@coderabbitai full review` without pushing new code). If you pushed new code, skip the wait — the push is the trigger.
 
 ---
 
@@ -309,6 +326,37 @@ List findings the same way you would process CR findings: verify each against th
 
 When spawning subagents via the Task tool, **always pass the FULL contents of this CLAUDE.md file into the subagent's prompt.** Subagents do not automatically inherit CLAUDE.md context — they only see what you put in their prompt. Read this file via `cat ~/.claude/CLAUDE.md` and include the entire output in the subagent's task description. Do NOT summarize, excerpt, or paraphrase — pass the complete file. Without the full instructions, subagents will miss critical workflow steps (Macroscope fallback, ack-vs-completion detection, reply requirements) and improvise their own broken approach.
 
+### Subagent Task Decomposition (Token Safety)
+
+Subagents have a hardcoded **32K output token limit** that cannot be configured ([known Claude Code limitation](https://github.com/anthropics/claude-code/issues/25569)). A single subagent that reads 10-20 CR findings, fixes code, pushes, replies to every thread, AND polls for the next review will exhaust its token budget and die mid-poll. To prevent this, break PR lifecycle work into sequential phases:
+
+**Phase A: Fix + Push** (heaviest — uses most tokens)
+- Read CR/Macroscope findings from GitHub API
+- Read affected source files
+- Fix all valid findings + fix lint/CI failures
+- Commit all fixes in ONE commit, push once
+- Reply to all review comment threads
+- **EXIT after push — do not enter polling loop**
+
+**Phase B: Review Loop** (lighter — incremental)
+- Poll for new CR review (fast-path + 8-minute slow-path Macroscope trigger)
+- If CR/Macroscope posts new findings: fix, commit, push, reply (same as Phase A but smaller scope)
+- If clean pass: trigger one more `@coderabbitai full review` for confirmation
+- **EXIT after confirming clean or after fixing one round**
+
+**Phase C: Merge Prep** (lightest)
+- Verify 2 consecutive clean reviews achieved
+- Read PR body, verify all acceptance criteria against final code
+- Check off all boxes
+- Report ready for merge
+
+**Orchestration rules:**
+- Parent agent launches Phase A subagents (can run in parallel across different PRs)
+- When Phase A completes, parent launches Phase B for that PR
+- When Phase B reports clean, parent launches Phase C
+- **Stagger Phase B launches:** max 3 PRs entering review loop simultaneously (avoids burning the shared 8 reviews/hour CR quota in one burst)
+- Use judgment on small PRs: if CR only found 1-2 findings, a single subagent may handle the full lifecycle without hitting token limits
+
 ### Mandatory Subagent Review Protocol (COPY INTO EVERY SUBAGENT PROMPT)
 
 Since subagents receive the full CLAUDE.md (see above), this section serves as a **quick-reference summary** of the review protocol. The full details are in the sections above — this summary exists so subagents can quickly locate the critical steps without scanning the entire file.
@@ -318,13 +366,16 @@ Since subagents receive the full CLAUDE.md (see above), this section serves as a
 
 After pushing code and creating/updating a PR, follow this EXACT sequence:
 
-### Step 1: Wait for CR review (max 8 minutes)
+### Step 1: Wait for CR review (fast-path check every cycle, 8-min slow-path max)
 - Poll every 60s on all 3 endpoints (per_page=100):
   - `repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100`
   - `repos/{owner}/{repo}/pulls/{N}/comments?per_page=100`
   - `repos/{owner}/{repo}/issues/{N}/comments?per_page=100`
 - Filter by `coderabbitai[bot]` (with [bot] suffix)
-- Also check commit status: `repos/{owner}/{repo}/commits/{SHA}/check-runs`
+- EVERY cycle, check commit status for rate limit (FAST PATH):
+  `gh api "repos/{owner}/{repo}/commits/{SHA}/check-runs" --jq '.check_runs[] | select(.name == "CodeRabbit")'`
+  If check shows "rate limit" in output.title with conclusion "failure" → Macroscope IMMEDIATELY.
+  If check-runs empty, also check: `gh api "repos/{owner}/{repo}/commits/{SHA}/statuses"`
 
 ### Step 2: After 8 minutes with no review → trigger Macroscope (NO EXCEPTIONS)
 If 8 minutes pass and CR has not delivered review content, trigger Macroscope.
@@ -341,6 +392,11 @@ If you see the ack but no review within 8 minutes, CR failed to deliver. Move to
    - Inline comments: `gh api repos/{owner}/{repo}/pulls/comments/{id}/replies -f body="Fixed in \`SHA\`: <what changed>"`
    - Issue comments: `gh api repos/{owner}/{repo}/issues/{N}/comments -f body="@macroscope-app Fixed: <summary>"`
    Pushing code does NOT resolve threads — you MUST post explicit replies.
+
+### After Macroscope fix+push: CR gets a fresh chance automatically
+Pushing creates a new SHA with clean check-runs. CR auto-triggers on push.
+Do NOT wait 15 minutes. Enter the normal polling loop on the new SHA.
+The 15-min wait only applies to `@coderabbitai full review` on the SAME SHA.
 
 ### Step 4: Get 2 clean reviews for merge readiness
 Valid combinations (at least 1 must be from CR):
