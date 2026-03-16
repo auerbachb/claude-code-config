@@ -1,4 +1,4 @@
-## EVERY MESSAGE — NON-NEGOTIABLE BEHAVIORS
+# EVERY MESSAGE — NON-NEGOTIABLE BEHAVIORS
 
 These apply to EVERY message the parent agent sends to the user. No exceptions, no degradation over time, no skipping after context compaction.
 

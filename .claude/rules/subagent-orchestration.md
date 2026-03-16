@@ -1,4 +1,4 @@
-## Subagent Context
+# Subagent Context
 
 > **Always:** Pass ALL rule files to subagents. Use phase decomposition (A/B/C). Timestamp every message. Monitor subagent health. Report failures immediately.
 > **Ask first:** Respawning a failed subagent — tell the user what happened first.

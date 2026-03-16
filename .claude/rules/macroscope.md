@@ -2,7 +2,7 @@
 
 > **Always:** Trigger Macroscope after 8 min with no CR review OR on fast-path rate limit detection. Poll all 3 endpoints. Reply to every thread.
 > **Ask first:** Never — fix findings autonomously.
-> **Never:** Run Macroscope and CR simultaneously on the same push. Wait 15 min after pushing new code (fresh SHA = fresh CR chance).
+> **Never:** Run Macroscope and CR simultaneously on the same push. Manually re-trigger `@coderabbitai full review` on the same SHA within 15 min of a rate limit. (Fresh SHA from a new push = poll immediately, no wait.)
 
 When CodeRabbit is rate-limited on GitHub, fall back to Macroscope for code review. Macroscope is **disabled by default** on all repos — it only runs when explicitly triggered via PR comment.
 
@@ -20,7 +20,7 @@ Trigger Macroscope when **any** of these are true — check ALL of them every po
 When a CodeRabbit rate limit is detected:
 
 1. **Post a review request on the PR:**
-   ```
+   ```bash
    gh pr comment <PR_NUMBER> --body "@macroscope-app review"
    ```
 
@@ -46,7 +46,7 @@ When a CodeRabbit rate limit is detected:
 
 A Macroscope review is **complete** when EITHER of these is true:
 1. **Check-run signal:** `Macroscope - Correctness Check` shows `status: "completed"` with `conclusion: "success"` on the PR's HEAD commit. Check via:
-   ```
+   ```bash
    gh api "repos/{owner}/{repo}/commits/{SHA}/check-runs" \
      --jq '.check_runs[] | select(.app.slug == "macroscopeapp") | {name, status, conclusion}'
    ```

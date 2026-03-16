@@ -49,7 +49,15 @@ This creates **one canonical document** for the coding agent to work from:
 
 1. **If CR posted a plan:** Compare CR's plan against Claude's plan. Incorporate anything CR identified that Claude missed (files, edge cases, architectural considerations, risks). The goal is the most robust plan — pick the best ideas from each.
 2. **If CR did not post a plan:** Use Claude's plan as-is.
-3. **Edit the issue body** to include the merged plan. Use `gh issue edit N --body "..."` to append a `## Implementation Plan` section to the existing issue body. Do NOT replace the original issue description — append the plan below it.
+3. **Edit the issue body** to include the merged plan. Fetch the current body first, then write back both the original content and the plan:
+   ```bash
+   current_body="$(gh issue view N --json body --jq .body)"
+   gh issue edit N --body "${current_body}
+
+   ## Implementation Plan
+   <merged plan here>"
+   ```
+   This preserves the original issue description. (`gh issue edit --body` replaces the entire body — you must fetch-concatenate-edit to append.)
 4. **Comment on the issue** confirming the merge:
    ```
    gh issue comment N --body "Implementation plan merged into issue body (Claude's analysis + CodeRabbit's recommendations). Ready for implementation."
