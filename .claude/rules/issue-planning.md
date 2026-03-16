@@ -1,4 +1,4 @@
-## Issue Creation Flow
+# Issue Creation Flow
 
 > **Always:** Create a GitHub issue before any code work. Trigger `@coderabbitai plan` on every new issue. Merge CR's plan into the issue body.
 > **Ask first:** Never — issue creation and planning are autonomous.

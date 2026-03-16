@@ -1,4 +1,4 @@
-## Macroscope Fallback (CodeRabbit Rate Limit Recovery)
+# Macroscope Fallback (CodeRabbit Rate Limit Recovery)
 
 > **Always:** Trigger Macroscope after 8 min with no CR review OR on fast-path rate limit detection. Poll all 3 endpoints. Reply to every thread.
 > **Ask first:** Never — fix findings autonomously.

@@ -104,6 +104,7 @@ Context compaction can happen at any time in long sessions. When it does, you lo
    ```
    gh pr view N --json state,title,mergeStateStatus,commits
    gh api "repos/{owner}/{repo}/pulls/N/reviews?per_page=100"
+   gh api "repos/{owner}/{repo}/pulls/N/comments?per_page=100"
    gh api "repos/{owner}/{repo}/issues/N/comments?per_page=100"
    ```
    Build a dashboard: PR number, HEAD SHA, last review state, last reviewer, pending action.
