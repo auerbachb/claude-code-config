@@ -4,7 +4,7 @@ A battle-tested `CLAUDE.md` configuration that teaches [Claude Code](https://doc
 
 ## What this does
 
-When you drop this `CLAUDE.md` into your project (or `~/.claude/`), Claude Code will automatically:
+When you drop this `CLAUDE.md` and `.claude/rules/` into your project (or `~/.claude/`), Claude Code will automatically:
 
 - **Plan with CodeRabbit** — When starting a GitHub issue, Claude kicks off `@coderabbitai plan` asynchronously, builds its own plan in parallel, then merges the two into a single implementation plan.
 - **Review locally first** — After coding, Claude runs CodeRabbit reviews locally via the CLI (`coderabbit review --prompt-only`), fixes all findings, and repeats until clean — all before pushing or creating a PR. No polling, no PR noise, instant feedback.
@@ -24,11 +24,18 @@ This config encodes all of that into reusable instructions so you don't have to 
 ### Option 1: Global config (applies to all your projects)
 
 ```bash
-# Back up your existing CLAUDE.md if you have one
+mkdir -p ~/.claude
+# Back up existing config if you have one
 cp ~/.claude/CLAUDE.md ~/.claude/CLAUDE.md.bak 2>/dev/null
 
-# Copy or append
+# Copy or symlink
 cp CLAUDE.md ~/.claude/CLAUDE.md
+mkdir -p ~/.claude/rules
+cp -R .claude/rules/. ~/.claude/rules/
+
+# Or symlink (auto-updates when you pull changes)
+ln -sfn /path/to/claude-code-coderabbit/CLAUDE.md ~/.claude/CLAUDE.md
+ln -sfn /path/to/claude-code-coderabbit/.claude/rules ~/.claude/rules
 ```
 
 ### Option 2: Per-project config
@@ -36,9 +43,11 @@ cp CLAUDE.md ~/.claude/CLAUDE.md
 ```bash
 # Copy into your project root
 cp CLAUDE.md /path/to/your/project/CLAUDE.md
+mkdir -p /path/to/your/project/.claude/rules
+cp -R .claude/rules/. /path/to/your/project/.claude/rules/
 ```
 
-Claude Code loads `CLAUDE.md` from the project root first, then `~/.claude/CLAUDE.md` as a fallback. Per-project configs let you customize per repo.
+Claude Code loads `CLAUDE.md` from the project root first, then `~/.claude/CLAUDE.md` as a fallback. Files in `.claude/rules/` are auto-loaded alongside `CLAUDE.md`. Per-project configs let you customize per repo.
 
 ### Prerequisites
 
@@ -53,16 +62,16 @@ Claude Code loads `CLAUDE.md` from the project root first, then `~/.claude/CLAUD
 
 ## What's in the config
 
-| Section | What it does |
+The config is split into a root `CLAUDE.md` (~60 lines) and topic-specific rule files in `.claude/rules/` for better adherence ([Anthropic best practices](https://docs.anthropic.com/en/docs/claude-code/best-practices), [memory docs](https://docs.anthropic.com/en/docs/claude-code/memory)). All `.md` files in `.claude/rules/` load automatically — including subdirectories, so you can organize further as the rules grow.
+
+| File | What it does |
 |---|---|
-| **PR & Issue Workflow** | Branch naming, squash-merge policy, issue linking, acceptance criteria rules |
-| **Issue Planning Flow** | 7-step flow: read issue, kick off CR plan, build Claude's plan, merge plans, post final plan, start coding |
-| **Local CodeRabbit Review Loop** | Primary review workflow — runs CR locally via CLI before pushing, instant feedback, no PR noise |
-| **GitHub CodeRabbit Review Loop (Fallback)** | Safety net after PR creation — three-endpoint polling (`issues/` + `pulls/reviews` + `pulls/comments` + commit status checks), rate-limit-aware behavior, feedback processing, comment thread resolution |
-| **Completion Flow** | 2 consecutive clean reviews (at least 1 from CR), AC verification, user-confirmed merge |
-| **Macroscope Fallback** | When CR is rate-limited, trigger `@macroscope-app review` on the PR as a backup reviewer |
-| **Self-Review Fallback** | When both CR and Macroscope are unavailable, Claude reviews the diff itself so the flow doesn't stall |
-| **Subagent Context** | Ensures spawned subagents inherit the workflow rules |
+| **`CLAUDE.md`** | Worktree policy, PR & issue workflow, branch naming, squash-merge, acceptance criteria |
+| **`.claude/rules/issue-planning.md`** | Issue creation flow, CR plan integration, 5-step planning flow |
+| **`.claude/rules/cr-local-review.md`** | Primary review workflow — runs CR locally via CLI before pushing, instant feedback, no PR noise |
+| **`.claude/rules/cr-github-review.md`** | Safety net after PR creation — three-endpoint polling, rate-limit-aware behavior, fast-path detection, feedback processing, comment thread resolution, completion criteria |
+| **`.claude/rules/macroscope.md`** | Macroscope fallback (rate-limited CR) + self-review fallback (both unavailable) |
+| **`.claude/rules/subagent-orchestration.md`** | Task decomposition (phases A/B/C), health monitoring, timestamps, subagent quick-reference protocol |
 
 ## Key design decisions
 
