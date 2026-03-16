@@ -18,9 +18,13 @@ Tell the user: "I'll create a worktree for isolated work." Then use the `EnterWo
 
 ## PR & Issue Workflow
 
-### Issues
-- Every PR must link to a GitHub issue. If no issue exists before starting work, create one first.
+### Issues — MANDATORY before any code work
+
+- **Every PR must link to a GitHub issue. No exceptions.** If no issue exists, create one via `gh issue create` before writing any code, creating a branch, or making any changes.
+- **Why this is non-negotiable:** Issues go through a CR planning review (`@coderabbitai plan`) that catches logic errors, identifies edge cases, and produces a refined spec — all before a single coding token is spent. Skipping the issue means skipping this spec refinement, which leads to wasted coding effort on poorly defined tasks.
+- **The flow is always:** Create issue → CR reviews/refines the spec → plan implementation → create branch → write code → PR. Never jump straight to coding.
 - Use `Closes #N` in the PR body to auto-close the issue on merge.
+- If the user asks you to make a change and there's no existing issue, **create the issue first**, then proceed with the Issue Planning Flow below. Do not treat "quick fixes" or "small changes" as exceptions — the issue is the record of what was done and why.
 
 ### Acceptance Criteria
 - Every PR must include a **Test plan** section with checkboxes for acceptance criteria.
@@ -94,6 +98,7 @@ This is the **primary** review workflow. Run CodeRabbit locally in your terminal
 - **Verify installation:** `coderabbit --version` or `which coderabbit`
 - **Default install location:** `~/.local/bin/coderabbit`
 - If `coderabbit` is not in PATH, use the full path: `~/.local/bin/coderabbit`
+- **API key:** `CODERABBIT_API_KEY` is set in `~/.zshrc` — this links CLI reviews to the paid Pro plan with usage-based credits. Do NOT hardcode or commit this key anywhere.
 - **Always prefer local** `coderabbit review --prompt-only` over GitHub CR polling. Do NOT fall back to the GitHub CR polling loop unless local review explicitly fails.
 
 ### When to run
