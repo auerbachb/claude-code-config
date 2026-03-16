@@ -122,8 +122,10 @@ GitHub does not auto-resolve PR review comments when the fix touches different l
   - 1 clean self-review + 1 clean CodeRabbit review
   - NOT valid: 2 clean Macroscope reviews (need at least 1 CR)
   - NOT valid: 2 clean self-reviews (need at least 1 CR)
-- After a clean Macroscope or self-review, always re-trigger `@coderabbitai full review` to get the required CR clean pass. If CR is still rate-limited, wait 15 minutes and try again.
-  - **Exception:** If you just pushed new code (e.g., Macroscope fixes), CR auto-triggers on the new SHA — no need to manually re-trigger or wait 15 minutes. Just enter the polling loop on the new commit.
+- After a clean Macroscope or self-review, re-trigger CR to get the required CR clean pass:
+  - **If you pushed new code since the last CR attempt** (new SHA): CR auto-triggers on push. Enter the normal polling loop immediately — do NOT wait 15 minutes. The new SHA has fresh check-runs; the old rate-limit message is irrelevant.
+  - **If you're re-requesting review on the SAME SHA** (no new push): Wait 15 minutes before triggering `@coderabbitai full review`. Re-reviewing the same SHA while rate-limited will just fail again.
+  - **After 2 failed re-triggers on the same SHA**, stop and tell the user. Do not loop forever.
 - Once the 2-review requirement is met, proceed immediately to Step 2.
 
 **Step 2 — Verify every Test Plan checkbox (MANDATORY — do NOT skip):**

@@ -1,3 +1,14 @@
+## EVERY MESSAGE — NON-NEGOTIABLE BEHAVIORS
+
+These apply to EVERY message the parent agent sends to the user. No exceptions, no degradation over time, no skipping after context compaction.
+
+1. **Timestamp prefix.** Every message starts with Eastern time: `Mon Mar 16 02:34 AM ET`. Get via: `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`. This is the FIRST thing in every message — before status updates, before questions, before summaries.
+2. **Active monitoring declaration.** If you are monitoring background agents, state how many and which PRs at the end of every message. Example: "Monitoring: PR #618 (Phase B), PR #620 (Phase B), PR #623 (Phase C) — next poll in ~60s."
+
+If you have just resumed from context compaction, your FIRST action is to reconstruct monitoring state (see "Post-Compaction Recovery" in `subagent-orchestration.md`) and report it WITH a timestamp.
+
+---
+
 ## ALWAYS USE A WORKTREE — READ THIS FIRST
 
 **At the start of every session, before doing anything else, create a worktree.**

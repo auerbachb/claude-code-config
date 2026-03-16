@@ -42,6 +42,24 @@ When a CodeRabbit rate limit is detected:
 
 4. **Use reactions** on Macroscope comments to provide feedback (same as CR workflow)
 
+### Detecting a Clean Macroscope Pass
+
+A Macroscope review is **complete** when EITHER of these is true:
+1. **Check-run signal:** `Macroscope - Correctness Check` shows `status: "completed"` with `conclusion: "success"` on the PR's HEAD commit. Check via:
+   ```
+   gh api "repos/{owner}/{repo}/commits/{SHA}/check-runs" \
+     --jq '.check_runs[] | select(.app.slug == "macroscopeapp") | {name, status, conclusion}'
+   ```
+2. **Review comment signal:** `macroscope-app[bot]` posts a review or issue comment on the PR.
+
+A Macroscope review is **clean** (no findings) when:
+- The check-run shows completed/success AND
+- No new review objects or inline comments from `macroscope-app[bot]` appeared since the trigger
+
+**Important:** Macroscope may complete its review via check-runs WITHOUT posting any review comments. `conclusion: "success"` with no comments = clean pass. This is different from CodeRabbit, which always posts a review object.
+
+A clean Macroscope pass counts as 1 of the 2 required reviews for merge readiness (but at least 1 must come from CodeRabbit).
+
 ### Important constraints
 - **Never run both reviewers simultaneously on the same push.** Trigger Macroscope only after CR fails to deliver a review within 8 minutes.
 - **Macroscope has no CLI.** It only operates via GitHub PR comments — there is no local pre-push review fallback from Macroscope.
