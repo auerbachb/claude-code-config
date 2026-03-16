@@ -8,9 +8,10 @@
 
 At the start of every session, before any code work:
 
-1. Search the repo for a directory named `work-logs/` (check common locations: `docs/work-logs/`, `work-logs/`, `.docs/work-logs/`)
-2. **If found:** Ask the user once to confirm: "I found a work log directory at `{path}`. I'll log issues, PRs, and merges there — sound good?" If the user already mentioned the work log or it's clear from context, skip the ask and just use it.
-3. **If not found:** Do nothing — this rule is a no-op for repos without work logs.
+1. Search the repo for directory matches named `work-logs/` (check common locations first: `docs/work-logs/`, `work-logs/`, `.docs/work-logs/`).
+2. **If one match is found:** Ask the user once to confirm: "I found a work log directory at `{path}`. I'll log issues, PRs, and merges there — sound good?" If the user already mentioned the work log or it's clear from context, skip the ask and just use it.
+3. **If multiple matches are found:** Ask the user once to choose the canonical path, then persist that choice for the session.
+4. **If not found:** Do nothing — this rule is a no-op for repos without work logs.
 
 Once confirmed (or inferred), remember the path for the rest of the session. Do not ask again.
 
