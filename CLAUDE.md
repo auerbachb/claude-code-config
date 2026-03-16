@@ -357,6 +357,26 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 - **Stagger Phase B launches:** max 3 PRs entering review loop simultaneously (avoids burning the shared 8 reviews/hour CR quota in one burst)
 - Use judgment on small PRs: if CR only found 1-2 findings, a single subagent may handle the full lifecycle without hitting token limits
 
+### Subagent Health Monitoring (MANDATORY for parent agents)
+
+The user has no visibility into subagent failures. If a subagent runs out of tokens or times out, the parent agent is the only one who knows — and if the parent doesn't report it, the user won't discover the failure until they manually check GitHub 15-20 minutes later. **This is unacceptable.**
+
+**Monitoring rules for parent agents:**
+1. **Poll subagent status every ~60 seconds.** When running subagents in the background, check their status regularly. Do not fire-and-forget.
+2. **Report failures immediately.** If a subagent exits with an error, times out, or returns without completing its task, tell the user right away. Include:
+   - Which PR / issue the subagent was working on
+   - What phase it was in (A/B/C)
+   - How it failed (token exhaustion, timeout, error, incomplete work)
+   - What was left undone
+3. **Report success too.** When a subagent completes its phase successfully, give the user a brief status update (e.g., "Phase A complete for PR #619 — fixes pushed, entering Phase B").
+4. **Detect silent failures.** A subagent that returns a result but didn't actually push code or complete its assigned task has silently failed. Check the subagent's output against what it was supposed to do before marking it as complete.
+5. **Never assume success.** If a subagent was supposed to push code, verify the push happened (e.g., check `git log` or `gh pr view` for the expected commit). If it was supposed to reply to review threads, verify the replies exist.
+
+**What to tell the user on failure:**
+> "⚠️ Subagent for PR #N (Phase B) failed — ran out of tokens during CR polling. The last push was commit `abc1234`. CR review is pending but unprocessed. Want me to respawn a new agent to continue, or would you like to handle it?"
+
+The user should never have to discover a stalled PR by checking GitHub manually.
+
 ### Mandatory Subagent Review Protocol (COPY INTO EVERY SUBAGENT PROMPT)
 
 Since subagents receive the full CLAUDE.md (see above), this section serves as a **quick-reference summary** of the review protocol. The full details are in the sections above — this summary exists so subagents can quickly locate the critical steps without scanning the entire file.
