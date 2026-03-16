@@ -151,7 +151,7 @@ After pushing a commit to a PR, automatically enter the CR review loop:
 - **Batch fixes into a single commit before pushing.** If CR found 4 issues, fix all 4 in one commit — don't push 4 separate commits (that's 4 reviews consumed vs. 1).
 - **Never trigger `@coderabbitai full review` more than twice per PR per hour.** After 2 explicit triggers with no response, stop and tell the user CR may be rate-limited.
 - **When multiple agents are working in parallel on separate PRs**, each push consumes a review from the shared 8/hour pool. Coordinate: stagger pushes when possible, and never have more than 3-4 PRs triggering CR reviews in the same hour.
-- **If CR responds with "Reviews paused" or rate-limit language**, do NOT retry immediately. Wait at least 10 minutes, then post `@coderabbitai resume` followed by `@coderabbitai full review`. Only one retry — if still paused, inform the user.
+- **If CR responds with "Reviews paused" or rate-limit language**, do NOT retry immediately. Fall back to **Macroscope** (see below). If Macroscope is also unavailable, fall back to **self-review**.
 
 ### Polling
 - Poll every 60 seconds for new CodeRabbit comments/reviews on the PR
@@ -170,8 +170,9 @@ After pushing a commit to a PR, automatically enter the CR review loop:
 
 ### Timeout & Fallback
 - **Hard timeout: 8 minutes total.** If CR has not responded after 8 minutes of polling (including the retry), stop waiting. Do NOT keep polling — it wastes tokens and risks session timeout.
-- When CR times out, run a **self-review** instead (see below) and proceed with the flow.
-- Tell the user: "CR didn't respond within 8 minutes. I ran a self-review instead. CR may still comment on the PR later — check back after merge if needed."
+- **If CR is rate-limited** (check shows "Review rate limit exceeded" ❌, or CR's comment mentions rate limiting/throttling): fall back to **Macroscope** (see below).
+- **If CR simply timed out** (no rate-limit signal): run a **self-review** instead and proceed with the flow.
+- Tell the user which fallback was used and why.
 
 ### Processing CR Feedback
 1. Fetch the latest CR comments via `gh api`
@@ -191,13 +192,20 @@ After pushing a commit to a PR, automatically enter the CR review loop:
 
 ### Completion
 
-**Step 1 — Confirm CR is clean (2 consecutive clean full reviews):**
+**Step 1 — Confirm reviews are clean (2 consecutive clean reviews, at least 1 from CR):**
 - If CR responds with no findings after a round of fixes, post `@coderabbitai full review` one more time to confirm.
 - **How to detect a clean pass:** After triggering `@coderabbitai full review`, watch for these signals in order:
   1. **Ack (review started):** CR posts an issue comment (on `issues/{N}/comments`) with "✅ Actions performed — Full review triggered." This means CR **started** the review — it is NOT a completion signal.
   2. **Completion (review finished):** The commit status check for CodeRabbit shows `status: "completed"` with `conclusion: "success"` (visible as "CodeRabbit — Review completed" in the PR's CI checks). This is the **definitive completion signal**.
   3. **Clean = completed + no new findings:** Once the CI check shows completed, check all three comment endpoints for any new findings posted after the ack. If there are none, the review is a clean pass. You do NOT need to keep polling for the full 10 minutes once the CI check is green and no findings appeared.
-- If CR has no findings on **2 consecutive** `full review` requests, the PR is clean. Proceed immediately to Step 2.
+- **Valid combinations for merge readiness (2 clean reviews required):**
+  - ✅ 2 consecutive clean CodeRabbit reviews
+  - ✅ 1 clean Macroscope review + 1 clean CodeRabbit review
+  - ✅ 1 clean self-review + 1 clean CodeRabbit review
+  - ❌ 2 clean Macroscope reviews (need at least 1 CR)
+  - ❌ 2 clean self-reviews (need at least 1 CR)
+- After a clean Macroscope or self-review, always re-trigger `@coderabbitai full review` to get the required CR clean pass. If CR is still rate-limited, wait 15 minutes and try again.
+- Once the 2-review requirement is met, proceed immediately to Step 2.
 
 **Step 2 — Verify every Test Plan checkbox (MANDATORY — do NOT skip):**
 > This is the **immediate next step** after CR is clean. Do not ask the user about merging until this is done.
@@ -219,15 +227,59 @@ After pushing a commit to a PR, automatically enter the CR review loop:
 
 ---
 
+## Macroscope Fallback (CodeRabbit Rate Limit Recovery)
+
+When CodeRabbit is rate-limited on GitHub, fall back to Macroscope for code review. Macroscope is **disabled by default** on all repos — it only runs when explicitly triggered via PR comment.
+
+### Detecting CodeRabbit rate limits
+CodeRabbit is rate-limited when any of these are true:
+- The CodeRabbit check shows "Review rate limit exceeded" with a failing ❌ status
+- CR fails to post a review within 8 minutes after `@coderabbitai full review` is triggered
+- CR's review comment explicitly mentions rate limiting or throttling
+
+### Triggering Macroscope review
+When a CodeRabbit rate limit is detected:
+
+1. **Post a review request on the PR:**
+   ```
+   gh pr comment <PR_NUMBER> --body "@macroscope-app review"
+   ```
+
+2. **Poll for Macroscope's response** using the same polling pattern as CodeRabbit:
+   - Poll every 60 seconds via `gh api` for new review comments from `macroscope-app[bot]`
+   - Check `repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100` and `repos/{owner}/{repo}/issues/{N}/comments?per_page=100`
+   - Timeout after **10 minutes** — if no response, fall back to **self-review** and inform the user that both CR and Macroscope are unavailable
+
+3. **Process Macroscope findings** the same way as CR findings:
+   - Fix all valid findings in a single commit
+   - Reply to each Macroscope comment thread confirming the fix or explaining why it was declined
+   - Push once (single commit for all fixes)
+
+4. **Use 👍 or 👎 reactions** on Macroscope comments to provide feedback (same as CR workflow)
+
+### Important constraints
+- **Never run both reviewers simultaneously on the same push.** Trigger Macroscope only after confirming CR is rate-limited.
+- **Macroscope has no CLI.** It only operates via GitHub PR comments — there is no local pre-push review fallback from Macroscope.
+- **Macroscope counts as 1 of the 2 required clean reviews**, but at least 1 must come from CodeRabbit (see Completion criteria above).
+
+### Switching back to CodeRabbit
+After completing a Macroscope review cycle:
+1. Wait at least **15 minutes** from the last CodeRabbit rate limit message
+2. Re-trigger `@coderabbitai full review` on the PR
+3. If CR responds normally, resume the standard CR review loop
+4. If CR is still rate-limited, trigger another `@macroscope-app review` cycle
+
+---
+
 ## Self-Review Fallback
 
-When CodeRabbit is unavailable (CLI timeout, GitHub timeout, rate-limited, or not configured), Claude performs its own review as a fallback. This is not a replacement for CR — it's a safety net so the flow doesn't break.
+When CodeRabbit is unavailable and Macroscope cannot help (non-rate-limit timeout, CLI failure, neither tool configured), Claude performs its own review as a last-resort fallback. This is not a replacement for CR or Macroscope — it's a safety net so the flow doesn't break.
 
 ### When to trigger
 - CR CLI hangs or errors out twice during the local review loop
-- GitHub CR polling exceeds the 8-minute hard timeout
-- CR is rate-limited and not responding after the retry protocol
-- CR is not configured for the repo
+- GitHub CR polling exceeds the 8-minute hard timeout **and** the cause is not a rate limit (if rate-limited, use Macroscope first)
+- Both CR and Macroscope are unavailable on GitHub (CR rate-limited + Macroscope timed out)
+- Neither CR nor Macroscope is configured for the repo
 
 ### How to self-review
 Review the full diff (`git diff main...HEAD`) and check for:
