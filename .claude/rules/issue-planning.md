@@ -6,11 +6,11 @@
 
 When creating a new GitHub issue (whether the user asked for it or you identified the need):
 
-### 1. Draft the issue locally
+## 1. Draft the issue locally
 - Write the title, body, acceptance criteria, and any relevant context
 - Do NOT post it yet
 
-### 2. Create the issue and trigger CR plan
+## 2. Create the issue and trigger CR plan
 - Post the issue via `gh issue create`
 - Immediately comment `@coderabbitai plan` on the new issue:
   ```
@@ -18,7 +18,7 @@ When creating a new GitHub issue (whether the user asked for it or you identifie
   ```
 - CR will analyze the issue and post an implementation plan with file recommendations, edge cases, and architectural considerations. This feedback is valuable — it catches gaps in the spec before any coding begins.
 
-### 3. If starting work immediately
+## 3. If starting work immediately
 - If you're about to start coding on this issue right away, proceed to the **Issue Planning Flow** below — it handles waiting for CR's plan.
 - If the issue is for later (backlog), you're done — CR's plan will be there when someone picks it up.
 

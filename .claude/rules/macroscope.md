@@ -6,7 +6,8 @@
 
 When CodeRabbit is rate-limited on GitHub, fall back to Macroscope for code review. Macroscope is **disabled by default** on all repos — it only runs when explicitly triggered via PR comment.
 
-### When to trigger Macroscope
+## When to trigger Macroscope
+
 Trigger Macroscope when **any** of these are true — check ALL of them every polling cycle:
 - **FAST PATH (check every cycle):** The commit's check-runs or statuses API shows CodeRabbit rate limiting (see "Fast-path rate limit detection" in GitHub review rules). This catches rate limits within ~60-120 seconds — **trigger Macroscope immediately, do not wait 8 minutes.**
 - **SLOW PATH (8-minute timeout):** 8 minutes have passed since pushing or triggering `@coderabbitai full review` and no review content has appeared. This fires regardless of whether you see an explicit rate-limit signal.
@@ -16,7 +17,8 @@ Trigger Macroscope when **any** of these are true — check ALL of them every po
 
 > **THE #1 SUBAGENT FAILURE MODE:** Agents see the "Actions performed" ack and interpret it as "CR is reviewing, keep waiting." But when CR is rate-limited, it posts the ack and then **never delivers the actual review**. The result: the agent polls forever, waiting for a review that will never come. **If 8 minutes pass after the ack with no review content, CR is rate-limited — trigger Macroscope immediately.**
 
-### Triggering Macroscope review
+## Triggering Macroscope review
+
 When a CodeRabbit rate limit is detected:
 
 1. **Post a review request on the PR:**
@@ -42,7 +44,7 @@ When a CodeRabbit rate limit is detected:
 
 4. **Use reactions** on Macroscope comments to provide feedback (same as CR workflow)
 
-### Detecting a Clean Macroscope Pass
+## Detecting a Clean Macroscope Pass
 
 A Macroscope review is **complete** when EITHER of these is true:
 1. **Check-run signal:** `Macroscope - Correctness Check` shows `status: "completed"` with `conclusion: "success"` on the PR's HEAD commit. Check via:
@@ -60,12 +62,13 @@ A Macroscope review is **clean** (no findings) when:
 
 A clean Macroscope pass counts as 1 of the 2 required reviews for merge readiness (but at least 1 must come from CodeRabbit).
 
-### Important constraints
+## Important constraints
 - **Never run both reviewers simultaneously on the same push.** Trigger Macroscope only after CR fails to deliver a review within 8 minutes.
 - **Macroscope has no CLI.** It only operates via GitHub PR comments — there is no local pre-push review fallback from Macroscope.
 - **Macroscope counts as 1 of the 2 required clean reviews**, but at least 1 must come from CodeRabbit (see Completion criteria in GitHub review rules).
 
-### After Macroscope: Always Try CR Next
+## After Macroscope: Always Try CR Next
+
 After fixing Macroscope findings and pushing a new commit:
 1. **Do NOT wait 15 minutes.** The push creates a new commit with fresh check-runs — the old "Review rate limit exceeded" was on the previous SHA and is irrelevant. CR auto-triggers on every push, so the new commit gets a fresh CR review attempt.
 2. Enter the normal polling loop on the **new** commit's SHA (fast-path + 8-minute slow-path).

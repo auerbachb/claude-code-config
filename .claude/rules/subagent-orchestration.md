@@ -114,7 +114,7 @@ Context compaction can happen at any time in long sessions. When it does, you lo
 
 **Pre-compaction checkpointing (preventive):**
 
-When running a long monitoring session with multiple PRs, periodically write a status checkpoint to `.claude/session-state.json`. Write every 10 minutes or after any significant state change (phase transition, review received, agent launched). Format:
+When running a long monitoring session with multiple PRs, periodically write a status checkpoint to `~/.claude/session-state.json`. Write every 10 minutes or after any significant state change (phase transition, review received, agent launched). Format:
 ```json
 {
   "last_updated": "2026-03-16T16:00:00Z",
@@ -129,7 +129,7 @@ When running a long monitoring session with multiple PRs, periodically write a s
   ]
 }
 ```
-After compaction, read this file first: `cat .claude/session-state.json`, then reconcile with live GitHub state.
+After compaction, read this file first: `cat ~/.claude/session-state.json`, then reconcile with live GitHub state.
 
 ### Mandatory Subagent Review Protocol (COPY INTO EVERY SUBAGENT PROMPT)
 
