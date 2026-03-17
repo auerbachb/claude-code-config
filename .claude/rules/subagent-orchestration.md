@@ -56,6 +56,8 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 
 Get the timestamp via: `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`
 
+NEVER estimate, calculate, or mentally derive timestamps — always run the `date` command. This includes elapsed time: do not count poll cycles or steps to estimate minutes passed. If you need elapsed time, compare two `date` outputs.
+
 This applies to ALL messages — status updates, failure reports, success reports, questions, summaries. No exceptions.
 
 > **Compaction-proof:** This obligation survives context compaction. If you are resuming from compaction and realize you haven't been timestamping, start immediately — do not wait for the next "natural" message. Your first post-compaction message must include a timestamp and an acknowledgment that monitoring is being re-established.
