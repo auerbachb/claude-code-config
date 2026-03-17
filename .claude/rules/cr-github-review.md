@@ -49,6 +49,7 @@ After pushing a commit to a PR, automatically enter the CR review loop:
 - **Hard timeout: 8 minutes.** If CR has not delivered a review after 8 minutes of polling, stop waiting and trigger **Greptile**. Do NOT keep polling — it wastes tokens and risks session timeout.
 
 ### Timeout & Fallback — Two Trigger Paths to Greptile
+
 - **Fast path (~1-2 min):** The check-runs or commit statuses API shows "Review rate limit exceeded" -> trigger Greptile immediately on that poll cycle. Do not wait.
 - **Slow path (8 min):** No rate-limit signal visible, but CR has not delivered review content after 8 minutes -> trigger Greptile. The distinction between "rate-limited" and "slow" is irrelevant at this point — the action is the same.
 - **If Greptile also fails** (5-minute timeout with no response): fall back to **self-review**.
@@ -116,7 +117,7 @@ Merge requires ALL of these:
 1. 1 clean Greptile review (no findings from `greptile-apps[bot]`)
 2. 2 clean CR reviews (no findings from `coderabbitai[bot]`) — the second is the confirmation pass, and the final review before merge must always be CR
 
-If Greptile is unavailable (timeout), a clean self-review may substitute for the Greptile requirement — but this is a last resort, not standard practice. The 2 CR reviews are non-negotiable.
+If Greptile is unavailable (timeout), perform a self-review for risk reduction and report the blocker to the user, but do NOT count self-review toward merge readiness. The required clean passes remain: 1 Greptile + 2 CR.
 
 - If CR responds with no findings after a round of fixes, post `@coderabbitai full review` one more time to confirm.
 - **How to detect a clean CR pass:** After triggering `@coderabbitai full review`, watch for these signals in order:

@@ -44,7 +44,7 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 - Parent agent launches Phase A subagents (can run in parallel across different PRs)
 - When Phase A completes, parent launches Phase B for that PR
 - When Phase B reports clean, parent launches Phase C
-- **No hard limit on parallel Phase B PRs.** CR rate limiting is handled by the Greptile fallback — if CR is rate-limited, Greptile fills in. The only bottleneck is the final "at least 1 CR clean pass" requirement, which the user will address separately (alternative reviewer API, higher Greptile tier, or manual review).
+- **No hard limit on parallel Phase B PRs.** CR rate limiting is handled by the Greptile fallback for interim feedback, but merge readiness still requires the full gate: 1 clean Greptile + 2 clean CR passes.
 - **Track CR quota.** Maintain a running count of CR reviews consumed this hour. Increment when: pushing to a PR with CR configured (auto-review), or posting `@coderabbitai full review`. If count reaches 7 in the current hour, expect Greptile to be the primary reviewer for remaining PRs until the window resets.
 - Use judgment on small PRs: if CR only found 1-2 findings, a single subagent may handle the full lifecycle without hitting token limits
 
@@ -120,7 +120,7 @@ When running a long monitoring session with multiple PRs, periodically write a s
   "last_updated": "2026-03-16T16:00:00Z",
   "monitoring_active": true,
   "prs": {
-    "618": {"phase": "B", "round": 2, "head_sha": "7b2cfbf", "reviews_clean": ["greptile"], "needs": "cr_clean"},
+    "618": {"phase": "B", "round": 2, "head_sha": "7b2cfbf", "reviews_clean": ["greptile", "cr_round_1"], "needs": "cr_round_2_clean"},
     "620": {"phase": "B", "round": 1, "head_sha": "d0e4fef", "reviews_clean": [], "needs": "fix_and_push"}
   },
   "cr_quota": {"reviews_used": 5, "window_start": "2026-03-16T15:00:00Z"},
@@ -191,8 +191,7 @@ Merge requires ALL of these:
 1. 1 clean Greptile review (no findings from greptile-apps[bot])
 2. 2 clean CR reviews (no findings from coderabbitai[bot]) — the second is the confirmation pass, and the final review before merge must always be CR
 
-If Greptile is unavailable (timeout), a clean self-review may substitute —
-but this is a last resort. The 2 CR reviews are non-negotiable.
+If Greptile is unavailable (timeout), perform self-review for risk reduction and report the blocker, but do NOT count self-review toward merge readiness. Required gate remains 1 Greptile + 2 CR.
 
 After Greptile or self-review, the next step depends on whether you pushed new code:
 1. **New commit pushed** (e.g., Greptile fixes) -> CR auto-triggers on the new SHA. Enter polling immediately — no wait needed.
