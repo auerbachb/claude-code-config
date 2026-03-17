@@ -71,7 +71,7 @@ When working in a worktree, any edits to shared docs (session logs, work logs, c
 **Before pushing any PR or closing the work session, the agent must ensure one of the following:**
 
 1. **Commit the log file in the PR branch** — stage and commit the work-log file alongside the code changes so it merges with the PR.
-2. **Manually sync the log to the root repo** — if the log edits should not be part of the PR (e.g., the log lives in a different repo or on main), copy the updated log to the root repo's working directory and commit it there separately.
+2. **Manually sync the log to the root repo** — if the log edits should not be part of the PR (e.g., the log lives in a different repo or on main), append only the missing Activity Log entries to the root repo's copy (do not replace the entire file), then commit separately.
 
 **Never assume a worktree-local edit to a shared doc will "make it back" on its own.** At task completion, verify the root repo's copy is current:
 
