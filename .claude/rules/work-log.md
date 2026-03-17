@@ -2,16 +2,21 @@
 
 > **Always:** Log issue creates, PR opens, and PR merges to the daily work log file. Check for `work-logs/` directory at session start. Sync worktree log edits back to the root repo.
 > **Ask first:** At session start, confirm the work log directory with the user (once only — skip if already known from context).
-> **Never:** Skip logging events. Overwrite existing narrative content in the log file. Log to a directory that doesn't exist. Leave log updates stranded in a worktree.
+> **Never:** Skip logging events. Overwrite existing narrative content in the log file. Log to a directory that doesn't exist. Create a `work-logs/` directory. Leave log updates stranded in a worktree.
 
 ## Session Start: Detect Work Log Directory
 
 At the start of every session, before any code work:
 
-1. Search the repo for directory matches named `work-logs/` (check common locations first: `docs/work-logs/`, `work-logs/`, `.docs/work-logs/`).
+1. **Find existing `work-logs/` directories** by running this command from the repo root:
+   ```bash
+   find . -type d -name "work-logs" -not -path "./.git/*" -not -path "./.claude/*"
+   ```
+   **NEVER create a `work-logs/` directory.** Only use directories that already exist. If the find command returns nothing, this rule is a no-op — skip all logging for the session.
 2. **If one match is found:** Ask the user once to confirm: "I found a work log directory at `{path}`. I'll log issues, PRs, and merges there — sound good?" If the user already mentioned the work log or it's clear from context, skip the ask and just use it.
-3. **If multiple matches are found:** Ask the user once to choose the canonical path, then persist that choice for the session.
+3. **If multiple matches are found:** Prefer paths under `docs/` (e.g., `docs/work-logs/` over `work-logs/` at repo root) — a `docs/` location indicates intentional placement. If still ambiguous, ask the user to choose.
 4. **If not found:** Do nothing — this rule is a no-op for repos without work logs.
+5. **Before writing any log file**, verify the directory exists: `test -d "$WORK_LOG_PATH"`. If it fails, stop — do not create the directory or write to a nonexistent path.
 
 Once confirmed (or inferred), remember the path for the rest of the session. Do not ask again.
 
