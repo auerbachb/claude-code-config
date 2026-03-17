@@ -44,7 +44,7 @@ Append a timestamped line to `## Activity Log` on each of these events:
 
 ### PR lifecycle fields
 
-Every PR log entry (both opened and merged) must include these fields in a bracketed suffix. At PR open time, use placeholder values for fields not yet known (`merged: -`, `cycles: 0`). At merge time, update the entry with final values:
+Every PR log entry (both opened and merged) must include these fields in a bracketed suffix. At PR open time, use placeholder values for fields not yet known (`merged: -`, `cycles: 0`). At merge time, write the final values in the PR merged entry (do not edit prior Activity Log lines):
 
 1. **`opened`** — timestamp when the PR was created (recorded at PR open time)
 2. **`merged`** — timestamp when the PR was merged or closed (recorded at merge time)
