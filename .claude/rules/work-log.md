@@ -46,15 +46,17 @@ Append a timestamped line to `## Activity Log` on each of these events:
 
 Every PR log entry (both opened and merged) must include these fields in a bracketed suffix. At PR open time, use placeholder values for fields not yet known (`merged: -`, `cycles: 0`). At merge time, write the final values in the PR merged entry (do not edit prior Activity Log lines):
 
-1. **`opened`** — timestamp when the PR was created (recorded at PR open time)
-2. **`merged`** — timestamp when the PR was merged or closed (recorded at merge time)
-3. **`cycles`** — count of review-then-revise rounds before approval. Each review (bot or human) that triggers a new commit counts as one cycle. A PR that passes review on the first push has `cycles: 0`.
+1. **`opened`** (`pr_opened_at`) — timestamp when the PR was created (recorded at PR open time)
+2. **`merged`** (`pr_merged_at`) — timestamp when the PR was merged or closed (recorded at merge time)
+3. **`cycles`** (`review_cycles`) — count of review-then-revise rounds before approval. Each review (bot or human) that triggers a new commit counts as one cycle. A PR that passes review on the first push has `cycles: 0`.
+
+> **Note:** The short names (`opened`, `merged`, `cycles`) are used in Activity Log entries for readability. The parenthesized names are the canonical field identifiers for reference.
 
 This data measures PR throughput, average cycle time, and review friction — informing how many simultaneous PRs can be effectively managed in parallel.
 
 **How to count cycles:** Increment the cycle counter each time any reviewer (bot or human) posts findings that result in a new fix commit. Clean passes and confirmation reviews do not count.
 
-**Determining the count at merge time:** If the cycle count wasn't tracked during the session (e.g., after context compaction or session handoff), reconstruct it from the PR's history: fetch all review objects on `pulls/{N}/reviews` and all commits on `pulls/{N}/commits`. Count each review (from any reviewer — bot or human) that is followed by at least one new commit before the next review or merge. Each such review-then-commit pair = 1 cycle.
+**Determining the count at merge time:** If the cycle count wasn't tracked during the session (e.g., after context compaction or session handoff), reconstruct it from the PR's history: fetch all review objects on `pulls/{N}/reviews` and all commits on `pulls/{N}/commits`. Count each review that contains actionable findings (i.e., has inline comments or a body with specific fix requests) and is followed by at least one new commit before the next review or merge. Each such review-then-fix pair = 1 cycle. Reviews with no findings (clean passes) do not count.
 
 ### PR merge summaries
 
@@ -79,6 +81,7 @@ When working in a worktree, any edits to shared docs (session logs, work logs, c
 # ROOT_REPO = first entry from: git worktree list (the main worktree)
 # WORKTREE = current working directory (pwd)
 # WORK_LOG_PATH = confirmed canonical path from session start (e.g., docs/work-logs)
+# Replace YYYY-MM-DD with today's date: $(TZ='America/New_York' date +'%Y-%m-%d')
 diff "$WORKTREE/$WORK_LOG_PATH/session-log-YYYY-MM-DD.md" "$ROOT_REPO/$WORK_LOG_PATH/session-log-YYYY-MM-DD.md"
 ```
 
