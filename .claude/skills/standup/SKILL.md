@@ -26,10 +26,10 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
 For each repo, run:
 ```bash
 # Closed issues since the cutoff
-gh issue list --state closed --search "closed:>$SINCE_ISO" --json number,title,closedAt --limit 50
+gh issue list --state closed --search "closed:>$SINCE_ISO" --json number,title,closedAt --limit 100
 
 # Merged PRs since the cutoff
-gh pr list --state merged --search "merged:>$SINCE_ISO" --json number,title,mergedAt,additions,deletions --limit 50
+gh pr list --state merged --search "merged:>$SINCE_ISO" --json number,title,mergedAt,additions,deletions --limit 100
 
 # Currently open PRs (in progress work)
 gh pr list --state open --author @me --json number,title,createdAt,additions,deletions
