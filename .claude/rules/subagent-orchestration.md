@@ -54,7 +54,7 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 
 1. **Verify the push happened.** Run `gh pr view N --json commits --jq '.commits[-1].oid'` and confirm the SHA matches what the subagent reported. If the push didn't happen, the subagent silently failed — report to user.
 2. **Check if reviewers already posted findings.** Fetch all 3 comment endpoints for the PR. If CR or Greptile already posted findings (common if the review was fast), include those findings in the Phase B prompt.
-3. **Launch Phase B within 60 seconds.** This is the immediate next action — queue it ahead of any other work (creating issues, reading files, responding to unrelated questions). If you cannot launch within 60 seconds due to tool throttling, tell the user why and when you will launch.
+3. **Launch Phase B within 60 seconds.** This is the immediate next action — queue it ahead of any other work (creating issues, reading files, responding to unrelated questions). If you cannot launch within 60 seconds due to tool throttling, tell the user why and when you will launch, then automatically retry until Phase B is launched (do not wait for user action). Record the planned retry in `session-state.json`.
 4. **Update `session-state.json`.** Write the phase transition: PR moved from Phase A to Phase B, record the HEAD SHA, reset review state.
 5. **Report to user.** "Phase A complete for PR #N — fixes pushed (SHA `abc1234`). Phase B launched, polling for reviews."
 
@@ -125,13 +125,13 @@ Context compaction can happen at any time in long sessions. When it does, you lo
    ```
    Build a dashboard: PR number, HEAD SHA, last review state, last reviewer, pending action.
 3. **Check for stale background agents.** Any agents mentioned in the summary are likely dead (compaction killed their parent's awareness). Verify by checking if their expected outputs exist (commits pushed, comments posted).
-4. **Check Phase B coverage.** For every open PR, verify a Phase B agent is running or has completed. If any PR has unprocessed review findings and no active Phase B agent, launch Phase B immediately — this is the most common post-compaction failure.
+4. **Check Phase B coverage.** For every open PR, check `session-state.json` for a Phase B entry. If no Phase B record exists for a PR that has unprocessed review findings, launch Phase B immediately and record it in `session-state.json` — this is the most common post-compaction failure.
 5. **Report to the user.** Post the reconstructed dashboard with a note: "Resuming after context compaction. Reconstructed state from GitHub. [N agents may need relaunching]."
 6. **Resume the monitoring loop.** Re-enter the polling cycle for any PRs still awaiting reviews.
 
 **Pre-compaction checkpointing (preventive):**
 
-When running a long monitoring session with multiple PRs, write a status checkpoint to `~/.claude/session-state.json`. **Write on EVERY phase transition** (A→B, B→C, agent launched, agent completed, review received) — not just every 10 minutes. The checkpoint write forces you to stop, assess state, and act on pending transitions. Format:
+When running a long monitoring session with multiple PRs, write a status checkpoint to `~/.claude/session-state.json`. **Write on phase transitions (A→B, B→C) and key state-change events** (agent launched, agent completed, review received) — not just every 10 minutes. The checkpoint write forces you to stop, assess state, and act on pending transitions. Format:
 ```json
 {
   "last_updated": "2026-03-16T16:00:00Z",
