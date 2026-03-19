@@ -2,6 +2,7 @@
 # This repo contains Claude Code agent configuration files (not application code).
 
 reviews:
+  profile: assertive
   path_instructions:
     - path: "**/*"
       instructions: |
