@@ -8,10 +8,12 @@
 
 At the start of every session, before any code work:
 
-1. **Find existing `work-logs/` directories** by running this command from the repo root:
+1. **Find existing `work-logs/` directories** by searching the **main worktree root** (not the current worktree, which may lack shared directories). Get the main worktree path via:
    ```bash
-   find . -type d -name "work-logs" -not -path "./.git/*" -not -path "./.claude/*"
+   ROOT_REPO=$(git worktree list | head -1 | awk '{print $1}')
+   find "$ROOT_REPO" -type d -name "work-logs" -not -path "*/.git/*" -not -path "*/.claude/*"
    ```
+   If you are not in a worktree (i.e., working directly in the repo), `$ROOT_REPO` is just the repo root and the find command works the same way.
    **NEVER create a `work-logs/` directory.** Only use directories that already exist. If the find command returns nothing, this rule is a no-op — skip all logging for the session.
 2. **If one match is found:** Ask the user once to confirm: "I found a work log directory at `{path}`. I'll log issues, PRs, and merges there — sound good?" If the user already mentioned the work log or it's clear from context, skip the ask and just use it.
 3. **If multiple matches are found:** Prefer paths under `docs/` (e.g., `docs/work-logs/` over `work-logs/` at repo root) — a `docs/` location indicates intentional placement. If still ambiguous, ask the user to choose.

@@ -50,7 +50,7 @@ Tell the user: "I'll create a worktree for isolated work." Then use the `EnterWo
 
 ### Branching & Merging
 - **NEVER work on `main` — not editing, not committing, not pushing.** All code changes happen in worktrees on feature branches. If you're not in a worktree, create one first. If `git branch --show-current` returns `main`, do not touch any files.
-- **Every change requires: GitHub issue -> feature branch -> PR -> squash merge.** No exceptions.
+- **Every change requires: GitHub issue -> feature branch -> PR -> squash merge.** No exceptions. This includes `.claude/rules/*.md` and `CLAUDE.md` — rule files are code and follow the same PR workflow.
 - Branch naming: `issue-N-short-description` (e.g. `issue-10-nav-welcome-header`).
 - Always **squash and merge** via `gh pr merge --squash --delete-branch`, then delete the branch.
 - **Never merge immediately after a rebase or force-push.** Even trivial conflict resolutions (e.g. a single import line) trigger a new CR review cycle. Always wait for CR to review the rebased commit and confirm no findings before merging. The safe flow is: resolve conflict -> force-push -> wait for CR -> confirm clean -> merge.

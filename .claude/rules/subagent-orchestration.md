@@ -116,7 +116,8 @@ Context compaction can happen at any time in long sessions. When it does, you lo
 **Immediate recovery protocol (do ALL of these before any other work):**
 
 1. **Timestamp your first message.** (See "EVERY MESSAGE" rules in CLAUDE.md.)
-2. **Reconstruct PR state from GitHub.** For every open PR in the summary:
+2. **Re-run session-start checklist.** Compaction wipes in-memory state like the work-log path. Re-run the work-log detection from `work-log.md` (search from the **main worktree root**, not the current worktree — see that file for details). Also re-check any other session-start obligations from rule files.
+3. **Reconstruct PR state from GitHub.** For every open PR in the summary:
    ```bash
    gh pr view N --json state,title,mergeStateStatus,commits
    gh api "repos/{owner}/{repo}/pulls/N/reviews?per_page=100"
@@ -124,10 +125,10 @@ Context compaction can happen at any time in long sessions. When it does, you lo
    gh api "repos/{owner}/{repo}/issues/N/comments?per_page=100"
    ```
    Build a dashboard: PR number, HEAD SHA, last review state, last reviewer, pending action.
-3. **Check for stale background agents.** Any agents mentioned in the summary are likely dead (compaction killed their parent's awareness). Verify by checking if their expected outputs exist (commits pushed, comments posted).
-4. **Check Phase B coverage.** For every open PR, check `~/.claude/session-state.json` for a Phase B entry. If no Phase B record exists for a PR that has unprocessed review findings, launch Phase B immediately and record it in `~/.claude/session-state.json` — this is the most common post-compaction failure.
-5. **Report to the user.** Post the reconstructed dashboard with a note: "Resuming after context compaction. Reconstructed state from GitHub. [N agents may need relaunching]."
-6. **Resume the monitoring loop.** Re-enter the polling cycle for any PRs still awaiting reviews.
+4. **Check for stale background agents.** Any agents mentioned in the summary are likely dead (compaction killed their parent's awareness). Verify by checking if their expected outputs exist (commits pushed, comments posted).
+5. **Check Phase B coverage.** For every open PR, check `~/.claude/session-state.json` for a Phase B entry. If no Phase B record exists for a PR that has unprocessed review findings, launch Phase B immediately and record it in `~/.claude/session-state.json` — this is the most common post-compaction failure.
+6. **Report to the user.** Post the reconstructed dashboard with a note: "Resuming after context compaction. Reconstructed state from GitHub. [N agents may need relaunching]."
+7. **Resume the monitoring loop.** Re-enter the polling cycle for any PRs still awaiting reviews.
 
 **Pre-compaction checkpointing (preventive):**
 
@@ -136,6 +137,8 @@ When running a long monitoring session with multiple PRs, write a status checkpo
 {
   "last_updated": "2026-03-16T16:00:00Z",
   "monitoring_active": true,
+  "root_repo": "/Users/user/repos/my-project",
+  "work_log_path": "docs/work-logs",
   "prs": {
     "618": {"phase": "B", "round": 2, "head_sha": "7b2cfbf", "reviews_clean": ["greptile", "cr_round_1"], "needs": "cr_round_2_clean"},
     "620": {"phase": "B", "round": 1, "head_sha": "d0e4fef", "reviews_clean": [], "needs": "fix_and_push"}
