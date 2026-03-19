@@ -39,9 +39,10 @@ gh pr list --state open --author @me --json number,title,createdAt,additions,del
 
 **This is what makes the report useful.** Titles alone cannot convey business context.
 
-For every merged PR and every open PR, read the PR body:
+For every merged PR and every open PR (using the `number` field from Step 2's JSON output), read the PR body:
 ```bash
-gh pr view <NUMBER> --json body,title,additions,deletions
+# For each PR number from Step 2:
+gh pr view "$PR_NUMBER" --json body,title,additions,deletions
 ```
 
 Scan each PR body for:
@@ -49,9 +50,9 @@ Scan each PR body for:
 - **Concrete numbers** — record counts, accuracy metrics, coverage stats, thresholds
 - **Which part of the system** this advances — classification, scraping, data pipeline, UI, etc.
 
-If a PR body is thin or template-only, fall back to reading the linked issue body:
+If a PR body is thin or template-only, extract the linked issue number (look for `Fixes #N`, `Closes #N`, or similar patterns in the PR body) and read the issue body:
 ```bash
-gh issue view <NUMBER> --json body,title
+gh issue view "$ISSUE_NUMBER" --json body,title
 ```
 
 ### Step 4: Identify business themes
