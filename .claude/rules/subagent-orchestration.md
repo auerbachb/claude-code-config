@@ -2,7 +2,7 @@
 
 > **Always:** Pass ALL rule files to subagents. Use phase decomposition (A/B/C). Timestamp every message. Monitor subagent health. Report failures immediately.
 > **Ask first:** Respawning a failed subagent — tell the user what happened first.
-> **Never:** Summarize rules for subagents. Fire-and-forget subagents. Let a stalled PR go unreported. Skip timestamps.
+> **Never:** Summarize rules for subagents. Fire-and-forget subagents. Let a stalled PR go unreported. Skip timestamps. Go >5 minutes without a user-visible message. Report a PR as "awaiting review" for >5 minutes without a Phase B agent running.
 
 When spawning subagents via the Task tool, **always pass the FULL contents of ALL rule files into the subagent's prompt.** Subagents do not automatically inherit CLAUDE.md or `.claude/rules/` context — they only see what you put in their prompt.
 
@@ -83,6 +83,8 @@ The user has no visibility into subagent failures. If a subagent runs out of tok
 The user should never have to discover a stalled PR by checking GitHub manually.
 
 ### User Heartbeat (MANDATORY for parent agents)
+
+> **Core obligation is in CLAUDE.md item #3.** This section has the detailed rules. The 5-minute max silence is a non-negotiable behavior that applies to EVERY message — see the EVERY MESSAGE block.
 
 The user must never go more than **5 minutes** without a status message. This is separate from subagent polling — it's about keeping the user informed.
 

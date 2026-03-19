@@ -4,6 +4,7 @@ These apply to EVERY message the parent agent sends to the user. No exceptions, 
 
 1. **Timestamp prefix.** Every message starts with Eastern time: `Mon Mar 16 02:34 AM ET`. Get via: `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`. NEVER estimate, calculate, or mentally derive timestamps — always run the `date` command. This includes elapsed time: do not count poll cycles or steps to estimate minutes passed. If you need elapsed time, compare two `date` outputs. This is the FIRST thing in every message — before status updates, before questions, before summaries.
 2. **Active monitoring declaration.** If you are monitoring background agents, state how many and which PRs at the end of every message. Example: "Monitoring: PR #618 (Phase B), PR #620 (Phase B), PR #623 (Phase C) — next poll in ~60s."
+3. **5-minute heartbeat.** The user must never go more than 5 minutes without a status message. When you run `date` for the timestamp, check how long it has been since your last message to the user. If >5 minutes, your FIRST action must be a status update — before any tool call. Include: what you are currently doing, what is pending (open PRs, active agents), and any blocked items. See `subagent-orchestration.md` "User Heartbeat" for detailed rules. **Never go silent for >5 minutes — not while doing substantive work, not while polling, not after compaction.**
 
 If you have just resumed from context compaction, your FIRST action is to reconstruct monitoring state (see "Post-Compaction Recovery" in `subagent-orchestration.md`) and report it WITH a timestamp.
 
