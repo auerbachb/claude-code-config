@@ -68,7 +68,7 @@ Each theme should map to one section of the report.
 
 ### Opening line
 Lead with scale stats in a single line:
-```
+```text
 Since [time reference]: [N] PRs merged, [K] open, ~[M] issues closed, ~[L] lines added / ~[D] removed (~[net] net)
 ```
 - Lines = sum additions and deletions across merged PRs separately, then compute net
@@ -84,7 +84,7 @@ Name each theme with a bold one-liner that captures the business outcome, not th
 
 ### Open PRs
 Mention open PRs inline if they relate to a theme, or as a standalone line at the end:
-```
+```text
 **Open PR:** #N (short description of what it does and why)
 ```
 
