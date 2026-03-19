@@ -36,7 +36,7 @@ Write from the user's perspective ("I" / "we") for direct paste into a standup c
 
 **Format:**
 
-```
+```text
 **Since [time reference]:**
 
 [2-4 bullet points summarizing what was accomplished in business logic terms — what capabilities were added, what problems were solved, what the system can now do that it couldn't before. Lead with the "so what" not the "what".]
