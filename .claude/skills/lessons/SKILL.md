@@ -35,7 +35,7 @@ For each lesson identified, determine:
 
 For each actionable, novel lesson:
 
-1. Write a memory file to `~/.claude/projects/{project}/memory/` with proper frontmatter:
+1. Write a memory file to `~/.claude/projects/{project}/memory/` with proper frontmatter. Derive the filename by slugifying the `name` field (lowercase, spaces to hyphens, e.g., `feedback_no_git_clean.md`):
    ```markdown
    ---
    name: <descriptive_name>
@@ -49,7 +49,7 @@ For each actionable, novel lesson:
    **How to apply:** <when and where this should change behavior>
    ```
 
-2. Add a pointer to `MEMORY.md` as a single bullet: `- [filename.md](filename.md) — one-line description`
+2. Add a pointer to `MEMORY.md` (the memory index at `~/.claude/projects/{project}/memory/MEMORY.md`) as a single bullet: `- [filename.md](filename.md) — one-line description`. If updating an existing memory, update the existing pointer instead of adding a duplicate.
 
 ### Step 4: Output summary
 
