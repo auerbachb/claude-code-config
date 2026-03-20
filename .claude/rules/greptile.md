@@ -1,10 +1,10 @@
-# Greptile — Peer Reviewer & CodeRabbit Fallback
+# Greptile — CodeRabbit Fallback Reviewer
 
-> **Always:** Trigger Greptile on every PR alongside CR. Poll for response. Reply to every thread. Fix all valid findings.
+> **Always:** Poll for response after triggering. Reply to every thread. Fix all valid findings. Stay on G once triggered for a PR.
 > **Ask first:** Never — fix findings autonomously.
-> **Never:** Skip Greptile on a PR. Merge without a clean Greptile pass. Ignore Greptile findings because "CR already reviewed."
+> **Never:** Trigger Greptile proactively on a PR where CR hasn't failed yet. Ignore Greptile findings. Switch a PR back to CR after Greptile has been triggered.
 
-Greptile is an AI code reviewer that runs as a **peer** alongside CodeRabbit on every PR. It also serves as the fallback when CR is rate-limited.
+Greptile is an AI code reviewer used as a **fallback** when CodeRabbit is rate-limited or unresponsive. It is trusted equally with CR in terms of review quality. The differences are cost ($1/review beyond the included 50/month quota) and completion-signal reliability — Greptile's signals are accurate, while CR's are not.
 
 ## Greptile Basics
 
@@ -21,23 +21,19 @@ Greptile is an AI code reviewer that runs as a **peer** alongside CodeRabbit on 
 
 ## When to Trigger Greptile
 
-### On every PR (peer review mode)
+**Greptile is fallback-only.** Never trigger it proactively alongside CR. It is only triggered when CR fails for a specific PR:
 
-After pushing code and creating/updating a PR, trigger BOTH reviewers:
+1. **CR rate limit detected (fast-path):** Check-runs or commit statuses show rate limiting → trigger Greptile immediately.
+2. **CR timeout (slow-path):** CR has not delivered a review within 7 minutes of push → trigger Greptile.
 
-1. CR auto-triggers on push (or use `@coderabbitai full review`)
-2. Comment `@greptileai` on the PR to trigger Greptile
+### Sticky Assignment
 
-Both run in parallel — there is no conflict. Process findings from whichever responds first.
+**Once Greptile is triggered for a PR, that PR stays on Greptile for all remaining review cycles.** Do not switch back to CR. Rationale: if CR was slow or rate-limited once for this PR, it will likely be slow again, and switching back just wastes more time.
 
-### As CR fallback (rate-limit recovery)
-
-When CR is rate-limited (detected via fast-path check-run signal or 8-minute timeout):
-
-1. Greptile should already be running (triggered in step above)
-2. If Greptile was not yet triggered, comment `@greptileai` immediately
-3. Process Greptile findings while waiting for CR to recover
-4. After fixing + pushing, CR auto-triggers on the new SHA — enter normal polling
+This means:
+- After fixing Greptile findings, trigger `@greptileai` again (not `@coderabbitai full review`)
+- Ignore any late CR reviews that arrive after Greptile has taken ownership
+- The merge gate for this PR is now 1 clean Greptile review (see below)
 
 ## Polling for Greptile Response
 
@@ -74,6 +70,7 @@ Same protocol as CR findings:
    - Issue comments: `gh api repos/{owner}/{repo}/issues/{N}/comments -f body="@greptileai Fixed: <summary>"`
 5. Resolve threads via GraphQL (same as CR threads)
 6. Use 👍/👎 reactions on Greptile comments to provide feedback
+7. **Trigger `@greptileai` again** to request the next review (stay on Greptile — do not switch to CR)
 
 ## Detecting a Clean Greptile Pass
 
@@ -82,7 +79,7 @@ A Greptile review is **clean** when:
 - `greptile-apps[bot]` posted a review or summary with no actionable findings, OR
 - 👍 completion signal appeared with no inline comments or review findings
 
-A clean Greptile pass counts as 1 of the 3 required reviews for merge readiness.
+**A clean Greptile pass = merge-ready** for that PR (no further CR review needed). No confirmation pass is required on the Greptile path.
 
 ## Self-Review Fallback
 
@@ -90,5 +87,5 @@ If BOTH CR and Greptile are unavailable (CR rate-limited + Greptile timeout):
 
 1. Perform a self-review of the full diff (`git diff main...HEAD`)
 2. Check for: bugs, security issues, error handling, types, naming, edge cases
-3. A clean self-review does NOT satisfy the 3-review merge requirement
+3. A clean self-review does NOT satisfy the merge gate
 4. Tell the user both reviewers are down and what was left unreviewed

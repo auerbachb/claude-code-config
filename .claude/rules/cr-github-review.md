@@ -3,7 +3,7 @@
 
 > **Always:** Poll all 3 endpoints + check-runs every cycle. Use `per_page=100`. Filter by `coderabbitai[bot]`. Batch fixes into one commit. Reply to every thread. Resolve threads via GraphQL.
 > **Ask first:** Merging — always ask the user.
-> **Never:** Poll only 1-2 endpoints. Use bare `coderabbitai` without `[bot]`. Push per-finding. Trigger `@coderabbitai full review` more than twice/hour. Skip waiting for Greptile's 5-minute timeout when it's triggered. Merge without all 3 required clean reviews.
+> **Never:** Poll only 1-2 endpoints. Use bare `coderabbitai` without `[bot]`. Push per-finding. Trigger `@coderabbitai full review` more than twice per PR per hour. Trigger Greptile proactively (only on CR failure). Merge without meeting the merge gate (2 clean CR or 1 clean G).
 
 > **This is the fallback review workflow.** It runs after you push and create a PR. If the local review loop was thorough, CR should find few or no issues here. But edge cases exist (e.g., CI-only context, cross-file interactions the local review missed), so always let this loop run.
 
@@ -41,17 +41,18 @@ After pushing a commit to a PR, automatically enter the CR review loop:
     --jq '.[] | select(.context | test("CodeRabbit"; "i")) | {context, state, description}'
   ```
   - **Completion signal:** `status: "completed"` with `conclusion: "success"` = review done (visible as "CodeRabbit — Review completed" in the PR's CI checks box). This is the definitive signal, especially for clean passes.
-  - **Fast-path rate limit detection:** If EITHER endpoint shows rate limiting — check-run has `conclusion: "failure"` with `output.title` containing "rate limit" (case-insensitive), OR commit status has `state: "failure"`/`state: "error"` with `description` containing "rate limit" — **trigger Greptile IMMEDIATELY.** Do not wait 8 minutes. This catches rate limits within ~60-120 seconds of pushing.
+  - **Fast-path rate limit detection:** If EITHER endpoint shows rate limiting — check-run has `conclusion: "failure"` with `output.title` containing "rate limit" (case-insensitive), OR commit status has `state: "failure"`/`state: "error"` with `description` containing "rate limit" — **trigger Greptile IMMEDIATELY.** Do not wait 7 minutes. This catches rate limits within ~60-120 seconds of pushing. Sticky assignment applies (see below).
   - **Do NOT confuse the ack with completion.** The "Actions performed — Full review triggered" issue comment means CR **started** reviewing — it does NOT mean the review is finished. The CI check "CodeRabbit — Review completed" is what signals actual completion.
 - **CR's GitHub username is `coderabbitai[bot]` (with the `[bot]` suffix).** Always filter by `.user.login == "coderabbitai[bot]"` — NOT bare `coderabbitai`. Using the wrong username will silently miss all CR comments.
 - Track the **highest comment ID** seen so far across all three endpoints. Any comment from `coderabbitai[bot]` with an ID greater than the watermark is a new finding that needs attention.
 - If CR responds, process immediately
-- **Hard timeout: 8 minutes.** If CR has not delivered a review after 8 minutes of polling, stop waiting and trigger **Greptile**. Do NOT keep polling — it wastes tokens and risks session timeout.
+- **Hard timeout: 7 minutes.** If CR has not delivered a review after 7 minutes of polling, stop waiting and trigger **Greptile**. Do NOT keep polling — it wastes tokens and risks session timeout. Sticky assignment applies (see below).
 
 ### Timeout & Fallback — Two Trigger Paths to Greptile
 
 - **Fast path (~1-2 min):** The check-runs or commit statuses API shows "Review rate limit exceeded" -> trigger Greptile immediately on that poll cycle. Do not wait.
-- **Slow path (8 min):** No rate-limit signal visible, but CR has not delivered review content after 8 minutes -> trigger Greptile. The distinction between "rate-limited" and "slow" is irrelevant at this point — the action is the same.
+- **Slow path (7 min):** No rate-limit signal visible, but CR has not delivered review content after 7 minutes -> trigger Greptile. The distinction between "rate-limited" and "slow" is irrelevant at this point — the action is the same.
+- **Sticky Greptile assignment:** Once either trigger path fires for a PR, that PR stays on Greptile permanently (see `greptile.md` "Sticky Assignment" for full details). Do not switch back to CR.
 - **If Greptile also fails** (5-minute timeout with no response): fall back to **self-review**.
 - Tell the user which fallback was used and why.
 
@@ -111,28 +112,31 @@ GitHub does not auto-resolve PR review comments when the fix touches different l
 
 ### Completion
 
-**Step 1 — Confirm reviews are clean (3 clean reviews required):**
+**Step 1 — Confirm reviews are clean (merge gate):**
 
-Merge requires ALL of these:
-1. 1 clean Greptile review (no findings from `greptile-apps[bot]`)
-2. 2 clean CR reviews (no findings from `coderabbitai[bot]`) — the second is the confirmation pass, and the final review before merge must always be CR
+> Canonical merge-gate definition is in `greptile.md` "Detecting a Clean Greptile Pass". Repeated here for subagent self-containment.
 
-If Greptile is unavailable (timeout), perform a self-review for risk reduction and report the blocker to the user, but do NOT count self-review toward merge readiness. The required clean passes remain: 1 Greptile + 2 CR.
+The merge gate depends on which reviewer owns the PR:
 
+**CR-only path** (Greptile was never triggered for this PR):
+- 2 clean CR reviews required. The second is a confirmation pass — CR's completion signal is unreliable (it may mark the check as "completed" but post findings minutes later), so a second clean pass is needed.
 - If CR responds with no findings after a round of fixes, post `@coderabbitai full review` one more time to confirm.
+- **After 2 failed re-triggers on the same SHA**, stop and tell the user. Do not loop forever.
+
+**Greptile path** (Greptile was triggered at any point for this PR):
+- 1 clean Greptile review = merge-ready. Greptile's CI check accurately reflects its review state, so no confirmation pass is needed.
+- After fixing Greptile findings, trigger `@greptileai` again and poll for the next review. Stay on Greptile — do not switch back to CR.
+
+**If both CR and Greptile are down** (CR rate-limited/timed out + Greptile 5-min timeout): perform a self-review for risk reduction. A clean self-review does NOT satisfy the merge gate — report the blocker to the user.
+
 - **How to detect a clean CR pass:** After triggering `@coderabbitai full review`, watch for these signals in order:
   1. **Ack (review started):** CR posts an issue comment (on `issues/{N}/comments`) with "Actions performed — Full review triggered." This means CR **started** the review — it is NOT a completion signal.
   2. **Completion (review finished):** The commit status check for CodeRabbit shows `status: "completed"` with `conclusion: "success"` (visible as "CodeRabbit — Review completed" in the PR's CI checks). This is the **definitive completion signal**.
-  3. **Clean = completed + no new findings:** Once the CI check shows completed, check all three comment endpoints for any new findings posted after the ack. If there are none, the review is a clean pass. You do NOT need to keep polling to the 8-minute timeout once the CI check is green and no findings appeared.
-- After a clean Greptile pass, re-trigger CR to get the required CR clean passes:
-  - **If you pushed new code since the last CR attempt** (new SHA): CR auto-triggers on push. Enter the normal polling loop immediately — do NOT wait 15 minutes. The new SHA has fresh check-runs; the old rate-limit message is irrelevant.
-  - **If you're re-requesting review on the SAME SHA** (no new push): Wait 15 minutes before triggering `@coderabbitai full review`. Re-reviewing the same SHA while rate-limited will just fail again.
-  - **After 2 failed re-triggers on the same SHA**, stop and tell the user. Do not loop forever.
-- If Greptile timed out and you performed self-review, report blocker status to the user and stop merge-readiness progression until a clean Greptile review is obtained.
-- Once the 3-review requirement is met, proceed immediately to Step 2.
+  3. **Clean = completed + no new findings:** Once the CI check shows completed, check all three comment endpoints for any new findings posted after the ack. If there are none, the review is a clean pass. You do NOT need to keep polling to the 7-minute timeout once the CI check is green and no findings appeared.
+- Once the merge gate is met, proceed immediately to Step 2.
 
 **Step 2 — Verify every Test Plan checkbox (MANDATORY — do NOT skip):**
-> This is the **immediate next step** after CR is clean. Do not ask the user about merging until this is done.
+> This is the **immediate next step** after the merge gate is met. Do not ask the user about merging until this is done.
 >
 > 1. Fetch the PR body via `gh pr view N --json body`
 > 2. Parse **every** checkbox in the **Test plan** section of the PR description
@@ -146,5 +150,5 @@ If Greptile is unavailable (timeout), perform a self-review for risk reduction a
 > Skipping this step is a **blocking failure** — the user should never see unchecked AC boxes when asked about merge.
 
 **Step 3 — Ask the user about merging:**
-- Ask the user: "CR is clean, all AC verified and checked off. Want me to squash and merge and delete the branch, or do you want to review the diff yourself first?"
+- Ask the user: "Reviews are clean, all AC verified and checked off. Want me to squash and merge and delete the branch, or do you want to review the diff yourself first?"
 - Always use **squash and merge** (never regular merge or rebase)

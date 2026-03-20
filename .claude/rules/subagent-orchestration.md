@@ -29,13 +29,15 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 - **EXIT after push — do not enter polling loop**
 
 **Phase B: Review Loop** (lighter — incremental)
-- Poll for new CR review (fast-path + 8-minute slow-path Greptile trigger)
-- If CR/Greptile posts new findings: fix, commit, push, reply (same as Phase A but smaller scope)
-- If clean pass: trigger one more `@coderabbitai full review` for confirmation
+- If this PR is on CR: poll for CR review (fast-path + 7-minute slow-path Greptile trigger). If Greptile is triggered, the PR switches to Greptile permanently.
+- If this PR is already on Greptile: skip CR polling, trigger `@greptileai` and poll for Greptile response directly.
+- If reviewer posts new findings: fix, commit, push, reply (same as Phase A but smaller scope)
+- If clean pass on CR: trigger one more `@coderabbitai full review` for confirmation (2 clean CR passes needed)
+- If clean pass on Greptile: merge-ready (1 clean Greptile pass is sufficient)
 - **EXIT after confirming clean or after fixing one round**
 
 **Phase C: Merge Prep** (lightest)
-- Verify merge gate is satisfied: 1 clean Greptile review + 2 clean CR reviews (final review must be CR)
+- Verify merge gate is satisfied: if PR is on Greptile, 1 clean G review. If CR-only, 2 clean CR reviews.
 - Read PR body, verify all acceptance criteria against final code
 - Check off all boxes
 - Report ready for merge
@@ -44,7 +46,7 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 - Parent agent launches Phase A subagents (can run in parallel across different PRs)
 - **When Phase A completes, parent MUST launch Phase B immediately** — see "Phase A Completion Protocol" below
 - When Phase B reports clean, parent launches Phase C
-- **No hard limit on parallel Phase B PRs.** CR rate limiting is handled by the Greptile fallback for interim feedback, but merge readiness still requires the full gate: 1 clean Greptile + 2 clean CR passes.
+- **Soft limit on parallel Phase B PRs:** aim for 3-4 active CR-polled PRs at once to reduce CR throttling and unnecessary Greptile fallback cost. Each PR tracks its own reviewer assignment: CR-only PRs need 2 clean CR passes; Greptile PRs need 1 clean G pass.
 - **Track CR quota.** Maintain a running count of CR reviews consumed this hour. Increment when: pushing to a PR with CR configured (auto-review), or posting `@coderabbitai full review`. If count reaches 7 in the current hour, expect Greptile to be the primary reviewer for remaining PRs until the window resets.
 - Use judgment on small PRs: if CR only found 1-2 findings, a single subagent may handle the full lifecycle without hitting token limits
 
@@ -140,8 +142,8 @@ When running a long monitoring session with multiple PRs, write a status checkpo
   "root_repo": "/Users/user/repos/my-project",
   "work_log_path": "docs/work-logs",
   "prs": {
-    "618": {"phase": "B", "round": 2, "head_sha": "7b2cfbf", "reviews_clean": ["greptile", "cr_round_1"], "needs": "cr_round_2_clean"},
-    "620": {"phase": "B", "round": 1, "head_sha": "d0e4fef", "reviews_clean": [], "needs": "fix_and_push"}
+    "618": {"phase": "B", "head_sha": "7b2cfbf", "reviewer": "cr", "needs": "cr_confirmation_pass"},
+    "620": {"phase": "B", "head_sha": "d0e4fef", "reviewer": "g", "needs": "fix_and_push"}
   },
   "cr_quota": {"reviews_used": 5, "window_start": "2026-03-16T15:00:00Z"},
   "active_agents": [
@@ -168,7 +170,10 @@ BEFORE triggering `@coderabbitai full review` or entering the polling loop:
 4. Only request a new review after all prior findings are addressed
 Skipping this step wastes a review cycle and burns CR quota.
 
-### Step 1: Wait for CR review (fast-path check every cycle, 8-min slow-path max)
+### Step 1: Check if PR is already on Greptile
+If this PR has already switched to Greptile (check session-state `reviewer` field), skip CR polling entirely — go directly to Step 3 and trigger `@greptileai`.
+
+### Step 1b: Wait for CR review (only if PR is still on CR)
 - Poll every 60s on all 3 endpoints (per_page=100):
   - `repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100`
   - `repos/{owner}/{repo}/pulls/{N}/comments?per_page=100`
@@ -179,11 +184,12 @@ Skipping this step wastes a review cycle and burns CR quota.
   If check shows "rate limit" in output.title with conclusion "failure" -> Greptile IMMEDIATELY.
   If check-runs empty, also check: `gh api "repos/{owner}/{repo}/commits/{SHA}/statuses"`
 
-### Step 2: After 8 minutes with no review -> trigger Greptile (NO EXCEPTIONS)
-If 8 minutes pass and CR has not delivered review content, trigger Greptile.
+### Step 2: After 7 minutes with no review -> trigger Greptile (NO EXCEPTIONS)
+If 7 minutes pass and CR has not delivered review content, trigger Greptile.
 It does NOT matter whether you see an explicit rate-limit signal.
 The "Actions performed" ack means CR STARTED — it is NOT a review.
-If you see the ack but no review within 8 minutes, CR failed to deliver.
+If you see the ack but no review within 7 minutes, CR failed to deliver.
+**Once Greptile is triggered, this PR stays on Greptile permanently.**
 
 ### Step 3: Trigger Greptile (if not already running)
 1. Post: `gh pr comment <PR_NUMBER> --body "@greptileai"`
@@ -196,24 +202,19 @@ If you see the ack but no review within 8 minutes, CR failed to deliver.
    - Issue comments: `gh api repos/{owner}/{repo}/issues/{N}/comments -f body="@greptileai Fixed: <summary>"`
    Pushing code does NOT resolve threads — you MUST post explicit replies.
 
-### After Greptile fix+push: CR gets a fresh chance automatically
-Pushing creates a new SHA with clean check-runs. CR auto-triggers on push.
-Do NOT wait 15 minutes. Enter the normal polling loop on the new SHA.
-The 15-min wait only applies to `@coderabbitai full review` on the SAME SHA.
+### After Greptile fix+push: stay on Greptile
+Once a PR is on Greptile, it stays on Greptile. After pushing fixes, trigger `@greptileai` again.
+Do NOT switch back to CR or enter the CR polling loop.
 
 ### Greptile clean detection
 greptile-apps[bot] posts a review/summary with no actionable findings = clean pass.
 Also watch for 👍 completion signal with no inline comments.
 Check-run name: TBD — update after first Greptile review on this repo.
 
-### Step 4: Get 3 clean reviews for merge readiness
-Merge requires ALL of these:
-1. 1 clean Greptile review (no findings from greptile-apps[bot])
-2. 2 clean CR reviews (no findings from coderabbitai[bot]) — the second is the confirmation pass, and the final review before merge must always be CR
+### Step 4: Merge gate
+The merge gate depends on which reviewer owns the PR:
+- **CR-only** (Greptile never triggered): 2 clean CR reviews required (confirmation pass needed due to unreliable signals)
+- **Greptile** (triggered at any point): 1 clean Greptile review = merge-ready
 
-If Greptile is unavailable (timeout), perform self-review for risk reduction and report the blocker, but do NOT count self-review toward merge readiness. Required gate remains 1 Greptile + 2 CR.
-
-After a Greptile pass (or after self-review used only for risk reduction while reporting a blocker), the next CR step depends on whether you pushed new code:
-1. **New commit pushed** (e.g., Greptile fixes) -> CR auto-triggers on the new SHA. Enter polling immediately — no wait needed.
-2. **Same SHA, manual re-trigger only** -> Wait 15 min, then `@coderabbitai full review`. If still rate-limited, tell user and stop.
+If BOTH reviewers are down (CR rate-limited + Greptile timeout), perform self-review for risk reduction and report the blocker. Self-review does NOT satisfy the merge gate.
 ```
