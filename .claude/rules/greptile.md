@@ -82,7 +82,7 @@ A Greptile review is **merge-ready** when any of these are true:
 
 - **No findings at all** (fully clean) — merge immediately.
 - **Findings are all P1/P2 (no P0)** — fix them, push, reply to threads, but skip re-review. Merge-ready after the fix push.
-- **P0 findings were present, fixed, and re-review shows no new P0** — merge-ready after the confirmation review.
+- **P0 findings were present, fixed, and re-review shows no P0 findings** — merge-ready after the confirmation review.
 
 Also watch for 👍 completion signal with no inline comments (= fully clean pass).
 

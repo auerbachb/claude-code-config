@@ -222,7 +222,7 @@ Once a PR is on Greptile, it stays on Greptile. Do NOT switch back to CR.
 A Greptile review is merge-ready when:
 - No findings at all (fully clean), OR
 - Findings are all P1/P2 (no P0) — fix them but skip re-review, OR
-- Re-review after P0 fix shows no new P0 findings
+- Re-review after P0 fix shows no P0 findings
 Also watch for 👍 completion signal with no inline comments.
 **Max 3 Greptile reviews per PR.** After 3, self-review + report blocker.
 Check-run name: TBD — update after first Greptile review on this repo.
