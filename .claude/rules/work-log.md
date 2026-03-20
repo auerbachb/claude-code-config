@@ -11,7 +11,7 @@ At the start of every session, before any code work:
 1. **Find existing `work-logs/` directories** by searching the **main worktree root** (not the current worktree, which may lack shared directories). Get the main worktree path via:
 
    ```bash
-   ROOT_REPO=$(git worktree list | head -1 | awk '{print $1}')
+   ROOT_REPO=$(git worktree list --porcelain | awk '/^worktree /{sub(/^worktree /, ""); print; exit}')
    find "$ROOT_REPO" -type d -name "work-logs" -not -path "*/.git/*" -not -path "*/.claude/*"
    ```
 
