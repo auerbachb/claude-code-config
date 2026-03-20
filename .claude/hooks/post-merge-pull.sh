@@ -28,11 +28,15 @@ if [[ "$command" == *"gh pr merge"* ]] && [[ "$exit_code" == "0" ]]; then
   if [[ -z "$cwd" || ! -d "$cwd" ]]; then
     exit 0
   fi
-  root_repo=$(cd "$cwd" && git worktree list 2>/dev/null | head -1 | awk '{print $1}')
+  root_repo=$(git -C "$cwd" worktree list --porcelain 2>/dev/null \
+    | sed -n 's/^worktree //p' \
+    | head -n 1)
 
   if [[ -n "$root_repo" && -d "$root_repo/.git" ]]; then
     # Pull main in the root repo (not the worktree)
-    git -C "$root_repo" pull origin main --ff-only 2>/dev/null
+    if ! git -C "$root_repo" pull origin main --ff-only >/dev/null 2>&1; then
+      printf 'post-merge-pull: fast-forward pull failed in %s\n' "$root_repo" >&2
+    fi
   fi
 fi
 
