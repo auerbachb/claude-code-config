@@ -39,7 +39,7 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 - **EXIT after confirming clean or after fixing one round**
 
 **Phase C: Merge Prep** (lightest)
-- Verify merge gate is satisfied: if PR is on Greptile, check severity gate (no P0 = merge-ready after fixes; P0 = confirmed resolved via re-review; max 3 G reviews). If CR-only, 2 clean CR reviews.
+- Verify merge gate is satisfied: if PR is on Greptile, see `greptile.md` "Detecting a Merge-Ready Greptile Review". If CR-only, 2 clean CR reviews.
 - Read PR body, verify all acceptance criteria against final code
 - Check off all boxes
 - Report ready for merge
@@ -48,7 +48,7 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 - Parent agent launches Phase A subagents (can run in parallel across different PRs)
 - **When Phase A completes, parent MUST launch Phase B immediately** — see "Phase A Completion Protocol" below
 - When Phase B reports clean, parent launches Phase C
-- **Soft limit on parallel Phase B PRs:** aim for 3-4 active CR-polled PRs at once to reduce CR throttling and unnecessary Greptile fallback cost. Each PR tracks its own reviewer assignment: CR-only PRs need 2 clean CR passes; Greptile PRs use severity gate (no P0 = merge-ready, P0 = re-review; max 3 G reviews).
+- **Soft limit on parallel Phase B PRs:** aim for 3-4 active CR-polled PRs at once to reduce CR throttling and unnecessary Greptile fallback cost. Each PR tracks its own reviewer assignment: CR-only PRs need 2 clean CR passes; Greptile PRs use severity gate (see `greptile.md`).
 - **Track CR quota.** Maintain a running count of CR reviews consumed this hour. Increment when: pushing to a PR with CR configured (auto-review), or posting `@coderabbitai full review`. If count reaches 7 in the current hour, expect Greptile to be the primary reviewer for remaining PRs until the window resets.
 - Use judgment on small PRs: if CR only found 1-2 findings, a single subagent may handle the full lifecycle without hitting token limits
 

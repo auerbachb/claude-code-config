@@ -33,7 +33,7 @@ Greptile is an AI code reviewer used as a **fallback** when CodeRabbit is rate-l
 This means:
 - After fixing Greptile findings, only trigger `@greptileai` again if there were P0 findings (not `@coderabbitai full review`)
 - Ignore any late CR reviews that arrive after Greptile has taken ownership
-- The merge gate for this PR is severity-dependent: no P0 = merge-ready after first review + fixes; P0 = one re-review to confirm resolution (see "Detecting a Clean Greptile Pass" below)
+- Merge gate is severity-dependent — see "Detecting a Merge-Ready Greptile Review" below
 
 ## Polling for Greptile Response
 
@@ -62,7 +62,7 @@ Filter by `greptile-apps[bot]` (with `[bot]` suffix).
 
 Same protocol as CR findings, but with **severity-gated re-review**:
 
-1. **Classify each finding by Greptile's severity badge:** P0 (critical), P1 (important), P2 (minor). Only Greptile's own badge label counts — do not infer severity yourself.
+1. **Classify findings by Greptile badge only:** P0, P1, P2. Do not infer severity yourself.
 2. Verify each finding against the actual code before fixing
 3. Fix **all valid findings** (P0, P1, and P2) in a single commit
 4. Push once
@@ -88,7 +88,7 @@ Also watch for 👍 completion signal with no inline comments (= fully clean pas
 
 ### Greptile Review Budget
 
-**Max 3 Greptile reviews per PR** (1 initial + up to 2 re-reviews for P0 cascades) to contain cost and avoid infinite cascades. Track the count: increment on each `@greptileai` trigger for this PR. If the count reaches 3 and there are still P0 findings, perform a self-review and report the blocker to the user. Do not trigger a 4th review.
+**Max 3 Greptile reviews per PR** (1 initial + up to 2 re-reviews for P0 cascades). Track the count: increment on each `@greptileai` trigger. At 3 with persistent P0 findings, self-review + report blocker. Do not trigger a 4th review.
 
 ## Self-Review Fallback
 
