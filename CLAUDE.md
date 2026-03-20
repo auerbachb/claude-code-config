@@ -69,5 +69,6 @@ Detailed workflow rules are split into topic-specific files in `.claude/rules/`:
 | `greptile.md` | Greptile peer reviewer + CR fallback + self-review fallback |
 | `subagent-orchestration.md` | Task decomposition (phases A/B/C), health monitoring, timestamps, subagent quick-reference |
 | `work-log.md` | Auto-update daily work log on issue create, PR open, PR merge |
+| `safety.md` | Destructive command prohibitions, .env protection, subagent safety warnings |
 
 These files auto-load for the parent agent session. **Subagents do NOT auto-load these files.** See `subagent-orchestration.md` for how to pass rules to subagents.
