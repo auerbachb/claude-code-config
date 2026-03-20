@@ -109,6 +109,14 @@ The user must never go more than **5 minutes** without a status message. This is
 4. **Never batch status updates.** Don't wait until everything is done to report. Report incrementally: "PR #620 fix pushed. Now checking PR #618 status."
 5. **Time your silences.** If your last message to the user was >5 minutes ago by wall clock, your next tool call must be a status message, not another background operation.
 
+### Heartbeat Enforcement (Automatic)
+
+The 5-minute heartbeat rule is enforced by a PostToolUse hook (`silence-detector.sh`). After every tool call, the hook checks how long it has been since the agent last sent a visible message. If >5 minutes, a warning is injected into the agent's context via `additionalContext`.
+
+**How it works:** Stop hook (`silence-detector-ack.sh`) touches `/tmp/claude-heartbeat-$CLAUDE_SESSION_ID` after each response. PostToolUse hook (`silence-detector.sh`) checks mtime after tool calls; if >5 min elapsed, injects warning via `additionalContext`.
+
+**When you see the warning:** Stop what you are doing and send a status message to the user immediately. Include a timestamp (run `date` command), what you're currently doing, what's pending, and any blockers. Then resume your work — the next tool call will check again and the warning will be gone (because the Stop hook touched the file after your status message).
+
 ### Post-Compaction Recovery (MANDATORY)
 
 Context compaction can happen at any time in long sessions. When it does, you lose your in-memory state: which agents are running, what phase each PR is in, which review cycles are pending, and what timestamps matter.
