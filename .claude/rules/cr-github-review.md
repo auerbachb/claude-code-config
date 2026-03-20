@@ -3,7 +3,7 @@
 
 > **Always:** Poll all 3 endpoints + check-runs every cycle. Use `per_page=100`. Filter by `coderabbitai[bot]`. Batch fixes into one commit. Reply to every thread. Resolve threads via GraphQL.
 > **Ask first:** Merging — always ask the user.
-> **Never:** Poll only 1-2 endpoints. Use bare `coderabbitai` without `[bot]`. Push per-finding. Trigger `@coderabbitai full review` more than twice per PR per hour. Trigger Greptile proactively (only on CR failure). Merge without meeting the merge gate (2 clean CR or 1 clean G).
+> **Never:** Poll only 1-2 endpoints. Use bare `coderabbitai` without `[bot]`. Push per-finding. Trigger `@coderabbitai full review` more than twice per PR per hour. Trigger Greptile proactively (only on CR failure). Merge without meeting the merge gate (2 clean CR or Greptile severity gate — see greptile.md).
 
 > **This is the fallback review workflow.** It runs after you push and create a PR. If the local review loop was thorough, CR should find few or no issues here. But edge cases exist (e.g., CI-only context, cross-file interactions the local review missed), so always let this loop run.
 
@@ -124,8 +124,8 @@ The merge gate depends on which reviewer owns the PR:
 - **After 2 failed re-triggers on the same SHA**, stop and tell the user. Do not loop forever.
 
 **Greptile path** (Greptile was triggered at any point for this PR):
-- 1 clean Greptile review = merge-ready. Greptile's CI check accurately reflects its review state, so no confirmation pass is needed.
-- After fixing Greptile findings, trigger `@greptileai` again and poll for the next review. Stay on Greptile — do not switch back to CR.
+- Severity-gated merge gate — see `greptile.md` "Detecting a Merge-Ready Greptile Review" for authoritative rules.
+- Stay on Greptile — do not switch back to CR.
 
 **If both CR and Greptile are down** (CR rate-limited/timed out + Greptile 5-min timeout): perform a self-review for risk reduction. A clean self-review does NOT satisfy the merge gate — report the blocker to the user.
 

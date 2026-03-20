@@ -31,13 +31,15 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 **Phase B: Review Loop** (lighter — incremental)
 - If this PR is on CR: poll for CR review (fast-path + 7-minute slow-path Greptile trigger). If Greptile is triggered, the PR switches to Greptile permanently.
 - If this PR is already on Greptile: skip CR polling, trigger `@greptileai` and poll for Greptile response directly.
-- If reviewer posts new findings: fix, commit, push, reply (same as Phase A but smaller scope)
+- If Greptile posts findings: classify by severity (P0/P1/P2). Fix all valid findings, commit, push, reply.
+  - If any P0: trigger `@greptileai` again for re-review (max 3 total Greptile reviews per PR).
+  - If only P1/P2 (no P0): merge-ready after fix push — no re-review needed.
 - If clean pass on CR: trigger one more `@coderabbitai full review` for confirmation (2 clean CR passes needed)
-- If clean pass on Greptile: merge-ready (1 clean Greptile pass is sufficient)
+- If clean Greptile pass (no findings at all): merge-ready immediately.
 - **EXIT after confirming clean or after fixing one round**
 
 **Phase C: Merge Prep** (lightest)
-- Verify merge gate is satisfied: if PR is on Greptile, 1 clean G review. If CR-only, 2 clean CR reviews.
+- Verify merge gate is satisfied: if PR is on Greptile, see `greptile.md` "Detecting a Merge-Ready Greptile Review". If CR-only, 2 clean CR reviews.
 - Read PR body, verify all acceptance criteria against final code
 - Check off all boxes
 - Report ready for merge
@@ -46,7 +48,7 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 - Parent agent launches Phase A subagents (can run in parallel across different PRs)
 - **When Phase A completes, parent MUST launch Phase B immediately** — see "Phase A Completion Protocol" below
 - When Phase B reports clean, parent launches Phase C
-- **Soft limit on parallel Phase B PRs:** aim for 3-4 active CR-polled PRs at once to reduce CR throttling and unnecessary Greptile fallback cost. Each PR tracks its own reviewer assignment: CR-only PRs need 2 clean CR passes; Greptile PRs need 1 clean G pass.
+- **Soft limit on parallel Phase B PRs:** aim for 3-4 active CR-polled PRs at once to reduce CR throttling and unnecessary Greptile fallback cost. Each PR tracks its own reviewer assignment: CR-only PRs need 2 clean CR passes; Greptile PRs use severity gate (see `greptile.md`).
 - **Track CR quota.** Maintain a running count of CR reviews consumed this hour. Increment when: pushing to a PR with CR configured (auto-review), or posting `@coderabbitai full review`. If count reaches 7 in the current hour, expect Greptile to be the primary reviewer for remaining PRs until the window resets.
 - Use judgment on small PRs: if CR only found 1-2 findings, a single subagent may handle the full lifecycle without hitting token limits
 
@@ -210,19 +212,28 @@ If you see the ack but no review within 7 minutes, CR failed to deliver.
    - Issue comments: `gh api repos/{owner}/{repo}/issues/{N}/comments -f body="@greptileai Fixed: <summary>"`
    Pushing code does NOT resolve threads — you MUST post explicit replies.
 
-### After Greptile fix+push: stay on Greptile
-Once a PR is on Greptile, it stays on Greptile. After pushing fixes, trigger `@greptileai` again.
-Do NOT switch back to CR or enter the CR polling loop.
+### After Greptile fix+push: severity-gated re-review
+Once a PR is on Greptile, it stays on Greptile. Do NOT switch back to CR.
+- **If the review had P0 findings:** After pushing fixes, trigger `@greptileai` again to confirm P0 resolution.
+- **If the review had only P1/P2 (no P0):** Do NOT trigger `@greptileai` again. The PR is merge-ready after the fix push.
+- **Max 3 Greptile reviews per PR** (initial + up to 2 P0 re-reviews). After 3, self-review + tell user.
 
-### Greptile clean detection
-greptile-apps[bot] posts a review/summary with no actionable findings = clean pass.
+### Greptile clean / merge-ready detection
+A Greptile review is merge-ready when:
+- No findings at all (fully clean), OR
+- Findings are all P1/P2 (no P0) — fix them but skip re-review, OR
+- Re-review after P0 fix shows no P0 findings
 Also watch for 👍 completion signal with no inline comments.
+**Max 3 Greptile reviews per PR.** After 3, self-review + report blocker.
 Check-run name: TBD — update after first Greptile review on this repo.
 
 ### Step 4: Merge gate
 The merge gate depends on which reviewer owns the PR:
 - **CR-only** (Greptile never triggered): 2 clean CR reviews required (confirmation pass needed due to unreliable signals)
-- **Greptile** (triggered at any point): 1 clean Greptile review = merge-ready
+- **Greptile** (triggered at any point): severity-gated:
+  - No P0 on first review -> merge-ready after fixing P1/P2 (no re-review)
+  - P0 on first review -> fix + 1 re-review to confirm P0 resolution
+  - Max 3 Greptile reviews per PR. After 3, self-review + report blocker.
 
 If BOTH reviewers are down (CR rate-limited + Greptile timeout), perform self-review for risk reduction and report the blocker. Self-review does NOT satisfy the merge gate.
 ```

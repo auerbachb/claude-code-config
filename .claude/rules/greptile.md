@@ -1,6 +1,6 @@
 # Greptile — CodeRabbit Fallback Reviewer
 
-> **Always:** Poll for response after triggering. Reply to every thread. Fix all valid findings. Stay on G once triggered for a PR.
+> **Always:** Poll for response after triggering. Reply to every thread. Fix all valid findings. Classify by severity (P0/P1/P2). Only re-review for P0. Stay on G once triggered for a PR.
 > **Ask first:** Never — fix findings autonomously.
 > **Never:** Trigger Greptile proactively on a PR where CR hasn't failed yet. Ignore Greptile findings. Switch a PR back to CR after Greptile has been triggered.
 
@@ -31,9 +31,9 @@ Greptile is an AI code reviewer used as a **fallback** when CodeRabbit is rate-l
 **Once Greptile is triggered for a PR, that PR stays on Greptile for all remaining review cycles.** Do not switch back to CR. Rationale: if CR was slow or rate-limited once for this PR, it will likely be slow again, and switching back just wastes more time.
 
 This means:
-- After fixing Greptile findings, trigger `@greptileai` again (not `@coderabbitai full review`)
+- After fixing Greptile findings, only trigger `@greptileai` again if there were P0 findings (not `@coderabbitai full review`)
 - Ignore any late CR reviews that arrive after Greptile has taken ownership
-- The merge gate for this PR is now 1 clean Greptile review (see below)
+- Merge gate is severity-dependent — see "Detecting a Merge-Ready Greptile Review" below
 
 ## Polling for Greptile Response
 
@@ -60,26 +60,35 @@ Filter by `greptile-apps[bot]` (with `[bot]` suffix).
 
 ## Processing Greptile Findings
 
-Same protocol as CR findings:
+Same protocol as CR findings, but with **severity-gated re-review**:
 
-1. Verify each finding against the actual code before fixing
-2. Fix **all valid findings** in a single commit
-3. Push once
-4. **Reply to every Greptile comment thread** confirming the fix:
+1. **Classify findings by Greptile badge only:** P0, P1, P2. Do not infer severity yourself.
+2. Verify each finding against the actual code before fixing
+3. Fix **all valid findings** (P0, P1, and P2) in a single commit
+4. Push once
+5. **Reply to every Greptile comment thread** confirming the fix:
    - Inline comments: `gh api repos/{owner}/{repo}/pulls/comments/{id}/replies -f body="Fixed in \`SHA\`: <what changed>"`
    - Issue comments: `gh api repos/{owner}/{repo}/issues/{N}/comments -f body="@greptileai Fixed: <summary>"`
-5. Resolve threads via GraphQL (same as CR threads)
-6. Use 👍/👎 reactions on Greptile comments to provide feedback
-7. **Trigger `@greptileai` again** to request the next review (stay on Greptile — do not switch to CR)
+6. Resolve threads via GraphQL (same as CR threads)
+7. Use 👍/👎 reactions on Greptile comments to provide feedback
+8. **Severity-gated re-review:**
+   - **If any P0 findings were present:** Trigger `@greptileai` again to confirm P0 resolution. This consumes one re-review.
+   - **If only P1/P2 findings (no P0):** Do NOT trigger `@greptileai` again. The PR is merge-ready after the fix push.
+   - Stay on Greptile — do not switch back to CR.
 
-## Detecting a Clean Greptile Pass
+## Detecting a Merge-Ready Greptile Review
 
-A Greptile review is **clean** when:
+A Greptile review is **merge-ready** when any of these are true:
 
-- `greptile-apps[bot]` posted a review or summary with no actionable findings, OR
-- 👍 completion signal appeared with no inline comments or review findings
+- **No findings at all** (fully clean) — merge immediately.
+- **Findings are all P1/P2 (no P0)** — fix them, push, reply to threads, but skip re-review. Merge-ready after the fix push.
+- **P0 findings were present, fixed, and re-review shows no P0 findings** — merge-ready after the confirmation review.
 
-**A clean Greptile pass = merge-ready** for that PR (no further CR review needed). No confirmation pass is required on the Greptile path.
+Also watch for 👍 completion signal with no inline comments (= fully clean pass).
+
+### Greptile Review Budget
+
+**Max 3 Greptile reviews per PR** (1 initial + up to 2 re-reviews for P0 cascades). Track the count: increment on each `@greptileai` trigger. At 3 with persistent P0 findings, self-review + report blocker. Do not trigger a 4th review.
 
 ## Self-Review Fallback
 
