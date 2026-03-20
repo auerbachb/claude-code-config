@@ -6,16 +6,21 @@
 
 ## Session Start: Detect Work Log Directory
 
-At the start of every session, before any code work:
+At the start of every session — including continuation sessions and post-compaction recovery — before any code work:
 
-1. **Find existing `work-logs/` directories** by searching the **main worktree root** (not the current worktree, which may lack shared directories). Get the main worktree path via:
+1. **Find existing `work-logs/` directories** by searching the **main repo root** (not the current worktree, which may lack shared directories). The main repo root is always the first entry from `git worktree list`, regardless of where you are:
 
    ```bash
-   ROOT_REPO=$(git worktree list --porcelain | awk '/^worktree /{sub(/^worktree /, ""); print; exit}')
+   ROOT_REPO=$(git worktree list | head -1 | awk '{print $1}')
    find "$ROOT_REPO" -type d -name "work-logs" -not -path "*/.git/*" -not -path "*/.claude/*"
    ```
 
    If you are not in a worktree (i.e., working directly in the repo), `$ROOT_REPO` is just the repo root and the find command works the same way.
+
+   > **Why the main repo root?** Worktrees are sparse checkouts — shared directories like `docs/work-logs/` often exist only in the main repo root, not in individual worktrees. Searching the current directory from a worktree will silently miss the work-log directory.
+
+   > **Continuation sessions & post-compaction:** Context compaction wipes in-memory state including the work-log path. On every session resume — whether from compaction, a new conversation turn after a long gap, or an explicit continuation — re-run this detection. Do not assume the path is still cached. The `ROOT_REPO` lookup is always safe to re-run (idempotent and fast).
+
    **NEVER create a `work-logs/` directory.** Only use directories that already exist. If the find command returns nothing, this rule is a no-op — skip all logging for the session.
 2. **If one match is found:** Ask the user once to confirm: "I found a work log directory at `{path}`. I'll log issues, PRs, and merges there — sound good?" If the user already mentioned the work log or it's clear from context, skip the ask and just use it.
 3. **If multiple matches are found:** Prefer paths under `docs/` (e.g., `docs/work-logs/` over `work-logs/` at repo root) — a `docs/` location indicates intentional placement. If still ambiguous, ask the user to choose.
