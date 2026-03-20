@@ -90,9 +90,7 @@ Also watch for 👍 completion signal with no inline comments (= fully clean pas
 
 **Max 3 Greptile reviews per PR** (1 initial + up to 2 re-reviews for P0 cascades).
 
-Track the count: increment on each `@greptileai` trigger for this PR. If the count reaches 3 and there are still P0 findings, perform a self-review and report the blocker to the user. Do not trigger a 4th review.
-
-**Why this cap exists:** Greptile costs $1/review. Without a cap, P0 cascades (where a fix introduces a new P0) could run indefinitely. 3 reviews is enough to catch genuine issues; persistent P0s after 3 rounds likely indicate a design problem that needs human judgment.
+Track the count: increment on each `@greptileai` trigger for this PR. If the count reaches 3 and there are still P0 findings, perform a self-review and report the blocker to the user. Do not trigger a 4th review. Caps reviews to contain cost and avoid infinite P0 cascades.
 
 ## Self-Review Fallback
 
