@@ -79,7 +79,7 @@ A Greptile review is **clean** when:
 - `greptile-apps[bot]` posted a review or summary with no actionable findings, OR
 - 👍 completion signal appeared with no inline comments or review findings
 
-**A clean Greptile pass = merge-ready** for that PR (no further CR review needed). Greptile's CI check accurately reflects its review state, so no confirmation pass is required. This differs from CR, which needs 2 clean passes due to unreliable completion signals.
+**A clean Greptile pass = merge-ready** for that PR (no further CR review needed). No confirmation pass is required on the Greptile path.
 
 ## Self-Review Fallback
 

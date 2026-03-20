@@ -139,8 +139,8 @@ When running a long monitoring session with multiple PRs, write a status checkpo
   "last_updated": "2026-03-16T16:00:00Z",
   "monitoring_active": true,
   "prs": {
-    "618": {"phase": "B", "round": 2, "head_sha": "7b2cfbf", "reviewer": "cr", "reviews_clean": ["cr_round_1"], "needs": "cr_round_2_clean"},
-    "620": {"phase": "B", "round": 1, "head_sha": "d0e4fef", "reviewer": "g", "reviews_clean": [], "needs": "fix_and_push"}
+    "618": {"phase": "B", "head_sha": "7b2cfbf", "reviewer": "cr", "needs": "cr_confirmation_pass"},
+    "620": {"phase": "B", "head_sha": "d0e4fef", "reviewer": "g", "needs": "fix_and_push"}
   },
   "cr_quota": {"reviews_used": 5, "window_start": "2026-03-16T15:00:00Z"},
   "active_agents": [
