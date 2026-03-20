@@ -124,9 +124,7 @@ The merge gate depends on which reviewer owns the PR:
 - **After 2 failed re-triggers on the same SHA**, stop and tell the user. Do not loop forever.
 
 **Greptile path** (Greptile was triggered at any point for this PR):
-- **No P0 findings on first review:** merge-ready after fixing P1/P2 findings (no re-review needed). Greptile's P0 badge is the only trigger for re-review.
-- **P0 findings present:** fix all findings, trigger `@greptileai` again to confirm P0 resolution. If the re-review has no new P0, merge-ready.
-- **Max 3 Greptile reviews per PR.** After 3 reviews with persistent P0 findings, self-review + report to user.
+- Severity-gated merge gate — see `greptile.md` "Detecting a Merge-Ready Greptile Review" for authoritative rules. Summary: no P0 = merge-ready after fixes; P0 = re-review to confirm; max 3 G reviews per PR.
 - Stay on Greptile — do not switch back to CR.
 
 **If both CR and Greptile are down** (CR rate-limited/timed out + Greptile 5-min timeout): perform a self-review for risk reduction. A clean self-review does NOT satisfy the merge gate — report the blocker to the user.

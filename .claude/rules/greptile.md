@@ -88,9 +88,7 @@ Also watch for 👍 completion signal with no inline comments (= fully clean pas
 
 ### Greptile Review Budget
 
-**Max 3 Greptile reviews per PR** (1 initial + up to 2 re-reviews for P0 cascades).
-
-Track the count: increment on each `@greptileai` trigger for this PR. If the count reaches 3 and there are still P0 findings, perform a self-review and report the blocker to the user. Do not trigger a 4th review. Caps reviews to contain cost and avoid infinite P0 cascades.
+**Max 3 Greptile reviews per PR** (1 initial + up to 2 re-reviews for P0 cascades) to contain cost and avoid infinite cascades. Track the count: increment on each `@greptileai` trigger for this PR. If the count reaches 3 and there are still P0 findings, perform a self-review and report the blocker to the user. Do not trigger a 4th review.
 
 ## Self-Review Fallback
 
