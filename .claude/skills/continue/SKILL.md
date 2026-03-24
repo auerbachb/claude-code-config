@@ -50,17 +50,18 @@ git status --porcelain
 
 ## Step 2: Run local CR review
 
-Check if `coderabbit` CLI is available:
+Find the `coderabbit` CLI:
 ```bash
-which coderabbit 2>/dev/null || which ~/.local/bin/coderabbit 2>/dev/null
+CR_BIN=$(which coderabbit 2>/dev/null || echo ~/.local/bin/coderabbit)
+test -x "$CR_BIN" && echo "Found: $CR_BIN" || echo "Not found"
 ```
 
 If available, run the local review loop:
 ```bash
-~/.local/bin/coderabbit review --prompt-only
+$CR_BIN review --prompt-only
 ```
 
-- If findings are returned: `[ACTION]` — Fix all valid findings. Run `coderabbit review --prompt-only` again after fixing.
+- If findings are returned: `[ACTION]` — Fix all valid findings. Run `$CR_BIN review --prompt-only` again after fixing.
 - Track a **consecutive-clean counter** (starts at 0). Each clean pass increments it by 1. Any pass with findings resets it to 0.
 - **Exit when consecutive-clean == 2** (two back-to-back clean passes) — `[DONE]` Local CR review passed.
 - **Max 5 total iterations.** If you hit 5 runs without achieving 2 consecutive clean passes, stop and report: `[BLOCKED]` — CR review not converging after 5 iterations.
@@ -110,18 +111,23 @@ PR_JSON=$(gh pr view --json number,title,body,state 2>/dev/null)
 
 ## Step 5: Trigger Greptile alongside CR
 
-After pushing (Step 3) or creating a PR (Step 4), check if Greptile has already been triggered:
+After pushing (Step 3) or creating a PR (Step 4), check if Greptile has already been triggered **for the current HEAD**:
 
 ```bash
+# Get the current HEAD SHA and its commit timestamp
+HEAD_SHA=$(gh pr view $PR_NUM --json commits --jq '.commits[-1].oid')
+HEAD_TIME=$(gh api "repos/{owner}/{repo}/commits/$HEAD_SHA" --jq '.commit.committer.date')
+
+# Find @greptileai trigger comments posted AFTER the current HEAD commit
 gh api "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
-  --jq '[.[] | select(.body | test("@greptileai"))] | length'
+  --jq "[.[] | select(.body | test(\"@greptileai\")) | select(.created_at >= \"$HEAD_TIME\")] | length"
 ```
 
-- If `@greptileai` has NOT been triggered yet on the current HEAD SHA: `[ACTION]` — Trigger Greptile:
+- If no `@greptileai` trigger exists after the current HEAD commit: `[ACTION]` — Trigger Greptile:
   ```bash
   gh pr comment $PR_NUM --body "@greptileai"
   ```
-- If already triggered: `[DONE]` — Greptile already triggered.
+- If already triggered for this HEAD: `[DONE]` — Greptile already triggered for current SHA.
 
 ---
 
