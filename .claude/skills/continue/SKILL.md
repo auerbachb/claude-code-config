@@ -60,10 +60,11 @@ If available, run the local review loop:
 ~/.local/bin/coderabbit review --prompt-only
 ```
 
-- If findings are returned: `[ACTION]` — Fix all valid findings. Run `coderabbit review --prompt-only` again after fixing. Repeat until clean (max 5 iterations to avoid infinite loops).
-- If clean (no findings): `[DONE]` — Local CR review passed.
+- If findings are returned: `[ACTION]` — Fix all valid findings. Run `coderabbit review --prompt-only` again after fixing.
+- Track a **consecutive-clean counter** (starts at 0). Each clean pass increments it by 1. Any pass with findings resets it to 0.
+- **Exit when consecutive-clean == 2** (two back-to-back clean passes) — `[DONE]` Local CR review passed.
+- **Max 5 total iterations.** If you hit 5 runs without achieving 2 consecutive clean passes, stop and report: `[BLOCKED]` — CR review not converging after 5 iterations.
 - If CR CLI is not available or errors out: `[SKIP]` — CR CLI unavailable, performing self-review of `git diff main...HEAD` instead.
-- **Two consecutive clean passes required** before marking as done.
 
 ---
 
@@ -195,7 +196,7 @@ gh api "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
 
 ## Step 8: Check for unresolved findings
 
-Fetch unresolved review threads:
+Fetch unresolved review threads (first 100 — sufficient for most PRs; if a PR has >100 threads, paginate using `pageInfo.endCursor`):
 ```bash
 gh api graphql -f query='query {
   repository(owner: "{owner}", name: "{repo}") {
