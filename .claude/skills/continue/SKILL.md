@@ -65,7 +65,11 @@ $CR_BIN review --prompt-only
 - Track a **consecutive-clean counter** (starts at 0). Each clean pass increments it by 1. Any pass with findings resets it to 0.
 - **Exit when consecutive-clean == 2** (two back-to-back clean passes) — `[DONE]` Local CR review passed.
 - **Max 5 total iterations.** If you hit 5 runs without achieving 2 consecutive clean passes, stop and report: `[BLOCKED]` — CR review not converging after 5 iterations.
-- If CR CLI is not available or errors out: `[SKIP]` — CR CLI unavailable, performing self-review of `git diff main...HEAD` instead.
+- If CR CLI is not available or errors out: `[SKIP]` — CR CLI unavailable, performing self-review instead:
+  ```bash
+  BASE=$(gh pr view --json baseRefName --jq '.baseRefName' 2>/dev/null || echo main)
+  git diff "$BASE"...HEAD
+  ```
 
 ---
 
@@ -248,10 +252,9 @@ gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
 
 ### If PR is on CR (Greptile never triggered):
 
-Need **2 consecutive clean CR passes**. A pass is clean only when ALL of:
+Need **2 consecutive clean CR passes**. A pass is clean only when BOTH of:
 1. CodeRabbit check-run on current HEAD shows `status: "completed"` + `conclusion: "success"`
-2. Step 7 reports zero unresolved CR findings
-3. No new CR review comments appeared after the check-run completed
+2. Step 7 reports zero unresolved CR findings (verified via GraphQL query below)
 
 Track a `cr_clean_streak` counter:
 - Increment by 1 after a verified clean pass
