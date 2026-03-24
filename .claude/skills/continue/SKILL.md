@@ -119,7 +119,8 @@ PR_NUM=$(echo "$PR_JSON" | jq -r '.number // empty')
     ```bash
     PR_NUM=$(gh pr view --json number --jq '.number')
     ```
-- If the PR is merged/closed: `[DONE]` — PR is already merged. Nothing to continue.
+- If the PR is merged: `[DONE]` — PR is already merged. Nothing to continue.
+- If the PR is closed but not merged: `[BLOCKED]` — PR was closed without merging. It may need to be reopened or a new PR created.
 
 ---
 
@@ -164,7 +165,11 @@ gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
 **Rate limit detection:** If check-run shows `conclusion: "failure"` with title containing "rate limit" (case-insensitive), OR status shows `state: "failure"`/`state: "error"` with description containing "rate limit":
 - `[ACTION]` — CR is rate-limited. Switching to Greptile.
 - Trigger `@greptileai` on the PR if not already done.
-- This PR is now on Greptile permanently (sticky assignment).
+- This PR is now on Greptile permanently (sticky assignment). Persist this to session-state:
+  ```bash
+  # Write sticky reviewer assignment to session-state
+  jq --arg pr "$PR_NUM" '.prs[$pr].reviewer = "g"' ~/.claude/session-state.json > /tmp/ss.json && mv /tmp/ss.json ~/.claude/session-state.json
+  ```
 - Go to the Greptile section below.
 
 **Review completion:** If check-run shows `status: "completed"` with `conclusion: "success"`:
