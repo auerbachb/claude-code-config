@@ -71,19 +71,24 @@ $CR_BIN review --prompt-only
 
 ## Step 3: Push to remote
 
+First check if the remote branch exists:
 ```bash
-git log --oneline origin/$BRANCH..$BRANCH 2>/dev/null | wc -l
+git rev-parse --verify origin/$BRANCH 2>/dev/null
 ```
 
-- If there are unpushed commits: `[ACTION]` — Pushing.
-  ```bash
-  git push origin $BRANCH
-  ```
-- If already up to date: `[DONE]` — Branch is pushed.
-- If the remote branch doesn't exist yet: `[ACTION]` — Pushing with `-u`:
+- If the remote branch **does not exist**: `[ACTION]` — Pushing new branch:
   ```bash
   git push -u origin $BRANCH
   ```
+- If the remote branch **exists**, check for unpushed commits:
+  ```bash
+  UNPUSHED=$(git log --oneline origin/$BRANCH..$BRANCH | wc -l | tr -d ' ')
+  ```
+  - If `UNPUSHED > 0`: `[ACTION]` — Pushing $UNPUSHED commits.
+    ```bash
+    git push origin $BRANCH
+    ```
+  - If `UNPUSHED == 0`: `[DONE]` — Branch is up to date with remote.
 
 ---
 
