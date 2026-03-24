@@ -177,15 +177,15 @@ gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
 
 Check for Greptile comments:
 ```bash
-gh api "repos/{owner}/{repo}/pulls/{N}/comments?per_page=100" \
+gh api --paginate "repos/{owner}/{repo}/pulls/{N}/comments?per_page=100" \
   --jq '[.[] | select(.user.login == "greptile-apps[bot]")]'
-gh api "repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100" \
+gh api --paginate "repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100" \
   --jq '[.[] | select(.user.login == "greptile-apps[bot]")]'
-gh api "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
+gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
   --jq '[.[] | select(.user.login == "greptile-apps[bot]")]'
 ```
 
-- If Greptile has posted findings: `[DONE]` — Greptile review received. Process findings (Step 8).
+- If Greptile has posted findings: `[DONE]` — Greptile review received. Process findings (Step 7).
 - If no Greptile response: `[ACTION]` — Polling for Greptile (5-minute timeout).
   - If no response after 5 minutes: `[BLOCKED]` — Greptile timed out. Performing self-review as fallback. Note: self-review does NOT satisfy merge gate.
 
@@ -222,7 +222,7 @@ Count unresolved threads from reviewers:
 
 Also check for issue-level review comments that may not have threads:
 ```bash
-gh api "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
+gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
   --jq '[.[] | select(.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]") | select(.body | test("suggestion|finding|issue|bug|error|warning"; "i"))]'
 ```
 
@@ -250,7 +250,7 @@ gh api "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
 
 Need **2 consecutive clean CR passes**. A pass is clean only when ALL of:
 1. CodeRabbit check-run on current HEAD shows `status: "completed"` + `conclusion: "success"`
-2. Step 8 reports zero unresolved CR findings
+2. Step 7 reports zero unresolved CR findings
 3. No new CR review comments appeared after the check-run completed
 
 Track a `cr_clean_streak` counter:
@@ -266,9 +266,11 @@ SHA=$(gh pr view $PR_NUM --json commits --jq '.commits[-1].oid')
 gh api "repos/{owner}/{repo}/commits/$SHA/check-runs" \
   --jq '.check_runs[] | select(.name == "CodeRabbit") | {status, conclusion}'
 
-# Verify no unresolved findings from CR
-gh api graphql -f query='query { repository(owner: "{owner}", name: "{repo}") { pullRequest(number: {N}) { reviewThreads(first: 100) { nodes { isResolved comments(first: 1) { nodes { author { login } } } } } } } }' \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | select(.comments.nodes[0].author.login == "coderabbitai[bot]")] | length'
+# Verify no unresolved findings from CR (fetch all comments per thread to catch CR anywhere in thread)
+gh api graphql -f query='query { repository(owner: "{owner}", name: "{repo}") { pullRequest(number: {N}) { reviewThreads(first: 100) { nodes { isResolved comments(first: 100) { nodes { author { login } } } } } } } }' \
+  --jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+         | select(.isResolved == false)
+         | select(any(.comments.nodes[]; .author.login == "coderabbitai[bot]"))] | length'
 ```
 
 - If check-run is green AND zero unresolved CR findings: this is a clean pass. Increment `cr_clean_streak`.
