@@ -40,8 +40,7 @@ cp global-settings.json ~/.claude/settings.json
 # Or symlink (auto-updates when you pull changes)
 ln -sfn /path/to/claude-code-config/CLAUDE.md ~/.claude/CLAUDE.md
 ln -sfn /path/to/claude-code-config/.claude/rules ~/.claude/rules
-# Note: global-settings.json must be COPIED (not symlinked) because
-# you need to replace placeholder paths with your actual paths
+# Note: global-settings.json must be copied, not symlinked (needs per-user path edits)
 ```
 
 ### Option 2: Per-project config
