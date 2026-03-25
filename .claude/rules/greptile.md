@@ -11,13 +11,38 @@ Greptile is an AI code reviewer used as a **fallback** when CodeRabbit is rate-l
 - **GitHub App:** Greptile Apps
 - **Bot username:** `greptile-apps[bot]`
 - **Trigger:** Comment `@greptileai` on any PR (no special "full review" suffix needed)
-- **Auto-trigger:** OFF — must be explicitly triggered via @mention
+- **Auto-trigger:** OFF — disabled via dashboard filter (see "Dashboard Configuration" below). Must be explicitly triggered via @mention.
 - **Rate limits:** None documented (50 reviews/seat/month included, $1/extra — no per-hour throttle)
 - **Review time:** ~1-3 minutes for most PRs
 - **Completion signals:** 👀 emoji on the PR = analyzing, 👍 = complete, 😕 = failed
 - **No CLI:** Greptile cannot do local pre-push reviews. Local review loop uses CR CLI only.
-- **Config:** Optional `greptile.json` in repo root (supports `strictness`, `customInstructions`, `scope`)
+- **Config:** Optional `greptile.json` in repo root (supports `strictness`, `customInstructions`, `scope`). Review trigger filters are configured in the Greptile web dashboard (app.greptile.com), not in repo files.
 - **Feedback loop:** 👍/👎 reactions on Greptile comments train it over 2-3 weeks
+
+## Dashboard Configuration (app.greptile.com)
+
+Greptile auto-reviews every new PR by default. The "Automatically trigger on new commits" toggle only controls reviews on new **commits** to existing PRs — it does NOT prevent auto-review on PR open. To disable auto-review on PR open, a **filter** must be configured in the Greptile dashboard.
+
+**Current configuration** (app.greptile.com/review → Settings → Review Triggers):
+
+| Setting | Value |
+|---------|-------|
+| Authors Exclude | `dependabot[bot]`, `renovate[bot]` |
+| Labels Include | `greptile` |
+| File Change Limit | 100 |
+| Automatically trigger on new commits | OFF |
+| Review draft pull requests | OFF |
+
+**The "Labels Include: greptile" filter** is the key setting that prevents auto-review. With this filter active, Greptile only auto-reviews PRs that carry the `greptile` label. Since we never add that label (we trigger reviews explicitly via `@greptileai` comments), this effectively disables all automatic reviews while preserving manual trigger capability.
+
+**To apply this configuration:**
+1. Go to https://app.greptile.com/review (select the GitHub repo)
+2. Navigate to Settings → Review Triggers
+3. Add a "Labels: includes: greptile" filter
+4. Verify "Automatically trigger on new commits" is OFF
+5. Save
+
+**Important:** This is a web dashboard setting, not a repo file. The `@greptileai` manual trigger in PR comments is unaffected by this filter — it always works regardless of labels or dashboard settings.
 
 ## When to Trigger Greptile
 
