@@ -4,7 +4,7 @@
 > **Ask first:** Never — fix findings autonomously.
 > **Never:** Trigger Greptile proactively on a PR where CR hasn't failed yet. Ignore Greptile findings. Switch a PR back to CR after Greptile has been triggered.
 
-Greptile is an AI code reviewer used as a **fallback** when CR is rate-limited or unresponsive. Trusted equally with CR; differences are cost ($1/review beyond 50/month quota) and signal reliability (Greptile's signals are accurate, CR's are not).
+Greptile is an AI code reviewer used as a **fallback** when CR is rate-limited or unresponsive. Both tools' findings must be verified against code. Differences: cost ($1/review beyond 50/month quota) and completion-signal reliability (Greptile's completion signals are accurate; CR's require confirmation passes).
 
 ## Greptile Basics
 
