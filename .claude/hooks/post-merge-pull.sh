@@ -9,7 +9,7 @@
 #         "matcher": "Bash",
 #         "hooks": [{
 #           "type": "command",
-#           "command": "~/.claude/hooks/post-merge-pull.sh",
+#           "command": "/absolute/path/to/repo/.claude/hooks/post-merge-pull.sh",
 #           "timeout": 15
 #         }]
 #       }]

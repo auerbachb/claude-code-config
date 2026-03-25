@@ -15,10 +15,12 @@ If you have just resumed from context compaction, your FIRST action is to recons
 **At the start of every session, before doing anything else, sync local `main` and then create a worktree.**
 
 1. **Pull remote main into local main.** This ensures your worktree branches from the latest code — not a stale local `main` that missed merges from other sessions, the web UI, or hook failures.
+
    ```bash
    ROOT_REPO=$(git worktree list | head -1 | awk '{print $1}')
    git -C "$ROOT_REPO" pull origin main --ff-only
    ```
+
    If the pull fails (e.g., diverged history), tell the user — do not force-pull or reset.
 2. **Create a worktree.** Tell the user: "I'll create a worktree for isolated work." Then use the `EnterWorktree` tool (or ask the user to say "use a worktree"). This gives you your own working directory and branch — completely isolated from the root repo and from any other agents.
 
