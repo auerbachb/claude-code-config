@@ -6,7 +6,15 @@ This directory contains Claude Code [hooks](https://docs.anthropic.com/en/docs/c
 
 Automatically pulls `main` in the root repo after every successful `gh pr merge`. This keeps hardlinked rule files in `~/.claude/rules/` up to date without manual intervention.
 
-**How it works:** When Claude Code runs a Bash command matching `gh pr merge`, this hook detects success and runs `git pull origin main --ff-only` in the root repo (not the worktree).
+**How it works:** When Claude Code runs a Bash command matching `gh pr merge`, this hook detects success and runs `git pull origin main --ff-only` in the root repo (not the worktree). It uses three fallback strategies to locate the root repo:
+
+1. **`$cwd` from the hook input** — resolves the root via `git worktree list` (works when the worktree still exists)
+2. **Script path** — walks up from `.claude/hooks/` to find the parent repo (works even if the worktree is gone)
+3. **Repo name search** — extracts the repo name from `git remote` and searches common directories (`~/Documents/Develop`, `~/repos`, `~/projects`, `~/src`)
+
+If all strategies fail, a visible warning is printed to stderr instead of exiting silently.
+
+> **Note:** This hook is a safety net, not the primary mechanism. The primary mechanism is the session-start `git pull origin main --ff-only` rule in `CLAUDE.md`, which catches all missed pulls regardless of how a merge happened (web UI, other sessions, hook failures).
 
 ### Setup
 
