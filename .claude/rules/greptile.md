@@ -21,7 +21,7 @@ Greptile is an AI code reviewer used as a **fallback** when CodeRabbit is rate-l
 
 ## Dashboard Configuration (app.greptile.com)
 
-Greptile auto-reviews every new PR by default. The "Automatically trigger on new commits" toggle only controls reviews on new **commits** to existing PRs — it does NOT prevent auto-review on PR open. To disable auto-review on PR open, a **filter** must be configured in the Greptile dashboard.
+Greptile auto-reviews new PRs by default; to disable that, configure a dashboard filter — the "Automatically trigger on new commits" toggle only affects subsequent commits, not PR-open events.
 
 **Current configuration** (app.greptile.com/review → Settings → Review Triggers):
 
@@ -33,7 +33,7 @@ Greptile auto-reviews every new PR by default. The "Automatically trigger on new
 | Automatically trigger on new commits | OFF |
 | Review draft pull requests | OFF |
 
-**The "Labels Include: greptile" filter** is the key setting that prevents auto-review. With this filter active, Greptile only auto-reviews PRs that carry the `greptile` label. Since we never add that label (we trigger reviews explicitly via `@greptileai` comments), this effectively disables all automatic reviews while preserving manual trigger capability.
+The "Labels Include: greptile" filter prevents auto-review since we never add that label, disabling automatic reviews while preserving manual `@greptileai` triggers.
 
 **To apply this configuration:**
 1. Go to https://app.greptile.com/review (select the GitHub repo)
@@ -41,8 +41,6 @@ Greptile auto-reviews every new PR by default. The "Automatically trigger on new
 3. Add a "Labels: includes: greptile" filter
 4. Verify "Automatically trigger on new commits" is OFF
 5. Save
-
-**Important:** This is a web dashboard setting, not a repo file. The `@greptileai` manual trigger in PR comments is unaffected by this filter — it always works regardless of labels or dashboard settings.
 
 ## When to Trigger Greptile
 
