@@ -4,7 +4,7 @@
 > **Ask first:** Never — fix findings autonomously.
 > **Never:** Trigger Greptile proactively on a PR where CR hasn't failed yet. Ignore Greptile findings. Switch a PR back to CR after Greptile has been triggered.
 
-Greptile is an AI code reviewer used as a **fallback** when CR is rate-limited or unresponsive. Both tools' findings must be verified against code. Differences: cost ($1/review beyond 50/month quota) and completion-signal reliability (Greptile's are accurate; CR completion signals require confirmation passes).
+Greptile is an AI code reviewer used as a **fallback** when CR is rate-limited or unresponsive. Both tools' findings must be verified against code. Differences: cost ($1/review beyond 50/month quota) and completion-signal reliability (Greptile completion signals are accurate; CR completion signals require confirmation passes).
 
 ## Greptile Basics
 
@@ -21,7 +21,7 @@ Greptile is an AI code reviewer used as a **fallback** when CR is rate-limited o
 
 ## Dashboard Configuration (app.greptile.com)
 
-Auto-review on PR open is disabled via a "Labels Include: `greptile`" filter in the Greptile dashboard (app.greptile.com/review → Settings → Review Triggers). Since we never add that label, no PRs get auto-reviewed — manual `@greptileai` triggers still work.
+Auto-review on PR open is disabled via a "Labels: includes: `greptile`" filter in the Greptile dashboard (app.greptile.com/review → Settings → Review Triggers). Since we never add that label, no PRs get auto-reviewed — manual `@greptileai` triggers still work.
 
 | Setting | Value |
 |---------|-------|
