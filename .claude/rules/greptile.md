@@ -26,7 +26,7 @@ Auto-review on PR open is disabled via a "Labels: includes: `greptile`" filter i
 | Setting | Value |
 |---------|-------|
 | Authors Exclude | `dependabot[bot]`, `renovate[bot]` |
-| Labels Include | `greptile` |
+| Labels: includes | `greptile` |
 | File Change Limit | 100 |
 | Automatically trigger on new commits | OFF |
 | Review draft pull requests | OFF |
