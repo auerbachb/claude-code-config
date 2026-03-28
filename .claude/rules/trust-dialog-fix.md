@@ -37,17 +37,22 @@ except json.JSONDecodeError as e:
     print('Repair or restore ~/.claude.json, then re-run this fix.')
     sys.exit(1)
 
+projects = data.get('projects') or {}
+if not isinstance(projects, dict):
+    print('Invalid ~/.claude.json: \"projects\" must be an object.')
+    sys.exit(1)
+
 # Replace with the absolute path to your project
 proj_key = '/Users/yourname/path/to/project'
 
-if proj_key not in data.get('projects', {}):
+if proj_key not in projects:
     print(f'Project key not found: {proj_key}')
     print('Available projects:')
-    for k in data.get('projects', {}):
+    for k in projects:
         print(f'  {k}')
     sys.exit(1)
 
-proj = data['projects'][proj_key]
+proj = projects[proj_key]
 changed = []
 for flag in ['hasTrustDialogAccepted', 'hasClaudeMdExternalIncludesApproved', 'hasClaudeMdExternalIncludesWarningShown']:
     if not proj.get(flag):
@@ -82,9 +87,14 @@ except json.JSONDecodeError as e:
     print('Repair or restore ~/.claude.json, then re-run this fix.')
     sys.exit(1)
 
+projects = data.get('projects') or {}
+if not isinstance(projects, dict):
+    print('Invalid ~/.claude.json: \"projects\" must be an object.')
+    sys.exit(1)
+
 flags = ['hasTrustDialogAccepted', 'hasClaudeMdExternalIncludesApproved', 'hasClaudeMdExternalIncludesWarningShown']
 total = 0
-for proj_key, proj in data.get('projects', {}).items():
+for proj_key, proj in projects.items():
     for flag in flags:
         if not proj.get(flag):
             proj[flag] = True
@@ -93,7 +103,7 @@ for proj_key, proj in data.get('projects', {}).items():
 if total:
     with open(path, 'w') as f:
         json.dump(data, f, indent=2)
-    print(f'Fixed {total} flag(s) across {len(data[\"projects\"])} project(s).')
+    print(f'Fixed {total} flag(s) across {len(projects)} project(s).')
 else:
     print('All flags already set across all projects — no changes needed.')
 "
