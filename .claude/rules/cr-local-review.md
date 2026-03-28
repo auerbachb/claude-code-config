@@ -47,5 +47,10 @@ Run the CLI directly via Bash from the repo root:
 ### Then: push and create the PR
 - After the local review loop passes, push the branch and create the PR
 - CodeRabbit will still auto-review on GitHub — enter the **GitHub CodeRabbit Review Loop** as a safety net
-- After pushing, trigger Greptile alongside CR — but **check the Greptile daily budget first** (see `greptile.md` "Daily Budget"). If budget allows, comment `@greptileai` on the PR. If budget is exhausted, skip the Greptile trigger — CR will be the sole reviewer; if CR also fails, fall back to self-review. Greptile has no CLI so it cannot run locally, but it should review every PR on GitHub when budget permits. Both CR and Greptile run in parallel — process findings from whichever responds first.
+- After pushing, trigger Greptile alongside CR:
+  1. Check the Greptile daily budget (see `greptile.md` "Daily Budget")
+  2. If budget allows, comment `@greptileai` on the PR to trigger Greptile alongside CR
+  3. If budget is exhausted, skip Greptile — CR will be the sole reviewer
+  4. If CR also fails, fall back to self-review
+  5. CR and Greptile run in parallel — process findings from whichever responds first
 - Because you already cleaned up locally, the GitHub review should find nothing or very little
