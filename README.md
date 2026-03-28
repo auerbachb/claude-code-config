@@ -65,6 +65,32 @@ Claude Code loads `CLAUDE.md` from the project root first, then `~/.claude/CLAUD
   coderabbit auth login
   ```
 
+## Permissions and settings
+
+### Project-level settings (`.claude/settings.json`)
+
+This repo includes a `.claude/settings.json` with broad permission allow rules that ensure autonomous operation without prompting for every tool call, including in **git worktrees** which have a [known bug](https://github.com/anthropics/claude-code/issues/28248) where bypass permissions don't reliably carry over.
+
+The project-level settings apply to anyone working in this repo. They don't affect other repos.
+
+### Global settings (`~/.claude/settings.json`)
+
+For autonomous behavior across all repos and worktrees, copy the entire `global-settings.json` to `~/.claude/settings.json`. This includes both permissions and hook configurations. Hooks can be defined at any scope. Precedence: `.claude/settings.local.json` > `.claude/settings.json` > `~/.claude/settings.json`.
+
+**After copying, update the hook paths.** Replace `/path/to/claude-code-config/` with your actual clone path. If you rename or move the repo, hooks will silently fail.
+
+### Hooks
+
+The global settings configure three hooks:
+
+| Hook | Trigger | Purpose |
+|------|---------|---------|
+| `silence-detector-ack.sh` | Stop (after each response) | Touches a heartbeat file so the detector knows the agent is alive |
+| `silence-detector.sh` | PostToolUse (after every tool call) | Checks if the agent has been silent >5 minutes; injects a warning if so |
+| `post-merge-pull.sh` | PostToolUse on Bash | Auto-pulls main after squash merges to keep local main in sync |
+
+All three hook scripts live in `.claude/hooks/` in this repo. The global settings must reference their **absolute paths** on your machine.
+
 ## What's in the config
 
 The config is split into a root `CLAUDE.md` (~60 lines) and topic-specific rule files in `.claude/rules/` for better adherence ([Anthropic best practices](https://docs.anthropic.com/en/docs/claude-code/best-practices), [memory docs](https://docs.anthropic.com/en/docs/claude-code/memory)). All `.md` files in `.claude/rules/` load automatically — including subdirectories, so you can organize further as the rules grow.
