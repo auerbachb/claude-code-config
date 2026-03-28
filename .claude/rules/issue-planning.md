@@ -1,6 +1,6 @@
 # Issue Creation Flow
 
-> **Always:** Create a GitHub issue before any code work. Trigger `@coderabbitai plan` on every new issue. Merge CR's plan into the issue body.
+> **Always:** Create a GitHub issue before any code work. Ensure `@coderabbitai plan` runs on every new issue (automated via workflow). Merge CR's plan into the issue body.
 > **Ask first:** Never — issue creation and planning are autonomous.
 > **Never:** Skip the issue. Start coding without a plan. Post the plan as scattered comments instead of editing the issue body.
 
@@ -10,12 +10,11 @@ When creating a new GitHub issue (whether the user asked for it or you identifie
 - Write the title, body, acceptance criteria, and any relevant context
 - Do NOT post it yet
 
-## 2. Create the issue and trigger CR plan
+## 2. Create the issue (CR plan is auto-triggered)
+
 - Post the issue via `gh issue create`
-- Immediately comment `@coderabbitai plan` on the new issue:
-  ```
-  gh issue comment N --body "@coderabbitai plan"
-  ```
+- **A GitHub Actions workflow (`.github/workflows/cr-plan-on-issue.yml`) automatically comments `@coderabbitai plan` on every new issue.** You do not need to manually trigger it. The workflow skips bot-created issues.
+- If you want to confirm the trigger fired, check the issue comments — but do not manually post `@coderabbitai plan` unless the workflow failed (visible in the Actions tab).
 - CR will analyze the issue and post an implementation plan with file recommendations, edge cases, and architectural considerations. This feedback is valuable — it catches gaps in the spec before any coding begins.
 
 ## 3. If starting work immediately
