@@ -33,7 +33,7 @@ To confirm all skills are properly symlinked (not copies):
 ls -la ~/.claude/skills/
 ```
 
-Every entry should show `->` pointing to this repo's `.claude/skills/` directory. If any entry is a regular directory (not a symlink), replace it with a symlink:
+Every skill entry should show `->` pointing to this repo's `.claude/skills/` directory. If any skill entry is a regular directory (not a symlink), replace it with a symlink:
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel)"
