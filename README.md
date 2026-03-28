@@ -75,7 +75,7 @@ The project-level settings apply to anyone working in this repo. They don't affe
 
 ### Global settings (`~/.claude/settings.json`)
 
-For autonomous behavior across all repos and worktrees, copy the permissions block from `global-settings.json` to `~/.claude/settings.json`. The `global-settings.json` also contains hook configurations. Hooks can be defined at any scope. Precedence: `.claude/settings.local.json` > `.claude/settings.json` > `~/.claude/settings.json`.
+For autonomous behavior across all repos and worktrees, copy the entire `global-settings.json` to `~/.claude/settings.json`. This includes both permissions and hook configurations. Hooks can be defined at any scope. Precedence: `.claude/settings.local.json` > `.claude/settings.json` > `~/.claude/settings.json`.
 
 **After copying, update the hook paths.** Replace `/path/to/claude-code-config/` with your actual clone path. If you rename or move the repo, hooks will silently fail.
 
