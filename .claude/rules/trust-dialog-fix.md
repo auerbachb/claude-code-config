@@ -25,8 +25,17 @@ python3 -c "
 import json, os, sys
 
 path = os.path.expanduser('~/.claude.json')
-with open(path) as f:
-    data = json.load(f)
+try:
+    with open(path) as f:
+        data = json.load(f)
+except FileNotFoundError:
+    print(f'Config not found: {path}')
+    print('Open Claude Code once to recreate it, then re-run this fix.')
+    sys.exit(1)
+except json.JSONDecodeError as e:
+    print(f'Invalid JSON in {path}: {e}')
+    print('Repair or restore ~/.claude.json, then re-run this fix.')
+    sys.exit(1)
 
 # Replace with the absolute path to your project
 proj_key = '/Users/yourname/path/to/project'
@@ -58,11 +67,20 @@ To fix **all** projects at once:
 
 ```bash
 python3 -c "
-import json, os
+import json, os, sys
 
 path = os.path.expanduser('~/.claude.json')
-with open(path) as f:
-    data = json.load(f)
+try:
+    with open(path) as f:
+        data = json.load(f)
+except FileNotFoundError:
+    print(f'Config not found: {path}')
+    print('Open Claude Code once to recreate it, then re-run this fix.')
+    sys.exit(1)
+except json.JSONDecodeError as e:
+    print(f'Invalid JSON in {path}: {e}')
+    print('Repair or restore ~/.claude.json, then re-run this fix.')
+    sys.exit(1)
 
 flags = ['hasTrustDialogAccepted', 'hasClaudeMdExternalIncludesApproved', 'hasClaudeMdExternalIncludesWarningShown']
 total = 0
@@ -87,6 +105,6 @@ else:
 - **After deleting `~/.claude.json`:** Claude Code recreates it with `false` defaults. Run the repair script after the file is recreated.
 - **After cloning/moving a project:** A new project entry in `~/.claude.json` starts with `false` flags.
 
-## Startup Hook (Optional)
+## Automatic Hook (Optional)
 
-If this issue recurs frequently, add a startup hook to `global-settings.json` that auto-repairs the flags. This is not included by default because the issue is intermittent and the manual fix is fast. To add one, create a hook script and register it in the `Stop` or `PostToolUse` hook array in `global-settings.json`.
+If this issue recurs frequently, add an automatic hook in `global-settings.json` to auto-repair the flags. This is not included by default because the issue is intermittent and the manual fix is fast. Create a hook script and register it under `Stop` or `PostToolUse` (these are the supported hook arrays).
