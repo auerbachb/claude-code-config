@@ -14,7 +14,7 @@ At the start of every session, after creating the worktree but before any code w
 
 **Check:** Does `.github/workflows/cr-plan-on-issue.yml` exist?
 
-**If missing**, create it with this exact content:
+**If missing**, create it with this exact content (canonical source: `.github/workflows/cr-plan-on-issue.yml` — keep both in sync):
 
 ```yaml
 name: Trigger CodeRabbit Plan on New Issues
