@@ -43,10 +43,9 @@ jobs:
             });
 ```
 
-**How to add it:** Include it in the first PR you create in that repo. Add it alongside the feature changes — no separate PR needed for bootstrap files. If you're only doing planning (no PR yet), note it for the first PR.
+**How to add it:** Include it in your first feature PR in that repo — do not open a bootstrap-only PR. If you're only planning (no PR yet), note it for the first PR.
 
 ### Rules
 
 - **Only add missing workflows.** If the file already exists, do not modify it — even if the content differs. The repo owner may have customized it.
-- **Do not create a separate PR just for bootstrapping.** Bundle it with the first feature PR in that session.
 - **This check is idempotent.** Running it multiple times is safe — it only acts when the file is missing.
