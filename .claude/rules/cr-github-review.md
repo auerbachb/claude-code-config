@@ -78,7 +78,7 @@ After pushing a commit to a PR, automatically enter the CR review loop:
 GitHub does not auto-resolve PR review comments when the fix touches different lines than where the comment was made (which is common — e.g., a comment about a missing null check on line 42 gets fixed by adding a guard on line 38). **You must explicitly resolve these threads.**
 
 **How to resolve a comment thread after fixing it:**
-1. **Reply to the thread** confirming the fix (this is already required — see processing steps below). **Note:** The inline reply endpoint (`repos/{owner}/{repo}/pulls/comments/{id}/replies`) returns 404 for review-level and PR conversation comments — it only works on inline diff comments (those with `path` and `line` fields). If you get a 404, fall back to a PR-level comment: `gh pr comment N --body "@coderabbitai Fixed in \`SHA\`: <what changed>"`. Always include `@coderabbitai` so CR reads it.
+1. **Reply to the thread** confirming the fix (this is already required — see processing steps below). **Note:** The inline reply endpoint may 404 for non-diff comments — see "Processing CR Feedback" step 5 for the full fallback procedure.
 2. **Resolve the thread** via the GitHub API:
    ```bash
    gh api graphql -f query='mutation { minimizeComment(input: {subjectId: "<node_id>", classifier: RESOLVED}) { minimizedComment { isMinimized } } }'
