@@ -10,17 +10,18 @@ This repo (`claude-code-config`) is the single source of truth for all Claude Co
 
 ## After Creating a New Skill
 
-Every time a new skill is created in `.claude/skills/<name>/SKILL.md`, the agent must also symlink it globally:
+Every time a new skill is created in `.claude/skills/<name>/SKILL.md`, the agent must also symlink it globally. Resolve the repo root dynamically:
 
 ```bash
-ln -s /Users/brettonauerbach/Documents/Develop/claude-code-config/.claude/skills/<name> ~/.claude/skills/<name>
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+ln -s "$REPO_ROOT/.claude/skills/<name>" ~/.claude/skills/<name>
 ```
 
 This makes the skill available in every repo, not just this one. Without the symlink, the skill only exists locally in this repo's `.claude/skills/` directory.
 
 **Checklist (do both, every time):**
 1. Create the skill: `.claude/skills/<name>/SKILL.md`
-2. Symlink it globally: `ln -s /Users/brettonauerbach/Documents/Develop/claude-code-config/.claude/skills/<name> ~/.claude/skills/<name>`
+2. Symlink it globally: `ln -s "$(git rev-parse --show-toplevel)/.claude/skills/<name>" ~/.claude/skills/<name>`
 
 If `~/.claude/skills/` does not exist, create it first: `mkdir -p ~/.claude/skills/`.
 
@@ -35,6 +36,7 @@ ls -la ~/.claude/skills/
 Every entry should show `->` pointing to this repo's `.claude/skills/` directory. If any entry is a regular directory (not a symlink), replace it with a symlink:
 
 ```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)"
 rm -rf ~/.claude/skills/<name>
-ln -s /Users/brettonauerbach/Documents/Develop/claude-code-config/.claude/skills/<name> ~/.claude/skills/<name>
+ln -s "$REPO_ROOT/.claude/skills/<name>" ~/.claude/skills/<name>
 ```
