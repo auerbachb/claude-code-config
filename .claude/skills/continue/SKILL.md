@@ -252,6 +252,11 @@ gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
      gh pr comment N --body "@coderabbitai Fixed in \`$SHA\`: <what changed>. (Re: <brief description of the finding>)"
      ```
 
+     **When to use which:**
+     - Inline diff comments (`path` and `line` fields present) → use `/replies` endpoint
+     - Review-level or PR conversation comments → use `gh pr comment` with `@coderabbitai` mention
+     - If unsure, try `/replies` first — the 404 is harmless and signals fallback
+
   6. Resolve each thread via GraphQL:
 
      ```bash
