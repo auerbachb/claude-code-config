@@ -78,7 +78,7 @@ After pushing a commit to a PR, automatically enter the CR review loop:
 GitHub does not auto-resolve PR review comments when the fix touches different lines than where the comment was made (which is common — e.g., a comment about a missing null check on line 42 gets fixed by adding a guard on line 38). **You must explicitly resolve these threads.**
 
 **How to resolve a comment thread after fixing it:**
-1. **Reply to the thread** confirming the fix (this is already required — see processing steps below)
+1. **Reply to the thread** confirming the fix (this is already required — see processing steps below). **Note:** The inline reply endpoint (`repos/{owner}/{repo}/pulls/comments/{id}/replies`) returns 404 for review-level and PR conversation comments — it only works on inline diff comments (those with `path` and `line` fields). If you get a 404, fall back to a PR-level comment: `gh pr comment N --body "@coderabbitai Fixed in \`SHA\`: <what changed>"`. Always include `@coderabbitai` so CR reads it.
 2. **Resolve the thread** via the GitHub API:
    ```bash
    gh api graphql -f query='mutation { minimizeComment(input: {subjectId: "<node_id>", classifier: RESOLVED}) { minimizedComment { isMinimized } } }'
@@ -98,7 +98,19 @@ GitHub does not auto-resolve PR review comments when the fix touches different l
 2. Parse each finding from CR's summary/review
 3. Verify each finding against the actual file before applying
 4. Fix **all valid findings**, then commit and push **once** (one commit = one review consumed)
-5. **Reply to every CR comment thread** acknowledging the fix (e.g. "Fixed in `abc1234`: <what changed>"). Pushing a code fix does NOT resolve a GitHub comment thread — you must post an explicit reply via `gh api repos/{owner}/{repo}/pulls/comments/{id}/replies -f body="..."`. Unreplied threads show as unresolved in the PR and block merge.
+5. **Reply to every CR comment thread** acknowledging the fix (e.g. "Fixed in `abc1234`: <what changed>"). Pushing a code fix does NOT resolve a GitHub comment thread — you must post an explicit reply. Unreplied threads show as unresolved in the PR and block merge.
+
+   **How to reply — with 404 fallback:**
+   - **First, try the inline reply endpoint:** `gh api repos/{owner}/{repo}/pulls/comments/{id}/replies -f body="..."`. This works for inline diff comments (comments attached to specific lines of code).
+   - **If the reply endpoint returns 404:** The comment may be a review-level comment or a PR conversation comment rather than an inline diff comment — the `/replies` sub-resource only exists on diff-positioned comments. Fall back to posting a **PR-level comment** instead:
+     ```bash
+     gh pr comment N --body "@coderabbitai Fixed in \`abc1234\`: <what changed>. (Re: <brief description of the finding>)"
+     ```
+     Always include `@coderabbitai` so CR reads the reply. Include enough context (quote or paraphrase the finding) so CR can correlate the fix with the original comment.
+   - **When to use which:**
+     - Inline diff comments (`pulls/{N}/comments` endpoint, have `path` and `line` fields) → use `/replies` endpoint
+     - Review-level or PR conversation comments (`pulls/{N}/reviews` or `issues/{N}/comments` endpoints) → use `gh pr comment` with `@coderabbitai` mention
+     - If unsure, try `/replies` first — the 404 is harmless and tells you to fall back
 6. **Resolve the comment thread** after replying (see "Resolving Comment Threads on GitHub" above). A reply alone does not mark the thread as resolved — you must explicitly resolve it via the GraphQL API.
 7. **@mention CR in PR-level comments.** When posting general PR comments (via `gh pr comment`), always include `@coderabbitai` in the body so CR reads them. CR only reliably processes comments where it is explicitly mentioned — untagged PR comments are often ignored. This applies to fix summaries, duplicate-finding replies posted at the PR level, and any context you want CR to incorporate into its next review.
 8. Resume polling for CR's next response
