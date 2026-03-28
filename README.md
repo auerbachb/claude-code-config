@@ -116,6 +116,46 @@ The config is split into a root `CLAUDE.md` (~60 lines) and topic-specific rule 
 
 **Three-tier fallback chain.** CodeRabbit → Macroscope → self-review. CR is always preferred. If rate-limited on GitHub, Macroscope (`@macroscope-app review`) fills in. If both are unavailable, Claude does its own diff review. The flow never stalls.
 
+## Slash commands
+
+Custom skills (in `.claude/skills/`) that you can invoke during a session. Listed in typical workflow order.
+
+### `/status`
+
+- **Why:** You need a quick view of all open PRs without manually checking GitHub.
+- **When:** At the start of a session, after context compaction, or whenever you want to see what's in flight.
+- **How:** Queries GitHub for all open PRs and outputs a dashboard with review state, findings, and blockers.
+
+### `/continue`
+
+- **Why:** Long-running review workflows get interrupted — context compaction, session timeouts, or manual pauses. Picking up where you left off manually is error-prone.
+- **When:** When resuming work on a feature branch that has an in-progress PR, or after any interruption to the review cycle.
+- **How:** Walks through the full review lifecycle and resumes at the first incomplete step, outputting `[DONE]`/`[ACTION]`/`[BLOCKED]`/`[SKIP]` status.
+
+### `/check-acceptance-criteria`
+
+- **Why:** PRs should never be merged with unchecked Test Plan boxes. Manually verifying each criterion against code is tedious and easy to skip.
+- **When:** After reviews are clean and before merging, or anytime you want to verify the current state of acceptance criteria.
+- **How:** Verifies each Test Plan checkbox against source files, checks off passing items, and reports failures.
+
+### `/merge`
+
+- **Why:** Merging involves multiple verification steps (merge gate, acceptance criteria, work-log update) that are easy to skip or do out of order.
+- **When:** After reviews are clean and all acceptance criteria pass.
+- **How:** Verifies merge gate and acceptance criteria, squash merges with branch deletion, and logs to the daily work log.
+
+### `/lessons`
+
+- **Why:** Insights from a session (workflow friction, edge cases, surprises) are lost when the conversation ends.
+- **When:** At the end of a session, before closing the thread.
+- **How:** Reviews session for patterns, categorizes actionable lessons, checks for duplicates, and saves to memory.
+
+### `/standup`
+
+- **Why:** Writing standup summaries from raw PR titles misses the business context buried in PR bodies and issue descriptions.
+- **When:** Before a standup meeting, or whenever you need a summary of recent work.
+- **How:** Gathers PRs and issues since a given time (default: yesterday noon ET), extracts business context, and outputs a thematic standup report.
+
 ## Customizing
 
 The config is plain Markdown. Edit it to match your workflow:
