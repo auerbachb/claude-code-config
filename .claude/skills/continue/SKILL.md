@@ -251,10 +251,13 @@ gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
      ```bash
      gh pr comment N --body "@coderabbitai Fixed in \`$SHA\`: <what changed>. (Re: <brief description of the finding>)"
      ```
+
   6. Resolve each thread via GraphQL:
+
      ```bash
      gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "{thread_id}"}) { thread { isResolved } } }'
      ```
+
   7. After fixing, go back to **Step 6** to wait for the next review.
 - If no unresolved findings: `[DONE]` — No unresolved findings.
 
