@@ -1,6 +1,6 @@
 # Issue Creation Flow
 
-> **Always:** Create a GitHub issue before any code work. Trigger `@coderabbitai plan` on every new issue. Merge CR's plan into the issue body.
+> **Always:** Create a GitHub issue before any code work. Ensure `@coderabbitai plan` runs on every new issue (automated via workflow). Merge CR's plan into the issue body.
 > **Ask first:** Never — issue creation and planning are autonomous.
 > **Never:** Skip the issue. Start coding without a plan. Post the plan as scattered comments instead of editing the issue body.
 
