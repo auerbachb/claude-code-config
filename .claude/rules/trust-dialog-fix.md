@@ -53,6 +53,9 @@ if proj_key not in projects:
     sys.exit(1)
 
 proj = projects[proj_key]
+if not isinstance(proj, dict):
+    print(f'Invalid project entry for {proj_key}: expected object, got {type(proj).__name__}.')
+    sys.exit(1)
 changed = []
 for flag in ['hasTrustDialogAccepted', 'hasClaudeMdExternalIncludesApproved', 'hasClaudeMdExternalIncludesWarningShown']:
     if not proj.get(flag):
@@ -95,6 +98,9 @@ if not isinstance(projects, dict):
 flags = ['hasTrustDialogAccepted', 'hasClaudeMdExternalIncludesApproved', 'hasClaudeMdExternalIncludesWarningShown']
 total = 0
 for proj_key, proj in projects.items():
+    if not isinstance(proj, dict):
+        print(f'Skipping invalid project entry {proj_key}: expected object, got {type(proj).__name__}.')
+        continue
     for flag in flags:
         if not proj.get(flag):
             proj[flag] = True
