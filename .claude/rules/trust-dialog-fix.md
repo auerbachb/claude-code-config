@@ -6,7 +6,7 @@
 
 ## Problem
 
-Claude Code re-prompts for the trust dialog and CLAUDE.md external includes approval even when bypass permissions is enabled. This happens because `~/.claude.json` stores per-project flags that can reset to `false` — for example, when a new project entry is created or the file is deleted and recreated.
+Claude Code re-prompts for the trust dialog and CLAUDE.md external includes approval even when bypass permissions are enabled. This happens because `~/.claude.json` stores per-project flags that can reset to `false` — for example, when a new project entry is created or the file is deleted and recreated.
 
 The three flags that must be `true` per project:
 
