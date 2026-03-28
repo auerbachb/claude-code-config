@@ -33,6 +33,21 @@ Auto-review on PR open is disabled via a "Labels: includes: `greptile`" filter i
 
 **Setup:** Add the "Labels: includes: greptile" filter at app.greptile.com/review → Settings → Review Triggers. The "new commits" toggle only affects commits to existing PRs, not PR-open events.
 
+## Daily Budget
+
+Greptile charges $1/review beyond the 50/month included quota. To prevent runaway costs when many PRs are processed in parallel, enforce a hard daily cap.
+
+- **Default budget: 40 reviews/day** (adjustable — set `budget` field in `session-state.json`). Use 40 at 50% discount pricing, 20 at full price.
+- **Tracking:** The `greptile_daily` section in `~/.claude/session-state.json` tracks `reviews_used`, `date` (YYYY-MM-DD in ET timezone), and `budget`. See `subagent-orchestration.md` for the schema.
+- **Before EVERY `@greptileai` trigger**, read `greptile_daily` from session state and run the budget check:
+  1. Get the current date in ET: `TZ='America/New_York' date +'%Y-%m-%d'`
+  2. If `greptile_daily.date` differs from today's date, reset `reviews_used` to 0 and update `date` to today
+  3. If `reviews_used >= budget`, the budget is **exhausted** — do NOT post `@greptileai`. Fall back to self-review (see below)
+  4. Otherwise, increment `reviews_used` by 1 and write the updated `greptile_daily` back to session state **before** posting the `@greptileai` comment
+- **Budget exhaustion fallback:** Perform a self-review instead. Self-review does NOT satisfy the merge gate. Report the blocker to the user:
+  > "Greptile daily budget exhausted ({reviews_used}/{budget} reviews used today). Falling back to self-review for PR #{N}. Self-review does NOT satisfy the merge gate — this PR cannot be merged until: (a) manual human review, or (b) budget resets tomorrow. Want me to proceed with self-review for risk reduction?"
+- **This check applies to ALL Greptile trigger points:** CR GitHub fallback (fast-path and slow-path), CR local post-push trigger, Phase B subagent Greptile polling, and per-PR re-reviews. No `@greptileai` comment may be posted without passing the budget check first.
+
 ## When to Trigger Greptile
 
 **Greptile is fallback-only.** Never trigger it proactively alongside CR. It is only triggered when CR fails for a specific PR:

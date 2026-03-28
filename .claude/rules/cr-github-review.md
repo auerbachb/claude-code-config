@@ -50,10 +50,11 @@ After pushing a commit to a PR, automatically enter the CR review loop:
 
 ### Timeout & Fallback — Two Trigger Paths to Greptile
 
-- **Fast path (~1-2 min):** The check-runs or commit statuses API shows "Review rate limit exceeded" -> trigger Greptile immediately on that poll cycle. Do not wait.
-- **Slow path (7 min):** No rate-limit signal visible, but CR has not delivered review content after 7 minutes -> trigger Greptile. The distinction between "rate-limited" and "slow" is irrelevant at this point — the action is the same.
+- **Fast path (~1-2 min):** The check-runs or commit statuses API shows "Review rate limit exceeded" -> check Greptile daily budget first (see `greptile.md` "Daily Budget"), then trigger Greptile immediately if budget allows. If budget is exhausted, fall back to self-review and notify user.
+- **Slow path (7 min):** No rate-limit signal visible, but CR has not delivered review content after 7 minutes -> check Greptile daily budget first, then trigger Greptile if budget allows. If budget is exhausted, fall back to self-review and notify user. The distinction between "rate-limited" and "slow" is irrelevant at this point — the action is the same.
 - **Sticky Greptile assignment:** Once either trigger path fires for a PR, that PR stays on Greptile permanently (see `greptile.md` "Sticky Assignment" for full details). Do not switch back to CR.
 - **If Greptile also fails** (5-minute timeout with no response): fall back to **self-review**.
+- **If Greptile daily budget is exhausted:** fall back to **self-review** and report the blocker to the user. Self-review does NOT satisfy the merge gate.
 - Tell the user which fallback was used and why.
 
 ### Before Requesting Any New Review (MANDATORY — applies to ALL agents)

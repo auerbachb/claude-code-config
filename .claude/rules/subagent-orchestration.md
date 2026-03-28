@@ -29,6 +29,7 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 - **EXIT after push — do not enter polling loop**
 
 **Phase B: Review Loop** (lighter — incremental)
+- **Before ANY `@greptileai` trigger**, check the daily budget (see `greptile.md` "Daily Budget"). If exhausted, fall back to self-review and report the blocker — do not post `@greptileai`.
 - If this PR is on CR: poll for CR review (fast-path + 7-minute slow-path Greptile trigger). If Greptile is triggered, the PR switches to Greptile permanently.
 - If this PR is already on Greptile: skip CR polling, trigger `@greptileai` and poll for Greptile response directly.
 - If Greptile posts findings: classify by severity (P0/P1/P2). Fix all valid findings, commit, push, reply.
@@ -156,6 +157,7 @@ When running a long monitoring session with multiple PRs, write a status checkpo
     "620": {"phase": "B", "head_sha": "d0e4fef", "reviewer": "g", "needs": "fix_and_push"}
   },
   "cr_quota": {"reviews_used": 5, "window_start": "2026-03-16T15:00:00Z"},
+  "greptile_daily": {"reviews_used": 12, "date": "2026-03-16", "budget": 40},
   "active_agents": [
     {"id": "a3f8d26fa75eddcb3", "task": "PR #623 Phase C", "launched": "2026-03-16T15:55:00Z"}
   ]
@@ -202,6 +204,7 @@ If you see the ack but no review within 7 minutes, CR failed to deliver.
 **Once Greptile is triggered, this PR stays on Greptile permanently.**
 
 ### Step 3: Trigger Greptile (if not already running)
+0. **CHECK DAILY BUDGET FIRST** — read `greptile_daily` from session state. If `reviews_used >= budget`, do NOT trigger Greptile. Fall back to self-review and report the blocker to the user. See `greptile.md` "Daily Budget".
 1. Post: `gh pr comment <PR_NUMBER> --body "@greptileai"`
 2. Poll every 60s for `greptile-apps[bot]` comments on the same 3 endpoints
 3. Timeout after 5 minutes (Greptile typically responds in 1-3 minutes)
