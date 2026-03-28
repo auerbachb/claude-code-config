@@ -11,6 +11,7 @@ When creating a new GitHub issue (whether the user asked for it or you identifie
 - Do NOT post it yet
 
 ## 2. Create the issue (CR plan is auto-triggered)
+
 - Post the issue via `gh issue create`
 - **A GitHub Actions workflow (`.github/workflows/cr-plan-on-issue.yml`) automatically comments `@coderabbitai plan` on every new issue.** You do not need to manually trigger it. The workflow skips bot-created issues.
 - If you want to confirm the trigger fired, check the issue comments — but do not manually post `@coderabbitai plan` unless the workflow failed (visible in the Actions tab).
