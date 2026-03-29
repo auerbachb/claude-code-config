@@ -1,15 +1,15 @@
 ## GitHub CodeRabbit Review Loop (Fallback)
 - note code rabbit is called cr or CR for short
 
-> **Always:** Poll all 3 endpoints + check-runs every cycle. Use `per_page=100`. Filter by `coderabbitai[bot]`. Batch fixes into one commit. Reply to every thread. Resolve threads via GraphQL. **Enter the polling loop immediately after push — do NOT ask.**
-> **Ask first:** Merging — always ask the user. **Nothing else in this workflow requires permission.**
-> **Never:** Poll only 1-2 endpoints. Use bare `coderabbitai` without `[bot]`. Push per-finding. Trigger `@coderabbitai full review` more than twice per PR per hour. Trigger Greptile proactively (only on CR failure). Merge without meeting the merge gate (2 clean CR or Greptile severity gate — see greptile.md). **Ask "want me to poll?" or "should I process this feedback?" — just do it.**
+> **Always:** Poll all 3 endpoints + check-runs every cycle. Use `per_page=100`. Filter by `coderabbitai[bot]`. Batch fixes into one commit. Reply to every thread. Resolve threads via GraphQL.
+> **Ask first:** Merging — always ask the user.
+> **Never:** Poll only 1-2 endpoints. Use bare `coderabbitai` without `[bot]`. Push per-finding. Trigger `@coderabbitai full review` more than twice per PR per hour. Trigger Greptile proactively (only on CR failure). Merge without meeting the merge gate (2 clean CR or Greptile severity gate — see greptile.md).
 
 > **This is the fallback review workflow.** It runs after you push and create a PR. If the local review loop was thorough, CR should find few or no issues here. But edge cases exist (e.g., CI-only context, cross-file interactions the local review missed), so always let this loop run.
 
 **Prerequisite:** Before entering this loop, check if the repo uses CodeRabbit (look for `.coderabbit.yaml` at the repo root, or check if CodeRabbit has ever commented on PRs via `gh api repos/{owner}/{repo}/pulls --jq '.[].number' | head -5 | xargs -I{} gh api repos/{owner}/{repo}/pulls/{}/reviews --jq '.[].user.login' | grep -q 'coderabbitai\[bot\]'`). If CodeRabbit is not configured for the repo, skip this workflow.
 
-After pushing a commit to a PR, **automatically** enter the CR review loop. Do not ask "want me to poll for reviews?" — polling is mandatory and immediate:
+After pushing a commit to a PR, automatically enter the CR review loop:
 
 ### Rate Limits (Pro Tier)
 - **8 PR reviews per hour** — each push to a PR branch consumes one review. So does each `@coderabbitai full review` trigger.
@@ -124,9 +124,6 @@ GitHub does not auto-resolve PR review comments when the fix touches different l
 
 ### Autonomy Boundaries
 - **Fix autonomously:** All files unless the user instructed otherwise
-- **Poll autonomously:** Enter and remain in the polling loop without asking — this is the default behavior after any push
-- **Process feedback autonomously:** When CR/Greptile posts findings, fix them immediately — do not ask "should I fix these?"
-- **Trigger fallbacks autonomously:** Greptile on CR timeout, self-review on Greptile timeout — these are automatic, not user-prompted
 
 ### Completion
 

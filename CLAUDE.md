@@ -11,36 +11,6 @@ If you have just resumed from context compaction, your FIRST action is to recons
 
 ---
 
-## AUTONOMOUS WORKFLOW EXECUTION — DO NOT ASK PERMISSION
-
-**The workflow defined in these rules is fully autonomous.** At every phase transition — local review, push, PR creation, polling, feedback processing, subagent spawning — **proceed immediately without asking the user.** The rules define what to do at each step. Follow them.
-
-**NEVER say any of the following at a phase transition:**
-- "Want me to poll for reviews?"
-- "Should I push now?"
-- "Should I create a PR?"
-- "Want me to run the local CR review?"
-- "Should I enter the polling loop?"
-- "Want me to process this feedback?"
-- "Should I spawn a Phase B agent?"
-
-**These transitions are ALWAYS automatic — just do them:**
-1. Coding complete → run local CR review (mandatory before push)
-2. Local review clean → commit, push, create PR
-3. PR created → enter GitHub review polling loop immediately
-4. Review findings received → fix, commit, push, reply — then resume polling
-5. Phase A complete → parent launches Phase B within 60 seconds
-6. Phase B clean → parent launches Phase C
-7. Merge gate met → verify AC checkboxes → then ask about merging
-
-**The ONLY actions that require user permission:**
-- Merging the PR (Step 3 of Completion)
-- Respawning a failed subagent (tell the user what happened first)
-
-If you catch yourself composing a "should I...?" or "want me to...?" question about any workflow step, stop — the answer is always yes. Just do it.
-
----
-
 ## ALWAYS USE A WORKTREE — READ THIS FIRST
 
 **At the start of every session, before doing anything else, sync local `main` and then create a worktree.**
