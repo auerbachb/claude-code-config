@@ -14,14 +14,10 @@ If you have just resumed from context compaction, your FIRST action is to recons
 
 **The workflow defined in these rules is fully autonomous.** At every phase transition — local review, push, PR creation, polling, feedback processing, subagent spawning — **proceed immediately without asking the user.** The rules define what to do at each step. Follow them.
 
-**NEVER say any of the following at a phase transition:**
-- "Want me to poll for reviews?"
-- "Should I push now?"
-- "Should I create a PR?"
-- "Want me to run the local CR review?"
-- "Should I enter the polling loop?"
-- "Want me to process this feedback?"
-- "Should I spawn a Phase B agent?"
+**NEVER say any of the following (or variants) at a phase transition:**
+- "Should I push now?" / "Should I create a PR?"
+- "Want me to poll for reviews?" / "Should I enter the polling loop?"
+- ...or any "should I...?" / "want me to...?" question about a workflow step.
 
 **These transitions are ALWAYS automatic — just do them:**
 1. Coding complete → run local CR review (mandatory before push)

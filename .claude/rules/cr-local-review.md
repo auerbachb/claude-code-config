@@ -1,7 +1,7 @@
 ## Local CodeRabbit Review Loop (Primary)
 
-> **Always:** Run local CR review before pushing. Verify findings against code before fixing. Two clean passes to exit. **Transition to push + PR creation is automatic after clean passes — do NOT ask.**
-> **Ask first:** Never — fix all findings autonomously. Never ask "should I run the review?" or "should I push?"
+> **Always:** Run local CR review before pushing. Verify findings against code before fixing. Two clean passes to exit.
+> **Ask first:** Never — fix all findings autonomously. Never ask "should I run the review?", "should I push?", or "should I create a PR?" — these transitions are automatic.
 > **Never:** Push code without running local review. Fall back to GitHub polling when CLI works. Ask permission at any step in this workflow.
 
 This is the **primary** review workflow. Run CodeRabbit locally in your terminal to catch issues **before** pushing or creating a PR. This is faster than GitHub-based reviews (instant feedback, no polling), produces no noise on the PR, and doesn't consume your GitHub-based CR review quota.
