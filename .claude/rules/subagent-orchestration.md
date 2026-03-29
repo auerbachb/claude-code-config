@@ -51,6 +51,17 @@ Subagents have a 32K output token limit. Parent agents may hit turn limits. When
 
 1. **Write a handoff to `~/.claude/session-state.json`.** Update the PR's entry with:
 
+   ```json
+   {
+     "phase": "B",
+     "needs": "continue_polling",
+     "handoff_reason": "token_exhaustion",
+     "last_action": "pushed fixes at SHA abc1234, replied to 3/5 threads",
+     "remaining_work": ["reply to threads 4-5", "poll for next review"],
+     "head_sha": "abc1234"
+   }
+   ```
+
 2. **Report concisely to the parent (subagent) or user (parent).** State what was done and what remains — do NOT ask "should I continue?" or "want me to spawn a new agent?" The parent will read session-state and act.
 3. **Exit cleanly.** Do not attempt to squeeze in one more tool call that might fail mid-execution.
 
