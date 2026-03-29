@@ -49,7 +49,16 @@ Determine which reviewer owns this PR:
 2. If no session-state entry, check the PR's review history — if `greptile-apps[bot]` has posted reviews/comments, this PR is on Greptile. Otherwise CR.
 
 **Merge gate check:**
-- **CR-only PR:** Need 2 clean CR reviews. Check the last 2 review objects from `coderabbitai[bot]` — both must have no actionable findings. Verify the CodeRabbit check-run shows `conclusion: "success"`.
+- **CR-only PR:** Need 2 clean CR reviews. Check the last 2 review objects from `coderabbitai[bot]` — both must have no actionable findings. Also verify the CodeRabbit check-run on the HEAD commit:
+  ```bash
+  gh api "repos/{owner}/{repo}/commits/{HEAD_SHA}/check-runs" \
+    --jq '.check_runs[] | select(.name == "CodeRabbit") | {status, conclusion}'
+  ```
+  Gate on BOTH `status == "completed"` AND `conclusion == "success"`. If check-runs is empty, fall back to commit statuses:
+  ```bash
+  gh api "repos/{owner}/{repo}/commits/{HEAD_SHA}/statuses" \
+    --jq '.[] | select(.context | test("CodeRabbit"; "i")) | {state}'
+  ```
 - **Greptile PR:** Need severity-gated clean — no unresolved P0 findings. Check the last review from `greptile-apps[bot]`.
 
 If the merge gate is NOT met, stop and report exactly what's missing.
@@ -65,7 +74,17 @@ Extract the PR body's **Test plan** section. For each checkbox:
 
 If any item fails, stop and report — do NOT merge with unchecked boxes.
 
-### Step 2.3: Squash merge
+### Step 2.3: Pre-merge safety check
+
+Before merging, verify the PR has not been rebased or force-pushed since the last clean review:
+
+1. Compare the HEAD SHA that passed the merge gate with the current PR head:
+   ```bash
+   gh pr view N --json commits --jq '.commits[-1].oid'
+   ```
+2. If the SHA differs from what the merge gate was verified against, a rebase/force-push happened — **do NOT merge.** Wait for a fresh CR review on the new SHA before proceeding.
+
+### Step 2.4: Squash merge
 
 ```bash
 gh pr merge --squash --delete-branch
