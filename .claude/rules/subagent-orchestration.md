@@ -34,7 +34,8 @@ Every transition below is classified as **"Always do"** (autonomous) or **"Ask f
 | Phase B reports clean | Parent launches Phase C | **Always do** |
 | Merge gate met | Verify AC checkboxes against code | **Always do** |
 | AC verified, all boxes checked | Ask user about merging | **Ask first** |
-| Subagent failed | Report failure, ask about respawn | **Ask first** |
+| Subagent failed (crash / no handoff state) | Report failure, ask about respawn | **Ask first** |
+| Subagent exited with valid exhaustion handoff | Launch replacement for same phase | **Always do** |
 
 > **Anti-pattern:** If you find yourself composing "Should I...?" or "Want me to...?" for any "Always do" row, stop — the answer is always yes. Execute immediately.
 
