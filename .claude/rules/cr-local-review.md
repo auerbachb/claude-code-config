@@ -1,8 +1,8 @@
 ## Local CodeRabbit Review Loop (Primary)
 
 > **Always:** Run local CR review before pushing. Verify findings against code before fixing. Two clean passes to exit.
-> **Ask first:** Never — fix all findings autonomously.
-> **Never:** Push code without running local review. Fall back to GitHub polling when CLI works.
+> **Ask first:** Never — fix all findings autonomously. Never ask "should I run the review?", "should I push?", or "should I create a PR?" — these transitions are automatic.
+> **Never:** Push code without running local review. Fall back to GitHub polling when CLI works. Ask permission at any step in this workflow.
 
 This is the **primary** review workflow. Run CodeRabbit locally in your terminal to catch issues **before** pushing or creating a PR. This is faster than GitHub-based reviews (instant feedback, no polling), produces no noise on the PR, and doesn't consume your GitHub-based CR review quota.
 
@@ -43,9 +43,10 @@ Run the CLI directly via Bash from the repo root:
 ### Exit criteria
 - **Two consecutive clean local reviews** with no findings (or two clean self-reviews if CR CLI is unavailable)
 - Once clean, commit all changes and push the branch
+- **This transition is automatic.** After two clean passes, IMMEDIATELY commit and push — do not ask "should I push now?" or "ready to create a PR?"
 
-### Then: push and create the PR
-- After the local review loop passes, push the branch and create the PR
+### Then: push and create the PR (AUTOMATIC — do not ask)
+- After the local review loop passes, push the branch and create the PR. **This is an autonomous transition — do not pause for user confirmation.**
 - CodeRabbit will still auto-review on GitHub — enter the **GitHub CodeRabbit Review Loop** as a safety net
 - After pushing, trigger Greptile alongside CR:
   1. Check the Greptile daily budget (see `greptile.md` "Daily Budget")

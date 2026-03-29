@@ -16,6 +16,78 @@ When spawning subagents via the Task tool, **always pass the FULL contents of AL
 
 Without the full instructions, subagents will miss critical workflow steps (Greptile fallback, ack-vs-completion detection, reply requirements) and improvise their own broken approach.
 
+### Phase Transition Autonomy (Quick Reference)
+
+Every transition below is classified as **"Always do"** (autonomous) or **"Ask first"** (requires user input). Agents MUST NOT ask permission for "Always do" transitions — just execute them immediately.
+
+| Transition | Action | Classification |
+|------------|--------|----------------|
+| Coding complete | Run local CR review (`coderabbit review --prompt-only`) | **Always do** |
+| Local review clean (2 passes) | Commit all changes, push branch | **Always do** |
+| Branch pushed | Create PR via `gh pr create` | **Always do** |
+| PR created/updated | Enter GitHub review polling loop (60s cycle) | **Always do** |
+| CR/Greptile posts findings | Fix all valid findings, commit, push, reply to threads | **Always do** |
+| CR rate-limited (fast-path) | Trigger Greptile immediately | **Always do** |
+| CR timeout (7 min) | Trigger Greptile | **Always do** |
+| Both reviewers down | Self-review for risk reduction | **Always do** |
+| Phase A subagent completes | Parent launches Phase B within 60s | **Always do** |
+| Phase B reports clean | Parent launches Phase C | **Always do** |
+| Merge gate met | Verify AC checkboxes against code | **Always do** |
+| AC verified, all boxes checked | Ask user about merging | **Ask first** |
+| Subagent failed | Report failure, ask about respawn | **Ask first** |
+
+> **Anti-pattern:** If you find yourself composing "Should I...?" or "Want me to...?" for any "Always do" row, stop — the answer is always yes. Execute immediately.
+
+### Token/Turn Exhaustion Protocol (MANDATORY)
+
+Subagents have a 32K output token limit. Parent agents may hit turn limits. When approaching exhaustion, the agent MUST hand off remaining work — not ask the user what to do.
+
+**Detection signals:**
+- Subagent: you've used many tool calls and still have work remaining (polling, fixing, replying)
+- Parent: you notice you're running low on turns or the conversation is getting very long
+
+**When approaching exhaustion, do this (in order):**
+
+1. **Write a handoff to `~/.claude/session-state.json`.** Update the PR's entry with:
+   ```json
+   {
+     "phase": "B",
+     "needs": "continue_polling",
+     "handoff_reason": "token_exhaustion",
+     "last_action": "pushed fixes at SHA abc1234, replied to 3/5 threads",
+     "remaining_work": ["reply to threads 4-5", "poll for next review"],
+     "head_sha": "abc1234"
+   }
+   ```
+2. **Report concisely to the parent (subagent) or user (parent).** State what was done and what remains — do NOT ask "should I continue?" or "want me to spawn a new agent?" The parent will read session-state and act.
+3. **Exit cleanly.** Do not attempt to squeeze in one more tool call that might fail mid-execution.
+
+**Parent agent response to exhaustion handoff:**
+- Read `session-state.json` for the PR's remaining work
+- Launch a new subagent for the same phase with the remaining work in its prompt
+- This is an **"Always do"** action — do not ask the user whether to continue
+
+**NEVER do this on exhaustion:**
+- Ask "should I continue?" — there is no user action needed
+- Ask "want me to spawn a replacement?" — just do it
+- Silently die without writing handoff state — this is the worst outcome
+- Try to finish "just one more thing" when you're out of budget
+
+### Subagent `--max-turns` Guidance
+
+When spawning subagents via the Agent tool, consider the phase's token demands:
+
+| Phase | Recommended approach | Rationale |
+|-------|---------------------|-----------|
+| Phase A (Fix + Push) | Keep prompts focused — avoid exploration instructions | Heaviest phase: reads findings, reads files, edits, commits, pushes, replies |
+| Phase B (Review Loop) | Same | Lighter but involves polling loops — each poll cycle costs turns |
+| Phase C (Merge Prep) | Same | Lightest — reads PR body, verifies AC, reports |
+
+**Key insight:** The 32K output token limit is the binding constraint, not turns. To maximize effective work within 32K tokens:
+- Do NOT include exploratory instructions ("also check if...", "while you're at it...")
+- Give the subagent ONE clear phase with explicit exit criteria
+- Include only the findings/context it needs — not the full PR history
+
 ### Subagent Task Decomposition (Token Safety)
 
 Subagents have a hardcoded **32K output token limit** that cannot be configured ([known Claude Code limitation](https://github.com/anthropics/claude-code/issues/25569)). A single subagent that reads 10-20 CR findings, fixes code, pushes, replies to every thread, AND polls for the next review will exhaust its token budget and die mid-poll. To prevent this, break PR lifecycle work into sequential phases:
@@ -225,6 +297,11 @@ Since subagents receive the full rules (see above), this section serves as a **q
 
 ```text
 ## GitHub Review Loop — Quick Reference
+
+AUTONOMY RULE: Every step below is AUTOMATIC. Do NOT ask "should I?" or "want me to?"
+at any point. The ONLY user-prompted action is the final merge decision (Step 4).
+If you are running low on tokens, write handoff state to session-state.json and exit
+cleanly — do NOT ask the user what to do.
 
 After pushing code and creating/updating a PR, follow this EXACT sequence:
 
