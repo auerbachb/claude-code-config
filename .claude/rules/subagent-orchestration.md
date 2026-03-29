@@ -1,8 +1,8 @@
 # Subagent Context
 
-> **Always:** Pass ALL rule files to subagents. Use phase decomposition (A/B/C). Timestamp every message. Monitor subagent health. Report failures immediately.
-> **Ask first:** Respawning a failed subagent — tell the user what happened first.
-> **Never:** Summarize rules for subagents. Fire-and-forget subagents. Let a stalled PR go unreported. Skip timestamps. Go >5 minutes without a user-visible message. Report a PR as "awaiting review" for >5 minutes without a Phase B agent running.
+> **Always:** Pass ALL rule files to subagents. Use phase decomposition (A/B/C). Timestamp every message. Monitor subagent health. Report failures immediately. Enter monitor mode when subagents are active.
+> **Ask first:** Respawning a failed subagent — tell the user what happened first. Breaking monitor mode for explicit user requests — warn about paused monitoring first.
+> **Never:** Summarize rules for subagents. Fire-and-forget subagents. Let a stalled PR go unreported. Skip timestamps. Go >5 minutes without a user-visible message. Report a PR as "awaiting review" for >5 minutes without a Phase B agent running. Do substantive work (coding, issue creation, file editing) while subagents are active.
 
 When spawning subagents via the Task tool, **always pass the FULL contents of ALL rule files into the subagent's prompt.** Subagents do not automatically inherit CLAUDE.md or `.claude/rules/` context — they only see what you put in their prompt.
 
@@ -156,7 +156,10 @@ This applies to ALL messages — status updates, failure reports, success report
 The user has no visibility into subagent failures. If a subagent runs out of tokens or times out, the parent agent is the only one who knows — and if the parent doesn't report it, the user won't discover the failure until they manually check GitHub 15-20 minutes later. **This is unacceptable.**
 
 **Monitoring rules for parent agents:**
-1. **Poll subagent status every ~60 seconds.** When running subagents in the background, check their status regularly. Do not fire-and-forget. If you are also doing other work (fixing code, managing PRs), this obligation does NOT pause. Either: (a) delegate the fix work to a subagent so you can keep polling, or (b) send the user a status message BEFORE starting the fix work, explaining what you're doing and that monitoring is temporarily paused.
+
+> **Monitor mode prerequisite:** The ~60s polling obligation below is enforceable precisely because Dedicated Monitor Mode (see below) prohibits the parent from doing competing substantive work. If you have active subagents, you are in monitor mode — polling is your primary job, not a side task.
+
+1. **Poll subagent status every ~60 seconds.** When running subagents in the background, check their status regularly. Do not fire-and-forget. Monitor mode ensures you have no competing work — polling is your only responsibility.
 2. **Report failures immediately.** If a subagent exits with an error, times out, or returns without completing its task, tell the user right away. Include:
    - Which PR / issue the subagent was working on
    - What phase it was in (A/B/C)
@@ -177,12 +180,15 @@ The user should never have to discover a stalled PR by checking GitHub manually.
 
 The user must never go more than **5 minutes** without a status message. This is separate from subagent polling — it's about keeping the user informed.
 
+> **Monitor mode makes this easy.** When in Dedicated Monitor Mode (see below), heartbeats are one of your few permitted activities. There is no competing work to displace them — if you miss a heartbeat while in monitor mode, something is fundamentally wrong with your loop.
+
 **Rules:**
-1. **Before entering any multi-step operation** (fixing code, reading multiple files, running a sequence of commands), send a brief status message first: "16:03 ET — Fixing 2 CR findings on PR #620. Other PRs (#618, #619, #621, #622) are waiting for review. Will update in ~3 min."
-2. **After completing any multi-step operation**, immediately send a status update — don't start the next operation first.
-3. **If you're blocked waiting** (e.g., polling), use that wait time to compose a dashboard message to the user.
-4. **Never batch status updates.** Don't wait until everything is done to report. Report incrementally: "PR #620 fix pushed. Now checking PR #618 status."
-5. **Time your silences.** If your last message to the user was >5 minutes ago by wall clock, your next tool call must be a status message, not another background operation.
+1. **In monitor mode**, heartbeats are part of your core loop: poll subagent status → compose status message → send to user → wait → repeat. There is no "multi-step operation" competing for attention.
+2. **Outside monitor mode** (no active subagents), send a brief status message before entering any multi-step operation: "16:03 ET — Fixing 2 CR findings on PR #620. Will update in ~3 min."
+3. **After completing any multi-step operation**, immediately send a status update — don't start the next operation first.
+4. **If you're blocked waiting** (e.g., polling), use that wait time to compose a dashboard message to the user.
+5. **Never batch status updates.** Don't wait until everything is done to report. Report incrementally: "PR #620 fix pushed. Now checking PR #618 status."
+6. **Time your silences.** If your last message to the user was >5 minutes ago by wall clock, your next tool call must be a status message, not another background operation.
 
 ### Heartbeat Enforcement (Automatic)
 
@@ -191,6 +197,54 @@ The 5-minute heartbeat rule is enforced by a PostToolUse hook (`silence-detector
 **How it works:** Stop hook (`silence-detector-ack.sh`) touches `/tmp/claude-heartbeat-$CLAUDE_SESSION_ID` after each response. PostToolUse hook (`silence-detector.sh`) checks mtime after tool calls; if >5 min elapsed, injects warning via `additionalContext`.
 
 **When you see the warning:** Stop what you are doing and send a status message to the user immediately. Include a timestamp (run `date` command), what you're currently doing, what's pending, and any blockers. Then resume your work — the next tool call will check again and the warning will be gone (because the Stop hook touched the file after your status message).
+
+### Dedicated Monitor Mode (MANDATORY for parent agents)
+
+When one or more subagents are active, the parent agent enters **monitor mode**. In monitor mode, the parent's sole responsibility is orchestration — not substantive work. This prevents monitoring obligations (heartbeats, Phase B launches, failure detection) from being displaced by coding or other heavy tasks.
+
+**Entry condition:** Monitor mode activates whenever `active_agents` in `session-state.json` is non-empty, or when you have spawned any subagent that has not yet completed or failed.
+
+**Exit condition:** Monitor mode deactivates when ALL of the following are true:
+- All subagents have completed or failed (no active agents)
+- No PRs are awaiting review (no pending Phase B/C launches)
+- All phase transitions have been executed (no Phase A completions waiting for Phase B launch)
+
+**Permitted activities in monitor mode (exhaustive list):**
+- Poll subagent status (~60s cycle)
+- Send heartbeat/status messages to the user
+- Launch next-phase agents (Phase A → B → C transitions)
+- Verify subagent outputs (check pushes, check replies)
+- Read `session-state.json` and update it
+- Reconstruct state after context compaction
+- Respond to user questions about status or progress
+- Write checkpoint state to `session-state.json`
+
+**Prohibited activities in monitor mode (substantive work):**
+- Writing or editing code/files directly
+- Creating GitHub issues or PRs
+- Reading/analyzing source files for non-monitoring purposes
+- Running local CR reviews
+- Any multi-step operation that takes >60 seconds and could displace a poll cycle
+- Fixing code yourself instead of delegating to a subagent
+
+> **The core principle:** If it can be delegated to a subagent, it MUST be delegated. The parent's job is to orchestrate, not to execute.
+
+**Exception: Explicit user request.** If the user explicitly asks the parent to perform substantive work while subagents are active, the parent MAY do so — but must first warn:
+
+> "I have N active subagent(s) monitoring PR(s) #X, #Y. Monitoring will pause while I work on this. Heartbeats and phase transitions may be delayed until I finish."
+
+After completing the user-requested work, immediately re-enter monitor mode:
+1. Check all subagent statuses (some may have completed or failed while you were working)
+2. Execute any pending phase transitions
+3. Send a status update to the user
+4. Resume the normal monitoring loop
+
+**How to delegate instead of doing it yourself:**
+
+When you identify work that needs doing (e.g., a new issue to create, code to fix, a file to update) while in monitor mode:
+1. Spawn a subagent with the task
+2. Add it to `active_agents` in `session-state.json`
+3. Continue monitoring — the new subagent is now part of your monitoring set
 
 ### Post-Compaction Recovery (MANDATORY)
 
