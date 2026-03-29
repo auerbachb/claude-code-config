@@ -89,15 +89,13 @@ If a work-log directory was detected at session start:
    - {time} ET — PR #{N} merged (Issue #{M}): {1-line summary} [opened: {open_time}, merged: {merge_time}, cycles: {count}]
    ```
 
-3. Get the linked issue number from the PR body (`Closes #N` pattern).
-
 ## Phase 3: Follow-Up Detection
 
 Check if there is related work that needs attention for feature completeness.
 
 ### Step 3.1: Check related issues
 
-1. Get the linked issue number from the PR body
+1. Extract the linked issue number from the PR body (`Closes #N` pattern)
 2. If a parent issue exists (check for "parent" or "epic" references in the issue body), fetch sibling issues:
    ```bash
    gh issue view {parent_N} --json body --jq .body
@@ -133,7 +131,7 @@ Determine the session depth to decide how thoroughly to reflect.
 
 Calculate a complexity signal:
 - **Cycle count** from Phase 2 (review-then-fix rounds)
-- **Thread length** — approximate from the number of messages in this conversation (use context length as a proxy: if the conversation is short and the PR was single-cycle, it's trivial)
+- **Thread length** — count the number of user + assistant messages in the current session. "Short" = fewer than 15 total messages.
 - **PR size** — number of files changed (`gh pr view N --json files --jq '.files | length'`)
 
 **Trivial threshold:** cycle count = 0 AND conversation is short (you've been in this session for <15 messages) AND <5 files changed.
