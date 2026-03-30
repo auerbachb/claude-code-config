@@ -1,6 +1,6 @@
 # Subagent Context
 
-> **Always:** Pass ALL rule files to subagents. Use phase decomposition (A/B/C). Timestamp every message. Monitor subagent health. Report failures immediately. Enter monitor mode when subagents are active.
+> **Always:** Pass ALL rule files to subagents. Use phase decomposition (A/B/C). Timestamp every message. Monitor subagent health. Report failures immediately. Enter monitor mode when subagents are active. Write handoff files on phase completion (Phase A writes `pr-{N}-handoff.json`; Phase B updates it). Read handoff files before reconstructing state from GitHub API (Phases B/C). Delete the handoff file on successful merge (Phase C).
 > **Ask first:** Respawning a failed subagent — tell the user what happened first. Breaking monitor mode for explicit user requests — warn about paused monitoring first.
 > **Never:** Summarize rules for subagents. Fire-and-forget subagents. Let a stalled PR go unreported. Skip timestamps. Go >5 minutes without a user-visible message. Report a PR as "awaiting review" for >5 minutes without a Phase B agent running. Do substantive work (coding, issue creation, file editing) while subagents are active.
 
@@ -107,7 +107,7 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 - Fix all valid findings + fix lint/CI failures
 - Commit all fixes in ONE commit, push once
 - Reply to all review comment threads
-- **Write handoff file** to `~/.claude/handoffs/pr-{N}-handoff.json` (see "Handoff File Schema" above) with all findings fixed, threads replied/resolved, files changed, and HEAD SHA
+- **Write handoff file** to `~/.claude/handoffs/pr-{N}-handoff.json` (see "Structured Handoff Files" section below) with all findings fixed, threads replied/resolved, files changed, and HEAD SHA
 - **EXIT after push — do not enter polling loop**
 
 **Phase B: Review Loop** (lighter — incremental)
