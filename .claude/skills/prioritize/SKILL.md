@@ -108,7 +108,7 @@ For every open issue, assess:
    - An issue that directly advances an incomplete key result gets a **one-tier boost** (e.g., Medium → High) unless it's already Critical.
    - An issue that aligns with an objective broadly (but no specific KR) gets a tiebreaker advantage: it ranks ahead of other issues in the same tier that have no OKR alignment. The displayed tier label does not change (e.g., Medium stays Medium) — this only affects ordering within a tier.
    - Issues that don't align with any OKR receive no penalty — they are scored purely on goal alignment and leverage.
-   - Record which OKR(s) each issue aligns with for the output rationale (e.g., "Advances O1/KR2").
+   - Record which OKR(s) each issue aligns with for the output rationale (e.g., "Advances O1/KR2"). If an issue matches multiple key results, list at most 2 matches ordered by objective ID then KR ID (e.g., "Advances O1/KR2, O2/KR1").
 
 4. **Cost-benefit:** A small issue that provides High alignment beats a massive issue that provides the same alignment. Factor in estimated effort (from scope signals in the body) when breaking ties within a tier.
 
