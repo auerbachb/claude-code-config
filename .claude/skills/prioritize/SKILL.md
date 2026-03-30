@@ -28,9 +28,9 @@ Check if `.claude/pm-config.md` exists and has a non-empty OKRs section:
 test -f .claude/pm-config.md && echo "CONFIG_EXISTS" || echo "NO_CONFIG"
 ```
 
-If the config exists, extract the `## OKRs` section content: from a line matching `^## OKRs` at column 1 through the line before the next `^## ` header (or EOF). If the section is empty, contains only the default placeholder ("No OKRs set"), or the config doesn't exist, set `OKR_MODE=false` and proceed with heuristic-only ranking.
+If the config exists, extract the `## OKRs` section content: from a line matching `^## OKRs` at column 1 through the line before the next `^## ` header (or EOF). When the section is empty, contains only the default placeholder ("No OKRs set"), or the config doesn't exist, set `OKR_MODE=false` and proceed with heuristic-only ranking.
 
-If the section contains objectives and key results, set `OKR_MODE=true` and parse the OKRs into a structured list. Expected format:
+For sections containing objectives and key results, set `OKR_MODE=true` and parse the OKRs into a structured list. Expected format:
 
 ```
 O1: [Objective text]
