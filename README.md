@@ -334,7 +334,7 @@ This is the most common issue. You've set `"allow": ["*"]` in `~/.claude/setting
 
 When a `.claude/settings.json` exists inside a repo (or worktree), Claude Code treats its permissions block as an **override** rather than merging it with `~/.claude/settings.json`. Even with `"allow": ["*"]` in both files, the project-level file's presence interferes with the global wildcard. Four other repos with no project-level settings file work fine on global settings alone — this repo was the only one that re-prompted, and removing the file fixed it.
 
-Related issues: [anthropics/claude-code#17017](https://github.com/anthropics/claude-code/issues/17017), [#13340](https://github.com/anthropics/claude-code/issues/13340), [#27139](https://github.com/anthropics/claude-code/issues/27139).
+Related issues: [anthropics/claude-code#17017](https://github.com/anthropics/claude-code/issues/17017), [anthropics/claude-code#13340](https://github.com/anthropics/claude-code/issues/13340), [anthropics/claude-code#27139](https://github.com/anthropics/claude-code/issues/27139).
 
 **Fix:** Delete any `.claude/settings.json` from your repos and rely exclusively on the global settings file (`~/.claude/settings.json`). Use `global-settings.json` from this repo as your template.
 
