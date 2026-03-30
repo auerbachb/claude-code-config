@@ -163,7 +163,6 @@ Claude Code loads project-level `CLAUDE.md` first, then falls back to `~/.claude
 |------|---------|
 | `CLAUDE.md` | Core instructions — worktree policy, PR workflow, branch naming, acceptance criteria |
 | `global-settings.json` | Global user settings — hooks, permissions, env vars, plugin marketplaces |
-| `.claude/settings.json` | Project-level permissions for this repo |
 | `.coderabbit.yaml` | CodeRabbit review configuration |
 
 ### Rule files (`.claude/rules/`)
@@ -329,29 +328,27 @@ The config is plain Markdown. Edit to match your workflow:
 
 This is the most common issue. You've set `"allow": ["*"]` in `~/.claude/settings.json`, but Claude Code still prompts you to approve edits, bash commands, or the trust dialog. There are two independent causes — fix both.
 
-**Cause 1: Project-level settings override your global wildcard.**
+**Cause 1: A project-level `.claude/settings.json` exists in the repo.**
 
-A `.claude/settings.json` inside the repo (or inside a worktree) takes precedence over `~/.claude/settings.json`. If the project-level file uses specific patterns like `Edit(*)` instead of `*`, certain operations (especially cross-worktree edits) won't match and will trigger prompts.
+> **Do not use project-level `.claude/settings.json` files for permissions.** This repo previously shipped one and it caused *more* re-prompting, not less.
 
-**Fix:** Ensure every `.claude/settings.json` in the repo and its worktrees uses the `*` wildcard. Note: if your worktrees live outside the repo directory (e.g., sibling directories), run the find command from a parent directory that contains all of them.
+When a `.claude/settings.json` exists inside a repo (or worktree), Claude Code treats its permissions block as an **override** rather than merging it with `~/.claude/settings.json`. Even with `"allow": ["*"]` in both files, the project-level file's presence interferes with the global wildcard. Four other repos with no project-level settings file work fine on global settings alone — this repo was the only one that re-prompted, and removing the file fixed it.
+
+Related issues: [anthropics/claude-code#17017](https://github.com/anthropics/claude-code/issues/17017), [anthropics/claude-code#13340](https://github.com/anthropics/claude-code/issues/13340), [anthropics/claude-code#27139](https://github.com/anthropics/claude-code/issues/27139).
+
+**Fix:** Delete any `.claude/settings.json` from your repos and rely exclusively on the global settings file (`~/.claude/settings.json`). Use `global-settings.json` from this repo as your template.
 
 ```bash
-# Find all project-level settings files (use a parent dir that covers worktrees too)
-find /path/to/your/repo -name "settings.json" -path "*/.claude/*" -not -path "*/.git/*"
+# Find project-level settings files (use . from a repo root, or an absolute path)
+find . -name "settings.json" -path "*/.claude/*" -not -path "*/.git/*"
 
-# Update each one — merges the wildcard without wiping other settings
-find /path/to/your/repo -name "settings.json" -path "*/.claude/*" -not -path "*/.git/*" -print0 \
-  | while IFS= read -r -d '' f; do
-      python3 - "$f" <<'PY'
-import json, sys
-p = sys.argv[1]
-with open(p) as fh:
-    data = json.load(fh)
-data.setdefault("permissions", {})["allow"] = ["*"]
-with open(p, "w") as fh:
-    json.dump(data, fh, indent=2)
-PY
-    done
+# Inspect each file — if it only contains permissions, it's safe to delete.
+# If it has hooks or env vars you want to keep, migrate those to ~/.claude/settings.json first.
+find . -name "settings.json" -path "*/.claude/*" -not -path "*/.git/*" \
+  -exec sh -c 'echo "== $1 =="; cat "$1"' _ {} \;
+
+# After confirming the files only contain permissions:
+find . -name "settings.json" -path "*/.claude/*" -not -path "*/.git/*" -delete
 ```
 
 **Cause 2: Trust dialog flags reset on new worktrees.**
