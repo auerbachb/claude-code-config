@@ -112,7 +112,7 @@ Tell the user the config was bootstrapped and they should review/customize the R
 
 ## Step 3: Read existing config
 
-Parse `.claude/pm-config.md` by splitting on `## ` headers. Store each section's content keyed by header name.
+Parse `.claude/pm-config.md` using line-anchored level-2 headers (`^## ` at column 1). For each header, capture content verbatim until the next `^## ` header (or EOF), then store by header name. Do not split on `## ` appearing mid-line in section bodies.
 
 ## Step 4: Fetch live GitHub state
 

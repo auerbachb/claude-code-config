@@ -21,7 +21,7 @@ If missing, tell the user: "No PM config found. Run `/pm` first to bootstrap it.
 
 ## Step 2: Parse the config
 
-Read `.claude/pm-config.md` and extract the `## OKRs` section content (everything between `## OKRs` and the next `## ` header or end of file).
+Read `.claude/pm-config.md` and extract the `## OKRs` section content using line-anchored headers: from a line matching `^## OKRs` at column 1 through the line before the next `^## ` header (or EOF). Do not match `## ` appearing mid-line in body text.
 
 ## Mode: show (default)
 
@@ -47,7 +47,7 @@ Replace the `## OKRs` section content with the text provided after "set". Preser
 
 1. Parse everything after "set " in `$ARGUMENTS` as the new OKRs content
 2. Read the full `.claude/pm-config.md`
-3. Replace only the content between `## OKRs` and the next `## ` header
+3. Replace only the content between line-anchored headers: `^## OKRs` and the next `^## ` header
 4. Write back the file
 5. Confirm: "OKRs updated in `.claude/pm-config.md`. These will be used by `/pm-prioritize` and `/pm-sprint-plan` for alignment scoring."
 
