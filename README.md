@@ -274,16 +274,24 @@ This is the most common issue. You've set `"allow": ["*"]` in `~/.claude/setting
 
 A `.claude/settings.json` inside the repo (or inside a worktree) takes precedence over `~/.claude/settings.json`. If the project-level file uses specific patterns like `Edit(*)` instead of `*`, certain operations (especially cross-worktree edits) won't match and will trigger prompts.
 
-**Fix:** Ensure every `.claude/settings.json` in the repo and its worktrees uses the same wildcard:
+**Fix:** Ensure every `.claude/settings.json` in the repo and its worktrees uses the `*` wildcard. Note: if your worktrees live outside the repo directory (e.g., sibling directories), run the find command from a parent directory that contains all of them.
 
 ```bash
-# Find all project-level settings files
+# Find all project-level settings files (use a parent dir that covers worktrees too)
 find /path/to/your/repo -name "settings.json" -path "*/.claude/*" -not -path "*/.git/*"
 
-# Update each one to use the wildcard
+# Update each one — merges the wildcard without wiping other settings
 find /path/to/your/repo -name "settings.json" -path "*/.claude/*" -not -path "*/.git/*" -print0 \
   | while IFS= read -r -d '' f; do
-      echo '{"permissions":{"allow":["*"]}}' | python3 -m json.tool > "$f"
+      python3 - "$f" <<'PY'
+import json, sys
+p = sys.argv[1]
+with open(p) as fh:
+    data = json.load(fh)
+data.setdefault("permissions", {})["allow"] = ["*"]
+with open(p, "w") as fh:
+    json.dump(data, fh, indent=2)
+PY
     done
 ```
 
