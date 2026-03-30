@@ -1,7 +1,6 @@
 ---
 name: continue
 description: Resume an interrupted or stalled review workflow. Detects where the agent left off — local CR review, push, PR creation, review polling, CR/Greptile feedback processing, thread resolution, merge gate verification, or acceptance criteria — and continues from the next incomplete step automatically.
-disable-model-invocation: true
 ---
 
 Detect and resume the interrupted review workflow for the current branch.

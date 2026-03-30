@@ -1,7 +1,6 @@
 ---
 name: status
 description: Show a dashboard of all open PRs with review state, unresolved findings, and blockers.
-disable-model-invocation: true
 ---
 
 Build a status dashboard of all open PRs in this repo.

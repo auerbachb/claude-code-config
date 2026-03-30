@@ -1,7 +1,6 @@
 ---
 name: check-acceptance-criteria
 description: Verify all Test Plan checkboxes in a PR against the actual code, check off passing items, and report any failures.
-disable-model-invocation: true
 argument-hint: "[PR number, default: current branch's PR]"
 ---
 

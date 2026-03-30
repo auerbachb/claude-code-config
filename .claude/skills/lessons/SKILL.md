@@ -1,7 +1,6 @@
 ---
 name: lessons
 description: Summarize lessons learned from the current session — what went wrong, what patterns emerged, what to remember. Saves actionable insights to memory.
-disable-model-invocation: true
 ---
 
 Reflect on the current session and extract reusable lessons before the thread is closed.

@@ -1,7 +1,6 @@
 ---
 name: merge
 description: Squash merge the current PR, delete the branch, log to work-log, and clean up. Verifies merge gate and acceptance criteria before merging.
-disable-model-invocation: true
 ---
 
 Squash merge the current PR. This is the "we're done here" command.

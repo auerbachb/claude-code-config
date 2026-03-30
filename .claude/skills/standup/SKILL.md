@@ -1,7 +1,6 @@
 ---
 name: standup
 description: Generate a daily standup summary of what was accomplished since the last standup, from a business logic perspective. Reads PR bodies to understand what changes actually enabled.
-disable-model-invocation: true
 argument-hint: [since-time, e.g. "yesterday at noon ET"]
 ---
 

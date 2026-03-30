@@ -69,6 +69,41 @@ if [[ "$command" == *"gh pr merge"* ]] && [[ "$exit_code" == "0" ]]; then
     if ! git -C "$root_repo" pull origin main --ff-only >/dev/null 2>&1; then
       printf 'post-merge-pull: fast-forward pull failed in %s\n' "$root_repo" >&2
     fi
+
+    # --- Sync skills worktree (if it exists) ---
+    skills_wt="$HOME/.claude/skills-worktree"
+    if [[ -d "$skills_wt" ]]; then
+      # Verify it belongs to the same repo
+      wt_root="$(git -C "$skills_wt" worktree list 2>/dev/null | head -1 | awk '{print $1}')"
+      if [[ "$wt_root" == "$root_repo" ]]; then
+        if ! git -C "$skills_wt" fetch origin main --quiet 2>/dev/null; then
+          printf 'post-merge-pull: skills worktree fetch failed\n' >&2
+        elif ! git -C "$skills_wt" reset --hard origin/main --quiet 2>/dev/null; then
+          printf 'post-merge-pull: skills worktree reset failed\n' >&2
+        fi
+
+        # Re-symlink any new or stale skills
+        skills_src="$skills_wt/.claude/skills"
+        skills_dir="$HOME/.claude/skills"
+        if [[ -d "$skills_src" && -d "$skills_dir" ]]; then
+          for skill_dir in "$skills_src"/*/; do
+            [[ -d "$skill_dir" ]] || continue
+            name="$(basename "$skill_dir")"
+            link="$skills_dir/$name"
+            target="$skills_src/$name"
+            if [[ -L "$link" ]]; then
+              # Replace stale symlinks pointing elsewhere
+              [[ "$(readlink "$link")" == "$target" ]] && continue
+              rm "$link" 2>/dev/null || true
+            elif [[ -e "$link" ]]; then
+              # Skip non-symlink entries (directories/copies) — setup script handles these
+              continue
+            fi
+            ln -s "$target" "$link" 2>/dev/null || true
+          done
+        fi
+      fi
+    fi
   else
     # Visible warning instead of silent exit
     printf 'post-merge-pull: could not find root repo (cwd=%s). Local main may be stale.\n' "$cwd" >&2

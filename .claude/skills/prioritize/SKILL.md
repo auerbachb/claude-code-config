@@ -1,7 +1,6 @@
 ---
 name: prioritize
 description: Scan a repo's open issue backlog and produce a ranked priority list of what a specific engineer should work on next, ordered by impact on a stated business goal.
-disable-model-invocation: true
 argument-hint: "business goal | @username role-constraints | depth (e.g. \"increase scraping throughput | @auerbachb backend-python | 50\")"
 ---
 

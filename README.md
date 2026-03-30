@@ -95,7 +95,18 @@ This file configures:
 
 > **Important:** All hook paths in `settings.json` must be absolute. Do not use `~/` or relative paths — they are unreliable. If you move the repo, re-run the `sed` command above.
 
-### Step 7: Install prerequisites
+### Step 7: Set up skills worktree
+
+The skills worktree ensures skills are always available regardless of what branch the root repo is on:
+
+```bash
+# Run from inside the repo
+./setup-skills-worktree.sh
+```
+
+This creates a dedicated worktree at `~/.claude/skills-worktree/` pinned to `main` and symlinks all skills to `~/.claude/skills/`. The `post-merge-pull.sh` hook keeps it in sync automatically. If skills ever break, re-run this script.
+
+### Step 8: Install prerequisites
 
 These tools are required for the full workflow:
 
@@ -117,7 +128,7 @@ The CLI installs to `~/.local/bin/coderabbit`. If it's not in your PATH, the con
 
 **Optional: Greptile** — An AI code reviewer used as a fallback when CodeRabbit is rate-limited or unresponsive. Install the [Greptile GitHub App](https://greptile.com) on your repos. Greptile app settings are configured via the Greptile web dashboard (app.greptile.com). The `greptile.md` rule file in this repo tells Claude how to use Greptile as a fallback reviewer.
 
-### Step 8: Set up CodeRabbit for a repo (per-repo)
+### Step 9: Set up CodeRabbit for a repo (per-repo)
 
 For each repo where you want the full workflow:
 
@@ -125,7 +136,7 @@ For each repo where you want the full workflow:
 2. Optionally add a `.coderabbit.yaml` to the repo root for custom review rules.
 3. The config auto-detects whether CodeRabbit is installed. If it's not, those sections are skipped.
 
-### Step 9: Verify your setup
+### Step 10: Verify your setup
 
 ```bash
 # Check symlinks point to this repo
@@ -330,6 +341,84 @@ The config is plain Markdown. Edit to match your workflow:
 - **Adjust polling intervals** — The 60-second interval and 7-minute timeout are in `cr-github-review.md`.
 - **Restrict autonomy** — The rules allow Claude to fix all files autonomously. Add restrictions in `CLAUDE.md` if you want approval for certain paths.
 - **Skip CodeRabbit** — The config auto-detects. No CodeRabbit = those sections are skipped.
+
+## Troubleshooting
+
+### Claude Code keeps asking for permission even with bypass enabled
+
+This is the most common issue. You've set `"allow": ["*"]` in `~/.claude/settings.json`, but Claude Code still prompts you to approve edits, bash commands, or the trust dialog. There are two independent causes — fix both.
+
+**Cause 1: Project-level settings override your global wildcard.**
+
+A `.claude/settings.json` inside the repo (or inside a worktree) takes precedence over `~/.claude/settings.json`. If the project-level file uses specific patterns like `Edit(*)` instead of `*`, certain operations (especially cross-worktree edits) won't match and will trigger prompts.
+
+**Fix:** Ensure every `.claude/settings.json` in the repo and its worktrees uses the `*` wildcard. Note: if your worktrees live outside the repo directory (e.g., sibling directories), run the find command from a parent directory that contains all of them.
+
+```bash
+# Find all project-level settings files (use a parent dir that covers worktrees too)
+find /path/to/your/repo -name "settings.json" -path "*/.claude/*" -not -path "*/.git/*"
+
+# Update each one — merges the wildcard without wiping other settings
+find /path/to/your/repo -name "settings.json" -path "*/.claude/*" -not -path "*/.git/*" -print0 \
+  | while IFS= read -r -d '' f; do
+      python3 - "$f" <<'PY'
+import json, sys
+p = sys.argv[1]
+with open(p) as fh:
+    data = json.load(fh)
+data.setdefault("permissions", {})["allow"] = ["*"]
+with open(p, "w") as fh:
+    json.dump(data, fh, indent=2)
+PY
+    done
+```
+
+**Cause 2: Trust dialog flags reset on new worktrees.**
+
+Every worktree creates a new project entry in `~/.claude.json` with `hasTrustDialogAccepted`, `hasClaudeMdExternalIncludesApproved`, and `hasClaudeMdExternalIncludesWarningShown` all set to `false`. This triggers the trust dialog and external includes approval prompts again.
+
+**Fix:** Run this to set all flags to `true` across all projects:
+
+```bash
+python3 -c "
+import json, os, sys
+
+path = os.path.expanduser('~/.claude.json')
+if not os.path.exists(path):
+    print('~/.claude.json not found. Open Claude Code once, then rerun this fix.')
+    sys.exit(1)
+try:
+    with open(path) as f:
+        data = json.load(f)
+except json.JSONDecodeError as e:
+    print(f'Invalid JSON in {path}: {e}')
+    print('Repair or restore ~/.claude.json, then re-run this fix.')
+    sys.exit(1)
+
+projects = data.get('projects') or {}
+if not isinstance(projects, dict):
+    print('Invalid ~/.claude.json: \"projects\" must be an object.')
+    sys.exit(1)
+
+flags = ['hasTrustDialogAccepted', 'hasClaudeMdExternalIncludesApproved', 'hasClaudeMdExternalIncludesWarningShown']
+total = 0
+for proj in projects.values():
+    if not isinstance(proj, dict): continue
+    for flag in flags:
+        if not proj.get(flag):
+            proj[flag] = True
+            total += 1
+
+if total:
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=2)
+    print(f'Fixed {total} flag(s).')
+else:
+    print('All flags already set.')
+"
+```
+
+You'll need to re-run this after creating new worktrees. See `.claude/rules/trust-dialog-fix.md` for more details and a single-project variant.
 
 ## Contributing
 

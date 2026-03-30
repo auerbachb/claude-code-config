@@ -1,7 +1,6 @@
 ---
 name: wrap
 description: End-of-session command — verify no unresolved findings, squash merge, detect follow-ups, extract lessons, sync work-log, and clean up the worktree.
-disable-model-invocation: true
 ---
 
 Wrap up the current PR and session. This is the "we're done here" command that handles everything from final verification through worktree cleanup.
