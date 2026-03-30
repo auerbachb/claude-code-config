@@ -28,9 +28,11 @@ If `.claude/pm-config.md` does not exist, tell the user: "No PM config found. Ru
 
 ## Step 2: Parse existing config into sections
 
-Read `.claude/pm-config.md` and split on `## ` headers. For each section, store:
-- The header name (e.g., "Role", "Infrastructure")
-- The full content between this header and the next `## ` header (or end of file)
+Read `.claude/pm-config.md` and identify sections by **line-anchored level-2 headers** — lines matching `^## ` at the start of the line. For each section, store:
+- The header name (the text after `## `, e.g., "Role", "Infrastructure")
+- The full content between this header line and the next `^## ` line (or end of file), preserved verbatim
+
+Do not split on `## ` appearing mid-line within section body text — only match headers that start at column 1.
 
 Preserve the file's title line (the `# PM Config — ...` line at the top).
 
@@ -95,7 +97,7 @@ Before writing, show the user what will change:
 
 ## Step 6: Reassemble and write config
 
-Reconstruct `.claude/pm-config.md` maintaining the original section order:
+Reconstruct `.claude/pm-config.md` using the fixed schema order below (regardless of the order in the existing file):
 
 1. Title line (preserved from original)
 2. Role (preserved)
