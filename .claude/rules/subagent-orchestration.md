@@ -1,6 +1,6 @@
 # Subagent Context
 
-> **Always:** Pass ALL rule files to subagents. Use phase decomposition (A/B/C). Timestamp every message. Monitor subagent health. Report failures immediately. Enter monitor mode when subagents are active.
+> **Always:** Pass ALL rule files to subagents. Use phase decomposition (A/B/C). Timestamp every message. Monitor subagent health. Report failures immediately. Enter monitor mode when subagents are active. Write handoff files on phase completion (Phase A writes `pr-{N}-handoff.json`; Phase B updates it). Read handoff files before reconstructing state from GitHub API (Phases B/C). Delete the handoff file on successful merge (Phase C).
 > **Ask first:** Respawning a failed subagent — tell the user what happened first. Breaking monitor mode for explicit user requests — warn about paused monitoring first.
 > **Never:** Summarize rules for subagents. Fire-and-forget subagents. Let a stalled PR go unreported. Skip timestamps. Go >5 minutes without a user-visible message. Report a PR as "awaiting review" for >5 minutes without a Phase B agent running. Do substantive work (coding, issue creation, file editing) while subagents are active.
 
@@ -15,6 +15,12 @@ When spawning subagents via the Task tool, **always pass the FULL contents of AL
 > **Why project-local first:** Per-project configs override global ones. If a repo has its own `CLAUDE.md` or `.claude/rules/`, those are the active instructions — not `~/.claude/`. Passing the global file when a project-level file exists will give subagents the wrong rules.
 
 Without the full instructions, subagents will miss critical workflow steps (Greptile fallback, ack-vs-completion detection, reply requirements) and improvise their own broken approach.
+
+**Handoff file instructions in subagent prompts:**
+- Phase A prompts must include: the PR number and instruction to write `~/.claude/handoffs/pr-{N}-handoff.json` after pushing.
+- Phase B and C prompts must include: the PR number, the handoff file path, and instruction to read the handoff file before starting work (with GitHub API fallback if missing).
+- Phase B prompts must include: instruction to update the handoff file on completion.
+- Phase C prompts must include: instruction to delete the handoff file after successful merge.
 
 ### Phase Transition Autonomy (Quick Reference)
 
@@ -101,9 +107,13 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 - Fix all valid findings + fix lint/CI failures
 - Commit all fixes in ONE commit, push once
 - Reply to all review comment threads
+- **Write handoff file** to `~/.claude/handoffs/pr-{N}-handoff.json` (see "Structured Handoff Files" section below) with all findings fixed, threads replied/resolved, files changed, and HEAD SHA. Include `findings_dismissed` for any findings verified as false positives (each entry: `{id, reason}`).
 - **EXIT after push — do not enter polling loop**
 
 **Phase B: Review Loop** (lighter — incremental)
+- **Phase B Initialization:** On startup, check for `~/.claude/handoffs/pr-{N}-handoff.json`:
+  1. **If found:** Parse and validate (`schema_version`, `pr_number`, `phase_completed`). Extract `head_sha`, `reviewer`, `threads_replied`, `threads_resolved`, `findings_fixed` to avoid duplicate work. Log: "Loaded handoff file from Phase A."
+  2. **If missing or invalid:** Fall back to GitHub API reconstruction (existing behavior — fetch all 3 comment endpoints). Log: "No handoff file found, reconstructing state from GitHub API."
 - **Before ANY `@greptileai` trigger**, check the daily budget (see `greptile.md` "Daily Budget"). If exhausted, fall back to self-review and report the blocker — do not post `@greptileai`.
 - If this PR is on CR: poll for CR review (fast-path + 7-minute slow-path Greptile trigger). If Greptile is triggered, the PR switches to Greptile permanently.
 - If this PR is already on Greptile: skip CR polling, trigger `@greptileai` and poll for Greptile response directly.
@@ -112,13 +122,16 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
   - If only P1/P2 (no P0): merge-ready after fix push — no re-review needed.
 - If clean pass on CR: trigger one more `@coderabbitai full review` for confirmation (2 clean CR passes needed)
 - If clean Greptile pass (no findings at all): merge-ready immediately.
+- **Phase B Completion:** Update the handoff file at `~/.claude/handoffs/pr-{N}-handoff.json` — set `phase_completed` to `"B"`, refresh `head_sha` if there was a new push, and merge new entries into `findings_fixed`, `threads_replied`, `threads_resolved`, and `files_changed`. **Deduplicate deterministically per field:** for `string[]` fields (`findings_fixed`, `threads_replied`, `threads_resolved`, `files_changed`), dedupe by exact string value; for object arrays (`findings_dismissed`), dedupe by `.id`. This prevents duplicate accumulation when replacement agents re-process the same findings.
 - **EXIT after confirming clean or after fixing one round**
 
 **Phase C: Merge Prep** (lightest)
+- **Phase C Initialization:** Read `~/.claude/handoffs/pr-{N}-handoff.json` if it exists. Use `reviewer` and `phase_completed` fields to confirm merge gate expectations. Fall back to GitHub API if missing.
 - Verify merge gate is satisfied: if PR is on Greptile, see `greptile.md` "Detecting a Merge-Ready Greptile Review". If CR-only, 2 clean CR reviews.
 - Read PR body, verify all acceptance criteria against final code
 - Check off all boxes
 - Report ready for merge
+- **Phase C Cleanup (after successful merge only):** Delete the handoff file: `rm ~/.claude/handoffs/pr-{N}-handoff.json`. If merge fails or is aborted, do NOT delete the handoff file. Cleanup failure is non-fatal — log a warning but don't block.
 
 **Orchestration rules:**
 - Parent agent launches Phase A subagents (can run in parallel across different PRs)
@@ -133,10 +146,11 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 **WHEN** a subagent returns and reports a PR was created or updated, **THEN** execute this checklist immediately — before any other work:
 
 1. **Verify the push happened.** Run `gh pr view N --json commits --jq '.commits[-1].oid'` and confirm the SHA matches what the subagent reported. If the push didn't happen, the subagent silently failed — report to user.
-2. **Check if reviewers already posted findings.** Fetch all 3 comment endpoints for the PR (`per_page=100` on each). If CR or Greptile already posted findings (common if the review was fast), include those findings in the Phase B prompt.
-3. **Launch Phase B within 60 seconds.** This is the immediate next action — queue it ahead of any other work (creating issues, reading files, responding to unrelated questions). If you cannot launch within 60 seconds due to tool throttling, tell the user why and when you will launch, then automatically retry until Phase B is launched (do not wait for user action). Record the planned retry in `session-state.json`.
-4. **Update `session-state.json`.** Write the phase transition: PR moved from Phase A to Phase B, record the HEAD SHA, reset review state.
-5. **Report to user.** "Phase A complete for PR #N — fixes pushed (SHA `abc1234`). Phase B launched, polling for reviews."
+2. **Verify the handoff file was written.** Check `~/.claude/handoffs/pr-{N}-handoff.json` exists and contains valid JSON with `phase_completed: "A"`. If missing, the subagent skipped the handoff write — reconstruct from the subagent's output and write it yourself before launching Phase B.
+3. **Check if reviewers already posted findings.** Fetch all 3 comment endpoints for the PR (`per_page=100` on each). If CR or Greptile already posted findings (common if the review was fast), include those findings in the Phase B prompt.
+4. **Launch Phase B within 60 seconds.** This is the immediate next action — queue it ahead of any other work (creating issues, reading files, responding to unrelated questions). If you cannot launch within 60 seconds due to tool throttling, tell the user why and when you will launch, then automatically retry until Phase B is launched (do not wait for user action). Record the planned retry in `session-state.json`. Include the handoff file path (`~/.claude/handoffs/pr-{N}-handoff.json`) in the Phase B subagent prompt.
+5. **Update `session-state.json`.** Write the phase transition: PR moved from Phase A to Phase B, record the HEAD SHA, reset review state.
+6. **Report to user.** "Phase A complete for PR #N — fixes pushed (SHA `abc1234`). Phase B launched, polling for reviews."
 
 **Phase B launch is the highest-priority action after Phase A reports.** Do not start other substantive work until Phase B is launched for every PR that completed Phase A. If multiple Phase A agents complete simultaneously, launch Phase B for each one before doing anything else.
 
@@ -293,7 +307,71 @@ When running a long monitoring session with multiple PRs, write a status checkpo
   ]
 }
 ```
-After compaction, read this file first: `cat ~/.claude/session-state.json`, then reconcile with live GitHub state.
+After compaction, read this file first: `cat ~/.claude/session-state.json`, then reconcile with live GitHub state. Also check `~/.claude/handoffs/` for any existing handoff files — if a handoff file exists for a PR that session-state reports is in Phase B or C, use the handoff file to bootstrap detailed state (findings fixed, threads replied, etc.) before falling back to GitHub API reconstruction.
+
+### Structured Handoff Files (Per-PR Phase-to-Phase State Transfer)
+
+Handoff files provide structured state transfer between subagent phases. Instead of each phase reconstructing state from GitHub API calls (fragile, token-expensive), the completing phase writes a handoff file that the next phase reads on startup.
+
+#### Two-File State System
+
+The orchestration uses two complementary state files:
+
+| File | Scope | Purpose |
+|------|-------|---------|
+| `~/.claude/session-state.json` | Session-wide | High-level orchestration: which PRs exist, what phase each is in, CR/Greptile quota, active agents |
+| `~/.claude/handoffs/pr-{N}-handoff.json` | Per-PR | Detailed phase state: findings fixed, threads replied/resolved, files changed — consumed by the next phase |
+
+`session-state.json` must still be updated on phase transitions (existing behavior unchanged). Handoff files complement it with the detailed per-PR context that subagents need.
+
+#### Handoff File Storage
+
+- **Location:** `~/.claude/handoffs/` (create directory if it doesn't exist: `mkdir -p ~/.claude/handoffs/`)
+- **Naming:** `pr-{N}-handoff.json` where `N` is the PR number (e.g., `pr-618-handoff.json`)
+- **One file per PR at any time.** Phase A creates the initial handoff file. Phase B performs a read-modify-write update: read the existing file, merge changes (append new array entries, update scalar fields), preserve unknown fields, and write back. Phase C only reads the file for context, then deletes it after successful merge.
+- **Lifecycle:** Created by Phase A → read/updated by Phase B → read then deleted by Phase C after merge.
+
+#### Handoff File Schema
+
+```json
+{
+  "schema_version": "1.0",
+  "pr_number": 618,
+  "head_sha": "abc1234",
+  "reviewer": "cr",
+  "phase_completed": "A",
+  "created_at": "2026-03-24T17:00:00Z",
+  "findings_fixed": ["comment-id-1", "comment-id-2"],
+  "findings_dismissed": [
+    {"id": "comment-id-3", "reason": "false positive — code already handles this case"}
+  ],
+  "threads_replied": ["thread-id-1", "thread-id-2"],
+  "threads_resolved": ["thread-id-1", "thread-id-2"],
+  "files_changed": ["src/foo.ts", "src/bar.ts"],
+  "push_timestamp": "2026-03-24T17:00:00Z",
+  "notes": "CR had 3 findings, all fixed. 1 dismissed as false positive."
+}
+```
+
+**Field reference:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `schema_version` | string | yes | Always `"1.0"` — for forward compatibility |
+| `pr_number` | number | yes | The PR number |
+| `head_sha` | string | yes | HEAD SHA after the phase's last push |
+| `reviewer` | string | yes | `"cr"` or `"greptile"` — which reviewer owns this PR |
+| `phase_completed` | string | yes | `"A"`, `"B"`, or `"C"` |
+| `created_at` | string | yes | ISO 8601 timestamp when the handoff file was written |
+| `findings_fixed` | string[] | yes | Comment/review IDs of findings that were fixed |
+| `findings_dismissed` | object[] | no | Findings dismissed with reason (id + reason) |
+| `threads_replied` | string[] | yes | Thread IDs where a reply was posted |
+| `threads_resolved` | string[] | yes | Thread IDs that were resolved via GraphQL |
+| `files_changed` | string[] | yes | File paths modified during the phase |
+| `push_timestamp` | string | yes | ISO 8601 timestamp of the phase's last push |
+| `notes` | string | no | Free-text summary for debugging |
+
+**Forward compatibility:** Unknown fields must be preserved when reading and rewriting the file. Do not strip fields you don't recognize — a future schema version may have added them.
 
 ### Mandatory Subagent Review Protocol (COPY INTO EVERY SUBAGENT PROMPT)
 
@@ -309,7 +387,15 @@ cleanly — do NOT ask the user what to do.
 
 After pushing code and creating/updating a PR, follow this EXACT sequence:
 
-### Step 0: Check for unresolved findings BEFORE requesting any review
+### Step 0a: Check Handoff File (Phase B/C only)
+Before any other work, check for `~/.claude/handoffs/pr-{N}-handoff.json`:
+- If found: parse it. Use `head_sha`, `reviewer`, `threads_replied`, `threads_resolved`,
+  `findings_fixed` to understand what the previous phase already did. This avoids
+  duplicate API calls and duplicate thread replies.
+- If missing: fall back to GitHub API reconstruction (fetch all 3 endpoints).
+- Log which path was taken for debugging.
+
+### Step 0b: Check for unresolved findings BEFORE requesting any review
 BEFORE triggering `@coderabbitai full review` or entering the polling loop:
 1. Fetch all comments on the PR (all 3 endpoints, per_page=100)
 2. Look for unresolved findings from coderabbitai[bot] or greptile-apps[bot]
@@ -382,4 +468,20 @@ The merge gate depends on which reviewer owns the PR:
   - Max 3 Greptile reviews per PR. After 3, self-review + report blocker.
 
 If BOTH reviewers are down (CR rate-limited + Greptile timeout), perform self-review for risk reduction and report the blocker. Self-review does NOT satisfy the merge gate.
+
+### Final Step: Handoff File Lifecycle (per-phase)
+- **Phase A (create):** `mkdir -p ~/.claude/handoffs/` then write a new
+  `~/.claude/handoffs/pr-{N}-handoff.json` with all schema fields:
+  `schema_version`, `pr_number`, `head_sha`, `reviewer`, `phase_completed` ("A"),
+  `created_at`, `findings_fixed`, `findings_dismissed`, `threads_replied`,
+  `threads_resolved`, `files_changed`, `push_timestamp`, `notes`.
+- **Phase B (read-modify-write):** Read existing handoff file, merge new entries
+  into arrays (deduplicate per field: by exact string value for `string[]` fields,
+  by `.id` for object arrays like `findings_dismissed`), update `phase_completed` to "B", refresh
+  `head_sha` if pushed. Do NOT overwrite `created_at` or `push_timestamp` from
+  Phase A — only set `push_timestamp` if Phase B itself pushed a new commit.
+  Preserve unknown fields.
+- **Phase C (read then delete):** Read handoff file for reviewer/state context.
+  Do NOT update or rewrite the file. After successful merge only, delete it:
+  `rm ~/.claude/handoffs/pr-{N}-handoff.json`. Deletion failure is non-fatal.
 ```
