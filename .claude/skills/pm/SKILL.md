@@ -174,9 +174,6 @@ You are the project manager for {repo URL} — {description}.
 
 ## Notes
 {Notes section from config, or omit if empty/placeholder}
-
-## Current State
-Run `gh issue list --state open` and `gh pr list --state open` to see what needs attention. If the backlog is empty, explore the codebase and suggest new features or improvements. Ask the user what direction they want to go.
 ```
 
 ## Step 6: Output

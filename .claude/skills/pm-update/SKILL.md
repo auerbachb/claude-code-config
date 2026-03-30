@@ -71,6 +71,26 @@ Scan the directory structure (depth 2) and detect:
 
 Same detection logic as `/pm` bootstrap Step 2c. Generate a new Architecture section.
 
+## Step 5.5: Display diff for review
+
+Before writing, show the user what will change:
+
+1. Compare the current Infrastructure section against the newly scanned version
+2. Compare the current Architecture section against the newly scanned version
+3. Display changes in a clear format:
+   ```
+   ### Infrastructure changes
+   - Added: Fly.io (detected fly.toml)
+   - Removed: Heroku (heroku.yml no longer present)
+   - Unchanged: Railway, Vercel, Docker
+
+   ### Architecture changes
+   - Added: api/ directory (new)
+   - Updated: CI workflows (added deploy.yml)
+   ```
+4. If no changes detected in either section: skip to Step 7 with message "Infrastructure and Architecture are unchanged — config is up to date." Do not write the file.
+5. If changes exist, proceed to Step 6 to apply them.
+
 ## Step 6: Reassemble and write config
 
 Reconstruct `.claude/pm-config.md` maintaining the original section order:
