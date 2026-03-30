@@ -344,7 +344,8 @@ find /path/to/your/repo -name "settings.json" -path "*/.claude/*" -not -path "*/
 
 # Inspect each file — if it only contains permissions, it's safe to delete.
 # If it has hooks or env vars you want to keep, migrate those to ~/.claude/settings.json first.
-find /path/to/your/repo -name "settings.json" -path "*/.claude/*" -not -path "*/.git/*" -exec cat {} +
+find /path/to/your/repo -name "settings.json" -path "*/.claude/*" -not -path "*/.git/*" \
+  -exec sh -c 'echo "== $1 =="; cat "$1"' _ {} \;
 
 # After confirming the files only contain permissions:
 find /path/to/your/repo -name "settings.json" -path "*/.claude/*" -not -path "*/.git/*" -delete
