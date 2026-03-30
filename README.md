@@ -264,6 +264,84 @@ This usually happens on clean passes (no findings). When CR has findings, it pos
 **What if CodeRabbit and Claude disagree?**
 During planning, the config tells Claude to pick the best ideas from both plans. During review, Claude verifies every CR finding against the actual code before applying it — it won't blindly apply suggestions that would break things.
 
+## Troubleshooting
+
+### Claude Code keeps asking for permission even with bypass enabled
+
+This is the most common issue. You've set `"allow": ["*"]` in `~/.claude/settings.json`, but Claude Code still prompts you to approve edits, bash commands, or the trust dialog. There are two independent causes — fix both.
+
+**Cause 1: Project-level settings override your global wildcard.**
+
+A `.claude/settings.json` inside the repo (or inside a worktree) takes precedence over `~/.claude/settings.json`. If the project-level file uses specific patterns like `Edit(*)` instead of `*`, certain operations (especially cross-worktree edits) won't match and will trigger prompts.
+
+**Fix:** Ensure every `.claude/settings.json` in the repo and its worktrees uses the `*` wildcard. Note: if your worktrees live outside the repo directory (e.g., sibling directories), run the find command from a parent directory that contains all of them.
+
+```bash
+# Find all project-level settings files (use a parent dir that covers worktrees too)
+find /path/to/your/repo -name "settings.json" -path "*/.claude/*" -not -path "*/.git/*"
+
+# Update each one — merges the wildcard without wiping other settings
+find /path/to/your/repo -name "settings.json" -path "*/.claude/*" -not -path "*/.git/*" -print0 \
+  | while IFS= read -r -d '' f; do
+      python3 - "$f" <<'PY'
+import json, sys
+p = sys.argv[1]
+with open(p) as fh:
+    data = json.load(fh)
+data.setdefault("permissions", {})["allow"] = ["*"]
+with open(p, "w") as fh:
+    json.dump(data, fh, indent=2)
+PY
+    done
+```
+
+**Cause 2: Trust dialog flags reset on new worktrees.**
+
+Every worktree creates a new project entry in `~/.claude.json` with `hasTrustDialogAccepted`, `hasClaudeMdExternalIncludesApproved`, and `hasClaudeMdExternalIncludesWarningShown` all set to `false`. This triggers the trust dialog and external includes approval prompts again.
+
+**Fix:** Run this to set all flags to `true` across all projects:
+
+```bash
+python3 -c "
+import json, os, sys
+
+path = os.path.expanduser('~/.claude.json')
+if not os.path.exists(path):
+    print('~/.claude.json not found. Open Claude Code once, then rerun this fix.')
+    sys.exit(1)
+try:
+    with open(path) as f:
+        data = json.load(f)
+except json.JSONDecodeError as e:
+    print(f'Invalid JSON in {path}: {e}')
+    print('Repair or restore ~/.claude.json, then re-run this fix.')
+    sys.exit(1)
+
+projects = data.get('projects') or {}
+if not isinstance(projects, dict):
+    print('Invalid ~/.claude.json: \"projects\" must be an object.')
+    sys.exit(1)
+
+flags = ['hasTrustDialogAccepted', 'hasClaudeMdExternalIncludesApproved', 'hasClaudeMdExternalIncludesWarningShown']
+total = 0
+for proj in projects.values():
+    if not isinstance(proj, dict): continue
+    for flag in flags:
+        if not proj.get(flag):
+            proj[flag] = True
+            total += 1
+
+if total:
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=2)
+    print(f'Fixed {total} flag(s).')
+else:
+    print('All flags already set.')
+"
+```
+
+You'll need to re-run this after creating new worktrees. See `.claude/rules/trust-dialog-fix.md` for more details and a single-project variant.
+
 ## Contributing
 
 Found an edge case or improvement? PRs welcome. This config evolved from real-world usage across multiple repos, but there's always room to handle more scenarios.
