@@ -320,7 +320,7 @@ Skipping this step wastes a review cycle and burns CR quota.
 ### Step 0b: Check ALL CI check-runs (MANDATORY — every poll cycle)
 Fetch ALL check-runs once per cycle (reuse this result in Step 1b for CR rate-limit detection):
 `gh api "repos/{owner}/{repo}/commits/{SHA}/check-runs?per_page=100" --jq '.check_runs[] | {name, status, conclusion}'`
-If ANY check-run has `conclusion: "failure"` (test, lint, build, audit, gitleaks, etc.):
+If ANY check-run has a blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`):
 1. Read the failure output: `gh api "repos/{owner}/{repo}/check-runs/{ID}" --jq '.output.summary'`
 2. If test/lint/build failure -> fix code, commit, push BEFORE continuing review loop
 3. If transient/infra failure -> note it, retry with no-op commit if needed

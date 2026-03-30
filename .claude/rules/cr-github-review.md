@@ -58,10 +58,10 @@ gh api "repos/{owner}/{repo}/commits/{SHA}/check-runs?per_page=100" \
 ```
 
 **Rules:**
-- If ANY check-run has `conclusion: "failure"`, **investigate immediately.**
+- **Blocking conclusions:** `failure`, `timed_out`, `action_required`, `startup_failure`, `stale`. If ANY check-run has one of these conclusions, **investigate immediately.** (`cancelled`, `neutral`, `skipped` are non-blocking.)
   - Read the check-run's output: `gh api "repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID}" --jq '.output.summary'`
   - Test/lint/build failure: fix, commit, and push before continuing the review loop.
-  - Transient/infra failure (e.g., runner timeout): note it, retry with a no-op commit if needed.
+  - Transient/infra failure (e.g., `timed_out`, `startup_failure`): note it, retry with a no-op commit if needed.
 - CI failures block merge independently of CR — a PR with passing CR but failing tests is not merge-ready. Report pass/fail summary to the user: "CI: 5/6 passed, `test` failed — investigating."
 
 ### Timeout & Fallback — Two Trigger Paths to Greptile
