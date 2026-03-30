@@ -8,7 +8,7 @@ After setup, Claude Code will automatically:
 
 - **Plan before coding** — Kicks off `@coderabbitai plan` on new issues, builds its own plan in parallel, then merges both into one implementation spec.
 - **Review locally first** — Runs CodeRabbit reviews via CLI before pushing. No PR noise, instant feedback.
-- **GitHub review as safety net** — After pushing, CodeRabbit and Greptile auto-review on GitHub. Claude polls for findings and resolves them.
+- **GitHub review as safety net** — After pushing, CodeRabbit auto-reviews on GitHub. Claude polls for findings and resolves them. If CodeRabbit is rate-limited, Greptile is triggered as a fallback.
 - **Handle rate limits** — Batches fixes into single commits, respects CodeRabbit's hourly limits, falls back to Greptile or self-review when throttled.
 - **Verify acceptance criteria** — Before merging, reads every Test Plan checkbox, verifies each against the code, and checks them off.
 - **Squash and merge** — Clean PRs get squash-merged with branch cleanup, only after user confirmation.
@@ -180,7 +180,7 @@ Claude Code loads project-level `CLAUDE.md` first, then falls back to `~/.claude
 | `cr-local-review.md` | Primary review — runs CR locally via CLI before pushing |
 | `cr-github-review.md` | GitHub review — three-endpoint polling, rate limits, thread resolution |
 | `greptile.md` | Greptile fallback reviewer + self-review fallback |
-| `subagent-orchestration.md` | Multi-agent task decomposition (phases A/B/C), health monitoring |
+| `subagent-orchestration.md` | Multi-agent task decomposition and health monitoring |
 | `work-log.md` | Auto-update daily work log on issue create, PR open, PR merge |
 | `safety.md` | Destructive command prohibitions, `.env` protection |
 | `repo-bootstrap.md` | Auto-provision required GitHub Actions workflows |
