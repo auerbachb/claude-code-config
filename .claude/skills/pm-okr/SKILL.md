@@ -46,10 +46,12 @@ If OKRs exist, display them formatted clearly with any progress indicators the u
 After displaying OKRs, fetch the open issue backlog and show which issues align with each key result:
 
 ```bash
-gh issue list --state open --json number,title,labels --limit 100
+gh issue list --state open --json number,title,labels,body --limit 100
 ```
 
-For each objective and key result, scan open issue titles, labels, and (if needed) bodies to find alignment. Display a compact cross-reference below each key result:
+For each objective and key result, scan open issue titles, labels, and bodies to find alignment. Match by comparing key terms from the key result text against issue titles, labels, and body content. Only list issues with a clear keyword connection — do not force-match tangential issues.
+
+Display a compact cross-reference below each key result:
 
 ```
 O1: Launch MVP by April 15
@@ -59,8 +61,6 @@ O1: Launch MVP by April 15
 ```
 
 If there are no open issues in the repo, skip the cross-reference and note: "No open issues to cross-reference."
-
-Alignment matching: compare issue titles, labels, and body content against the key result text. Match on keywords, not exact strings. Only list issues with a clear connection — do not force-match tangential issues.
 
 ## Mode: set
 

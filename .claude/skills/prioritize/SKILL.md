@@ -106,7 +106,7 @@ For every open issue, assess:
 
 3. **OKR alignment (when `OKR_MODE=true`):** Match issue content (title, body, labels) against each parsed objective and key result. Apply these adjustments:
    - An issue that directly advances an incomplete key result gets a **one-tier boost** (e.g., Medium → High) unless it's already Critical.
-   - An issue that aligns with an objective broadly (but no specific KR) gets a half-tier tiebreaker advantage within its current tier.
+   - An issue that aligns with an objective broadly (but no specific KR) gets a tiebreaker advantage: it ranks ahead of other issues in the same tier that have no OKR alignment. The displayed tier label does not change (e.g., Medium stays Medium) — this only affects ordering within a tier.
    - Issues that don't align with any OKR receive no penalty — they are scored purely on goal alignment and leverage.
    - Record which OKR(s) each issue aligns with for the output rationale (e.g., "Advances O1/KR2").
 
