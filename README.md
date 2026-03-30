@@ -115,7 +115,7 @@ coderabbit auth login
 
 The CLI installs to `~/.local/bin/coderabbit`. If it's not in your PATH, the config falls back to the full path.
 
-**Optional: Greptile** — An AI code reviewer used as a fallback when CodeRabbit is rate-limited. Install the [Greptile GitHub App](https://greptile.com) on your repos. Configuration is done via the Greptile web dashboard (app.greptile.com), not repo files.
+**Optional: Greptile** — An AI code reviewer used as a fallback when CodeRabbit is rate-limited. Install the [Greptile GitHub App](https://greptile.com) on your repos. Greptile app settings are configured via the Greptile web dashboard (app.greptile.com). The `greptile.md` rule file in this repo tells Claude how to use Greptile as a fallback reviewer.
 
 ### Step 8: Set up CodeRabbit for a repo (per-repo)
 
