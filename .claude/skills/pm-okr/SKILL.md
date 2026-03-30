@@ -41,6 +41,27 @@ Example:
 
 If OKRs exist, display them formatted clearly with any progress indicators the user has added.
 
+### Cross-reference with open issues
+
+After displaying OKRs, fetch the open issue backlog and show which issues align with each key result:
+
+```bash
+gh issue list --state open --json number,title,labels --limit 100
+```
+
+For each objective and key result, scan open issue titles, labels, and (if needed) bodies to find alignment. Display a compact cross-reference below each key result:
+
+```
+O1: Launch MVP by April 15
+  KR1: All 5 core API endpoints deployed — Aligned issues: #42, #45
+  KR2: Frontend covers core views — Aligned issues: #50, #52, #55
+  KR3: End-to-end pipeline runs — No aligned issues found
+```
+
+If there are no open issues in the repo, skip the cross-reference and note: "No open issues to cross-reference."
+
+Alignment matching: compare issue titles, labels, and body content against the key result text. Match on keywords, not exact strings. Only list issues with a clear connection — do not force-match tangential issues.
+
 ## Mode: set
 
 Replace the `## OKRs` section content with the text provided after "set". Preserve all other sections of pm-config.md verbatim.
@@ -80,8 +101,8 @@ Group merged PRs and closed issues into business themes (same approach as `/stan
 ### Step 3c: Generate suggestions
 
 If OKRs already exist:
-- For each existing objective, assess progress based on completed work
-- Suggest updating key result progress (e.g., "KR2 appears 80% complete — 4 of 5 endpoints deployed based on merged PRs")
+- For each existing objective, assess progress based on completed work — reference **both** merged PRs and closed issues as evidence (e.g., "KR2 appears 80% complete — 4 of 5 endpoints deployed based on PRs #42, #45, #48 and issue #39 closed as resolved")
+- Suggest updating key result progress with specific PR/issue citations
 - Flag objectives that may be fully achieved
 - Suggest new objectives if the backlog reveals work not covered by current OKRs
 
@@ -99,8 +120,8 @@ Present suggestions clearly, distinguishing between updates to existing OKRs and
 
 ### Existing OKRs — Progress Assessment
 - O1: Launch MVP by April 15
-  - KR1: All 5 core API endpoints deployed ✅ (completed — PRs #42, #45, #48)
-  - KR2: Frontend covers core views — 80% (3 of 4 views merged, filtering PR #52 still open)
+  - KR1: All 5 core API endpoints deployed ✅ (completed — PRs #42, #45, #48; issues #30, #33 closed)
+  - KR2: Frontend covers core views — 80% (3 of 4 views merged via PRs #50, #51; issue #39 closed; filtering PR #52 still open)
   - KR3: End-to-end pipeline — not started
 
 ### Suggested New Objective
