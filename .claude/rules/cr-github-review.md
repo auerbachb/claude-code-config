@@ -50,7 +50,7 @@ After pushing a commit to a PR, **automatically** enter the CR review loop. Do n
 
 ### CI Health Check (MANDATORY — every poll cycle)
 
-In addition to checking for CodeRabbit check-runs, **check ALL check-runs every poll cycle.** The polling loop must not be blind to test, lint, build, audit, gitleaks, or any other CI check failures.
+**Check ALL check-runs every poll cycle — not just CodeRabbit.** CI failures (test, lint, build, audit, gitleaks) are independent of CR review status.
 
 ```bash
 gh api "repos/{owner}/{repo}/commits/{SHA}/check-runs?per_page=100" \
@@ -58,12 +58,11 @@ gh api "repos/{owner}/{repo}/commits/{SHA}/check-runs?per_page=100" \
 ```
 
 **Rules:**
-- If ANY check-run has `conclusion: "failure"` (not just CodeRabbit), **investigate immediately.**
+- If ANY check-run has `conclusion: "failure"`, **investigate immediately.**
   - Read the check-run's output: `gh api "repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID}" --jq '.output.summary'`
-  - If it's a test/lint/build failure: fix the code, commit, and push before continuing the review loop.
-  - If it's a transient/infra failure (e.g., runner timeout): note it but don't block — retry by pushing a no-op commit if needed.
-- **Do not wait for CR's review to notice CI failures.** CR reviews code quality; CI checks correctness. A PR with passing CR but failing tests is not merge-ready.
-- Log which checks passed/failed in your status update to the user: "CI: 5/6 checks passed, `test` failed — investigating."
+  - Test/lint/build failure: fix, commit, and push before continuing the review loop.
+  - Transient/infra failure (e.g., runner timeout): note it, retry with a no-op commit if needed.
+- CI failures block merge independently of CR — a PR with passing CR but failing tests is not merge-ready. Report pass/fail summary to the user: "CI: 5/6 passed, `test` failed — investigating."
 
 ### Timeout & Fallback — Two Trigger Paths to Greptile
 
