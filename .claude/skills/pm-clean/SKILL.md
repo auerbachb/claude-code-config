@@ -6,8 +6,8 @@ argument-hint: "[days] (optional — inactivity threshold, default 30)"
 
 Scan the repo's open issues for staleness and present closure recommendations. Parse `$ARGUMENTS`:
 
-- If `$ARGUMENTS` is a number, use it as the inactivity threshold in days (default: 30).
-- If empty, use 30 days.
+- If `$ARGUMENTS` is a number, use it as the inactivity threshold in days.
+- If empty or non-numeric, default to 30 days (warn if non-numeric: "Invalid argument '{value}', defaulting to 30 days").
 
 ## Step 1: Gather open issues
 
@@ -63,6 +63,8 @@ For each open issue from Step 1, check for recent activity:
    gh api "repos/{owner}/{repo}/issues/42/comments" --jq '[.[] | .created_at] | sort | last'
    ```
    If the most recent comment is older than the threshold (or there are no comments), the issue is still a candidate.
+
+   If the jq result is `null` (empty comments array), treat it as "no recent comments" — the issue remains a candidate.
 
    Also check if any open PR references this issue (substitute the issue number into the regex):
    ```bash
