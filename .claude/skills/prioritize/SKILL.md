@@ -146,7 +146,7 @@ Structure the output in four sections:
 Scanned [N] open issues against goal: "[business goal]". [M] issues match [engineer]'s scope. [K] have dependency relationships.
 ```
 
-If `OKR_MODE=true`, append: `OKRs loaded from pm-config.md — [X] objectives with [Y] key results used for alignment scoring.`
+If `OKR_MODE=true`, append: `OKRs loaded from .claude/pm-config.md — [X] objectives with [Y] key results used for alignment scoring.`
 
 ### 2. Tiered priority list
 
