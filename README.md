@@ -70,7 +70,7 @@ sed -i 's|/path/to/claude-code-config|'"$(pwd)"'|g' ~/.claude/settings.json
 
 This file configures:
 - **Permissions** — Broad allow rules so Claude operates autonomously without prompting for every tool call.
-- **Hooks** — Three shell scripts that run automatically during sessions (see below).
+- **Hooks** — Shell scripts that run automatically during sessions (see below).
 - **Environment variables** — Model preferences and experimental flags.
 - **Plugin marketplaces** — Access to official Claude plugins.
 
@@ -327,7 +327,7 @@ The config is plain Markdown. Edit to match your workflow:
 
 ### Claude Code keeps asking for permission even with bypass enabled
 
-This is the most common issue. You've set `"allow": ["*"]` in `~/.claude/settings.json`, but Claude Code still prompts you to approve edits, bash commands, or the trust dialog. There are two independent causes — fix both.
+This is the most common issue. You've set `"allow": ["*"]` in `~/.claude/settings.json`, but Claude Code still prompts you to approve edits, bash commands, or the trust dialog. There are three independent causes — fix all that apply.
 
 **Cause 1: A project-level `.claude/settings.json` exists in the repo.**
 

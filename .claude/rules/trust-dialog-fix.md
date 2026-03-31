@@ -121,9 +121,7 @@ Every worktree gets its own absolute path (e.g., `/Users/you/repo/.claude/worktr
 
 This is especially problematic for the `claude-code-config` repo because it is the global config source — `~/.claude/CLAUDE.md` and `~/.claude/rules` are symlinks pointing **into** this repo. From a worktree's perspective, those symlinks resolve to paths outside the worktree directory, so Claude Code treats them as "external includes." Other repos using worktrees don't have this problem because their global symlinks don't point back into themselves.
 
-See the README troubleshooting section (Cause 3) for the full topology explanation and upstream issue links.
-
-**Recommended mitigation:** The `trust-flag-repair.sh` Stop hook (see "Automatic Hook" below) repairs flags after every agent response, preventing re-prompting on subsequent operations within a session.
+See the README troubleshooting section (Cause 3) for the full topology explanation and upstream issue links. The `trust-flag-repair.sh` Stop hook (see "Automatic Hook" below) mitigates this automatically.
 
 ## When to Run
 

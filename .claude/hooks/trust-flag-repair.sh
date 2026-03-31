@@ -17,6 +17,9 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     sys.exit(0)
 
+if not isinstance(data, dict):
+    sys.exit(0)
+
 projects = data.get('projects')
 if not isinstance(projects, dict):
     sys.exit(0)
