@@ -9,10 +9,19 @@ Evaluate team contributions over a configurable period. Parse `$ARGUMENTS`:
 - If `$ARGUMENTS` contains `--days N`, use N days as the evaluation period.
 - If empty, default to 14 days.
 
+Extract the value:
+
+```bash
+if [[ "$ARGUMENTS" =~ --days[[:space:]]+([0-9]+) ]]; then
+  DAYS="${BASH_REMATCH[1]}"
+else
+  DAYS=14
+fi
+```
+
 ## Step 1: Set evaluation period
 
 ```bash
-DAYS=${DAYS:-14}
 SINCE_DATE=$(TZ='America/New_York' date -v-${DAYS}d '+%Y-%m-%d' 2>/dev/null || TZ='America/New_York' date -d "$DAYS days ago" '+%Y-%m-%d')
 SINCE_ISO=$(TZ='America/New_York' date -v-${DAYS}d '+%Y-%m-%dT00:00:00%z' 2>/dev/null || TZ='America/New_York' date -d "$DAYS days ago" '+%Y-%m-%dT00:00:00%z')
 SINCE_ISO=$(printf '%s' "$SINCE_ISO" | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/')
@@ -58,18 +67,17 @@ If no reviews exist on any PR in the period, note this gracefully: "No PR review
 
 ```bash
 # Issues created by each contributor
-gh issue list --state all --search "created:>$SINCE_DATE" --json number,title,author,state,createdAt --limit 200
+gh issue list --state all --search "created:>$SINCE_DATE" --json number,title,author,state,createdAt --limit 500
 
 # Issues closed in the period
-gh issue list --state closed --search "closed:>$SINCE_DATE" --json number,title,closedAt --limit 200
+gh issue list --state closed --search "closed:>$SINCE_DATE" --json number,title,closedAt --limit 500
 ```
 
 ### 3d: Review participation (reviews given to others)
 
 ```bash
-# Scan recent PRs for reviews authored by each contributor
-gh api "repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=50" \
-  --jq '.[].number' | while read -r pr_num; do
+# Scan PRs active during the evaluation period for reviews
+gh pr list --state all --search "updated:>$SINCE_DATE" --json number --limit 100 | jq -r '.[].number' | while read -r pr_num; do
   gh api "repos/{owner}/{repo}/pulls/$pr_num/reviews?per_page=100" \
     --jq '.[] | select(.submitted_at > "'"$SINCE_ISO"'") | {reviewer: .user.login, pr: '"$pr_num"', state: .state}'
 done
@@ -83,7 +91,7 @@ For each merged PR, check if CodeRabbit's first review passed clean:
 
 1. Fetch the first review from `coderabbitai[bot]` on that PR (sort by `submitted_at`, take the earliest)
 2. A PR counts as **first-pass success** when the first `coderabbitai[bot]` review meets BOTH criteria:
-   - No inline comments from `coderabbitai[bot]` on `pulls/$PR_NUM/comments`
+   - No inline comments from `coderabbitai[bot]` on the PR: `gh api "repos/{owner}/{repo}/pulls/$PR_NUM/comments" --jq '[.[] | select(.user.login == "coderabbitai[bot]")]'` returns an empty array
    - No review with GitHub state `CHANGES_REQUESTED` from `coderabbitai[bot]`
 3. Calculate: (PRs passing CR on first push) / (total PRs with CR reviews) × 100%
 
