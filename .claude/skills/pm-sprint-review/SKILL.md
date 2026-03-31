@@ -81,10 +81,10 @@ Issues that were open at the start of the review period AND are still open repre
 
 ```bash
 # Issues created before the sprint start that are still open
-gh issue list --state open --json number,title,labels,assignees,createdAt --limit 200
+gh issue list --state open --search "created:<$SINCE_DATE" --json number,title,labels,assignees,createdAt --limit 200
 ```
 
-Filter to issues where `createdAt < $SINCE_DATE` — these existed when the sprint started. Issues created during the sprint are new work, not slippage.
+The `created:<$SINCE_DATE` filter ensures only pre-sprint issues are returned server-side. These existed when the sprint started — issues created during the sprint are new work, not slippage.
 
 ### 4b: Assess slippage
 
@@ -197,8 +197,9 @@ For each contributor, compute:
 For review participation:
 
 ```bash
-gh api --paginate "repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=100" \
-  | jq -r '.[] | select(.updated_at > "'"$SINCE_ISO"'") | .number' | while read -r pr_num; do
+# Cap at 100 PRs to avoid API rate limits on large repos
+gh api "repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=100" \
+  --jq '.[] | select(.updated_at > "'"$SINCE_ISO"'") | .number' | head -100 | while read -r pr_num; do
   gh api "repos/{owner}/{repo}/pulls/$pr_num/reviews?per_page=100" \
     --jq '.[] | select(.submitted_at > "'"$SINCE_ISO"'") | select(.user.login | (endswith("[bot]") or . == "github-actions") | not) | {reviewer: .user.login, pr: '"$pr_num"'}'
 done

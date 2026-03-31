@@ -40,10 +40,10 @@ If the config is missing or a section is empty/placeholder, degrade gracefully �
 ### 2a: Fetch the open issue list
 
 ```bash
-gh issue list --state open --limit 100 --json number,title,labels,assignees,createdAt,updatedAt
+gh issue list --state open --limit 200 --json number,title,labels,assignees,createdAt,updatedAt
 ```
 
-Store the result. If zero issues are returned, output: "No open issues found — nothing to plan. Create issues first, then re-run." Then stop.
+Store the result. For repos with very large backlogs (200+ issues), the limit caps the scan — note this in the output summary. If zero issues are returned, output: "No open issues found — nothing to plan. Create issues first, then re-run." Then stop.
 
 ### 2b: Read each issue body (CRITICAL — do not skip)
 
@@ -63,7 +63,7 @@ For each issue, extract:
 
 ### 3a: Explicit dependencies
 
-Scan each issue body AND comments for these patterns (case-insensitive):
+Scan each issue body and all comments (already fetched via `gh issue view --json comments` in Step 2b) for these patterns (case-insensitive). For issues with 100+ comments, prioritize scanning the issue body and the 20 most recent comments to limit processing time:
 - **Blocking patterns** (this issue is blocked BY another): `blocked by #N`, `depends on #N`, `prerequisite: #N`, `after #N`, `requires #N`
 - **Dependent patterns** (this issue BLOCKS another): `unblocks #N`, `enables #N`, `required by #N`, `before #N`, `prerequisite for #N`
 - **PR linkage**: `Fixes #N`, `Closes #N` — indicates a PR may already be in flight for that issue
@@ -72,14 +72,14 @@ Build directed edges: blocker → blocked.
 
 ### 3b: Implicit dependencies
 
-Parse issue bodies for file path references — patterns like `src/`, `lib/`, specific filenames, or file extensions (`.ts`, `.py`, `.go`, etc.). Build a co-reference map: issues touching the same files likely conflict if run in parallel.
+Parse issue bodies for file path references — patterns like `src/`, `lib/`, specific filenames, or file extensions (`.ts`, `.py`, `.go`, etc.). Before treating a path as a conflict signal, verify it plausibly exists in the repo (matches directories or file patterns in the current git tree). Paths appearing inside code blocks or example snippets may be illustrative, not actual references — use judgment to filter false positives. Build a co-reference map: issues touching the same verified files likely conflict if run in parallel.
 
-As a secondary signal, identify label overlap where issues share component/area labels (e.g., `backend`, `auth`, `database`, `frontend`). Issues sharing narrow labels (not generic ones like `bug` or `enhancement`) may have implicit ordering needs.
+As a secondary signal, identify label overlap where issues share component/area labels (e.g., `backend`, `auth`, `database`, `frontend`). Filter out generic labels (`bug`, `enhancement`, `documentation`, `good first issue`) — only narrow/component labels indicate implicit ordering needs.
 
 ### 3c: Build dependency graph
 
 - Create directed edges from blocking → blocked issues
-- Flag circular dependencies (A blocks B, B blocks A) as warnings requiring human resolution
+- **Detect circular dependencies** (e.g., #10 → #15 → #20 → #10). Emit a non-fatal warning listing the cycle. Exclude cycled issues from automated track assignment but include them in a dedicated "Circular Dependencies" section of the output with suggested actions (break one link, reprioritize, or mark as external). Do not block overall plan generation.
 - Identify dependency chains: if #10 blocks #15 which blocks #20, the chain is #10 → #15 → #20
 
 ## Step 4: Score issues against business goal / OKRs
