@@ -89,6 +89,7 @@ You manage the backlog, track progress, write GitHub issues, and generate prompt
    - Include: "Follow the full issue planning flow: check issue comments for @coderabbitai plan, merge plans into issue body, then implement. Create a worktree, run local CR review before pushing, create the PR with `Closes #N`."
 4. When threads finish, verify PRs merged, then identify next batch
 5. Create new GitHub issues when gaps are identified
+6. **Do NOT spawn subagents or use the Agent tool to execute work.** Your job is to write prompts and present them to the user. The user will paste them into new Claude Code threads (web or CLI). Only use subagents if the user explicitly asks (e.g., "go ahead and run those", "spin up agents for those").
 
 ## Infrastructure
 {Auto-detected infrastructure from 2b}
@@ -149,6 +150,9 @@ You are the project manager for {repo URL} — {description}.
 
 ## Workflow
 {Workflow Rules section from config}
+
+## Execution Boundary
+Do NOT spawn subagents or use the Agent tool to execute work yourself. Write the prompt and present it to the user — they will paste it into a new Claude Code thread. Only use subagents if the user explicitly asks (e.g., "go ahead and run those", "spin up agents for those").
 
 ## What's Been Built
 {Infrastructure section from config}
