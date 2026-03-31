@@ -86,8 +86,9 @@ This returns the GitHub username of the person (or bot) who closed the issue. At
 ### 3d: Review participation (reviews given to others)
 
 ```bash
-# Scan PRs active during the evaluation period for reviews
-gh pr list --state all --search "updated:>$SINCE_DATE" --json number --limit 100 | jq -r '.[].number' | while read -r pr_num; do
+# Scan PRs active during the evaluation period for reviews (paginate to capture all)
+gh api --paginate "repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=100" \
+  | jq -r '.[] | select(.updated_at > "'"$SINCE_ISO"'") | .number' | while read -r pr_num; do
   gh api "repos/{owner}/{repo}/pulls/$pr_num/reviews?per_page=100" \
     --jq '.[] | select(.submitted_at > "'"$SINCE_ISO"'") | {reviewer: .user.login, pr: '"$pr_num"', state: .state}'
 done
