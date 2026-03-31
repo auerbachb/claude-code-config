@@ -32,8 +32,17 @@ for proj in projects.values():
             changed = True
 
 if changed:
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=2)
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w') as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try: os.unlink(tmp)
+        except OSError: pass
 " 2>/dev/null
 
 exit 0
