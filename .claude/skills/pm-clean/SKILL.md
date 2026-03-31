@@ -42,9 +42,9 @@ gh issue list --state closed --limit 200 --json number,title,body,closedAt,state
 For each merged PR from Step 2, scan the PR body AND branch name for closure keywords referencing open issues:
 
 **In the PR body**, search for these patterns (case-insensitive):
-- `Closes #N`, `Close #N`
-- `Fixes #N`, `Fix #N`
-- `Resolves #N`, `Resolve #N`
+- `Closes #N`, `Close #N`, `Closed #N`
+- `Fixes #N`, `Fix #N`, `Fixed #N`
+- `Resolves #N`, `Resolve #N`, `Resolved #N`
 
 Extract each referenced issue number `N`. If `N` matches an open issue from Step 1, flag it:
 - **Category:** `solved-by-pr`
@@ -70,7 +70,7 @@ For each open issue from Step 1, check for recent activity:
 
    Also check if any open PR references this issue (substitute the issue number into the regex):
    ```bash
-   gh pr list --state open --json number,title,body --jq '.[] | select(.body | test("(?i)(closes|fixes|resolves)\\s+#42"))'
+   gh pr list --state open --json number,title,body --jq '.[] | select(.body | test("(?i)(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s+#42"))'
    ```
 
 3. **Commit-reference check (for candidates only):** Verify whether recent commits reference the issue number in their messages:
