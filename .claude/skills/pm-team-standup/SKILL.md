@@ -50,8 +50,9 @@ Group commits by author name. For each author, collect commit messages.
 ### 3b: PRs opened, merged, or updated
 
 ```bash
-# PRs updated in the time range (includes opened, merged, reviewed)
-gh pr list --state all --search "updated:>$SINCE_DATE" --json number,title,author,state,mergedAt,createdAt,additions,deletions --limit 100
+# PRs updated in the time range (paginate to capture all activity)
+gh api --paginate "repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=100" \
+  | jq '[.[] | select(.updated_at > "'"$SINCE_ISO"'") | {number, title, author: .user, state, mergedAt: .merged_at, createdAt: .created_at, additions, deletions}]'
 ```
 
 For each PR, categorize:
@@ -65,10 +66,10 @@ Group PRs by `author.login`.
 
 ```bash
 # Issues created
-gh issue list --state all --search "created:>$SINCE_DATE" --json number,title,author,state,createdAt --limit 100
+gh issue list --state all --search "created:>$SINCE_DATE" --json number,title,author,state,createdAt --limit 500
 
 # Issues closed
-gh issue list --state closed --search "closed:>$SINCE_DATE" --json number,title,closedAt --limit 100
+gh issue list --state closed --search "closed:>$SINCE_DATE" --json number,title,closedAt --limit 500
 ```
 
 Group by author for created issues. Closed issues may not have an easy author attribution — note them separately if the closer isn't identifiable.
@@ -76,15 +77,15 @@ Group by author for created issues. Closed issues may not have an easy author at
 ### 3d: PR review comments authored
 
 ```bash
-# Fetch recent PR reviews to identify reviewers
-gh api "repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=30" \
-  --jq '.[].number' | while read -r pr_num; do
+# Fetch reviews from all PRs active in the standup window (paginate to capture all)
+gh api --paginate "repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=100" \
+  | jq -r '.[] | select(.updated_at > "'"$SINCE_ISO"'") | .number' | while read -r pr_num; do
   gh api "repos/{owner}/{repo}/pulls/$pr_num/reviews?per_page=100" \
     --jq '.[] | select(.submitted_at > "'"$SINCE_ISO"'") | {user: .user.login, pr: '"$pr_num"', state: .state}'
 done
 ```
 
-Group reviews by reviewer username. Note: limit the PR scan to 30 recent PRs to avoid excessive API calls. If this is too slow, fall back to just listing merged/opened PRs without review data.
+Group reviews by reviewer username. If this is too slow for very large repos, fall back to just listing merged/opened PRs without review data.
 
 ## Step 4: Filter out bots
 
