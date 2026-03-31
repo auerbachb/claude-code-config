@@ -26,6 +26,11 @@
             "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/silence-detector-ack.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/trust-flag-repair.sh",
+            "timeout": 5
           }
         ]
       }
