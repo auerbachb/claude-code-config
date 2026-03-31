@@ -6,8 +6,10 @@ argument-hint: "[days] (optional — inactivity threshold, default 30)"
 
 Scan the repo's open issues for staleness and present closure recommendations. Parse `$ARGUMENTS`:
 
-- If `$ARGUMENTS` is a number, use it as the inactivity threshold in days.
-- If empty or non-numeric, default to 30 days (warn if non-numeric: "Invalid argument '{value}', defaulting to 30 days").
+- If `$ARGUMENTS` is a positive number, use it as the inactivity threshold in days.
+- If empty, non-numeric, or non-positive (zero or negative), default to 30 days:
+  - Warn if non-numeric: "Invalid argument '{value}', defaulting to 30 days"
+  - Warn if non-positive: "Threshold must be positive, defaulting to 30 days"
 
 ## Step 1: Gather open issues
 
@@ -49,7 +51,7 @@ Extract each referenced issue number `N`. If `N` matches an open issue from Step
 - **Rationale:** "PR #M (`title`) merged on `date` references `Closes #N` but issue remains open."
 
 **In the branch name**, search for patterns like `issue-42-` or `42-` at the start. If the branch name contains a number matching an open issue and the PR merged successfully, flag it as a weaker signal:
-- Only flag if the PR title or body shares at least 2 significant keywords with the open issue's title (after lowercasing and removing stopwords like "add", "fix", "update", "the"). This avoids false positives from coincidental branch numbering.
+- Only flag if the PR title or body shares at least 2 significant keywords with the open issue's title (after lowercasing and removing common stopwords: articles, prepositions, and generic action verbs like "add", "fix", "update", "change", "remove"). A "significant keyword" is any remaining token with 4+ characters. This avoids false positives from coincidental branch numbering.
 
 ## Step 5: Detect inactive issues
 
@@ -83,20 +85,24 @@ For each open issue from Step 1, check for recent activity:
 
 For each open issue from Step 1 (that wasn't already flagged in Steps 4-5), check if the issue's context has been overtaken by recent changes:
 
-1. **Extract file references** from the issue body — look for paths like `src/foo.ts`, `lib/bar.py`, function names, or component names.
+1. **Extract file references** from the issue body:
+   - Match file paths with extensions (e.g., `src/foo.ts`, `lib/bar.py`) using pattern `[a-zA-Z0-9_/.-]+\.[a-z]{2,4}`
+   - Extract capitalized identifiers in backticks or code blocks (likely function/component names)
+   - Exclude common generic terms (e.g., "utils", "helper", "handler", "index") that would produce false positives
 
 2. **For issues with file references**, check if those files have been substantially changed since the issue was created. Replace `ISSUE_CREATED_DATE` with the issue's `createdAt` value (ISO date, e.g., `2026-01-15`) and `path/to/file` with the actual file path:
    ```bash
    git log --since="2026-01-15" --oneline -- "src/utils/parser.ts"
    ```
-   If the file has 5+ commits since the issue was created, it's a superseded candidate.
+   If the file has 3+ commits since the issue was created, it's a superseded candidate. (Threshold is deliberately low — the "strong evidence" rule in step 4 still requires corroboration.)
 
 3. **For issues referencing features or behaviors**, check if the described feature was added or removed by scanning recent commit messages. Replace `KEYWORD` with a key term extracted from the issue (e.g., a feature name or component):
    ```bash
    git log --since="2026-01-15" --oneline --grep="dark mode"
    ```
+   Flag if 3+ commits match the keyword.
 
-4. **Only flag if the evidence is strong** — multiple commits touching the referenced files/features. A single commit is not enough (it might be an unrelated refactor).
+4. **Only flag if the evidence is strong** — require both file-path matches AND keyword matches, or 5+ commits on a single referenced file. A single commit is not enough (it might be an unrelated refactor).
    - **Category:** `superseded`
    - **Rationale:** "Files referenced in this issue (`path`) have been modified in N commits since the issue was created. The described behavior may already be addressed."
 
@@ -104,9 +110,9 @@ For each open issue from Step 1 (that wasn't already flagged in Steps 4-5), chec
 
 Compare each open issue's title and body against closed issues from Step 3:
 
-1. **Title similarity:** Normalize titles (lowercase, strip punctuation, remove common words like "add", "fix", "update", "the", "a"). If two titles share 3+ significant words, they're a candidate pair.
+1. **Title similarity:** Normalize titles (lowercase, strip punctuation, remove common English stopwords and generic action verbs). A "significant word" is any remaining token with 4+ characters. If two titles share 3+ significant words, they're a candidate pair.
 
-2. **Body keyword overlap:** Extract key terms from both issue bodies (ignoring markdown formatting, code blocks, and boilerplate). If 5+ significant terms overlap, strengthen the duplicate signal.
+2. **Body keyword overlap:** Extract key terms from both issue bodies (ignoring Markdown formatting, code blocks, and boilerplate). Apply the same significance filter (4+ chars, not a stopword). If 5+ significant terms overlap, strengthen the duplicate signal.
 
 3. **Only flag if the closed issue was resolved** (not closed as "not planned"):
    - **Category:** `potential-duplicate`
@@ -183,7 +189,7 @@ Which issues should I close? (List numbers, category names, or "all")
 - **Be conservative with "superseded" and "duplicate" flags.** False positives waste the user's time reviewing issues that shouldn't be closed. Only flag when evidence is clear.
 - **Include rationale for every recommendation.** The user should be able to evaluate each suggestion without reading the full issue.
 - **Handle large backlogs gracefully.** If there are 100+ open issues, batch the API calls and use the performance limits described in Step 5. Report how many issues were fully analyzed vs. skimmed.
-- **Respect issue labels.** If an issue has labels like `pinned`, `do-not-close`, `long-term`, or `epic`, skip it in the inactive and superseded checks. Still check it for solved-by-PR (since that's a factual signal, not a judgment call).
+- **Respect issue labels.** If an issue has labels like `pinned`, `do-not-close`, `long-term`, or `epic`, skip it in the inactive, superseded, and duplicate checks. Still check it for solved-by-PR (since that's a factual signal, not a judgment call).
 - **When the user confirms closures**, close each issue with a comment:
   ```bash
   # Replace 42 with the actual issue number and customize the rationale
