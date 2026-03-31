@@ -180,7 +180,7 @@ If Team section exists in pm-config.md, use those entries. Otherwise, derive fro
 gh pr list --state merged --search "merged:>$SINCE_DATE" --json author --limit 200 | jq -r '.[].author.login' | sort -u
 ```
 
-Exclude bot accounts (logins ending in `[bot]`, `dependabot`, `renovate`, `github-actions`).
+Exclude bot accounts (logins ending in `[bot]` or matching `dependabot`, `renovate`, `github-actions`).
 
 ### 7b: Per-contributor metrics
 
@@ -197,9 +197,8 @@ For each contributor, compute:
 For review participation:
 
 ```bash
-# Cap at 100 PRs to avoid API rate limits on large repos
-gh api "repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=100" \
-  --jq '.[] | select(.updated_at > "'"$SINCE_ISO"'") | .number' | head -100 | while read -r pr_num; do
+# Server-side filter: only PRs updated during the review period
+gh pr list --search "updated:>$SINCE_DATE" --state all --limit 100 --json number --jq '.[].number' | while read -r pr_num; do
   gh api "repos/{owner}/{repo}/pulls/$pr_num/reviews?per_page=100" \
     --jq '.[] | select(.submitted_at > "'"$SINCE_ISO"'") | select(.user.login | (endswith("[bot]") or . == "github-actions") | not) | {reviewer: .user.login, pr: '"$pr_num"'}'
 done
