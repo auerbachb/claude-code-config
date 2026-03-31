@@ -51,7 +51,7 @@ gh issue list --state open --json number,title,labels,body --limit 100
 
 For each objective and key result, scan open issue titles, labels, and bodies to find alignment. Match by comparing key terms from the key result text against issue titles, labels, and body content. Only list issues with a clear keyword connection — do not force-match tangential issues.
 
-Display a compact cross-reference below each key result:
+Display a compact cross-reference below each key result. Sort aligned issues by ascending issue number:
 
 ```
 O1: Launch MVP by April 15
