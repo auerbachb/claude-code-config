@@ -43,7 +43,7 @@ If present, parse contributor entries for display names, GitHub usernames, and r
 ### 3a: Merged PRs
 
 ```bash
-gh pr list --state merged --search "merged:>$SINCE_DATE" --json number,title,author,mergedAt,additions,deletions,commits --limit 200
+gh pr list --state merged --search "merged:>=$SINCE_DATE" --json number,title,author,mergedAt,additions,deletions,commits --limit 200
 ```
 
 For each merged PR, record: number, title, author, merge date, code volume (additions + deletions).
@@ -51,7 +51,7 @@ For each merged PR, record: number, title, author, merge date, code volume (addi
 ### 3b: Closed issues
 
 ```bash
-gh issue list --state closed --search "closed:>$SINCE_DATE" --json number,title,closedAt,labels --limit 200
+gh issue list --state closed --search "closed:>=$SINCE_DATE" --json number,title,closedAt,labels --limit 200
 ```
 
 For closer attribution, query the events API for each closed issue:
@@ -103,7 +103,7 @@ Count for the review period:
 - **Issues opened:** count of issues created during the period (net throughput = closed - opened)
 
 ```bash
-gh issue list --state all --search "created:>$SINCE_DATE" --json number --limit 500 | jq length
+gh issue list --state all --search "created:>=$SINCE_DATE" --json number --limit 500 | jq length
 ```
 
 ### 5b: Average cycle time per PR
@@ -111,7 +111,7 @@ gh issue list --state all --search "created:>$SINCE_DATE" --json number --limit 
 For each merged PR, compute cycle time: time from PR creation to merge.
 
 ```bash
-gh pr list --state merged --search "merged:>$SINCE_DATE" --json number,createdAt,mergedAt --limit 200
+gh pr list --state merged --search "merged:>=$SINCE_DATE" --json number,createdAt,mergedAt --limit 200
 ```
 
 Calculate `mergedAt - createdAt` for each PR. Report: average, median, min, max.
@@ -145,7 +145,7 @@ Identify PRs and issues that stalled during the sprint:
 PRs that were open for more than 3 days before merge (or are still open):
 
 ```bash
-gh pr list --state all --search "created:>$SINCE_DATE" --json number,title,author,createdAt,mergedAt,state --limit 200
+gh pr list --state all --search "created:>=$SINCE_DATE" --json number,title,author,createdAt,mergedAt,state --limit 200
 ```
 
 Flag PRs where `mergedAt - createdAt > 3 days` or where state is still `open` and `createdAt` is more than 3 days ago.
@@ -178,7 +178,7 @@ If Team section exists in pm-config.md, use those entries. Otherwise, derive fro
 
 ```bash
 # Unique authors of merged PRs in the period
-gh pr list --state merged --search "merged:>$SINCE_DATE" --json author --limit 200 | jq -r '.[].author.login' | sort -u
+gh pr list --state merged --search "merged:>=$SINCE_DATE" --json author --limit 200 | jq -r '.[].author.login' | sort -u
 ```
 
 Exclude bot accounts (logins ending in `[bot]` or matching `dependabot`, `renovate`, `github-actions`).
@@ -199,7 +199,7 @@ For review participation:
 
 ```bash
 # Server-side filter: only PRs updated during the review period
-gh pr list --search "updated:>$SINCE_DATE" --state all --limit 100 --json number --jq '.[].number' | while read -r pr_num; do
+gh pr list --search "updated:>=$SINCE_DATE" --state all --limit 100 --json number --jq '.[].number' | while read -r pr_num; do
   gh api "repos/{owner}/{repo}/pulls/$pr_num/reviews?per_page=100" \
     --jq '.[] | select(.submitted_at > "'"$SINCE_ISO"'") | select(.user.login | (endswith("[bot]") or . == "github-actions") | not) | {reviewer: .user.login, pr: '"$pr_num"'}'
 done
