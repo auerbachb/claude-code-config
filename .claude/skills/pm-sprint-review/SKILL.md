@@ -36,7 +36,7 @@ Check if `.claude/pm-config.md` exists and has a `## Team` section:
 test -f .claude/pm-config.md && echo "CONFIG_EXISTS" || echo "NO_CONFIG"
 ```
 
-If present, parse contributor entries for display names, GitHub usernames, and roles. Use these for labeling output sections. If missing, derive contributors from git activity.
+If present, parse contributor entries for display names, GitHub usernames, and roles. Expected format: lines containing `@username` with optional role/description text (e.g., `@alice — Frontend lead`). Use these for labeling output sections. If missing, derive contributors from git activity.
 
 ## Step 3: Gather data — what got done
 
@@ -155,6 +155,7 @@ Flag PRs where `mergedAt - createdAt > 3 days` or where state is still `open` an
 Issues assigned during the sprint that saw no PR activity:
 
 For each assigned open issue, check if any PR references it:
+
 ```bash
 gh pr list --state all --search "\"#$ISSUE_NUM\"" --json number --limit 5
 ```
