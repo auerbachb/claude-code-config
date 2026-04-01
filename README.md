@@ -1,6 +1,30 @@
 # Claude Code Configuration
 
-A reusable `CLAUDE.md` configuration that teaches [Claude Code](https://docs.anthropic.com/en/docs/claude-code) to collaborate with [CodeRabbit](https://coderabbit.ai) and [Greptile](https://greptile.com) for automated PR planning, code review, and merge workflows — all driven from your terminal.
+A reusable `CLAUDE.md` configuration that teaches [Claude Code](https://docs.anthropic.com/en/docs/claude-code) to collaborate with [CodeRabbit](https://coderabbit.ai) and [Greptile](https://greptile.com) for automated PR planning, code review, and merge workflows — all driven from your terminal. Includes a full PM skill family for project orchestration across threads.
+
+## Table of Contents
+
+- [What You Get](#what-you-get)
+- [Getting Started](#getting-started)
+  - [Prerequisites](#step-7-install-prerequisites)
+- [Slash Commands](#slash-commands)
+  - [PM Skill Family](#pm-skill-family)
+  - [Workflow Commands](#workflow-commands)
+- [Rule Files](#rule-files)
+- [Hook Scripts](#hook-scripts)
+- [Config Files](#config-files)
+- [GitHub Actions](#github-actions)
+- [Architecture](#architecture)
+- [How the Review Loop Works](#how-the-review-loop-works)
+- [Key Design Decisions](#key-design-decisions)
+- [Per-Project Override](#per-project-override-optional)
+- [FAQ](#faq)
+- [Troubleshooting](#troubleshooting)
+- [Customizing](#customizing)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
 
 ## What you get
 
@@ -12,6 +36,8 @@ After setup, Claude Code will automatically:
 - **Handle rate limits** — Batches fixes into single commits, respects CodeRabbit's hourly limits, falls back to Greptile or self-review when throttled.
 - **Verify acceptance criteria** — Before merging, reads every Test Plan checkbox, verifies each against the code, and checks them off.
 - **Squash and merge** — Clean PRs get squash-merged with branch cleanup after merge gates pass.
+- **Orchestrate multi-agent work** — Decomposes large tasks into phases (fix, review, merge) with health monitoring, handoff files, and heartbeat enforcement.
+- **Project management** — A full PM skill family (`/pm`, `/pm-sprint-plan`, `/pm-okr`, etc.) for backlog prioritization, sprint planning, team metrics, and cross-thread orchestration.
 
 ---
 
@@ -70,9 +96,8 @@ sed -i 's|/path/to/claude-code-config|'"$(pwd)"'|g' ~/.claude/settings.json
 
 This file configures:
 - **Permissions** — Broad allow rules so Claude operates autonomously without prompting for every tool call.
-- **Hooks** — Shell scripts that run automatically during sessions (see below).
+- **Hooks** — Shell scripts that run automatically during sessions (see [Hook Scripts](#hook-scripts)).
 - **Environment variables** — Model preferences and experimental flags.
-- **Plugin marketplaces** — Access to official Claude plugins.
 
 > **Important:** All hook paths in `settings.json` must be absolute. Do not use `~/` or relative paths — they are unreliable. If you move the repo, re-run the `sed` command above.
 
@@ -133,98 +158,259 @@ ls -la "$(pwd)/.claude/hooks/"
 ```
 
 You should see:
-- `~/.claude/CLAUDE.md` → this repo's `CLAUDE.md`
-- `~/.claude/rules` → this repo's `.claude/rules`
-- Each skill in `~/.claude/skills/` → this repo's `.claude/skills/<name>`
+- `~/.claude/CLAUDE.md` -> this repo's `CLAUDE.md`
+- `~/.claude/rules` -> this repo's `.claude/rules`
+- Each skill in `~/.claude/skills/` -> `~/.claude/skills-worktree/.claude/skills/<name>`
 - No `path/to` placeholders in `~/.claude/settings.json`
 - Hook scripts with `x` (execute) permission
 
 ---
 
-## Per-project override (optional)
+## Slash Commands
 
-The global config applies to all projects. To customize per repo, copy files into the project instead:
+All commands below are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
 
-```bash
-cp CLAUDE.md /path/to/your/project/CLAUDE.md
-mkdir -p /path/to/your/project/.claude/rules
-cp -R .claude/rules/. /path/to/your/project/.claude/rules/
+### Summary
+
+| Command | Category | Description |
+|---------|----------|-------------|
+| `/pm` | PM | Generate a PM handoff prompt for a new thread |
+| `/pm-update` | PM | Re-scan repo and refresh `pm-config.md` |
+| `/pm-okr` | PM | View, set, or suggest OKRs |
+| `/pm-clean` | PM | Detect stale issues and suggest closures |
+| `/prioritize` | PM | Rank backlog issues by business goal impact (OKR-aware) |
+| `/pm-team-standup` | PM | Per-contributor activity summary (past 24h) |
+| `/pm-rate-team` | PM | Contribution metrics over a configurable period |
+| `/pm-sprint-plan` | PM | Generate a 2-week sprint plan |
+| `/pm-sprint-review` | PM | Sprint retrospective with velocity metrics |
+| `/standup` | Workflow | Daily standup summary (single contributor) |
+| `/status` | Workflow | Dashboard of open PRs with review state |
+| `/continue` | Workflow | Resume an interrupted review workflow |
+| `/merge` | Workflow | Squash merge with merge gate + AC verification |
+| `/wrap` | Workflow | End-of-session: merge, lessons, cleanup |
+| `/check-acceptance-criteria` | Workflow | Verify Test Plan checkboxes against code |
+| `/lessons` | Workflow | Extract and save session learnings to memory |
+
+### PM Skill Family
+
+The PM skills turn Claude Code into a project manager that works across threads. They share a central config file (`pm-config.md`) that stores your team roster, OKRs, infrastructure, and architecture. Run `/pm` first to bootstrap the config, then use the other skills as needed.
+
+#### `/pm [copy]`
+
+Generate a self-contained handoff prompt for starting a new PM thread. On first run, bootstraps `.claude/pm-config.md` with auto-detected infrastructure and architecture. Combines static config with live GitHub state (open issues, PRs, recent merges) into a single prompt.
+
+Pass `copy` to send the output to the clipboard via `pbcopy`.
+
+#### `/pm-update`
+
+Re-scan the repo and refresh the auto-generated sections of `pm-config.md` (Infrastructure, Architecture) while preserving user-edited sections (Role, OKRs, Team, Notes, Dependency Rules, Workflow Rules). Run after major milestones or significant directory restructuring.
+
+#### `/pm-okr [show | set <objectives> | suggest]`
+
+Manage the OKRs section of `pm-config.md`. OKRs drive `/prioritize` ranking and `/pm-sprint-plan` planning.
+
+- `show` (default) — Display current OKRs with cross-references to open issues
+- `set <objectives>` — Replace OKRs with the provided text
+- `suggest` — Analyze recent merged PRs and closed issues, then suggest OKR updates
+
+#### `/pm-clean [days]`
+
+Scan open issues for staleness and suggest closures. Detects four categories:
+
+1. **Solved by PR** — Issues already fixed by a merged PR
+2. **Inactive** — No activity for N days (default: 30)
+3. **Superseded** — Replaced by a newer issue
+4. **Potential duplicates** — Similar to already-closed issues
+
+Presents recommendations grouped by category. Never auto-closes — always waits for user confirmation.
+
+#### `/prioritize <goal> [| @user constraints | depth]`
+
+Rank open issues by impact on a stated business goal. When OKRs are defined in `pm-config.md`, uses them as an additional ranking signal.
+
+```
+/prioritize increase API throughput | @alice backend-only | 25
 ```
 
-Claude Code loads project-level `CLAUDE.md` first, then falls back to `~/.claude/CLAUDE.md`. Per-project configs let you override specific rules per repo.
+Produces a tiered list (Critical / High / Medium / Low) with dependency annotations, OKR alignment, and next actions. Includes a "stop doing" section if the engineer's current work is misaligned.
+
+#### `/pm-team-standup [since-time]`
+
+Multi-contributor standup. Summarizes what each team member did in the past 24 hours — commits, PRs merged/opened, issues created/closed, and reviews given. Uses the Team section from `pm-config.md` for display names and roles.
+
+Default time reference: yesterday at noon ET.
+
+#### `/pm-rate-team [--days N]`
+
+Evaluate team contributions over a configurable period (default: 14 days). Per-contributor metrics include: PRs merged, code volume, average review cycles, issues opened/closed, reviews given, and CR first-pass success rate. Includes constructive qualitative observations and collaboration patterns.
+
+#### `/pm-sprint-plan [--days N]`
+
+Generate a 2-week sprint plan from the open backlog. Detects dependencies between issues, identifies parallel work tracks, assigns issues to team members (from `pm-config.md`), and aligns with OKRs. Warns about circular dependencies and team overload.
+
+#### `/pm-sprint-review [--days N]`
+
+Sprint retrospective covering: what got done, what slipped, velocity metrics (issues closed, PRs merged, avg cycle time), blockers encountered, per-contributor breakdown, and lessons learned with recommendations.
+
+### Workflow Commands
+
+These commands support the day-to-day PR and review workflow.
+
+#### `/standup [since-time]`
+
+Generate a daily standup summary from recent PRs and issues. Groups accomplishments by business themes and explains what the system can now do (not just what code changed). Reads PR bodies for context.
+
+#### `/status`
+
+Dashboard of all open PRs showing review state, unresolved findings, blockers, HEAD SHA, and last update time. Also reports CR quota usage and active agents if applicable.
+
+#### `/continue`
+
+Resume an interrupted or stalled review workflow. Detects where the agent left off and continues from the next incomplete step:
+
+1. Local CR review
+2. Push to remote
+3. PR creation
+4. Review polling (CR / Greptile)
+5. Feedback processing and thread resolution
+6. Merge gate verification
+7. Acceptance criteria check
+
+Each step shows `[DONE]`, `[ACTION]`, `[BLOCKED]`, or `[SKIP]`.
+
+#### `/merge`
+
+Squash merge the current PR after verifying:
+- Merge gate satisfied (2 clean CR reviews or Greptile severity gate)
+- All acceptance criteria checked off
+- All CI checks passing
+- Branch deletion after merge
+- Work-log updated
+
+#### `/wrap`
+
+End-of-session command that runs the full close-out workflow:
+1. Verify no unresolved review findings
+2. Squash merge the PR
+3. Detect follow-up issues
+4. Extract lessons and save to memory
+5. Sync work-log to root repo
+6. Clean up the worktree
+
+#### `/check-acceptance-criteria [PR-number]`
+
+Verify every Test Plan checkbox in a PR against the actual source code. Checks off passing items by editing the PR body. Reports failures with explanations and flags items that require manual testing. Defaults to the current branch's PR if no number is given.
+
+#### `/lessons`
+
+Extract actionable lessons from the current session — what went wrong, what patterns emerged, what to remember. Categorizes each lesson and saves novel ones to memory with proper frontmatter. Skips lessons that duplicate existing memory entries.
 
 ---
 
-## What's included
+## Rule Files
 
-### Config files
-
-| File | Purpose |
-|------|---------|
-| `CLAUDE.md` | Core instructions — worktree policy, PR workflow, branch naming, acceptance criteria |
-| `global-settings.json` | Global user settings — hooks, permissions, env vars, plugin marketplaces |
-| `.coderabbit.yaml` | CodeRabbit review configuration |
-
-### Rule files (`.claude/rules/`)
+Rule files in `.claude/rules/` auto-load alongside `CLAUDE.md` and define the detailed workflows. They are the behavioral core of this configuration.
 
 | File | Purpose |
 |------|---------|
-| `issue-planning.md` | Issue creation flow, CR plan integration, planning flow |
-| `cr-local-review.md` | Primary review — runs CR locally via CLI before pushing |
-| `cr-github-review.md` | GitHub review — three-endpoint polling, rate limits, thread resolution |
-| `greptile.md` | Greptile fallback reviewer + self-review fallback |
-| `subagent-orchestration.md` | Multi-agent task decomposition and health monitoring |
+| `issue-planning.md` | Issue creation flow, `@coderabbitai plan` integration, plan merging |
+| `cr-local-review.md` | Primary review loop — runs CodeRabbit CLI locally before pushing |
+| `cr-github-review.md` | GitHub review polling — three endpoints, rate limits, thread resolution, merge gate |
+| `greptile.md` | Greptile fallback reviewer — severity-gated re-reviews, daily budget, self-review fallback |
+| `subagent-orchestration.md` | Multi-agent task decomposition (phases A/B/C), monitor mode, heartbeats, handoff files |
 | `work-log.md` | Auto-update daily work log on issue create, PR open, PR merge |
-| `safety.md` | Destructive command prohibitions, `.env` protection |
-| `repo-bootstrap.md` | Auto-provision required GitHub Actions workflows |
+| `safety.md` | Destructive command prohibitions, `.env` protection, subagent safety warnings |
+| `repo-bootstrap.md` | Auto-provision required GitHub Actions workflows on first touch |
 | `trust-dialog-fix.md` | Fix trust dialog re-prompting when bypass permissions are enabled |
-| `skill-symlinks.md` | Symlink new skills globally after creation |
+| `skill-symlinks.md` | Symlink new skills globally via the skills worktree after creation |
 
-### Hook scripts (`.claude/hooks/`)
+---
+
+## Hook Scripts
+
+Hook scripts in `.claude/hooks/` run automatically during Claude Code sessions. They are registered in `global-settings.json` and fire on specific events.
 
 | Script | Trigger | Purpose |
 |--------|---------|---------|
-| `silence-detector-ack.sh` | Stop (after each response) | Touches a heartbeat file so the detector knows the agent is alive |
-| `trust-flag-repair.sh` | Stop (after each response) | Auto-repairs trust flags in `~/.claude.json` to prevent re-prompting |
-| `silence-detector.sh` | PostToolUse (after every tool call) | Checks if the agent has been silent >5 minutes; injects a warning |
-| `post-merge-pull.sh` | PostToolUse on Bash | Auto-pulls main after squash merges to keep local main in sync |
+| `post-merge-pull.sh` | PostToolUse (Bash) | Auto-pulls `main` in the root repo after `gh pr merge` succeeds; also syncs the skills worktree. Uses three fallback strategies to locate the root repo. |
+| `silence-detector.sh` | PostToolUse (all tools) | Checks if the agent has been silent >5 minutes by comparing heartbeat file mtime. Injects a context warning if the threshold is exceeded. |
+| `silence-detector-ack.sh` | Stop (after each response) | Touches the heartbeat file (`/tmp/claude-heartbeat-$SESSION_ID`) to reset the silence timer. |
+| `trust-flag-repair.sh` | Stop (after each response) | Auto-repairs trust flags in `~/.claude.json` across all projects. Prevents re-prompting on subsequent operations within a session. |
 
-### Skills (`.claude/skills/`)
-
-Slash commands you can invoke during a session:
-
-| Command | Purpose |
-|---------|---------|
-| `/status` | Dashboard of all open PRs with review state and blockers |
-| `/continue` | Resume an interrupted review workflow at the first incomplete step |
-| `/check-acceptance-criteria` | Verify Test Plan checkboxes against source code |
-| `/merge` | Verify merge gate + AC, squash merge, update work log |
-| `/lessons` | Extract and save actionable lessons from the current session |
-| `/standup` | Generate a standup summary from recent PRs and issues |
-| `/prioritize` | Rank backlog issues by business goal impact |
-| `/wrap` | End-of-session: verify findings, squash merge, extract lessons, clean up |
-
-### GitHub Actions (`.github/workflows/`)
-
-| Workflow | Purpose |
-|----------|---------|
-| `cr-plan-on-issue.yml` | Auto-comments `@coderabbitai plan` on new issues for spec refinement |
+All hooks are idempotent and fail-safe — they exit silently on errors rather than interrupting the session.
 
 ---
 
-## Key design decisions
+## Config Files
 
-**Worktrees by default.** Every session starts by creating a git worktree — an isolated working directory with its own branch. Multiple Claude Code agents can work on the same repo simultaneously without conflicts. The root repo stays clean on `main`.
+| File | Location | Purpose |
+|------|----------|---------|
+| `CLAUDE.md` | Repo root (symlinked to `~/.claude/CLAUDE.md`) | Core instructions: worktree policy, PR workflow, branch naming, acceptance criteria, CI merge gate, autonomous workflow execution rules |
+| `global-settings.json` | Copied to `~/.claude/settings.json` | Hooks, permissions (`allow: ["*"]` for autonomous operation), model preference (`opus`), experimental flags (`AGENT_TEAMS=1`) |
+| `.coderabbit.yaml` | Repo root | CodeRabbit review config: assertive profile, token-efficiency checks for rule files, knowledge base integration |
+| `.claude/pm-config.md` | Per-repo (bootstrapped by `/pm`) | PM configuration: role, OKRs, team roster, infrastructure/architecture detection, dependency rules, workflow rules |
 
-**Local first, GitHub as safety net.** The CodeRabbit CLI runs reviews instantly in your terminal — no pushing, no polling, no PR noise. Claude fixes everything locally before the PR is ever created. GitHub-based review stays as a fallback.
+### `pm-config.md` sections
 
-**Batch fixes, single push.** Every push consumes a CodeRabbit review from your hourly quota. The config instructs Claude to fix all findings in one commit rather than pushing per-finding.
+The PM config file is bootstrapped by `/pm` on first run and updated by `/pm-update`. It has two types of sections:
 
-**Three-tier fallback chain.** CodeRabbit → Greptile → self-review. CR is always preferred. If rate-limited or unresponsive, Greptile is used if budget allows. If both are unavailable (or Greptile budget is exhausted), Claude performs self-review for risk reduction and reports a blocker. Self-review does **not** satisfy the merge gate.
+- **User-edited** (preserved across updates): Role, OKRs, Team, Notes, Dependency Rules, Workflow Rules
+- **Auto-generated** (refreshed by `/pm-update`): Infrastructure, Architecture
 
-**Verify before merge.** Claude won't offer to merge until it has read the source files and confirmed every acceptance criteria checkbox.
+---
 
-**Two consecutive clean reviews (CR path).** When CodeRabbit is the reviewer, both the local and GitHub loops require two consecutive clean passes before proceeding. This catches the edge case where CodeRabbit marks a review complete but posts findings shortly after. The Greptile path uses a severity-gated merge gate instead — no P0 findings means merge-ready after one fix push.
+## GitHub Actions
+
+| Workflow | File | Purpose |
+|----------|------|---------|
+| CodeRabbit Plan on Issues | `cr-plan-on-issue.yml` | Auto-comments `@coderabbitai plan` on every new issue (skips bot-created issues). Produces an implementation plan with file recommendations and edge cases before any coding begins. |
+
+---
+
+## Architecture
+
+### Symlink topology
+
+```
+~/.claude/
+  CLAUDE.md          ->  <repo>/CLAUDE.md
+  rules/             ->  <repo>/.claude/rules/
+  settings.json         (copied from <repo>/global-settings.json)
+  skills/
+    pm/              ->  ~/.claude/skills-worktree/.claude/skills/pm/
+    standup/         ->  ~/.claude/skills-worktree/.claude/skills/standup/
+    ...              ->  ~/.claude/skills-worktree/.claude/skills/.../
+  skills-worktree/      (git worktree pinned to main)
+```
+
+### Why a skills worktree?
+
+Skills are symlinked through a dedicated worktree (`~/.claude/skills-worktree/`) rather than directly to the root repo. This decouples skill availability from the root repo's branch state. Without it, switching the root repo to a feature branch would make skills added after that branch invisible — their symlink targets wouldn't exist on that branch.
+
+The `post-merge-pull.sh` hook auto-syncs the skills worktree after merges. The `setup-skills-worktree.sh` script handles initial setup and migration from old direct symlinks.
+
+### Session lifecycle
+
+1. **Session start** — Pull remote `main`, create a worktree, verify skills worktree exists, detect work-log directory, check for required GitHub Actions workflows
+2. **Issue creation** — Draft issue, post via `gh issue create`, wait for CodeRabbit plan, merge plans into issue body
+3. **Implementation** — Code on the worktree's feature branch
+4. **Local review** — Run `coderabbit review --prompt-only` until two consecutive clean passes
+5. **Push and PR** — Commit, push, create PR with `Closes #N` and Test Plan checkboxes
+6. **GitHub review** — Poll CR (7-min timeout), fall back to Greptile if needed, fix findings, reply to threads
+7. **Merge** — Verify merge gate (2 clean CR passes or Greptile severity gate), verify AC, squash merge
+8. **Cleanup** — Delete branch, sync work-log, optionally remove worktree
+
+### Multi-agent orchestration
+
+For large tasks, work is decomposed into three sequential phases per PR:
+
+| Phase | Scope | Token budget |
+|-------|-------|-------------|
+| **A: Fix + Push** | Read findings, fix code, commit, push, reply to threads, write handoff file | Heaviest |
+| **B: Review Loop** | Poll for reviews, fix new findings, confirm merge gate | Medium |
+| **C: Merge Prep** | Verify AC checkboxes, report ready for merge | Lightest |
+
+The parent agent stays in **monitor mode** while subagents are active — polling status every ~60 seconds, sending heartbeats, and launching next-phase agents. Structured handoff files (`~/.claude/handoffs/pr-{N}-handoff.json`) transfer detailed state between phases.
 
 ---
 
@@ -239,7 +425,7 @@ Finish coding on feature branch
 Run coderabbit review --prompt-only
        |
        v
-CR returns findings? ──No──> Run review once more to confirm
+CR returns findings? --No--> Run review once more to confirm
        |                              |
       Yes                        Still clean?
        |                              |
@@ -264,7 +450,7 @@ PR created, CR auto-reviews on GitHub
 Poll for CR comments (60s intervals, 7 min timeout)
        |
        v
-CR posts findings? ──No──> CR rate-limited?
+CR posts findings? --No--> CR rate-limited?
        |                       |            |
       Yes                     Yes           No
        |                       |            |
@@ -289,6 +475,42 @@ clean
 
 ---
 
+## Key design decisions
+
+**Worktrees by default.** Every session starts by creating a git worktree — an isolated working directory with its own branch. Multiple Claude Code agents can work on the same repo simultaneously without conflicts. The root repo stays clean on `main`.
+
+**Local first, GitHub as safety net.** The CodeRabbit CLI runs reviews instantly in your terminal — no pushing, no polling, no PR noise. Claude fixes everything locally before the PR is ever created. GitHub-based review stays as a fallback.
+
+**Batch fixes, single push.** Every push consumes a CodeRabbit review from your hourly quota. The config instructs Claude to fix all findings in one commit rather than pushing per-finding.
+
+**Three-tier fallback chain.** CodeRabbit -> Greptile -> self-review. CR is always preferred. If rate-limited or unresponsive, Greptile is used if budget allows (40 reviews/day default cap). If both are unavailable, Claude performs self-review for risk reduction and reports a blocker. Self-review does **not** satisfy the merge gate.
+
+**CI must pass before merge.** All CI check-runs are verified before any merge. Linter suppression comments (`eslint-disable`, `@ts-ignore`, etc.) are prohibited — fix the actual code instead.
+
+**Verify before merge.** Claude won't offer to merge until it has read the source files and confirmed every acceptance criteria checkbox.
+
+**Two consecutive clean reviews (CR path).** Both the local and GitHub loops require two consecutive clean passes. This catches the edge case where CodeRabbit marks a review complete but posts findings shortly after. The Greptile path uses a severity-gated merge gate instead — no P0 findings means merge-ready after one fix push.
+
+**Every PR starts with an issue.** Issues go through CodeRabbit planning (`@coderabbitai plan`) that catches gaps before coding begins. The implementation plan is merged into the issue body as the canonical spec.
+
+---
+
+## Per-project override (optional)
+
+The global config applies to all projects. To customize per repo, copy files into the project instead:
+
+```bash
+cp CLAUDE.md /path/to/your/project/CLAUDE.md
+mkdir -p /path/to/your/project/.claude/rules
+cp -R .claude/rules/. /path/to/your/project/.claude/rules/
+```
+
+Claude Code loads project-level `CLAUDE.md` first, then falls back to `~/.claude/CLAUDE.md`. Per-project configs let you override specific rules per repo.
+
+> **Do not use project-level `.claude/settings.json` files for permissions.** They interfere with the global wildcard `allow: ["*"]` and cause more re-prompting, not less. See [Troubleshooting](#troubleshooting).
+
+---
+
 ## FAQ
 
 **Why does the config require worktrees?**
@@ -310,18 +532,12 @@ The local review loop times out after 2 minutes. The GitHub loop times out after
 Yes. The config auto-detects CodeRabbit. Without it, Claude uses self-review as a fallback, and you still get the PR workflow, branch naming, acceptance criteria verification, and squash-merge flow. (Greptile is only triggered as a fallback when CodeRabbit is installed but rate-limited or unresponsive.)
 
 **Can I use this without Greptile?**
-Yes. Greptile is optional — it's only triggered when CodeRabbit is rate-limited or unresponsive. Without it, the fallback chain is CodeRabbit → self-review.
+Yes. Greptile is optional — it's only triggered when CodeRabbit is rate-limited or unresponsive. Without it, the fallback chain is CodeRabbit -> self-review.
+
+**What is `pm-config.md` and do I need it?**
+It's a per-repo config file bootstrapped by `/pm` on first run. It stores your team roster, OKRs, infrastructure, and architecture detection. You only need it if you use the PM skill family. Other skills and the review workflow work without it.
 
 ---
-
-## Customizing
-
-The config is plain Markdown. Edit to match your workflow:
-
-- **Change branch naming** — Modify the `issue-N-short-description` pattern in CLAUDE.md.
-- **Adjust polling intervals** — The 60-second interval and 7-minute timeout are in `cr-github-review.md`.
-- **Restrict autonomy** — The rules allow Claude to fix all files autonomously. Add restrictions in `CLAUDE.md` if you want approval for certain paths.
-- **Skip CodeRabbit** — The config auto-detects. No CodeRabbit = those sections are skipped.
 
 ## Troubleshooting
 
@@ -416,6 +632,19 @@ Note: `--dangerously-skip-permissions` does **not** bypass trust dialogs — the
 - [anthropics/claude-code#9113](https://github.com/anthropics/claude-code/issues/9113) — Pre-configured `~/.claude.json` flags not respected
 
 **Mitigation:** A `Stop` hook (`trust-flag-repair.sh`) automatically repairs all trust flags after every agent response. This prevents re-prompting on subsequent operations within a session, but cannot prevent the initial prompt when creating a brand-new worktree for the first time. For manual repair, use the script under Cause 2 above or see `.claude/rules/trust-dialog-fix.md`.
+
+---
+
+## Customizing
+
+The config is plain Markdown. Edit to match your workflow:
+
+- **Change branch naming** — Modify the `issue-N-short-description` pattern in CLAUDE.md.
+- **Adjust polling intervals** — The 60-second interval and 7-minute timeout are in `cr-github-review.md`.
+- **Adjust Greptile budget** — The 40 reviews/day default cap is in `greptile.md`. Change the `budget` field in `session-state.json`.
+- **Restrict autonomy** — The rules allow Claude to fix all files autonomously. Add restrictions in `CLAUDE.md` if you want approval for certain paths.
+- **Skip CodeRabbit** — The config auto-detects. No CodeRabbit = those sections are skipped.
+- **Customize PM config** — Edit `.claude/pm-config.md` to set your team roster, OKRs, and workflow rules. User-edited sections are preserved across `/pm-update` runs.
 
 ## Contributing
 
