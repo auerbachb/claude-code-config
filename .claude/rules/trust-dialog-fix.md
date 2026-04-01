@@ -115,12 +115,27 @@ else:
 "
 ```
 
+## Worktree Root Cause
+
+Every worktree gets its own absolute path (e.g., `/Users/you/repo/.claude/worktrees/my-worktree/`), and Claude Code registers this as a separate project in `~/.claude.json`. New project entries start with all trust flags set to `false`, triggering the trust dialog and external includes approval prompts.
+
+This is especially problematic for the `claude-code-config` repo because it is the global config source — `~/.claude/CLAUDE.md` and `~/.claude/rules` are symlinks pointing **into** this repo. From a worktree's perspective, those symlinks resolve to paths outside the worktree directory, so Claude Code treats them as "external includes." Other repos using worktrees don't have this problem because their global symlinks don't point back into themselves.
+
+See the README troubleshooting section (Cause 3) for the full topology explanation and upstream issue links. The `trust-flag-repair.sh` Stop hook (see "Automatic Hook" below) mitigates this automatically.
+
 ## When to Run
 
 - **Symptom:** Claude Code prompts you to trust a project or approve external includes when it shouldn't (bypass permissions is already enabled).
 - **After deleting `~/.claude.json`:** Claude Code recreates it with `false` defaults. Run the repair script after the file is recreated.
 - **After cloning/moving a project:** A new project entry in `~/.claude.json` starts with `false` flags.
 
-## Automatic Hook (Optional)
+## Automatic Hook
 
-If this issue recurs frequently, add an automatic hook in `global-settings.json` to auto-repair the flags. This is not included by default because the issue is intermittent and the manual fix is fast. Create a hook script and register it under `Stop` or `PostToolUse` (these are the supported hook arrays).
+The `trust-flag-repair.sh` script runs as a `Stop` hook after every agent response. It repairs all trust flags across all projects in `~/.claude.json`, preventing re-prompting on subsequent operations within a session.
+
+- **Script:** `.claude/hooks/trust-flag-repair.sh`
+- **Registered in:** `global-settings.json` under `hooks.Stop`
+- **Behavior:** Idempotent — safe to run repeatedly. Exits silently when all flags are already set. Handles missing `~/.claude.json` gracefully.
+- **Limitation:** Cannot prevent the initial trust prompt when a brand-new worktree is created for the first time (the project entry doesn't exist yet). The hook repairs it after the first response, so subsequent operations in that session won't re-prompt.
+
+The manual repair scripts above remain useful for debugging and one-off fixes (e.g., after deleting `~/.claude.json`).

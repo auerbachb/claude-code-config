@@ -70,7 +70,7 @@ sed -i 's|/path/to/claude-code-config|'"$(pwd)"'|g' ~/.claude/settings.json
 
 This file configures:
 - **Permissions** — Broad allow rules so Claude operates autonomously without prompting for every tool call.
-- **Hooks** — Three shell scripts that run automatically during sessions (see below).
+- **Hooks** — Shell scripts that run automatically during sessions (see below).
 - **Environment variables** — Model preferences and experimental flags.
 - **Plugin marketplaces** — Access to official Claude plugins.
 
@@ -185,6 +185,7 @@ Claude Code loads project-level `CLAUDE.md` first, then falls back to `~/.claude
 | Script | Trigger | Purpose |
 |--------|---------|---------|
 | `silence-detector-ack.sh` | Stop (after each response) | Touches a heartbeat file so the detector knows the agent is alive |
+| `trust-flag-repair.sh` | Stop (after each response) | Auto-repairs trust flags in `~/.claude.json` to prevent re-prompting |
 | `silence-detector.sh` | PostToolUse (after every tool call) | Checks if the agent has been silent >5 minutes; injects a warning |
 | `post-merge-pull.sh` | PostToolUse on Bash | Auto-pulls main after squash merges to keep local main in sync |
 
@@ -326,7 +327,7 @@ The config is plain Markdown. Edit to match your workflow:
 
 ### Claude Code keeps asking for permission even with bypass enabled
 
-This is the most common issue. You've set `"allow": ["*"]` in `~/.claude/settings.json`, but Claude Code still prompts you to approve edits, bash commands, or the trust dialog. There are two independent causes — fix both.
+This is the most common issue. You've set `"allow": ["*"]` in `~/.claude/settings.json`, but Claude Code still prompts you to approve edits, bash commands, or the trust dialog. There are three independent causes — fix all that apply.
 
 **Cause 1: A project-level `.claude/settings.json` exists in the repo.**
 
@@ -397,6 +398,24 @@ else:
 ```
 
 You'll need to re-run this after creating new worktrees. See `.claude/rules/trust-dialog-fix.md` for more details and a single-project variant.
+
+**Cause 3: Worktree-symlink topology (this repo only).**
+
+> This cause is specific to `claude-code-config` itself. Other repos using worktrees are not affected.
+
+This repo is the source of truth for global Claude Code config — `~/.claude/CLAUDE.md` and `~/.claude/rules` are symlinks pointing **into** this repo. When Claude Code runs in a worktree of this repo, the symlinks resolve to the root repo's files (e.g., `/Users/you/claude-code-config/CLAUDE.md`), which is **outside** the worktree directory (e.g., `/Users/you/claude-code-config/.claude/worktrees/my-worktree/`). Claude Code sees these as "external includes" and creates a new project entry in `~/.claude.json` with all trust flags set to `false`, triggering the trust dialog and external includes approval prompts.
+
+Other repos don't have this problem because their worktrees only *consume* the global symlinks — there's no path collision. This repo is unique because the global symlinks point back *into* it.
+
+Note: `--dangerously-skip-permissions` does **not** bypass trust dialogs — they are a separate security boundary.
+
+**Upstream issues tracking this:**
+- [anthropics/claude-code#34437](https://github.com/anthropics/claude-code/issues/34437) — Worktrees should share parent repo's project directory
+- [anthropics/claude-code#23109](https://github.com/anthropics/claude-code/issues/23109) — Feature request: trusted workspace patterns
+- [anthropics/claude-code#28506](https://github.com/anthropics/claude-code/issues/28506) — `--dangerously-skip-permissions` doesn't bypass workspace trust
+- [anthropics/claude-code#9113](https://github.com/anthropics/claude-code/issues/9113) — Pre-configured `~/.claude.json` flags not respected
+
+**Mitigation:** A `Stop` hook (`trust-flag-repair.sh`) automatically repairs all trust flags after every agent response. This prevents re-prompting on subsequent operations within a session, but cannot prevent the initial prompt when creating a brand-new worktree for the first time. For manual repair, use the script under Cause 2 above or see `.claude/rules/trust-dialog-fix.md`.
 
 ## Contributing
 
