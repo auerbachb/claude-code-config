@@ -6,7 +6,7 @@ A reusable `CLAUDE.md` configuration that teaches [Claude Code](https://docs.ant
 
 - [What You Get](#what-you-get)
 - [Getting Started](#getting-started)
-  - [Prerequisites](#step-7-install-prerequisites)
+  - [Prerequisites](#prerequisites)
 - [Slash Commands](#slash-commands)
   - [PM Skill Family](#pm-skill-family)
   - [Workflow Commands](#workflow-commands)
@@ -112,7 +112,7 @@ The skills worktree ensures skills are always available regardless of what branc
 
 This creates a dedicated worktree at `~/.claude/skills-worktree/` pinned to `main` and symlinks all skills to `~/.claude/skills/`. The `post-merge-pull.sh` hook keeps it in sync automatically. If skills ever break, re-run this script.
 
-### Step 7: Install prerequisites
+### Prerequisites
 
 These tools are required for the full workflow:
 
