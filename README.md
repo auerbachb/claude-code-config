@@ -74,7 +74,7 @@ This gives Claude Code its core instructions in every project. The symlink means
 ln -sfn "$(pwd)/.claude/rules" ~/.claude/rules
 ```
 
-Rule files in `.claude/rules/` auto-load alongside `CLAUDE.md` for the parent agent session. Subagents do not auto-load these files — pass full rule content explicitly when spawning subagents. These files contain the detailed review, planning, safety, and orchestration workflows.
+Rule files in `.claude/rules/` auto-load alongside `CLAUDE.md` for the parent agent session. Subagents do not auto-load these files — pass full `CLAUDE.md` and all rule file contents explicitly when spawning subagents. These files contain the detailed review, planning, safety, and orchestration workflows.
 
 ### Step 5: Install global settings (hooks + permissions)
 
@@ -193,7 +193,7 @@ All commands below are invoked as `/command` in a Claude Code session. They are 
 
 ### PM Skill Family
 
-The PM skills turn Claude Code into a project manager that works across threads. They share a central config file (`pm-config.md`) that stores your team roster, OKRs, infrastructure, and architecture. Run `/pm` first to bootstrap the config, then use the other skills as needed.
+The PM skills turn Claude Code into a project manager who works across threads. They share a central config file (`pm-config.md`) that stores your team roster, OKRs, infrastructure, and architecture. Run `/pm` first to bootstrap the config, then use the other skills as needed.
 
 #### `/pm [copy]`
 
@@ -339,7 +339,7 @@ Hook scripts in `.claude/hooks/` run automatically during Claude Code sessions. 
 | `silence-detector-ack.sh` | Stop (after each response) | Touches the heartbeat file (`/tmp/claude-heartbeat-$SESSION_ID`) to reset the silence timer. |
 | `trust-flag-repair.sh` | Stop (after each response) | Auto-repairs trust flags in `~/.claude.json` across all projects. Prevents re-prompting on subsequent operations within a session. |
 
-All hooks are idempotent and fail-safe — they exit silently on errors rather than interrupting the session.
+All hooks are idempotent and fail-safe — they handle errors gracefully without interrupting the session.
 
 ---
 
