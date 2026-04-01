@@ -83,13 +83,31 @@ Before merging, verify the PR has not been rebased or force-pushed since the las
    ```
 2. If the SHA differs from what the merge gate was verified against, a rebase/force-push happened — **do NOT merge.** Wait for a fresh CR review on the new SHA before proceeding.
 
-### Step 2.4: Squash merge
+### Step 2.4: Verify CI passes (NON-NEGOTIABLE)
+
+Before merging, check ALL CI check-runs on the HEAD commit:
+
+```bash
+SHA=$(gh pr view <PR_NUMBER> --json commits --jq '.commits[-1].oid')
+gh api "repos/{owner}/{repo}/commits/$SHA/check-runs?per_page=100" \
+  --jq '.check_runs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required") | {name, conclusion}'
+```
+
+**If ANY check-run has a blocking conclusion: DO NOT MERGE.** Instead:
+1. Read the failure output: `gh api "repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID}" --jq '.output.summary'`
+2. Fix the issue (lint errors, type errors, test failures, etc.)
+3. Commit, push, and wait for CI to re-run
+4. Re-verify all checks pass before proceeding
+
+**Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, or any suppression comment to work around CI.** Fix the actual code.
+
+### Step 2.5: Squash merge
 
 ```bash
 gh pr merge --squash --delete-branch
 ```
 
-### Step 2.4: Log to work-log
+### Step 2.6: Log to work-log
 
 If a work-log directory was detected at session start:
 

@@ -83,6 +83,36 @@ If you catch yourself composing a "should I...?" or "want me to...?" question ab
 - Acceptance criteria are verified via code review and manual testing after deploy, not automated test suites.
 - When verifying, read the relevant source files and confirm the logic satisfies each criterion.
 
+### CI Must Pass Before Merge (NON-NEGOTIABLE)
+
+Before running `gh pr merge` on ANY PR, check ALL CI check-runs:
+
+```bash
+SHA=$(gh pr view <PR_NUMBER> --json commits --jq '.commits[-1].oid')
+gh api "repos/{owner}/{repo}/commits/$SHA/check-runs?per_page=100" \
+  --jq '.check_runs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required") | {name, conclusion}'
+```
+
+**If ANY check-run has a blocking conclusion (`failure`, `timed_out`, `action_required`): DO NOT MERGE.** Instead:
+1. Read the failure output and fix the issue
+2. Commit, push, and wait for CI to re-run
+3. Only merge after ALL checks pass
+
+**Never disable linters, suppress warnings, or add eslint-disable comments to work around CI failures.** Fix the actual code errors. If lint errors exist in files you didn't touch, fix them anyway — they block the entire CI pipeline.
+
+This applies to ALL merge paths: manual `gh pr merge`, the `/merge` skill, the `/wrap` skill, and Phase C merge prep.
+
+### Never Suppress Linter Errors (NON-NEGOTIABLE)
+
+**NEVER add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `noqa`, or any linter suppression comment** to work around CI failures. These hide bugs instead of fixing them.
+
+When CI lint/typecheck fails:
+1. Read the error messages
+2. Fix the actual code — unused vars, missing types, incorrect imports, etc.
+3. If the error is in a file you didn't modify, fix it anyway — broken lint blocks the entire pipeline
+
+The only acceptable use of suppression comments is when the linter is provably wrong about a specific line AND you add a comment explaining why.
+
 ### Branching & Merging
 - **NEVER work on `main` — not editing, not committing, not pushing.** All code changes happen in worktrees on feature branches. If you're not in a worktree, create one first. If `git branch --show-current` returns `main`, do not touch any files.
 - **Every change requires: GitHub issue -> feature branch -> PR -> squash merge.** No exceptions. This includes `.claude/rules/*.md` and `CLAUDE.md` — rule files are code and follow the same PR workflow.
