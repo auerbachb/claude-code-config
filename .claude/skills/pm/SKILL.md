@@ -71,7 +71,7 @@ Show the user:
 2. Any issues that were in-progress but whose PRs are now missing or stale
 3. Remaining open issues not yet assigned
 
-Ask: "Here's where we left off. Want me to continue with the current assignments, or re-prioritize?"
+Proceed with current assignments by default. State: "Continuing with current assignments. Say 're-prioritize' to change strategy."
 
 Then proceed to **Step 3: Orchestration Loop**.
 
@@ -183,7 +183,7 @@ Based on {N} open issues, {M} recent merges, and {OKR status}:
 {If any suggested issues have dependency chains, note the order}
 ```
 
-Ask the user: "Which of these should we work on? Pick the issues (or adjust), and I'll generate coding thread prompts."
+Select the top-ranked batch by default and generate prompts immediately. State: "Generating prompts for the top issues below. Say 'adjust' to change the selection before pasting into threads."
 
 Then proceed to **Step 3: Orchestration Loop**.
 
@@ -219,8 +219,8 @@ Fix/implement issue #{N}: {title}
 
 ## Workflow
 1. Create a worktree for isolated work
-2. Read the issue and any CodeRabbit plan in the comments
-3. Merge plans into the issue body if not already done
+2. Read the issue body — this is the canonical implementation plan (includes merged CodeRabbit recommendations when available)
+3. Check issue comments only to detect any plan content not yet merged into the body — if found, merge it first
 4. Implement the changes
 5. Run local CodeRabbit review (`coderabbit review --prompt-only`) — fix all findings
 6. Two clean passes, then commit and push
