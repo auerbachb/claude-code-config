@@ -40,7 +40,7 @@ Greptile charges $1/review beyond the 50/month included quota. To prevent runawa
 - **Default budget: 40 reviews/day** (adjustable — set `budget` field in `session-state.json`).
 - **Tracking:** The `greptile_daily` section in `~/.claude/session-state.json` tracks `reviews_used`, `date` (YYYY-MM-DD in ET timezone), and `budget`. See `subagent-orchestration.md` for the schema.
 - **Before EVERY `@greptileai` trigger**, read `greptile_daily` from session state and run the budget check:
-  1. Get the current date in ET: `TZ='America/New_York' date +'%Y-%m-%d'`
+  1. Get the current date in ET: `powershell -Command "[System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTime]::UtcNow, 'Eastern Standard Time').ToString('yyyy-MM-dd')"` (or `TZ='America/New_York' date +'%Y-%m-%d'` on Linux/macOS)
   2. If `greptile_daily.date` differs from today's date, reset `reviews_used` to 0 and update `date` to today
   3. If `reviews_used >= budget`, the budget is **exhausted** — do NOT post `@greptileai`. Fall back to self-review (see below)
   4. Otherwise, increment `reviews_used` by 1 and write the updated `greptile_daily` back to session state **before** posting the `@greptileai` comment

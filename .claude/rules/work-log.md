@@ -38,7 +38,7 @@ Once confirmed (or inferred), remember the path for the rest of the session. Do 
 # Session Log — March 16, 2026
 ```
 
-Generate the date via: `TZ='America/New_York' date +'%B %-d, %Y'`
+Generate the date via: `powershell -Command "[System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTime]::UtcNow, 'Eastern Standard Time').ToString('MMMM d, yyyy')"` (or `TZ='America/New_York' date +'%B %-d, %Y'` on Linux/macOS)
 
 The file should also include an `## Activity Log` section (added on first event, or included in the header).
 
@@ -54,7 +54,7 @@ Append a timestamped line to `## Activity Log` on each of these events:
 | PR opened | `- {time} ET — PR #{N} opened (Issue #{M}): {title} [opened: {open_time}, merged: -, cycles: 0]` |
 | PR merged | `- {time} ET — PR #{N} merged (Issue #{M}): {summary} [opened: {open_time}, merged: {merge_time}, cycles: {N}]` |
 
-**Time format:** `2:34 PM` (12-hour, no leading zero). Get via: `TZ='America/New_York' date +'%l:%M %p' | sed 's/^ //'`.
+**Time format:** `2:34 PM` (12-hour, no leading zero). Get via: `powershell -Command "[System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTime]::UtcNow, 'Eastern Standard Time').ToString('h:mm tt')"` (or `TZ='America/New_York' date +'%l:%M %p' | sed 's/^ //'` on Linux/macOS).
 
 ### PR lifecycle fields
 
@@ -95,7 +95,9 @@ When working in a worktree, any edits to shared docs (session logs, work logs, c
 # ROOT_REPO = first entry from: git worktree list (the main worktree)
 # WORKTREE = current working directory (pwd)
 # WORK_LOG_PATH = confirmed canonical path from session start (e.g., docs/work-logs)
-# Replace YYYY-MM-DD with today's date: $(TZ='America/New_York' date +'%Y-%m-%d')
+# Replace YYYY-MM-DD with today's date (use PowerShell on Windows, TZ on Linux/macOS):
+# Windows: powershell -Command "[System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTime]::UtcNow, 'Eastern Standard Time').ToString('yyyy-MM-dd')"
+# Linux/macOS: TZ='America/New_York' date +'%Y-%m-%d'
 diff "$WORKTREE/$WORK_LOG_PATH/session-log-YYYY-MM-DD.md" "$ROOT_REPO/$WORK_LOG_PATH/session-log-YYYY-MM-DD.md"
 ```
 
