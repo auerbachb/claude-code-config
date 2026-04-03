@@ -31,8 +31,8 @@ gh api --paginate repos/{owner}/{repo}/issues/$NUMBER/comments --jq '.[] | {auth
 ```
 
 From all comments, extract:
-- **CR implementation plan:** Filter for comments by `coderabbitai[bot]` and look for plan structure markers (file lists, implementation steps, phase breakdowns)
-- **Discussion signals:** Scan non-bot comments for dependency markers, scope clarifications, and complexity context (these feed into Step 3)
+- **Implementation plan:** Scan ALL comments (not just `coderabbitai[bot]`) for plan structure markers — file lists, implementation steps, phase breakdowns. CR plans are the most common source, but human-written plans in comments are equally valid. Prefer the most structured/detailed plan found regardless of author.
+- **Discussion signals:** Scan all comments for dependency markers, scope clarifications, and complexity context (these feed into Step 3)
 - If a CR plan exists, extract the **file list** using these patterns:
   - Look for headings containing "Files", "Files likely touched", "File list", or "Touched files" (case-insensitive)
   - Parse the block following that heading: bullet/numbered lists (`-`, `*`, `+`, or digits + `.`) or fenced code blocks with one path per line
@@ -62,7 +62,8 @@ From the gathered data, compute these discrete signals:
 |--------|---------------|
 | `file_count` | Per-issue count of files from CR plan file list (see Step 2 parsing). If no CR plan, count strings in the issue body that contain `/`, end with a file extension (`.ts`, `.md`, `.json`, `.py`, `.sh`, `.yml`, `.yaml`), and do NOT start with `http://` or `https://`. Default: 0 if no CR plan and no file paths detected. For batch tier decisions, use the highest per-issue `file_count`. |
 | `dependency_count` | Total dependency references found in Step 3. |
-| `touches_rules` | `true` if any file path matches `.claude/rules/*.md` OR issue body mentions "rule file", "workflow protocol", "CLAUDE.md". |
+| `touches_rules` | `true` if any file path matches `.claude/rules/*.md` OR issue body mentions "rule file", "workflow protocol". |
+| `touches_claude_md` | `true` if any file path matches `CLAUDE.md` (case-insensitive) OR issue body mentions "CLAUDE.md". |
 | `touches_skill` | `true` if any file path matches `.claude/skills/` OR issue is about creating/modifying a skill. |
 | `ac_count` | Count of acceptance criteria checkboxes (both `- [ ]` and `- [x]`/`- [X]`) in issue body. |
 | `is_multi_issue` | `true` if more than one issue number was provided. |
@@ -79,6 +80,7 @@ Apply this decision tree. When signals conflict, choose the **higher** tier (con
 
 Assign Heavy if ANY of these are true:
 - `touches_rules` is true (rule files are highest-stakes)
+- `touches_claude_md` is true (CLAUDE.md is the root config — highest-stakes)
 - `has_orchestration_keywords` is true
 - `is_multi_issue` AND at least one issue has `file_count > 1` or `ac_count > 3` (multiple non-trivial issues)
 - `file_count > 5`
