@@ -91,21 +91,21 @@ Assign Standard if ANY of these are true (and Heavy was not triggered):
 - Issue body is >200 words with structural patterns (includes a user story, describes a new feature via keywords like "implement", "add", "support")
 - `is_multi_issue` with mixed complexity (at least one non-trivial issue that didn't trigger Heavy)
 
-### Light — Sonnet 4.6 / Medium effort
-
-Assign Light if ANY of these are true (and Heavy/Standard were not triggered):
-- `file_count` is 0–1
-- `scope_keywords` include "config", "doc update", "README"
-- Issue describes a straightforward single-file addition or modification
-
 ### Quick — Haiku 4.5 / Low effort
 
-Assign Quick only if ALL of these are true:
+Assign Quick only if ALL of these are true (evaluated before Light to prevent Light's broader conditions from preempting):
 - `scope_keywords` are exclusively from: "typo", "rename", "comment", "formatting"
 - `file_count` is 0–1
 - `ac_count` ≤ 2
 - `dependency_count` is 0
 - No orchestration, rule, or skill signals
+
+### Light — Sonnet 4.6 / Medium effort
+
+Assign Light if ANY of these are true (and Heavy/Standard/Quick were not triggered):
+- `file_count` is 0–1
+- `scope_keywords` include "config", "doc update", "README"
+- Issue describes a straightforward single-file addition or modification
 
 ### Fallback
 
