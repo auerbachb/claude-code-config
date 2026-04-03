@@ -16,7 +16,7 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
    ```bash
    # Example: "yesterday at noon ET" → ISO 8601 with colon offset (GitHub requires +HH:MM not +HHMM)
    # Windows (PowerShell): compute yesterday noon in ET with proper offset
-   SINCE_ISO=$(powershell -Command "\$tz=[System.TimeZoneInfo]::FindSystemTimeZoneById('Eastern Standard Time'); \$nowEt=[System.TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow,\$tz); (Get-Date -Date \$nowEt.Date.AddDays(-1).AddHours(12) -Format 'yyyy-MM-ddTHH:mm:sszzz')" 2>/dev/null || TZ='America/New_York' date -d 'yesterday 12:00' '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || TZ='America/New_York' date -v-1d -v12H -v0M -v0S '+%Y-%m-%dT%H:%M:%S%z')
+   SINCE_ISO=$(powershell -Command "\$tz=[System.TimeZoneInfo]::FindSystemTimeZoneById('Eastern Standard Time'); \$nowEt=[System.TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow,\$tz); \$sinceEt=\$nowEt.Date.AddDays(-1).AddHours(12); ([DateTimeOffset]::new(\$sinceEt, \$tz.GetUtcOffset(\$sinceEt))).ToString('yyyy-MM-ddTHH:mm:sszzz')" 2>/dev/null || TZ='America/New_York' date -d 'yesterday 12:00' '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || TZ='America/New_York' date -v-1d -v12H -v0M -v0S '+%Y-%m-%dT%H:%M:%S%z')
    SINCE_ISO=$(printf '%s' "$SINCE_ISO" | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/')
    ```
    Adjust the date expression to match the user's time reference.
