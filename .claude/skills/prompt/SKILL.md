@@ -74,7 +74,7 @@ From the gathered data, compute these discrete signals:
 
 Apply this decision tree. When signals conflict, choose the **higher** tier (conservative on quality).
 
-**Batch handling rule:** When multiple issues are provided, the tier is determined by the most complex issue in the batch. A batch of 3 issues where one is Heavy makes the whole batch Heavy.
+**Batch handling rule:** When multiple issues are provided, the tier is determined by the most complex issue in the batch. A batch of 3 issues where one is Heavy makes the whole batch Heavy. This means every per-issue prompt block in the batch inherits the batch-level tier — an individually Light issue will carry Heavy checkpoints if the batch tier is Heavy. This is intentional: the conservative-on-quality principle applies to the entire batch, and blocks are "independently copyable" in the sense that each is self-contained, not that each has its own tier.
 
 ### Heavy — Opus 4.6 1M / High effort
 
@@ -126,9 +126,9 @@ The output has two parts:
 1. **Tier Recommendation** — plain text (not inside a code fence), shown once at the top
 2. **Per-issue prompt blocks** — one 4-backtick fenced block per issue, each self-contained with all context needed by the executing agent
 
-For single-issue input, there is one prompt block. For batch input, there are multiple prompt blocks, each independently copyable.
+For single-issue input, there is one prompt block. For batch input, there are multiple prompt blocks, each independently copyable (i.e., self-contained with all context; this does not imply each block has its own tier). All blocks in a batch share the batch-level tier, so an individually Light issue's block may include Heavy-tier checkpoints when the batch tier is Heavy.
 
-**Fence nesting rule:** Outer prompt blocks use ```````` (4 backticks). Any inner code examples (bash commands, SQL, file paths, etc.) use the standard `` ``` `` (3 backticks). This ensures the outer block renders as one copyable unit in the Claude app while inner code blocks display correctly inside it.
+**Fence nesting rule:** Outer prompt blocks use ```````` (4 backticks) because markdown requires n+1 backticks to contain a fence of n backticks. Any inner code examples (bash commands, SQL, file paths, etc.) use the standard `` ``` `` (3 backticks). This ensures the outer block renders as one copyable unit in the Claude app while inner code blocks display correctly inside it.
 
 ### Output Template
 
@@ -179,7 +179,7 @@ Then, for each issue, output a self-contained prompt block. Use 4-backtick fence
 
 ---
 
-{ONLY for Heavy tier — include this section:}
+{ONLY when the tier is Heavy (whether from a single issue or batch classification) — include this section in every issue block:}
 ## Protocol Checkpoints
 
 These are mandatory verification points. The executing agent MUST follow these:
