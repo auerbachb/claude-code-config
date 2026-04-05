@@ -161,9 +161,9 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 
 `Mon Mar 16 02:34 AM ET`
 
-Get the timestamp via: `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`
+Get the timestamp via: `powershell -Command "[System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTime]::UtcNow, 'Eastern Standard Time').ToString('ddd MMM d h:mm tt') + ' ET'"` (or `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'` on Linux/macOS)
 
-NEVER estimate, calculate, or mentally derive timestamps — always run the `date` command. This includes elapsed time: do not count poll cycles or steps to estimate minutes passed. If you need elapsed time, compare two `date` outputs.
+NEVER estimate, calculate, or mentally derive timestamps — always run the command. This includes elapsed time: do not count poll cycles or steps to estimate minutes passed. If you need elapsed time, compare two command outputs.
 
 This applies to ALL messages — status updates, failure reports, success reports, questions, summaries. No exceptions.
 

@@ -1,5 +1,6 @@
 {
   "permissions": {
+    "defaultMode": "bypassPermissions",
     "allow": [
       "Bash(*)",
       "Edit(*)",
@@ -24,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/claude-code-config/.claude/hooks/silence-detector-ack.sh",
+            "command": "C:/Users/PaulKaThat/Develop/claude-code-config/.claude/hooks/silence-detector-ack.sh",
             "timeout": 5
           },
           {
@@ -41,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/claude-code-config/.claude/hooks/post-merge-pull.sh",
+            "command": "C:/Users/PaulKaThat/Develop/claude-code-config/.claude/hooks/post-merge-pull.sh",
             "timeout": 15
           }
         ]
@@ -50,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/claude-code-config/.claude/hooks/silence-detector.sh",
+            "command": "C:/Users/PaulKaThat/Develop/claude-code-config/.claude/hooks/silence-detector.sh",
             "timeout": 5
           }
         ]

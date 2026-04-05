@@ -1,8 +1,18 @@
+# PR MERGE AUTHORIZATION — NON-NEGOTIABLE
+
+**Never merge (or commit to main) a PR/ticket that the user did not create, unless one of the following is true:**
+1. The ticket creator (e.g. Bretton, or whoever opened the issue) has explicitly approved it in the PR/issue comments, OR
+2. The user has explicitly said in the conversation that Bretton (or the ticket creator) has reviewed and approved it.
+
+This applies to all repos, all sessions, forever. When in doubt, ask before merging.
+
+---
+
 # EVERY MESSAGE — NON-NEGOTIABLE BEHAVIORS
 
 These apply to EVERY message the parent agent sends to the user. No exceptions, no degradation over time, no skipping after context compaction.
 
-1. **Timestamp prefix.** Every message starts with Eastern time: `Mon Mar 16 02:34 AM ET`. Get via: `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`. NEVER estimate, calculate, or mentally derive timestamps — always run the `date` command. This includes elapsed time: do not count poll cycles or steps to estimate minutes passed. If you need elapsed time, compare two `date` outputs. This is the FIRST thing in every message — before status updates, before questions, before summaries.
+1. **Timestamp prefix.** Every message starts with Eastern time: `Mon Mar 16 02:34 AM ET`. Get via: `powershell -Command "[System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTime]::UtcNow, 'Eastern Standard Time').ToString('ddd MMM d h:mm tt') + ' ET'"` (or `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'` on Linux/macOS). NEVER estimate, calculate, or mentally derive timestamps — always run the command. This includes elapsed time: do not count poll cycles or steps to estimate minutes passed. If you need elapsed time, compare two command outputs. This is the FIRST thing in every message — before status updates, before questions, before summaries.
 2. **Active monitoring declaration.** If you are monitoring background agents, state how many and which PRs at the end of every message. Example: "Monitoring: PR #618 (Phase B), PR #620 (Phase B), PR #623 (Phase C) — next poll in ~60s."
 3. **5-minute heartbeat.** The user must never go more than 5 minutes without a status message. When you run `date` for the timestamp, check how long it has been since your last message to the user. If >5 minutes, your FIRST action must be a status update — before any tool call. Include: what you are currently doing, what is pending (open PRs, active agents), and any blocked items. See `subagent-orchestration.md` "User Heartbeat" for detailed rules. **Never go silent for >5 minutes — not while doing substantive work, not while polling, not after compaction.**
 4. **Dedicated monitor mode.** If you have active subagents, you are in **monitor mode**: your ONLY job is orchestration (polling subagent status, heartbeats, phase launches, output verification, and session-state/recovery tasks). Do NOT do substantive work (coding, issue creation, file editing) — delegate it to a subagent instead. If the user explicitly asks you to do something, warn that monitoring will pause, do the work, then re-enter monitor mode. See `subagent-orchestration.md` "Dedicated Monitor Mode" for the full rules, permitted/prohibited activities, and exit conditions.
