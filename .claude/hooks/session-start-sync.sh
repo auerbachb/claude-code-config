@@ -37,6 +37,8 @@ else
 fi
 
 # --- Sync root repo (derives path from skills worktree) ---
+# Re-check skills worktree availability independently — fetch/reset errors above
+# don't block this pull, and the root repo path is derived from the worktree.
 if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
   root_repo=$(git -C "$skills_wt" worktree list 2>/dev/null | head -1 | awk '{print $1}')
   if [[ -n "$root_repo" && -e "$root_repo/.git" ]]; then
