@@ -107,7 +107,7 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 - Read affected source files
 - Fix all valid findings + fix lint/CI failures
 - Commit all fixes in ONE commit, push once
-- Reply to all review comment threads
+- Reply to all review comment threads (for Greptile: plain text only — do not include `@greptileai`, every @mention triggers a paid re-review)
 - **Write handoff file** to `~/.claude/handoffs/pr-{N}-handoff.json` (see "Structured Handoff Files" section below) with all findings fixed, threads replied/resolved, files changed, and HEAD SHA. Include `findings_dismissed` for any findings verified as false positives (each entry: `{id, reason}`).
 - **EXIT after push — do not enter polling loop**
 
@@ -440,9 +440,11 @@ If you see the ack but no review within 7 minutes, CR failed to deliver.
 3. Timeout after 5 minutes (Greptile typically responds in 1-3 minutes)
 4. If no response, do a self-review instead
 5. Process Greptile findings same as CR: fix all valid findings in one commit, push once
-6. Reply to EVERY Greptile comment thread confirming the fix:
+6. Reply to EVERY Greptile comment thread confirming the fix using **plain text (no `@greptileai` mention)**:
    - Inline comments: `gh api repos/{owner}/{repo}/pulls/comments/{id}/replies -f body="Fixed in \`SHA\`: <what changed>"`
-   - Issue comments: `gh api repos/{owner}/{repo}/issues/{N}/comments -f body="@greptileai Fixed: <summary>"`
+   - Issue/PR-level comments: `gh pr comment N --body "Fixed in \`SHA\`: <what changed>"`
+   **Do NOT include `@greptileai` in replies** — every @mention triggers a new paid review ($0.50-$1.00).
+   Greptile does not learn from text replies (only from 👍/👎 reactions). Replies are for thread management only.
    Pushing code does NOT resolve threads — you MUST post explicit replies.
 
 ### After Greptile fix+push: severity-gated re-review

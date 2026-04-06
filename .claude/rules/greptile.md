@@ -2,9 +2,9 @@
 
 > **Always:** Poll for response after triggering. Reply to every thread. Fix all valid findings. Classify by severity (P0/P1/P2). Only re-review for P0. Stay on G once triggered for a PR.
 > **Ask first:** Never — fix findings autonomously.
-> **Never:** Trigger Greptile proactively on a PR where CR hasn't failed yet. Ignore Greptile findings. Switch a PR back to CR after Greptile has been triggered.
+> **Never:** Trigger Greptile proactively on a PR where CR hasn't failed yet. Ignore Greptile findings. Switch a PR back to CR after Greptile has been triggered. Include `@greptileai` in reply comments (triggers a paid re-review with no learning benefit).
 
-Greptile is an AI code reviewer used as a **fallback** when CR is rate-limited or unresponsive. Both tools' findings must be verified against code. Differences: cost ($1/review beyond 50/month quota) and completion-signal reliability (Greptile completion signals are accurate; CR completion signals require confirmation passes).
+Greptile is an AI code reviewer used as a **fallback** when CR is rate-limited or unresponsive. Both tools' findings must be verified against code. Differences: cost ($0.50-$1.00/review beyond 50/month quota) and completion-signal reliability (Greptile completion signals are accurate; CR completion signals require confirmation passes).
 
 ## Greptile Basics
 
@@ -75,9 +75,22 @@ Filter by `greptile-apps[bot]` (with `[bot]` suffix).
 
 ## Processing Greptile Findings
 
-Same protocol as CR: classify by severity (P0/P1/P2 — use Greptile badges only), verify against code, fix all valid findings in one commit, push once, reply to every thread, resolve via GraphQL. Use 👍/👎 reactions for feedback.
+Classify by severity (P0/P1/P2 — use Greptile badges only), verify against code, fix all valid findings in one commit, push once, reply to every thread, resolve via GraphQL. Use 👍/👎 reactions for feedback (this is Greptile's only learning mechanism).
 
-**Severity-gated re-review:** P0 present → re-trigger `@greptileai` after fix. P1/P2 only → merge-ready after fix push, no re-review needed.
+> **CRITICAL: Do NOT include `@greptileai` in reply comments.** Every `@greptileai` mention — even in a reply — triggers a new paid review ($0.50-$1.00). Greptile does not learn from text replies (unlike CR which has a knowledge base). Replies are purely for GitHub thread management and human readability.
+>
+> | | CodeRabbit | Greptile |
+> |--|-----------|----------|
+> | Reply format | Include `@coderabbitai` (teaches knowledge base) | **No @mention** — plain text only |
+> | Learns from replies | Yes | No — only from 👍/👎 reactions |
+> | @mention cost | Within hourly quota | $0.50-$1.00 per triggered review |
+
+**Reply format for Greptile threads:**
+- Inline comments: `gh api repos/{owner}/{repo}/pulls/comments/{id}/replies -f body="Fixed in \`SHA\`: <what changed>"`
+- Issue/PR-level comments: `gh pr comment N --body "Fixed in \`SHA\`: <what changed>"`
+- **Never** include `@greptileai` in reply bodies. The only valid use of `@greptileai` is posting a standalone comment to intentionally request a new review (P0 re-review trigger).
+
+**Severity-gated re-review:** P0 present → re-trigger `@greptileai` after fix (this is an intentional re-review request, not a reply). P1/P2 only → merge-ready after fix push, no re-review needed.
 
 ## Detecting a Merge-Ready Greptile Review
 
