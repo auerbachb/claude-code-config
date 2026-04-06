@@ -119,8 +119,9 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 - If this PR is on CR: poll for CR review (fast-path + 7-minute slow-path Greptile trigger). If Greptile is triggered, the PR switches to Greptile permanently.
 - If this PR is already on Greptile: skip CR polling, trigger `@greptileai` and poll for Greptile response directly.
 - If Greptile posts findings: classify by severity (P0/P1/P2). Fix all valid findings, commit, push, reply.
-  - If any P0: trigger `@greptileai` again for re-review (max 3 total Greptile reviews per PR).
-  - If only P1/P2 (no P0): merge-ready after fix push — no re-review needed.
+  - **BEFORE any re-trigger:** Run the severity gate checklist (see `greptile.md` "Before EVERY `@greptileai` Re-Trigger (MANDATORY — after initial trigger)").
+  - If any P0: proceed through severity gate → budget check → trigger `@greptileai` again (max 3 total Greptile reviews per PR).
+  - If only P1/P2 (no P0): STOP — merge-ready after fix push. Do NOT trigger `@greptileai`. Proceed to Phase B completion.
 - If clean pass on CR: trigger one more `@coderabbitai full review` for confirmation (2 clean CR passes needed)
 - If clean Greptile pass (no findings at all): merge-ready immediately.
 - **Phase B Completion:** Update the handoff file at `~/.claude/handoffs/pr-{N}-handoff.json` — set `phase_completed` to `"B"`, refresh `head_sha` if there was a new push, and merge new entries into `findings_fixed`, `threads_replied`, `threads_resolved`, and `files_changed`. **Deduplicate deterministically per field:** for `string[]` fields (`findings_fixed`, `threads_replied`, `threads_resolved`, `files_changed`), dedupe by exact string value; for object arrays (`findings_dismissed`), dedupe by `.id`. This prevents duplicate accumulation when replacement agents re-process the same findings.
@@ -447,11 +448,13 @@ If you see the ack but no review within 7 minutes, CR failed to deliver.
    Greptile does not learn from text replies (only from 👍/👎 reactions). Replies are for thread management only.
    Pushing code does NOT resolve threads — you MUST post explicit replies.
 
-### After Greptile fix+push: severity-gated re-review
+### After Greptile fix+push: severity-gated re-review (MANDATORY checklist)
 Once a PR is on Greptile, it stays on Greptile. Do NOT switch back to CR.
-- **If the review had P0 findings:** After pushing fixes, trigger `@greptileai` again to confirm P0 resolution.
-- **If the review had only P1/P2 (no P0):** Do NOT trigger `@greptileai` again. The PR is merge-ready after the fix push.
-- **Max 3 Greptile reviews per PR** (initial + up to 2 P0 re-reviews). After 3, self-review + tell user.
+1. **Classify all findings** (P0/P1/P2).
+2. **If NO P0:** STOP — skip `@greptileai`. Proceed to merge gate.
+3. **If P0 present:** budget check → trigger `@greptileai`.
+4. **Log severity counts in handoff notes.**
+5. **Max 3 Greptile reviews per PR** (initial + up to 2 P0 re-reviews). After 3, self-review + tell user.
 
 ### Greptile clean / merge-ready detection
 A Greptile review is merge-ready when:
