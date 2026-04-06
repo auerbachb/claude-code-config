@@ -149,12 +149,16 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
 
 3. **Convert to an ISO 8601 timestamp** with the correct UTC offset (handles EST/EDT automatically):
    ```bash
-   # If user gave explicit $ARGUMENTS, convert that time reference directly.
-   # If using smart default, LOOKBACK_DATE is set above — use its noon:
-   SINCE_ISO=$(TZ='America/New_York' date -d "${LOOKBACK_DATE} 12:00" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || TZ='America/New_York' date -jf '%Y-%m-%d %H:%M' "${LOOKBACK_DATE} 12:00" '+%Y-%m-%dT%H:%M:%S%z')
+   if [ -n "$ARGUMENTS" ]; then
+     # User provided an explicit time reference — use it directly, bypass smart lookback
+     SINCE_ISO=$(TZ='America/New_York' date -d "$ARGUMENTS" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || TZ='America/New_York' date -v-1d -v12H -v0M -v0S '+%Y-%m-%dT%H:%M:%S%z')
+   else
+     # Smart default — LOOKBACK_DATE was computed above (most recent prior workday)
+     SINCE_ISO=$(TZ='America/New_York' date -d "${LOOKBACK_DATE} 12:00" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || TZ='America/New_York' date -jf '%Y-%m-%d %H:%M' "${LOOKBACK_DATE} 12:00" '+%Y-%m-%dT%H:%M:%S%z')
+   fi
    SINCE_ISO=$(printf '%s' "$SINCE_ISO" | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/')
    ```
-   If the user provided an explicit time reference via `$ARGUMENTS`, skip the smart lookback and convert their reference directly (same as before).
+   The explicit `if/else` ensures `$ARGUMENTS` overrides the smart lookback cleanly. Both branches produce `SINCE_ISO` in the same format for downstream use.
 
 ### Step 2: Pull issues, PRs, and line counts
 
