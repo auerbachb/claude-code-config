@@ -37,6 +37,15 @@
     ],
     "PostToolUse": [
       {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/session-start-sync.sh",
+            "timeout": 15
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {

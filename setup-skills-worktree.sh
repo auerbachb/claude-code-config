@@ -111,6 +111,59 @@ for link in "$SKILLS_DIR"/*/; do
   fi
 done
 
+# --- Step 5: Migrate CLAUDE.md and rules symlinks to skills worktree ---
+
+CLAUDE_MD_LINK="$HOME/.claude/CLAUDE.md"
+CLAUDE_MD_TARGET="$SKILLS_WORKTREE/CLAUDE.md"
+RULES_LINK="$HOME/.claude/rules"
+RULES_TARGET="$SKILLS_WORKTREE/.claude/rules"
+
+# Migrate CLAUDE.md
+if [[ -L "$CLAUDE_MD_LINK" ]]; then
+  current_target="$(readlink "$CLAUDE_MD_LINK")"
+  if [[ "$current_target" == "$CLAUDE_MD_TARGET" ]]; then
+    echo "  CLAUDE.md — already correct"
+  elif [[ "$current_target" == "$REPO_ROOT/CLAUDE.md" ]]; then
+    echo "  CLAUDE.md — migrating from root repo to worktree"
+    rm "$CLAUDE_MD_LINK"
+    ln -s "$CLAUDE_MD_TARGET" "$CLAUDE_MD_LINK"
+  else
+    echo "  CLAUDE.md — symlink points elsewhere ($current_target), updating to worktree"
+    rm "$CLAUDE_MD_LINK"
+    ln -s "$CLAUDE_MD_TARGET" "$CLAUDE_MD_LINK"
+  fi
+elif [[ -e "$CLAUDE_MD_LINK" ]]; then
+  echo "  WARNING: $CLAUDE_MD_LINK is not a symlink — skipping (will not overwrite)"
+else
+  if [[ -f "$CLAUDE_MD_TARGET" ]]; then
+    echo "  CLAUDE.md — creating symlink to worktree"
+    ln -s "$CLAUDE_MD_TARGET" "$CLAUDE_MD_LINK"
+  fi
+fi
+
+# Migrate rules
+if [[ -L "$RULES_LINK" ]]; then
+  current_target="$(readlink "$RULES_LINK")"
+  if [[ "$current_target" == "$RULES_TARGET" ]]; then
+    echo "  rules — already correct"
+  elif [[ "$current_target" == "$REPO_ROOT/.claude/rules" ]]; then
+    echo "  rules — migrating from root repo to worktree"
+    rm "$RULES_LINK"
+    ln -s "$RULES_TARGET" "$RULES_LINK"
+  else
+    echo "  rules — symlink points elsewhere ($current_target), updating to worktree"
+    rm "$RULES_LINK"
+    ln -s "$RULES_TARGET" "$RULES_LINK"
+  fi
+elif [[ -e "$RULES_LINK" ]]; then
+  echo "  WARNING: $RULES_LINK is not a symlink — skipping (will not overwrite)"
+else
+  if [[ -d "$RULES_TARGET" ]]; then
+    echo "  rules — creating symlink to worktree"
+    ln -s "$RULES_TARGET" "$RULES_LINK"
+  fi
+fi
+
 echo ""
 echo "Done. Skills worktree: $SKILLS_WORKTREE"
 echo "Symlinks in:           $SKILLS_DIR"
