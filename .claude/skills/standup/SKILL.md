@@ -28,13 +28,32 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
      TZ='America/New_York' date -d "$1 - $2 days" '+%Y-%m-%d' 2>/dev/null || TZ='America/New_York' date -jf '%Y-%m-%d' -v-"$2"d "$1" '+%Y-%m-%d'
    }
 
+   days_in_month() {
+     # days_in_month YYYY-MM → number of days in that month
+     local ym=$1
+     local y=${ym%-*} m=${ym#*-}
+     m=$((10#$m))  # strip leading zero
+     case $m in
+       1|3|5|7|8|10|12) echo 31 ;;
+       4|6|9|11) echo 30 ;;
+       2) # leap year check
+         if [ $((y % 400)) -eq 0 ] || { [ $((y % 4)) -eq 0 ] && [ $((y % 100)) -ne 0 ]; }; then
+           echo 29
+         else
+           echo 28
+         fi ;;
+     esac
+   }
+
    get_nth_weekday_of_month() {
      # get_nth_weekday_of_month N WEEKDAY YYYY-MM
      # N=occurrence (1-5), WEEKDAY=0-6 (Sun-Sat), YYYY-MM=year-month
      # Returns YYYY-MM-DD of the Nth occurrence of WEEKDAY in that month
      local n=$1 wd=$2 ym=$3
+     local max_days
+     max_days=$(days_in_month "$ym")
      local count=0 d=1
-     while true; do
+     while [ "$d" -le "$max_days" ]; do
        local candidate="${ym}-$(printf '%02d' $d)"
        local dow
        dow=$(get_day_of_week "$candidate")
@@ -46,29 +65,26 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
          fi
        fi
        d=$((d + 1))
-       [ "$d" -gt 31 ] && return 1
      done
+     return 1
    }
 
    get_last_weekday_of_month() {
      # get_last_weekday_of_month WEEKDAY YYYY-MM
      # Returns the last occurrence of WEEKDAY (0-6) in the given month
      local wd=$1 ym=$2
+     local max_days
+     max_days=$(days_in_month "$ym")
      local last=""
      local d=1
-     while true; do
+     while [ "$d" -le "$max_days" ]; do
        local candidate="${ym}-$(printf '%02d' $d)"
-       # Check if we've rolled into the next month
-       local check_month
-       check_month=$(printf '%s' "$candidate" | cut -d- -f1-2)
-       [ "$check_month" != "$ym" ] && break
        local dow
        dow=$(get_day_of_week "$candidate" 2>/dev/null) || break
        if [ "$dow" -eq "$wd" ]; then
          last="$candidate"
        fi
        d=$((d + 1))
-       [ "$d" -gt 31 ] && break
      done
      echo "$last"
    }
@@ -150,8 +166,14 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
 3. **Convert to an ISO 8601 timestamp** with the correct UTC offset (handles EST/EDT automatically):
    ```bash
    if [ -n "$ARGUMENTS" ]; then
-     # User provided an explicit time reference — use it directly, bypass smart lookback
-     SINCE_ISO=$(TZ='America/New_York' date -d "$ARGUMENTS" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || TZ='America/New_York' date -v-1d -v12H -v0M -v0S '+%Y-%m-%dT%H:%M:%S%z')
+     # User provided an explicit time reference — parse it directly, bypass smart lookback
+     # The agent should convert $ARGUMENTS to the appropriate date -d / date -v expression.
+     # Example for "yesterday at noon ET": date -d 'yesterday 12:00' or date -v-1d -v12H -v0M -v0S
+     SINCE_ISO=$(TZ='America/New_York' date -d "$ARGUMENTS" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || TZ='America/New_York' date -jf '%Y-%m-%d %H:%M' "$ARGUMENTS" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null)
+     if [ -z "$SINCE_ISO" ]; then
+       echo "Error: Could not parse time reference: $ARGUMENTS" >&2
+       exit 1
+     fi
    else
      # Smart default — LOOKBACK_DATE was computed above (most recent prior workday)
      SINCE_ISO=$(TZ='America/New_York' date -d "${LOOKBACK_DATE} 12:00" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || TZ='America/New_York' date -jf '%Y-%m-%d %H:%M' "${LOOKBACK_DATE} 12:00" '+%Y-%m-%dT%H:%M:%S%z')
