@@ -48,6 +48,15 @@ Greptile charges $1/review beyond the 50/month included quota. To prevent runawa
   > "Greptile budget exhausted ({reviews_used}/{budget}). PR #{N} falling back to self-review — merge blocked until manual review or budget resets tomorrow."
 - **This check applies to all Greptile trigger points** (CR GitHub fallback, local post-push, Phase B polling, and per-PR re-reviews). No `@greptileai` comment may be posted without passing the budget check first.
 
+## Before EVERY `@greptileai` Re-Trigger (MANDATORY — after initial trigger)
+
+Applies to 2nd/3rd triggers only; initial trigger requires only the budget check (no severity classification).
+
+1. **Classify all findings from the previous review** (P0/P1/P2).
+2. **If NO P0:** STOP — do NOT trigger `@greptileai`. Proceed to Phase B completion (merge gate check).
+3. **If P0 present:** perform budget check (see "Daily Budget" above) → trigger `@greptileai`.
+4. **Log severity counts in handoff `notes`.**
+
 ## When to Trigger Greptile
 
 **Greptile is fallback-only.** Never trigger it proactively alongside CR. It is only triggered when CR fails for a specific PR:
@@ -90,7 +99,7 @@ Classify by severity (P0/P1/P2 — use Greptile badges only), verify against cod
 - Issue/PR-level comments: `gh pr comment N --body "Fixed in \`SHA\`: <what changed>"`
 - **Never** include `@greptileai` in reply bodies. The only valid use of `@greptileai` is posting a standalone comment to intentionally request a new review (P0 re-review trigger).
 
-**Severity-gated re-review:** P0 present → re-trigger `@greptileai` after fix (this is an intentional re-review request, not a reply). P1/P2 only → merge-ready after fix push, no re-review needed.
+**Severity-gated re-review:** See the "Before EVERY `@greptileai` Re-Trigger" checklist above.
 
 ## Detecting a Merge-Ready Greptile Review
 
