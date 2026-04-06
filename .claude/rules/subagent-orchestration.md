@@ -107,7 +107,7 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 - Read affected source files
 - Fix all valid findings + fix lint/CI failures
 - Commit all fixes in ONE commit, push once
-- Reply to all review comment threads
+- Reply to all review comment threads (for Greptile: plain text only — do not include `@greptileai`, every @mention triggers a paid re-review)
 - **Write handoff file** to `~/.claude/handoffs/pr-{N}-handoff.json` (see "Structured Handoff Files" section below) with all findings fixed, threads replied/resolved, files changed, and HEAD SHA. Include `findings_dismissed` for any findings verified as false positives (each entry: `{id, reason}`).
 - **EXIT after push — do not enter polling loop**
 
