@@ -1,18 +1,27 @@
 # Skill Symlink Rule
 
-> **Always:** Symlink new skills to `~/.claude/skills/` via the skills worktree. Verify existing skills are symlinks pointing to the worktree, not copies or root-repo symlinks. Ensure the skills worktree exists at session start.
+> **Always:** Symlink new skills to `~/.claude/skills/` via the skills worktree. Verify existing skills are symlinks pointing to the worktree, not copies or root-repo symlinks. Ensure the skills worktree exists at session start. CLAUDE.md and rules also go through the skills worktree.
 > **Ask first:** Never — symlink creation and worktree setup are autonomous.
-> **Never:** Copy skill directories to `~/.claude/skills/`. Symlink directly to the root repo (breaks when root repo isn't on `main`). Leave a new skill without a global symlink.
+> **Never:** Copy skill directories to `~/.claude/skills/`. Symlink directly to the root repo (breaks when root repo isn't on `main`). Leave a new skill without a global symlink. Symlink CLAUDE.md or rules directly to the root repo.
 
 ## Source of Truth
 
-This repo (`claude-code-config`) is the single source of truth for all Claude Code skills. The global skills directory (`~/.claude/skills/`) must contain **symlinks** pointing to a dedicated skills worktree — never standalone copies, and never direct symlinks to the root repo.
+This repo (`claude-code-config`) is the single source of truth for all Claude Code skills, global rules, and CLAUDE.md. The global config directory (`~/.claude/`) must contain **symlinks** pointing to a dedicated skills worktree — never standalone copies, and never direct symlinks to the root repo.
+
+The following symlinks all go through the skills worktree:
+- `~/.claude/skills/<name>` -> `~/.claude/skills-worktree/.claude/skills/<name>`
+- `~/.claude/CLAUDE.md` -> `~/.claude/skills-worktree/CLAUDE.md`
+- `~/.claude/rules` -> `~/.claude/skills-worktree/.claude/rules`
 
 ## Why a Dedicated Worktree
 
-Skills are served from `~/.claude/skills-worktree/`, a git worktree permanently checked out to `main`. This decouples skill availability from the root repo's branch state. Without it, when the root repo is on a feature branch (e.g., another session left it there), skills added after that branch was created become invisible — their symlink targets don't exist on that branch.
+Skills, rules, and CLAUDE.md are served from `~/.claude/skills-worktree/`, a git worktree permanently checked out to `main`. This decouples config availability from the root repo's branch state. Without it, when the root repo is on a feature branch (e.g., another session left it there), symlink targets may not exist on that branch.
 
-The `post-merge-pull.sh` hook automatically syncs the skills worktree after merges, so new skills on `main` appear without manual intervention.
+## Session-Start Sync Hook
+
+The `session-start-sync.sh` PostToolUse hook runs once per session (on the first tool call) and syncs the skills worktree to `origin/main`. This ensures skills, rules, and CLAUDE.md are fresh across **all repos** — not just `claude-code-config`. The hook also pulls the root repo's `main` branch if it's currently checked out.
+
+The `post-merge-pull.sh` hook syncs the skills worktree after merges and also refreshes the CLAUDE.md and rules symlinks.
 
 ## Session Start: Verify Skills Worktree
 
@@ -45,19 +54,24 @@ ln -s "$HOME/.claude/skills-worktree/.claude/skills/<name>" "$HOME/.claude/skill
 
 If `~/.claude/skills/` does not exist, create it first: `mkdir -p ~/.claude/skills/`.
 
-## Verifying Existing Skills
+## Verifying Existing Symlinks
 
-To confirm all skills are properly symlinked via the worktree (not copies or root-repo symlinks):
+To confirm all symlinks are properly set up via the worktree (not copies or root-repo symlinks):
 
 ```bash
+# Check skills
 ls -la ~/.claude/skills/
+
+# Check CLAUDE.md and rules
+ls -la ~/.claude/CLAUDE.md
+ls -la ~/.claude/rules
 ```
 
-Every skill entry should show `->` pointing to `~/.claude/skills-worktree/.claude/skills/<name>`. If any skill entry:
-- Is a regular directory (not a symlink) — replace it with a symlink to the worktree
-- Points to the root repo's `.claude/skills/` — migrate it to the worktree
+Every entry should show `->` pointing to `~/.claude/skills-worktree/...`. If any entry:
+- Is a regular directory/file (not a symlink) — the setup script will warn but not overwrite
+- Points to the root repo — migrate it by re-running the setup script
 
-To fix all skills at once, re-run the setup script:
+To fix all symlinks at once, re-run the setup script:
 
 ```bash
 REPO_ROOT="$(git worktree list | head -1 | awk '{print $1}')"
