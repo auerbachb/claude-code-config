@@ -80,12 +80,15 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
      while [ "$d" -le "$max_days" ]; do
        local candidate="${ym}-$(printf '%02d' $d)"
        local dow
-       dow=$(get_day_of_week "$candidate" 2>/dev/null) || break
+       dow=$(get_day_of_week "$candidate")
        if [ "$dow" -eq "$wd" ]; then
          last="$candidate"
        fi
        d=$((d + 1))
      done
+     if [ -z "$last" ]; then
+       return 1
+     fi
      echo "$last"
    }
 
@@ -177,7 +180,15 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
      fi
    else
      # Smart default — LOOKBACK_DATE was computed above (most recent prior workday)
+     if [ -z "$LOOKBACK_DATE" ]; then
+       echo "Error: Failed to compute lookback date" >&2
+       exit 1
+     fi
      SINCE_ISO=$(TZ='America/New_York' date -d "${LOOKBACK_DATE} 12:00" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || TZ='America/New_York' date -jf '%Y-%m-%d %H:%M' "${LOOKBACK_DATE} 12:00" '+%Y-%m-%dT%H:%M:%S%z')
+     if [ -z "$SINCE_ISO" ]; then
+       echo "Error: Failed to convert lookback date to ISO timestamp" >&2
+       exit 1
+     fi
    fi
    SINCE_ISO=$(printf '%s' "$SINCE_ISO" | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/')
    ```
