@@ -9,7 +9,9 @@
 cat > /dev/null
 
 # Session-scoped sentinel file
-sentinel="/tmp/claude-config-synced-${CLAUDE_SESSION_ID:-default}"
+session_id="${CLAUDE_SESSION_ID:-${PPID:-$$}}"
+session_id="${session_id//[^[:alnum:]_.-]/_}"
+sentinel="/tmp/claude-config-synced-${session_id}"
 
 # Already synced this session — exit fast
 if [[ -f "$sentinel" ]]; then
@@ -45,6 +47,8 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
         errors="${errors:+$errors; }root repo pull failed: $err"
       fi
     fi
+  else
+    errors="${errors:+$errors; }root repo could not be resolved from skills worktree at $skills_wt"
   fi
 fi
 

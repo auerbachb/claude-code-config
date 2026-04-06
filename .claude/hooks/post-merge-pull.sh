@@ -64,10 +64,12 @@ if [[ "$command" == *"gh pr merge"* ]] && [[ "$exit_code" == "0" ]]; then
     fi
   fi
 
+  pull_errors=""
+
   # Pull if we found the root repo
   if [[ -n "$root_repo" && -e "$root_repo/.git" ]]; then
-    if ! git -C "$root_repo" pull origin main --ff-only >/dev/null 2>&1; then
-      printf 'post-merge-pull: fast-forward pull failed in %s\n' "$root_repo" >&2
+    if ! err=$(git -C "$root_repo" pull origin main --ff-only 2>&1); then
+      pull_errors="root repo pull failed in $root_repo: $err"
     fi
 
     # --- Sync skills worktree (if it exists) ---
@@ -119,6 +121,8 @@ if [[ "$command" == *"gh pr merge"* ]] && [[ "$exit_code" == "0" ]]; then
           fi
         elif [[ ! -e "$claude_md_link" && -f "$claude_md_target" ]]; then
           ln -s "$claude_md_target" "$claude_md_link" 2>/dev/null || true
+        elif [[ -e "$claude_md_link" ]]; then
+          sync_errors="${sync_errors:+$sync_errors; }$claude_md_link exists and is not a symlink (left unchanged)"
         fi
 
         rules_link="$HOME/.claude/rules"
@@ -130,6 +134,8 @@ if [[ "$command" == *"gh pr merge"* ]] && [[ "$exit_code" == "0" ]]; then
           fi
         elif [[ ! -e "$rules_link" && -d "$rules_target" ]]; then
           ln -s "$rules_target" "$rules_link" 2>/dev/null || true
+        elif [[ -e "$rules_link" ]]; then
+          sync_errors="${sync_errors:+$sync_errors; }$rules_link exists and is not a symlink (left unchanged)"
         fi
       else
         sync_errors="skills worktree belongs to different repo ($wt_root)"
@@ -147,8 +153,18 @@ if [[ "$command" == *"gh pr merge"* ]] && [[ "$exit_code" == "0" ]]; then
       exit 0
     fi
   else
-    # Visible warning instead of silent exit
-    printf 'post-merge-pull: could not find root repo (cwd=%s). Local main may be stale.\n' "$cwd" >&2
+    pull_errors="could not find root repo (cwd=$cwd). Local main may be stale."
+  fi
+
+  # Report pull-level errors via JSON additionalContext
+  if [[ -n "$pull_errors" ]]; then
+    jq -n --arg err "$pull_errors" '{
+      hookSpecificOutput: {
+        hookEventName: "PostToolUse",
+        additionalContext: ("POST-MERGE PULL WARNING: " + $err)
+      }
+    }'
+    exit 0
   fi
 fi
 
