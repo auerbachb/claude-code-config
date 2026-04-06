@@ -24,15 +24,25 @@ touch "$sentinel"
 
 # --- Sync skills worktree ---
 skills_wt="$HOME/.claude/skills-worktree"
+setup_script="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)/setup-skills-worktree.sh"
 errors=""
 
-if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
+# Bootstrap missing skills worktree if setup script is available
+if [[ ! -d "$skills_wt/.claude/skills" || ! -f "$skills_wt/.git" ]]; then
+  if [[ -x "$setup_script" || -f "$setup_script" ]]; then
+    if ! err=$(bash "$setup_script" 2>&1); then
+      errors="skills worktree setup failed: $err"
+    fi
+  fi
+fi
+
+if [[ -z "$errors" && -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
   if ! err=$(git -C "$skills_wt" fetch origin main --quiet 2>&1); then
     errors="skills worktree fetch failed: $err"
   elif ! err=$(git -C "$skills_wt" reset --hard origin/main --quiet 2>&1); then
     errors="skills worktree reset failed: $err"
   fi
-else
+elif [[ -z "$errors" ]]; then
   errors="skills worktree not found at $skills_wt"
 fi
 
