@@ -46,8 +46,10 @@ If OKRs exist, display them formatted clearly with any progress indicators the u
 After displaying OKRs, fetch the open issue backlog and show which issues align with each key result:
 
 ```bash
-gh issue list --state open --json number,title,labels,body --limit 100
+gh issue list --state open --json number,title,labels,body --limit 500
 ```
+
+**Truncation check:** If the returned issue count equals 500, warn: "Showing 500 issues — repo may have more. Results may be incomplete."
 
 For each objective and key result, scan open issue titles, labels, and bodies to find alignment. Match by comparing key terms from the key result text against issue titles, labels, and body content. Only list issues with a clear keyword connection — do not force-match tangential issues.
 
@@ -88,8 +90,10 @@ gh pr list --state merged --search "merged:>$(date -v-30d '+%Y-%m-%d' 2>/dev/nul
 gh issue list --state closed --search "closed:>$(date -v-30d '+%Y-%m-%d' 2>/dev/null || date -d '30 days ago' '+%Y-%m-%d')" --json number,title --limit 50
 
 # Open issues (to see what's left)
-gh issue list --state open --json number,title,labels --limit 50
+gh issue list --state open --json number,title,labels --limit 500
 ```
+
+**Truncation check:** If the returned issue count equals 500, warn: "Showing 500 issues — repo may have more. Results may be incomplete."
 
 ### Step 3b: Identify themes
 

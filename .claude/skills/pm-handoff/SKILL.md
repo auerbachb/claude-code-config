@@ -80,7 +80,7 @@ You manage the backlog, track progress, write GitHub issues, and generate prompt
 {Leave empty with a placeholder: "No OKRs set. Use `/pm-okr set` to define objectives."}
 
 ## Workflow Rules
-1. Check repo state: `gh issue list --state open`, `gh pr list --state open`, `gh pr list --state merged --limit 10`
+1. Check repo state: `gh issue list --state open --limit 500`, `gh pr list --state open`, `gh pr list --state merged --limit 10`
 2. Identify what can run in parallel (no dependency conflicts)
 3. Write detailed prompts for each thread — each prompt should:
    - Reference the GitHub issue URL
@@ -124,7 +124,7 @@ Query current repo state:
 gh repo view --json nameWithOwner,description,url
 
 # Open issues
-gh issue list --state open --json number,title,labels,assignees,createdAt --limit 100
+gh issue list --state open --json number,title,labels,assignees,createdAt --limit 500
 
 # Open PRs
 gh pr list --state open --json number,title,headRefName,author,updatedAt,additions,deletions
@@ -132,6 +132,8 @@ gh pr list --state open --json number,title,headRefName,author,updatedAt,additio
 # Recent merges (last 20)
 gh pr list --state merged --limit 20 --json number,title,mergedAt,author
 ```
+
+**Truncation check:** If the returned issue count equals 500, warn: "Showing 500 issues — repo may have more. Results may be incomplete."
 
 If any command returns empty results, note that gracefully (e.g., "No open issues" rather than failing).
 

@@ -57,8 +57,10 @@ State files may be stale. Cross-reference with live data:
 ```bash
 gh pr list --state open --json number,title,headRefName,author,updatedAt
 gh pr list --state merged --limit 10 --json number,title,mergedAt
-gh issue list --state open --json number,title,labels,assignees --limit 100
+gh issue list --state open --json number,title,labels,assignees --limit 500
 ```
+
+**Truncation check:** If the returned issue count equals 500, warn: "Showing 500 issues — repo may have more. Results may be incomplete."
 
 - PRs that have merged since the handoff: mark as complete, remove from assignments.
 - Issues that have been closed: remove from backlog.
@@ -99,15 +101,17 @@ Extract the `## OKRs` section if present and non-placeholder. Set `OKR_MODE=true
 gh pr list --state merged --limit 20 --json number,title,mergedAt,author,body
 
 # Open issues — the backlog
-gh issue list --state open --json number,title,labels,assignees,createdAt,updatedAt --limit 100
+gh issue list --state open --json number,title,labels,assignees,createdAt,updatedAt --limit 500
 
 # Open PRs — detect in-flight work
 gh pr list --state open --json number,title,headRefName,author,updatedAt,additions,deletions
 ```
 
+**Truncation check:** If the returned issue count equals 500, warn: "Showing 500 issues — repo may have more. Results may be incomplete."
+
 ### 1B.3: Read issue bodies for top candidates
 
-Reading all 100 issue bodies is expensive. Use a two-pass approach:
+Reading all issue bodies is expensive. Use a two-pass approach:
 
 **Pass 1 — Quick scan:** From the issue list, identify the top ~20 candidates using fast signals:
 - Labels containing `bug`, `critical`, `P0`, `P1`, `urgent`, `blocked`
