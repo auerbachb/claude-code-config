@@ -12,7 +12,7 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
 
 1. **Find all repos the user works in.** Check recent git activity across known repo paths. Start with the current working directory, then check other repos mentioned in conversation context or memory.
 
-2. **Determine the lookback cutoff.** If the user provided an explicit `$ARGUMENTS` time reference, use it directly (skip to the ISO conversion below). If no argument was given, compute the smart default: find the most recent prior workday by walking backwards from yesterday, skipping weekends and US federal holidays.
+2. **Determine the lookback cutoff.** If the user provided an explicit `$ARGUMENTS` time reference, use it directly (skip to the ISO conversion below). If no argument was given, compute the smart default: find the most recent prior workday by walking backwards from yesterday, skipping weekends, US federal holidays, and the day after Thanksgiving (a de facto holiday for most organizations).
 
    **Smart lookback algorithm** (run only when `$ARGUMENTS` is empty):
 
@@ -127,7 +127,8 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
      thanksgiving=$(get_nth_weekday_of_month 4 4 "$y-11")          # Thanksgiving: 4th Thu Nov
      holidays="$holidays $thanksgiving"
 
-     # Day after Thanksgiving (Friday)
+     # Day after Thanksgiving (Friday) — not a federal holiday, but a de facto
+     # holiday for most organizations; included to avoid gaps in standup reporting
      local day_after
      day_after=$(TZ='America/New_York' date -d "$thanksgiving + 1 day" '+%Y-%m-%d' 2>/dev/null || TZ='America/New_York' date -jf '%Y-%m-%d' -v+1d "$thanksgiving" '+%Y-%m-%d')
      holidays="$holidays $day_after"
