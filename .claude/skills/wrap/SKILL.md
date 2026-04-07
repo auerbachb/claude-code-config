@@ -242,10 +242,10 @@ If the root repo's copy is missing entries, append them (do not overwrite the en
 The remote branch was already deleted by `--delete-branch` at merge time. Now delete the local tracking branch on the root repo:
 
 ```bash
-git -C "$ROOT_REPO" branch -d "$BRANCH_NAME"
+git -C "$ROOT_REPO" branch -D "$BRANCH_NAME"
 ```
 
-If this fails (branch already deleted, or never existed locally), treat as non-fatal and continue to Step 5.3.
+If this fails (branch already deleted or never existed locally), treat as non-fatal and continue to Step 5.3.
 
 ### Step 5.3: Remove the worktree
 
