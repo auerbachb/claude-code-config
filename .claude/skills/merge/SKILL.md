@@ -72,9 +72,16 @@ Do NOT use `--delete-branch`. That flag attempts local branch deletion immediate
 
 ### Step 5a: Delete the branches
 
-**Local branch** — must use `-D` (force), not `-d`. Squash merges rewrite history so the branch commits are not reachable from `main` and `-d` always fails post-squash:
+**Local branch** — must use `-D` (force), not `-d`. Squash merges rewrite history so the branch commits are not reachable from `main` and `-d` always fails post-squash.
+
+If currently on the feature branch, check out the base branch first (can't delete the branch you're on):
 
 ```bash
+BASE_BRANCH=$(gh pr view --json baseRefName --jq '.baseRefName')
+CURRENT_BRANCH=$(git branch --show-current)
+if [ "$CURRENT_BRANCH" = "$BRANCH_NAME" ]; then
+  git checkout "$BASE_BRANCH"
+fi
 git branch -D "$BRANCH_NAME"
 ```
 
