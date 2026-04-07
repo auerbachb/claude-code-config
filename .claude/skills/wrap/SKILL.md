@@ -47,6 +47,12 @@ Determine which reviewer owns this PR:
 1. Check `~/.claude/session-state.json` for a `reviewer` field for this PR number (`"g"` = Greptile, `"cr"` = CodeRabbit).
 2. If no session-state entry, check the PR's review history — if `greptile-apps[bot]` has posted reviews/comments, this PR is on Greptile. Otherwise CR.
 
+Also extract and store the feature branch name for use in Phase 5 cleanup:
+
+```bash
+BRANCH_NAME=$(gh pr view --json headRefName --jq '.headRefName')
+```
+
 **Merge gate check:**
 - **CR-only PR:** Need 2 clean CR reviews. Check the last 2 review objects from `coderabbitai[bot]` — both must have no actionable findings. Also verify the CodeRabbit check-run on the HEAD commit:
   ```bash
@@ -107,7 +113,23 @@ gh api "repos/{owner}/{repo}/commits/$SHA/check-runs?per_page=100" \
 gh pr merge --squash --delete-branch
 ```
 
-### Step 2.6: Log to work-log
+### Step 2.6: Sync root repo main
+
+After merging, update the root repo's local `main` so subsequent sessions branch from the latest code.
+
+First check that the root repo is clean before switching branches:
+
+```bash
+ROOT_REPO=$(git worktree list | head -1 | awk '{print $1}')
+if [ -z "$(git -C "$ROOT_REPO" status --porcelain)" ]; then
+  git -C "$ROOT_REPO" checkout main
+  git -C "$ROOT_REPO" pull origin main --ff-only
+else
+  echo "Warning: root repo has uncommitted changes — skipping main sync. Run manually: git -C $ROOT_REPO checkout main && git -C $ROOT_REPO pull origin main --ff-only"
+fi
+```
+
+### Step 2.7: Log to work-log
 
 If a work-log directory was detected at session start:
 
@@ -215,13 +237,23 @@ diff "$WORKTREE/$WORK_LOG_PATH/session-log-YYYY-MM-DD.md" "$ROOT_REPO/$WORK_LOG_
 
 If the root repo's copy is missing entries, append them (do not overwrite the entire file).
 
-### Step 5.2: Remove the worktree
+### Step 5.2: Delete the local branch
 
-Use `ExitWorktree` with `action: "remove"` to delete the worktree directory and its branch.
+The remote branch was already deleted by `--delete-branch` at merge time. Now delete the local tracking branch on the root repo:
+
+```bash
+git -C "$ROOT_REPO" branch -d "$BRANCH_NAME"
+```
+
+If this fails (branch already deleted, or never existed locally), treat as non-fatal and continue to Step 5.3.
+
+### Step 5.3: Remove the worktree
+
+After the branch is deleted, use `ExitWorktree` with `action: "remove"` to delete the worktree directory.
 
 If `ExitWorktree` reports uncommitted changes, discard them — by this point all meaningful work has been merged.
 
-### Step 5.3: Final report
+### Step 5.4: Final report
 
 ```
 ## Wrap-Up Complete
