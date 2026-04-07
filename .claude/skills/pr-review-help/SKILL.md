@@ -135,7 +135,7 @@ For each primary linked issue:
 ```bash
 gh issue view {ISSUE_NUMBER} --json number,title,body,labels,state
 ```
-- If cross-repo reference (`org/repo#N`):
+- If cross-repo reference (`org/repo#N` or full URL `https://github.com/{owner}/{repo}/issues/N` — extract owner/repo from the URL or reference):
 ```bash
 gh issue view {ISSUE_NUMBER} --repo {ISSUE_OWNER}/{ISSUE_REPO} --json number,title,body,labels,state
 ```
