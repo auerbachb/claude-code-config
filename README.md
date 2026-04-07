@@ -64,7 +64,12 @@ mkdir -p ~/.claude/skills
 
 ### Step 3: Symlink `CLAUDE.md` (global instructions)
 
+> **Note:** `setup.sh` handles this automatically via the skills worktree. The manual commands below are for reference only — prefer `bash ./setup.sh`.
+
 ```bash
+# setup.sh symlinks through the skills worktree (recommended):
+#   ~/.claude/CLAUDE.md -> ~/.claude/skills-worktree/CLAUDE.md
+# Manual fallback (if not using setup.sh):
 ln -sfn "$(pwd)/CLAUDE.md" ~/.claude/CLAUDE.md
 ```
 
@@ -72,7 +77,12 @@ This gives Claude Code its core instructions in every project. The symlink means
 
 ### Step 4: Symlink the rule files
 
+> **Note:** `setup.sh` handles this automatically via the skills worktree. The manual commands below are for reference only — prefer `bash ./setup.sh`.
+
 ```bash
+# setup.sh symlinks through the skills worktree (recommended):
+#   ~/.claude/rules -> ~/.claude/skills-worktree/.claude/rules
+# Manual fallback (if not using setup.sh):
 ln -sfn "$(pwd)/.claude/rules" ~/.claude/rules
 ```
 
@@ -378,9 +388,9 @@ The PM config file is bootstrapped by `/pm` on first run and updated by `/pm-upd
 
 ```text
 ~/.claude/
-  CLAUDE.md          ->  <repo>/CLAUDE.md
-  rules/             ->  <repo>/.claude/rules/
-  settings.json         (copied from <repo>/global-settings.json)
+  CLAUDE.md          ->  ~/.claude/skills-worktree/CLAUDE.md
+  rules/             ->  ~/.claude/skills-worktree/.claude/rules/
+  settings.json         (copied from <repo>/global-settings.json, paths replaced)
   skills/
     pm/              ->  ~/.claude/skills-worktree/.claude/skills/pm/
     standup/         ->  ~/.claude/skills-worktree/.claude/skills/standup/

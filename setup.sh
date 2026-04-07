@@ -13,6 +13,17 @@ set -euo pipefail
 # Path derivation — everything is relative to this script's location
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Validate SCRIPT_DIR is a git repo root (catches copied/symlinked setup.sh)
+if ! REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)"; then
+  echo "FAIL: setup.sh must be run from a cloned git repository." >&2
+  exit 1
+fi
+if [[ "$REPO_ROOT" != "$SCRIPT_DIR" ]]; then
+  echo "FAIL: setup.sh must live at the repo root. Found repo root: $REPO_ROOT" >&2
+  exit 1
+fi
+
 CLAUDE_DIR="$HOME/.claude"
 SKILLS_WORKTREE="$CLAUDE_DIR/skills-worktree"
 
@@ -23,6 +34,7 @@ if ! command -v git >/dev/null 2>&1; then
   echo "FAIL: git is not installed or not in PATH." >&2
   exit 1
 fi
+
 
 # Track pass/fail per step for final summary
 declare -a STEP_NAMES=()
@@ -68,12 +80,14 @@ fi
 cp "$SETTINGS_SRC" "$SETTINGS_DST"
 
 # Replace placeholder paths with this clone's absolute path (works on both macOS and Linux)
+# Escape & and \ in SCRIPT_DIR so sed doesn't misinterpret them in replacement text
+ESCAPED_DIR="$(printf '%s\n' "$SCRIPT_DIR" | sed 's/[&\\/]/\\&/g')"
 if sed --version >/dev/null 2>&1; then
   # GNU sed (Linux)
-  sed -i "s|/path/to/claude-code-config|$SCRIPT_DIR|g" "$SETTINGS_DST"
+  sed -i "s|/path/to/claude-code-config|$ESCAPED_DIR|g" "$SETTINGS_DST"
 else
   # BSD sed (macOS)
-  sed -i '' "s|/path/to/claude-code-config|$SCRIPT_DIR|g" "$SETTINGS_DST"
+  sed -i '' "s|/path/to/claude-code-config|$ESCAPED_DIR|g" "$SETTINGS_DST"
 fi
 
 # Verify: no placeholders remain
