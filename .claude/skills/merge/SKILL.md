@@ -20,7 +20,7 @@ If the PR is already merged or closed, stop and tell the user.
 **Worktree check:** If running inside a git worktree where the feature branch is checked out, `git branch -D` will fail even after checking out away — git refuses to delete a branch checked out in any worktree. Detect this and abort early:
 
 ```bash
-if git rev-parse --git-common-dir | grep -q '\.git$' && [ "$(git rev-parse --git-common-dir)" != "$(git rev-parse --git-dir)" ]; then
+if [ "$(git rev-parse --git-common-dir)" != "$(git rev-parse --git-dir)" ]; then
   echo "Running inside a worktree. Use /wrap instead — it handles worktree removal before branch cleanup."
   exit 1
 fi
