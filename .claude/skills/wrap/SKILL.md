@@ -252,6 +252,10 @@ If `ExitWorktree` reports uncommitted changes, discard them — by this point al
 After the worktree is removed, the branch is no longer checked out anywhere and can be safely deleted. Run on the root repo:
 
 ```bash
+CURRENT_ROOT_BRANCH=$(git -C "$ROOT_REPO" branch --show-current)
+if [ "$CURRENT_ROOT_BRANCH" = "$BRANCH_NAME" ]; then
+  git -C "$ROOT_REPO" checkout main || echo "Warning: could not checkout main before deleting $BRANCH_NAME"
+fi
 git -C "$ROOT_REPO" branch -D "$BRANCH_NAME" || echo "Warning: local branch deletion failed (may already be deleted) — skipping"
 ```
 
