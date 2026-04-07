@@ -47,10 +47,11 @@ Determine which reviewer owns this PR:
 1. Check `~/.claude/session-state.json` for a `reviewer` field for this PR number (`"g"` = Greptile, `"cr"` = CodeRabbit).
 2. If no session-state entry, check the PR's review history — if `greptile-apps[bot]` has posted reviews/comments, this PR is on Greptile. Otherwise CR.
 
-Also extract and store the feature branch name for use in Phase 5 cleanup:
+Also extract and store the feature branch name and base branch for use in Phase 5 cleanup:
 
 ```bash
 BRANCH_NAME=$(gh pr view --json headRefName --jq '.headRefName')
+BASE_BRANCH=$(gh pr view --json baseRefName --jq '.baseRefName')
 ```
 
 **Merge gate check:**
@@ -254,7 +255,7 @@ After the worktree is removed, the branch is no longer checked out anywhere and 
 ```bash
 CURRENT_ROOT_BRANCH=$(git -C "$ROOT_REPO" branch --show-current)
 if [ "$CURRENT_ROOT_BRANCH" = "$BRANCH_NAME" ]; then
-  git -C "$ROOT_REPO" checkout main || echo "Warning: could not checkout main before deleting $BRANCH_NAME"
+  git -C "$ROOT_REPO" checkout "$BASE_BRANCH" || echo "Warning: could not checkout $BASE_BRANCH before deleting $BRANCH_NAME"
 fi
 git -C "$ROOT_REPO" branch -D "$BRANCH_NAME" || echo "Warning: local branch deletion failed (may already be deleted) — skipping"
 ```
@@ -266,7 +267,7 @@ If this fails (branch already deleted or never existed locally), treat as non-fa
 The remote branch is deleted by GitHub's auto-delete-on-merge setting. If that is not enabled, delete it manually — treat failure as non-fatal (branch may already be deleted, or permissions/network may prevent it):
 
 ```bash
-git push origin --delete "$BRANCH_NAME" || echo "Warning: remote branch deletion failed (may already be deleted) — skipping"
+git -C "$ROOT_REPO" push origin --delete "$BRANCH_NAME" || echo "Warning: remote branch deletion failed (may already be deleted) — skipping"
 ```
 
 ### Step 5.4: Final report
