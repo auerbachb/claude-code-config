@@ -211,8 +211,16 @@ for entry in manifest_entries:
 
 # Read existing settings.json or start fresh
 if os.path.isfile(settings_file):
-    with open(settings_file) as f:
-        settings = json.load(f)
+    try:
+        with open(settings_file) as f:
+            settings = json.load(f)
+    except json.JSONDecodeError as e:
+        import shutil
+        backup = settings_file + ".bak"
+        shutil.copy2(settings_file, backup)
+        print(f"  WARNING: {settings_file} contains invalid JSON: {e}")
+        print(f"  Backed up to {backup}, starting fresh for hooks section")
+        settings = {}
 else:
     settings = {}
 
