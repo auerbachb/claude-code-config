@@ -62,10 +62,13 @@ Pass `STRATEGIC_CONTEXT_DISCLOSURE` into each subagent prompt, substituting `{ST
 
 ### 1b. Validate PR numbers
 
-For each PR number from `$ARGUMENTS`:
+For each PR number from `$ARGUMENTS`, validate it is numeric before executing:
 
 ```bash
-gh pr view $N --json number,title 2>/dev/null
+case "$N" in
+  ''|*[!0-9]*) echo "Skipping non-numeric ref: $N"; continue ;;
+esac
+gh pr view "$N" --json number,title 2>/dev/null
 ```
 
 If a PR doesn't exist, note it in the output and skip. If ALL PR numbers are invalid, exit with an error. Deduplicate PR numbers.
