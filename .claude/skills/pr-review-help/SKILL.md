@@ -75,7 +75,7 @@ Spawn one subagent per valid PR using the Agent tool. All subagents run in paral
 
 **Each subagent prompt must include:**
 - The PR number to analyze (substitute `{NUMBER}` in the template below)
-- The repo owner/name (substitute `{owner}/{repo}` — or let `gh` auto-detect from the working directory)
+- The repo owner/name (must substitute `{owner}/{repo}` in all API paths — `gh api` does not auto-detect)
 - The strategic context fetched in Step 1 (OKRs or README/milestones)
 - Which strategic source was used (`okrs` or `readme_fallback`)
 - The full subagent instructions below with parent-resolved placeholders substituted (`{NUMBER}`, `{STRATEGIC_CONTEXT_DISCLOSURE}`). Note: `{ISSUE_NUMBER}` is resolved by the subagent at runtime when it parses linked issues — do not substitute it in the parent.
@@ -127,8 +127,13 @@ Parse the PR body and branch name for issue references:
 Classify each as **primary** (explicit close/fix/resolve keywords) or **drive-by** (plain mention).
 
 For each primary linked issue:
+- If same-repo reference (`#N`, `Closes #N`, etc.):
 ```bash
 gh issue view {ISSUE_NUMBER} --json number,title,body,labels,state
+```
+- If cross-repo reference (`org/repo#N`):
+```bash
+gh issue view {ISSUE_NUMBER} --repo {ISSUE_OWNER}/{ISSUE_REPO} --json number,title,body,labels,state
 ```
 
 ## Assign Confidence Level
