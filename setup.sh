@@ -16,6 +16,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_DIR="$HOME/.claude"
 SKILLS_WORKTREE="$CLAUDE_DIR/skills-worktree"
 
+# ---------------------------------------------------------------------------
+# Prerequisites
+# ---------------------------------------------------------------------------
+if ! command -v git >/dev/null 2>&1; then
+  echo "FAIL: git is not installed or not in PATH." >&2
+  exit 1
+fi
+
 # Track pass/fail per step for final summary
 declare -a STEP_NAMES=()
 declare -a STEP_RESULTS=()
@@ -154,14 +162,32 @@ if [[ ! -d "$SKILLS_WORKTREE/.claude/skills" ]]; then
   exit 1
 fi
 
-# Verify: at least one skill is symlinked
+# Verify: all skill entries are symlinks pointing into the skills worktree
 skill_count=0
-for link in "$CLAUDE_DIR/skills"/*/; do
-  [[ -L "${link%/}" ]] && skill_count=$((skill_count + 1))
+skill_errors=0
+for entry in "$CLAUDE_DIR/skills"/*/; do
+  [[ -e "$entry" || -L "${entry%/}" ]] || continue
+  entry="${entry%/}"
+  skill_count=$((skill_count + 1))
+  if [[ ! -L "$entry" ]]; then
+    echo "  ERROR: Not a symlink (copy?): $entry" >&2
+    skill_errors=$((skill_errors + 1))
+  else
+    resolved="$(readlink "$entry")"
+    if [[ "$resolved" != "$SKILLS_WORKTREE/.claude/skills/"* ]]; then
+      echo "  ERROR: Symlink target outside worktree: $entry -> $resolved" >&2
+      skill_errors=$((skill_errors + 1))
+    fi
+  fi
 done
 
 if [[ $skill_count -eq 0 ]]; then
-  step_fail "Skills worktree" "No skill symlinks found in $CLAUDE_DIR/skills/"
+  step_fail "Skills worktree" "No skills found in $CLAUDE_DIR/skills/"
+  exit 1
+fi
+
+if [[ $skill_errors -gt 0 ]]; then
+  step_fail "Skills worktree" "$skill_errors skill(s) not correctly symlinked to worktree"
   exit 1
 fi
 
