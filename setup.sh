@@ -80,6 +80,10 @@ if ! grep -q "$SCRIPT_DIR" "$SETTINGS_DST"; then
   exit 1
 fi
 
+# Ensure hooks are executable before verifying (handles missing execute bits
+# from tarballs, WSL, or CI environments where git didn't preserve modes)
+chmod +x "$SCRIPT_DIR/.claude/hooks"/*.sh 2>/dev/null || true
+
 # Verify: ALL hook paths referenced in settings.json exist and are executable
 hook_errors=0
 while IFS= read -r hook_path; do
@@ -90,7 +94,7 @@ while IFS= read -r hook_path; do
     echo "  ERROR: Hook not executable: $hook_path" >&2
     hook_errors=$((hook_errors + 1))
   fi
-done < <(grep -o '"command": "[^"]*"' "$SETTINGS_DST" | sed 's/"command": "//;s/"$//' | awk '{print $1}')
+done < <(grep -o '"command": "[^"]*"' "$SETTINGS_DST" | sed 's/"command": "//;s/"$//')
 
 if [[ $hook_errors -gt 0 ]]; then
   step_fail "Install settings.json" "$hook_errors hook(s) missing or not executable"
