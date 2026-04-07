@@ -97,7 +97,7 @@ CURRENT_BRANCH=$(git branch --show-current)
 if [ "$CURRENT_BRANCH" = "$BRANCH_NAME" ]; then
   git checkout "$BASE_BRANCH"
 fi
-git branch -D "$BRANCH_NAME"
+git branch -D "$BRANCH_NAME" || echo "Warning: local branch deletion failed (may already be deleted) — skipping"
 ```
 
 **Remote branch** — treat failure as non-fatal (branch may already be deleted by GitHub's auto-delete-on-merge, by `/wrap` if run previously, or due to permissions/network):
