@@ -121,11 +121,13 @@ First check that the root repo is clean before switching branches:
 
 ```bash
 ROOT_REPO=$(git worktree list | head -1 | awk '{print $1}')
-if [ -z "$(git -C "$ROOT_REPO" status --porcelain)" ]; then
+if [ -z "$ROOT_REPO" ] || [ ! -d "$ROOT_REPO" ]; then
+  echo "Warning: could not determine root repo path — skipping main sync"
+elif [ -z "$(git -C "$ROOT_REPO" status --porcelain)" ]; then
   git -C "$ROOT_REPO" checkout main
   git -C "$ROOT_REPO" pull origin main --ff-only
 else
-  echo "Warning: root repo has uncommitted changes — skipping main sync. Run manually: git -C $ROOT_REPO checkout main && git -C $ROOT_REPO pull origin main --ff-only"
+  echo "Warning: root repo has uncommitted changes — skipping main sync. Run manually: git -C \"$ROOT_REPO\" checkout main && git -C \"$ROOT_REPO\" pull origin main --ff-only"
 fi
 ```
 
