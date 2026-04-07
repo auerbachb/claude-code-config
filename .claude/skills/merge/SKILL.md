@@ -17,6 +17,17 @@ If no PR exists on the current branch, stop and tell the user: "No PR found for 
 
 If the PR is already merged or closed, stop and tell the user.
 
+**Worktree check:** If running inside a git worktree where the feature branch is checked out, `git branch -D` will fail even after checking out away — git refuses to delete a branch checked out in any worktree. Detect this and abort early:
+
+```bash
+if [ "$(git rev-parse --git-common-dir)" != "$(git rev-parse --git-dir)" ]; then
+  echo "Running inside a worktree. Use /wrap instead — it handles worktree removal before branch cleanup."
+  exit 1
+fi
+```
+
+If running in a worktree, stop here and tell the user: "This PR was developed in a worktree. Use `/wrap` instead of `/merge` — it removes the worktree first, then deletes the branch in the correct order."
+
 ### Step 2: Verify the merge gate
 
 Determine which reviewer owns this PR:
@@ -65,7 +76,34 @@ If all checks pass, proceed to merge.
 ### Step 5: Squash merge
 
 ```bash
-gh pr merge --squash --delete-branch
+gh pr merge --squash
+```
+
+Do NOT use `--delete-branch`. That flag attempts local branch deletion immediately, which fails when run from a worktree (the branch is still checked out). Handle branch cleanup in Step 5a below.
+
+### Step 5a: Delete the branches
+
+```bash
+BRANCH_NAME=$(gh pr view --json headRefName --jq '.headRefName')
+BASE_BRANCH=$(gh pr view --json baseRefName --jq '.baseRefName')
+```
+
+**Local branch** — must use `-D` (force), not `-d`. Squash merges rewrite history so the branch commits are not reachable from `main` and `-d` always fails post-squash.
+
+If currently on the feature branch, check out the base branch first (can't delete the branch you're on):
+
+```bash
+CURRENT_BRANCH=$(git branch --show-current)
+if [ "$CURRENT_BRANCH" = "$BRANCH_NAME" ]; then
+  git checkout "$BASE_BRANCH"
+fi
+git branch -D "$BRANCH_NAME" || echo "Warning: local branch deletion failed (may already be deleted) — skipping"
+```
+
+**Remote branch** — treat failure as non-fatal (branch may already be deleted by GitHub's auto-delete-on-merge, by `/wrap` if run previously, or due to permissions/network):
+
+```bash
+git push origin --delete "$BRANCH_NAME" || echo "Warning: remote branch deletion failed (may already be deleted) — skipping"
 ```
 
 ### Step 6: Log to work-log

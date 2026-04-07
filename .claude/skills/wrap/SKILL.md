@@ -47,10 +47,11 @@ Determine which reviewer owns this PR:
 1. Check `~/.claude/session-state.json` for a `reviewer` field for this PR number (`"g"` = Greptile, `"cr"` = CodeRabbit).
 2. If no session-state entry, check the PR's review history — if `greptile-apps[bot]` has posted reviews/comments, this PR is on Greptile. Otherwise CR.
 
-Also extract and store the feature branch name for use in Phase 5 cleanup:
+Also extract and store the feature branch name and base branch for use in Phase 5 cleanup:
 
 ```bash
 BRANCH_NAME=$(gh pr view --json headRefName --jq '.headRefName')
+BASE_BRANCH=$(gh pr view --json baseRefName --jq '.baseRefName')
 ```
 
 **Merge gate check:**
@@ -110,8 +111,10 @@ gh api "repos/{owner}/{repo}/commits/$SHA/check-runs?per_page=100" \
 ### Step 2.5: Squash merge
 
 ```bash
-gh pr merge --squash --delete-branch
+gh pr merge --squash
 ```
+
+Do NOT use `--delete-branch` here. That flag attempts local branch deletion while the worktree is still active, which fails because git refuses to delete a branch checked out in any worktree. Branch cleanup is handled explicitly in Phase 5 after the worktree is removed.
 
 ### Step 2.6: Sync root repo main
 
@@ -239,21 +242,33 @@ diff "$WORKTREE/$WORK_LOG_PATH/session-log-YYYY-MM-DD.md" "$ROOT_REPO/$WORK_LOG_
 
 If the root repo's copy is missing entries, append them (do not overwrite the entire file).
 
-### Step 5.2: Delete the local branch
+### Step 5.2: Remove the worktree
 
-The remote branch was already deleted by `--delete-branch` at merge time. Now delete the local tracking branch on the root repo:
-
-```bash
-git -C "$ROOT_REPO" branch -D "$BRANCH_NAME"
-```
-
-If this fails (branch already deleted or never existed locally), treat as non-fatal and continue to Step 5.3.
-
-### Step 5.3: Remove the worktree
-
-After the branch is deleted, use `ExitWorktree` with `action: "remove"` to delete the worktree directory.
+Use `ExitWorktree` with `action: "remove"` to delete the worktree directory. This must happen **before** local branch deletion — git refuses to delete a branch that is currently checked out in any worktree.
 
 If `ExitWorktree` reports uncommitted changes, discard them — by this point all meaningful work has been merged.
+
+### Step 5.3: Delete the local branch
+
+After the worktree is removed, the branch is no longer checked out anywhere and can be safely deleted. Run on the root repo:
+
+```bash
+CURRENT_ROOT_BRANCH=$(git -C "$ROOT_REPO" branch --show-current)
+if [ "$CURRENT_ROOT_BRANCH" = "$BRANCH_NAME" ]; then
+  git -C "$ROOT_REPO" checkout "$BASE_BRANCH" || echo "Warning: could not checkout $BASE_BRANCH before deleting $BRANCH_NAME"
+fi
+git -C "$ROOT_REPO" branch -D "$BRANCH_NAME" || echo "Warning: local branch deletion failed (may already be deleted) — skipping"
+```
+
+Use `-D` (force) rather than `-d` — squash merges rewrite history so the branch commits are not reachable from `main`, and `-d` will always fail post-squash.
+
+If this fails (branch already deleted or never existed locally), treat as non-fatal.
+
+The remote branch is deleted by GitHub's auto-delete-on-merge setting. If that is not enabled, delete it manually — treat failure as non-fatal (branch may already be deleted, or permissions/network may prevent it):
+
+```bash
+git -C "$ROOT_REPO" push origin --delete "$BRANCH_NAME" || echo "Warning: remote branch deletion failed (may already be deleted) — skipping"
+```
 
 ### Step 5.4: Final report
 
