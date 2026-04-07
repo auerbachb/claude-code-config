@@ -184,7 +184,7 @@ HOOKS_MANIFEST=(
 )
 
 SETTINGS_FILE="$HOME/.claude/settings.json"
-HOOKS_DIR="$REPO_ROOT/.claude/hooks"
+HOOKS_DIR="$SKILLS_WORKTREE/.claude/hooks"
 
 echo ""
 echo "Registering hooks in $SETTINGS_FILE..."
@@ -245,6 +245,10 @@ for item in manifest:
     script = item["script"]
     timeout = item["timeout"]
     cmd = command_path(script)
+
+    if not os.path.isfile(cmd):
+        print(f"  {script} — WARNING: not found at {cmd}; skipping")
+        continue
 
     if event not in hooks:
         hooks[event] = []
