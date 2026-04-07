@@ -52,8 +52,8 @@ gh label list --limit 50
 ```
 
 Set a disclosure string based on the result:
-- If OKRs found: `STRATEGIC_CONTEXT_DISCLOSURE="Assessed against OKRs from pm-config.md."`
-- If README fallback: `STRATEGIC_CONTEXT_DISCLOSURE="*Note: No OKR document found (pm-config.md). Strategic fit assessed against repo README and recent milestones only.*"`
+- If OKRs found: `STRATEGIC_CONTEXT_DISCLOSURE="Assessed against OKRs from \`pm-config.md\`."`
+- If README fallback: `STRATEGIC_CONTEXT_DISCLOSURE="*Note: No OKR document found (\`pm-config.md\`). Strategic fit assessed against repo README and recent milestones only.*"`
 
 Pass `STRATEGIC_CONTEXT_DISCLOSURE` into each subagent prompt, substituting `{STRATEGIC_CONTEXT_DISCLOSURE}` in the template.
 
@@ -78,7 +78,7 @@ Spawn one subagent per valid PR using the Agent tool. All subagents run in paral
 - The repo owner/name (substitute `{owner}/{repo}` — or let `gh` auto-detect from the working directory)
 - The strategic context fetched in Step 1 (OKRs or README/milestones)
 - Which strategic source was used (`okrs` or `readme_fallback`)
-- The full subagent instructions below with all placeholders resolved (`{NUMBER}`, `{ISSUE_NUMBER}`, `{STRATEGIC_CONTEXT_DISCLOSURE}`)
+- The full subagent instructions below with parent-resolved placeholders substituted (`{NUMBER}`, `{STRATEGIC_CONTEXT_DISCLOSURE}`). Note: `{ISSUE_NUMBER}` is resolved by the subagent at runtime when it parses linked issues — do not substitute it in the parent.
 
 ### Subagent Instructions (include verbatim in each subagent prompt)
 
