@@ -38,8 +38,9 @@ CR automatically posts an implementation plan when issues are created (triggered
 
 > **Username note:** Use `coderabbitai` (no `[bot]` suffix) for issue comments; PR reviews use `coderabbitai[bot]`.
 
-- **If the issue is older than 10 minutes:** Check comments for a plan from `coderabbitai`. If it exists, read it. If it doesn't exist (CR may not have been triggered), post `@coderabbitai plan` now and poll for up to 5 minutes. If still no response, proceed without it.
-- **If the issue is less than 10 minutes old:** CR may still be generating the plan. Poll every 60 seconds for a comment from `coderabbitai` on the issue. Timeout after 10 minutes from issue creation time — if no plan appears by then, proceed without it.
+- **Issue age determines the polling strategy:**
+  - Older than 10 minutes: Check comments for a plan from `coderabbitai`. If it exists, read it. If it doesn't exist (CR may not have been triggered), post `@coderabbitai plan` now and poll for up to 5 minutes. If still no response, proceed without it.
+  - Less than 10 minutes old: CR may still be generating the plan. Poll every 60 seconds for a comment from `coderabbitai` on the issue. Timeout after 10 minutes from issue creation time — if no plan appears by then, proceed without it.
 
 ### 3. Build Claude's plan
 - Explore the codebase and design an implementation plan (use plan mode)
