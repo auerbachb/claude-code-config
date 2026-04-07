@@ -2,6 +2,8 @@
 
 A reusable `CLAUDE.md` configuration that teaches [Claude Code](https://docs.anthropic.com/en/docs/claude-code) to collaborate with [CodeRabbit](https://coderabbit.ai) and [Greptile](https://greptile.com) for automated PR planning, code review, and merge workflows — all driven from your terminal. Includes a full PM skill family for project orchestration across threads.
 
+> **Using an LLM to set this up?** If you're installing via Claude Code, Cursor, Aider, or any other AI coding assistant, see **[SETUP.md](SETUP.md)** — it has a single `bash ./setup.sh` command that handles everything. Do not manually run the steps below.
+
 ## Table of Contents
 
 - [What You Get](#what-you-get)
