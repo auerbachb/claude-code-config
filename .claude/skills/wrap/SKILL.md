@@ -252,7 +252,7 @@ If `ExitWorktree` reports uncommitted changes, discard them — by this point al
 After the worktree is removed, the branch is no longer checked out anywhere and can be safely deleted. Run on the root repo:
 
 ```bash
-git -C "$ROOT_REPO" branch -D "$BRANCH_NAME"
+git -C "$ROOT_REPO" branch -D "$BRANCH_NAME" || echo "Warning: local branch deletion failed (may already be deleted) — skipping"
 ```
 
 Use `-D` (force) rather than `-d` — squash merges rewrite history so the branch commits are not reachable from `main`, and `-d` will always fail post-squash.
