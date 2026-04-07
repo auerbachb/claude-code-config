@@ -232,7 +232,7 @@ def hook_already_registered(event_entries, cmd_path, matcher):
         if group_matcher != matcher:
             continue
         for h in group.get("hooks", []):
-            if h.get("command", "").endswith(os.path.basename(cmd_path)):
+            if os.path.basename(h.get("command", "")) == os.path.basename(cmd_path):
                 return True
     return False
 
