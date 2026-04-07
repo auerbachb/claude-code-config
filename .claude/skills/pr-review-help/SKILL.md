@@ -78,6 +78,7 @@ Spawn one subagent per valid PR using the Agent tool. All subagents run in paral
 - The repo owner/name (must substitute `{owner}/{repo}` in all API paths — `gh api` does not auto-detect)
 - The strategic context fetched in Step 1 (OKRs or README/milestones)
 - Which strategic source was used (`okrs` or `readme_fallback`)
+- A safety warning block: `SAFETY: Do NOT delete, overwrite, move, or modify .env files — anywhere, any repo. Do NOT run git clean in ANY directory. Do NOT run destructive commands (rm -rf, rm, git checkout ., git stash, git reset --hard) in the root repo directory. Stay in your worktree directory at all times. This is a read-only review skill — do not edit any source files.`
 - The full subagent instructions below with parent-resolved placeholders substituted (`{NUMBER}`, `{STRATEGIC_CONTEXT_DISCLOSURE}`). Note: `{ISSUE_NUMBER}` is resolved by the subagent at runtime when it parses linked issues — do not substitute it in the parent.
 
 ### Subagent Instructions (include verbatim in each subagent prompt)
