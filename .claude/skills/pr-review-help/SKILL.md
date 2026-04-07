@@ -38,14 +38,17 @@ sed -n '/^## OKRs$/,/^## /{/^## OKRs$/d;/^## /d;p}' .claude/pm-config.md
 
 If the extracted content is empty, only whitespace, or starts with "No OKRs set", set `HAS_OKRS=false`. Otherwise set `HAS_OKRS=true` and capture the content.
 
-If no OKRs available, fetch fallback context:
+If no OKRs available, fetch fallback context. First, resolve the canonical repo name once (reuse in all subagent prompts):
 
 ```bash
+# Resolve canonical repo once — reuse in parent and all subagent prompts
+REPO_FULL="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+
 # README content
-gh api repos/{owner}/{repo}/readme --jq .content | base64 -d | head -100
+gh api "repos/${REPO_FULL}/readme" --jq .content | base64 -d | head -100
 
 # Active milestones
-gh api repos/{owner}/{repo}/milestones --jq '.[] | select(.state=="open") | {title, description}'
+gh api "repos/${REPO_FULL}/milestones" --jq '.[] | select(.state=="open") | {title, description}'
 
 # Labels that indicate priority
 gh label list --limit 50
@@ -212,7 +215,7 @@ One of:
 
 ## Step 3: Collect and Consolidate Output (parent agent)
 
-Wait for all subagents to complete. Collect their outputs.
+Wait for all subagents to complete (or timeout). If any subagent failed or timed out, report which PRs are incomplete and exclude them from the summary table and portfolio synthesis rather than silently continuing with partial data.
 
 ### Summary Table
 
