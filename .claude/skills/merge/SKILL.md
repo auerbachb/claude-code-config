@@ -65,7 +65,25 @@ If all checks pass, proceed to merge.
 ### Step 5: Squash merge
 
 ```bash
-gh pr merge --squash --delete-branch
+gh pr merge --squash
+```
+
+Do NOT use `--delete-branch`. That flag attempts local branch deletion immediately, which fails when run from a worktree (the branch is still checked out). Handle branch cleanup in Step 5a below.
+
+### Step 5a: Delete the branches
+
+**Local branch** — must use `-D` (force), not `-d`. Squash merges rewrite history so the branch commits are not reachable from `main` and `-d` always fails post-squash:
+
+```bash
+git branch -D "$BRANCH_NAME"
+```
+
+If running from a worktree checked out on this branch, local branch deletion must happen after the worktree is removed. In that case, use `/wrap` instead of `/merge` — wrap handles worktree removal and branch cleanup in the correct order.
+
+**Remote branch** — treat failure as non-fatal (branch may already be deleted by GitHub's auto-delete-on-merge, or permissions/network may prevent it):
+
+```bash
+git push origin --delete "$BRANCH_NAME" || echo "Warning: remote branch deletion failed (may already be deleted) — skipping"
 ```
 
 ### Step 6: Log to work-log
