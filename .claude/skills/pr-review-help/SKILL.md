@@ -29,7 +29,14 @@ Check for OKRs first, fall back to README:
 test -f .claude/pm-config.md && echo "CONFIG_EXISTS" || echo "NO_CONFIG"
 ```
 
-If the config exists, extract the `## OKRs` section: from a line matching `^## OKRs` at column 1 through the line before the next `^## ` header (or EOF). If the section is empty, contains only a placeholder (text starting with "No OKRs set"), or the config doesn't exist, set `HAS_OKRS=false`.
+If the config exists, extract the `## OKRs` section: from a line matching `^## OKRs` at column 1 through the line before the next `^## ` header (or EOF):
+
+```bash
+# Extract OKRs section from pm-config.md
+sed -n '/^## OKRs$/,/^## /{/^## OKRs$/d;/^## /d;p}' .claude/pm-config.md
+```
+
+If the extracted content is empty, only whitespace, or starts with "No OKRs set", set `HAS_OKRS=false`. Otherwise set `HAS_OKRS=true` and capture the content.
 
 If no OKRs available, fetch fallback context:
 
@@ -44,7 +51,11 @@ gh api repos/{owner}/{repo}/milestones --jq '.[] | select(.state=="open") | {tit
 gh label list --limit 50
 ```
 
-Record which source was used — subagents must disclose this in their Strategic Fit section.
+Set a disclosure string based on the result:
+- If OKRs found: `STRATEGIC_CONTEXT_DISCLOSURE="Assessed against OKRs from pm-config.md."`
+- If README fallback: `STRATEGIC_CONTEXT_DISCLOSURE="*Note: No OKR document found (pm-config.md). Strategic fit assessed against repo README and recent milestones only.*"`
+
+Pass `STRATEGIC_CONTEXT_DISCLOSURE` into each subagent prompt, substituting `{STRATEGIC_CONTEXT_DISCLOSURE}` in the template.
 
 ### 1b. Validate PR numbers
 
