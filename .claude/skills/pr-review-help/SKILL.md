@@ -63,10 +63,11 @@ Spawn one subagent per valid PR using the Agent tool. All subagents run in paral
 **Each subagent invocation MUST use `mode: "bypassPermissions"`.**
 
 **Each subagent prompt must include:**
-- The PR number to analyze
+- The PR number to analyze (substitute `{NUMBER}` in the template below)
+- The repo owner/name (substitute `{owner}/{repo}` — or let `gh` auto-detect from the working directory)
 - The strategic context fetched in Step 1 (OKRs or README/milestones)
 - Which strategic source was used (`okrs` or `readme_fallback`)
-- The full subagent instructions below
+- The full subagent instructions below with all placeholders resolved (`{NUMBER}`, `{ISSUE_NUMBER}`, `{STRATEGIC_CONTEXT_DISCLOSURE}`)
 
 ### Subagent Instructions (include verbatim in each subagent prompt)
 
@@ -90,16 +91,16 @@ gh api repos/{owner}/{repo}/pulls/{NUMBER}/comments?per_page=100 --jq '.[] | {us
 gh api repos/{owner}/{repo}/issues/{NUMBER}/comments?per_page=100 --jq '.[] | {user: .user.login, body: .body}'
 ```
 
-For large PRs (additions + deletions > 500), only fetch full diff for high-risk files:
-- DB schemas / migrations
-- Auth / permissions
-- Public APIs / contracts / webhooks
-- Background jobs / concurrency
-- Config / feature flags
-- Analytics events / metric definitions
+For large PRs (additions + deletions > 500), only fetch full diff for high-risk files. Identify them from `--stat` output by matching these patterns:
+- **DB / migrations:** `**/migrations/**`, `**/migrate*`, `**/*schema*`, `**/models/**`
+- **Auth / permissions:** `**/auth/**`, `**/permissions/**`, `**/middleware/auth*`
+- **APIs / contracts:** `**/api/**`, `**/routes/**`, `**/webhooks/**`, `**/*endpoint*`
+- **Jobs / concurrency:** `**/jobs/**`, `**/workers/**`, `**/queues/**`, `**/tasks/**`
+- **Config / flags:** `**/config/**`, `**/.env*`, `**/feature_flags*`, `**/settings*`
+- **Analytics / metrics:** `**/analytics/**`, `**/events/**`, `**/tracking/**`
 
 ```bash
-# Example: selective full diff for specific files
+# Extract filenames from --stat, then fetch full diff for matched high-risk files
 gh pr diff {NUMBER} -- path/to/risky/file.ts
 ```
 
