@@ -42,6 +42,14 @@ section() {
   echo -e "${BOLD}━━━ $1 ━━━${NC}"
 }
 
+ensure_safe_environment() {
+  if [[ "${ALLOW_LOCAL_DESTRUCTIVE_TESTS:-0}" != "1" && ! -f "/.dockerenv" ]]; then
+    echo -e "${RED}Refusing to run destructive setup tests outside Docker.${NC}" >&2
+    echo "Set ALLOW_LOCAL_DESTRUCTIVE_TESTS=1 to override intentionally." >&2
+    exit 1
+  fi
+}
+
 clean_slate() {
   # Remove all setup artifacts to start fresh
   rm -rf "$HOME/.claude"
@@ -96,8 +104,8 @@ test_2_idempotent() {
   section "Test 2: Idempotent re-run"
 
   # Capture state before
-  local settings_before hooks_before
-  settings_before=$(cat "$HOME/.claude/settings.json")
+  local settings_hash_before hooks_before
+  settings_hash_before=$(sha256sum "$HOME/.claude/settings.json" | awk '{print $1}')
   hooks_before=$(python3 -c "
 import json
 d = json.load(open('$HOME/.claude/settings.json'))
@@ -113,8 +121,8 @@ print(count)
   assert "setup.sh exits 0 on re-run" "[ $exit_code -eq 0 ]"
 
   # Capture state after
-  local settings_after hooks_after
-  settings_after=$(cat "$HOME/.claude/settings.json")
+  local settings_hash_after hooks_after
+  settings_hash_after=$(sha256sum "$HOME/.claude/settings.json" | awk '{print $1}')
   hooks_after=$(python3 -c "
 import json
 d = json.load(open('$HOME/.claude/settings.json'))
@@ -123,6 +131,7 @@ count = sum(len(group.get('hooks', [])) for groups in hooks.values() for group i
 print(count)
 " 2>/dev/null || echo "0")
 
+  assert "settings.json unchanged after re-run" "[ '$settings_hash_before' = '$settings_hash_after' ]"
   assert "Hook count unchanged after re-run" "[ '$hooks_before' = '$hooks_after' ]"
   assert "Symlinks still valid" "[ -e '$HOME/.claude/CLAUDE.md' ] && [ -e '$HOME/.claude/rules' ]"
 }
@@ -314,6 +323,8 @@ echo ""
 echo -e "${BOLD}╔══════════════════════════════════════════════════════╗${NC}"
 echo -e "${BOLD}║  claude-code-config setup.sh test suite              ║${NC}"
 echo -e "${BOLD}╚══════════════════════════════════════════════════════╝${NC}"
+
+ensure_safe_environment
 
 test_1_fresh_install
 test_2_idempotent
