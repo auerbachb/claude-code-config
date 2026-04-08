@@ -2,8 +2,8 @@
 # setup.sh — Idempotent installer for claude-code-config
 #
 # Derives all paths from the script's own location (SCRIPT_DIR).
-# Safe to run multiple times — backs up settings.json before overwrite,
-# exits fast on failure with a clear error message.
+# Safe to run multiple times — merges settings without overwriting user
+# customizations, exits fast on failure with a clear error message.
 #
 # Usage: bash ./setup.sh
 
@@ -58,72 +58,102 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 2: Install settings.json (copy + path replacement)
+# Step 2: Merge non-hook settings into settings.json (preserves existing keys)
 # ---------------------------------------------------------------------------
-echo "Step 2: Installing settings.json..."
+echo "Step 2: Merging settings from global-settings.json..."
 
 SETTINGS_SRC="$SCRIPT_DIR/global-settings.json"
 SETTINGS_DST="$CLAUDE_DIR/settings.json"
 
 if [[ ! -f "$SETTINGS_SRC" ]]; then
-  step_fail "Install settings.json" "Source file not found: $SETTINGS_SRC"
+  step_fail "Merge settings" "Source file not found: $SETTINGS_SRC"
   exit 1
 fi
 
-# Back up existing settings.json if present
-if [[ -f "$SETTINGS_DST" ]]; then
-  backup="$SETTINGS_DST.bak.$(date +%Y%m%d%H%M%S)"
-  cp "$SETTINGS_DST" "$backup"
-  echo "  Backed up existing settings.json to $backup"
-fi
-
-cp "$SETTINGS_SRC" "$SETTINGS_DST"
-
-# Replace placeholder paths with this clone's absolute path (works on both macOS and Linux)
-# Escape & and \ in SCRIPT_DIR so sed doesn't misinterpret them in replacement text
-ESCAPED_DIR="$(printf '%s\n' "$SCRIPT_DIR" | sed 's/[&\\/|]/\\&/g')"
-if sed --version >/dev/null 2>&1; then
-  # GNU sed (Linux)
-  sed -i "s|/path/to/claude-code-config|$ESCAPED_DIR|g" "$SETTINGS_DST"
-else
-  # BSD sed (macOS)
-  sed -i '' "s|/path/to/claude-code-config|$ESCAPED_DIR|g" "$SETTINGS_DST"
-fi
-
-# Verify: no placeholders remain
-if grep -q '/path/to/claude-code-config' "$SETTINGS_DST"; then
-  step_fail "Install settings.json" "Placeholder paths still present in $SETTINGS_DST"
-  exit 1
-fi
-
-# Verify: settings.json contains this clone's SCRIPT_DIR
-if ! grep -Fq -- "$SCRIPT_DIR" "$SETTINGS_DST"; then
-  step_fail "Install settings.json" "settings.json does not contain paths to $SCRIPT_DIR"
-  exit 1
-fi
-
-# Ensure hooks are executable before verifying (handles missing execute bits
+# Ensure hooks are executable before anything else (handles missing execute bits
 # from tarballs, WSL, or CI environments where git didn't preserve modes)
 chmod +x "$SCRIPT_DIR/.claude/hooks"/*.sh 2>/dev/null || true
 
-# Verify: ALL hook paths referenced in settings.json exist and are executable
-hook_errors=0
-while IFS= read -r hook_path; do
-  if [[ ! -f "$hook_path" ]]; then
-    echo "  ERROR: Hook not found: $hook_path" >&2
-    hook_errors=$((hook_errors + 1))
-  elif [[ ! -x "$hook_path" ]]; then
-    echo "  ERROR: Hook not executable: $hook_path" >&2
-    hook_errors=$((hook_errors + 1))
-  fi
-done < <(grep -o '"command": "[^"]*"' "$SETTINGS_DST" | sed 's/"command": "//;s/"$//')
+# Merge non-hook keys from template into existing settings.json.
+# Existing keys are NEVER overwritten — only missing keys are seeded.
+# Hooks are NOT touched here — setup-skills-worktree.sh Step 6 handles them.
+python3 - "$SETTINGS_SRC" "$SETTINGS_DST" <<'PYTHON_MERGE'
+import json
+import os
+import sys
+import tempfile
 
-if [[ $hook_errors -gt 0 ]]; then
-  step_fail "Install settings.json" "$hook_errors hook(s) missing or not executable"
+template_path = sys.argv[1]
+settings_path = sys.argv[2]
+
+# Read template
+with open(template_path) as f:
+    template = json.load(f)
+
+# Read existing settings (or start empty)
+if os.path.isfile(settings_path):
+    try:
+        with open(settings_path) as f:
+            settings = json.load(f)
+    except json.JSONDecodeError as e:
+        import shutil
+        backup = settings_path + ".bak"
+        shutil.copy2(settings_path, backup)
+        print(f"  WARNING: {settings_path} has invalid JSON: {e}")
+        print(f"  Backed up to {backup}, starting fresh")
+        settings = {}
+else:
+    settings = {}
+
+if not isinstance(settings, dict):
+    settings = {}
+
+# Seed missing non-hook keys from template
+# Never overwrite existing keys — user customizations take precedence
+SKIP_KEYS = {"hooks"}  # hooks are managed by setup-skills-worktree.sh
+added = []
+for key, value in template.items():
+    if key in SKIP_KEYS:
+        continue
+    if key not in settings:
+        settings[key] = value
+        added.append(key)
+    else:
+        # For dict values, seed missing sub-keys (one level deep)
+        if isinstance(value, dict) and isinstance(settings[key], dict):
+            for sub_key, sub_value in value.items():
+                if sub_key not in settings[key]:
+                    settings[key][sub_key] = sub_value
+                    added.append(f"{key}.{sub_key}")
+
+# Ensure hooks key exists (setup-skills-worktree.sh expects it)
+if "hooks" not in settings:
+    settings["hooks"] = {}
+
+# Write atomically
+settings_dir = os.path.dirname(settings_path) or "."
+fd, tmp_path = tempfile.mkstemp(dir=settings_dir, suffix=".tmp")
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(settings, f, indent=2)
+        f.write("\n")
+    os.replace(tmp_path, settings_path)
+except BaseException:
+    os.unlink(tmp_path)
+    raise
+
+if added:
+    print(f"  Seeded {len(added)} missing key(s): {', '.join(added)}")
+else:
+    print("  All settings already present — no changes needed")
+PYTHON_MERGE
+
+if [[ $? -ne 0 ]]; then
+  step_fail "Merge settings" "Python merge script failed"
   exit 1
 fi
 
-step_pass "Install settings.json"
+step_pass "Merge settings"
 
 # ---------------------------------------------------------------------------
 # Step 3: Ensure hook scripts are executable
@@ -265,6 +295,30 @@ elif [[ "$actual_target" == "$SCRIPT_DIR/.claude/rules" ]]; then
 else
   step_fail "Symlink rules" "Points to $actual_target, expected $RULES_EXPECTED"
   exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Step 7: Verify hooks registered in settings.json
+# ---------------------------------------------------------------------------
+echo "Step 7: Verifying hook registration..."
+
+# setup-skills-worktree.sh Step 6 should have registered all hooks.
+# Verify that hook paths exist, are executable, and point to the skills worktree.
+hook_verify_errors=0
+while IFS= read -r hook_path; do
+  if [[ ! -f "$hook_path" ]]; then
+    echo "  ERROR: Hook not found: $hook_path" >&2
+    hook_verify_errors=$((hook_verify_errors + 1))
+  elif [[ ! -x "$hook_path" ]]; then
+    echo "  ERROR: Hook not executable: $hook_path" >&2
+    hook_verify_errors=$((hook_verify_errors + 1))
+  fi
+done < <(grep -o '"command": "[^"]*"' "$SETTINGS_DST" | sed 's/"command": "//;s/"$//')
+
+if [[ $hook_verify_errors -gt 0 ]]; then
+  step_fail "Hook registration" "$hook_verify_errors hook(s) missing or not executable in settings.json"
+else
+  step_pass "Hook registration"
 fi
 
 # ---------------------------------------------------------------------------
