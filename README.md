@@ -90,22 +90,20 @@ Rule files in `.claude/rules/` auto-load alongside `CLAUDE.md` for the parent ag
 
 ### Step 5: Install global settings (hooks + permissions)
 
-`setup.sh` merges non-hook keys from `global-settings.json` into `~/.claude/settings.json`, preserving any existing keys (permissions, model, env). Hook registration is handled separately by `setup-skills-worktree.sh` (Step 3), which resolves placeholder paths to the skills worktree automatically.
+`setup.sh` merges non-hook settings from `global-settings.json` into `~/.claude/settings.json`, preserving any existing keys (permissions, model, env). Hook registration is handled separately by `setup-skills-worktree.sh` (Step 6), which resolves placeholder paths to the skills worktree automatically.
 
-If setting up manually (not recommended — use `setup.sh`):
+If setting up manually, seed `settings.json` and replace placeholder paths:
 
 ```bash
-# Seed settings.json with template (only if it doesn't exist yet):
 cp global-settings.json ~/.claude/settings.json
 
-# Then replace all placeholder paths with the absolute path to your clone:
 # macOS:
 sed -i '' 's|/path/to/claude-code-config|'"$(pwd)"'|g' ~/.claude/settings.json
 # Linux:
 sed -i 's|/path/to/claude-code-config|'"$(pwd)"'|g' ~/.claude/settings.json
 ```
 
-> **Note:** `setup.sh` handles this automatically with proper merge semantics. The manual steps above are for reference only.
+> **Note:** Use `setup.sh` instead — it handles merge semantics (preserving existing keys) and path resolution automatically. The manual steps above are for reference only.
 
 This file configures:
 - **Permissions** — Broad allow rules so Claude operates autonomously without prompting for every tool call.
