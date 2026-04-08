@@ -118,21 +118,42 @@ Do NOT use `--delete-branch` here. That flag attempts local branch deletion whil
 
 ### Step 2.6: Sync root repo main
 
-After merging, update the root repo's local `main` so subsequent sessions branch from the latest code.
-
-First check that the root repo is clean before switching branches:
+After merging, update the root repo's local `main` so subsequent sessions branch from the latest code. **Capture the result for the final report in Step 5.4.**
 
 ```bash
 ROOT_REPO=$(git worktree list | head -1 | awk '{print $1}')
+MAIN_SYNC_STATUS=""
+
 if [ -z "$ROOT_REPO" ] || [ ! -d "$ROOT_REPO" ]; then
-  echo "Warning: could not determine root repo path — skipping main sync"
-elif [ -z "$(git -C "$ROOT_REPO" status --porcelain)" ]; then
-  git -C "$ROOT_REPO" checkout main
-  git -C "$ROOT_REPO" pull origin main --ff-only
+  MAIN_SYNC_STATUS="failed: could not determine root repo path"
+elif [ -n "$(git -C "$ROOT_REPO" status --porcelain)" ]; then
+  MAIN_SYNC_STATUS="skipped: root repo has uncommitted changes — run manually: git -C \"$ROOT_REPO\" pull origin main --ff-only"
 else
-  echo "Warning: root repo has uncommitted changes — skipping main sync. Run manually: git -C \"$ROOT_REPO\" checkout main && git -C \"$ROOT_REPO\" pull origin main --ff-only"
+  CURRENT_BRANCH=$(git -C "$ROOT_REPO" branch --show-current)
+  if [ "$CURRENT_BRANCH" != "main" ]; then
+    if ! git -C "$ROOT_REPO" checkout main 2>&1; then
+      MAIN_SYNC_STATUS="failed: could not checkout main in root repo"
+    fi
+  fi
+  if [ -z "$MAIN_SYNC_STATUS" ]; then
+    BEFORE_SHA=$(git -C "$ROOT_REPO" rev-parse HEAD 2>/dev/null)
+    if PULL_OUTPUT=$(git -C "$ROOT_REPO" pull origin main --ff-only 2>&1); then
+      AFTER_SHA=$(git -C "$ROOT_REPO" rev-parse HEAD 2>/dev/null)
+      if [ "$BEFORE_SHA" = "$AFTER_SHA" ]; then
+        MAIN_SYNC_STATUS="up to date (${AFTER_SHA:0:7})"
+      else
+        MAIN_SYNC_STATUS="updated ${BEFORE_SHA:0:7} → ${AFTER_SHA:0:7}"
+      fi
+    else
+      MAIN_SYNC_STATUS="failed: $PULL_OUTPUT"
+    fi
+  fi
 fi
+
+echo "Main sync: $MAIN_SYNC_STATUS"
 ```
+
+Store `MAIN_SYNC_STATUS` for the final report — this value MUST appear in Step 5.4 output.
 
 ### Step 2.7: Log to work-log
 
@@ -276,6 +297,7 @@ git -C "$ROOT_REPO" push origin --delete "$BRANCH_NAME" || echo "Warning: remote
 ## Wrap-Up Complete
 
 - **PR #{N}** merged ({title})
+- **Main branch** {MAIN_SYNC_STATUS from Step 2.6 — e.g. "updated abc1234 → def5678", "up to date (abc1234)", or "failed: ..."}
 - **Branch** deleted
 - **Work-log** updated (if applicable)
 - **Follow-ups:** {summary or "none"}

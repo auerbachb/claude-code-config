@@ -106,6 +106,40 @@ git branch -D "$BRANCH_NAME" || echo "Warning: local branch deletion failed (may
 git push origin --delete "$BRANCH_NAME" || echo "Warning: remote branch deletion failed (may already be deleted) — skipping"
 ```
 
+### Step 5b: Sync local main
+
+After merging, update the local `main` so subsequent sessions branch from the latest code. **Capture the result for the completion report in Step 7.**
+
+```bash
+MAIN_SYNC_STATUS=""
+
+# Ensure we're on main before pulling
+CURRENT_BRANCH=$(git branch --show-current)
+if [ "$CURRENT_BRANCH" != "main" ]; then
+  if ! git checkout main 2>&1; then
+    MAIN_SYNC_STATUS="failed: could not checkout main"
+  fi
+fi
+
+if [ -z "$MAIN_SYNC_STATUS" ]; then
+  BEFORE_SHA=$(git rev-parse HEAD 2>/dev/null)
+  if PULL_OUTPUT=$(git pull origin main --ff-only 2>&1); then
+    AFTER_SHA=$(git rev-parse HEAD 2>/dev/null)
+    if [ "$BEFORE_SHA" = "$AFTER_SHA" ]; then
+      MAIN_SYNC_STATUS="up to date (${AFTER_SHA:0:7})"
+    else
+      MAIN_SYNC_STATUS="updated ${BEFORE_SHA:0:7} → ${AFTER_SHA:0:7}"
+    fi
+  else
+    MAIN_SYNC_STATUS="failed: $PULL_OUTPUT"
+  fi
+fi
+
+echo "Main sync: $MAIN_SYNC_STATUS"
+```
+
+Note: `/merge` only runs outside worktrees (Step 1 aborts in worktrees), so we should be on `main` after Step 5a's checkout. The explicit checkout-main guard handles edge cases. The `post-merge-pull.sh` hook also fires as a safety net, but this explicit step captures the result for reporting.
+
 ### Step 6: Log to work-log
 
 If a work-log directory exists (detected at session start per work-log.md rules):
@@ -133,5 +167,6 @@ If a work-log directory exists (detected at session start per work-log.md rules)
 Tell the user:
 - PR number and title
 - Merge SHA
+- Main branch {MAIN_SYNC_STATUS from Step 5b — e.g. "updated abc1234 → def5678", "up to date (abc1234)", or "failed: ..."}
 - Branch deleted
 - Work-log updated (if applicable)
