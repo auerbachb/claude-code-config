@@ -102,7 +102,7 @@ test_2_idempotent() {
 import json
 d = json.load(open('$HOME/.claude/settings.json'))
 hooks = d.get('hooks', {})
-count = sum(len(group) for groups in hooks.values() for group in groups for _ in group.get('hooks', []))
+count = sum(len(group.get('hooks', [])) for groups in hooks.values() for group in groups)
 print(count)
 " 2>/dev/null || echo "0")
 
@@ -119,7 +119,7 @@ print(count)
 import json
 d = json.load(open('$HOME/.claude/settings.json'))
 hooks = d.get('hooks', {})
-count = sum(len(group) for groups in hooks.values() for group in groups for _ in group.get('hooks', []))
+count = sum(len(group.get('hooks', [])) for groups in hooks.values() for group in groups)
 print(count)
 " 2>/dev/null || echo "0")
 
