@@ -1,6 +1,6 @@
 # Subagent Context
 
-> **Always:** Pass ALL rule files to subagents. Use `mode: "bypassPermissions"` on every Agent tool call. Use phase decomposition (A/B/C). Timestamp every message. Monitor subagent health. Report failures immediately. Enter monitor mode when subagents are active. Write handoff files on phase completion (Phase A writes `pr-{N}-handoff.json`; Phase B updates it). Read handoff files before reconstructing state from GitHub API (Phases B/C). Delete the handoff file on successful merge (Phase C).
+> **Always:** Pass ALL rule files to subagents. Use `mode: "bypassPermissions"` on every Agent tool call. Use phase decomposition (A/B/C). Timestamp every message. Monitor subagent health. Report failures immediately. Enter monitor mode when subagents are active. Write handoff files on phase completion (Phase A writes `pr-{N}-handoff.json`; Phase B updates it). Read handoff files before reconstructing state from GitHub API (Phases B/C). Delete the handoff file on successful merge (Phase C). Print Structured Exit Report as the final output before every subagent exits (see "Structured Exit Report" section for format).
 > **Ask first:** Respawning a failed subagent — tell the user what happened first. Breaking monitor mode for explicit user requests — warn about paused monitoring first.
 > **Never:** Summarize rules for subagents. Spawn subagents without `mode: "bypassPermissions"`. Fire-and-forget subagents. Let a stalled PR go unreported. Skip timestamps. Go >5 minutes without a user-visible message. Report a PR as "awaiting review" for >5 minutes without a Phase B agent running. Do substantive work (coding, issue creation, file editing) while subagents are active.
 
@@ -384,11 +384,7 @@ Context compaction can happen at any time in long sessions. When it does, you lo
    Build a dashboard: PR number, HEAD SHA, last review state, last reviewer, pending action.
 4. **Check for stale background agents.** Any agents mentioned in the summary are likely dead (compaction killed their parent's awareness). Verify by checking if their expected outputs exist (commits pushed, comments posted).
 5. **Check Phase B coverage.** For every open PR, check `~/.claude/session-state.json` for a Phase B entry. If no Phase B record exists for a PR that has unprocessed review findings, launch Phase B immediately and record it in `~/.claude/session-state.json` — this is the most common post-compaction failure.
-6. **Check for pending phase transitions.** Read `session-state.json` for any PRs where a phase completed but the next phase was never launched. Common scenarios:
-   - Phase A completed but Phase B was never launched (compaction killed the parent before it could act)
-   - Phase B reported `merge_ready` but Phase C was never launched
-   - Phase C reported `ac_verified` but the user was never asked about merging
-   For each pending transition, execute the appropriate Completion Protocol immediately. This is the **second most common post-compaction failure** after missing Phase B coverage.
+6. **Check for pending phase transitions.** Read `session-state.json` for any PRs where a phase completed but the next phase was never launched (e.g., Phase A done but Phase B not launched; Phase B `merge_ready` but Phase C not launched; Phase C `ac_verified` but merge prompt not shown). For each, execute the appropriate Completion Protocol immediately. This is the **second most common post-compaction failure** after missing Phase B coverage.
 7. **Report to the user.** Post the reconstructed dashboard with a note: "Resuming after context compaction. Reconstructed state from GitHub. [N agents may need relaunching, N pending transitions executed]."
 8. **Resume the monitoring loop.** Re-enter the polling cycle for any PRs still awaiting reviews.
 
