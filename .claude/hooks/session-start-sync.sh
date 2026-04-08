@@ -91,7 +91,10 @@ template_hooks = template.get("hooks", {})
 if not isinstance(template_hooks, dict):
     sys.exit(0)
 
-# Extract individual hook entries from template structure
+# Extract individual hook entries from template structure.
+# Note: multi-hook groups in the template are flattened to one-hook-per-group
+# in settings.json. This is intentional (matches setup-skills-worktree.sh) and
+# functionally equivalent — Claude Code reads all groups regardless of grouping.
 manifest = []
 for event, groups in template_hooks.items():
     if not isinstance(groups, list):
@@ -186,10 +189,11 @@ try:
         json.dump(settings, f, indent=2)
         f.write("\n")
     os.replace(tmp, settings_file)
-except BaseException:
+except OSError as e:
     try: os.unlink(tmp)
     except OSError: pass
-    raise
+    print(f"hook-sync: atomic write failed: {e}", file=sys.stderr)
+    sys.exit(1)
 
 print(f"hook-sync: registered {added} new hook(s)", file=sys.stderr)
 HOOK_SYNC_PYTHON
