@@ -97,7 +97,7 @@ if grep -q '/path/to/claude-code-config' "$SETTINGS_DST"; then
 fi
 
 # Verify: settings.json contains this clone's SCRIPT_DIR
-if ! grep -q "$SCRIPT_DIR" "$SETTINGS_DST"; then
+if ! grep -Fq -- "$SCRIPT_DIR" "$SETTINGS_DST"; then
   step_fail "Install settings.json" "settings.json does not contain paths to $SCRIPT_DIR"
   exit 1
 fi
