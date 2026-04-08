@@ -59,9 +59,8 @@ mkdir -p "$SKILLS_DIR"
 WORKTREE_SKILLS="$SKILLS_WORKTREE/.claude/skills"
 
 if [[ ! -d "$WORKTREE_SKILLS" ]]; then
-  echo "WARNING: No .claude/skills/ directory in the worktree. Nothing to symlink."
-  exit 0
-fi
+  echo "WARNING: No .claude/skills/ directory in the worktree. Skipping skill symlinks."
+else
 
 echo "Symlinking skills from worktree..."
 
@@ -110,6 +109,8 @@ for link in "$SKILLS_DIR"/*/; do
     fi
   fi
 done
+
+fi  # end of skills directory check
 
 # --- Step 5: Migrate CLAUDE.md and rules symlinks to skills worktree ---
 
@@ -163,6 +164,166 @@ else
     ln -s "$RULES_TARGET" "$RULES_LINK"
   fi
 fi
+
+# --- Step 6: Register hooks in ~/.claude/settings.json ---
+#
+# Hooks manifest — declarative list of hooks this repo expects to be registered.
+# Each entry: "event|matcher|script_name|timeout"
+# matcher is empty string for hooks with no matcher.
+#
+# To add a new hook:
+#   1. Add the hook script to .claude/hooks/
+#   2. Add a manifest entry below with the event, matcher, script name, and timeout
+#   3. Run this script — it will register the hook in settings.json
+#
+HOOKS_MANIFEST=(
+  "Stop||silence-detector-ack.sh|5"
+  "Stop||trust-flag-repair.sh|10"
+  "PostToolUse|Bash|post-merge-pull.sh|15"
+  "PostToolUse||session-start-sync.sh|30"
+  "PostToolUse||silence-detector.sh|5"
+)
+
+SETTINGS_FILE="$HOME/.claude/settings.json"
+HOOKS_DIR="$SKILLS_WORKTREE/.claude/hooks"
+
+echo ""
+echo "Registering hooks in $SETTINGS_FILE..."
+
+python3 - "$SETTINGS_FILE" "$HOOKS_DIR" "${HOOKS_MANIFEST[@]}" <<'PYTHON_SCRIPT'
+import json
+import os
+import sys
+
+settings_file = sys.argv[1]
+hooks_dir = sys.argv[2]
+manifest_entries = sys.argv[3:]
+
+# Parse manifest: "event|matcher|script_name|timeout"
+manifest = []
+for entry in manifest_entries:
+    parts = entry.split("|")
+    if len(parts) != 4:
+        print(f"  WARNING: skipping malformed manifest entry: {entry}")
+        continue
+    try:
+        timeout_val = int(parts[3])
+    except ValueError:
+        print(f"  WARNING: skipping entry with non-integer timeout: {entry}")
+        continue
+    manifest.append({
+        "event": parts[0],
+        "matcher": parts[1] if parts[1] else None,
+        "script": parts[2],
+        "timeout": timeout_val,
+    })
+
+# Read existing settings.json or start fresh
+if os.path.isfile(settings_file):
+    try:
+        with open(settings_file) as f:
+            settings = json.load(f)
+    except json.JSONDecodeError as e:
+        import shutil
+        backup = settings_file + ".bak"
+        shutil.copy2(settings_file, backup)
+        print(f"  WARNING: {settings_file} contains invalid JSON: {e}")
+        print(f"  Backed up to {backup}, starting fresh (all settings will be re-created)")
+        settings = {}
+else:
+    settings = {}
+
+if not isinstance(settings, dict):
+    print(f"  WARNING: {settings_file} top-level value is not an object; resetting")
+    settings = {}
+
+if "hooks" not in settings or not isinstance(settings["hooks"], dict):
+    if "hooks" in settings:
+        print(f"  WARNING: {settings_file} has non-object 'hooks'; resetting hooks section")
+    settings["hooks"] = {}
+
+hooks = settings["hooks"]
+
+def command_path(script_name):
+    return os.path.join(hooks_dir, script_name)
+
+def is_placeholder_path(path):
+    """Detect placeholder paths from global-settings.json templates."""
+    return "/path/to/" in path or not os.path.isabs(path)
+
+def hook_already_registered(event_entries, cmd_path, matcher):
+    """Check if a hook with this command path is already registered under the event."""
+    for group in event_entries:
+        if not isinstance(group, dict):
+            continue
+        group_matcher = group.get("matcher")
+        # Match by command path within groups that have the same matcher
+        if group_matcher != matcher:
+            continue
+        hook_list = group.get("hooks", [])
+        if not isinstance(hook_list, list):
+            continue
+        for h in hook_list:
+            if not isinstance(h, dict):
+                continue
+            existing_cmd = h.get("command", "")
+            # Skip placeholder paths — they aren't functional registrations
+            if is_placeholder_path(existing_cmd):
+                continue
+            if os.path.basename(existing_cmd) == os.path.basename(cmd_path):
+                return True
+    return False
+
+added = []
+already_present = []
+
+for item in manifest:
+    event = item["event"]
+    matcher = item["matcher"]
+    script = item["script"]
+    timeout = item["timeout"]
+    cmd = command_path(script)
+
+    if not os.path.isfile(cmd):
+        print(f"  {script} — WARNING: not found at {cmd}; skipping")
+        continue
+
+    if event not in hooks or not isinstance(hooks[event], list):
+        hooks[event] = []
+
+    if hook_already_registered(hooks[event], cmd, matcher):
+        already_present.append(script)
+        continue
+
+    # Build the hook group entry
+    hook_obj = {"type": "command", "command": cmd, "timeout": timeout}
+    group = {"hooks": [hook_obj]}
+    if matcher:
+        group["matcher"] = matcher
+
+    hooks[event].append(group)
+    added.append(script)
+
+# Write back atomically to prevent corruption on interrupt
+import tempfile
+
+settings_dir = os.path.dirname(settings_file) or "."
+fd, tmp_path = tempfile.mkstemp(dir=settings_dir, suffix=".tmp")
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(settings, f, indent=2)
+        f.write("\n")
+    os.replace(tmp_path, settings_file)
+except BaseException:
+    os.unlink(tmp_path)
+    raise
+
+# Report
+for name in added:
+    print(f"  {name} — added")
+for name in already_present:
+    print(f"  {name} — already registered")
+PYTHON_SCRIPT
 
 echo ""
 echo "Done. Skills worktree: $SKILLS_WORKTREE"
