@@ -133,6 +133,7 @@ HANDOFF_FILE: ~/.claude/handoffs/pr-618-handoff.json
 |-------|---------|---------|
 | A | `pushed_fixes` | Findings fixed, code pushed |
 | A | `no_findings` | Review was already clean, code pushed as-is |
+| A | `exhaustion` | Token budget running low — partial fixes, replacement Phase A needed |
 | B | `clean` | Review passed with no findings |
 | B | `fixes_pushed` | Fixed findings, pushed — needs re-review (launch replacement Phase B) |
 | B | `merge_ready` | All checks green, merge gate satisfied |
@@ -144,7 +145,7 @@ HANDOFF_FILE: ~/.claude/handoffs/pr-618-handoff.json
 - The exit report MUST be the very last thing the subagent outputs before exiting
 - The `EXIT_REPORT` header line is required — the parent uses it to locate the block
 - One field per line, colon-separated, no extra whitespace around values
-- On approaching token exhaustion: print the exit report (with `OUTCOME: exhaustion` for Phase B) **before** hitting the hard limit — see "Token/Turn Exhaustion Protocol" above for detection signals and handoff procedure
+- On approaching token exhaustion: print the exit report (with `OUTCOME: exhaustion` for Phase A or B) **before** hitting the hard limit — see "Token/Turn Exhaustion Protocol" above for detection signals and handoff procedure
 
 ### Subagent Task Decomposition (Token Safety)
 
@@ -157,7 +158,7 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 - Commit all fixes in ONE commit, push once
 - Reply to all review comment threads (for Greptile: plain text only — do not include `@greptileai`, every @mention triggers a paid re-review)
 - **Write handoff file** to `~/.claude/handoffs/pr-{N}-handoff.json` (see "Structured Handoff Files" section below) with all findings fixed, threads replied/resolved, files changed, and HEAD SHA. Include `findings_dismissed` for any findings verified as false positives (each entry: `{id, reason}`).
-- **Print the Structured Exit Report and EXIT — do not enter polling loop.** The exit report is your final output. Use `OUTCOME: pushed_fixes` if you fixed findings, `OUTCOME: no_findings` if the review was already clean. Set `NEXT_PHASE: B`.
+- **Print the Structured Exit Report and EXIT — do not enter polling loop.** The exit report is your final output. Use `OUTCOME: pushed_fixes` if you fixed findings, `OUTCOME: no_findings` if the review was already clean, or `OUTCOME: exhaustion` if approaching token limit with partial work remaining. Set `NEXT_PHASE: B` (or `NEXT_PHASE: A` for exhaustion).
 
 **Phase B: Review Loop** (lighter — incremental)
 - **Phase B Initialization:** On startup, check for `~/.claude/handoffs/pr-{N}-handoff.json`:
@@ -200,12 +201,15 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 
 **WHEN** a subagent returns and reports a PR was created or updated, **THEN** execute this checklist immediately — before any other work:
 
-1. **Verify the push happened.** Run `gh pr view N --json commits --jq '.commits[-1].oid'` and confirm the SHA matches what the subagent reported. If the push didn't happen, the subagent silently failed — report to user.
-2. **Verify the handoff file was written.** Check `~/.claude/handoffs/pr-{N}-handoff.json` exists and contains valid JSON with `phase_completed: "A"`. If missing, the subagent skipped the handoff write — reconstruct from the subagent's output and write it yourself before launching Phase B.
-3. **Check if reviewers already posted findings.** Fetch all 3 comment endpoints for the PR (`per_page=100` on each). If CR or Greptile already posted findings (common if the review was fast), include those findings in the Phase B prompt.
-4. **Launch Phase B within 60 seconds.** This is the immediate next action — queue it ahead of any other work (creating issues, reading files, responding to unrelated questions). If you cannot launch within 60 seconds due to tool throttling, tell the user why and when you will launch, then automatically retry until Phase B is launched (do not wait for user action). Record the planned retry in `session-state.json`. Include the handoff file path (`~/.claude/handoffs/pr-{N}-handoff.json`) in the Phase B subagent prompt.
-5. **Update `session-state.json`.** Write the phase transition: PR moved from Phase A to Phase B, record the HEAD SHA, reset review state.
-6. **Report to user.** "Phase A complete for PR #N — fixes pushed (SHA `abc1234`). Phase B launched, polling for reviews."
+1. **Parse the exit report.** Extract `PR_NUMBER`, `HEAD_SHA`, `OUTCOME`, `REVIEWER`, and `NEXT_PHASE` from the `EXIT_REPORT` block. If the subagent exited without printing an exit report, treat it as a silent failure — report to user and check GitHub API for current state.
+2. **Branch on OUTCOME:**
+   - `pushed_fixes` or `no_findings` → proceed to step 3 (verify and launch Phase B)
+   - `exhaustion` → launch a **replacement Phase A** subagent within 60 seconds with the remaining work from the handoff file/session-state. Report to user: "Phase A for PR #N exhausted tokens (partial fixes). Launching replacement Phase A." Skip steps 3-4.
+3. **Verify the push happened.** Run `gh pr view N --json commits --jq '.commits[-1].oid'` and confirm the SHA matches what the subagent reported. If the push didn't happen, the subagent silently failed — report to user.
+4. **Verify the handoff file was written.** Check `~/.claude/handoffs/pr-{N}-handoff.json` exists and contains valid JSON with `phase_completed: "A"`. If missing, the subagent skipped the handoff write — reconstruct from the subagent's output and write it yourself before launching Phase B.
+5. **Launch Phase B within 60 seconds.** Check if reviewers already posted findings (fetch all 3 comment endpoints, `per_page=100`). Include any existing findings and the handoff file path in the Phase B subagent prompt. If you cannot launch within 60 seconds due to tool throttling, tell the user why and when you will launch, then automatically retry until Phase B is launched (do not wait for user action). Record the planned retry in `session-state.json`.
+6. **Update `session-state.json`.** Write the phase transition: PR moved from Phase A to Phase B (or Phase A to Phase A for exhaustion replacements), record the HEAD SHA, reset review state.
+7. **Report to user.** "Phase A complete for PR #N — fixes pushed (SHA `abc1234`). Phase B launched, polling for reviews."
 
 **Phase B launch is the highest-priority action after Phase A reports.** Do not start other substantive work until Phase B is launched for every PR that completed Phase A. If multiple Phase A agents complete simultaneously, launch Phase B for each one before doing anything else.
 
@@ -585,8 +589,8 @@ If BOTH reviewers are down (CR rate-limited + Greptile timeout), perform self-re
   `schema_version`, `pr_number`, `head_sha`, `reviewer`, `phase_completed` ("A"),
   `created_at`, `findings_fixed`, `findings_dismissed`, `threads_replied`,
   `threads_resolved`, `files_changed`, `push_timestamp`, `notes`.
-  Then print the Structured Exit Report: `OUTCOME: pushed_fixes` or `no_findings`,
-  `NEXT_PHASE: B`.
+  Then print the Structured Exit Report: `OUTCOME: pushed_fixes`, `no_findings`, or
+  `exhaustion` (partial fixes). `NEXT_PHASE: B` (or `A` for exhaustion).
 - **Phase B (read-modify-write + exit):** Read existing handoff file, merge new entries
   into arrays (deduplicate per field: by exact string value for `string[]` fields,
   by `.id` for object arrays like `findings_dismissed`), update `phase_completed` to "B", refresh
