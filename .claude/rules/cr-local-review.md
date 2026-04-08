@@ -2,7 +2,7 @@
 
 > **Always:** Run local CR review before pushing. Verify findings against code before fixing. Two clean passes to exit.
 > **Ask first:** Never — fix all findings autonomously. Never ask "should I run the review?", "should I push?", or "should I create a PR?" — these transitions are automatic.
-> **Never:** Push code without running local review. Fall back to GitHub polling when CLI works. Ask permission at any step in this workflow.
+> **Never:** Push code without running local review. Fall back to GitHub polling when CLI works. Ask permission at any step in this workflow. Treat local review as the merge gate (it is not — the GitHub review loop is mandatory for merge).
 
 This is the **primary** review workflow. Run CodeRabbit locally in your terminal to catch issues **before** pushing or creating a PR. This is faster than GitHub-based reviews (instant feedback, no polling), produces no noise on the PR, and doesn't consume your GitHub-based CR review quota.
 
@@ -45,11 +45,18 @@ Run the CLI directly via Bash from the repo root:
 - Once clean, commit all changes and push the branch
 - **This transition is automatic.** After two clean passes, IMMEDIATELY commit and push — do not ask "should I push now?" or "ready to create a PR?"
 
-### Then: push and create the PR (AUTOMATIC — do not ask)
-- After the local review loop passes, push the branch and create the PR. **This is an autonomous transition — do not pause for user confirmation.**
-- CodeRabbit will still auto-review on GitHub — enter the **GitHub CodeRabbit Review Loop** as a safety net
-- After pushing, trigger Greptile alongside CR:
-  1. Check the Greptile daily budget (see `greptile.md` "Daily Budget")
-  2. If budget allows: comment `@greptileai` on the PR. CR and Greptile run in parallel — process findings from whichever responds first.
-  3. If budget exhausted: skip Greptile — CR is the sole reviewer. If CR also fails, fall back to self-review.
-- Because you already cleaned up locally, the GitHub review should find nothing or very little
+### Post-Clean: Push, PR, and GitHub Review (AUTOMATIC — do not ask)
+
+After two consecutive clean local reviews, execute this checklist immediately:
+
+1. **Commit all changes** in a single commit.
+2. **Push the branch** to the remote.
+3. **Create the PR** via `gh pr create` with `Closes #N` in the body and a Test Plan section with acceptance criteria checkboxes.
+
+> **STOP — Local review does NOT satisfy the merge gate.** The GitHub review loop (CR + Greptile) is mandatory: 2 clean CR passes or a clean Greptile severity gate (see `cr-github-review.md` "Completion" section). Proceed immediately — do not ask.
+
+4. **Trigger Greptile** alongside CR:
+   1. Check the Greptile daily budget (see `greptile.md` "Daily Budget").
+   2. If budget allows: comment `@greptileai` on the PR. CR and Greptile run in parallel — process findings from whichever responds first.
+   3. If budget exhausted: skip Greptile — CR is the sole reviewer. If CR also fails, fall back to self-review.
+5. **Enter the GitHub CodeRabbit Review Loop** (see `cr-github-review.md` "Polling" section). Poll immediately — do not wait.
