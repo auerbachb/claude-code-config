@@ -251,13 +251,20 @@ def is_placeholder_path(path):
     """Detect placeholder paths from global-settings.json templates."""
     return "/path/to/" in path or not os.path.isabs(path)
 
-def hook_already_registered(event_entries, cmd_path, matcher):
-    """Check if a hook with this command path is already registered under the event."""
+def find_existing_hook(event_entries, cmd_path, matcher):
+    """Find an existing hook entry by basename match within groups that share the same matcher.
+
+    Returns:
+      ("exact", None)    — already registered with correct path
+      ("migrate", hook)  — registered but path needs updating (e.g., root-repo -> worktree)
+      ("placeholder", hook) — registered with a placeholder path
+      (None, None)       — not registered
+    """
+    basename = os.path.basename(cmd_path)
     for group in event_entries:
         if not isinstance(group, dict):
             continue
         group_matcher = group.get("matcher")
-        # Match by command path within groups that have the same matcher
         if group_matcher != matcher:
             continue
         hook_list = group.get("hooks", [])
@@ -267,14 +274,18 @@ def hook_already_registered(event_entries, cmd_path, matcher):
             if not isinstance(h, dict):
                 continue
             existing_cmd = h.get("command", "")
-            # Skip placeholder paths — they aren't functional registrations
-            if is_placeholder_path(existing_cmd):
+            if os.path.basename(existing_cmd) != basename:
                 continue
-            if os.path.basename(existing_cmd) == os.path.basename(cmd_path):
-                return True
-    return False
+            if is_placeholder_path(existing_cmd):
+                return ("placeholder", h)
+            if existing_cmd == cmd_path:
+                return ("exact", None)
+            # Same script name, different valid path — needs migration
+            return ("migrate", h)
+    return (None, None)
 
 added = []
+migrated = []
 already_present = []
 
 for item in manifest:
@@ -291,11 +302,26 @@ for item in manifest:
     if event not in hooks or not isinstance(hooks[event], list):
         hooks[event] = []
 
-    if hook_already_registered(hooks[event], cmd, matcher):
+    status, hook_ref = find_existing_hook(hooks[event], cmd, matcher)
+
+    if status == "exact":
         already_present.append(script)
         continue
+    elif status == "migrate":
+        # Update path in-place (e.g., root-repo -> skills-worktree)
+        old_path = hook_ref["command"]
+        hook_ref["command"] = cmd
+        hook_ref["timeout"] = timeout
+        migrated.append(script)
+        continue
+    elif status == "placeholder":
+        # Replace placeholder with real path in-place
+        hook_ref["command"] = cmd
+        hook_ref["timeout"] = timeout
+        migrated.append(script)
+        continue
 
-    # Build the hook group entry
+    # Not registered at all — add new entry
     hook_obj = {"type": "command", "command": cmd, "timeout": timeout}
     group = {"hooks": [hook_obj]}
     if matcher:
@@ -321,6 +347,8 @@ except BaseException:
 # Report
 for name in added:
     print(f"  {name} — added")
+for name in migrated:
+    print(f"  {name} — migrated path to skills worktree")
 for name in already_present:
     print(f"  {name} — already registered")
 PYTHON_SCRIPT

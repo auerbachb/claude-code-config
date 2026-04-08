@@ -30,7 +30,7 @@
           {
             "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/trust-flag-repair.sh",
-            "timeout": 5
+            "timeout": 10
           }
         ]
       }
@@ -41,7 +41,7 @@
           {
             "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/session-start-sync.sh",
-            "timeout": 15
+            "timeout": 30
           }
         ]
       },
