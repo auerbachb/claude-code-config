@@ -134,7 +134,8 @@ except json.JSONDecodeError as e:
     sys.exit(1)
 
 if not isinstance(settings, dict):
-    sys.exit(0)
+    print(f"settings.json top-level is {type(settings).__name__}, not object", file=sys.stderr)
+    sys.exit(1)
 if "hooks" not in settings or not isinstance(settings["hooks"], dict):
     settings["hooks"] = {}
 
