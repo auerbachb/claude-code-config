@@ -131,8 +131,8 @@ elif [ -n "$(git -C "$ROOT_REPO" status --porcelain)" ]; then
 else
   CURRENT_BRANCH=$(git -C "$ROOT_REPO" branch --show-current)
   if [ "$CURRENT_BRANCH" != "main" ]; then
-    if ! git -C "$ROOT_REPO" checkout main 2>&1; then
-      MAIN_SYNC_STATUS="failed: could not checkout main in root repo"
+    if ! CHECKOUT_OUTPUT=$(git -C "$ROOT_REPO" checkout main 2>&1); then
+      MAIN_SYNC_STATUS="failed: could not checkout main in root repo — $CHECKOUT_OUTPUT"
     fi
   fi
   if [ -z "$MAIN_SYNC_STATUS" ]; then
