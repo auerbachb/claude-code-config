@@ -77,7 +77,7 @@ chmod +x "$SCRIPT_DIR/.claude/hooks"/*.sh 2>/dev/null || true
 # Merge non-hook keys from template into existing settings.json.
 # Existing keys are NEVER overwritten — only missing keys are seeded.
 # Hooks are NOT touched here — setup-skills-worktree.sh Step 6 handles them.
-python3 - "$SETTINGS_SRC" "$SETTINGS_DST" <<'PYTHON_MERGE'
+if ! python3 - "$SETTINGS_SRC" "$SETTINGS_DST" <<'PYTHON_MERGE'
 import json
 import os
 import sys
@@ -147,8 +147,7 @@ if added:
 else:
     print("  All settings already present — no changes needed")
 PYTHON_MERGE
-
-if [[ $? -ne 0 ]]; then
+then
   step_fail "Merge settings" "Python merge script failed"
   exit 1
 fi
