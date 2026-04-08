@@ -35,7 +35,8 @@ RUN rm -rf .git \
 RUN git clone --bare /workspace /opt/origin-bare.git \
     && git remote add origin /opt/origin-bare.git
 
-# Make scripts executable
-RUN chmod +x setup.sh setup-skills-worktree.sh tests/test-setup.sh .claude/hooks/*.sh
+# Make scripts executable (find handles missing globs safely)
+RUN chmod +x setup.sh setup-skills-worktree.sh tests/test-setup.sh \
+    && find .claude/hooks -name '*.sh' -exec chmod +x {} +
 
 ENTRYPOINT ["bash", "tests/test-setup.sh"]
