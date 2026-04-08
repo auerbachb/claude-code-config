@@ -98,6 +98,54 @@ When spawning subagents via the Agent tool, consider the phase's token demands:
 - Give the subagent ONE clear phase with explicit exit criteria
 - Include only the findings/context it needs — not the full PR history
 
+### Structured Exit Report (MANDATORY — all phases)
+
+Every subagent MUST print a structured exit report as its **final output** before exiting. This enables the parent agent to parse results mechanically — not by interpreting prose. The report must be a fenced code block with exactly these key-value pairs:
+
+```text
+EXIT_REPORT
+PHASE_COMPLETE: A
+PR_NUMBER: 618
+HEAD_SHA: abc1234
+REVIEWER: cr
+OUTCOME: pushed_fixes
+FILES_CHANGED: src/foo.ts, src/bar.ts
+NEXT_PHASE: B
+HANDOFF_FILE: ~/.claude/handoffs/pr-618-handoff.json
+```
+
+**Field reference:**
+
+| Field | Values | Description |
+|-------|--------|-------------|
+| `PHASE_COMPLETE` | `A`, `B`, `C` | Which phase just finished |
+| `PR_NUMBER` | integer | The PR number |
+| `HEAD_SHA` | string | HEAD SHA after the phase's last push (or current HEAD if no push) |
+| `REVIEWER` | `cr`, `greptile` | Which reviewer owns this PR |
+| `OUTCOME` | see below | What happened during the phase |
+| `FILES_CHANGED` | comma-separated paths | Files modified (empty string if none) |
+| `NEXT_PHASE` | `B`, `C`, `none` | What the parent should launch next |
+| `HANDOFF_FILE` | path | Path to the handoff file written/updated by this phase |
+
+**Valid `OUTCOME` values per phase:**
+
+| Phase | Outcome | Meaning |
+|-------|---------|---------|
+| A | `pushed_fixes` | Findings fixed, code pushed |
+| A | `no_findings` | Review was already clean, code pushed as-is |
+| B | `clean` | Review passed with no findings |
+| B | `fixes_pushed` | Fixed findings, pushed — needs re-review (launch replacement Phase B) |
+| B | `merge_ready` | All checks green, merge gate satisfied |
+| B | `exhaustion` | Token budget running low — replacement Phase B needed |
+| C | `ac_verified` | All acceptance criteria verified and checked off — ready for user merge decision |
+| C | `blocked` | Merge blocked (CI failure, missing approvals, unchecked AC) |
+
+**Rules:**
+- The exit report MUST be the very last thing the subagent outputs before exiting
+- The `EXIT_REPORT` header line is required — the parent uses it to locate the block
+- One field per line, colon-separated, no extra whitespace around values
+- If the subagent exits due to token exhaustion, it MUST still print the exit report (with `OUTCOME: exhaustion` for Phase B, or the best-available outcome for other phases) before writing handoff state and exiting
+
 ### Subagent Task Decomposition (Token Safety)
 
 Subagents have a hardcoded **32K output token limit** that cannot be configured ([known Claude Code limitation](https://github.com/anthropics/claude-code/issues/25569)). A single subagent that reads 10-20 CR findings, fixes code, pushes, replies to every thread, AND polls for the next review will exhaust its token budget and die mid-poll. To prevent this, break PR lifecycle work into sequential phases:
@@ -109,7 +157,7 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 - Commit all fixes in ONE commit, push once
 - Reply to all review comment threads (for Greptile: plain text only — do not include `@greptileai`, every @mention triggers a paid re-review)
 - **Write handoff file** to `~/.claude/handoffs/pr-{N}-handoff.json` (see "Structured Handoff Files" section below) with all findings fixed, threads replied/resolved, files changed, and HEAD SHA. Include `findings_dismissed` for any findings verified as false positives (each entry: `{id, reason}`).
-- **EXIT after push — do not enter polling loop**
+- **Print the Structured Exit Report and EXIT — do not enter polling loop.** The exit report is your final output. Use `OUTCOME: pushed_fixes` if you fixed findings, `OUTCOME: no_findings` if the review was already clean. Set `NEXT_PHASE: B`.
 
 **Phase B: Review Loop** (lighter — incremental)
 - **Phase B Initialization:** On startup, check for `~/.claude/handoffs/pr-{N}-handoff.json`:
@@ -125,7 +173,11 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 - If clean pass on CR: trigger one more `@coderabbitai full review` for confirmation (2 clean CR passes needed)
 - If clean Greptile pass (no findings at all): merge-ready immediately.
 - **Phase B Completion:** Update the handoff file at `~/.claude/handoffs/pr-{N}-handoff.json` — set `phase_completed` to `"B"`, refresh `head_sha` if there was a new push, and merge new entries into `findings_fixed`, `threads_replied`, `threads_resolved`, and `files_changed`. **Deduplicate deterministically per field:** for `string[]` fields (`findings_fixed`, `threads_replied`, `threads_resolved`, `files_changed`), dedupe by exact string value; for object arrays (`findings_dismissed`), dedupe by `.id`. This prevents duplicate accumulation when replacement agents re-process the same findings.
-- **EXIT after confirming clean or after fixing one round**
+- **Print the Structured Exit Report and EXIT.** Use the appropriate `OUTCOME`:
+  - `clean` — review passed with no findings
+  - `fixes_pushed` — fixed findings and pushed, needs re-review (set `NEXT_PHASE: B` for replacement agent)
+  - `merge_ready` — merge gate satisfied, all checks green (set `NEXT_PHASE: C`)
+  - `exhaustion` — token budget running low, replacement needed (set `NEXT_PHASE: B`)
 
 **Phase C: Merge Prep** (lightest)
 - **Phase C Initialization:** Read `~/.claude/handoffs/pr-{N}-handoff.json` if it exists. Use `reviewer` and `phase_completed` fields to confirm merge gate expectations. Fall back to GitHub API if missing.
@@ -134,6 +186,7 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 - Check off all boxes
 - Report ready for merge
 - **Phase C Cleanup (after successful merge only):** Delete the handoff file: `rm ~/.claude/handoffs/pr-{N}-handoff.json`. If merge fails or is aborted, do NOT delete the handoff file. Cleanup failure is non-fatal — log a warning but don't block.
+- **Print the Structured Exit Report and EXIT.** Use `OUTCOME: ac_verified` when all acceptance criteria are verified and checked off (set `NEXT_PHASE: none`). Use `OUTCOME: blocked` if merge is blocked by CI failures, missing approvals, or unchecked AC items (set `NEXT_PHASE: none` — parent will report blocker to user).
 
 **Orchestration rules:**
 - Parent agent launches Phase A subagents (can run in parallel across different PRs)
@@ -155,6 +208,51 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 6. **Report to user.** "Phase A complete for PR #N — fixes pushed (SHA `abc1234`). Phase B launched, polling for reviews."
 
 **Phase B launch is the highest-priority action after Phase A reports.** Do not start other substantive work until Phase B is launched for every PR that completed Phase A. If multiple Phase A agents complete simultaneously, launch Phase B for each one before doing anything else.
+
+### Phase B Completion Protocol (MANDATORY)
+
+**WHEN** a Phase B subagent returns, **THEN** parse its Structured Exit Report and execute this checklist immediately — before any other work:
+
+1. **Parse the exit report.** Extract `PR_NUMBER`, `HEAD_SHA`, `OUTCOME`, `REVIEWER`, and `NEXT_PHASE` from the `EXIT_REPORT` block. If the subagent exited without printing an exit report, treat it as a silent failure — report to user and check GitHub API for current state.
+2. **Branch on OUTCOME:**
+   - `clean` or `merge_ready` → proceed to step 3 (launch Phase C)
+   - `fixes_pushed` → launch a **replacement Phase B** subagent within 60 seconds. Include the handoff file path and note that this is a continuation. Update `session-state.json` with the new HEAD SHA. Report to user: "Phase B for PR #N pushed fixes (SHA `abc1234`). Launching replacement Phase B for re-review."
+   - `exhaustion` → launch a **replacement Phase B** subagent within 60 seconds with the remaining work from the handoff file/session-state. Report to user: "Phase B for PR #N exhausted tokens. Launching replacement."
+3. **Verify review state via GitHub API.** For `clean`/`merge_ready` outcomes, confirm the merge gate is actually met:
+   - CR-only: verify 2 clean CR reviews exist
+   - Greptile: verify severity gate is satisfied (see `greptile.md`)
+   - If verification fails, launch a replacement Phase B instead of Phase C
+4. **Launch Phase C within 60 seconds.** This is the immediate next action for `clean`/`merge_ready` outcomes. Include the handoff file path (`~/.claude/handoffs/pr-{N}-handoff.json`) in the Phase C subagent prompt.
+5. **Update `session-state.json`.** Write the phase transition: PR moved from Phase B to Phase C (or Phase B to Phase B for replacements), record the HEAD SHA, update review state.
+6. **Report to user.** "Phase B complete for PR #N — reviews clean (SHA `abc1234`). Phase C launched, verifying acceptance criteria."
+
+**Phase C launch is the highest-priority action after Phase B reports clean.** Do not start other substantive work until Phase C is launched for every PR that completed Phase B with a clean/merge_ready outcome.
+
+### Phase C Completion Protocol (MANDATORY)
+
+**WHEN** a Phase C subagent returns, **THEN** parse its Structured Exit Report and execute this checklist immediately:
+
+1. **Parse the exit report.** Extract `PR_NUMBER`, `OUTCOME`, and `HEAD_SHA` from the `EXIT_REPORT` block. If no exit report, treat as silent failure — check GitHub API.
+2. **Branch on OUTCOME:**
+   - `ac_verified` → all acceptance criteria verified and checked off. Ask the user: "Reviews are clean, all AC verified and checked off for PR #N. Want me to squash and merge and delete the branch, or do you want to review the diff yourself first?"
+   - `blocked` → report the blocker to the user with details from the handoff file or subagent output. Do NOT merge.
+3. **Update `session-state.json`.** Mark the PR as Phase C complete. Remove from `active_agents`.
+4. **Report to user.** Include the outcome and next action (merge decision or blocker details).
+
+### Monitor Loop — Per-Cycle Checklist (MANDATORY)
+
+Every ~60-second monitor cycle, execute these steps **in priority order**. Higher-priority items MUST be handled before lower-priority ones:
+
+1. **Check for completed subagents.** Poll all active subagent statuses. If any have returned results, process them immediately (steps 2-3).
+2. **Execute pending phase transitions.** For each completed subagent:
+   - Parse its Structured Exit Report
+   - Execute the appropriate Completion Protocol (Phase A → B, Phase B → C, Phase C → merge decision)
+   - This is the highest-priority action — do it before heartbeats or status checks
+3. **Check for pending transitions from prior cycles.** Read `session-state.json` for any PRs where a phase completed but the next phase was not yet launched (e.g., due to tool throttling or compaction). Launch the pending phase immediately.
+4. **Send heartbeat/status message.** If >5 minutes since last user message, send a status update. Include: active agents, PR phases, any pending transitions, any blockers.
+5. **Check for stale agents.** If any subagent has been running for an unusually long time without reporting (>15 minutes for Phase A, >10 minutes for Phase B polling, >5 minutes for Phase C), investigate — it may have silently failed.
+
+> **The key insight:** Steps 2-3 (transition execution) come BEFORE step 4 (heartbeats). A heartbeat that says "PR #618 is in Phase A" when Phase A already completed 2 minutes ago is worse than no heartbeat — it's misleading. Execute transitions first, then report accurate state.
 
 ### Timestamped Status Updates (MANDATORY for parent agents)
 
@@ -286,8 +384,13 @@ Context compaction can happen at any time in long sessions. When it does, you lo
    Build a dashboard: PR number, HEAD SHA, last review state, last reviewer, pending action.
 4. **Check for stale background agents.** Any agents mentioned in the summary are likely dead (compaction killed their parent's awareness). Verify by checking if their expected outputs exist (commits pushed, comments posted).
 5. **Check Phase B coverage.** For every open PR, check `~/.claude/session-state.json` for a Phase B entry. If no Phase B record exists for a PR that has unprocessed review findings, launch Phase B immediately and record it in `~/.claude/session-state.json` — this is the most common post-compaction failure.
-6. **Report to the user.** Post the reconstructed dashboard with a note: "Resuming after context compaction. Reconstructed state from GitHub. [N agents may need relaunching]."
-7. **Resume the monitoring loop.** Re-enter the polling cycle for any PRs still awaiting reviews.
+6. **Check for pending phase transitions.** Read `session-state.json` for any PRs where a phase completed but the next phase was never launched. Common scenarios:
+   - Phase A completed but Phase B was never launched (compaction killed the parent before it could act)
+   - Phase B reported `merge_ready` but Phase C was never launched
+   - Phase C reported `ac_verified` but the user was never asked about merging
+   For each pending transition, execute the appropriate Completion Protocol immediately. This is the **second most common post-compaction failure** after missing Phase B coverage.
+7. **Report to the user.** Post the reconstructed dashboard with a note: "Resuming after context compaction. Reconstructed state from GitHub. [N agents may need relaunching, N pending transitions executed]."
+8. **Resume the monitoring loop.** Re-enter the polling cycle for any PRs still awaiting reviews.
 
 **Pre-compaction checkpointing (preventive):**
 
@@ -384,8 +487,13 @@ Since subagents receive the full rules (see above), this section serves as a **q
 
 AUTONOMY RULE: Every step below is AUTOMATIC. Do NOT ask "should I?" or "want me to?"
 at any point. The ONLY user-prompted action is the final merge decision (Step 4).
-If you are running low on tokens, write handoff state to session-state.json and exit
-cleanly — do NOT ask the user what to do.
+If you are running low on tokens, write handoff state to session-state.json, print the
+Structured Exit Report, and exit cleanly — do NOT ask the user what to do.
+
+EXIT REPORT RULE: Before exiting, you MUST print a Structured Exit Report as your final
+output. Format: fenced code block starting with `EXIT_REPORT`, one key-value pair per line:
+PHASE_COMPLETE, PR_NUMBER, HEAD_SHA, REVIEWER, OUTCOME, FILES_CHANGED, NEXT_PHASE,
+HANDOFF_FILE. The parent parses this mechanically — omitting it causes silent failures.
 
 After pushing code and creating/updating a PR, follow this EXACT sequence:
 
@@ -475,19 +583,25 @@ The merge gate depends on which reviewer owns the PR:
 
 If BOTH reviewers are down (CR rate-limited + Greptile timeout), perform self-review for risk reduction and report the blocker. Self-review does NOT satisfy the merge gate.
 
-### Final Step: Handoff File Lifecycle (per-phase)
-- **Phase A (create):** `mkdir -p ~/.claude/handoffs/` then write a new
+### Final Step: Handoff File + Exit Report (per-phase)
+- **Phase A (create + exit):** `mkdir -p ~/.claude/handoffs/` then write a new
   `~/.claude/handoffs/pr-{N}-handoff.json` with all schema fields:
   `schema_version`, `pr_number`, `head_sha`, `reviewer`, `phase_completed` ("A"),
   `created_at`, `findings_fixed`, `findings_dismissed`, `threads_replied`,
   `threads_resolved`, `files_changed`, `push_timestamp`, `notes`.
-- **Phase B (read-modify-write):** Read existing handoff file, merge new entries
+  Then print the Structured Exit Report: `OUTCOME: pushed_fixes` or `no_findings`,
+  `NEXT_PHASE: B`.
+- **Phase B (read-modify-write + exit):** Read existing handoff file, merge new entries
   into arrays (deduplicate per field: by exact string value for `string[]` fields,
   by `.id` for object arrays like `findings_dismissed`), update `phase_completed` to "B", refresh
   `head_sha` if pushed. Do NOT overwrite `created_at` or `push_timestamp` from
   Phase A — only set `push_timestamp` if Phase B itself pushed a new commit.
   Preserve unknown fields.
-- **Phase C (read then delete):** Read handoff file for reviewer/state context.
+  Then print the Structured Exit Report: `OUTCOME: clean`/`merge_ready`/`fixes_pushed`/`exhaustion`,
+  `NEXT_PHASE: C` (clean/merge_ready) or `B` (fixes_pushed/exhaustion).
+- **Phase C (read then delete + exit):** Read handoff file for reviewer/state context.
   Do NOT update or rewrite the file. After successful merge only, delete it:
   `rm ~/.claude/handoffs/pr-{N}-handoff.json`. Deletion failure is non-fatal.
+  Then print the Structured Exit Report: `OUTCOME: ac_verified` or `blocked`,
+  `NEXT_PHASE: none`.
 ```
