@@ -59,9 +59,8 @@ mkdir -p "$SKILLS_DIR"
 WORKTREE_SKILLS="$SKILLS_WORKTREE/.claude/skills"
 
 if [[ ! -d "$WORKTREE_SKILLS" ]]; then
-  echo "WARNING: No .claude/skills/ directory in the worktree. Nothing to symlink."
-  exit 0
-fi
+  echo "WARNING: No .claude/skills/ directory in the worktree. Skipping skill symlinks."
+else
 
 echo "Symlinking skills from worktree..."
 
@@ -110,6 +109,8 @@ for link in "$SKILLS_DIR"/*/; do
     fi
   fi
 done
+
+fi  # end of skills directory check
 
 # --- Step 5: Migrate CLAUDE.md and rules symlinks to skills worktree ---
 
@@ -227,9 +228,13 @@ if os.path.isfile(settings_file):
         backup = settings_file + ".bak"
         shutil.copy2(settings_file, backup)
         print(f"  WARNING: {settings_file} contains invalid JSON: {e}")
-        print(f"  Backed up to {backup}, starting fresh for hooks section")
+        print(f"  Backed up to {backup}, starting fresh (all settings will be re-created)")
         settings = {}
 else:
+    settings = {}
+
+if not isinstance(settings, dict):
+    print(f"  WARNING: {settings_file} top-level value is not an object; resetting")
     settings = {}
 
 if "hooks" not in settings or not isinstance(settings["hooks"], dict):
