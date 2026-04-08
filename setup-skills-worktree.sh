@@ -232,6 +232,10 @@ hooks = settings["hooks"]
 def command_path(script_name):
     return os.path.join(hooks_dir, script_name)
 
+def is_placeholder_path(path):
+    """Detect placeholder paths from global-settings.json templates."""
+    return "/path/to/" in path or not os.path.isabs(path)
+
 def hook_already_registered(event_entries, cmd_path, matcher):
     """Check if a hook with this command path is already registered under the event."""
     for group in event_entries:
@@ -240,7 +244,11 @@ def hook_already_registered(event_entries, cmd_path, matcher):
         if group_matcher != matcher:
             continue
         for h in group.get("hooks", []):
-            if os.path.basename(h.get("command", "")) == os.path.basename(cmd_path):
+            existing_cmd = h.get("command", "")
+            # Skip placeholder paths — they aren't functional registrations
+            if is_placeholder_path(existing_cmd):
+                continue
+            if os.path.basename(existing_cmd) == os.path.basename(cmd_path):
                 return True
     return False
 
