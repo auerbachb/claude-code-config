@@ -81,7 +81,7 @@ cp "$SETTINGS_SRC" "$SETTINGS_DST"
 
 # Replace placeholder paths with this clone's absolute path (works on both macOS and Linux)
 # Escape & and \ in SCRIPT_DIR so sed doesn't misinterpret them in replacement text
-ESCAPED_DIR="$(printf '%s\n' "$SCRIPT_DIR" | sed 's/[&\\/]/\\&/g')"
+ESCAPED_DIR="$(printf '%s\n' "$SCRIPT_DIR" | sed 's/[&\\/|]/\\&/g')"
 if sed --version >/dev/null 2>&1; then
   # GNU sed (Linux)
   sed -i "s|/path/to/claude-code-config|$ESCAPED_DIR|g" "$SETTINGS_DST"
