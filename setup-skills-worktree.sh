@@ -202,11 +202,19 @@ manifest_entries = sys.argv[3:]
 manifest = []
 for entry in manifest_entries:
     parts = entry.split("|")
+    if len(parts) != 4:
+        print(f"  WARNING: skipping malformed manifest entry: {entry}")
+        continue
+    try:
+        timeout_val = int(parts[3])
+    except ValueError:
+        print(f"  WARNING: skipping entry with non-integer timeout: {entry}")
+        continue
     manifest.append({
         "event": parts[0],
         "matcher": parts[1] if parts[1] else None,
         "script": parts[2],
-        "timeout": int(parts[3]),
+        "timeout": timeout_val,
     })
 
 # Read existing settings.json or start fresh
@@ -291,10 +299,19 @@ for item in manifest:
     hooks[event].append(group)
     added.append(script)
 
-# Write back
-with open(settings_file, "w") as f:
-    json.dump(settings, f, indent=2)
-    f.write("\n")
+# Write back atomically to prevent corruption on interrupt
+import tempfile
+
+settings_dir = os.path.dirname(settings_file) or "."
+fd, tmp_path = tempfile.mkstemp(dir=settings_dir, suffix=".tmp")
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(settings, f, indent=2)
+        f.write("\n")
+    os.replace(tmp_path, settings_file)
+except BaseException:
+    os.unlink(tmp_path)
+    raise
 
 # Report
 for name in added:
