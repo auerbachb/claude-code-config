@@ -12,7 +12,8 @@ set -uo pipefail
 PASS=0
 FAIL=0
 TOTAL=0
-REPO_ROOT="/workspace"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[0;33m'
@@ -169,29 +170,40 @@ test_4_hook_path_migration() {
 
   # Replace a hook path with a stale root-repo path
   python3 -c "
-import json
+import json, sys
 path = '$HOME/.claude/settings.json'
 with open(path) as f:
     data = json.load(f)
 
-# Find the first hook and replace its path with a stale root-repo path
+# Find the first hook with a skills-worktree path and replace it
+migrated_seeded = False
 for event_key, event_groups in data.get('hooks', {}).items():
     for group in event_groups:
         for hook in group.get('hooks', []):
             if 'command' in hook and 'skills-worktree' in hook['command']:
-                # Replace with a stale root-repo path
                 hook['command'] = hook['command'].replace('/.claude/skills-worktree/', '/')
+                migrated_seeded = True
                 break
+        if migrated_seeded:
+            break
+    if migrated_seeded:
         break
-    break
+
+if not migrated_seeded:
+    print('ERROR: No hook with skills-worktree path found to seed migration test', file=sys.stderr)
+    sys.exit(1)
 
 with open(path, 'w') as f:
     json.dump(data, f, indent=2)
 "
 
   # Run setup-skills-worktree.sh which handles migration
-  cd "$REPO_ROOT"
-  bash setup-skills-worktree.sh 2>&1 | tail -10
+  cd "$REPO_ROOT" || return 1
+  local migrate_output
+  migrate_output=$(bash setup-skills-worktree.sh 2>&1)
+  local migrate_exit_code=$?
+  echo "$migrate_output" | tail -10
+  assert "setup-skills-worktree.sh exits 0" "[ $migrate_exit_code -eq 0 ]"
 
   # Check that paths now point to skills-worktree
   assert "No stale root-repo hook paths" "python3 -c \"
