@@ -114,6 +114,7 @@ for event, groups in template_hooks.items():
                 continue
             cmd = os.path.join(hooks_dir, script)
             if not os.path.isfile(cmd):
+                print(f"hook-sync: skipping {script} (not found in {hooks_dir})", file=sys.stderr)
                 continue
             manifest.append({
                 "event": event,
