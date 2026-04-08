@@ -64,6 +64,139 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
   fi
 fi
 
+# --- Sync hooks from global-settings.json into ~/.claude/settings.json ---
+# Ensures new hooks added to the template are auto-registered each session.
+# Uses the same registration logic as setup-skills-worktree.sh Step 6.
+# Matches by script basename to detect existing hooks; preserves user hooks
+# and custom timeouts. No-op if root_repo is unavailable or template is missing.
+
+if [[ -n "${root_repo:-}" && -d "${root_repo:-}" && -d "$skills_wt" ]]; then
+  if ! err=$(python3 - "$root_repo" "$skills_wt" <<'HOOK_SYNC_PYTHON' 2>&1
+import json, os, sys, tempfile
+
+root_repo = sys.argv[1]
+skills_wt = sys.argv[2]
+settings_file = os.path.expanduser("~/.claude/settings.json")
+template_file = os.path.join(root_repo, "global-settings.json")
+hooks_dir = os.path.join(skills_wt, ".claude", "hooks")
+
+# Read template (source of truth for hook definitions)
+try:
+    with open(template_file) as f:
+        template = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    sys.exit(0)
+
+template_hooks = template.get("hooks", {})
+if not isinstance(template_hooks, dict):
+    sys.exit(0)
+
+# Extract individual hook entries from template structure
+manifest = []
+for event, groups in template_hooks.items():
+    if not isinstance(groups, list):
+        continue
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        matcher = group.get("matcher")
+        hook_list = group.get("hooks", [])
+        if not isinstance(hook_list, list):
+            continue
+        for h in hook_list:
+            if not isinstance(h, dict):
+                continue
+            script = os.path.basename(h.get("command", ""))
+            if not script:
+                continue
+            cmd = os.path.join(hooks_dir, script)
+            if not os.path.isfile(cmd):
+                continue
+            manifest.append({
+                "event": event,
+                "matcher": matcher,
+                "script": script,
+                "command": cmd,
+                "timeout": h.get("timeout", 10),
+            })
+
+if not manifest:
+    sys.exit(0)
+
+# Read live settings
+try:
+    with open(settings_file) as f:
+        settings = json.load(f)
+except FileNotFoundError:
+    settings = {}
+except json.JSONDecodeError as e:
+    print(f"settings.json malformed: {e}", file=sys.stderr)
+    sys.exit(1)
+
+if not isinstance(settings, dict):
+    sys.exit(0)
+if "hooks" not in settings or not isinstance(settings["hooks"], dict):
+    settings["hooks"] = {}
+
+live = settings["hooks"]
+
+def is_placeholder(path):
+    return "/path/to/" in path or not os.path.isabs(path)
+
+def is_registered(entries, basename, matcher):
+    """Check if a hook with this script basename is already registered."""
+    for g in entries:
+        if not isinstance(g, dict):
+            continue
+        if g.get("matcher") != matcher:
+            continue
+        for h in (g.get("hooks") or []):
+            if not isinstance(h, dict):
+                continue
+            existing = h.get("command", "")
+            if is_placeholder(existing):
+                continue
+            if os.path.basename(existing) == basename:
+                return True
+    return False
+
+added = 0
+for item in manifest:
+    event = item["event"]
+    if event not in live or not isinstance(live[event], list):
+        live[event] = []
+    if is_registered(live[event], item["script"], item["matcher"]):
+        continue
+    hook_obj = {"type": "command", "command": item["command"], "timeout": item["timeout"]}
+    group = {"hooks": [hook_obj]}
+    if item["matcher"]:
+        group["matcher"] = item["matcher"]
+    live[event].append(group)
+    added += 1
+
+if added == 0:
+    sys.exit(0)
+
+# Atomic write
+d = os.path.dirname(settings_file) or "."
+fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(settings, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, settings_file)
+except BaseException:
+    try: os.unlink(tmp)
+    except OSError: pass
+    raise
+
+print(f"hook-sync: registered {added} new hook(s)", file=sys.stderr)
+HOOK_SYNC_PYTHON
+  ); then
+    errors="${errors:+$errors; }hook sync failed: $err"
+  fi
+fi
+
 # Report result
 if [[ -n "$errors" ]]; then
   jq -n --arg errors "$errors" '{
