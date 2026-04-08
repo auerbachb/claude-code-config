@@ -158,19 +158,19 @@ If classification is unclear, default to **Standard**. It is better to slightly 
 
 **Skip this step entirely if `PM_AUTO_DETECT` is not `true`** (i.e., when explicit arguments were provided via Path A, or if Path C was taken). When skipped, all issues proceed to Step 6 as thread-prompt issues.
 
-When `PM_AUTO_DETECT=true`, partition the classified issues into two groups using the subagent candidate criteria. An issue is **subagent-eligible** if ALL of the following are true:
+When `PM_AUTO_DETECT=true`, partition the classified issues into two groups using the subagent candidate criteria. Eligibility must be evaluated **per issue**. An issue is **subagent-eligible** if ALL of the following are true:
 
 | Signal | Subagent-eligible threshold |
 |--------|---------------------------|
 | `file_count` | 0–2 |
 | `ac_count` | ≤ 3 |
-| `dependency_count` | 0 |
+| `dependency_count` | 0 (for that issue — count only dependencies referencing or referenced by this specific issue, not the batch total) |
 | `touches_rules` | `false` |
 | `touches_claude_md` | `false` |
 | `has_orchestration_keywords` | `false` |
 | Tier | Quick or Light |
 
-These signals are already computed in Steps 4–5 — no new computation is needed. Apply the table as a gate: if ANY signal exceeds its threshold, the issue is **not** subagent-eligible.
+Use per-issue signal values from Steps 4–5. Do not use batch-aggregated values for per-issue gating. Apply the table as a gate: if ANY signal exceeds its threshold, the issue is **not** subagent-eligible.
 
 **Result of partitioning:**
 - **Subagent-eligible issues** — reported in a separate section with a `/subagent` command suggestion (see Step 6)
@@ -178,7 +178,7 @@ These signals are already computed in Steps 4–5 — no new computation is need
 
 If all issues are subagent-eligible, the thread-prompt group is empty — only the Subagent Candidates section is output. If no issues are subagent-eligible, the Subagent Candidates section is omitted entirely.
 
-**Batch tier recomputation:** When `PM_AUTO_DETECT=true` and partitioning produces a non-empty subagent-eligible group, the batch tier from Step 5 may be incorrect (it was computed over all issues including the now-partitioned subagent candidates). Recompute the batch tier using only the thread-prompt issues — apply the same Step 5 decision tree but only consider the thread-prompt group. If all issues were subagent-eligible (empty thread-prompt group), skip tier computation entirely.
+**Batch tier recomputation:** When `PM_AUTO_DETECT=true` and partitioning produces a non-empty subagent-eligible group, the batch tier from Step 5 may be incorrect (it was computed over all issues including the now-partitioned subagent candidates). Recompute the batch tier using only the thread-prompt issues. This includes recomputing all derived signals for that subset (e.g., `is_multi_issue`, dependency totals, and other batch-level aggregates) before reapplying the Step 5 decision tree. If all issues were subagent-eligible (empty thread-prompt group), skip tier computation entirely.
 
 ## Step 6: Generate Output
 
