@@ -19,11 +19,11 @@ The script handles everything: directory creation, symlinks, settings installati
 ## What It Does
 
 1. Creates the `~/.claude/skills/` directory
-2. Symlinks `CLAUDE.md` (global instructions) to `~/.claude/CLAUDE.md`
-3. Symlinks `.claude/rules/` to `~/.claude/rules`
-4. Copies `global-settings.json` to `~/.claude/settings.json` with path replacement (backs up any existing file)
-5. Verifies all hook scripts exist and are executable
-6. Runs `setup-skills-worktree.sh` to create the skills worktree and skill symlinks
+2. Copies `global-settings.json` to `~/.claude/settings.json` with path replacement (backs up any existing file)
+3. Verifies all hook scripts exist and are executable
+4. Runs `setup-skills-worktree.sh` to create a dedicated skills worktree and skill symlinks
+5. Symlinks `~/.claude/CLAUDE.md` → skills worktree (`~/.claude/skills-worktree/CLAUDE.md`)
+6. Symlinks `~/.claude/rules` → skills worktree (`~/.claude/skills-worktree/.claude/rules`)
 
 ## Prerequisites
 
