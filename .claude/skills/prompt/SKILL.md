@@ -25,15 +25,21 @@ If `$ARGUMENTS` is empty, check for PM orchestration context:
    test -f .claude/pm-config.md && echo "PM_CONFIG_EXISTS" || echo "NO_PM_CONFIG"
    ```
 
-2. **Scan recent conversation for PM output patterns.** Look for ANY of these markers in the conversation history (these are output patterns from the `/pm` skill's Steps 1B.5 and 3.4):
+2. **Scan conversation messages since the most recent `/pm` invocation for PM output patterns.** The scan window starts at the last message containing `/pm` (or its output markers) and extends to the current message. Look for ANY of these markers within that window:
    - A heading matching `## Suggested Next Issues`
    - A ranked list with issue references in the format `**#N — {Title}**`
    - An `## Active Work` table with issue numbers
 
-3. **If PM context is detected**, extract issue numbers from the most recent suggestion list or active work table. Only include issues that are:
-   - Not already marked as "Active", "In review", or "Merged" in the Active Work table
-   - Referenced in the `## Suggested Next Issues` section (if present)
-   - In the "Awaiting thread start" or "Prompt generated" status (if in the Active Work table)
+3. **If PM context is detected**, extract issue numbers using include/exclude logic:
+
+   **Include** (OR — issue qualifies if it matches any of these):
+   - Referenced in the `## Suggested Next Issues` section
+   - Listed in the `## Active Work` table with status "Awaiting thread start" or "Prompt generated"
+
+   **Then exclude** (AND NOT — remove any issue that matches any of these):
+   - Marked as "Active", "In review", or "Merged" in the `## Active Work` table
+
+   Example: If `## Suggested Next Issues` lists #42, #55, #61 and the Active Work table shows #42 as "In review", the result is #55 and #61.
 
    Use these extracted issue numbers as the input set. Set `PM_AUTO_DETECT=true` (this flag controls the subagent partition output in Step 6). Proceed to Step 1.
 
@@ -171,6 +177,8 @@ These signals are already computed in Steps 4–5 — no new computation is need
 - **Thread-prompt issues** — everything else. These get full prompt blocks as normal.
 
 If all issues are subagent-eligible, the thread-prompt group is empty — only the Subagent Candidates section is output. If no issues are subagent-eligible, the Subagent Candidates section is omitted entirely.
+
+**Batch tier recomputation:** When `PM_AUTO_DETECT=true` and partitioning produces a non-empty subagent-eligible group, the batch tier from Step 5 may be incorrect (it was computed over all issues including the now-partitioned subagent candidates). Recompute the batch tier using only the thread-prompt issues — apply the same Step 5 decision tree but only consider the thread-prompt group. If all issues were subagent-eligible (empty thread-prompt group), skip tier computation entirely.
 
 ## Step 6: Generate Output
 
