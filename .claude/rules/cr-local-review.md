@@ -54,8 +54,4 @@ After two consecutive clean local reviews, execute this checklist immediately:
 1. **Commit all changes** in a single commit.
 2. **Push the branch** to the remote.
 3. **Create the PR** via `gh pr create` with `Closes #N` in the body and a Test Plan section with acceptance criteria checkboxes.
-4. **Trigger Greptile** alongside CR:
-   1. Check the Greptile daily budget (see `greptile.md` "Daily Budget").
-   2. If budget allows: comment `@greptileai` on the PR. CR and Greptile run in parallel — process findings from whichever responds first.
-   3. If budget exhausted: skip Greptile — CR is the sole reviewer. If CR also fails, fall back to self-review.
-5. **Enter the GitHub CodeRabbit Review Loop** (see `cr-github-review.md` "Polling" section). Poll immediately — do not wait.
+4. **Enter the GitHub CodeRabbit Review Loop** (see `cr-github-review.md` "Polling" section). CR auto-reviews on push — poll immediately, do not wait. Greptile is fallback-only: it triggers automatically if CR is rate-limited or times out (see `greptile.md` "When to Trigger Greptile"). Never trigger Greptile proactively while CR is still expected to respond.
