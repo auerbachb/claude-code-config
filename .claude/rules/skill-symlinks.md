@@ -28,7 +28,7 @@ The `post-merge-pull.sh` hook syncs the skills worktree after merges and also re
 The session-start sync also registers hooks from `global-settings.json` into `~/.claude/settings.json`. This ensures new hooks added to the template are picked up automatically — no need to re-run the setup script.
 
 **How it works:**
-- Reads `global-settings.json` from the root repo (source of truth for hook definitions)
+- Reads `global-settings.json` from the skills worktree (always at `origin/main`)
 - Resolves placeholder paths to the skills worktree hooks directory
 - Compares against `~/.claude/settings.json` by script basename per event/matcher
 - Adds only missing hooks; existing hooks (including user-customized timeouts) are preserved
