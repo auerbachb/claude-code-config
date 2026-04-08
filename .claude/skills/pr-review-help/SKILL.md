@@ -214,6 +214,45 @@ One of:
 - Concrete suggested issues to open
 - Conversations to have
 - Sign-offs to obtain
+
+#### 8. Cleanup Prompt
+(All verdicts except Ship Now. Omit this section entirely for Ship Now.)
+
+Generate a copy-pasteable prompt block fenced with 4 backticks that an engineer can hand to a Claude Code agent to address the findings. The block must be self-contained — the receiving agent needs no additional context.
+
+Structure the prompt block exactly as follows:
+
+`````
+````
+### Cleanup: PR #{NUMBER} — {title}
+
+**PR:** {url}
+**Branch:** `{headRefName}`
+
+Work on the existing PR branch above. Do NOT create a new branch or new PR. Commit fixes as follow-up on this same PR.
+
+#### Findings to fix
+
+{For each actionable item from sections 4 (Risks) and 5 (Open Questions), emit a numbered entry:}
+1. **{short finding title}** (`{file_path}`) — {one-line fix instruction}
+2. ...
+
+#### Also consider
+
+{For each item from section 7 (Follow-ups), emit a bullet:}
+- {follow-up description}
+
+{If section 7 was omitted or empty, omit the "Also consider" sub-section entirely.}
+````
+`````
+
+**Generation rules for Section 8:**
+- Extract actionable findings from **section 4 (Risks)** and **section 5 (Open Questions)** only. Each risk or open question that implies a code change becomes a numbered finding.
+- Map each finding to specific file(s) from the diff stat. If a finding spans multiple files, list the primary file and mention others in the instruction. If a finding is process-only (e.g., "missing PM approval", "unresolved review disagreement") and cannot be mapped to a file, omit it from the numbered findings list and move it to the "Also consider" sub-section instead.
+- Write each fix instruction as a single imperative sentence (e.g., "Add feature flag guard around the new analytics endpoint", "Add migration rollback step for the `users` column rename").
+- Include items from **section 7 (Follow-ups)** under "Also consider" as secondary items — these are suggestions, not primary tasks.
+- If section 7 was omitted (Ship Now) or empty, omit the "Also consider" sub-section.
+- If sections 4 and 5 contain no actionable code-change items (e.g., only "missing sign-off" or "needs discussion"), still generate the prompt block but note "No code changes identified — findings require human decisions" in place of the numbered list.
 ````
 
 ## Step 3: Collect and Consolidate Output (parent agent)
