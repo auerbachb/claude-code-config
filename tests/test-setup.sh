@@ -22,6 +22,8 @@ NC='\033[0m' # No Color
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 assert() {
+  # NOTE: $condition is always a script-authored string (never user input).
+  # eval is intentional here — it lets test cases pass shell expressions as strings.
   local description="$1"
   local condition="$2"
   TOTAL=$((TOTAL + 1))
