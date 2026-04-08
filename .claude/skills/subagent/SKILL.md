@@ -67,7 +67,7 @@ Apply this decision tree. When signals conflict, choose the **higher** tier.
 Assign Heavy if ANY: `touches_rules`, `touches_claude_md`, `has_orchestration_keywords`, `file_count > 5`, `dependency_count > 2`, or (`is_multi_issue` AND at least one issue has `file_count > 1` or `ac_count > 3`).
 
 ### Standard — reject
-Assign Standard if ANY (and Heavy not triggered): `file_count` 2–5, `ac_count > 3`, `touches_skill`, body >200 words with feature keywords, or `is_multi_issue` with mixed complexity.
+Assign Standard if ANY (and Heavy not triggered): `file_count` 3–5, `ac_count > 3`, `touches_skill`, body >200 words with feature keywords, or `is_multi_issue` with mixed complexity.
 
 ### Quick — accept
 Assign Quick only if ALL: `scope_keywords` exclusively from "typo"/"rename"/"comment"/"formatting", `file_count` 0–1, `ac_count` <= 2, `dependency_count` 0, no orchestration/rule/skill signals.
@@ -353,6 +353,12 @@ Read ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json first.
 
 ## RULES (MANDATORY)
 {COMPLETE contents of CLAUDE.md and all .claude/rules/*.md}
+
+## SAFETY WARNING
+SAFETY: Do NOT delete, overwrite, move, or modify .env files — anywhere, any repo.
+Do NOT run git clean in ANY directory. Do NOT run destructive commands (rm -rf, rm,
+git checkout ., git stash, git reset --hard) in the root repo directory. Stay in your
+worktree directory at all times.
 
 ## Phase C Instructions
 
