@@ -14,6 +14,14 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# ---------------------------------------------------------------------------
+# Prerequisites
+# ---------------------------------------------------------------------------
+if ! command -v git >/dev/null 2>&1; then
+  echo "FAIL: git is not installed or not in PATH." >&2
+  exit 1
+fi
+
 # Validate SCRIPT_DIR is a git repo root (catches copied/symlinked setup.sh)
 if ! REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)"; then
   echo "FAIL: setup.sh must be run from a cloned git repository." >&2
@@ -26,14 +34,6 @@ fi
 
 CLAUDE_DIR="$HOME/.claude"
 SKILLS_WORKTREE="$CLAUDE_DIR/skills-worktree"
-
-# ---------------------------------------------------------------------------
-# Prerequisites
-# ---------------------------------------------------------------------------
-if ! command -v git >/dev/null 2>&1; then
-  echo "FAIL: git is not installed or not in PATH." >&2
-  exit 1
-fi
 
 
 # Track pass/fail per step for final summary
