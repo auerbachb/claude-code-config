@@ -2,6 +2,19 @@
 
 This directory contains Claude Code [hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) that automate workflow tasks.
 
+## Hook Auto-Registration
+
+Hooks are **automatically registered** in `~/.claude/settings.json` on every session start. The `session-start-sync.sh` hook reads `global-settings.json` (the hook manifest) and registers any missing hooks. Existing hooks and user-customized timeouts are preserved.
+
+**To add a new hook:**
+1. Create the script in this directory (`.claude/hooks/`)
+2. Add the hook entry to `global-settings.json` at the repo root (use `/path/to/claude-code-config` as the path placeholder)
+3. Merge to `main` — the next session start registers it automatically
+
+**Initial setup** is handled by `setup-skills-worktree.sh` (see `SETUP.md`). The ongoing sync is a safety net that catches hooks added after initial setup.
+
+---
+
 ## post-merge-pull.sh
 
 Automatically pulls `main` in the root repo after every successful `gh pr merge`. This keeps hardlinked rule files in `~/.claude/rules/` up to date without manual intervention.
