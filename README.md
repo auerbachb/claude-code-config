@@ -90,21 +90,22 @@ Rule files in `.claude/rules/` auto-load alongside `CLAUDE.md` for the parent ag
 
 ### Step 5: Install global settings (hooks + permissions)
 
+`setup.sh` merges non-hook settings from `global-settings.json` into `~/.claude/settings.json`, preserving any existing keys (permissions, model, env). Hook registration is handled separately by `setup-skills-worktree.sh` (Step 6), which resolves placeholder paths to the skills worktree automatically.
+
+Manual fallback (not recommended):
+
 ```bash
+# WARNING: This overwrites ~/.claude/settings.json — back up first if you have custom settings.
 cp global-settings.json ~/.claude/settings.json
-```
 
-> **Why copy instead of symlink?** Unlike the other files, `settings.json` contains absolute paths that must be customized per machine. A symlink would point everyone to the same placeholder paths.
-
-**Then replace all placeholder paths** with the absolute path to your clone:
-
-```bash
+# Replace placeholder paths with your clone's absolute path:
 # macOS:
 sed -i '' 's|/path/to/claude-code-config|'"$(pwd)"'|g' ~/.claude/settings.json
-
 # Linux:
 sed -i 's|/path/to/claude-code-config|'"$(pwd)"'|g' ~/.claude/settings.json
 ```
+
+> **Note:** Use `setup.sh` instead — it merges settings (preserving existing keys like `permissions`, `model`, `env`) and resolves hook paths automatically. The `cp` above overwrites everything.
 
 This file configures:
 - **Permissions** — Broad allow rules so Claude operates autonomously without prompting for every tool call.
@@ -346,6 +347,7 @@ Hook scripts in `.claude/hooks/` run automatically during Claude Code sessions. 
 
 | Script | Trigger | Purpose |
 |--------|---------|---------|
+| `session-start-sync.sh` | PostToolUse (first tool call) | Syncs skills worktree to `origin/main` and auto-registers new hooks from `global-settings.json`. Runs once per session. |
 | `post-merge-pull.sh` | PostToolUse (Bash) | Auto-pulls `main` in the root repo after `gh pr merge` succeeds; also syncs the skills worktree. Uses three fallback strategies to locate the root repo. |
 | `silence-detector.sh` | PostToolUse (all tools) | Checks if the agent has been silent >5 minutes by comparing heartbeat file mtime. Injects a context warning if the threshold is exceeded. |
 | `silence-detector-ack.sh` | Stop (after each response) | Touches the heartbeat file (`/tmp/claude-heartbeat-$SESSION_ID`) to reset the silence timer. |
@@ -360,7 +362,7 @@ All hooks are idempotent and fail-safe — they handle errors gracefully without
 | File | Location | Purpose |
 |------|----------|---------|
 | `CLAUDE.md` | Repo root (symlinked to `~/.claude/CLAUDE.md`) | Core instructions: worktree policy, PR workflow, branch naming, acceptance criteria, CI merge gate, autonomous workflow execution rules |
-| `global-settings.json` | Copied to `~/.claude/settings.json` | Hooks, permissions (`allow: ["*"]` for autonomous operation), model preference (`opus`), experimental flags (`AGENT_TEAMS=1`) |
+| `global-settings.json` | Merged into `~/.claude/settings.json` | Hooks, permissions (`allow: ["*"]` for autonomous operation), model preference (`opus`), experimental flags (`AGENT_TEAMS=1`). Existing keys are preserved — only missing keys are seeded. |
 | `.coderabbit.yaml` | Repo root | CodeRabbit review config: assertive profile, token-efficiency checks for rule files, knowledge base integration |
 | `.claude/pm-config.md` | Per-repo (bootstrapped by `/pm`) | PM configuration: role, OKRs, team roster, infrastructure/architecture detection, dependency rules, workflow rules |
 | `~/.claude/session-state.json` | Runtime (auto-created) | Session orchestration state. **User-editable:** `greptile_daily.budget` (integer, default 40 — max Greptile reviews/day). **System-managed** (do not edit): PR phases, CR quota, active subagents. |
