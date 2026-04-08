@@ -70,14 +70,13 @@ fi
 # Matches by script basename to detect existing hooks; preserves user hooks
 # and custom timeouts. No-op if root_repo is unavailable or template is missing.
 
-if [[ -n "${root_repo:-}" && -d "${root_repo:-}" && -d "$skills_wt" ]]; then
-  if ! err=$(python3 - "$root_repo" "$skills_wt" <<'HOOK_SYNC_PYTHON' 2>&1
+if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
+  if ! err=$(python3 - "$skills_wt" <<'HOOK_SYNC_PYTHON' 2>&1
 import json, os, sys, tempfile
 
-root_repo = sys.argv[1]
-skills_wt = sys.argv[2]
+skills_wt = sys.argv[1]
 settings_file = os.path.expanduser("~/.claude/settings.json")
-template_file = os.path.join(root_repo, "global-settings.json")
+template_file = os.path.join(skills_wt, "global-settings.json")
 hooks_dir = os.path.join(skills_wt, ".claude", "hooks")
 
 # Read template (source of truth for hook definitions)
@@ -140,16 +139,19 @@ except json.JSONDecodeError as e:
 if not isinstance(settings, dict):
     print(f"settings.json top-level is {type(settings).__name__}, not object", file=sys.stderr)
     sys.exit(1)
-if "hooks" not in settings or not isinstance(settings["hooks"], dict):
+if "hooks" not in settings:
     settings["hooks"] = {}
+elif not isinstance(settings["hooks"], dict):
+    print("settings.json hooks section is not an object", file=sys.stderr)
+    sys.exit(1)
 
 live = settings["hooks"]
 
 def is_placeholder(path):
     return "/path/to/" in path or not os.path.isabs(path)
 
-def is_registered(entries, basename, matcher):
-    """Check if a hook with this script basename is already registered."""
+def find_existing(entries, basename, matcher):
+    """Return True for a real match, or the placeholder hook dict to repair."""
     for g in entries:
         if not isinstance(g, dict):
             continue
@@ -159,18 +161,25 @@ def is_registered(entries, basename, matcher):
             if not isinstance(h, dict):
                 continue
             existing = h.get("command", "")
-            if is_placeholder(existing):
-                continue
             if os.path.basename(existing) == basename:
-                return True
-    return False
+                return h if is_placeholder(existing) else True
+    return None
 
 added = 0
 for item in manifest:
     event = item["event"]
-    if event not in live or not isinstance(live[event], list):
+    if event not in live:
         live[event] = []
-    if is_registered(live[event], item["script"], item["matcher"]):
+    elif not isinstance(live[event], list):
+        print(f"settings.json hooks[{event!r}] is not a list", file=sys.stderr)
+        sys.exit(1)
+    match = find_existing(live[event], item["script"], item["matcher"])
+    if match is True:
+        continue
+    if isinstance(match, dict):
+        # Repair placeholder entry in-place
+        match["command"] = item["command"]
+        added += 1
         continue
     hook_obj = {"type": "command", "command": item["command"], "timeout": item["timeout"]}
     group = {"hooks": [hook_obj]}
