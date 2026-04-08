@@ -305,6 +305,7 @@ echo "Step 7: Verifying hook registration..."
 # Verify that hook paths exist, are executable, and point to the skills worktree.
 hook_verify_errors=0
 while IFS= read -r hook_path; do
+  [[ -z "$hook_path" ]] && continue
   if [[ ! -f "$hook_path" ]]; then
     echo "  ERROR: Hook not found: $hook_path" >&2
     hook_verify_errors=$((hook_verify_errors + 1))
@@ -312,7 +313,26 @@ while IFS= read -r hook_path; do
     echo "  ERROR: Hook not executable: $hook_path" >&2
     hook_verify_errors=$((hook_verify_errors + 1))
   fi
-done < <(grep -o '"command": "[^"]*"' "$SETTINGS_DST" | sed 's/"command": "//;s/"$//')
+done < <(python3 - "$SETTINGS_DST" <<'PYTHON_HOOK_PATHS'
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+hooks = data.get("hooks", {})
+if not isinstance(hooks, dict):
+    sys.exit(0)
+for event_entries in hooks.values():
+    if not isinstance(event_entries, list):
+        continue
+    for group in event_entries:
+        if not isinstance(group, dict):
+            continue
+        for hook in group.get("hooks", []):
+            if isinstance(hook, dict) and hook.get("type") == "command":
+                cmd = hook.get("command", "")
+                if cmd:
+                    print(cmd)
+PYTHON_HOOK_PATHS
+)
 
 if [[ $hook_verify_errors -gt 0 ]]; then
   step_fail "Hook registration" "$hook_verify_errors hook(s) missing or not executable in settings.json"
