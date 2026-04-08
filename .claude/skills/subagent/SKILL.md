@@ -52,6 +52,7 @@ Compute these signals per issue (same logic as `/prompt` Steps 3-4):
 |--------|---------------|
 | `file_count` | Count of files from CR plan file list. If no CR plan, count path-like strings in the issue body (contain `/`, end with a file extension, don't start with `http`). Default: 0. |
 | `dependency_count` | Count of dependency references: `blocked by #N`, `depends on #N`, `blocks #N`, `after #N`, etc. Scan both issue body and comments. |
+| `is_multi_issue` | `true` if more than one issue number was provided as input. |
 | `touches_rules` | `true` if any file path matches `.claude/rules/*.md` OR body mentions "rule file", "workflow protocol". |
 | `touches_claude_md` | `true` if any file path matches `CLAUDE.md` (case-insensitive) OR body mentions "CLAUDE.md". |
 | `touches_skill` | `true` if any file path matches `.claude/skills/` OR issue is about creating/modifying a skill. |
@@ -67,7 +68,7 @@ Apply this decision tree. When signals conflict, choose the **higher** tier.
 Assign Heavy if ANY: `touches_rules`, `touches_claude_md`, `has_orchestration_keywords`, `file_count > 5`, `dependency_count > 2`, or (`is_multi_issue` AND at least one issue has `file_count > 1` or `ac_count > 3`).
 
 ### Standard — reject
-Assign Standard if ANY (and Heavy not triggered): `file_count` 3–5, `ac_count > 3`, `touches_skill`, body >200 words with feature keywords, or `is_multi_issue` with mixed complexity.
+Assign Standard if ANY (and Heavy not triggered): `file_count` 2–5, `ac_count > 3`, `touches_skill`, body >200 words with feature keywords, or `is_multi_issue` with mixed complexity.
 
 ### Quick — accept
 Assign Quick only if ALL: `scope_keywords` exclusively from "typo"/"rename"/"comment"/"formatting", `file_count` 0–1, `ac_count` <= 2, `dependency_count` 0, no orchestration/rule/skill signals.
@@ -84,7 +85,7 @@ For each issue, verify ALL of the following:
 
 | Signal | Threshold |
 |--------|-----------|
-| `file_count` | 0–2 files |
+| `file_count` | 0–1 files |
 | `ac_count` | <= 3 acceptance criteria |
 | `dependency_count` | 0 (no blockers or blocked-by) |
 | `touches_rules` | `false` |
@@ -107,6 +108,16 @@ Use `/prompt #N` to generate a thread prompt instead.
 ## Step 6: Pre-Spawn Setup
 
 For each qualifying issue:
+
+### 6.0: Check for existing open PRs
+
+For each qualifying issue, verify no PR is already open:
+
+```bash
+gh pr list --search "head:issue-{NUMBER}" --json number,title,state
+```
+
+If a PR already exists for the issue, skip it: "Issue #N already has PR #{M} — skipping."
 
 ### 6.1: Ensure handoff directory exists
 
@@ -445,8 +456,6 @@ When all subagent PRs are either merged or blocked:
 - **CR CLI unavailable:** Subagents fall back to self-review (per cr-local-review.md timeout rules). This does not block Phase A — it just means less pre-push coverage.
 - **Subagent token exhaustion:** The parent detects this via the `exhaustion` outcome in the exit report and launches a replacement agent automatically (no user input needed).
 - **All reviewers down:** Subagent performs self-review. Self-review does NOT satisfy the merge gate. Parent reports the blocker to the user.
-- **Issue already has an open PR:** Check before spawning: `gh pr list --search "head:issue-{N}" --json number`. If a PR exists, skip: "Issue #N already has PR #{M} — skipping."
-
 ## Usage Examples
 
 **Single issue:**
