@@ -11,6 +11,7 @@ A reusable `CLAUDE.md` configuration that teaches [Claude Code](https://docs.ant
   - [Prerequisites](#prerequisites)
 - [Slash Commands](#slash-commands)
   - [PM Skill Family](#pm-skill-family)
+  - [Planning & Review Commands](#planning--review-commands)
   - [Workflow Commands](#workflow-commands)
 - [Rule Files](#rule-files)
 - [Hook Scripts](#hook-scripts)
@@ -187,7 +188,8 @@ All commands below are invoked as `/command` in a Claude Code session. They are 
 
 | Command | Category | Description |
 |---------|----------|-------------|
-| `/pm` | PM | Generate a PM handoff prompt for a new thread |
+| `/pm` | PM | Active PM orchestrator — manage backlog, track threads, suggest next work |
+| `/pm-handoff` | PM | Generate a self-contained handoff prompt for a new PM thread |
 | `/pm-update` | PM | Re-scan repo and refresh `pm-config.md` |
 | `/pm-okr` | PM | View, set, or suggest OKRs |
 | `/pm-clean` | PM | Detect stale issues and suggest closures |
@@ -196,6 +198,8 @@ All commands below are invoked as `/command` in a Claude Code session. They are 
 | `/pm-rate-team` | PM | Contribution metrics over a configurable period |
 | `/pm-sprint-plan` | PM | Generate a 2-week sprint plan |
 | `/pm-sprint-review` | PM | Sprint retrospective with velocity metrics |
+| `/prompt` | Planning | Classify issue complexity, recommend model, generate copy-paste prompt |
+| `/pr-review-help` | Review | Executive PR review — multi-PR parallel strategic analysis |
 | `/standup` | Workflow | Daily standup summary (single contributor) |
 | `/status` | Workflow | Dashboard of open PRs with review state |
 | `/continue` | Workflow | Resume an interrupted review workflow |
@@ -208,9 +212,18 @@ All commands below are invoked as `/command` in a Claude Code session. They are 
 
 The PM skills turn Claude Code into a project manager who works across threads. They share a central config file (`pm-config.md`) that stores your team roster, OKRs, infrastructure, and architecture. Run `/pm` first to bootstrap the config, then use the other skills as needed.
 
-#### `/pm [copy]`
+#### `/pm [resume]`
 
-Generate a self-contained handoff prompt for starting a new PM thread. On first run, bootstraps `.claude/pm-config.md` with auto-detected infrastructure and architecture. Combines static config with live GitHub state (open issues, PRs, recent merges) into a single prompt.
+Active PM orchestrator. Scans GitHub state (open issues, PRs, recent merges), scores and ranks issues by priority, OKR alignment, and dependency leverage, then suggests the top 3-5 issues to work on. Generates self-contained prompts for each that can be pasted into new Claude Code threads.
+
+- `/pm` — **Cold start** (default). Scans the backlog from scratch, bootstraps `.claude/pm-config.md` on first run.
+- `/pm resume` — **Resume**. Reads in-flight state from session files and continues where a previous PM thread left off.
+
+Enters an orchestration loop to track thread progress and suggest new batches as work completes.
+
+#### `/pm-handoff [copy]`
+
+Generate a self-contained handoff prompt for starting or continuing a PM orchestration thread. Captures static config (`pm-config.md`), live GitHub state (open issues, PRs, recent merges), in-flight thread state (session files, handoff files), and memory summary into a single prompt. Paste it into a new Claude Code session and the new thread becomes the project manager with full context.
 
 Pass `copy` to send the output to the clipboard via `pbcopy`.
 
@@ -266,6 +279,26 @@ Generate a 2-week sprint plan from the open backlog. Detects dependencies betwee
 #### `/pm-sprint-review [--days N]`
 
 Sprint retrospective covering: what got done, what slipped, velocity metrics (issues closed, PRs merged, avg cycle time), blockers encountered, per-contributor breakdown, and lessons learned with recommendations.
+
+### Planning & Review Commands
+
+#### `/prompt #123 [#124 #125 ...]`
+
+Analyze one or more GitHub issues, classify complexity into a 4-tier system, recommend a model, and generate a copy-paste-ready prompt with pre-extracted context. Each prompt block includes the issue's acceptance criteria, CR implementation plan (if available), relevant rule file pointers, and exit criteria.
+
+Tiers:
+- **Heavy** (Opus 4.6 1M) — rule files, orchestration, multi-file cross-cutting changes
+- **Standard** (Opus 4.6) — multi-file features, skills, >3 acceptance criteria
+- **Light** (Sonnet 4.6) — single-file changes, config updates, doc edits
+- **Quick** (Haiku 4.5) — typo fixes, renames, formatting-only changes
+
+For batch input (`/prompt #110 #111 #112`), the most complex issue determines the batch tier.
+
+#### `/pr-review-help #123 #456 #789`
+
+Executive PR review from a CTO/CPO/Chief Data Scientist lens. Analyzes multiple PRs in parallel (one subagent per PR) for strategic fit, risk, issue alignment, and operational readiness. This is not a code-correctness review — it assumes CodeRabbit and automated tests already handled that.
+
+Each PR gets a structured analysis: executive summary, issue alignment, strategic fit (assessed against OKRs if available), risks, open questions, and a verdict. Verdicts range from **Ship Now** through **Ship Behind Flag**, **Approve with Follow-up**, **Needs Discussion**, to **Hold**. A portfolio-level synthesis covers cross-PR themes, merge ordering, and a leadership takeaway.
 
 ### Workflow Commands
 
