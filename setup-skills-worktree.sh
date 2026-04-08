@@ -224,7 +224,9 @@ if os.path.isfile(settings_file):
 else:
     settings = {}
 
-if "hooks" not in settings:
+if "hooks" not in settings or not isinstance(settings["hooks"], dict):
+    if "hooks" in settings:
+        print(f"  WARNING: {settings_file} has non-object 'hooks'; resetting hooks section")
     settings["hooks"] = {}
 
 hooks = settings["hooks"]
@@ -239,11 +241,18 @@ def is_placeholder_path(path):
 def hook_already_registered(event_entries, cmd_path, matcher):
     """Check if a hook with this command path is already registered under the event."""
     for group in event_entries:
+        if not isinstance(group, dict):
+            continue
         group_matcher = group.get("matcher")
         # Match by command path within groups that have the same matcher
         if group_matcher != matcher:
             continue
-        for h in group.get("hooks", []):
+        hook_list = group.get("hooks", [])
+        if not isinstance(hook_list, list):
+            continue
+        for h in hook_list:
+            if not isinstance(h, dict):
+                continue
             existing_cmd = h.get("command", "")
             # Skip placeholder paths — they aren't functional registrations
             if is_placeholder_path(existing_cmd):
@@ -266,7 +275,7 @@ for item in manifest:
         print(f"  {script} — WARNING: not found at {cmd}; skipping")
         continue
 
-    if event not in hooks:
+    if event not in hooks or not isinstance(hooks[event], list):
         hooks[event] = []
 
     if hook_already_registered(hooks[event], cmd, matcher):
