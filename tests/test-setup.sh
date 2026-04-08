@@ -51,7 +51,6 @@ run_setup() {
   # Run setup.sh from repo root, capture output
   cd "$REPO_ROOT"
   bash setup.sh 2>&1
-  return $?
 }
 
 # ── Test 1: Fresh install ────────────────────────────────────────────────────
