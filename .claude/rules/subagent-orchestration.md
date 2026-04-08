@@ -144,7 +144,7 @@ HANDOFF_FILE: ~/.claude/handoffs/pr-618-handoff.json
 - The exit report MUST be the very last thing the subagent outputs before exiting
 - The `EXIT_REPORT` header line is required — the parent uses it to locate the block
 - One field per line, colon-separated, no extra whitespace around values
-- When a subagent detects it is **approaching** token exhaustion (see detection signals above), it MUST write handoff state, print the exit report (with `OUTCOME: exhaustion` for Phase B, or the best-available outcome for other phases), and exit cleanly — all **before** hitting the hard token limit
+- On approaching token exhaustion: print the exit report (with `OUTCOME: exhaustion` for Phase B) **before** hitting the hard limit — see "Token/Turn Exhaustion Protocol" above for detection signals and handoff procedure
 
 ### Subagent Task Decomposition (Token Safety)
 
