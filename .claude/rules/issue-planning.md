@@ -70,6 +70,9 @@ This creates **one canonical document** for the coding agent to work from:
    ```
 
 ### 5. Start coding
-- Create the feature branch (`issue-N-short-description`) and begin implementation
-- The coding agent should read the **issue body** (not scattered comments) for the canonical plan
-- When implementation is done, run the **Local CodeRabbit Review Loop** before pushing
+
+1. **Create the feature branch** (`issue-N-short-description`).
+2. **Read the issue body** (not scattered comments) for the canonical implementation plan.
+3. **Implement the changes.**
+4. **Run the Local CodeRabbit Review Loop** (see `cr-local-review.md` "Fix loop" section) — two clean passes required before pushing.
+5. **Execute the post-clean checklist** (see `cr-local-review.md` "Post-Clean" section) — commit, push, create PR, enter GitHub review loop.
