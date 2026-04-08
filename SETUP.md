@@ -34,7 +34,7 @@ The script handles everything: directory creation, symlinks, settings merge, hoo
 
 - **Git** — the repo must be cloned (not downloaded as a zip)
 - **GitHub CLI (`gh`)** — needed for the PR workflow: `brew install gh && gh auth login`
-- **Claude Code** — `npm install -g @anthropic-ai/claude-code`
+- **Claude Code** — install via `npm install -g @anthropic-ai/claude-code` (see [docs](https://docs.anthropic.com/en/docs/claude-code))
 
 Optional tools (for the full review workflow):
 - [CodeRabbit](https://coderabbit.ai) — AI code review on PRs
