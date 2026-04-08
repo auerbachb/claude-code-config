@@ -106,6 +106,10 @@ else:
     settings = {}
 
 if not isinstance(settings, dict):
+    import shutil
+    backup = settings_path + ".bak"
+    shutil.copy2(settings_path, backup)
+    print(f"  WARNING: {settings_path} top-level is not an object; backed up to {backup}, starting fresh")
     settings = {}
 
 # Seed missing non-hook keys from template
