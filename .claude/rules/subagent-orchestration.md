@@ -144,7 +144,7 @@ HANDOFF_FILE: ~/.claude/handoffs/pr-618-handoff.json
 - The exit report MUST be the very last thing the subagent outputs before exiting
 - The `EXIT_REPORT` header line is required — the parent uses it to locate the block
 - One field per line, colon-separated, no extra whitespace around values
-- If the subagent exits due to token exhaustion, it MUST still print the exit report (with `OUTCOME: exhaustion` for Phase B, or the best-available outcome for other phases) before writing handoff state and exiting
+- When a subagent detects it is **approaching** token exhaustion (see detection signals above), it MUST write handoff state, print the exit report (with `OUTCOME: exhaustion` for Phase B, or the best-available outcome for other phases), and exit cleanly — all **before** hitting the hard token limit
 
 ### Subagent Task Decomposition (Token Safety)
 
@@ -224,7 +224,7 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
    - If verification fails, launch a replacement Phase B instead of Phase C
 4. **Launch Phase C within 60 seconds.** This is the immediate next action for `clean`/`merge_ready` outcomes. Include the handoff file path (`~/.claude/handoffs/pr-{N}-handoff.json`) in the Phase C subagent prompt.
 5. **Update `session-state.json`.** Write the phase transition: PR moved from Phase B to Phase C (or Phase B to Phase B for replacements), record the HEAD SHA, update review state.
-6. **Report to user.** "Phase B complete for PR #N — reviews clean (SHA `abc1234`). Phase C launched, verifying acceptance criteria."
+6. **Report to user (with timestamp).** "Mon Mar 16 02:34 AM ET — Phase B complete for PR #N — reviews clean (SHA `abc1234`). Phase C launched, verifying acceptance criteria."
 
 **Phase C launch is the highest-priority action after Phase B reports clean.** Do not start other substantive work until Phase C is launched for every PR that completed Phase B with a clean/merge_ready outcome.
 
@@ -237,7 +237,7 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
    - `ac_verified` → all acceptance criteria verified and checked off. Ask the user: "Reviews are clean, all AC verified and checked off for PR #N. Want me to squash and merge and delete the branch, or do you want to review the diff yourself first?"
    - `blocked` → report the blocker to the user with details from the handoff file or subagent output. Do NOT merge.
 3. **Update `session-state.json`.** Mark the PR as Phase C complete. Remove from `active_agents`.
-4. **Report to user.** Include the outcome and next action (merge decision or blocker details).
+4. **Report to user (with timestamp).** Include timestamp, the outcome, and next action (merge decision or blocker details).
 
 ### Monitor Loop — Per-Cycle Checklist (MANDATORY)
 
@@ -252,7 +252,7 @@ Every ~60-second monitor cycle, execute these steps **in priority order**. Highe
 4. **Send heartbeat/status message.** If >5 minutes since last user message, send a status update. Include: active agents, PR phases, any pending transitions, any blockers.
 5. **Check for stale agents.** If any subagent has been running for an unusually long time without reporting (>15 minutes for Phase A, >10 minutes for Phase B polling, >5 minutes for Phase C), investigate — it may have silently failed.
 
-> **The key insight:** Steps 2-3 (transition execution) come BEFORE step 4 (heartbeats). A heartbeat that says "PR #618 is in Phase A" when Phase A already completed 2 minutes ago is worse than no heartbeat — it's misleading. Execute transitions first, then report accurate state.
+> **The key insight:** Execute transitions (Steps 2-3) before sending heartbeats (Step 4) — stale heartbeats reporting outdated phase state are misleading.
 
 ### Timestamped Status Updates (MANDATORY for parent agents)
 
