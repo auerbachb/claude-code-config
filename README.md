@@ -2,6 +2,8 @@
 
 A reusable `CLAUDE.md` configuration that teaches [Claude Code](https://docs.anthropic.com/en/docs/claude-code) to collaborate with [CodeRabbit](https://coderabbit.ai) and [Greptile](https://greptile.com) for automated PR planning, code review, and merge workflows — all driven from your terminal. Includes a full PM skill family for project orchestration across threads.
 
+> **Using an LLM to set this up?** If you're installing via Claude Code, Cursor, Aider, or any other AI coding assistant, see **[SETUP.md](SETUP.md)** — it has a single `bash ./setup.sh` command that handles everything. Do not manually run the steps below.
+
 ## Table of Contents
 
 - [What You Get](#what-you-get)
@@ -62,7 +64,12 @@ mkdir -p ~/.claude/skills
 
 ### Step 3: Symlink `CLAUDE.md` (global instructions)
 
+> **Note:** `setup.sh` handles this automatically via the skills worktree. The manual commands below are for reference only — prefer `bash ./setup.sh`.
+
 ```bash
+# setup.sh symlinks through the skills worktree (recommended):
+#   ~/.claude/CLAUDE.md -> ~/.claude/skills-worktree/CLAUDE.md
+# Manual fallback (if not using setup.sh):
 ln -sfn "$(pwd)/CLAUDE.md" ~/.claude/CLAUDE.md
 ```
 
@@ -70,7 +77,12 @@ This gives Claude Code its core instructions in every project. The symlink means
 
 ### Step 4: Symlink the rule files
 
+> **Note:** `setup.sh` handles this automatically via the skills worktree. The manual commands below are for reference only — prefer `bash ./setup.sh`.
+
 ```bash
+# setup.sh symlinks through the skills worktree (recommended):
+#   ~/.claude/rules -> ~/.claude/skills-worktree/.claude/rules
+# Manual fallback (if not using setup.sh):
 ln -sfn "$(pwd)/.claude/rules" ~/.claude/rules
 ```
 
@@ -376,9 +388,9 @@ The PM config file is bootstrapped by `/pm` on first run and updated by `/pm-upd
 
 ```text
 ~/.claude/
-  CLAUDE.md          ->  <repo>/CLAUDE.md
-  rules/             ->  <repo>/.claude/rules/
-  settings.json         (copied from <repo>/global-settings.json)
+  CLAUDE.md          ->  ~/.claude/skills-worktree/CLAUDE.md
+  rules/             ->  ~/.claude/skills-worktree/.claude/rules/
+  settings.json         (copied from <repo>/global-settings.json, paths replaced)
   skills/
     pm/              ->  ~/.claude/skills-worktree/.claude/skills/pm/
     standup/         ->  ~/.claude/skills-worktree/.claude/skills/standup/
