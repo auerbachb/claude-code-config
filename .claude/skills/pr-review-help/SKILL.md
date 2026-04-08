@@ -231,6 +231,12 @@ Structure the prompt block exactly as follows:
 
 Work on the existing PR branch above. Do NOT create a new branch or new PR. Commit fixes as follow-up on this same PR.
 
+#### Files involved
+
+{Deduplicated list of files referenced by the findings below:}
+- `{file_path_1}`
+- `{file_path_2}`
+
 #### Findings to fix
 
 {For each actionable item from sections 4 (Risks) and 5 (Open Questions), emit a numbered entry:}
@@ -247,6 +253,7 @@ Work on the existing PR branch above. Do NOT create a new branch or new PR. Comm
 `````
 
 **Generation rules for Section 8:**
+- Populate "Files involved" with a deduplicated list of all file paths referenced in the numbered findings below it. This gives the receiving agent a quick overview of the blast radius before reading individual findings.
 - Extract actionable findings from **section 4 (Risks)** and **section 5 (Open Questions)** only. Each risk or open question that implies a code change becomes a numbered finding.
 - Map each finding to specific file(s) from the diff stat. If a finding spans multiple files, list the primary file and mention others in the instruction. If a finding is process-only (e.g., "missing PM approval", "unresolved review disagreement") and cannot be mapped to a file, omit it from the numbered findings list and move it to the "Also consider" sub-section instead.
 - Write each fix instruction as a single imperative sentence (e.g., "Add feature flag guard around the new analytics endpoint", "Add migration rollback step for the `users` column rename").
