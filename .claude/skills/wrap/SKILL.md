@@ -126,8 +126,8 @@ MAIN_SYNC_STATUS=""
 
 if [ -z "$ROOT_REPO" ] || [ ! -d "$ROOT_REPO" ]; then
   MAIN_SYNC_STATUS="failed: could not determine root repo path"
-elif [ -n "$(git -C "$ROOT_REPO" status --porcelain)" ]; then
-  MAIN_SYNC_STATUS="skipped: root repo has uncommitted changes — run manually: git -C \"$ROOT_REPO\" pull origin main --ff-only"
+elif ! git -C "$ROOT_REPO" diff --quiet 2>/dev/null || ! git -C "$ROOT_REPO" diff --cached --quiet 2>/dev/null; then
+  MAIN_SYNC_STATUS="skipped: root repo has tracked files with uncommitted changes — run manually: git -C \"$ROOT_REPO\" pull origin main --ff-only"
 else
   CURRENT_BRANCH=$(git -C "$ROOT_REPO" branch --show-current)
   if [ "$CURRENT_BRANCH" != "main" ]; then

@@ -113,9 +113,9 @@ After merging, update the local `main` so subsequent sessions branch from the la
 ```bash
 MAIN_SYNC_STATUS=""
 
-# Guard: uncommitted changes would block checkout
-if [ -n "$(git status --porcelain)" ]; then
-  MAIN_SYNC_STATUS="skipped: working tree has uncommitted changes — run manually: git checkout main && git pull origin main --ff-only"
+# Guard: tracked files with uncommitted changes would block checkout
+if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+  MAIN_SYNC_STATUS="skipped: tracked files have uncommitted changes — run manually: git checkout main && git pull origin main --ff-only"
 fi
 
 # Ensure we're on main before pulling
