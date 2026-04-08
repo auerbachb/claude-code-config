@@ -42,7 +42,7 @@ Add the following to your **global** `~/.claude/settings.json` (create the file 
         "hooks": [
           {
             "type": "command",
-            "command": "/absolute/path/to/claude-code-coderabbit/.claude/hooks/post-merge-pull.sh",
+            "command": "/absolute/path/to/claude-code-config/.claude/hooks/post-merge-pull.sh",
             "timeout": 15
           }
         ]
@@ -52,7 +52,7 @@ Add the following to your **global** `~/.claude/settings.json` (create the file 
 }
 ```
 
-Replace `/absolute/path/to/claude-code-coderabbit` with the actual path to your clone of this repo.
+Replace `/absolute/path/to/claude-code-config` with the actual path to your clone of this repo.
 
 ### Prerequisites
 
@@ -82,7 +82,7 @@ The heartbeat file is session-scoped (`/tmp/claude-heartbeat-$CLAUDE_SESSION_ID`
         "hooks": [
           {
             "type": "command",
-            "command": "/absolute/path/to/claude-code-coderabbit/.claude/hooks/silence-detector-ack.sh",
+            "command": "/absolute/path/to/claude-code-config/.claude/hooks/silence-detector-ack.sh",
             "timeout": 5
           }
         ]
@@ -93,7 +93,7 @@ The heartbeat file is session-scoped (`/tmp/claude-heartbeat-$CLAUDE_SESSION_ID`
         "hooks": [
           {
             "type": "command",
-            "command": "/absolute/path/to/claude-code-coderabbit/.claude/hooks/silence-detector.sh",
+            "command": "/absolute/path/to/claude-code-config/.claude/hooks/silence-detector.sh",
             "timeout": 5
           }
         ]
@@ -103,7 +103,7 @@ The heartbeat file is session-scoped (`/tmp/claude-heartbeat-$CLAUDE_SESSION_ID`
 }
 ```
 
-Replace `/absolute/path/to/claude-code-coderabbit` with the actual path to your clone of this repo.
+Replace `/absolute/path/to/claude-code-config` with the actual path to your clone of this repo.
 
 ### Prerequisites
 
