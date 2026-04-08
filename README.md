@@ -294,7 +294,7 @@ Tiers:
 
 For batch input (`/prompt #110 #111 #112`), the most complex issue determines the batch tier.
 
-#### `/pr-review-help #123 #456 #789`
+#### `/pr-review-help #123 [#456 #789 ...]`
 
 Executive PR review from a CTO/CPO/Chief Data Scientist lens. Analyzes multiple PRs in parallel (one subagent per PR) for strategic fit, risk, issue alignment, and operational readiness. This is not a code-correctness review — it assumes CodeRabbit and automated tests already handled that.
 
