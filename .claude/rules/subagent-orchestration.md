@@ -125,7 +125,7 @@ HANDOFF_FILE: ~/.claude/handoffs/pr-618-handoff.json
 | `OUTCOME` | see below | What happened during the phase |
 | `FILES_CHANGED` | comma-separated paths | Files modified (empty string if none) |
 | `NEXT_PHASE` | `B`, `C`, `none` | What the parent should launch next |
-| `HANDOFF_FILE` | path | Path to the handoff file written/updated by this phase |
+| `HANDOFF_FILE` | path | Path to the handoff file for this PR (Phase A creates, Phase B updates, Phase C reads then deletes) |
 
 **Valid `OUTCOME` values per phase:**
 
@@ -174,7 +174,7 @@ Subagents have a hardcoded **32K output token limit** that cannot be configured 
 - If clean Greptile pass (no findings at all): merge-ready immediately.
 - **Phase B Completion:** Update the handoff file at `~/.claude/handoffs/pr-{N}-handoff.json` — set `phase_completed` to `"B"`, refresh `head_sha` if there was a new push, and merge new entries into `findings_fixed`, `threads_replied`, `threads_resolved`, and `files_changed`. **Deduplicate deterministically per field:** for `string[]` fields (`findings_fixed`, `threads_replied`, `threads_resolved`, `files_changed`), dedupe by exact string value; for object arrays (`findings_dismissed`), dedupe by `.id`. This prevents duplicate accumulation when replacement agents re-process the same findings.
 - **Print the Structured Exit Report and EXIT.** Use the appropriate `OUTCOME`:
-  - `clean` — review passed with no findings
+  - `clean` — review passed with no findings (set `NEXT_PHASE: C`)
   - `fixes_pushed` — fixed findings and pushed, needs re-review (set `NEXT_PHASE: B` for replacement agent)
   - `merge_ready` — merge gate satisfied, all checks green (set `NEXT_PHASE: C`)
   - `exhaustion` — token budget running low, replacement needed (set `NEXT_PHASE: B`)
