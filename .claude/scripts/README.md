@@ -12,4 +12,4 @@ Manually-invoked utility scripts. Run these from the command line when needed.
 - **`scripts/`** — manual utilities, run on demand
 - **`hooks/`** — auto-triggered by Claude Code lifecycle events (Stop, PostToolUse, etc.)
 
-The `trust-flag-repair.sh` hook in `hooks/` runs automatically after every agent response. These scripts are for manual diagnosis and one-off repairs (e.g., after deleting `~/.claude.json`).
+The `trust-flag-repair.sh` hook in `hooks/` runs automatically after every agent response. These scripts are for manual diagnosis and one-off repairs (e.g., after new worktree/project entries, cloning/moving projects, or config recreation).

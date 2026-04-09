@@ -31,6 +31,10 @@ except json.JSONDecodeError as e:
     print('Repair or restore ~/.claude.json, then re-run this fix.')
     sys.exit(1)
 
+if not isinstance(data, dict):
+    print('Invalid ~/.claude.json: root must be an object.')
+    sys.exit(1)
+
 projects = data.get('projects') or {}
 if not isinstance(projects, dict):
     print('Invalid ~/.claude.json: \"projects\" must be an object.')
