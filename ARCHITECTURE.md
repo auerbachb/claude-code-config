@@ -51,7 +51,7 @@ Skills, rules, and `CLAUDE.md` are served from `~/.claude/skills-worktree/`, a g
 
 **Keeping it fresh:** The `session-start-sync.sh` hook runs once per session (on the first tool call) and syncs the skills worktree to `origin/main`. The `post-merge-pull.sh` hook syncs after merges. Both ensure skills, rules, and `CLAUDE.md` stay current across all repos.
 
-**Initial setup:** `setup-skills-worktree.sh` creates the worktree, symlinks all skills, and registers hooks. It's called by `setup.sh` during installation and can be re-run to fix broken symlinks.
+**Initial setup:** `setup-skills-worktree.sh` creates the worktree, symlinks all skills, and registers hooks in `~/.claude/settings.json`. `setup.sh` calls it during installation, then separately merges non-hook settings from `global-settings.json` and verifies the final result. Re-run either script to fix broken symlinks or stale hook paths.
 
 ---
 

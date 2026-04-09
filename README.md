@@ -153,7 +153,7 @@ Five hooks in `.claude/hooks/` run automatically during Claude Code sessions:
 
 All hooks are idempotent and fail-safe.
 
-**Auto-registration:** Hooks are defined in `global-settings.json` with placeholder paths (e.g., `/path/to/claude-code-config/.claude/hooks/session-start-sync.sh`). At install time, `setup-skills-worktree.sh` resolves these to the skills worktree. At each session start, `session-start-sync.sh` checks for new hooks added to the repo and registers them automatically — no manual setup needed after the initial install. See [ARCHITECTURE.md](ARCHITECTURE.md#hook-auto-registration) for details.
+**Auto-registration:** Hooks are defined in `global-settings.json` with placeholder paths (e.g., `/path/to/claude-code-config/.claude/hooks/session-start-sync.sh`). At install time, `setup-skills-worktree.sh` resolves these to the skills worktree and registers them in `~/.claude/settings.json`. At each session start, `session-start-sync.sh` checks for new hooks added to the repo and registers them automatically — no manual setup needed after the initial install. See [ARCHITECTURE.md](ARCHITECTURE.md#hook-auto-registration) for details.
 
 ---
 
