@@ -1,6 +1,7 @@
 # Trust Dialog Re-Prompting Fix
 
 > **Always:** Check `~/.claude.json` flags when the user reports trust dialog re-prompting.
+> **Ask first:** Never — diagnosis and repair are safe read/write operations on a JSON config file.
 > **Never:** Delete `~/.claude.json` entirely (Claude Code recreates it with `false` defaults).
 
 ## Problem
