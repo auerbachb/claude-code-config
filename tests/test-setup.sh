@@ -141,7 +141,7 @@ print(count)
 test_3_settings_preserved() {
   section "Test 3: Existing settings preserved"
 
-  # Inject custom keys
+  # Inject custom keys AND remove a template key to test re-seeding
   python3 -c "
 import json
 path = '$HOME/.claude/settings.json'
@@ -152,6 +152,8 @@ data['model'] = 'sonnet'
 data['permissions'] = {'allow': ['Read']}
 data['env'] = {'CUSTOM_VAR': 'keep_me', 'ANOTHER': 'also_keep'}
 data['extraKnownMarketplaces'] = {'test': True}
+# Remove a template-provided key to test that setup.sh re-seeds it
+data.pop('permissions', None)
 
 with open(path, 'w') as f:
     json.dump(data, f, indent=2)
@@ -165,7 +167,7 @@ with open(path, 'w') as f:
 
   # Check preserved keys
   assert "model key preserved" "python3 -c \"import json; d=json.load(open('$HOME/.claude/settings.json')); assert d['model'] == 'sonnet', f'got {d[\\\"model\\\"]}'\""
-  assert "permissions key preserved" "python3 -c \"import json; d=json.load(open('$HOME/.claude/settings.json')); assert d['permissions'] == {'allow': ['Read']}\""
+  assert "permissions key re-seeded" "python3 -c \"import json; d=json.load(open('$HOME/.claude/settings.json')); assert 'permissions' in d, 'permissions not re-seeded'\""
   assert "env.CUSTOM_VAR preserved" "python3 -c \"import json; d=json.load(open('$HOME/.claude/settings.json')); assert d['env']['CUSTOM_VAR'] == 'keep_me'\""
   assert "env.ANOTHER preserved" "python3 -c \"import json; d=json.load(open('$HOME/.claude/settings.json')); assert d['env']['ANOTHER'] == 'also_keep'\""
   assert "extraKnownMarketplaces preserved" "python3 -c \"import json; d=json.load(open('$HOME/.claude/settings.json')); assert 'extraKnownMarketplaces' in d\""
@@ -178,7 +180,8 @@ test_4_hook_path_migration() {
   section "Test 4: Hook path migration"
 
   # Replace a hook path with a stale root-repo path
-  python3 -c "
+  local seed_output
+  seed_output=$(python3 -c "
 import json, sys
 path = '$HOME/.claude/settings.json'
 with open(path) as f:
@@ -204,7 +207,10 @@ if not migrated_seeded:
 
 with open(path, 'w') as f:
     json.dump(data, f, indent=2)
-"
+print('Seeded stale path for migration test')
+" 2>&1)
+  local seed_exit=$?
+  assert "Stale path seed succeeded" "[ $seed_exit -eq 0 ]"
 
   # Run setup-skills-worktree.sh which handles migration
   cd "$REPO_ROOT" || return 1
@@ -285,7 +291,10 @@ for event_key, groups in hooks.items():
                 elif not os.access(cmd, os.X_OK):
                     errors.append(f'NOT EXECUTABLE: {cmd}')
 
-if errors:
+if checked == 0:
+    print('FAIL: No hooks found to check — settings.json may have empty hooks object')
+    raise SystemExit(1)
+elif errors:
     for e in errors:
         print(e)
     raise SystemExit(1)
