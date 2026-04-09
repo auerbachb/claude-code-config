@@ -13,6 +13,12 @@ fi
 
 proj_key="$1"
 
+if [[ "$proj_key" != /* ]]; then
+  echo "Error: <absolute-project-path> must start with '/'"
+  echo "Example: $0 /Users/you/repos/my-project"
+  exit 1
+fi
+
 python3 -c "
 import json, os, sys, tempfile
 
