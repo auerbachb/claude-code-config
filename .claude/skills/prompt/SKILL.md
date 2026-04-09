@@ -18,7 +18,7 @@ If `$ARGUMENTS` is non-empty, use the specified issue numbers. Proceed to Step 1
 
 ### Path B: No arguments + PM thread context detected
 
-If `$ARGUMENTS` is empty, check for PM orchestration context:
+If `$ARGUMENTS` is empty, check for PM orchestration context. PM context is detected if EITHER condition is true (OR gate — PM output patterns alone are sufficient even without `pm-config.md`):
 
 1. **Check for `pm-config.md`:**
    ```bash
@@ -30,14 +30,14 @@ If `$ARGUMENTS` is empty, check for PM orchestration context:
    - A ranked list with issue references in the format `**#N — {Title}**`
    - An `## Active Work` table with issue numbers
 
-3. **If PM context is detected**, extract issue numbers using include/exclude logic:
+3. **If PM context is detected** (either `pm-config.md` exists OR PM output patterns were found), extract issue numbers using include/exclude logic:
 
    **Include** (OR — issue qualifies if it matches any of these):
    - Referenced in the `## Suggested Next Issues` section
-   - Listed in the `## Active Work` table with status "Awaiting thread start" or "Prompt generated"
+   - Listed in the `## Active Work` table with status "Awaiting thread start"
 
    **Then exclude** (AND NOT — remove any issue that matches any of these):
-   - Marked as "Active", "In review", or "Merged" in the `## Active Work` table
+   - Marked as "Active", "In review", "Merged", or "Prompt generated" in the `## Active Work` table
 
    Example: If `## Suggested Next Issues` lists #42, #55, #61 and the Active Work table shows #42 as "In review", the result is #55 and #61.
 
@@ -45,7 +45,7 @@ If `$ARGUMENTS` is empty, check for PM orchestration context:
 
 ### Path C: No arguments + no PM context
 
-If `$ARGUMENTS` is empty and no PM context is detected (no `pm-config.md` and no PM output patterns in conversation), ask the user which issue(s) to analyze. Stop and wait for input.
+If `$ARGUMENTS` is empty and no PM context is detected (no `pm-config.md` **and** no PM output patterns in conversation — both must be absent), ask the user which issue(s) to analyze. Stop and wait for input.
 
 ## Step 1: Gather Issue Data
 
@@ -100,7 +100,7 @@ From the gathered data, compute these discrete signals:
 | Signal | How to compute |
 |--------|---------------|
 | `file_count` | Per-issue count of files from CR plan file list (see Step 2 parsing). If no CR plan, count strings in the issue body that contain `/`, end with a file extension (`.ts`, `.md`, `.json`, `.py`, `.sh`, `.yml`, `.yaml`), and do NOT start with `http://` or `https://`. Default: 0 if no CR plan and no file paths detected. For batch tier decisions, use the highest per-issue `file_count`. |
-| `dependency_count` | Total dependency references found in Step 3. |
+| `dependency_count` | Total dependency references found in Step 3. Also record a **per-issue breakdown** (`dependency_count_per_issue`) for use in Step 5.5 subagent eligibility gating. |
 | `touches_rules` | `true` if any file path matches `.claude/rules/*.md` OR issue body mentions "rule file", "workflow protocol". |
 | `touches_claude_md` | `true` if any file path matches `CLAUDE.md` (case-insensitive) OR issue body mentions "CLAUDE.md". |
 | `touches_skill` | `true` if any file path matches `.claude/skills/` OR issue is about creating/modifying a skill. |
