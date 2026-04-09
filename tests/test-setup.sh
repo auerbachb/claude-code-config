@@ -83,8 +83,8 @@ test_1_fresh_install() {
   assert "~/.claude/rules is a symlink" "[ -L '$HOME/.claude/rules' ]"
   assert "CLAUDE.md symlink target exists" "[ -e '$HOME/.claude/CLAUDE.md' ]"
   assert "rules symlink target exists" "[ -e '$HOME/.claude/rules' ]"
-  assert "CLAUDE.md points to skills-worktree" "readlink '$HOME/.claude/CLAUDE.md' | grep -q 'skills-worktree'"
-  assert "rules points to skills-worktree" "readlink '$HOME/.claude/rules' | grep -q 'skills-worktree'"
+  assert "CLAUDE.md points to skills-worktree" "[ \"$(readlink '$HOME/.claude/CLAUDE.md')\" = '$HOME/.claude/skills-worktree/CLAUDE.md' ]"
+  assert "rules points to skills-worktree" "[ \"$(readlink '$HOME/.claude/rules')\" = '$HOME/.claude/skills-worktree/.claude/rules' ]"
 
   # Check that at least some skills are symlinked
   local skill_count
@@ -301,9 +301,10 @@ elif errors:
 else:
     print(f'All {checked} hook paths resolve to existing executables')
 " 2>&1)
+  local hooks_exit=$?
 
   echo "  $result"
-  assert "All hook paths resolve" "echo '$result' | grep -q 'All .* hook paths resolve'"
+  assert "All hook paths resolve" "[ $hooks_exit -eq 0 ]"
 }
 
 # ── Test 7: No settings.json yet ─────────────────────────────────────────────
