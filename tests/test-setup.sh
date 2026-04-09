@@ -16,7 +16,6 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 GREEN='\033[0;32m'
 RED='\033[0;31m'
-YELLOW='\033[0;33m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
@@ -210,6 +209,7 @@ with open(path, 'w') as f:
 print('Seeded stale path for migration test')
 " 2>&1)
   local seed_exit=$?
+  echo "  Seed output: $seed_output"
   assert "Stale path seed succeeded" "[ $seed_exit -eq 0 ]"
 
   # Run setup-skills-worktree.sh which handles migration
