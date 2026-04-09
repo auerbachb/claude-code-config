@@ -58,7 +58,7 @@ clean_slate() {
 
 run_setup() {
   # Run setup.sh from repo root, capture output
-  cd "$REPO_ROOT"
+  cd "$REPO_ROOT" || return 1
   bash setup.sh 2>&1
 }
 
