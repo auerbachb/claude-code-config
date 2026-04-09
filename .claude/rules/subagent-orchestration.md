@@ -478,130 +478,15 @@ The orchestration uses two complementary state files:
 
 **Forward compatibility:** Unknown fields must be preserved when reading and rewriting the file. Do not strip fields you don't recognize — a future schema version may have added them.
 
-### Mandatory Subagent Review Protocol (COPY INTO EVERY SUBAGENT PROMPT)
+### Subagent Review Protocol
 
-Since subagents receive the full rules (see above), this section serves as a **quick-reference summary** of the review protocol. The full details are in the other rule files — this summary exists so subagents can quickly locate the critical steps without scanning everything.
+Subagents receive the full rule files in their prompts (see "How to spawn subagents" above). The review protocol is defined authoritatively in these canonical sources — do NOT duplicate it here:
 
-```text
-## GitHub Review Loop — Quick Reference
+- **CR polling, CI checks, thread resolution, merge gate (2 clean CR passes):** `cr-github-review.md`
+- **Greptile trigger, severity classification (P0/P1/P2), daily budget, reply format:** `greptile.md`
+- **Local review before push, fix loop, 2 clean passes exit criteria:** `cr-local-review.md`
 
-AUTONOMY RULE: Every step below is AUTOMATIC. Do NOT ask "should I?" or "want me to?"
-at any point. The ONLY user-prompted action is the final merge decision (Step 4).
-If you are running low on tokens, write handoff state to session-state.json, print the
-Structured Exit Report, and exit cleanly — do NOT ask the user what to do.
-
-EXIT REPORT RULE: Before exiting, you MUST print a Structured Exit Report as your final
-output. Format: fenced code block starting with `EXIT_REPORT`, one key-value pair per line:
-PHASE_COMPLETE, PR_NUMBER, HEAD_SHA, REVIEWER, OUTCOME, FILES_CHANGED, NEXT_PHASE,
-HANDOFF_FILE. The parent parses this mechanically — omitting it causes silent failures.
-
-After pushing code and creating/updating a PR, follow this EXACT sequence:
-
-### Step 0a: Check Handoff File (Phase B/C only)
-Before any other work, check for `~/.claude/handoffs/pr-{N}-handoff.json`:
-- If found: parse it. Use `head_sha`, `reviewer`, `threads_replied`, `threads_resolved`,
-  `findings_fixed` to understand what the previous phase already did. This avoids
-  duplicate API calls and duplicate thread replies.
-- If missing: fall back to GitHub API reconstruction (fetch all 3 endpoints).
-- Log which path was taken for debugging.
-
-### Step 0b: Check for unresolved findings BEFORE requesting any review
-BEFORE triggering `@coderabbitai full review` or entering the polling loop:
-1. Fetch all comments on the PR (all 3 endpoints, per_page=100)
-2. Look for unresolved findings from coderabbitai[bot] or greptile-apps[bot]
-3. If unresolved findings exist -> fix them, push, reply, resolve threads FIRST
-4. Only request a new review after all prior findings are addressed
-Skipping this step wastes a review cycle and burns CR quota.
-
-### Step 0b: Check ALL CI check-runs (MANDATORY — every poll cycle)
-Fetch ALL check-runs once per cycle (reuse this result in Step 1b for CR rate-limit detection):
-`gh api "repos/{owner}/{repo}/commits/{SHA}/check-runs?per_page=100" --jq '.check_runs[] | {id, name, status, conclusion, title: .output.title}'`
-If ANY check-run has a blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`):
-1. Read the failure output: `gh api "repos/{owner}/{repo}/check-runs/{ID}" --jq '.output.summary'`
-2. If test/lint/build failure -> fix code, commit, push BEFORE continuing review loop
-3. If transient/infra failure -> note it, retry with no-op commit if needed
-A PR with passing CR but failing CI is NOT merge-ready. Report CI status to user.
-
-### Step 1: Check if PR is already on Greptile
-If this PR has already switched to Greptile (check session-state `reviewer` field), skip CR polling entirely — go directly to Step 3 and trigger `@greptileai`.
-
-### Step 1b: Wait for CR review (only if PR is still on CR)
-- Poll every 60s on all 3 endpoints (per_page=100):
-  - `repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100`
-  - `repos/{owner}/{repo}/pulls/{N}/comments?per_page=100`
-  - `repos/{owner}/{repo}/issues/{N}/comments?per_page=100`
-- Filter by `coderabbitai[bot]` (with [bot] suffix)
-- Reuse the Step 0b check-runs result for CR rate-limit fast-path detection:
-  Find the CodeRabbit entry in the already-fetched check-runs. If it shows "rate limit" in output.title with conclusion "failure" -> Greptile IMMEDIATELY.
-  If no CodeRabbit check-run in the result, also check: `gh api "repos/{owner}/{repo}/commits/{SHA}/statuses"`
-
-### Step 2: After 7 minutes with no review -> trigger Greptile (NO EXCEPTIONS)
-If 7 minutes pass and CR has not delivered review content, trigger Greptile.
-It does NOT matter whether you see an explicit rate-limit signal.
-The "Actions performed" ack means CR STARTED — it is NOT a review.
-If you see the ack but no review within 7 minutes, CR failed to deliver.
-**Once Greptile is triggered, this PR stays on Greptile permanently.**
-
-### Step 3: Trigger Greptile (if not already running)
-0. **CHECK DAILY BUDGET FIRST** — read `greptile_daily` from session state. If `reviews_used >= budget`, do NOT trigger Greptile. Fall back to self-review and report the blocker to the user. See `greptile.md` "Daily Budget".
-1. Post: `gh pr comment <PR_NUMBER> --body "@greptileai"`
-2. Poll every 60s for `greptile-apps[bot]` comments on the same 3 endpoints
-3. Timeout after 5 minutes (Greptile typically responds in 1-3 minutes)
-4. If no response, do a self-review instead
-5. Process Greptile findings same as CR: fix all valid findings in one commit, push once
-6. Reply to EVERY Greptile comment thread confirming the fix using **plain text (no `@greptileai` mention)**:
-   - Inline comments: `gh api repos/{owner}/{repo}/pulls/comments/{id}/replies -f body="Fixed in \`SHA\`: <what changed>"`
-   - Issue/PR-level comments: `gh pr comment N --body "Fixed in \`SHA\`: <what changed>"`
-   **Do NOT include `@greptileai` in replies** — every @mention triggers a new paid review ($0.50-$1.00).
-   Greptile does not learn from text replies (only from 👍/👎 reactions). Replies are for thread management only.
-   Pushing code does NOT resolve threads — you MUST post explicit replies.
-
-### After Greptile fix+push: severity-gated re-review (MANDATORY checklist)
-Once a PR is on Greptile, it stays on Greptile. Do NOT switch back to CR.
-1. **Classify all findings** (P0/P1/P2).
-2. **If NO P0:** STOP — skip `@greptileai`. Proceed to merge gate.
-3. **If P0 present:** budget check → trigger `@greptileai`.
-4. **Log severity counts in handoff notes.**
-5. **Max 3 Greptile reviews per PR** (initial + up to 2 P0 re-reviews). After 3, self-review + tell user.
-
-### Greptile clean / merge-ready detection
-A Greptile review is merge-ready when:
-- No findings at all (fully clean), OR
-- Findings are all P1/P2 (no P0) — fix them but skip re-review, OR
-- Re-review after P0 fix shows no P0 findings
-Also watch for 👍 completion signal with no inline comments.
-**Max 3 Greptile reviews per PR.** After 3, self-review + report blocker.
-Check-run name: TBD — update after first Greptile review on this repo.
-
-### Step 4: Merge gate
-The merge gate depends on which reviewer owns the PR:
-- **CR-only** (Greptile never triggered): 2 clean CR reviews required (confirmation pass needed due to unreliable signals)
-- **Greptile** (triggered at any point): severity-gated:
-  - No P0 on first review -> merge-ready after fixing P1/P2 (no re-review)
-  - P0 on first review -> fix + 1 re-review to confirm P0 resolution
-  - Max 3 Greptile reviews per PR. After 3, self-review + report blocker.
-
-If BOTH reviewers are down (CR rate-limited + Greptile timeout), perform self-review for risk reduction and report the blocker. Self-review does NOT satisfy the merge gate.
-
-### Final Step: Handoff File + Exit Report (per-phase)
-- **Phase A (create + exit):** `mkdir -p ~/.claude/handoffs/` then write a new
-  `~/.claude/handoffs/pr-{N}-handoff.json` with all schema fields:
-  `schema_version`, `pr_number`, `head_sha`, `reviewer`, `phase_completed` ("A"),
-  `created_at`, `findings_fixed`, `findings_dismissed`, `threads_replied`,
-  `threads_resolved`, `files_changed`, `push_timestamp`, `notes`.
-  Then print the Structured Exit Report: `OUTCOME: pushed_fixes`, `no_findings`, or
-  `exhaustion` (partial fixes). `NEXT_PHASE: B` (or `A` for exhaustion).
-- **Phase B (read-modify-write + exit):** Read existing handoff file, merge new entries
-  into arrays (deduplicate per field: by exact string value for `string[]` fields,
-  by `.id` for object arrays like `findings_dismissed`), update `phase_completed` to "B", refresh
-  `head_sha` if pushed. Do NOT overwrite `created_at` or `push_timestamp` from
-  Phase A — only set `push_timestamp` if Phase B itself pushed a new commit.
-  Preserve unknown fields.
-  Then print the Structured Exit Report: `OUTCOME: clean`/`merge_ready`/`fixes_pushed`/`exhaustion`,
-  `NEXT_PHASE: C` (clean/merge_ready) or `B` (fixes_pushed/exhaustion).
-- **Phase C (read then delete + exit):** Read handoff file for reviewer/state context.
-  Do NOT update or rewrite the file. After successful merge only, delete it:
-  `rm ~/.claude/handoffs/pr-{N}-handoff.json`. Deletion failure is non-fatal.
-  Then print the Structured Exit Report: `OUTCOME: ac_verified` or `blocked`,
-  `NEXT_PHASE: none`.
-```
+**Three reminders for subagents** (full definitions are earlier in this file):
+1. **AUTONOMY:** Every phase transition is automatic — do NOT ask "should I?" at any step. See the Phase Transition Autonomy table above.
+2. **EXIT REPORT:** Print a Structured Exit Report as your final output before exiting. See the "Structured Exit Report" section above for the exact format and valid OUTCOME values per phase.
+3. **HANDOFF FILE:** Write/update/read `~/.claude/handoffs/pr-{N}-handoff.json` per the lifecycle defined in "Structured Handoff Files" above (Phase A creates, Phase B updates, Phase C reads then deletes).
