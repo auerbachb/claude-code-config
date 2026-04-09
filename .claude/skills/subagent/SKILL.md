@@ -1,0 +1,475 @@
+---
+name: subagent
+description: Run Quick/Light issues as subagents directly from a PM thread. Validates complexity, spawns Phase A/B/C agents, monitors progress, and reports merge readiness. Use when small issues should be executed inline instead of in separate coding threads.
+argument-hint: "#42 [#55 #61 ...] (one or more issue numbers)"
+---
+
+Execute one or more small issues as subagents within the current thread. Each issue goes through the full Phase A/B/C orchestration protocol (fix, review, merge prep) while this skill monitors progress and manages transitions.
+
+Parse `$ARGUMENTS` as space-separated issue references. Strip `#` prefixes to get bare issue numbers. If no arguments provided, ask the user which issue(s) to execute.
+
+---
+
+## Step 1: Gather Issue Data
+
+For each issue number, fetch the full issue:
+
+```bash
+gh issue view $NUMBER --json number,title,body,labels,milestone,assignees,createdAt,state,closedAt
+```
+
+**Validation:**
+- If the issue does not exist or is closed, report: "Issue #N not found or already closed — skipping." Continue with remaining issues.
+- If all issues are invalid, stop with an error message.
+
+For each valid issue, extract and record:
+- **Full body content** (needed for complexity analysis and subagent prompt)
+- **Labels** (check for protocol-relevant labels)
+- **Acceptance criteria** — count all checklist items matching `- [ ]` or `- [x]`/`- [X]` in the body
+
+## Step 2: Detect CR Implementation Plan
+
+For each issue, fetch all comments:
+
+```bash
+gh api --paginate repos/{owner}/{repo}/issues/$NUMBER/comments --jq '.[] | {author: .user.login, body: .body}'
+```
+
+From all comments, extract:
+- **Implementation plan:** Scan ALL comments for plan structure markers — file lists, implementation steps, phase breakdowns. Prefer the most structured/detailed plan found regardless of author.
+- If a CR plan exists, extract the **file list** using these patterns:
+  - Look for headings containing "Files", "Files likely touched", "File list", or "Touched files" (case-insensitive)
+  - Parse the block following that heading: bullet/numbered lists or fenced code blocks with one path per line
+  - Also capture inline backticked paths
+  - Normalize: trim whitespace, strip leading `./`, deduplicate, skip non-path lines
+- Store the CR plan content verbatim for inclusion in the subagent prompt
+
+## Step 3: Extract Complexity Signals
+
+Compute these signals per issue (same logic as `/prompt` Steps 3-4):
+
+| Signal | How to compute |
+|--------|---------------|
+| `file_count` | Count of files from CR plan file list. If no CR plan, count path-like strings in the issue body (contain `/`, end with a file extension, don't start with `http`). Default: 0. |
+| `dependency_count` | Count of dependency references: `blocked by #N`, `depends on #N`, `blocks #N`, `after #N`, etc. Scan both issue body and comments. |
+| `is_multi_issue` | `true` if more than one issue number was provided as input. |
+| `touches_rules` | `true` if any file path matches `.claude/rules/*.md` OR body mentions "rule file", "workflow protocol". |
+| `touches_claude_md` | `true` if any file path matches `CLAUDE.md` (case-insensitive) OR body mentions "CLAUDE.md". |
+| `touches_skill` | `true` if any file path matches `.claude/skills/` OR issue is about creating/modifying a skill. |
+| `ac_count` | Count of acceptance criteria checkboxes (both `- [ ]` and `- [x]`/`- [X]`) in issue body. |
+| `has_orchestration_keywords` | `true` if body contains: "subagent", "Phase A", "Phase B", "Phase C", "multi-phase", "orchestration", "monitor mode", "handoff". |
+| `scope_keywords` | Collect any of: "typo", "rename", "comment", "config", "doc update", "README", "formatting". |
+
+## Step 4: Classify Tier (Same as `/prompt` Step 5)
+
+Apply this decision tree. When signals conflict, choose the **higher** tier.
+
+### Heavy — reject
+Assign Heavy if ANY: `touches_rules`, `touches_claude_md`, `has_orchestration_keywords`, `file_count > 5`, `dependency_count > 2`, or (`is_multi_issue` AND at least one issue has `file_count > 1` or `ac_count > 3`).
+
+### Standard — reject
+Assign Standard if ANY (and Heavy not triggered): `file_count` 2–5, `ac_count > 3`, `touches_skill`, body >200 words with feature keywords, or `is_multi_issue` with mixed complexity.
+
+### Quick — accept
+Assign Quick only if ALL: `scope_keywords` exclusively from "typo"/"rename"/"comment"/"formatting", `file_count` 0–1, `ac_count` <= 2, `dependency_count` 0, no orchestration/rule/skill signals.
+
+### Light — accept
+Assign Light if ANY (and Heavy/Standard/Quick not triggered): `file_count` 0–1, `scope_keywords` include "config"/"doc update"/"README", or issue describes a single-file change.
+
+### Fallback
+If unclear, default to **Standard** (which means rejection).
+
+## Step 5: Gate Check — Validate Candidate Criteria
+
+For each issue, verify ALL of the following:
+
+| Signal | Threshold |
+|--------|-----------|
+| `file_count` | 0–1 files |
+| `ac_count` | <= 3 acceptance criteria |
+| `dependency_count` | 0 (no blockers or blocked-by) |
+| `touches_rules` | `false` |
+| `touches_claude_md` | `false` |
+| `has_orchestration_keywords` | `false` |
+| Tier classification | Quick or Light only |
+
+**If any signal exceeds its threshold, reject the issue:**
+
+```
+Issue #N is too complex for subagent execution (classified as {tier}).
+Failing signals: {list signals that exceeded thresholds}
+Use `/prompt #N` to generate a thread prompt instead.
+```
+
+**If all issues are rejected**, stop and report the rejections. Do not proceed.
+
+**If some pass and some fail**, report the rejections and proceed with the qualifying issues. Ask: "Proceeding with qualifying issues: #{a}, #{b}. The rejected issues need `/prompt` instead."
+
+## Step 6: Pre-Spawn Setup
+
+For each qualifying issue:
+
+### 6.0: Check for existing open PRs
+
+For each qualifying issue, verify no PR is already open:
+
+```bash
+gh pr list --search "head:issue-{NUMBER}" --json number,title,state
+```
+
+If a PR already exists for the issue, skip it: "Issue #N already has PR #{M} — skipping."
+
+### 6.1: Ensure handoff directory exists
+
+```bash
+mkdir -p ~/.claude/handoffs/
+```
+
+### 6.2: Initialize session state
+
+Read or create `~/.claude/session-state.json`. Add each qualifying issue to the `prs` section (PR number will be filled after Phase A creates it). Initialize:
+
+```json
+{
+  "last_updated": "{ISO 8601 now}",
+  "monitoring_active": true,
+  "prs": {},
+  "cr_quota": {"reviews_used": 0, "window_start": "{ISO 8601 now}"},
+  "greptile_daily": {"reviews_used": 0, "date": "{YYYY-MM-DD}", "budget": 40},
+  "active_agents": []
+}
+```
+
+If session-state already exists, merge — do not overwrite existing PR entries or quota counters.
+
+### 6.3: Read full rule files for subagent prompts
+
+Read ALL rule files and CLAUDE.md to include in subagent prompts:
+
+```bash
+cat ./CLAUDE.md
+cat ./.claude/rules/*.md
+```
+
+If no project-level files exist, fall back to global:
+
+```bash
+cat ~/.claude/CLAUDE.md
+cat ~/.claude/rules/*.md
+```
+
+Store the complete output — do NOT summarize or excerpt.
+
+## Step 7: Spawn Phase A Subagents
+
+For each qualifying issue, spawn a Phase A subagent using the Agent tool.
+
+**Parallel execution rules:**
+- Spawn up to 4 Phase A subagents in parallel (soft limit from subagent-orchestration.md)
+- If more than 4 qualifying issues, stagger: spawn the first 4, then spawn additional agents as earlier ones complete
+- Each subagent gets its own worktree (use `isolation: "worktree"` on the Agent tool call)
+
+**Subagent prompt template** (fill in variables per issue):
+
+```
+You are a Phase A coding agent. Your job: implement Issue #{NUMBER}, push code, create a PR, then EXIT.
+
+## Issue Details
+Title: {title}
+Body:
+{full issue body}
+
+## CR Implementation Plan
+{CR plan if available, or "No CR plan available — explore the codebase to identify affected files."}
+
+## RULES (MANDATORY — read all of these)
+{COMPLETE contents of CLAUDE.md}
+
+{COMPLETE contents of all .claude/rules/*.md files}
+
+## SAFETY WARNING
+SAFETY: Do NOT delete, overwrite, move, or modify .env files — anywhere, any repo.
+Do NOT run git clean in ANY directory. Do NOT run destructive commands (rm -rf, rm,
+git checkout ., git stash, git reset --hard) in the root repo directory. Stay in your
+worktree directory at all times.
+
+## Phase A Instructions
+
+1. You are already in a worktree — verify with `git branch --show-current`.
+2. Read the issue body above — this is your implementation plan.
+3. Implement the changes.
+4. Run local CodeRabbit review: `coderabbit review --prompt-only`
+   - Fix all valid findings.
+   - Run again. Repeat until two consecutive clean passes.
+   - If coderabbit CLI hangs >2 minutes or errors twice, do a self-review instead.
+5. Commit all changes in ONE commit.
+6. Push the branch.
+7. Create the PR via `gh pr create` with:
+   - `Closes #{NUMBER}` in the body
+   - A **Test plan** section with acceptance criteria checkboxes from the issue
+8. Write the handoff file:
+   ```bash
+   mkdir -p ~/.claude/handoffs/
+   ```
+   Then write `~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json` with:
+   ```json
+   {
+     "schema_version": "1.0",
+     "pr_number": {PR_NUMBER},
+     "head_sha": "{HEAD_SHA}",
+     "reviewer": "cr",
+     "phase_completed": "A",
+     "created_at": "{ISO 8601 now}",
+     "findings_fixed": [],
+     "findings_dismissed": [],
+     "threads_replied": [],
+     "threads_resolved": [],
+     "files_changed": ["{list of files you changed}"],
+     "push_timestamp": "{ISO 8601 now}",
+     "notes": "{brief summary of what was done}"
+   }
+   ```
+9. Print the Structured Exit Report as your FINAL output:
+   ```
+   EXIT_REPORT
+   PHASE_COMPLETE: A
+   PR_NUMBER: {PR_NUMBER}
+   HEAD_SHA: {HEAD_SHA}
+   REVIEWER: cr
+   OUTCOME: {pushed_fixes|no_findings|exhaustion}
+   FILES_CHANGED: {comma-separated file paths}
+   NEXT_PHASE: B
+   HANDOFF_FILE: ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json
+   ```
+10. EXIT immediately after printing the exit report. Do NOT enter a polling loop.
+```
+
+**Agent tool call parameters:**
+- `mode: "bypassPermissions"`
+- `isolation: "worktree"`
+- `run_in_background: true` (so you can monitor multiple agents)
+
+Record each spawned agent in `session-state.json` under `active_agents`.
+
+## Step 8: Enter Monitor Mode
+
+Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is now orchestration.
+
+### Monitor loop (repeat every ~60 seconds):
+
+1. **Check for completed subagents.** Poll active agent statuses. If any returned results, process immediately (step 2).
+2. **Execute pending phase transitions.** For each completed subagent:
+   - Parse the Structured Exit Report from its output.
+   - Execute the appropriate Completion Protocol (see below).
+3. **Check for pending transitions from prior cycles.** Read `session-state.json` for PRs where a phase completed but the next phase was not launched.
+4. **Send heartbeat.** If >5 minutes since last user message, send a status update. Include: active agents, PR phases, pending transitions, blockers. Always start with a timestamp: `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`.
+5. **Check for stale agents.** >15 min for Phase A, >10 min for Phase B, >5 min for Phase C without reporting — investigate.
+
+### Permitted activities in monitor mode:
+- Poll subagent status
+- Send heartbeat/status messages
+- Launch next-phase agents (A->B->C transitions)
+- Verify subagent outputs (check pushes, replies)
+- Read/update `session-state.json`
+
+### Prohibited activities in monitor mode:
+- Writing or editing code/files directly
+- Creating GitHub issues or PRs
+- Reading source files for non-monitoring purposes
+- Any substantive work — delegate to a subagent instead
+
+## Step 9: Phase Completion Protocols
+
+### Phase A Completion
+
+When a Phase A subagent returns:
+
+1. **Parse the exit report.** Extract `PR_NUMBER`, `HEAD_SHA`, `OUTCOME`, `REVIEWER`, `NEXT_PHASE`.
+   - If no exit report: treat as silent failure — report to user and check GitHub API.
+2. **Branch on OUTCOME:**
+   - `pushed_fixes` or `no_findings` -> proceed to step 3.
+   - `exhaustion` -> launch a replacement Phase A subagent within 60s. Report to user.
+3. **Verify the push:** `gh pr view {PR_NUMBER} --json commits --jq '.commits[-1].oid'` — confirm SHA matches.
+4. **Verify handoff file:** `cat ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json` — confirm valid JSON with `phase_completed: "A"`.
+5. **Launch Phase B within 60 seconds.** Check if reviewers already posted findings. Include handoff file path in the Phase B prompt.
+6. **Update `session-state.json`** — record phase transition.
+7. **Report to user** with timestamp.
+
+### Phase B Subagent Prompt Template
+
+```
+You are a Phase B review-loop agent for PR #{PR_NUMBER} (Issue #{ISSUE_NUMBER}).
+
+## Handoff File
+Read ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json first. Use it to avoid duplicate work.
+If missing, reconstruct state from GitHub API.
+
+## RULES (MANDATORY)
+{COMPLETE contents of CLAUDE.md and all .claude/rules/*.md}
+
+## SAFETY WARNING
+{Same safety warning as Phase A}
+
+## Phase B Instructions
+
+1. Read the handoff file at ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json.
+2. Check for unresolved findings BEFORE requesting any review:
+   - Fetch all 3 endpoints (reviews, inline comments, issue comments) with per_page=100.
+   - If unresolved findings from coderabbitai[bot] or greptile-apps[bot] exist, fix them first.
+3. Check ALL CI check-runs. Fix any failures before continuing.
+4. Poll for CR review every 60s on all 3 endpoints. Filter by coderabbitai[bot].
+5. Check commit status for CR completion signal and rate-limit fast-path.
+6. If CR rate-limited (fast-path): trigger Greptile immediately (budget check first).
+7. If 7 minutes with no CR review: trigger Greptile (budget check first).
+8. Process findings: fix all valid ones in ONE commit, push once, reply to every thread, resolve threads via GraphQL.
+9. Merge gate:
+   - CR-only: 2 clean CR passes required.
+   - Greptile: severity-gated (no P0 after fix = merge-ready).
+10. Update the handoff file: set phase_completed to "B", refresh head_sha, merge new entries.
+11. Print Structured Exit Report:
+    ```
+    EXIT_REPORT
+    PHASE_COMPLETE: B
+    PR_NUMBER: {PR_NUMBER}
+    HEAD_SHA: {current HEAD}
+    REVIEWER: {cr|greptile}
+    OUTCOME: {clean|fixes_pushed|merge_ready|exhaustion}
+    FILES_CHANGED: {files changed in this phase}
+    NEXT_PHASE: {C|B}
+    HANDOFF_FILE: ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json
+    ```
+12. EXIT immediately.
+```
+
+### Phase B Completion
+
+When a Phase B subagent returns:
+
+1. **Parse exit report.**
+2. **Branch on OUTCOME:**
+   - `clean` or `merge_ready` -> launch Phase C within 60s.
+   - `fixes_pushed` -> launch replacement Phase B within 60s.
+   - `exhaustion` -> launch replacement Phase B within 60s.
+3. **Verify review state via GitHub API** for `clean`/`merge_ready`.
+4. **Update `session-state.json`.**
+5. **Report to user** with timestamp.
+
+### Phase C Subagent Prompt Template
+
+```
+You are a Phase C merge-prep agent for PR #{PR_NUMBER} (Issue #{ISSUE_NUMBER}).
+
+## Handoff File
+Read ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json first.
+
+## RULES (MANDATORY)
+{COMPLETE contents of CLAUDE.md and all .claude/rules/*.md}
+
+## SAFETY WARNING
+SAFETY: Do NOT delete, overwrite, move, or modify .env files — anywhere, any repo.
+Do NOT run git clean in ANY directory. Do NOT run destructive commands (rm -rf, rm,
+git checkout ., git stash, git reset --hard) in the root repo directory. Stay in your
+worktree directory at all times.
+
+## Phase C Instructions
+
+1. Read the handoff file.
+2. Verify merge gate is satisfied:
+   - CR-only: 2 clean CR reviews exist.
+   - Greptile: severity gate satisfied.
+3. Fetch PR body: `gh pr view {PR_NUMBER} --json body`
+4. Parse every checkbox in the Test plan section.
+5. For each item, read the relevant source file(s) and verify the criterion is met.
+6. Check off passing items by editing the PR body (replace `- [ ]` with `- [x]`).
+7. If any item fails, report the failure — do NOT check it off.
+8. Check ALL CI check-runs pass.
+9. Print Structured Exit Report:
+   ```
+   EXIT_REPORT
+   PHASE_COMPLETE: C
+   PR_NUMBER: {PR_NUMBER}
+   HEAD_SHA: {current HEAD}
+   REVIEWER: {cr|greptile}
+   OUTCOME: {ac_verified|blocked}
+   FILES_CHANGED:
+   NEXT_PHASE: none
+   HANDOFF_FILE: ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json
+   ```
+10. EXIT immediately. Do NOT merge — the parent presents the merge decision to the user.
+```
+
+### Phase C Completion
+
+When a Phase C subagent returns:
+
+1. **Parse exit report.**
+2. **Branch on OUTCOME:**
+   - `ac_verified` -> present merge decision to user (Step 10).
+   - `blocked` -> report blocker details to user. Do NOT merge.
+3. **Update `session-state.json`** — mark PR as Phase C complete.
+4. **Report to user** with timestamp.
+
+## Step 10: Merge Decision (User Input Required)
+
+This is the **only step requiring user permission**.
+
+For each PR where Phase C reported `ac_verified`:
+
+```
+Reviews are clean, all AC verified and checked off for PR #{PR_NUMBER} (Issue #{ISSUE_NUMBER}).
+Want me to squash and merge and delete the branch, or do you want to review the diff yourself first?
+```
+
+**If user approves:**
+1. Verify ALL CI check-runs pass one final time.
+2. `gh pr merge {PR_NUMBER} --squash --delete-branch`
+3. Delete the handoff file: `rm ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json`
+4. Update `session-state.json` — remove PR from active tracking.
+5. Report: "PR #{PR_NUMBER} merged. Issue #{ISSUE_NUMBER} closed."
+
+**If user wants to review first:** wait for their response before merging.
+
+## Step 11: Completion
+
+When all subagent PRs are either merged or blocked:
+
+1. Exit monitor mode.
+2. Present a summary:
+
+```
+## Subagent Execution Summary
+
+| Issue | PR | Status | Review Cycles |
+|-------|----|--------|---------------|
+| #42 | #88 | Merged | 1 |
+| #55 | #91 | Merged | 0 |
+| #61 | #93 | Blocked (CI failure) | 2 |
+```
+
+3. For any blocked PRs, suggest next steps.
+
+---
+
+## Edge Cases
+
+- **Issue has no acceptance criteria:** Flag it: "Issue #N has no acceptance criteria — the subagent will implement based on the issue body but AC verification in Phase C will be skipped."
+- **CR CLI unavailable:** Subagents fall back to self-review (per cr-local-review.md timeout rules). This does not block Phase A — it just means less pre-push coverage.
+- **Subagent token exhaustion:** The parent detects this via the `exhaustion` outcome in the exit report and launches a replacement agent automatically (no user input needed).
+- **All reviewers down:** Subagent performs self-review. Self-review does NOT satisfy the merge gate. Parent reports the blocker to the user.
+## Usage Examples
+
+**Single issue:**
+```
+/subagent #42
+```
+
+**Multiple issues:**
+```
+/subagent #42 #55 #61
+```
+
+**From a PM thread after `/pm` suggests issues:**
+```
+/subagent #42 #55
+```
+(Quick/Light issues run as subagents; remaining issues get `/prompt` for separate threads)
