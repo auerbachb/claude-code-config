@@ -4,7 +4,7 @@ Manually-invoked utility scripts. Run these from the command line when needed.
 
 | Script | Purpose |
 |--------|---------|
-| `repair-trust-single.sh <path>` | Fix trust flags for one project in `~/.claude.json` |
+| `repair-trust-single.sh <absolute-project-path>` | Fix trust flags for one project in `~/.claude.json` |
 | `repair-trust-all.sh` | Fix trust flags for all projects in `~/.claude.json` |
 
 ## scripts/ vs hooks/
