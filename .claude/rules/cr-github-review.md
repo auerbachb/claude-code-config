@@ -169,6 +169,23 @@ The merge gate depends on which reviewer owns the PR:
   3. **Clean = completed + no new findings:** Once the CI check shows completed, check all three comment endpoints for any new findings posted after the ack. If there are none, the review is a clean pass. You do NOT need to keep polling to the 7-minute timeout once the CI check is green and no findings appeared.
 - Once the merge gate is met, proceed immediately to Step 2.
 
+**Step 1b — CI Must Pass Before Merge (NON-NEGOTIABLE):**
+
+Before running `gh pr merge` on ANY PR, check ALL CI check-runs:
+
+```bash
+SHA=$(gh pr view <PR_NUMBER> --json commits --jq '.commits[-1].oid')
+gh api "repos/{owner}/{repo}/commits/$SHA/check-runs?per_page=100" \
+  --jq '.check_runs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required" or .conclusion == "startup_failure" or .conclusion == "stale") | {name, conclusion}'
+```
+
+**If ANY check-run has a blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`): DO NOT MERGE.** Instead:
+1. Read the failure output and fix the issue
+2. Commit, push, and wait for CI to re-run
+3. Only merge after ALL checks pass
+
+This applies to ALL merge paths: manual `gh pr merge`, the `/merge` skill, the `/wrap` skill, and Phase C merge prep.
+
 **Step 2 — Verify every Test Plan checkbox (MANDATORY — do NOT skip):**
 > This is the **immediate next step** after the merge gate is met. Do not ask the user about merging until this is done.
 >
