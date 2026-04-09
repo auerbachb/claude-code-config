@@ -213,7 +213,7 @@ print('Seeded stale path for migration test')
   assert "Stale path seed succeeded" "[ $seed_exit -eq 0 ]"
 
   # Run setup-skills-worktree.sh which handles migration
-  cd "$REPO_ROOT" || return 1
+  cd "$REPO_ROOT" || { assert "Can cd to REPO_ROOT" "false"; return; }
   local migrate_output
   migrate_output=$(bash setup-skills-worktree.sh 2>&1)
   local migrate_exit_code=$?
