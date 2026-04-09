@@ -35,10 +35,13 @@ if not isinstance(data, dict):
     print('Invalid ~/.claude.json: root must be an object.')
     sys.exit(1)
 
-projects = data.get('projects') or {}
-if not isinstance(projects, dict):
-    print('Invalid ~/.claude.json: \"projects\" must be an object.')
-    sys.exit(1)
+if 'projects' not in data:
+    projects = {}
+else:
+    projects = data['projects']
+    if not isinstance(projects, dict):
+        print('Invalid ~/.claude.json: \"projects\" must be an object.')
+        sys.exit(1)
 
 if proj_key not in projects:
     print(f'Project key not found: {proj_key}')
