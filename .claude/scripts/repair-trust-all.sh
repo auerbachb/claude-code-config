@@ -42,7 +42,7 @@ for proj_key, proj in projects.items():
         print(f'Skipping invalid project entry {proj_key}: expected object, got {type(proj).__name__}.')
         continue
     for flag in flags:
-        if not proj.get(flag):
+        if proj.get(flag) is not True:
             proj[flag] = True
             total += 1
             affected.add(proj_key)

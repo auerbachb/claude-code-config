@@ -58,7 +58,7 @@ if not isinstance(proj, dict):
 flags = ['hasTrustDialogAccepted', 'hasClaudeMdExternalIncludesApproved', 'hasClaudeMdExternalIncludesWarningShown']
 changed = []
 for flag in flags:
-    if not proj.get(flag):
+    if proj.get(flag) is not True:
         proj[flag] = True
         changed.append(flag)
 
