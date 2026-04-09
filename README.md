@@ -179,7 +179,7 @@ All hooks are idempotent and fail-safe.
 
 ## Architecture
 
-All config is served through a **skills worktree** (`~/.claude/skills-worktree/`) — a git worktree pinned to `main` that decouples config availability from the root repo's branch state. `CLAUDE.md`, rules, and all skills are symlinked through this worktree, ensuring they're always available regardless of what branch the root repo is on.
+`CLAUDE.md`, rules, and all skills are served through a **skills worktree** (`~/.claude/skills-worktree/`) — a git worktree pinned to `main` that decouples config availability from the root repo's branch state. These symlinked assets stay available regardless of what branch the root repo is on.
 
 The `session-start-sync.sh` hook keeps the worktree in sync with `origin/main` at the start of each session. New hooks added to `global-settings.json` are auto-registered without re-running setup.
 

@@ -17,7 +17,7 @@ Deep-dive reference for the claude-code-config system. For setup instructions an
 
 ## Symlink Topology
 
-All global config lives under `~/.claude/` as symlinks pointing into a dedicated skills worktree — never directly to the root repo.
+Most user-facing config in `~/.claude/` is symlinked into a dedicated skills worktree (e.g., `CLAUDE.md`, `rules/`, `skills/`) — never directly to the root repo.
 
 ```text
 ~/.claude/
