@@ -73,7 +73,7 @@ All hooks are idempotent and fail-safe — they handle errors gracefully without
 
 ## Hook Auto-Registration
 
-Hooks are defined in `global-settings.json` with placeholder paths (`/path/to/claude-code-config`). Two mechanisms resolve these to real paths:
+Hooks are defined in `global-settings.json` with placeholder paths (e.g., `/path/to/claude-code-config/.claude/hooks/session-start-sync.sh`). Two mechanisms resolve these to real paths:
 
 1. **At install time:** `setup-skills-worktree.sh` resolves placeholders to the skills worktree hooks directory and writes them into `~/.claude/settings.json`.
 2. **At session start:** `session-start-sync.sh` reads `global-settings.json` from the skills worktree, compares against `~/.claude/settings.json` by script basename per event, and adds any missing hooks. Existing hooks (including user-customized timeouts) are preserved.
@@ -129,7 +129,7 @@ The parent agent stays in **monitor mode** while subagents are active — pollin
 
 ### Phase 1: Local review (primary)
 
-```
+```text
 Finish coding on feature branch
        |
        v
@@ -154,7 +154,7 @@ Repeat until clean                    |
 
 ### Phase 2: GitHub review (fallback)
 
-```
+```text
 PR created, CR auto-reviews on GitHub
        |
        v
