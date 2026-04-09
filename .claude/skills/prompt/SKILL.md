@@ -113,7 +113,7 @@ From the gathered data, compute these discrete signals:
 
 Apply this decision tree. When signals conflict, choose the **higher** tier (conservative on quality).
 
-**Batch handling rule:** When multiple issues are provided, the tier is determined by the most complex issue in the batch. A batch of 3 issues where one is Heavy makes the whole batch Heavy. This means every per-issue prompt block in the batch inherits the batch-level tier — an individually Light issue will carry Heavy checkpoints if the batch tier is Heavy. This is intentional: the conservative-on-quality principle applies to the entire batch, and blocks are "independently copyable" in the sense that each is self-contained, not that each has its own tier.
+**Batch handling rule:** First classify each issue independently to produce a per-issue tier (`issue_tier`). Then compute a batch tier from the most complex `issue_tier` in the set. A batch of 3 issues where one is Heavy makes the batch tier Heavy. The batch tier is used for thread-prompt output formatting and checkpoint inheritance, while per-issue decisions (like Step 5.5 subagent partitioning) must use `issue_tier`.
 
 ### Heavy — Opus 4.6 1M / High effort
 
@@ -168,9 +168,9 @@ When `PM_AUTO_DETECT=true`, partition the classified issues into two groups usin
 | `touches_rules` | `false` |
 | `touches_claude_md` | `false` |
 | `has_orchestration_keywords` | `false` |
-| Tier | Quick or Light |
+| `issue_tier` | Quick or Light |
 
-Use per-issue signal values from Steps 4–5. Do not use batch-aggregated values for per-issue gating. Apply the table as a gate: if ANY signal exceeds its threshold, the issue is **not** subagent-eligible.
+Use per-issue signal values from Steps 4–5, including `issue_tier` (the per-issue tier from the classification decision tree — not the batch tier). Do not use batch-aggregated values for per-issue gating. Apply the table as a gate: if ANY signal exceeds its threshold, the issue is **not** subagent-eligible.
 
 **Result of partitioning:**
 - **Subagent-eligible issues** — reported in a separate section with a `/subagent` command suggestion (see Step 6)
