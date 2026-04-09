@@ -28,10 +28,12 @@ If you catch yourself composing a "should I...?" question about any workflow ste
 **At the start of every session, before doing anything else, sync local `main` and then create a worktree.**
 
 1. **Pull remote main into local main:**
+
    ```bash
    ROOT_REPO=$(git worktree list | head -1 | awk '{print $1}')
    git -C "$ROOT_REPO" pull origin main --ff-only
    ```
+
    If the pull fails (e.g., diverged history), tell the user — do not force-pull or reset.
 2. **Create a worktree** via the `EnterWorktree` tool for isolated work.
 
