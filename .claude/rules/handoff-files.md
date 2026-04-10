@@ -23,7 +23,7 @@
   "work_log_path": "docs/work-logs",
   "prs": {
     "618": {"phase": "B", "head_sha": "7b2cfbf", "reviewer": "cr", "needs": "cr_confirmation_pass"},
-    "620": {"phase": "B", "head_sha": "d0e4fef", "reviewer": "g", "needs": "fix_and_push"}
+    "620": {"phase": "B", "head_sha": "d0e4fef", "reviewer": "greptile", "needs": "fix_and_push"}
   },
   "cr_quota": {"reviews_used": 5, "window_start": "2026-03-16T15:00:00Z"},
   "greptile_daily": {"reviews_used": 12, "date": "2026-03-16", "budget": 40},

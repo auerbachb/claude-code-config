@@ -78,12 +78,14 @@ Context compaction wipes in-memory state. **Detection:** conversation starts wit
 1. **Timestamp your first message.**
 2. **Re-run session-start checklist.** Re-detect work-log path (search from main worktree root — see `work-log.md`). Re-check other session-start obligations.
 3. **Reconstruct PR state from GitHub.** For every open PR:
+
    ```bash
    gh pr view N --json state,title,mergeStateStatus,commits
    gh api "repos/{owner}/{repo}/pulls/N/reviews?per_page=100"
    gh api "repos/{owner}/{repo}/pulls/N/comments?per_page=100"
    gh api "repos/{owner}/{repo}/issues/N/comments?per_page=100"
    ```
+
    Build a dashboard: PR number, HEAD SHA, last review state, reviewer, pending action.
 4. **Check for stale background agents.** Verify expected outputs exist.
 5. **Check Phase B coverage.** If no Phase B record for a PR with unprocessed findings, launch Phase B immediately.

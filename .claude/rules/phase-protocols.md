@@ -97,4 +97,5 @@ HANDOFF_FILE: ~/.claude/handoffs/pr-618-handoff.json
    - `ac_verified` → ask user: "Reviews clean, all AC verified for PR #N. Want me to squash and merge, or review the diff first?"
    - `blocked` → report blocker details to user. Do NOT merge.
 3. **Update `session-state.json`.** Mark Phase C complete, remove from `active_agents`.
-4. **Report to user (with timestamp).**
+4. **Handoff cleanup (after successful merge only).** Delete `~/.claude/handoffs/pr-{N}-handoff.json`. If merge fails or is aborted, do NOT delete. See `handoff-files.md` for the full lifecycle.
+5. **Report to user (with timestamp).**
