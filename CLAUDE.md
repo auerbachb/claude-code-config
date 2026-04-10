@@ -90,11 +90,11 @@ Rules consume tokens on every turn — keep them tight. Limits apply to CLAUDE.m
 
 - **Per-file soft cap:** ~150 lines / ~1,500 words. Consider splitting if exceeded.
 - **Per-file hard cap:** 200 lines / 2,000 words. Must split — extract a sub-topic into a new rule file.
-- **Total budget:** ≤10,000 words across CLAUDE.md + all rule files (matches the 10K target documented in `.coderabbit.yaml`).
+- **Total budget:** ≤14,000 words across CLAUDE.md + all rule files.
 - **Verify on every PR that touches CLAUDE.md or `.claude/rules/`:**
 
   ```bash
   { cat CLAUDE.md; find .claude/rules -name '*.md' -exec cat {} +; } | wc -w
   ```
 
-  If the total exceeds 10,000, condense before merging.
+  If the total exceeds 14,000, condense before merging.
