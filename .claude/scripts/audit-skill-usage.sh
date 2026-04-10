@@ -1,29 +1,39 @@
 #!/bin/bash
 # Audit skill usage — manual monthly utility
 #
-# Reads .claude/skill-usage.csv and reports skills that appear unused:
-#   - 30+ days since start_date with use_count == 0 → FLAG (consider removal)
-#   - 60+ days since start_date with use_count == 0 → RECOMMEND REMOVAL
+# Reads the LIVE skill-usage CSV (~/.claude/skill-usage.csv, bootstrapped
+# by skill-usage-tracker.sh on first Skill invocation). Reports skills that
+# appear unused:
+#   - 30-59 days since start_date with use_count == 0 → FLAG (tracking issue)
+#   - 60+  days since start_date with use_count == 0 → RECOMMEND REMOVAL
 #
 # Output only — does NOT modify files or remove skills.
+#
+# Override the CSV path with SKILL_USAGE_CSV env var (useful for testing
+# or for auditing the committed seed file directly).
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-CSV="${REPO_ROOT}/.claude/skill-usage.csv"
+CSV="${SKILL_USAGE_CSV:-${HOME}/.claude/skill-usage.csv}"
 
 if [ ! -f "$CSV" ]; then
   echo "Error: skill-usage CSV not found at $CSV" >&2
+  echo "  (the tracker hook creates it on first Skill invocation)" >&2
   exit 1
 fi
 
 python3 - "$CSV" <<'PY'
 import csv, sys
-from datetime import datetime, date
+from datetime import datetime
+
+try:
+    import zoneinfo
+    today = datetime.now(zoneinfo.ZoneInfo("America/New_York")).date()
+except Exception:
+    # Fallback: machine local date (Python 3.8 or unusual environments)
+    today = datetime.now().date()
 
 csv_path = sys.argv[1]
-today = date.today()
 
 flagged = []    # 30-59 days unused
 recommend = []  # 60+ days unused
