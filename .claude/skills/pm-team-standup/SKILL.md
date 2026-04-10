@@ -2,6 +2,14 @@
 name: pm-team-standup
 description: Summarize what each contributor did in the past 24 hours — commits, PRs, issues, and reviews grouped by person. Multi-contributor version of /standup. Uses Team section from pm-config.md for display names and roles when available.
 argument-hint: "[since-time, e.g. \"yesterday at noon ET\"]"
+model: sonnet
+allowed-tools:
+  - Read
+  - Glob
+  - Grep
+  - Bash
+  - WebFetch
+  - WebSearch
 ---
 
 Generate a team standup report showing what each contributor accomplished since $ARGUMENTS (default: "yesterday at noon ET" if no argument given).
