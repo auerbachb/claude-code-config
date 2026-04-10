@@ -98,3 +98,24 @@ Rules consume tokens on every turn — keep them tight. Limits apply to CLAUDE.m
   ```
 
   If the total exceeds 14,000, condense before merging.
+
+---
+
+## Memory System
+
+The auto-memory system persists insights across sessions at `~/.claude/projects/*/memory/`. Save memories **proactively** (without being asked) when you encounter information future sessions will need. Explicit user requests ("remember this", "save that") always override — save what the user says even if it doesn't fit these heuristics.
+
+**Save proactively:**
+- **Feedback patterns:** CR false positives specific to this repo, user-preferred approaches confirmed across sessions, recurring corrections.
+- **Project context:** non-obvious repo quirks, deadlines, stakeholder decisions, undocumented conventions that shape future work.
+- **External references:** dashboards, docs, or systems where current state lives but isn't in the repo.
+- **Incident lessons:** things that went wrong and the fix — so the next session doesn't repeat the mistake.
+
+**Do NOT save:**
+- Code patterns or API signatures — read the current code instead.
+- Git history facts — `git log`/`git blame` is authoritative.
+- Anything already covered in CLAUDE.md or rule files.
+- Ephemeral task state — use handoff files (`~/.claude/handoffs/`) instead.
+- One-off details with no expected reuse.
+
+Before creating a memory, check for existing ones to avoid duplicates. Update or remove stale memories when you encounter them.
