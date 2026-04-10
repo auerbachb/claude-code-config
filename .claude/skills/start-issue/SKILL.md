@@ -40,8 +40,8 @@ gh issue view "$ISSUE_NUMBER" --json number,title,body,state,createdAt --comment
 ```
 
 - If `state != "OPEN"`: stop and report "Issue #$ISSUE_NUMBER is $state — cannot start work on a closed issue."
-- Capture `TITLE`, `BODY`, and `createdAt` for downstream steps.
-- Compute issue age in seconds from `createdAt`. Use a portable approach (Python or `gdate` on macOS if available; otherwise derive from the recorded `ISSUE_CREATED_AT` when the issue was just created by this skill).
+- Capture `TITLE`, `BODY`, and `CREATED_AT` (from the `createdAt` JSON field) for downstream steps.
+- Compute issue age in seconds from `CREATED_AT`. Use a portable approach (Python or `gdate` on macOS if available; otherwise derive from the recorded `ISSUE_CREATED_AT` when the issue was just created by this skill).
 
 ## Step 3: Handle CR implementation plan
 
