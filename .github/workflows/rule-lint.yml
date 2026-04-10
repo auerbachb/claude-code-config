@@ -2,12 +2,7 @@ name: Rule Index & Word Count Lint
 
 on:
   workflow_dispatch: {}
-  pull_request:
-    paths:
-      - 'CLAUDE.md'
-      - '.claude/rules/**'
-      - '.github/workflows/rule-lint.yml'
-      - '.github/scripts/rule-lint.sh'
+  pull_request: {}
 
 permissions:
   contents: read
