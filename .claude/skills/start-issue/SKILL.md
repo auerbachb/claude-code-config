@@ -86,11 +86,14 @@ PLAN=$(gh issue view "$ISSUE_NUMBER" --json comments \
 ```
 
 - **If plan exists:** capture and proceed to Step 4.
-- **If no plan:** the auto-trigger workflow (`.github/workflows/cr-plan-on-issue.yml`) should have already posted `@coderabbitai plan` when the issue was opened. Do NOT manually trigger it unless you have confirmed the workflow failed. Check the workflow run for this issue via the Actions tab or:
+- **If no plan:** the auto-trigger workflow (`.github/workflows/cr-plan-on-issue.yml`) should have already posted `@coderabbitai plan` when the issue was opened. Do NOT manually trigger it unless you have confirmed the workflow failed **for this specific issue**. Filter runs to the `issues` event and match by displayed title so a failure on an unrelated issue doesn't cause a false manual-trigger here:
   ```bash
-  gh run list --workflow=cr-plan-on-issue.yml --limit 5 --json databaseId,status,conclusion,createdAt,event
+  gh run list --workflow=cr-plan-on-issue.yml --event issues --limit 20 \
+    --json databaseId,displayTitle,status,conclusion,createdAt,event \
+    --jq ".[] | select(.displayTitle | test(\"#${ISSUE_NUMBER}\\\\b\"))"
   ```
-  - **If the workflow run shows `conclusion: "failure"`** (or is missing entirely for this issue): post `@coderabbitai plan` and poll every 60s for up to 5 minutes:
+  If that query returns nothing (no matching run), also consider it a "missing" case. Only post `@coderabbitai plan` when the matching run for THIS issue has `conclusion: "failure"` or no run for THIS issue exists.
+  - **If the workflow run for this issue failed (or is missing entirely)**: post `@coderabbitai plan` and poll every 60s for up to 5 minutes:
     ```bash
     gh issue comment "$ISSUE_NUMBER" --body "@coderabbitai plan"
     for i in $(seq 1 5); do
@@ -180,12 +183,18 @@ This creates **one canonical planning document** the coding agent can work from.
 4. **Pull main and create worktree:**
    ```bash
    ROOT_REPO=$(git worktree list | head -1 | awk '{print $1}')
+   # Defensive guard: only pull main if the root repo is actually on main.
+   # Mirrors the pattern used by wrap/merge skills.
+   CURRENT_BRANCH=$(git -C "$ROOT_REPO" branch --show-current)
+   if [ "$CURRENT_BRANCH" != "main" ]; then
+     git -C "$ROOT_REPO" checkout main
+   fi
    git -C "$ROOT_REPO" pull origin main --ff-only
    WORKTREE_PATH="$ROOT_REPO/.claude/worktrees/issue-$ISSUE_NUMBER-$SLUG"
    git -C "$ROOT_REPO" worktree add "$WORKTREE_PATH" -b "issue-$ISSUE_NUMBER-$SLUG"
    cd "$WORKTREE_PATH"
    ```
-   If `pull` fails (diverged history), stop and report to the user — do not force-pull.
+   If `pull` fails (diverged history), stop and report to the user — do not force-pull. If `checkout main` fails (uncommitted changes in the root repo), stop and report — do not stash or discard changes.
 5. **Verify:** confirm the worktree directory exists and the branch is checked out before proceeding.
 
 ## Step 7: Output ready-to-code summary
