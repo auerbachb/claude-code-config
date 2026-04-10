@@ -43,13 +43,33 @@ gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/reviews?per_page=100"
 The merge gate depends on which reviewer owns the PR:
 
 ### CR-only path (reviewer = `cr`)
-Verify 2 clean CR reviews exist. Check:
+
+Verify **2 clean CR passes**. A clean pass is NOT just a review object from CR — CR emits a review object for every review, including ones with findings. A clean pass is defined as:
+
+1. The CodeRabbit CI check-run shows `status: "completed"` with `conclusion: "success"` on the current HEAD SHA, AND
+2. No new CR findings (inline comments or review objects with a `COMMENTED`/`CHANGES_REQUESTED` state containing actionable items) were posted after that check-run's ack.
+
+**Do NOT** simply count review objects. Use the check-run status on the current HEAD:
+
 ```bash
-gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/reviews?per_page=100" \
-  --jq '[.[] | select(.user.login == "coderabbitai[bot]" and .state != "DISMISSED")] | length'
+SHA=$(gh pr view {{PR_NUMBER}} --json commits --jq '.commits[-1].oid')
+
+# Step 1a: CR check-run must be completed with conclusion=success
+gh api "repos/{{OWNER}}/{{REPO}}/commits/$SHA/check-runs?per_page=100" \
+  --jq '.check_runs[] | select(.name == "CodeRabbit") | {status, conclusion, title: .output.title}'
+
+# Step 1b: No new CR findings posted since the most recent "Actions performed" ack
+#   - fetch coderabbitai[bot] comments from all 3 endpoints (reviews, pulls/comments, issues/comments)
+#   - discard the "Actions performed" ack comments themselves
+#   - if any remaining comment is newer than the ack AND contains an actionable finding, the pass is NOT clean
+gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/comments?per_page=100" \
+  --jq '[.[] | select(.user.login == "coderabbitai[bot]")] | length'
 ```
 
+Two clean passes are required (the second is a confirmation pass on the same SHA after triggering `@coderabbitai full review` one more time). If both conditions hold across two consecutive reviews on the same HEAD, the merge gate is met.
+
 Also verify no unresolved review threads:
+
 ```bash
 gh api graphql -f query='query { repository(owner: "{{OWNER}}", name: "{{REPO}}") { pullRequest(number: {{PR_NUMBER}}) { reviewThreads(first: 100) { nodes { id isResolved comments(first: 1) { nodes { body author { login } } } } } } } }'
 ```

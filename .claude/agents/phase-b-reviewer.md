@@ -104,7 +104,24 @@ echo "$GREPTILE_DAILY"
 1. Get current date: `TZ='America/New_York' date +'%Y-%m-%d'`
 2. If `date` differs from today, reset `reviews_used` to 0
 3. If `reviews_used >= budget` → fall back to self-review. Report blocker. Do NOT post `@greptileai`.
-4. Otherwise, increment `reviews_used` and write back BEFORE posting `@greptileai`
+4. Otherwise, increment `reviews_used` and write back BEFORE posting `@greptileai`.
+
+**Safe write-back (MANDATORY — surgical `jq` update).** A naive `echo '{"greptile_daily": ...}' > ~/.claude/session-state.json` would WIPE all other top-level fields (`prs`, `active_agents`, `cr_quota`, `root_repo`, `work_log_path`, `last_updated`). Always merge into the existing file:
+
+```bash
+TODAY=$(TZ='America/New_York' date +'%Y-%m-%d')
+# If today differs from the stored date, reset reviews_used to 0 before incrementing.
+# Use a temp file + mv to avoid partial writes if jq fails mid-stream.
+jq --arg today "$TODAY" \
+  '.greptile_daily //= {"date": "", "reviews_used": 0, "budget": 40}
+   | if .greptile_daily.date != $today then .greptile_daily.reviews_used = 0 | .greptile_daily.date = $today else . end
+   | .greptile_daily.reviews_used += 1
+   | .last_updated = (now | todate)' \
+  ~/.claude/session-state.json > ~/.claude/session-state.json.tmp \
+  && mv ~/.claude/session-state.json.tmp ~/.claude/session-state.json
+```
+
+This preserves every other top-level field while updating only `greptile_daily` and `last_updated`. Never use `echo` or string concatenation to rewrite session-state.json.
 
 ### Triggering
 

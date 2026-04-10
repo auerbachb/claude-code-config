@@ -47,10 +47,14 @@ Fix ALL valid findings before committing. Also fix any lint/CI failures.
 
 ### Step 3: Commit and Push
 
-Commit all fixes in ONE commit. If the review was already clean and no code changes were needed, skip the commit but **still proceed through Steps 4-6** (reply to any existing threads, resolve them, and write the handoff file). Only Step 3 itself is conditional — the handoff file MUST be written regardless of OUTCOME, or Phase B will have no state to read from:
+Commit all fixes in ONE commit. If the review was already clean and no code changes were needed, skip the commit but **still proceed through Steps 4-6** (reply to any existing threads, resolve them, and write the handoff file). Only Step 3 itself is conditional — the handoff file MUST be written regardless of OUTCOME, or Phase B will have no state to read from.
+
+**Stage files explicitly by name.** NEVER use `git add -A` or `git add .` — those can accidentally include untracked sensitive files (`.env`, credentials) or large binaries. You already know exactly which files you modified in Step 2 (from the findings you fixed), so pass those paths explicitly:
 
 ```bash
-git add -A
+# Replace the placeholder list below with the actual paths you modified in Step 2
+git add path/to/file1 path/to/file2 ...
+
 if git diff --cached --quiet; then
   echo "No code changes — record OUTCOME: no_findings for the exit report, then continue to Step 4"
   # Do NOT exit here. Steps 4-6 still run.
