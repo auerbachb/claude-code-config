@@ -65,8 +65,8 @@ try:
     import zoneinfo
     today = datetime.now(zoneinfo.ZoneInfo("America/New_York")).date().isoformat()
 except Exception:
-    from datetime import timezone
-    today = datetime.now(timezone.utc).date().isoformat()
+    # Fallback: machine local date (matches audit-skill-usage.sh fallback).
+    today = datetime.now().date().isoformat()
 
 csv_path, seed_path, skill = sys.argv[1], sys.argv[2], sys.argv[3]
 lock_path = csv_path + ".lock"
