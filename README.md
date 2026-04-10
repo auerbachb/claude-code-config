@@ -29,7 +29,7 @@ After setup, Claude Code will automatically:
 - **Review locally, then on GitHub** — Runs CodeRabbit CLI reviews before pushing (instant feedback, no PR noise). After PR creation, CodeRabbit auto-reviews on GitHub as a safety net, with Greptile as a fallback if CR is rate-limited.
 - **Verify and merge** — Checks every acceptance criteria checkbox against the code, confirms CI is green, then squash-merges with branch cleanup.
 - **Orchestrate multi-agent work** — Decomposes large tasks into phases (fix, review, merge) with health monitoring, handoff files, and heartbeat enforcement.
-- **Manage your project** — 19 slash commands for backlog prioritization, sprint planning, team metrics, standups, and cross-thread orchestration.
+- **Manage your project** — 21 slash commands for backlog prioritization, sprint planning, team metrics, standups, and cross-thread orchestration.
 
 ---
 
@@ -92,7 +92,7 @@ ls -la ~/.claude/skills/       # each skill -> ~/.claude/skills-worktree/.claude
 
 ## Slash Commands
 
-All 19 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
+All 21 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
 
 | Command | Category | Description |
 |---------|----------|-------------|
@@ -106,7 +106,9 @@ All 19 commands are invoked as `/command` in a Claude Code session. They are def
 | `/pm-rate-team` | PM | Contribution metrics over a configurable period |
 | `/pm-sprint-plan` | PM | Generate a 2-week sprint plan |
 | `/pm-sprint-review` | PM | Sprint retrospective with velocity metrics |
+| `/subagent` | PM | Run Quick/Light issues as Phase A/B/C subagents from a PM thread |
 | `/prompt` | Planning | Classify issue complexity, recommend model, generate copy-paste prompt |
+| `/start-issue` | Planning | End-to-end issue-to-coding setup — plan polling, plan merge, worktree, branch |
 | `/pr-review-help` | Review | Executive PR review — multi-PR parallel strategic analysis |
 | `/standup` | Workflow | Daily standup summary (single contributor) |
 | `/status` | Workflow | Dashboard of open PRs with review state |
@@ -136,7 +138,7 @@ Rule files in `.claude/rules/` auto-load alongside `CLAUDE.md` and define the de
 | `phase-protocols.md` | Structured exit report format, Phase A/B/C completion protocol checklists |
 | `work-log.md` | Auto-update daily work log on issue create, PR open, PR merge |
 | `safety.md` | Destructive command prohibitions, `.env` protection, subagent safety warnings |
-| `repo-bootstrap.md` | Auto-provision required GitHub Actions workflows on first touch |
+| `repo-bootstrap.md` | Auto-provision required GitHub Actions workflows on first touch; check `main` branch protection and prompt to enable required status checks if missing |
 | `trust-dialog-fix.md` | Fix trust dialog re-prompting when bypass permissions are enabled |
 | `skill-symlinks.md` | Symlink new skills globally via the skills worktree after creation |
 
@@ -144,12 +146,13 @@ Rule files in `.claude/rules/` auto-load alongside `CLAUDE.md` and define the de
 
 ## Hook Scripts
 
-Five hooks in `.claude/hooks/` run automatically during Claude Code sessions:
+Six hooks in `.claude/hooks/` run automatically during Claude Code sessions:
 
 | Script | Event | Purpose |
 |--------|-------|---------|
-| `session-start-sync.sh` | PostToolUse (first call) | Syncs skills worktree to `origin/main`, auto-registers new hooks |
+| `session-start-sync.sh` | PostToolUse (first call) | Syncs skills worktree to `origin/main`, auto-registers new hooks from `global-settings.json` |
 | `post-merge-pull.sh` | PostToolUse (Bash) | Pulls `main` after `gh pr merge`, syncs skills worktree |
+| `worktree-guard.sh` | PreToolUse (Write/Edit) | Blocks file edits in `claude-code-config` repo when root is on `main` |
 | `silence-detector.sh` | PostToolUse (all) | Warns if agent has been silent >5 minutes |
 | `silence-detector-ack.sh` | Stop | Resets the silence timer after each response |
 | `trust-flag-repair.sh` | Stop | Repairs trust flags in `~/.claude.json` for all projects |
