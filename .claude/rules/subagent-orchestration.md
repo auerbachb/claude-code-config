@@ -111,7 +111,7 @@ Subagents have a hardcoded **32K output token limit** ([known limitation](https:
 - Print exit report and EXIT.
 
 **Phase C: Merge Prep** (lightest)
-- Read handoff file. Verify merge gate (CR: 2 clean reviews; Greptile: severity gate per `greptile.md`).
+- Read handoff file. Verify merge gate per `cr-github-review.md` "Completion" section (authoritative definition for both CR and Greptile paths).
 - Read PR body, verify all AC against final code, check off all boxes.
 - Report ready for merge. Do not delete the handoff file — parent performs deletion after successful user-gated merge (see `phase-protocols.md`).
 - Print exit report and EXIT.

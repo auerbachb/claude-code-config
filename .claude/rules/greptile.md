@@ -101,19 +101,6 @@ Classify by severity (P0/P1/P2 — use Greptile badges only), verify against cod
 
 **Severity-gated re-review:** See the "Before EVERY `@greptileai` Re-Trigger" checklist above.
 
-## Detecting a Merge-Ready Greptile Review
+## Merge Gate
 
-Merge-ready when: no findings (clean), all P1/P2 after fix (no re-review), or P0 fixed + re-review clean. 👍 with no inline comments = clean pass.
-
-### Greptile Review Budget
-
-**Max 3 Greptile reviews per PR** (1 initial + up to 2 re-reviews for P0 cascades). Track the count: increment on each `@greptileai` trigger. At 3 with persistent P0 findings, self-review + report blocker. Do not trigger a 4th review.
-
-## Self-Review Fallback
-
-If BOTH CR and Greptile are unavailable (CR rate-limited + Greptile timeout):
-
-1. Perform a self-review of the full diff (`git diff main...HEAD`)
-2. Check for: bugs, security issues, error handling, types, naming, edge cases
-3. A clean self-review does NOT satisfy the merge gate
-4. Tell the user both reviewers are down and what was left unreviewed
+**Canonical definition:** See `cr-github-review.md` "Completion" section (Step 1). That section is the single authoritative source for both the CR 2-clean-pass path and the Greptile severity-gated path (including the 3-review-per-PR cap and the self-review fallback when both reviewers are down).
