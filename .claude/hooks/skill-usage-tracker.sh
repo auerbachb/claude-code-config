@@ -72,16 +72,27 @@ csv_path, seed_path, skill = sys.argv[1], sys.argv[2], sys.argv[3]
 lock_path = csv_path + ".lock"
 
 # Acquire advisory lock via a sidecar file (works on macOS + Linux).
+# Fail closed: if we cannot acquire the exclusive lock, abort without writing.
+# Unlocked writes under concurrency could lose increments.
 lock_fd = None
 try:
     import fcntl
-    lock_fd = open(lock_path, "w")
+except Exception:
+    # Platform has no fcntl (e.g. Windows). Concurrent writes are then
+    # theoretically racy, but Skill invocations are rare enough in practice
+    # that we proceed without a lock on such platforms.
+    fcntl = None
+
+if fcntl is not None:
     try:
+        lock_fd = open(lock_path, "w")
         fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
     except Exception:
-        pass
-except Exception:
-    lock_fd = None
+        # Lock acquisition failed — abort to avoid clobbering concurrent writes.
+        if lock_fd is not None:
+            try: lock_fd.close()
+            except Exception: pass
+        sys.exit(0)
 
 def atomic_write(path, header, data):
     dir_ = os.path.dirname(path) or "."
