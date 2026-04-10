@@ -6,6 +6,14 @@ triggers:
   - PR dashboard
   - what's open
   - review status
+model: sonnet
+allowed-tools:
+  - Read
+  - Glob
+  - Grep
+  - Bash
+  - WebFetch
+  - WebSearch
 ---
 
 Build a status dashboard of all open PRs in this repo.

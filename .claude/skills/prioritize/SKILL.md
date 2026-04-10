@@ -6,6 +6,13 @@ triggers:
   - what to work on next
   - priority list
 argument-hint: "business goal | @username role-constraints | depth (e.g. \"increase scraping throughput | @auerbachb backend-python | 50\")"
+allowed-tools:
+  - Read
+  - Glob
+  - Grep
+  - Bash
+  - WebFetch
+  - WebSearch
 ---
 
 Rank open issues by impact on a business goal for a specific engineer. When `.claude/pm-config.md` exists with a non-empty `## OKRs` section, OKR alignment is used as an additional ranking signal — issues that directly advance a key result rank higher than general maintenance. The business goal argument remains the primary signal; OKRs supplement, not replace it.
