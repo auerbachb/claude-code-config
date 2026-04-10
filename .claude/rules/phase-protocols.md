@@ -60,7 +60,7 @@ HANDOFF_FILE: ~/.claude/handoffs/pr-618-handoff.json
 1. **Parse the exit report.** Extract `PR_NUMBER`, `HEAD_SHA`, `OUTCOME`, `REVIEWER`, `NEXT_PHASE`. No exit report = silent failure — report to user, check GitHub API.
 2. **Branch on OUTCOME:**
    - `pushed_fixes` or `no_findings` → proceed to step 3
-   - `exhaustion` → launch replacement Phase A within 60s. Report to user. Skip steps 3-4.
+   - `exhaustion` → launch replacement Phase A within 60s. Report to user. **STOP — do not execute steps 3-7.**
 3. **Verify the push.** `gh pr view N --json commits --jq '.commits[-1].oid'` — confirm SHA matches. Mismatch = silent failure.
 4. **Verify handoff file.** Check `~/.claude/handoffs/pr-{N}-handoff.json` exists with `phase_completed: "A"`. If missing, reconstruct and write it yourself.
 5. **Launch Phase B within 60 seconds.** Check if reviewers already posted findings (fetch all 3 comment endpoints, `per_page=100`). Include findings and handoff file path in prompt. If throttled, tell user and auto-retry.

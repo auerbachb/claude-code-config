@@ -40,7 +40,7 @@ Write on phase transitions (A→B, B→C) and key state-change events (agent lau
 - **Location:** `~/.claude/handoffs/` (create if missing: `mkdir -p ~/.claude/handoffs/`)
 - **Naming:** `pr-{N}-handoff.json` (e.g., `pr-618-handoff.json`)
 - **One file per PR at any time.**
-- **Lifecycle:** Created by Phase A → read/updated by Phase B → read then deleted by Phase C after merge.
+- **Lifecycle:** Created by Phase A → read/updated by Phase B → read by Phase C for context → deleted by **parent** after successful user-gated merge (see `phase-protocols.md`).
 
 ### Phase-Specific Operations
 
@@ -48,7 +48,7 @@ Write on phase transitions (A→B, B→C) and key state-change events (agent lau
 |-------|-----------|---------|
 | A | **Create** | Write initial handoff with all findings fixed, threads replied/resolved, files changed, HEAD SHA |
 | B | **Read-modify-write** | Read existing file, merge changes (append new array entries, update scalars), preserve unknown fields, write back. **Deduplicate:** `string[]` fields by exact value; `findings_dismissed` by `.id` |
-| C | **Read then delete** | Read for context (reviewer, phase_completed). Delete only after successful merge. If merge fails, do NOT delete |
+| C | **Read only** | Phase C subagents read for context (reviewer, phase_completed) and verify/report. **Parent** deletes the file after successful user-gated merge. If merge fails, do NOT delete |
 
 ## Handoff File Schema
 

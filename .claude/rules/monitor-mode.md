@@ -54,8 +54,9 @@ Subagent failures are only visible to the parent.
 4. **Detect silent failures.** Verify outputs (pushes, replies) before marking complete.
 5. **Never assume success.** Verify pushes via `gh pr view`, verify replies exist.
 
-**Failure message template:**
-> "Mon Mar 16 02:34 AM ET — Subagent for PR #N (Phase B) failed — ran out of tokens. Last push: `abc1234`. CR review pending. Want me to respawn?"
+**Failure message templates:**
+> Crash/no handoff: "Mon Mar 16 02:34 AM ET — Subagent for PR #N (Phase B) crashed — no handoff state. Last push: `abc1234`. CR review pending. Want me to respawn?"
+> Token exhaustion: "Mon Mar 16 02:34 AM ET — Subagent for PR #N (Phase B) exhausted tokens. Last push: `abc1234`. Launching replacement Phase B automatically."
 
 ## User Heartbeat (MANDATORY)
 
