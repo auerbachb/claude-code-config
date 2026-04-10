@@ -34,8 +34,8 @@ Skills live in `.claude/skills/<name>/SKILL.md`.
    git -C ~/.claude/skills-worktree fetch origin main --quiet
    git -C ~/.claude/skills-worktree reset --hard origin/main --quiet
 
-   # Create the global symlink
-   ln -s ~/.claude/skills-worktree/.claude/skills/<name> ~/.claude/skills/<name>
+   # Create/update the global symlink (idempotent)
+   ln -sfn ~/.claude/skills-worktree/.claude/skills/<name> ~/.claude/skills/<name>
    ```
 
 See [`.claude/rules/skill-symlinks.md`](.claude/rules/skill-symlinks.md) for the full symlink rules and verification commands.
@@ -63,7 +63,7 @@ Rules live in `.claude/rules/<name>.md` and auto-load in every parent-agent sess
 
 Hooks live in `.claude/hooks/` and run automatically during Claude Code sessions.
 
-1. **Create the script** at `.claude/hooks/<name>.sh` (bash) or `.py` (Python). Make it executable: `chmod +x`.
+1. **Create the script** at `.claude/hooks/<name>.sh` (bash) or `.claude/hooks/<name>.py` (Python). Make it executable: `chmod +x .claude/hooks/<name>.sh` (or `.py`).
 2. **Implement the JSON contract** for the event type (`PreToolUse`, `PostToolUse`, `Stop`, etc.) — see existing hooks in `.claude/hooks/` for reference patterns.
 3. **Register the hook** in `global-settings.json` under `hooks.{event}` using the `/path/to/claude-code-config` placeholder path.
 4. **Auto-registration** handles the rest: the `session-start-sync.sh` hook resolves placeholders to the skills-worktree hooks directory and adds the entry to each user's `~/.claude/settings.json` on the next session start. Existing entries (including user-customized timeouts) are preserved.
