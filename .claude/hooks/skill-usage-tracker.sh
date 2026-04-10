@@ -13,8 +13,10 @@
 #     session-start-sync.sh does `git reset --hard`, which would wipe counters
 #     stored inside the worktree).
 #   - Seed CSV: ~/.claude/skills-worktree/.claude/skill-usage.csv — the
-#     git-tracked template, used to bootstrap the live CSV on first run and
-#     to carry new skills over to the live CSV.
+#     git-tracked template, used to bootstrap the live CSV on first run.
+#
+# Bootstrap and increment both happen inside a single locked Python
+# transaction, so concurrent first-use invocations cannot clobber each other.
 
 set -uo pipefail
 
@@ -50,19 +52,13 @@ print(skill)
 LIVE_CSV="${HOME}/.claude/skill-usage.csv"
 SEED_CSV="${HOME}/.claude/skills-worktree/.claude/skill-usage.csv"
 
-# Bootstrap live CSV if missing (copy the seed, or create an empty header)
-if [ ! -f "$LIVE_CSV" ]; then
-  mkdir -p "$(dirname "$LIVE_CSV")" 2>/dev/null || exit 0
-  if [ -f "$SEED_CSV" ]; then
-    cp "$SEED_CSV" "$LIVE_CSV" 2>/dev/null || exit 0
-  else
-    printf 'skill_name,start_date,use_count,last_used\n' > "$LIVE_CSV" 2>/dev/null || exit 0
-  fi
-fi
+# Ensure the parent directory exists (cheap, idempotent, race-free).
+mkdir -p "$(dirname "$LIVE_CSV")" 2>/dev/null || exit 0
 
-# Serialized atomic update using Python's fcntl.flock (cross-platform on
-# macOS/Linux; Windows is not supported and silently falls back to no lock).
-python3 - "$LIVE_CSV" "$SKILL_NAME" <<'PY' 2>/dev/null || true
+# Serialized bootstrap + update inside a single Python transaction, protected
+# by fcntl.flock on a sidecar lock file. Works on macOS + Linux; degrades
+# gracefully on platforms without fcntl.
+python3 - "$LIVE_CSV" "$SEED_CSV" "$SKILL_NAME" <<'PY' 2>/dev/null || true
 import csv, os, sys, tempfile
 from datetime import datetime
 try:
@@ -72,7 +68,7 @@ except Exception:
     from datetime import timezone
     today = datetime.now(timezone.utc).date().isoformat()
 
-csv_path, skill = sys.argv[1], sys.argv[2]
+csv_path, seed_path, skill = sys.argv[1], sys.argv[2], sys.argv[3]
 lock_path = csv_path + ".lock"
 
 # Acquire advisory lock via a sidecar file (works on macOS + Linux).
@@ -87,7 +83,42 @@ try:
 except Exception:
     lock_fd = None
 
+def atomic_write(path, header, data):
+    dir_ = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".skill-usage.", dir=dir_)
+    try:
+        with os.fdopen(fd, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(header)
+            w.writerows(data)
+        os.replace(tmp, path)
+    except Exception:
+        try: os.unlink(tmp)
+        except Exception: pass
+        raise
+
 try:
+    # BOOTSTRAP (under lock): if the live CSV does not exist, create it
+    # from the seed (preferred) or from a bare header. This happens inside
+    # the lock so a concurrent invocation cannot clobber our first update.
+    if not os.path.exists(csv_path):
+        if os.path.exists(seed_path):
+            try:
+                with open(seed_path, "r", newline="") as sf:
+                    seed_rows = list(csv.reader(sf))
+            except Exception:
+                seed_rows = []
+        else:
+            seed_rows = []
+        if not seed_rows:
+            seed_rows = [["skill_name", "start_date", "use_count", "last_used"]]
+        try:
+            atomic_write(csv_path, seed_rows[0], seed_rows[1:])
+        except Exception:
+            sys.exit(0)
+
+    # UPDATE (same lock): read the freshly-bootstrapped-or-existing CSV and
+    # apply the increment.
     try:
         with open(csv_path, "r", newline="") as f:
             rows = list(csv.reader(f))
@@ -109,21 +140,12 @@ try:
             break
 
     if not found:
-        # Skill not in tracker yet — seed it (count starts at 1, start_date = today)
+        # Skill not in tracker yet — seed it (count=1, start_date=today)
         data.append([skill, today, "1", today])
 
-    # Atomic write
-    dir_ = os.path.dirname(csv_path) or "."
-    fd, tmp = tempfile.mkstemp(prefix=".skill-usage.", dir=dir_)
     try:
-        with os.fdopen(fd, "w", newline="") as f:
-            w = csv.writer(f)
-            w.writerow(header)
-            w.writerows(data)
-        os.replace(tmp, csv_path)
+        atomic_write(csv_path, header, data)
     except Exception:
-        try: os.unlink(tmp)
-        except Exception: pass
         sys.exit(0)
 finally:
     if lock_fd is not None:
