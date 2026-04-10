@@ -76,6 +76,8 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
     if ! err=$(python3 "$register_script" "$skills_wt" 2>&1); then
       errors="${errors:+$errors; }hook sync failed: $err"
     fi
+  else
+    errors="${errors:+$errors; }hook sync helper missing: $register_script"
   fi
 fi
 

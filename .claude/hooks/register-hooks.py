@@ -34,8 +34,11 @@ import sys
 import tempfile
 
 
+PLACEHOLDER_PREFIX = "/path/to/claude-code-config/"
+
+
 def is_placeholder(path):
-    return "/path/to/" in path or not os.path.isabs(path)
+    return path.startswith(PLACEHOLDER_PREFIX)
 
 
 def find_existing(entries, basename, matcher):
@@ -171,17 +174,20 @@ def main(argv):
 
     # Atomic write
     d = os.path.dirname(settings_file) or "."
-    fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+    tmp = None
     try:
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(settings, f, indent=2)
             f.write("\n")
         os.replace(tmp, settings_file)
     except OSError as e:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         print(f"hook-sync: atomic write failed: {e}", file=sys.stderr)
         return 1
 
