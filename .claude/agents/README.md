@@ -35,7 +35,7 @@ Agent definitions use `{{PLACEHOLDER}}` markers for runtime context that the par
 
 ### Model Selection
 
-Each agent definition declares a default `model` in frontmatter. The parent should also set `model` explicitly at the Agent tool call site per `.claude/rules/subagent-orchestration.md` "Model Selection" — the call-site parameter overrides the frontmatter default and keeps cost decisions visible at every spawn point.
+Each agent definition declares a default `model` in frontmatter. The parent must also set `model` explicitly at every Agent tool call site per `.claude/rules/subagent-orchestration.md` "Model Selection" — the call-site parameter overrides the frontmatter default and keeps cost decisions visible at every spawn point.
 
 **Per-phase rationale:**
 
