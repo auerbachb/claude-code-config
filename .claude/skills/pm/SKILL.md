@@ -21,6 +21,36 @@ Parse `$ARGUMENTS`:
 
 ---
 
+## Step 0: Identify the current gh user
+
+Before any mode-specific logic, detect the active GitHub user so downstream filtering can target "your work" vs. "all work".
+
+```bash
+GH_USER=$(gh api user --jq .login 2>/dev/null)
+if [ -z "$GH_USER" ]; then
+  echo "WARNING: gh api user failed — falling back to unfiltered views"
+else
+  echo "Active gh user: $GH_USER"
+fi
+```
+
+Store `$GH_USER` for the rest of the session. Use it everywhere filtering matters:
+
+- **Your active PRs** — `gh pr list --state open --search "author:$GH_USER"`
+- **PRs awaiting your review** — `gh pr list --state open --search "review-requested:$GH_USER"`
+- **Your recent merged work** — `gh pr list --state merged --search "author:$GH_USER" --limit 20`
+- **Issues assigned to you** — `gh issue list --state open --assignee "$GH_USER"`
+
+When the user asks "what should I work on?", prioritize in this order:
+1. **Your own open PRs with unresolved review findings** — highest priority (you own them and they're blocked on you)
+2. **PRs where you're the requested reviewer** — others are blocked on you
+3. **Open issues assigned to you** — committed work
+4. **Unassigned issues you could claim** — backlog pickup
+
+If `gh api user` fails (no auth, network error), degrade gracefully: skip the user-scoped filters and fall back to the repo-wide views below. Note the fallback in the output so the user knows filtering is unavailable.
+
+---
+
 ## Step 1A: Resume mode
 
 Read existing orchestration state to continue where a previous PM thread left off.
@@ -57,12 +87,19 @@ Parse any found state into an assignments table:
 
 ### 1A.3: Verify against live GitHub
 
-State files may be stale. Cross-reference with live data:
+State files may be stale. Cross-reference with live data. When `$GH_USER` is set (Step 0), also fetch the user-scoped views so resumed state can be annotated with "yours" vs. "others":
 
 ```bash
 gh pr list --state open --json number,title,headRefName,author,updatedAt
 gh pr list --state merged --limit 10 --json number,title,mergedAt
 gh issue list --state open --json number,title,labels,assignees --limit 500
+
+# User-scoped views (only if $GH_USER is set)
+if [ -n "$GH_USER" ]; then
+  gh pr list --state open --search "author:$GH_USER" --json number,title,updatedAt
+  gh pr list --state open --search "review-requested:$GH_USER" --json number,title,author,updatedAt
+  gh issue list --state open --assignee "$GH_USER" --json number,title,labels
+fi
 ```
 
 **Truncation check:** If the returned issue count equals 500, warn: "Showing 500 issues — repo may have more. Results may be incomplete."
@@ -110,6 +147,18 @@ gh issue list --state open --json number,title,labels,assignees,createdAt,update
 
 # Open PRs — detect in-flight work
 gh pr list --state open --json number,title,headRefName,author,updatedAt,additions,deletions
+
+# User-scoped views (only if $GH_USER is set from Step 0)
+if [ -n "$GH_USER" ]; then
+  # Your own open PRs — highest priority when asking "what's next"
+  gh pr list --state open --search "author:$GH_USER" --json number,title,updatedAt,headRefName
+
+  # PRs awaiting your review — others are blocked on you
+  gh pr list --state open --search "review-requested:$GH_USER" --json number,title,author,updatedAt
+
+  # Issues assigned to you — committed work
+  gh issue list --state open --assignee "$GH_USER" --json number,title,labels,updatedAt
+fi
 ```
 
 **Truncation check:** If the returned issue count equals 500, warn: "Showing 500 issues — repo may have more. Results may be incomplete."
@@ -163,7 +212,20 @@ For each candidate, assess:
 
 ### 1B.5: Present recommendations
 
-Output the top 3-5 issues as a ranked list:
+When `$GH_USER` is set, lead the output with user-scoped sections before the general backlog ranking. These always take precedence over backlog pickup — they represent work already on the user's plate.
+
+```
+## Your Open PRs
+{List of open PRs authored by $GH_USER with last update time — or "none" if empty}
+
+## PRs Awaiting Your Review
+{List of open PRs where $GH_USER is a requested reviewer — or "none" if empty}
+
+## Issues Assigned to You
+{List of open issues assigned to $GH_USER — or "none" if empty}
+```
+
+Then output the top 3-5 backlog issues (unassigned / up for pickup) as a ranked list:
 
 ```
 ## Suggested Next Issues
@@ -270,7 +332,15 @@ gh pr list --state merged --limit 10 --json number,title,mergedAt,body
 
 # Check for closed issues
 gh issue list --state closed --limit 20 --json number,title,closedAt
+
+# User-scoped re-check (only if $GH_USER is set from Step 0)
+if [ -n "$GH_USER" ]; then
+  gh pr list --state open --search "author:$GH_USER" --json number,title,updatedAt
+  gh pr list --state open --search "review-requested:$GH_USER" --json number,title,author,updatedAt
+fi
 ```
+
+When answering "what's next", always check the user-scoped results first (your open PRs with unresolved findings, then review requests against you) before suggesting new backlog pickup.
 
 Cross-reference with the assignments table:
 - Detect PRs that reference tracked issues (search PR body for `Closes #N`, `Fixes #N`)
