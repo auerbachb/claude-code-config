@@ -152,7 +152,7 @@ Six hooks in `.claude/hooks/` run automatically during Claude Code sessions:
 |--------|-------|---------|
 | `session-start-sync.sh` | PostToolUse (first call) | Syncs skills worktree to `origin/main`, auto-registers new hooks from `global-settings.json` |
 | `post-merge-pull.sh` | PostToolUse (Bash) | Pulls `main` after `gh pr merge`, syncs skills worktree |
-| `worktree-guard.sh` | PreToolUse (Write/Edit) | Blocks file edits in `claude-code-config` repo when root is on `main` |
+| `worktree-guard.sh` | PreToolUse (Write/Edit/NotebookEdit) | Blocks file edits in `claude-code-config` repo when root is on `main` |
 | `silence-detector.sh` | PostToolUse (all) | Warns if agent has been silent >5 minutes |
 | `silence-detector-ack.sh` | Stop | Resets the silence timer after each response |
 | `trust-flag-repair.sh` | Stop | Repairs trust flags in `~/.claude.json` for all projects |
