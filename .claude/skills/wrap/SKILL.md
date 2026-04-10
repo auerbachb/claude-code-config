@@ -238,9 +238,11 @@ The two HHG follow-up titles are:
 1. `{STATE} HHG — Export carriers and run scraper`
 2. `{STATE} HHG — Seed product codes and load scrape results to Neon`
 
-Each body should reference the source PR (`Follow-up from PR #{PR_NUMBER}`) and include any scraping/ETL context from the parent issue body.
+**Create the scraping issue first**, capture its number as `SCRAPE_NUM`, then create the ETL issue with `Depends on #${SCRAPE_NUM}` in its body so the dependency is explicit and the ETL task cannot be orphaned. If the scraping issue was deduped to an existing open issue, use that existing number as `SCRAPE_NUM`.
 
-If `STATE == "UNKNOWN"`, still create both issues but flag them in the final report so the user can review and rename them.
+Each body should reference the source PR (`Follow-up from PR #{PR_NUMBER}`) and include any scraping/ETL context from the parent issue body. The ETL issue body must also include a `Depends on #${SCRAPE_NUM}` line.
+
+If `STATE == "UNKNOWN"`, still create both issues (scraping first, then ETL with the dependency line) but flag them in the final report so the user can review and rename them.
 
 ### Step 3.3: Dedup check and create
 
@@ -272,11 +274,11 @@ For each follow-up item (the HHG pair or the generic list):
    fi
    ```
 
-3. **Log to work-log** — if a work-log directory was detected at session start, append a timestamped line to today's session log for each created issue (use the same path logic as Phase 2.7):
+3. **Log to work-log** — if a work-log directory was detected at session start, append a timestamped line to today's session log for each created issue using the **canonical** format from `work-log.md` (use the same path logic as Phase 2.7):
    ```
-   - {time} ET — Issue #{NEW_NUM} created: {title} (follow-up from PR #{PR_NUMBER})
+   - {time} ET — Issue #{NEW_NUM} created: {title}
    ```
-   Skip logging if no work-log directory exists.
+   Do not add a PR suffix to the log line — the PR linkage belongs in the issue body and the Step 3.4 report, not in the canonical work-log format. Skip logging entirely if no work-log directory exists.
 
 **Non-HHG PRs still get generic follow-up creation** — any items collected in Step 3.1 that are not overridden by the HHG path go through the dedup + create + log flow above.
 
