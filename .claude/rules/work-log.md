@@ -89,15 +89,7 @@ When working in a worktree, any edits to shared docs (session logs, work logs, c
 1. **Commit the shared doc in the PR branch** — stage and commit the affected shared doc(s) alongside the code changes so they merge with the PR.
 2. **Manually sync the log to the root repo** — if the log edits should not be part of the PR (e.g., the log lives in a different repo or on main), append only the missing Activity Log entries to the root repo's copy (do not replace the entire file), then commit separately.
 
-**Never assume a worktree-local edit to a shared doc will "make it back" on its own.** At task completion, verify the root repo's copy is current:
-
-```bash
-# ROOT_REPO = first entry from: git worktree list (the main worktree)
-# WORKTREE = current working directory (pwd)
-# WORK_LOG_PATH = confirmed canonical path from session start (e.g., docs/work-logs)
-# Replace YYYY-MM-DD with today's date: $(TZ='America/New_York' date +'%Y-%m-%d')
-diff "$WORKTREE/$WORK_LOG_PATH/session-log-YYYY-MM-DD.md" "$ROOT_REPO/$WORK_LOG_PATH/session-log-YYYY-MM-DD.md"
-```
+**Never assume a worktree-local edit to a shared doc will "make it back" on its own.** At task completion, verify the root repo's copy is current by diffing `$WORKTREE/$WORK_LOG_PATH/session-log-$(TZ='America/New_York' date +'%Y-%m-%d').md` against the same relative path under `$ROOT_REPO` (where `$ROOT_REPO` is the first entry from `git worktree list`).
 
 If the root repo's copy is missing Activity Log entries, reconcile without overwriting:
 

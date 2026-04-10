@@ -30,19 +30,10 @@ After pushing a commit to a PR, **automatically** enter the CR review loop. Do n
   2. `repos/{owner}/{repo}/pulls/{N}/comments` — inline comments on specific lines of code in the diff
   3. `repos/{owner}/{repo}/issues/{N}/comments` — **main PR conversation thread** (where CR posts its summary review, the "Actions performed" ack, and general findings)
   - **The third endpoint (`issues/` not `pulls/`) is important.** When CR reviews with findings, it posts review objects on `pulls/{N}/reviews` (which you'll see). But CR also posts its summary and the "Actions performed" ack as issue comments on `issues/{N}/comments`. Missing this endpoint means you'll catch reviews with findings but miss the ack and summary — causing indefinite polling on **clean passes** where CR has no findings to post as review objects.
-- **Check the commit status on EVERY poll cycle** — this serves two purposes:
-  ```bash
-  gh api "repos/{owner}/{repo}/commits/{SHA}/check-runs" \
-    --jq '.check_runs[] | select(.name == "CodeRabbit") | {name, status, conclusion, title: .output.title}'
-  ```
-  If check-runs returns empty for CodeRabbit, fall back to the commit statuses endpoint:
-  ```bash
-  gh api "repos/{owner}/{repo}/commits/{SHA}/statuses" \
-    --jq '.[] | select(.context | test("CodeRabbit"; "i")) | {context, state, description}'
-  ```
-  - **Completion signal:** `status: "completed"` with `conclusion: "success"` = review done (visible as "CodeRabbit — Review completed" in the PR's CI checks box). This is the definitive signal, especially for clean passes.
-  - **Fast-path rate limit detection:** If EITHER endpoint shows rate limiting — check-run has `conclusion: "failure"` with `output.title` containing "rate limit" (case-insensitive), OR commit status has `state: "failure"`/`state: "error"` with `description` containing "rate limit" — **trigger Greptile IMMEDIATELY.** Do not wait 7 minutes. This catches rate limits within ~60-120 seconds of pushing. Sticky assignment applies (see below).
-  - **Do NOT confuse the ack with completion.** The "Actions performed — Full review triggered" issue comment means CR **started** reviewing — it does NOT mean the review is finished. The CI check "CodeRabbit — Review completed" is what signals actual completion.
+- **Check the commit status on EVERY poll cycle.** Query `repos/{owner}/{repo}/commits/{SHA}/check-runs` filtered to `name == "CodeRabbit"`; if empty, fall back to the `/statuses` endpoint filtered to `context ~ "CodeRabbit"`. Full commands: `.claude/reference/cr-polling-commands.md`.
+  - **Completion signal:** `status: "completed"` + `conclusion: "success"` = review done (visible as "CodeRabbit — Review completed" in the PR's CI checks box). Definitive signal, especially for clean passes.
+  - **Fast-path rate limit detection:** check-run `conclusion: "failure"` with `output.title` containing "rate limit" (case-insensitive), OR commit status `state: "failure"`/`"error"` with `description` containing "rate limit" — **trigger Greptile IMMEDIATELY.** Do not wait 7 minutes. Catches rate limits within ~60-120 seconds of pushing. Sticky assignment applies.
+  - **Do NOT confuse the ack with completion.** The "Actions performed — Full review triggered" issue comment means CR **started** reviewing — not finished. The CI check "CodeRabbit — Review completed" is what signals actual completion.
 - **CR's GitHub username is `coderabbitai[bot]` (with the `[bot]` suffix).** Always filter by `.user.login == "coderabbitai[bot]"` — NOT bare `coderabbitai`. Using the wrong username will silently miss all CR comments.
 - **Track the highest review ID** (from `pulls/{N}/reviews`) as your watermark — NOT inline comment IDs. New reviews can have inline comment IDs *lower* than comments from previous reviews because they use different ID sequences. Any review from `coderabbitai[bot]` with `review.id` above the watermark is new — fetch ALL its associated comments regardless of their individual comment IDs. For issue comments (`issues/{N}/comments`), continue tracking by comment ID since those share a single sequence.
 - If CR responds, process immediately
@@ -50,17 +41,11 @@ After pushing a commit to a PR, **automatically** enter the CR review loop. Do n
 
 ### CI Health Check (MANDATORY — every poll cycle)
 
-**Check ALL check-runs every poll cycle — not just CodeRabbit.** CI failures (test, lint, build, audit, gitleaks) are independent of CR review status.
-
-```bash
-gh api "repos/{owner}/{repo}/commits/{SHA}/check-runs?per_page=100" \
-  --jq '.check_runs[] | {id, name, status, conclusion, title: .output.title}'
-```
+**Check ALL check-runs every poll cycle — not just CodeRabbit.** CI failures (test, lint, build, audit, gitleaks) are independent of CR review status. Query `repos/{owner}/{repo}/commits/{SHA}/check-runs?per_page=100` and inspect `{name, status, conclusion}`. Full command: `.claude/reference/cr-polling-commands.md`.
 
 **Rules:**
-- **Blocking conclusions:** `failure`, `timed_out`, `action_required`, `startup_failure`, `stale`. If ANY check-run has one of these conclusions, **investigate immediately.** (`cancelled`, `neutral`, `skipped` are non-blocking.)
-  - Read the check-run's output: `gh api "repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID}" --jq '.output.summary'`
-  - Test/lint/build failure: fix, commit, and push before continuing the review loop.
+- **Blocking conclusions:** `failure`, `timed_out`, `action_required`, `startup_failure`, `stale`. If ANY check-run has one of these, **investigate immediately.** (`cancelled`, `neutral`, `skipped` are non-blocking.) Read the output via `gh api repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID} --jq .output.summary`.
+  - Test/lint/build failure: fix, commit, push before continuing the review loop.
   - Transient/infra failure (e.g., `timed_out`, `startup_failure`): note it, retry with a no-op commit if needed.
 - CI failures block merge independently of CR — a PR with passing CR but failing tests is not merge-ready. Report pass/fail summary to the user: "CI: 5/6 passed, `test` failed — investigating."
 
@@ -95,19 +80,8 @@ gh api "repos/{owner}/{repo}/commits/{SHA}/check-runs?per_page=100" \
 GitHub does not auto-resolve PR review comments when the fix touches different lines than where the comment was made (which is common — e.g., a comment about a missing null check on line 42 gets fixed by adding a guard on line 38). **You must explicitly resolve these threads.**
 
 **How to resolve a comment thread after fixing it:**
-1. **Reply to the thread** confirming the fix (this is already required — see processing steps below). **Note:** The inline reply endpoint may 404 for non-diff comments — see "Processing CR Feedback" step 5 for the full fallback procedure.
-2. **Resolve the thread** via the GitHub API:
-   ```bash
-   gh api graphql -f query='mutation { minimizeComment(input: {subjectId: "<node_id>", classifier: RESOLVED}) { minimizedComment { isMinimized } } }'
-   ```
-   Or if the comment is a pull request review thread, use:
-   ```bash
-   gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<thread_node_id>"}) { thread { isResolved } } }'
-   ```
-   To get the thread ID, fetch the review threads:
-   ```bash
-   gh api graphql -f query='query { repository(owner: "{owner}", name: "{repo}") { pullRequest(number: {N}) { reviewThreads(first: 100) { nodes { id isResolved comments(first: 1) { nodes { body author { login } } } } } } } }'
-   ```
+1. **Reply to the thread** confirming the fix (see "Processing CR Feedback" step 5 for the 404 fallback on non-diff comments).
+2. **Resolve the thread** via GraphQL. Preferred: `resolveReviewThread(threadId)` for PR review threads; fallback: `minimizeComment(subjectId, classifier: RESOLVED)` for non-thread comments. Fetch thread IDs via the `pullRequest.reviewThreads` query. Full mutations and query: `.claude/reference/graphql-thread-resolution.md`.
 3. **Check that all threads are resolved** before requesting a new review. Unresolved threads signal to CR (and to human reviewers) that work is still outstanding.
 
 ### Processing CR Feedback
@@ -175,21 +149,11 @@ The merge gate depends on which reviewer owns the PR:
 
 **Step 1b — CI Must Pass Before Merge (NON-NEGOTIABLE):**
 
-Before running `gh pr merge` on ANY PR, verify ALL CI check-runs are complete and passing:
+Before running `gh pr merge` on ANY PR, verify ALL CI check-runs are complete and passing. Run two queries against `repos/{owner}/{repo}/commits/$SHA/check-runs?per_page=100`: (1) incomplete runs — `select(.status != "completed")`; (2) blocking conclusions — `select(.conclusion IN (failure, timed_out, action_required, startup_failure, stale))`. Full commands: `.claude/reference/cr-polling-commands.md`.
 
-```bash
-SHA=$(gh pr view <PR_NUMBER> --json commits --jq '.commits[-1].oid')
-# 1. Check for incomplete runs (queued or in_progress) — DO NOT merge while any exist
-gh api "repos/{owner}/{repo}/commits/$SHA/check-runs?per_page=100" \
-  --jq '.check_runs[] | select(.status != "completed") | {name, status}'
-# 2. Check for blocking conclusions among completed runs
-gh api "repos/{owner}/{repo}/commits/$SHA/check-runs?per_page=100" \
-  --jq '.check_runs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required" or .conclusion == "startup_failure" or .conclusion == "stale") | {name, conclusion}'
-```
+**If query 1 returns ANY incomplete check-runs: DO NOT MERGE.** Wait for them to finish — a null conclusion means the check hasn't reported yet, not that it passed.
 
-**If step 1 returns ANY incomplete check-runs: DO NOT MERGE.** Wait for them to finish — a null conclusion means the check hasn't reported yet, not that it passed.
-
-**If step 2 returns ANY blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`): DO NOT MERGE.** Instead:
+**If query 2 returns ANY blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`): DO NOT MERGE.** Instead:
 1. Read the failure output and fix the issue
 2. Commit, push, and wait for CI to re-run
 3. Only merge after ALL checks are `status: "completed"` with non-blocking conclusions
