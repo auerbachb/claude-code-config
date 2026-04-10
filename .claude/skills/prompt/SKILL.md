@@ -250,7 +250,7 @@ Then, for each issue, output a self-contained prompt block. Use 4-backtick fence
 
 ### Relevant rules
 {Based on tier and task type, list which rule files contain relevant protocols:}
-{- For Heavy + orchestration: "Read `.claude/rules/subagent-orchestration.md` — specifically the Phase A/B/C protocol, handoff file schema, and monitor mode rules."}
+{- For Heavy + orchestration: "Read `.claude/rules/subagent-orchestration.md` (phase decomposition, spawning), `monitor-mode.md` (monitor loop, heartbeats, recovery), `handoff-files.md` (state transfer schema), and `phase-protocols.md` (exit reports, completion checklists)."}
 {- For any tier involving PRs: "Read `.claude/rules/cr-github-review.md` — specifically the merge gate (2 clean CR passes), polling endpoints, and thread resolution."}
 {- For any tier involving CR local review: "Read `.claude/rules/cr-local-review.md` — specifically the fix loop and exit criteria (2 clean passes)."}
 {- For issue creation: "Read `.claude/rules/issue-planning.md` — specifically the planning flow and plan merge step."}

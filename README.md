@@ -130,7 +130,10 @@ Rule files in `.claude/rules/` auto-load alongside `CLAUDE.md` and define the de
 | `cr-local-review.md` | Primary review loop — runs CodeRabbit CLI locally before pushing |
 | `cr-github-review.md` | GitHub review polling — three endpoints, rate limits, thread resolution, merge gate |
 | `greptile.md` | Greptile fallback reviewer — severity-gated re-reviews, daily budget, self-review fallback |
-| `subagent-orchestration.md` | Multi-agent task decomposition (phases A/B/C), monitor mode, heartbeats, handoff files |
+| `subagent-orchestration.md` | Subagent spawning, phase transition autonomy, token exhaustion, phase A/B/C decomposition |
+| `monitor-mode.md` | Dedicated monitor mode, monitor loop, heartbeats, health monitoring, post-compaction recovery |
+| `handoff-files.md` | Handoff file schema, session-state.json format, lifecycle (create/update/delete) |
+| `phase-protocols.md` | Structured exit report format, Phase A/B/C completion protocol checklists |
 | `work-log.md` | Auto-update daily work log on issue create, PR open, PR merge |
 | `safety.md` | Destructive command prohibitions, `.env` protection, subagent safety warnings |
 | `repo-bootstrap.md` | Auto-provision required GitHub Actions workflows on first touch |
