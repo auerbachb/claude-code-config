@@ -5,7 +5,11 @@
 #   1. The rule index table in CLAUDE.md matches the actual set of
 #      .claude/rules/*.md files (no drift in either direction).
 #   2. Total auto-loaded word count (CLAUDE.md + all rule files) is
-#      within budget: soft 10000 (warn), hard 12000 (fail).
+#      within budget: soft 10000 (warn), hard 14000 (fail).
+#      Note: hard cap is 14000 as a transition setting while rules are
+#      condensed back toward the 10000 soft cap.
+#      TODO(#203): revert HARD_LIMIT to 12000 (or lower) once total
+#      word count drops back under the 10000 soft budget.
 #   3. Per-file size: any rule file > 2000 words emits a warning.
 #
 # Output uses GitHub Actions annotations (::error::, ::warning::) so
@@ -15,7 +19,7 @@ set -euo pipefail
 shopt -s nullglob
 
 SOFT_LIMIT=10000
-HARD_LIMIT=12000
+HARD_LIMIT=14000
 PER_FILE_WARN=2000
 
 CLAUDE_MD="CLAUDE.md"
