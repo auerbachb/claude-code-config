@@ -40,7 +40,7 @@ Check if `.claude/pm-config.md` exists and has a `## Team` section. If present, 
 ### 3a: Merged PRs with code volume
 
 ```bash
-gh pr list --state merged --search "merged:>$SINCE_DATE" --json number,title,author,mergedAt,additions,deletions,commits --limit 200
+gh pr list --state merged --search "merged:>=$SINCE_DATE" --json number,title,author,mergedAt,additions,deletions,commits --limit 200
 ```
 
 For each merged PR, record: author, additions, deletions, commit count.
@@ -71,10 +71,10 @@ If no reviews exist on any PR in the period, note this gracefully: "No PR review
 
 ```bash
 # Issues created by each contributor
-gh issue list --state all --search "created:>$SINCE_DATE" --json number,title,author,state,createdAt --limit 500
+gh issue list --state all --search "created:>=$SINCE_DATE" --json number,title,author,state,createdAt --limit 500
 
 # Issues closed in the period
-gh issue list --state closed --search "closed:>$SINCE_DATE" --json number,title,closedAt --limit 500
+gh issue list --state closed --search "closed:>=$SINCE_DATE" --json number,title,closedAt --limit 500
 ```
 
 **Closer attribution:** The `gh issue list` command does not include a `closedBy` field. To attribute issue closures to contributors, query the events API for each closed issue:

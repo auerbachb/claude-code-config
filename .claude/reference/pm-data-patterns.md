@@ -117,9 +117,18 @@ If no `coderabbitai[bot]` reviews exist across all PRs in the window, skip this 
 
 ## Maintenance
 
-When updating any of the query patterns above, update this doc AND every PM skill that references it. Skills that depend on this reference:
+When updating any of the query patterns above, update this doc AND every PM skill that references it.
+
+**Currently migrated** (cite this doc in a `## Data gathering` section):
 
 - `.claude/skills/pm-rate-team/SKILL.md`
 - `.claude/skills/pm-team-standup/SKILL.md`
 
-Add new dependents to this list when onboarding additional skills.
+**Not yet migrated** (share the same patterns but still inline them — migrate in follow-up work):
+
+- `.claude/skills/pm-sprint-review/SKILL.md`
+- `.claude/skills/pm-sprint-plan/SKILL.md`
+- `.claude/skills/prioritize/SKILL.md`
+
+When onboarding a skill from the "not yet migrated" list, add a `## Data gathering` reference section near the top and move it into "currently migrated." When adding a brand-new PM skill, add it directly to "currently migrated."
+
