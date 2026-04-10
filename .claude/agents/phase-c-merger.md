@@ -1,6 +1,7 @@
 ---
 description: "Phase C subagent: verify merge gate, check acceptance criteria against code, report readiness. Read-only — does not modify code."
 allowed-tools: Read, Glob, Grep, Bash
+model: sonnet
 ---
 
 # Phase C: Merge Prep

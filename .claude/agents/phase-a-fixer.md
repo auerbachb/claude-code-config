@@ -1,5 +1,6 @@
 ---
 description: "Phase A subagent: fix review findings, push code, write handoff file, print exit report. Used after a PR receives CR/Greptile review findings."
+model: opus
 ---
 
 # Phase A: Fix + Push

@@ -77,7 +77,7 @@ If a PR doesn't exist, note it in the output and skip. If ALL PR numbers are inv
 
 Spawn one subagent per valid PR using the Agent tool. All subagents run in parallel.
 
-**Each subagent invocation MUST use `mode: "bypassPermissions"`.**
+**Each subagent invocation MUST use `mode: "bypassPermissions"` and `model: "sonnet"`.** This is a read-only strategic review — analysis from a well-defined template, no code modification. Sonnet keeps per-review cost low so parallel portfolio reviews stay economical. See `.claude/rules/subagent-orchestration.md` "Model Selection" for the rationale.
 
 **Each subagent prompt must include:**
 - The PR number to analyze (substitute `{NUMBER}` in the template below)

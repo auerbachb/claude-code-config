@@ -245,7 +245,9 @@ worktree directory at all times.
 ```
 
 **Agent tool call parameters:**
+- `subagent_type: "phase-a-fixer"`
 - `mode: "bypassPermissions"`
+- `model: "opus"` (Phase A does heavy reasoning — see `subagent-orchestration.md` "Model Selection")
 - `isolation: "worktree"`
 - `run_in_background: true` (so you can monitor multiple agents)
 
@@ -341,6 +343,13 @@ If missing, reconstruct state from GitHub API.
 12. EXIT immediately.
 ```
 
+**Phase B Agent tool call parameters:**
+- `subagent_type: "phase-b-reviewer"`
+- `mode: "bypassPermissions"`
+- `model: "opus"` (Phase B evaluates review findings and fixes code — see `subagent-orchestration.md` "Model Selection")
+- `isolation: "worktree"` (same as Phase A — Phase B fetches and checks out the PR branch inside its own fresh worktree)
+- `run_in_background: true`
+
 ### Phase B Completion
 
 When a Phase B subagent returns:
@@ -397,6 +406,13 @@ worktree directory at all times.
    ```
 10. EXIT immediately. Do NOT merge — the parent presents the merge decision to the user.
 ```
+
+**Phase C Agent tool call parameters:**
+- `subagent_type: "phase-c-merger"`
+- `mode: "bypassPermissions"`
+- `model: "sonnet"` (Phase C is lightweight read-only verification — see `subagent-orchestration.md` "Model Selection")
+- `isolation: "worktree"` (same as Phase A — Phase C fetches and checks out the PR branch inside its own fresh worktree)
+- `run_in_background: true`
 
 ### Phase C Completion
 

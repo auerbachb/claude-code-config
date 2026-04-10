@@ -1,8 +1,8 @@
 # Subagent Context
 
-> **Always:** Spawn subagents via custom agent definitions in `.claude/agents/` (see "How to Spawn Subagents" below). Use `mode: "bypassPermissions"` on every Agent tool call. Use phase decomposition (A/B/C). Timestamp every message (see `monitor-mode.md`). Write handoff files on phase completion (see `handoff-files.md`). Print Structured Exit Report before every subagent exit (see `phase-protocols.md`). Only fall back to manually passing all rule files if `.claude/agents/` is unavailable in the current repo.
+> **Always:** Spawn subagents via custom agent definitions in `.claude/agents/` (see "How to Spawn Subagents" below). Use `mode: "bypassPermissions"` on every Agent tool call. Set `model` explicitly at every call site per the Model Selection policy (see below). Use phase decomposition (A/B/C). Timestamp every message (see `monitor-mode.md`). Write handoff files on phase completion (see `handoff-files.md`). Print Structured Exit Report before every subagent exit (see `phase-protocols.md`). Only fall back to manually passing all rule files if `.claude/agents/` is unavailable in the current repo.
 > **Ask first:** Respawning a failed subagent (crash/no handoff state) — tell the user what happened first. Exhaustion with valid handoff is auto-respawn ("Always do").
-> **Never:** Summarize rules for subagents. Spawn subagents without `mode: "bypassPermissions"`. Fire-and-forget subagents.
+> **Never:** Summarize rules for subagents. Spawn subagents without `mode: "bypassPermissions"`. Spawn without an explicit `model` parameter. Fire-and-forget subagents.
 
 ## How to Spawn Subagents
 
@@ -16,13 +16,14 @@ Use the custom agent definitions in `.claude/agents/` instead of manually readin
    - `phase-b-reviewer` — Poll reviews, process findings, update handoff
    - `phase-c-merger` — Verify merge gate, check AC, report readiness (read-only)
    - `pm-worker` — Issue management, work-log, repo bootstrap
-3. **Provide runtime context in the `prompt` parameter** — the agent definition supplies workflow rules; the prompt supplies PR-specific details:
+3. **Set `model` explicitly at the call site** (see "Model Selection" below). Each agent definition also declares a frontmatter default (`opus` for Phase A/B; `sonnet` for Phase C and pm-worker), but the call-site `model` parameter takes precedence and makes the choice visible at every spawn.
+4. **Provide runtime context in the `prompt` parameter** — the agent definition supplies workflow rules; the prompt supplies PR-specific details:
    - PR number, issue number, branch name
    - Repo owner/name
    - Handoff file path (`~/.claude/handoffs/pr-{N}-handoff.json`)
    - HEAD SHA, reviewer assignment (`cr` or `greptile`)
    - Pre-fetched findings (optional — saves the subagent from re-fetching)
-4. **Include the safety warning** in every subagent prompt:
+5. **Include the safety warning** in every subagent prompt:
 
    ```text
    SAFETY: Do NOT delete, overwrite, move, or modify .env files — anywhere, any repo.
@@ -43,6 +44,29 @@ If agent definitions are unavailable (e.g., working in a repo without `.claude/a
 4. Do NOT summarize, excerpt, or paraphrase — pass the complete files
 
 > **Why project-local first:** Per-project configs override global ones. Passing the global file when a project-level file exists gives subagents the wrong rules.
+
+## Model Selection
+
+The Agent tool's `model` parameter selects which Claude model runs the subagent. Match the model to the phase's cognitive load — this is the cost-efficiency lever.
+
+**Defaults (set at every spawn site):**
+
+| Phase / Agent | Model |
+|---------------|-------|
+| Phase A (`phase-a-fixer`) | `opus` |
+| Phase B (`phase-b-reviewer`) | `opus` |
+| Phase C (`phase-c-merger`) | `sonnet` |
+| `pm-worker` | `sonnet` |
+| Read-only review agents (e.g., `/pr-review-help`) | `sonnet` |
+
+Full per-phase rationale lives in `.claude/agents/README.md` "Model Selection". In short: A/B do the heavy reasoning (fixes, dismissals, severity judgment); C and pm-worker do mechanical verification and data gathering.
+
+**Rules:**
+
+- **Set `model` at the call site explicitly.** Every Agent tool invocation MUST include `model` alongside `mode` and `subagent_type`. Relying on frontmatter defaults or the global `CLAUDE_CODE_SUBAGENT_MODEL` env var hides cost decisions.
+- **Call-site `model` overrides agent-definition frontmatter.** Override to `opus` when a specific spawn needs more firepower.
+- **Keep `CLAUDE_CODE_SUBAGENT_MODEL=opus` as the global fallback.** Do not modify it — it's the safety net for undocumented spawn sites.
+- **Cost-optimization ≠ quality regression.** If a Sonnet-tier agent underperforms, escalate that phase's default to `opus` and document why.
 
 ## Phase Transition Autonomy (Quick Reference)
 

@@ -26,12 +26,27 @@ Agent definitions use `{{PLACEHOLDER}}` markers for runtime context that the par
 
 ## Agent Inventory
 
-| Agent | Phase | Purpose | Tool Restrictions |
-|-------|-------|---------|-------------------|
-| `phase-a-fixer` | A | Fix findings, push, write handoff | Full access |
-| `phase-b-reviewer` | B | Poll reviews, fix findings, update handoff | Full access |
-| `phase-c-merger` | C | Verify merge gate, check AC, report readiness | Read-only + Bash (for `gh`) |
-| `pm-worker` | — | Issue management, work-log, repo bootstrap | Full access |
+| Agent | Phase | Purpose | Tool Restrictions | Default Model |
+|-------|-------|---------|-------------------|---------------|
+| `phase-a-fixer` | A | Fix findings, push, write handoff | Full access | `opus` |
+| `phase-b-reviewer` | B | Poll reviews, fix findings, update handoff | Full access | `opus` |
+| `phase-c-merger` | C | Verify merge gate, check AC, report readiness | Read-only + Bash (for `gh`) | `sonnet` |
+| `pm-worker` | — | Issue management, work-log, repo bootstrap | Full access | `sonnet` |
+
+### Model Selection
+
+Each agent definition declares a default `model` in frontmatter. The parent should also set `model` explicitly at the Agent tool call site per `.claude/rules/subagent-orchestration.md` "Model Selection" — the call-site parameter overrides the frontmatter default and keeps cost decisions visible at every spawn point.
+
+**Per-phase rationale:**
+
+| Agent | Model | Why |
+|-------|-------|-----|
+| `phase-a-fixer` | `opus` | Heaviest reasoning: reads findings, edits source files across multiple locations, resolves rule conflicts, designs fixes. Quality regressions here cost a full review cycle. |
+| `phase-b-reviewer` | `opus` | Evaluates review findings (many are false positives), decides when to dismiss vs. fix, handles multi-reviewer edge cases, judges severity. Needs strong judgment. |
+| `phase-c-merger` | `sonnet` | Lightweight verification: reads PR body, checks boxes against code, runs `gh` commands. Read-only tool restrictions (no Write/Edit) — the mechanical work does not need Opus-level reasoning. |
+| `pm-worker` | `sonnet` | Data gathering and formatting: issue creation, work-log updates, repo bootstrap checks. Each task follows a well-defined template. |
+
+The global env var `CLAUDE_CODE_SUBAGENT_MODEL=opus` remains the fallback default for any spawn site that doesn't specify a model — it's the safety net for undocumented spawns.
 
 ## Spawning Pattern
 
@@ -41,6 +56,7 @@ The parent agent spawns subagents like this:
 Agent tool call:
   subagent_type: "phase-a-fixer"
   mode: "bypassPermissions"
+  model: "opus"
   prompt: "Work on PR #618 for issue #617 on branch issue-617-add-auth.
            Repo: auerbachb/claude-code-config
            Handoff file: ~/.claude/handoffs/pr-618-handoff.json

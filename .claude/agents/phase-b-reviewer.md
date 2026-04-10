@@ -1,5 +1,6 @@
 ---
 description: "Phase B subagent: poll for CR/Greptile reviews, process findings, fix code, update handoff file, print exit report. Runs after Phase A pushes fixes."
+model: opus
 ---
 
 # Phase B: Review Loop
