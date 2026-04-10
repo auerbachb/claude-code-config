@@ -44,10 +44,13 @@ fi
 # Scope the grep to pipe-delimited table rows so prose references to
 # other *.md files elsewhere in CLAUDE.md (e.g. README.md) aren't
 # misread as rule-file entries.
+# Allow empty results without aborting under `set -euo pipefail`: if either
+# grep matches nothing it exits 1, which would kill the script. The `|| true`
+# guard lets downstream comm/diagnostic logic handle the empty case.
 indexed_files=$(grep -E '^\|' "$CLAUDE_MD" \
   | grep -oE '`[a-zA-Z0-9_-]+\.md`' \
   | tr -d '`' \
-  | sort -u)
+  | sort -u || true)
 
 actual_files=$(find "$RULES_DIR" -maxdepth 1 -type f -name '*.md' -exec basename {} \; \
   | sort -u)
