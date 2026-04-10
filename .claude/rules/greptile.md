@@ -66,7 +66,7 @@ Applies to 2nd/3rd triggers only; initial trigger requires only the budget check
 
 ### Sticky Assignment
 
-**Once Greptile is triggered for a PR, it stays on Greptile permanently.** Do not switch back to CR. After fixing findings, only re-trigger `@greptileai` for P0 findings. Ignore late CR reviews. Merge gate is severity-dependent (see below).
+**Once Greptile is triggered for a PR, it stays on Greptile permanently.** Do not switch back to CR. After fixing findings, only re-trigger `@greptileai` for P0 findings. Ignore late CR reviews. Merge gate is severity-dependent — see `cr-github-review.md` "Completion" section (Step 1) for the authoritative definition.
 
 ## Polling for Greptile Response
 
