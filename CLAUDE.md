@@ -4,10 +4,10 @@ These apply to EVERY message the parent agent sends to the user. No exceptions, 
 
 1. **Timestamp prefix.** Start every message with Eastern time (`Mon Mar 16 02:34 AM ET`). Get via: `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`. NEVER estimate timestamps — always run the `date` command.
 2. **Active monitoring declaration.** If monitoring background agents, state how many and which PRs at the end of every message.
-3. **5-minute heartbeat.** Never go >5 minutes without a status message. See `subagent-orchestration.md` "User Heartbeat" for detailed rules.
-4. **Dedicated monitor mode.** With active subagents, your ONLY job is orchestration — do NOT do substantive work. See `subagent-orchestration.md` "Dedicated Monitor Mode" for full rules.
+3. **5-minute heartbeat.** Never go >5 minutes without a status message. See `monitor-mode.md` "User Heartbeat" for detailed rules.
+4. **Dedicated monitor mode.** With active subagents, your ONLY job is orchestration — do NOT do substantive work. See `monitor-mode.md` "Dedicated Monitor Mode" for full rules.
 
-After context compaction, your FIRST action is to reconstruct monitoring state (see "Post-Compaction Recovery" in `subagent-orchestration.md`) and report it WITH a timestamp.
+After context compaction, your FIRST action is to reconstruct monitoring state (see "Post-Compaction Recovery" in `monitor-mode.md`) and report it WITH a timestamp.
 
 ---
 
@@ -72,7 +72,10 @@ Detailed workflow rules are split into topic-specific files in `.claude/rules/`:
 | `cr-local-review.md` | Local CodeRabbit CLI review loop (primary review workflow), linter suppression prohibition |
 | `cr-github-review.md` | GitHub CR polling, rate limits, fast-path detection, thread resolution, CI-must-pass gate, completion criteria |
 | `greptile.md` | Greptile peer reviewer + CR fallback + self-review fallback |
-| `subagent-orchestration.md` | Task decomposition (phases A/B/C), dedicated monitor mode, health monitoring, timestamps, subagent quick-reference |
+| `subagent-orchestration.md` | Subagent spawning, phase transition autonomy table, token exhaustion, phase A/B/C decomposition |
+| `monitor-mode.md` | Dedicated monitor mode, monitor loop, heartbeats, health monitoring, post-compaction recovery |
+| `handoff-files.md` | Handoff file schema, session-state.json format, lifecycle (create/update/delete) |
+| `phase-protocols.md` | Structured exit report format, Phase A/B/C completion protocol checklists |
 | `work-log.md` | Auto-update daily work log on issue create, PR open, PR merge |
 | `safety.md` | Destructive command prohibitions, .env protection, subagent safety warnings |
 | `repo-bootstrap.md` | Auto-provision required GitHub Actions workflows on first touch |

@@ -38,7 +38,7 @@ Auto-review on PR open is disabled via a "Labels: includes: `greptile`" filter i
 Greptile charges $1/review beyond the 50/month included quota. To prevent runaway costs when many PRs are processed in parallel, enforce a hard daily cap.
 
 - **Default budget: 40 reviews/day** (adjustable — set `budget` field in `session-state.json`).
-- **Tracking:** The `greptile_daily` section in `~/.claude/session-state.json` tracks `reviews_used`, `date` (YYYY-MM-DD in ET timezone), and `budget`. See `subagent-orchestration.md` for the schema.
+- **Tracking:** The `greptile_daily` section in `~/.claude/session-state.json` tracks `reviews_used`, `date` (YYYY-MM-DD in ET timezone), and `budget`. See `handoff-files.md` for the schema.
 - **Before EVERY `@greptileai` trigger**, read `greptile_daily` from session state and run the budget check:
   1. Get the current date in ET: `TZ='America/New_York' date +'%Y-%m-%d'`
   2. If `greptile_daily.date` differs from today's date, reset `reviews_used` to 0 and update `date` to today
