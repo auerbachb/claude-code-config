@@ -167,7 +167,7 @@ The merge gate depends on which reviewer owns the PR:
   1. **Ack (review started):** CR posts an issue comment (on `issues/{N}/comments`) with "Actions performed — Full review triggered." This means CR **started** the review — it is NOT a completion signal.
   2. **Completion (review finished):** The commit status check for CodeRabbit shows `status: "completed"` with `conclusion: "success"` (visible as "CodeRabbit — Review completed" in the PR's CI checks). This is the **definitive completion signal**.
   3. **Clean = completed + no new findings:** Once the CI check shows completed, check all three comment endpoints for any new findings posted after the ack. If there are none, the review is a clean pass. You do NOT need to keep polling to the 7-minute timeout once the CI check is green and no findings appeared.
-- Once the merge gate is met, proceed immediately to Step 2.
+- Once the merge gate is met, proceed immediately to Step 1b (CI verification).
 
 **Step 1b — CI Must Pass Before Merge (NON-NEGOTIABLE):**
 
@@ -193,7 +193,7 @@ gh api "repos/{owner}/{repo}/commits/$SHA/check-runs?per_page=100" \
 This applies to ALL merge paths: manual `gh pr merge`, the `/merge` skill, the `/wrap` skill, and Phase C merge prep.
 
 **Step 2 — Verify every Test Plan checkbox (MANDATORY — do NOT skip):**
-> This is the **immediate next step** after the merge gate is met. Do not ask the user about merging until this is done.
+> This is the **immediate next step** after CI passes (Step 1b). Do not ask the user about merging until this is done.
 >
 > 1. Fetch the PR body via `gh pr view N --json body`
 > 2. Parse **every** checkbox in the **Test plan** section of the PR description
