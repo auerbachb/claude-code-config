@@ -12,6 +12,10 @@ allowed-tools:
   - WebSearch
 ---
 
+## Data gathering
+
+This skill uses the canonical query patterns documented in `.claude/reference/pm-data-patterns.md` (time windows, review participation, bot filtering). When updating data collection logic, update the reference doc AND any skills that depend on it.
+
 Generate a team standup report showing what each contributor accomplished since $ARGUMENTS (default: "yesterday at noon ET" if no argument given).
 
 ## Step 1: Set time range
@@ -74,10 +78,10 @@ Group PRs by `author.login`.
 
 ```bash
 # Issues created
-gh issue list --state all --search "created:>$SINCE_DATE" --json number,title,author,state,createdAt --limit 500
+gh issue list --state all --search "created:>=$SINCE_DATE" --json number,title,author,state,createdAt --limit 500
 
 # Issues closed
-gh issue list --state closed --search "closed:>$SINCE_DATE" --json number,title,closedAt --limit 500
+gh issue list --state closed --search "closed:>=$SINCE_DATE" --json number,title,closedAt --limit 500
 ```
 
 Group by author for created issues. Closed issues may not have an easy author attribution — note them separately if the closer isn't identifiable.
