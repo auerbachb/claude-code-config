@@ -92,8 +92,11 @@ PLAN=$(gh issue view "$ISSUE_NUMBER" --json comments \
     --json databaseId,displayTitle,status,conclusion,createdAt,event \
     --jq ".[] | select(.displayTitle | test(\"#${ISSUE_NUMBER}\\\\b\"))"
   ```
-  If that query returns nothing (no matching run), also consider it a "missing" case. Only post `@coderabbitai plan` when the matching run for THIS issue has `conclusion: "failure"` or no run for THIS issue exists.
-  - **If the workflow run for this issue failed (or is missing entirely)**: post `@coderabbitai plan` and poll every 60s for up to 5 minutes:
+  If that query returns nothing (no matching run), consider it a "missing" case. When evaluating a matching run, **always check `status` before `conclusion`** — a run with `status: "queued"` or `status: "in_progress"` has no final conclusion yet and must not be treated as success or failure:
+  - **`status != "completed"` (queued / in_progress):** the workflow is still running. Wait up to 5 minutes, re-querying every 60s. If it completes during the wait, re-evaluate. If still not completed after 5 minutes, treat it as stalled and fall through to the manual trigger branch below.
+  - **`status == "completed"` and `conclusion == "success"`:** the workflow succeeded. Skip the manual trigger and proceed to Step 4 without a plan — CR simply produced no plan comment.
+  - **`status == "completed"` and `conclusion == "failure"` (or any other non-success conclusion):** the workflow ran but failed — fall through to the manual trigger branch.
+  - **If the workflow run for this issue failed, is missing entirely, or stalled past the 5-minute wait**: post `@coderabbitai plan` and poll every 60s for up to 5 minutes:
     ```bash
     gh issue comment "$ISSUE_NUMBER" --body "@coderabbitai plan"
     for i in $(seq 1 5); do
@@ -108,7 +111,6 @@ PLAN=$(gh issue view "$ISSUE_NUMBER" --json comments \
       if [ -n "$PLAN" ]; then break; fi
     done
     ```
-  - **If the workflow succeeded but CR simply produced no plan comment**: skip the manual trigger and proceed to Step 4 without a plan.
 - If still no plan after 5 minutes, proceed to Step 4 without it. Note it in the final summary.
 
 > **Note:** Use `coderabbitai` (no `[bot]` suffix) for issue comments. PR reviews use `coderabbitai[bot]`.
