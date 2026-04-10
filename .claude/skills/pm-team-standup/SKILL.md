@@ -12,6 +12,10 @@ allowed-tools:
   - WebSearch
 ---
 
+## Data gathering
+
+This skill uses the canonical query patterns documented in `.claude/reference/pm-data-patterns.md` (time windows, review participation, bot filtering). When updating data collection logic, update the reference doc AND any skills that depend on it.
+
 Generate a team standup report showing what each contributor accomplished since $ARGUMENTS (default: "yesterday at noon ET" if no argument given).
 
 ## Step 1: Set time range

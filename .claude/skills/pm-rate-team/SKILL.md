@@ -4,6 +4,10 @@ description: Evaluate team member contributions over a configurable period (defa
 argument-hint: "[--days N] (default: 14)"
 ---
 
+## Data gathering
+
+This skill uses the canonical query patterns documented in `.claude/reference/pm-data-patterns.md` (time windows, merged PRs, closed issues with closer attribution, review cycles, review participation, bot filtering, first-pass CR success). When updating data collection logic, update the reference doc AND any skills that depend on it.
+
 Evaluate team contributions over a configurable period. Parse `$ARGUMENTS`:
 
 - If `$ARGUMENTS` contains `--days N`, use N days as the evaluation period.
