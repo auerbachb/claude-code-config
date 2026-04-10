@@ -305,6 +305,12 @@ The **user** decides when and where to paste the prompts. The user starts the co
 
 **Exception:** If the user explicitly says "go ahead and run those", "spin up agents", or "execute those prompts" — then and only then may you spawn subagents via the Agent tool to execute the coding thread prompts.
 
+**Model selection for spawned subagents:**
+
+- **Coding subagents** (Phase A/B executing a selected issue): prefer the `/subagent` skill, which already enforces per-phase model selection (`opus` for Phase A/B, `sonnet` for Phase C). See `.claude/rules/subagent-orchestration.md` "Model Selection".
+- **Read-only PM data-gathering subagents** (e.g., scanning GitHub for backlog context, summarizing recent PR activity, reviewing progress on in-flight threads): spawn with `subagent_type: "pm-worker"`, `mode: "bypassPermissions"`, and `model: "sonnet"`. These tasks are template-driven data collection — Sonnet is the right cost tier and the frontmatter default on `pm-worker` matches.
+- **Never omit `model`** at the call site. Explicit model selection keeps cost decisions visible at every spawn point and prevents silent Opus usage for lightweight work.
+
 ---
 
 ## Writing Rules

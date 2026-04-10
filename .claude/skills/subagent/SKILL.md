@@ -246,8 +246,11 @@ worktree directory at all times.
 
 **Agent tool call parameters:**
 - `mode: "bypassPermissions"`
+- `model: "opus"` (heavy reasoning — initial implementation, multi-file edits, PR creation — see `subagent-orchestration.md` "Model Selection")
 - `isolation: "worktree"`
 - `run_in_background: true` (so you can monitor multiple agents)
+
+> **Note on `subagent_type`:** Do NOT set `subagent_type: "phase-a-fixer"` here. The `/subagent` skill's "Phase A" does **initial implementation** of a new issue (no PR exists yet), but `.claude/agents/phase-a-fixer.md` is designed for **fixing existing review findings** on an already-open PR — its workflow references findings, review threads, and push replies that don't apply to green-field implementation. Let this Agent call fall back to the default general-purpose agent; the long custom prompt below carries all the rules the subagent needs.
 
 Record each spawned agent in `session-state.json` under `active_agents`.
 
@@ -341,6 +344,13 @@ If missing, reconstruct state from GitHub API.
 12. EXIT immediately.
 ```
 
+**Phase B Agent tool call parameters:**
+- `subagent_type: "phase-b-reviewer"`
+- `mode: "bypassPermissions"`
+- `model: "opus"` (Phase B evaluates review findings and fixes code — see `subagent-orchestration.md` "Model Selection")
+- `isolation: "worktree"` (same as Phase A — Phase B fetches and checks out the PR branch inside its own fresh worktree)
+- `run_in_background: true`
+
 ### Phase B Completion
 
 When a Phase B subagent returns:
@@ -397,6 +407,13 @@ worktree directory at all times.
    ```
 10. EXIT immediately. Do NOT merge — the parent presents the merge decision to the user.
 ```
+
+**Phase C Agent tool call parameters:**
+- `subagent_type: "phase-c-merger"`
+- `mode: "bypassPermissions"`
+- `model: "sonnet"` (Phase C is lightweight read-only verification — see `subagent-orchestration.md` "Model Selection")
+- `isolation: "worktree"` (same as Phase A — Phase C fetches and checks out the PR branch inside its own fresh worktree)
+- `run_in_background: true`
 
 ### Phase C Completion
 

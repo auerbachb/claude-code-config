@@ -1,5 +1,6 @@
 ---
 description: "PM task execution agent: issue management, work-log updates, repo bootstrap checks. Used for lightweight PM tasks that don't require the full Phase A/B/C pipeline."
+model: sonnet
 ---
 
 # PM Worker Agent
