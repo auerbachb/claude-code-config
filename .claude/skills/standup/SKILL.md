@@ -6,6 +6,14 @@ triggers:
   - what did I do yesterday
   - recent work summary
 argument-hint: "[since-time] — omit for smart default (skips weekends/holidays); e.g. \"Friday at noon ET\""
+model: sonnet
+allowed-tools:
+  - Read
+  - Glob
+  - Grep
+  - Bash
+  - WebFetch
+  - WebSearch
 ---
 
 Generate a standup report summarizing what was accomplished since $ARGUMENTS (default: smart lookback to previous workday noon ET — skips weekends and US federal holidays).

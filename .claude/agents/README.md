@@ -23,6 +23,8 @@ Agent definitions use `{{PLACEHOLDER}}` markers for runtime context that the par
 | `{{HANDOFF_FILE}}` | Path to handoff JSON | `~/.claude/handoffs/pr-618-handoff.json` |
 | `{{REVIEWER}}` | Assigned reviewer (`cr` or `greptile`) | `cr` |
 | `{{EXISTING_FINDINGS}}` | Pre-fetched review findings (optional) | JSON or summary text |
+| `{{RESEARCH_QUESTION}}` | Research/audit question for the `researcher` agent | `"List every skill that uses the `Bash` tool"` |
+| `{{SCOPE}}` | Optional scope hints for `researcher` (dirs, files, date ranges) | `".claude/skills/*/SKILL.md"` |
 
 ## Agent Inventory
 
@@ -32,6 +34,7 @@ Agent definitions use `{{PLACEHOLDER}}` markers for runtime context that the par
 | `phase-b-reviewer` | B | Poll reviews, fix findings, update handoff | Full access | `opus` |
 | `phase-c-merger` | C | Verify merge gate, check AC, report readiness | Read-only + Bash (for `gh`) | `sonnet` |
 | `pm-worker` | — | Issue management, work-log, repo bootstrap | Full access | `sonnet` |
+| `researcher` | — | Read-only exploration, audit, investigation — produces a findings report | Read, Glob, Grep, Bash (read-only `gh`/`git`/`cat`/`find`/etc.) | `sonnet` |
 
 ### Model Selection
 
@@ -45,6 +48,7 @@ Each agent definition declares a default `model` in frontmatter. The parent must
 | `phase-b-reviewer` | `opus` | Evaluates review findings (many are false positives), decides when to dismiss vs. fix, handles multi-reviewer edge cases, judges severity. Needs strong judgment. |
 | `phase-c-merger` | `sonnet` | Lightweight verification: reads PR body, checks boxes against code, runs `gh` commands. Read-only tool restrictions (no Write/Edit) — the mechanical work does not need Opus-level reasoning. |
 | `pm-worker` | `sonnet` | Data gathering and formatting: issue creation, work-log updates, repo bootstrap checks. Each task follows a well-defined template. |
+| `researcher` | `sonnet` | Read-only exploration and summarization: reads files, runs `gh`/`git` queries, synthesizes findings. No code edits, no fixes — `sonnet` is sufficient for read-and-report work, and the restricted `allowed-tools` frontmatter prevents any write operations regardless of model. |
 
 The global env var `CLAUDE_CODE_SUBAGENT_MODEL=opus` is a legacy safety net for unexpected/undocumented spawns only — **not** a compliant spawn pattern. Compliant calls must still set `model` explicitly at the call site and must not rely on either the frontmatter default or this env var.
 
