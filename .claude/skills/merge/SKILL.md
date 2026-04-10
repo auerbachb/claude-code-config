@@ -5,6 +5,13 @@ description: Squash merge the current PR, delete the branch, log to work-log, an
 
 Squash merge the current PR. This is the "we're done here" command.
 
+## When to use /merge vs /wrap
+
+- Use **/merge** for a quick mid-session merge when you'll continue working in the same session. It handles AC verification, CI check, and squash-merge — nothing else.
+- Use **/wrap** for end-of-session cleanup. /wrap is a superset: runs the same merge flow PLUS detects follow-up issues, extracts session lessons, syncs the work log, and cleans up the worktree.
+- If you're done for the session, use /wrap. If you're merging and immediately starting the next issue, use /merge.
+- Note: /merge aborts if invoked from inside a worktree (see Step 1) — use /wrap in that case since it removes the worktree before deleting the branch.
+
 ## Steps
 
 ### Step 1: Identify the PR
