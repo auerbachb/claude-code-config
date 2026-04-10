@@ -76,12 +76,12 @@ HANDOFF_FILE: ~/.claude/handoffs/pr-618-handoff.json
 1. **Parse the exit report.** No exit report = silent failure.
 2. **Branch on OUTCOME:**
    - `clean` or `merge_ready` → proceed to step 3 (launch Phase C)
-   - `fixes_pushed` → launch replacement Phase B within 60s. Update `session-state.json`. Report to user.
-   - `exhaustion` → launch replacement Phase B within 60s. Report to user.
+   - `fixes_pushed` → launch replacement Phase B within 60s. Update `session-state.json` (record new HEAD SHA, keep phase as B). Report to user with timestamp. **STOP — do not execute steps 3-6.**
+   - `exhaustion` → launch replacement Phase B within 60s. Update `session-state.json` (record remaining work, keep phase as B). Report to user with timestamp. **STOP — do not execute steps 3-6.**
 3. **Verify review state via GitHub API.** Confirm merge gate is met:
    - CR-only: verify 2 clean CR reviews exist
    - Greptile: verify severity gate (see `greptile.md`)
-   - If verification fails, launch replacement Phase B instead of Phase C
+   - If verification fails, launch replacement Phase B instead of Phase C — STOP.
 4. **Launch Phase C within 60 seconds.** Include handoff file path in prompt.
 5. **Update `session-state.json`.** Record phase transition and HEAD SHA.
 6. **Report to user (with timestamp).**
