@@ -58,12 +58,25 @@ SHA=$(gh pr view {{PR_NUMBER}} --json commits --jq '.commits[-1].oid')
 gh api "repos/{{OWNER}}/{{REPO}}/commits/$SHA/check-runs?per_page=100" \
   --jq '.check_runs[] | select(.name == "CodeRabbit") | {status, conclusion, title: .output.title}'
 
-# Step 1b: No new CR findings posted since the most recent "Actions performed" ack
-#   - fetch coderabbitai[bot] comments from all 3 endpoints (reviews, pulls/comments, issues/comments)
-#   - discard the "Actions performed" ack comments themselves
-#   - if any remaining comment is newer than the ack AND contains an actionable finding, the pass is NOT clean
-gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/comments?per_page=100" \
-  --jq '[.[] | select(.user.login == "coderabbitai[bot]")] | length'
+# Step 1b: No new CR findings posted across ALL 3 endpoints since the most recent "Actions performed" ack.
+# Find the latest ack timestamp from the issues/comments endpoint (where CR posts the ack):
+ACK_TS=$(gh api "repos/{{OWNER}}/{{REPO}}/issues/{{PR_NUMBER}}/comments?per_page=100" \
+  --jq '[.[] | select(.user.login == "coderabbitai[bot]" and (.body | test("Actions performed"; "i")))] | if length > 0 then (max_by(.created_at) | .created_at) else "" end')
+
+# Count CR inline comments newer than the ack (excluding the ack itself)
+NEW_INLINE=$(gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/comments?per_page=100" \
+  --jq --arg ack "$ACK_TS" '[.[] | select(.user.login == "coderabbitai[bot]" and .created_at > $ack)] | length')
+
+# Count CR review objects newer than the ack that carry actionable findings (CHANGES_REQUESTED or non-empty body)
+NEW_REVIEWS=$(gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/reviews?per_page=100" \
+  --jq --arg ack "$ACK_TS" '[.[] | select(.user.login == "coderabbitai[bot]" and .submitted_at > $ack and (.state == "CHANGES_REQUESTED" or ((.body // "") | length > 0)))] | length')
+
+# Count CR issue comments newer than the ack that are not themselves acks
+NEW_ISSUE=$(gh api "repos/{{OWNER}}/{{REPO}}/issues/{{PR_NUMBER}}/comments?per_page=100" \
+  --jq --arg ack "$ACK_TS" '[.[] | select(.user.login == "coderabbitai[bot]" and .created_at > $ack and ((.body | test("Actions performed"; "i")) | not))] | length')
+
+echo "NEW_INLINE=$NEW_INLINE NEW_REVIEWS=$NEW_REVIEWS NEW_ISSUE=$NEW_ISSUE"
+# A clean pass requires: Step 1a shows conclusion=success AND all three counts above are 0.
 ```
 
 Two clean passes are required (the second is a confirmation pass on the same SHA after triggering `@coderabbitai full review` one more time). If both conditions hold across two consecutive reviews on the same HEAD, the merge gate is met.

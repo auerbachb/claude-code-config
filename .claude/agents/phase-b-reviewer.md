@@ -91,14 +91,18 @@ Never trigger `@coderabbitai full review` more than twice per PR per hour.
 ### Daily Budget Check (MANDATORY before EVERY `@greptileai` trigger)
 
 ```bash
-# Read budget from session state — with safe defaults if missing/corrupt
+# Read budget from session state — with safe defaults if missing OR corrupt.
+# Both conditions must be handled: a missing file, AND a file that contains invalid JSON
+# (jq exits non-zero on invalid JSON, which would otherwise crash the flow before budget enforcement).
 mkdir -p ~/.claude
-if [ -f ~/.claude/session-state.json ]; then
+if [ -f ~/.claude/session-state.json ] && jq -e . ~/.claude/session-state.json >/dev/null 2>&1; then
+  # File exists AND parses as valid JSON — extract greptile_daily with field-level default
   GREPTILE_DAILY=$(jq '.greptile_daily // {"date": "", "reviews_used": 0, "budget": 40}' ~/.claude/session-state.json)
 else
+  # File is missing OR contains invalid JSON — recover with a safe default and rewrite atomically
   GREPTILE_DAILY='{"date":"","reviews_used":0,"budget":40}'
-  # Initialize the file with the default so subsequent writes can update it
-  echo '{"greptile_daily":'"$GREPTILE_DAILY"'}' > ~/.claude/session-state.json
+  jq -n --argjson gd "$GREPTILE_DAILY" '{greptile_daily: $gd}' > ~/.claude/session-state.json.tmp \
+    && mv ~/.claude/session-state.json.tmp ~/.claude/session-state.json
 fi
 echo "$GREPTILE_DAILY"
 ```
