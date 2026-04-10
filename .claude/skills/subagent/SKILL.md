@@ -245,11 +245,12 @@ worktree directory at all times.
 ```
 
 **Agent tool call parameters:**
-- `subagent_type: "phase-a-fixer"`
 - `mode: "bypassPermissions"`
-- `model: "opus"` (Phase A does heavy reasoning — see `subagent-orchestration.md` "Model Selection")
+- `model: "opus"` (heavy reasoning — initial implementation, multi-file edits, PR creation — see `subagent-orchestration.md` "Model Selection")
 - `isolation: "worktree"`
 - `run_in_background: true` (so you can monitor multiple agents)
+
+> **Note on `subagent_type`:** Do NOT set `subagent_type: "phase-a-fixer"` here. The `/subagent` skill's "Phase A" does **initial implementation** of a new issue (no PR exists yet), but `.claude/agents/phase-a-fixer.md` is designed for **fixing existing review findings** on an already-open PR — its workflow references findings, review threads, and push replies that don't apply to green-field implementation. Let this Agent call fall back to the default general-purpose agent; the long custom prompt below carries all the rules the subagent needs.
 
 Record each spawned agent in `session-state.json` under `active_agents`.
 
