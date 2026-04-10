@@ -32,6 +32,7 @@ Agent definitions use `{{PLACEHOLDER}}` markers for runtime context that the par
 | `phase-b-reviewer` | B | Poll reviews, fix findings, update handoff | Full access | `opus` |
 | `phase-c-merger` | C | Verify merge gate, check AC, report readiness | Read-only + Bash (for `gh`) | `sonnet` |
 | `pm-worker` | — | Issue management, work-log, repo bootstrap | Full access | `sonnet` |
+| `researcher` | — | Read-only exploration, audit, investigation — produces a findings report | Read, Glob, Grep, Bash (read-only `gh`/`git`/`cat`/`find`/etc.) | `sonnet` |
 
 ### Model Selection
 
