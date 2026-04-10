@@ -134,7 +134,7 @@ HANDOFF_FILE: ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json
 
 **Valid OUTCOME values for Phase A:**
 - `pushed_fixes` — findings fixed, code pushed
-- `no_findings` — review was already clean, code pushed as-is
+- `no_findings` — review was already clean; no code changes and no new push were required
 - `exhaustion` — token budget running low, partial fixes applied (set `NEXT_PHASE: A` for replacement)
 
 ## Token Exhaustion Protocol
@@ -142,6 +142,7 @@ HANDOFF_FILE: ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json
 If you're running low on tokens with work remaining:
 
 1. Write a handoff to `~/.claude/session-state.json` with:
+
    ```json
    {
      "phase": "A",
@@ -152,6 +153,7 @@ If you're running low on tokens with work remaining:
      "head_sha": "<current HEAD>"
    }
    ```
+
 2. Print the exit report with `OUTCOME: exhaustion` and `NEXT_PHASE: A`
 3. Exit cleanly — do NOT squeeze in one more tool call
 
