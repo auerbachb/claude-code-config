@@ -5,6 +5,12 @@ description: End-of-session command — verify no unresolved findings, squash me
 
 Wrap up the current PR and session. This is the "we're done here" command that handles everything from final verification through worktree cleanup.
 
+## When to use /wrap vs /merge
+
+- Use **/wrap** at end-of-session. Handles merge + follow-up detection + lessons + work-log sync + worktree cleanup in one command.
+- Use **/merge** for a quick mid-session merge when you'll keep working. Skips the cleanup steps and only runs outside worktrees.
+- /wrap includes everything /merge does, plus the cleanup. Don't run both.
+
 ## Phase 1: Pre-Merge Verification — Check for Unresolved Findings
 
 Before merging, verify that all reviewer feedback has been addressed.
