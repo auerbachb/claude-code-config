@@ -132,6 +132,9 @@ This creates **one canonical planning document** the coding agent can work from.
    current_body=$(gh issue view "$ISSUE_NUMBER" --json body --jq .body)
    merged_plan="<merged plan — files, steps, risks, verification>"
 
+   # Export CURRENT_BODY BEFORE the python heredoc so the subshell inherits it.
+   export CURRENT_BODY="$current_body"
+
    # Strip any existing "## Implementation Plan" section (everything from the
    # header to EOF or to the next top-level heading) so re-runs of /start-issue
    # don't create duplicate plan sections.
@@ -143,8 +146,6 @@ This creates **one canonical planning document** the coding agent can work from.
    sys.stdout.write(body.rstrip() + "\n")
    PY
    )
-   CURRENT_BODY="$current_body" # exported for the python block above
-   export CURRENT_BODY
 
    new_body="${stripped_body}
 
