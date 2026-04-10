@@ -35,7 +35,7 @@ for arg in "$@"; do
       APPLY=1
       ;;
     -h|--help)
-      sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -106,21 +106,41 @@ for ((i = 0; i < total; i++)); do
     continue
   fi
 
-  # Dirty check: uncommitted working-tree OR index changes.
+  # Dirty check: uncommitted working-tree OR index changes OR untracked files.
+  # Untracked files (e.g., a stray .env, scratch notes, partially-written scripts)
+  # are invisible to `diff --quiet` but `git worktree remove` will silently delete
+  # them. The ls-files check below protects those files.
   if ! (git -C "$wt" diff --quiet 2>/dev/null && git -C "$wt" diff --cached --quiet 2>/dev/null); then
+    dirty_paths+=("$wt")
+    continue
+  fi
+  if [[ -n "$(git -C "$wt" ls-files --others --exclude-standard 2>/dev/null)" ]]; then
     dirty_paths+=("$wt")
     continue
   fi
 
   # Staleness: merged into main OR branch no longer on origin.
+  # NOTE: `merge-base --is-ancestor` does NOT catch squash-merged branches —
+  # the original tip is not an ancestor of the squash commit. In practice
+  # squash-merge always deletes the remote branch, so the remote_gone check
+  # below catches squash-merged PRs. The is-ancestor check covers non-squash
+  # (true merge or ff) merges. We compare against `origin/main` to avoid lag
+  # in the local `main` ref.
   merged=0
-  if git -C "$MAIN_ROOT" merge-base --is-ancestor "$br" main 2>/dev/null; then
+  if git -C "$MAIN_ROOT" merge-base --is-ancestor "$br" origin/main 2>/dev/null; then
     merged=1
   fi
 
+  # Remote-gone: the branch is absent from origin. A never-pushed local branch
+  # also has no origin ref — distinguish by checking whether the branch has
+  # any commits ahead of main. Never-pushed branches with local commits are
+  # not stale (they represent in-progress unpushed work).
   remote_gone=0
   if [[ -z "$(git -C "$MAIN_ROOT" ls-remote --heads origin "$br" 2>/dev/null)" ]]; then
-    remote_gone=1
+    local_commits="$(git -C "$MAIN_ROOT" rev-list --count "origin/main..$br" 2>/dev/null || echo 0)"
+    if [[ "$local_commits" -eq 0 ]]; then
+      remote_gone=1
+    fi
   fi
 
   if [[ "$merged" -eq 1 || "$remote_gone" -eq 1 ]]; then
