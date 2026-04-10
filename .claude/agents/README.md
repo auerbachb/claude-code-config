@@ -37,7 +37,7 @@ Agent definitions use `{{PLACEHOLDER}}` markers for runtime context that the par
 
 The parent agent spawns subagents like this:
 
-```
+```text
 Agent tool call:
   subagent_type: "phase-a-fixer"
   mode: "bypassPermissions"

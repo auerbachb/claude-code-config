@@ -26,9 +26,11 @@ The parent agent provides task-specific context in your prompt:
 When creating a new GitHub issue:
 
 ### 1. Draft the issue locally
+
 Write the title, body, acceptance criteria, and relevant context.
 
 ### 2. Create the issue
+
 ```bash
 gh issue create --title "<title>" --body "<body>" --label "<labels>"
 ```
@@ -55,7 +57,9 @@ A GitHub Actions workflow automatically comments `@coderabbitai plan` on new iss
 ## Task: Work Log Updates
 
 ### Detect work-log directory
+
 Search from the main repo root (not the worktree):
+
 ```bash
 ROOT_REPO=$(git worktree list | head -1 | awk '{print $1}')
 find "$ROOT_REPO" -type d -name "work-logs" -not -path "*/.git/*" -not -path "*/.claude/*"
@@ -64,6 +68,7 @@ find "$ROOT_REPO" -type d -name "work-logs" -not -path "*/.git/*" -not -path "*/
 NEVER create a `work-logs/` directory. If none found, skip logging.
 
 ### Log format
+
 File: `session-log-YYYY-MM-DD.md` in the work-logs directory.
 
 Append timestamped lines to `## Activity Log`:
@@ -77,6 +82,7 @@ Append timestamped lines to `## Activity Log`:
 Time format: `TZ='America/New_York' date +'%l:%M %p' | sed 's/^ //'`
 
 ### Worktree sync
+
 Work-log edits in a worktree must be synced to the root repo:
 - Preferred: include the log file in the PR branch commit
 - Fallback: append missing entries to the root repo's copy
@@ -84,6 +90,7 @@ Work-log edits in a worktree must be synced to the root repo:
 ## Task: Repo Bootstrap
 
 ### Check for required workflows
+
 ```bash
 test -f .github/workflows/cr-plan-on-issue.yml && echo "exists" || echo "missing"
 ```
@@ -91,6 +98,7 @@ test -f .github/workflows/cr-plan-on-issue.yml && echo "exists" || echo "missing
 If missing, create `cr-plan-on-issue.yml` with the standard content (triggers `@coderabbitai plan` on new issues).
 
 ### Check branch protection
+
 ```bash
 gh api "repos/{{OWNER}}/{{REPO}}/branches/main/protection/required_status_checks" 2>&1
 ```

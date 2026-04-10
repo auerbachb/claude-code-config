@@ -47,11 +47,16 @@ Fix ALL valid findings before committing. Also fix any lint/CI failures.
 
 ### Step 3: Commit and Push
 
-Commit all fixes in ONE commit:
+Commit all fixes in ONE commit. If the review was already clean and no code changes were needed, skip the commit and proceed to Step 7 with `OUTCOME: no_findings`:
+
 ```bash
 git add -A
-git commit -m "fix: address review findings for PR #{{PR_NUMBER}}"
-git push origin {{BRANCH_NAME}}
+if git diff --cached --quiet; then
+  echo "No code changes — exit with OUTCOME: no_findings"
+else
+  git commit -m "fix: address review findings for PR #{{PR_NUMBER}}"
+  git push origin {{BRANCH_NAME}}
+fi
 ```
 
 One commit = one review consumed. Never push multiple commits for separate findings.

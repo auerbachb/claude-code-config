@@ -23,7 +23,8 @@ Use the custom agent definitions in `.claude/agents/` instead of manually readin
    - HEAD SHA, reviewer assignment (`cr` or `greptile`)
    - Pre-fetched findings (optional — saves the subagent from re-fetching)
 4. **Include the safety warning** in every subagent prompt:
-   ```
+
+   ```text
    SAFETY: Do NOT delete, overwrite, move, or modify .env files — anywhere, any repo.
    Do NOT run git clean in ANY directory. Do NOT run destructive commands (rm -rf, rm,
    git checkout ., git stash, git reset --hard) in the root repo directory. Stay in your

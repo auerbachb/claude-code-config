@@ -43,17 +43,20 @@ Before triggering `@coderabbitai full review` or entering the polling loop:
 
 ### Polling (60-second cycle)
 
-Poll ALL THREE endpoints + check-runs every cycle:
+Poll ALL THREE endpoints + check-runs every cycle. **Resolve the HEAD SHA dynamically at the start of every cycle** — Phase B may push new commits, and querying a stale SHA returns false merge-gate/CI conclusions:
 
 ```bash
+# Resolve current HEAD SHA (do this at the START of every poll cycle, and again after any push)
+CURRENT_SHA=$(gh pr view {{PR_NUMBER}} --json commits --jq '.commits[-1].oid')
+
 # Reviews
 gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/reviews?per_page=100"
 # Inline comments
 gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/comments?per_page=100"
 # Issue comments (where CR posts ack + summary)
 gh api "repos/{{OWNER}}/{{REPO}}/issues/{{PR_NUMBER}}/comments?per_page=100"
-# Check-runs (completion signal + rate-limit detection)
-gh api "repos/{{OWNER}}/{{REPO}}/commits/{{HEAD_SHA}}/check-runs" \
+# Check-runs (completion signal + rate-limit detection) — uses CURRENT_SHA, not the stale {{HEAD_SHA}} from your prompt
+gh api "repos/{{OWNER}}/{{REPO}}/commits/$CURRENT_SHA/check-runs" \
   --jq '.check_runs[] | select(.name == "CodeRabbit") | {name, status, conclusion, title: .output.title}'
 ```
 
@@ -86,8 +89,16 @@ Never trigger `@coderabbitai full review` more than twice per PR per hour.
 ### Daily Budget Check (MANDATORY before EVERY `@greptileai` trigger)
 
 ```bash
-# Read budget from session state
-cat ~/.claude/session-state.json | jq '.greptile_daily'
+# Read budget from session state — with safe defaults if missing/corrupt
+mkdir -p ~/.claude
+if [ -f ~/.claude/session-state.json ]; then
+  GREPTILE_DAILY=$(jq '.greptile_daily // {"date": "", "reviews_used": 0, "budget": 40}' ~/.claude/session-state.json)
+else
+  GREPTILE_DAILY='{"date":"","reviews_used":0,"budget":40}'
+  # Initialize the file with the default so subsequent writes can update it
+  echo '{"greptile_daily":'"$GREPTILE_DAILY"'}' > ~/.claude/session-state.json
+fi
+echo "$GREPTILE_DAILY"
 ```
 
 1. Get current date: `TZ='America/New_York' date +'%Y-%m-%d'`
@@ -123,10 +134,10 @@ Merge-ready when: no findings (clean), all P1/P2 after fix (no re-review needed)
 
 ## CI Health Check (MANDATORY — every poll cycle)
 
-Check ALL check-runs, not just CodeRabbit:
+Check ALL check-runs, not just CodeRabbit. Use `$CURRENT_SHA` resolved at the start of the cycle — not the stale `{{HEAD_SHA}}` from your prompt:
 
 ```bash
-gh api "repos/{{OWNER}}/{{REPO}}/commits/{{HEAD_SHA}}/check-runs?per_page=100" \
+gh api "repos/{{OWNER}}/{{REPO}}/commits/$CURRENT_SHA/check-runs?per_page=100" \
   --jq '.check_runs[] | {id, name, status, conclusion, title: .output.title}'
 ```
 
