@@ -100,7 +100,7 @@ Write JSON with this schema:
 {
   "schema_version": "1.0",
   "pr_number": {{PR_NUMBER}},
-  "head_sha": "<new HEAD SHA after push>",
+  "head_sha": "<HEAD after Step 3 — pushed commit SHA if a push occurred, otherwise current HEAD>",
   "reviewer": "<cr or greptile>",
   "phase_completed": "A",
   "created_at": "<ISO 8601 timestamp>",
