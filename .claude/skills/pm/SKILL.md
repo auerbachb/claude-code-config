@@ -336,7 +336,7 @@ gh issue list --state closed --limit 20 --json number,title,closedAt
 # User-scoped re-check (only if $GH_USER is set from Step 0)
 if [ -n "$GH_USER" ]; then
   gh pr list --state open --search "author:$GH_USER" --json number,title,updatedAt
-  gh pr list --state open --search "review-requested:$GH_USER" --json number,title,author
+  gh pr list --state open --search "review-requested:$GH_USER" --json number,title,author,updatedAt
 fi
 ```
 
