@@ -15,23 +15,9 @@
 
 ## Session-State Schema
 
-```json
-{
-  "last_updated": "2026-03-16T16:00:00Z",
-  "monitoring_active": true,
-  "root_repo": "/Users/user/repos/my-project",
-  "work_log_path": "docs/work-logs",
-  "prs": {
-    "618": {"phase": "B", "head_sha": "7b2cfbf", "reviewer": "cr", "needs": "cr_confirmation_pass"},
-    "620": {"phase": "B", "head_sha": "d0e4fef", "reviewer": "greptile", "needs": "fix_and_push"}
-  },
-  "cr_quota": {"reviews_used": 5, "window_start": "2026-03-16T15:00:00Z"},
-  "greptile_daily": {"reviews_used": 12, "date": "2026-03-16", "budget": 40},
-  "active_agents": [
-    {"id": "a3f8d26fa75eddcb3", "task": "PR #623 Phase C", "launched": "2026-03-16T15:55:00Z"}
-  ]
-}
-```
+Full example JSON (including the token-exhaustion handoff shape): `.claude/reference/session-state-schema.json`.
+
+Top-level keys: `last_updated`, `monitoring_active`, `root_repo`, `work_log_path`, `prs` (map of PR number → `{phase, head_sha, reviewer, needs}`), `cr_quota` (`{reviews_used, window_start}`), `greptile_daily` (`{reviews_used, date, budget}`), `active_agents` (array of `{id, task, launched}`).
 
 Write on phase transitions (A→B, B→C) and key state-change events (agent launched, completed, review received).
 
@@ -52,25 +38,7 @@ Write on phase transitions (A→B, B→C) and key state-change events (agent lau
 
 ## Handoff File Schema
 
-```json
-{
-  "schema_version": "1.0",
-  "pr_number": 618,
-  "head_sha": "abc1234",
-  "reviewer": "cr",
-  "phase_completed": "A",
-  "created_at": "2026-03-24T17:00:00Z",
-  "findings_fixed": ["comment-id-1", "comment-id-2"],
-  "findings_dismissed": [
-    {"id": "comment-id-3", "reason": "false positive — code already handles this case"}
-  ],
-  "threads_replied": ["thread-id-1", "thread-id-2"],
-  "threads_resolved": ["thread-id-1", "thread-id-2"],
-  "files_changed": ["src/foo.ts", "src/bar.ts"],
-  "push_timestamp": "2026-03-24T17:00:00Z",
-  "notes": "CR had 3 findings, all fixed. 1 dismissed as false positive."
-}
-```
+Full example JSON: `.claude/reference/handoff-file-schema.json`.
 
 ### Field Reference
 
@@ -94,18 +62,7 @@ Write on phase transitions (A→B, B→C) and key state-change events (agent lau
 
 ## Token Exhaustion Handoff
 
-When approaching token exhaustion (see `subagent-orchestration.md` "Token/Turn Exhaustion Protocol"), write a handoff to `session-state.json` with:
-
-```json
-{
-  "phase": "B",
-  "needs": "continue_polling",
-  "handoff_reason": "token_exhaustion",
-  "last_action": "pushed fixes at SHA abc1234, replied to 3/5 threads",
-  "remaining_work": ["reply to threads 4-5", "poll for next review"],
-  "head_sha": "abc1234"
-}
-```
+When approaching token exhaustion (see `subagent-orchestration.md` "Token/Turn Exhaustion Protocol"), write a handoff to `session-state.json` with `{phase, needs: "continue_polling", handoff_reason: "token_exhaustion", last_action, remaining_work, head_sha}`. Full example: `.claude/reference/session-state-schema.json` (see `_token_exhaustion_example`).
 
 Report concisely to the parent/user what was done and what remains. Exit cleanly — do not squeeze in one more tool call.
 
