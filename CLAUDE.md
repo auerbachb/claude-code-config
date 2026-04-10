@@ -103,7 +103,7 @@ Rules consume tokens on every turn — keep them tight. Limits apply to CLAUDE.m
 
 ## Memory System
 
-The auto-memory system persists insights across sessions at `~/.claude/projects/*/memory/`. Save memories **proactively** (without being asked) when you encounter information future sessions will need. Explicit user requests ("remember this", "save that") always override — save what the user says even if it doesn't fit these heuristics.
+The auto-memory system persists insights across sessions at `~/.claude/projects/*/memory/`. Save memories **proactively** (without being asked) when you encounter information future sessions will need. Explicit user requests ("remember this", "save that") normally override these heuristics, but never persist secrets, credentials, tokens, or regulated/sensitive personal data — if the user asks, confirm before saving and redact sensitive values.
 
 **Save proactively:**
 - **Feedback patterns:** CR false positives specific to this repo, user-preferred approaches confirmed across sessions, recurring corrections.
