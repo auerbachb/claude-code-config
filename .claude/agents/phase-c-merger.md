@@ -54,9 +54,21 @@ Verify **2 clean CR passes**. A clean pass is NOT just a review object from CR �
 ```bash
 SHA=$(gh pr view {{PR_NUMBER}} --json commits --jq '.commits[-1].oid')
 
-# Step 1a: CR check-run must be completed with conclusion=success
-gh api "repos/{{OWNER}}/{{REPO}}/commits/$SHA/check-runs?per_page=100" \
-  --jq '.check_runs[] | select(.name == "CodeRabbit") | {status, conclusion, title: .output.title}'
+# Step 1a: CR check-run must be completed with conclusion=success.
+# Fall back to the commit statuses endpoint if check-runs has no CodeRabbit entry —
+# some repos report CR via the legacy commit-status API instead of check-runs.
+CR_CHECK_RUN=$(gh api "repos/{{OWNER}}/{{REPO}}/commits/$SHA/check-runs?per_page=100" \
+  --jq '[.check_runs[] | select(.name == "CodeRabbit")] | first // empty')
+
+if [ -z "$CR_CHECK_RUN" ]; then
+  # Fallback: check commit statuses for a CodeRabbit context
+  gh api "repos/{{OWNER}}/{{REPO}}/commits/$SHA/statuses" \
+    --jq '.[] | select(.context | test("CodeRabbit"; "i")) | {context, state, description}'
+  # A clean pass in the fallback path requires state == "success"
+else
+  echo "$CR_CHECK_RUN" | jq '{status, conclusion, title: .output.title}'
+  # A clean pass in the check-runs path requires status == "completed" AND conclusion == "success"
+fi
 
 # Step 1b: No new CR findings posted across ALL 3 endpoints since the most recent "Actions performed" ack.
 # Find the latest ack timestamp from the issues/comments endpoint (where CR posts the ack):
@@ -88,6 +100,7 @@ gh api graphql -f query='query { repository(owner: "{{OWNER}}", name: "{{REPO}}"
 ```
 
 ### Greptile path (reviewer = `greptile`)
+
 Severity-gated: merge-ready when no findings, all P1/P2 after fix (no re-review), or P0 fixed + re-review clean.
 
 If the merge gate is NOT met, set `OUTCOME: blocked` and report what's missing.
@@ -112,18 +125,22 @@ If ANY blocking conclusions: `OUTCOME: blocked` (CI failed).
 ## Step 3: Verify Acceptance Criteria
 
 1. Fetch the PR body:
+
    ```bash
    gh pr view {{PR_NUMBER}} --json body --jq .body
    ```
+
 2. Parse every checkbox in the **Test plan** section
 3. For each item, read the relevant source file(s) and verify the criterion is met
 4. Check off passing items by editing the PR body:
+
    ```bash
    # Get current body, replace unchecked boxes with checked for verified items
    BODY=$(gh pr view {{PR_NUMBER}} --json body --jq .body)
    # Use gh pr edit to update
    gh pr edit {{PR_NUMBER}} --body "<updated body with checked boxes>"
    ```
+
 5. If any item fails verification: `OUTCOME: blocked` — report which items failed and why
 
 ## Step 4: Print Exit Report and EXIT

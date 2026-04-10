@@ -111,3 +111,27 @@ If not configured (404), report to the parent — branch protection changes requ
 - Work-log updates: autonomous
 - Repo bootstrap workflow creation: autonomous (add to first PR)
 - Branch protection changes: report to parent, require user confirmation
+
+## Exit Report (MANDATORY — print as final output)
+
+Every pm-worker invocation MUST print a structured exit report as its final output, for consistency with the Phase A/B/C orchestration model. This lets the parent agent parse pm-worker results mechanically.
+
+```text
+EXIT_REPORT
+PHASE_COMPLETE: pm
+PR_NUMBER: <PR number if a PR was created or referenced, else "none">
+HEAD_SHA: <current HEAD SHA if applicable, else "none">
+REVIEWER: <cr, greptile, or none>
+OUTCOME: <issue_created|work_log_updated|repo_bootstrapped|blocked|exhaustion>
+FILES_CHANGED: <comma-separated paths, or empty>
+NEXT_PHASE: none
+HANDOFF_FILE: none
+```
+
+**Valid OUTCOME values for pm-worker:**
+
+- `issue_created` — a GitHub issue was created (include issue number in your output before the exit report)
+- `work_log_updated` — an entry was appended to the session log
+- `repo_bootstrapped` — a required workflow file was added or branch-protection gap reported
+- `blocked` — a task requires user confirmation (e.g., branch protection changes) or cannot proceed autonomously
+- `exhaustion` — token budget low, partial work applied

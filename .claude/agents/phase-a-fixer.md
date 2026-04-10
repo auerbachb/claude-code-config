@@ -80,15 +80,21 @@ Reply to EVERY review comment thread acknowledging the fix.
 
 ### Step 5: Resolve Threads
 
-After replying, resolve each thread via GraphQL:
+After replying, resolve **only** the threads whose first-comment author is `coderabbitai` or `greptile-apps` (the bots you actually handled in Step 2). Do NOT resolve threads authored by human reviewers or other bots — those may be active discussion threads unrelated to your fix work.
 
 ```bash
-# Get thread IDs
-gh api graphql -f query='query { repository(owner: "{{OWNER}}", name: "{{REPO}}") { pullRequest(number: {{PR_NUMBER}}) { reviewThreads(first: 100) { nodes { id isResolved comments(first: 1) { nodes { body author { login } } } } } } } }'
-
-# Resolve each unresolved thread
-gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<thread_id>"}) { thread { isResolved } } }'
+# Get unresolved threads, filter to CR/Greptile bot authors, then resolve each
+gh api graphql -f query='query { repository(owner: "{{OWNER}}", name: "{{REPO}}") { pullRequest(number: {{PR_NUMBER}}) { reviewThreads(first: 100) { nodes { id isResolved comments(first: 1) { nodes { author { login } } } } } } } }' \
+  --jq '.data.repository.pullRequest.reviewThreads.nodes[]
+        | select(.isResolved == false)
+        | select(.comments.nodes[0].author.login | test("^(coderabbitai|greptile-apps)$"))
+        | .id' \
+  | while read -r thread_id; do
+      gh api graphql -f query="mutation { resolveReviewThread(input: {threadId: \"$thread_id\"}) { thread { isResolved } } }"
+    done
 ```
+
+If a thread's first-comment author is anything other than `coderabbitai` or `greptile-apps` (e.g., a human reviewer, or `cursor[bot]`), leave it alone.
 
 ### Step 6: Write Handoff File
 
