@@ -65,7 +65,7 @@ Full per-phase rationale lives in `.claude/agents/README.md` "Model Selection". 
 
 - **Set `model` at the call site explicitly.** Every Agent tool invocation MUST include `model` alongside `mode` and `subagent_type`. Relying on frontmatter defaults or the global `CLAUDE_CODE_SUBAGENT_MODEL` env var hides cost decisions.
 - **Call-site `model` overrides agent-definition frontmatter.** Override to `opus` when a specific spawn needs more firepower.
-- **Keep `CLAUDE_CODE_SUBAGENT_MODEL=opus` as the global fallback.** Do not modify it — it's the safety net for undocumented spawn sites.
+- **`CLAUDE_CODE_SUBAGENT_MODEL=opus` is a legacy safety net — not a compliant pattern.** Do not modify it, and do not rely on it: compliant calls must still set `model` explicitly at the call site. The env var only catches unexpected/undocumented spawns.
 - **Cost-optimization ≠ quality regression.** If a Sonnet-tier agent underperforms, escalate that phase's default to `opus` and document why.
 
 ## Phase Transition Autonomy (Quick Reference)

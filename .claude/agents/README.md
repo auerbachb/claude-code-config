@@ -46,7 +46,7 @@ Each agent definition declares a default `model` in frontmatter. The parent must
 | `phase-c-merger` | `sonnet` | Lightweight verification: reads PR body, checks boxes against code, runs `gh` commands. Read-only tool restrictions (no Write/Edit) — the mechanical work does not need Opus-level reasoning. |
 | `pm-worker` | `sonnet` | Data gathering and formatting: issue creation, work-log updates, repo bootstrap checks. Each task follows a well-defined template. |
 
-The global env var `CLAUDE_CODE_SUBAGENT_MODEL=opus` remains the fallback default for any spawn site that doesn't specify a model — it's the safety net for undocumented spawns.
+The global env var `CLAUDE_CODE_SUBAGENT_MODEL=opus` is a legacy safety net for unexpected/undocumented spawns only — **not** a compliant spawn pattern. Compliant calls must still set `model` explicitly at the call site and must not rely on either the frontmatter default or this env var.
 
 ## Spawning Pattern
 
