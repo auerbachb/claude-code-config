@@ -35,6 +35,8 @@ TOOL_NAME="${PARSED##*|}"
 
 [ -z "$CWD" ] && exit 0
 
+# Defense-in-depth: also filter here in case the matcher in global-settings.json
+# is ever widened or the script is invoked directly during testing.
 case "$TOOL_NAME" in
   Write|Edit|NotebookEdit) ;;
   *) exit 0 ;;
@@ -45,8 +47,12 @@ TOPLEVEL=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)
 
 # Scope enforcement to the claude-code-config repo only. The hook is registered
 # globally in ~/.claude/settings.json, but we only want to block writes on main
-# for this specific repo. Match the repo name as a full path component so paths
-# like /foo/claude-code-config-fork/bar do NOT trigger the guard.
+# for this specific repo. Match the repo's canonical directory name as a full
+# path component:
+#   - Excludes forks like /foo/claude-code-config-fork/bar (requires literal
+#     /claude-code-config trailing segment or /claude-code-config/ prefix segment)
+#   - Excludes clones under alternate names (e.g., ~/my-config) — intentional
+#     trade-off: the guard only protects the canonical directory name
 case "$TOPLEVEL" in
   */claude-code-config|*/claude-code-config/*) ;;
   *) exit 0 ;;
@@ -55,6 +61,9 @@ esac
 BRANCH=$(git -C "$CWD" branch --show-current 2>/dev/null || true)
 
 if [ "$BRANCH" = "main" ]; then
+  # If this python3 invocation fails for any reason (transient crash, etc.),
+  # the hook exits 0 with empty stdout — the framework treats that as "allow"
+  # (fail-open). The inline script is trivially simple so this is unlikely.
   python3 -c '
 import json
 print(json.dumps({
