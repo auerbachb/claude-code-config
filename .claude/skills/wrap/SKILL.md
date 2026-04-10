@@ -179,13 +179,21 @@ If a work-log directory was detected at session start:
    - {time} ET — PR #{N} merged (Issue #{M}): {1-line summary} [opened: {open_time}, merged: {merge_time}, cycles: {count}]
    ```
 
-## Phase 3: Follow-Up Detection
+## Phase 3: Follow-Up Detection and Creation
 
-Check if there is related work that needs attention for feature completeness.
+Detect related work that needs attention for feature completeness, then **auto-create GitHub issues** for each follow-up (with deduplication and HHG two-ticket pattern awareness).
 
-### Step 3.1: Check related issues
+### Step 3.1: Detect follow-up items
 
-1. Extract the linked issue number from the PR body (`Closes #N` pattern)
+1. Extract the linked issue number from the PR body (`Closes #N` pattern) and fetch its title and body:
+   ```bash
+   ISSUE_N=$(gh pr view --json body --jq '.body' | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+')
+   ISSUE_TITLE=$(gh issue view "$ISSUE_N" --json title --jq '.title' 2>/dev/null || echo "")
+   ISSUE_BODY=$(gh issue view "$ISSUE_N" --json body --jq '.body' 2>/dev/null || echo "")
+   PR_TITLE=$(gh pr view --json title --jq '.title')
+   PR_NUMBER=$(gh pr view --json number --jq '.number')
+   ```
+
 2. If a parent issue exists (check for "parent" or "epic" references in the issue body), fetch sibling issues:
    ```bash
    gh issue view {parent_N} --json body --jq .body
@@ -200,18 +208,95 @@ Check if there is related work that needs attention for feature completeness.
 
 4. Check if the issue itself has sub-tasks (task list checkboxes) that are unchecked.
 
-### Step 3.2: Report follow-ups
+Collect each detected follow-up as a `{title, body, keywords}` record. `keywords` is a short phrase (2-5 words) used for the dedup search.
 
-If follow-up items were found, present them:
+### Step 3.2: HHG two-ticket pattern detection
+
+If the PR title, linked issue title, or linked issue body contains "HHG" (case-insensitive), **override** any generic follow-ups with exactly **two** HHG follow-ups (scraping + ETL). This codifies the pattern from `feedback_split_hhg_issues.md` — HHG work always splits into one scraping ticket and one ETL ticket.
+
+```bash
+HHG_MATCH=$(printf '%s\n%s\n%s\n' "$PR_TITLE" "$ISSUE_TITLE" "$ISSUE_BODY" | grep -iE 'HHG' || true)
+if [ -n "$HHG_MATCH" ]; then
+  # Extract a 2-letter US state code from PR title or issue title.
+  # Restrict to the 50 USPS codes so unrelated 2-letter tokens (e.g. "CI", "PR")
+  # don't get mistaken for a state. If multiple states are mentioned, take the
+  # one adjacent to "HHG" first, then fall back to the first state match.
+  COMBINED=$(printf '%s %s' "$PR_TITLE" "$ISSUE_TITLE")
+  US_STATES='AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY'
+  STATE=$(printf '%s\n' "$COMBINED" | grep -oiE "\\b(${US_STATES})\\b[[:space:]]+HHG|HHG[[:space:]]+\\b(${US_STATES})\\b" | grep -oiE "\\b(${US_STATES})\\b" | head -1 | tr '[:lower:]' '[:upper:]')
+  if [ -z "$STATE" ]; then
+    STATE=$(printf '%s\n' "$COMBINED" | grep -oiE "\\b(${US_STATES})\\b" | head -1 | tr '[:lower:]' '[:upper:]')
+  fi
+  if [ -z "$STATE" ]; then
+    STATE="UNKNOWN"
+    echo "WARNING: HHG PR detected but no state code found in PR/issue title — creating generic HHG follow-ups. Flag for user review."
+  fi
+fi
+```
+
+The two HHG follow-up titles are:
+1. `{STATE} HHG — Export carriers and run scraper`
+2. `{STATE} HHG — Seed product codes and load scrape results to Neon`
+
+Each body should reference the source PR (`Follow-up from PR #{PR_NUMBER}`) and include any scraping/ETL context from the parent issue body.
+
+If `STATE == "UNKNOWN"`, still create both issues but flag them in the final report so the user can review and rename them.
+
+### Step 3.3: Dedup check and create
+
+For each follow-up item (the HHG pair or the generic list):
+
+1. **Dedup check** — search for an existing open issue with matching keywords in the title:
+   ```bash
+   DUP_NUM=$(gh issue list --search "{keywords} in:title" --state open --json number,title --jq '.[0].number // empty')
+   ```
+   If `DUP_NUM` is non-empty, skip creation and record the item as `skipped (dup of #{DUP_NUM})` in the report.
+
+2. **Create the issue** (only if no duplicate found). Check the exit status and validate the parsed number before logging — if creation fails or the URL doesn't parse, record the failure in the report and continue with the next item:
+   ```bash
+   if NEW_URL=$(gh issue create \
+     --title "{derived title}" \
+     --body "Follow-up from PR #${PR_NUMBER}.
+
+   {context from detection}
+
+   Linked source: #${ISSUE_N}" 2>&1); then
+     NEW_NUM=$(echo "$NEW_URL" | grep -oE '[0-9]+$')
+     if [ -z "$NEW_NUM" ]; then
+       echo "WARNING: created issue but could not parse number from: $NEW_URL"
+       # record as failure and continue
+     fi
+   else
+     echo "WARNING: gh issue create failed: $NEW_URL"
+     # record as failure and continue — do not abort Phase 3
+   fi
+   ```
+
+3. **Log to work-log** — if a work-log directory was detected at session start, append a timestamped line to today's session log for each created issue (use the same path logic as Phase 2.7):
+   ```
+   - {time} ET — Issue #{NEW_NUM} created: {title} (follow-up from PR #{PR_NUMBER})
+   ```
+   Skip logging if no work-log directory exists.
+
+**Non-HHG PRs still get generic follow-up creation** — any items collected in Step 3.1 that are not overridden by the HHG path go through the dedup + create + log flow above.
+
+### Step 3.4: Report follow-ups
+
+Present the results:
 
 ```
-## Follow-ups Detected
-- Issue #X: {title} — still open, related to this work
-- Migration needed: {description from thread}
-- ...
+## Follow-ups
+
+### Created
+- Issue #{NEW_NUM}: {title}
+- Issue #{NEW_NUM}: {title}
+
+### Skipped (duplicates)
+- "{title}" — already tracked in #{DUP_NUM}
 ```
 
-If nothing found: "No follow-up items detected."
+If nothing was detected: "No follow-up items detected."
+If the HHG state fallback was used: append "⚠️ HHG state code not found — review and rename issues #{A} and #{B} manually."
 
 ## Phase 4: Lessons Learned (Depth-Adaptive)
 
