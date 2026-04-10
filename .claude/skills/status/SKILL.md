@@ -1,6 +1,11 @@
 ---
 name: status
 description: Show a dashboard of all open PRs with review state, unresolved findings, and blockers.
+triggers:
+  - show PRs
+  - PR dashboard
+  - what's open
+  - review status
 ---
 
 Build a status dashboard of all open PRs in this repo.

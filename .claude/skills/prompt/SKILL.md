@@ -1,6 +1,11 @@
 ---
 name: prompt
 description: Analyze GitHub issues to assess complexity, classify effort tier, recommend model selection, and generate tailored prompts with pre-extracted context. Use when starting work, planning sprints, estimating effort, right-sizing model choice, or analyzing issue batches. When called with no args in a PM thread, auto-detects suggested issues and partitions subagent candidates from thread prompts.
+triggers:
+  - analyze issue
+  - generate prompt
+  - estimate effort
+  - complexity check
 argument-hint: "[#123 #124 ...] (issue numbers, or omit for PM auto-detect)"
 ---
 

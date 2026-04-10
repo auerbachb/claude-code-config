@@ -1,6 +1,10 @@
 ---
 name: standup
 description: Generate a daily standup summary of what was accomplished since the last standup, from a business logic perspective. Reads PR bodies to understand what changes actually enabled.
+triggers:
+  - daily standup
+  - what did I do yesterday
+  - recent work summary
 argument-hint: "[since-time] — omit for smart default (skips weekends/holidays); e.g. \"Friday at noon ET\""
 ---
 

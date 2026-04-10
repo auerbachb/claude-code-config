@@ -1,6 +1,11 @@
 ---
 name: pm
 description: Active PM orchestrator — manages issue pipeline, tracks coding threads, suggests next work. Cold-starts from GitHub state or resumes from a /pm-handoff prompt. Triggers on "pm", "project manager", "orchestrate", "what should I work on".
+triggers:
+  - project manager
+  - orchestrate
+  - what should I work on
+  - manage issues
 argument-hint: "[resume] (optional — 'resume' reads in-flight state from session files to continue a previous PM session)"
 ---
 
