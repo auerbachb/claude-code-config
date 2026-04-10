@@ -34,10 +34,14 @@ if [[ ! -d "$RULES_DIR" ]]; then
 fi
 
 # --- 1. Rule index alignment check ---------------------------------------
-# Extract basenames from the CLAUDE.md index table. Table rows look like:
+# Extract basenames from the CLAUDE.md rule index table. Table rows look
+# like:
 #   | `issue-planning.md` | ... |
-# We grep for backticked *.md filenames inside pipe-delimited rows.
-indexed_files=$(grep -oE '`[a-zA-Z0-9_-]+\.md`' "$CLAUDE_MD" \
+# Scope the grep to pipe-delimited table rows so prose references to
+# other *.md files elsewhere in CLAUDE.md (e.g. README.md) aren't
+# misread as rule-file entries.
+indexed_files=$(grep -E '^\|' "$CLAUDE_MD" \
+  | grep -oE '`[a-zA-Z0-9_-]+\.md`' \
   | tr -d '`' \
   | sort -u)
 
