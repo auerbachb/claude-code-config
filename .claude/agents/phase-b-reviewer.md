@@ -72,11 +72,13 @@ gh api "repos/{{OWNER}}/{{REPO}}/commits/$CURRENT_SHA/check-runs" \
 
 ### Rate-Limit Fast Path
 
-If check-runs show `conclusion: "failure"` with `output.title` containing "rate limit" (case-insensitive), OR commit statuses show rate-limit language → **trigger Greptile IMMEDIATELY.** Do not wait 7 minutes. The PR switches to Greptile permanently (sticky assignment).
+If check-runs show `conclusion: "failure"` with `output.title` containing "rate limit" (case-insensitive), OR commit statuses show rate-limit language → **run the Greptile Daily Budget Check below**, and if the budget allows, trigger Greptile **immediately** (do not wait 7 minutes). If the budget is exhausted, fall back to self-review and report the blocker — do NOT post `@greptileai`. The PR switches to Greptile permanently (sticky assignment) the moment the budget check passes and the trigger is sent.
 
 ### CR Timeout (Slow Path)
 
-If CR has not delivered a review after **7 minutes** of polling → trigger Greptile. Sticky assignment applies.
+If CR has not delivered a review after **7 minutes** of polling → **run the Greptile Daily Budget Check below**, and if the budget allows, trigger Greptile. If the budget is exhausted, fall back to self-review and report the blocker — do NOT post `@greptileai`. Sticky assignment applies once the trigger is sent.
+
+> **MANDATORY budget gate on both paths above.** The Greptile Daily Budget Check in the "Greptile Review Path" section below is NOT optional — it applies to every `@greptileai` trigger point, including CR fallbacks. Never post `@greptileai` without running the check first.
 
 ### CR Merge Gate
 
