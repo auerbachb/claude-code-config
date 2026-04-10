@@ -124,18 +124,18 @@ Print this as your FINAL output, then stop:
 EXIT_REPORT
 PHASE_COMPLETE: A
 PR_NUMBER: {{PR_NUMBER}}
-HEAD_SHA: <sha from your push>
+HEAD_SHA: <pushed commit SHA for pushed_fixes, or current HEAD for no_findings/exhaustion>
 REVIEWER: <cr or greptile>
 OUTCOME: <pushed_fixes|no_findings|exhaustion>
-FILES_CHANGED: <comma-separated file paths>
-NEXT_PHASE: B
+FILES_CHANGED: <comma-separated file paths, empty if none>
+NEXT_PHASE: <B for pushed_fixes or no_findings, A for exhaustion>
 HANDOFF_FILE: ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json
 ```
 
-**Valid OUTCOME values for Phase A:**
-- `pushed_fixes` — findings fixed, code pushed
-- `no_findings` — review was already clean; no code changes and no new push were required
-- `exhaustion` — token budget running low, partial fixes applied (set `NEXT_PHASE: A` for replacement)
+**Valid OUTCOME values for Phase A** (with required `NEXT_PHASE` and `HEAD_SHA` pairing):
+- `pushed_fixes` — findings fixed, code pushed. Set `NEXT_PHASE: B` and `HEAD_SHA` to the new pushed commit SHA.
+- `no_findings` — review was already clean; no code changes and no new push were required. Set `NEXT_PHASE: B` and `HEAD_SHA` to the current (unchanged) HEAD.
+- `exhaustion` — token budget running low, partial fixes applied. Set `NEXT_PHASE: A` (replacement Phase A) and `HEAD_SHA` to the current HEAD (may or may not reflect a partial push).
 
 ## Token Exhaustion Protocol
 
