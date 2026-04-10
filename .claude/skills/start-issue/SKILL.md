@@ -95,8 +95,9 @@ PLAN=$(gh issue view "$ISSUE_NUMBER" --json comments \
   If that query returns nothing (no matching run), consider it a "missing" case. When evaluating a matching run, **always check `status` before `conclusion`** — a run with `status: "queued"` or `status: "in_progress"` has no final conclusion yet and must not be treated as success or failure:
   - **`status != "completed"` (queued / in_progress):** the workflow is still running. Wait up to 5 minutes, re-querying every 60s. If it completes during the wait, re-evaluate. If still not completed after 5 minutes, treat it as stalled and fall through to the manual trigger branch below.
   - **`status == "completed"` and `conclusion == "success"`:** the workflow succeeded. Skip the manual trigger and proceed to Step 4 without a plan — CR simply produced no plan comment.
-  - **`status == "completed"` and `conclusion == "failure"` (or any other non-success conclusion):** the workflow ran but failed — fall through to the manual trigger branch.
-  - **If the workflow run for this issue failed, is missing entirely, or stalled past the 5-minute wait**: post `@coderabbitai plan` and poll every 60s for up to 5 minutes:
+  - **`status == "completed"` and `conclusion` in the blocking set (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`):** the workflow ran but failed — fall through to the manual trigger branch.
+  - **`status == "completed"` and `conclusion` is non-blocking (`cancelled`, `neutral`, `skipped`):** do not assume failure. Skip the manual trigger and proceed to Step 4 without a plan. The workflow was intentionally aborted or bypassed; manually re-posting `@coderabbitai plan` would be unjustified.
+  - **If the workflow run for this issue hit a blocking conclusion, is missing entirely, or stalled past the 5-minute wait**: post `@coderabbitai plan` and poll every 60s for up to 5 minutes:
     ```bash
     gh issue comment "$ISSUE_NUMBER" --body "@coderabbitai plan"
     for i in $(seq 1 5); do
