@@ -1,25 +1,48 @@
 # Subagent Context
 
-> **Always:** Pass ALL rule files to subagents. Use `mode: "bypassPermissions"` on every Agent tool call. Use phase decomposition (A/B/C). Timestamp every message (see `monitor-mode.md`). Write handoff files on phase completion (see `handoff-files.md`). Print Structured Exit Report before every subagent exit (see `phase-protocols.md`).
+> **Always:** Spawn subagents via custom agent definitions in `.claude/agents/` (see "How to Spawn Subagents" below). Use `mode: "bypassPermissions"` on every Agent tool call. Use phase decomposition (A/B/C). Timestamp every message (see `monitor-mode.md`). Write handoff files on phase completion (see `handoff-files.md`). Print Structured Exit Report before every subagent exit (see `phase-protocols.md`). Only fall back to manually passing all rule files if `.claude/agents/` is unavailable in the current repo.
 > **Ask first:** Respawning a failed subagent (crash/no handoff state) — tell the user what happened first. Exhaustion with valid handoff is auto-respawn ("Always do").
 > **Never:** Summarize rules for subagents. Spawn subagents without `mode: "bypassPermissions"`. Fire-and-forget subagents.
 
 ## How to Spawn Subagents
 
-**always pass the FULL contents of ALL rule files into the subagent's prompt.** Subagents do not inherit CLAUDE.md or `.claude/rules/` context.
+Use the custom agent definitions in `.claude/agents/` instead of manually reading and embedding all rule files. Each agent definition is self-contained with embedded phase-specific rules.
+
+### Using Agent Definitions (Preferred)
 
 1. **Always set `mode: "bypassPermissions"`** on the Agent tool call.
-2. Read the root `CLAUDE.md` — check **project root first** (`cat ./CLAUDE.md`), fall back to global (`cat ~/.claude/CLAUDE.md`)
-3. Read ALL rule files — check **project root first** (`cat ./.claude/rules/*.md`), fall back to global
-4. Include the COMPLETE output of both in the subagent's task description
-5. Do NOT summarize, excerpt, or paraphrase — pass the complete files
+2. **Set `subagent_type`** to the appropriate agent definition:
+   - `phase-a-fixer` — Fix findings, push, write handoff
+   - `phase-b-reviewer` — Poll reviews, process findings, update handoff
+   - `phase-c-merger` — Verify merge gate, check AC, report readiness (read-only)
+   - `pm-worker` — Issue management, work-log, repo bootstrap
+3. **Provide runtime context in the `prompt` parameter** — the agent definition supplies workflow rules; the prompt supplies PR-specific details:
+   - PR number, issue number, branch name
+   - Repo owner/name
+   - Handoff file path (`~/.claude/handoffs/pr-{N}-handoff.json`)
+   - HEAD SHA, reviewer assignment (`cr` or `greptile`)
+   - Pre-fetched findings (optional — saves the subagent from re-fetching)
+4. **Include the safety warning** in every subagent prompt:
+
+   ```text
+   SAFETY: Do NOT delete, overwrite, move, or modify .env files — anywhere, any repo.
+   Do NOT run git clean in ANY directory. Do NOT run destructive commands (rm -rf, rm,
+   git checkout ., git stash, git reset --hard) in the root repo directory. Stay in your
+   worktree directory at all times.
+   ```
+
+See `.claude/agents/README.md` for the full placeholder reference and spawning examples.
+
+### Fallback: Manual Rule Injection
+
+If agent definitions are unavailable (e.g., working in a repo without `.claude/agents/`), fall back to the manual approach:
+
+1. Read the root `CLAUDE.md` — check **project root first** (`cat ./CLAUDE.md`), fall back to global (`cat ~/.claude/CLAUDE.md`)
+2. Read ALL rule files — check **project root first** (`cat ./.claude/rules/*.md`), fall back to global
+3. Include the COMPLETE output of both in the subagent's task description
+4. Do NOT summarize, excerpt, or paraphrase — pass the complete files
 
 > **Why project-local first:** Per-project configs override global ones. Passing the global file when a project-level file exists gives subagents the wrong rules.
-
-**Handoff file instructions in subagent prompts:**
-- Phase A: include PR number + instruction to write `~/.claude/handoffs/pr-{N}-handoff.json` after pushing
-- Phase B: include PR number, handoff file path, instruction to read it on startup (GitHub API fallback if missing), instruction to update the handoff file on completion
-- Phase C: include PR number, handoff file path, instruction to read it on startup for context (GitHub API fallback if missing). Phase C subagents only verify state and report — the **parent** deletes the handoff file as part of the Phase C completion protocol after user-gated merge (see `phase-protocols.md`)
 
 ## Phase Transition Autonomy (Quick Reference)
 

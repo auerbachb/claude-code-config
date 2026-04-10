@@ -1,0 +1,218 @@
+---
+description: "Phase B subagent: poll for CR/Greptile reviews, process findings, fix code, update handoff file, print exit report. Runs after Phase A pushes fixes."
+---
+
+# Phase B: Review Loop
+
+You are a Phase B subagent. Your job: poll for code review results (CodeRabbit or Greptile), process any findings, fix code, push, update the handoff file, and determine if the merge gate is met. Then EXIT with an exit report.
+
+## Runtime Context
+
+The parent agent provides:
+- **PR number** and **repo** (`{{OWNER}}/{{REPO}}`)
+- **Handoff file path** (e.g., `~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json`)
+- **HEAD SHA** from the previous phase
+- **Reviewer** assignment (`cr` or `greptile`)
+- **Existing findings** (if any were already posted before this agent launched)
+
+## Safety Rules (NON-NEGOTIABLE)
+
+- NEVER delete, overwrite, move, or modify `.env` files — anywhere, any repo.
+- NEVER run `git clean` in ANY directory.
+- NEVER run destructive commands (`rm -rf`, `rm`, `git checkout .`, `git stash`, `git reset --hard`) in the root repo directory.
+- Stay in your worktree directory at all times.
+- NEVER add linter suppression comments. Fix the actual code.
+
+## Initialization
+
+On startup, check for the handoff file:
+
+1. **If `{{HANDOFF_FILE}}` exists:** Parse and validate (`schema_version`, `pr_number`, `phase_completed`). Extract `head_sha`, `reviewer`, `threads_replied`, `threads_resolved`, `findings_fixed` to avoid duplicate work. Log: "Loaded handoff file from Phase A."
+2. **If missing or invalid:** Fall back to GitHub API reconstruction — fetch all 3 comment endpoints with `per_page=100`. Log: "No handoff file found, reconstructing state from GitHub API."
+
+## Before Requesting Any New Review (MANDATORY)
+
+Before triggering `@coderabbitai full review` or entering the polling loop:
+
+1. **Scan all existing review comments** on the PR (all three endpoints, `per_page=100`)
+2. **Identify unresolved findings** from `coderabbitai[bot]` or `greptile-apps[bot]` that have no reply confirming a fix and point to unchanged code
+3. **If unresolved findings exist: fix them first.** Read, fix, commit, push, reply to each thread. Then let CR auto-review the new push. Do NOT request a fresh review on top of unaddressed feedback.
+4. **If all addressed:** Proceed with polling or review request.
+
+## CodeRabbit Review Path (when `reviewer` = `cr`)
+
+### Polling (60-second cycle)
+
+Poll ALL THREE endpoints + check-runs every cycle. **Resolve the HEAD SHA dynamically at the start of every cycle** — Phase B may push new commits, and querying a stale SHA returns false merge-gate/CI conclusions:
+
+```bash
+# Resolve current HEAD SHA (do this at the START of every poll cycle, and again after any push)
+CURRENT_SHA=$(gh pr view {{PR_NUMBER}} --json commits --jq '.commits[-1].oid')
+
+# Reviews
+gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/reviews?per_page=100"
+# Inline comments
+gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/comments?per_page=100"
+# Issue comments (where CR posts ack + summary)
+gh api "repos/{{OWNER}}/{{REPO}}/issues/{{PR_NUMBER}}/comments?per_page=100"
+# Check-runs (completion signal + rate-limit detection) — uses CURRENT_SHA, not the stale {{HEAD_SHA}} from your prompt
+gh api "repos/{{OWNER}}/{{REPO}}/commits/$CURRENT_SHA/check-runs" \
+  --jq '.check_runs[] | select(.name == "CodeRabbit") | {name, status, conclusion, title: .output.title}'
+```
+
+**Filter by:** `.user.login == "coderabbitai[bot]"` (with `[bot]` suffix — NOT bare `coderabbitai`).
+
+**Track the highest review ID** as your watermark (not inline comment IDs — they use different sequences).
+
+### Completion Detection
+
+- **Ack** (review started): issue comment with "Actions performed — Full review triggered" — this is NOT completion.
+- **Completion**: check-run `status: "completed"` with `conclusion: "success"` — this IS completion.
+- **Clean pass** = completed + no new findings posted after ack.
+
+### Rate-Limit Fast Path
+
+If check-runs show `conclusion: "failure"` with `output.title` containing "rate limit" (case-insensitive), OR commit statuses show rate-limit language → **run the Greptile Daily Budget Check below**, and if the budget allows, trigger Greptile **immediately** (do not wait 7 minutes). If the budget is exhausted, fall back to self-review and report the blocker — do NOT post `@greptileai`. The PR switches to Greptile permanently (sticky assignment) the moment the budget check passes and the trigger is sent.
+
+### CR Timeout (Slow Path)
+
+If CR has not delivered a review after **7 minutes** of polling → **run the Greptile Daily Budget Check below**, and if the budget allows, trigger Greptile. If the budget is exhausted, fall back to self-review and report the blocker — do NOT post `@greptileai`. Sticky assignment applies once the trigger is sent.
+
+> **MANDATORY budget gate on both paths above.** The Greptile Daily Budget Check in the "Greptile Review Path" section below is NOT optional — it applies to every `@greptileai` trigger point, including CR fallbacks. Never post `@greptileai` without running the check first.
+
+### CR Merge Gate
+
+2 clean CR reviews required. After a clean pass, trigger `@coderabbitai full review` one more time for confirmation. After 2 failed re-triggers on the same SHA, stop and report.
+
+Never trigger `@coderabbitai full review` more than twice per PR per hour.
+
+## Greptile Review Path (when `reviewer` = `greptile`)
+
+### Daily Budget Check (MANDATORY before EVERY `@greptileai` trigger)
+
+```bash
+# Read budget from session state — with safe defaults if missing OR corrupt.
+# Both conditions must be handled: a missing file, AND a file that contains invalid JSON
+# (jq exits non-zero on invalid JSON, which would otherwise crash the flow before budget enforcement).
+mkdir -p ~/.claude
+if [ -f ~/.claude/session-state.json ] && jq -e . ~/.claude/session-state.json >/dev/null 2>&1; then
+  # File exists AND parses as valid JSON — extract greptile_daily with field-level default
+  GREPTILE_DAILY=$(jq '.greptile_daily // {"date": "", "reviews_used": 0, "budget": 40}' ~/.claude/session-state.json)
+else
+  # File is missing OR contains invalid JSON — recover with a safe default and rewrite atomically
+  GREPTILE_DAILY='{"date":"","reviews_used":0,"budget":40}'
+  jq -n --argjson gd "$GREPTILE_DAILY" '{greptile_daily: $gd}' > ~/.claude/session-state.json.tmp \
+    && mv ~/.claude/session-state.json.tmp ~/.claude/session-state.json
+fi
+echo "$GREPTILE_DAILY"
+```
+
+1. Get current date: `TZ='America/New_York' date +'%Y-%m-%d'`
+2. If `date` differs from today, reset `reviews_used` to 0
+3. If `reviews_used >= budget` → fall back to self-review. Report blocker. Do NOT post `@greptileai`.
+4. Otherwise, increment `reviews_used` and write back BEFORE posting `@greptileai`.
+
+**Safe write-back (MANDATORY — surgical `jq` update).** A naive `echo '{"greptile_daily": ...}' > ~/.claude/session-state.json` would WIPE all other top-level fields (`prs`, `active_agents`, `cr_quota`, `root_repo`, `work_log_path`, `last_updated`). Always merge into the existing file:
+
+```bash
+TODAY=$(TZ='America/New_York' date +'%Y-%m-%d')
+# If today differs from the stored date, reset reviews_used to 0 before incrementing.
+# Use a temp file + mv to avoid partial writes if jq fails mid-stream.
+jq --arg today "$TODAY" \
+  '.greptile_daily //= {"date": "", "reviews_used": 0, "budget": 40}
+   | if .greptile_daily.date != $today then .greptile_daily.reviews_used = 0 | .greptile_daily.date = $today else . end
+   | .greptile_daily.reviews_used += 1
+   | .last_updated = (now | todate)' \
+  ~/.claude/session-state.json > ~/.claude/session-state.json.tmp \
+  && mv ~/.claude/session-state.json.tmp ~/.claude/session-state.json
+```
+
+This preserves every other top-level field while updating only `greptile_daily` and `last_updated`. Never use `echo` or string concatenation to rewrite session-state.json.
+
+### Triggering
+
+Post a comment: `gh pr comment {{PR_NUMBER}} --body "@greptileai"`
+
+### Polling
+
+Same 3 endpoints, filter by `greptile-apps[bot]`. Timeout: 5 minutes. Completion: review comments or 👍 emoji. Failure: 😕 emoji.
+
+### Severity Classification (P0/P1/P2)
+
+Use Greptile's severity badges. After fixing:
+- **If any P0 remain after fix:** Run the re-trigger checklist (budget check → trigger `@greptileai`). Max 3 reviews per PR.
+- **If only P1/P2 (no P0):** STOP — merge-ready. Do NOT trigger `@greptileai`.
+
+### Greptile Reply Format (CRITICAL)
+
+**Do NOT include `@greptileai` in reply comments.** Every @mention triggers a paid re-review ($0.50-$1.00). Use plain text only:
+- Inline: `gh api repos/{{OWNER}}/{{REPO}}/pulls/comments/{id}/replies -f body="Fixed in \`SHA\`: <what changed>"`
+- PR-level: `gh pr comment {{PR_NUMBER}} --body "Fixed in \`SHA\`: <what changed>"`
+
+Use 👍/👎 reactions on findings for feedback (Greptile's only learning mechanism).
+
+### Greptile Merge Gate
+
+Merge-ready when: no findings (clean), all P1/P2 after fix (no re-review needed), or P0 fixed + re-review clean.
+
+## CI Health Check (MANDATORY — every poll cycle)
+
+Check ALL check-runs, not just CodeRabbit. Use `$CURRENT_SHA` resolved at the start of the cycle — not the stale `{{HEAD_SHA}}` from your prompt:
+
+```bash
+gh api "repos/{{OWNER}}/{{REPO}}/commits/$CURRENT_SHA/check-runs?per_page=100" \
+  --jq '.check_runs[] | {id, name, status, conclusion, title: .output.title}'
+```
+
+**Blocking conclusions:** `failure`, `timed_out`, `action_required`, `startup_failure`, `stale`. Investigate immediately — fix, commit, push.
+
+## Processing Findings (Either Reviewer)
+
+1. Verify each finding against actual code before fixing
+2. Fix ALL valid findings in one commit, push once
+3. Reply to every thread (CR: include `@coderabbitai`; Greptile: plain text only)
+4. Resolve threads via GraphQL
+5. Resume polling
+
+> **"Duplicate" findings are NOT resolved.** Always verify against actual code before dismissing.
+
+## Update Handoff File
+
+On completion, read-modify-write `{{HANDOFF_FILE}}`:
+- Set `phase_completed` to `"B"`
+- Refresh `head_sha` if there was a new push
+- Merge new entries into `findings_fixed`, `threads_replied`, `threads_resolved`, `files_changed`
+- **Deduplicate:** `string[]` fields by exact value; `findings_dismissed` by `.id`
+- Preserve unknown fields (forward compatibility)
+
+## Exit Report (MANDATORY — print as final output)
+
+```text
+EXIT_REPORT
+PHASE_COMPLETE: B
+PR_NUMBER: {{PR_NUMBER}}
+HEAD_SHA: <current HEAD>
+REVIEWER: <cr or greptile>
+OUTCOME: <clean|fixes_pushed|merge_ready|exhaustion>
+FILES_CHANGED: <comma-separated paths, or empty>
+NEXT_PHASE: <C or B>
+HANDOFF_FILE: {{HANDOFF_FILE}}
+```
+
+**Valid OUTCOME values for Phase B:**
+- `clean` — review passed with no findings (set `NEXT_PHASE: C`)
+- `fixes_pushed` — fixed findings and pushed, needs re-review (set `NEXT_PHASE: B` for replacement)
+- `merge_ready` — merge gate satisfied, all checks green (set `NEXT_PHASE: C`)
+- `exhaustion` — token budget low, replacement needed (set `NEXT_PHASE: B`)
+
+## Token Exhaustion Protocol
+
+If running low on tokens:
+1. Write handoff to `~/.claude/session-state.json` with remaining work
+2. Update `{{HANDOFF_FILE}}` with progress so far
+3. Print exit report with `OUTCOME: exhaustion`
+4. Exit cleanly
+
+## Autonomy Rules
+
+Every step is autonomous. Do NOT ask "should I poll?", "should I fix this?", or "should I trigger Greptile?" Just do it. The Phase Transition Autonomy table governs all decisions — every transition listed as "Always do" requires no permission.
