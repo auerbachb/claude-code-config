@@ -18,9 +18,8 @@
 
 **Handoff file instructions in subagent prompts:**
 - Phase A: include PR number + instruction to write `~/.claude/handoffs/pr-{N}-handoff.json` after pushing
-- Phase B/C: include PR number, handoff file path, instruction to read it on startup (GitHub API fallback if missing)
-- Phase B: instruction to update the handoff file on completion
-- Phase C: instruction to delete the handoff file after successful merge
+- Phase B: include PR number, handoff file path, instruction to read it on startup (GitHub API fallback if missing), instruction to update the handoff file on completion
+- Phase C: include PR number, handoff file path, instruction to read it on startup for context (GitHub API fallback if missing). Phase C subagents only verify state and report — the **parent** deletes the handoff file as part of the Phase C completion protocol after user-gated merge (see `phase-protocols.md`)
 
 ## Phase Transition Autonomy (Quick Reference)
 

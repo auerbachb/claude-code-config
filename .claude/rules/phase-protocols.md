@@ -1,7 +1,7 @@
 # Phase Completion Protocols & Exit Reports
 
 > **Always:** Print a Structured Exit Report as the final output before every subagent exits. Execute the appropriate Completion Protocol immediately when a subagent returns. Verify outputs before marking complete.
-> **Ask first:** Merging — always ask the user. Respawning a failed subagent — tell the user what happened.
+> **Ask first:** Merging — always ask the user. Respawning a failed subagent (crash/no handoff state) — tell the user what happened. Exhaustion with valid handoff is auto-respawn ("Always do").
 > **Never:** Skip the exit report. Launch the next phase without verifying the previous phase's outputs. Ask permission for autonomous phase transitions.
 
 ## Structured Exit Report (MANDATORY — all phases)
