@@ -54,7 +54,12 @@ CR may still be generating the plan. Poll every 60s until the issue is 10 minute
 ```bash
 while true; do
   PLAN=$(gh issue view "$ISSUE_NUMBER" --json comments \
-    --jq '[.comments[] | select(.author.login == "coderabbitai") | .body] | first // empty')
+    --jq '[.comments[]
+           | select(.author.login == "coderabbitai")
+           | .body
+           | select((test("(?i)^\\s*actions performed\\b") | not))
+           | select(length > 200)
+          ] | last // empty')
   if [ -n "$PLAN" ]; then break; fi
   # Stop polling once issue age exceeds 10 minutes
   AGE_NOW=$(python3 -c "import datetime,sys; print(int((datetime.datetime.utcnow() - datetime.datetime.strptime('$CREATED_AT','%Y-%m-%dT%H:%M:%SZ')).total_seconds()))")
@@ -68,24 +73,39 @@ done
 
 ### Path B: Older issue (age >= 10 minutes)
 
-Check for an existing CR plan comment:
+Check for an existing CR plan comment (ignore ack-only and short/non-substantive comments):
 
 ```bash
 PLAN=$(gh issue view "$ISSUE_NUMBER" --json comments \
-  --jq '[.comments[] | select(.author.login == "coderabbitai") | .body] | first // empty')
+  --jq '[.comments[]
+         | select(.author.login == "coderabbitai")
+         | .body
+         | select((test("(?i)^\\s*actions performed\\b") | not))
+         | select(length > 200)
+        ] | last // empty')
 ```
 
 - **If plan exists:** capture and proceed to Step 4.
-- **If no plan:** post `@coderabbitai plan` and poll every 60s for up to 5 minutes:
+- **If no plan:** the auto-trigger workflow (`.github/workflows/cr-plan-on-issue.yml`) should have already posted `@coderabbitai plan` when the issue was opened. Do NOT manually trigger it unless you have confirmed the workflow failed. Check the workflow run for this issue via the Actions tab or:
   ```bash
-  gh issue comment "$ISSUE_NUMBER" --body "@coderabbitai plan"
-  for i in $(seq 1 5); do
-    sleep 60
-    PLAN=$(gh issue view "$ISSUE_NUMBER" --json comments \
-      --jq '[.comments[] | select(.author.login == "coderabbitai") | .body] | first // empty')
-    if [ -n "$PLAN" ]; then break; fi
-  done
+  gh run list --workflow=cr-plan-on-issue.yml --limit 5 --json databaseId,status,conclusion,createdAt,event
   ```
+  - **If the workflow run shows `conclusion: "failure"`** (or is missing entirely for this issue): post `@coderabbitai plan` and poll every 60s for up to 5 minutes:
+    ```bash
+    gh issue comment "$ISSUE_NUMBER" --body "@coderabbitai plan"
+    for i in $(seq 1 5); do
+      sleep 60
+      PLAN=$(gh issue view "$ISSUE_NUMBER" --json comments \
+        --jq '[.comments[]
+               | select(.author.login == "coderabbitai")
+               | .body
+               | select((test("(?i)^\\s*actions performed\\b") | not))
+               | select(length > 200)
+              ] | last // empty')
+      if [ -n "$PLAN" ]; then break; fi
+    done
+    ```
+  - **If the workflow succeeded but CR simply produced no plan comment**: skip the manual trigger and proceed to Step 4 without a plan.
 - If still no plan after 5 minutes, proceed to Step 4 without it. Note it in the final summary.
 
 > **Note:** Use `coderabbitai` (no `[bot]` suffix) for issue comments. PR reviews use `coderabbitai[bot]`.
@@ -107,16 +127,34 @@ Do NOT post this plan yet — it gets merged in Step 5.
 This creates **one canonical planning document** the coding agent can work from.
 
 1. **Compare plans** (if CR posted one): incorporate anything CR identified that Claude missed (additional files, edge cases, architectural considerations). Goal is the most robust plan.
-2. **Fetch current body and append:**
+2. **Fetch current body and upsert the Implementation Plan section:**
    ```bash
    current_body=$(gh issue view "$ISSUE_NUMBER" --json body --jq .body)
-   gh issue edit "$ISSUE_NUMBER" --body "${current_body}
+   merged_plan="<merged plan — files, steps, risks, verification>"
+
+   # Strip any existing "## Implementation Plan" section (everything from the
+   # header to EOF or to the next top-level heading) so re-runs of /start-issue
+   # don't create duplicate plan sections.
+   stripped_body=$(python3 - <<'PY'
+   import os, re, sys
+   body = os.environ["CURRENT_BODY"]
+   # Remove "## Implementation Plan" through EOF or the next "## " heading.
+   body = re.sub(r"\n*##[ \t]+Implementation Plan\b.*?(?=\n##[ \t]|\Z)", "", body, flags=re.DOTALL)
+   sys.stdout.write(body.rstrip() + "\n")
+   PY
+   )
+   CURRENT_BODY="$current_body" # exported for the python block above
+   export CURRENT_BODY
+
+   new_body="${stripped_body}
 
    ## Implementation Plan
 
-   <merged plan — files, steps, risks, verification>"
+   ${merged_plan}"
+
+   gh issue edit "$ISSUE_NUMBER" --body "$new_body"
    ```
-   `gh issue edit --body` replaces the entire body, so the fetch-concatenate-write pattern is required to preserve the original description.
+   `gh issue edit --body` replaces the entire body, so the fetch-strip-rewrite pattern is required to preserve the original description AND prevent duplicate `## Implementation Plan` sections when `/start-issue` is re-run on the same issue.
 3. **Post a confirmation comment:**
    ```bash
    if [ -n "$PLAN" ]; then
