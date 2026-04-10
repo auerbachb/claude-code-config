@@ -36,6 +36,17 @@ Run the CLI directly via Bash from the repo root:
 4. Run `coderabbit review --prompt-only` again
 5. Repeat until CR returns no findings
 
+### Never Suppress Linter Errors (NON-NEGOTIABLE)
+
+**NEVER add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `noqa`, or any linter suppression comment** to work around CI failures. These hide bugs instead of fixing them.
+
+When CI lint/typecheck fails:
+1. Read the error messages
+2. Fix the actual code — unused vars, missing types, incorrect imports, etc.
+3. If the error is in a file you didn't modify, fix it anyway — broken lint blocks the entire pipeline
+
+The only acceptable use of suppression comments is when the linter is provably wrong about a specific line AND you add a comment explaining why.
+
 ### Timeout & fallback
 - If `coderabbit review` hangs for more than **2 minutes** or errors out, skip it and run a **self-review** instead (see self-review fallback rules).
 - Do not retry more than once. If CR CLI fails twice, it's down — move on with self-review.
