@@ -44,10 +44,17 @@ Agent tool call:
   prompt: "Work on PR #618 for issue #617 on branch issue-617-add-auth.
            Repo: auerbachb/claude-code-config
            Handoff file: ~/.claude/handoffs/pr-618-handoff.json
-           
+
+           SAFETY: Do NOT delete, overwrite, move, or modify .env files — anywhere,
+           any repo. Do NOT run git clean in ANY directory. Do NOT run destructive
+           commands (rm -rf, rm, git checkout ., git stash, git reset --hard) in the
+           root repo directory. Stay in your worktree directory at all times.
+
            Existing findings to fix:
            <paste findings here>"
 ```
+
+The SAFETY block is mandatory in every subagent prompt (see `.claude/rules/safety.md`). The example above shows where to place it — between the task context and any findings payload.
 
 The agent definition provides the workflow rules. The prompt provides the runtime context. The parent no longer needs to read and embed all rule files manually.
 

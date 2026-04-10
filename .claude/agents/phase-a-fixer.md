@@ -47,12 +47,13 @@ Fix ALL valid findings before committing. Also fix any lint/CI failures.
 
 ### Step 3: Commit and Push
 
-Commit all fixes in ONE commit. If the review was already clean and no code changes were needed, skip the commit and proceed to Step 7 with `OUTCOME: no_findings`:
+Commit all fixes in ONE commit. If the review was already clean and no code changes were needed, skip the commit but **still proceed through Steps 4-6** (reply to any existing threads, resolve them, and write the handoff file). Only Step 3 itself is conditional — the handoff file MUST be written regardless of OUTCOME, or Phase B will have no state to read from:
 
 ```bash
 git add -A
 if git diff --cached --quiet; then
-  echo "No code changes — exit with OUTCOME: no_findings"
+  echo "No code changes — record OUTCOME: no_findings for the exit report, then continue to Step 4"
+  # Do NOT exit here. Steps 4-6 still run.
 else
   git commit -m "fix: address review findings for PR #{{PR_NUMBER}}"
   git push origin {{BRANCH_NAME}}
