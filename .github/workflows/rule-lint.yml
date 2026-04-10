@@ -1,0 +1,23 @@
+name: Rule Index & Word Count Lint
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - 'CLAUDE.md'
+      - '.claude/rules/**'
+      - '.github/workflows/rule-lint.yml'
+      - '.github/scripts/rule-lint.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  rule-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run rule-lint
+        run: bash .github/scripts/rule-lint.sh
