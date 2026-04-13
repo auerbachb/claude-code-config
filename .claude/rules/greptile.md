@@ -4,40 +4,29 @@
 > **Ask first:** Never — fix findings autonomously.
 > **Never:** Trigger Greptile proactively on a PR where CR hasn't failed yet. Ignore Greptile findings. Switch a PR back to CR after Greptile has been triggered. Include `@greptileai` in reply comments (triggers a paid re-review with no learning benefit).
 
-Greptile is an AI code reviewer used as a **fallback** when CR is rate-limited or unresponsive. Both tools' findings must be verified against code. Differences: cost ($0.50-$1.00/review beyond 50/month quota) and completion-signal reliability (Greptile completion signals are accurate; CR completion signals require confirmation passes).
+Greptile is a **fallback** AI code reviewer for when CR is rate-limited or unresponsive. Verify all findings against code. Key differences from CR: cost ($0.50-$1.00/review beyond 50/month quota), accurate completion signals (no confirmation pass needed).
 
 ## Greptile Basics
 
-- **GitHub App:** Greptile Apps
 - **Bot username:** `greptile-apps[bot]`
-- **Trigger:** Comment `@greptileai` on any PR (no special "full review" suffix needed)
-- **Auto-trigger:** OFF — disabled via dashboard filter (see "Dashboard Configuration" below). Must be explicitly triggered via @mention.
-- **Rate limits:** None documented (50 reviews/seat/month included, $1/extra — no per-hour throttle)
-- **Review time:** ~1-3 minutes for most PRs
-- **Completion signals:** 👀 emoji on the PR = analyzing, 👍 = complete, 😕 = failed
-- **No CLI:** Greptile cannot do local pre-push reviews. Local review loop uses CR CLI only.
-- **Config:** Optional `greptile.json` in repo root (supports `strictness`, `customInstructions`, `scope`). Review trigger filters are configured in the Greptile web dashboard (app.greptile.com), not in repo files.
-- **Feedback loop:** 👍/👎 reactions on Greptile comments train it over 2-3 weeks
+- **Trigger:** Comment `@greptileai` on any PR
+- **Auto-trigger:** OFF (see `.claude/reference/greptile-setup.md`). Must be explicitly triggered.
+- **Rate limits:** 50 reviews/seat/month included, $1/extra — no per-hour throttle
+- **Review time:** ~1-3 minutes
+- **Completion signals:** 👀 = analyzing, 👍 = complete, 😕 = failed
+- **No CLI** — local review loop uses CR CLI only
+- **Config:** Optional `greptile.json` in repo root. Trigger filters configured at app.greptile.com.
+- **Feedback:** 👍/👎 reactions on comments train it over 2-3 weeks
 
-## Dashboard Configuration (app.greptile.com)
+## Dashboard Configuration
 
-Auto-review on PR open is disabled via a "Labels: includes: `greptile`" filter in the Greptile dashboard (app.greptile.com/review → Settings → Review Triggers). Since we never add that label, no PRs get auto-reviewed — manual `@greptileai` triggers still work.
-
-| Setting | Value |
-|---------|-------|
-| Authors Exclude | `dependabot[bot]`, `renovate[bot]` |
-| Labels: includes | `greptile` |
-| File Change Limit | 100 |
-| Automatically trigger on new commits | OFF |
-| Review draft pull requests | OFF |
-
-**Setup:** Add the "Labels: includes: greptile" filter at app.greptile.com/review → Settings → Review Triggers. The "new commits" toggle only affects commits to existing PRs, not PR-open events.
+One-time setup at app.greptile.com. See `.claude/reference/greptile-setup.md` for settings table and setup steps.
 
 ## Daily Budget
 
-Greptile charges $1/review beyond the 50/month included quota. To prevent runaway costs when many PRs are processed in parallel, enforce a hard daily cap.
+Hard daily cap prevents runaway costs when many PRs run in parallel.
 
-- **Default budget: 40 reviews/day** (adjustable — set `budget` field in `session-state.json`).
+- **Default budget: 40 reviews/day** (set `budget` in `session-state.json`).
 - **Tracking:** The `greptile_daily` section in `~/.claude/session-state.json` tracks `reviews_used`, `date` (YYYY-MM-DD in ET timezone), and `budget`. See `handoff-files.md` for the schema.
 - **Before EVERY `@greptileai` trigger**, read `greptile_daily` from session state and run the budget check:
   1. Get the current date in ET: `TZ='America/New_York' date +'%Y-%m-%d'`
@@ -70,34 +59,17 @@ Applies to 2nd/3rd triggers only; initial trigger requires only the budget check
 
 ## Polling for Greptile Response
 
-Poll every 60 seconds on all three endpoints (same pattern as CR):
+Poll every 60 seconds on all three endpoints (same pattern as CR — `pulls/{N}/reviews`, `pulls/{N}/comments`, `issues/{N}/comments` with `per_page=100`). Filter by `greptile-apps[bot]`.
 
-- `repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100`
-- `repos/{owner}/{repo}/pulls/{N}/comments?per_page=100`
-- `repos/{owner}/{repo}/issues/{N}/comments?per_page=100`
-
-Filter by `greptile-apps[bot]` (with `[bot]` suffix).
-
-**Timeout:** 5 minutes (typical response: 1-3 min). No response after 5 min = timeout.
-
-**Completion detection:** 👍 or review comments from `greptile-apps[bot]` = done. 😕 = failed (stop polling, report failure). No signal after 5 min = timeout.
+**Timeout:** 5 minutes. **Completion:** 👍 or review comments = done. 😕 = failed. No signal after 5 min = timeout.
 
 ## Processing Greptile Findings
 
 Classify by severity (P0/P1/P2 — use Greptile badges only), verify against code, fix all valid findings in one commit, push once, reply to every thread, resolve via GraphQL. Use 👍/👎 reactions for feedback (this is Greptile's only learning mechanism).
 
-> **CRITICAL: Do NOT include `@greptileai` in reply comments.** Every `@greptileai` mention — even in a reply — triggers a new paid review ($0.50-$1.00). Greptile does not learn from text replies (unlike CR which has a knowledge base). Replies are purely for GitHub thread management and human readability.
->
-> | | CodeRabbit | Greptile |
-> |--|-----------|----------|
-> | Reply format | Include `@coderabbitai` (teaches knowledge base) | **No @mention** — plain text only |
-> | Learns from replies | Yes | No — only from 👍/👎 reactions |
-> | @mention cost | Within hourly quota | $0.50-$1.00 per triggered review |
+> **CRITICAL: Do NOT include `@greptileai` in reply comments.** Every `@greptileai` mention — even in a reply — triggers a new paid review ($0.50-$1.00). Greptile does not learn from text replies. Use plain text only in replies — `@greptileai` is ONLY for intentionally requesting a new review.
 
-**Reply format for Greptile threads:**
-- Inline comments: `gh api repos/{owner}/{repo}/pulls/comments/{id}/replies -f body="Fixed in \`SHA\`: <what changed>"`
-- Issue/PR-level comments: `gh pr comment N --body "Fixed in \`SHA\`: <what changed>"`
-- **Never** include `@greptileai` in reply bodies. The only valid use of `@greptileai` is posting a standalone comment to intentionally request a new review (P0 re-review trigger).
+Reply commands and CR-vs-Greptile comparison: `.claude/reference/greptile-reply-format.md`.
 
 **Severity-gated re-review:** See the "Before EVERY `@greptileai` Re-Trigger" checklist above.
 
