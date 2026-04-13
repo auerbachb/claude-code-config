@@ -36,20 +36,17 @@ See `.claude/agents/README.md` for the full placeholder reference and spawning e
 
 ### Fallback: Manual Rule Injection
 
-If agent definitions are unavailable (e.g., working in a repo without `.claude/agents/`), fall back to the manual approach:
+If agent definitions are unavailable (e.g., repo without `.claude/agents/`):
 
-1. Read the root `CLAUDE.md` — check **project root first** (`cat ./CLAUDE.md`), fall back to global (`cat ~/.claude/CLAUDE.md`)
-2. Read ALL rule files — check **project root first** (`cat ./.claude/rules/*.md`), fall back to global
-3. Include the COMPLETE output of both in the subagent's task description
-4. Do NOT summarize, excerpt, or paraphrase — pass the complete files
+1. Read `CLAUDE.md` — **project root first**, fall back to global
+2. Read ALL rule files — **project root first**, fall back to global
+3. Include the COMPLETE output in the subagent's task description — do NOT summarize or paraphrase
 
-> **Why project-local first:** Per-project configs override global ones. Passing the global file when a project-level file exists gives subagents the wrong rules.
+> **Why project-local first:** Per-project configs override global ones.
 
 ## Model Selection
 
-The Agent tool's `model` parameter selects which Claude model runs the subagent. Match the model to the phase's cognitive load — this is the cost-efficiency lever.
-
-**Defaults (set at every spawn site):**
+**Defaults (set at every spawn site).** Full rationale: `.claude/agents/README.md` "Model Selection".
 
 | Phase / Agent | Model |
 |---------------|-------|
@@ -59,14 +56,12 @@ The Agent tool's `model` parameter selects which Claude model runs the subagent.
 | `pm-worker` | `sonnet` |
 | Read-only review agents (e.g., `/pr-review-help`) | `sonnet` |
 
-Full per-phase rationale lives in `.claude/agents/README.md` "Model Selection". In short: A/B do the heavy reasoning (fixes, dismissals, severity judgment); C and pm-worker do mechanical verification and data gathering.
-
 **Rules:**
 
-- **Set `model` at the call site explicitly.** Every Agent tool invocation MUST include `model` alongside `mode` and `subagent_type`. Relying on frontmatter defaults or the global `CLAUDE_CODE_SUBAGENT_MODEL` env var hides cost decisions.
+- **Set `model` at the call site explicitly.** Every Agent tool invocation MUST include `model` alongside `mode` and `subagent_type`.
 - **Call-site `model` overrides agent-definition frontmatter.** Override to `opus` when a specific spawn needs more firepower.
-- **`CLAUDE_CODE_SUBAGENT_MODEL=opus` is a legacy safety net — not a compliant pattern.** Do not modify it, and do not rely on it: compliant calls must still set `model` explicitly at the call site. The env var only catches unexpected/undocumented spawns.
-- **Cost-optimization ≠ quality regression.** If a Sonnet-tier agent underperforms, escalate that phase's default to `opus` and document why.
+- **`CLAUDE_CODE_SUBAGENT_MODEL=opus` is a legacy safety net — not a compliant pattern.** Compliant calls must still set `model` explicitly. The env var only catches undocumented spawns.
+- **Cost-optimization ≠ quality regression.** If a Sonnet-tier agent underperforms, escalate to `opus` and document why.
 
 ## Phase Transition Autonomy (Quick Reference)
 
@@ -101,44 +96,13 @@ Subagents have a 32K output token limit. When approaching exhaustion:
 
 **NEVER:** Ask "should I continue?", silently die without writing handoff state, or try to finish "just one more thing."
 
-## Subagent `--max-turns` Guidance
-
-| Phase | Recommended approach | Rationale |
-|-------|---------------------|-----------|
-| Phase A (Fix + Push) | Keep prompts focused — avoid exploration instructions | Heaviest: reads findings, edits, commits, pushes, replies |
-| Phase B (Review Loop) | Same | Lighter but polling loops cost turns |
-| Phase C (Merge Prep) | Same | Lightest — reads PR body, verifies AC, reports |
-
-**Key insight:** The 32K output token limit is the binding constraint. To maximize effective work:
-- Do NOT include exploratory instructions
-- Give the subagent ONE clear phase with explicit exit criteria
-- Include only the findings/context it needs
-
 ## Task Decomposition (Token Safety)
 
-Subagents have a hardcoded **32K output token limit** ([known limitation](https://github.com/anthropics/claude-code/issues/25569)). Break PR lifecycle work into sequential phases:
+The 32K limit is the binding constraint. Give each subagent ONE clear phase with explicit exit criteria — no exploratory instructions. Detailed per-phase procedures live in the agent definitions (`.claude/agents/phase-{a,b,c}-*.md`):
 
-**Phase A: Fix + Push** (heaviest)
-- Read CR/Greptile findings, read affected files, fix all valid findings + lint/CI failures
-- Commit all fixes in ONE commit, push once
-- Reply to all review threads (see `greptile.md` for Greptile reply format)
-- Write handoff file (see `handoff-files.md`)
-- Print exit report and EXIT (see `phase-protocols.md`). Do not enter polling loop.
-
-**Phase B: Review Loop** (lighter)
-- Read handoff file on startup (GitHub API fallback if missing)
-- Before ANY `@greptileai` trigger, check daily budget (see `greptile.md`)
-- CR path: poll for review (fast-path + 7-min Greptile trigger). Greptile path: trigger and poll directly.
-- Greptile findings: classify P0/P1/P2, fix all, commit, push, reply. Re-trigger only for P0 (max 3 reviews/PR).
-- CR clean pass: trigger one more `@coderabbitai full review` for confirmation (2 clean passes needed)
-- Update handoff file. Deduplicate: `string[]` by exact value, `findings_dismissed` by `.id`.
-- Print exit report and EXIT.
-
-**Phase C: Merge Prep** (lightest)
-- Read handoff file. Verify merge gate per `cr-github-review.md` "Completion" section (authoritative definition for both CR and Greptile paths).
-- Read PR body, verify all AC against final code, check off all boxes.
-- Report ready for merge. Do not delete the handoff file — parent performs deletion after successful user-gated merge (see `phase-protocols.md`).
-- Print exit report and EXIT.
+- **Phase A: Fix + Push** (heaviest) — fix findings, commit once, push once, reply to threads, write handoff, EXIT.
+- **Phase B: Review Loop** (lighter) — poll/trigger reviewer, fix new findings, update handoff, EXIT.
+- **Phase C: Merge Prep** (lightest) — verify merge gate + AC, report readiness, EXIT. Do not delete handoff.
 
 **Orchestration rules:**
 - Parent launches Phase A subagents (can run in parallel across PRs)
