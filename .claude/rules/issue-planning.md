@@ -43,12 +43,9 @@ This creates **one canonical document** for the coding agent to work from:
 
 ## 6. Comment confirming the merge
 ```
-gh issue comment N --body "Implementation plan merged into issue body (Claude's analysis + CodeRabbit's recommendations). Ready for implementation."
+gh issue comment N --body "Implementation plan merged into issue body (<source>). Ready for implementation."
 ```
-If CR's plan was not available:
-```
-gh issue comment N --body "Implementation plan added to issue body (Claude's analysis only — CodeRabbit plan was not available). Ready for implementation."
-```
+Use "Claude's analysis + CodeRabbit's recommendations" when CR contributed, or "Claude's analysis only — CodeRabbit plan was not available" when it didn't.
 
 ## 7. Begin implementation
 1. **Create the feature branch** (`issue-N-short-description`).
