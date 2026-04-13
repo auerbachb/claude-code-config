@@ -3,41 +3,34 @@
 
 > **Always:** Poll all 3 endpoints + check-runs every cycle. Use `per_page=100`. Filter by `coderabbitai[bot]`. Batch fixes into one commit. Reply to every thread. Resolve threads via GraphQL. **Enter the polling loop immediately after push — do NOT ask.**
 > **Ask first:** Merging — always ask the user. **Nothing else in this workflow requires permission.**
-> **Never:** Poll only 1-2 endpoints. Use bare `coderabbitai` without `[bot]`. Push per-finding. Trigger `@coderabbitai full review` more than twice per PR per hour. Trigger Greptile proactively (only on CR failure). Merge without meeting the merge gate (see "Completion" section below for the authoritative definition). **Ask "want me to poll?" or "should I process this feedback?" — just do it.**
+> **Never:** Poll only 1-2 endpoints. Use bare `coderabbitai` without `[bot]`. Push per-finding. Trigger `@coderabbitai full review` more than twice per PR per hour. Trigger Greptile proactively (only on CR failure). Merge without meeting the merge gate (see `cr-merge-gate.md` for the authoritative definition). **Ask "want me to poll?" or "should I process this feedback?" — just do it.**
 
 > **This is the fallback review workflow.** It runs after you push and create a PR. If the local review loop was thorough, CR should find few or no issues here. But edge cases exist (e.g., CI-only context, cross-file interactions the local review missed), so always let this loop run.
 
 **Prerequisite:** Before entering this loop, check if the repo uses CodeRabbit (look for `.coderabbit.yaml` at the repo root, or check if CodeRabbit has ever commented on PRs via `gh api repos/{owner}/{repo}/pulls --jq '.[].number' | head -5 | xargs -I{} gh api repos/{owner}/{repo}/pulls/{}/reviews --jq '.[].user.login' | grep -q 'coderabbitai\[bot\]'`). If CodeRabbit is not configured for the repo, skip this workflow.
 
-After pushing a commit to a PR, **automatically** enter the CR review loop. Do not ask "want me to poll for reviews?" — polling is mandatory and immediate:
+After pushing a commit to a PR, **automatically** enter the CR review loop. Do not ask "want me to poll for reviews?" — polling is mandatory and immediate.
 
-### Rate Limits (Pro Tier)
-- **8 PR reviews per hour** — each push to a PR branch consumes one review. So does each `@coderabbitai full review` trigger.
-- **50 chat interactions per hour** — each `@coderabbitai` comment (plan, review, resume, etc.) counts.
-- **Hitting the limit makes things worse:** CR throttles further, retries reset the cooldown window, and polling burns Claude tokens for nothing.
-
-### Rate-Limit-Aware Behavior
-- **Batch fixes into a single commit before pushing.** If CR found 4 issues, fix all 4 in one commit — don't push 4 separate commits (that's 4 reviews consumed vs. 1).
-- **Never trigger `@coderabbitai full review` more than twice per PR per hour.** After 2 explicit triggers with no response, stop and tell the user CR may be rate-limited.
-- **When multiple agents are working in parallel on separate PRs**, each push consumes a review from the shared 8/hour pool. Coordinate: stagger pushes when possible, and never have more than 3-4 PRs triggering CR reviews in the same hour.
-- **If CR responds with "Reviews paused" or rate-limit language**, do NOT retry immediately. Fall back to **Greptile** (see greptile rules). If Greptile is also unavailable, fall back to **self-review**.
+### Rate Limits & Behavior (Pro Tier)
+- **8 PR reviews/hour** (each push or `@coderabbitai full review` consumes one), **50 chat interactions/hour**.
+- **Batch fixes into ONE commit** before pushing — 4 fixes = 1 review consumed, not 4.
+- **Max 2 explicit `@coderabbitai full review` triggers per PR per hour.** After 2 with no response, tell the user CR may be rate-limited.
+- **Parallel agents:** stagger pushes; max 3-4 PRs triggering CR reviews in the same hour.
+- **"Reviews paused" or rate-limit language:** fall back to **Greptile** (see `greptile.md`). If Greptile unavailable, fall back to **self-review**.
 
 ### Polling
-- Poll every 60 seconds for new CodeRabbit comments/reviews on the PR
-- **Always use `per_page=100` on all GitHub API calls.** The default `per_page=30` will silently miss reviews/comments when a PR exceeds 30 total. Example: `gh api repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100`. This applies to all three endpoints below.
-- **Poll ALL THREE endpoints every cycle.** These are distinct GitHub API endpoints that return different data:
-  1. `repos/{owner}/{repo}/pulls/{N}/reviews` — review objects (approve, request changes, review-level comments)
-  2. `repos/{owner}/{repo}/pulls/{N}/comments` — inline comments on specific lines of code in the diff
-  3. `repos/{owner}/{repo}/issues/{N}/comments` — **main PR conversation thread** (where CR posts its summary review, the "Actions performed" ack, and general findings)
-  - **The third endpoint (`issues/` not `pulls/`) is important.** When CR reviews with findings, it posts review objects on `pulls/{N}/reviews` (which you'll see). But CR also posts its summary and the "Actions performed" ack as issue comments on `issues/{N}/comments`. Missing this endpoint means you'll catch reviews with findings but miss the ack and summary — causing indefinite polling on **clean passes** where CR has no findings to post as review objects.
-- **Check the commit status on EVERY poll cycle.** Query `repos/{owner}/{repo}/commits/{SHA}/check-runs` filtered to `name == "CodeRabbit"`; if empty, fall back to the `/statuses` endpoint filtered to `context ~ "CodeRabbit"`. Full commands: `.claude/reference/cr-polling-commands.md`.
-  - **Completion signal:** `status: "completed"` + `conclusion: "success"` = review done (visible as "CodeRabbit — Review completed" in the PR's CI checks box). Definitive signal, especially for clean passes.
-  - **Fast-path rate limit detection:** check-run `conclusion: "failure"` with `output.title` containing "rate limit" (case-insensitive), OR commit status `state: "failure"`/`"error"` with `description` containing "rate limit" — **trigger Greptile IMMEDIATELY.** Do not wait 7 minutes. Catches rate limits within ~60-120 seconds of pushing. Sticky assignment applies.
-  - **Do NOT confuse the ack with completion.** The "Actions performed — Full review triggered" issue comment means CR **started** reviewing — not finished. The CI check "CodeRabbit — Review completed" is what signals actual completion.
-- **CR's GitHub username is `coderabbitai[bot]` (with the `[bot]` suffix).** Always filter by `.user.login == "coderabbitai[bot]"` — NOT bare `coderabbitai`. Using the wrong username will silently miss all CR comments.
-- **Track the highest review ID** (from `pulls/{N}/reviews`) as your watermark — NOT inline comment IDs. New reviews can have inline comment IDs *lower* than comments from previous reviews because they use different ID sequences. Any review from `coderabbitai[bot]` with `review.id` above the watermark is new — fetch ALL its associated comments regardless of their individual comment IDs. For issue comments (`issues/{N}/comments`), continue tracking by comment ID since those share a single sequence.
-- If CR responds, process immediately
-- **Hard timeout: 7 minutes.** If CR has not delivered a review after 7 minutes of polling, stop waiting and trigger **Greptile**. Do NOT keep polling — it wastes tokens and risks session timeout. Sticky assignment applies (see below).
+- Poll every 60 seconds. Always use `per_page=100` on all GitHub API calls.
+- **Poll ALL THREE endpoints every cycle:**
+  1. `repos/{owner}/{repo}/pulls/{N}/reviews` — review objects
+  2. `repos/{owner}/{repo}/pulls/{N}/comments` — inline diff comments
+  3. `repos/{owner}/{repo}/issues/{N}/comments` — PR conversation (summary, ack, general findings). Missing this endpoint causes indefinite polling on clean passes.
+- **Check commit status every cycle.** Query `repos/{owner}/{repo}/commits/{SHA}/check-runs` filtered to `name == "CodeRabbit"`; fallback: `/statuses` filtered to `context ~ "CodeRabbit"`. Full commands: `.claude/reference/cr-polling-commands.md`.
+  - **Completion signal:** `status: "completed"` + `conclusion: "success"` = review done. Definitive signal.
+  - **Fast-path rate limit:** check-run `conclusion: "failure"` with "rate limit" in `output.title`, OR status `state: "failure"`/`"error"` with "rate limit" in `description` — **trigger Greptile IMMEDIATELY.** Sticky assignment applies.
+  - **Ack ≠ completion.** "Actions performed — Full review triggered" = CR started. "CodeRabbit — Review completed" CI check = CR finished.
+- **CR username:** `coderabbitai[bot]` (with `[bot]` suffix). Filter by `.user.login == "coderabbitai[bot]"` — NOT bare `coderabbitai`.
+- **Watermark:** Track highest review ID from `pulls/{N}/reviews`. New reviews can have inline comment IDs lower than previous reviews (different ID sequences). For `issues/{N}/comments`, track by comment ID.
+- **Hard timeout: 7 minutes.** No review after 7 min → trigger Greptile. Sticky assignment applies.
 
 ### CI Health Check (MANDATORY — every poll cycle)
 
@@ -75,42 +68,15 @@ After pushing a commit to a PR, **automatically** enter the CR review loop. Do n
 3. **If unresolved findings exist: fix them first.** Read the findings, fix the code, commit, push, reply to each thread — then let CR auto-review the new push. Do NOT request a fresh review on top of unaddressed feedback.
 4. **If all findings are already addressed:** Verify by reading the current code, then proceed with requesting a review.
 
-### Resolving Comment Threads on GitHub
-
-GitHub does not auto-resolve PR review comments when the fix touches different lines than where the comment was made (which is common — e.g., a comment about a missing null check on line 42 gets fixed by adding a guard on line 38). **You must explicitly resolve these threads.**
-
-**How to resolve a comment thread after fixing it:**
-1. **Reply to the thread** confirming the fix (see "Processing CR Feedback" step 5 for the 404 fallback on non-diff comments).
-2. **Resolve the thread** via GraphQL. Preferred: `resolveReviewThread(threadId)` for PR review threads; fallback: `minimizeComment(subjectId, classifier: RESOLVED)` for non-thread comments. Fetch thread IDs via the `pullRequest.reviewThreads` query. Full mutations and query: `.claude/reference/graphql-thread-resolution.md`.
-3. **Check that all threads are resolved** before requesting a new review. Unresolved threads signal to CR (and to human reviewers) that work is still outstanding.
-
 ### Processing CR Feedback
-1. Fetch the latest CR comments via `gh api`
-2. Parse each finding from CR's summary/review
-3. Verify each finding against the actual file before applying
-4. Fix **all valid findings**, then commit and push **once** (one commit = one review consumed)
-5. **Reply to every CR comment thread** acknowledging the fix (e.g. "Fixed in `abc1234`: <what changed>"). Pushing a code fix does NOT resolve a GitHub comment thread — you must post an explicit reply. Unreplied threads show as unresolved in the PR and block merge.
+1. Fetch latest CR comments via `gh api`, verify each finding against the actual file
+2. Fix **all valid findings**, commit and push **once** (one commit = one review consumed)
+3. **Reply to every thread** ("Fixed in `abc1234`: <what changed>"). Try inline reply first: `gh api repos/{owner}/{repo}/pulls/comments/{id}/replies -f body="..."`. On 404, fall back to `gh pr comment N --body "@coderabbitai Fixed in ..."` (always @mention CR in PR-level comments so CR reads them)
+4. **Resolve each thread via GraphQL** after replying — replies alone don't resolve threads. Use `resolveReviewThread(threadId)`; fallback: `minimizeComment(subjectId, classifier: RESOLVED)`. Full mutations: `.claude/reference/graphql-thread-resolution.md`
+5. **Verify all threads resolved** before requesting a new review
+6. Resume polling; repeat until CR has no more findings
 
-   **How to reply — with 404 fallback:**
-   - **First, try the inline reply endpoint:** `gh api repos/{owner}/{repo}/pulls/comments/{id}/replies -f body="..."`. This works for inline diff comments (comments attached to specific lines of code).
-   - **If the reply endpoint returns 404:** The comment may be a review-level comment or a PR conversation comment rather than an inline diff comment — the `/replies` sub-resource only exists on diff-positioned comments. Fall back to posting a **PR-level comment** instead:
-
-     ```bash
-     gh pr comment N --body "@coderabbitai Fixed in \`abc1234\`: <what changed>. (Re: <brief description of the finding>)"
-     ```
-
-     Always include `@coderabbitai` so CR reads the reply. Include enough context (quote or paraphrase the finding) so CR can correlate the fix with the original comment.
-   - **When to use which:**
-     - Inline diff comments (`pulls/{N}/comments` endpoint, have `path` and `line` fields) → use `/replies` endpoint
-     - Review-level or PR conversation comments (`pulls/{N}/reviews` or `issues/{N}/comments` endpoints) → use `gh pr comment` with `@coderabbitai` mention
-     - If unsure, try `/replies` first — the 404 is harmless and tells you to fall back
-6. **Resolve the comment thread** after replying (see "Resolving Comment Threads on GitHub" above). A reply alone does not mark the thread as resolved — you must explicitly resolve it via the GraphQL API.
-7. **@mention CR in PR-level comments.** When posting general PR comments (via `gh pr comment`), always include `@coderabbitai` in the body so CR reads them. CR only reliably processes comments where it is explicitly mentioned — untagged PR comments are often ignored. This applies to fix summaries, duplicate-finding replies posted at the PR level, and any context you want CR to incorporate into its next review.
-8. Resume polling for CR's next response
-9. Repeat until CR has no more findings
-
-> **CRITICAL: "Duplicate" findings are NOT resolved findings.**
-> CR labels a comment "duplicate" when it raised the same issue in a previous round — this does **not** mean the issue was fixed. Before dismissing any CR comment (actionable, duplicate, nitpick, or otherwise), **always verify the finding against the actual code**. Only dismiss it if the current code already addresses it. Never assume a prior round resolved something without checking the file.
+> **"Duplicate" findings are NOT resolved.** CR labels a comment "duplicate" when it raised the same issue before — this does NOT mean it was fixed. Always verify against actual code before dismissing any CR comment.
 
 ### Autonomy Boundaries
 - **Fix autonomously:** All files unless the user instructed otherwise
@@ -120,60 +86,4 @@ GitHub does not auto-resolve PR review comments when the fix touches different l
 
 ### Completion
 
-**Step 1 — Confirm reviews are clean (merge gate):**
-
-> **This is the single authoritative definition of the merge gate.** All other rule files reference this section instead of duplicating it.
-
-The merge gate depends on which reviewer owns the PR:
-
-**CR-only path** (Greptile was never triggered for this PR):
-- 2 clean CR reviews required. The second is a confirmation pass — CR's completion signal is unreliable (it may mark the check as "completed" but post findings minutes later), so a second clean pass is needed.
-- If CR responds with no findings after a round of fixes, post `@coderabbitai full review` one more time to confirm.
-- **After 2 failed re-triggers on the same SHA**, stop and tell the user. Do not loop forever.
-
-**Greptile path** (Greptile was triggered at any point for this PR — sticky assignment, see `greptile.md`):
-- Severity-gated: merge-ready when ANY of these hold:
-  1. **Clean review:** no findings (👍 with no inline comments).
-  2. **No P0 findings:** only P1/P2 findings present — fix all of them, push, reply to threads; no re-review required.
-  3. **P0 fixed + re-review clean:** P0 findings were present, fixed, and a re-triggered `@greptileai` review came back clean.
-- Stay on Greptile — do not switch back to CR. Ignore any late CR reviews.
-- Max 3 Greptile reviews per PR (initial + up to 2 P0 re-reviews). At 3 with persistent P0, self-review and report blocker.
-
-**If both CR and Greptile are down** (CR rate-limited/timed out + Greptile 5-min timeout): perform a self-review for risk reduction. A clean self-review does NOT satisfy the merge gate — report the blocker to the user.
-
-- **How to detect a clean CR pass:** After triggering `@coderabbitai full review`, watch for these signals in order:
-  1. **Ack (review started):** CR posts an issue comment (on `issues/{N}/comments`) with "Actions performed — Full review triggered." This means CR **started** the review — it is NOT a completion signal.
-  2. **Completion (review finished):** The commit status check for CodeRabbit shows `status: "completed"` with `conclusion: "success"` (visible as "CodeRabbit — Review completed" in the PR's CI checks). This is the **definitive completion signal**.
-  3. **Clean = completed + no new findings:** Once the CI check shows completed, check all three comment endpoints for any new findings posted after the ack. If there are none, the review is a clean pass. You do NOT need to keep polling to the 7-minute timeout once the CI check is green and no findings appeared.
-- Once the merge gate is met, proceed immediately to Step 1b (CI verification).
-
-**Step 1b — CI Must Pass Before Merge (NON-NEGOTIABLE):**
-
-Before running `gh pr merge` on ANY PR, verify ALL CI check-runs are complete and passing. Run two queries against `repos/{owner}/{repo}/commits/$SHA/check-runs?per_page=100`: (1) incomplete runs — `select(.status != "completed")`; (2) blocking conclusions — `select(.conclusion IN (failure, timed_out, action_required, startup_failure, stale))`. Full commands: `.claude/reference/cr-polling-commands.md`.
-
-**If query 1 returns ANY incomplete check-runs: DO NOT MERGE.** Wait for them to finish — a null conclusion means the check hasn't reported yet, not that it passed.
-
-**If query 2 returns ANY blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`): DO NOT MERGE.** Instead:
-1. Read the failure output and fix the issue
-2. Commit, push, and wait for CI to re-run
-3. Only merge after ALL checks are `status: "completed"` with non-blocking conclusions
-
-This applies to ALL merge paths: manual `gh pr merge`, the `/merge` skill, the `/wrap` skill, and Phase C merge prep.
-
-**Step 2 — Verify every Test Plan checkbox (MANDATORY — do NOT skip):**
-> This is the **immediate next step** after CI passes (Step 1b). Do not ask the user about merging until this is done.
->
-> 1. Fetch the PR body via `gh pr view N --json body`
-> 2. Parse **every** checkbox in the **Test plan** section of the PR description
-> 3. For each item, read the relevant source file(s) and verify the criterion is met
-> 4. Check off passing items by editing the PR body (replace `- [ ]` with `- [x]`)
-> 5. If any item fails, fix the code first — do NOT offer to merge with unchecked boxes
-> 6. Only after **ALL** boxes are checked, proceed to Step 3
->
-> Re-run after every CR round. If additional code changes were made during the CR loop (e.g. fixes from CR rounds after the initial AC pass), you must re-verify ALL AC items against the final code. AC verification reflects the code **at merge time**, not the code at some earlier checkpoint.
->
-> Skipping this step is a **blocking failure** — the user should never see unchecked AC boxes when asked about merge.
-
-**Step 3 — Ask the user about merging:**
-- Ask the user: "Reviews are clean, all AC verified and checked off. Want me to squash and merge and delete the branch, or do you want to review the diff yourself first?"
-- Always use **squash and merge** (never regular merge or rebase)
+**See `cr-merge-gate.md` for the authoritative merge gate definition** (Steps 1/1b/2/3: review gate, CI verification, AC checkbox verification, and user merge confirmation). All merge-related logic lives there — this file covers the review polling loop only.

@@ -51,7 +51,7 @@ If you catch yourself composing a "should I...?" question about any workflow ste
 - **Every PR must link to a GitHub issue.** No exceptions — create one via `gh issue create` first. Use `Closes #N` in the PR body.
 - **Every PR must include a Test plan section** with checkboxes for acceptance criteria.
 - **We do not use TDD** unless the user explicitly requests it. AC is verified via code review and manual testing.
-- **CI must pass before merge.** See `cr-github-review.md` "CI Must Pass Before Merge" for the check-runs verification procedure.
+- **CI must pass before merge.** See `cr-merge-gate.md` "CI Must Pass Before Merge" for the check-runs verification procedure.
 - **Never suppress linter errors.** See `cr-local-review.md` "Never Suppress Linter Errors" — fix the actual code, never add suppression comments.
 
 **Branching & merging:**
@@ -70,7 +70,8 @@ Detailed workflow rules are split into topic-specific files in `.claude/rules/`:
 |------|----------|
 | `issue-planning.md` | Issue creation flow, CR plan integration, planning flow |
 | `cr-local-review.md` | Local CodeRabbit CLI review loop (primary review workflow), linter suppression prohibition |
-| `cr-github-review.md` | GitHub CR polling, rate limits, fast-path detection, thread resolution, CI-must-pass gate, completion criteria |
+| `cr-github-review.md` | GitHub CR polling, rate limits, fast-path detection, thread resolution, feedback processing, autonomy boundaries |
+| `cr-merge-gate.md` | Merge gate definition (CR/Greptile paths), CI-must-pass gate, AC verification, merge confirmation |
 | `greptile.md` | Greptile peer reviewer + CR fallback + self-review fallback |
 | `subagent-orchestration.md` | Subagent spawning, phase transition autonomy table, token exhaustion, phase A/B/C decomposition |
 | `monitor-mode.md` | Dedicated monitor mode, monitor loop, heartbeats, health monitoring, post-compaction recovery |

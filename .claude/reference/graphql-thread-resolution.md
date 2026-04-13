@@ -1,6 +1,6 @@
 # GraphQL — PR Review Thread Resolution
 
-Full mutations and queries for resolving PR review threads via the GitHub GraphQL API. Referenced from `.claude/rules/cr-github-review.md` "Resolving Comment Threads on GitHub".
+Full mutations and queries for resolving PR review threads via the GitHub GraphQL API. Referenced from `.claude/rules/cr-github-review.md` "Processing CR Feedback".
 
 ## Resolve a pull request review thread (preferred)
 

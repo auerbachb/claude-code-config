@@ -60,7 +60,7 @@ The only acceptable use of suppression comments is when the linter is provably w
 
 After two consecutive clean local reviews, execute this checklist immediately:
 
-> **STOP — Local review does NOT satisfy the merge gate.** The GitHub review loop (CR + Greptile) is mandatory: 2 clean CR passes or a clean Greptile severity gate (see `cr-github-review.md` "Completion" section). Proceed immediately — do not ask.
+> **STOP — Local review does NOT satisfy the merge gate.** The GitHub review loop (CR + Greptile) is mandatory: 2 clean CR passes or a clean Greptile severity gate (see `cr-merge-gate.md`). Proceed immediately — do not ask.
 
 1. **Commit all changes** in a single commit.
 2. **Push the branch** to the remote.

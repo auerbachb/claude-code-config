@@ -45,7 +45,7 @@ Block header is `EXIT_REPORT`; fields (one per line, colon-separated, no extra w
    - `clean` or `merge_ready` → proceed to step 3 (launch Phase C)
    - `fixes_pushed` → launch replacement Phase B within 60s. Update `session-state.json` (record new HEAD SHA, keep phase as B). Report to user with timestamp. **STOP — do not execute steps 3-6.**
    - `exhaustion` → launch replacement Phase B within 60s. Update `session-state.json` (record remaining work, keep phase as B). Report to user with timestamp. **STOP — do not execute steps 3-6.**
-3. **Verify review state via GitHub API.** Confirm the merge gate is met per the authoritative definition in `cr-github-review.md` "Completion" section (Step 1). If verification fails, launch replacement Phase B instead of Phase C — STOP.
+3. **Verify review state via GitHub API.** Confirm the merge gate is met per the authoritative definition in `cr-merge-gate.md` (Step 1). If verification fails, launch replacement Phase B instead of Phase C — STOP.
 4. **Launch Phase C within 60 seconds.** Include handoff file path in prompt.
 5. **Update `session-state.json`.** Record phase transition and HEAD SHA.
 6. **Report to user (with timestamp).**

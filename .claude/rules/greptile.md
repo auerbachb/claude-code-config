@@ -66,7 +66,7 @@ Applies to 2nd/3rd triggers only; initial trigger requires only the budget check
 
 ### Sticky Assignment
 
-**Once Greptile is triggered for a PR, it stays on Greptile permanently.** Do not switch back to CR. After fixing findings, only re-trigger `@greptileai` for P0 findings. Ignore late CR reviews. Merge gate is severity-dependent — see `cr-github-review.md` "Completion" section (Step 1) for the authoritative definition.
+**Once Greptile is triggered for a PR, it stays on Greptile permanently.** Do not switch back to CR. After fixing findings, only re-trigger `@greptileai` for P0 findings. Ignore late CR reviews. Merge gate is severity-dependent — see `cr-merge-gate.md` (Step 1) for the authoritative definition.
 
 ## Polling for Greptile Response
 
@@ -103,4 +103,4 @@ Classify by severity (P0/P1/P2 — use Greptile badges only), verify against cod
 
 ## Merge Gate
 
-**Canonical definition:** See `cr-github-review.md` "Completion" section (Step 1). That section is the single authoritative source for both the CR 2-clean-pass path and the Greptile severity-gated path (including the 3-review-per-PR cap and the self-review fallback when both reviewers are down).
+**Canonical definition:** See `cr-merge-gate.md` (Step 1). That file is the single authoritative source for both the CR 2-clean-pass path and the Greptile severity-gated path (including the 3-review-per-PR cap and the self-review fallback when both reviewers are down).
