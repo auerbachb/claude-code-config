@@ -36,7 +36,7 @@ gh api "repos/{owner}/{repo}/branches/main/protection/required_status_checks" 2>
 
 1. **Discover CI check names** from latest `main` commit's check-runs; fall back to parsing `.github/workflows/*.yml` job names.
 2. **Ask the user:** "No required status checks on `main` — PRs can merge with failing CI. Found checks: `lint`, `test`, `build`. Want me to enable protection?"
-3. **If approved:** PUT to `repos/{owner}/{repo}/branches/main/protection` with `required_status_checks.contexts` set to discovered checks and `strict: true`. Preserve existing protection settings; use sensible defaults if none exist.
+3. **If approved:** Read existing protection first (`gh api repos/{owner}/{repo}/branches/main/protection`; ignore 404). PUT to the same endpoint, merging `required_status_checks.contexts` with `strict: true` into any existing protection settings; use sensible defaults (`enforce_admins: false`) if 404.
 4. **If declined:** move on. Do not ask again in the same session.
 
 ### Rules

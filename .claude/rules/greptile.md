@@ -9,14 +9,14 @@ Greptile is a **fallback** AI code reviewer for when CR is rate-limited or unres
 ## Greptile Basics
 
 - **Bot username:** `greptile-apps[bot]`
-- **Trigger:** Comment `@greptileai` on any PR
+- **Trigger:** Comment `@greptileai` on any PR (no "full review" suffix, unlike CR)
 - **Auto-trigger:** OFF (see `.claude/reference/greptile-setup.md`). Must be explicitly triggered.
 - **Rate limits:** 50 reviews/seat/month included, $1/extra — no per-hour throttle
 - **Review time:** ~1-3 minutes
 - **Completion signals:** 👀 = analyzing, 👍 = complete, 😕 = failed
 - **No CLI** — local review loop uses CR CLI only
-- **Config:** Optional `greptile.json` in repo root. Trigger filters configured at app.greptile.com.
-- **Feedback:** 👍/👎 reactions on comments train it over 2-3 weeks
+- **Config:** Optional `greptile.json` in repo root. Trigger filters at app.greptile.com.
+- **Feedback:** 👍/👎 reactions train it over 2-3 weeks
 
 ## Dashboard Configuration
 
