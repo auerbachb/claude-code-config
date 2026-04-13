@@ -10,7 +10,7 @@ For deep-dive architecture (symlink topology, hook lifecycle, multi-agent orches
 - **Branch naming:** `issue-N-short-description`. Never work on `main`.
 - **Always use a worktree** for isolated work — see the "Always use a worktree" section of [CLAUDE.md](CLAUDE.md).
 - **Local review before push:** run `coderabbit review --prompt-only` until two clean passes, then commit and push. See [`.claude/rules/cr-local-review.md`](.claude/rules/cr-local-review.md).
-- **Merge gate:** 2 clean CodeRabbit passes, or a clean Greptile severity gate. See [`.claude/rules/cr-github-review.md`](.claude/rules/cr-github-review.md) "Completion" for the authoritative definition.
+- **Merge gate:** 2 clean CodeRabbit passes, or a clean Greptile severity gate. See [`.claude/rules/cr-merge-gate.md`](.claude/rules/cr-merge-gate.md) for the authoritative definition.
 - **CI must pass before merge** (including the `rule-lint` check that verifies rule-file sizes and index alignment).
 - **Squash merge only:** `gh pr merge --squash --delete-branch`.
 - **Test plan required:** every PR body must include a `## Test plan` section with a checkbox for each acceptance criterion.
