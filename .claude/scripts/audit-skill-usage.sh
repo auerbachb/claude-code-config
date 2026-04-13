@@ -97,7 +97,8 @@ if [[ -d "$SKILLS_DIR" ]]; then
 fi
 
 # Write back the (possibly updated) data file
-echo "$USAGE_DATA" | jq '.' > "$DATA_FILE"
+_tmp="$(mktemp "$(dirname "$DATA_FILE")/skill-usage.XXXXXX.json")"
+echo "$USAGE_DATA" | jq '.' > "$_tmp" && mv "$_tmp" "$DATA_FILE"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Detect orphaned entries (in data file but no longer in skills dir)
@@ -137,9 +138,9 @@ while IFS= read -r skill_name; do
   age_days=$(( (today_epoch - first_epoch) / 86400 ))
 
   if (( age_days >= 60 )); then
-    RECOMMEND+=("${skill_name}:${age_days}")
+    RECOMMEND+=("${skill_name}	${age_days}")
   elif (( age_days >= 30 )); then
-    FLAGGED+=("${skill_name}:${age_days}")
+    FLAGGED+=("${skill_name}	${age_days}")
   fi
 done < <(echo "$USAGE_DATA" | jq -r 'keys[]')
 
@@ -184,10 +185,13 @@ fi
 if (( ${#RECOMMEND[@]} > 0 )); then
   printf "RECOMMEND REMOVAL (%d skill(s), 60+ days unused):\n" "${#RECOMMEND[@]}"
   # Sort by age descending
-  mapfile -t sorted < <(printf '%s\n' "${RECOMMEND[@]}" | sort -t: -k2 -rn)
+  sorted=()
+  while IFS= read -r entry; do
+    sorted+=("$entry")
+  done < <(printf '%s\n' "${RECOMMEND[@]}" | sort -t$'\t' -k2 -rn)
   for entry in "${sorted[@]}"; do
-    skill_name="${entry%%:*}"
-    age_days="${entry##*:}"
+    skill_name="${entry%%$'\t'*}"
+    age_days="${entry##*$'\t'}"
     printf "  - %s (unused for %d days)\n" "$skill_name" "$age_days"
   done
   echo ""
@@ -199,10 +203,13 @@ fi
 # Review flags (30–59 days unused)
 if (( ${#FLAGGED[@]} > 0 )); then
   printf "FLAGGED — REVIEW RECOMMENDED (%d skill(s), 30–59 days unused):\n" "${#FLAGGED[@]}"
-  mapfile -t sorted < <(printf '%s\n' "${FLAGGED[@]}" | sort -t: -k2 -rn)
+  sorted=()
+  while IFS= read -r entry; do
+    sorted+=("$entry")
+  done < <(printf '%s\n' "${FLAGGED[@]}" | sort -t$'\t' -k2 -rn)
   for entry in "${sorted[@]}"; do
-    skill_name="${entry%%:*}"
-    age_days="${entry##*:}"
+    skill_name="${entry%%$'\t'*}"
+    age_days="${entry##*$'\t'}"
     printf "  - %s (unused for %d days)\n" "$skill_name" "$age_days"
   done
   echo ""
