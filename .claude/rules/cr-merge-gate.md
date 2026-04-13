@@ -60,5 +60,5 @@ This applies to ALL merge paths: manual `gh pr merge`, the `/merge` skill, the `
 
 ## Step 3 — Ask the user about merging
 
-- Ask the user: "Reviews are clean, all AC verified and checked off. Want me to squash and merge and delete the branch, or do you want to review the diff yourself first?"
+- Ask the user: "Reviews are clean, all AC verified and checked off. Want me to squash and merge, or do you want to review the diff yourself first?"
 - Always use **squash and merge** (never regular merge or rebase)
