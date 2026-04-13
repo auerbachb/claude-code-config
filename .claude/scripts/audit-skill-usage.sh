@@ -184,8 +184,7 @@ fi
 if (( ${#RECOMMEND[@]} > 0 )); then
   printf "RECOMMEND REMOVAL (%d skill(s), 60+ days unused):\n" "${#RECOMMEND[@]}"
   # Sort by age descending
-  IFS=$'\n' sorted=($(printf '%s\n' "${RECOMMEND[@]}" | sort -t: -k2 -rn))
-  unset IFS
+  mapfile -t sorted < <(printf '%s\n' "${RECOMMEND[@]}" | sort -t: -k2 -rn)
   for entry in "${sorted[@]}"; do
     skill_name="${entry%%:*}"
     age_days="${entry##*:}"
@@ -200,8 +199,7 @@ fi
 # Review flags (30–59 days unused)
 if (( ${#FLAGGED[@]} > 0 )); then
   printf "FLAGGED — REVIEW RECOMMENDED (%d skill(s), 30–59 days unused):\n" "${#FLAGGED[@]}"
-  IFS=$'\n' sorted=($(printf '%s\n' "${FLAGGED[@]}" | sort -t: -k2 -rn))
-  unset IFS
+  mapfile -t sorted < <(printf '%s\n' "${FLAGGED[@]}" | sort -t: -k2 -rn)
   for entry in "${sorted[@]}"; do
     skill_name="${entry%%:*}"
     age_days="${entry##*:}"
