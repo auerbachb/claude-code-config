@@ -98,7 +98,7 @@ Subagents have a 32K output token limit. When approaching exhaustion:
 
 ## Task Decomposition (Token Safety)
 
-The 32K limit is the binding constraint. Give each subagent ONE clear phase with explicit exit criteria — no exploratory instructions. Detailed per-phase procedures live in the agent definitions (`.claude/agents/phase-{a,b,c}-*.md`):
+The 32K limit is the binding constraint. Give each subagent ONE clear phase with explicit exit criteria — no exploratory instructions. Detailed per-phase procedures live in the agent definitions (`.claude/agents/phase-{a,b,c}-*.md`); if agent definitions are unavailable, use `.claude/reference/phase-decomposition.md`.
 
 - **Phase A: Fix + Push** (heaviest) — fix findings, commit once, push once, reply to threads, write handoff, EXIT.
 - **Phase B: Review Loop** (lighter) — poll/trigger reviewer, fix new findings, update handoff, EXIT.
