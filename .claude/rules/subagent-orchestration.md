@@ -102,7 +102,7 @@ The 32K limit is the binding constraint. Give each subagent ONE clear phase with
 
 - **Phase A: Fix + Push** (heaviest) — fix findings, commit once, push once, reply to threads, write handoff, EXIT.
 - **Phase B: Review Loop** (lighter) — poll/trigger reviewer, fix new findings, update handoff, EXIT.
-- **Phase C: Merge Prep** (lightest) — verify merge gate + AC, report readiness, EXIT. Do not delete handoff.
+- **Phase C: Merge Prep** (lightest) — verify merge gate per `cr-merge-gate.md` + AC, report readiness, EXIT. Do not delete handoff.
 
 **Orchestration rules:**
 - Parent launches Phase A subagents (can run in parallel across PRs)
@@ -115,7 +115,8 @@ The 32K limit is the binding constraint. Give each subagent ONE clear phase with
 
 Review protocol is defined authoritatively in these canonical sources — do NOT duplicate:
 
-- **CR polling, CI checks, thread resolution, merge gate:** `cr-github-review.md`
+- **CR polling, CI checks, thread resolution:** `cr-github-review.md`
+- **Merge gate, CI-must-pass, AC verification:** `cr-merge-gate.md`
 - **Greptile trigger, severity classification, daily budget, reply format:** `greptile.md`
 - **Local review before push, fix loop, 2 clean passes:** `cr-local-review.md`
 
