@@ -43,32 +43,43 @@ Print: `[CONTEXT] PR #$PR_NUMBER on $OWNER/$REPO (branch: $BRANCH, HEAD: ${HEAD_
 
 ### 1a. Review threads (GraphQL — authoritative for resolution status)
 
+**Paginate** — `reviewThreads` caps at 100 per page, so PRs with more threads silently lose data. Loop until `hasNextPage` is false, accumulating all nodes before classifying.
+
 ```bash
-gh api graphql -f query='query {
-  repository(owner: "'$OWNER'", name: "'$REPO'") {
-    pullRequest(number: '$PR_NUMBER') {
-      reviewThreads(first: 100) {
-        nodes {
-          id
-          isResolved
-          isOutdated
-          comments(first: 10) {
-            nodes {
-              id
-              databaseId
-              body
-              author { login }
-              path
-              line
-              originalLine
-              url
+CURSOR="null"
+ALL_THREADS="[]"
+while :; do
+  RESP=$(gh api graphql -f query='query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $pr) {
+        reviewThreads(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            id
+            isResolved
+            isOutdated
+            comments(first: 10) {
+              nodes {
+                id
+                databaseId
+                body
+                author { login }
+                path
+                line
+                originalLine
+                url
+              }
             }
           }
         }
       }
     }
-  }
-}'
+  }' -F owner="$OWNER" -F repo="$REPO" -F pr=$PR_NUMBER -f cursor="$CURSOR")
+  ALL_THREADS=$(jq -s '.[0] + .[1].data.repository.pullRequest.reviewThreads.nodes' <(echo "$ALL_THREADS") <(echo "$RESP"))
+  HAS_NEXT=$(echo "$RESP" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
+  [ "$HAS_NEXT" = "true" ] || break
+  CURSOR=$(echo "$RESP" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor')
+done
 ```
 
 ### 1b. CI check-runs (REST — every check, not just CodeRabbit)
@@ -227,19 +238,30 @@ Print per thread: `[RESOLVED] thread <id> — <summary>`
 
 ### 6a. Re-fetch threads
 
+**Paginate** — same cursor loop as Step 1a, applied to the simpler re-fetch query:
+
 ```bash
-gh api graphql -f query='query {
-  repository(owner: "'$OWNER'", name: "'$REPO'") {
-    pullRequest(number: '$PR_NUMBER') {
-      reviewThreads(first: 100) {
-        nodes { id isResolved comments(first: 1) { nodes { body author { login } } } }
+CURSOR="null"
+ALL_THREADS="[]"
+while :; do
+  RESP=$(gh api graphql -f query='query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $pr) {
+        reviewThreads(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { id isResolved comments(first: 1) { nodes { body author { login } } } }
+        }
       }
     }
-  }
-}'
+  }' -F owner="$OWNER" -F repo="$REPO" -F pr=$PR_NUMBER -f cursor="$CURSOR")
+  ALL_THREADS=$(jq -s '.[0] + .[1].data.repository.pullRequest.reviewThreads.nodes' <(echo "$ALL_THREADS") <(echo "$RESP"))
+  HAS_NEXT=$(echo "$RESP" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
+  [ "$HAS_NEXT" = "true" ] || break
+  CURSOR=$(echo "$RESP" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor')
+done
 ```
 
-Count unresolved (`isResolved: false`).
+Count unresolved (`isResolved: false`) across `ALL_THREADS`.
 
 - **0 unresolved:** `[CLEAN] All threads resolved — zero uncollapsed in browser.`
 - **Any remain:** Retry resolution (max 2 attempts per thread). If still stuck:
