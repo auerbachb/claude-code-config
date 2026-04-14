@@ -33,6 +33,10 @@ OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
 OWNER=$(echo "$OWNER_REPO" | cut -d/ -f1)
 REPO=$(echo "$OWNER_REPO" | cut -d/ -f2)
 HEAD_SHA=$(gh pr view $PR_NUMBER --json commits --jq '.commits[-1].oid')
+
+# Timestamp baseline for detecting NEW bot comments posted during/after this run.
+# Step 6b uses this to catch reviews that land between Step 1's audit and Step 6's verify.
+RUN_STARTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 ```
 
 Print: `[CONTEXT] PR #$PR_NUMBER on $OWNER/$REPO (branch: $BRANCH, HEAD: ${HEAD_SHA:0:7})`
@@ -236,7 +240,9 @@ Print per thread: `[RESOLVED] thread <id> — <summary>`
 
 ---
 
-## Step 6: Verify — zero unresolved threads, CI status
+## Step 6: Verify — zero unresolved threads, zero new comments, CI status, review-bot completion
+
+> **Why four checks, not just threads:** GraphQL `reviewThreads` only sees inline-comment threads. A reviewer bot can post a new review body (or a new PR-conversation comment) that carries actionable findings without ever creating a thread. Relying on thread-resolution state alone is how premature "merge-ready" declarations happen — this section exists specifically to prevent that.
 
 ### 6a. Re-fetch threads
 
@@ -269,7 +275,48 @@ Count unresolved (`isResolved: false`) across `ALL_THREADS`.
 - **Any remain:** Retry resolution (max 2 attempts per thread). If still stuck:
   `[STUCK] Thread <id> — cannot resolve (permission or GitHub bug): "<first line>"`
 
-### 6b. Re-check CI (if a push was made)
+### 6b. Re-scan the three REST comment endpoints for NEW bot comments since `$RUN_STARTED_AT`
+
+This is the critical gap that thread-resolution checks alone miss. A reviewer bot can post a new review body or PR-conversation comment that contains findings without ever creating a resolvable thread — so Step 6a would report clean while the PR is still unaddressed.
+
+Filter each endpoint by `coderabbitai[bot]` / `greptile-apps[bot]` and by timestamp > `$RUN_STARTED_AT` (captured in Step 0):
+
+```bash
+SINCE="$RUN_STARTED_AT"
+NEW_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
+  --jq --arg since "$SINCE" '[.[] | select((.user.login=="coderabbitai[bot]" or .user.login=="greptile-apps[bot]") and .submitted_at > $since)]')
+NEW_INLINE=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" \
+  --jq --arg since "$SINCE" '[.[] | select((.user.login=="coderabbitai[bot]" or .user.login=="greptile-apps[bot]") and .created_at > $since)]')
+NEW_CONVO=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
+  --jq --arg since "$SINCE" '[.[] | select((.user.login=="coderabbitai[bot]" or .user.login=="greptile-apps[bot]") and .created_at > $since)]')
+```
+
+For each hit, classify the body with these explicit patterns (case-insensitive regex):
+
+**Finding patterns** (any match → treat as finding):
+- Severity words/badges: `\b(critical|major|minor|nitpick|p[0-2])\b` or `🔴|🟠|🟡`
+- Actionable language: `actionable comments posted|issues? found|findings?:|potential[_ ]issue`
+- Suggestion markers: a fenced block labeled `suggestion` (e.g., ` ```suggestion `) or a CR "Prompt for AI Agent" heading
+- A diff/patch proposal: a fenced code block whose first line starts with `+` or `-`
+
+**Acknowledgment patterns** (match only if NO finding pattern matches above):
+- HTML marker: `<!-- <review_comment_addressed> -->`
+- LGTM variants: `\b(lgtm|looks good|approved|confirmed|resolved)\b`
+
+**Default rule:** if neither set matches, treat as a finding (safer default — under-classifying leads to the premature-merge failure mode this section exists to prevent).
+
+**If any finding is detected:** do NOT loop in-process. Emit `NEW_FINDINGS` in Step 8, stop the run, and require a fresh `/fixpr` invocation. The new run captures a new `$RUN_STARTED_AT` and re-audits from Step 1.
+
+Print:
+```
+[VERIFY-COMMENTS] reviews: 0 new | inline: 0 new | convo: 1 new (acknowledgment, non-blocking)
+```
+or:
+```
+[VERIFY-COMMENTS] reviews: 1 new (CR, Major finding @ SKILL.md:98) → exit NEW_FINDINGS, re-run /fixpr
+```
+
+### 6c. Re-check CI (if a push was made)
 
 If Step 4 pushed, get the new HEAD SHA and poll check-runs once (wait up to 60s for checks to start):
 
@@ -282,6 +329,32 @@ gh api --paginate "repos/$OWNER/$REPO/commits/$NEW_SHA/check-runs?per_page=100" 
 - Report status of every check: `[CI] lint: queued | test: in_progress | build: success`
 - If checks haven't started yet, note: "CI triggered — checks not yet started. Run `/fixpr` again after CI completes if needed."
 - Do NOT poll in a loop — this is a single-pass tool.
+
+### 6d. Verify review-bot commit statuses
+
+CodeRabbit (and Greptile, if triggered) report review completion via commit statuses, not check-runs. A `pending` status means the bot is still analyzing the current HEAD — declaring CLEAN while `pending` is the exact failure mode Step 6 is designed to prevent.
+
+```bash
+TARGET_SHA="${NEW_SHA:-$HEAD_SHA}"
+gh api "repos/$OWNER/$REPO/commits/$TARGET_SHA/statuses" \
+  --jq '[.[] | select(.context=="CodeRabbit" or .context=="Greptile") | {context, state, description, updated_at}]
+        | group_by(.context) | map(sort_by(.updated_at) | last)'
+```
+
+For each bot present on the PR:
+- `state: success` → review completed on this SHA. Clean pass signal.
+- `state: pending` → review still running. **Do NOT declare CLEAN.** Emit `REVIEW_PENDING` (see Step 8) and instruct re-run.
+- `state: failure` / `error` with "rate limit" in `description` → CR rate-limited, fall back to Greptile per `cr-github-review.md`.
+- No CodeRabbit / Greptile status context at all after a push → the bot hasn't started. Re-run `/fixpr` after it does.
+
+Print:
+```
+[VERIFY-BOTS] CodeRabbit: success (21:43:01Z) | Greptile: n/a
+```
+or:
+```
+[VERIFY-BOTS] CodeRabbit: pending (21:38:21Z) → REVIEW_PENDING, stopping
+```
 
 ---
 
@@ -301,6 +374,7 @@ Check each field:
 | `mergeable` | `UNKNOWN` | GitHub is still computing — note it, re-run `/fixpr` later. |
 | `mergeStateStatus` | `BEHIND` | Branch is behind main — rebase and force-push: `git fetch origin main && git rebase origin/main && git push --force-with-lease` |
 | `mergeStateStatus` | `BLOCKED` | Required status checks failing or required reviews missing — already handled by Steps 3-6, but report any remaining blockers. |
+| `mergeStateStatus` | `UNSTABLE` | A non-required check is pending or failing — most commonly the CR/Greptile review on the new SHA. If Step 6d emitted `REVIEW_PENDING`, stop with that status — do NOT declare CLEAN. Re-run `/fixpr` after the review completes. |
 | `reviewDecision` | `CHANGES_REQUESTED` | A human reviewer requested changes — report to user (cannot auto-resolve human review requests). |
 
 Print:
@@ -333,12 +407,14 @@ Merge state:     mergeable=$MERGEABLE, status=$MERGE_STATE, review=$REVIEW_DECIS
   - Rebased:     yes/no
   - Conflicts:   none | resolved | unresolvable
 Push:            <sha> (or "no push needed")
-Status:          CLEAN | THREADS_STUCK | CI_PENDING | CI_FAILING | CONFLICTS | NEEDS_HUMAN_REVIEW
+Status:          CLEAN | THREADS_STUCK | REVIEW_PENDING | CI_PENDING | CI_FAILING | CONFLICTS | NEEDS_HUMAN_REVIEW | NEW_FINDINGS
 ```
 
 **Status definitions:**
-- `CLEAN` — zero unresolved threads, all CI green, no merge blockers
+- `CLEAN` — **all four conditions met simultaneously:** zero unresolved threads (Step 6a), zero new bot comments since `$RUN_STARTED_AT` that classify as findings (Step 6b), every CR/Greptile commit status is `success` on the current HEAD (Step 6d), and no merge blockers (Step 7). Missing any one of the four disqualifies `CLEAN` — use the more specific status below.
 - `THREADS_STUCK` — some threads could not be resolved via GraphQL (report which)
+- `REVIEW_PENDING` — Step 6d found a CR/Greptile commit status still in `pending` on the current HEAD. The bot has not finished reviewing the latest push. Re-run `/fixpr` after the status flips to `success`. Do NOT declare CLEAN.
+- `NEW_FINDINGS` — Step 6b found new bot comments (review body, inline, or PR-conversation) posted after `$RUN_STARTED_AT` that classify as findings. Stop the run. Re-run `/fixpr` (a fresh invocation captures a new `$RUN_STARTED_AT` and re-audits from Step 1, including the new findings).
 - `CI_PENDING` — push/rebase was made, CI not yet complete (re-run `/fixpr` after CI)
 - `CI_FAILING` — transient CI failures that cannot be fixed locally (report which)
 - `CONFLICTS` — merge conflicts could not be auto-resolved (needs manual intervention)
