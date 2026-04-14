@@ -89,7 +89,7 @@ For each entry in `.threads.unresolved`:
 
 Print the numbered list:
 
-```
+```text
 [FINDING 1] actionable — src/foo.ts:42 — "unused import" (coderabbitai[bot])
 [FINDING 2] already-fixed — src/bar.ts:10 — "missing null check" (coderabbitai[bot])
 [FINDING 3] outdated — src/deleted.ts:5 — file removed (greptile-apps[bot])
@@ -115,7 +115,7 @@ For each entry in `.check_runs.failing_runs` (blocking conclusions: `failure`, `
 
 Print per check:
 
-```
+```text
 [CI:FAIL] "lint" — 3 errors in src/foo.ts → fixing
 [CI:INFRA] "deploy-preview" — timed_out (transient)
 ```
@@ -308,7 +308,7 @@ After any rebase + force-push: `[MERGE] rebase complete, force-pushed (SHA: <new
 
 ## Step 7: Final summary
 
-```
+```text
 === fixpr complete ===
 PR:              #$PR_NUMBER ($BRANCH)
 Threads:         N total, M were unresolved
