@@ -21,7 +21,7 @@ Poll alongside CR every 60 seconds on all three endpoints (same pattern — `pul
 
 **Timeout:** 5 minutes **from push time** (not from CR failure detection). Since BugBot auto-triggers at push time, its timeout runs concurrently with CR's 7-minute window. If the 7-minute CR timeout fires and BugBot hasn't posted a review, BugBot's 5-minute window has already expired — trigger Greptile immediately (see `greptile.md` "When to Trigger Greptile"). Do NOT wait another 5 minutes.
 
-**Completion signal:** BugBot review comments appearing on any of the three endpoints = review complete. No separate CI check-run signal like CR.
+**Completion signal:** BugBot creates a CI check-run named `Cursor Bugbot` that transitions to `status: "completed"` when the review finishes. The `conclusion` field is `neutral` when BugBot posted findings (still counts as a completed review — `neutral` is not a failure). Completion can also be detected via BugBot review comments appearing on any of the three endpoints.
 
 ## When BugBot Becomes the Active Reviewer
 
