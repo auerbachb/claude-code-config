@@ -22,6 +22,13 @@ If no PR exists for this branch, stop: "No PR found for branch `$BRANCH`."
 Extract:
 ```bash
 PR_NUMBER=$(echo "$PR_JSON" | jq -r '.number')
+PR_STATE=$(echo "$PR_JSON" | jq -r '.state')
+
+if [ "$PR_STATE" != "OPEN" ]; then
+  echo "PR #$PR_NUMBER is already $PR_STATE — nothing to fix."
+  exit 0
+fi
+
 OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
 OWNER=$(echo "$OWNER_REPO" | cut -d/ -f1)
 REPO=$(echo "$OWNER_REPO" | cut -d/ -f2)
@@ -157,7 +164,8 @@ Combine all fixes (review findings + CI failures) into a single commit:
 4. Commit and push:
 
 ```bash
-git add -A
+# Stage only the files modified during fixing (tracked from Steps 2–3)
+git add <list of modified files>
 git commit -m "fix: resolve all review findings and CI failures
 
 Fixes N review findings and M CI errors."
@@ -188,8 +196,9 @@ gh api "repos/$OWNER/$REPO/pulls/comments/{comment_id}/replies" -f body="<reply>
 ```
 On 404, fall back to:
 ```bash
-gh pr comment $PR_NUMBER --body "<reply with @-mention of reviewer>"
+gh pr comment $PR_NUMBER --body "<plain-text reply — do NOT include @greptileai>"
 ```
+**CRITICAL:** Never include `@greptileai` in reply text. Every `@greptileai` mention triggers a paid Greptile re-review ($0.50–$1.00). Use plain text only; `@greptileai` is reserved exclusively for intentionally requesting a new review.
 
 ### 5b. Resolve via GraphQL
 
