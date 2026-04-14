@@ -93,12 +93,12 @@ gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100"
 
 ### 1c. REST comment endpoints (for reply targets and comment IDs)
 
-Fetch all three endpoints with `per_page=100`. Paginate if `Link` header contains `rel="next"`.
+Fetch all three endpoints with `--paginate` so large PRs don't silently truncate review/comment data.
 
 ```bash
-gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100"
-gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100"
-gh api "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100"
+gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100"
+gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100"
+gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100"
 ```
 
 ### 1d. Print audit summary
