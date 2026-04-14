@@ -74,7 +74,7 @@ while :; do
         }
       }
     }
-  }' -F owner="$OWNER" -F repo="$REPO" -F pr=$PR_NUMBER -f cursor="$CURSOR")
+  }' -F owner="$OWNER" -F repo="$REPO" -F pr=$PR_NUMBER -F cursor="$CURSOR")
   ALL_THREADS=$(jq -s '.[0] + .[1].data.repository.pullRequest.reviewThreads.nodes' <(echo "$ALL_THREADS") <(echo "$RESP"))
   HAS_NEXT=$(echo "$RESP" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
   [ "$HAS_NEXT" = "true" ] || break
@@ -82,10 +82,12 @@ while :; do
 done
 ```
 
+**Note on `-F cursor`:** `-F` performs GraphQL type conversion (literal `"null"` → GraphQL `null`, `"true"` → boolean, numbers → int). `-f` would send the literal string `"null"` and break the first fetch. Same pattern applies to Step 6a.
+
 ### 1b. CI check-runs (REST — every check, not just CodeRabbit)
 
 ```bash
-gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" \
+gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" \
   --jq '.check_runs[] | {id, name, status, conclusion, title: .output.title}'
 ```
 
@@ -253,7 +255,7 @@ while :; do
         }
       }
     }
-  }' -F owner="$OWNER" -F repo="$REPO" -F pr=$PR_NUMBER -f cursor="$CURSOR")
+  }' -F owner="$OWNER" -F repo="$REPO" -F pr=$PR_NUMBER -F cursor="$CURSOR")
   ALL_THREADS=$(jq -s '.[0] + .[1].data.repository.pullRequest.reviewThreads.nodes' <(echo "$ALL_THREADS") <(echo "$RESP"))
   HAS_NEXT=$(echo "$RESP" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
   [ "$HAS_NEXT" = "true" ] || break
@@ -273,7 +275,7 @@ If Step 4 pushed, get the new HEAD SHA and poll check-runs once (wait up to 60s 
 
 ```bash
 NEW_SHA=$(git rev-parse HEAD)
-gh api "repos/$OWNER/$REPO/commits/$NEW_SHA/check-runs?per_page=100" \
+gh api --paginate "repos/$OWNER/$REPO/commits/$NEW_SHA/check-runs?per_page=100" \
   --jq '.check_runs[] | {name, status, conclusion}'
 ```
 
