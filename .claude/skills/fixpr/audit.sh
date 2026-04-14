@@ -115,7 +115,7 @@ while :; do
         }
       }
     }
-  }' -F owner="$OWNER" -F repo="$REPO" -F pr="$PR_NUMBER" -F cursor="$CURSOR")
+  }' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" -F cursor="$CURSOR")
   ALL_THREADS=$(jq -n --argjson acc "$ALL_THREADS" --argjson page "$RESP" \
     '$acc + $page.data.repository.pullRequest.reviewThreads.nodes')
   HAS_NEXT=$(echo "$RESP" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
@@ -192,7 +192,7 @@ if [[ -n "$SINCE" ]]; then
     --arg since "$SINCE" \
     '
     def classify:
-      if . == null then {class: "acknowledgment", reason: "empty body"}
+      if . == null or . == "" then {class: "acknowledgment", reason: "empty body"}
       elif test("<!--\\s*<review_comment_addressed>\\s*-->"; "") then {class: "acknowledgment", reason: "addressed marker"}
       elif test("actionable comments posted:\\s*0\\b"; "i") then {class: "acknowledgment", reason: "CR reports zero actionable"}
       elif test("\\b(critical|major|minor|nitpick|p[0-2])\\b"; "i") then {class: "finding", reason: "severity keyword"}
