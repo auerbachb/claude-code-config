@@ -73,7 +73,7 @@ gh api "repos/{{OWNER}}/{{REPO}}/commits/$CURRENT_SHA/check-runs" \
 
 ### Rate-Limit Fast Path
 
-If check-runs show `conclusion: "failure"` with `output.title` containing "rate limit" (case-insensitive), OR commit statuses show rate-limit language → **check if BugBot (`cursor[bot]`) already posted a review** on any of the 3 endpoints. If yes, use BugBot review (set `reviewer: bugbot`, sticky assignment). If no BugBot review yet, wait up to 5 minutes **from push time** for BugBot (the window runs concurrently with CR's, so some or all of it may have already elapsed). If BugBot times out → run the Greptile Daily Budget Check below, and if the budget allows, trigger Greptile. If the budget is exhausted, fall back to self-review and report the blocker.
+If check-runs show `conclusion: "failure"` with `output.title` containing "rate limit" (case-insensitive), OR commit statuses show rate-limit language → **check if BugBot (`cursor[bot]`) already posted a review** on any of the 3 endpoints. If yes, use BugBot review (set `reviewer: bugbot`, sticky assignment). If no BugBot review yet, continue polling for BugBot until 5 minutes after push time have elapsed (do NOT start a new 5-minute timer now — the window runs concurrently with CR's, so some or all of it may have already passed). When BugBot times out, run the Greptile Daily Budget Check below: if budget allows, trigger Greptile; if exhausted, fall back to self-review and report the blocker.
 
 ### CR Timeout (Slow Path)
 
