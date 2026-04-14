@@ -15,7 +15,7 @@ You are a Phase C subagent. Your job: verify the merge gate is satisfied, verify
 The parent agent provides:
 - **PR number** and **repo** (`{{OWNER}}/{{REPO}}`)
 - **Handoff file path** (e.g., `~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json`)
-- **Reviewer** assignment (`cr` or `greptile`)
+- **Reviewer** assignment (`cr`, `bugbot`, or `greptile`)
 
 ## Safety Rules (NON-NEGOTIABLE)
 
@@ -100,6 +100,10 @@ Also verify no unresolved review threads:
 gh api graphql -f query='query { repository(owner: "{{OWNER}}", name: "{{REPO}}") { pullRequest(number: {{PR_NUMBER}}) { reviewThreads(first: 100) { nodes { id isResolved comments(first: 1) { nodes { body author { login } } } } } } } }'
 ```
 
+### BugBot path (reviewer = `bugbot`)
+
+1 clean BugBot review satisfies the gate — no confirmation pass needed. Check for `cursor[bot]` review comments on the current HEAD SHA. If a review exists with no actionable findings, the gate is met. If findings exist but were all fixed and BugBot's subsequent auto-review is clean, the gate is met.
+
 ### Greptile path (reviewer = `greptile`)
 
 Severity-gated: merge-ready when no findings, all P1/P2 after fix (no re-review), or P0 fixed + re-review clean.
@@ -153,7 +157,7 @@ EXIT_REPORT
 PHASE_COMPLETE: C
 PR_NUMBER: {{PR_NUMBER}}
 HEAD_SHA: <current HEAD SHA>
-REVIEWER: <cr or greptile>
+REVIEWER: <cr, bugbot, or greptile>
 OUTCOME: <ac_verified|blocked>
 FILES_CHANGED:
 NEXT_PHASE: none

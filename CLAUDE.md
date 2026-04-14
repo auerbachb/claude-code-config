@@ -71,8 +71,9 @@ Detailed workflow rules are split into topic-specific files in `.claude/rules/`:
 | `issue-planning.md` | Issue creation flow, CR plan integration, planning flow |
 | `cr-local-review.md` | Local CodeRabbit CLI review loop (primary review workflow), linter suppression prohibition |
 | `cr-github-review.md` | GitHub CR polling, rate limits, fast-path detection, thread resolution, feedback processing, autonomy boundaries |
-| `cr-merge-gate.md` | Merge gate definition (CR/Greptile paths), CI-must-pass gate, AC verification, merge confirmation |
-| `greptile.md` | Greptile peer reviewer + CR fallback + self-review fallback |
+| `cr-merge-gate.md` | Merge gate definition (CR/BugBot/Greptile paths), CI-must-pass gate, AC verification, merge confirmation |
+| `bugbot.md` | BugBot (Cursor) second-tier reviewer, auto-trigger, merge gate contribution |
+| `greptile.md` | Greptile last-resort reviewer + CR/BugBot fallback + self-review fallback |
 | `subagent-orchestration.md` | Subagent spawning, phase transition autonomy table, token exhaustion, phase A/B/C decomposition |
 | `monitor-mode.md` | Dedicated monitor mode, monitor loop, heartbeats, health monitoring, post-compaction recovery |
 | `handoff-files.md` | Handoff file schema, session-state.json format, lifecycle (create/update/delete) |

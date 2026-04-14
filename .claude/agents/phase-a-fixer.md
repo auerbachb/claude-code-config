@@ -1,5 +1,5 @@
 ---
-description: "Phase A subagent: fix review findings, push code, write handoff file, print exit report. Used after a PR receives CR/Greptile review findings."
+description: "Phase A subagent: fix review findings, push code, write handoff file, print exit report. Used after a PR receives CR/BugBot/Greptile review findings."
 model: opus
 ---
 
@@ -35,7 +35,7 @@ gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/comments?per_page=100"
 gh api "repos/{{OWNER}}/{{REPO}}/issues/{{PR_NUMBER}}/comments?per_page=100"
 ```
 
-Filter by `coderabbitai[bot]` or `greptile-apps[bot]`.
+Filter by `coderabbitai[bot]`, `cursor[bot]`, or `greptile-apps[bot]`.
 
 ### Step 2: Verify and Fix
 
@@ -75,27 +75,31 @@ Reply to EVERY review comment thread acknowledging the fix.
 - Inline diff comments: `gh api repos/{{OWNER}}/{{REPO}}/pulls/comments/{id}/replies -f body="@coderabbitai Fixed in \`SHA\`: <what changed>"`
 - If reply endpoint returns 404, fall back to: `gh pr comment {{PR_NUMBER}} --body "@coderabbitai Fixed in \`SHA\`: <what changed>. (Re: <finding description>)"`
 
+**For BugBot threads** — do NOT include `@cursor` in replies (may trigger a re-review):
+- Inline comments: `gh api repos/{{OWNER}}/{{REPO}}/pulls/comments/{id}/replies -f body="Fixed in \`SHA\`: <what changed>"`
+- PR-level: `gh pr comment {{PR_NUMBER}} --body "Fixed in \`SHA\`: <what changed>"`
+
 **For Greptile threads** — do NOT include `@greptileai` (every @mention triggers a paid re-review):
 - Inline comments: `gh api repos/{{OWNER}}/{{REPO}}/pulls/comments/{id}/replies -f body="Fixed in \`SHA\`: <what changed>"`
 - PR-level: `gh pr comment {{PR_NUMBER}} --body "Fixed in \`SHA\`: <what changed>"`
 
 ### Step 5: Resolve Threads
 
-After replying, resolve **only** the threads whose first-comment author is `coderabbitai` or `greptile-apps` (the bots you actually handled in Step 2). Do NOT resolve threads authored by human reviewers or other bots — those may be active discussion threads unrelated to your fix work.
+After replying, resolve **only** the threads whose first-comment author is `coderabbitai`, `cursor`, or `greptile-apps` (the bots you actually handled in Step 2). Do NOT resolve threads authored by human reviewers or other bots — those may be active discussion threads unrelated to your fix work.
 
 ```bash
 # Get unresolved threads, filter to CR/Greptile bot authors, then resolve each
 gh api graphql -f query='query { repository(owner: "{{OWNER}}", name: "{{REPO}}") { pullRequest(number: {{PR_NUMBER}}) { reviewThreads(first: 100) { nodes { id isResolved comments(first: 1) { nodes { author { login } } } } } } } }' \
   --jq '.data.repository.pullRequest.reviewThreads.nodes[]
         | select(.isResolved == false)
-        | select(.comments.nodes[0].author.login | test("^(coderabbitai|greptile-apps)$"))
+        | select(.comments.nodes[0].author.login | test("^(coderabbitai|cursor|greptile-apps)$"))
         | .id' \
   | while read -r thread_id; do
       gh api graphql -f query="mutation { resolveReviewThread(input: {threadId: \"$thread_id\"}) { thread { isResolved } } }"
     done
 ```
 
-If a thread's first-comment author is anything other than `coderabbitai` or `greptile-apps` (e.g., a human reviewer, or `cursor[bot]`), leave it alone.
+If a thread's first-comment author is anything other than `coderabbitai`, `cursor`, or `greptile-apps` (e.g., a human reviewer), leave it alone.
 
 ### Step 6: Write Handoff File
 
@@ -112,7 +116,7 @@ Write JSON with this schema:
   "schema_version": "1.0",
   "pr_number": {{PR_NUMBER}},
   "head_sha": "<HEAD after Step 3 — pushed commit SHA if a push occurred, otherwise current HEAD>",
-  "reviewer": "<cr or greptile>",
+  "reviewer": "<cr, bugbot, or greptile>",
   "phase_completed": "A",
   "created_at": "<ISO 8601 timestamp>",
   "findings_fixed": ["<comment-id-1>", "<comment-id-2>"],
@@ -136,7 +140,7 @@ EXIT_REPORT
 PHASE_COMPLETE: A
 PR_NUMBER: {{PR_NUMBER}}
 HEAD_SHA: <pushed commit SHA for pushed_fixes, or current HEAD for no_findings/exhaustion>
-REVIEWER: <cr or greptile>
+REVIEWER: <cr, bugbot, or greptile>
 OUTCOME: <pushed_fixes|no_findings|exhaustion>
 FILES_CHANGED: <comma-separated file paths, empty if none>
 NEXT_PHASE: <B for pushed_fixes or no_findings, A for exhaustion>

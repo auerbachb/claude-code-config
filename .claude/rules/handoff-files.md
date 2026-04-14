@@ -47,7 +47,7 @@ Full example JSON: `.claude/reference/handoff-file-schema.json`.
 | `schema_version` | string | yes | Always `"1.0"` |
 | `pr_number` | number | yes | The PR number |
 | `head_sha` | string | yes | HEAD SHA after the phase's last push |
-| `reviewer` | string | yes | `"cr"` or `"greptile"` |
+| `reviewer` | string | yes | `"cr"`, `"bugbot"`, or `"greptile"` |
 | `phase_completed` | string | yes | `"A"`, `"B"`, or `"C"` |
 | `created_at` | string | yes | ISO 8601 timestamp |
 | `findings_fixed` | string[] | yes | Comment/review IDs of fixed findings |
