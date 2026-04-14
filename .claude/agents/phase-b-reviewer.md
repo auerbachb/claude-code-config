@@ -37,7 +37,7 @@ Before triggering `@coderabbitai full review` or entering the polling loop:
 
 1. **Scan all existing review comments** on the PR (all three endpoints, `per_page=100`)
 2. **Identify unresolved findings** from `coderabbitai[bot]`, `cursor[bot]`, or `greptile-apps[bot]` that have no reply confirming a fix and point to unchanged code
-3. **If unresolved findings exist: fix them first.** Read, fix, commit, push, reply to each thread. Then let CR auto-review the new push. Do NOT request a fresh review on top of unaddressed feedback.
+3. **If unresolved findings exist: fix them first.** Read, fix, commit, push, reply to each thread. The assigned reviewer auto-reviews the new push (CR and BugBot auto-trigger; Greptile requires explicit `@greptileai`). Do NOT request a fresh review on top of unaddressed feedback.
 4. **If all addressed:** Proceed with polling or review request.
 
 ## CodeRabbit Review Path (when `reviewer` = `cr`)
@@ -77,7 +77,7 @@ If check-runs show `conclusion: "failure"` with `output.title` containing "rate 
 
 ### CR Timeout (Slow Path)
 
-If CR has not delivered a review after **7 minutes** of polling → **check if BugBot (`cursor[bot]`) already posted a review** (BugBot's 5-min window from push has already expired at this point). If yes, use BugBot review (set `reviewer: bugbot`, sticky assignment). If no BugBot review exists, trigger Greptile immediately (do NOT wait another 5 min) → run the Greptile Daily Budget Check below. Sticky assignment applies at each tier.
+If CR has not delivered a review after **7 minutes** of polling → **check if BugBot (`cursor[bot]`) already posted a review** (BugBot's 5-min window from push has already expired at this point). If yes, use BugBot review (set `reviewer: bugbot`, sticky assignment). If no BugBot review exists → run the Greptile Daily Budget Check below: if budget allows, trigger Greptile immediately (do NOT wait another 5 min); if budget exhausted, fall back to self-review and report the blocker. Sticky assignment applies at each tier.
 
 > **MANDATORY budget gate on both paths above.** The Greptile Daily Budget Check in the "Greptile Review Path" section below is NOT optional — it applies to every `@greptileai` trigger point, including CR fallbacks. Never post `@greptileai` without running the check first.
 
