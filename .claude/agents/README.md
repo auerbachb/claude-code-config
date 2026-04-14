@@ -21,7 +21,7 @@ Agent definitions use `{{PLACEHOLDER}}` markers for runtime context that the par
 | `{{REPO}}` | GitHub repo name | `claude-code-config` |
 | `{{HEAD_SHA}}` | Current HEAD commit SHA | `7b2cfbf` |
 | `{{HANDOFF_FILE}}` | Path to handoff JSON | `~/.claude/handoffs/pr-618-handoff.json` |
-| `{{REVIEWER}}` | Assigned reviewer (`cr` or `greptile`) | `cr` |
+| `{{REVIEWER}}` | Assigned reviewer (`cr`, `bugbot`, or `greptile`) | `cr` |
 | `{{EXISTING_FINDINGS}}` | Pre-fetched review findings (optional) | JSON or summary text |
 | `{{RESEARCH_QUESTION}}` | Research/audit question for the `researcher` agent | `"List every skill that uses the `Bash` tool"` |
 | `{{SCOPE}}` | Optional scope hints for `researcher` (dirs, files, date ranges) | `".claude/skills/*/SKILL.md"` |

@@ -21,7 +21,7 @@ Use the custom agent definitions in `.claude/agents/` instead of manually readin
    - PR number, issue number, branch name
    - Repo owner/name
    - Handoff file path (`~/.claude/handoffs/pr-{N}-handoff.json`)
-   - HEAD SHA, reviewer assignment (`cr` or `greptile`)
+   - HEAD SHA, reviewer assignment (`cr`, `bugbot`, or `greptile`)
    - Pre-fetched findings (optional — saves the subagent from re-fetching)
 5. **Include the safety warning** in every subagent prompt:
 
@@ -71,10 +71,11 @@ If agent definitions are unavailable (e.g., repo without `.claude/agents/`):
 | Local review clean (2 passes) | Commit all changes, push branch | **Always do** |
 | Branch pushed | Create PR via `gh pr create` | **Always do** |
 | PR created/updated | Enter GitHub review polling loop (60s cycle) | **Always do** |
-| CR/Greptile posts findings | Fix all valid findings, commit, push, reply to threads | **Always do** |
-| CR rate-limited (fast-path) | Trigger Greptile immediately | **Always do** |
-| CR timeout (7 min) | Trigger Greptile | **Always do** |
-| Both reviewers down | Self-review for risk reduction | **Always do** |
+| CR/BugBot/Greptile posts findings | Fix all valid findings, commit, push, reply to threads | **Always do** |
+| CR rate-limited (fast-path) | Check BugBot review; if absent, wait 5 min for BugBot | **Always do** |
+| CR timeout (7 min) | Check BugBot review; if absent, wait 5 min for BugBot | **Always do** |
+| BugBot timeout (5 min, CR already failed) | Trigger Greptile | **Always do** |
+| All three reviewers down | Self-review for risk reduction | **Always do** |
 | Phase A subagent completes | Parent launches Phase B within 60s | **Always do** |
 | Phase B reports clean | Parent launches Phase C | **Always do** |
 | Merge gate met | Verify AC checkboxes against code | **Always do** |
@@ -117,6 +118,7 @@ Review protocol is defined authoritatively in these canonical sources — do NOT
 
 - **CR polling, CI checks, thread resolution:** `cr-github-review.md`
 - **Merge gate, CI-must-pass, AC verification:** `cr-merge-gate.md`
+- **BugBot (Cursor) second-tier reviewer, auto-trigger, merge gate:** `bugbot.md`
 - **Greptile trigger, severity classification, daily budget, reply format:** `greptile.md`
 - **Local review before push, fix loop, 2 clean passes:** `cr-local-review.md`
 

@@ -1,11 +1,11 @@
 ---
-description: "Phase B subagent: poll for CR/Greptile reviews, process findings, fix code, update handoff file, print exit report. Runs after Phase A pushes fixes."
+description: "Phase B subagent: poll for CR/BugBot/Greptile reviews, process findings, fix code, update handoff file, print exit report. Runs after Phase A pushes fixes."
 model: opus
 ---
 
 # Phase B: Review Loop
 
-You are a Phase B subagent. Your job: poll for code review results (CodeRabbit or Greptile), process any findings, fix code, push, update the handoff file, and determine if the merge gate is met. Then EXIT with an exit report.
+You are a Phase B subagent. Your job: poll for code review results (CodeRabbit, BugBot/Cursor, or Greptile), process any findings, fix code, push, update the handoff file, and determine if the merge gate is met. Then EXIT with an exit report.
 
 ## Runtime Context
 
@@ -13,7 +13,7 @@ The parent agent provides:
 - **PR number** and **repo** (`{{OWNER}}/{{REPO}}`)
 - **Handoff file path** (e.g., `~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json`)
 - **HEAD SHA** from the previous phase
-- **Reviewer** assignment (`cr` or `greptile`)
+- **Reviewer** assignment (`cr`, `bugbot`, or `greptile`)
 - **Existing findings** (if any were already posted before this agent launched)
 
 ## Safety Rules (NON-NEGOTIABLE)
@@ -36,7 +36,7 @@ On startup, check for the handoff file:
 Before triggering `@coderabbitai full review` or entering the polling loop:
 
 1. **Scan all existing review comments** on the PR (all three endpoints, `per_page=100`)
-2. **Identify unresolved findings** from `coderabbitai[bot]` or `greptile-apps[bot]` that have no reply confirming a fix and point to unchanged code
+2. **Identify unresolved findings** from `coderabbitai[bot]`, `cursor[bot]`, or `greptile-apps[bot]` that have no reply confirming a fix and point to unchanged code
 3. **If unresolved findings exist: fix them first.** Read, fix, commit, push, reply to each thread. Then let CR auto-review the new push. Do NOT request a fresh review on top of unaddressed feedback.
 4. **If all addressed:** Proceed with polling or review request.
 
@@ -73,11 +73,11 @@ gh api "repos/{{OWNER}}/{{REPO}}/commits/$CURRENT_SHA/check-runs" \
 
 ### Rate-Limit Fast Path
 
-If check-runs show `conclusion: "failure"` with `output.title` containing "rate limit" (case-insensitive), OR commit statuses show rate-limit language → **run the Greptile Daily Budget Check below**, and if the budget allows, trigger Greptile **immediately** (do not wait 7 minutes). If the budget is exhausted, fall back to self-review and report the blocker — do NOT post `@greptileai`. The PR switches to Greptile permanently (sticky assignment) the moment the budget check passes and the trigger is sent.
+If check-runs show `conclusion: "failure"` with `output.title` containing "rate limit" (case-insensitive), OR commit statuses show rate-limit language → **check if BugBot (`cursor[bot]`) already posted a review** on any of the 3 endpoints. If yes, use BugBot review (set `reviewer: bugbot`, sticky assignment). If no BugBot review yet, wait up to 5 minutes for BugBot. If BugBot times out → run the Greptile Daily Budget Check below, and if the budget allows, trigger Greptile. If the budget is exhausted, fall back to self-review and report the blocker.
 
 ### CR Timeout (Slow Path)
 
-If CR has not delivered a review after **7 minutes** of polling → **run the Greptile Daily Budget Check below**, and if the budget allows, trigger Greptile. If the budget is exhausted, fall back to self-review and report the blocker — do NOT post `@greptileai`. Sticky assignment applies once the trigger is sent.
+If CR has not delivered a review after **7 minutes** of polling → **check if BugBot (`cursor[bot]`) already posted a review.** If yes, use BugBot review (set `reviewer: bugbot`, sticky assignment). If no BugBot review yet, wait up to 5 minutes for BugBot. If BugBot times out → run the Greptile Daily Budget Check below. Sticky assignment applies at each tier.
 
 > **MANDATORY budget gate on both paths above.** The Greptile Daily Budget Check in the "Greptile Review Path" section below is NOT optional — it applies to every `@greptileai` trigger point, including CR fallbacks. Never post `@greptileai` without running the check first.
 
@@ -171,7 +171,7 @@ gh api "repos/{{OWNER}}/{{REPO}}/commits/$CURRENT_SHA/check-runs?per_page=100" \
 
 1. Verify each finding against actual code before fixing
 2. Fix ALL valid findings in one commit, push once
-3. Reply to every thread (CR: include `@coderabbitai`; Greptile: plain text only)
+3. Reply to every thread (CR: include `@coderabbitai`; BugBot: plain text only, no `@cursor`; Greptile: plain text only, no `@greptileai`)
 4. Resolve threads via GraphQL
 5. Resume polling
 
@@ -193,7 +193,7 @@ EXIT_REPORT
 PHASE_COMPLETE: B
 PR_NUMBER: {{PR_NUMBER}}
 HEAD_SHA: <current HEAD>
-REVIEWER: <cr or greptile>
+REVIEWER: <cr, bugbot, or greptile>
 OUTCOME: <clean|fixes_pushed|merge_ready|exhaustion>
 FILES_CHANGED: <comma-separated paths, or empty>
 NEXT_PHASE: <C or B>

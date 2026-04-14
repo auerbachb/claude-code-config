@@ -9,20 +9,25 @@
 
 The merge gate depends on which reviewer owns the PR:
 
-**CR-only path** (Greptile was never triggered for this PR):
+**CR-only path** (neither BugBot nor Greptile was triggered for this PR):
 - 2 clean CR reviews required. The second is a confirmation pass — CR's completion signal is unreliable (it may mark the check as "completed" but post findings minutes later), so a second clean pass is needed.
 - If CR responds with no findings after a round of fixes, post `@coderabbitai full review` one more time to confirm.
 - **After 2 failed re-triggers on the same SHA**, stop and tell the user. Do not loop forever.
 
-**Greptile path** (Greptile was triggered at any point for this PR — sticky assignment, see `greptile.md`):
+**BugBot path** (CR failed, BugBot responded, Greptile was never triggered — sticky assignment, see `bugbot.md`):
+- 1 clean BugBot review satisfies the gate — no confirmation pass needed (BugBot's completion signals are reliable).
+- After fixing BugBot findings, BugBot auto-reviews the new push. If auto-review doesn't fire within 5 min, trigger manually via `@cursor review`.
+- Stay on BugBot — do not switch back to CR. Ignore late CR reviews.
+
+**Greptile path** (Greptile was triggered at any point — both CR and BugBot failed — sticky assignment, see `greptile.md`):
 - Severity-gated: merge-ready when ANY of these hold:
   1. **Clean review:** no findings (thumbs-up with no inline comments).
   2. **No P0 findings:** only P1/P2 findings present — fix all of them, push, reply to threads; no re-review required.
   3. **P0 fixed + re-review clean:** P0 findings were present, fixed, and a re-triggered `@greptileai` review came back clean.
-- Stay on Greptile — do not switch back to CR. Ignore any late CR reviews.
+- Stay on Greptile — do not switch back to CR or BugBot. Ignore any late CR/BugBot reviews.
 - Max 3 Greptile reviews per PR (initial + up to 2 P0 re-reviews). At 3 with persistent P0, self-review and report blocker.
 
-**If both CR and Greptile are down** (CR rate-limited/timed out + Greptile 5-min timeout): perform a self-review for risk reduction. A clean self-review does NOT satisfy the merge gate — report the blocker to the user.
+**If CR, BugBot, and Greptile are all down** (CR rate-limited/timed out + BugBot 5-min timeout + Greptile 5-min timeout): perform a self-review for risk reduction. A clean self-review does NOT satisfy the merge gate — report the blocker to the user.
 
 - **How to detect a clean CR pass:** After triggering `@coderabbitai full review`, watch for these signals in order:
   1. **Ack (review started):** CR posts an issue comment (on `issues/{N}/comments`) with "Actions performed — Full review triggered." This means CR **started** the review — it is NOT a completion signal.

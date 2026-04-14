@@ -23,7 +23,7 @@ HANDOFF_FILE: ~/.claude/handoffs/pr-618-handoff.json
 | `PHASE_COMPLETE` | `A`, `B`, `C` | Which phase just finished |
 | `PR_NUMBER` | integer | The PR number |
 | `HEAD_SHA` | string | HEAD SHA after last push (or current HEAD) |
-| `REVIEWER` | `cr`, `greptile` | Which reviewer owns this PR |
+| `REVIEWER` | `cr`, `bugbot`, `greptile` | Which reviewer owns this PR |
 | `OUTCOME` | see below | What happened |
 | `FILES_CHANGED` | comma-separated paths | Files modified (empty string if none) |
 | `NEXT_PHASE` | `B`, `C`, `none` | What parent should launch next |

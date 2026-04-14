@@ -122,7 +122,7 @@ EXIT_REPORT
 PHASE_COMPLETE: pm
 PR_NUMBER: <PR number if a PR was created or referenced, else "none">
 HEAD_SHA: <current HEAD SHA if applicable, else "none">
-REVIEWER: <cr, greptile, or none>
+REVIEWER: <cr, bugbot, greptile, or none>
 OUTCOME: <issue_created|work_log_updated|repo_bootstrapped|blocked|exhaustion>
 FILES_CHANGED: <comma-separated paths, or empty>
 NEXT_PHASE: none

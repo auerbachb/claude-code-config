@@ -18,7 +18,7 @@ gh api "repos/{owner}/{repo}/commits/{SHA}/statuses" \
 
 **Completion signal:** `status: "completed"` + `conclusion: "success"` = review done.
 
-**Fast-path rate-limit signal:** check-run with `conclusion: "failure"` and `output.title` containing "rate limit" (case-insensitive), OR status `state: "failure"`/`"error"` with `description` containing "rate limit" → trigger Greptile immediately.
+**Fast-path rate-limit signal:** check-run with `conclusion: "failure"` and `output.title` containing "rate limit" (case-insensitive), OR status `state: "failure"`/`"error"` with `description` containing "rate limit" → check BugBot (`cursor[bot]`) first. If BugBot already posted a review, use it. If not, wait up to 5 min for BugBot. If BugBot also times out, trigger Greptile (see `bugbot.md`).
 
 ## CI Health Check — every poll cycle
 

@@ -1,10 +1,10 @@
-# Greptile — CodeRabbit Fallback Reviewer
+# Greptile — Last-Resort Fallback Reviewer
 
 > **Always:** Poll for response after triggering. Reply to every thread. Fix all valid findings. Classify by severity (P0/P1/P2). Only re-review for P0. Stay on G once triggered for a PR.
 > **Ask first:** Never — fix findings autonomously.
-> **Never:** Trigger Greptile proactively on a PR where CR hasn't failed yet. Ignore Greptile findings. Switch a PR back to CR after Greptile has been triggered. Include `@greptileai` in reply comments (triggers a paid re-review with no learning benefit).
+> **Never:** Trigger Greptile before both CR AND BugBot have failed. Ignore Greptile findings. Switch a PR back to CR/BugBot after Greptile has been triggered. Include `@greptileai` in reply comments (triggers a paid re-review with no learning benefit).
 
-Greptile is a **fallback** AI code reviewer for when CR is rate-limited or unresponsive. Verify all findings against code. Key differences from CR: cost ($0.50-$1.00/review beyond 50/month quota), accurate completion signals (no confirmation pass needed).
+Greptile is the **last-resort paid** AI code reviewer — only triggered when both CR and BugBot (Cursor) have failed. Review chain: **CR → BugBot → Greptile → self-review.** Verify all findings against code. Key differences from CR/BugBot: cost ($0.50-$1.00/review beyond 50/month quota), accurate completion signals (no confirmation pass needed).
 
 ## Greptile Basics
 
@@ -48,14 +48,16 @@ Applies to 2nd/3rd triggers only; initial trigger requires only the budget check
 
 ## When to Trigger Greptile
 
-**Greptile is fallback-only.** Never trigger it proactively alongside CR. It is only triggered when CR fails for a specific PR:
+**Greptile is last-resort only.** Never trigger it before both CR AND BugBot have failed. It is only triggered when both upstream reviewers fail for a specific PR:
 
-1. **CR rate limit detected (fast-path):** Check-runs or commit statuses show rate limiting → trigger Greptile immediately.
-2. **CR timeout (slow-path):** CR has not delivered a review within 7 minutes of push → trigger Greptile.
+1. **CR rate-limit + BugBot timeout:** CR is rate-limited (fast-path) AND BugBot has not posted a review within 5 minutes → trigger Greptile.
+2. **CR timeout + BugBot timeout:** CR has not delivered a review within 7 minutes AND BugBot has not posted a review within 5 minutes → trigger Greptile.
+
+In both cases, always check if BugBot (`cursor[bot]`) already posted a review before triggering Greptile — BugBot auto-runs on every push, so it may have responded while you were waiting for CR.
 
 ### Sticky Assignment
 
-**Once Greptile is triggered for a PR, it stays on Greptile permanently.** Do not switch back to CR. After fixing findings, only re-trigger `@greptileai` for P0 findings. Ignore late CR reviews. Merge gate is severity-dependent — see `cr-merge-gate.md` (Step 1) for the authoritative definition.
+**Once Greptile is triggered for a PR, it stays on Greptile permanently.** Do not switch back to CR or BugBot. After fixing findings, only re-trigger `@greptileai` for P0 findings. Ignore late CR/BugBot reviews. Merge gate is severity-dependent — see `cr-merge-gate.md` (Step 1) for the authoritative definition.
 
 ## Polling for Greptile Response
 
@@ -75,4 +77,4 @@ Reply commands and CR-vs-Greptile comparison: `.claude/reference/greptile-reply-
 
 ## Merge Gate
 
-**Canonical definition:** See `cr-merge-gate.md` (Step 1). That file is the single authoritative source for both the CR 2-clean-pass path and the Greptile severity-gated path (including the 3-review-per-PR cap and the self-review fallback when both reviewers are down).
+**Canonical definition:** See `cr-merge-gate.md` (Step 1). That file is the single authoritative source for the CR 2-clean-pass path, the BugBot 1-clean-pass path, and the Greptile severity-gated path (including the 3-review-per-PR cap and the self-review fallback when all three reviewers are down).

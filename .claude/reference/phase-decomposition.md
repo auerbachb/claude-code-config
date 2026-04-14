@@ -4,7 +4,7 @@ Canonical reference for per-phase subagent procedures. Used by agent definitions
 
 ## Phase A: Fix + Push (heaviest)
 
-1. Read CR/Greptile findings, read affected files, fix all valid findings + lint/CI failures
+1. Read CR/BugBot/Greptile findings, read affected files, fix all valid findings + lint/CI failures
 2. Commit all fixes in ONE commit, push once
 3. Reply to all review threads (see `greptile.md` for Greptile reply format)
 4. Write handoff file (see `handoff-files.md`)
@@ -14,7 +14,7 @@ Canonical reference for per-phase subagent procedures. Used by agent definitions
 
 1. Read handoff file on startup (GitHub API fallback if missing)
 2. Before ANY `@greptileai` trigger, check daily budget (see `greptile.md`)
-3. CR path: poll for review (fast-path + 7-min Greptile trigger). Greptile path: trigger and poll directly.
+3. CR path: poll for review (fast-path → check BugBot → 5-min BugBot timeout → Greptile trigger). BugBot path: poll for BugBot review. Greptile path: trigger and poll directly.
 4. Greptile findings: classify P0/P1/P2, fix all, commit, push, reply. Re-trigger only for P0 (max 3 reviews/PR).
 5. CR clean pass: trigger one more `@coderabbitai full review` for confirmation (2 clean passes needed)
 6. Update handoff file. Deduplicate: `string[]` by exact value, `findings_dismissed` by `.id`.

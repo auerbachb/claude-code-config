@@ -84,7 +84,7 @@ Count reviews per reviewer. Exclude self-reviews (reviewer == PR author). Used b
 
 Drop contributors whose `login` matches any of:
 
-- ends with `[bot]` (e.g., `coderabbitai[bot]`, `greptile-apps[bot]`, `dependabot[bot]`)
+- ends with `[bot]` (e.g., `coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `dependabot[bot]`)
 - equals `github-actions`, `dependabot`, `renovate`
 
 jq filter for an author stream:

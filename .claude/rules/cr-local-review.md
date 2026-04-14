@@ -2,7 +2,7 @@
 
 > **Always:** Run local CR review before pushing. Verify findings against code before fixing. Two clean passes to exit.
 > **Ask first:** Never — fix all findings autonomously. Never ask "should I run the review?", "should I push?", or "should I create a PR?" — these transitions are automatic.
-> **Never:** Push code without running local review. Fall back to GitHub polling when CLI works. Ask permission at any step in this workflow. Treat local review as satisfying the merge gate — only the GitHub review loop (CR + Greptile) satisfies the merge requirement.
+> **Never:** Push code without running local review. Fall back to GitHub polling when CLI works. Ask permission at any step in this workflow. Treat local review as satisfying the merge gate — only the GitHub review loop (CR + BugBot + Greptile) satisfies the merge requirement.
 
 This is the **primary** review workflow. Run CodeRabbit locally in your terminal to catch issues **before** pushing or creating a PR. This is faster than GitHub-based reviews (instant feedback, no polling), produces no noise on the PR, and doesn't consume your GitHub-based CR review quota.
 
@@ -60,9 +60,9 @@ The only acceptable use of suppression comments is when the linter is provably w
 
 After two consecutive clean local reviews, execute this checklist immediately:
 
-> **STOP — Local review does NOT satisfy the merge gate.** The GitHub review loop (CR + Greptile) is mandatory: 2 clean CR passes or a clean Greptile severity gate (see `cr-merge-gate.md`). Proceed immediately — do not ask.
+> **STOP — Local review does NOT satisfy the merge gate.** The GitHub review loop (CR + BugBot + Greptile) is mandatory: 2 clean CR passes, 1 clean BugBot pass, or a clean Greptile severity gate (see `cr-merge-gate.md`). Proceed immediately — do not ask.
 
 1. **Commit all changes** in a single commit.
 2. **Push the branch** to the remote.
 3. **Create the PR** via `gh pr create` with `Closes #N` in the body and a Test Plan section with acceptance criteria checkboxes.
-4. **Enter the GitHub CodeRabbit Review Loop** (see `cr-github-review.md` "Polling" section). CR auto-reviews on push — poll immediately, do not wait. Greptile is fallback-only: it triggers automatically if CR is rate-limited or times out (see `greptile.md` "When to Trigger Greptile"). Never trigger Greptile proactively while CR is still expected to respond.
+4. **Enter the GitHub CodeRabbit Review Loop** (see `cr-github-review.md` "Polling" section). CR and BugBot both auto-review on push — poll for both immediately, do not wait. BugBot is second-tier fallback if CR fails (see `bugbot.md`). Greptile is last-resort: triggered only when both CR and BugBot have failed (see `greptile.md` "When to Trigger Greptile"). Never trigger Greptile proactively while CR or BugBot is still expected to respond.
