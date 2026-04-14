@@ -77,7 +77,7 @@ If check-runs show `conclusion: "failure"` with `output.title` containing "rate 
 
 ### CR Timeout (Slow Path)
 
-If CR has not delivered a review after **7 minutes** of polling → **check if BugBot (`cursor[bot]`) already posted a review.** If yes, use BugBot review (set `reviewer: bugbot`, sticky assignment). If no BugBot review yet, wait up to 5 minutes for BugBot. If BugBot times out → run the Greptile Daily Budget Check below. Sticky assignment applies at each tier.
+If CR has not delivered a review after **7 minutes** of polling → **check if BugBot (`cursor[bot]`) already posted a review** (BugBot's 5-min window from push has already expired at this point). If yes, use BugBot review (set `reviewer: bugbot`, sticky assignment). If no BugBot review exists, trigger Greptile immediately (do NOT wait another 5 min) → run the Greptile Daily Budget Check below. Sticky assignment applies at each tier.
 
 > **MANDATORY budget gate on both paths above.** The Greptile Daily Budget Check in the "Greptile Review Path" section below is NOT optional — it applies to every `@greptileai` trigger point, including CR fallbacks. Never post `@greptileai` without running the check first.
 
@@ -86,6 +86,32 @@ If CR has not delivered a review after **7 minutes** of polling → **check if B
 2 clean CR reviews required. After a clean pass, trigger `@coderabbitai full review` one more time for confirmation. After 2 failed re-triggers on the same SHA, stop and report.
 
 Never trigger `@coderabbitai full review` more than twice per PR per hour.
+
+## BugBot Review Path (when `reviewer` = `bugbot`)
+
+BugBot auto-reviews every push — no manual trigger needed. Poll for `cursor[bot]` reviews on all 3 endpoints every 60 seconds.
+
+### Polling
+
+Same 3 endpoints as CR, filter by `.user.login == "cursor[bot]"`. Check-run name: `Cursor Bugbot`.
+
+**Completion:** check-run `status: "completed"` (any conclusion — BugBot uses `neutral` for reviews with findings). Also check for review objects from `cursor[bot]`.
+
+**Timeout:** 5 minutes from push. If no BugBot review after 5 min, trigger Greptile (budget gate applies).
+
+### BugBot Merge Gate
+
+1 clean BugBot review satisfies the gate — no confirmation pass needed. Clean = review posted with no inline findings, OR all findings fixed and BugBot's subsequent auto-review has no new findings.
+
+### BugBot Reply Format
+
+Do NOT include `@cursor` in reply comments (may trigger a re-review). Use plain text only:
+- Inline: `gh api repos/{{OWNER}}/{{REPO}}/pulls/comments/{id}/replies -f body="Fixed in \`SHA\`: <what changed>"`
+- PR-level: `gh pr comment {{PR_NUMBER}} --body "Fixed in \`SHA\`: <what changed>"`
+
+### Re-Reviews
+
+After fixing BugBot findings and pushing, BugBot auto-reviews the new push. If auto-review doesn't fire within 5 min, trigger manually: `gh pr comment {{PR_NUMBER}} --body "@cursor review"`
 
 ## Greptile Review Path (when `reviewer` = `greptile`)
 

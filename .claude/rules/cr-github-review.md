@@ -48,8 +48,8 @@ After pushing a commit to a PR, **automatically** enter the CR review loop. Do n
 
 BugBot auto-runs on every push — poll for its reviews alongside CR. When CR fails, check BugBot before triggering Greptile.
 
-- **Fast path (~1-2 min):** CR rate-limit detected → check if BugBot (`cursor[bot]`) already posted a review. If yes, use BugBot review (assign `reviewer: bugbot`). If no, wait up to 5 min for BugBot. If BugBot times out, trigger Greptile (budget gate applies — see `greptile.md` "Daily Budget").
-- **Slow path (7 min):** CR has not delivered review content after 7 min → same BugBot-first check as fast path.
+- **Fast path (~1-2 min):** CR rate-limit detected → check if BugBot (`cursor[bot]`) already posted a review (BugBot auto-triggers at push time, so it may already be done). If yes, use BugBot review (assign `reviewer: bugbot`). If no BugBot review yet, wait up to 5 min **from push time** (not from CR failure detection). If BugBot times out, trigger Greptile (budget gate applies — see `greptile.md` "Daily Budget").
+- **Slow path (7 min):** CR has not delivered review content after 7 min → check if BugBot already posted a review (since BugBot's 5-min window from push has already passed by this point). If yes, use BugBot review. If no, trigger Greptile immediately — do NOT wait another 5 min for BugBot.
 - **Sticky assignment:** CR fail → BugBot owns the PR. If BugBot also fails → Greptile owns permanently. Do not switch back up the chain.
 - **If all three fail** (CR rate-limited + BugBot 5-min timeout + Greptile 5-min timeout): fall back to **self-review**. Self-review does NOT satisfy the merge gate.
 - Tell the user which fallback was used and why.
