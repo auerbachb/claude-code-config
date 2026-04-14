@@ -91,7 +91,7 @@ gh api "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100"
 ### 1d. Print audit summary
 
 ```
-[AUDIT] Review threads: N total (M unresolved, K resolved, J outdated)
+[AUDIT] Review threads: N total — M unresolved, K resolved (J outdated across both categories)
 [AUDIT] CI checks: X total (P passing, F failing, I in-progress)
 ```
 
