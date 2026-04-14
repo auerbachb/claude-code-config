@@ -26,11 +26,11 @@ After pushing a commit to a PR, **automatically** enter the CR review loop. Do n
   3. `repos/{owner}/{repo}/issues/{N}/comments` — PR conversation (summary, ack, general findings). Missing this endpoint causes indefinite polling on clean passes.
 - **Check commit status every cycle.** Query `repos/{owner}/{repo}/commits/{SHA}/check-runs` filtered to `name == "CodeRabbit"`; fallback: `/statuses` filtered to `context ~ "CodeRabbit"`. Full commands: `.claude/reference/cr-polling-commands.md`.
   - **Completion signal:** `status: "completed"` + `conclusion: "success"` = review done. Definitive signal.
-  - **Fast-path rate limit:** check-run `conclusion: "failure"` with "rate limit" in `output.title`, OR status `state: "failure"`/`"error"` with "rate limit" in `description` — **check BugBot first** (see `bugbot.md`). If BugBot already posted a review, use it. If not, wait up to 5 min for BugBot. If BugBot also times out, trigger Greptile. Sticky assignment applies at each tier.
+  - **Fast-path rate limit:** check-run `conclusion: "failure"` with "rate limit" in `output.title`, OR status `state: "failure"`/`"error"` with "rate limit" in `description` — **check BugBot first** (see `bugbot.md`). If BugBot already posted a review, use it. If not, wait up to 5 min **from push time** for BugBot. If BugBot also times out, trigger Greptile. Sticky assignment applies at each tier.
   - **Ack ≠ completion.** "Actions performed — Full review triggered" = CR started. "CodeRabbit — Review completed" CI check = CR finished.
 - **CR username:** `coderabbitai[bot]` (with `[bot]` suffix). Filter by `.user.login == "coderabbitai[bot]"` — NOT bare `coderabbitai`.
 - **Watermark:** Track highest review ID from `pulls/{N}/reviews`. New reviews can have inline comment IDs lower than previous reviews (different ID sequences). For `issues/{N}/comments`, track by comment ID.
-- **Hard timeout: 7 minutes.** No CR review after 7 min → check BugBot (see `bugbot.md`). If BugBot already posted a review, use it. If not, wait up to 5 min for BugBot. If BugBot also times out, trigger Greptile. Sticky assignment applies at each tier.
+- **Hard timeout: 7 minutes.** No CR review after 7 min → check BugBot (see `bugbot.md`). If BugBot already posted a review, use it. If not, trigger Greptile immediately (BugBot's 5-min window from push has already elapsed). Sticky assignment applies at each tier.
 
 ### CI Health Check (MANDATORY — every poll cycle)
 
