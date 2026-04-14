@@ -73,7 +73,7 @@ gh api "repos/{{OWNER}}/{{REPO}}/commits/$CURRENT_SHA/check-runs" \
 
 ### Rate-Limit Fast Path
 
-If check-runs show `conclusion: "failure"` with `output.title` containing "rate limit" (case-insensitive), OR commit statuses show rate-limit language → **check if BugBot (`cursor[bot]`) already posted a review** on any of the 3 endpoints. If yes, use BugBot review (set `reviewer: bugbot`, sticky assignment). If no BugBot review yet, continue polling for BugBot until 5 minutes after push time have elapsed (do NOT start a new 5-minute timer now — the window runs concurrently with CR's, so some or all of it may have already passed). When BugBot times out, run the Greptile Daily Budget Check below: if budget allows, trigger Greptile; if exhausted, fall back to self-review and report the blocker.
+If check-runs show `conclusion: "failure"` with `output.title` containing "rate limit" (case-insensitive), OR commit statuses show rate-limit language → **check if BugBot (`cursor[bot]`) already posted a review** on any of the 3 endpoints. If yes, use BugBot review (set `reviewer: bugbot`, sticky assignment). If no BugBot review yet, continue polling for BugBot until 5 minutes from push time have elapsed (do NOT start a new 5-minute timer now — the window runs concurrently with CR's, so some or all of it may have already passed). When BugBot times out, run the Greptile Daily Budget Check below: if budget allows, trigger Greptile; if exhausted, fall back to self-review and report the blocker.
 
 ### CR Timeout (Slow Path)
 
@@ -97,7 +97,7 @@ Same 3 endpoints as CR, filter by `.user.login == "cursor[bot]"`. Check-run name
 
 **Completion:** check-run `status: "completed"` (any conclusion — BugBot uses `neutral` for reviews with findings). Also check for review objects from `cursor[bot]`.
 
-**Timeout:** 5 minutes from push. If no BugBot review after 5 min, trigger Greptile (budget gate applies).
+**Timeout:** 5 minutes from push. If no BugBot review after 5 min, run the Greptile Daily Budget Check below: if budget allows, trigger Greptile; if exhausted, fall back to self-review and report the blocker.
 
 ### BugBot Merge Gate
 
