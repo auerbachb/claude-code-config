@@ -47,23 +47,13 @@ For each merged PR, record: author, additions, deletions, commit count.
 
 ### 3b: Review cycles per PR
 
-For each merged PR from 3a, count review cycles — the number of review rounds that triggered fix commits.
+For each merged PR from 3a, count review cycles — the number of review rounds that triggered fix commits. Use `--exclude-bots` so human review engagement is measured (bot reviews are tracked separately via first-pass CR success in 3f).
 
-**How to compute cycles for a PR:**
+```bash
+CYCLES=$(.claude/scripts/cycle-count.sh "$PR_NUM" --exclude-bots)
+```
 
-1. Fetch reviews sorted by submission time (exclude bot logins ending in `[bot]` and `github-actions`):
-   ```bash
-   gh api "repos/{owner}/{repo}/pulls/$PR_NUM/reviews?per_page=100" \
-     --jq '[.[] | select(.user.login | (endswith("[bot]") or . == "github-actions") | not)] | sort_by(.submitted_at)'
-   ```
-
-2. Fetch the PR commit timeline:
-   ```bash
-   gh api "repos/{owner}/{repo}/pulls/$PR_NUM/commits?per_page=100" \
-     --jq '[.[] | {sha: .sha, date: .commit.committer.date}] | sort_by(.date)'
-   ```
-
-3. Iterate reviews chronologically. A review counts as one cycle if there exists at least one commit with `timestamp > review.submitted_at` AND `timestamp < next_review.submitted_at` (or `< merge time` if there is no subsequent review). Reviews with no subsequent commits are non-actionable and do not count.
+The script counts one cycle per review followed by at least one commit before the next review (or merge). Reviews with no subsequent commits are non-actionable and do not count. Matches the canonical pattern in `.claude/reference/pm-data-patterns.md` "Review cycles per PR". See `.claude/scripts/cycle-count.sh --help` for the full contract.
 
 If no reviews exist on any PR in the period, note this gracefully: "No PR review history found — review cycle metrics skipped."
 

@@ -118,21 +118,13 @@ Calculate `mergedAt - createdAt` for each PR. Report: average, median, min, max.
 
 ### 5c: Review cycles per PR
 
-For each merged PR, count review-then-fix rounds (same approach as `/pm-rate-team`):
+For each merged PR, count review-then-fix rounds (same approach as `/pm-rate-team`). Use `--exclude-bots` so the metric reflects human review engagement:
 
-1. Fetch reviews sorted by submission time (exclude bots):
-   ```bash
-   gh api "repos/{owner}/{repo}/pulls/$PR_NUM/reviews?per_page=100" \
-     --jq '[.[] | select(.user.login | (endswith("[bot]") or . == "github-actions") | not)] | sort_by(.submitted_at)'
-   ```
+```bash
+CYCLES=$(.claude/scripts/cycle-count.sh "$PR_NUM" --exclude-bots)
+```
 
-2. Fetch commit timeline:
-   ```bash
-   gh api "repos/{owner}/{repo}/pulls/$PR_NUM/commits?per_page=100" \
-     --jq '[.[] | {sha: .sha, date: .commit.committer.date}] | sort_by(.date)'
-   ```
-
-3. A review counts as one cycle if there exists at least one commit after it before the next review or merge. Reviews with no subsequent commits are non-actionable.
+The script counts one cycle per review followed by at least one commit before the next review (or merge). Reviews with no subsequent commits are non-actionable and do not count. See `.claude/scripts/cycle-count.sh --help` for the full contract and `.claude/reference/pm-data-patterns.md` for the canonical pattern.
 
 Report: average review cycles per PR. Lower is cleaner.
 

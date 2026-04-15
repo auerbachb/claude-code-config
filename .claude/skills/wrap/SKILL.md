@@ -194,12 +194,9 @@ If a work-log directory was detected at session start:
 
 1. Reconstruct the cycle count from PR history:
    ```bash
-   gh api "repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100" \
-     --jq '[.[] | select(.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]") | {state, submitted_at}]'
-   gh api "repos/{owner}/{repo}/pulls/{N}/commits?per_page=100" \
-     --jq '[.[] | {sha: .sha, date: .commit.committer.date}]'
+   CYCLES=$(.claude/scripts/cycle-count.sh "$PR_NUM")
    ```
-   Count each review-with-findings followed by a fix commit as 1 cycle.
+   The script counts one cycle per review followed by at least one commit before the next review (or merge). Clean passes and confirmation reviews do not count. Default mode includes all reviewers; see `.claude/scripts/cycle-count.sh --help` for flags.
 
 2. Append to today's session log:
    ```
