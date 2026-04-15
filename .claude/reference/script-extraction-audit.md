@@ -19,7 +19,7 @@ Every directory below was walked (read every `.md`, `.sh`, `.py`, `.json`, `.yml
 - Root: `CLAUDE.md`, `global-settings.json`, `setup.sh`, `setup-skills-worktree.sh`
 - Memory index (`~/.claude/projects/-…/memory/MEMORY.md`) — scanned for confirmed pain points
 
-Total prose in rule/skill/agent surface area: ~9,000 lines of markdown. The audit focuses on deterministic, side-effect-free or single-side-effect procedures that the agent repeats in prose today.
+Total prose in rule/skill/agent surface area: ~9,000 lines of Markdown. The audit focuses on deterministic, side-effect-free or single-side-effect procedures that the agent repeats in prose today.
 
 ---
 
