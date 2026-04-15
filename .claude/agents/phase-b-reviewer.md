@@ -33,12 +33,12 @@ On startup, check for the handoff file:
 
 ## Before Requesting Any New Review (MANDATORY)
 
-Before triggering `@coderabbitai full review` or entering the polling loop:
+Run the session-start / pre-review comment audit per `cr-github-review.md` ("Session-start / pre-review comment audit"):
 
-1. **Scan all existing review comments** on the PR (all three endpoints, `per_page=100`)
-2. **Identify unresolved findings** from `coderabbitai[bot]`, `cursor[bot]`, or `greptile-apps[bot]` that have no reply confirming a fix and point to unchanged code
-3. **If unresolved findings exist: fix them first.** Read, fix, commit, push, reply to each thread. The assigned reviewer auto-reviews the new push (CR and BugBot auto-trigger; Greptile requires explicit `@greptileai`). Do NOT request a fresh review on top of unaddressed feedback.
-4. **If all addressed:** Proceed with polling or review request.
+1. Fetch all 3 comment endpoints with `per_page=100`.
+2. Identify any unresolved findings from `coderabbitai[bot]`, `cursor[bot]`, or `greptile-apps[bot]`.
+3. **If ANY unresolved findings exist: invoke `/fixpr`.** `/fixpr` fixes, commits once, pushes, replies to every thread, resolves via GraphQL. Do NOT fix manually and do NOT request a new review on top of unaddressed feedback.
+4. **STOP condition:** do not proceed to the polling loop (or request a new review) until step 3 completes.
 
 ## CodeRabbit Review Path (when `reviewer` = `cr`)
 
