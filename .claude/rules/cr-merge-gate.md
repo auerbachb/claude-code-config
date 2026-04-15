@@ -3,7 +3,17 @@
 > **This is the single authoritative definition of the merge gate.** All other rule files reference this file instead of duplicating it.
 > **Always:** Verify merge gate before any merge. Verify CI. Verify AC checkboxes against code. Ask user before merging.
 > **Ask first:** Merging — always ask the user.
-> **Never:** Merge without meeting the gate. Merge with failing CI. Merge with unchecked AC boxes.
+> **Never:** Merge without meeting the gate. Merge with failing CI. Merge with unchecked AC boxes. Stop polling because "nothing is unresolved right now" — see "Polling exit criterion" below.
+
+## Polling exit criterion
+
+The ONLY valid reason to stop polling an open PR is: this file's merge gate has been met — specifically, one of:
+
+1. **2 consecutive clean CR passes** on the current HEAD SHA (CR-only path, Step 1 below).
+2. **1 clean BugBot pass** on the current HEAD SHA (BugBot path, Step 1 below).
+3. **Greptile severity gate passed** (sticky-Greptile path — clean review, or only P1/P2 fixed, or P0 fixed + re-review clean — Step 1 below).
+
+"0 unresolved threads right now" is a transient snapshot, NOT an exit condition. After pushing a fix commit (whether by the loop directly or by `/fixpr`), the HEAD SHA changes and every reviewer re-runs — continue polling for the reviewer's response to the new SHA until one of the three conditions above holds.
 
 ## Step 1 — Confirm reviews are clean (merge gate)
 

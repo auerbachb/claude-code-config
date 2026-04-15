@@ -77,7 +77,7 @@ If agent definitions are unavailable (e.g., repo without `.claude/agents/`):
 | BugBot timeout (5 min, CR already failed) | Trigger Greptile | **Always do** |
 | All three reviewers down | Self-review for risk reduction | **Always do** |
 | Phase A subagent completes | Parent launches Phase B within 60s | **Always do** |
-| Phase B reports clean | Parent launches Phase C | **Always do** |
+| Phase B reports merge_ready | Parent launches Phase C | **Always do** |
 | Merge gate met | Verify AC checkboxes against code | **Always do** |
 | AC verified, all boxes checked | Ask user about merging | **Ask first** |
 | Subagent failed (crash / no handoff state) | Report failure, ask about respawn | **Ask first** |
@@ -108,7 +108,7 @@ The 32K limit is the binding constraint. Give each subagent ONE clear phase with
 **Orchestration rules:**
 - Parent launches Phase A subagents (can run in parallel across PRs)
 - Phase A complete → parent launches Phase B immediately (see `phase-protocols.md`)
-- Phase B clean → parent launches Phase C
+- Phase B merge_ready → parent launches Phase C
 - Soft limit: 3-4 active CR-polled PRs to reduce throttling
 - Track CR quota: 7+ reviews/hour means expect Greptile as primary reviewer
 

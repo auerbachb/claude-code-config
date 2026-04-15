@@ -297,7 +297,7 @@ jq -r '.merge_state | "[MERGE] mergeable=\(.mergeable), status=\(.mergeStateStat
 |-------|---------------|--------|
 | `mergeable` | `CONFLICTING` | Rebase onto main: `git fetch origin main && git rebase origin/main`. Fix conflicts, continue, force-push. |
 | `mergeable` | `UNKNOWN` | GitHub still computing — note and re-run `/fixpr` later. |
-| `mergeStateStatus` | `BEHIND` | Rebase + force-push. |
+| `mergeStateStatus` | `BEHIND` | Rebase onto main: `git fetch origin main && git rebase origin/main`. If conflicts arise mid-rebase (replaying commits individually can conflict even when a three-way merge wouldn't), resolve them the same way as `CONFLICTING` above, then `git rebase --continue`. Force-push. Wait for CI to re-run before verifying merge gate. |
 | `mergeStateStatus` | `BLOCKED` | Required checks/reviews missing — already covered by 5c/5d, but report any residual. |
 | `mergeStateStatus` | `UNSTABLE` | A non-required check pending/failing — typically CR/Greptile on the new SHA. If 5d emitted `REVIEW_PENDING`, stop with that status. |
 | `reviewDecision` | `CHANGES_REQUESTED` | A human reviewer requested changes — report; cannot auto-resolve. |
@@ -320,7 +320,7 @@ CI checks:       P total, Q were failing
   - Transient:   S (cannot fix locally)
 Merge state:     mergeable=..., status=..., review=...
 Push:            <sha> or "no push needed"
-Status:          CLEAN | THREADS_STUCK | REVIEW_PENDING | CI_PENDING | CI_FAILING | CONFLICTS | NEEDS_HUMAN_REVIEW | NEW_FINDINGS
+Status:          CLEAN | THREADS_STUCK | REVIEW_PENDING | CI_PENDING | CI_FAILING | CONFLICTS | BEHIND | NEEDS_HUMAN_REVIEW | NEW_FINDINGS
 ```
 
 **Status definitions:**
@@ -332,4 +332,5 @@ Status:          CLEAN | THREADS_STUCK | REVIEW_PENDING | CI_PENDING | CI_FAILIN
 - `CI_PENDING` — push was made, CI not yet complete. Re-run `/fixpr` after CI.
 - `CI_FAILING` — transient CI failures that cannot be fixed locally (report which).
 - `CONFLICTS` — merge conflicts could not be auto-resolved (needs manual intervention).
+- `BEHIND` — branch behind base, auto-rebased and force-pushed; now waiting for CI re-run. Re-run `/fixpr` after CI completes.
 - `NEEDS_HUMAN_REVIEW` — a human reviewer requested changes (cannot auto-resolve).

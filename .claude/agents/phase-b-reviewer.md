@@ -33,12 +33,12 @@ On startup, check for the handoff file:
 
 ## Before Requesting Any New Review (MANDATORY)
 
-Before triggering `@coderabbitai full review` or entering the polling loop:
+Run the session-start / pre-review comment audit per `cr-github-review.md` ("Session-start / pre-review comment audit"):
 
-1. **Scan all existing review comments** on the PR (all three endpoints, `per_page=100`)
-2. **Identify unresolved findings** from `coderabbitai[bot]`, `cursor[bot]`, or `greptile-apps[bot]` that have no reply confirming a fix and point to unchanged code
-3. **If unresolved findings exist: fix them first.** Read, fix, commit, push, reply to each thread. The assigned reviewer auto-reviews the new push (CR and BugBot auto-trigger; Greptile requires explicit `@greptileai`). Do NOT request a fresh review on top of unaddressed feedback.
-4. **If all addressed:** Proceed with polling or review request.
+1. Fetch all 3 comment endpoints with `per_page=100`.
+2. Identify any unresolved findings from `coderabbitai[bot]`, `cursor[bot]`, or `greptile-apps[bot]`.
+3. **If ANY unresolved findings exist: invoke `/fixpr`.** `/fixpr` fixes, commits once, pushes, replies to every thread, resolves via GraphQL. Do NOT fix manually and do NOT request a new review on top of unaddressed feedback.
+4. **STOP condition:** do not proceed to the polling loop (or request a new review) until step 3 completes.
 
 ## CodeRabbit Review Path (when `reviewer` = `cr`)
 
@@ -212,6 +212,21 @@ On completion, read-modify-write `{{HANDOFF_FILE}}`:
 - **Deduplicate:** `string[]` fields by exact value; `findings_dismissed` by `.id`
 - Preserve unknown fields (forward compatibility)
 
+## Exit criteria — merge gate ONLY (MANDATORY)
+
+**You may NOT exit with `OUTCOME: clean` just because the current instant has no unresolved threads.** "0 unresolved threads right now" is a snapshot, not a merge-gate signal. After your last push in this phase, the HEAD SHA changed — every reviewer re-runs, and new findings commonly arrive 5–7 minutes later.
+
+Before exiting, follow this checklist literally:
+
+1. If you pushed any commit during this phase: wait for the reviewer to respond to the new SHA. Full timeouts per `cr-github-review.md`: 7 min for CR, 5 min for BugBot, 5 min for Greptile.
+2. If the response arrives with findings: invoke `/fixpr` to handle them **in this same phase** before exiting. Do not kick the can to a replacement unless you hit token exhaustion (see "Token Exhaustion Protocol" below).
+3. Exit with `OUTCOME: merge_ready` ONLY when the merge gate is met per `cr-merge-gate.md` ("Polling exit criterion" and Step 1) on the current HEAD — specifically one of:
+   - 2 consecutive clean CR passes on the current HEAD (CR path)
+   - 1 clean BugBot pass on the current HEAD (BugBot path)
+   - Greptile severity gate passed (Greptile path)
+4. Exit with `OUTCOME: clean` ONLY when this round had no new findings AND no commit was pushed in this phase AND the merge gate is NOT yet fully satisfied (e.g., only 1 of 2 required CR passes). This signals the parent to launch a replacement Phase B to poll for the confirmation pass — do NOT advance to Phase C.
+5. If findings landed that you can't fix in this phase (token budget, scope): exit with `OUTCOME: fixes_pushed` (if you pushed) or `OUTCOME: exhaustion` — NEVER `clean` or `merge_ready`.
+
 ## Exit Report (MANDATORY — print as final output)
 
 ```text
@@ -226,11 +241,11 @@ NEXT_PHASE: <C or B>
 HANDOFF_FILE: {{HANDOFF_FILE}}
 ```
 
-**Valid OUTCOME values for Phase B:**
-- `clean` — review passed with no findings (set `NEXT_PHASE: C`)
-- `fixes_pushed` — fixed findings and pushed, needs re-review (set `NEXT_PHASE: B` for replacement)
-- `merge_ready` — merge gate satisfied, all checks green (set `NEXT_PHASE: C`)
-- `exhaustion` — token budget low, replacement needed (set `NEXT_PHASE: B`)
+**Valid OUTCOME values for Phase B (mutually exclusive):**
+- `merge_ready` — merge gate satisfied on current HEAD per `cr-merge-gate.md` (Step 1). This is the **single Phase C terminal** (set `NEXT_PHASE: C`).
+- `clean` — review loop clean on current HEAD (no findings this round, no pushes pending) but merge gate NOT yet satisfied (e.g., 1 of 2 required CR passes). Keep polling for the confirmation pass (set `NEXT_PHASE: B`).
+- `fixes_pushed` — fixed findings and pushed; reviewer response pending on new SHA (set `NEXT_PHASE: B` for replacement).
+- `exhaustion` — token budget low; replacement needed (set `NEXT_PHASE: B`).
 
 ## Token Exhaustion Protocol
 
