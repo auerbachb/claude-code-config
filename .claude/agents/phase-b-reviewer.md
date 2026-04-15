@@ -212,6 +212,20 @@ On completion, read-modify-write `{{HANDOFF_FILE}}`:
 - **Deduplicate:** `string[]` fields by exact value; `findings_dismissed` by `.id`
 - Preserve unknown fields (forward compatibility)
 
+## Exit criteria — merge gate ONLY (MANDATORY)
+
+**You may NOT exit with `OUTCOME: clean` just because the current instant has no unresolved threads.** "0 unresolved threads right now" is a snapshot, not a merge-gate signal. After your last push in this phase, the HEAD SHA changed — every reviewer re-runs, and new findings commonly arrive 5–7 minutes later.
+
+Before exiting, follow this checklist literally:
+
+1. If you pushed any commit during this phase: wait for the reviewer to respond to the new SHA. Full timeouts per `cr-github-review.md`: 7 min for CR, 5 min for BugBot, 5 min for Greptile.
+2. If the response arrives with findings: invoke `/fixpr` to handle them **in this same phase** before exiting. Do not kick the can to a replacement unless you hit token exhaustion (see "Token Exhaustion Protocol" below).
+3. Only exit with `OUTCOME: clean` or `OUTCOME: merge_ready` when the merge gate is met per `cr-merge-gate.md` ("Polling exit criterion" and Step 1) — specifically one of:
+   - 2 consecutive clean CR passes on the current HEAD (CR path)
+   - 1 clean BugBot pass on the current HEAD (BugBot path)
+   - Greptile severity gate passed (Greptile path)
+4. If findings landed that you can't fix in this phase (token budget, scope): exit with `OUTCOME: fixes_pushed` (if you pushed) or `OUTCOME: exhaustion` — NEVER `clean`.
+
 ## Exit Report (MANDATORY — print as final output)
 
 ```text
@@ -227,9 +241,9 @@ HANDOFF_FILE: {{HANDOFF_FILE}}
 ```
 
 **Valid OUTCOME values for Phase B:**
-- `clean` — review passed with no findings (set `NEXT_PHASE: C`)
-- `fixes_pushed` — fixed findings and pushed, needs re-review (set `NEXT_PHASE: B` for replacement)
-- `merge_ready` — merge gate satisfied, all checks green (set `NEXT_PHASE: C`)
+- `clean` — merge gate met per `cr-merge-gate.md` on current HEAD, no findings, no pushes pending reviewer response (set `NEXT_PHASE: C`)
+- `fixes_pushed` — fixed findings and pushed, reviewer response pending on new SHA (set `NEXT_PHASE: B` for replacement)
+- `merge_ready` — merge gate satisfied, all checks green, reviewer has weighed in on current SHA (set `NEXT_PHASE: C`)
 - `exhaustion` — token budget low, replacement needed (set `NEXT_PHASE: B`)
 
 ## Token Exhaustion Protocol
