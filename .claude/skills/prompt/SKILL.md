@@ -195,7 +195,7 @@ The output has up to three parts:
 
 1. **Subagent Candidates section** (only when `PM_AUTO_DETECT=true` and subagent-eligible issues exist) — shown first, before prompt blocks
 2. **Tier Recommendation** — plain text (not inside a code fence), shown once. Applies only to the thread-prompt issues (not the subagent candidates).
-3. **Per-issue prompt blocks** — one 4-backtick fenced block per thread-prompt issue, each self-contained with all context needed by the executing agent
+3. **Per-issue prompt blocks** — one tilde-fenced block (`~~~`) per thread-prompt issue, each self-contained with all context needed by the executing agent
 
 When `PM_AUTO_DETECT=true` and Step 5.5 produced a non-empty subagent-eligible group, output the Subagent Candidates section first (see template below). Then output the Tier Recommendation and prompt blocks for the remaining thread-prompt issues only.
 
@@ -203,7 +203,7 @@ If all issues are subagent-eligible, skip the Tier Recommendation and prompt blo
 
 For single-issue input, there is one prompt block. For batch input, there are multiple prompt blocks, each independently copyable (i.e., self-contained with all context; this does not imply each block has its own tier). All blocks in a batch share the batch-level tier, so an individually Light issue's block may include Heavy-tier checkpoints when the batch tier is Heavy. **Batch tier is computed from thread-prompt issues only** — subagent candidates do not influence the batch tier.
 
-**Fence nesting rule:** Outer prompt blocks open and close with exactly four backtick characters because markdown requires n+1 backticks to contain a fence of n backticks. Inner code examples (bash commands, SQL, file paths, etc.) use the standard three backtick characters. This ensures the outer block renders as one copyable unit in the Claude app while inner code blocks display correctly inside it.
+**Fence nesting rule:** Outer prompt blocks open and close with tilde fences (`~~~`). Inner code examples (bash commands, SQL, file paths, etc.) use the standard three backtick characters. Per CommonMark, a fenced block can only be closed by a fence using the **same character** as the opening fence — so a `~~~`-delimited outer block safely contains any number of ```` ``` ````-delimited inner blocks without collision. This is more robust than nested backtick fences (e.g., 4-backtick outer + 3-backtick inner) because some renderers (including recent versions of the Claude Mac app) close the outer fence at the first inner triple-backtick in violation of CommonMark's requirement that fences close only with matching fence characters of equal or greater length. Tilde outer fences sidestep that renderer bug entirely.
 
 ### Subagent Candidates Template (PM auto-detect only)
 
@@ -233,9 +233,9 @@ Output the Tier Recommendation as plain text first (skip if all issues are subag
 Rationale: {1-line explanation of why this tier was selected, citing the dominant signal}
 ```
 
-Then, for each issue, output a self-contained prompt block. Use 4-backtick fences (shown here as the outer boundary):
+Then, for each issue, output a self-contained prompt block. Use tilde fences (`~~~`, shown here as the outer boundary):
 
-````
+~~~
 ### Issue #{NUMBER}: {TITLE}
 
 **Acceptance Criteria:**
@@ -302,9 +302,9 @@ This task is done when:
 - [ ] {AC item 2 from issue body}
 {...}
 - [ ] PR merged and branch deleted (if applicable)
-````
+~~~
 
-{Repeat the above 4-backtick block for each issue in the batch. Each block is independently copyable.}
+{Repeat the above tilde-fenced block for each issue in the batch. Each block is independently copyable.}
 
 ## Edge Cases
 
