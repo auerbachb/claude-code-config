@@ -220,11 +220,12 @@ Before exiting, follow this checklist literally:
 
 1. If you pushed any commit during this phase: wait for the reviewer to respond to the new SHA. Full timeouts per `cr-github-review.md`: 7 min for CR, 5 min for BugBot, 5 min for Greptile.
 2. If the response arrives with findings: invoke `/fixpr` to handle them **in this same phase** before exiting. Do not kick the can to a replacement unless you hit token exhaustion (see "Token Exhaustion Protocol" below).
-3. Only exit with `OUTCOME: clean` or `OUTCOME: merge_ready` when the merge gate is met per `cr-merge-gate.md` ("Polling exit criterion" and Step 1) — specifically one of:
+3. Exit with `OUTCOME: merge_ready` ONLY when the merge gate is met per `cr-merge-gate.md` ("Polling exit criterion" and Step 1) on the current HEAD — specifically one of:
    - 2 consecutive clean CR passes on the current HEAD (CR path)
    - 1 clean BugBot pass on the current HEAD (BugBot path)
    - Greptile severity gate passed (Greptile path)
-4. If findings landed that you can't fix in this phase (token budget, scope): exit with `OUTCOME: fixes_pushed` (if you pushed) or `OUTCOME: exhaustion` — NEVER `clean`.
+4. Exit with `OUTCOME: clean` ONLY when this round had no new findings AND no commit was pushed in this phase AND the merge gate is NOT yet fully satisfied (e.g., only 1 of 2 required CR passes). This signals the parent to launch a replacement Phase B to poll for the confirmation pass — do NOT advance to Phase C.
+5. If findings landed that you can't fix in this phase (token budget, scope): exit with `OUTCOME: fixes_pushed` (if you pushed) or `OUTCOME: exhaustion` — NEVER `clean` or `merge_ready`.
 
 ## Exit Report (MANDATORY — print as final output)
 
@@ -240,11 +241,11 @@ NEXT_PHASE: <C or B>
 HANDOFF_FILE: {{HANDOFF_FILE}}
 ```
 
-**Valid OUTCOME values for Phase B:**
-- `clean` — merge gate met per `cr-merge-gate.md` on current HEAD, no findings, no pushes pending reviewer response (set `NEXT_PHASE: C`)
-- `fixes_pushed` — fixed findings and pushed, reviewer response pending on new SHA (set `NEXT_PHASE: B` for replacement)
-- `merge_ready` — merge gate satisfied, all checks green, reviewer has weighed in on current SHA (set `NEXT_PHASE: C`)
-- `exhaustion` — token budget low, replacement needed (set `NEXT_PHASE: B`)
+**Valid OUTCOME values for Phase B (mutually exclusive):**
+- `merge_ready` — merge gate satisfied on current HEAD per `cr-merge-gate.md` (Step 1). This is the **single Phase C terminal** (set `NEXT_PHASE: C`).
+- `clean` — review loop clean on current HEAD (no findings this round, no pushes pending) but merge gate NOT yet satisfied (e.g., 1 of 2 required CR passes). Keep polling for the confirmation pass (set `NEXT_PHASE: B`).
+- `fixes_pushed` — fixed findings and pushed; reviewer response pending on new SHA (set `NEXT_PHASE: B` for replacement).
+- `exhaustion` — token budget low; replacement needed (set `NEXT_PHASE: B`).
 
 ## Token Exhaustion Protocol
 
