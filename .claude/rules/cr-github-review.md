@@ -35,13 +35,14 @@ Each poll cycle, for every open PR owned by this session, query:
 2. All check-runs on the current HEAD SHA (resolve SHA dynamically — `gh pr view N --json commits --jq '.commits[-1].oid'` — do NOT cache it across cycles)
 3. `mergeable` and `mergeStateStatus` via `gh pr view N --json mergeable,mergeStateStatus`
 
-If **ANY** of the following conditions hold, invoke `/fixpr` and do NOT request a new review until `/fixpr` completes:
+If **ANY** of conditions 1–4 below hold, invoke `/fixpr` and do NOT request a new review until `/fixpr` completes:
 
-- New findings from any bot (CR / BugBot / Greptile) since the last poll watermark
-- Any check-run with a blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`)
-- `mergeStateStatus == "BEHIND"` (branch behind base, auto-rebase; `/fixpr` handles it)
-- `mergeable == "CONFLICTING"` (merge conflicts; `/fixpr` handles rebase + surfaces blockers)
-- An unresolved review thread exists **after** the last fix-commit push (reviewer hasn't yet caught up — keep polling, invoke `/fixpr` on new findings)
+1. New findings from any bot (CR / BugBot / Greptile) since the last poll watermark
+2. Any check-run with a blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`)
+3. `mergeStateStatus == "BEHIND"` (branch behind base, auto-rebase; `/fixpr` handles it)
+4. `mergeable == "CONFLICTING"` (merge conflicts; `/fixpr` handles rebase + surfaces blockers)
+
+> **Unresolved threads are NOT a trigger.** If unresolved threads remain after the last fix-commit push, keep polling for reviewer catch-up. See conditions 1–4 above.
 
 **Exit polling ONLY when the merge gate (`cr-merge-gate.md`) is met.** "0 unresolved threads right now" is NOT an exit condition — see the trap note at the top of this file. After any `/fixpr` push, reset the watermark and keep polling for the reviewer's response to the new SHA.
 
@@ -80,9 +81,7 @@ If **ANY** of the following conditions hold, invoke `/fixpr` and do NOT request 
 
 **Review chain:** CR (primary) → BugBot (second tier, free) → Greptile (last resort, paid) → self-review (emergency).
 
-BugBot auto-runs on every push — poll for its reviews alongside CR. When CR fails, check BugBot before triggering Greptile.
-
-When CR fails (rate-limited or 7-min timeout), check BugBot before Greptile. BugBot's 5-min timeout runs from push time, concurrent with CR's window. See `bugbot.md` for full BugBot behavior and `greptile.md` for Greptile trigger conditions.
+BugBot auto-runs on every push — poll for its reviews alongside CR. When CR fails (rate-limited or 7-min timeout), check BugBot before triggering Greptile; BugBot's 5-min timeout runs from push time, concurrent with CR's window. See `bugbot.md` and `greptile.md` for timing and trigger details.
 
 - **Sticky assignment:** CR fail → BugBot owns the PR. If BugBot also fails → Greptile owns permanently. Do not switch back up the chain.
 - **If all three fail** (CR rate-limited + BugBot 5-min timeout + Greptile 5-min timeout): fall back to **self-review**. Self-review does NOT satisfy the merge gate.
