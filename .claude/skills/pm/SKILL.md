@@ -117,7 +117,7 @@ Show the user:
 
 Proceed with current assignments by default. State: "Continuing with current assignments. Say 're-prioritize' to change strategy."
 
-Then proceed to **Step 3: Orchestration Loop**.
+Then proceed to **Step 2: Active Monitoring Setup** (resume mode must re-establish polling — see Step 2).
 
 ---
 
@@ -256,11 +256,85 @@ Based on {N} open issues, {M} recent merges, and {OKR status}:
 
 Select the top-ranked batch by default and generate prompts immediately. State: "Generating prompts for the top issues below. Say 'adjust' to change the selection before pasting into threads."
 
-Then proceed to **Step 3: Orchestration Loop**.
+Then proceed to **Step 2: Active Monitoring Setup**.
 
 ---
 
-## Step 2: (Reserved — both modes skip to Step 3)
+## Step 2: Active Monitoring Setup
+
+After Step 1 presents assignments/suggestions, detect whether any **active cloud threads** exist and offer (do NOT auto-start) a polling loop. The PM agent can't autonomously poll GitHub between user messages without a timer — this step wires one up so state changes (new PRs, CR findings, merges, CI failures) get surfaced without the user having to ping.
+
+Resume mode passes through this step too — polling needs to be re-established after context turnover.
+
+### 2.1: Detect active threads
+
+An active cloud thread is an open issue (assigned to `$GH_USER` if set, otherwise any) where ANY of:
+- A feature branch referencing the issue exists on the remote
+- A local worktree exists for the issue
+- An open PR has `Closes #N` / `Fixes #N` referencing the issue
+
+Cross-reference the open-issue list (already fetched in Step 1) against open PRs and `git branch -r` / `git worktree list`. Count the result as `ACTIVE_COUNT`.
+
+### 2.2: Offer a polling option (do NOT auto-start)
+
+Based on `ACTIVE_COUNT`, recommend one of three options:
+
+| Threads | Recommended | Rationale |
+|---------|-------------|-----------|
+| ≥3 active | **(a) Recurring `CronCreate` poll** — set-and-forget, fires even when REPL is idle between user messages | Too many threads to track manually |
+| 1-2 active | **(b) `/loop 5m /status`** — dynamic, tied to this session, dies on session exit | Lightweight; self-paced |
+| 0 active | **(c) Passive** — user pings the PM thread when PRs need attention | Nothing to monitor |
+
+Only offer option (c) proactively when there are zero active threads. If the user explicitly requests passive mode at any count, honor it.
+
+**In the same message that proposes the option, state the cancel command.** The user should never have to spelunk to escape a poll:
+
+- Option (a): `CronDelete {jobId}` — emit the job ID as soon as `CronCreate` returns it.
+- Option (b): interrupt the loop (Ctrl+C in CLI, stop in web), or say "stop polling".
+- Option (c): N/A.
+
+Template message:
+
+> "Detected {N} active cloud threads. Recommend **{option}** — {schedule/command}. To stop: **{cancel command}**. Say 'yes' to start, 'passive' to skip, or pick a different option."
+
+### 2.3: Off-peak minute selection (option a only)
+
+When creating a `CronCreate` job, pick a minute that is NOT 0, 5, 30, or 55 — these are fleet pile-up minutes where every agent's schedule collides on the API. Use a deterministic per-repo offset so the same repo always lands on the same minute (predictability) but different repos spread across the hour (no collision):
+
+```bash
+REPO_NAME=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+MINUTE=$(printf '%s' "$REPO_NAME" | cksum | awk '{print $1 % 60}')
+# Nudge off pile-up minutes
+case $MINUTE in
+  0|5|30|55) MINUTE=$(( (MINUTE + 2) % 60 )) ;;
+esac
+echo "Off-peak minute for $REPO_NAME: $MINUTE"
+```
+
+**CronCreate defaults for `/pm` polling:**
+- `cron`: `"$MINUTE * * * *"` for hourly (most common). For tighter cadence like every 10 min, reduce `MINUTE` to its ones-digit first (`M10=$((MINUTE % 10))`, re-nudge if `M10` lands on 0 or 5) and use `"$M10-59/10 * * * *"` — otherwise the `A-59/10` range truncates for any `A > 9` (e.g., `47-59/10` fires only at :47 and :57).
+- `recurring`: `true` (default).
+- `durable`: `false` — session-only. Only set `durable: true` when the user explicitly asks the poll to survive across sessions.
+- `prompt`: `/status` (or a PM-specific scan command) — the cron fires it in a fresh invocation, so the prompt must be self-contained.
+- Tell the user about the 7-day auto-expiry.
+
+### 2.4: Heartbeat etiquette
+
+Every poll cycle should produce **at most ~3 lines** of status unless action is required. Long silence between cycles is the goal — the user shouldn't feel spammed.
+
+This cadence is independent of the 5-minute user-heartbeat rule in `.claude/rules/monitor-mode.md` (which applies only while actively monitoring subagents). PM polling is a slower tempo — hourly is normal, 5-10 min when PRs are actively merging.
+
+Good heartbeat:
+```
+{time} ET — 3 active PRs: #88 clean, #90 CR reviewing, #92 CI failing. No action needed.
+```
+
+Bad heartbeat (too verbose):
+```
+{time} ET — Polled GitHub. PR #88 has 0 new comments, last review clean, CI green, waiting for merge gate. PR #90 ...
+```
+
+After setup (or if the user picks passive mode), proceed to **Step 3: Orchestration Loop**.
 
 ---
 

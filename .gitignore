@@ -1,1 +1,5 @@
 .DS_Store
+
+# Runtime lock files
+.claude/scheduled_tasks.lock
+.claude/scheduled_tasks.json
