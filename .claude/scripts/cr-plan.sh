@@ -118,14 +118,20 @@ fi
 
 # Fetch issue metadata once up-front so we can (a) error out cleanly on missing/
 # closed issues with exit 3 and (b) compute age for --max-age-minutes.
+# Keep stderr separate from stdout so incidental gh warnings (auth refresh,
+# deprecation notices) never contaminate the JSON we pipe to jq.
 ISSUE_META_JSON=""
-if ! ISSUE_META_JSON=$(gh issue view "$ISSUE_NUMBER" --json number,state,createdAt 2>&1); then
-  if printf '%s' "$ISSUE_META_JSON" | grep -qi 'could not resolve\|not found\|no issue found\|HTTP 404'; then
+ISSUE_META_STDERR=""
+ISSUE_META_STDERR_FILE=$(mktemp)
+trap 'rm -f "$ISSUE_META_STDERR_FILE"' EXIT
+if ! ISSUE_META_JSON=$(gh issue view "$ISSUE_NUMBER" --json number,state,createdAt 2>"$ISSUE_META_STDERR_FILE"); then
+  ISSUE_META_STDERR=$(cat "$ISSUE_META_STDERR_FILE")
+  if printf '%s' "$ISSUE_META_STDERR" | grep -qi 'could not resolve\|not found\|no issue found\|HTTP 404'; then
     echo "cr-plan.sh: issue #$ISSUE_NUMBER not found" >&2
     exit 3
   fi
   echo "cr-plan.sh: gh error fetching issue #$ISSUE_NUMBER:" >&2
-  printf '%s\n' "$ISSUE_META_JSON" >&2
+  printf '%s\n' "$ISSUE_META_STDERR" >&2
   exit 4
 fi
 
@@ -165,13 +171,18 @@ CR_PLAN_JQ='[.comments[]
 
 fetch_plan() {
   # Single-shot lookup. Prints plan body (possibly empty) on stdout; prints gh
-  # error text to stderr and returns 4 on API failure.
-  local out
-  if ! out=$(gh issue view "$ISSUE_NUMBER" --json comments --jq "$CR_PLAN_JQ" 2>&1); then
+  # error text to stderr and returns 4 on API failure. Keeps stderr separate
+  # from stdout so incidental gh warnings never contaminate the plan body.
+  local out err err_file
+  err_file=$(mktemp)
+  if ! out=$(gh issue view "$ISSUE_NUMBER" --json comments --jq "$CR_PLAN_JQ" 2>"$err_file"); then
+    err=$(cat "$err_file")
+    rm -f "$err_file"
     echo "cr-plan.sh: gh error fetching comments for issue #$ISSUE_NUMBER:" >&2
-    printf '%s\n' "$out" >&2
+    printf '%s\n' "$err" >&2
     return 4
   fi
+  rm -f "$err_file"
   printf '%s' "$out"
 }
 
