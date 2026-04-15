@@ -357,10 +357,11 @@ When a Phase B subagent returns:
 
 1. **Parse exit report.**
 2. **Branch on OUTCOME:**
-   - `clean` or `merge_ready` -> launch Phase C within 60s.
+   - `merge_ready` -> launch Phase C within 60s.
+   - `clean` -> launch replacement Phase B within 60s (confirmation pass — merge gate not yet verified on current HEAD).
    - `fixes_pushed` -> launch replacement Phase B within 60s.
    - `exhaustion` -> launch replacement Phase B within 60s.
-3. **Verify review state via GitHub API** for `clean`/`merge_ready`.
+3. **Verify review state via GitHub API** for `merge_ready`.
 4. **Update `session-state.json`.**
 5. **Report to user** with timestamp.
 
