@@ -29,14 +29,15 @@ For each valid issue, extract and record:
 
 ## Step 2: Detect CR Implementation Plan
 
-For each issue, fetch all comments:
+For each issue, fetch the CR plan (if any) via the shared detector — it encapsulates the canonical jq filter (CR author, skip "actions performed" ack lines, length > 200) behind a stable CLI:
 
 ```bash
-gh api --paginate repos/{owner}/{repo}/issues/$NUMBER/comments --jq '.[] | {author: .user.login, body: .body}'
+PLAN=$(.claude/scripts/cr-plan.sh "$NUMBER" || true)
 ```
 
-From all comments, extract:
-- **Implementation plan:** Scan ALL comments for plan structure markers — file lists, implementation steps, phase breakdowns. Prefer the most structured/detailed plan found regardless of author.
+Exit codes: `0` plan found on stdout, `1` no plan, `3` issue not found/closed, `4` gh error. Run `.claude/scripts/cr-plan.sh --help` for full usage.
+
+- **Implementation plan:** If `PLAN` is non-empty, treat it as the canonical CR plan for this issue. `cr-plan.sh` intentionally only matches `coderabbitai` authors — if you suspect a human-authored plan lives in a different comment, fetch comments directly (`gh issue view "$NUMBER" --json comments`) and inspect them; otherwise rely on the script.
 - If a CR plan exists, extract the **file list** using these patterns:
   - Look for headings containing "Files", "Files likely touched", "File list", or "Touched files" (case-insensitive)
   - Parse the block following that heading: bullet/numbered lists or fenced code blocks with one path per line

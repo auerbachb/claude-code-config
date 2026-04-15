@@ -40,7 +40,11 @@ A GitHub Actions workflow automatically comments `@coderabbitai plan` on new iss
 
 ### 3. If starting work immediately — Issue Planning Flow
 
-1. Wait for CR's plan: poll issue comments every 60 seconds for up to 10 minutes for a comment from `coderabbitai` (no `[bot]` suffix for issue comments).
+1. Wait for CR's plan via `.claude/scripts/cr-plan.sh` — it encapsulates the canonical jq filter (`coderabbitai` author, skip "actions performed" ack lines, length > 200) and the 60s polling loop:
+   ```bash
+   PLAN=$(.claude/scripts/cr-plan.sh "$ISSUE_NUMBER" --poll 10 --max-age-minutes 10 || true)
+   ```
+   Exit codes: `0` plan found on stdout, `1` no plan after timeout, `3` issue closed/missing, `4` gh error. Run `.claude/scripts/cr-plan.sh --help` for full usage. Issue comments use the bare `coderabbitai` author (no `[bot]` suffix) — the script handles this.
 2. Build your own implementation plan (explore the codebase).
 3. Merge plans into the issue body:
    ```bash

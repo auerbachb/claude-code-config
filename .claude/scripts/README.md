@@ -4,6 +4,7 @@ Manually-invoked utility scripts. Run these from the command line when needed.
 
 | Script | Purpose |
 |--------|---------|
+| `cr-plan.sh <issue_number> [--poll <min>] [--max-age-minutes N]` | Detect a CodeRabbit implementation-plan comment on a GitHub issue. Prints plan body on stdout. Exits `0` plan found, `1` no plan, `2` usage error, `3` issue not found/closed, `4` gh error. Used by `/start-issue`, `/subagent`, `pm-worker`. |
 | `repair-trust-single.sh <absolute-project-path>` | Fix trust flags for one project in `~/.claude.json` |
 | `repair-trust-all.sh` | Fix trust flags for all projects in `~/.claude.json` |
 | `repair-worktrees.sh [--apply]` | Detect stale git worktrees (branch merged to main or deleted on origin) and optionally remove them. Dry-run by default; skips worktrees with uncommitted changes and never touches the main worktree. |
