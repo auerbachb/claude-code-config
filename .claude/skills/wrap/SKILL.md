@@ -11,6 +11,31 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 - Use **/merge** for a quick mid-session merge when you'll keep working. Skips the cleanup steps and only runs outside worktrees.
 - /wrap includes everything /merge does, plus the cleanup. Don't run both.
 
+## Execution Model
+
+`/wrap` is a set-and-forget command. Once invoked, it runs all 5 phases end-to-end without mid-run confirmation prompts. The only way /wrap stops before Phase 5 is a genuine blocker (unresolved findings, failed merge gate, CI failure, AC verification failure, or rebase detected).
+
+> **Always:** Execute all phases end-to-end; proceed immediately between phases when no blocker exists.
+> **Ask first:** Never — all phases are autonomous once /wrap is invoked.
+> **Never:** Stop to ask "should I continue?" between phases; insert confirmation prompts for non-blocker transitions.
+
+### Phase Transition Autonomy
+
+| Transition | Action | Classification |
+|------------|--------|----------------|
+| Phase 1 complete (no unresolved findings) | Begin Phase 2 | **Always do** |
+| Phase 2 merge successful | Begin Phase 3 | **Always do** |
+| Phase 3 follow-ups processed | Begin Phase 4 | **Always do** |
+| Phase 4 lessons complete (or skipped as trivial) | Begin Phase 5 | **Always do** |
+| Phase 5 cleanup complete | Output Step 5.4 final report | **Always do** |
+| Unresolved reviewer findings detected (Phase 1) | Stop and report | **Stop and report** |
+| Merge gate not met (Phase 2.1) | Stop and report | **Stop and report** |
+| AC checkbox verification fails (Phase 2.2) | Stop and report | **Stop and report** |
+| SHA changed since last review / rebase detected (Phase 2.3) | Stop and report | **Stop and report** |
+| CI check-run failing (Phase 2.4) | Stop and report | **Stop and report** |
+
+> **Anti-pattern:** If you find yourself composing "Should I proceed?" or presenting a confirmation button, the answer is always yes — execute immediately.
+
 ## Phase 1: Pre-Merge Verification — Check for Unresolved Findings
 
 Before merging, verify that all reviewer feedback has been addressed.
@@ -43,6 +68,8 @@ Filter for comments from `coderabbitai[bot]` and `greptile-apps[bot]`. For each 
 **If unresolved findings exist:** Report them to the user and stop. List each unresolved finding with its location and what it says. Do NOT proceed to merge.
 
 **If all findings are addressed:** Continue to Phase 2.
+
+If no unresolved findings: proceed immediately to Phase 2 — do not ask.
 
 ## Phase 2: Merge
 
@@ -179,6 +206,8 @@ If a work-log directory was detected at session start:
    - {time} ET — PR #{N} merged (Issue #{M}): {1-line summary} [opened: {open_time}, merged: {merge_time}, cycles: {count}]
    ```
 
+After work-log entry: proceed immediately to Phase 3 — do not ask.
+
 ## Phase 3: Follow-Up Detection and Creation
 
 Detect related work that needs attention for feature completeness, then **auto-create GitHub issues** for each follow-up (with deduplication and HHG two-ticket pattern awareness).
@@ -308,6 +337,8 @@ Present the results:
 If nothing was detected: "No follow-up items detected."
 If HHG was detected but no state code was found (so auto-creation was skipped): append "⚠️ HHG detected but no state code found in PR/issue — auto-creation skipped. Create the scraping and ETL issues manually once you know the state."
 
+After follow-up report: proceed immediately to Phase 4 — do not ask.
+
 ## Phase 4: Lessons Learned (Depth-Adaptive)
 
 Determine the session depth to decide how thoroughly to reflect.
@@ -348,6 +379,8 @@ Present the summary:
 ### Observations (not saved):
 - <things noted but not actionable>
 ```
+
+After lessons (or skip): proceed immediately to Phase 5 — do not ask.
 
 ## Phase 5: Worktree Cleanup
 
