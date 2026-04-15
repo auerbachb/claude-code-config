@@ -13,7 +13,7 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 
 ## Execution Model
 
-`/wrap` is a set-and-forget command. Once invoked, it runs all 5 phases end-to-end without mid-run confirmation prompts. The only way /wrap stops before Phase 5 is a genuine blocker (unresolved findings, failed merge gate, CI failure, AC verification failure, or rebase detected).
+`/wrap` is a set-and-forget command. Once invoked, it runs all 5 phases end-to-end without mid-run confirmation prompts. It stops early only for explicit stop conditions (for example: no PR on current branch, unresolved findings, failed merge gate, CI failure, AC verification failure, or rebase detected).
 
 > **Always:** Execute all phases end-to-end; proceed immediately between phases when no blocker exists.
 > **Ask first:** Never — all phases are autonomous once /wrap is invoked.
@@ -24,7 +24,7 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 | Transition | Action | Classification |
 |------------|--------|----------------|
 | Phase 1 complete (no unresolved findings) | Begin Phase 2 | **Always do** |
-| Phase 2 merge successful | Begin Phase 3 | **Always do** |
+| Phase 2 complete | Begin Phase 3 | **Always do** |
 | Phase 3 follow-ups processed | Begin Phase 4 | **Always do** |
 | Phase 4 lessons complete (or skipped as trivial) | Begin Phase 5 | **Always do** |
 | Phase 5 cleanup complete | Output Step 5.4 final report | **Always do** |
