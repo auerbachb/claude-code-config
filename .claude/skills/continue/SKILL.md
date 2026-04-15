@@ -256,11 +256,13 @@ gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
      - Review-level or PR conversation comments → use `gh pr comment` with `@coderabbitai` mention
      - If unsure, try `/replies` first — the 404 is harmless and signals fallback
 
-  6. Resolve each thread via GraphQL:
+  6. Resolve all bot threads with the shared helper (paginated, filtered to `coderabbitai`/`cursor`/`greptile-apps`, falls back to `minimizeComment` on failure):
 
      ```bash
-     gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "{thread_id}"}) { thread { isResolved } } }'
+     bash .claude/scripts/resolve-review-threads.sh $PR_NUM
      ```
+
+     Exit 1 means at least one thread failed both mutations — surface to the user and stop. Do not proceed with a non-zero exit.
 
   7. After fixing, go back to **Step 6** to wait for the next review.
 - If no unresolved findings: `[DONE]` — No unresolved findings.

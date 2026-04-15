@@ -159,8 +159,6 @@ Pull the IDs from the JSON:
 ```bash
 # index <i> in each call — iterate 0..unresolved_count-1
 DBID=$(jq -r ".threads.unresolved[$i].comments.nodes[0].databaseId" "$AUDIT")
-THREAD_ID=$(jq -r ".threads.unresolved[$i].id" "$AUDIT")
-NODE_ID=$(jq -r ".threads.unresolved[$i].comments.nodes[0].id" "$AUDIT")
 ```
 
 Reply text by classification:
@@ -178,27 +176,15 @@ gh api "repos/$OWNER/$REPO/pulls/comments/$DBID/replies" -f body="<reply>" \
 
 **Never include `@greptileai` in any reply text.** Every `@greptileai` mention triggers a paid Greptile re-review ($0.50–$1.00). Use plain text only; `@greptileai` is reserved exclusively for intentionally requesting a new review.
 
-### 4b. Resolve via GraphQL
+### 4b. Resolve via shared helper
 
-Pass IDs as typed GraphQL variables (`-F name=value`) — never shell-interpolate them into the query string.
-
-```bash
-gh api graphql -F threadId="$THREAD_ID" -f query='
-  mutation($threadId: ID!) {
-    resolveReviewThread(input: {threadId: $threadId}) { thread { isResolved } }
-  }'
-```
-
-On failure, fall back to minimize:
+After all replies are posted, resolve every unresolved bot-authored thread with one call:
 
 ```bash
-gh api graphql -F subjectId="$NODE_ID" -f query='
-  mutation($subjectId: ID!) {
-    minimizeComment(input: {subjectId: $subjectId, classifier: RESOLVED}) { minimizedComment { isMinimized } }
-  }'
+bash .claude/scripts/resolve-review-threads.sh "$PR_NUMBER"
 ```
 
-Print per thread: `[RESOLVED] <thread-id> — <summary>`.
+The script fetches unresolved threads via GraphQL (paginated), filters to `coderabbitai`, `cursor`, and `greptile-apps` authors by default, runs `resolveReviewThread`, and falls back to `minimizeComment(classifier: RESOLVED)` on failure. Exit codes: `0` all resolved, `1` at least one failed both mutations (block on Step 5 — do NOT treat as clean), `3` PR not found, `4` gh error. It prints `[RESOLVED]` / `[MINIMIZED]` / `[FAILED]` per thread.
 
 ---
 
