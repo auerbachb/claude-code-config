@@ -33,7 +33,7 @@ Each poll cycle, for every open PR owned by this session, query everything liste
 
 If **ANY** of the conditions below hold, invoke `/fixpr` and do NOT request a new review until `/fixpr` completes:
 
-1. New findings from any bot (CR / BugBot / Greptile) since the last poll watermark
+1. New findings from any bot (CR / BugBot / Greptile) since the last poll watermark — i.e., bot comments that arrived after the watermark, not pre-existing unresolved threads still awaiting reviewer ack
 2. Any check-run with a blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`)
 3. `mergeStateStatus == "BEHIND"` (branch behind base, auto-rebase; `/fixpr` handles it)
 4. `mergeable == "CONFLICTING"` (merge conflicts; `/fixpr` handles rebase + surfaces blockers)
