@@ -126,9 +126,9 @@ Per AC #5, this audit must identify existing scripts that agent call sites bypas
 7. **C-07 gh-window** — unblocks the real migration of the PM skills off inlined date bash.
 8. C-08 → C-15 as the P1 batch in whatever order the next sprint tackles them; C-11 + C-12 are natural pairs (both mutate session-state via the same atomic pattern).
 
-## Follow-up issues (filed separately per AC #7)
+## Follow-up issue TODOs (not yet filed)
 
-Each P0 should become its own implementation issue. Titles (for the PM to file):
+Per the #271 Exit Criteria, this audit PR is allowed to list follow-up issue titles as TODOs instead of filing them immediately (AC #7 requires the audit + follow-up tracking — filing is deferred to the PM). Each P0 should become its own implementation issue. **Not yet filed** — the PM will open these once the audit merges:
 
 - **P0 — Extract merge-gate verifier (`.claude/scripts/merge-gate.sh`)** — ref #271 C-01
 - **P0 — Promote `fixpr/audit.sh` to shared `.claude/scripts/pr-state.sh` and migrate bypass call sites** — ref #271 C-02
