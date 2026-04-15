@@ -171,7 +171,9 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
    }
 
    # --- Walk backward from yesterday to find last workday ---
-   CANDIDATE=$(subtract_days "$(TZ='America/New_York' date '+%Y-%m-%d')" 1)
+   # Seed with yesterday via .claude/scripts/gh-window.sh; the loop below uses
+   # the local subtract_days helper to step through holidays/weekends.
+   CANDIDATE=$(bash .claude/scripts/gh-window.sh --days 1 --format date)
    while ! is_workday "$CANDIDATE"; do
      CANDIDATE=$(subtract_days "$CANDIDATE" 1)
    done

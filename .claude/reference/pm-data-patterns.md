@@ -14,14 +14,18 @@ Canonical `gh` CLI query patterns for PM skill data collection. When adding or m
 
 ## Time window utilities
 
-Standard bash for computing a `$DAYS`-ago window in both date-only (`YYYY-MM-DD`, for GitHub search qualifiers) and ISO 8601 (`YYYY-MM-DDTHH:MM:SS±HH:MM`, for JSON comparisons) forms. Handles macOS (`date -v`) and GNU (`date -d`):
+Use `.claude/scripts/gh-window.sh` to compute a `$DAYS`-ago window in both date-only (`YYYY-MM-DD`, for GitHub search qualifiers) and ISO 8601 (`YYYY-MM-DDTHH:MM:SS±HH:MM`, for JSON comparisons) forms. The script is ET-anchored and handles macOS (`date -v`) and GNU (`date -d`) transparently.
 
 ```bash
-SINCE_DATE=$(TZ='America/New_York' date -v-${DAYS}d '+%Y-%m-%d' 2>/dev/null || TZ='America/New_York' date -d "$DAYS days ago" '+%Y-%m-%d')
-SINCE_ISO=$(TZ='America/New_York' date -v-${DAYS}d '+%Y-%m-%dT00:00:00%z' 2>/dev/null || TZ='America/New_York' date -d "$DAYS days ago" '+%Y-%m-%dT00:00:00%z')
-# Convert +HHMM → +HH:MM for GitHub search
-SINCE_ISO=$(printf '%s' "$SINCE_ISO" | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/')
+# Both values at once (recommended):
+IFS=$'\t' read -r SINCE_DATE SINCE_ISO < <(bash .claude/scripts/gh-window.sh --days "$DAYS")
+
+# Or individually:
+SINCE_DATE=$(bash .claude/scripts/gh-window.sh --days "$DAYS" --format date)
+SINCE_ISO=$(bash .claude/scripts/gh-window.sh --days "$DAYS" --format iso)
 ```
+
+Exit codes: `0` OK, `2` usage error (missing/invalid `--days` or bad `--format`), `3` `date` command failed on this platform. See the script header for the full contract.
 
 ## Merged PRs in a time window
 
