@@ -312,7 +312,7 @@ echo "Off-peak minute for $REPO_NAME: $MINUTE"
 ```
 
 **CronCreate defaults for `/pm` polling:**
-- `cron`: `"$MINUTE * * * *"` for hourly (most common). For tighter cadence like every 10 min, use `"$MINUTE-59/10 * * * *"`.
+- `cron`: `"$MINUTE * * * *"` for hourly (most common). For tighter cadence like every 10 min, reduce `MINUTE` to its ones-digit first (`M10=$((MINUTE % 10))`, re-nudge if `M10` lands on 0 or 5) and use `"$M10-59/10 * * * *"` — otherwise the `A-59/10` range truncates for any `A > 9` (e.g., `47-59/10` fires only at :47 and :57).
 - `recurring`: `true` (default).
 - `durable`: `false` — session-only. Only set `durable: true` when the user explicitly asks the poll to survive across sessions.
 - `prompt`: `/status` (or a PM-specific scan command) — the cron fires it in a fresh invocation, so the prompt must be self-contained.
