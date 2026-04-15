@@ -29,13 +29,9 @@ Run this checklist BEFORE the first poll tick AND before triggering any new revi
 
 ### Per-cycle check (every 60 seconds)
 
-Each poll cycle, for every open PR owned by this session, query:
+Each poll cycle, for every open PR owned by this session, query everything listed in the "Polling" section below.
 
-1. All 3 comment endpoints (`pulls/{N}/reviews`, `pulls/{N}/comments`, `issues/{N}/comments`), each with `per_page=100`
-2. All check-runs on the current HEAD SHA (resolve SHA dynamically — `gh pr view N --json commits --jq '.commits[-1].oid'` — do NOT cache it across cycles)
-3. `mergeable` and `mergeStateStatus` via `gh pr view N --json mergeable,mergeStateStatus`
-
-If **ANY** of conditions 1–4 below hold, invoke `/fixpr` and do NOT request a new review until `/fixpr` completes:
+If **ANY** of the conditions below hold, invoke `/fixpr` and do NOT request a new review until `/fixpr` completes:
 
 1. New findings from any bot (CR / BugBot / Greptile) since the last poll watermark
 2. Any check-run with a blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`)
@@ -59,6 +55,7 @@ If **ANY** of conditions 1–4 below hold, invoke `/fixpr` and do NOT request a 
   1. `repos/{owner}/{repo}/pulls/{N}/reviews` — review objects
   2. `repos/{owner}/{repo}/pulls/{N}/comments` — inline diff comments
   3. `repos/{owner}/{repo}/issues/{N}/comments` — PR conversation (summary, ack, general findings). Missing this endpoint causes indefinite polling on clean passes.
+- **Check merge metadata every cycle.** Query `mergeable` and `mergeStateStatus` via `gh pr view N --json mergeable,mergeStateStatus` — these drive `/fixpr` trigger conditions 3 and 4.
 - **Check commit status every cycle.** Query `repos/{owner}/{repo}/commits/{SHA}/check-runs` filtered to `name == "CodeRabbit"`; fallback: `/statuses` filtered to `context ~ "CodeRabbit"`. Full commands: `.claude/reference/cr-polling-commands.md`.
   - **Completion signal:** `status: "completed"` + `conclusion: "success"` = review done. Definitive signal.
   - **Fast-path rate limit:** check-run `conclusion: "failure"` with "rate limit" in `output.title`, OR status `state: "failure"`/`"error"` with "rate limit" in `description` — **check BugBot first** (see `bugbot.md`). If BugBot already posted a review, use it. If not, wait up to 5 min **from push time** for BugBot. If BugBot also times out, trigger Greptile. Sticky assignment applies at each tier.
