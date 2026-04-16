@@ -22,11 +22,11 @@ fi
 ## Step 1: Set review period
 
 ```bash
-SINCE_DATE=$(TZ='America/New_York' date -v-${DAYS}d '+%Y-%m-%d' 2>/dev/null || TZ='America/New_York' date -d "$DAYS days ago" '+%Y-%m-%d')
-SINCE_ISO=$(TZ='America/New_York' date -v-${DAYS}d '+%Y-%m-%dT00:00:00%z' 2>/dev/null || TZ='America/New_York' date -d "$DAYS days ago" '+%Y-%m-%dT00:00:00%z')
-SINCE_ISO=$(printf '%s' "$SINCE_ISO" | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/')
+IFS=$'\t' read -r SINCE_DATE SINCE_ISO < <(bash .claude/scripts/gh-window.sh --days "$DAYS")
 TODAY=$(TZ='America/New_York' date '+%Y-%m-%d')
 ```
+
+See `.claude/scripts/gh-window.sh` for the ET-anchored, macOS + GNU-compatible date-window builder. `$SINCE_DATE` is `YYYY-MM-DD` (for `gh search` date qualifiers); `$SINCE_ISO` is ISO 8601 with colon-separated offset (for JSON timestamp comparisons).
 
 ## Step 2: Load team config (optional)
 

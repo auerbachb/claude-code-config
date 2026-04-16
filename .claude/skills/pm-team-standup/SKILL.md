@@ -23,15 +23,17 @@ Generate a team standup report showing what each contributor accomplished since 
 Convert the user's time reference to an ISO 8601 timestamp and a `git log`-compatible `--since` value:
 
 ```bash
-# ISO 8601 with colon offset (GitHub search requires +HH:MM not +HHMM)
+# ISO 8601 "yesterday at noon ET" with colon offset (GitHub search requires +HH:MM not +HHMM).
+# This skill uses noon-anchored lookback — not midnight — so we keep this inline rather
+# than using .claude/scripts/gh-window.sh (which anchors to midnight).
 SINCE_ISO=$(TZ='America/New_York' date -v-1d -v12H -v0M -v0S '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || TZ='America/New_York' date -d 'yesterday 12:00' '+%Y-%m-%dT%H:%M:%S%z')
 SINCE_ISO=$(printf '%s' "$SINCE_ISO" | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/')
 
 # Date for GitHub search (YYYY-MM-DD)
-SINCE_DATE=$(TZ='America/New_York' date -v-1d '+%Y-%m-%d' 2>/dev/null || TZ='America/New_York' date -d 'yesterday' '+%Y-%m-%d')
+SINCE_DATE=$(bash .claude/scripts/gh-window.sh --days 1 --format date)
 ```
 
-Adjust the date expressions to match the user's time reference.
+Adjust the date expressions to match the user's time reference. See `.claude/scripts/gh-window.sh` for the date-window builder (used above for `$SINCE_DATE`; `$SINCE_ISO` stays inline because this skill anchors to noon, not midnight).
 
 ## Step 2: Load team config (optional)
 
