@@ -87,19 +87,13 @@ Reply to EVERY review comment thread acknowledging the fix.
 
 After replying, resolve **only** the threads whose first-comment author is `coderabbitai`, `cursor`, or `greptile-apps` (the bots you actually handled in Step 2). Do NOT resolve threads authored by human reviewers or other bots — those may be active discussion threads unrelated to your fix work.
 
+Use the shared helper (falls back to `minimizeComment` if `resolveReviewThread` fails):
+
 ```bash
-# Get unresolved threads, filter to CR/Greptile bot authors, then resolve each
-gh api graphql -f query='query { repository(owner: "{{OWNER}}", name: "{{REPO}}") { pullRequest(number: {{PR_NUMBER}}) { reviewThreads(first: 100) { nodes { id isResolved comments(first: 1) { nodes { author { login } } } } } } } }' \
-  --jq '.data.repository.pullRequest.reviewThreads.nodes[]
-        | select(.isResolved == false)
-        | select(.comments.nodes[0].author.login | test("^(coderabbitai|cursor|greptile-apps)$"))
-        | .id' \
-  | while read -r thread_id; do
-      gh api graphql -f query="mutation { resolveReviewThread(input: {threadId: \"$thread_id\"}) { thread { isResolved } } }"
-    done
+bash .claude/scripts/resolve-review-threads.sh {{PR_NUMBER}}
 ```
 
-If a thread's first-comment author is anything other than `coderabbitai`, `cursor`, or `greptile-apps` (e.g., a human reviewer), leave it alone.
+The script defaults to `--authors coderabbitai,cursor,greptile-apps`. If a thread's first-comment author is anything other than those logins (e.g., a human reviewer), the script leaves it alone. Exit 1 means at least one thread failed both mutations — still write the Step 6 handoff file (include `"notes": "thread resolution partial failure"` so Phase B knows), then report the failure to the parent. Do not proceed to Phase B with unresolved bot threads.
 
 ### Step 6: Write Handoff File
 
