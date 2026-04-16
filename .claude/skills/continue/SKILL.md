@@ -125,23 +125,16 @@ PR_NUM=$(echo "$PR_JSON" | jq -r '.number // empty')
 
 ## Step 5: Determine reviewer ownership
 
-Fetch the shared PR-state bundle once and reuse `$STATE` for Steps 5–8 (each re-run of the helper hits GitHub again; one invocation covers all four steps as long as no push happens between them).
-
-> **`$STATE` is a file path.** `pr-state.sh` writes `/tmp/pr-state-<PR>-<epoch>.json` and prints that path on stdout. Every `jq` below passes `"$STATE"` as the file argument. The script exits non-zero on failure — under `set -e` the skill aborts automatically.
-
-```bash
-STATE=$(.claude/scripts/pr-state.sh)
-HEAD_SHA=$(jq -r '.pr.head_sha' "$STATE")
-```
-
 Check which reviewer owns this PR:
 
 ```bash
 # Check session-state first
 cat ~/.claude/session-state.json 2>/dev/null | jq -r ".prs.\"$PR_NUM\".reviewer // empty"
 
-# If no session-state, read review-history logins from the bundle
-jq -r '[.comments.reviews[], .comments.inline[], .comments.conversation[]] | .[].user.login' "$STATE" | sort -u
+# If no session-state, check review history (paginate to catch all activity)
+gh api --paginate "repos/{owner}/{repo}/pulls/{N}/comments?per_page=100" --jq '.[].user.login' | sort -u
+gh api --paginate "repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100" --jq '.[].user.login' | sort -u
+gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" --jq '.[].user.login' | sort -u
 ```
 
 - If `greptile-apps[bot]` has posted reviews: PR is on **Greptile** (sticky assignment).
@@ -155,14 +148,17 @@ Output: `Reviewer: CR` or `Reviewer: Greptile`
 
 ### If PR is on CR:
 
-Check the CodeRabbit check-run from `$STATE` (Step 5 captured `HEAD_SHA` already):
+Check the commit status for CodeRabbit:
 ```bash
-jq '.check_runs.all[] | select(.name == "CodeRabbit") | {status, conclusion, title}' "$STATE"
+SHA=$(gh pr view $PR_NUM --json commits --jq '.commits[-1].oid')
+gh api "repos/{owner}/{repo}/commits/$SHA/check-runs" \
+  --jq '.check_runs[] | select(.name == "CodeRabbit") | {status: .status, conclusion: .conclusion, title: .output.title}'
 ```
 
-Also check the statuses rollup as fallback (handles repos that report CR via the legacy commit-status API instead of check-runs):
+Also check the statuses endpoint as fallback:
 ```bash
-jq '.bot_statuses.CodeRabbit' "$STATE"
+gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
+  --jq '.[] | select(.context | test("CodeRabbit"; "i")) | {state: .state, description: .description}'
 ```
 
 **Rate limit detection:** If check-run shows `conclusion: "failure"` with title containing "rate limit" (case-insensitive), OR status shows `state: "failure"`/`state: "error"` with description containing "rate limit":
@@ -187,10 +183,14 @@ jq '.bot_statuses.CodeRabbit' "$STATE"
 
 ### If PR is on Greptile:
 
-Check for Greptile comments in `$STATE`:
+Check for Greptile comments:
 ```bash
-jq '[.comments.reviews[], .comments.inline[], .comments.conversation[]]
-     | map(select(.user.login == "greptile-apps[bot]"))' "$STATE"
+gh api --paginate "repos/{owner}/{repo}/pulls/{N}/comments?per_page=100" \
+  --jq '[.[] | select(.user.login == "greptile-apps[bot]")]'
+gh api --paginate "repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100" \
+  --jq '[.[] | select(.user.login == "greptile-apps[bot]")]'
+gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
+  --jq '[.[] | select(.user.login == "greptile-apps[bot]")]'
 ```
 
 - If Greptile has posted findings: `[DONE]` — Greptile review received. Process findings (Step 7).
@@ -201,24 +201,37 @@ jq '[.comments.reviews[], .comments.inline[], .comments.conversation[]]
 
 ## Step 7: Check for unresolved findings
 
-The shared bundle `$STATE` already contains all review threads (paginated GraphQL) under `.threads`, and the 3 comment endpoints under `.comments`. Re-run `pr-state.sh` only if a fix commit landed since Step 5.
+Fetch unresolved review threads (first 100 — sufficient for most PRs; if a PR has >100 threads, paginate using `pageInfo.endCursor`):
+```bash
+gh api graphql -f query='query {
+  repository(owner: "{owner}", name: "{repo}") {
+    pullRequest(number: {N}) {
+      reviewThreads(first: 100) {
+        nodes {
+          id
+          isResolved
+          comments(first: 100) {
+            nodes {
+              body
+              author { login }
+              createdAt
+            }
+          }
+        }
+      }
+    }
+  }
+}'
+```
 
 Count unresolved threads from reviewers:
-```bash
-# Full unresolved array from the bundle (includes comments nested under each thread)
-jq '.threads.unresolved' "$STATE"
-
-# Count unresolved threads where any comment is from CR or Greptile
-jq '[.threads.unresolved[]
-     | select(any(.comments.nodes[]; .author.login == "coderabbitai[bot]" or .author.login == "greptile-apps[bot]"))]
-     | length' "$STATE"
-```
+- Filter for threads where any comment is from `coderabbitai[bot]` or `greptile-apps[bot]`
+- Only count threads where `isResolved == false`
 
 Also check for issue-level review comments that may not have threads:
 ```bash
-jq '[.comments.conversation[]
-     | select(.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]")
-     | select(.body | test("suggestion|finding|issue|bug|error|warning"; "i"))]' "$STATE"
+gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
+  --jq '[.[] | select(.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]") | select(.body | test("suggestion|finding|issue|bug|error|warning"; "i"))]'
 ```
 
 - If there are unresolved findings: `[ACTION]` — Processing N unresolved findings.
@@ -258,64 +271,26 @@ jq '[.comments.conversation[]
 
 ## Step 8: Check merge gate
 
-### If PR is on CR (Greptile never triggered):
+Run the shared merge-gate verifier (implements CR 2-clean / BugBot 1-clean / Greptile severity + CI + BEHIND checks):
 
-Need **2 consecutive clean CR passes**. A pass is clean only when BOTH of:
-1. CodeRabbit check-run on current HEAD shows `status: "completed"` + `conclusion: "success"`
-2. Step 7 reports zero unresolved CR findings (verified via GraphQL query below)
-
-Track a `cr_clean_streak` counter:
-- Increment by 1 after a verified clean pass
-- Reset to 0 when findings are present or a new commit is pushed
-- Merge gate met when `cr_clean_streak >= 2`
-
-If a fix commit landed after Step 5, re-run `pr-state.sh` so the HEAD SHA and all downstream checks reflect the new state:
 ```bash
-STATE=$(.claude/scripts/pr-state.sh)
-HEAD_SHA=$(jq -r '.pr.head_sha' "$STATE")
+GATE_JSON=$(.claude/scripts/merge-gate.sh "$PR_NUM")
+GATE_EXIT=$?
 ```
 
-Check latest CR signals from `$STATE` — with fallback to the legacy commit-status API for repos that don't surface a CodeRabbit check-run:
-```bash
-# CodeRabbit check-run must be green on current HEAD (preferred path)
-CR_CHECK=$(jq '.check_runs.all[] | select(.name == "CodeRabbit")' "$STATE")
+Branch on the exit code:
 
-# Fallback: commit-status rollup already captured by pr-state.sh
-if [ -z "$CR_CHECK" ] || [ "$CR_CHECK" = "null" ]; then
-  jq '.bot_statuses.CodeRabbit' "$STATE"
-  # A clean pass in the fallback path requires .state == "success"
-else
-  echo "$CR_CHECK" | jq '{status, conclusion}'
-  # A clean pass in the check-runs path requires status == "completed" AND conclusion == "success"
-fi
-
-# Count unresolved threads that involve coderabbitai[bot] anywhere in the thread
-jq '[.threads.unresolved[]
-     | select(any(.comments.nodes[]; .author.login == "coderabbitai[bot]"))] | length' "$STATE"
-```
-
-- If check-run is green AND zero unresolved CR findings: this is a clean pass. Increment `cr_clean_streak`.
-- If `cr_clean_streak >= 2`: `[DONE]` — Merge gate satisfied (2 consecutive clean CR passes).
-- If `cr_clean_streak == 1`: `[ACTION]` — One clean pass confirmed. Triggering confirmation review:
-  ```bash
-  gh pr comment $PR_NUM --body "@coderabbitai full review"
-  ```
-  Go back to **Step 6** to poll for the confirmation review.
-- If check-run has findings or is not green: `[ACTION]` — Merge gate not met. Reset streak. Go back to **Step 6**.
-
-### If PR is on Greptile:
-
-Severity-gated merge gate:
-- **No findings at all** on last Greptile review: `[DONE]` — Merge gate satisfied (clean Greptile pass).
-- **Only P1/P2 findings** (no P0) on last review, all fixed: `[DONE]` — Merge gate satisfied (P1/P2 fixed, no re-review needed).
-- **P0 findings were present**: Need re-review to confirm P0 resolution.
-  - Check if re-review has been done (max 3 Greptile reviews per PR).
-  - If re-review needed and budget allows: `[ACTION]` — Triggering Greptile re-review:
-    ```bash
-    gh pr comment $PR_NUM --body "@greptileai"
-    ```
-    Go back to **Step 6**.
-  - If 3 reviews already consumed: `[BLOCKED]` — Greptile review budget exhausted. Performing self-review. Report blocker to user.
+- `0` → `[DONE]` — Merge gate satisfied. Proceed to Step 9 (AC verification).
+- `1` → `[ACTION]` — Gate not met. Parse `missing` from the JSON output and act accordingly:
+  - CR path with **"need 2 clean CR reviews on HEAD (have 1)"**: post `@coderabbitai full review` to trigger the confirmation pass, then return to **Step 6**.
+  - CR path with **"CodeRabbit check-run not green on HEAD"** or **"latest CR review on HEAD requests changes"**: CR has findings; return to **Step 7** to process them.
+  - BugBot path with **"no BugBot review on HEAD"**: BugBot hasn't reviewed the current HEAD yet; return to **Step 6** to poll for the review.
+  - BugBot path with **"latest BugBot review on HEAD has findings"**: return to **Step 7** to process findings.
+  - Greptile path with **"unresolved Greptile thread(s)"**: return to **Step 7** to process; if P0 remains after fix, re-trigger `@greptileai` (subject to the 3-review cap per `.claude/rules/greptile.md`).
+  - **"branch is BEHIND base"**: `[ACTION]` — rebase onto base, force-push, wait for a fresh review, then re-run the gate.
+  - **"CI has N failing check-run(s)"** or **"CI has N incomplete check-run(s)"**: fix CI or wait for incomplete runs, then re-run the gate.
+- `3` → `[BLOCKED]` — PR not found (closed or merged).
+- `2`/`4` → `[BLOCKED]` — script or gh error; surface the message to the user.
 
 ---
 

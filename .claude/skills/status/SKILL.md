@@ -68,16 +68,21 @@ jq '.check_runs.all[] | select(.name == "Cursor Bugbot") | {name, status, conclu
 
 ### Step 3: Determine status for each PR
 
-Classify each PR into one of these states:
-- **Clean (merge-ready)** — merge gate satisfied (2 clean CR or 1 clean G)
-- **Has findings** — reviewer posted actionable comments that need fixing
-- **Review pending** — pushed but no review yet
-- **Rate-limited** — CR check shows rate limit failure
+For a structured merge-readiness call per PR, run the shared merge-gate verifier:
 
-Also note:
-- Which reviewer owns the PR (CR or Greptile)
-- Number of unresolved inline comments
-- Time since last update
+```bash
+.claude/scripts/merge-gate.sh "$PR_NUM"
+```
+
+Exit `0` → Clean (merge-ready). Exit `1` → parse `.missing[]` to classify: entries about findings/threads = **Has findings**, entries about CI incomplete or review not yet posted = **Review pending**, entries about rate limits = **Rate-limited**. Exit `3` → PR not found. Exit `2`/`4` → script/gh error.
+
+The JSON also surfaces `.reviewer`, `.head_sha`, `.ci_status`, and `.merge_state` — use these to populate the dashboard columns without re-querying.
+
+Classifications to present in the table:
+- **Clean (merge-ready)** — script exit `0`.
+- **Has findings** — gate not met because of unresolved threads, CR check-run red, or findings on HEAD.
+- **Review pending** — gate not met because no review yet / CI still running.
+- **Rate-limited** — gate not met with a CR rate-limit signal in `missing`.
 
 ### Step 4: Check session-state
 
