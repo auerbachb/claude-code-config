@@ -27,16 +27,48 @@ For each valid issue, extract and record:
 - **Labels** (check for protocol-relevant labels)
 - **Acceptance criteria** — count all checklist items matching `- [ ]` or `- [x]`/`- [X]` in the body
 
-## Step 2: Detect CR Implementation Plan
+## Step 2: Detect Implementation Plan
 
-For each issue, fetch all comments:
+For each issue, first try the shared CR plan detector — it encapsulates the canonical jq filter (CR author, skip "actions performed" ack lines, length > 200) behind a stable CLI. Branch on the exit code explicitly — don't swallow it with `|| true`, or a closed issue (exit 3) and a gh API outage (exit 4) look the same as "no plan" (exit 1):
 
 ```bash
-gh api --paginate repos/{owner}/{repo}/issues/$NUMBER/comments --jq '.[] | {author: .user.login, body: .body}'
+PLAN=""
+if PLAN=$(.claude/scripts/cr-plan.sh "$NUMBER"); then
+  : # exit 0 — CR plan captured in $PLAN
+else
+  rc=$?
+  case "$rc" in
+    1) PLAN="" ;;  # no CR plan; fall through to the human-plan scan below
+    3)
+      echo "Issue #$NUMBER not found or already closed — skipping." >&2
+      continue
+      ;;
+    4)
+      echo "cr-plan.sh: gh error on issue #$NUMBER — skipping." >&2
+      continue
+      ;;
+    *)
+      echo "cr-plan.sh: unexpected exit $rc on issue #$NUMBER — skipping." >&2
+      continue
+      ;;
+  esac
+fi
 ```
 
-From all comments, extract:
-- **Implementation plan:** Scan ALL comments for plan structure markers — file lists, implementation steps, phase breakdowns. Prefer the most structured/detailed plan found regardless of author.
+Exit codes: `0` plan found on stdout, `1` no plan, `3` issue not found/closed, `4` gh error. Run `.claude/scripts/cr-plan.sh --help` for full usage.
+
+**If `$PLAN` is empty (no CR plan), fall back to scanning comments for a human-authored plan** — a tech lead or teammate may have written one directly on the issue. The script intentionally only matches `coderabbitai`, so the human-only fallback scan is the agent's job. Explicitly filter out bot accounts so automated comments can't become `$PLAN`:
+
+```bash
+if [ -z "$PLAN" ]; then
+  gh api --paginate repos/{owner}/{repo}/issues/$NUMBER/comments \
+    --jq '.[] | select(.user.type != "Bot") | {author: .user.login, body: .body}'
+fi
+```
+
+From the returned comments, prefer the most structured/detailed **human-authored** plan — file lists, implementation steps, phase breakdowns — and store that body in `$PLAN`. Never promote a bot-authored comment into `$PLAN` here; bot plans only reach `$PLAN` via the CR path above.
+
+- **Implementation plan:** Use `$PLAN` (either the CR plan from `cr-plan.sh` or the best human-authored plan from the fallback scan) as the canonical plan for this issue.
 - If a CR plan exists, extract the **file list** using these patterns:
   - Look for headings containing "Files", "Files likely touched", "File list", or "Touched files" (case-insensitive)
   - Parse the block following that heading: bullet/numbered lists or fenced code blocks with one path per line

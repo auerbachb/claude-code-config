@@ -45,27 +45,23 @@ gh issue view "$ISSUE_NUMBER" --json number,title,body,state,createdAt --comment
 
 ## Step 3: Handle CR implementation plan
 
-CR's plan is identified by a comment from `coderabbitai` (no `[bot]` suffix — issue comments use the bare name).
+CR's plan is identified by a comment from `coderabbitai` (no `[bot]` suffix — issue comments use the bare name). Use `.claude/scripts/cr-plan.sh` for detection — it encapsulates the canonical jq filter (skip "actions performed" ack lines, require length > 200) and the 60s polling loop.
+
+Exit codes: `0` plan found (printed to stdout), `1` no plan, `3` issue not found/closed, `4` gh error. Run `.claude/scripts/cr-plan.sh --help` for full usage.
 
 ### Path A: Fresh issue (age < 10 minutes)
 
-CR may still be generating the plan. Poll every 60s until the issue is 10 minutes old (from `createdAt`):
+CR may still be generating the plan. Poll for up to 10 minutes, stopping early once the issue ages past 10 minutes from `createdAt`:
 
 ```bash
-while true; do
-  PLAN=$(gh issue view "$ISSUE_NUMBER" --json comments \
-    --jq '[.comments[]
-           | select(.author.login == "coderabbitai")
-           | .body
-           | select((test("(?i)^\\s*actions performed\\b") | not))
-           | select(length > 200)
-          ] | last // empty')
-  if [ -n "$PLAN" ]; then break; fi
-  # Stop polling once issue age exceeds 10 minutes
-  AGE_NOW=$(python3 -c "import datetime,sys; print(int((datetime.datetime.utcnow() - datetime.datetime.strptime('$CREATED_AT','%Y-%m-%dT%H:%M:%SZ')).total_seconds()))")
-  if [ "$AGE_NOW" -ge 600 ]; then break; fi
-  sleep 60
-done
+if PLAN=$(.claude/scripts/cr-plan.sh "$ISSUE_NUMBER" --poll 10 --max-age-minutes 10); then
+  : # plan captured
+else
+  case $? in
+    1) PLAN="" ;;  # timeout — no plan
+    *) PLAN=""; echo "cr-plan.sh failed" >&2 ;;
+  esac
+fi
 ```
 
 - If a plan arrives, capture it and proceed to Step 4.
@@ -73,16 +69,10 @@ done
 
 ### Path B: Older issue (age >= 10 minutes)
 
-Check for an existing CR plan comment (ignore ack-only and short/non-substantive comments):
+Do a single check for an existing CR plan comment:
 
 ```bash
-PLAN=$(gh issue view "$ISSUE_NUMBER" --json comments \
-  --jq '[.comments[]
-         | select(.author.login == "coderabbitai")
-         | .body
-         | select((test("(?i)^\\s*actions performed\\b") | not))
-         | select(length > 200)
-        ] | last // empty')
+PLAN=$(.claude/scripts/cr-plan.sh "$ISSUE_NUMBER" || true)
 ```
 
 - **If plan exists:** capture and proceed to Step 4.
@@ -100,17 +90,7 @@ PLAN=$(gh issue view "$ISSUE_NUMBER" --json comments \
   - **If the workflow run for this issue hit a blocking conclusion, is missing entirely, or stalled past the 5-minute wait**: post `@coderabbitai plan` and poll every 60s for up to 5 minutes:
     ```bash
     gh issue comment "$ISSUE_NUMBER" --body "@coderabbitai plan"
-    for i in $(seq 1 5); do
-      sleep 60
-      PLAN=$(gh issue view "$ISSUE_NUMBER" --json comments \
-        --jq '[.comments[]
-               | select(.author.login == "coderabbitai")
-               | .body
-               | select((test("(?i)^\\s*actions performed\\b") | not))
-               | select(length > 200)
-              ] | last // empty')
-      if [ -n "$PLAN" ]; then break; fi
-    done
+    PLAN=$(.claude/scripts/cr-plan.sh "$ISSUE_NUMBER" --poll 5 || true)
     ```
 - If still no plan after 5 minutes, proceed to Step 4 without it. Note it in the final summary.
 
