@@ -424,12 +424,29 @@ worktree directory at all times.
 2. Verify merge gate is satisfied:
    - CR-only: 2 clean CR reviews exist.
    - Greptile: severity gate satisfied.
-3. Fetch PR body: `gh pr view {PR_NUMBER} --json body`
-4. Parse every checkbox in the Test plan section.
-5. For each item, read the relevant source file(s) and verify the criterion is met.
-6. Check off passing items by editing the PR body (replace `- [ ]` with `- [x]`).
-7. If any item fails, report the failure — do NOT check it off.
-8. Check ALL CI check-runs pass.
+3. Extract Test Plan checkboxes via the shared helper, branching on the exit code so "no Test Plan section" is distinguished from real errors:
+   ```bash
+   if ITEMS=$(.claude/scripts/ac-checkboxes.sh {PR_NUMBER} --extract); then
+     : # $ITEMS is a JSON array of {index, checked, text}
+   else
+     rc=$?
+     case "$rc" in
+       1) ITEMS=""      ;;  # no Test Plan section — skip AC verification (step 7)
+       3) OUTCOME=blocked; MSG="PR not found" ;;
+       *) OUTCOME=blocked; MSG="ac-checkboxes.sh failed (exit $rc)" ;;
+     esac
+   fi
+   ```
+4. For each item in `$ITEMS` with `checked == false`, read the relevant source file(s) and verify the criterion is met.
+5. Tick passing items by index (or `--all-pass` if every unchecked item passed):
+   ```bash
+   .claude/scripts/ac-checkboxes.sh {PR_NUMBER} --tick "0,2,3"
+   # or
+   .claude/scripts/ac-checkboxes.sh {PR_NUMBER} --all-pass
+   ```
+6. If any item fails verification, do NOT tick it — set `OUTCOME: blocked` and list the failing items in the exit report.
+7. If `ITEMS` was empty (step 3 returned exit 1), skip AC verification and note "no Test Plan section" in the exit report (still `OUTCOME: ac_verified` — nothing to block on).
+8. Check ALL CI check-runs pass. If any fail, set `OUTCOME: blocked`.
 9. Print Structured Exit Report:
    ```
    EXIT_REPORT

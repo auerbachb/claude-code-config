@@ -96,14 +96,36 @@ BASE_BRANCH=$(gh pr view --json baseRefName --jq '.baseRefName')
 
 ### Step 2.2: Verify acceptance criteria
 
-Extract the PR body's **Test plan** section. For each checkbox:
+Use the shared `ac-checkboxes.sh` helper to parse and tick Test Plan items:
+
+```bash
+# 1. Extract items (JSON: [{index, checked, text}, ...])
+ITEMS=$(.claude/scripts/ac-checkboxes.sh "$PR_NUM" --extract)
+AC_EXIT=$?
+```
+
+For each item with `checked == false`:
 
 1. Read the criterion
 2. Identify and read the relevant source files
 3. Confirm the criterion is satisfied by the current code
-4. Check off passing items by editing the PR body (replace `- [ ]` with `- [x]`)
 
-If any item fails, stop and report — do NOT merge with unchecked boxes.
+Tick passing items by index (or use `--all-pass` if every unchecked item passed):
+
+```bash
+# Example: items 0, 2, 3 passed
+.claude/scripts/ac-checkboxes.sh "$PR_NUM" --tick "0,2,3"
+# Or: every unchecked item passed
+.claude/scripts/ac-checkboxes.sh "$PR_NUM" --all-pass
+```
+
+Exit codes from the extract/tick calls:
+- `0` OK — proceed.
+- `1` no Test Plan section — stop: "PR has no Test Plan section — cannot verify acceptance criteria."
+- `3` PR not found — stop.
+- `2`/`4` script/gh error — surface stderr and stop.
+
+If any item fails verification, do NOT tick it — stop and report the failure. Do NOT merge with unchecked boxes.
 
 ### Step 2.3: Pre-merge safety & CI (handled by Step 2.1)
 

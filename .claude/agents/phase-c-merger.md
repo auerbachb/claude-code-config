@@ -64,24 +64,31 @@ GATE_EXIT=$?
 
 ## Step 2: Verify Acceptance Criteria
 
-1. Fetch the PR body:
+1. Extract Test Plan checkboxes via the shared helper:
 
    ```bash
-   gh pr view {{PR_NUMBER}} --json body --jq .body
+   ITEMS=$(.claude/scripts/ac-checkboxes.sh {{PR_NUMBER}} --extract)
+   AC_EXIT=$?
    ```
 
-2. Parse every checkbox in the **Test plan** section
-3. For each item, read the relevant source file(s) and verify the criterion is met
-4. Check off passing items by editing the PR body:
+   Exit codes:
+   - `0` → `$ITEMS` is a JSON array of `{index, checked, text}`. Proceed to step 2.
+   - `1` → no Test Plan section. Report this in the exit report (`OUTCOME: ac_verified` with a note — there are no criteria to verify).
+   - `3` → PR not found; `OUTCOME: blocked`.
+   - `2`/`4` → script/gh error; `OUTCOME: blocked`.
+
+2. For each item with `checked == false`, read the relevant source file(s) and verify the criterion is met.
+
+3. Tick passing items by zero-based index, or use `--all-pass` if every unchecked item passed:
 
    ```bash
-   # Get current body, replace unchecked boxes with checked for verified items
-   BODY=$(gh pr view {{PR_NUMBER}} --json body --jq .body)
-   # Use gh pr edit to update
-   gh pr edit {{PR_NUMBER}} --body "<updated body with checked boxes>"
+   # Example: indexes 0, 2, 3 passed
+   .claude/scripts/ac-checkboxes.sh {{PR_NUMBER}} --tick "0,2,3"
+   # Or: every unchecked item passed
+   .claude/scripts/ac-checkboxes.sh {{PR_NUMBER}} --all-pass
    ```
 
-5. If any item fails verification: `OUTCOME: blocked` — report which items failed and why
+4. If any item fails verification: `OUTCOME: blocked` — report which items failed and why. Do NOT tick failing items.
 
 ## Step 3: Print Exit Report and EXIT
 
