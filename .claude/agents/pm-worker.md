@@ -66,8 +66,12 @@ A GitHub Actions workflow automatically comments `@coderabbitai plan` on new iss
 Search from the main repo root (not the worktree):
 
 ```bash
-ROOT_REPO=$(.claude/scripts/repo-root.sh)
-find "$ROOT_REPO" -type d -name "work-logs" -not -path "*/.git/*" -not -path "*/.claude/*"
+ROOT_REPO=$(.claude/scripts/repo-root.sh 2>/dev/null || true)
+if [ -z "$ROOT_REPO" ] || [ ! -d "$ROOT_REPO" ]; then
+  echo "Not in a git repo — skipping work-log detection" >&2
+else
+  find "$ROOT_REPO" -type d -name "work-logs" -not -path "*/.git/*" -not -path "*/.claude/*"
+fi
 ```
 
 NEVER create a `work-logs/` directory. If none found, skip logging.

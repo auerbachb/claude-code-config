@@ -11,8 +11,12 @@ At the start of every session — including continuation sessions and post-compa
 1. **Find existing `work-logs/` directories** by searching the **main repo root** (not the current worktree, which may lack shared directories). Use `.claude/scripts/repo-root.sh` to resolve it — the helper wraps the porcelain-aware `git worktree list` lookup and returns a non-zero exit when not inside a git repo:
 
    ```bash
-   ROOT_REPO=$(.claude/scripts/repo-root.sh)
-   find "$ROOT_REPO" -type d -name "work-logs" -not -path "*/.git/*" -not -path "*/.claude/*"
+   ROOT_REPO=$(.claude/scripts/repo-root.sh 2>/dev/null || true)
+   if [ -z "$ROOT_REPO" ] || [ ! -d "$ROOT_REPO" ]; then
+     echo "Not in a git repo — skipping work-log detection" >&2
+   else
+     find "$ROOT_REPO" -type d -name "work-logs" -not -path "*/.git/*" -not -path "*/.claude/*"
+   fi
    ```
 
    If you are not in a worktree (i.e., working directly in the repo), `$ROOT_REPO` is just the repo root and the find command works the same way.
