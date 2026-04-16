@@ -215,16 +215,23 @@ write_state() {
     trap "rm -f '$tmp' 2>/dev/null" EXIT
   fi
 
+  # Capture jq stderr separately so a failure surfaces the underlying cause
+  # (e.g., unexpected input) instead of being swallowed. Stdout still goes to
+  # $tmp so the atomic rename below is unaffected.
+  local jq_err
+  jq_err="$(mktemp)"
   if ! jq \
     --arg today "$TODAY" \
     --argjson used "$new_used" \
     --argjson budget "$new_budget" \
     '.greptile_daily = {"date": $today, "reviews_used": $used, "budget": $budget}
      | .last_updated = (now | todate)' \
-    "$input_file" > "$tmp" 2>/dev/null; then
-    echo "greptile-budget.sh: jq failed updating $STATE_FILE" >&2
+    "$input_file" > "$tmp" 2>"$jq_err"; then
+    echo "greptile-budget.sh: jq failed updating $STATE_FILE: $(cat "$jq_err")" >&2
+    rm -f "$jq_err" 2>/dev/null || true
     exit 5
   fi
+  rm -f "$jq_err" 2>/dev/null || true
 
   if ! mv "$tmp" "$STATE_FILE" 2>/dev/null; then
     echo "greptile-budget.sh: could not write $STATE_FILE" >&2
