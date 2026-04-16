@@ -122,9 +122,14 @@ fi
 # dependency beyond what `gh` already bundles. Keep stderr separate from stdout
 # so incidental gh warnings (auth refresh, deprecation notices) never
 # contaminate the tab-separated output.
+# Single tmpdir tracks every temp file this script creates (here + fetch_plan),
+# torn down by one EXIT trap so fetch_plan's err_file can't leak if the script
+# aborts mid-call.
+TMPDIR_CR_PLAN=$(mktemp -d)
+trap 'rm -rf "$TMPDIR_CR_PLAN"' EXIT
+
 ISSUE_META=""
-ISSUE_META_STDERR_FILE=$(mktemp)
-trap 'rm -f "$ISSUE_META_STDERR_FILE"' EXIT
+ISSUE_META_STDERR_FILE="$TMPDIR_CR_PLAN/issue-meta-stderr"
 if ! ISSUE_META=$(gh issue view "$ISSUE_NUMBER" --json state,createdAt --jq '"\(.state)\t\(.createdAt)"' 2>"$ISSUE_META_STDERR_FILE"); then
   ISSUE_META_STDERR=$(cat "$ISSUE_META_STDERR_FILE")
   if printf '%s' "$ISSUE_META_STDERR" | grep -qi 'could not resolve\|not found\|no issue found\|HTTP 404'; then
@@ -173,16 +178,16 @@ fetch_plan() {
   # Single-shot lookup. Prints plan body (possibly empty) on stdout; prints gh
   # error text to stderr and returns 4 on API failure. Keeps stderr separate
   # from stdout so incidental gh warnings never contaminate the plan body.
+  # Temp file lives under TMPDIR_CR_PLAN so the single EXIT trap cleans it up
+  # even if the script aborts between write and unlink.
   local out err err_file
-  err_file=$(mktemp)
+  err_file="$TMPDIR_CR_PLAN/fetch-plan-stderr"
   if ! out=$(gh issue view "$ISSUE_NUMBER" --json comments --jq "$CR_PLAN_JQ" 2>"$err_file"); then
     err=$(cat "$err_file")
-    rm -f "$err_file"
     echo "cr-plan.sh: gh error fetching comments for issue #$ISSUE_NUMBER:" >&2
     printf '%s\n' "$err" >&2
     return 4
   fi
-  rm -f "$err_file"
   printf '%s' "$out"
 }
 
