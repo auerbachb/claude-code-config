@@ -396,6 +396,9 @@ case "$RESULT" in
     ;;
   *)
     echo "ERROR: unexpected python result: $RESULT" >&2
-    exit 4
+    # Exit 2 (internal script error) — NOT 4. An unrecognized Python result is
+    # an internal parser fault, matching the "empty py-out" sibling case above.
+    # Exit 4 is reserved for `gh pr edit` failures only.
+    exit 2
     ;;
 esac
