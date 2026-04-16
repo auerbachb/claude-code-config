@@ -73,7 +73,7 @@ if [[ -z "$PR_NUMBER" ]]; then
   exit 2
 fi
 
-if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
   echo "ERROR: <pr_number> must be a positive integer (got: $PR_NUMBER)" >&2
   exit 2
 fi
@@ -84,15 +84,17 @@ if [[ ${#_author_arr[@]} -eq 0 ]]; then
   echo "ERROR: --authors must contain at least one login" >&2
   exit 2
 fi
-# Escape regex metacharacters in each author (safe for typical GH logins).
+# Escape jq regex metacharacters in each author token.
 _author_regex=""
 for _a in "${_author_arr[@]}"; do
   _a_trimmed="${_a// /}"
   if [[ -z "$_a_trimmed" ]]; then continue; fi
+  # Escape characters meaningful in jq regex (PCRE subset): . * + ? ^ $ | \ [ ] ( ) { }
+  _a_escaped=$(printf '%s' "$_a_trimmed" | sed 's/[.+*?^$|\\[\](){}]/\\&/g')
   if [[ -z "$_author_regex" ]]; then
-    _author_regex="$_a_trimmed"
+    _author_regex="$_a_escaped"
   else
-    _author_regex="$_author_regex|$_a_trimmed"
+    _author_regex="$_author_regex|$_a_escaped"
   fi
 done
 if [[ -z "$_author_regex" ]]; then
