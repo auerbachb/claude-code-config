@@ -153,11 +153,15 @@ TODAY="$(TZ='America/New_York' date +'%Y-%m-%d')"
 # are preserved when the JSON is valid.
 read_state() {
   if [[ -f "$STATE_FILE" ]] && jq -e . "$STATE_FILE" >/dev/null 2>&1; then
-    # File exists AND parses as valid JSON.
-    jq -r '.greptile_daily // {"date":"","reviews_used":0,"budget":40}' "$STATE_FILE"
+    # File exists AND parses as valid JSON. Inject DEFAULT_BUDGET so the
+    # jq fallback tracks the shell constant — changing DEFAULT_BUDGET at the
+    # top of the script flows through to every default site.
+    jq -r --argjson default_budget "$DEFAULT_BUDGET" \
+      '.greptile_daily // {"date":"","reviews_used":0,"budget":$default_budget}' \
+      "$STATE_FILE"
   else
     # File missing or corrupt — return default, do not mutate on read.
-    printf '%s\n' '{"date":"","reviews_used":0,"budget":40}'
+    printf '{"date":"","reviews_used":0,"budget":%s}\n' "$DEFAULT_BUDGET"
   fi
 }
 
@@ -165,7 +169,7 @@ CURRENT_RAW="$(read_state)"
 # Extract fields with defaults.
 CURRENT_DATE="$(printf '%s' "$CURRENT_RAW" | jq -r '.date // ""')"
 CURRENT_USED="$(printf '%s' "$CURRENT_RAW" | jq -r '.reviews_used // 0')"
-CURRENT_BUDGET="$(printf '%s' "$CURRENT_RAW" | jq -r '.budget // 40')"
+CURRENT_BUDGET="$(printf '%s' "$CURRENT_RAW" | jq -r --argjson default_budget "$DEFAULT_BUDGET" '.budget // $default_budget')"
 
 # Apply --budget override.
 if [[ -n "$BUDGET_OVERRIDE" ]]; then
