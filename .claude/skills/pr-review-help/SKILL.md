@@ -61,7 +61,7 @@ gh label list --limit 50
 
 Set a disclosure string based on the result:
 - If OKRs found: `STRATEGIC_CONTEXT_DISCLOSURE="Assessed against OKRs from \`pm-config.md\`."`
-- If README fallback: `STRATEGIC_CONTEXT_DISCLOSURE="*Note: No OKR document found (\`pm-config.md\`). Strategic fit assessed against repo README and recent milestones only.*"`
+- If README fallback: `STRATEGIC_CONTEXT_DISCLOSURE="*Note: No usable OKRs in \`pm-config.md\` (missing file, empty \`## OKRs\` section, or placeholder text). Strategic fit assessed against repo README and recent milestones only.*"`
 
 Pass `STRATEGIC_CONTEXT_DISCLOSURE` into each subagent prompt, substituting `{STRATEGIC_CONTEXT_DISCLOSURE}` in the template.
 

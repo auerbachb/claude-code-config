@@ -49,7 +49,11 @@
 set -uo pipefail
 
 print_help() {
-  sed -n '/^# PURPOSE$/,/^# EXAMPLES$/p' "$0" | sed 's/^# \{0,1\}//'
+  # Print the header comment block (PURPOSE through EXAMPLES and their bodies)
+  # by starting at `# PURPOSE` and stopping at the first truly blank line, which
+  # terminates the comment block before `set -uo pipefail`. Strip the `# `
+  # prefix so the output reads as plain text.
+  sed -n '/^# PURPOSE$/,/^$/{/^$/d;p;}' "$0" | sed 's/^# \{0,1\}//'
 }
 
 SECTION=""
@@ -150,9 +154,11 @@ fi
 
 # --- --list mode: print section names. ---
 if [[ "$MODE_LIST" -eq 1 ]]; then
-  # Capture line-anchored `^## <name>` headers; strip the `## ` prefix.
-  # Use awk over sed so we reliably get column-1 anchoring.
-  SECTIONS_RAW="$(awk '/^## /{sub(/^## /, ""); print}' "$CONFIG_FILE")"
+  # Capture line-anchored `^## <name>` headers; strip the `## ` prefix AND any
+  # trailing whitespace so `--list` output feeds cleanly back into `--section`
+  # (the `--section` match already trims trailing whitespace from the target,
+  # so they must normalize the same way).
+  SECTIONS_RAW="$(awk '/^## /{sub(/^## /, ""); sub(/[ \t]+$/, ""); print}' "$CONFIG_FILE")"
   if [[ "$EMIT_JSON" -eq 1 ]]; then
     if [[ -z "$SECTIONS_RAW" ]]; then
       jq -cn --arg file "$CONFIG_FILE" '{sections: [], file: $file, present: true}'
