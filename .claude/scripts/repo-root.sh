@@ -43,13 +43,24 @@ print_help() {
 }
 
 TARGET=""
+STOP_PARSING=0
 for arg in "$@"; do
+  if [[ "$STOP_PARSING" -eq 1 ]]; then
+    # After --, treat everything as a positional argument.
+    if [[ -n "$TARGET" ]]; then
+      echo "repo-root.sh: only one path argument is allowed" >&2
+      exit 2
+    fi
+    TARGET="$arg"
+    continue
+  fi
   case "$arg" in
     -h|--help)
       print_help
       exit 0
       ;;
     --)
+      STOP_PARSING=1
       ;;
     -*)
       echo "repo-root.sh: unknown flag: $arg" >&2
