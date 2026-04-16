@@ -3,7 +3,9 @@
 #
 # Parse Markdown checkboxes from the PR body's `## Test plan` section (case-
 # insensitive match; also accepts `## Test Plan` and `## Acceptance Criteria`),
-# then either emit them as JSON or flip `- [ ]` to `- [x]` via `gh pr edit --body`.
+# then either emit them as JSON or flip `- [ ]` to `- [x]` via
+# `gh pr edit --body-file` (using --body-file, not --body, preserves the body's
+# exact whitespace and trailing-newline profile).
 #
 # Implements the AC-verification contract from .claude/rules/cr-merge-gate.md
 # Step 2. Call sites: /check-acceptance-criteria, /merge, /wrap, /continue,
@@ -38,14 +40,19 @@
 #
 # Exit codes:
 #   0  OK (JSON printed for --extract; body updated for --tick/--all-pass)
-#   1  No Test Plan section found (or section contains no checkboxes)
-#   2  Usage error
+#   1  No Test Plan section found, OR the section exists but contains no
+#      checkbox items. Both cases mean "no acceptance criteria to verify" —
+#      callers MUST treat this as a blocking PR-body violation (see CLAUDE.md:
+#      every PR must include a Test Plan with checkboxes).
+#   2  Usage error (or internal script error — e.g., python parse failure,
+#      missing prerequisite)
 #   3  PR not found (or closed/merged — `gh pr view` failed)
-#   4  `gh pr edit` failed
+#   4  `gh pr edit --body-file` failed (only reachable from --tick/--all-pass)
 #
 # Notes:
-#   - `gh pr edit --body` replaces the entire body; this script fetches first,
-#     mutates in memory, and writes back to preserve all non-Test-Plan content.
+#   - `gh pr edit --body-file` replaces the entire body; this script fetches
+#     first, mutates in memory, and writes back via --body-file to preserve
+#     all non-Test-Plan content verbatim (trailing newlines included).
 #   - --tick and --all-pass are no-ops (exit 0) when nothing needs ticking.
 #   - For --tick with no matches, exit is 0 and a note is printed to stderr.
 
@@ -178,8 +185,11 @@ fi
 
 # Extract .body from the JSON via Python so trailing newlines survive. `jq -r`
 # strips a single trailing newline; Python's json.load + file write does not.
+# Guard explicitly — with `set -e` disabled, a silent failure here would
+# cascade into a misleading "python parsing failed" downstream.
 BODY_FILE="$TMPDIR_AC/body.md"
-python3 - "$BODY_JSON_FILE" "$BODY_FILE" <<'PY'
+BODY_EXTRACT_ERR="$TMPDIR_AC/body-extract-err"
+python3 - "$BODY_JSON_FILE" "$BODY_FILE" <<'PY' 2>"$BODY_EXTRACT_ERR"
 import json
 import sys
 with open(sys.argv[1], "r", encoding="utf-8") as src:
@@ -187,6 +197,12 @@ with open(sys.argv[1], "r", encoding="utf-8") as src:
 with open(sys.argv[2], "w", encoding="utf-8", newline="") as dst:
     dst.write(body)
 PY
+BODY_EXTRACT_STATUS=$?
+if [[ $BODY_EXTRACT_STATUS -ne 0 ]] || [[ ! -f "$BODY_FILE" ]]; then
+  echo "ERROR: failed to extract PR body from JSON (exit $BODY_EXTRACT_STATUS):" >&2
+  cat "$BODY_EXTRACT_ERR" >&2
+  exit 2
+fi
 
 PY_OUT="$TMPDIR_AC/py-out"
 PY_ERR="$TMPDIR_AC/py-err"

@@ -73,7 +73,9 @@ GATE_EXIT=$?
 
    Exit codes:
    - `0` → `$ITEMS` is a JSON array of `{index, checked, text}`. Proceed to step 2.
-   - `1` → no Test Plan section. `OUTCOME: blocked` — every PR must include a Test Plan with acceptance-criteria checkboxes (per CLAUDE.md). Report "PR body is missing a Test Plan section — cannot verify acceptance criteria".
+   - `1` → **either** no Test Plan section **or** the section exists but contains no checkbox items. Both mean "no acceptance criteria to verify" and both are blocking per CLAUDE.md. `OUTCOME: blocked`. Report the specific subcase — `gh pr view {{PR_NUMBER}} --json body --jq '.body'` can tell you which:
+     - No `## Test plan` / `## Test Plan` / `## Acceptance Criteria` heading → "PR body is missing a Test Plan section".
+     - Heading present but zero `- [ ]`/`- [x]` lines → "Test Plan section has no checkbox items".
    - `3` → PR not found; `OUTCOME: blocked`.
    - `2`/`4` → script/gh error; `OUTCOME: blocked`.
 
