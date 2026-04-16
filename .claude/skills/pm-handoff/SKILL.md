@@ -12,14 +12,15 @@ Parse `$ARGUMENTS`:
 
 ## Step 1: Detect mode (bootstrap vs. standard)
 
-Check if `.claude/pm-config.md` exists in the current repo:
+Probe for the config file via the shared parser — rc=2 means missing:
 
 ```bash
-test -f .claude/pm-config.md && echo "CONFIG_EXISTS" || echo "BOOTSTRAP"
+.claude/scripts/pm-config-get.sh --list >/dev/null 2>&1
+CONFIG_RC=$?
 ```
 
-- If **BOOTSTRAP**: proceed to Step 2 (create config from repo scan)
-- If **CONFIG_EXISTS**: skip to Step 3 (read existing config)
+- If `CONFIG_RC == 2` (**BOOTSTRAP**): proceed to Step 2 (create config from repo scan)
+- Otherwise (**CONFIG_EXISTS**): skip to Step 3 (read existing config)
 
 ## Step 2: Bootstrap — create pm-config.md from repo discovery
 
