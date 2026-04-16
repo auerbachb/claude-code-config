@@ -52,17 +52,15 @@ Attach the `closer` value to each issue record, then compute per-contributor clo
 
 Count review-then-fix rounds for a merged PR. A review counts as one cycle when at least one commit lands after it and before the next review (or merge). Reviews with no subsequent commits are non-actionable.
 
-```bash
-# Reviews (exclude bots)
-gh api "repos/{owner}/{repo}/pulls/$PR_NUM/reviews?per_page=100" \
-  --jq '[.[] | select(.user.login | (endswith("[bot]") or . == "github-actions") | not)] | sort_by(.submitted_at)'
+**Use the extracted script:**
 
-# Commit timeline
-gh api "repos/{owner}/{repo}/pulls/$PR_NUM/commits?per_page=100" \
-  --jq '[.[] | {sha: .sha, date: .commit.committer.date}] | sort_by(.date)'
+```bash
+CYCLES=$(.claude/scripts/cycle-count.sh "$PR_NUM" --exclude-bots)
 ```
 
-Iterate reviews chronologically and count each one that has a commit with `review.submitted_at < commit.date < next_review.submitted_at` (or merge time for the last review). Used by `/pm-rate-team`, `/pm-sprint-review`.
+Default includes all reviewers; `--exclude-bots` drops logins ending in `[bot]` or equal to `github-actions` (used for human-review metrics). See `.claude/scripts/cycle-count.sh --help` for the full contract (exit codes: `0` OK, `2` usage, `3` PR not found, `4` gh error).
+
+Internally the script fetches `pulls/$PR_NUM/reviews?per_page=100` and `pulls/$PR_NUM/commits?per_page=100`, sorts by submitted_at / committer date, and counts reviews with `review.submitted_at < commit.date < next_boundary` (next review's `submitted_at`, or `mergedAt`, or now for open PRs). Used by `/merge`, `/wrap`, `/pm-rate-team`, `/pm-sprint-review`.
 
 ## Review participation (reviews given by a contributor)
 

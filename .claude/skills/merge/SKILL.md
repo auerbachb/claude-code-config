@@ -158,16 +158,9 @@ If a work-log directory exists (detected at session start per work-log.md rules)
 
 1. Determine the cycle count by reconstructing from PR history:
    ```bash
-   # Fetch reviews and commits
-   gh api "repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100" \
-     --jq '[.[] | select(.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]") | {state, submitted_at}]'
-   gh api "repos/{owner}/{repo}/pulls/{N}/commits?per_page=100" \
-     --jq '[.[] | {sha: .sha, date: .commit.committer.date}]'
+   CYCLES=$(.claude/scripts/cycle-count.sh "$PR_NUM")
    ```
-   - For each review where `state == "CHANGES_REQUESTED"` (or has inline comments with actionable findings), check if any commit has `committed_date > review.submitted_at`
-   - If yes, that review-then-fix pair = 1 cycle. Multiple commits after a single review count as 1 cycle.
-   - Include reviews from both `coderabbitai[bot]` and `greptile-apps[bot]`
-   - Clean passes and confirmation reviews do not count
+   The script counts one cycle per review followed by at least one commit before the next review (or merge). Clean passes and confirmation reviews do not count. Default mode includes all reviewers (CR, Greptile, cursor, humans); pass `--exclude-bots` only if you need human-only cycles (not used here). See `.claude/scripts/cycle-count.sh --help` for the full contract.
 2. Append a merge entry to today's session log:
    ```
    - {time} ET — PR #{N} merged (Issue #{M}): {1-line summary} [opened: {open_time}, merged: {merge_time}, cycles: {count}]

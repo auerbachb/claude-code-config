@@ -7,6 +7,8 @@ Manually-invoked utility scripts. Run these from the command line when needed.
 | `repair-trust-single.sh <absolute-project-path>` | Fix trust flags for one project in `~/.claude.json` |
 | `repair-trust-all.sh` | Fix trust flags for all projects in `~/.claude.json` |
 | `repair-worktrees.sh [--apply]` | Detect stale git worktrees (branch merged to main or deleted on origin) and optionally remove them. Dry-run by default; skips worktrees with uncommitted changes and never touches the main worktree. |
+| `cycle-count.sh <pr_number> [--exclude-bots]` | Reconstruct per-PR review-then-fix cycle count. Prints an integer on stdout. Used by `/merge`, `/wrap`, `/pm-rate-team`, `/pm-sprint-review`. See `--help` and `.claude/reference/pm-data-patterns.md` "Review cycles per PR". |
+| `audit-skill-usage.sh` | Monthly skill-usage audit against `.claude/data/skill-usage.json`. |
 
 ## scripts/ vs hooks/
 
