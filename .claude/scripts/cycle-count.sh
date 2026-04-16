@@ -219,10 +219,15 @@ ACTIONABLE_REVIEW_IDS="$(jq -s '
 # A review is actionable when state == "CHANGES_REQUESTED" OR its id appears in
 # ACTIONABLE_REVIEW_IDS (i.e., it has at least one inline comment). This
 # matches .claude/rules/work-log.md.
+# Also attach an epoch value so cycle-count comparisons are timezone-safe.
+# GitHub returns most timestamps as ISO 8601 UTC ("...Z"), but commit
+# committer.date can use "+HH:MM" offsets, which would sort incorrectly as
+# raw strings. fromdateiso8601 normalizes everything to epoch seconds.
 REVIEWS_WITH_ACTIONABLE_JSON="$(jq -n \
   --argjson reviews "$REVIEWS_JSON" \
   --argjson actionable_ids "$ACTIONABLE_REVIEW_IDS" '
   [$reviews[] | . + {
+    submitted_at_epoch: (.submitted_at | fromdateiso8601),
     actionable: (
       .state == "CHANGES_REQUESTED"
       or (.id as $rid | ($actionable_ids | index($rid) != null))
@@ -242,8 +247,12 @@ if ! gh api "repos/{owner}/{repo}/pulls/$PR_NUM/commits?per_page=100" --paginate
 fi
 
 COMMITS_JSON="$(jq -s '
-  [.[][] | {sha: .sha, date: .commit.committer.date}]
-  | sort_by(.date)
+  [.[][] | {
+    sha: .sha,
+    date: .commit.committer.date,
+    date_epoch: (.commit.committer.date | fromdateiso8601)
+  }]
+  | sort_by(.date_epoch)
 ' "$COMMITS_RAW" 2>/dev/null)" || {
   echo "Error: jq failed parsing commits for PR #$PR_NUM" >&2
   exit 4
@@ -255,16 +264,18 @@ COMMITS_JSON="$(jq -s '
 # only if the review at this position is actionable. This way non-actionable
 # reviews correctly serve as boundaries for earlier actionable reviews, but
 # they themselves do not contribute to the count.
+# All comparisons use epoch seconds so mixed-timezone timestamps sort correctly.
 CYCLE_COUNT="$(jq -n \
   --argjson reviews "$REVIEWS_WITH_ACTIONABLE_JSON" \
   --argjson commits "$COMMITS_JSON" \
   --arg end "$END_BOUNDARY" '
-  ($reviews | length) as $n
+  ($end | fromdateiso8601) as $end_epoch
+  | ($reviews | length) as $n
   | [range(0; $n) as $i
      | select($reviews[$i].actionable)
-     | $reviews[$i].submitted_at as $rt
-     | (if $i + 1 < $n then $reviews[$i+1].submitted_at else $end end) as $next
-     | ($commits | any(.date > $rt and .date < $next))
+     | $reviews[$i].submitted_at_epoch as $rt
+     | (if $i + 1 < $n then $reviews[$i+1].submitted_at_epoch else $end_epoch end) as $next
+     | ($commits | any(.date_epoch > $rt and .date_epoch < $next))
      | select(.)]
   | length
 ')" || {

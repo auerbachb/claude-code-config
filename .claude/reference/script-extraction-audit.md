@@ -28,16 +28,16 @@ Total prose in rule/skill/agent surface area: ~9,000 lines of Markdown. The audi
 | Bucket | Count |
 |-------:|:------|
 | **Total extraction candidates** | **22** |
-| P0 — extract first (high reuse × high token cost × deterministic) | **7** |
+| P0 — extract first (high reuse × high token cost × deterministic) | **7** (1 extracted, 6 pending) |
 | P1 — extract next (meaningful reuse OR meaningful token cost) | **8** |
 | P2 — extract later (low reuse or low cost, but still mechanical) | **7** |
-| Existing extracted scripts in `.claude/scripts/` | 4 (see "Existing Scripts") |
+| Existing extracted scripts in `.claude/scripts/` | 5 (see "Existing Scripts") |
 | Existing per-skill scripts (not in `.claude/scripts/`) | 1 (`fixpr/audit.sh`) |
 | Existing hook scripts in `.claude/hooks/` | 9 |
 
 **Estimated combined savings if all P0+P1 are extracted:** ~12,000–18,000 tokens per typical Phase B cycle (polling one PR through a fix round to merge), driven mostly by the merge-gate verifier (C-01), the PR-state snapshot (C-02) unifying what fixpr/audit.sh already does, and the all-threads-resolver (C-04). Secondary wins: removing ~200 lines of duplicated bash from `merge`, `wrap`, `continue`, `status`, and the Phase B/C agent files, which cuts their on-load weight for every invocation.
 
-**Recommended extraction order:** C-01 → C-02 → C-04 → C-06 → C-05 → C-03 → C-07, then the P1 batch in the order listed. Rationale at bottom of this doc.
+**Recommended extraction order:** C-01 → C-02 → C-04 → ~~C-06~~ (extracted — issue #279) → C-05 → C-03 → C-07, then the P1 batch in the order listed. Rationale at bottom of this doc.
 
 ---
 
@@ -49,6 +49,7 @@ Total prose in rule/skill/agent surface area: ~9,000 lines of Markdown. The audi
 | `.claude/scripts/repair-trust-single.sh` | Fix trust flags for one project path | Manual | Same logic duplicated in `repair-trust-all.sh` + `trust-flag-repair.sh` — three copies of the same atomic-write-to-`~/.claude.json` pattern |
 | `.claude/scripts/repair-worktrees.sh` | Detect + remove stale worktrees (dry-run by default) | Manual | No bypass call site, but `/wrap` Step 5 reimplements a subset (worktree remove + branch delete) inline |
 | `.claude/scripts/audit-skill-usage.sh` | Monthly skill-usage audit | Manual | No bypass |
+| `.claude/scripts/cycle-count.sh` | Per-PR review-then-fix cycle count (epoch-normalized). Prints integer to stdout. | `/merge`, `/wrap`, `/pm-rate-team`, `/pm-sprint-review` | Extracted C-06 (issue #279). No remaining bypass. |
 | `.claude/skills/fixpr/audit.sh` | Gather PR state (threads + checks + comments + statuses + new-since classifier) → JSON | `/fixpr` (via `~/.claude/skills/fixpr/audit.sh` fallback chain in SKILL.md) | **Major bypass surface.** All of `/merge`, `/wrap`, `/continue`, `/status`, `phase-b-reviewer`, and `phase-c-merger` fetch overlapping subsets of the same data inline with `gh api` one-liners. See C-02 — promoting `audit.sh` into a shared `.claude/scripts/pr-state.sh` and pointing every skill at it is the single biggest extraction win |
 
 **Hooks (`.claude/hooks/`)** are out of scope for this audit — they run outside the agent loop on Stop/PostToolUse/PreToolUse events and do not consume agent tokens. They're listed only because three of them (`trust-flag-repair.sh`, `session-start-sync.sh`, `env-guard.py`) inline logic that a shared helper would simplify. Those are deferred P2+ (out of scope for token-cost extraction).
