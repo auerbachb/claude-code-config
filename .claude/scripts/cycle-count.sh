@@ -115,7 +115,7 @@ if [[ -z "$PR_NUM" ]]; then
   exit 2
 fi
 
-if ! [[ "$PR_NUM" =~ ^[0-9]+$ ]]; then
+if ! [[ "$PR_NUM" =~ ^[1-9][0-9]*$ ]]; then
   echo "Error: <pr_number> must be a positive integer, got: $PR_NUM" >&2
   exit 2
 fi
