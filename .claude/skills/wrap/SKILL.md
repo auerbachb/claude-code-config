@@ -386,10 +386,14 @@ After lessons (or skip): proceed immediately to Phase 5 — do not ask.
 If a work-log was updated in Phase 2, sync it before removing the worktree:
 
 ```bash
-ROOT_REPO=$(.claude/scripts/repo-root.sh)
-WORKTREE=$(pwd)
-# Compare and append any missing entries to root repo copy
-diff "$WORKTREE/$WORK_LOG_PATH/session-log-YYYY-MM-DD.md" "$ROOT_REPO/$WORK_LOG_PATH/session-log-YYYY-MM-DD.md"
+ROOT_REPO=$(.claude/scripts/repo-root.sh 2>/dev/null || true)
+if [ -z "$ROOT_REPO" ] || [ ! -d "$ROOT_REPO" ]; then
+  echo "WARNING: could not resolve root repo — skipping work-log sync" >&2
+else
+  WORKTREE=$(pwd)
+  # Compare and append any missing entries to root repo copy
+  diff "$WORKTREE/$WORK_LOG_PATH/session-log-YYYY-MM-DD.md" "$ROOT_REPO/$WORK_LOG_PATH/session-log-YYYY-MM-DD.md"
+fi
 ```
 
 If the root repo's copy is missing entries, append them (do not overwrite the entire file).
