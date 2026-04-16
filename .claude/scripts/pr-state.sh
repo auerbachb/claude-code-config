@@ -24,6 +24,23 @@
 
 set -euo pipefail
 
+# Wrap every `gh` invocation so any auth/network/API failure maps to exit code 5
+# (the documented "gh/network error" code in the CLI contract). Under `set -e`,
+# a bare `gh ...` would exit with whatever code gh returned — typically 1 — and
+# callers relying on this script's exit contract would see the wrong code.
+#
+# Uses `|| status=$?` to capture the exit status without triggering `set -e`
+# on failure (the `||` branch makes the whole expression succeed).
+run_gh() {
+  local output status=0
+  output=$(gh "$@" 2>&1) || status=$?
+  if [[ $status -ne 0 ]]; then
+    echo "ERROR: gh command failed (exit $status): $output" >&2
+    exit 5
+  fi
+  printf '%s' "$output"
+}
+
 PR_ARG=""
 SINCE=""
 while [[ $# -gt 0 ]]; do
@@ -138,7 +155,15 @@ OWNER="${OWNER_REPO%/*}"
 REPO="${OWNER_REPO#*/}"
 
 RUN_STARTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-OUT="/tmp/pr-state-${PR_NUMBER}-$(date -u +%s).json"
+# Use mktemp so concurrent invocations for the same PR in the same second
+# (realistic now that multiple skills share this helper) don't collide.
+# macOS mktemp only expands XXXXXX at the END of the template, so create the
+# temp file without the .json suffix, then rename. Both the base tempfile and
+# the renamed target are unique per-invocation, so the rename cannot clobber
+# another concurrent run's output.
+OUT_BASE=$(mktemp "/tmp/pr-state-${PR_NUMBER}-$(date -u +%s)-XXXXXX")
+OUT="${OUT_BASE}.json"
+mv "$OUT_BASE" "$OUT"
 
 # ----------------------------------------------------------------------
 # 2. Review threads (GraphQL, paginated — authoritative for resolution)
@@ -147,7 +172,7 @@ OUT="/tmp/pr-state-${PR_NUMBER}-$(date -u +%s).json"
 ALL_THREADS="[]"
 CURSOR="null"
 while :; do
-  RESP=$(gh api graphql -f query='query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
+  RESP=$(run_gh api graphql -f query='query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $pr) {
         reviewThreads(first: 100, after: $cursor) {
@@ -186,7 +211,7 @@ UNRESOLVED=$(echo "$ALL_THREADS" | jq '[.[] | select(.isResolved == false)]')
 # ----------------------------------------------------------------------
 # 3. CI check-runs (paginated)
 # ----------------------------------------------------------------------
-CHECK_RUNS=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" \
+CHECK_RUNS=$(run_gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" \
   --jq '.check_runs[]' | jq -s '.')
 
 CR_SPLIT=$(echo "$CHECK_RUNS" | jq '
@@ -206,7 +231,7 @@ CR_SPLIT=$(echo "$CHECK_RUNS" | jq '
 # ----------------------------------------------------------------------
 # 4. Commit statuses — latest per context, plus CR/Greptile bot rollup
 # ----------------------------------------------------------------------
-STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses?per_page=100" | jq -s 'add // []')
+STATUSES=$(run_gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses?per_page=100" | jq -s 'add // []')
 
 BOT_STATUSES=$(echo "$STATUSES" | jq '
   [.[] | select(.context == "CodeRabbit" or .context == "Greptile")]
@@ -221,9 +246,9 @@ BOT_STATUSES=$(echo "$STATUSES" | jq '
 # ----------------------------------------------------------------------
 # 5. REST comment endpoints (paginated)
 # ----------------------------------------------------------------------
-REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" | jq -s 'add // []')
-INLINE=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" | jq -s 'add // []')
-CONVO=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" | jq -s 'add // []')
+REVIEWS=$(run_gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" | jq -s 'add // []')
+INLINE=$(run_gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" | jq -s 'add // []')
+CONVO=$(run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" | jq -s 'add // []')
 
 # ----------------------------------------------------------------------
 # 6. New-since-baseline classification (only when --since given)

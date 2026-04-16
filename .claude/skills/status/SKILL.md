@@ -53,8 +53,15 @@ jq '[.comments.conversation[]
      | select(.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]")]
      | length' "$STATE"
 
-# CodeRabbit check-run status (also serves as rate-limit signal via title)
-jq '.check_runs.all[] | select(.name == "CodeRabbit") | {status, conclusion, title}' "$STATE"
+# CodeRabbit check-run status (also serves as rate-limit signal via title).
+# Falls back to the commit-status rollup for repos that report CR via the legacy statuses API —
+# without this fallback the dashboard silently misses CR pending/rate-limit signals.
+CR_CHECK=$(jq '.check_runs.all[] | select(.name == "CodeRabbit") | {status, conclusion, title}' "$STATE")
+if [ -z "$CR_CHECK" ] || [ "$CR_CHECK" = "null" ]; then
+  jq '.bot_statuses.CodeRabbit' "$STATE"    # legacy commit-status path: {state, description, updated_at}
+else
+  echo "$CR_CHECK"
+fi
 ```
 
 ### Step 3: Determine status for each PR

@@ -63,13 +63,25 @@ if [ "$CR_CHECK_RUN" = "" ] || [ "$CR_CHECK_RUN" = "null" ]; then
   jq '.bot_statuses.CodeRabbit // (.commit_statuses[] | select(.context | test("CodeRabbit"; "i")) | {context, state, description})' "$STATE"
   # A clean pass in the fallback path requires state == "success"
 else
-  echo "$CR_CHECK_RUN" | jq '{status, conclusion, title: .output.title}'
+  # `.check_runs.all[]` is already pre-flattened by pr-state.sh (§3 assembles `title: .output.title`),
+  # so the element already has a top-level `.title` — do NOT re-drill into `.output`.
+  echo "$CR_CHECK_RUN" | jq '{status, conclusion, title}'
   # A clean pass in the check-runs path requires status == "completed" AND conclusion == "success"
 fi
 
 # Step 1b: No new CR findings posted across ALL 3 endpoints since the most recent "Actions performed" ack.
 # $STATE already contains unfiltered .comments.reviews/inline/conversation — run the watermark jq over it.
-ACK_TS=$(jq -r '[.comments.conversation[] | select(.user.login == "coderabbitai[bot]" and (.body | test("Actions performed"; "i")))] | if length > 0 then (max_by(.created_at) | .created_at) else "" end' "$STATE")
+# If no "Actions performed" conversation comment exists (e.g., CR was never manually re-triggered),
+# fall back to the CodeRabbit commit status timestamp so the `> $ack` filters don't treat every
+# historical comment as new. The combined jq prefers the ack timestamp when present, otherwise
+# uses .bot_statuses.CodeRabbit.updated_at, and finally falls back to "" (which means "no watermark" —
+# legitimately count every CR comment as new, which is the correct behavior for a brand-new PR).
+ACK_TS=$(jq -r '
+  . as $state
+  | [$state.comments.conversation[] | select(.user.login == "coderabbitai[bot]" and (.body | test("Actions performed"; "i")))]
+  | if length > 0 then (max_by(.created_at) | .created_at)
+    else ($state.bot_statuses.CodeRabbit.updated_at // "")
+    end' "$STATE")
 
 # Count CR inline comments newer than the ack (excluding the ack itself)
 NEW_INLINE=$(jq --arg ack "$ACK_TS" '[.comments.inline[] | select(.user.login == "coderabbitai[bot]" and .created_at > $ack)] | length' "$STATE")

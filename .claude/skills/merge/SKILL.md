@@ -59,9 +59,19 @@ Determine which reviewer owns this PR:
 
 **Merge gate check:**
 
-- **CR-only PR:** Need 2 clean CR reviews. Check the last 2 review objects from `coderabbitai[bot]` — both must have no actionable findings. Also verify the CodeRabbit check-run:
+- **CR-only PR:** Need 2 clean CR reviews. Check the last 2 review objects from `coderabbitai[bot]` — both must have no actionable findings. Also verify the CodeRabbit check-run **with fallback to the legacy commit-status API** — some repos still surface CR via `statuses` instead of `check-runs`, and without the fallback the merge gate silently misses rate-limit and pending signals:
   ```bash
-  jq '.check_runs.all[] | select(.name == "CodeRabbit") | {status, conclusion}' "$STATE"
+  # Preferred: check-run on the current HEAD
+  CR_CHECK=$(jq '.check_runs.all[] | select(.name == "CodeRabbit")' "$STATE")
+
+  # Fallback: commit-status rollup already captured by pr-state.sh
+  if [ -z "$CR_CHECK" ] || [ "$CR_CHECK" = "null" ]; then
+    jq '.bot_statuses.CodeRabbit' "$STATE"
+    # A clean pass in the fallback path requires .state == "success"
+  else
+    echo "$CR_CHECK" | jq '{status, conclusion}'
+    # A clean pass in the check-runs path requires status == "completed" AND conclusion == "success"
+  fi
   ```
 - **Greptile PR:** Need 1 clean Greptile review. Check the last review from `greptile-apps[bot]` has no actionable findings.
 
