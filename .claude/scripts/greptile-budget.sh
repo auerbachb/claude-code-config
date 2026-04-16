@@ -257,20 +257,12 @@ case "$MODE" in
     ;;
 
   consume)
+    # VIEW_USED was already reset to 0 earlier on cross-day (see the
+    # "view after same-day reset" block above), so this check covers
+    # same-day exhaustion and the --budget 0 edge case.
     if (( VIEW_USED >= EFFECTIVE_BUDGET )); then
-      # Exhausted — no decrement. Persist the reset if we crossed days.
-      if [[ "$CURRENT_DATE" != "$TODAY" ]]; then
-        write_state 0 "$EFFECTIVE_BUDGET"
-        # After reset, budget is 0 used vs N — re-check.
-        if (( 0 < EFFECTIVE_BUDGET )); then
-          # Reset made room — fall through to consume path below.
-          VIEW_USED=0
-        fi
-      fi
-      if (( VIEW_USED >= EFFECTIVE_BUDGET )); then
-        print_state "$VIEW_USED" "$EFFECTIVE_BUDGET" true
-        exit 1
-      fi
+      print_state "$VIEW_USED" "$EFFECTIVE_BUDGET" true
+      exit 1
     fi
     NEW_USED=$(( VIEW_USED + 1 ))
     write_state "$NEW_USED" "$EFFECTIVE_BUDGET"
