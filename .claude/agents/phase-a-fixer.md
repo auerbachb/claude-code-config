@@ -93,7 +93,7 @@ Use the shared helper (falls back to `minimizeComment` if `resolveReviewThread` 
 bash .claude/scripts/resolve-review-threads.sh {{PR_NUMBER}}
 ```
 
-The script defaults to `--authors coderabbitai,cursor,greptile-apps`. If a thread's first-comment author is anything other than those logins (e.g., a human reviewer), the script leaves it alone. Exit 1 means at least one thread failed both mutations — report to the parent and stop; do not proceed to the handoff file with unresolved bot threads.
+The script defaults to `--authors coderabbitai,cursor,greptile-apps`. If a thread's first-comment author is anything other than those logins (e.g., a human reviewer), the script leaves it alone. Exit 1 means at least one thread failed both mutations — still write the Step 6 handoff file (include `"notes": "thread resolution partial failure"` so Phase B knows), then report the failure to the parent. Do not proceed to Phase B with unresolved bot threads.
 
 ### Step 6: Write Handoff File
 
