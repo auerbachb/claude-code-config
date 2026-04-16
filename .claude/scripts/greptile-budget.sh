@@ -169,6 +169,12 @@ CURRENT_RAW="$(read_state)"
 # Extract fields with defaults.
 CURRENT_DATE="$(printf '%s' "$CURRENT_RAW" | jq -r '.date // ""')"
 CURRENT_USED="$(printf '%s' "$CURRENT_RAW" | jq -r '.reviews_used // 0')"
+# Mirror the EFFECTIVE_BUDGET validation below — if the JSON is malformed
+# with a non-numeric reviews_used, bash arithmetic would silently treat it
+# as 0. Be explicit instead so corrupt state is handled consistently.
+if ! [[ "$CURRENT_USED" =~ ^[0-9]+$ ]]; then
+  CURRENT_USED=0
+fi
 CURRENT_BUDGET="$(printf '%s' "$CURRENT_RAW" | jq -r --argjson default_budget "$DEFAULT_BUDGET" '.budget // $default_budget')"
 
 # Apply --budget override.
