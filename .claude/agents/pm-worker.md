@@ -66,7 +66,7 @@ A GitHub Actions workflow automatically comments `@coderabbitai plan` on new iss
 Search from the main repo root (not the worktree):
 
 ```bash
-ROOT_REPO=$(git worktree list | head -1 | awk '{print $1}')
+ROOT_REPO=$(.claude/scripts/repo-root.sh)
 find "$ROOT_REPO" -type d -name "work-logs" -not -path "*/.git/*" -not -path "*/.claude/*"
 ```
 

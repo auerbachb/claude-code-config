@@ -154,7 +154,7 @@ Do NOT use `--delete-branch` here. That flag attempts local branch deletion whil
 After merging, update the root repo's local `main` so subsequent sessions branch from the latest code. **Capture the result for the final report in Step 5.4.**
 
 ```bash
-ROOT_REPO=$(git worktree list | head -1 | awk '{print $1}')
+ROOT_REPO=$(.claude/scripts/repo-root.sh 2>/dev/null || true)
 MAIN_SYNC_STATUS=""
 
 if [ -z "$ROOT_REPO" ] || [ ! -d "$ROOT_REPO" ]; then
@@ -386,7 +386,7 @@ After lessons (or skip): proceed immediately to Phase 5 — do not ask.
 If a work-log was updated in Phase 2, sync it before removing the worktree:
 
 ```bash
-ROOT_REPO=$(git worktree list | head -1 | awk '{print $1}')
+ROOT_REPO=$(.claude/scripts/repo-root.sh)
 WORKTREE=$(pwd)
 # Compare and append any missing entries to root repo copy
 diff "$WORKTREE/$WORK_LOG_PATH/session-log-YYYY-MM-DD.md" "$ROOT_REPO/$WORK_LOG_PATH/session-log-YYYY-MM-DD.md"

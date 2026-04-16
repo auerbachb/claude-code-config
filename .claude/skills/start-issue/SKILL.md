@@ -165,7 +165,7 @@ This creates **one canonical planning document** the coding agent can work from.
    ```
 4. **Pull main and create worktree:**
    ```bash
-   ROOT_REPO=$(git worktree list | head -1 | awk '{print $1}')
+   ROOT_REPO=$(.claude/scripts/repo-root.sh)
    # Defensive guard: only pull main if the root repo is actually on main.
    # Mirrors the pattern used by wrap/merge skills.
    CURRENT_BRANCH=$(git -C "$ROOT_REPO" branch --show-current)

@@ -47,7 +47,14 @@ for arg in "$@"; do
 done
 
 # Resolve the main repo root (first worktree entry).
-MAIN_ROOT="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
+# Prefer the shared helper; fall back to inline porcelain parse when not available.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT_HELPER="$SCRIPT_DIR/repo-root.sh"
+if [[ -x "$REPO_ROOT_HELPER" ]]; then
+  MAIN_ROOT="$("$REPO_ROOT_HELPER")" || true
+else
+  MAIN_ROOT="$(git worktree list --porcelain | awk '/^worktree /{sub(/^worktree /, ""); print; exit}')"
+fi
 if [[ -z "${MAIN_ROOT}" ]]; then
   echo "error: could not determine main worktree root" >&2
   exit 1
