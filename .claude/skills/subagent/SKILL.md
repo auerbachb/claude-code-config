@@ -424,28 +424,28 @@ worktree directory at all times.
 2. Verify merge gate is satisfied:
    - CR-only: 2 clean CR reviews exist.
    - Greptile: severity gate satisfied.
-3. Extract Test Plan checkboxes via the shared helper, branching on the exit code so "no Test Plan section" is distinguished from real errors:
+3. Extract Test Plan checkboxes via the shared helper, branching on the exit code. Exit `1` ("no Test Plan") is a **blocking** outcome — every PR must include a Test Plan section (per CLAUDE.md):
    ```bash
    if ITEMS=$(.claude/scripts/ac-checkboxes.sh {PR_NUMBER} --extract); then
      : # $ITEMS is a JSON array of {index, checked, text}
    else
      rc=$?
      case "$rc" in
-       1) ITEMS=""      ;;  # no Test Plan section — skip AC verification (step 7)
+       1) OUTCOME=blocked; MSG="No Test Plan section in PR body — required per CLAUDE.md" ;;
        3) OUTCOME=blocked; MSG="PR not found" ;;
        *) OUTCOME=blocked; MSG="ac-checkboxes.sh failed (exit $rc)" ;;
      esac
    fi
    ```
-4. For each item in `$ITEMS` with `checked == false`, read the relevant source file(s) and verify the criterion is met.
-5. Tick passing items by index (or `--all-pass` if every unchecked item passed):
+4. If `OUTCOME=blocked` was set in step 3, skip steps 5–7 and go straight to step 9 (exit report) with `OUTCOME: blocked` and the captured `$MSG`.
+5. For each item in `$ITEMS` with `checked == false`, read the relevant source file(s) and verify the criterion is met.
+6. Tick passing items by index (or `--all-pass` if every unchecked item passed):
    ```bash
    .claude/scripts/ac-checkboxes.sh {PR_NUMBER} --tick "0,2,3"
    # or
    .claude/scripts/ac-checkboxes.sh {PR_NUMBER} --all-pass
    ```
-6. If any item fails verification, do NOT tick it — set `OUTCOME: blocked` and list the failing items in the exit report.
-7. If `ITEMS` was empty (step 3 returned exit 1), skip AC verification and note "no Test Plan section" in the exit report (still `OUTCOME: ac_verified` — nothing to block on).
+7. If any item fails verification, do NOT tick it — set `OUTCOME: blocked` and list the failing items in the exit report.
 8. Check ALL CI check-runs pass. If any fail, set `OUTCOME: blocked`.
 9. Print Structured Exit Report:
    ```

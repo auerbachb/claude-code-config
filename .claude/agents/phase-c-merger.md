@@ -73,7 +73,7 @@ GATE_EXIT=$?
 
    Exit codes:
    - `0` → `$ITEMS` is a JSON array of `{index, checked, text}`. Proceed to step 2.
-   - `1` → no Test Plan section. Report this in the exit report (`OUTCOME: ac_verified` with a note — there are no criteria to verify).
+   - `1` → no Test Plan section. `OUTCOME: blocked` — every PR must include a Test Plan with acceptance-criteria checkboxes (per CLAUDE.md). Report "PR body is missing a Test Plan section — cannot verify acceptance criteria".
    - `3` → PR not found; `OUTCOME: blocked`.
    - `2`/`4` → script/gh error; `OUTCOME: blocked`.
 

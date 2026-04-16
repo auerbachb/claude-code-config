@@ -29,18 +29,18 @@ EXTRACT_EXIT=$?
 
 Exit codes for `--extract`:
 - `0` → `$ITEMS` is a JSON array of `{index, checked, text}` entries (zero-based index, in document order).
-- `1` → no Test Plan section (or section has no checkboxes). Warn the user: "No Test Plan section found in PR body. Nothing to verify." and stop.
+- `1` → no Test Plan section (or section has no checkboxes). **Blocking** — every PR must include a Test Plan section (CLAUDE.md). Report the missing section as a PR-body violation and stop with a non-zero exit; the PR is NOT merge-ready until the body is fixed.
 - `2` → internal script error (usage, python parse, helper prereq). Surface stderr with a `[script-error]` tag and stop.
 - `3` → PR not found (closed/merged). Stop and tell the user.
 
 Exit code `4` (`[gh-error]`) is only reachable from `--tick`/`--all-pass` (Step 4) — `--extract` is read-only and never calls `gh pr edit`.
 
-Handle `$EXTRACT_EXIT` explicitly before using `$ITEMS`:
+Handle `$EXTRACT_EXIT` explicitly before using `$ITEMS`. Exit 1 is a **blocking** failure — every PR must include a Test Plan with acceptance-criteria checkboxes (CLAUDE.md), so a missing section is a PR-body violation, not a clean pass:
 
 ```bash
 case "$EXTRACT_EXIT" in
   0) : ;;  # $ITEMS is valid JSON — proceed
-  1) echo "No Test Plan section found in PR body. Nothing to verify."; exit 0 ;;
+  1) echo "[blocked] PR #$PR_NUM is missing a Test Plan section — required per CLAUDE.md. Add the section before asking for AC verification."; exit 1 ;;
   2) echo "[script-error] ac-checkboxes.sh failed — see stderr above."; exit 2 ;;
   3) echo "PR #$PR_NUM not found (closed/merged)."; exit 3 ;;
   *) echo "Unexpected exit code from ac-checkboxes.sh: $EXTRACT_EXIT"; exit "$EXTRACT_EXIT" ;;

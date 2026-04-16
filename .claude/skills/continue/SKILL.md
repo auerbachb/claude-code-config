@@ -305,7 +305,7 @@ AC_EXIT=$?
 
 Branch on exit code:
 - `0` → `$ITEMS` is a JSON array of `{index, checked, text}`. For each item with `checked == false`, read the relevant source files and verify the criterion. Tick passing items by index: `.claude/scripts/ac-checkboxes.sh "$PR_NUM" --tick "0,2,3"` (or `--all-pass` if every unchecked item passed).
-- `1` → `[SKIP]` — No Test Plan section; no acceptance criteria to verify.
+- `1` → `[BLOCKED]` — PR body is missing a Test Plan section. Every PR must include one (per CLAUDE.md). The PR is NOT merge-ready until the body is fixed — report this to the user and do not continue to the merge decision.
 - `3` → `[BLOCKED]` — PR not found.
 - `2`/`4` → `[BLOCKED]` — script or gh error; surface stderr to user.
 

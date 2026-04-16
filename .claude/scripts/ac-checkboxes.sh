@@ -22,8 +22,9 @@
 #   --tick <spec>        Tick checkboxes matching <spec>, where <spec> is either:
 #                          - a comma-separated list of zero-based indexes
 #                            (e.g. "0,2,3")
-#                          - an ERE regex applied to each item's text
-#                            (e.g. "script exists" or "--all-pass|--tick")
+#                          - a Python regular expression applied to each item's
+#                            text (e.g. "script exists" or "--all-pass|--tick").
+#                            Evaluated via Python's `re` module — NOT POSIX ERE.
 #                        Only unchecked items can be ticked; already-checked items
 #                        in the match set are silently skipped (idempotent).
 #   --all-pass           Tick every unchecked item in the Test Plan section.
@@ -151,7 +152,11 @@ TMPDIR_AC=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_AC"' EXIT
 
 BODY_ERR_FILE="$TMPDIR_AC/body-stderr"
-if ! BODY=$(gh pr view "$PR_NUMBER" --json body --jq '.body // ""' 2>"$BODY_ERR_FILE"); then
+BODY_JSON_FILE="$TMPDIR_AC/body.json"
+# Stream gh output to a file (not command substitution) so we don't strip trailing
+# newlines from the PR body. Command substitution strips trailing `\n`, which would
+# otherwise silently mutate the body on every `--tick`/`--all-pass` write-back.
+if ! gh pr view "$PR_NUMBER" --json body >"$BODY_JSON_FILE" 2>"$BODY_ERR_FILE"; then
   BODY_ERR=$(cat "$BODY_ERR_FILE")
   if printf '%s' "$BODY_ERR" | grep -qiE 'could not resolve|not found|no pull request'; then
     echo "ERROR: PR #$PR_NUMBER not found" >&2
@@ -171,11 +176,17 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 2
 fi
 
-# Write body to a file so it survives any shell-quoting pitfalls when we pipe it
-# into Python. Avoids losing trailing newlines via command substitution and keeps
-# the body intact for gh pr edit later.
+# Extract .body from the JSON via Python so trailing newlines survive. `jq -r`
+# strips a single trailing newline; Python's json.load + file write does not.
 BODY_FILE="$TMPDIR_AC/body.md"
-printf '%s' "$BODY" > "$BODY_FILE"
+python3 - "$BODY_JSON_FILE" "$BODY_FILE" <<'PY'
+import json
+import sys
+with open(sys.argv[1], "r", encoding="utf-8") as src:
+    body = (json.load(src).get("body") or "")
+with open(sys.argv[2], "w", encoding="utf-8", newline="") as dst:
+    dst.write(body)
+PY
 
 PY_OUT="$TMPDIR_AC/py-out"
 PY_ERR="$TMPDIR_AC/py-err"
@@ -199,7 +210,10 @@ lines = body.splitlines(keepends=True)
 # Section detection. Match the first heading line (level 2) whose text is
 # "test plan" or "acceptance criteria" (case-insensitive). Content runs until
 # the next `## ` heading or EOF.
-SECTION_RE = re.compile(r"^\s*##\s+(test\s+plan|acceptance\s+criteria)\b", re.IGNORECASE)
+# Anchor the section name with \s*$ (not \b) so "## Test plan notes" does not
+# match. Only exact "## Test plan" / "## Test Plan" / "## Acceptance Criteria"
+# (optionally followed by trailing whitespace) select the section.
+SECTION_RE = re.compile(r"^\s*##\s+(test\s+plan|acceptance\s+criteria)\s*$", re.IGNORECASE)
 HEADING_RE = re.compile(r"^\s*##\s+")
 CHECKBOX_RE = re.compile(r"^(\s*-\s*\[)( |x|X)(\]\s*)(.*?)(\s*)$")
 
@@ -325,7 +339,10 @@ PY_STATUS=$?
 if [[ $PY_STATUS -ne 0 ]]; then
   echo "ERROR: python parsing failed:" >&2
   cat "$PY_ERR" >&2
-  exit "$PY_STATUS"
+  # Normalize to 2 (internal script error) — NEVER forward a raw $PY_STATUS.
+  # A Python crash exiting 1 would collide with the "no Test Plan section"
+  # meaning and mislead callers into declaring AC clean.
+  exit 2
 fi
 
 # Surface non-fatal python warnings (e.g., "index N out of range") to the caller.
