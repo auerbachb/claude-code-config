@@ -28,10 +28,10 @@ Total prose in rule/skill/agent surface area: ~9,000 lines of Markdown. The audi
 | Bucket | Count |
 |-------:|:------|
 | **Total extraction candidates** | **22** |
-| P0 — extract first (high reuse × high token cost × deterministic) | **7** (1 extracted, 6 pending) |
+| P0 — extract first (high reuse × high token cost × deterministic) | **7** (2 extracted, 5 pending) |
 | P1 — extract next (meaningful reuse OR meaningful token cost) | **8** |
 | P2 — extract later (low reuse or low cost, but still mechanical) | **7** |
-| Existing extracted scripts in `.claude/scripts/` | 5 (see "Existing Scripts") |
+| Existing extracted scripts in `.claude/scripts/` | 6 (see "Existing Scripts") |
 | Existing per-skill scripts (not in `.claude/scripts/`) | 1 (`fixpr/audit.sh`) |
 | Existing hook scripts in `.claude/hooks/` | 9 |
 
@@ -122,7 +122,7 @@ Per AC #5, this audit must identify existing scripts that agent call sites bypas
 2. **C-02 pr-state** — promote `fixpr/audit.sh`. Every skill that currently hand-fetches state gets a one-line replacement.
 3. **C-04 resolve-review-threads** — closes off the mutating half of the review loop in one helper.
 4. **C-06 cycle-count** — feeds into `/merge` and `/wrap` logging plus all four `pm-rate-team`/`pm-sprint-*`/`pm-team-standup` skills.
-5. **C-05 repo-root** — tiny but ubiquitous. One-off PR worth 20 lines of extraction and touches 10+ call sites.
+~~5. **C-05 repo-root** — tiny but ubiquitous. One-off PR worth 20 lines of extraction and touches 10+ call sites.~~ ✅ Done: #278
 6. **C-03 cr-plan** — clean win for `/start-issue`, `/subagent`, `pm-worker`.
 7. **C-07 gh-window** — unblocks the real migration of the PM skills off inlined date bash.
 8. C-08 → C-15 as the P1 batch in whatever order the next sprint tackles them; C-11 + C-12 are natural pairs (both mutate session-state via the same atomic pattern).
