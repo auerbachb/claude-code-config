@@ -6,6 +6,11 @@
 # Matches basenames: .env, .env.local, .env.production, .env.test, .env.ci, etc.
 # Does NOT match: environment.ts, env-config.json, rails_env, my.env.backup.
 #
+# Allow-list: basenames matching `.env.<suffix>` where <suffix> (case-insensitive)
+# is in SAFE_ENV_SUFFIXES (example, sample, template, dist, tpl) are treated as
+# committed-to-repo templates and are NOT blocked. Everything else defaults to
+# deny — including bare `.env` and any unrecognized suffix.
+#
 # Hook protocol: reads tool-invocation JSON from stdin. Exit code 2 with a
 # message on stderr blocks the tool call and surfaces the reason to the agent.
 #
@@ -36,6 +41,20 @@ BLOCK_MSG = (
 # `rails_env`, and `my.env.bak` do NOT match.
 ENV_BASENAME_RE = re.compile(r'(?:^|/)\.env(?:\.[A-Za-z0-9_-]+)?$')
 
+# Allow-list of suffixes that identify non-secret template/example files.
+# A basename of `.env.<suffix>` where <suffix> (case-insensitive) is in this
+# set is treated as a committed-to-repo template — safe to edit.
+# Everything else still defaults to deny.
+# To extend: add a lowercase suffix to this frozenset.
+SAFE_ENV_SUFFIXES = frozenset({'example', 'sample', 'template', 'dist', 'tpl'})
+
+# Matches the final suffix segment of a `.env.<suffix>` basename so we can
+# compare it against SAFE_ENV_SUFFIXES. The anchor on `(?:^|/)` ensures we
+# only look at basenames, not interior path segments.
+SAFE_ENV_TEMPLATE_RE = re.compile(
+    r'(?:^|/)\.env\.([A-Za-z0-9_-]+)$'
+)
+
 # Bash binaries that can mutate files. We only block a Bash command if one of
 # these appears AND the command also references a .env path. Non-mutating reads
 # like `cat .env` or `grep X .env` are not blocked by the hook — using the Read
@@ -59,6 +78,20 @@ def is_env_path(path: str) -> bool:
     return bool(ENV_BASENAME_RE.search(p))
 
 
+def is_safe_env_template(path: str) -> bool:
+    """Return True iff `path` is a `.env.<suffix>` basename where <suffix>
+    (case-insensitive) is in the template allow-list. Returns False for bare
+    `.env`, unknown suffixes, and empty input.
+    """
+    if not path:
+        return False
+    p = path.strip().strip('"').strip("'").rstrip('/')
+    m = SAFE_ENV_TEMPLATE_RE.search(p)
+    if not m:
+        return False
+    return m.group(1).lower() in SAFE_ENV_SUFFIXES
+
+
 def bash_targets_env(cmd: str) -> bool:
     if not cmd:
         return False
@@ -80,7 +113,9 @@ def bash_targets_env(cmd: str) -> bool:
         redirect_m = EMBEDDED_REDIRECT_RE.search(tok)
         if redirect_m:
             has_write_op = True
-            if is_env_path(redirect_m.group(1)):
+            target = redirect_m.group(1)
+            # Safe-template targets (`>.env.example`) are not treated as env.
+            if is_env_path(target) and not is_safe_env_template(target):
                 has_env_token = True
             continue
         # Destructive binary (match on basename so `/bin/rm` still counts).
@@ -88,8 +123,8 @@ def bash_targets_env(cmd: str) -> bool:
         if base in DESTRUCTIVE_BINS:
             has_write_op = True
             continue
-        # Plain token that looks like a .env path.
-        if is_env_path(tok):
+        # Plain token that looks like a .env path. Skip safe templates.
+        if is_env_path(tok) and not is_safe_env_template(tok):
             has_env_token = True
 
     return has_env_token and has_write_op
@@ -111,7 +146,7 @@ def main() -> int:
 
     if tool_name in ('Write', 'Edit', 'MultiEdit', 'NotebookEdit'):
         path = tool_input.get('file_path') or tool_input.get('notebook_path') or ''
-        if is_env_path(path):
+        if is_env_path(path) and not is_safe_env_template(path):
             blocked = True
             reason = f"{BLOCK_MSG} (tool={tool_name}, path={path})"
     elif tool_name == 'Bash':

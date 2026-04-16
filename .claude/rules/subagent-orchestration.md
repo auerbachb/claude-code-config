@@ -27,6 +27,8 @@ Use the custom agent definitions in `.claude/agents/` instead of manually readin
 
    ```text
    SAFETY: Do NOT delete, overwrite, move, or modify .env files — anywhere, any repo.
+   Exception: template files matching .env.<example|sample|template|dist|tpl>
+   (case-insensitive) are committed, non-secret, and safe to edit.
    Do NOT run git clean in ANY directory. Do NOT run destructive commands (rm -rf, rm,
    git checkout ., git stash, git reset --hard) in the root repo directory. Stay in your
    worktree directory at all times.
