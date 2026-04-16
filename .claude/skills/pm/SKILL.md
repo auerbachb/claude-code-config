@@ -58,12 +58,25 @@ Read existing orchestration state to continue where a previous PM thread left of
 ### 1A.1: Load pm-config.md
 
 ```bash
-# Enumerate `^## ` headers; no output + rc=2 means the config file is missing.
-mapfile -t SECTIONS < <(.claude/scripts/pm-config-get.sh --list 2>/dev/null)
+# Probe the config file via the shared parser. IMPORTANT: run the probe as a
+# direct call first, not via `mapfile < <(...)`. With mapfile, `$?` captures
+# mapfile's exit code (always 0 on success) — NOT the script's — so a probe
+# like `mapfile ...; LIST_RC=$?` would silently never see the rc=2
+# (config-missing) signal.
+.claude/scripts/pm-config-get.sh --list >/dev/null 2>&1
 LIST_RC=$?
 ```
 
-If `LIST_RC == 2`, tell the user to run `/pm-handoff` first to bootstrap the config. Otherwise, iterate `${SECTIONS[@]}` and call `.claude/scripts/pm-config-get.sh --section "$name"` for each body (same loop as `/pm-handoff` Step 3).
+- If `LIST_RC == 2`: tell the user to run `/pm-handoff` first to bootstrap the config, then stop.
+- Otherwise: enumerate sections and iterate for bodies:
+
+  ```bash
+  mapfile -t SECTIONS < <(.claude/scripts/pm-config-get.sh --list 2>/dev/null)
+  for name in "${SECTIONS[@]}"; do
+    body="$(.claude/scripts/pm-config-get.sh --section "$name" 2>/dev/null)"
+    # store (name, body) — same loop as `/pm-handoff` Step 3
+  done
+  ```
 
 ### 1A.2: Load in-flight state
 

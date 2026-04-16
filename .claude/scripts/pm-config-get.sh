@@ -25,7 +25,9 @@
 #     `##` appears mid-line are not header matches.
 #   - Section body = the lines AFTER the header line, UP TO but not including
 #     the next `^## ` header line (or EOF).
-#   - Extraction is raw and verbatim; no whitespace normalization is applied.
+#   - Trailing whitespace (including trailing blank lines) is trimmed from the
+#     extracted body. Leading whitespace and internal blank lines are
+#     preserved verbatim.
 #
 # OUTPUT
 #   --section raw:  section body on stdout (may be multi-line or empty).
