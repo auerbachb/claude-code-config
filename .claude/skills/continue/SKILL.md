@@ -275,10 +275,19 @@ STATE=$(.claude/scripts/pr-state.sh)
 HEAD_SHA=$(jq -r '.pr.head_sha' "$STATE")
 ```
 
-Check latest CR signals from `$STATE`:
+Check latest CR signals from `$STATE` — with fallback to the legacy commit-status API for repos that don't surface a CodeRabbit check-run:
 ```bash
-# CodeRabbit check-run must be green on current HEAD
-jq '.check_runs.all[] | select(.name == "CodeRabbit") | {status, conclusion}' "$STATE"
+# CodeRabbit check-run must be green on current HEAD (preferred path)
+CR_CHECK=$(jq '.check_runs.all[] | select(.name == "CodeRabbit")' "$STATE")
+
+# Fallback: commit-status rollup already captured by pr-state.sh
+if [ -z "$CR_CHECK" ] || [ "$CR_CHECK" = "null" ]; then
+  jq '.bot_statuses.CodeRabbit' "$STATE"
+  # A clean pass in the fallback path requires .state == "success"
+else
+  echo "$CR_CHECK" | jq '{status, conclusion}'
+  # A clean pass in the check-runs path requires status == "completed" AND conclusion == "success"
+fi
 
 # Count unresolved threads that involve coderabbitai[bot] anywhere in the thread
 jq '[.threads.unresolved[]

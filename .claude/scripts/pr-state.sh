@@ -216,7 +216,7 @@ CHECK_RUNS=$(run_gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-r
 
 CR_SPLIT=$(echo "$CHECK_RUNS" | jq '
   def is_blocking: . == "failure" or . == "timed_out" or . == "action_required" or . == "startup_failure" or . == "stale";
-  def is_passing: . == "success" or . == "neutral" or . == "skipped";
+  def is_passing: . == "success" or . == "neutral" or . == "skipped" or . == "cancelled";
   {
     total: length,
     passing: ([.[] | select(.conclusion | is_passing)] | length),

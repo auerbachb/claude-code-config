@@ -39,29 +39,31 @@ STATE=$(.claude/scripts/pr-state.sh --pr "$N")
 All subsequent queries read from `$STATE`:
 
 ```bash
-# Last review from CR or Greptile (state: APPROVED / COMMENTED / CHANGES_REQUESTED)
+# Last review from CR, BugBot, or Greptile (state: APPROVED / COMMENTED / CHANGES_REQUESTED)
 jq '[.comments.reviews[]
-     | select(.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]")
+     | select(.user.login == "coderabbitai[bot]" or .user.login == "cursor[bot]" or .user.login == "greptile-apps[bot]")
      | {user: .user.login, state, submitted: .submitted_at}]
      | sort_by(.submitted) | if length == 0 then {} else last end' "$STATE"
 
 # Unresolved thread count
 jq '.threads.unresolved_count' "$STATE"
 
-# CR/Greptile issue-comment count (summaries, acks, PR-level findings)
+# CR/BugBot/Greptile issue-comment count (summaries, acks, PR-level findings)
 jq '[.comments.conversation[]
-     | select(.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]")]
+     | select(.user.login == "coderabbitai[bot]" or .user.login == "cursor[bot]" or .user.login == "greptile-apps[bot]")]
      | length' "$STATE"
 
 # CodeRabbit check-run status (also serves as rate-limit signal via title).
-# Falls back to the commit-status rollup for repos that report CR via the legacy statuses API —
-# without this fallback the dashboard silently misses CR pending/rate-limit signals.
+# Falls back to the commit-status rollup for repos that report CR via the legacy statuses API.
 CR_CHECK=$(jq '.check_runs.all[] | select(.name == "CodeRabbit") | {status, conclusion, title}' "$STATE")
 if [ -z "$CR_CHECK" ] || [ "$CR_CHECK" = "null" ]; then
-  jq '.bot_statuses.CodeRabbit' "$STATE"    # legacy commit-status path: {state, description, updated_at}
+  jq '.bot_statuses.CodeRabbit' "$STATE"    # legacy commit-status path
 else
   echo "$CR_CHECK"
 fi
+
+# BugBot (Cursor) check-run — included so PRs on the BugBot path show review status
+jq '.check_runs.all[] | select(.name == "Cursor Bugbot") | {name, status, conclusion}' "$STATE"
 ```
 
 ### Step 3: Determine status for each PR
