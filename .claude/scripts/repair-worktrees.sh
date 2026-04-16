@@ -53,7 +53,8 @@ REPO_ROOT_HELPER="$SCRIPT_DIR/repo-root.sh"
 if [[ -x "$REPO_ROOT_HELPER" ]]; then
   MAIN_ROOT="$("$REPO_ROOT_HELPER")" || true
 else
-  MAIN_ROOT="$(git worktree list --porcelain | awk '/^worktree /{sub(/^worktree /, ""); print; exit}')"
+  MAIN_ROOT="$(git worktree list --porcelain 2>/dev/null \
+    | awk '/^worktree /{sub(/^worktree /, ""); print; exit}')" || true
 fi
 if [[ -z "${MAIN_ROOT}" ]]; then
   echo "error: could not determine main worktree root" >&2
