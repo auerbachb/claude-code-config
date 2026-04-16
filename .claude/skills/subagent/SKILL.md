@@ -27,9 +27,9 @@ For each valid issue, extract and record:
 - **Labels** (check for protocol-relevant labels)
 - **Acceptance criteria** — count all checklist items matching `- [ ]` or `- [x]`/`- [X]` in the body
 
-## Step 2: Detect CR Implementation Plan
+## Step 2: Detect Implementation Plan
 
-For each issue, fetch the CR plan (if any) via the shared detector — it encapsulates the canonical jq filter (CR author, skip "actions performed" ack lines, length > 200) behind a stable CLI:
+For each issue, first try the shared CR plan detector — it encapsulates the canonical jq filter (CR author, skip "actions performed" ack lines, length > 200) behind a stable CLI:
 
 ```bash
 PLAN=$(.claude/scripts/cr-plan.sh "$NUMBER" || true)
@@ -37,7 +37,17 @@ PLAN=$(.claude/scripts/cr-plan.sh "$NUMBER" || true)
 
 Exit codes: `0` plan found on stdout, `1` no plan, `3` issue not found/closed, `4` gh error. Run `.claude/scripts/cr-plan.sh --help` for full usage.
 
-- **Implementation plan:** If `PLAN` is non-empty, treat it as the canonical CR plan for this issue. `cr-plan.sh` intentionally only matches `coderabbitai` authors — if you suspect a human-authored plan lives in a different comment, fetch comments directly (`gh issue view "$NUMBER" --json comments`) and inspect them; otherwise rely on the script.
+**If `$PLAN` is empty (no CR plan), fall back to scanning all comments for a human-authored plan** — a tech lead or teammate may have written one directly on the issue. The script intentionally only matches `coderabbitai`, so the all-authors scan is the agent's job:
+
+```bash
+if [ -z "$PLAN" ]; then
+  gh api --paginate repos/{owner}/{repo}/issues/$NUMBER/comments --jq '.[] | {author: .user.login, body: .body}'
+fi
+```
+
+From the returned comments, prefer the most structured/detailed plan — file lists, implementation steps, phase breakdowns — regardless of author, and store that body in `$PLAN`.
+
+- **Implementation plan:** Use `$PLAN` (either the CR plan from `cr-plan.sh` or the best human-authored plan from the fallback scan) as the canonical plan for this issue.
 - If a CR plan exists, extract the **file list** using these patterns:
   - Look for headings containing "Files", "Files likely touched", "File list", or "Touched files" (case-insensitive)
   - Parse the block following that heading: bullet/numbered lists or fenced code blocks with one path per line
