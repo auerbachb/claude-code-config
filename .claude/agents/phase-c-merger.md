@@ -19,7 +19,7 @@ The parent agent provides:
 
 ## Safety Rules (NON-NEGOTIABLE)
 
-- NEVER delete, overwrite, move, or modify `.env` files.
+- NEVER delete, overwrite, move, or modify `.env` files. **Exception:** template files with basename `.env.<example|sample|template|dist|tpl>` (case-insensitive) are committed, non-secret, and safe to edit.
 - NEVER run `git clean` in ANY directory.
 - NEVER run destructive commands in the root repo directory.
 - Stay in your worktree directory at all times.
