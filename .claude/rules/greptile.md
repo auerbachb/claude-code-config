@@ -28,14 +28,19 @@ Hard daily cap prevents runaway costs when many PRs run in parallel.
 
 - **Default budget: 40 reviews/day** (set `budget` in `session-state.json`).
 - **Tracking:** The `greptile_daily` section in `~/.claude/session-state.json` tracks `reviews_used`, `date` (YYYY-MM-DD in ET timezone), and `budget`. See `handoff-files.md` for the schema.
-- **Before EVERY `@greptileai` trigger**, read `greptile_daily` from session state and run the budget check:
-  1. Get the current date in ET: `TZ='America/New_York' date +'%Y-%m-%d'`
-  2. If `greptile_daily.date` differs from today's date, reset `reviews_used` to 0 and update `date` to today
-  3. If `reviews_used >= budget`, the budget is **exhausted** — do NOT post `@greptileai`. Fall back to self-review (see below)
-  4. Otherwise, increment `reviews_used` by 1 and write the updated `greptile_daily` back to session state **before** posting the `@greptileai` comment
+- **Enforcement:** `.claude/scripts/greptile-budget.sh` is the single source of truth for this contract. Every `@greptileai` trigger point MUST gate on `greptile-budget.sh --consume` (exit 0 = consumed, exit 1 = exhausted). The script handles same-day reset, cross-day reset, atomic write-back, and sibling preservation on the state file. Do not reinvent the budget math inline.
+- **Example gate:**
+  ```bash
+  if ! .claude/scripts/greptile-budget.sh --consume >/dev/null; then
+    echo "Greptile budget exhausted — falling back to self-review" >&2
+    exit 1
+  fi
+  gh pr comment "$PR" --body "@greptileai"
+  ```
+  Use `--check` for a read-only snapshot and `--reset` to force-zero today's counter. See `greptile-budget.sh --help` for full details.
 - **Budget exhaustion fallback:** Perform a self-review instead. Self-review does NOT satisfy the merge gate. Report the blocker to the user:
   > "Greptile budget exhausted ({reviews_used}/{budget}). PR #{N} falling back to self-review — merge blocked until manual review or budget resets tomorrow."
-- **This check applies to all Greptile trigger points** (CR GitHub fallback, local post-push, Phase B polling, and per-PR re-reviews). No `@greptileai` comment may be posted without passing the budget check first.
+- **This check applies to all Greptile trigger points** (CR GitHub fallback, local post-push, Phase B polling, and per-PR re-reviews). No `@greptileai` comment may be posted without a successful `--consume` first.
 
 ## Before EVERY `@greptileai` Re-Trigger (MANDATORY — after initial trigger)
 
