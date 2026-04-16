@@ -355,7 +355,9 @@ fi
 # ---------------------------------------------------------------------------
 if [[ ! -s "$PY_OUT" ]]; then
   echo "ERROR: python produced no output" >&2
-  exit 4
+  # Exit 2 (internal script error) — NOT 4. Exit 4 is reserved for `gh pr edit`
+  # failures; an empty py-out file is an internal parser fault.
+  exit 2
 fi
 
 RESULT=$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); print(data.get("error") or data.get("result"))' "$PY_OUT" 2>/dev/null || true)
