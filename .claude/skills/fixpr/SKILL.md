@@ -11,16 +11,16 @@ Single-pass cleanup of the current branch's PR. After this completes:
 
 ## How this skill is structured
 
-All mechanical GitHub API work — pagination, GraphQL queries, comment classification — lives in the companion script `audit.sh`. This file tells the AI layer how to invoke the script and what to do with its output (the JSON bundle).
+All mechanical GitHub API work — pagination, GraphQL queries, comment classification — lives in the shared script `.claude/scripts/pr-state.sh`. This file tells the AI layer how to invoke the script and what to do with its output (the JSON bundle).
 
 | Step | Kind | Done by |
 |------|------|---------|
-| 0. Gather PR state | Mechanical | `audit.sh` writes `/tmp/fixpr-audit-<PR>-<epoch>.json` |
+| 0. Gather PR state | Mechanical | `pr-state.sh` writes `/tmp/pr-state-<PR>-<epoch>.json` |
 | 1. Classify review findings | Judgment | AI reads JSON + source files |
 | 2. Classify CI failures | Judgment | AI reads `check-runs/<id>.output.summary` |
 | 3. Fix & push | Judgment | AI edits files, commits, pushes |
 | 4. Reply & resolve | Mechanical | `gh api` calls against IDs from the JSON |
-| 5. Verify | Mechanical | Re-run `audit.sh --since $RUN_STARTED_AT` |
+| 5. Verify | Mechanical | Re-run `pr-state.sh --since $RUN_STARTED_AT` |
 | 6. Merge blockers | Judgment | AI reads `.merge_state` from the JSON |
 | 7. Final summary | Judgment | AI emits the status |
 
@@ -30,25 +30,30 @@ Execute the steps sequentially. Do NOT poll in a loop — this is a single-pass 
 
 ## Step 0: Run the initial audit
 
-Locate `audit.sh`. Prefer the global install; fall back to the in-repo copy when developing the skill itself. If neither exists, stop — the skill cannot run.
+Locate `pr-state.sh`. Prefer the global install; fall back to the in-repo copy when developing the skill itself. The legacy `audit.sh` wrapper is kept for back-compat — call it only if `pr-state.sh` cannot be found.
 
 ```bash
 SCRIPT=""
-for candidate in "$HOME/.claude/skills/fixpr/audit.sh" ".claude/skills/fixpr/audit.sh"; do
+for candidate in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/pr-state.sh" \
+  "$HOME/.claude/scripts/pr-state.sh" \
+  ".claude/scripts/pr-state.sh" \
+  "$HOME/.claude/skills/fixpr/audit.sh" \
+  ".claude/skills/fixpr/audit.sh"; do
   if [[ -x "$candidate" ]]; then
     SCRIPT="$candidate"
     break
   fi
 done
 if [[ -z "$SCRIPT" ]]; then
-  echo "ERROR: audit.sh not found (checked ~/.claude/skills/fixpr/ and .claude/skills/fixpr/)" >&2
+  echo "ERROR: pr-state.sh not found (checked ~/.claude/scripts/, ~/.claude/skills-worktree/.claude/scripts/, and in-repo .claude/scripts/)" >&2
   exit 1
 fi
 
 AUDIT=$("$SCRIPT")
 ```
 
-If `audit.sh` itself exits non-zero it prints the reason to stderr (no PR, closed PR, detached HEAD, etc.). Stop and report.
+If `pr-state.sh` itself exits non-zero it prints the reason to stderr (no PR, closed PR, detached HEAD, etc.). Stop and report. Exit codes: `0` OK, `2` usage error, `3` no branch and no `--pr`, `4` PR closed/not found, `5` gh/network error.
 
 Pull the values that the later steps need out of the JSON once:
 
@@ -218,7 +223,7 @@ jq -r '
 ' "$VERIFY"
 ```
 
-**Classification rules** (these live in `audit.sh`; the list below is the contract — keep the two in sync if either changes). Patterns are checked in this order; first match wins:
+**Classification rules** (these live in `pr-state.sh`; the list below is the contract — keep the two in sync if either changes). Patterns are checked in this order; first match wins:
 
 1. **Explicit-resolution overrides** (checked first — these signals mean CR has already marked the thread addressed, so they win even if the body still contains finding language from a quoted earlier review):
    - HTML marker `<!-- <review_comment_addressed> -->` → `acknowledgment`

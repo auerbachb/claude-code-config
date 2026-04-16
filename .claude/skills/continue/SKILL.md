@@ -125,16 +125,23 @@ PR_NUM=$(echo "$PR_JSON" | jq -r '.number // empty')
 
 ## Step 5: Determine reviewer ownership
 
+Fetch the shared PR-state bundle once and reuse `$STATE` for Steps 5–8 (each re-run of the helper hits GitHub again; one invocation covers all four steps as long as no push happens between them).
+
+> **`$STATE` is a file path.** `pr-state.sh` writes `/tmp/pr-state-<PR>-<epoch>.json` and prints that path on stdout. Every `jq` below passes `"$STATE"` as the file argument. The script exits non-zero on failure — under `set -e` the skill aborts automatically.
+
+```bash
+STATE=$(.claude/scripts/pr-state.sh)
+HEAD_SHA=$(jq -r '.pr.head_sha' "$STATE")
+```
+
 Check which reviewer owns this PR:
 
 ```bash
 # Check session-state first
 cat ~/.claude/session-state.json 2>/dev/null | jq -r ".prs.\"$PR_NUM\".reviewer // empty"
 
-# If no session-state, check review history (paginate to catch all activity)
-gh api --paginate "repos/{owner}/{repo}/pulls/{N}/comments?per_page=100" --jq '.[].user.login' | sort -u
-gh api --paginate "repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100" --jq '.[].user.login' | sort -u
-gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" --jq '.[].user.login' | sort -u
+# If no session-state, read review-history logins from the bundle
+jq -r '[.comments.reviews[], .comments.inline[], .comments.conversation[]] | .[].user.login' "$STATE" | sort -u
 ```
 
 - If `greptile-apps[bot]` has posted reviews: PR is on **Greptile** (sticky assignment).
@@ -148,17 +155,14 @@ Output: `Reviewer: CR` or `Reviewer: Greptile`
 
 ### If PR is on CR:
 
-Check the commit status for CodeRabbit:
+Check the CodeRabbit check-run from `$STATE` (Step 5 captured `HEAD_SHA` already):
 ```bash
-SHA=$(gh pr view $PR_NUM --json commits --jq '.commits[-1].oid')
-gh api "repos/{owner}/{repo}/commits/$SHA/check-runs" \
-  --jq '.check_runs[] | select(.name == "CodeRabbit") | {status: .status, conclusion: .conclusion, title: .output.title}'
+jq '.check_runs.all[] | select(.name == "CodeRabbit") | {status, conclusion, title}' "$STATE"
 ```
 
-Also check the statuses endpoint as fallback:
+Also check the statuses rollup as fallback (handles repos that report CR via the legacy commit-status API instead of check-runs):
 ```bash
-gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
-  --jq '.[] | select(.context | test("CodeRabbit"; "i")) | {state: .state, description: .description}'
+jq '.bot_statuses.CodeRabbit' "$STATE"
 ```
 
 **Rate limit detection:** If check-run shows `conclusion: "failure"` with title containing "rate limit" (case-insensitive), OR status shows `state: "failure"`/`state: "error"` with description containing "rate limit":
@@ -183,14 +187,10 @@ gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
 
 ### If PR is on Greptile:
 
-Check for Greptile comments:
+Check for Greptile comments in `$STATE`:
 ```bash
-gh api --paginate "repos/{owner}/{repo}/pulls/{N}/comments?per_page=100" \
-  --jq '[.[] | select(.user.login == "greptile-apps[bot]")]'
-gh api --paginate "repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100" \
-  --jq '[.[] | select(.user.login == "greptile-apps[bot]")]'
-gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
-  --jq '[.[] | select(.user.login == "greptile-apps[bot]")]'
+jq '[.comments.reviews[], .comments.inline[], .comments.conversation[]]
+     | map(select(.user.login == "greptile-apps[bot]"))' "$STATE"
 ```
 
 - If Greptile has posted findings: `[DONE]` — Greptile review received. Process findings (Step 7).
@@ -201,37 +201,24 @@ gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
 
 ## Step 7: Check for unresolved findings
 
-Fetch unresolved review threads (first 100 — sufficient for most PRs; if a PR has >100 threads, paginate using `pageInfo.endCursor`):
-```bash
-gh api graphql -f query='query {
-  repository(owner: "{owner}", name: "{repo}") {
-    pullRequest(number: {N}) {
-      reviewThreads(first: 100) {
-        nodes {
-          id
-          isResolved
-          comments(first: 100) {
-            nodes {
-              body
-              author { login }
-              createdAt
-            }
-          }
-        }
-      }
-    }
-  }
-}'
-```
+The shared bundle `$STATE` already contains all review threads (paginated GraphQL) under `.threads`, and the 3 comment endpoints under `.comments`. Re-run `pr-state.sh` only if a fix commit landed since Step 5.
 
 Count unresolved threads from reviewers:
-- Filter for threads where any comment is from `coderabbitai[bot]` or `greptile-apps[bot]`
-- Only count threads where `isResolved == false`
+```bash
+# Full unresolved array from the bundle (includes comments nested under each thread)
+jq '.threads.unresolved' "$STATE"
+
+# Count unresolved threads where any comment is from CR or Greptile
+jq '[.threads.unresolved[]
+     | select(any(.comments.nodes[]; .author.login == "coderabbitai[bot]" or .author.login == "greptile-apps[bot]"))]
+     | length' "$STATE"
+```
 
 Also check for issue-level review comments that may not have threads:
 ```bash
-gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
-  --jq '[.[] | select(.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]") | select(.body | test("suggestion|finding|issue|bug|error|warning"; "i"))]'
+jq '[.comments.conversation[]
+     | select(.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]")
+     | select(.body | test("suggestion|finding|issue|bug|error|warning"; "i"))]' "$STATE"
 ```
 
 - If there are unresolved findings: `[ACTION]` — Processing N unresolved findings.
@@ -282,19 +269,29 @@ Track a `cr_clean_streak` counter:
 - Reset to 0 when findings are present or a new commit is pushed
 - Merge gate met when `cr_clean_streak >= 2`
 
-Check latest CR signals:
+If a fix commit landed after Step 5, re-run `pr-state.sh` so the HEAD SHA and all downstream checks reflect the new state:
 ```bash
-SHA=$(gh pr view $PR_NUM --json commits --jq '.commits[-1].oid')
+STATE=$(.claude/scripts/pr-state.sh)
+HEAD_SHA=$(jq -r '.pr.head_sha' "$STATE")
+```
 
-# Check-run must be green on current HEAD
-gh api "repos/{owner}/{repo}/commits/$SHA/check-runs" \
-  --jq '.check_runs[] | select(.name == "CodeRabbit") | {status, conclusion}'
+Check latest CR signals from `$STATE` — with fallback to the legacy commit-status API for repos that don't surface a CodeRabbit check-run:
+```bash
+# CodeRabbit check-run must be green on current HEAD (preferred path)
+CR_CHECK=$(jq '.check_runs.all[] | select(.name == "CodeRabbit")' "$STATE")
 
-# Verify no unresolved findings from CR (fetch all comments per thread to catch CR anywhere in thread)
-gh api graphql -f query='query { repository(owner: "{owner}", name: "{repo}") { pullRequest(number: {N}) { reviewThreads(first: 100) { nodes { isResolved comments(first: 100) { nodes { author { login } } } } } } } }' \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[]
-         | select(.isResolved == false)
-         | select(any(.comments.nodes[]; .author.login == "coderabbitai[bot]"))] | length'
+# Fallback: commit-status rollup already captured by pr-state.sh
+if [ -z "$CR_CHECK" ] || [ "$CR_CHECK" = "null" ]; then
+  jq '.bot_statuses.CodeRabbit' "$STATE"
+  # A clean pass in the fallback path requires .state == "success"
+else
+  echo "$CR_CHECK" | jq '{status, conclusion}'
+  # A clean pass in the check-runs path requires status == "completed" AND conclusion == "success"
+fi
+
+# Count unresolved threads that involve coderabbitai[bot] anywhere in the thread
+jq '[.threads.unresolved[]
+     | select(any(.comments.nodes[]; .author.login == "coderabbitai[bot]"))] | length' "$STATE"
 ```
 
 - If check-run is green AND zero unresolved CR findings: this is a clean pass. Increment `cr_clean_streak`.

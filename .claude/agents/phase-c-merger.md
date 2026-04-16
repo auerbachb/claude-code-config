@@ -32,11 +32,11 @@ Read the handoff file if it exists:
 cat ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json 2>/dev/null
 ```
 
-Use `reviewer` and `phase_completed` to confirm merge gate expectations. If missing, fall back to GitHub API:
+Use `reviewer` and `phase_completed` to confirm merge gate expectations. Regardless of handoff presence, fetch the shared PR-state bundle once and reuse `$STATE` for every downstream check in Steps 1–2. It bundles `.pr.head_sha`, `.pr.state`, `.merge_state.mergeStateStatus`, and all 3 comment endpoints in one JSON file so you never need `gh pr view` or individual comment endpoints again:
 
 ```bash
-gh pr view {{PR_NUMBER}} --json state,title,mergeStateStatus,commits
-gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/reviews?per_page=100"
+STATE=$(.claude/scripts/pr-state.sh --pr {{PR_NUMBER}})
+SHA=$(jq -r '.pr.head_sha' "$STATE")
 ```
 
 ## Step 1: Verify Merge Gate
@@ -50,43 +50,47 @@ Verify **2 clean CR passes**. A clean pass is NOT just a review object from CR �
 1. The CodeRabbit CI check-run shows `status: "completed"` with `conclusion: "success"` on the current HEAD SHA, AND
 2. No new CR findings (inline comments or review objects with a `COMMENTED`/`CHANGES_REQUESTED` state containing actionable items) were posted after that check-run's ack.
 
-**Do NOT** simply count review objects. Use the check-run status on the current HEAD:
+**Do NOT** simply count review objects. Read the CR check-run status from `$STATE` (Initialization already captured `SHA` from `$STATE`):
 
 ```bash
-SHA=$(gh pr view {{PR_NUMBER}} --json commits --jq '.commits[-1].oid')
-
 # Step 1a: CR check-run must be completed with conclusion=success.
-# Fall back to the commit statuses endpoint if check-runs has no CodeRabbit entry —
+# Fall back to the commit-status rollup in $STATE if check-runs has no CodeRabbit entry —
 # some repos report CR via the legacy commit-status API instead of check-runs.
-CR_CHECK_RUN=$(gh api "repos/{{OWNER}}/{{REPO}}/commits/$SHA/check-runs?per_page=100" \
-  --jq '[.check_runs[] | select(.name == "CodeRabbit")] | first // empty')
+CR_CHECK_RUN=$(jq '[.check_runs.all[] | select(.name == "CodeRabbit")] | first // empty' "$STATE")
 
-if [ -z "$CR_CHECK_RUN" ]; then
-  # Fallback: check commit statuses for a CodeRabbit context
-  gh api "repos/{{OWNER}}/{{REPO}}/commits/$SHA/statuses" \
-    --jq '.[] | select(.context | test("CodeRabbit"; "i")) | {context, state, description}'
+if [ "$CR_CHECK_RUN" = "" ] || [ "$CR_CHECK_RUN" = "null" ]; then
+  # Fallback: CodeRabbit commit-status context from $STATE
+  jq '.bot_statuses.CodeRabbit // (.commit_statuses[] | select(.context | test("CodeRabbit"; "i")) | {context, state, description})' "$STATE"
   # A clean pass in the fallback path requires state == "success"
 else
-  echo "$CR_CHECK_RUN" | jq '{status, conclusion, title: .output.title}'
+  # `.check_runs.all[]` is already pre-flattened by pr-state.sh (§3 assembles `title: .output.title`),
+  # so the element already has a top-level `.title` — do NOT re-drill into `.output`.
+  echo "$CR_CHECK_RUN" | jq '{status, conclusion, title}'
   # A clean pass in the check-runs path requires status == "completed" AND conclusion == "success"
 fi
 
 # Step 1b: No new CR findings posted across ALL 3 endpoints since the most recent "Actions performed" ack.
-# Find the latest ack timestamp from the issues/comments endpoint (where CR posts the ack):
-ACK_TS=$(gh api "repos/{{OWNER}}/{{REPO}}/issues/{{PR_NUMBER}}/comments?per_page=100" \
-  --jq '[.[] | select(.user.login == "coderabbitai[bot]" and (.body | test("Actions performed"; "i")))] | if length > 0 then (max_by(.created_at) | .created_at) else "" end')
+# $STATE already contains unfiltered .comments.reviews/inline/conversation — run the watermark jq over it.
+# If no "Actions performed" conversation comment exists (e.g., CR was never manually re-triggered),
+# fall back to the CodeRabbit commit status timestamp so the `> $ack` filters don't treat every
+# historical comment as new. The combined jq prefers the ack timestamp when present, otherwise
+# uses .bot_statuses.CodeRabbit.updated_at, and finally falls back to "" (which means "no watermark" —
+# legitimately count every CR comment as new, which is the correct behavior for a brand-new PR).
+ACK_TS=$(jq -r '
+  . as $state
+  | [$state.comments.conversation[] | select(.user.login == "coderabbitai[bot]" and (.body | test("Actions performed"; "i")))]
+  | if length > 0 then (max_by(.created_at) | .created_at)
+    else ($state.bot_statuses.CodeRabbit.updated_at // "")
+    end' "$STATE")
 
 # Count CR inline comments newer than the ack (excluding the ack itself)
-NEW_INLINE=$(gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/comments?per_page=100" \
-  --jq --arg ack "$ACK_TS" '[.[] | select(.user.login == "coderabbitai[bot]" and .created_at > $ack)] | length')
+NEW_INLINE=$(jq --arg ack "$ACK_TS" '[.comments.inline[] | select(.user.login == "coderabbitai[bot]" and .created_at > $ack)] | length' "$STATE")
 
 # Count CR review objects newer than the ack that carry actionable findings (CHANGES_REQUESTED or non-empty body)
-NEW_REVIEWS=$(gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/reviews?per_page=100" \
-  --jq --arg ack "$ACK_TS" '[.[] | select(.user.login == "coderabbitai[bot]" and .submitted_at > $ack and (.state == "CHANGES_REQUESTED" or ((.body // "") | length > 0)))] | length')
+NEW_REVIEWS=$(jq --arg ack "$ACK_TS" '[.comments.reviews[] | select(.user.login == "coderabbitai[bot]" and .submitted_at > $ack and (.state == "CHANGES_REQUESTED" or ((.body // "") | length > 0)))] | length' "$STATE")
 
 # Count CR issue comments newer than the ack that are not themselves acks
-NEW_ISSUE=$(gh api "repos/{{OWNER}}/{{REPO}}/issues/{{PR_NUMBER}}/comments?per_page=100" \
-  --jq --arg ack "$ACK_TS" '[.[] | select(.user.login == "coderabbitai[bot]" and .created_at > $ack and ((.body | test("Actions performed"; "i")) | not))] | length')
+NEW_ISSUE=$(jq --arg ack "$ACK_TS" '[.comments.conversation[] | select(.user.login == "coderabbitai[bot]" and .created_at > $ack and ((.body | test("Actions performed"; "i")) | not))] | length' "$STATE")
 
 echo "NEW_INLINE=$NEW_INLINE NEW_REVIEWS=$NEW_REVIEWS NEW_ISSUE=$NEW_ISSUE"
 # A clean pass requires: Step 1a shows conclusion=success AND all three counts above are 0.
@@ -94,10 +98,10 @@ echo "NEW_INLINE=$NEW_INLINE NEW_REVIEWS=$NEW_REVIEWS NEW_ISSUE=$NEW_ISSUE"
 
 Two clean passes are required (the second is a confirmation pass on the same SHA after triggering `@coderabbitai full review` one more time). If both conditions hold across two consecutive reviews on the same HEAD, the merge gate is met.
 
-Also verify no unresolved review threads:
+Also verify no unresolved review threads (already paginated and included in `$STATE.threads`):
 
 ```bash
-gh api graphql -f query='query { repository(owner: "{{OWNER}}", name: "{{REPO}}") { pullRequest(number: {{PR_NUMBER}}) { reviewThreads(first: 100) { nodes { id isResolved comments(first: 1) { nodes { body author { login } } } } } } } }'
+jq '.threads.unresolved' "$STATE"
 ```
 
 ### BugBot path (reviewer = `bugbot`)
@@ -112,20 +116,20 @@ If the merge gate is NOT met, set `OUTCOME: blocked` and report what's missing.
 
 ## Step 2: Verify CI (NON-NEGOTIABLE)
 
+`$STATE` (from Initialization) already has the pre-split check-run buckets. Reuse them — no extra `gh api` calls:
+
 ```bash
-SHA=$(gh pr view {{PR_NUMBER}} --json commits --jq '.commits[-1].oid')
+# Incomplete runs (still running or queued)
+jq '.check_runs.in_progress_runs' "$STATE"
 
-# Check for incomplete runs
-gh api "repos/{{OWNER}}/{{REPO}}/commits/$SHA/check-runs?per_page=100" \
-  --jq '.check_runs[] | select(.status != "completed") | {name, status}'
-
-# Check for blocking conclusions
-gh api "repos/{{OWNER}}/{{REPO}}/commits/$SHA/check-runs?per_page=100" \
-  --jq '.check_runs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required" or .conclusion == "startup_failure" or .conclusion == "stale") | {name, conclusion}'
+# Blocking conclusions (failure, timed_out, action_required, startup_failure, stale)
+jq '.check_runs.failing_runs' "$STATE"
 ```
 
-If ANY incomplete runs exist: `OUTCOME: blocked` (CI still running).
-If ANY blocking conclusions: `OUTCOME: blocked` (CI failed).
+If `in_progress_runs` is non-empty: `OUTCOME: blocked` (CI still running).
+If `failing_runs` is non-empty: `OUTCOME: blocked` (CI failed).
+
+If a fix commit landed since Initialization, re-run `pr-state.sh` first so `$STATE` reflects the new HEAD.
 
 ## Step 3: Verify Acceptance Criteria
 
