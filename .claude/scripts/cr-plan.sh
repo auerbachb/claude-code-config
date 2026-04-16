@@ -117,14 +117,15 @@ if ! command -v gh >/dev/null 2>&1; then
 fi
 
 # Fetch issue metadata once up-front so we can (a) error out cleanly on missing/
-# closed issues with exit 3 and (b) compute age for --max-age-minutes.
-# Keep stderr separate from stdout so incidental gh warnings (auth refresh,
-# deprecation notices) never contaminate the JSON we pipe to jq.
-ISSUE_META_JSON=""
-ISSUE_META_STDERR=""
+# closed issues with exit 3 and (b) compute age for --max-age-minutes. Use
+# `gh --jq` for the field projection so we don't take an external `jq`
+# dependency beyond what `gh` already bundles. Keep stderr separate from stdout
+# so incidental gh warnings (auth refresh, deprecation notices) never
+# contaminate the tab-separated output.
+ISSUE_META=""
 ISSUE_META_STDERR_FILE=$(mktemp)
 trap 'rm -f "$ISSUE_META_STDERR_FILE"' EXIT
-if ! ISSUE_META_JSON=$(gh issue view "$ISSUE_NUMBER" --json number,state,createdAt 2>"$ISSUE_META_STDERR_FILE"); then
+if ! ISSUE_META=$(gh issue view "$ISSUE_NUMBER" --json state,createdAt --jq '"\(.state)\t\(.createdAt)"' 2>"$ISSUE_META_STDERR_FILE"); then
   ISSUE_META_STDERR=$(cat "$ISSUE_META_STDERR_FILE")
   if printf '%s' "$ISSUE_META_STDERR" | grep -qi 'could not resolve\|not found\|no issue found\|HTTP 404'; then
     echo "cr-plan.sh: issue #$ISSUE_NUMBER not found" >&2
@@ -135,13 +136,12 @@ if ! ISSUE_META_JSON=$(gh issue view "$ISSUE_NUMBER" --json number,state,created
   exit 4
 fi
 
-ISSUE_STATE=$(printf '%s' "$ISSUE_META_JSON" | jq -r '.state // ""')
+ISSUE_STATE="${ISSUE_META%%$'\t'*}"
+CREATED_AT="${ISSUE_META#*$'\t'}"
 if [ "$ISSUE_STATE" != "OPEN" ]; then
   echo "cr-plan.sh: issue #$ISSUE_NUMBER is $ISSUE_STATE (expected OPEN)" >&2
   exit 3
 fi
-
-CREATED_AT=$(printf '%s' "$ISSUE_META_JSON" | jq -r '.createdAt // ""')
 
 # Returns seconds since the issue was created (0 on any parse failure).
 issue_age_seconds() {
