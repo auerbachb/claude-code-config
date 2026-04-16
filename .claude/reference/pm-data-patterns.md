@@ -125,10 +125,10 @@ When updating any of the query patterns above, update this doc AND every PM skil
 
 - `.claude/skills/pm-rate-team/SKILL.md`
 - `.claude/skills/pm-team-standup/SKILL.md`
+- `.claude/skills/pm-sprint-review/SKILL.md`
 
 **Not yet migrated** (share the same patterns but still inline them — migrate in follow-up work):
 
-- `.claude/skills/pm-sprint-review/SKILL.md`
 - `.claude/skills/pm-sprint-plan/SKILL.md`
 - `.claude/skills/prioritize/SKILL.md`
 
