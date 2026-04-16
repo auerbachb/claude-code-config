@@ -44,21 +44,20 @@ Run the session-start / pre-review comment audit per `cr-github-review.md` ("Ses
 
 ### Polling (60-second cycle)
 
-Poll ALL THREE endpoints + check-runs every cycle. **Resolve the HEAD SHA dynamically at the start of every cycle** — Phase B may push new commits, and querying a stale SHA returns false merge-gate/CI conclusions:
+**Call `.claude/scripts/pr-state.sh --pr {{PR_NUMBER}}` ONCE per poll cycle.** It resolves the HEAD SHA fresh every invocation (eliminating the stale-SHA hazard) and bundles reviews, inline comments, issue comments, unresolved threads, check-runs, and bot statuses into one JSON file. Read everything downstream via jq — do NOT re-issue separate `gh api` calls:
 
 ```bash
-# Resolve current HEAD SHA (do this at the START of every poll cycle, and again after any push)
-CURRENT_SHA=$(gh pr view {{PR_NUMBER}} --json commits --jq '.commits[-1].oid')
+# Single invocation per cycle — fresh HEAD SHA, all endpoints, all check-runs
+STATE=$(.claude/scripts/pr-state.sh --pr {{PR_NUMBER}})
+CURRENT_SHA=$(jq -r '.pr.head_sha' "$STATE")
 
-# Reviews
-gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/reviews?per_page=100"
-# Inline comments
-gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/comments?per_page=100"
-# Issue comments (where CR posts ack + summary)
-gh api "repos/{{OWNER}}/{{REPO}}/issues/{{PR_NUMBER}}/comments?per_page=100"
-# Check-runs (completion signal + rate-limit detection) — uses CURRENT_SHA, not the stale {{HEAD_SHA}} from your prompt
-gh api "repos/{{OWNER}}/{{REPO}}/commits/$CURRENT_SHA/check-runs" \
-  --jq '.check_runs[] | select(.name == "CodeRabbit") | {name, status, conclusion, title: .output.title}'
+# CodeRabbit check-run (completion signal + rate-limit detection)
+jq '.check_runs.all[] | select(.name == "CodeRabbit") | {name, status, conclusion, title}' "$STATE"
+
+# CR reviews/inline/issue comments for watermark tracking
+jq '.comments.reviews | map(select(.user.login == "coderabbitai[bot]"))' "$STATE"
+jq '.comments.inline  | map(select(.user.login == "coderabbitai[bot]"))' "$STATE"
+jq '.comments.conversation | map(select(.user.login == "coderabbitai[bot]"))' "$STATE"
 ```
 
 **Filter by:** `.user.login == "coderabbitai[bot]"` (with `[bot]` suffix — NOT bare `coderabbitai`).
@@ -93,7 +92,7 @@ BugBot auto-reviews every push — no manual trigger needed. Poll for `cursor[bo
 
 ### Polling
 
-Same 3 endpoints as CR, filter by `.user.login == "cursor[bot]"`. Check-run name: `Cursor Bugbot`.
+Same shared `$STATE` bundle as the CR path. Filter by `.user.login == "cursor[bot]"` across `.comments.reviews`, `.comments.inline`, `.comments.conversation`. Check-run name: `Cursor Bugbot` (in `.check_runs.all`).
 
 **Completion:** check-run `status: "completed"` (any conclusion — BugBot uses `neutral` for reviews with findings). Also check for review objects from `cursor[bot]`.
 
@@ -162,7 +161,7 @@ Post a comment: `gh pr comment {{PR_NUMBER}} --body "@greptileai"`
 
 ### Polling
 
-Same 3 endpoints, filter by `greptile-apps[bot]`. Timeout: 5 minutes. Completion: review comments or 👍 emoji. Failure: 😕 emoji.
+Same shared `$STATE` bundle, filter by `.user.login == "greptile-apps[bot]"` across `.comments.reviews`, `.comments.inline`, `.comments.conversation`. Timeout: 5 minutes. Completion: review comments or 👍 emoji. Failure: 😕 emoji.
 
 ### Severity Classification (P0/P1/P2)
 
@@ -184,11 +183,17 @@ Merge-ready when: no findings (clean), all P1/P2 after fix (no re-review needed)
 
 ## CI Health Check (MANDATORY — every poll cycle)
 
-Check ALL check-runs, not just CodeRabbit. Use `$CURRENT_SHA` resolved at the start of the cycle — not the stale `{{HEAD_SHA}}` from your prompt:
+Check ALL check-runs, not just CodeRabbit. The shared `$STATE` bundle (fetched once per cycle) already includes the full split — `.check_runs.all`, `.check_runs.failing_runs`, `.check_runs.in_progress_runs`:
 
 ```bash
-gh api "repos/{{OWNER}}/{{REPO}}/commits/$CURRENT_SHA/check-runs?per_page=100" \
-  --jq '.check_runs[] | {id, name, status, conclusion, title: .output.title}'
+# All runs
+jq '.check_runs.all' "$STATE"
+
+# Blocking conclusions (failure, timed_out, action_required, startup_failure, stale)
+jq '.check_runs.failing_runs' "$STATE"
+
+# Still running / queued
+jq '.check_runs.in_progress_runs' "$STATE"
 ```
 
 **Blocking conclusions:** `failure`, `timed_out`, `action_required`, `startup_failure`, `stale`. Investigate immediately — fix, commit, push.

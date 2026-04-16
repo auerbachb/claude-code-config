@@ -271,54 +271,26 @@ gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
 
 ## Step 8: Check merge gate
 
-### If PR is on CR (Greptile never triggered):
+Run the shared merge-gate verifier (implements CR 2-clean / BugBot 1-clean / Greptile severity + CI + BEHIND checks):
 
-Need **2 consecutive clean CR passes**. A pass is clean only when BOTH of:
-1. CodeRabbit check-run on current HEAD shows `status: "completed"` + `conclusion: "success"`
-2. Step 7 reports zero unresolved CR findings (verified via GraphQL query below)
-
-Track a `cr_clean_streak` counter:
-- Increment by 1 after a verified clean pass
-- Reset to 0 when findings are present or a new commit is pushed
-- Merge gate met when `cr_clean_streak >= 2`
-
-Check latest CR signals:
 ```bash
-SHA=$(gh pr view $PR_NUM --json commits --jq '.commits[-1].oid')
-
-# Check-run must be green on current HEAD
-gh api "repos/{owner}/{repo}/commits/$SHA/check-runs" \
-  --jq '.check_runs[] | select(.name == "CodeRabbit") | {status, conclusion}'
-
-# Verify no unresolved findings from CR (fetch all comments per thread to catch CR anywhere in thread)
-gh api graphql -f query='query { repository(owner: "{owner}", name: "{repo}") { pullRequest(number: {N}) { reviewThreads(first: 100) { nodes { isResolved comments(first: 100) { nodes { author { login } } } } } } } }' \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[]
-         | select(.isResolved == false)
-         | select(any(.comments.nodes[]; .author.login == "coderabbitai[bot]"))] | length'
+GATE_JSON=$(.claude/scripts/merge-gate.sh "$PR_NUM")
+GATE_EXIT=$?
 ```
 
-- If check-run is green AND zero unresolved CR findings: this is a clean pass. Increment `cr_clean_streak`.
-- If `cr_clean_streak >= 2`: `[DONE]` — Merge gate satisfied (2 consecutive clean CR passes).
-- If `cr_clean_streak == 1`: `[ACTION]` — One clean pass confirmed. Triggering confirmation review:
-  ```bash
-  gh pr comment $PR_NUM --body "@coderabbitai full review"
-  ```
-  Go back to **Step 6** to poll for the confirmation review.
-- If check-run has findings or is not green: `[ACTION]` — Merge gate not met. Reset streak. Go back to **Step 6**.
+Branch on the exit code:
 
-### If PR is on Greptile:
-
-Severity-gated merge gate:
-- **No findings at all** on last Greptile review: `[DONE]` — Merge gate satisfied (clean Greptile pass).
-- **Only P1/P2 findings** (no P0) on last review, all fixed: `[DONE]` — Merge gate satisfied (P1/P2 fixed, no re-review needed).
-- **P0 findings were present**: Need re-review to confirm P0 resolution.
-  - Check if re-review has been done (max 3 Greptile reviews per PR).
-  - If re-review needed and budget allows: `[ACTION]` — Triggering Greptile re-review:
-    ```bash
-    gh pr comment $PR_NUM --body "@greptileai"
-    ```
-    Go back to **Step 6**.
-  - If 3 reviews already consumed: `[BLOCKED]` — Greptile review budget exhausted. Performing self-review. Report blocker to user.
+- `0` → `[DONE]` — Merge gate satisfied. Proceed to Step 9 (AC verification).
+- `1` → `[ACTION]` — Gate not met. Parse `missing` from the JSON output and act accordingly:
+  - CR path with **"need 2 clean CR reviews on HEAD (have 1)"**: post `@coderabbitai full review` to trigger the confirmation pass, then return to **Step 6**.
+  - CR path with **"CodeRabbit check-run not green on HEAD"** or **"latest CR review on HEAD requests changes"**: CR has findings; return to **Step 7** to process them.
+  - BugBot path with **"no BugBot review on HEAD"**: BugBot hasn't reviewed the current HEAD yet; return to **Step 6** to poll for the review.
+  - BugBot path with **"latest BugBot review on HEAD has findings"**: return to **Step 7** to process findings.
+  - Greptile path with **"unresolved Greptile thread(s)"**: return to **Step 7** to process; if P0 remains after fix, re-trigger `@greptileai` (subject to the 3-review cap per `.claude/rules/greptile.md`).
+  - **"branch is BEHIND base"**: `[ACTION]` — rebase onto base, force-push, wait for a fresh review, then re-run the gate.
+  - **"CI has N failing check-run(s)"** or **"CI has N incomplete check-run(s)"**: fix CI or wait for incomplete runs, then re-run the gate.
+- `3` → `[BLOCKED]` — PR not found (closed or merged).
+- `2`/`4` → `[BLOCKED]` — script or gh error; surface the message to the user.
 
 ---
 

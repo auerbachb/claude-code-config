@@ -31,8 +31,7 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 | Unresolved reviewer findings detected (Phase 1) | Stop and report | **Stop and report** |
 | Merge gate not met (Phase 2.1) | Stop and report | **Stop and report** |
 | AC checkbox verification fails (Phase 2.2) | Stop and report | **Stop and report** |
-| SHA changed since last review / rebase detected (Phase 2.3) | Stop and report | **Stop and report** |
-| CI check-run failing (Phase 2.4) | Stop and report | **Stop and report** |
+| SHA changed / rebase / CI failure / BEHIND (Phase 2.3) | Stop and report | **Stop and report** |
 
 > **Anti-pattern:** If you find yourself composing "Should I proceed?" or presenting a confirmation button, the answer is always yes — execute immediately.
 
@@ -75,10 +74,18 @@ If no unresolved findings: proceed immediately to Phase 2 — do not ask.
 
 ### Step 2.1: Verify the merge gate
 
-Determine which reviewer owns this PR:
+Run the shared merge-gate verifier, which implements the authoritative gate from `.claude/rules/cr-merge-gate.md` (CR 2-clean / BugBot 1-clean / Greptile severity, plus CI and BEHIND checks):
 
-1. Check `~/.claude/session-state.json` for a `reviewer` field for this PR number (`"g"` = Greptile, `"cr"` = CodeRabbit).
-2. If no session-state entry, check the PR's review history — if `greptile-apps[bot]` has posted reviews/comments, this PR is on Greptile. Otherwise CR.
+```bash
+PR_NUM=$(gh pr view --json number --jq .number)
+GATE_JSON=$(.claude/scripts/merge-gate.sh "$PR_NUM")
+GATE_EXIT=$?
+```
+
+- Exit `0` → gate met, proceed.
+- Exit `1` → gate NOT met. Stop and report the `missing` array from the JSON output verbatim (e.g., "need 2 clean CR reviews on HEAD", "branch is BEHIND base", "CI has 2 failing check-run(s): ...").
+- Exit `3` → PR not found; skip to Phase 3 as described above.
+- Exit `2`/`4` → script or gh error; surface the stderr message.
 
 Also extract and store the feature branch name and base branch for use in Phase 5 cleanup:
 
@@ -86,21 +93,6 @@ Also extract and store the feature branch name and base branch for use in Phase 
 BRANCH_NAME=$(gh pr view --json headRefName --jq '.headRefName')
 BASE_BRANCH=$(gh pr view --json baseRefName --jq '.baseRefName')
 ```
-
-**Merge gate check:**
-- **CR-only PR:** Need 2 clean CR reviews. Check the last 2 review objects from `coderabbitai[bot]` — both must have no actionable findings. Also verify the CodeRabbit check-run on the HEAD commit:
-  ```bash
-  gh api "repos/{owner}/{repo}/commits/{HEAD_SHA}/check-runs" \
-    --jq '.check_runs[] | select(.name == "CodeRabbit") | {status, conclusion}'
-  ```
-  Gate on BOTH `status == "completed"` AND `conclusion == "success"`. If check-runs is empty, fall back to commit statuses:
-  ```bash
-  gh api "repos/{owner}/{repo}/commits/{HEAD_SHA}/statuses" \
-    --jq '.[] | select(.context | test("CodeRabbit"; "i")) | {state}'
-  ```
-- **Greptile PR:** Need severity-gated clean — no unresolved P0 findings. Check the last review from `greptile-apps[bot]`.
-
-If the merge gate is NOT met, stop and report exactly what's missing.
 
 ### Step 2.2: Verify acceptance criteria
 
@@ -113,35 +105,25 @@ Extract the PR body's **Test plan** section. For each checkbox:
 
 If any item fails, stop and report — do NOT merge with unchecked boxes.
 
-### Step 2.3: Pre-merge safety check
+### Step 2.3: Pre-merge safety & CI (handled by Step 2.1)
 
-Before merging, verify the PR has not been rebased or force-pushed since the last clean review:
+`.claude/scripts/merge-gate.sh` already verifies:
 
-1. Compare the HEAD SHA that passed the merge gate with the current PR head:
-   ```bash
-   gh pr view N --json commits --jq '.commits[-1].oid'
-   ```
-2. If the SHA differs from what the merge gate was verified against, a rebase/force-push happened — **do NOT merge.** Wait for a fresh CR review on the new SHA before proceeding.
+- **Rebase/force-push safety** — the CR 2-clean-pass check requires reviews on the **current** HEAD, so any rebase invalidates the gate.
+- **BEHIND base branch** — gate fails with "branch is BEHIND base" in `missing`; rebase + force-push and wait for fresh review before retrying.
+- **CI** — all check-runs must be completed with non-blocking conclusions; failures surface as "CI has N failing check-run(s): ..." in `missing`.
 
-### Step 2.4: Verify CI passes (NON-NEGOTIABLE)
-
-Before merging, check ALL CI check-runs on the HEAD commit:
+If Step 2.1 exited `0`, these are already satisfied. If `missing` reported CI failures, **do NOT merge**. Read the failure output:
 
 ```bash
-SHA=$(gh pr view <PR_NUMBER> --json commits --jq '.commits[-1].oid')
-gh api "repos/{owner}/{repo}/commits/$SHA/check-runs?per_page=100" \
-  --jq '.check_runs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required") | {name, conclusion}'
+gh api "repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID}" --jq '.output.summary'
 ```
 
-**If ANY check-run has a blocking conclusion: DO NOT MERGE.** Instead:
-1. Read the failure output: `gh api "repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID}" --jq '.output.summary'`
-2. Fix the issue (lint errors, type errors, test failures, etc.)
-3. Commit, push, and wait for CI to re-run
-4. Re-verify all checks pass before proceeding
+Fix the code, commit, push, wait for CI to re-run, and re-invoke `.claude/scripts/merge-gate.sh`.
 
 **Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, or any suppression comment to work around CI.** Fix the actual code.
 
-### Step 2.5: Squash merge
+### Step 2.4: Squash merge
 
 ```bash
 gh pr merge --squash
@@ -149,7 +131,7 @@ gh pr merge --squash
 
 Do NOT use `--delete-branch` here. That flag attempts local branch deletion while the worktree is still active, which fails because git refuses to delete a branch checked out in any worktree. Branch cleanup is handled explicitly in Phase 5 after the worktree is removed.
 
-### Step 2.6: Sync root repo main
+### Step 2.5: Sync root repo main
 
 After merging, update the root repo's local `main` so subsequent sessions branch from the latest code. **Capture the result for the final report in Step 5.4.**
 
@@ -188,7 +170,7 @@ echo "Main sync: $MAIN_SYNC_STATUS"
 
 Store `MAIN_SYNC_STATUS` for the final report — this value MUST appear in Step 5.4 output.
 
-### Step 2.7: Log to work-log
+### Step 2.6: Log to work-log
 
 If a work-log directory was detected at session start:
 
@@ -308,7 +290,7 @@ For each follow-up item (the HHG pair or the generic list):
    fi
    ```
 
-3. **Log to work-log** — if a work-log directory was detected at session start, append a timestamped line to today's session log for each created issue using the **canonical** format from `work-log.md` (use the same path logic as Phase 2.7):
+3. **Log to work-log** — if a work-log directory was detected at session start, append a timestamped line to today's session log for each created issue using the **canonical** format from `work-log.md` (use the same path logic as Phase 2.6):
    ```
    - {time} ET — Issue #{NEW_NUM} created: {title}
    ```
@@ -432,7 +414,7 @@ git -C "$ROOT_REPO" push origin --delete "$BRANCH_NAME" || echo "Warning: remote
 ## Wrap-Up Complete
 
 - **PR #{N}** merged ({title})
-- **Main branch** {MAIN_SYNC_STATUS from Step 2.6 — e.g. "updated abc1234 → def5678", "up to date (abc1234)", or "failed: ..."}
+- **Main branch** {MAIN_SYNC_STATUS from Step 2.5 — e.g. "updated abc1234 → def5678", "up to date (abc1234)", or "failed: ..."}
 - **Branch** deleted
 - **Work-log** updated (if applicable)
 - **Follow-ups:** {summary or "none"}

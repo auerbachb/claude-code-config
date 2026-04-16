@@ -39,95 +39,30 @@ gh pr view {{PR_NUMBER}} --json state,title,mergeStateStatus,commits
 gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/reviews?per_page=100"
 ```
 
-## Step 1: Verify Merge Gate
+## Step 1: Verify Merge Gate (and CI)
 
-The merge gate depends on which reviewer owns the PR:
-
-### CR-only path (reviewer = `cr`)
-
-Verify **2 clean CR passes**. A clean pass is NOT just a review object from CR — CR emits a review object for every review, including ones with findings. A clean pass is defined as:
-
-1. The CodeRabbit CI check-run shows `status: "completed"` with `conclusion: "success"` on the current HEAD SHA, AND
-2. No new CR findings (inline comments or review objects with a `COMMENTED`/`CHANGES_REQUESTED` state containing actionable items) were posted after that check-run's ack.
-
-**Do NOT** simply count review objects. Use the check-run status on the current HEAD:
+Run the shared merge-gate verifier. It implements the three-path gate from `.claude/rules/cr-merge-gate.md` (CR 2-clean, BugBot 1-clean, Greptile severity-gated), plus the CI-must-pass check and the BEHIND check.
 
 ```bash
-SHA=$(gh pr view {{PR_NUMBER}} --json commits --jq '.commits[-1].oid')
-
-# Step 1a: CR check-run must be completed with conclusion=success.
-# Fall back to the commit statuses endpoint if check-runs has no CodeRabbit entry —
-# some repos report CR via the legacy commit-status API instead of check-runs.
-CR_CHECK_RUN=$(gh api "repos/{{OWNER}}/{{REPO}}/commits/$SHA/check-runs?per_page=100" \
-  --jq '[.check_runs[] | select(.name == "CodeRabbit")] | first // empty')
-
-if [ -z "$CR_CHECK_RUN" ]; then
-  # Fallback: check commit statuses for a CodeRabbit context
-  gh api "repos/{{OWNER}}/{{REPO}}/commits/$SHA/statuses" \
-    --jq '.[] | select(.context | test("CodeRabbit"; "i")) | {context, state, description}'
-  # A clean pass in the fallback path requires state == "success"
-else
-  echo "$CR_CHECK_RUN" | jq '{status, conclusion, title: .output.title}'
-  # A clean pass in the check-runs path requires status == "completed" AND conclusion == "success"
+# Only pass --reviewer when the handoff has a validated reviewer assignment.
+REVIEWER=""
+if [[ -f ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json ]]; then
+  REVIEWER=$(jq -r '.reviewer // ""' ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json)
 fi
 
-# Step 1b: No new CR findings posted across ALL 3 endpoints since the most recent "Actions performed" ack.
-# Find the latest ack timestamp from the issues/comments endpoint (where CR posts the ack):
-ACK_TS=$(gh api "repos/{{OWNER}}/{{REPO}}/issues/{{PR_NUMBER}}/comments?per_page=100" \
-  --jq '[.[] | select(.user.login == "coderabbitai[bot]" and (.body | test("Actions performed"; "i")))] | if length > 0 then (max_by(.created_at) | .created_at) else "" end')
-
-# Count CR inline comments newer than the ack (excluding the ack itself)
-NEW_INLINE=$(gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/comments?per_page=100" \
-  --jq --arg ack "$ACK_TS" '[.[] | select(.user.login == "coderabbitai[bot]" and .created_at > $ack)] | length')
-
-# Count CR review objects newer than the ack that carry actionable findings (CHANGES_REQUESTED or non-empty body)
-NEW_REVIEWS=$(gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/reviews?per_page=100" \
-  --jq --arg ack "$ACK_TS" '[.[] | select(.user.login == "coderabbitai[bot]" and .submitted_at > $ack and (.state == "CHANGES_REQUESTED" or ((.body // "") | length > 0)))] | length')
-
-# Count CR issue comments newer than the ack that are not themselves acks
-NEW_ISSUE=$(gh api "repos/{{OWNER}}/{{REPO}}/issues/{{PR_NUMBER}}/comments?per_page=100" \
-  --jq --arg ack "$ACK_TS" '[.[] | select(.user.login == "coderabbitai[bot]" and .created_at > $ack and ((.body | test("Actions performed"; "i")) | not))] | length')
-
-echo "NEW_INLINE=$NEW_INLINE NEW_REVIEWS=$NEW_REVIEWS NEW_ISSUE=$NEW_ISSUE"
-# A clean pass requires: Step 1a shows conclusion=success AND all three counts above are 0.
+if [[ -n "$REVIEWER" ]]; then
+  GATE_JSON=$(.claude/scripts/merge-gate.sh {{PR_NUMBER}} --reviewer "$REVIEWER")
+else
+  GATE_JSON=$(.claude/scripts/merge-gate.sh {{PR_NUMBER}})
+fi
+GATE_EXIT=$?
 ```
 
-Two clean passes are required (the second is a confirmation pass on the same SHA after triggering `@coderabbitai full review` one more time). If both conditions hold across two consecutive reviews on the same HEAD, the merge gate is met.
+- Exit `0` → merge gate met (all three paths + CI + BEHIND all satisfied). Proceed to Step 2 (AC verification).
+- Exit `1` → gate not met. Parse the `missing` array from the JSON output and include it verbatim in your exit report; set `OUTCOME: blocked`.
+- Exit `2`/`3`/`4` → script/usage/gh error. Set `OUTCOME: blocked` and report the stderr/JSON message.
 
-Also verify no unresolved review threads:
-
-```bash
-gh api graphql -f query='query { repository(owner: "{{OWNER}}", name: "{{REPO}}") { pullRequest(number: {{PR_NUMBER}}) { reviewThreads(first: 100) { nodes { id isResolved comments(first: 1) { nodes { body author { login } } } } } } } }'
-```
-
-### BugBot path (reviewer = `bugbot`)
-
-1 clean BugBot review satisfies the gate — no confirmation pass needed. Check for `cursor[bot]` review comments on the current HEAD SHA. If a review exists with no actionable findings, the gate is met. If findings exist but were all fixed and BugBot's subsequent auto-review is clean, the gate is met.
-
-### Greptile path (reviewer = `greptile`)
-
-Severity-gated: merge-ready when no findings, all P1/P2 after fix (no re-review), or P0 fixed + re-review clean.
-
-If the merge gate is NOT met, set `OUTCOME: blocked` and report what's missing.
-
-## Step 2: Verify CI (NON-NEGOTIABLE)
-
-```bash
-SHA=$(gh pr view {{PR_NUMBER}} --json commits --jq '.commits[-1].oid')
-
-# Check for incomplete runs
-gh api "repos/{{OWNER}}/{{REPO}}/commits/$SHA/check-runs?per_page=100" \
-  --jq '.check_runs[] | select(.status != "completed") | {name, status}'
-
-# Check for blocking conclusions
-gh api "repos/{{OWNER}}/{{REPO}}/commits/$SHA/check-runs?per_page=100" \
-  --jq '.check_runs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required" or .conclusion == "startup_failure" or .conclusion == "stale") | {name, conclusion}'
-```
-
-If ANY incomplete runs exist: `OUTCOME: blocked` (CI still running).
-If ANY blocking conclusions: `OUTCOME: blocked` (CI failed).
-
-## Step 3: Verify Acceptance Criteria
+## Step 2: Verify Acceptance Criteria
 
 1. Fetch the PR body:
 
@@ -148,7 +83,7 @@ If ANY blocking conclusions: `OUTCOME: blocked` (CI failed).
 
 5. If any item fails verification: `OUTCOME: blocked` — report which items failed and why
 
-## Step 4: Print Exit Report and EXIT
+## Step 3: Print Exit Report and EXIT
 
 Print this as your FINAL output:
 

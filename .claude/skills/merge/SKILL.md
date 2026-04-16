@@ -37,48 +37,37 @@ If running in a worktree, stop here and tell the user: "This PR was developed in
 
 ### Step 2: Verify the merge gate
 
-Determine which reviewer owns this PR:
+Run the shared merge-gate verifier, which implements the authoritative gate from `.claude/rules/cr-merge-gate.md` (CR 2-clean / BugBot 1-clean / Greptile severity, plus CI and BEHIND checks):
 
-1. **Check session-state** — read `~/.claude/session-state.json` and check the `reviewer` field for this PR number. If it says `"g"`, this PR is on Greptile.
-2. **If no session-state entry**, check the PR's review history to determine ownership:
-   ```bash
-   gh api "repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100" --jq '.[].user.login'
-   gh api "repos/{owner}/{repo}/pulls/{N}/comments?per_page=100" --jq '.[].user.login'
-   gh api "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" --jq '.[].user.login'
-   ```
-   - If `greptile-apps[bot]` has posted reviews/comments, this PR is on Greptile.
-   - Otherwise, it's on CR.
+```bash
+PR_NUM=$(gh pr view --json number --jq .number)
+GATE_JSON=$(.claude/scripts/merge-gate.sh "$PR_NUM")
+GATE_EXIT=$?
+```
 
-**Merge gate check:**
+- Exit `0` → gate met, proceed.
+- Exit `1` → gate NOT met. Stop and report the `missing` array from the JSON output verbatim (e.g., "need 2 clean CR reviews on HEAD", "Greptile has P0 finding", "branch is BEHIND base").
+- Exit `3` → PR not found (already merged/closed). Stop.
+- Exit `2`/`4` → script or gh error; surface the stderr message to the user.
 
-- **CR-only PR:** Need 2 clean CR reviews. Check the last 2 review objects from `coderabbitai[bot]` — both must have no actionable findings. Also verify the CodeRabbit check-run shows `conclusion: "success"`.
-- **Greptile PR:** Need 1 clean Greptile review. Check the last review from `greptile-apps[bot]` has no actionable findings.
-
-If the merge gate is NOT met, stop and tell the user exactly what's missing (e.g., "PR needs 1 more clean CR review" or "Greptile has unresolved findings").
+Reviewer assignment is resolved automatically from `~/.claude/session-state.json` and live history. Pass `--reviewer cr|bugbot|greptile` to override.
 
 ### Step 3: Verify acceptance criteria
 
 Run the `/check-acceptance-criteria` skill logic for this PR. All Test Plan checkboxes must be checked off before proceeding. If any fail, stop and report — do NOT merge with unchecked boxes.
 
-### Step 4: Verify CI passes (NON-NEGOTIABLE)
+### Step 4: CI verification (handled by Step 2)
 
-Before merging, check ALL CI check-runs on the HEAD commit:
+`.claude/scripts/merge-gate.sh` already verifies CI as part of the gate — a gate-passing PR has all check-runs complete with no blocking conclusions. If Step 2 exited `0`, CI is green and you can proceed to merge.
 
-```bash
-SHA=$(gh pr view <PR_NUMBER> --json commits --jq '.commits[-1].oid')
-gh api "repos/{owner}/{repo}/commits/$SHA/check-runs?per_page=100" \
-  --jq '.check_runs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required") | {name, conclusion}'
-```
+If Step 2 reported `missing` entries about CI ("CI has N failing check-run(s): ..." or "CI has N incomplete check-run(s): ..."), **do NOT merge**. Instead:
 
-**If ANY check-run has a blocking conclusion: DO NOT MERGE.** Instead:
 1. Read the failure output: `gh api "repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID}" --jq '.output.summary'`
 2. Fix the issue (lint errors, type errors, test failures, etc.)
 3. Commit, push, and wait for CI to re-run
-4. Re-verify all checks pass before proceeding
+4. Re-run `.claude/scripts/merge-gate.sh` to confirm CI is green before proceeding
 
 **Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, or any suppression comment to work around CI.** Fix the actual code.
-
-If all checks pass, proceed to merge.
 
 ### Step 5: Squash merge
 
