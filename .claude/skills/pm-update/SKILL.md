@@ -28,13 +28,20 @@ If `.claude/pm-config.md` does not exist, tell the user: "No PM config found. Ru
 
 ## Step 2: Parse existing config into sections
 
-Read `.claude/pm-config.md` and identify sections by **line-anchored level-2 headers** — lines matching `^## ` at the start of the line. For each section, store:
-- The header name (the text after `## `, e.g., "Role", "Infrastructure")
-- The full content between this header line and the next `^## ` line (or end of file), preserved verbatim
+Enumerate section names via the shared parser, then extract each body by name:
 
-Do not split on `## ` appearing mid-line within section body text — only match headers that start at column 1.
+```bash
+# List every `^## ` header in the config (one name per line).
+mapfile -t SECTIONS < <(.claude/scripts/pm-config-get.sh --list 2>/dev/null)
 
-Preserve the file's title line (the `# PM Config — ...` line at the top).
+# For each section, fetch the verbatim body.
+for name in "${SECTIONS[@]}"; do
+  body="$(.claude/scripts/pm-config-get.sh --section "$name" 2>/dev/null)"
+  # store (name, body) — reuse body in Steps 3-7
+done
+```
+
+`pm-config-get.sh` handles line-anchored `^## ` matching (no mid-line matches), preserves body content verbatim, and stops at the next `^## ` or EOF. Preserve the file's title line (`# PM Config — ...`) separately — it sits above all `## ` sections.
 
 ## Step 3: Preserve user-edited sections
 

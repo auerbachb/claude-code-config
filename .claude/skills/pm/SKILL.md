@@ -58,10 +58,12 @@ Read existing orchestration state to continue where a previous PM thread left of
 ### 1A.1: Load pm-config.md
 
 ```bash
-test -f .claude/pm-config.md && echo "CONFIG_EXISTS" || echo "NO_CONFIG"
+# Enumerate `^## ` headers; no output + rc=2 means the config file is missing.
+mapfile -t SECTIONS < <(.claude/scripts/pm-config-get.sh --list 2>/dev/null)
+LIST_RC=$?
 ```
 
-If config exists, parse it using line-anchored `^## ` headers (same logic as `/pm-handoff` Step 3). If missing, tell the user to run `/pm-handoff` first to bootstrap the config.
+If `LIST_RC == 2`, tell the user to run `/pm-handoff` first to bootstrap the config. Otherwise, iterate `${SECTIONS[@]}` and call `.claude/scripts/pm-config-get.sh --section "$name"` for each body (same loop as `/pm-handoff` Step 3).
 
 ### 1A.2: Load in-flight state
 
@@ -128,13 +130,15 @@ No prior state — scan GitHub and suggest what to work on.
 ### 1B.1: Load or bootstrap pm-config.md
 
 ```bash
-test -f .claude/pm-config.md && echo "CONFIG_EXISTS" || echo "BOOTSTRAP"
+# Probe for the config file via the shared parser. rc=2 means the file is missing.
+.claude/scripts/pm-config-get.sh --list >/dev/null 2>&1
+LIST_RC=$?
 ```
 
-- If **BOOTSTRAP**: Run the same bootstrap logic as `/pm-handoff` Step 2 (detect infrastructure, map architecture, generate pm-config.md). Then continue.
-- If **CONFIG_EXISTS**: Parse it using line-anchored `^## ` headers.
+- If `LIST_RC == 2` (**BOOTSTRAP**): run the same bootstrap logic as `/pm-handoff` Step 2 (detect infrastructure, map architecture, generate pm-config.md). Then continue.
+- Otherwise (**CONFIG_EXISTS**): parse sections via `--list` + per-section `--section <name>` as in 1A.1.
 
-Extract the `## OKRs` section if present and non-placeholder. Set `OKR_MODE=true` if OKRs exist.
+Extract the `## OKRs` section via `.claude/scripts/pm-config-get.sh --section OKRs`. If `rc=0` **and** the body does not start with "No OKRs set", set `OKR_MODE=true`.
 
 ### 1B.2: Fetch GitHub state
 

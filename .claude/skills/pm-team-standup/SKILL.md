@@ -37,13 +37,14 @@ Adjust the date expressions to match the user's time reference. See `.claude/scr
 
 ## Step 2: Load team config (optional)
 
-Check if `.claude/pm-config.md` exists and has a `## Team` section:
+Extract the `## Team` section via the shared parser:
 
 ```bash
-test -f .claude/pm-config.md && echo "CONFIG_EXISTS" || echo "NO_CONFIG"
+TEAM_CONTENT="$(.claude/scripts/pm-config-get.sh --section Team 2>/dev/null)"
+TEAM_RC=$?
 ```
 
-If the config exists, parse the `## Team` section (line-anchored `^## Team` through the next `^## ` header or EOF). Extract any contributor entries — typically formatted as:
+If `TEAM_RC=0`, parse `$TEAM_CONTENT` for contributor entries — typically formatted as:
 
 ```
 - @github-username — Display Name (Role)

@@ -33,7 +33,14 @@ See `.claude/scripts/gh-window.sh` for the ET-anchored, macOS + GNU-compatible d
 
 ## Step 2: Load team config (optional)
 
-Check if `.claude/pm-config.md` exists and has a `## Team` section. If present, parse contributor entries for display names and roles (same as `/pm-team-standup` Step 2). Use this for labeling output sections.
+Extract the `## Team` section via the shared parser:
+
+```bash
+TEAM_CONTENT="$(.claude/scripts/pm-config-get.sh --section Team 2>/dev/null)"
+TEAM_RC=$?
+```
+
+If `TEAM_RC=0`, parse contributor entries from `$TEAM_CONTENT` for display names and roles (same format as `/pm-team-standup` Step 2). Use this for labeling output sections. Otherwise, skip — use GitHub usernames as-is.
 
 ## Step 3: Gather data
 

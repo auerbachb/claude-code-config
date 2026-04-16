@@ -33,13 +33,15 @@ If only a business goal is provided (no pipes), use defaults for segments 2 and 
 
 ### Step 0: Detect OKRs (optional enhancement)
 
-Check if `.claude/pm-config.md` exists and has a non-empty OKRs section:
+Extract the `## OKRs` section via the shared parser:
 
 ```bash
-test -f .claude/pm-config.md && echo "CONFIG_EXISTS" || echo "NO_CONFIG"
+# rc=0 → present with non-empty body; rc=1 → missing/empty; rc=2 → no config file.
+OKRS_CONTENT="$(.claude/scripts/pm-config-get.sh --section OKRs 2>/dev/null)"
+OKRS_RC=$?
 ```
 
-If the config exists, extract the `## OKRs` section content: from a line matching `^## OKRs` at column 1 through the line before the next `^## ` header (or EOF). When the section is empty, contains only a placeholder (any text starting with "No OKRs set"), or the config doesn't exist, set `OKR_MODE=false` and proceed with heuristic-only ranking.
+If `OKRS_RC != 0` **or** `OKRS_CONTENT` starts with "No OKRs set" (the bootstrap placeholder), set `OKR_MODE=false` and proceed with heuristic-only ranking. Otherwise set `OKR_MODE=true`.
 
 For sections containing objectives and key results, set `OKR_MODE=true` and parse the OKRs into a structured list. Expected format:
 
