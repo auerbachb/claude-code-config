@@ -116,44 +116,17 @@ After fixing BugBot findings and pushing, BugBot auto-reviews the new push. If a
 
 ### Daily Budget Check (MANDATORY before EVERY `@greptileai` trigger)
 
+Gate every `@greptileai` post on a successful `--consume`. The script handles same-day reset, cross-day reset, atomic write-back, and sibling preservation on `~/.claude/session-state.json`.
+
 ```bash
-# Read budget from session state — with safe defaults if missing OR corrupt.
-# Both conditions must be handled: a missing file, AND a file that contains invalid JSON
-# (jq exits non-zero on invalid JSON, which would otherwise crash the flow before budget enforcement).
-mkdir -p ~/.claude
-if [ -f ~/.claude/session-state.json ] && jq -e . ~/.claude/session-state.json >/dev/null 2>&1; then
-  # File exists AND parses as valid JSON — extract greptile_daily with field-level default
-  GREPTILE_DAILY=$(jq '.greptile_daily // {"date": "", "reviews_used": 0, "budget": 40}' ~/.claude/session-state.json)
-else
-  # File is missing OR contains invalid JSON — recover with a safe default and rewrite atomically
-  GREPTILE_DAILY='{"date":"","reviews_used":0,"budget":40}'
-  jq -n --argjson gd "$GREPTILE_DAILY" '{greptile_daily: $gd}' > ~/.claude/session-state.json.tmp \
-    && mv ~/.claude/session-state.json.tmp ~/.claude/session-state.json
+# Exit 0 = consumed (safe to post @greptileai); exit 1 = exhausted (do NOT post).
+if ! .claude/scripts/greptile-budget.sh --consume >/dev/null; then
+  echo "Greptile budget exhausted — falling back to self-review for PR #{{PR_NUMBER}}" >&2
+  # Self-review path below. Do NOT post @greptileai.
 fi
-echo "$GREPTILE_DAILY"
 ```
 
-1. Get current date: `TZ='America/New_York' date +'%Y-%m-%d'`
-2. If `date` differs from today, reset `reviews_used` to 0
-3. If `reviews_used >= budget` → fall back to self-review. Report blocker. Do NOT post `@greptileai`.
-4. Otherwise, increment `reviews_used` and write back BEFORE posting `@greptileai`.
-
-**Safe write-back (MANDATORY — surgical `jq` update).** A naive `echo '{"greptile_daily": ...}' > ~/.claude/session-state.json` would WIPE all other top-level fields (`prs`, `active_agents`, `cr_quota`, `root_repo`, `work_log_path`, `last_updated`). Always merge into the existing file:
-
-```bash
-TODAY=$(TZ='America/New_York' date +'%Y-%m-%d')
-# If today differs from the stored date, reset reviews_used to 0 before incrementing.
-# Use a temp file + mv to avoid partial writes if jq fails mid-stream.
-jq --arg today "$TODAY" \
-  '.greptile_daily //= {"date": "", "reviews_used": 0, "budget": 40}
-   | if .greptile_daily.date != $today then .greptile_daily.reviews_used = 0 | .greptile_daily.date = $today else . end
-   | .greptile_daily.reviews_used += 1
-   | .last_updated = (now | todate)' \
-  ~/.claude/session-state.json > ~/.claude/session-state.json.tmp \
-  && mv ~/.claude/session-state.json.tmp ~/.claude/session-state.json
-```
-
-This preserves every other top-level field while updating only `greptile_daily` and `last_updated`. Never use `echo` or string concatenation to rewrite session-state.json.
+See `.claude/scripts/greptile-budget.sh --help` for `--check`, `--reset`, `--budget N` overrides, and the full JSON output contract. The script is the single source of truth for the budget rules in `.claude/rules/greptile.md` — do not reinvent the budget math inline.
 
 ### Triggering
 
