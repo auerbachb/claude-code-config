@@ -30,27 +30,31 @@ If no open PRs, say "No open PRs." and stop.
 
 ### Step 2: For each PR, gather review state
 
-For each open PR, fetch review data from all 3 endpoints:
+For each open PR, run the shared PR-state helper once per PR. One invocation returns reviews, inline comments, issue comments, unresolved threads, check-runs, and bot status rollups — all derived from the same HEAD SHA:
 
 ```bash
-# Reviews (approve/changes requested)
-gh api "repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100" \
-  --jq '[.[] | select(.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]") | {user: .user.login, state: .state, submitted: .submitted_at}] | sort_by(.submitted) | if length == 0 then {} else last end'
-
-# Unresolved findings (use GraphQL to get only unresolved threads)
-gh api graphql -f query='query { repository(owner: "{owner}", name: "{repo}") { pullRequest(number: {N}) { reviewThreads(first: 100) { nodes { isResolved comments(first: 1) { nodes { author { login } } } } } } } }' \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length'
-
-# Issue comments (summary, ack)
-gh api "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
-  --jq '[.[] | select(.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]")] | length'
+STATE=$(.claude/scripts/pr-state.sh --pr "$N")
 ```
 
-Also check the commit status:
+All subsequent queries read from `$STATE`:
+
 ```bash
-SHA=$(gh pr view N --json commits --jq '.commits[-1].oid')
-gh api "repos/{owner}/{repo}/commits/$SHA/check-runs" \
-  --jq '.check_runs[] | select(.name == "CodeRabbit") | {status: .status, conclusion: .conclusion}'
+# Last review from CR or Greptile (state: APPROVED / COMMENTED / CHANGES_REQUESTED)
+jq '[.comments.reviews[]
+     | select(.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]")
+     | {user: .user.login, state, submitted: .submitted_at}]
+     | sort_by(.submitted) | if length == 0 then {} else last end' "$STATE"
+
+# Unresolved thread count
+jq '.threads.unresolved_count' "$STATE"
+
+# CR/Greptile issue-comment count (summaries, acks, PR-level findings)
+jq '[.comments.conversation[]
+     | select(.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]")]
+     | length' "$STATE"
+
+# CodeRabbit check-run status (also serves as rate-limit signal via title)
+jq '.check_runs.all[] | select(.name == "CodeRabbit") | {status, conclusion, title}' "$STATE"
 ```
 
 ### Step 3: Determine status for each PR

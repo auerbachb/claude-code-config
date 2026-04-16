@@ -37,21 +37,32 @@ If running in a worktree, stop here and tell the user: "This PR was developed in
 
 ### Step 2: Verify the merge gate
 
+Run the shared PR-state helper once and read every downstream check from the resulting JSON bundle (eliminates overlapping `gh api` round trips). `/merge` runs outside worktrees (Step 1 aborts inside one), so the current branch is the PR's feature branch and no `--pr` override is needed.
+
+> **`$STATE` is a file path, not JSON.** `pr-state.sh` writes `/tmp/pr-state-<PR>-<epoch>.json` and prints that path on stdout. Every `jq` below passes `"$STATE"` as the file argument. The script exits non-zero on failure (gh/network error, closed PR, detached HEAD) — under `set -e` the skill aborts automatically; in an ad-hoc shell, check `$?` before using `$STATE`.
+
+```bash
+STATE=$(.claude/scripts/pr-state.sh)
+PR_NUMBER=$(jq -r '.pr.number' "$STATE")
+HEAD_SHA=$(jq -r '.pr.head_sha' "$STATE")
+```
+
 Determine which reviewer owns this PR:
 
 1. **Check session-state** — read `~/.claude/session-state.json` and check the `reviewer` field for this PR number. If it says `"g"`, this PR is on Greptile.
-2. **If no session-state entry**, check the PR's review history to determine ownership:
+2. **If no session-state entry**, check the PR's review history from the bundle:
    ```bash
-   gh api "repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100" --jq '.[].user.login'
-   gh api "repos/{owner}/{repo}/pulls/{N}/comments?per_page=100" --jq '.[].user.login'
-   gh api "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" --jq '.[].user.login'
+   jq -r '[.comments.reviews[], .comments.inline[], .comments.conversation[]] | .[].user.login' "$STATE" | sort -u
    ```
    - If `greptile-apps[bot]` has posted reviews/comments, this PR is on Greptile.
    - Otherwise, it's on CR.
 
 **Merge gate check:**
 
-- **CR-only PR:** Need 2 clean CR reviews. Check the last 2 review objects from `coderabbitai[bot]` — both must have no actionable findings. Also verify the CodeRabbit check-run shows `conclusion: "success"`.
+- **CR-only PR:** Need 2 clean CR reviews. Check the last 2 review objects from `coderabbitai[bot]` — both must have no actionable findings. Also verify the CodeRabbit check-run:
+  ```bash
+  jq '.check_runs.all[] | select(.name == "CodeRabbit") | {status, conclusion}' "$STATE"
+  ```
 - **Greptile PR:** Need 1 clean Greptile review. Check the last review from `greptile-apps[bot]` has no actionable findings.
 
 If the merge gate is NOT met, stop and tell the user exactly what's missing (e.g., "PR needs 1 more clean CR review" or "Greptile has unresolved findings").
@@ -62,19 +73,30 @@ Run the `/check-acceptance-criteria` skill logic for this PR. All Test Plan chec
 
 ### Step 4: Verify CI passes (NON-NEGOTIABLE)
 
-Before merging, check ALL CI check-runs on the HEAD commit:
+Before merging, inspect the check-runs from `$STATE` (already fetched in Step 2 for the current HEAD SHA). If you reach this step directly without Step 2, re-run `STATE=$(.claude/scripts/pr-state.sh)` first.
+
+Look for any incomplete or blocking check-runs:
 
 ```bash
-SHA=$(gh pr view <PR_NUMBER> --json commits --jq '.commits[-1].oid')
-gh api "repos/{owner}/{repo}/commits/$SHA/check-runs?per_page=100" \
-  --jq '.check_runs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required") | {name, conclusion}'
+# Incomplete (still running or queued)
+jq '.check_runs.in_progress_runs' "$STATE"
+
+# Blocking conclusions (failure, timed_out, action_required, startup_failure, stale)
+jq '.check_runs.failing_runs' "$STATE"
 ```
 
-**If ANY check-run has a blocking conclusion: DO NOT MERGE.** Instead:
-1. Read the failure output: `gh api "repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID}" --jq '.output.summary'`
+**If `in_progress_runs` is non-empty:** wait — do NOT merge. A null/pending conclusion is not a pass.
+
+**If `failing_runs` has ANY entry: DO NOT MERGE.** Instead:
+1. Read the failure output: `gh api "repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID}" --jq '.output.summary'` (each entry in `failing_runs` already includes the `id` and `title`).
 2. Fix the issue (lint errors, type errors, test failures, etc.)
 3. Commit, push, and wait for CI to re-run
-4. Re-verify all checks pass before proceeding
+4. Refresh `$STATE` and re-verify every check before proceeding:
+   ```bash
+   STATE=$(.claude/scripts/pr-state.sh)
+   jq '.check_runs.in_progress_runs, .check_runs.failing_runs' "$STATE"
+   ```
+   Both arrays must be empty before the merge gate is clear.
 
 **Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, or any suppression comment to work around CI.** Fix the actual code.
 
