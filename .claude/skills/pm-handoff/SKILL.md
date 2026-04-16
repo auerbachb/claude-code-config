@@ -12,14 +12,15 @@ Parse `$ARGUMENTS`:
 
 ## Step 1: Detect mode (bootstrap vs. standard)
 
-Check if `.claude/pm-config.md` exists in the current repo:
+Probe for the config file via the shared parser — rc=2 means missing:
 
 ```bash
-test -f .claude/pm-config.md && echo "CONFIG_EXISTS" || echo "BOOTSTRAP"
+.claude/scripts/pm-config-get.sh --list >/dev/null 2>&1
+CONFIG_RC=$?
 ```
 
-- If **BOOTSTRAP**: proceed to Step 2 (create config from repo scan)
-- If **CONFIG_EXISTS**: skip to Step 3 (read existing config)
+- If `CONFIG_RC == 2` (**BOOTSTRAP**): proceed to Step 2 (create config from repo scan)
+- Otherwise (**CONFIG_EXISTS**): skip to Step 3 (read existing config)
 
 ## Step 2: Bootstrap — create pm-config.md from repo discovery
 
@@ -113,7 +114,18 @@ Tell the user the config was bootstrapped and they should review/customize the R
 
 ## Step 3: Read existing config
 
-Parse `.claude/pm-config.md` using line-anchored level-2 headers (`^## ` at column 1). For each header, capture content verbatim until the next `^## ` header (or EOF), then store by header name. Do not split on `## ` appearing mid-line in section bodies.
+Parse `.claude/pm-config.md` via the shared parser:
+
+```bash
+# Enumerate headers, then fetch each body verbatim.
+mapfile -t SECTIONS < <(.claude/scripts/pm-config-get.sh --list 2>/dev/null)
+for name in "${SECTIONS[@]}"; do
+  body="$(.claude/scripts/pm-config-get.sh --section "$name" 2>/dev/null)"
+  # store (name, body) for use in later steps
+done
+```
+
+`pm-config-get.sh` handles line-anchored `^## ` matching (no mid-line matches), the next-header/EOF boundary, and preserves body content verbatim.
 
 ## Step 4: Fetch live GitHub state
 

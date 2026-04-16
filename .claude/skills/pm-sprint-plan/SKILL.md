@@ -21,19 +21,22 @@ fi
 
 ## Step 1: Load pm-config.md (optional)
 
-Check if `.claude/pm-config.md` exists:
+Extract the three relevant sections via the shared parser:
 
 ```bash
-test -f .claude/pm-config.md && echo "CONFIG_EXISTS" || echo "NO_CONFIG"
+# rc=0 → present with non-empty body; rc=1 → missing/empty; rc=2 → no config file.
+TEAM_CONTENT="$(.claude/scripts/pm-config-get.sh --section Team 2>/dev/null)";   TEAM_RC=$?
+OKRS_CONTENT="$(.claude/scripts/pm-config-get.sh --section OKRs 2>/dev/null)";   OKRS_RC=$?
+NOTES_CONTENT="$(.claude/scripts/pm-config-get.sh --section Notes 2>/dev/null)"; NOTES_RC=$?
 ```
 
-If the config exists, parse it using line-anchored level-2 headers (`^## ` at column 1). Extract these sections when present:
+Per-section handling:
 
-- **`## Team`**: Parse contributor entries for GitHub usernames, display names, and roles. Expected format: lines containing `@username` with optional role/description text.
-- **`## OKRs`**: Extract objectives and key results. Set `OKR_MODE=true` if the section is non-empty and does not start with "No OKRs set". Parse into structured list (O1/KR1, O1/KR2, etc.).
-- **`## Notes`**: Read for any sprint-relevant context.
+- **`$TEAM_CONTENT`** (when `TEAM_RC=0`): parse contributor entries — lines containing `@username` with optional role/description text.
+- **`$OKRS_CONTENT`** (when `OKRS_RC=0`): set `OKR_MODE=true` if the body does not start with "No OKRs set". Parse into structured list (O1/KR1, O1/KR2, etc.).
+- **`$NOTES_CONTENT`** (when `NOTES_RC=0`): read for any sprint-relevant context.
 
-If the config is missing or a section is empty/placeholder, degrade gracefully — note which features are skipped.
+If the config is missing (`RC=2`) or a section is empty/placeholder, degrade gracefully — note which features are skipped.
 
 ## Step 2: Fetch and read open issues
 

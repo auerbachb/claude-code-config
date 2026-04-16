@@ -34,17 +34,14 @@ Before spawning subagents, fetch shared context that all PR reviews need. This r
 Check for OKRs first, fall back to README:
 
 ```bash
-test -f .claude/pm-config.md && echo "CONFIG_EXISTS" || echo "NO_CONFIG"
+# Extract OKRs section (exit 0 = present, 1 = missing/empty, 2 = no config).
+OKRS_CONTENT="$(.claude/scripts/pm-config-get.sh --section OKRs 2>/dev/null)"
+OKRS_RC=$?
 ```
 
-If the config exists, extract the `## OKRs` section: from a line matching `^## OKRs` at column 1 through the line before the next `^## ` header (or EOF):
+`pm-config-get.sh --section OKRs` handles the file-exists check, the line-anchored `^## OKRs` parse, and the "next `^## ` header or EOF" boundary internally. See `.claude/scripts/pm-config-get.sh --help` for the full contract.
 
-```bash
-# Extract OKRs section from pm-config.md
-sed -n '/^## OKRs$/,/^## /{/^## OKRs$/d;/^## /d;p}' .claude/pm-config.md
-```
-
-If the extracted content is empty, only whitespace, or starts with "No OKRs set", set `HAS_OKRS=false`. Otherwise set `HAS_OKRS=true` and capture the content.
+Set `HAS_OKRS=true` only if `OKRS_RC=0` **and** `OKRS_CONTENT` does not start with "No OKRs set" (the bootstrap placeholder). Otherwise set `HAS_OKRS=false` and fall back to README context.
 
 If no OKRs available, fetch fallback context. First, resolve the canonical repo name once (reuse in all subagent prompts):
 
@@ -64,7 +61,7 @@ gh label list --limit 50
 
 Set a disclosure string based on the result:
 - If OKRs found: `STRATEGIC_CONTEXT_DISCLOSURE="Assessed against OKRs from \`pm-config.md\`."`
-- If README fallback: `STRATEGIC_CONTEXT_DISCLOSURE="*Note: No OKR document found (\`pm-config.md\`). Strategic fit assessed against repo README and recent milestones only.*"`
+- If README fallback: `STRATEGIC_CONTEXT_DISCLOSURE="*Note: No usable OKRs in \`pm-config.md\` (missing file, empty \`## OKRs\` section, or placeholder text). Strategic fit assessed against repo README and recent milestones only.*"`
 
 Pass `STRATEGIC_CONTEXT_DISCLOSURE` into each subagent prompt, substituting `{STRATEGIC_CONTEXT_DISCLOSURE}` in the template.
 

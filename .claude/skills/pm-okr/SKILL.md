@@ -21,7 +21,15 @@ If missing, tell the user: "No PM config found. Run `/pm` first to bootstrap it.
 
 ## Step 2: Parse the config
 
-Read `.claude/pm-config.md` and extract the `## OKRs` section content using line-anchored headers: from a line matching `^## OKRs` at column 1 through the line before the next `^## ` header (or EOF). Do not match `## ` appearing mid-line in body text.
+Extract the `## OKRs` section body via the shared parser:
+
+```bash
+# rc=0 → present with non-empty body; rc=1 → missing or body empty; rc=2 → no config file.
+OKRS_CONTENT="$(.claude/scripts/pm-config-get.sh --section OKRs 2>/dev/null)"
+OKRS_RC=$?
+```
+
+`pm-config-get.sh` handles the line-anchored `^## OKRs` match (no mid-line matches) and the "next `^## ` or EOF" boundary. See `.claude/scripts/pm-config-get.sh --help`.
 
 ## Mode: show (default)
 

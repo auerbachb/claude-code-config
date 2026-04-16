@@ -30,13 +30,14 @@ See `.claude/scripts/gh-window.sh` for the ET-anchored, macOS + GNU-compatible d
 
 ## Step 2: Load team config (optional)
 
-Check if `.claude/pm-config.md` exists and has a `## Team` section:
+Extract the `## Team` section via the shared parser:
 
 ```bash
-test -f .claude/pm-config.md && echo "CONFIG_EXISTS" || echo "NO_CONFIG"
+TEAM_CONTENT="$(.claude/scripts/pm-config-get.sh --section Team 2>/dev/null)"
+TEAM_RC=$?
 ```
 
-If present, parse contributor entries for display names, GitHub usernames, and roles. Expected format: lines containing `@username` with optional role/description text (e.g., `@alice — Frontend lead`). Use these for labeling output sections. If missing, derive contributors from git activity.
+If `TEAM_RC=0`, parse contributor entries from `$TEAM_CONTENT` for display names, GitHub usernames, and roles. Expected format: lines containing `@username` with optional role/description text (e.g., `@alice — Frontend lead`). Use these for labeling output sections. If `TEAM_RC != 0`, derive contributors from git activity.
 
 ## Step 3: Gather data — what got done
 
