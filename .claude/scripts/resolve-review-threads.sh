@@ -150,7 +150,7 @@ collect_threads() {
     }"
     local resp
     if ! resp=$(gh api graphql -f query="$query" 2>&1); then
-      if printf '%s' "$resp" | grep -qi "could not resolve to a pullrequest\|not found"; then
+      if printf '%s' "$resp" | grep -qi "could not resolve to a pullrequest"; then
         echo "ERROR: PR #$PR_NUMBER not found in $OWNER/$REPO" >&2
         exit 3
       fi
