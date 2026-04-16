@@ -30,7 +30,10 @@ If you catch yourself composing a "should I...?" question about any workflow ste
 1. **Pull remote main into local main:**
 
    ```bash
-   ROOT_REPO=$(git worktree list | head -1 | awk '{print $1}')
+   ROOT_REPO=$(.claude/scripts/repo-root.sh 2>/dev/null || true)
+   if [[ -z "$ROOT_REPO" || ! -d "$ROOT_REPO" ]]; then
+     echo "ERROR: could not resolve root repo path" >&2; exit 1
+   fi
    git -C "$ROOT_REPO" pull origin main --ff-only
    ```
 

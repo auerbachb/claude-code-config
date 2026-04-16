@@ -16,8 +16,19 @@ set -euo pipefail
 SKILLS_WORKTREE="$HOME/.claude/skills-worktree"
 SKILLS_DIR="$HOME/.claude/skills"
 
-# Find the repo root (works from anywhere inside the repo or a worktree)
-REPO_ROOT="$(git worktree list 2>/dev/null | head -1 | awk '{print $1}')" || true
+# Locate the script dir so we can invoke the repo-root helper by absolute path,
+# independent of the caller's cwd.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT_HELPER="$SCRIPT_DIR/.claude/scripts/repo-root.sh"
+
+# Find the repo root (works from anywhere inside the repo or a worktree).
+# Prefer the shared helper; fall back to the inline one-liner when the helper
+# file isn't on disk yet (e.g., this script was copied into a bare clone).
+if [[ -x "$REPO_ROOT_HELPER" ]]; then
+  REPO_ROOT="$("$REPO_ROOT_HELPER" 2>/dev/null)" || true
+else
+  REPO_ROOT="$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{sub(/^worktree /, ""); print; exit}')" || true
+fi
 
 if [[ -z "$REPO_ROOT" || ! -d "$REPO_ROOT/.git" ]]; then
   echo "ERROR: Could not find the root repo. Run this from inside the claude-code-config repo." >&2
@@ -30,7 +41,11 @@ echo "Root repo: $REPO_ROOT"
 
 if [[ -d "$SKILLS_WORKTREE" ]]; then
   # Verify it's a valid worktree pointing to this repo
-  wt_root="$(git -C "$SKILLS_WORKTREE" worktree list 2>/dev/null | head -1 | awk '{print $1}')"
+  if [[ -x "$REPO_ROOT_HELPER" ]]; then
+    wt_root="$("$REPO_ROOT_HELPER" "$SKILLS_WORKTREE" 2>/dev/null)" || wt_root=""
+  else
+    wt_root="$(git -C "$SKILLS_WORKTREE" worktree list --porcelain 2>/dev/null | awk '/^worktree /{sub(/^worktree /, ""); print; exit}')" || wt_root=""
+  fi
   if [[ "$wt_root" == "$REPO_ROOT" ]]; then
     echo "Skills worktree already exists at $SKILLS_WORKTREE — updating to latest main."
     git -C "$SKILLS_WORKTREE" fetch origin main --quiet

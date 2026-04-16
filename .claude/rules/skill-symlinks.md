@@ -27,8 +27,12 @@ At the start of every session, verify the skills worktree exists. If missing, ru
 
 ```bash
 if [[ ! -d "$HOME/.claude/skills-worktree/.claude/skills" ]]; then
-  REPO_ROOT="$(git worktree list | head -1 | awk '{print $1}')"
-  bash "$REPO_ROOT/setup-skills-worktree.sh"
+  REPO_ROOT="$(.claude/scripts/repo-root.sh 2>/dev/null || true)"
+  if [[ -n "$REPO_ROOT" && -d "$REPO_ROOT" ]]; then
+    bash "$REPO_ROOT/setup-skills-worktree.sh"
+  else
+    echo "ERROR: could not resolve root repo — cannot bootstrap skills worktree" >&2
+  fi
 fi
 ```
 
@@ -72,6 +76,10 @@ Every entry should show `->` pointing to `~/.claude/skills-worktree/...`. If any
 To fix all symlinks at once, re-run the setup script:
 
 ```bash
-REPO_ROOT="$(git worktree list | head -1 | awk '{print $1}')"
-bash "$REPO_ROOT/setup-skills-worktree.sh"
+REPO_ROOT="$(.claude/scripts/repo-root.sh 2>/dev/null || true)"
+if [[ -n "$REPO_ROOT" && -d "$REPO_ROOT" ]]; then
+  bash "$REPO_ROOT/setup-skills-worktree.sh"
+else
+  echo "ERROR: could not resolve root repo" >&2
+fi
 ```
