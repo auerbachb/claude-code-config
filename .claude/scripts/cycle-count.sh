@@ -35,15 +35,22 @@
 #   2. Fetch reviews (optionally bot-filtered), sorted by submitted_at.
 #   3. Fetch inline comments to identify actionable reviews (those with at least
 #      one inline comment).
-#   4. Filter reviews to actionable ones: state == "CHANGES_REQUESTED" OR the
-#      review has at least one inline comment attached. Matches the
-#      "actionable review" definition in .claude/rules/work-log.md.
+#   4. Annotate each review with an `actionable` flag: true when
+#      state == "CHANGES_REQUESTED" OR the review has at least one inline
+#      comment attached. Matches the "actionable review" definition in
+#      .claude/rules/work-log.md.
 #   5. Fetch commits, sorted by committer date.
-#   6. For each actionable review i (iterated in the original sorted order, so
-#      the "next boundary" is the next actionable review's submitted_at),
-#      count one cycle iff there exists a commit c with
-#      actionable_reviews[i].submitted_at < c.date < boundary, where boundary is
-#      actionable_reviews[i+1].submitted_at or mergedAt (or now for open PRs).
+#   6. Walk reviews in chronological order. At each position, the boundary is
+#      the next review's submitted_at (actionable or not — every review serves
+#      as a boundary). Count the position only if its own review is actionable
+#      and there exists a commit c with
+#      reviews[i].submitted_at < c.date < boundary, where boundary is
+#      reviews[i+1].submitted_at or mergedAt (or now for open PRs).
+#      Non-actionable reviews (approvals with no findings, bare COMMENTED
+#      reviews with no inline comments) are NOT counted themselves but DO
+#      serve as boundaries for earlier actionable reviews, preventing
+#      over-counting when a commit is triggered by feedback that arrives
+#      after an actionable review but before a later non-actionable one.
 
 set -euo pipefail
 
@@ -130,8 +137,13 @@ PR_META_STDERR="$(mktemp)"
 REVIEWS_RAW=""
 COMMITS_RAW=""
 INLINE_RAW=""
+GH_CALL_STDERR="$(mktemp)"
 cleanup() {
-  rm -f "$PR_META_STDERR" "$REVIEWS_RAW" "$COMMITS_RAW" "$INLINE_RAW" 2>/dev/null || true
+  rm -f "$PR_META_STDERR" "$GH_CALL_STDERR" 2>/dev/null || true
+  [[ -n "$REVIEWS_RAW" ]] && rm -f "$REVIEWS_RAW" 2>/dev/null
+  [[ -n "$COMMITS_RAW" ]] && rm -f "$COMMITS_RAW" 2>/dev/null
+  [[ -n "$INLINE_RAW" ]]  && rm -f "$INLINE_RAW"  2>/dev/null
+  return 0  # never propagate cleanup failures to the script's exit code
 }
 trap cleanup EXIT
 
@@ -155,7 +167,8 @@ fi
 
 # --- fetch reviews ---
 REVIEWS_RAW="$(mktemp)"
-if ! gh api "repos/{owner}/{repo}/pulls/$PR_NUM/reviews?per_page=100" --paginate >"$REVIEWS_RAW" 2>/dev/null; then
+if ! gh api "repos/{owner}/{repo}/pulls/$PR_NUM/reviews?per_page=100" --paginate >"$REVIEWS_RAW" 2>"$GH_CALL_STDERR"; then
+  sed 's/^/gh: /' "$GH_CALL_STDERR" >&2
   echo "Error: gh api failed fetching reviews for PR #$PR_NUM" >&2
   exit 4
 fi
@@ -186,7 +199,8 @@ fi
 # or has at least one inline comment. We fetch the PR's inline comments and
 # extract the set of review IDs they belong to.
 INLINE_RAW="$(mktemp)"
-if ! gh api "repos/{owner}/{repo}/pulls/$PR_NUM/comments?per_page=100" --paginate >"$INLINE_RAW" 2>/dev/null; then
+if ! gh api "repos/{owner}/{repo}/pulls/$PR_NUM/comments?per_page=100" --paginate >"$INLINE_RAW" 2>"$GH_CALL_STDERR"; then
+  sed 's/^/gh: /' "$GH_CALL_STDERR" >&2
   echo "Error: gh api failed fetching inline comments for PR #$PR_NUM" >&2
   exit 4
 fi
@@ -198,21 +212,31 @@ ACTIONABLE_REVIEW_IDS="$(jq -s '
   exit 4
 }
 
-# --- filter reviews to actionable ones ---
-# Keep reviews where state == "CHANGES_REQUESTED" OR the review id appears in
-# ACTIONABLE_REVIEW_IDS (i.e., it has at least one inline comment).
-ACTIONABLE_REVIEWS_JSON="$(jq -n \
+# --- annotate reviews with actionable flag ---
+# Keep the full chronological review stream — every review (actionable or not)
+# still serves as a boundary for earlier reviews. Only the "actionable" flag
+# decides whether a given review is *counted*.
+# A review is actionable when state == "CHANGES_REQUESTED" OR its id appears in
+# ACTIONABLE_REVIEW_IDS (i.e., it has at least one inline comment). This
+# matches .claude/rules/work-log.md.
+REVIEWS_WITH_ACTIONABLE_JSON="$(jq -n \
   --argjson reviews "$REVIEWS_JSON" \
   --argjson actionable_ids "$ACTIONABLE_REVIEW_IDS" '
-  [$reviews[] | select(.state == "CHANGES_REQUESTED" or (.id as $rid | $actionable_ids | index($rid)))]
+  [$reviews[] | . + {
+    actionable: (
+      .state == "CHANGES_REQUESTED"
+      or (.id as $rid | ($actionable_ids | index($rid) != null))
+    )
+  }]
 ')" || {
-  echo "Error: jq failed filtering actionable reviews for PR #$PR_NUM" >&2
+  echo "Error: jq failed annotating reviews for PR #$PR_NUM" >&2
   exit 4
 }
 
 # --- fetch commits ---
 COMMITS_RAW="$(mktemp)"
-if ! gh api "repos/{owner}/{repo}/pulls/$PR_NUM/commits?per_page=100" --paginate >"$COMMITS_RAW" 2>/dev/null; then
+if ! gh api "repos/{owner}/{repo}/pulls/$PR_NUM/commits?per_page=100" --paginate >"$COMMITS_RAW" 2>"$GH_CALL_STDERR"; then
+  sed 's/^/gh: /' "$GH_CALL_STDERR" >&2
   echo "Error: gh api failed fetching commits for PR #$PR_NUM" >&2
   exit 4
 fi
@@ -226,17 +250,18 @@ COMMITS_JSON="$(jq -s '
 }
 
 # --- compute cycle count ---
-# For each actionable review, check whether at least one commit lies strictly
-# between its submitted_at and the next boundary (next actionable review, else
-# END_BOUNDARY). Non-actionable reviews (approvals without findings, bare
-# COMMENTED reviews with no body/inline comments) are skipped entirely so they
-# do not interpose a false boundary either.
+# For each review position, take the next review's submitted_at (regardless of
+# whether that next review is actionable) as the boundary. Count this position
+# only if the review at this position is actionable. This way non-actionable
+# reviews correctly serve as boundaries for earlier actionable reviews, but
+# they themselves do not contribute to the count.
 CYCLE_COUNT="$(jq -n \
-  --argjson reviews "$ACTIONABLE_REVIEWS_JSON" \
+  --argjson reviews "$REVIEWS_WITH_ACTIONABLE_JSON" \
   --argjson commits "$COMMITS_JSON" \
   --arg end "$END_BOUNDARY" '
   ($reviews | length) as $n
   | [range(0; $n) as $i
+     | select($reviews[$i].actionable)
      | $reviews[$i].submitted_at as $rt
      | (if $i + 1 < $n then $reviews[$i+1].submitted_at else $end end) as $next
      | ($commits | any(.date > $rt and .date < $next))
