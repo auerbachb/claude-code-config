@@ -60,7 +60,13 @@ INPUT=""
 CHECK_RUNS_STDIN=0
 
 print_usage() {
-  awk 'NR == 1 { next } /^$/ { exit } { print }' "$0"
+  awk '
+    NR == 1 { next }
+    /^# Usage:/, /^# Exit-code priority/ {
+      sub(/^# ?/, "")
+      print
+    }
+  ' "$0"
 }
 
 # --------------------------------------------------------------------------
@@ -120,13 +126,21 @@ HEAD_SHA=""
 # 40-char all-zero SHA, or any numeric-only abbreviated SHA) fall through to
 # the SHA path so we don't mis-resolve them as astronomically large PR numbers.
 if [[ "$INPUT" =~ ^[0-9]+$ ]] && [[ "${#INPUT}" -lt 10 ]]; then
-  # PR number — resolve HEAD SHA via gh pr view.
-  PR_JSON=$(gh pr view "$INPUT" --json headRefOid,state 2>/dev/null || true)
-  if [[ -z "$PR_JSON" ]]; then
-    echo "ERROR: PR #$INPUT not found" >&2
-    exit 4
+  # PR number — resolve HEAD SHA via gh pr view. Capture stderr so we can
+  # distinguish "PR doesn't exist" (exit 4) from auth/network errors (exit 5).
+  # `gh pr view` writes "no pull requests found" / "GraphQL: Could not resolve
+  # to a PullRequest" on 404, and auth/DNS errors look different (e.g. "HTTP
+  # 401", "connection refused", resolver failures).
+  PR_VIEW_OUT=$(gh pr view "$INPUT" --json headRefOid,state 2>&1)
+  if [[ $? -ne 0 ]] || [[ -z "$PR_VIEW_OUT" ]]; then
+    if echo "$PR_VIEW_OUT" | grep -qiE 'no pull requests found|could not resolve to a pullrequest|HTTP 404'; then
+      echo "ERROR: PR #$INPUT not found" >&2
+      exit 4
+    fi
+    echo "ERROR: gh pr view failed: $PR_VIEW_OUT" >&2
+    exit 5
   fi
-  HEAD_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid // ""')
+  HEAD_SHA=$(echo "$PR_VIEW_OUT" | jq -r '.headRefOid // ""' 2>/dev/null)
   if [[ -z "$HEAD_SHA" ]]; then
     echo "ERROR: could not resolve HEAD SHA for PR #$INPUT" >&2
     exit 4
@@ -159,10 +173,12 @@ else
     # the stderr message text. `gh api` exits non-zero and writes "HTTP 404" /
     # "Not Found" / "No commit found for SHA" to stderr; it does not expose the
     # HTTP status code as a structured field on the error path, so a text grep
-    # is the available signal. Pre-existing behavior — not affected by the
-    # --check-runs-stdin path (stdin callers are responsible for their own
-    # HTTP error handling before piping in).
-    if echo "$CHECK_RUNS_RAW" | grep -qiE 'not found|no commit found|could not resolve'; then
+    # is the available signal. Narrow to explicit 404 indicators only — DNS
+    # "could not resolve host" failures, auth errors, etc. must fall through
+    # to exit 5, not be mis-classified as commit-not-found (exit 4).
+    # Pre-existing behavior — not affected by the --check-runs-stdin path
+    # (stdin callers are responsible for their own HTTP error handling).
+    if echo "$CHECK_RUNS_RAW" | grep -qiE 'HTTP 404|Not Found|No commit found for SHA'; then
       echo "ERROR: commit $HEAD_SHA not found" >&2
       exit 4
     fi

@@ -165,8 +165,14 @@ die_api() {
   exit 4
 }
 
-if ! CHECK_RUNS_JSON=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" 2>/dev/null); then
+if ! CHECK_RUNS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" 2>/dev/null); then
   die_api "check-runs"
+fi
+# `gh --paginate` concatenates per-page objects; flatten to a single
+# {check_runs: [...]} object so downstream `.check_runs[]` jq queries work.
+CHECK_RUNS_JSON=$(echo "$CHECK_RUNS_RAW" | jq -s '{check_runs: [.[].check_runs[]?]}' 2>/dev/null || true)
+if [[ -z "$CHECK_RUNS_JSON" ]] || ! echo "$CHECK_RUNS_JSON" | jq -e . >/dev/null 2>&1; then
+  die_api "check-runs parse"
 fi
 
 # Delegate CI status classification to ci-status.sh — single source of truth for
