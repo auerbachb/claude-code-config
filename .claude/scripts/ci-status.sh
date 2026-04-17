@@ -126,24 +126,31 @@ HEAD_SHA=""
 # 40-char all-zero SHA, or any numeric-only abbreviated SHA) fall through to
 # the SHA path so we don't mis-resolve them as astronomically large PR numbers.
 if [[ "$INPUT" =~ ^[0-9]+$ ]] && [[ "${#INPUT}" -lt 10 ]]; then
-  # PR number — resolve HEAD SHA via gh pr view. Capture stderr so we can
-  # distinguish "PR doesn't exist" (exit 4) from auth/network errors (exit 5).
-  # `gh pr view` writes "no pull requests found" / "GraphQL: Could not resolve
-  # to a PullRequest" on 404, and auth/DNS errors look different (e.g. "HTTP
-  # 401", "connection refused", resolver failures).
-  PR_VIEW_OUT=$(gh pr view "$INPUT" --json headRefOid,state 2>&1)
-  if [[ $? -ne 0 ]] || [[ -z "$PR_VIEW_OUT" ]]; then
+  # Numeric-only short input — try resolving as a PR number first. If GitHub
+  # returns 404, fall back to treating the input as an abbreviated commit SHA
+  # (short numeric-only SHAs like "1234567" are otherwise misclassified and
+  # rejected). Auth / network errors still exit 5. Capture stderr from
+  # `gh pr view` so we can distinguish 404 ("no pull requests found" /
+  # "GraphQL: Could not resolve to a PullRequest") from other gh failures
+  # (e.g. "HTTP 401", "connection refused", DNS resolver failures).
+  PR_VIEW_RC=0
+  PR_VIEW_OUT=$(gh pr view "$INPUT" --json headRefOid 2>&1) || PR_VIEW_RC=$?
+  if [[ "$PR_VIEW_RC" -ne 0 ]] || [[ -z "$PR_VIEW_OUT" ]]; then
     if echo "$PR_VIEW_OUT" | grep -qiE 'no pull requests found|could not resolve to a pullrequest|HTTP 404'; then
-      echo "ERROR: PR #$INPUT not found" >&2
+      # Not a PR — treat as an abbreviated commit SHA. The check-runs API
+      # accepts abbreviated forms; if the SHA is also invalid, that request
+      # will return 404 below and we exit 4 there.
+      HEAD_SHA="$INPUT"
+    else
+      echo "ERROR: gh pr view failed: $PR_VIEW_OUT" >&2
+      exit 5
+    fi
+  else
+    HEAD_SHA=$(echo "$PR_VIEW_OUT" | jq -r '.headRefOid // ""' 2>/dev/null)
+    if [[ -z "$HEAD_SHA" ]]; then
+      echo "ERROR: could not resolve HEAD SHA for PR #$INPUT" >&2
       exit 4
     fi
-    echo "ERROR: gh pr view failed: $PR_VIEW_OUT" >&2
-    exit 5
-  fi
-  HEAD_SHA=$(echo "$PR_VIEW_OUT" | jq -r '.headRefOid // ""' 2>/dev/null)
-  if [[ -z "$HEAD_SHA" ]]; then
-    echo "ERROR: could not resolve HEAD SHA for PR #$INPUT" >&2
-    exit 4
   fi
 else
   # Treat as SHA — API accepts full or abbreviated forms.
