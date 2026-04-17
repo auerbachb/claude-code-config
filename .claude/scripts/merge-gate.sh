@@ -170,9 +170,12 @@ if ! CHECK_RUNS_JSON=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?p
 fi
 
 # Delegate CI status classification to ci-status.sh — single source of truth for
-# the blocking/in-progress/passing splits. The script exits non-zero when CI is not
-# clean; suppress that here (the merge gate consumes the JSON and decides itself).
-CI_STATUS_JSON=$("$(dirname "$0")/ci-status.sh" "$HEAD_SHA" --format json 2>/dev/null || true)
+# the blocking/in-progress/passing splits. Pipe the already-fetched check-runs
+# JSON via --check-runs-stdin so we don't make a second identical API call (and
+# don't open a data-consistency gap between two fetches). The script exits
+# non-zero when CI is not clean; suppress that here (the merge gate consumes the
+# JSON and decides itself).
+CI_STATUS_JSON=$(echo "$CHECK_RUNS_JSON" | "$(dirname "$0")/ci-status.sh" "$HEAD_SHA" --format json --check-runs-stdin 2>/dev/null || true)
 if [[ -z "$CI_STATUS_JSON" ]] || ! echo "$CI_STATUS_JSON" | jq -e . >/dev/null 2>&1; then
   die_api "ci-status.sh"
 fi

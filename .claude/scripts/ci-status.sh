@@ -11,12 +11,21 @@
 # merge gate.
 #
 # Usage:
-#   ci-status.sh <head_sha_or_pr_number> [--format json|summary]
+#   ci-status.sh <head_sha_or_pr_number> [--format json|summary] [--check-runs-stdin]
 #   ci-status.sh --help
 #
 # Input resolution:
 #   - All-digit argument -> treated as PR number; HEAD SHA is resolved via gh pr view
 #   - Otherwise -> treated as a commit SHA (full or abbreviated, as accepted by the API)
+#
+# --check-runs-stdin:
+#   Read the GitHub check-runs JSON from stdin instead of calling `gh api`. Lets
+#   callers that already fetched the same endpoint (e.g. merge-gate.sh) avoid a
+#   redundant API round-trip and eliminates the data-consistency gap between two
+#   separate fetches. Accepts either a single `{check_runs: [...]}` object or the
+#   `--paginate`-style stream of concatenated objects. Requires a full SHA input
+#   (PR-number resolution still calls `gh pr view`, but the check-runs fetch is
+#   skipped).
 #
 # Output (JSON, default):
 #   {
@@ -48,6 +57,7 @@ set -uo pipefail
 
 FORMAT="json"
 INPUT=""
+CHECK_RUNS_STDIN=0
 
 print_usage() {
   awk 'NR == 1 { next } /^$/ { exit } { print }' "$0"
@@ -77,6 +87,10 @@ while [[ $# -gt 0 ]]; do
       esac
       shift 2
       ;;
+    --check-runs-stdin)
+      CHECK_RUNS_STDIN=1
+      shift
+      ;;
     -*)
       echo "ERROR: unknown flag: $1" >&2
       exit 2
@@ -99,16 +113,8 @@ if [[ -z "$INPUT" ]]; then
 fi
 
 # --------------------------------------------------------------------------
-# Resolve owner/repo + HEAD SHA
+# Resolve HEAD SHA (+ owner/repo only if we need to fetch check-runs ourselves)
 # --------------------------------------------------------------------------
-OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
-if [[ -z "$OWNER_REPO" ]]; then
-  echo "ERROR: gh repo view failed — not in a git repo or no remote" >&2
-  exit 5
-fi
-OWNER="${OWNER_REPO%/*}"
-REPO="${OWNER_REPO#*/}"
-
 HEAD_SHA=""
 # All-digits AND length < 10 -> PR number. Longer all-digit strings (e.g. a
 # 40-char all-zero SHA, or any numeric-only abbreviated SHA) fall through to
@@ -131,16 +137,38 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# Fetch check-runs (paginated)
+# Obtain check-runs — from stdin (caller-provided) or via gh api (paginated).
 # --------------------------------------------------------------------------
-if ! CHECK_RUNS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" 2>&1); then
-  # Distinguish 404 (SHA not found) from other gh errors.
-  if echo "$CHECK_RUNS_RAW" | grep -qiE 'not found|no commit found|could not resolve'; then
-    echo "ERROR: commit $HEAD_SHA not found" >&2
-    exit 4
+if [[ "$CHECK_RUNS_STDIN" -eq 1 ]]; then
+  CHECK_RUNS_RAW=$(cat)
+  if [[ -z "$CHECK_RUNS_RAW" ]]; then
+    echo "ERROR: --check-runs-stdin set but stdin was empty" >&2
+    exit 2
   fi
-  echo "ERROR: gh api check-runs failed: $CHECK_RUNS_RAW" >&2
-  exit 5
+else
+  OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
+  if [[ -z "$OWNER_REPO" ]]; then
+    echo "ERROR: gh repo view failed — not in a git repo or no remote" >&2
+    exit 5
+  fi
+  OWNER="${OWNER_REPO%/*}"
+  REPO="${OWNER_REPO#*/}"
+
+  if ! CHECK_RUNS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" 2>&1); then
+    # Distinguish 404 (SHA not found) from other gh errors by pattern-matching
+    # the stderr message text. `gh api` exits non-zero and writes "HTTP 404" /
+    # "Not Found" / "No commit found for SHA" to stderr; it does not expose the
+    # HTTP status code as a structured field on the error path, so a text grep
+    # is the available signal. Pre-existing behavior — not affected by the
+    # --check-runs-stdin path (stdin callers are responsible for their own
+    # HTTP error handling before piping in).
+    if echo "$CHECK_RUNS_RAW" | grep -qiE 'not found|no commit found|could not resolve'; then
+      echo "ERROR: commit $HEAD_SHA not found" >&2
+      exit 4
+    fi
+    echo "ERROR: gh api check-runs failed: $CHECK_RUNS_RAW" >&2
+    exit 5
+  fi
 fi
 
 # gh --paginate concatenates per-page objects; flatten to a single check_runs array.
