@@ -155,7 +155,14 @@ fi
 # ---------------------------------------------------------------------------
 # Fetch PR body
 # ---------------------------------------------------------------------------
-TMPDIR_AC=$(mktemp -d)
+TMPDIR_AC=$(mktemp -d) || TMPDIR_AC=""
+if [[ -z "$TMPDIR_AC" ]] || [[ ! -d "$TMPDIR_AC" ]] || [[ ! -w "$TMPDIR_AC" ]]; then
+  echo "ERROR: failed to create temporary directory" >&2
+  exit 2
+fi
+# Only install the cleanup trap after validation — with `set -e` off, a failed
+# mktemp would otherwise leave TMPDIR_AC empty and trap `rm -rf ""` as a no-op
+# while the script continued writing to absolute paths like `/body.json`.
 trap 'rm -rf "$TMPDIR_AC"' EXIT
 
 BODY_ERR_FILE="$TMPDIR_AC/body-stderr"

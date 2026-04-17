@@ -81,14 +81,21 @@ GATE_EXIT=$?
 
 2. For each item with `checked == false`, read the relevant source file(s) and verify the criterion is met.
 
-3. Tick passing items by zero-based index, or use `--all-pass` if every unchecked item passed:
+3. Tick passing items by zero-based index, or use `--all-pass` if every unchecked item passed. Capture the helper exit code — a failed `gh pr edit --body-file` leaves the PR body unchanged, so Phase C must NOT mark AC as verified on tick failure:
 
    ```bash
    # Example: indexes 0, 2, 3 passed
    .claude/scripts/ac-checkboxes.sh {{PR_NUMBER}} --tick "0,2,3"
+   TICK_EXIT=$?
    # Or: every unchecked item passed
    .claude/scripts/ac-checkboxes.sh {{PR_NUMBER}} --all-pass
+   TICK_EXIT=$?
    ```
+
+   Exit codes:
+   - `0` → body updated (or noop — nothing to tick). Proceed.
+   - `4` → `gh pr edit --body-file` failed. `OUTCOME: blocked` — report the stderr with a `[gh-error]` tag.
+   - `2` / other non-zero → internal script error. `OUTCOME: blocked` — report the stderr with a `[script-error]` tag.
 
 4. If any item fails verification: `OUTCOME: blocked` — report which items failed and why. Do NOT tick failing items.
 
