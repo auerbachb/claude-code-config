@@ -34,9 +34,14 @@
 #     "passing": N,
 #     "failing": N,
 #     "in_progress": N,
-#     "blocking": [{"name": "...", "conclusion": "..."}, ...],
-#     "in_progress_runs": [{"name": "...", "status": "..."}, ...]
+#     "blocking": [{"id": N, "name": "...", "conclusion": "..."}, ...],
+#     "in_progress_runs": [{"id": N, "name": "...", "status": "..."}, ...]
 #   }
+#
+# `id` is the GitHub check-run ID — included so callers (e.g. the /merge and
+# /wrap flows that fetch `gh api repos/.../check-runs/{id}` for output.summary)
+# can disambiguate matrix jobs that share a `name`. Synthesized "no check-runs
+# reported yet" sentinels have id: null.
 #
 # Output (summary, one line):
 #   CI: <passing>/<total> passed, <failing> failing (names), <in_progress> in progress (names)
@@ -204,16 +209,23 @@ fi
 # --------------------------------------------------------------------------
 # Classify runs
 # --------------------------------------------------------------------------
+# An empty check_runs array (right after a push, before GitHub has wired up
+# any workflows) must NOT be reported as clean — otherwise merge-gate.sh and
+# downstream `/merge` / `/wrap` callers will proceed as if CI passed when no
+# checks have even started. Surface total==0 as in_progress in the JSON AND
+# via exit 1, not just implicitly via exit 0.
 SPLIT=$(echo "$RUNS_JSON" | jq -c --arg head_sha "$HEAD_SHA" '
   def is_blocking: . == "failure" or . == "timed_out" or . == "action_required" or . == "startup_failure" or . == "stale";
-  {
+  . as $runs
+  | ([$runs[] | select(.status != "completed")]) as $incomplete
+  | {
     head_sha: $head_sha,
-    total: length,
-    passing: ([.[] | select(.status == "completed" and (.conclusion | is_blocking | not))] | length),
-    failing: ([.[] | select(.status == "completed" and (.conclusion | is_blocking))] | length),
-    in_progress: ([.[] | select(.status != "completed")] | length),
-    blocking: [.[] | select(.status == "completed" and (.conclusion | is_blocking)) | {name, conclusion}],
-    in_progress_runs: [.[] | select(.status != "completed") | {name, status}]
+    total: ($runs | length),
+    passing: ([$runs[] | select(.status == "completed" and (.conclusion | is_blocking | not))] | length),
+    failing: ([$runs[] | select(.status == "completed" and (.conclusion | is_blocking))] | length),
+    in_progress: (($incomplete | length) + (if ($runs | length) == 0 then 1 else 0 end)),
+    blocking: [$runs[] | select(.status == "completed" and (.conclusion | is_blocking)) | {id, name, conclusion}],
+    in_progress_runs: (($incomplete | map({id, name, status})) + (if ($runs | length) == 0 then [{id: null, name: "(no check-runs reported yet)", status: "queued"}] else [] end))
   }
 ' 2>/dev/null)
 
