@@ -64,24 +64,40 @@ GATE_EXIT=$?
 
 ## Step 2: Verify Acceptance Criteria
 
-1. Fetch the PR body:
+1. Extract Test Plan checkboxes via the shared helper:
 
    ```bash
-   gh pr view {{PR_NUMBER}} --json body --jq .body
+   ITEMS=$(.claude/scripts/ac-checkboxes.sh {{PR_NUMBER}} --extract)
+   AC_EXIT=$?
    ```
 
-2. Parse every checkbox in the **Test plan** section
-3. For each item, read the relevant source file(s) and verify the criterion is met
-4. Check off passing items by editing the PR body:
+   Exit codes:
+   - `0` → `$ITEMS` is a JSON array of `{index, checked, text}`. Proceed to step 2.
+   - `1` → **either** no Test Plan section **or** the section exists but contains no checkbox items. Both mean "no acceptance criteria to verify" and both are blocking per CLAUDE.md. `OUTCOME: blocked`. Report the specific subcase — `gh pr view {{PR_NUMBER}} --json body --jq '.body'` can tell you which:
+     - No `## Test plan` / `## Test Plan` / `## Acceptance Criteria` heading → "PR body is missing a Test Plan section".
+     - Heading present but zero `- [ ]`/`- [x]` lines → "Test Plan section has no checkbox items".
+   - `3` → PR not found; `OUTCOME: blocked`.
+   - `2`/`4` → script/gh error; `OUTCOME: blocked`.
+
+2. For each item with `checked == false`, read the relevant source file(s) and verify the criterion is met.
+
+3. Tick passing items by zero-based index, or use `--all-pass` if every unchecked item passed. Capture the helper exit code — a failed `gh pr edit --body-file` leaves the PR body unchanged, so Phase C must NOT mark AC as verified on tick failure:
 
    ```bash
-   # Get current body, replace unchecked boxes with checked for verified items
-   BODY=$(gh pr view {{PR_NUMBER}} --json body --jq .body)
-   # Use gh pr edit to update
-   gh pr edit {{PR_NUMBER}} --body "<updated body with checked boxes>"
+   # Example: indexes 0, 2, 3 passed
+   .claude/scripts/ac-checkboxes.sh {{PR_NUMBER}} --tick "0,2,3"
+   TICK_EXIT=$?
+   # Or: every unchecked item passed
+   .claude/scripts/ac-checkboxes.sh {{PR_NUMBER}} --all-pass
+   TICK_EXIT=$?
    ```
 
-5. If any item fails verification: `OUTCOME: blocked` — report which items failed and why
+   Exit codes:
+   - `0` → body updated (or noop — nothing to tick). Proceed.
+   - `4` → `gh pr edit --body-file` failed. `OUTCOME: blocked` — report the stderr with a `[gh-error]` tag.
+   - `2` / other non-zero → internal script error. `OUTCOME: blocked` — report the stderr with a `[script-error]` tag.
+
+4. If any item fails verification: `OUTCOME: blocked` — report which items failed and why. Do NOT tick failing items.
 
 ## Step 3: Print Exit Report and EXIT
 

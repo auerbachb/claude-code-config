@@ -20,13 +20,42 @@ If no PR exists, stop and tell the user.
 
 ### Step 2: Parse the Test Plan section
 
-Extract the PR body and find the **Test plan** section (may also be labeled "Test Plan", "Acceptance Criteria", or "## Test plan").
+Extract checkboxes via the shared helper. `ac-checkboxes.sh --extract` parses the PR body, locates the **Test plan** (or "Test Plan"/"Acceptance Criteria") section, and emits each checkbox as JSON:
 
-Parse every checkbox line (`- [ ]` or `- [x]`). If there is no Test Plan section, warn the user: "No Test Plan section found in PR body. Nothing to verify."
+```bash
+ITEMS=$(.claude/scripts/ac-checkboxes.sh "$PR_NUM" --extract)
+EXTRACT_EXIT=$?
+```
+
+Exit codes for `--extract`:
+- `0` → `$ITEMS` is a JSON array of `{index, checked, text}` entries (zero-based index, in document order).
+- `1` → no Test Plan section (or section has no checkboxes). **Blocking** — every PR must include a Test Plan section (CLAUDE.md). Report the missing section as a PR-body violation and stop with a non-zero exit; the PR is NOT merge-ready until the body is fixed.
+- `2` → internal script error (usage, python parse, helper prereq). Surface stderr with a `[script-error]` tag and stop.
+- `3` → PR not found (closed/merged). Stop and tell the user.
+
+Exit code `4` (`[gh-error]`) is only reachable from `--tick`/`--all-pass` (Step 4) — `--extract` is read-only and never calls `gh pr edit`.
+
+Handle `$EXTRACT_EXIT` explicitly before using `$ITEMS`. Exit 1 is a **blocking** failure — every PR must include a Test Plan with acceptance-criteria checkboxes (CLAUDE.md), so a missing section is a PR-body violation, not a clean pass:
+
+```bash
+case "$EXTRACT_EXIT" in
+  0) : ;;  # $ITEMS is valid JSON — proceed
+  1) echo "[blocked] PR #$PR_NUM is missing a Test Plan section — required per CLAUDE.md. Add the section before asking for AC verification."; exit 1 ;;
+  2) echo "[script-error] ac-checkboxes.sh failed — see stderr above."; exit 2 ;;
+  3) echo "PR #$PR_NUM not found (closed/merged)."; exit 3 ;;
+  *) echo "Unexpected exit code from ac-checkboxes.sh: $EXTRACT_EXIT"; exit "$EXTRACT_EXIT" ;;
+esac
+```
 
 ### Step 3: Verify each criterion
 
-For each checkbox item:
+Filter `$ITEMS` to only the unchecked entries — already-checked items don't need re-verification. `$ITEMS` is guaranteed to be valid JSON after a successful `--extract` (exit 0), so `jq` cannot fail here unless the file was truncated:
+
+```bash
+UNCHECKED=$(echo "$ITEMS" | jq '[.[] | select(.checked == false)]')
+```
+
+Then, for each object in `$UNCHECKED`:
 
 1. **Read the criterion carefully** — understand what it's asserting
 2. **Identify the relevant source files** — which files need to be checked to verify this criterion
@@ -37,16 +66,29 @@ Some criteria may not be verifiable from code alone (e.g., "renders correctly in
 
 ### Step 4: Update the PR body
 
-For each passing criterion, check it off by editing the PR body:
+Tick every item you verified via `--tick`, passing the zero-based indexes from Step 2 as a comma-separated list (no spaces between commas):
 
 ```bash
-# Fetch current body, replace checkboxes, update
-current_body="$(gh pr view N --json body --jq .body)"
-# Replace specific - [ ] lines with - [x] for passing items
-gh pr edit N --body "$updated_body"
+# Example: items 0, 2, 3 passed. Note: "0,2,3" — no spaces between commas.
+.claude/scripts/ac-checkboxes.sh "$PR_NUM" --tick "0,2,3"
+TICK_EXIT=$?
 ```
 
-Only check off items that are verified. Never check off items that failed or require manual testing.
+Or, if **every** unchecked item passed, use the convenience flag:
+
+```bash
+.claude/scripts/ac-checkboxes.sh "$PR_NUM" --all-pass
+TICK_EXIT=$?
+```
+
+The script fetches the current body, flips matching `- [ ]` to `- [x]`, and writes back via `gh pr edit --body-file`. Already-checked items in the match set are skipped (idempotent).
+
+Handle the tick exit code:
+- `0` → body updated (or noop). Proceed to Step 5.
+- `4` → `gh pr edit` failed. Surface stderr with `[gh-error]` and stop.
+- `2` / other non-zero → internal script error. Surface stderr with `[script-error]` and stop.
+
+Only tick items that passed verification. Never tick items that failed or require manual testing.
 
 ### Step 5: Report results
 

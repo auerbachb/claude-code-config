@@ -13,6 +13,7 @@ Manually-invoked utility scripts. Run these from the command line when needed.
 | `audit-skill-usage.sh` | Monthly skill-usage audit against `.claude/data/skill-usage.json`. |
 | `resolve-review-threads.sh <pr_number> [--authors a,b,c] [--dry-run]` | Fetch unresolved PR review threads via GraphQL, filter to bot authors (default: `coderabbitai,cursor,greptile-apps`), and resolve each via `resolveReviewThread` (fallback: `minimizeComment`). Used by `/fixpr`, `/continue`, and `phase-a-fixer`. Exit codes: 0 OK, 1 ≥1 thread failed both mutations, 2 usage, 3 PR not found, 4 gh error. |
 | `merge-gate.sh <pr_number> [--reviewer cr\|bugbot\|greptile]` | Verify the merge gate for a PR per `.claude/rules/cr-merge-gate.md` (CR 2-clean / BugBot 1-clean / Greptile severity + CI + BEHIND). Prints JSON on stdout. Exits `0` gate met, `1` gate not met, `2` usage, `3` PR not found, `4` gh error. Called from `/merge`, `/wrap`, `/continue`, `/status`, and the `phase-c-merger` agent. |
+| `ac-checkboxes.sh <pr_number> [--extract\|--tick <spec>\|--all-pass]` | Parse and update the PR body's `## Test plan` checkboxes. `--extract` emits JSON `[{index, checked, text}]`; `--tick 0,2,3` (indexes) or `--tick "regex"` flips matching unchecked items; `--all-pass` ticks every unchecked item. Implements the AC contract from `.claude/rules/cr-merge-gate.md` Step 2. Called from `/check-acceptance-criteria`, `/merge`, `/wrap`, `/continue`, `/subagent`, and `phase-c-merger`. Exits `0` OK, `1` no Test Plan section, `2` usage, `3` PR not found, `4` gh edit failed. |
 
 ## scripts/ vs hooks/
 

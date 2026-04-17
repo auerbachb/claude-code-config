@@ -296,16 +296,21 @@ Branch on the exit code:
 
 ## Step 9: Verify acceptance criteria
 
-Run the acceptance criteria check (same logic as `/check-acceptance-criteria`):
+Run the acceptance criteria check via the shared helper:
 
-1. Fetch PR body: `gh pr view $PR_NUM --json body --jq .body`
-2. Parse every checkbox in the **Test plan** section
-3. For each item, read the relevant source files and verify the criterion is met
-4. Check off passing items by editing the PR body (replace `- [ ]` with `- [x]`)
+```bash
+ITEMS=$(.claude/scripts/ac-checkboxes.sh "$PR_NUM" --extract)
+AC_EXIT=$?
+```
 
-- If all items pass: `[DONE]` — All acceptance criteria verified and checked off.
+Branch on exit code:
+- `0` → `$ITEMS` is a JSON array of `{index, checked, text}`. For each item with `checked == false`, read the relevant source files and verify the criterion. Tick passing items by index: `.claude/scripts/ac-checkboxes.sh "$PR_NUM" --tick "0,2,3"` (or `--all-pass` if every unchecked item passed).
+- `1` → `[BLOCKED]` — PR body is missing a Test Plan section. Every PR must include one (per CLAUDE.md). The PR is NOT merge-ready until the body is fixed — report this to the user and do not continue to the merge decision.
+- `3` → `[BLOCKED]` — PR not found.
+- `2`/`4` → `[BLOCKED]` — script or gh error; surface stderr to user.
+
+- If all items pass after ticking: `[DONE]` — All acceptance criteria verified and checked off.
 - If any item fails: `[ACTION]` — Fix the failing criteria, then re-verify.
-- If no Test Plan section: `[SKIP]` — No acceptance criteria to verify.
 
 ---
 

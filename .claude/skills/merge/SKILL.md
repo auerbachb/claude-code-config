@@ -54,7 +54,33 @@ Reviewer assignment is resolved automatically from `~/.claude/session-state.json
 
 ### Step 3: Verify acceptance criteria
 
-Run the `/check-acceptance-criteria` skill logic for this PR. All Test Plan checkboxes must be checked off before proceeding. If any fail, stop and report — do NOT merge with unchecked boxes.
+Use the shared `ac-checkboxes.sh` helper to parse and tick Test Plan items. All Test Plan checkboxes must be checked off before proceeding. If any fail verification, stop and report — do NOT merge with unchecked boxes.
+
+```bash
+# 1. Extract items (JSON array of {index, checked, text})
+ITEMS=$(.claude/scripts/ac-checkboxes.sh "$PR_NUM" --extract)
+AC_EXIT=$?
+```
+
+Exit codes from `--extract`:
+- `0` → `$ITEMS` is a JSON array. Verify each unchecked item against the code, then tick the ones that pass.
+- `1` → no Test Plan section. Stop and tell the user: "PR has no Test Plan section — cannot verify acceptance criteria."
+- `3` → PR not found. Stop.
+- `2` → internal script error. Surface stderr (`[script-error]`) and stop.
+
+After verification, tick passing items — and **capture the tick exit code**:
+
+```bash
+.claude/scripts/ac-checkboxes.sh "$PR_NUM" --tick "0,2,3"  # or --all-pass
+TICK_EXIT=$?
+```
+
+Exit codes from `--tick`/`--all-pass`:
+- `0` → body updated (or noop — nothing to tick). Proceed.
+- `4` → `gh pr edit` failed. Surface stderr (`[gh-error]`) and stop — do NOT merge.
+- `2` / other non-zero → internal script error. Surface stderr and stop.
+
+If any item fails verification, do NOT tick it — stop and report the failure. Do NOT merge with any unchecked AC.
 
 ### Step 4: CI verification (handled by Step 2)
 
