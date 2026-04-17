@@ -88,10 +88,11 @@ If any item fails verification, do NOT tick it — stop and report the failure. 
 
 If Step 2 reported `missing` entries about CI ("CI has N failing check-run(s): ..." or "CI has N incomplete check-run(s): ..."), **do NOT merge**. Instead:
 
-1. Read the failure output: `gh api "repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID}" --jq '.output.summary'`
-2. Fix the issue (lint errors, type errors, test failures, etc.)
-3. Commit, push, and wait for CI to re-run
-4. Re-run `.claude/scripts/merge-gate.sh` to confirm CI is green before proceeding
+1. Inspect the CI split: `.claude/scripts/ci-status.sh "$PR_NUM" --format summary` (exit `3` = blocking failures, exit `1` = incomplete). For the JSON with failing check-run IDs, drop `--format summary`.
+2. Read a specific failure's output: `gh api "repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID}" --jq '.output.summary'`
+3. Fix the issue (lint errors, type errors, test failures, etc.)
+4. Commit, push, and wait for CI to re-run
+5. Re-run `.claude/scripts/merge-gate.sh` to confirm CI is green before proceeding
 
 **Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, or any suppression comment to work around CI.** Fix the actual code.
 

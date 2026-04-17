@@ -47,7 +47,7 @@ The merge gate depends on which reviewer owns the PR:
 
 ## Step 1b — CI Must Pass Before Merge (NON-NEGOTIABLE)
 
-Before running `gh pr merge` on ANY PR, verify ALL CI check-runs are complete and passing. Run two queries against `repos/{owner}/{repo}/commits/$SHA/check-runs?per_page=100`: (1) incomplete runs — `select(.status != "completed")`; (2) blocking conclusions — `select(.conclusion IN (failure, timed_out, action_required, startup_failure, stale))`. Full commands: `.claude/reference/cr-polling-commands.md`.
+Before running `gh pr merge` on ANY PR, verify ALL CI check-runs are complete and passing. Use the shared helper `.claude/scripts/ci-status.sh <PR_NUMBER_OR_SHA> --format summary` — exit `0` is clean+complete, `1` is incomplete (WAIT), `3` is blocking failures (FIX). It implements the authoritative contract: (1) incomplete runs — `select(.status != "completed")`; (2) blocking conclusions — `select(.conclusion IN (failure, timed_out, action_required, startup_failure, stale))`. Full commands + inline fallback: `.claude/reference/cr-polling-commands.md`. `.claude/scripts/merge-gate.sh` already calls `ci-status.sh` internally as part of the gate.
 
 **If query 1 returns ANY incomplete check-runs: DO NOT MERGE.** Wait for them to finish — a null conclusion means the check hasn't reported yet, not that it passed.
 

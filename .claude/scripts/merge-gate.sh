@@ -168,6 +168,15 @@ die_api() {
 if ! CHECK_RUNS_JSON=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" 2>/dev/null); then
   die_api "check-runs"
 fi
+
+# Delegate CI status classification to ci-status.sh — single source of truth for
+# the blocking/in-progress/passing splits. The script exits non-zero when CI is not
+# clean; suppress that here (the merge gate consumes the JSON and decides itself).
+CI_STATUS_JSON=$("$(dirname "$0")/ci-status.sh" "$HEAD_SHA" --format json 2>/dev/null || true)
+if [[ -z "$CI_STATUS_JSON" ]] || ! echo "$CI_STATUS_JSON" | jq -e . >/dev/null 2>&1; then
+  die_api "ci-status.sh"
+fi
+
 if ! REVIEWS_JSON=$(gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" 2>/dev/null); then
   die_api "reviews"
 fi
@@ -184,19 +193,19 @@ if ! THREADS_JSON=$(gh api graphql -f query="query { repository(owner: \"$OWNER\
 fi
 
 # --------------------------------------------------------------------------
-# CI status (pairs with #270 — two-query pattern)
+# CI status — delegated to ci-status.sh; adapt its shape for this script's
+# legacy output key names (ci-status.sh uses `in_progress_runs`; this script's
+# emitted JSON has always called that field `incomplete`). Drop the `head_sha`
+# field ci-status.sh adds — this script emits it at the top level already.
 # --------------------------------------------------------------------------
-CI_STATUS=$(echo "$CHECK_RUNS_JSON" | jq -c '
-  (.check_runs // []) as $runs
-  | {
-      total: ($runs | length),
-      passing: ([$runs[] | select(.status == "completed" and .conclusion == "success")] | length),
-      failing: ([$runs[] | select(.status == "completed" and (.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required" or .conclusion == "startup_failure" or .conclusion == "stale"))] | length),
-      in_progress: ([$runs[] | select(.status != "completed")] | length),
-      blocking: [$runs[] | select(.status == "completed" and (.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required" or .conclusion == "startup_failure" or .conclusion == "stale")) | {name: .name, conclusion: .conclusion}],
-      incomplete: [$runs[] | select(.status != "completed") | {name: .name, status: .status}]
-    }
-')
+CI_STATUS=$(echo "$CI_STATUS_JSON" | jq -c '{
+  total,
+  passing,
+  failing,
+  in_progress,
+  blocking,
+  incomplete: .in_progress_runs
+}')
 
 # --------------------------------------------------------------------------
 # Reviewer resolution

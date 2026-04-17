@@ -35,6 +35,18 @@ gh api "repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID}" --jq '.output.summary'
 
 ## Pre-Merge CI Verification (NON-NEGOTIABLE)
 
+**Preferred:** use the shared helper which implements both splits + exit-code contract:
+
+```bash
+.claude/scripts/ci-status.sh <PR_NUMBER_OR_SHA> --format summary
+# Exit codes: 0 clean+complete, 1 incomplete (WAIT), 3 blocking failures (FIX),
+#             2 usage, 4 SHA/PR not found, 5 gh error.
+# Drop --format summary for full JSON ({head_sha, total, passing, failing,
+#                                        in_progress, blocking, in_progress_runs}).
+```
+
+**Inline fallback** (only if the script is unavailable):
+
 ```bash
 SHA=$(gh pr view <PR_NUMBER> --json commits --jq '.commits[-1].oid')
 
