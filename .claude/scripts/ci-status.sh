@@ -151,7 +151,15 @@ if [[ "$INPUT" =~ ^[0-9]+$ ]] && [[ "${#INPUT}" -lt 10 ]]; then
       exit 5
     fi
   else
-    HEAD_SHA=$(echo "$PR_VIEW_OUT" | jq -r '.headRefOid // ""' 2>/dev/null)
+    # Guard jq exit status separately — a jq failure (missing binary, parse
+    # error) must exit 5 (gh/network/jq error), not 4 (SHA/PR not found).
+    # Without this guard, jq stderr is swallowed by `2>/dev/null` and the
+    # empty HEAD_SHA falls through to the exit-4 branch, breaking the
+    # documented error contract that callers (merge-gate.sh etc.) rely on.
+    if ! HEAD_SHA=$(echo "$PR_VIEW_OUT" | jq -r '.headRefOid // ""' 2>/dev/null); then
+      echo "ERROR: failed to parse gh pr view output for PR #$INPUT" >&2
+      exit 5
+    fi
     if [[ -z "$HEAD_SHA" ]]; then
       echo "ERROR: could not resolve HEAD SHA for PR #$INPUT" >&2
       exit 4
