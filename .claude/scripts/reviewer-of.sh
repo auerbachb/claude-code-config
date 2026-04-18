@@ -53,6 +53,10 @@
 #      --sticky value).
 #   3  PR not found (live-history fallback only — gh pr view returned a
 #      not-found error).
+#   5  Write/runtime failure during --sticky persistence (mkdir, jq
+#      transform, atomic mv, or corrupt state-file guard). Matches the
+#      write-failure code used by greptile-budget.sh so callers can tell
+#      "bad flag value" (2) from "disk/state write failed" (5).
 #
 # ATOMICITY (--sticky)
 #   Writes go through `jq … > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp"
@@ -162,7 +166,7 @@ write_sticky() {
   state_dir="$(dirname "$STATE_FILE")"
   if ! mkdir -p "$state_dir" 2>/dev/null; then
     echo "reviewer-of.sh: could not create state dir: $state_dir" >&2
-    exit 2
+    exit 5
   fi
 
   local input_file="$STATE_FILE"
@@ -173,14 +177,18 @@ write_sticky() {
     seeded_tmp="$(mktemp)"
     printf '%s\n' '{}' > "$seeded_tmp"
     input_file="$seeded_tmp"
-  elif ! jq -e . "$STATE_FILE" >/dev/null 2>&1; then
-    # File exists but is not valid JSON. Refuse to overwrite — the sibling-
+  elif ! jq -e 'type == "object"' "$STATE_FILE" >/dev/null 2>&1; then
+    # File exists but is not a JSON object. Refuse to overwrite — the sibling-
     # preservation contract depends on merging into the existing object, and
     # silently replacing a corrupt file would discard unrelated session data
     # (cr_quota, greptile_daily, active_agents, etc.) that may still be
-    # recoverable by hand.
-    echo "reviewer-of.sh: $STATE_FILE contains invalid JSON; refusing to overwrite" >&2
-    exit 2
+    # recoverable by hand. Uses `-e 'type == "object"'` rather than `-e .` so
+    # valid-but-wrong-shape JSON (null, false, arrays, scalars) is treated
+    # as corrupt instead of silently accepted; `-e` is required because the
+    # bare `type == "object"' filter prints true/false to stdout and always
+    # exits 0 on syntactically valid JSON.
+    echo "reviewer-of.sh: $STATE_FILE is not a JSON object; refusing to overwrite" >&2
+    exit 5
   fi
 
   local tmp="$STATE_FILE.tmp.$$"
@@ -203,12 +211,12 @@ write_sticky() {
      | .last_updated = (now | todate)' \
     "$input_file" > "$tmp" 2>"$jq_err"; then
     echo "reviewer-of.sh: jq failed updating $STATE_FILE: $(cat "$jq_err")" >&2
-    exit 2
+    exit 5
   fi
 
   if ! mv "$tmp" "$STATE_FILE" 2>/dev/null; then
     echo "reviewer-of.sh: could not write $STATE_FILE" >&2
-    exit 2
+    exit 5
   fi
 }
 
@@ -221,7 +229,12 @@ if [[ -n "$STICKY" ]]; then
 fi
 
 # --- session-state lookup (default mode, step 1) ---
-if [[ -f "$STATE_FILE" ]] && jq -e . "$STATE_FILE" >/dev/null 2>&1; then
+# `jq -e 'type == "object"'` rather than `jq -e .` so valid-JSON non-objects
+# (null, false, arrays, scalars) fall through to the live-history scan
+# instead of being treated as valid state — `jq -e .` treats `null`/`false`
+# as falsy but also accepts arrays/scalars as truthy, neither of which
+# matches the sibling-preservation contract.
+if [[ -f "$STATE_FILE" ]] && jq -e 'type == "object"' "$STATE_FILE" >/dev/null 2>&1; then
   FROM_STATE="$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].reviewer // ""' "$STATE_FILE" 2>/dev/null || echo "")"
   case "$FROM_STATE" in
     cr|bugbot|greptile)
