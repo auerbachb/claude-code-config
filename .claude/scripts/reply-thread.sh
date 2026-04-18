@@ -43,7 +43,7 @@
 # .claude/rules/greptile.md / .claude/rules/bugbot.md for the reply conventions
 # this script enforces.
 
-set -uo pipefail
+set -euo pipefail
 
 REVIEWER=""
 BODY=""
