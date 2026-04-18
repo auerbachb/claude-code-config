@@ -137,7 +137,20 @@ fi
 
 # --------------------------------------------------------------------------
 # Body transformation — reviewer-specific @mention rules
+#
+# Token stripping is word-boundary-aware: only removes the @mention when
+# surrounded by non-word characters (or string boundaries). This preserves
+# unrelated text like "@cursoring" or "greptileai-blog", and keeps the
+# replaced token from eating its neighbors.
 # --------------------------------------------------------------------------
+strip_standalone_token() {
+  # $1 = sed character-class pattern for the literal @token
+  # Wraps the pattern with word-boundary guards and back-refs the surrounding
+  # non-word chars so the slot collapses cleanly without touching text beyond.
+  BODY=$(printf '%s' "$BODY" \
+    | sed -E "s/(^|[^[:alnum:]_])$1([^[:alnum:]_]|$)/\1\2/g")
+}
+
 case "$REVIEWER" in
   cr)
     # Prepend @coderabbitai if not already present (case-insensitive).
@@ -148,21 +161,22 @@ case "$REVIEWER" in
     fi
     ;;
   bugbot)
-    # Strip any @cursor tokens (may trigger a re-review on PR-level comments).
-    # Case-insensitive literal match; does not touch surrounding text beyond
-    # collapsing the now-empty slot.
-    BODY=$(printf '%s' "$BODY" | sed -E 's/@[Cc][Uu][Rr][Ss][Oo][Rr]//g')
+    # Strip standalone @cursor tokens (may trigger a re-review).
+    strip_standalone_token '@[Cc][Uu][Rr][Ss][Oo][Rr]'
     ;;
   greptile)
-    # Strip any @greptileai tokens (every mention triggers a paid re-review).
-    BODY=$(printf '%s' "$BODY" | sed -E 's/@[Gg][Rr][Ee][Pp][Tt][Ii][Ll][Ee][Aa][Ii]//g')
+    # Strip standalone @greptileai tokens (every mention = paid re-review).
+    strip_standalone_token '@[Gg][Rr][Ee][Pp][Tt][Ii][Ll][Ee][Aa][Ii]'
     ;;
 esac
 
-# Collapse any runs of whitespace introduced by token removal, and trim ends.
-# Only applies to bugbot/greptile where we actually stripped something.
+# Collapse only runs of spaces/tabs left by token removal; preserve newlines
+# so multi-line replies keep their formatting. Trim leading/trailing horizontal
+# whitespace from each line. [[:blank:]] is portable across BSD and GNU sed —
+# [ \t] is NOT: BSD sed's -E treats `\t` as literal `\` + `t` inside a bracket
+# expression, which would eat real `t` characters at line ends.
 if [[ "$REVIEWER" == "bugbot" || "$REVIEWER" == "greptile" ]]; then
-  BODY=$(printf '%s' "$BODY" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')
+  BODY=$(printf '%s' "$BODY" | sed -E 's/[[:blank:]]{2,}/ /g; s/^[[:blank:]]+//; s/[[:blank:]]+$//')
 fi
 
 if [[ -z "$BODY" ]]; then
@@ -206,10 +220,14 @@ INLINE_RESP=$(gh api "repos/$OWNER/$REPO/pulls/comments/$COMMENT_ID/replies" \
 
 if [[ $INLINE_RC -eq 0 ]]; then
   # Success path: stdout contains the POST response JSON. Parse html_url.
-  URL=$(printf '%s' "$INLINE_RESP" | jq -r '.html_url // empty' 2>/dev/null || true)
-  if [[ -n "$URL" ]]; then
-    printf '%s\n' "$URL"
+  # The contract says exit 0 = URL printed, so a missing/unparseable html_url
+  # is a treated as a protocol violation: surface it as an unexpected error
+  # rather than silently exit 0 with no stdout.
+  if ! URL=$(printf '%s' "$INLINE_RESP" | jq -er '.html_url') || [[ -z "$URL" ]]; then
+    echo "ERROR: inline reply posted but response did not include html_url" >&2
+    exit 5
   fi
+  printf '%s\n' "$URL"
   exit 0
 fi
 
