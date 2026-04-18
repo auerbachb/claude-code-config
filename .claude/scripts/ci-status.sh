@@ -67,7 +67,9 @@ CHECK_RUNS_STDIN=0
 print_usage() {
   awk '
     NR == 1 { next }
-    /^# Usage:/, /^# Exit-code priority/ {
+    /^# Usage:/ { in_block = 1 }
+    in_block && !/^#/ { exit }
+    in_block {
       sub(/^# ?/, "")
       print
     }
