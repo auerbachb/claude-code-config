@@ -54,9 +54,15 @@
 #   3  PR not found (live-history fallback only — gh pr view returned a
 #      not-found error).
 #   5  Write/runtime failure during --sticky persistence (mkdir, jq
-#      transform, atomic mv, or corrupt state-file guard). Matches the
-#      write-failure code used by greptile-budget.sh so callers can tell
-#      "bad flag value" (2) from "disk/state write failed" (5).
+#      transform, atomic mv, or corrupt state-file guard) OR malformed
+#      existing session-state.json on read (file present but not a JSON
+#      object). Matches the write-failure code used by greptile-budget.sh
+#      so callers can tell "bad flag value" (2) from "disk/state
+#      write/parse failed" (5). Read-path malformed-state is fatal (rather
+#      than a silent fall-through to live-history) because sticky
+#      BugBot/Greptile escalation decisions are intentionally stored in
+#      session-state and are not always recoverable from live-history
+#      co-presence; a corrupt state file must be repaired or removed.
 #
 # ATOMICITY (--sticky)
 #   Writes go through `jq … > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp"
@@ -229,12 +235,32 @@ if [[ -n "$STICKY" ]]; then
 fi
 
 # --- session-state lookup (default mode, step 1) ---
+# Distinguishes three cases:
+#   (a) File missing                 → fall through to live-history scan.
+#   (b) File present and is a valid  → use session state (the normal path).
+#       JSON object
+#   (c) File present but malformed   → fail fast with exit 5, matching the
+#       (not an object, or not JSON)   write-failure code. The escalation
+#                                      decision for sticky BugBot/Greptile
+#                                      PRs is intentionally stored in
+#                                      session-state and is NOT always
+#                                      recoverable from live-history
+#                                      co-presence. Silently degrading to
+#                                      live-history on a corrupt state file
+#                                      can mis-route sticky PRs back to CR
+#                                      (or `unknown`), so the operator must
+#                                      repair the file before resolution
+#                                      proceeds.
 # `jq -e 'type == "object"'` rather than `jq -e .` so valid-JSON non-objects
-# (null, false, arrays, scalars) fall through to the live-history scan
-# instead of being treated as valid state — `jq -e .` treats `null`/`false`
-# as falsy but also accepts arrays/scalars as truthy, neither of which
-# matches the sibling-preservation contract.
-if [[ -f "$STATE_FILE" ]] && jq -e 'type == "object"' "$STATE_FILE" >/dev/null 2>&1; then
+# (null, false, arrays, scalars) are treated as malformed instead of silently
+# accepted — `jq -e .` treats `null`/`false` as falsy but also accepts
+# arrays/scalars as truthy, neither of which matches the sibling-preservation
+# contract.
+if [[ -f "$STATE_FILE" ]]; then
+  if ! jq -e 'type == "object"' "$STATE_FILE" >/dev/null 2>&1; then
+    echo "reviewer-of.sh: $STATE_FILE exists but is not a JSON object; refusing to fall back to live-history (sticky escalation decisions are stored in session-state). Repair or remove the file to continue." >&2
+    exit 5
+  fi
   FROM_STATE="$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].reviewer // ""' "$STATE_FILE" 2>/dev/null || echo "")"
   case "$FROM_STATE" in
     cr|bugbot|greptile)
