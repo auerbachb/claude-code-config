@@ -104,9 +104,12 @@ Same shared `$STATE` bundle as the CR path. Filter by `.user.login == "cursor[bo
 
 ### BugBot Reply Format
 
-Do NOT include `@cursor` in reply comments (may trigger a re-review). Use plain text only:
-- Inline: `gh api repos/{{OWNER}}/{{REPO}}/pulls/comments/{id}/replies -f body="Fixed in \`SHA\`: <what changed>"`
-- PR-level: `gh pr comment {{PR_NUMBER}} --body "Fixed in \`SHA\`: <what changed>"`
+Use the shared helper — it tries the inline reply endpoint first, falls back to a PR-level comment on 404, and strips any `@cursor` tokens from the body (they may trigger a re-review):
+
+```bash
+.claude/scripts/reply-thread.sh <comment_id> --reviewer bugbot \
+  --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}}
+```
 
 ### Re-Reviews
 
@@ -144,9 +147,12 @@ Use Greptile's severity badges. After fixing:
 
 ### Greptile Reply Format (CRITICAL)
 
-**Do NOT include `@greptileai` in reply comments.** Every @mention triggers a paid re-review ($0.50-$1.00). Use plain text only:
-- Inline: `gh api repos/{{OWNER}}/{{REPO}}/pulls/comments/{id}/replies -f body="Fixed in \`SHA\`: <what changed>"`
-- PR-level: `gh pr comment {{PR_NUMBER}} --body "Fixed in \`SHA\`: <what changed>"`
+**Never include `@greptileai` in reply text** — every @mention triggers a paid re-review ($0.50-$1.00). Use the shared helper, which strips any `@greptileai` tokens from the body as an extra safeguard and falls back to a PR-level comment on 404:
+
+```bash
+.claude/scripts/reply-thread.sh <comment_id> --reviewer greptile \
+  --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}}
+```
 
 Use 👍/👎 reactions on findings for feedback (Greptile's only learning mechanism).
 

@@ -239,22 +239,15 @@ gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
   2. Verify against actual code before fixing
   3. Fix ALL valid findings in a single commit
   4. Push once
-  5. Reply to every thread confirming the fix. Try the inline reply endpoint first:
+  5. Reply to every thread confirming the fix. Use the shared helper — it tries the inline `/replies` endpoint first, falls back to a PR-level comment on 404, and applies reviewer-specific `@mention` rules (prepends `@coderabbitai` for CR; strips `@cursor`/`@greptileai` for BugBot/Greptile):
 
      ```bash
-     gh api "repos/{owner}/{repo}/pulls/comments/{id}/replies" -f body="Fixed in \`$SHA\`: <what changed>"
+     # $REVIEWER: cr | bugbot | greptile (determined from the finding's author)
+     .claude/scripts/reply-thread.sh <comment_id> --reviewer "$REVIEWER" \
+       --body "Fixed in \`$SHA\`: <what changed>" --pr N
      ```
 
-     If the reply endpoint returns **404**, the comment is not an inline diff comment — fall back to a PR-level comment:
-
-     ```bash
-     gh pr comment N --body "@coderabbitai Fixed in \`$SHA\`: <what changed>. (Re: <brief description of the finding>)"
-     ```
-
-     **When to use which:**
-     - Inline diff comments (`path` and `line` fields present) → use `/replies` endpoint
-     - Review-level or PR conversation comments → use `gh pr comment` with `@coderabbitai` mention
-     - If unsure, try `/replies` first — the 404 is harmless and signals fallback
+     Exit codes: `0` inline reply posted; `1` fallback PR-level reply posted (still success). Both outcomes are successful replies. See `.claude/scripts/reply-thread.sh --help` for the full contract, including the 404-without-`--pr` (exit 3) and both-endpoints-failed (exit 4) cases.
 
   6. Resolve all bot threads with the shared helper (paginated, filtered to `coderabbitai`/`cursor`/`greptile-apps`, falls back to `minimizeComment` on failure):
 
