@@ -69,19 +69,14 @@ One commit = one review consumed. Never push multiple commits for separate findi
 
 ### Step 4: Reply to Review Threads
 
-Reply to EVERY review comment thread acknowledging the fix.
+Reply to EVERY review comment thread acknowledging the fix. Use the shared helper — it tries the inline reply endpoint first, falls back to a PR-level comment on 404, and applies reviewer-specific `@mention` rules automatically (prepends `@coderabbitai` for CR; strips `@cursor`/`@greptileai` for BugBot/Greptile):
 
-**For CodeRabbit threads** — include `@coderabbitai` in replies (teaches its knowledge base):
-- Inline diff comments: `gh api repos/{{OWNER}}/{{REPO}}/pulls/comments/{id}/replies -f body="@coderabbitai Fixed in \`SHA\`: <what changed>"`
-- If reply endpoint returns 404, fall back to: `gh pr comment {{PR_NUMBER}} --body "@coderabbitai Fixed in \`SHA\`: <what changed>. (Re: <finding description>)"`
+```bash
+.claude/scripts/reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile \
+  --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}}
+```
 
-**For BugBot threads** — do NOT include `@cursor` in replies (may trigger a re-review):
-- Inline comments: `gh api repos/{{OWNER}}/{{REPO}}/pulls/comments/{id}/replies -f body="Fixed in \`SHA\`: <what changed>"`
-- PR-level: `gh pr comment {{PR_NUMBER}} --body "Fixed in \`SHA\`: <what changed>"`
-
-**For Greptile threads** — do NOT include `@greptileai` (every @mention triggers a paid re-review):
-- Inline comments: `gh api repos/{{OWNER}}/{{REPO}}/pulls/comments/{id}/replies -f body="Fixed in \`SHA\`: <what changed>"`
-- PR-level: `gh pr comment {{PR_NUMBER}} --body "Fixed in \`SHA\`: <what changed>"`
+Exit codes: `0` inline reply posted; `1` fallback PR-level reply posted (still a successful reply); `3` inline 404 with no `--pr` OR both endpoints 404; `4` inline 404 then fallback failed with a non-404 error; `5` gh/network error. Treat `0` and `1` as success. See `.claude/scripts/reply-thread.sh --help` for the full contract.
 
 ### Step 5: Resolve Threads
 

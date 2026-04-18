@@ -172,14 +172,15 @@ Reply text by classification:
 - **already-fixed:** `"Addressed in a prior commit — current code no longer has this issue. Resolving."`
 - **outdated:** `"Referenced code no longer exists after refactoring. Resolving."`
 
-Post the reply (inline endpoint first, PR-comment fallback on 404):
+Post the reply via the shared helper — it handles inline-first, PR-comment-fallback, and reviewer-specific `@mention` rules automatically:
 
 ```bash
-gh api "repos/$OWNER/$REPO/pulls/comments/$DBID/replies" -f body="<reply>" \
-  || gh pr comment "$PR_NUMBER" --body "<plain-text reply>"
+# $REVIEWER: cr | bugbot | greptile (from the audit classification)
+.claude/scripts/reply-thread.sh "$DBID" --reviewer "$REVIEWER" \
+  --body "$REPLY" --pr "$PR_NUMBER"
 ```
 
-**Never include `@greptileai` in any reply text.** Every `@greptileai` mention triggers a paid Greptile re-review ($0.50–$1.00). Use plain text only; `@greptileai` is reserved exclusively for intentionally requesting a new review.
+The script strips any `@greptileai` tokens from the body in greptile mode and any `@cursor` tokens in bugbot mode — so even a stray mention in `$REPLY` cannot trigger a paid Greptile re-review ($0.50–$1.00). `@greptileai` is reserved exclusively for intentionally requesting a new review. See `.claude/scripts/reply-thread.sh --help` for the full exit-code contract.
 
 ### 4b. Resolve via shared helper
 
