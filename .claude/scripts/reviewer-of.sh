@@ -267,11 +267,21 @@ fi
 # arrays/scalars as truthy, neither of which matches the sibling-preservation
 # contract.
 if [[ -f "$STATE_FILE" ]]; then
-  if ! jq -e 'type == "object"' "$STATE_FILE" >/dev/null 2>&1; then
-    echo "reviewer-of.sh: $STATE_FILE exists but is not a JSON object; refusing to fall back to live-history (sticky escalation decisions are stored in session-state). Repair or remove the file to continue." >&2
+  # Validate both the top-level shape AND the `.prs` subtree shape. A valid
+  # top-level object with a malformed `.prs` (e.g. `{"prs":"oops"}` or
+  # `{"prs":[]}`) would otherwise pass the top-level guard and then silently
+  # fail the `.prs[$pr]` lookup below — masking the error and falling through
+  # to live-history, defeating the fail-fast contract. Accept `.prs` missing
+  # (null) because a fresh session-state legitimately has no PRs recorded yet.
+  if ! jq -e 'type == "object" and (.prs == null or (.prs | type == "object"))' "$STATE_FILE" >/dev/null 2>&1; then
+    echo "reviewer-of.sh: $STATE_FILE is not a JSON object with an object-shaped .prs; refusing to fall back to live-history (sticky escalation decisions are stored in session-state). Repair or remove the file to continue." >&2
     exit 5
   fi
-  FROM_STATE="$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].reviewer // ""' "$STATE_FILE" 2>/dev/null || echo "")"
+  # No `|| echo ""` mask: the guard above guarantees `.prs` is an object (or
+  # null), so jq's `.prs[$pr].reviewer // ""` will always succeed. If jq does
+  # fail here it means the state file raced underneath us — surface that as
+  # a non-zero exit rather than a silent empty string.
+  FROM_STATE="$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].reviewer // ""' "$STATE_FILE")"
   case "$FROM_STATE" in
     cr|bugbot|greptile)
       printf '%s\n' "$FROM_STATE"
