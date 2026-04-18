@@ -49,6 +49,14 @@ Run the shared merge-gate verifier. It implements the three-path gate from `.cla
 REVIEWER=""
 if [[ -f ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json ]]; then
   REVIEWER=$(jq -r '.reviewer // ""' ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json)
+  # Normalize legacy `g` and reject any other unexpected value so only
+  # cr|bugbot|greptile reach merge-gate.sh --reviewer. An invalid value
+  # clears REVIEWER and falls through to the reviewer-of.sh resolution.
+  case "$REVIEWER" in
+    g) REVIEWER="greptile" ;;
+    cr|bugbot|greptile) ;;
+    *) REVIEWER="" ;;
+  esac
 fi
 if [[ -z "$REVIEWER" ]]; then
   RESOLVED=$(.claude/scripts/reviewer-of.sh {{PR_NUMBER}} 2>/dev/null || true)

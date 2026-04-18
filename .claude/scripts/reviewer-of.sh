@@ -167,13 +167,20 @@ write_sticky() {
 
   local input_file="$STATE_FILE"
   local seeded_tmp=""
-  if [[ ! -f "$STATE_FILE" ]] || ! jq -e . "$STATE_FILE" >/dev/null 2>&1; then
-    # File missing or corrupt — seed a temp file with an empty object so jq
-    # has valid input. The original file (if any) is not modified until the
-    # atomic mv at the end.
+  if [[ ! -f "$STATE_FILE" ]]; then
+    # File missing — seed a temp file with an empty object so jq has valid
+    # input. The original file path is written atomically at the end.
     seeded_tmp="$(mktemp)"
     printf '%s\n' '{}' > "$seeded_tmp"
     input_file="$seeded_tmp"
+  elif ! jq -e . "$STATE_FILE" >/dev/null 2>&1; then
+    # File exists but is not valid JSON. Refuse to overwrite — the sibling-
+    # preservation contract depends on merging into the existing object, and
+    # silently replacing a corrupt file would discard unrelated session data
+    # (cr_quota, greptile_daily, active_agents, etc.) that may still be
+    # recoverable by hand.
+    echo "reviewer-of.sh: $STATE_FILE contains invalid JSON; refusing to overwrite" >&2
+    exit 2
   fi
 
   local tmp="$STATE_FILE.tmp.$$"
@@ -246,7 +253,10 @@ fi
 PR_CHECK_ERR="$(mktemp)"
 trap "rm -f '$PR_CHECK_ERR' 2>/dev/null" EXIT
 if ! gh api "repos/{owner}/{repo}/pulls/$PR_NUMBER" >/dev/null 2>"$PR_CHECK_ERR"; then
-  if grep -qi "http 404\|not found\|could not resolve\|no pull request\|no such" "$PR_CHECK_ERR"; then
+  # Use ERE (-E) for portability: BSD grep on macOS treats basic-regex `\|`
+  # as a literal pipe, so the original `\|` alternation silently failed to
+  # match 404 error bodies and downgraded them to exit 2.
+  if grep -qiE "http 404|not found|could not resolve|no pull request|no such" "$PR_CHECK_ERR"; then
     echo "reviewer-of.sh: PR #$PR_NUMBER not found" >&2
     exit 3
   fi
@@ -254,18 +264,26 @@ if ! gh api "repos/{owner}/{repo}/pulls/$PR_NUMBER" >/dev/null 2>"$PR_CHECK_ERR"
   exit 2
 fi
 
-# Collect distinct bot authors across all three endpoints (paginated). Route
-# errors through stderr so the resulting variable is clean.
-AUTHORS="$(
-  {
-    gh api --paginate "repos/{owner}/{repo}/pulls/$PR_NUMBER/reviews?per_page=100" \
-      --jq '.[]?.user.login // empty' 2>/dev/null
-    gh api --paginate "repos/{owner}/{repo}/pulls/$PR_NUMBER/comments?per_page=100" \
-      --jq '.[]?.user.login // empty' 2>/dev/null
-    gh api --paginate "repos/{owner}/{repo}/issues/$PR_NUMBER/comments?per_page=100" \
-      --jq '.[]?.user.login // empty' 2>/dev/null
-  } | sort -u
-)"
+# Collect distinct bot authors across all three endpoints (paginated).
+# Each endpoint is queried separately so a transient failure aborts with a
+# clear error rather than silently returning a wrong reviewer from a partial
+# author set. stderr is captured for diagnostics.
+AUTHORS_TMP="$(mktemp)"
+GH_ERR="$(mktemp)"
+trap "rm -f '$PR_CHECK_ERR' '$AUTHORS_TMP' '$GH_ERR' 2>/dev/null" EXIT
+
+for endpoint in \
+  "repos/{owner}/{repo}/pulls/$PR_NUMBER/reviews" \
+  "repos/{owner}/{repo}/pulls/$PR_NUMBER/comments" \
+  "repos/{owner}/{repo}/issues/$PR_NUMBER/comments"; do
+  if ! gh api --paginate "${endpoint}?per_page=100" \
+       --jq '.[]?.user.login // empty' >>"$AUTHORS_TMP" 2>"$GH_ERR"; then
+    echo "reviewer-of.sh: failed to scan $endpoint: $(cat "$GH_ERR")" >&2
+    exit 2
+  fi
+done
+
+AUTHORS="$(sort -u "$AUTHORS_TMP")"
 
 # Detection priority matches merge-gate.sh resolve_reviewer(): greptile wins
 # over anything else (sticky); bugbot only when cursor is the sole reviewer
