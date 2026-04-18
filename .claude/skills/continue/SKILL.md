@@ -125,22 +125,21 @@ PR_NUM=$(echo "$PR_JSON" | jq -r '.number // empty')
 
 ## Step 5: Determine reviewer ownership
 
-Check which reviewer owns this PR:
+Resolve reviewer ownership via the shared helper (reads `.prs["<N>"].reviewer` from `~/.claude/session-state.json` first, falls back to a paginated live-history scan on all three comment endpoints):
 
 ```bash
-# Check session-state first
-cat ~/.claude/session-state.json 2>/dev/null | jq -r ".prs.\"$PR_NUM\".reviewer // empty"
-
-# If no session-state, check review history (paginate to catch all activity)
-gh api --paginate "repos/{owner}/{repo}/pulls/{N}/comments?per_page=100" --jq '.[].user.login' | sort -u
-gh api --paginate "repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100" --jq '.[].user.login' | sort -u
-gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" --jq '.[].user.login' | sort -u
+REVIEWER=$(.claude/scripts/reviewer-of.sh "$PR_NUM")
+REVIEWER_EXIT=$?
 ```
 
-- If `greptile-apps[bot]` has posted reviews: PR is on **Greptile** (sticky assignment).
-- Otherwise: PR is on **CR**.
+Branch on exit code:
+- `0` → `$REVIEWER` is one of `cr` / `bugbot` / `greptile`. Use it for Step 6.
+- `1` → `unknown` printed; no bot has reviewed yet. Treat as **CR** (the default primary reviewer) and proceed to Step 6 to wait for the first review.
+- `2` → `[BLOCKED]` — script/gh error; surface stderr.
+- `3` → `[BLOCKED]` — PR #$PR_NUM not found (closed, merged, or invalid).
+- `5` → `[BLOCKED]` — `~/.claude/session-state.json` is malformed, wrong shape, or the helper hit a runtime failure (e.g. a racing read between the validation guard and the jq lookup). Surface the helper's stderr, stop polling, and repair or remove the state file before retrying `/continue`. Do **not** fall through to a live-history scan — sticky reviewer assignments live in session-state, and bypassing them risks mis-routing an already-escalated PR back to CR.
 
-Output: `Reviewer: CR` or `Reviewer: Greptile`
+Output: `Reviewer: CR` / `Reviewer: BugBot` / `Reviewer: Greptile`.
 
 ---
 
@@ -162,14 +161,22 @@ gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
 ```
 
 **Rate limit detection:** If check-run shows `conclusion: "failure"` with title containing "rate limit" (case-insensitive), OR status shows `state: "failure"`/`state: "error"` with description containing "rate limit":
-- `[ACTION]` — CR is rate-limited. Switching to Greptile.
-- Trigger `@greptileai` on the PR if not already done.
-- This PR is now on Greptile permanently (sticky assignment). Persist this to session-state:
+- `[ACTION]` — CR is rate-limited. Check BugBot (second-tier reviewer) before falling through to Greptile — BugBot auto-triggers on every push, so it may already have responded while CR was blocked:
   ```bash
-  # Write sticky reviewer assignment to session-state
-  jq --arg pr "$PR_NUM" '.prs[$pr].reviewer = "g"' ~/.claude/session-state.json > /tmp/ss.json && mv /tmp/ss.json ~/.claude/session-state.json
+  gh api "repos/{owner}/{repo}/pulls/$PR_NUM/reviews?per_page=100" \
+    --jq '[.[] | select(.user.login == "cursor[bot]" and .commit_id == "'"$SHA"'")]'
   ```
-- Go to the Greptile section below.
+  - BugBot has posted on `$SHA` → PR is now on **BugBot** (sticky). Persist and go to the BugBot section:
+    ```bash
+    .claude/scripts/reviewer-of.sh "$PR_NUM" --sticky bugbot
+    ```
+  - BugBot has NOT posted AND <5 min since push → `[ACTION]` — Waiting up to 5 min for BugBot's auto-review. Poll every 60 s.
+  - BugBot has NOT posted AND ≥5 min since push → BugBot timed out. Fall through to Greptile:
+    ```bash
+    gh pr comment "$PR_NUM" --body "@greptileai"
+    .claude/scripts/reviewer-of.sh "$PR_NUM" --sticky greptile
+    ```
+    Go to the Greptile section below.
 
 **Review completion:** If check-run shows `status: "completed"` with `conclusion: "success"`:
 - CR has finished reviewing. Check for findings (Step 7).
@@ -178,8 +185,36 @@ gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
 - `[ACTION]` — CR review is still pending. Polling every 60 seconds (7-minute timeout).
 - Poll all 3 endpoints each cycle for new comments from `coderabbitai[bot]`.
 - Check for rate-limit signals on every poll cycle.
-- After 7 minutes with no review content and no rate-limit signal: `[BLOCKED]` — CR has not responded. Tell the user and ask whether to wait longer or trigger Greptile manually.
-- **Only switch to Greptile on a clear rate-limit signal.** Do not auto-trigger Greptile on timeout alone.
+- After 7 minutes with no review content and no rate-limit signal: `[ACTION]` — CR timed out. Check BugBot (same query as rate-limit path above). If BugBot has posted a review, persist `--sticky bugbot` and go to the BugBot section. If BugBot has also timed out (≥5 min since push), fall through to Greptile.
+
+### If PR is on BugBot:
+
+BugBot (`cursor[bot]`) is the second-tier free reviewer. Auto-triggers on every push; merge gate requires **1 clean BugBot review** on the current HEAD SHA (no confirmation pass — BugBot's completion signals are reliable).
+
+Check for BugBot reviews on the current HEAD:
+```bash
+gh api --paginate "repos/{owner}/{repo}/pulls/$PR_NUM/reviews?per_page=100" \
+  --jq '[.[] | select(.user.login == "cursor[bot]" and .commit_id == "'"$SHA"'")]'
+gh api --paginate "repos/{owner}/{repo}/pulls/$PR_NUM/comments?per_page=100" \
+  --jq '[.[] | select(.user.login == "cursor[bot]")]'
+gh api --paginate "repos/{owner}/{repo}/issues/$PR_NUM/comments?per_page=100" \
+  --jq '[.[] | select(.user.login == "cursor[bot]")]'
+```
+
+Also check the BugBot check-run for the completion signal:
+```bash
+gh api "repos/{owner}/{repo}/commits/$SHA/check-runs" \
+  --jq '.check_runs[] | select(.name == "Cursor Bugbot") | {status, conclusion}'
+```
+
+- BugBot has posted findings on `$SHA` → `[DONE]` — BugBot review received. Process findings (Step 7). After fixes are pushed, BugBot auto-reviews the new push; return to this section on the new SHA.
+- BugBot has posted a clean review (check-run `completed` with no finding comments) on `$SHA` → `[DONE]` — merge gate met (1 clean pass is sufficient for the BugBot path). Proceed to merge verification.
+- No BugBot response AND <5 min since push → `[ACTION]` — Polling for BugBot (5-min timeout from push). Poll every 60 s.
+- No BugBot response AND ≥5 min since push → BugBot timed out. Trigger manual re-review once; if still silent after another 5 min, fall through to Greptile:
+  ```bash
+  gh pr comment "$PR_NUM" --body "@cursor review"
+  ```
+- Stay on BugBot — do not switch back to CR. Ignore late CR reviews. Only escalate to Greptile if BugBot also fails.
 
 ### If PR is on Greptile:
 
