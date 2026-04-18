@@ -22,6 +22,12 @@
 #                    optional for inline. If omitted and inline returns 404,
 #                    the script cannot fall back — exits 3.
 #
+# Prerequisites:
+#   Must be run from inside a git checkout of the target repository — the
+#   OWNER/REPO are resolved via `gh repo view --json owner,name` against the
+#   current directory. Set GH_REPO=owner/repo in the environment to override
+#   that lookup if you need to post from outside a checkout.
+#
 # Exit codes:
 #   0  Inline reply posted (posted comment URL printed to stdout)
 #   1  Fallback PR-level reply posted (still a successful reply; URL on stdout)
@@ -147,8 +153,20 @@ strip_standalone_token() {
   # $1 = sed character-class pattern for the literal @token
   # Wraps the pattern with word-boundary guards and back-refs the surrounding
   # non-word chars so the slot collapses cleanly without touching text beyond.
-  BODY=$(printf '%s' "$BODY" \
-    | sed -E "s/(^|[^[:alnum:]_])$1([^[:alnum:]_]|$)/\1\2/g")
+  #
+  # Loop until stable: sed's /g advances past the ORIGINAL matched text, not
+  # the replacement. For adjacent tokens like "@cursor @cursor", the second
+  # occurrence would be skipped because sed resumes past the first replacement
+  # and the remaining text no longer starts with a word-boundary match. Looping
+  # re-runs sed on the already-trimmed body until no further substitutions
+  # apply. In practice this terminates in 1-2 iterations.
+  local prev
+  while :; do
+    prev="$BODY"
+    BODY=$(printf '%s' "$BODY" \
+      | sed -E "s/(^|[^[:alnum:]_])$1([^[:alnum:]_]|$)/\1\2/g")
+    [[ "$BODY" == "$prev" ]] && break
+  done
 }
 
 case "$REVIEWER" in
