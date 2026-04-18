@@ -32,11 +32,11 @@ Read the handoff file if it exists:
 cat ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json 2>/dev/null
 ```
 
-Use `reviewer` and `phase_completed` to confirm merge gate expectations. If missing, fall back to GitHub API:
+Use `reviewer` and `phase_completed` to confirm merge gate expectations. If the handoff is missing or lacks a `reviewer` field, resolve reviewer ownership via the shared helper (checks `~/.claude/session-state.json` first, falls back to a paginated live-history scan):
 
 ```bash
+REVIEWER=$(.claude/scripts/reviewer-of.sh {{PR_NUMBER}})   # prints cr / bugbot / greptile / unknown
 gh pr view {{PR_NUMBER}} --json state,title,mergeStateStatus,commits
-gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/reviews?per_page=100"
 ```
 
 ## Step 1: Verify Merge Gate (and CI)
@@ -44,10 +44,17 @@ gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/reviews?per_page=100"
 Run the shared merge-gate verifier. It implements the three-path gate from `.claude/rules/cr-merge-gate.md` (CR 2-clean, BugBot 1-clean, Greptile severity-gated), plus the CI-must-pass check and the BEHIND check.
 
 ```bash
-# Only pass --reviewer when the handoff has a validated reviewer assignment.
+# Prefer the handoff's reviewer field; fall back to reviewer-of.sh (session-state
+# → live-history). Only pass --reviewer when we end up with a validated value.
 REVIEWER=""
 if [[ -f ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json ]]; then
   REVIEWER=$(jq -r '.reviewer // ""' ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json)
+fi
+if [[ -z "$REVIEWER" ]]; then
+  RESOLVED=$(.claude/scripts/reviewer-of.sh {{PR_NUMBER}} 2>/dev/null || true)
+  case "$RESOLVED" in
+    cr|bugbot|greptile) REVIEWER="$RESOLVED" ;;
+  esac
 fi
 
 if [[ -n "$REVIEWER" ]]; then

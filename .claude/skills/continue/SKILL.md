@@ -125,22 +125,20 @@ PR_NUM=$(echo "$PR_JSON" | jq -r '.number // empty')
 
 ## Step 5: Determine reviewer ownership
 
-Check which reviewer owns this PR:
+Resolve reviewer ownership via the shared helper (reads `.prs["<N>"].reviewer` from `~/.claude/session-state.json` first, falls back to a paginated live-history scan on all three comment endpoints):
 
 ```bash
-# Check session-state first
-cat ~/.claude/session-state.json 2>/dev/null | jq -r ".prs.\"$PR_NUM\".reviewer // empty"
-
-# If no session-state, check review history (paginate to catch all activity)
-gh api --paginate "repos/{owner}/{repo}/pulls/{N}/comments?per_page=100" --jq '.[].user.login' | sort -u
-gh api --paginate "repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100" --jq '.[].user.login' | sort -u
-gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" --jq '.[].user.login' | sort -u
+REVIEWER=$(.claude/scripts/reviewer-of.sh "$PR_NUM")
+REVIEWER_EXIT=$?
 ```
 
-- If `greptile-apps[bot]` has posted reviews: PR is on **Greptile** (sticky assignment).
-- Otherwise: PR is on **CR**.
+Branch on exit code:
+- `0` → `$REVIEWER` is one of `cr` / `bugbot` / `greptile`. Use it for Step 6.
+- `1` → `unknown` printed; no bot has reviewed yet. Treat as **CR** (the default primary reviewer) and proceed to Step 6 to wait for the first review.
+- `3` → `[BLOCKED]` — PR #$PR_NUM not found (closed, merged, or invalid).
+- `2` → `[BLOCKED]` — script/gh error; surface stderr.
 
-Output: `Reviewer: CR` or `Reviewer: Greptile`
+Output: `Reviewer: CR` / `Reviewer: BugBot` / `Reviewer: Greptile`.
 
 ---
 
@@ -164,10 +162,9 @@ gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
 **Rate limit detection:** If check-run shows `conclusion: "failure"` with title containing "rate limit" (case-insensitive), OR status shows `state: "failure"`/`state: "error"` with description containing "rate limit":
 - `[ACTION]` — CR is rate-limited. Switching to Greptile.
 - Trigger `@greptileai` on the PR if not already done.
-- This PR is now on Greptile permanently (sticky assignment). Persist this to session-state:
+- This PR is now on Greptile permanently (sticky assignment). Persist via the shared helper (atomic write, preserves siblings, normalizes any legacy `"g"` entry):
   ```bash
-  # Write sticky reviewer assignment to session-state
-  jq --arg pr "$PR_NUM" '.prs[$pr].reviewer = "g"' ~/.claude/session-state.json > /tmp/ss.json && mv /tmp/ss.json ~/.claude/session-state.json
+  .claude/scripts/reviewer-of.sh "$PR_NUM" --sticky greptile
   ```
 - Go to the Greptile section below.
 
