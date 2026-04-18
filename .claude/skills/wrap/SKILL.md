@@ -135,13 +135,15 @@ If any item fails verification, do NOT tick it — stop and report the failure. 
 - **BEHIND base branch** — gate fails with "branch is BEHIND base" in `missing`; rebase + force-push and wait for fresh review before retrying.
 - **CI** — all check-runs must be completed with non-blocking conclusions; failures surface as "CI has N failing check-run(s): ..." in `missing`.
 
-If Step 2.1 exited `0`, these are already satisfied. If `missing` reported CI failures, **do NOT merge**. Read the failure output:
+If Step 2.1 exited `0`, these are already satisfied. If `missing` reported CI failures, **do NOT merge**. Inspect the CI split and read the specific failure:
 
 ```bash
+.claude/scripts/ci-status.sh "$PR_NUM"             # JSON with blocking[].name + in_progress_runs[].name
+.claude/scripts/ci-status.sh "$PR_NUM" --format summary
 gh api "repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID}" --jq '.output.summary'
 ```
 
-Fix the code, commit, push, wait for CI to re-run, and re-invoke `.claude/scripts/merge-gate.sh`.
+`ci-status.sh` exits `3` on blocking failures (fix), `1` on incomplete runs (wait), `0` when CI is clean. Fix the code, commit, push, wait for CI to re-run, and re-invoke `.claude/scripts/merge-gate.sh`.
 
 **Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, or any suppression comment to work around CI.** Fix the actual code.
 
