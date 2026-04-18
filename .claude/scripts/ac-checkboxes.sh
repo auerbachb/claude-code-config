@@ -400,13 +400,13 @@ case "$RESULT" in
     exit 0
     ;;
   noop)
-    TICKED=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(f"0 ticked (of {d[\"items\"]} items — nothing to do)")' "$PY_OUT")
+    TICKED=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); n=d["items"]; print(f"0 ticked (of {n} items — nothing to do)")' "$PY_OUT")
     echo "$TICKED"
     exit 0
     ;;
   updated)
     BODY_PATH=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["body_path"])' "$PY_OUT")
-    TICKED=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(f"ticked {len(d[\"ticked\"])} of {d[\"items\"]} items: {d[\"ticked\"]}")' "$PY_OUT")
+    TICKED=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); t=d["ticked"]; n=d["items"]; print(f"ticked {len(t)} of {n} items: {t}")' "$PY_OUT")
     # gh pr edit --body-file reads the full body verbatim (preserves newlines).
     EDIT_ERR_FILE="$TMPDIR_AC/edit-stderr"
     if ! gh pr edit "$PR_NUMBER" --body-file "$BODY_PATH" >/dev/null 2>"$EDIT_ERR_FILE"; then
