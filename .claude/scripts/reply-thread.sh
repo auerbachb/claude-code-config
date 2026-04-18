@@ -156,7 +156,9 @@ case "$REVIEWER" in
     # Prepend @coderabbitai if not already present (case-insensitive).
     # CR needs the @mention so it reads the reply — especially in PR-comment
     # fallback, but we keep it consistent on inline too.
-    if ! printf '%s' "$BODY" | grep -qi '@coderabbitai'; then
+    # Word-boundary-aware match: a substring like `foo@coderabbitaix` must
+    # NOT suppress the prepend — only a standalone @mention counts as present.
+    if ! printf '%s' "$BODY" | grep -qiE '(^|[^[:alnum:]_])@coderabbitai([^[:alnum:]_]|$)'; then
       BODY="@coderabbitai $BODY"
     fi
     ;;
@@ -179,8 +181,8 @@ if [[ "$REVIEWER" == "bugbot" || "$REVIEWER" == "greptile" ]]; then
   BODY=$(printf '%s' "$BODY" | sed -E 's/[[:blank:]]{2,}/ /g; s/^[[:blank:]]+//; s/[[:blank:]]+$//')
 fi
 
-if [[ -z "$BODY" ]]; then
-  echo "ERROR: --body is empty after reviewer transformation" >&2
+if ! printf '%s' "$BODY" | grep -q '[^[:space:]]'; then
+  echo "ERROR: --body is empty or whitespace-only after reviewer transformation" >&2
   exit 2
 fi
 
@@ -262,8 +264,19 @@ FALLBACK_RC=0
 FALLBACK_RESP=$(gh pr comment "$PR_NUMBER" --body "$BODY" 2>"$FALLBACK_ERR") || FALLBACK_RC=$?
 
 if [[ $FALLBACK_RC -eq 0 ]]; then
-  # `gh pr comment` prints the posted comment URL on stdout.
-  printf '%s\n' "$FALLBACK_RESP"
+  # Current `gh pr comment` (2.x) prints the posted URL to stdout. A few older
+  # gh versions printed it to stderr; check the captured stderr file as a
+  # belt-and-suspenders fallback so the exit-1 URL contract holds across
+  # versions. Extract the first http(s) URL from whichever stream has one.
+  FALLBACK_URL=$(printf '%s' "$FALLBACK_RESP" | grep -oE 'https?://[^[:space:]]+' | head -1)
+  if [[ -z "$FALLBACK_URL" ]]; then
+    FALLBACK_URL=$(grep -oE 'https?://[^[:space:]]+' "$FALLBACK_ERR" | head -1 || true)
+  fi
+  if [[ -z "$FALLBACK_URL" ]]; then
+    echo "ERROR: fallback reply posted but gh pr comment emitted no URL on stdout or stderr" >&2
+    exit 5
+  fi
+  printf '%s\n' "$FALLBACK_URL"
   exit 1
 fi
 

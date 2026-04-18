@@ -76,7 +76,7 @@ Reply to EVERY review comment thread acknowledging the fix. Use the shared helpe
   --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}}
 ```
 
-Exit codes: `0` inline reply posted; `1` fallback PR-level reply posted (still a successful reply); `3` comment not found; `4` both endpoints failed; `5` gh/network error. Treat `0` and `1` as success. See `.claude/scripts/reply-thread.sh --help` for the full contract.
+Exit codes: `0` inline reply posted; `1` fallback PR-level reply posted (still a successful reply); `3` inline 404 with no `--pr` OR both endpoints 404; `4` inline 404 then fallback failed with a non-404 error; `5` gh/network error. Treat `0` and `1` as success. See `.claude/scripts/reply-thread.sh --help` for the full contract.
 
 ### Step 5: Resolve Threads
 
