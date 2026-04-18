@@ -279,9 +279,16 @@ if [[ -f "$STATE_FILE" ]]; then
   fi
   # No `|| echo ""` mask: the guard above guarantees `.prs` is an object (or
   # null), so jq's `.prs[$pr].reviewer // ""` will always succeed. If jq does
-  # fail here it means the state file raced underneath us — surface that as
-  # a non-zero exit rather than a silent empty string.
-  FROM_STATE="$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].reviewer // ""' "$STATE_FILE")"
+  # fail here it means the state file raced underneath us (truncated, removed,
+  # or clobbered between the validation guard above and this read) — surface
+  # that as a non-zero exit rather than a silent empty string. The script
+  # runs with `set -uo pipefail` (no `-e`), so a failed command substitution
+  # in an assignment does NOT halt execution on its own — we MUST wrap the
+  # assignment in an explicit `if !` check to enforce the fail-fast contract.
+  if ! FROM_STATE="$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].reviewer // ""' "$STATE_FILE")"; then
+    echo "reviewer-of.sh: jq read of $STATE_FILE failed after validation (file may have been modified or removed mid-read); refusing to fall back to live-history. Repair or remove the file to continue." >&2
+    exit 5
+  fi
   case "$FROM_STATE" in
     cr|bugbot|greptile)
       printf '%s\n' "$FROM_STATE"
