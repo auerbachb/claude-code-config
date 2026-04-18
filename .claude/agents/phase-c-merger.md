@@ -59,7 +59,19 @@ if [[ -f ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json ]]; then
   esac
 fi
 if [[ -z "$REVIEWER" ]]; then
-  RESOLVED=$(.claude/scripts/reviewer-of.sh {{PR_NUMBER}} 2>/dev/null || true)
+  # Capture stdout + exit code separately. Do NOT swallow stderr or mask the
+  # exit code — exit 5 from reviewer-of.sh means session-state is malformed
+  # (not a JSON object), which is an explicit fail-fast signal per the
+  # script's contract. Falling through to merge-gate.sh on corrupt state
+  # would silently swap the sticky assignment for whatever live-history
+  # inference merge-gate.sh picks, defeating the purpose of storing the
+  # sticky decision in session-state.
+  RESOLVED=$(.claude/scripts/reviewer-of.sh {{PR_NUMBER}})
+  RESOLVED_EXIT=$?
+  if [[ "$RESOLVED_EXIT" -eq 5 ]]; then
+    echo "reviewer-of.sh exit 5: session-state malformed — blocking merge prep. Repair or remove ~/.claude/session-state.json and retry." >&2
+    exit 1
+  fi
   case "$RESOLVED" in
     cr|bugbot|greptile) REVIEWER="$RESOLVED" ;;
   esac

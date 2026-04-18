@@ -93,7 +93,12 @@ set -uo pipefail
 STATE_FILE="${HOME}/.claude/session-state.json"
 
 print_help() {
-  sed -n '/^# PURPOSE$/,/^# EXAMPLES$/p' "$0" | sed 's/^# \{0,1\}//'
+  # Print from PURPOSE through end of the header block (the first non-comment
+  # line terminates). Extending the range to EOF would print the rest of the
+  # script body too; terminating at the first line that doesn't start with "#"
+  # keeps output scoped to the leading comment header while still including
+  # the EXAMPLES section (previously cut off at the EXAMPLES heading).
+  sed -n '/^# PURPOSE$/,/^[^#]/{/^[^#]/!p;}' "$0" | sed 's/^# \{0,1\}//'
 }
 
 die_usage() {
@@ -165,7 +170,12 @@ fi
 # --- atomic write helper (--sticky path) ---
 # Writes .prs["$PR_NUMBER"].reviewer = "$1" to $STATE_FILE, preserving all
 # sibling keys (other PRs, greptile_daily, cr_quota, active_agents, etc.).
-# Creates the file with a minimal object if missing or corrupt.
+# Creates the file with a minimal `{}` object ONLY when it is missing. When
+# the file exists but is not a JSON object (corrupt, wrong shape, or non-JSON
+# text), the function exits 5 rather than overwriting — the sibling-preservation
+# contract depends on merging into an existing object, and silently replacing
+# a corrupt file would discard unrelated session data that may still be
+# recoverable by hand.
 write_sticky() {
   local value="$1"
   local state_dir
