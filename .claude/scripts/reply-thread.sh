@@ -27,7 +27,7 @@
 #   1  Fallback PR-level reply posted (still a successful reply; URL on stdout)
 #   2  Usage error
 #   3  Inline returned 404 and no --pr provided OR both endpoints returned 404
-#   4  Inline succeeded in posting but fallback failed — or both endpoints errored non-404
+#   4  Inline returned 404 and fallback failed with a non-404 error
 #   5  gh / network error (unexpected)
 #
 # Examples:
