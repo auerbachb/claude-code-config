@@ -210,17 +210,18 @@ if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
 fi
 
 # Build the input file: existing state if present + valid; seeded `{}` otherwise.
+# Use `jq empty` for parse-only validation — `jq -e` returns non-zero on valid
+# JSON values `null` and `false`, which would misclassify them as invalid.
 SEEDED_TMP=""
 input_file="$STATE_FILE"
-if [[ ! -f "$STATE_FILE" ]] || ! jq -e . "$STATE_FILE" >/dev/null 2>&1; then
-  if [[ -f "$STATE_FILE" ]]; then
-    # File exists but isn't valid JSON. Refuse to silently nuke it — exit 4.
-    echo "session-state.sh: $STATE_FILE exists but is not valid JSON; refusing to overwrite" >&2
-    exit 4
-  fi
+if [[ ! -f "$STATE_FILE" ]]; then
   SEEDED_TMP="$(mktemp)"
   printf '%s\n' '{}' > "$SEEDED_TMP"
   input_file="$SEEDED_TMP"
+elif ! jq empty "$STATE_FILE" >/dev/null 2>&1; then
+  # File exists but isn't valid JSON. Refuse to silently nuke it — exit 4.
+  echo "session-state.sh: $STATE_FILE exists but is not valid JSON; refusing to overwrite" >&2
+  exit 4
 fi
 
 OUT_TMP="$STATE_FILE.tmp.$$"
