@@ -280,9 +280,15 @@ cmd_holidays_for_year() {
     echo "Error: --holidays-for-year requires a 4-digit year (got: $year)" >&2
     exit 2
   fi
-  # Sort ascending, one per line — easier for downstream consumers than the
-  # space-separated internal form used by is_workday().
-  compute_holidays_for_year "$year" | tr ' ' '\n' | sed '/^$/d' | sort -u
+  # Gather the same 3-year window cmd_is_workday uses so observed-date rules
+  # that shift a holiday across a year boundary (e.g., Jan 1 on Sat → Dec 31
+  # of prior year) are listed under the year they actually fall in. Then
+  # filter to dates whose YYYY prefix matches the requested year.
+  {
+    compute_holidays_for_year "$year"
+    compute_holidays_for_year "$((year - 1))"
+    compute_holidays_for_year "$((year + 1))"
+  } | tr ' ' '\n' | sed '/^$/d' | grep -E "^${year}-" | sort -u
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
