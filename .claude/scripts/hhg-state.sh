@@ -73,6 +73,14 @@ case "$1" in
     print_help
     exit 0
     ;;
+  --)
+    shift
+    ;;
+  -*)
+    echo "hhg-state.sh: unknown flag: $1" >&2
+    echo "Run with --help for usage." >&2
+    exit 2
+    ;;
 esac
 
 # Join all positional arguments with spaces. Callers can pass either a single
