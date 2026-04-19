@@ -35,7 +35,8 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
    #
    # Resolve the script path robustly: /standup runs from arbitrary repos,
    # so a bare `.claude/scripts/workday.sh` only works when CWD happens to be
-   # this config repo. Prefer the stable skills-worktree path, then git root,
+   # this config repo. Check in this order: skills-worktree (canonical),
+   # ~/.claude/scripts (global symlink fallback), git root of the current repo,
    # then CWD-relative.
    WORKDAY_SH=""
    for candidate in \
