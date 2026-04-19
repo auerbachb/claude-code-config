@@ -53,7 +53,10 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
      echo "Error: could not locate workday.sh" >&2
      exit 1
    fi
-   LOOKBACK_DATE=$("$WORKDAY_SH" --last-workday)
+   # Preserve workday.sh's exit-code contract (exit 3 = runtime failure).
+   # A plain `LOOKBACK_DATE=$(...)` would swallow non-zero exits and later
+   # collapse them to a generic `exit 1`; `|| exit $?` keeps the original.
+   LOOKBACK_DATE=$("$WORKDAY_SH" --last-workday) || exit $?
    # LOOKBACK_DATE is now the most recent prior workday (YYYY-MM-DD)
    ```
 
@@ -69,11 +72,9 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
        exit 1
      fi
    else
-     # Smart default — LOOKBACK_DATE was computed above (most recent prior workday)
-     if [ -z "$LOOKBACK_DATE" ]; then
-       echo "Error: Failed to compute lookback date" >&2
-       exit 1
-     fi
+     # Smart default — LOOKBACK_DATE was set above by workday.sh; any failure
+     # there already propagated via `|| exit $?`, so LOOKBACK_DATE is non-empty
+     # here by contract.
      SINCE_ISO=$(TZ='America/New_York' date -d "${LOOKBACK_DATE} 12:00" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || TZ='America/New_York' date -jf '%Y-%m-%d %H:%M' "${LOOKBACK_DATE} 12:00" '+%Y-%m-%dT%H:%M:%S%z')
      if [ -z "$SINCE_ISO" ]; then
        echo "Error: Failed to convert lookback date to ISO timestamp" >&2
