@@ -51,20 +51,26 @@ set -euo pipefail
 # ──────────────────────────────────────────────────────────────────────────────
 get_day_of_week() {
   # Returns 0=Sun 1=Mon ... 6=Sat for a YYYY-MM-DD date
-  TZ='America/New_York' date -d "$1" '+%w' 2>/dev/null \
-    || TZ='America/New_York' date -jf '%Y-%m-%d' "$1" '+%w'
+  TZ='America/New_York' date -d "$1" '+%w' 2>/dev/null && return 0
+  TZ='America/New_York' date -jf '%Y-%m-%d' "$1" '+%w' 2>/dev/null && return 0
+  echo "Error: failed to parse date: $1" >&2
+  return 3
 }
 
 subtract_days() {
   # subtract_days YYYY-MM-DD N → returns YYYY-MM-DD minus N days
-  TZ='America/New_York' date -d "$1 - $2 days" '+%Y-%m-%d' 2>/dev/null \
-    || TZ='America/New_York' date -jf '%Y-%m-%d' -v-"$2"d "$1" '+%Y-%m-%d'
+  TZ='America/New_York' date -d "$1 - $2 days" '+%Y-%m-%d' 2>/dev/null && return 0
+  TZ='America/New_York' date -jf '%Y-%m-%d' -v-"$2"d "$1" '+%Y-%m-%d' 2>/dev/null && return 0
+  echo "Error: failed to subtract $2 days from: $1" >&2
+  return 3
 }
 
 add_days() {
   # add_days YYYY-MM-DD N → returns YYYY-MM-DD plus N days
-  TZ='America/New_York' date -d "$1 + $2 days" '+%Y-%m-%d' 2>/dev/null \
-    || TZ='America/New_York' date -jf '%Y-%m-%d' -v+"$2"d "$1" '+%Y-%m-%d'
+  TZ='America/New_York' date -d "$1 + $2 days" '+%Y-%m-%d' 2>/dev/null && return 0
+  TZ='America/New_York' date -jf '%Y-%m-%d' -v+"$2"d "$1" '+%Y-%m-%d' 2>/dev/null && return 0
+  echo "Error: failed to add $2 days to: $1" >&2
+  return 3
 }
 
 days_in_month() {

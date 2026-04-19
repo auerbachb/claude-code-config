@@ -29,10 +29,29 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
    **Smart lookback algorithm** (run only when `$ARGUMENTS` is empty):
 
    ```bash
-   # Delegates to .claude/scripts/workday.sh, which implements the full
-   # weekend + US-federal-holiday + day-after-Thanksgiving calculator with
-   # observed-date rules (Sat → Fri, Sun → Mon) and cross-year lookbacks.
-   LOOKBACK_DATE=$(bash .claude/scripts/workday.sh --last-workday)
+   # Delegates to workday.sh, which implements the full weekend +
+   # US-federal-holiday + day-after-Thanksgiving calculator with observed-date
+   # rules (Sat → Fri, Sun → Mon) and cross-year lookbacks.
+   #
+   # Resolve the script path robustly: /standup runs from arbitrary repos,
+   # so a bare `.claude/scripts/workday.sh` only works when CWD happens to be
+   # this config repo. Prefer the stable skills-worktree path, then git root,
+   # then CWD-relative.
+   WORKDAY_SH=""
+   for candidate in \
+     "$HOME/.claude/skills-worktree/.claude/scripts/workday.sh" \
+     "$(git rev-parse --show-toplevel 2>/dev/null)/.claude/scripts/workday.sh" \
+     ".claude/scripts/workday.sh"; do
+     if [ -x "$candidate" ]; then
+       WORKDAY_SH="$candidate"
+       break
+     fi
+   done
+   if [ -z "$WORKDAY_SH" ]; then
+     echo "Error: could not locate workday.sh" >&2
+     exit 1
+   fi
+   LOOKBACK_DATE=$("$WORKDAY_SH" --last-workday)
    # LOOKBACK_DATE is now the most recent prior workday (YYYY-MM-DD)
    ```
 
