@@ -102,6 +102,17 @@ die_usage() {
   exit 2
 }
 
+# Validate that the state file contains exactly ONE top-level JSON object.
+# `jq empty` and `jq -e 'type == "object"'` both succeed on multi-document
+# files like `{}\n{}` because jq processes documents independently — the
+# slurp (-s) check folds them into an array so we can assert length == 1.
+# Without this guard, --get returns N values per path and --set rewrites N
+# objects, corrupting the state file. Non-zero exit on any of: parse error,
+# multi-document, scalar/array/null at top level.
+is_single_object_state_file() {
+  jq -s -e 'length == 1 and (.[0] | type == "object")' "$1" >/dev/null 2>&1
+}
+
 # --- arg parsing ---
 MODE=""
 GET_PATH=""
@@ -145,6 +156,12 @@ while [[ $# -gt 0 ]]; do
       if [[ "$local_arg" != *=* ]]; then
         die_usage "--set argument must be <jq-path>=<value>, got: $local_arg"
       fi
+      # Reject empty LHS so `--set =foo` fails at the usage-error stage
+      # (exit 2) instead of falling through to a cryptic jq pipeline error
+      # (exit 5). The `*=*` glob above accepts "=foo"; this guard rejects it.
+      if [[ -z "${local_arg%%=*}" ]]; then
+        die_usage "--set requires a non-empty jq path, got: $local_arg"
+      fi
       SET_PATHS+=("${local_arg%%=*}")
       SET_VALUES+=("${local_arg#*=}")
       shift 2
@@ -186,6 +203,12 @@ if [[ "$MODE" == "get" ]]; then
     echo "session-state.sh: state file not found: $STATE_FILE" >&2
     exit 3
   fi
+  # Reject multi-document, scalar/array/null, and unparseable state files
+  # before evaluating the user's path — see is_single_object_state_file().
+  if ! is_single_object_state_file "$STATE_FILE"; then
+    echo "session-state.sh: $STATE_FILE must contain exactly one top-level JSON object" >&2
+    exit 4
+  fi
   # Use jq -r so callers get the raw value (string without quotes, number
   # as-is, etc.). jq exits non-zero on parse errors — translate to 4.
   jq_err="$(mktemp)"
@@ -209,25 +232,20 @@ if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
   exit 5
 fi
 
-# Build the input file: existing state if present + valid object; seeded `{}` otherwise.
-# Require a top-level JSON object — every assignment in the pipeline indexes
-# the root with a string key, so arrays/scalars/null would parse fine but fail
-# downstream with confusing "Cannot index <type> with string" errors. Matches
-# the `jq -e 'type == "object"'` discipline in reviewer-of.sh.
+# Build the input file: existing state if present + valid; seeded `{}` otherwise.
+# Require a single top-level JSON object — see is_single_object_state_file().
+# Every assignment in the pipeline indexes the root with a string key, so
+# arrays/scalars/null would parse fine but fail downstream with confusing
+# "Cannot index <type> with string" errors; multi-document files would write
+# back N modified objects, corrupting the state file.
 SEEDED_TMP=""
 input_file="$STATE_FILE"
 if [[ ! -f "$STATE_FILE" ]]; then
   SEEDED_TMP="$(mktemp)"
   printf '%s\n' '{}' > "$SEEDED_TMP"
   input_file="$SEEDED_TMP"
-elif ! jq empty "$STATE_FILE" >/dev/null 2>&1; then
-  echo "session-state.sh: $STATE_FILE exists but is not valid JSON; refusing to overwrite" >&2
-  exit 4
-elif ! jq -e 'type == "object"' "$STATE_FILE" >/dev/null 2>&1; then
-  # Valid JSON but wrong shape — top level must be an object so `.key = value`
-  # assignments work. Refuse rather than emit confusing downstream jq errors.
-  STATE_TYPE="$(jq -r 'type' "$STATE_FILE" 2>/dev/null || echo unknown)"
-  echo "session-state.sh: $STATE_FILE top-level is $STATE_TYPE, expected object; refusing to overwrite" >&2
+elif ! is_single_object_state_file "$STATE_FILE"; then
+  echo "session-state.sh: $STATE_FILE must contain exactly one top-level JSON object; refusing to overwrite" >&2
   exit 4
 fi
 
