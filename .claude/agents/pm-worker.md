@@ -98,21 +98,23 @@ Work-log edits in a worktree must be synced to the root repo:
 
 ## Task: Repo Bootstrap
 
-### Check for required workflows
+Run the bootstrap check (workflow presence + branch-protection state):
 
 ```bash
-test -f .github/workflows/cr-plan-on-issue.yml && echo "exists" || echo "missing"
+.claude/scripts/repo-bootstrap.sh --check
 ```
 
-If missing, create `cr-plan-on-issue.yml` with the standard content (triggers `@coderabbitai plan` on new issues).
+Exit codes: `0` clean, `1` gaps detected, `2` usage, `3` env error, `4` `gh`/network error. Reports `[OK]`/`[MISSING]`/`[INSTALLED]`/`[SKIP]`/`[UNKNOWN]` per check.
 
-### Check branch protection
+If the report shows the `cr-plan-on-issue.yml` workflow as `[MISSING]`, install it (autonomous — workflow creation does not require user confirmation):
 
 ```bash
-gh api "repos/{{OWNER}}/{{REPO}}/branches/main/protection/required_status_checks" 2>&1
+.claude/scripts/repo-bootstrap.sh --apply
 ```
 
-If not configured (404), report to the parent — branch protection changes require user confirmation.
+`--apply` only installs the missing workflow — it never overwrites an existing file and never modifies branch protection.
+
+If branch protection is `[MISSING]`, report to the parent — branch protection changes require user confirmation per `.claude/rules/repo-bootstrap.md`.
 
 ## Autonomy Rules
 
