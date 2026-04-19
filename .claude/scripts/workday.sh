@@ -99,7 +99,8 @@ get_nth_weekday_of_month() {
   max_days=$(days_in_month "$ym")
   local count=0 d=1
   while [ "$d" -le "$max_days" ]; do
-    local candidate="${ym}-$(printf '%02d' $d)"
+    local candidate
+    candidate="${ym}-$(printf '%02d' $d)"
     local dow
     dow=$(get_day_of_week "$candidate")
     if [ "$dow" -eq "$wd" ]; then
@@ -123,7 +124,8 @@ get_last_weekday_of_month() {
   local last=""
   local d=1
   while [ "$d" -le "$max_days" ]; do
-    local candidate="${ym}-$(printf '%02d' $d)"
+    local candidate
+    candidate="${ym}-$(printf '%02d' $d)"
     local dow
     dow=$(get_day_of_week "$candidate")
     if [ "$dow" -eq "$wd" ]; then
