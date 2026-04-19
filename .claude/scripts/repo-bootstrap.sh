@@ -232,12 +232,24 @@ fi
 
 if [[ "$GAPS" -eq 1 ]]; then
   echo
+  WORKFLOW_GAP=0
+  BP_GAP=0
+  if [[ "$WORKFLOW_PRESENT" -eq 0 ]]; then WORKFLOW_GAP=1; fi
+  if [[ "$BP_STATE" == "missing" ]]; then BP_GAP=1; fi
+
   if [[ "$MODE" == "check" ]]; then
-    echo "Gaps detected. Re-run with --apply to install missing workflows."
-    echo "Branch protection (if missing) requires user confirmation."
+    if [[ "$WORKFLOW_GAP" -eq 1 ]]; then
+      echo "Workflow gaps detected. Re-run with --apply to install missing workflows."
+    fi
+    if [[ "$BP_GAP" -eq 1 ]]; then
+      echo "Branch protection gap detected. Requires user confirmation — see"
+      echo ".claude/rules/repo-bootstrap.md (--apply does not modify branch protection)."
+    fi
   else
-    # apply mode — only branch-protection gap can remain
-    echo "Workflow gaps applied. Branch protection still requires user confirmation."
+    # apply mode — workflow gaps are resolved before this point (or exit 5),
+    # so a remaining GAPS=1 here can only be branch protection.
+    echo "Branch protection gap remains. Requires user confirmation — see"
+    echo ".claude/rules/repo-bootstrap.md (--apply does not modify branch protection)."
   fi
   exit 1
 fi
