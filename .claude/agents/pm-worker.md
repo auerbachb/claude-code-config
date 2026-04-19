@@ -104,7 +104,7 @@ Run the bootstrap check (workflow presence + branch-protection state):
 .claude/scripts/repo-bootstrap.sh --check
 ```
 
-Exit codes: `0` clean, `1` gaps detected, `2` usage, `3` env error, `4` `gh`/network error. Reports `[OK]`/`[MISSING]`/`[INSTALLED]`/`[SKIP]`/`[UNKNOWN]` per check.
+Exit codes: `0` clean, `1` gaps detected, `2` usage, `3` env error, `4` `gh`/network error, `5` write failure (during `--apply`). Reports `[OK]`/`[MISSING]`/`[INSTALLED]`/`[SKIP]`/`[UNKNOWN]` per check.
 
 If the report shows the `cr-plan-on-issue.yml` workflow as `[MISSING]`, install it (autonomous — workflow creation does not require user confirmation):
 

@@ -26,7 +26,7 @@ If the report shows `[MISSING] .github/workflows/cr-plan-on-issue.yml`, install 
 
 ### Branch protection — required status checks
 
-The script reports branch-protection state in three forms: `[OK]` (configured, lists current contexts), `[MISSING]` (no required status checks — actionable), or `[SKIP]` (token lacks read permission). Without required status checks on `main`, GitHub allows merges even when CI is red — breaking `main` for all subsequent PRs.
+The script reports branch-protection state in four forms: `[OK]` (configured, lists current contexts), `[MISSING]` (no required status checks — actionable), `[SKIP]` (token lacks read permission), or `[UNKNOWN]` (state could not be determined — investigate the script's stderr output). Without required status checks on `main`, GitHub allows merges even when CI is red — breaking `main` for all subsequent PRs.
 
 When the script reports `[MISSING]`, follow the remediation below. Branch protection is **never** changed by the script; user confirmation is required before any write.
 

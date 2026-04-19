@@ -30,15 +30,23 @@
 #     .claude/rules/repo-bootstrap.md. The script reports status only.
 #   - Read-only gh API calls are used for the branch-protection check.
 
-set -uo pipefail
+set -euo pipefail
 
-MODE="check"
+MODE=""
 for arg in "$@"; do
   case "$arg" in
     --check)
+      if [[ -n "$MODE" && "$MODE" != "check" ]]; then
+        echo "repo-bootstrap.sh: choose only one of --check or --apply" >&2
+        exit 2
+      fi
       MODE="check"
       ;;
     --apply)
+      if [[ -n "$MODE" && "$MODE" != "apply" ]]; then
+        echo "repo-bootstrap.sh: choose only one of --check or --apply" >&2
+        exit 2
+      fi
       MODE="apply"
       ;;
     -h|--help)
@@ -52,9 +60,14 @@ for arg in "$@"; do
       ;;
   esac
 done
+[[ -z "$MODE" ]] && MODE="check"
 
 if ! command -v gh >/dev/null 2>&1; then
   echo "repo-bootstrap.sh: gh CLI not found on PATH" >&2
+  exit 3
+fi
+if ! command -v jq >/dev/null 2>&1; then
+  echo "repo-bootstrap.sh: jq not found on PATH" >&2
   exit 3
 fi
 
@@ -139,13 +152,16 @@ if gh api "repos/$OWNER_REPO/branches/main/protection/required_status_checks" \
   # checks[].context is the newer field — prefer checks[].context, fall back to
   # contexts).
   BP_STATE="configured"
-  BP_CHECKS=$(jq -r '
+  if ! BP_CHECKS=$(jq -r '
     if (.checks | type) == "array" and (.checks | length) > 0 then
       [.checks[].context] | join(", ")
     elif (.contexts | type) == "array" then
       .contexts | join(", ")
     else "" end
-  ' "$BP_BODY_FILE" 2>/dev/null || true)
+  ' "$BP_BODY_FILE" 2>/dev/null); then
+    echo "repo-bootstrap.sh: failed to parse branch-protection response with jq" >&2
+    exit 4
+  fi
 else
   BP_STDERR=$(cat "$BP_STDERR_FILE")
   if printf '%s' "$BP_STDERR" | grep -qiE 'HTTP 404|Not Found|Branch not protected'; then
