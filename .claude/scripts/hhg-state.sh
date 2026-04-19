@@ -83,6 +83,13 @@ case "$1" in
     ;;
 esac
 
+# Re-check after possible `--` shift — `hhg-state.sh --` leaves no text behind.
+if [[ $# -eq 0 ]]; then
+  echo "hhg-state.sh: <text> is required" >&2
+  echo "Run with --help for usage." >&2
+  exit 2
+fi
+
 # Join all positional arguments with spaces. Callers can pass either a single
 # pre-concatenated string or multiple tokens — both produce the same input.
 TEXT="$*"
