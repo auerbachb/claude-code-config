@@ -197,7 +197,14 @@ populate_holidays_window() {
 is_workday() {
   local date=$1
   local dow
-  dow=$(get_day_of_week "$date")
+  # Propagate runtime failure from get_day_of_week (exit 3) without collapsing
+  # it to exit 1. Under `set -e`, callers like `while ! is_workday ...` and
+  # `if is_workday ...; else ...; fi` run is_workday in a conditional context,
+  # which suppresses `set -e` inside the function. So we must check and
+  # propagate get_day_of_week's status explicitly here.
+  if ! dow=$(get_day_of_week "$date"); then
+    return 3
+  fi
   # Weekend check: 0=Sun, 6=Sat
   [ "$dow" -eq 0 ] && return 1
   [ "$dow" -eq 6 ] && return 1
@@ -233,7 +240,21 @@ cmd_last_workday() {
   # so 14 iterations is ample headroom. If we ever exhaust it, something is
   # wrong upstream (e.g., HOLIDAYS malformed) — fail loudly rather than hang.
   local attempts=0
-  while ! is_workday "$candidate"; do
+  local status
+  while true; do
+    if is_workday "$candidate"; then
+      break
+    else
+      # NOTE: $? must be captured INSIDE the else branch. After `fi`, $? is
+      # the exit status of the if-statement itself (zero when no branch ran),
+      # not the condition's exit status.
+      status=$?
+    fi
+    # Exit 1 = "not a workday" → keep walking back. Any other non-zero status
+    # (e.g., exit 3 = runtime failure from get_day_of_week) must propagate.
+    if [ "$status" -ne 1 ]; then
+      exit "$status"
+    fi
     attempts=$((attempts + 1))
     if [ "$attempts" -gt 14 ]; then
       echo "Error: no workday found within 14 days of seed; aborting" >&2
@@ -267,11 +288,21 @@ cmd_is_workday() {
 $(compute_holidays_for_year "$((year - 1))") \
 $(compute_holidays_for_year "$((year + 1))")"
 
+  local status
   if is_workday "$date"; then
     exit 0
   else
+    # NOTE: $? must be captured INSIDE the else branch. After `fi`, $? is the
+    # exit status of the if-statement itself (zero when no branch ran), not
+    # the condition's exit status.
+    status=$?
+  fi
+  # Exit 1 = "not a workday" (contract). Exit 3 = runtime failure from
+  # get_day_of_week; propagate directly rather than collapsing to 1.
+  if [ "$status" -eq 1 ]; then
     exit 1
   fi
+  exit "$status"
 }
 
 cmd_holidays_for_year() {
