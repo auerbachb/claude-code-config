@@ -93,7 +93,7 @@ set -euo pipefail
 STATE_FILE="${HOME}/.claude/session-state.json"
 
 print_help() {
-  sed -n '/^# PURPOSE$/,/^# EXAMPLES$/p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '/^# PURPOSE$/,/^$/p' "$0" | sed '$d; s/^# \{0,1\}//'
 }
 
 die_usage() {
