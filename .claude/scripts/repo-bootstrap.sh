@@ -50,7 +50,10 @@ for arg in "$@"; do
       MODE="apply"
       ;;
     -h|--help)
-      sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+      # Sentinel-based extraction: print the leading comment block (from the
+      # script-name banner through the last consecutive `#` line) so adding or
+      # removing header lines doesn't silently truncate or pollute --help.
+      sed -n '/^# repo-bootstrap\.sh/,/^[^#]/{/^[^#]/d; s/^# \{0,1\}//; p;}' "$0"
       exit 0
       ;;
     *)
@@ -78,7 +81,13 @@ BP_BODY_FILE=""
 BP_STDERR_FILE=""
 TMP_WORKFLOW=""
 cleanup() {
-  rm -f "${OWNER_REPO_ERR:-}" "${BP_BODY_FILE:-}" "${BP_STDERR_FILE:-}" "${TMP_WORKFLOW:-}"
+  # Guard each rm: rm -f "" emits "cannot remove ''" on GNU coreutils, leaking
+  # stderr noise when the script exits before any mktemp call runs.
+  [[ -n "${OWNER_REPO_ERR:-}" ]] && rm -f "$OWNER_REPO_ERR"
+  [[ -n "${BP_BODY_FILE:-}"   ]] && rm -f "$BP_BODY_FILE"
+  [[ -n "${BP_STDERR_FILE:-}" ]] && rm -f "$BP_STDERR_FILE"
+  [[ -n "${TMP_WORKFLOW:-}"   ]] && rm -f "$TMP_WORKFLOW"
+  return 0
 }
 trap cleanup EXIT
 
