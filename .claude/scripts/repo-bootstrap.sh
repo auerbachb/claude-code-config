@@ -21,7 +21,7 @@
 #   2 — usage error
 #   3 — environment error (not in a git repo, no remote, cannot resolve
 #       owner/repo)
-#   4 — gh / network error
+#   4 — gh / network error, or jq parse failure on the gh response
 #   5 — write failure during --apply (mkdir or workflow file write failed)
 #
 # Safety:
@@ -71,6 +71,17 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 3
 fi
 
+# Single EXIT trap — clean up every temp file we may create. Variables are
+# initialized empty so the trap is safe to install before any mktemp call.
+OWNER_REPO_ERR=""
+BP_BODY_FILE=""
+BP_STDERR_FILE=""
+TMP_WORKFLOW=""
+cleanup() {
+  rm -f "${OWNER_REPO_ERR:-}" "${BP_BODY_FILE:-}" "${BP_STDERR_FILE:-}" "${TMP_WORKFLOW:-}"
+}
+trap cleanup EXIT
+
 # Resolve git toplevel — script writes into this dir's .github/workflows/.
 if ! REPO_TOP=$(git rev-parse --show-toplevel 2>/dev/null); then
   echo "repo-bootstrap.sh: not in a git repository" >&2
@@ -79,7 +90,6 @@ fi
 
 # Resolve owner/repo for the branch-protection API call.
 OWNER_REPO_ERR=$(mktemp)
-trap 'rm -f "$OWNER_REPO_ERR"' EXIT
 if ! OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>"$OWNER_REPO_ERR"); then
   echo "repo-bootstrap.sh: could not resolve owner/repo via 'gh repo view':" >&2
   cat "$OWNER_REPO_ERR" >&2
@@ -141,7 +151,6 @@ fi
 # (no permission — skip with a note) from other gh failures (network, auth).
 BP_BODY_FILE=$(mktemp)
 BP_STDERR_FILE=$(mktemp)
-trap 'rm -f "$OWNER_REPO_ERR" "$BP_BODY_FILE" "$BP_STDERR_FILE"' EXIT
 
 BP_STATE="unknown"
 BP_CHECKS=""
@@ -194,7 +203,6 @@ if [[ "$MODE" == "apply" ]] && [[ "$WORKFLOW_PRESENT" -eq 0 ]]; then
   # "already present" instead of overwriting. The temp file is removed on
   # success or via the EXIT trap on failure.
   TMP_WORKFLOW="$(mktemp "$WORKFLOW_DIR/.repo-bootstrap.XXXXXX")"
-  trap 'rm -f "$OWNER_REPO_ERR" "$BP_BODY_FILE" "$BP_STDERR_FILE" "${TMP_WORKFLOW:-}"' EXIT
   if ! read_workflow_content >"$TMP_WORKFLOW"; then
     echo "repo-bootstrap.sh: failed to write temp workflow file" >&2
     exit 5
