@@ -40,6 +40,7 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
    WORKDAY_SH=""
    for candidate in \
      "$HOME/.claude/skills-worktree/.claude/scripts/workday.sh" \
+     "$HOME/.claude/scripts/workday.sh" \
      "$(git rev-parse --show-toplevel 2>/dev/null)/.claude/scripts/workday.sh" \
      ".claude/scripts/workday.sh"; do
      if [ -x "$candidate" ]; then
