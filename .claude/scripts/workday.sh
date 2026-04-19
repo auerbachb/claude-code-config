@@ -20,8 +20,14 @@
 #       holiday. No stdout.
 #
 #   workday.sh --holidays-for-year YYYY
-#       Print all observed holidays for the given year, one YYYY-MM-DD per
-#       line, sorted ascending.
+#       Print all observed holidays whose date falls within the given year,
+#       one YYYY-MM-DD per line, sorted ascending.
+#       NOTE: observed-date shifts that cross a year boundary are listed under
+#       the year in which they actually fall. For example, when Jan 1 of year
+#       Y+1 falls on a Saturday, US federal rules observe New Year's on Dec 31
+#       of year Y — that date is returned by `--holidays-for-year Y`, not by
+#       `--holidays-for-year Y+1`. Use `--is-workday` for single-date queries
+#       that don't depend on this calendar-year framing.
 #
 #   workday.sh -h|--help
 #       Print this header and exit.
@@ -187,13 +193,16 @@ compute_holidays_for_year() {
   echo "$holidays"
 }
 
-# Populate HOLIDAYS with the current and previous year so cross-year lookbacks
-# (e.g., early January asking about late December) resolve correctly.
+# Populate HOLIDAYS with a 3-year window (prev/current/next) so cross-year
+# lookbacks resolve correctly. Next year matters because the observed-date
+# rule can shift Jan 1 of next year onto Dec 31 of current year when Jan 1
+# falls on a Saturday (e.g., 2021-12-31 was observed New Year's for 2022).
 populate_holidays_window() {
   local current_year
   current_year=$(TZ='America/New_York' date '+%Y')
   local prev_year=$((current_year - 1))
-  HOLIDAYS="$(compute_holidays_for_year "$current_year") $(compute_holidays_for_year "$prev_year")"
+  local next_year=$((current_year + 1))
+  HOLIDAYS="$(compute_holidays_for_year "$current_year") $(compute_holidays_for_year "$prev_year") $(compute_holidays_for_year "$next_year")"
 }
 
 is_workday() {
@@ -242,7 +251,12 @@ cmd_last_workday() {
   # so 14 iterations is ample headroom. If we ever exhaust it, something is
   # wrong upstream (e.g., HOLIDAYS malformed) — fail loudly rather than hang.
   local attempts=0
-  local status
+  # Initialize to 0 so a hypothetical re-ordering that reaches the `[ "$status"
+  # -ne 1 ]` check before the else-branch assignment can't trip
+  # `integer expression expected` under `set -euo pipefail`. With the current
+  # loop shape, the else-branch always runs before the check, but defending
+  # against future edits costs one line.
+  local status=0
   while true; do
     if is_workday "$candidate"; then
       break
@@ -290,7 +304,9 @@ cmd_is_workday() {
 $(compute_holidays_for_year "$((year - 1))") \
 $(compute_holidays_for_year "$((year + 1))")"
 
-  local status
+  # Defensive init (see cmd_last_workday for rationale) — protects against
+  # future edits that could reach the status check before the else assignment.
+  local status=0
   if is_workday "$date"; then
     exit 0
   else
