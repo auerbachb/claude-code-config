@@ -275,8 +275,10 @@ JQ_ARGS+=(--arg __last_updated "$LAST_UPDATED")
 JQ_FILTER="$JQ_FILTER | .last_updated = \$__last_updated"
 
 if ! jq "${JQ_ARGS[@]}" "$JQ_FILTER" "$input_file" > "$OUT_TMP" 2>"$JQ_ERR"; then
+  # Write-stage pipeline failure → exit 5 per the contract documented in the
+  # EXIT STATUS block above. (Exit 4 is reserved for read-stage parse errors.)
   echo "session-state.sh: jq failed updating $STATE_FILE: $(cat "$JQ_ERR")" >&2
-  exit 4
+  exit 5
 fi
 
 if ! mv "$OUT_TMP" "$STATE_FILE" 2>/dev/null; then
