@@ -186,12 +186,31 @@ if [[ "$MODE" == "apply" ]] && [[ "$WORKFLOW_PRESENT" -eq 0 ]]; then
     echo "repo-bootstrap.sh: failed to create $WORKFLOW_DIR" >&2
     exit 5
   fi
-  if ! read_workflow_content >"$WORKFLOW_PATH"; then
-    echo "repo-bootstrap.sh: failed to write $WORKFLOW_PATH" >&2
+  # Write to a temp file in the same dir (so the atomic publication is a
+  # rename within one filesystem), then publish via `ln` which fails if the
+  # destination exists. This closes the TOCTOU window between the existence
+  # check above and the write — a concurrent writer that creates
+  # $WORKFLOW_PATH first will cause `ln` to fail, and we treat that as
+  # "already present" instead of overwriting. The temp file is removed on
+  # success or via the EXIT trap on failure.
+  TMP_WORKFLOW="$(mktemp "$WORKFLOW_DIR/.repo-bootstrap.XXXXXX")"
+  trap 'rm -f "$OWNER_REPO_ERR" "$BP_BODY_FILE" "$BP_STDERR_FILE" "${TMP_WORKFLOW:-}"' EXIT
+  if ! read_workflow_content >"$TMP_WORKFLOW"; then
+    echo "repo-bootstrap.sh: failed to write temp workflow file" >&2
     exit 5
   fi
-  WORKFLOW_INSTALLED=1
-  WORKFLOW_PRESENT=1
+  if ln "$TMP_WORKFLOW" "$WORKFLOW_PATH" 2>/dev/null; then
+    rm -f "$TMP_WORKFLOW"
+    WORKFLOW_INSTALLED=1
+    WORKFLOW_PRESENT=1
+  elif [[ -e "$WORKFLOW_PATH" ]]; then
+    # Concurrent writer beat us — honor the no-overwrite contract.
+    rm -f "$TMP_WORKFLOW"
+    WORKFLOW_PRESENT=1
+  else
+    echo "repo-bootstrap.sh: failed to publish $WORKFLOW_PATH" >&2
+    exit 5
+  fi
 fi
 
 # --------------------------------------------------------------------------
