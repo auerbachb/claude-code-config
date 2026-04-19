@@ -155,6 +155,11 @@ BP_STDERR_FILE=$(mktemp)
 BP_STATE="unknown"
 BP_CHECKS=""
 BP_NOTE=""
+# Deferred-exit code: when set non-zero, the report still prints (so the user
+# sees the [UNKNOWN] line + note) and the script exits with this value at the
+# end. Keeps the exit-4 contract intact while making the documented [UNKNOWN]
+# state actually reachable.
+BP_ERROR_EXIT=0
 if gh api "repos/$OWNER_REPO/branches/main/protection/required_status_checks" \
     >"$BP_BODY_FILE" 2>"$BP_STDERR_FILE"; then
   # 200 — configured. Extract the contexts array (contexts is the legacy field;
@@ -169,7 +174,9 @@ if gh api "repos/$OWNER_REPO/branches/main/protection/required_status_checks" \
     else "" end
   ' "$BP_BODY_FILE" 2>/dev/null); then
     echo "repo-bootstrap.sh: failed to parse branch-protection response with jq" >&2
-    exit 4
+    BP_STATE="unknown"
+    BP_NOTE="jq parse failure on branch-protection response — see stderr."
+    BP_ERROR_EXIT=4
   fi
 else
   BP_STDERR=$(cat "$BP_STDERR_FILE")
@@ -182,7 +189,9 @@ else
   else
     echo "repo-bootstrap.sh: gh api failed for branch protection:" >&2
     printf '%s\n' "$BP_STDERR" >&2
-    exit 4
+    BP_STATE="unknown"
+    BP_NOTE="gh api failed for branch protection — see stderr."
+    BP_ERROR_EXIT=4
   fi
 fi
 
@@ -258,13 +267,24 @@ case "$BP_STATE" in
     echo "  [SKIP]      $BP_NOTE"
     ;;
   *)
-    echo "  [UNKNOWN]   could not determine branch protection state"
+    if [[ -n "$BP_NOTE" ]]; then
+      echo "  [UNKNOWN]   $BP_NOTE"
+    else
+      echo "  [UNKNOWN]   could not determine branch protection state"
+    fi
     ;;
 esac
 
 # --------------------------------------------------------------------------
 # Exit code
 # --------------------------------------------------------------------------
+# Deferred error from the BP-check section (jq parse failure or unrecognized
+# gh failure) takes precedence over GAPS — the report has been printed so the
+# user sees the [UNKNOWN] line; now surface the original exit-4 contract.
+if [[ "$BP_ERROR_EXIT" -ne 0 ]]; then
+  exit "$BP_ERROR_EXIT"
+fi
+
 GAPS=0
 if [[ "$WORKFLOW_PRESENT" -eq 0 ]]; then
   GAPS=1
