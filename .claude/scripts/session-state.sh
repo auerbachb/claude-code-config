@@ -209,9 +209,11 @@ if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
   exit 5
 fi
 
-# Build the input file: existing state if present + valid; seeded `{}` otherwise.
-# Use `jq empty` for parse-only validation — `jq -e` returns non-zero on valid
-# JSON values `null` and `false`, which would misclassify them as invalid.
+# Build the input file: existing state if present + valid object; seeded `{}` otherwise.
+# Require a top-level JSON object — every assignment in the pipeline indexes
+# the root with a string key, so arrays/scalars/null would parse fine but fail
+# downstream with confusing "Cannot index <type> with string" errors. Matches
+# the `jq -e 'type == "object"'` discipline in reviewer-of.sh.
 SEEDED_TMP=""
 input_file="$STATE_FILE"
 if [[ ! -f "$STATE_FILE" ]]; then
@@ -219,8 +221,13 @@ if [[ ! -f "$STATE_FILE" ]]; then
   printf '%s\n' '{}' > "$SEEDED_TMP"
   input_file="$SEEDED_TMP"
 elif ! jq empty "$STATE_FILE" >/dev/null 2>&1; then
-  # File exists but isn't valid JSON. Refuse to silently nuke it — exit 4.
   echo "session-state.sh: $STATE_FILE exists but is not valid JSON; refusing to overwrite" >&2
+  exit 4
+elif ! jq -e 'type == "object"' "$STATE_FILE" >/dev/null 2>&1; then
+  # Valid JSON but wrong shape — top level must be an object so `.key = value`
+  # assignments work. Refuse rather than emit confusing downstream jq errors.
+  STATE_TYPE="$(jq -r 'type' "$STATE_FILE" 2>/dev/null || echo unknown)"
+  echo "session-state.sh: $STATE_FILE top-level is $STATE_TYPE, expected object; refusing to overwrite" >&2
   exit 4
 fi
 
@@ -243,7 +250,11 @@ for i in "${!SET_PATHS[@]}"; do
   # because `-e` exits non-zero on null/false even when parse succeeds — so
   # legitimate JSON values null and false would be silently coerced to the
   # strings "null" and "false". `empty` validates parse only.
-  if printf '%s' "$value" | jq empty >/dev/null 2>&1; then
+  #
+  # Empty value short-circuit: `jq empty` accepts zero-value stdin and exits 0,
+  # but `--argjson v ""` then fails ("invalid JSON text"). Treat an empty
+  # `--set <path>=` as the literal empty string.
+  if [[ -n "$value" ]] && printf '%s' "$value" | jq empty >/dev/null 2>&1; then
     JQ_ARGS+=(--argjson "$varname" "$value")
   else
     JQ_ARGS+=(--arg "$varname" "$value")
