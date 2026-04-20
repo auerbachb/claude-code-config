@@ -61,11 +61,18 @@ print_help() {
   awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
 }
 
-# --- arg parsing ---
-if [[ $# -eq 0 ]]; then
+# Emit the "missing <text>" usage error and exit 2. Called both before the
+# case arm (no args at all) and after it (the `--` end-of-options consumed
+# the lone argument, leaving no text behind).
+require_text() {
   echo "hhg-state.sh: <text> is required" >&2
   echo "Run with --help for usage." >&2
   exit 2
+}
+
+# --- arg parsing ---
+if [[ $# -eq 0 ]]; then
+  require_text
 fi
 
 case "$1" in
@@ -85,9 +92,7 @@ esac
 
 # Re-check after possible `--` shift — `hhg-state.sh --` leaves no text behind.
 if [[ $# -eq 0 ]]; then
-  echo "hhg-state.sh: <text> is required" >&2
-  echo "Run with --help for usage." >&2
-  exit 2
+  require_text
 fi
 
 # Join all positional arguments with spaces. Callers can pass either a single
