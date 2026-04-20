@@ -106,16 +106,20 @@ US_STATES='AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|
 # between them. The outer grep captures the whole "<STATE> HHG" / "HHG
 # <STATE>" substring; a second grep peels the state code out of that match.
 # Case-insensitive on input; uppercased on output via tr.
+#
+# Word boundaries use POSIX `[[:<:]]` (start-of-word) and `[[:>:]]` (end-of-
+# word) instead of `\b`. Both GNU grep and BSD grep (macOS default) support
+# these; `\b` is GNU-specific and silently fails to match on strict BSD grep.
 STATE=$(printf '%s\n' "$TEXT" \
-  | grep -oiE "\\b(${US_STATES})\\b[[:space:]]+HHG|HHG[[:space:]]+\\b(${US_STATES})\\b" \
-  | grep -oiE "\\b(${US_STATES})\\b" \
+  | grep -oiE "[[:<:]](${US_STATES})[[:>:]][[:space:]]+HHG|HHG[[:space:]]+[[:<:]](${US_STATES})[[:>:]]" \
+  | grep -oiE "[[:<:]](${US_STATES})[[:>:]]" \
   | head -1 \
   | tr '[:lower:]' '[:upper:]' || true)
 
 # --- pass 2: first state code anywhere (fallback) ---
 if [[ -z "$STATE" ]]; then
   STATE=$(printf '%s\n' "$TEXT" \
-    | grep -oiE "\\b(${US_STATES})\\b" \
+    | grep -oiE "[[:<:]](${US_STATES})[[:>:]]" \
     | head -1 \
     | tr '[:lower:]' '[:upper:]' || true)
 fi
