@@ -6,31 +6,29 @@
 
 ## Session Start: Required Configuration Checks
 
-At the start of every session, after creating the worktree but before any code work, run the checks below. Each is idempotent and safe to repeat.
+At the start of every session, after creating the worktree but before any code work, run the bootstrap script. It is idempotent and safe to repeat.
 
-### 1. Workflows
-
-Verify that the repo has the required GitHub Actions workflows. If any are missing, add them as part of the first PR or as a standalone commit on the feature branch.
-
-#### 1a. `cr-plan-on-issue.yml` — Auto-trigger CodeRabbit plan on new issues
-
-**Check:** Does `.github/workflows/cr-plan-on-issue.yml` exist?
-
-**If missing:** Canonical source is `.github/workflows/cr-plan-on-issue.yml` in this repo. Copy that file verbatim into the target repo. Include it in your first feature PR — do not open a bootstrap-only PR.
-
-### 2. Branch Protection — Required Status Checks
-
-Without required status checks on `main`, GitHub allows merges even when CI is red — breaking `main` for all subsequent PRs.
-
-**Check:** Does `main` have required status checks enabled?
+### Run the bootstrap check
 
 ```bash
-gh api "repos/{owner}/{repo}/branches/main/protection/required_status_checks" 2>&1
+.claude/scripts/repo-bootstrap.sh --check
 ```
 
-- **200** (returns `contexts`/`checks` array): configured — log which checks are required and move on.
-- **404** ("Branch not protected"): not configured — proceed to remediation below.
-- **403**: token lacks permission — note to user and skip.
+The script reports the workflow + branch-protection state without mutating anything. Exit codes: `0` clean, `1` gaps detected, `2` usage error, `3` environment error (not in a git repo / no `gh`), `4` `gh`/network error, `5` write failure (only from `--apply`). See `repo-bootstrap.sh --help` for the full contract.
+
+If the report shows `[MISSING] .github/workflows/cr-plan-on-issue.yml`, install it as part of the first feature PR — do not open a bootstrap-only PR:
+
+```bash
+.claude/scripts/repo-bootstrap.sh --apply
+```
+
+`--apply` only installs the missing workflow. It never overwrites an existing workflow file (even if the content differs — the repo owner may have customized it) and never modifies branch protection.
+
+### Branch protection — required status checks
+
+The script reports branch-protection state in four forms: `[OK]` (configured, lists current contexts), `[MISSING]` (no required status checks — actionable), `[SKIP]` (token lacks read permission), or `[UNKNOWN]` (state could not be determined — investigate the script's stderr output). Without required status checks on `main`, GitHub allows merges even when CI is red — breaking `main` for all subsequent PRs.
+
+When the script reports `[MISSING]`, follow the remediation below. Branch protection is **never** changed by the script; user confirmation is required before any write.
 
 **Remediation (requires user confirmation):**
 
