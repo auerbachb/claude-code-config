@@ -1,0 +1,329 @@
+#!/usr/bin/env bash
+# repo-bootstrap.sh — Check (and optionally install) required repo configuration.
+#
+# Implements the contract from .claude/rules/repo-bootstrap.md:
+#   1. Workflows: ensure .github/workflows/cr-plan-on-issue.yml exists.
+#   2. Branch protection on main: report status only — never modified by this
+#      script (the rule requires user confirmation, so the script defers).
+#
+# Usage:
+#   repo-bootstrap.sh [--check]   # default: report status, no mutation
+#   repo-bootstrap.sh --apply     # install missing workflows; never touches
+#                                 # branch protection
+#   repo-bootstrap.sh -h|--help   # print this usage and exit
+#
+# Exit codes:
+#   0 — all checks pass (--check clean, or --apply succeeded with no remaining
+#       gaps that the script is allowed to fix)
+#   1 — gaps detected. In --check: workflow missing OR branch protection not
+#       configured. In --apply: branch protection still requires user
+#       confirmation (workflow gaps were applied successfully).
+#   2 — usage error
+#   3 — environment error (not in a git repo, no remote, cannot resolve
+#       owner/repo)
+#   4 — gh / network error, or jq parse failure on the gh response
+#   5 — write failure during --apply (mkdir or workflow file write failed)
+#
+# Safety:
+#   - Never overwrites existing workflow files (idempotent-add-only).
+#   - Never modifies branch protection — that requires user confirmation per
+#     .claude/rules/repo-bootstrap.md. The script reports status only.
+#   - Read-only gh API calls are used for the branch-protection check.
+
+set -euo pipefail
+
+MODE=""
+for arg in "$@"; do
+  case "$arg" in
+    --check)
+      if [[ -n "$MODE" && "$MODE" != "check" ]]; then
+        echo "repo-bootstrap.sh: choose only one of --check or --apply" >&2
+        exit 2
+      fi
+      MODE="check"
+      ;;
+    --apply)
+      if [[ -n "$MODE" && "$MODE" != "apply" ]]; then
+        echo "repo-bootstrap.sh: choose only one of --check or --apply" >&2
+        exit 2
+      fi
+      MODE="apply"
+      ;;
+    -h|--help)
+      # Sentinel-based extraction: print the leading comment block (from the
+      # script-name banner through the last consecutive `#` line) so adding or
+      # removing header lines doesn't silently truncate or pollute --help.
+      sed -n '/^# repo-bootstrap\.sh/,/^[^#]/{/^[^#]/d; s/^# \{0,1\}//; p;}' "$0"
+      exit 0
+      ;;
+    *)
+      echo "repo-bootstrap.sh: unknown argument: $arg" >&2
+      echo "Run with --help for usage." >&2
+      exit 2
+      ;;
+  esac
+done
+[[ -z "$MODE" ]] && MODE="check"
+
+if ! command -v gh >/dev/null 2>&1; then
+  echo "repo-bootstrap.sh: gh CLI not found on PATH" >&2
+  exit 3
+fi
+if ! command -v jq >/dev/null 2>&1; then
+  echo "repo-bootstrap.sh: jq not found on PATH" >&2
+  exit 3
+fi
+
+# Single EXIT trap — clean up every temp file we may create. Variables are
+# initialized empty so the trap is safe to install before any mktemp call.
+OWNER_REPO_ERR=""
+BP_BODY_FILE=""
+BP_STDERR_FILE=""
+TMP_WORKFLOW=""
+cleanup() {
+  # Guard each rm: rm -f "" emits "cannot remove ''" on GNU coreutils, leaking
+  # stderr noise when the script exits before any mktemp call runs.
+  [[ -n "${OWNER_REPO_ERR:-}" ]] && rm -f "$OWNER_REPO_ERR"
+  [[ -n "${BP_BODY_FILE:-}"   ]] && rm -f "$BP_BODY_FILE"
+  [[ -n "${BP_STDERR_FILE:-}" ]] && rm -f "$BP_STDERR_FILE"
+  [[ -n "${TMP_WORKFLOW:-}"   ]] && rm -f "$TMP_WORKFLOW"
+  return 0
+}
+trap cleanup EXIT
+
+# Resolve git toplevel — script writes into this dir's .github/workflows/.
+if ! REPO_TOP=$(git rev-parse --show-toplevel 2>/dev/null); then
+  echo "repo-bootstrap.sh: not in a git repository" >&2
+  exit 3
+fi
+
+# Resolve owner/repo for the branch-protection API call.
+OWNER_REPO_ERR=$(mktemp)
+if ! OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>"$OWNER_REPO_ERR"); then
+  echo "repo-bootstrap.sh: could not resolve owner/repo via 'gh repo view':" >&2
+  cat "$OWNER_REPO_ERR" >&2
+  exit 3
+fi
+if [[ -z "$OWNER_REPO" ]]; then
+  echo "repo-bootstrap.sh: 'gh repo view' returned empty owner/repo" >&2
+  exit 3
+fi
+
+WORKFLOW_REL=".github/workflows/cr-plan-on-issue.yml"
+WORKFLOW_PATH="$REPO_TOP/$WORKFLOW_REL"
+
+# Canonical workflow content. Single-quoted heredoc so `${...}` and `$(...)`
+# inside the YAML's GitHub Actions expressions are written literally.
+read_workflow_content() {
+  cat <<'WORKFLOW_EOF'
+name: Trigger CodeRabbit Plan on New Issues
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  trigger-cr-plan:
+    runs-on: ubuntu-latest
+    if: "!endsWith(github.event.issue.user.login, '[bot]')"
+    steps:
+      - name: Comment @coderabbitai plan
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '@coderabbitai plan'
+            });
+WORKFLOW_EOF
+}
+
+# --------------------------------------------------------------------------
+# Workflow check
+# --------------------------------------------------------------------------
+WORKFLOW_PRESENT=0
+WORKFLOW_INSTALLED=0
+if [[ -f "$WORKFLOW_PATH" ]]; then
+  WORKFLOW_PRESENT=1
+fi
+
+# --------------------------------------------------------------------------
+# Branch protection check (read-only — never modified)
+# --------------------------------------------------------------------------
+# Capture the response and HTTP status separately. `gh api` returns non-zero on
+# 4xx, but we need to distinguish 404 (not configured — actionable) from 403
+# (no permission — skip with a note) from other gh failures (network, auth).
+BP_BODY_FILE=$(mktemp)
+BP_STDERR_FILE=$(mktemp)
+
+BP_STATE="unknown"
+BP_CHECKS=""
+BP_NOTE=""
+# Deferred-exit code: when set non-zero, the report still prints (so the user
+# sees the [UNKNOWN] line + note) and the script exits with this value at the
+# end. Keeps the exit-4 contract intact while making the documented [UNKNOWN]
+# state actually reachable.
+BP_ERROR_EXIT=0
+if gh api "repos/$OWNER_REPO/branches/main/protection/required_status_checks" \
+    >"$BP_BODY_FILE" 2>"$BP_STDERR_FILE"; then
+  # 200 — configured. Extract the contexts array (contexts is the legacy field;
+  # checks[].context is the newer field — prefer checks[].context, fall back to
+  # contexts).
+  BP_STATE="configured"
+  if ! BP_CHECKS=$(jq -r '
+    if (.checks | type) == "array" and (.checks | length) > 0 then
+      [.checks[].context] | join(", ")
+    elif (.contexts | type) == "array" then
+      .contexts | join(", ")
+    else "" end
+  ' "$BP_BODY_FILE" 2>/dev/null); then
+    echo "repo-bootstrap.sh: failed to parse branch-protection response with jq" >&2
+    BP_STATE="unknown"
+    BP_NOTE="jq parse failure on branch-protection response — see stderr."
+    BP_ERROR_EXIT=4
+  fi
+else
+  BP_STDERR=$(cat "$BP_STDERR_FILE")
+  if printf '%s' "$BP_STDERR" | grep -qiE 'HTTP 404|Not Found|Branch not protected'; then
+    BP_STATE="missing"
+    BP_NOTE="404 — required status checks not configured."
+  elif printf '%s' "$BP_STDERR" | grep -qiE 'HTTP 403|forbidden|must have admin'; then
+    BP_STATE="no_permission"
+    BP_NOTE="403 — token lacks permission to read branch protection."
+  else
+    echo "repo-bootstrap.sh: gh api failed for branch protection:" >&2
+    printf '%s\n' "$BP_STDERR" >&2
+    BP_STATE="unknown"
+    BP_NOTE="gh api failed for branch protection — see stderr."
+    BP_ERROR_EXIT=4
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# Apply mode — install missing workflow file (never overwrites)
+# --------------------------------------------------------------------------
+if [[ "$MODE" == "apply" ]] && [[ "$WORKFLOW_PRESENT" -eq 0 ]]; then
+  WORKFLOW_DIR="$(dirname "$WORKFLOW_PATH")"
+  if ! mkdir -p "$WORKFLOW_DIR"; then
+    echo "repo-bootstrap.sh: failed to create $WORKFLOW_DIR" >&2
+    exit 5
+  fi
+  # Write to a temp file in the same dir (so the atomic publication is a
+  # rename within one filesystem), then publish via `ln` which fails if the
+  # destination exists. This closes the TOCTOU window between the existence
+  # check above and the write — a concurrent writer that creates
+  # $WORKFLOW_PATH first will cause `ln` to fail, and we treat that as
+  # "already present" instead of overwriting. The temp file is removed on
+  # success or via the EXIT trap on failure.
+  TMP_WORKFLOW="$(mktemp "$WORKFLOW_DIR/.repo-bootstrap.XXXXXX")"
+  if ! read_workflow_content >"$TMP_WORKFLOW"; then
+    echo "repo-bootstrap.sh: failed to write temp workflow file" >&2
+    exit 5
+  fi
+  if ln "$TMP_WORKFLOW" "$WORKFLOW_PATH" 2>/dev/null; then
+    rm -f "$TMP_WORKFLOW"
+    WORKFLOW_INSTALLED=1
+    WORKFLOW_PRESENT=1
+  elif [[ -e "$WORKFLOW_PATH" ]]; then
+    # Concurrent writer beat us — honor the no-overwrite contract.
+    rm -f "$TMP_WORKFLOW"
+    WORKFLOW_PRESENT=1
+  else
+    echo "repo-bootstrap.sh: failed to publish $WORKFLOW_PATH" >&2
+    exit 5
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# Report
+# --------------------------------------------------------------------------
+echo "Repo Bootstrap Report"
+echo "====================="
+echo "Repo: $OWNER_REPO"
+echo "Mode: $MODE"
+echo
+echo "Workflows:"
+if [[ "$WORKFLOW_PRESENT" -eq 1 ]]; then
+  if [[ "$WORKFLOW_INSTALLED" -eq 1 ]]; then
+    echo "  [INSTALLED] $WORKFLOW_REL"
+  else
+    echo "  [OK]        $WORKFLOW_REL"
+  fi
+else
+  echo "  [MISSING]   $WORKFLOW_REL"
+fi
+echo
+echo "Branch Protection (main):"
+case "$BP_STATE" in
+  configured)
+    if [[ -n "$BP_CHECKS" ]]; then
+      echo "  [OK]        Required status checks configured: $BP_CHECKS"
+    else
+      echo "  [OK]        Required status checks configured (no contexts listed)"
+    fi
+    ;;
+  missing)
+    echo "  [MISSING]   $BP_NOTE"
+    echo "              User confirmation required to enable — see"
+    echo "              .claude/rules/repo-bootstrap.md."
+    ;;
+  no_permission)
+    echo "  [SKIP]      $BP_NOTE"
+    ;;
+  *)
+    if [[ -n "$BP_NOTE" ]]; then
+      echo "  [UNKNOWN]   $BP_NOTE"
+    else
+      echo "  [UNKNOWN]   could not determine branch protection state"
+    fi
+    ;;
+esac
+
+# --------------------------------------------------------------------------
+# Exit code
+# --------------------------------------------------------------------------
+# Deferred error from the BP-check section (jq parse failure or unrecognized
+# gh failure) takes precedence over GAPS — the report has been printed so the
+# user sees the [UNKNOWN] line; now surface the original exit-4 contract.
+if [[ "$BP_ERROR_EXIT" -ne 0 ]]; then
+  exit "$BP_ERROR_EXIT"
+fi
+
+GAPS=0
+if [[ "$WORKFLOW_PRESENT" -eq 0 ]]; then
+  GAPS=1
+fi
+if [[ "$BP_STATE" == "missing" ]]; then
+  GAPS=1
+fi
+
+if [[ "$GAPS" -eq 1 ]]; then
+  echo
+  WORKFLOW_GAP=0
+  BP_GAP=0
+  if [[ "$WORKFLOW_PRESENT" -eq 0 ]]; then WORKFLOW_GAP=1; fi
+  if [[ "$BP_STATE" == "missing" ]]; then BP_GAP=1; fi
+
+  if [[ "$MODE" == "check" ]]; then
+    if [[ "$WORKFLOW_GAP" -eq 1 ]]; then
+      echo "Workflow gaps detected. Re-run with --apply to install missing workflows."
+    fi
+    if [[ "$BP_GAP" -eq 1 ]]; then
+      echo "Branch protection gap detected. Requires user confirmation — see"
+      echo ".claude/rules/repo-bootstrap.md (--apply does not modify branch protection)."
+    fi
+  else
+    # apply mode — workflow gaps are resolved before this point (or exit 5),
+    # so a remaining GAPS=1 here can only be branch protection.
+    echo "Branch protection gap remains. Requires user confirmation — see"
+    echo ".claude/rules/repo-bootstrap.md (--apply does not modify branch protection)."
+  fi
+  exit 1
+fi
+
+exit 0

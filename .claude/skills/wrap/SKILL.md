@@ -249,16 +249,14 @@ If the PR title, linked issue title, or linked issue body contains "HHG" (case-i
 ```bash
 HHG_MATCH=$(printf '%s\n%s\n%s\n' "$PR_TITLE" "$ISSUE_TITLE" "$ISSUE_BODY" | grep -iE 'HHG' || true)
 if [ -n "$HHG_MATCH" ]; then
-  # Extract a 2-letter US state code from PR title or issue title.
-  # Restrict to the 50 USPS codes so unrelated 2-letter tokens (e.g. "CI", "PR")
-  # don't get mistaken for a state. If multiple states are mentioned, take the
-  # one adjacent to "HHG" first, then fall back to the first state match.
+  # Extract a 2-letter US state code from PR title, issue title, or issue
+  # body. `.claude/scripts/hhg-state.sh` restricts to the 50 USPS codes so
+  # unrelated 2-letter tokens (e.g. "CI", "PR") don't match, prefers a state
+  # adjacent to "HHG", and falls back to the first state match elsewhere.
+  # Exits 0 when a state is found (code on stdout), 1 when none match — the
+  # `|| true` keeps the pipeline from tripping `set -e` on the no-match path.
   COMBINED=$(printf '%s %s %s' "$PR_TITLE" "$ISSUE_TITLE" "$ISSUE_BODY")
-  US_STATES='AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY'
-  STATE=$(printf '%s\n' "$COMBINED" | grep -oiE "\\b(${US_STATES})\\b[[:space:]]+HHG|HHG[[:space:]]+\\b(${US_STATES})\\b" | grep -oiE "\\b(${US_STATES})\\b" | head -1 | tr '[:lower:]' '[:upper:]')
-  if [ -z "$STATE" ]; then
-    STATE=$(printf '%s\n' "$COMBINED" | grep -oiE "\\b(${US_STATES})\\b" | head -1 | tr '[:lower:]' '[:upper:]')
-  fi
+  STATE=$(.claude/scripts/hhg-state.sh "$COMBINED" || true)
   if [ -z "$STATE" ]; then
     STATE=""
     echo "WARNING: HHG PR detected but no state code found in PR title, issue title, or issue body — skipping HHG auto-creation. Create the scraping and ETL issues manually once you know the state."
