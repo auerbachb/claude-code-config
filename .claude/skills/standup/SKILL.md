@@ -38,12 +38,18 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
    # this config repo. Check in this order: skills-worktree (canonical),
    # ~/.claude/scripts (global symlink fallback), git root of the current repo,
    # then CWD-relative.
+   # Capture GIT_ROOT first and only include that candidate when non-empty —
+   # otherwise `$(git rev-parse …)` expands to "" and the candidate becomes
+   # `/.claude/scripts/workday.sh` (absolute-root path), which would
+   # incorrectly match an unrelated root-level file if one existed.
    WORKDAY_SH=""
+   GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
    for candidate in \
      "$HOME/.claude/skills-worktree/.claude/scripts/workday.sh" \
      "$HOME/.claude/scripts/workday.sh" \
-     "$(git rev-parse --show-toplevel 2>/dev/null)/.claude/scripts/workday.sh" \
+     "${GIT_ROOT:+$GIT_ROOT/.claude/scripts/workday.sh}" \
      ".claude/scripts/workday.sh"; do
+     [ -n "$candidate" ] || continue
      if [ -x "$candidate" ]; then
        WORKDAY_SH="$candidate"
        break
