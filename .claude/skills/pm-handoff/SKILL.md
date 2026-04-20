@@ -219,7 +219,7 @@ Scan for orchestration state files:
 
 ```bash
 # Session state (high-level orchestration)
-test -f ~/.claude/session-state.json && cat ~/.claude/session-state.json || echo "NO_SESSION_STATE"
+.claude/scripts/session-state.sh --get . 2>/dev/null || echo "NO_SESSION_STATE"
 
 # Per-PR handoff files (emit valid JSON content per file)
 found_handoffs=false
