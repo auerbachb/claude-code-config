@@ -50,15 +50,22 @@ If the PR is already merged or closed, skip to Phase 3 (follow-up detection).
 
 ### Step 1.2: Scan for unresolved review findings
 
-Fetch all review comments from all three endpoints:
+Use the shared `pr-state.sh` helper to fetch and pre-classify review activity from all three endpoints in one call. It filters to `coderabbitai[bot]`, `greptile-apps[bot]`, and `cursor[bot]` (BugBot) and tags each comment with `classification.class` (`finding` vs `acknowledgment`). The classifier only runs when `--since <iso>` is passed — pass the PR's `createdAt` to include every bot comment on the PR. The helper writes the JSON bundle to a tempfile and prints its **path** on stdout — capture the path, then read with `jq < "$BUNDLE"`:
 
 ```bash
-gh api "repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100"
-gh api "repos/{owner}/{repo}/pulls/{N}/comments?per_page=100"
-gh api "repos/{owner}/{repo}/issues/{N}/comments?per_page=100"
+PR_NUM=$(gh pr view --json number --jq .number)
+PR_CREATED=$(gh pr view "$PR_NUM" --json createdAt --jq '.createdAt')
+BUNDLE=$(.claude/scripts/pr-state.sh --pr "$PR_NUM" --since "$PR_CREATED")
 ```
 
-Filter for comments from `coderabbitai[bot]` and `greptile-apps[bot]`. For each finding:
+Read the findings across all three endpoints with a single jq pass:
+
+```bash
+jq '[.new_since_baseline.reviews[], .new_since_baseline.inline[], .new_since_baseline.conversation[]]
+    | map(select(.classification.class == "finding"))' < "$BUNDLE"
+```
+
+For each finding:
 
 1. Check if there is a reply confirming the fix
 2. Check if the code at the referenced location has been updated since the comment
