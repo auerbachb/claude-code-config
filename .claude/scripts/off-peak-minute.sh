@@ -174,10 +174,10 @@ fi
 #             minute (notably 0 when N=2) — unavoidable since the
 #             non-pile-up nudge targets (2, 7, 32, 57) exceed N-1 and clamp
 #             back via mod N. The exact stabilized set depends on
-#             MINUTE % N: N=2 → {0, 1}; N=3 → {1, 2}; N=4 → {1, 2, 3};
-#             N=5 → {1, 2, 3, 4}. Small-N pile-ups are accepted rather
-#             than worked around — the deterministic spread across repos
-#             still dominates the collision risk.
+#             MINUTE % N: N=1 → {0}; N=2 → {0, 1}; N=3 → {1, 2};
+#             N=4 → {1, 2, 3}; N=5 → {1, 2, 3, 4}. Small-N pile-ups are
+#             accepted rather than worked around — the deterministic
+#             spread across repos still dominates the collision risk.
 M_REDUCED=$(( MINUTE % EVERY_N ))
 for _ in 1 2; do
   M_REDUCED=$(nudge_pileup "$M_REDUCED")
