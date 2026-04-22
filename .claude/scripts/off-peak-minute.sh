@@ -124,12 +124,15 @@ if [[ $# -gt 0 ]]; then
   usage_error "unexpected positional argument: $1"
 fi
 
-# Validate --every-n-min as integer in [1, 59]. Using a regex so "10abc"
-# or " 10" don't slip through arithmetic coercion.
+# Validate --every-n-min as integer in [1, 59]. Regex first so "10abc" or
+# " 10" don't slip through arithmetic coercion. Then force decimal base
+# via `10#` so a leading-zero input like "08" or "09" doesn't crash the
+# arithmetic context as invalid octal (`08: value too great for base`).
 if [[ -n "$EVERY_N" ]]; then
   if ! [[ "$EVERY_N" =~ ^[0-9]+$ ]]; then
     usage_error "--every-n-min must be a positive integer (got: $EVERY_N)"
   fi
+  EVERY_N=$((10#$EVERY_N))
   if (( EVERY_N < 1 || EVERY_N > 59 )); then
     usage_error "--every-n-min must be in [1, 59] (got: $EVERY_N)"
   fi
@@ -159,21 +162,17 @@ fi
 # --- every-N-min mode: reduce ones-digit, re-nudge, emit range ---
 # Cron's `A-59/N` range truncates silently when A > N-1 (e.g. 47-59/10 only
 # fires at :47 and :57). Reducing MINUTE mod N keeps the full /N cadence.
-# The nudge is re-applied because the reduced value may itself land on
-# the pile-up minutes 0 or 5 (30/55 are unreachable once N ≤ 59 since
-# M < N ≤ 59).
+# The reduced value may itself land on a pile-up minute (0/5/30/55), and
+# the nudge (+2 mod 60) may push back over N-1 for small N, so we iterate
+# a bounded "nudge then clamp" loop. Two passes suffice for all N ∈ [1,59]:
+#   - N ≥ 6:  converges in 1-2 passes to a non-pile-up value < N.
+#   - N ≤ 5:  stabilizes at 0 — a forced pile-up; unavoidable since every
+#             non-pile-up target (2, 7, 32, 57) exceeds N-1 and clamps back.
 M_REDUCED=$(( MINUTE % EVERY_N ))
-M_REDUCED=$(nudge_pileup "$M_REDUCED")
-# Defensive clamp: if the post-nudge value exceeds N-1 (can happen when
-# N ≤ 7 and the reduced value was exactly 5 → nudged to 7), wrap back
-# inside the step window by re-reducing. Preserves both invariants:
-# never on a pile-up minute AND always < N so the range form is correct.
-M_REDUCED=$(( M_REDUCED % EVERY_N ))
-# Final pile-up re-nudge after the clamp. For N ≤ 5 the reduced value
-# must land on 0 — acceptable: at that cadence every schedule collides
-# with :00 anyway, so the anti-pile-up guarantee is vacuous.
-M_REDUCED=$(nudge_pileup "$M_REDUCED")
-M_REDUCED=$(( M_REDUCED % EVERY_N ))
+for _ in 1 2; do
+  M_REDUCED=$(nudge_pileup "$M_REDUCED")
+  M_REDUCED=$(( M_REDUCED % EVERY_N ))
+done
 
 printf '%s\n' "$M_REDUCED"
 printf '%s-59/%s\n' "$M_REDUCED" "$EVERY_N"
