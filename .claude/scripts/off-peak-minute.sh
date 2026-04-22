@@ -102,11 +102,13 @@ while [[ $# -gt 0 ]]; do
       ;;
     --every-n-min)
       [[ $# -ge 2 ]] || usage_error "--every-n-min requires a value"
+      [[ -n "$2" ]] || usage_error "--every-n-min value cannot be empty"
       EVERY_N="$2"
       shift 2
       ;;
     --every-n-min=*)
       EVERY_N="${1#--every-n-min=}"
+      [[ -n "$EVERY_N" ]] || usage_error "--every-n-min value cannot be empty"
       shift
       ;;
     --)
