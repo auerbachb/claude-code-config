@@ -1,0 +1,58 @@
+#!/bin/bash
+# pre-commit — Block commits on `main` in the root checkout.
+#
+# Worktree discipline: the root repo is a bookmark, never a workspace. All
+# code changes happen in worktrees on feature branches. This hook enforces
+# that at the git level so human and agent commits are caught uniformly.
+#
+# Behavior:
+#   - On a branch other than `main`: allow (exit 0).
+#   - Detached HEAD: allow (no branch = no main).
+#   - On `main` in a worktree: allow — rare, but not this hook's concern.
+#   - On `main` in the root checkout: reject with guidance.
+#
+# Bypass: `git commit --no-verify` still works for genuine emergencies.
+#
+# Installed by setup.sh into .git/hooks/pre-commit.
+
+set -u
+
+branch="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
+
+# Detached HEAD or anything non-main: allow.
+if [[ "$branch" != "main" ]]; then
+  exit 0
+fi
+
+# Root vs. worktree: in the root checkout the `.git` entry at the work-tree
+# root is a DIRECTORY; in a linked worktree it is a FILE containing
+# `gitdir: ...`. `git rev-parse --git-dir` always returns a real directory
+# path (in worktrees it resolves to `<main>/.git/worktrees/<name>`) and so is
+# not usable for this distinction — we check the entry type directly.
+toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+
+# Bare repo / no working tree: nothing to commit in, allow (hook wouldn't run
+# in a bare repo anyway).
+if [[ -z "$toplevel" ]]; then
+  exit 0
+fi
+
+if [[ -d "$toplevel/.git" ]]; then
+  cat >&2 <<'ERR'
+❌ Blocked: committing to `main` in the root checkout is forbidden.
+
+The root repo is a bookmark, never a workspace. All code changes happen in
+worktrees on feature branches.
+
+Create a worktree:
+  git worktree add ../<name> -b issue-N-short-description
+
+Or use the EnterWorktree tool in Claude Code.
+
+Bypass with `git commit --no-verify` only for genuine emergencies.
+ERR
+  exit 1
+fi
+
+# `.git` is a file → we are inside a worktree. Allow.
+exit 0

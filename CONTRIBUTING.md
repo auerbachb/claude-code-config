@@ -71,6 +71,15 @@ Hooks live in `.claude/hooks/` and run automatically during Claude Code sessions
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) "Hook Lifecycle" and "Hook Auto-Registration" for details on event types and the registration flow.
 
+## Git Pre-commit Hook (Worktree Enforcement)
+
+`setup.sh` installs `.claude/git-hooks/pre-commit` into the shared git hooks directory on first run (and reuses it on later runs when unchanged). When this hook is installed and not bypassed, it rejects commits made on `main` in the root checkout, enforcing the "never work on main" rule at the git level for any committer — human, Claude, Cursor, Codex, or a random terminal session.
+
+- **Blocks:** `git commit` while on `main` in the root checkout.
+- **Allows:** any other branch, detached HEAD, and commits on `main` inside a worktree (rare but not this hook's concern).
+- **Bypass:** `git commit --no-verify` still works for genuine emergencies — left functional on purpose.
+- **User customization:** if `.git/hooks/pre-commit` already exists with different content, `setup.sh` warns and leaves your hook in place.
+
 ## Modifying CLAUDE.md
 
 - CLAUDE.md is the **executive summary** — high-level non-negotiables and pointers to rule files. Target: **≤ 1,000 words**.

@@ -345,6 +345,57 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Step 8: Install Git pre-commit hook (blocks commits on root/main)
+# ---------------------------------------------------------------------------
+echo "Step 8: Installing Git pre-commit hook..."
+
+HOOK_SRC="$SCRIPT_DIR/.claude/git-hooks/pre-commit"
+
+# Resolve the shared hooks dir via Git metadata so setup.sh works from the
+# root checkout OR from a linked worktree (where `.git` is a file, not a
+# directory). We deliberately use --git-common-dir, not --git-path hooks:
+# in a worktree the latter points at the per-worktree hooks directory, and
+# a pre-commit hook installed there would not block commits on `main` in
+# the root checkout — the whole point of this hook.
+GIT_COMMON_DIR="$(git -C "$SCRIPT_DIR" rev-parse --git-common-dir 2>/dev/null || true)"
+if [[ -z "$GIT_COMMON_DIR" ]]; then
+  step_fail "Git pre-commit hook" "Not inside a git repository: $SCRIPT_DIR"
+  exit 1
+fi
+# --git-common-dir can return a relative path; resolve to absolute.
+if [[ "$GIT_COMMON_DIR" != /* ]]; then
+  GIT_COMMON_DIR="$SCRIPT_DIR/$GIT_COMMON_DIR"
+fi
+HOOKS_DIR="$GIT_COMMON_DIR/hooks"
+HOOK_DST="$HOOKS_DIR/pre-commit"
+
+if [[ ! -f "$HOOK_SRC" ]]; then
+  step_fail "Git pre-commit hook" "Source hook not found: $HOOK_SRC"
+  exit 1
+fi
+
+if [[ ! -d "$HOOKS_DIR" ]]; then
+  step_fail "Git pre-commit hook" "Hooks directory missing: $HOOKS_DIR"
+  exit 1
+fi
+
+if [[ ! -e "$HOOK_DST" ]]; then
+  cp "$HOOK_SRC" "$HOOK_DST"
+  chmod +x "$HOOK_DST"
+  echo "  Installed pre-commit hook."
+  step_pass "Git pre-commit hook"
+elif cmp -s "$HOOK_SRC" "$HOOK_DST"; then
+  chmod +x "$HOOK_DST"
+  echo "  Pre-commit hook already installed — no changes."
+  step_pass "Git pre-commit hook"
+else
+  echo "  WARNING: $HOOK_DST exists but differs from $HOOK_SRC." >&2
+  echo "           Leaving user hook in place. Merge manually if you want our rule." >&2
+  echo "           Inspect with: diff -u \"$HOOK_DST\" \"$HOOK_SRC\"" >&2
+  step_pass "Git pre-commit hook (user customization preserved)"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
