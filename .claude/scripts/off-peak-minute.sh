@@ -91,11 +91,13 @@ while [[ $# -gt 0 ]]; do
       ;;
     --repo)
       [[ $# -ge 2 ]] || usage_error "--repo requires a value"
+      [[ -n "$2" ]] || usage_error "--repo value cannot be empty"
       REPO="$2"
       shift 2
       ;;
     --repo=*)
       REPO="${1#--repo=}"
+      [[ -n "$REPO" ]] || usage_error "--repo value cannot be empty"
       shift
       ;;
     --every-n-min)
@@ -166,8 +168,14 @@ fi
 # the nudge (+2 mod 60) may push back over N-1 for small N, so we iterate
 # a bounded "nudge then clamp" loop. Two passes suffice for all N ∈ [1,59]:
 #   - N ≥ 6:  converges in 1-2 passes to a non-pile-up value < N.
-#   - N ≤ 5:  stabilizes at 0 — a forced pile-up; unavoidable since every
-#             non-pile-up target (2, 7, 32, 57) exceeds N-1 and clamps back.
+#   - N ≤ 5:  stabilizes within [0, N-1] but may land back on a pile-up
+#             minute (notably 0 when N=2) — unavoidable since the
+#             non-pile-up nudge targets (2, 7, 32, 57) exceed N-1 and clamp
+#             back via mod N. The exact stabilized set depends on
+#             MINUTE % N: N=2 → {0, 1}; N=3 → {1, 2}; N=4 → {1, 2, 3};
+#             N=5 → {1, 2, 3, 4}. Small-N pile-ups are accepted rather
+#             than worked around — the deterministic spread across repos
+#             still dominates the collision risk.
 M_REDUCED=$(( MINUTE % EVERY_N ))
 for _ in 1 2; do
   M_REDUCED=$(nudge_pileup "$M_REDUCED")
