@@ -73,7 +73,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) "Hook Lifecycle" and "Hook Auto-Registrat
 
 ## Git Pre-commit Hook (Worktree Enforcement)
 
-`setup.sh` installs `.claude/git-hooks/pre-commit` into `.git/hooks/pre-commit` on first run (and keeps it in sync on later runs when unchanged). The hook rejects commits made on `main` in the root checkout so the "never work on main" rule is enforced at the git level for every committer — human, Claude, Cursor, Codex, or a random terminal session.
+`setup.sh` installs `.claude/git-hooks/pre-commit` into the shared git hooks directory on first run (and reuses it on later runs when unchanged). When this hook is installed and not bypassed, it rejects commits made on `main` in the root checkout, enforcing the "never work on main" rule at the git level for any committer — human, Claude, Cursor, Codex, or a random terminal session.
 
 - **Blocks:** `git commit` while on `main` in the root checkout.
 - **Allows:** any other branch, detached HEAD, and commits on `main` inside a worktree (rare but not this hook's concern).

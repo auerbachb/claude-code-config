@@ -350,15 +350,32 @@ fi
 echo "Step 8: Installing Git pre-commit hook..."
 
 HOOK_SRC="$SCRIPT_DIR/.claude/git-hooks/pre-commit"
-HOOK_DST="$SCRIPT_DIR/.git/hooks/pre-commit"
+
+# Resolve the shared hooks dir via Git metadata so setup.sh works from the
+# root checkout OR from a linked worktree (where `.git` is a file, not a
+# directory). We deliberately use --git-common-dir, not --git-path hooks:
+# in a worktree the latter points at the per-worktree hooks directory, and
+# a pre-commit hook installed there would not block commits on `main` in
+# the root checkout — the whole point of this hook.
+GIT_COMMON_DIR="$(git -C "$SCRIPT_DIR" rev-parse --git-common-dir 2>/dev/null || true)"
+if [[ -z "$GIT_COMMON_DIR" ]]; then
+  step_fail "Git pre-commit hook" "Not inside a git repository: $SCRIPT_DIR"
+  exit 1
+fi
+# --git-common-dir can return a relative path; resolve to absolute.
+if [[ "$GIT_COMMON_DIR" != /* ]]; then
+  GIT_COMMON_DIR="$SCRIPT_DIR/$GIT_COMMON_DIR"
+fi
+HOOKS_DIR="$GIT_COMMON_DIR/hooks"
+HOOK_DST="$HOOKS_DIR/pre-commit"
 
 if [[ ! -f "$HOOK_SRC" ]]; then
   step_fail "Git pre-commit hook" "Source hook not found: $HOOK_SRC"
   exit 1
 fi
 
-if [[ ! -d "$SCRIPT_DIR/.git/hooks" ]]; then
-  step_fail "Git pre-commit hook" "Hooks directory missing: $SCRIPT_DIR/.git/hooks"
+if [[ ! -d "$HOOKS_DIR" ]]; then
+  step_fail "Git pre-commit hook" "Hooks directory missing: $HOOKS_DIR"
   exit 1
 fi
 
