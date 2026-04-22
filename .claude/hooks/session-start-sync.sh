@@ -52,10 +52,20 @@ fi
 if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
   root_repo=$(git -C "$skills_wt" worktree list 2>/dev/null | head -1 | awk '{print $1}')
   if [[ -n "$root_repo" && -e "$root_repo/.git" ]]; then
-    # Only pull if on main branch (don't disrupt feature branches)
+    # Only pull if on main branch (don't disrupt feature branches).
+    # Delegate the actual sync to main-sync.sh: exit 0 = updated/up-to-date,
+    # exit 1 = benign skip (uncommitted tracked changes — leave the root repo
+    # alone), exit 2 = hard failure. Only exit 2 is reported as an error.
     current_branch=$(git -C "$root_repo" branch --show-current 2>/dev/null)
     if [[ "$current_branch" == "main" ]]; then
-      if ! err=$(git -C "$root_repo" pull origin main --ff-only --quiet 2>&1); then
+      main_sync_script="$root_repo/.claude/scripts/main-sync.sh"
+      if [[ -x "$main_sync_script" ]]; then
+        main_sync_out=$(bash "$main_sync_script" --repo "$root_repo" 2>&1)
+        main_sync_rc=$?
+        if [[ $main_sync_rc -eq 2 ]]; then
+          errors="${errors:+$errors; }root repo sync failed: $main_sync_out"
+        fi
+      elif ! err=$(git -C "$root_repo" pull origin main --ff-only --quiet 2>&1); then
         errors="${errors:+$errors; }root repo pull failed: $err"
       fi
     fi
