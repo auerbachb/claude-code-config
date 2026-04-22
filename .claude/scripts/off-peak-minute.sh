@@ -14,8 +14,9 @@
 #   digit (MINUTE % N) because cron's `A-59/N` form truncates whenever
 #   A > N-1 — e.g. `47-59/10` would fire only at :47 and :57, missing the
 #   other expected slots. After reduction the value is re-nudged off 0/5
-#   to preserve the anti-pile-up guarantee. See memory note
-#   `feedback_cron_step_range_truncation.md`.
+#   when possible; for small N (≤ 5), clamp-back via mod N can reintroduce
+#   pile-up values — this is unavoidable and documented inline near the
+#   every-N loop. See memory note `feedback_cron_step_range_truncation.md`.
 #
 # USAGE
 #   off-peak-minute.sh [--repo <owner/name>] [--every-n-min N]
