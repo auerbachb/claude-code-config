@@ -316,20 +316,17 @@ Template message:
 
 ### 2.3: Off-peak minute selection (option a only)
 
-When creating a `CronCreate` job, pick a minute that is NOT 0, 5, 30, or 55 — these are fleet pile-up minutes where every agent's schedule collides on the API. Use a deterministic per-repo offset so the same repo always lands on the same minute (predictability) but different repos spread across the hour (no collision):
+When creating a `CronCreate` job, pick a minute that is NOT 0, 5, 30, or 55 — these are fleet pile-up minutes where every agent's schedule collides on the API. Use `.claude/scripts/off-peak-minute.sh` so the same repo always lands on the same minute (predictability) but different repos spread across the hour (no collision):
 
 ```bash
-REPO_NAME=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
-MINUTE=$(printf '%s' "$REPO_NAME" | cksum | awk '{print $1 % 60}')
-# Nudge off pile-up minutes
-case $MINUTE in
-  0|5|30|55) MINUTE=$(( (MINUTE + 2) % 60 )) ;;
-esac
-echo "Off-peak minute for $REPO_NAME: $MINUTE"
+MINUTE=$(.claude/scripts/off-peak-minute.sh)
+echo "Off-peak minute for $(gh repo view --json nameWithOwner --jq .nameWithOwner): $MINUTE"
 ```
 
+The script hashes the current repo's `owner/name` with `cksum`, reduces mod 60, and nudges off the pile-up minutes (0, 5, 30, 55). Pass `--repo <owner/name>` to target a different repo; pass `--every-n-min N` to also emit a cron-friendly step-range (see below).
+
 **CronCreate defaults for `/pm` polling:**
-- `cron`: `"$MINUTE * * * *"` for hourly (most common). For tighter cadence like every 10 min, reduce `MINUTE` to its ones-digit first (`M10=$((MINUTE % 10))`, re-nudge if `M10` lands on 0 or 5) and use `"$M10-59/10 * * * *"` — otherwise the `A-59/10` range truncates for any `A > 9` (e.g., `47-59/10` fires only at :47 and :57).
+- `cron`: `"$MINUTE * * * *"` for hourly (most common). For tighter cadence like every 10 min, invoke the script with `--every-n-min 10` — it returns two lines (chosen minute on line 1, range string like `7-59/10` on line 2), and handles the ones-digit reduction + re-nudge so the step range doesn't truncate (cron's `A-59/10` form fires only at :A and :A+10 when `A > 9`, e.g., `47-59/10` silently collapses to :47 and :57). Example: `{ read -r M; read -r RANGE; } < <(.claude/scripts/off-peak-minute.sh --every-n-min 10); CRON="$RANGE * * * *"`.
 - `recurring`: `true` (default).
 - `durable`: `false` — session-only. Only set `durable: true` when the user explicitly asks the poll to survive across sessions.
 - `prompt`: `/status` (or a PM-specific scan command) — the cron fires it in a fresh invocation, so the prompt must be self-contained.
