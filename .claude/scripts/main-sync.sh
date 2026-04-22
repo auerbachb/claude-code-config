@@ -4,9 +4,14 @@
 # PURPOSE
 #   Centralizes the "sync local main" sequence used in `/merge` Step 5b,
 #   `/wrap` Step 2.5 (née 2.6), and the `session-start-sync.sh` hook:
-#     1. Guard against uncommitted tracked changes (staged + unstaged).
-#     2. Checkout `main` if the repo is on another branch.
-#     3. `git pull origin main --ff-only` and report BEFORE/AFTER SHAs.
+#     1. Checkout `main` if the repo is on another branch — but only after
+#        guarding against uncommitted tracked changes (staged + unstaged),
+#        since `git checkout` would either refuse or silently carry them.
+#     2. `git pull origin main --ff-only` and report BEFORE/AFTER SHAs.
+#
+#   When already on `main`, the dirty-check is skipped: `git pull --ff-only`
+#   handles non-conflicting dirty trees natively, matching the prior bare-
+#   pull behavior of `session-start-sync.sh` (see PR #345).
 #
 #   All output lines follow the status-string contract documented below, so
 #   callers can simply capture stdout and pass it through to user-visible
@@ -23,7 +28,9 @@
 #   updated <before7> → <after7>       Fast-forward pulled new commits.
 #   up to date (<sha7>)                Already at origin/main.
 #   skipped: tracked files have uncommitted changes — run manually: <cmd>
-#                                       Dirty working tree; no-op.
+#                                       Off-main with dirty tree; no-op.
+#                                       (On-main dirty trees are NOT skipped —
+#                                       pull --ff-only handles them natively.)
 #   failed: could not checkout main — <git output>
 #                                       Not on main and checkout refused.
 #   failed: <git pull output>           Pull refused (non-ff, network, etc.).
@@ -109,18 +116,25 @@ else
   MANUAL_CMD="git checkout main && git pull origin main --ff-only"
 fi
 
-# Uncommitted-changes guard. `diff --quiet` / `diff --cached --quiet` cover
-# tracked files only — untracked files do NOT block a fast-forward pull, so
-# using `status --porcelain` here would produce false positives (see memory
+# Ensure we're on main before pulling. The uncommitted-changes guard only
+# fires when we need to checkout — `git checkout main` refuses to run if
+# uncommitted tracked changes would be clobbered, and silently carries them
+# across branches otherwise, both of which we want to avoid. If we're
+# ALREADY on main, `git pull --ff-only` handles non-conflicting dirty trees
+# natively (the pull succeeds and leaves the working tree intact), so
+# skipping there would regress the hook's prior bare-pull behavior
+# (see BugBot finding on PR #345).
+#
+# `diff --quiet` / `diff --cached --quiet` cover tracked files only —
+# untracked files do NOT block a fast-forward pull, so using
+# `status --porcelain` here would produce false positives (see memory
 # note `feedback_porcelain_untracked.md`).
-if ! "${GIT[@]}" diff --quiet 2>/dev/null || ! "${GIT[@]}" diff --cached --quiet 2>/dev/null; then
-  echo "skipped: tracked files have uncommitted changes — run manually: $MANUAL_CMD"
-  exit 1
-fi
-
-# Ensure we're on main before pulling. No-op if already there.
 CURRENT_BRANCH=$("${GIT[@]}" branch --show-current 2>/dev/null || true)
 if [[ "$CURRENT_BRANCH" != "main" ]]; then
+  if ! "${GIT[@]}" diff --quiet 2>/dev/null || ! "${GIT[@]}" diff --cached --quiet 2>/dev/null; then
+    echo "skipped: tracked files have uncommitted changes — run manually: $MANUAL_CMD"
+    exit 1
+  fi
   if ! CHECKOUT_OUTPUT=$("${GIT[@]}" checkout main 2>&1); then
     echo "failed: could not checkout main — $CHECKOUT_OUTPUT"
     exit 2
