@@ -289,7 +289,7 @@ if [[ -n "$SINCE" ]]; then
       end;
     def enrich($since; $tsfield):
       [.[]
-       | select((.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]")
+       | select((.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]" or .user.login == "cursor[bot]")
                 and ((.[$tsfield] // "") > $since))
        | {
            id,

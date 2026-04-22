@@ -260,13 +260,15 @@ gh api graphql -f query='query {
 ```
 
 Count unresolved threads from reviewers:
-- Filter for threads where any comment is from `coderabbitai[bot]` or `greptile-apps[bot]`
+- Filter for threads where any comment is from `coderabbitai[bot]`, `greptile-apps[bot]`, or `cursor[bot]`
 - Only count threads where `isResolved == false`
 
-Also check for issue-level review comments that may not have threads:
+Also check for issue-level review comments that may not have threads. Use the shared `pr-state.sh` helper — it fetches all three endpoints in one call, filters to `coderabbitai[bot]` / `greptile-apps[bot]` / `cursor[bot]` (BugBot), and pre-classifies each comment with `classification.class` (`finding` vs `acknowledgment`). The classifier only runs when `--since <iso>` is passed — pass the PR's `createdAt` to include every bot comment on the PR. The helper writes the JSON bundle to a tempfile and prints its **path** on stdout — capture the path, then read with `jq < "$BUNDLE"`:
+
 ```bash
-gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
-  --jq '[.[] | select(.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]") | select(.body | test("suggestion|finding|issue|bug|error|warning"; "i"))]'
+PR_CREATED=$(gh pr view "$PR_NUM" --json createdAt --jq '.createdAt')
+BUNDLE=$(.claude/scripts/pr-state.sh --pr "$PR_NUM" --since "$PR_CREATED")
+jq '.new_since_baseline.conversation | map(select(.classification.class == "finding"))' < "$BUNDLE"
 ```
 
 - If there are unresolved findings: `[ACTION]` — Processing N unresolved findings.
