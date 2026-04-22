@@ -345,6 +345,40 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Step 8: Install Git pre-commit hook (blocks commits on root/main)
+# ---------------------------------------------------------------------------
+echo "Step 8: Installing Git pre-commit hook..."
+
+HOOK_SRC="$SCRIPT_DIR/.claude/git-hooks/pre-commit"
+HOOK_DST="$SCRIPT_DIR/.git/hooks/pre-commit"
+
+if [[ ! -f "$HOOK_SRC" ]]; then
+  step_fail "Git pre-commit hook" "Source hook not found: $HOOK_SRC"
+  exit 1
+fi
+
+if [[ ! -d "$SCRIPT_DIR/.git/hooks" ]]; then
+  step_fail "Git pre-commit hook" "Hooks directory missing: $SCRIPT_DIR/.git/hooks"
+  exit 1
+fi
+
+if [[ ! -e "$HOOK_DST" ]]; then
+  cp "$HOOK_SRC" "$HOOK_DST"
+  chmod +x "$HOOK_DST"
+  echo "  Installed pre-commit hook."
+  step_pass "Git pre-commit hook"
+elif cmp -s "$HOOK_SRC" "$HOOK_DST"; then
+  chmod +x "$HOOK_DST"
+  echo "  Pre-commit hook already installed — no changes."
+  step_pass "Git pre-commit hook"
+else
+  echo "  WARNING: $HOOK_DST exists but differs from $HOOK_SRC." >&2
+  echo "           Leaving user hook in place. Merge manually if you want our rule." >&2
+  echo "           Inspect with: diff -u \"$HOOK_DST\" \"$HOOK_SRC\"" >&2
+  step_pass "Git pre-commit hook (user customization preserved)"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
