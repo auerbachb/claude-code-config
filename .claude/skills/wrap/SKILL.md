@@ -167,37 +167,23 @@ Do NOT use `--delete-branch` here. That flag attempts local branch deletion whil
 After merging, update the root repo's local `main` so subsequent sessions branch from the latest code. **Capture the result for the final report in Step 5.4.**
 
 ```bash
+# .claude/scripts/main-sync.sh --repo <path> writes the status line to
+# stdout and exits 0 OK / 1 skipped (uncommitted) / 2 failed
+# (checkout/pull). /wrap runs from inside a worktree, so we resolve the
+# root repo explicitly and pass it via --repo. A non-zero exit from the
+# helper is not a hard error here — the status line is captured for the
+# final report regardless.
 ROOT_REPO=$(.claude/scripts/repo-root.sh 2>/dev/null || true)
 MAIN_SYNC_STATUS=""
-
 if [ -z "$ROOT_REPO" ] || [ ! -d "$ROOT_REPO" ]; then
   MAIN_SYNC_STATUS="failed: could not determine root repo path"
-elif ! git -C "$ROOT_REPO" diff --quiet 2>/dev/null || ! git -C "$ROOT_REPO" diff --cached --quiet 2>/dev/null; then
-  MAIN_SYNC_STATUS="skipped: root repo has tracked files with uncommitted changes — run manually: git -C \"$ROOT_REPO\" pull origin main --ff-only"
 else
-  CURRENT_BRANCH=$(git -C "$ROOT_REPO" branch --show-current)
-  if [ "$CURRENT_BRANCH" != "main" ]; then
-    if ! CHECKOUT_OUTPUT=$(git -C "$ROOT_REPO" checkout main 2>&1); then
-      MAIN_SYNC_STATUS="failed: could not checkout main in root repo — $CHECKOUT_OUTPUT"
-    fi
-  fi
-  if [ -z "$MAIN_SYNC_STATUS" ]; then
-    BEFORE_SHA=$(git -C "$ROOT_REPO" rev-parse HEAD 2>/dev/null)
-    if PULL_OUTPUT=$(git -C "$ROOT_REPO" pull origin main --ff-only 2>&1); then
-      AFTER_SHA=$(git -C "$ROOT_REPO" rev-parse HEAD 2>/dev/null)
-      if [ "$BEFORE_SHA" = "$AFTER_SHA" ]; then
-        MAIN_SYNC_STATUS="up to date (${AFTER_SHA:0:7})"
-      else
-        MAIN_SYNC_STATUS="updated ${BEFORE_SHA:0:7} → ${AFTER_SHA:0:7}"
-      fi
-    else
-      MAIN_SYNC_STATUS="failed: $PULL_OUTPUT"
-    fi
-  fi
+  MAIN_SYNC_STATUS=$(bash .claude/scripts/main-sync.sh --repo "$ROOT_REPO" 2>&1 || true)
 fi
-
 echo "Main sync: $MAIN_SYNC_STATUS"
 ```
+
+See `.claude/scripts/main-sync.sh --help` for the full contract.
 
 Store `MAIN_SYNC_STATUS` for the final report — this value MUST appear in Step 5.4 output.
 

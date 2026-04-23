@@ -134,39 +134,15 @@ git push origin --delete "$BRANCH_NAME" || echo "Warning: remote branch deletion
 After merging, update the local `main` so subsequent sessions branch from the latest code. **Capture the result for the completion report in Step 7.**
 
 ```bash
-MAIN_SYNC_STATUS=""
-
-# Guard: tracked files with uncommitted changes would block checkout
-if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-  MAIN_SYNC_STATUS="skipped: tracked files have uncommitted changes — run manually: git checkout main && git pull origin main --ff-only"
-fi
-
-# Ensure we're on main before pulling
-CURRENT_BRANCH=$(git branch --show-current)
-if [ -z "$MAIN_SYNC_STATUS" ] && [ "$CURRENT_BRANCH" != "main" ]; then
-  if ! CHECKOUT_OUTPUT=$(git checkout main 2>&1); then
-    MAIN_SYNC_STATUS="failed: could not checkout main — $CHECKOUT_OUTPUT"
-  fi
-fi
-
-if [ -z "$MAIN_SYNC_STATUS" ]; then
-  BEFORE_SHA=$(git rev-parse HEAD 2>/dev/null)
-  if PULL_OUTPUT=$(git pull origin main --ff-only 2>&1); then
-    AFTER_SHA=$(git rev-parse HEAD 2>/dev/null)
-    if [ "$BEFORE_SHA" = "$AFTER_SHA" ]; then
-      MAIN_SYNC_STATUS="up to date (${AFTER_SHA:0:7})"
-    else
-      MAIN_SYNC_STATUS="updated ${BEFORE_SHA:0:7} → ${AFTER_SHA:0:7}"
-    fi
-  else
-    MAIN_SYNC_STATUS="failed: $PULL_OUTPUT"
-  fi
-fi
-
+# .claude/scripts/main-sync.sh writes the status line to stdout and exits
+# 0 OK / 1 skipped (uncommitted) / 2 failed (checkout/pull). All three
+# outcomes are captured here for the completion report — a non-zero exit
+# is not a hard error for /merge, just a report-worthy condition.
+MAIN_SYNC_STATUS=$(bash .claude/scripts/main-sync.sh 2>&1 || true)
 echo "Main sync: $MAIN_SYNC_STATUS"
 ```
 
-Note: `/merge` only runs outside worktrees (Step 1 aborts in worktrees), so we should be on `main` after Step 5a's checkout. The explicit checkout-main guard handles edge cases. The `post-merge-pull.sh` hook also fires as a safety net, but this explicit step captures the result for reporting.
+Note: `/merge` only runs outside worktrees (Step 1 aborts in worktrees), so we should be on `main` after Step 5a's checkout. The helper's internal checkout-main guard handles edge cases. The `post-merge-pull.sh` hook also fires as a safety net, but this explicit step captures the result for reporting. See `.claude/scripts/main-sync.sh --help` for the full contract.
 
 ### Step 6: Log to work-log
 
