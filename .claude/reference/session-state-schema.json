@@ -2,7 +2,6 @@
   "last_updated": "2026-03-16T16:00:00Z",
   "monitoring_active": true,
   "root_repo": "/Users/user/repos/my-project",
-  "work_log_path": "docs/work-logs",
   "prs": {
     "618": {"phase": "B", "head_sha": "7b2cfbf", "reviewer": "cr", "needs": "cr_confirmation_pass"},
     "619": {"phase": "B", "head_sha": "a1b2c3d", "reviewer": "bugbot", "needs": "bugbot_review_poll"},

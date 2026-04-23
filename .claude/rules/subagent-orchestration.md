@@ -15,7 +15,7 @@ Use the custom agent definitions in `.claude/agents/` instead of manually readin
    - `phase-a-fixer` — Fix findings, push, write handoff
    - `phase-b-reviewer` — Poll reviews, process findings, update handoff
    - `phase-c-merger` — Verify merge gate, check AC, report readiness (read-only)
-   - `pm-worker` — Issue management, work-log, repo bootstrap
+   - `pm-worker` — Issue management, repo bootstrap
 3. **Set `model` explicitly at the call site** (see "Model Selection" below). Each agent definition also declares a frontmatter default (`opus` for Phase A/B; `sonnet` for Phase C and pm-worker), but the call-site `model` parameter takes precedence and makes the choice visible at every spawn.
 4. **Provide runtime context in the `prompt` parameter** — the agent definition supplies workflow rules; the prompt supplies PR-specific details:
    - PR number, issue number, branch name

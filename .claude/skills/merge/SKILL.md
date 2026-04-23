@@ -1,6 +1,6 @@
 ---
 name: merge
-description: Squash merge the current PR, delete the branch, log to work-log, and clean up. Verifies merge gate and acceptance criteria before merging.
+description: Squash merge the current PR, delete the branch, and clean up. Verifies merge gate and acceptance criteria before merging.
 ---
 
 Squash merge the current PR. This is the "we're done here" command.
@@ -8,7 +8,7 @@ Squash merge the current PR. This is the "we're done here" command.
 ## When to use /merge vs /wrap
 
 - Use **/merge** for a quick mid-session merge when you'll continue working in the same session. It handles AC verification, CI check, and squash-merge — nothing else.
-- Use **/wrap** for end-of-session cleanup. /wrap is a superset: runs the same merge flow PLUS detects follow-up issues, extracts session lessons, syncs the work log, and cleans up the worktree.
+- Use **/wrap** for end-of-session cleanup. /wrap is a superset: runs the same merge flow PLUS detects follow-up issues, extracts session lessons, and cleans up the worktree.
 - If you're done for the session, use /wrap. If you're merging and immediately starting the next issue, use /merge.
 - Note: /merge aborts if invoked from inside a worktree (see Step 1) — use /wrap in that case since it removes the worktree before deleting the branch.
 
@@ -131,7 +131,7 @@ git push origin --delete "$BRANCH_NAME" || echo "Warning: remote branch deletion
 
 ### Step 5b: Sync local main
 
-After merging, update the local `main` so subsequent sessions branch from the latest code. **Capture the result for the completion report in Step 7.**
+After merging, update the local `main` so subsequent sessions branch from the latest code. **Capture the result for the completion report in Step 6.**
 
 ```bash
 # .claude/scripts/main-sync.sh writes the status line to stdout and exits
@@ -144,26 +144,10 @@ echo "Main sync: $MAIN_SYNC_STATUS"
 
 Note: `/merge` only runs outside worktrees (Step 1 aborts in worktrees), so we should be on `main` after Step 5a's checkout. The helper's internal checkout-main guard handles edge cases. The `post-merge-pull.sh` hook also fires as a safety net, but this explicit step captures the result for reporting. See `.claude/scripts/main-sync.sh --help` for the full contract.
 
-### Step 6: Log to work-log
-
-If a work-log directory exists (detected at session start per work-log.md rules):
-
-1. Determine the cycle count by reconstructing from PR history:
-   ```bash
-   CYCLES=$(.claude/scripts/cycle-count.sh "$PR_NUM")
-   ```
-   The script counts one cycle per review followed by at least one commit before the next review (or merge). Clean passes and confirmation reviews do not count. Default mode includes all reviewers (CR, Greptile, cursor, humans); pass `--exclude-bots` only if you need human-only cycles (not used here). See `.claude/scripts/cycle-count.sh --help` for the full contract.
-2. Append a merge entry to today's session log:
-   ```
-   - {time} ET — PR #{N} merged (Issue #{M}): {1-line summary} [opened: {open_time}, merged: {merge_time}, cycles: {count}]
-   ```
-3. Get the linked issue number from the PR body (`Closes #N` pattern)
-
-### Step 7: Report completion
+### Step 6: Report completion
 
 Tell the user:
 - PR number and title
 - Merge SHA
 - Main branch {MAIN_SYNC_STATUS from Step 5b — e.g. "updated abc1234 → def5678", "up to date (abc1234)", or "failed: ..."}
 - Branch deleted
-- Work-log updated (if applicable)

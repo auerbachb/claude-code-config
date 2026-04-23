@@ -37,8 +37,7 @@
 #      one inline comment).
 #   4. Annotate each review with an `actionable` flag: true when
 #      state == "CHANGES_REQUESTED" OR the review has at least one inline
-#      comment attached. Matches the "actionable review" definition in
-#      .claude/rules/work-log.md.
+#      comment attached.
 #   5. Fetch commits, sorted by committer date.
 #   6. Walk reviews in chronological order. At each position, the boundary is
 #      the next review's submitted_at (actionable or not — every review serves
@@ -195,9 +194,9 @@ else
 fi
 
 # --- fetch inline comments (for actionable-review detection) ---
-# A review is "actionable" per .claude/rules/work-log.md if it requests changes
-# or has at least one inline comment. We fetch the PR's inline comments and
-# extract the set of review IDs they belong to.
+# A review is "actionable" if it requests changes or has at least one inline
+# comment. We fetch the PR's inline comments and extract the set of review IDs
+# they belong to.
 INLINE_RAW="$(mktemp)"
 if ! gh api "repos/{owner}/{repo}/pulls/$PR_NUM/comments?per_page=100" --paginate >"$INLINE_RAW" 2>"$GH_CALL_STDERR"; then
   sed 's/^/gh: /' "$GH_CALL_STDERR" >&2
@@ -217,8 +216,7 @@ ACTIONABLE_REVIEW_IDS="$(jq -s '
 # still serves as a boundary for earlier reviews. Only the "actionable" flag
 # decides whether a given review is *counted*.
 # A review is actionable when state == "CHANGES_REQUESTED" OR its id appears in
-# ACTIONABLE_REVIEW_IDS (i.e., it has at least one inline comment). This
-# matches .claude/rules/work-log.md.
+# ACTIONABLE_REVIEW_IDS (i.e., it has at least one inline comment).
 # Also attach an epoch value so cycle-count comparisons are timezone-safe.
 # GitHub returns most timestamps as ISO 8601 UTC ("...Z"), but commit
 # committer.date can use "+HH:MM" offsets, which would sort incorrectly as
