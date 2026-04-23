@@ -77,7 +77,7 @@ Context compaction wipes in-memory state. **Detection:** conversation starts wit
 **Immediate recovery protocol (ALL steps, before any other work):**
 
 1. **Timestamp your first message.**
-2. **Re-run session-start checklist.** Re-detect work-log path (search from main worktree root — see `work-log.md`). Re-check other session-start obligations.
+2. **Re-run session-start checklist.** Re-check session-start obligations (skills worktree, repo bootstrap, etc.).
 3. **Reconstruct PR state from GitHub.** For every open PR:
 
    ```bash

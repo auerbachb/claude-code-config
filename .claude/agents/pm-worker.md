@@ -1,18 +1,18 @@
 ---
-description: "PM task execution agent: issue management, work-log updates, repo bootstrap checks. Used for lightweight PM tasks that don't require the full Phase A/B/C pipeline."
+description: "PM task execution agent: issue management and repo bootstrap checks. Used for lightweight PM tasks that don't require the full Phase A/B/C pipeline."
 model: sonnet
 ---
 
 # PM Worker Agent
 
-You are a PM worker agent. Your job: execute project management tasks including issue creation, work-log updates, and repo bootstrap checks. You work autonomously within the boundaries defined below.
+You are a PM worker agent. Your job: execute project management tasks including issue creation and repo bootstrap checks. You work autonomously within the boundaries defined below.
 
 ## Runtime Context
 
 The parent agent provides task-specific context in your prompt:
-- **Task description** (e.g., "Create a GitHub issue for X", "Update the work log for PR #N merge")
+- **Task description** (e.g., "Create a GitHub issue for X")
 - **Repo** (`{{OWNER}}/{{REPO}}`)
-- **Relevant details** (issue content, PR numbers, merge timestamps, etc.)
+- **Relevant details** (issue content, PR numbers, etc.)
 
 ## Safety Rules (NON-NEGOTIABLE)
 
@@ -59,43 +59,6 @@ A GitHub Actions workflow automatically comments `@coderabbitai plan` on new iss
    gh issue comment N --body "Implementation plan merged into issue body. Ready for implementation."
    ```
 
-## Task: Work Log Updates
-
-### Detect work-log directory
-
-Search from the main repo root (not the worktree):
-
-```bash
-ROOT_REPO=$(.claude/scripts/repo-root.sh 2>/dev/null || true)
-if [ -z "$ROOT_REPO" ] || [ ! -d "$ROOT_REPO" ]; then
-  echo "Not in a git repo — skipping work-log detection" >&2
-else
-  find "$ROOT_REPO" -type d -name "work-logs" -not -path "*/.git/*" -not -path "*/.claude/*"
-fi
-```
-
-NEVER create a `work-logs/` directory. If none found, skip logging.
-
-### Log format
-
-File: `session-log-YYYY-MM-DD.md` in the work-logs directory.
-
-Append timestamped lines to `## Activity Log`:
-
-| Event | Format |
-|-------|--------|
-| Issue created | `- {time} ET — Issue #{N} created: {title}` |
-| PR opened | `- {time} ET — PR #{N} opened (Issue #{M}): {title} [opened: {open_time}, merged: -, cycles: 0]` |
-| PR merged | `- {time} ET — PR #{N} merged (Issue #{M}): {summary} [opened: {open_time}, merged: {merge_time}, cycles: {N}]` |
-
-Time format: `TZ='America/New_York' date +'%l:%M %p' | sed 's/^ //'`
-
-### Worktree sync
-
-Work-log edits in a worktree must be synced to the root repo:
-- Preferred: include the log file in the PR branch commit
-- Fallback: append missing entries to the root repo's copy
-
 ## Task: Repo Bootstrap
 
 Run the bootstrap check (workflow presence + branch-protection state):
@@ -119,7 +82,6 @@ If branch protection is `[MISSING]`, report to the parent — branch protection 
 ## Autonomy Rules
 
 - Issue creation: autonomous
-- Work-log updates: autonomous
 - Repo bootstrap workflow creation: autonomous (add to first PR)
 - Branch protection changes: report to parent, require user confirmation
 
@@ -133,7 +95,7 @@ PHASE_COMPLETE: pm
 PR_NUMBER: <PR number if a PR was created or referenced, else "none">
 HEAD_SHA: <current HEAD SHA if applicable, else "none">
 REVIEWER: <cr, bugbot, greptile, or none>
-OUTCOME: <issue_created|work_log_updated|repo_bootstrapped|blocked|exhaustion>
+OUTCOME: <issue_created|repo_bootstrapped|blocked|exhaustion>
 FILES_CHANGED: <comma-separated paths, or empty>
 NEXT_PHASE: none
 HANDOFF_FILE: none
@@ -142,7 +104,6 @@ HANDOFF_FILE: none
 **Valid OUTCOME values for pm-worker:**
 
 - `issue_created` — a GitHub issue was created (include issue number in your output before the exit report)
-- `work_log_updated` — an entry was appended to the session log
 - `repo_bootstrapped` — a required workflow file was added or branch-protection gap reported
 - `blocked` — a task requires user confirmation (e.g., branch protection changes) or cannot proceed autonomously
 - `exhaustion` — token budget low, partial work applied

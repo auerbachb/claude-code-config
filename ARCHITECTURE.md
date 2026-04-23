@@ -91,14 +91,14 @@ This means new hooks added to the repo are automatically picked up after merging
 
 Each Claude Code session follows this sequence:
 
-1. **Session start** — Pull remote `main`, create a worktree, verify skills worktree exists, detect work-log directory, check for required GitHub Actions workflows
+1. **Session start** — Pull remote `main`, create a worktree, verify skills worktree exists, check for required GitHub Actions workflows
 2. **Issue creation** — Draft issue, post via `gh issue create`, wait for CodeRabbit plan, merge plans into issue body
 3. **Implementation** — Code on the worktree's feature branch
 4. **Local review** — Run `coderabbit review --prompt-only` until two consecutive clean passes
 5. **Push and PR** — Commit, push, create PR with `Closes #N` and Test Plan checkboxes
 6. **GitHub review** — Poll CR (7-min timeout), fall back to Greptile if needed, fix findings, reply to threads
 7. **Merge** — Verify merge gate (2 clean CR passes or Greptile severity gate), verify acceptance criteria, squash merge
-8. **Cleanup** — Delete branch, sync work-log, optionally remove worktree
+8. **Cleanup** — Delete branch, optionally remove worktree
 
 ---
 

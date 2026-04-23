@@ -1,13 +1,13 @@
 ---
 name: wrap
-description: End-of-session command — verify no unresolved findings, squash merge, detect follow-ups, extract lessons, sync work-log, and clean up the worktree.
+description: End-of-session command — verify no unresolved findings, squash merge, detect follow-ups, extract lessons, and clean up the worktree.
 ---
 
 Wrap up the current PR and session. This is the "we're done here" command that handles everything from final verification through worktree cleanup.
 
 ## When to use /wrap vs /merge
 
-- Use **/wrap** at end-of-session. Handles merge + follow-up detection + lessons + work-log sync + worktree cleanup in one command.
+- Use **/wrap** at end-of-session. Handles merge + follow-up detection + lessons + worktree cleanup in one command.
 - Use **/merge** for a quick mid-session merge when you'll keep working. Skips the cleanup steps and only runs outside worktrees.
 - /wrap includes everything /merge does, plus the cleanup. Don't run both.
 
@@ -27,7 +27,7 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 | Phase 2 complete | Begin Phase 3 | **Always do** |
 | Phase 3 follow-ups processed | Begin Phase 4 | **Always do** |
 | Phase 4 lessons complete (or skipped as trivial) | Begin Phase 5 | **Always do** |
-| Phase 5 cleanup complete | Output Step 5.4 final report | **Always do** |
+| Phase 5 cleanup complete | Output Step 5.3 final report | **Always do** |
 | Unresolved reviewer findings detected (Phase 1) | Stop and report | **Stop and report** |
 | Merge gate not met (Phase 2.1) | Stop and report | **Stop and report** |
 | AC checkbox verification fails (Phase 2.2) | Stop and report | **Stop and report** |
@@ -164,7 +164,7 @@ Do NOT use `--delete-branch` here. That flag attempts local branch deletion whil
 
 ### Step 2.5: Sync root repo main
 
-After merging, update the root repo's local `main` so subsequent sessions branch from the latest code. **Capture the result for the final report in Step 5.4.**
+After merging, update the root repo's local `main` so subsequent sessions branch from the latest code. **Capture the result for the final report in Step 5.3.**
 
 ```bash
 # .claude/scripts/main-sync.sh --repo <path> writes the status line to
@@ -185,24 +185,7 @@ echo "Main sync: $MAIN_SYNC_STATUS"
 
 See `.claude/scripts/main-sync.sh --help` for the full contract.
 
-Store `MAIN_SYNC_STATUS` for the final report — this value MUST appear in Step 5.4 output.
-
-### Step 2.6: Log to work-log
-
-If a work-log directory was detected at session start:
-
-1. Reconstruct the cycle count from PR history:
-   ```bash
-   CYCLES=$(.claude/scripts/cycle-count.sh "$PR_NUM")
-   ```
-   The script counts one cycle per review followed by at least one commit before the next review (or merge). Clean passes and confirmation reviews do not count. Default mode includes all reviewers; see `.claude/scripts/cycle-count.sh --help` for flags.
-
-2. Append to today's session log:
-   ```
-   - {time} ET — PR #{N} merged (Issue #{M}): {1-line summary} [opened: {open_time}, merged: {merge_time}, cycles: {count}]
-   ```
-
-After work-log entry: proceed immediately to Phase 3 — do not ask.
+Store `MAIN_SYNC_STATUS` for the final report — this value MUST appear in Step 5.3 output.
 
 ## Phase 3: Follow-Up Detection and Creation
 
@@ -305,13 +288,7 @@ For each follow-up item (the HHG pair or the generic list):
    fi
    ```
 
-3. **Log to work-log** — if a work-log directory was detected at session start, append a timestamped line to today's session log for each created issue using the **canonical** format from `work-log.md` (use the same path logic as Phase 2.6):
-   ```
-   - {time} ET — Issue #{NEW_NUM} created: {title}
-   ```
-   Do not add a PR suffix to the log line — the PR linkage belongs in the issue body and the Step 3.4 report, not in the canonical work-log format. Skip logging entirely if no work-log directory exists.
-
-**Non-HHG PRs still get generic follow-up creation** — any items collected in Step 3.1 that are not overridden by the HHG path go through the dedup + create + log flow above.
+**Non-HHG PRs still get generic follow-up creation** — any items collected in Step 3.1 that are not overridden by the HHG path go through the dedup + create flow above.
 
 ### Step 3.4: Report follow-ups
 
@@ -340,7 +317,7 @@ Determine the session depth to decide how thoroughly to reflect.
 ### Step 4.1: Assess session complexity
 
 Calculate a complexity signal:
-- **Cycle count** from Phase 2 (review-then-fix rounds)
+- **Cycle count** — review-then-fix rounds on the PR, via `CYCLES=$(.claude/scripts/cycle-count.sh "$PR_NUM")`
 - **Thread length** — count the number of user + assistant messages in the current session. "Short" = fewer than 15 total messages.
 - **PR size** — number of files changed (`gh pr view N --json files --jq '.files | length'`)
 
@@ -378,30 +355,13 @@ After lessons (or skip): proceed immediately to Phase 5 — do not ask.
 
 ## Phase 5: Worktree Cleanup
 
-### Step 5.1: Sync work-log to root repo
-
-If a work-log was updated in Phase 2, sync it before removing the worktree:
-
-```bash
-ROOT_REPO=$(.claude/scripts/repo-root.sh 2>/dev/null || true)
-if [ -z "$ROOT_REPO" ] || [ ! -d "$ROOT_REPO" ]; then
-  echo "WARNING: could not resolve root repo — skipping work-log sync" >&2
-else
-  WORKTREE=$(pwd)
-  # Compare and append any missing entries to root repo copy
-  diff "$WORKTREE/$WORK_LOG_PATH/session-log-YYYY-MM-DD.md" "$ROOT_REPO/$WORK_LOG_PATH/session-log-YYYY-MM-DD.md"
-fi
-```
-
-If the root repo's copy is missing entries, append them (do not overwrite the entire file).
-
-### Step 5.2: Remove the worktree
+### Step 5.1: Remove the worktree
 
 Use `ExitWorktree` with `action: "remove"` to delete the worktree directory. This must happen **before** local branch deletion — git refuses to delete a branch that is currently checked out in any worktree.
 
 If `ExitWorktree` reports uncommitted changes, discard them — by this point all meaningful work has been merged.
 
-### Step 5.3: Delete the local branch
+### Step 5.2: Delete the local branch
 
 After the worktree is removed, the branch is no longer checked out anywhere and can be safely deleted. Run on the root repo:
 
@@ -423,7 +383,7 @@ The remote branch is deleted by GitHub's auto-delete-on-merge setting. If that i
 git -C "$ROOT_REPO" push origin --delete "$BRANCH_NAME" || echo "Warning: remote branch deletion failed (may already be deleted) — skipping"
 ```
 
-### Step 5.4: Final report
+### Step 5.3: Final report
 
 ```
 ## Wrap-Up Complete
@@ -431,7 +391,6 @@ git -C "$ROOT_REPO" push origin --delete "$BRANCH_NAME" || echo "Warning: remote
 - **PR #{N}** merged ({title})
 - **Main branch** {MAIN_SYNC_STATUS from Step 2.5 — e.g. "updated abc1234 → def5678", "up to date (abc1234)", or "failed: ..."}
 - **Branch** deleted
-- **Work-log** updated (if applicable)
 - **Follow-ups:** {summary or "none"}
 - **Lessons:** {summary or "clean session"}
 - **Worktree** removed

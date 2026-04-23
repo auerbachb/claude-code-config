@@ -81,7 +81,6 @@ Detailed workflow rules are split into topic-specific files in `.claude/rules/`:
 | `monitor-mode.md` | Dedicated monitor mode, monitor loop, heartbeats, health monitoring, post-compaction recovery |
 | `handoff-files.md` | Handoff file schema, session-state.json format, lifecycle (create/update/delete) |
 | `phase-protocols.md` | Structured exit report format, Phase A/B/C completion protocol checklists |
-| `work-log.md` | Auto-update daily work log on issue create, PR open, PR merge |
 | `safety.md` | Destructive command prohibitions, .env protection, subagent safety warnings |
 | `repo-bootstrap.md` | Auto-provision required GitHub Actions workflows on first touch |
 | `trust-dialog-fix.md` | Fix trust dialog re-prompting when bypass permissions are enabled |
