@@ -120,9 +120,29 @@ Scan each PR body for:
 - **Concrete numbers** — record counts, accuracy metrics, coverage stats, thresholds
 - **Which part of the system** this advances — classification, scraping, data pipeline, UI, etc.
 
-If a PR body is thin or template-only, extract the linked issue number (look for `Fixes #N`, `Closes #N`, or similar patterns in the PR body) and read the issue body:
+If a PR body is thin or template-only, extract the linked issue number via `pr-issue-ref.sh` (matches `Closes #N` / `Fixes #N` / `Resolves #N`, case-insensitive) and read the issue body. /standup runs from arbitrary repos, so resolve the script path with the same multi-candidate lookup used for `workday.sh` above. The helper exits 1 with empty stdout when no link is found, so guard before the `gh issue view` call:
 ```bash
-gh issue view "$ISSUE_NUMBER" --json body,title
+PR_ISSUE_REF_SH=""
+GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+for candidate in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/pr-issue-ref.sh" \
+  "$HOME/.claude/scripts/pr-issue-ref.sh" \
+  "${GIT_ROOT:+$GIT_ROOT/.claude/scripts/pr-issue-ref.sh}" \
+  ".claude/scripts/pr-issue-ref.sh"; do
+  [ -n "$candidate" ] || continue
+  if [ -x "$candidate" ]; then
+    PR_ISSUE_REF_SH="$candidate"
+    break
+  fi
+done
+if [ -z "$PR_ISSUE_REF_SH" ]; then
+  echo "Error: could not locate pr-issue-ref.sh" >&2
+  exit 1
+fi
+ISSUE_NUMBER=$("$PR_ISSUE_REF_SH" "$PR_NUMBER" || true)
+if [ -n "$ISSUE_NUMBER" ]; then
+  gh issue view "$ISSUE_NUMBER" --json body,title
+fi
 ```
 
 ### Step 4: Identify business themes

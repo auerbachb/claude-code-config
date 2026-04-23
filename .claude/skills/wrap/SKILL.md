@@ -193,13 +193,19 @@ Detect related work that needs attention for feature completeness, then **auto-c
 
 ### Step 3.1: Detect follow-up items
 
-1. Extract the linked issue number from the PR body (`Closes #N` pattern) and fetch its title and body:
+1. Extract the linked issue number from the PR body via `pr-issue-ref.sh` (matches `Closes #N` / `Fixes #N` / `Resolves #N`, case-insensitive) and fetch its title and body:
    ```bash
-   ISSUE_N=$(gh pr view --json body --jq '.body' | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+')
-   ISSUE_TITLE=$(gh issue view "$ISSUE_N" --json title --jq '.title' 2>/dev/null || echo "")
-   ISSUE_BODY=$(gh issue view "$ISSUE_N" --json body --jq '.body' 2>/dev/null || echo "")
-   PR_TITLE=$(gh pr view --json title --jq '.title')
    PR_NUMBER=$(gh pr view --json number --jq '.number')
+   PR_TITLE=$(gh pr view --json title --jq '.title')
+   # pr-issue-ref.sh exits 1 with empty stdout when no link is found — `|| true`
+   # under `set -euo pipefail` keeps the assignment from aborting the block.
+   ISSUE_N=$(.claude/scripts/pr-issue-ref.sh "$PR_NUMBER" || true)
+   ISSUE_TITLE=""
+   ISSUE_BODY=""
+   if [ -n "$ISSUE_N" ]; then
+     ISSUE_TITLE=$(gh issue view "$ISSUE_N" --json title --jq '.title' 2>/dev/null || echo "")
+     ISSUE_BODY=$(gh issue view "$ISSUE_N" --json body --jq '.body' 2>/dev/null || echo "")
+   fi
    ```
 
 2. If a parent issue exists (check for "parent" or "epic" references in the issue body), fetch sibling issues:
