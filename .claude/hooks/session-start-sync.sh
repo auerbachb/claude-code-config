@@ -59,7 +59,13 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
     current_branch=$(git -C "$root_repo" branch --show-current 2>/dev/null)
     if [[ "$current_branch" == "main" ]]; then
       main_sync_script="$root_repo/.claude/scripts/main-sync.sh"
-      if [[ -x "$main_sync_script" ]]; then
+      # Match the `setup_script` guard on line 32: `-x` alone is too strict,
+      # since `bash "$script"` only requires readability. Systems with
+      # `core.filemode=false` or mounts that drop the exec bit would still
+      # have a usable helper but the `-x` test would silently fall through
+      # to the inline `git pull` fallback, losing main-sync.sh's status
+      # reporting and error handling (see BugBot finding on PR #345).
+      if [[ -x "$main_sync_script" || -f "$main_sync_script" ]]; then
         main_sync_out=$(bash "$main_sync_script" --repo "$root_repo" 2>&1)
         main_sync_rc=$?
         if [[ $main_sync_rc -eq 2 ]]; then
