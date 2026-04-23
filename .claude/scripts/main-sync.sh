@@ -24,13 +24,17 @@
 #   --repo <path>   Operate on the git repo rooted at <path> (uses `git -C`).
 #                   Defaults to the current working directory.
 #
-# OUTPUT (single stdout line, always)
+# OUTPUT (single stdout line, always — multi-line git stderr is collapsed)
 #   updated <before7> → <after7>       Fast-forward pulled new commits.
 #   up to date (<sha7>)                Already at origin/main.
 #   skipped: tracked files have uncommitted changes — run manually: <cmd>
 #                                       Off-main with dirty tree; no-op.
 #                                       (On-main dirty trees are NOT skipped —
 #                                       pull --ff-only handles them natively.)
+#   failed: not inside a git working tree — <rev-parse output>
+#                                       --repo (or cwd) is not a git repo.
+#   failed: could not inspect working tree state (git diff rc=<N>, ...)
+#                                       `git diff` itself errored (rc>1).
 #   failed: could not checkout main — <git output>
 #                                       Not on main and checkout refused.
 #   failed: <git pull output>           Pull refused (non-ff, network, etc.).
@@ -53,6 +57,15 @@
 #   STATUS=$(bash .claude/scripts/main-sync.sh --repo "$ROOT_REPO")
 
 set -euo pipefail
+
+# Collapse a captured git stderr blob into a single whitespace-normalized line
+# so the "failed: ..." status string honors the single-line stdout contract
+# documented in the OUTPUT section above. Callers capture this stdout and
+# pipe it straight into user-visible reports; a multi-line value would split
+# into multiple "columns" and break table rendering / grep-based checks.
+to_one_line() {
+  printf '%s' "$1" | tr '\n' ' ' | sed -e 's/[[:space:]]\{1,\}/ /g' -e 's/^ //' -e 's/ $//'
+}
 
 print_help() {
   # Print the header block (lines 2..first blank line), stripping leading "# ".
@@ -116,6 +129,19 @@ else
   MANUAL_CMD="git checkout main && git pull origin main --ff-only"
 fi
 
+# Refuse to run outside a git working tree — every downstream call (checkout,
+# diff, pull, rev-parse) would otherwise fail with a cryptic "fatal: not a git
+# repository" and exit 128/129, which the dirty-check below would misread as
+# a "dirty tree" skip (exit 1) instead of a hard configuration failure (exit 2).
+if ! INSIDE_WT=$("${GIT[@]}" rev-parse --is-inside-work-tree 2>&1); then
+  echo "failed: not inside a git working tree — $(to_one_line "$INSIDE_WT")"
+  exit 2
+fi
+if [[ "$INSIDE_WT" != "true" ]]; then
+  echo "failed: not inside a git working tree (rev-parse returned: $INSIDE_WT)"
+  exit 2
+fi
+
 # Ensure we're on main before pulling. The uncommitted-changes guard only
 # fires when we need to checkout — `git checkout main` refuses to run if
 # uncommitted tracked changes would be clobbered, and silently carries them
@@ -131,12 +157,23 @@ fi
 # note `feedback_porcelain_untracked.md`).
 CURRENT_BRANCH=$("${GIT[@]}" branch --show-current 2>/dev/null || true)
 if [[ "$CURRENT_BRANCH" != "main" ]]; then
-  if ! "${GIT[@]}" diff --quiet 2>/dev/null || ! "${GIT[@]}" diff --cached --quiet 2>/dev/null; then
+  # Distinguish "dirty tree" (exit 1 — benign skip) from "git error" (exit >1 —
+  # hard failure). The `|| rc=$?` idiom both captures the exit status AND
+  # suppresses `set -e` on the expected non-zero rc=1 from `diff --quiet`.
+  unstaged_rc=0
+  "${GIT[@]}" diff --quiet 2>/dev/null || unstaged_rc=$?
+  staged_rc=0
+  "${GIT[@]}" diff --cached --quiet 2>/dev/null || staged_rc=$?
+  if (( unstaged_rc > 1 || staged_rc > 1 )); then
+    echo "failed: could not inspect working tree state (git diff rc=$unstaged_rc, git diff --cached rc=$staged_rc)"
+    exit 2
+  fi
+  if (( unstaged_rc == 1 || staged_rc == 1 )); then
     echo "skipped: tracked files have uncommitted changes — run manually: $MANUAL_CMD"
     exit 1
   fi
   if ! CHECKOUT_OUTPUT=$("${GIT[@]}" checkout main 2>&1); then
-    echo "failed: could not checkout main — $CHECKOUT_OUTPUT"
+    echo "failed: could not checkout main — $(to_one_line "$CHECKOUT_OUTPUT")"
     exit 2
   fi
 fi
@@ -151,6 +188,6 @@ if PULL_OUTPUT=$("${GIT[@]}" pull origin main --ff-only 2>&1); then
   fi
   exit 0
 else
-  echo "failed: $PULL_OUTPUT"
+  echo "failed: $(to_one_line "$PULL_OUTPUT")"
   exit 2
 fi
