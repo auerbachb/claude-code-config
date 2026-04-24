@@ -42,9 +42,7 @@ git checkout -B phase-b-<branch> origin/<branch>
 git push origin HEAD:<branch>
 ```
 
-Creating a differently-named local branch (`phase-b-<branch>`) avoids the git "branch '<branch>' is already checked out at '<path>'" error. Use `-B` (uppercase) — it creates the branch on first launch and resets it to `origin/<branch>` on replacement launches (three of four Phase B outcomes — `clean`, `fixes_pushed`, `exhaustion` — trigger replacement, so this path is common; lowercase `-b` would fail with "branch already exists"). Pushing with `HEAD:<branch>` sends commits to the correct remote branch regardless of the local name.
-
-**Why MANDATORY (not just redundant):** the parent's worktree cleanup in `phase-protocols.md` (Phase A step 4) can fail or race in ways Phase B cannot observe — a crashed Phase A that never returned a result, `git worktree remove --force` failing on permissions or in-flight file handles, a concurrent Phase B launch while the first still holds the branch, or prune leaving dangling refs. This defensive checkout is the single reliable guarantee that Phase B acquires the branch; the parent cleanup is a best-effort hygiene step layered on top.
+The differently-named local branch avoids the "branch already checked out" error; `-B` (uppercase) is idempotent — creates on first launch, resets to `origin/<branch>` on replacements (three of four Phase B outcomes trigger replacements); `HEAD:<branch>` pushes to the right remote regardless of local name. MANDATORY because parent cleanup (`phase-protocols.md` Phase A step 4) can silently fail or race — Phase A crash, permission/file-handle errors, concurrent launches, dangling refs after prune — and Phase B cannot observe those failures. This checkout is the single reliable guarantee; parent cleanup is best-effort hygiene layered on top.
 
 ## Before Requesting Any New Review (MANDATORY)
 
