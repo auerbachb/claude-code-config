@@ -37,6 +37,7 @@ fi
 
 now=$(date +%s)
 elapsed=$((now - last_ack))
+current_time=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET' 2>/dev/null)
 
 if [[ $elapsed -gt $THRESHOLD ]]; then
   elapsed_min=$((elapsed / 60))
@@ -49,7 +50,14 @@ if [[ $elapsed -gt $THRESHOLD ]]; then
 }
 EOF
 else
-  echo '{}'
+  cat <<EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PostToolUse",
+    "additionalContext": "Current system time: ${current_time}"
+  }
+}
+EOF
 fi
 
 exit 0
