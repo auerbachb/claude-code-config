@@ -7,17 +7,13 @@
 cat > /dev/null
 
 CURRENT_TIME=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET' 2>/dev/null)
-
-if [[ -z "$CURRENT_TIME" ]]; then
-  echo '{}'
-  exit 0
-fi
+[[ -z "$CURRENT_TIME" ]] && CURRENT_TIME="ET time unavailable"
 
 cat <<EOF
 {
   "hookSpecificOutput": {
     "hookEventName": "UserPromptSubmit",
-    "additionalContext": "Current system time: ${CURRENT_TIME}. Use this time (or run the date command for a fresher reading) as your timestamp prefix — never estimate or calculate timestamps."
+    "additionalContext": "Current ET system time: ${CURRENT_TIME}. Use as timestamp prefix; never estimate."
   }
 }
 EOF

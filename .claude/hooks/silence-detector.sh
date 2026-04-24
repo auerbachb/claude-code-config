@@ -38,6 +38,7 @@ fi
 now=$(date +%s)
 elapsed=$((now - last_ack))
 current_time=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET' 2>/dev/null)
+[[ -z "$current_time" ]] && current_time="ET time unavailable"
 
 if [[ $elapsed -gt $THRESHOLD ]]; then
   elapsed_min=$((elapsed / 60))

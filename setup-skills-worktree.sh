@@ -205,6 +205,7 @@ HOOKS_MANIFEST=(
   $'PostToolUse\tBash\tpost-merge-pull.sh\t15'
   $'PostToolUse\tSkill\tskill-usage-tracker.sh\t5'
   $'PostToolUse\t\tsilence-detector.sh\t5'
+  $'UserPromptSubmit\t\ttimestamp-injector.sh\t5'
 )
 
 SETTINGS_FILE="$HOME/.claude/settings.json"
