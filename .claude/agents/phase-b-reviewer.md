@@ -37,12 +37,13 @@ Before any code operations, check out the feature branch using a **uniquely-name
 
 ```bash
 git fetch origin <branch>
-git checkout -B phase-b-<branch> origin/<branch>
+LOCAL="phase-b-<branch>-$(date +%s)"
+git checkout -b "$LOCAL" origin/<branch>
 # ... poll, fix, commit ...
 git push origin HEAD:<branch>
 ```
 
-The differently-named local branch avoids the "branch already checked out" error; `-B` (uppercase) is idempotent — creates on first launch, resets to `origin/<branch>` on replacements (three of four Phase B outcomes trigger replacements); `HEAD:<branch>` pushes to the right remote regardless of local name. MANDATORY because parent cleanup (`phase-protocols.md` Phase A step 4) can silently fail or race — Phase A crash, permission/file-handle errors, concurrent launches, dangling refs after prune — and Phase B cannot observe those failures. This checkout is the single reliable guarantee; parent cleanup is best-effort hygiene layered on top.
+Using a **unique per-launch local name** (timestamp suffix) sidesteps git's worktree branch lock — the lock is per-branch across all worktrees, so even `-B` can't override it when an old Phase B worktree still holds the branch (three of four Phase B outcomes trigger replacements). A fresh local name per launch is lock-free by construction. `HEAD:<branch>` pushes to the right remote regardless of local name. MANDATORY because parent cleanup (`phase-protocols.md` Phase A step 4) covers only Phase A; Phase B replacements are uncleaned today, and parent cleanup anywhere can silently fail or race (crash, permissions, concurrent launches). This checkout is the single reliable guarantee Phase B acquires the branch.
 
 ## Before Requesting Any New Review (MANDATORY)
 
