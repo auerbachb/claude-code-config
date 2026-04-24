@@ -183,20 +183,28 @@ fi
 # --- Step 6: Register hooks in ~/.claude/settings.json ---
 #
 # Hooks manifest — declarative list of hooks this repo expects to be registered.
-# Each entry: "event|matcher|script_name|timeout"
-# matcher is empty string for hooks with no matcher.
+# Fields are TAB-separated so matchers can use "|" alternation (e.g. Write|Edit).
+# Layout: event<TAB>matcher<TAB>script_name<TAB>timeout
+# matcher is an empty field for hooks with no matcher.
+#
+# Must stay in sync with global-settings.json; setup.sh verifies this and fails
+# if any template hook is missing from ~/.claude/settings.json after this runs.
 #
 # To add a new hook:
 #   1. Add the hook script to .claude/hooks/
-#   2. Add a manifest entry below with the event, matcher, script name, and timeout
+#   2. Add the same entry to global-settings.json AND to this manifest
 #   3. Run this script — it will register the hook in settings.json
 #
 HOOKS_MANIFEST=(
-  "Stop||silence-detector-ack.sh|5"
-  "Stop||trust-flag-repair.sh|10"
-  "PostToolUse|Bash|post-merge-pull.sh|15"
-  "PostToolUse||session-start-sync.sh|30"
-  "PostToolUse||silence-detector.sh|5"
+  $'PreToolUse\tWrite|Edit|NotebookEdit\tworktree-guard.sh\t5'
+  $'PreToolUse\tWrite|Edit|MultiEdit|NotebookEdit|Bash\tenv-guard.py\t5'
+  $'Stop\t\tsilence-detector-ack.sh\t5'
+  $'Stop\t\ttrust-flag-repair.sh\t10'
+  $'Stop\t\tdirty-main-warn.sh\t10'
+  $'PostToolUse\t\tsession-start-sync.sh\t30'
+  $'PostToolUse\tBash\tpost-merge-pull.sh\t15'
+  $'PostToolUse\tSkill\tskill-usage-tracker.sh\t5'
+  $'PostToolUse\t\tsilence-detector.sh\t5'
 )
 
 SETTINGS_FILE="$HOME/.claude/settings.json"
@@ -214,17 +222,18 @@ settings_file = sys.argv[1]
 hooks_dir = sys.argv[2]
 manifest_entries = sys.argv[3:]
 
-# Parse manifest: "event|matcher|script_name|timeout"
+# Parse manifest: TAB-separated "event\tmatcher\tscript_name\ttimeout".
+# Tab is used (not "|") so matchers can contain "|" alternation (e.g. Write|Edit).
 manifest = []
 for entry in manifest_entries:
-    parts = entry.split("|")
+    parts = entry.split("\t")
     if len(parts) != 4:
-        print(f"  WARNING: skipping malformed manifest entry: {entry}")
+        print(f"  WARNING: skipping malformed manifest entry: {entry!r}")
         continue
     try:
         timeout_val = int(parts[3])
     except ValueError:
-        print(f"  WARNING: skipping entry with non-integer timeout: {entry}")
+        print(f"  WARNING: skipping entry with non-integer timeout: {entry!r}")
         continue
     manifest.append({
         "event": parts[0],
