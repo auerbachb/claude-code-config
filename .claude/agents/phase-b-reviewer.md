@@ -31,6 +31,21 @@ On startup, check for the handoff file:
 1. **If `{{HANDOFF_FILE}}` exists:** Parse and validate (`schema_version`, `pr_number`, `phase_completed`). Extract `head_sha`, `reviewer`, `threads_replied`, `threads_resolved`, `findings_fixed` to avoid duplicate work. Log: "Loaded handoff file from Phase A."
 2. **If missing or invalid:** Fall back to GitHub API reconstruction — fetch all 3 comment endpoints with `per_page=100`. Log: "No handoff file found, reconstructing state from GitHub API."
 
+### Defensive Branch Checkout (MANDATORY)
+
+Before any code operations, check out the feature branch using a **uniquely-named local branch** that tracks the remote. This is lock-free even if a stale Phase A worktree is still holding the feature branch:
+
+```bash
+git fetch origin <branch>
+git checkout -b phase-b-<branch> origin/<branch>
+# ... poll, fix, commit ...
+git push origin HEAD:<branch>
+```
+
+Creating a differently-named local branch (`phase-b-<branch>`) avoids the git "branch '<branch>' is already checked out at '<path>'" error. Pushing with `HEAD:<branch>` sends commits to the correct remote branch regardless of the local name.
+
+**Why MANDATORY (not just redundant):** the parent's worktree cleanup in `phase-protocols.md` (Phase A step 4) can fail or race in ways Phase B cannot observe — a crashed Phase A that never returned a result, `git worktree remove --force` failing on permissions or in-flight file handles, a concurrent Phase B launch while the first still holds the branch, or prune leaving dangling refs. This defensive checkout is the single reliable guarantee that Phase B acquires the branch; the parent cleanup is a best-effort hygiene step layered on top.
+
 ## Before Requesting Any New Review (MANDATORY)
 
 Run the session-start / pre-review comment audit per `cr-github-review.md` ("Session-start / pre-review comment audit"):
