@@ -59,11 +59,20 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     --)
-      # Stop option parsing but keep validating remaining positional args
-      # through the standard `*)` path (catches stray trailing args and
-      # gives `--` a meaningful position before the PR number).
+      # Truly stop option parsing: drain remaining args as positional so
+      # dash-prefixed args (e.g. `-- -h`) don't re-match the option arms.
+      # Plain `continue` here would re-enter the `case`, defeating `--`.
       shift
-      continue
+      while [[ $# -gt 0 ]]; do
+        if [[ -n "$PR_NUM" ]]; then
+          echo "Error: unexpected positional argument: $1" >&2
+          print_usage >&2
+          exit 2
+        fi
+        PR_NUM="$1"
+        shift
+      done
+      break
       ;;
     -*)
       echo "Error: unknown flag: $1" >&2
@@ -117,9 +126,12 @@ fi
 
 # --- extract issue number ---
 # Match all nine GitHub closing keywords case-insensitively with optional
-# whitespace between keyword and `#`. `head -1` keeps the first hit; the
-# second grep strips back to just the digits.
-MATCH="$(printf '%s\n' "$BODY" | grep -oiE '(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]*#[0-9]+' | head -1 || true)"
+# whitespace between keyword and `#`. The leading `(^|[^[:alnum:]_])` is a
+# left word-boundary that prevents matches inside larger words — without
+# it, `prefixes #34` would match `fixes #34` and `enclosed #56` would match
+# `closed #56`. `head -1` keeps the first hit; the second grep strips back
+# to just the digits.
+MATCH="$(printf '%s\n' "$BODY" | grep -oiE '(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]*#[0-9]+' | head -1 || true)"
 if [[ -z "$MATCH" ]]; then
   exit 1
 fi
