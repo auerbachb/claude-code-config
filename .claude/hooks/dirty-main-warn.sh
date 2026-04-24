@@ -16,7 +16,11 @@ if [[ ! -x "$guard" ]]; then
   exit 0
 fi
 
-status=$("$guard" --check 2>/dev/null) || rc=$?
+# --no-fetch skips the network round-trip (BugBot PR #350 finding:
+# Stop fires after every response, and a fetch per turn is wasteful).
+# Local-only drift detection is what this hook needs — session-start
+# is where the canonical fetch happens.
+status=$("$guard" --check --no-fetch 2>/dev/null) || rc=$?
 rc=${rc:-0}
 
 if [[ "$rc" -eq 1 ]]; then

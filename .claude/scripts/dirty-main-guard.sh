@@ -29,6 +29,13 @@
 #   --quarantine   Move dirty state to a recovery branch and reset main
 #                  to origin/main. Exit 0 on success (or no-op when clean),
 #                  2 on failure.
+#   --no-fetch     Skip the `git fetch origin main` that normally precedes
+#                  the unpushed-commit comparison. The comparison then runs
+#                  against whatever remote-tracking ref is already present.
+#                  Intended for recurring callers (e.g. Stop hooks) that
+#                  only care about local drift; a stale origin/main cannot
+#                  mask new local commits. Session-start callers should
+#                  still fetch.
 #
 # OUTPUT (single stdout line per invocation)
 #   --check:
@@ -70,6 +77,7 @@ usage_error() {
 }
 
 MODE=""
+NO_FETCH=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
@@ -79,6 +87,10 @@ while [[ $# -gt 0 ]]; do
     --check|--quarantine)
       [[ -z "$MODE" ]] || usage_error "--check and --quarantine are mutually exclusive"
       MODE="${1#--}"
+      shift
+      ;;
+    --no-fetch)
+      NO_FETCH=1
       shift
       ;;
     --)
@@ -150,7 +162,14 @@ fi
 # origin/main ref — otherwise a stale remote-tracking branch produces false
 # positives. Fetch errors are non-fatal (offline / no network): fall back to
 # whatever origin/main we already have.
-"${GIT[@]}" fetch origin main --quiet 2>/dev/null || true
+#
+# --no-fetch skips the round-trip for recurring callers (Stop hooks) where
+# only *local* drift matters — a stale origin/main cannot mask new local
+# commits or uncommitted changes, it can only make `rev-list ahead` stale,
+# which is still correct for "did I commit something here?" detection.
+if (( NO_FETCH == 0 )); then
+  "${GIT[@]}" fetch origin main --quiet 2>/dev/null || true
+fi
 AHEAD=0
 if ahead_raw="$("${GIT[@]}" rev-list --count origin/main..HEAD 2>/dev/null)"; then
   AHEAD="$ahead_raw"
