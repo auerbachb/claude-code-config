@@ -103,13 +103,13 @@ Subagents have a 32K output token limit. When approaching exhaustion:
 
 The 32K limit is the binding constraint. Give each subagent ONE clear phase with explicit exit criteria — no exploratory instructions. Detailed per-phase procedures live in the agent definitions (`.claude/agents/phase-{a,b,c}-*.md`); if agent definitions are unavailable, use `.claude/reference/phase-decomposition.md`.
 
-- **Phase A: Fix + Push** (heaviest) — fix findings, commit once, push once, reply to threads, write handoff, EXIT.
+- **Phase A: Fix + Push** (heaviest) — fix findings, commit once, push once, reply to threads, write handoff, EXIT (parent cleanup detailed in Orchestration rules below).
 - **Phase B: Review Loop** (lighter) — poll/trigger reviewer, fix new findings, update handoff, EXIT.
 - **Phase C: Merge Prep** (lightest) — verify merge gate per `cr-merge-gate.md` + AC, report readiness, EXIT. Do not delete handoff.
 
 **Orchestration rules:**
 - Parent launches Phase A subagents (can run in parallel across PRs)
-- Phase A complete → parent launches Phase B immediately (see `phase-protocols.md`)
+- Phase A complete → parent removes the Phase A worktree (releases branch lock), then launches Phase B immediately (see `phase-protocols.md` Phase A Completion Protocol for the authoritative cleanup step)
 - Phase B merge_ready → parent launches Phase C
 - Soft limit: 3-4 active CR-polled PRs to reduce throttling
 - Track CR quota: 7+ reviews/hour means expect Greptile as primary reviewer
