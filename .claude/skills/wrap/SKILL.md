@@ -162,30 +162,48 @@ gh pr merge --squash
 
 Do NOT use `--delete-branch` here. That flag attempts local branch deletion while the worktree is still active, which fails because git refuses to delete a branch checked out in any worktree. Branch cleanup is handled explicitly in Phase 5 after the worktree is removed.
 
-### Step 2.5: Sync root repo main
+### Step 2.5: Sync root repo main (aggressive reset)
 
-After merging, update the root repo's local `main` so subsequent sessions branch from the latest code. **Capture the result for the final report in Step 5.3.**
+After merging, aggressively align the root repo's local `main` with `origin/main` so subsequent sessions branch from the latest code with zero drift. The sequence is:
+
+1. **Quarantine any dirty state** on root main via `dirty-main-guard.sh --quarantine` (creates a `recovery/dirty-main-*` branch if needed — nothing is lost).
+2. **Aggressively reset** root main to `origin/main` via `main-sync.sh --reset`. This fetches origin, aborts loudly if local main has unpushed commits (belt-and-suspenders for bypasses of the `#323` pre-commit hook), and otherwise `git reset --hard origin/main`.
+
+**Capture both status lines for the final report in Step 5.3.**
 
 ```bash
-# .claude/scripts/main-sync.sh --repo <path> writes the status line to
-# stdout and exits 0 OK / 1 skipped (uncommitted) / 2 failed
-# (checkout/pull). /wrap runs from inside a worktree, so we resolve the
-# root repo explicitly and pass it via --repo. A non-zero exit from the
-# helper is not a hard error here — the status line is captured for the
-# final report regardless.
+# /wrap runs from inside a worktree. dirty-main-guard.sh resolves the root
+# repo itself via repo-root.sh — no --repo flag needed. main-sync.sh does
+# accept --repo, so we pass the resolved root explicitly.
 ROOT_REPO=$(.claude/scripts/repo-root.sh 2>/dev/null || true)
 MAIN_SYNC_STATUS=""
+QUARANTINE_STATUS=""
 if [ -z "$ROOT_REPO" ] || [ ! -d "$ROOT_REPO" ]; then
   MAIN_SYNC_STATUS="failed: could not determine root repo path"
 else
-  MAIN_SYNC_STATUS=$(bash .claude/scripts/main-sync.sh --repo "$ROOT_REPO" 2>&1 || true)
+  # Quarantine first so the reset below never clobbers uncommitted work.
+  # --check is read-only (exit 0 clean / 1 dirty); --quarantine is non-
+  # destructive (preserves state to a recovery branch). A non-zero exit
+  # from either is captured for the report but does not short-circuit —
+  # main-sync.sh --reset has its own guards.
+  if .claude/scripts/dirty-main-guard.sh --check >/dev/null 2>&1; then
+    QUARANTINE_STATUS="clean"
+  else
+    QUARANTINE_STATUS=$(.claude/scripts/dirty-main-guard.sh --quarantine 2>&1 || true)
+  fi
+  # --reset: fetch → abort-if-ahead → reset --hard origin/main. Exits 0
+  # success / 1 skipped / 2 failed / 4 aborted (unpushed commits on main).
+  MAIN_SYNC_STATUS=$(bash .claude/scripts/main-sync.sh --reset --repo "$ROOT_REPO" 2>&1 || true)
 fi
+echo "Main quarantine: $QUARANTINE_STATUS"
 echo "Main sync: $MAIN_SYNC_STATUS"
 ```
 
-See `.claude/scripts/main-sync.sh --help` for the full contract.
+See `.claude/scripts/main-sync.sh --help` and `.claude/scripts/dirty-main-guard.sh --help` for the full contracts.
 
-Store `MAIN_SYNC_STATUS` for the final report — this value MUST appear in Step 5.3 output.
+**If `MAIN_SYNC_STATUS` starts with `aborted:`** (local main has unpushed commits that didn't come from origin), do NOT attempt recovery automatically. Surface the full status line in the final report so the user can run `git log origin/main..main` against the root repo and decide. The PR merge itself has already succeeded — main-sync failure does not un-merge anything.
+
+Store `MAIN_SYNC_STATUS` and `QUARANTINE_STATUS` for the final report — both values MUST appear in Step 5.3 output.
 
 ## Phase 3: Follow-Up Detection and Creation
 
@@ -401,7 +419,8 @@ git -C "$ROOT_REPO" push origin --delete "$BRANCH_NAME" || echo "Warning: remote
 ## Wrap-Up Complete
 
 - **PR #{N}** merged ({title})
-- **Main branch** {MAIN_SYNC_STATUS from Step 2.5 — e.g. "updated abc1234 → def5678", "up to date (abc1234)", or "failed: ..."}
+- **Main quarantine** {QUARANTINE_STATUS from Step 2.5 — e.g. "clean" (literal output of `dirty-main-guard.sh --check` on a clean main), "quarantined: recovery/dirty-main-20260424-003012 (uncommitted)", or "no-op: main is clean" (only produced if `--quarantine` ran on an already-clean tree)}
+- **Main branch** {MAIN_SYNC_STATUS from Step 2.5 — e.g. "reset abc1234 → def5678", "up to date (abc1234)", "aborted: local main has 1 unpushed commit(s) — inspect: git log origin/main..main, resolve manually before re-running", or "failed: ..."}
 - **Branch** deleted
 - **Follow-ups:** {summary or "none"}
 - **Lessons:** {summary or "clean session"}

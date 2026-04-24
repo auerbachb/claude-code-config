@@ -18,35 +18,57 @@
 #   reports without re-parsing.
 #
 # USAGE
-#   main-sync.sh [--repo <path>]
+#   main-sync.sh [--repo <path>] [--reset]
 #   main-sync.sh --help | -h
 #
 #   --repo <path>   Operate on the git repo rooted at <path> (uses `git -C`).
 #                   Defaults to the current working directory.
+#   --reset         Aggressive post-merge sync: fetch origin/main, abort if
+#                   local main has unpushed commits, else `git reset --hard
+#                   origin/main`. Used by /wrap to guarantee local main
+#                   matches origin after merge. Without --reset, the script
+#                   falls back to the cautious `git pull --ff-only` path.
 #
 # OUTPUT (single stdout line, always — multi-line git stderr is collapsed)
 #   updated <before7> → <after7>       Fast-forward pulled new commits.
+#   reset <before7> → <after7>         --reset advanced main to origin/main.
 #   up to date (<sha7>)                Already at origin/main.
 #   skipped: tracked files have uncommitted changes — run manually: <cmd>
 #                                       Off-main with dirty tree; no-op.
-#                                       (On-main dirty trees are NOT skipped —
-#                                       pull --ff-only handles them natively.)
+#                                       (On-main dirty trees are NOT skipped
+#                                       in the default path — pull --ff-only
+#                                       handles them natively. --reset DOES
+#                                       check tracked changes on main because
+#                                       `reset --hard` is destructive.)
+#   aborted: local main has <N> unpushed commit(s) — inspect: git log origin/main..main, resolve manually before re-running
+#                                       --reset refused to clobber unpushed
+#                                       commits. Belt-and-suspenders for any
+#                                       bypass of the root/main pre-commit
+#                                       hook (#323). Run the suggested
+#                                       `git log` to see what's local.
 #   failed: not inside a git working tree — <rev-parse output>
 #                                       --repo (or cwd) is not a git repo.
 #   failed: could not inspect working tree state (git diff rc=<N>, ...)
 #                                       `git diff` itself errored (rc>1).
 #   failed: could not checkout main — <git output>
 #                                       Not on main and checkout refused.
+#   failed: git fetch origin main — <git output>
+#                                       --reset fetch step failed.
+#   failed: could not compare HEAD to origin/main — <git output>
+#                                       --reset rev-list step failed.
+#   failed: could not reset main to origin/main — <git output>
+#                                       --reset reset step failed.
 #   failed: <git pull output>           Pull refused (non-ff, network, etc.).
 #
-#   The "updated" arrow is rendered as U+2192 RIGHTWARDS ARROW to match the
-#   existing prose in merge/wrap skills.
+#   The arrow is rendered as U+2192 RIGHTWARDS ARROW to match the existing
+#   prose in merge/wrap skills.
 #
 # EXIT STATUS
-#   0  Success — pull succeeded (updated or already up to date).
+#   0  Success — pull or reset succeeded (updated, reset, or up to date).
 #   1  Skipped — uncommitted changes blocked the sync.
-#   2  Failed — checkout main failed or pull --ff-only failed.
+#   2  Failed — checkout main, fetch, rev-list, pull, or reset failed.
 #   3  Usage error (unknown flag, missing --repo value, bad path).
+#   4  Aborted — --reset refused because local main has unpushed commits.
 #
 # EXAMPLES
 #   # Default: operate on the current working directory's repo.
@@ -80,6 +102,7 @@ usage_error() {
 }
 
 REPO=""
+RESET_MODE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
@@ -95,6 +118,10 @@ while [[ $# -gt 0 ]]; do
     --repo=*)
       REPO="${1#--repo=}"
       [[ -n "$REPO" ]] || usage_error "--repo value cannot be empty"
+      shift
+      ;;
+    --reset)
+      RESET_MODE=1
       shift
       ;;
     --)
@@ -179,6 +206,67 @@ if [[ "$CURRENT_BRANCH" != "main" ]]; then
 fi
 
 BEFORE_SHA=$("${GIT[@]}" rev-parse HEAD 2>/dev/null || true)
+
+if (( RESET_MODE == 1 )); then
+  # --reset mode: fetch, verify safety, then hard-reset to origin/main.
+  # `git reset --hard` is a sanctioned exception to safety.md's destructive-
+  # command prohibitions, guarded by:
+  #   (a) the dirty-tree check below (pull --ff-only's tolerance of dirty
+  #       on-main trees does NOT apply — reset --hard clobbers them),
+  #   (b) the ahead-of-origin check below (belt-and-suspenders for any
+  #       bypass of the root/main pre-commit hook from #323).
+  # Expected composition: /wrap runs dirty-main-guard --quarantine on the
+  # root repo before calling this, so the dirty check here should be a
+  # formality on the happy path.
+  unstaged_rc=0
+  "${GIT[@]}" diff --quiet 2>/dev/null || unstaged_rc=$?
+  staged_rc=0
+  "${GIT[@]}" diff --cached --quiet 2>/dev/null || staged_rc=$?
+  if (( unstaged_rc > 1 || staged_rc > 1 )); then
+    echo "failed: could not inspect working tree state (git diff rc=$unstaged_rc, git diff --cached rc=$staged_rc)"
+    exit 2
+  fi
+  if (( unstaged_rc == 1 || staged_rc == 1 )); then
+    echo "skipped: tracked files have uncommitted changes — run manually: $MANUAL_CMD"
+    exit 1
+  fi
+
+  if ! FETCH_OUTPUT=$("${GIT[@]}" fetch origin main 2>&1); then
+    echo "failed: git fetch origin main — $(to_one_line "$FETCH_OUTPUT")"
+    exit 2
+  fi
+
+  if ! AHEAD_RAW=$("${GIT[@]}" rev-list --count origin/main..HEAD 2>&1); then
+    echo "failed: could not compare HEAD to origin/main — $(to_one_line "$AHEAD_RAW")"
+    exit 2
+  fi
+  # Fail loud if the count can't be parsed — silently treating "?" as 0
+  # would proceed to reset --hard with unknown state, which is exactly what
+  # the ahead check exists to prevent.
+  AHEAD_TRIMMED="$(printf '%s' "$AHEAD_RAW" | tr -d '[:space:]')"
+  if ! [[ "$AHEAD_TRIMMED" =~ ^[0-9]+$ ]]; then
+    echo "failed: could not parse ahead count from rev-list — $(to_one_line "$AHEAD_RAW")"
+    exit 2
+  fi
+  AHEAD="$AHEAD_TRIMMED"
+  if (( AHEAD > 0 )); then
+    echo "aborted: local main has $AHEAD unpushed commit(s) — inspect: git log origin/main..main, resolve manually before re-running"
+    exit 4
+  fi
+
+  if ! RESET_OUTPUT=$("${GIT[@]}" reset --hard origin/main 2>&1); then
+    echo "failed: could not reset main to origin/main — $(to_one_line "$RESET_OUTPUT")"
+    exit 2
+  fi
+  AFTER_SHA=$("${GIT[@]}" rev-parse HEAD 2>/dev/null || true)
+  if [[ "$BEFORE_SHA" == "$AFTER_SHA" ]]; then
+    echo "up to date (${AFTER_SHA:0:7})"
+  else
+    echo "reset ${BEFORE_SHA:0:7} → ${AFTER_SHA:0:7}"
+  fi
+  exit 0
+fi
+
 if PULL_OUTPUT=$("${GIT[@]}" pull origin main --ff-only 2>&1); then
   AFTER_SHA=$("${GIT[@]}" rev-parse HEAD 2>/dev/null || true)
   if [[ "$BEFORE_SHA" == "$AFTER_SHA" ]]; then
