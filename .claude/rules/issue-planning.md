@@ -51,5 +51,5 @@ Use "Claude's analysis + CodeRabbit's recommendations" when CR contributed, or "
 1. **Create the feature branch** (`issue-N-short-description`).
 2. **Read the issue body** (not scattered comments) for the canonical implementation plan.
 3. **Implement the changes.**
-4. **Run the Local CodeRabbit Review Loop** (see `cr-local-review.md`) — two clean passes required before pushing.
+4. **Run the Local CodeRabbit Review Loop** (see `cr-local-review.md`) — one clean pass required before pushing.
 5. **Execute the post-clean checklist** (see `cr-local-review.md` "Post-Clean" section) — commit, push, create PR, enter GitHub review loop.

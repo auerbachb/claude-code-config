@@ -94,10 +94,10 @@ Each Claude Code session follows this sequence:
 1. **Session start** — Pull remote `main`, create a worktree, verify skills worktree exists, check for required GitHub Actions workflows
 2. **Issue creation** — Draft issue, post via `gh issue create`, wait for CodeRabbit plan, merge plans into issue body
 3. **Implementation** — Code on the worktree's feature branch
-4. **Local review** — Run `coderabbit review --prompt-only` until two consecutive clean passes
+4. **Local review** — Run `coderabbit review --prompt-only` until one clean pass
 5. **Push and PR** — Commit, push, create PR with `Closes #N` and Test Plan checkboxes
 6. **GitHub review** — Poll CR (7-min timeout), fall back to Greptile if needed, fix findings, reply to threads
-7. **Merge** — Verify merge gate (2 clean CR passes or Greptile severity gate), verify acceptance criteria, squash merge
+7. **Merge** — Verify merge gate (1 explicit CR APPROVED review on current HEAD, 1 clean BugBot pass on current HEAD, or Greptile severity gate), verify acceptance criteria, squash merge
 8. **Cleanup** — Delete branch, optionally remove worktree
 
 ---
@@ -136,20 +136,18 @@ Finish coding on feature branch
 Run coderabbit review --prompt-only
        |
        v
-CR returns findings? --No--> Run review once more to confirm
+CR returns findings? --No--> Local review loop done
        |                              |
-      Yes                        Still clean?
-       |                              |
-       v                             Yes
-Fix all valid findings               |
-       |                              v
-       v                    Local review loop done
-Run coderabbit review again          |
-       |                              v
-       v                    Push branch & create PR
-Repeat until clean                    |
-                                      v
-                            Enter Phase 2 (below)
+      Yes                              v
+       |                    Push branch & create PR
+       v                              |
+Fix all valid findings                v
+       |                    Enter Phase 2 (below)
+       v
+Run coderabbit review again
+       |
+       v
+Repeat until clean
 ```
 
 ### Phase 2: GitHub review (fallback)
@@ -161,32 +159,33 @@ PR created, CR auto-reviews on GitHub
 Poll for CR comments (60s intervals, 7 min timeout)
        |
        v
-CR posts findings? --No--> CR rate-limited?
-       |                       |            |
-      Yes                     Yes           No
-       |                       |            |
-       v                       v            v
-Verify each finding    Check Greptile   Wait for CR
-against code           daily budget     completion signal
+CR posts findings? --No--> CR rate-limited or 7-min timeout?
+       |                       |                   |
+      Yes                     Yes                  No
+       |                       |                   |
+       v                       v                   v
+Verify each finding    Check BugBot (5 min)   Wait for CR
+against code           on current HEAD        completion + APPROVED
        |                  |                  |
        v                  v                  v
-Fix all findings    Budget OK?          2 clean CR passes?
-in one commit,      Yes: @greptileai         |
-push                No: self-review         Yes
+Fix all findings    BugBot clean?       CR APPROVED on HEAD?
+in one commit,      Yes: merge gate met      |
+push                No: stay on BugBot,     Yes
+                    fix findings on it       |
        |                  |                  |
        v                  v                  v
-Reply to every      Report blocker:     Merge gate met
-comment thread      self-review only
-       |
-       v
-Poll again...
+Reply to every      Process findings;   Merge gate met
+comment thread      escalate to
+       |            Greptile only on
+       v            BugBot timeout
+Poll again...       (sticky assignment)
 repeat until
 clean
 ```
 
 ### Three-tier fallback chain
 
-CodeRabbit -> Greptile -> self-review. CR is always preferred. If rate-limited or unresponsive (7-min timeout), Greptile is triggered (budget permitting, 40 reviews/day default cap). If both are unavailable, Claude performs self-review for risk reduction and reports a merge-gate blocker. Self-review does **not** satisfy the merge gate.
+CodeRabbit -> BugBot -> Greptile -> self-review. CR is always preferred. If CR is rate-limited or unresponsive (7-min timeout), check BugBot (auto-runs on every push, 5-min window from push time) first — BugBot is free and its completion signals are reliable. **Once BugBot is the active reviewer it is sticky:** stay on BugBot and process its findings normally, even if it returns issues. Escalate to Greptile only when BugBot itself fails to deliver (5-min timeout from push time), not when BugBot has findings to fix (budget permitting, 40 reviews/day default cap). If all three are unavailable, Claude performs self-review for risk reduction and reports a merge-gate blocker. Self-review does **not** satisfy the merge gate.
 
 ---
 
@@ -200,6 +199,6 @@ CodeRabbit -> Greptile -> self-review. CR is always preferred. If rate-limited o
 
 **CI must pass before merge.** All CI check-runs are verified before any merge. Linter suppression comments (`eslint-disable`, `@ts-ignore`, etc.) are prohibited — fix the actual code instead.
 
-**Two consecutive clean reviews (CR path).** Both the local and GitHub loops require two consecutive clean passes. This catches the edge case where CodeRabbit marks a review complete but posts findings shortly after. The Greptile path uses a severity-gated merge gate instead.
+**Single explicit CR approval on current HEAD (CR path).** The GitHub CR gate requires one explicit `APPROVED` review whose `commit_id` matches the current HEAD SHA — stale approvals (those on a pre-push SHA) and approvals retracted by a later `CHANGES_REQUESTED` on the same SHA do not count. SHA freshness and explicit-approval-only replace the older 2-pass reliability check. The Greptile path uses a severity-gated merge gate instead.
 
 **Every PR starts with an issue.** Issues go through CodeRabbit planning (`@coderabbitai plan`) that catches gaps before coding begins. The implementation plan is merged into the issue body as the canonical spec.

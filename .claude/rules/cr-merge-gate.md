@@ -9,7 +9,7 @@
 
 The ONLY valid reason to stop polling an open PR is: this file's merge gate has been met — specifically, one of:
 
-1. **2 consecutive clean CR passes** on the current HEAD SHA (CR-only path, Step 1 below).
+1. **1 explicit clean CR approval on the current HEAD SHA** (CR-only path, Step 1 below).
 2. **1 clean BugBot pass** on the current HEAD SHA (BugBot path, Step 1 below).
 3. **Greptile severity gate passed** (sticky-Greptile path — clean review, or only P1/P2 fixed, or P0 fixed + re-review clean — Step 1 below).
 
@@ -20,12 +20,18 @@ The ONLY valid reason to stop polling an open PR is: this file's merge gate has 
 The merge gate depends on which reviewer owns the PR:
 
 **CR-only path** (neither BugBot nor Greptile was triggered for this PR):
-- 2 clean CR reviews required. The second is a confirmation pass — CR's completion signal is unreliable (it may mark the check as "completed" but post findings minutes later), so a second clean pass is needed.
-- If CR responds with no findings after a round of fixes, post `@coderabbitai full review` one more time to confirm.
-- **After 2 failed re-triggers on the same SHA**, stop and tell the user. Do not loop forever.
+- **1 clean CR approval on the current HEAD SHA satisfies the gate.** No extra verification round required. Two safeguards replace the old reliability check: SHA freshness (the approval must match the current HEAD) and explicit-approval-only (no inferring from acks or silence).
+- **SHA freshness:** the approval's `commit_id` MUST equal the PR's current HEAD SHA. CR approvals stick to the PR after new pushes, so an approval from SHA `abc1234` does NOT validate SHA `def5678`. If the approval is on a stale SHA (any push happened after it), treat it as no approval: re-trigger `@coderabbitai full review` and keep polling. Verify every poll cycle — not just once.
+- **Approval retraction on the same SHA.** If CR posts an `APPROVED` review and later posts a `CHANGES_REQUESTED` review on the same HEAD SHA (newer `submitted_at`), the approval is retracted and the gate is NOT met. Compare the newest `APPROVED` timestamp against the newest `CHANGES_REQUESTED` timestamp directly — a subsequent `COMMENTED` review must not paper over the retraction. Fix the findings, push (the SHA changes, so CR re-reviews from scratch), and wait for a fresh `APPROVED` on the new HEAD.
+- **Explicit approval only.** A CR review with `state: "APPROVED"` on the current HEAD SHA counts — and only if it has not been retracted by a later `CHANGES_REQUESTED` on the same SHA (see above). Equivalently, a CR review with findings, all fixed + re-reviewed clean on the current HEAD SHA counts. The following are **NOT** approvals and MUST NOT exit polling:
+  - The "Actions performed — Full review triggered" ack comment (review started, not finished).
+  - "0 unresolved threads right now" without an APPROVED review on the current SHA.
+  - Absence of findings in the first N minutes after triggering (CR can run slowly or time out).
+  - CR check-run `status: "completed"` without an accompanying APPROVED review object on the current SHA.
+- **Re-trigger policy (unchanged):** if no approval on the current SHA within the 7-minute polling timeout, re-trigger `@coderabbitai full review` once. Max 2 explicit triggers per PR per hour. After 2 failed re-triggers on the same SHA, fall back to BugBot → Greptile → self-review per the three-tier chain.
 
 **BugBot path** (CR failed, BugBot responded, Greptile was never triggered — sticky assignment, see `bugbot.md`):
-- 1 clean BugBot review satisfies the gate — no confirmation pass needed (BugBot's completion signals are reliable).
+- 1 clean BugBot review on the current HEAD SHA satisfies the gate (BugBot's completion signals are reliable).
 - After fixing BugBot findings, BugBot auto-reviews the new push. If auto-review doesn't fire within 5 min, trigger manually via `@cursor review`.
 - Stay on BugBot — do not switch back to CR. Ignore late CR reviews.
 
@@ -39,10 +45,10 @@ The merge gate depends on which reviewer owns the PR:
 
 **If CR, BugBot, and Greptile are all down** (CR rate-limited/timed out + BugBot 5-min timeout + Greptile 5-min timeout): perform a self-review for risk reduction. A clean self-review does NOT satisfy the merge gate — report the blocker to the user.
 
-- **How to detect a clean CR pass:** After triggering `@coderabbitai full review`, watch for these signals in order:
-  1. **Ack (review started):** CR posts an issue comment (on `issues/{N}/comments`) with "Actions performed — Full review triggered." This means CR **started** the review — it is NOT a completion signal.
-  2. **Completion (review finished):** The commit status check for CodeRabbit shows `status: "completed"` with `conclusion: "success"` (visible as "CodeRabbit — Review completed" in the PR's CI checks). This is the **definitive completion signal**.
-  3. **Clean = completed + no new findings:** Once the CI check shows completed, check all three comment endpoints for any new findings posted after the ack. If there are none, the review is a clean pass. You do NOT need to keep polling to the 7-minute timeout once the CI check is green and no findings appeared.
+- **How to detect a clean CR approval:** After triggering `@coderabbitai full review`, watch for these signals in order:
+  1. **Ack (review started):** CR posts an issue comment (on `issues/{N}/comments`) with "Actions performed — Full review triggered." This means CR **started** the review — it is NOT a completion signal and NOT an approval.
+  2. **Completion (review finished):** The commit status check for CodeRabbit shows `status: "completed"` with `conclusion: "success"`. This is the completion signal — but completion alone does NOT satisfy the merge gate. An explicit `state: "APPROVED"` review object on the current HEAD SHA is still required.
+  3. **Approval = APPROVED review on current HEAD:** Fetch `repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100`, filter to `.user.login == "coderabbitai[bot]"`, and find a review with `.state == "APPROVED"` AND `.commit_id == <current HEAD SHA>`. That review is the gate. If the latest APPROVED review's `commit_id` is stale, re-trigger and keep polling.
 - Once the merge gate is met, proceed immediately to Step 1b (CI verification).
 
 ## Step 1b — CI Must Pass Before Merge (NON-NEGOTIABLE)

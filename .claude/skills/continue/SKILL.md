@@ -61,9 +61,8 @@ $CR_BIN review --prompt-only
 ```
 
 - If findings are returned: `[ACTION]` — Fix all valid findings. Run `$CR_BIN review --prompt-only` again after fixing.
-- Track a **consecutive-clean counter** (starts at 0). Each clean pass increments it by 1. Any pass with findings resets it to 0.
-- **Exit when consecutive-clean == 2** (two back-to-back clean passes) — `[DONE]` Local CR review passed.
-- **Max 5 total iterations.** If you hit 5 runs without achieving 2 consecutive clean passes, stop and report: `[BLOCKED]` — CR review not converging after 5 iterations.
+- **Exit on 1 clean pass** (no findings returned) — `[DONE]` Local CR review passed.
+- **Max 5 total iterations.** If you hit 5 runs without a clean pass, stop and report: `[BLOCKED]` — CR review not converging after 5 iterations.
 - If CR CLI is not available or errors out: `[SKIP]` — CR CLI unavailable, performing self-review instead:
   ```bash
   BASE=$(gh pr view --json baseRefName --jq '.baseRefName' 2>/dev/null || echo main)
@@ -189,7 +188,7 @@ gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
 
 ### If PR is on BugBot:
 
-BugBot (`cursor[bot]`) is the second-tier free reviewer. Auto-triggers on every push; merge gate requires **1 clean BugBot review** on the current HEAD SHA (no confirmation pass — BugBot's completion signals are reliable).
+BugBot (`cursor[bot]`) is the second-tier free reviewer. Auto-triggers on every push; merge gate requires **1 clean BugBot review** on the current HEAD SHA (BugBot's completion signals are reliable).
 
 Check for BugBot reviews on the current HEAD:
 ```bash
@@ -301,7 +300,7 @@ jq '.new_since_baseline.conversation | map(select(.classification.class == "find
 
 ## Step 8: Check merge gate
 
-Run the shared merge-gate verifier (implements CR 2-clean / BugBot 1-clean / Greptile severity + CI + BEHIND checks):
+Run the shared merge-gate verifier (implements CR 1 explicit APPROVED on current HEAD / BugBot 1-clean / Greptile severity + CI + BEHIND checks):
 
 ```bash
 GATE_JSON=$(.claude/scripts/merge-gate.sh "$PR_NUM")
@@ -312,7 +311,8 @@ Branch on the exit code:
 
 - `0` → `[DONE]` — Merge gate satisfied. Proceed to Step 9 (AC verification).
 - `1` → `[ACTION]` — Gate not met. Parse `missing` from the JSON output and act accordingly:
-  - CR path with **"need 2 clean CR reviews on HEAD (have 1)"**: post `@coderabbitai full review` to trigger the confirmation pass, then return to **Step 6**.
+  - CR path with **"need 1 explicit CR APPROVED review on HEAD"**: if the current SHA is still within the 7-minute CR polling window, return to **Step 6** and keep polling — do NOT re-trigger yet. Only after the 7-minute timeout, and only within the 2-trigger-per-hour budget, post `@coderabbitai full review` once and return to **Step 6**.
+  - CR path with **"CR approval on HEAD ... retracted by later CHANGES_REQUESTED"**: CR retracted approval. Return to **Step 7** to process the findings. Re-trigger only after fixes are pushed (the new SHA invalidates prior reviews regardless).
   - CR path with **"CodeRabbit check-run not green on HEAD"** or **"latest CR review on HEAD requests changes"**: CR has findings; return to **Step 7** to process them.
   - BugBot path with **"no BugBot review on HEAD"**: BugBot hasn't reviewed the current HEAD yet; return to **Step 6** to poll for the review.
   - BugBot path with **"latest BugBot review on HEAD has findings"**: return to **Step 7** to process findings.

@@ -122,7 +122,7 @@ Review protocol is defined authoritatively in these canonical sources — do NOT
 - **Merge gate, CI-must-pass, AC verification:** `cr-merge-gate.md`
 - **BugBot (Cursor) second-tier reviewer, auto-trigger, merge gate:** `bugbot.md`
 - **Greptile trigger, severity classification, daily budget, reply format:** `greptile.md`
-- **Local review before push, fix loop, 2 clean passes:** `cr-local-review.md`
+- **Local review before push, fix loop, 1 clean pass to exit:** `cr-local-review.md`
 
 **Three reminders for subagents:**
 1. **AUTONOMY:** Every phase transition is automatic — do NOT ask "should I?" See the Phase Transition Autonomy table above.
