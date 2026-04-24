@@ -68,7 +68,7 @@ Canonical rule: CLAUDE.md #3 (5-minute max silence, non-negotiable).
 3. **After completing any multi-step operation:** immediately send a status update.
 4. **Never batch status updates.** Report incrementally.
 
-**Heartbeat enforcement:** A PostToolUse hook warns when >5 min have elapsed — on seeing it, stop and send a status message immediately.
+**Heartbeat enforcement:** A PostToolUse hook warns when >5 min have elapsed — on seeing it, stop and send a status message immediately. The hook only fires **during** turns, so it cannot detect a dropped scheduler chain between turns. For polling that survives the gap between turns, see `scheduling-reliability.md`.
 
 ## File-Write Status Updates (MANDATORY)
 
