@@ -27,17 +27,20 @@ If you catch yourself composing a "should I...?" question about any workflow ste
 
 **At the start of every session, before doing anything else, sync local `main` and then create a worktree.**
 
-1. **Pull remote main into local main:**
+1. **Pull remote main into local main** (quarantine dirty state first):
 
    ```bash
    ROOT_REPO=$(.claude/scripts/repo-root.sh 2>/dev/null || true)
    if [[ -z "$ROOT_REPO" || ! -d "$ROOT_REPO" ]]; then
      echo "ERROR: could not resolve root repo path" >&2; exit 1
    fi
+   if ! .claude/scripts/dirty-main-guard.sh --check >/dev/null; then
+     .claude/scripts/dirty-main-guard.sh --quarantine
+   fi
    git -C "$ROOT_REPO" pull origin main --ff-only
    ```
 
-   If the pull fails (e.g., diverged history), tell the user — do not force-pull or reset.
+   If the guard reports `quarantined: recovery/dirty-main-*`, mention the recovery branch to the user so they know where their prior work lives. If the pull itself fails (e.g., diverged history after quarantine), tell the user — do not force-pull or reset. See `main-hygiene.md` for the full guard contract.
 2. **Create a worktree** via the `EnterWorktree` tool for isolated work.
 
 **Do not write code, edit files, stage changes, commit, or push while on `main`. Ever.** If you cannot create a worktree, fall back to `git checkout -b issue-N-short-description`.
@@ -82,6 +85,7 @@ Detailed workflow rules are split into topic-specific files in `.claude/rules/`:
 | `handoff-files.md` | Handoff file schema, session-state.json format, lifecycle (create/update/delete) |
 | `phase-protocols.md` | Structured exit report format, Phase A/B/C completion protocol checklists |
 | `safety.md` | Destructive command prohibitions, .env protection, subagent safety warnings |
+| `main-hygiene.md` | Dirty-main guard, recovery branches, session-start integration, Stop hook |
 | `repo-bootstrap.md` | Auto-provision required GitHub Actions workflows on first touch |
 | `trust-dialog-fix.md` | Fix trust dialog re-prompting when bypass permissions are enabled |
 | `skill-symlinks.md` | Symlink new skills to `~/.claude/skills/` after creation; this repo is source of truth |
