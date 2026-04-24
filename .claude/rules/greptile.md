@@ -4,7 +4,7 @@
 > **Ask first:** Never — fix findings autonomously.
 > **Never:** Trigger Greptile before both CR AND BugBot have failed. Ignore Greptile findings. Switch a PR back to CR/BugBot after Greptile has been triggered. Include `@greptileai` in reply comments (triggers a paid re-review with no learning benefit).
 
-Greptile is the **last-resort paid** AI code reviewer — only triggered when both CR and BugBot (Cursor) have failed. Review chain: **CR → BugBot → Greptile → self-review.** Verify all findings against code. Key differences from CR/BugBot: cost ($1/review beyond 50/month quota), accurate completion signals (no confirmation pass needed).
+Greptile is the **last-resort paid** AI code reviewer — only triggered when both CR and BugBot (Cursor) have failed. Review chain: **CR → BugBot → Greptile → self-review.** Verify all findings against code. Key differences from CR/BugBot: cost ($1/review beyond 50/month quota), accurate completion signals (no ambiguity between ack and approval as there is with CR).
 
 ## Greptile Basics
 
@@ -82,4 +82,4 @@ Reply commands and CR-vs-Greptile comparison: `.claude/reference/greptile-reply-
 
 ## Merge Gate
 
-**Canonical definition:** See `cr-merge-gate.md` (Step 1). That file is the single authoritative source for the CR 2-clean-pass path, the BugBot 1-clean-pass path, and the Greptile severity-gated path (including the 3-review-per-PR cap and the self-review fallback when all three reviewers are down).
+**Canonical definition:** See `cr-merge-gate.md` (Step 1). That file is the single authoritative source for the CR 1-explicit-APPROVED-on-current-HEAD path, the BugBot 1-clean-pass path, and the Greptile severity-gated path (including the 3-review-per-PR cap and the self-review fallback when all three reviewers are down).

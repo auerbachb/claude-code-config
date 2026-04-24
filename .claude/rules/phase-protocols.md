@@ -44,7 +44,7 @@ Block header is `EXIT_REPORT`; fields (one per line, colon-separated, no extra w
 1. **Parse the exit report.** No exit report = silent failure.
 2. **Branch on OUTCOME:**
    - `merge_ready` → proceed to step 3 (launch Phase C). This is the single Phase-C-advancing terminal.
-   - `clean` → launch replacement Phase B within 60s to poll for the confirmation pass (review loop is clean but merge gate not yet fully satisfied — e.g., 1 of 2 required CR passes). Update `session-state.json` (keep phase as B). Report to user with timestamp. **STOP — do not execute steps 3-6.**
+   - `clean` → launch replacement Phase B within 60s to keep polling for the explicit CR approval (review loop is clean but merge gate not yet fully satisfied — e.g., CR has not yet posted an `APPROVED` review on the current HEAD, or the latest approval is on a stale SHA). Update `session-state.json` (keep phase as B). Report to user with timestamp. **STOP — do not execute steps 3-6.**
    - `fixes_pushed` → launch replacement Phase B within 60s. Update `session-state.json` (record new HEAD SHA, keep phase as B). Report to user with timestamp. **STOP — do not execute steps 3-6.**
    - `exhaustion` → launch replacement Phase B within 60s. Update `session-state.json` (record remaining work, keep phase as B). Report to user with timestamp. **STOP — do not execute steps 3-6.**
 3. **Verify review state via GitHub API.** Confirm the merge gate is met per the authoritative definition in `cr-merge-gate.md` (Step 1). If verification fails, launch replacement Phase B instead of Phase C — STOP.

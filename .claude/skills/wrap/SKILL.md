@@ -81,7 +81,7 @@ If no unresolved findings: proceed immediately to Phase 2 — do not ask.
 
 ### Step 2.1: Verify the merge gate
 
-Run the shared merge-gate verifier, which implements the authoritative gate from `.claude/rules/cr-merge-gate.md` (CR 2-clean / BugBot 1-clean / Greptile severity, plus CI and BEHIND checks):
+Run the shared merge-gate verifier, which implements the authoritative gate from `.claude/rules/cr-merge-gate.md` (CR 1 explicit APPROVED review on current HEAD / BugBot 1-clean / Greptile severity, plus CI and BEHIND checks):
 
 ```bash
 PR_NUM=$(gh pr view --json number --jq .number)
@@ -90,7 +90,7 @@ GATE_EXIT=$?
 ```
 
 - Exit `0` → gate met, proceed.
-- Exit `1` → gate NOT met. Stop and report the `missing` array from the JSON output verbatim (e.g., "need 2 clean CR reviews on HEAD", "branch is BEHIND base", "CI has 2 failing check-run(s): ...").
+- Exit `1` → gate NOT met. Stop and report the `missing` array from the JSON output verbatim (e.g., "need 1 explicit CR APPROVED review on HEAD", "branch is BEHIND base", "CI has 2 failing check-run(s): ...").
 - Exit `3` → PR not found; skip to Phase 3 as described above.
 - Exit `2`/`4` → script or gh error; surface the stderr message.
 
@@ -138,7 +138,7 @@ If any item fails verification, do NOT tick it — stop and report the failure. 
 
 `.claude/scripts/merge-gate.sh` already verifies:
 
-- **Rebase/force-push safety** — the CR 2-clean-pass check requires reviews on the **current** HEAD, so any rebase invalidates the gate.
+- **Rebase/force-push safety** — the CR gate requires an explicit `APPROVED` review on the **current** HEAD SHA, so any rebase invalidates the gate (the approval's `commit_id` no longer matches).
 - **BEHIND base branch** — gate fails with "branch is BEHIND base" in `missing`; rebase + force-push and wait for fresh review before retrying.
 - **CI** — all check-runs must be completed with non-blocking conclusions; failures surface as "CI has N failing check-run(s): ..." in `missing`.
 

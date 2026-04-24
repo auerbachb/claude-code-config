@@ -29,7 +29,7 @@ Run this checklist BEFORE the first poll tick AND before triggering any new revi
 
 ### Per-cycle check (every 60 seconds)
 
-Each poll cycle, for every open PR owned by this session, query everything listed in the "Polling" section below.
+Each poll cycle, for every open PR owned by this session, query everything listed in the "Polling" section below. **Re-read the PR's current HEAD SHA every cycle** — pushes from this loop or elsewhere change it, and stale approvals must not exit polling (see "SHA freshness" below).
 
 If **ANY** of the conditions below hold, invoke `/fixpr` and do NOT request a new review until `/fixpr` completes:
 
@@ -39,6 +39,8 @@ If **ANY** of the conditions below hold, invoke `/fixpr` and do NOT request a ne
 4. `mergeable == "CONFLICTING"` (merge conflicts; `/fixpr` handles rebase + surfaces blockers)
 
 > **Unresolved threads are NOT a trigger.** If unresolved threads remain after the last fix-commit push, keep polling for reviewer catch-up. See conditions 1–4 above.
+
+**SHA freshness (every cycle).** If a CR `state: "APPROVED"` review exists but its `.commit_id` does not match the current HEAD SHA, treat it as no approval — the approval is stale (a push happened after CR approved). Re-trigger `@coderabbitai full review` (subject to the 2-per-hour cap) and keep polling. Never exit on a stale approval.
 
 **Exit polling ONLY when the merge gate (`cr-merge-gate.md`) is met.** "0 unresolved threads right now" is NOT an exit condition — see the trap note at the top of this file. After any `/fixpr` push, reset the watermark and keep polling for the reviewer's response to the new SHA.
 

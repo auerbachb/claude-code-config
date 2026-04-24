@@ -2,7 +2,9 @@
 # merge-gate.sh — Verify the merge gate for a PR (CR / BugBot / Greptile).
 #
 # Implements the authoritative gate defined in .claude/rules/cr-merge-gate.md:
-#   - CR path       : 2 clean CR reviews on current HEAD + zero unresolved CR threads
+#   - CR path       : 1 explicit CR APPROVED review whose commit_id == current HEAD SHA
+#                     + zero unresolved CR threads (SHA freshness enforced; acks /
+#                     check-run completion alone do NOT satisfy the gate)
 #   - BugBot path   : 1 clean BugBot review on current HEAD + zero unresolved BugBot threads
 #   - Greptile path : severity-gated — clean OR only P1/P2 (fixed) OR P0 fixed + re-review clean
 # Also enforces the pre-merge CI gate from .claude/rules/cr-merge-gate.md Step 1b
@@ -318,31 +320,38 @@ case "$REVIEWER" in
       MISSING+=("CodeRabbit check-run not green on HEAD ${HEAD_SHA:0:7}")
     fi
 
-    # Count consecutive clean CR reviews on current HEAD SHA. "Clean" = state is NOT
-    # CHANGES_REQUESTED. The 2-pass contract requires 2 consecutive clean passes — so
-    # APPROVED → CHANGES_REQUESTED → APPROVED has only 1 consecutive clean, not 2.
-    # Check the last 2 reviews: both must be clean.
-    CLEAN_CR_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
-      [.[]? | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha and .state != "CHANGES_REQUESTED")]
+    # Require 1 explicit CR APPROVED review on the current HEAD SHA (per issue #337).
+    # SHA freshness is intrinsic to the filter: commit_id must equal $HEAD_SHA, so a
+    # prior APPROVED on a stale SHA does NOT satisfy the gate.
+    #
+    # Also check for approval retraction on the current SHA — if CR posts an
+    # APPROVED review and later posts a CHANGES_REQUESTED on the same SHA, the
+    # approval is retracted and the gate is NOT met (even if a still-later
+    # COMMENTED review is the literal last review). Compare the newest
+    # APPROVED timestamp to the newest CHANGES_REQUESTED timestamp directly,
+    # not just the overall latest-review state — a COMMENTED follow-up must
+    # not paper over a retraction.
+    LATEST_CR_APPROVED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
+      [.[]?
+        | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha and .state == "APPROVED")
+        | .submitted_at]
+      | sort | last // ""')
+    LATEST_CR_CHANGES_REQUESTED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
+      [.[]?
+        | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha and .state == "CHANGES_REQUESTED")
+        | .submitted_at]
+      | sort | last // ""')
+    APPROVED_CR_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
+      [.[]? | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha and .state == "APPROVED")]
       | length')
     TOTAL_CR_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
       [.[]? | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha)]
       | length')
 
-    if [[ "$CLEAN_CR_ON_HEAD" -lt 2 ]]; then
-      MISSING+=("need 2 consecutive clean CR reviews on HEAD (have $CLEAN_CR_ON_HEAD clean of $TOTAL_CR_ON_HEAD total)")
-    else
-      # Verify last 2 CR reviews are both clean (consecutive). If any of the last 2 is
-      # CHANGES_REQUESTED, the consecutive-clean count resets.
-      LAST_TWO_DIRTY=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
-        [.[]? | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha)]
-        | sort_by(.submitted_at)
-        | .[-2:]
-        | [.[]? | select(.state == "CHANGES_REQUESTED")]
-        | length')
-      if [[ "$LAST_TWO_DIRTY" -gt 0 ]]; then
-        MISSING+=("last 2 CR reviews on HEAD are not both clean — need 2 consecutive clean passes")
-      fi
+    if [[ "$APPROVED_CR_ON_HEAD" -lt 1 ]]; then
+      MISSING+=("need 1 explicit CR APPROVED review on HEAD ${HEAD_SHA:0:7} (have 0 approved of $TOTAL_CR_ON_HEAD CR review(s) on this SHA)")
+    elif [[ -n "$LATEST_CR_CHANGES_REQUESTED_AT" && "$LATEST_CR_CHANGES_REQUESTED_AT" > "$LATEST_CR_APPROVED_AT" ]]; then
+      MISSING+=("CR approval on HEAD ${HEAD_SHA:0:7} retracted by later CHANGES_REQUESTED — fix and re-trigger")
     fi
     ;;
 
