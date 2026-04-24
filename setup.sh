@@ -71,8 +71,9 @@ if [[ ! -f "$SETTINGS_SRC" ]]; then
 fi
 
 # Ensure hooks are executable before anything else (handles missing execute bits
-# from tarballs, WSL, or CI environments where git didn't preserve modes)
-chmod +x "$SCRIPT_DIR/.claude/hooks"/*.sh 2>/dev/null || true
+# from tarballs, WSL, or CI environments where git didn't preserve modes).
+# Cover both shell and Python hooks — the manifest includes env-guard.py.
+chmod +x "$SCRIPT_DIR/.claude/hooks"/*.sh "$SCRIPT_DIR/.claude/hooks"/*.py 2>/dev/null || true
 
 # Merge non-hook keys from template into existing settings.json.
 # Existing keys are NEVER overwritten — only missing keys are seeded.
@@ -165,10 +166,10 @@ echo "Step 3: Verifying hook permissions..."
 
 hooks_dir="$SCRIPT_DIR/.claude/hooks"
 if [[ -d "$hooks_dir" ]]; then
-  chmod +x "$hooks_dir"/*.sh 2>/dev/null || true
+  chmod +x "$hooks_dir"/*.sh "$hooks_dir"/*.py 2>/dev/null || true
 
   hook_check_errors=0
-  for f in "$hooks_dir"/*.sh; do
+  for f in "$hooks_dir"/*.sh "$hooks_dir"/*.py; do
     [[ -f "$f" ]] || continue
     if [[ ! -x "$f" ]]; then
       echo "  ERROR: Could not make executable: $f" >&2
@@ -342,6 +343,82 @@ if [[ $hook_verify_errors -gt 0 ]]; then
   step_fail "Hook registration" "$hook_verify_errors hook(s) missing or not executable in settings.json"
 else
   step_pass "Hook registration"
+fi
+
+# Drift check: every hook listed in global-settings.json MUST be registered in
+# ~/.claude/settings.json. Catches the failure mode from #145, where a hook is
+# added to global-settings.json but not to setup-skills-worktree.sh's manifest,
+# silently never reaching the user's deployed settings.
+drift_rc=0
+drift_output="$(python3 - "$SETTINGS_SRC" "$SETTINGS_DST" 2>&1 <<'PYTHON_DRIFT_CHECK'
+import json, os, shlex, sys
+
+def hook_keys(data):
+    """Yield (event, matcher_or_empty, script_basename) for each hook entry.
+
+    Normalizes the command via shlex so entries like "dirty-main-warn.sh --check"
+    compare by basename of the executable token, not the full command string.
+    """
+    hooks = data.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return
+    for event, groups in hooks.items():
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            matcher = group.get("matcher") or ""
+            hook_list = group.get("hooks", [])
+            if not isinstance(hook_list, list):
+                continue
+            for h in hook_list:
+                if not isinstance(h, dict):
+                    continue
+                cmd = h.get("command", "")
+                try:
+                    argv = shlex.split(cmd) if isinstance(cmd, str) else []
+                except ValueError:
+                    argv = []
+                script = os.path.basename(argv[0]) if argv else ""
+                if script:
+                    yield (event, matcher, script)
+
+try:
+    with open(sys.argv[1]) as f:
+        template = json.load(f)
+except (OSError, json.JSONDecodeError) as e:
+    print(f"read-template-failed: {e}", file=sys.stderr)
+    sys.exit(2)
+try:
+    with open(sys.argv[2]) as f:
+        deployed = json.load(f)
+except (OSError, json.JSONDecodeError) as e:
+    print(f"read-deployed-failed: {e}", file=sys.stderr)
+    sys.exit(2)
+
+template_hooks = set(hook_keys(template))
+deployed_hooks = set(hook_keys(deployed))
+for missing in sorted(template_hooks - deployed_hooks):
+    print(f"missing\t{missing[0]}\t{missing[1]}\t{missing[2]}")
+PYTHON_DRIFT_CHECK
+)" || drift_rc=$?
+
+if [[ $drift_rc -ne 0 ]]; then
+  echo "  Drift check script error (exit $drift_rc):" >&2
+  [[ -n "$drift_output" ]] && echo "$drift_output" | sed 's/^/    /' >&2
+  step_fail "Hook drift check" "drift-check script failed to read $SETTINGS_SRC or $SETTINGS_DST"
+elif [[ -n "$drift_output" ]]; then
+  echo "  Drift detected — global-settings.json lists hooks that are missing from $SETTINGS_DST:" >&2
+  while IFS=$'\t' read -r tag event matcher script; do
+    [[ "$tag" == "missing" ]] || continue
+    matcher_display="${matcher:-(none)}"
+    echo "    - $event / matcher=$matcher_display / $script" >&2
+  done <<<"$drift_output"
+  echo "  Fix: add the entries to HOOKS_MANIFEST in setup-skills-worktree.sh and re-run setup.sh." >&2
+  step_fail "Hook drift check" "global-settings.json has hooks not registered in $SETTINGS_DST"
+else
+  step_pass "Hook drift check"
 fi
 
 # ---------------------------------------------------------------------------
