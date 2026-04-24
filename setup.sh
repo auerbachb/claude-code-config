@@ -71,8 +71,9 @@ if [[ ! -f "$SETTINGS_SRC" ]]; then
 fi
 
 # Ensure hooks are executable before anything else (handles missing execute bits
-# from tarballs, WSL, or CI environments where git didn't preserve modes)
-chmod +x "$SCRIPT_DIR/.claude/hooks"/*.sh 2>/dev/null || true
+# from tarballs, WSL, or CI environments where git didn't preserve modes).
+# Cover both shell and Python hooks — the manifest includes env-guard.py.
+chmod +x "$SCRIPT_DIR/.claude/hooks"/*.sh "$SCRIPT_DIR/.claude/hooks"/*.py 2>/dev/null || true
 
 # Merge non-hook keys from template into existing settings.json.
 # Existing keys are NEVER overwritten — only missing keys are seeded.
@@ -165,10 +166,10 @@ echo "Step 3: Verifying hook permissions..."
 
 hooks_dir="$SCRIPT_DIR/.claude/hooks"
 if [[ -d "$hooks_dir" ]]; then
-  chmod +x "$hooks_dir"/*.sh 2>/dev/null || true
+  chmod +x "$hooks_dir"/*.sh "$hooks_dir"/*.py 2>/dev/null || true
 
   hook_check_errors=0
-  for f in "$hooks_dir"/*.sh; do
+  for f in "$hooks_dir"/*.sh "$hooks_dir"/*.py; do
     [[ -f "$f" ]] || continue
     if [[ ! -x "$f" ]]; then
       echo "  ERROR: Could not make executable: $f" >&2
@@ -349,10 +350,14 @@ fi
 # added to global-settings.json but not to setup-skills-worktree.sh's manifest,
 # silently never reaching the user's deployed settings.
 drift_output="$(python3 - "$SETTINGS_SRC" "$SETTINGS_DST" <<'PYTHON_DRIFT_CHECK'
-import json, os, sys
+import json, os, shlex, sys
 
 def hook_keys(data):
-    """Yield (event, matcher_or_empty, script_basename) for each hook entry."""
+    """Yield (event, matcher_or_empty, script_basename) for each hook entry.
+
+    Normalizes the command via shlex so entries like "dirty-main-warn.sh --check"
+    compare by basename of the executable token, not the full command string.
+    """
     hooks = data.get("hooks", {})
     if not isinstance(hooks, dict):
         return
@@ -370,7 +375,11 @@ def hook_keys(data):
                 if not isinstance(h, dict):
                     continue
                 cmd = h.get("command", "")
-                script = os.path.basename(cmd)
+                try:
+                    argv = shlex.split(cmd) if isinstance(cmd, str) else []
+                except ValueError:
+                    argv = []
+                script = os.path.basename(argv[0]) if argv else ""
                 if script:
                     yield (event, matcher, script)
 
