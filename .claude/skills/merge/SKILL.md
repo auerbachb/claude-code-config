@@ -37,7 +37,7 @@ If running in a worktree, stop here and tell the user: "This PR was developed in
 
 ### Step 2: Verify the merge gate
 
-Run the shared merge-gate verifier, which implements the authoritative gate from `.claude/rules/cr-merge-gate.md` (CR 2-clean / BugBot 1-clean / Greptile severity, plus CI and BEHIND checks):
+Run the shared merge-gate verifier, which implements the authoritative gate from `.claude/rules/cr-merge-gate.md` (CR 1 explicit APPROVED review on current HEAD / BugBot 1-clean / Greptile severity, plus CI and BEHIND checks):
 
 ```bash
 PR_NUM=$(gh pr view --json number --jq .number)
@@ -46,7 +46,7 @@ GATE_EXIT=$?
 ```
 
 - Exit `0` → gate met, proceed.
-- Exit `1` → gate NOT met. Stop and report the `missing` array from the JSON output verbatim (e.g., "need 2 clean CR reviews on HEAD", "Greptile has P0 finding", "branch is BEHIND base").
+- Exit `1` → gate NOT met. Stop and report the `missing` array from the JSON output verbatim (e.g., "need 1 explicit CR APPROVED review on HEAD", "Greptile has P0 finding", "branch is BEHIND base").
 - Exit `3` → PR not found (already merged/closed). Stop.
 - Exit `2`/`4` → script or gh error; surface the stderr message to the user.
 

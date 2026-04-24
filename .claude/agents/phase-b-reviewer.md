@@ -82,9 +82,9 @@ If CR has not delivered a review after **7 minutes** of polling → **check if B
 
 ### CR Merge Gate
 
-2 clean CR reviews required. After a clean pass, trigger `@coderabbitai full review` one more time for confirmation. After 2 failed re-triggers on the same SHA, stop and report.
+1 clean CR approval on the current HEAD SHA satisfies the gate. An "approval" means a CR review object with `state: "APPROVED"` AND `commit_id == <current HEAD SHA>`. Ack comments, empty thread snapshots, and CR check-run completion alone do NOT exit polling — see `cr-merge-gate.md` "Step 1" for the full explicit-approval and SHA-freshness rules.
 
-Never trigger `@coderabbitai full review` more than twice per PR per hour.
+If no approval lands on the current SHA within the 7-minute timeout, re-trigger `@coderabbitai full review` once. After 2 failed re-triggers on the same SHA, fall through to the BugBot/Greptile fallback chain. Never trigger `@coderabbitai full review` more than twice per PR per hour.
 
 ## BugBot Review Path (when `reviewer` = `bugbot`)
 
@@ -100,7 +100,7 @@ Same shared `$STATE` bundle as the CR path. Filter by `.user.login == "cursor[bo
 
 ### BugBot Merge Gate
 
-1 clean BugBot review satisfies the gate — no confirmation pass needed. Clean = review posted with no inline findings, OR all findings fixed and BugBot's subsequent auto-review has no new findings.
+1 clean BugBot review on the current HEAD satisfies the gate. Clean = review posted with no inline findings, OR all findings fixed and BugBot's subsequent auto-review has no new findings.
 
 ### BugBot Reply Format
 
@@ -205,10 +205,10 @@ Before exiting, follow this checklist literally:
 1. If you pushed any commit during this phase: wait for the reviewer to respond to the new SHA. Full timeouts per `cr-github-review.md`: 7 min for CR, 5 min for BugBot, 5 min for Greptile.
 2. If the response arrives with findings: invoke `/fixpr` to handle them **in this same phase** before exiting. Do not kick the can to a replacement unless you hit token exhaustion (see "Token Exhaustion Protocol" below).
 3. Exit with `OUTCOME: merge_ready` ONLY when the merge gate is met per `cr-merge-gate.md` ("Polling exit criterion" and Step 1) on the current HEAD — specifically one of:
-   - 2 consecutive clean CR passes on the current HEAD (CR path)
+   - 1 explicit clean CR approval on the current HEAD SHA (CR path — approval's `commit_id` must match current HEAD)
    - 1 clean BugBot pass on the current HEAD (BugBot path)
    - Greptile severity gate passed (Greptile path)
-4. Exit with `OUTCOME: clean` ONLY when this round had no new findings AND no commit was pushed in this phase AND the merge gate is NOT yet fully satisfied (e.g., only 1 of 2 required CR passes). This signals the parent to launch a replacement Phase B to poll for the confirmation pass — do NOT advance to Phase C.
+4. Exit with `OUTCOME: clean` ONLY when this round had no new findings AND no commit was pushed in this phase AND the merge gate is NOT yet fully satisfied (e.g., CR has not yet posted an `APPROVED` review on the current HEAD, or the latest approval is on a stale SHA). This signals the parent to launch a replacement Phase B to keep polling for the explicit approval — do NOT advance to Phase C.
 5. If findings landed that you can't fix in this phase (token budget, scope): exit with `OUTCOME: fixes_pushed` (if you pushed) or `OUTCOME: exhaustion` — NEVER `clean` or `merge_ready`.
 
 ## Exit Report (MANDATORY — print as final output)
@@ -227,7 +227,7 @@ HANDOFF_FILE: {{HANDOFF_FILE}}
 
 **Valid OUTCOME values for Phase B (mutually exclusive):**
 - `merge_ready` — merge gate satisfied on current HEAD per `cr-merge-gate.md` (Step 1). This is the **single Phase C terminal** (set `NEXT_PHASE: C`).
-- `clean` — review loop clean on current HEAD (no findings this round, no pushes pending) but merge gate NOT yet satisfied (e.g., 1 of 2 required CR passes). Keep polling for the confirmation pass (set `NEXT_PHASE: B`).
+- `clean` — review loop clean on current HEAD (no findings this round, no pushes pending) but merge gate NOT yet satisfied (e.g., no explicit CR approval on the current HEAD yet, or latest approval is stale). Keep polling for the explicit approval (set `NEXT_PHASE: B`).
 - `fixes_pushed` — fixed findings and pushed; reviewer response pending on new SHA (set `NEXT_PHASE: B` for replacement).
 - `exhaustion` — token budget low; replacement needed (set `NEXT_PHASE: B`).
 

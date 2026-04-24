@@ -234,7 +234,7 @@ worktree directory at all times.
 3. Implement the changes.
 4. Run local CodeRabbit review: `coderabbit review --prompt-only`
    - Fix all valid findings.
-   - Run again. Repeat until two consecutive clean passes.
+   - Run again. Repeat until one clean pass with no findings.
    - If coderabbit CLI hangs >2 minutes or errors twice, do a self-review instead.
 5. Commit all changes in ONE commit.
 6. Push the branch.
@@ -360,7 +360,7 @@ If missing, reconstruct state from GitHub API.
 7. If 7 minutes with no CR review: trigger Greptile (budget check first).
 8. Process findings: fix all valid ones in ONE commit, push once, reply to every thread, resolve threads via GraphQL.
 9. Merge gate:
-   - CR-only: 2 clean CR passes required.
+   - CR-only: 1 explicit CR APPROVED review on the current HEAD SHA (commit_id must match HEAD; acks / check-run completion alone do NOT count).
    - Greptile: severity-gated (no P0 after fix = merge-ready).
 10. Update the handoff file: set phase_completed to "B", refresh head_sha, merge new entries.
 11. Print Structured Exit Report:
@@ -392,7 +392,7 @@ When a Phase B subagent returns:
 1. **Parse exit report.**
 2. **Branch on OUTCOME:**
    - `merge_ready` -> launch Phase C within 60s.
-   - `clean` -> launch replacement Phase B within 60s (confirmation pass — merge gate not yet verified on current HEAD).
+   - `clean` -> launch replacement Phase B within 60s (no explicit CR approval on current HEAD yet, or latest approval is on a stale SHA).
    - `fixes_pushed` -> launch replacement Phase B within 60s.
    - `exhaustion` -> launch replacement Phase B within 60s.
 3. **Verify review state via GitHub API** for `merge_ready`.
@@ -422,7 +422,7 @@ worktree directory at all times.
 
 1. Read the handoff file.
 2. Verify merge gate is satisfied:
-   - CR-only: 2 clean CR reviews exist.
+   - CR-only: 1 explicit CR APPROVED review on the current HEAD SHA.
    - Greptile: severity gate satisfied.
 3. Extract Test Plan checkboxes via the shared helper, branching on the exit code. Exit `1` ("no Test Plan") is a **blocking** outcome — every PR must include a Test Plan section (per CLAUDE.md):
    ```bash

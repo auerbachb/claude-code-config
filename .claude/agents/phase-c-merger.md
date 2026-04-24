@@ -41,7 +41,7 @@ gh pr view {{PR_NUMBER}} --json state,title,mergeStateStatus,commits
 
 ## Step 1: Verify Merge Gate (and CI)
 
-Run the shared merge-gate verifier. It implements the three-path gate from `.claude/rules/cr-merge-gate.md` (CR 2-clean, BugBot 1-clean, Greptile severity-gated), plus the CI-must-pass check and the BEHIND check.
+Run the shared merge-gate verifier. It implements the three-path gate from `.claude/rules/cr-merge-gate.md` (CR 1-clean-approval on current HEAD, BugBot 1-clean, Greptile severity-gated), plus the CI-must-pass check and the BEHIND check.
 
 ```bash
 # Prefer the handoff's reviewer field; fall back to reviewer-of.sh (session-state

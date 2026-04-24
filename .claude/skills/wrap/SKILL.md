@@ -90,7 +90,7 @@ GATE_EXIT=$?
 ```
 
 - Exit `0` → gate met, proceed.
-- Exit `1` → gate NOT met. Stop and report the `missing` array from the JSON output verbatim (e.g., "need 2 clean CR reviews on HEAD", "branch is BEHIND base", "CI has 2 failing check-run(s): ...").
+- Exit `1` → gate NOT met. Stop and report the `missing` array from the JSON output verbatim (e.g., "need 1 explicit CR APPROVED review on HEAD", "branch is BEHIND base", "CI has 2 failing check-run(s): ...").
 - Exit `3` → PR not found; skip to Phase 3 as described above.
 - Exit `2`/`4` → script or gh error; surface the stderr message.
 

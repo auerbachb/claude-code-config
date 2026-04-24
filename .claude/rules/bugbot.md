@@ -41,7 +41,7 @@ Verify all findings against actual code. Fix all valid findings in one commit, p
 
 ## Merge Gate
 
-**A clean BugBot review independently satisfies the merge gate.** Unlike CR (which needs 2 clean passes), BugBot requires only 1 clean pass — no confirmation pass needed.
+**A clean BugBot review independently satisfies the merge gate.** Both CR and BugBot now require 1 clean pass on the current HEAD, but the BugBot path is simpler: BugBot's completion signals are reliable, while CR additionally requires an explicit `state: "APPROVED"` review on the current HEAD (SHA freshness enforced). See `cr-merge-gate.md` Step 1 for the CR-path specifics.
 
 **Canonical definition:** See `cr-merge-gate.md` (Step 1) for the authoritative merge gate including the BugBot path.
 

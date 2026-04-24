@@ -16,7 +16,7 @@ Canonical reference for per-phase subagent procedures. Used by agent definitions
 2. Before ANY `@greptileai` trigger, check daily budget (see `greptile.md`)
 3. CR path: poll for review (fast-path → check BugBot → 5-min BugBot timeout → Greptile trigger). BugBot path: poll for BugBot review on the 3 endpoints. Greptile path: poll for existing Greptile review; only re-trigger `@greptileai` for P0 findings (max 3 reviews/PR).
 4. Greptile findings: classify P0/P1/P2, fix all, commit, push, reply. Re-trigger only for P0 (max 3 reviews/PR).
-5. CR clean pass: trigger one more `@coderabbitai full review` for confirmation (2 clean passes needed)
+5. CR gate: verify an explicit `state: "APPROVED"` CR review exists on the current HEAD SHA (stale approvals don't count — re-trigger if the latest approval's `commit_id` is not HEAD)
 6. Update handoff file. Deduplicate: `string[]` by exact value, `findings_dismissed` by `.id`.
 7. Print exit report and EXIT.
 

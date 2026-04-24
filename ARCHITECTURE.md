@@ -94,10 +94,10 @@ Each Claude Code session follows this sequence:
 1. **Session start** — Pull remote `main`, create a worktree, verify skills worktree exists, check for required GitHub Actions workflows
 2. **Issue creation** — Draft issue, post via `gh issue create`, wait for CodeRabbit plan, merge plans into issue body
 3. **Implementation** — Code on the worktree's feature branch
-4. **Local review** — Run `coderabbit review --prompt-only` until two consecutive clean passes
+4. **Local review** — Run `coderabbit review --prompt-only` until one clean pass
 5. **Push and PR** — Commit, push, create PR with `Closes #N` and Test Plan checkboxes
 6. **GitHub review** — Poll CR (7-min timeout), fall back to Greptile if needed, fix findings, reply to threads
-7. **Merge** — Verify merge gate (2 clean CR passes or Greptile severity gate), verify acceptance criteria, squash merge
+7. **Merge** — Verify merge gate (1 explicit CR APPROVED review on current HEAD, or Greptile severity gate), verify acceptance criteria, squash merge
 8. **Cleanup** — Delete branch, optionally remove worktree
 
 ---
@@ -136,20 +136,18 @@ Finish coding on feature branch
 Run coderabbit review --prompt-only
        |
        v
-CR returns findings? --No--> Run review once more to confirm
+CR returns findings? --No--> Local review loop done
        |                              |
-      Yes                        Still clean?
-       |                              |
-       v                             Yes
-Fix all valid findings               |
-       |                              v
-       v                    Local review loop done
-Run coderabbit review again          |
-       |                              v
-       v                    Push branch & create PR
-Repeat until clean                    |
-                                      v
-                            Enter Phase 2 (below)
+      Yes                              v
+       |                    Push branch & create PR
+       v                              |
+Fix all valid findings                v
+       |                    Enter Phase 2 (below)
+       v
+Run coderabbit review again
+       |
+       v
+Repeat until clean
 ```
 
 ### Phase 2: GitHub review (fallback)
@@ -170,7 +168,7 @@ Verify each finding    Check Greptile   Wait for CR
 against code           daily budget     completion signal
        |                  |                  |
        v                  v                  v
-Fix all findings    Budget OK?          2 clean CR passes?
+Fix all findings    Budget OK?          CR APPROVED on HEAD?
 in one commit,      Yes: @greptileai         |
 push                No: self-review         Yes
        |                  |                  |

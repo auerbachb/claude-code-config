@@ -1,6 +1,6 @@
 ## Local CodeRabbit Review Loop (Primary)
 
-> **Always:** Run local CR review before pushing. Verify findings against code before fixing. Two clean passes to exit.
+> **Always:** Run local CR review before pushing. Verify findings against code before fixing. One clean pass to exit.
 > **Ask first:** Never — fix all findings autonomously. Never ask "should I run the review?", "should I push?", or "should I create a PR?" — these transitions are automatic.
 > **Never:** Push code without running local review. Fall back to GitHub polling when CLI works. Ask permission at any step in this workflow. Treat local review as satisfying the merge gate — only the GitHub review loop (CR + BugBot + Greptile) satisfies the merge requirement.
 
@@ -52,15 +52,15 @@ The only acceptable use of suppression comments is when the linter is provably w
 - Do not retry more than once. If CR CLI fails twice, it's down — move on with self-review.
 
 ### Exit criteria
-- **Two consecutive clean local reviews** with no findings (or two clean self-reviews if CR CLI is unavailable)
+- **One clean local review** with no findings (or one clean self-review if CR CLI is unavailable)
 - Once clean, commit all changes and push the branch
-- **This transition is automatic.** After two clean passes, IMMEDIATELY commit and push — do not ask "should I push now?" or "ready to create a PR?"
+- **This transition is automatic.** After a clean pass, IMMEDIATELY commit and push — do not ask "should I push now?" or "ready to create a PR?"
 
 ### Post-Clean: Push, PR, and GitHub Review (AUTOMATIC — do not ask)
 
-After two consecutive clean local reviews, execute this checklist immediately:
+After a clean local review, execute this checklist immediately:
 
-> **STOP — Local review does NOT satisfy the merge gate.** The GitHub review loop (CR + BugBot + Greptile) is mandatory: 2 clean CR passes, 1 clean BugBot pass, or a clean Greptile severity gate (see `cr-merge-gate.md`). Proceed immediately — do not ask.
+> **STOP — Local review does NOT satisfy the merge gate.** The GitHub review loop (CR + BugBot + Greptile) is mandatory: 1 clean CR approval on the current HEAD SHA, 1 clean BugBot pass, or a clean Greptile severity gate (see `cr-merge-gate.md`). Proceed immediately — do not ask.
 
 1. **Commit all changes** in a single commit.
 2. **Push the branch** to the remote.
