@@ -349,7 +349,8 @@ fi
 # ~/.claude/settings.json. Catches the failure mode from #145, where a hook is
 # added to global-settings.json but not to setup-skills-worktree.sh's manifest,
 # silently never reaching the user's deployed settings.
-drift_output="$(python3 - "$SETTINGS_SRC" "$SETTINGS_DST" <<'PYTHON_DRIFT_CHECK'
+drift_rc=0
+drift_output="$(python3 - "$SETTINGS_SRC" "$SETTINGS_DST" 2>&1 <<'PYTHON_DRIFT_CHECK'
 import json, os, shlex, sys
 
 def hook_keys(data):
@@ -387,23 +388,27 @@ try:
     with open(sys.argv[1]) as f:
         template = json.load(f)
 except (OSError, json.JSONDecodeError) as e:
-    print(f"read-template-failed: {e}")
-    sys.exit(0)
+    print(f"read-template-failed: {e}", file=sys.stderr)
+    sys.exit(2)
 try:
     with open(sys.argv[2]) as f:
         deployed = json.load(f)
 except (OSError, json.JSONDecodeError) as e:
-    print(f"read-deployed-failed: {e}")
-    sys.exit(0)
+    print(f"read-deployed-failed: {e}", file=sys.stderr)
+    sys.exit(2)
 
 template_hooks = set(hook_keys(template))
 deployed_hooks = set(hook_keys(deployed))
 for missing in sorted(template_hooks - deployed_hooks):
     print(f"missing\t{missing[0]}\t{missing[1]}\t{missing[2]}")
 PYTHON_DRIFT_CHECK
-)"
+)" || drift_rc=$?
 
-if [[ -n "$drift_output" ]]; then
+if [[ $drift_rc -ne 0 ]]; then
+  echo "  Drift check script error (exit $drift_rc):" >&2
+  [[ -n "$drift_output" ]] && echo "$drift_output" | sed 's/^/    /' >&2
+  step_fail "Hook drift check" "drift-check script failed to read $SETTINGS_SRC or $SETTINGS_DST"
+elif [[ -n "$drift_output" ]]; then
   echo "  Drift detected — global-settings.json lists hooks that are missing from $SETTINGS_DST:" >&2
   while IFS=$'\t' read -r tag event matcher script; do
     [[ "$tag" == "missing" ]] || continue
