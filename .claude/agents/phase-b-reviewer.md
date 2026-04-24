@@ -37,12 +37,12 @@ Before any code operations, check out the feature branch using a **uniquely-name
 
 ```bash
 git fetch origin <branch>
-git checkout -b phase-b-<branch> origin/<branch>
+git checkout -B phase-b-<branch> origin/<branch>
 # ... poll, fix, commit ...
 git push origin HEAD:<branch>
 ```
 
-Creating a differently-named local branch (`phase-b-<branch>`) avoids the git "branch '<branch>' is already checked out at '<path>'" error. Pushing with `HEAD:<branch>` sends commits to the correct remote branch regardless of the local name.
+Creating a differently-named local branch (`phase-b-<branch>`) avoids the git "branch '<branch>' is already checked out at '<path>'" error. Use `-B` (uppercase) — it creates the branch on first launch and resets it to `origin/<branch>` on replacement launches (three of four Phase B outcomes — `clean`, `fixes_pushed`, `exhaustion` — trigger replacement, so this path is common; lowercase `-b` would fail with "branch already exists"). Pushing with `HEAD:<branch>` sends commits to the correct remote branch regardless of the local name.
 
 **Why MANDATORY (not just redundant):** the parent's worktree cleanup in `phase-protocols.md` (Phase A step 4) can fail or race in ways Phase B cannot observe — a crashed Phase A that never returned a result, `git worktree remove --force` failing on permissions or in-flight file handles, a concurrent Phase B launch while the first still holds the branch, or prune leaving dangling refs. This defensive checkout is the single reliable guarantee that Phase B acquires the branch; the parent cleanup is a best-effort hygiene step layered on top.
 

@@ -103,7 +103,7 @@ Subagents have a 32K output token limit. When approaching exhaustion:
 
 The 32K limit is the binding constraint. Give each subagent ONE clear phase with explicit exit criteria — no exploratory instructions. Detailed per-phase procedures live in the agent definitions (`.claude/agents/phase-{a,b,c}-*.md`); if agent definitions are unavailable, use `.claude/reference/phase-decomposition.md`.
 
-- **Phase A: Fix + Push** (heaviest) — fix findings, commit once, push once, reply to threads, write handoff, EXIT. The parent removes Phase A's worktree before launching Phase B (see `phase-protocols.md` Phase A step 4).
+- **Phase A: Fix + Push** (heaviest) — fix findings, commit once, push once, reply to threads, write handoff, EXIT (parent cleanup detailed in Orchestration rules below).
 - **Phase B: Review Loop** (lighter) — poll/trigger reviewer, fix new findings, update handoff, EXIT.
 - **Phase C: Merge Prep** (lightest) — verify merge gate per `cr-merge-gate.md` + AC, report readiness, EXIT. Do not delete handoff.
 
