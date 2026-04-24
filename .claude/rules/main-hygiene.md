@@ -38,10 +38,17 @@ Canonical script: `.claude/scripts/dirty-main-guard.sh`. See `--help` for the fu
 
 ## Recovery workflow
 
-When the guard creates a recovery branch:
+When the guard creates a recovery branch, first list the exact branch name (`recovery/dirty-main-*` is a shell glob; commands like `git branch -D` need the literal name):
 
-1. Inspect the branch: `git -C "$ROOT" log recovery/dirty-main-* --oneline` or `git -C "$ROOT" diff main..recovery/dirty-main-* --stat`.
+```bash
+cd "$(.claude/scripts/repo-root.sh)"
+git branch --list 'recovery/dirty-main-*'
+```
+
+Copy the full branch name from that output and substitute it for `<recovery-branch>` in every subsequent command:
+
+1. Inspect the branch: `git log <recovery-branch> --oneline` or `git diff main..<recovery-branch> --stat`.
 2. Cherry-pick, rebase, or open a PR from the branch the same way you would any other branch.
-3. Once the content is landed (via PR) or confirmed unneeded, delete the branch: `git -C "$ROOT" branch -D recovery/dirty-main-*`.
+3. Once the content is landed (via PR) or confirmed unneeded, delete the branch: `git branch -D <recovery-branch>`.
 
 Do not delete recovery branches automatically — they are the user's audit trail. Ask first if cleanup comes up.
