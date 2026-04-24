@@ -31,6 +31,20 @@ On startup, check for the handoff file:
 1. **If `{{HANDOFF_FILE}}` exists:** Parse and validate (`schema_version`, `pr_number`, `phase_completed`). Extract `head_sha`, `reviewer`, `threads_replied`, `threads_resolved`, `findings_fixed` to avoid duplicate work. Log: "Loaded handoff file from Phase A."
 2. **If missing or invalid:** Fall back to GitHub API reconstruction — fetch all 3 comment endpoints with `per_page=100`. Log: "No handoff file found, reconstructing state from GitHub API."
 
+### Defensive Branch Checkout (MANDATORY)
+
+Before any code operations, check out the feature branch using a **uniquely-named local branch** that tracks the remote. This is lock-free even if a stale Phase A worktree is still holding the feature branch:
+
+```bash
+git fetch origin <branch>
+LOCAL="phase-b-<branch>-$(date +%s)"
+git checkout -b "$LOCAL" origin/<branch>
+# ... poll, fix, commit ...
+git push origin HEAD:<branch>
+```
+
+Using a **unique per-launch local name** (timestamp suffix) sidesteps git's worktree branch lock — the lock is per-branch across all worktrees, so even `-B` can't override it when an old Phase B worktree still holds the branch (three of four Phase B outcomes trigger replacements). A fresh local name per launch is lock-free by construction. `HEAD:<branch>` pushes to the right remote regardless of local name. MANDATORY because parent cleanup (`phase-protocols.md` Phase A step 4) covers only Phase A; Phase B replacements are uncleaned today, and parent cleanup anywhere can silently fail or race (crash, permissions, concurrent launches). This checkout is the single reliable guarantee Phase B acquires the branch.
+
 ## Before Requesting Any New Review (MANDATORY)
 
 Run the session-start / pre-review comment audit per `cr-github-review.md` ("Session-start / pre-review comment audit"):

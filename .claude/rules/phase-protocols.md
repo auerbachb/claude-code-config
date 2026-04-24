@@ -27,12 +27,13 @@ Block header is `EXIT_REPORT`; fields (one per line, colon-separated, no extra w
 1. **Parse the exit report.** Extract `PR_NUMBER`, `HEAD_SHA`, `OUTCOME`, `REVIEWER`, `NEXT_PHASE`. No exit report = silent failure — report to user, check GitHub API.
 2. **Branch on OUTCOME:**
    - `pushed_fixes` or `no_findings` → proceed to step 3
-   - `exhaustion` → launch replacement Phase A within 60s. Report to user. **STOP — do not execute steps 3-7.**
+   - `exhaustion` → **run step 4 (worktree cleanup) now**, then launch replacement Phase A within 60s. Report to user. **STOP — do not execute steps 3, 5-8.** (Cleanup is mandatory even on exhaustion — Phase A has no defensive checkout, so the replacement will hit "branch already checked out" if the old worktree's lock persists.)
 3. **Verify the push.** `gh pr view N --json commits --jq '.commits[-1].oid'` — confirm SHA matches. Mismatch = silent failure.
-4. **Verify handoff file.** Check `~/.claude/handoffs/pr-{N}-handoff.json` exists with `phase_completed: "A"`. If missing, reconstruct and write it yourself.
-5. **Launch Phase B within 60 seconds.** Check if reviewers already posted findings (fetch all 3 comment endpoints, `per_page=100`). Include findings and handoff file path in prompt. If throttled, tell user and auto-retry.
-6. **Update `session-state.json`.** Record phase transition and HEAD SHA.
-7. **Report to user.** "Phase A complete for PR #N — fixes pushed (SHA `abc1234`). Phase B launched."
+4. **Clean up the Phase A worktree.** Remove it with `git worktree remove <path> --force` (required for uncommitted state). On failure, fall back to `git worktree prune`. Cleanup releases the branch lock for Phase B. Phase B's defensive checkout (see `phase-b-reviewer.md`) handles residual lock failures via a distinct local branch name.
+5. **Verify handoff file.** Check `~/.claude/handoffs/pr-{N}-handoff.json` exists with `phase_completed: "A"`. If missing, reconstruct and write it yourself.
+6. **Launch Phase B within 60 seconds.** Check if reviewers already posted findings (fetch all 3 comment endpoints, `per_page=100`). Include findings and handoff file path in prompt. If throttled, tell user and auto-retry.
+7. **Update `session-state.json`.** Record phase transition and HEAD SHA.
+8. **Report to user.** "Phase A complete for PR #N — fixes pushed (SHA `abc1234`). Phase B launched."
 
 **Phase B launch is the highest-priority action after Phase A reports.** Do not start other work until Phase B is launched for every completed Phase A.
 
