@@ -34,12 +34,19 @@
 #   reset <before7> → <after7>         --reset advanced main to origin/main.
 #   up to date (<sha7>)                Already at origin/main.
 #   skipped: tracked files have uncommitted changes — run manually: <cmd>
-#                                       Off-main with dirty tree; no-op.
-#                                       (On-main dirty trees are NOT skipped
-#                                       in the default path — pull --ff-only
-#                                       handles them natively. --reset DOES
-#                                       check tracked changes on main because
-#                                       `reset --hard` is destructive.)
+#                                       Default path, off-main with dirty
+#                                       tree; no-op. <cmd> is the
+#                                       checkout+pull recovery. (On-main
+#                                       dirty trees are NOT skipped in the
+#                                       default path — pull --ff-only handles
+#                                       them natively.)
+#   skipped: tracked files have uncommitted changes — run .claude/scripts/dirty-main-guard.sh --quarantine, then re-run main-sync.sh --reset
+#                                       --reset path, dirty tree on main.
+#                                       `reset --hard` would clobber them,
+#                                       so we redirect to dirty-main-guard
+#                                       (which preserves state to a recovery
+#                                       branch) rather than the default
+#                                       `pull --ff-only` hint.
 #   aborted: local main has <N> unpushed commit(s) — inspect: git log origin/main..main, resolve manually before re-running
 #                                       --reset refused to clobber unpushed
 #                                       commits. Belt-and-suspenders for any
@@ -227,7 +234,12 @@ if (( RESET_MODE == 1 )); then
     exit 2
   fi
   if (( unstaged_rc == 1 || staged_rc == 1 )); then
-    echo "skipped: tracked files have uncommitted changes — run manually: $MANUAL_CMD"
+    # In --reset mode, the right recovery is dirty-main-guard (which
+    # preserves state to a recovery branch), NOT `pull --ff-only` — the
+    # caller invoked --reset specifically to hard-reset, and pull --ff-only
+    # would neither rescue the uncommitted work nor perform the intended
+    # reset. Point users at the guard instead.
+    echo "skipped: tracked files have uncommitted changes — run .claude/scripts/dirty-main-guard.sh --quarantine, then re-run main-sync.sh --reset"
     exit 1
   fi
 
