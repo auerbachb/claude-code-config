@@ -70,6 +70,12 @@ Canonical rule: CLAUDE.md #3 (5-minute max silence, non-negotiable).
 
 **Heartbeat enforcement:** A PostToolUse hook warns when >5 min have elapsed — on seeing it, stop and send a status message immediately.
 
+## File-Write Status Updates (MANDATORY)
+
+Extension of "Never batch status updates" (above). Long silent chains of file writes trip the silence detector even though work is progressing, and deprive the user of progress visibility.
+
+**Rule:** For operations touching 4+ files, emit a one-line status after every 3 writes/edits (e.g., "wrote 3/9: auth module done, starting handlers"). Batches of 1–3 don't need one. One message per chunk is enough — no extra timestamp needed if the turn-start one already fired. Applies to parent agents and subagents.
+
 ## Post-Compaction Recovery (MANDATORY)
 
 Context compaction wipes in-memory state. **Detection:** conversation starts with a summary block referencing prior work you don't remember.
