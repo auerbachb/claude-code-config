@@ -193,13 +193,19 @@ Detect related work that needs attention for feature completeness, then **auto-c
 
 ### Step 3.1: Detect follow-up items
 
-1. Extract the linked issue number from the PR body via `pr-issue-ref.sh` (matches `Closes #N` / `Fixes #N` / `Resolves #N`, case-insensitive) and fetch its title and body:
+1. Extract the linked issue number from the PR body via `pr-issue-ref.sh` (matches all nine GitHub closing keywords — `close`/`closes`/`closed`/`fix`/`fixes`/`fixed`/`resolve`/`resolves`/`resolved`, case-insensitive) and fetch its title and body. Distinguish exit `1` (no link — expected) from exits `2`/`3`/`4` (real errors) so genuine failures surface:
    ```bash
    PR_NUMBER=$(gh pr view --json number --jq '.number')
    PR_TITLE=$(gh pr view --json title --jq '.title')
-   # pr-issue-ref.sh exits 1 with empty stdout when no link is found — `|| true`
-   # under `set -euo pipefail` keeps the assignment from aborting the block.
-   ISSUE_N=$(.claude/scripts/pr-issue-ref.sh "$PR_NUMBER" || true)
+   ISSUE_N=""
+   if RAW_REF=$(.claude/scripts/pr-issue-ref.sh "$PR_NUMBER" 2>&1); then
+     ISSUE_N="$RAW_REF"
+   else
+     REF_RC=$?
+     if [ "$REF_RC" -ne 1 ]; then
+       echo "Warning: pr-issue-ref.sh exit $REF_RC: $RAW_REF — skipping linked-issue lookup" >&2
+     fi
+   fi
    ISSUE_TITLE=""
    ISSUE_BODY=""
    if [ -n "$ISSUE_N" ]; then

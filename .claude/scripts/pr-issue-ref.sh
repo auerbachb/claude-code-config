@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # pr-issue-ref.sh — Extract the linked issue number from a PR body.
 #
-# Scans the PR body for `Closes #N` / `Fixes #N` / `Resolves #N`
-# (case-insensitive, optional whitespace between keyword and `#`) and prints
-# the first matching issue number on stdout. Prints nothing when no match
-# is found.
+# Scans the PR body for any of GitHub's nine supported issue-closing keywords
+# (`close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves`,
+# `resolved` — case-insensitive, optional whitespace between keyword and `#`)
+# and prints the first matching issue number on stdout. Prints nothing when
+# no match is found.
 #
 # USAGE:
 #   pr-issue-ref.sh <pr_number>
@@ -34,9 +35,10 @@ print_usage() {
 Usage: pr-issue-ref.sh <pr_number>
        pr-issue-ref.sh --help | -h
 
-Extract the first linked issue number from a PR body. Matches
-`Closes #N`, `Fixes #N`, `Resolves #N` (case-insensitive, optional
-whitespace between keyword and `#`).
+Extract the first linked issue number from a PR body. Matches any of
+GitHub's nine supported closing keywords — `close`, `closes`, `closed`,
+`fix`, `fixes`, `fixed`, `resolve`, `resolves`, `resolved` (case-
+insensitive, optional whitespace between keyword and `#`).
 
 Exit codes:
   0  issue reference found (number on stdout)
@@ -57,8 +59,11 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     --)
+      # Stop option parsing but keep validating remaining positional args
+      # through the standard `*)` path (catches stray trailing args and
+      # gives `--` a meaningful position before the PR number).
       shift
-      break
+      continue
       ;;
     -*)
       echo "Error: unknown flag: $1" >&2
@@ -111,9 +116,10 @@ if ! BODY="$(gh pr view "$PR_NUM" --json body --jq '.body // ""' 2>"$GH_STDERR")
 fi
 
 # --- extract issue number ---
-# Match `(closes|fixes|resolves)[whitespace]*#<digits>` case-insensitively.
-# `head -1` keeps the first hit; the second grep strips back to just the digits.
-MATCH="$(printf '%s\n' "$BODY" | grep -oiE '(closes|fixes|resolves)[[:space:]]*#[0-9]+' | head -1 || true)"
+# Match all nine GitHub closing keywords case-insensitively with optional
+# whitespace between keyword and `#`. `head -1` keeps the first hit; the
+# second grep strips back to just the digits.
+MATCH="$(printf '%s\n' "$BODY" | grep -oiE '(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]*#[0-9]+' | head -1 || true)"
 if [[ -z "$MATCH" ]]; then
   exit 1
 fi
