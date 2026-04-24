@@ -24,10 +24,14 @@ status=$("$guard" --check --no-fetch 2>/dev/null) || rc=$?
 rc=${rc:-0}
 
 if [[ "$rc" -eq 1 ]]; then
-  jq -n --arg s "$status" --arg g "$guard" '{
+  # Shell-escape the guard path so copy/paste survives paths with spaces.
+  # printf '%q' produces a shell-safe representation that the user can paste
+  # directly into a terminal without mis-tokenizing on whitespace.
+  quarantine_cmd="$(printf '%q' "$guard") --quarantine"
+  jq -n --arg s "$status" --arg cmd "$quarantine_cmd" '{
     hookSpecificOutput: {
       hookEventName: "Stop",
-      additionalContext: ("DIRTY MAIN WARNING: " + $s + ". Run: " + $g + " --quarantine  (creates a recovery/dirty-main-* branch, then resets main to origin/main).")
+      additionalContext: ("DIRTY MAIN WARNING: " + $s + ". Run: " + $cmd + "  (creates a recovery/dirty-main-* branch, then resets main to origin/main).")
     }
   }'
 fi

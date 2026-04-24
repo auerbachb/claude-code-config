@@ -170,10 +170,16 @@ fi
 if (( NO_FETCH == 0 )); then
   "${GIT[@]}" fetch origin main --quiet 2>/dev/null || true
 fi
-AHEAD=0
-if ahead_raw="$("${GIT[@]}" rev-list --count origin/main..HEAD 2>/dev/null)"; then
-  AHEAD="$ahead_raw"
+# Fail fast if we can't compare HEAD to origin/main. Silently defaulting
+# AHEAD=0 would mask the case where origin/main is missing (unusual remote
+# config, first-ever clone with no successful fetch) and cause --check to
+# report "clean" on a tree we never actually compared. Per the script's
+# contract, git errors exit 2 rather than normalize to zero.
+if ! ahead_raw="$("${GIT[@]}" rev-list --count origin/main..HEAD 2>&1)"; then
+  echo "error: could not compare HEAD to origin/main — $(printf '%s' "$ahead_raw" | tr '\n' ' ' | sed 's/[[:space:]]\{1,\}/ /g')"
+  exit 2
 fi
+AHEAD="$ahead_raw"
 # Normalize to integer; rev-list yields a plain count, but guard against
 # leading whitespace or empty string from unusual git output.
 AHEAD="${AHEAD//[^0-9]/}"
