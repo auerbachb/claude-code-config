@@ -170,21 +170,22 @@ against code           on current HEAD        completion + APPROVED
        v                  v                  v
 Fix all findings    BugBot clean?       CR APPROVED on HEAD?
 in one commit,      Yes: merge gate met      |
-push                No: check Greptile      Yes
+push                No: stay on BugBot,     Yes
+                    fix findings on it       |
        |                  |                  |
        v                  v                  v
-Reply to every      Budget OK?          Merge gate met
-comment thread      Yes: @greptileai
-       |            No: self-review
-       v                 (blocker)
-Poll again...
+Reply to every      Process findings;   Merge gate met
+comment thread      escalate to
+       |            Greptile only on
+       v            BugBot timeout
+Poll again...       (sticky assignment)
 repeat until
 clean
 ```
 
 ### Three-tier fallback chain
 
-CodeRabbit -> BugBot -> Greptile -> self-review. CR is always preferred. If CR is rate-limited or unresponsive (7-min timeout), check BugBot (auto-runs on every push, 5-min window from push time) first — BugBot is free and its completion signals are reliable. If BugBot also times out or has findings that can't be addressed, Greptile is triggered (budget permitting, 40 reviews/day default cap). If all three are unavailable, Claude performs self-review for risk reduction and reports a merge-gate blocker. Self-review does **not** satisfy the merge gate.
+CodeRabbit -> BugBot -> Greptile -> self-review. CR is always preferred. If CR is rate-limited or unresponsive (7-min timeout), check BugBot (auto-runs on every push, 5-min window from push time) first — BugBot is free and its completion signals are reliable. **Once BugBot is the active reviewer it is sticky:** stay on BugBot and process its findings normally, even if it returns issues. Escalate to Greptile only when BugBot itself fails to deliver (5-min timeout from push time), not when BugBot has findings to fix (budget permitting, 40 reviews/day default cap). If all three are unavailable, Claude performs self-review for risk reduction and reports a merge-gate blocker. Self-review does **not** satisfy the merge gate.
 
 ---
 
@@ -198,6 +199,6 @@ CodeRabbit -> BugBot -> Greptile -> self-review. CR is always preferred. If CR i
 
 **CI must pass before merge.** All CI check-runs are verified before any merge. Linter suppression comments (`eslint-disable`, `@ts-ignore`, etc.) are prohibited — fix the actual code instead.
 
-**Two consecutive clean reviews (CR path).** Both the local and GitHub loops require two consecutive clean passes. This catches the edge case where CodeRabbit marks a review complete but posts findings shortly after. The Greptile path uses a severity-gated merge gate instead.
+**Single explicit CR approval on current HEAD (CR path).** The GitHub CR gate requires one explicit `APPROVED` review whose `commit_id` matches the current HEAD SHA — stale approvals (those on a pre-push SHA) and approvals retracted by a later `CHANGES_REQUESTED` on the same SHA do not count. SHA freshness and explicit-approval-only replace the older 2-pass reliability check. The Greptile path uses a severity-gated merge gate instead.
 
 **Every PR starts with an issue.** Issues go through CodeRabbit planning (`@coderabbitai plan`) that catches gaps before coding begins. The implementation plan is merged into the issue body as the canonical spec.
