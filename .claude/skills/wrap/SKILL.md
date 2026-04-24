@@ -193,13 +193,25 @@ Detect related work that needs attention for feature completeness, then **auto-c
 
 ### Step 3.1: Detect follow-up items
 
-1. Extract the linked issue number from the PR body (`Closes #N` pattern) and fetch its title and body:
+1. Extract the linked issue number from the PR body via `pr-issue-ref.sh` (matches all nine GitHub closing keywords — `close`/`closes`/`closed`/`fix`/`fixes`/`fixed`/`resolve`/`resolves`/`resolved`, case-insensitive) and fetch its title and body. Distinguish exit `1` (no link — expected) from exits `2`/`3`/`4` (real errors) so genuine failures surface:
    ```bash
-   ISSUE_N=$(gh pr view --json body --jq '.body' | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+')
-   ISSUE_TITLE=$(gh issue view "$ISSUE_N" --json title --jq '.title' 2>/dev/null || echo "")
-   ISSUE_BODY=$(gh issue view "$ISSUE_N" --json body --jq '.body' 2>/dev/null || echo "")
-   PR_TITLE=$(gh pr view --json title --jq '.title')
    PR_NUMBER=$(gh pr view --json number --jq '.number')
+   PR_TITLE=$(gh pr view --json title --jq '.title')
+   ISSUE_N=""
+   if RAW_REF=$(.claude/scripts/pr-issue-ref.sh "$PR_NUMBER" 2>&1); then
+     ISSUE_N="$RAW_REF"
+   else
+     REF_RC=$?
+     if [ "$REF_RC" -ne 1 ]; then
+       echo "Warning: pr-issue-ref.sh exit $REF_RC: $RAW_REF — skipping linked-issue lookup" >&2
+     fi
+   fi
+   ISSUE_TITLE=""
+   ISSUE_BODY=""
+   if [ -n "$ISSUE_N" ]; then
+     ISSUE_TITLE=$(gh issue view "$ISSUE_N" --json title --jq '.title' 2>/dev/null || echo "")
+     ISSUE_BODY=$(gh issue view "$ISSUE_N" --json body --jq '.body' 2>/dev/null || echo "")
+   fi
    ```
 
 2. If a parent issue exists (check for "parent" or "epic" references in the issue body), fetch sibling issues:
