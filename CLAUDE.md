@@ -4,7 +4,7 @@ These apply to EVERY message the parent agent sends to the user. No exceptions, 
 
 1. **Timestamp prefix.** Start every message with Eastern time (`Mon Mar 16 02:34 AM ET`). Get via: `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`. NEVER estimate timestamps — always run the `date` command.
 2. **Active monitoring declaration.** If monitoring background agents, state how many and which PRs at the end of every message.
-3. **5-minute heartbeat.** Never go >5 minutes without a status message. See `monitor-mode.md` "User Heartbeat" for detailed rules.
+3. **5-minute heartbeat.** Never go >5 minutes without a status message. During operations touching 4+ files, emit a one-line status after every 3 writes/edits (see `monitor-mode.md` "User Heartbeat" and "File-Write Status Updates" for details).
 4. **Dedicated monitor mode.** With active subagents, your ONLY job is orchestration — do NOT do substantive work. See `monitor-mode.md` "Dedicated Monitor Mode" for full rules.
 
 After context compaction, your FIRST action is to reconstruct monitoring state (see "Post-Compaction Recovery" in `monitor-mode.md`) and report it WITH a timestamp.
