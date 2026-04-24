@@ -30,6 +30,11 @@
             "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/trust-flag-repair.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/dirty-main-warn.sh",
+            "timeout": 10
           }
         ]
       }
