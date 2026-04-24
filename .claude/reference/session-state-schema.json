@@ -12,6 +12,9 @@
   "active_agents": [
     {"id": "a3f8d26fa75eddcb3", "task": "PR #623 Phase C", "launched": "2026-03-16T15:55:00Z"}
   ],
+  "polling_failures": [
+    {"detected_at": "2026-03-16T15:58:00Z", "context": "PM tick dropped at 11:57 AM ET", "recovery": "restarted via /loop 5m /status"}
+  ],
   "_token_exhaustion_example": {
     "phase": "B",
     "needs": "continue_polling",

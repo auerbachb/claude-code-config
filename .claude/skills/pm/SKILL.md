@@ -283,6 +283,8 @@ After Step 1 presents assignments/suggestions, detect whether any **active cloud
 
 Resume mode passes through this step too — polling needs to be re-established after context turnover.
 
+**Primitive selection (MANDATORY):** For any user-initiated "poll every N" request, `/loop` is **mandatory** — not just recommended. `CronCreate` is reserved for PM-initiated autonomous monitoring across ≥3 concurrent threads or cross-session durability. Hand-rolled one-shot `ScheduleWakeup` chains are forbidden for recurring polls — they drop silently when the model forgets to re-schedule. For the full decision tree and the pre-exit checklist that every polling turn must run, see `.claude/rules/scheduling-reliability.md`.
+
 ### 2.1: Detect active threads
 
 An active cloud thread is an open issue (assigned to `$GH_USER` if set, otherwise any) where ANY of:

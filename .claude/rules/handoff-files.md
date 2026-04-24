@@ -17,7 +17,7 @@
 
 Full example JSON (including the token-exhaustion handoff shape): `.claude/reference/session-state-schema.json`.
 
-Top-level keys: `last_updated`, `monitoring_active`, `root_repo`, `prs` (map of PR number → `{phase, head_sha, reviewer, needs}`), `cr_quota` (`{reviews_used, window_start}`), `greptile_daily` (`{reviews_used, date, budget}`), `active_agents` (array of `{id, task, launched}`).
+Top-level keys: `last_updated`, `monitoring_active`, `root_repo`, `prs` (map of PR number → `{phase, head_sha, reviewer, needs}`), `cr_quota` (`{reviews_used, window_start}`), `greptile_daily` (`{reviews_used, date, budget}`), `active_agents` (array of `{id, task, launched}`), `polling_failures` (array of `{detected_at, context, recovery}` — dropped scheduler chains; see `.claude/rules/scheduling-reliability.md` "Failure Recovery").
 
 Write on phase transitions (A→B, B→C) and key state-change events (agent launched, completed, review received). Use `.claude/scripts/session-state.sh --set <jq-path>=<value> [--set ...]` for surgical writes — it preserves sibling fields, batches multiple `--set` flags into one atomic temp+mv, and refreshes `.last_updated` automatically. Use `--get <jq-path>` for reads. Avoid hand-rolling `jq … > tmp && mv tmp file` blocks for this file.
 
