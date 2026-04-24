@@ -10,6 +10,9 @@
 # Consume stdin (required by hook protocol)
 cat > /dev/null
 
+current_time=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET' 2>/dev/null)
+[[ -z "$current_time" ]] && current_time="ET time unavailable"
+
 # Session-scoped heartbeat file in /tmp
 HEARTBEAT_FILE="/tmp/claude-heartbeat-${CLAUDE_SESSION_ID:-default}"
 THRESHOLD=300  # 5 minutes in seconds
@@ -17,7 +20,14 @@ THRESHOLD=300  # 5 minutes in seconds
 # If heartbeat file doesn't exist, create it (first tool call in session)
 if [[ ! -f "$HEARTBEAT_FILE" ]]; then
   touch "$HEARTBEAT_FILE"
-  echo '{}'
+  cat <<EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PostToolUse",
+    "additionalContext": "Current system time: ${current_time}"
+  }
+}
+EOF
   exit 0
 fi
 
@@ -31,14 +41,19 @@ fi
 # Fallback if stat failed
 if [[ -z "$last_ack" ]]; then
   touch "$HEARTBEAT_FILE"
-  echo '{}'
+  cat <<EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PostToolUse",
+    "additionalContext": "Current system time: ${current_time}"
+  }
+}
+EOF
   exit 0
 fi
 
 now=$(date +%s)
 elapsed=$((now - last_ack))
-current_time=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET' 2>/dev/null)
-[[ -z "$current_time" ]] && current_time="ET time unavailable"
 
 if [[ $elapsed -gt $THRESHOLD ]]; then
   elapsed_min=$((elapsed / 60))
