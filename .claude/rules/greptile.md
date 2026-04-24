@@ -82,4 +82,4 @@ Reply commands and CR-vs-Greptile comparison: `.claude/reference/greptile-reply-
 
 ## Merge Gate
 
-**Canonical definition:** See `cr-merge-gate.md` (Step 1). That file is the single authoritative source for the CR 2-clean-pass path, the BugBot 1-clean-pass path, and the Greptile severity-gated path (including the 3-review-per-PR cap and the self-review fallback when all three reviewers are down).
+**Canonical definition:** See `cr-merge-gate.md` (Step 1). That file is the single authoritative source for the CR 1-explicit-APPROVED-on-current-HEAD path, the BugBot 1-clean-pass path, and the Greptile severity-gated path (including the 3-review-per-PR cap and the self-review fallback when all three reviewers are down).

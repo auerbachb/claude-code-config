@@ -300,7 +300,7 @@ jq '.new_since_baseline.conversation | map(select(.classification.class == "find
 
 ## Step 8: Check merge gate
 
-Run the shared merge-gate verifier (implements CR 2-clean / BugBot 1-clean / Greptile severity + CI + BEHIND checks):
+Run the shared merge-gate verifier (implements CR 1 explicit APPROVED on current HEAD / BugBot 1-clean / Greptile severity + CI + BEHIND checks):
 
 ```bash
 GATE_JSON=$(.claude/scripts/merge-gate.sh "$PR_NUM")
@@ -311,7 +311,8 @@ Branch on the exit code:
 
 - `0` → `[DONE]` — Merge gate satisfied. Proceed to Step 9 (AC verification).
 - `1` → `[ACTION]` — Gate not met. Parse `missing` from the JSON output and act accordingly:
-  - CR path with **"need 1 explicit CR APPROVED review on HEAD"** or **"latest CR review on HEAD is CHANGES_REQUESTED"**: post `@coderabbitai full review` to request an approval review on the current HEAD, then return to **Step 6**.
+  - CR path with **"need 1 explicit CR APPROVED review on HEAD"**: if the current SHA is still within the 7-minute CR polling window, return to **Step 6** and keep polling — do NOT re-trigger yet. Only after the 7-minute timeout, and only within the 2-trigger-per-hour budget, post `@coderabbitai full review` once and return to **Step 6**.
+  - CR path with **"CR approval on HEAD ... retracted by later CHANGES_REQUESTED"**: CR retracted approval. Return to **Step 7** to process the findings. Re-trigger only after fixes are pushed (the new SHA invalidates prior reviews regardless).
   - CR path with **"CodeRabbit check-run not green on HEAD"** or **"latest CR review on HEAD requests changes"**: CR has findings; return to **Step 7** to process them.
   - BugBot path with **"no BugBot review on HEAD"**: BugBot hasn't reviewed the current HEAD yet; return to **Step 6** to poll for the review.
   - BugBot path with **"latest BugBot review on HEAD has findings"**: return to **Step 7** to process findings.

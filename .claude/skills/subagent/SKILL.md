@@ -423,6 +423,7 @@ worktree directory at all times.
 1. Read the handoff file.
 2. Verify merge gate is satisfied:
    - CR-only: 1 explicit CR APPROVED review on the current HEAD SHA.
+   - BugBot: 1 clean BugBot pass on the current HEAD SHA.
    - Greptile: severity gate satisfied.
 3. Extract Test Plan checkboxes via the shared helper, branching on the exit code. Exit `1` ("no Test Plan") is a **blocking** outcome — every PR must include a Test Plan section (per CLAUDE.md):
    ```bash

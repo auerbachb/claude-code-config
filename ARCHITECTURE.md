@@ -97,7 +97,7 @@ Each Claude Code session follows this sequence:
 4. **Local review** — Run `coderabbit review --prompt-only` until one clean pass
 5. **Push and PR** — Commit, push, create PR with `Closes #N` and Test Plan checkboxes
 6. **GitHub review** — Poll CR (7-min timeout), fall back to Greptile if needed, fix findings, reply to threads
-7. **Merge** — Verify merge gate (1 explicit CR APPROVED review on current HEAD, or Greptile severity gate), verify acceptance criteria, squash merge
+7. **Merge** — Verify merge gate (1 explicit CR APPROVED review on current HEAD, 1 clean BugBot pass on current HEAD, or Greptile severity gate), verify acceptance criteria, squash merge
 8. **Cleanup** — Delete branch, optionally remove worktree
 
 ---
@@ -159,24 +159,24 @@ PR created, CR auto-reviews on GitHub
 Poll for CR comments (60s intervals, 7 min timeout)
        |
        v
-CR posts findings? --No--> CR rate-limited?
-       |                       |            |
-      Yes                     Yes           No
-       |                       |            |
-       v                       v            v
-Verify each finding    Check Greptile   Wait for CR
-against code           daily budget     completion signal
+CR posts findings? --No--> CR rate-limited or 7-min timeout?
+       |                       |                   |
+      Yes                     Yes                  No
+       |                       |                   |
+       v                       v                   v
+Verify each finding    Check BugBot (5 min)   Wait for CR
+against code           on current HEAD        completion + APPROVED
        |                  |                  |
        v                  v                  v
-Fix all findings    Budget OK?          CR APPROVED on HEAD?
-in one commit,      Yes: @greptileai         |
-push                No: self-review         Yes
+Fix all findings    BugBot clean?       CR APPROVED on HEAD?
+in one commit,      Yes: merge gate met      |
+push                No: check Greptile      Yes
        |                  |                  |
        v                  v                  v
-Reply to every      Report blocker:     Merge gate met
-comment thread      self-review only
-       |
-       v
+Reply to every      Budget OK?          Merge gate met
+comment thread      Yes: @greptileai
+       |            No: self-review
+       v                 (blocker)
 Poll again...
 repeat until
 clean
@@ -184,7 +184,7 @@ clean
 
 ### Three-tier fallback chain
 
-CodeRabbit -> Greptile -> self-review. CR is always preferred. If rate-limited or unresponsive (7-min timeout), Greptile is triggered (budget permitting, 40 reviews/day default cap). If both are unavailable, Claude performs self-review for risk reduction and reports a merge-gate blocker. Self-review does **not** satisfy the merge gate.
+CodeRabbit -> BugBot -> Greptile -> self-review. CR is always preferred. If CR is rate-limited or unresponsive (7-min timeout), check BugBot (auto-runs on every push, 5-min window from push time) first — BugBot is free and its completion signals are reliable. If BugBot also times out or has findings that can't be addressed, Greptile is triggered (budget permitting, 40 reviews/day default cap). If all three are unavailable, Claude performs self-review for risk reduction and reports a merge-gate blocker. Self-review does **not** satisfy the merge gate.
 
 ---
 

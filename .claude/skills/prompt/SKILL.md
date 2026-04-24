@@ -256,7 +256,7 @@ Then, for each issue, output a self-contained prompt block. Use tilde fences (`~
 ### Relevant rules
 {Based on tier and task type, list which rule files contain relevant protocols:}
 {- For Heavy + orchestration: "Read `.claude/rules/subagent-orchestration.md` (phase decomposition, spawning), `monitor-mode.md` (monitor loop, heartbeats, recovery), `handoff-files.md` (state transfer schema), and `phase-protocols.md` (exit reports, completion checklists)."}
-{- For any tier involving PRs: "Read `.claude/rules/cr-github-review.md` — specifically the merge gate (1 explicit CR APPROVED review on current HEAD, with SHA freshness + explicit-approval-only), polling endpoints, and thread resolution."}
+{- For any tier involving PRs: "Read `.claude/rules/cr-github-review.md` for polling endpoints and thread resolution, and `.claude/rules/cr-merge-gate.md` for the authoritative merge gate (1 explicit CR APPROVED review on current HEAD SHA, with SHA freshness + explicit-approval-only)."}
 {- For any tier involving CR local review: "Read `.claude/rules/cr-local-review.md` — specifically the fix loop and exit criteria (1 clean pass)."}
 {- For issue creation: "Read `.claude/rules/issue-planning.md` — specifically the planning flow and plan merge step."}
 {- For Light/Quick tiers with no protocol involvement: "No special protocol rules needed — standard coding workflow."}
@@ -289,7 +289,7 @@ These are mandatory verification points. The executing agent MUST follow these:
 
 **If the task involves merging:**
 - [ ] Verify ALL AC checkboxes are checked against final code
-- [ ] Confirm merge gate: 1 explicit CR APPROVED review on current HEAD (CR path) or severity-gated Greptile pass
+- [ ] Confirm merge gate: 1 explicit CR APPROVED review on current HEAD (CR path), or 1 clean BugBot pass on current HEAD, or severity-gated Greptile pass
 - [ ] Check ALL CI check-runs pass before merging — never merge with failing CI
 
 ---

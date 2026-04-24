@@ -324,13 +324,23 @@ case "$REVIEWER" in
     # SHA freshness is intrinsic to the filter: commit_id must equal $HEAD_SHA, so a
     # prior APPROVED on a stale SHA does NOT satisfy the gate.
     #
-    # Also explicitly count CHANGES_REQUESTED on the current SHA — a newer
-    # CHANGES_REQUESTED than the APPROVED means CR retracted approval and the gate
-    # is not met. Compare submission timestamps: gate met only if the latest
-    # CR review on the current SHA is APPROVED.
-    LATEST_CR_REVIEW_ON_HEAD=$(echo "$REVIEWS_JSON" | jq -c --arg sha "$HEAD_SHA" '
-      [.[]? | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha)]
-      | sort_by(.submitted_at) | last // empty')
+    # Also check for approval retraction on the current SHA — if CR posts an
+    # APPROVED review and later posts a CHANGES_REQUESTED on the same SHA, the
+    # approval is retracted and the gate is NOT met (even if a still-later
+    # COMMENTED review is the literal last review). Compare the newest
+    # APPROVED timestamp to the newest CHANGES_REQUESTED timestamp directly,
+    # not just the overall latest-review state — a COMMENTED follow-up must
+    # not paper over a retraction.
+    LATEST_CR_APPROVED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
+      [.[]?
+        | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha and .state == "APPROVED")
+        | .submitted_at]
+      | sort | last // ""')
+    LATEST_CR_CHANGES_REQUESTED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
+      [.[]?
+        | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha and .state == "CHANGES_REQUESTED")
+        | .submitted_at]
+      | sort | last // ""')
     APPROVED_CR_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
       [.[]? | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha and .state == "APPROVED")]
       | length')
@@ -340,11 +350,8 @@ case "$REVIEWER" in
 
     if [[ "$APPROVED_CR_ON_HEAD" -lt 1 ]]; then
       MISSING+=("need 1 explicit CR APPROVED review on HEAD ${HEAD_SHA:0:7} (have 0 approved of $TOTAL_CR_ON_HEAD CR review(s) on this SHA)")
-    elif [[ -n "$LATEST_CR_REVIEW_ON_HEAD" ]]; then
-      LATEST_CR_STATE=$(echo "$LATEST_CR_REVIEW_ON_HEAD" | jq -r '.state // ""')
-      if [[ "$LATEST_CR_STATE" == "CHANGES_REQUESTED" ]]; then
-        MISSING+=("latest CR review on HEAD is CHANGES_REQUESTED — approval retracted, fix and re-trigger")
-      fi
+    elif [[ -n "$LATEST_CR_CHANGES_REQUESTED_AT" && "$LATEST_CR_CHANGES_REQUESTED_AT" > "$LATEST_CR_APPROVED_AT" ]]; then
+      MISSING+=("CR approval on HEAD ${HEAD_SHA:0:7} retracted by later CHANGES_REQUESTED — fix and re-trigger")
     fi
     ;;
 

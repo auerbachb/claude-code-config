@@ -80,9 +80,9 @@ jq '.comments.conversation | map(select(.user.login == "coderabbitai[bot]"))' "$
 
 ### Completion Detection
 
-- **Ack** (review started): issue comment with "Actions performed — Full review triggered" — this is NOT completion.
-- **Completion**: check-run `status: "completed"` with `conclusion: "success"` — this IS completion.
-- **Clean pass** = completed + no new findings posted after ack.
+- **Ack** (review started): issue comment with "Actions performed — Full review triggered" — NOT completion, NOT approval.
+- **Completion**: check-run `status: "completed"` with `conclusion: "success"` — CR finished running, but this alone does NOT satisfy the merge gate.
+- **Gate-satisfying approval** = a CR review object with `state: "APPROVED"` AND `commit_id == <current HEAD SHA>` (per `cr-merge-gate.md` Step 1 and `phase-protocols.md`). Completion without such a review means the gate is not met — keep polling.
 
 ### Rate-Limit Fast Path
 
