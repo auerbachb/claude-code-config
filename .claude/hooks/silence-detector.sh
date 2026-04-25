@@ -10,6 +10,13 @@
 # Consume stdin (required by hook protocol)
 cat > /dev/null
 
+current_time=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET' 2>/dev/null)
+[[ -z "$current_time" ]] && current_time="ET time unavailable"
+
+emit_context() {
+  printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "PostToolUse",\n    "additionalContext": "%s"\n  }\n}\n' "$1"
+}
+
 # Session-scoped heartbeat file in /tmp
 HEARTBEAT_FILE="/tmp/claude-heartbeat-${CLAUDE_SESSION_ID:-default}"
 THRESHOLD=300  # 5 minutes in seconds
@@ -17,7 +24,7 @@ THRESHOLD=300  # 5 minutes in seconds
 # If heartbeat file doesn't exist, create it (first tool call in session)
 if [[ ! -f "$HEARTBEAT_FILE" ]]; then
   touch "$HEARTBEAT_FILE"
-  echo '{}'
+  emit_context "Current system time: ${current_time}"
   exit 0
 fi
 
@@ -31,7 +38,7 @@ fi
 # Fallback if stat failed
 if [[ -z "$last_ack" ]]; then
   touch "$HEARTBEAT_FILE"
-  echo '{}'
+  emit_context "Current system time: ${current_time}"
   exit 0
 fi
 
@@ -40,16 +47,9 @@ elapsed=$((now - last_ack))
 
 if [[ $elapsed -gt $THRESHOLD ]]; then
   elapsed_min=$((elapsed / 60))
-  cat <<EOF
-{
-  "hookSpecificOutput": {
-    "hookEventName": "PostToolUse",
-    "additionalContext": "HEARTBEAT WARNING: No visible message to user in ${elapsed_min}+ minutes (${elapsed}s). Per the 5-minute heartbeat rule, you MUST send a status update to the user NOW — before making any more tool calls. Include: what you are doing, what is pending, any blockers. Start with a timestamp (run date command)."
-  }
-}
-EOF
+  emit_context "Current system time: ${current_time}. HEARTBEAT WARNING: No visible message to user in ${elapsed_min}+ minutes (${elapsed}s). Per the 5-minute heartbeat rule, you MUST send a status update to the user NOW — before making any more tool calls. Include: what you are doing, what is pending, any blockers. Use the timestamp above as your prefix."
 else
-  echo '{}'
+  emit_context "Current system time: ${current_time}"
 fi
 
 exit 0
