@@ -286,18 +286,20 @@ if [[ "$CI_FAILING" -gt 0 ]]; then
   MISSING+=("CI has $CI_FAILING failing check-run(s): $BLOCKING_NAMES")
 fi
 
+# Universal unresolved-thread gate (#211) — applies to all paths regardless of
+# author. Catches threads from any reviewer (CR, BugBot, Greptile, Copilot,
+# human) that the per-path author-scoped checks would miss.
+UNRESOLVED_TOTAL=$(echo "$THREADS_JSON" | jq -r '
+  [.data.repository.pullRequest.reviewThreads.nodes[]?
+    | select(.isResolved == false)]
+  | length')
+if [[ "$UNRESOLVED_TOTAL" -gt 0 ]]; then
+  MISSING+=("$UNRESOLVED_TOTAL unresolved review thread(s) — resolve via GraphQL before merge")
+fi
+
 # Path-specific checks.
 case "$REVIEWER" in
   cr)
-    # Unresolved CR threads (GraphQL — any thread with a coderabbitai[bot] comment and isResolved=false).
-    UNRESOLVED_CR=$(echo "$THREADS_JSON" | jq -r '
-      [.data.repository.pullRequest.reviewThreads.nodes[]?
-        | select(.isResolved == false)
-        | select(any(.comments.nodes[]?; .author.login == "coderabbitai[bot]"))]
-      | length')
-    if [[ "$UNRESOLVED_CR" -gt 0 ]]; then
-      MISSING+=("$UNRESOLVED_CR unresolved CR thread(s)")
-    fi
 
     # CodeRabbit check-run status on current HEAD.
     CR_CHECK=$(echo "$CHECK_RUNS_JSON" | jq -c '[.check_runs[]? | select(.name == "CodeRabbit")] | first // empty')
@@ -356,17 +358,8 @@ case "$REVIEWER" in
     ;;
 
   bugbot)
-    # Unresolved BugBot (cursor[bot]) threads.
-    UNRESOLVED_BB=$(echo "$THREADS_JSON" | jq -r '
-      [.data.repository.pullRequest.reviewThreads.nodes[]?
-        | select(.isResolved == false)
-        | select(any(.comments.nodes[]?; .author.login == "cursor[bot]"))]
-      | length')
-    if [[ "$UNRESOLVED_BB" -gt 0 ]]; then
-      MISSING+=("$UNRESOLVED_BB unresolved BugBot thread(s)")
-    fi
-
     # Need at least 1 BugBot review on current HEAD, with no actionable findings.
+    # Unresolved BugBot threads are caught by the universal unresolved-thread gate above.
     BB_REVIEWS_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
       [.[]? | select(.user.login == "cursor[bot]" and .commit_id == $sha)] | length')
 

@@ -64,6 +64,18 @@ Before running `gh pr merge` on ANY PR, verify ALL CI check-runs are complete an
 
 This applies to ALL merge paths: manual `gh pr merge`, the `/merge` skill, the `/wrap` skill, and Phase C merge prep.
 
+## Step 1c — All Review Threads Resolved (NON-NEGOTIABLE)
+
+Before any merge, every review thread on the PR must be `isResolved: true`. Use the GraphQL `reviewThreads` endpoint — REST endpoints miss bot threads (cursor/copilot — see memory `feedback_premerge_all_threads.md`). `merge-gate.sh` enforces this universally (any unresolved thread blocks, regardless of author). Manual fallback:
+
+```bash
+gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{isResolved}}}}}' \
+  -F o="$OWNER" -F r="$REPO" -F n="$PR" \
+  | jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)]|length'
+```
+
+**If the count is > 0: DO NOT MERGE.** Reply + resolve via `resolveReviewThread` mutation (see `cr-github-review.md` "Processing CR Feedback"), then re-check.
+
 ## Step 2 — Verify every Test Plan checkbox (MANDATORY — do NOT skip)
 
 > This is the **immediate next step** after CI passes (Step 1b). Do not ask the user about merging until this is done.
