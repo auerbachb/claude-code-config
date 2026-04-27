@@ -157,9 +157,9 @@ When `PM_AUTO_DETECT=true`, partition the classified issues into two groups usin
 
 | Signal | Subagent-eligible threshold |
 |--------|---------------------------|
-| `file_count` | 0–2 |
+| `file_count` | 0–1 |
 | `ac_count` | ≤ 3 |
-| `dependency_count` | 0 (for that issue — count only dependencies referencing or referenced by this specific issue, not the batch total) |
+| `dependency_count_per_issue` | 0 (count only dependencies referencing or referenced by this specific issue, not the batch total) |
 | `touches_rules` | `false` |
 | `touches_claude_md` | `false` |
 | `has_orchestration_keywords` | `false` |
