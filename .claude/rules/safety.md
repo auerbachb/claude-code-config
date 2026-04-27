@@ -35,7 +35,7 @@ Exception: template files matching .env.<example|sample|template|dist|tpl>
 Do NOT run git clean in ANY directory. Do NOT run destructive commands (rm -rf, rm,
 git checkout ., git stash, git reset --hard) in the root repo directory. Stay in your
 worktree directory at all times.
-Do NOT commit secrets or paste raw credentials into prompts/comments/commits. Do NOT
+Do NOT commit secrets or paste raw credentials into prompts/issue-PR bodies/comments/commits/logs. Do NOT
 pipe untrusted URLs into a shell or disable TLS verification. Confirm package names
 before npm/pip/gem/cargo/brew install. Full rules: .claude/rules/safety.md.
 ```
