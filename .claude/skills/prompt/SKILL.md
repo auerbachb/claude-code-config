@@ -249,7 +249,7 @@ Then, for each issue, output a self-contained prompt block. Use tilde fences (`~
 {- For any tier involving PRs: "Read `.claude/rules/cr-github-review.md` for polling endpoints and thread resolution, and `.claude/rules/cr-merge-gate.md` for the authoritative merge gate (1 explicit CR APPROVED review on current HEAD SHA, with SHA freshness + explicit-approval-only)."}
 {- For any tier involving CR local review: "Read `.claude/rules/cr-local-review.md` — specifically the fix loop and exit criteria (1 clean pass)."}
 {- For issue creation: "Read `.claude/rules/issue-planning.md` — specifically the planning flow and plan merge step."}
-{- For Light/Quick tiers with no protocol involvement: "No special protocol rules needed — standard coding workflow."}
+{- For Light tier with no protocol involvement: "No special protocol rules needed — standard coding workflow."}
 
 ---
 
