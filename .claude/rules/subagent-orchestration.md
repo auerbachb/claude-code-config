@@ -23,16 +23,7 @@ Use the custom agent definitions in `.claude/agents/` instead of manually readin
    - Handoff file path (`~/.claude/handoffs/pr-{N}-handoff.json`)
    - HEAD SHA, reviewer assignment (`cr`, `bugbot`, or `greptile`)
    - Pre-fetched findings (optional — saves the subagent from re-fetching)
-5. **Include the safety warning** in every subagent prompt:
-
-   ```text
-   SAFETY: Do NOT delete, overwrite, move, or modify .env files — anywhere, any repo.
-   Exception: template files matching .env.<example|sample|template|dist|tpl>
-   (case-insensitive) are committed, non-secret, and safe to edit.
-   Do NOT run git clean in ANY directory. Do NOT run destructive commands (rm -rf, rm,
-   git checkout ., git stash, git reset --hard) in the root repo directory. Stay in your
-   worktree directory at all times.
-   ```
+5. **Include the safety warning** in every subagent prompt — copy the `SAFETY:` block from `safety.md` "Subagent Warning (MANDATORY)" verbatim. It covers `.env` handling, destructive commands, secrets/credentials, untrusted installers, and TLS bypass.
 
 See `.claude/agents/README.md` for the full placeholder reference and spawning examples.
 
