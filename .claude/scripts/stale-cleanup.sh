@@ -546,6 +546,25 @@ for entry in "${STALE_WORKTREES[@]}"; do
   fi
   if out="$("${GIT[@]}" worktree remove "$p" 2>&1)"; then
     echo "removed: worktree $p"
+    # The branch this worktree was holding was NOT classified as a stale
+    # local branch (parse_worktrees adds every worktree's branch to
+    # CHECKED_OUT_BRANCHES, so during classification stale-worktree
+    # branches were skipped as "checked out"). Now that the worktree is
+    # gone, attempt to delete the branch too — gated by the same safety
+    # checks the local-branch loop uses (protected names, open PR).
+    # `git branch -D` is non-fatal on unknown branches, so failures here
+    # don't abort the script; we surface them via the FAILURES counter
+    # only when the branch actually exists and refuses deletion.
+    if [[ -n "$b" ]] && ! is_protected "$b" && ! has_open_pr "$b"; then
+      if "${GIT[@]}" show-ref --verify --quiet "refs/heads/$b"; then
+        if branch_out="$("${GIT[@]}" branch -D "$b" 2>&1)"; then
+          echo "removed: local branch $b (was on stale worktree $p)"
+        else
+          echo "failed: local branch $b (after worktree $p removed) — $branch_out"
+          FAILURES=$(( FAILURES + 1 ))
+        fi
+      fi
+    fi
   else
     echo "failed: worktree $p — $out"
     FAILURES=$(( FAILURES + 1 ))
