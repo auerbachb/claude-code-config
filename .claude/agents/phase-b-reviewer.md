@@ -90,7 +90,7 @@ If check-runs show `conclusion: "failure"` with `output.title` containing "rate 
 
 ### CR Timeout (Slow Path)
 
-If CR has not delivered a review after **12 minutes** of polling → **check if BugBot (`cursor[bot]`) already posted a review** (BugBot's 10-min window from push has already expired at this point). If yes, use BugBot review (set `reviewer: bugbot`, sticky assignment). If no BugBot review exists → run the Greptile Daily Budget Check below: if budget allows, trigger Greptile immediately (do NOT wait another 10 min); if budget exhausted, fall back to self-review and report the blocker. Sticky assignment applies at each tier. Polling cadence stays 60 s; a clean CR check-run completion short-circuits earlier — exit immediately on completion, do not keep polling to 12 min.
+If CR has not delivered a review after **12 minutes** of polling → **check if BugBot (`cursor[bot]`) already posted a review** (BugBot's 10-min window from push has already expired at this point). If yes, use BugBot review (set `reviewer: bugbot`, sticky assignment). If no BugBot review exists → run the Greptile Daily Budget Check below: if budget allows, trigger Greptile immediately (do NOT wait another 10 min); if budget exhausted, fall back to self-review and report the blocker. Sticky assignment applies at each tier. Polling cadence stays 60 s; a clean CR check-run completion short-circuits the timeout wait, but Phase B must still verify the merge gate (explicit `APPROVED` review on current HEAD SHA per `cr-merge-gate.md` Step 1) before exiting — completion alone is not approval.
 
 > **MANDATORY budget gate on both paths above.** The Greptile Daily Budget Check in the "Greptile Review Path" section below is NOT optional — it applies to every `@greptileai` trigger point, including CR fallbacks. Never post `@greptileai` without running the check first.
 
@@ -98,7 +98,7 @@ If CR has not delivered a review after **12 minutes** of polling → **check if 
 
 1 clean CR approval on the current HEAD SHA satisfies the gate. An "approval" means a CR review object with `state: "APPROVED"` AND `commit_id == <current HEAD SHA>`. Ack comments, empty thread snapshots, and CR check-run completion alone do NOT exit polling — see `cr-merge-gate.md` "Step 1" for the full explicit-approval and SHA-freshness rules.
 
-If no approval lands on the current SHA within the 12-minute timeout, re-trigger `@coderabbitai full review` once. After 2 failed re-triggers on the same SHA, fall through to the BugBot/Greptile fallback chain. Never trigger `@coderabbitai full review` more than twice per PR per hour.
+If no approval lands on the current SHA within the 12-minute timeout, re-trigger `@coderabbitai full review` (max 2 re-triggers per PR per hour). If both re-triggers fail on the same SHA, fall through to the BugBot/Greptile fallback chain.
 
 ## BugBot Review Path (when `reviewer` = `bugbot`)
 
