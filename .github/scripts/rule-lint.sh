@@ -4,12 +4,8 @@
 # Validates:
 #   1. The rule index table in CLAUDE.md matches the actual set of
 #      .claude/rules/*.md files (no drift in either direction).
-#   2. Total auto-loaded word count (CLAUDE.md + all rule files) is
-#      within budget: soft 10000 (warn), hard 14000 (fail).
-#      Note: hard cap is 14000 as a transition setting while rules are
-#      condensed back toward the 10000 soft cap.
-#      TODO(#203): revert HARD_LIMIT to 12000 (or lower) once total
-#      word count drops back under the 10000 soft budget.
+#   2. Total auto-loaded word count (CLAUDE.md + all rule files) stays
+#      within the warning soft limit, committed ratchet cap, and hard limit.
 #   3. Per-file size: any rule file > 2000 words emits a warning.
 #
 # Output uses GitHub Actions annotations (::error::, ::warning::) so
@@ -19,13 +15,44 @@ set -euo pipefail
 shopt -s nullglob
 
 SOFT_LIMIT=10000
-HARD_LIMIT=14000
+HARD_LIMIT=11000
 PER_FILE_WARN=2000
+RATCHET_FLOOR=8500
+RATCHET_HEADROOM=250
 
 CLAUDE_MD="CLAUDE.md"
 RULES_DIR=".claude/rules"
+BUDGET_CAP_FILE="${RULES_DIR}/.budget-soft-cap"
 
 errors=0
+update_cap=0
+
+usage() {
+  cat <<'EOF'
+Usage: .github/scripts/rule-lint.sh [--update-cap]
+
+  --update-cap  Rewrite .claude/rules/.budget-soft-cap to max(current_count + 250, 8500),
+                then continue linting against the updated cap.
+EOF
+}
+
+while (( $# > 0 )); do
+  case "$1" in
+    --update-cap)
+      update_cap=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "::error::Unknown argument: $1"
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
 
 if [[ ! -f "$CLAUDE_MD" ]]; then
   echo "::error file=${CLAUDE_MD}::CLAUDE.md not found at repo root"
@@ -36,6 +63,28 @@ if [[ ! -d "$RULES_DIR" ]]; then
   echo "::error::${RULES_DIR} directory not found"
   exit 1
 fi
+
+read_budget_cap() {
+  local cap
+  if [[ ! -f "$BUDGET_CAP_FILE" ]]; then
+    echo "::error file=${BUDGET_CAP_FILE}::Budget soft cap file is missing"
+    return 1
+  fi
+  if ! cap=$(python3 - "$BUDGET_CAP_FILE" <<'PY'
+import re
+import sys
+
+data = open(sys.argv[1], "rb").read()
+if not re.fullmatch(rb"[0-9]+", data):
+    sys.exit(1)
+sys.stdout.write(data.decode("ascii"))
+PY
+  ); then
+    echo "::error file=${BUDGET_CAP_FILE}::Budget soft cap must contain a single integer with no whitespace"
+    return 1
+  fi
+  printf '%s\n' "$cap"
+}
 
 # --- 1. Rule index alignment check ---------------------------------------
 # Extract basenames from the CLAUDE.md rule index table. Table rows look
@@ -89,11 +138,31 @@ else
 fi
 echo "Total auto-loaded word count: ${total} (soft=${SOFT_LIMIT}, hard=${HARD_LIMIT})"
 
+if (( update_cap )); then
+  updated_cap=$(( total + RATCHET_HEADROOM ))
+  if (( updated_cap < RATCHET_FLOOR )); then
+    updated_cap=$RATCHET_FLOOR
+  fi
+  printf '%s' "$updated_cap" > "$BUDGET_CAP_FILE"
+  echo "Updated budget soft cap: ${updated_cap}"
+fi
+
+if ! budget_cap=$(read_budget_cap); then
+  errors=$((errors + 1))
+  budget_cap=$HARD_LIMIT
+fi
+echo "Ratchet budget cap: ${budget_cap} (formula=max(current_count + ${RATCHET_HEADROOM}, ${RATCHET_FLOOR}))"
+
 if (( total > HARD_LIMIT )); then
   echo "::error file=${CLAUDE_MD}::Auto-loaded word count ${total} exceeds HARD limit ${HARD_LIMIT}. Rules must be condensed before merge."
   errors=$((errors + 1))
 elif (( total > SOFT_LIMIT )); then
   echo "::warning file=${CLAUDE_MD}::Auto-loaded word count ${total} exceeds soft budget ${SOFT_LIMIT} (hard=${HARD_LIMIT}). Consider condensing rules."
+fi
+
+if (( total > budget_cap )); then
+  echo "::error file=${BUDGET_CAP_FILE}::Auto-loaded word count ${total} exceeds ratchet cap ${budget_cap}. Run rule-lint.sh --update-cap only after intentional corpus reduction."
+  errors=$((errors + 1))
 fi
 
 # --- 3. Per-file size check ----------------------------------------------
