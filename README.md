@@ -118,7 +118,7 @@ All 22 commands are invoked as `/command` in a Claude Code session. They are def
 | `/pm-sprint-plan` | PM | Generate a 2-week sprint plan |
 | `/pm-sprint-review` | PM | Sprint retrospective with velocity metrics |
 | `/subagent` | PM | Run Quick/Light issues as Phase A/B/C subagents from a PM thread |
-| `/prompt` | Planning | Classify issue complexity, recommend a Claude 4.7/4.6 model tier, generate copy-paste prompt |
+| `/prompt` | Planning | Classify issue complexity, recommend a Claude 4.7/4.6 model tier, generate copy-paste prompt without the removed `effort` field |
 | `/start-issue` | Planning | End-to-end issue-to-coding setup — plan polling, plan merge, worktree, branch |
 | `/fixpr` | Review | Single-pass PR cleanup — fixes review findings and CI failures, replies to findings, resolves threads |
 | `/pr-review-help` | Review | Executive PR review — multi-PR parallel strategic analysis |
@@ -142,7 +142,7 @@ Rule files in `.claude/rules/` auto-load alongside `CLAUDE.md` and define the de
 |------|---------|
 | `issue-planning.md` | Issue creation flow, `@coderabbitai plan` integration, plan merging |
 | `cr-local-review.md` | Primary review loop — runs CodeRabbit CLI locally before pushing |
-| `cr-github-review.md` | GitHub review polling — three endpoints, rate limits, BugBot fallback, thread resolution, merge gate |
+| `cr-github-review.md` | GitHub review polling — three endpoints, rate limits, BugBot fallback, CI checks, thread resolution |
 | `cr-merge-gate.md` | Single authoritative merge gate — CR approval or clean BugBot/Greptile path, CI, resolved threads, AC verification |
 | `bugbot.md` | BugBot second-tier reviewer — polling, timeout, sticky assignment, merge gate contribution |
 | `greptile.md` | Greptile last-resort reviewer — severity-gated re-reviews, daily budget, self-review fallback |
@@ -161,7 +161,7 @@ Rule files in `.claude/rules/` auto-load alongside `CLAUDE.md` and define the de
 
 ## Hook Scripts
 
-Twelve hook and hook-utility scripts support Claude Code sessions:
+Twelve hook scripts and hook utilities support Claude Code sessions:
 
 | Script | Event | Purpose |
 |--------|-------|---------|
@@ -282,7 +282,7 @@ Yes. Rate limits in the config are tuned for Pro. Free tier limits are lower —
 Local review times out after 2 minutes. GitHub review polling follows the sticky chain: CodeRabbit first, BugBot after CodeRabbit rate-limit/timeout, Greptile after BugBot timeout, then self-review only if all reviewers are unavailable. A self-review reduces risk but does not satisfy the merge gate.
 
 **Can I use this without CodeRabbit / BugBot / Greptile?**
-Yes. The config auto-detects reviewer availability. Without CodeRabbit, Claude can use the fallback chain where available; Greptile remains optional and is only triggered after CodeRabbit and BugBot fail. The PR workflow, branch naming, acceptance criteria, and squash-merge flow work regardless.
+Yes. The config auto-detects reviewer availability. If CodeRabbit is unavailable, Claude uses the next available reviewer tier: BugBot first, then Greptile if needed. Greptile remains optional. The PR workflow, branch naming, acceptance criteria, and squash-merge flow work regardless.
 
 **What is `pm-config.md`?**
 A per-repo config bootstrapped by `/pm`. Stores team roster, OKRs, and infrastructure detection. Only needed for PM skills — the review workflow works without it.
