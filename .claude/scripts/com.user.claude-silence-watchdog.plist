@@ -13,6 +13,8 @@
 
   <key>EnvironmentVariables</key>
   <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>SILENCE_THRESHOLD_MINUTES</key>
     <string>10</string>
   </dict>

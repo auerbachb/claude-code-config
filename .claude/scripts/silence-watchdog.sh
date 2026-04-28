@@ -41,7 +41,7 @@ notify() {
     -e 'on run argv' \
     -e 'display notification ("Session " & item 1 of argv & " has been silent for " & item 2 of argv & "+ minutes.") with title "Claude silent"' \
     -e 'end run' \
-    -- "$session_id" "$THRESHOLD_MINUTES" >/dev/null 2>&1 || true
+    -- "$session_id" "$THRESHOLD_MINUTES" >/dev/null 2>&1
 }
 
 tmp_state=$(mktemp "${STATE_FILE}.tmp.XXXXXX")
@@ -73,9 +73,10 @@ for heartbeat in "${HEARTBEAT_PREFIX}"*; do
     continue
   fi
 
-  notify "$session_id"
-  jq --arg path "$heartbeat" --argjson mtime "$mtime" '.[$path] = $mtime' "$tmp_state" > "${tmp_state}.next"
-  mv "${tmp_state}.next" "$tmp_state"
+  if notify "$session_id"; then
+    jq --arg path "$heartbeat" --argjson mtime "$mtime" '.[$path] = $mtime' "$tmp_state" > "${tmp_state}.next"
+    mv "${tmp_state}.next" "$tmp_state"
+  fi
 done
 shopt -u nullglob
 

@@ -27,10 +27,25 @@ fi
 
 mkdir -p "$LOG_DIR" "$LAUNCH_AGENTS_DIR"
 
+escape_sed_replacement() {
+  printf '%s' "$1" | sed 's/[&#]/\\&/g'
+}
+
+xml_escape() {
+  local value="$1"
+  value="${value//&/&amp;}"
+  value="${value//</&lt;}"
+  value="${value//>/&gt;}"
+  printf '%s' "$value"
+}
+
+ESCAPED_SCRIPT_PATH="$(escape_sed_replacement "$(xml_escape "$SCRIPT_DIR/silence-watchdog.sh")")"
+ESCAPED_HOME="$(escape_sed_replacement "$(xml_escape "$HOME")")"
+
 sed \
   -e "s#__SHELL__#/bin/bash#g" \
-  -e "s#__SCRIPT_PATH__#$SCRIPT_DIR/silence-watchdog.sh#g" \
-  -e "s#__HOME__#$HOME#g" \
+  -e "s#__SCRIPT_PATH__#$ESCAPED_SCRIPT_PATH#g" \
+  -e "s#__HOME__#$ESCAPED_HOME#g" \
   "$TEMPLATE_PLIST" > "$INSTALLED_PLIST"
 
 # Idempotently unload an existing instance before bootstrapping the new plist.

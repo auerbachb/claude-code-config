@@ -52,22 +52,39 @@ rotate_log() {
   fi
 }
 
+rotate_log_if_needed() {
+  local pending_size="$1"
+  local size=0
+
+  if [[ -f "$LOG_FILE" ]]; then
+    size=$(file_size "$LOG_FILE")
+  fi
+  [[ -n "$size" ]] || size=0
+
+  if (( size + pending_size >= LOG_MAX_SIZE )); then
+    rm -f "${LOG_FILE}.1" 2>/dev/null || true
+    mv "$LOG_FILE" "${LOG_FILE}.1" 2>/dev/null || true
+  fi
+}
+
 write_log() {
   local elapsed_s="$1"
-  local ts
+  local ts entry pending_size
 
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   mkdir -p "$LOG_DIR"
-  rotate_log
-
-  jq -nc \
+  entry=$(jq -nc \
     --arg ts "$ts" \
     --arg sid "$SESSION_ID" \
     --arg cwd "$CWD" \
     --arg tool "$TOOL_NAME" \
     --argjson elapsed "$elapsed_s" \
-    '{ts: $ts, session_id: $sid, cwd: $cwd, elapsed_s: $elapsed, tool_name: $tool}' \
-    >> "$LOG_FILE"
+    '{ts: $ts, session_id: $sid, cwd: $cwd, elapsed_s: $elapsed, tool_name: $tool}')
+
+  pending_size=$(printf '%s\n' "$entry" | LC_ALL=C wc -c | tr -d ' ')
+  rotate_log_if_needed "$pending_size"
+
+  printf '%s\n' "$entry" >> "$LOG_FILE"
 }
 
 # Session-scoped heartbeat file in /tmp
