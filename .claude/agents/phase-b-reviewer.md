@@ -86,11 +86,11 @@ jq '.comments.conversation | map(select(.user.login == "coderabbitai[bot]"))' "$
 
 ### Rate-Limit Fast Path
 
-If check-runs show `conclusion: "failure"` with `output.title` containing "rate limit" (case-insensitive), OR commit statuses show rate-limit language → **check if BugBot (`cursor[bot]`) already posted a review** on any of the 3 endpoints. If yes, use BugBot review (set `reviewer: bugbot`, sticky assignment). If no BugBot review yet, continue polling for BugBot until 5 minutes from push time have elapsed (do NOT start a new 5-minute timer now — the window runs concurrently with CR's, so some or all of it may have already passed). When BugBot times out, run the Greptile Daily Budget Check below: if budget allows, trigger Greptile; if exhausted, fall back to self-review and report the blocker.
+If check-runs show `conclusion: "failure"` with `output.title` containing "rate limit" (case-insensitive), OR commit statuses show rate-limit language → **escalate immediately, regardless of elapsed minutes.** Rate-limit signals override CR's 12-minute timeout — do not wait it out. **Check if BugBot (`cursor[bot]`) already posted a review** on any of the 3 endpoints. If yes, use BugBot review (set `reviewer: bugbot`, sticky assignment). If no BugBot review yet, continue polling for BugBot until 10 minutes from push time have elapsed (do NOT start a new 10-minute timer now — the window runs concurrently with CR's, so some or all of it may have already passed). When BugBot times out, run the Greptile Daily Budget Check below: if budget allows, trigger Greptile; if exhausted, fall back to self-review and report the blocker.
 
 ### CR Timeout (Slow Path)
 
-If CR has not delivered a review after **7 minutes** of polling → **check if BugBot (`cursor[bot]`) already posted a review** (BugBot's 5-min window from push has already expired at this point). If yes, use BugBot review (set `reviewer: bugbot`, sticky assignment). If no BugBot review exists → run the Greptile Daily Budget Check below: if budget allows, trigger Greptile immediately (do NOT wait another 5 min); if budget exhausted, fall back to self-review and report the blocker. Sticky assignment applies at each tier.
+If CR has not delivered a review after **12 minutes** of polling → **check if BugBot (`cursor[bot]`) already posted a review** (BugBot's 10-min window from push has already expired at this point). If yes, use BugBot review (set `reviewer: bugbot`, sticky assignment). If no BugBot review exists → run the Greptile Daily Budget Check below: if budget allows, trigger Greptile immediately (do NOT wait another 10 min); if budget exhausted, fall back to self-review and report the blocker. Sticky assignment applies at each tier. Polling cadence stays 60 s; a clean CR check-run completion short-circuits earlier — exit immediately on completion, do not keep polling to 12 min.
 
 > **MANDATORY budget gate on both paths above.** The Greptile Daily Budget Check in the "Greptile Review Path" section below is NOT optional — it applies to every `@greptileai` trigger point, including CR fallbacks. Never post `@greptileai` without running the check first.
 
@@ -98,7 +98,7 @@ If CR has not delivered a review after **7 minutes** of polling → **check if B
 
 1 clean CR approval on the current HEAD SHA satisfies the gate. An "approval" means a CR review object with `state: "APPROVED"` AND `commit_id == <current HEAD SHA>`. Ack comments, empty thread snapshots, and CR check-run completion alone do NOT exit polling — see `cr-merge-gate.md` "Step 1" for the full explicit-approval and SHA-freshness rules.
 
-If no approval lands on the current SHA within the 7-minute timeout, re-trigger `@coderabbitai full review` once. After 2 failed re-triggers on the same SHA, fall through to the BugBot/Greptile fallback chain. Never trigger `@coderabbitai full review` more than twice per PR per hour.
+If no approval lands on the current SHA within the 12-minute timeout, re-trigger `@coderabbitai full review` once. After 2 failed re-triggers on the same SHA, fall through to the BugBot/Greptile fallback chain. Never trigger `@coderabbitai full review` more than twice per PR per hour.
 
 ## BugBot Review Path (when `reviewer` = `bugbot`)
 
@@ -110,7 +110,7 @@ Same shared `$STATE` bundle as the CR path. Filter by `.user.login == "cursor[bo
 
 **Completion:** check-run `status: "completed"` (any conclusion — BugBot uses `neutral` for reviews with findings). Also check for review objects from `cursor[bot]`.
 
-**Timeout:** 5 minutes from push. If no BugBot review after 5 min, run the Greptile Daily Budget Check below: if budget allows, trigger Greptile; if exhausted, fall back to self-review and report the blocker.
+**Timeout:** 10 minutes from push. Polling cadence stays 60 s; a `Cursor Bugbot` check-run with `status: "completed"` short-circuits the wait — exit polling as soon as the review lands, do not keep polling to 10 min. If no BugBot review after 10 min, run the Greptile Daily Budget Check below: if budget allows, trigger Greptile; if exhausted, fall back to self-review and report the blocker.
 
 ### BugBot Merge Gate
 
@@ -127,7 +127,7 @@ Use the shared helper — it tries the inline reply endpoint first, falls back t
 
 ### Re-Reviews
 
-After fixing BugBot findings and pushing, BugBot auto-reviews the new push. If auto-review doesn't fire within 5 min, trigger manually: `gh pr comment {{PR_NUMBER}} --body "@cursor review"`
+After fixing BugBot findings and pushing, BugBot auto-reviews the new push. If auto-review doesn't fire within 10 min, trigger manually: `gh pr comment {{PR_NUMBER}} --body "@cursor review"`
 
 ## Greptile Review Path (when `reviewer` = `greptile`)
 
@@ -151,7 +151,7 @@ Post a comment: `gh pr comment {{PR_NUMBER}} --body "@greptileai"`
 
 ### Polling
 
-Same shared `$STATE` bundle, filter by `.user.login == "greptile-apps[bot]"` across `.comments.reviews`, `.comments.inline`, `.comments.conversation`. Timeout: 5 minutes. Completion: review comments or 👍 emoji. Failure: 😕 emoji.
+Same shared `$STATE` bundle, filter by `.user.login == "greptile-apps[bot]"` across `.comments.reviews`, `.comments.inline`, `.comments.conversation`. Timeout: 10 minutes. Polling cadence stays 60 s — exit immediately when the review lands, do not keep polling to 10 min. Completion: review comments or 👍 emoji. Failure: 😕 emoji.
 
 ### Severity Classification (P0/P1/P2)
 
@@ -212,11 +212,11 @@ On completion, read-modify-write `{{HANDOFF_FILE}}`:
 
 ## Exit criteria — merge gate ONLY (MANDATORY)
 
-**You may NOT exit with `OUTCOME: clean` just because the current instant has no unresolved threads.** "0 unresolved threads right now" is a snapshot, not a merge-gate signal. After your last push in this phase, the HEAD SHA changed — every reviewer re-runs, and new findings commonly arrive 5–7 minutes later.
+**You may NOT exit with `OUTCOME: clean` just because the current instant has no unresolved threads.** "0 unresolved threads right now" is a snapshot, not a merge-gate signal. After your last push in this phase, the HEAD SHA changed — every reviewer re-runs, and new findings commonly arrive 10–12 minutes later.
 
 Before exiting, follow this checklist literally:
 
-1. If you pushed any commit during this phase: wait for the reviewer to respond to the new SHA. Full timeouts per `cr-github-review.md`: 7 min for CR, 5 min for BugBot, 5 min for Greptile.
+1. If you pushed any commit during this phase: wait for the reviewer to respond to the new SHA. Full timeouts per `cr-github-review.md`: 12 min for CR, 10 min for BugBot, 10 min for Greptile.
 2. If the response arrives with findings: invoke `/fixpr` to handle them **in this same phase** before exiting. Do not kick the can to a replacement unless you hit token exhaustion (see "Token Exhaustion Protocol" below).
 3. Exit with `OUTCOME: merge_ready` ONLY when the merge gate is met per `cr-merge-gate.md` ("Polling exit criterion" and Step 1) on the current HEAD — specifically one of:
    - 1 explicit clean CR approval on the current HEAD SHA (CR path — approval's `commit_id` must match current HEAD)

@@ -60,11 +60,11 @@ If **ANY** of the conditions below hold, invoke `/fixpr` and do NOT request a ne
 - **Check merge metadata every cycle.** Query `mergeable` and `mergeStateStatus` via `gh pr view N --json mergeable,mergeStateStatus` — these drive `/fixpr` trigger conditions 3 and 4.
 - **Check commit status every cycle.** Query `repos/{owner}/{repo}/commits/{SHA}/check-runs` filtered to `name == "CodeRabbit"`; fallback: `/statuses` filtered to `context ~ "CodeRabbit"`. Full commands: `.claude/reference/cr-polling-commands.md`.
   - **Completion signal:** `status: "completed"` + `conclusion: "success"` = review done. Definitive signal.
-  - **Fast-path rate limit:** check-run `conclusion: "failure"` with "rate limit" in `output.title`, OR status `state: "failure"`/`"error"` with "rate limit" in `description` — **check BugBot first** (see `bugbot.md`). If BugBot already posted a review, use it. If not, wait up to 5 min **from push time** for BugBot. If BugBot also times out, trigger Greptile. Sticky assignment applies at each tier.
+  - **Fast-path rate limit:** check-run `conclusion: "failure"` with "rate limit" in `output.title`, OR status `state: "failure"`/`"error"` with "rate limit" in `description` — **escalate immediately, regardless of elapsed minutes.** Rate-limit signals override the timeout: do not wait out CR's 12-minute window. **Check BugBot first** (see `bugbot.md`). If BugBot already posted a review, use it. If not, wait up to 10 min **from push time** for BugBot. If BugBot also times out, trigger Greptile. Sticky assignment applies at each tier.
   - **Ack ≠ completion.** "Actions performed — Full review triggered" = CR started. "CodeRabbit — Review completed" CI check = CR finished.
 - **CR username:** `coderabbitai[bot]` (with `[bot]` suffix). Filter by `.user.login == "coderabbitai[bot]"` — NOT bare `coderabbitai`.
 - **Watermark:** Track highest review ID from `pulls/{N}/reviews`. New reviews can have inline comment IDs lower than previous reviews (different ID sequences). For `issues/{N}/comments`, track by comment ID.
-- **Hard timeout: 7 minutes.** No CR review after 7 min → check BugBot (see `bugbot.md`). If BugBot already posted a review, use it. If not, trigger Greptile immediately (BugBot's 5-min window from push has already elapsed). Sticky assignment applies at each tier.
+- **Hard timeout: 12 minutes.** Cadence stays 60 s; a clean CR `status: "completed"` exits polling immediately — don't keep polling to 12 min after completion. No CR review after 12 min → check BugBot (see `bugbot.md`). If BugBot already posted a review, use it. If not, trigger Greptile immediately (BugBot's 10-min window has already elapsed). Sticky assignment applies at each tier.
 
 ### CI Health Check (MANDATORY — every poll cycle)
 
@@ -80,10 +80,10 @@ If **ANY** of the conditions below hold, invoke `/fixpr` and do NOT request a ne
 
 **Review chain:** CR (primary) → BugBot (second tier, free) → Greptile (last resort, paid) → self-review (emergency).
 
-BugBot auto-runs on every push — poll for its reviews alongside CR. When CR fails (rate-limited or 7-min timeout), check BugBot before triggering Greptile; BugBot's 5-min timeout runs from push time, concurrent with CR's window. See `bugbot.md` and `greptile.md` for timing and trigger details.
+BugBot auto-runs on every push — poll for its reviews alongside CR. When CR fails (rate-limited or 12-min timeout), check BugBot before triggering Greptile; BugBot's 10-min timeout runs from push time, concurrent with CR's window (BugBot's 10 still fits inside CR's 12). See `bugbot.md` and `greptile.md` for timing and trigger details.
 
 - **Sticky assignment:** CR fail → BugBot owns the PR. If BugBot also fails → Greptile owns permanently. Do not switch back up the chain.
-- **If all three fail** (CR rate-limited + BugBot 5-min timeout + Greptile 5-min timeout): fall back to **self-review**. Self-review does NOT satisfy the merge gate.
+- **If all three fail** (CR rate-limited + BugBot 10-min timeout + Greptile 10-min timeout): fall back to **self-review**. Self-review does NOT satisfy the merge gate.
 - Tell the user which fallback was used and why.
 
 ### Processing CR Feedback

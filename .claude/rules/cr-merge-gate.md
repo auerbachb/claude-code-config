@@ -28,11 +28,11 @@ The merge gate depends on which reviewer owns the PR:
   - "0 unresolved threads right now" without an APPROVED review on the current SHA.
   - Absence of findings in the first N minutes after triggering (CR can run slowly or time out).
   - CR check-run `status: "completed"` without an accompanying APPROVED review object on the current SHA.
-- **Re-trigger policy (unchanged):** if no approval on the current SHA within the 7-minute polling timeout, re-trigger `@coderabbitai full review` once. Max 2 explicit triggers per PR per hour. After 2 failed re-triggers on the same SHA, fall back to BugBot → Greptile → self-review per the three-tier chain.
+- **Re-trigger policy (unchanged):** if no approval on the current SHA within the 12-minute polling timeout, re-trigger `@coderabbitai full review` once. Max 2 explicit triggers per PR per hour. After 2 failed re-triggers on the same SHA, fall back to BugBot → Greptile → self-review per the three-tier chain. Rate-limit signals override the timeout — escalate immediately on a rate-limit signal regardless of elapsed minutes.
 
 **BugBot path** (CR failed, BugBot responded, Greptile was never triggered — sticky assignment, see `bugbot.md`):
 - 1 clean BugBot review on the current HEAD SHA satisfies the gate (BugBot's completion signals are reliable).
-- After fixing BugBot findings, BugBot auto-reviews the new push. If auto-review doesn't fire within 5 min, trigger manually via `@cursor review`.
+- After fixing BugBot findings, BugBot auto-reviews the new push. If auto-review doesn't fire within 10 min, trigger manually via `@cursor review`.
 - Stay on BugBot — do not switch back to CR. Ignore late CR reviews.
 
 **Greptile path** (Greptile was triggered at any point — both CR and BugBot failed — sticky assignment, see `greptile.md`):
@@ -43,7 +43,7 @@ The merge gate depends on which reviewer owns the PR:
 - Stay on Greptile — do not switch back to CR or BugBot. Ignore any late CR/BugBot reviews.
 - Max 3 Greptile reviews per PR (initial + up to 2 P0 re-reviews). At 3 with persistent P0, self-review and report blocker.
 
-**If CR, BugBot, and Greptile are all down** (CR rate-limited/timed out + BugBot 5-min timeout + Greptile 5-min timeout): perform a self-review for risk reduction. A clean self-review does NOT satisfy the merge gate — report the blocker to the user.
+**If CR, BugBot, and Greptile are all down** (CR rate-limited/timed out + BugBot 10-min timeout + Greptile 10-min timeout): perform a self-review for risk reduction. A clean self-review does NOT satisfy the merge gate — report the blocker to the user.
 
 - **How to detect a clean CR approval:** After triggering `@coderabbitai full review`, watch for these signals in order:
   1. **Ack (review started):** CR posts an issue comment (on `issues/{N}/comments`) with "Actions performed — Full review triggered." This means CR **started** the review — it is NOT a completion signal and NOT an approval.

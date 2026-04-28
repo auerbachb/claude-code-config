@@ -357,7 +357,7 @@ If missing, reconstruct state from GitHub API.
 4. Poll for CR review every 60s on all 3 endpoints. Filter by coderabbitai[bot].
 5. Check commit status for CR completion signal and rate-limit fast-path.
 6. If CR rate-limited (fast-path): trigger Greptile immediately (budget check first).
-7. If 7 minutes with no CR review: trigger Greptile (budget check first).
+7. If 12 minutes with no CR review: trigger Greptile (budget check first). Polling cadence stays 60 s; a clean CR check-run completion short-circuits the wait. Rate-limit signals override the timeout — escalate immediately on a rate-limit signal regardless of elapsed minutes.
 8. Process findings: fix all valid ones in ONE commit, push once, reply to every thread, resolve threads via GraphQL.
 9. Merge gate:
    - CR-only: 1 explicit CR APPROVED review on the current HEAD SHA (commit_id must match HEAD; acks / check-run completion alone do NOT count).
