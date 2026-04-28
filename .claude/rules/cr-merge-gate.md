@@ -70,7 +70,7 @@ Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses
 
 ## Step 2 — Verify every Test Plan checkbox (MANDATORY — do NOT skip)
 
-> This is the **immediate next step** after CI passes (Step 1b). Do not ask the user about merging until this is done.
+> After Step 1c passes (`merge-gate.sh` enforces resolved threads), verify AC before merge.
 >
 > 1. Fetch the PR body via `gh pr view N --json body`
 > 2. Parse **every** checkbox in the **Test plan** section of the PR description
