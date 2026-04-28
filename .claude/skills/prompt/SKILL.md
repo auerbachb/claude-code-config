@@ -1,15 +1,14 @@
 ---
 name: prompt
-description: Analyze GitHub issues to assess complexity, classify effort tier, recommend model selection, and generate tailored prompts with pre-extracted context. Use when starting work, planning sprints, estimating effort, right-sizing model choice, or analyzing issue batches. When called with no args in a PM thread, auto-detects suggested issues and partitions subagent candidates from thread prompts.
+description: Analyze GitHub issues to assess complexity, recommend a model tier, and generate tailored prompts with pre-extracted context. Use when starting work, planning sprints, right-sizing model choice, or analyzing issue batches. When called with no args in a PM thread, auto-detects suggested issues and partitions subagent candidates from thread prompts.
 triggers:
   - analyze issue
   - generate prompt
-  - estimate effort
   - complexity check
 argument-hint: "[#123 #124 ...] (issue numbers, or omit for PM auto-detect)"
 ---
 
-Analyze one or more GitHub issues, classify complexity, and produce a copy-paste-ready prompt with a model/effort recommendation. The goal is quality-conservative right-sizing — never under-resource a task, but don't waste Opus 4.6 1M tokens on a typo fix.
+Analyze one or more GitHub issues, classify complexity, and produce a copy-paste-ready prompt with a model recommendation. The goal is quality-conservative right-sizing — never under-resource a task, but don't waste Opus 4.7 1M tokens on a typo fix.
 
 ## Step 0: Parse Arguments and Detect Context
 
@@ -120,7 +119,7 @@ Apply this decision tree. When signals conflict, choose the **higher** tier (con
 
 **Batch handling rule:** First classify each issue independently to produce a per-issue tier (`issue_tier`). Then compute a batch tier from the most complex `issue_tier` in the set. A batch of 3 issues where one is Heavy makes the batch tier Heavy. The batch tier is used for thread-prompt output formatting and checkpoint inheritance, while per-issue decisions (like Step 5.5 subagent partitioning) must use `issue_tier`.
 
-### Heavy — Opus 4.6 1M / High effort
+### Heavy — Opus 4.7 1M
 
 Assign Heavy if ANY of these are true:
 - `touches_rules` is true (rule files are highest-stakes)
@@ -130,7 +129,7 @@ Assign Heavy if ANY of these are true:
 - `file_count > 5`
 - `dependency_count > 2`
 
-### Standard — Opus 4.6 / Medium effort
+### Standard — Opus 4.7
 
 Assign Standard if ANY of these are true (and Heavy was not triggered):
 - `file_count` is 2–5
@@ -139,20 +138,11 @@ Assign Standard if ANY of these are true (and Heavy was not triggered):
 - Issue body is >200 words with structural patterns (includes a user story, describes a new feature via keywords like "implement", "add", "support")
 - `is_multi_issue` with mixed complexity (at least one non-trivial issue that didn't trigger Heavy)
 
-### Quick — Haiku 4.5 / Low effort
+### Light — Sonnet 4.6
 
-Assign Quick only if ALL of these are true (evaluated before Light to prevent Light's broader conditions from preempting):
-- `scope_keywords` is non-empty AND every element is exclusively from: "typo", "rename", "comment", "formatting"
+Assign Light if ANY of these are true (and Heavy/Standard were not triggered):
 - `file_count` is 0–1
-- `ac_count` ≤ 2
-- `dependency_count` is 0
-- No orchestration, rule, or skill signals
-
-### Light — Sonnet 4.6 / Medium effort
-
-Assign Light if ANY of these are true (and Heavy/Standard/Quick were not triggered):
-- `file_count` is 0–1
-- `scope_keywords` include "config", "doc update", "README"
+- `scope_keywords` include "typo", "rename", "comment", "formatting", "config", "doc update", "README"
 - Issue describes a straightforward single-file addition or modification
 
 ### Fallback
@@ -167,13 +157,15 @@ When `PM_AUTO_DETECT=true`, partition the classified issues into two groups usin
 
 | Signal | Subagent-eligible threshold |
 |--------|---------------------------|
-| `file_count` | 0–2 |
+| `file_count` | 0–1 |
 | `ac_count` | ≤ 3 |
-| `dependency_count` | 0 (for that issue — count only dependencies referencing or referenced by this specific issue, not the batch total) |
+
+| `dependency_count` | 0 (count only dependencies referencing or referenced by this specific issue, not the batch total) |
+
 | `touches_rules` | `false` |
 | `touches_claude_md` | `false` |
 | `has_orchestration_keywords` | `false` |
-| `issue_tier` | Quick or Light |
+| `issue_tier` | Light |
 
 Use per-issue signal values from Steps 4–5, including `issue_tier` (the per-issue tier from the classification decision tree — not the batch tier). Do not use batch-aggregated values for per-issue gating. Apply the table as a gate: if ANY signal exceeds its threshold, the issue is **not** subagent-eligible.
 
@@ -228,7 +220,7 @@ Output the Tier Recommendation as plain text first (skip if all issues are subag
 ```
 ## Tier Recommendation
 
-**{TIER_NAME}** — {MODEL} / {EFFORT} effort
+**{TIER_NAME}** — {MODEL}
 
 Rationale: {1-line explanation of why this tier was selected, citing the dominant signal}
 ```
@@ -259,7 +251,7 @@ Then, for each issue, output a self-contained prompt block. Use tilde fences (`~
 {- For any tier involving PRs: "Read `.claude/rules/cr-github-review.md` for polling endpoints and thread resolution, and `.claude/rules/cr-merge-gate.md` for the authoritative merge gate (1 explicit CR APPROVED review on current HEAD SHA, with SHA freshness + explicit-approval-only)."}
 {- For any tier involving CR local review: "Read `.claude/rules/cr-local-review.md` — specifically the fix loop and exit criteria (1 clean pass)."}
 {- For issue creation: "Read `.claude/rules/issue-planning.md` — specifically the planning flow and plan merge step."}
-{- For Light/Quick tiers with no protocol involvement: "No special protocol rules needed — standard coding workflow."}
+{- For Light tier with no protocol involvement: "No special protocol rules needed — standard coding workflow."}
 
 ---
 
@@ -340,5 +332,41 @@ When called with no args in a PM thread, auto-detects recently suggested issues,
 /prompt
 ```
 Falls back to asking: "Which issue(s) should I analyze?"
+
+### Sample output
+
+For an issue with `touches_skill=true` and `ac_count=4`, the skill emits the Tier Recommendation as plain text first, then a self-contained prompt block in a tilde fence. The recommendation rendered to the chat looks like:
+
+> **Standard** — Opus 4.7
+>
+> Rationale: touches_skill=true (modifies a file under .claude/skills/) drives Standard.
+
+The prompt block that follows:
+
+~~~
+### Issue #110: {Title}
+
+**Acceptance Criteria:**
+{checklist items from the issue body}
+
+**Dependencies:** {relationships, or "None detected"}
+
+**Labels:** {comma-separated, or "None"}
+
+---
+
+## Pre-extracted Context
+
+### Files to read/modify
+{files from CR plan, or exploration note}
+
+### Relevant rules
+{rule files relevant to the tier}
+
+---
+
+## CR Implementation Plan
+{CR plan verbatim, or "No CodeRabbit implementation plan available."}
+~~~
 
 **Note:** This skill produces a recommendation. The user decides whether to follow the tier suggestion. When in doubt, the skill errs toward the higher tier — it's better to slightly over-resource than to get instruction adherence failures on a complex task.
