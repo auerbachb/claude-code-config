@@ -331,4 +331,40 @@ When called with no args in a PM thread, auto-detects recently suggested issues,
 ```
 Falls back to asking: "Which issue(s) should I analyze?"
 
+### Sample output
+
+For an issue with `touches_skill=true` and `ac_count=4`, the skill emits the Tier Recommendation as plain text first, then a self-contained prompt block in a tilde fence. The recommendation rendered to the chat looks like:
+
+> **Standard** — Opus 4.7
+>
+> Rationale: touches_skill=true (modifies a file under .claude/skills/) drives Standard.
+
+The prompt block that follows:
+
+~~~
+### Issue #110: {Title}
+
+**Acceptance Criteria:**
+{checklist items from the issue body}
+
+**Dependencies:** {relationships, or "None detected"}
+
+**Labels:** {comma-separated, or "None"}
+
+---
+
+## Pre-extracted Context
+
+### Files to read/modify
+{files from CR plan, or exploration note}
+
+### Relevant rules
+{rule files relevant to the tier}
+
+---
+
+## CR Implementation Plan
+{CR plan verbatim, or "No CodeRabbit implementation plan available."}
+~~~
+
 **Note:** This skill produces a recommendation. The user decides whether to follow the tier suggestion. When in doubt, the skill errs toward the higher tier — it's better to slightly over-resource than to get instruction adherence failures on a complex task.
