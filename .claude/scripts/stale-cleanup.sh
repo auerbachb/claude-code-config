@@ -165,16 +165,24 @@ is_protected() {
 # trip; for a repo with thousands of open PRs it stays correct without
 # silently dropping entries.
 OPEN_PR_BRANCHES=""
+GH_TMPERR=""
+trap 'rm -f "$GH_TMPERR"' EXIT
+GH_TMPERR="$(mktemp -t stale-cleanup-gh-stderr.XXXXXX)"
+
 gh_pr_page() {
   # gh pr list with --json forces non-interactive mode; --limit 1000 is the
   # max gh accepts per call. We use the search API via --search to enable
   # cursor-style pagination through `created:<timestamp` filters.
+  # Stderr is captured (not silenced) so fetch_open_prs can distinguish
+  # "no PRs" from "gh failed" — silently swallowing errors here would
+  # let the open-PR safety check return false for every branch and
+  # delete branches that actually have open PRs.
   local cursor="$1"
   local query="state:open"
   if [[ -n "$cursor" ]]; then
     query="$query created:<$cursor"
   fi
-  gh pr list --search "$query" --limit 1000 --json headRefName,createdAt 2>/dev/null
+  gh pr list --search "$query" --limit 1000 --json headRefName,createdAt 2>"$GH_TMPERR"
 }
 fetch_open_prs() {
   local cursor=""
@@ -182,10 +190,20 @@ fetch_open_prs() {
   local accumulated=""
   while :; do
     local page
-    page="$(gh_pr_page "$cursor")" || break
-    [[ "$page" == "[]" || -z "$page" ]] && break
+    if ! page="$(gh_pr_page "$cursor")"; then
+      echo "error: gh pr list failed — refusing to run with an unverified open-PR set" >&2
+      sed 's/^/  gh: /' "$GH_TMPERR" >&2 || true
+      exit 4
+    fi
+    [[ -z "$page" ]] && break
+    local count
+    if ! count="$(printf '%s' "$page" | jq 'length')"; then
+      echo "error: gh pr list returned non-JSON output — refusing to proceed" >&2
+      exit 4
+    fi
+    (( count == 0 )) && break
     local refs
-    refs="$(printf '%s' "$page" | jq -r '.[].headRefName' 2>/dev/null || true)"
+    refs="$(printf '%s' "$page" | jq -r '.[].headRefName')"
     if [[ -n "$refs" ]]; then
       if [[ -z "$accumulated" ]]; then
         accumulated="$refs"
@@ -194,12 +212,10 @@ fetch_open_prs() {
       fi
     fi
     # Page < 1000 entries means no more results.
-    local count
-    count="$(printf '%s' "$page" | jq 'length' 2>/dev/null || echo 0)"
     (( count < 1000 )) && break
     # Advance cursor to the oldest createdAt we just saw.
     prev_cursor="$cursor"
-    cursor="$(printf '%s' "$page" | jq -r '[.[].createdAt] | min' 2>/dev/null || echo "")"
+    cursor="$(printf '%s' "$page" | jq -r '[.[].createdAt] | min')"
     [[ -z "$cursor" || "$cursor" == "null" ]] && break
     # Guard against pathological case where 1000+ PRs share the same
     # createdAt timestamp — without this check we'd refetch the same page
@@ -499,6 +515,10 @@ FAILURES=0
 emit_text
 echo
 
+# Empty-array guard: under `set -u`, expanding "${ARR[@]}" on an empty
+# array errors with `unbound variable` on bash 3.2 (macOS system bash).
+# Skip the loop entirely when the category has no stale items.
+if (( ${#STALE_WORKTREES[@]} > 0 )); then
 for entry in "${STALE_WORKTREES[@]}"; do
   IFS="$US" read -r p b _ <<<"$entry"
   # TOCTOU re-check: between classification (Phase --check) and apply, the
@@ -522,7 +542,9 @@ for entry in "${STALE_WORKTREES[@]}"; do
     FAILURES=$(( FAILURES + 1 ))
   fi
 done
+fi
 
+if (( ${#STALE_LOCAL_BRANCHES[@]} > 0 )); then
 for entry in "${STALE_LOCAL_BRANCHES[@]}"; do
   IFS="$US" read -r b _ <<<"$entry"
   # TOCTOU re-check: same defense as worktrees — a PR opened between
@@ -538,7 +560,9 @@ for entry in "${STALE_LOCAL_BRANCHES[@]}"; do
     FAILURES=$(( FAILURES + 1 ))
   fi
 done
+fi
 
+if (( ${#STALE_REMOTE_BRANCHES[@]} > 0 )); then
 for entry in "${STALE_REMOTE_BRANCHES[@]}"; do
   IFS="$US" read -r ref _ <<<"$entry"
   branch="${ref#origin/}"
@@ -554,6 +578,7 @@ for entry in "${STALE_REMOTE_BRANCHES[@]}"; do
     FAILURES=$(( FAILURES + 1 ))
   fi
 done
+fi
 
 if (( FAILURES > 0 )); then exit 2; fi
 exit 0
