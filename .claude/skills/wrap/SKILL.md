@@ -1,23 +1,25 @@
 ---
 name: wrap
-description: End-of-session command — verify no unresolved findings, squash merge, detect follow-ups, extract lessons, and clean up the worktree.
+description: End-of-session command — verify no unresolved findings, squash merge, sync main, detect follow-ups, and extract lessons.
 ---
 
-Wrap up the current PR and session. This is the "we're done here" command that handles everything from final verification through worktree cleanup.
+Wrap up the current PR and session. This is the "we're done here" command that handles final verification through merge, root-main sync, follow-up detection, and lessons.
+
+`/wrap` does **not** delete the running worktree or its branch — leaving the thread alive so it can keep working. Stale worktrees and stale local/remote branches are reaped out-of-band by `/pm-update`, which calls `.claude/scripts/stale-cleanup.sh`.
 
 ## When to use /wrap vs /merge
 
-- Use **/wrap** at end-of-session. Handles merge + follow-up detection + lessons + worktree cleanup in one command.
-- Use **/merge** for a quick mid-session merge when you'll keep working. Skips the cleanup steps and only runs outside worktrees.
-- /wrap includes everything /merge does, plus the cleanup. Don't run both.
+- Use **/wrap** at end-of-session. Handles merge + root-main sync + follow-up detection + lessons.
+- Use **/merge** for a quick mid-session merge when you'll keep working. Skips follow-up detection and lessons.
+- /wrap includes everything /merge does, plus follow-ups and lessons. Don't run both.
 
 ## Execution Model
 
-`/wrap` is a set-and-forget command. Once invoked, it runs all 5 phases end-to-end without mid-run confirmation prompts. It stops early only for explicit stop conditions (for example: no PR on current branch, unresolved findings, failed merge gate, CI failure, AC verification failure, or rebase detected).
+`/wrap` is a set-and-forget command. Once invoked, it runs all 4 phases end-to-end without mid-run confirmation prompts. It stops early only for explicit stop conditions (for example: no PR on current branch, unresolved findings, failed merge gate, CI failure, AC verification failure, or rebase detected).
 
 > **Always:** Execute all phases end-to-end; proceed immediately between phases when no blocker exists.
 > **Ask first:** Never — all phases are autonomous once /wrap is invoked.
-> **Never:** Stop to ask "should I continue?" between phases; insert confirmation prompts for non-blocker transitions.
+> **Never:** Stop to ask "should I continue?" between phases; insert confirmation prompts for non-blocker transitions. Delete the running worktree or its branch — that's `/pm-update`'s job, not /wrap's.
 
 ### Phase Transition Autonomy
 
@@ -26,8 +28,7 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 | Phase 1 complete (no unresolved findings) | Begin Phase 2 | **Always do** |
 | Phase 2 complete | Begin Phase 3 | **Always do** |
 | Phase 3 follow-ups processed | Begin Phase 4 | **Always do** |
-| Phase 4 lessons complete (or skipped as trivial) | Begin Phase 5 | **Always do** |
-| Phase 5 cleanup complete | Output Step 5.3 final report | **Always do** |
+| Phase 4 lessons complete (or skipped as trivial) | Output final report | **Always do** |
 | Unresolved reviewer findings detected (Phase 1) | Stop and report | **Stop and report** |
 | Merge gate not met (Phase 2.1) | Stop and report | **Stop and report** |
 | AC checkbox verification fails (Phase 2.2) | Stop and report | **Stop and report** |
@@ -94,13 +95,6 @@ GATE_EXIT=$?
 - Exit `3` → PR not found; skip to Phase 3 as described above.
 - Exit `2`/`4` → script or gh error; surface the stderr message.
 
-Also extract and store the feature branch name and base branch for use in Phase 5 cleanup:
-
-```bash
-BRANCH_NAME=$(gh pr view --json headRefName --jq '.headRefName')
-BASE_BRANCH=$(gh pr view --json baseRefName --jq '.baseRefName')
-```
-
 ### Step 2.2: Verify acceptance criteria
 
 Use the shared `ac-checkboxes.sh` helper to parse and tick Test Plan items:
@@ -160,7 +154,7 @@ gh api "repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID}" --jq '.output.summary'
 gh pr merge --squash
 ```
 
-Do NOT use `--delete-branch` here. That flag attempts local branch deletion while the worktree is still active, which fails because git refuses to delete a branch checked out in any worktree. Branch cleanup is handled explicitly in Phase 5 after the worktree is removed.
+Do NOT use `--delete-branch`. The current worktree is still checked out on the feature branch — git refuses to delete a branch held by a worktree, and `/wrap` no longer touches the worktree at all. The branch is cleaned up out-of-band by `/pm-update` once it ages past the stale threshold (see `.claude/scripts/stale-cleanup.sh`).
 
 ### Step 2.5: Sync root repo main (aggressive reset)
 
@@ -169,7 +163,7 @@ After merging, aggressively align the root repo's local `main` with `origin/main
 1. **Quarantine any dirty state** on root main via `dirty-main-guard.sh --quarantine` (creates a `recovery/dirty-main-*` branch if needed — nothing is lost).
 2. **Aggressively reset** root main to `origin/main` via `main-sync.sh --reset`. This fetches origin, aborts loudly if local main has unpushed commits (belt-and-suspenders for bypasses of the `#323` pre-commit hook), and otherwise `git reset --hard origin/main`.
 
-**Capture both status lines for the final report in Step 5.3.**
+**Capture both status lines for the final report in Phase 4.**
 
 ```bash
 # /wrap runs from inside a worktree. dirty-main-guard.sh resolves the root
@@ -203,7 +197,7 @@ See `.claude/scripts/main-sync.sh --help` and `.claude/scripts/dirty-main-guard.
 
 **If `MAIN_SYNC_STATUS` starts with `aborted:`** (local main has unpushed commits that didn't come from origin), do NOT attempt recovery automatically. Surface the full status line in the final report so the user can run `git log origin/main..main` against the root repo and decide. The PR merge itself has already succeeded — main-sync failure does not un-merge anything.
 
-Store `MAIN_SYNC_STATUS` and `QUARANTINE_STATUS` for the final report — both values MUST appear in Step 5.3 output.
+Store `MAIN_SYNC_STATUS` and `QUARANTINE_STATUS` for the final report at the end of Phase 4.
 
 ## Phase 3: Follow-Up Detection and Creation
 
@@ -355,7 +349,7 @@ Calculate a complexity signal:
 
 ### Step 4.2: Run lessons (or skip)
 
-**If trivial:** Output "Clean session — no lessons to capture." and skip to Phase 5.
+**If trivial:** Output "Clean session — no lessons to capture." and skip to Step 4.3 (final report).
 
 **If non-trivial:** Reflect on the session:
 
@@ -381,39 +375,9 @@ Present the summary:
 - <things noted but not actionable>
 ```
 
-After lessons (or skip): proceed immediately to Phase 5 — do not ask.
+After lessons (or skip): emit the final report below — do not ask.
 
-## Phase 5: Worktree Cleanup
-
-### Step 5.1: Remove the worktree
-
-Use `ExitWorktree` with `action: "remove"` to delete the worktree directory. This must happen **before** local branch deletion — git refuses to delete a branch that is currently checked out in any worktree.
-
-If `ExitWorktree` reports uncommitted changes, discard them — by this point all meaningful work has been merged.
-
-### Step 5.2: Delete the local branch
-
-After the worktree is removed, the branch is no longer checked out anywhere and can be safely deleted. Run on the root repo:
-
-```bash
-CURRENT_ROOT_BRANCH=$(git -C "$ROOT_REPO" branch --show-current)
-if [ "$CURRENT_ROOT_BRANCH" = "$BRANCH_NAME" ]; then
-  git -C "$ROOT_REPO" checkout "$BASE_BRANCH" || echo "Warning: could not checkout $BASE_BRANCH before deleting $BRANCH_NAME"
-fi
-git -C "$ROOT_REPO" branch -D "$BRANCH_NAME" || echo "Warning: local branch deletion failed (may already be deleted) — skipping"
-```
-
-Use `-D` (force) rather than `-d` — squash merges rewrite history so the branch commits are not reachable from `main`, and `-d` will always fail post-squash.
-
-If this fails (branch already deleted or never existed locally), treat as non-fatal.
-
-The remote branch is deleted by GitHub's auto-delete-on-merge setting. If that is not enabled, delete it manually — treat failure as non-fatal (branch may already be deleted, or permissions/network may prevent it):
-
-```bash
-git -C "$ROOT_REPO" push origin --delete "$BRANCH_NAME" || echo "Warning: remote branch deletion failed (may already be deleted) — skipping"
-```
-
-### Step 5.3: Final report
+### Step 4.3: Final report
 
 ```
 ## Wrap-Up Complete
@@ -421,8 +385,8 @@ git -C "$ROOT_REPO" push origin --delete "$BRANCH_NAME" || echo "Warning: remote
 - **PR #{N}** merged ({title})
 - **Main quarantine** {QUARANTINE_STATUS from Step 2.5 — e.g. "clean" (literal output of `dirty-main-guard.sh --check` on a clean main), "quarantined: recovery/dirty-main-20260424-003012 (uncommitted)", or "no-op: main is clean" (only produced if `--quarantine` ran on an already-clean tree)}
 - **Main branch** {MAIN_SYNC_STATUS from Step 2.5 — e.g. "reset abc1234 → def5678", "up to date (abc1234)", "aborted: local main has 1 unpushed commit(s) — inspect: git log origin/main..main, resolve manually before re-running", or "failed: ..."}
-- **Branch** deleted
 - **Follow-ups:** {summary or "none"}
 - **Lessons:** {summary or "clean session"}
-- **Worktree** removed
 ```
+
+The worktree and feature branch are intentionally left in place. They are reaped out-of-band by `/pm-update`'s stale-cleanup pass once they age past the threshold (default 7 days, configurable via `STALE_DAYS`). See `.claude/scripts/stale-cleanup.sh --help`.
