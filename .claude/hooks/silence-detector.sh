@@ -39,19 +39,6 @@ parse_json_field() {
   printf '%s' "$STDIN_JSON" | jq -r "$field // empty" 2>/dev/null
 }
 
-rotate_log() {
-  [[ -f "$LOG_FILE" ]] || return 0
-
-  local size
-  size=$(file_size "$LOG_FILE")
-  [[ -n "$size" ]] || return 0
-
-  if (( size >= LOG_MAX_SIZE )); then
-    rm -f "${LOG_FILE}.1" 2>/dev/null || true
-    mv "$LOG_FILE" "${LOG_FILE}.1" 2>/dev/null || true
-  fi
-}
-
 rotate_log_if_needed() {
   local pending_size="$1"
   local size=0
