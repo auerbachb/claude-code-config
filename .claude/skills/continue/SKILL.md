@@ -169,8 +169,8 @@ gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
     ```bash
     .claude/scripts/reviewer-of.sh "$PR_NUM" --sticky bugbot
     ```
-  - BugBot has NOT posted AND <5 min since push → `[ACTION]` — Waiting up to 5 min for BugBot's auto-review. Poll every 60 s.
-  - BugBot has NOT posted AND ≥5 min since push → BugBot timed out. Fall through to Greptile:
+  - BugBot has NOT posted AND <10 min since push → `[ACTION]` — Waiting up to 10 min for BugBot's auto-review. Poll every 60 s.
+  - BugBot has NOT posted AND ≥10 min since push → BugBot timed out. Fall through to Greptile:
     ```bash
     gh pr comment "$PR_NUM" --body "@greptileai"
     .claude/scripts/reviewer-of.sh "$PR_NUM" --sticky greptile
@@ -181,10 +181,10 @@ gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
 - CR has finished reviewing. Check for findings (Step 7).
 
 **Review pending:** If no completion signal and no rate-limit signal:
-- `[ACTION]` — CR review is still pending. Polling every 60 seconds (7-minute timeout).
+- `[ACTION]` — CR review is still pending. Polling every 60 seconds (12-minute timeout). A clean CR check-run completion short-circuits the timeout wait — but the merge gate still requires an explicit `APPROVED` review on the current HEAD SHA (per `cr-merge-gate.md` Step 1); completion alone does not satisfy it.
 - Poll all 3 endpoints each cycle for new comments from `coderabbitai[bot]`.
-- Check for rate-limit signals on every poll cycle.
-- After 7 minutes with no review content and no rate-limit signal: `[ACTION]` — CR timed out. Check BugBot (same query as rate-limit path above). If BugBot has posted a review, persist `--sticky bugbot` and go to the BugBot section. If BugBot has also timed out (≥5 min since push), fall through to Greptile.
+- Check for rate-limit signals on every poll cycle. Rate-limit signals override the timeout — escalate immediately regardless of elapsed minutes.
+- After 12 minutes with no review content and no rate-limit signal: `[ACTION]` — CR timed out. Check BugBot (same query as rate-limit path above). If BugBot has posted a review, persist `--sticky bugbot` and go to the BugBot section. If BugBot has also timed out (≥10 min since push), fall through to Greptile.
 
 ### If PR is on BugBot:
 
@@ -208,11 +208,8 @@ gh api "repos/{owner}/{repo}/commits/$SHA/check-runs" \
 
 - BugBot has posted findings on `$SHA` → `[DONE]` — BugBot review received. Process findings (Step 7). After fixes are pushed, BugBot auto-reviews the new push; return to this section on the new SHA.
 - BugBot has posted a clean review (check-run `completed` with no finding comments) on `$SHA` → `[DONE]` — merge gate met (1 clean pass is sufficient for the BugBot path). Proceed to merge verification.
-- No BugBot response AND <5 min since push → `[ACTION]` — Polling for BugBot (5-min timeout from push). Poll every 60 s.
-- No BugBot response AND ≥5 min since push → BugBot timed out. Trigger manual re-review once; if still silent after another 5 min, fall through to Greptile:
-  ```bash
-  gh pr comment "$PR_NUM" --body "@cursor review"
-  ```
+- No BugBot response AND <10 min since push → `[ACTION]` — Polling for BugBot (10-min timeout from push). Poll every 60 s.
+- No BugBot response AND ≥10 min since push → BugBot timed out. Fall through to Greptile immediately (after the Greptile budget gate). Do NOT extend the wait by triggering a manual `@cursor review` retry — the 10-min window from push is the hard timeout.
 - Stay on BugBot — do not switch back to CR. Ignore late CR reviews. Only escalate to Greptile if BugBot also fails.
 
 ### If PR is on Greptile:
@@ -228,8 +225,8 @@ gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
 ```
 
 - If Greptile has posted findings: `[DONE]` — Greptile review received. Process findings (Step 7).
-- If no Greptile response: `[ACTION]` — Polling for Greptile (5-minute timeout).
-  - If no response after 5 minutes: `[BLOCKED]` — Greptile timed out. Performing self-review as fallback. Note: self-review does NOT satisfy merge gate.
+- If no Greptile response: `[ACTION]` — Polling for Greptile (10-minute timeout). Polling cadence stays 60 s; exit immediately when the review lands, do not keep polling to 10 min.
+  - If no response after 10 minutes: `[BLOCKED]` — Greptile timed out. Performing self-review as fallback. Note: self-review does NOT satisfy merge gate.
 
 ---
 
@@ -311,7 +308,7 @@ Branch on the exit code:
 
 - `0` → `[DONE]` — Merge gate satisfied. Proceed to Step 9 (AC verification).
 - `1` → `[ACTION]` — Gate not met. Parse `missing` from the JSON output and act accordingly:
-  - CR path with **"need 1 explicit CR APPROVED review on HEAD"**: if the current SHA is still within the 7-minute CR polling window, return to **Step 6** and keep polling — do NOT re-trigger yet. Only after the 7-minute timeout, and only within the 2-trigger-per-hour budget, post `@coderabbitai full review` once and return to **Step 6**.
+  - CR path with **"need 1 explicit CR APPROVED review on HEAD"**: if the current SHA is still within the 12-minute CR polling window, return to **Step 6** and keep polling — do NOT re-trigger yet. Only after the 12-minute timeout, and only within the 2-trigger-per-hour budget, post `@coderabbitai full review` once and return to **Step 6**.
   - CR path with **"CR approval on HEAD ... retracted by later CHANGES_REQUESTED"**: CR retracted approval. Return to **Step 7** to process the findings. Re-trigger only after fixes are pushed (the new SHA invalidates prior reviews regardless).
   - CR path with **"CodeRabbit check-run not green on HEAD"** or **"latest CR review on HEAD requests changes"**: CR has findings; return to **Step 7** to process them.
   - BugBot path with **"no BugBot review on HEAD"**: BugBot hasn't reviewed the current HEAD yet; return to **Step 6** to poll for the review.
