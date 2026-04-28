@@ -1,9 +1,9 @@
 ---
 name: pm-update
-description: Re-scan the current repo and update `.claude/pm-config.md` with fresh infrastructure and architecture detection while preserving user-edited sections (Role, OKRs, Team, Notes, Dependency Rules, Workflow Rules). Use this after major milestones, new service integrations, or significant directory restructuring. Triggers on "pm update", "update pm config", "refresh pm config", "rescan repo".
+description: Re-scan the current repo and update `.claude/pm-config.md` with fresh infrastructure and architecture detection while preserving user-edited sections (Role, OKRs, Team, Notes, Dependency Rules, Workflow Rules), then run a stale-cleanup pass to prune long-abandoned worktrees and branches. Use this after major milestones, new service integrations, or significant directory restructuring. Triggers on "pm update", "update pm config", "refresh pm config", "rescan repo".
 ---
 
-Re-scan the current repo and update `.claude/pm-config.md`. Auto-generated sections (Infrastructure, Architecture) are regenerated from the repo's current state. User-edited sections are preserved verbatim.
+Re-scan the current repo and update `.claude/pm-config.md`, then sweep stale worktrees and branches. Auto-generated config sections (Infrastructure, Architecture) are regenerated from the repo's current state; user-edited sections are preserved verbatim. After the config write, the stale-cleanup pass surfaces (and optionally removes) worktrees and branches that have aged past the threshold.
 
 ## Section classification
 
@@ -118,9 +118,9 @@ Reconstruct `.claude/pm-config.md` using the fixed schema order below (regardles
 
 Write back to `.claude/pm-config.md`.
 
-## Step 7: Report changes
+## Step 7: Report config changes
 
-Output a summary showing what changed:
+Output a summary showing what changed in the config:
 
 ```
 ## PM Config Updated
@@ -133,4 +133,59 @@ Output a summary showing what changed:
 - Architecture: {brief diff — e.g., "detected new api/ directory"}
 ```
 
-If nothing changed in the auto-generated sections, say so: "Infrastructure and Architecture are unchanged — config is up to date."
+If nothing changed in the auto-generated sections, say so: "Infrastructure and Architecture are unchanged — config is up to date." Either way, proceed to Step 8 — config staleness and worktree/branch staleness are independent.
+
+## Step 8: Stale worktree + branch cleanup
+
+`/wrap` no longer self-removes the running worktree or deletes its branch (issue #338). Stale cleanup is `/pm-update`'s job — invoke `.claude/scripts/stale-cleanup.sh` to detect and (after user confirmation) prune long-abandoned refs.
+
+### Step 8.1: Run the dry-run pass
+
+Always run `--check` first. The script never deletes in this mode.
+
+```bash
+.claude/scripts/stale-cleanup.sh --check
+RC=$?
+```
+
+`stale-cleanup.sh` reports three categories — stale worktrees, stale local branches, stale remote branches — plus a "Skipped (safety)" list with the reason each item was protected (main worktree, caller's current worktree, uncommitted changes, open PR, protected branch name, branch checked out in a worktree). See `.claude/scripts/stale-cleanup.sh --help` for the full safety-check contract.
+
+Threshold defaults to 7 days; override with `STALE_DAYS=N` if the user requests a different cutoff.
+
+### Step 8.2: Show the report and ask before deleting
+
+Show the user the stdout from Step 8.1 verbatim. Then:
+
+- **If `RC == 0`:** No stale items — say "No stale worktrees or branches detected." Done.
+- **If `RC == 1`:** Stale items exist. Ask the user: "Apply the stale cleanup above? (worktrees removed, local + remote branches deleted)" Wait for confirmation. Never run `--apply` autonomously — every deletion is destructive and the dry-run is the user's only chance to spot a false positive.
+- **If `RC == 3`:** Usage error (invalid flag, bad `STALE_DAYS`). Print the script's `--help` output and stop — this indicates a bug in this skill's invocation, not a real-state problem.
+- **If `RC == 4`:** Environment error (no `gh`, no `jq`, can't resolve repo). Surface stderr to the user and stop.
+- **Other non-zero exits:** Surface stderr and stop.
+
+### Step 8.3: Apply (only on user confirmation)
+
+If the user approves, run `--apply`:
+
+```bash
+.claude/scripts/stale-cleanup.sh --apply
+APPLY_RC=$?
+```
+
+The script re-runs the same detection (in case the repo state changed between Steps 8.1 and 8.3), re-emits the report, and then attempts each deletion. Each successful deletion logs `removed: <thing>`; each failure logs `failed: <thing> — <reason>` and continues.
+
+- **`APPLY_RC == 0`:** All deletions succeeded.
+- **`APPLY_RC == 2`:** One or more deletions failed — surface the `failed:` lines from stdout. Do not retry automatically; some failures (e.g., network errors on remote-branch deletion) need user intervention.
+
+### Step 8.4: Final report
+
+Append a cleanup summary to the Step 7 report:
+
+```
+**Stale cleanup:**
+- {N} worktrees removed
+- {M} local branches deleted
+- {K} remote branches deleted
+- {F} failures (see log)
+```
+
+If the user declined `--apply`, report: "Stale cleanup: dry-run only — no changes applied."
