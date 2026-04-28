@@ -19,7 +19,7 @@ BugBot is the **second-tier** AI code reviewer — free, auto-triggers on every 
 
 Poll alongside CR every 60 seconds on all three endpoints (same pattern — `pulls/{N}/reviews`, `pulls/{N}/comments`, `issues/{N}/comments` with `per_page=100`). Filter by `.user.login == "cursor[bot]"`.
 
-**Timeout:** 10 minutes **from push time** (not from CR failure detection). BugBot auto-triggers at push, so its timeout runs concurrently with CR's 12-minute window — BugBot's 10 fits inside CR's 12. Cadence stays 60 s; a `Cursor Bugbot` `status: "completed"` short-circuits the wait. If CR's 12-min timeout fires and BugBot hasn't posted, BugBot's 10-min window has already expired — trigger Greptile immediately (see `greptile.md` "When to Trigger Greptile"). Do NOT wait another 10 minutes.
+**Timeout:** 10 minutes **from push time** (not from CR failure detection). BugBot auto-triggers at push, so its timeout runs concurrently with CR's 12-minute window (BugBot's 10 fits inside CR's 12). Cadence stays 60 s; `Cursor Bugbot` `status: "completed"` short-circuits the wait. If CR's 12-min timeout fires and BugBot hasn't posted, BugBot's 10-min window has already expired — trigger Greptile immediately (see `greptile.md`). Do NOT wait another 10 min.
 
 **Completion signal:** BugBot creates a CI check-run named `Cursor Bugbot` that transitions to `status: "completed"` when the review finishes. The `conclusion` field is `neutral` when BugBot posted findings (still counts as a completed review — `neutral` is not a failure). Completion can also be detected via BugBot review comments appearing on any of the three endpoints.
 

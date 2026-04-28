@@ -28,7 +28,7 @@ The merge gate depends on which reviewer owns the PR:
   - "0 unresolved threads right now" without an APPROVED review on the current SHA.
   - Absence of findings in the first N minutes after triggering (CR can run slowly or time out).
   - CR check-run `status: "completed"` without an accompanying APPROVED review object on the current SHA.
-- **Re-trigger policy (unchanged):** if no approval on the current SHA within the 12-minute polling timeout, re-trigger `@coderabbitai full review` once. Max 2 explicit triggers per PR per hour. After 2 failed re-triggers on the same SHA, fall back to BugBot → Greptile → self-review per the three-tier chain. Rate-limit signals override the timeout — escalate immediately on a rate-limit signal regardless of elapsed minutes.
+- **Re-trigger policy:** if no approval on the current SHA within the 12-min timeout, re-trigger `@coderabbitai full review` once. Max 2 triggers per PR per hour. Rate-limit signals override the timeout — escalate immediately. After 2 failed re-triggers on the same SHA, fall back BugBot → Greptile → self-review.
 
 **BugBot path** (CR failed, BugBot responded, Greptile was never triggered — sticky assignment, see `bugbot.md`):
 - 1 clean BugBot review on the current HEAD SHA satisfies the gate (BugBot's completion signals are reliable).

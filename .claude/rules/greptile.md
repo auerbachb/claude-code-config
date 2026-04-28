@@ -55,8 +55,8 @@ Applies to 2nd/3rd triggers only; initial trigger requires only the budget check
 
 **Greptile is last-resort only.** Never trigger it before both CR AND BugBot have failed. It is only triggered when both upstream reviewers fail for a specific PR:
 
-1. **CR rate-limit + BugBot timeout:** CR is rate-limited (fast-path) AND BugBot has not posted a review within 10 minutes → trigger Greptile. Rate-limit signals override the timeout — CR's 12-minute ceiling does NOT delay this fallback; escalate the moment a rate-limit signal appears (waiting only on BugBot's 10).
-2. **CR timeout + BugBot timeout:** CR has not delivered a review within 12 minutes AND BugBot has not posted a review within 10 minutes → trigger Greptile.
+1. **CR rate-limit + BugBot timeout:** CR is rate-limited (fast-path) AND BugBot has not posted within 10 min → trigger Greptile. Rate-limit signals override CR's 12-min ceiling (escalate immediately, wait only on BugBot's 10).
+2. **CR timeout + BugBot timeout:** no CR review within 12 min AND no BugBot review within 10 min → trigger Greptile.
 
 In both cases, always check if BugBot (`cursor[bot]`) already posted a review before triggering Greptile — BugBot auto-runs on every push, so it may have responded while you were waiting for CR.
 
@@ -68,7 +68,7 @@ In both cases, always check if BugBot (`cursor[bot]`) already posted a review be
 
 Poll every 60 seconds on all three endpoints (same pattern as CR — `pulls/{N}/reviews`, `pulls/{N}/comments`, `issues/{N}/comments` with `per_page=100`). Filter by `greptile-apps[bot]`.
 
-**Timeout:** 10 minutes. Polling cadence stays 60 s — the longer ceiling does not slow checks. **Completion:** 👍 or review comments = done (exit polling immediately on completion; do not keep polling to 10 min). 😕 = failed. No signal after 10 min = timeout.
+**Timeout:** 10 minutes. Cadence stays 60 s. **Completion:** 👍 or review comments = done (exit immediately). 😕 = failed. No signal after 10 min = timeout.
 
 ## Processing Greptile Findings
 
