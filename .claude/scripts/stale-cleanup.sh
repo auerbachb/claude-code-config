@@ -447,18 +447,27 @@ emit_text() {
   if (( skipped_total > 0 )); then
     echo
     echo "Skipped (safety):"
-    for entry in "${SKIPPED_WORKTREES[@]}"; do
-      IFS="$US" read -r p reason <<<"$entry"
-      printf '  worktree %s — %s\n' "$p" "$reason"
-    done
-    for entry in "${SKIPPED_LOCAL_BRANCHES[@]}"; do
-      IFS="$US" read -r b reason <<<"$entry"
-      printf '  branch %s — %s\n' "$b" "$reason"
-    done
-    for entry in "${SKIPPED_REMOTE_BRANCHES[@]}"; do
-      IFS="$US" read -r r reason <<<"$entry"
-      printf '  remote %s — %s\n' "$r" "$reason"
-    done
+    # Per-array guards: under bash 3.2 + set -u, expanding "${ARR[@]}" on
+    # an empty array crashes — even when at least one of the three has
+    # items. Same pattern used by --apply and emit_json.
+    if (( ${#SKIPPED_WORKTREES[@]} > 0 )); then
+      for entry in "${SKIPPED_WORKTREES[@]}"; do
+        IFS="$US" read -r p reason <<<"$entry"
+        printf '  worktree %s — %s\n' "$p" "$reason"
+      done
+    fi
+    if (( ${#SKIPPED_LOCAL_BRANCHES[@]} > 0 )); then
+      for entry in "${SKIPPED_LOCAL_BRANCHES[@]}"; do
+        IFS="$US" read -r b reason <<<"$entry"
+        printf '  branch %s — %s\n' "$b" "$reason"
+      done
+    fi
+    if (( ${#SKIPPED_REMOTE_BRANCHES[@]} > 0 )); then
+      for entry in "${SKIPPED_REMOTE_BRANCHES[@]}"; do
+        IFS="$US" read -r r reason <<<"$entry"
+        printf '  remote %s — %s\n' "$r" "$reason"
+      done
+    fi
   fi
 }
 
