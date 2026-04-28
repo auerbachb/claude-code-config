@@ -41,7 +41,11 @@ gh pr view {{PR_NUMBER}} --json state,title,mergeStateStatus,commits
 
 ## Step 1: Verify Merge Gate (and CI)
 
-Run the shared merge-gate verifier. It implements the three-path gate from `.claude/rules/cr-merge-gate.md` (CR 1-clean-approval on current HEAD, BugBot 1-clean, Greptile severity-gated), plus the CI-must-pass check and the BEHIND check.
+Run the shared merge-gate verifier. It implements the three-path gate from `.claude/rules/cr-merge-gate.md` (CR 1-clean-approval on current HEAD, BugBot 1-clean, Greptile severity-gated), plus these explicit pre-merge gates — each is a hard STOP if not satisfied:
+
+- **Gate 1a — CI terminal state.** All check-runs `status: "completed"` with no blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`). In-progress checks BLOCK — do NOT present the merge prompt; wait and re-poll.
+- **Gate 1b — All review threads resolved.** Every thread `isResolved: true` via GraphQL `reviewThreads(first: 100)` (REST misses cursor/copilot bot threads). Any unresolved thread BLOCKS regardless of author.
+- **Gate 1c — BEHIND check.** `mergeStateStatus != BEHIND`.
 
 ```bash
 # Prefer the handoff's reviewer field; fall back to reviewer-of.sh (session-state

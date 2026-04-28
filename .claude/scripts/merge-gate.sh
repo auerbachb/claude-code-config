@@ -286,18 +286,20 @@ if [[ "$CI_FAILING" -gt 0 ]]; then
   MISSING+=("CI has $CI_FAILING failing check-run(s): $BLOCKING_NAMES")
 fi
 
+# Universal unresolved-thread gate (#211) — applies to all paths regardless of
+# author. Catches threads from any reviewer (CR, BugBot, Greptile, Copilot,
+# human) that the per-path author-scoped checks would miss.
+UNRESOLVED_TOTAL=$(echo "$THREADS_JSON" | jq -r '
+  [.data.repository.pullRequest.reviewThreads.nodes[]?
+    | select(.isResolved == false)]
+  | length')
+if [[ "$UNRESOLVED_TOTAL" -gt 0 ]]; then
+  MISSING+=("$UNRESOLVED_TOTAL unresolved review thread(s) — resolve via GraphQL before merge")
+fi
+
 # Path-specific checks.
 case "$REVIEWER" in
   cr)
-    # Unresolved CR threads (GraphQL — any thread with a coderabbitai[bot] comment and isResolved=false).
-    UNRESOLVED_CR=$(echo "$THREADS_JSON" | jq -r '
-      [.data.repository.pullRequest.reviewThreads.nodes[]?
-        | select(.isResolved == false)
-        | select(any(.comments.nodes[]?; .author.login == "coderabbitai[bot]"))]
-      | length')
-    if [[ "$UNRESOLVED_CR" -gt 0 ]]; then
-      MISSING+=("$UNRESOLVED_CR unresolved CR thread(s)")
-    fi
 
     # CodeRabbit check-run status on current HEAD.
     CR_CHECK=$(echo "$CHECK_RUNS_JSON" | jq -c '[.check_runs[]? | select(.name == "CodeRabbit")] | first // empty')
@@ -356,17 +358,8 @@ case "$REVIEWER" in
     ;;
 
   bugbot)
-    # Unresolved BugBot (cursor[bot]) threads.
-    UNRESOLVED_BB=$(echo "$THREADS_JSON" | jq -r '
-      [.data.repository.pullRequest.reviewThreads.nodes[]?
-        | select(.isResolved == false)
-        | select(any(.comments.nodes[]?; .author.login == "cursor[bot]"))]
-      | length')
-    if [[ "$UNRESOLVED_BB" -gt 0 ]]; then
-      MISSING+=("$UNRESOLVED_BB unresolved BugBot thread(s)")
-    fi
-
     # Need at least 1 BugBot review on current HEAD, with no actionable findings.
+    # Unresolved BugBot threads are caught by the universal unresolved-thread gate above.
     BB_REVIEWS_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
       [.[]? | select(.user.login == "cursor[bot]" and .commit_id == $sha)] | length')
 
@@ -390,12 +383,9 @@ case "$REVIEWER" in
     ;;
 
   greptile)
-    # Severity-gated. Clean = no unresolved Greptile threads and no "P0" badges outstanding.
-    UNRESOLVED_G=$(echo "$THREADS_JSON" | jq -r '
-      [.data.repository.pullRequest.reviewThreads.nodes[]?
-        | select(.isResolved == false)
-        | select(any(.comments.nodes[]?; .author.login == "greptile-apps[bot]"))]
-      | length')
+    # Severity-gated. Greptile-specific count handling is intentionally NOT here —
+    # the universal unresolved-thread gate above already reports the count for any
+    # unresolved thread. This path adds severity context (P0 vs P1/P2) only.
 
     # Latest Greptile review.
     LATEST_G=$(echo "$REVIEWS_JSON" | jq -c '
@@ -405,23 +395,26 @@ case "$REVIEWER" in
     if [[ -z "$LATEST_G" ]]; then
       MISSING+=("no Greptile review yet")
     else
-      # Look at the Greptile review body + its inline findings for P0 badges.
+      # Did the latest Greptile review include a P0 finding (in its body or its
+      # inline comments)? Used for severity-gated logic below.
       G_BODY=$(echo "$LATEST_G" | jq -r '.body // ""')
       G_SUBMITTED=$(echo "$LATEST_G" | jq -r '.submitted_at // ""')
       G_INLINE_BODIES=$(echo "$PR_COMMENTS_JSON" | jq -r --arg ts "$G_SUBMITTED" '
         [.[]? | select(.user.login == "greptile-apps[bot]" and .created_at >= $ts) | .body] | join("\n---\n")')
-
-      # Count P0 vs P1/P2 findings from the review + its inline comments. Greptile uses
-      # "P0"/"P1"/"P2" badges in comment bodies (see .claude/rules/greptile.md).
       P0_COUNT=$( { echo "$G_BODY"; echo "$G_INLINE_BODIES"; } | grep -oE '\bP0\b' | wc -l | tr -d ' ')
 
-      if [[ "$UNRESOLVED_G" -gt 0 ]]; then
-        if [[ "$P0_COUNT" -gt 0 ]]; then
-          MISSING+=("$UNRESOLVED_G unresolved Greptile thread(s) with P0 finding(s) — need re-review after fix")
-        else
-          MISSING+=("$UNRESOLVED_G unresolved Greptile thread(s) (P1/P2 — fix and reply to close)")
-        fi
-      elif [[ "$P0_COUNT" -gt 0 ]]; then
+      # Are there unresolved Greptile-authored threads? If so, P0 vs P1/P2 changes
+      # whether a re-review is required after fixing.
+      UNRESOLVED_G=$(echo "$THREADS_JSON" | jq -r '
+        [.data.repository.pullRequest.reviewThreads.nodes[]?
+          | select(.isResolved == false)
+          | select(any(.comments.nodes[]?; .author.login == "greptile-apps[bot]"))]
+        | length')
+
+      if [[ "$UNRESOLVED_G" -gt 0 && "$P0_COUNT" -gt 0 ]]; then
+        # Universal gate already reports the count; add severity-aware advice only.
+        MISSING+=("Greptile threads include P0 finding(s) — need clean re-review after fix")
+      elif [[ "$UNRESOLVED_G" -eq 0 && "$P0_COUNT" -gt 0 ]]; then
         # Threads are resolved but the latest (most recent) Greptile review had P0.
         # Since LATEST_G is already the last review by submitted_at, a clean re-review
         # would BE the latest review and wouldn't have P0. So if we're here, no clean

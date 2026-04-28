@@ -64,9 +64,13 @@ Before running `gh pr merge` on ANY PR, verify ALL CI check-runs are complete an
 
 This applies to ALL merge paths: manual `gh pr merge`, the `/merge` skill, the `/wrap` skill, and Phase C merge prep.
 
+## Step 1c — All Review Threads Resolved (NON-NEGOTIABLE)
+
+Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses cursor/copilot bots). `merge-gate.sh` enforces this — any unresolved thread blocks, regardless of author. **If any unresolved: DO NOT MERGE.** Reply + `resolveReviewThread`, then re-check.
+
 ## Step 2 — Verify every Test Plan checkbox (MANDATORY — do NOT skip)
 
-> This is the **immediate next step** after CI passes (Step 1b). Do not ask the user about merging until this is done.
+> After Step 1c passes (`merge-gate.sh` enforces resolved threads), verify AC before merge.
 >
 > 1. Fetch the PR body via `gh pr view N --json body`
 > 2. Parse **every** checkbox in the **Test plan** section of the PR description
