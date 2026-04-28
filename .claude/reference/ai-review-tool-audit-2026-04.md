@@ -11,15 +11,14 @@ The remaining tools are configured through vendor dashboards or GitHub apps, and
 no repo-local config was found for codeant.ai, BugBot, Vercel Agent, Greptile, or
 Graphite.
 
-Safe change applied in this PR:
-
-- Updated `.coderabbit.yaml` to match the current rule-file budget of 14,000
-  words across `CLAUDE.md` and `.claude/rules/**/*.md`. This aligns CodeRabbit's
-  review instruction with the non-negotiable budget in `CLAUDE.md` and has no
-  product or workflow tradeoff.
+No safe no-tradeoff config change was identified in this audit.
 
 Changes intentionally not applied:
 
+- Raising CodeRabbit's token-footprint threshold from 10,000 to 14,000 words.
+  The repo currently treats 10,000 words as the soft budget and 14,000 words as
+  a transitional hard limit, so raising the CodeRabbit threshold would remove
+  early-warning coverage and has a real tradeoff.
 - Dashboard settings for codeant.ai, BugBot, Vercel Agent, Greptile, and
   Graphite. These affect spend, reviewer noise, automation scope, or external
   app behavior and should be reviewed by the user before activation.
@@ -83,13 +82,14 @@ Repo-local config: `.coderabbit.yaml`.
 
 ### Max-config recommendations
 
-No-tradeoff applied:
-
-- Updated the token-footprint threshold in `.coderabbit.yaml` from 10,000 words
-  to 14,000 words so CodeRabbit matches the current `CLAUDE.md` hard budget.
-
 Flag for user review before applying:
 
+- Decide whether to keep CodeRabbit's token-footprint threshold at the 10,000
+  word soft budget or raise it to the temporary 14,000 word hard limit.
+  Recommendation: keep 10,000 for early-warning coverage until the rule set is
+  condensed below the soft budget. Tradeoff: a 10,000-word threshold can produce
+  more review noise while the repo is intentionally above the soft budget; a
+  14,000-word threshold would miss drift until the hard limit is nearly failing.
 - Enable or tune CodeRabbit pre-merge checks. Useful candidates:
   - PR title and description checks aligned to issue linkage and Test Plan
     requirements.
@@ -575,7 +575,7 @@ Use this table in the follow-up:
 
 | Change | Status | Reason |
 |--------|--------|--------|
-| Align CodeRabbit token budget with 14,000-word rule budget | Applied | No tradeoff; fixes stale config. |
+| Raise CodeRabbit token threshold from 10,000 to 14,000 words | User review | 10,000 is the soft budget and preserves early-warning coverage; 14,000 is only the transitional hard limit. |
 | Add `.cursor/BUGBOT.md` | User review | Useful, but adds another rule surface that can drift. |
 | Enable BugBot Autofix | User review | Can push commits and consume Cloud Agent credits. |
 | Enable codeant.ai SAST/CI as blocking | User review | Needs one-month false-positive baseline first. |
