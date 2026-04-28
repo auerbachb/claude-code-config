@@ -159,7 +159,9 @@ When `PM_AUTO_DETECT=true`, partition the classified issues into two groups usin
 |--------|---------------------------|
 | `file_count` | 0–1 |
 | `ac_count` | ≤ 3 |
-| `dependency_count_per_issue` | 0 (count only dependencies referencing or referenced by this specific issue, not the batch total) |
+
+| `dependency_count` | 0 (count only dependencies referencing or referenced by this specific issue, not the batch total) |
+
 | `touches_rules` | `false` |
 | `touches_claude_md` | `false` |
 | `has_orchestration_keywords` | `false` |
