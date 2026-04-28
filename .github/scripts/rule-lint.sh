@@ -67,7 +67,7 @@ fi
 read_budget_cap() {
   local cap
   if [[ ! -f "$BUDGET_CAP_FILE" ]]; then
-    echo "::error file=${BUDGET_CAP_FILE}::Budget soft cap file is missing"
+    echo "::error file=${BUDGET_CAP_FILE}::Budget soft cap file is missing" >&2
     return 1
   fi
   if ! cap=$(python3 - "$BUDGET_CAP_FILE" <<'PY'
@@ -75,12 +75,13 @@ import re
 import sys
 
 data = open(sys.argv[1], "rb").read()
+data = data.rstrip(b"\r\n")
 if not re.fullmatch(rb"[0-9]+", data):
     sys.exit(1)
 sys.stdout.write(data.decode("ascii"))
 PY
   ); then
-    echo "::error file=${BUDGET_CAP_FILE}::Budget soft cap must contain a single integer with no whitespace"
+    echo "::error file=${BUDGET_CAP_FILE}::Budget soft cap must contain a single integer, with at most a trailing newline"
     return 1
   fi
   printf '%s\n' "$cap"

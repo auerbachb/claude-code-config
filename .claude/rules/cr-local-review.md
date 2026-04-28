@@ -7,13 +7,16 @@
 This is the **primary** review workflow. It catches issues before PR noise/quota and does not replace the GitHub merge gate.
 
 ### Prerequisites
+
 - CLI installed/authenticated (`coderabbit --version` or `~/.local/bin/coderabbit`).
 - Repo has `.coderabbit.yaml` if it uses CR.
 - `CODERABBIT_API_KEY` may live in shell config; never print or commit it.
 - Prefer local `coderabbit review --prompt-only`; use GitHub polling only after push or CLI failure.
 
 ### When/how to run
+
 After implementation on a feature branch, before push/PR. Optional mid-development when risk warrants. Run from repo root:
+
 - `coderabbit review --prompt-only` — review all changes (prompt-only mode is optimized for AI agent parsing)
 - `coderabbit review --prompt-only --type uncommitted` — review only uncommitted changes
 - `coderabbit review --prompt-only --type committed` — review only committed changes

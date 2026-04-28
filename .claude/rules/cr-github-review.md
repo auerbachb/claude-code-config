@@ -42,6 +42,7 @@ If **ANY** of the conditions below hold, invoke `/fixpr` and do NOT request a ne
 **Exit polling ONLY when the merge gate (`cr-merge-gate.md`) is met.** "0 unresolved threads right now" is NOT an exit condition — see the trap note at the top of this file. After any `/fixpr` push, reset the watermark and keep polling for the reviewer's response to the new SHA.
 
 ### Rate Limits & Behavior (Pro Tier)
+
 - **8 PR reviews/hour** (each push or `@coderabbitai full review` consumes one), **50 chat interactions/hour**.
 - **Batch fixes into ONE commit** before pushing — 4 fixes = 1 review consumed, not 4.
 - **Max 2 explicit `@coderabbitai full review` triggers per PR per hour.** After 2 with no response, tell the user CR may be rate-limited.
@@ -49,6 +50,7 @@ If **ANY** of the conditions below hold, invoke `/fixpr` and do NOT request a ne
 - **"Reviews paused" or rate-limit language:** fall back to **BugBot** (see `bugbot.md`). If BugBot also fails, fall back to **Greptile** (see `greptile.md`). If Greptile unavailable, fall back to **self-review**.
 
 ### Polling
+
 - Poll every 60 seconds. Always use `per_page=100` on all GitHub API calls.
 - **Poll ALL THREE endpoints every cycle** (`per_page=100`):
   1. `repos/{owner}/{repo}/pulls/{N}/reviews` — review objects
@@ -84,6 +86,7 @@ BugBot auto-runs on every push. When CR fails, check BugBot before Greptile; Bug
 - Tell the user which fallback was used and why.
 
 ### Processing CR Feedback
+
 1. Fetch latest CR comments via `gh api`, verify each finding against the actual file
 2. Fix **all valid findings**, commit and push **once**
 3. **Reply to every thread** ("Fixed in `abc1234`: <what changed>"). Try inline reply; on 404, PR-level comment with `@coderabbitai Fixed in ...`

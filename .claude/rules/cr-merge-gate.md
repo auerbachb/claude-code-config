@@ -20,6 +20,7 @@ Stop polling ONLY when one current-HEAD review path below is satisfied:
 The merge gate depends on which reviewer owns the PR:
 
 **CR-only path** (neither BugBot nor Greptile was triggered):
+
 - **Gate:** 1 CR review with `state: "APPROVED"` and `commit_id == current HEAD SHA`.
 - **SHA freshness:** stale approvals do not count; re-trigger `@coderabbitai full review` subject to the rate cap and keep polling.
 - **Retraction:** a newer same-SHA `CHANGES_REQUESTED` retracts an earlier `APPROVED` until findings are fixed, pushed, and re-approved.
@@ -28,14 +29,16 @@ The merge gate depends on which reviewer owns the PR:
   - "0 unresolved threads right now" without an APPROVED review on the current SHA.
   - Absence of findings in the first N minutes after triggering (CR can run slowly or time out).
   - CR check-run `status: "completed"` without an accompanying APPROVED review object on the current SHA.
-- **Re-trigger policy:** after 12 min without approval, re-trigger once; max 2 explicit triggers/PR/hour. Rate-limit signals override the timeout. After 2 failed re-triggers on one SHA, fall back BugBot → Greptile → self-review.
+- **Re-trigger policy:** after 12 min without approval, re-trigger `@coderabbitai full review` up to 2 times on the same SHA, capped at 2 explicit triggers/PR/hour. Rate-limit signals override the timeout. After 2 failed re-triggers on one SHA, fall back BugBot → Greptile → self-review.
 
 **BugBot path** (CR failed, BugBot responded, Greptile was never triggered — sticky assignment, see `bugbot.md`):
+
 - 1 clean BugBot review on the current HEAD SHA satisfies the gate (BugBot's completion signals are reliable).
 - After fixing BugBot findings, BugBot auto-reviews the new push. If auto-review doesn't fire within 10 min, trigger manually via `@cursor review`.
 - Stay on BugBot — do not switch back to CR. Ignore late CR reviews.
 
 **Greptile path** (Greptile was triggered at any point — both CR and BugBot failed — sticky assignment, see `greptile.md`):
+
 - Severity-gated: merge-ready when ANY of these hold:
   1. **Clean review:** no findings (thumbs-up with no inline comments).
   2. **No P0 findings:** only P1/P2 findings present — fix all of them, push, reply to threads; no re-review required.
