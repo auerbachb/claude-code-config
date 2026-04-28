@@ -6,24 +6,12 @@
 
 ## How to Spawn Subagents
 
-Use the custom agent definitions in `.claude/agents/` instead of manually reading and embedding all rule files. Each agent definition is self-contained with embedded phase-specific rules.
-
-### Using Agent Definitions (Preferred)
-
-1. **Always set `mode: "bypassPermissions"`** on the Agent tool call.
-2. **Set `subagent_type`** to the appropriate agent definition:
-   - `phase-a-fixer` — Fix findings, push, write handoff
-   - `phase-b-reviewer` — Poll reviews, process findings, update handoff
-   - `phase-c-merger` — Verify merge gate, check AC, report readiness (read-only)
-   - `pm-worker` — Issue management, repo bootstrap
-3. **Set `model` explicitly at the call site** (see "Model Selection" below). Each agent definition also declares a frontmatter default (`opus` for Phase A/B; `sonnet` for Phase C and pm-worker), but the call-site `model` parameter takes precedence and makes the choice visible at every spawn.
-4. **Provide runtime context in the `prompt` parameter** — the agent definition supplies workflow rules; the prompt supplies PR-specific details:
-   - PR number, issue number, branch name
-   - Repo owner/name
-   - Handoff file path (`~/.claude/handoffs/pr-{N}-handoff.json`)
-   - HEAD SHA, reviewer assignment (`cr`, `bugbot`, or `greptile`)
-   - Pre-fetched findings (optional — saves the subagent from re-fetching)
-5. **Include the safety warning** in every subagent prompt — copy the `SAFETY:` block from `safety.md` "Subagent Warning (MANDATORY)" verbatim. It covers `.env` handling, destructive commands, secrets/credentials, untrusted installers, and TLS bypass.
+Use `.claude/agents/` definitions; they embed phase rules. Every Agent call must include:
+1. `mode: "bypassPermissions"`.
+2. `subagent_type`: `phase-a-fixer`, `phase-b-reviewer`, `phase-c-merger`, or `pm-worker`.
+3. Explicit `model` (see "Model Selection").
+4. Runtime context: PR/issue/branch, repo, handoff path, HEAD SHA, reviewer, and optional pre-fetched findings.
+5. The verbatim `SAFETY:` block from `safety.md`.
 
 See `.claude/agents/README.md` for the full placeholder reference and spawning examples.
 
@@ -31,15 +19,13 @@ See `.claude/agents/README.md` for the full placeholder reference and spawning e
 
 If agent definitions are unavailable (e.g., repo without `.claude/agents/`):
 
-1. Read `CLAUDE.md` — **project root first**, fall back to global
-2. Read ALL rule files — **project root first**, fall back to global
-3. Include the COMPLETE output in the subagent's task description — do NOT summarize or paraphrase
-
-> **Why project-local first:** Per-project configs override global ones.
+1. Read project-local `CLAUDE.md`, then all project-local `.claude/rules/*.md`.
+2. If missing, fall back to global copies.
+3. Paste complete contents; do NOT summarize.
 
 ## Model Selection
 
-**Defaults (set at every spawn site).** Full rationale: `.claude/agents/README.md` "Model Selection".
+**Defaults (set at every spawn site).** Full rationale: `.claude/agents/README.md`.
 
 | Phase / Agent | Model |
 |---------------|-------|
@@ -49,61 +35,31 @@ If agent definitions are unavailable (e.g., repo without `.claude/agents/`):
 | `pm-worker` | `sonnet` |
 | Read-only review agents (e.g., `/pr-review-help`) | `sonnet` |
 
-**Rules:**
-
-- **Set `model` at the call site explicitly.** Every Agent tool invocation MUST include `model` alongside `mode` and `subagent_type`.
-- **Call-site `model` overrides agent-definition frontmatter.** Override to `opus` when a specific spawn needs more firepower.
-- **`CLAUDE_CODE_SUBAGENT_MODEL=opus` is a legacy safety net — not a compliant pattern.** Compliant calls must still set `model` explicitly. The env var only catches undocumented spawns.
-- **Cost-optimization ≠ quality regression.** If a Sonnet-tier agent underperforms, escalate to `opus` and document why.
+Rules: set `model` explicitly on every spawn; call-site value overrides frontmatter. `CLAUDE_CODE_SUBAGENT_MODEL=opus` is only a legacy safety net. If a Sonnet-tier agent underperforms, escalate to `opus` and document why.
 
 ## Phase Transition Autonomy (Quick Reference)
 
-| Transition | Action | Classification |
-|------------|--------|----------------|
-| Coding complete | Run local CR review (`coderabbit review --prompt-only`) | **Always do** |
-| Local review clean (2 passes) | Commit all changes, push branch | **Always do** |
-| Branch pushed | Create PR via `gh pr create` | **Always do** |
-| PR created/updated | Enter GitHub review polling loop (60s cycle) | **Always do** |
-| CR/BugBot/Greptile posts findings | Fix all valid findings, commit, push, reply to threads | **Always do** |
-| CR rate-limited (fast-path) | Escalate immediately; check BugBot, else wait up to 10 min from push | **Always do** |
-| CR timeout (12 min) | Check BugBot; if absent, trigger Greptile immediately (BugBot's 10-min window already elapsed) | **Always do** |
-| BugBot timeout (10 min, CR already failed) | Trigger Greptile | **Always do** |
-| All three reviewers down | Self-review for risk reduction | **Always do** |
-| Phase A subagent completes | Parent launches Phase B within 60s | **Always do** |
-| Phase B reports merge_ready | Parent launches Phase C | **Always do** |
-| Merge gate met | Verify AC checkboxes against code | **Always do** |
-| AC verified, all boxes checked | Ask user about merging | **Ask first** |
-| Subagent failed (crash / no handoff state) | Report failure, ask about respawn | **Ask first** |
-| Subagent exited with valid exhaustion handoff | Launch replacement for same phase | **Always do** |
+**Always do:** local CR review; commit/push after clean local review; create PR after push; enter 60s GitHub polling; fix valid reviewer findings; follow CR→BugBot→Greptile→self-review fallback timing; launch Phase B after Phase A, Phase C after `merge_ready`; verify AC after merge gate; respawn exhaustion with valid handoff.
+
+**Ask first only:** merging; respawning a crashed/no-handoff subagent.
 
 > **Anti-pattern:** If you find yourself composing "Should I...?" or "Want me to...?" for any "Always do" row, stop — the answer is always yes. Execute immediately.
 
 ## Token/Turn Exhaustion Protocol (MANDATORY)
 
-Subagents have a 32K output token limit. When approaching exhaustion:
-
-1. **Write a handoff** to `~/.claude/session-state.json` (see `handoff-files.md` "Token Exhaustion Handoff" for schema)
-2. **Report concisely** to parent/user — what was done, what remains. Do NOT ask "should I continue?"
-3. **Exit cleanly.** Do not squeeze in one more tool call.
-
-**Parent response:** Read `session-state.json`, launch a replacement subagent. This is **"Always do"** — do not ask the user.
+Subagents have a 32K output token limit. Near exhaustion: write the token-exhaustion handoff to `~/.claude/session-state.json` (schema in `handoff-files.md`), report what was done/remaining, and exit cleanly. Parent reads state and launches a replacement automatically.
 
 **NEVER:** Ask "should I continue?", silently die without writing handoff state, or try to finish "just one more thing."
 
 ## Task Decomposition (Token Safety)
 
-The 32K limit is the binding constraint. Give each subagent ONE clear phase with explicit exit criteria — no exploratory instructions. Detailed per-phase procedures live in the agent definitions (`.claude/agents/phase-{a,b,c}-*.md`); if agent definitions are unavailable, use `.claude/reference/phase-decomposition.md`.
+The 32K limit is binding. Give each subagent one phase with explicit exit criteria. Detailed procedures live in `.claude/agents/phase-{a,b,c}-*.md`; fallback: `.claude/reference/phase-decomposition.md`.
 
 - **Phase A: Fix + Push** (heaviest) — fix findings, commit once, push once, reply to threads, write handoff, EXIT (parent cleanup detailed in Orchestration rules below).
 - **Phase B: Review Loop** (lighter) — poll/trigger reviewer, fix new findings, update handoff, EXIT.
 - **Phase C: Merge Prep** (lightest) — verify merge gate per `cr-merge-gate.md` + AC, report readiness, EXIT. Do not delete handoff.
 
-**Orchestration rules:**
-- Parent launches Phase A subagents (can run in parallel across PRs)
-- Phase A complete → parent removes the Phase A worktree (releases branch lock), then launches Phase B immediately (see `phase-protocols.md` Phase A Completion Protocol for the authoritative cleanup step)
-- Phase B merge_ready → parent launches Phase C
-- Soft limit: 3-4 active CR-polled PRs to reduce throttling
-- Track CR quota: 7+ reviews/hour means expect Greptile as primary reviewer
+**Orchestration:** parent launches Phase A (parallel across PRs allowed); Phase A complete → cleanup per `phase-protocols.md` then Phase B; Phase B `merge_ready` → Phase C. Keep 3-4 active CR-polled PRs max; at 7+ CR reviews/hour expect Greptile fallback.
 
 ## Subagent Review Protocol
 

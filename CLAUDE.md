@@ -75,39 +75,40 @@ Detailed workflow rules are split into topic-specific files in `.claude/rules/`:
 
 | File | Contents |
 |------|----------|
-| `issue-planning.md` | Issue creation flow, CR plan integration, planning flow |
-| `cr-local-review.md` | Local CodeRabbit CLI review loop (primary review workflow), linter suppression prohibition |
-| `cr-github-review.md` | GitHub CR polling, rate limits, fast-path detection, thread resolution, feedback processing, autonomy boundaries |
-| `cr-merge-gate.md` | Merge gate definition (CR/BugBot/Greptile paths), CI-must-pass gate, AC verification, merge confirmation |
-| `bugbot.md` | BugBot (Cursor) second-tier reviewer, auto-trigger, merge gate contribution |
-| `greptile.md` | Greptile last-resort reviewer + CR/BugBot fallback + self-review fallback |
-| `subagent-orchestration.md` | Subagent spawning, phase transition autonomy table, token exhaustion, phase A/B/C decomposition |
-| `monitor-mode.md` | Dedicated monitor mode, monitor loop, heartbeats, health monitoring, post-compaction recovery |
-| `scheduling-reliability.md` | `/loop` vs one-shot decision tree, forbidden hand-rolled chains, pre-exit checklist for polling turns |
-| `handoff-files.md` | Handoff file schema, session-state.json format, lifecycle (create/update/delete) |
-| `phase-protocols.md` | Structured exit report format, Phase A/B/C completion protocol checklists |
-| `safety.md` | Destructive command prohibitions, .env protection, subagent safety warnings |
-| `main-hygiene.md` | Dirty-main guard, recovery branches, session-start integration, Stop hook |
-| `repo-bootstrap.md` | Auto-provision required GitHub Actions workflows on first touch |
-| `trust-dialog-fix.md` | Fix trust dialog re-prompting when bypass permissions are enabled |
-| `skill-symlinks.md` | Symlink new skills to `~/.claude/skills/` after creation; this repo is source of truth |
+| `issue-planning.md` | Issue + planning flow |
+| `cr-local-review.md` | Local CR review |
+| `cr-github-review.md` | GitHub review polling |
+| `cr-merge-gate.md` | Merge gate |
+| `bugbot.md` | BugBot fallback |
+| `greptile.md` | Greptile fallback |
+| `subagent-orchestration.md` | Subagent spawning |
+| `monitor-mode.md` | Monitoring + recovery |
+| `scheduling-reliability.md` | Recurring poll safety |
+| `handoff-files.md` | Handoff state |
+| `phase-protocols.md` | Phase exit protocols |
+| `safety.md` | Safety prohibitions |
+| `main-hygiene.md` | Dirty-main guard |
+| `repo-bootstrap.md` | Repo bootstrap |
+| `trust-dialog-fix.md` | Trust flags |
+| `skill-symlinks.md` | Skill symlinks |
 
 These files auto-load for the parent agent session. **Subagents do NOT auto-load these files.** See `subagent-orchestration.md` for how to pass rules to subagents.
 
 ### Rule File Size Guidelines
 
-Rules consume tokens on every turn — keep them tight. Limits apply to CLAUDE.md and every file in `.claude/rules/`:
+Rules consume tokens on every turn. Limits apply to CLAUDE.md + `.claude/rules/*.md`:
 
-- **Per-file soft cap:** ~150 lines / ~1,500 words. Consider splitting if exceeded.
-- **Per-file hard cap:** 200 lines / 2,000 words. Must split — extract a sub-topic into a new rule file.
-- **Total budget:** ≤14,000 words across CLAUDE.md + all rule files.
-- **Verify on every PR that touches CLAUDE.md or `.claude/rules/`:**
+- **Soft warning:** 10,000 words.
+- **Ratchet cap:** `.claude/rules/.budget-soft-cap` must equal `max(current_count + 250, 8500)`. `rule-lint.sh` fails when the corpus exceeds this committed cap, independent of soft/hard checks; run `rule-lint.sh --update-cap` only after intentional cuts.
+- **Hard fail:** 11,000 words.
+- **Per-file warning:** >2,000 words; split or extract reference material.
+- **Verify on every PR touching CLAUDE.md or `.claude/rules/`:**
 
   ```bash
   { cat CLAUDE.md; find .claude/rules -name '*.md' -exec cat {} +; } | wc -w
   ```
 
-  If the total exceeds 14,000, condense before merging.
+  If the total exceeds any enforced limit, condense before merging.
 
 ---
 

@@ -6,39 +6,19 @@
 
 ## Dedicated Monitor Mode (MANDATORY for parent agents)
 
-When one or more subagents are active, the parent enters **monitor mode** — sole responsibility is orchestration.
+**Entry:** any active subagent or non-empty `active_agents` in `session-state.json`. **Exit:** all subagents complete/failed, pending B/C launches executed, and state updated.
 
-**Entry condition:** `active_agents` in `session-state.json` is non-empty, or any spawned subagent has not yet completed or failed.
+While active, the parent only orchestrates: poll subagents, verify outputs, execute phase transitions, update state, report heartbeats, recover after compaction, and answer user questions. No code edits, issue/PR creation, local CR review, or source analysis; delegate fix work to subagents.
 
-**Exit condition:** ALL true: all subagents completed/failed, no pending Phase B/C launches, all phase transitions executed.
-
-**Permitted activities (exhaustive):**
-- Subagent status polling, heartbeat messages, next-phase launches
-- Output verification (pushes, replies), `session-state.json` read/update
-- Post-compaction state reconstruction, user questions
-
-**Prohibited activities (substantive work):**
-- Code/file edits, issue/PR creation, non-monitoring source analysis
-- Local CR reviews, any multi-step operation displacing the polling loop
-- Fixing code yourself instead of delegating to a subagent
-
-> **Core principle:** If it can be delegated to a subagent, it MUST be. The parent orchestrates, not executes.
-
-**Exception: Explicit user request.** The parent MAY do substantive work if the user explicitly asks — but must first warn: "I have N active subagent(s) monitoring PR(s) #X, #Y. Monitoring will pause." After completing the work, immediately re-enter monitor mode: check all statuses, execute pending transitions, send update, resume polling.
-
-**Delegating from monitor mode:** Spawn a subagent with the task, add it to `active_agents`, continue monitoring.
+If the user explicitly requests substantive work, warn that monitoring N active PR(s) will pause, do the work, then immediately re-enter monitor mode.
 
 ## Monitor Loop — Per-Cycle Checklist (MANDATORY)
 
-**Cycle interval: ~60 seconds.** Execute in **priority order**:
-
-1. **Check for completed subagents.** If any returned results, process immediately (steps 2-3).
-2. **Execute pending phase transitions.** Parse exit reports, execute the appropriate Completion Protocol (see `phase-protocols.md`). Highest priority — before heartbeats.
-3. **Check for pending transitions from prior cycles.** Read `session-state.json` for stalled transitions. Launch immediately.
-4. **Send heartbeat if due.** See CLAUDE.md #3 for the 5-minute rule. Include: active agents, PR phases, pending transitions, blockers.
-5. **Check for stale agents.** Thresholds: >15 min Phase A, >10 min Phase B, >5 min Phase C — investigate possible silent failure.
-
-> **Key insight:** Execute transitions (Steps 2-3) before heartbeats (Step 4) — stale heartbeats reporting outdated phase state are misleading.
+Every ~60s, in order:
+1. Process completed subagents and parse exit reports.
+2. Execute phase transitions via `phase-protocols.md`; also launch transitions stalled in `session-state.json`.
+3. Send heartbeat if due (≤5 min; include active agents, PR phases, pending transitions, blockers).
+4. Investigate stale agents: >15 min Phase A, >10 min Phase B, >5 min Phase C.
 
 ## Timestamped Status Updates (MANDATORY)
 
@@ -46,59 +26,26 @@ Every message must start with an Eastern time timestamp. NEVER estimate — alwa
 
 ## Subagent Health Monitoring (MANDATORY)
 
-Subagent failures are only visible to the parent.
+Poll every cycle; never fire-and-forget. Report successes and failures immediately, naming PR/issue, phase, failure mode, and remaining work. Verify outputs before marking complete (`gh pr view` for pushes, comments/replies for feedback handling).
 
-1. **Poll status every cycle.** Do not fire-and-forget.
-2. **Report failures immediately.** Include: which PR/issue, phase (A/B/C), how it failed, what was left undone.
-3. **Report success too.** Brief status update on phase completion.
-4. **Detect silent failures.** Verify outputs (pushes, replies) before marking complete.
-5. **Never assume success.** Verify pushes via `gh pr view`, verify replies exist.
-
-**Failure message templates:**
-> Crash/no handoff: "Mon Mar 16 02:34 AM ET — Subagent for PR #N (Phase B) crashed — no handoff state. Last push: `abc1234`. CR review pending. Want me to respawn?"
-> Token exhaustion: "Mon Mar 16 02:34 AM ET — Subagent for PR #N (Phase B) exhausted tokens. Last push: `abc1234`. Launching replacement Phase B automatically."
+Crash/no handoff requires user permission to respawn. Token exhaustion with valid handoff auto-respawns.
 
 ## User Heartbeat (MANDATORY)
 
-Canonical rule: CLAUDE.md #3 (5-minute max silence, non-negotiable).
-
-**Rules:**
-1. **In monitor mode:** heartbeats are part of the core loop — poll → status → wait → repeat.
-2. **Outside monitor mode:** send a brief status before entering any multi-step operation.
-3. **After completing any multi-step operation:** immediately send a status update.
-4. **Never batch status updates.** Report incrementally.
-
-**Heartbeat enforcement:** A PostToolUse hook warns when >5 min have elapsed — on seeing it, stop and send a status message immediately. The hook only fires **during** turns, so it cannot detect a dropped scheduler chain between turns. For polling that survives the gap between turns, see `scheduling-reliability.md`.
+CLAUDE.md #3 is canonical: timestamped status at least every 5 min. In monitor mode, heartbeat is part of each loop; outside it, send status before/after multi-step operations. If the silence hook warns, stop and message immediately. For between-turn polling reliability, use `scheduling-reliability.md`.
 
 ## File-Write Status Updates (MANDATORY)
 
-Extension of "Never batch status updates" (above). Long silent chains of file writes trip the silence detector even though work is progressing, and deprive the user of progress visibility.
-
-**Rule:** For operations touching 4+ files, emit a one-line status after every 3 writes/edits (e.g., "wrote 3/9: auth module done, starting handlers"). Batches of 1–3 don't need one. One message per chunk is enough — no extra timestamp needed if the turn-start one already fired. Applies to parent agents and subagents.
+For operations touching 4+ files, emit one-line status after every 3 writes/edits. Batches of 1-3 need no extra message. Applies to parent agents and subagents.
 
 ## Post-Compaction Recovery (MANDATORY)
 
-Context compaction wipes in-memory state. **Detection:** conversation starts with a summary block referencing prior work you don't remember.
-
-**Immediate recovery protocol (ALL steps, before any other work):**
-
-1. **Timestamp your first message.**
-2. **Re-run session-start checklist.** Re-check session-start obligations (skills worktree, repo bootstrap, etc.).
-3. **Reconstruct PR state from GitHub.** For every open PR:
-
-   ```bash
-   gh pr view N --json state,title,mergeStateStatus,commits
-   gh api "repos/{owner}/{repo}/pulls/N/reviews?per_page=100"
-   gh api "repos/{owner}/{repo}/pulls/N/comments?per_page=100"
-   gh api "repos/{owner}/{repo}/issues/N/comments?per_page=100"
-   ```
-
-   Build a dashboard: PR number, HEAD SHA, last review state, reviewer, pending action.
-4. **Check for stale background agents.** Verify expected outputs exist.
-5. **Check Phase B coverage.** If no Phase B record for a PR with unprocessed findings, launch Phase B immediately.
-6. **Check for pending phase transitions.** Execute any stalled Completion Protocols.
-7. **Report to user.** "Resuming after context compaction. Reconstructed state from GitHub."
-8. **Resume monitoring loop.**
+If a summary block references prior work you do not remember, recover before all other work:
+1. Timestamp first message and rerun session-start checks.
+2. Read `session-state.json` and handoff files, then reconcile every open PR via GitHub (`pr view`, reviews, inline comments, issue comments; use `per_page=100`).
+3. Build a dashboard: PR, HEAD SHA, reviewer, last review state, pending action.
+4. Verify stale agent outputs, Phase B coverage, and pending transitions; launch anything stalled.
+5. Report "Resuming after context compaction. Reconstructed state from GitHub." and resume monitoring.
 
 ### Pre-Compaction Checkpointing (Preventive)
 
