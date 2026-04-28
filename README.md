@@ -1,6 +1,6 @@
 # Claude Code Configuration
 
-A reusable `CLAUDE.md` configuration that teaches [Claude Code](https://docs.anthropic.com/en/docs/claude-code) to collaborate with [CodeRabbit](https://coderabbit.ai), Cursor BugBot, and [Greptile](https://greptile.com) for automated PR planning, code review, and merge workflows — all driven from your terminal. Includes a full PM skill family for project orchestration across threads.
+A reusable `CLAUDE.md` configuration that teaches [Claude Code](https://docs.anthropic.com/en/docs/claude-code) to collaborate with [CodeRabbit](https://coderabbit.ai), Cursor BugBot, [Greptile](https://greptile.com), CodeAnt, and Graphite AI Reviews for automated PR planning, code review, and merge workflows — all driven from your terminal. Includes a full PM skill family for project orchestration across threads.
 
 ## Table of Contents
 
@@ -27,7 +27,7 @@ A reusable `CLAUDE.md` configuration that teaches [Claude Code](https://docs.ant
 After setup, Claude Code will automatically:
 
 - **Plan before coding** — Triggers `@coderabbitai plan` on new issues, builds its own plan in parallel, then merges both into one implementation spec before writing any code.
-- **Review locally, then on GitHub** — Runs CodeRabbit CLI reviews before pushing (instant feedback, no PR noise). After PR creation, the reviewer chain is CodeRabbit primary, BugBot (Cursor) second tier, Greptile last resort, then self-review only if every reviewer is unavailable.
+- **Review locally, then on GitHub** — Runs CodeRabbit CLI reviews before pushing (instant feedback, no PR noise). After PR creation, the reviewer chain is CodeRabbit primary, BugBot (Cursor) second tier, Greptile last resort, then self-review only if every reviewer is unavailable; CodeAnt and Graphite AI Reviews provide supplemental AI review signals.
 - **Verify and merge** — Checks every acceptance criteria checkbox against the code, confirms CI is green, then squash-merges with branch cleanup.
 - **Orchestrate multi-agent work** — Decomposes large tasks into phases (fix, review, merge) with health monitoring, handoff files, and heartbeat enforcement.
 - **Manage your project** — 22 slash commands for backlog prioritization, sprint planning, team metrics, standups, and cross-thread orchestration.
@@ -39,6 +39,8 @@ Review ownership is sticky once a fallback tier takes over:
 | CodeRabbit | Primary | Local CLI review before push, then explicit GitHub approval on the current HEAD SHA |
 | BugBot (Cursor) | Second tier | Free fallback when CodeRabbit is rate-limited or times out; clean BugBot pass can satisfy the merge gate |
 | Greptile | Last resort | Paid fallback when both CodeRabbit and BugBot fail; severity-gated review path |
+| CodeAnt | Supplemental | Additional AI code review signal on PRs; findings are handled alongside other review feedback |
+| Graphite AI Reviews | Supplemental | Additional AI code review/check-run signal on PRs; failures or findings are treated as review/CI blockers |
 | Self-review | Emergency only | Risk-reduction fallback when all reviewers are unavailable; does not satisfy the merge gate |
 
 ---
@@ -53,8 +55,10 @@ Review ownership is sticky once a fallback tier takes over:
 | [GitHub CLI (`gh`)](https://cli.github.com/) | `brew install gh && gh auth login` | Issue/PR creation, API calls |
 | [CodeRabbit](https://coderabbit.ai) | Install the GitHub App on your repos | AI code review on PRs |
 | [CodeRabbit CLI](https://docs.coderabbit.ai/cli) | `curl -fsSL https://cli.coderabbit.ai/install.sh \| sh` | Local pre-push reviews |
+| CodeAnt | Install the GitHub App on your repos | Supplemental AI code review on PRs |
+| Graphite AI Reviews | Enable in Graphite for your repos | Supplemental AI review/check-run signal on PRs |
 
-**Optional:** [Greptile](https://greptile.com) — AI code reviewer used as a fallback when CodeRabbit is rate-limited or unresponsive. Install the GitHub App and configure via the [Greptile dashboard](https://app.greptile.com).
+**Optional:** [Greptile](https://greptile.com) — AI code reviewer used as a fallback when CodeRabbit and BugBot are unavailable. Install the GitHub App and configure via the [Greptile dashboard](https://app.greptile.com).
 
 ### Install
 
@@ -273,7 +277,7 @@ Claude Code loads project-level `CLAUDE.md` first, then falls back to `~/.claude
 Without worktrees, all Claude Code sessions share a single working directory. If two agents work on the same repo, they overwrite each other's edits. Worktrees give each agent its own isolated directory and branch.
 
 **What's the difference between local and GitHub reviews?**
-Local reviews run the CodeRabbit CLI in your terminal — instant, no PR noise, no quota cost. GitHub reviews happen after PR creation and consume from the 8-reviews/hour limit.
+Local reviews run the CodeRabbit CLI in your terminal — instant, no PR noise, no quota cost. GitHub reviews happen after PR creation. CodeRabbit is the primary merge-gate reviewer, BugBot and Greptile are fallbacks, and CodeAnt plus Graphite AI Reviews add supplemental PR review signals.
 
 **Does this work with CodeRabbit's free tier?**
 Yes. Rate limits in the config are tuned for Pro. Free tier limits are lower — you may want to increase polling timeouts.
