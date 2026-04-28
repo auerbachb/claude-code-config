@@ -21,7 +21,7 @@ reviews:
         poorly structured rules waste tokens and degrade agent performance.
 
         1. TOKEN FOOTPRINT: Flag if the total word count across CLAUDE.md and all
-           .claude/rules/**/*.md files exceeds 10,000 words (~13K tokens, ~6.5% of
+           .claude/rules/**/*.md files exceeds 14,000 words (~18K tokens, ~9% of
            the 200K context window). Include the current total in your review.
         2. INFORMATION HIERARCHY: The most critical behaviors (timestamps,
            worktree requirements, never-do lists) must appear at the top of the
@@ -42,7 +42,7 @@ reviews:
         structured rules waste tokens and degrade agent performance.
 
         1. TOKEN FOOTPRINT: Flag if the total word count across CLAUDE.md and all
-           .claude/rules/**/*.md files exceeds 10,000 words (~13K tokens, ~6.5% of
+           .claude/rules/**/*.md files exceeds 14,000 words (~18K tokens, ~9% of
            the 200K context window). Include the current total in your review.
         2. INFORMATION HIERARCHY: The most critical behaviors should appear at the
            top of each file. Flag if high-priority rules are buried below less
