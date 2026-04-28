@@ -19,15 +19,15 @@ BugBot is the **second-tier** AI code reviewer — free, auto-triggers on every 
 
 Poll alongside CR every 60 seconds on all three endpoints (same pattern — `pulls/{N}/reviews`, `pulls/{N}/comments`, `issues/{N}/comments` with `per_page=100`). Filter by `.user.login == "cursor[bot]"`.
 
-**Timeout:** 5 minutes **from push time** (not from CR failure detection). Since BugBot auto-triggers at push time, its timeout runs concurrently with CR's 7-minute window. If the 7-minute CR timeout fires and BugBot hasn't posted a review, BugBot's 5-minute window has already expired — trigger Greptile immediately (see `greptile.md` "When to Trigger Greptile"). Do NOT wait another 5 minutes.
+**Timeout:** 10 minutes **from push time** (not from CR failure detection). BugBot auto-triggers at push, so its timeout runs concurrently with CR's 12-minute window (BugBot's 10 fits inside CR's 12). Cadence stays 60 s; `Cursor Bugbot` `status: "completed"` short-circuits the wait. If CR's 12-min timeout fires and BugBot hasn't posted, BugBot's 10-min window has already expired — trigger Greptile immediately (see `greptile.md`). Do NOT wait another 10 min.
 
 **Completion signal:** BugBot creates a CI check-run named `Cursor Bugbot` that transitions to `status: "completed"` when the review finishes. The `conclusion` field is `neutral` when BugBot posted findings (still counts as a completed review — `neutral` is not a failure). Completion can also be detected via BugBot review comments appearing on any of the three endpoints.
 
 ## When BugBot Becomes the Active Reviewer
 
 BugBot becomes the active reviewer (`reviewer: bugbot`) when:
-1. **CR fails** (rate-limited or 7-min timeout) AND BugBot has already posted a review, OR
-2. **CR fails** AND BugBot posts a review within its 5-minute window
+1. **CR fails** (rate-limited or 12-min timeout) AND BugBot has already posted a review, OR
+2. **CR fails** AND BugBot posts a review within its 10-minute window
 
 **Sticky assignment:** Once a PR is assigned to BugBot (CR failed, BugBot responded), it stays on BugBot unless BugBot also fails — then Greptile takes over permanently.
 
@@ -47,4 +47,4 @@ Verify all findings against actual code. Fix all valid findings in one commit, p
 
 ## Re-Reviews
 
-After fixing BugBot findings, BugBot auto-reviews the new push (since auto-trigger is ON). No need to manually trigger `@cursor review` unless the auto-review didn't fire within 5 minutes — then post `@cursor review` as a manual trigger.
+After fixing BugBot findings, BugBot auto-reviews the new push (since auto-trigger is ON). No need to manually trigger `@cursor review` unless the auto-review didn't fire within 10 minutes — then post `@cursor review` as a manual trigger.

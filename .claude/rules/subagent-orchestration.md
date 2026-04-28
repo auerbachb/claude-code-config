@@ -65,9 +65,9 @@ If agent definitions are unavailable (e.g., repo without `.claude/agents/`):
 | Branch pushed | Create PR via `gh pr create` | **Always do** |
 | PR created/updated | Enter GitHub review polling loop (60s cycle) | **Always do** |
 | CR/BugBot/Greptile posts findings | Fix all valid findings, commit, push, reply to threads | **Always do** |
-| CR rate-limited (fast-path) | Check BugBot review; if absent, wait 5 min for BugBot | **Always do** |
-| CR timeout (7 min) | Check BugBot review; if absent, trigger Greptile immediately (BugBot's 5-min window from push has already elapsed) | **Always do** |
-| BugBot timeout (5 min, CR already failed) | Trigger Greptile | **Always do** |
+| CR rate-limited (fast-path) | Escalate immediately; check BugBot, else wait up to 10 min from push | **Always do** |
+| CR timeout (12 min) | Check BugBot; if absent, trigger Greptile immediately (BugBot's 10-min window already elapsed) | **Always do** |
+| BugBot timeout (10 min, CR already failed) | Trigger Greptile | **Always do** |
 | All three reviewers down | Self-review for risk reduction | **Always do** |
 | Phase A subagent completes | Parent launches Phase B within 60s | **Always do** |
 | Phase B reports merge_ready | Parent launches Phase C | **Always do** |
