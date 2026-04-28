@@ -525,6 +525,12 @@ done
 
 for entry in "${STALE_LOCAL_BRANCHES[@]}"; do
   IFS="$US" read -r b _ <<<"$entry"
+  # TOCTOU re-check: same defense as worktrees — a PR opened between
+  # dry-run and apply must not lose its branch.
+  if has_open_pr "$b"; then
+    echo "skipped: local branch $b (open PR appeared after dry-run)"
+    continue
+  fi
   if out="$("${GIT[@]}" branch -D "$b" 2>&1)"; then
     echo "removed: local branch $b"
   else
@@ -536,6 +542,11 @@ done
 for entry in "${STALE_REMOTE_BRANCHES[@]}"; do
   IFS="$US" read -r ref _ <<<"$entry"
   branch="${ref#origin/}"
+  # TOCTOU re-check for remote-branch deletion.
+  if has_open_pr "$branch"; then
+    echo "skipped: remote branch $branch (open PR appeared after dry-run)"
+    continue
+  fi
   if out="$("${GIT[@]}" push origin --delete "$branch" 2>&1)"; then
     echo "removed: remote branch $branch"
   else
