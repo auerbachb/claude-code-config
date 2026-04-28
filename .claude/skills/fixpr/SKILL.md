@@ -167,7 +167,7 @@ echo "[REVIEWERS] waiting 120s for auto-triggered reviewers on ${PUSHED_SHA:0:7}
 sleep 120
 ```
 
-Detect activity from all 4 proactive reviewers on the pushed SHA. Check all three PR comment endpoints plus check-runs for activity after `$PUSHED_AT`:
+Detect activity from all 4 proactive reviewers on the pushed SHA. Check all three PR comment endpoints plus check-runs for activity after `$PUSHED_AT`. Conversation-level comments do not expose a `commit_id`, so they only count as activity on the pushed SHA when the body mentions the full SHA or short SHA; otherwise, use SHA-scoped reviews, inline comments, or check-runs to avoid treating a late summary from the previous SHA as coverage for the new one:
 
 ```bash
 REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" | jq -s 'add // []')
@@ -184,33 +184,41 @@ REVIEWER_ACTIVITY=$(jq -n \
   --argjson checks "$CHECK_RUNS" \
   '
   def recent($ts): ($ts // "") >= $pushed_at;
+  def matches_any($value; $needles):
+    ($value // "" | ascii_downcase) as $haystack
+    | any($needles[]; (. | ascii_downcase) as $needle | $haystack | contains($needle));
   def check_by($names):
     any($checks[]?;
       (((.name // "") as $name
         | (.app.slug // "") as $slug
         | (.app.name // "") as $app
-        | $names | index($name) or index($slug) or index($app)))
+        | (matches_any($name; $names) or matches_any($slug; $names) or matches_any($app; $names))))
       and recent(.started_at // .created_at // .completed_at));
+  def convo_by($login):
+    any($convo[]?;
+      .user.login == $login
+      and recent(.created_at)
+      and (((.body // "") | contains($sha)) or ((.body // "") | contains($sha[0:7]))));
   {
     coderabbit:
       (any($reviews[]?; .user.login == "coderabbitai[bot]" and .commit_id == $sha and recent(.submitted_at))
        or any($inline[]?; .user.login == "coderabbitai[bot]" and ((.commit_id // .original_commit_id // "") == $sha) and recent(.created_at))
-       or any($convo[]?; .user.login == "coderabbitai[bot]" and recent(.created_at))
+       or convo_by("coderabbitai[bot]")
        or check_by(["CodeRabbit", "coderabbitai"])),
     graphite:
       (any($reviews[]?; .user.login == "graphite-app[bot]" and .commit_id == $sha and recent(.submitted_at))
        or any($inline[]?; .user.login == "graphite-app[bot]" and ((.commit_id // .original_commit_id // "") == $sha) and recent(.created_at))
-       or any($convo[]?; .user.login == "graphite-app[bot]" and recent(.created_at))
+       or convo_by("graphite-app[bot]")
        or check_by(["Graphite", "graphite-app"])),
     codeant:
       (any($reviews[]?; .user.login == "codeant-ai[bot]" and .commit_id == $sha and recent(.submitted_at))
        or any($inline[]?; .user.login == "codeant-ai[bot]" and ((.commit_id // .original_commit_id // "") == $sha) and recent(.created_at))
-       or any($convo[]?; .user.login == "codeant-ai[bot]" and recent(.created_at))
+       or convo_by("codeant-ai[bot]")
        or check_by(["CodeAnt", "codeant-ai"])),
     cursor:
       (any($reviews[]?; .user.login == "cursor[bot]" and .commit_id == $sha and recent(.submitted_at))
        or any($inline[]?; .user.login == "cursor[bot]" and ((.commit_id // .original_commit_id // "") == $sha) and recent(.created_at))
-       or any($convo[]?; .user.login == "cursor[bot]" and recent(.created_at))
+       or convo_by("cursor[bot]")
        or check_by(["Cursor Bugbot", "cursor"])),
   }')
 ```
@@ -324,24 +332,45 @@ jq -r '
 
 **If `finding_count > 0`:** do NOT loop. Emit `NEW_FINDINGS` in Step 7 and stop. Re-running `/fixpr` captures a new `$RUN_STARTED_AT` and re-audits from Step 0, picking up the new findings.
 
-### 5c. CI (if a push was made)
+### 5c. CI (if a push was made; exclude review-bot check-runs from CI pending)
 
 The verify audit's `.check_runs` reflects the new HEAD.
 
 ```bash
 jq -r '.check_runs.all[] | "[CI] \(.name): \(.status)\(if .conclusion then " — \(.conclusion)" else "" end)"' "$VERIFY"
 
-FAILING=$(jq -r '.check_runs.failing' "$VERIFY")
-IN_PROGRESS=$(jq -r '.check_runs.in_progress' "$VERIFY")
+CI_CHECKS=$(jq '
+  def is_review_bot:
+    (.name // "" | ascii_downcase) as $name
+    | ($name | contains("coderabbit")
+       or contains("graphite")
+       or contains("codeant")
+       or contains("cursor bugbot"));
+  [.check_runs.all[] | select(is_review_bot | not)]
+' "$VERIFY")
+REVIEW_BOT_CHECKS=$(jq '
+  def is_review_bot:
+    (.name // "" | ascii_downcase) as $name
+    | ($name | contains("coderabbit")
+       or contains("graphite")
+       or contains("codeant")
+       or contains("cursor bugbot"));
+  [.check_runs.all[] | select(is_review_bot)]
+' "$VERIFY")
+
+FAILING=$(jq '[.[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required" or .conclusion == "startup_failure" or .conclusion == "stale")] | length' <<<"$CI_CHECKS")
+IN_PROGRESS=$(jq '[.[] | select(.status != "completed")] | length' <<<"$CI_CHECKS")
+REVIEW_IN_PROGRESS=$(jq '[.[] | select(.status != "completed")] | length' <<<"$REVIEW_BOT_CHECKS")
 ```
 
-Decide from those two counts:
+Decide from the non-review CI counts before review-bot pending counts:
 
-- `IN_PROGRESS > 0` → emit `CI_PENDING` in Step 7. Re-run `/fixpr` after CI finishes.
+- `IN_PROGRESS > 0` on non-review-bot checks → emit `CI_PENDING` in Step 7. Re-run `/fixpr` after CI finishes.
+- `REVIEW_IN_PROGRESS > 0` with no non-review-bot CI pending/failing → defer to Step 5d and emit `REVIEW_PENDING`, not `CI_PENDING`.
 - `IN_PROGRESS == 0 && FAILING > 0` → read each entry in `.check_runs.failing_runs` from the VERIFY audit. Classify:
   - **deterministic** (lint/typecheck/test/build/security reports a real error) → emit `CI_FAILING` in Step 7 and stop. Re-run `/fixpr` so Steps 2–3 can retry the fix on the newly-visible error.
   - **transient** (runner timeout, startup failure, flaky external dep) → emit `CI_FAILING` in Step 7, note the specific checks, and continue to Step 6 — local fixes aren't possible and the user decides whether to retry.
-- `IN_PROGRESS == 0 && FAILING == 0` → CI clean on this SHA.
+- `IN_PROGRESS == 0 && FAILING == 0` → non-review-bot CI is clean on this SHA.
 
 Do NOT poll.
 
@@ -406,7 +435,7 @@ Status:          CLEAN | THREADS_STUCK | REVIEW_PENDING | CI_PENDING | CI_FAILIN
 - `THREADS_STUCK` — some threads could not be resolved via GraphQL (report which).
 - `REVIEW_PENDING` — 5d found a review-bot status/check-run still pending on the current HEAD, or a reviewer has not responded yet after Step 3b triggered it. Re-run `/fixpr` after it flips to a completed state. Do NOT declare CLEAN.
 - `NEW_FINDINGS` — 5b's `finding_count > 0`. Stop the run. A fresh `/fixpr` captures a new `$RUN_STARTED_AT` and re-audits from Step 0.
-- `CI_PENDING` — push was made, CI not yet complete. Re-run `/fixpr` after CI.
+- `CI_PENDING` — push was made, and non-review-bot CI is not yet complete. Re-run `/fixpr` after CI.
 - `CI_FAILING` — transient CI failures that cannot be fixed locally (report which).
 - `CONFLICTS` — merge conflicts could not be auto-resolved (needs manual intervention).
 - `BEHIND` — branch behind base, auto-rebased and force-pushed; now waiting for CI re-run. Re-run `/fixpr` after CI completes.
