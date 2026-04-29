@@ -11,7 +11,7 @@ if ! command -v python3 >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; the
   exit 0
 fi
 
-python3 - "$INPUT" <<'PY'
+printf '%s' "$INPUT" | python3 <<'PY'
 import json
 import os
 import re
@@ -25,11 +25,14 @@ def empty():
 
 
 try:
-    payload = json.loads(sys.argv[1] or "{}")
+    payload = json.loads(sys.stdin.read() or "{}")
 except Exception:
     empty()
 
-cwd = payload.get("cwd") or os.getcwd()
+cwd = payload.get("cwd") or ""
+if not cwd:
+    empty()
+
 prompt = payload.get("prompt") or payload.get("message") or ""
 
 
@@ -66,9 +69,14 @@ issue_matches = re.findall(r"(?:issues?/|issue\s*#?|#)(\d+)\b", prompt, re.IGNOR
 if not issue_matches:
     empty()
 
-prompt_issue = issue_matches[0]
 branch_match = re.search(r"(?:^|[/-])issue-(\d+)(?:\b|-)", branch)
 branch_issue = branch_match.group(1) if branch_match else ""
+
+# If the branch issue matches any issue mentioned in the prompt, no warning needed.
+if branch_issue and branch_issue in issue_matches:
+    empty()
+
+prompt_issue = issue_matches[0]
 
 if branch_issue == prompt_issue:
     empty()
