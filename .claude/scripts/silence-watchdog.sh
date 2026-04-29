@@ -8,6 +8,7 @@ set -euo pipefail
 
 LABEL="com.user.claude-silence-watchdog"
 HEARTBEAT_PREFIX="/tmp/claude-heartbeat-"
+ACTIVE_PREFIX="/tmp/claude-active-"
 THRESHOLD_MINUTES="${SILENCE_THRESHOLD_MINUTES:-10}"
 if [[ ! "$THRESHOLD_MINUTES" =~ ^[0-9]+$ ]] || (( THRESHOLD_MINUTES == 0 )); then
   THRESHOLD_MINUTES=10
@@ -54,10 +55,16 @@ for heartbeat in "${HEARTBEAT_PREFIX}"*; do
   [[ -f "$heartbeat" ]] || continue
 
   base="$(basename "$heartbeat")"
-  [[ "$base" == claude-heartbeat-warned-* ]] && continue
 
   session_id="${base#claude-heartbeat-}"
   [[ "$session_id" =~ ^[[:alnum:]_.-]+$ ]] || continue
+  active_file="${ACTIVE_PREFIX}${session_id}"
+  if [[ ! -f "$active_file" ]]; then
+    jq --arg path "$heartbeat" 'del(.[$path])' "$tmp_state" > "${tmp_state}.next"
+    mv "${tmp_state}.next" "$tmp_state"
+    continue
+  fi
+
   mtime="$(file_mtime "$heartbeat")"
   [[ -n "$mtime" ]] || continue
 
@@ -81,8 +88,6 @@ done
 shopt -u nullglob
 
 # Drop state for heartbeat files that no longer exist.
-jq 'with_entries(select(.key | test("^/tmp/claude-heartbeat-warned-") | not))' "$tmp_state" > "${tmp_state}.next"
-mv "${tmp_state}.next" "$tmp_state"
 jq 'with_entries(select(.key | startswith("/tmp/claude-heartbeat-")))' "$tmp_state" > "${tmp_state}.next"
 mv "${tmp_state}.next" "$tmp_state"
 while IFS= read -r path; do

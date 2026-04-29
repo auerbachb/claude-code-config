@@ -13,8 +13,9 @@ SESSION_ID="${SESSION_ID:-default}"
 
 # Touch the heartbeat file to reset the silence timer
 HEARTBEAT_FILE="/tmp/claude-heartbeat-${SESSION_ID}"
-WARNED_FILE="/tmp/claude-heartbeat-warned-${SESSION_ID}"
+WARNED_FILE="/tmp/claude-silence-warned-${SESSION_ID}"
+ACTIVE_FILE="/tmp/claude-active-${SESSION_ID}"
 touch "$HEARTBEAT_FILE"
-rm -f "$WARNED_FILE"
+rm -f "$WARNED_FILE" "$ACTIVE_FILE"
 
 exit 0

@@ -79,7 +79,8 @@ SESSION_ID=$(parse_json_field '.session_id')
 SESSION_ID="${SESSION_ID:-${CLAUDE_SESSION_ID:-default}}"
 SESSION_ID="${SESSION_ID//[^[:alnum:]_.-]/_}"
 HEARTBEAT_FILE="/tmp/claude-heartbeat-${SESSION_ID}"
-WARNED_FILE="/tmp/claude-heartbeat-warned-${SESSION_ID}"
+WARNED_FILE="/tmp/claude-silence-warned-${SESSION_ID}"
+ACTIVE_FILE="/tmp/claude-active-${SESSION_ID}"
 THRESHOLD=300  # 5 minutes in seconds
 COOLDOWN_S="${SILENCE_WARN_COOLDOWN_S:-90}"
 [[ "$COOLDOWN_S" =~ ^[0-9]+$ ]] || COOLDOWN_S=90
@@ -88,6 +89,10 @@ LOG_FILE="$LOG_DIR/silence.log"
 LOG_MAX_SIZE=$((10 * 1024 * 1024))
 TOOL_NAME=$(parse_json_field '.tool_name')
 CWD=$(parse_json_field '.cwd')
+
+# A PostToolUse event means the agent is still in a turn until the Stop hook
+# clears this marker after the next visible response.
+touch "$ACTIVE_FILE" 2>/dev/null || true
 
 # If heartbeat file doesn't exist, create it (first tool call in session)
 if [[ ! -f "$HEARTBEAT_FILE" ]]; then
