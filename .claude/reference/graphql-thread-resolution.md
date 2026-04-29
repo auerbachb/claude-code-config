@@ -21,3 +21,11 @@ gh api graphql -f query='query { repository(owner: "{owner}", name: "{repo}") { 
 ```
 
 Use the returned `nodes[].id` as `threadId` in `resolveReviewThread`. Check `isResolved` before requesting a new review — unresolved threads signal outstanding work.
+
+## Verify addressed threads after replying
+
+When a workflow replies to review threads, keep the thread node IDs it touched and re-query
+`pullRequest.reviewThreads` after the reply/resolve pass. Every touched ID must be present and
+must report `isResolved: true`; otherwise retry `resolveReviewThread`, then fall back to
+`minimizeComment(classifier: RESOLVED)` on the first comment node ID. Report the final
+`addressed / resolved / dangling` counts and list dangling thread URLs.
