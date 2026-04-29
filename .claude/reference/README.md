@@ -11,3 +11,4 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `cr-polling-commands.md` — full multi-line `gh api` commands for CR review polling and CI verification
 - `graphql-thread-resolution.md` — full GraphQL queries/mutations for resolving PR review threads
 - `exit-report-format.md` — full structured exit report block specification
+- `issue-162-phase-protocol-verification.md` — static verification log for exit reports, phase B/C protocols, and monitor loop ordering (issue #162)
