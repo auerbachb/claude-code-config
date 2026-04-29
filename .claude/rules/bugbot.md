@@ -4,16 +4,19 @@
 > **Ask first:** Never — fix findings autonomously.
 > **Never:** Trigger Greptile before checking if BugBot already posted a review. Include `@cursor` in reply comments (may trigger a re-review). Ignore BugBot findings.
 
-BugBot is the **second-tier** AI code reviewer — free, auto-triggers on every push/PR open, and sits between CR (primary) and Greptile (last resort). The full review chain: **CR → BugBot → Greptile → self-review.**
+BugBot is the **second-tier** AI code reviewer — included with Cursor (per-seat), sits between CR (primary) and Greptile (last resort). The full review chain: **CR → BugBot → Greptile → self-review.**
+
+**Always-trigger:** This repo posts `@cursor review` on every PR open and every push via `.github/workflows/cursor-review-pr-comment.yml` because BugBot’s GitHub auto-trigger is unreliable on later pushes. Do **not** rely on “wait for auto-trigger” alone — see memory `feedback_bugbot_auto_trigger_unreliable.md`.
 
 **Escalation authority:** The numbered gate + STOP conditions live in `cr-github-review.md` ("Reviewer escalation gate"). Use `.claude/scripts/escalate-review.sh <PR_NUMBER>` for the per-cycle `STATUS=` verdict; this file only defines BugBot behavior after `STATUS=switch_bugbot`.
 
 ## BugBot Basics
 
 - **Bot username:** `cursor[bot]`
-- **Auto-trigger:** ON — runs on every push and every PR open (both "Only Run When Mentioned" and "Only Run Once Automatically" are OFF)
-- **Manual trigger:** Comment `@cursor review` on any PR (for re-reviews or when auto-trigger didn't fire)
-- **Cost:** Free (included with Cursor)
+- **Auto-trigger (GitHub):** May be ON in product settings, but do **not** assume it fires every time — treat it as best-effort only.
+- **Unconditional trigger (this repo):** CI always posts `@cursor review` on PR open and every push (`cursor-review-pr-comment.yml`). Agents (`/fixpr`, phase workflows) also post `@cursor review` after pushes where applicable — duplicate triggers are OK.
+- **Manual trigger:** Same comment — `@cursor review` — anytime you need an extra run outside CI (rare).
+- **Cost:** Per-seat product — no per-comment or per-review charges for BugBot; always-triggering is safe from a billing standpoint.
 - **Review time:** Typically fast (~1-3 minutes)
 - **No CLI** — local review loop uses CR CLI only; BugBot is GitHub-only
 
@@ -49,4 +52,4 @@ Verify all findings against actual code. Fix all valid findings in one commit, p
 
 ## Re-Reviews
 
-After fixing BugBot findings, BugBot auto-reviews the new push (since auto-trigger is ON). No need to manually trigger `@cursor review` unless the auto-review didn't fire within 10 minutes — then post `@cursor review` as a manual trigger.
+After fixing BugBot findings and pushing, expect a new BugBot pass on the new HEAD: CI already posted `@cursor review` on that push. If anything still looks stale after polling, post `@cursor review` again — duplicates are acceptable.
