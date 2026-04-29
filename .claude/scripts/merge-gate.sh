@@ -221,9 +221,9 @@ fi
 CODEOWNERS_TEXT=""
 for codeowners_path in CODEOWNERS .github/CODEOWNERS docs/CODEOWNERS; do
   if [[ -n "$BASE_REF" ]]; then
-    CODEOWNERS_JSON=$(gh api "repos/$OWNER/$REPO/contents/$codeowners_path" -f ref="$BASE_REF" 2>/dev/null || true)
+    CODEOWNERS_JSON=$(gh api --method GET "repos/$OWNER/$REPO/contents/$codeowners_path" -f ref="$BASE_REF" 2>/dev/null || true)
   else
-    CODEOWNERS_JSON=$(gh api "repos/$OWNER/$REPO/contents/$codeowners_path" 2>/dev/null || true)
+    CODEOWNERS_JSON=$(gh api --method GET "repos/$OWNER/$REPO/contents/$codeowners_path" 2>/dev/null || true)
   fi
   if [[ -n "$CODEOWNERS_JSON" ]]; then
     CODEOWNERS_TEXT=$(echo "$CODEOWNERS_JSON" | jq -r '.content // ""' | base64 --decode 2>/dev/null || true)
