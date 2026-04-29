@@ -75,10 +75,9 @@ import re
 import sys
 
 data = open(sys.argv[1], "rb").read()
-data = data.rstrip(b"\r\n")
-if not re.fullmatch(rb"[0-9]+", data):
+if not re.fullmatch(rb"[0-9]+(\r?\n)?", data):
     sys.exit(1)
-sys.stdout.write(data.decode("ascii"))
+sys.stdout.write(str(int(data.strip().decode("ascii"))))
 PY
   ); then
     echo "::error file=${BUDGET_CAP_FILE}::Budget soft cap must contain a single integer, with at most a trailing newline"
@@ -161,7 +160,7 @@ elif (( total > SOFT_LIMIT )); then
   echo "::warning file=${CLAUDE_MD}::Auto-loaded word count ${total} exceeds soft budget ${SOFT_LIMIT} (hard=${HARD_LIMIT}). Consider condensing rules."
 fi
 
-if (( total > budget_cap )); then
+if (( total > 10#$budget_cap )); then
   echo "::error file=${BUDGET_CAP_FILE}::Auto-loaded word count ${total} exceeds ratchet cap ${budget_cap}. Run rule-lint.sh --update-cap only after intentional corpus reduction."
   errors=$((errors + 1))
 fi
