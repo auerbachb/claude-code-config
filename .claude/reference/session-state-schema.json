@@ -1,6 +1,13 @@
 {
   "last_updated": "2026-04-29T14:00:00Z",
   "monitoring_active": true,
+  "monitoring_mode": "cron",
+  "monitoring_command": "/status",
+  "monitoring_interval_minutes": 60,
+  "monitoring_durable": false,
+  "monitoring_started_at": "2026-03-16T15:00:00Z",
+  "last_poll_at": "2026-03-16T15:58:00Z",
+  "next_expected_poll_at": "2026-03-16T16:58:00Z",
   "root_repo": "/Users/user/repos/my-project",
   "prs": {
     "618": {
@@ -40,10 +47,13 @@
   "cr_quota": {"reviews_used": 5, "window_start": "2026-03-16T15:00:00Z"},
   "greptile_daily": {"reviews_used": 12, "date": "2026-03-16", "budget": 40},
   "active_agents": [
-    {"id": "a3f8d26fa75eddcb3", "task": "PR #623 Phase C", "launched": "2026-03-16T15:55:00Z"}
+    {"id": "a3f8d26fa75eddcb3", "task": "PR #623 Phase C", "issue": 503, "pr": 623, "phase": "C", "launched": "2026-03-16T15:55:00Z", "last_seen_at": "2026-03-16T15:58:00Z"}
+  ],
+  "polling_jobs": [
+    {"primitive": "CronCreate", "id": "cron_abc123", "cron": "17 * * * *", "prompt": "/status", "recurring": true, "durable": false, "created_at": "2026-03-16T15:00:00Z", "expires_at": "2026-03-23T15:00:00Z"}
   ],
   "polling_failures": [
-    {"detected_at": "2026-03-16T15:58:00Z", "context": "PM tick dropped at 11:57 AM ET", "recovery": "restarted via /loop 5m /status"}
+    {"detected_at": "2026-03-16T15:58:00Z", "expected_at": "2026-03-16T15:57:00Z", "context": "PM tick dropped at 11:57 AM ET", "recovery": "restarted via /loop 5m /status", "active_work": ["PR #618", "PR #619", "PR #620"]}
   ],
   "polling_backoffs": [
     {"pr": 619, "detected_at": "2026-04-29T13:58:00Z", "digest_streak": 4, "action": "CronUpdate", "interval": "5m"},
