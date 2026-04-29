@@ -143,7 +143,9 @@ if (( update_cap )); then
   if (( updated_cap < RATCHET_FLOOR )); then
     updated_cap=$RATCHET_FLOOR
   fi
-  printf '%s' "$updated_cap" > "$BUDGET_CAP_FILE"
+  tmp_cap=$(mktemp "${BUDGET_CAP_FILE}.tmp.XXXXXX")
+  printf '%s' "$updated_cap" > "$tmp_cap"
+  mv "$tmp_cap" "$BUDGET_CAP_FILE"
   echo "Updated budget soft cap: ${updated_cap}"
 fi
 
