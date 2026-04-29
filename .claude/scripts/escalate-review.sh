@@ -166,7 +166,7 @@ CR_REVIEW_ON_HEAD="$(jq -r --arg sha "$HEAD_SHA" '
   | length > 0
 ' "$STATE_PATH")"
 
-if [[ "$CR_RATE_LIMITED" != "true" && ! ( "$AGE_SECONDS" -gt 420 && "$CR_REVIEW_ON_HEAD" != "true" ) ]]; then
+if [[ "$CR_RATE_LIMITED" != "true" && ! ( "$AGE_SECONDS" -gt 720 && "$CR_REVIEW_ON_HEAD" != "true" ) ]]; then
   emit "polling_cr"
 fi
 
@@ -196,13 +196,13 @@ case "$CACHED_BUGBOT_INSTALLED" in
   *)
     if [[ "$BUGBOT_CHECK_PRESENT" == "true" || "$BUGBOT_POSTED" == "true" ]]; then
       BUGBOT_INSTALLED="true"
+      "$SESSION_STATE" --set ".prs[\"$PR_NUMBER\"].bugbot_installed=true" 2>/dev/null || {
+        echo "escalate-review.sh: failed to cache bugbot_installed=true" >&2
+        exit 4
+      }
     else
       BUGBOT_INSTALLED="false"
     fi
-    "$SESSION_STATE" --set ".prs[\"$PR_NUMBER\"].bugbot_installed=$BUGBOT_INSTALLED" 2>/dev/null || {
-      echo "escalate-review.sh: failed to cache bugbot_installed=$BUGBOT_INSTALLED" >&2
-      exit 4
-    }
     ;;
 esac
 
@@ -210,12 +210,12 @@ if [[ "$BUGBOT_POSTED" == "true" ]]; then
   emit "switch_bugbot"
 fi
 
-if [[ "$BUGBOT_INSTALLED" == "true" && "$AGE_SECONDS" -lt 300 ]]; then
+if [[ "$BUGBOT_INSTALLED" == "true" && "$AGE_SECONDS" -lt 600 ]]; then
   emit "polling_cr"
 fi
 
-BUDGET_JSON="$("$GREPTILE_BUDGET" --check 2>/dev/null)"
-BUDGET_CHECK_RC=$?
+BUDGET_CHECK_RC=0
+BUDGET_JSON="$("$GREPTILE_BUDGET" --check 2>/dev/null)" || BUDGET_CHECK_RC=$?
 if [[ $BUDGET_CHECK_RC -ge 2 ]]; then
   echo "escalate-review.sh: failed to check Greptile budget" >&2
   exit 4
