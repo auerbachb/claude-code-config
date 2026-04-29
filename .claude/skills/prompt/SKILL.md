@@ -10,6 +10,8 @@ argument-hint: "[#123 #124 ...] (issue numbers, or omit for PM auto-detect)"
 
 Analyze one or more GitHub issues, classify complexity, and produce a copy-paste-ready prompt with a model recommendation. The goal is quality-conservative right-sizing — never under-resource a task, but don't waste Opus 4.7 1M tokens on a typo fix.
 
+**MANDATORY OUTPUT FORMAT:** Every per-issue prompt block MUST open and close with `~~~` tilde fences. NEVER use backtick fences as the outer prompt-block delimiter.
+
 ## Step 0: Parse Arguments and Detect Context
 
 Parse `$ARGUMENTS` as space-separated issue references. Strip `#` prefixes to get bare issue numbers.
@@ -195,7 +197,7 @@ If all issues are subagent-eligible, skip the Tier Recommendation and prompt blo
 
 For single-issue input, there is one prompt block. For batch input, there are multiple prompt blocks, each independently copyable (i.e., self-contained with all context; this does not imply each block has its own tier). All blocks in a batch share the batch-level tier, so an individually Light issue's block may include Heavy-tier checkpoints when the batch tier is Heavy. **Batch tier is computed from thread-prompt issues only** — subagent candidates do not influence the batch tier.
 
-**Fence nesting rule:** Outer prompt blocks open and close with tilde fences (`~~~`). Inner code examples (bash commands, SQL, file paths, etc.) use the standard three backtick characters. Per CommonMark, a fenced block can only be closed by a fence using the **same character** as the opening fence — so a `~~~`-delimited outer block safely contains any number of ```` ``` ````-delimited inner blocks without collision. This is more robust than nested backtick fences (e.g., 4-backtick outer + 3-backtick inner) because some renderers (including recent versions of the Claude Mac app) close the outer fence at the first inner triple-backtick in violation of CommonMark's requirement that fences close only with matching fence characters of equal or greater length. Tilde outer fences sidestep that renderer bug entirely.
+**Fence nesting rule:** MUST use tilde fences (`~~~`) for all outer prompt blocks. Do NOT use backtick fences as outer delimiters. Inner code examples (bash commands, SQL, file paths, etc.) may use the standard three backtick characters because a `~~~`-delimited outer block is not closed by inner backticks; this keeps each full prompt block copyable as one unit in renderers that mishandle nested backtick fences.
 
 ### Subagent Candidates Template (PM auto-detect only)
 
@@ -224,6 +226,8 @@ Output the Tier Recommendation as plain text first (skip if all issues are subag
 
 Rationale: {1-line explanation of why this tier was selected, citing the dominant signal}
 ```
+
+**OUTPUT MUST USE `~~~` FENCES, NOT BACKTICKS.** The opening and closing lines of every per-issue prompt block must be exactly `~~~`.
 
 Then, for each issue, output a self-contained prompt block. Use tilde fences (`~~~`, shown here as the outer boundary):
 
