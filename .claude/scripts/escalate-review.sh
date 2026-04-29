@@ -208,6 +208,7 @@ case "$CACHED_BUGBOT_INSTALLED" in
       }
     else
       BUGBOT_INSTALLED="false"
+      emit "polling_cr"
     fi
     ;;
 esac
