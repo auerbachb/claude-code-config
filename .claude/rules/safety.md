@@ -28,7 +28,7 @@
 
 Include this in every subagent prompt AND set `mode: "bypassPermissions"` on the Agent call (see `subagent-orchestration.md`):
 
-```
+```text
 SAFETY: Do NOT delete/overwrite/move/modify .env files anywhere (exception:
 .env.<example|sample|template>, case-insensitive, are safe to edit).
 Do NOT run git clean. Do NOT run destructive commands (rm -rf, rm, git checkout .,

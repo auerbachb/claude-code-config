@@ -59,7 +59,7 @@ If you compose "should I...?" about any workflow step, stop — the answer is ye
 - **CI must pass before merge** — see `cr-merge-gate.md`.
 - **Never suppress linter errors** — fix the code; see `cr-local-review.md`.
 - **NEVER work on `main`.** Worktree + feature branch (`issue-N-short-description`) for every change.
-- **Always squash-merge:** `gh pr merge --squash --delete-branch`.
+- **Always squash-merge:** `gh pr merge --squash` (the `/wrap` and `/merge` skills handle branch cleanup separately — don't pass `--delete-branch` while the worktree is still on that branch).
 - **Never merge immediately after a rebase/force-push** — wait for CR to re-review the new commit.
 
 ---
