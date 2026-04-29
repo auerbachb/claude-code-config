@@ -245,7 +245,7 @@ append_thread_ids() {
   local raw="$1"
   printf '%s\n' "$raw" | tr ',' '\n' | while IFS= read -r id; do
     id="${id//[[:space:]]/}"
-    [[ -n "$id" ]] && printf '%s\n' "$id"
+    [[ -n "$id" ]] && printf '%s\n' "$id" || true
   done
 }
 
