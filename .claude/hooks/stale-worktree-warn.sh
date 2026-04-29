@@ -11,7 +11,7 @@ if ! command -v python3 >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; the
   exit 0
 fi
 
-printf '%s' "$INPUT" | python3 <<'PY'
+INPUT="$INPUT" python3 <<'PY'
 import json
 import os
 import re
@@ -25,7 +25,7 @@ def empty():
 
 
 try:
-    payload = json.loads(sys.stdin.read() or "{}")
+    payload = json.loads(os.environ.get("INPUT", "") or "{}")
 except Exception:
     empty()
 
