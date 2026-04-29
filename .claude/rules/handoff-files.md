@@ -37,3 +37,4 @@ When approaching token exhaustion (see `subagent-orchestration.md` "Token/Turn E
 Report concisely to the parent/user what was done and what remains. Exit cleanly — do not squeeze in one more tool call.
 
 **Parent response to exhaustion:** Read `session-state.json`, launch a replacement subagent for the same phase. This is an **"Always do"** action — do not ask the user.
+
