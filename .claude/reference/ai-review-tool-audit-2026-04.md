@@ -84,8 +84,8 @@ Repo-local config: `.coderabbit.yaml`.
 
 Flag for user review before applying:
 
-- Decide whether to keep CodeRabbit's token-footprint threshold at the 10,000
-  word soft budget or raise it to the temporary 14,000 word hard limit.
+- Decide whether to keep CodeRabbit's token-footprint threshold at the
+  10,000-word soft budget or raise it to the temporary 14,000-word hard limit.
   Recommendation: keep 10,000 for early-warning coverage until the rule set is
   condensed below the soft budget. Tradeoff: a 10,000-word threshold can produce
   more review noise while the repo is intentionally above the soft budget; a
@@ -290,7 +290,7 @@ Flag for user review before applying:
   Tradeoff: broad automatic review spends credits on non-Vercel config changes.
 - In the Vercel dashboard, set repository scope deliberately:
   - All repositories only if every connected repo is a Vercel app.
-  - Public only / Private only if the app split maps to value.
+  - Choose Public-only or Private-only if the app split maps to value.
 - Keep draft PR review disabled unless early Vercel-specific feedback is worth
   credit spend.
 - Configure auto-recharge with a monthly spending limit if Agent is enabled.
