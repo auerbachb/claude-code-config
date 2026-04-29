@@ -208,6 +208,7 @@ HOOKS_MANIFEST=(
   $'PostToolUse\tSkill\tskill-usage-tracker.sh\t5'
   $'PostToolUse\t\tsilence-detector.sh\t5'
   $'UserPromptSubmit\t\ttimestamp-injector.sh\t5'
+  $'UserPromptSubmit\t\tstale-worktree-warn.sh\t30'
 )
 
 SETTINGS_FILE="$HOME/.claude/settings.json"

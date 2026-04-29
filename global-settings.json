@@ -78,6 +78,11 @@
             "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/timestamp-injector.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/stale-worktree-warn.sh",
+            "timeout": 30
           }
         ]
       }
