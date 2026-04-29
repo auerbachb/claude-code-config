@@ -286,7 +286,7 @@ worktree directory at all times.
 
 > **Note on `subagent_type`:** Do NOT set `subagent_type: "phase-a-fixer"` here. The `/subagent` skill's "Phase A" does **initial implementation** of a new issue (no PR exists yet), but `.claude/agents/phase-a-fixer.md` is designed for **fixing existing review findings** on an already-open PR — its workflow references findings, review threads, and push replies that don't apply to green-field implementation. Let this Agent call fall back to the default general-purpose agent; the long custom prompt below carries all the rules the subagent needs.
 
-Record each spawned agent in `session-state.json` under `active_agents`.
+Record each spawned agent in `session-state.json` under `active_agents` and set `monitoring_active=true`. Also record the monitoring primitive state from `.claude/reference/pm-monitoring-decision.md`: use in-turn Dedicated Monitor Mode immediately, and arm between-turn `/loop` for 1-2 active workers or `CronCreate` for 3+ workers/cross-session durability when the campaign needs polling after the current turn.
 
 ## Step 8: Enter Monitor Mode
 
