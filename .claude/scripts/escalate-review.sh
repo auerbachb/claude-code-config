@@ -148,7 +148,7 @@ CR_RATE_LIMITED="$(jq -r '
     [.check_runs.all[]
      | select((.name // "") == "CodeRabbit")
      | select((.conclusion // "") == "failure")
-     | select(((.title // "") | test("rate limit"; "i")))]
+     | select((text | test("rate limit"; "i")))]
     | length
   ) > 0
   or
@@ -198,6 +198,12 @@ case "$CACHED_BUGBOT_INSTALLED" in
       BUGBOT_INSTALLED="true"
       "$SESSION_STATE" --set ".prs[\"$PR_NUMBER\"].bugbot_installed=true" 2>/dev/null || {
         echo "escalate-review.sh: failed to cache bugbot_installed=true" >&2
+        exit 4
+      }
+    elif [[ "$AGE_SECONDS" -ge 600 ]]; then
+      BUGBOT_INSTALLED="false"
+      "$SESSION_STATE" --set ".prs[\"$PR_NUMBER\"].bugbot_installed=false" 2>/dev/null || {
+        echo "escalate-review.sh: failed to cache bugbot_installed=false" >&2
         exit 4
       }
     else
