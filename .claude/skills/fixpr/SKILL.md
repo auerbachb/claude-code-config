@@ -355,19 +355,39 @@ jq -r '.check_runs.all[] | "[CI] \(.name): \(.status)\(if .conclusion then " —
 CI_CHECKS=$(jq '
   def is_review_bot:
     (.name // "" | ascii_downcase) as $name
+    | (.app.slug // "" | ascii_downcase) as $slug
+    | (.app.name // "" | ascii_downcase) as $app
     | ($name | contains("coderabbit")
        or contains("graphite")
        or contains("codeant")
-       or contains("cursor bugbot"));
+       or contains("cursor"))
+      or ($slug | contains("coderabbit")
+         or contains("graphite")
+         or contains("codeant")
+         or contains("cursor"))
+      or ($app | contains("coderabbit")
+         or contains("graphite")
+         or contains("codeant")
+         or contains("cursor"));
   [.check_runs.all[] | select(is_review_bot | not)]
 ' "$VERIFY")
 REVIEW_BOT_CHECKS=$(jq '
   def is_review_bot:
     (.name // "" | ascii_downcase) as $name
+    | (.app.slug // "" | ascii_downcase) as $slug
+    | (.app.name // "" | ascii_downcase) as $app
     | ($name | contains("coderabbit")
        or contains("graphite")
        or contains("codeant")
-       or contains("cursor bugbot"));
+       or contains("cursor"))
+      or ($slug | contains("coderabbit")
+         or contains("graphite")
+         or contains("codeant")
+         or contains("cursor"))
+      or ($app | contains("coderabbit")
+         or contains("graphite")
+         or contains("codeant")
+         or contains("cursor"));
   [.check_runs.all[] | select(is_review_bot)]
 ' "$VERIFY")
 
