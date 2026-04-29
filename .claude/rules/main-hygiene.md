@@ -4,18 +4,16 @@
 > **Ask first:** Never — `--check` is read-only and `--quarantine` is non-destructive (creates a recovery branch before resetting main).
 > **Never:** Call `--quarantine` on a worktree / feature branch. Delete recovery branches without the user's say-so. Hand-roll `git reset --hard origin/main` on the root repo — use the guard so dirty state is preserved.
 
-Enforces the "never leave anything on main" rule from `CLAUDE.md`. Complements the pre-commit hook from #323 (which blocks *new* commits on main) by catching drift that already exists — stray uncommitted changes or unpushed local commits — whenever a session starts.
+Enforces "never leave anything on main" from `CLAUDE.md`. Complements the #323 pre-commit hook (which blocks new commits) by catching pre-existing drift at session start.
 
 ## What counts as "dirty"
 
-The guard flags two conditions on the **root repo's** main branch:
+On the root repo's main branch, either condition triggers `dirty:` output from `--check` and quarantine from `--quarantine`:
 
-1. **Uncommitted tracked changes** — staged or unstaged modifications to files git is tracking. Detected via `git diff --quiet` + `git diff --cached --quiet` (tracked-only by design; untracked files never block — see memory `feedback_porcelain_untracked.md`).
-2. **Unpushed commits on main** — `git rev-list --count origin/main..HEAD > 0`. Fetches origin first so the comparison is current; fetch errors degrade gracefully to the existing remote-tracking ref.
+1. **Uncommitted tracked changes** — `git diff --quiet` + `git diff --cached --quiet` (tracked-only; untracked files never block — see memory `feedback_porcelain_untracked.md`).
+2. **Unpushed commits** — `git rev-list --count origin/main..HEAD > 0`, with origin fetched first; fetch errors degrade to the existing remote-tracking ref.
 
-Both conditions are independent — either triggers `dirty:` output from `--check` and a quarantine from `--quarantine`.
-
-Feature branches / worktrees are **not** in scope. The guard short-circuits to a clean / no-op exit on any branch other than main.
+Feature branches / worktrees are out of scope — the guard short-circuits to a no-op on any branch other than main.
 
 ## Using the guard
 
@@ -38,17 +36,17 @@ Canonical script: `.claude/scripts/dirty-main-guard.sh`. See `--help` for the fu
 
 ## Recovery workflow
 
-When the guard creates a recovery branch, first list the exact branch name (`recovery/dirty-main-*` is a shell glob; commands like `git branch -D` need the literal name):
+`recovery/dirty-main-*` is a shell glob; `git branch -D` needs the literal name. List it first:
 
 ```bash
 cd "$(.claude/scripts/repo-root.sh)"
 git branch --list 'recovery/dirty-main-*'
 ```
 
-Copy the full branch name from that output and substitute it for `<recovery-branch>` in every subsequent command:
+Then, with `<recovery-branch>` substituted:
 
-1. Inspect the branch: `git log <recovery-branch> --oneline` or `git diff main..<recovery-branch> --stat`.
-2. Cherry-pick, rebase, or open a PR from the branch the same way you would any other branch.
-3. Once the content is landed (via PR) or confirmed unneeded, delete the branch: `git branch -D <recovery-branch>`.
+1. Inspect: `git log <recovery-branch> --oneline` or `git diff main..<recovery-branch> --stat`.
+2. Cherry-pick, rebase, or open a PR like any other branch.
+3. After landing (or confirming unneeded), delete: `git branch -D <recovery-branch>`.
 
-Do not delete recovery branches automatically — they are the user's audit trail. Ask first if cleanup comes up.
+Recovery branches are the user's audit trail — never auto-delete; ask first.
