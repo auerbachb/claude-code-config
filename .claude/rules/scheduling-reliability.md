@@ -21,10 +21,10 @@ The 5-minute heartbeat rule catches silence during turns; this file covers betwe
 PM manager monitoring uses the hybrid decision recorded in `.claude/reference/pm-monitoring-decision.md`:
 
 - `/loop` is canonical for explicit user-requested polling and 1-2 session-scoped PM worker threads.
-- `CronCreate` is canonical when the PM owns 3+ active worker threads/PRs, the user asks for cross-session durability, or the campaign should outlive the current interactive session.
+- `CronCreate` is canonical for 3+ active threads/PRs, cross-session durability, or campaigns outliving the session.
 - Passive mode is valid only with zero active workers or when the user explicitly chooses it.
 
-Every PM polling turn must read/write the monitoring fields in `~/.claude/session-state.json`, including `monitoring_mode`, `monitoring_command`, timing watermarks, tracked `prs`, `active_agents`, `polling_jobs`, and `polling_failures`. If a PM loop drops, run the normal post-compaction recovery from `monitor-mode.md`, reconcile with GitHub and handoff files, then re-arm the recorded primitive or mark monitoring inactive if no active work remains.
+Each polling turn: update `session-state.json` monitoring fields. If a loop drops, follow post-compaction recovery in `monitor-mode.md`.
 
 ## Forbidden Pattern: Hand-Rolled One-Shot Chains
 
