@@ -423,9 +423,11 @@ jq -r '.merge_state | "[MERGE] mergeable=\(.mergeable), status=\(.mergeStateStat
 | `mergeable` | `CONFLICTING` | Rebase onto main: `git fetch origin main && git rebase origin/main`. Fix conflicts, continue, force-push. |
 | `mergeable` | `UNKNOWN` | GitHub still computing — note and re-run `/fixpr` later. |
 | `mergeStateStatus` | `BEHIND` | Rebase onto main: `git fetch origin main && git rebase origin/main`. If conflicts arise mid-rebase (replaying commits individually can conflict even when a three-way merge wouldn't), resolve them the same way as `CONFLICTING` above, then `git rebase --continue`. Force-push. Wait for CI to re-run before verifying merge gate. |
-| `mergeStateStatus` | `BLOCKED` | Required checks/reviews missing — already covered by 5c/5d, but report any residual. |
+| `mergeStateStatus` | `BLOCKED` | Required checks/reviews missing — already covered by 5c/5d. If CodeRabbit or Greptile is in CODEOWNERS and the last approval is stale/dismissed after a push, recover by triggering that bot re-review (`@coderabbitai full review` or `@greptileai`) instead of escalating to the author. |
 | `mergeStateStatus` | `UNSTABLE` | A non-required check pending/failing — typically CR/Greptile on the new SHA. If 5d emitted `REVIEW_PENDING`, stop with that status. |
-| `reviewDecision` | `CHANGES_REQUESTED` | A human reviewer requested changes — report; cannot auto-resolve. |
+| `reviewDecision` | `CHANGES_REQUESTED` | Changes were requested. If the requester is a bot, process findings through this skill; if a human requested changes, report it as non-automatable. |
+
+When residual branch protection says review is missing or `reviewDecision != "APPROVED"`, run `.claude/scripts/merge-gate.sh "$PR_NUMBER"` and read `.code_owner_bots`. If it lists `coderabbitai[bot]` or `greptile-apps[bot]`, a current-HEAD approval from that bot is the merge unblocker. A stale/dismissed bot approval is recoverable review debt: trigger the matching bot and re-run the gate after it responds. Do not ask the PR author for an approval GitHub will not accept.
 
 After any rebase + force-push: `[MERGE] rebase complete, force-pushed (SHA: <new-sha>) — CI re-triggered. Re-run /fixpr after CI completes.`
 
@@ -458,4 +460,4 @@ Status:          CLEAN | THREADS_STUCK | REVIEW_PENDING | CI_PENDING | CI_FAILIN
 - `CI_FAILING` — transient CI failures that cannot be fixed locally (report which).
 - `CONFLICTS` — merge conflicts could not be auto-resolved (needs manual intervention).
 - `BEHIND` — branch behind base, auto-rebased and force-pushed; now waiting for CI re-run. Re-run `/fixpr` after CI completes.
-- `NEEDS_HUMAN_REVIEW` — a human reviewer requested changes (cannot auto-resolve).
+- `NEEDS_HUMAN_REVIEW` — a human reviewer requested changes, or no configured code-owner bot can satisfy the missing required approval. If CR/Greptile is in CODEOWNERS and only its approval is stale/dismissed, downgrade to `REVIEW_PENDING` after triggering the bot re-review.

@@ -9,7 +9,9 @@
 #   - Greptile path : severity-gated — clean OR only P1/P2 (fixed) OR P0 fixed + re-review clean
 # Also enforces the pre-merge CI gate from .claude/rules/cr-merge-gate.md Step 1b
 # (incomplete runs OR blocking conclusions = not merge-ready) and the BEHIND check
-# (mergeStateStatus != BEHIND) per issue #273.
+# (mergeStateStatus != BEHIND) per issue #273. When CR or Greptile is listed
+# in CODEOWNERS, also verifies GitHub branch protection's reviewDecision is
+# APPROVED so stale/dismissed bot approvals cannot accidentally pass the gate.
 #
 # Usage:
 #   merge-gate.sh <pr_number> [--reviewer cr|bugbot|greptile]
@@ -35,7 +37,9 @@
 #       "blocking": [{"name": "...", "conclusion": "..."}],
 #       "incomplete": [{"name": "...", "status": "..."}]
 #     },
-#     "merge_state": "CLEAN"|"BEHIND"|"BLOCKED"|...
+#     "merge_state": "CLEAN"|"BEHIND"|"BLOCKED"|...,
+#     "review_decision": "APPROVED"|"CHANGES_REQUESTED"|"REVIEW_REQUIRED"|...,
+#     "code_owner_bots": ["coderabbitai[bot]", "greptile-apps[bot]"]
 #   }
 #
 # Exit codes:
@@ -109,8 +113,8 @@ fi
 # Helpers
 # --------------------------------------------------------------------------
 emit_json() {
-  # emit_json <met> <reviewer> <path> <missing_json_array> <head_sha> <ci_status_json> <merge_state>
-  local met="$1" reviewer="$2" path="$3" missing="$4" head_sha="$5" ci_status="$6" merge_state="$7"
+  # emit_json <met> <reviewer> <path> <missing_json_array> <head_sha> <ci_status_json> <merge_state> <review_decision> <code_owner_bots_json>
+  local met="$1" reviewer="$2" path="$3" missing="$4" head_sha="$5" ci_status="$6" merge_state="$7" review_decision="$8" code_owner_bots="$9"
   jq -cn \
     --argjson met "$met" \
     --arg reviewer "$reviewer" \
@@ -119,11 +123,17 @@ emit_json() {
     --arg head_sha "$head_sha" \
     --argjson ci_status "$ci_status" \
     --arg merge_state "$merge_state" \
-    '{met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state}'
+    --arg review_decision "$review_decision" \
+    --argjson code_owner_bots "$code_owner_bots" \
+    '{met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, review_decision: $review_decision, code_owner_bots: $code_owner_bots}'
 }
 
 emit_empty_ci() {
   echo '{"total":0,"passing":0,"failing":0,"in_progress":0,"blocking":[],"incomplete":[]}'
+}
+
+emit_empty_code_owner_bots() {
+  echo '[]'
 }
 
 # --------------------------------------------------------------------------
@@ -131,29 +141,31 @@ emit_empty_ci() {
 # --------------------------------------------------------------------------
 OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
 if [[ -z "$OWNER_REPO" ]]; then
-  emit_json false unknown cr '["gh repo view failed — not in a git repo or no remote"]' "" "$(emit_empty_ci)" ""
+  emit_json false unknown cr '["gh repo view failed — not in a git repo or no remote"]' "" "$(emit_empty_ci)" "" "" "$(emit_empty_code_owner_bots)"
   exit 4
 fi
 OWNER="${OWNER_REPO%/*}"
 REPO="${OWNER_REPO#*/}"
 
-PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,headRefOid,mergeStateStatus,mergeable 2>/dev/null || true)
+PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,headRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision 2>/dev/null || true)
 if [[ -z "$PR_JSON" ]]; then
-  emit_json false unknown cr "[\"PR #$PR_NUMBER not found\"]" "" "$(emit_empty_ci)" ""
+  emit_json false unknown cr "[\"PR #$PR_NUMBER not found\"]" "" "$(emit_empty_ci)" "" "" "$(emit_empty_code_owner_bots)"
   exit 3
 fi
 
 PR_STATE=$(echo "$PR_JSON" | jq -r '.state // "UNKNOWN"')
 HEAD_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid // ""')
+BASE_REF=$(echo "$PR_JSON" | jq -r '.baseRefName // ""')
 MERGE_STATE=$(echo "$PR_JSON" | jq -r '.mergeStateStatus // ""')
+REVIEW_DECISION=$(echo "$PR_JSON" | jq -r '.reviewDecision // ""')
 
 if [[ "$PR_STATE" != "OPEN" ]]; then
-  emit_json false unknown cr "[\"PR #$PR_NUMBER is $PR_STATE — not open\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE"
+  emit_json false unknown cr "[\"PR #$PR_NUMBER is $PR_STATE — not open\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)"
   exit 3
 fi
 
 if [[ -z "$HEAD_SHA" ]]; then
-  emit_json false unknown cr '["could not determine HEAD SHA"]' "" "$(emit_empty_ci)" "$MERGE_STATE"
+  emit_json false unknown cr '["could not determine HEAD SHA"]' "" "$(emit_empty_ci)" "$MERGE_STATE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)"
   exit 4
 fi
 
@@ -164,7 +176,7 @@ fi
 # inside a helper function called via $(), because exit inside $() only kills
 # the subshell and the main script continues with garbage data.
 die_api() {
-  emit_json false "${REVIEWER_OVERRIDE:-unknown}" "unknown" "[\"gh api failed: $1\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE"
+  emit_json false "${REVIEWER_OVERRIDE:-unknown}" "unknown" "[\"gh api failed: $1\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)"
   exit 4
 }
 
@@ -203,6 +215,34 @@ fi
 if ! THREADS_JSON=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$REPO\") { pullRequest(number: $PR_NUMBER) { reviewThreads(first: 100) { nodes { isResolved comments(first: 100) { nodes { author { login } } } } } } } }" 2>/dev/null); then
   die_api "GraphQL-reviewThreads"
 fi
+
+# Runtime CODEOWNERS detection. Branch protection is repo-specific, so only
+# enforce reviewDecision against bot code-owner approvals when this repo actually
+# names CR or Greptile as a code owner.
+CODEOWNERS_TEXT=""
+for codeowners_path in CODEOWNERS .github/CODEOWNERS docs/CODEOWNERS; do
+  if [[ -n "$BASE_REF" ]]; then
+    CODEOWNERS_JSON=$(gh api --method GET "repos/$OWNER/$REPO/contents/$codeowners_path" -f ref="$BASE_REF" 2>/dev/null || true)
+  else
+    CODEOWNERS_JSON=$(gh api --method GET "repos/$OWNER/$REPO/contents/$codeowners_path" 2>/dev/null || true)
+  fi
+  if [[ -n "$CODEOWNERS_JSON" ]]; then
+    CODEOWNERS_TEXT=$(echo "$CODEOWNERS_JSON" | jq -r '.content // ""' | base64 --decode 2>/dev/null || true)
+    if [[ -n "$CODEOWNERS_TEXT" ]]; then
+      break
+    fi
+  fi
+done
+
+CODE_OWNER_BOTS=$(printf '%s\n' "$CODEOWNERS_TEXT" | jq -R -s -c '
+  split("\n")
+  | map(select(test("^\\s*#") | not))
+  | join("\n")
+  | ascii_downcase as $text
+  | [
+      if ($text | test("(^|[^a-z0-9_-])@?coderabbitai([^a-z0-9_-]|$)")) then "coderabbitai[bot]" else empty end,
+      if ($text | test("(^|[^a-z0-9_-])@?greptile-apps([^a-z0-9_-]|$)")) then "greptile-apps[bot]" else empty end
+    ]')
 
 # --------------------------------------------------------------------------
 # CI status — delegated to ci-status.sh; adapt its shape for this script's
@@ -296,6 +336,18 @@ UNRESOLVED_TOTAL=$(echo "$THREADS_JSON" | jq -r '
   | length')
 if [[ "$UNRESOLVED_TOTAL" -gt 0 ]]; then
   MISSING+=("$UNRESOLVED_TOTAL unresolved review thread(s) — resolve via GraphQL before merge")
+fi
+
+CR_IS_CODE_OWNER=$(echo "$CODE_OWNER_BOTS" | jq -e 'index("coderabbitai[bot]") != null' >/dev/null 2>&1 && echo true || echo false)
+GREPTILE_IS_CODE_OWNER=$(echo "$CODE_OWNER_BOTS" | jq -e 'index("greptile-apps[bot]") != null' >/dev/null 2>&1 && echo true || echo false)
+
+if [[ -n "$REVIEW_DECISION" && "$REVIEW_DECISION" != "APPROVED" ]]; then
+  if [[ "$CR_IS_CODE_OWNER" == true ]]; then
+    MISSING+=("branch protection reviewDecision is $REVIEW_DECISION, not APPROVED, with CodeRabbit in CODEOWNERS — if the prior CR approval was dismissed as stale, trigger @coderabbitai full review")
+  fi
+  if [[ "$GREPTILE_IS_CODE_OWNER" == true ]]; then
+    MISSING+=("branch protection reviewDecision is $REVIEW_DECISION, not APPROVED, with Greptile in CODEOWNERS — if the prior Greptile approval was dismissed as stale, trigger @greptileai")
+  fi
 fi
 
 # Path-specific checks.
@@ -438,7 +490,7 @@ fi
 
 MISSING_JSON=$(printf '%s\n' "${MISSING[@]:-}" | jq -R . | jq -cs 'map(select(length > 0))')
 
-emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE"
+emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS"
 
 if [[ "$MET" == true ]]; then
   exit 0

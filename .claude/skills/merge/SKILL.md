@@ -50,6 +50,8 @@ GATE_EXIT=$?
 - Exit `3` → PR not found (already merged/closed). Stop.
 - Exit `2`/`4` → script or gh error; surface the stderr message to the user.
 
+If `missing` says branch protection `reviewDecision` is not `APPROVED` and `.code_owner_bots` lists `coderabbitai[bot]` or `greptile-apps[bot]`, do not ask the PR author to approve. Trigger the matching bot re-review (`@coderabbitai full review` or `@greptileai`) and wait for a fresh current-HEAD approval.
+
 Reviewer assignment is resolved automatically from `~/.claude/session-state.json` and live history. Pass `--reviewer cr|bugbot|greptile` to override.
 
 ### Step 3: Verify acceptance criteria
