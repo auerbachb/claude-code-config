@@ -146,7 +146,7 @@ fi
 OWNER="${OWNER_REPO%/*}"
 REPO="${OWNER_REPO#*/}"
 
-PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,headRefOid,mergeStateStatus,mergeable,reviewDecision 2>/dev/null || true)
+PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,headRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision 2>/dev/null || true)
 if [[ -z "$PR_JSON" ]]; then
   emit_json false unknown cr "[\"PR #$PR_NUMBER not found\"]" "" "$(emit_empty_ci)" "" "" "$(emit_empty_code_owner_bots)"
   exit 3
@@ -154,6 +154,7 @@ fi
 
 PR_STATE=$(echo "$PR_JSON" | jq -r '.state // "UNKNOWN"')
 HEAD_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid // ""')
+BASE_REF=$(echo "$PR_JSON" | jq -r '.baseRefName // ""')
 MERGE_STATE=$(echo "$PR_JSON" | jq -r '.mergeStateStatus // ""')
 REVIEW_DECISION=$(echo "$PR_JSON" | jq -r '.reviewDecision // ""')
 
@@ -219,7 +220,12 @@ fi
 # names CR or Greptile as a code owner.
 CODEOWNERS_TEXT=""
 for codeowners_path in CODEOWNERS .github/CODEOWNERS docs/CODEOWNERS; do
-  if CODEOWNERS_JSON=$(gh api "repos/$OWNER/$REPO/contents/$codeowners_path" 2>/dev/null); then
+  if [[ -n "$BASE_REF" ]]; then
+    CODEOWNERS_JSON=$(gh api "repos/$OWNER/$REPO/contents/$codeowners_path" -f ref="$BASE_REF" 2>/dev/null || true)
+  else
+    CODEOWNERS_JSON=$(gh api "repos/$OWNER/$REPO/contents/$codeowners_path" 2>/dev/null || true)
+  fi
+  if [[ -n "$CODEOWNERS_JSON" ]]; then
     CODEOWNERS_TEXT=$(echo "$CODEOWNERS_JSON" | jq -r '.content // ""' | base64 --decode 2>/dev/null || true)
     if [[ -n "$CODEOWNERS_TEXT" ]]; then
       break
@@ -228,7 +234,10 @@ for codeowners_path in CODEOWNERS .github/CODEOWNERS docs/CODEOWNERS; do
 done
 
 CODE_OWNER_BOTS=$(printf '%s\n' "$CODEOWNERS_TEXT" | jq -R -s -c '
-  ascii_downcase as $text
+  split("\n")
+  | map(select(test("^\\s*#") | not))
+  | join("\n")
+  | ascii_downcase as $text
   | [
       if ($text | test("(^|[^a-z0-9_-])@?coderabbitai([^a-z0-9_-]|$)")) then "coderabbitai[bot]" else empty end,
       if ($text | test("(^|[^a-z0-9_-])@?greptile-apps([^a-z0-9_-]|$)")) then "greptile-apps[bot]" else empty end
@@ -332,9 +341,10 @@ CR_IS_CODE_OWNER=$(echo "$CODE_OWNER_BOTS" | jq -e 'index("coderabbitai[bot]") !
 GREPTILE_IS_CODE_OWNER=$(echo "$CODE_OWNER_BOTS" | jq -e 'index("greptile-apps[bot]") != null' >/dev/null 2>&1 && echo true || echo false)
 
 if [[ -n "$REVIEW_DECISION" && "$REVIEW_DECISION" != "APPROVED" ]]; then
-  if [[ "$REVIEWER" == "cr" && "$CR_IS_CODE_OWNER" == true ]]; then
+  if [[ "$CR_IS_CODE_OWNER" == true ]]; then
     MISSING+=("branch protection reviewDecision is $REVIEW_DECISION, not APPROVED, with CodeRabbit in CODEOWNERS — if the prior CR approval was dismissed as stale, trigger @coderabbitai full review")
-  elif [[ "$REVIEWER" == "greptile" && "$GREPTILE_IS_CODE_OWNER" == true ]]; then
+  fi
+  if [[ "$GREPTILE_IS_CODE_OWNER" == true ]]; then
     MISSING+=("branch protection reviewDecision is $REVIEW_DECISION, not APPROVED, with Greptile in CODEOWNERS — if the prior Greptile approval was dismissed as stale, trigger @greptileai")
   fi
 fi
