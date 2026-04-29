@@ -16,7 +16,7 @@ Update `session-state.json` on phase transitions and key events (agent launched/
 - **Location:** `~/.claude/handoffs/` (create if missing: `mkdir -p ~/.claude/handoffs/`)
 - **Naming:** `pr-{N}-handoff.json` (e.g., `pr-618-handoff.json`)
 - **One file per PR at any time.**
-- **Lifecycle:** Created by Phase A → read/updated by Phase B → read by Phase C for context → deleted by **parent** after successful user-gated merge (see `phase-protocols.md`).
+- **Lifecycle:** Created by Phase A → read/updated by Phase B → read by Phase C → deleted by **parent** after `OUTCOME: merged` confirmed by GitHub (see `phase-protocols.md`).
 
 ### Phase Operations
 
@@ -24,7 +24,7 @@ Update `session-state.json` on phase transitions and key events (agent launched/
 |-------|-----------|
 | A | Create with fixed/dismissed findings, replied/resolved threads, files changed, HEAD SHA |
 | B | Read-modify-write; append arrays, update scalars, preserve unknown fields |
-| C | Read only; parent deletes only after successful user-gated merge |
+| C | Read only; parent deletes after `OUTCOME: merged` confirmed by GitHub |
 
 Schema reference: `.claude/reference/handoff-file-schema.json`. Required fields: `schema_version`, `pr_number`, `head_sha`, `reviewer`, `phase_completed`, `created_at`, `findings_fixed`, `threads_replied`, `threads_resolved`, `files_changed`, `push_timestamp`. Optional: `findings_dismissed`, `notes`.
 

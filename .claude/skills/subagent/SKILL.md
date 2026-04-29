@@ -391,7 +391,7 @@ When a Phase B subagent returns:
 
 1. **Parse exit report.**
 2. **Branch on OUTCOME:**
-   - `merge_ready` -> launch Phase C within 60s.
+   - `merge_ready` -> ask for merge authorization if it has not already been provided, then launch Phase C within 60s.
    - `clean` -> launch replacement Phase B within 60s (no explicit CR approval on current HEAD yet, or latest approval is on a stale SHA).
    - `fixes_pushed` -> launch replacement Phase B within 60s.
    - `exhaustion` -> launch replacement Phase B within 60s.
@@ -402,7 +402,8 @@ When a Phase B subagent returns:
 ### Phase C Subagent Prompt Template
 
 ```
-You are a Phase C merge-prep agent for PR #{PR_NUMBER} (Issue #{ISSUE_NUMBER}).
+You are a Phase C verify-and-wrap agent for PR #{PR_NUMBER} (Issue #{ISSUE_NUMBER}).
+The user has authorized merging; execute the canonical `/wrap` flow after verification.
 
 ## Handoff File
 Read ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json first.
@@ -438,7 +439,7 @@ worktree directory at all times.
      esac
    fi
    ```
-4. If `OUTCOME=blocked` was set in step 3, skip steps 5–7 and go straight to step 9 (exit report) with `OUTCOME: blocked` and the captured `$MSG`.
+4. If `OUTCOME=blocked` was set in step 3, skip steps 5–9 and go straight to step 10 (exit report) with `OUTCOME: blocked` and the captured `$MSG`.
 5. For each item in `$ITEMS` with `checked == false`, read the relevant source file(s) and verify the criterion is met.
 6. Tick passing items by index (or `--all-pass` if every unchecked item passed):
    ```bash
@@ -448,25 +449,26 @@ worktree directory at all times.
    ```
 7. If any item fails verification, do NOT tick it — set `OUTCOME: blocked` and list the failing items in the exit report.
 8. Check ALL CI check-runs pass. If any fail, set `OUTCOME: blocked`.
-9. Print Structured Exit Report:
+9. If steps 1–8 pass, read `.claude/skills/wrap/SKILL.md` and execute it exactly from the current PR branch. Do not duplicate `/wrap` merge, main-sync, follow-up, or stale-cleanup logic in this prompt.
+10. Print Structured Exit Report:
    ```
    EXIT_REPORT
    PHASE_COMPLETE: C
    PR_NUMBER: {PR_NUMBER}
    HEAD_SHA: {current HEAD}
-   REVIEWER: {cr|greptile}
-   OUTCOME: {ac_verified|blocked}
+   REVIEWER: {cr|bugbot|greptile}
+   OUTCOME: {merged|blocked}
    FILES_CHANGED:
    NEXT_PHASE: none
    HANDOFF_FILE: ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json
    ```
-10. EXIT immediately. Do NOT merge — the parent presents the merge decision to the user.
+11. EXIT immediately.
 ```
 
 **Phase C Agent tool call parameters:**
 - `subagent_type: "phase-c-merger"`
 - `mode: "bypassPermissions"`
-- `model: "sonnet"` (Phase C is lightweight read-only verification — see `subagent-orchestration.md` "Model Selection")
+- `model: "sonnet"` (Phase C is lightweight verification plus the mechanical `/wrap` flow — see `subagent-orchestration.md` "Model Selection")
 - `isolation: "worktree"` (same as Phase A — Phase C fetches and checks out the PR branch inside its own fresh worktree)
 - `run_in_background: true`
 
@@ -476,28 +478,25 @@ When a Phase C subagent returns:
 
 1. **Parse exit report.**
 2. **Branch on OUTCOME:**
-   - `ac_verified` -> present merge decision to user (Step 10).
+   - `merged` -> verify GitHub shows the PR merged, then delete the handoff file.
    - `blocked` -> report blocker details to user. Do NOT merge.
 3. **Update `session-state.json`** — mark PR as Phase C complete.
 4. **Report to user** with timestamp.
 
-## Step 10: Merge Decision (User Input Required)
+## Step 10: Merge Authorization (User Input Required)
 
 This is the **only step requiring user permission**.
 
-For each PR where Phase C reported `ac_verified`:
+For each PR where Phase B reported `merge_ready` and the user has not already authorized merging:
 
 ```
-Reviews are clean, all AC verified and checked off for PR #{PR_NUMBER} (Issue #{ISSUE_NUMBER}).
-Want me to squash and merge and delete the branch, or do you want to review the diff yourself first?
+Reviews are clean for PR #{PR_NUMBER} (Issue #{ISSUE_NUMBER}). Phase C will re-check the merge gate, verify and tick AC, then run `/wrap` to squash-merge, sync root main, and detect follow-ups. Want me to launch Phase C now, or do you want to review the diff yourself first?
 ```
 
 **If user approves:**
-1. Verify ALL CI check-runs pass one final time.
-2. `gh pr merge {PR_NUMBER} --squash --delete-branch`
-3. Delete the handoff file: `rm ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json`
-4. Update `session-state.json` — remove PR from active tracking.
-5. Report: "PR #{PR_NUMBER} merged. Issue #{ISSUE_NUMBER} closed."
+1. Launch Phase C with the explicit authorization text in the prompt.
+2. Phase C runs the shared `/wrap` flow and exits with `OUTCOME: merged` or `OUTCOME: blocked`.
+3. After `OUTCOME: merged`, verify GitHub shows the PR merged, delete the handoff file, update `session-state.json`, and report: "PR #{PR_NUMBER} merged. Issue #{ISSUE_NUMBER} closed."
 
 **If user wants to review first:** wait for their response before merging.
 
