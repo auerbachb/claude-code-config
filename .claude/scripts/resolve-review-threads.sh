@@ -7,6 +7,7 @@
 #
 # Usage:
 #   resolve-review-threads.sh <pr_number> [--authors coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai] [--thread-ids id1,id2 | --thread-ids-file path] [--max-attempts 2] [--dry-run]
+#   resolve-review-threads.sh <pr_number> --thread-ids-file path --verify-only
 #   resolve-review-threads.sh --help
 #
 # Flags:
@@ -23,6 +24,10 @@
 #   --max-attempts
 #              Number of resolve/minimize passes before final verification. Default: 2
 #   --dry-run  Print thread IDs that would be resolved and exit 0 without mutating.
+#   --verify-only
+#              Re-fetch threads via GraphQL and verify every ID in --thread-ids /
+#              --thread-ids-file reports isResolved=true. Does not mutate. Requires
+#              explicit thread IDs. Exit 1 if any expected ID is missing or unresolved.
 #
 # Exit codes:
 #   0  All addressed/matching threads verified resolved (or dry-run OK)
@@ -38,6 +43,7 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >>
 
 AUTHORS="coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai"
 DRY_RUN=0
+VERIFY_ONLY=0
 THREAD_IDS=""
 THREAD_IDS_FILE=""
 EXPLICIT_IDS_MODE=0
@@ -92,6 +98,10 @@ while [[ $# -gt 0 ]]; do
       DRY_RUN=1
       shift
       ;;
+    --verify-only)
+      VERIFY_ONLY=1
+      shift
+      ;;
     --*)
       echo "ERROR: unknown flag: $1" >&2
       exit 2
@@ -121,6 +131,17 @@ fi
 if [[ -n "$THREAD_IDS" && -n "$THREAD_IDS_FILE" ]]; then
   echo "ERROR: use only one of --thread-ids or --thread-ids-file" >&2
   exit 2
+fi
+
+if [[ "$VERIFY_ONLY" -eq 1 ]]; then
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "ERROR: --verify-only cannot be combined with --dry-run" >&2
+    exit 2
+  fi
+  if [[ "$EXPLICIT_IDS_MODE" -ne 1 ]]; then
+    echo "ERROR: --verify-only requires --thread-ids or --thread-ids-file" >&2
+    exit 2
+  fi
 fi
 
 if [[ ! "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
@@ -316,6 +337,38 @@ write_dangling_threads() {
         ' > "$DANGLING_FILE"
   fi
 }
+
+# ----------------------------------------------------------------------
+# --verify-only: no mutations; confirm every expected thread id is resolved.
+# ----------------------------------------------------------------------
+if [[ "$VERIFY_ONLY" -eq 1 ]]; then
+  if [[ ! -s "$EXPECTED_FILE" ]]; then
+    echo "ERROR: --verify-only requires a non-empty thread id list" >&2
+    exit 2
+  fi
+  ADDRESSED_COUNT=$(wc -l < "$EXPECTED_FILE" | tr -d ' ')
+  VERIFY_THREADS=$(collect_threads)
+  write_dangling_threads "$VERIFY_THREADS"
+  DANGLING_COUNT=$(wc -l < "$DANGLING_FILE" | tr -d ' ')
+  RESOLVED_COUNT=$((ADDRESSED_COUNT - DANGLING_COUNT))
+  if [[ "$RESOLVED_COUNT" -lt 0 ]]; then
+    RESOLVED_COUNT=0
+  fi
+  echo "[VERIFY] addressed=$ADDRESSED_COUNT resolved=$RESOLVED_COUNT dangling=$DANGLING_COUNT"
+  if [[ "$DANGLING_COUNT" -gt 0 ]]; then
+    while IFS=$'\t' read -r THREAD_ID _COMMENT_ID AUTHOR URL REASON; do
+      [[ -z "$THREAD_ID" ]] && continue
+      if [[ -n "$URL" ]]; then
+        echo "[STUCK] $THREAD_ID  ($AUTHOR) — $REASON — $URL" >&2
+      else
+        echo "[STUCK] $THREAD_ID  ($AUTHOR) — $REASON" >&2
+      fi
+    done < "$DANGLING_FILE"
+    echo "ERROR: $DANGLING_COUNT thread(s) not verified resolved" >&2
+    exit 1
+  fi
+  exit 0
+fi
 
 resolve_or_minimize() {
   local thread_id="$1"
