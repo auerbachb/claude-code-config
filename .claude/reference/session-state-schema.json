@@ -47,7 +47,7 @@
   "cr_quota": {"reviews_used": 5, "window_start": "2026-03-16T15:00:00Z"},
   "greptile_daily": {"reviews_used": 12, "date": "2026-03-16", "budget": 40},
   "active_agents": [
-    {"id": "a3f8d26fa75eddcb3", "task": "PR #623 Phase C", "issue": 503, "pr": 623, "phase": "C", "launched": "2026-03-16T15:55:00Z", "last_seen_at": "2026-03-16T15:58:00Z"}
+    {"id": "a3f8d26fa75eddcb3", "task": "PR #620 Phase C", "issue": 503, "pr": 620, "phase": "C", "launched": "2026-03-16T15:55:00Z", "last_seen_at": "2026-03-16T15:58:00Z"}
   ],
   "polling_jobs": [
     {"primitive": "CronCreate", "id": "cron_abc123", "cron": "17 * * * *", "prompt": "/status", "recurring": true, "durable": false, "created_at": "2026-03-16T15:00:00Z", "expires_at": "2026-03-23T15:00:00Z"}

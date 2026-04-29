@@ -24,7 +24,7 @@ PM manager monitoring uses the hybrid decision recorded in `.claude/reference/pm
 - `CronCreate` is canonical for 3+ active threads/PRs, cross-session durability, or campaigns outliving the session.
 - Passive mode is valid only with zero active workers or when the user explicitly chooses it.
 
-Each polling turn: update `session-state.json` monitoring fields. If a loop drops, follow post-compaction recovery in `monitor-mode.md`.
+Each polling turn: update `session-state.json` monitoring fields. If a loop drops, run `monitor-mode.md` **PM Monitoring Recovery** (and apply dropped-tick handling in this file).
 
 ## Forbidden Pattern: Hand-Rolled One-Shot Chains
 

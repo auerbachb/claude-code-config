@@ -330,6 +330,11 @@ When the user selects an option, update `~/.claude/session-state.json` before th
 
 Each later polling turn refreshes the timing watermarks and any changed PR/agent status. If the loop drops, recover using `.claude/rules/monitor-mode.md` "PM Monitoring Recovery".
 
+Mode-switch cleanup requirements:
+- Switching to `passive`: set `monitoring_active=false`, clear `next_expected_poll_at`, and run `CronDelete` for each entry in `polling_jobs[]` before exiting setup.
+- Switching away from `cron`: remove stale `polling_jobs[]` entries that no longer correspond to live jobs.
+- Switching to `cron`: persist returned job IDs to `polling_jobs[]` immediately; keep `polling_jobs[]` authoritative.
+
 ### 2.3: Off-peak minute selection (option a only)
 
 When creating a `CronCreate` job, pick a minute that is NOT 0, 5, 30, or 55 — these are fleet pile-up minutes where every agent's schedule collides on the API. Use `.claude/scripts/off-peak-minute.sh` so the same repo always lands on the same minute (predictability) but different repos spread across the hour (no collision):

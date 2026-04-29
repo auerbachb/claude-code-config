@@ -53,7 +53,8 @@ If `session-state.json` has `monitoring_active=true`, rebuild from `prs`, `activ
 
 - No active workers/PRs remain: set `monitoring_active=false` and report completion.
 - Prior `monitoring_mode=loop`: restart the recorded `/loop` unless user explicitly chose passive mode.
-- Prior `monitoring_mode=cron`: verify with `CronList`; recreate only missing or expired session-only jobs.
+- Prior `monitoring_mode=cron` with `monitoring_durable=true`: verify with `CronList`; recreate only if missing.
+- Prior `monitoring_mode=cron` with `monitoring_durable=false`: recreate missing or expired session-only jobs for the current session.
 - Prior `monitoring_mode=passive`: keep passive but report that active work remains user-triggered.
 
 Log dropped ticks in `polling_failures[]`; include recovered PRs/workers in next heartbeat. Full state contract: `.claude/reference/pm-monitoring-decision.md`.
