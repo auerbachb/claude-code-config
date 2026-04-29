@@ -24,7 +24,7 @@
 #   2  Usage/dependency error
 #   4  GitHub/API/state read error
 
-set -u -o pipefail
+set -euo pipefail
 
 PR_NUMBER=""
 
@@ -133,6 +133,7 @@ if raw.endswith("Z"):
 try:
     ts = datetime.fromisoformat(raw)
 except ValueError:
+    print(f"warning: could not parse timestamp: {raw}", file=sys.stderr)
     print(0)
     sys.exit(0)
 if ts.tzinfo is None:

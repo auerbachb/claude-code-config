@@ -374,8 +374,8 @@ If missing, reconstruct state from GitHub API.
     PHASE_COMPLETE: B
     PR_NUMBER: {PR_NUMBER}
     HEAD_SHA: {current HEAD}
-    REVIEWER: {cr|greptile}
-    OUTCOME: {clean|fixes_pushed|merge_ready|exhaustion}
+    REVIEWER: {cr|bugbot|greptile|self_review}
+    OUTCOME: {clean|fixes_pushed|merge_ready|blocked_self_review|exhaustion}
     FILES_CHANGED: {files changed in this phase}
     NEXT_PHASE: {C|B}
     HANDOFF_FILE: ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json
@@ -399,6 +399,7 @@ When a Phase B subagent returns:
    - `merge_ready` -> ask for merge authorization if it has not already been provided, then launch Phase C within 60s.
    - `clean` -> launch replacement Phase B within 60s (no explicit CR approval on current HEAD yet, or latest approval is on a stale SHA).
    - `fixes_pushed` -> launch replacement Phase B within 60s.
+   - `blocked_self_review` -> report blocker to user; do NOT auto-loop Phase B without a reviewer availability change.
    - `exhaustion` -> launch replacement Phase B within 60s.
 3. **Verify review state via GitHub API** for `merge_ready`.
 4. **Update `session-state.json`.**
