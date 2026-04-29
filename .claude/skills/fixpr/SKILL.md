@@ -223,13 +223,26 @@ REVIEWER_ACTIVITY=$(jq -n \
   }')
 ```
 
-For each reviewer whose value is `false`, post exactly one dedicated PR-level trigger comment. Do not batch mentions; combined-mention comments fail to trigger reliably. Post these comments sequentially in this order, skipping reviewers that already auto-triggered:
+For each reviewer whose value is `false`, post exactly one dedicated PR-level trigger comment. Do not batch mentions; combined-mention comments fail to trigger reliably. Post these comments sequentially in this order, skipping reviewers that already auto-triggered. CodeRabbit is additionally capped at 2 manual `@coderabbitai full review` triggers per PR in the trailing hour:
 
 ```bash
 jq -r 'to_entries[] | "[REVIEWERS] \(.key): \(if .value then "auto-triggered" else "missing" end)"' <<<"$REVIEWER_ACTIVITY"
 
+CR_TRIGGER_COUNT_LAST_HOUR=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" | jq -s '
+  (add // [])
+  | map(select(
+      (.body // "") == "@coderabbitai full review"
+      and ((.created_at // "") >= (now - 3600 | strftime("%Y-%m-%dT%H:%M:%SZ")))
+    ))
+  | length
+')
+
 if [[ "$(jq -r '.coderabbit' <<<"$REVIEWER_ACTIVITY")" != "true" ]]; then
-  gh pr comment "$PR_NUMBER" --body "@coderabbitai full review"
+  if [[ "$CR_TRIGGER_COUNT_LAST_HOUR" -lt 2 ]]; then
+    gh pr comment "$PR_NUMBER" --body "@coderabbitai full review"
+  else
+    echo "[REVIEWERS] coderabbit trigger budget exhausted (>=2 in the last hour); skipping manual trigger"
+  fi
 fi
 if [[ "$(jq -r '.graphite' <<<"$REVIEWER_ACTIVITY")" != "true" ]]; then
   gh pr comment "$PR_NUMBER" --body "@graphite-app re-review"
