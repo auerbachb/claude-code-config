@@ -314,15 +314,6 @@ write_dangling_threads() {
             else empty
             end
         ' > "$DANGLING_FILE"
-  else
-    printf '%s' "$threads_json" \
-      | jq -r --arg re "$AUTHOR_REGEX" '
-          .[]
-          | select(.isResolved == false)
-          | select((.comments.nodes[0].author.login // "") | test($re))
-          | [.id, (.comments.nodes[0].id // ""), (.comments.nodes[0].author.login // ""), (.comments.nodes[0].url // ""), "isResolved=false"]
-          | @tsv
-        ' > "$DANGLING_FILE"
   fi
 }
 

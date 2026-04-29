@@ -309,7 +309,7 @@ After all replies are posted, resolve and verify exactly the threads `/fixpr` to
 
 ```bash
 TOUCHED_THREADS=$(mktemp -t fixpr-touched-threads.XXXXXX)
-# append one GraphQL thread node id per replied thread
+# append one GraphQL thread node id per unresolved thread
 jq -r '.threads.unresolved[].id' "$AUDIT" > "$TOUCHED_THREADS"
 
 THREAD_RESOLUTION_OUTPUT=$(bash .claude/scripts/resolve-review-threads.sh "$PR_NUMBER" \
