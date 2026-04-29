@@ -53,7 +53,7 @@ The helper prints exactly one `STATUS=` verdict and exits 0. Canonical steps:
 
 1. Fetch CodeRabbit check-run/status for current HEAD.
 2. If `conclusion == "failure"` and title/description contains `rate limit`, go to step 5.
-3. If push age >7 min and no CR review posted for current HEAD, go to step 5.
+3. If push age >12 min and no CR review posted for current HEAD, go to step 5.
 4. Otherwise continue polling CR. **STOP: `STATUS=polling_cr`.**
 5. Check BugBot (`cursor[bot]` comments/reviews + `Cursor Bugbot` check-run). Cache first install verdict at `.prs["<PR_NUMBER>"].bugbot_installed`.
    - If BugBot has posted a review/comment or completed its check-run, switch sticky reviewer ownership to BugBot. **STOP: `STATUS=switch_bugbot`.**
