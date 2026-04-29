@@ -1,6 +1,6 @@
 ---
 name: merge
-description: Squash merge the current PR, delete the branch, and clean up. Verifies merge gate and acceptance criteria before merging.
+description: Squash merge the current PR. Verifies merge gate and acceptance criteria before merging.
 ---
 
 Squash merge the current PR. This is the "we're done here" command.
@@ -8,9 +8,9 @@ Squash merge the current PR. This is the "we're done here" command.
 ## When to use /merge vs /wrap
 
 - Use **/merge** for a quick mid-session merge when you'll continue working in the same session. It handles AC verification, CI check, and squash-merge — nothing else.
-- Use **/wrap** for end-of-session cleanup. /wrap is a superset: runs the same merge flow PLUS detects follow-up issues, extracts session lessons, and cleans up the worktree.
+- Use **/wrap** for end-of-session cleanup. /wrap is a superset: runs the same merge flow PLUS detects follow-up issues, extracts session lessons, and syncs root `main`.
 - If you're done for the session, use /wrap. If you're merging and immediately starting the next issue, use /merge.
-- Note: /merge aborts if invoked from inside a worktree (see Step 1) — use /wrap in that case since it removes the worktree before deleting the branch.
+- Note: /merge aborts if invoked from inside a worktree (see Step 1) — use /wrap in that case because it can run from the active worktree and leaves stale worktree/branch cleanup to `/pm-update`.
 
 ## Steps
 
@@ -28,12 +28,12 @@ If the PR is already merged or closed, stop and tell the user.
 
 ```bash
 if [ "$(git rev-parse --git-common-dir)" != "$(git rev-parse --git-dir)" ]; then
-  echo "Running inside a worktree. Use /wrap instead — it handles worktree removal before branch cleanup."
+  echo "Running inside a worktree. Use /wrap instead — it merges safely from the worktree and leaves cleanup to /pm-update."
   exit 1
 fi
 ```
 
-If running in a worktree, stop here and tell the user: "This PR was developed in a worktree. Use `/wrap` instead of `/merge` — it removes the worktree first, then deletes the branch in the correct order."
+If running in a worktree, stop here and use the message from the Worktree check above.
 
 ### Step 2: Verify the merge gate
 

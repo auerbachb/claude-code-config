@@ -89,6 +89,7 @@
 #   session-state.sh --set '.cr_quota.reviews_used=5'
 
 set -euo pipefail
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
 
 STATE_FILE="${HOME}/.claude/session-state.json"
 

@@ -50,6 +50,7 @@
 #   4 — gh / network / jq error
 
 set -uo pipefail
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
 
 # --------------------------------------------------------------------------
 # Arg parsing

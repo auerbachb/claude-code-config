@@ -23,6 +23,7 @@
 #   5  gh/network error
 
 set -euo pipefail
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
 
 # Wrap every `gh` invocation so any auth/network/API failure maps to exit code 5
 # (the documented "gh/network error" code in the CLI contract). Under `set -e`,

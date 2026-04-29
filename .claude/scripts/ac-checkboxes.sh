@@ -61,6 +61,7 @@
 # precisely — a bare `-e` would let any downstream failure surface as exit 1,
 # colliding with the "no Test Plan section" meaning.
 set -uo pipefail
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
 
 print_usage() {
   awk 'NR == 1 { next } /^$/ { exit } { print }' "$0"

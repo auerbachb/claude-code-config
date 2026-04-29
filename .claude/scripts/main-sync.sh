@@ -86,6 +86,7 @@
 #   STATUS=$(bash .claude/scripts/main-sync.sh --repo "$ROOT_REPO")
 
 set -euo pipefail
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
 
 # Collapse a captured git stderr blob into a single whitespace-normalized line
 # so the "failed: ..." status string honors the single-line stdout contract
