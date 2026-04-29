@@ -91,7 +91,7 @@ BugBot auto-runs on every push. When CR fails, check BugBot before Greptile; Bug
 2. Fix **all valid findings**, commit and push **once**
 3. **Reply to every thread** ("Fixed in `abc1234`: <what changed>"). Try inline reply; on 404, PR-level comment with `@coderabbitai Fixed in ...`
 4. **Resolve each thread via GraphQL** after replying — replies alone don't resolve threads. Use `resolveReviewThread(threadId)`; fallback: `minimizeComment(subjectId, classifier: RESOLVED)`. Full mutations: `.claude/reference/graphql-thread-resolution.md`
-5. **Re-query `pullRequest.reviewThreads` and verify every touched thread has `isResolved: true`** before requesting a new review. Retry unresolved touched threads, then use the minimize fallback; if any addressed thread is still dangling, surface its URL and do not declare success.
+5. **Re-query `pullRequest.reviewThreads` and verify every touched thread has `isResolved: true`** before requesting a new review. Retry with the minimize fallback; surface any still-dangling URLs — do not declare success.
 6. Resume polling; repeat until CR has no more findings
 
 > **"Duplicate" findings are NOT resolved.** CR labels a comment "duplicate" when it raised the same issue before — this does NOT mean it was fixed. Always verify against actual code before dismissing any CR comment.
