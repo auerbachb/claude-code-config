@@ -44,9 +44,10 @@ For operations touching 4+ files, emit one-line status after every 3 writes/edit
 If a summary block references prior work you do not remember, recover before all other work:
 1. Timestamp first message and rerun session-start checks.
 2. Read `session-state.json` and handoff files, then reconcile every open PR via GitHub (`pr view`, reviews, inline comments, issue comments; use `per_page=100`).
-3. Build a dashboard: PR, HEAD SHA, reviewer, last review state, pending action.
-4. Verify stale agent outputs, Phase B coverage, and pending transitions; launch anything stalled.
-5. Report "Resuming after context compaction. Reconstructed state from GitHub." and resume monitoring.
+3. **Polling recovery:** per polled PR, `.claude/scripts/polling-state-gate.sh <N> --verify-state` (`--root-repo` if needed). Then resume cycles with `.claude/scripts/polling-state-gate.sh <N>` (invokes `merge-gate.sh`; no prose substitute).
+4. Build a dashboard: PR, HEAD SHA, reviewer, last review state, pending action.
+5. Verify stale agent outputs, Phase B coverage, and pending transitions; launch anything stalled.
+6. Report "Resuming after context compaction. Reconstructed state from GitHub." and resume monitoring.
 
 ## PM Monitoring Recovery
 
