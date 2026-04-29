@@ -7,7 +7,7 @@
 ## Destructive Commands
 
 1. **NEVER delete, overwrite, move, or modify `.env` files** — anywhere, any repo. They contain irrecoverable secrets.
-   - **Template exception:** `.env.{example,sample,template,dist,tpl}` (case-insensitive) are committed, non-secret templates — safe to edit. Bare `.env`, `.env.local`, `.env.production`, and unrecognized suffixes stay blocked. Allow-list: `.claude/hooks/env-guard.py` (`SAFE_ENV_SUFFIXES`).
+   - **Template exception:** `.env.{example,sample,template}` (case-insensitive) are committed, non-secret templates — safe to edit. Bare `.env`, `.env.local`, `.env.production`, and unrecognized suffixes stay blocked. Allow-list: `.claude/hooks/env-guard.py` (`TEMPLATE_SUFFIXES`).
 2. **NEVER run `git clean` in ANY directory** — it deletes untracked files, including gitignored `.env`.
 3. **NEVER run destructive commands in the root repo:** `rm -rf`, `rm`, `git checkout .`, `git stash` (drops untracked), `git reset --hard`. Root stays clean on `main`.
 4. **NEVER `cd` to the root repo and run file operations.** Stay in your worktree. Safe root operations are read-only: `git worktree list`, `find`, file reads.
@@ -30,7 +30,7 @@ When spawning subagents, include this warning in the prompt AND always set `mode
 
 ```
 SAFETY: Do NOT delete, overwrite, move, or modify .env files — anywhere, any repo.
-Exception: template files matching .env.<example|sample|template|dist|tpl>
+Exception: template files matching .env.<example|sample|template>
 (case-insensitive) are committed, non-secret, and safe to edit.
 Do NOT run git clean in ANY directory. Do NOT run destructive commands (rm -rf, rm,
 git checkout ., git stash, git reset --hard) in the root repo directory. Stay in your
