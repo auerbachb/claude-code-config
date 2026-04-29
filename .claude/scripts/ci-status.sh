@@ -59,6 +59,7 @@
 # turn red too; the caller should fix the known failures first.
 
 set -uo pipefail
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
 
 FORMAT="json"
 INPUT=""

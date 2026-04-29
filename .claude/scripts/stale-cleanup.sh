@@ -67,6 +67,7 @@
 #   4  Environment error (cannot resolve repo, gh missing, etc.).
 
 set -euo pipefail
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
 
 print_help() {
   awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"

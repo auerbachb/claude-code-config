@@ -196,6 +196,7 @@ fi
 #   3. Run this script — it will register the hook in settings.json
 #
 HOOKS_MANIFEST=(
+  $'PreToolUse\tBash\tscript-bypass-detector.sh\t5'
   $'PreToolUse\tWrite|Edit|NotebookEdit\tworktree-guard.sh\t5'
   $'PreToolUse\tWrite|Edit|MultiEdit|NotebookEdit|Bash\tenv-guard.py\t5'
   $'Stop\t\tsilence-detector-ack.sh\t5'
