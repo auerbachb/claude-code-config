@@ -26,9 +26,7 @@ If the report shows `[MISSING] .github/workflows/cr-plan-on-issue.yml`, install 
 
 ### Branch protection — required status checks
 
-The script reports branch-protection state in four forms: `[OK]` (configured, lists current contexts), `[MISSING]` (no required status checks — actionable), `[SKIP]` (token lacks read permission), or `[UNKNOWN]` (state could not be determined — investigate the script's stderr output). Without required status checks on `main`, GitHub allows merges even when CI is red — breaking `main` for all subsequent PRs.
-
-When the script reports `[MISSING]`, follow the remediation below. Branch protection is **never** changed by the script; user confirmation is required before any write.
+The script reports state as `[OK]` / `[MISSING]` / `[SKIP]` (token lacks read perm) / `[UNKNOWN]` (investigate stderr). Without required status checks on `main`, PRs can merge with red CI. The script never changes branch protection — user confirmation required for any write.
 
 **Remediation (requires user confirmation):**
 
@@ -39,7 +37,7 @@ When the script reports `[MISSING]`, follow the remediation below. Branch protec
 
 ### Rules
 
-- **Only add missing workflows.** If the file already exists, do not modify it — even if the content differs. The repo owner may have customized it.
-- **This check is idempotent.** Running it multiple times is safe — it only acts when the file is missing.
-- **Branch protection changes require user confirmation.** Never modify branch protection settings autonomously — always report the gap and ask first.
-- **Do not downgrade existing protection.** If branch protection is already configured with additional rules (required reviews, admin enforcement), preserve them when adding status checks.
+- **Only add missing workflows.** Never modify existing workflow files — owner may have customized them.
+- **Idempotent.** Safe to re-run; only acts when files are missing.
+- **Branch protection requires user confirmation** — never modify autonomously.
+- **Do not downgrade existing protection.** Preserve required reviews, admin enforcement, etc. when adding status checks.

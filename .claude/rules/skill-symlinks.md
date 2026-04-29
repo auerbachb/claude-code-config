@@ -15,7 +15,7 @@ The following symlinks all go through the skills worktree:
 
 ## Why a Dedicated Worktree
 
-Skills, rules, and CLAUDE.md are served from `~/.claude/skills-worktree/`, a git worktree permanently checked out to `main`. This decouples config availability from the root repo's branch state. Without it, when the root repo is on a feature branch (e.g., another session left it there), symlink targets may not exist on that branch.
+Served from `~/.claude/skills-worktree/`, a worktree permanently on `main`. Decouples config availability from the root repo's branch state — without it, symlink targets break when the root repo is on a feature branch.
 
 ## Session-Start Sync & Hook Auto-Registration
 
@@ -58,22 +58,11 @@ If `~/.claude/skills/` does not exist, create it first: `mkdir -p ~/.claude/skil
 
 ## Verifying Existing Symlinks
 
-To confirm all symlinks are properly set up via the worktree (not copies or root-repo symlinks):
-
 ```bash
-# Check skills
-ls -la ~/.claude/skills/
-
-# Check CLAUDE.md and rules
-ls -la ~/.claude/CLAUDE.md
-ls -la ~/.claude/rules
+ls -la ~/.claude/skills/ ~/.claude/CLAUDE.md ~/.claude/rules
 ```
 
-Every entry should show `->` pointing to `~/.claude/skills-worktree/...`. If any entry:
-- Is a regular directory/file (not a symlink) — the setup script will warn but not overwrite
-- Points to the root repo — migrate it by re-running the setup script
-
-To fix all symlinks at once, re-run the setup script:
+Every entry should `->` to `~/.claude/skills-worktree/...`. Regular files (not symlinks) trigger a setup-script warning but aren't overwritten; root-repo-targeted symlinks are migrated by re-running the setup script:
 
 ```bash
 REPO_ROOT="$(.claude/scripts/repo-root.sh 2>/dev/null || true)"
