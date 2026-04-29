@@ -7,6 +7,7 @@
 #
 # USAGE:
 #   script-usage-report.sh [--days N]
+#   script-usage-report.sh [--since Nd]
 #   script-usage-report.sh --help
 #
 # OUTPUT:
@@ -41,6 +42,30 @@ while [[ $# -gt 0 ]]; do
       ;;
     --days=*)
       DAYS="${1#--days=}"
+      shift
+      ;;
+    --since)
+      SINCE="${2:-}"
+      if [[ -z "$SINCE" ]]; then
+        echo "ERROR: --since requires a value like 7d" >&2
+        exit 2
+      fi
+      if [[ "$SINCE" =~ ^([0-9]+)d$ ]]; then
+        DAYS="${BASH_REMATCH[1]}"
+      else
+        echo "ERROR: --since must use Nd format, for example 7d" >&2
+        exit 2
+      fi
+      shift 2
+      ;;
+    --since=*)
+      SINCE="${1#--since=}"
+      if [[ "$SINCE" =~ ^([0-9]+)d$ ]]; then
+        DAYS="${BASH_REMATCH[1]}"
+      else
+        echo "ERROR: --since must use Nd format, for example 7d" >&2
+        exit 2
+      fi
       shift
       ;;
     -h|--help)
