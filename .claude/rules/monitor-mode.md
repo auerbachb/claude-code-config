@@ -47,6 +47,18 @@ If a summary block references prior work you do not remember, recover before all
 4. Verify stale agent outputs, Phase B coverage, and pending transitions; launch anything stalled.
 5. Report "Resuming after context compaction. Reconstructed state from GitHub." and resume monitoring.
 
+## PM Monitoring Recovery
+
+If `session-state.json` has `monitoring_active=true`, OR has `monitoring_mode=passive` with a non-empty `prs` map, rebuild from `prs`, `active_agents`, handoff files, and live GitHub state before re-arming.
+
+- No active workers/PRs remain: set `monitoring_active=false` and report completion.
+- Prior `monitoring_mode=loop`: restart the recorded `/loop` unless user explicitly chose passive mode.
+- Prior `monitoring_mode=cron` with `monitoring_durable=true`: verify with `CronList`; recreate only if missing.
+- Prior `monitoring_mode=cron` with `monitoring_durable=false`: recreate missing or expired session-only jobs for the current session.
+- Prior `monitoring_mode=passive`: keep passive but report that active work remains user-triggered.
+
+Log dropped ticks in `polling_failures[]`; include recovered PRs/workers in next heartbeat. Full state contract: `.claude/reference/pm-monitoring-decision.md`.
+
 ### Pre-Compaction Checkpointing (Preventive)
 
 Write status checkpoints to `~/.claude/session-state.json` on phase transitions and key state-change events. See `handoff-files.md` for the schema. After compaction, read this file first, then reconcile with live GitHub state and any handoff files in `~/.claude/handoffs/`.

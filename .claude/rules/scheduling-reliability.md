@@ -16,6 +16,16 @@ The 5-minute heartbeat rule catches silence during turns; this file covers betwe
 
 > **Default recurring user-facing poll: `/loop`.** Use `CronCreate` only for cross-session durability or fleet jobs. Never hand-roll one-shot chains.
 
+## PM Monitoring Primitive
+
+PM manager monitoring uses the hybrid decision recorded in `.claude/reference/pm-monitoring-decision.md`:
+
+- `/loop` is canonical for explicit user-requested polling and 1-2 session-scoped PM worker threads.
+- `CronCreate` is canonical for 3+ active threads/PRs, cross-session durability, or campaigns outliving the session.
+- Passive mode is valid only with zero active workers or when the user explicitly chooses it.
+
+Each polling turn: update `session-state.json` monitoring fields. If a loop drops, run `monitor-mode.md` **PM Monitoring Recovery** (and apply dropped-tick handling in this file).
+
 ## Forbidden Pattern: Hand-Rolled One-Shot Chains
 
 Do not recur as "do work, then schedule the next one-shot wakeup." Forgetting or failing the re-arm silently kills the poll. Use `/loop N <command>` once; the runtime re-arms it.

@@ -283,7 +283,7 @@ After Step 1 presents assignments/suggestions, detect whether any **active cloud
 
 Resume mode passes through this step too — polling needs to be re-established after context turnover.
 
-**Primitive selection (MANDATORY):** For any user-initiated "poll every N" request, `/loop` is **mandatory** — not just recommended. `CronCreate` is reserved for PM-initiated autonomous monitoring across ≥3 concurrent threads or cross-session durability. Hand-rolled one-shot `ScheduleWakeup` chains are forbidden for recurring polls — they drop silently when the model forgets to re-schedule. For the full decision tree and the pre-exit checklist that every polling turn must run, see `.claude/rules/scheduling-reliability.md`.
+**Primitive selection (MANDATORY):** Use the hybrid decision in `.claude/reference/pm-monitoring-decision.md`. For any user-initiated "poll every N" request, `/loop` is **mandatory** — not just recommended. `CronCreate` is reserved for PM-initiated autonomous monitoring across ≥3 concurrent threads, cross-session durability, or campaigns expected to outlive the current interactive session. Hand-rolled one-shot `ScheduleWakeup` chains are forbidden for recurring polls — they drop silently when the model forgets to re-schedule. For the full decision tree and the pre-exit checklist that every polling turn must run, see `.claude/rules/scheduling-reliability.md`.
 
 ### 2.1: Detect active threads
 
@@ -315,6 +315,25 @@ Only offer option (c) proactively when there are zero active threads. If the use
 Template message:
 
 > "Detected {N} active cloud threads. Recommend **{option}** — {schedule/command}. To stop: **{cancel command}**. Say 'yes' to start, 'passive' to skip, or pick a different option."
+
+### 2.2a: Record selected monitoring state
+
+When the user selects an option, update `~/.claude/session-state.json` before the first tick. Preserve unknown fields and record at least:
+
+- `monitoring_active`
+- `monitoring_mode` (`loop`, `cron`, or `passive`)
+- `monitoring_command` (default `/status`)
+- `monitoring_interval_minutes` for `/loop`, or `polling_jobs[].cron` for `CronCreate`
+- `monitoring_durable`
+- `monitoring_started_at`, `last_poll_at`, `next_expected_poll_at`
+- tracked `prs`, `active_agents`, and `polling_jobs` where known
+
+Each later polling turn refreshes the timing watermarks and any changed PR/agent status. If the loop drops, recover using `.claude/rules/monitor-mode.md` "PM Monitoring Recovery".
+
+Mode-switch cleanup requirements:
+- Switching to `passive`: set `monitoring_active=false`, clear `next_expected_poll_at`, run `CronDelete` for each entry in `polling_jobs[]`, then clear `polling_jobs[]` so `session-state.json` stays authoritative.
+- Switching away from `cron`: call `CronDelete` for each live job in `polling_jobs[]`, then remove their IDs from `polling_jobs[]` so `session-state.json` stays authoritative.
+- Switching to `cron`: persist returned job IDs to `polling_jobs[]` immediately; keep `polling_jobs[]` authoritative.
 
 ### 2.3: Off-peak minute selection (option a only)
 
