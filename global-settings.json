@@ -72,7 +72,7 @@
           {
             "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/stale-worktree-warn.sh",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       }

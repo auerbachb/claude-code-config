@@ -1,24 +1,26 @@
 # EVERY MESSAGE — NON-NEGOTIABLE BEHAVIORS
 
-Apply to every parent-agent message. No exceptions, no decay, no skipping after compaction.
+These apply to EVERY message the parent agent sends to the user. No exceptions, no degradation over time, no skipping after context compaction.
 
-1. **Timestamp prefix.** Eastern time (`Mon Mar 16 02:34 AM ET`) via `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`. NEVER estimate — run `date`.
-2. **Active monitoring declaration.** If monitoring background agents, state count + PRs at message end.
-3. **5-minute heartbeat.** Never silent for >5 min. During 4+ file ops, one-line status every 3 writes/edits (see `monitor-mode.md`).
-4. **`/loop` for recurring polls.** Any "poll/check/watch every N" request → `/loop` (or `CronCreate` for ≥3 concurrent or cross-session). Never hand-rolled one-shot chains. See `scheduling-reliability.md`.
-5. **Dedicated monitor mode.** With active subagents, your ONLY job is orchestration — see `monitor-mode.md`.
+1. **Timestamp prefix.** Start every message with Eastern time (`Mon Mar 16 02:34 AM ET`). Get via: `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`. NEVER estimate timestamps — always run the `date` command.
+2. **Active monitoring declaration.** If monitoring background agents, state how many and which PRs at the end of every message.
+3. **5-minute heartbeat.** Never go >5 minutes without a status message. During operations touching 4+ files, emit a one-line status after every 3 writes/edits (see `monitor-mode.md` "User Heartbeat" and "File-Write Status Updates" for details).
+4. **`/loop` for recurring polls.** Any user request phrased as "poll every N / check every N / watch for X" must be backed by `/loop` (or `CronCreate` for ≥3 concurrent autonomous polls and/or cross-session durability) — never a hand-rolled chain of one-shot wake-ups. See `scheduling-reliability.md` for the decision tree and pre-exit checklist.
+5. **Dedicated monitor mode.** With active subagents, your ONLY job is orchestration — do NOT do substantive work. See `monitor-mode.md` "Dedicated Monitor Mode" for full rules.
 
-After compaction, FIRST reconstruct monitoring state (see `monitor-mode.md` "Post-Compaction Recovery") and report WITH a timestamp.
+After context compaction, your FIRST action is to reconstruct monitoring state (see "Post-Compaction Recovery" in `monitor-mode.md`) and report it WITH a timestamp.
 
 ---
 
 ## AUTONOMOUS WORKFLOW EXECUTION — DO NOT ASK PERMISSION
 
-Every phase transition — local review, push, PR creation, polling, feedback, subagent spawn — proceeds immediately without asking. See `subagent-orchestration.md` "Phase Transition Autonomy".
+The workflow is fully autonomous. At every phase transition — local review, push, PR creation, polling, feedback processing, subagent spawning — **proceed immediately without asking the user.** See `subagent-orchestration.md` "Phase Transition Autonomy" for the complete table.
 
-**Only actions that need user permission:** merging the PR; respawning a failed subagent.
+**The ONLY actions that require user permission:**
+- Merging the PR
+- Respawning a failed subagent
 
-If you compose "should I...?" about any workflow step, stop — the answer is yes. Do it.
+If you catch yourself composing a "should I...?" question about any workflow step, stop — the answer is always yes. Just do it.
 
 ---
 
@@ -50,17 +52,20 @@ If you compose "should I...?" about any workflow step, stop — the answer is ye
 
 ## PR & ISSUE WORKFLOW
 
-**Flow:** issue → CR plan → implementation plan → feature branch → code → local review → push → PR → GitHub review → merge. Never jump to coding. See `issue-planning.md`.
+**The flow is always:** GitHub issue → CR plan → implementation plan → feature branch → code → local review → push → PR → GitHub review → merge. Never jump straight to coding. See `issue-planning.md` for the full issue creation and planning flow.
 
-**Rules:**
-- **Every PR links to a GitHub issue** (`Closes #N`); create via `gh issue create` first.
-- **Every PR has a Test plan** with checkboxes for AC.
-- **No TDD** unless explicitly requested. AC verified via review + manual testing.
-- **CI must pass before merge** — see `cr-merge-gate.md`.
-- **Never suppress linter errors** — fix the code; see `cr-local-review.md`.
-- **NEVER work on `main`.** Worktree + feature branch (`issue-N-short-description`) for every change.
-- **Always squash-merge:** `gh pr merge --squash` (the `/wrap` and `/merge` skills handle branch cleanup separately — don't pass `--delete-branch` while the worktree is still on that branch).
-- **Never merge immediately after a rebase/force-push** — wait for CR to re-review the new commit.
+**Key rules:**
+- **Every PR must link to a GitHub issue.** No exceptions — create one via `gh issue create` first. Use `Closes #N` in the PR body.
+- **Every PR must include a Test plan section** with checkboxes for acceptance criteria.
+- **We do not use TDD** unless the user explicitly requests it. AC is verified via code review and manual testing.
+- **CI must pass before merge.** See `cr-merge-gate.md` "CI Must Pass Before Merge" for the check-runs verification procedure.
+- **Never suppress linter errors.** See `cr-local-review.md` "Never Suppress Linter Errors" — fix the actual code, never add suppression comments.
+
+**Branching & merging:**
+- **NEVER work on `main`.** All code changes happen in worktrees on feature branches. Every change requires: issue → feature branch → PR → squash merge.
+- Branch naming: `issue-N-short-description`.
+- Always **squash and merge** via `gh pr merge --squash`.
+- **Never merge immediately after a rebase or force-push.** Wait for CR to review the rebased commit and confirm clean before merging.
 
 ---
 
@@ -109,10 +114,19 @@ Rules consume tokens on every turn. Limits apply to CLAUDE.md + `.claude/rules/*
 
 ## Memory System
 
-Persisted at `~/.claude/projects/*/memory/`. Save proactively when future sessions will need the info. User requests ("remember this") override heuristics — but never persist secrets, credentials, tokens, or regulated personal data (confirm + redact if asked).
+The auto-memory system persists insights across sessions at `~/.claude/projects/*/memory/`. Save memories **proactively** (without being asked) when you encounter information future sessions will need. Explicit user requests ("remember this", "save that") normally override these heuristics, but never persist secrets, credentials, tokens, or regulated/sensitive personal data — if the user asks, confirm before saving and redact sensitive values.
 
-**Save:** repo-specific CR false positives, confirmed user preferences, recurring corrections; non-obvious repo quirks, deadlines, decisions, conventions; external dashboards/docs/systems; incident root causes + fixes.
+**Save proactively:**
+- **Feedback patterns:** CR false positives specific to this repo, user-preferred approaches confirmed across sessions, recurring corrections.
+- **Project context:** non-obvious repo quirks, deadlines, stakeholder decisions, undocumented conventions that shape future work.
+- **External references:** dashboards, docs, or systems where current state lives but isn't in the repo.
+- **Incident lessons:** things that went wrong and the fix — so the next session doesn't repeat the mistake.
 
-**Don't save:** code patterns / API signatures (read code); git history facts (use `git log`/`blame`); anything already in CLAUDE.md or rule files; ephemeral task state (use `~/.claude/handoffs/`); one-off details.
+**Do NOT save:**
+- Code patterns or API signatures — read the current code instead.
+- Git history facts — `git log`/`git blame` is authoritative.
+- Anything already covered in CLAUDE.md or rule files.
+- Ephemeral task state — use handoff files (`~/.claude/handoffs/`) instead.
+- One-off details with no expected reuse.
 
-Check for duplicates before writing. Update or remove stale memories when encountered.
+Before creating a memory, check for existing ones to avoid duplicates. Update or remove stale memories when you encounter them.
