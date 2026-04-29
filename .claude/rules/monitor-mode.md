@@ -49,7 +49,7 @@ If a summary block references prior work you do not remember, recover before all
 
 ## PM Monitoring Recovery
 
-If `session-state.json` has `monitoring_active=true`, rebuild from `prs`, `active_agents`, handoff files, and live GitHub state before re-arming.
+If `session-state.json` has `monitoring_active=true`, OR has `monitoring_mode=passive` with a non-empty `prs` map, rebuild from `prs`, `active_agents`, handoff files, and live GitHub state before re-arming.
 
 - No active workers/PRs remain: set `monitoring_active=false` and report completion.
 - Prior `monitoring_mode=loop`: restart the recorded `/loop` unless user explicitly chose passive mode.
