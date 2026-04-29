@@ -57,6 +57,9 @@ if [[ -d "$SKILLS_WORKTREE" ]]; then
   fi
 else
   echo "Creating skills worktree at $SKILLS_WORKTREE..."
+  # If a previous run removed only the worktree directory, git can still list the
+  # path as registered — worktree add then fails. Prune drops stale metadata.
+  git -C "$REPO_ROOT" worktree prune 2>/dev/null || true
   # Fetch latest main first
   git -C "$REPO_ROOT" fetch origin main --quiet
   # Create worktree on main — use a detached HEAD tracking origin/main

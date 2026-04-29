@@ -160,6 +160,16 @@ fi
 step_pass "Merge settings"
 
 # ---------------------------------------------------------------------------
+# Step 2b: Optional Graphite CLI repo marker (per-repo auto-detection for plugin)
+# ---------------------------------------------------------------------------
+echo "Step 2b: Optional Graphite repo init (.git/.graphite_repo_config)..."
+GRAPHITE_INIT="$SCRIPT_DIR/.claude/scripts/graphite-repo-init.sh"
+if [[ -x "$GRAPHITE_INIT" ]]; then
+  bash "$GRAPHITE_INIT" "$SCRIPT_DIR" || true
+fi
+step_pass "Graphite repo init (optional)"
+
+# ---------------------------------------------------------------------------
 # Step 3: Ensure hook scripts are executable
 # ---------------------------------------------------------------------------
 echo "Step 3: Verifying hook permissions..."
