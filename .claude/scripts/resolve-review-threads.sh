@@ -40,6 +40,7 @@ AUTHORS="coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai"
 DRY_RUN=0
 THREAD_IDS=""
 THREAD_IDS_FILE=""
+EXPLICIT_IDS_MODE=0
 MAX_ATTEMPTS=2
 PR_NUMBER=""
 
@@ -67,6 +68,7 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       THREAD_IDS="$2"
+      EXPLICIT_IDS_MODE=1
       shift 2
       ;;
     --thread-ids-file)
@@ -75,6 +77,7 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       THREAD_IDS_FILE="$2"
+      EXPLICIT_IDS_MODE=1
       shift 2
       ;;
     --max-attempts)
@@ -275,6 +278,10 @@ write_unresolved_matches() {
           | [.id, (.comments.nodes[0].id // ""), (.comments.nodes[0].author.login // ""), (.comments.nodes[0].url // "")]
           | @tsv
         ' > "$MATCHES_FILE"
+  elif [[ "$EXPLICIT_IDS_MODE" -eq 1 ]]; then
+    # IDs were requested but all parsed to empty — resolve nothing rather than
+    # silently falling back to author mode and resolving unrelated threads.
+    : > "$MATCHES_FILE"
   else
     printf '%s' "$threads_json" \
       | jq -r --arg re "$AUTHOR_REGEX" '
