@@ -37,3 +37,15 @@ When approaching token exhaustion (see `subagent-orchestration.md` "Token/Turn E
 Report concisely to the parent/user what was done and what remains. Exit cleanly — do not squeeze in one more tool call.
 
 **Parent response to exhaustion:** Read `session-state.json`, launch a replacement subagent for the same phase. This is an **"Always do"** action — do not ask the user.
+
+## Session-State Schema
+
+Full schema/examples: `.claude/reference/session-state-schema.json`. Preserve unknown fields. Per-PR polling fields under `prs.{N}`:
+
+| Field | Meaning |
+|-------|---------|
+| `digest` | Last stable polling digest from `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)`. Excludes free-text `blocker`. |
+| `digest_streak` | Consecutive identical ticks; drives `scheduling-reliability.md` backoff. |
+| `blocker` | Human-readable blocker, or `null`. |
+| `blocker_kind` | `"user_input"`, `"ci_external"`, `"review_pending"`, or `null`. |
+| `last_cron_action` | Last scheduler action `{type, at, interval}`; lets the hook avoid repeat warnings after `CronUpdate`/`CronDelete`. |

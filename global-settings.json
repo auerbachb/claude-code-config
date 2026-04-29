@@ -89,6 +89,11 @@
             "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/post-merge-pull.sh",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/polling-backoff-warn.sh",
+            "timeout": 5
           }
         ]
       },

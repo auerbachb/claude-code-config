@@ -42,6 +42,14 @@ The common thread: **between-turn scheduling has no in-turn observer.** Once the
 
 **Fix.** Before any message that commits to a future check-back, the same turn must contain an active `/loop` (or `CronCreate`) call. If no scheduler is armed, do not promise one — say "ping me when you want the status" instead.
 
+## Pattern 5 — Stable-State Flooding
+
+**Symptom.** A durable poll keeps firing at base cadence after a PR reaches steady state. Every tick reports the same HEAD SHA, review verdicts, CI blocker, and "awaiting user direction" status, burying useful signal under duplicate heartbeats.
+
+**Root cause.** The scheduler had no stable-state digest or backoff gate, so "nothing changed" was treated like actionable progress forever. In PR #359 on 2026-04-25, cron `e7230e2f` kept a 1-minute cadence while orphan one-shot `4e56074f` also remained alive; ticks #45-#93 repeated the same state for roughly 50 minutes until the user manually stopped it.
+
+**Fix.** Apply `scheduling-reliability.md` "Stable-State Backoff & Auto-Pause": compute the digest, increment `digest_streak`, widen to 5m at streak 3, widen to 15m at streak 6, and pause at streak 9. If `blocker_kind == "user_input"` or the blocker text says the agent is awaiting the user's direction, pause after the first visible message. When deleting or promoting the cron, also cancel sibling `ScheduleWakeup` jobs.
+
 ## Detection Heuristics
 
 Treat any of these as a scheduling failure until proven otherwise:
@@ -50,6 +58,7 @@ Treat any of these as a scheduling failure until proven otherwise:
 - User prompts for status after the promised tick time with no intervening agent message
 - `session-state.json` records a polling context but `CronList` has no matching job and no `/loop` is visible
 - Post-compaction recovery finds a `polling_failures` entry or a `monitoring_active: true` flag with no live schedule
+- Repeated poll ticks show unchanged `digest`/`digest_streak`, unchanged blocker, and no matching `last_cron_action` backoff
 
 Recovery is always the same: apologize briefly, issue `/loop`, record the incident, continue.
 
