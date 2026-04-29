@@ -32,7 +32,7 @@ If **ANY** of the conditions below hold, invoke `/fixpr` and do NOT request a ne
 
 1. New bot findings since the last poll watermark (not old unresolved threads awaiting reviewer ack)
 2. Any check-run with a blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`)
-3. `mergeStateStatus == "BEHIND"` (branch behind base, auto-rebase; `/fixpr` handles it)
+3. **`mergeStateStatus == "BEHIND"`** — each cycle, read this field explicitly (e.g. `gh pr view <N> --json mergeStateStatus,mergeable` or the PR snapshot used for polling). **Do not treat `mergeStateStatus: "BLOCKED"` as “behind base”**; BLOCKED covers missing checks/reviews as well. Only the literal value `BEHIND` triggers rebase + force-push via `/fixpr` (same merge-state handling as `/fixpr` Step 6 / `.merge_state` from `pr-state.sh` — see `fixpr/SKILL.md`).
 4. `mergeable == "CONFLICTING"` (merge conflicts; `/fixpr` handles rebase + surfaces blockers)
 
 > **Unresolved threads are NOT a trigger.** After a fix push, keep polling for reviewer catch-up unless conditions 1-4 occur.
@@ -78,7 +78,7 @@ The helper prints exactly one `STATUS=` verdict and exits 0. Canonical steps:
   1. `repos/{owner}/{repo}/pulls/{N}/reviews` — review objects
   2. `repos/{owner}/{repo}/pulls/{N}/comments` — inline diff comments
   3. `repos/{owner}/{repo}/issues/{N}/comments` — PR conversation (summary, ack, general findings). Missing this endpoint causes indefinite polling on clean passes.
-- **Check merge metadata every cycle:** `mergeable` and `mergeStateStatus` drive `/fixpr` triggers 3-4.
+- **Check merge metadata every cycle:** fetch `mergeStateStatus` and `mergeable` every cycle (same PR JSON as `merge-gate.sh`). They drive `/fixpr` triggers 3–4; never infer BEHIND from `BLOCKED` alone.
 - **Check commit status every cycle.** Query `repos/{owner}/{repo}/commits/{SHA}/check-runs` filtered to `name == "CodeRabbit"`; fallback: `/statuses` filtered to `context ~ "CodeRabbit"`. Full commands: `.claude/reference/cr-polling-commands.md`.
   - **Completion signal:** `status: "completed"` + `conclusion: "success"` = review done. Definitive signal.
 - **Fast-path rate limit:** "rate limit" in failed CodeRabbit check/status output goes through the escalation gate above. Sticky assignment applies.
