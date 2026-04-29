@@ -355,9 +355,14 @@ If missing, reconstruct state from GitHub API.
    - If unresolved findings from coderabbitai[bot] or greptile-apps[bot] exist, fix them first.
 3. Check ALL CI check-runs. Fix any failures before continuing.
 4. Poll for CR review every 60s on all 3 endpoints. Filter by coderabbitai[bot].
-5. Check commit status for CR completion signal and rate-limit fast-path.
-6. If CR rate-limited (fast-path): trigger Greptile immediately (budget check first).
-7. If 12 minutes with no CR review: trigger Greptile (budget check first). Polling cadence stays 60 s; a clean CR check-run completion short-circuits the wait. Rate-limit signals override the timeout — escalate immediately on a rate-limit signal regardless of elapsed minutes.
+5. Run `.claude/scripts/escalate-review.sh {PR_NUMBER}` every CR-owned poll cycle and branch on its single `STATUS=` verdict:
+   - `polling_cr`: continue polling CR.
+   - `switch_bugbot`: persist `reviewer: bugbot` and follow the BugBot path.
+   - `trigger_greptile`: run `greptile-budget.sh --consume`, post `@greptileai`, persist `reviewer: greptile`, and follow the Greptile path.
+   - `budget_exhausted`: persist the self-review fallback/blocker; do NOT post `@greptileai`.
+   - `self_review`: perform/report self-review fallback; merge remains blocked.
+6. Check commit status for CR completion signal and rate-limit fast-path.
+7. If CR rate-limited or silent past the gate threshold, do NOT hand-roll fallback timing — use the escalation gate verdict above. Polling cadence stays 60 s; a clean CR check-run completion short-circuits the wait. Rate-limit signals override the timeout and are handled by `escalate-review.sh`.
 8. Process findings: fix all valid ones in ONE commit, push once, reply to every thread, resolve threads via GraphQL.
 9. Merge gate:
    - CR-only: 1 explicit CR APPROVED review on the current HEAD SHA (commit_id must match HEAD; acks / check-run completion alone do NOT count).

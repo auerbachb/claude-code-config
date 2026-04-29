@@ -41,6 +41,28 @@ If **ANY** of the conditions below hold, invoke `/fixpr` and do NOT request a ne
 
 **Exit polling ONLY when the merge gate (`cr-merge-gate.md`) is met.** "0 unresolved threads right now" is NOT an exit condition — see the trap note at the top of this file. After any `/fixpr` push, reset the watermark and keep polling for the reviewer's response to the new SHA.
 
+### Reviewer escalation gate (MANDATORY per cycle)
+
+Run this gate **every poll cycle while `reviewer == cr`**, after the shared PR snapshot and CI check. Helper:
+
+```bash
+STATUS=$(.claude/scripts/escalate-review.sh <PR_NUMBER> | sed -n 's/^STATUS=//p')
+```
+
+The helper prints exactly one `STATUS=` verdict and exits 0. Canonical steps:
+
+1. Fetch CodeRabbit check-run/status for current HEAD.
+2. If `conclusion == "failure"` and title/description contains `rate limit`, go to step 5.
+3. If push age >7 min and no CR review posted for current HEAD, go to step 5.
+4. Otherwise continue polling CR. **STOP: `STATUS=polling_cr`.**
+5. Check BugBot (`cursor[bot]` comments/reviews + `Cursor Bugbot` check-run). Cache first install verdict at `.prs["<PR_NUMBER>"].bugbot_installed`.
+   - If BugBot has posted a review/comment or completed its check-run, switch sticky reviewer ownership to BugBot. **STOP: `STATUS=switch_bugbot`.**
+   - If cached `bugbot_installed == false`, skip the 5-minute BugBot grace window and continue to step 6.
+   - If installed, push age <5 min, and silent, keep polling. **STOP: `STATUS=polling_cr`.**
+6. Run the Greptile budget check per `greptile.md`.
+   - If budget is available, trigger Greptile and switch sticky reviewer ownership to Greptile. **STOP: `STATUS=trigger_greptile`.**
+   - If budget is exhausted, perform self-review and report the merge blocker to the user. **STOP: `STATUS=budget_exhausted` then `STATUS=self_review` for the active self-review path.**
+
 ### Rate Limits & Behavior (Pro Tier)
 
 - **8 PR reviews/hour** (each push or `@coderabbitai full review` consumes one), **50 chat interactions/hour**.
@@ -59,11 +81,11 @@ If **ANY** of the conditions below hold, invoke `/fixpr` and do NOT request a ne
 - **Check merge metadata every cycle:** `mergeable` and `mergeStateStatus` drive `/fixpr` triggers 3-4.
 - **Check commit status every cycle.** Query `repos/{owner}/{repo}/commits/{SHA}/check-runs` filtered to `name == "CodeRabbit"`; fallback: `/statuses` filtered to `context ~ "CodeRabbit"`. Full commands: `.claude/reference/cr-polling-commands.md`.
   - **Completion signal:** `status: "completed"` + `conclusion: "success"` = review done. Definitive signal.
-  - **Fast-path rate limit:** "rate limit" in failed CodeRabbit check/status output escalates immediately: check BugBot first, wait only BugBot's push-time 10-min window, then Greptile. Sticky assignment applies.
+- **Fast-path rate limit:** "rate limit" in failed CodeRabbit check/status output goes through the escalation gate above. Sticky assignment applies.
   - **Ack ≠ completion.** "Actions performed — Full review triggered" = CR started. "CodeRabbit — Review completed" CI check = CR finished.
 - **CR username:** `coderabbitai[bot]` (with `[bot]` suffix). Filter by `.user.login == "coderabbitai[bot]"` — NOT bare `coderabbitai`.
 - **Watermark:** Track highest review ID from `pulls/{N}/reviews`. New reviews can have inline comment IDs lower than previous reviews (different ID sequences). For `issues/{N}/comments`, track by comment ID.
-- **Hard timeout: 12 minutes.** Cadence 60 s; a CR `status: "completed"` exits polling immediately. No CR review after 12 min → check BugBot (see `bugbot.md`); if absent, trigger Greptile immediately (BugBot's 10-min window already elapsed). Sticky assignment applies.
+- **CR silence threshold:** Cadence 60 s; a CR `status: "completed"` exits polling immediately. Otherwise, the escalation gate owns silence, BugBot grace, and Greptile fallback. Sticky assignment applies.
 
 ### CI Health Check (MANDATORY — every poll cycle)
 
@@ -79,10 +101,10 @@ If **ANY** of the conditions below hold, invoke `/fixpr` and do NOT request a ne
 
 **Review chain:** CR (primary) → BugBot (second tier, free) → Greptile (last resort, paid) → self-review (emergency).
 
-BugBot auto-runs on every push. When CR fails, check BugBot before Greptile; BugBot's 10-min timeout runs concurrently with CR's 12. See `bugbot.md` and `greptile.md`.
+When CR fails or stalls, the reviewer escalation gate checks BugBot before Greptile and caches whether BugBot is installed for the PR. See `bugbot.md` and `greptile.md`.
 
 - **Sticky assignment:** CR fail → BugBot owns the PR. If BugBot also fails → Greptile owns permanently. Do not switch back up the chain.
-- **If all three fail** (CR rate-limited + BugBot 10-min timeout + Greptile 10-min timeout): fall back to **self-review**. Self-review does NOT satisfy the merge gate.
+- **If all three fail** (CR failed/stalled + BugBot absent/silent per the gate + Greptile timeout or budget exhaustion): fall back to **self-review**. Self-review does NOT satisfy the merge gate.
 - Tell the user which fallback was used and why.
 
 ### Processing CR Feedback

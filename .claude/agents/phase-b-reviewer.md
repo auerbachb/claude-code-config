@@ -68,6 +68,9 @@ CURRENT_SHA=$(jq -r '.pr.head_sha' "$STATE")
 # CodeRabbit check-run (completion signal + rate-limit detection)
 jq '.check_runs.all[] | select(.name == "CodeRabbit") | {name, status, conclusion, title}' "$STATE"
 
+# Mandatory reviewer escalation gate (CR -> BugBot -> Greptile -> self-review)
+ESCALATION_STATUS=$(.claude/scripts/escalate-review.sh {{PR_NUMBER}} | sed -n 's/^STATUS=//p')
+
 # CR reviews/inline/issue comments for watermark tracking
 jq '.comments.reviews | map(select(.user.login == "coderabbitai[bot]"))' "$STATE"
 jq '.comments.inline  | map(select(.user.login == "coderabbitai[bot]"))' "$STATE"
@@ -78,27 +81,64 @@ jq '.comments.conversation | map(select(.user.login == "coderabbitai[bot]"))' "$
 
 **Track the highest review ID** as your watermark (not inline comment IDs — they use different sequences).
 
+### Reviewer Escalation Gate (MANDATORY every CR poll cycle)
+
+After the shared `$STATE` snapshot and CI check, run the canonical escalation gate every cycle while `reviewer = cr`:
+
+```bash
+ESCALATION_STATUS=$(.claude/scripts/escalate-review.sh {{PR_NUMBER}} | sed -n 's/^STATUS=//p')
+case "$ESCALATION_STATUS" in
+  polling_cr)
+    : # keep waiting on CodeRabbit/BugBot grace window
+    ;;
+  switch_bugbot)
+    .claude/scripts/reviewer-of.sh {{PR_NUMBER}} --sticky bugbot >/dev/null
+    reviewer="bugbot"
+    # Continue this cycle using the BugBot Review Path below.
+    ;;
+  trigger_greptile)
+    if .claude/scripts/greptile-budget.sh --consume >/dev/null; then
+      gh pr comment {{PR_NUMBER}} --body "@greptileai"
+      .claude/scripts/reviewer-of.sh {{PR_NUMBER}} --sticky greptile >/dev/null
+      reviewer="greptile"
+      # Continue this cycle using the Greptile Review Path below.
+    else
+      ESCALATION_STATUS="budget_exhausted"
+    fi
+    ;;
+  budget_exhausted)
+    .claude/scripts/session-state.sh --set '.prs["{{PR_NUMBER}}"].reviewer="self_review"'
+    echo "Greptile budget exhausted — falling back to self-review for PR #{{PR_NUMBER}}; merge remains blocked until manual review or budget reset." >&2
+    ;;
+  self_review)
+    echo "PR #{{PR_NUMBER}} is already in self-review fallback; merge remains blocked until manual review or budget reset." >&2
+    ;;
+  *)
+    echo "Unexpected escalation status: $ESCALATION_STATUS" >&2
+    exit 1
+    ;;
+esac
+```
+
+The script caches `.prs["{{PR_NUMBER}}"].bugbot_installed` in `~/.claude/session-state.json` on first BugBot detection so repositories without BugBot skip the 5-minute grace wait on later cycles. Do not duplicate the timing logic inline; `cr-github-review.md` owns the numbered gate and STOP conditions.
+
 ### Completion Detection
 
 - **Ack** (review started): issue comment with "Actions performed — Full review triggered" — NOT completion, NOT approval.
 - **Completion**: check-run `status: "completed"` with `conclusion: "success"` — CR finished running, but this alone does NOT satisfy the merge gate.
 - **Gate-satisfying approval** = a CR review object with `state: "APPROVED"` AND `commit_id == <current HEAD SHA>` (per `cr-merge-gate.md` Step 1 and `phase-protocols.md`). Completion without such a review means the gate is not met — keep polling.
 
-### Rate-Limit Fast Path
+### Rate-Limit and CR-Silence Paths
 
-If check-runs show `conclusion: "failure"` with `output.title` containing "rate limit" (case-insensitive), OR commit statuses show rate-limit language → **escalate immediately, regardless of elapsed minutes.** Rate-limit signals override CR's 12-minute timeout — do not wait it out. **Check if BugBot (`cursor[bot]`) already posted a review** on any of the 3 endpoints. If yes, use BugBot review (set `reviewer: bugbot`, sticky assignment). If no BugBot review yet, continue polling for BugBot until 10 minutes from push time have elapsed (do NOT start a new 10-minute timer now — the window runs concurrently with CR's, so some or all of it may have already passed). When BugBot times out, run the Greptile Daily Budget Check below: if budget allows, trigger Greptile; if exhausted, fall back to self-review and report the blocker.
+Do not hand-roll fallback timing here. The mandatory Reviewer Escalation Gate above owns rate-limit fast-path handling, CR silence thresholds, BugBot installed-cache behavior, Greptile trigger eligibility, and self-review fallback. Polling cadence stays 60 s; a clean CR check-run completion short-circuits the wait, but Phase B must still verify the merge gate (explicit `APPROVED` review on current HEAD SHA per `cr-merge-gate.md` Step 1) before exiting — completion alone is not approval.
 
-### CR Timeout (Slow Path)
-
-If CR has not delivered a review after **12 minutes** of polling → **check if BugBot (`cursor[bot]`) already posted a review** (BugBot's 10-min window from push has already expired at this point). If yes, use BugBot review (set `reviewer: bugbot`, sticky assignment). If no BugBot review exists → run the Greptile Daily Budget Check below: if budget allows, trigger Greptile immediately (do NOT wait another 10 min); if budget exhausted, fall back to self-review and report the blocker. Sticky assignment applies at each tier. Polling cadence stays 60 s; a clean CR check-run completion short-circuits the timeout wait, but Phase B must still verify the merge gate (explicit `APPROVED` review on current HEAD SHA per `cr-merge-gate.md` Step 1) before exiting — completion alone is not approval.
-
-> **MANDATORY budget gate on both paths above.** The Greptile Daily Budget Check in the "Greptile Review Path" section below is NOT optional — it applies to every `@greptileai` trigger point, including CR fallbacks. Never post `@greptileai` without running the check first.
+> **MANDATORY budget gate.** Every `@greptileai` trigger from a `STATUS=trigger_greptile` verdict still requires the Greptile Daily Budget Check in the "Greptile Review Path" section below. Never post `@greptileai` without running the check first.
 
 ### CR Merge Gate
 
 1 clean CR approval on the current HEAD SHA satisfies the gate. An "approval" means a CR review object with `state: "APPROVED"` AND `commit_id == <current HEAD SHA>`. Ack comments, empty thread snapshots, and CR check-run completion alone do NOT exit polling — see `cr-merge-gate.md` "Step 1" for the full explicit-approval and SHA-freshness rules.
 
-If no approval lands on the current SHA within the 12-minute timeout, re-trigger `@coderabbitai full review` (max 2 re-triggers per PR per hour). If both re-triggers fail on the same SHA, fall through to the BugBot/Greptile fallback chain.
+If CR remains silent or cannot produce a current-HEAD approval, keep using the Reviewer Escalation Gate above for the per-cycle verdict. Do not layer an additional 12-minute fallback chain here.
 
 ## BugBot Review Path (when `reviewer` = `bugbot`)
 

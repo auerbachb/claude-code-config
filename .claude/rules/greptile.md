@@ -4,7 +4,9 @@
 > **Ask first:** Never — fix findings autonomously.
 > **Never:** Trigger Greptile before both CR AND BugBot have failed. Ignore Greptile findings. Switch a PR back to CR/BugBot after Greptile has been triggered. Include `@greptileai` in reply comments (triggers a paid re-review with no learning benefit).
 
-Greptile is the **last-resort paid** AI code reviewer — only triggered when both CR and BugBot (Cursor) have failed. Review chain: **CR → BugBot → Greptile → self-review.** Verify all findings against code. Key differences from CR/BugBot: cost ($1/review beyond 50/month quota), accurate completion signals (no ambiguity between ack and approval as there is with CR).
+Greptile is the **last-resort paid** AI code reviewer — only triggered when both CR and BugBot (Cursor) have failed. Review chain: **CR → BugBot → Greptile → self-review.** Verify all findings against code.
+
+**Escalation gate:** `cr-github-review.md` owns triggers/STOP conditions. This file only defines Greptile behavior after `escalate-review.sh` returns `STATUS=trigger_greptile`.
 
 ## Greptile Basics
 
@@ -27,11 +29,9 @@ Applies to 2nd/3rd triggers only; initial trigger requires only the budget check
 
 ## When to Trigger Greptile
 
-**Last-resort only:** trigger Greptile only after both upstream reviewers fail for the PR:
-1. CR rate-limit fast-path + no BugBot review within 10 min from push.
-2. No CR review within 12 min + no BugBot review within 10 min from push.
+**Last-resort only:** trigger Greptile only after the mandatory escalation gate in `cr-github-review.md` returns `STATUS=trigger_greptile`. The gate checks CR failure/silence, BugBot response/install/cache state, and STOP conditions before Greptile is considered.
 
-Always check all three endpoints for `cursor[bot]` immediately before triggering; BugBot may have responded while CR was pending.
+Always rely on `.claude/scripts/escalate-review.sh <PR_NUMBER>` for the current per-cycle verdict; it checks all three endpoints for `cursor[bot]` before returning `STATUS=trigger_greptile`.
 
 ### Sticky Assignment
 

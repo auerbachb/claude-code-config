@@ -6,6 +6,8 @@
 
 BugBot is the **second-tier** AI code reviewer — free, auto-triggers on every push/PR open, and sits between CR (primary) and Greptile (last resort). The full review chain: **CR → BugBot → Greptile → self-review.**
 
+**Escalation authority:** The numbered gate + STOP conditions live in `cr-github-review.md` ("Reviewer escalation gate"). Use `.claude/scripts/escalate-review.sh <PR_NUMBER>` for the per-cycle `STATUS=` verdict; this file only defines BugBot behavior after `STATUS=switch_bugbot`.
+
 ## BugBot Basics
 
 - **Bot username:** `cursor[bot]`
@@ -19,15 +21,15 @@ BugBot is the **second-tier** AI code reviewer — free, auto-triggers on every 
 
 Poll alongside CR every 60 seconds on all three endpoints (same pattern — `pulls/{N}/reviews`, `pulls/{N}/comments`, `issues/{N}/comments` with `per_page=100`). Filter by `.user.login == "cursor[bot]"`.
 
-**Timeout:** 10 minutes **from push time** (not from CR failure detection). BugBot auto-triggers at push, so its timeout runs concurrently with CR's 12-minute window (BugBot's 10 fits inside CR's 12). Cadence stays 60 s; `Cursor Bugbot` `status: "completed"` short-circuits the wait. If CR's 12-min timeout fires and BugBot hasn't posted, BugBot's 10-min window has already expired — trigger Greptile immediately (see `greptile.md`). Do NOT wait another 10 min.
+**Fallback timing:** Do not maintain a separate CR-owned BugBot timeout here. The escalation gate decides whether to keep polling, switch to BugBot, trigger Greptile, or self-review. Once BugBot owns the PR, keep 60 s cadence and use the `Cursor Bugbot` completion signal below.
 
 **Completion signal:** BugBot creates a CI check-run named `Cursor Bugbot` that transitions to `status: "completed"` when the review finishes. The `conclusion` field is `neutral` when BugBot posted findings (still counts as a completed review — `neutral` is not a failure). Completion can also be detected via BugBot review comments appearing on any of the three endpoints.
 
 ## When BugBot Becomes the Active Reviewer
 
 BugBot becomes the active reviewer (`reviewer: bugbot`) when:
-1. **CR fails** (rate-limited or 12-min timeout) AND BugBot has already posted a review, OR
-2. **CR fails** AND BugBot posts a review within its 10-minute window
+1. The escalation gate returns `STATUS=switch_bugbot`, and
+2. The caller persists sticky ownership with `.claude/scripts/reviewer-of.sh <PR_NUMBER> --sticky bugbot`.
 
 **Sticky assignment:** Once a PR is assigned to BugBot (CR failed, BugBot responded), it stays on BugBot unless BugBot also fails — then Greptile takes over permanently.
 
