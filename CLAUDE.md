@@ -24,9 +24,26 @@ If you compose "should I...?" about any workflow step, stop — the answer is ye
 
 ## ALWAYS USE A WORKTREE
 
-**At the start of every session, before doing anything else, sync local `main` and then create a worktree.**
+**At the start of every session, before doing anything else, verify the current directory, sync local `main`, and create or enter the correct worktree.**
 
-1. **Pull remote main into local main** (quarantine dirty state first):
+Root cause for stale-worktree starts: session resume, explicit `/continue`, or parent-process cwd inheritance can drop an agent into a prior worktree. The harness/system text may say "operating in a git worktree"; treat that as a fact to verify against the current issue, not permission to skip worktree setup.
+
+1. **Run the stale-worktree gate before any edits, staging, commits, or pushes:**
+
+   ```bash
+   CURRENT_TOP=$(git rev-parse --show-toplevel 2>/dev/null || true)
+   CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || true)
+   git worktree list
+   ```
+
+   Then answer, in order:
+   - Am I already inside a linked worktree rather than the root repo?
+   - What issue number am I working on from the user prompt, issue URL, or task context?
+   - Does the current branch contain that issue number (extract with `echo "$CURRENT_BRANCH" | grep -oE 'issue-[0-9]+' | grep -oE '[0-9]+'`)?
+   - Does this branch's issue number match the issue I'm about to work on?
+
+   **STOP condition:** If the branch issue is missing, different from the current issue, or the task has no issue context yet, do not continue in that directory. Return to the root repo, sync `main`, and create a fresh issue-matching worktree before any file edits. A branch like `claude/cool-carson` or `cursor/old-task` is stale unless it is explicitly the branch for the current issue.
+2. **Pull remote main into local main** (quarantine dirty state first):
 
    ```bash
    ROOT_REPO=$(.claude/scripts/repo-root.sh 2>/dev/null || true)
@@ -40,7 +57,7 @@ If you compose "should I...?" about any workflow step, stop — the answer is ye
    ```
 
    If the guard reports `quarantined: recovery/dirty-main-*`, mention the recovery branch to the user so they know where their prior work lives. If the pull itself fails (e.g., diverged history after quarantine), tell the user — do not force-pull or reset. See `main-hygiene.md` for the full guard contract.
-2. **Create a worktree** via the `EnterWorktree` tool for isolated work.
+3. **Create a worktree** via the `EnterWorktree` tool for isolated work. The branch must name the issue (`issue-N-*`, or this environment's required wrapper such as `cursor/issue-N-*-suffix`).
 
 **Do not write code, edit files, stage changes, commit, or push while on `main`. Ever.** If you cannot create a worktree, fall back to `git checkout -b issue-N-short-description`.
 
