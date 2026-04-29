@@ -15,6 +15,7 @@
       "head_sha": "7b2cfbf",
       "reviewer": "cr",
       "needs": "cr_confirmation_pass",
+      "bugbot_installed": true,
       "digest": "sha256:51d9f7f2b7f0bb7e4fd98c9b5d5d5d52aafcc8d6f8a76f36635b2f2e91dbb7ef",
       "digest_streak": 1,
       "blocker": null,

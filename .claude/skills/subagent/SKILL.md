@@ -355,9 +355,14 @@ If missing, reconstruct state from GitHub API.
    - If unresolved findings from coderabbitai[bot] or greptile-apps[bot] exist, fix them first.
 3. Check ALL CI check-runs. Fix any failures before continuing.
 4. Poll for CR review every 60s on all 3 endpoints. Filter by coderabbitai[bot].
-5. Check commit status for CR completion signal and rate-limit fast-path.
-6. If CR rate-limited (fast-path): trigger Greptile immediately (budget check first).
-7. If 12 minutes with no CR review: trigger Greptile (budget check first). Polling cadence stays 60 s; a clean CR check-run completion short-circuits the wait. Rate-limit signals override the timeout — escalate immediately on a rate-limit signal regardless of elapsed minutes.
+5. Run `.claude/scripts/escalate-review.sh {PR_NUMBER}` every CR-owned poll cycle and branch on its single `STATUS=` verdict:
+   - `polling_cr`: continue polling CR.
+   - `switch_bugbot`: persist `reviewer: bugbot` and follow the BugBot path.
+   - `trigger_greptile`: run `greptile-budget.sh --consume`, post `@greptileai`, persist `reviewer: greptile`, and follow the Greptile path.
+   - `budget_exhausted`: persist the self-review fallback/blocker; do NOT post `@greptileai`.
+   - `self_review`: perform/report self-review fallback; merge remains blocked.
+6. Check commit status for CR completion signal and rate-limit fast-path.
+7. If CR rate-limited or silent past the gate threshold, do NOT hand-roll fallback timing — use the escalation gate verdict above. Polling cadence stays 60 s; a clean CR check-run completion short-circuits the wait. Rate-limit signals override the timeout and are handled by `escalate-review.sh`.
 8. Process findings: fix all valid ones in ONE commit, push once, reply to every thread, resolve threads via GraphQL.
 9. Merge gate:
    - CR-only: 1 explicit CR APPROVED review on the current HEAD SHA (commit_id must match HEAD; acks / check-run completion alone do NOT count).
@@ -369,8 +374,8 @@ If missing, reconstruct state from GitHub API.
     PHASE_COMPLETE: B
     PR_NUMBER: {PR_NUMBER}
     HEAD_SHA: {current HEAD}
-    REVIEWER: {cr|greptile}
-    OUTCOME: {clean|fixes_pushed|merge_ready|exhaustion}
+    REVIEWER: {cr|bugbot|greptile|self_review}
+    OUTCOME: {clean|fixes_pushed|merge_ready|blocked_self_review|exhaustion}
     FILES_CHANGED: {files changed in this phase}
     NEXT_PHASE: {C|B}
     HANDOFF_FILE: ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json
@@ -394,6 +399,7 @@ When a Phase B subagent returns:
    - `merge_ready` -> ask for merge authorization if it has not already been provided, then launch Phase C within 60s.
    - `clean` -> launch replacement Phase B within 60s (no explicit CR approval on current HEAD yet, or latest approval is on a stale SHA).
    - `fixes_pushed` -> launch replacement Phase B within 60s.
+   - `blocked_self_review` -> report blocker to user; do NOT auto-loop Phase B without a reviewer availability change.
    - `exhaustion` -> launch replacement Phase B within 60s.
 3. **Verify review state via GitHub API** for `merge_ready`.
 4. **Update `session-state.json`.**

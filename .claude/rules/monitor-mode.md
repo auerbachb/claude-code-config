@@ -17,8 +17,9 @@ If the user explicitly requests substantive work, warn that monitoring N active 
 Every ~60s, in order:
 1. Process completed subagents and parse exit reports.
 2. Execute phase transitions via `phase-protocols.md`; also launch transitions stalled in `session-state.json`.
-3. Send heartbeat if due (≤5 min; include active agents, PR phases, pending transitions, blockers).
-4. Investigate stale agents: >15 min Phase A, >10 min Phase B, >5 min Phase C.
+3. For every session PR still on `reviewer == cr`, run `.claude/scripts/escalate-review.sh <PR_NUMBER>` and act on its `STATUS=` verdict before sleeping.
+4. Send heartbeat if due (≤5 min; include active agents, PR phases, pending transitions, blockers).
+5. Investigate stale agents: >15 min Phase A, >10 min Phase B, >5 min Phase C.
 
 ## Timestamped Status Updates (MANDATORY)
 

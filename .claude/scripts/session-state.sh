@@ -85,8 +85,8 @@
 #   # Set a JSON object literal:
 #   session-state.sh --set '.greptile_daily={"date":"","reviews_used":0,"budget":40}'
 #
-#   # Set a number (auto-detected as numeric):
-#   session-state.sh --set '.cr_quota.reviews_used=5'
+#   # Cache that BugBot is installed for PR 287 (used by escalate-review.sh):
+#   session-state.sh --set '.prs["287"].bugbot_installed=true'
 
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
