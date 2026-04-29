@@ -4,7 +4,7 @@
 > **Ask first:** Never — fix findings autonomously.
 > **Never:** Trigger Greptile before both CR AND BugBot have failed. Ignore Greptile findings. Switch a PR back to CR/BugBot after Greptile has been triggered. Include `@greptileai` in reply comments (triggers a paid re-review with no learning benefit).
 
-Greptile is the **last-resort paid** AI code reviewer — only triggered when both CR and BugBot (Cursor) have failed. Review chain: **CR → BugBot → Greptile → self-review.** Verify all findings against code.
+Greptile is the **last-resort paid** AI code reviewer — only triggered when both CR and BugBot (Cursor) have failed. Review chain: **CR → BugBot → Greptile → self-review.** CodeAnt/Graphite: `codeant-graphite.md`.
 
 **Escalation gate:** `cr-github-review.md` owns triggers/STOP conditions. This file only defines Greptile behavior after `escalate-review.sh` returns `STATUS=trigger_greptile`.
 

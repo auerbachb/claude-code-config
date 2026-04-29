@@ -79,6 +79,7 @@ Detailed workflow rules are split into topic-specific files in `.claude/rules/`:
 | `cr-local-review.md` | Local CR review |
 | `cr-github-review.md` | GitHub review polling |
 | `cr-merge-gate.md` | Merge gate |
+| `codeant-graphite.md` | CodeAnt + Graphite supplemental review |
 | `bugbot.md` | BugBot fallback |
 | `greptile.md` | Greptile fallback |
 | `subagent-orchestration.md` | Subagent spawning |
