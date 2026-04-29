@@ -331,7 +331,7 @@ fi
 CR_IS_CODE_OWNER=$(echo "$CODE_OWNER_BOTS" | jq -e 'index("coderabbitai[bot]") != null' >/dev/null 2>&1 && echo true || echo false)
 GREPTILE_IS_CODE_OWNER=$(echo "$CODE_OWNER_BOTS" | jq -e 'index("greptile-apps[bot]") != null' >/dev/null 2>&1 && echo true || echo false)
 
-if [[ "$REVIEW_DECISION" != "APPROVED" ]]; then
+if [[ -n "$REVIEW_DECISION" && "$REVIEW_DECISION" != "APPROVED" ]]; then
   if [[ "$REVIEWER" == "cr" && "$CR_IS_CODE_OWNER" == true ]]; then
     MISSING+=("branch protection reviewDecision is $REVIEW_DECISION, not APPROVED, with CodeRabbit in CODEOWNERS — if the prior CR approval was dismissed as stale, trigger @coderabbitai full review")
   elif [[ "$REVIEWER" == "greptile" && "$GREPTILE_IS_CODE_OWNER" == true ]]; then
