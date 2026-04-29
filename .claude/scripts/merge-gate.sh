@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# merge-gate.sh — Verify the merge gate for a PR (CR / BugBot / Greptile).
+# merge-gate.sh — Verify the merge gate for a PR (CR / BugBot / Greptile / CodeAnt).
 #
 # Implements the authoritative gate defined in .claude/rules/cr-merge-gate.md:
 #   - CR path       : 1 explicit CR APPROVED review whose commit_id == current HEAD SHA
 #                     + zero unresolved CR threads (SHA freshness enforced; acks /
 #                     check-run completion alone do NOT satisfy the gate)
+#                     + when CodeAnt has artifacts on that SHA, CodeAnt clean signal
+#                     (explicit APPROVED on HEAD or CodeAnt check-run success) — issue #367
 #   - BugBot path   : 1 clean BugBot review on current HEAD + zero unresolved BugBot threads
 #   - Greptile path : severity-gated — clean OR only P1/P2 (fixed) OR P0 fixed + re-review clean
 # Also enforces the pre-merge CI gate from .claude/rules/cr-merge-gate.md Step 1b
@@ -241,7 +243,8 @@ CODE_OWNER_BOTS=$(printf '%s\n' "$CODEOWNERS_TEXT" | jq -R -s -c '
   | ascii_downcase as $text
   | [
       if ($text | test("(^|[^a-z0-9_-])@?coderabbitai([^a-z0-9_-]|$)")) then "coderabbitai[bot]" else empty end,
-      if ($text | test("(^|[^a-z0-9_-])@?greptile-apps([^a-z0-9_-]|$)")) then "greptile-apps[bot]" else empty end
+      if ($text | test("(^|[^a-z0-9_-])@?greptile-apps([^a-z0-9_-]|$)")) then "greptile-apps[bot]" else empty end,
+      if ($text | test("(^|[^a-z0-9_-])@?codeant-ai([^a-z0-9_-]|$)")) then "codeant-ai[bot]" else empty end
     ]')
 
 # --------------------------------------------------------------------------
@@ -340,6 +343,7 @@ fi
 
 CR_IS_CODE_OWNER=$(echo "$CODE_OWNER_BOTS" | jq -e 'index("coderabbitai[bot]") != null' >/dev/null 2>&1 && echo true || echo false)
 GREPTILE_IS_CODE_OWNER=$(echo "$CODE_OWNER_BOTS" | jq -e 'index("greptile-apps[bot]") != null' >/dev/null 2>&1 && echo true || echo false)
+CODEANT_IS_CODE_OWNER=$(echo "$CODE_OWNER_BOTS" | jq -e 'index("codeant-ai[bot]") != null' >/dev/null 2>&1 && echo true || echo false)
 
 if [[ -n "$REVIEW_DECISION" && "$REVIEW_DECISION" != "APPROVED" ]]; then
   if [[ "$CR_IS_CODE_OWNER" == true ]]; then
@@ -347,6 +351,9 @@ if [[ -n "$REVIEW_DECISION" && "$REVIEW_DECISION" != "APPROVED" ]]; then
   fi
   if [[ "$GREPTILE_IS_CODE_OWNER" == true ]]; then
     MISSING+=("branch protection reviewDecision is $REVIEW_DECISION, not APPROVED, with Greptile in CODEOWNERS — if the prior Greptile approval was dismissed as stale, trigger @greptileai")
+  fi
+  if [[ "$CODEANT_IS_CODE_OWNER" == true ]]; then
+    MISSING+=("branch protection reviewDecision is $REVIEW_DECISION, not APPROVED, with CodeAnt in CODEOWNERS — if the prior CodeAnt approval was dismissed as stale, trigger @codeant-ai review")
   fi
 fi
 
@@ -407,6 +414,54 @@ case "$REVIEWER" in
       MISSING+=("need 1 explicit CR APPROVED review on HEAD ${HEAD_SHA:0:7} (have 0 approved of $TOTAL_CR_ON_HEAD CR review(s) on this SHA)")
     elif [[ -n "$LATEST_CR_CHANGES_REQUESTED_AT" && "$LATEST_CR_CHANGES_REQUESTED_AT" > "$LATEST_CR_APPROVED_AT" ]]; then
       MISSING+=("CR approval on HEAD ${HEAD_SHA:0:7} retracted by later CHANGES_REQUESTED — fix and re-trigger")
+    fi
+
+    # CodeAnt (codeant-ai[bot]) — only when it has already participated on this SHA (#367).
+    # Resolver gap: treat explicit APPROVED on HEAD like CR, and accept a green CodeAnt
+    # check-run when the bot does not emit a GitHub review object.
+    CODEANT_REVIEWS_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
+      [.[]? | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha)] | length')
+    CODEANT_INLINE_ON_HEAD=$(echo "$PR_COMMENTS_JSON" | jq --arg sha "$HEAD_SHA" '
+      [.[]? | select(.user.login == "codeant-ai[bot]" and ((.commit_id // .original_commit_id // "") == $sha))] | length')
+    CODEANT_CONVO_ON_HEAD=$(echo "$ISSUE_COMMENTS_JSON" | jq -r --arg sha "$HEAD_SHA" '
+      def short: $sha[0:7];
+      [.[]?
+        | select(.user.login == "codeant-ai[bot]")
+        | .body // ""
+        | select((contains($sha)) or (contains(short)))]
+      | length')
+    if [[ "$CODEANT_REVIEWS_ON_HEAD" -gt 0 || "$CODEANT_INLINE_ON_HEAD" -gt 0 || "$CODEANT_CONVO_ON_HEAD" -gt 0 ]]; then
+      LATEST_CA_APPROVED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
+        [.[]?
+          | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha and .state == "APPROVED")
+          | .submitted_at]
+        | sort | last // ""')
+      LATEST_CA_CHANGES_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
+        [.[]?
+          | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha and .state == "CHANGES_REQUESTED")
+          | .submitted_at]
+        | sort | last // ""')
+      if [[ -n "$LATEST_CA_CHANGES_AT" && ( -z "$LATEST_CA_APPROVED_AT" || "$LATEST_CA_CHANGES_AT" > "$LATEST_CA_APPROVED_AT" ) ]]; then
+        MISSING+=("CodeAnt CHANGES_REQUESTED on HEAD ${HEAD_SHA:0:7} — address findings or wait for APPROVED after fix")
+      else
+        CODEANT_APPROVED_COUNT=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
+          [.[]? | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha and .state == "APPROVED")] | length')
+        CODEANT_CHECK_OK=false
+        if echo "$CHECK_RUNS_JSON" | jq -e '
+          .check_runs[]
+          | select((.status // "") == "completed" and (.conclusion // "") == "success")
+          | select(
+              ((.name // "") | test("codeant"; "i"))
+              or ((.app.slug // "") | test("codeant"; "i"))
+              or ((.app.name // "") | test("codeant"; "i"))
+            )
+          ' >/dev/null 2>&1; then
+          CODEANT_CHECK_OK=true
+        fi
+        if [[ "$CODEANT_APPROVED_COUNT" -lt 1 && "$CODEANT_CHECK_OK" != true ]]; then
+          MISSING+=("CodeAnt participated on HEAD ${HEAD_SHA:0:7} but no explicit APPROVED review and no successful CodeAnt check-run — wait or comment @codeant-ai review")
+        fi
+      fi
     fi
     ;;
 
