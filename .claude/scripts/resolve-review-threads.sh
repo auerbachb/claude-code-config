@@ -376,7 +376,11 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
 fi
 
 if [[ "$ADDRESSED_COUNT" -eq 0 ]]; then
-  echo "No unresolved threads matching authors: $AUTHORS"
+  if [[ -n "$THREAD_IDS" || -n "$THREAD_IDS_FILE" ]]; then
+    echo "No unresolved threads in the provided thread-ids set"
+  else
+    echo "No unresolved threads matching authors: $AUTHORS"
+  fi
   exit 0
 fi
 
