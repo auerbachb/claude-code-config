@@ -31,28 +31,9 @@ Before any polling turn ends (`/loop`, `CronCreate`, or legacy one-shot), verify
 2. **User heartbeat sent this turn?** Timestamped visible message summarizing what happened and what is next.
 3. **Monitoring state recorded?** Update `~/.claude/session-state.json` with tick time, next expected tick, and watermarks (last review ID, last HEAD SHA, etc.). See `handoff-files.md`.
 
-## Stable-State Backoff & Auto-Pause
+## Stable-State Backoff
 
-Run this gate on every polling tick:
-
-1. **Compute digest.** Hash only `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)`; store in `prs.{N}.digest` + `digest_streak`. Free-text `blocker` excluded from digest.
-2. **Compare to prior digest.**
-   - Different: reset `digest_streak = 1`, emit heartbeat.
-   - Identical: increment `digest_streak`; silent unless ladder triggers.
-3. **Backoff ladder.**
-
-   | Streak | Action |
-   |--------|--------|
-   | 1-2 | Base cadence; no action. |
-   | 3-5 | `CronUpdate` to 5m (or re-arm `/loop` at 5m); emit one "backing off" message. |
-   | 6-8 | Widen to 15m; emit one "deep backoff" message. |
-   | >= 9 | `CronDelete` + sibling cleanup; one final "paused — ping me to resume" message. |
-
-4. **User-blocker fast-path.** If `blocker_kind == "user_input"` or `blocker` matches user-waiting text, pause after the first heartbeat and skip the ladder.
-5. **Resume.** Restart at base cadence after a new user message or changed digest.
-6. **Sibling cleanup.** On pause: `CronDelete` orphan `ScheduleWakeup`. On promote: cancel the one-shot first.
-
-`polling-backoff-warn.sh` enforces this as a PostToolUse safety net.
+Each tick hash `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)` into `prs.{N}.digest_streak` (free-text `blocker` excluded). Widen at streak ≥3→5m, ≥6→15m; `CronDelete` at ≥9 or `blocker_kind == "user_input"`. Resume at base cadence after user message or changed digest. `polling-backoff-warn.sh` enforces this.
 
 ## Failure Recovery
 
