@@ -352,7 +352,7 @@ The verify audit's `.check_runs` reflects the new HEAD.
 ```bash
 jq -r '.check_runs.all[] | "[CI] \(.name): \(.status)\(if .conclusion then " — \(.conclusion)" else "" end)"' "$VERIFY"
 
-CI_CHECKS=$(jq '
+CHECK_BUCKETS=$(jq '
   def is_review_bot:
     (.name // "" | ascii_downcase) as $name
     | (.app.slug // "" | ascii_downcase) as $slug
@@ -369,27 +369,13 @@ CI_CHECKS=$(jq '
          or contains("graphite")
          or contains("codeant")
          or contains("cursor"));
-  [.check_runs.all[] | select(is_review_bot | not)]
+  {
+    ci: [.check_runs.all[] | select(is_review_bot | not)],
+    review: [.check_runs.all[] | select(is_review_bot)]
+  }
 ' "$VERIFY")
-REVIEW_BOT_CHECKS=$(jq '
-  def is_review_bot:
-    (.name // "" | ascii_downcase) as $name
-    | (.app.slug // "" | ascii_downcase) as $slug
-    | (.app.name // "" | ascii_downcase) as $app
-    | ($name | contains("coderabbit")
-       or contains("graphite")
-       or contains("codeant")
-       or contains("cursor"))
-      or ($slug | contains("coderabbit")
-         or contains("graphite")
-         or contains("codeant")
-         or contains("cursor"))
-      or ($app | contains("coderabbit")
-         or contains("graphite")
-         or contains("codeant")
-         or contains("cursor"));
-  [.check_runs.all[] | select(is_review_bot)]
-' "$VERIFY")
+CI_CHECKS=$(jq '.ci' <<<"$CHECK_BUCKETS")
+REVIEW_BOT_CHECKS=$(jq '.review' <<<"$CHECK_BUCKETS")
 
 FAILING=$(jq '[.[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required" or .conclusion == "startup_failure" or .conclusion == "stale")] | length' <<<"$CI_CHECKS")
 IN_PROGRESS=$(jq '[.[] | select(.status != "completed")] | length' <<<"$CI_CHECKS")
