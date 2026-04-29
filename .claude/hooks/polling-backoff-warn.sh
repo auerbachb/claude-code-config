@@ -39,7 +39,10 @@ if [[ "$command" == *"gh pr view"* ]]; then
 elif [[ "$command" == *"gh api"* ]] && [[ "$command" == *"/pulls/"* || "$command" == *"/check-runs"* ]]; then
   is_polling_command=1
 elif [[ "$command" == *"session-state.sh"* && "$command" == *"--set"* ]]; then
-  if [[ "$command" == *".prs["* || "$command" == *".polling_failures"* || "$command" == *".polling_backoffs"* ]]; then
+  if [[ "$command" == *".digest"* || "$command" == *".digest_streak"* || \
+        "$command" == *".blocker"* || "$command" == *".blocker_kind"* || \
+        "$command" == *".last_cron_action"* || "$command" == *".polling_failures"* || \
+        "$command" == *".polling_backoffs"* ]]; then
     is_polling_command=1
   fi
 fi
