@@ -24,9 +24,6 @@ json_field() {
 }
 
 command=$(json_field '.tool_input.command')
-session_id=$(json_field '.session_id')
-session_id="${session_id:-${CLAUDE_SESSION_ID:-default}}"
-session_id="${session_id//[^[:alnum:]_.-]/_}"
 
 [[ -n "$command" ]] || exit 0
 
@@ -99,6 +96,7 @@ if (( user_blocker == 1 || streak >= 9 )); then
 fi
 
 if (( streak >= 6 )); then
+  [[ "$last_cron_type" == "delete" ]] && exit 0
   if [[ "$last_cron_type" == "update" && "$last_cron_interval" == "15m" ]]; then
     exit 0
   fi
@@ -107,6 +105,7 @@ if (( streak >= 6 )); then
 fi
 
 if (( streak >= 3 )); then
+  [[ "$last_cron_type" == "delete" ]] && exit 0
   if [[ "$last_cron_type" == "update" && ( "$last_cron_interval" == "5m" || "$last_cron_interval" == "15m" ) ]]; then
     exit 0
   fi
