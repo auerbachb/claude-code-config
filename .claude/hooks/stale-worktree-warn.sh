@@ -78,9 +78,6 @@ if branch_issue and branch_issue in issue_matches:
 
 prompt_issue = issue_matches[0]
 
-if branch_issue == prompt_issue:
-    empty()
-
 if branch_issue:
     mismatch = f"current branch '{branch}' is for issue #{branch_issue}, but the prompt names issue #{prompt_issue}"
 else:
