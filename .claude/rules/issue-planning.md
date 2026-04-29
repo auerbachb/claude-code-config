@@ -11,9 +11,9 @@
 1. **Draft the issue locally** — write the title, body, acceptance criteria, and relevant context. Do NOT post it yet.
 2. **Create the issue** — post via `gh issue create`. A GitHub Actions workflow (`.github/workflows/cr-plan-on-issue.yml`) automatically comments `@coderabbitai plan` on every new issue. The workflow skips bot-created issues; do not manually post `@coderabbitai plan` unless the workflow failed (visible in the Actions tab).
 3. **Read the issue and comments** — run `gh issue view N --comments` and check for an implementation plan comment from `coderabbitai`.
-4. **If no CR plan exists, request and poll for one:**
-   - Post `@coderabbitai plan` on the issue.
-   - Poll every 60 seconds for up to 5 minutes for a comment from `coderabbitai`.
+4. **If no CR plan exists, request or poll for one:**
+   - If a workflow-triggered `@coderabbitai plan` request already exists, poll that request every 60 seconds for up to 5 minutes.
+   - If no request exists, or the workflow clearly failed, post `@coderabbitai plan` on the issue and poll every 60 seconds for up to 5 minutes.
    - If no response appears after 5 minutes: log "CR plan unavailable" and continue. This fallback applies only to CR's plan; it does not skip Claude's plan or the issue-body merge below.
 5. **Build Claude's plan** — explore the codebase and design an implementation approach. Claude's own plan is always required regardless of CR availability.
 6. **Merge plans into the issue body** — create **one canonical document** for the coding agent to work from:
