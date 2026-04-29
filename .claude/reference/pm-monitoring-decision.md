@@ -45,7 +45,7 @@ PM monitoring reads and writes `~/.claude/session-state.json`. Unknown fields mu
 - `monitoring_interval_minutes`: intended cadence for `/loop` or human-readable cron cadence.
 - `monitoring_durable`: whether the monitor is expected to survive session exit.
 - `monitoring_started_at`, `last_poll_at`, `next_expected_poll_at`: timing watermarks.
-- `root_repo`: repo path used to run helper scripts.
+- `root_repo`: absolute path to the **git root** of the repo where PR helpers run (must match `git rev-parse --show-toplevel` for that checkout). Also store the same path on `.prs["N"].root_repo` when multiple PRs/repos share one session file — validate equality before polling so a wrong-repo hazard cannot silently use another checkout.
 - `prs`: tracked PR map. Each entry may include `issue`, `phase`, `head_sha`, `reviewer`, `needs`, `status`, `worker`, and `updated_at`.
 - `active_agents`: subagent records. Each entry should include `id`, `task`, `issue`, `pr`, `phase`, `launched`, and optional `last_seen_at`.
 - `polling_jobs`: active scheduled jobs. Each entry should include `primitive`, `id`, `cron`, `prompt`, `recurring`, `durable`, `created_at`, and `expires_at` when known.
