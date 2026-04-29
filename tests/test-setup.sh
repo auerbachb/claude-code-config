@@ -82,8 +82,8 @@ test_1_fresh_install() {
   assert "~/.claude/rules is a symlink" "[ -L '$HOME/.claude/rules' ]"
   assert "CLAUDE.md symlink target exists" "[ -e '$HOME/.claude/CLAUDE.md' ]"
   assert "rules symlink target exists" "[ -e '$HOME/.claude/rules' ]"
-  assert "CLAUDE.md points to skills-worktree" "[ \"$(readlink '$HOME/.claude/CLAUDE.md')\" = '$HOME/.claude/skills-worktree/CLAUDE.md' ]"
-  assert "rules points to skills-worktree" "[ \"$(readlink '$HOME/.claude/rules')\" = '$HOME/.claude/skills-worktree/.claude/rules' ]"
+  assert "CLAUDE.md points to skills-worktree" "python3 -c \"import os; h=os.path.expanduser('~'); assert os.readlink(os.path.join(h,'.claude','CLAUDE.md')) == os.path.join(h,'.claude','skills-worktree','CLAUDE.md')\""
+  assert "rules points to skills-worktree" "python3 -c \"import os; h=os.path.expanduser('~'); assert os.readlink(os.path.join(h,'.claude','rules')) == os.path.join(h,'.claude','skills-worktree','.claude','rules')\""
 
   # Check that at least some skills are symlinked
   local skill_count
@@ -95,6 +95,8 @@ test_1_fresh_install() {
 
   # Check settings.json hooks have real paths (not placeholders)
   assert "No placeholder paths in settings.json" "! grep -q '/path/to/' '$HOME/.claude/settings.json'"
+  assert "Graphite plugin marketplace seeded" "python3 -c \"import json; d=json.load(open('$HOME/.claude/settings.json')); assert 'extraKnownMarketplaces' in d and 'claude-code-graphite' in d['extraKnownMarketplaces']\""
+  assert "Graphite plugins enabled in settings" "python3 -c \"import json; d=json.load(open('$HOME/.claude/settings.json')); ep=d.get('enabledPlugins',{}); assert ep.get('graphite@claude-code-graphite') is True and ep.get('graphite-mcp@claude-code-graphite') is True\""
 }
 
 # ── Test 2: Idempotent re-run ────────────────────────────────────────────────
