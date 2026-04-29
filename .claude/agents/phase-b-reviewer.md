@@ -170,7 +170,7 @@ Use the shared helper — it tries the inline reply endpoint first, falls back t
 
 ### Re-Reviews
 
-After fixing BugBot findings and pushing, BugBot auto-reviews the new push. If auto-review doesn't fire within 10 min, trigger manually: `gh pr comment {{PR_NUMBER}} --body "@cursor review"`
+After fixing BugBot findings and pushing, expect `@cursor review` from CI on every push (`cursor-review-pr-comment.yml`). If BugBot still hasn't landed after polling, post again: `gh pr comment {{PR_NUMBER}} --body "@cursor review"` — duplicates are OK.
 
 ## Greptile Review Path (when `reviewer` = `greptile`)
 
