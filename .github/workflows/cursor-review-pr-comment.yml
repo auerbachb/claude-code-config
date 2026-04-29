@@ -1,0 +1,25 @@
+# Issue #361: Always post @cursor review on PR open and every push so BugBot runs
+# reliably (auto-trigger alone misses often). BugBot is per-seat — no per-comment cost.
+name: Cursor BugBot review trigger
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  post-cursor-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment @cursor review
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: '@cursor review'
+            });
