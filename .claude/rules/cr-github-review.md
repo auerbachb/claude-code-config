@@ -58,7 +58,7 @@ The helper prints exactly one `STATUS=` verdict and exits 0. Canonical steps:
 5. Check BugBot (`cursor[bot]` comments/reviews + `Cursor Bugbot` check-run). Cache first install verdict at `.prs["<PR_NUMBER>"].bugbot_installed`.
    - If BugBot has posted a review/comment or completed its check-run, switch sticky reviewer ownership to BugBot. **STOP: `STATUS=switch_bugbot`.**
    - If cached `bugbot_installed == false`, skip the 5-minute BugBot grace window and continue to step 6.
-   - If installed, push age <5 min, and silent, keep polling. **STOP: `STATUS=polling_cr`.**
+   - If installed, push age <5 min, and silent, keep polling (BugBot grace window). **STOP: `STATUS=polling_cr`.**
 6. Run the Greptile budget check per `greptile.md`.
    - If budget is available, trigger Greptile and switch sticky reviewer ownership to Greptile. **STOP: `STATUS=trigger_greptile`.**
    - If budget is exhausted, perform self-review and report the merge blocker to the user. **STOP: `STATUS=budget_exhausted` then `STATUS=self_review` for the active self-review path.**

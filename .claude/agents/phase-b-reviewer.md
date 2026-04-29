@@ -103,7 +103,8 @@ case "$ESCALATION_STATUS" in
       reviewer="greptile"
       # Continue this cycle using the Greptile Review Path below.
     else
-      ESCALATION_STATUS="budget_exhausted"
+      .claude/scripts/session-state.sh --set '.prs["{{PR_NUMBER}}"].reviewer="self_review"'
+      echo "Greptile budget exhausted — falling back to self-review for PR #{{PR_NUMBER}}; merge remains blocked until manual review or budget reset." >&2
     fi
     ;;
   budget_exhausted)

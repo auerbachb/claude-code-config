@@ -114,7 +114,7 @@ COMMITS_JSON="$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/commits?p
 }
 
 PUSH_TIMESTAMP="$(jq -r --arg sha "$HEAD_SHA" '
-  (map(select(.sha == $sha)) | last // last // {})
+  (map(select(.sha == $sha)) | last // {})
   | .commit.committer.date // .commit.author.date // empty
 ' <<<"$COMMITS_JSON")"
 
@@ -213,10 +213,12 @@ if [[ "$BUGBOT_INSTALLED" == "true" && "$AGE_SECONDS" -lt 300 ]]; then
   emit "polling_cr"
 fi
 
-BUDGET_JSON="$("$GREPTILE_BUDGET" --check 2>/dev/null)" || {
+BUDGET_JSON="$("$GREPTILE_BUDGET" --check 2>/dev/null)"
+BUDGET_CHECK_RC=$?
+if [[ $BUDGET_CHECK_RC -ge 2 ]]; then
   echo "escalate-review.sh: failed to check Greptile budget" >&2
   exit 4
-}
+fi
 
 BUDGET_EXHAUSTED="$(jq -r '.exhausted == true' <<<"$BUDGET_JSON")"
 if [[ "$BUDGET_EXHAUSTED" == "true" ]]; then
