@@ -4,6 +4,7 @@
 # macOS-only v1. Linux/systemd support is intentionally out of scope.
 
 set -euo pipefail
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
 
 LABEL="com.user.claude-silence-watchdog"
 PLIST_DEST="$HOME/Library/LaunchAgents/${LABEL}.plist"
