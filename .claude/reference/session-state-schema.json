@@ -1,11 +1,41 @@
 {
-  "last_updated": "2026-03-16T16:00:00Z",
+  "last_updated": "2026-04-29T14:00:00Z",
   "monitoring_active": true,
   "root_repo": "/Users/user/repos/my-project",
   "prs": {
-    "618": {"phase": "B", "head_sha": "7b2cfbf", "reviewer": "cr", "needs": "cr_confirmation_pass"},
-    "619": {"phase": "B", "head_sha": "a1b2c3d", "reviewer": "bugbot", "needs": "bugbot_review_poll"},
-    "620": {"phase": "B", "head_sha": "d0e4fef", "reviewer": "greptile", "needs": "fix_and_push"}
+    "618": {
+      "phase": "B",
+      "head_sha": "7b2cfbf",
+      "reviewer": "cr",
+      "needs": "cr_confirmation_pass",
+      "digest": "sha256:51d9f7f2b7f0bb7e4fd98c9b5d5d5d52aafcc8d6f8a76f36635b2f2e91dbb7ef",
+      "digest_streak": 1,
+      "blocker": null,
+      "blocker_kind": null,
+      "last_cron_action": {"type": "create", "at": "2026-04-29T13:55:00Z", "interval": "1m"}
+    },
+    "619": {
+      "phase": "B",
+      "head_sha": "a1b2c3d",
+      "reviewer": "bugbot",
+      "needs": "bugbot_review_poll",
+      "digest": "sha256:0ce8b0d6f0e8d42bb8747c71f9abfd8a2d43ec631436d1dd85dc3bbcf35381a7",
+      "digest_streak": 4,
+      "blocker": "CI e2e-mobile-web remains red on the same failure",
+      "blocker_kind": "ci_external",
+      "last_cron_action": {"type": "update", "at": "2026-04-29T13:58:00Z", "interval": "5m"}
+    },
+    "620": {
+      "phase": "B",
+      "head_sha": "d0e4fef",
+      "reviewer": "greptile",
+      "needs": "user_direction",
+      "digest": "sha256:c9c8769c6a7f184969608bdeed0c8dff63cf429f235b4492154087977cb02d82",
+      "digest_streak": 2,
+      "blocker": "Awaiting your direction on whether to merge with flaky CI",
+      "blocker_kind": "user_input",
+      "last_cron_action": {"type": "delete", "at": "2026-04-29T14:00:00Z", "interval": "paused"}
+    }
   },
   "cr_quota": {"reviews_used": 5, "window_start": "2026-03-16T15:00:00Z"},
   "greptile_daily": {"reviews_used": 12, "date": "2026-03-16", "budget": 40},
@@ -14,6 +44,10 @@
   ],
   "polling_failures": [
     {"detected_at": "2026-03-16T15:58:00Z", "context": "PM tick dropped at 11:57 AM ET", "recovery": "restarted via /loop 5m /status"}
+  ],
+  "polling_backoffs": [
+    {"pr": 619, "detected_at": "2026-04-29T13:58:00Z", "digest_streak": 4, "action": "CronUpdate", "interval": "5m"},
+    {"pr": 620, "detected_at": "2026-04-29T14:00:00Z", "digest_streak": 2, "action": "CronDelete", "reason": "user_input"}
   ],
   "_token_exhaustion_example": {
     "phase": "B",
