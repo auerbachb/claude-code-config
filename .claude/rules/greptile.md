@@ -8,39 +8,13 @@ Greptile is the **last-resort paid** AI code reviewer — only triggered when bo
 
 ## Greptile Basics
 
-- **Bot username:** `greptile-apps[bot]`
-- **Trigger:** Comment `@greptileai` on any PR (no "full review" suffix, unlike CR)
-- **Auto-trigger:** OFF (see `.claude/reference/greptile-setup.md`). Must be explicitly triggered.
-- **Rate limits:** 50 reviews/seat/month included, $1/extra — no per-hour throttle
-- **Review time:** ~1-3 minutes
-- **Completion signals:** 👀 = analyzing, 👍 = complete, 😕 = failed
-- **No CLI** — local review loop uses CR CLI only
-- **Config:** Optional `greptile.json` in repo root. Trigger filters at app.greptile.com.
-- **Feedback:** 👍/👎 reactions train it over 2-3 weeks
-
-## Dashboard Configuration
-
-One-time setup at app.greptile.com. See `.claude/reference/greptile-setup.md` for settings table and setup steps.
+Bot username: `greptile-apps[bot]`. Trigger: PR comment `@greptileai` (no suffix). Auto-trigger is OFF. Review time is usually 1-3 minutes. Signals: 👀 analyzing, 👍 complete, 😕 failed. Config/setup details: `.claude/reference/greptile-setup.md`.
 
 ## Daily Budget
 
-Hard daily cap prevents runaway costs when many PRs run in parallel.
+Default budget: 40 reviews/day. `~/.claude/session-state.json` tracks `greptile_daily.{reviews_used,date,budget}` (ET date). `.claude/scripts/greptile-budget.sh` is authoritative; every `@greptileai` trigger point MUST run `greptile-budget.sh --consume` first. Exit 0 = consumed; exit 1 = exhausted. Use `--check` for snapshots and `--reset` only for intentional counter resets.
 
-- **Default budget: 40 reviews/day** (set `budget` in `session-state.json`).
-- **Tracking:** The `greptile_daily` section in `~/.claude/session-state.json` tracks `reviews_used`, `date` (YYYY-MM-DD in ET timezone), and `budget`. See `handoff-files.md` for the schema.
-- **Enforcement:** `.claude/scripts/greptile-budget.sh` is the single source of truth for this contract. Every `@greptileai` trigger point MUST gate on `greptile-budget.sh --consume` (exit 0 = consumed, exit 1 = exhausted). The script handles same-day reset, cross-day reset, atomic write-back, and sibling preservation on the state file. Do not reinvent the budget math inline.
-- **Example gate:**
-  ```bash
-  if ! .claude/scripts/greptile-budget.sh --consume >/dev/null; then
-    echo "Greptile budget exhausted — falling back to self-review" >&2
-    exit 1
-  fi
-  gh pr comment "$PR" --body "@greptileai"
-  ```
-  Use `--check` for a read-only snapshot and `--reset` to force-zero today's counter. See `greptile-budget.sh --help` for full details.
-- **Budget exhaustion fallback:** Perform a self-review instead. Self-review does NOT satisfy the merge gate. Report the blocker to the user:
-  > "Greptile budget exhausted ({reviews_used}/{budget}). PR #{N} falling back to self-review — merge blocked until manual review or budget resets tomorrow."
-- **This check applies to all Greptile trigger points** (CR GitHub fallback, local post-push, Phase B polling, and per-PR re-reviews). No `@greptileai` comment may be posted without a successful `--consume` first.
+If exhausted, perform self-review, report `"Greptile budget exhausted (used/budget, e.g. 40/40). PR #N falling back to self-review — merge blocked until manual review or budget resets tomorrow."` using actual numeric counters. Self-review does NOT satisfy the merge gate.
 
 ## Before EVERY `@greptileai` Re-Trigger (MANDATORY — after initial trigger)
 
@@ -53,12 +27,11 @@ Applies to 2nd/3rd triggers only; initial trigger requires only the budget check
 
 ## When to Trigger Greptile
 
-**Greptile is last-resort only.** Never trigger it before both CR AND BugBot have failed. It is only triggered when both upstream reviewers fail for a specific PR:
+**Last-resort only:** trigger Greptile only after both upstream reviewers fail for the PR:
+1. CR rate-limit fast-path + no BugBot review within 10 min from push.
+2. No CR review within 12 min + no BugBot review within 10 min from push.
 
-1. **CR rate-limit + BugBot timeout:** CR is rate-limited (fast-path) AND BugBot has not posted within 10 min → trigger Greptile. Rate-limit signals override CR's 12-min ceiling (escalate immediately, wait only on BugBot's 10).
-2. **CR timeout + BugBot timeout:** no CR review within 12 min AND no BugBot review within 10 min → trigger Greptile.
-
-In both cases, always check if BugBot (`cursor[bot]`) already posted a review before triggering Greptile — BugBot auto-runs on every push, so it may have responded while you were waiting for CR.
+Always check all three endpoints for `cursor[bot]` immediately before triggering; BugBot may have responded while CR was pending.
 
 ### Sticky Assignment
 

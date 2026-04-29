@@ -6,32 +6,22 @@
 
 ## Structured Exit Report (MANDATORY — all phases)
 
-Every subagent MUST print a structured exit report as its **final output**. The parent parses results mechanically from this block.
+Every subagent MUST print an `EXIT_REPORT` block as its **final output**. Required fields and valid `OUTCOME` values live in `.claude/reference/exit-report-format.md`.
 
-Block header is `EXIT_REPORT`; fields (one per line, colon-separated, no extra whitespace): `PHASE_COMPLETE`, `PR_NUMBER`, `HEAD_SHA`, `REVIEWER`, `OUTCOME`, `FILES_CHANGED`, `NEXT_PHASE`, `HANDOFF_FILE`. Full format, field reference table, and valid `OUTCOME` values per phase: `.claude/reference/exit-report-format.md`.
-
-**Valid OUTCOME values by phase:**
-- Phase A: `pushed_fixes`, `no_findings`, `exhaustion`
-- Phase B: `clean`, `fixes_pushed`, `merge_ready`, `exhaustion`
-- Phase C: `ac_verified`, `blocked`
-
-**Rules:**
-- Exit report MUST be the very last output before exiting.
-- `EXIT_REPORT` header line is required — parent uses it to locate the block.
-- On token exhaustion: print the report (with `OUTCOME: exhaustion`) **before** hitting the hard limit.
+Rules: one colon-separated field per line, no extra whitespace, and on exhaustion print `OUTCOME: exhaustion` before the hard token limit.
 
 ## Phase A Completion Protocol (MANDATORY)
 
 **WHEN** a Phase A subagent returns, execute immediately — before any other work:
 
-1. **Parse the exit report.** Extract `PR_NUMBER`, `HEAD_SHA`, `OUTCOME`, `REVIEWER`, `NEXT_PHASE`. No exit report = silent failure — report to user, check GitHub API.
+1. **Parse the exit report.** Extract `PR_NUMBER`, `HEAD_SHA`, `OUTCOME`, `REVIEWER`, `NEXT_PHASE`. No exit report = silent failure — report to user, check GitHub.
 2. **Branch on OUTCOME:**
    - `pushed_fixes` or `no_findings` → proceed to step 3
    - `exhaustion` → **run step 4 (worktree cleanup) now**, then launch replacement Phase A within 60s. Report to user. **STOP — do not execute steps 3, 5-8.** (Cleanup is mandatory even on exhaustion — Phase A has no defensive checkout, so the replacement will hit "branch already checked out" if the old worktree's lock persists.)
 3. **Verify the push.** `gh pr view N --json commits --jq '.commits[-1].oid'` — confirm SHA matches. Mismatch = silent failure.
 4. **Clean up the Phase A worktree.** Remove it with `git worktree remove <path> --force` (required for uncommitted state). On failure, fall back to `git worktree prune`. Cleanup releases the branch lock for Phase B. Phase B's defensive checkout (see `phase-b-reviewer.md`) handles residual lock failures via a distinct local branch name.
 5. **Verify handoff file.** Check `~/.claude/handoffs/pr-{N}-handoff.json` exists with `phase_completed: "A"`. If missing, reconstruct and write it yourself.
-6. **Launch Phase B within 60 seconds.** Check if reviewers already posted findings (fetch all 3 comment endpoints, `per_page=100`). Include findings and handoff file path in prompt. If throttled, tell user and auto-retry.
+6. **Launch Phase B within 60 seconds.** Check all 3 comment endpoints (`per_page=100`) for existing findings; include findings and handoff path. If throttled, tell user and auto-retry.
 7. **Update `session-state.json`.** Record phase transition and HEAD SHA.
 8. **Report to user.** "Phase A complete for PR #N — fixes pushed (SHA `abc1234`). Phase B launched."
 
@@ -44,9 +34,7 @@ Block header is `EXIT_REPORT`; fields (one per line, colon-separated, no extra w
 1. **Parse the exit report.** No exit report = silent failure.
 2. **Branch on OUTCOME:**
    - `merge_ready` → proceed to step 3 (launch Phase C). This is the single Phase-C-advancing terminal.
-   - `clean` → launch replacement Phase B within 60s to keep polling for the explicit CR approval (review loop is clean but merge gate not yet fully satisfied — e.g., CR has not yet posted an `APPROVED` review on the current HEAD, or the latest approval is on a stale SHA). Update `session-state.json` (keep phase as B). Report to user with timestamp. **STOP — do not execute steps 3-6.**
-   - `fixes_pushed` → launch replacement Phase B within 60s. Update `session-state.json` (record new HEAD SHA, keep phase as B). Report to user with timestamp. **STOP — do not execute steps 3-6.**
-   - `exhaustion` → launch replacement Phase B within 60s. Update `session-state.json` (record remaining work, keep phase as B). Report to user with timestamp. **STOP — do not execute steps 3-6.**
+   - `clean`, `fixes_pushed`, or `exhaustion` → launch replacement Phase B within 60s, update `session-state.json` (keep phase B; record new SHA/remaining work as applicable), report with timestamp, and **STOP**.
 3. **Verify review state via GitHub API.** Confirm the merge gate is met per the authoritative definition in `cr-merge-gate.md` (Step 1). If verification fails, launch replacement Phase B instead of Phase C — STOP.
 4. **Launch Phase C within 60 seconds.** Include handoff file path in prompt.
 5. **Update `session-state.json`.** Record phase transition and HEAD SHA.

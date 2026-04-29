@@ -1,30 +1,22 @@
 ## Local CodeRabbit Review Loop (Primary)
 
-> **Always:** Run local CR review before pushing. Verify findings against code before fixing. One clean pass to exit.
-> **Ask first:** Never — fix all findings autonomously. Never ask "should I run the review?", "should I push?", or "should I create a PR?" — these transitions are automatic.
-> **Never:** Push code without running local review. Fall back to GitHub polling when CLI works. Ask permission at any step in this workflow. Treat local review as satisfying the merge gate — only the GitHub review loop (CR + BugBot + Greptile) satisfies the merge requirement.
+> **Always:** Run local CR review before push; verify findings; exit after one clean pass.
+> **Ask first:** Never — review, fix, push, PR creation are automatic.
+> **Never:** Push before local review; treat local review as the merge gate.
 
-This is the **primary** review workflow. Run CodeRabbit locally in your terminal to catch issues **before** pushing or creating a PR. This is faster than GitHub-based reviews (instant feedback, no polling), produces no noise on the PR, and doesn't consume your GitHub-based CR review quota.
+This is the **primary** review workflow. It catches issues before PR noise/quota and does not replace the GitHub merge gate.
 
 ### Prerequisites
-- **CodeRabbit CLI** installed and authenticated:
-  ```
-  curl -fsSL https://cli.coderabbit.ai/install.sh | sh
-  coderabbit auth login
-  ```
-- **Config:** `.coderabbit.yaml` in repo root (if the repo uses CodeRabbit)
-- **Verify installation:** `coderabbit --version` or `which coderabbit`
-- **Default install location:** `~/.local/bin/coderabbit`
-- If `coderabbit` is not in PATH, use the full path: `~/.local/bin/coderabbit`
-- **API key:** `CODERABBIT_API_KEY` is set in `~/.zshrc` — this links CLI reviews to the paid Pro plan with usage-based credits. Do NOT hardcode or commit this key anywhere.
-- **Always prefer local** `coderabbit review --prompt-only` over GitHub CR polling. Do NOT fall back to the GitHub CR polling loop unless local review explicitly fails.
 
-### When to run
-- After finishing implementation on a feature branch, **before pushing or creating a PR**
-- After making any significant changes during development (optional — use judgment on whether a local review pass is worthwhile mid-development)
+- CLI installed/authenticated (`coderabbit --version` or `~/.local/bin/coderabbit`).
+- Repo has `.coderabbit.yaml` if it uses CR.
+- `CODERABBIT_API_KEY` may live in shell config; never print or commit it.
+- Prefer local `coderabbit review --prompt-only`; use GitHub polling only after push or CLI failure.
 
-### How to run
-Run the CLI directly via Bash from the repo root:
+### When/how to run
+
+After implementation on a feature branch, before push/PR. Optional mid-development when risk warrants. Run from repo root:
+
 - `coderabbit review --prompt-only` — review all changes (prompt-only mode is optimized for AI agent parsing)
 - `coderabbit review --prompt-only --type uncommitted` — review only uncommitted changes
 - `coderabbit review --prompt-only --type committed` — review only committed changes
@@ -38,14 +30,7 @@ Run the CLI directly via Bash from the repo root:
 
 ### Never Suppress Linter Errors (NON-NEGOTIABLE)
 
-**NEVER add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `noqa`, or any linter suppression comment** to work around CI failures. These hide bugs instead of fixing them.
-
-When CI lint/typecheck fails:
-1. Read the error messages
-2. Fix the actual code — unused vars, missing types, incorrect imports, etc.
-3. If the error is in a file you didn't modify, fix it anyway — broken lint blocks the entire pipeline
-
-The only acceptable use of suppression comments is when the linter is provably wrong about a specific line AND you add a comment explaining why.
+Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `noqa`, or equivalent just to pass CI. Read the lint/type errors and fix the code, even in a file you did not modify. Suppression is allowed only when the linter is provably wrong and the comment explains why.
 
 ### Timeout & fallback
 - If `coderabbit review` hangs for more than **2 minutes** or errors out, skip it and run a **self-review** instead (see self-review fallback rules).
@@ -56,13 +41,6 @@ The only acceptable use of suppression comments is when the linter is provably w
 - Once clean, commit all changes and push the branch
 - **This transition is automatic.** After a clean pass, IMMEDIATELY commit and push — do not ask "should I push now?" or "ready to create a PR?"
 
-### Post-Clean: Push, PR, and GitHub Review (AUTOMATIC — do not ask)
+### Post-Clean: Push, PR, GitHub Review
 
-After a clean local review, execute this checklist immediately:
-
-> **STOP — Local review does NOT satisfy the merge gate.** The GitHub review loop (CR + BugBot + Greptile) is mandatory: 1 clean CR approval on the current HEAD SHA, 1 clean BugBot pass, or a clean Greptile severity gate (see `cr-merge-gate.md`). Proceed immediately — do not ask.
-
-1. **Commit all changes** in a single commit.
-2. **Push the branch** to the remote.
-3. **Create the PR** via `gh pr create` with `Closes #N` in the body and a Test Plan section with acceptance criteria checkboxes.
-4. **Enter the GitHub CodeRabbit Review Loop** (see `cr-github-review.md` "Polling" section). CR and BugBot both auto-review on push — poll for both immediately, do not wait. BugBot is second-tier fallback if CR fails (see `bugbot.md`). Greptile is last-resort: triggered only when both CR and BugBot have failed (see `greptile.md` "When to Trigger Greptile"). Never trigger Greptile proactively while CR or BugBot is still expected to respond.
+After a clean local review: commit, push, create/update PR with `Closes #N` and Test Plan checkboxes, then enter `cr-github-review.md` immediately. Local review never satisfies `cr-merge-gate.md`.

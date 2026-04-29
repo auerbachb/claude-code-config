@@ -4,22 +4,12 @@
 > **Ask first:** Never — handoff file operations are autonomous.
 > **Never:** Skip writing the handoff file. Delete a handoff file before successful merge. Strip unrecognized fields from handoff files.
 
-## Two-File State System
+## State Files
 
-| File | Scope | Purpose |
-|------|-------|---------|
-| `~/.claude/session-state.json` | Session-wide | High-level orchestration: which PRs exist, what phase each is in, CR/Greptile quota, active agents |
-| `~/.claude/handoffs/pr-{N}-handoff.json` | Per-PR | Detailed phase state: findings fixed, threads replied/resolved, files changed — consumed by the next phase |
+- `~/.claude/session-state.json`: session-wide orchestration (`prs`, active agents, reviewer quotas, polling failures). Full schema: `.claude/reference/session-state-schema.json`.
+- `~/.claude/handoffs/pr-{N}-handoff.json`: per-PR phase details consumed by the next phase.
 
-`session-state.json` must be updated on phase transitions. Handoff files complement it with detailed per-PR context that subagents need.
-
-## Session-State Schema
-
-Full example JSON (including the token-exhaustion handoff shape): `.claude/reference/session-state-schema.json`.
-
-Top-level keys: `last_updated`, `monitoring_active`, `root_repo`, `prs` (map of PR number → `{phase, head_sha, reviewer, needs}`), `cr_quota` (`{reviews_used, window_start}`), `greptile_daily` (`{reviews_used, date, budget}`), `active_agents` (array of `{id, task, launched}`), `polling_failures` (array of `{detected_at, context, recovery}` — dropped scheduler chains; see `.claude/rules/scheduling-reliability.md` "Failure Recovery").
-
-Write on phase transitions (A→B, B→C) and key state-change events (agent launched, completed, review received). Use `.claude/scripts/session-state.sh --set <jq-path>=<value> [--set ...]` for surgical writes — it preserves sibling fields, batches multiple `--set` flags into one atomic temp+mv, and refreshes `.last_updated` automatically. Use `--get <jq-path>` for reads. Avoid hand-rolling `jq … > tmp && mv tmp file` blocks for this file.
+Update `session-state.json` on phase transitions and key events (agent launched/completed, review received, dropped poll recovered). Prefer `.claude/scripts/session-state.sh --set <jq-path>=<value>` / `--get <jq-path>`; it preserves siblings and writes atomically.
 
 ## Handoff File Storage
 
@@ -28,37 +18,17 @@ Write on phase transitions (A→B, B→C) and key state-change events (agent lau
 - **One file per PR at any time.**
 - **Lifecycle:** Created by Phase A → read/updated by Phase B → read by Phase C for context → deleted by **parent** after successful user-gated merge (see `phase-protocols.md`).
 
-### Phase-Specific Operations
+### Phase Operations
 
-| Phase | Operation | Details |
-|-------|-----------|---------|
-| A | **Create** | Write initial handoff with all findings fixed, threads replied/resolved, files changed, HEAD SHA |
-| B | **Read-modify-write** | Read existing file, merge changes (append new array entries, update scalars), preserve unknown fields, write back. **Deduplicate:** `string[]` fields by exact value; `findings_dismissed` by `.id` |
-| C | **Read only** | Phase C subagents read for context (reviewer, phase_completed) and verify/report. **Parent** deletes the file after successful user-gated merge. If merge fails, do NOT delete |
+| Phase | Operation |
+|-------|-----------|
+| A | Create with fixed/dismissed findings, replied/resolved threads, files changed, HEAD SHA |
+| B | Read-modify-write; append arrays, update scalars, preserve unknown fields |
+| C | Read only; parent deletes only after successful user-gated merge |
 
-## Handoff File Schema
+Schema reference: `.claude/reference/handoff-file-schema.json`. Required fields: `schema_version`, `pr_number`, `head_sha`, `reviewer`, `phase_completed`, `created_at`, `findings_fixed`, `threads_replied`, `threads_resolved`, `files_changed`, `push_timestamp`. Optional: `findings_dismissed`, `notes`.
 
-Full example JSON: `.claude/reference/handoff-file-schema.json`.
-
-### Field Reference
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `schema_version` | string | yes | Always `"1.0"` |
-| `pr_number` | number | yes | The PR number |
-| `head_sha` | string | yes | HEAD SHA after the phase's last push |
-| `reviewer` | string | yes | `"cr"`, `"bugbot"`, or `"greptile"` |
-| `phase_completed` | string | yes | `"A"`, `"B"`, or `"C"` |
-| `created_at` | string | yes | ISO 8601 timestamp |
-| `findings_fixed` | string[] | yes | Comment/review IDs of fixed findings |
-| `findings_dismissed` | object[] | no | Findings dismissed with `{id, reason}` |
-| `threads_replied` | string[] | yes | Thread IDs where a reply was posted |
-| `threads_resolved` | string[] | yes | Thread IDs resolved via GraphQL |
-| `files_changed` | string[] | yes | File paths modified during the phase |
-| `push_timestamp` | string | yes | ISO 8601 timestamp of last push |
-| `notes` | string | no | Free-text summary for debugging |
-
-**Forward compatibility:** Unknown fields must be preserved when reading and rewriting. Do not strip fields you don't recognize.
+**Forward compatibility:** preserve unknown fields; dedupe string arrays by exact value and `findings_dismissed` by `.id`.
 
 ## Token Exhaustion Handoff
 
