@@ -39,9 +39,9 @@ Rules: set `model` explicitly on every spawn; call-site value overrides frontmat
 
 ## Phase Transition Autonomy (Quick Reference)
 
-**Always do:** local CR review; commit/push after clean local review; create PR after push; enter 60s GitHub polling; fix valid reviewer findings; follow CR→BugBot→Greptile→self-review fallback timing; launch Phase B after Phase A, Phase C after `merge_ready`; verify AC after merge gate; respawn exhaustion with valid handoff.
+**Always do:** local CR review; commit/push after clean local review; create PR after push; enter 60s GitHub polling; fix valid reviewer findings; follow CR→BugBot→Greptile→self-review fallback timing; launch Phase B after Phase A; launch Phase C after `merge_ready` with merge authorization; verify AC after merge gate; respawn exhaustion with valid handoff.
 
-**Ask first only:** merging; respawning a crashed/no-handoff subagent.
+**Ask first only:** merging (ask before Phase C launch, or pass prior authorization in the prompt); respawning a crashed/no-handoff subagent.
 
 > **Anti-pattern:** If you find yourself composing "Should I...?" or "Want me to...?" for any "Always do" row, stop — the answer is always yes. Execute immediately.
 
@@ -57,9 +57,9 @@ The 32K limit is binding. Give each subagent one phase with explicit exit criter
 
 - **Phase A: Fix + Push** (heaviest) — fix findings, commit once, push once, reply to threads, write handoff, EXIT (parent cleanup detailed in Orchestration rules below).
 - **Phase B: Review Loop** (lighter) — poll/trigger reviewer, fix new findings, update handoff, EXIT.
-- **Phase C: Merge Prep** (lightest) — verify merge gate per `cr-merge-gate.md` + AC, report readiness, EXIT. Do not delete handoff.
+- **Phase C: Verify + Wrap** (lightest) — verify merge gate + AC, then run `/wrap` to squash-merge, sync main, and report `merged`. Do not duplicate `/wrap` logic.
 
-**Orchestration:** parent launches Phase A (parallel across PRs allowed); Phase A complete → cleanup per `phase-protocols.md` then Phase B; Phase B `merge_ready` → Phase C. Keep 3-4 active CR-polled PRs max; at 7+ CR reviews/hour expect Greptile fallback.
+**Orchestration:** parent launches Phase A (parallel across PRs allowed); Phase A complete → cleanup per `phase-protocols.md` then Phase B; Phase B `merge_ready` → get merge authorization, then launch Phase C. Keep 3-4 active CR-polled PRs max; at 7+ CR reviews/hour expect Greptile fallback.
 
 ## Subagent Review Protocol
 

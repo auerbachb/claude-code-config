@@ -40,7 +40,7 @@ HANDOFF_FILE: ~/.claude/handoffs/pr-618-handoff.json
 | B | `fixes_pushed` | Fixed findings, pushed — needs re-review |
 | B | `merge_ready` | All checks green, merge gate satisfied |
 | B | `exhaustion` | Token budget low — replacement needed |
-| C | `ac_verified` | All AC verified and checked off |
+| C | `merged` | All AC verified and checked off; `/wrap` completed the squash merge and follow-up flow |
 | C | `blocked` | Merge blocked (CI failure, missing approvals, unchecked AC) |
 
 ## Rules
