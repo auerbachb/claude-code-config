@@ -331,7 +331,7 @@ When the user selects an option, update `~/.claude/session-state.json` before th
 Each later polling turn refreshes the timing watermarks and any changed PR/agent status. If the loop drops, recover using `.claude/rules/monitor-mode.md` "PM Monitoring Recovery".
 
 Mode-switch cleanup requirements:
-- Switching to `passive`: set `monitoring_active=false`, clear `next_expected_poll_at`, and run `CronDelete` for each entry in `polling_jobs[]` before exiting setup.
+- Switching to `passive`: set `monitoring_active=false`, clear `next_expected_poll_at`, run `CronDelete` for each entry in `polling_jobs[]`, then clear `polling_jobs[]` so `session-state.json` stays authoritative.
 - Switching away from `cron`: call `CronDelete` for each live job in `polling_jobs[]`, then remove their IDs from `polling_jobs[]` so `session-state.json` stays authoritative.
 - Switching to `cron`: persist returned job IDs to `polling_jobs[]` immediately; keep `polling_jobs[]` authoritative.
 

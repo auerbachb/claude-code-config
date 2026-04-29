@@ -87,7 +87,7 @@ When a PM monitoring loop drops mid-campaign:
 4. If active work remains and the prior mode was:
    - `loop`: re-establish `/loop` with the recorded cadence, unless the user explicitly chose passive mode.
    - `cron` with `durable=true`: verify the job with `CronList`; create a replacement only if missing.
-   - `cron` with `durable=false`: create a fresh session-scoped `CronCreate` job using the recorded cron/prompt if the old session ended.
+   - `cron` with `durable=false`: verify with `CronList` first; only create a fresh session-scoped `CronCreate` job if the recorded ID is absent or expired.
    - `passive`: keep passive and report that active work exists but monitoring is user-triggered.
 5. Append a `polling_failures[]` entry with detection time, prior expected tick, recovery action, and remaining active work.
 6. Send a concise heartbeat identifying the recovered PRs/workers and the re-armed primitive.
