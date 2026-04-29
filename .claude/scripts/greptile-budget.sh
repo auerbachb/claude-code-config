@@ -73,7 +73,7 @@
 #   # -> {"date":"2026-04-16","reviews_used":3,"budget":40,"exhausted":false}
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
 
 STATE_FILE="${HOME}/.claude/session-state.json"
 DEFAULT_BUDGET=40
