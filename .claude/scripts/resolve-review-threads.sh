@@ -6,18 +6,27 @@
 # resolveReviewThread. On failure, falls back to minimizeComment(classifier: RESOLVED).
 #
 # Usage:
-#   resolve-review-threads.sh <pr_number> [--authors coderabbitai,cursor,greptile-apps] [--dry-run]
+#   resolve-review-threads.sh <pr_number> [--authors coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai] [--thread-ids id1,id2 | --thread-ids-file path] [--max-attempts 2] [--dry-run]
 #   resolve-review-threads.sh --help
 #
 # Flags:
 #   --authors  Comma-separated list of GitHub logins (without [bot] suffix) whose
 #              threads are eligible for resolution. Default:
-#              coderabbitai,cursor,greptile-apps
+#              coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai
+#   --thread-ids
+#              Comma-separated GraphQL review thread node IDs that must be verified
+#              resolved after mutation attempts. When provided, these explicit IDs
+#              are authoritative and are not filtered by --authors.
+#   --thread-ids-file
+#              File containing GraphQL review thread node IDs, one per line or
+#              comma-separated. Same verification behavior as --thread-ids.
+#   --max-attempts
+#              Number of resolve/minimize passes before final verification. Default: 2
 #   --dry-run  Print thread IDs that would be resolved and exit 0 without mutating.
 #
 # Exit codes:
-#   0  All matching threads resolved (or dry-run OK)
-#   1  At least one thread failed BOTH mutations (resolveReviewThread + minimizeComment)
+#   0  All addressed/matching threads verified resolved (or dry-run OK)
+#   1  At least one thread is still dangling after retry/fallback verification
 #   2  Usage error
 #   3  PR not found
 #   4  gh / network error
@@ -27,8 +36,11 @@
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
 
-AUTHORS="coderabbitai,cursor,greptile-apps"
+AUTHORS="coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai"
 DRY_RUN=0
+THREAD_IDS=""
+THREAD_IDS_FILE=""
+MAX_ATTEMPTS=2
 PR_NUMBER=""
 
 print_help() {
@@ -47,6 +59,30 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       AUTHORS="$2"
+      shift 2
+      ;;
+    --thread-ids)
+      if [[ -z "${2:-}" ]]; then
+        echo "ERROR: --thread-ids requires a value" >&2
+        exit 2
+      fi
+      THREAD_IDS="$2"
+      shift 2
+      ;;
+    --thread-ids-file)
+      if [[ -z "${2:-}" ]]; then
+        echo "ERROR: --thread-ids-file requires a value" >&2
+        exit 2
+      fi
+      THREAD_IDS_FILE="$2"
+      shift 2
+      ;;
+    --max-attempts)
+      if [[ -z "${2:-}" ]]; then
+        echo "ERROR: --max-attempts requires a value" >&2
+        exit 2
+      fi
+      MAX_ATTEMPTS="$2"
       shift 2
       ;;
     --dry-run)
@@ -76,6 +112,21 @@ fi
 
 if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
   echo "ERROR: <pr_number> must be a positive integer (got: $PR_NUMBER)" >&2
+  exit 2
+fi
+
+if [[ -n "$THREAD_IDS" && -n "$THREAD_IDS_FILE" ]]; then
+  echo "ERROR: use only one of --thread-ids or --thread-ids-file" >&2
+  exit 2
+fi
+
+if [[ ! "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: --max-attempts must be a positive integer (got: $MAX_ATTEMPTS)" >&2
+  exit 2
+fi
+
+if [[ -n "$THREAD_IDS_FILE" && ! -f "$THREAD_IDS_FILE" ]]; then
+  echo "ERROR: --thread-ids-file does not exist: $THREAD_IDS_FILE" >&2
   exit 2
 fi
 
@@ -141,6 +192,7 @@ collect_threads() {
               comments(first: 1) {
                 nodes {
                   id
+                  url
                   author { login }
                 }
               }
@@ -181,70 +233,188 @@ collect_threads() {
   printf '%s' "$all"
 }
 
-ALL_THREADS=$(collect_threads)
-
-# Filter to unresolved threads whose first-comment author matches the regex.
-# Emit tab-separated: <thread_id>\t<first_comment_node_id>\t<author>
-# Use a temp file instead of mapfile (unavailable in macOS bash 3.2).
 MATCHES_FILE=$(mktemp -t resolve-threads.XXXXXX)
-trap 'rm -f "$MATCHES_FILE"' EXIT
+EXPECTED_FILE=$(mktemp -t resolve-expected.XXXXXX)
+DANGLING_FILE=$(mktemp -t resolve-dangling.XXXXXX)
+trap 'rm -f "$MATCHES_FILE" "$EXPECTED_FILE" "$DANGLING_FILE"' EXIT
 
-printf '%s' "$ALL_THREADS" \
-  | jq -r --arg re "$AUTHOR_REGEX" '
-      .[]
-      | select(.isResolved == false)
-      | select((.comments.nodes[0].author.login // "") | test($re))
-      | [.id, (.comments.nodes[0].id // ""), (.comments.nodes[0].author.login // "")]
-      | @tsv
-    ' > "$MATCHES_FILE"
+append_thread_ids() {
+  local raw="$1"
+  printf '%s\n' "$raw" | tr ',' '\n' | while IFS= read -r id; do
+    id="${id//[[:space:]]/}"
+    [[ -n "$id" ]] && printf '%s\n' "$id"
+  done
+}
+
+if [[ -n "$THREAD_IDS" ]]; then
+  append_thread_ids "$THREAD_IDS" > "$EXPECTED_FILE"
+elif [[ -n "$THREAD_IDS_FILE" ]]; then
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    append_thread_ids "$line"
+  done < "$THREAD_IDS_FILE" > "$EXPECTED_FILE"
+fi
+
+if [[ -s "$EXPECTED_FILE" ]]; then
+  sort -u "$EXPECTED_FILE" -o "$EXPECTED_FILE"
+fi
+
+expected_json() {
+  jq -R -s 'split("\n") | map(select(length > 0))' "$EXPECTED_FILE"
+}
+
+write_unresolved_matches() {
+  local threads_json="$1"
+  if [[ -s "$EXPECTED_FILE" ]]; then
+    local expected
+    expected=$(expected_json)
+    printf '%s' "$threads_json" \
+      | jq -r --argjson expected "$expected" '
+          .[]
+          | select(.id as $id | $expected | index($id))
+          | select(.isResolved == false)
+          | [.id, (.comments.nodes[0].id // ""), (.comments.nodes[0].author.login // ""), (.comments.nodes[0].url // "")]
+          | @tsv
+        ' > "$MATCHES_FILE"
+  else
+    printf '%s' "$threads_json" \
+      | jq -r --arg re "$AUTHOR_REGEX" '
+          .[]
+          | select(.isResolved == false)
+          | select((.comments.nodes[0].author.login // "") | test($re))
+          | [.id, (.comments.nodes[0].id // ""), (.comments.nodes[0].author.login // ""), (.comments.nodes[0].url // "")]
+          | @tsv
+        ' > "$MATCHES_FILE"
+  fi
+}
+
+write_dangling_threads() {
+  local threads_json="$1"
+  if [[ -s "$EXPECTED_FILE" ]]; then
+    local expected
+    expected=$(expected_json)
+    printf '%s' "$threads_json" \
+      | jq -r --argjson expected "$expected" '
+          def row($id; $comment_id; $author; $url; $reason):
+            [$id, $comment_id, $author, $url, $reason] | @tsv;
+          ([.[] | {key: .id, value: .}] | from_entries) as $by_id
+          | $expected[]
+          | . as $id
+          | ($by_id[$id] // null) as $thread
+          | if $thread == null then
+              row($id; ""; ""; ""; "thread not returned by GraphQL")
+            elif $thread.isResolved == false then
+              row($id; ($thread.comments.nodes[0].id // ""); ($thread.comments.nodes[0].author.login // ""); ($thread.comments.nodes[0].url // ""); "isResolved=false")
+            else empty
+            end
+        ' > "$DANGLING_FILE"
+  else
+    printf '%s' "$threads_json" \
+      | jq -r --arg re "$AUTHOR_REGEX" '
+          .[]
+          | select(.isResolved == false)
+          | select((.comments.nodes[0].author.login // "") | test($re))
+          | [.id, (.comments.nodes[0].id // ""), (.comments.nodes[0].author.login // ""), (.comments.nodes[0].url // ""), "isResolved=false"]
+          | @tsv
+        ' > "$DANGLING_FILE"
+  fi
+}
+
+resolve_or_minimize() {
+  local thread_id="$1"
+  local comment_id="$2"
+  local author="$3"
+  local attempt="$4"
+  local resp resp2
+
+  if resp=$(gh api graphql -F threadId="$thread_id" -f query='
+    mutation($threadId: ID!) {
+      resolveReviewThread(input: {threadId: $threadId}) { thread { isResolved } }
+    }' 2>&1); then
+    echo "[RESOLVED] attempt=$attempt $thread_id  ($author)"
+    return 0
+  fi
+
+  if [[ -n "$comment_id" ]]; then
+    if resp2=$(gh api graphql -F subjectId="$comment_id" -f query='
+      mutation($subjectId: ID!) {
+        minimizeComment(input: {subjectId: $subjectId, classifier: RESOLVED}) { minimizedComment { isMinimized } }
+      }' 2>&1); then
+      echo "[MINIMIZED] attempt=$attempt $thread_id  ($author) — resolveReviewThread failed, minimizeComment fallback succeeded"
+      return 0
+    fi
+    echo "[FAILED] attempt=$attempt $thread_id  ($author) — resolveReviewThread: $resp | minimizeComment: $resp2" >&2
+    return 1
+  fi
+
+  echo "[FAILED] attempt=$attempt $thread_id  ($author) — resolveReviewThread: $resp | no comment node id for fallback" >&2
+  return 1
+}
+
+ALL_THREADS=$(collect_threads)
+write_unresolved_matches "$ALL_THREADS"
+
+if [[ -s "$EXPECTED_FILE" ]]; then
+  ADDRESSED_COUNT=$(wc -l < "$EXPECTED_FILE" | tr -d ' ')
+else
+  ADDRESSED_COUNT=$(wc -l < "$MATCHES_FILE" | tr -d ' ')
+  cut -f1 "$MATCHES_FILE" > "$EXPECTED_FILE"
+fi
 
 MATCH_COUNT=$(wc -l < "$MATCHES_FILE" | tr -d ' ')
 
-if [[ "$MATCH_COUNT" -eq 0 ]]; then
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  if [[ "$MATCH_COUNT" -eq 0 ]]; then
+    echo "[DRY-RUN] no unresolved addressed/matching threads"
+  else
+    echo "[DRY-RUN] $MATCH_COUNT thread(s) would be resolved:"
+    while IFS=$'\t' read -r tid _cid author url; do
+      [[ -z "$tid" ]] && continue
+      echo "  $tid  ($author) ${url}"
+    done < "$MATCHES_FILE"
+  fi
+  exit 0
+fi
+
+if [[ "$ADDRESSED_COUNT" -eq 0 ]]; then
   echo "No unresolved threads matching authors: $AUTHORS"
   exit 0
 fi
 
-if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[DRY-RUN] $MATCH_COUNT thread(s) would be resolved:"
-  while IFS=$'\t' read -r tid _cid author; do
-    [[ -z "$tid" ]] && continue
-    echo "  $tid  ($author)"
+attempt=1
+while [[ "$attempt" -le "$MAX_ATTEMPTS" ]]; do
+  write_unresolved_matches "$ALL_THREADS"
+  MATCH_COUNT=$(wc -l < "$MATCHES_FILE" | tr -d ' ')
+  [[ "$MATCH_COUNT" -gt 0 ]] || break
+
+  while IFS=$'\t' read -r THREAD_ID COMMENT_ID AUTHOR _URL; do
+    [[ -z "$THREAD_ID" ]] && continue
+    resolve_or_minimize "$THREAD_ID" "$COMMENT_ID" "$AUTHOR" "$attempt" || true
   done < "$MATCHES_FILE"
-  exit 0
+
+  ALL_THREADS=$(collect_threads)
+  attempt=$((attempt + 1))
+done
+
+VERIFY_THREADS=$(collect_threads)
+write_dangling_threads "$VERIFY_THREADS"
+DANGLING_COUNT=$(wc -l < "$DANGLING_FILE" | tr -d ' ')
+RESOLVED_COUNT=$((ADDRESSED_COUNT - DANGLING_COUNT))
+if [[ "$RESOLVED_COUNT" -lt 0 ]]; then
+  RESOLVED_COUNT=0
 fi
 
-FAILURES=0
-while IFS=$'\t' read -r THREAD_ID COMMENT_ID AUTHOR; do
-  [[ -z "$THREAD_ID" ]] && continue
+echo "[VERIFY] addressed=$ADDRESSED_COUNT resolved=$RESOLVED_COUNT dangling=$DANGLING_COUNT"
 
-  # Primary: resolveReviewThread
-  if resp=$(gh api graphql -F threadId="$THREAD_ID" -f query='
-    mutation($threadId: ID!) {
-      resolveReviewThread(input: {threadId: $threadId}) { thread { isResolved } }
-    }' 2>&1); then
-    echo "[RESOLVED] $THREAD_ID  ($AUTHOR)"
-    continue
-  fi
-
-  # Fallback: minimizeComment on the first comment's node id.
-  if [[ -n "$COMMENT_ID" ]]; then
-    if resp2=$(gh api graphql -F subjectId="$COMMENT_ID" -f query='
-      mutation($subjectId: ID!) {
-        minimizeComment(input: {subjectId: $subjectId, classifier: RESOLVED}) { minimizedComment { isMinimized } }
-      }' 2>&1); then
-      echo "[MINIMIZED] $THREAD_ID  ($AUTHOR) — resolveReviewThread failed, minimizeComment succeeded"
-      continue
+if [[ "$DANGLING_COUNT" -gt 0 ]]; then
+  while IFS=$'\t' read -r THREAD_ID _COMMENT_ID AUTHOR URL REASON; do
+    [[ -z "$THREAD_ID" ]] && continue
+    if [[ -n "$URL" ]]; then
+      echo "[STUCK] $THREAD_ID  ($AUTHOR) — $REASON — $URL" >&2
+    else
+      echo "[STUCK] $THREAD_ID  ($AUTHOR) — $REASON" >&2
     fi
-    echo "[FAILED] $THREAD_ID  ($AUTHOR) — resolveReviewThread: $resp | minimizeComment: $resp2" >&2
-  else
-    echo "[FAILED] $THREAD_ID  ($AUTHOR) — resolveReviewThread: $resp | no comment node id for fallback" >&2
-  fi
-  FAILURES=$((FAILURES + 1))
-done < "$MATCHES_FILE"
-
-if [[ "$FAILURES" -gt 0 ]]; then
-  echo "ERROR: $FAILURES thread(s) could not be resolved" >&2
+  done < "$DANGLING_FILE"
+  echo "ERROR: $DANGLING_COUNT thread(s) remain dangling after retry/fallback verification" >&2
   exit 1
 fi
 

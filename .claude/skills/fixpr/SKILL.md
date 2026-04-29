@@ -88,18 +88,31 @@ For each entry in `.threads.unresolved`:
 
 1. Read the first comment (`.comments.nodes[0].body`) plus its `path` + `line`
 2. Read the current file at that location
-3. Classify:
-   - **actionable** — code still has the issue → must fix
+3. Auto-decide the disposition:
+   - **fix** — code still has the issue, or the conservative change is safe → must fix
+   - **decline-high-confidence** — finding is invalid, obsolete, or intentionally not applicable with confidence >= 50% → reply with rationale and resolve silently
+   - **surface-low-confidence** — confidence < 50% because this is a genuine design/product/user-preference decision → still reply and resolve on GitHub, then list it in the final chat summary with rationale and override prompt
    - **already-fixed** — code no longer matches the finding → resolve only
    - **outdated** — file/line no longer exists → resolve only
+
+Do not ask the user before deciding. GitHub is the audit surface and chat is the decision surface: every thread touched by `/fixpr` must end resolved on GitHub, whether the decision was fix or decline.
 
 Print the numbered list:
 
 ```text
-[FINDING 1] actionable — src/foo.ts:42 — "unused import" (coderabbitai[bot])
-[FINDING 2] already-fixed — src/bar.ts:10 — "missing null check" (coderabbitai[bot])
-[FINDING 3] outdated — src/deleted.ts:5 — file removed (greptile-apps[bot])
+[FINDING 1] fix — src/foo.ts:42 — "unused import" (coderabbitai[bot]) — confidence 90%
+[FINDING 2] decline-high-confidence — src/bar.ts:10 — "missing null check" (coderabbitai[bot]) — confidence 80%
+[FINDING 3] surface-low-confidence — src/baz.ts:55 — "change retry policy" (cursor[bot]) — confidence 40%
+[FINDING 4] outdated — src/deleted.ts:5 — file removed (greptile-apps[bot])
 ```
+
+Keep running counters for final chat output:
+
+- `FIXED_COUNT`: findings classified `fix` and changed in code
+- `DECLINED_SILENT_COUNT`: findings classified `decline-high-confidence`, `already-fixed`, or `outdated`
+- `SURFACED_COUNT`: findings classified `surface-low-confidence`
+
+For every `surface-low-confidence` item, capture file, finding, decision, rationale, alternative considered, and the override prompt for Step 7.
 
 ---
 
@@ -261,7 +274,7 @@ Cost/rate-limit note: `@codeant-ai review` and `@cursor review` may consume thei
 
 ## Step 4: Reply and resolve every thread
 
-For every entry in `.threads.unresolved` — actionable, already-fixed, or outdated:
+For every entry in `.threads.unresolved` — fix, decline-high-confidence, surface-low-confidence, already-fixed, or outdated:
 
 ### 4a. Reply
 
@@ -274,7 +287,9 @@ DBID=$(jq -r ".threads.unresolved[$i].comments.nodes[0].databaseId" "$AUDIT")
 
 Reply text by classification:
 
-- **actionable:** `"Fixed in \`<short-sha>\`: <one-line description>"`
+- **fix:** `"Fixed in \`<short-sha>\`: <one-line description>"`
+- **decline-high-confidence:** `"Reviewed and intentionally declined: <one-line rationale>. Resolving so GitHub stays an audit surface."`
+- **surface-low-confidence:** `"Reviewed and resolved on GitHub; surfacing the decision in chat because confidence is <50%: <one-line rationale>."`
 - **already-fixed:** `"Addressed in a prior commit — current code no longer has this issue. Resolving."`
 - **outdated:** `"Referenced code no longer exists after refactoring. Resolving."`
 
@@ -290,13 +305,19 @@ The script strips any `@greptileai` tokens from the body in greptile mode and an
 
 ### 4b. Resolve via shared helper
 
-After all replies are posted, resolve every unresolved bot-authored thread with one call:
+After all replies are posted, resolve and verify exactly the threads `/fixpr` touched. Build the expected-resolved set from the GraphQL thread IDs for every item replied to in 4a:
 
 ```bash
-bash .claude/scripts/resolve-review-threads.sh "$PR_NUMBER"
+TOUCHED_THREADS=$(mktemp -t fixpr-touched-threads.XXXXXX)
+# append one GraphQL thread node id per replied thread
+jq -r '.threads.unresolved[].id' "$AUDIT" > "$TOUCHED_THREADS"
+
+THREAD_RESOLUTION_OUTPUT=$(bash .claude/scripts/resolve-review-threads.sh "$PR_NUMBER" \
+  --thread-ids-file "$TOUCHED_THREADS" --max-attempts 2 2>&1)
+echo "$THREAD_RESOLUTION_OUTPUT"
 ```
 
-The script fetches unresolved threads via GraphQL (paginated), filters to `coderabbitai`, `cursor`, and `greptile-apps` authors by default, runs `resolveReviewThread`, and falls back to `minimizeComment(classifier: RESOLVED)` on failure. Exit codes: `0` all resolved, `1` at least one failed both mutations (block on Step 5 — do NOT treat as clean), `3` PR not found, `4` gh error. It prints `[RESOLVED]` / `[MINIMIZED]` / `[FAILED]` per thread.
+The script re-fetches `pullRequest.reviewThreads` via GraphQL after each mutation pass and again before exit. For any touched thread still reporting `isResolved: false`, it retries `resolveReviewThread` and falls back to `minimizeComment(classifier: RESOLVED)`. Exit codes: `0` means every touched thread was verified resolved; `1` means at least one dangling thread remains and `/fixpr` must not declare success; `3` PR not found; `4` gh error. It prints `[VERIFY] addressed=N resolved=M dangling=K` plus `[STUCK]` lines with URLs/reasons for every dangling thread.
 
 ---
 
@@ -310,12 +331,15 @@ VERIFY=$("$SCRIPT" --since "$RUN_STARTED_AT")
 
 ### 5a. Threads
 
+The Step 4 resolver already re-fetched `pullRequest.reviewThreads` after replying, retried `resolveReviewThread`, used `minimizeComment(classifier: RESOLVED)` as fallback, and printed the authoritative addressed/resolved/dangling counts. Re-state those counts here from `THREAD_RESOLUTION_OUTPUT`; do not recompute them from `.threads.unresolved_count` alone because `/fixpr` must verify the specific threads it replied to.
+
 ```bash
 UNRESOLVED=$(jq -r '.threads.unresolved_count' "$VERIFY")
 ```
 
-- `0` → `[CLEAN] All threads resolved — zero uncollapsed in browser.`
-- otherwise → retry resolution (max 2 attempts per thread). Remaining stuck threads emit `[STUCK] thread <id> — cannot resolve`.
+- If the resolver's dangling count is `0` and `UNRESOLVED == 0` → `[CLEAN] All threads resolved — zero uncollapsed in browser.`
+- If the resolver's dangling count is `0` but unrelated reviewer threads remain unresolved → run `bash .claude/scripts/resolve-review-threads.sh "$PR_NUMBER"` once to resolve them too. `/fixpr` never leaves reviewer threads open as a paper trail.
+- If the resolver reports dangling threads → emit `THREADS_STUCK` and list each `[STUCK]` URL/reason. Do not declare success.
 
 ### 5b. New bot comments since `$RUN_STARTED_AT`
 
@@ -439,9 +463,11 @@ After any rebase + force-push: `[MERGE] rebase complete, force-pushed (SHA: <new
 === fixpr complete ===
 PR:              #$PR_NUMBER ($BRANCH)
 Threads:         N total, M were unresolved
-  - Fixed:       X findings in code
-  - Resolved:    Y threads via GraphQL
-  - Stuck:       Z threads (0 = clean)
+  - Addressed:   A threads replied to by /fixpr
+  - Resolved:    Y addressed threads verified isResolved=true
+  - Dangling:    Z addressed threads (0 = clean; list each URL below)
+Decisions:       X fixed, D declined silently, K surfaced
+  - Surfaced:    <file/thread URL> — finding; decision; rationale; alternative considered; "Reply if you want me to override this decision."
 CI checks:       P total, Q were failing
   - Fixed:       R failures in code
   - Transient:   S (cannot fix locally)
