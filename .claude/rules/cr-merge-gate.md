@@ -73,9 +73,26 @@ This applies to ALL merge paths: manual `gh pr merge`, the `/merge` skill, the `
 
 Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses cursor/copilot bots). `merge-gate.sh` enforces this — any unresolved thread blocks, regardless of author. **If any unresolved: DO NOT MERGE.** Reply + `resolveReviewThread`, then re-check.
 
+## Step 1d — `mergeStateStatus` and branch sync (NON-NEGOTIABLE)
+
+**Do not infer “behind base” from `mergeStateStatus: "BLOCKED"` alone.** `BLOCKED` is overloaded (required checks, reviews, code owners, etc.). Always read **`mergeStateStatus` and `mergeable` explicitly** (e.g. `gh pr view <N> --json mergeStateStatus,mergeable,reviewDecision` — same fields `merge-gate.sh` uses).
+
+| `mergeStateStatus` | Meaning | Action |
+|--------------------|---------|--------|
+| `CLEAN` | GitHub considers the branch mergeable with respect to the base | OK for merge once Steps 1–1c and 1b pass |
+| `BEHIND` | Branch tip is behind the base branch | **Not merge-ready.** Invoke `/fixpr` (rebase onto the PR base per `.claude/skills/fixpr/SKILL.md` merge_state / `pr-state.sh` — do not reimplement). After `git fetch` + `git rebase` onto the correct base, **force-push only from a clean worktree** after `.claude/scripts/dirty-main-guard.sh --check` passes — force-push is destructive. Re-run reviews/CI on the new SHA; keep polling until Step 1d is satisfied |
+| `BLOCKED` | Protection or merge requirements not met | Use `reviewDecision`, CI, and thread state — not a substitute for checking `BEHIND` |
+| `UNSTABLE` | Required checks green but something non-merge-blocking is pending/failing | Treat as not merge-ready until CI/review gate is clearly satisfied; see Step 1b |
+| `DIRTY` | Merge commit cannot be computed cleanly | Block merge; investigate (often needs rebase or conflict resolution via `/fixpr`) |
+| `UNKNOWN` | GitHub still computing | Wait and re-check; do not merge |
+
+**`mergeable == "CONFLICTING"`** (from the same JSON) means merge conflicts — `/fixpr` rebase path; do not merge until resolved.
+
+**Polling / merge gate / Phase C:** When `mergeStateStatus == "BEHIND"`, the merge gate **must** fail until rebased (`merge-gate.sh` enforces this). Polling treats BEHIND as a **`/fixpr` trigger**, not a reason to stop polling or to treat the PR as “blocked by branch protection” without rebase.
+
 ## Step 2 — Verify every Test Plan checkbox (MANDATORY — do NOT skip)
 
-> After Step 1c passes (`merge-gate.sh` enforces resolved threads), verify AC before merge.
+> After Steps 1c and 1d pass (`merge-gate.sh` enforces resolved threads and merge metadata including `mergeStateStatus`), verify AC before merge.
 >
 > 1. Fetch the PR body via `gh pr view N --json body`
 > 2. Parse **every** checkbox in the **Test plan** section of the PR description

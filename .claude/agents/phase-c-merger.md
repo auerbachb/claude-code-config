@@ -48,7 +48,7 @@ Run the shared merge-gate verifier. It implements the three-path gate from `.cla
 
 - **Gate 1a — CI terminal state.** All check-runs `status: "completed"` with no blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`). In-progress checks BLOCK — do NOT present the merge prompt; wait and re-poll.
 - **Gate 1b — All review threads resolved.** Every thread `isResolved: true` via GraphQL `reviewThreads(first: 100)` (REST misses cursor/copilot bot threads). Any unresolved thread BLOCKS regardless of author.
-- **Gate 1c — BEHIND check.** `mergeStateStatus != BEHIND`.
+- **Gate 1c — BEHIND / merge metadata.** `merge-gate.sh` enforces `mergeStateStatus != BEHIND` (and related merge metadata; see `cr-merge-gate.md` Step 1d). If the script exits `1` and the JSON `missing` array includes the BEHIND reason, **do not merge** — report `OUTCOME: blocked` and instruct the parent to run **`/fixpr`** (rebase + force-push from a guard-clean worktree) until `mergeStateStatus` is no longer `BEHIND`, then re-run Phase C.
 
 ```bash
 # Prefer the handoff's reviewer field; fall back to reviewer-of.sh (session-state
