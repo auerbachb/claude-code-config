@@ -24,7 +24,6 @@ json_field() {
 }
 
 command=$(json_field '.tool_input.command')
-cwd=$(json_field '.cwd')
 session_id=$(json_field '.session_id')
 session_id="${session_id:-${CLAUDE_SESSION_ID:-default}}"
 session_id="${session_id//[^[:alnum:]_.-]/_}"
@@ -33,15 +32,14 @@ session_id="${session_id//[^[:alnum:]_.-]/_}"
 
 case "$command" in
   *CronUpdate*|*CronDelete*|*CronCreate*)
-    sentinel="/tmp/claude-polling-cron-action-${session_id}"
-    mkdir -p "$(dirname "$sentinel")" 2>/dev/null || true
-    date -u +'%Y-%m-%dT%H:%M:%SZ' > "$sentinel" 2>/dev/null || true
     exit 0
     ;;
 esac
 
 is_polling_command=0
-if [[ "$command" == *"gh pr view"* || "$command" == *"gh api"* ]]; then
+if [[ "$command" == *"gh pr view"* ]]; then
+  is_polling_command=1
+elif [[ "$command" == *"gh api"* ]] && [[ "$command" == *"/pulls/"* || "$command" == *"/check-runs"* ]]; then
   is_polling_command=1
 elif [[ "$command" == *"session-state.sh"* && "$command" == *"--set"* ]]; then
   if [[ "$command" == *".prs["* || "$command" == *".polling_failures"* || "$command" == *".polling_backoffs"* ]]; then
@@ -68,16 +66,6 @@ elif [[ "$command" =~ \.prs\[[\"\']?([0-9]+)[\"\']?\] ]]; then
   pr_number="${BASH_REMATCH[1]}"
 fi
 
-if [[ -z "$pr_number" ]]; then
-  pr_number=$(jq -r '
-    .prs // {} | to_entries
-    | map(select((.value.digest_streak // 0) >= 3 or .value.blocker_kind == "user_input"))
-    | sort_by(.value.digest_streak // 0)
-    | reverse
-    | .[0].key // empty
-  ' "$state_file" 2>/dev/null)
-fi
-
 [[ -n "$pr_number" ]] || exit 0
 
 pr_jq=".prs[\"${pr_number}\"]"
@@ -94,8 +82,10 @@ fi
 user_blocker=0
 if [[ "$blocker_kind" == "user_input" ]]; then
   user_blocker=1
-elif [[ "$blocker" =~ [Aa]waiting[[:space:]]+(your[[:space:]]+)?direction|[Aa]waiting[[:space:]]+user|[Uu]ser[[:space:]]+input|[Uu]ser[[:space:]]+decision ]]; then
-  user_blocker=1
+else
+  shopt -s nocasematch
+  [[ "$blocker" =~ awaiting[[:space:]]+(your[[:space:]]+)?direction|awaiting[[:space:]]+user|user[[:space:]]+input|user[[:space:]]+decision ]] && user_blocker=1
+  shopt -u nocasematch
 fi
 
 if (( streak < 3 )) && (( user_blocker == 0 )); then

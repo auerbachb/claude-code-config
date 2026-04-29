@@ -44,8 +44,8 @@ Full schema/examples: `.claude/reference/session-state-schema.json`. Preserve un
 
 | Field | Meaning |
 |-------|---------|
-| `digest` | Last stable polling digest from `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)`. Excludes free-text `blocker`. |
-| `digest_streak` | Consecutive identical ticks; drives `scheduling-reliability.md` backoff. |
+| `digest` | Polling digest: `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)`; excludes free-text `blocker`. |
+| `digest_streak` | Consecutive identical ticks; drives backoff (see `scheduling-reliability.md`). |
 | `blocker` | Human-readable blocker, or `null`. |
 | `blocker_kind` | `"user_input"`, `"ci_external"`, `"review_pending"`, or `null`. |
-| `last_cron_action` | Last scheduler action `{type, at, interval}`; lets the hook avoid repeat warnings after `CronUpdate`/`CronDelete`. |
+| `last_cron_action` | Last scheduler action `{type, at, interval}`; suppresses duplicate hook warnings. |

@@ -33,26 +33,26 @@ Before any polling turn ends (`/loop`, `CronCreate`, or legacy one-shot), verify
 
 ## Stable-State Backoff & Auto-Pause
 
-Each polling tick MUST run this gate before any user-visible heartbeat:
+Run this gate on every polling tick:
 
-1. **Compute digest.** Hash only `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)`. Store `prs.{N}.digest` and `digest_streak`. Free-text `blocker` MUST NOT feed the digest.
-2. **Compare to the prior digest.**
-   - Different: set `digest_streak = 1`, emit normal heartbeat, keep base cadence.
-   - Identical: increment `digest_streak`, record-only unless the ladder emits a transition message.
+1. **Compute digest.** Hash only `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)`; store in `prs.{N}.digest` + `digest_streak`. Free-text `blocker` excluded from digest.
+2. **Compare to prior digest.**
+   - Different: reset `digest_streak = 1`, emit heartbeat.
+   - Identical: increment `digest_streak`; silent unless ladder triggers.
 3. **Backoff ladder.**
 
    | Streak | Action |
    |--------|--------|
-   | 1-2 | Base cadence; suppress duplicate messages. |
-   | 3-5 | Widen via `CronUpdate` to 5m (or re-arm `/loop` at 5m); emit one "backing off" message. |
+   | 1-2 | Base cadence; no action. |
+   | 3-5 | `CronUpdate` to 5m (or re-arm `/loop` at 5m); emit one "backing off" message. |
    | 6-8 | Widen to 15m; emit one "deep backoff" message. |
-   | >= 9 | `CronDelete` plus sibling cleanup; emit one final "paused — ping me to resume" message. |
+   | >= 9 | `CronDelete` + sibling cleanup; one final "paused — ping me to resume" message. |
 
-4. **User-blocker fast-path.** If `blocker_kind == "user_input"` or `blocker` matches `/awaiting (your )?direction|awaiting user|user input|user decision/i`, pause after the first visible message and skip the ladder.
-5. **Resume condition.** Re-create the cron at base cadence only after a new user message or an external one-shot poll with changed digest.
-6. **Sibling cleanup.** When pausing `CronCreate`, `CronDelete` orphan `ScheduleWakeup` for the same PR. When promoting `ScheduleWakeup` to `/loop`/`CronCreate`, cancel the one-shot first.
+4. **User-blocker fast-path.** If `blocker_kind == "user_input"` or `blocker` matches user-waiting text, pause after the first heartbeat and skip the ladder.
+5. **Resume.** Restart at base cadence after a new user message or changed digest.
+6. **Sibling cleanup.** On pause: `CronDelete` orphan `ScheduleWakeup`. On promote: cancel the one-shot first.
 
-`polling-backoff-warn.sh` is the PostToolUse safety net: warn at stable streaks, force-pause on long streaks/user-blockers.
+`polling-backoff-warn.sh` enforces this as a PostToolUse safety net.
 
 ## Failure Recovery
 
