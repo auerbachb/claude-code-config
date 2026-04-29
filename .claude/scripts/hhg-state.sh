@@ -52,6 +52,7 @@
 #   # (no stdout, exit 1)
 
 set -euo pipefail
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
 
 print_help() {
   # Print the header comment block (from shebang's next line until the first

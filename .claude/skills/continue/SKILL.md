@@ -353,8 +353,8 @@ PR: #$PR_NUM
 Reviewer: CR / Greptile
 Merge gate: MET / NOT MET
 Acceptance criteria: ALL PASSED / N FAILED
-Status: Ready to merge — want me to squash and merge?
+Status: Ready for wrap
 ```
 
 If the merge gate is met and all AC pass, ask:
-"Reviews clean, all AC verified and checked off. Want me to squash and merge (`gh pr merge --squash --delete-branch`) and delete the branch, or do you want to review the diff yourself first?"
+"Reviews clean, all AC verified and checked off. Want me to run `/wrap` to squash-merge, sync root main, and detect follow-ups, or do you want to review the diff yourself first?"

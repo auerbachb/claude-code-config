@@ -20,9 +20,11 @@ Canonical reference for per-phase subagent procedures. Used by agent definitions
 6. Update handoff file. Deduplicate: `string[]` by exact value, `findings_dismissed` by `.id`.
 7. Print exit report and EXIT.
 
-## Phase C: Merge Prep (lightest)
+## Phase C: Verify + Wrap (lightest)
 
-1. Read handoff file. Verify merge gate per `cr-github-review.md` "Completion" section.
-2. Read PR body, verify all AC against final code, check off all boxes.
-3. Report ready for merge. Do not delete the handoff file — parent performs deletion after successful user-gated merge (see `phase-protocols.md`).
-4. Print exit report and EXIT.
+1. Start only after the parent has user merge authorization or passes explicit prior authorization in the prompt.
+2. Read handoff file. Verify merge gate per `cr-merge-gate.md` (reviewer path, CI, resolved threads, and BEHIND checks).
+3. Read PR body, verify all AC against final code, check off all boxes.
+4. If any gate or AC check fails, report `OUTCOME: blocked` and do not merge.
+5. If verification passes, read `.claude/skills/wrap/SKILL.md` and execute that canonical flow. Do not duplicate `/wrap` merge, main-sync, follow-up, or stale-cleanup logic here.
+6. Print exit report with `OUTCOME: merged` or `OUTCOME: blocked` and EXIT. Do not delete the handoff file — parent performs deletion after `OUTCOME: merged` and GitHub confirms the PR is merged (see `phase-protocols.md`).

@@ -49,6 +49,7 @@
 #   pm-config-get.sh --section OKRs --file /path/to/pm-config.md
 
 set -uo pipefail
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
 
 print_help() {
   # Print the header comment block (PURPOSE through EXAMPLES and their bodies)

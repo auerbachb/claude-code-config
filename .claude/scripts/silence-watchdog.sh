@@ -5,6 +5,7 @@
 # even when Claude is stalled and no tool hook is firing. macOS-only v1.
 
 set -euo pipefail
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
 
 LABEL="com.user.claude-silence-watchdog"
 HEARTBEAT_PREFIX="/tmp/claude-heartbeat-"

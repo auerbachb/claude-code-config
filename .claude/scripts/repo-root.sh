@@ -36,6 +36,7 @@
 #   ROOT_REPO=$(.claude/scripts/repo-root.sh "$SOME_WT") # from another worktree
 
 set -euo pipefail
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
 
 # Self-extract the header block between BEGIN/END markers for --help.
 print_help() {

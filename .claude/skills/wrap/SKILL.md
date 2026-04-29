@@ -12,6 +12,7 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 - Use **/wrap** at end-of-session. Handles merge + root-main sync + follow-up detection + lessons.
 - Use **/merge** for a quick mid-session merge when you'll keep working. Skips follow-up detection and lessons.
 - /wrap includes everything /merge does, plus follow-ups and lessons. Don't run both.
+- Phase C invokes this skill after gate and AC verification; keep merge, main-sync, follow-up, and cleanup behavior here so Phase C and `/wrap` cannot drift.
 
 ## Execution Model
 

@@ -4,6 +4,7 @@
 # See .claude/rules/trust-dialog-fix.md for details.
 
 set -euo pipefail
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
 
 if [[ $# -ne 0 ]]; then
   echo "Usage: $0"

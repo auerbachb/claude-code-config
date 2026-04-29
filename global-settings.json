@@ -41,6 +41,16 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/script-bypass-detector.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "Write|Edit|NotebookEdit",
         "hooks": [
           {

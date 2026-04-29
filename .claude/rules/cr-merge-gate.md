@@ -67,7 +67,7 @@ Before running `gh pr merge` on ANY PR, verify ALL CI check-runs are complete an
 2. Commit, push, and wait for CI to re-run
 3. Only merge after ALL checks are `status: "completed"` with non-blocking conclusions
 
-This applies to ALL merge paths: manual `gh pr merge`, the `/merge` skill, the `/wrap` skill, and Phase C merge prep.
+This applies to ALL merge paths: manual `gh pr merge`, the `/merge` skill, the `/wrap` skill, and Phase C verify-and-wrap.
 
 ## Step 1c — All Review Threads Resolved (NON-NEGOTIABLE)
 
