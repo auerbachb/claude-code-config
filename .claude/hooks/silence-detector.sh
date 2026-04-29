@@ -107,7 +107,7 @@ fi
 now=$(date +%s)
 elapsed=$((now - last_ack))
 
-if [[ $elapsed -gt $THRESHOLD ]]; then
+if [[ $elapsed -ge $THRESHOLD ]]; then
   if [[ -f "$WARNED_FILE" ]]; then
     warned_mtime=$(file_mtime "$WARNED_FILE")
     if [[ -n "$warned_mtime" ]]; then
