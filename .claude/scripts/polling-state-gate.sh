@@ -150,8 +150,11 @@ write_checkpoint_handoff() {
   local now
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   mkdir -p "$HANDOFF_DIR"
+  # Atomic write: temp in same directory as handoff (same filesystem for mv)
+  local tmp
+  tmp="$(mktemp "${HANDOFF_DIR}/.pr-${PR_NUMBER}-handoff-new.XXXXXX")"
   # Minimal valid handoff: parent polling checkpoint (schema handoff-file-schema.json)
-  jq -n \
+  if ! jq -n \
     --argjson pr "$PR_NUMBER" \
     --arg sha "$head_sha" \
     --arg rev "$reviewer" \
@@ -170,7 +173,16 @@ write_checkpoint_handoff() {
       files_changed: [],
       push_timestamp: $now,
       notes: "Polling checkpoint — written by polling-state-gate.sh --ensure-session; Phase A/B handoffs supersede when present from subagents."
-    }' > "$handoff_path"
+    }' > "$tmp"; then
+    rm -f "$tmp"
+    echo "polling-state-gate.sh: failed to write handoff JSON: $handoff_path" >&2
+    exit 4
+  fi
+  if ! mv "$tmp" "$handoff_path"; then
+    rm -f "$tmp"
+    echo "polling-state-gate.sh: could not write handoff: $handoff_path" >&2
+    exit 4
+  fi
 }
 
 ensure_session() {
@@ -276,11 +288,12 @@ require_handoff_and_state() {
     echo "polling-state-gate.sh: PR $PR_NUMBER not registered in session-state — run --ensure-session first" >&2
     exit 4
   fi
-  local top rr state_sha handoff_sha canon live_head
+  local top rr state_sha handoff_sha handoff_pr canon live_head
   top=$(jq -r '.root_repo // empty' "$STATE_FILE")
   rr=$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].root_repo // empty' "$STATE_FILE")
   state_sha=$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].head_sha // empty' "$STATE_FILE")
   handoff_sha=$(jq -r '.head_sha // empty' "$handoff_path")
+  handoff_pr=$(jq -r 'if .pr_number == null then "" else (.pr_number | tostring) end' "$handoff_path")
   if [[ -z "$top" || "$top" == "null" ]]; then
     echo "polling-state-gate.sh: session-state missing top-level .root_repo" >&2
     exit 4
@@ -295,6 +308,14 @@ require_handoff_and_state() {
   fi
   if [[ -z "$handoff_sha" || "$handoff_sha" == "null" ]]; then
     echo "polling-state-gate.sh: handoff missing .head_sha ($handoff_path)" >&2
+    exit 4
+  fi
+  if [[ -z "$handoff_pr" || "$handoff_pr" == "null" ]]; then
+    echo "polling-state-gate.sh: handoff missing .pr_number ($handoff_path)" >&2
+    exit 4
+  fi
+  if [[ "$handoff_pr" != "$PR_NUMBER" ]]; then
+    echo "polling-state-gate.sh: handoff .pr_number ($handoff_pr) does not match PR $PR_NUMBER ($handoff_path)" >&2
     exit 4
   fi
   if [[ "$state_sha" != "$handoff_sha" ]]; then
