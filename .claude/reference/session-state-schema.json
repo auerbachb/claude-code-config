@@ -22,7 +22,8 @@
       "digest_streak": 1,
       "blocker": null,
       "blocker_kind": null,
-      "last_cron_action": {"type": "create", "at": "2026-04-29T13:55:00Z", "interval": "1m"}
+      "last_cron_action": {"type": "create", "at": "2026-04-29T13:55:00Z", "interval": "1m"},
+      "cr_explicit_triggers": ["2026-04-29T22:30:00Z"]
     },
     "619": {
       "phase": "B",
@@ -48,6 +49,12 @@
     }
   },
   "cr_quota": {"reviews_used": 5, "window_start": "2026-03-16T15:00:00Z"},
+  "cr_hourly": {
+    "events": [
+      "2026-04-29T22:10:00Z",
+      "2026-04-29T22:45:00Z"
+    ]
+  },
   "greptile_daily": {"reviews_used": 12, "date": "2026-03-16", "budget": 40},
   "active_agents": [
     {"id": "a3f8d26fa75eddcb3", "task": "PR #620 Phase C", "issue": 503, "pr": 620, "phase": "C", "launched": "2026-03-16T15:55:00Z", "last_seen_at": "2026-03-16T15:58:00Z"}

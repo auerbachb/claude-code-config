@@ -62,11 +62,11 @@ Verdicts: `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget_exhausted`,
 
 ### Rate Limits & Behavior (Pro Tier)
 
-- **8 PR reviews/hour** (each push or `@coderabbitai full review` consumes one), **50 chat interactions/hour**.
-- **Batch fixes into ONE commit** before pushing — 4 fixes = 1 review consumed, not 4.
-- **Max 2 explicit `@coderabbitai full review` triggers per PR per hour.** After 2 with no response, tell the user CR may be rate-limited.
-- **Parallel agents:** stagger pushes; max 3-4 PRs triggering CR reviews/hour.
-- **"Reviews paused" or rate-limit language:** fall back to **BugBot** (see `bugbot.md`). If BugBot also fails, fall back to **Greptile** (see `greptile.md`). If Greptile unavailable, fall back to **self-review**.
+**Cap:** ~**8** GitHub PR reviews/hour + **50** chats/hour (tier variance — plan on **8**). One commit per fix batch before push. Max **2** explicit `@coderabbitai full review`/PR/hour (rolling 3600s); surface user at **2nd** recorded trigger.
+
+**State:** `cr_hourly.events` (push consumption), `.prs[N].cr_explicit_triggers` (manual). Script `.claude/scripts/cr-review-hourly.sh`: `--check`, `--consume`, `--record-explicit N` (stderr SURFACE if ≥2); prune rolling hour; default budget **8** (`CR_HOURLY_BUDGET` = tests only).
+
+**Cooldown / exhausted:** `cr-local-review.md` first; wait for window expiry (~≤60m) or escalation gate → BugBot → Greptile → self-review (`bugbot.md`, `greptile.md`). Parallel PRs: stagger (~3–4 CR-triggering pushes/hour).
 
 ### Polling
 

@@ -6,7 +6,8 @@
 
 ## State Files
 
-- `~/.claude/session-state.json`: session-wide orchestration (`prs`, active agents, reviewer quotas, polling failures). Full schema: `.claude/reference/session-state-schema.json`.
+- `~/.claude/session-state.json`: session-wide orchestration (`prs`, active agents, Greptile daily budget, **CodeRabbit hourly consumption** in `cr_hourly.events`, per-PR `cr_explicit_triggers`, polling failures). Full schema: `.claude/reference/session-state-schema.json`.
+- `~/.claude/handoffs/pr-{N}-handoff.json`: per-PR phase details consumed by the next phase.
 - **Polling:** Parent runs `polling-state-gate.sh N --ensure-session` once, then `polling-state-gate.sh N` each cycle (see script). Subagent handoffs overwrite the same file when a phase finishes.
 
 Update `session-state.json` on phase transitions and key events (agent launched/completed, review received, dropped poll recovered). Prefer `.claude/scripts/session-state.sh --set <jq-path>=<value>` / `--get <jq-path>`; it preserves siblings and writes atomically.

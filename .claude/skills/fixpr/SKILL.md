@@ -9,6 +9,14 @@ Single-pass cleanup of the current branch's PR. After this completes:
 2. **Zero failing CI checks** (all fixed and passing)
 3. **Every finding replied to** with what was done
 
+### Batching before burning CR quota (Issue #28)
+
+CodeRabbit caps **~8 GitHub PR reviews per hour** per account; **each push** consumes one. **Multi-round PRs** exhaust that budget fast if you fix-and-push repeatedly.
+
+**Coalesce locally first:** Before opening `/fixpr` on minor iterations, run **`coderabbit review --prompt-only`** per `cr-local-review.md` on uncommitted changes when feasible — catch issues **before** they cost a GitHub review.
+
+**Coalesce inside `/fixpr`:** Steps 1–3 intentionally gather **every** unresolved finding + every failing CI check, then fix **all** actionable items and **`git push` once**. Never push once per finding. One `/fixpr` cycle should produce **at most one** consume-side CR review per completed push (tracked below).
+
 ## How this skill is structured
 
 All mechanical GitHub API work — pagination, GraphQL queries, comment classification — lives in the shared script `.claude/scripts/pr-state.sh`. This file tells the AI layer how to invoke the script and what to do with its output (the JSON bundle).
@@ -168,11 +176,51 @@ Print: `[PUSH] committed and pushed (SHA: $(git rev-parse --short HEAD))`.
 
 If nothing needed fixing (all already-fixed/outdated, CI all green), skip the commit/push and set `DID_PUSH=0` (do not run Step 4c).
 
+**Record hourly CR consumption** after a successful push (atomic budget guard):
+
+```bash
+CR_HOURLY_SCRIPT=""
+for candidate in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/cr-review-hourly.sh" \
+  "$HOME/.claude/scripts/cr-review-hourly.sh" \
+  ".claude/scripts/cr-review-hourly.sh"; do
+  if [[ -x "$candidate" ]]; then
+    CR_HOURLY_SCRIPT="$candidate"
+    break
+  fi
+done
+if [[ -n "$CR_HOURLY_SCRIPT" ]]; then
+  if ! CR_SNAPSHOT="$("$CR_HOURLY_SCRIPT" --consume)"; then
+    echo "[CR-HOURLY] WARNING: hourly CR budget appears exhausted — $CR_SNAPSHOT"
+    echo "[CR-HOURLY] Prefer local coderabbit review + cooldown before more pushes; see cr-github-review.md"
+  else
+    echo "[CR-HOURLY] recorded push-level review event — $CR_SNAPSHOT"
+  fi
+else
+  echo "[CR-HOURLY] cr-review-hourly.sh not found — skip consumption tracking"
+fi
+```
+
 ---
 
 ## Step 3b: Trigger missing AI reviewers after a push
 
 Only run this step when Step 3 made a push. If Step 3 skipped the commit/push, skip this step too.
+
+Re-resolve the hourly helper path (Step 3 may not have run in the same shell):
+
+```bash
+CR_HOURLY_SCRIPT=""
+for candidate in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/cr-review-hourly.sh" \
+  "$HOME/.claude/scripts/cr-review-hourly.sh" \
+  ".claude/scripts/cr-review-hourly.sh"; do
+  if [[ -x "$candidate" ]]; then
+    CR_HOURLY_SCRIPT="$candidate"
+    break
+  fi
+done
+```
 
 Use the `$PUSHED_AT` captured immediately before `git push` in Step 3. Capturing it before the push avoids a race where a fast bot starts between push completion and the timestamp capture. After the push completes, wait exactly 2 minutes before checking reviewer status so CodeRabbit / Graphite / CodeAnt auto-triggers have time to post activity (BugBot is covered separately — always trigger `@cursor review` unconditionally; see `bugbot.md` and memory `feedback_bugbot_auto_trigger_unreliable.md`):
 
@@ -249,9 +297,19 @@ CR_TRIGGER_COUNT_LAST_HOUR=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NU
 
 if [[ "$(jq -r '.coderabbit' <<<"$REVIEWER_ACTIVITY")" != "true" ]]; then
   if [[ "$CR_TRIGGER_COUNT_LAST_HOUR" -lt 2 ]]; then
-    gh pr comment "$PR_NUMBER" --body "@coderabbitai full review"
+    if gh pr comment "$PR_NUMBER" --body "@coderabbitai full review"; then
+      # Persist explicit trigger only when the comment actually posted (avoid ghost timestamps on gh failure)
+      if [[ -n "$CR_HOURLY_SCRIPT" ]]; then
+        "$CR_HOURLY_SCRIPT" --record-explicit "$PR_NUMBER" || true
+      fi
+    else
+      echo "[REVIEWERS] FAILED to post @coderabbitai full review — check gh auth scopes; not recording explicit trigger" >&2
+    fi
   else
     echo "[REVIEWERS] coderabbit trigger budget exhausted (>=2 in the last hour); skipping manual trigger"
+    if [[ -n "$CR_HOURLY_SCRIPT" ]]; then
+      echo "[REVIEWERS] Surface to user: this PR has hit 2 explicit @coderabbitai full review posts in the last hour — CodeRabbit may be rate-limited; wait for reviews or use local CR (cr-local-review.md)."
+    fi
   fi
 fi
 if [[ "$(jq -r '.graphite' <<<"$REVIEWER_ACTIVITY")" != "true" ]]; then
