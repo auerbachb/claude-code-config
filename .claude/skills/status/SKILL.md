@@ -85,12 +85,14 @@ Classifications to present in the table:
 - **Behind base** — gate not met with `merge_state == "BEHIND"` or `missing` mentions BEHIND — show **Rebase** (invoke `/fixpr`); do not conflate with generic `BLOCKED`.
 - **Rate-limited** — gate not met with a CR rate-limit signal in `missing`.
 
-### Step 4: Check session-state
+### Step 4: Session-state + CR hourly quota
 
-If `~/.claude/session-state.json` exists, cross-reference it:
-- Active agents and what they're doing
+Always run `.claude/scripts/cr-review-hourly.sh --check` from the repo root (same `HOME` as the agent). Parse JSON on stdout and put **`CR quota: <reviews_used>/<budget>`** (or **`CR quota: exhausted`**) in the footer **every time**, even when `~/.claude/session-state.json` does not exist yet (`--check` then reports 0 used).
+
+If `session-state.json` exists, also cross-reference:
+
+- Active agents and tasks
 - Phase assignments (A/B/C)
-- CR quota usage this hour
 
 ### Step 5: Format the dashboard
 
@@ -106,5 +108,5 @@ PR    | Title                          | Reviewer | State          | Findings | 
 
 Below the table, add:
 - **Blocked:** List any PRs that are blocked and why
-- **CR quota:** N/8 reviews used this hour (if session-state available)
-- **Active agents:** List any running agents and their tasks (if session-state available)
+- **CR quota:** From `cr-review-hourly.sh --check` — **CR quota: N/M** or **exhausted** (deterministic; do not gate on session-state.json existing)
+- **Active agents:** List any running agents and their tasks (only when present in session-state)
