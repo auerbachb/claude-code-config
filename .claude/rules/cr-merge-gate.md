@@ -31,11 +31,11 @@ The merge gate depends on which reviewer owns the PR:
   - CR check-run `status: "completed"` without an accompanying APPROVED review object on the current SHA.
 - **Re-trigger policy:** after 12 min without approval, re-trigger `@coderabbitai full review` up to 2 times on the same SHA, capped at 2 explicit triggers/PR/hour. Rate-limit signals override the timeout. After 2 failed re-triggers on one SHA, fall back BugBot → Greptile → self-review.
 
-**CodeAnt on the CR path** (supplemental — `codeant-ai[bot]`; parallel to CR, not a BugBot/Greptile tier):
+**CodeAnt on the CR path** (`codeant-ai[bot]`; parallel to CR — see `codeant-graphite.md`):
 
-- **When it applies:** CodeAnt has a **review**, **inline comment**, or **issue comment** on the PR tied to the **current** HEAD SHA, **or** any CodeAnt-associated **check-run** on that commit (name / app slug / app name matches `codeant`, case-insensitive). If none of these exist on this SHA, CodeAnt does not block the CR path.
-- **Clean signal (any one):** (a) explicit `APPROVED` from `codeant-ai[bot]` on current HEAD, or (b) completed CodeAnt check-run with `conclusion: success`.
-- **Retraction vs clean:** treat `CHANGES_REQUESTED` as blocking only if it is **newer than** the latest of (latest `APPROVED` on that SHA, latest successful CodeAnt check-run completion time). Otherwise the supplemental clean signal clears the CodeAnt gate. Unresolved threads: Step 1c.
+- **Applies** when CodeAnt has review/comment on current HEAD **or** a CodeAnt check-run on that commit.
+- **Clean:** `APPROVED` on HEAD **or** completed CodeAnt check with `conclusion: success`.
+- **Retraction:** `CHANGES_REQUESTED` blocks only if newer than latest clean signal on that SHA. Threads: Step 1c.
 
 **BugBot path** (CR failed, BugBot responded, Greptile never triggered — sticky; see `bugbot.md`):
 
@@ -79,9 +79,20 @@ This applies to ALL merge paths: manual `gh pr merge`, the `/merge` skill, the `
 
 Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses cursor/copilot bots). `merge-gate.sh` enforces this — any unresolved thread blocks, regardless of author. **If any unresolved: DO NOT MERGE.** Reply + `resolveReviewThread`, then re-check.
 
+## Step 1d — `mergeStateStatus` and branch sync (NON-NEGOTIABLE)
+
+**Do not infer “behind base” from `mergeStateStatus: "BLOCKED"` alone.** Read **`mergeStateStatus` and `mergeable`** explicitly (`gh pr view <N> --json mergeStateStatus,mergeable,reviewDecision` — same as `merge-gate.sh`).
+
+- **`CLEAN`** — OK for merge once Steps 1–1c and 1b pass.
+- **`BEHIND`** — Not merge-ready. `/fixpr` rebase (see `fixpr/SKILL.md` / `pr-state.sh`); **force-push only** after `dirty-main-guard.sh --check`. `merge-gate.sh` fails until resolved; polling invokes `/fixpr`.
+- **`BLOCKED`** — Use `reviewDecision`, CI, threads — not a substitute for **`BEHIND`**.
+- **`UNSTABLE` / `DIRTY` / `UNKNOWN`** — Not merge-ready; wait, rebase, or resolve per `fixpr` / Step 1b.
+
+**`mergeable == "CONFLICTING"`** — conflicts; `/fixpr` rebase path.
+
 ## Step 2 — Verify every Test Plan checkbox (MANDATORY — do NOT skip)
 
-> After Step 1c passes (`merge-gate.sh` enforces resolved threads), verify AC before merge.
+> After Steps 1c and 1d pass (`merge-gate.sh` enforces resolved threads and merge metadata including `mergeStateStatus`), verify AC before merge.
 >
 > 1. Fetch the PR body via `gh pr view N --json body`
 > 2. Parse **every** checkbox in the **Test plan** section of the PR description
