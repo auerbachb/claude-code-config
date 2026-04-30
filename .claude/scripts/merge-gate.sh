@@ -6,9 +6,6 @@
 #                     HEAD SHA + zero unresolved threads (SHA freshness enforced).
 #                     CodeRabbit check-run must be green when CodeRabbit supplies
 #                     the approval; CodeAnt-only approval skips that check-run.
-#                     When CodeAnt has artifacts on that SHA, CodeAnt clean signal
-#                     must also hold (explicit APPROVED or successful CodeAnt
-#                     check-run vs CHANGES_REQUESTED) — issue #367
 #   - BugBot path   : 1 clean BugBot review on current HEAD + zero unresolved BugBot threads
 #   - Greptile path : severity-gated — clean OR only P1/P2 (fixed) OR P0 fixed + re-review clean
 # Also enforces the pre-merge CI gate from .claude/rules/cr-merge-gate.md Step 1b
