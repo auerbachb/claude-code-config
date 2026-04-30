@@ -9,7 +9,7 @@
 
 Stop polling ONLY when one current-HEAD review path below is satisfied:
 
-1. **CR:** explicit clean `APPROVED` review on current HEAD.
+1. **CR:** explicit clean `APPROVED` on current HEAD **and** CodeAnt clean when CodeAnt has participated on that SHA (`codeant-graphite.md`, `merge-gate.sh`).
 2. **BugBot:** clean BugBot pass on current HEAD.
 3. **Greptile:** severity gate passed.
 
@@ -31,7 +31,13 @@ The merge gate depends on which reviewer owns the PR:
   - CR check-run `status: "completed"` without an accompanying APPROVED review object on the current SHA.
 - **Re-trigger policy:** after 12 min without approval, re-trigger `@coderabbitai full review` up to 2 times on the same SHA, capped at 2 explicit triggers/PR/hour. Rate-limit signals override the timeout. After 2 failed re-triggers on one SHA, fall back BugBot → Greptile → self-review.
 
-**BugBot path** (CR failed, BugBot responded, Greptile was never triggered — sticky assignment, see `bugbot.md`):
+**CodeAnt on the CR path** (supplemental — `codeant-ai[bot]`; parallel to CR, not a BugBot/Greptile tier):
+
+- **When it applies:** CodeAnt has a **review**, **inline comment**, or **issue comment** on the PR tied to the **current** HEAD SHA, **or** any CodeAnt-associated **check-run** on that commit (name / app slug / app name matches `codeant`, case-insensitive). If none of these exist on this SHA, CodeAnt does not block the CR path.
+- **Clean signal (any one):** (a) explicit `APPROVED` from `codeant-ai[bot]` on current HEAD, or (b) completed CodeAnt check-run with `conclusion: success`.
+- **Retraction vs clean:** treat `CHANGES_REQUESTED` as blocking only if it is **newer than** the latest of (latest `APPROVED` on that SHA, latest successful CodeAnt check-run completion time). Otherwise the supplemental clean signal clears the CodeAnt gate. Unresolved threads: Step 1c.
+
+**BugBot path** (CR failed, BugBot responded, Greptile never triggered — sticky; see `bugbot.md`):
 
 - 1 clean BugBot review on the current HEAD SHA satisfies the gate (BugBot's completion signals are reliable).
 - After fixing BugBot findings, BugBot auto-reviews the new push. If auto-review doesn't fire within 10 min, trigger manually via `@cursor review`.
@@ -54,7 +60,7 @@ The merge gate depends on which reviewer owns the PR:
 
 Some repos list CR (`@coderabbitai`) or Greptile (`@greptile-apps`) in `CODEOWNERS`. When branch protection has `require_code_owner_reviews`, that bot's `APPROVED` review on the current HEAD SHA satisfies the code-owner approval requirement. Do not ask the PR author or repo owner to self-approve — GitHub does not allow author self-approval and the bot approval is the terminal unblock when fresh.
 
-Because `CODEOWNERS` varies by repo, this is a runtime check. `.claude/scripts/merge-gate.sh` reads `CODEOWNERS`, `.github/CODEOWNERS`, or `docs/CODEOWNERS`; when CR or Greptile is a code owner it also requires GitHub `reviewDecision == "APPROVED"` on the current PR head. If branch protection is `BLOCKED` and a prior bot approval is stale/dismissed after a push, trigger that bot again (`@coderabbitai full review` for CR, `@greptileai` for Greptile) and keep polling. Human escalation is only for an actual human-authored `CHANGES_REQUESTED`, not stale bot approval.
+Because `CODEOWNERS` varies by repo, this is a runtime check. `.claude/scripts/merge-gate.sh` reads `CODEOWNERS`, `.github/CODEOWNERS`, or `docs/CODEOWNERS`; when CR, Greptile, or **CodeAnt** (`@codeant-ai`) is a code owner it also requires GitHub `reviewDecision == "APPROVED"` on the current PR head. If branch protection is `BLOCKED` and a prior bot approval is stale/dismissed after a push, trigger that bot again (`@coderabbitai full review` for CR, `@greptileai` for Greptile, `@codeant-ai review` for CodeAnt) and keep polling. Human escalation is only for an actual human-authored `CHANGES_REQUESTED`, not stale bot approval.
 
 ## Step 1b — CI Must Pass Before Merge (NON-NEGOTIABLE)
 
