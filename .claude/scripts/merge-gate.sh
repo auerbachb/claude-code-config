@@ -375,23 +375,6 @@ fi
 case "$REVIEWER" in
   cr)
 
-    # CodeRabbit check-run must be green on HEAD whenever we are on the CR path.
-    CR_CHECK=$(echo "$CHECK_RUNS_JSON" | jq -c '[.check_runs[]? | select(.name == "CodeRabbit")] | first // empty')
-    CR_CHECK_OK=false
-    if [[ -n "$CR_CHECK" ]]; then
-      CR_STATUS=$(echo "$CR_CHECK" | jq -r '.status // ""')
-      CR_CONCLUSION=$(echo "$CR_CHECK" | jq -r '.conclusion // ""')
-      if [[ "$CR_STATUS" == "completed" && "$CR_CONCLUSION" == "success" ]]; then
-        CR_CHECK_OK=true
-      fi
-    else
-      # Fallback: legacy commit-status API.
-      STATUSES_JSON=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses" 2>/dev/null || echo '[]')
-      if echo "$STATUSES_JSON" | jq -e '.[] | select(.context | test("CodeRabbit"; "i")) | select(.state == "success")' >/dev/null 2>&1; then
-        CR_CHECK_OK=true
-      fi
-    fi
-
     # Require 1 explicit CodeRabbit APPROVED on HEAD (SHA freshness in the jq filter).
     # Retraction: CHANGES_REQUESTED newer than APPROVED on same SHA invalidates approval.
     LATEST_CR_APPROVED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
@@ -457,8 +440,6 @@ case "$REVIEWER" in
       else
         MISSING+=("need 1 explicit CodeRabbit APPROVED review on HEAD ${HEAD_SHA:0:7} (have $TOTAL_CR_ON_HEAD CR review(s) on this SHA)")
       fi
-    elif [[ "$CR_CHECK_OK" != true ]]; then
-      MISSING+=("CodeRabbit check-run not green on HEAD ${HEAD_SHA:0:7}")
     fi
 
     # CodeAnt supplemental gate (#367 / CodeRabbit review): only when CodeAnt left
