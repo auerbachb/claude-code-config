@@ -31,7 +31,15 @@ if ! git -C "$TARGET" rev-parse --git-dir >/dev/null 2>&1; then
   exit 1
 fi
 
-CONFIG="$(git -C "$TARGET" rev-parse --git-path .graphite_repo_config)"
+# rev-parse --git-path returns a path relative to the repo root, not to $PWD.
+REL="$(git -C "$TARGET" rev-parse --git-path .graphite_repo_config)"
+TOP="$(git -C "$TARGET" rev-parse --show-toplevel)"
+if [[ "$REL" == /* ]]; then
+  CONFIG="$REL"
+else
+  CONFIG="$TOP/${REL#./}"
+fi
+
 if [[ -f "$CONFIG" ]]; then
   echo "graphite-repo-init: already present: $CONFIG"
   exit 0
