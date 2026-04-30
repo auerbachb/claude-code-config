@@ -76,6 +76,12 @@ branch_issue = branch_match.group(1) if branch_match else ""
 if branch_issue and branch_issue in issue_matches:
     empty()
 
+# Desktop / SDK session worktrees often use `claude/<adjective>-<name>-<hash>` with no
+# issue token in the branch name. That is not evidence of a stale harness worktree —
+# only warn when the branch actually encodes a different issue than the prompt.
+if not branch_issue and re.match(r"^claude/", branch):
+    empty()
+
 prompt_issue = issue_matches[0]
 
 if branch_issue:
@@ -84,9 +90,10 @@ else:
     mismatch = f"current branch '{branch}' does not include issue #{prompt_issue}"
 
 message = (
-    "STALE WORKTREE CHECK: STOP before making edits: "
-    f"{mismatch}. Return to the root repo, sync main, and create a fresh "
-    "issue-matching worktree. See CLAUDE.md 'ALWAYS USE A WORKTREE'."
+    "Worktree / issue mismatch (review before editing): "
+    f"{mismatch}. If you meant this issue, sync main and use a branch named "
+    "`issue-<N>-...` in a linked worktree, or continue here only if this branch "
+    "is intentional. See CLAUDE.md 'ALWAYS USE A WORKTREE'."
 )
 
 print(json.dumps({
