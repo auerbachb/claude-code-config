@@ -21,6 +21,7 @@ All mechanical GitHub API work — pagination, GraphQL queries, comment classifi
 | 3. Fix & push | Judgment | AI edits files, commits, pushes |
 | 3b. Trigger missing AI reviewers | Mechanical | wait 2 minutes, detect 4-bot activity on the new SHA, post one trigger comment per missing bot |
 | 4. Reply & resolve | Mechanical | `gh api` calls against IDs from the JSON |
+| 4c. Post-push thread verify (if Step 3 pushed) | Mechanical | Re-fetch threads on new HEAD; explicitly resolve any touched thread still `isResolved: false` (fixes unchanged-line orphans), then `--verify-only` |
 | 5. Verify | Mechanical | Re-run `pr-state.sh --since $RUN_STARTED_AT` |
 | 6. Merge blockers | Judgment | AI reads `.merge_state` from the JSON |
 | 7. Final summary | Judgment | AI emits the status |
@@ -160,11 +161,12 @@ git commit -m "fix: resolve all review findings and CI failures
 Fixes N review findings and M CI errors."
 PUSHED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 git push
+DID_PUSH=1
 ```
 
 Print: `[PUSH] committed and pushed (SHA: $(git rev-parse --short HEAD))`.
 
-If nothing needed fixing (all already-fixed/outdated, CI all green), skip the commit/push.
+If nothing needed fixing (all already-fixed/outdated, CI all green), skip the commit/push and set `DID_PUSH=0` (do not run Step 4c).
 
 ---
 
@@ -305,11 +307,11 @@ The script strips any `@greptileai` tokens from the body in greptile mode and an
 
 ### 4b. Resolve via shared helper
 
-After all replies are posted, resolve and verify exactly the threads `/fixpr` touched. Build the expected-resolved set from the GraphQL thread IDs for every item replied to in 4a:
+After all replies are posted, resolve and verify exactly the threads `/fixpr` touched. Build the expected-resolved set from the GraphQL thread IDs for every item replied to in 4a (same set you will re-verify in Step 4c after a push):
 
 ```bash
 TOUCHED_THREADS=$(mktemp -t fixpr-touched-threads.XXXXXX)
-# append one GraphQL thread node id per unresolved thread
+# append one GraphQL thread node id per unresolved thread from the Step 0 audit
 jq -r '.threads.unresolved[].id' "$AUDIT" > "$TOUCHED_THREADS"
 
 THREAD_RESOLUTION_OUTPUT=$(bash .claude/scripts/resolve-review-threads.sh "$PR_NUMBER" \
@@ -317,7 +319,39 @@ THREAD_RESOLUTION_OUTPUT=$(bash .claude/scripts/resolve-review-threads.sh "$PR_N
 echo "$THREAD_RESOLUTION_OUTPUT"
 ```
 
+**Unchanged-line threads:** GitHub only auto-resolves a review thread when the **exact** commented line changes. If `/fixpr` fixed the issue by editing nearby code (or declined/OBE), the thread can stay `isResolved: false` after Step 4b until the script runs `resolveReviewThread` / `minimizeComment` on that thread id. The explicit `--thread-ids-file` set forces resolution for **every** addressed thread, not only those GitHub auto-closed.
+
 The script re-fetches `pullRequest.reviewThreads` via GraphQL after each mutation pass and again before exit. For any touched thread still reporting `isResolved: false`, it retries `resolveReviewThread` and falls back to `minimizeComment(classifier: RESOLVED)`. Exit codes: `0` means every touched thread was verified resolved; `1` means at least one dangling thread remains and `/fixpr` must not declare success; `3` PR not found; `4` gh error. It prints `[VERIFY] addressed=N resolved=M dangling=K` plus `[STUCK]` lines with URLs/reasons for every dangling thread.
+
+Keep `$TOUCHED_THREADS` until after Step 4c (same path as Step 4b).
+
+### 4c. Post-push: re-resolve and verify touched threads on the new HEAD
+
+Run **only when Step 3 pushed** (`DID_PUSH=1`). A new commit can reopen threads that were resolved on the prior HEAD (or leave unchanged-line threads still open until an explicit resolve sees the post-push graph).
+
+1. Run the same resolve pass again against the **same** `TOUCHED_THREADS` file (fresh GraphQL fetch on current HEAD).
+2. Run a read-only verification pass so completion is blocked until a **second** GraphQL read shows every addressed id as `isResolved: true`.
+
+```bash
+POST_PUSH_RESOLVE_FAILED=0
+POST_PUSH_VERIFY_FAILED=0
+POST_PUSH_THREAD_OUTPUT=""
+POST_PUSH_VERIFY_OUTPUT=""
+if [[ "${DID_PUSH:-0}" -eq 1 ]]; then
+  POST_PUSH_THREAD_OUTPUT=$(bash .claude/scripts/resolve-review-threads.sh "$PR_NUMBER" \
+    --thread-ids-file "$TOUCHED_THREADS" --max-attempts 2 2>&1) || POST_PUSH_RESOLVE_FAILED=1
+  echo "$POST_PUSH_THREAD_OUTPUT"
+  POST_PUSH_VERIFY_OUTPUT=$(bash .claude/scripts/resolve-review-threads.sh "$PR_NUMBER" \
+    --thread-ids-file "$TOUCHED_THREADS" --verify-only 2>&1) || POST_PUSH_VERIFY_FAILED=1
+  echo "$POST_PUSH_VERIFY_OUTPUT"
+fi
+```
+
+Treat non-zero exit from either sub-step as `THREADS_STUCK` in Step 7 (do not declare `CLEAN`). On success, both lines print `[VERIFY] addressed=N resolved=N dangling=0`.
+
+When `TOUCHED_THREADS` is empty (no threads from Step 0’s `.threads.unresolved`, e.g. CI-only fix with a push), `--verify-only` still runs but is a **no-op**: it prints `[VERIFY] addressed=0 resolved=0 dangling=0` and exits 0 — do not treat that as failure.
+
+When `DID_PUSH=0`, omit Step 4c; Step 4b’s resolver output alone is authoritative for touched threads.
 
 ---
 
@@ -331,7 +365,7 @@ VERIFY=$("$SCRIPT" --since "$RUN_STARTED_AT")
 
 ### 5a. Threads
 
-The Step 4 resolver already re-fetched `pullRequest.reviewThreads` after replying, retried `resolveReviewThread`, used `minimizeComment(classifier: RESOLVED)` as fallback, and printed the authoritative addressed/resolved/dangling counts. Re-state those counts here from `THREAD_RESOLUTION_OUTPUT`; do not recompute them from `.threads.unresolved_count` alone because `/fixpr` must verify the specific threads it replied to.
+The Step 4b resolver (and, when `DID_PUSH=1`, Step 4c’s resolve + `--verify-only` passes) re-fetched `pullRequest.reviewThreads` via GraphQL, retried `resolveReviewThread`, used `minimizeComment(classifier: RESOLVED)` as fallback, and printed addressed/resolved/dangling counts. Re-state the **latest** `[VERIFY]` line(s) here from `THREAD_RESOLUTION_OUTPUT` plus `POST_PUSH_THREAD_OUTPUT` / `POST_PUSH_VERIFY_OUTPUT` when Step 4c ran; do not recompute from `.threads.unresolved_count` alone because `/fixpr` must verify the specific threads it replied to.
 
 ```bash
 UNRESOLVED=$(jq -r '.threads.unresolved_count' "$VERIFY")
