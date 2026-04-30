@@ -6,6 +6,10 @@
 
 Primary review workflow — catches issues before PR noise/quota; does not replace the GitHub merge gate.
 
+### Anti–rate-limit pre-flight (local-first)
+
+**~8 reviews/hour** (hidden cap, tier-dependent). **Batch locally:** `coderabbit review --prompt-only` → fix all → re-run until clean → **one commit, one push**. `/fixpr` matches: all threads + CI, **one** commit/push; cap + session tracking: `cr-github-review.md` and `cr-review-hourly.sh`.
+
 ### Prerequisites
 
 - CLI installed/authenticated (`coderabbit --version`); `.coderabbit.yaml` if the repo uses CR.

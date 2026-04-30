@@ -233,7 +233,7 @@ See `.claude/scripts/README.md` for detailed contracts, arguments, and exit code
 | `global-settings.json` | Merged into `~/.claude/settings.json` | Hooks, permissions (`allow` rules for autonomous operation), model preference, experimental flags |
 | `.coderabbit.yaml` | Repo root | CodeRabbit review config: assertive profile, token-efficiency checks, knowledge base integration |
 | `.claude/pm-config.md` | Per-repo (bootstrapped by `/pm`) | PM config: role, OKRs, team roster, infrastructure/architecture detection |
-| `~/.claude/session-state.json` | Runtime (auto-created) | Session orchestration state: PR phases, CR quota, active subagents, Greptile daily budget |
+| `~/.claude/session-state.json` | Runtime (auto-created) | Session orchestration state: PR phases, **CR hourly consumption** (`cr_hourly.events`), per-PR `cr_explicit_triggers`, active subagents, Greptile daily budget |
 
 ---
 
