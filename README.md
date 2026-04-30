@@ -95,7 +95,7 @@ After upgrading or first enabling plugins, run **`/reload-plugins`** once inside
 
 ### Graphite CLI + Claude Code plugins (optional)
 
-`global-settings.json` seeds **`extraKnownMarketplaces`** (the [claude-code-graphite](https://github.com/georgeguimaraes/claude-code-graphite) catalog) and **`enabledPlugins`** for `graphite` and `graphite-mcp`. That matches [Anthropic’s team-marketplace pattern](https://code.claude.com/docs/en/discover-plugins#configure-team-marketplaces): Claude Code can fetch and enable those plugins without manual `/plugin marketplace add` for users who trust this repo’s defaults.
+`global-settings.json` seeds **`extraKnownMarketplaces`** (the [claude-code-graphite](https://github.com/georgeguimaraes/claude-code-graphite) catalog) and **`enabledPlugins`** for `graphite` and `graphite-mcp`. That matches [Anthropic’s team-marketplace pattern](https://code.claude.com/docs/en/discover-plugins#configure-team-marketplaces): Claude Code can **discover** those marketplaces/plugins and **prompt** you to install them after you trust the folder—**explicit consent** is required, and you may still need `/plugin marketplace add` manually if you skip the prompt or in setups where prompting is unreliable. Once installed to your scope, **`enabledPlugins`** from merged settings can enable the extensions without re-running marketplace commands every time.
 
 **Per-repo marker (not committed):** The Graphite plugin detects repos via **`.git/.graphite_repo_config`**. Run **`gt repo init`** in each clone where you want stacked-PR context, or:
 
