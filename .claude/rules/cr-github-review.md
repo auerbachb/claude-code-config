@@ -43,25 +43,13 @@ If **ANY** of the conditions below hold, invoke `/fixpr` and do NOT request a ne
 
 ### Reviewer escalation gate (MANDATORY per cycle)
 
-Run this gate **every poll cycle while `reviewer == cr`**, after the shared PR snapshot and CI check. Helper:
+Run **every poll cycle while `reviewer == cr`** after PR snapshot + CI:
 
 ```bash
 STATUS=$(.claude/scripts/escalate-review.sh <PR_NUMBER> | sed -n 's/^STATUS=//p')
 ```
 
-The helper prints exactly one `STATUS=` verdict and exits 0. Canonical steps:
-
-1. Fetch CodeRabbit check-run/status for current HEAD.
-2. If `conclusion == "failure"` and title/description contains `rate limit`, go to step 5.
-3. If push age >12 min and no CR review posted for current HEAD, go to step 5.
-4. Otherwise continue polling CR. **STOP: `STATUS=polling_cr`.**
-5. Check BugBot (`cursor[bot]` comments/reviews + `Cursor Bugbot` check-run). Cache first install verdict at `.prs["<PR_NUMBER>"].bugbot_installed`.
-   - If BugBot has posted a review/comment or completed its check-run, switch sticky reviewer ownership to BugBot. **STOP: `STATUS=switch_bugbot`.**
-   - If cached `bugbot_installed == false`, skip the 10-minute BugBot grace window and continue to step 6.
-   - If installed, push age <10 min, and silent, keep polling (BugBot grace window). **STOP: `STATUS=polling_cr`.**
-6. Run the Greptile budget check per `greptile.md`.
-   - If budget is available, trigger Greptile and switch sticky reviewer ownership to Greptile. **STOP: `STATUS=trigger_greptile`.**
-   - If budget is exhausted, perform self-review and report the merge blocker to the user. **STOP: `STATUS=budget_exhausted` then `STATUS=self_review` for the active self-review path.**
+Verdicts: `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget_exhausted`, `self_review` — follow `escalate-review.sh` / `bugbot.md` / `greptile.md` (rate-limit → BugBot → Greptile; cache `bugbot_installed` in session-state).
 
 ### Rate Limits & Behavior (Pro Tier)
 

@@ -31,11 +31,11 @@ The merge gate depends on which reviewer owns the PR:
   - CR check-run `status: "completed"` without an accompanying APPROVED review object on the current SHA.
 - **Re-trigger policy:** after 12 min without approval, re-trigger `@coderabbitai full review` up to 2 times on the same SHA, capped at 2 explicit triggers/PR/hour. Rate-limit signals override the timeout. After 2 failed re-triggers on one SHA, fall back BugBot → Greptile → self-review.
 
-**CodeAnt on the CR path** (supplemental — `codeant-ai[bot]`; parallel to CR, not a BugBot/Greptile tier):
+**CodeAnt on the CR path** (`codeant-ai[bot]`; parallel to CR — see `codeant-graphite.md`):
 
-- **When it applies:** CodeAnt has a **review**, **inline comment**, or **issue comment** on the PR tied to the **current** HEAD SHA, **or** any CodeAnt-associated **check-run** on that commit (name / app slug / app name matches `codeant`, case-insensitive). If none of these exist on this SHA, CodeAnt does not block the CR path.
-- **Clean signal (any one):** (a) explicit `APPROVED` from `codeant-ai[bot]` on current HEAD, or (b) completed CodeAnt check-run with `conclusion: success`.
-- **Retraction vs clean:** treat `CHANGES_REQUESTED` as blocking only if it is **newer than** the latest of (latest `APPROVED` on that SHA, latest successful CodeAnt check-run completion time). Otherwise the supplemental clean signal clears the CodeAnt gate. Unresolved threads: Step 1c.
+- **Applies** when CodeAnt has review/comment on current HEAD **or** a CodeAnt check-run on that commit.
+- **Clean:** `APPROVED` on HEAD **or** completed CodeAnt check with `conclusion: success`.
+- **Retraction:** `CHANGES_REQUESTED` blocks only if newer than latest clean signal on that SHA. Threads: Step 1c.
 
 **BugBot path** (CR failed, BugBot responded, Greptile never triggered — sticky; see `bugbot.md`):
 
@@ -81,20 +81,14 @@ Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses
 
 ## Step 1d — `mergeStateStatus` and branch sync (NON-NEGOTIABLE)
 
-**Do not infer “behind base” from `mergeStateStatus: "BLOCKED"` alone.** `BLOCKED` is overloaded (required checks, reviews, code owners, etc.). Always read **`mergeStateStatus` and `mergeable` explicitly** (e.g. `gh pr view <N> --json mergeStateStatus,mergeable,reviewDecision` — same fields `merge-gate.sh` uses).
+**Do not infer “behind base” from `mergeStateStatus: "BLOCKED"` alone.** Read **`mergeStateStatus` and `mergeable`** explicitly (`gh pr view <N> --json mergeStateStatus,mergeable,reviewDecision` — same as `merge-gate.sh`).
 
-| `mergeStateStatus` | Meaning | Action |
-|--------------------|---------|--------|
-| `CLEAN` | GitHub considers the branch mergeable with respect to the base | OK for merge once Steps 1–1c and 1b pass |
-| `BEHIND` | Branch tip is behind the base branch | **Not merge-ready.** Invoke `/fixpr` (rebase onto the PR base per `.claude/skills/fixpr/SKILL.md` merge_state / `pr-state.sh` — do not reimplement). After `git fetch` + `git rebase` onto the correct base, **force-push only from a clean worktree** after `.claude/scripts/dirty-main-guard.sh --check` passes — force-push is destructive. Re-run reviews/CI on the new SHA; keep polling until Step 1d is satisfied |
-| `BLOCKED` | Protection or merge requirements not met | Use `reviewDecision`, CI, and thread state — not a substitute for checking `BEHIND` |
-| `UNSTABLE` | Required checks green but something non-merge-blocking is pending/failing | Treat as not merge-ready until CI/review gate is clearly satisfied; see Step 1b |
-| `DIRTY` | Merge commit cannot be computed cleanly | Block merge; investigate (often needs rebase or conflict resolution via `/fixpr`) |
-| `UNKNOWN` | GitHub still computing | Wait and re-check; do not merge |
+- **`CLEAN`** — OK for merge once Steps 1–1c and 1b pass.
+- **`BEHIND`** — Not merge-ready. `/fixpr` rebase (see `fixpr/SKILL.md` / `pr-state.sh`); **force-push only** after `dirty-main-guard.sh --check`. `merge-gate.sh` fails until resolved; polling invokes `/fixpr`.
+- **`BLOCKED`** — Use `reviewDecision`, CI, threads — not a substitute for **`BEHIND`**.
+- **`UNSTABLE` / `DIRTY` / `UNKNOWN`** — Not merge-ready; wait, rebase, or resolve per `fixpr` / Step 1b.
 
-**`mergeable == "CONFLICTING"`** (from the same JSON) means merge conflicts — `/fixpr` rebase path; do not merge until resolved.
-
-**Polling / merge gate / Phase C:** When `mergeStateStatus == "BEHIND"`, the merge gate **must** fail until rebased (`merge-gate.sh` enforces this). Polling treats BEHIND as a **`/fixpr` trigger**, not a reason to stop polling or to treat the PR as “blocked by branch protection” without rebase.
+**`mergeable == "CONFLICTING"`** — conflicts; `/fixpr` rebase path.
 
 ## Step 2 — Verify every Test Plan checkbox (MANDATORY — do NOT skip)
 
