@@ -10,6 +10,10 @@ These apply to EVERY message the parent agent sends to the user. No exceptions, 
 
 After context compaction, your FIRST action is to reconstruct monitoring state (see "Post-Compaction Recovery" in `monitor-mode.md`) and report it WITH a timestamp.
 
+## Thread title — `[#issue]` prefix
+
+There is no supported customization for auto-generated thread/tab names. **Best-effort only:** start the first *user message* with a leading `[#N]` token — e.g. single `[#339]` or multi `[#339, #341]` — so the auto-summarizer (which typically picks up leading tokens) is likelier to put the issue number(s) in the title.
+
 ---
 
 ## AUTONOMOUS WORKFLOW EXECUTION — DO NOT ASK PERMISSION
@@ -79,6 +83,7 @@ Detailed workflow rules are split into topic-specific files in `.claude/rules/`:
 | `cr-local-review.md` | Local CR review |
 | `cr-github-review.md` | GitHub review polling |
 | `cr-merge-gate.md` | Merge gate |
+| `codeant-graphite.md` | CodeAnt + Graphite supplemental review |
 | `bugbot.md` | BugBot fallback |
 | `greptile.md` | Greptile fallback |
 | `subagent-orchestration.md` | Subagent spawning |

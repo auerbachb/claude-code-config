@@ -4,7 +4,7 @@
 > **Ask first:** Never — fix findings autonomously.
 > **Never:** Trigger Greptile before checking if BugBot already posted a review. Include `@cursor` in reply comments (may trigger a re-review). Ignore BugBot findings.
 
-BugBot is the **second-tier** AI code reviewer — free, auto-triggers on every push/PR open, and sits between CR (primary) and Greptile (last resort). The full review chain: **CR → BugBot → Greptile → self-review.**
+BugBot is the **second-tier** AI code reviewer — free, auto-triggers on every push/PR open, and sits between CR (primary) and Greptile (last resort). The full review chain: **CR → BugBot → Greptile → self-review.** CodeAnt/Graphite parallel on CR path: `codeant-graphite.md`.
 
 **Escalation authority:** The numbered gate + STOP conditions live in `cr-github-review.md` ("Reviewer escalation gate"). Use `.claude/scripts/escalate-review.sh <PR_NUMBER>` for the per-cycle `STATUS=` verdict; this file only defines BugBot behavior after `STATUS=switch_bugbot`.
 

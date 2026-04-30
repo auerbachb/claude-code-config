@@ -40,7 +40,8 @@
 # See .claude/rules/cr-github-review.md "Processing CR Feedback" step 4.
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
+mkdir -p "${HOME}/.claude" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
 
 AUTHORS="coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai"
 DRY_RUN=0
