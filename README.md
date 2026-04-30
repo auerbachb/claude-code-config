@@ -83,7 +83,7 @@ bash ./setup.sh
 This single command handles everything:
 1. Creates `~/.claude/skills/` directory
 2. Merges settings from `global-settings.json` into `~/.claude/settings.json` (preserves existing keys), including the **Graphite plugin marketplace** and enabled plugins when those keys are missing locally
-3. Optionally runs `gt repo init` in this checkout when Graphite CLI (`gt`) is installed, creating `.git/.graphite_repo_config` so the Graphite plugin can auto-detect this repo (harmless skip if `gt` is missing)
+3. Optionally runs `gt repo init` in this checkout when Graphite CLI (`gt`) is installed, creating `.git/.graphite_repo_config` so the Graphite plugin can auto-detect this repo (skipped quietly if `gt` is missing; **setup fails** if `gt` is present but `gt repo init` fails)
 4. Sets up the [skills worktree](#architecture) and symlinks (`CLAUDE.md`, rules, all skills)
 5. Registers all hooks with correct paths
 6. Installs the git pre-commit hook that blocks root-`main` commits

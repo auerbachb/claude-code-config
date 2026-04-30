@@ -9,7 +9,8 @@
 #   bash .claude/scripts/graphite-repo-init.sh           # cwd or skills-worktree root
 #   bash .claude/scripts/graphite-repo-init.sh /path/to/repo
 #
-# Non-destructive: exits 0 if gt is missing or the repo is already initialized.
+# Succeeds (exit 0) if: Graphite CLI is missing; repo already has the marker; or
+# init completes. Exits 1 if `gt repo init` fails (auth/network, etc.).
 
 set -euo pipefail
 
@@ -47,7 +48,7 @@ fi
 
 echo "graphite-repo-init: running gt repo init in $TARGET"
 if ! (cd "$TARGET" && gt repo init); then
-  echo "graphite-repo-init: gt repo init failed (auth/network?). Skip or run manually later." >&2
-  exit 0
+  echo "graphite-repo-init: gt repo init failed (auth/network?). Fix credentials or run manually." >&2
+  exit 1
 fi
 echo "graphite-repo-init: done ($CONFIG)"

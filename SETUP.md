@@ -22,7 +22,7 @@ The script handles everything: directory creation, symlinks, settings merge, hoo
 
 1. Creates the `~/.claude/skills/` directory
 2. Merges non-hook settings from `global-settings.json` into `~/.claude/settings.json` (existing keys like `permissions`, `model`, `env` are preserved — only missing keys are seeded), including optional Graphite plugin marketplace and `enabledPlugins` when absent
-3. Optionally runs `gt repo init` for this checkout when Graphite CLI is installed (creates `.git/.graphite_repo_config`)
+3. Optionally runs `gt repo init` for this checkout when Graphite CLI is installed (creates `.git/.graphite_repo_config`; setup fails if `gt repo init` fails when `gt` is installed)
 4. Verifies all hook scripts exist and are executable
 5. Runs `setup-skills-worktree.sh` which:
    - Creates a dedicated skills worktree and skill symlinks
