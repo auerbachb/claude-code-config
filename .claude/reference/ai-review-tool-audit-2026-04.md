@@ -53,9 +53,7 @@ Only three tools currently participate in the formal merge gate:
 - Greptile: last-resort path; severity-gated pass after CodeRabbit and BugBot
   fail.
 
-codeant.ai, Vercel Agent, and Graphite are not currently represented in
-`.claude/rules/cr-merge-gate.md`. During the next month, keep them advisory
-unless they prove unique, reliable value and their costs/noise are acceptable.
+codeant.ai, Vercel Agent, and Graphite were not in `cr-merge-gate.md` at audit time. **Update (#367):** CodeAnt is now encoded on the CR path in `cr-merge-gate.md` and `merge-gate.sh` when it has participated on the current SHA; Graphite remains supplemental until it posts reliably.
 
 ## Tool: CodeRabbit
 

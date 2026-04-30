@@ -1,6 +1,6 @@
 ## GitHub CodeRabbit Review Loop (Fallback)
 
-> **NEVER declare a PR done immediately after pushing.** Every push triggers a new CR/BugBot/Greptile review. Poll until `cr-merge-gate.md` is met; "0 unresolved threads" is not an exit condition.
+> **NEVER declare a PR done immediately after pushing.** Every push triggers new CR/BugBot review activity; **Greptile** runs only when escalated. **CodeAnt** and **Graphite** (`codeant-ai[bot]`, `graphite-app[bot]`) may also run in parallel on the CR path. Poll until `cr-merge-gate.md` is met; "0 unresolved threads" is not an exit condition.
 >
 > **Always:** Poll all 3 endpoints + check-runs every cycle. Use `per_page=100`. Filter by `coderabbitai[bot]`. Batch fixes into one commit. Reply to every thread. Resolve threads via GraphQL. **Enter the polling loop immediately after push — do NOT ask.** Invoke `/fixpr` when any trigger condition fires (see "Per-cycle check" below).
 > **Ask first:** Merging — always ask the user. **Nothing else in this workflow requires permission.**
@@ -29,7 +29,7 @@ Run this before the first poll tick and before any new review trigger (`@coderab
    - `repos/{owner}/{repo}/pulls/{N}/reviews`
    - `repos/{owner}/{repo}/pulls/{N}/comments`
    - `repos/{owner}/{repo}/issues/{N}/comments`
-2. Identify any unresolved findings from `coderabbitai[bot]`, `cursor[bot]`, or `greptile-apps[bot]` (no reply confirming a fix, code unchanged since the comment, not marked outdated/resolved).
+2. Identify any unresolved findings from `coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, or `graphite-app[bot]` (no reply confirming a fix, code unchanged since the comment, not marked outdated/resolved).
 3. **If ANY unresolved findings exist: invoke `/fixpr` now.** `/fixpr` fixes, commits once, pushes, replies to every thread, resolves via GraphQL. Do NOT request a new review on top of unaddressed feedback.
 4. Do not poll/request review until step 3 completes.
 
@@ -108,7 +108,7 @@ The helper prints exactly one `STATUS=` verdict and exits 0. Canonical steps:
 
 ### Timeout & Fallback — Three-Tier Review Chain
 
-**Review chain:** CR (primary) → BugBot (second tier, free) → Greptile (last resort, paid) → self-review (emergency).
+**Review chain:** CR → BugBot → Greptile → self-review. **Supplemental (CR path):** CodeAnt + Graphite — `codeant-graphite.md`.
 
 When CR fails or stalls, the reviewer escalation gate checks BugBot before Greptile and caches whether BugBot is installed for the PR. See `bugbot.md` and `greptile.md`.
 
