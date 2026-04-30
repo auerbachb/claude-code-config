@@ -174,8 +174,24 @@ write_checkpoint_handoff() {
 }
 
 ensure_session() {
-  local resolved
-  if ! resolved="$(resolve_root_repo "$ROOT_REPO_ARG")"; then
+  local resolved=""
+  # Prefer live checkout root unless --root-repo is explicit (avoids stale session-state roots).
+  if [[ -n "$ROOT_REPO_ARG" ]]; then
+    if ! resolved="$(resolve_root_repo "$ROOT_REPO_ARG")"; then
+      exit 4
+    fi
+  else
+    resolved="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    if [[ -z "$resolved" ]]; then
+      if ! resolved="$(resolve_root_repo "")"; then
+        exit 4
+      fi
+    else
+      resolved="$(cd "$resolved" && git rev-parse --show-toplevel)"
+    fi
+  fi
+  if [[ -z "$resolved" || ! -d "$resolved" ]]; then
+    echo "polling-state-gate.sh: could not resolve root for --ensure-session" >&2
     exit 4
   fi
   if ! validate_root_match "$resolved"; then
@@ -208,23 +224,37 @@ ensure_session() {
     reviewer="$r"
   fi
 
-  "$STATE_HELPER" --set ".root_repo=\"$canon\""
-  "$STATE_HELPER" --set ".prs[\"$PR_NUMBER\"].root_repo=\"$canon\""
-  "$STATE_HELPER" --set ".prs[\"$PR_NUMBER\"].head_sha=\"$head_sha\""
+  # Single atomic write — session-state.sh merges multiple --set in one transaction.
   if [[ -n "$owner_repo" ]]; then
-    "$STATE_HELPER" --set ".prs[\"$PR_NUMBER\"].owner_repo=\"$owner_repo\""
+    "$STATE_HELPER" \
+      --set ".root_repo=\"$canon\"" \
+      --set ".prs[\"$PR_NUMBER\"].root_repo=\"$canon\"" \
+      --set ".prs[\"$PR_NUMBER\"].head_sha=\"$head_sha\"" \
+      --set ".prs[\"$PR_NUMBER\"].owner_repo=\"$owner_repo\""
+  else
+    "$STATE_HELPER" \
+      --set ".root_repo=\"$canon\"" \
+      --set ".prs[\"$PR_NUMBER\"].root_repo=\"$canon\"" \
+      --set ".prs[\"$PR_NUMBER\"].head_sha=\"$head_sha\""
   fi
 
   local handoff_path="${HANDOFF_DIR}/pr-${PR_NUMBER}-handoff.json"
   if [[ ! -f "$handoff_path" ]]; then
     write_checkpoint_handoff "$head_sha" "$reviewer"
   else
-    # Refresh head_sha in handoff if stale (preserve other fields)
+    # Refresh head_sha only — preserve phase_completed, reviewer, and other Phase A/B fields.
     local tmp
     tmp="$(mktemp)"
-    jq --arg sha "$head_sha" --arg rev "$reviewer" \
-      '.head_sha = $sha | .reviewer = $rev | .phase_completed = "B"' \
-      "$handoff_path" > "$tmp" && mv "$tmp" "$handoff_path"
+    if ! jq --arg sha "$head_sha" '.head_sha = $sha' "$handoff_path" > "$tmp"; then
+      rm -f "$tmp"
+      echo "polling-state-gate.sh: failed to refresh handoff JSON: $handoff_path" >&2
+      exit 4
+    fi
+    if ! mv "$tmp" "$handoff_path"; then
+      rm -f "$tmp"
+      echo "polling-state-gate.sh: could not write handoff: $handoff_path" >&2
+      exit 4
+    fi
   fi
 
   exit 0
@@ -232,6 +262,7 @@ ensure_session() {
 
 require_handoff_and_state() {
   local resolved="$1"
+  local gate_mode="${2:-live}"
   local handoff_path="${HANDOFF_DIR}/pr-${PR_NUMBER}-handoff.json"
   if [[ ! -f "$handoff_path" ]]; then
     echo "polling-state-gate.sh: missing handoff $handoff_path — run: polling-state-gate.sh $PR_NUMBER --ensure-session" >&2
@@ -245,9 +276,11 @@ require_handoff_and_state() {
     echo "polling-state-gate.sh: PR $PR_NUMBER not registered in session-state — run --ensure-session first" >&2
     exit 4
   fi
-  local top rr
+  local top rr state_sha handoff_sha canon live_head
   top=$(jq -r '.root_repo // empty' "$STATE_FILE")
   rr=$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].root_repo // empty' "$STATE_FILE")
+  state_sha=$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].head_sha // empty' "$STATE_FILE")
+  handoff_sha=$(jq -r '.head_sha // empty' "$handoff_path")
   if [[ -z "$top" || "$top" == "null" ]]; then
     echo "polling-state-gate.sh: session-state missing top-level .root_repo" >&2
     exit 4
@@ -255,6 +288,33 @@ require_handoff_and_state() {
   if [[ -z "$rr" || "$rr" == "null" ]]; then
     echo "polling-state-gate.sh: session-state missing .prs[\"$PR_NUMBER\"].root_repo" >&2
     exit 4
+  fi
+  if [[ -z "$state_sha" || "$state_sha" == "null" ]]; then
+    echo "polling-state-gate.sh: session-state missing .prs[\"$PR_NUMBER\"].head_sha" >&2
+    exit 4
+  fi
+  if [[ -z "$handoff_sha" || "$handoff_sha" == "null" ]]; then
+    echo "polling-state-gate.sh: handoff missing .head_sha ($handoff_path)" >&2
+    exit 4
+  fi
+  if [[ "$state_sha" != "$handoff_sha" ]]; then
+    echo "polling-state-gate.sh: head_sha mismatch between session-state and handoff — run polling-state-gate.sh $PR_NUMBER --ensure-session" >&2
+    exit 4
+  fi
+  canon="$(cd "$resolved" && git rev-parse --show-toplevel)"
+  if [[ "$gate_mode" == "live" ]]; then
+    if ! live_head="$(cd "$canon" && gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null)"; then
+      echo "polling-state-gate.sh: gh pr view failed (cannot verify live HEAD for PR #$PR_NUMBER)" >&2
+      exit 4
+    fi
+    if [[ -z "$live_head" || "$live_head" == "null" ]]; then
+      echo "polling-state-gate.sh: could not read live HEAD for PR #$PR_NUMBER" >&2
+      exit 4
+    fi
+    if [[ "$state_sha" != "$live_head" ]]; then
+      echo "polling-state-gate.sh: stored head_sha does not match GitHub HEAD — run polling-state-gate.sh $PR_NUMBER --ensure-session" >&2
+      exit 4
+    fi
   fi
   if ! validate_root_match "$resolved"; then
     exit 4
@@ -270,7 +330,7 @@ if [[ "$MODE" == "verify" ]]; then
   if ! resolved="$(resolve_root_repo "$ROOT_REPO_ARG")"; then
     exit 4
   fi
-  require_handoff_and_state "$resolved"
+  require_handoff_and_state "$resolved" verify
   exit 0
 fi
 
@@ -279,6 +339,6 @@ resolved=""
 if ! resolved="$(resolve_root_repo "$ROOT_REPO_ARG")"; then
   exit 4
 fi
-require_handoff_and_state "$resolved"
+require_handoff_and_state "$resolved" live
 canon="$(cd "$resolved" && git rev-parse --show-toplevel)"
 (cd "$canon" && exec "$MERGE_GATE" "$PR_NUMBER")

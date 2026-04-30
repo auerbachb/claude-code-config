@@ -28,9 +28,10 @@ cat > "$HOME/.claude/session-state.json" <<EOF
 }
 EOF
 cp "$REPO_ROOT/.claude/reference/handoff-file-schema.json" "$HOME/.claude/handoffs/pr-${PR_NUM}-handoff.json"
-# Fix pr_number in handoff to match
+# Align pr_number and head_sha with session-state (verify-state checks consistency).
 tmp="$(mktemp)"
-jq --argjson p "$PR_NUM" '.pr_number = $p' "$HOME/.claude/handoffs/pr-${PR_NUM}-handoff.json" > "$tmp"
+jq --argjson p "$PR_NUM" --arg sha "deadbeef" '.pr_number = $p | .head_sha = $sha' \
+  "$HOME/.claude/handoffs/pr-${PR_NUM}-handoff.json" > "$tmp"
 mv "$tmp" "$HOME/.claude/handoffs/pr-${PR_NUM}-handoff.json"
 
 # Simulate compaction (lost in-memory context): verify offline gate passes
