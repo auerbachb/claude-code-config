@@ -435,6 +435,17 @@ case "$REVIEWER" in
         CR_RETRACTED=true
       fi
     fi
+    CA_RETRACTED=false
+    if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && -n "$LATEST_CA_CHANGES_REQUESTED_AT" && -n "$LATEST_CA_APPROVED_AT" ]]; then
+      if [[ "$LATEST_CA_CHANGES_REQUESTED_AT" > "$LATEST_CA_APPROVED_AT" ]]; then
+        CA_RETRACTED=true
+      fi
+    fi
+
+    CR_APPROVAL_VALID=false
+    if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && "$CR_RETRACTED" == false ]]; then
+      CR_APPROVAL_VALID=true
+    fi
     CA_APPROVAL_VALID=false
     if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && "$CA_RETRACTED" == false ]]; then
       CA_APPROVAL_VALID=true
