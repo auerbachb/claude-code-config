@@ -42,25 +42,24 @@ For operations touching 4+ files, emit one-line status after every 3 writes/edit
 ## Post-Compaction Recovery (MANDATORY)
 
 If a summary block references prior work you do not remember, recover before all other work:
-1. Timestamp first message and rerun session-start checks.
-2. Read `session-state.json` and handoff files, then reconcile every open PR via GitHub (`pr view`, reviews, inline comments, issue comments; use `per_page=100`).
-3. **Polling recovery:** per polled PR, `.claude/scripts/polling-state-gate.sh <N> --verify-state` (`--root-repo` if needed). Then resume cycles with `.claude/scripts/polling-state-gate.sh <N>` (invokes `merge-gate.sh`; no prose substitute).
-4. Build a dashboard: PR, HEAD SHA, reviewer, last review state, pending action.
-5. Verify stale agent outputs, Phase B coverage, and pending transitions; launch anything stalled.
-6. Report "Resuming after context compaction. Reconstructed state from GitHub." and resume monitoring.
+1. Timestamp; rerun session-start checks.
+2. Read `session-state.json` + handoffs; reconcile each open PR on GitHub (`per_page=100` on reviews, inline, issue comments).
+3. Per polled PR: `polling-state-gate.sh <N> --verify-state` (optional `--root-repo`), then resume with `polling-state-gate.sh <N>` (shells `merge-gate.sh`).
+4. Dashboard (PR, HEAD, reviewer, pending); verify stale agents and stalled transitions; launch as needed.
+5. Report: "Resuming after context compaction. Reconstructed state from GitHub." then resume monitoring.
 
 ## PM Monitoring Recovery
 
-If `session-state.json` has `monitoring_active=true`, OR has `monitoring_mode=passive` with a non-empty `prs` map, rebuild from `prs`, `active_agents`, handoff files, and live GitHub state before re-arming.
+If `monitoring_active=true` or passive mode with non-empty `prs`, rebuild from `prs`, `active_agents`, handoffs, and GitHub before re-arming.
 
-- No active workers/PRs remain: set `monitoring_active=false` and report completion.
-- Prior `monitoring_mode=loop`: restart the recorded `/loop` unless user explicitly chose passive mode.
-- Prior `monitoring_mode=cron` with `monitoring_durable=true`: verify with `CronList`; recreate only if missing.
-- Prior `monitoring_mode=cron` with `monitoring_durable=false`: recreate missing or expired session-only jobs for the current session.
-- Prior `monitoring_mode=passive`: keep passive but report that active work remains user-triggered.
+- No workers left → `monitoring_active=false`, report done.
+- Was `loop` → restart recorded `/loop` unless user chose passive.
+- Was `cron` + durable → `CronList`; recreate if missing.
+- Was `cron` + not durable → recreate expired session jobs.
+- Was passive → stay passive; note user-triggered work remains.
 
-Log dropped ticks in `polling_failures[]`; include recovered PRs/workers in next heartbeat. Full state contract: `.claude/reference/pm-monitoring-decision.md`.
+Log drops in `polling_failures[]`. Contract: `pm-monitoring-decision.md`.
 
 ### Pre-Compaction Checkpointing (Preventive)
 
-Write status checkpoints to `~/.claude/session-state.json` on phase transitions and key state-change events. See `handoff-files.md` for the schema. After compaction, read this file first, then reconcile with live GitHub state and any handoff files in `~/.claude/handoffs/`.
+Checkpoint `session-state.json` on phase transitions. After compaction read it first, then GitHub + `~/.claude/handoffs/`.

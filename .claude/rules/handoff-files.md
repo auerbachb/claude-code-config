@@ -7,7 +7,7 @@
 ## State Files
 
 - `~/.claude/session-state.json`: session-wide orchestration (`prs`, active agents, reviewer quotas, polling failures). Full schema: `.claude/reference/session-state-schema.json`.
-- **Polling:** Before CR/GitHub polling for PR `N`, the **parent** runs `.claude/scripts/polling-state-gate.sh N --ensure-session` once; each cycle runs `.claude/scripts/polling-state-gate.sh N` (validates state, then `merge-gate.sh`). Phase A/B **subagents** still write the rich handoff at the same path — they replace the parent's checkpoint when they finish a phase.
+- **Polling:** Parent runs `polling-state-gate.sh N --ensure-session` once, then `polling-state-gate.sh N` each cycle (see script). Subagent handoffs overwrite the same file when a phase finishes.
 
 Update `session-state.json` on phase transitions and key events (agent launched/completed, review received, dropped poll recovered). Prefer `.claude/scripts/session-state.sh --set <jq-path>=<value>` / `--get <jq-path>`; it preserves siblings and writes atomically.
 
