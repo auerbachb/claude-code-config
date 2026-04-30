@@ -10,8 +10,9 @@
 #   - BugBot path   : 1 clean BugBot review on current HEAD + zero unresolved BugBot threads
 #   - Greptile path : severity-gated — clean OR only P1/P2 (fixed) OR P0 fixed + re-review clean
 # Also enforces the pre-merge CI gate from .claude/rules/cr-merge-gate.md Step 1b
-# (incomplete runs OR blocking conclusions = not merge-ready) and the BEHIND check
-# (mergeStateStatus != BEHIND) per issue #273. When CR or Greptile is listed
+# (incomplete runs OR blocking conclusions = not merge-ready), merge metadata
+# (mergeStateStatus including BEHIND, mergeable including CONFLICTING) per
+# cr-merge-gate.md Step 1d / issue #273. When CR or Greptile is listed
 # in CODEOWNERS, also verifies GitHub branch protection's reviewDecision is
 # APPROVED so stale/dismissed bot approvals cannot accidentally pass the gate.
 #
@@ -40,6 +41,7 @@
 #       "incomplete": [{"name": "...", "status": "..."}]
 #     },
 #     "merge_state": "CLEAN"|"BEHIND"|"BLOCKED"|...,
+#     "mergeable": "MERGEABLE"|"CONFLICTING"|"UNKNOWN"|...,
 #     "review_decision": "APPROVED"|"CHANGES_REQUESTED"|"REVIEW_REQUIRED"|...,
 #     "code_owner_bots": ["coderabbitai[bot]", "greptile-apps[bot]"]
 #   }
@@ -115,8 +117,8 @@ fi
 # Helpers
 # --------------------------------------------------------------------------
 emit_json() {
-  # emit_json <met> <reviewer> <path> <missing_json_array> <head_sha> <ci_status_json> <merge_state> <review_decision> <code_owner_bots_json>
-  local met="$1" reviewer="$2" path="$3" missing="$4" head_sha="$5" ci_status="$6" merge_state="$7" review_decision="$8" code_owner_bots="$9"
+  # emit_json <met> <reviewer> <path> <missing_json_array> <head_sha> <ci_status_json> <merge_state> <mergeable> <review_decision> <code_owner_bots_json>
+  local met="$1" reviewer="$2" path="$3" missing="$4" head_sha="$5" ci_status="$6" merge_state="$7" mergeable="$8" review_decision="$9" code_owner_bots="${10}"
   jq -cn \
     --argjson met "$met" \
     --arg reviewer "$reviewer" \
@@ -125,9 +127,10 @@ emit_json() {
     --arg head_sha "$head_sha" \
     --argjson ci_status "$ci_status" \
     --arg merge_state "$merge_state" \
+    --arg mergeable "$mergeable" \
     --arg review_decision "$review_decision" \
     --argjson code_owner_bots "$code_owner_bots" \
-    '{met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, review_decision: $review_decision, code_owner_bots: $code_owner_bots}'
+    '{met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots}'
 }
 
 emit_empty_ci() {
@@ -143,7 +146,7 @@ emit_empty_code_owner_bots() {
 # --------------------------------------------------------------------------
 OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
 if [[ -z "$OWNER_REPO" ]]; then
-  emit_json false unknown cr '["gh repo view failed — not in a git repo or no remote"]' "" "$(emit_empty_ci)" "" "" "$(emit_empty_code_owner_bots)"
+  emit_json false unknown cr '["gh repo view failed — not in a git repo or no remote"]' "" "$(emit_empty_ci)" "" "" "" "$(emit_empty_code_owner_bots)"
   exit 4
 fi
 OWNER="${OWNER_REPO%/*}"
@@ -151,7 +154,7 @@ REPO="${OWNER_REPO#*/}"
 
 PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,headRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision 2>/dev/null || true)
 if [[ -z "$PR_JSON" ]]; then
-  emit_json false unknown cr "[\"PR #$PR_NUMBER not found\"]" "" "$(emit_empty_ci)" "" "" "$(emit_empty_code_owner_bots)"
+  emit_json false unknown cr "[\"PR #$PR_NUMBER not found\"]" "" "$(emit_empty_ci)" "" "" "" "$(emit_empty_code_owner_bots)"
   exit 3
 fi
 
@@ -159,15 +162,16 @@ PR_STATE=$(echo "$PR_JSON" | jq -r '.state // "UNKNOWN"')
 HEAD_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid // ""')
 BASE_REF=$(echo "$PR_JSON" | jq -r '.baseRefName // ""')
 MERGE_STATE=$(echo "$PR_JSON" | jq -r '.mergeStateStatus // ""')
+MERGEABLE=$(echo "$PR_JSON" | jq -r '.mergeable // ""')
 REVIEW_DECISION=$(echo "$PR_JSON" | jq -r '.reviewDecision // ""')
 
 if [[ "$PR_STATE" != "OPEN" ]]; then
-  emit_json false unknown cr "[\"PR #$PR_NUMBER is $PR_STATE — not open\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)"
+  emit_json false unknown cr "[\"PR #$PR_NUMBER is $PR_STATE — not open\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)"
   exit 3
 fi
 
 if [[ -z "$HEAD_SHA" ]]; then
-  emit_json false unknown cr '["could not determine HEAD SHA"]' "" "$(emit_empty_ci)" "$MERGE_STATE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)"
+  emit_json false unknown cr '["could not determine HEAD SHA"]' "" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)"
   exit 4
 fi
 
@@ -178,7 +182,7 @@ fi
 # inside a helper function called via $(), because exit inside $() only kills
 # the subshell and the main script continues with garbage data.
 die_api() {
-  emit_json false "${REVIEWER_OVERRIDE:-unknown}" "unknown" "[\"gh api failed: $1\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)"
+  emit_json false "${REVIEWER_OVERRIDE:-unknown}" "unknown" "[\"gh api failed: $1\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)"
   exit 4
 }
 
@@ -313,9 +317,18 @@ REVIEWER=$(resolve_reviewer)
 # --------------------------------------------------------------------------
 MISSING=()
 
-# BEHIND check (#273) — applies to all paths.
+# BEHIND / merge metadata (#273, Step 1d in cr-merge-gate.md) — applies to all paths.
 if [[ "$MERGE_STATE" == "BEHIND" ]]; then
   MISSING+=("branch is BEHIND base — rebase + force-push before merging")
+fi
+if [[ "$MERGEABLE" == "CONFLICTING" ]]; then
+  MISSING+=("mergeable is CONFLICTING — resolve merge conflicts (rebase/repair) before merging")
+fi
+if [[ "$MERGE_STATE" == "DIRTY" ]]; then
+  MISSING+=("mergeStateStatus is DIRTY — merge commit cannot be computed; investigate or rebase via /fixpr")
+fi
+if [[ "$MERGE_STATE" == "UNKNOWN" ]]; then
+  MISSING+=("mergeStateStatus is UNKNOWN — GitHub still computing mergeability; wait and re-check")
 fi
 
 # CI gate (#270) — applies to all paths.
@@ -562,7 +575,7 @@ fi
 
 MISSING_JSON=$(printf '%s\n' "${MISSING[@]:-}" | jq -R . | jq -cs 'map(select(length > 0))')
 
-emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS"
+emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS"
 
 if [[ "$MET" == true ]]; then
   exit 0

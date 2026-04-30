@@ -48,7 +48,7 @@ Run the shared merge-gate verifier. It implements the three-path gate from `.cla
 
 - **Gate 1a — CI terminal state.** All check-runs `status: "completed"` with no blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`). In-progress checks BLOCK — do NOT present the merge prompt; wait and re-poll.
 - **Gate 1b — All review threads resolved.** Every thread `isResolved: true` via GraphQL `reviewThreads(first: 100)` (REST misses cursor/copilot bot threads). Any unresolved thread BLOCKS regardless of author.
-- **Gate 1c — BEHIND check.** `mergeStateStatus != BEHIND`.
+- **Gate 1c — BEHIND / merge metadata.** `merge-gate.sh` enforces merge metadata (see `cr-merge-gate.md` Step 1d). The script JSON field **`merge_state`** mirrors GitHub **`mergeStateStatus`**. If **`GATE_EXIT == 1`** and **`echo "$GATE_JSON" | jq -e '.merge_state == "BEHIND"'`** succeeds, **do not merge** — report `OUTCOME: blocked` and instruct the parent to run **`/fixpr`** (rebase + force-push from a guard-clean worktree) until **`merge_state`** is no longer **`BEHIND`**, then re-run Phase C. For other gate failures, still parse **`missing`** as below — do not infer BEHIND from **`missing`** substring matching.
 
 ```bash
 # Prefer the handoff's reviewer field; fall back to reviewer-of.sh (session-state
@@ -98,8 +98,9 @@ fi
 If `REVIEWER_ERROR` is set, set `OUTCOME: blocked`, include the error in the output, and go directly to Step 4. Do not evaluate `GATE_EXIT` or perform Step 2 AC verification/ticking.
 
 Only when `REVIEWER_ERROR` is unset, branch on `GATE_EXIT`:
-- Exit `0` → merge gate met (all three paths + CI + BEHIND all satisfied). Proceed to Step 2 (AC verification).
-- Exit `1` → gate not met. Parse the `missing` array from the JSON output and include it verbatim in your exit report; set `OUTCOME: blocked`.
+- Exit `0` → merge gate met (all three paths + CI + merge metadata satisfied). Proceed to Step 2 (AC verification).
+- Exit `1` with **`merge_state == "BEHIND"`** (see Gate 1c) → **`OUTCOME: blocked`** per the BEHIND branch above; do not treat **`missing`** text as the source of truth for this case.
+- Exit `1` otherwise → gate not met for another reason. Parse the **`missing`** array from the JSON output and include it verbatim in your exit report; set **`OUTCOME: blocked`**.
 - Exit `2`/`3`/`4` → script/usage/gh error. Set `OUTCOME: blocked` and report the stderr/JSON message.
 
 ## Step 2: Verify Acceptance Criteria
