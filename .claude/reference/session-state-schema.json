@@ -11,6 +11,8 @@
   "root_repo": "/Users/user/repos/my-project",
   "prs": {
     "618": {
+      "root_repo": "/Users/user/repos/my-project",
+      "owner_repo": "org/repo",
       "phase": "B",
       "head_sha": "7b2cfbf",
       "reviewer": "cr",

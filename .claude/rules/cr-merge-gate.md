@@ -40,7 +40,7 @@ The merge gate depends on which reviewer owns the PR:
 **BugBot path** (CR failed, BugBot responded, Greptile never triggered — sticky; see `bugbot.md`):
 
 - 1 clean BugBot review on the current HEAD SHA satisfies the gate (BugBot's completion signals are reliable).
-- After fixing BugBot findings, BugBot auto-reviews the new push. If auto-review doesn't fire within 10 min, trigger manually via `@cursor review`.
+- After fixing BugBot findings, CI already posted `@cursor review` on that push; `/fixpr` also posts it after agent pushes. If BugBot still hasn't completed after polling, post `@cursor review` again — duplicates are acceptable (see `bugbot.md`).
 - Stay on BugBot — do not switch back to CR. Ignore late CR reviews.
 
 **Greptile path** (Greptile was triggered at any point — both CR and BugBot failed — sticky assignment, see `greptile.md`):

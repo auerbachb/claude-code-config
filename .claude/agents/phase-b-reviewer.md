@@ -137,6 +137,8 @@ Do not hand-roll fallback timing here. The mandatory Reviewer Escalation Gate ab
 
 ### CR Merge Gate
 
+**Procedural requirement:** Do not restate `cr-merge-gate.md` from memory. Each poll cycle, run `.claude/scripts/polling-state-gate.sh {{PR_NUMBER}}` after `--ensure-session` was run by the parent before polling began (the script shells to `merge-gate.sh` after validating handoff + session-state). Exit code `0` means the merge gate is met.
+
 1 clean CR approval on the current HEAD SHA satisfies the gate. An "approval" means a CR review object with `state: "APPROVED"` AND `commit_id == <current HEAD SHA>`. Ack comments, empty thread snapshots, and CR check-run completion alone do NOT exit polling — see `cr-merge-gate.md` "Step 1" for the full explicit-approval and SHA-freshness rules.
 
 If CR remains silent or cannot produce a current-HEAD approval, keep using the Reviewer Escalation Gate above for the per-cycle verdict. Do not layer an additional 12-minute fallback chain here.
@@ -168,7 +170,7 @@ Use the shared helper — it tries the inline reply endpoint first, falls back t
 
 ### Re-Reviews
 
-After fixing BugBot findings and pushing, BugBot auto-reviews the new push. If auto-review doesn't fire within 10 min, trigger manually: `gh pr comment {{PR_NUMBER}} --body "@cursor review"`
+After fixing BugBot findings and pushing, expect `@cursor review` from CI on every push (`cursor-review-pr-comment.yml`). If BugBot still hasn't landed after polling, post again: `gh pr comment {{PR_NUMBER}} --body "@cursor review"` — duplicates are OK.
 
 ## Greptile Review Path (when `reviewer` = `greptile`)
 

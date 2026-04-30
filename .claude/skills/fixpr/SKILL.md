@@ -19,7 +19,7 @@ All mechanical GitHub API work — pagination, GraphQL queries, comment classifi
 | 1. Classify review findings | Judgment | AI reads JSON + source files |
 | 2. Classify CI failures | Judgment | AI reads `check-runs/<id>.output.summary` |
 | 3. Fix & push | Judgment | AI edits files, commits, pushes |
-| 3b. Trigger missing AI reviewers | Mechanical | wait 2 minutes, detect 4-bot activity on the new SHA, post one trigger comment per missing bot |
+| 3b. Trigger missing AI reviewers | Mechanical | wait 2 minutes, detect CR/Graphite/CodeAnt activity on the new SHA, post triggers for missing bots, always post `@cursor review` |
 | 4. Reply & resolve | Mechanical | `gh api` calls against IDs from the JSON |
 | 4c. Post-push thread verify (if Step 3 pushed) | Mechanical | Re-fetch threads on new HEAD; explicitly resolve any touched thread still `isResolved: false` (fixes unchanged-line orphans), then `--verify-only` |
 | 5. Verify | Mechanical | Re-run `pr-state.sh --since $RUN_STARTED_AT` |
@@ -174,7 +174,7 @@ If nothing needed fixing (all already-fixed/outdated, CI all green), skip the co
 
 Only run this step when Step 3 made a push. If Step 3 skipped the commit/push, skip this step too.
 
-Use the `$PUSHED_AT` captured immediately before `git push` in Step 3. Capturing it before the push avoids a race where a fast bot starts between push completion and the timestamp capture. After the push completes, wait exactly 2 minutes before checking reviewer status so auto-triggers have time to post activity:
+Use the `$PUSHED_AT` captured immediately before `git push` in Step 3. Capturing it before the push avoids a race where a fast bot starts between push completion and the timestamp capture. After the push completes, wait exactly 2 minutes before checking reviewer status so CodeRabbit / Graphite / CodeAnt auto-triggers have time to post activity (BugBot is covered separately — always trigger `@cursor review` unconditionally; see `bugbot.md` and memory `feedback_bugbot_auto_trigger_unreliable.md`):
 
 ```bash
 PUSHED_SHA=$(git rev-parse HEAD)
@@ -182,7 +182,7 @@ echo "[REVIEWERS] waiting 120s for auto-triggered reviewers on ${PUSHED_SHA:0:7}
 sleep 120
 ```
 
-Detect activity from all 4 proactive reviewers on the pushed SHA. Check all three PR comment endpoints plus check-runs for activity after `$PUSHED_AT`. Conversation-level comments do not expose a `commit_id`, so they only count as activity on the pushed SHA when the body mentions the full SHA or short SHA; otherwise, use SHA-scoped reviews, inline comments, or check-runs to avoid treating a late summary from the previous SHA as coverage for the new one:
+Detect activity from the 3 conditionally triggered reviewers (CodeRabbit, Graphite, CodeAnt) on the pushed SHA. Check all three PR comment endpoints plus check-runs for activity after `$PUSHED_AT`. Conversation-level comments do not expose a `commit_id`, so they only count as activity on the pushed SHA when the body mentions the full SHA or short SHA; otherwise, use SHA-scoped reviews, inline comments, or check-runs to avoid treating a late summary from the previous SHA as coverage for the new one:
 
 ```bash
 REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" | jq -s 'add // []')
@@ -230,15 +230,10 @@ REVIEWER_ACTIVITY=$(jq -n \
        or any($inline[]?; .user.login == "codeant-ai[bot]" and ((.commit_id // .original_commit_id // "") == $sha) and recent(.created_at))
        or convo_by("codeant-ai[bot]")
        or check_by(["CodeAnt", "codeant-ai"])),
-    cursor:
-      (any($reviews[]?; .user.login == "cursor[bot]" and .commit_id == $sha and recent(.submitted_at))
-       or any($inline[]?; .user.login == "cursor[bot]" and ((.commit_id // .original_commit_id // "") == $sha) and recent(.created_at))
-       or convo_by("cursor[bot]")
-       or check_by(["Cursor Bugbot", "cursor"])),
   }')
 ```
 
-For each reviewer whose value is `false`, post exactly one dedicated PR-level trigger comment. Do not batch mentions; combined-mention comments fail to trigger reliably. Post these comments sequentially in this order, skipping reviewers that already auto-triggered. CodeRabbit is additionally capped at 2 manual `@coderabbitai full review` triggers per PR in the trailing hour:
+For each of **coderabbit**, **graphite**, **codeant** whose value is `false`, post exactly one dedicated PR-level trigger comment. Do not batch mentions; combined-mention comments fail to trigger reliably. Post these comments sequentially in this order, skipping reviewers that already auto-triggered. CodeRabbit is additionally capped at 2 manual `@coderabbitai full review` triggers per PR in the trailing hour:
 
 ```bash
 jq -r 'to_entries[] | "[REVIEWERS] \(.key): \(if .value then "auto-triggered" else "missing" end)"' <<<"$REVIEWER_ACTIVITY"
@@ -265,12 +260,10 @@ fi
 if [[ "$(jq -r '.codeant' <<<"$REVIEWER_ACTIVITY")" != "true" ]]; then
   gh pr comment "$PR_NUMBER" --body "@codeant-ai review"
 fi
-if [[ "$(jq -r '.cursor' <<<"$REVIEWER_ACTIVITY")" != "true" ]]; then
-  gh pr comment "$PR_NUMBER" --body "@cursor review"
-fi
+gh pr comment "$PR_NUMBER" --body "@cursor review"
 ```
 
-Cost/rate-limit note: `@codeant-ai review` and `@cursor review` may consume their respective review budgets, so skip them whenever auto-trigger activity is already present on the new SHA. Greptile is intentionally NOT part of this proactive trigger set; it remains last-resort only per `greptile.md`.
+Cost/rate-limit note: `@codeant-ai review` may consume CodeAnt’s review budget, so skip it when auto-trigger activity is already present on the new SHA. **`@cursor review` is always posted** after a `/fixpr` push (composes with CI and issue #370’s four-reviewer triggers); BugBot is per-seat with no per-call charges — duplicates are acceptable. Greptile is intentionally NOT part of this proactive trigger set; it remains last-resort only per `greptile.md`.
 
 ---
 
@@ -514,7 +507,7 @@ Status:          CLEAN | THREADS_STUCK | REVIEW_PENDING | CI_PENDING | CI_FAILIN
 
 - `CLEAN` — **all four conditions simultaneously:** zero unresolved threads (5a), `new_since_baseline.finding_count == 0` (5b), every present review-bot status/check-run for the current HEAD is complete/successful (5d), no merge blockers (6). Missing any one disqualifies `CLEAN` — pick the more specific status below.
 - `THREADS_STUCK` — some threads could not be resolved via GraphQL (report which).
-- `REVIEW_PENDING` — 5d found a review-bot status/check-run still pending on the current HEAD, or a reviewer has not responded yet after Step 3b triggered it. Re-run `/fixpr` after it flips to a completed state. Do NOT declare CLEAN.
+- `REVIEW_PENDING` — 5d found a review-bot status/check-run still pending on the current HEAD, or a reviewer has not responded yet after Step 3b (including the unconditional `@cursor review`). Re-run `/fixpr` after it flips to a completed state. Do NOT declare CLEAN.
 - `NEW_FINDINGS` — 5b's `finding_count > 0`. Stop the run. A fresh `/fixpr` captures a new `$RUN_STARTED_AT` and re-audits from Step 0.
 - `CI_PENDING` — push was made, and non-review-bot CI is not yet complete. Re-run `/fixpr` after CI.
 - `CI_FAILING` — transient CI failures that cannot be fixed locally (report which).

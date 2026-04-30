@@ -1,10 +1,11 @@
-> **Always:** Poll `codeant-ai[bot]` and `graphite-app[bot]` on the same three PR endpoints as CodeRabbit when those tools are enabled; process threads and blocking CI like other bots.
-> **Ask first:** Merging — always ask the user (unchanged from repo defaults).
-> **Never:** Treat Graphite as a merge-gate tier until it posts reliably; do not spam `@codeant-ai` / `@graphite-app` triggers.
+> **Always:** When CodeAnt or Graphite is enabled, poll `codeant-ai[bot]` and `graphite-app[bot]` on the same three PR endpoints as CodeRabbit; clear threads and blocking CI like other bots.
+> **Ask first:** Merging — always ask the user.
+> **Never:** Treat Graphite as a merge-gate tier until it posts reliably; avoid spamming `@codeant-ai` / `@graphite-app`.
 
-# CodeAnt & Graphite — supplemental AI review
+# CodeAnt & Graphite
 
-> **CodeAnt:** On the **CR path**, when CodeAnt has participated on current HEAD (reviews, inline/issue comments, **or** a CodeAnt-associated check-run on that commit), `merge-gate.sh` requires a clean signal (`APPROVED` on HEAD or successful CodeAnt check-run). `@codeant-ai review` to nudge. Full contract: `cr-merge-gate.md` Step 1 + `merge-gate.sh`.
-> **Graphite:** Poll `graphite-app[bot]` like other bots; clear threads and blocking CI. **Not** a merge-gate tier until reviews post reliably. If enabled but silent: verify [Graphite GitHub App](https://github.com/apps/graphite-app) repo access, Graphite AI review toggle for this repo, workspace↔GitHub link, and plan limits; then `@graphite-app re-review` on a test PR (see `fixpr` skill).
+**CodeAnt (CR path):** If CodeAnt participated on current HEAD (comments or CodeAnt check-run), `merge-gate.sh` needs a clean signal per `cr-merge-gate.md`. Use `@codeant-ai review` to nudge.
 
-Chain: CR → BugBot → Greptile (unchanged). CodeAnt/Graphite run parallel to CR only.
+**Graphite:** Poll like other bots; not a merge-gate tier until reliable. If silent: check [Graphite app](https://github.com/apps/graphite-app) access, AI review toggle, workspace link, limits; try `@graphite-app re-review` on a test PR.
+
+Primary chain stays CR → BugBot → Greptile. CodeAnt/Graphite are parallel supplements.

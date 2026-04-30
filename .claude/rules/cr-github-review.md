@@ -12,6 +12,15 @@
 
 After pushing to a PR, enter this loop automatically.
 
+### Pre-polling procedural gate (MANDATORY — issue #315)
+
+Before the first poll tick:
+
+1. `.claude/scripts/polling-state-gate.sh <PR_NUMBER> --ensure-session` (`--root-repo <path>` if cwd is not the PR repo). Registers the PR, sets `root_repo`, creates/refreshes `~/.claude/handoffs/pr-<PR_NUMBER>-handoff.json`.
+2. If session `root_repo` ≠ your checkout, stop and reconcile (multi-repo hazard).
+
+**Each cycle:** `.claude/scripts/polling-state-gate.sh <PR_NUMBER>` — validates state then runs `merge-gate.sh`. Do not substitute prose for that script. Exit `0` = gate met; `1` = keep polling (plus `/fixpr` triggers below).
+
 ### Session-start / pre-review comment audit (MANDATORY)
 
 Run this before the first poll tick and before any new review trigger (`@coderabbitai full review`, `@cursor review`, `@greptileai`) on fresh push, resume, or post-compaction re-entry.
