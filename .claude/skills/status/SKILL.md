@@ -76,12 +76,13 @@ For a structured merge-readiness call per PR, run the shared merge-gate verifier
 
 Exit `0` → Clean (merge-ready). Exit `1` → parse `.missing[]` to classify: entries about findings/threads = **Has findings**, entries about CI incomplete or review not yet posted = **Review pending**, entries about rate limits = **Rate-limited**. Exit `3` → PR not found. Exit `2`/`4` → script/gh error.
 
-The JSON also surfaces `.reviewer`, `.head_sha`, `.ci_status`, and `.merge_state` — use these to populate the dashboard columns without re-querying.
+The JSON also surfaces `.reviewer`, `.head_sha`, `.ci_status`, `.merge_state`, and `.mergeable` — use these to populate the dashboard columns without re-querying.
 
 Classifications to present in the table:
 - **Clean (merge-ready)** — script exit `0`.
 - **Has findings** — gate not met because of unresolved threads, CR check-run red, or findings on HEAD.
-- **Review pending** — gate not met because no review yet / CI still running.
+- **Review pending** — gate not met because no review yet / CI still running / `mergeStateStatus` is `UNKNOWN` (GitHub still computing mergeability).
+- **Behind base** — gate not met with `merge_state == "BEHIND"` or `missing` mentions BEHIND — show **Rebase** (invoke `/fixpr`); do not conflate with generic `BLOCKED`.
 - **Rate-limited** — gate not met with a CR rate-limit signal in `missing`.
 
 ### Step 4: Check session-state
