@@ -74,11 +74,17 @@ Not exercised in this environment (no live token exhaustion). **Spec check:** Ph
 ## Commands (reproduce)
 
 ```bash
-# Phase A sample (from exit-report-format.md)
+# Phase A sample (from exit-report-format.md) — each KEY: value must be one argument
+# so word-splitting does not break lines (see exit-report-format.md).
 printf '%s\n' \
-  EXIT_REPORT PHASE_COMPLETE: A PR_NUMBER: 618 HEAD_SHA: abc1234 \
-  REVIEWER: cr OUTCOME: pushed_fixes \
-  'FILES_CHANGED: src/foo.ts, src/bar.ts' NEXT_PHASE: B \
+  EXIT_REPORT \
+  'PHASE_COMPLETE: A' \
+  'PR_NUMBER: 618' \
+  'HEAD_SHA: abc1234' \
+  'REVIEWER: cr' \
+  'OUTCOME: pushed_fixes' \
+  'FILES_CHANGED: src/foo.ts, src/bar.ts' \
+  'NEXT_PHASE: B' \
   'HANDOFF_FILE: ~/.claude/handoffs/pr-618-handoff.json' \
   | .claude/scripts/verify-exit-report-block.sh
 ```

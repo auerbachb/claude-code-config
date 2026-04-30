@@ -2,6 +2,7 @@
 # Verify stdin contains a parseable EXIT_REPORT per
 # .claude/reference/exit-report-format.md — header line plus KEY: value fields.
 # Exit 0 = valid block with all required fields; 1 = missing/invalid.
+# Uses read loops instead of mapfile/associative arrays — macOS ships bash 3.2.
 set -euo pipefail
 
 required=(
@@ -21,23 +22,27 @@ if ! printf '%s\n' "$content" | grep -qx 'EXIT_REPORT'; then
   exit 1
 fi
 
-# Contiguous block: EXIT_REPORT then KEY: value (value may be empty; optional single space after colon)
-mapfile -t lines < <(printf '%s\n' "$content" | awk '
+# Contiguous block: EXIT_REPORT then KEY: value (value may be empty)
+lines=()
+while IFS= read -r line; do
+  lines+=("$line")
+done < <(printf '%s\n' "$content" | awk '
   /^EXIT_REPORT$/ { inblk=1; next }
   inblk && /^[A-Z_]+:/ { print; next }
   inblk { exit }
 ')
 
-declare -A seen=()
-for line in "${lines[@]}"; do
-  key=${line%%:*}
-  [[ -n "$key" ]] || continue
-  seen["$key"]=1
-done
-
 missing=()
 for k in "${required[@]}"; do
-  [[ -n "${seen[$k]-}" ]] || missing+=("$k")
+  found=0
+  for line in "${lines[@]}"; do
+    case "$line" in
+      "$k:"*) found=1; break ;;
+    esac
+  done
+  if [[ "$found" -eq 0 ]]; then
+    missing+=("$k")
+  fi
 done
 
 if ((${#missing[@]})); then
@@ -45,8 +50,8 @@ if ((${#missing[@]})); then
   exit 1
 fi
 
-# Disallow tab-only or multiple spaces after colon (keep single space or none per templates)
-while IFS= read -r line; do
+# Disallow tab-only or multiple spaces after colon
+for line in "${lines[@]}"; do
   if [[ "$line" =~ ^[A-Z_]+:[[:space:]] ]]; then
     rest=${line#*:}
     if [[ "$rest" =~ ^[[:space:]]{2,} ]]; then
@@ -58,7 +63,7 @@ while IFS= read -r line; do
       exit 1
     fi
   fi
-done < <(printf '%s\n' "${lines[@]}")
+done
 
 echo "OK: EXIT_REPORT block has all required fields ($(printf '%s ' "${required[@]}"))"
 exit 0
