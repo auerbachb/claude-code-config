@@ -44,4 +44,4 @@ bash .claude/scripts/resolve-review-threads.sh "$PR" --thread-ids-file touched.t
 ```
 
 `--verify-only` performs no mutations; it exits non-zero if any expected id is missing or still
-`isResolved: false`.
+`isResolved: false`. With an **empty** thread-id file, it prints `[VERIFY] addressed=0 resolved=0 dangling=0` and exits 0 (CI-only pushes with no review threads).

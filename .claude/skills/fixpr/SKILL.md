@@ -349,6 +349,8 @@ fi
 
 Treat non-zero exit from either sub-step as `THREADS_STUCK` in Step 7 (do not declare `CLEAN`). On success, both lines print `[VERIFY] addressed=N resolved=N dangling=0`.
 
+When `TOUCHED_THREADS` is empty (no threads from Step 0’s `.threads.unresolved`, e.g. CI-only fix with a push), `--verify-only` still runs but is a **no-op**: it prints `[VERIFY] addressed=0 resolved=0 dangling=0` and exits 0 — do not treat that as failure.
+
 When `DID_PUSH=0`, omit Step 4c; Step 4b’s resolver output alone is authoritative for touched threads.
 
 ---

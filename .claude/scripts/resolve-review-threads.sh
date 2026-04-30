@@ -27,7 +27,8 @@
 #   --verify-only
 #              Re-fetch threads via GraphQL and verify every ID in --thread-ids /
 #              --thread-ids-file reports isResolved=true. Does not mutate. Requires
-#              explicit thread IDs. Exit 1 if any expected ID is missing or unresolved.
+#              explicit thread IDs. An empty id file is a valid no-op (prints
+#              addressed=0 and exits 0). Exit 1 if any expected ID is missing or unresolved.
 #
 # Exit codes:
 #   0  All addressed/matching threads verified resolved (or dry-run OK)
@@ -343,8 +344,9 @@ write_dangling_threads() {
 # ----------------------------------------------------------------------
 if [[ "$VERIFY_ONLY" -eq 1 ]]; then
   if [[ ! -s "$EXPECTED_FILE" ]]; then
-    echo "ERROR: --verify-only requires a non-empty thread id list" >&2
-    exit 2
+    # CI-only / no-thread runs: empty explicit set means nothing to verify (not an error).
+    echo "[VERIFY] addressed=0 resolved=0 dangling=0"
+    exit 0
   fi
   ADDRESSED_COUNT=$(wc -l < "$EXPECTED_FILE" | tr -d ' ')
   VERIFY_THREADS=$(collect_threads)
