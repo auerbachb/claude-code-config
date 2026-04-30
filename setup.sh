@@ -164,7 +164,7 @@ step_pass "Merge settings"
 # ---------------------------------------------------------------------------
 echo "Step 2b: Optional Graphite repo init (.git/.graphite_repo_config)..."
 GRAPHITE_INIT="$SCRIPT_DIR/.claude/scripts/graphite-repo-init.sh"
-if [[ -x "$GRAPHITE_INIT" ]]; then
+if [[ -f "$GRAPHITE_INIT" ]]; then
   bash "$GRAPHITE_INIT" "$SCRIPT_DIR" || true
 fi
 step_pass "Graphite repo init (optional)"
