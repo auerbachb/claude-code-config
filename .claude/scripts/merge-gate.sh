@@ -2,10 +2,12 @@
 # merge-gate.sh — Verify the merge gate for a PR (CR / BugBot / Greptile / CodeAnt).
 #
 # Implements the authoritative gate defined in .claude/rules/cr-merge-gate.md:
-#   - CR path       : 1 explicit CodeRabbit OR CodeAnt APPROVED review on current
-#                     HEAD SHA + zero unresolved threads (SHA freshness enforced).
-#                     CodeRabbit check-run must be green when CodeRabbit supplies
-#                     the approval; CodeAnt-only approval skips that check-run.
+#   - CR path       : 1 explicit CodeRabbit APPROVED on current HEAD SHA + green
+#                     CodeRabbit check-run (SHA freshness + retraction enforced).
+#                     CodeAnt is supplemental: when CodeAnt participated on that SHA,
+#                     require CodeAnt APPROVED or a successful CodeAnt check-run;
+#                     CodeAnt CHANGES_REQUESTED blocks only if newer than the latest
+#                     clean signal (APPROVED or successful check completion).
 #   - BugBot path   : 1 clean BugBot review on current HEAD + zero unresolved BugBot threads
 #   - Greptile path : severity-gated — clean OR only P1/P2 (fixed) OR P0 fixed + re-review clean
 # Also enforces the pre-merge CI gate from .claude/rules/cr-merge-gate.md Step 1b
@@ -373,8 +375,7 @@ fi
 case "$REVIEWER" in
   cr)
 
-    # CodeRabbit check-run status on current HEAD (required only when CodeRabbit
-    # supplies the APPROVED review on this SHA — CodeAnt-only approval skips it).
+    # CodeRabbit check-run must be green on HEAD whenever we are on the CR path.
     CR_CHECK=$(echo "$CHECK_RUNS_JSON" | jq -c '[.check_runs[]? | select(.name == "CodeRabbit")] | first // empty')
     CR_CHECK_OK=false
     if [[ -n "$CR_CHECK" ]]; then
@@ -391,13 +392,8 @@ case "$REVIEWER" in
       fi
     fi
 
-    # Require 1 explicit CodeRabbit OR CodeAnt APPROVED review on the current HEAD SHA.
-    # SHA freshness is intrinsic to the filter: commit_id must equal $HEAD_SHA, so a
-    # prior APPROVED on a stale SHA does NOT satisfy the gate.
-    #
-    # Retraction: if a bot posts APPROVED and later CHANGES_REQUESTED on the same
-    # SHA, the approval is retracted. Compare newest APPROVED vs newest
-    # CHANGES_REQUESTED per bot (COMMENTED follow-ups must not paper over retraction).
+    # Require 1 explicit CodeRabbit APPROVED on HEAD (SHA freshness in the jq filter).
+    # Retraction: CHANGES_REQUESTED newer than APPROVED on same SHA invalidates approval.
     LATEST_CR_APPROVED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
       [.[]?
         | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha and .state == "APPROVED")
@@ -439,34 +435,78 @@ case "$REVIEWER" in
         CR_RETRACTED=true
       fi
     fi
-    CA_RETRACTED=false
-    if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && -n "$LATEST_CA_CHANGES_REQUESTED_AT" && -n "$LATEST_CA_APPROVED_AT" ]]; then
-      if [[ "$LATEST_CA_CHANGES_REQUESTED_AT" > "$LATEST_CA_APPROVED_AT" ]]; then
-        CA_RETRACTED=true
-      fi
-    fi
-
-    CR_APPROVAL_VALID=false
-    if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && "$CR_RETRACTED" == false ]]; then
-      CR_APPROVAL_VALID=true
-    fi
     CA_APPROVAL_VALID=false
     if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && "$CA_RETRACTED" == false ]]; then
       CA_APPROVAL_VALID=true
     fi
 
-    if [[ "$CR_APPROVAL_VALID" == true ]]; then
-      if [[ "$CR_CHECK_OK" != true ]]; then
-        MISSING+=("CodeRabbit check-run not green on HEAD ${HEAD_SHA:0:7}")
+    if [[ "$CR_APPROVAL_VALID" != true ]]; then
+      if [[ "$CR_RETRACTED" == true ]]; then
+        MISSING+=("CR approval on HEAD ${HEAD_SHA:0:7} retracted by later CHANGES_REQUESTED — fix and re-trigger")
+      else
+        MISSING+=("need 1 explicit CodeRabbit APPROVED review on HEAD ${HEAD_SHA:0:7} (have $TOTAL_CR_ON_HEAD CR review(s) on this SHA)")
       fi
-    elif [[ "$CA_APPROVAL_VALID" == true ]]; then
-      : # CodeAnt APPROVED on HEAD — no CodeRabbit check-run required
-    elif [[ "$CR_RETRACTED" == true ]]; then
-      MISSING+=("CR approval on HEAD ${HEAD_SHA:0:7} retracted by later CHANGES_REQUESTED — fix and re-trigger")
-    elif [[ "$CA_RETRACTED" == true ]]; then
-      MISSING+=("CodeAnt approval on HEAD ${HEAD_SHA:0:7} retracted by later CHANGES_REQUESTED — fix and re-trigger")
-    else
-      MISSING+=("need 1 explicit CodeRabbit or CodeAnt APPROVED review on HEAD ${HEAD_SHA:0:7} (CR: $TOTAL_CR_ON_HEAD review(s), CodeAnt: $TOTAL_CA_ON_HEAD review(s) on this SHA)")
+    elif [[ "$CR_CHECK_OK" != true ]]; then
+      MISSING+=("CodeRabbit check-run not green on HEAD ${HEAD_SHA:0:7}")
+    fi
+
+    # CodeAnt supplemental gate (#367 / CodeRabbit review): only when CodeAnt left
+    # artifacts on this SHA — require APPROVED or successful CodeAnt check-run, and
+    # treat CHANGES_REQUESTED as blocking only if it is newer than the latest clean signal.
+    CODEANT_REVIEWS_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
+      [.[]? | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha)] | length')
+    CODEANT_INLINE_ON_HEAD=$(echo "$PR_COMMENTS_JSON" | jq --arg sha "$HEAD_SHA" '
+      [.[]? | select(.user.login == "codeant-ai[bot]" and ((.commit_id // .original_commit_id // "") == $sha))] | length')
+    CODEANT_CONVO_ON_HEAD=$(echo "$ISSUE_COMMENTS_JSON" | jq -r --arg sha "$HEAD_SHA" '
+      def short: $sha[0:7];
+      [.[]?
+        | select(.user.login == "codeant-ai[bot]")
+        | .body // ""
+        | select((contains($sha)) or (contains(short)))]
+      | length')
+    CODEANT_CHECK_PRESENT=false
+    if echo "$CHECK_RUNS_JSON" | jq -e '
+      .check_runs[]?
+      | select(
+          ((.name // "") | test("codeant"; "i"))
+          or ((.app.slug // "") | test("codeant"; "i"))
+          or ((.app.name // "") | test("codeant"; "i"))
+        )
+      ' >/dev/null 2>&1; then
+      CODEANT_CHECK_PRESENT=true
+    fi
+
+    CODEANT_PARTICIPATED=false
+    if [[ "$CODEANT_REVIEWS_ON_HEAD" -gt 0 || "$CODEANT_INLINE_ON_HEAD" -gt 0 || "$CODEANT_CONVO_ON_HEAD" -gt 0 || "$CODEANT_CHECK_PRESENT" == true ]]; then
+      CODEANT_PARTICIPATED=true
+    fi
+
+    if [[ "$CODEANT_PARTICIPATED" == true ]]; then
+      LATEST_CA_CHECK_OK_AT=$(echo "$CHECK_RUNS_JSON" | jq -r '
+        [.check_runs[]?
+          | select((.status // "") == "completed" and (.conclusion // "") == "success")
+          | select(
+              ((.name // "") | test("codeant"; "i"))
+              or ((.app.slug // "") | test("codeant"; "i"))
+              or ((.app.name // "") | test("codeant"; "i"))
+            )
+          | (.completed_at // .started_at // "")]
+        | sort | last // ""')
+      CODEANT_CHECK_OK=false
+      if [[ -n "$LATEST_CA_CHECK_OK_AT" ]]; then
+        CODEANT_CHECK_OK=true
+      fi
+
+      LATEST_CA_CLEAN_AT="$LATEST_CA_APPROVED_AT"
+      if [[ -n "$LATEST_CA_CHECK_OK_AT" && ( -z "$LATEST_CA_CLEAN_AT" || "$LATEST_CA_CHECK_OK_AT" > "$LATEST_CA_CLEAN_AT" ) ]]; then
+        LATEST_CA_CLEAN_AT="$LATEST_CA_CHECK_OK_AT"
+      fi
+
+      if [[ -n "$LATEST_CA_CHANGES_REQUESTED_AT" && ( -z "$LATEST_CA_CLEAN_AT" || "$LATEST_CA_CHANGES_REQUESTED_AT" > "$LATEST_CA_CLEAN_AT" ) ]]; then
+        MISSING+=("CodeAnt CHANGES_REQUESTED on HEAD ${HEAD_SHA:0:7} is newer than the latest CodeAnt clean signal — address findings or wait for APPROVED / successful CodeAnt check-run")
+      elif [[ "$CA_APPROVAL_VALID" != true && "$CODEANT_CHECK_OK" != true ]]; then
+        MISSING+=("CodeAnt participated on HEAD ${HEAD_SHA:0:7} but no explicit APPROVED review and no successful CodeAnt check-run — wait or comment @codeant-ai review")
+      fi
     fi
 
     ;;

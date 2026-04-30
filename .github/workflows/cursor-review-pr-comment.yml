@@ -1,14 +1,17 @@
 # Issue #361: Always post @cursor review on PR open and every push so BugBot runs
 # reliably (auto-trigger alone misses often). BugBot is per-seat — no per-comment cost.
+#
+# pull_request_target: fork PRs get read-only GITHUB_TOKEN on pull_request; we only
+# call issues.createComment (no checkout / untrusted code). See GitHub hardening docs.
 name: Cursor BugBot review trigger
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened]
 
 permissions:
-  # issues.createComment on a PR needs issues:write; GITHUB_TOKEN on pull_request
-  # may still 403 without pull-requests:write — keep both (see PR #399).
+  # pull_request_target runs in base context; token can comment on PRs from forks.
+  # issues.createComment needs issues:write; keep pull-requests:write for parity with prior runs.
   contents: read
   issues: write
   pull-requests: write
