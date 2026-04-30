@@ -160,6 +160,19 @@ fi
 step_pass "Merge settings"
 
 # ---------------------------------------------------------------------------
+# Step 2b: Optional Graphite CLI repo marker (per-repo auto-detection for plugin)
+# ---------------------------------------------------------------------------
+echo "Step 2b: Optional Graphite repo init (.git/.graphite_repo_config)..."
+GRAPHITE_INIT="$SCRIPT_DIR/.claude/scripts/graphite-repo-init.sh"
+if [[ -f "$GRAPHITE_INIT" ]]; then
+  if ! bash "$GRAPHITE_INIT" "$SCRIPT_DIR"; then
+    step_fail "Graphite repo init (optional)" "graphite-repo-init.sh failed; install/configure Graphite CLI or run 'gt repo init' manually in this repo"
+    exit 1
+  fi
+fi
+step_pass "Graphite repo init (optional)"
+
+# ---------------------------------------------------------------------------
 # Step 3: Ensure hook scripts are executable
 # ---------------------------------------------------------------------------
 echo "Step 3: Verifying hook permissions..."

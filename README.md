@@ -57,6 +57,7 @@ Review ownership is sticky once a fallback tier takes over:
 | [CodeRabbit CLI](https://docs.coderabbit.ai/cli) | `curl -fsSL https://cli.coderabbit.ai/install.sh \| sh` | Local pre-push reviews |
 | CodeAnt | Install the GitHub App on your repos | Supplemental AI code review on PRs |
 | Graphite AI Reviews | Enable in Graphite for your repos | Supplemental AI review/check-run signal on PRs |
+| [Graphite CLI](https://graphite.dev/docs/command-line) (`gt`) | `brew install withgraphite/tap/graphite` or `npm install -g @withgraphite/graphite-cli@stable` | Stacked PR workflow; required for the Graphite Claude Code plugins (`graphite`, `graphite-mcp`). MCP integration needs **v1.6.7+**. |
 
 **Optional:** [Greptile](https://greptile.com) — AI code reviewer used as a fallback when CodeRabbit and BugBot are unavailable. Install the GitHub App and configure via the [Greptile dashboard](https://app.greptile.com).
 
@@ -81,13 +82,28 @@ bash ./setup.sh
 
 This single command handles everything:
 1. Creates `~/.claude/skills/` directory
-2. Merges settings from `global-settings.json` into `~/.claude/settings.json` (preserves existing keys)
-3. Sets up the [skills worktree](#architecture) and symlinks (`CLAUDE.md`, rules, all skills)
-4. Registers all hooks with correct paths
-5. Installs the git pre-commit hook that blocks root-`main` commits
-6. Verifies the installation and prints a pass/fail summary
+2. Merges settings from `global-settings.json` into `~/.claude/settings.json` (preserves existing keys), including the **Graphite plugin marketplace** and enabled plugins when those keys are missing locally
+3. Optionally runs `gt repo init` in this checkout when Graphite CLI (`gt`) is installed, creating `.git/.graphite_repo_config` so the Graphite plugin can auto-detect this repo (skipped quietly if `gt` is missing; **setup fails** if `gt` is present but `gt repo init` fails)
+4. Sets up the [skills worktree](#architecture) and symlinks (`CLAUDE.md`, rules, all skills)
+5. Registers all hooks with correct paths
+6. Installs the git pre-commit hook that blocks root-`main` commits
+7. Verifies the installation and prints a pass/fail summary
 
 The script is idempotent — safe to re-run at any time.
+
+After upgrading or first enabling plugins, run **`/reload-plugins`** once inside Claude Code so the Graphite skills and MCP load.
+
+### Graphite CLI + Claude Code plugins (optional)
+
+`global-settings.json` seeds **`extraKnownMarketplaces`** (the [claude-code-graphite](https://github.com/georgeguimaraes/claude-code-graphite) catalog) and **`enabledPlugins`** for `graphite` and `graphite-mcp`. That matches [Anthropic’s team-marketplace pattern](https://code.claude.com/docs/en/discover-plugins#configure-team-marketplaces): Claude Code can **discover** those marketplaces/plugins and **prompt** you to install them after you trust the folder—**explicit consent** is required, and you may still need `/plugin marketplace add` manually if you skip the prompt or in setups where prompting is unreliable. Once installed to your scope, **`enabledPlugins`** from merged settings can enable the extensions without re-running marketplace commands every time.
+
+**Per-repo marker (not committed):** The Graphite plugin detects repos via **`.git/.graphite_repo_config`**. Run **`gt repo init`** in each clone where you want stacked-PR context, or:
+
+```bash
+bash /path/to/claude-code-config/.claude/scripts/graphite-repo-init.sh /path/to/other-repo
+```
+
+**Opt-out:** Remove or set `enabledPlugins` entries to `false` in `~/.claude/settings.json`, or disable the plugins under `/plugin` → Installed. Omitting Graphite CLI does not break this config — hooks and skills behave as before.
 
 **Step 3: Verify**
 
@@ -230,7 +246,7 @@ See `.claude/scripts/README.md` for detailed contracts, arguments, and exit code
 | File | Location | Purpose |
 |------|----------|---------|
 | `CLAUDE.md` | Repo root (symlinked to `~/.claude/`) | Core instructions: worktree policy, PR workflow, branch naming, acceptance criteria, CI merge gate |
-| `global-settings.json` | Merged into `~/.claude/settings.json` | Hooks, permissions (`allow` rules for autonomous operation), model preference, experimental flags |
+| `global-settings.json` | Merged into `~/.claude/settings.json` | Hooks, permissions (`allow` rules for autonomous operation), model preference, experimental flags, and optional **`extraKnownMarketplaces` / `enabledPlugins`** (Graphite CLI plugins when seeded) |
 | `.coderabbit.yaml` | Repo root | CodeRabbit review config: assertive profile, token-efficiency checks, knowledge base integration |
 | `.claude/pm-config.md` | Per-repo (bootstrapped by `/pm`) | PM config: role, OKRs, team roster, infrastructure/architecture detection |
 | `~/.claude/session-state.json` | Runtime (auto-created) | Session orchestration state: PR phases, **CR hourly consumption** (`cr_hourly.events`), per-PR `cr_explicit_triggers`, active subagents, Greptile daily budget |

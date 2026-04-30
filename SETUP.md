@@ -21,14 +21,15 @@ The script handles everything: directory creation, symlinks, settings merge, hoo
 > Steps below are the logical workflow — see `setup.sh` for exact step numbering in script output.
 
 1. Creates the `~/.claude/skills/` directory
-2. Merges non-hook settings from `global-settings.json` into `~/.claude/settings.json` (existing keys like `permissions`, `model`, `env` are preserved — only missing keys are seeded)
-3. Verifies all hook scripts exist and are executable
-4. Runs `setup-skills-worktree.sh` which:
+2. Merges non-hook settings from `global-settings.json` into `~/.claude/settings.json` (existing keys like `permissions`, `model`, `env` are preserved — only missing keys are seeded), including optional Graphite plugin marketplace and `enabledPlugins` when absent
+3. Optionally runs `gt repo init` for this checkout when Graphite CLI is installed (creates `.git/.graphite_repo_config`; setup fails if `gt repo init` fails when `gt` is installed)
+4. Verifies all hook scripts exist and are executable
+5. Runs `setup-skills-worktree.sh` which:
    - Creates a dedicated skills worktree and skill symlinks
    - Registers all hooks into `~/.claude/settings.json` with paths pointing to the skills worktree (migrates stale root-repo or placeholder paths automatically)
-5. Symlinks `~/.claude/CLAUDE.md` → skills worktree (`~/.claude/skills-worktree/CLAUDE.md`)
-6. Symlinks `~/.claude/rules` → skills worktree (`~/.claude/skills-worktree/.claude/rules`)
-7. Verifies all hook paths in `settings.json` resolve to existing, executable scripts
+6. Symlinks `~/.claude/CLAUDE.md` → skills worktree (`~/.claude/skills-worktree/CLAUDE.md`)
+7. Symlinks `~/.claude/rules` → skills worktree (`~/.claude/skills-worktree/.claude/rules`)
+8. Verifies all hook paths in `settings.json` resolve to existing, executable scripts
 
 ## Prerequisites
 
@@ -39,6 +40,7 @@ The script handles everything: directory creation, symlinks, settings merge, hoo
 Optional tools (for the full review workflow):
 - [CodeRabbit](https://coderabbit.ai) — AI code review on PRs
 - [CodeRabbit CLI](https://docs.coderabbit.ai/cli) — local pre-push reviews (`coderabbit review --prompt-only`)
+- [Graphite CLI](https://graphite.dev/docs/command-line) — stacked PRs; pair with the Graphite Claude Code plugins enabled via `setup.sh` (see [README.md](README.md#getting-started))
 - [Greptile](https://greptile.com) — fallback reviewer when CodeRabbit is rate-limited
 
 See [README.md](README.md) for full documentation.
