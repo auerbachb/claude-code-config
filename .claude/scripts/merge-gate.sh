@@ -445,8 +445,6 @@ case "$REVIEWER" in
     # CodeAnt supplemental gate (#367 / CodeRabbit review): only when CodeAnt left
     # artifacts on this SHA — require APPROVED or successful CodeAnt check-run, and
     # treat CHANGES_REQUESTED as blocking only if it is newer than the latest clean signal.
-    CODEANT_REVIEWS_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
-      [.[]? | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha)] | length')
     CODEANT_INLINE_ON_HEAD=$(echo "$PR_COMMENTS_JSON" | jq --arg sha "$HEAD_SHA" '
       [.[]? | select(.user.login == "codeant-ai[bot]" and ((.commit_id // .original_commit_id // "") == $sha))] | length')
     CODEANT_CONVO_ON_HEAD=$(echo "$ISSUE_COMMENTS_JSON" | jq -r --arg sha "$HEAD_SHA" '
@@ -469,7 +467,7 @@ case "$REVIEWER" in
     fi
 
     CODEANT_PARTICIPATED=false
-    if [[ "$CODEANT_REVIEWS_ON_HEAD" -gt 0 || "$CODEANT_INLINE_ON_HEAD" -gt 0 || "$CODEANT_CONVO_ON_HEAD" -gt 0 || "$CODEANT_CHECK_PRESENT" == true ]]; then
+    if [[ "$TOTAL_CA_ON_HEAD" -gt 0 || "$CODEANT_INLINE_ON_HEAD" -gt 0 || "$CODEANT_CONVO_ON_HEAD" -gt 0 || "$CODEANT_CHECK_PRESENT" == true ]]; then
       CODEANT_PARTICIPATED=true
     fi
 
