@@ -10,9 +10,9 @@ These apply to EVERY message the parent agent sends to the user. No exceptions, 
 
 After context compaction, your FIRST action is to reconstruct monitoring state (see "Post-Compaction Recovery" in `monitor-mode.md`) and report it WITH a timestamp.
 
-### Thread title — `[#issue]` prefix
+## Thread title — `[#issue]` prefix
 
-There is no supported customization for auto-generated thread/tab names. **Bias the first message** with a leading `[#N]` token — e.g. single `[#339]` or multi `[#339, #341]` — so the auto-summarizer (which typically picks up leading tokens) is likelier to put the issue number in the title.
+There is no supported customization for auto-generated thread/tab names. **Best-effort only:** start the first *user message* with a leading `[#N]` token — e.g. single `[#339]` or multi `[#339, #341]` — so the auto-summarizer (which typically picks up leading tokens) is likelier to put the issue number(s) in the title.
 
 ---
 
