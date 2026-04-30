@@ -517,8 +517,10 @@ case "$REVIEWER" in
         BB_STATE=$(echo "$LATEST_BB" | jq -r '.state // ""')
         # Always check for inline findings — BugBot can post inline diff comments
         # without a review body, so gating on body length would miss them.
+        # Filter by original_commit_id == sha to exclude stale comments GitHub
+        # "moves" to the new HEAD when commit_id advances but the diff line persists.
         INLINE_BB=$(echo "$PR_COMMENTS_JSON" | jq --arg sha "$HEAD_SHA" '
-          [.[]? | select(.user.login == "cursor[bot]" and .commit_id == $sha)] | length')
+          [.[]? | select(.user.login == "cursor[bot]" and .commit_id == $sha and (.original_commit_id // .commit_id) == $sha)] | length')
         if [[ "$BB_STATE" == "CHANGES_REQUESTED" ]] || [[ "$INLINE_BB" -gt 0 ]]; then
           MISSING+=("latest BugBot review on HEAD has findings ($INLINE_BB inline)")
         fi
