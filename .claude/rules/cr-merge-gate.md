@@ -33,9 +33,9 @@ The merge gate depends on which reviewer owns the PR:
 
 **CodeAnt on the CR path** (supplemental — `codeant-ai[bot]`; parallel to CR, not a BugBot/Greptile tier):
 
-- **When it applies:** only if CodeAnt has already left a **review**, **inline comment**, or **issue comment** on the PR that ties to the **current** HEAD SHA (body contains full SHA or 7-char prefix, or review `commit_id` matches HEAD). If CodeAnt has not run on this SHA, it does not block the CR path.
-- **Clean signal (any one):** (a) explicit `APPROVED` from `codeant-ai[bot]` on current HEAD, or (b) completed CodeAnt check-run (`codeant` in name/slug/app, case-insensitive) with `conclusion: success`.
-- **Blocking:** latest `CHANGES_REQUESTED` from CodeAnt on that SHA after the latest `APPROVED` blocks until fixed; unresolved threads: Step 1c.
+- **When it applies:** CodeAnt has a **review**, **inline comment**, or **issue comment** on the PR tied to the **current** HEAD SHA, **or** any CodeAnt-associated **check-run** on that commit (name / app slug / app name matches `codeant`, case-insensitive). If none of these exist on this SHA, CodeAnt does not block the CR path.
+- **Clean signal (any one):** (a) explicit `APPROVED` from `codeant-ai[bot]` on current HEAD, or (b) completed CodeAnt check-run with `conclusion: success`.
+- **Retraction vs clean:** treat `CHANGES_REQUESTED` as blocking only if it is **newer than** the latest of (latest `APPROVED` on that SHA, latest successful CodeAnt check-run completion time). Otherwise the supplemental clean signal clears the CodeAnt gate. Unresolved threads: Step 1c.
 
 **BugBot path** (CR failed, BugBot responded, Greptile never triggered — sticky; see `bugbot.md`):
 

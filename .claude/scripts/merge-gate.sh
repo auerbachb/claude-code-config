@@ -430,7 +430,18 @@ case "$REVIEWER" in
         | .body // ""
         | select((contains($sha)) or (contains(short)))]
       | length')
-    if [[ "$CODEANT_REVIEWS_ON_HEAD" -gt 0 || "$CODEANT_INLINE_ON_HEAD" -gt 0 || "$CODEANT_CONVO_ON_HEAD" -gt 0 ]]; then
+    CODEANT_CHECK_ON_HEAD=false
+    if echo "$CHECK_RUNS_JSON" | jq -e '
+      .check_runs[]?
+      | select(
+          ((.name // "") | test("codeant"; "i"))
+          or ((.app.slug // "") | test("codeant"; "i"))
+          or ((.app.name // "") | test("codeant"; "i"))
+        )
+      ' >/dev/null 2>&1; then
+      CODEANT_CHECK_ON_HEAD=true
+    fi
+    if [[ "$CODEANT_REVIEWS_ON_HEAD" -gt 0 || "$CODEANT_INLINE_ON_HEAD" -gt 0 || "$CODEANT_CONVO_ON_HEAD" -gt 0 || "$CODEANT_CHECK_ON_HEAD" == true ]]; then
       LATEST_CA_APPROVED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
         [.[]?
           | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha and .state == "APPROVED")
@@ -441,21 +452,27 @@ case "$REVIEWER" in
           | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha and .state == "CHANGES_REQUESTED")
           | .submitted_at]
         | sort | last // ""')
-      if [[ -n "$LATEST_CA_CHANGES_AT" && ( -z "$LATEST_CA_APPROVED_AT" || "$LATEST_CA_CHANGES_AT" > "$LATEST_CA_APPROVED_AT" ) ]]; then
-        MISSING+=("CodeAnt CHANGES_REQUESTED on HEAD ${HEAD_SHA:0:7} — address findings or wait for APPROVED after fix")
-      else
-        CODEANT_APPROVED_COUNT=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
-          [.[]? | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha and .state == "APPROVED")] | length')
-        CODEANT_CHECK_OK=false
-        if echo "$CHECK_RUNS_JSON" | jq -e '
-          .check_runs[]
+      LATEST_CA_CHECK_OK_AT=$(echo "$CHECK_RUNS_JSON" | jq -r '
+        [.check_runs[]?
           | select((.status // "") == "completed" and (.conclusion // "") == "success")
           | select(
               ((.name // "") | test("codeant"; "i"))
               or ((.app.slug // "") | test("codeant"; "i"))
               or ((.app.name // "") | test("codeant"; "i"))
             )
-          ' >/dev/null 2>&1; then
+          | (.completed_at // .started_at // "")]
+        | sort | last // ""')
+      LATEST_CA_CLEAN_AT="$LATEST_CA_APPROVED_AT"
+      if [[ -n "$LATEST_CA_CHECK_OK_AT" && ( -z "$LATEST_CA_CLEAN_AT" || "$LATEST_CA_CHECK_OK_AT" > "$LATEST_CA_CLEAN_AT" ) ]]; then
+        LATEST_CA_CLEAN_AT="$LATEST_CA_CHECK_OK_AT"
+      fi
+      if [[ -n "$LATEST_CA_CHANGES_AT" && ( -z "$LATEST_CA_CLEAN_AT" || "$LATEST_CA_CHANGES_AT" > "$LATEST_CA_CLEAN_AT" ) ]]; then
+        MISSING+=("CodeAnt CHANGES_REQUESTED on HEAD ${HEAD_SHA:0:7} — address findings or wait for APPROVED / successful CodeAnt check-run after fix")
+      else
+        CODEANT_APPROVED_COUNT=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
+          [.[]? | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha and .state == "APPROVED")] | length')
+        CODEANT_CHECK_OK=false
+        if [[ -n "$LATEST_CA_CHECK_OK_AT" ]]; then
           CODEANT_CHECK_OK=true
         fi
         if [[ "$CODEANT_APPROVED_COUNT" -lt 1 && "$CODEANT_CHECK_OK" != true ]]; then

@@ -1,6 +1,6 @@
 ## GitHub CodeRabbit Review Loop (Fallback)
 
-> **NEVER declare a PR done immediately after pushing.** Every push triggers a new CR/BugBot/Greptile review; **CodeAnt** and **Graphite** (`codeant-ai[bot]`, `graphite-app[bot]`) may also run in parallel on the CR path. Poll until `cr-merge-gate.md` is met; "0 unresolved threads" is not an exit condition.
+> **NEVER declare a PR done immediately after pushing.** Every push triggers new CR/BugBot review activity; **Greptile** runs only when escalated. **CodeAnt** and **Graphite** (`codeant-ai[bot]`, `graphite-app[bot]`) may also run in parallel on the CR path. Poll until `cr-merge-gate.md` is met; "0 unresolved threads" is not an exit condition.
 >
 > **Always:** Poll all 3 endpoints + check-runs every cycle. Use `per_page=100`. Filter by `coderabbitai[bot]`. Batch fixes into one commit. Reply to every thread. Resolve threads via GraphQL. **Enter the polling loop immediately after push — do NOT ask.** Invoke `/fixpr` when any trigger condition fires (see "Per-cycle check" below).
 > **Ask first:** Merging — always ask the user. **Nothing else in this workflow requires permission.**
