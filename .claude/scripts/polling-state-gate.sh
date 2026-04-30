@@ -256,7 +256,7 @@ ensure_session() {
   else
     # Refresh head_sha only — preserve phase_completed, reviewer, and other Phase A/B fields.
     local tmp
-    tmp="$(mktemp)"
+    tmp="$(mktemp "${HANDOFF_DIR}/.pr-${PR_NUMBER}-handoff-refresh.XXXXXX")"
     if ! jq --arg sha "$head_sha" '.head_sha = $sha' "$handoff_path" > "$tmp"; then
       rm -f "$tmp"
       echo "polling-state-gate.sh: failed to refresh handoff JSON: $handoff_path" >&2
