@@ -7,6 +7,8 @@ on:
     types: [opened, synchronize, reopened]
 
 permissions:
+  # issues.createComment on a PR needs issues:write; GITHUB_TOKEN on pull_request
+  # may still 403 without pull-requests:write — keep both (see PR #399).
   contents: read
   issues: write
   pull-requests: write
