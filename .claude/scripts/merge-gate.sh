@@ -516,7 +516,7 @@ case "$REVIEWER" in
       if [[ -n "$LATEST_CA_CHANGES_REQUESTED_AT" && ( -z "$LATEST_CA_CLEAN_AT" || "$LATEST_CA_CHANGES_REQUESTED_AT" > "$LATEST_CA_CLEAN_AT" ) ]]; then
         MISSING+=("CodeAnt CHANGES_REQUESTED on HEAD ${HEAD_SHA:0:7} is newer than the latest CodeAnt clean signal — address findings or wait for APPROVED / successful CodeAnt check-run")
       elif [[ "$CA_APPROVAL_VALID" != true && "$CODEANT_CHECK_OK" != true ]]; then
-        MISSING+=("CodeAnt participated on HEAD ${HEAD_SHA:0:7} but no explicit APPROVED review and no successful CodeAnt check-run — wait or comment @codeant-ai review")
+        MISSING+=("CodeAnt participated on HEAD ${HEAD_SHA:0:7} but no explicit APPROVED review and no successful CodeAnt check-run (have $TOTAL_CA_ON_HEAD CodeAnt review(s) on this SHA) — wait or comment @codeant-ai review")
       fi
     fi
 
