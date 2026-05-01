@@ -39,6 +39,7 @@ RUN git clone --bare /workspace /opt/origin-bare.git \
 
 # Make scripts executable
 RUN chmod +x setup.sh setup-skills-worktree.sh tests/test-setup.sh \
+    .claude/hooks/tests/stale-worktree-warn.test.sh \
     && if [ -d .claude/hooks ]; then find .claude/hooks -name '*.sh' -exec chmod +x {} +; fi
 
 ENTRYPOINT ["bash", "tests/test-setup.sh"]

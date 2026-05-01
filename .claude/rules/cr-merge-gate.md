@@ -9,7 +9,7 @@
 
 Stop polling ONLY when one current-HEAD review path below is satisfied:
 
-1. **CR:** explicit clean `APPROVED` on current HEAD **and** CodeAnt clean when CodeAnt has participated on that SHA (`codeant-graphite.md`, `merge-gate.sh`).
+1. **CR path:** explicit clean `APPROVED` from **CodeRabbit** (`coderabbitai[bot]`) **or** **CodeAnt** (`codeant-ai[bot]`) on current HEAD, same SHA-freshness and same-SHA retraction rules as legacy CR-only; **and** when CodeAnt has participated on that SHA, CodeAnt clean per supplemental rule (`codeant-graphite.md`, `merge-gate.sh`).
 2. **BugBot:** clean BugBot pass on current HEAD.
 3. **Greptile:** severity gate passed.
 
@@ -19,11 +19,12 @@ Stop polling ONLY when one current-HEAD review path below is satisfied:
 
 The merge gate depends on which reviewer owns the PR:
 
-**CR-only path** (neither BugBot nor Greptile was triggered):
+**CR path** (neither BugBot nor Greptile was triggered — `merge-gate.sh` reviewer `cr`):
 
-- **Gate:** 1 CR review with `state: "APPROVED"` and `commit_id == current HEAD SHA`.
-- **SHA freshness:** stale approvals do not count; re-trigger `@coderabbitai full review` subject to the rate cap and keep polling.
-- **Retraction:** a newer same-SHA `CHANGES_REQUESTED` retracts an earlier `APPROVED` until findings are fixed, pushed, and re-approved.
+- **Gate:** at least one of: **CodeRabbit** (`coderabbitai[bot]`) or **CodeAnt** (`codeant-ai[bot]`) with `state: "APPROVED"` and `commit_id == current HEAD SHA`. Either bot satisfies the primary review; you do not need both when only one reviewed.
+- **Routing (live scan):** CodeAnt or CodeRabbit in PR history → CR path; cursor-only → BugBot (`merge-gate.sh`, `reviewer-of.sh`).
+- **SHA freshness:** stale approvals do not count (wrong `commit_id`); re-trigger `@coderabbitai full review` or `@codeant-ai review` for the bot that must refresh, subject to the rate cap, and keep polling.
+- **Retraction:** a newer same-SHA `CHANGES_REQUESTED` from the **same** bot retracts that bot's earlier `APPROVED` until findings are fixed, pushed, and re-approved (same rule as legacy CR-only, evaluated per bot).
 - **Not approvals:**
   - The "Actions performed — Full review triggered" ack comment (review started, not finished).
   - "0 unresolved threads right now" without an APPROVED review on the current SHA.
