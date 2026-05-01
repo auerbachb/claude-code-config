@@ -109,9 +109,11 @@ for skill_dir in "$WORKTREE_SKILLS"/*/; do
 done
 
 # --- Step 3b: Remove orphaned skill symlinks (skill renamed or removed on main) ---
-for link in "$SKILLS_DIR"/*/; do
-  [[ -L "${link%/}" ]] || continue
-  link="${link%/}"
+# Use "$SKILLS_DIR"/* (not */) so dangling symlinks are included — a broken link is
+# not a directory, so */-style globs skip it.
+for link in "$SKILLS_DIR"/*; do
+  [[ -e "$link" || -L "$link" ]] || continue
+  [[ -L "$link" ]] || continue
   skill_name="$(basename "$link")"
   if [[ ! -d "$WORKTREE_SKILLS/$skill_name" ]]; then
     echo "  $skill_name — removing stale symlink (no matching skill in worktree)"
@@ -121,9 +123,9 @@ done
 
 # --- Step 4: Remove stale symlinks pointing to the old root repo location ---
 
-for link in "$SKILLS_DIR"/*/; do
-  [[ -L "${link%/}" ]] || continue
-  link="${link%/}"
+for link in "$SKILLS_DIR"/*; do
+  [[ -e "$link" || -L "$link" ]] || continue
+  [[ -L "$link" ]] || continue
   skill_name="$(basename "$link")"
   current_target="$(readlink "$link")"
 
