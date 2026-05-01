@@ -2,8 +2,8 @@
 # merge-gate.sh — Verify the merge gate for a PR (CR / BugBot / Greptile / CodeAnt).
 #
 # Implements the authoritative gate defined in .claude/rules/cr-merge-gate.md:
-#   - CR path       : 1 explicit CodeRabbit APPROVED on current HEAD SHA + green
-#                     CodeRabbit check-run (SHA freshness + retraction enforced).
+#   - CR path       : 1 explicit CodeRabbit OR CodeAnt APPROVED on current HEAD SHA
+#                     (SHA freshness + same-SHA retraction per bot, same rules as legacy CR-only).
 #                     CodeAnt is supplemental: when CodeAnt participated on that SHA,
 #                     require CodeAnt APPROVED or a successful CodeAnt check-run;
 #                     CodeAnt CHANGES_REQUESTED blocks only if newer than the latest
@@ -13,7 +13,7 @@
 # Also enforces the pre-merge CI gate from .claude/rules/cr-merge-gate.md Step 1b
 # (incomplete runs OR blocking conclusions = not merge-ready), merge metadata
 # (mergeStateStatus including BEHIND, mergeable including CONFLICTING) per
-# cr-merge-gate.md Step 1d / issue #273. When CR or Greptile is listed
+# cr-merge-gate.md Step 1d / issue #273. When CR, Greptile, or CodeAnt is listed
 # in CODEOWNERS, also verifies GitHub branch protection's reviewDecision is
 # APPROVED so stale/dismissed bot approvals cannot accidentally pass the gate.
 #
@@ -24,7 +24,8 @@
 # Reviewer resolution order (unless --reviewer is passed):
 #   1. ~/.claude/session-state.json  .prs["<N>"].reviewer  ("cr"/"bugbot"/"greptile"/"g")
 #   2. Live history scan — greptile-apps[bot] present → greptile;
-#      cursor[bot] present AND coderabbitai[bot] absent → bugbot; else cr.
+#      cursor[bot] present AND coderabbitai[bot] absent AND codeant-ai[bot] absent
+#      → bugbot; else cr (CodeAnt-only reviews use the CR path per #408).
 #      (BugBot auto-triggers on every push, so both bots are present on normal
 #      CR-owned PRs. The absence check ensures the live scan defaults to cr;
 #      CR→BugBot escalation is tracked via session-state, not the live scan.)
@@ -302,10 +303,12 @@ resolve_reviewer() {
   if echo "$authors" | grep -q '^greptile-apps\[bot\]$'; then
     echo "greptile"; return
   fi
-  # Only return bugbot when cursor[bot] is the sole reviewer — if coderabbitai[bot]
-  # is also present, CR is the primary reviewer (BugBot auto-triggers on every push).
+  # Only return bugbot when cursor[bot] is the sole AI reviewer — if coderabbitai[bot]
+  # or codeant-ai[bot] is present, use the CR path (BugBot auto-triggers on every push).
   # CR→BugBot escalation is tracked via session-state, not the live scan.
-  if echo "$authors" | grep -q '^cursor\[bot\]$' && ! echo "$authors" | grep -q '^coderabbitai\[bot\]$'; then
+  if echo "$authors" | grep -q '^cursor\[bot\]$' \
+    && ! echo "$authors" | grep -q '^coderabbitai\[bot\]$' \
+    && ! echo "$authors" | grep -q '^codeant-ai\[bot\]$'; then
     echo "bugbot"; return
   fi
   echo "cr"
@@ -434,11 +437,20 @@ case "$REVIEWER" in
       CA_APPROVAL_VALID=true
     fi
 
-    if [[ "$CR_APPROVAL_VALID" != true ]]; then
-      if [[ "$CR_RETRACTED" == true ]]; then
-        MISSING+=("CR approval on HEAD ${HEAD_SHA:0:7} retracted by later CHANGES_REQUESTED — fix and re-trigger")
-      else
-        MISSING+=("need 1 explicit CodeRabbit APPROVED review on HEAD ${HEAD_SHA:0:7} (have $TOTAL_CR_ON_HEAD CR review(s) on this SHA)")
+    PRIMARY_REVIEW_MET=false
+    if [[ "$CR_APPROVAL_VALID" == true || "$CA_APPROVAL_VALID" == true ]]; then
+      PRIMARY_REVIEW_MET=true
+    fi
+
+    if [[ "$PRIMARY_REVIEW_MET" != true ]]; then
+      if [[ "$CR_RETRACTED" == true && "$CA_APPROVAL_VALID" != true ]]; then
+        MISSING+=("CodeRabbit approval on HEAD ${HEAD_SHA:0:7} retracted by later CHANGES_REQUESTED — fix and re-trigger @coderabbitai full review")
+      fi
+      if [[ "$CA_RETRACTED" == true && "$CR_APPROVAL_VALID" != true ]]; then
+        MISSING+=("CodeAnt approval on HEAD ${HEAD_SHA:0:7} retracted by later CHANGES_REQUESTED — fix and re-trigger @codeant-ai review")
+      fi
+      if [[ "$CR_RETRACTED" != true && "$CA_RETRACTED" != true ]]; then
+        MISSING+=("need 1 explicit CodeRabbit or CodeAnt APPROVED review on HEAD ${HEAD_SHA:0:7} (have $TOTAL_CR_ON_HEAD CodeRabbit, $TOTAL_CA_ON_HEAD CodeAnt review(s) on this SHA)")
       fi
     fi
 
