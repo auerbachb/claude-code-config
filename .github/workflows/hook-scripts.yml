@@ -1,0 +1,25 @@
+name: Hook scripts
+
+on:
+  pull_request: {}
+
+permissions:
+  contents: read
+
+jobs:
+  hook-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure git (worktree tests)
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "CI"
+
+      - name: stale-worktree-warn integration test
+        run: bash .claude/hooks/tests/stale-worktree-warn.test.sh
+
+      - name: env-guard unit tests
+        run: python3 -m unittest tests.test_env_guard -v
