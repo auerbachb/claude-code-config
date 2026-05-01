@@ -195,7 +195,7 @@ Thirteen hook scripts and hook utilities support Claude Code sessions:
 | `silence-detector-ack.sh` | Stop | Resets the silence timer after each response |
 | `trust-flag-repair.sh` | Stop | Repairs trust flags in `~/.claude.json` for all projects |
 | `dirty-main-warn.sh` | Stop | Warns when root `main` has uncommitted drift and points to quarantine recovery |
-| `skill-usage-tracker.sh` | PostToolUse (Skill) | Tracks skill usage counts for PM and maintenance audits |
+| `skill-usage-tracker.sh` | PostToolUse (Skill) | Appends each Skill invocation to `~/.claude/skill-usage.log` and updates `~/.claude/skill-usage.csv` for PM and maintenance audits |
 | `register-hooks.py` | Utility | Merges hook definitions from `global-settings.json` into user settings |
 | `.claude/git-hooks/pre-commit` | Git pre-commit | Blocks commits made on `main` in the root checkout |
 
@@ -236,7 +236,8 @@ Shared helpers in `.claude/scripts/` are used by skills, hooks, and review subag
 | `repair-worktrees.sh` | Diagnose and optionally remove stale git worktrees |
 | `repair-trust-single.sh` | Repair Claude trust flags for one project path |
 | `repair-trust-all.sh` | Repair Claude trust flags for all known projects |
-| `audit-skill-usage.sh` | Audit recorded skill usage data |
+| `audit-skill-usage.sh` | Legacy monthly audit against `.claude/data/skill-usage.json` |
+| `skill-usage-report.sh` | Markdown rollup from `~/.claude/skill-usage.log` (dead-skill candidates; issue #416) |
 
 See `.claude/scripts/README.md` for detailed contracts, arguments, and exit codes for the most commonly shared helpers.
 
