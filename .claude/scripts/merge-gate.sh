@@ -16,6 +16,8 @@
 # cr-merge-gate.md Step 1d / issue #273. When CR, Greptile, or CodeAnt is listed
 # in CODEOWNERS, also verifies GitHub branch protection's reviewDecision is
 # APPROVED so stale/dismissed bot approvals cannot accidentally pass the gate.
+# When stderr notes stale bot CHANGES_REQUESTED (issue #426), dismiss via
+# dismiss-stale-bot-changes.sh after push — do not treat as a human block.
 #
 # Usage:
 #   merge-gate.sh <pr_number> [--reviewer cr|bugbot|greptile]
@@ -209,8 +211,12 @@ if [[ -z "$CI_STATUS_JSON" ]] || ! echo "$CI_STATUS_JSON" | jq -e . >/dev/null 2
   die_api "ci-status.sh"
 fi
 
-if ! REVIEWS_JSON=$(gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" 2>/dev/null); then
+if ! REVIEWS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" 2>/dev/null); then
   die_api "reviews"
+fi
+REVIEWS_JSON=$(echo "$REVIEWS_RAW" | jq -s 'add // []')
+if [[ -z "$REVIEWS_JSON" ]] || ! echo "$REVIEWS_JSON" | jq -e . >/dev/null 2>&1; then
+  die_api "reviews parse"
 fi
 if ! PR_COMMENTS_JSON=$(gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
   die_api "pull-comments"
@@ -591,6 +597,23 @@ if [[ "${#MISSING[@]}" -eq 0 ]]; then
   MET=true
 else
   MET=false
+fi
+
+# When reviewDecision is CHANGES_REQUESTED, help operators distinguish stale bot
+# reviews (old commit) from current human requests — fixpr dismisses the former
+# after each push (cr-merge-gate.md / issue #426).
+if [[ "$REVIEW_DECISION" == "CHANGES_REQUESTED" ]]; then
+  STALE_BOT_CHANGES_COUNT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
+    def allow: ["coderabbitai[bot]","cursor[bot]","greptile-apps[bot]","codeant-ai[bot]","graphite-app[bot]"];
+    [.[]?
+      | select(.state == "CHANGES_REQUESTED")
+      | select((.commit_id // "") != "" and .commit_id != $sha)
+      | select((.user.type // "") == "Bot")
+      | select((.user.login // "") as $l | allow | index($l))]
+    | length')
+  if [[ "${STALE_BOT_CHANGES_COUNT:-0}" -gt 0 ]]; then
+    echo "[merge-gate] reviewDecision is CHANGES_REQUESTED with ${STALE_BOT_CHANGES_COUNT} stale bot CHANGES_REQUESTED review(s) (commit_id != HEAD ${HEAD_SHA:0:7}). Dismiss via .claude/scripts/dismiss-stale-bot-changes.sh after push (see fixpr Step 3a, cr-merge-gate.md) — not human escalation." >&2
+  fi
 fi
 
 MISSING_JSON=$(printf '%s\n' "${MISSING[@]:-}" | jq -R . | jq -cs 'map(select(length > 0))')
