@@ -98,22 +98,23 @@ def classify_and_resolve(ours: str, theirs: str) -> tuple[str, str | None, str]:
     if _rstrip_lines(ours) == _rstrip_lines(theirs):
         return "simple", _rstrip_lines(ours), ""
 
+    if o_nb == t_nb:
+        # Identical non-blank line sequence; preserve blank-line structure from theirs
+        return "simple", _rstrip_lines(theirs), ""
+
     if len(o_nb) == len(t_nb) and all(
         a.rstrip() == b.rstrip() for a, b in zip(o_nb, t_nb)
     ):
         # Per-line trailing whitespace only (non-blank lines align in order)
         return "simple", "\n".join(b.rstrip() for b in t_nb), ""
 
-    if o_nb == t_nb:
-        # Identical non-blank line sequence; whole-block whitespace handled above
-        return "simple", _rstrip_lines(theirs), ""
-
     o_empty = not o_nb
     t_empty = not t_nb
 
     if o_empty and not t_empty:
         if _all_import_lines(t_nb):
-            return "simple", theirs.rstrip("\n") + ("\n" if theirs.endswith("\n") else ""), ""
+            # No trailing newline: resolve_file joins out_parts with "\n" between elements
+            return "simple", theirs.rstrip("\n"), ""
         return "complex", None, "one side empty, other side has non-import content (possible deletion vs addition)"
 
     if t_empty and not o_empty:

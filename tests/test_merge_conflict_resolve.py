@@ -53,7 +53,8 @@ class ClassifyTests(unittest.TestCase):
         cls, resolved, _ = mod.classify_and_resolve(ours, theirs)
         self.assertEqual(cls, "simple")
         assert resolved is not None
-        self.assertIn("from x import y", resolved)
+        self.assertEqual(resolved, "from x import y\nimport z")
+        self.assertFalse(resolved.endswith("\n"))
 
     def test_empty_ours_non_import_complex(self) -> None:
         ours = ""
@@ -70,6 +71,15 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(cls, "complex")
         self.assertIsNone(resolved)
         self.assertIn("incoming side empty", reason)
+
+    def test_identical_nonblank_sequence_preserves_blank_lines(self) -> None:
+        """o_nb == t_nb branch must run (not swallowed by per-line rstrip-only path)."""
+        ours = "a\n\nb\n"
+        theirs = "a\n\nb\n"
+        cls, resolved, _ = mod.classify_and_resolve(ours, theirs)
+        self.assertEqual(cls, "simple")
+        assert resolved is not None
+        self.assertEqual(resolved, "a\n\nb")
 
 
 class WriteRepoTextTests(unittest.TestCase):
