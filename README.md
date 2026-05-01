@@ -145,13 +145,13 @@ All 22 commands are invoked as `/command` in a Claude Code session. They are def
 | `/pr-review-help` | Review | Executive PR review — multi-PR parallel strategic analysis |
 | `/standup` | Workflow | Daily standup summary (single contributor) |
 | `/status` | Workflow | Dashboard of open PRs with review state |
-| `/continue` | Workflow | Resume an interrupted review workflow |
+| `/go-on` | Workflow | Resume an interrupted review workflow |
 | `/merge` | Workflow | Squash merge with merge gate + AC verification |
 | `/wrap` | Workflow | End-of-session: verify, squash merge, aggressively reset root `main`, detect follow-ups, extract lessons |
 | `/check-acceptance-criteria` | Workflow | Verify Test Plan checkboxes against code |
 | `/lessons` | Workflow | Extract and save session learnings to memory |
 
-Run `/pm` first to bootstrap the PM config, then use the other PM skills as needed. Workflow commands (`/merge`, `/wrap`, `/continue`, etc.) work independently.
+Run `/pm` first to bootstrap the PM config, then use the other PM skills as needed. Workflow commands (`/merge`, `/wrap`, `/go-on`, etc.) work independently.
 
 ---
 

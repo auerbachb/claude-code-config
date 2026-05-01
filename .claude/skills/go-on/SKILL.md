@@ -1,6 +1,6 @@
 ---
-name: continue
-description: Resume an interrupted or stalled review workflow. Detects where the agent left off — local CR review, push, PR creation, review polling, CR/Greptile feedback processing, thread resolution, merge gate verification, or acceptance criteria — and continues from the next incomplete step automatically.
+name: go-on
+description: Resume an interrupted or stalled review workflow. Detects where the agent left off — local CR review, push, PR creation, review polling, CR/Greptile feedback processing, thread resolution, merge gate verification, or acceptance criteria — and continues from the next incomplete step automatically. Invoke as `/go-on`.
 ---
 
 Detect and resume the interrupted review workflow for the current branch.
@@ -136,7 +136,7 @@ Branch on exit code:
 - `1` → `unknown` printed; no bot has reviewed yet. Treat as **CR** (the default primary reviewer) and proceed to Step 6 to wait for the first review.
 - `2` → `[BLOCKED]` — script/gh error; surface stderr.
 - `3` → `[BLOCKED]` — PR #$PR_NUM not found (closed, merged, or invalid).
-- `5` → `[BLOCKED]` — `~/.claude/session-state.json` is malformed, wrong shape, or the helper hit a runtime failure (e.g. a racing read between the validation guard and the jq lookup). Surface the helper's stderr, stop polling, and repair or remove the state file before retrying `/continue`. Do **not** fall through to a live-history scan — sticky reviewer assignments live in session-state, and bypassing them risks mis-routing an already-escalated PR back to CR.
+- `5` → `[BLOCKED]` — `~/.claude/session-state.json` is malformed, wrong shape, or the helper hit a runtime failure (e.g. a racing read between the validation guard and the jq lookup). Surface the helper's stderr, stop polling, and repair or remove the state file before retrying `/go-on`. Do **not** fall through to a live-history scan — sticky reviewer assignments live in session-state, and bypassing them risks mis-routing an already-escalated PR back to CR.
 
 Output: `Reviewer: CR` / `Reviewer: BugBot` / `Reviewer: Greptile`.
 
@@ -346,7 +346,7 @@ Branch on exit code:
 Output a summary:
 
 ```
-=== /continue complete ===
+=== /go-on complete ===
 
 Branch: $BRANCH
 PR: #$PR_NUM

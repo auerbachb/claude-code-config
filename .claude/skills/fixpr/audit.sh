@@ -2,7 +2,7 @@
 # Thin wrapper — delegates to the shared .claude/scripts/pr-state.sh.
 #
 # The canonical PR-state script lives at .claude/scripts/pr-state.sh and is shared
-# across /fixpr, /merge, /wrap, /continue, /status, phase-b-reviewer, phase-c-merger.
+# across /fixpr, /merge, /wrap, /go-on, /status, phase-b-reviewer, phase-c-merger.
 # This file remains as a compatibility shim for anyone invoking the old path.
 #
 # All arguments, stdout (the JSON path), stderr, and exit codes are passed through
