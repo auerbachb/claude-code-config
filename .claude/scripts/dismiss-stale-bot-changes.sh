@@ -110,7 +110,7 @@ mapfile -t DISMISS_IDS < <(
 DISMISSED_IDS=()
 MESSAGE="Superseded by fixes on ${HEAD_SHA}"
 
-for rid in "${DISMISS_IDS[@]:-}"; do
+for rid in "${DISMISS_IDS[@]}"; do
   if [[ -z "$rid" ]]; then
     continue
   fi
@@ -132,17 +132,22 @@ for rid in "${DISMISS_IDS[@]:-}"; do
   fi
 done
 
-if [[ ${#DISMISS_IDS[@]:-} -eq 0 ]]; then
+if [[ ${#DISMISS_IDS[@]} -eq 0 ]]; then
   echo "[DISMISS-STALE] no stale bot CHANGES_REQUESTED reviews for PR #$PR_NUMBER (HEAD ${HEAD_SHA:0:7})"
 fi
 
-if [[ -n "$HANDOFF_FILE" && ${#DISMISSED_IDS[@]:-} -gt 0 ]]; then
+if [[ -n "$HANDOFF_FILE" && ${#DISMISSED_IDS[@]} -gt 0 ]]; then
   ids_json=$(printf '%s\n' "${DISMISSED_IDS[@]}" | jq -R . | jq -cs '.')
-  tmp=$(mktemp)
   if [[ -f "$HANDOFF_FILE" ]] && jq -e . "$HANDOFF_FILE" >/dev/null 2>&1; then
-    jq --argjson new_ids "$ids_json" '
+    tmp=$(mktemp)
+    if jq --argjson new_ids "$ids_json" '
       .stale_bot_reviews_dismissed = ((.stale_bot_reviews_dismissed // []) + $new_ids | unique)
-    ' "$HANDOFF_FILE" >"$tmp" && mv "$tmp" "$HANDOFF_FILE"
+    ' "$HANDOFF_FILE" >"$tmp"; then
+      mv "$tmp" "$HANDOFF_FILE"
+    else
+      rm -f "$tmp"
+      echo "[DISMISS-STALE] WARN: failed to merge handoff JSON — leaving file unchanged" >&2
+    fi
   else
     jq -n \
       --argjson new_ids "$ids_json" \
