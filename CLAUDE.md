@@ -1,10 +1,6 @@
-# PR MERGE AUTHORIZATION — NON-NEGOTIABLE
+# PR MERGE AUTHORIZATION
 
-**Never merge (or commit to main) a PR/ticket that the user did not create, unless one of the following is true:**
-1. The ticket creator (e.g. Bretton, or whoever opened the issue) has explicitly approved it in the PR/issue comments, OR
-2. The user has explicitly said in the conversation that Bretton (or the ticket creator) has reviewed and approved it.
-
-This applies to all repos, all sessions, forever. When in doubt, ask before merging.
+Do not merge a PR or commit to `main` unless the issue author approved on the PR/issue **or** the user confirmed that approval in chat. If unclear, ask.
 
 ---
 
@@ -12,7 +8,7 @@ This applies to all repos, all sessions, forever. When in doubt, ask before merg
 
 These apply to EVERY message the parent agent sends to the user. No exceptions, no degradation over time, no skipping after context compaction.
 
-1. **Timestamp prefix.** Start every message with Eastern time (`Mon Mar 16 02:34 AM ET`). On **Windows**, Git Bash often mishandles `TZ='America/New_York'` — use PowerShell first: `powershell -Command "[System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTime]::UtcNow, 'Eastern Standard Time').ToString('ddd MMM d h:mm tt') + ' ET'"`. On **Linux/macOS**, use `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`. NEVER estimate timestamps — always run one of these commands. This includes elapsed time: do not count poll cycles or steps to estimate minutes passed; compare two command outputs if needed.
+1. **Timestamp prefix.** Start every message with Eastern time (`Mon Mar 16 02:34 AM ET`). **Windows (Git Bash):** `TZ=America/New_York` is often wrong — use PowerShell `TimeZoneInfo` for ET first; **Linux/macOS:** `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`. Never estimate — run a command; for elapsed time, compare two outputs.
 2. **Active monitoring declaration.** If monitoring background agents, state how many and which PRs at the end of every message.
 3. **5-minute heartbeat.** Never go >5 minutes without a status message. During operations touching 4+ files, emit a one-line status after every 3 writes/edits (see `monitor-mode.md` "User Heartbeat" and "File-Write Status Updates" for details).
 4. **`/loop` for recurring polls.** Any user request phrased as "poll every N / check every N / watch for X" must be backed by `/loop` (or `CronCreate` for ≥3 concurrent autonomous polls and/or cross-session durability) — never a hand-rolled chain of one-shot wake-ups. See `scheduling-reliability.md` for the decision tree and pre-exit checklist.
@@ -22,7 +18,7 @@ After context compaction, your FIRST action is to reconstruct monitoring state (
 
 ## Thread title — `[#issue]` prefix
 
-There is no supported customization for auto-generated thread/tab names. **Best-effort only:** start the first *user message* with a leading `[#N]` token — e.g. single `[#339]` or multi `[#339, #341]` — so the auto-summarizer (which typically picks up leading tokens) is likelier to put the issue number(s) in the title.
+Best-effort: lead the first user message with `[#N]` (or `[#339, #341]`) so tab titles may pick up issue numbers.
 
 ---
 
@@ -129,19 +125,4 @@ Rules consume tokens on every turn. Limits apply to CLAUDE.md + `.claude/rules/*
 
 ## Memory System
 
-The auto-memory system persists insights across sessions at `~/.claude/projects/*/memory/`. Save memories **proactively** (without being asked) when you encounter information future sessions will need. Explicit user requests ("remember this", "save that") normally override these heuristics, but never persist secrets, credentials, tokens, or regulated/sensitive personal data — if the user asks, confirm before saving and redact sensitive values.
-
-**Save proactively:**
-- **Feedback patterns:** CR false positives specific to this repo, user-preferred approaches confirmed across sessions, recurring corrections.
-- **Project context:** non-obvious repo quirks, deadlines, stakeholder decisions, undocumented conventions that shape future work.
-- **External references:** dashboards, docs, or systems where current state lives but isn't in the repo.
-- **Incident lessons:** things that went wrong and the fix — so the next session doesn't repeat the mistake.
-
-**Do NOT save:**
-- Code patterns or API signatures — read the current code instead.
-- Git history facts — `git log`/`git blame` is authoritative.
-- Anything already covered in CLAUDE.md or rule files.
-- Ephemeral task state — use handoff files (`~/.claude/handoffs/`) instead.
-- One-off details with no expected reuse.
-
-Before creating a memory, check for existing ones to avoid duplicates. Update or remove stale memories when you encounter them.
+Persist durable insights at `~/.claude/projects/*/memory/` (never secrets/tokens/PII). Prefer: repo-specific CR false positives, stakeholder decisions, incident lessons, external dashboards. Skip: code/API details (read code), git facts, content already in rules, ephemeral work (use `~/.claude/handoffs/`). Dedupe and prune stale entries.
