@@ -181,9 +181,9 @@ Stub files live under [.claude/reference/diagrams/](diagrams/):
 | Observation | Detail |
 |---------------|--------|
 | **Events in use** | `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop` — valid per upstream |
-| **Not yet used (upstream examples)** | `SessionStart`, `PostToolBatch`, `PreCompact` / `PostCompact`, `InstructionsLoaded`, HTTP/MCP/prompt/agent hook types | **Optional adoption** — evaluate per-feature; avoid default-on HTTP hooks (operational security) |
-| **`if` field on handlers** | Upstream documents `if` for tool events to reduce spawns — repo uses matchers but could add `if` for hot paths | Low priority perf polish |
-| **`$CLAUDE_PROJECT_DIR` vs absolute paths** | Repo uses resolved absolute paths from setup — portable after install; docs now recommend `$CLAUDE_PROJECT_DIR` for **project-local** hooks | Acceptable divergence; optional future: hybrid |
+| **Not yet used (upstream examples)** | Examples include `SessionStart`, `PostToolBatch`, `PreCompact` and `PostCompact`, `InstructionsLoaded`, and HTTP, MCP, prompt, and agent hook handler types. **Optional adoption** — evaluate per-feature; avoid default-on HTTP hooks (operational security). |
+| **`if` field on handlers** | Upstream documents `if` for tool events to reduce spawns — repo uses matchers but could add `if` for hot paths. Low priority perf polish. |
+| **`$CLAUDE_PROJECT_DIR` vs absolute paths** | Repo uses resolved absolute paths from setup (portable after install). Docs recommend `$CLAUDE_PROJECT_DIR` for project-local hooks. **Acceptable divergence**; optional future: hybrid approach. |
 
 ### Agent SDK / Agent tool alignment
 

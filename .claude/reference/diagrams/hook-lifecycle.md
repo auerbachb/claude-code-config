@@ -9,11 +9,11 @@ sequenceDiagram
   participant H as Hooks
   U->>CC: prompt
   CC->>H: UserPromptSubmit
-  Note over H: TODO — list timestamp-injector, stale-worktree-warn, issue-prefix-nudge
+  Note over H: timestamp-injector.sh, stale-worktree-warn.sh, issue-prefix-nudge.sh
   CC->>H: PreToolUse
-  Note over H: TODO — worktree-guard, env-guard, script-bypass-detector
+  Note over H: worktree-guard.sh, env-guard.py, script-bypass-detector.sh
   CC->>H: PostToolUse
-  Note over H: TODO — session-start-sync, post-merge-pull, skill-usage, silence
+  Note over H: session-start-sync.sh, post-merge-pull.sh, skill-usage-tracker.sh, silence-detector.sh
   CC->>H: Stop
-  Note over H: TODO — silence-ack, trust-flag-repair, dirty-main-warn
+  Note over H: silence-detector-ack.sh, trust-flag-repair.sh, dirty-main-warn.sh
 ```
