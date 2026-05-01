@@ -106,7 +106,7 @@ def classify_and_resolve(ours: str, theirs: str) -> tuple[str, str | None, str]:
         a.rstrip() == b.rstrip() for a, b in zip(o_nb, t_nb)
     ):
         # Per-line trailing whitespace only (non-blank lines align in order)
-        return "simple", "\n".join(b.rstrip() for b in t_nb), ""
+        return "simple", _rstrip_lines(theirs), ""
 
     o_empty = not o_nb
     t_empty = not t_nb
