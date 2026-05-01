@@ -231,7 +231,7 @@ Rationale: {1-line explanation of why this tier was selected, citing the dominan
 
 **OUTPUT MUST USE `~~~` FENCES, NOT BACKTICKS.** The opening and closing lines of every per-issue prompt block must be exactly `~~~`.
 
-**Map `issue_tier` to `{MODEL}` (per issue, for the block header line only):**
+**Map tier to `{MODEL}` string** (same Heavy / Standard / Light → model mapping for both the batch **Tier Recommendation** line and each per-issue `**Model:**` line — use **batch tier** for Tier Recommendation and **per-issue `issue_tier`** for each block):
 - **Heavy** → `Opus 4.7 (1M context)`
 - **Standard** → `Opus 4.7`
 - **Light** → `Sonnet 4.6`
