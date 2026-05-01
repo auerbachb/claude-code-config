@@ -40,8 +40,8 @@ class ConflictHunk:
 @dataclass
 class FileResult:
     path: str
-    hunks: list[tuple[ConflictHunk, str, str | None]] = field(default_factory=list)
-    # (hunk, classification, resolved_body or None if complex)
+    hunks: list[tuple[ConflictHunk, str, str | None, str]] = field(default_factory=list)
+    # (hunk, classification, resolved_body or None if complex, reason)
     error: str | None = None
     wrote: bool = False
 
@@ -195,8 +195,8 @@ def resolve_file(path: Path, text: str) -> FileResult:
         while line_idx < h.start_line - 1:
             out_parts.append(lines[line_idx])
             line_idx += 1
-        cls, resolved, _reason = classify_and_resolve(h.body_ours, h.body_theirs)
-        fr.hunks.append((h, cls, resolved))
+        cls, resolved, reason = classify_and_resolve(h.body_ours, h.body_theirs)
+        fr.hunks.append((h, cls, resolved, reason))
         if cls == "simple" and resolved is not None:
             any_simple = True
             if resolved != "":
@@ -345,9 +345,8 @@ def main() -> int:
 
         still_has_markers = "<<<<<<< " in read_repo_text(p)
 
-        for h, cls, _ in fr.hunks:
+        for h, cls, _, reason in fr.hunks:
             if cls == "complex":
-                _c, _r, reason = classify_and_resolve(h.body_ours, h.body_theirs)
                 complex_report.append(
                     {
                         "file": rel,
