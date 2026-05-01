@@ -441,9 +441,12 @@ jq -r '
 
 **Classification rules** (these live in `pr-state.sh`; the list below is the contract — keep the two in sync if either changes). Patterns are checked in this order; first match wins:
 
-1. **Explicit-resolution overrides** (checked first — these signals mean CR has already marked the thread addressed, so they win even if the body still contains finding language from a quoted earlier review):
+1. **Explicit-resolution / clean-pass overrides** (checked first — these signals mean CR has already marked the thread addressed, posted a rate-limit notice, or posted a review-started ack, so they win even if the body still contains finding language from a quoted earlier review):
    - HTML marker `<!-- <review_comment_addressed> -->` → `acknowledgment`
    - `actionable comments posted: 0` → `acknowledgment`. This specific zero-count pattern MUST be checked before the general `actionable comments posted` pattern below — otherwise the general finding pattern would swallow the zero case.
+   - `no actionable comments were generated` → `acknowledgment`
+   - `rate limit exceeded` or `rate-limited by coderabbit` → `acknowledgment`
+   - `full review triggered` → `acknowledgment`
 2. **Finding patterns**:
    - Severity keywords `\b(critical|major|minor|nitpick|p[0-2])\b` or badges `🔴|🟠|🟡`
    - Actionable phrases: `actionable comments posted` (non-zero), `issues? found`, `findings?:`, `potential[_ ]issue`
