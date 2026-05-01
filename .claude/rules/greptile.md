@@ -1,97 +1,58 @@
-# Greptile — CodeRabbit Fallback Reviewer
+# Greptile — Last-Resort Fallback Reviewer
 
 > **Always:** Poll for response after triggering. Reply to every thread. Fix all valid findings. Classify by severity (P0/P1/P2). Only re-review for P0. Stay on G once triggered for a PR.
 > **Ask first:** Never — fix findings autonomously.
-> **Never:** Trigger Greptile proactively on a PR where CR hasn't failed yet. Ignore Greptile findings. Switch a PR back to CR after Greptile has been triggered.
+> **Never:** Trigger Greptile before both CR AND BugBot have failed. Ignore Greptile findings. Switch a PR back to CR/BugBot after Greptile has been triggered. Include `@greptileai` in reply comments (triggers a paid re-review with no learning benefit).
 
-Greptile is an AI code reviewer used as a **fallback** when CR is rate-limited or unresponsive. Both tools' findings must be verified against code. Differences: cost ($1/review beyond 50/month quota) and completion-signal reliability (Greptile completion signals are accurate; CR completion signals require confirmation passes).
+Greptile is the **last-resort paid** AI code reviewer — only triggered when both CR and BugBot (Cursor) have failed. Review chain: **CR → BugBot → Greptile → self-review.** CodeAnt/Graphite: `codeant-graphite.md`.
+
+**Escalation gate:** `cr-github-review.md` owns triggers/STOP conditions. This file only defines Greptile behavior after `escalate-review.sh` returns `STATUS=trigger_greptile`.
 
 ## Greptile Basics
 
-- **GitHub App:** Greptile Apps
-- **Bot username:** `greptile-apps[bot]`
-- **Trigger:** Comment `@greptileai` on any PR (no special "full review" suffix needed)
-- **Auto-trigger:** OFF — disabled via dashboard filter (see "Dashboard Configuration" below). Must be explicitly triggered via @mention.
-- **Rate limits:** None documented (50 reviews/seat/month included, $1/extra — no per-hour throttle)
-- **Review time:** ~1-3 minutes for most PRs
-- **Completion signals:** 👀 emoji on the PR = analyzing, 👍 = complete, 😕 = failed
-- **No CLI:** Greptile cannot do local pre-push reviews. Local review loop uses CR CLI only.
-- **Config:** Optional `greptile.json` in repo root (supports `strictness`, `customInstructions`, `scope`). Review trigger filters are configured in the Greptile web dashboard (app.greptile.com), not in repo files.
-- **Feedback loop:** 👍/👎 reactions on Greptile comments train it over 2-3 weeks
-
-## Dashboard Configuration (app.greptile.com)
-
-Auto-review on PR open is disabled via a "Labels: includes: `greptile`" filter in the Greptile dashboard (app.greptile.com/review → Settings → Review Triggers). Since we never add that label, no PRs get auto-reviewed — manual `@greptileai` triggers still work.
-
-| Setting | Value |
-|---------|-------|
-| Authors Exclude | `dependabot[bot]`, `renovate[bot]` |
-| Labels: includes | `greptile` |
-| File Change Limit | 100 |
-| Automatically trigger on new commits | OFF |
-| Review draft pull requests | OFF |
-
-**Setup:** Add the "Labels: includes: greptile" filter at app.greptile.com/review → Settings → Review Triggers. The "new commits" toggle only affects commits to existing PRs, not PR-open events.
+Bot username: `greptile-apps[bot]`. Trigger: PR comment `@greptileai` (no suffix). Auto-trigger is OFF. Review time is usually 1-3 minutes. Signals: 👀 analyzing, 👍 complete, 😕 failed. Config/setup details: `.claude/reference/greptile-setup.md`.
 
 ## Daily Budget
 
-Greptile charges $1/review beyond the 50/month included quota. To prevent runaway costs when many PRs are processed in parallel, enforce a hard daily cap.
+Default budget: 40 reviews/day. `~/.claude/session-state.json` tracks `greptile_daily.{reviews_used,date,budget}` (ET date — on Windows use PowerShell for today’s ET date if `TZ=America/New_York` is unreliable; see `CLAUDE.md` timestamp guidance). `.claude/scripts/greptile-budget.sh` is authoritative; every `@greptileai` trigger point MUST run `greptile-budget.sh --consume` first. Exit 0 = consumed; exit 1 = exhausted. Use `--check` for snapshots and `--reset` only for intentional counter resets.
 
-- **Default budget: 40 reviews/day** (adjustable — set `budget` field in `session-state.json`).
-- **Tracking:** The `greptile_daily` section in `~/.claude/session-state.json` tracks `reviews_used`, `date` (YYYY-MM-DD in ET timezone), and `budget`. See `subagent-orchestration.md` for the schema.
-- **Before EVERY `@greptileai` trigger**, read `greptile_daily` from session state and run the budget check:
-  1. Get the current date in ET: `powershell -Command "[System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTime]::UtcNow, 'Eastern Standard Time').ToString('yyyy-MM-dd')"` (or `TZ='America/New_York' date +'%Y-%m-%d'` on Linux/macOS)
-  2. If `greptile_daily.date` differs from today's date, reset `reviews_used` to 0 and update `date` to today
-  3. If `reviews_used >= budget`, the budget is **exhausted** — do NOT post `@greptileai`. Fall back to self-review (see below)
-  4. Otherwise, increment `reviews_used` by 1 and write the updated `greptile_daily` back to session state **before** posting the `@greptileai` comment
-- **Budget exhaustion fallback:** Perform a self-review instead. Self-review does NOT satisfy the merge gate. Report the blocker to the user:
-  > "Greptile budget exhausted ({reviews_used}/{budget}). PR #{N} falling back to self-review — merge blocked until manual review or budget resets tomorrow."
-- **This check applies to all Greptile trigger points** (CR GitHub fallback, local post-push, Phase B polling, and per-PR re-reviews). No `@greptileai` comment may be posted without passing the budget check first.
+If exhausted, perform self-review, report `"Greptile budget exhausted (used/budget, e.g. 40/40). PR #N falling back to self-review — merge blocked until manual review or budget resets tomorrow."` using actual numeric counters. Self-review does NOT satisfy the merge gate.
+
+## Before EVERY `@greptileai` Re-Trigger (MANDATORY — after initial trigger)
+
+Applies to 2nd/3rd triggers only; initial trigger requires only the budget check (no severity classification).
+
+1. **Classify all findings from the previous review** (P0/P1/P2).
+2. **If NO P0:** STOP — do NOT trigger `@greptileai`. Proceed to Phase B completion (merge gate check).
+3. **If P0 present:** perform budget check (see "Daily Budget" above) → trigger `@greptileai`.
+4. **Log severity counts in handoff `notes`.**
 
 ## When to Trigger Greptile
 
-**Greptile is fallback-only.** Never trigger it proactively alongside CR. It is only triggered when CR fails for a specific PR:
+**Last-resort only:** trigger Greptile only after the mandatory escalation gate in `cr-github-review.md` returns `STATUS=trigger_greptile`. The gate checks CR failure/silence, BugBot response/install/cache state, and STOP conditions before Greptile is considered.
 
-1. **CR rate limit detected (fast-path):** Check-runs or commit statuses show rate limiting → trigger Greptile immediately.
-2. **CR timeout (slow-path):** CR has not delivered a review within 7 minutes of push → trigger Greptile.
+Always rely on `.claude/scripts/escalate-review.sh <PR_NUMBER>` for the current per-cycle verdict; it checks all three endpoints for `cursor[bot]` before returning `STATUS=trigger_greptile`.
 
 ### Sticky Assignment
 
-**Once Greptile is triggered for a PR, it stays on Greptile permanently.** Do not switch back to CR. After fixing findings, only re-trigger `@greptileai` for P0 findings. Ignore late CR reviews. Merge gate is severity-dependent (see below).
+**Once Greptile is triggered for a PR, it stays on Greptile permanently.** Do not switch back to CR or BugBot. After fixing findings, only re-trigger `@greptileai` for P0 findings. Ignore late CR/BugBot reviews. Merge gate is severity-dependent — see `cr-merge-gate.md` (Step 1) for the authoritative definition.
 
 ## Polling for Greptile Response
 
-Poll every 60 seconds on all three endpoints (same pattern as CR):
+Poll every 60 seconds on all three endpoints (same pattern as CR — `pulls/{N}/reviews`, `pulls/{N}/comments`, `issues/{N}/comments` with `per_page=100`). Filter by `greptile-apps[bot]`.
 
-- `repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100`
-- `repos/{owner}/{repo}/pulls/{N}/comments?per_page=100`
-- `repos/{owner}/{repo}/issues/{N}/comments?per_page=100`
-
-Filter by `greptile-apps[bot]` (with `[bot]` suffix).
-
-**Timeout:** 5 minutes (typical response: 1-3 min). No response after 5 min = timeout.
-
-**Completion detection:** 👍 or review comments from `greptile-apps[bot]` = done. 😕 = failed (stop polling, report failure). No signal after 5 min = timeout.
+**Timeout:** 10 minutes. Cadence stays 60 s. **Completion:** 👍 or review comments = done (exit immediately). 😕 = failed. No signal after 10 min = timeout.
 
 ## Processing Greptile Findings
 
-Same protocol as CR: classify by severity (P0/P1/P2 — use Greptile badges only), verify against code, fix all valid findings in one commit, push once, reply to every thread, resolve via GraphQL. Use 👍/👎 reactions for feedback.
+Classify by severity (P0/P1/P2 — use Greptile badges only), verify against code, fix all valid findings in one commit, push once, reply to every thread, resolve via GraphQL. Use 👍/👎 reactions for feedback (this is Greptile's only learning mechanism).
 
-**Severity-gated re-review:** P0 present → re-trigger `@greptileai` after fix. P1/P2 only → merge-ready after fix push, no re-review needed.
+> **CRITICAL: Do NOT include `@greptileai` in reply comments.** Every `@greptileai` mention — even in a reply — triggers a new paid review ($0.50-$1.00). Greptile does not learn from text replies. Use plain text only in replies — `@greptileai` is ONLY for intentionally requesting a new review.
 
-## Detecting a Merge-Ready Greptile Review
+Reply commands and CR-vs-Greptile comparison: `.claude/reference/greptile-reply-format.md`.
 
-Merge-ready when: no findings (clean), all P1/P2 after fix (no re-review), or P0 fixed + re-review clean. 👍 with no inline comments = clean pass.
+**Severity-gated re-review:** See the "Before EVERY `@greptileai` Re-Trigger" checklist above.
 
-### Greptile Review Budget
+## Merge Gate
 
-**Max 3 Greptile reviews per PR** (1 initial + up to 2 re-reviews for P0 cascades). Track the count: increment on each `@greptileai` trigger. At 3 with persistent P0 findings, self-review + report blocker. Do not trigger a 4th review.
-
-## Self-Review Fallback
-
-If BOTH CR and Greptile are unavailable (CR rate-limited + Greptile timeout):
-
-1. Perform a self-review of the full diff (`git diff main...HEAD`)
-2. Check for: bugs, security issues, error handling, types, naming, edge cases
-3. A clean self-review does NOT satisfy the merge gate
-4. Tell the user both reviewers are down and what was left unreviewed
+**Canonical definition:** See `cr-merge-gate.md` (Step 1). That file is the single authoritative source for the CR 1-explicit-APPROVED-on-current-HEAD path, the BugBot 1-clean-pass path, and the Greptile severity-gated path (including the 3-review-per-PR cap and the self-review fallback when all three reviewers are down).

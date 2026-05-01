@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "pr_number": 618,
+  "head_sha": "abc1234",
+  "reviewer": "cr",
+  "phase_completed": "A",
+  "created_at": "2026-03-24T17:00:00Z",
+  "findings_fixed": ["comment-id-1", "comment-id-2"],
+  "findings_dismissed": [
+    {"id": "comment-id-3", "reason": "false positive — code already handles this case"}
+  ],
+  "threads_replied": ["thread-id-1", "thread-id-2"],
+  "threads_resolved": ["thread-id-1", "thread-id-2"],
+  "files_changed": ["src/foo.ts", "src/bar.ts"],
+  "push_timestamp": "2026-03-24T17:00:00Z",
+  "notes": "CR had 3 findings, all fixed. 1 dismissed as false positive."
+}

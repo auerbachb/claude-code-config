@@ -1,51 +1,43 @@
-# Repo Bootstrap — Auto-Provision Workflows
+# Repo Bootstrap — Auto-Provision Configuration
 
-> **Always:** Check for required workflows at session start. Add missing ones before any code work.
-> **Ask first:** Never — bootstrapping is autonomous and non-destructive.
-> **Never:** Skip the check. Modify workflows that already exist.
+> **Always:** Check for required workflows and branch protection at session start. Add missing workflows before any code work. Report missing branch protection to the user.
+> **Ask first:** Branch protection changes — always ask the user before modifying repo-level settings.
+> **Never:** Skip the checks. Modify workflows that already exist. Change branch protection without user confirmation.
 
-## Session Start: Check Required Workflows
+## Session Start: Required Configuration Checks
 
-At the start of every session, after creating the worktree but before any code work, verify that the repo has the required GitHub Actions workflows. If any are missing, add them as part of the first PR or as a standalone commit on the feature branch.
+At the start of every session, after creating the worktree but before any code work, run the bootstrap script. It is idempotent and safe to repeat.
 
-### Required Workflows
+### Run the bootstrap check
 
-#### 1. `cr-plan-on-issue.yml` — Auto-trigger CodeRabbit plan on new issues
-
-**Check:** Does `.github/workflows/cr-plan-on-issue.yml` exist?
-
-**If missing**, create it with this exact content (canonical source: `.github/workflows/cr-plan-on-issue.yml` — keep both in sync):
-
-```yaml
-name: Trigger CodeRabbit Plan on New Issues
-
-on:
-  issues:
-    types: [opened]
-
-permissions:
-  issues: write
-
-jobs:
-  trigger-cr-plan:
-    runs-on: ubuntu-latest
-    if: "!endsWith(github.event.issue.user.login, '[bot]')"
-    steps:
-      - name: Comment @coderabbitai plan
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: '@coderabbitai plan'
-            });
+```bash
+.claude/scripts/repo-bootstrap.sh --check
 ```
 
-**How to add it:** Include it in your first feature PR in that repo — do not open a bootstrap-only PR. If you're only planning (no PR yet), note it for the first PR.
+The script reports the workflow + branch-protection state without mutating anything. Exit codes: `0` clean, `1` gaps detected, `2` usage error, `3` environment error (not in a git repo / no `gh`), `4` `gh`/network error, `5` write failure (only from `--apply`). See `repo-bootstrap.sh --help` for the full contract.
+
+If the report shows `[MISSING] .github/workflows/cr-plan-on-issue.yml`, install it as part of the first feature PR — do not open a bootstrap-only PR:
+
+```bash
+.claude/scripts/repo-bootstrap.sh --apply
+```
+
+`--apply` only installs the missing workflow. It never overwrites an existing workflow file (even if the content differs — the repo owner may have customized it) and never modifies branch protection.
+
+### Branch protection — required status checks
+
+The script reports state as `[OK]` / `[MISSING]` / `[SKIP]` (token lacks read perm) / `[UNKNOWN]` (investigate stderr). Without required status checks on `main`, PRs can merge with red CI. The script never changes branch protection — user confirmation required for any write.
+
+**Remediation (requires user confirmation):**
+
+1. **Discover CI check names** from latest `main` commit's check-runs; fall back to parsing `.github/workflows/*.yml` job names.
+2. **Ask the user:** "No required status checks on `main` — PRs can merge with failing CI. Found checks: `lint`, `test`, `build`. Want me to enable protection?"
+3. **If approved:** Read existing protection first (`gh api repos/{owner}/{repo}/branches/main/protection`; ignore 404). PUT to the same endpoint, merging `required_status_checks.contexts` with `strict: true` into any existing protection settings; use sensible defaults (`enforce_admins: false`) if 404.
+4. **If declined:** move on. Do not ask again in the same session.
 
 ### Rules
 
-- **Only add missing workflows.** If the file already exists, do not modify it — even if the content differs. The repo owner may have customized it.
-- **This check is idempotent.** Running it multiple times is safe — it only acts when the file is missing.
+- **Only add missing workflows.** Never modify existing workflow files — owner may have customized them.
+- **Idempotent.** Safe to re-run; only acts when files are missing.
+- **Branch protection requires user confirmation** — never modify autonomously.
+- **Do not downgrade existing protection.** Preserve required reviews, admin enforcement, etc. when adding status checks.

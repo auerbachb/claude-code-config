@@ -1,4 +1,16 @@
 {
+  "extraKnownMarketplaces": {
+    "claude-code-graphite": {
+      "source": {
+        "source": "github",
+        "repo": "georgeguimaraes/claude-code-graphite"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "graphite@claude-code-graphite": true,
+    "graphite-mcp@claude-code-graphite": true
+  },
   "permissions": {
     "defaultMode": "bypassPermissions",
     "allow": [
@@ -16,7 +28,6 @@
   "model": "opus",
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
-    "ANTHROPIC_MODEL": "opus",
     "CLAUDE_CODE_SUBAGENT_MODEL": "opus"
   },
   "hooks": {
@@ -25,7 +36,70 @@
         "hooks": [
           {
             "type": "command",
-            "command": "C:/Users/PaulKaThat/Develop/claude-code-config/.claude/hooks/silence-detector-ack.sh",
+            "command": "/path/to/claude-code-config/.claude/hooks/silence-detector-ack.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/trust-flag-repair.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/dirty-main-warn.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/script-bypass-detector.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/worktree-guard.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/env-guard.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/timestamp-injector.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/stale-worktree-warn.sh",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/issue-prefix-nudge.sh",
             "timeout": 5
           }
         ]
@@ -33,12 +107,36 @@
     ],
     "PostToolUse": [
       {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/session-start-sync.sh",
+            "timeout": 30
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "C:/Users/PaulKaThat/Develop/claude-code-config/.claude/hooks/post-merge-pull.sh",
+            "command": "/path/to/claude-code-config/.claude/hooks/post-merge-pull.sh",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/polling-backoff-warn.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/skill-usage-tracker.sh",
+            "timeout": 5
           }
         ]
       },
@@ -46,19 +144,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "C:/Users/PaulKaThat/Develop/claude-code-config/.claude/hooks/silence-detector.sh",
+            "command": "/path/to/claude-code-config/.claude/hooks/silence-detector.sh",
             "timeout": 5
           }
         ]
       }
     ]
-  },
-  "extraKnownMarketplaces": {
-    "claude-plugins-official": {
-      "source": {
-        "source": "github",
-        "repo": "anthropics/claude-plugins-official"
-      }
-    }
   }
 }

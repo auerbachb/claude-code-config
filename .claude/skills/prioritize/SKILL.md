@@ -1,10 +1,23 @@
 ---
 name: prioritize
-description: Scan a repo's open issue backlog and produce a ranked priority list of what a specific engineer should work on next, ordered by impact on a stated business goal.
+description: Scan a repo's open issue backlog and produce a ranked priority list of what a specific engineer should work on next, ordered by impact on a stated business goal. When OKRs are defined in `.claude/pm-config.md`, uses them as an additional ranking signal.
+triggers:
+  - rank issues
+  - what to work on next
+  - priority list
 argument-hint: "business goal | @username role-constraints | depth (e.g. \"increase scraping throughput | @auerbachb backend-python | 50\")"
+allowed-tools:
+  - Read
+  - Glob
+  - Grep
+  - Bash
+  - WebFetch
+  - WebSearch
 ---
 
-Rank open issues by impact on a business goal for a specific engineer. Parse `$ARGUMENTS` using pipe-delimited format:
+Rank open issues by impact on a business goal for a specific engineer. When `.claude/pm-config.md` exists with a non-empty `## OKRs` section, OKR alignment is used as an additional ranking signal — issues that directly advance a key result rank higher than general maintenance. The business goal argument remains the primary signal; OKRs supplement, not replace it.
+
+Parse `$ARGUMENTS` using pipe-delimited format:
 
 ```
 $ARGUMENTS = "business goal | @username role-constraints | depth"
@@ -17,6 +30,30 @@ $ARGUMENTS = "business goal | @username role-constraints | depth"
 If only a business goal is provided (no pipes), use defaults for segments 2 and 3. The repo defaults to the current working directory.
 
 ## How to gather data
+
+### Step 0: Detect OKRs (optional enhancement)
+
+Extract the `## OKRs` section via the shared parser:
+
+```bash
+# rc=0 → present with non-empty body; rc=1 → missing/empty; rc=2 → no config file.
+OKRS_CONTENT="$(.claude/scripts/pm-config-get.sh --section OKRs 2>/dev/null)"
+OKRS_RC=$?
+```
+
+If `OKRS_RC != 0` **or** `OKRS_CONTENT` starts with "No OKRs set" (the bootstrap placeholder), set `OKR_MODE=false` and proceed with heuristic-only ranking. Otherwise set `OKR_MODE=true`.
+
+For sections containing objectives and key results, set `OKR_MODE=true` and parse the OKRs into a structured list. Expected format:
+
+```
+O1: [Objective text]
+  KR1: [Key result text] [Progress: X%]
+  KR2: [Key result text]
+O2: [Objective text]
+  KR1: [Key result text]
+```
+
+Store each objective with its key results for use in the scoring step.
 
 ### Step 1: Gather open issues
 
@@ -80,7 +117,13 @@ For every open issue, assess:
 
 2. **Leverage (secondary signal):** Does this issue unblock other high-value issues? An issue that unblocks 3 Critical issues is itself Critical, even if its direct goal alignment is Medium.
 
-3. **Cost-benefit:** A small issue that provides High alignment beats a massive issue that provides the same alignment. Factor in estimated effort (from scope signals in the body) when breaking ties within a tier.
+3. **OKR alignment (when `OKR_MODE=true`):** Match issue content (title, body, labels) against each parsed objective and key result. Apply these adjustments:
+   - An issue that directly advances an incomplete key result gets a **one-tier boost** (e.g., Medium → High) unless it's already Critical.
+   - An issue that aligns with an objective broadly (but no specific KR) gets a tiebreaker advantage: it ranks ahead of other issues in the same tier that have no OKR alignment. The displayed tier label does not change (e.g., Medium stays Medium) — this only affects ordering within a tier.
+   - Issues that don't align with any OKR receive no penalty — they are scored purely on goal alignment and leverage.
+   - Record which OKR(s) each issue aligns with for the output rationale (e.g., "Advances O1/KR2"). If an issue matches multiple key results, list at most 2 matches ordered by objective ID then KR ID (e.g., "Advances O1/KR2, O2/KR1").
+
+4. **Cost-benefit:** A small issue that provides High alignment beats a massive issue that provides the same alignment. Factor in estimated effort (from scope signals in the body) when breaking ties within a tier.
 
 ### Filter by engineer role/constraints (if provided)
 
@@ -116,6 +159,8 @@ Structure the output in four sections:
 Scanned [N] open issues against goal: "[business goal]". [M] issues match [engineer]'s scope. [K] have dependency relationships.
 ```
 
+If `OKR_MODE=true`, append: `OKRs loaded from .claude/pm-config.md — [X] objectives with [Y] key results used for alignment scoring.`
+
 ### 2. Tiered priority list
 
 For each tier (Critical, High, Medium, Low), list matching issues:
@@ -125,6 +170,7 @@ For each tier (Critical, High, Medium, Low), list matching issues:
 
 - **#42 — [Issue title]** — [1-line rationale connecting this issue to the business goal]
   - Unblocks: #50, #53
+  - Advances: O1/KR2 *(only if OKR_MODE=true and alignment detected)*
 - **#38 — [Issue title]** — [rationale]
   - Blocked by: #35 (assign #35 first)
 

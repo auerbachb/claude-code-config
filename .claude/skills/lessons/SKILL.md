@@ -1,6 +1,14 @@
 ---
 name: lessons
 description: Summarize lessons learned from the current session — what went wrong, what patterns emerged, what to remember. Saves actionable insights to memory.
+model: sonnet
+allowed-tools:
+  - Read
+  - Glob
+  - Grep
+  - Bash
+  - Write
+  - Edit
 ---
 
 Reflect on the current session and extract reusable lessons before the thread is closed.
@@ -49,6 +57,8 @@ For each actionable, novel lesson:
    ```
 
 2. Add a pointer to `MEMORY.md` (the memory index at `~/.claude/projects/{project}/memory/MEMORY.md`) as a single bullet: `- [filename.md](filename.md) — one-line description`. If updating an existing memory, update the existing pointer instead of adding a duplicate.
+
+> **Heartbeat during batch writes:** When batching 4+ memory files, emit a one-line status message after every 3 writes per `monitor-mode.md` "File-Write Status Updates" (e.g., "Saved 3/5 lessons; continuing").
 
 ### Step 4: Output summary
 

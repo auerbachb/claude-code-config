@@ -12,93 +12,74 @@ This applies to all repos, all sessions, forever. When in doubt, ask before merg
 
 These apply to EVERY message the parent agent sends to the user. No exceptions, no degradation over time, no skipping after context compaction.
 
-1. **Timestamp prefix.** Every message starts with Eastern time: `Mon Mar 16 02:34 AM ET`. Get via: `powershell -Command "[System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTime]::UtcNow, 'Eastern Standard Time').ToString('ddd MMM d h:mm tt') + ' ET'"` (or `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'` on Linux/macOS). NEVER estimate, calculate, or mentally derive timestamps — always run the command. This includes elapsed time: do not count poll cycles or steps to estimate minutes passed. If you need elapsed time, compare two command outputs. This is the FIRST thing in every message — before status updates, before questions, before summaries.
-2. **Active monitoring declaration.** If you are monitoring background agents, state how many and which PRs at the end of every message. Example: "Monitoring: PR #618 (Phase B), PR #620 (Phase B), PR #623 (Phase C) — next poll in ~60s."
-3. **5-minute heartbeat.** The user must never go more than 5 minutes without a status message. When you run `date` for the timestamp, check how long it has been since your last message to the user. If >5 minutes, your FIRST action must be a status update — before any tool call. Include: what you are currently doing, what is pending (open PRs, active agents), and any blocked items. See `subagent-orchestration.md` "User Heartbeat" for detailed rules. **Never go silent for >5 minutes — not while doing substantive work, not while polling, not after compaction.**
-4. **Dedicated monitor mode.** If you have active subagents, you are in **monitor mode**: your ONLY job is orchestration (polling subagent status, heartbeats, phase launches, output verification, and session-state/recovery tasks). Do NOT do substantive work (coding, issue creation, file editing) — delegate it to a subagent instead. If the user explicitly asks you to do something, warn that monitoring will pause, do the work, then re-enter monitor mode. See `subagent-orchestration.md` "Dedicated Monitor Mode" for the full rules, permitted/prohibited activities, and exit conditions.
+1. **Timestamp prefix.** Start every message with Eastern time (`Mon Mar 16 02:34 AM ET`). On **Windows**, Git Bash often mishandles `TZ='America/New_York'` — use PowerShell first: `powershell -Command "[System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTime]::UtcNow, 'Eastern Standard Time').ToString('ddd MMM d h:mm tt') + ' ET'"`. On **Linux/macOS**, use `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`. NEVER estimate timestamps — always run one of these commands. This includes elapsed time: do not count poll cycles or steps to estimate minutes passed; compare two command outputs if needed.
+2. **Active monitoring declaration.** If monitoring background agents, state how many and which PRs at the end of every message.
+3. **5-minute heartbeat.** Never go >5 minutes without a status message. During operations touching 4+ files, emit a one-line status after every 3 writes/edits (see `monitor-mode.md` "User Heartbeat" and "File-Write Status Updates" for details).
+4. **`/loop` for recurring polls.** Any user request phrased as "poll every N / check every N / watch for X" must be backed by `/loop` (or `CronCreate` for ≥3 concurrent autonomous polls and/or cross-session durability) — never a hand-rolled chain of one-shot wake-ups. See `scheduling-reliability.md` for the decision tree and pre-exit checklist.
+5. **Dedicated monitor mode.** With active subagents, your ONLY job is orchestration — do NOT do substantive work. See `monitor-mode.md` "Dedicated Monitor Mode" for full rules.
 
-If you have just resumed from context compaction, your FIRST action is to reconstruct monitoring state (see "Post-Compaction Recovery" in `subagent-orchestration.md`) and report it WITH a timestamp.
+After context compaction, your FIRST action is to reconstruct monitoring state (see "Post-Compaction Recovery" in `monitor-mode.md`) and report it WITH a timestamp.
+
+## Thread title — `[#issue]` prefix
+
+There is no supported customization for auto-generated thread/tab names. **Best-effort only:** start the first *user message* with a leading `[#N]` token — e.g. single `[#339]` or multi `[#339, #341]` — so the auto-summarizer (which typically picks up leading tokens) is likelier to put the issue number(s) in the title.
 
 ---
 
 ## AUTONOMOUS WORKFLOW EXECUTION — DO NOT ASK PERMISSION
 
-**The workflow defined in these rules is fully autonomous.** At every phase transition — local review, push, PR creation, polling, feedback processing, subagent spawning — **proceed immediately without asking the user.** The rules define what to do at each step. Follow them.
-
-**NEVER say any of the following (or variants) at a phase transition:**
-- "Should I push now?" / "Should I create a PR?"
-- "Want me to poll for reviews?" / "Should I enter the polling loop?"
-- ...or any "should I...?" / "want me to...?" question about a workflow step.
-
-**These transitions are ALWAYS automatic — just do them:**
-1. Coding complete → run local CR review (mandatory before push)
-2. Local review clean → commit, push, create PR
-3. PR created → enter GitHub review polling loop immediately
-4. Review findings received → fix, commit, push, reply — then resume polling
-5. Phase A complete → parent launches Phase B within 60 seconds
-6. Phase B clean → parent launches Phase C
-7. Merge gate met → verify AC checkboxes → then ask about merging
+The workflow is fully autonomous. At every phase transition — local review, push, PR creation, polling, feedback processing, subagent spawning — **proceed immediately without asking the user.** See `subagent-orchestration.md` "Phase Transition Autonomy" for the complete table.
 
 **The ONLY actions that require user permission:**
-- Merging the PR (Step 3 of Completion)
-- Respawning a failed subagent (tell the user what happened first)
+- Merging the PR
+- Respawning a failed subagent
 
-If you catch yourself composing a "should I...?" or "want me to...?" question about any workflow step, stop — the answer is always yes. Just do it.
+If you catch yourself composing a "should I...?" question about any workflow step, stop — the answer is always yes. Just do it.
 
 ---
 
-## ALWAYS USE A WORKTREE — READ THIS FIRST
+## ALWAYS USE A WORKTREE
 
-**At the start of every session, before doing anything else, sync local `main` and then create a worktree.**
+**At the start of every session, before doing anything else, sync local `main` and enter the correct worktree. The `stale-worktree-warn.sh` hook warns when the branch doesn't match the task issue.**
 
-1. **Pull remote main into local main.** This ensures your worktree branches from the latest code — not a stale local `main` that missed merges from other sessions, the web UI, or hook failures.
+1. **Pull remote main into local main** (quarantine dirty state first):
 
    ```bash
-   ROOT_REPO=$(git worktree list | head -1 | awk '{print $1}')
+   ROOT_REPO=$(.claude/scripts/repo-root.sh 2>/dev/null || true)
+   if [[ -z "$ROOT_REPO" || ! -d "$ROOT_REPO" ]]; then
+     echo "ERROR: could not resolve root repo path" >&2; exit 1
+   fi
+   if ! .claude/scripts/dirty-main-guard.sh --check >/dev/null; then
+     .claude/scripts/dirty-main-guard.sh --quarantine
+   fi
    git -C "$ROOT_REPO" pull origin main --ff-only
    ```
 
-   If the pull fails (e.g., diverged history), tell the user — do not force-pull or reset.
-2. **Create a worktree.** Tell the user: "I'll create a worktree for isolated work." Then use the `EnterWorktree` tool (or ask the user to say "use a worktree"). This gives you your own working directory and branch — completely isolated from the root repo and from any other agents.
+   If the guard reports `quarantined: recovery/dirty-main-*`, mention the recovery branch to the user so they know where their prior work lives. If the pull itself fails (e.g., diverged history after quarantine), tell the user — do not force-pull or reset. See `main-hygiene.md` for the full guard contract.
+2. **Create a worktree** via the `EnterWorktree` tool for isolated work. The branch must include the issue number (`issue-N-*`).
 
-**Why this is mandatory:**
-- The root repo directory stays clean on `main`. You never touch it.
-- Multiple agents get separate worktrees — no shared working directory, no overwriting each other's files.
-- Each worktree has its own branch, its own staged files, its own uncommitted changes.
-- Push and pull work normally — worktrees share the same remote.
+**Do not write code, edit files, stage changes, commit, or push while on `main`. Ever.** If you cannot create a worktree, fall back to `git checkout -b issue-N-short-description`.
 
-**Do not write code, edit files, stage changes, commit, or push while on `main`. Ever.** If for any reason you cannot create a worktree, fall back to creating a feature branch manually (`git checkout -b issue-N-short-description`) before touching any files.
-
-**Worktree cleanup:** After your PR is merged, remove the worktree via `git worktree remove <path>` or let the session exit prompt handle it. Periodically run `git worktree list` to check for stale worktrees.
+**Worktree cleanup:** After merge, remove via `git worktree remove <path>` or let the session exit prompt handle it.
 
 ---
 
-## PR & Issue Workflow
+## PR & ISSUE WORKFLOW
 
-### Issues — MANDATORY before any code work
+**The flow is always:** GitHub issue → CR plan → implementation plan → feature branch → code → local review → push → PR → GitHub review → merge. Never jump straight to coding. See `issue-planning.md` for the full issue creation and planning flow.
 
-- **Every PR must link to a GitHub issue. No exceptions.** If no issue exists, create one via `gh issue create` before writing any code, creating a branch, or making any changes.
-- **Why this is non-negotiable:** Issues go through a CR planning review (`@coderabbitai plan`) that catches logic errors, identifies edge cases, and produces a refined spec — all before a single coding token is spent. Skipping the issue means skipping this spec refinement, which leads to wasted coding effort on poorly defined tasks.
-- **The flow is always:** Create issue -> CR reviews/refines the spec -> plan implementation -> create branch -> write code -> PR. Never jump straight to coding.
-- Use `Closes #N` in the PR body to auto-close the issue on merge.
-- If the user asks you to make a change and there's no existing issue, **create the issue first**, then proceed with the Issue Planning Flow (see `.claude/rules/issue-planning.md`). Do not treat "quick fixes" or "small changes" as exceptions — the issue is the record of what was done and why.
+**Key rules:**
+- **Every PR must link to a GitHub issue.** No exceptions — create one via `gh issue create` first. Use `Closes #N` in the PR body.
+- **Every PR must include a Test plan section** with checkboxes for acceptance criteria.
+- **We do not use TDD** unless the user explicitly requests it. AC is verified via code review and manual testing.
+- **CI must pass before merge.** See `cr-merge-gate.md` "CI Must Pass Before Merge" for the check-runs verification procedure.
+- **Never suppress linter errors.** See `cr-local-review.md` "Never Suppress Linter Errors" — fix the actual code, never add suppression comments.
 
-### Acceptance Criteria
-- Every PR must include a **Test plan** section with checkboxes for acceptance criteria.
-- Before merging, verify each item against the actual code and **check off** every box in the PR description.
-- If an item can't be verified from code alone (e.g. visual/runtime behavior), note that it requires manual testing.
-
-### Testing Approach
-- We do **not** use TDD unless the user explicitly requests it.
-- Acceptance criteria are verified via code review and manual testing after deploy, not automated test suites.
-- When verifying, read the relevant source files and confirm the logic satisfies each criterion.
-
-### Branching & Merging
-- **NEVER work on `main` — not editing, not committing, not pushing.** All code changes happen in worktrees on feature branches. If you're not in a worktree, create one first. If `git branch --show-current` returns `main`, do not touch any files.
-- **Every change requires: GitHub issue -> feature branch -> PR -> squash merge.** No exceptions. This includes `.claude/rules/*.md` and `CLAUDE.md` — rule files are code and follow the same PR workflow.
-- Branch naming: `issue-N-short-description` (e.g. `issue-10-nav-welcome-header`).
-- Always **squash and merge** via `gh pr merge --squash --delete-branch`, then delete the branch.
-- **Never merge immediately after a rebase or force-push.** Even trivial conflict resolutions (e.g. a single import line) trigger a new CR review cycle. Always wait for CR to review the rebased commit and confirm no findings before merging. The safe flow is: resolve conflict -> force-push -> wait for CR -> confirm clean -> merge.
+**Branching & merging:**
+- **NEVER work on `main`.** All code changes happen in worktrees on feature branches. Every change requires: issue → feature branch → PR → squash merge.
+- Branch naming: `issue-N-short-description`.
+- Always **squash and merge** via `gh pr merge --squash`.
+- **Never merge immediately after a rebase or force-push.** Wait for CR to review the rebased commit and confirm clean before merging.
 
 ---
 
@@ -108,15 +89,59 @@ Detailed workflow rules are split into topic-specific files in `.claude/rules/`:
 
 | File | Contents |
 |------|----------|
-| `issue-planning.md` | Issue creation flow, CR plan integration, planning flow |
-| `cr-local-review.md` | Local CodeRabbit CLI review loop (primary review workflow) |
-| `cr-github-review.md` | GitHub CR polling, rate limits, fast-path detection, thread resolution, completion criteria |
-| `greptile.md` | Greptile peer reviewer + CR fallback + self-review fallback |
-| `subagent-orchestration.md` | Task decomposition (phases A/B/C), dedicated monitor mode, health monitoring, timestamps, subagent quick-reference |
-| `work-log.md` | Auto-update daily work log on issue create, PR open, PR merge |
-| `safety.md` | Destructive command prohibitions, .env protection, subagent safety warnings |
-| `repo-bootstrap.md` | Auto-provision required GitHub Actions workflows on first touch |
-| `trust-dialog-fix.md` | Fix trust dialog re-prompting when bypass permissions are enabled |
-| `skill-symlinks.md` | Symlink new skills to `~/.claude/skills/` after creation; this repo is source of truth |
+| `issue-planning.md` | Issue + planning flow |
+| `cr-local-review.md` | Local CR review |
+| `cr-github-review.md` | GitHub review polling |
+| `cr-merge-gate.md` | Merge gate |
+| `codeant-graphite.md` | CodeAnt + Graphite supplemental review |
+| `bugbot.md` | BugBot fallback |
+| `greptile.md` | Greptile fallback |
+| `subagent-orchestration.md` | Subagent spawning |
+| `monitor-mode.md` | Monitoring + recovery |
+| `scheduling-reliability.md` | Recurring poll safety |
+| `handoff-files.md` | Handoff state |
+| `phase-protocols.md` | Phase exit protocols |
+| `safety.md` | Safety prohibitions |
+| `main-hygiene.md` | Dirty-main guard |
+| `repo-bootstrap.md` | Repo bootstrap |
+| `trust-dialog-fix.md` | Trust flags |
+| `skill-symlinks.md` | Skill symlinks |
 
 These files auto-load for the parent agent session. **Subagents do NOT auto-load these files.** See `subagent-orchestration.md` for how to pass rules to subagents.
+
+### Rule File Size Guidelines
+
+Rules consume tokens on every turn. Limits apply to CLAUDE.md + `.claude/rules/*.md`:
+
+- **Soft warning:** 10,000 words.
+- **Ratchet cap:** `.claude/rules/.budget-soft-cap` must equal `max(current_count + 250, 8500)`. `rule-lint.sh` fails when the corpus exceeds this committed cap, independent of soft/hard checks; run `rule-lint.sh --update-cap` only after intentional cuts.
+- **Hard fail:** 11,000 words.
+- **Per-file warning:** >2,000 words; split or extract reference material.
+- **Verify on every PR touching CLAUDE.md or `.claude/rules/`:**
+
+  ```bash
+  { cat CLAUDE.md; find .claude/rules -name '*.md' -exec cat {} +; } | wc -w
+  ```
+
+  If the total exceeds any enforced limit, condense before merging.
+
+---
+
+## Memory System
+
+The auto-memory system persists insights across sessions at `~/.claude/projects/*/memory/`. Save memories **proactively** (without being asked) when you encounter information future sessions will need. Explicit user requests ("remember this", "save that") normally override these heuristics, but never persist secrets, credentials, tokens, or regulated/sensitive personal data — if the user asks, confirm before saving and redact sensitive values.
+
+**Save proactively:**
+- **Feedback patterns:** CR false positives specific to this repo, user-preferred approaches confirmed across sessions, recurring corrections.
+- **Project context:** non-obvious repo quirks, deadlines, stakeholder decisions, undocumented conventions that shape future work.
+- **External references:** dashboards, docs, or systems where current state lives but isn't in the repo.
+- **Incident lessons:** things that went wrong and the fix — so the next session doesn't repeat the mistake.
+
+**Do NOT save:**
+- Code patterns or API signatures — read the current code instead.
+- Git history facts — `git log`/`git blame` is authoritative.
+- Anything already covered in CLAUDE.md or rule files.
+- Ephemeral task state — use handoff files (`~/.claude/handoffs/`) instead.
+- One-off details with no expected reuse.
+
+Before creating a memory, check for existing ones to avoid duplicates. Update or remove stale memories when you encounter them.

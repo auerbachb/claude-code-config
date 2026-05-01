@@ -1,6 +1,19 @@
 ---
 name: status
 description: Show a dashboard of all open PRs with review state, unresolved findings, and blockers.
+triggers:
+  - show PRs
+  - PR dashboard
+  - what's open
+  - review status
+model: sonnet
+allowed-tools:
+  - Read
+  - Glob
+  - Grep
+  - Bash
+  - WebFetch
+  - WebSearch
 ---
 
 Build a status dashboard of all open PRs in this repo.
@@ -17,48 +30,69 @@ If no open PRs, say "No open PRs." and stop.
 
 ### Step 2: For each PR, gather review state
 
-For each open PR, fetch review data from all 3 endpoints:
+For each open PR, run the shared PR-state helper once per PR. One invocation returns reviews, inline comments, issue comments, unresolved threads, check-runs, and bot status rollups — all derived from the same HEAD SHA:
 
 ```bash
-# Reviews (approve/changes requested)
-gh api "repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100" \
-  --jq '[.[] | select(.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]") | {user: .user.login, state: .state, submitted: .submitted_at}] | sort_by(.submitted) | if length == 0 then {} else last end'
-
-# Unresolved findings (use GraphQL to get only unresolved threads)
-gh api graphql -f query='query { repository(owner: "{owner}", name: "{repo}") { pullRequest(number: {N}) { reviewThreads(first: 100) { nodes { isResolved comments(first: 1) { nodes { author { login } } } } } } } }' \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length'
-
-# Issue comments (summary, ack)
-gh api "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
-  --jq '[.[] | select(.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]")] | length'
+STATE=$(.claude/scripts/pr-state.sh --pr "$N")
 ```
 
-Also check the commit status:
+All subsequent queries read from `$STATE`:
+
 ```bash
-SHA=$(gh pr view N --json commits --jq '.commits[-1].oid')
-gh api "repos/{owner}/{repo}/commits/$SHA/check-runs" \
-  --jq '.check_runs[] | select(.name == "CodeRabbit") | {status: .status, conclusion: .conclusion}'
+# Last review from CR, BugBot, or Greptile (state: APPROVED / COMMENTED / CHANGES_REQUESTED)
+jq '[.comments.reviews[]
+     | select(.user.login == "coderabbitai[bot]" or .user.login == "cursor[bot]" or .user.login == "greptile-apps[bot]")
+     | {user: .user.login, state, submitted: .submitted_at}]
+     | sort_by(.submitted) | if length == 0 then {} else last end' "$STATE"
+
+# Unresolved thread count
+jq '.threads.unresolved_count' "$STATE"
+
+# CR/BugBot/Greptile issue-comment count (summaries, acks, PR-level findings)
+jq '[.comments.conversation[]
+     | select(.user.login == "coderabbitai[bot]" or .user.login == "cursor[bot]" or .user.login == "greptile-apps[bot]")]
+     | length' "$STATE"
+
+# CodeRabbit check-run status (also serves as rate-limit signal via title).
+# Falls back to the commit-status rollup for repos that report CR via the legacy statuses API.
+CR_CHECK=$(jq '.check_runs.all[] | select(.name == "CodeRabbit") | {status, conclusion, title}' "$STATE")
+if [ -z "$CR_CHECK" ] || [ "$CR_CHECK" = "null" ]; then
+  jq '.bot_statuses.CodeRabbit' "$STATE"    # legacy commit-status path
+else
+  echo "$CR_CHECK"
+fi
+
+# BugBot (Cursor) check-run — included so PRs on the BugBot path show review status
+jq '.check_runs.all[] | select(.name == "Cursor Bugbot") | {name, status, conclusion}' "$STATE"
 ```
 
 ### Step 3: Determine status for each PR
 
-Classify each PR into one of these states:
-- **Clean (merge-ready)** — merge gate satisfied (2 clean CR or 1 clean G)
-- **Has findings** — reviewer posted actionable comments that need fixing
-- **Review pending** — pushed but no review yet
-- **Rate-limited** — CR check shows rate limit failure
+For a structured merge-readiness call per PR, run the shared merge-gate verifier:
 
-Also note:
-- Which reviewer owns the PR (CR or Greptile)
-- Number of unresolved inline comments
-- Time since last update
+```bash
+.claude/scripts/merge-gate.sh "$PR_NUM"
+```
 
-### Step 4: Check session-state
+Exit `0` → Clean (merge-ready). Exit `1` → parse `.missing[]` to classify: entries about findings/threads = **Has findings**, entries about CI incomplete or review not yet posted = **Review pending**, entries about rate limits = **Rate-limited**. Exit `3` → PR not found. Exit `2`/`4` → script/gh error.
 
-If `~/.claude/session-state.json` exists, cross-reference it:
-- Active agents and what they're doing
+The JSON also surfaces `.reviewer`, `.head_sha`, `.ci_status`, `.merge_state`, and `.mergeable` — use these to populate the dashboard columns without re-querying.
+
+Classifications to present in the table:
+- **Clean (merge-ready)** — script exit `0`.
+- **Has findings** — gate not met because of unresolved threads, CR check-run red, or findings on HEAD.
+- **Review pending** — gate not met because no review yet / CI still running / `mergeStateStatus` is `UNKNOWN` (GitHub still computing mergeability).
+- **Behind base** — gate not met with `merge_state == "BEHIND"` or `missing` mentions BEHIND — show **Rebase** (invoke `/fixpr`); do not conflate with generic `BLOCKED`.
+- **Rate-limited** — gate not met with a CR rate-limit signal in `missing`.
+
+### Step 4: Session-state + CR hourly quota
+
+Always run `.claude/scripts/cr-review-hourly.sh --check` from the repo root (same `HOME` as the agent). Parse JSON on stdout and put **`CR quota: <reviews_used>/<budget>`** (or **`CR quota: exhausted`**) in the footer **every time**, even when `~/.claude/session-state.json` does not exist yet (`--check` then reports 0 used).
+
+If `session-state.json` exists, also cross-reference:
+
+- Active agents and tasks
 - Phase assignments (A/B/C)
-- CR quota usage this hour
 
 ### Step 5: Format the dashboard
 
@@ -74,5 +108,5 @@ PR    | Title                          | Reviewer | State          | Findings | 
 
 Below the table, add:
 - **Blocked:** List any PRs that are blocked and why
-- **CR quota:** N/8 reviews used this hour (if session-state available)
-- **Active agents:** List any running agents and their tasks (if session-state available)
+- **CR quota:** From `cr-review-hourly.sh --check` — **CR quota: N/M** or **exhausted** (deterministic; do not gate on session-state.json existing)
+- **Active agents:** List any running agents and their tasks (only when present in session-state)

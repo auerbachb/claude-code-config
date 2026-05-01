@@ -1,10 +1,22 @@
 ---
 name: standup
 description: Generate a daily standup summary of what was accomplished since the last standup, from a business logic perspective. Reads PR bodies to understand what changes actually enabled.
-argument-hint: [since-time, e.g. "yesterday at noon ET"]
+triggers:
+  - daily standup
+  - what did I do yesterday
+  - recent work summary
+argument-hint: "[since-time] — omit for smart default (skips weekends/holidays); e.g. \"Friday at noon ET\""
+model: sonnet
+allowed-tools:
+  - Read
+  - Glob
+  - Grep
+  - Bash
+  - WebFetch
+  - WebSearch
 ---
 
-Generate a standup report summarizing what was accomplished since $ARGUMENTS (default: "yesterday at noon ET" if no argument given).
+Generate a standup report summarizing what was accomplished since $ARGUMENTS (default: smart lookback to previous workday noon ET — skips weekends and US federal holidays).
 
 ## How to gather data
 
@@ -12,14 +24,75 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
 
 1. **Find all repos the user works in.** Check recent git activity across known repo paths. Start with the current working directory, then check other repos mentioned in conversation context or memory.
 
-2. **Convert the user's time reference to an ISO 8601 timestamp** with the correct UTC offset (handles EST/EDT automatically):
+2. **Determine the lookback cutoff.** If the user provided an explicit `$ARGUMENTS` time reference, use it directly (skip to the ISO conversion below). If no argument was given, compute the smart default: find the most recent prior workday by walking backwards from yesterday, skipping weekends, US federal holidays, and the day after Thanksgiving (a de facto holiday for most organizations).
+
+   **Smart lookback algorithm** (run only when `$ARGUMENTS` is empty):
+
    ```bash
-   # Example: "yesterday at noon ET" → ISO 8601 with colon offset (GitHub requires +HH:MM not +HHMM)
-   # Windows (PowerShell): compute yesterday noon in ET with proper offset
-   SINCE_ISO=$(powershell -Command "\$tz=[System.TimeZoneInfo]::FindSystemTimeZoneById('Eastern Standard Time'); \$nowEt=[System.TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow,\$tz); \$sinceEt=\$nowEt.Date.AddDays(-1).AddHours(12); ([DateTimeOffset]::new(\$sinceEt, \$tz.GetUtcOffset(\$sinceEt))).ToString('yyyy-MM-ddTHH:mm:sszzz')" 2>/dev/null || TZ='America/New_York' date -d 'yesterday 12:00' '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || TZ='America/New_York' date -v-1d -v12H -v0M -v0S '+%Y-%m-%dT%H:%M:%S%z')
+   # Delegates to workday.sh, which implements the full weekend +
+   # US-federal-holiday + day-after-Thanksgiving calculator with observed-date
+   # rules (Sat → Fri, Sun → Mon) and cross-year lookbacks.
+   #
+   # Resolve the script path robustly: /standup runs from arbitrary repos,
+   # so a bare `.claude/scripts/workday.sh` only works when CWD happens to be
+   # this config repo. Check in this order: skills-worktree (canonical),
+   # ~/.claude/scripts (global symlink fallback), git root of the current repo,
+   # then CWD-relative.
+   # Capture GIT_ROOT first and only include that candidate when non-empty —
+   # otherwise `$(git rev-parse …)` expands to "" and the candidate becomes
+   # `/.claude/scripts/workday.sh` (absolute-root path), which would
+   # incorrectly match an unrelated root-level file if one existed.
+   WORKDAY_SH=""
+   GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+   for candidate in \
+     "$HOME/.claude/skills-worktree/.claude/scripts/workday.sh" \
+     "$HOME/.claude/scripts/workday.sh" \
+     "${GIT_ROOT:+$GIT_ROOT/.claude/scripts/workday.sh}" \
+     ".claude/scripts/workday.sh"; do
+     [ -n "$candidate" ] || continue
+     if [ -x "$candidate" ]; then
+       WORKDAY_SH="$candidate"
+       break
+     fi
+   done
+   if [ -z "$WORKDAY_SH" ]; then
+     echo "Error: could not locate workday.sh" >&2
+     exit 1
+   fi
+   # Preserve workday.sh's exit-code contract (exit 3 = runtime failure).
+   # A plain `LOOKBACK_DATE=$(...)` would swallow non-zero exits and later
+   # collapse them to a generic `exit 1`; `|| exit $?` keeps the original.
+   LOOKBACK_DATE=$("$WORKDAY_SH" --last-workday) || exit $?
+   # LOOKBACK_DATE is now the most recent prior workday (YYYY-MM-DD)
+   ```
+
+3. **Convert to an ISO 8601 timestamp** with the correct UTC offset (handles EST/EDT automatically):
+   ```bash
+   if [ -n "$ARGUMENTS" ]; then
+     # User provided an explicit time reference — parse it directly, bypass smart lookback
+     # The agent should convert $ARGUMENTS to the appropriate date -d / date -v expression.
+     # Example for "yesterday at noon ET": date -d 'yesterday 12:00' or date -v-1d -v12H -v0M -v0S
+     SINCE_ISO=$(TZ='America/New_York' date -d "$ARGUMENTS" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || TZ='America/New_York' date -jf '%Y-%m-%d %H:%M' "$ARGUMENTS" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null)
+     if [ -z "$SINCE_ISO" ]; then
+       echo "Error: Could not parse time reference: $ARGUMENTS" >&2
+       exit 1
+     fi
+   else
+     # Smart default — LOOKBACK_DATE was set above by workday.sh; any failure
+     # there already propagated via `|| exit $?`, so LOOKBACK_DATE is non-empty
+     # here by contract.
+     # On Windows (Git Bash), TZ may be wrong — try PowerShell first for noon ET on LOOKBACK_DATE.
+     SINCE_ISO=$(powershell -Command "\$tz=[System.TimeZoneInfo]::FindSystemTimeZoneById('Eastern Standard Time'); \$d=[DateTime]::ParseExact('${LOOKBACK_DATE}','yyyy-MM-dd',[Globalization.CultureInfo]::InvariantCulture); \$local=[DateTime]::SpecifyKind(\$d.Date.AddHours(12), [DateTimeKind]::Unspecified); \$dto=[DateTimeOffset]::new(\$local, \$tz.GetUtcOffset(\$local)); \$dto.ToString('yyyy-MM-ddTHH:mm:sszzz')" 2>/dev/null \
+       || TZ='America/New_York' date -d "${LOOKBACK_DATE} 12:00" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null \
+       || TZ='America/New_York' date -jf '%Y-%m-%d %H:%M' "${LOOKBACK_DATE} 12:00" '+%Y-%m-%dT%H:%M:%S%z')
+     if [ -z "$SINCE_ISO" ]; then
+       echo "Error: Failed to convert lookback date to ISO timestamp" >&2
+       exit 1
+     fi
+   fi
    SINCE_ISO=$(printf '%s' "$SINCE_ISO" | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/')
    ```
-   Adjust the date expression to match the user's time reference.
+   The explicit `if/else` ensures `$ARGUMENTS` overrides the smart lookback cleanly. Both branches produce `SINCE_ISO` in the same format for downstream use.
 
 ### Step 2: Pull issues, PRs, and line counts
 
@@ -50,9 +123,37 @@ Scan each PR body for:
 - **Concrete numbers** — record counts, accuracy metrics, coverage stats, thresholds
 - **Which part of the system** this advances — classification, scraping, data pipeline, UI, etc.
 
-If a PR body is thin or template-only, extract the linked issue number (look for `Fixes #N`, `Closes #N`, or similar patterns in the PR body) and read the issue body:
+If a PR body is thin or template-only, extract the linked issue number via `pr-issue-ref.sh` (matches all nine GitHub closing keywords — `close`/`closes`/`closed`/`fix`/`fixes`/`fixed`/`resolve`/`resolves`/`resolved`, case-insensitive) and read the issue body. /standup runs from arbitrary repos, so resolve the script path with the same multi-candidate lookup used for `workday.sh` above. The helper exits 1 with empty stdout when no link is found — distinguish that benign case from exits 2/3/4 (real errors) so genuine failures surface:
 ```bash
-gh issue view "$ISSUE_NUMBER" --json body,title
+PR_ISSUE_REF_SH=""
+GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+for candidate in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/pr-issue-ref.sh" \
+  "$HOME/.claude/scripts/pr-issue-ref.sh" \
+  "${GIT_ROOT:+$GIT_ROOT/.claude/scripts/pr-issue-ref.sh}" \
+  ".claude/scripts/pr-issue-ref.sh"; do
+  [ -n "$candidate" ] || continue
+  if [ -x "$candidate" ]; then
+    PR_ISSUE_REF_SH="$candidate"
+    break
+  fi
+done
+if [ -z "$PR_ISSUE_REF_SH" ]; then
+  echo "Error: could not locate pr-issue-ref.sh" >&2
+  exit 1
+fi
+ISSUE_NUMBER=""
+if RAW_REF=$("$PR_ISSUE_REF_SH" "$PR_NUMBER" 2>&1); then
+  ISSUE_NUMBER="$RAW_REF"
+else
+  REF_RC=$?
+  if [ "$REF_RC" -ne 1 ]; then
+    echo "Warning: pr-issue-ref.sh exit $REF_RC for PR #$PR_NUMBER: $RAW_REF — skipping linked-issue lookup" >&2
+  fi
+fi
+if [ -n "$ISSUE_NUMBER" ]; then
+  gh issue view "$ISSUE_NUMBER" --json body,title
+fi
 ```
 
 ### Step 4: Identify business themes

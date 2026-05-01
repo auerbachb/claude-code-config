@@ -61,9 +61,8 @@ $CR_BIN review --prompt-only
 ```
 
 - If findings are returned: `[ACTION]` — Fix all valid findings. Run `$CR_BIN review --prompt-only` again after fixing.
-- Track a **consecutive-clean counter** (starts at 0). Each clean pass increments it by 1. Any pass with findings resets it to 0.
-- **Exit when consecutive-clean == 2** (two back-to-back clean passes) — `[DONE]` Local CR review passed.
-- **Max 5 total iterations.** If you hit 5 runs without achieving 2 consecutive clean passes, stop and report: `[BLOCKED]` — CR review not converging after 5 iterations.
+- **Exit on 1 clean pass** (no findings returned) — `[DONE]` Local CR review passed.
+- **Max 5 total iterations.** If you hit 5 runs without a clean pass, stop and report: `[BLOCKED]` — CR review not converging after 5 iterations.
 - If CR CLI is not available or errors out: `[SKIP]` — CR CLI unavailable, performing self-review instead:
   ```bash
   BASE=$(gh pr view --json baseRefName --jq '.baseRefName' 2>/dev/null || echo main)
@@ -125,22 +124,21 @@ PR_NUM=$(echo "$PR_JSON" | jq -r '.number // empty')
 
 ## Step 5: Determine reviewer ownership
 
-Check which reviewer owns this PR:
+Resolve reviewer ownership via the shared helper (reads `.prs["<N>"].reviewer` from `~/.claude/session-state.json` first, falls back to a paginated live-history scan on all three comment endpoints):
 
 ```bash
-# Check session-state first
-cat ~/.claude/session-state.json 2>/dev/null | jq -r ".prs.\"$PR_NUM\".reviewer // empty"
-
-# If no session-state, check review history (paginate to catch all activity)
-gh api --paginate "repos/{owner}/{repo}/pulls/{N}/comments?per_page=100" --jq '.[].user.login' | sort -u
-gh api --paginate "repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100" --jq '.[].user.login' | sort -u
-gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" --jq '.[].user.login' | sort -u
+REVIEWER=$(.claude/scripts/reviewer-of.sh "$PR_NUM")
+REVIEWER_EXIT=$?
 ```
 
-- If `greptile-apps[bot]` has posted reviews: PR is on **Greptile** (sticky assignment).
-- Otherwise: PR is on **CR**.
+Branch on exit code:
+- `0` → `$REVIEWER` is one of `cr` / `bugbot` / `greptile`. Use it for Step 6.
+- `1` → `unknown` printed; no bot has reviewed yet. Treat as **CR** (the default primary reviewer) and proceed to Step 6 to wait for the first review.
+- `2` → `[BLOCKED]` — script/gh error; surface stderr.
+- `3` → `[BLOCKED]` — PR #$PR_NUM not found (closed, merged, or invalid).
+- `5` → `[BLOCKED]` — `~/.claude/session-state.json` is malformed, wrong shape, or the helper hit a runtime failure (e.g. a racing read between the validation guard and the jq lookup). Surface the helper's stderr, stop polling, and repair or remove the state file before retrying `/continue`. Do **not** fall through to a live-history scan — sticky reviewer assignments live in session-state, and bypassing them risks mis-routing an already-escalated PR back to CR.
 
-Output: `Reviewer: CR` or `Reviewer: Greptile`
+Output: `Reviewer: CR` / `Reviewer: BugBot` / `Reviewer: Greptile`.
 
 ---
 
@@ -162,24 +160,57 @@ gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
 ```
 
 **Rate limit detection:** If check-run shows `conclusion: "failure"` with title containing "rate limit" (case-insensitive), OR status shows `state: "failure"`/`state: "error"` with description containing "rate limit":
-- `[ACTION]` — CR is rate-limited. Switching to Greptile.
-- Trigger `@greptileai` on the PR if not already done.
-- This PR is now on Greptile permanently (sticky assignment). Persist this to session-state:
+- `[ACTION]` — CR is rate-limited. Check BugBot (second-tier reviewer) before falling through to Greptile — BugBot auto-triggers on every push, so it may already have responded while CR was blocked:
   ```bash
-  # Write sticky reviewer assignment to session-state
-  jq --arg pr "$PR_NUM" '.prs[$pr].reviewer = "g"' ~/.claude/session-state.json > /tmp/ss.json && mv /tmp/ss.json ~/.claude/session-state.json
+  gh api "repos/{owner}/{repo}/pulls/$PR_NUM/reviews?per_page=100" \
+    --jq '[.[] | select(.user.login == "cursor[bot]" and .commit_id == "'"$SHA"'")]'
   ```
-- Go to the Greptile section below.
+  - BugBot has posted on `$SHA` → PR is now on **BugBot** (sticky). Persist and go to the BugBot section:
+    ```bash
+    .claude/scripts/reviewer-of.sh "$PR_NUM" --sticky bugbot
+    ```
+  - BugBot has NOT posted AND <10 min since push → `[ACTION]` — Waiting up to 10 min for BugBot's auto-review. Poll every 60 s.
+  - BugBot has NOT posted AND ≥10 min since push → BugBot timed out. Fall through to Greptile:
+    ```bash
+    gh pr comment "$PR_NUM" --body "@greptileai"
+    .claude/scripts/reviewer-of.sh "$PR_NUM" --sticky greptile
+    ```
+    Go to the Greptile section below.
 
 **Review completion:** If check-run shows `status: "completed"` with `conclusion: "success"`:
 - CR has finished reviewing. Check for findings (Step 7).
 
 **Review pending:** If no completion signal and no rate-limit signal:
-- `[ACTION]` — CR review is still pending. Polling every 60 seconds (7-minute timeout).
+- `[ACTION]` — CR review is still pending. Polling every 60 seconds (12-minute timeout). A clean CR check-run completion short-circuits the timeout wait — but the merge gate still requires an explicit `APPROVED` review on the current HEAD SHA (per `cr-merge-gate.md` Step 1); completion alone does not satisfy it.
 - Poll all 3 endpoints each cycle for new comments from `coderabbitai[bot]`.
-- Check for rate-limit signals on every poll cycle.
-- After 7 minutes with no review content and no rate-limit signal: `[BLOCKED]` — CR has not responded. Tell the user and ask whether to wait longer or trigger Greptile manually.
-- **Only switch to Greptile on a clear rate-limit signal.** Do not auto-trigger Greptile on timeout alone.
+- Check for rate-limit signals on every poll cycle. Rate-limit signals override the timeout — escalate immediately regardless of elapsed minutes.
+- After 12 minutes with no review content and no rate-limit signal: `[ACTION]` — CR timed out. Check BugBot (same query as rate-limit path above). If BugBot has posted a review, persist `--sticky bugbot` and go to the BugBot section. If BugBot has also timed out (≥10 min since push), fall through to Greptile.
+
+### If PR is on BugBot:
+
+BugBot (`cursor[bot]`) is the second-tier free reviewer. Auto-triggers on every push; merge gate requires **1 clean BugBot review** on the current HEAD SHA (BugBot's completion signals are reliable).
+
+Check for BugBot reviews on the current HEAD:
+```bash
+gh api --paginate "repos/{owner}/{repo}/pulls/$PR_NUM/reviews?per_page=100" \
+  --jq '[.[] | select(.user.login == "cursor[bot]" and .commit_id == "'"$SHA"'")]'
+gh api --paginate "repos/{owner}/{repo}/pulls/$PR_NUM/comments?per_page=100" \
+  --jq '[.[] | select(.user.login == "cursor[bot]")]'
+gh api --paginate "repos/{owner}/{repo}/issues/$PR_NUM/comments?per_page=100" \
+  --jq '[.[] | select(.user.login == "cursor[bot]")]'
+```
+
+Also check the BugBot check-run for the completion signal:
+```bash
+gh api "repos/{owner}/{repo}/commits/$SHA/check-runs" \
+  --jq '.check_runs[] | select(.name == "Cursor Bugbot") | {status, conclusion}'
+```
+
+- BugBot has posted findings on `$SHA` → `[DONE]` — BugBot review received. Process findings (Step 7). After fixes are pushed, BugBot auto-reviews the new push; return to this section on the new SHA.
+- BugBot has posted a clean review (check-run `completed` with no finding comments) on `$SHA` → `[DONE]` — merge gate met (1 clean pass is sufficient for the BugBot path). Proceed to merge verification.
+- No BugBot response AND <10 min since push → `[ACTION]` — Polling for BugBot (10-min timeout from push). Poll every 60 s.
+- No BugBot response AND ≥10 min since push → BugBot timed out. Fall through to Greptile immediately (after the Greptile budget gate). Do NOT extend the wait by triggering a manual `@cursor review` retry — the 10-min window from push is the hard timeout.
+- Stay on BugBot — do not switch back to CR. Ignore late CR reviews. Only escalate to Greptile if BugBot also fails.
 
 ### If PR is on Greptile:
 
@@ -194,8 +225,8 @@ gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
 ```
 
 - If Greptile has posted findings: `[DONE]` — Greptile review received. Process findings (Step 7).
-- If no Greptile response: `[ACTION]` — Polling for Greptile (5-minute timeout).
-  - If no response after 5 minutes: `[BLOCKED]` — Greptile timed out. Performing self-review as fallback. Note: self-review does NOT satisfy merge gate.
+- If no Greptile response: `[ACTION]` — Polling for Greptile (10-minute timeout). Polling cadence stays 60 s; exit immediately when the review lands, do not keep polling to 10 min.
+  - If no response after 10 minutes: `[BLOCKED]` — Greptile timed out. Performing self-review as fallback. Note: self-review does NOT satisfy merge gate.
 
 ---
 
@@ -225,13 +256,15 @@ gh api graphql -f query='query {
 ```
 
 Count unresolved threads from reviewers:
-- Filter for threads where any comment is from `coderabbitai[bot]` or `greptile-apps[bot]`
+- Filter for threads where any comment is from `coderabbitai[bot]`, `greptile-apps[bot]`, or `cursor[bot]`
 - Only count threads where `isResolved == false`
 
-Also check for issue-level review comments that may not have threads:
+Also check for issue-level review comments that may not have threads. Use the shared `pr-state.sh` helper — it fetches all three endpoints in one call, filters to `coderabbitai[bot]` / `greptile-apps[bot]` / `cursor[bot]` (BugBot), and pre-classifies each comment with `classification.class` (`finding` vs `acknowledgment`). The classifier only runs when `--since <iso>` is passed — pass the PR's `createdAt` to include every bot comment on the PR. The helper writes the JSON bundle to a tempfile and prints its **path** on stdout — capture the path, then read with `jq < "$BUNDLE"`:
+
 ```bash
-gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
-  --jq '[.[] | select(.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]") | select(.body | test("suggestion|finding|issue|bug|error|warning"; "i"))]'
+PR_CREATED=$(gh pr view "$PR_NUM" --json createdAt --jq '.createdAt')
+BUNDLE=$(.claude/scripts/pr-state.sh --pr "$PR_NUM" --since "$PR_CREATED")
+jq '.new_since_baseline.conversation | map(select(.classification.class == "finding"))' < "$BUNDLE"
 ```
 
 - If there are unresolved findings: `[ACTION]` — Processing N unresolved findings.
@@ -239,28 +272,23 @@ gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
   2. Verify against actual code before fixing
   3. Fix ALL valid findings in a single commit
   4. Push once
-  5. Reply to every thread confirming the fix. Try the inline reply endpoint first:
+  5. Reply to every thread confirming the fix. Use the shared helper — it tries the inline `/replies` endpoint first, falls back to a PR-level comment on 404, and applies reviewer-specific `@mention` rules (prepends `@coderabbitai` for CR; strips `@cursor`/`@greptileai` for BugBot/Greptile):
 
      ```bash
-     gh api "repos/{owner}/{repo}/pulls/comments/{id}/replies" -f body="Fixed in \`$SHA\`: <what changed>"
+     # $REVIEWER: cr | bugbot | greptile (determined from the finding's author)
+     .claude/scripts/reply-thread.sh <comment_id> --reviewer "$REVIEWER" \
+       --body "Fixed in \`$SHA\`: <what changed>" --pr N
      ```
 
-     If the reply endpoint returns **404**, the comment is not an inline diff comment — fall back to a PR-level comment:
+     Exit codes: `0` inline reply posted; `1` fallback PR-level reply posted (still success). Both outcomes are successful replies. See `.claude/scripts/reply-thread.sh --help` for the full contract, including 404-without-`--pr` or both-endpoints-404 (exit 3) and inline-404-then-fallback-non-404 (exit 4).
+
+  6. Resolve all bot threads with the shared helper (paginated, filtered to `coderabbitai`/`cursor`/`greptile-apps`, falls back to `minimizeComment` on failure):
 
      ```bash
-     gh pr comment N --body "@coderabbitai Fixed in \`$SHA\`: <what changed>. (Re: <brief description of the finding>)"
+     bash .claude/scripts/resolve-review-threads.sh $PR_NUM
      ```
 
-     **When to use which:**
-     - Inline diff comments (`path` and `line` fields present) → use `/replies` endpoint
-     - Review-level or PR conversation comments → use `gh pr comment` with `@coderabbitai` mention
-     - If unsure, try `/replies` first — the 404 is harmless and signals fallback
-
-  6. Resolve each thread via GraphQL:
-
-     ```bash
-     gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "{thread_id}"}) { thread { isResolved } } }'
-     ```
+     Exit 1 means at least one thread failed both mutations — surface to the user and stop. Do not proceed with a non-zero exit.
 
   7. After fixing, go back to **Step 6** to wait for the next review.
 - If no unresolved findings: `[DONE]` — No unresolved findings.
@@ -269,69 +297,47 @@ gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
 
 ## Step 8: Check merge gate
 
-### If PR is on CR (Greptile never triggered):
+Run the shared merge-gate verifier (implements CR 1 explicit APPROVED on current HEAD / BugBot 1-clean / Greptile severity + CI + BEHIND checks):
 
-Need **2 consecutive clean CR passes**. A pass is clean only when BOTH of:
-1. CodeRabbit check-run on current HEAD shows `status: "completed"` + `conclusion: "success"`
-2. Step 7 reports zero unresolved CR findings (verified via GraphQL query below)
-
-Track a `cr_clean_streak` counter:
-- Increment by 1 after a verified clean pass
-- Reset to 0 when findings are present or a new commit is pushed
-- Merge gate met when `cr_clean_streak >= 2`
-
-Check latest CR signals:
 ```bash
-SHA=$(gh pr view $PR_NUM --json commits --jq '.commits[-1].oid')
-
-# Check-run must be green on current HEAD
-gh api "repos/{owner}/{repo}/commits/$SHA/check-runs" \
-  --jq '.check_runs[] | select(.name == "CodeRabbit") | {status, conclusion}'
-
-# Verify no unresolved findings from CR (fetch all comments per thread to catch CR anywhere in thread)
-gh api graphql -f query='query { repository(owner: "{owner}", name: "{repo}") { pullRequest(number: {N}) { reviewThreads(first: 100) { nodes { isResolved comments(first: 100) { nodes { author { login } } } } } } } }' \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[]
-         | select(.isResolved == false)
-         | select(any(.comments.nodes[]; .author.login == "coderabbitai[bot]"))] | length'
+GATE_JSON=$(.claude/scripts/merge-gate.sh "$PR_NUM")
+GATE_EXIT=$?
 ```
 
-- If check-run is green AND zero unresolved CR findings: this is a clean pass. Increment `cr_clean_streak`.
-- If `cr_clean_streak >= 2`: `[DONE]` — Merge gate satisfied (2 consecutive clean CR passes).
-- If `cr_clean_streak == 1`: `[ACTION]` — One clean pass confirmed. Triggering confirmation review:
-  ```bash
-  gh pr comment $PR_NUM --body "@coderabbitai full review"
-  ```
-  Go back to **Step 6** to poll for the confirmation review.
-- If check-run has findings or is not green: `[ACTION]` — Merge gate not met. Reset streak. Go back to **Step 6**.
+Branch on the exit code:
 
-### If PR is on Greptile:
-
-Severity-gated merge gate:
-- **No findings at all** on last Greptile review: `[DONE]` — Merge gate satisfied (clean Greptile pass).
-- **Only P1/P2 findings** (no P0) on last review, all fixed: `[DONE]` — Merge gate satisfied (P1/P2 fixed, no re-review needed).
-- **P0 findings were present**: Need re-review to confirm P0 resolution.
-  - Check if re-review has been done (max 3 Greptile reviews per PR).
-  - If re-review needed and budget allows: `[ACTION]` — Triggering Greptile re-review:
-    ```bash
-    gh pr comment $PR_NUM --body "@greptileai"
-    ```
-    Go back to **Step 6**.
-  - If 3 reviews already consumed: `[BLOCKED]` — Greptile review budget exhausted. Performing self-review. Report blocker to user.
+- `0` → `[DONE]` — Merge gate satisfied. Proceed to Step 9 (AC verification).
+- `1` → `[ACTION]` — Gate not met. Parse `missing` from the JSON output and act accordingly:
+  - CR path with **"need 1 explicit CR APPROVED review on HEAD"**: if the current SHA is still within the 12-minute CR polling window, return to **Step 6** and keep polling — do NOT re-trigger yet. Only after the 12-minute timeout, and only within the 2-trigger-per-hour budget, post `@coderabbitai full review` once and return to **Step 6**.
+  - CR path with **"CR approval on HEAD ... retracted by later CHANGES_REQUESTED"**: CR retracted approval. Return to **Step 7** to process the findings. Re-trigger only after fixes are pushed (the new SHA invalidates prior reviews regardless).
+  - CR path with **"CodeRabbit check-run not green on HEAD"** or **"latest CR review on HEAD requests changes"**: CR has findings; return to **Step 7** to process them.
+  - BugBot path with **"no BugBot review on HEAD"**: BugBot hasn't reviewed the current HEAD yet; return to **Step 6** to poll for the review.
+  - BugBot path with **"latest BugBot review on HEAD has findings"**: return to **Step 7** to process findings.
+  - Greptile path with **"unresolved Greptile thread(s)"**: return to **Step 7** to process; if P0 remains after fix, re-trigger `@greptileai` (subject to the 3-review cap per `.claude/rules/greptile.md`).
+  - **"branch is BEHIND base"**: `[ACTION]` — rebase onto base, force-push, wait for a fresh review, then re-run the gate.
+  - **"CI has N failing check-run(s)"** or **"CI has N incomplete check-run(s)"**: fix CI or wait for incomplete runs, then re-run the gate.
+- `3` → `[BLOCKED]` — PR not found (closed or merged).
+- `2`/`4` → `[BLOCKED]` — script or gh error; surface the message to the user.
 
 ---
 
 ## Step 9: Verify acceptance criteria
 
-Run the acceptance criteria check (same logic as `/check-acceptance-criteria`):
+Run the acceptance criteria check via the shared helper:
 
-1. Fetch PR body: `gh pr view $PR_NUM --json body --jq .body`
-2. Parse every checkbox in the **Test plan** section
-3. For each item, read the relevant source files and verify the criterion is met
-4. Check off passing items by editing the PR body (replace `- [ ]` with `- [x]`)
+```bash
+ITEMS=$(.claude/scripts/ac-checkboxes.sh "$PR_NUM" --extract)
+AC_EXIT=$?
+```
 
-- If all items pass: `[DONE]` — All acceptance criteria verified and checked off.
+Branch on exit code:
+- `0` → `$ITEMS` is a JSON array of `{index, checked, text}`. For each item with `checked == false`, read the relevant source files and verify the criterion. Tick passing items by index: `.claude/scripts/ac-checkboxes.sh "$PR_NUM" --tick "0,2,3"` (or `--all-pass` if every unchecked item passed).
+- `1` → `[BLOCKED]` — PR body is missing a Test Plan section. Every PR must include one (per CLAUDE.md). The PR is NOT merge-ready until the body is fixed — report this to the user and do not continue to the merge decision.
+- `3` → `[BLOCKED]` — PR not found.
+- `2`/`4` → `[BLOCKED]` — script or gh error; surface stderr to user.
+
+- If all items pass after ticking: `[DONE]` — All acceptance criteria verified and checked off.
 - If any item fails: `[ACTION]` — Fix the failing criteria, then re-verify.
-- If no Test Plan section: `[SKIP]` — No acceptance criteria to verify.
 
 ---
 
@@ -347,8 +353,8 @@ PR: #$PR_NUM
 Reviewer: CR / Greptile
 Merge gate: MET / NOT MET
 Acceptance criteria: ALL PASSED / N FAILED
-Status: Ready to merge — want me to squash and merge?
+Status: Ready for wrap
 ```
 
 If the merge gate is met and all AC pass, ask:
-"Reviews clean, all AC verified and checked off. Want me to squash and merge (`gh pr merge --squash --delete-branch`) and delete the branch, or do you want to review the diff yourself first?"
+"Reviews clean, all AC verified and checked off. Want me to run `/wrap` to squash-merge, sync root main, and detect follow-ups, or do you want to review the diff yourself first?"
