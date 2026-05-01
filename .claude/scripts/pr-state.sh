@@ -257,9 +257,10 @@ CONVO=$(run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per
 #    in sync with the regex branches below.
 #
 #    Branch ordering in classify is deliberate — do NOT reorder without reading this:
-#      1. Explicit-resolution overrides (addressed marker, "actionable comments posted: 0",
-#         "no actionable comments were generated") are checked FIRST. They mean CR has
-#         marked the thread resolved regardless of any quoted earlier finding language.
+#      1. Explicit-resolution / clean-pass overrides (addressed marker, "actionable comments posted: 0",
+#         "no actionable comments were generated", "rate limit exceeded", "full review triggered")
+#         are checked FIRST. They mean CR has marked the thread resolved, hit a rate-limit notice,
+#         or posted a review-started ack — regardless of any quoted earlier finding language.
 #      2. The specific "actionable comments posted: 0" and "no actionable comments were
 #         generated" checks MUST precede the general "actionable comments posted" finding
 #         check — otherwise the general pattern swallows clean CR summaries as findings.
@@ -280,6 +281,8 @@ if [[ -n "$SINCE" ]]; then
       elif test("<!--\\s*<review_comment_addressed>\\s*-->"; "") then {class: "acknowledgment", reason: "addressed marker"}
       elif test("actionable comments posted:\\s*0\\b"; "i") then {class: "acknowledgment", reason: "CR reports zero actionable"}
       elif test("no actionable comments were generated"; "i") then {class: "acknowledgment", reason: "CR no actionable comments generated"}
+      elif test("rate limit exceeded"; "i") then {class: "acknowledgment", reason: "rate limit notice"}
+      elif test("full review triggered"; "i") then {class: "acknowledgment", reason: "review-started ack"}
       elif test("\\b(critical|major|minor|nitpick|p[0-2])\\b"; "i") then {class: "finding", reason: "severity keyword"}
       elif test("🔴|🟠|🟡"; "") then {class: "finding", reason: "severity badge"}
       elif test("actionable comments posted"; "i") then {class: "finding", reason: "actionable phrase"}
