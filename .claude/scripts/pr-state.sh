@@ -257,12 +257,12 @@ CONVO=$(run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per
 #    in sync with the regex branches below.
 #
 #    Branch ordering in classify is deliberate — do NOT reorder without reading this:
-#      1. Explicit-resolution overrides (addressed marker, "actionable comments posted: 0")
-#         are checked FIRST. They mean CR has marked the thread resolved regardless of
-#         any quoted earlier finding language still in the body.
-#      2. The specific "actionable comments posted: 0" check MUST precede the general
-#         "actionable comments posted" finding check — otherwise the general pattern
-#         swallows the zero case and a clean CR summary gets misclassified as a finding.
+#      1. Explicit-resolution overrides (addressed marker, "actionable comments posted: 0",
+#         "no actionable comments were generated") are checked FIRST. They mean CR has
+#         marked the thread resolved regardless of any quoted earlier finding language.
+#      2. The specific "actionable comments posted: 0" and "no actionable comments were
+#         generated" checks MUST precede the general "actionable comments posted" finding
+#         check — otherwise the general pattern swallows clean CR summaries as findings.
 #      3. Finding patterns (severity/badges/phrases/suggestions) come next.
 #      4. Weak-ack fallback (lgtm variants) last, so it can't hide a real finding.
 #      5. Default is finding — under-classifying is the failure mode this skill prevents.
@@ -279,6 +279,7 @@ if [[ -n "$SINCE" ]]; then
       if . == null or . == "" then {class: "acknowledgment", reason: "empty body"}
       elif test("<!--\\s*<review_comment_addressed>\\s*-->"; "") then {class: "acknowledgment", reason: "addressed marker"}
       elif test("actionable comments posted:\\s*0\\b"; "i") then {class: "acknowledgment", reason: "CR reports zero actionable"}
+      elif test("no actionable comments were generated"; "i") then {class: "acknowledgment", reason: "CR no actionable comments generated"}
       elif test("\\b(critical|major|minor|nitpick|p[0-2])\\b"; "i") then {class: "finding", reason: "severity keyword"}
       elif test("🔴|🟠|🟡"; "") then {class: "finding", reason: "severity badge"}
       elif test("actionable comments posted"; "i") then {class: "finding", reason: "actionable phrase"}
