@@ -12,6 +12,8 @@ Analyze one or more GitHub issues, classify complexity, and produce a copy-paste
 
 **MANDATORY OUTPUT FORMAT:** Every per-issue prompt block MUST open and close with `~~~` tilde fences. NEVER use backtick fences as the outer prompt-block delimiter.
 
+**Per-block model label (mandatory):** The first content inside each tilde-fenced block (immediately after the opening `~~~`) MUST be a single line: `**Model:** {MODEL} — {REASON}` where `{MODEL}` is the model string for **that issue's** `issue_tier` (from Step 5 — not the batch tier), and `{REASON}` is a concise task-type phrase of **at most 10 words** derived from that issue's signals (dominant drivers such as rules/CLAUDE.md, orchestration, file count, AC count, skills, dependencies, or scope keywords). The label must be **inside** the tilde fence so a pasted block is self-explanatory without surrounding prose.
+
 ## Step 0: Parse Arguments and Detect Context
 
 Parse `$ARGUMENTS` as space-separated issue references. Strip `#` prefixes to get bare issue numbers.
@@ -162,7 +164,7 @@ When `PM_AUTO_DETECT=true`, partition the classified issues into two groups usin
 | `file_count` | 0–1 |
 | `ac_count` | ≤ 3 |
 
-| `dependency_count` | 0 (count only dependencies referencing or referenced by this specific issue, not the batch total) |
+| `dependency_count_per_issue` | 0 (count only dependencies referencing or referenced by this specific issue, not the batch total) |
 
 | `touches_rules` | `false` |
 | `touches_claude_md` | `false` |
@@ -195,7 +197,7 @@ When `PM_AUTO_DETECT=true` and Step 5.5 produced a non-empty subagent-eligible g
 
 If all issues are subagent-eligible, skip the Tier Recommendation and prompt blocks entirely — only output the Subagent Candidates section. If no issues are subagent-eligible (or `PM_AUTO_DETECT` is not `true`), skip the Subagent Candidates section entirely.
 
-For single-issue input, there is one prompt block. For batch input, there are multiple prompt blocks, each independently copyable (i.e., self-contained with all context; this does not imply each block has its own tier). All blocks in a batch share the batch-level tier, so an individually Light issue's block may include Heavy-tier checkpoints when the batch tier is Heavy. **Batch tier is computed from thread-prompt issues only** — subagent candidates do not influence the batch tier.
+For single-issue input, there is one prompt block. For batch input, there are multiple prompt blocks, each independently copyable (i.e., self-contained with all context). **Per-issue `issue_tier`** drives the **Model** line at the top of that issue's block (each block can differ in a batch). **Batch tier** (from thread-prompt issues only) still drives the global **Tier Recommendation** prose and whether **Protocol Checkpoints** appear inside each block — when the batch tier is Heavy, include Heavy checkpoints in every thread-prompt block even if that issue's `issue_tier` is Light. **Batch tier is computed from thread-prompt issues only** — subagent candidates do not influence the batch tier.
 
 **Fence nesting rule:** MUST use tilde fences (`~~~`) for all outer prompt blocks. Do NOT use backtick fences as outer delimiters. Inner code examples (bash commands, SQL, file paths, etc.) may use the standard three backtick characters because a `~~~`-delimited outer block is not closed by inner backticks; this keeps each full prompt block copyable as one unit in renderers that mishandle nested backtick fences.
 
@@ -229,9 +231,17 @@ Rationale: {1-line explanation of why this tier was selected, citing the dominan
 
 **OUTPUT MUST USE `~~~` FENCES, NOT BACKTICKS.** The opening and closing lines of every per-issue prompt block must be exactly `~~~`.
 
+**Map tier to `{MODEL}` string** (same Heavy / Standard / Light → model mapping for both the batch **Tier Recommendation** line and each per-issue `**Model:**` line — use **batch tier** for Tier Recommendation and **per-issue `issue_tier`** for each block):
+- **Heavy** → `Opus 4.7 (1M context)`
+- **Standard** → `Opus 4.7`
+- **Light** → `Sonnet 4.6`
+
+**`{REASON}` construction:** Choose a short phrase (≤10 words) that names the main complexity driver for **this issue alone** — e.g. touches `.claude/rules`, touches `CLAUDE.md`, orchestration keywords, dependency web, many files from the CR plan, high `ac_count`, skill paths, multi-file feature work, or Light-scope keywords. Do not copy the batch Tier Recommendation rationale into every block when reasons differ per issue.
+
 Then, for each issue, output a self-contained prompt block. Use tilde fences (`~~~`, shown here as the outer boundary):
 
 ~~~
+**Model:** Opus 4.7 — skill change with many acceptance checks
 ### Issue #{NUMBER}: {TITLE}
 
 **Acceptance Criteria:**
@@ -348,6 +358,7 @@ For an issue with `touches_skill=true` and `ac_count=4`, the skill emits the Tie
 The prompt block that follows:
 
 ~~~
+**Model:** Opus 4.7 — skill file with multiple acceptance criteria
 ### Issue #110: {Title}
 
 **Acceptance Criteria:**
