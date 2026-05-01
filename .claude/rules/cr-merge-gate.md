@@ -107,7 +107,8 @@ Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses
 >
 > Skipping this step is a **blocking failure** — the user should never see unchecked AC boxes when asked about merge.
 
-## Step 3 — Ask the user about merging
+## Step 3 — Confirm merge intent with the user
 
-- Ask the user: "Reviews are clean, all AC verified and checked off. Want me to squash and merge, or do you want to review the diff yourself first?"
+**Default:** ask squash-merge vs review. **`/wrap` / `/merge`:** after Steps 1–2, `gh pr merge --squash` with no extra prompt; overrides this step and `CLAUDE.md` for that scope (see skills).
+
 - Always use **squash and merge** (never regular merge or rebase)

@@ -151,6 +151,8 @@ gh api "repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID}" --jq '.output.summary'
 
 ### Step 2.4: Squash merge
 
+**Merge authorization:** `/wrap` invocation authorizes merge. After blockers clear (Phase 1 + Steps 2.1–2.2), run `gh pr merge --squash` with no merge prompt — overrides `CLAUDE.md` "PR MERGE AUTHORIZATION" and `cr-merge-gate.md` Step 3 **for `/wrap` only**; real blockers above still stop the flow.
+
 ```bash
 gh pr merge --squash
 ```
