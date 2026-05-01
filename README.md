@@ -13,6 +13,7 @@ A reusable `CLAUDE.md` configuration that teaches [Claude Code](https://docs.ant
 - [Config Files](#config-files)
 - [GitHub Actions](#github-actions)
 - [Architecture](#architecture)
+- [Documentation map](#documentation-map)
 - [Per-Project Override](#per-project-override)
 - [FAQ](#faq)
 - [Troubleshooting](#troubleshooting)
@@ -270,6 +271,29 @@ See `.claude/scripts/README.md` for detailed contracts, arguments, and exit code
 The `session-start-sync.sh` hook keeps the worktree in sync with `origin/main` at the start of each session. New hooks added to `global-settings.json` are auto-registered without re-running setup.
 
 For the full architecture reference — symlink topology, hook lifecycle, session lifecycle, multi-agent orchestration, review loop flowcharts, and design decisions — see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
+Mermaid diagram stubs (skills worktree, review pipeline, hook sequence) live under [.claude/reference/diagrams/](.claude/reference/diagrams/) and are filled in alongside doc updates.
+
+---
+
+## Documentation map
+
+Long-form material is split so **rules + `CLAUDE.md` stay token-efficient** (see the word-budget section in `CLAUDE.md`). Use this table to find the right doc.
+
+| Path | Audience | Auto-loaded? |
+|------|----------|----------------|
+| [README.md](README.md) (this file) | New users, operators | No |
+| [SETUP.md](SETUP.md) | Installers, LLM-guided setup | No |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Anyone debugging symlinks, hooks, worktrees | No |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contributors | No |
+| [CLAUDE.md](CLAUDE.md) | Every Claude Code session (global symlink) | **Yes** (with project `CLAUDE.md` taking precedence when present) |
+| [.claude/rules/](.claude/rules/) | Session workflows | **Yes** — each `*.md` alongside `CLAUDE.md` |
+| [.claude/skills/](.claude/skills/) | Slash-command procedures | On skill invocation |
+| [.claude/agents/](.claude/agents/) | Subagent definitions | On Agent tool spawn |
+| [.claude/reference/](.claude/reference/) | Schemas, long `gh` recipes, audits | **No** — on-demand only |
+| [.claude/scripts/README.md](.claude/scripts/README.md) | Script contracts | No |
+
+**Audits and research** (reference, not rules): [ai-review-tool-audit-2026-04.md](.claude/reference/ai-review-tool-audit-2026-04.md), [repo-audit-2026-05.md](.claude/reference/repo-audit-2026-05.md), [graphite-stacked-prs-research-2026-05.md](.claude/reference/graphite-stacked-prs-research-2026-05.md).
 
 ---
 
