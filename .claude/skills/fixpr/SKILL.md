@@ -229,7 +229,7 @@ HANDOFF_JSON="${HANDOFF_JSON:-$HOME/.claude/handoffs/pr-${PR_NUMBER}-handoff.jso
 # mkdir -p "$(dirname "$HANDOFF_JSON")"  # if the file may not exist yet
 ```
 
-Run dismissal (idempotent — already-dismissed reviews are skipped with a log line, not a hard failure):
+Run dismissal (idempotent where PUT succeeds or review already **DISMISSED**; genuine dismissal failures cause **exit 4**). Handoff: append **only** when `--handoff-file` exists and parses as JSON; missing path logs a warn and skips append (caller creates full handoff); invalid JSON exits **4**.
 
 ```bash
 if [[ "${DID_PUSH:-0}" -eq 1 ]]; then
