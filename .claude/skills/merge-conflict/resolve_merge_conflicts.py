@@ -49,13 +49,7 @@ class FileResult:
 def _lines(s: str) -> list[str]:
     if not s:
         return []
-    result = s.splitlines()
-    # splitlines() treats a trailing newline as a terminator and omits the
-    # resulting empty element.  Restore it so that a trailing blank line in a
-    # hunk body is not silently dropped during resolution.
-    if s.endswith(("\n", "\r")):
-        result.append("")
-    return result
+    return s.splitlines()
 
 
 def _non_blank_lines(s: str) -> list[str]:
@@ -64,6 +58,14 @@ def _non_blank_lines(s: str) -> list[str]:
 
 def _rstrip_lines(s: str) -> str:
     return "\n".join(ln.rstrip() for ln in _lines(s))
+
+
+def _normalize_hunk(s: str) -> str:
+    """Rstrip each line; preserve a trailing blank line if the input ends with a newline."""
+    result = "\n".join(ln.rstrip() for ln in s.splitlines())
+    if s.endswith(("\n", "\r\n")) and result:
+        result += "\n"
+    return result
 
 
 def _detect_newline(text: str) -> str:
@@ -107,17 +109,17 @@ def classify_and_resolve(ours: str, theirs: str) -> tuple[str, str | None, str]:
     t_nb = _non_blank_lines(theirs)
 
     if _rstrip_lines(ours) == _rstrip_lines(theirs):
-        return "simple", _rstrip_lines(ours), ""
+        return "simple", _normalize_hunk(theirs), ""
 
     if o_nb == t_nb:
         # Identical non-blank line sequence; preserve blank-line structure from theirs
-        return "simple", _rstrip_lines(theirs), ""
+        return "simple", _normalize_hunk(theirs), ""
 
     if len(o_nb) == len(t_nb) and all(
         a.rstrip() == b.rstrip() for a, b in zip(o_nb, t_nb)
     ):
         # Per-line trailing whitespace only (non-blank lines align in order)
-        return "simple", _rstrip_lines(theirs), ""
+        return "simple", _normalize_hunk(theirs), ""
 
     o_empty = not o_nb
     t_empty = not t_nb
@@ -210,7 +212,7 @@ def resolve_file(path: Path, text: str) -> FileResult:
         out_parts.append(lines[line_idx])
         line_idx += 1
 
-    had_complex = any(c == "complex" for _, c, _ in fr.hunks)
+    had_complex = any(c == "complex" for _, c, _, _ in fr.hunks)
 
     if any_simple or not had_complex:
         new_text = "\n".join(out_parts)
