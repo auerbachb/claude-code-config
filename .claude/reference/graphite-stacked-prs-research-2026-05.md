@@ -34,7 +34,8 @@ The CodeRabbit hourly rate-limit budget (8 reviews/hour) is the binding constrai
 **Budget:** `CR_HOURLY_BUDGET=8` per `.claude/scripts/cr-review-hourly.sh:49` — rolling 3600s window. Each `git push` to an open PR (initial submit, fix push, or rebase force-push) consumes one slot when CR is configured to auto-review on push.
 
 **Current state (this session, 2026-05-01 17:39 UTC):**
-```
+
+```json
 {"reviews_used":8,"budget":8,"remaining":0,"exhausted":true}
 ```
 
@@ -83,7 +84,7 @@ A 3-layer stack for a feature that today ships as 1 PR consumes:
 
 **Total stacked consumption (3-layer, 1 fix per layer, sequential merge):**
 
-```
+```text
 Initial:   3 reviews
 Fix loop:  3 reviews
 Rebases:   3 reviews
@@ -170,7 +171,7 @@ The asymmetry kills the math: smaller PRs save *human* review time but cost *rev
 
 Tested in `/tmp/gt-sandbox-test` (init → 2-layer stack → log → cleanup):
 
-```
+```bash
 $ gt init --trunk main
 Welcome to Graphite!
 Trunk set to main
@@ -309,13 +310,13 @@ If we adopt stacked PRs anyway (against this report's recommendation), the crite
 
 ### 6.2 Soft issues (would need attention but aren't blockers)
 
-5. **Handoff file schema.** `~/.claude/handoffs/pr-{N}-handoff.json` is per-PR; a stack needs cross-PR linkage (parent SHA, sibling state). Not a blocker — could add `stack: { parent_pr, child_pr }` fields without breaking existing clients (per `feedback_*_handoff_files.md` forward-compat rules).
+1. **Handoff file schema.** `~/.claude/handoffs/pr-{N}-handoff.json` is per-PR; a stack needs cross-PR linkage (parent SHA, sibling state). Not a blocker — could add `stack: { parent_pr, child_pr }` fields without breaking existing clients (per `feedback_*_handoff_files.md` forward-compat rules).
 
-6. **Phase orchestration parallelism.** `phase-protocols.md` is sequential per PR; concurrent layer-N Phase A + layer-N-1 Phase B works but isn't tested. Could lead to handoff race conditions.
+2. **Phase orchestration parallelism.** `phase-protocols.md` is sequential per PR; concurrent layer-N Phase A + layer-N-1 Phase B works but isn't tested. Could lead to handoff race conditions.
 
-7. **`merge-gate.sh` per-layer semantics.** Currently treats single PR; for stacks needs to gate on whole-stack health (any child blocking blocks the parent's merge readiness, since merging parent invalidates children's reviews).
+3. **`merge-gate.sh` per-layer semantics.** Currently treats single PR; for stacks needs to gate on whole-stack health (any child blocking blocks the parent's merge readiness, since merging parent invalidates children's reviews).
 
-8. **`stale-worktree-warn.sh` hook.** Compares branch name to task issue number; would warn on every layer of an `issue-418-layer-2` style stack. Minor adjustment.
+4. **`stale-worktree-warn.sh` hook.** Compares branch name to task issue number; would warn on every layer of an `issue-418-layer-2` style stack. Minor adjustment.
 
 ### 6.3 Not show-stoppers
 
