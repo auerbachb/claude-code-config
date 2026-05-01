@@ -95,6 +95,11 @@
             "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/stale-worktree-warn.sh",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/issue-prefix-nudge.sh",
+            "timeout": 5
           }
         ]
       }

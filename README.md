@@ -181,7 +181,7 @@ Rule files in `.claude/rules/` auto-load alongside `CLAUDE.md` and define the de
 
 ## Hook Scripts
 
-Twelve hook scripts and hook utilities support Claude Code sessions:
+Thirteen hook scripts and hook utilities support Claude Code sessions:
 
 | Script | Event | Purpose |
 |--------|-------|---------|
@@ -190,6 +190,7 @@ Twelve hook scripts and hook utilities support Claude Code sessions:
 | `worktree-guard.sh` | PreToolUse (Write/Edit/NotebookEdit) | Blocks file edits in `claude-code-config` repo when root is on `main` |
 | `env-guard.py` | PreToolUse (Write/Edit/MultiEdit/NotebookEdit/Bash) | Blocks edits and shell writes to `.env` files that may contain secrets |
 | `timestamp-injector.sh` | UserPromptSubmit | Injects real system-clock Eastern timestamp context to prevent hallucinated dates |
+| `issue-prefix-nudge.sh` | UserPromptSubmit | On the first user message of a session only, nudges when the prompt lacks a leading `[#N]` issue prefix (see CLAUDE.md) |
 | `silence-detector.sh` | PostToolUse (all) | Warns if agent has been silent >5 minutes |
 | `silence-detector-ack.sh` | Stop | Resets the silence timer after each response |
 | `trust-flag-repair.sh` | Stop | Repairs trust flags in `~/.claude.json` for all projects |

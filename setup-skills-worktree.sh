@@ -213,6 +213,7 @@ HOOKS_MANIFEST=(
   $'PostToolUse\t\tsilence-detector.sh\t5'
   $'UserPromptSubmit\t\ttimestamp-injector.sh\t5'
   $'UserPromptSubmit\t\tstale-worktree-warn.sh\t30'
+  $'UserPromptSubmit\t\tissue-prefix-nudge.sh\t5'
 )
 
 SETTINGS_FILE="$HOME/.claude/settings.json"
