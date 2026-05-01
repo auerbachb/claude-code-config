@@ -24,7 +24,8 @@
 # Reviewer resolution order (unless --reviewer is passed):
 #   1. ~/.claude/session-state.json  .prs["<N>"].reviewer  ("cr"/"bugbot"/"greptile"/"g")
 #   2. Live history scan — greptile-apps[bot] present → greptile;
-#      cursor[bot] present AND coderabbitai[bot] absent → bugbot; else cr.
+#      cursor[bot] present AND coderabbitai[bot] absent AND codeant-ai[bot] absent
+#      → bugbot; else cr (CodeAnt-only reviews use the CR path per #408).
 #      (BugBot auto-triggers on every push, so both bots are present on normal
 #      CR-owned PRs. The absence check ensures the live scan defaults to cr;
 #      CR→BugBot escalation is tracked via session-state, not the live scan.)
@@ -302,10 +303,12 @@ resolve_reviewer() {
   if echo "$authors" | grep -q '^greptile-apps\[bot\]$'; then
     echo "greptile"; return
   fi
-  # Only return bugbot when cursor[bot] is the sole reviewer — if coderabbitai[bot]
-  # is also present, CR is the primary reviewer (BugBot auto-triggers on every push).
+  # Only return bugbot when cursor[bot] is the sole AI reviewer — if coderabbitai[bot]
+  # or codeant-ai[bot] is present, use the CR path (BugBot auto-triggers on every push).
   # CR→BugBot escalation is tracked via session-state, not the live scan.
-  if echo "$authors" | grep -q '^cursor\[bot\]$' && ! echo "$authors" | grep -q '^coderabbitai\[bot\]$'; then
+  if echo "$authors" | grep -q '^cursor\[bot\]$' \
+    && ! echo "$authors" | grep -q '^coderabbitai\[bot\]$' \
+    && ! echo "$authors" | grep -q '^codeant-ai\[bot\]$'; then
     echo "bugbot"; return
   fi
   echo "cr"
