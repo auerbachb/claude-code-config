@@ -34,8 +34,8 @@
 #   2. Live history — collect distinct `user.login` values across the three
 #      endpoints (pulls/reviews, pulls/comments, issues/comments, paginated):
 #        • greptile-apps[bot] present → greptile
-#        • cursor[bot] present AND coderabbitai[bot] absent → bugbot
-#        • coderabbitai[bot] present → cr
+#        • cursor[bot] present AND coderabbitai[bot] absent AND codeant-ai[bot] absent → bugbot
+#        • coderabbitai[bot] or codeant-ai[bot] present → cr
 #        • else → unknown (exit 1)
 #      Matches the resolve_reviewer() logic in merge-gate.sh.
 #
@@ -353,19 +353,21 @@ done
 AUTHORS="$(sort -u "$AUTHORS_TMP")"
 
 # Detection priority matches merge-gate.sh resolve_reviewer(): greptile wins
-# over anything else (sticky); bugbot only when cursor is the sole reviewer
-# (CR+cursor means CR is primary — BugBot auto-triggers on every push);
-# otherwise cr if CR has any activity.
+# over anything else (sticky); bugbot only when cursor is the sole AI reviewer
+# among CR-path bots (CodeAnt without CodeRabbit still uses the cr path — #408);
+# otherwise cr if CodeRabbit or CodeAnt has activity.
 if printf '%s\n' "$AUTHORS" | grep -q '^greptile-apps\[bot\]$'; then
   printf '%s\n' "greptile"
   exit 0
 fi
 if printf '%s\n' "$AUTHORS" | grep -q '^cursor\[bot\]$' \
-   && ! printf '%s\n' "$AUTHORS" | grep -q '^coderabbitai\[bot\]$'; then
+   && ! printf '%s\n' "$AUTHORS" | grep -q '^coderabbitai\[bot\]$' \
+   && ! printf '%s\n' "$AUTHORS" | grep -q '^codeant-ai\[bot\]$'; then
   printf '%s\n' "bugbot"
   exit 0
 fi
-if printf '%s\n' "$AUTHORS" | grep -q '^coderabbitai\[bot\]$'; then
+if printf '%s\n' "$AUTHORS" | grep -q '^coderabbitai\[bot\]$' \
+   || printf '%s\n' "$AUTHORS" | grep -q '^codeant-ai\[bot\]$'; then
   printf '%s\n' "cr"
   exit 0
 fi
