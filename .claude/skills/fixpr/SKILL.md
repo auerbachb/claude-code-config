@@ -445,7 +445,7 @@ jq -r '
    - HTML marker `<!-- <review_comment_addressed> -->` → `acknowledgment`
    - `actionable comments posted: 0` → `acknowledgment`. This specific zero-count pattern MUST be checked before the general `actionable comments posted` pattern below — otherwise the general finding pattern would swallow the zero case.
    - `no actionable comments were generated` → `acknowledgment`
-   - `rate limit exceeded` → `acknowledgment`
+   - `rate limit exceeded` or `rate-limited by coderabbit` → `acknowledgment`
    - `full review triggered` → `acknowledgment`
 2. **Finding patterns**:
    - Severity keywords `\b(critical|major|minor|nitpick|p[0-2])\b` or badges `🔴|🟠|🟡`
