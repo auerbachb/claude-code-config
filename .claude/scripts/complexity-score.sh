@@ -17,8 +17,6 @@
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
 help() {
   sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
 }
@@ -54,7 +52,7 @@ if ! command -v gh >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
   exit 4
 fi
 
-FILE_WEIGHT="${COMPLEXITY_FILE_WEIGHT:-5}"
+FILE_WEIGHT=5
 
 # Optional: read FILE_WEIGHT from repo .claude/pm-config.md (Complexity triggers section)
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -73,6 +71,11 @@ if [[ -n "$PM_CFG" ]]; then
       fi
     fi
   fi
+fi
+
+# Env wins when set (explicit override for CI / one-off tuning).
+if [[ "${COMPLEXITY_FILE_WEIGHT+set}" == "set" ]] && [[ "${COMPLEXITY_FILE_WEIGHT}" =~ ^[1-9][0-9]*$ ]]; then
+  FILE_WEIGHT="$COMPLEXITY_FILE_WEIGHT"
 fi
 
 STDERR_TMP="$(mktemp)"

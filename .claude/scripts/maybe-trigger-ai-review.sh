@@ -8,11 +8,13 @@
 # Optional 4th: /pr-review-help (see pm-config.md).
 #
 # Config: `.claude/pm-config.md` section **Complexity triggers** (see template in repo).
+# Env vars COMPLEXITY_THRESHOLD_SCORE, COMPLEXITY_FIRST_CR_ROUND, COMPLEXITY_CADENCE_ROUNDS
+# override file values when set.
 #
 # Usage:
 #   maybe-trigger-ai-review.sh <pr_number> [--dry-run] [--json]
 #
-# Exit: 0 always on successful evaluation (posted or skipped); 2 usage; 3 PR; 4 error
+# Exit: 0 skipped/dry-run/success; 2 usage; 3 PR; 4 error (incl. session-state missing); 5 gh post failed after persistence
 
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
@@ -21,9 +23,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATE_HELPER="${SCRIPT_DIR}/session-state.sh"
 CYCLE_SCRIPT="${SCRIPT_DIR}/cycle-count.sh"
 COMPLEXITY_SCRIPT="${SCRIPT_DIR}/complexity-score.sh"
+STATE_FILE="${HOME}/.claude/session-state.json"
 
 help() {
-  sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 PR_NUM=""
@@ -62,9 +65,9 @@ for need in gh jq; do
 done
 
 # Defaults (calibrated on ≥10 merged PRs in claude-code-config; ~53% would trigger at threshold 100)
-THRESHOLD_SCORE="${COMPLEXITY_THRESHOLD_SCORE:-100}"
-FIRST_CR_ROUND="${COMPLEXITY_FIRST_CR_ROUND:-3}"
-CADENCE_ROUNDS="${COMPLEXITY_CADENCE_ROUNDS:-2}"
+THRESHOLD_SCORE=100
+FIRST_CR_ROUND=3
+CADENCE_ROUNDS=2
 ENABLE_PR_REVIEW_HELP=0
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -98,6 +101,17 @@ if [[ -n "$PM_CFG" ]]; then
   fi
 fi
 
+# Env overrides repo file when set (explicit tuning / CI).
+if [[ "${COMPLEXITY_THRESHOLD_SCORE+set}" == "set" ]] && [[ "${COMPLEXITY_THRESHOLD_SCORE}" =~ ^[0-9]+$ ]]; then
+  THRESHOLD_SCORE="$COMPLEXITY_THRESHOLD_SCORE"
+fi
+if [[ "${COMPLEXITY_FIRST_CR_ROUND+set}" == "set" ]] && [[ "${COMPLEXITY_FIRST_CR_ROUND}" =~ ^[0-9]+$ ]]; then
+  FIRST_CR_ROUND="$COMPLEXITY_FIRST_CR_ROUND"
+fi
+if [[ "${COMPLEXITY_CADENCE_ROUNDS+set}" == "set" ]] && [[ "${COMPLEXITY_CADENCE_ROUNDS}" =~ ^[0-9]+$ ]]; then
+  CADENCE_ROUNDS="$COMPLEXITY_CADENCE_ROUNDS"
+fi
+
 [[ ! -x "$CYCLE_SCRIPT" ]] && CYCLE_SCRIPT="${SCRIPT_DIR}/cycle-count.sh"
 [[ ! -x "$COMPLEXITY_SCRIPT" ]] && COMPLEXITY_SCRIPT="${SCRIPT_DIR}/complexity-score.sh"
 
@@ -112,10 +126,27 @@ HEAD_SHA="$(gh pr view "$PR_NUM" --json headRefOid -q .headRefOid 2>/dev/null)" 
 PR_KEY="$PR_NUM"
 LAST_FIRED_ROUND=""
 LAST_SHA=""
-if [[ -f "$HOME/.claude/session-state.json" ]]; then
-  LAST_FIRED_ROUND="$(jq -r --arg k "$PR_KEY" '.prs[$k].ai_review_trigger_last_cr_round // empty' "$HOME/.claude/session-state.json" 2>/dev/null || true)"
-  LAST_SHA="$(jq -r --arg k "$PR_KEY" '.prs[$k].ai_review_trigger_head_sha // empty' "$HOME/.claude/session-state.json" 2>/dev/null || true)"
+if [[ -f "$STATE_FILE" ]]; then
+  LAST_FIRED_ROUND="$(jq -r --arg k "$PR_KEY" '.prs[$k].ai_review_trigger_last_cr_round // empty' "$STATE_FILE" 2>/dev/null || true)"
+  LAST_SHA="$(jq -r --arg k "$PR_KEY" '.prs[$k].ai_review_trigger_head_sha // empty' "$STATE_FILE" 2>/dev/null || true)"
 fi
+
+# Incomplete multi-step post from a prior run (resume without re-firing completed mentions).
+steps_incomplete() {
+  [[ ! -f "$STATE_FILE" ]] && return 1
+  jq -e --arg k "$PR_KEY" --arg h "$HEAD_SHA" --argjson r "$CR_ROUNDS" --argjson need_help "$ENABLE_PR_REVIEW_HELP" '
+    .prs[$k].ai_review_trigger_steps? as $st
+    | $st != null
+      and ($st.head_sha == $h)
+      and ($st.cr_rounds == $r)
+      and (
+        ($st.codeant | not)
+        or ($st.cursor | not)
+        or ($st.graphite | not)
+        or ($need_help == 1 and ($st.pr_help | not))
+      )
+  ' "$STATE_FILE" >/dev/null 2>&1
+}
 
 SKIP_REASON=""
 if (( CR_ROUNDS < 2 )); then
@@ -136,9 +167,9 @@ elif [[ -n "$LAST_FIRED_ROUND" && "$LAST_FIRED_ROUND" =~ ^[0-9]+$ ]]; then
   if (( CR_ROUNDS < LAST_FIRED_ROUND )); then
     SKIP_REASON="state_behind_current_rounds"
   elif (( CR_ROUNDS == LAST_FIRED_ROUND )); then
-    if [[ "$HEAD_SHA" == "$LAST_SHA" ]]; then
+    if [[ "$HEAD_SHA" == "$LAST_SHA" ]] && ! steps_incomplete; then
       SKIP_REASON="duplicate_poll_tick"
-    else
+    elif [[ "$HEAD_SHA" != "$LAST_SHA" ]]; then
       SKIP_REASON="pending_new_cr_round_after_push"
     fi
   fi
@@ -163,15 +194,6 @@ if [[ -n "$SKIP_REASON" ]]; then
   fi
   exit 0
 fi
-
-post_comments() {
-  gh pr comment "$PR_NUM" --body "@codeant-ai review"
-  gh pr comment "$PR_NUM" --body "@cursor review"
-  gh pr comment "$PR_NUM" --body "@graphite-app re-review"
-  if (( ENABLE_PR_REVIEW_HELP )); then
-    gh pr comment "$PR_NUM" --body "/pr-review-help"
-  fi
-}
 
 if (( DRY_RUN )); then
   if (( JSON_OUT )); then
@@ -202,15 +224,74 @@ if (( DRY_RUN )); then
   exit 0
 fi
 
-post_comments
+if [[ ! -x "$STATE_HELPER" ]]; then
+  echo "maybe-trigger-ai-review.sh: session-state.sh missing or not executable: $STATE_HELPER (required to dedupe triggers)" >&2
+  exit 4
+fi
 
-# Persist trigger so we do not re-fire on every 60s poll until rounds advance
+# Persist step tracking before any gh comment (fail-closed); resume partial progress on retry.
+INIT_STEPS="$(jq -cn \
+  --arg h "$HEAD_SHA" \
+  --argjson r "$CR_ROUNDS" \
+  --argjson need_help "$ENABLE_PR_REVIEW_HELP" \
+  '{
+    head_sha: $h,
+    cr_rounds: $r,
+    needs_pr_help: ($need_help == 1),
+    codeant: false,
+    cursor: false,
+    graphite: false,
+    pr_help: false
+  }')"
+
+if [[ -f "$STATE_FILE" ]]; then
+  EXISTING="$(jq -c --arg k "$PR_KEY" '.prs[$k].ai_review_trigger_steps // empty' "$STATE_FILE" 2>/dev/null || true)"
+  if [[ -n "$EXISTING" && "$EXISTING" != "null" && "$EXISTING" != "" ]]; then
+    MATCH="$(jq -n --argjson ex "$EXISTING" --arg h "$HEAD_SHA" --argjson r "$CR_ROUNDS" '$ex | select(.head_sha == $h and .cr_rounds == $r)' 2>/dev/null || true)"
+    if [[ -n "$MATCH" && "$MATCH" != "null" ]]; then
+      INIT_STEPS="$(jq -cn --argjson ex "$EXISTING" --argjson need_help "$ENABLE_PR_REVIEW_HELP" '$ex | .needs_pr_help = ($need_help == 1)')"
+    fi
+  fi
+fi
+
+if ! "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps=$INIT_STEPS"; then
+  echo "maybe-trigger-ai-review.sh: failed to persist trigger step state — aborting without posting comments" >&2
+  exit 4
+fi
+
+post_one() {
+  local step_key="$1"
+  local body="$2"
+  local posted
+  posted="$(jq -r --arg k "$PR_KEY" --arg s "$step_key" '.prs[$k].ai_review_trigger_steps[$s] // empty' "$STATE_FILE" 2>/dev/null || true)"
+  if [[ "$posted" == "true" ]]; then
+    return 0
+  fi
+  gh pr comment "$PR_NUM" --body "$body" || return 1
+  local merged
+  merged="$(jq -cn --argjson cur "$INIT_STEPS" --arg s "$step_key" '$cur | .[$s] = true')"
+  INIT_STEPS="$merged"
+  if ! "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps=$merged"; then
+    echo "maybe-trigger-ai-review.sh: gh succeeded but session-state update failed — manual dedupe check may be needed" >&2
+    exit 4
+  fi
+}
+
+if ! post_one codeant "@codeant-ai review"; then echo "maybe-trigger-ai-review.sh: failed posting @codeant-ai review" >&2; exit 5; fi
+if ! post_one cursor "@cursor review"; then echo "maybe-trigger-ai-review.sh: failed posting @cursor review" >&2; exit 5; fi
+if ! post_one graphite "@graphite-app re-review"; then echo "maybe-trigger-ai-review.sh: failed posting @graphite-app re-review" >&2; exit 5; fi
+if (( ENABLE_PR_REVIEW_HELP )); then
+  if ! post_one pr_help "/pr-review-help"; then echo "maybe-trigger-ai-review.sh: failed posting /pr-review-help" >&2; exit 5; fi
+fi
+
 NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-if [[ -x "$STATE_HELPER" ]]; then
-  "$STATE_HELPER" \
-    --set ".prs[\"${PR_KEY}\"].ai_review_trigger_last_cr_round=$CR_ROUNDS" \
-    --set ".prs[\"${PR_KEY}\"].ai_review_trigger_head_sha=$HEAD_SHA" \
-    --set ".prs[\"${PR_KEY}\"].ai_review_trigger_last_at=\"$NOW_ISO\""
+if ! "$STATE_HELPER" \
+  --set ".prs[\"${PR_KEY}\"].ai_review_trigger_last_cr_round=$CR_ROUNDS" \
+  --set ".prs[\"${PR_KEY}\"].ai_review_trigger_head_sha=$HEAD_SHA" \
+  --set ".prs[\"${PR_KEY}\"].ai_review_trigger_last_at=\"$NOW_ISO\"" \
+  --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps=null"; then
+  echo "maybe-trigger-ai-review.sh: failed to persist completion markers" >&2
+  exit 4
 fi
 
 if (( JSON_OUT )); then
