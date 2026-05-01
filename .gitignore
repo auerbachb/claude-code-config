@@ -1,5 +1,9 @@
 .DS_Store
 
+# Python
+__pycache__/
+*.py[cod]
+
 # Runtime lock files
 .claude/scheduled_tasks.lock
 .claude/scheduled_tasks.json
