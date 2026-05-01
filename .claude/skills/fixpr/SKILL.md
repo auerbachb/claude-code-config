@@ -529,9 +529,9 @@ jq -r '.merge_state | "[MERGE] mergeable=\(.mergeable), status=\(.mergeStateStat
 
 | Field | Blocking value | Action |
 |-------|---------------|--------|
-| `mergeable` | `CONFLICTING` | Rebase onto main: `git fetch origin main && git rebase origin/main`. Fix conflicts, continue, force-push. |
+| `mergeable` | `CONFLICTING` | Rebase onto main: `git fetch origin main && git rebase origin/main`. Fix conflicts (optionally run **`/merge-conflict`** — `.claude/skills/merge-conflict/SKILL.md` — to fetch main, auto-resolve *simple* hunks, stage clean files, and list *complex* hunks), continue, force-push. |
 | `mergeable` | `UNKNOWN` | GitHub still computing — note and re-run `/fixpr` later. |
-| `mergeStateStatus` | `BEHIND` | Rebase onto main: `git fetch origin main && git rebase origin/main`. If conflicts arise mid-rebase (replaying commits individually can conflict even when a three-way merge wouldn't), resolve them the same way as `CONFLICTING` above, then `git rebase --continue`. Force-push. Wait for CI to re-run before verifying merge gate. |
+| `mergeStateStatus` | `BEHIND` | Rebase onto main: `git fetch origin main && git rebase origin/main`. If conflicts arise mid-rebase (replaying commits individually can conflict even when a three-way merge wouldn't), resolve them the same way as `CONFLICTING` above (including optional **`/merge-conflict`**), then `git rebase --continue`. Force-push. Wait for CI to re-run before verifying merge gate. |
 | `mergeStateStatus` | `BLOCKED` | Required checks/reviews missing — already covered by 5c/5d. If CodeRabbit, Greptile, or CodeAnt is in CODEOWNERS and the last approval is stale/dismissed after a push, recover by triggering that bot (`@coderabbitai full review`, `@greptileai`, or `@codeant-ai review`) instead of escalating to the author. |
 | `mergeStateStatus` | `UNSTABLE` | A non-required check pending/failing — typically CR/Greptile on the new SHA. If 5d emitted `REVIEW_PENDING`, stop with that status. |
 | `reviewDecision` | `CHANGES_REQUESTED` | Changes were requested. If the requester is a bot, process findings through this skill; if a human requested changes, report it as non-automatable. |
