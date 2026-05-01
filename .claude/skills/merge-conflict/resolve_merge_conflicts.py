@@ -49,7 +49,13 @@ class FileResult:
 def _lines(s: str) -> list[str]:
     if not s:
         return []
-    return s.splitlines()
+    result = s.splitlines()
+    # splitlines() treats a trailing newline as a terminator and omits the
+    # resulting empty element.  Restore it so that a trailing blank line in a
+    # hunk body is not silently dropped during resolution.
+    if s.endswith(("\n", "\r")):
+        result.append("")
+    return result
 
 
 def _non_blank_lines(s: str) -> list[str]:
@@ -58,6 +64,11 @@ def _non_blank_lines(s: str) -> list[str]:
 
 def _rstrip_lines(s: str) -> str:
     return "\n".join(ln.rstrip() for ln in _lines(s))
+
+
+def _detect_newline(text: str) -> str:
+    """Return the line-ending convention used in *text* ('\\r\\n' or '\\n')."""
+    return "\r\n" if "\r\n" in text else "\n"
 
 
 def _has_nested_markers(chunk: str) -> bool:
@@ -166,6 +177,7 @@ def iter_conflicts(lines: list[str]) -> Iterable[ConflictHunk]:
 
 def resolve_file(path: Path, text: str) -> FileResult:
     fr = FileResult(path=str(path))
+    newline = _detect_newline(text)
     lines = text.splitlines()
     try:
         hunks = list(iter_conflicts(lines))
@@ -202,8 +214,10 @@ def resolve_file(path: Path, text: str) -> FileResult:
 
     if any_simple or not had_complex:
         new_text = "\n".join(out_parts)
-        if text.endswith("\n") and new_text and not new_text.endswith("\n"):
-            new_text += "\n"
+        if newline == "\r\n":
+            new_text = new_text.replace("\n", "\r\n")
+        if text.endswith(newline) and new_text and not new_text.endswith(newline):
+            new_text += newline
         write_repo_text(path, new_text)
         fr.wrote = True
 
@@ -220,10 +234,11 @@ def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def unmerged_paths(repo: Path) -> list[str]:
+def unmerged_paths(repo: Path) -> list[str] | None:
     p = git(["diff", "--name-only", "--diff-filter=U"], repo)
     if p.returncode != 0:
-        return []
+        print(f"ERROR: git diff --diff-filter=U failed: {p.stderr.strip()}", file=sys.stderr)
+        return None
     return [ln.strip() for ln in p.stdout.splitlines() if ln.strip()]
 
 
@@ -260,6 +275,8 @@ def main() -> int:
             print(f"WARN: git fetch origin main failed: {f.stderr.strip()}", file=sys.stderr)
 
     paths = unmerged_paths(repo)
+    if paths is None:
+        return 1
     if not paths:
         summary = {
             "unmerged_paths": [],
