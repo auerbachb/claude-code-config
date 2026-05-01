@@ -25,8 +25,10 @@
 # DATA SOURCE:
 #   .claude/data/skill-usage.json (relative to the repo root).
 #   The file is initialized automatically on first run if it does not exist.
-#   Use_counts are incremented by the skill-usage-tracker hook (see #121).
-#   Until that hook is active, all skills will show use_count == 0.
+#   The skill-usage-tracker hook (see #121, #416) updates ~/.claude/skill-usage.csv
+#   and ~/.claude/skill-usage.log; it does not maintain this JSON file. Prefer
+#   skill-usage-report.sh for log-based rollups. Until JSON is wired or manually
+#   synced, entries here may show use_count == 0.
 #
 # EXIT STATUS:
 #   0 — no removal recommendations (all clean, or only review flags)

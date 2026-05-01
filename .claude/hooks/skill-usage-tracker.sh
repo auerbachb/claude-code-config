@@ -1,22 +1,24 @@
 #!/bin/bash
 # Skill usage tracker — PostToolUse hook (matcher: Skill)
 #
-# Increments use_count and updates last_used in the live skill-usage CSV
-# whenever the Skill tool is invoked.
+# On each Skill tool invocation: appends one line to ~/.claude/skill-usage.log,
+# then increments use_count and updates last_used in the live skill-usage CSV.
 #
 # Input  (stdin) : JSON with {tool_name, tool_input, cwd, ...}
 # Output (stdout): empty JSON object (non-blocking)
 # Exit code      : always 0 — never blocks tool execution
 #
 # Storage model:
-#   - Live CSV: ~/.claude/skill-usage.csv (NEVER in the skills worktree;
-#     session-start-sync.sh does `git reset --hard`, which would wipe counters
-#     stored inside the worktree).
-#   - Seed CSV: ~/.claude/skills-worktree/.claude/skill-usage.csv — the
-#     git-tracked template, used to bootstrap the live CSV on first run.
+#   - Append-only log: ~/.claude/skill-usage.log — one tab-separated line per
+#     invocation (ISO8601 UTC, skill_name, session_id). Mirrors script-usage.log
+#     (#310); used by skill-usage-report.sh (#416). NEVER in the skills worktree.
+#   - Live CSV: ~/.claude/skill-usage.csv — aggregated counts for legacy audits.
+#   - Seed CSV: ~/.claude/skills-worktree/.claude/skill-usage.csv — git-tracked
+#     template used to bootstrap the live CSV on first run.
 #
-# Bootstrap and increment both happen inside a single locked Python
-# transaction, so concurrent first-use invocations cannot clobber each other.
+# Log line is best-effort (append may fail silently). CSV bootstrap + increment
+# run inside a single locked Python transaction so concurrent first-use
+# invocations cannot clobber each other.
 
 set -uo pipefail
 
@@ -48,6 +50,15 @@ print(skill)
 ' 2>/dev/null) || exit 0
 
 [ -z "$SKILL_NAME" ] && exit 0
+
+# Append-only telemetry log (same family as ~/.claude/script-usage.log).
+USAGE_LOG="${HOME}/.claude/skill-usage.log"
+mkdir -p "$(dirname "$USAGE_LOG")" 2>/dev/null || exit 0
+SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)
+SESSION_ID="${SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
+SESSION_ID="${SESSION_ID//[^[:alnum:]_.-]/_}"
+SESSION_ID="${SESSION_ID:-unknown}"
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$SKILL_NAME" "$SESSION_ID" >> "$USAGE_LOG" 2>/dev/null || true
 
 LIVE_CSV="${HOME}/.claude/skill-usage.csv"
 SEED_CSV="${HOME}/.claude/skills-worktree/.claude/skill-usage.csv"
