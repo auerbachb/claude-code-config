@@ -25,6 +25,8 @@ Usage: /pr-review-help #123 #456 #789
 Pass one or more PR numbers to get an executive strategic review.
 ```
 
+**Optional automated invoke (issue #362):** When `ENABLE_PR_REVIEW_HELP=1` in `.claude/pm-config.md` **Complexity triggers**, `.claude/scripts/maybe-trigger-ai-review.sh` may post a **standalone** PR comment whose body is exactly `/pr-review-help` (no PR numbers — leadership review is then invoked in session context). This is separate from manually passing `#N` arguments here.
+
 ## Step 1: Fetch Shared Repo Context (parent agent — once)
 
 Before spawning subagents, fetch shared context that all PR reviews need. This runs once in the parent agent and is passed to each subagent.

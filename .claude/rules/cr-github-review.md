@@ -37,6 +37,8 @@ Run this before the first poll tick and before any new review trigger (`@coderab
 
 Each cycle, query everything in "Polling" for every open PR owned by this session. **Re-read current HEAD SHA every cycle** so stale approvals never exit polling.
 
+**#362:** If this cycle does not require `/fixpr`, run `maybe-trigger-ai-review.sh <PR>` (`pm-config.md` **Complexity triggers**; `complexity-score.sh`; `cycle-count.sh --cr-only`; three separate `@` comments). Dedupe `session-state.json` `.prs[N].ai_review_trigger_*`.
+
 If **ANY** of the conditions below hold, invoke `/fixpr` and do NOT request a new review until `/fixpr` completes:
 
 1. New bot findings since the last poll watermark (not old unresolved threads awaiting reviewer ack)

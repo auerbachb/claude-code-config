@@ -222,7 +222,9 @@ Shared helpers in `.claude/scripts/` are used by skills, hooks, and review subag
 | `resolve-review-threads.sh` | Resolve review threads via GraphQL, with minimize fallback |
 | `gh-window.sh` | Build GitHub search date windows |
 | `cr-plan.sh` | Find or poll for CodeRabbit implementation-plan comments on issues |
-| `cycle-count.sh` | Reconstruct review/fix cycle counts for PR metrics |
+| `cycle-count.sh` | Reconstruct review/fix cycle counts for PR metrics (`--cr-only` = CodeRabbit rounds for issue #362) |
+| `complexity-score.sh` | PR complexity score for issue #362 triggers |
+| `maybe-trigger-ai-review.sh` | Issue #362: round-gated AI reviewer triggers (three separate comments) |
 | `reply-thread.sh` | Reply to CodeRabbit, BugBot, or Greptile review comments with the right fallback path |
 | `reviewer-of.sh` | Detect which reviewer currently owns a PR |
 | `hhg-state.sh` | Detect HHG state codes for domain-specific workflows |

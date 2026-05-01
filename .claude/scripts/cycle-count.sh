@@ -7,7 +7,7 @@
 # reviews therefore do not count.
 #
 # USAGE:
-#   cycle-count.sh <pr_number> [--exclude-bots]
+#   cycle-count.sh <pr_number> [--exclude-bots] [--cr-only]
 #   cycle-count.sh --help | -h
 #
 # OUTPUT:
@@ -19,6 +19,9 @@
 #                     .claude/reference/pm-data-patterns.md. Use this for
 #                     human-review metrics (e.g., PM reports). Omit to count
 #                     all reviews including bots (e.g., /merge, /wrap logging).
+#   --cr-only         Count cycles using only CodeRabbit reviews (`coderabbitai[bot]`).
+#                     Inline comments count toward actionable CR reviews only when
+#                     they attach to a CR-authored review (issue #362 round gate).
 #
 # EXIT CODES:
 #   0    OK (count printed on stdout)
@@ -56,7 +59,7 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >>
 
 print_usage() {
   cat <<'EOF'
-Usage: cycle-count.sh <pr_number> [--exclude-bots]
+Usage: cycle-count.sh <pr_number> [--exclude-bots] [--cr-only]
        cycle-count.sh --help | -h
 
 Reconstruct the review-then-fix cycle count for a PR and print it to stdout.
@@ -64,6 +67,7 @@ Reconstruct the review-then-fix cycle count for a PR and print it to stdout.
 Options:
   --exclude-bots    Exclude bot reviewers (logins ending in "[bot]" or
                     equal to "github-actions"). Default: include all reviews.
+  --cr-only         Only `coderabbitai[bot]` reviews participate (issue #362).
   -h, --help        Print this usage message.
 
 Exit codes:
@@ -77,6 +81,7 @@ EOF
 # --- arg parsing ---
 PR_NUM=""
 EXCLUDE_BOTS=0
+CR_ONLY=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -86,6 +91,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --exclude-bots)
       EXCLUDE_BOTS=1
+      shift
+      ;;
+    --cr-only)
+      CR_ONLY=1
       shift
       ;;
     --)
@@ -112,6 +121,11 @@ done
 if [[ -z "$PR_NUM" ]]; then
   echo "Error: <pr_number> is required" >&2
   print_usage >&2
+  exit 2
+fi
+
+if (( EXCLUDE_BOTS && CR_ONLY )); then
+  echo "Error: --exclude-bots and --cr-only are mutually exclusive" >&2
   exit 2
 fi
 
@@ -175,7 +189,16 @@ fi
 
 # `gh api --paginate` concatenates JSON arrays with no separator; the first
 # `jq -s` flattens them into a single array.
-if (( EXCLUDE_BOTS )); then
+if (( CR_ONLY )); then
+  REVIEWS_JSON="$(jq -s '
+    [.[][] | select(.submitted_at != null)
+           | select(.user.login == "coderabbitai[bot]")]
+    | sort_by(.submitted_at)
+  ' "$REVIEWS_RAW" 2>/dev/null)" || {
+    echo "Error: jq failed parsing reviews for PR #$PR_NUM" >&2
+    exit 4
+  }
+elif (( EXCLUDE_BOTS )); then
   REVIEWS_JSON="$(jq -s '
     [.[][] | select(.submitted_at != null)
            | select(.user.login | (endswith("[bot]") or . == "github-actions") | not)]
@@ -205,12 +228,23 @@ if ! gh api "repos/{owner}/{repo}/pulls/$PR_NUM/comments?per_page=100" --paginat
   exit 4
 fi
 
-ACTIONABLE_REVIEW_IDS="$(jq -s '
-  [.[][] | .pull_request_review_id | select(. != null)] | unique
-' "$INLINE_RAW" 2>/dev/null)" || {
-  echo "Error: jq failed parsing inline comments for PR #$PR_NUM" >&2
-  exit 4
-}
+if (( CR_ONLY )); then
+  CR_REVIEW_IDS="$(jq -c '[.[] | .id]' <<<"$REVIEWS_JSON")"
+  ACTIONABLE_REVIEW_IDS="$(jq -s --argjson rid "$CR_REVIEW_IDS" '
+    [.[][] | select(.pull_request_review_id != null) | .pull_request_review_id as $p | select(($rid | index($p)) != null) | $p]
+    | unique
+  ' "$INLINE_RAW" 2>/dev/null)" || {
+    echo "Error: jq failed parsing inline comments for PR #$PR_NUM" >&2
+    exit 4
+  }
+else
+  ACTIONABLE_REVIEW_IDS="$(jq -s '
+    [.[][] | .pull_request_review_id | select(. != null)] | unique
+  ' "$INLINE_RAW" 2>/dev/null)" || {
+    echo "Error: jq failed parsing inline comments for PR #$PR_NUM" >&2
+    exit 4
+  }
+fi
 
 # --- annotate reviews with actionable flag ---
 # Keep the full chronological review stream — every review (actionable or not)
