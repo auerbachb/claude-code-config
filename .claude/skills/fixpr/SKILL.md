@@ -1,6 +1,6 @@
 ---
 name: fixpr
-description: Single-pass PR cleanup — audit every review thread + every CI check-run, fix all issues, push once, resolve all threads via GraphQL, verify CI green. Zero uncollapsed threads and zero failing checks when done.
+description: Single-pass PR cleanup — audit every review thread + every CI check-run, fix all issues, push once, dismiss stale bot CHANGES_REQUESTED on old commits, resolve all threads via GraphQL, verify CI green. Zero uncollapsed threads and zero failing checks when done.
 ---
 
 Single-pass cleanup of the current branch's PR. After this completes:
@@ -200,6 +200,52 @@ else
   echo "[CR-HOURLY] cr-review-hourly.sh not found — skip consumption tracking"
 fi
 ```
+
+---
+
+## Step 3a: Dismiss stale bot `CHANGES_REQUESTED` reviews (Issue #426)
+
+Only run when Step 3 made a push (`DID_PUSH=1`). Runs **after** `git push` and **before** Step 3b (reviewer triggers) so GitHub does not keep `reviewDecision: CHANGES_REQUESTED` from an obsolete bot review on an older commit.
+
+Resolve the helper (same pattern as `pr-state.sh` / `cr-review-hourly.sh`):
+
+```bash
+DISMISS_STALE_SCRIPT=""
+for candidate in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/dismiss-stale-bot-changes.sh" \
+  "$HOME/.claude/scripts/dismiss-stale-bot-changes.sh" \
+  ".claude/scripts/dismiss-stale-bot-changes.sh"; do
+  if [[ -x "$candidate" ]]; then
+    DISMISS_STALE_SCRIPT="$candidate"
+    break
+  fi
+done
+```
+
+Optional handoff path (per `handoff-files.md`, one JSON file per PR):
+
+```bash
+HANDOFF_JSON="${HANDOFF_JSON:-$HOME/.claude/handoffs/pr-${PR_NUMBER}-handoff.json}"
+# mkdir -p "$(dirname "$HANDOFF_JSON")"  # if the file may not exist yet
+```
+
+Run dismissal (idempotent — already-dismissed reviews are skipped with a log line, not a hard failure):
+
+```bash
+if [[ "${DID_PUSH:-0}" -eq 1 ]]; then
+  if [[ -n "$DISMISS_STALE_SCRIPT" ]]; then
+    if [[ -n "${HANDOFF_JSON:-}" ]]; then
+      "$DISMISS_STALE_SCRIPT" "$PR_NUMBER" --handoff-file "$HANDOFF_JSON"
+    else
+      "$DISMISS_STALE_SCRIPT" "$PR_NUMBER"
+    fi
+  else
+    echo "[DISMISS-STALE] dismiss-stale-bot-changes.sh not found — skipping (install from repo .claude/scripts/)"
+  fi
+fi
+```
+
+The script only dismisses **`CHANGES_REQUESTED`** reviews where **`commit_id` ≠ current PR HEAD** and the author is a **Bot** on the literal allowlist (`coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, `graphite-app[bot]`). Human reviews are never dismissed. Logged lines look like `[DISMISS-STALE] dismissed stale bot CHANGES_REQUESTED review_id=…`.
 
 ---
 
@@ -534,7 +580,7 @@ jq -r '.merge_state | "[MERGE] mergeable=\(.mergeable), status=\(.mergeStateStat
 | `mergeStateStatus` | `BEHIND` | Rebase onto main: `git fetch origin main && git rebase origin/main`. If conflicts arise mid-rebase (replaying commits individually can conflict even when a three-way merge wouldn't), resolve them the same way as `CONFLICTING` above (including optional **`/merge-conflict`**), then `git rebase --continue`. Force-push. Wait for CI to re-run before verifying merge gate. |
 | `mergeStateStatus` | `BLOCKED` | Required checks/reviews missing — already covered by 5c/5d. If CodeRabbit, Greptile, or CodeAnt is in CODEOWNERS and the last approval is stale/dismissed after a push, recover by triggering that bot (`@coderabbitai full review`, `@greptileai`, or `@codeant-ai review`) instead of escalating to the author. |
 | `mergeStateStatus` | `UNSTABLE` | A non-required check pending/failing — typically CR/Greptile on the new SHA. If 5d emitted `REVIEW_PENDING`, stop with that status. |
-| `reviewDecision` | `CHANGES_REQUESTED` | Changes were requested. If the requester is a bot, process findings through this skill; if a human requested changes, report it as non-automatable. |
+| `reviewDecision` | `CHANGES_REQUESTED` | Changes were requested. **Stale** bot `CHANGES_REQUESTED` (wrong `commit_id` vs HEAD) are cleared by Step 3a after each push — not escalation. If a **human** left `CHANGES_REQUESTED` on the current HEAD, report as non-automatable. |
 
 When residual branch protection says review is missing or `reviewDecision != "APPROVED"`, run `.claude/scripts/merge-gate.sh "$PR_NUMBER"` and read `.code_owner_bots`. If it lists `coderabbitai[bot]`, `greptile-apps[bot]`, or `codeant-ai[bot]`, a current-HEAD **`APPROVED`** review from that bot satisfies GitHub's code-owner requirement. CodeAnt **check-run success** only covers the supplemental CR-path cleanliness rule in `cr-merge-gate.md`; it does **not** replace an `APPROVED` when CodeAnt is a code owner. A stale/dismissed bot approval is recoverable review debt: trigger the matching bot and re-run the gate after it responds. Do not ask the PR author for an approval GitHub will not accept.
 
