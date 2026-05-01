@@ -27,7 +27,7 @@ Update `session-state.json` on phase transitions and key events (agent launched/
 | B | Read-modify-write; append arrays, update scalars, preserve unknown fields |
 | C | Read only; parent deletes after `OUTCOME: merged` confirmed by GitHub |
 
-Schema reference: `.claude/reference/handoff-file-schema.json`. Required fields: `schema_version`, `pr_number`, `head_sha`, `reviewer`, `phase_completed`, `created_at`, `findings_fixed`, `threads_replied`, `threads_resolved`, `files_changed`, `push_timestamp`. Optional: `findings_dismissed`, `notes`.
+Schema reference: `.claude/reference/handoff-file-schema.json`. Required fields: `schema_version`, `pr_number`, `head_sha`, `reviewer`, `phase_completed`, `created_at`, `findings_fixed`, `threads_replied`, `threads_resolved`, `files_changed`, `push_timestamp`. Optional: `findings_dismissed`, `stale_bot_reviews_dismissed` (GitHub review IDs dismissed by `dismiss-stale-bot-changes.sh` after a `/fixpr` push — issue #426), `notes`.
 
 **Forward compatibility:** preserve unknown fields; dedupe string arrays by exact value and `findings_dismissed` by `.id`.
 
