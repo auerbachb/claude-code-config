@@ -27,6 +27,7 @@ All mechanical GitHub API work — pagination, GraphQL queries, comment classifi
 | 1. Classify review findings | Judgment | AI reads JSON + source files |
 | 2. Classify CI failures | Judgment | AI reads `check-runs/<id>.output.summary` |
 | 3. Fix & push | Judgment | AI edits files, commits, pushes |
+| 3a. Dismiss stale bot `CHANGES_REQUESTED` | Mechanical | `dismiss-stale-bot-changes.sh` after push when `DID_PUSH=1`; optional `--handoff-file` append |
 | 3b. Trigger missing AI reviewers | Mechanical | wait 2 minutes, detect CR/Graphite/CodeAnt activity on the new SHA, post triggers for missing bots, always post `@cursor review` |
 | 4. Reply & resolve | Mechanical | `gh api` calls against IDs from the JSON |
 | 4c. Post-push thread verify (if Step 3 pushed) | Mechanical | Re-fetch threads on new HEAD; explicitly resolve any touched thread still `isResolved: false` (fixes unchanged-line orphans), then `--verify-only` |

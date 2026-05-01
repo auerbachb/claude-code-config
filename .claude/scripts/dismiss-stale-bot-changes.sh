@@ -153,8 +153,13 @@ if [[ -n "$HANDOFF_FILE" && ${#DISMISSED_IDS[@]} -gt 0 ]]; then
     if jq --argjson new_ids "$ids_json" '
       .stale_bot_reviews_dismissed = ((.stale_bot_reviews_dismissed // []) + $new_ids | unique)
     ' "$HANDOFF_FILE" >"$tmp"; then
-      mv "$tmp" "$HANDOFF_FILE"
-      echo "[DISMISS-STALE] appended review IDs to handoff file: $HANDOFF_FILE"
+      if mv "$tmp" "$HANDOFF_FILE"; then
+        echo "[DISMISS-STALE] appended review IDs to handoff file: $HANDOFF_FILE"
+      else
+        rm -f "$tmp"
+        echo "[DISMISS-STALE] ERROR: failed to write handoff file: $HANDOFF_FILE" >&2
+        exit 4
+      fi
     else
       rm -f "$tmp"
       echo "[DISMISS-STALE] ERROR: failed to merge handoff JSON: $HANDOFF_FILE" >&2

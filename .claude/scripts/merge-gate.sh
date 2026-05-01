@@ -211,8 +211,12 @@ if [[ -z "$CI_STATUS_JSON" ]] || ! echo "$CI_STATUS_JSON" | jq -e . >/dev/null 2
   die_api "ci-status.sh"
 fi
 
-if ! REVIEWS_JSON=$(gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" 2>/dev/null); then
+if ! REVIEWS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" 2>/dev/null); then
   die_api "reviews"
+fi
+REVIEWS_JSON=$(echo "$REVIEWS_RAW" | jq -s 'add // []')
+if [[ -z "$REVIEWS_JSON" ]] || ! echo "$REVIEWS_JSON" | jq -e . >/dev/null 2>&1; then
+  die_api "reviews parse"
 fi
 if ! PR_COMMENTS_JSON=$(gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
   die_api "pull-comments"
