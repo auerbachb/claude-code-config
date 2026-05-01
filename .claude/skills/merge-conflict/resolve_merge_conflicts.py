@@ -203,7 +203,7 @@ def resolve_file(path: Path, text: str) -> FileResult:
         new_text = "\n".join(out_parts)
         if text.endswith("\n") and new_text and not new_text.endswith("\n"):
             new_text += "\n"
-        path.write_text(new_text, encoding="utf-8", newline="")
+        write_repo_text(path, new_text)
         fr.wrote = True
 
     return fr
@@ -228,6 +228,16 @@ def unmerged_paths(repo: Path) -> list[str]:
 
 def is_binary_bytes(b: bytes) -> bool:
     return b"\x00" in b[:8192]
+
+
+def read_repo_text(path: Path) -> str:
+    """Decode worktree file bytes the same way as conflict reads (non-UTF8 safe)."""
+    return path.read_bytes().decode("utf-8", errors="surrogateescape")
+
+
+def write_repo_text(path: Path, text: str) -> None:
+    """Write text so bytes round-trip with read_repo_text (avoids UnicodeEncodeError on surrogates)."""
+    path.write_bytes(text.encode("utf-8", errors="surrogateescape"))
 
 
 def main() -> int:
@@ -303,9 +313,19 @@ def main() -> int:
             continue
 
         if not fr.hunks:
+            complex_report.append(
+                {
+                    "file": rel,
+                    "location": "entire file",
+                    "reason": (
+                        "unmerged path has no inline conflict markers (<<<<<<< / ======= / >>>>>>>); "
+                        "resolve with git checkout --ours/--theirs, manual merge, or your merge tool, then git add"
+                    ),
+                }
+            )
             continue
 
-        still_has_markers = "<<<<<<< " in p.read_text(encoding="utf-8", errors="replace")
+        still_has_markers = "<<<<<<< " in read_repo_text(p)
 
         for h, cls, _ in fr.hunks:
             if cls == "complex":
@@ -320,7 +340,7 @@ def main() -> int:
 
         if not still_has_markers:
             fully.append(rel)
-        elif fr.wrote and before != p.read_text(encoding="utf-8", errors="replace"):
+        elif fr.wrote and before != read_repo_text(p):
             partial.append(rel)
 
     staged: list[str] = []

@@ -49,7 +49,11 @@ EXIT=$?
 
 1. `git fetch origin main` (unless `--skip-fetch`).
 2. Lists conflicted files: `git diff --name-only --diff-filter=U`.
-3. For each **text** file, parses `<<<<<<<` / `=======` / `>>>>>>>` hunks and classifies each hunk:
+3. For each **text** file, parses `<<<<<<<` / `=======` / `>>>>>>>` hunks and classifies each hunk (see Simple / Complex below).
+
+**Unmerged but no markers:** Some conflicts (e.g. modify/delete) leave the path unmerged without injecting `<<<<<<<` lines. Those paths are listed in **`complex_report`** with an explicit reason so they are not silent skips.
+
+**Encoding:** Files are read with UTF-8 + `surrogateescape` so non-UTF-8 bytes do not crash parsing; writes use the same so simple resolutions do not raise `UnicodeEncodeError`.
 
 ### Simple (auto-resolved)
 
