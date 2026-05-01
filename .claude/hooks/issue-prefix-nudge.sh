@@ -3,7 +3,7 @@
 # When the first prompt does not start with a leading [#N] style token, injects
 # additionalContext pointing at CLAUDE.md. Non-blocking; always exits 0.
 #
-# Sentinel (per session, not in skills-worktree): ~/.claude/issue-prefix-nudge-first-<session_id>
+# Sentinel (per session): /tmp/issue-prefix-nudge-first-<session_id> — OS-managed cleanup.
 
 INPUT=$(cat 2>/dev/null || true)
 
@@ -13,10 +13,16 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 session_id=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
-session_id="${session_id:-${CLAUDE_SESSION_ID:-default}}"
+session_id="${session_id:-${CLAUDE_SESSION_ID:-}}"
 session_id="${session_id//[^[:alnum:]_.-]/_}"
 
-state_dir="${HOME}/.claude"
+# Without a session_id we cannot track "first message of this session" — skip nudge.
+if [[ -z "$session_id" ]]; then
+  echo '{}'
+  exit 0
+fi
+
+state_dir="/tmp"
 sentinel="${state_dir}/issue-prefix-nudge-first-${session_id}"
 
 if [[ -f "$sentinel" ]]; then
