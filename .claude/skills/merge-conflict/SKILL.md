@@ -82,23 +82,11 @@ For **mixed** files (some simple, some complex): simple hunks are written into t
 3. **Do not edit** complex hunks in this pass unless the user explicitly asks for a proposal-only suggestion — the skill’s contract is report-first.
 4. Tell the user the exact **next git commands** based on state:
    - Mid-merge: `git status` → if all conflicts cleared, `git commit` (merge) or continue as their workflow dictates.
-   - Mid-rebase: fix remaining files → `git add` each → `git rebase --continue` (or `git merge --continue`).
+   - Mid-rebase: fix remaining files → `git add` each → `git rebase --continue`.
 
 ## Global symlink (after the skill is on `main`)
 
-Per `.claude/rules/skill-symlinks.md`:
-
-1. Merge the PR so `.claude/skills/merge-conflict/` exists on `main`.
-2. Refresh the skills worktree and symlink:
-
-```bash
-mkdir -p "$HOME/.claude/skills"
-git -C "$HOME/.claude/skills-worktree" fetch origin main --quiet
-git -C "$HOME/.claude/skills-worktree" reset --hard origin/main --quiet
-ln -sfn "$HOME/.claude/skills-worktree/.claude/skills/merge-conflict" "$HOME/.claude/skills/merge-conflict"
-```
-
-Or run `bash "$(git rev-parse --show-toplevel)/setup-skills-worktree.sh"` from the repo root, which symlinks **all** skills including new ones.
+See `.claude/rules/skill-symlinks.md` or run `setup-skills-worktree.sh` from the repo root — it symlinks all skills automatically.
 
 ## Smoke test (for PR / manual verification)
 

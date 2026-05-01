@@ -22,8 +22,8 @@ spec.loader.exec_module(mod)
 
 class ClassifyTests(unittest.TestCase):
     def test_identical_trailing_whitespace_simple(self) -> None:
-        ours = "foo  \nbar\n"
-        theirs = "foo\nbar\n"
+        ours = "foo  \nbar"
+        theirs = "foo\nbar"
         cls, resolved, reason = mod.classify_and_resolve(ours, theirs)
         self.assertEqual(cls, "simple")
         self.assertIsNotNone(resolved)
@@ -32,8 +32,8 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(reason, "")
 
     def test_per_line_trailing_simple(self) -> None:
-        ours = "a \nb\n"
-        theirs = "a\nb \n"
+        ours = "a \nb"
+        theirs = "a\nb "
         cls, resolved, _ = mod.classify_and_resolve(ours, theirs)
         self.assertEqual(cls, "simple")
         assert resolved is not None
@@ -74,8 +74,8 @@ class ClassifyTests(unittest.TestCase):
 
     def test_identical_nonblank_sequence_preserves_blank_lines(self) -> None:
         """o_nb == t_nb branch must run (not swallowed by per-line rstrip-only path)."""
-        ours = "a\n\nb\n"
-        theirs = "a\n\nb\n"
+        ours = "a\nb"
+        theirs = "a\n\nb"
         cls, resolved, _ = mod.classify_and_resolve(ours, theirs)
         self.assertEqual(cls, "simple")
         assert resolved is not None

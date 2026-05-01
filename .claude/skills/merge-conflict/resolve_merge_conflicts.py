@@ -363,9 +363,18 @@ def main() -> int:
             partial.append(rel)
 
     staged: list[str] = []
+    stage_failed = False
     for rel in fully:
         g = git(["add", "--", rel], repo)
         if g.returncode != 0:
+            stage_failed = True
+            complex_report.append(
+                {
+                    "file": rel,
+                    "location": "git add",
+                    "reason": g.stderr.strip() or "git add failed",
+                }
+            )
             print(f"WARN: git add failed for {rel}: {g.stderr}", file=sys.stderr)
         else:
             staged.append(rel)
@@ -396,7 +405,7 @@ def main() -> int:
                 print(f"  - {item['file']}: {item['location']}")
                 print(f"    why: {item['reason']}")
 
-    exit_ok = not complex_report and len(fully) == len(paths)
+    exit_ok = not complex_report and not stage_failed and len(staged) == len(paths)
     return 0 if exit_ok else 1
 
 
