@@ -81,7 +81,10 @@ Generate a standup report summarizing what was accomplished since $ARGUMENTS (de
      # Smart default — LOOKBACK_DATE was set above by workday.sh; any failure
      # there already propagated via `|| exit $?`, so LOOKBACK_DATE is non-empty
      # here by contract.
-     SINCE_ISO=$(TZ='America/New_York' date -d "${LOOKBACK_DATE} 12:00" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || TZ='America/New_York' date -jf '%Y-%m-%d %H:%M' "${LOOKBACK_DATE} 12:00" '+%Y-%m-%dT%H:%M:%S%z')
+     # On Windows (Git Bash), TZ may be wrong — try PowerShell first for noon ET on LOOKBACK_DATE.
+     SINCE_ISO=$(powershell -Command "\$tz=[System.TimeZoneInfo]::FindSystemTimeZoneById('Eastern Standard Time'); \$d=[DateTime]::ParseExact('${LOOKBACK_DATE}','yyyy-MM-dd',[Globalization.CultureInfo]::InvariantCulture); \$local=[DateTime]::SpecifyKind(\$d.Date.AddHours(12), [DateTimeKind]::Unspecified); \$dto=[DateTimeOffset]::new(\$local, \$tz.GetUtcOffset(\$local)); \$dto.ToString('yyyy-MM-ddTHH:mm:sszzz')" 2>/dev/null \
+       || TZ='America/New_York' date -d "${LOOKBACK_DATE} 12:00" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null \
+       || TZ='America/New_York' date -jf '%Y-%m-%d %H:%M' "${LOOKBACK_DATE} 12:00" '+%Y-%m-%dT%H:%M:%S%z')
      if [ -z "$SINCE_ISO" ]; then
        echo "Error: Failed to convert lookback date to ISO timestamp" >&2
        exit 1

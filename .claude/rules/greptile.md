@@ -14,7 +14,7 @@ Bot username: `greptile-apps[bot]`. Trigger: PR comment `@greptileai` (no suffix
 
 ## Daily Budget
 
-Default budget: 40 reviews/day. `~/.claude/session-state.json` tracks `greptile_daily.{reviews_used,date,budget}` (ET date). `.claude/scripts/greptile-budget.sh` is authoritative; every `@greptileai` trigger point MUST run `greptile-budget.sh --consume` first. Exit 0 = consumed; exit 1 = exhausted. Use `--check` for snapshots and `--reset` only for intentional counter resets.
+Default budget: 40 reviews/day. `~/.claude/session-state.json` tracks `greptile_daily.{reviews_used,date,budget}` (ET date — on Windows use PowerShell for today’s ET date if `TZ=America/New_York` is unreliable; see `CLAUDE.md` timestamp guidance). `.claude/scripts/greptile-budget.sh` is authoritative; every `@greptileai` trigger point MUST run `greptile-budget.sh --consume` first. Exit 0 = consumed; exit 1 = exhausted. Use `--check` for snapshots and `--reset` only for intentional counter resets.
 
 If exhausted, perform self-review, report `"Greptile budget exhausted (used/budget, e.g. 40/40). PR #N falling back to self-review — merge blocked until manual review or budget resets tomorrow."` using actual numeric counters. Self-review does NOT satisfy the merge gate.
 

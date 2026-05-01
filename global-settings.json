@@ -12,6 +12,7 @@
     "graphite-mcp@claude-code-graphite": true
   },
   "permissions": {
+    "defaultMode": "bypassPermissions",
     "allow": [
       "Bash(*)",
       "Edit(*)",
