@@ -1,8 +1,8 @@
 # Merge Gate & Pre-Merge Verification
 
 > **This is the single authoritative definition of the merge gate.** All other rule files reference this file instead of duplicating it.
-> **Always:** Verify merge gate before any merge. Verify CI. Verify AC checkboxes against code. Ask user before merging **(except `/wrap` / `/merge`, which skip the extra merge prompt after gate+AC)**.
-> **Ask first:** Merging — always ask the user (except `/wrap`/`/merge`; Step 3).
+> **Always:** Verify merge gate before any merge. Verify CI. Verify AC checkboxes against code. Ask user before merging (except `/wrap`/`/merge`; Step 3).
+> **Ask first:** Merging; `/wrap`/`/merge` skip this step (Step 3).
 > **Never:** Merge without meeting the gate. Merge with failing CI. Merge with unchecked AC boxes. Stop polling because "nothing is unresolved right now" — see "Polling exit criterion" below.
 
 ## Polling exit criterion
