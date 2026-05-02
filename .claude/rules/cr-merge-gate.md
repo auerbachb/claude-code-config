@@ -1,8 +1,8 @@
 # Merge Gate & Pre-Merge Verification
 
 > **This is the single authoritative definition of the merge gate.** All other rule files reference this file instead of duplicating it.
-> **Always:** Verify merge gate before any merge. Verify CI. Verify AC checkboxes against code. Ask user before merging.
-> **Ask first:** Merging — always ask the user.
+> **Always:** Verify merge gate before any merge. Verify CI. Verify AC checkboxes against code. Ask user before merging (except `/wrap`/`/merge`; Step 3).
+> **Ask first:** Merging; `/wrap`/`/merge` skip this step (Step 3).
 > **Never:** Merge without meeting the gate. Merge with failing CI. Merge with unchecked AC boxes. Stop polling because "nothing is unresolved right now" — see "Polling exit criterion" below.
 
 ## Polling exit criterion
@@ -107,7 +107,8 @@ Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses
 >
 > Skipping this step is a **blocking failure** — the user should never see unchecked AC boxes when asked about merge.
 
-## Step 3 — Ask the user about merging
+## Step 3 — Confirm merge intent with the user
 
-- Ask the user: "Reviews are clean, all AC verified and checked off. Want me to squash and merge, or do you want to review the diff yourself first?"
+**Default:** ask squash-merge vs review. **`/wrap` / `/merge`:** after Steps 1–2, `gh pr merge --squash` with no extra prompt; overrides this step and `CLAUDE.md` for that scope (see skills).
+
 - Always use **squash and merge** (never regular merge or rebase)

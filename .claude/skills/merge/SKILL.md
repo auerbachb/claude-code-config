@@ -100,6 +100,8 @@ If Step 2 reported `missing` entries about CI ("CI has N failing check-run(s): .
 
 ### Step 5: Squash merge
 
+**Merge authorization:** `/merge` invocation authorizes merge. After Steps 2–3 pass, run `gh pr merge --squash` with no merge prompt — overrides `CLAUDE.md` "PR MERGE AUTHORIZATION" and `cr-merge-gate.md` Step 3 **for `/merge` only**; gate/CI/AC/worktree failures still stop as above.
+
 ```bash
 gh pr merge --squash
 ```

@@ -2,6 +2,8 @@
 
 Do not merge a PR or commit to `main` unless the issue author approved on the PR/issue **or** the user confirmed that approval in chat. If unclear, ask.
 
+**Exception:** `/wrap` / `/merge` = merge auth for that run; no extra merge prompt after gate+AC (see those skills).
+
 ---
 
 # EVERY MESSAGE — NON-NEGOTIABLE BEHAVIORS
@@ -27,7 +29,7 @@ Best-effort: lead the first user message with `[#N]` (or `[#339, #341]`) so tab 
 The workflow is fully autonomous. At every phase transition — local review, push, PR creation, polling, feedback processing, subagent spawning — **proceed immediately without asking the user.** See `subagent-orchestration.md` "Phase Transition Autonomy" for the complete table.
 
 **The ONLY actions that require user permission:**
-- Merging the PR
+- Merging (except `/wrap` / `/merge` — see above)
 - Respawning a failed subagent
 
 If you catch yourself composing a "should I...?" question about any workflow step, stop — the answer is always yes. Just do it.
