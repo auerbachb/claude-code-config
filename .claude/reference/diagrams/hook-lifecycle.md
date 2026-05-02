@@ -13,7 +13,7 @@ sequenceDiagram
   CC->>H: PreToolUse
   Note over H: worktree-guard.sh, env-guard.py, script-bypass-detector.sh
   CC->>H: PostToolUse
-  Note over H: session-start-sync.sh, post-merge-pull.sh, skill-usage-tracker.sh, silence-detector.sh
+  Note over H: session-start-sync.sh, post-merge-pull.sh, polling-backoff-warn.sh, skill-usage-tracker.sh, silence-detector.sh
   CC->>H: Stop
   Note over H: silence-detector-ack.sh, trust-flag-repair.sh, dirty-main-warn.sh
 ```

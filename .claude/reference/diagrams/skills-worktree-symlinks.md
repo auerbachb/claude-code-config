@@ -7,7 +7,7 @@ flowchart TB
   subgraph TODO["TODO — refine labels"]
     R["Root clone<br/>claude-code-config"]
     W["~/.claude/skills-worktree<br/>detached origin/main"]
-    H["~/.claude/ symlinks<br/>CLAUDE.md · rules/ · skills/*"]
+    H["~/.claude/<br/>symlinks<br/>CLAUDE.md · rules/ · skills/*"]
   end
   R -->|"git worktree add"| W
   W -->|"symlink targets"| H
