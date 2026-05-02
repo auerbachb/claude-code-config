@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # pr-state.sh — Gather all PR state into a single JSON file.
 #
-# Shared helper used by /fixpr, /merge, /wrap, /continue, /status, phase-b-reviewer,
+# Shared helper used by /fixpr, /merge, /wrap, /go-on, /status, phase-b-reviewer,
 # and phase-c-merger. Collapses the 3-endpoint comment scan + GraphQL review threads
 # + check-runs + commit statuses into one JSON bundle. Call sites read the bundle
 # via jq instead of re-issuing overlapping gh api calls inline.
