@@ -1,3 +1,5 @@
+# PM Config
+
 ## Role
 
 <!-- Optional: who uses this config (human-editable). -->
@@ -10,7 +12,7 @@ No OKRs set — add objectives under this header when ready.
 
 <!-- Issue #362 — tune per repo. Defaults match claude-code-config calibration (≥10 merged PRs, threshold 100 → ~53% would exceed). -->
 
-```
+```ini
 THRESHOLD_SCORE=100
 FIRST_CR_ROUND=3
 CADENCE_ROUNDS=2
