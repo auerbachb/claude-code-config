@@ -90,11 +90,20 @@ parse_pm_kv() {
 
 if [[ -n "$PM_CFG" ]]; then
   v="$(parse_pm_kv THRESHOLD_SCORE)"
-  [[ -n "$v" && "$v" =~ ^[0-9]+$ ]] && THRESHOLD_SCORE="$v"
+  if [[ -n "$v" ]]; then
+    if [[ "$v" =~ ^[0-9]+$ ]]; then THRESHOLD_SCORE="$v"
+    else echo "maybe-trigger-ai-review.sh: pm-config THRESHOLD_SCORE='$v' is not a non-negative integer" >&2; exit 4; fi
+  fi
   v="$(parse_pm_kv FIRST_CR_ROUND)"
-  [[ -n "$v" && "$v" =~ ^[0-9]+$ ]] && FIRST_CR_ROUND="$v"
+  if [[ -n "$v" ]]; then
+    if [[ "$v" =~ ^[0-9]+$ ]]; then FIRST_CR_ROUND="$v"
+    else echo "maybe-trigger-ai-review.sh: pm-config FIRST_CR_ROUND='$v' is not a non-negative integer" >&2; exit 4; fi
+  fi
   v="$(parse_pm_kv CADENCE_ROUNDS)"
-  [[ -n "$v" && "$v" =~ ^[0-9]+$ ]] && CADENCE_ROUNDS="$v"
+  if [[ -n "$v" ]]; then
+    if [[ "$v" =~ ^[0-9]+$ ]]; then CADENCE_ROUNDS="$v"
+    else echo "maybe-trigger-ai-review.sh: pm-config CADENCE_ROUNDS='$v' is not a non-negative integer" >&2; exit 4; fi
+  fi
   v="$(parse_pm_kv ENABLE_PR_REVIEW_HELP)"
   if [[ "$v" =~ ^(1|true|yes|on)$ ]]; then
     ENABLE_PR_REVIEW_HELP=1
@@ -102,14 +111,39 @@ if [[ -n "$PM_CFG" ]]; then
 fi
 
 # Env overrides repo file when set (explicit tuning / CI).
-if [[ "${COMPLEXITY_THRESHOLD_SCORE+set}" == "set" ]] && [[ "${COMPLEXITY_THRESHOLD_SCORE}" =~ ^[0-9]+$ ]]; then
-  THRESHOLD_SCORE="$COMPLEXITY_THRESHOLD_SCORE"
+if [[ "${COMPLEXITY_THRESHOLD_SCORE+set}" == "set" ]]; then
+  if [[ "${COMPLEXITY_THRESHOLD_SCORE}" =~ ^[0-9]+$ ]]; then
+    THRESHOLD_SCORE="$COMPLEXITY_THRESHOLD_SCORE"
+  else
+    echo "maybe-trigger-ai-review.sh: COMPLEXITY_THRESHOLD_SCORE='$COMPLEXITY_THRESHOLD_SCORE' is not a non-negative integer" >&2
+    exit 4
+  fi
 fi
-if [[ "${COMPLEXITY_FIRST_CR_ROUND+set}" == "set" ]] && [[ "${COMPLEXITY_FIRST_CR_ROUND}" =~ ^[0-9]+$ ]]; then
-  FIRST_CR_ROUND="$COMPLEXITY_FIRST_CR_ROUND"
+if [[ "${COMPLEXITY_FIRST_CR_ROUND+set}" == "set" ]]; then
+  if [[ "${COMPLEXITY_FIRST_CR_ROUND}" =~ ^[0-9]+$ ]]; then
+    FIRST_CR_ROUND="$COMPLEXITY_FIRST_CR_ROUND"
+  else
+    echo "maybe-trigger-ai-review.sh: COMPLEXITY_FIRST_CR_ROUND='$COMPLEXITY_FIRST_CR_ROUND' is not a non-negative integer" >&2
+    exit 4
+  fi
 fi
-if [[ "${COMPLEXITY_CADENCE_ROUNDS+set}" == "set" ]] && [[ "${COMPLEXITY_CADENCE_ROUNDS}" =~ ^[0-9]+$ ]]; then
-  CADENCE_ROUNDS="$COMPLEXITY_CADENCE_ROUNDS"
+if [[ "${COMPLEXITY_CADENCE_ROUNDS+set}" == "set" ]]; then
+  if [[ "${COMPLEXITY_CADENCE_ROUNDS}" =~ ^[0-9]+$ ]]; then
+    CADENCE_ROUNDS="$COMPLEXITY_CADENCE_ROUNDS"
+  else
+    echo "maybe-trigger-ai-review.sh: COMPLEXITY_CADENCE_ROUNDS='$COMPLEXITY_CADENCE_ROUNDS' is not a non-negative integer" >&2
+    exit 4
+  fi
+fi
+
+# Validate config constraints before reading PR state (fail fast on misconfiguration).
+if (( FIRST_CR_ROUND < 3 )); then
+  echo "maybe-trigger-ai-review.sh: FIRST_CR_ROUND must be >= 3 (needs >=2 completed CR rounds before first fire)" >&2
+  exit 4
+fi
+if (( CADENCE_ROUNDS < 1 )); then
+  echo "maybe-trigger-ai-review.sh: CADENCE_ROUNDS must be >= 1" >&2
+  exit 4
 fi
 
 RC=0; CR_ROUNDS="$("$CYCLE_SCRIPT" "$PR_NUM" --cr-only)" || RC=$?
@@ -161,14 +195,8 @@ if (( CR_ROUNDS < 2 )); then
   SKIP_REASON="cr_rounds_lt_2"
 elif (( SCORE < THRESHOLD_SCORE )); then
   SKIP_REASON="below_complexity_threshold"
-elif (( FIRST_CR_ROUND < 3 )); then
-  echo "maybe-trigger-ai-review.sh: FIRST_CR_ROUND must be >= 3 (needs >=2 completed CR rounds before first fire)" >&2
-  exit 4
 elif (( CR_ROUNDS < FIRST_CR_ROUND )); then
   SKIP_REASON="before_first_trigger_round"
-elif (( CADENCE_ROUNDS < 1 )); then
-  echo "maybe-trigger-ai-review.sh: CADENCE_ROUNDS must be >= 1" >&2
-  exit 4
 elif (( (CR_ROUNDS - FIRST_CR_ROUND) % CADENCE_ROUNDS != 0 )); then
   SKIP_REASON="cadence_gate"
 elif [[ -n "$LAST_FIRED_ROUND" && "$LAST_FIRED_ROUND" =~ ^[0-9]+$ ]]; then

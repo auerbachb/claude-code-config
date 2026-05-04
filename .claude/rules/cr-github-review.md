@@ -35,18 +35,18 @@ Run this before the first poll tick and before any new review trigger (`@coderab
 
 ### Per-cycle check (every 60 seconds)
 
-Each cycle, query everything in "Polling" for every open PR owned by this session. **Re-read current HEAD SHA every cycle** so stale approvals never exit polling.
-
-**#362:** If this cycle does not require `/fixpr`, run `maybe-trigger-ai-review.sh <PR>` (`pm-config.md` **Complexity triggers**; `complexity-score.sh`; `cycle-count.sh --cr-only`; three separate `@` comments). Dedupe `session-state.json` `.prs[N].ai_review_trigger_*`.
+Each cycle, query everything in “Polling” for every open PR owned by this session. **Re-read current HEAD SHA every cycle** so stale approvals never exit polling.
 
 If **ANY** of the conditions below hold, invoke `/fixpr` and do NOT request a new review until `/fixpr` completes:
 
 1. New bot findings since the last poll watermark (not old unresolved threads awaiting reviewer ack)
 2. Any check-run with a blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`)
-3. **`mergeStateStatus == "BEHIND"`** — each cycle, read this field explicitly (e.g. `gh pr view <N> --json mergeStateStatus,mergeable` or the PR snapshot used for polling). **Do not treat `mergeStateStatus: "BLOCKED"` as “behind base”**; BLOCKED covers missing checks/reviews as well. Only the literal value `BEHIND` triggers rebase + force-push via `/fixpr` (same merge-state handling as `/fixpr` Step 6 / `.merge_state` from `pr-state.sh` — see `fixpr/SKILL.md`).
-4. `mergeable == "CONFLICTING"` (merge conflicts; `/fixpr` handles rebase + surfaces blockers)
+3. **`mergeStateStatus == “BEHIND”`** — each cycle, read this field explicitly (e.g. `gh pr view <N> --json mergeStateStatus,mergeable` or the PR snapshot used for polling). **Do not treat `mergeStateStatus: “BLOCKED”` as “behind base”**; BLOCKED covers missing checks/reviews as well. Only the literal value `BEHIND` triggers rebase + force-push via `/fixpr` (same merge-state handling as `/fixpr` Step 6 / `.merge_state` from `pr-state.sh` — see `fixpr/SKILL.md`).
+4. `mergeable == “CONFLICTING”` (merge conflicts; `/fixpr` handles rebase + surfaces blockers)
 
 > **Unresolved threads are NOT a trigger.** After a fix push, keep polling for reviewer catch-up unless conditions 1-4 occur.
+
+**#362:** If this cycle does not require `/fixpr`, run `maybe-trigger-ai-review.sh <PR>` (`pm-config.md` **Complexity triggers**; `complexity-score.sh`; `cycle-count.sh --cr-only`; three separate `@` comments). Dedupe `session-state.json` `.prs[N].ai_review_trigger_*`.
 
 **SHA freshness (every cycle).** A CR approval must have `.commit_id == current HEAD SHA`; otherwise it is stale. Re-trigger (respecting the 2/hour cap) and keep polling. See `cr-merge-gate.md` for retraction rules.
 
