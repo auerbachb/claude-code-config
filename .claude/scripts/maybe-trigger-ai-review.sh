@@ -323,7 +323,7 @@ if ! post_one codeant "@codeant-ai review"; then echo "maybe-trigger-ai-review.s
 if ! post_one cursor "@cursor review"; then echo "maybe-trigger-ai-review.sh: failed posting @cursor review" >&2; exit 5; fi
 if ! post_one graphite "@graphite-app re-review"; then echo "maybe-trigger-ai-review.sh: failed posting @graphite-app re-review" >&2; exit 5; fi
 if (( ENABLE_PR_REVIEW_HELP )); then
-  if ! post_one pr_help "/pr-review-help #$PR_NUM"; then echo "maybe-trigger-ai-review.sh: failed posting /pr-review-help" >&2; exit 5; fi
+  if ! post_one pr_help "/pr-review-help"; then echo "maybe-trigger-ai-review.sh: failed posting /pr-review-help" >&2; exit 5; fi
 fi
 
 NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
