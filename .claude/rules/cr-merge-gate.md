@@ -103,7 +103,7 @@ Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses
 > 5. If any item fails, fix the code first — do NOT offer to merge with unchecked boxes
 > 6. Only after **ALL** boxes are checked, proceed to Step 3
 >
-> Re-run after every CR round. If additional code changes were made during the CR loop (e.g. fixes from CR rounds after the initial AC pass), you must re-verify ALL AC items against the final code. AC verification reflects the code **at merge time**, not the code at some earlier checkpoint.
+> Re-run after every CR round. Re-verify all AC items if code changed during CR; verification reflects the code **at merge time**, not an earlier checkpoint.
 >
 > Skipping this step is a **blocking failure** — the user should never see unchecked AC boxes when asked about merge.
 

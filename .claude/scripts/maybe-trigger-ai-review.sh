@@ -267,14 +267,14 @@ post_one() {
   if [[ "$posted" == "true" ]]; then
     return 0
   fi
-  gh pr comment "$PR_NUM" --body "$body" || return 1
   local merged
   merged="$(jq -cn --argjson cur "$INIT_STEPS" --arg s "$step_key" '$cur | .[$s] = true')"
   INIT_STEPS="$merged"
   if ! "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps=$merged"; then
-    echo "maybe-trigger-ai-review.sh: gh succeeded but session-state update failed — manual dedupe check may be needed" >&2
+    echo "maybe-trigger-ai-review.sh: failed to persist step state before posting — aborting" >&2
     exit 4
   fi
+  gh pr comment "$PR_NUM" --body "$body" || return 1
 }
 
 if ! post_one codeant "@codeant-ai review"; then echo "maybe-trigger-ai-review.sh: failed posting @codeant-ai review" >&2; exit 5; fi
