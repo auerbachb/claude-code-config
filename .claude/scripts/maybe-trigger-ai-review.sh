@@ -146,6 +146,13 @@ if (( CADENCE_ROUNDS < 1 )); then
   exit 4
 fi
 
+for helper in "$CYCLE_SCRIPT" "$COMPLEXITY_SCRIPT"; do
+  if [[ ! -x "$helper" ]]; then
+    echo "maybe-trigger-ai-review.sh: required helper missing or not executable: $helper" >&2
+    exit 4
+  fi
+done
+
 RC=0; CR_ROUNDS="$("$CYCLE_SCRIPT" "$PR_NUM" --cr-only)" || RC=$?
 if (( RC != 0 )); then exit $RC; fi
 RC=0; SCORE="$("$COMPLEXITY_SCRIPT" "$PR_NUM")" || RC=$?

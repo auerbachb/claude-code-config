@@ -20,7 +20,7 @@ FILE_WEIGHT=5
 ENABLE_PR_REVIEW_HELP=0
 ```
 
-- **THRESHOLD_SCORE** — minimum `complexity-score.sh` value before auto-trigger. Repo file sets the default; **`COMPLEXITY_THRESHOLD_SCORE` env overrides** when set.
+- **THRESHOLD_SCORE** — minimum `complexity-score.sh` value before auto-trigger; must be a **non-negative integer**. Repo file sets the default; **`COMPLEXITY_THRESHOLD_SCORE` env overrides** when set.
 - **FIRST_CR_ROUND** — first fire at this CodeRabbit round count (must be **≥ 3**; scripts error out otherwise — needs ≥ 2 completed CR rounds before first fire). Uses `cycle-count.sh <PR> --cr-only`. **`COMPLEXITY_FIRST_CR_ROUND` env overrides** when set.
 - **CADENCE_ROUNDS** — after the first fire, fire again every N additional CR rounds (e.g. 2 → rounds 3, 5, 7…); must be **≥ 1**. **`COMPLEXITY_CADENCE_ROUNDS` env overrides** when set.
 - **FILE_WEIGHT** — multiplier on `changedFiles` inside the score; must be a **positive integer** (0 and non-positive values are rejected). **`COMPLEXITY_FILE_WEIGHT` env overrides** when set.
