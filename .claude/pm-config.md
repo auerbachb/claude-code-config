@@ -10,7 +10,7 @@ No OKRs set — add objectives under this header when ready.
 
 ## Complexity triggers
 
-<!-- Issue #362 — tune per repo. Defaults match claude-code-config calibration (≥10 merged PRs, threshold 100 → ~53% would exceed). -->
+<!-- Issue #362 — tune per repo. Defaults match claude-code-config calibration (25 merged PRs, threshold 100 → 72% would exceed). -->
 
 ```ini
 THRESHOLD_SCORE=100

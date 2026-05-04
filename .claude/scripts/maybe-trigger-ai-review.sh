@@ -26,7 +26,7 @@ COMPLEXITY_SCRIPT="${SCRIPT_DIR}/complexity-score.sh"
 STATE_FILE="${HOME}/.claude/session-state.json"
 
 help() {
-  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 PR_NUM=""
@@ -64,7 +64,7 @@ for need in gh jq; do
   fi
 done
 
-# Defaults (calibrated on ≥10 merged PRs in claude-code-config; ~53% would trigger at threshold 100)
+# Defaults (calibrated on 25 merged PRs in claude-code-config; 72% would trigger at threshold 100)
 THRESHOLD_SCORE=100
 FIRST_CR_ROUND=3
 CADENCE_ROUNDS=2
@@ -112,16 +112,24 @@ if [[ "${COMPLEXITY_CADENCE_ROUNDS+set}" == "set" ]] && [[ "${COMPLEXITY_CADENCE
   CADENCE_ROUNDS="$COMPLEXITY_CADENCE_ROUNDS"
 fi
 
-[[ ! -x "$CYCLE_SCRIPT" ]] && CYCLE_SCRIPT="${SCRIPT_DIR}/cycle-count.sh"
-[[ ! -x "$COMPLEXITY_SCRIPT" ]] && COMPLEXITY_SCRIPT="${SCRIPT_DIR}/complexity-score.sh"
+RC=0; CR_ROUNDS="$("$CYCLE_SCRIPT" "$PR_NUM" --cr-only)" || RC=$?
+if (( RC != 0 )); then exit $RC; fi
+RC=0; SCORE="$("$COMPLEXITY_SCRIPT" "$PR_NUM")" || RC=$?
+if (( RC != 0 )); then exit $RC; fi
 
-CR_ROUNDS="$("$CYCLE_SCRIPT" "$PR_NUM" --cr-only)" || exit 4
-SCORE="$("$COMPLEXITY_SCRIPT" "$PR_NUM")" || exit 4
-
-HEAD_SHA="$(gh pr view "$PR_NUM" --json headRefOid -q .headRefOid 2>/dev/null)" || {
-  echo "maybe-trigger-ai-review.sh: could not read PR #$PR_NUM" >&2
-  exit 3
-}
+STDERR_TMP="$(mktemp)"
+RC=0; HEAD_SHA="$(gh pr view "$PR_NUM" --json headRefOid -q .headRefOid 2>"$STDERR_TMP")" || RC=$?
+if (( RC != 0 )); then
+  if grep -qiE 'not.?found|could not resolve|no pull requests? found' "$STDERR_TMP"; then
+    rm -f "$STDERR_TMP"
+    echo "maybe-trigger-ai-review.sh: PR #$PR_NUM not found" >&2
+    exit 3
+  fi
+  cat "$STDERR_TMP" >&2
+  rm -f "$STDERR_TMP"
+  exit 4
+fi
+rm -f "$STDERR_TMP"
 
 PR_KEY="$PR_NUM"
 LAST_FIRED_ROUND=""
@@ -267,14 +275,13 @@ post_one() {
   if [[ "$posted" == "true" ]]; then
     return 0
   fi
+  gh pr comment "$PR_NUM" --body "$body" || return 1
   local merged
   merged="$(jq -cn --argjson cur "$INIT_STEPS" --arg s "$step_key" '$cur | .[$s] = true')"
   INIT_STEPS="$merged"
   if ! "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps=$merged"; then
-    echo "maybe-trigger-ai-review.sh: failed to persist step state before posting — aborting" >&2
-    exit 4
+    echo "maybe-trigger-ai-review.sh: comment posted but state update failed — may re-post on retry" >&2
   fi
-  gh pr comment "$PR_NUM" --body "$body" || return 1
 }
 
 if ! post_one codeant "@codeant-ai review"; then echo "maybe-trigger-ai-review.sh: failed posting @codeant-ai review" >&2; exit 5; fi

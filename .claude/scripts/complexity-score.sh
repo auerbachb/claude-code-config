@@ -18,7 +18,7 @@ set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
 
 help() {
-  sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 PR_NUM=""
@@ -68,14 +68,22 @@ if [[ -n "$PM_CFG" ]]; then
       val="${val//$'\t'/}"
       if [[ "$val" =~ ^[1-9][0-9]*$ ]]; then
         FILE_WEIGHT="$val"
+      else
+        echo "complexity-score.sh: pm-config FILE_WEIGHT='$val' is not a positive integer" >&2
+        exit 4
       fi
     fi
   fi
 fi
 
 # Env wins when set (explicit override for CI / one-off tuning).
-if [[ "${COMPLEXITY_FILE_WEIGHT+set}" == "set" ]] && [[ "${COMPLEXITY_FILE_WEIGHT}" =~ ^[1-9][0-9]*$ ]]; then
-  FILE_WEIGHT="$COMPLEXITY_FILE_WEIGHT"
+if [[ "${COMPLEXITY_FILE_WEIGHT+set}" == "set" ]]; then
+  if [[ "${COMPLEXITY_FILE_WEIGHT}" =~ ^[1-9][0-9]*$ ]]; then
+    FILE_WEIGHT="$COMPLEXITY_FILE_WEIGHT"
+  else
+    echo "complexity-score.sh: COMPLEXITY_FILE_WEIGHT='$COMPLEXITY_FILE_WEIGHT' is not a positive integer" >&2
+    exit 4
+  fi
 fi
 
 STDERR_TMP="$(mktemp)"
