@@ -311,10 +311,7 @@ post_one() {
     return 0
   fi
   gh pr comment "$PR_NUM" --body "$body" || return 1
-  local merged
-  merged="$(jq -cn --argjson cur "$INIT_STEPS" --arg s "$step_key" '$cur | .[$s] = true')"
-  INIT_STEPS="$merged"
-  if ! "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps=$merged"; then
+  if ! "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps[\"$step_key\"]=true"; then
     echo "maybe-trigger-ai-review.sh: comment posted but state update failed — may re-post on retry" >&2
   fi
 }
