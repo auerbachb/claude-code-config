@@ -91,17 +91,17 @@ parse_pm_kv() {
 if [[ -n "$PM_CFG" ]]; then
   v="$(parse_pm_kv THRESHOLD_SCORE)"
   if [[ -n "$v" ]]; then
-    if [[ "$v" =~ ^[0-9]+$ ]]; then THRESHOLD_SCORE="$v"
+    if [[ "$v" =~ ^(0|[1-9][0-9]*)$ ]]; then THRESHOLD_SCORE="$v"
     else echo "maybe-trigger-ai-review.sh: pm-config THRESHOLD_SCORE='$v' is not a non-negative integer" >&2; exit 4; fi
   fi
   v="$(parse_pm_kv FIRST_CR_ROUND)"
   if [[ -n "$v" ]]; then
-    if [[ "$v" =~ ^[0-9]+$ ]]; then FIRST_CR_ROUND="$v"
+    if [[ "$v" =~ ^(0|[1-9][0-9]*)$ ]]; then FIRST_CR_ROUND="$v"
     else echo "maybe-trigger-ai-review.sh: pm-config FIRST_CR_ROUND='$v' is not a non-negative integer" >&2; exit 4; fi
   fi
   v="$(parse_pm_kv CADENCE_ROUNDS)"
   if [[ -n "$v" ]]; then
-    if [[ "$v" =~ ^[0-9]+$ ]]; then CADENCE_ROUNDS="$v"
+    if [[ "$v" =~ ^(0|[1-9][0-9]*)$ ]]; then CADENCE_ROUNDS="$v"
     else echo "maybe-trigger-ai-review.sh: pm-config CADENCE_ROUNDS='$v' is not a non-negative integer" >&2; exit 4; fi
   fi
   v="$(parse_pm_kv ENABLE_PR_REVIEW_HELP)"
@@ -112,7 +112,7 @@ fi
 
 # Env overrides repo file when set (explicit tuning / CI).
 if [[ "${COMPLEXITY_THRESHOLD_SCORE+set}" == "set" ]]; then
-  if [[ "${COMPLEXITY_THRESHOLD_SCORE}" =~ ^[0-9]+$ ]]; then
+  if [[ "${COMPLEXITY_THRESHOLD_SCORE}" =~ ^(0|[1-9][0-9]*)$ ]]; then
     THRESHOLD_SCORE="$COMPLEXITY_THRESHOLD_SCORE"
   else
     echo "maybe-trigger-ai-review.sh: COMPLEXITY_THRESHOLD_SCORE='$COMPLEXITY_THRESHOLD_SCORE' is not a non-negative integer" >&2
@@ -120,7 +120,7 @@ if [[ "${COMPLEXITY_THRESHOLD_SCORE+set}" == "set" ]]; then
   fi
 fi
 if [[ "${COMPLEXITY_FIRST_CR_ROUND+set}" == "set" ]]; then
-  if [[ "${COMPLEXITY_FIRST_CR_ROUND}" =~ ^[0-9]+$ ]]; then
+  if [[ "${COMPLEXITY_FIRST_CR_ROUND}" =~ ^(0|[1-9][0-9]*)$ ]]; then
     FIRST_CR_ROUND="$COMPLEXITY_FIRST_CR_ROUND"
   else
     echo "maybe-trigger-ai-review.sh: COMPLEXITY_FIRST_CR_ROUND='$COMPLEXITY_FIRST_CR_ROUND' is not a non-negative integer" >&2
@@ -128,7 +128,7 @@ if [[ "${COMPLEXITY_FIRST_CR_ROUND+set}" == "set" ]]; then
   fi
 fi
 if [[ "${COMPLEXITY_CADENCE_ROUNDS+set}" == "set" ]]; then
-  if [[ "${COMPLEXITY_CADENCE_ROUNDS}" =~ ^[0-9]+$ ]]; then
+  if [[ "${COMPLEXITY_CADENCE_ROUNDS}" =~ ^(0|[1-9][0-9]*)$ ]]; then
     CADENCE_ROUNDS="$COMPLEXITY_CADENCE_ROUNDS"
   else
     echo "maybe-trigger-ai-review.sh: COMPLEXITY_CADENCE_ROUNDS='$COMPLEXITY_CADENCE_ROUNDS' is not a non-negative integer" >&2
@@ -316,7 +316,7 @@ if ! post_one codeant "@codeant-ai review"; then echo "maybe-trigger-ai-review.s
 if ! post_one cursor "@cursor review"; then echo "maybe-trigger-ai-review.sh: failed posting @cursor review" >&2; exit 5; fi
 if ! post_one graphite "@graphite-app re-review"; then echo "maybe-trigger-ai-review.sh: failed posting @graphite-app re-review" >&2; exit 5; fi
 if (( ENABLE_PR_REVIEW_HELP )); then
-  if ! post_one pr_help "/pr-review-help"; then echo "maybe-trigger-ai-review.sh: failed posting /pr-review-help" >&2; exit 5; fi
+  if ! post_one pr_help "/pr-review-help #$PR_NUM"; then echo "maybe-trigger-ai-review.sh: failed posting /pr-review-help" >&2; exit 5; fi
 fi
 
 NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
