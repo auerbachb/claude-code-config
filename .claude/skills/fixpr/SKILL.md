@@ -370,7 +370,7 @@ gh pr comment "$PR_NUMBER" --body "@cursor review"
 
 Cost/rate-limit note: `@codeant-ai review` may consume CodeAnt’s review budget, so skip it when auto-trigger activity is already present on the new SHA. **`@cursor review` is always posted** after a `/fixpr` push (composes with CI and issue #370’s four-reviewer triggers); BugBot is per-seat with no per-call charges — duplicates are acceptable. Greptile is intentionally NOT part of this proactive trigger set; it remains last-resort only per `greptile.md`.
 
-**Composition with issue #362:** `cr-github-review.md` runs `.claude/scripts/maybe-trigger-ai-review.sh` on each poll tick when there is **no** `/fixpr` trigger (no new findings, CI green, not `BEHIND`/`CONFLICTING`). That path fires the same three single-mention comments for **complexity + CR round count**, not because of a push — state is tracked in `session-state.json` so it does not batch with Step 3b on the same cause.
+**Composition with issue #362:** `cr-github-review.md` runs `.claude/scripts/maybe-trigger-ai-review.sh` on each poll tick when there is **no** `/fixpr` trigger (no new findings, CI green, not `BEHIND`/`CONFLICTING`). That path fires three single-mention comments — `@codeant-ai review`, `@cursor review`, `@graphite-app re-review` — for **complexity + CR round count**, not because of a push. This differs from Step 3b, which additionally posts `@coderabbitai full review` (subject to the 2/hour cap) when CodeRabbit has not yet auto-triggered on the new SHA. State for the #362 path is tracked in `session-state.json` so it does not batch with Step 3b on the same cause.
 
 ---
 

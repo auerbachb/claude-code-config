@@ -175,6 +175,10 @@ rm -f "$STDERR_TMP"
 PR_KEY="$PR_NUM"
 LAST_FIRED_ROUND=""
 LAST_SHA=""
+if [[ -f "$STATE_FILE" ]] && ! jq empty "$STATE_FILE" >/dev/null 2>&1; then
+  echo "maybe-trigger-ai-review.sh: session state at $STATE_FILE is not valid JSON; aborting to avoid duplicate AI-review comments" >&2
+  exit 4
+fi
 if [[ -f "$STATE_FILE" ]]; then
   LAST_FIRED_ROUND="$(jq -r --arg k "$PR_KEY" '.prs[$k].ai_review_trigger_last_cr_round // empty' "$STATE_FILE" 2>/dev/null || true)"
   LAST_SHA="$(jq -r --arg k "$PR_KEY" '.prs[$k].ai_review_trigger_head_sha // empty' "$STATE_FILE" 2>/dev/null || true)"

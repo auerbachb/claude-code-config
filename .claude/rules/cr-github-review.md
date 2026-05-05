@@ -46,7 +46,7 @@ If **ANY** of the conditions below hold, invoke `/fixpr` and do NOT request a ne
 
 > **Unresolved threads are NOT a trigger.** After a fix push, keep polling for reviewer catch-up unless conditions 1-4 occur.
 
-**#362:** If this cycle does not require `/fixpr`, run `maybe-trigger-ai-review.sh <PR>` (`pm-config.md` **Complexity triggers**; `complexity-score.sh`; `cycle-count.sh --cr-only`; three separate `@` comments). Dedupe `session-state.json` `.prs[N].ai_review_trigger_*`.
+**#362:** If this cycle does not require `/fixpr` **and** the session-start / pre-review audit has confirmed there are no unresolved bot findings for the current SHA, run `maybe-trigger-ai-review.sh <PR>` (`pm-config.md` **Complexity triggers**; `complexity-score.sh`; `cycle-count.sh --cr-only`; three separate `@` comments: `@codeant-ai review`, `@cursor review`, `@graphite-app re-review`). Dedupe `session-state.json` `.prs[N].ai_review_trigger_*`.
 
 **SHA freshness (every cycle).** A CR approval must have `.commit_id == current HEAD SHA`; otherwise it is stale. Re-trigger (respecting the 2/hour cap) and keep polling. See `cr-merge-gate.md` for retraction rules.
 
