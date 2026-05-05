@@ -190,9 +190,11 @@ fi
 # `gh api --paginate` concatenates JSON arrays with no separator; the first
 # `jq -s` flattens them into a single array.
 if (( CR_ONLY )); then
+  # Keep the full chronological review stream so non-CR reviews still serve as
+  # window boundaries for earlier CR reviews. The coderabbitai-only restriction
+  # is applied below when computing CR_REVIEW_IDS and ACTIONABLE_REVIEW_IDS.
   REVIEWS_JSON="$(jq -s '
-    [.[][] | select(.submitted_at != null)
-           | select(.user.login == "coderabbitai[bot]")]
+    [.[][] | select(.submitted_at != null)]
     | sort_by(.submitted_at)
   ' "$REVIEWS_RAW" 2>/dev/null)" || {
     echo "Error: jq failed parsing reviews for PR #$PR_NUM" >&2
@@ -229,7 +231,7 @@ if ! gh api "repos/{owner}/{repo}/pulls/$PR_NUM/comments?per_page=100" --paginat
 fi
 
 if (( CR_ONLY )); then
-  CR_REVIEW_IDS="$(jq -c '[.[] | .id]' <<<"$REVIEWS_JSON")"
+  CR_REVIEW_IDS="$(jq -c '[.[] | select(.user.login == "coderabbitai[bot]") | .id]' <<<"$REVIEWS_JSON")"
   ACTIONABLE_REVIEW_IDS="$(jq -s --argjson rid "$CR_REVIEW_IDS" '
     [.[][] | select(.pull_request_review_id != null) | .pull_request_review_id as $p | select(($rid | index($p)) != null) | $p]
     | unique
@@ -250,26 +252,47 @@ fi
 # Keep the full chronological review stream — every review (actionable or not)
 # still serves as a boundary for earlier reviews. Only the "actionable" flag
 # decides whether a given review is *counted*.
-# A review is actionable when state == "CHANGES_REQUESTED" OR its id appears in
-# ACTIONABLE_REVIEW_IDS (i.e., it has at least one inline comment).
+# In --cr-only mode only coderabbitai[bot] reviews can be actionable; non-CR
+# reviews are kept in the stream for correct boundary calculation but are never
+# counted. In other modes, a review is actionable when state == "CHANGES_REQUESTED"
+# OR its id appears in ACTIONABLE_REVIEW_IDS (has at least one inline comment).
 # Also attach an epoch value so cycle-count comparisons are timezone-safe.
 # GitHub returns most timestamps as ISO 8601 UTC ("...Z"), but commit
 # committer.date can use "+HH:MM" offsets, which would sort incorrectly as
 # raw strings. fromdateiso8601 normalizes everything to epoch seconds.
-REVIEWS_WITH_ACTIONABLE_JSON="$(jq -n \
-  --argjson reviews "$REVIEWS_JSON" \
-  --argjson actionable_ids "$ACTIONABLE_REVIEW_IDS" '
-  [$reviews[] | . + {
-    submitted_at_epoch: (.submitted_at | fromdateiso8601),
-    actionable: (
-      .state == "CHANGES_REQUESTED"
-      or (.id as $rid | ($actionable_ids | index($rid) != null))
-    )
-  }]
-')" || {
-  echo "Error: jq failed annotating reviews for PR #$PR_NUM" >&2
-  exit 4
-}
+if (( CR_ONLY )); then
+  REVIEWS_WITH_ACTIONABLE_JSON="$(jq -n \
+    --argjson reviews "$REVIEWS_JSON" \
+    --argjson actionable_ids "$ACTIONABLE_REVIEW_IDS" \
+    --argjson cr_ids "$CR_REVIEW_IDS" '
+    [$reviews[] | . + {
+      submitted_at_epoch: (.submitted_at | fromdateiso8601),
+      actionable: (
+        (.id as $rid | ($cr_ids | index($rid) != null))
+        and (.state == "CHANGES_REQUESTED"
+             or (.id as $rid | ($actionable_ids | index($rid) != null)))
+      )
+    }]
+  ')" || {
+    echo "Error: jq failed annotating reviews for PR #$PR_NUM" >&2
+    exit 4
+  }
+else
+  REVIEWS_WITH_ACTIONABLE_JSON="$(jq -n \
+    --argjson reviews "$REVIEWS_JSON" \
+    --argjson actionable_ids "$ACTIONABLE_REVIEW_IDS" '
+    [$reviews[] | . + {
+      submitted_at_epoch: (.submitted_at | fromdateiso8601),
+      actionable: (
+        .state == "CHANGES_REQUESTED"
+        or (.id as $rid | ($actionable_ids | index($rid) != null))
+      )
+    }]
+  ')" || {
+    echo "Error: jq failed annotating reviews for PR #$PR_NUM" >&2
+    exit 4
+  }
+fi
 
 # --- fetch commits ---
 COMMITS_RAW="$(mktemp)"
