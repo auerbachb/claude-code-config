@@ -4,7 +4,7 @@
 >
 > **Always:** Poll all 3 endpoints + check-runs every cycle. Use `per_page=100`. Filter by `coderabbitai[bot]`. Batch fixes into one commit. Reply to every thread. Resolve threads via GraphQL. **Enter the polling loop immediately after push — do NOT ask.** Invoke `/fixpr` when any trigger condition fires (see "Per-cycle check" below).
 > **Ask first:** Merging — always ask the user. **Nothing else in this workflow requires permission.**
-> **Never:** Poll only 1-2 endpoints. Use bare `coderabbitai` without `[bot]`. Push per-finding. Trigger `@coderabbitai full review` more than twice per PR per hour. Trigger Greptile proactively (only on CR failure). Merge without meeting the merge gate (see `cr-merge-gate.md` for the authoritative definition). **Exit polling on "nothing unresolved right now" — the only valid exit is the merge gate.** **Ask "want me to poll?" or "should I process this feedback?" — just do it.**
+> **Never:** Poll only 1-2 endpoints. Use bare `coderabbitai` without `[bot]`. Push per-finding. Trigger `@coderabbitai full review` more than twice per PR per hour. Trigger Greptile proactively (only on CR failure). Merge without meeting the merge gate (see `cr-merge-gate.md` for the authoritative definition). **Exit polling on "nothing unresolved right now" — the only valid exit is the merge gate.**
 >
 > **This fallback workflow runs after every push/PR.** Local review reduces findings; it does not replace GitHub review.
 
@@ -83,7 +83,7 @@ Verdicts: `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget_exhausted`,
 - **Fast-path rate limit:** "rate limit" in failed CodeRabbit check/status output goes through the escalation gate above. Sticky assignment applies.
   - **Ack ≠ completion.** "Actions performed — Full review triggered" = CR started. "CodeRabbit — Review completed" CI check = CR finished.
 - **CR username:** `coderabbitai[bot]` (with `[bot]` suffix). Filter by `.user.login == "coderabbitai[bot]"` — NOT bare `coderabbitai`.
-- **Watermark:** Track highest review ID from `pulls/{N}/reviews`. New reviews can have inline comment IDs lower than previous reviews (different ID sequences). For `issues/{N}/comments`, track by comment ID.
+- **Watermark:** Track highest review ID from `pulls/{N}/reviews`. New reviews can have inline comment IDs lower than previous reviews. For `issues/{N}/comments`, track by comment ID.
 - **CR silence threshold:** Cadence 60 s; a CR `status: "completed"` exits polling immediately. Otherwise, the escalation gate owns silence, BugBot grace, and Greptile fallback. Sticky assignment applies.
 
 ### CI Health Check (MANDATORY — every poll cycle)
