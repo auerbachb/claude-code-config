@@ -60,7 +60,7 @@ The merge gate depends on which reviewer owns the PR:
 
 ### Code-owner bots
 
-Some repos list CR (`@coderabbitai`) or Greptile (`@greptile-apps`) in `CODEOWNERS`. When branch protection has `require_code_owner_reviews`, that bot's `APPROVED` review on the current HEAD SHA satisfies the code-owner approval requirement. Do not ask the PR author or repo owner to self-approve — GitHub does not allow author self-approval and the bot approval is the terminal unblock when fresh.
+Some repos list CR (`@coderabbitai`) or Greptile (`@greptile-apps`) in `CODEOWNERS`. When branch protection has `require_code_owner_reviews`, that bot's `APPROVED` review on the current HEAD SHA satisfies the code-owner approval requirement. Do not ask the PR author to self-approve; the bot approval is the terminal unblock when fresh.
 
 Because `CODEOWNERS` varies by repo, this is a runtime check. `.claude/scripts/merge-gate.sh` reads `CODEOWNERS`, `.github/CODEOWNERS`, or `docs/CODEOWNERS`; when CR, Greptile, or **CodeAnt** (`@codeant-ai`) is a code owner it also requires GitHub `reviewDecision == "APPROVED"` on the current PR head. If branch protection is `BLOCKED` and a prior bot approval is stale/dismissed after a push, trigger that bot again (`@coderabbitai full review` for CR, `@greptileai` for Greptile, `@codeant-ai review` for CodeAnt) and keep polling. Human escalation is only for an actual human-authored `CHANGES_REQUESTED`, not stale bot approval.
 
@@ -103,7 +103,7 @@ Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses
 > 5. If any item fails, fix the code first — do NOT offer to merge with unchecked boxes
 > 6. Only after **ALL** boxes are checked, proceed to Step 3
 >
-> Re-run after every CR round. If additional code changes were made during the CR loop (e.g. fixes from CR rounds after the initial AC pass), you must re-verify ALL AC items against the final code. AC verification reflects the code **at merge time**, not the code at some earlier checkpoint.
+> Re-run after every review round. Re-verify all AC items if code changed during review; verification reflects the code **at merge time**, not an earlier checkpoint.
 >
 > Skipping this step is a **blocking failure** — the user should never see unchecked AC boxes when asked about merge.
 
