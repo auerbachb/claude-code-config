@@ -611,7 +611,10 @@ CI checks:       P total, Q were failing
 Merge state:     mergeable=..., status=..., review=...
 Push:            <sha> or "no push needed"
 Status:          CLEAN | THREADS_STUCK | REVIEW_PENDING | CI_PENDING | CI_FAILING | CONFLICTS | BEHIND | NEEDS_HUMAN_REVIEW | NEW_FINDINGS
+FIXPR_WRAP_STATUS: <exact same token as Status — single-line machine-parseable copy for /wrap issue #452>
 ```
+
+`/wrap` recovery may delegate here; parents grep **`FIXPR_WRAP_STATUS:`** (and echo **`Status:`**) into heartbeats without re-parsing prose.
 
 **Status definitions:**
 

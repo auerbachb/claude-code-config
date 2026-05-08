@@ -16,7 +16,7 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 
 ## Execution Model
 
-`/wrap` is a set-and-forget command. Once invoked, it runs all 4 phases end-to-end without mid-run confirmation prompts. It stops early only for explicit stop conditions (for example: no PR on current branch, unresolved findings, failed merge gate, CI failure, AC verification failure, or rebase detected).
+`/wrap` is a set-and-forget command. Once invoked, it runs all 4 phases end-to-end without mid-run confirmation prompts. It stops early only for explicit stop conditions (for example: no PR on current branch, **human** change requests on HEAD, recovery iteration cap, failed merge gate after recovery, **`/fixpr` delegation failure**, AC verification failure).
 
 > **Always:** Execute all phases end-to-end; proceed immediately between phases when no blocker exists.
 > **Ask first:** Never — all phases are autonomous once /wrap is invoked.
@@ -26,14 +26,13 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 
 | Transition | Action | Classification |
 |------------|--------|----------------|
-| Phase 1 complete (no unresolved findings) | Begin Phase 2 | **Always do** |
-| Phase 2 complete | Begin Phase 3 | **Always do** |
+| Phase 1 complete (findings scan finished — may have flagged bot findings) | Begin Phase 2 recovery + merge | **Always do** |
+| Phase 2 recovery loop exits cleanly (gate met, ready to merge) | AC check → squash merge → Phase 3 | **Always do** |
 | Phase 3 follow-ups processed | Begin Phase 4 | **Always do** |
 | Phase 4 lessons complete (or skipped as trivial) | Output final report | **Always do** |
-| Unresolved reviewer findings detected (Phase 1) | Stop and report | **Stop and report** |
-| Merge gate not met (Phase 2.1) | Stop and report | **Stop and report** |
+| Human `CHANGES_REQUESTED` on current HEAD (`human_changes_requested` non-empty in `merge-gate.sh` JSON) | Stop with reviewer names — **never** auto-dismiss | **Genuine block** |
+| Recovery iteration cap or non-recoverable gate failure | Stop with full audit + last `missing` | **Stop and report** |
 | AC checkbox verification fails (Phase 2.2) | Stop and report | **Stop and report** |
-| SHA changed / rebase / CI failure / BEHIND (Phase 2.3) | Stop and report | **Stop and report** |
 
 > **Anti-pattern:** If you find yourself composing "Should I proceed?" or presenting a confirmation button, the answer is always yes — execute immediately.
 
@@ -73,28 +72,132 @@ For each finding:
 2. Check if the code at the referenced location has been updated since the comment
 3. Check if the thread is resolved/outdated
 
-**If unresolved findings exist:** Report them to the user and stop. List each unresolved finding with its location and what it says. Do NOT proceed to merge.
+**Do not stop here.** Record whether any items remain classified as `finding` (after `pr-state.sh` classification) as **`WRAP_PHASE1_FINDINGS`** — e.g. count + short list for the recovery audit. Unresolved bot findings are a **trigger** for Phase 2’s `/fixpr` delegation path (issue #452), not a hard stop.
 
-**If all findings are addressed:** Continue to Phase 2.
-
-If no unresolved findings: proceed immediately to Phase 2 — do not ask.
+Proceed immediately to Phase 2 — do not ask.
 
 ## Phase 2: Merge
 
-### Step 2.1: Verify the merge gate
+### Step 2.1: Merge gate + autonomous recovery loop (issue #452)
 
-Run the shared merge-gate verifier, which implements the authoritative gate from `.claude/rules/cr-merge-gate.md` (CR 1 explicit APPROVED review on current HEAD / BugBot 1-clean / Greptile severity, plus CI and BEHIND checks):
+**Authority:** `.claude/scripts/merge-gate.sh` JSON on stdout is the single source of truth for merge readiness. After **every** recovery action, re-fetch the PR HEAD SHA (`gh pr view "$PR_NUM" --json headRefOid,state,merged`) and re-run `merge-gate.sh` — **no stale cache** of gate JSON across iterations.
+
+**Environment (optional):** Assign defaults once before looping:
 
 ```bash
-PR_NUM=$(gh pr view --json number --jq .number)
-GATE_JSON=$(.claude/scripts/merge-gate.sh "$PR_NUM")
-GATE_EXIT=$?
+WRAP_RECOVERY_MAX_ITERATIONS="${WRAP_RECOVERY_MAX_ITERATIONS:-5}"
+WRAP_RECOVERY_POLL_SECS="${WRAP_RECOVERY_POLL_SECS:-120}"
+WRAP_RECOVERY_MICRO_POLLS="${WRAP_RECOVERY_MICRO_POLLS:-3}"
 ```
 
-- Exit `0` → gate met, proceed.
-- Exit `1` → gate NOT met. Stop and report the `missing` array from the JSON output verbatim (e.g., "need 1 explicit CR APPROVED review on HEAD", "branch is BEHIND base", "CI has 2 failing check-run(s): ..."). If the JSON lists `coderabbitai[bot]` or `greptile-apps[bot]` in `.code_owner_bots` and the blocker is a stale/dismissed bot approval, trigger that bot's re-review instead of asking the PR author to approve.
-- Exit `3` → PR not found; skip to Phase 3 as described above.
-- Exit `2`/`4` → script or gh error; surface the stderr message.
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `WRAP_RECOVERY_MAX_ITERATIONS` | `5` | Hard cap on recovery cycles |
+| `WRAP_RECOVERY_POLL_SECS` | `120` | Sleep between reviewer trigger and re-check |
+| `WRAP_RECOVERY_MICRO_POLLS` | `3` | Within one iteration, brief re-polls after trigger |
+
+**Per-iteration heartbeat (mandatory):** Before acting, emit one user-visible line:
+
+```bash
+TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
+echo "[$TS] /wrap recovery cycle $i/$WRAP_RECOVERY_MAX_ITERATIONS — gate check"
+```
+
+The first line of each cycle must include Eastern time (same `TZ='America/New_York' date` pattern as `CLAUDE.md`). Optional: append **`— blocker → action → result`** after each recovery step for scanability.
+
+After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bullets): cycle number, blocker summary, action taken, result (`merge-gate` exit code + short `missing` summary or success). Include any **`FIXPR_WRAP_STATUS:…`** / **`Status:`** line parsed from a delegated `/fixpr` run.
+
+**Merge-ready shortcut:** Before entering the loop, run `merge-gate.sh` once. If exit `0` **and** Phase 1 recorded no `WRAP_PHASE1_FINDINGS`, **and** you are not carrying forward a half-applied recovery from a prior turn, skip straight to Step 2.2 — **no extra overhead**.
+
+**Recovery loop:** For `i` from `1` through `$WRAP_RECOVERY_MAX_ITERATIONS`:
+
+1. **Terminal checks**
+   - If `gh pr view` shows `merged: true` → exit loop for Phase 3 (merged terminal — Phase 3 + 4 unchanged).
+   - If PR closed without merge → stop with status (do not merge).
+
+2. **Refresh gate (always)**  
+   ```bash
+   GATE_JSON=$(.claude/scripts/merge-gate.sh "$PR_NUM")
+   GATE_EXIT=$?
+   HEAD_NOW=$(echo "$GATE_JSON" | jq -r '.head_sha // empty')
+   ```
+   - Exit `3` → PR not found / not open → Phase 3 handling as today.
+   - Exit `2`/`4` → surface stderr; append to audit; stop (tooling failure).
+   - Exit `0` → if Phase 1 had no outstanding findings trigger **or** findings were cleared by recovery, proceed **out** of the loop to Step 2.2. If Phase 1 still shows classified findings but gate passes (rare), prefer one `/fixpr` verification pass before merge — record in audit.
+
+3. **Exit `1` — classify JSON** (never guess from prose alone):
+
+   **`human_changes_requested` (non-empty array)** — **genuine block.** Stop immediately. Message must **name each login** from `human_changes_requested`. Do **not** run `dismiss-stale-bot-changes.sh`. Do **not** squash-merge.
+
+   Otherwise apply the **decision tree** below in order — **first matching branch wins** for this iteration:
+
+   **A. Stale bot `CHANGES_REQUESTED`** — When `( .stale_bot_changes_requested_count // 0 ) > 0`, invoke dismissal **without waiting for a push** (same allowlist + semantics as `/fixpr` Step 3a):
+
+   ```bash
+   DISMISS=""
+   for candidate in \
+     "$HOME/.claude/skills-worktree/.claude/scripts/dismiss-stale-bot-changes.sh" \
+     "$HOME/.claude/scripts/dismiss-stale-bot-changes.sh" \
+     ".claude/scripts/dismiss-stale-bot-changes.sh"; do
+     if [[ -x "$candidate" ]]; then DISMISS="$candidate"; break; fi
+   done
+   [[ -n "$DISMISS" ]] && "$DISMISS" "$PR_NUM"
+   ```
+
+   Record dismiss exit code in audit. **Never** use this path when `human_changes_requested` is non-empty.
+
+   **`mergeable == CONFLICTING`** — Stop immediately; recommend **`/merge-conflict`** or manual resolution (not safe to auto-merge). Do **not** proceed to Branch B.
+
+   **B. Delegate `/fixpr`** — Run when **any** of:
+
+   - `missing` mentions unresolved review threads; **or**
+   - `merge_state == "BEHIND"`; **or**
+   - `missing` reports CI **failing** check-runs (not merely incomplete); **or**
+   - `merge_state == "DIRTY"`; **or**
+   - Phase 1 left **`WRAP_PHASE1_FINDINGS`** (classified bot findings still pending remediation).
+
+   **Execution contract:** Do **not** shell out to an opaque “run fixpr” wrapper. Execute the **full** `.claude/skills/fixpr/SKILL.md` workflow (Steps 0–7): `pr-state.sh`, classify findings, fix + single push when needed, `dismiss-stale-bot-changes.sh` after push when applicable, `reply-thread.sh`, `resolve-review-threads.sh`, verify passes, etc. If spawning a Phase A subagent to carry the skill, use **`mode: "bypassPermissions"`**, explicit **`model`**, SAFETY block from `.claude/rules/safety.md`, and handoff path per `.claude/rules/subagent-orchestration.md` — parent stays in **monitor mode** (orchestration only).
+
+   Parse the **`=== fixpr complete ===`** footer for **`Status:`** and **`FIXPR_WRAP_STATUS`** (see fixpr skill). Echo that status into the heartbeat for this cycle.
+
+   **Stop conditions after `/fixpr`:**
+
+   - **`CI_FAILING`** with deterministic code/test failures you cannot fix in-session → stop; surface `missing` / CI summary + audit (matches “unfixable CI” scenario).
+   - **`THREADS_STUCK`**, **`NEEDS_HUMAN_REVIEW`**, or **`NEW_FINDINGS`** where unresolved → stop with audit; instruct re-run `/wrap` or `/fixpr`.
+   - **`REVIEW_PENDING`** → re-enter recovery loop; next gate re-check routes to Branch C (trigger bot + micro-poll) or Branch D. Outer iteration cap still applies.
+   - **`CI_PENDING`** → re-enter recovery loop; next gate re-check routes to Branch D (wait for CI). Outer iteration cap still applies.
+   - **`BEHIND`** → `/fixpr` rebased/force-pushed; re-run the gate. If CI is now pending on the new HEAD, treat as `CI_PENDING`.
+   - **`CONFLICTS`** → stop immediately; recommend **`/merge-conflict`** or manual resolution.
+   - **`CLEAN`** → **continue** to next recovery iteration (re-run gate).
+
+   When CodeRabbit hourly budget blocks an internal `@coderabbitai full review` inside `/fixpr`, `/fixpr` surfaces it — `/wrap` records it and **stops** (no infinite loop).
+
+   **C. Missing fresh bot review signal** — When `missing` indicates stale/dismissed bot approval or missing CR/BugBot/CodeAnt/Greptile signal per `.claude/rules/cr-merge-gate.md`, trigger the **one** bot your repo needs:
+
+   - CodeRabbit: before **`gh pr comment … "@coderabbitai full review"`**, run `.claude/scripts/cr-review-hourly.sh --check` (or repo install path). Exit **`1`** → **stop** with the script’s JSON snapshot and **`cr-github-review.md`** rate-limit guidance — **do not** loop until the cap resets.
+   - Greptile: `@greptileai` only when Greptile is the owning path / code owner (per `greptile.md`).
+   - CodeAnt: `@codeant-ai review` when CodeAnt owns the gap.
+   - BugBot: when the PR is on the BugBot path (`reviewer == "bugbot"` per `reviewer-of.sh` or `session-state.json`), post `@cursor review` — duplicates are acceptable per `bugbot.md`.
+
+   Then **poll:** sleep `$WRAP_RECOVERY_POLL_SECS`, re-run `merge-gate.sh`, and repeat up to **`WRAP_RECOVERY_MICRO_POLLS`** times **within the same outer iteration**. After micro-polls are exhausted, advance to the next outer iteration and record the chosen checks/results in the audit.
+
+   **D. CI incomplete only** (no failing yet) — Do not call `/fixpr` for fix work. Sleep `$WRAP_RECOVERY_POLL_SECS`, append “waiting for CI”, continue to next iteration if under cap.
+
+   **`merge_state == UNKNOWN`** — Sleep and retry within cap; if still unknown at cap, stop with audit.
+
+4. **End of iteration:** If no branch matched and gate still fails, append “unclassified blocker” + full `missing` to audit and proceed to next `i`.
+
+**Loop exit:**
+
+- **Success:** `merge-gate.sh` exit `0` → Step 2.2.
+- **Iteration cap:** Stop. Report **last `missing` array** verbatim + **full `WRAP_RECOVERY_AUDIT`** + guidance to re-run `/wrap`.
+- **Genuine block:** Human changes requested, `CONFLICTING`, rate-limit stop, or hard `/fixpr` failure as above.
+
+**Safety (non-negotiable, issue #452 / #450):**
+
+- **Never** call GitHub APIs that modify **branch protection** (`.../branches/.../protection`).
+- **Never** dismiss **human** reviews — only `dismiss-stale-bot-changes.sh` (bot allowlist, wrong `commit_id`).
+- **Never** resolve a review thread **without** verifying the code addresses the comment (`/fixpr` Steps 1–4 verify-address → reply → resolve).
 
 ### Step 2.2: Verify acceptance criteria
 
@@ -131,27 +234,22 @@ If any item fails verification, do NOT tick it — stop and report the failure. 
 
 ### Step 2.3: Pre-merge safety & CI (handled by Step 2.1)
 
-`.claude/scripts/merge-gate.sh` already verifies:
+After the recovery loop, **Step 2.1** must have returned gate exit `0` immediately before Step 2.2. That implies:
 
-- **Rebase/force-push safety** — the CR gate requires an explicit `APPROVED` review on the **current** HEAD SHA, so any rebase invalidates the gate (the approval's `commit_id` no longer matches).
-- **BEHIND base branch** — gate fails with "branch is BEHIND base" in `missing`; rebase + force-push and wait for fresh review before retrying.
-- **CI** — all check-runs must be completed with non-blocking conclusions; failures surface as "CI has N failing check-run(s): ..." in `missing`.
-
-If Step 2.1 exited `0`, these are already satisfied. If `missing` reported CI failures, **do NOT merge**. Inspect the CI split and read the specific failure:
+- **SHA freshness** — explicit `APPROVED` on current HEAD where required.
+- **BEHIND / CI / unresolved threads** — cleared by loop + `/fixpr` delegations.
+- If you need deeper CI forensics after a reported failure, use:
 
 ```bash
-.claude/scripts/ci-status.sh "$PR_NUM"             # JSON with blocking[].name + in_progress_runs[].name
+.claude/scripts/ci-status.sh "$PR_NUM"
 .claude/scripts/ci-status.sh "$PR_NUM" --format summary
-gh api "repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID}" --jq '.output.summary'
 ```
-
-`ci-status.sh` exits `3` on blocking failures (fix), `1` on incomplete runs (wait), `0` when CI is clean. Fix the code, commit, push, wait for CI to re-run, and re-invoke `.claude/scripts/merge-gate.sh`.
 
 **Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, or any suppression comment to work around CI.** Fix the actual code.
 
 ### Step 2.4: Squash merge
 
-**Merge authorization:** `/wrap` invocation authorizes merge. After blockers clear (Phase 1 + Steps 2.1–2.2), run `gh pr merge --squash` with no merge prompt — overrides `CLAUDE.md` "PR MERGE AUTHORIZATION" and `cr-merge-gate.md` Step 3 **for `/wrap` only**; real blockers above still stop the flow.
+**Merge authorization:** `/wrap` invocation authorizes merge. After blockers clear (Phase 1 + Step 2.1 recovery + Step 2.2), run `gh pr merge --squash` with no merge prompt — overrides `CLAUDE.md` "PR MERGE AUTHORIZATION" and `cr-merge-gate.md` Step 3 **for `/wrap` only**; real blockers above still stop the flow.
 
 ```bash
 gh pr merge --squash
