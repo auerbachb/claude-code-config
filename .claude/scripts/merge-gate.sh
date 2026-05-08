@@ -387,6 +387,27 @@ if [[ "$(echo "$HUMAN_CHANGES_ON_HEAD_JSON" | jq 'length')" -gt 0 ]]; then
   MISSING+=("human reviewer(s) requested changes on HEAD ${HEAD_SHA:0:7}: $HUMAN_LIST — cannot auto-dismiss; withdraw or supersede before merge")
 fi
 
+# Also catch human CHANGES_REQUESTED on an older SHA that still drives reviewDecision.
+# GitHub does NOT auto-dismiss human reviews on push; a stale human review on an old
+# SHA keeps reviewDecision == "CHANGES_REQUESTED" even when no human review is on HEAD.
+if [[ "$(echo "$HUMAN_CHANGES_ON_HEAD_JSON" | jq 'length')" -eq 0 && \
+      -n "$REVIEW_DECISION" && "$REVIEW_DECISION" == "CHANGES_REQUESTED" ]]; then
+  STALE_HUMAN_JSON=$(echo "$REVIEWS_JSON" | jq -c --arg sha "$HEAD_SHA" '
+    [.[]?
+      | select((.user.type // "") != "Bot")
+      | select(.commit_id != $sha)
+      | select(.state == "CHANGES_REQUESTED")
+    ]
+    | group_by(.user.login)
+    | map((sort_by(.submitted_at) | last) | {login: .user.login, sha: .commit_id[0:7]})
+  ')
+  if [[ "$(echo "$STALE_HUMAN_JSON" | jq 'length')" -gt 0 ]]; then
+    STALE_HUMAN_LIST=$(echo "$STALE_HUMAN_JSON" | jq -r 'map("\(.login) (on \(.sha))") | join(", ")')
+    MISSING+=("reviewDecision is CHANGES_REQUESTED from a human review on an older SHA: $STALE_HUMAN_LIST — ask the reviewer to re-review or dismiss their old review before merge")
+    HUMAN_CHANGES_ON_HEAD_JSON=$(echo "$STALE_HUMAN_JSON" | jq -c '[.[].login]')
+  fi
+fi
+
 CR_IS_CODE_OWNER=$(echo "$CODE_OWNER_BOTS" | jq -e 'index("coderabbitai[bot]") != null' >/dev/null 2>&1 && echo true || echo false)
 GREPTILE_IS_CODE_OWNER=$(echo "$CODE_OWNER_BOTS" | jq -e 'index("greptile-apps[bot]") != null' >/dev/null 2>&1 && echo true || echo false)
 CODEANT_IS_CODE_OWNER=$(echo "$CODE_OWNER_BOTS" | jq -e 'index("codeant-ai[bot]") != null' >/dev/null 2>&1 && echo true || echo false)

@@ -105,7 +105,7 @@ echo "[$TS] /wrap recovery cycle $i/$WRAP_RECOVERY_MAX_ITERATIONS — gate check
 
 The first line of each cycle must include Eastern time (same `TZ='America/New_York' date` pattern as `CLAUDE.md`). Optional: append **`— blocker → action → result`** after each recovery step for scanability.
 
-After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bullets): cycle number, blocker summary, action taken, result (`merge-gate` exit code + short `missing` summary or success). Include any **`FIXPR_WRAP_STATUS=…`** / **`Status:`** line parsed from a delegated `/fixpr` run.
+After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bullets): cycle number, blocker summary, action taken, result (`merge-gate` exit code + short `missing` summary or success). Include any **`FIXPR_WRAP_STATUS:…`** / **`Status:`** line parsed from a delegated `/fixpr` run.
 
 **Merge-ready shortcut:** Before entering the loop, run `merge-gate.sh` once. If exit `0` **and** Phase 1 recorded no `WRAP_PHASE1_FINDINGS`, **and** you are not carrying forward a half-applied recovery from a prior turn, skip straight to Step 2.2 — **no extra overhead**.
 
@@ -172,11 +172,12 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bulle
 
    When CodeRabbit hourly budget blocks an internal `@coderabbitai full review` inside `/fixpr`, `/fixpr` surfaces it — `/wrap` records it and **stops** (no infinite loop).
 
-   **C. Missing fresh bot `APPROVED` / `review_decision != APPROVED` with code-owner bots** — When `missing` indicates stale/dismissed bot approval or missing CR/CodeAnt/Greptile signal per `.claude/rules/cr-merge-gate.md`, trigger the **one** bot your repo needs:
+   **C. Missing fresh bot review signal** — When `missing` indicates stale/dismissed bot approval or missing CR/BugBot/CodeAnt/Greptile signal per `.claude/rules/cr-merge-gate.md`, trigger the **one** bot your repo needs:
 
    - CodeRabbit: before **`gh pr comment … "@coderabbitai full review"`**, run `.claude/scripts/cr-review-hourly.sh --check` (or repo install path). Exit **`1`** → **stop** with the script’s JSON snapshot and **`cr-github-review.md`** rate-limit guidance — **do not** loop until the cap resets.
    - Greptile: `@greptileai` only when Greptile is the owning path / code owner (per `greptile.md`).
    - CodeAnt: `@codeant-ai review` when CodeAnt owns the gap.
+   - BugBot: when the PR is on the BugBot path (`reviewer == "bugbot"` per `reviewer-of.sh` or `session-state.json`), post `@cursor review` — duplicates are acceptable per `bugbot.md`.
 
    Then **poll:** sleep `$WRAP_RECOVERY_POLL_SECS`, re-run `merge-gate.sh`, and repeat up to **`WRAP_RECOVERY_MICRO_POLLS`** times **within the same outer iteration**. After micro-polls are exhausted, advance to the next outer iteration and record the chosen checks/results in the audit.
 
