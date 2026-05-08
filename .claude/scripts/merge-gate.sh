@@ -395,9 +395,12 @@ fi
 if [[ "$(echo "$HUMAN_CHANGES_ON_HEAD_JSON" | jq 'length')" -eq 0 && \
       -n "$REVIEW_DECISION" && "$REVIEW_DECISION" == "CHANGES_REQUESTED" ]]; then
   STALE_HUMAN_JSON=$(echo "$REVIEWS_JSON" | jq -c --arg sha "$HEAD_SHA" '
-    [.[]?
+    # Exclude reviewers who already have any review on HEAD — handled by the HEAD block.
+    ([.[]? | select((.user.type // "") != "Bot") | select(.commit_id == $sha) | .user.login] | unique) as $head_reviewers
+    | [.[]?
       | select((.user.type // "") != "Bot")
       | select(.commit_id != $sha)
+      | select(.user.login | IN($head_reviewers[]) | not)
       | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")
     ]
     | group_by(.user.login)
