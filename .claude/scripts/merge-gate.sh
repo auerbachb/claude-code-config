@@ -373,6 +373,7 @@ HUMAN_CHANGES_ON_HEAD_JSON=$(echo "$REVIEWS_JSON" | jq -c --arg sha "$HEAD_SHA" 
   [.[]?
     | select((.user.type // "") != "Bot")
     | select(.commit_id == $sha)
+    | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")
   ]
   | group_by(.user.login)
   | map(
