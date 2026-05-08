@@ -174,7 +174,7 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bulle
    - Greptile: `@greptileai` only when Greptile is the owning path / code owner (per `greptile.md`).
    - CodeAnt: `@codeant-ai review` when CodeAnt owns the gap.
 
-   Then **poll:** sleep `$WRAP_RECOVERY_POLL_SECS`, re-run `merge-gate.sh`, repeat up to **`WRAP_RECOVERY_MICRO_POLLS`** times within the same iteration **or** consume the next outer iteration — pick one consistent strategy and record it in the audit.
+   Then **poll:** sleep `$WRAP_RECOVERY_POLL_SECS`, re-run `merge-gate.sh`, and repeat up to **`WRAP_RECOVERY_MICRO_POLLS`** times **within the same outer iteration**. After micro-polls are exhausted, advance to the next outer iteration and record the chosen checks/results in the audit.
 
    **D. CI incomplete only** (no failing yet) — Do not call `/fixpr` for fix work. Sleep ~`90–120s`, append “waiting for CI”, continue to next iteration if under cap.
 
