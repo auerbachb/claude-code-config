@@ -47,7 +47,9 @@
 #     "merge_state": "CLEAN"|"BEHIND"|"BLOCKED"|...,
 #     "mergeable": "MERGEABLE"|"CONFLICTING"|"UNKNOWN"|...,
 #     "review_decision": "APPROVED"|"CHANGES_REQUESTED"|"REVIEW_REQUIRED"|...,
-#     "code_owner_bots": ["coderabbitai[bot]", "greptile-apps[bot]"]
+#     "code_owner_bots": ["coderabbitai[bot]", "greptile-apps[bot]"],
+#     "human_changes_requested": ["login", ...],
+#     "stale_bot_changes_requested_count": N
 #   }
 #
 # Exit codes:
@@ -121,8 +123,8 @@ fi
 # Helpers
 # --------------------------------------------------------------------------
 emit_json() {
-  # emit_json <met> <reviewer> <path> <missing_json_array> <head_sha> <ci_status_json> <merge_state> <mergeable> <review_decision> <code_owner_bots_json>
-  local met="$1" reviewer="$2" path="$3" missing="$4" head_sha="$5" ci_status="$6" merge_state="$7" mergeable="$8" review_decision="$9" code_owner_bots="${10}"
+  # emit_json <met> <reviewer> <path> <missing_json_array> <head_sha> <ci_status_json> <merge_state> <mergeable> <review_decision> <code_owner_bots_json> <human_changes_json_array> <stale_bot_changes_requested_count_number>
+  local met="$1" reviewer="$2" path="$3" missing="$4" head_sha="$5" ci_status="$6" merge_state="$7" mergeable="$8" review_decision="$9" code_owner_bots="${10}" human_changes="${11}" stale_bot_count="${12}"
   jq -cn \
     --argjson met "$met" \
     --arg reviewer "$reviewer" \
@@ -134,7 +136,9 @@ emit_json() {
     --arg mergeable "$mergeable" \
     --arg review_decision "$review_decision" \
     --argjson code_owner_bots "$code_owner_bots" \
-    '{met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots}'
+    --argjson human_changes_requested "$human_changes" \
+    --argjson stale_bot_changes_requested_count "$stale_bot_count" \
+    '{met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count}'
 }
 
 emit_empty_ci() {
@@ -150,7 +154,7 @@ emit_empty_code_owner_bots() {
 # --------------------------------------------------------------------------
 OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
 if [[ -z "$OWNER_REPO" ]]; then
-  emit_json false unknown cr '["gh repo view failed — not in a git repo or no remote"]' "" "$(emit_empty_ci)" "" "" "" "$(emit_empty_code_owner_bots)"
+  emit_json false unknown cr '["gh repo view failed — not in a git repo or no remote"]' "" "$(emit_empty_ci)" "" "" "" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 4
 fi
 OWNER="${OWNER_REPO%/*}"
@@ -158,7 +162,7 @@ REPO="${OWNER_REPO#*/}"
 
 PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,headRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision 2>/dev/null || true)
 if [[ -z "$PR_JSON" ]]; then
-  emit_json false unknown cr "[\"PR #$PR_NUMBER not found\"]" "" "$(emit_empty_ci)" "" "" "" "$(emit_empty_code_owner_bots)"
+  emit_json false unknown cr "[\"PR #$PR_NUMBER not found\"]" "" "$(emit_empty_ci)" "" "" "" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 3
 fi
 
@@ -170,12 +174,12 @@ MERGEABLE=$(echo "$PR_JSON" | jq -r '.mergeable // ""')
 REVIEW_DECISION=$(echo "$PR_JSON" | jq -r '.reviewDecision // ""')
 
 if [[ "$PR_STATE" != "OPEN" ]]; then
-  emit_json false unknown cr "[\"PR #$PR_NUMBER is $PR_STATE — not open\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)"
+  emit_json false unknown cr "[\"PR #$PR_NUMBER is $PR_STATE — not open\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 3
 fi
 
 if [[ -z "$HEAD_SHA" ]]; then
-  emit_json false unknown cr '["could not determine HEAD SHA"]' "" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)"
+  emit_json false unknown cr '["could not determine HEAD SHA"]' "" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 4
 fi
 
@@ -186,7 +190,7 @@ fi
 # inside a helper function called via $(), because exit inside $() only kills
 # the subshell and the main script continues with garbage data.
 die_api() {
-  emit_json false "${REVIEWER_OVERRIDE:-unknown}" "unknown" "[\"gh api failed: $1\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)"
+  emit_json false "${REVIEWER_OVERRIDE:-unknown}" "unknown" "[\"gh api failed: $1\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 4
 }
 
@@ -362,6 +366,19 @@ UNRESOLVED_TOTAL=$(echo "$THREADS_JSON" | jq -r '
   | length')
 if [[ "$UNRESOLVED_TOTAL" -gt 0 ]]; then
   MISSING+=("$UNRESOLVED_TOTAL unresolved review thread(s) — resolve via GraphQL before merge")
+fi
+
+# Human-authored CHANGES_REQUESTED on current HEAD (#452 / cr-merge-gate.md) — never auto-dismissable.
+HUMAN_CHANGES_ON_HEAD_JSON=$(echo "$REVIEWS_JSON" | jq -c --arg sha "$HEAD_SHA" '
+  [.[]?
+    | select(.commit_id == $sha and .state == "CHANGES_REQUESTED")
+    | select((.user.type // "") != "Bot")
+  ]
+  | map(.user.login)
+  | unique')
+if [[ "$(echo "$HUMAN_CHANGES_ON_HEAD_JSON" | jq 'length')" -gt 0 ]]; then
+  HUMAN_LIST=$(echo "$HUMAN_CHANGES_ON_HEAD_JSON" | jq -r 'join(", ")')
+  MISSING+=("human reviewer(s) requested changes on HEAD ${HEAD_SHA:0:7}: $HUMAN_LIST — cannot auto-dismiss; withdraw or supersede before merge")
 fi
 
 CR_IS_CODE_OWNER=$(echo "$CODE_OWNER_BOTS" | jq -e 'index("coderabbitai[bot]") != null' >/dev/null 2>&1 && echo true || echo false)
@@ -599,26 +616,25 @@ else
   MET=false
 fi
 
-# When reviewDecision is CHANGES_REQUESTED, help operators distinguish stale bot
-# reviews (old commit) from current human requests — fixpr dismisses the former
-# after each push (cr-merge-gate.md / issue #426).
-if [[ "$REVIEW_DECISION" == "CHANGES_REQUESTED" ]]; then
-  STALE_BOT_CHANGES_COUNT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
-    def allow: ["coderabbitai[bot]","cursor[bot]","greptile-apps[bot]","codeant-ai[bot]","graphite-app[bot]"];
-    [.[]?
-      | select(.state == "CHANGES_REQUESTED")
-      | select((.commit_id // "") != "" and .commit_id != $sha)
-      | select((.user.type // "") == "Bot")
-      | select((.user.login // "") as $l | allow | index($l))]
-    | length')
-  if [[ "${STALE_BOT_CHANGES_COUNT:-0}" -gt 0 ]]; then
-    echo "[merge-gate] reviewDecision is CHANGES_REQUESTED with ${STALE_BOT_CHANGES_COUNT} stale bot CHANGES_REQUESTED review(s) (commit_id != HEAD ${HEAD_SHA:0:7}). Dismiss via .claude/scripts/dismiss-stale-bot-changes.sh after push (see fixpr Step 3a, cr-merge-gate.md) — not human escalation." >&2
-  fi
+# Stale bot CHANGES_REQUESTED (wrong SHA) — dismiss via dismiss-stale-bot-changes.sh
+# or /wrap recovery; emitted as JSON for orchestration (#452 / issue #426).
+STALE_BOT_CHANGES_COUNT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
+  def allow: ["coderabbitai[bot]","cursor[bot]","greptile-apps[bot]","codeant-ai[bot]","graphite-app[bot]"];
+  [.[]?
+    | select(.state == "CHANGES_REQUESTED")
+    | select((.commit_id // "") != "" and .commit_id != $sha)
+    | select((.user.type // "") == "Bot")
+    | select((.user.login // "") as $l | allow | index($l))]
+  | length')
+if [[ "$REVIEW_DECISION" == "CHANGES_REQUESTED" ]] && [[ "${STALE_BOT_CHANGES_COUNT:-0}" -gt 0 ]]; then
+  echo "[merge-gate] reviewDecision is CHANGES_REQUESTED with ${STALE_BOT_CHANGES_COUNT} stale bot CHANGES_REQUESTED review(s) (commit_id != HEAD ${HEAD_SHA:0:7}). Dismiss via .claude/scripts/dismiss-stale-bot-changes.sh after push (see fixpr Step 3a, cr-merge-gate.md) — not human escalation." >&2
 fi
+
+STALE_JSON=$(jq -n --argjson c "${STALE_BOT_CHANGES_COUNT:-0}" '$c')
 
 MISSING_JSON=$(printf '%s\n' "${MISSING[@]:-}" | jq -R . | jq -cs 'map(select(length > 0))')
 
-emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS"
+emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON"
 
 if [[ "$MET" == true ]]; then
   exit 0
