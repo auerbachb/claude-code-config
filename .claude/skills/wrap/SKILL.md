@@ -146,6 +146,8 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bulle
 
    Record dismiss exit code in audit. **Never** use this path when `human_changes_requested` is non-empty.
 
+   **`mergeable == CONFLICTING`** — Stop immediately; recommend **`/merge-conflict`** or manual resolution (not safe to auto-merge). Do **not** proceed to Branch B.
+
    **B. Delegate `/fixpr`** — Run when **any** of:
 
    - `missing` mentions unresolved review threads; **or**
@@ -162,7 +164,8 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bulle
 
    - **`CI_FAILING`** with deterministic code/test failures you cannot fix in-session → stop; surface `missing` / CI summary + audit (matches “unfixable CI” scenario).
    - **`THREADS_STUCK`**, **`NEEDS_HUMAN_REVIEW`**, or **`NEW_FINDINGS`** where unresolved → stop with audit; instruct re-run `/wrap` or `/fixpr`.
-   - **`REVIEW_PENDING`** / **`CI_PENDING`** → stop with audit; “re-run `/wrap` after bots/CI finish” — **do not spin forever**.
+   - **`REVIEW_PENDING`** → re-enter recovery loop; next gate re-check routes to Branch C (trigger bot + micro-poll) or Branch D. Outer iteration cap still applies.
+   - **`CI_PENDING`** → re-enter recovery loop; next gate re-check routes to Branch D (wait for CI). Outer iteration cap still applies.
    - **`BEHIND`** → `/fixpr` rebased/force-pushed; re-run the gate. If CI is now pending on the new HEAD, treat as `CI_PENDING`.
    - **`CONFLICTS`** → stop immediately; recommend **`/merge-conflict`** or manual resolution.
    - **`CLEAN`** → **continue** to next recovery iteration (re-run gate).
@@ -178,8 +181,6 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bulle
    Then **poll:** sleep `$WRAP_RECOVERY_POLL_SECS`, re-run `merge-gate.sh`, and repeat up to **`WRAP_RECOVERY_MICRO_POLLS`** times **within the same outer iteration**. After micro-polls are exhausted, advance to the next outer iteration and record the chosen checks/results in the audit.
 
    **D. CI incomplete only** (no failing yet) — Do not call `/fixpr` for fix work. Sleep `$WRAP_RECOVERY_POLL_SECS`, append “waiting for CI”, continue to next iteration if under cap.
-
-   **`mergeable == CONFLICTING`** — Stop; recommend **`/merge-conflict`** or manual resolution (not safe to auto-merge).
 
    **`merge_state == UNKNOWN`** — Sleep and retry within cap; if still unknown at cap, stop with audit.
 
