@@ -371,11 +371,16 @@ fi
 # Human-authored CHANGES_REQUESTED on current HEAD (#452 / cr-merge-gate.md) — never auto-dismissable.
 HUMAN_CHANGES_ON_HEAD_JSON=$(echo "$REVIEWS_JSON" | jq -c --arg sha "$HEAD_SHA" '
   [.[]?
-    | select(.commit_id == $sha and .state == "CHANGES_REQUESTED")
     | select((.user.type // "") != "Bot")
+    | select(.commit_id == $sha)
   ]
-  | map(.user.login)
-  | unique')
+  | group_by(.user.login)
+  | map(
+      (sort_by(.submitted_at) | last) as $latest
+      | select($latest.state == "CHANGES_REQUESTED")
+      | $latest.user.login
+    )
+')
 if [[ "$(echo "$HUMAN_CHANGES_ON_HEAD_JSON" | jq 'length')" -gt 0 ]]; then
   HUMAN_LIST=$(echo "$HUMAN_CHANGES_ON_HEAD_JSON" | jq -r 'join(", ")')
   MISSING+=("human reviewer(s) requested changes on HEAD ${HEAD_SHA:0:7}: $HUMAN_LIST — cannot auto-dismiss; withdraw or supersede before merge")

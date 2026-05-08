@@ -163,6 +163,7 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bulle
    - **`CI_FAILING`** with deterministic code/test failures you cannot fix in-session → stop; surface `missing` / CI summary + audit (matches “unfixable CI” scenario).
    - **`THREADS_STUCK`**, **`NEEDS_HUMAN_REVIEW`**, or **`NEW_FINDINGS`** where unresolved → stop with audit; instruct re-run `/wrap` or `/fixpr`.
    - **`REVIEW_PENDING`** / **`CI_PENDING`** → stop with audit; “re-run `/wrap` after bots/CI finish” — **do not spin forever**.
+   - **`CONFLICTS`** → stop immediately; recommend **`/merge-conflict`** or manual resolution.
    - **`CLEAN`** → **continue** to next recovery iteration (re-run gate).
 
    When CodeRabbit hourly budget blocks an internal `@coderabbitai full review` inside `/fixpr`, `/fixpr` surfaces it — `/wrap` records it and **stops** (no infinite loop).
