@@ -396,10 +396,14 @@ if [[ "$(echo "$HUMAN_CHANGES_ON_HEAD_JSON" | jq 'length')" -eq 0 && \
     [.[]?
       | select((.user.type // "") != "Bot")
       | select(.commit_id != $sha)
-      | select(.state == "CHANGES_REQUESTED")
+      | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")
     ]
     | group_by(.user.login)
-    | map((sort_by(.submitted_at) | last) | {login: .user.login, sha: .commit_id[0:7]})
+    | map(
+        (sort_by(.submitted_at) | last) as $latest
+        | select($latest.state == "CHANGES_REQUESTED")
+        | {login: $latest.user.login, sha: $latest.commit_id[0:7]}
+      )
   ')
   if [[ "$(echo "$STALE_HUMAN_JSON" | jq 'length')" -gt 0 ]]; then
     STALE_HUMAN_LIST=$(echo "$STALE_HUMAN_JSON" | jq -r 'map("\(.login) (on \(.sha))") | join(", ")')
