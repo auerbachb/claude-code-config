@@ -369,11 +369,12 @@ if [[ "$UNRESOLVED_TOTAL" -gt 0 ]]; then
 fi
 
 # Human-authored CHANGES_REQUESTED on current HEAD (#452 / cr-merge-gate.md) — never auto-dismissable.
+# Include DISMISSED so a dismissed CHANGES_REQUESTED is superseded by the newer DISMISSED state.
 HUMAN_CHANGES_ON_HEAD_JSON=$(echo "$REVIEWS_JSON" | jq -c --arg sha "$HEAD_SHA" '
   [.[]?
     | select((.user.type // "") != "Bot")
     | select(.commit_id == $sha)
-    | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")
+    | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")
   ]
   | group_by(.user.login)
   | map(
@@ -381,7 +382,8 @@ HUMAN_CHANGES_ON_HEAD_JSON=$(echo "$REVIEWS_JSON" | jq -c --arg sha "$HEAD_SHA" 
       | select($latest.state == "CHANGES_REQUESTED")
       | $latest.user.login
     )
-')
+') || HUMAN_CHANGES_ON_HEAD_JSON='[]'
+if [[ -z "$HUMAN_CHANGES_ON_HEAD_JSON" ]]; then HUMAN_CHANGES_ON_HEAD_JSON='[]'; fi
 if [[ "$(echo "$HUMAN_CHANGES_ON_HEAD_JSON" | jq 'length')" -gt 0 ]]; then
   HUMAN_LIST=$(echo "$HUMAN_CHANGES_ON_HEAD_JSON" | jq -r 'join(", ")')
   MISSING+=("human reviewer(s) requested changes on HEAD ${HEAD_SHA:0:7}: $HUMAN_LIST — cannot auto-dismiss; withdraw or supersede before merge")
@@ -396,7 +398,7 @@ if [[ "$(echo "$HUMAN_CHANGES_ON_HEAD_JSON" | jq 'length')" -eq 0 && \
     [.[]?
       | select((.user.type // "") != "Bot")
       | select(.commit_id != $sha)
-      | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")
+      | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")
     ]
     | group_by(.user.login)
     | map(
@@ -404,7 +406,8 @@ if [[ "$(echo "$HUMAN_CHANGES_ON_HEAD_JSON" | jq 'length')" -eq 0 && \
         | select($latest.state == "CHANGES_REQUESTED")
         | {login: $latest.user.login, sha: $latest.commit_id[0:7]}
       )
-  ')
+  ') || STALE_HUMAN_JSON='[]'
+  if [[ -z "$STALE_HUMAN_JSON" ]]; then STALE_HUMAN_JSON='[]'; fi
   if [[ "$(echo "$STALE_HUMAN_JSON" | jq 'length')" -gt 0 ]]; then
     STALE_HUMAN_LIST=$(echo "$STALE_HUMAN_JSON" | jq -r 'map("\(.login) (on \(.sha))") | join(", ")')
     MISSING+=("reviewDecision is CHANGES_REQUESTED from a human review on an older SHA: $STALE_HUMAN_LIST — ask the reviewer to re-review or dismiss their old review before merge")
