@@ -277,4 +277,4 @@ Bundle aggressively to limit CR review cycles.
 ## Verification notes (this PR)
 
 - **Corpus word count** ( `CLAUDE.md` + `.claude/rules/*.md` ): **10970** words — under `.claude/rules/.budget-soft-cap` (**11166**). This PR adds reference-only markdown and does not raise the corpus.  
-- **CodeRabbit CLI** was not present in the audit CI environment; human/agent with CLI should run `coderabbit review --prompt-only` before merge per workflow rules.
+- **CodeRabbit CLI** was not present in the audit CI environment; human/agent with CLI should run `coderabbit review --agent` before merge per workflow rules.

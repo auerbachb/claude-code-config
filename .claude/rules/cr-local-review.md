@@ -8,7 +8,7 @@ Primary review workflow — catches issues before PR noise/quota; does not repla
 
 ### Anti–rate-limit pre-flight (local-first)
 
-**~8 reviews/hour** (hidden cap, tier-dependent). **Batch locally:** `coderabbit review --prompt-only` → fix all → re-run until clean → **one commit, one push**. `/fixpr` matches: all threads + CI, **one** commit/push; cap + session tracking: `cr-github-review.md` and `cr-review-hourly.sh`.
+**~8 reviews/hour** (hidden cap, tier-dependent). **Batch locally:** `coderabbit review --agent` → fix all → re-run until clean → **one commit, one push**. `/fixpr` matches: all threads + CI, **one** commit/push; cap + session tracking: `cr-github-review.md` and `cr-review-hourly.sh`.
 
 ### Prerequisites
 
@@ -19,14 +19,14 @@ Primary review workflow — catches issues before PR noise/quota; does not repla
 
 After implementation, before push. Optional mid-development. Run from repo root:
 
-- `coderabbit review --prompt-only` — all changes (prompt-only is optimized for agent parsing)
+- `coderabbit review --agent` — all changes (`--agent` emits structured NDJSON findings, optimized for agent parsing)
 - `--type uncommitted` / `--type committed` — scope to working dir or last commit
 
 ### Fix loop
-1. Run `coderabbit review --prompt-only` to review changes
+1. Run `coderabbit review --agent` to review changes
 2. Parse the findings — verify each against the actual code before fixing
 3. Fix **all valid findings**
-4. Run `coderabbit review --prompt-only` again
+4. Run `coderabbit review --agent` again
 5. Repeat until CR returns no findings
 
 ### Never Suppress Linter Errors (NON-NEGOTIABLE)

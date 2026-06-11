@@ -74,7 +74,7 @@ Repo-local config: `.coderabbit.yaml`.
 - GitHub workflow: `.github/workflows/cr-plan-on-issue.yml` auto-comments
   `@coderabbitai plan` on newly opened non-bot issues.
 - Local workflow: `.claude/rules/cr-local-review.md` requires
-  `coderabbit review --prompt-only` before push when the CLI is available.
+  `coderabbit review --agent` before push when the CLI is available.
 - GitHub workflow: `.claude/rules/cr-github-review.md` polls CodeRabbit after
   push and requires current-HEAD approval for the CR merge path.
 

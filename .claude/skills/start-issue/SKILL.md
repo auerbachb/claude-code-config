@@ -203,7 +203,7 @@ Print a compact summary to the user:
 {unchecked checkbox items from the issue body}
 
 ---
-Ready to code. Start with step 1 of the plan above. Run local CR review (`coderabbit review --prompt-only`) before pushing.
+Ready to code. Start with step 1 of the plan above. Run local CR review (`coderabbit review --agent`) before pushing.
 ```
 
 Stop after printing the summary. Do NOT start coding automatically — the user may want to review the plan first.
