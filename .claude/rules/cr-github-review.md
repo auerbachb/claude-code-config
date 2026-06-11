@@ -64,7 +64,7 @@ Verdicts: `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget_exhausted`,
 
 ### Rate Limits & Behavior (Pro Tier)
 
-**Cap:** ~**8** CR PR reviews/hour (plan on 8). Batch fixes into one commit/push; max **2** explicit `@coderabbitai full review`/PR/hour. On cooldown/exhaustion, local review first, then escalate CR → BugBot → Greptile → self-review. Consumption tracked via `cr-review-hourly.sh` (`cr_hourly.events`, `.prs[N].cr_explicit_triggers`). Full caps, hourly-state mechanics, and script flags: `.claude/reference/cr-rate-limits.md`.
+**Cap:** ~**8** CR PR reviews/hour (plan on 8). Batch fixes into one commit/push; max **2** explicit `@coderabbitai full review`/PR/hour (surface the user at the 2nd recorded trigger). On cooldown/exhaustion, local review first, then escalate CR → BugBot → Greptile → self-review. Consumption tracked via `cr-review-hourly.sh` (`cr_hourly.events`, `.prs[N].cr_explicit_triggers`). Full caps, hourly-state mechanics, and script flags: `.claude/reference/cr-rate-limits.md`.
 
 ### Polling
 
