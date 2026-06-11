@@ -48,14 +48,14 @@ Rules live in `.claude/rules/<name>.md` and auto-load in every parent-agent sess
 2. **File size limits** (see CLAUDE.md "Rule File Size Guidelines"):
    - **Soft cap:** ~150 lines / ~1,500 words per file — consider splitting if exceeded.
    - **Hard cap:** 200 lines / 2,000 words per file — must split.
-3. **Total budget:** CLAUDE.md + all rule files ≤ **10,000 words** (matches `.coderabbit.yaml`).
+3. **Total budget:** CLAUDE.md + all rule files ≤ **12,000 words** soft / **13,000** hard (matches `.coderabbit.yaml` and `rule-lint.sh`).
 4. **Verification command:**
 
    ```bash
    { cat CLAUDE.md; find .claude/rules -name '*.md' -exec cat {} +; } | wc -w
    ```
 
-   Run this on any PR that touches CLAUDE.md or `.claude/rules/`. If the total exceeds 10,000, condense before merging.
+   Run this on any PR that touches CLAUDE.md or `.claude/rules/`. If the total exceeds 12,000, condense before merging.
 5. **Update the CLAUDE.md rule index table** with a new row for the file (file name + one-line contents summary).
 6. **CI will verify** index alignment and the word-count budget via the `rule-lint` check.
 
