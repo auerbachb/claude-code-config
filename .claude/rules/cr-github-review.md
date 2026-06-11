@@ -64,11 +64,7 @@ Verdicts: `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget_exhausted`,
 
 ### Rate Limits & Behavior (Pro Tier)
 
-**Cap:** ~**8** GitHub PR reviews/hour + **50** chats/hour (tier variance — plan on **8**). One commit per fix batch before push. Max **2** explicit `@coderabbitai full review`/PR/hour (rolling 3600s); surface user at **2nd** recorded trigger.
-
-**State:** `cr_hourly.events` (push consumption), `.prs[N].cr_explicit_triggers` (manual). Script `.claude/scripts/cr-review-hourly.sh`: `--check`, `--consume`, `--record-explicit N` (stderr SURFACE if ≥2); prune rolling hour; default budget **8** (`CR_HOURLY_BUDGET` = tests only).
-
-**Cooldown / exhausted:** `cr-local-review.md` first; wait for window expiry (~≤60m) or escalation gate → BugBot → Greptile → self-review (`bugbot.md`, `greptile.md`). Parallel PRs: stagger (~3–4 CR-triggering pushes/hour).
+**Cap:** ~**8** CR PR reviews/hour (plan on 8). Batch fixes into one commit/push; max **2** explicit `@coderabbitai full review`/PR/hour. On cooldown/exhaustion, local review first, then escalate CR → BugBot → Greptile → self-review. Consumption tracked via `cr-review-hourly.sh` (`cr_hourly.events`, `.prs[N].cr_explicit_triggers`). Full caps, hourly-state mechanics, and script flags: `.claude/reference/cr-rate-limits.md`.
 
 ### Polling
 
@@ -98,13 +94,25 @@ Verdicts: `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget_exhausted`,
 
 ### Timeout & Fallback — Three-Tier Review Chain
 
-**Review chain:** CR → BugBot → Greptile → self-review. **Supplemental (CR path):** CodeAnt + Graphite — `codeant-graphite.md`.
+**Review chain:** CR → BugBot → Greptile → self-review. **Supplemental (CR path):** CodeAnt + Graphite — see the "CodeAnt & Graphite (supplemental)" subsection below.
 
 When CR fails or stalls, the reviewer escalation gate checks BugBot before Greptile and caches whether BugBot is installed for the PR. See `bugbot.md` and `greptile.md`.
 
 - **Sticky assignment:** CR fail → BugBot owns the PR. If BugBot also fails → Greptile owns permanently. Do not switch back up the chain.
 - **If all three fail** (CR failed/stalled + BugBot absent/silent per the gate + Greptile timeout or budget exhaustion): fall back to **self-review**. Self-review does NOT satisfy the merge gate.
 - Tell the user which fallback was used and why.
+
+### CodeAnt & Graphite (supplemental)
+
+> **Always:** When CodeAnt or Graphite is enabled, poll `codeant-ai[bot]` and `graphite-app[bot]` on the same three PR endpoints as CodeRabbit; clear threads and blocking CI like other bots.
+> **Ask first:** Merging — always ask the user.
+> **Never:** Treat Graphite as a merge-gate tier until it posts reliably; avoid spamming `@codeant-ai` / `@graphite-app`.
+
+**CodeAnt (CR path):** If CodeAnt participated on current HEAD (comments or CodeAnt check-run), `merge-gate.sh` needs a clean signal per `cr-merge-gate.md`. Use `@codeant-ai review` to nudge.
+
+**Graphite:** Poll like other bots; not a merge-gate tier until reliable. If silent: check [Graphite app](https://github.com/apps/graphite-app) access, AI review toggle, workspace link, limits; try `@graphite-app re-review` on a test PR.
+
+CodeAnt and Graphite are parallel supplements; the primary chain stays CR → BugBot → Greptile.
 
 ### Processing CR Feedback
 

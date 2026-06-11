@@ -91,7 +91,6 @@ Detailed workflow rules are split into topic-specific files in `.claude/rules/`:
 | `cr-local-review.md` | Local CR review |
 | `cr-github-review.md` | GitHub review polling |
 | `cr-merge-gate.md` | Merge gate |
-| `codeant-graphite.md` | CodeAnt + Graphite supplemental review |
 | `bugbot.md` | BugBot fallback |
 | `greptile.md` | Greptile fallback |
 | `subagent-orchestration.md` | Subagent spawning |
@@ -109,11 +108,11 @@ These files auto-load for the parent agent session. **Subagents do NOT auto-load
 
 ### Rule File Size Guidelines
 
-Rules consume tokens on every turn. Limits apply to CLAUDE.md + `.claude/rules/*.md`:
+Rules load every turn. With the current 1M-token fleet (Opus 4.8, Fable 5, Sonnet 4.6) the corpus is ~1.5% of the window (~$0.015/turn cached on Opus 4.8), so the budget now exists for **instruction adherence and maintainability** — redundant or contradictory rules misfire on literal-following models — not context pressure. Limits apply to CLAUDE.md + `.claude/rules/*.md`:
 
-- **Soft warning:** 10,000 words.
-- **Ratchet cap:** `.claude/rules/.budget-soft-cap` must equal `max(current_count + 250, 8500)`. `rule-lint.sh` fails when the corpus exceeds this committed cap, independent of soft/hard checks; run `rule-lint.sh --update-cap` only after intentional cuts.
-- **Hard fail:** 11,000 words.
+- **Soft warning:** 12,000 words.
+- **Ratchet cap:** `.claude/rules/.budget-soft-cap` must equal `max(current_count + 750, 8500)`. `rule-lint.sh` fails when the corpus exceeds this committed cap, independent of soft/hard checks; run `rule-lint.sh --update-cap` only after intentional cuts.
+- **Hard fail:** 13,000 words.
 - **Per-file warning:** >2,000 words; split or extract reference material.
 - **Verify on every PR touching CLAUDE.md or `.claude/rules/`:**
 

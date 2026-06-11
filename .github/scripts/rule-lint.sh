@@ -14,11 +14,11 @@
 set -euo pipefail
 shopt -s nullglob
 
-SOFT_LIMIT=10000
-HARD_LIMIT=11000
+SOFT_LIMIT=12000
+HARD_LIMIT=13000
 PER_FILE_WARN=2000
 RATCHET_FLOOR=8500
-RATCHET_HEADROOM=250
+RATCHET_HEADROOM=750
 
 CLAUDE_MD="CLAUDE.md"
 RULES_DIR=".claude/rules"
@@ -31,7 +31,7 @@ usage() {
   cat <<'EOF'
 Usage: .github/scripts/rule-lint.sh [--update-cap]
 
-  --update-cap  Rewrite .claude/rules/.budget-soft-cap to max(current_count + 250, 8500),
+  --update-cap  Rewrite .claude/rules/.budget-soft-cap to max(current_count + 750, 8500),
                 then continue linting against the updated cap.
 EOF
 }
