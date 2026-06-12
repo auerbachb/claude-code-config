@@ -13,6 +13,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 
 ### Runbooks and long command forms
 
+- `cli-tool-defaults.md` — installed service CLIs (vercel, neonctl, railway, cloudinary) and common commands; CLI-first over web dashboards
 - `cr-polling-commands.md` — full multi-line `gh api` commands for CR review polling and CI verification
 - `cr-rate-limits.md` — full CR rate-limit caps, hourly-state mechanics, and `cr-review-hourly.sh` flags
 - `codeowner-bot-approvals.md` — CODEOWNERS handling for review bots and stale-approval re-trigger commands
