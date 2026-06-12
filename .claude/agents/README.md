@@ -40,6 +40,8 @@ Agent definitions use `{{PLACEHOLDER}}` markers for runtime context that the par
 
 Each agent definition declares a default `model` in frontmatter. The parent must also set `model` explicitly at every Agent tool call site per `.claude/rules/subagent-orchestration.md` "Model Selection" — the call-site parameter overrides the frontmatter default and keeps cost decisions visible at every spawn point.
 
+**Current alias resolution (verified 2026-06):** `opus` → Opus 4.8, `sonnet` → Sonnet 4.6, `haiku` → Haiku 4.5. Frontmatter intentionally uses bare aliases — Claude Code resolves them to the latest non-legacy model of each family, so agent definitions don't need editing when Anthropic ships a new version. If the runtime ever stops resolving bare aliases, switch frontmatter to explicit versioned IDs (e.g., `claude-opus-4-8`, `claude-sonnet-4-6`) and update this note.
+
 **Per-phase rationale:**
 
 | Agent | Model | Why |
