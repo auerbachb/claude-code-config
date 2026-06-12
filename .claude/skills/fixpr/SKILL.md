@@ -13,7 +13,7 @@ Single-pass cleanup of the current branch's PR. After this completes:
 
 CodeRabbit caps **~8 GitHub PR reviews per hour** per account; **each push** consumes one. **Multi-round PRs** exhaust that budget fast if you fix-and-push repeatedly.
 
-**Coalesce locally first:** Before opening `/fixpr` on minor iterations, run **`coderabbit review --prompt-only`** per `cr-local-review.md` on uncommitted changes when feasible — catch issues **before** they cost a GitHub review.
+**Coalesce locally first:** Before opening `/fixpr` on minor iterations, run **`coderabbit review --agent`** per `cr-local-review.md` on uncommitted changes when feasible — catch issues **before** they cost a GitHub review.
 
 **Coalesce inside `/fixpr`:** Steps 1–3 intentionally gather **every** unresolved finding + every failing CI check, then fix **all** actionable items and **`git push` once**. Never push once per finding. One `/fixpr` cycle should produce **at most one** consume-side CR review per completed push (tracked below).
 

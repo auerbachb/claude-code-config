@@ -9,7 +9,7 @@ For deep-dive architecture (symlink topology, hook lifecycle, multi-agent orches
 - **Every PR links to a GitHub issue.** Create one first via `gh issue create` if none exists. Reference it with `Closes #N` in the PR body.
 - **Branch naming:** `issue-N-short-description`. Never work on `main`.
 - **Always use a worktree** for isolated work — see the "Always use a worktree" section of [CLAUDE.md](CLAUDE.md).
-- **Local review before push:** run `coderabbit review --prompt-only` until one clean pass, then commit and push. See [`.claude/rules/cr-local-review.md`](.claude/rules/cr-local-review.md).
+- **Local review before push:** run `coderabbit review --agent` until one clean pass, then commit and push. See [`.claude/rules/cr-local-review.md`](.claude/rules/cr-local-review.md).
 - **Merge gate:** 1 explicit CodeRabbit APPROVED on current HEAD (plus CodeAnt clean signal when CodeAnt has run on that SHA), or 1 clean BugBot pass, or a clean Greptile severity gate. See [`.claude/rules/cr-merge-gate.md`](.claude/rules/cr-merge-gate.md).
 - **CI must pass before merge** (including the `rule-lint` check that verifies rule-file sizes and index alignment).
 - **Squash merge only:** `gh pr merge --squash --delete-branch`.
@@ -82,7 +82,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) "Hook Lifecycle" and "Hook Auto-Registrat
 
 ## Modifying CLAUDE.md
 
-- CLAUDE.md is the **executive summary** — high-level non-negotiables and pointers to rule files. Target: **≤ 1,000 words**.
+- CLAUDE.md is the **executive summary** — high-level non-negotiables and pointers to rule files. Target: **≤ 1,300 words** (relaxed from 1,000 after #443; keep it lean — detail belongs in rule files).
 - **Detailed protocols, step-by-step procedures, and edge cases belong in `.claude/rules/*.md`**, not in CLAUDE.md.
 - **Do not duplicate** content between CLAUDE.md and rule files. When the same topic appears in both, CLAUDE.md should link to the rule file as the authoritative source.
 - Any change that touches CLAUDE.md must re-run the word-count verification command above.
