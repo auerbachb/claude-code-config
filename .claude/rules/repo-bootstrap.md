@@ -41,3 +41,4 @@ The script reports state as `[OK]` / `[MISSING]` / `[SKIP]` (token lacks read pe
 - **Idempotent.** Safe to re-run; only acts when files are missing.
 - **Branch protection requires user confirmation** — never modify autonomously.
 - **Do not downgrade existing protection.** Preserve required reviews, admin enforcement, etc. when adding status checks.
+- **Prefer installed CLI tools** (`vercel`, `neonctl`, `railway`, `cloudinary`) over web dashboards — see `.claude/reference/cli-tool-defaults.md` for commands.
