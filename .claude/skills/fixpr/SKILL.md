@@ -1,13 +1,14 @@
 ---
 name: fixpr
-description: Single-pass PR cleanup — audit every review thread + every CI check-run, fix all issues, push once, dismiss stale bot CHANGES_REQUESTED on old commits, resolve all threads via GraphQL, verify CI green. Zero uncollapsed threads and zero failing checks when done.
+description: Bounded-convergence PR cleanup — audit every review thread + every CI check-run, fix all issues, push once per sweep, dismiss stale bot CHANGES_REQUESTED on old commits, resolve all threads via GraphQL, then wait (capped) for bot verdicts + CI on the new SHA, re-sweeping on new findings up to 5 iterations. Zero uncollapsed threads and zero failing checks when done.
 ---
 
-Single-pass cleanup of the current branch's PR. After this completes:
+Bounded-convergence cleanup of the current branch's PR (issue #454 added the post-push review-wait loop to the original single-pass design). After this completes:
 
 1. **Zero uncollapsed review threads** in the browser (all resolved via GraphQL)
 2. **Zero failing CI checks** (all fixed and passing)
 3. **Every finding replied to** with what was done
+4. **A definitive bot verdict on the final SHA** — or an explicit cap-hit report naming what is still pending (never a silent "we pushed, bye" exit)
 
 ### Batching before burning CR quota (Issue #28)
 
@@ -31,15 +32,38 @@ All mechanical GitHub API work — pagination, GraphQL queries, comment classifi
 | 3b. Trigger missing AI reviewers | Mechanical | wait 2 minutes, detect CR/Graphite/CodeAnt activity on the new SHA, post triggers for missing bots, always post `@cursor review` |
 | 4. Reply & resolve | Mechanical | `gh api` calls against IDs from the JSON |
 | 4c. Post-push thread verify (if Step 3 pushed) | Mechanical | Re-fetch threads on new HEAD; explicitly resolve any touched thread still `isResolved: false` (fixes unchanged-line orphans), then `--verify-only` |
+| 4d. Review-wait loop (issue #454) | Mechanical | Poll `pr-state.sh` on the pushed SHA every 30–60s, capped at 20 min; early-exit on full bot+CI verdict; new findings → next sweep |
 | 5. Verify | Mechanical | Re-run `pr-state.sh --since $RUN_STARTED_AT` |
 | 6. Merge blockers | Judgment | AI reads `.merge_state` from the JSON |
 | 7. Final summary | Judgment | AI emits the status |
 
-Execute the steps sequentially. Do NOT poll in a loop — this is a single-pass tool. When a verify pass finds unfinished work, exit with a status code and instruct the user to re-run `/fixpr`.
+Execute the steps sequentially. Steps 0–4c form one **fix sweep**. After a sweep that pushed, Step 4d waits — bounded — for bot verdicts and CI on the **new HEAD SHA**; when new findings or blocking CI arrive mid-wait, start the next sweep at Step 0 (outer cap: `FIXPR_MAX_ITERATIONS`, default 5). `/fixpr` exits when the wait predicate is clean, a cap fires, or a non-loopable status arises (conflicts, human changes requested, stuck threads). This in-turn loop runs within a single agent turn — no `/loop`, `CronCreate`, or `ScheduleWakeup`.
+
+**Environment knobs (issue #454):**
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `FIXPR_WAIT_CAP_SECS` | `1200` | Hard cap per wait iteration (20 min = P93 of bot-response times from a 30-PR sample) |
+| `FIXPR_WAIT_POLL_SECS` | `60` | Poll cadence inside the wait loop (valid range 30–60) |
+| `FIXPR_MAX_ITERATIONS` | `5` | Outer cap on fix-sweep + wait iterations (matches `/wrap` recovery cap, issue #452) |
 
 ---
 
 ## Step 0: Run the initial audit
+
+Initialize the wait-loop counters **once per `/fixpr` invocation** (NOT per sweep — re-entering Step 0 for sweep 2+ must preserve them):
+
+```bash
+FIXPR_WAIT_CAP_SECS="${FIXPR_WAIT_CAP_SECS:-1200}"
+FIXPR_WAIT_POLL_SECS="${FIXPR_WAIT_POLL_SECS:-60}"
+FIXPR_MAX_ITERATIONS="${FIXPR_MAX_ITERATIONS:-5}"
+# Clamp cadence to the 30–60s contract
+(( FIXPR_WAIT_POLL_SECS < 30 )) && FIXPR_WAIT_POLL_SECS=30
+(( FIXPR_WAIT_POLL_SECS > 60 )) && FIXPR_WAIT_POLL_SECS=60
+FIXPR_WAIT_ITER=0          # wait iterations entered so far
+FIXPR_TOTAL_WAIT_SECS=0    # cumulative wall-clock wait across iterations
+FIXPR_WAIT_FINAL=""        # clean | cap-exhausted | new-findings-pending (set by 4d / outer-cap logic)
+```
 
 Locate `pr-state.sh`. Prefer the global install; fall back to the in-repo copy when developing the skill itself. The legacy `audit.sh` wrapper is kept for back-compat — call it only if `pr-state.sh` cannot be found.
 
@@ -455,6 +479,117 @@ When `DID_PUSH=0`, omit Step 4c; Step 4b’s resolver output alone is authoritat
 
 ---
 
+## Step 4d: Post-push review-wait loop (issue #454)
+
+Wait — bounded — for the bots and CI to deliver a verdict on the **current HEAD SHA only** (never the pre-push SHA), so `/fixpr` returns with a definitive answer instead of "we pushed, bye". This is the single owner of post-push polling: `/wrap` trusts this loop's verdict and never adds its own polling cadence on top.
+
+**Entry conditions:**
+
+- `DID_PUSH=1` → always enter. Watch the pushed SHA: `WATCH_SHA=$PUSHED_SHA`, baseline `WAIT_BASELINE=$PUSHED_AT`. Step 3b's fixed 120s reviewer-trigger wait already ran; it does **not** count against this loop's cap (the cap clock starts at loop entry).
+- `DID_PUSH=0` (idempotent path) → run **one** snapshot tick first (same `pr-state.sh` call + jq as below) on the current HEAD (`WATCH_SHA=$HEAD_SHA`, `WAIT_BASELINE=$RUN_STARTED_AT`) **without incrementing `FIXPR_WAIT_ITER`**. If `bots_pending`, `ci_pending`, and `ci_failing` are all empty and `new_findings == 0`, set `FIXPR_WAIT_FINAL=clean` and **exit Step 4d immediately — zero wait, zero iterations, no push** — proceed to Step 5. If bots or CI are still pending on the current SHA (e.g. `/wrap` delegated here mid-review), enter the loop and wait.
+
+**Per-tick snapshot — reuse `pr-state.sh`, do not re-invent endpoint polling.** Each tick fetches one fresh bundle (all 3 comment endpoints + check-runs + commit statuses, `per_page=100`, classification since baseline — the same primitives as `cr-github-review.md`):
+
+```bash
+FIXPR_WAIT_ITER=$((FIXPR_WAIT_ITER + 1))
+WAIT_STARTED=$(date +%s)
+WAIT_OUTCOME=""          # clean | cap-exhausted | new-findings | ci-failing | head-moved
+RETRIGGERED_THIS_WAIT=0
+while :; do
+  TICK=$("$SCRIPT" --pr "$PR_NUMBER" --since "$WAIT_BASELINE")
+  WAIT_STATE=$(jq -c --arg sha "$WATCH_SHA" '
+    . as $root
+    | ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]","graphite-app[bot]"] as $botlist
+    | {"coderabbitai[bot]":"coderabbit","cursor[bot]":"bugbot","codeant-ai[bot]":"codeant",
+       "greptile-apps[bot]":"greptile","graphite-app[bot]":"graphite"} as $needles
+    | def is_review_check($n):
+        ($n // "" | ascii_downcase) as $name
+        | any("coderabbit","graphite","codeant","cursor","bugbot","greptile";
+              . as $x | $name | contains($x));
+    ([$root.comments.reviews[]?.user.login,
+      $root.comments.inline[]?.user.login,
+      $root.comments.conversation[]?.user.login]
+     | map(select(. as $l | $botlist | index($l) != null)) | unique) as $participants
+    | ($root.check_runs.all // []) as $checks
+    | ($root.bot_statuses // {}) as $bstat
+    | ($participants | map(. as $bot
+        | $needles[$bot] as $needle
+        | {bot: $bot,
+           done: (
+             # Review object pinned to the watched SHA. EXCLUDED for BugBot:
+             # cursor[bot] commit_id is stale/unreliable — gate BugBot by its
+             # check-run only (memory feedback_bugbot_commit_id_stale).
+             ( $bot != "cursor[bot]"
+               and any($root.comments.reviews[]?;
+                       .user.login == $bot and (.commit_id // "") == $sha) )
+             # Completed check-run on the watched SHA (check_runs are fetched per
+             # HEAD SHA, so SHA scoping is implicit). conclusion neutral still
+             # counts as complete — BugBot uses neutral for "findings posted".
+             or any($checks[]?;
+                    ((.name // "") | ascii_downcase | contains($needle))
+                    and .status == "completed")
+             # CR/Greptile also report via commit statuses on the watched SHA.
+             or ( $bot == "coderabbitai[bot]" and (($bstat.CodeRabbit.state // "pending") != "pending") )
+             or ( $bot == "greptile-apps[bot]" and (($bstat.Greptile.state // "pending") != "pending") )
+           )})) as $bots
+    | {head_moved: ($root.pr.head_sha != $sha),
+       bots_pending: ($bots | map(select(.done | not) | .bot)),
+       ci_pending: [ $checks[] | select((is_review_check(.name) | not) and .status != "completed") | .name ],
+       ci_failing: [ $checks[] | select((is_review_check(.name) | not)
+                     and (.conclusion == "failure" or .conclusion == "timed_out"
+                          or .conclusion == "action_required" or .conclusion == "startup_failure"
+                          or .conclusion == "stale")) | .name ],
+       new_findings: ($root.new_since_baseline.finding_count // 0)}
+  ' "$TICK")
+
+  ELAPSED=$(( $(date +%s) - WAIT_STARTED ))
+  BOTS_PENDING=$(jq -r '.bots_pending | join(", ") | if . == "" then "none" else . end' <<<"$WAIT_STATE")
+  CI_PENDING=$(jq -r '.ci_pending | join(", ") | if . == "" then "none" else . end' <<<"$WAIT_STATE")
+
+  # Heartbeat — every tick, user-visible, ET-timestamped
+  TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
+  echo "[$TS] [WAIT] iter $FIXPR_WAIT_ITER/$FIXPR_MAX_ITERATIONS — ${ELAPSED}s/${FIXPR_WAIT_CAP_SECS}s on ${WATCH_SHA:0:7} — bots pending: $BOTS_PENDING — CI pending: $CI_PENDING"
+
+  if [[ "$(jq -r '.head_moved' <<<"$WAIT_STATE")" == "true" ]]; then
+    WAIT_OUTCOME="head-moved"; break          # external push — re-audit from Step 0
+  fi
+  if [[ "$(jq -r '.new_findings' <<<"$WAIT_STATE")" -gt 0 ]]; then
+    WAIT_OUTCOME="new-findings"; break        # bots posted findings — next sweep
+  fi
+  if [[ "$(jq -r '.ci_failing | length' <<<"$WAIT_STATE")" -gt 0 ]]; then
+    WAIT_OUTCOME="ci-failing"; break          # blocking CI on the new SHA — next sweep
+  fi
+  if [[ "$BOTS_PENDING" == "none" && "$CI_PENDING" == "none" ]]; then
+    WAIT_OUTCOME="clean"; break               # full verdict in — early exit
+  fi
+  if (( ELAPSED >= FIXPR_WAIT_CAP_SECS )); then
+    WAIT_OUTCOME="cap-exhausted"
+    echo "[WAIT] CAP HIT at ${FIXPR_WAIT_CAP_SECS}s on ${WATCH_SHA:0:7} — NOT falling through silently:"
+    echo "[WAIT]   bots still pending: $BOTS_PENDING"
+    echo "[WAIT]   CI still incomplete: $CI_PENDING"
+    break
+  fi
+  sleep "$FIXPR_WAIT_POLL_SECS"
+done
+FIXPR_TOTAL_WAIT_SECS=$((FIXPR_TOTAL_WAIT_SECS + ELAPSED))
+```
+
+**Participating-bot set is DYNAMIC** — computed fresh each tick from the bot logins seen in any review or comment on this PR, intersected with the allowlist. A CR-only PR never waits on Greptile/BugBot signals. Never use a static list.
+
+**Optional CR re-trigger inside the wait** (per `cr-merge-gate.md` re-trigger policy): if `coderabbitai[bot]` is participating and still pending after **12 min** (`ELAPSED >= 720`) and `RETRIGGERED_THIS_WAIT=0`, you may post one `@coderabbitai full review` — but ONLY when `cr-review-hourly.sh --check` exits 0 AND `cr-review-hourly.sh --record-explicit "$PR_NUMBER"` succeeds (it enforces the ≤2 explicit triggers/PR/hour cap atomically and exits 1 at the cap — at the cap, skip the trigger and keep waiting). Set `RETRIGGERED_THIS_WAIT=1` — at most one re-trigger per wait iteration. The wait loop never triggers any other reviewer; Step 3b owns those.
+
+**Routing on `WAIT_OUTCOME`:**
+
+| Outcome | Action |
+|---------|--------|
+| `clean` | Set `FIXPR_WAIT_FINAL=clean`. Proceed to Step 5 — the verify pass gives the authoritative classification of what the bots posted. |
+| `new-findings`, `ci-failing`, or `head-moved` | If `FIXPR_WAIT_ITER < FIXPR_MAX_ITERATIONS` → start the **next sweep at Step 0** (fresh `$RUN_STARTED_AT` picks up the new findings; the sweep fixes, pushes once, and re-enters this wait on the new SHA). Else → set `FIXPR_WAIT_FINAL=new-findings-pending` and proceed to Step 5/7 with status `NEW_FINDINGS` and the full audit — the outer cap is exhausted. |
+| `cap-exhausted` | Set `FIXPR_WAIT_FINAL=cap-exhausted`. Proceed to Step 5/7 — the cap-hit lines above (pending bots + incomplete CI) MUST appear in the final summary; the status will be `REVIEW_PENDING` or `CI_PENDING` per what is outstanding. |
+
+**Safety (non-negotiable, issues #450/#452/#454):** this loop is read-only plus the single rate-capped CR re-trigger above. It never calls branch-protection APIs, never dismisses human reviews, and never resolves threads — thread resolution happens only in Steps 1–4 after code-verification.
+
+---
+
 ## Step 5: Verify
 
 Run the audit script again with `--since $RUN_STARTED_AT`. This picks up the new HEAD SHA (post-push) **and** pre-classifies any bot comment that landed between Step 0 and now:
@@ -504,7 +639,7 @@ jq -r '
    - LGTM variants: `lgtm`, `looks good`, `approved`, `confirmed`, `resolved`
 4. **Default** (no pattern matched) → `finding`. The safer default — under-classifying here is the failure mode this whole skill exists to prevent.
 
-**If `finding_count > 0`:** do NOT loop. Emit `NEW_FINDINGS` in Step 7 and stop. Re-running `/fixpr` captures a new `$RUN_STARTED_AT` and re-audits from Step 0, picking up the new findings.
+**If `finding_count > 0`:** findings landed between the Step 4d wait exit and this verify. If `FIXPR_WAIT_ITER < FIXPR_MAX_ITERATIONS`, start the next sweep at Step 0 (a fresh `$RUN_STARTED_AT` re-audits and picks them up). At the outer cap: set `FIXPR_WAIT_FINAL=new-findings-pending`, emit `NEW_FINDINGS` in Step 7, and stop — re-running `/fixpr` resets the iteration budget.
 
 ### 5c. CI (if a push was made; exclude review-bot check-runs from CI pending)
 
@@ -552,7 +687,7 @@ Decide from the non-review CI counts before review-bot pending counts:
   - **transient** (runner timeout, startup failure, flaky external dep) → emit `CI_FAILING` in Step 7, note the specific checks, and continue to Step 6 — local fixes aren't possible and the user decides whether to retry.
 - `IN_PROGRESS == 0 && FAILING == 0` → non-review-bot CI is clean on this SHA.
 
-Do NOT poll.
+Do NOT poll here — Step 4d is the single owner of post-push polling. CI still pending at this point means the 4d cap fired (or 4d was skipped on the no-push path); report it, don't wait.
 
 ### 5d. Review-bot commit statuses on the current HEAD
 
@@ -583,7 +718,7 @@ jq -r '.merge_state | "[MERGE] mergeable=\(.mergeable), status=\(.mergeStateStat
 |-------|---------------|--------|
 | `mergeable` | `CONFLICTING` | Rebase onto main: `git fetch origin main && git rebase origin/main`. Fix conflicts (optionally run **`/merge-conflict`** — `.claude/skills/merge-conflict/SKILL.md` — to fetch main, auto-resolve *simple* hunks, stage clean files, and list *complex* hunks), continue, force-push. |
 | `mergeable` | `UNKNOWN` | GitHub still computing — note and re-run `/fixpr` later. |
-| `mergeStateStatus` | `BEHIND` | Rebase onto main: `git fetch origin main && git rebase origin/main`. If conflicts arise mid-rebase (replaying commits individually can conflict even when a three-way merge wouldn't), resolve them the same way as `CONFLICTING` above (including optional **`/merge-conflict`**), then `git rebase --continue`. Force-push. Wait for CI to re-run before verifying merge gate. |
+| `mergeStateStatus` | `BEHIND` | Rebase onto main: `git fetch origin main && git rebase origin/main`. If conflicts arise mid-rebase (replaying commits individually can conflict even when a three-way merge wouldn't), resolve them the same way as `CONFLICTING` above (including optional **`/merge-conflict`**), then `git rebase --continue`. Force-push, then — if `FIXPR_WAIT_ITER < FIXPR_MAX_ITERATIONS` — enter the Step 4d wait loop on the new SHA (counts as a wait iteration) instead of exiting blind. |
 | `mergeStateStatus` | `BLOCKED` | Required checks/reviews missing — already covered by 5c/5d. If CodeRabbit, Greptile, or CodeAnt is in CODEOWNERS and the last approval is stale/dismissed after a push, recover by triggering that bot (`@coderabbitai full review`, `@greptileai`, or `@codeant-ai review`) instead of escalating to the author. |
 | `mergeStateStatus` | `UNSTABLE` | A non-required check pending/failing — typically CR/Greptile on the new SHA. If 5d emitted `REVIEW_PENDING`, stop with that status. |
 | `reviewDecision` | `CHANGES_REQUESTED` | Changes were requested. **Stale** bot `CHANGES_REQUESTED` (wrong `commit_id` vs HEAD) are cleared by Step 3a after each push — not escalation. If a **human** left `CHANGES_REQUESTED` on the current HEAD, report as non-automatable. |
@@ -610,20 +745,23 @@ CI checks:       P total, Q were failing
   - Transient:   S (cannot fix locally)
 Merge state:     mergeable=..., status=..., review=...
 Push:            <sha> or "no push needed"
+Wait loop:       $FIXPR_WAIT_ITER iteration(s), total wait ${FIXPR_TOTAL_WAIT_SECS}s, final state: clean | cap-exhausted | new-findings-pending
+  - Pending at cap: <bots-pending list + CI-pending list when final state is cap-exhausted; omit otherwise>
 Status:          CLEAN | THREADS_STUCK | REVIEW_PENDING | CI_PENDING | CI_FAILING | CONFLICTS | BEHIND | NEEDS_HUMAN_REVIEW | NEW_FINDINGS
 FIXPR_WRAP_STATUS: <exact same token as Status — single-line machine-parseable copy for /wrap issue #452>
+FIXPR_WAIT_SUMMARY: iterations=<N> total_wait_secs=<S> final=<clean|cap-exhausted|new-findings-pending>
 ```
 
-`/wrap` recovery may delegate here; parents grep **`FIXPR_WRAP_STATUS:`** (and echo **`Status:`**) into heartbeats without re-parsing prose.
+`/wrap` recovery may delegate here; parents grep **`FIXPR_WRAP_STATUS:`** and **`FIXPR_WAIT_SUMMARY:`** (and echo **`Status:`**) into heartbeats without re-parsing prose. `FIXPR_WAIT_SUMMARY` is the issue #454 contract: `/wrap` trusts this verdict — the bots and CI were already waited on here, so `/wrap` re-runs `merge-gate.sh` immediately with no polling of its own. `final=clean` when the last wait exited on a full bot+CI verdict (or the idempotent no-push path was already clean — `iterations=0`); `final=cap-exhausted` when the last wait hit `FIXPR_WAIT_CAP_SECS`; `final=new-findings-pending` when the outer iteration cap exhausted with findings still arriving.
 
 **Status definitions:**
 
 - `CLEAN` — **all four conditions simultaneously:** zero unresolved threads (5a), `new_since_baseline.finding_count == 0` (5b), every present review-bot status/check-run for the current HEAD is complete/successful (5d), no merge blockers (6). Missing any one disqualifies `CLEAN` — pick the more specific status below.
 - `THREADS_STUCK` — some threads could not be resolved via GraphQL (report which).
-- `REVIEW_PENDING` — 5d found a review-bot status/check-run still pending on the current HEAD, or a reviewer has not responded yet after Step 3b (including the unconditional `@cursor review`). Re-run `/fixpr` after it flips to a completed state. Do NOT declare CLEAN.
-- `NEW_FINDINGS` — 5b's `finding_count > 0`. Stop the run. A fresh `/fixpr` captures a new `$RUN_STARTED_AT` and re-audits from Step 0.
-- `CI_PENDING` — push was made, and non-review-bot CI is not yet complete. Re-run `/fixpr` after CI.
+- `REVIEW_PENDING` — a review-bot status/check-run is still pending on the current HEAD after the Step 4d wait (i.e., the 20-min cap fired with bots outstanding — `FIXPR_WAIT_FINAL=cap-exhausted`). The footer's "Pending at cap" line names them. Re-run `/fixpr` for a fresh iteration budget. Do NOT declare CLEAN.
+- `NEW_FINDINGS` — findings still arriving at the outer iteration cap (`FIXPR_WAIT_FINAL=new-findings-pending`). Stop the run. A fresh `/fixpr` resets the budget and re-audits from Step 0.
+- `CI_PENDING` — push was made, and non-review-bot CI was still incomplete when the Step 4d cap fired. Re-run `/fixpr` after CI.
 - `CI_FAILING` — transient CI failures that cannot be fixed locally (report which).
 - `CONFLICTS` — merge conflicts could not be auto-resolved (needs manual intervention).
-- `BEHIND` — branch behind base, auto-rebased and force-pushed; now waiting for CI re-run. Re-run `/fixpr` after CI completes.
+- `BEHIND` — branch behind base, auto-rebased and force-pushed, and the wait budget was already exhausted (Step 6 enters the Step 4d wait on the new SHA when iterations remain). Re-run `/fixpr` after CI completes.
 - `NEEDS_HUMAN_REVIEW` — a human reviewer requested changes, or no configured code-owner bot can satisfy the missing required approval. If CR/Greptile is in CODEOWNERS and only its approval is stale/dismissed, downgrade to `REVIEW_PENDING` after triggering the bot re-review.
