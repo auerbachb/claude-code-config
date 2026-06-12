@@ -94,7 +94,7 @@ Each Claude Code session follows this sequence:
 1. **Session start** — Pull remote `main`, create a worktree, verify skills worktree exists, check for required GitHub Actions workflows
 2. **Issue creation** — Draft issue, post via `gh issue create`, wait for CodeRabbit plan, merge plans into issue body
 3. **Implementation** — Code on the worktree's feature branch
-4. **Local review** — Run `coderabbit review --prompt-only` until one clean pass
+4. **Local review** — Run `coderabbit review --agent` until one clean pass
 5. **Push and PR** — Commit, push, create PR with `Closes #N` and Test Plan checkboxes
 6. **GitHub review** — Poll CR (7-min timeout), fall back to Greptile if needed, fix findings, reply to threads
 7. **Merge** — Verify merge gate (1 explicit CR APPROVED review on current HEAD, 1 clean BugBot pass on current HEAD, or Greptile severity gate), verify acceptance criteria, squash merge
@@ -133,7 +133,7 @@ The parent agent stays in **monitor mode** while subagents are active — pollin
 Finish coding on feature branch
        |
        v
-Run coderabbit review --prompt-only
+Run coderabbit review --agent
        |
        v
 CR returns findings? --No--> Local review loop done

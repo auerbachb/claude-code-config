@@ -57,10 +57,10 @@ test -x "$CR_BIN" && echo "Found: $CR_BIN" || echo "Not found"
 
 If available, run the local review loop:
 ```bash
-$CR_BIN review --prompt-only
+$CR_BIN review --agent
 ```
 
-- If findings are returned: `[ACTION]` — Fix all valid findings. Run `$CR_BIN review --prompt-only` again after fixing.
+- If findings are returned: `[ACTION]` — Fix all valid findings. Run `$CR_BIN review --agent` again after fixing.
 - **Exit on 1 clean pass** (no findings returned) — `[DONE]` Local CR review passed.
 - **Max 5 total iterations.** If you hit 5 runs without a clean pass, stop and report: `[BLOCKED]` — CR review not converging after 5 iterations.
 - If CR CLI is not available or errors out: `[SKIP]` — CR CLI unavailable, performing self-review instead:

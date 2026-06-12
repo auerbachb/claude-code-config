@@ -232,7 +232,7 @@ worktree directory at all times.
 1. You are already in a worktree — verify with `git branch --show-current`.
 2. Read the issue body above — this is your implementation plan.
 3. Implement the changes.
-4. Run local CodeRabbit review: `coderabbit review --prompt-only`
+4. Run local CodeRabbit review: `coderabbit review --agent`
    - Fix all valid findings.
    - Run again. Repeat until one clean pass with no findings.
    - If coderabbit CLI hangs >2 minutes or errors twice, do a self-review instead.
