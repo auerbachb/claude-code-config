@@ -28,6 +28,11 @@ HANDOFF_FILE: ~/.claude/handoffs/pr-618-handoff.json
 | `FILES_CHANGED` | comma-separated paths | Files modified (empty string if none) |
 | `NEXT_PHASE` | `B`, `C`, `none` | What parent should launch next |
 | `HANDOFF_FILE` | path | Handoff file path |
+| `FIXPR_WAIT_ITERATIONS` | integer | (when the phase ran `/fixpr`) wait-loop iterations executed — issue #454 |
+| `FIXPR_TOTAL_WAIT_SECS` | integer | (when the phase ran `/fixpr`) cumulative post-push review-wait time |
+| `FIXPR_WAIT_FINAL` | `clean`, `cap-exhausted`, `new-findings-pending` | (when the phase ran `/fixpr`) final wait-loop state from `FIXPR_WAIT_SUMMARY` |
+
+The three `FIXPR_*` fields are required whenever the phase executed the `/fixpr` workflow (copy them from its `FIXPR_WAIT_SUMMARY` footer line); omit them otherwise.
 
 ## Valid OUTCOME Values
 

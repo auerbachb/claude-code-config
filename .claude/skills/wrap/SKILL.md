@@ -86,15 +86,13 @@ Proceed immediately to Phase 2 — do not ask.
 
 ```bash
 WRAP_RECOVERY_MAX_ITERATIONS="${WRAP_RECOVERY_MAX_ITERATIONS:-5}"
-WRAP_RECOVERY_POLL_SECS="${WRAP_RECOVERY_POLL_SECS:-120}"
-WRAP_RECOVERY_MICRO_POLLS="${WRAP_RECOVERY_MICRO_POLLS:-3}"
 ```
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `WRAP_RECOVERY_MAX_ITERATIONS` | `5` | Hard cap on recovery cycles |
-| `WRAP_RECOVERY_POLL_SECS` | `120` | Sleep between reviewer trigger and re-check |
-| `WRAP_RECOVERY_MICRO_POLLS` | `3` | Within one iteration, brief re-polls after trigger |
+
+**Polling ownership (issue #454):** `/wrap` has NO polling cadence of its own — no sleeps, no micro-polls between gate checks. All waiting for bot verdicts and CI happens inside `/fixpr`'s Step 4d review-wait loop (30–60s cadence, 20-min cap per iteration, outer cap 5). `/wrap` delegates, trusts the returned verdict, and re-runs `merge-gate.sh` immediately.
 
 **Per-iteration heartbeat (mandatory):** Before acting, emit one user-visible line:
 
@@ -156,16 +154,16 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bulle
    - `merge_state == "DIRTY"`; **or**
    - Phase 1 left **`WRAP_PHASE1_FINDINGS`** (classified bot findings still pending remediation).
 
-   **Execution contract:** Do **not** shell out to an opaque “run fixpr” wrapper. Execute the **full** `.claude/skills/fixpr/SKILL.md` workflow (Steps 0–7): `pr-state.sh`, classify findings, fix + single push when needed, `dismiss-stale-bot-changes.sh` after push when applicable, `reply-thread.sh`, `resolve-review-threads.sh`, verify passes, etc. If spawning a Phase A subagent to carry the skill, use **`mode: "bypassPermissions"`**, explicit **`model`**, SAFETY block from `.claude/rules/safety.md`, and handoff path per `.claude/rules/subagent-orchestration.md` — parent stays in **monitor mode** (orchestration only).
+   **Execution contract:** Do **not** shell out to an opaque “run fixpr” wrapper. Execute the **full** `.claude/skills/fixpr/SKILL.md` workflow (Steps 0–7, including the Step 4d review-wait loop): `pr-state.sh`, classify findings, fix + single push when needed, `dismiss-stale-bot-changes.sh` after push when applicable, `reply-thread.sh`, `resolve-review-threads.sh`, the bounded wait for bot verdicts + CI on the new SHA, verify passes, etc. If spawning a Phase A subagent to carry the skill, use **`mode: "bypassPermissions"`**, explicit **`model`**, SAFETY block from `.claude/rules/safety.md`, and handoff path per `.claude/rules/subagent-orchestration.md` — parent stays in **monitor mode** (orchestration only).
 
-   Parse the **`=== fixpr complete ===`** footer for **`Status:`** and **`FIXPR_WRAP_STATUS`** (see fixpr skill). Echo that status into the heartbeat for this cycle.
+   Parse the **`=== fixpr complete ===`** footer for **`Status:`**, **`FIXPR_WRAP_STATUS`**, and **`FIXPR_WAIT_SUMMARY`** (iterations, total wait secs, final state — see fixpr skill). Echo status + wait summary into the heartbeat for this cycle and append them to `WRAP_RECOVERY_AUDIT`. **Trust the verdict (issue #454):** `/fixpr` already waited for the bots and CI on the new SHA — re-fetch HEAD and re-run `merge-gate.sh` **immediately**; never sleep or re-poll on top.
 
    **Stop conditions after `/fixpr`:**
 
    - **`CI_FAILING`** with deterministic code/test failures you cannot fix in-session → stop; surface `missing` / CI summary + audit (matches “unfixable CI” scenario).
-   - **`THREADS_STUCK`**, **`NEEDS_HUMAN_REVIEW`**, or **`NEW_FINDINGS`** where unresolved → stop with audit; instruct re-run `/wrap` or `/fixpr`.
-   - **`REVIEW_PENDING`** → re-enter recovery loop; next gate re-check routes to Branch C (trigger bot + micro-poll) or Branch D. Outer iteration cap still applies.
-   - **`CI_PENDING`** → re-enter recovery loop; next gate re-check routes to Branch D (wait for CI). Outer iteration cap still applies.
+   - **`THREADS_STUCK`**, **`NEEDS_HUMAN_REVIEW`**, or **`NEW_FINDINGS`** where unresolved → stop with audit; instruct re-run `/wrap` or `/fixpr`. (`NEW_FINDINGS` now means `/fixpr` exhausted its own 5-iteration budget — `FIXPR_WAIT_SUMMARY: … final=new-findings-pending`.)
+   - **`REVIEW_PENDING`** (`final=cap-exhausted` — `/fixpr`'s 20-min wait cap fired with the named bots still pending) → re-enter recovery loop; next gate re-check routes to Branch C (trigger bot, then re-delegate the wait to `/fixpr`) or Branch D. Outer iteration cap still applies.
+   - **`CI_PENDING`** (`final=cap-exhausted` with CI incomplete) → re-enter recovery loop; next gate re-check routes to Branch D. Outer iteration cap still applies.
    - **`BEHIND`** → `/fixpr` rebased/force-pushed; re-run the gate. If CI is now pending on the new HEAD, treat as `CI_PENDING`.
    - **`CONFLICTS`** → stop immediately; recommend **`/merge-conflict`** or manual resolution.
    - **`CLEAN`** → **continue** to next recovery iteration (re-run gate).
@@ -179,11 +177,11 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bulle
    - CodeAnt: `@codeant-ai review` when CodeAnt owns the gap.
    - BugBot: when the PR is on the BugBot path (`reviewer == "bugbot"` per `reviewer-of.sh` or `session-state.json`), post `@cursor review` — duplicates are acceptable per `bugbot.md`.
 
-   Then **poll:** sleep `$WRAP_RECOVERY_POLL_SECS`, re-run `merge-gate.sh`, and repeat up to **`WRAP_RECOVERY_MICRO_POLLS`** times **within the same outer iteration**. After micro-polls are exhausted, advance to the next outer iteration and record the chosen checks/results in the audit.
+   Then **delegate the wait to `/fixpr`** (issue #454 — no wrap-side sleep/micro-polls): run the `/fixpr` workflow; its idempotent path makes no push when nothing needs fixing, and its Step 4d loop waits on the current SHA until the triggered bot completes or the 20-min cap fires. Parse `FIXPR_WAIT_SUMMARY`, append to audit, re-run `merge-gate.sh` immediately, advance to the next outer iteration.
 
-   **D. CI incomplete only** (no failing yet) — Do not call `/fixpr` for fix work. Sleep `$WRAP_RECOVERY_POLL_SECS`, append “waiting for CI”, continue to next iteration if under cap.
+   **D. CI incomplete only** (no failing yet) — Do not fix anything. Delegate the wait to `/fixpr` (idempotent — no push; its Step 4d loop polls until non-review-bot CI completes or the cap fires), append “waited for CI via /fixpr: <FIXPR_WAIT_SUMMARY>” to audit, re-run the gate immediately, continue to next iteration if under cap.
 
-   **`merge_state == UNKNOWN`** — Sleep and retry within cap; if still unknown at cap, stop with audit.
+   **`merge_state == UNKNOWN`** — GitHub is still computing mergeability; re-run `merge-gate.sh` on the next iteration (the gate call itself provides the spacing — no sleep). If still unknown at cap, stop with audit.
 
 4. **End of iteration:** If no branch matched and gate still fails, append “unclassified blocker” + full `missing` to audit and proceed to next `i`.
 
