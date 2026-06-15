@@ -60,9 +60,9 @@ FIXPR_MAX_ITERATIONS="${FIXPR_MAX_ITERATIONS:-5}"
 # Clamp cadence to the 30–60s contract
 (( FIXPR_WAIT_POLL_SECS < 30 )) && FIXPR_WAIT_POLL_SECS=30
 (( FIXPR_WAIT_POLL_SECS > 60 )) && FIXPR_WAIT_POLL_SECS=60
-FIXPR_WAIT_ITER=0          # wait iterations entered so far
-FIXPR_TOTAL_WAIT_SECS=0    # cumulative wall-clock wait across iterations
-FIXPR_WAIT_FINAL=""        # clean | cap-exhausted | new-findings-pending (set by 4d / outer-cap logic)
+FIXPR_WAIT_ITER="${FIXPR_WAIT_ITER:-0}"          # wait iterations entered so far
+FIXPR_TOTAL_WAIT_SECS="${FIXPR_TOTAL_WAIT_SECS:-0}"    # cumulative wall-clock wait across iterations
+FIXPR_WAIT_FINAL="${FIXPR_WAIT_FINAL:-}"        # clean | cap-exhausted | new-findings-pending (set by 4d / outer-cap logic)
 ```
 
 Locate `pr-state.sh`. Prefer the global install; fall back to the in-repo copy when developing the skill itself. The legacy `audit.sh` wrapper is kept for back-compat — call it only if `pr-state.sh` cannot be found.
@@ -486,16 +486,79 @@ Wait — bounded — for the bots and CI to deliver a verdict on the **current H
 **Entry conditions:**
 
 - `DID_PUSH=1` → always enter. Watch the pushed SHA: `WATCH_SHA=$PUSHED_SHA`, baseline `WAIT_BASELINE=$PUSHED_AT`. Step 3b's fixed 120s reviewer-trigger wait already ran; it does **not** count against this loop's cap (the cap clock starts at loop entry).
-- `DID_PUSH=0` (idempotent path) → run **one** snapshot tick first (same `pr-state.sh` call + jq as below) on the current HEAD (`WATCH_SHA=$HEAD_SHA`, `WAIT_BASELINE=$RUN_STARTED_AT`) **without incrementing `FIXPR_WAIT_ITER`**. If `bots_pending`, `ci_pending`, and `ci_failing` are all empty and `new_findings == 0`, set `FIXPR_WAIT_FINAL=clean` and **exit Step 4d immediately — zero wait, zero iterations, no push** — proceed to Step 5. If bots or CI are still pending on the current SHA (e.g. `/wrap` delegated here mid-review), enter the loop and wait.
+- `DID_PUSH=0` (idempotent path) → run **one** snapshot tick first on the current HEAD (`WATCH_SHA=$HEAD_SHA`, `WAIT_BASELINE=$RUN_STARTED_AT`) using the same `pr-state.sh` + jq predicate as the loop below, **without incrementing `FIXPR_WAIT_ITER`**. If `bots_pending`, `ci_pending`, and `ci_failing` are all empty and `new_findings == 0`, set `FIXPR_WAIT_FINAL=clean` and **skip the wait loop entirely — zero wait, zero iterations, no push** — proceed to Step 5. If bots or CI are still pending on the current SHA (e.g. `/wrap` delegated here mid-review), fall through to the wait loop (which increments `FIXPR_WAIT_ITER` once at entry).
 
-**Per-tick snapshot — reuse `pr-state.sh`, do not re-invent endpoint polling.** Each tick fetches one fresh bundle (all 3 comment endpoints + check-runs + commit statuses, `per_page=100`, classification since baseline — the same primitives as `cr-github-review.md`):
+**Per-tick snapshot — reuse `pr-state.sh`, do not re-invent endpoint polling.** Set `WATCH_SHA` / `WAIT_BASELINE` from the entry path above (`PUSHED_SHA`/`PUSHED_AT` when `DID_PUSH=1`, else `HEAD_SHA`/`RUN_STARTED_AT`). Each tick fetches one fresh bundle (all 3 comment endpoints + check-runs + commit statuses, `per_page=100`, classification since baseline — the same primitives as `cr-github-review.md`):
 
 ```bash
-FIXPR_WAIT_ITER=$((FIXPR_WAIT_ITER + 1))
-WAIT_STARTED=$(date +%s)
-WAIT_OUTCOME=""          # clean | cap-exhausted | new-findings | ci-failing | head-moved
-RETRIGGERED_THIS_WAIT=0
-while :; do
+# Idempotent pre-check (DID_PUSH=0 only) — one tick, no iter increment
+SKIP_WAIT_LOOP=0
+if [[ "${DID_PUSH:-0}" -eq 0 ]]; then
+  WATCH_SHA=$HEAD_SHA
+  WAIT_BASELINE=$RUN_STARTED_AT
+  TICK=$("$SCRIPT" --pr "$PR_NUMBER" --since "$WAIT_BASELINE")
+  WAIT_STATE=$(jq -c --arg sha "$WATCH_SHA" '
+    . as $root
+    | ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]","graphite-app[bot]"] as $botlist
+    | {"coderabbitai[bot]":"coderabbit","cursor[bot]":"bugbot","codeant-ai[bot]":"codeant",
+       "greptile-apps[bot]":"greptile","graphite-app[bot]":"graphite"} as $needles
+    | def is_review_check($n):
+        ($n // "" | ascii_downcase) as $name
+        | any("coderabbit","graphite","codeant","cursor","bugbot","greptile";
+              . as $x | $name | contains($x));
+    ([$root.comments.reviews[]?.user.login,
+      $root.comments.inline[]?.user.login,
+      $root.comments.conversation[]?.user.login]
+     | map(select(. as $l | $botlist | index($l) != null)) | unique) as $participants
+    | ($root.check_runs.all // []) as $checks
+    | ($root.bot_statuses // {}) as $bstat
+    | ($participants | map(. as $bot
+        | $needles[$bot] as $needle
+        | {bot: $bot,
+           done: (
+             ( $bot != "cursor[bot]"
+               and any($root.comments.reviews[]?;
+                       .user.login == $bot and (.commit_id // "") == $sha) )
+             or any($checks[]?;
+                    ((.name // "") | ascii_downcase | contains($needle))
+                    and .status == "completed")
+             or ( $bot == "coderabbitai[bot]" and (($bstat.CodeRabbit.state // "pending") != "pending") )
+             or ( $bot == "greptile-apps[bot]" and (($bstat.Greptile.state // "pending") != "pending") )
+           )})) as $bots
+    | {head_moved: ($root.pr.head_sha != $sha),
+       bots_pending: ($bots | map(select(.done | not) | .bot)),
+       ci_pending: [ $checks[] | select((is_review_check(.name) | not) and .status != "completed") | .name ],
+       ci_failing: [ $checks[] | select((is_review_check(.name) | not)
+                     and (.conclusion == "failure" or .conclusion == "timed_out"
+                          or .conclusion == "action_required" or .conclusion == "startup_failure"
+                          or .conclusion == "stale")) | .name ],
+       new_findings: ($root.new_since_baseline.finding_count // 0)}
+  ' "$TICK")
+  BOTS_PENDING=$(jq -r '.bots_pending | join(", ") | if . == "" then "none" else . end' <<<"$WAIT_STATE")
+  CI_PENDING=$(jq -r '.ci_pending | join(", ") | if . == "" then "none" else . end' <<<"$WAIT_STATE")
+  if [[ "$BOTS_PENDING" == "none" && "$CI_PENDING" == "none"
+        && "$(jq -r '.ci_failing | length' <<<"$WAIT_STATE")" -eq 0
+        && "$(jq -r '.new_findings' <<<"$WAIT_STATE")" -eq 0
+        && "$(jq -r '.head_moved' <<<"$WAIT_STATE")" != "true" ]]; then
+    FIXPR_WAIT_FINAL=clean
+    SKIP_WAIT_LOOP=1
+    echo "[WAIT] idempotent pre-check: clean on ${WATCH_SHA:0:7} — zero wait, zero iterations"
+  fi
+fi
+
+if [[ "$SKIP_WAIT_LOOP" -eq 0 ]]; then
+  if [[ "${DID_PUSH:-0}" -eq 1 ]]; then
+    WATCH_SHA=$PUSHED_SHA
+    WAIT_BASELINE=$PUSHED_AT
+  else
+    WATCH_SHA=$HEAD_SHA
+    WAIT_BASELINE=$RUN_STARTED_AT
+  fi
+  FIXPR_WAIT_ITER=$((FIXPR_WAIT_ITER + 1))
+  WAIT_STARTED=$(date +%s)
+  WAIT_OUTCOME=""          # clean | cap-exhausted | new-findings | ci-failing | head-moved
+  RETRIGGERED_THIS_WAIT=0
+  while :; do
   TICK=$("$SCRIPT" --pr "$PR_NUMBER" --since "$WAIT_BASELINE")
   WAIT_STATE=$(jq -c --arg sha "$WATCH_SHA" '
     . as $root
@@ -572,6 +635,7 @@ while :; do
   sleep "$FIXPR_WAIT_POLL_SECS"
 done
 FIXPR_TOTAL_WAIT_SECS=$((FIXPR_TOTAL_WAIT_SECS + ELAPSED))
+fi   # end SKIP_WAIT_LOOP
 ```
 
 **Participating-bot set is DYNAMIC** — computed fresh each tick from the bot logins seen in any review or comment on this PR, intersected with the allowlist. A CR-only PR never waits on Greptile/BugBot signals. Never use a static list.
@@ -583,7 +647,7 @@ FIXPR_TOTAL_WAIT_SECS=$((FIXPR_TOTAL_WAIT_SECS + ELAPSED))
 | Outcome | Action |
 |---------|--------|
 | `clean` | Set `FIXPR_WAIT_FINAL=clean`. Proceed to Step 5 — the verify pass gives the authoritative classification of what the bots posted. |
-| `new-findings`, `ci-failing`, or `head-moved` | If `FIXPR_WAIT_ITER < FIXPR_MAX_ITERATIONS` → start the **next sweep at Step 0** (fresh `$RUN_STARTED_AT` picks up the new findings; the sweep fixes, pushes once, and re-enters this wait on the new SHA). Else → set `FIXPR_WAIT_FINAL=new-findings-pending` and proceed to Step 5/7 with status `NEW_FINDINGS` and the full audit — the outer cap is exhausted. |
+| `new-findings`, `ci-failing`, or `head-moved` | If `FIXPR_WAIT_ITER < FIXPR_MAX_ITERATIONS` → start the **next sweep at Step 0** (fresh `$RUN_STARTED_AT` picks up the new findings; the sweep fixes, pushes once, and re-enters this wait on the new SHA). Else at outer cap, set `FIXPR_WAIT_FINAL` and Status **per outcome** — do not blanket-label everything `new-findings-pending`: `new-findings` → `FIXPR_WAIT_FINAL=new-findings-pending`, Status `NEW_FINDINGS`; `ci-failing` → `FIXPR_WAIT_FINAL=cap-exhausted`, Status `CI_FAILING`; `head-moved` → `FIXPR_WAIT_FINAL=cap-exhausted`, Status note external push in summary (re-run `/fixpr`). |
 | `cap-exhausted` | Set `FIXPR_WAIT_FINAL=cap-exhausted`. Proceed to Step 5/7 — the cap-hit lines above (pending bots + incomplete CI) MUST appear in the final summary; the status will be `REVIEW_PENDING` or `CI_PENDING` per what is outstanding. |
 
 **Safety (non-negotiable, issues #450/#452/#454):** this loop is read-only plus the single rate-capped CR re-trigger above. It never calls branch-protection APIs, never dismisses human reviews, and never resolves threads — thread resolution happens only in Steps 1–4 after code-verification.
@@ -718,7 +782,7 @@ jq -r '.merge_state | "[MERGE] mergeable=\(.mergeable), status=\(.mergeStateStat
 |-------|---------------|--------|
 | `mergeable` | `CONFLICTING` | Rebase onto main: `git fetch origin main && git rebase origin/main`. Fix conflicts (optionally run **`/merge-conflict`** — `.claude/skills/merge-conflict/SKILL.md` — to fetch main, auto-resolve *simple* hunks, stage clean files, and list *complex* hunks), continue, force-push. |
 | `mergeable` | `UNKNOWN` | GitHub still computing — note and re-run `/fixpr` later. |
-| `mergeStateStatus` | `BEHIND` | Rebase onto main: `git fetch origin main && git rebase origin/main`. If conflicts arise mid-rebase (replaying commits individually can conflict even when a three-way merge wouldn't), resolve them the same way as `CONFLICTING` above (including optional **`/merge-conflict`**), then `git rebase --continue`. Force-push, then — if `FIXPR_WAIT_ITER < FIXPR_MAX_ITERATIONS` — enter the Step 4d wait loop on the new SHA (counts as a wait iteration) instead of exiting blind. |
+| `mergeStateStatus` | `BEHIND` | Rebase onto main: `git fetch origin main && git rebase origin/main`. If conflicts arise mid-rebase (replaying commits individually can conflict even when a three-way merge wouldn't), resolve them the same way as `CONFLICTING` above (including optional **`/merge-conflict`**), then `git rebase --continue`. Force-push. When `FIXPR_WAIT_ITER < FIXPR_MAX_ITERATIONS`, treat the force-push as push-equivalent: set `PUSHED_SHA=$(git rev-parse HEAD)`, `PUSHED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")`, `DID_PUSH=1`, run **Step 3a** (dismiss stale bot reviews), **Step 3b** (reviewer triggers + 120s wait), then **Step 4d** on the new SHA. Do **not** jump straight to Step 4d without 3a/3b — bots are never kicked on the rebased SHA otherwise. |
 | `mergeStateStatus` | `BLOCKED` | Required checks/reviews missing — already covered by 5c/5d. If CodeRabbit, Greptile, or CodeAnt is in CODEOWNERS and the last approval is stale/dismissed after a push, recover by triggering that bot (`@coderabbitai full review`, `@greptileai`, or `@codeant-ai review`) instead of escalating to the author. |
 | `mergeStateStatus` | `UNSTABLE` | A non-required check pending/failing — typically CR/Greptile on the new SHA. If 5d emitted `REVIEW_PENDING`, stop with that status. |
 | `reviewDecision` | `CHANGES_REQUESTED` | Changes were requested. **Stale** bot `CHANGES_REQUESTED` (wrong `commit_id` vs HEAD) are cleared by Step 3a after each push — not escalation. If a **human** left `CHANGES_REQUESTED` on the current HEAD, report as non-automatable. |
