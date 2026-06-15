@@ -35,6 +35,8 @@ If agent definitions are unavailable (e.g., repo without `.claude/agents/`):
 | `pm-worker` | `sonnet` |
 | Read-only review agents (e.g., `/pr-review-help`) | `sonnet` |
 
+Aliases currently resolve to: `opus` = Opus 4.8, `sonnet` = Sonnet 4.6, `haiku` = Haiku 4.5 (resolution notes: `.claude/agents/README.md`).
+
 Rules: set `model` explicitly on every spawn; call-site value overrides frontmatter. `CLAUDE_CODE_SUBAGENT_MODEL=opus` is only a legacy safety net. If a Sonnet-tier agent underperforms, escalate to `opus` and document why.
 
 ## Phase Transition Autonomy (Quick Reference)
