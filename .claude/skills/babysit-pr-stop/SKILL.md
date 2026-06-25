@@ -68,18 +68,26 @@ Do **not** clear `active` here — let the watcher's terminate path own that so 
 
 ### 4. Cancel the recurring poll
 
-- **`/loop` mode (default):** the session loop stops re-arming once the watcher terminates; if you can cancel the active `/loop` immediately (runtime stop / "stop polling"), do so — otherwise the `stop_requested` flag guarantees the next tick is the last.
-- **Durable mode (`CronCreate`):** look up the job id and remove it so it stops firing across sessions:
+Branch on the watcher's recorded mode (`babysit.durable`):
 
-  **Fail closed** — do not report "stopped", prune `polling_jobs[]`, or clear `active` unless **both** the id lookup **and** `CronDelete` succeed. If either fails, exit early with the cron still recorded so a retry can finish the teardown (a falsely-reported stop while the cron keeps firing is the failure mode to avoid):
+```bash
+DURABLE=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.durable" 2>/dev/null || echo "false")
+```
+
+- **`/loop` mode (`DURABLE != true`):** the session loop stops re-arming once the watcher terminates; if you can cancel the active `/loop` immediately (runtime stop / "stop polling"), do so — otherwise the `stop_requested` flag set in Step 3 guarantees the next tick is the last.
+- **Durable mode (`DURABLE == true`, `CronCreate`):** the recorded cron must actually be deleted before claiming a stop.
+
+  **Fail closed** — do not report "stopped", prune `polling_jobs[]`, or clear `active`/`dispatch_in_flight` unless the cron is genuinely gone. A **missing** `cron_job_id` in durable mode is itself a fail-closed condition (the job is orphaned — we cannot target it), not a license to skip `CronDelete` and still report success:
 
   ```bash
   CRON_ID=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.cron_job_id") || {
     echo "ERROR: could not read cron_job_id — aborting stop; cron still active, retry /babysit-pr-stop $PR." >&2; exit 1; }
-  if [[ -n "$CRON_ID" && "$CRON_ID" != "null" ]]; then
-    CronDelete "$CRON_ID" || {
-      echo "ERROR: CronDelete failed for $CRON_ID — NOT clearing state; cron may still fire, retry /babysit-pr-stop $PR." >&2; exit 1; }
+  if [[ -z "$CRON_ID" || "$CRON_ID" == "null" ]]; then
+    echo "ERROR: durable watcher for PR #$PR has no recorded cron_job_id — the poll is orphaned. Run CronList, delete the matching job manually, then re-run /babysit-pr-stop $PR. NOT clearing state." >&2
+    exit 1
   fi
+  CronDelete "$CRON_ID" || {
+    echo "ERROR: CronDelete failed for $CRON_ID — NOT clearing state; cron may still fire, retry /babysit-pr-stop $PR." >&2; exit 1; }
   ```
 
   Only **after** `CronDelete` succeeds, prune `polling_jobs[]` and clear the per-PR state. `session-state.sh --set` only **assigns** a path — it cannot splice an array element — so read the array, filter it locally with `jq` (a read/transform, not a state write), and write the whole new array back via `--set` (the only writer, keeping the atomic guarantee and the "no raw `jq` writes" rule):
