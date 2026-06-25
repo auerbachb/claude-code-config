@@ -27,6 +27,8 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 | Transition | Action | Classification |
 |------------|--------|----------------|
 | Phase 1 complete (findings scan finished — may have flagged bot findings) | Begin Phase 2 recovery + merge | **Always do** |
+| Unresolved review threads only (Phase 1 scan — no other blocker category) | Record `WRAP_PHASE1_FINDINGS`, proceed to Phase 2 Branch B which auto-invokes `/fixpr` (issue #455) | **Auto-recover** |
+| Unresolved review threads only (Phase 2.1 — `merge-gate.sh` `missing` contains only `unresolved review thread(s)` entries) | Auto-invoke `/fixpr` (Branch B), then re-fetch HEAD + re-run `merge-gate.sh` | **Auto-recover** |
 | Phase 2 recovery loop exits cleanly (gate met, ready to merge) | AC check → squash merge → Phase 3 | **Always do** |
 | Phase 3 follow-ups processed | Begin Phase 4 | **Always do** |
 | Phase 4 lessons complete (or skipped as trivial) | Output final report | **Always do** |
@@ -35,6 +37,8 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 | AC checkbox verification fails (Phase 2.2) | Stop and report | **Stop and report** |
 
 > **Anti-pattern:** If you find yourself composing "Should I proceed?" or presenting a confirmation button, the answer is always yes — execute immediately.
+
+> **"Threads only" defined (issue #455):** the unresolved-review-threads auto-recovery rows above apply when unresolved review threads are the **sole** blocker — i.e. no other blocker category is present (no CI failing/incomplete, no `BEHIND`/`DIRTY`/`CONFLICTING` merge state, no stale or human `CHANGES_REQUESTED`, no missing fresh bot `APPROVED`). When any of those co-occur, the broader Step 2.1 decision tree (issue #452) owns dispatch — first matching branch wins — rather than a single threads-only pass. The single-attempt / stop-on-mixed-blocker semantics from #455 are realized here as the threads-only branch of the bounded #452 loop, not a separate one-shot path.
 
 ## Phase 1: Pre-Merge Verification — Check for Unresolved Findings
 
@@ -73,6 +77,22 @@ For each finding:
 3. Check if the thread is resolved/outdated
 
 **Do not stop here.** Record whether any items remain classified as `finding` (after `pr-state.sh` classification) as **`WRAP_PHASE1_FINDINGS`** — e.g. count + short list for the recovery audit. Unresolved bot findings are a **trigger** for Phase 2’s `/fixpr` delegation path (issue #452), not a hard stop.
+
+**Unresolved-threads-only classification (issue #455).** Pull the unresolved-thread count from the same bundle and decide whether threads are the *sole* blocker, so the heartbeat and Phase 2 routing can be explicit:
+
+```bash
+# Same $BUNDLE captured above. pr-state.sh exposes threads.unresolved_count.
+WRAP_UNRESOLVED_THREADS=$(jq -r '.threads.unresolved_count // 0' < "$BUNDLE")
+```
+
+If `WRAP_UNRESOLVED_THREADS > 0`, emit a timestamped detection heartbeat so the user sees the auto-recovery intent before Phase 2 acts:
+
+```bash
+TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
+echo "[$TS] Phase 1: $WRAP_UNRESOLVED_THREADS unresolved review thread(s) detected — auto-recoverable via /fixpr in Phase 2 (issue #455)"
+```
+
+**Do not invoke `/fixpr` from Phase 1** — that would double-invoke against Phase 2 Branch B and re-burn a CR review. Phase 1 only *classifies and records*; the single delegation point is Step 2.1 Branch B. The actual threads-only stop-or-recover decision (single bounded pass, code-verified resolution, re-check) lives there. This preserves the single-`/fixpr`-per-blocker contract and the bounded loop (no infinite delegation).
 
 Proceed immediately to Phase 2 — do not ask.
 
@@ -154,14 +174,38 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bulle
    - `merge_state == "DIRTY"`; **or**
    - Phase 1 left **`WRAP_PHASE1_FINDINGS`** (classified bot findings still pending remediation).
 
+   **Threads-only detection + delegate heartbeat (issue #455).** Before delegating, classify whether unresolved review threads are the *only* blocker in `missing` (every entry matches the `merge-gate.sh` thread string `N unresolved review thread(s) — resolve via GraphQL before merge`):
+
+   ```bash
+   THREADS_ONLY=$(echo "$GATE_JSON" | jq -r '
+     (.missing // []) as $m
+     | (($m | length) > 0)
+       and (($m | map(select(test("unresolved review thread\\(s\\)") | not)) | length) == 0)')
+   TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
+   if [ "$THREADS_ONLY" = "true" ]; then
+     echo "[$TS] Phase 2.1: merge gate blocked by unresolved review threads only — invoking /fixpr (issue #455)"
+   else
+     echo "[$TS] Phase 2.1: gate blocked (mixed/other blockers) — invoking /fixpr per #452 decision tree"
+   fi
+   ```
+
+   The threads-only case is the narrow #455 path; mixed blockers fall through to the broader #452 dispatch above (Branch A stale-dismiss, `CONFLICTING` stop, etc. — first matching branch already won this iteration). Either way the delegation target is the same `/fixpr` workflow; the heartbeat just makes the trigger legible.
+
    **Execution contract:** Do **not** shell out to an opaque “run fixpr” wrapper. Execute the **full** `.claude/skills/fixpr/SKILL.md` workflow (Steps 0–7, including the Step 4d review-wait loop): `pr-state.sh`, classify findings, fix + single push when needed, `dismiss-stale-bot-changes.sh` after push when applicable, `reply-thread.sh`, `resolve-review-threads.sh`, the bounded wait for bot verdicts + CI on the new SHA, verify passes, etc. If spawning a Phase A subagent to carry the skill, use **`mode: "bypassPermissions"`**, explicit **`model`**, SAFETY block from `.claude/rules/safety.md`, and handoff path per `.claude/rules/subagent-orchestration.md` — parent stays in **monitor mode** (orchestration only).
 
-   Parse the **`=== fixpr complete ===`** footer for **`Status:`**, **`FIXPR_WRAP_STATUS`**, and **`FIXPR_WAIT_SUMMARY`** (iterations, total wait secs, final state — see fixpr skill). Echo status + wait summary into the heartbeat for this cycle and append them to `WRAP_RECOVERY_AUDIT`. **Trust the verdict (issue #454):** `/fixpr` already waited for the bots and CI on the new SHA — re-fetch HEAD and re-run `merge-gate.sh` **immediately**; never sleep or re-poll on top.
+   Parse the **`=== fixpr complete ===`** footer for **`Status:`**, **`FIXPR_WRAP_STATUS`**, and **`FIXPR_WAIT_SUMMARY`** (iterations, total wait secs, final state — see fixpr skill and the `/wrap → /fixpr` delegation contract in `.claude/rules/phase-protocols.md`). On return, emit a timestamped **control-returned heartbeat** (issue #455 AC) so the delegation is visible end-to-end:
+
+   ```bash
+   TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
+   echo "[$TS] Phase 2.1: /fixpr returned — Status: $FIXPR_WRAP_STATUS ($FIXPR_WAIT_SUMMARY)"
+   ```
+
+   Echo status + wait summary into the heartbeat for this cycle and append them to `WRAP_RECOVERY_AUDIT`. **Trust the verdict (issue #454):** `/fixpr` already waited for the bots and CI on the new SHA — re-fetch HEAD and re-run `merge-gate.sh` **immediately**; never sleep or re-poll on top. For the threads-only case this satisfies #455's "re-fetch HEAD SHA, re-run `pr-state.sh` + `merge-gate.sh`; if clean continue to merge, else stop/loop" — `/fixpr` ran `pr-state.sh` internally and `merge-gate.sh` re-enforces resolved threads (Step 1c of `cr-merge-gate.md`).
 
    **Stop conditions after `/fixpr`:**
 
    - **`CI_FAILING`** with deterministic code/test failures you cannot fix in-session → stop; surface `missing` / CI summary + audit (matches “unfixable CI” scenario).
-   - **`THREADS_STUCK`**, **`NEEDS_HUMAN_REVIEW`**, or **`NEW_FINDINGS`** where unresolved → stop with audit; instruct re-run `/wrap` or `/fixpr`. (`NEW_FINDINGS` now means `/fixpr` exhausted its own 5-iteration budget — `FIXPR_WAIT_SUMMARY: … final=new-findings-pending`.)
+   - **`THREADS_STUCK`**, **`NEEDS_HUMAN_REVIEW`**, or **`NEW_FINDINGS`** where unresolved → stop with audit; instruct re-run `/wrap` or `/fixpr`. (`NEW_FINDINGS` now means `/fixpr` exhausted its own 5-iteration budget — `FIXPR_WAIT_SUMMARY: … final=new-findings-pending`.) For **`THREADS_STUCK`** specifically (issue #455 single-attempt boundary), the hard-stop message must **list each residual unresolved thread** — copy the `[STUCK] <url> — <reason>` lines from `/fixpr`'s footer — so the user sees exactly which threads `/fixpr` could not code-verify (it never resolves a thread without verification — that safety boundary is never overridden by `/wrap`).
    - **`REVIEW_PENDING`** (`final=cap-exhausted` — `/fixpr`'s 20-min wait cap fired with the named bots still pending) → re-enter recovery loop; next gate re-check routes to Branch C (trigger bot, then re-delegate the wait to `/fixpr`) or Branch D. Outer iteration cap still applies.
    - **`CI_PENDING`** (`final=cap-exhausted` with CI incomplete) → re-enter recovery loop; next gate re-check routes to Branch D. Outer iteration cap still applies.
    - **`BEHIND`** → `/fixpr` rebased/force-pushed; re-run the gate. If CI is now pending on the new HEAD, treat as `CI_PENDING`.
