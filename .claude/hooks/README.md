@@ -60,6 +60,34 @@ Replace `/absolute/path/to/claude-code-config` with the actual path to your clon
 - The repo must have a git remote named `origin` with a `main` branch
 - The hook script must be executable: `chmod +x .claude/hooks/post-merge-pull.sh` (the repo tracks it as executable, but some systems may strip the bit on checkout)
 
+## quota-usage-hook.sh
+
+Tracks daily API spend (issue #458). On every `PostToolUse` event it reads the
+session transcript, finds the most recent assistant message and its token usage,
+costs it with the per-model pricing in `quota-config.json`, and appends one
+tab-separated line to `~/.claude/quota-usage.log` (append-only, same family as
+`script-usage.log` / `skill-usage.log`).
+
+**De-duplication:** a single assistant message can spawn several `PostToolUse`
+events (one per tool-use block), so the hook records the last-logged message id
+per session under `~/.claude/quota-usage.d/<session>.last` and skips when it is
+unchanged — each response is counted exactly once.
+
+**TSV columns:** `ts_utc`, `et_date`, `session_id`, `message_id`, `model`,
+`input_tokens`, `output_tokens`, `cache_creation_tokens`, `cache_read_tokens`,
+`cost_usd`.
+
+The `/quota` skill and `.claude/scripts/quota-budget.sh` read this ledger to
+report today's spend and project end-of-day spend against `daily_cap_usd`.
+
+**Limitation:** `PostToolUse` only fires when a tool runs, so a final text-only
+response (no tool call) is not captured. This tracks the large majority of spend,
+which is what the run-rate projection needs.
+
+**Non-blocking:** always emits `{}` and exits `0`; a failure never blocks tool
+execution. Requires `python3`. Env `QUOTA_CONFIG` / `QUOTA_USAGE_LOG` /
+`QUOTA_STATE_DIR` override paths (tests).
+
 ## silence-detector.sh + silence-detector-ack.sh
 
 Enforces the 5-minute heartbeat rule. If the agent goes >5 minutes without sending a visible message to the user, a warning is injected into the agent's context after every tool call until a message is sent.
