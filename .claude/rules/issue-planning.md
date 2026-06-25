@@ -45,3 +45,7 @@
 9. **Start coding only after the gate passes** — create branch `issue-N-short-description`, read the issue body (not scattered comments) as canonical spec, implement, then run Local CodeRabbit Review Loop (`cr-local-review.md`) + Post-Clean checklist.
 
 > Do NOT jump to step 9 without passing step 7. The `## Implementation Plan` section in the issue body is the canonical spec for the coding work.
+
+## Capture-only issue threads
+
+For brainstorming threads whose only job is *opening* issues (no coding, no worktrees, no in-thread CR-plan polling), use the `/issue-maker` skill (`.claude/skills/issue-maker/SKILL.md`). It establishes a session-invariant capture mode, reflects before writing (1–3 scope questions), emits the canonical 6-section body with functional-first tone, and refuses workflow-advancing actions. It deliberately does **not** poll for the CR plan in-thread — `cr-plan-on-issue.yml` posts `@coderabbitai plan` on the issue itself, and the plan-merge gate (steps 5–7 above) runs later when the issue is picked up via `/start-issue`.

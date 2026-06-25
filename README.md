@@ -124,7 +124,7 @@ ls -la ~/.claude/skills/       # each skill -> ~/.claude/skills-worktree/.claude
 
 ## Slash Commands
 
-All 22 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
+All 23 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
 
 | Command | Category | Description |
 |---------|----------|-------------|
@@ -141,6 +141,7 @@ All 22 commands are invoked as `/command` in a Claude Code session. They are def
 | `/subagent` | PM | Run Quick/Light issues as Phase A/B/C subagents from a PM thread |
 | `/prompt` | Planning | Classify issue complexity, recommend a Claude 4.7/4.6 model tier, generate copy-paste prompt without the removed `effort` field |
 | `/start-issue` | Planning | End-to-end issue-to-coding setup — plan polling, plan merge, worktree, branch |
+| `/issue-maker` | Planning | Capture-only thread mode — drafts and opens well-structured issues, reflects before writing, no implementation |
 | `/fixpr` | Review | Single-pass PR cleanup — fixes review findings and CI failures, replies to findings, resolves threads |
 | `/pr-review-help` | Review | Executive PR review — multi-PR parallel strategic analysis |
 | `/standup` | Workflow | Daily standup summary (single contributor) |
