@@ -2,9 +2,10 @@
 name: babysit-pr-stop
 description: Cleanly stop an active /babysit-pr watcher for a PR. Sets the watcher's stop flag in session-state so its next tick terminates, cancels the recurring poll (CronDelete in durable mode), and confirms. Invoke as `/babysit-pr-stop <PR>`.
 triggers:
-  - stop babysit
-  - stop watching pr
-  - stop babysitting pr
+  - babysit-pr-stop
+  - unwatch pr
+  - cancel babysit
+  - end pr watcher
 argument-hint: "<PR>"
 ---
 
@@ -38,15 +39,22 @@ The first bare integer in `$ARGUMENTS` is `<PR>`. If none is given, stop: "Usage
 
 ### 2. Check for an active watcher
 
+Distinguish "no watcher" from "the state helper failed" — do **not** collapse every error into a clean no-op (that would silently skip a real stop request):
+
 ```bash
-ACTIVE=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.active" 2>/dev/null || echo "null")
-if [[ "$ACTIVE" != "true" ]]; then
+ACTIVE=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.active"); GET_RC=$?
+case "$GET_RC" in
+  0) ;;                                   # value read OK (may be true/false/null)
+  3) echo "No babysit state on file — nothing to stop."; exit 0 ;;  # state file missing
+  *) echo "ERROR: session-state.sh --get failed (exit $GET_RC) — not assuming inactive; investigate before retrying." >&2; exit "$GET_RC" ;;
+esac
+if [[ "$ACTIVE" != "true" ]]; then       # only a genuine null/false means inactive
   echo "No active babysit watcher for PR #$PR — nothing to stop."
   exit 0
 fi
 ```
 
-`null`/`false`/missing all mean "not watching" → warn and exit cleanly (no error).
+Exit `3` (state file absent) is the legitimate "nothing to watch" case. Any other non-zero exit is a real helper/parse failure — surface it and stop rather than masking it as inactive.
 
 ### 3. Request the stop (cooperative shutdown)
 
@@ -62,10 +70,27 @@ Do **not** clear `active` here — let the watcher's terminate path own that so 
 
 - **`/loop` mode (default):** the session loop stops re-arming once the watcher terminates; if you can cancel the active `/loop` immediately (runtime stop / "stop polling"), do so — otherwise the `stop_requested` flag guarantees the next tick is the last.
 - **Durable mode (`CronCreate`):** look up the job id and remove it so it stops firing across sessions:
+
   ```bash
-  CRON_ID=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.cron_job_id" 2>/dev/null || echo "null")
+  CRON_ID=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.cron_job_id")
   ```
-  If non-null, call `CronDelete <CRON_ID>`, then remove that entry from top-level `polling_jobs[]` and clear `.prs["<PR>"].babysit.cron_job_id` (so `session-state.json` stays authoritative — `pm/SKILL.md` mode-switch cleanup contract). Since no further tick will fire after `CronDelete`, also set `.prs["<PR>"].babysit.active=false` here.
+
+  If non-null, call `CronDelete <CRON_ID>`. Then prune `polling_jobs[]` and clear the per-PR state. `session-state.sh --set` only **assigns** a path — it cannot splice an array element — so read the array, filter it locally with `jq` (a read/transform, not a state write), and write the whole new array back via `--set` (the only writer, keeping the atomic guarantee and the "no raw `jq` writes" rule):
+
+  ```bash
+  JOBS=$("$SESSION_STATE_SH" --get '.polling_jobs')              # JSON array (or "null")
+  if [[ "$JOBS" != "null" && -n "$JOBS" ]]; then
+    NEW_JOBS=$(jq -c --arg id "$CRON_ID" 'map(select(.id != $id))' <<<"$JOBS")
+  else
+    NEW_JOBS='[]'
+  fi
+  "$SESSION_STATE_SH" \
+    --set ".polling_jobs=$NEW_JOBS" \
+    --set ".prs[\"$PR\"].babysit.cron_job_id=null" \
+    --set ".prs[\"$PR\"].babysit.active=false"
+  ```
+
+  (Since no further tick fires after `CronDelete`, this also sets `babysit.active=false` directly — `pm/SKILL.md` mode-switch cleanup contract: `polling_jobs[]` stays authoritative.)
 
 ### 5. Confirm
 

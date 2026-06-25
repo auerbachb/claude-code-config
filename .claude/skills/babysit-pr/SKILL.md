@@ -84,6 +84,7 @@ GREPTILE_SH=$(resolve_script greptile-budget.sh)     || true   # optional; degra
 {
   "active": true,
   "started_at": "2026-06-25T19:00:00Z",
+  "last_tick_at": "2026-06-25T19:00:00Z",   // refreshed every tick — freshness signal for A2
   "cadence_base_minutes": 5,
   "cadence_effective_minutes": 5,
   "tick_count": 0,
@@ -117,11 +118,25 @@ fi
 
 ### A2. Refuse duplicate watchers (idempotent setup)
 
+A live watcher writes `babysit.last_tick_at` every tick (T5). Treat `active == true` as a duplicate **only when the watcher is actually fresh** — otherwise a crashed/aborted session would leave `active=true` forever and brick re-arm. The freshness window is generous: `3 ×` the effective cadence, floored at the dispatch TTL (`BABYSIT_DISPATCH_TTL_MIN`, default 30m) so a long in-flight `/fixpr` never looks dead.
+
 ```bash
-ALREADY=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.active" 2>/dev/null || echo "null")
+ALREADY=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.active"); RC=$?
+if [[ "$RC" -eq 3 ]]; then ALREADY="null"; elif [[ "$RC" -ne 0 ]]; then
+  echo "ERROR: session-state.sh --get failed (exit $RC) — aborting arm to avoid double-watch." >&2; exit "$RC"
+fi
 if [[ "$ALREADY" == "true" ]]; then
-  echo "Already babysitting PR #$PR — not arming a second watcher. Use /babysit-pr-stop $PR to stop."
-  exit 0
+  LAST_TICK=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.last_tick_at" 2>/dev/null || echo "")
+  EFF_MIN=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.cadence_effective_minutes" 2>/dev/null || echo 5)
+  [[ "$EFF_MIN" =~ ^[0-9]+$ ]] || EFF_MIN=5
+  FRESH_MIN=$(( EFF_MIN * 3 )); (( FRESH_MIN < ${BABYSIT_DISPATCH_TTL_MIN:-30} )) && FRESH_MIN=${BABYSIT_DISPATCH_TTL_MIN:-30}
+  AGE_MIN=999999
+  [[ -n "$LAST_TICK" && "$LAST_TICK" != "null" ]] && AGE_MIN=$(( ( $(date -u +%s) - $(date -u -d "$LAST_TICK" +%s 2>/dev/null || echo 0) ) / 60 ))
+  if (( AGE_MIN < FRESH_MIN )); then
+    echo "Already babysitting PR #$PR (last tick ${AGE_MIN}m ago) — not arming a second watcher. Use /babysit-pr-stop $PR to stop."
+    exit 0
+  fi
+  echo "[babysit] stale watcher for PR #$PR (last tick ${AGE_MIN}m ago ≥ ${FRESH_MIN}m) — reclaiming and re-arming."
 fi
 ```
 
@@ -132,7 +147,7 @@ Write the babysit object (one atomic `--set` batch), seeding backoff fields to a
 ```bash
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 "$SESSION_STATE_SH" \
-  --set ".prs[\"$PR\"].babysit={\"active\":true,\"started_at\":\"$NOW\",\"cadence_base_minutes\":$BASE_MIN,\"cadence_effective_minutes\":$BASE_MIN,\"tick_count\":0,\"blocker_streak\":0,\"max_blocker_ticks\":$MAX_ITER,\"silent\":$SILENT,\"durable\":$DURABLE,\"stop_requested\":false,\"dispatch_in_flight\":null,\"last_dispatch\":null,\"cron_job_id\":null}" \
+  --set ".prs[\"$PR\"].babysit={\"active\":true,\"started_at\":\"$NOW\",\"last_tick_at\":\"$NOW\",\"cadence_base_minutes\":$BASE_MIN,\"cadence_effective_minutes\":$BASE_MIN,\"tick_count\":0,\"blocker_streak\":0,\"max_blocker_ticks\":$MAX_ITER,\"silent\":$SILENT,\"durable\":$DURABLE,\"stop_requested\":false,\"dispatch_in_flight\":null,\"last_dispatch\":null,\"cron_job_id\":null}" \
   --set ".prs[\"$PR\"].digest_streak=0"
 ```
 
@@ -160,7 +175,28 @@ if [[ "$STOP" == "true" || "$ACTIVE" != "true" ]]; then
 fi
 ```
 
-If `dispatch_in_flight` is set and its `started_at` is **recent** (a prior tick's `/fixpr` or `/wrap` is still running — ticks can overlap when a dispatch outlives the cadence), **skip this tick's dispatch** (idempotency — see T4) and emit a "dispatch in progress" heartbeat. Do not classify-and-dispatch on top of an in-flight dispatch.
+If `dispatch_in_flight` is set, decide whether it is **still running** or **stale** using an explicit TTL (`BABYSIT_DISPATCH_TTL_MIN`, default `30` — comfortably longer than `/fixpr`'s 20-min wait cap plus `/wrap` recovery, so a live dispatch is never mistaken for stale):
+
+```bash
+TTL_MIN="${BABYSIT_DISPATCH_TTL_MIN:-30}"
+IN_FLIGHT=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.dispatch_in_flight" 2>/dev/null || echo "null")
+DISPATCH_BLOCKING=0
+if [[ "$IN_FLIGHT" != "null" && -n "$IN_FLIGHT" ]]; then
+  STARTED=$(jq -r '.started_at // empty' <<<"$IN_FLIGHT")
+  AGE_MIN=$(( ( $(date -u +%s) - $(date -u -d "$STARTED" +%s 2>/dev/null || echo 0) ) / 60 ))
+  if (( AGE_MIN < TTL_MIN )); then
+    DISPATCH_BLOCKING=1            # a prior tick's /fixpr or /wrap is genuinely still running
+  else
+    # Stale: a crashed/abandoned dispatch. Reclaim it so it never blocks forever.
+    "$SESSION_STATE_SH" \
+      --set ".prs[\"$PR\"].babysit.last_dispatch=$(jq -c '. + {completed_at: (now|todate), status: "stale-reclaimed"}' <<<"$IN_FLIGHT")" \
+      --set ".prs[\"$PR\"].babysit.dispatch_in_flight=null"
+    echo "[babysit] reclaimed stale dispatch (age ${AGE_MIN}m ≥ ${TTL_MIN}m TTL) — proceeding"
+  fi
+fi
+```
+
+If `DISPATCH_BLOCKING == 1`, **skip this tick's dispatch** (idempotency — see T4): emit a "dispatch in progress" heartbeat and finish the tick without classifying-and-dispatching on top of the running dispatch. Otherwise continue normally (a stale in-flight has been reclaimed above).
 
 ### T1. Read PR state (the two shared scripts — never re-implement)
 
@@ -185,6 +221,9 @@ CI_FAILING=$(jq -r '.ci_status.failing // 0'       <<<"$GATE_JSON")
 CI_INCOMPLETE=$(jq -r '.ci_status.in_progress // 0' <<<"$GATE_JSON")
 STALE_BOT_CR=$(jq -r '.stale_bot_changes_requested_count // 0' <<<"$GATE_JSON")
 MISSING=$(jq -r '.missing | join(" | ")'           <<<"$GATE_JSON")
+# Sorted blocking CI conclusions — the `ci_blocking_conclusions_sorted` field of
+# the T5 digest tuple. merge-gate.sh exposes blocking runs as .ci_status.blocking[].
+CI_BLOCKING_SORTED=$(jq -r '[.ci_status.blocking[].conclusion] | sort | join(",")' <<<"$GATE_JSON")
 
 UNRESOLVED=$(jq -r '.threads.unresolved_count'      < "$BUNDLE")
 NEW_FINDINGS=$(jq -r '.new_since_baseline.finding_count // 0' < "$BUNDLE")
@@ -194,9 +233,25 @@ GREP_STATE=$(jq -r '.bot_statuses.Greptile.state // "none"'   < "$BUNDLE")
 BUGBOT_STATE=$(jq -r '[.check_runs.all[] | select((.name//""|ascii_downcase)|contains("cursor") or contains("bugbot"))] | (if length==0 then "none" elif any(.[]; .status!="completed") then "pending" else "done" end)' < "$BUNDLE" 2>/dev/null || echo "none")
 ```
 
-If `merge-gate.sh` exits `3` (PR not found / not open) or `gh pr view` shows merged/closed, jump to T2's terminal handling.
+If `merge-gate.sh` exits `3` (PR not found / not open) or `gh pr view` shows merged/closed, jump to T3's terminal handling.
 
-### T2. Classify (first match wins, in this order)
+### T2. Rate-cap snapshot (MUST run before classification)
+
+`/babysit-pr` never posts review triggers itself — `/fixpr` owns triggers and their caps. But the **classifier (T3) must already know** the budget state, so this snapshot runs **first**: it decides whether "missing fresh bot review" is a recoverable gap (a reviewer can still be triggered) or a `hard-blocked` budget-exhaustion (no path to the gate this window).
+
+```bash
+CR_BUDGET_OK=1; GREP_BUDGET_OK=1
+if [[ -n "$CR_HOURLY_SH" ]]; then "$CR_HOURLY_SH" --check >/dev/null 2>&1 || CR_BUDGET_OK=0; fi
+if [[ -n "$GREPTILE_SH" ]]; then "$GREPTILE_SH" --check >/dev/null 2>&1 || GREP_BUDGET_OK=0; fi
+```
+
+- **CodeRabbit:** `cr-review-hourly.sh --check` exit `1` ⇒ `CR_BUDGET_OK=0` (hourly budget exhausted). `/babysit-pr` only consults `--check`, never consumes — `/fixpr`'s own `--record-explicit` enforces the ≤2/PR/hour cap atomically when it actually posts `@coderabbitai full review`.
+- **Greptile:** `greptile-budget.sh --check` exit `1` ⇒ `GREP_BUDGET_OK=0` (daily budget exhausted).
+- **BugBot (`@cursor review`):** per-seat, no per-call charge — always safe (`bugbot.md`). Never gate on it.
+
+The classifier (T3) consumes `CR_BUDGET_OK` / `GREP_BUDGET_OK`: a PR whose only gap is a fresh review becomes `hard-blocked` (budget exhaustion) **only** when CR **and** Greptile are both exhausted and there is no other recoverable work; otherwise it stays `waiting-on-bots` (a trigger path still exists). Re-running `/babysit-pr` after the window resets resumes cleanly.
+
+### T3. Classify (first match wins, in this order)
 
 Re-fetch the authoritative open/merged state once:
 
@@ -209,45 +264,39 @@ PR_MERGED=$(jq -r '.merged'   <<<"$PR_NOW")
 | # | Class | Condition | Action |
 |---|-------|-----------|--------|
 | 1 | `merged` | `PR_MERGED == true` (or gate exit 3 because merged) | **Exit** — terminal success. |
-| 2 | `hard-blocked` | `HUMAN_CR > 0` (human `CHANGES_REQUESTED` on HEAD), **or** PR `CLOSED` unmerged, **or** all needed reviewers are budget-exhausted (T3), **or** a Greptile P0 needing design input persists | **Record blocker, exit.** Never auto-dismiss. |
+| 2 | `hard-blocked` | `HUMAN_CR > 0` (human `CHANGES_REQUESTED` on HEAD), **or** PR `CLOSED` unmerged, **or** the only gap is a fresh review and both budgets are exhausted (`CR_BUDGET_OK == 0 && GREP_BUDGET_OK == 0`, from T2), **or** a Greptile P0 needing design input persists | **Record blocker, exit.** Never auto-dismiss. |
 | 3 | `merge-ready` | `GATE_MET == true` (gate exit 0) | **Dispatch `/wrap`** (T4). |
 | 4 | `has-recoverable-blockers` | gate exit 1 **and** any of: `UNRESOLVED > 0`, `NEW_FINDINGS > 0`, `CI_FAILING > 0`, `STALE_BOT_CR > 0`, `MERGE_STATE` ∈ {`BEHIND`,`DIRTY`}, `MERGEABLE == CONFLICTING` | **Dispatch `/fixpr`** (T4). |
-| 5 | `waiting-on-bots` | gate exit 1 and the only gaps are pending review/CI: `CI_INCOMPLETE > 0`, or a missing-but-pending bot approval / `REVIEW_REQUIRED` with no findings/threads/failing-CI | **Heartbeat only, no dispatch.** Bots are still working on the current SHA. |
+| 5 | `waiting-on-bots` | gate exit 1 and the only gaps are pending review/CI: `CI_INCOMPLETE > 0`, or a missing-but-pending bot approval / `REVIEW_REQUIRED` with no findings/threads/failing-CI (and at least one review budget remains per T2) | **Heartbeat only, no dispatch.** Bots are still working on the current SHA. |
 
 `waiting-on-bots` is the "do nothing, just wait" state — the gate isn't met but there is nothing actionable yet (no findings to fix, no threads to resolve, CI still running, a bot hasn't posted its verdict). Do **not** dispatch `/fixpr` here — that would burn CR/CI cycles on a PR that just needs time. `/fixpr` owns its own bounded post-push wait (#454); `/babysit-pr` simply tolerates the gap across ticks.
-
-### T3. Rate-cap gating (before classifying anything as needing a review trigger)
-
-`/babysit-pr` never posts review triggers itself — `/fixpr` owns triggers and their caps. But the **classifier** must not route to a dispatch that would immediately hit a cap with no path forward. Before treating "missing fresh bot review" as recoverable:
-
-- **CodeRabbit:** if `CR_HOURLY_SH` is present, run `"$CR_HOURLY_SH" --check`. Exit `1` ⇒ CR hourly budget exhausted. Do **not** classify as needing a CR trigger this tick; if CR is the only path to the gate, this contributes to `hard-blocked` (budget exhaustion). `/fixpr`'s own `--record-explicit` enforces the ≤2/PR/hour cap atomically — `/babysit-pr` only consults `--check`, never consumes.
-- **Greptile:** if `GREPTILE_SH` is present, run `"$GREPTILE_SH" --check`. Exit `1` ⇒ Greptile daily budget exhausted — same treatment.
-- **BugBot (`@cursor review`):** per-seat, no per-call charge — always safe (`bugbot.md`). Never gate on it.
-
-If CR **and** Greptile are both exhausted **and** the PR still needs a fresh review to reach the gate (no other recoverable work), classify `hard-blocked` with a budget-exhaustion blocker and exit — re-running `/babysit-pr` after the window resets resumes cleanly.
 
 ### T4. Dispatch with idempotency (`session-state.json` is the source of truth)
 
 Only classes `merge-ready` (→ `/wrap`) and `has-recoverable-blockers` (→ `/fixpr`) dispatch.
 
-1. **Idempotency guard.** Read `.prs["<N>"].babysit.dispatch_in_flight`. If non-null and its `started_at` is recent (still running), **refuse to re-dispatch** the same skill — emit "dispatch in progress (<skill>), skipping" and finish the tick. This prevents two overlapping `/fixpr` (or `/wrap`) runs racing on the same PR when a dispatch outlives the cadence.
+1. **Idempotency guard (already evaluated in T0).** `DISPATCH_BLOCKING` from T0 is authoritative: it is `1` only when a prior `dispatch_in_flight` is **within** the `BABYSIT_DISPATCH_TTL_MIN` window (genuinely still running) — a stale entry was already reclaimed to `null` there. If `DISPATCH_BLOCKING == 1`, **refuse to re-dispatch**: emit "dispatch in progress (<skill>), skipping" and finish the tick. This prevents two overlapping `/fixpr` (or `/wrap`) runs racing on the same PR when a dispatch outlives the cadence, while the TTL guarantees a crashed dispatch cannot wedge the watcher forever.
 2. **Mark in-flight before invoking:**
+
    ```bash
    START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
    "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.dispatch_in_flight={\"skill\":\"$TARGET\",\"started_at\":\"$START\"}"
    ```
+
 3. **Invoke the full skill.** Execute the complete `.claude/skills/$TARGET/SKILL.md` workflow inline (or via a Phase A subagent in `bypassPermissions` mode with the `safety.md` block when the parent is in monitor mode — `subagent-orchestration.md`). `/fixpr` runs Steps 0–7 including its Step 4d post-push wait; `/wrap` runs its merge-gate recovery + AC + squash-merge + main-sync. **Do not shortcut either.**
 4. **Clear in-flight after it returns:**
+
    ```bash
    DONE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
    "$SESSION_STATE_SH" \
      --set ".prs[\"$PR\"].babysit.last_dispatch={\"skill\":\"$TARGET\",\"started_at\":\"$START\",\"completed_at\":\"$DONE\",\"status\":\"$DISPATCH_STATUS\"}" \
      --set ".prs[\"$PR\"].babysit.dispatch_in_flight=null"
    ```
+
    `DISPATCH_STATUS` = the parsed `Status:` / `FIXPR_WRAP_STATUS:` from `/fixpr`, or `merged`/`blocked`/`stopped` from `/wrap`.
 5. **On dispatch error:** record `status: "error"`, clear `dispatch_in_flight`, do **not** retry within this tick — the next tick re-classifies from scratch.
 
-After a `/wrap` dispatch that reports the PR merged, the next tick (T2 #1) sees `merged` and terminates. After a `/fixpr` dispatch, the next tick re-reads state on the new SHA.
+After a `/wrap` dispatch that reports the PR merged, the next tick (T3 #1) sees `merged` and terminates. After a `/fixpr` dispatch, the next tick re-reads state on the new SHA.
 
 ### T5. Backoff + bookkeeping (`scheduling-reliability.md` stable-state backoff)
 
@@ -267,27 +316,36 @@ PREV_STREAK=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].digest_streak" 2>/dev/nul
 if [[ "$DIGEST" == "$PREV_DIGEST" ]]; then STREAK=$((PREV_STREAK + 1)); else STREAK=1; fi
 ```
 
-**Cadence tiers** (base default 5m; `scheduling-reliability.md` widens a stable state and stops a frozen one). For `/babysit-pr` the first widen tier coincides with the 5m base, so the streak widens straight to **15m at ≥3 consecutive same-digest ticks** (satisfying the AC), and a frozen state stops at ≥9:
+**Cadence tiers** (`scheduling-reliability.md` widens a stable state and stops a frozen one). The widened cadence is **derived from the configured base**, never hard-coded, so it is **always slower than the base** regardless of `--cadence`:
+
+```bash
+# Widened cadence: at least 15m, and at least 3× the base — whichever is larger.
+# base 5m → 15m (satisfies the AC); base 1m → 15m; base 20m → 60m (still slower).
+WIDE_MIN=$(( BASE_MIN * 3 )); (( WIDE_MIN < 15 )) && WIDE_MIN=15
+(( WIDE_MIN < BASE_MIN )) && WIDE_MIN=$BASE_MIN     # guard: never faster than base
+```
 
 | `digest_streak` | Effective cadence |
 |-----------------|-------------------|
 | `< 3` | base (`--cadence`, default 5m) |
-| `>= 3` | **15m** (widened) |
-| `>= 9` | **terminate** (truly frozen — `CronDelete` in durable mode) |
+| `>= 3` | `WIDE_MIN` = `max(15m, 3 × base)` — for the default 5m base this is **15m** (satisfies the AC) |
+| `>= 9` | **terminate** (truly frozen — cancel `/loop`; `CronDelete` in durable mode) |
 
-**Revert to base cadence on any state change** (digest differs → `STREAK` reset to 1 → cadence returns to base).
+**Revert to base cadence on any state change** (digest differs → `STREAK` reset to 1 → `cadence_effective_minutes` returns to `BASE_MIN`).
 
 **Blocker-streak** (drives `--max-iter` termination): a tick is a *blocker-state tick* when `CLASS` ∈ {`has-recoverable-blockers`, `waiting-on-bots`} **and** the digest did not change (no forward progress). Increment `blocker_streak` on such ticks; reset to `0` on `merge-ready`/`merged` or on any digest change.
 
-Persist all counters atomically, then increment the tick count:
+Persist all counters atomically, then increment the tick count. `$DIGEST` (the `sha256:…` string computed above) is not valid JSON, so `session-state.sh --set` stores it as a string literal:
 
 ```bash
+NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 "$SESSION_STATE_SH" \
-  --set ".prs[\"$PR\"].digest=$JSON_DIGEST" \
+  --set ".prs[\"$PR\"].digest=$DIGEST" \
   --set ".prs[\"$PR\"].digest_streak=$STREAK" \
   --set ".prs[\"$PR\"].babysit.blocker_streak=$BLOCKER_STREAK" \
   --set ".prs[\"$PR\"].babysit.tick_count=$NEW_TICK_COUNT" \
-  --set ".prs[\"$PR\"].babysit.cadence_effective_minutes=$EFFECTIVE_MIN"
+  --set ".prs[\"$PR\"].babysit.cadence_effective_minutes=$EFFECTIVE_MIN" \
+  --set ".prs[\"$PR\"].babysit.last_tick_at=$NOW"
 ```
 
 **Re-arm cadence only when it crosses a tier boundary.** `/loop` owns the cadence, so to change it: stop the current loop and re-arm `/loop <new-cadence> /babysit-pr <PR> --tick` (durable mode: `CronUpdate`/recreate the job at the new minute-range, persisting the new id). If the effective cadence is unchanged, do nothing — never re-arm an unchanged loop (forbidden hand-rolled re-arm churn).
@@ -319,7 +377,7 @@ One-liner format:
 [<TS>] #<PR> tick <n>: state=<class>, action=<dispatch /fixpr | dispatch /wrap | no-op | waiting | dispatch-in-progress>, next in <effective-cadence>
 ```
 
-Append context: blocker reason on `hard-blocked`/`waiting-on-bots`; dispatch target on a dispatch; `(backoff: stable ×<streak>, widened to 15m)` when cadence widened; the final summary on termination.
+Append context: blocker reason on `hard-blocked`/`waiting-on-bots`; dispatch target on a dispatch; `(backoff: stable ×<streak>, widened to <WIDE_MIN>m)` when cadence widened; the final summary on termination.
 
 **`--silent`:** suppress the line on plain `waiting-on-bots`/no-change ticks, but **always** print on state change, any dispatch, backoff transitions, and termination. (Default — no `--silent` — prints every tick, satisfying the per-tick heartbeat AC.)
 
@@ -331,8 +389,22 @@ Append context: blocker reason on `hard-blocked`/`waiting-on-bots`; dispatch tar
   --set ".prs[\"$PR\"].babysit.dispatch_in_flight=null"
 ```
 
-- **Durable mode:** `CronDelete` the `cron_job_id` and remove it from `polling_jobs[]`.
-- **`/loop` mode:** do **not** re-arm — letting the loop lapse is the stop. (If the runtime keeps re-invoking, the T0 short-circuit makes every further tick a no-op terminate.)
+**Cancelling the poll is a required terminal action — the loop does NOT lapse on its own** (`/loop` re-arms every cycle; `CronCreate` fires until deleted). Tear it down explicitly:
+
+- **`/loop` mode (default):** cancel the active loop now (runtime loop-stop / "stop polling"). Do not re-arm it.
+- **Durable mode:** `CronDelete` the `cron_job_id`, then prune `polling_jobs[]` and clear the per-PR id. `session-state.sh --set` cannot splice an array, so read → filter with `jq` (a read/transform) → write the new array back via `--set` (same supported delete path as `/babysit-pr-stop`):
+
+  ```bash
+  JOBS=$("$SESSION_STATE_SH" --get '.polling_jobs')
+  if [[ "$JOBS" != "null" && -n "$JOBS" ]]; then
+    NEW_JOBS=$(jq -c --arg id "$CRON_ID" 'map(select(.id != $id))' <<<"$JOBS")
+  else
+    NEW_JOBS='[]'
+  fi
+  "$SESSION_STATE_SH" --set ".polling_jobs=$NEW_JOBS" --set ".prs[\"$PR\"].babysit.cron_job_id=null"
+  ```
+
+Belt-and-suspenders: even if cancellation is delayed, the T0 short-circuit (`active != true`) makes every subsequent tick an immediate no-op terminate — but cancellation is still mandatory so the runtime stops invoking the watcher.
 
 Emit the final summary:
 
