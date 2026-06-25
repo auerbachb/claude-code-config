@@ -1,0 +1,31 @@
+{
+  "_comment": "Daily API spend tracker config for the /quota skill (issue #458). daily_cap_usd is the soft daily budget that quota-budget.sh checks today's spend and end-of-day projection against. pricing is keyed by a substring matched against the assistant message model id (longest match wins; 'default' is the fallback). All prices are USD per 1,000,000 tokens. quota-usage-hook.sh reads this file to cost each response; quota-budget.sh reads daily_cap_usd. Override the path in tests with QUOTA_CONFIG.",
+  "currency": "USD",
+  "daily_cap_usd": 100,
+  "pricing": {
+    "claude-opus-4": {
+      "input": 15.0,
+      "output": 75.0,
+      "cache_write": 18.75,
+      "cache_read": 1.5
+    },
+    "claude-sonnet-4": {
+      "input": 3.0,
+      "output": 15.0,
+      "cache_write": 3.75,
+      "cache_read": 0.3
+    },
+    "claude-haiku-4": {
+      "input": 1.0,
+      "output": 5.0,
+      "cache_write": 1.25,
+      "cache_read": 0.1
+    },
+    "default": {
+      "input": 15.0,
+      "output": 75.0,
+      "cache_write": 18.75,
+      "cache_read": 1.5
+    }
+  }
+}
