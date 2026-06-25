@@ -206,7 +206,9 @@ fi
 
 GATE_ARGS=("$PR_NUMBER")
 [[ -n "$REVIEWER_OVERRIDE" ]] && GATE_ARGS+=(--reviewer "$REVIEWER_OVERRIDE")
-GATE_JSON="$("$MERGE_GATE" "${GATE_ARGS[@]}" 2>/dev/null || true)"
+# set -e is intentionally off, so a non-zero merge-gate exit (e.g. 1 = gate not
+# met) does not abort here — capture the real exit code, then inspect the JSON.
+GATE_JSON="$("$MERGE_GATE" "${GATE_ARGS[@]}" 2>/dev/null)"
 GATE_EXIT=$?
 if [[ -z "$GATE_JSON" ]] || ! echo "$GATE_JSON" | jq -e . >/dev/null 2>&1; then
   echo "ERROR: merge-gate.sh produced no parseable JSON (exit $GATE_EXIT)." >&2
@@ -451,13 +453,15 @@ if [[ "$MODE" == "execute" ]]; then
     exit 7
   fi
 
+  # Explicit normal-flow re-enable (also keeps reenable_protection reachable for
+  # static analysis; the EXIT trap is the failure-path safety net).
   echo "[admin-merge] re-enabling enforce_admins ..."
-  if ! $REENABLE_CALL >/dev/null 2>&1; then
+  reenable_protection
+  if [[ "$ENFORCE_REENABLED" != "1" ]]; then
     echo "ERROR: failed to re-enable enforce_admins — re-run manually:" >&2
     echo "  $REENABLE_CALL" >&2
     exit 7
   fi
-  ENFORCE_REENABLED=1
 
   # Post-verify: protection restored + PR merged.
   FINAL_ENFORCE=$(gh api "repos/$OWNER/$REPO/branches/$BRANCH/protection/enforce_admins" --jq '.enabled' 2>/dev/null || echo "unknown")
