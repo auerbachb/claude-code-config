@@ -71,11 +71,18 @@ Do **not** clear `active` here — let the watcher's terminate path own that so 
 - **`/loop` mode (default):** the session loop stops re-arming once the watcher terminates; if you can cancel the active `/loop` immediately (runtime stop / "stop polling"), do so — otherwise the `stop_requested` flag guarantees the next tick is the last.
 - **Durable mode (`CronCreate`):** look up the job id and remove it so it stops firing across sessions:
 
+  **Fail closed** — do not report "stopped", prune `polling_jobs[]`, or clear `active` unless **both** the id lookup **and** `CronDelete` succeed. If either fails, exit early with the cron still recorded so a retry can finish the teardown (a falsely-reported stop while the cron keeps firing is the failure mode to avoid):
+
   ```bash
-  CRON_ID=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.cron_job_id")
+  CRON_ID=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.cron_job_id") || {
+    echo "ERROR: could not read cron_job_id — aborting stop; cron still active, retry /babysit-pr-stop $PR." >&2; exit 1; }
+  if [[ -n "$CRON_ID" && "$CRON_ID" != "null" ]]; then
+    CronDelete "$CRON_ID" || {
+      echo "ERROR: CronDelete failed for $CRON_ID — NOT clearing state; cron may still fire, retry /babysit-pr-stop $PR." >&2; exit 1; }
+  fi
   ```
 
-  If non-null, call `CronDelete <CRON_ID>`. Then prune `polling_jobs[]` and clear the per-PR state. `session-state.sh --set` only **assigns** a path — it cannot splice an array element — so read the array, filter it locally with `jq` (a read/transform, not a state write), and write the whole new array back via `--set` (the only writer, keeping the atomic guarantee and the "no raw `jq` writes" rule):
+  Only **after** `CronDelete` succeeds, prune `polling_jobs[]` and clear the per-PR state. `session-state.sh --set` only **assigns** a path — it cannot splice an array element — so read the array, filter it locally with `jq` (a read/transform, not a state write), and write the whole new array back via `--set` (the only writer, keeping the atomic guarantee and the "no raw `jq` writes" rule):
 
   ```bash
   JOBS=$("$SESSION_STATE_SH" --get '.polling_jobs')              # JSON array (or "null")
@@ -90,7 +97,7 @@ Do **not** clear `active` here — let the watcher's terminate path own that so 
     --set ".prs[\"$PR\"].babysit.active=false"
   ```
 
-  (Since no further tick fires after `CronDelete`, this also sets `babysit.active=false` directly — `pm/SKILL.md` mode-switch cleanup contract: `polling_jobs[]` stays authoritative.)
+  (Since no further tick fires after a successful `CronDelete`, this also sets `babysit.active=false` directly — `pm/SKILL.md` mode-switch cleanup contract: `polling_jobs[]` stays authoritative.)
 
 ### 5. Confirm
 

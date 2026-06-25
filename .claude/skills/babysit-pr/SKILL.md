@@ -392,16 +392,20 @@ Append context: blocker reason on `hard-blocked`/`waiting-on-bots`; dispatch tar
 **Cancelling the poll is a required terminal action — the loop does NOT lapse on its own** (`/loop` re-arms every cycle; `CronCreate` fires until deleted). Tear it down explicitly:
 
 - **`/loop` mode (default):** cancel the active loop now (runtime loop-stop / "stop polling"). Do not re-arm it.
-- **Durable mode:** `CronDelete` the `cron_job_id`, then prune `polling_jobs[]` and clear the per-PR id. `session-state.sh --set` cannot splice an array, so read → filter with `jq` (a read/transform) → write the new array back via `--set` (same supported delete path as `/babysit-pr-stop`):
+- **Durable mode:** **fail closed** — `CronDelete` the `cron_job_id` and only prune `polling_jobs[]` / clear the id **after** it succeeds, so a failed delete never leaves a cron firing against state that claims it's gone. `session-state.sh --set` cannot splice an array, so read → filter with `jq` (a read/transform) → write the new array back via `--set` (same supported delete path as `/babysit-pr-stop`):
 
   ```bash
-  JOBS=$("$SESSION_STATE_SH" --get '.polling_jobs')
-  if [[ "$JOBS" != "null" && -n "$JOBS" ]]; then
-    NEW_JOBS=$(jq -c --arg id "$CRON_ID" 'map(select(.id != $id))' <<<"$JOBS")
-  else
-    NEW_JOBS='[]'
+  CRON_ID=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.cron_job_id") || CRON_ID=""
+  if [[ -n "$CRON_ID" && "$CRON_ID" != "null" ]]; then
+    CronDelete "$CRON_ID" || { echo "ERROR: CronDelete failed for $CRON_ID — leaving job recorded; re-run /babysit-pr-stop $PR." >&2; exit 1; }
+    JOBS=$("$SESSION_STATE_SH" --get '.polling_jobs')
+    if [[ "$JOBS" != "null" && -n "$JOBS" ]]; then
+      NEW_JOBS=$(jq -c --arg id "$CRON_ID" 'map(select(.id != $id))' <<<"$JOBS")
+    else
+      NEW_JOBS='[]'
+    fi
+    "$SESSION_STATE_SH" --set ".polling_jobs=$NEW_JOBS" --set ".prs[\"$PR\"].babysit.cron_job_id=null"
   fi
-  "$SESSION_STATE_SH" --set ".polling_jobs=$NEW_JOBS" --set ".prs[\"$PR\"].babysit.cron_job_id=null"
   ```
 
 Belt-and-suspenders: even if cancellation is delayed, the T0 short-circuit (`active != true`) makes every subsequent tick an immediate no-op terminate — but cancellation is still mandatory so the runtime stops invoking the watcher.
