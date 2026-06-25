@@ -181,6 +181,8 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bulle
 
    **D. CI incomplete only** (no failing yet) — Do not fix anything. Delegate the wait to `/fixpr` (idempotent — no push; its Step 4d loop polls until non-review-bot CI completes or the cap fires), append “waited for CI via /fixpr: <FIXPR_WAIT_SUMMARY>” to audit, re-run the gate immediately, continue to next iteration if under cap.
 
+   **E. Branch-protection block a bot re-review can't clear (`enforce_admins`)** — When the **only** outstanding blocker is `missing` reporting `branch protection reviewDecision is … not APPROVED, with <bot> in CODEOWNERS` **and** that bot already has a fresh `APPROVED` on HEAD (so Branch C's re-trigger won't help — the AI reviewer auto-skipped the code-owner path), this is the solo-owner `enforce_admins` bypass scenario. **Stop** and suggest **`/admin-merge <PR>`** — never tell the user to toggle `enforce_admins` in the GitHub UI, and never modify branch protection yourself. `/admin-merge` prints a user-runnable bypass command (gate is re-verified first). Record the suggestion in the audit.
+
    **`merge_state == UNKNOWN`** — GitHub is still computing mergeability; re-run `merge-gate.sh` on the next iteration (the gate call itself provides the spacing — no sleep). If still unknown at cap, stop with audit.
 
 4. **End of iteration:** If no branch matched and gate still fails, append “unclassified blocker” + full `missing` to audit and proceed to next `i`.
@@ -193,7 +195,7 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bulle
 
 **Safety (non-negotiable, issue #452 / #450):**
 
-- **Never** call GitHub APIs that modify **branch protection** (`.../branches/.../protection`).
+- **Never** call GitHub APIs that modify **branch protection** (`.../branches/.../protection`). When a merge is blocked by `enforce_admins` on a solo-owner repo, suggest **`/admin-merge`** (Branch E) — it prints a command for the **user** to run — instead of toggling protection or pointing the user at the GitHub UI.
 - **Never** dismiss **human** reviews — only `dismiss-stale-bot-changes.sh` (bot allowlist, wrong `commit_id`).
 - **Never** resolve a review thread **without** verifying the code addresses the comment (`/fixpr` Steps 1–4 verify-address → reply → resolve).
 

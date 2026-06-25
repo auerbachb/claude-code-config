@@ -31,7 +31,7 @@ After setup, Claude Code will automatically:
 - **Review locally, then on GitHub** — Runs CodeRabbit CLI reviews before pushing (instant feedback, no PR noise). After PR creation, the reviewer chain is CodeRabbit primary, BugBot (Cursor) second tier, Greptile last resort, then self-review only if every reviewer is unavailable; CodeAnt and Graphite AI Reviews provide supplemental AI review signals.
 - **Verify and merge** — Checks every acceptance criteria checkbox against the code, confirms CI is green, then squash-merges with branch cleanup.
 - **Orchestrate multi-agent work** — Decomposes large tasks into phases (fix, review, merge) with health monitoring, handoff files, and heartbeat enforcement.
-- **Manage your project** — 22 slash commands for backlog prioritization, sprint planning, team metrics, standups, and cross-thread orchestration.
+- **Manage your project** — 23 slash commands for backlog prioritization, sprint planning, team metrics, standups, and cross-thread orchestration.
 
 Review ownership is sticky once a fallback tier takes over:
 
@@ -124,7 +124,7 @@ ls -la ~/.claude/skills/       # each skill -> ~/.claude/skills-worktree/.claude
 
 ## Slash Commands
 
-All 22 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
+All 23 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
 
 | Command | Category | Description |
 |---------|----------|-------------|
@@ -147,6 +147,7 @@ All 22 commands are invoked as `/command` in a Claude Code session. They are def
 | `/status` | Workflow | Dashboard of open PRs with review state |
 | `/go-on` | Workflow | Resume an interrupted review workflow |
 | `/merge` | Workflow | Squash merge with merge gate + AC verification |
+| `/admin-merge` | Workflow | Print a user-runnable bypass command to merge a solo-owner PR blocked by `enforce_admins` (Claude never modifies branch protection) |
 | `/wrap` | Workflow | End-of-session: verify, squash merge, aggressively reset root `main`, detect follow-ups, extract lessons |
 | `/check-acceptance-criteria` | Workflow | Verify Test Plan checkboxes against code |
 | `/lessons` | Workflow | Extract and save session learnings to memory |
@@ -214,6 +215,7 @@ Shared helpers in `.claude/scripts/` are used by skills, hooks, and review subag
 |--------|---------|
 | `repo-root.sh` | Resolve the root repo path from a worktree or nested directory |
 | `merge-gate.sh` | Verify reviewer ownership, review gate, CI, merge state, and unresolved thread blockers |
+| `admin-merge.sh` | Print (or, on user opt-in `--execute`, run) the `enforce_admins` toggle-merge-toggle bypass for a solo-owner PR after verifying the merge gate — Claude only ever runs it in `--print`/`--launch-terminal` mode |
 | `pr-state.sh` | Gather PR state: review threads, comments, CI, commit statuses, merge metadata |
 | `ci-status.sh` | Summarize check-runs/statuses for a PR or SHA |
 | `ac-checkboxes.sh` | Extract and update PR Test Plan checkboxes |
