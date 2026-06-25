@@ -1,9 +1,8 @@
 #!/bin/bash
-# quota-usage-hook.sh — PostToolUse hook (all tools): per-response API spend ledger.
+# quota-usage-hook.sh — PostToolUse hook (all tools): per-response token ledger.
 #
-# On each tool call, inspects the session transcript, finds the most recent
-# assistant message and its token usage, costs it with the per-model pricing in
-# quota-config.json, and appends ONE tab-separated line to
+# After each tool call, inspects the session transcript, finds the most recent
+# assistant message and its token usage, and appends ONE tab-separated line to
 # ~/.claude/quota-usage.log (append-only, same family as script-usage.log /
 # skill-usage.log). The /quota skill + quota-budget.sh read this ledger to report
 # today's spend and project end-of-day vs the daily cap (issue #458).
@@ -12,21 +11,27 @@
 # Output (stdout): empty JSON object (non-blocking)
 # Exit code      : always 0 — never blocks tool execution
 #
+# TSV columns (7) — counts + model + session id only; NEVER prompts/completions
+# or secrets:
+#   ts_utc(ISO8601)  model  input_tokens  output_tokens  cache_read_tokens
+#   cache_creation_tokens  session_id
+#
 # De-duplication:
 #   A single assistant message can spawn several PostToolUse events (one per
-#   tool_use block). We must count each assistant message's tokens once, so the
-#   hook records the last-logged message id per session in
-#   ~/.claude/quota-usage.d/<session>.last and skips when it is unchanged.
+#   tool_use block). The hook records the last-logged message id per session in
+#   ~/.claude/quota-usage.d/<session>.last and skips when it is unchanged, so
+#   each response's tokens are counted exactly once. The message id is kept ONLY
+#   in the sidecar marker — it never enters the log.
 #
-# TSV columns (10):
-#   ts_utc  et_date  session_id  message_id  model
-#   input_tokens  output_tokens  cache_creation_tokens  cache_read_tokens  cost_usd
+# Graceful no-op: if the transcript is missing or exposes no assistant `usage`
+# block (the documented payload-availability gap, AC #2), the hook writes nothing
+# and exits 0.
 #
 # Limitation: PostToolUse fires only when a tool runs, so a final text-only
 #   assistant message (no tool call) is not captured. This tracks the large
 #   majority of spend, which is what the daily projection needs.
 #
-# Env overrides (tests): QUOTA_CONFIG, QUOTA_USAGE_LOG, QUOTA_STATE_DIR.
+# Env overrides (tests): QUOTA_USAGE_LOG, QUOTA_STATE_DIR.
 
 set -uo pipefail
 
@@ -37,11 +42,6 @@ trap 'echo "{}"; exit 0' EXIT
 
 command -v python3 >/dev/null 2>&1 || exit 0
 
-# Resolve config path: env override, else repo root (two levels up from this hook).
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-CONFIG_PATH="${QUOTA_CONFIG:-$REPO_ROOT/quota-config.json}"
-
 USAGE_LOG="${QUOTA_USAGE_LOG:-$HOME/.claude/quota-usage.log}"
 STATE_DIR="${QUOTA_STATE_DIR:-$HOME/.claude/quota-usage.d}"
 
@@ -50,11 +50,11 @@ mkdir -p "$(dirname "$USAGE_LOG")" "$STATE_DIR" 2>/dev/null || exit 0
 # NOTE: pass the hook payload via env var, NOT stdin. The heredoc below already
 # claims python's stdin to deliver the program, so a piped stdin would be
 # shadowed and read back empty.
-QUOTA_HOOK_INPUT="$INPUT" python3 - "$CONFIG_PATH" "$USAGE_LOG" "$STATE_DIR" <<'PY' 2>/dev/null || exit 0
+QUOTA_HOOK_INPUT="$INPUT" python3 - "$USAGE_LOG" "$STATE_DIR" <<'PY' 2>/dev/null || exit 0
 import json, os, sys
 from datetime import datetime, timezone
 
-config_path, usage_log, state_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+usage_log, state_dir = sys.argv[1], sys.argv[2]
 
 try:
     hook_input = json.loads(os.environ.get("QUOTA_HOOK_INPUT", ""))
@@ -69,44 +69,6 @@ session_id = "".join(c if (c.isalnum() or c in "_.-") else "_" for c in str(sess
 
 if not transcript_path or not os.path.isfile(transcript_path):
     sys.exit(0)
-
-# --- Pricing (USD per 1,000,000 tokens) ---
-def load_pricing(path):
-    try:
-        with open(path, encoding="utf-8") as f:
-            cfg = json.load(f)
-    except Exception:
-        cfg = {}
-    pricing = cfg.get("pricing") if isinstance(cfg, dict) else None
-    if not isinstance(pricing, dict):
-        pricing = {}
-    default = pricing.get("default")
-    if not isinstance(default, dict):
-        default = {"input": 15.0, "output": 75.0, "cache_write": 18.75, "cache_read": 1.5}
-    return pricing, default
-
-pricing, default_price = load_pricing(config_path)
-
-def price_for(model):
-    model = model or ""
-    best_key, best_len = None, -1
-    for key, val in pricing.items():
-        if key in ("default", "_comment") or not isinstance(val, dict):
-            continue
-        if key in model and len(key) > best_len:
-            best_key, best_len = key, len(key)
-    chosen = pricing.get(best_key, default_price) if best_key else default_price
-    def num(v, fb):
-        try:
-            return float(v)
-        except (TypeError, ValueError):
-            return fb
-    return {
-        "input": num(chosen.get("input"), default_price.get("input", 0.0)),
-        "output": num(chosen.get("output"), default_price.get("output", 0.0)),
-        "cache_write": num(chosen.get("cache_write"), default_price.get("cache_write", 0.0)),
-        "cache_read": num(chosen.get("cache_read"), default_price.get("cache_read", 0.0)),
-    }
 
 # --- Read the tail of the transcript and find the latest assistant usage ---
 def read_tail_lines(path, max_bytes=1_048_576):
@@ -143,6 +105,7 @@ for line in read_tail_lines(transcript_path):
         continue
     latest = {"id": str(msg_id), "model": str(msg.get("model") or ""), "usage": usage}
 
+# Graceful no-op when no assistant usage block is present (payload gap, AC #2).
 if latest is None:
     sys.exit(0)
 
@@ -165,24 +128,15 @@ def tok(name):
 
 inp = tok("input_tokens")
 out = tok("output_tokens")
-cw = tok("cache_creation_input_tokens")
 cr = tok("cache_read_input_tokens")
+cw = tok("cache_creation_input_tokens")
 
-p = price_for(latest["model"])
-cost = (inp * p["input"] + out * p["output"] + cw * p["cache_write"] + cr * p["cache_read"]) / 1_000_000.0
+ts_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+model = (latest["model"] or "unknown")
 
-now = datetime.now(timezone.utc)
-ts_utc = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-try:
-    import zoneinfo
-    et_date = datetime.now(zoneinfo.ZoneInfo("America/New_York")).date().isoformat()
-except Exception:
-    et_date = now.date().isoformat()
-
-row = "\t".join([
-    ts_utc, et_date, session_id, latest["id"], (latest["model"] or "unknown"),
-    str(inp), str(out), str(cw), str(cr), f"{cost:.6f}",
-])
+# Column order matches the issue #458 spec:
+# ts_utc, model, input, output, cache_read, cache_creation, session_id
+row = "\t".join([ts_utc, model, str(inp), str(out), str(cr), str(cw), session_id])
 
 try:
     with open(usage_log, "a", encoding="utf-8") as f:

@@ -1,8 +1,20 @@
 {
-  "_comment": "Daily API spend tracker config for the /quota skill (issue #458). daily_cap_usd is the soft daily budget that quota-budget.sh checks today's spend and end-of-day projection against. pricing is keyed by a substring matched against the assistant message model id (longest match wins; 'default' is the fallback). All prices are USD per 1,000,000 tokens. quota-usage-hook.sh reads this file to cost each response; quota-budget.sh reads daily_cap_usd. Override the path in tests with QUOTA_CONFIG.",
+  "_comment": "Config for the /quota daily API spend tracker (issue #458). quota-usage-hook.sh writes raw per-response token counts to ~/.claude/quota-usage.log; quota-budget.sh reads this file to convert those counts to USD, compare against daily_cap_usd, and project end-of-day spend. Spend tracking is observational (warnings only) — it never blocks work. Override the path in tests with QUOTA_CONFIG.",
   "currency": "USD",
-  "daily_cap_usd": 100,
+  "daily_cap_usd": 3.33,
+  "plan": {
+    "tier": "pro",
+    "monthly_cap_usd": 100,
+    "note": "Pro tier ~$100/month -> ~$3.33/day. Anthropic has no machine-readable plan endpoint; set daily_cap_usd manually for your plan/usage."
+  },
+  "thresholds": {
+    "info": 0.60,
+    "warn": 0.80,
+    "critical": 0.95
+  },
+  "stop_hook_threshold": 0.60,
   "pricing": {
+    "_comment": "USD per 1,000,000 tokens. Keyed by a substring matched against the response model id (longest match wins; 'default' is the fallback). Confirm current Anthropic list prices when they change.",
     "claude-opus-4": {
       "input": 15.0,
       "output": 75.0,
@@ -16,10 +28,10 @@
       "cache_read": 0.3
     },
     "claude-haiku-4": {
-      "input": 1.0,
-      "output": 5.0,
-      "cache_write": 1.25,
-      "cache_read": 0.1
+      "input": 0.8,
+      "output": 4.0,
+      "cache_write": 1.0,
+      "cache_read": 0.08
     },
     "default": {
       "input": 15.0,
