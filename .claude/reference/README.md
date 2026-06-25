@@ -29,6 +29,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `pm-monitoring-decision.md` — `/loop` vs `CronCreate` hybrid decision
 - `scheduling-failure-modes.md` — recurring poll failure analysis
 - `skill-sync-hooks.md` — skills worktree sync and hook registration narrative
+- `double-loading-fix.md` — decision record for suppressing the duplicate global CLAUDE.md + rules copy via project-local `claudeMdExcludes` (#461)
 
 ### Audits and research (point-in-time)
 
