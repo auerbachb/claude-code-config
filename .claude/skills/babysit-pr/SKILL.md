@@ -203,13 +203,38 @@ If `DISPATCH_BLOCKING == 1`, **skip this tick's dispatch** (idempotency — see 
 ```bash
 # Authoritative merge-readiness + blocker breakdown.
 GATE_JSON=$("$MERGE_GATE_SH" "$PR"); GATE_EXIT=$?
-# Full state bundle for findings/threads/CI/SHA. --since the PR's createdAt picks
-# up every bot finding; classification fields drive new-findings detection.
-PR_CREATED=$(gh pr view "$PR" --json createdAt --jq '.createdAt')
-BUNDLE=$("$PR_STATE_SH" --pr "$PR" --since "$PR_CREATED")   # prints path
 ```
 
-Pull the fields the classifier needs:
+**Fail closed before classifying** — `merge-gate.sh` exit codes are: `0` met (valid JSON), `1` not-met (valid JSON), `2` usage error, `3` PR not found/closed/merged, `4` gh/jq error. Only `0`/`1` produce real gate JSON. Do **not** let a transient tooling failure (`2`/`4`) or a bad `gh pr view` fall through into the jq parsing below — that would manufacture a bogus classification or dispatch:
+
+```bash
+case "$GATE_EXIT" in
+  0|1) ;;                                  # valid gate JSON — proceed to classify
+  3)  # PR not found / closed / merged — let T3's terminal handling decide (merged vs closed)
+      PR_NOW=$(gh pr view "$PR" --json state,merged --jq '{state,merged}' 2>/dev/null || echo '{}')
+      # fall through to T3 with GATE_JSON unused; T3 row 1/2 classify merged/closed
+      SKIP_STATE_READ=1 ;;
+  *)  # exit 2/4/other — tooling/transient error. Heartbeat + skip this tick (no classify, no dispatch).
+      TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
+      echo "[$TS] #$PR tick: merge-gate.sh failed (exit $GATE_EXIT) — skipping classification this tick, retrying next cadence."
+      # update last_tick_at so A2 freshness still reflects a live watcher, then end the tick
+      "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.last_tick_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" 2>/dev/null || true
+      return 0 2>/dev/null || exit 0 ;;
+esac
+```
+
+When `SKIP_STATE_READ` is unset, fetch the full state bundle (findings/threads/CI/SHA). Guard `gh pr view` and `pr-state.sh` the same way — a non-zero exit means skip the tick, never classify on empty data:
+
+```bash
+if [[ -z "${SKIP_STATE_READ:-}" ]]; then
+  PR_CREATED=$(gh pr view "$PR" --json createdAt --jq '.createdAt') || {
+    echo "[babysit] gh pr view failed — skipping tick, retry next cadence." >&2; exit 0; }
+  BUNDLE=$("$PR_STATE_SH" --pr "$PR" --since "$PR_CREATED") || {
+    echo "[babysit] pr-state.sh failed — skipping tick, retry next cadence." >&2; exit 0; }
+fi
+```
+
+Pull the fields the classifier needs (only when `GATE_EXIT` was `0`/`1` and the bundle was read):
 
 ```bash
 HEAD_SHA=$(jq -r '.head_sha // ""'                 <<<"$GATE_JSON")
@@ -233,7 +258,7 @@ GREP_STATE=$(jq -r '.bot_statuses.Greptile.state // "none"'   < "$BUNDLE")
 BUGBOT_STATE=$(jq -r '[.check_runs.all[] | select((.name//""|ascii_downcase)|contains("cursor") or contains("bugbot"))] | (if length==0 then "none" elif any(.[]; .status!="completed") then "pending" else "done" end)' < "$BUNDLE" 2>/dev/null || echo "none")
 ```
 
-If `merge-gate.sh` exits `3` (PR not found / not open) or `gh pr view` shows merged/closed, jump to T3's terminal handling.
+(When `SKIP_STATE_READ=1` was set above — gate exit `3` — skip straight to T3's terminal handling, which classifies `merged` vs `closed-unmerged` from `PR_NOW`.)
 
 ### T2. Rate-cap snapshot (MUST run before classification)
 
