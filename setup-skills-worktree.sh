@@ -223,6 +223,7 @@ HOOKS_MANIFEST=(
   $'PostToolUse\tBash\tpost-merge-pull.sh\t15'
   $'PostToolUse\tBash\tpolling-backoff-warn.sh\t5'
   $'PostToolUse\tSkill\tskill-usage-tracker.sh\t5'
+  $'PostToolUse\t\tquota-usage-hook.sh\t10'
   $'PostToolUse\t\tsilence-detector.sh\t5'
   $'UserPromptSubmit\t\ttimestamp-injector.sh\t5'
   $'UserPromptSubmit\t\tstale-worktree-warn.sh\t30'

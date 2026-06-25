@@ -144,6 +144,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/quota-usage-hook.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/silence-detector.sh",
             "timeout": 5
           }
