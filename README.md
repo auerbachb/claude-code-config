@@ -124,7 +124,7 @@ ls -la ~/.claude/skills/       # each skill -> ~/.claude/skills-worktree/.claude
 
 ## Slash Commands
 
-All 22 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
+All 23 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
 
 | Command | Category | Description |
 |---------|----------|-------------|
@@ -143,6 +143,7 @@ All 22 commands are invoked as `/command` in a Claude Code session. They are def
 | `/start-issue` | Planning | End-to-end issue-to-coding setup — plan polling, plan merge, worktree, branch |
 | `/fixpr` | Review | Single-pass PR cleanup — fixes review findings and CI failures, replies to findings, resolves threads |
 | `/pr-review-help` | Review | Executive PR review — multi-PR parallel strategic analysis |
+| `/open-code-review` | Review | Run Alibaba's self-hosted `ocr` CLI as a manual/advisory reviewer (not in the merge gate) |
 | `/standup` | Workflow | Daily standup summary (single contributor) |
 | `/status` | Workflow | Dashboard of open PRs with review state |
 | `/go-on` | Workflow | Resume an interrupted review workflow |
