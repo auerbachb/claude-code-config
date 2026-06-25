@@ -82,11 +82,14 @@ echo "[PMM] fleet = author:$PMM_AUTHOR repo:$OWNER_REPO cadence:$PMM_CADENCE"
 **Rediscover the fleet on every single tick.** A PR may have merged, closed, or been opened since the last tick — a cached list silently rots. Always re-run `gh pr list`:
 
 ```bash
+PMM_LIMIT=500   # high cap so a real fleet is never silently truncated
 PR_LIST=$(gh pr list --state open --author "$PMM_AUTHOR" "${REPO_FLAG[@]}" \
-  --json number,title,headRefName,mergeStateStatus,reviewDecision --limit 100)
+  --json number,title,headRefName,mergeStateStatus,reviewDecision --limit "$PMM_LIMIT")
 PR_NUMS=$(jq -r '.[].number' <<<"$PR_LIST")
 PR_COUNT=$(jq 'length' <<<"$PR_LIST")
 ```
+
+> **No silent truncation.** `gh pr list` caps results at `--limit`; with `--author` it goes through the Search API (hard ceiling ~1000). Use a high `--limit` (500 above) and **warn** when the fleet hits it: if `PR_COUNT == PMM_LIMIT`, print "Showing $PMM_LIMIT PRs — fleet may be larger; results may be incomplete" and, if you genuinely expect >500 open PRs for one author, page via `gh api`/GraphQL instead. A default 30 (the `gh` default) or a small fixed cap would silently drop PRs — never rely on it.
 
 **Empty fleet → clean exit.** If `PR_COUNT == 0`, jump to **Stop & Clean Exit** with "Fleet empty — no open PRs found". Do not keep polling an empty fleet.
 
@@ -248,21 +251,25 @@ fi
 
 ### Step 5c: Idempotency-gated dispatch of `/fixpr` and `/wrap` (verdicts `fixpr` / `wrap`)
 
-**Never re-dispatch a skill for a PR while a prior invocation is still in flight.** Track in-flight dispatches in `session-state.json`:
+**Never re-dispatch a skill for a PR while a prior invocation is still in flight.** Use an **explicit active lock** in `session-state.json` — the lock's *presence* is the guard, not a time window. A timeout is only a **stale-lock breaker** for a dispatch whose tick crashed or was interrupted before it could clear the lock (otherwise an over-running `/fixpr`/`/wrap` would deadlock the PR forever).
 
 ```bash
 INFLIGHT=$(.claude/scripts/session-state.sh --get ".pmm_in_flight.\"$N\"" 2>/dev/null || echo null)
 ```
 
-- If `$INFLIGHT` is non-null **and** its `dispatched_at` is within the last **30 minutes** **and** the PR's HEAD SHA is unchanged since dispatch → **skip**; note `awaiting prior <skill>` (the table already printed this verdict if known from prior state).
-- Otherwise record the dispatch, then run the skill:
+Decision:
+
+- `$INFLIGHT` has `status == "active"` → a prior dispatch is genuinely running. **Skip** (Verdict `awaiting prior <skill>`) — regardless of elapsed time — **unless** it is a *stale* lock: `dispatched_at` older than `PMM_LOCK_STALE_SECS` (default **3600s** — comfortably longer than `/fixpr`'s 20-min wait cap × its 5-iteration budget) **and** no live evidence the dispatch is still progressing (HEAD SHA unchanged and no new bot/CI activity since `dispatched_at`). A stale lock is logged and broken (treat as not-in-flight). The window is deliberately wide so a long-but-healthy `/fixpr` is never pre-empted.
+- `$INFLIGHT` is `null` (or a broken stale lock) → acquire the lock, then run the skill:
 
 ```bash
 NOW=$(date -u +%FT%TZ)
 HEAD_SHA=$(jq -r '.head_sha' <<<"$GATE")
 .claude/scripts/session-state.sh --set \
-  ".pmm_in_flight.\"$N\"={\"skill\":\"$SKILL\",\"dispatched_at\":\"$NOW\",\"head_sha\":\"$HEAD_SHA\"}"
+  ".pmm_in_flight.\"$N\"={\"skill\":\"$SKILL\",\"status\":\"active\",\"dispatched_at\":\"$NOW\",\"head_sha\":\"$HEAD_SHA\"}"
 ```
+
+Because each tick runs the dispatched skill **inline and synchronously** within the agent turn, two copies cannot run concurrently inside one process; the lock's real job is cross-tick / post-crash safety. Always clear it on completion (below) so the next tick re-evaluates the new SHA.
 
 **CR rate-cap respect (before any `/fixpr` that may trigger CodeRabbit):** `/fixpr` already calls `cr-review-hourly.sh` internally, but check first here so the table can show `rate-limited` instead of dispatching into an exhausted budget:
 
