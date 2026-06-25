@@ -94,15 +94,26 @@ Do **not** clear `active` here — let the watcher's terminate path own that so 
   "$SESSION_STATE_SH" \
     --set ".polling_jobs=$NEW_JOBS" \
     --set ".prs[\"$PR\"].babysit.cron_job_id=null" \
-    --set ".prs[\"$PR\"].babysit.active=false"
+    --set ".prs[\"$PR\"].babysit.active=false" \
+    --set ".prs[\"$PR\"].babysit.dispatch_in_flight=null"
   ```
 
-  (Since no further tick fires after a successful `CronDelete`, this also sets `babysit.active=false` directly — `pm/SKILL.md` mode-switch cleanup contract: `polling_jobs[]` stays authoritative.)
+  After a successful `CronDelete` **no further tick will fire**, so the watcher's normal T-END cleanup never runs — this branch therefore performs the **full** terminal cleanup itself: it clears `active` **and** `dispatch_in_flight` (not just `active`), mirroring T-END so no stale in-flight marker is left behind (`pm/SKILL.md` mode-switch cleanup contract: `polling_jobs[]` stays authoritative).
 
 ### 5. Confirm
 
-```
-Stopped babysitting PR #<PR>. The watcher will exit on its next tick (durable poll cancelled). No further /fixpr or /wrap dispatches will be made.
-```
+Word the confirmation to match what actually happened — do **not** promise a "next tick" in durable mode, where `CronDelete` already terminated the watcher and this skill performed the full cleanup:
 
-If durable cancellation happened, note the deleted `cron_job_id`. If there was no active watcher, the Step 2 message already reported the no-op.
+- **Durable mode (cron deleted in Step 4):**
+
+  ```
+  Stopped babysitting PR #<PR>. Durable poll cancelled (cron_job_id <ID> deleted) and watcher state fully cleared — no next tick will run. No further /fixpr or /wrap dispatches will be made.
+  ```
+
+- **`/loop` mode (cooperative stop via the flag):**
+
+  ```
+  Stopped babysitting PR #<PR>. The watcher will exit on its next tick (stop_requested set). No further /fixpr or /wrap dispatches will be made.
+  ```
+
+If there was no active watcher, the Step 2 message already reported the no-op.
