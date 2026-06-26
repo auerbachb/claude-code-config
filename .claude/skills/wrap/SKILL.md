@@ -27,7 +27,7 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 | Transition | Action | Classification |
 |------------|--------|----------------|
 | Phase 1 complete (findings scan finished — may have flagged bot findings) | Begin Phase 2 recovery + merge | **Always do** |
-| Unresolved review threads only (Phase 1 scan — no other blocker category) | Record `WRAP_PHASE1_FINDINGS`, proceed to Phase 2 Branch B which auto-invokes `/fixpr` (issue #455) | **Auto-recover** |
+| Unresolved review threads detected (Phase 1 scan) | Record `WRAP_UNRESOLVED_THREADS` (thread count — distinct from `WRAP_PHASE1_FINDINGS`, which counts classified bot *finding* comments); proceed to Phase 2 Branch B, which auto-invokes `/fixpr` when threads are the sole gate blocker (issue #455) | **Auto-recover** |
 | Unresolved review threads only (Phase 2.1 — `merge-gate.sh` `missing` contains only `unresolved review thread(s)` entries) | Auto-invoke `/fixpr` (Branch B), then re-fetch HEAD + re-run `merge-gate.sh` | **Auto-recover** |
 | Phase 2 recovery loop exits cleanly (gate met, ready to merge) | AC check → squash merge → Phase 3 | **Always do** |
 | Phase 3 follow-ups processed | Begin Phase 4 | **Always do** |
@@ -78,21 +78,25 @@ For each finding:
 
 **Do not stop here.** Record whether any items remain classified as `finding` (after `pr-state.sh` classification) as **`WRAP_PHASE1_FINDINGS`** — e.g. count + short list for the recovery audit. Unresolved bot findings are a **trigger** for Phase 2’s `/fixpr` delegation path (issue #452), not a hard stop.
 
-**Unresolved-threads-only classification (issue #455).** Pull the unresolved-thread count from the same bundle and decide whether threads are the *sole* blocker, so the heartbeat and Phase 2 routing can be explicit:
+**Unresolved-threads detection (issue #455).** Pull the unresolved-thread count from the same bundle and **record it**. Phase 1 runs *before* `merge-gate.sh`, so it **cannot** yet know whether threads are the *sole* blocker (CI, `BEHIND`/`DIRTY`, a missing fresh approval, etc. only surface in Step 2.1's gate JSON). The threads-only determination and the auto-recovery decision therefore live in Step 2.1 Branch B — Phase 1 only surfaces that unresolved threads exist:
 
 ```bash
 # Same $BUNDLE captured above. pr-state.sh exposes threads.unresolved_count.
+# This is the thread count — distinct from WRAP_PHASE1_FINDINGS (classified
+# bot *finding* comments). A threads-only gate failure can occur with zero
+# Phase 1 findings (e.g. an older thread that produced no new finding-class
+# comment in this baseline scan), so the two are tracked separately.
 WRAP_UNRESOLVED_THREADS=$(jq -r '.threads.unresolved_count // 0' < "$BUNDLE")
 ```
 
-If `WRAP_UNRESOLVED_THREADS > 0`, emit a timestamped detection heartbeat so the user sees the auto-recovery intent before Phase 2 acts:
+If `WRAP_UNRESOLVED_THREADS > 0`, emit a timestamped detection heartbeat. Do **not** assert that threads are the sole blocker or that recovery will happen — that is Branch B's call once the gate's full `missing` set is known:
 
 ```bash
 TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
-echo "[$TS] Phase 1: $WRAP_UNRESOLVED_THREADS unresolved review thread(s) detected — auto-recoverable via /fixpr in Phase 2 (issue #455)"
+echo "[$TS] Phase 1: $WRAP_UNRESOLVED_THREADS unresolved review thread(s) detected — Step 2.1 will route to /fixpr if they are the sole gate blocker (issue #455)"
 ```
 
-**Do not invoke `/fixpr` from Phase 1** — that would double-invoke against Phase 2 Branch B and re-burn a CR review. Phase 1 only *classifies and records*; the single delegation point is Step 2.1 Branch B. The actual threads-only stop-or-recover decision (single bounded pass, code-verified resolution, re-check) lives there. This preserves the single-`/fixpr`-per-blocker contract and the bounded loop (no infinite delegation).
+**Do not invoke `/fixpr` from Phase 1** — that would double-invoke against Phase 2 Branch B and re-burn a CR review. Phase 1 only *detects and records*; the single delegation point is Step 2.1 Branch B. The actual threads-only stop-or-recover decision (single bounded pass, code-verified resolution, re-check) lives there. This preserves the single-`/fixpr`-per-blocker contract and the bounded loop (no infinite delegation).
 
 Proceed immediately to Phase 2 — do not ask.
 
