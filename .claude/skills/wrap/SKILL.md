@@ -178,13 +178,12 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bulle
    - `merge_state == "DIRTY"`; **or**
    - Phase 1 left **`WRAP_PHASE1_FINDINGS`** (classified bot findings still pending remediation).
 
-   **Threads-only detection + delegate heartbeat (issue #455).** Before delegating, classify whether unresolved review threads are the *only* blocker in `missing` (every entry matches the `merge-gate.sh` thread string `N unresolved review thread(s) — resolve via GraphQL before merge`):
+   **Threads-only detection + delegate heartbeat (issue #455 / #479).** Before delegating, classify whether unresolved review threads are the *only* blocker using `merge-gate.sh`'s **structured** signals — not by string-matching the prose. The gate emits `unresolved_thread_count` (the count behind the thread `missing` entry) and adds exactly **one** `missing` entry for the unresolved-thread gate, so "threads only" is `unresolved_thread_count > 0` **and** `missing` has length 1:
 
    ```bash
    THREADS_ONLY=$(echo "$GATE_JSON" | jq -r '
-     (.missing // []) as $m
-     | (($m | length) > 0)
-       and (($m | map(select(test("unresolved review thread\\(s\\)") | not)) | length) == 0)')
+     ((.unresolved_thread_count // 0) > 0)
+     and (((.missing // []) | length) == 1)')
    TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
    if [ "$THREADS_ONLY" = "true" ]; then
      echo "[$TS] Phase 2.1: merge gate blocked by unresolved review threads only — invoking /fixpr (issue #455)"
