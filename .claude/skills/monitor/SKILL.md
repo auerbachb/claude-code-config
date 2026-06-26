@@ -75,12 +75,16 @@ CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh) || true   # optional; degrade
 
 ```bash
 PRS=$(gh pr list --state open --limit 50 --json number,title,isDraft,headRefOid,url)
+
+# Narrow to a single PR BEFORE counting, so a targeted audit of a closed/missing
+# PR yields COUNT == 0 (an open-list count would mask the empty result).
+if [[ -n "$PR_ARG" ]]; then
+  PRS=$(jq --argjson n "$PR_ARG" 'map(select(.number == $n))' <<<"$PRS")
+fi
 COUNT=$(jq 'length' <<<"$PRS")
 ```
 
-If a bare `<PR>` argument was given, narrow to it: `PRS=$(jq --argjson n "$PR_ARG" 'map(select(.number == $n))' <<<"$PRS")`.
-
-If `COUNT == 0` (or the single PR is not open), say **"No open PRs to audit."** and stop.
+If `COUNT == 0`, say **"No open PRs to audit."** and stop. (A bare `<PR>` that is closed or not found leaves `PRS` empty, so this also covers "the requested PR is not open.")
 
 ---
 
@@ -92,7 +96,9 @@ For each PR, run the shared state helper **once** — it aggregates the 3 commen
 BUNDLE=$("$PR_STATE_SH" --pr "$N") || { echo "skip #$N: pr-state.sh failed"; continue; }
 ```
 
-Build the 4-reviewer matrix from the bundle. A reviewer is **engaged** when it produced, on the current HEAD, any of: a **review object**, a **check-run** whose name matches the reviewer, OR a **finding-bearing comment**. Pure ack comments (e.g. CR's "Actions performed — Full review triggered", "actionable comments posted: 0", rate-limit notices) do **not** count.
+Build the 4-reviewer matrix from the bundle. A reviewer is **engaged** when it produced, **on the current HEAD SHA**, any of: a **review object**, a **check-run** whose name matches the reviewer, OR a **finding-bearing comment**. Pure ack comments (e.g. CR's "Actions performed — Full review triggered", "actionable comments posted: 0", rate-limit notices) do **not** count.
+
+The HEAD scoping matters: a reviewer that only ran on an older commit must show ❌ so its trigger is re-posted after a push. Check-runs and commit statuses in the bundle are already pulled from the HEAD SHA, so they are inherently current; reviews and inline comments are filtered by `commit_id == head_sha` (`.pr.head_sha` from the bundle), and conversation comments (which carry no `commit_id`) only count when their body references the HEAD SHA (full or short) — the same SHA-scoping `fixpr` uses in its "detect reviewer activity on the pushed SHA" step.
 
 ```bash
 MATRIX=$(jq -c '
@@ -112,20 +118,31 @@ MATRIX=$(jq -c '
       or ($b | test("no actionable comments were generated"; "i"))
       or ($b | test("rate limit"; "i"));
   . as $b
+  | (.pr.head_sha // "") as $head
+  | ($head[0:7]) as $short
   | reviewers
   | map(. as $r
       | {
+          # Review object on the current HEAD SHA.
           has_review:
-            ([$b.comments.reviews[]? | select(.user.login == $r.login)] | length > 0),
+            ([$b.comments.reviews[]?
+               | select(.user.login == $r.login and (.commit_id == $head))] | length > 0),
+          # Check-run (or CR legacy commit-status) — both already HEAD-scoped by pr-state.sh.
           has_check:
             (([$b.check_runs.all[]?
                | (.name // "" | ascii_downcase) as $n
                | select(any($r.needles[]; . as $needle | $n | contains($needle)))] | length > 0)
              or ($r.key == "coderabbit" and ($b.bot_statuses.CodeRabbit != null))),
+          # Finding-bearing comment on HEAD: inline scoped by commit_id; conversation by SHA mention.
           has_finding_comment:
-            ([ ($b.comments.inline[]?, $b.comments.conversation[]?)
-               | select(.user.login == $r.login)
-               | select(is_ack(.body) | not) ] | length > 0)
+            (([$b.comments.inline[]?
+               | select(.user.login == $r.login
+                        and ((.commit_id // .original_commit_id // "") == $head)
+                        and (is_ack(.body) | not))] | length > 0)
+             or ($head != "" and ([$b.comments.conversation[]?
+               | select(.user.login == $r.login
+                        and (is_ack(.body) | not)
+                        and (((.body // "") | contains($head)) or ((.body // "") | contains($short))))] | length > 0)))
         }
       | . + {key: $r.key, engaged: (.has_review or .has_check or .has_finding_comment)}
     )
@@ -185,13 +202,16 @@ Using `$CR_HEALTH` from Step 2: if the CR check-run is `completed` **and** a rat
 
 ### 4c. CR explicit-trigger budget (2/hour per PR + account hourly cap)
 
-Before proposing `@coderabbitai full review` for any PR, check the account hourly budget once:
+Before proposing `@coderabbitai full review` for any PR, check the account hourly budget once. Guard the optional script so a **missing** `cr-review-hourly.sh` is never mistaken for an exhausted budget (only an actual exit `1` from the script means exhausted):
 
 ```bash
-[[ -n "$CR_HOURLY_SH" ]] && "$CR_HOURLY_SH" --check >/dev/null 2>&1 || CR_BUDGET_EXHAUSTED=$?
+CR_BUDGET_OK=1
+if [[ -n "$CR_HOURLY_SH" ]]; then
+  "$CR_HOURLY_SH" --check >/dev/null 2>&1 || CR_BUDGET_OK=0
+fi
 ```
 
-Exit `1` ⇒ account budget exhausted — drop CR from the proposed triggers this run and say so. The per-PR **2 explicit `@coderabbitai full review`/hour** cap is enforced atomically at post time by `cr-review-hourly.sh --record-explicit <N>` (Step 5): if it returns `surface_user: true` / exits non-zero, the trigger was **not** recorded — do not post it, and surface the cooldown to the user.
+`CR_BUDGET_OK=0` ⇒ account budget exhausted — drop CR from the proposed triggers this run and say so. When `cr-review-hourly.sh` is absent, `CR_BUDGET_OK` stays `1` (degrade gracefully — do not silently suppress CR). The per-PR **2 explicit `@coderabbitai full review`/hour** cap is enforced atomically at post time by `cr-review-hourly.sh --record-explicit <N>` (Step 5): if it returns `surface_user: true` / exits non-zero, the trigger was **not** recorded — do not post it, and surface the cooldown to the user.
 
 ---
 
