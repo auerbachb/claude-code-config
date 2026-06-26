@@ -120,4 +120,33 @@ printf '%s' "$EMIT" | jq -e '.hookSpecificOutput.additionalContext | test("\\[qu
 SILENT="$(printf '{}' | QUOTA_CONFIG="$BIG_CFG" "$STOP_HOOK" 2>/dev/null || true)"
 [ -z "$SILENT" ] || fail "stop hook should be silent under threshold, got: $SILENT"
 
-echo "OK: quota tracker test passed (hook 7-col ledger + de-dup + no-op, budget check/config/reset/week/date + thresholds, spec session-state, stop hook)"
+# --- 13. Projection floor: tiny elapsed fraction must not explode EoD (BugBot) ---
+# Pin "now" to one minute after ET midnight (EDT = UTC-4 on 2026-06-26).
+FLOOR_LOG="$TMP_HOME/floor.log"
+printf '%s\tclaude-opus-4-8\t100000\t0\t0\t0\tSf\n' "2026-06-26T04:00:30Z" >> "$FLOOR_LOG"
+FSNAP="$(QUOTA_USAGE_LOG="$FLOOR_LOG" QUOTA_FAKE_NOW="2026-06-26T04:01:00Z" "$BUDGET" --check --cap 100 --no-state)"
+# spend = 100000*15/1e6 = 1.5 ; floored fraction = 1/24 -> projected = 1.5*24 = 36.0
+numeq "$(printf '%s' "$FSNAP" | jq -r '.estimated_usd')" "1.5" || fail "floor test spend wrong"
+numeq "$(printf '%s' "$FSNAP" | jq -r '.projected_eod_usd')" "36" || fail "projection not floored: $(printf '%s' "$FSNAP" | jq -r .projected_eod_usd)"
+# true elapsed fraction is still reported tiny (transparency), not the floor
+python3 -c "import sys; sys.exit(0 if float('$(printf '%s' "$FSNAP" | jq -r '.fraction_of_day_elapsed')') < 0.01 else 1)" \
+  || fail "fraction_of_day_elapsed should report the true tiny value"
+
+# --- 14. Marker committed before append: marker-write failure must not double-count ---
+MK_DIR="$TMP_HOME/marker.d"; mkdir -p "$MK_DIR"
+MK_TS="$TRANSCRIPT"  # reuse transcript with msg_A/msg_B; use a fresh session id
+MK_INPUT="$(printf '{"session_id":"sess-marker","transcript_path":"%s","tool_name":"Bash"}' "$MK_TS")"
+MK_LOG="$TMP_HOME/marker.log"
+# First fire writes one line and a marker.
+printf '%s' "$MK_INPUT" | QUOTA_USAGE_LOG="$MK_LOG" QUOTA_STATE_DIR="$MK_DIR" "$HOOK" >/dev/null
+[ "$(wc -l < "$MK_LOG" | tr -d ' ')" = "1" ] || fail "marker test: first fire should write 1 line"
+# Make the marker dir non-writable so a NEW message cannot commit its marker.
+# Mutate the transcript so the latest assistant id changes (msg_C).
+printf '%s\n' '{"type":"assistant","uuid":"u3","message":{"id":"msg_C","model":"claude-opus-4-8","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}' >> "$MK_TS"
+chmod 0555 "$MK_DIR"
+printf '%s' "$MK_INPUT" | QUOTA_USAGE_LOG="$MK_LOG" QUOTA_STATE_DIR="$MK_DIR" "$HOOK" >/dev/null
+chmod 0755 "$MK_DIR"
+# Because the marker could not be committed, the append must be skipped (no double-count).
+[ "$(wc -l < "$MK_LOG" | tr -d ' ')" = "1" ] || fail "marker-write failure must skip append (got $(wc -l < "$MK_LOG" | tr -d ' ') lines)"
+
+echo "OK: quota tracker test passed (hook 7-col ledger + de-dup + no-op + marker-before-append, budget check/config/reset/week/date + thresholds + projection floor, spec session-state, stop hook)"
