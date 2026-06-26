@@ -45,6 +45,7 @@ Parse `$ARGUMENTS`. **Extract flags first**, then interpret whatever remains as 
   - **Empty** → auto-detect (see below).
 
 Parse the remainder into a target id plus a repo qualifier:
+
 ```bash
 # REST = $ARGUMENTS with the three flags stripped, whitespace-collapsed.
 REPO_FLAG=""                      # empty = current repo; set only for a URL target
@@ -62,12 +63,22 @@ case "$TARGET" in
     ;;
   \#[0-9]*|[0-9]*)
     N="${TARGET#\#}"
+    # Require an all-digit id — `123abc`, `2026-q1`, etc. are typos, not targets.
+    if ! [[ "$N" =~ ^[0-9]+$ ]]; then
+      echo "Not a valid PR/issue target: '$TARGET'. Give a pure number (452), #number (#457), or a GitHub PR/issue URL." >&2
+      exit 1
+    fi
     ;;
   "")
     : # empty → auto-detect below
     ;;
+  *)
+    echo "Unrecognized target: '$TARGET'. Give a pure number (452), #number (#457), or a GitHub PR/issue URL." >&2
+    exit 1
+    ;;
 esac
 ```
+
 Carry `REPO_FLAG` through Step 2 — every `gh pr view` / `gh issue view` / `gh pr diff` call appends it so a URL target always resolves against its own repo, and a bare number stays in the current repo.
 
 ### Auto-detect when no target is given
@@ -77,12 +88,14 @@ Carry `REPO_FLAG` through Step 2 — every `gh pr view` / `gh issue view` / `gh 
    AUTO_PR=$(gh pr view --json number --jq '.number' 2>/dev/null || true)
    ```
    If non-empty, target is that PR.
-2. If no PR, try to recover an issue number from the branch name — only the deliberate forms `issue-<N>-*` or a leading `<N>-*` (the trailing hyphen is **required**, so a date-prefixed branch like `2026-q1-cleanup` does **not** get misread as issue #2026):
+2. If no PR, try to recover an issue number from the branch name. Match **only** the explicit `issue-<N>-*` convention (the repo's standard branch shape) — an `issue-` prefix is required so date-style branches like `2026-q1-cleanup` can never be misread as issue #2026:
+
    ```bash
    BRANCH=$(git branch --show-current 2>/dev/null || true)
-   AUTO_ISSUE=$(printf '%s' "$BRANCH" | grep -oE '(^|issue-)[0-9]+-' | grep -oE '[0-9]+' | head -1 || true)
+   AUTO_ISSUE=$(printf '%s' "$BRANCH" | grep -oE '^issue-[0-9]+-' | grep -oE '[0-9]+' | head -1 || true)
    ```
-   If non-empty, target is that issue. A bare numeric prefix with no following hyphen (e.g. `2026q1`) is intentionally ignored — fall through to step 3.
+
+   If non-empty, target is that issue. Any other branch shape (bare numeric prefixes, date prefixes, feature names) is intentionally ignored — fall through to step 3 and ask the user.
 3. If neither resolves, **stop and ask**: "What should I recap? Give a PR number, issue number, or URL (e.g. `/recap 452`, `/recap #457`, or a GitHub URL)."
 
 ## Step 2: Determine target type and fetch data
@@ -104,19 +117,25 @@ Carry `REPO_FLAG` through Step 2 — every `gh pr view` / `gh issue view` / `gh 
   > **Note:** in GitHub a PR *is* an issue under the hood, so `gh pr view <N>` succeeding is the authoritative "this number is a PR" signal. Only fall back to `gh issue view` when the PR lookup fails.
 
 **For a PR**, fetch state plus a diff stat (the stat is for *your* understanding of scope — it does **not** go in the output):
+
 ```bash
 gh pr view "$N" $REPO_FLAG --json number,title,body,state,mergedAt,isDraft,additions,deletions,changedFiles,headRefName
 gh pr diff "$N" $REPO_FLAG --stat 2>/dev/null || true
 ```
+
 Also scan the PR body for a linked issue (`Closes #N`, `Fixes #N`, `Resolves #N`, case-insensitive). If found, fetch that issue's title + body for additional "why" context (same `$REPO_FLAG`, since a linked issue lives in the PR's repo):
+
 ```bash
 gh issue view "$LINKED_N" $REPO_FLAG --json number,title,body,state 2>/dev/null || true
 ```
 
-**For an issue**, fetch state, body, and recent comments (comments often carry plan/scope refinements), plus any linked PRs:
+**For an issue**, fetch state, body, recent comments (comments often carry plan/scope refinements), and the linked PRs that reference it — `closedByPullRequestsReferences` is what powers the "mention the linkage" edge case below, so it must be requested here:
+
 ```bash
-gh issue view "$N" $REPO_FLAG --json number,title,body,state,createdAt --comments
+gh issue view "$N" $REPO_FLAG --json number,title,body,state,createdAt,closedByPullRequestsReferences --comments
 ```
+
+`closedByPullRequestsReferences` is an array of `{number, title, state}` for each PR that closes/references the issue — use it (and only it) to decide whether to mention linkage. If it is empty, there are no linked PRs to mention.
 
 If a JSON fetch fails outright (deleted / private / wrong repo), stop with a one-line graceful error — do not emit a half-summary.
 
@@ -209,7 +228,7 @@ Handle these gracefully — emit a short note plus the best summary the availabl
 - **PR with no description body** → note "This PR has no description — summarizing from its title and what it touched", then give a minimal summary from the title + diff stat. Do not invent detail.
 - **Closed-but-not-merged PR** → open with the closure (`state: CLOSED`, no `mergedAt`) and summarize what it *attempted* and, if discernible, why it stalled.
 - **Issue with no body** → summarize from the title alone with a one-line note that the issue has no description.
-- **Issue with linked PRs** → mention the linkage only if it materially adds to "what work is hoped for" (e.g. "Partially delivered by PR #N").
+- **Issue with linked PRs** → using the `closedByPullRequestsReferences` array fetched in Step 2 (not guesswork), mention the linkage only if it materially adds to "what work is hoped for" (e.g. "Partially delivered by PR #N"). Empty array → no linkage to mention.
 - **Deleted / private / wrong-repo reference** → stop with a single graceful line: "Couldn't find that PR/issue — it may be deleted, private, or in another repo."
 - **Batch request** (multiple numbers/URLs in `$ARGUMENTS`) → not supported in v1. Step 1's parser already takes only the first non-flag token and prints a one-line note listing the ignored ids, so the extra tokens are never passed to `gh`; recap that first target and tell the user to run `/recap` once per target.
 
