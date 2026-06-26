@@ -74,7 +74,10 @@ CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh) || true   # optional; degrade
 ## Step 1 — Inventory open PRs
 
 ```bash
-PRS=$(gh pr list --state open --limit 50 --json number,title,isDraft,headRefOid,url)
+# Cover the WHOLE open backlog, not just the first page. gh pr list paginates
+# internally up to --limit, so set it well above any realistic backlog (raise it
+# further if a repo can exceed this). A low cap would silently skip later PRs.
+PRS=$(gh pr list --state open --limit 1000 --json number,title,isDraft,headRefOid,url)
 
 # Narrow to a single PR BEFORE counting, so a targeted audit of a closed/missing
 # PR yields COUNT == 0 (an open-list count would mask the empty result).
@@ -202,16 +205,21 @@ Using `$CR_HEALTH` from Step 2: if the CR check-run is `completed` **and** a rat
 
 ### 4c. CR explicit-trigger budget (2/hour per PR + account hourly cap)
 
-Before proposing `@coderabbitai full review` for any PR, check the account hourly budget once. Guard the optional script so a **missing** `cr-review-hourly.sh` is never mistaken for an exhausted budget (only an actual exit `1` from the script means exhausted):
+Before proposing `@coderabbitai full review` for any PR, check the account hourly budget once. Map the script's exit code explicitly — `cr-review-hourly.sh --check` exits `0` (budget available), `1` (account budget exhausted), or another code (`2` usage, `5` write failure). Treat **only exit `1`** as exhausted; a missing script or any other nonzero is a helper problem, not an exhausted budget, so surface it and keep CR proposable rather than silently dropping it:
 
 ```bash
-CR_BUDGET_OK=1
+CR_BUDGET_OK=1            # 1 = propose CR; 0 = budget exhausted, drop CR
 if [[ -n "$CR_HOURLY_SH" ]]; then
-  "$CR_HOURLY_SH" --check >/dev/null 2>&1 || CR_BUDGET_OK=0
+  "$CR_HOURLY_SH" --check >/dev/null 2>&1; RC=$?
+  case "$RC" in
+    0) ;;                                  # budget available
+    1) CR_BUDGET_OK=0 ;;                    # account budget exhausted — drop CR
+    *) echo "warn: cr-review-hourly.sh --check failed (exit $RC) — not assuming exhausted; CR stays proposable" >&2 ;;
+  esac
 fi
 ```
 
-`CR_BUDGET_OK=0` ⇒ account budget exhausted — drop CR from the proposed triggers this run and say so. When `cr-review-hourly.sh` is absent, `CR_BUDGET_OK` stays `1` (degrade gracefully — do not silently suppress CR). The per-PR **2 explicit `@coderabbitai full review`/hour** cap is enforced atomically at post time by `cr-review-hourly.sh --record-explicit <N>` (Step 5): if it returns `surface_user: true` / exits non-zero, the trigger was **not** recorded — do not post it, and surface the cooldown to the user.
+`CR_BUDGET_OK=0` ⇒ account budget exhausted — drop CR from the proposed triggers this run and say so. A missing `cr-review-hourly.sh` (or any non-`1` failure) leaves `CR_BUDGET_OK=1` (degrade gracefully — surface the error, don't silently suppress CR). The per-PR **2 explicit `@coderabbitai full review`/hour** cap is enforced atomically at post time by `cr-review-hourly.sh --record-explicit <N>` (Step 5), which uses the same exit-code contract (exit `1` = cooldown/cap reached; other nonzero = helper error).
 
 ---
 
@@ -234,11 +242,13 @@ On confirmation, post each comment. For a CodeRabbit trigger, record it against 
 
 ```bash
 post_trigger() {  # $1=PR  $2=comment  $3=reviewer-key
-  if [[ "$3" == "coderabbit" ]]; then
-    if [[ -n "$CR_HOURLY_SH" ]]; then
-      OUT=$("$CR_HOURLY_SH" --record-explicit "$1") || {
-        echo "skip CR on #$1: $(jq -r '.explicit_triggers_in_window // "budget"' <<<"$OUT" 2>/dev/null) — cap/budget reached"; return 0; }
-    fi
+  if [[ "$3" == "coderabbit" && -n "$CR_HOURLY_SH" ]]; then
+    OUT=$("$CR_HOURLY_SH" --record-explicit "$1"); RC=$?
+    case "$RC" in
+      0) ;;                                  # recorded — clear to post
+      1) echo "skip CR on #$1: cooldown/cap or account budget reached — not posting"; return 0 ;;
+      *) echo "skip CR on #$1: cr-review-hourly.sh --record-explicit failed (exit $RC) — surfacing, not posting" >&2; return 0 ;;
+    esac
   fi
   gh pr comment "$1" --body "$2" && echo "posted on #$1: $2"
 }
