@@ -422,6 +422,15 @@ fi
 # Mode: execute (USER-INVOKED ONLY) — toggle-merge-toggle with safe re-enable.
 # --------------------------------------------------------------------------
 if [[ "$MODE" == "execute" ]]; then
+  # Run from the resolved clone so `gh pr merge` (which infers owner/repo from
+  # the cwd's git remote) targets the intended repo regardless of the invoker's
+  # cwd — mirrors the cd-prefix baked into the --print one-liner. Fail before
+  # touching protection if the path is bad.
+  if ! cd "$REPO_PATH" 2>/dev/null; then
+    echo "ERROR: cannot cd into repo path '$REPO_PATH' — pass --repo-path <abs-path>." >&2
+    exit 7
+  fi
+
   ENFORCE_DISABLED=0
   ENFORCE_REENABLED=0
 

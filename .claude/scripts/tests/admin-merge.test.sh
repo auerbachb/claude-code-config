@@ -132,6 +132,14 @@ fi
 # 9. Static: execute mode has a trap that re-enables protection.
 if grep -q "trap reenable_protection EXIT" "$SRC"; then ok "execute mode installs re-enable trap"; else bad "missing trap in execute mode"; fi
 
+# 9b. Static: execute mode cd's into the resolved repo path before the dance
+# (so `gh pr merge` targets the right repo from any cwd — BugBot finding).
+if awk '/MODE" == "execute"/{f=1} f && /cd "\$REPO_PATH"/{found=1} END{exit !found}' "$SRC"; then
+  ok "execute mode cd's into repo path before the dance"
+else
+  bad "execute mode does not cd into \$REPO_PATH before running gh"
+fi
+
 # 10. Mutually exclusive modes.
 run 1 --print --execute --repo-path "$CLONE" --branch main
 expect_rc 2 "mutually exclusive modes rejected (exit 2)"
