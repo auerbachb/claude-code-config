@@ -515,9 +515,9 @@ else
 fi
 ```
 
-Skip any loose end whose keyword already appears in `SWEEP_PRIOR_FILED` (idempotency).
+**Idempotency** is provided by the dedup search above, **not** by `SWEEP_PRIOR_FILED`: an issue auto-filed by a previous `/wrap` sweep is still an open issue, so a recurring loose end matches it via `gh issue list --search` and resolves to `DUP_NUM`. `SWEEP_PRIOR_FILED` is a JSON array of **issue numbers** (not keywords) recorded by earlier sweeps; when `DUP_NUM` is one of those numbers, treat the loose end as **already handled by this sweep** — do not re-file it and do not re-surface it as a new "needs decision" item.
 
-- **Duplicate found** (`DUP_NUM` non-empty) → add to `SWEEP_NEEDS_DECISION`: `"<summary>" — already tracked in #<DUP_NUM>` (or omit if no action needed; surface only when the existing ticket may need an update).
+- **Duplicate found** (`DUP_NUM` non-empty) → if `DUP_NUM` is in `SWEEP_PRIOR_FILED`, **omit** (this sweep already filed it on a prior run — idempotent). Otherwise add to `SWEEP_NEEDS_DECISION`: `"<summary>" — already tracked in #<DUP_NUM>` (or omit if no action needed; surface only when the existing ticket may need an update).
 - **No duplicate, default (ask first)** → add to `SWEEP_NEEDS_DECISION`: `TODO from conversation: "<summary>" — no existing ticket, file as new issue?`
 - **No duplicate, `--auto-file-followups` set** → create the issue, **surface its title + body**, add to `SWEEP_AUTO_HANDLED`. Use the same robust `gh issue create` guard as Step 3.3 (validate the parsed number; on failure record and continue):
 
@@ -598,10 +598,24 @@ Record the sweep outcome so a re-run is idempotent and over-long sections can li
 
 ```bash
 if [ -n "$SESSION_STATE_SH" ]; then
-  FILED_JSON=$(printf '%s\n' $SWEEP_FILED | jq -R . | jq -cs 'map(select(length>0))')
+  # filed_issues: UNION this run's auto-filed numbers with any recorded by a
+  # prior sweep — never overwrite. A re-run with no new filings (empty
+  # SWEEP_FILED) must NOT erase the earlier record, or idempotency breaks and
+  # the next run re-files duplicates.
+  NEW_FILED_JSON=$(printf '%s\n' $SWEEP_FILED | jq -R 'select(length>0)' | jq -cs 'map(tonumber? // .)')
+  PRIOR_FILED_JSON="$SWEEP_PRIOR_FILED"
+  case "$PRIOR_FILED_JSON" in ""|null) PRIOR_FILED_JSON='[]' ;; esac
+  FILED_JSON=$(jq -cn --argjson a "$PRIOR_FILED_JSON" --argjson b "$NEW_FILED_JSON" '($a + $b) | unique')
+  # Persist the FULL sweep, not just filed numbers, so the report's
+  # "+ N more — see session-state log" overflow pointer resolves to real data.
+  # SWEEP_AUTO_HANDLED / SWEEP_NEEDS_DECISION are newline-separated bullets.
+  AUTO_JSON=$(printf '%s\n' "$SWEEP_AUTO_HANDLED" | jq -R 'select(length>0)' | jq -cs .)
+  NEEDS_JSON=$(printf '%s\n' "$SWEEP_NEEDS_DECISION" | jq -R 'select(length>0)' | jq -cs .)
   "$SESSION_STATE_SH" \
     --set ".prs[\"$PR_NUMBER\"].wrap_sweep.swept_at=\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"" \
-    --set ".prs[\"$PR_NUMBER\"].wrap_sweep.filed_issues=$FILED_JSON" 2>/dev/null || true
+    --set ".prs[\"$PR_NUMBER\"].wrap_sweep.filed_issues=$FILED_JSON" \
+    --set ".prs[\"$PR_NUMBER\"].wrap_sweep.auto_handled=$AUTO_JSON" \
+    --set ".prs[\"$PR_NUMBER\"].wrap_sweep.needs_decision=$NEEDS_JSON" 2>/dev/null || true
 fi
 ```
 
