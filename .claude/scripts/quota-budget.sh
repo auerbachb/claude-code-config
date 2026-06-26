@@ -206,7 +206,7 @@ fi
 
 # --- --check / --week: aggregate the ledger ---
 SNAPSHOT="$(python3 - "$CONFIG_PATH" "$USAGE_LOG" "$CAP" "$MODE" "$DATE_OVERRIDE" <<'PY'
-import json, sys
+import json, os, sys
 from datetime import datetime, timezone, timedelta
 
 config_path, log_path, cap_s, mode, date_override = sys.argv[1:6]
@@ -254,7 +254,21 @@ try:
 except Exception:
     ET = None
 
-now_utc = datetime.now(timezone.utc)
+# QUOTA_FAKE_NOW (ISO8601, test-only) pins "now" so the projection floor and
+# ET-day boundary behavior are deterministically testable.
+_fake_now = os.environ.get("QUOTA_FAKE_NOW")
+now_utc = None
+if _fake_now:
+    try:
+        s = _fake_now.strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        now_utc = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        now_utc = None
+if now_utc is None:
+    now_utc = datetime.now(timezone.utc)
 now_et = now_utc.astimezone(ET) if ET else now_utc
 today_et = now_et.date().isoformat()
 
@@ -374,7 +388,15 @@ if is_today:
     fraction = max(min((now_et - midnight).total_seconds() / 86400.0, 1.0), 0.0)
 else:
     fraction = 1.0
-projected = spend / fraction if fraction > 0 else spend
+# Linear run-rate projection, but floor the denominator so a tiny elapsed
+# fraction just after ET midnight cannot explode the projection. Without this,
+# e.g. $0.10 spent one minute into the day extrapolates to ~$144, producing a
+# false critical/over-cap status. The floor caps the extrapolation multiplier at
+# 24x (>= 1 hour of data) before the run-rate is trusted; the true elapsed
+# fraction is still reported as fraction_of_day_elapsed for transparency.
+MIN_PROJECTION_FRACTION = 1.0 / 24.0  # 1 hour
+proj_fraction = max(fraction, MIN_PROJECTION_FRACTION)
+projected = spend / proj_fraction if proj_fraction > 0 else spend
 
 spend_pct = (spend / cap) if cap > 0 else 0.0
 projected_pct = (projected / cap) if cap > 0 else 0.0

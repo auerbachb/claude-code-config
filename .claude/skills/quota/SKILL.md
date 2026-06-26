@@ -100,7 +100,9 @@ tmp="$(mktemp)"; jq --argjson c "$amount" '.daily_cap_usd = $c' quota-config.jso
   cap); it is silent below that.
 - The PostToolUse hook fires only when a tool runs, so a final text-only
   response is not counted — the ledger captures the large majority of spend.
-- The projection is a linear run-rate; a few large early-day responses can
-  inflate it, so weight actual `estimated_usd` more heavily before noon ET.
+- The projection is a linear run-rate (`estimated_usd ÷ fraction_of_day_elapsed`)
+  with the denominator floored at 1 hour, so just after ET midnight it cannot
+  explode to a false over-cap. Even so, weight actual `estimated_usd` more
+  heavily before noon ET — the run-rate is noisy with little data.
 - The ledger stores only timestamp, model, token counts, and session id — never
   prompts, completions, or secrets.
