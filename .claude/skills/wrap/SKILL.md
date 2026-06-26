@@ -1,9 +1,9 @@
 ---
 name: wrap
-description: End-of-session command — verify no unresolved findings, squash merge, sync main, detect follow-ups, and extract lessons.
+description: End-of-session command — verify no unresolved findings, squash merge, sync main, detect per-PR follow-ups, run a full-session loose-ends sweep, and extract lessons.
 ---
 
-Wrap up the current PR and session. This is the "we're done here" command that handles final verification through merge, root-main sync, follow-up detection, and lessons.
+Wrap up the current PR and session. This is the "we're done here" command that handles final verification through merge, root-main sync, follow-up detection, a full-session sweep for loose ends, and lessons.
 
 `/wrap` does **not** delete the running worktree or its branch — leaving the thread alive so it can keep working. Stale worktrees and stale local/remote branches are reaped out-of-band by `/pm-update`, which calls `.claude/scripts/stale-cleanup.sh`.
 
@@ -22,6 +22,14 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 > **Ask first:** Never — all phases are autonomous once /wrap is invoked.
 > **Never:** Stop to ask "should I continue?" between phases; insert confirmation prompts for non-blocker transitions. Delete the running worktree or its branch — that's `/pm-update`'s job, not /wrap's.
 
+### Invocation flags
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `--auto-file-followups` | off | When set, Phase 3 **Part B** session-sweep loose ends (category 2) are auto-filed as GitHub issues (with the issue body surfaced in the report) instead of being surfaced under "Needs your decision". The per-PR follow-ups in **Part A** (HHG + linked-issue sub-tasks) always auto-file regardless of this flag — they are derived from the PR/issue, not from ambiguous transcript signal. |
+
+Parse the flag from the invocation arguments once at the top of the run; record it as `WRAP_AUTO_FILE_FOLLOWUPS` (`true`/`false`, default `false`) for Phase 3 Part B. Without the flag, the safe default is **ask first** — surface candidate tickets, never silently create them (issue #471 Confirmation-UX note).
+
 ### Phase Transition Autonomy
 
 | Transition | Action | Classification |
@@ -30,7 +38,7 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 | Unresolved review threads detected (Phase 1 scan) | Record `WRAP_UNRESOLVED_THREADS` (thread count — distinct from `WRAP_PHASE1_FINDINGS`, which counts classified bot *finding* comments); proceed to Phase 2 Branch B, which auto-invokes `/fixpr` when threads are the sole gate blocker (issue #455) | **Auto-recover** |
 | Unresolved review threads only (Phase 2.1 — `merge-gate.sh` `missing` contains only `unresolved review thread(s)` entries) | Auto-invoke `/fixpr` (Branch B), then re-fetch HEAD + re-run `merge-gate.sh` | **Auto-recover** |
 | Phase 2 recovery loop exits cleanly (gate met, ready to merge) | AC check → squash merge → Phase 3 | **Always do** |
-| Phase 3 follow-ups processed | Begin Phase 4 | **Always do** |
+| Phase 3 per-PR follow-ups + full-session sweep processed | Begin Phase 4 | **Always do** |
 | Phase 4 lessons complete (or skipped as trivial) | Output final report | **Always do** |
 | Human `CHANGES_REQUESTED` on current HEAD (`human_changes_requested` non-empty in `merge-gate.sh` JSON) | Stop with reviewer names — **never** auto-dismiss | **Genuine block** |
 | Recovery iteration cap or non-recoverable gate failure | Stop with full audit + last `missing` | **Stop and report** |
@@ -345,9 +353,18 @@ See `.claude/scripts/main-sync.sh --help` and `.claude/scripts/dirty-main-guard.
 
 Store `MAIN_SYNC_STATUS` and `QUARANTINE_STATUS` for the final report at the end of Phase 4.
 
-## Phase 3: Follow-Up Detection and Creation
+## Phase 3: Follow-Up Detection and Full-Session Sweep
 
-Detect related work that needs attention for feature completeness, then **auto-create GitHub issues** for each follow-up (with deduplication and HHG two-ticket pattern awareness).
+Phase 3 has **two parts**, run in order:
+
+- **Part A — Per-PR follow-up detection (Steps 3.1–3.4):** the original behavior — derive follow-ups from the **merging PR** and its linked issue (HHG two-ticket pattern, linked-issue sub-tasks), dedup, and **auto-create** GitHub issues. Unchanged.
+- **Part B — Full-session sweep (Steps 3.5–3.13):** answer "is there anything I should have ticketed but didn't?" across the **entire session**, not just the PR. Seven categories: loose ends, ticket coverage, external/process state, memory persistence, PM hygiene, time-sensitive items, future-self handoff. Each finding is either **auto-handled** (safe process cleanup or, with `--auto-file-followups`, an auto-filed ticket) or **surfaced** to the user under "needs your decision".
+
+Both parts feed the Phase 4 final report. Part A's "Follow-ups" block and Part B's "Session sweep" block are reported separately.
+
+> **Phase C / subagent context:** When `/wrap` is invoked by a Phase C subagent (per `subagent-orchestration.md`), the subagent's transcript is narrow and short-lived. Part B degrades gracefully: transcript-derived categories (1, 6, 7) will usually find nothing and the verdict will be "Clear to archive". Part A and the state-file-derived categories (3, 5) still run normally. Never block a Phase C merge on a Part B finding — Part B is advisory.
+
+### Part A — Per-PR follow-up detection
 
 ### Step 3.1: Detect follow-up items
 
@@ -478,7 +495,190 @@ Present the results:
 If nothing was detected: "No follow-up items detected."
 If HHG was detected but no state code was found (so auto-creation was skipped): append "⚠️ HHG detected but no state code found in PR/issue — auto-creation skipped. Create the scraping and ETL issues manually once you know the state."
 
-After follow-up report: proceed immediately to Phase 4 — do not ask.
+After the per-PR follow-up report: proceed immediately to **Part B** — do not ask.
+
+### Part B — Full-session sweep
+
+Part B sweeps the **whole session** for loose ends the per-PR detection in Part A cannot see — deferred ideas, stale process state, decisions worth persisting, drifted tickets, time-sensitive reminders. It produces two buckets — **Auto-handled** and **Needs your decision** — and a one-line **verdict**, all rendered in the Phase 4 final report (Step 4.3).
+
+**Out of scope (explicit):** the sweep only runs as part of `/wrap`, which already requires a PR (Step 1.1 stops with "No PR found for the current branch" otherwise). Pure non-PR threads (issue-capture, PM-only, monitoring-only) never reach Part B — a standalone `/session-wrap` is a separate ticket, not this skill (issue #471 Notes).
+
+**Safety boundaries for the entire sweep (non-negotiable — issue #471):**
+
+- **Never auto-file a ticket without surfacing its body** in the report. Auto-filing (only with `--auto-file-followups`) still prints the created issue's title + body.
+- **Never auto-act on anything affecting shared state** — durable `CronCreate` jobs, active subagents, human-owned issues/PRs, recovery branches. Surface them; let the user decide.
+- **Never modify branch protection** (same prohibition as Phase 2).
+- Auto-handling is limited to: stopping a **dead** session `/loop` job (target PR already merged/closed) and deleting a **stale** handoff file (its PR already merged). Everything else is surfaced.
+
+#### Step 3.5: Sweep setup & idempotency guard
+
+Resolve helpers with the standard three-candidate lookup (`fixpr/SKILL.md` pattern), then load any prior sweep record so a re-run does not re-file the same tickets:
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+SESSION_STATE_SH=$(resolve_script session-state.sh || true)
+
+# Idempotency: if a previous /wrap already swept this PR, load the issue
+# numbers it filed so this run skips re-filing them (AC: idempotent re-run).
+SWEEP_PRIOR_FILED=""
+if [[ -n "$SESSION_STATE_SH" ]]; then
+  SWEEP_PRIOR_FILED=$("$SESSION_STATE_SH" --get ".prs[\"$PR_NUMBER\"].wrap_sweep.filed_issues" 2>/dev/null || echo "")
+fi
+```
+
+Initialize two accumulators (free-form bullet lists) used by every category and rendered in Step 4.3:
+
+- **`SWEEP_AUTO_HANDLED`** — things the sweep did safely without asking.
+- **`SWEEP_NEEDS_DECISION`** — things surfaced for the user to decide.
+
+Each entry should be one short bullet. **Cap each rendered section at 3–5 bullets** (issue #471 final-report-length note); if a category produces more, keep the top items, summarize the rest as one bullet ("+ N more — see session-state log"), and write the full list to `.prs["$PR_NUMBER"].wrap_sweep` in Step 3.13. **Exception:** auto-filed tickets (the `--auto-file-followups` path) are **never** capped away — every created issue's title + body must be surfaced (Step 3.7 contract), so they render in full regardless of the 3–5 cap (count summary-only bullets toward the cap, not auto-filed-ticket bullets).
+
+#### Step 3.6: Category 1 — Session loose ends (transcript introspection)
+
+This is the **load-bearing capability** (issue #471): scan **this session's conversation** for deferred work — there is no shell command that can read the transcript, so this is a model-introspection step.
+
+**Heuristic (document for future maintainers):** review your own recent messages and tool-call history in this session for deferral signals — `later`, `TODO`, `follow-up`, `come back to`, `worth investigating`, `for now`, `deferred`, `out of scope`, `punt`, `we should eventually`, `not in this PR`, `leaving X for a separate change`. If transcript introspection is limited (e.g. after compaction), fall back to **tool-call history**: issues/PRs/files you touched, and any `// TODO` / `FIXME` you wrote into the diff. Scan the actual diff for new `TODO`/`FIXME` comments via `git diff origin/main...HEAD`.
+
+Collect each loose end as `{summary, context, keywords}` where `keywords` is a 2–5 word phrase for the Step 3.7 dedup search. If none found, Category 1 produces no output.
+
+#### Step 3.7: Category 2 — Ticket coverage (dedup, then propose or file)
+
+For **each** loose end from Step 3.6, dedup against open issues **before** proposing anything (AC: never propose a new ticket without checking first). Guard empty keywords (an empty search returns every issue):
+
+```bash
+if [ -z "$KEYWORDS" ]; then
+  DUP_NUM=""   # no keywords → can't dedup safely → surface, never auto-file
+else
+  DUP_NUM=$(gh issue list --search "${KEYWORDS} in:title" --state open --json number,title --jq '.[0].number // empty')
+fi
+```
+
+**Idempotency** is provided by the dedup search above, **not** by `SWEEP_PRIOR_FILED`: an issue auto-filed by a previous `/wrap` sweep is still an open issue, so a recurring loose end matches it via `gh issue list --search` and resolves to `DUP_NUM`. `SWEEP_PRIOR_FILED` is a JSON array of **issue numbers** (not keywords) recorded by earlier sweeps; when `DUP_NUM` is one of those numbers, treat the loose end as **already handled by this sweep** — do not re-file it and do not re-surface it as a new "needs decision" item.
+
+- **Duplicate found** (`DUP_NUM` non-empty) → if `DUP_NUM` is in `SWEEP_PRIOR_FILED`, **omit** (this sweep already filed it on a prior run — idempotent). Otherwise add to `SWEEP_NEEDS_DECISION`: `"<summary>" — already tracked in #<DUP_NUM>` (or omit if no action needed; surface only when the existing ticket may need an update).
+- **No duplicate, default (ask first)** → add to `SWEEP_NEEDS_DECISION`: `TODO from conversation: "<summary>" — no existing ticket, file as new issue?`
+- **No duplicate, `--auto-file-followups` set** → create the issue, **surface its title + body**, add to `SWEEP_AUTO_HANDLED`. Use the same robust `gh issue create` guard as Step 3.3 (validate the parsed number; on failure record and continue):
+
+  ```bash
+  if NEW_URL=$(gh issue create \
+      --title "<derived title>" \
+      --body "Follow-up surfaced by /wrap session sweep on PR #${PR_NUMBER}.
+
+  <context from transcript>" 2>&1); then
+    NEW_NUM=$(echo "$NEW_URL" | grep -oE '[0-9]+$')
+    [ -n "$NEW_NUM" ] && SWEEP_FILED="${SWEEP_FILED} ${NEW_NUM}"
+  fi
+  ```
+
+Never auto-file without `--auto-file-followups`; never auto-file without printing the body.
+
+#### Step 3.8: Category 3 — External / process state
+
+Read session/process state and clean up only what is **provably dead**; surface the rest.
+
+```bash
+[ -n "$SESSION_STATE_SH" ] && POLLING_JOBS=$("$SESSION_STATE_SH" --get '.polling_jobs' 2>/dev/null || echo "null")
+[ -n "$SESSION_STATE_SH" ] && ACTIVE_AGENTS=$("$SESSION_STATE_SH" --get '.active_agents' 2>/dev/null || echo "null")
+```
+
+- **Dead `/loop` jobs (auto-stop).** For each non-durable `/loop` poll in `polling_jobs[]` (or per-PR `babysit` watcher) whose target PR is **merged or closed**, stop it: set the watcher's stop flag (`.prs["$N"].babysit.stop_requested=true` via `session-state.sh --set`, same as `/babysit-pr-stop`) so the next tick exits, and record `Stopped stale /loop job (PR #N watcher — PR already merged)` in `SWEEP_AUTO_HANDLED`. The PR just merged in Phase 2 is the most common case.
+- **Stale handoffs (auto-delete).** For each `~/.claude/handoffs/pr-{N}-handoff.json`, if PR `N` is **merged** (`gh pr view N --json state,merged --jq '.merged'`), delete the file and record `Deleted handoff file pr-N-handoff.json (PR merged)` in `SWEEP_AUTO_HANDLED`. Deleting an already-gone file is a no-op (idempotent). Do **not** delete handoffs for open/un-merged PRs.
+- **Surface (never auto-act).** Add to `SWEEP_NEEDS_DECISION`: durable `CronCreate` jobs still scheduled (`CronList`), any `active_agents` entries (running subagents), monitor-mode flags (`monitoring_active=true`), and any `recovery/dirty-main-*` branches left by `dirty-main-guard.sh`. Word each as e.g. `Active subagent still running: PR #620 Phase C — stop it or let it finish?` or `Durable cron job <id> still scheduled (<prompt>) — keep or CronDelete?`.
+
+#### Step 3.9: Category 4 — Memory persistence (defers to Phase 4)
+
+Memory writes are owned by **Phase 4 (Lessons)**. To avoid double-prompting the user about the same lesson (AC), Category 4 does **not** write memories or re-prompt here. Instead it only *flags*, as `SWEEP_MEMORY_CANDIDATES` (handed to Phase 4 Step 4.2):
+
+- Decisions made this session that are worth persisting but are not yet lessons.
+- Existing memories the session **contradicted** (candidates for update/removal).
+
+Phase 4 Step 4.2 dedups these against `MEMORY.md` and writes them there. Surface a memory item in the sweep report **only** if Phase 4 is skipped as trivial (Step 4.2) — otherwise let Phase 4 own it, so the user sees each lesson once.
+
+#### Step 3.10: Category 5 — PM hygiene (all touched issues/PRs)
+
+Build the set of issues/PRs **touched this session** — not just the merging PR:
+
+- session-state `.prs` keys (`"$SESSION_STATE_SH" --get '.prs | keys'`),
+- the merging PR + its linked issue (`ISSUE_N` from Step 3.1),
+- any issue/PR numbers from tool-call history this session (issues/PRs you viewed, commented on, or edited).
+
+For each, check and flag **drift** under `SWEEP_NEEDS_DECISION` (do not auto-edit — issues/PRs are shared state):
+
+- **Status accuracy** — issue still `open` but its work merged? PR merged but linked issue not auto-closed?
+- **Linkage** — PR missing a `Closes #N` for work that clearly resolves an issue?
+- **AC checkbox truthfulness** — Test Plan boxes checked that the code does not actually satisfy (spot-check via `ac-checkboxes.sh "$N" --extract`)?
+
+Word each as e.g. `Issue #312 still open but PR #471 merged its work — close #312?`.
+
+#### Step 3.11: Category 6 — Time-sensitive items
+
+Scan the transcript for deadline / date / day-of-week phrases: `by Thursday`, `before the release`, `next week`, `end of month`, `by EOD`, `in N days`. **Convert every relative reference to an absolute date** (matching the existing memory-rule guidance), anchored on today:
+
+```bash
+TODAY=$(date +%Y-%m-%d)        # anchor; e.g. "next Thursday" → resolve to YYYY-MM-DD
+```
+
+- **`/schedule` available** → propose a `/schedule` task per item (surface the proposed command; do not auto-schedule).
+- **`/schedule` unavailable** → surface a plain-text reminder with the absolute date.
+- **No time-sensitive phrases found** → **produce no output** (skip silently — do not emit an empty Category 6 line).
+
+Add any items to `SWEEP_NEEDS_DECISION`.
+
+#### Step 3.12: Category 7 — Future-self handoff
+
+**Only if the session deferred something meaningful** (Category 1, 2, 5, or 6 produced surfaced items, or there is pending decision work). On a clean session, **skip entirely** — emit nothing.
+
+When warranted, generate **one paragraph**: "if you came back to this thread in 2 weeks, here's what you'd need to know" — the task, what shipped, what was deliberately left, and the single most important next step. Add it as the final entry under `SWEEP_NEEDS_DECISION` (or as a standalone "Handoff" line in the Step 4.3 block).
+
+#### Step 3.13: Persist sweep state & compute verdict
+
+Record the sweep outcome so a re-run is idempotent and over-long sections can link to detail:
+
+```bash
+if [ -n "$SESSION_STATE_SH" ]; then
+  # filed_issues: UNION this run's auto-filed numbers with any recorded by a
+  # prior sweep — never overwrite. A re-run with no new filings (empty
+  # SWEEP_FILED) must NOT erase the earlier record, or idempotency breaks and
+  # the next run re-files duplicates.
+  NEW_FILED_JSON=$(printf '%s\n' $SWEEP_FILED | jq -R 'select(length>0)' | jq -cs 'map(tonumber? // .)')
+  PRIOR_FILED_JSON="$SWEEP_PRIOR_FILED"
+  case "$PRIOR_FILED_JSON" in ""|null) PRIOR_FILED_JSON='[]' ;; esac
+  FILED_JSON=$(jq -cn --argjson a "$PRIOR_FILED_JSON" --argjson b "$NEW_FILED_JSON" '($a + $b) | unique')
+  # Persist the FULL sweep, not just filed numbers, so the report's
+  # "+ N more — see session-state log" overflow pointer resolves to real data.
+  # SWEEP_AUTO_HANDLED / SWEEP_NEEDS_DECISION are newline-separated bullets.
+  AUTO_JSON=$(printf '%s\n' "$SWEEP_AUTO_HANDLED" | jq -R 'select(length>0)' | jq -cs .)
+  NEEDS_JSON=$(printf '%s\n' "$SWEEP_NEEDS_DECISION" | jq -R 'select(length>0)' | jq -cs .)
+  # Do NOT swallow this write: wrap_sweep.filed_issues is the idempotency
+  # record, so a silent failure risks re-filing duplicate tickets next run.
+  # Surface it loudly (the merge already succeeded, so don't abort wrap —
+  # the Step 3.7 dedup search is the backstop, but the user must know the
+  # record may be stale).
+  if ! "$SESSION_STATE_SH" \
+    --set ".prs[\"$PR_NUMBER\"].wrap_sweep.swept_at=\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"" \
+    --set ".prs[\"$PR_NUMBER\"].wrap_sweep.filed_issues=$FILED_JSON" \
+    --set ".prs[\"$PR_NUMBER\"].wrap_sweep.auto_handled=$AUTO_JSON" \
+    --set ".prs[\"$PR_NUMBER\"].wrap_sweep.needs_decision=$NEEDS_JSON"; then
+    echo "WARNING: failed to persist wrap_sweep state — a re-run may not be idempotent (could re-file sweep tickets); the Step 3.7 dedup search still guards against open duplicates." >&2
+  fi
+fi
+```
+
+Compute the **verdict** from the count of `SWEEP_NEEDS_DECISION` items. It is **one of exactly two canonical strings** (no improvised wording — AC):
+
+- `0` pending → **`Clear to archive`**
+- `N > 0` pending → **`N items pending your decision before archive`** (substitute the integer for `N`).
+
+Proceed immediately to Phase 4 — do not ask.
 
 ## Phase 4: Lessons Learned (Depth-Adaptive)
 
@@ -505,7 +705,9 @@ Calculate a complexity signal:
 4. Any surprises — tools behaving unexpectedly, edge cases, workflow friction?
 5. Any workarounds that should be codified?
 
-For each actionable, novel lesson:
+**Merge in `SWEEP_MEMORY_CANDIDATES`** from Phase 3 Category 4 (decisions worth persisting + memories the session contradicted) so the user is prompted about each lesson exactly **once** — here, not twice. Dedup the candidates against the lessons you just reflected on before writing.
+
+For each actionable, novel lesson (including the merged sweep candidates):
 - Check `MEMORY.md` for duplicates — update existing memories rather than creating new ones
 - Write memory files with proper frontmatter (`feedback`, `project`, or `user` type)
 - Add pointers to `MEMORY.md`
@@ -531,8 +733,29 @@ After lessons (or skip): emit the final report below — do not ask.
 - **PR #{N}** merged ({title})
 - **Main quarantine** {QUARANTINE_STATUS from Step 2.5 — e.g. "clean" (literal output of `dirty-main-guard.sh --check` on a clean main), "quarantined: recovery/dirty-main-20260424-003012 (uncommitted)", or "no-op: main is clean" (only produced if `--quarantine` ran on an already-clean tree)}
 - **Main branch** {MAIN_SYNC_STATUS from Step 2.5 — e.g. "reset abc1234 → def5678", "up to date (abc1234)", "aborted: local main has 1 unpushed commit(s) — inspect: git log origin/main..main, resolve manually before re-running", or "failed: ..."}
-- **Follow-ups:** {summary or "none"}
-- **Lessons:** {summary or "clean session"}
+- **Follow-ups:** {Part A summary or "none"}
+
+## Session sweep
+
+### Auto-handled
+- {one bullet per `SWEEP_AUTO_HANDLED` entry — stopped /loop jobs, deleted handoffs, auto-filed tickets; omit the section if empty}
+
+### Needs your decision
+- {one bullet per `SWEEP_NEEDS_DECISION` entry — proposed tickets, surfaced crons/subagents, PM-hygiene drift, time-sensitive reminders, future-self handoff; omit the section if empty}
+
+### Verdict
+{exactly one of: `Clear to archive`  |  `N items pending your decision before archive` — from Step 3.13; never improvise}
+
+---
+
+- **Lessons:** {summary or "clean session" — recap of Step 4.2}
 ```
+
+**Rendering rules for the Session sweep section:**
+
+- Cap **Auto-handled** and **Needs your decision** at **3–5 bullets** each; if more, show the top items and summarize the remainder as one bullet linking to `.prs["$PR_NUMBER"].wrap_sweep`. **Auto-filed tickets are exempt from the cap** — with `--auto-file-followups`, every created issue's title + body is surfaced in full (never collapsed into the "+ N more" summary), since silently hiding a ticket you just created would violate the Step 3.7 surface-the-body contract.
+- Omit an empty subsection rather than printing "none".
+- The **Verdict** line is mandatory and is one of the two canonical strings only.
+- If Part B was skipped (e.g. Phase C subagent with an empty transcript and no state findings), still print `### Verdict` → `Clear to archive`.
 
 The worktree and feature branch are intentionally left in place. They are reaped out-of-band by `/pm-update`'s stale-cleanup pass once they age past the threshold (default 7 days, configurable via `STALE_DAYS`). See `.claude/scripts/stale-cleanup.sh --help`.
