@@ -493,7 +493,7 @@ Initialize two accumulators (free-form bullet lists) used by every category and 
 - **`SWEEP_AUTO_HANDLED`** — things the sweep did safely without asking.
 - **`SWEEP_NEEDS_DECISION`** — things surfaced for the user to decide.
 
-Each entry should be one short bullet. **Cap each rendered section at 3–5 bullets** (issue #471 final-report-length note); if a category produces more, keep the top items, summarize the rest as one bullet ("+ N more — see session-state log"), and write the full list to `.prs["$PR_NUMBER"].wrap_sweep` in Step 3.13.
+Each entry should be one short bullet. **Cap each rendered section at 3–5 bullets** (issue #471 final-report-length note); if a category produces more, keep the top items, summarize the rest as one bullet ("+ N more — see session-state log"), and write the full list to `.prs["$PR_NUMBER"].wrap_sweep` in Step 3.13. **Exception:** auto-filed tickets (the `--auto-file-followups` path) are **never** capped away — every created issue's title + body must be surfaced (Step 3.7 contract), so they render in full regardless of the 3–5 cap (count summary-only bullets toward the cap, not auto-filed-ticket bullets).
 
 #### Step 3.6: Category 1 — Session loose ends (transcript introspection)
 
@@ -611,11 +611,18 @@ if [ -n "$SESSION_STATE_SH" ]; then
   # SWEEP_AUTO_HANDLED / SWEEP_NEEDS_DECISION are newline-separated bullets.
   AUTO_JSON=$(printf '%s\n' "$SWEEP_AUTO_HANDLED" | jq -R 'select(length>0)' | jq -cs .)
   NEEDS_JSON=$(printf '%s\n' "$SWEEP_NEEDS_DECISION" | jq -R 'select(length>0)' | jq -cs .)
-  "$SESSION_STATE_SH" \
+  # Do NOT swallow this write: wrap_sweep.filed_issues is the idempotency
+  # record, so a silent failure risks re-filing duplicate tickets next run.
+  # Surface it loudly (the merge already succeeded, so don't abort wrap —
+  # the Step 3.7 dedup search is the backstop, but the user must know the
+  # record may be stale).
+  if ! "$SESSION_STATE_SH" \
     --set ".prs[\"$PR_NUMBER\"].wrap_sweep.swept_at=\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"" \
     --set ".prs[\"$PR_NUMBER\"].wrap_sweep.filed_issues=$FILED_JSON" \
     --set ".prs[\"$PR_NUMBER\"].wrap_sweep.auto_handled=$AUTO_JSON" \
-    --set ".prs[\"$PR_NUMBER\"].wrap_sweep.needs_decision=$NEEDS_JSON" 2>/dev/null || true
+    --set ".prs[\"$PR_NUMBER\"].wrap_sweep.needs_decision=$NEEDS_JSON"; then
+    echo "WARNING: failed to persist wrap_sweep state — a re-run may not be idempotent (could re-file sweep tickets); the Step 3.7 dedup search still guards against open duplicates." >&2
+  fi
 fi
 ```
 
@@ -699,7 +706,7 @@ After lessons (or skip): emit the final report below — do not ask.
 
 **Rendering rules for the Session sweep section:**
 
-- Cap **Auto-handled** and **Needs your decision** at **3–5 bullets** each; if more, show the top items and summarize the remainder as one bullet linking to `.prs["$PR_NUMBER"].wrap_sweep`.
+- Cap **Auto-handled** and **Needs your decision** at **3–5 bullets** each; if more, show the top items and summarize the remainder as one bullet linking to `.prs["$PR_NUMBER"].wrap_sweep`. **Auto-filed tickets are exempt from the cap** — with `--auto-file-followups`, every created issue's title + body is surfaced in full (never collapsed into the "+ N more" summary), since silently hiding a ticket you just created would violate the Step 3.7 surface-the-body contract.
 - Omit an empty subsection rather than printing "none".
 - The **Verdict** line is mandatory and is one of the two canonical strings only.
 - If Part B was skipped (e.g. Phase C subagent with an empty transcript and no state findings), still print `### Verdict` → `Clear to archive`.
