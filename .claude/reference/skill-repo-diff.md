@@ -11,12 +11,14 @@ cycles.
 
 ## Reference Repos Surveyed
 
-| Repo | Shape | Relevance to us |
-|------|-------|-----------------|
-| [obra/superpowers](https://github.com/obra/superpowers) | 14 focused, workflow-agnostic discipline skills (TDD, debugging, planning, code review, worktrees) | **High** — overlaps our worktree + plan + review workflow; already installed as a Cursor plugin, so its skills are available at runtime but are **not** in our repo |
-| [affaan-m/everything-claude-code](https://github.com/affaan-m/everything-claude-code) | ~270 skills (mostly polyglot/domain: per-language TDD, framework patterns, video/design), a large Node hook graph, MCP configs, multi-runtime scaffolds | **Selective** — most skills are language/domain-specific and out of scope; the hook graph and a few meta-skills have transferable ideas |
+| Repo | Surveyed ref | Shape | Relevance to us |
+|------|--------------|-------|-----------------|
+| [obra/superpowers](https://github.com/obra/superpowers) | `main` @ `896224c` (2026-06-18) | 14 focused, workflow-agnostic discipline skills (TDD, debugging, planning, code review, worktrees) | **High** — overlaps our worktree + plan + review workflow; already installed as a Cursor plugin, so its skills are available at runtime but are **not** in our repo |
+| [affaan-m/everything-claude-code](https://github.com/affaan-m/everything-claude-code) | `main` @ `71d22d0` (2026-06-20) | ~270 skills (mostly polyglot/domain: per-language TDD, framework patterns, video/design), a large Node hook graph, MCP configs, multi-runtime scaffolds | **Selective** — most skills are language/domain-specific and out of scope; the hook graph and a few meta-skills have transferable ideas |
 
-Survey date: 2026-06 (Opus 4.8 run). Re-survey each cycle; both repos move fast.
+**Survey run:** 2026-06-25 (Opus 4.8), against the pinned commits above. Re-survey
+each cycle and record the new run date + commit SHAs — a delta is only real
+relative to a pinned ref; both repos move fast, so coarse dates hide repo churn.
 
 ## How We Differ (adaptation constraints)
 
@@ -37,59 +39,61 @@ with phase A/B/C subagent orchestration. That shapes what fits:
 
 ## Gap Analysis by Dimension
 
-Fit labels: **direct fit** · **needs adaptation** · **doesn't fit our workflow**.
+**Fit legend** (compact codes used in the tables below): `DF` = direct fit ·
+`NA` = needs adaptation · `NF` = doesn't fit our workflow · `—` = parity / n/a.
+Priority tags (`P0`/`P1`/`P2`) and short rationale follow the code where useful.
 
 ### 1. Skill library coverage
 
 | Pattern (source) | We have? | Delta | Fit |
 |---|---|---|---|
-| `writing-skills` meta-skill — authoring discipline: description-as-trigger, match-form-to-failure, bulletproofing (superpowers) | Partial — CONTRIBUTING.md "Adding a New Skill" is purely mechanical (file paths, frontmatter fields) | We lack authoring *judgment* guidance | **needs adaptation** → harvested this cycle (see Import Log) |
-| `systematic-debugging` / `root-cause-tracing` (superpowers) | No dedicated skill; available via plugin | Root-cause-before-fix discipline | doesn't fit (plugin covers it; not a workflow command) |
-| `brainstorming` HARD-GATE before creative work (superpowers) | Partial — `issue-planning.md` + CR plan flow | Overlaps our planning flow; gate framing is novel | needs adaptation (P2 — evaluate vs issue-planning) |
-| `verification-before-completion` (superpowers) | Partial — phase protocols + exit reports enforce evidence | Mostly covered by phase A/B/C | doesn't fit (duplicate) |
-| Per-language TDD/verification skills, framework patterns, video/design (ECC) | No | Out of scope — we're a meta-config repo, not an app | doesn't fit our workflow |
-| `skill-scout` / `skill-stocktake` / `skill-comply` — skill-library hygiene (ECC) | Partial — `audit-skill-usage.sh`, `skill-usage-report.sh` | We track usage but have no "does this skill still comply with our conventions" audit | needs adaptation (P2) |
+| `writing-skills` meta-skill — authoring discipline: description-as-trigger, match-form-to-failure, bulletproofing (superpowers) | Partial — CONTRIBUTING.md "Adding a New Skill" is purely mechanical (file paths, frontmatter fields) | We lack authoring *judgment* guidance | `NA` → harvested this cycle (see Import Log) |
+| `systematic-debugging` / `root-cause-tracing` (superpowers) | No dedicated skill; available via plugin | Root-cause-before-fix discipline | `NF` — plugin covers it; not a workflow command |
+| `brainstorming` HARD-GATE before creative work (superpowers) | Partial — `issue-planning.md` + CR plan flow | Overlaps our planning flow; gate framing is novel | `NA` `P2` — evaluate vs issue-planning |
+| `verification-before-completion` (superpowers) | Partial — phase protocols + exit reports enforce evidence | Mostly covered by phase A/B/C | `NF` — duplicate |
+| Per-language TDD/verification skills, framework patterns, video/design (ECC) | No | Out of scope — we're a meta-config repo, not an app | `NF` |
+| `skill-scout` / `skill-stocktake` / `skill-comply` — skill-library hygiene (ECC) | Partial — `audit-skill-usage.sh`, `skill-usage-report.sh` | We track usage but have no "does this skill still comply with our conventions" audit | `NA` `P2` |
 
 ### 2. Hook patterns
 
 | Hook (source) | We have? | Delta | Fit |
 |---|---|---|---|
-| `pre:config-protection` — block edits to linter/formatter/CR config, steering agent to fix code not weaken config (ECC) | We have the **rule** "Never suppress linter errors" (`cr-local-review.md`) but **no enforcing hook** | Rule is advisory; a PreToolUse hook makes it mechanical | **needs adaptation** (P1 — strong candidate, next cycle) |
-| `post:quality-gate` — run checks after edits (ECC) | No structured post-edit gate | Could lint shell/markdown after edits | needs adaptation (P2 — our CI + `coderabbit review` already cover much of this) |
-| `session:start` bootstrap — load prior context + detect package manager (ECC) | `session-start-sync.sh` (worktree sync + hook registration) | Different scope; ECC also loads bounded prior context | doesn't fit (our scope is config sync, not context restore) |
-| `pre:edit-write:gateguard-fact-force` — block first edit per file until investigation done (ECC) | No | Forces "read importers/schema before editing" | doesn't fit (heavy; friction-prohibitive for our doc-heavy edits) |
-| `PreCompact` state save / `Stop` session metrics / cost tracker (ECC) | We have silence-detector + handoff files | ECC's are JS/metrics-oriented | doesn't fit (stack mismatch) |
-| `stop:format-typecheck`, `console.log` warn, Biome (ECC) | No | JS/TS-specific | doesn't fit our workflow |
+| `pre:config-protection` — block edits to linter/formatter/CR config, steering agent to fix code not weaken config (ECC) | We have the **rule** "Never suppress linter errors" (`cr-local-review.md`) but **no enforcing hook** | Rule is advisory; a PreToolUse hook makes it mechanical | `NA` `P1` — strong candidate, next cycle |
+| `post:quality-gate` — run checks after edits (ECC) | No structured post-edit gate | Could lint shell/markdown after edits | `NA` `P2` — our CI + `coderabbit review` already cover much of this |
+| `session:start` bootstrap — load prior context + detect package manager (ECC) | `session-start-sync.sh` (worktree sync + hook registration) | Different scope; ECC also loads bounded prior context | `NF` — our scope is config sync, not context restore |
+| `pre:edit-write:gateguard-fact-force` — block first edit per file until investigation done (ECC) | No | Forces "read importers/schema before editing" | `NF` — heavy; friction-prohibitive for our doc-heavy edits |
+| `PreCompact` state save / `Stop` session metrics / cost tracker (ECC) | We have silence-detector + handoff files | ECC's are JS/metrics-oriented | `NF` — stack mismatch |
+| `stop:format-typecheck`, `console.log` warn, Biome (ECC) | No | JS/TS-specific | `NF` |
 
 ### 3. CLAUDE.md conventions
 
 | Pattern (source) | We have? | Delta | Fit |
 |---|---|---|---|
-| Executive-summary CLAUDE.md + detail in rule files | **Yes** — already our model (CLAUDE.md ≤1,300 words, rules split out) | Parity | n/a (we lead here) |
-| `using-superpowers` "1% chance a skill applies → you MUST invoke it" gate (superpowers) | Partial — skills auto-trigger by description | Aggressive skill-invocation framing | doesn't fit (our slash-command model differs) |
-| Multi-runtime config mirrors (`.codex`, `.gemini`, `.cursor`, `.opencode`…) (both) | No — we target Claude Code + Cursor | Broad runtime portability | doesn't fit (scope/maintenance cost) |
+| Executive-summary CLAUDE.md + detail in rule files | **Yes** — already our model (CLAUDE.md ≤1,300 words, rules split out) | Parity | `—` — we lead here |
+| `using-superpowers` "1% chance a skill applies → you MUST invoke it" gate (superpowers) | Partial — skills auto-trigger by description | Aggressive skill-invocation framing | `NF` — our slash-command model differs |
+| Multi-runtime config mirrors (`.codex`, `.gemini`, `.cursor`, `.opencode`…) (both) | No — we target Claude Code + Cursor | Broad runtime portability | `NF` — scope/maintenance cost |
 
 ### 4. Prompt-engineering patterns
 
 | Pattern (source) | We have? | Delta | Fit |
 |---|---|---|---|
-| Description = *when to use*, NOT *what it does* (SDO research, superpowers) | **No** — most of our skill descriptions summarize the full workflow (e.g. `fixpr`, `start-issue`) | Workflow-summary descriptions can make agents follow the summary instead of reading the skill | **needs adaptation** → captured this cycle (see authoring patterns doc) |
-| "Match the form to the failure" — prohibition+rationalization-table vs positive recipe vs structural slot vs conditional (superpowers) | No | Sophisticated guidance-design model we lacked | **needs adaptation** → harvested this cycle |
-| Rationalization tables + red-flags lists for discipline rules (superpowers) | Partial — some rules use "Always/Ask first/Never" headers | We have prohibition headers but no rationalization-table convention | needs adaptation → captured this cycle |
+| Description = *when to use*, NOT *what it does* (SDO research, superpowers) | **No** — most of our skill descriptions summarize the full workflow (e.g. `fixpr`, `start-issue`) | Workflow-summary descriptions can make agents follow the summary instead of reading the skill | `NA` → captured this cycle (see authoring patterns doc) |
+| "Match the form to the failure" — prohibition+rationalization-table vs positive recipe vs structural slot vs conditional (superpowers) | No | Sophisticated guidance-design model we lacked | `NA` → harvested this cycle |
+| Rationalization tables + red-flags lists for discipline rules (superpowers) | Partial — some rules use "Always/Ask first/Never" headers | We have prohibition headers but no rationalization-table convention | `NA` → captured this cycle |
 
 ### 5. MCP integrations
 
 | Pattern (source) | We have? | Delta | Fit |
 |---|---|---|---|
-| `.mcp.json` with playwright / sequential-thinking / memory / github (ECC) | We have `mcp__*` permission wildcards but no documented server set | Our workflow is `gh`-CLI-driven, not MCP-driven | doesn't fit (low value for our PR workflow; revisit if we add E2E or browser testing) |
+| `.mcp.json` with playwright / sequential-thinking / memory / GitHub (ECC) | We have `mcp__*` permission wildcards but no documented server set | Our workflow is `gh`-CLI-driven, not MCP-driven | `NF` — low value for our PR workflow; revisit if we add E2E or browser testing |
 
 ### 6. Utility scripts / tooling
 
 | Pattern (source) | We have? | Delta | Fit |
 |---|---|---|---|
-| Consolidated pre/post Bash dispatcher (one hook fans out to many checks) (ECC) | We register hooks individually in `global-settings.json` | A dispatcher reduces per-tool hook overhead | needs adaptation (P2 — only worth it if our hook count grows) |
-| Continuous-learning / pattern-extraction at Stop (ECC `stop:evaluate-session`) | Partial — `/lessons` skill + memory system | Ours is manual/on-demand; theirs is automatic | needs adaptation (P2) |
-| Plugin-root resolver inlined in every hook command (ECC) | Our hooks resolve via `repo-root.sh` + worktree | Parity (different mechanism) | n/a |
+| Consolidated pre/post Bash dispatcher (one hook fans out to many checks) (ECC) | We register hooks individually in `global-settings.json` | A dispatcher reduces per-tool hook overhead | `NA` `P2` — only worth it if our hook count grows |
+| Continuous-learning / pattern-extraction at Stop (ECC `stop:evaluate-session`) | Partial — `/lessons` skill + memory system | Ours is manual/on-demand; theirs is automatic | `NA` `P2` |
+| Plugin-root resolver inlined in every hook command (ECC) | Our hooks resolve via `repo-root.sh` + worktree | Parity (different mechanism) | `—` |
 
 ## Prioritized Import Backlog
 
@@ -128,7 +132,7 @@ conventions; (3) low adaptation/maintenance cost; (4) high daily-use value.
 
 | Date | Source repo | Pattern | PR | Adaptation notes |
 |------|-------------|---------|-----|------------------|
-| 2026-06 | obra/superpowers (`skills/writing-skills`) | Skill/rule authoring-judgment patterns (SDO, match-form-to-failure, bulletproofing) | #417 first pass | Distilled into `skill-authoring-patterns.md` (reference, on-demand) + CONTRIBUTING pointers. Did **not** copy the TDD-for-skills methodology (heavyweight + plugin already provides it); referenced it instead. |
+| 2026-06-25 | obra/superpowers `skills/writing-skills` @ `896224c` | Skill/rule authoring-judgment patterns (SDO, match-form-to-failure, bulletproofing) | [#485](https://github.com/auerbachb/claude-code-config/pull/485) (first pass) | Distilled into `skill-authoring-patterns.md` (reference, on-demand) + CONTRIBUTING pointers. Did **not** copy the TDD-for-skills methodology (heavyweight + plugin already provides it); referenced it instead. |
 
 ## Re-Survey Checklist (each cycle)
 

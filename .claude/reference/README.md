@@ -31,13 +31,16 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `skill-sync-hooks.md` — skills worktree sync and hook registration narrative
 - `skill-authoring-patterns.md` — authoring *judgment* for skills/rules (description-as-trigger, match-form-to-failure, bulletproofing); complements CONTRIBUTING.md mechanics
 
+### Living trackers (updated each cycle — not point-in-time)
+
+- `skill-repo-diff.md` — cross-repo pattern-harvest tracker (#417): gap analysis vs superpowers / everything-claude-code, prioritized import backlog, and import log; re-surveyed and appended each cycle
+
 ### Audits and research (point-in-time)
 
 - `ai-review-tool-audit-2026-04.md` — AI review tool chain audit (#368 / #377)
 - `repo-audit-2026-05.md` — bundled org + efficiency + best-practices audit (#413–#415)
 - `script-extraction-audit.md` — deterministic script extraction inventory (#271)
 - `graphite-stacked-prs-research-2026-05.md` — stacked PR economics (#418 / #433)
-- `skill-repo-diff.md` — **living** cross-repo pattern-harvest tracker (#417): gap analysis vs superpowers / everything-claude-code, prioritized import backlog, and import log
 
 ### Diagrams (mermaid stubs and indexes)
 

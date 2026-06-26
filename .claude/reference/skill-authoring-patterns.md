@@ -44,8 +44,10 @@ step-by-step body. When auditing an existing skill, check: *could an agent skip
 the body and still "comply" with the description?* If yes, the description is
 leaking workflow — trim it.
 
-**Also:** third person, start with "Use when…", pack in real trigger
-keywords (error strings, symptoms, tool names) an agent would search for.
+**Also:** lead with the trigger condition ("Use when…") and pack in real
+keywords (error strings, symptoms, tool names) an agent would search for. Avoid
+first-person framing ("I can help you…") — the description is injected into the
+system prompt, not spoken to the user.
 
 ## 2. Match the Form to the Failure
 
