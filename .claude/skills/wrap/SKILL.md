@@ -62,17 +62,23 @@ for candidate in \
 done
 ```
 
-**1.1a — Explicit argument.** If `$ARGUMENTS` is non-empty, normalize it and use it directly — **skip 1.1b–1.1e** (an explicit reference bypasses all inference):
+**1.1a — Explicit argument.** If `$ARGUMENTS` is non-empty the user named a specific PR: resolve it explicitly and **skip 1.1b–1.1e entirely**. A non-empty `$ARGUMENTS` must **never** fall through to the current-branch path (1.1b) — that could wrap a *different* PR than the one requested. If the reference cannot be resolved (helper missing or unparseable), **stop** rather than guessing:
 
 ```bash
-if [[ -n "${ARGUMENTS:-}" && -n "$INFER_PR" ]]; then
-  if EXPLICIT_JSON=$("$INFER_PR" --explicit "$ARGUMENTS"); then
+OWNER_REPO=""   # repo the resolved PR lives in, when known (used by the guard below)
+if [[ -n "${ARGUMENTS:-}" ]]; then
+  if [[ -z "$INFER_PR" ]]; then
+    echo "STOP: /wrap was given '$ARGUMENTS' but infer-pr.sh was not found — cannot safely resolve an explicit PR reference. Install .claude/scripts/infer-pr.sh, or run /wrap with no argument from the PR's branch." >&2
+    # STOP — do NOT fall through to 1.1b (would risk wrapping the wrong PR).
+  elif EXPLICIT_JSON=$("$INFER_PR" --explicit "$ARGUMENTS"); then
     PR_NUM=$(jq -r '.most_recent.number' <<<"$EXPLICIT_JSON")
+    OWNER_REPO=$(jq -r '.most_recent.owner_repo // empty' <<<"$EXPLICIT_JSON")
     INFERRED_SOURCE="explicit argument"
   else
-    echo "Could not parse '$ARGUMENTS' as a PR reference (URL, owner/repo#N, #N, or N)." >&2
-    # stop — do not fall through to inference for a malformed explicit arg
+    echo "STOP: could not parse '$ARGUMENTS' as a PR reference (URL, owner/repo#N, #N, or N)." >&2
+    # STOP — do NOT fall through to inference for a malformed explicit arg.
   fi
+  # Either PR_NUM is now set, or we stopped. An explicit argument never reaches 1.1b–1.1e.
 fi
 ```
 
@@ -90,13 +96,17 @@ If `gh pr view` finds a PR, use it (`PR_NUM` = its number, `INFERRED_SOURCE` uns
 - The most recent `/fixpr <URL>` or `/wrap <URL>` invocation in this thread.
 - Explicit PR references the thread acted on — `PR #N`, `github.com/<owner>/<repo>/pull/N`, or a `=== fixpr complete === PR: #N` footer.
 
-Collect each distinct PR number with the position it was last mentioned (more recent = stronger). Thread-context recency outranks session-state in 1.1e.
+Collect each distinct PR number with the position it was last mentioned (more recent = stronger). Thread-context recency outranks session-state in 1.1e. If the chosen thread reference was a full `github.com/<owner>/<repo>/pull/N` URL, also capture its `<owner>/<repo>` into `OWNER_REPO` so the repo-scoping guard below can catch a cross-repo target.
 
-**1.1d — Query session-state.** Also gather candidates the session is tracking, scoped to this repo:
+**1.1d — Query session-state.** Also gather candidates the session is tracking, scoped to this repo. Capture the helper's **real** exit code — do **not** append `|| true`, which would force `$?` to `0` and mask exit `1` (multiple), `2` (none), or `4` (error):
 
 ```bash
-SESSION_JSON=$("$INFER_PR" --root-repo "$(git rev-parse --show-toplevel 2>/dev/null)") || true
-SESSION_RC=$?   # 0 single, 1 multiple, 2 none, 3/4 error
+ROOT_TOPLEVEL=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+if SESSION_JSON=$("$INFER_PR" --root-repo "$ROOT_TOPLEVEL"); then
+  SESSION_RC=0
+else
+  SESSION_RC=$?
+fi   # 0 single, 1 multiple, 2 none, 3/4 error
 ```
 
 **1.1e — Merge, deduplicate, resolve.** Combine the thread-context candidates (1.1c) and session-state candidates (1.1d), deduplicating by PR number. Rank by recency, **preferring thread-context order over session-state `last_activity`**. Then apply the resolution rules:
@@ -115,7 +125,18 @@ Also tracking: #458   ← only when other candidates exist
 
 Use a `<source>` of `explicit argument`, `thread context`, or `session-state` as applicable. After emitting the line, pause briefly to let the user interrupt if the inferred PR is wrong — this is the only abort point, since `/wrap` runs end-to-end without confirmation prompts.
 
-Once `PR_NUM` is fixed, fetch its details for the rest of Phase 1:
+**Repo-scoping guard (merge-safety).** `/wrap`'s verification and merge steps — `merge-gate.sh`, `pr-state.sh`, `ac-checkboxes.sh`, `gh pr merge`, and the root-main sync (Step 2.5) — all operate on the **current checkout** and take no cross-repo override. So if the resolved PR lives in a *different* repo than this checkout, proceeding would target the wrong PR (or sync the wrong `main`). When `OWNER_REPO` is known (set from an explicit URL / `owner/repo#N` in 1.1a, or a thread URL in 1.1c) and differs from the current repo, **stop**:
+
+```bash
+CURRENT_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")
+if [[ -n "${OWNER_REPO:-}" && -n "$CURRENT_REPO" && "$OWNER_REPO" != "$CURRENT_REPO" ]]; then
+  echo "STOP: the target resolves to $OWNER_REPO#$PR_NUM, but this checkout is $CURRENT_REPO. /wrap's merge, AC, and main-sync steps are scoped to the current checkout — re-run /wrap from a $OWNER_REPO checkout (or its worktree)." >&2
+fi
+```
+
+References without an `owner_repo` (`#N`, bare `N`, the 1.1b branch PR, or session-state candidates — which `infer-pr.sh --root-repo` already scopes to this repo) are assumed to live in the current checkout, so the guard is a no-op for them.
+
+Once `PR_NUM` is fixed (and the guard above passed), fetch its details for the rest of Phase 1:
 
 ```bash
 gh pr view "$PR_NUM" --json number,title,headRefName,body,state \
