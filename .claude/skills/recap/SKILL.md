@@ -39,10 +39,36 @@ Flags compose: `--table --technical` adds a third "Technical detail" column; `--
 Parse `$ARGUMENTS`. **Extract flags first**, then interpret whatever remains as the target identifier.
 
 - **Flags** (any order, anywhere in `$ARGUMENTS`): `--table`, `--full`, `--technical`. Set a boolean for each; strip them from the argument string.
-- **Target identifier** (the non-flag remainder):
-  - **URL** (`https://github.com/<owner>/<repo>/pull/123` or `.../issues/123`) → extract the trailing number; the path segment (`/pull/` vs `/issues/`) fixes the type.
-  - **`#N` or bare number** (`452`, `#457`) → strip any leading `#`; type is not yet known (resolve in Step 2).
+- **Target identifier** — take the **first** non-flag token only (see batch handling below). It is one of:
+  - **URL** (`https://github.com/<owner>/<repo>/pull/123` or `.../issues/123`) → extract **both** the `<owner>/<repo>` and the trailing number; the path segment (`/pull/` vs `/issues/`) fixes the type. **The owner/repo from the URL must qualify every later `gh` call** (`--repo <owner>/<repo>`) — otherwise a URL for another repo would silently recap whatever item shares that number in the *current* repo.
+  - **`#N` or bare number** (`452`, `#457`) → strip any leading `#`; target the **current** repo; type is not yet known (resolve in Step 2).
   - **Empty** → auto-detect (see below).
+
+Parse the remainder into a target id plus a repo qualifier:
+```bash
+# REST = $ARGUMENTS with the three flags stripped, whitespace-collapsed.
+REPO_FLAG=""                      # empty = current repo; set only for a URL target
+read -r -a TOKENS <<<"$REST"
+TARGET="${TOKENS[0]:-}"           # first non-flag token only — never pass the whole string to gh
+if (( ${#TOKENS[@]} > 1 )); then
+  echo "Note: /recap takes one target at a time — recapping ${TARGET} and ignoring the rest (${TOKENS[*]:1}). Run /recap once per PR/issue." >&2
+fi
+case "$TARGET" in
+  https://github.com/*/pull/*|https://github.com/*/issues/*)
+    REPO_OWNER_NAME=$(printf '%s' "$TARGET" | sed -E 's#https://github.com/([^/]+/[^/]+)/(pull|issues)/.*#\1#')
+    REPO_FLAG="--repo $REPO_OWNER_NAME"
+    case "$TARGET" in *"/pull/"*) TYPE=pr ;; *"/issues/"*) TYPE=issue ;; esac
+    N=$(printf '%s' "$TARGET" | grep -oE '[0-9]+$')
+    ;;
+  \#[0-9]*|[0-9]*)
+    N="${TARGET#\#}"
+    ;;
+  "")
+    : # empty → auto-detect below
+    ;;
+esac
+```
+Carry `REPO_FLAG` through Step 2 — every `gh pr view` / `gh issue view` / `gh pr diff` call appends it so a URL target always resolves against its own repo, and a bare number stays in the current repo.
 
 ### Auto-detect when no target is given
 
@@ -51,12 +77,12 @@ Parse `$ARGUMENTS`. **Extract flags first**, then interpret whatever remains as 
    AUTO_PR=$(gh pr view --json number --jq '.number' 2>/dev/null || true)
    ```
    If non-empty, target is that PR.
-2. If no PR, try to recover an issue number from the branch name (`issue-<N>-*` or a leading `<N>-*`):
+2. If no PR, try to recover an issue number from the branch name — only the deliberate forms `issue-<N>-*` or a leading `<N>-*` (the trailing hyphen is **required**, so a date-prefixed branch like `2026-q1-cleanup` does **not** get misread as issue #2026):
    ```bash
    BRANCH=$(git branch --show-current 2>/dev/null || true)
-   AUTO_ISSUE=$(printf '%s' "$BRANCH" | grep -oE '(^|issue-)[0-9]+' | grep -oE '[0-9]+' | head -1 || true)
+   AUTO_ISSUE=$(printf '%s' "$BRANCH" | grep -oE '(^|issue-)[0-9]+-' | grep -oE '[0-9]+' | head -1 || true)
    ```
-   If non-empty, target is that issue.
+   If non-empty, target is that issue. A bare numeric prefix with no following hyphen (e.g. `2026q1`) is intentionally ignored — fall through to step 3.
 3. If neither resolves, **stop and ask**: "What should I recap? Give a PR number, issue number, or URL (e.g. `/recap 452`, `/recap #457`, or a GitHub URL)."
 
 ## Step 2: Determine target type and fetch data
@@ -64,14 +90,14 @@ Parse `$ARGUMENTS`. **Extract flags first**, then interpret whatever remains as 
 **Type resolution:**
 - URL with `/pull/` → PR. URL with `/issues/` → issue.
 - Auto-detected PR (Step 1) → PR. Auto-detected issue → issue.
-- Bare number → try PR first, fall back to issue:
+- Bare number / URL whose type wasn't already fixed → try PR first, fall back to issue (`$REPO_FLAG` keeps the lookup in the right repo — empty for a bare number, the URL's owner/repo for a URL):
   ```bash
-  if gh pr view "$N" --json number >/dev/null 2>&1; then
+  if gh pr view "$N" $REPO_FLAG --json number >/dev/null 2>&1; then
     TYPE=pr
-  elif gh issue view "$N" --json number >/dev/null 2>&1; then
+  elif gh issue view "$N" $REPO_FLAG --json number >/dev/null 2>&1; then
     TYPE=issue
   else
-    echo "Could not find PR or issue #$N in this repo — it may be deleted, private, or in another repo." >&2
+    echo "Could not find PR or issue #$N${REPO_FLAG:+ in ${REPO_FLAG#--repo }} — it may be deleted, private, or in another repo." >&2
     exit 1
   fi
   ```
@@ -79,17 +105,17 @@ Parse `$ARGUMENTS`. **Extract flags first**, then interpret whatever remains as 
 
 **For a PR**, fetch state plus a diff stat (the stat is for *your* understanding of scope — it does **not** go in the output):
 ```bash
-gh pr view "$N" --json number,title,body,state,mergedAt,isDraft,additions,deletions,changedFiles,headRefName
-gh pr diff "$N" --stat 2>/dev/null || true
+gh pr view "$N" $REPO_FLAG --json number,title,body,state,mergedAt,isDraft,additions,deletions,changedFiles,headRefName
+gh pr diff "$N" $REPO_FLAG --stat 2>/dev/null || true
 ```
-Also scan the PR body for a linked issue (`Closes #N`, `Fixes #N`, `Resolves #N`, case-insensitive). If found, fetch that issue's title + body for additional "why" context:
+Also scan the PR body for a linked issue (`Closes #N`, `Fixes #N`, `Resolves #N`, case-insensitive). If found, fetch that issue's title + body for additional "why" context (same `$REPO_FLAG`, since a linked issue lives in the PR's repo):
 ```bash
-gh issue view "$LINKED_N" --json number,title,body,state 2>/dev/null || true
+gh issue view "$LINKED_N" $REPO_FLAG --json number,title,body,state 2>/dev/null || true
 ```
 
 **For an issue**, fetch state, body, and recent comments (comments often carry plan/scope refinements), plus any linked PRs:
 ```bash
-gh issue view "$N" --json number,title,body,state,createdAt --comments
+gh issue view "$N" $REPO_FLAG --json number,title,body,state,createdAt --comments
 ```
 
 If a JSON fetch fails outright (deleted / private / wrong repo), stop with a one-line graceful error — do not emit a half-summary.
@@ -170,9 +196,9 @@ Keep the conversational top-level bullet, then add **one** sub-bullet (bullets m
 
 ### Style anchor — the authoritative source of "good"
 
-The **Examples** section of issue #457 is the authoritative anchor for what "good" output looks like. When examples are present there, treat them as the style target: diff a draft summary against the "Good" examples and confirm the family resemblance (tone, length, level of abstraction); steer away from anything resembling the "Avoid" counter-examples. Fetch them when calibrating:
+The **Examples** section of issue #457 **in the `auerbachb/claude-code-config` repo** is the authoritative anchor for what "good" output looks like. When examples are present there, treat them as the style target: diff a draft summary against the "Good" examples and confirm the family resemblance (tone, length, level of abstraction); steer away from anything resembling the "Avoid" counter-examples. Fetch them when calibrating — always pin the repo, since `/recap` is globally symlinked and would otherwise read issue #457 from whatever repo happens to be current:
 ```bash
-gh issue view 457 --json body --jq '.body' | sed -n '/## Examples/,/## Acceptance Criteria/p'
+gh issue view 457 --repo auerbachb/claude-code-config --json body --jq '.body' | sed -n '/## Examples/,/## Acceptance Criteria/p'
 ```
 If the issue's Examples section is still a placeholder (not yet filled in), fall back to the tone rules and the worked example above — and mention briefly that no user examples were available to anchor against.
 
@@ -185,7 +211,7 @@ Handle these gracefully — emit a short note plus the best summary the availabl
 - **Issue with no body** → summarize from the title alone with a one-line note that the issue has no description.
 - **Issue with linked PRs** → mention the linkage only if it materially adds to "what work is hoped for" (e.g. "Partially delivered by PR #N").
 - **Deleted / private / wrong-repo reference** → stop with a single graceful line: "Couldn't find that PR/issue — it may be deleted, private, or in another repo."
-- **Batch request** (multiple numbers/URLs in `$ARGUMENTS`) → not supported in v1; recap the first target and tell the user to run `/recap` once per target.
+- **Batch request** (multiple numbers/URLs in `$ARGUMENTS`) → not supported in v1. Step 1's parser already takes only the first non-flag token and prints a one-line note listing the ignored ids, so the extra tokens are never passed to `gh`; recap that first target and tell the user to run `/recap` once per target.
 
 ## Usage examples
 
