@@ -1,8 +1,8 @@
 ---
 name: open-code-review
-description: Run Alibaba's self-hosted Open Code Review (`ocr`) CLI on Git changes to produce line-level review comments. Use as a free, rate-limit-free supplemental/manual reviewer alongside the CR -> BugBot -> Greptile chain. Not part of the merge gate.
+description: Run Alibaba's self-hosted Open Code Review (`ocr`) CLI on Git changes to produce line-level review comments. Use as a self-hosted supplemental/manual reviewer alongside the CR -> BugBot -> Greptile chain. Not part of the merge gate.
 triggers:
-  - run ocr
+  - ocr run
   - open code review
   - ocr review
   - self-hosted review
@@ -81,4 +81,4 @@ If the user asked to "review and fix", apply fixes. If they asked only to "revie
 
 ## Privacy
 
-OCR contacts only the configured `llm.url` (Anthropic API by default). It does not send code to any third-party review service. Verify with `ocr review --preview` (no network) and by confirming `llm.url` / provider base URL in `~/.opencodereview/config.json`.
+OCR contacts only the configured provider endpoint (Anthropic API by default). It does not send code to any third-party review service. Verify with `ocr review --preview` (no network) and by confirming the provider config (`providers.<name>` base URL) in `~/.opencodereview/config.json`.

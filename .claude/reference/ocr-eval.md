@@ -96,7 +96,7 @@ Repos with OCR installed: **`claude-code-config` (this repo)**. Pending: **`skin
 | Model id = `claude-opus-4-8` | PASS | config + `.claude/agents/README.md` lineup note |
 | Deterministic file-selection pipeline (no LLM) | PASS | `ocr review --commit HEAD --preview` |
 | Endpoint resolution + `x-api-key` header | PASS | fake key -> `POST https://api.anthropic.com/v1/messages` -> `401 invalid x-api-key` (real Anthropic Request-ID) |
-| No third-party leakage (only `llm.url` contacted) | PASS | same 401 trace; `--preview` is offline |
+| No third-party leakage (only the configured provider endpoint contacted) | PASS | same 401 trace; `--preview` is offline |
 | `ocr llm test` green (live connectivity) | **BLOCKED** | no Anthropic key in this VM; issue forbids a new credential |
 
 Notable real finding: on `ocr review --preview` of a markdown commit, **both `.md` files were excluded as `unsupported_ext`**. OCR's deterministic pipeline skips markdown by default, so on a doc/config-heavy repo like this one OCR reviews almost nothing without a custom `--rule`/`--tools` config. This materially shapes the recommendation.
@@ -121,7 +121,7 @@ For 5+ recent PRs spanning sizes/languages and a mix of known-buggy and known-cl
 |----|-------|----------------------|-------------|--------|----------|----------------|---------------------|------------|-------|
 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 
-Test Plan items to confirm during execution: staged/unstaged review; `--from/--to` branch range; `--commit` single commit; known-buggy PR catches the same set; known-clean PR low false positives; token cost acceptable; one non-default (Sonnet-tier) model works; only `llm.url` contacted.
+Test Plan items to confirm during execution: staged/unstaged review; `--from/--to` branch range; `--commit` single commit; known-buggy PR catches the same set; known-clean PR low false positives; token cost acceptable; one non-default (Sonnet-tier) model works; only the configured provider endpoint contacted.
 
 ## Preliminary recommendation
 
