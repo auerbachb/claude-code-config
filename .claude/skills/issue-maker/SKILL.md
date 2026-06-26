@@ -75,16 +75,47 @@ Then re-affirm: *"Still in capture mode — describe issues to create, or use `/
 
 ```bash
 REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
+# Mode is seeded from the invocation: `/issue-maker rapid-fire` (or the word
+# "rapid-fire" in $ARGUMENTS) starts in rapid-fire; otherwise default.
+MODE="default"; case "$ARGUMENTS" in *rapid-fire*) MODE="rapid-fire";; esac
 NOW=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 TMP=$(mktemp)
-jq -n --arg repo "$REPO" --arg now "$NOW" --arg sid "$SESSION_ID" \
-  '{schema_version:"1", session_id:$sid, target_repo:$repo, mode:"default",
+jq -n --arg repo "$REPO" --arg now "$NOW" --arg sid "$SESSION_ID" --arg mode "$MODE" \
+  '{schema_version:"1", session_id:$sid, target_repo:$repo, mode:$mode,
     created_at:$now, last_updated_at:$now, issues:[]}' > "$TMP" && mv "$TMP" "$LOG"
 ```
 
 Banner: *"Thread is now in issue-capture mode. I will only create, edit, or close issues — no implementation, no worktrees, no branches. Describe an issue and I'll ask a couple of scope questions before drafting."*
 
-**Repo detection (AC):** the `gh repo view` above auto-detects the target repo from cwd. If it returns empty (not a git repo / `gh` failed / ambiguous), **ask the user** which `owner/repo` to target before creating anything, then store it under `.target_repo`. Every `gh issue …` call below passes `--repo "$REPO"`.
+**Repo detection (AC):** the `gh repo view` above auto-detects the target repo from cwd. If it returns empty (not a git repo / `gh` failed / ambiguous), **ask the user** which `owner/repo` to target before creating anything, then **persist it to the log** so compaction recovery and later `--repo` calls see it:
+
+```bash
+REPO="<owner/repo the user supplied>"
+set_log '.target_repo = $v' --arg v "$REPO"   # see the write-log helper below
+```
+
+Every `gh issue …` call below passes `--repo "$REPO"`.
+
+### Writing to the session log (one canonical helper)
+
+Every mutation of `$LOG` — recording a created issue, switching mode, marking an issue closed, saving the target repo — goes through one atomic read-modify-write helper so no snippet ever leaves the log stale. Define it once per invocation and reuse it everywhere below:
+
+```bash
+# set_log <jq-filter> [--argjson|--arg NAME VALUE ...]
+# Applies <jq-filter> to $LOG and refreshes .last_updated_at, atomically.
+set_log() {
+  local filter="$1"; shift
+  local now; now=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+  local tmp; tmp=$(mktemp)
+  if jq "$@" --arg __now "$now" "$filter | .last_updated_at = \$__now" "$LOG" > "$tmp"; then
+    mv "$tmp" "$LOG"
+  else
+    rm -f "$tmp"; echo "WARN: failed to update session log ($filter)" >&2; return 1
+  fi
+}
+```
+
+Examples used below: `set_log '.target_repo = $v' --arg v "$REPO"`, `set_log '.mode = $v' --arg v rapid-fire`, and the create/close updates in Steps 9 and 12.
 
 ---
 
@@ -224,14 +255,17 @@ Detect `#N` mentions in the user's description and verify each exists (`gh issue
 
 After **every** create — and after every update/close — append/refresh the session log and **print the GitHub issue URL as a clickable markdown link as the final line of the response.** This rule is absolute: the link is never buried in prose, never mid-paragraph — it is the closing line.
 
+Build the labels as a JSON array from the accepted labels (the same set passed via `--label` flags in Step 5/7), then record the issue through the `set_log` helper:
+
 ```bash
-NOW=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-TMP=$(mktemp)
-jq --arg n "$ISSUE_NUMBER" --arg t "$TITLE" --arg u "$ISSUE_URL" \
-   --arg now "$NOW" --argjson labels "$(printf '%s' "$LABELS_JSON")" \
-   '.issues += [{number:($n|tonumber), title:$t, url:$u, labels:$labels,
-                 created_at:$now, status:"open"}] | .last_updated_at=$now' \
-   "$LOG" > "$TMP" && mv "$TMP" "$LOG"
+# ACCEPTED_LABELS holds the labels applied to this issue, one per line
+# (empty if none). Convert to a JSON array — `[]` when there are none.
+LABELS_JSON=$(printf '%s\n' "$ACCEPTED_LABELS" | jq -R . | jq -s 'map(select(length>0))')
+
+set_log '.issues += [{number:($n|tonumber), title:$t, url:$u, labels:$labels,
+                      created_at:$ts, status:"open"}]' \
+  --arg n "$ISSUE_NUMBER" --arg t "$TITLE" --arg u "$ISSUE_URL" \
+  --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" --argjson labels "$LABELS_JSON"
 ```
 
 Closing line format:
@@ -268,7 +302,16 @@ A first-class command for adding information to an existing issue **without leav
    gh issue comment "$N" --repo "$REPO" --body "$COMMENT" # comment
    ```
    Use the fetch → modify → write-whole-body pattern (`gh issue edit --body` replaces the entire body — never truncate the existing content).
-6. **Record** `edited_at` on the log entry and **print the updated issue URL as the closing line.**
+6. **Record** `edited_at` on the log entry and **print the updated issue URL as the closing line.** If the issue isn't already tracked in this thread's log (e.g. you're updating an issue opened elsewhere), add a minimal entry for it instead of silently skipping:
+
+   ```bash
+   set_log 'if any(.issues[]; .number == ($n|tonumber))
+            then (.issues[] | select(.number == ($n|tonumber)) | .edited_at) = $ts
+            else .issues += [{number:($n|tonumber), title:$t, url:$u, labels:[],
+                              created_at:$ts, edited_at:$ts, status:"open"}] end' \
+     --arg n "$N" --arg t "$TITLE" --arg u "$ISSUE_URL" \
+     --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+   ```
 
 ---
 
@@ -284,9 +327,12 @@ Phrases like **"scratch that, close #N"**, **"retract #N"**, **"never mind on #N
 
 ```bash
 gh issue close "$N" --repo "$REPO" --comment "Retracted via /issue-maker — not needed."
+
+# Flip the matching log entry to closed so tallies + compaction recaps stay accurate.
+set_log '(.issues[] | select(.number == ($n|tonumber)) | .status) = "closed"' --arg n "$N"
 ```
 
-Set that issue's `status` to `"closed"` in the log and print: *"Issue #N closed."* (with the issue link as the closing line).
+Then print: *"Issue #N closed."* (with the issue link as the closing line).
 
 ---
 
@@ -303,7 +349,13 @@ When invoked with `--export-prompt`, **do not create anything** — instead emit
 | **default** | ask 1–3 | show draft, ask Y/n/edit | propose, confirm | surface matches, ask |
 | **rapid-fire** | skipped | skipped | auto-apply validated | run; block only on exact title match |
 
-Mode is stored in `.mode` in the session log and persists across compaction. Switch with `"switch to rapid-fire mode"` / `"switch to default mode"`. Rapid-fire never suspends the closing-line URL rule or the 6-section body shape.
+Mode is stored in `.mode` in the session log and persists across compaction — both on first invocation (seeded from `/issue-maker rapid-fire`, Step 1) and on an explicit switch. A switch is a log write, not just an in-memory note, so compaction recovery reads the right mode:
+
+```bash
+set_log '.mode = $v' --arg v rapid-fire   # or: --arg v default
+```
+
+Switch with `"switch to rapid-fire mode"` / `"switch to default mode"`. Rapid-fire never suspends the closing-line URL rule or the 6-section body shape.
 
 ---
 
