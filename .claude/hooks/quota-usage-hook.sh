@@ -138,13 +138,13 @@ model = (latest["model"] or "unknown")
 # ts_utc, model, input, output, cache_read, cache_creation, session_id
 row = "\t".join([ts_utc, model, str(inp), str(out), str(cr), str(cw), session_id])
 
-try:
-    with open(usage_log, "a", encoding="utf-8") as f:
-        f.write(row + "\n")
-except Exception:
-    sys.exit(0)
-
-# Update the per-session marker only after a successful append.
+# Commit the de-dup marker BEFORE appending the ledger line. If the marker write
+# fails we skip the append entirely, so the worst case is dropping a single
+# response (a small undercount) rather than double-counting it: were we to append
+# first and then fail the marker write, the next PostToolUse for this same
+# assistant message would pass de-dup and append a duplicate row, inflating
+# estimated_usd / responses. For a spend tracker, undercount-by-one is strictly
+# safer than a phantom over-cap alarm.
 tmp = marker + ".tmp"
 try:
     with open(tmp, "w", encoding="utf-8") as f:
@@ -155,6 +155,13 @@ except Exception:
         os.unlink(tmp)
     except Exception:
         pass
+    sys.exit(0)
+
+try:
+    with open(usage_log, "a", encoding="utf-8") as f:
+        f.write(row + "\n")
+except Exception:
+    sys.exit(0)
 
 sys.exit(0)
 PY
