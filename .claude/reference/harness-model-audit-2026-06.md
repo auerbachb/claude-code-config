@@ -28,7 +28,7 @@ Issue #49's AC assumed a month of runtime telemetry (CR response times, false-cl
 
 | #49 component | Status today | Evidence |
 |---------------|--------------|----------|
-| 1. 2-clean-CR-passes requirement | **Already relaxed to 1** | `cr-local-review.md` "Exit criteria: One clean local review"; gate is "1 explicit CR APPROVED review on current HEAD" (`cr-merge-gate.md`). No "2 passes" anywhere. |
+| 1. 2-clean-CR-passes requirement | **Already relaxed to 1** | `cr-local-review.md` "Exit criteria: One clean local review"; gate is "1 explicit CodeRabbit (or CodeAnt) APPROVED review on current HEAD SHA" (`cr-merge-gate.md`). No "2 passes" anywhere. |
 | 2. Mandatory Phase A/B/C decomposition | **Partially relaxed** | `/subagent` runs Light/Quick issues inline in one thread; full A/B/C is reserved for non-trivial PRs. The *rationale* still cites the 32K limit (see Finding C). |
 | 3. 7-minute CR timeout | **Already retuned to 12 min** | `escalate-review.sh` uses `AGE_SECONDS > 720` (12 min), plus a check-run-completion short-circuit. No 7-min/420 s value survives. |
 | 4. Full rule blob in every subagent prompt | **Already replaced** | `.claude/agents/*.md` are self-contained; full-rule injection is now an explicit *fallback* "if `.claude/agents/` is unavailable" (`subagent-orchestration.md`). |
@@ -54,7 +54,7 @@ These surfaces are also **internally inconsistent about Haiku 4.5 vs Fable 5**: 
 
 ### Finding B — 2-clean-CR-passes (#49 component 1): already gone *(Already addressed)*
 
-There is no "two clean passes" requirement anywhere in the current harness. Local review exits on **one** clean `coderabbit review --agent` pass (`cr-local-review.md` "Exit criteria"). The GitHub merge gate requires **one** explicit `APPROVED` review object on the current HEAD SHA, with SHA-freshness re-checking each cycle (`cr-merge-gate.md`). The false-clean failure mode #49 worried about is handled structurally by SHA-freshness, not by a redundant second pass. **No action.**
+There is no "two clean passes" requirement anywhere in the current harness. Local review exits on **one** clean `coderabbit review --agent` pass (`cr-local-review.md` "Exit criteria"). The GitHub merge gate requires **one** explicit CodeRabbit (or CodeAnt) `APPROVED` review on the current HEAD SHA, with SHA-freshness re-checking each cycle (`cr-merge-gate.md` / `merge-gate.sh`). The false-clean failure mode #49 worried about is handled structurally by SHA-freshness, not by a redundant second pass. **No action.**
 
 ### Finding C — 32K output-token limit (#49 components 2 & 4): the one genuinely stale, load-bearing number *(Stale — needs runtime verification)*
 
@@ -92,22 +92,27 @@ No inline-fixable model-calibration drift in scripts/skills beyond Findings A an
 > `gh` is read-only in the audit environment, so these are written as ready-to-file specs rather than opened directly. Each is independently shippable.
 
 ### FU-1 — Reconcile model fleet across all selection surfaces; define Fable 5's tier *(small; touches CLAUDE.md + rules + skill → Heavy)*
+
 - **Problem:** Fable 5 appears in `CLAUDE.md` but in no selection surface; Haiku 4.5 appears in selection surfaces but not the `CLAUDE.md` fleet parenthetical (Finding A).
 - **AC:** All of `CLAUDE.md`, `subagent-orchestration.md`, `agents/README.md`, and `prompt/SKILL.md` list the same fleet (Opus 4.8, Fable 5, Sonnet 4.6, Haiku 4.5); Fable 5 has a documented tier and either a spawn default or an explicit "not used for spawns, and why"; alias-resolution note updated.
 
 ### FU-2 — Verify current subagent output budget; relax mandatory decomposition if warranted *(spike + rules)*
+
 - **Problem:** The "32K output token limit" justifying mandatory Phase A/B/C may be stale on the current fleet (Finding C).
 - **AC:** Measure the real per-turn output ceiling for the spawn-tier models; record the number + method; if it is materially larger than 32K, allow small PRs (<50 lines, <5 findings) to run the lifecycle in a single agent and update `subagent-orchestration.md` + `graphite-stacked-prs-research-2026-05.md`; otherwise annotate both with the verified current number.
 
 ### FU-3 — Calibrate the 12-minute CR escalation timeout against observed response times *(data + script)*
+
 - **Problem:** 720 s is currently a guess, not a measured p95 (Finding D).
 - **AC:** Capture CR first-response/approval latencies over a usage window; if p95 differs materially from 12 min, retune the `escalate-review.sh` threshold and document the basis.
 
 ### FU-4 — Decide on a shortened review path for trivial diffs *(policy + rules)*
+
 - **Problem:** Single-file <20-line changes pay the full review-gate cost (Finding E).
 - **AC:** Decision recorded (yes/no) on whether a "trivial diff" class may exit on self-review; if yes, define the line/file gate and update `cr-merge-gate.md`; if no, record the risk rationale so #49 component 5 is closed deliberately.
 
 ### FU-5 — Add the outcome-telemetry pipeline #49 originally assumed *(infrastructure)*
+
 - **Problem:** No pipeline captures CR response times, false-clean rates, subagent token usage, or Phase completion rates, so capability audits stay static (Scope note above).
 - **AC:** Lightweight capture of those metrics (extend `session-state`/usage logs); a `*-report.sh` that summarizes them; this audit re-runnable against real data.
 
