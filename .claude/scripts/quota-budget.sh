@@ -141,8 +141,8 @@ write_quota_daily() {
   if [[ ! -f "$STATE_FILE" ]] || ! jq -e . "$STATE_FILE" >/dev/null 2>&1; then
     seeded="$(mktemp)"; printf '%s\n' '{}' > "$seeded"; input_file="$seeded"
   fi
-  # shellcheck disable=SC2064
-  trap "rm -f '$tmp' ${seeded:+\"$seeded\"} 2>/dev/null" RETURN
+  _wqd_cleanup() { rm -f "$tmp" ${seeded:+"$seeded"} 2>/dev/null; }
+  trap _wqd_cleanup RETURN
   if jq --argjson qd "$obj" '.quota_daily = $qd | .last_updated = (now | todate)' \
       "$input_file" > "$tmp" 2>/dev/null; then
     mv "$tmp" "$STATE_FILE" 2>/dev/null || echo "quota-budget.sh: could not write $STATE_FILE" >&2

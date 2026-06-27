@@ -18,13 +18,14 @@ command -v python3 >/dev/null 2>&1 || exit 0
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 budget="${script_dir%/.claude/hooks}/.claude/scripts/quota-budget.sh"
-[[ -x "$budget" ]] || exit 0
+[[ -r "$budget" ]] || exit 0
 
 # Observational read; do not mutate session-state from a per-turn Stop hook.
-snap="$("$budget" --check --no-state 2>/dev/null)" || exit 0
+# Invoke via bash to avoid relying on the executable bit (may be stripped on some mounts/worktrees).
+snap="$(bash "$budget" --check --no-state 2>/dev/null)" || exit 0
 [[ -n "$snap" ]] || exit 0
 
-threshold="$("$budget" --config 2>/dev/null | jq -r '.stop_hook_threshold // 0.60' 2>/dev/null || echo 0.60)"
+threshold="$(bash "$budget" --config 2>/dev/null | jq -r '.stop_hook_threshold // 0.60' 2>/dev/null || echo 0.60)"
 
 read -r spend_pct spend cap proj status <<<"$(printf '%s' "$snap" | jq -r '"\(.spend_pct) \(.estimated_usd) \(.budget_usd) \(.projected_eod_usd) \(.status)"' 2>/dev/null)" || exit 0
 [[ -n "${spend_pct:-}" && "$spend_pct" != "null" ]] || exit 0

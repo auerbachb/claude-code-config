@@ -110,15 +110,15 @@ if latest is None:
     sys.exit(0)
 
 # --- De-dup: skip if this assistant message was already logged this session ---
+# Use a per-session lock file to make the marker read + write + log append atomic,
+# preventing duplicate rows when concurrent PostToolUse processes fire for the same
+# assistant message. fcntl.flock is available on both Linux and macOS; if it raises
+# (e.g., NFS or unusual OS), degrade gracefully and continue without locking
+# (same posture as greptile-budget.sh / cr-review-hourly.sh on macOS).
+import fcntl
+
 marker = os.path.join(state_dir, session_id + ".last")
-try:
-    with open(marker, encoding="utf-8") as f:
-        if f.read().strip() == latest["id"]:
-            sys.exit(0)
-except FileNotFoundError:
-    pass
-except Exception:
-    pass
+lock_path = os.path.join(state_dir, session_id + ".lock")
 
 def tok(name):
     try:
@@ -138,30 +138,57 @@ model = (latest["model"] or "unknown")
 # ts_utc, model, input, output, cache_read, cache_creation, session_id
 row = "\t".join([ts_utc, model, str(inp), str(out), str(cr), str(cw), session_id])
 
-# Commit the de-dup marker BEFORE appending the ledger line. If the marker write
-# fails we skip the append entirely, so the worst case is dropping a single
-# response (a small undercount) rather than double-counting it: were we to append
-# first and then fail the marker write, the next PostToolUse for this same
-# assistant message would pass de-dup and append a duplicate row, inflating
-# estimated_usd / responses. For a spend tracker, undercount-by-one is strictly
-# safer than a phantom over-cap alarm.
-tmp = marker + ".tmp"
+lock_fh = None
 try:
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(latest["id"])
-    os.replace(tmp, marker)
-except Exception:
+    lock_fh = open(lock_path, "w", encoding="utf-8")
     try:
-        os.unlink(tmp)
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+    except Exception:
+        # flock unavailable (NFS, unusual OS) — proceed unlocked; rare race is acceptable.
+        pass
+
+    # De-dup check under lock.
+    try:
+        with open(marker, encoding="utf-8") as f:
+            if f.read().strip() == latest["id"]:
+                sys.exit(0)
+    except FileNotFoundError:
+        pass
     except Exception:
         pass
-    sys.exit(0)
 
-try:
-    with open(usage_log, "a", encoding="utf-8") as f:
-        f.write(row + "\n")
+    # Commit the de-dup marker BEFORE appending the ledger line (undercount-on-marker-
+    # failure is safer than a phantom over-cap alarm from a duplicate row).
+    tmp = marker + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(latest["id"])
+        os.replace(tmp, marker)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+        sys.exit(0)
+
+    try:
+        with open(usage_log, "a", encoding="utf-8") as f:
+            f.write(row + "\n")
+    except Exception:
+        sys.exit(0)
+
 except Exception:
     sys.exit(0)
+finally:
+    if lock_fh is not None:
+        try:
+            fcntl.flock(lock_fh, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            lock_fh.close()
+        except Exception:
+            pass
 
 sys.exit(0)
 PY
