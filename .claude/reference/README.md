@@ -30,6 +30,11 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `pm-monitoring-decision.md` — `/loop` vs `CronCreate` hybrid decision
 - `scheduling-failure-modes.md` — recurring poll failure analysis
 - `skill-sync-hooks.md` — skills worktree sync and hook registration narrative
+- `skill-authoring-patterns.md` — authoring *judgment* for skills/rules (description-as-trigger, match-form-to-failure, bulletproofing); complements CONTRIBUTING.md mechanics
+
+### Living trackers (updated each cycle — not point-in-time)
+
+- `skill-repo-diff.md` — cross-repo pattern-harvest tracker (#417): gap analysis vs superpowers / everything-claude-code, prioritized import backlog, and import log; re-surveyed and appended each cycle
 
 ### Audits and research (point-in-time)
 
