@@ -42,12 +42,6 @@ Final `~/.opencodereview/config.json` (no secret):
             "model": "claude-opus-4-8",
             "auth_header": "x-api-key"
         }
-    },
-    "llm": {
-        "url": "https://api.anthropic.com",
-        "auth_header": "x-api-key",
-        "model": "claude-opus-4-8",
-        "use_anthropic": true
     }
 }
 ```
