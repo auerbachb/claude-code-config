@@ -110,3 +110,4 @@ Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses
 **Default:** ask squash-merge vs review. **`/wrap` / `/merge`:** after Steps 1–2, `gh pr merge --squash` with no extra prompt; overrides this step and `CLAUDE.md` for that scope (see skills).
 
 - Always use **squash and merge** (never regular merge or rebase)
+- `/wrap`'s post-merge phases (follow-ups, session sweep, lessons; see `wrap/SKILL.md`) run **after** the gate clears — they never gate the merge.

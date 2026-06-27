@@ -49,8 +49,14 @@
 #     "review_decision": "APPROVED"|"CHANGES_REQUESTED"|"REVIEW_REQUIRED"|...,
 #     "code_owner_bots": ["coderabbitai[bot]", "greptile-apps[bot]"],
 #     "human_changes_requested": ["login", ...],
-#     "stale_bot_changes_requested_count": N
+#     "stale_bot_changes_requested_count": N,
+#     "unresolved_thread_count": N
 #   }
+#
+# `unresolved_thread_count` is the structured count behind the human-readable
+# "N unresolved review thread(s)" entry in `missing` — orchestrators (e.g.
+# /wrap Step 2.1 Branch B) should key the threads-only decision off this field
+# (and `missing | length`) rather than string-matching the prose (#455 / #479).
 #
 # Exit codes:
 #   0 — gate met
@@ -123,8 +129,8 @@ fi
 # Helpers
 # --------------------------------------------------------------------------
 emit_json() {
-  # emit_json <met> <reviewer> <path> <missing_json_array> <head_sha> <ci_status_json> <merge_state> <mergeable> <review_decision> <code_owner_bots_json> <human_changes_json_array> <stale_bot_changes_requested_count_number>
-  local met="$1" reviewer="$2" path="$3" missing="$4" head_sha="$5" ci_status="$6" merge_state="$7" mergeable="$8" review_decision="$9" code_owner_bots="${10}" human_changes="${11}" stale_bot_count="${12}"
+  # emit_json <met> <reviewer> <path> <missing_json_array> <head_sha> <ci_status_json> <merge_state> <mergeable> <review_decision> <code_owner_bots_json> <human_changes_json_array> <stale_bot_changes_requested_count_number> [unresolved_thread_count_number]
+  local met="$1" reviewer="$2" path="$3" missing="$4" head_sha="$5" ci_status="$6" merge_state="$7" mergeable="$8" review_decision="$9" code_owner_bots="${10}" human_changes="${11}" stale_bot_count="${12}" unresolved_thread_count="${13:-0}"
   jq -cn \
     --argjson met "$met" \
     --arg reviewer "$reviewer" \
@@ -138,7 +144,8 @@ emit_json() {
     --argjson code_owner_bots "$code_owner_bots" \
     --argjson human_changes_requested "$human_changes" \
     --argjson stale_bot_changes_requested_count "$stale_bot_count" \
-    '{met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count}'
+    --argjson unresolved_thread_count "$unresolved_thread_count" \
+    '{met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count}'
 }
 
 emit_empty_ci() {
@@ -675,7 +682,7 @@ STALE_JSON=$(jq -n --argjson c "${STALE_BOT_CHANGES_COUNT:-0}" '$c')
 
 MISSING_JSON=$(printf '%s\n' "${MISSING[@]:-}" | jq -R . | jq -cs 'map(select(length > 0))')
 
-emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON"
+emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON" "${UNRESOLVED_TOTAL:-0}"
 
 if [[ "$MET" == true ]]; then
   exit 0
