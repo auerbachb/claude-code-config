@@ -39,6 +39,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 
 - `ai-review-tool-audit-2026-04.md` — AI review tool chain audit (#368 / #377)
 - `repo-audit-2026-05.md` — bundled org + efficiency + best-practices audit (#413–#415)
+- `harness-model-audit-2026-06.md` — harness components vs current model fleet (#49)
 - `script-extraction-audit.md` — deterministic script extraction inventory (#271)
 - `graphite-stacked-prs-research-2026-05.md` — stacked PR economics (#418 / #433)
 
