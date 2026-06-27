@@ -59,7 +59,7 @@ The 32K limit is binding. Give each subagent one phase with explicit exit criter
 
 - **Phase A: Fix + Push** (heaviest) — fix findings, commit once, push once, reply to threads, write handoff, EXIT (parent cleanup detailed in Orchestration rules below).
 - **Phase B: Review Loop** (lighter) — poll/trigger reviewer, fix new findings, update handoff, EXIT.
-- **Phase C: Verify + Wrap** (lightest) — verify merge gate + AC, then run `/wrap` to squash-merge, sync main, and report `merged`. Do not duplicate `/wrap` logic.
+- **Phase C: Verify + Wrap** (lightest) — verify merge gate + AC, then run `/wrap` to squash-merge, sync main, and report `merged`. Do not duplicate `/wrap` logic. `/wrap`'s Phase 3 now also runs a full-session sweep (Part B); in a Phase C subagent's narrow transcript it degrades gracefully (usually "Clear to archive") and is **advisory only — never block a merge on a sweep finding**.
 
 **Orchestration:** parent launches Phase A (parallel across PRs allowed); Phase A complete → cleanup per `phase-protocols.md` then Phase B; Phase B `merge_ready` → get merge authorization, then launch Phase C. Keep 3-4 active CR-polled PRs max; at 7+ CR reviews/hour expect Greptile fallback.
 

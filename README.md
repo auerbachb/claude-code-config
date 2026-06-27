@@ -142,7 +142,9 @@ All 23 commands are invoked as `/command` in a Claude Code session. They are def
 | `/prompt` | Planning | Classify issue complexity, recommend a Claude 4.7/4.6 model tier, generate copy-paste prompt without the removed `effort` field |
 | `/start-issue` | Planning | End-to-end issue-to-coding setup — plan polling, plan merge, worktree, branch |
 | `/fixpr` | Review | Single-pass PR cleanup — fixes review findings and CI failures, replies to findings, resolves threads |
+| `/monitor` | Review | Audit all open PRs for engagement from the 4 AI reviewers (CodeRabbit/CodeAnt/BugBot/Graphite); render a gap matrix and post missing triggers after confirmation |
 | `/pr-review-help` | Review | Executive PR review — multi-PR parallel strategic analysis |
+| `/recap` | Workflow | Functional summary of a single PR or issue — nested bullets or table |
 | `/standup` | Workflow | Daily standup summary (single contributor) |
 | `/status` | Workflow | Dashboard of open PRs with review state |
 | `/go-on` | Workflow | Resume an interrupted review workflow |
