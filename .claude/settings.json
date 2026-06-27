@@ -1,0 +1,6 @@
+{
+  "claudeMdExcludes": [
+    "**/skills-worktree/CLAUDE.md",
+    "**/skills-worktree/.claude/rules/**"
+  ]
+}

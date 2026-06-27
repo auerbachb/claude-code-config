@@ -21,6 +21,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `exit-report-format.md` — full structured exit report block specification
 - `greptile-setup.md` — Greptile dashboard setup notes
 - `greptile-reply-format.md` — reply conventions for Greptile threads
+- `ocr-eval.md` — Open Code Review (`ocr`) self-host stand-up, config decision, and side-by-side eval methodology (#470)
 
 ### Workflow decomposition and PM helpers
 
@@ -29,13 +30,21 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `pm-monitoring-decision.md` — `/loop` vs `CronCreate` hybrid decision
 - `scheduling-failure-modes.md` — recurring poll failure analysis
 - `skill-sync-hooks.md` — skills worktree sync and hook registration narrative
+- `double-loading-fix.md` — decision record for suppressing the duplicate global CLAUDE.md + rules copy via project-local `claudeMdExcludes` (#461)
+- `skill-authoring-patterns.md` — authoring *judgment* for skills/rules (description-as-trigger, match-form-to-failure, bulletproofing); complements CONTRIBUTING.md mechanics
+
+### Living trackers (updated each cycle — not point-in-time)
+
+- `skill-repo-diff.md` — cross-repo pattern-harvest tracker (#417): gap analysis vs superpowers / everything-claude-code, prioritized import backlog, and import log; re-surveyed and appended each cycle
 
 ### Audits and research (point-in-time)
 
 - `ai-review-tool-audit-2026-04.md` — AI review tool chain audit (#368 / #377)
 - `repo-audit-2026-05.md` — bundled org + efficiency + best-practices audit (#413–#415)
+- `harness-model-audit-2026-06.md` — harness components vs current model fleet (#49)
 - `script-extraction-audit.md` — deterministic script extraction inventory (#271)
 - `graphite-stacked-prs-research-2026-05.md` — stacked PR economics (#418 / #433)
+- `codeant-code-quality-eval-2026-06.md` — deeper CodeAnt Code Quality integration eval; verdict: keep advisory (#444)
 
 ### Diagrams (mermaid stubs and indexes)
 
