@@ -1,9 +1,12 @@
 ---
 name: wrap
-description: End-of-session command — verify no unresolved findings, squash merge, sync main, detect per-PR follow-ups, run a full-session loose-ends sweep, and extract lessons.
+description: End-of-session command — verify no unresolved findings, squash merge, sync main, detect per-PR follow-ups, run a full-session loose-ends sweep, and extract lessons. Accepts an optional PR reference (`/wrap <URL>`, `/wrap #N`, `/wrap N`); with no argument it infers the PR from the current branch, then thread context, then session-state.
+argument-hint: "[URL | #N | N]"
 ---
 
 Wrap up the current PR and session. This is the "we're done here" command that handles final verification through merge, root-main sync, follow-up detection, a full-session sweep for loose ends, and lessons.
+
+`/wrap` accepts an **optional** PR reference as its argument — a full URL, `#N`, `owner/repo#N`, or a bare number `N`. When invoked with no argument it resolves the target PR through the inference cascade in Step 1.1 (current branch → thread context → session-state). An explicit argument bypasses all inference.
 
 `/wrap` does **not** delete the running worktree or its branch — leaving the thread alive so it can keep working. Stale worktrees and stale local/remote branches are reaped out-of-band by `/pm-update`, which calls `.claude/scripts/stale-cleanup.sh`.
 
@@ -13,6 +16,7 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 - Use **/merge** for a quick mid-session merge when you'll keep working. Skips follow-up detection and lessons.
 - /wrap includes everything /merge does, plus follow-ups and lessons. Don't run both.
 - Phase C invokes this skill after gate and AC verification; keep merge, main-sync, follow-up, and cleanup behavior here so Phase C and `/wrap` cannot drift.
+- **Target PR:** `/wrap` operates on the PR resolved in Step 1.1. Pass an explicit reference (`/wrap <URL>`, `/wrap #N`, `/wrap N`) to wrap a PR that is **not** on the current branch — common in orchestration threads that ran `/fixpr <URL>` against another worktree. With no argument, Step 1.1's cascade infers the PR; see **Step 1.1: Identify the PR**.
 
 ## Execution Model
 
@@ -54,19 +58,112 @@ Before merging, verify that all reviewer feedback has been addressed.
 
 ### Step 1.1: Identify the PR
 
+`/wrap` resolves its target PR through an ordered inference cascade. The first sub-step that yields a PR wins; later sub-steps are skipped. The shared helper `.claude/scripts/infer-pr.sh` handles explicit-argument normalization and session-state lookup (issue #448 — the same helper `/fixpr` adopts under issue #447, so the two skills cannot drift). Thread scanning (1.1c) is judgment the AI layer performs directly.
+
+> **Merge-safety wrinkle:** `/wrap` implicitly authorizes the squash merge, so an incorrect inference would merge the **wrong** PR. Only auto-proceed when the target is unambiguous (1.1a explicit, 1.1b branch PR, or a single inferred candidate). When candidates are tied or genuinely ambiguous, **stop and prompt** — never guess for a merge. The `[INFERRED]` line emitted at the end of this step (before any Phase 1 verification work in Step 1.2 onward) is the user's only catch point, since `/wrap` runs end-to-end without confirmation prompts.
+
+Resolve the helper once (global install preferred, in-repo fallback):
+
 ```bash
-gh pr view --json number,title,headRefName,body,state --jq '{number, title, headRefName, body, state}'
+INFER_PR=""
+for candidate in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/infer-pr.sh" \
+  "$HOME/.claude/scripts/infer-pr.sh" \
+  ".claude/scripts/infer-pr.sh"; do
+  if [[ -x "$candidate" ]]; then INFER_PR="$candidate"; break; fi
+done
 ```
 
-If no PR exists on the current branch, stop: "No PR found for the current branch."
+**1.1a — Explicit argument.** If `$ARGUMENTS` is non-empty the user named a specific PR: resolve it explicitly and **skip 1.1b–1.1e entirely**. A non-empty `$ARGUMENTS` must **never** fall through to the current-branch path (1.1b) — that could wrap a *different* PR than the one requested. If the reference cannot be resolved (helper missing or unparseable), **stop** rather than guessing:
+
+```bash
+OWNER_REPO=""   # repo the resolved PR lives in, when known (used by the guard below)
+if [[ -n "${ARGUMENTS:-}" ]]; then
+  if [[ -z "$INFER_PR" ]]; then
+    echo "STOP: /wrap was given '$ARGUMENTS' but infer-pr.sh was not found — cannot safely resolve an explicit PR reference. Install .claude/scripts/infer-pr.sh, or run /wrap with no argument from the PR's branch." >&2
+    # STOP — do NOT fall through to 1.1b (would risk wrapping the wrong PR).
+  elif EXPLICIT_JSON=$("$INFER_PR" --explicit "$ARGUMENTS"); then
+    PR_NUM=$(jq -r '.most_recent.number' <<<"$EXPLICIT_JSON")
+    OWNER_REPO=$(jq -r '.most_recent.owner_repo // empty' <<<"$EXPLICIT_JSON")
+    INFERRED_SOURCE="explicit argument"
+  else
+    echo "STOP: could not parse '$ARGUMENTS' as a PR reference (URL, owner/repo#N, #N, or N)." >&2
+    # STOP — do NOT fall through to inference for a malformed explicit arg.
+  fi
+  # Either PR_NUM is now set, or we stopped. An explicit argument never reaches 1.1b–1.1e.
+fi
+```
+
+**1.1b — Current branch.** If no explicit argument, try the branch's PR (existing behavior — preferred when present):
+
+```bash
+BRANCH_PR=$(gh pr view --json number,title,headRefName,body,state \
+  --jq '{number, title, headRefName, body, state}' 2>/dev/null || true)
+```
+
+If `gh pr view` finds a PR, use it (`PR_NUM` = its number, `INFERRED_SOURCE` unset — this is the normal, non-inferred path) and skip 1.1c–1.1e.
+
+**1.1c — Scan thread context** *(AI judgment)*. If 1.1a and 1.1b found nothing, scan the **current conversation** (most recent first) for PRs this thread just operated on:
+
+- The most recent `/fixpr <URL>` or `/wrap <URL>` invocation in this thread.
+- Explicit PR references the thread acted on — `PR #N`, `github.com/<owner>/<repo>/pull/N`, or a `=== fixpr complete === PR: #N` footer.
+
+Collect each distinct PR number with the position it was last mentioned (more recent = stronger). Thread-context recency outranks session-state in 1.1e. If the chosen thread reference was a full `github.com/<owner>/<repo>/pull/N` URL, also capture its `<owner>/<repo>` into `OWNER_REPO` so the repo-scoping guard below can catch a cross-repo target.
+
+**1.1d — Query session-state.** Also gather candidates the session is tracking, scoped to this repo. Capture the helper's **real** exit code — do **not** append `|| true`, which would force `$?` to `0` and mask exit `1` (multiple), `2` (none), or `4` (error):
+
+```bash
+ROOT_TOPLEVEL=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+if SESSION_JSON=$("$INFER_PR" --root-repo "$ROOT_TOPLEVEL"); then
+  SESSION_RC=0
+else
+  SESSION_RC=$?
+fi   # 0 single, 1 multiple, 2 none, 3/4 error
+```
+
+**1.1e — Merge, deduplicate, resolve.** Combine the thread-context candidates (1.1c) and session-state candidates (1.1d), deduplicating by PR number. Rank by recency, **preferring thread-context order over session-state `last_activity`**. Then apply the resolution rules:
+
+- **Single candidate** (exactly one across both sources): proceed on it.
+- **Most-recent-unambiguous** (multiple candidates, but one was mentioned/active distinctly more recently — e.g. the top thread mention, or active within the last ~5 minutes while the others are stale): proceed on the most-recent one and surface the rest with an `Also tracking:` line.
+- **Ambiguous** (candidates tied in recency, or no clear most-recent winner): **stop** — list each candidate with its source/last-activity and ask the user to specify: `Multiple PRs in scope — please specify: /wrap <N>`.
+- **No candidates** (1.1b empty, 1.1c found nothing, `SESSION_RC == 2`): stop with the existing message: `No PR found for the current branch.`
+
+**Emit the inference result before verification.** Once a PR is resolved by inference (any of 1.1a, 1.1c, or 1.1d/e — i.e. `INFERRED_SOURCE` is set, *not* the plain 1.1b branch path), print the `[INFERRED]` line **immediately, before any Phase 1 verification work (Step 1.2 onward)**, so the user has a visible checkpoint to abort a mismatch:
+
+```text
+[INFERRED] PR #462 from thread context
+Also tracking: #458   ← only when other candidates exist
+```
+
+Use a `<source>` of `explicit argument`, `thread context`, or `session-state` as applicable. After emitting the line, pause briefly to let the user interrupt if the inferred PR is wrong — this is the only abort point, since `/wrap` runs end-to-end without confirmation prompts.
+
+**Repo-scoping guard (merge-safety).** `/wrap`'s verification and merge steps — `merge-gate.sh`, `pr-state.sh`, `ac-checkboxes.sh`, `gh pr merge`, and the root-main sync (Step 2.5) — all operate on the **current checkout** and take no cross-repo override. So if the resolved PR lives in a *different* repo than this checkout, proceeding would target the wrong PR (or sync the wrong `main`). When `OWNER_REPO` is known (set from an explicit URL / `owner/repo#N` in 1.1a, or a thread URL in 1.1c) and differs from the current repo, **stop**:
+
+```bash
+CURRENT_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")
+if [[ -n "${OWNER_REPO:-}" && -n "$CURRENT_REPO" && "$OWNER_REPO" != "$CURRENT_REPO" ]]; then
+  echo "STOP: the target resolves to $OWNER_REPO#$PR_NUM, but this checkout is $CURRENT_REPO. /wrap's merge, AC, and main-sync steps are scoped to the current checkout — re-run /wrap from a $OWNER_REPO checkout (or its worktree)." >&2
+fi
+```
+
+References without an `owner_repo` (`#N`, bare `N`, the 1.1b branch PR, or session-state candidates — which `infer-pr.sh --root-repo` already scopes to this repo) are assumed to live in the current checkout, so the guard is a no-op for them.
+
+Once `PR_NUM` is fixed (and the guard above passed), fetch its details for the rest of Phase 1:
+
+```bash
+gh pr view "$PR_NUM" --json number,title,headRefName,body,state \
+  --jq '{number, title, headRefName, body, state}'
+```
+
 If the PR is already merged or closed, skip to Phase 3 (follow-up detection).
 
 ### Step 1.2: Scan for unresolved review findings
 
 Use the shared `pr-state.sh` helper to fetch and pre-classify review activity from all three endpoints in one call. It filters to `coderabbitai[bot]`, `greptile-apps[bot]`, and `cursor[bot]` (BugBot) and tags each comment with `classification.class` (`finding` vs `acknowledgment`). The classifier only runs when `--since <iso>` is passed — pass the PR's `createdAt` to include every bot comment on the PR. The helper writes the JSON bundle to a tempfile and prints its **path** on stdout — capture the path, then read with `jq < "$BUNDLE"`:
 
+`$PR_NUM` is already fixed by Step 1.1's cascade — reuse it; do **not** re-derive it from `gh pr view` (a bare call would target the current branch's PR, not the inferred one):
+
 ```bash
-PR_NUM=$(gh pr view --json number --jq .number)
 PR_CREATED=$(gh pr view "$PR_NUM" --json createdAt --jq '.createdAt')
 BUNDLE=$(.claude/scripts/pr-state.sh --pr "$PR_NUM" --since "$PR_CREATED")
 ```
@@ -370,8 +467,10 @@ Both parts feed the Phase 4 final report. Part A's "Follow-ups" block and Part B
 
 1. Extract the linked issue number from the PR body via `pr-issue-ref.sh` (matches all nine GitHub closing keywords — `close`/`closes`/`closed`/`fix`/`fixes`/`fixed`/`resolve`/`resolves`/`resolved`, case-insensitive) and fetch its title and body. Distinguish exit `1` (no link — expected) from exits `2`/`3`/`4` (real errors) so genuine failures surface:
    ```bash
-   PR_NUMBER=$(gh pr view --json number --jq '.number')
-   PR_TITLE=$(gh pr view --json title --jq '.title')
+   # Reuse the PR fixed by Step 1.1 (the inferred PR may not be the current
+   # branch's PR — a bare `gh pr view` would resolve the wrong one).
+   PR_NUMBER="$PR_NUM"
+   PR_TITLE=$(gh pr view "$PR_NUMBER" --json title --jq '.title')
    ISSUE_N=""
    if RAW_REF=$(.claude/scripts/pr-issue-ref.sh "$PR_NUMBER" 2>&1); then
      ISSUE_N="$RAW_REF"
