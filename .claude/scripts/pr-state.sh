@@ -11,13 +11,30 @@
 #   pr-state.sh --pr 123                 # Use explicit PR number (skips branch detect)
 #   pr-state.sh --since <iso-8601>       # Pre-classify bot comments posted since baseline
 #   pr-state.sh --pr 123 --since <iso>   # Combined
+#   pr-state.sh --infer-candidates       # List session-tracked PR candidates (no GitHub state)
 #   pr-state.sh --help                   # Print usage
 #
 # Output: writes JSON to /tmp/pr-state-<PR>-<epoch>.json and prints the path on stdout.
+#         (--infer-candidates prints a JSON array to stdout instead — see below.)
+#
+# --infer-candidates (shared by /fixpr issue #447 and /wrap issue #448):
+#   Reads ~/.claude/session-state.json and prints a JSON array of the PRs this
+#   session is actively tracking (those with a non-null .phase), newest activity
+#   first (by .last_cron_action.at). No git branch, gh, or network calls are made
+#   for the candidate set itself — this is the fast no-argument inference path for
+#   /fixpr and /wrap. Each element:
+#       { "number": <int>, "phase": <str|null>, "reviewer": <str|null>,
+#         "needs": <str|null>, "blocker_kind": <str|null>,
+#         "owner_repo": <str|null>, "root_repo": <str|null>,
+#         "last_action_at": <iso-8601|"">, "same_repo": <true|false|null> }
+#   `same_repo` is true/false when both the current repo (via git remote URL) and
+#   the candidate's stored owner_repo are known, else null ("unknown — don't filter
+#   it out"). Always exits 0 with `[]` when the state file is missing or tracks no
+#   active PRs. Cannot be combined with --pr or --since.
 #
 # Exit codes:
 #   0  OK
-#   2  usage error (unknown flag, --since missing value)
+#   2  usage error (unknown flag, --since missing value, incompatible flag combo)
 #   3  no git branch AND no --pr given
 #   4  PR closed, merged, or not found
 #   5  gh/network error
@@ -44,8 +61,13 @@ run_gh() {
 
 PR_ARG=""
 SINCE=""
+INFER_CANDIDATES=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --infer-candidates)
+      INFER_CANDIDATES=1
+      shift
+      ;;
     --pr)
       PR_ARG="${2:-}"
       if [[ -z "$PR_ARG" ]]; then
@@ -85,6 +107,67 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# ----------------------------------------------------------------------
+# 0. --infer-candidates: list session-tracked PR candidates and exit.
+#    Shared by /fixpr (#447) and /wrap (#448) for no-argument PR inference.
+#    Pure read of ~/.claude/session-state.json — no GitHub state is gathered.
+# ----------------------------------------------------------------------
+if [[ "$INFER_CANDIDATES" -eq 1 ]]; then
+  if [[ -n "$PR_ARG" || -n "$SINCE" ]]; then
+    echo "ERROR: --infer-candidates cannot be combined with --pr or --since" >&2
+    exit 2
+  fi
+  STATE_FILE="$HOME/.claude/session-state.json"
+  if [[ ! -f "$STATE_FILE" ]]; then
+    echo "[]"
+    exit 0
+  fi
+  # Best-effort current repo detection so candidates can be flagged same_repo.
+  # Derived offline from the git remote URL to avoid any network/auth dependency.
+  # Falls back to "" so same_repo is reported as null ("unknown — don't filter").
+  _remote_url=$(git remote get-url origin 2>/dev/null || echo "")
+  if [[ -n "$_remote_url" ]]; then
+    # Handle both HTTPS (https://github.com/owner/repo.git) and SSH (git@github.com:owner/repo.git)
+    _remote_url="${_remote_url%.git}"
+    CUR_OWNER_REPO="${_remote_url##*github.com[:/]}"
+  else
+    CUR_OWNER_REPO=""
+  fi
+  # `(.prs // {})` tolerates a state file with no `prs` key. tonumber? keeps
+  # non-numeric keys from aborting the whole pass (defensive — keys are always
+  # numeric PR strings in practice).
+  # Only the missing-file / empty-prs cases return []; parse/runtime errors are
+  # surfaced on stderr so state corruption is visible rather than silently masked.
+  _jq_out=$(jq -c --arg cur "$CUR_OWNER_REPO" '
+    [ (.prs // {}) | to_entries[]
+      | select(.value.phase != null)
+      | {
+          number: (.key | tonumber? // .key),
+          phase: (.value.phase // null),
+          reviewer: (.value.reviewer // null),
+          needs: (.value.needs // null),
+          blocker_kind: (.value.blocker_kind // null),
+          owner_repo: (.value.owner_repo // null),
+          root_repo: (.value.root_repo // null),
+          last_action_at: (.value.last_cron_action.at // ""),
+          same_repo: (
+            if $cur == "" or (.value.owner_repo // "") == "" then null
+            else (.value.owner_repo == $cur) end
+          )
+        }
+    ]
+    | sort_by(.last_action_at) | reverse
+  ' "$STATE_FILE" 2>&1)
+  _jq_rc=$?
+  if [[ $_jq_rc -ne 0 ]]; then
+    echo "WARNING: pr-state.sh --infer-candidates: failed to parse $STATE_FILE (jq exit $_jq_rc): $_jq_out" >&2
+    echo "[]"
+  else
+    echo "$_jq_out"
+  fi
+  exit 0
+fi
 
 # ----------------------------------------------------------------------
 # 1. PR context

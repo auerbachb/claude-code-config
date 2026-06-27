@@ -21,5 +21,8 @@ jobs:
       - name: stale-worktree-warn integration test
         run: bash .claude/hooks/tests/stale-worktree-warn.test.sh
 
+      - name: pr-state --infer-candidates unit test
+        run: bash .claude/scripts/tests/pr-state-infer-candidates.test.sh
+
       - name: env-guard unit tests
         run: python3 -m unittest tests.test_env_guard -v
