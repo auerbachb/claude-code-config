@@ -43,6 +43,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `harness-model-audit-2026-06.md` — harness components vs current model fleet (#49)
 - `script-extraction-audit.md` — deterministic script extraction inventory (#271)
 - `graphite-stacked-prs-research-2026-05.md` — stacked PR economics (#418 / #433)
+- `codeant-code-quality-eval-2026-06.md` — deeper CodeAnt Code Quality integration eval; verdict: keep advisory (#444)
 
 ### Diagrams (mermaid stubs and indexes)
 
