@@ -8,7 +8,7 @@
 #   - `same_repo` is true / false / null per owner_repo match vs current repo
 #   - `--infer-candidates` rejects `--pr` / `--since` combos (exit 2)
 #
-# Uses a temporary HOME (never touches ~/.claude) and a stub `gh` on PATH so
+# Uses a temporary HOME (never touches ~/.claude) and stubs `gh`/`git` on PATH so
 # repo detection is deterministic and offline. Requires jq.
 set -euo pipefail
 
@@ -20,17 +20,25 @@ FAKE_BIN="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_HOME" "$FAKE_BIN"; }
 trap cleanup EXIT
 
-# Stub gh: only `gh repo view --json nameWithOwner ...` is exercised by the
-# inference path. Return a fixed repo so same_repo is deterministic offline.
+# Stub gh: still needed for non-inference paths that may call gh.
 cat > "$FAKE_BIN/gh" <<'GH'
 #!/usr/bin/env bash
-if [[ "${1:-}" == "repo" && "${2:-}" == "view" ]]; then
-  echo "auerbachb/skingod"
-  exit 0
-fi
 exit 1
 GH
 chmod +x "$FAKE_BIN/gh"
+
+# Stub git: intercept `git remote get-url origin` (used by the offline same_repo
+# detection path) and return a fixed repo URL so the result is deterministic.
+# All other git subcommands are forwarded to the real git binary.
+cat > "$FAKE_BIN/git" <<'GIT'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "remote" && "${2:-}" == "get-url" && "${3:-}" == "origin" ]]; then
+  echo "https://github.com/auerbachb/skingod.git"
+  exit 0
+fi
+exec "$(command -v git 2>/dev/null || true)" "$@"
+GIT
+chmod +x "$FAKE_BIN/git"
 
 export HOME="$TMP_HOME"
 export PATH="$FAKE_BIN:$PATH"
