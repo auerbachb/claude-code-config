@@ -149,6 +149,7 @@ All 23 commands are invoked as `/command` in a Claude Code session. They are def
 | `/status` | Workflow | Dashboard of open PRs with review state |
 | `/go-on` | Workflow | Resume an interrupted review workflow |
 | `/merge` | Workflow | Squash merge with merge gate + AC verification |
+| `/admin-merge` | Workflow | Print a user-runnable bypass command to merge a solo-owner PR blocked by `enforce_admins` (Claude never modifies branch protection) |
 | `/wrap` | Workflow | End-of-session: verify, squash merge, aggressively reset root `main`, detect follow-ups, extract lessons |
 | `/check-acceptance-criteria` | Workflow | Verify Test Plan checkboxes against code |
 | `/lessons` | Workflow | Extract and save session learnings to memory |
@@ -216,6 +217,7 @@ Shared helpers in `.claude/scripts/` are used by skills, hooks, and review subag
 |--------|---------|
 | `repo-root.sh` | Resolve the root repo path from a worktree or nested directory |
 | `merge-gate.sh` | Verify reviewer ownership, review gate, CI, merge state, and unresolved thread blockers |
+| `admin-merge.sh` | Print (or, on user opt-in `--execute`, run) the `enforce_admins` toggle-merge-toggle bypass for a solo-owner PR after verifying the merge gate — Claude only ever runs it in `--print`/`--launch-terminal` mode |
 | `pr-state.sh` | Gather PR state: review threads, comments, CI, commit statuses, merge metadata |
 | `ci-status.sh` | Summarize check-runs/statuses for a PR or SHA |
 | `ac-checkboxes.sh` | Extract and update PR Test Plan checkboxes |
