@@ -120,9 +120,13 @@ In a fresh session opened in this repo, confirm only the **project** copy is in
 context (paths under the repo root, not under `~/.claude/skills-worktree/`):
 
 ```bash
-# Resolved symlink targets that should now be excluded:
-readlink -f ~/.claude/CLAUDE.md          # → .../skills-worktree/CLAUDE.md
-readlink -f ~/.claude/rules              # → .../skills-worktree/.claude/rules
+# Resolved symlink targets that should now be excluded (portable, works on macOS/BSD and Linux):
+python3 - <<'PY'
+from pathlib import Path
+print((Path.home() / ".claude" / "CLAUDE.md").resolve())
+print((Path.home() / ".claude" / "rules").resolve())
+PY
+# Both paths should point into .../skills-worktree/...
 
 # The project settings carrying the exclusion:
 cat .claude/settings.json
