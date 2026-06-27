@@ -27,7 +27,7 @@
 #         "needs": <str|null>, "blocker_kind": <str|null>,
 #         "owner_repo": <str|null>, "root_repo": <str|null>,
 #         "last_action_at": <iso-8601|"">, "same_repo": <true|false|null> }
-#   `same_repo` is true/false when both the current repo (via `gh repo view`) and
+#   `same_repo` is true/false when both the current repo (via git remote URL) and
 #   the candidate's stored owner_repo are known, else null ("unknown — don't filter
 #   it out"). Always exits 0 with `[]` when the state file is missing or tracks no
 #   active PRs. Cannot be combined with --pr or --since.
@@ -124,13 +124,22 @@ if [[ "$INFER_CANDIDATES" -eq 1 ]]; then
     exit 0
   fi
   # Best-effort current repo detection so candidates can be flagged same_repo.
-  # A gh/network failure here must NOT fail the inference path — fall back to
-  # an empty owner so same_repo is reported as null ("unknown, don't filter").
-  CUR_OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")
+  # Derived offline from the git remote URL to avoid any network/auth dependency.
+  # Falls back to "" so same_repo is reported as null ("unknown — don't filter").
+  _remote_url=$(git remote get-url origin 2>/dev/null || echo "")
+  if [[ -n "$_remote_url" ]]; then
+    # Handle both HTTPS (https://github.com/owner/repo.git) and SSH (git@github.com:owner/repo.git)
+    _remote_url="${_remote_url%.git}"
+    CUR_OWNER_REPO="${_remote_url##*github.com[:/]}"
+  else
+    CUR_OWNER_REPO=""
+  fi
   # `(.prs // {})` tolerates a state file with no `prs` key. tonumber? keeps
   # non-numeric keys from aborting the whole pass (defensive — keys are always
   # numeric PR strings in practice).
-  jq -c --arg cur "$CUR_OWNER_REPO" '
+  # Only the missing-file / empty-prs cases return []; parse/runtime errors are
+  # surfaced on stderr so state corruption is visible rather than silently masked.
+  _jq_out=$(jq -c --arg cur "$CUR_OWNER_REPO" '
     [ (.prs // {}) | to_entries[]
       | select(.value.phase != null)
       | {
@@ -149,7 +158,14 @@ if [[ "$INFER_CANDIDATES" -eq 1 ]]; then
         }
     ]
     | sort_by(.last_action_at) | reverse
-  ' "$STATE_FILE" 2>/dev/null || echo "[]"
+  ' "$STATE_FILE" 2>&1)
+  _jq_rc=$?
+  if [[ $_jq_rc -ne 0 ]]; then
+    echo "WARNING: pr-state.sh --infer-candidates: failed to parse $STATE_FILE (jq exit $_jq_rc): $_jq_out" >&2
+    echo "[]"
+  else
+    echo "$_jq_out"
+  fi
   exit 0
 fi
 
