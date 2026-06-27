@@ -24,6 +24,7 @@ All mechanical GitHub API work — pagination, GraphQL queries, comment classifi
 
 | Step | Kind | Done by |
 |------|------|---------|
+| 0a. Resolve target PR (arg or infer) | Judgment + Mechanical | AI thread scan + `pr-state.sh --infer-candidates` (no-arg inference, issue #447) |
 | 0. Gather PR state | Mechanical | `pr-state.sh` writes `/tmp/pr-state-<PR>-<epoch>.json` |
 | 1. Classify review findings | Judgment | AI reads JSON + source files |
 | 2. Classify CI failures | Judgment | AI reads `check-runs/<id>.output.summary` |
@@ -84,11 +85,79 @@ if [[ -z "$SCRIPT" ]]; then
   echo "ERROR: pr-state.sh not found (checked ~/.claude/scripts/, ~/.claude/skills-worktree/.claude/scripts/, and in-repo .claude/scripts/)" >&2
   exit 1
 fi
-
-AUDIT=$("$SCRIPT")
 ```
 
-If `pr-state.sh` itself exits non-zero it prints the reason to stderr (no PR, closed PR, detached HEAD, etc.). Stop and report. Exit codes: `0` OK, `2` usage error, `3` no branch and no `--pr`, `4` PR closed/not found, `5` gh/network error.
+### Step 0a: Resolve the target PR (explicit argument → thread/session inference)
+
+`/fixpr` may be invoked **with** a PR (`/fixpr <url>` or `/fixpr <N>`) or **with no argument**. Resolve the target into `$PR_NUMBER_ARG` *before* calling `pr-state.sh`, so a no-argument re-run is a fast convenience instead of a dead end (issue #447). The session-state half of this inference is shared verbatim with `/wrap` (issue #448) via `pr-state.sh --infer-candidates` — do not re-implement it.
+
+**1. Capture and parse the explicit argument.** Put whatever the user typed after `/fixpr` into `$FIXPR_ARG` (empty when none). Accept a full PR URL or a bare PR number:
+
+```bash
+PR_NUMBER_ARG=""
+if [[ -n "${FIXPR_ARG:-}" ]]; then
+  if [[ "$FIXPR_ARG" =~ ^https?://github\.com/[^/]+/[^/]+/pull/([0-9]+) ]]; then
+    PR_NUMBER_ARG="${BASH_REMATCH[1]}"          # extracted from pull/<N>
+  elif [[ "$FIXPR_ARG" =~ ^[0-9]+$ ]]; then
+    PR_NUMBER_ARG="$FIXPR_ARG"                   # bare positive integer
+  else
+    echo "ERROR: /fixpr argument not recognized: '$FIXPR_ARG' (expected a PR URL or number)" >&2
+    exit 2
+  fi
+  echo "[CONTEXT] Using explicitly provided PR #$PR_NUMBER_ARG"
+fi
+```
+
+**2. When no argument was given, infer the target.** Skip this entire step when `$PR_NUMBER_ARG` is already set. Build a candidate set from two sources, then resolve:
+
+- **Thread scan (AI layer).** Read back through *this* conversation for the most recent `/fixpr <url-or-number>` and `/wrap <url-or-number>` invocations and any PR the thread just operated on (pushed to, audited). Extract PR numbers from the `pull/<N>` pattern. Record them **in order, most-recently-mentioned first** — thread recency is the strongest signal (the issue's motivating case: a `/fixpr <url>` ran moments ago, then a bare `/fixpr`).
+- **Session state (script layer).** Pull the PRs this session is actively tracking, newest activity first:
+
+```bash
+CANDIDATES_JSON=$("$SCRIPT" --infer-candidates 2>/dev/null || echo "[]")
+# Prefer same-repo candidates; same_repo==null means "unknown repo, keep it".
+SESSION_CANDIDATES=$(jq -c '[ .[] | select(.same_repo != false) ]' <<<"$CANDIDATES_JSON")
+jq -r '.[] | "  session-candidate: #\(.number) (phase=\(.phase // "?"), needs=\(.needs // "?"), last_action=\(.last_action_at // "?"))"' <<<"$SESSION_CANDIDATES"
+```
+
+(`--infer-candidates` is a pure read of `~/.claude/session-state.json`; a global `pr-state.sh` too old to know the flag exits non-zero and the `|| echo "[]"` fallback degrades gracefully to thread-only inference.)
+
+**3. Resolve candidates → `$PR_NUMBER_ARG` (or prompt).** Merge the thread list and `SESSION_CANDIDATES` into a unique set keyed by PR number, tracking each PR's source(s) (`thread`, `session`) and recency:
+
+| Situation | Action |
+|-----------|--------|
+| **Exactly one unique candidate** (from either source) | Select it. Set `PR_NUMBER_ARG=<N>` and print the `[INFERRED]` line (formats below). Proceed — do **not** ask. |
+| **Multiple candidates, one clearly most recent** | Pick the most-recently-mentioned. **Thread recency outranks session timestamps:** if any PR appeared in the thread scan, the newest thread mention wins; otherwise use the session candidate with the newest `last_action_at` (only when it is strictly newer than the next — not tied). Set `PR_NUMBER_ARG`, print the `[INFERRED]` line **and** the one-line `Also tracking:` note. |
+| **Genuinely ambiguous** (two+ tied on recency, e.g. two thread PRs mentioned equally recently or session candidates tied on `last_action_at`) | Do **not** guess. Print `[CONTEXT] No PR argument and no branch PR; multiple candidates:` followed by the candidate list with sources, and ask the user which PR they meant — same behavior as before #447. Leave `PR_NUMBER_ARG` empty. |
+| **No candidates at all** | Leave `PR_NUMBER_ARG` empty and fall through to branch auto-detection below — `pr-state.sh` with no `--pr` either finds the branch's PR or exits `3`/`4` and you report it (unchanged pre-#447 behavior). |
+
+`[INFERRED]` log formats (print exactly one, before the `[CONTEXT]`/audit output below — it is the user's only catch point for a misfire):
+
+```text
+[INFERRED] PR #462 from thread context (last /fixpr invocation)
+[INFERRED] PR #462 from session state (most recent activity at 2026-05-04T16:48:00Z)
+[INFERRED] PR #462 (most recent of 2 active PRs); override with /fixpr #458 if needed
+```
+
+When inference picked from multiple candidates, append the override hint on its own line (one line; annotate each other PR with its session `needs`/`phase`):
+
+```text
+Also tracking: #458 (bugbot_review_poll), #445 (cr_confirmation_pass)
+```
+
+### Step 0b: Run the audit
+
+Call `pr-state.sh` with the resolved PR when inference or an explicit argument produced one; otherwise fall back to branch auto-detection:
+
+```bash
+if [[ -n "$PR_NUMBER_ARG" ]]; then
+  AUDIT=$("$SCRIPT" --pr "$PR_NUMBER_ARG")
+else
+  AUDIT=$("$SCRIPT")
+fi
+```
+
+If `pr-state.sh` itself exits non-zero it prints the reason to stderr (no PR, closed PR, detached HEAD, etc.). Stop and report. Exit codes: `0` OK, `2` usage error, `3` no branch and no `--pr`, `4` PR closed/not found, `5` gh/network error. With Step 0a in place, exit `3` (no branch and no `--pr`) only reaches you when inference also found **no** candidate — that is the genuine "which PR did you mean?" case.
 
 Pull the values that the later steps need out of the JSON once:
 

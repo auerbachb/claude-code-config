@@ -13,6 +13,8 @@ The following symlinks all go through the skills worktree:
 - `~/.claude/CLAUDE.md` -> `~/.claude/skills-worktree/CLAUDE.md`
 - `~/.claude/rules` -> `~/.claude/skills-worktree/.claude/rules`
 
+> **Double-loading note:** because these symlinks make the global `CLAUDE.md` + rules resolve into the worktree, sessions opened *in this repo* would otherwise load the corpus twice (global + project). This repo suppresses the global copy via project-local `claudeMdExcludes` in `.claude/settings.json` — full rationale in `.claude/reference/double-loading-fix.md`.
+
 ## Why a Dedicated Worktree
 
 Served from `~/.claude/skills-worktree/`, a worktree permanently on `main`. Decouples config availability from the root repo's branch state — without it, symlink targets break when the root repo is on a feature branch.

@@ -18,6 +18,8 @@ Three flags must be `true` per project:
 
 Worktrees are the primary cause — each gets a unique path registered as a new project with `false` defaults. The `claude-code-config` repo is especially affected because global symlinks point back into it, triggering "external includes" detection.
 
+> **Related (separate symptom, same topology):** the same symlink setup also caused this repo's `CLAUDE.md` + rules to double-load. That is fixed independently via project-local `claudeMdExcludes` in `.claude/settings.json` — see `.claude/reference/double-loading-fix.md`. This trust-dialog content is unaffected.
+
 ## Manual Repair
 
 Run from the repo root:
