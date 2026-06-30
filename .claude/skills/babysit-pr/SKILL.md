@@ -23,7 +23,7 @@ This is reused by `/pr-monitor-and-manage` (issue #460): that skill invokes `/ba
 - **Never dismiss human-authored reviews.** Only `/fixpr`'s `dismiss-stale-bot-changes.sh` (bot allowlist, wrong `commit_id`) may dismiss, and only bot reviews.
 - **Never resolve a review thread** itself — thread resolution happens only inside `/fixpr` Steps 1–4 after code-verification. `/babysit-pr` does not call `resolveReviewThread`.
 - **Never bypass `/fixpr`'s code-verification step** — it dispatches the full `/fixpr` workflow, never a shortcut.
-- **Never post `@coderabbitai full review`** without `cr-review-hourly.sh --check` passing first (`/fixpr` owns the actual trigger + the atomic `--record-explicit` cap).
+- **Never post `@coderabbitai full review`** without `cr-review-hourly.sh --check` passing first. The **only** sanctioned trigger path in this skill is the T1b pre-flight (`pr-preflight.sh`, issue #493), which gates CR on `cr-review-hourly.sh` (`--check` + atomic `--record-explicit`) automatically, never triggers Greptile, and never flips another user's draft. `/fixpr` owns any further triggers after a push.
 
 A human `CHANGES_REQUESTED` on HEAD is `hard-blocked` → record and exit. Never auto-dismiss it.
 
@@ -72,6 +72,7 @@ MERGE_GATE_SH=$(resolve_script merge-gate.sh)     || { echo "ERROR: merge-gate.s
 SESSION_STATE_SH=$(resolve_script session-state.sh) || { echo "ERROR: session-state.sh not found" >&2; exit 1; }
 CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh)   || true   # optional; degrade gracefully
 GREPTILE_SH=$(resolve_script greptile-budget.sh)     || true   # optional; degrade gracefully
+PREFLIGHT_SH=$(resolve_script pr-preflight.sh)       || true   # optional; degrade gracefully (#493)
 ```
 
 **Always read/write `session-state.json` via `session-state.sh --get`/`--set`** (atomic, sibling-preserving) — never raw `jq` writes (`handoff-files.md`). State for this skill lives under `.prs["<N>"]`:
@@ -260,6 +261,25 @@ BUGBOT_STATE=$(jq -r '[.check_runs.all[] | select((.name//""|ascii_downcase)|con
 
 (When `SKIP_STATE_READ=1` was set above — gate exit `3` — skip straight to T3's terminal handling, which classifies `merged` vs `closed-unmerged` from `PR_NOW`.)
 
+### T1b. Pre-flight — draft→ready + four-reviewer trigger (issue #493)
+
+**First action after the PR state read, before classification.** Run the shared `pr-preflight.sh` so a draft PR you own is flipped ready and all four conditionally-triggered reviewers (CodeAnt, CodeRabbit, Cursor, Graphite) are engaged on the current SHA before T2/T3 decide anything. This is the **same** script `/fixpr` Step 0c and `/pr-monitor-and-manage` use — `/babysit-pr` never re-implements the draft flip or trigger logic. It is idempotent (a clean PR is a no-op), rate-cap safe (skips only `@coderabbitai full review` when `cr-review-hourly.sh` reports the cap hit, posting the other three), never flips another user's draft, and never triggers Greptile.
+
+Run **only** on a valid state read (skip when `SKIP_STATE_READ=1` — a gone/merged/closed PR needs no pre-flight):
+
+```bash
+PREFLIGHT_SUMMARY_JSON=""
+if [[ -z "${SKIP_STATE_READ:-}" && -n "$PREFLIGHT_SH" ]]; then
+  PREFLIGHT_OUT=$("$PREFLIGHT_SH" "$PR") || echo "[babysit] pr-preflight.sh exited non-zero (exit $?) — continuing tick" >&2
+  echo "$PREFLIGHT_OUT"   # its timestamped action lines double as part of this tick's heartbeat
+  PREFLIGHT_SUMMARY_JSON=$(sed -n 's/^PREFLIGHT_SUMMARY: //p' <<<"$PREFLIGHT_OUT")
+elif [[ -z "$PREFLIGHT_SH" && -z "${SKIP_STATE_READ:-}" ]]; then
+  echo "[babysit] pr-preflight.sh not found — skipping draft/reviewer pre-flight this tick"
+fi
+```
+
+Because the pre-flight may have just triggered reviewers, the T2 rate-cap snapshot and T3 classifier that follow see an accurate, post-trigger budget/bot state. Record the draft→ready action and any triggered reviewers in the T7 heartbeat / final summary from `$PREFLIGHT_SUMMARY_JSON`.
+
 ### T2. Rate-cap snapshot (MUST run before classification)
 
 `/babysit-pr` never posts review triggers itself — `/fixpr` owns triggers and their caps. But the **classifier (T3) must already know** the budget state, so this snapshot runs **first**: it decides whether "missing fresh bot review" is a recoverable gap (a reviewer can still be triggered) or a `hard-blocked` budget-exhaustion (no path to the gate this window).
@@ -440,6 +460,7 @@ Emit the final summary:
 ```
 === babysit-pr complete ===
 PR:           #<PR>
+Pre-flight:   <last tick's draft→ready + reviewers triggered, from $PREFLIGHT_SUMMARY_JSON; "clean" when no-op across ticks>
 Final state:  <class>
 Reason:       merged | hard-blocked | closed-unmerged | blocker-tick-cap | stable-frozen | user-stop
 Ticks:        <tick_count>
