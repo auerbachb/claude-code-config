@@ -208,8 +208,12 @@ login_present() {
   printf '%s\n' "$AUTHORS" | grep -qxF -- "$1"
 }
 trigger_already_posted() {
-  # $1 = literal trigger string already in some comment body
-  grep -qF -- "$1" "$BODIES_TMP"
+  # $1 = literal trigger string already in some comment body.
+  # -x requires a whole-line match so that prose mentions of the trigger
+  # string (e.g. "I ran @coderabbitai full review earlier") do not suppress
+  # the real trigger post.  Each line of BODIES_TMP is one collapsed comment
+  # body; a trigger comment we posted will be exactly that string on its line.
+  grep -qxF -- "$1" "$BODIES_TMP"
 }
 
 # --- 3. draft check ---
