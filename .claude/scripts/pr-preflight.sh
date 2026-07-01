@@ -169,7 +169,7 @@ CR_HOURLY_SH="$(resolve_cr_hourly || true)"
 
 # --- 1. read PR draft state + author ---
 PR_VIEW_ERR="$(mktemp)"
-trap 'rm -f "$PR_VIEW_ERR" 2>/dev/null; rmdir "$CR_LOCK_DIR" 2>/dev/null || true' EXIT
+
 if ! PR_VIEW="$(gh pr view "$PR" --json isDraft,author,state 2>"$PR_VIEW_ERR")"; then
   if grep -qiE 'not.?found|could not resolve|no pull requests? found|no such' "$PR_VIEW_ERR"; then
     echo "pr-preflight.sh: PR #$PR not found" >&2
@@ -195,7 +195,7 @@ CURRENT_USER="$(gh api user --jq .login 2>/dev/null || echo "")"
 AUTHORS_TMP="$(mktemp)"
 BODIES_TMP="$(mktemp)"
 GH_ERR="$(mktemp)"
-trap 'rm -f "$PR_VIEW_ERR" "$AUTHORS_TMP" "$BODIES_TMP" "$GH_ERR" 2>/dev/null' EXIT
+trap 'rm -f "$PR_VIEW_ERR" "$AUTHORS_TMP" "$BODIES_TMP" "$GH_ERR" 2>/dev/null; rmdir "$CR_LOCK_DIR" 2>/dev/null || true' EXIT
 
 for endpoint in \
   "repos/{owner}/{repo}/pulls/$PR/reviews" \

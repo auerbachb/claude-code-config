@@ -237,7 +237,7 @@ fi
 
 ### T1b. Pre-flight — draft→ready + four-reviewer trigger (issue #493)
 
-**Run immediately after the bundle read, BEFORE extracting bundle-derived states.** This ensures that BUGBOT_STATE, CR_STATE, and related fields reflect the post-trigger reality — a reviewer just engaged by pre-flight is not misclassified as "missing" and does not cause a spurious `/fixpr` dispatch on the same tick.
+**Run after the gate-exit check (which sets `SKIP_STATE_READ`), then re-fetch `GATE_JSON` and `BUNDLE` so that T1c field extraction and T3 classification operate on post-trigger snapshots.** A reviewer just engaged by pre-flight is not misclassified as "missing" and does not cause a spurious `/fixpr` dispatch on the same tick.
 
 Run the shared `pr-preflight.sh` so a draft PR you own is flipped ready and all four conditionally-triggered reviewers (CodeAnt, CodeRabbit, Cursor, Graphite) are engaged on the current SHA before T2/T3 decide anything. This is the **same** script `/fixpr` Step 0c and `/pr-monitor-and-manage` use — `/babysit-pr` never re-implements the draft flip or trigger logic. It is idempotent (a clean PR is a no-op), rate-cap safe (skips only `@coderabbitai full review` when `cr-review-hourly.sh` reports the cap hit, posting the other three), never flips another user's draft, and never triggers Greptile.
 
@@ -254,7 +254,27 @@ elif [[ -z "$PREFLIGHT_SH" && -z "${SKIP_STATE_READ:-}" ]]; then
 fi
 ```
 
-Pull the fields the classifier needs (only when `GATE_EXIT` was `0`/`1` and the bundle was read). Because pre-flight ran first, these reflect the post-trigger bot state:
+Re-fetch `GATE_JSON` and `BUNDLE` after pre-flight so that any reviewer or draft-state change made by pre-flight is captured before T3 classifies. Guard the same way as T1 — skip the tick on tooling error:
+
+```bash
+if [[ -z "${SKIP_STATE_READ:-}" ]]; then
+  GATE_JSON=$("$MERGE_GATE_SH" "$PR"); GATE_EXIT=$?
+  if [[ "$GATE_EXIT" != "0" && "$GATE_EXIT" != "1" ]]; then
+    TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
+    echo "[$TS] #$PR tick: merge-gate.sh post-preflight re-fetch failed (exit $GATE_EXIT) — skipping classification this tick."
+    "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.last_tick_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" 2>/dev/null || true
+    return 0 2>/dev/null || exit 0
+  fi
+  PR_CREATED=$(gh pr view "$PR" --json createdAt --jq '.createdAt') || {
+    echo "[babysit] gh pr view failed (post-preflight re-fetch) — skipping tick, retry next cadence." >&2; exit 0; }
+  BUNDLE=$("$PR_STATE_SH" --pr "$PR" --since "$PR_CREATED") || {
+    echo "[babysit] pr-state.sh failed (post-preflight re-fetch) — skipping tick, retry next cadence." >&2; exit 0; }
+fi
+```
+
+### T1c. Extract fields from post-preflight snapshots
+
+Pull the fields the classifier needs (only when `GATE_EXIT` was `0`/`1` and the bundle was read). These snapshots were taken after pre-flight ran, so they reflect the post-trigger bot state:
 
 ```bash
 HEAD_SHA=$(jq -r '.head_sha // ""'                 <<<"$GATE_JSON")
