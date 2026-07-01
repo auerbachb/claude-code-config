@@ -19,9 +19,12 @@
 #        Before posting `@coderabbitai full review`, gate on
 #        cr-review-hourly.sh (--check global budget + read-only --peek-explicit
 #        per-PR 2/hour cap). After a successful post, record via --record-explicit
-#        under a per-PR mkdir lock so concurrent pre-flights cannot double-trigger.
-#        If the cap is hit, skip ONLY CodeRabbit's trigger and
-#        still post the other three.
+#        (so a failed post never burns a slot). If the cap is hit, skip ONLY
+#        CodeRabbit's trigger and still post the other three.
+#        Best-effort: two pre-flights racing on the SAME PR within the same second
+#        could both pass the peek and double-post; this is an accepted limitation
+#        (a lock was removed after it caused ownership bugs and more risk than the
+#        rare race it guarded).
 #
 #   Strictly per-PR: no shared mutable accumulator across a fleet. Running it
 #   twice on a clean PR (already ready + all four engaged) does nothing and
@@ -125,23 +128,6 @@ for need in gh jq; do
   fi
 done
 
-# --- per-PR CR concurrency lock (mkdir atomic on macOS/Linux; Bash 3.2 compatible) ---
-CR_LOCK_DIR="${TMPDIR:-/tmp}/pr-preflight-cr-${PR}.lock"
-cr_lock_acquire() {
-  # Bounded wait ~30s; reclaim a stale lock >60s old (crashed holder); best-effort.
-  local waited=0 age
-  while ! mkdir "$CR_LOCK_DIR" 2>/dev/null; do
-    if [[ -d "$CR_LOCK_DIR" ]]; then
-      age=$(( $(date +%s) - $(stat -f %m "$CR_LOCK_DIR" 2>/dev/null || stat -c %Y "$CR_LOCK_DIR" 2>/dev/null || echo 0) ))
-      (( age > 60 )) && { rmdir "$CR_LOCK_DIR" 2>/dev/null || true; continue; }
-    fi
-    (( waited >= 30 )) && return 1
-    sleep 1; waited=$((waited + 1))
-  done
-  return 0
-}
-cr_lock_release() { rmdir "$CR_LOCK_DIR" 2>/dev/null || true; }
-
 # --- timestamped surface helper (ET, per CLAUDE.md #1) ---
 surface() {
   # Print one timestamped action line unless in --json mode.
@@ -195,7 +181,7 @@ CURRENT_USER="$(gh api user --jq .login 2>/dev/null || echo "")"
 AUTHORS_TMP="$(mktemp)"
 BODIES_TMP="$(mktemp)"
 GH_ERR="$(mktemp)"
-trap 'rm -f "$PR_VIEW_ERR" "$AUTHORS_TMP" "$BODIES_TMP" "$GH_ERR" 2>/dev/null; rmdir "$CR_LOCK_DIR" 2>/dev/null || true' EXIT
+trap 'rm -f "$PR_VIEW_ERR" "$AUTHORS_TMP" "$BODIES_TMP" "$GH_ERR" 2>/dev/null' EXIT
 
 for endpoint in \
   "repos/{owner}/{repo}/pulls/$PR/reviews" \
@@ -340,17 +326,12 @@ for key in "${REVIEWER_KEYS[@]}"; do
     continue
   fi
   if [[ "$key" == "coderabbit" ]]; then
-    CR_LOCKED=0
-    if (( ! DRY_RUN )); then
-      cr_lock_acquire && CR_LOCKED=1 || surface "WARNING: could not acquire CR pre-flight lock for #$PR — proceeding without concurrency guard"
-    fi
     if cr_budget_allows; then
       post_trigger "$key"
     else
       set_status "$key" "skipped-rate-cap"
       surface "skipping @coderabbitai full review — CR rate cap hit (posting the other reviewers)"
     fi
-    (( CR_LOCKED )) && cr_lock_release
   else
     post_trigger "$key"
   fi
