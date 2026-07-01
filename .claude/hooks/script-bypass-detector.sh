@@ -61,10 +61,11 @@ def _cycle_count_sentinel(cmd: str) -> bool:
     later line would otherwise suppress detection. Semicolons are NOT split
     because ; inside python3 -c "..." strings would create false segments.
 
-    Pattern 1 — raw count without bot-login filter:
+    Pattern 1 — raw count without any filter:
         A pipeline segment fetches /reviews and uses | length or python3 len()
         to count reviews as "rounds". Routine CR/BugBot polling ALWAYS filters
-        by .user.login; a genuine bypass does not.
+        with select(...) (e.g. by .user.login or .state); a genuine bypass does
+        not use any select() filter at all.
 
     Pattern 2/3 — temporal comparison:
         Reviews submitted_at is compared against commits endpoint data in the same
@@ -76,7 +77,7 @@ def _cycle_count_sentinel(cmd: str) -> bool:
         re.S,
     )
     for seg in segments:
-        if p1.search(seg) and not re.search(r'select\(\s*\.user\.login', seg):
+        if p1.search(seg) and not re.search(r'select\(', seg):
             return True
     temporal = re.compile(
         r"(?:"
@@ -115,10 +116,11 @@ sentinels = [
         "cycle-count.sh",
         # Sentinel uses a callable instead of a bare regex to handle compound
         # shell commands correctly. A genuine cycle-count.sh bypass either:
-        #   1. Fetches /reviews and counts them without any .user.login filter
+        #   1. Fetches /reviews and counts them without any select() filter
         #      (treating raw review count as a proxy for fix rounds). Presence of
-        #      select(.user.login in the SAME pipeline segment is a negative
-        #      indicator — routine CR/BugBot polling always filters by bot login.
+        #      any select(...) in the SAME pipeline segment is a negative
+        #      indicator — routine CR/BugBot polling always filters (by bot login,
+        #      review state, etc.).
         #      We split only on && and || (not ; or newline) to avoid breaking
         #      on ; inside python3 -c "..." strings.
         #   2. Compares review submitted_at timestamps against commits endpoint

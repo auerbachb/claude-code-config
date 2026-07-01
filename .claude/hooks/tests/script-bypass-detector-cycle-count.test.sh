@@ -35,7 +35,7 @@ def _sentinel(cmd):
         re.S,
     )
     for seg in segments:
-        if p1.search(seg) and not re.search(r'select\(\s*\.user\.login', seg):
+        if p1.search(seg) and not re.search(r'select\(', seg):
             return True
     temporal = re.compile(
         r"(?:"
@@ -152,6 +152,11 @@ run_sentinel_test \
   'gh api repos/owner/repo/pulls/123/reviews?per_page=100 | jq '"'"'. | length'"'"'
 select(.user.login == "coderabbitai[bot]")' \
   "yes"
+
+run_sentinel_test \
+  "state-filtered review count is NOT flagged — any select() is a sufficient exclusion (fix 4)" \
+  'gh api "repos/owner/repo/pulls/123/reviews?per_page=100" --jq '"'"'[.[] | select(.state == "APPROVED")] | length'"'"'' \
+  "no"
 
 echo ""
 echo "=== Summary ==="
