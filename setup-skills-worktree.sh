@@ -376,6 +376,58 @@ for item in manifest:
     hooks[event].append(group)
     added.append(script)
 
+# Prune stale registrations for decommissioned hooks.
+# When a hook is removed from the repo (e.g. the /quota rollback dropped
+# quota-stop-notify.sh and quota-usage-hook.sh), its entry can linger in an
+# existing ~/.claude/settings.json pointing at a now-deleted script. setup.sh
+# Step 7 then fails ("Hook not found") and Claude Code would try to invoke a
+# missing Stop/PostToolUse command each session. Remove any registered command
+# hook that is (1) NOT in the current manifest (decommissioned, not merely
+# un-migrated), (2) inside a managed .claude/hooks directory, and (3) pointing
+# at a file that no longer exists. Active hooks — and any hook whose target file
+# is present — are never touched, so re-runs are no-ops (idempotent; see
+# tests/test-setup.sh).
+manifest_scripts = {item["script"] for item in manifest}
+pruned = []
+
+def is_managed_hooks_path(path):
+    return os.path.basename(os.path.dirname(path)) == "hooks" and ".claude" in path
+
+for event in list(hooks.keys()):
+    event_entries = hooks[event]
+    if not isinstance(event_entries, list):
+        continue
+    surviving_groups = []
+    for group in event_entries:
+        if not isinstance(group, dict):
+            surviving_groups.append(group)
+            continue
+        hook_list = group.get("hooks")
+        if not isinstance(hook_list, list):
+            surviving_groups.append(group)
+            continue
+        surviving_hooks = []
+        for h in hook_list:
+            if isinstance(h, dict) and h.get("type") == "command":
+                cmd = h.get("command", "")
+                script_name = os.path.basename(cmd)
+                if (cmd
+                        and script_name not in manifest_scripts
+                        and is_managed_hooks_path(cmd)
+                        and not is_placeholder_path(cmd)
+                        and not os.path.isfile(cmd)):
+                    pruned.append(script_name)
+                    continue  # drop this stale hook entry
+            surviving_hooks.append(h)
+        if surviving_hooks:
+            group["hooks"] = surviving_hooks
+            surviving_groups.append(group)
+        # else: group held only stale hooks — drop the group entirely
+    if surviving_groups:
+        hooks[event] = surviving_groups
+    else:
+        del hooks[event]  # no hooks left for this event
+
 # Write back atomically to prevent corruption on interrupt
 import tempfile
 
@@ -397,6 +449,8 @@ for name in migrated:
     print(f"  {name} — migrated path to skills worktree")
 for name in already_present:
     print(f"  {name} — already registered")
+for name in pruned:
+    print(f"  {name} — pruned stale registration (script no longer exists)")
 PYTHON_SCRIPT
 
 echo ""

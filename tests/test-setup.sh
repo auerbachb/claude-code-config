@@ -329,6 +329,59 @@ test_7_no_settings_json() {
   assert "No placeholder paths" "! grep -q '/path/to/' '$HOME/.claude/settings.json'"
 }
 
+# ── Test 8: Stale hook registration pruned ───────────────────────────────────
+
+test_8_stale_hook_pruned() {
+  section "Test 8: Stale hook registration pruned"
+
+  # Simulate a decommissioned hook (e.g. the /quota rollback) whose registration
+  # still lives in settings.json pointing at a now-deleted managed hook script.
+  # setup.sh Step 7 would fail on the missing path; setup-skills-worktree.sh
+  # Step 6 must prune it. Use a generic name so the test survives quota being
+  # long forgotten.
+  local stale_cmd="$HOME/.claude/skills-worktree/.claude/hooks/decommissioned-quota-hook.sh"
+  assert "Stale hook target does not exist" "[ ! -f '$stale_cmd' ]"
+
+  local seed_output
+  seed_output=$(python3 -c "
+import json, sys
+path = '$HOME/.claude/settings.json'
+with open(path) as f:
+    data = json.load(f)
+
+hooks = data.setdefault('hooks', {})
+stop = hooks.setdefault('Stop', [])
+stop.append({'hooks': [{'type': 'command', 'command': '$stale_cmd', 'timeout': 5}]})
+
+with open(path, 'w') as f:
+    json.dump(data, f, indent=2)
+print('Seeded stale hook registration')
+" 2>&1)
+  local seed_exit=$?
+  echo "  Seed output: $seed_output"
+  assert "Stale hook seed succeeded" "[ $seed_exit -eq 0 ]"
+  assert "Stale hook is registered before setup" "grep -q 'decommissioned-quota-hook.sh' '$HOME/.claude/settings.json'"
+
+  # Run setup-skills-worktree.sh which prunes stale managed-hook registrations
+  cd "$REPO_ROOT" || { assert "Can cd to REPO_ROOT" "false"; return; }
+  local prune_output prune_exit_code
+  prune_output=$(bash setup-skills-worktree.sh 2>&1)
+  prune_exit_code=$?
+  echo "$prune_output" | grep -i 'pruned' || true
+  assert "setup-skills-worktree.sh exits 0" "[ $prune_exit_code -eq 0 ]"
+
+  # Stale registration is gone; active hooks and valid JSON remain
+  assert "Stale hook registration pruned" "! grep -q 'decommissioned-quota-hook.sh' '$HOME/.claude/settings.json'"
+  assert "settings.json still valid JSON" "python3 -c \"import json; json.load(open('$HOME/.claude/settings.json'))\""
+  assert "Active hook still registered (trust-flag-repair.sh)" "grep -q 'trust-flag-repair.sh' '$HOME/.claude/settings.json'"
+
+  # Full setup.sh now passes Step 7 (no missing hook paths)
+  local output exit_code
+  output=$(run_setup)
+  exit_code=$?
+  assert "setup.sh exits 0 after prune" "[ $exit_code -eq 0 ]"
+}
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -345,6 +398,7 @@ test_4_hook_path_migration
 test_5_broken_symlink_recovery
 test_6_hooks_resolve
 test_7_no_settings_json
+test_8_stale_hook_pruned
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 
