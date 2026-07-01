@@ -74,7 +74,7 @@ def _cycle_count_sentinel(cmd: str) -> bool:
         re.S,
     )
     for seg in segments:
-        if p1.search(seg) and "select(.user.login" not in seg:
+        if p1.search(seg) and not re.search(r'select\(\s*\.user\.login', seg):
             return True
     temporal = re.compile(
         r"(?:"
@@ -132,10 +132,12 @@ sentinels = [
 
 matches = []
 for pattern_name, script_name, matcher in sentinels:
-    if callable(matcher):
+    if isinstance(matcher, re.Pattern):
+        matched = bool(matcher.search(command))
+    elif callable(matcher):
         matched = matcher(command)
     else:
-        matched = bool(matcher.search(command))
+        matched = False
     if matched:
         matches.append((pattern_name, script_name))
 

@@ -35,7 +35,7 @@ def _sentinel(cmd):
         re.S,
     )
     for seg in segments:
-        if p1.search(seg) and "select(.user.login" not in seg:
+        if p1.search(seg) and not re.search(r'select\(\s*\.user\.login', seg):
             return True
     temporal = re.compile(
         r"(?:"
@@ -136,6 +136,16 @@ run_sentinel_test \
   "chained: raw count segment then bot-filtered segment (BugBot finding)" \
   'gh api repos/owner/repo/pulls/123/reviews | jq '"'"'. | length'"'"' && gh api repos/owner/repo/pulls/123/reviews?per_page=100 --jq '"'"'[.[] | select(.user.login == "coderabbitai[bot]")] | length'"'"'' \
   "yes"
+
+run_sentinel_test \
+  "until-prefixed cycle-count command still matches (fix 1: search not match)" \
+  'until gh api "repos/owner/repo/pulls/123/reviews?per_page=100" | jq '"'"'. | length'"'"' > 0; do sleep 60; done' \
+  "yes"
+
+run_sentinel_test \
+  "whitespace-variant select( .user.login ) is still excluded (fix 2: tolerant regex)" \
+  'gh api "repos/owner/repo/pulls/123/reviews?per_page=100" --jq '"'"'[.[] | select( .user.login == "coderabbitai[bot]")] | length'"'"'' \
+  "no"
 
 echo ""
 echo "=== Summary ==="
