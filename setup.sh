@@ -58,6 +58,65 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Step 1b: Note the inert legacy /quota data files (issue #499 rollback)
+#
+# The /quota API-spend tracker was rolled back. Its on-disk artifacts
+# (~/.claude/quota-usage.log and ~/.claude/quota-config.json) are user data and
+# are intentionally NOT deleted here — this step only annotates them as inert in
+# ~/.claude/README.md. The note is written between marker comments so re-running
+# setup refreshes it in place instead of duplicating it. The data files
+# themselves are never created, read, modified, or removed by this step.
+# ---------------------------------------------------------------------------
+echo "Step 1b: Recording inert-state note for legacy /quota data..."
+
+CLAUDE_README="$CLAUDE_DIR/README.md"
+if python3 - "$CLAUDE_README" <<'PYTHON_NOTE'
+import sys
+
+readme_path = sys.argv[1]
+begin = "<!-- QUOTA-ROLLBACK-NOTE:BEGIN -->"
+end = "<!-- QUOTA-ROLLBACK-NOTE:END -->"
+
+note = f"""{begin}
+## Legacy `/quota` artifacts (inert)
+
+The `/quota` API-spend tracker was rolled back (issue #499). The following files
+are **no longer written or read** by any hook, script, or skill:
+
+- `~/.claude/quota-usage.log`
+- `~/.claude/quota-config.json`
+
+They are preserved as historical user data — safe to archive or delete manually.
+Anthropic's in-app usage UI is the authoritative source for quota and spend.
+{end}"""
+
+try:
+    with open(readme_path) as f:
+        content = f.read()
+except FileNotFoundError:
+    content = ""
+
+if begin in content and end in content:
+    head = content.split(begin, 1)[0]
+    tail = content.split(end, 1)[1]
+    content = head + note + tail
+else:
+    if content and not content.endswith("\n"):
+        content += "\n"
+    if content:
+        content += "\n"
+    content += note + "\n"
+
+with open(readme_path, "w") as f:
+    f.write(content)
+PYTHON_NOTE
+then
+  step_pass "Inert-state note"
+else
+  step_fail "Inert-state note" "Could not write $CLAUDE_README"
+fi
+
+# ---------------------------------------------------------------------------
 # Step 2: Merge non-hook settings into settings.json (preserves existing keys)
 # ---------------------------------------------------------------------------
 echo "Step 2: Merging settings from global-settings.json..."

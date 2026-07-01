@@ -1,8 +1,8 @@
 # Safety — Destructive Command & Secret Prohibitions
 
-> **Always:** Stay in your worktree. Treat `.env` files and any unencrypted secret as untouchable. Pin and inspect installers. Warn subagents of these rules.
+> **Always:** Stay in your worktree. Treat `.env` files and any unencrypted secret as untouchable. Pin and inspect installers. Warn subagents of these rules. Treat Anthropic's in-app UI as the sole authority on quota and spend.
 > **Ask first:** Never — these are absolute prohibitions with no exceptions.
-> **Never:** Delete `.env` files. Run `git clean`. Run destructive commands in the root repo. Commit secrets. Pipe untrusted URLs into a shell. Pass raw credentials to subagents.
+> **Never:** Delete `.env` files. Run `git clean`. Run destructive commands in the root repo. Commit secrets. Pipe untrusted URLs into a shell. Pass raw credentials to subagents. Gate agent decisions on locally-estimated quota or spend.
 
 ## Destructive Commands
 
@@ -37,3 +37,7 @@ Do NOT commit secrets or paste raw credentials into prompts, issues, PRs, commen
 commits, or logs. Do NOT pipe untrusted URLs into a shell or disable TLS verification.
 Confirm package names before npm/pip/gem/cargo/brew install. Full rules: .claude/rules/safety.md.
 ```
+
+## Anthropic Quota & Spend Authority
+
+Anthropic's in-app usage UI is the **authoritative** source for quota and spend enforcement. Locally-computed spend estimation is unreliable and **MUST NOT gate agent decisions** — never pause, downgrade, defer, or refuse work based on a locally-tracked quota or spend figure. Do not re-implement local quota tracking without a corresponding upstream signal from Anthropic.
