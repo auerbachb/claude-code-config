@@ -31,11 +31,11 @@ expect = sys.argv[2]
 def _sentinel(cmd):
     segments = re.split(r"&&|\|\||\n", cmd)
     p1 = re.compile(
-        r"gh\s+api.*pulls/[0-9]+/reviews.*(?:\|\s*length\b|python3.*len\()",
+        r"gh\s+api.*pulls/[0-9]+/reviews.*(?:\|?\s*length\b|python3.*len\()",
         re.S,
     )
     for seg in segments:
-        if p1.search(seg) and not re.search(r'select\(', seg):
+        if p1.search(seg) and not re.search(r'select\s*\(', seg):
             return True
     temporal = re.compile(
         r"(?:"
@@ -157,6 +157,17 @@ run_sentinel_test \
   "state-filtered review count is NOT flagged — any select() is a sufficient exclusion (fix 4)" \
   'gh api "repos/owner/repo/pulls/123/reviews?per_page=100" --jq '"'"'[.[] | select(.state == "APPROVED")] | length'"'"'' \
   "no"
+
+run_sentinel_test \
+  "select with space 'select (.user.login' is still excluded (fix: select\s*\()" \
+  'gh api "repos/owner/repo/pulls/123/reviews?per_page=100" --jq '"'"'[.[] | select (.user.login == "coderabbitai[bot]")] | length'"'"'' \
+  "no"
+
+
+run_sentinel_test \
+  "--jq length without pipe prefix is detected (fix: \|? optional pipe)" \
+  'gh api "repos/owner/repo/pulls/123/reviews?per_page=100" --jq length' \
+  "yes"
 
 echo ""
 echo "=== Summary ==="

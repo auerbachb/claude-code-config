@@ -57,9 +57,9 @@ def _cycle_count_sentinel(cmd: str) -> bool:
     manually counts review-fix rounds without using cycle-count.sh.
 
     Split on &&, || and newlines so each pipeline line is a separate segment —
-    a multiline bypass with | length on one line and select(.user.login on a
-    later line would otherwise suppress detection. Semicolons are NOT split
-    because ; inside python3 -c "..." strings would create false segments.
+    a multiline bypass with | length on one line and a select() on a later
+    line is correctly detected. Semicolons are NOT split because ; appears
+    inside python3 -c "..." strings and would fragment valid detections.
 
     Pattern 1 — raw count without any filter:
         A pipeline segment fetches /reviews and uses | length or python3 len()
@@ -73,11 +73,11 @@ def _cycle_count_sentinel(cmd: str) -> bool:
     """
     segments = re.split(r"&&|\|\||\n", cmd)
     p1 = re.compile(
-        r"gh\s+api.*pulls/[0-9]+/reviews.*(?:\|\s*length\b|python3.*len\()",
+        r"gh\s+api.*pulls/[0-9]+/reviews.*(?:\|?\s*length\b|python3.*len\()",
         re.S,
     )
     for seg in segments:
-        if p1.search(seg) and not re.search(r'select\(', seg):
+        if p1.search(seg) and not re.search(r'select\s*\(', seg):
             return True
     temporal = re.compile(
         r"(?:"
