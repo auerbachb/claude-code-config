@@ -97,6 +97,7 @@ cat > "$CR_STUB" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
   --check) exit "${CR_CHECK_RC:-0}" ;;
+  --peek-explicit) exit "${CR_PEEK_RC:-0}" ;;
   --record-explicit) exit "${CR_RECORD_RC:-0}" ;;
   *) exit 0 ;;
 esac
@@ -183,10 +184,10 @@ check_eq "no CR trigger posted" "0" "$(actions | grep -cF '@coderabbitai full re
 check_eq "3 comments posted" "3" "$(actions | grep -c '^COMMENT')"
 
 ############################################################################
-echo "== Scenario 4b: CR per-PR cap (--record-explicit fails) → skip CR only =="
+echo "== Scenario 4b: CR per-PR cap (--peek-explicit fails) → skip CR only =="
 write_view '{"isDraft":false,"author":{"login":"me"},"state":"OPEN"}'
 write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
-OUT=$(CR_RECORD_RC=1 run_json 493); RC=$?
+OUT=$(CR_PEEK_RC=1 run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "coderabbit skipped-rate-cap" "skipped-rate-cap" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
 check_eq "no CR trigger posted" "0" "$(actions | grep -cF '@coderabbitai full review')"

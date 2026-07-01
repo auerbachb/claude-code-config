@@ -48,7 +48,7 @@
 #       "is_draft": <bool>,            # state observed before any flip
 #       "author": "<login>",
 #       "current_user": "<login>",
-#       "draft_action": "marked-ready" | "skipped-not-author" | "not-draft",
+#       "draft_action": "marked-ready" | "skipped-not-author" | "not-draft" | "ready-failed",
 #       "reviewers": {
 #         "codeant":   {"trigger":"@codeant-ai review","status":"<status>"},
 #         "coderabbit":{"trigger":"@coderabbitai full review","status":"<status>"},
@@ -218,7 +218,7 @@ if [[ "$IS_DRAFT" == "true" ]]; then
       DRAFT_ACTION="marked-ready"
       surface "Marked #$PR ready for review"
     else
-      DRAFT_ACTION="not-draft"
+      DRAFT_ACTION="ready-failed"
       surface "WARNING: failed to mark #$PR ready (gh pr ready errored) — leaving as draft"
     fi
   else
@@ -230,19 +230,29 @@ fi
 # --- 4. reviewer-trigger check ---
 # Ordered list: key | bot-login | trigger-string. Greptile intentionally absent.
 REVIEWER_KEYS=(codeant coderabbit cursor graphite)
-declare -A REVIEWER_LOGIN=(
-  [codeant]="codeant-ai[bot]"
-  [coderabbit]="coderabbitai[bot]"
-  [cursor]="cursor[bot]"
-  [graphite]="graphite-app[bot]"
-)
-declare -A REVIEWER_TRIGGER=(
-  [codeant]="@codeant-ai review"
-  [coderabbit]="@coderabbitai full review"
-  [cursor]="@cursor review"
-  [graphite]="@graphite-app re-review"
-)
-declare -A REVIEWER_STATUS=()
+# Bash 3.2-compatible (macOS default ships Bash 3.2): NO associative arrays.
+# `declare -A` is a syntax error on Bash 3 and, under `set -euo pipefail`, aborts
+# the script immediately (issue #494). Map key->login and key->trigger via case;
+# store per-reviewer status in dynamic REVIEWER_STATUS_<key> variables addressed
+# with printf -v / indirect expansion.
+reviewer_login() {
+  case "$1" in
+    codeant)    printf '%s' "codeant-ai[bot]" ;;
+    coderabbit) printf '%s' "coderabbitai[bot]" ;;
+    cursor)     printf '%s' "cursor[bot]" ;;
+    graphite)   printf '%s' "graphite-app[bot]" ;;
+  esac
+}
+reviewer_trigger() {
+  case "$1" in
+    codeant)    printf '%s' "@codeant-ai review" ;;
+    coderabbit) printf '%s' "@coderabbitai full review" ;;
+    cursor)     printf '%s' "@cursor review" ;;
+    graphite)   printf '%s' "@graphite-app re-review" ;;
+  esac
+}
+set_status() { printf -v "REVIEWER_STATUS_$1" '%s' "$2"; }
+get_status() { local __v="REVIEWER_STATUS_$1"; printf '%s' "${!__v-}"; }
 
 ACTIONS=0
 [[ "$DRAFT_ACTION" == "marked-ready" ]] && ACTIONS=$((ACTIONS + 1))
@@ -252,6 +262,10 @@ ACTIONS=0
 # (caller skips) when the global hourly budget or per-PR 2/hour cap is hit, or
 # the helper is missing (fail-closed on CR only — never spam CodeRabbit).
 cr_budget_allows() {
+  # Pre-gate ONLY (no consumption): global hourly budget (--check) + a read-only
+  # per-PR cap peek (--peek-explicit). The per-PR slot is recorded in post_trigger
+  # AFTER a successful `gh pr comment`, so a failed post never burns a slot with no
+  # trigger on the PR (issue #494 BugBot — "CR recorded before comment posts").
   if [[ -z "$CR_HOURLY_SH" ]]; then
     surface "CodeRabbit helper (cr-review-hourly.sh) not found — skipping @coderabbitai full review (fail-closed)"
     return 1
@@ -260,8 +274,8 @@ cr_budget_allows() {
     return 1   # global hourly budget exhausted
   fi
   (( DRY_RUN )) && return 0
-  # Atomically reserve + record (enforces the per-PR <=2/hour cap; exit 1 at cap).
-  if ! "$CR_HOURLY_SH" --record-explicit "$PR" >/dev/null 2>&1; then
+  # Non-consuming per-PR cap check (exit 1 at global-exhausted or >=2/hour cap).
+  if ! "$CR_HOURLY_SH" --peek-explicit "$PR" >/dev/null 2>&1; then
     return 1
   fi
   return 0
@@ -269,36 +283,44 @@ cr_budget_allows() {
 
 post_trigger() {
   # $1 = reviewer key
-  local key="$1" trigger="${REVIEWER_TRIGGER[$1]}"
+  local key="$1" trigger
+  trigger="$(reviewer_trigger "$1")"
   if (( DRY_RUN )); then
-    REVIEWER_STATUS[$key]="dry-run-would-trigger"
+    set_status "$key" "dry-run-would-trigger"
     surface "would trigger $key: $trigger (dry-run)"
     return 0
   fi
   if gh pr comment "$PR" --body "$trigger" >/dev/null 2>&1; then
-    REVIEWER_STATUS[$key]="triggered"
+    set_status "$key" "triggered"
     ACTIONS=$((ACTIONS + 1))
     surface "triggered $key: $trigger"
+    # Record CodeRabbit's per-PR explicit-trigger slot ONLY after a successful
+    # post, so a failed `gh pr comment` never consumes the cap with no trigger on
+    # the PR (issue #494 BugBot). Other reviewers have no per-PR cap to record.
+    if [[ "$key" == "coderabbit" && -n "$CR_HOURLY_SH" ]]; then
+      "$CR_HOURLY_SH" --record-explicit "$PR" >/dev/null 2>&1 || \
+        surface "WARNING: CR trigger posted but recording the per-PR slot failed"
+    fi
   else
-    REVIEWER_STATUS[$key]="trigger-failed"
+    set_status "$key" "trigger-failed"
     surface "WARNING: failed to post $key trigger ($trigger) — check gh auth/scopes"
   fi
 }
 
 for key in "${REVIEWER_KEYS[@]}"; do
-  login="${REVIEWER_LOGIN[$key]}"
-  trigger="${REVIEWER_TRIGGER[$key]}"
+  login="$(reviewer_login "$key")"
+  trigger="$(reviewer_trigger "$key")"
   # Idempotency: present if the bot already has an artifact OR we already posted
   # its trigger comment (covers "triggered but bot hasn't responded yet").
   if login_present "$login" || trigger_already_posted "$trigger"; then
-    REVIEWER_STATUS[$key]="already-present"
+    set_status "$key" "already-present"
     continue
   fi
   if [[ "$key" == "coderabbit" ]]; then
     if cr_budget_allows; then
       post_trigger "$key"
     else
-      REVIEWER_STATUS[$key]="skipped-rate-cap"
+      set_status "$key" "skipped-rate-cap"
       surface "skipping @coderabbitai full review — CR rate cap hit (posting the other reviewers)"
     fi
   else
@@ -310,9 +332,13 @@ done
 # Clean ⇒ nothing was done and nothing is pending: not flipped, and every
 # reviewer was already-present (no triggers, no skips, no failures).
 CLEAN=true
-[[ "$DRAFT_ACTION" == "marked-ready" || "$DRAFT_ACTION" == "skipped-not-author" ]] && CLEAN=false
+# Any draft action other than a genuine "not-draft" means work happened or the PR
+# is still a draft (marked-ready / skipped-not-author / ready-failed) — not clean.
+# ready-failed in particular keeps is_draft true, so clean MUST be false even when
+# all four reviewers are present (issue #494 BugBot — "False clean after ready failure").
+[[ "$DRAFT_ACTION" != "not-draft" ]] && CLEAN=false
 for key in "${REVIEWER_KEYS[@]}"; do
-  [[ "${REVIEWER_STATUS[$key]}" != "already-present" ]] && CLEAN=false
+  [[ "$(get_status "$key")" != "already-present" ]] && CLEAN=false
 done
 
 if [[ "$CLEAN" == "true" ]]; then
@@ -327,10 +353,10 @@ SUMMARY="$(jq -n \
   --arg draft_action "$DRAFT_ACTION" \
   --argjson actions "$ACTIONS" \
   --argjson clean "$CLEAN" \
-  --arg ca_t "${REVIEWER_TRIGGER[codeant]}"  --arg ca_s "${REVIEWER_STATUS[codeant]}" \
-  --arg cr_t "${REVIEWER_TRIGGER[coderabbit]}" --arg cr_s "${REVIEWER_STATUS[coderabbit]}" \
-  --arg cu_t "${REVIEWER_TRIGGER[cursor]}"   --arg cu_s "${REVIEWER_STATUS[cursor]}" \
-  --arg gr_t "${REVIEWER_TRIGGER[graphite]}" --arg gr_s "${REVIEWER_STATUS[graphite]}" \
+  --arg ca_t "$(reviewer_trigger codeant)"    --arg ca_s "$(get_status codeant)" \
+  --arg cr_t "$(reviewer_trigger coderabbit)" --arg cr_s "$(get_status coderabbit)" \
+  --arg cu_t "$(reviewer_trigger cursor)"     --arg cu_s "$(get_status cursor)" \
+  --arg gr_t "$(reviewer_trigger graphite)"   --arg gr_s "$(get_status graphite)" \
   '{
     pr: $pr,
     is_draft: $is_draft,
