@@ -35,17 +35,18 @@ read -r today_spend daily_warn monthly_spend monthly_cap proj_eom proj_eom_pct d
 [[ -n "${today_spend:-}" && "$today_spend" != "null" ]] || exit 0
 
 # Determine whether to emit: monthly_pct >= sht_monthly OR daily_spend >= sht_daily
-emit="$(python3 -c "
+emit="$(python3 - "$proj_eom_pct" "$today_spend" "$sht_monthly" "$sht_daily" <<'PYEMIT' >/dev/null 2>&1 && echo yes || echo no
 import sys
 try:
-    monthly_pct = float('$proj_eom_pct')
-    daily_spend = float('$today_spend')
-    sht_m = float('$sht_monthly')
-    sht_d = float('$sht_daily')
+    monthly_pct = float(sys.argv[1])
+    daily_spend = float(sys.argv[2])
+    sht_m = float(sys.argv[3])
+    sht_d = float(sys.argv[4])
     sys.exit(0 if (monthly_pct >= sht_m or daily_spend >= sht_d) else 1)
 except Exception:
     sys.exit(1)
-" >/dev/null 2>&1 && echo yes || echo no)"
+PYEMIT
+)"
 [[ "$emit" == "yes" ]] || exit 0
 
 line="$(python3 - "$today_spend" "$daily_warn" "$monthly_spend" "$monthly_cap" "$proj_eom" "$proj_eom_pct" "$status" <<'PY' 2>/dev/null

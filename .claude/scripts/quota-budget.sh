@@ -174,7 +174,7 @@ IS_STANDARD_DEFAULT = (abs(legacy_cap - 3.33) < 0.01 or legacy_cap <= 5.0)
 if not cfg.get("monthly_cap_usd"):
     cfg["monthly_cap_usd"] = 1000
 if not cfg.get("daily_warn_threshold_usd"):
-    cfg["daily_warn_threshold_usd"] = 100 if IS_STANDARD_DEFAULT else int(legacy_cap)
+    cfg["daily_warn_threshold_usd"] = 100 if IS_STANDARD_DEFAULT else float(legacy_cap)
 
 # Normalize thresholds to new schema
 old_th = cfg.get("thresholds", {})
