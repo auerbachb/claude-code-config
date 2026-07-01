@@ -438,14 +438,14 @@ proj_month_frac = max(month_fraction, MIN_MONTH_FRAC)
 projected_eom = monthly_spend / proj_month_frac if proj_month_frac > 0 else monthly_spend
 projected_eom_pct = projected_eom / monthly_cap if monthly_cap > 0 else 0.0
 
-MONTHLY_WARN = float(sys.argv[7]) if len(sys.argv) > 7 else 0.80
+MONTHLY_WARN = float(monthly_warn_s)  # sys.argv[6]: was incorrectly reading argv[7] (monthly_crit)
 def classify_monthly(pct):
     if pct >= MONTHLY_CRIT: return "critical"
     if pct >= MONTHLY_WARN: return "warn"
     if pct >= MONTHLY_INFO: return "info"
     return "ok"
 def classify_daily(spend):
-    if spend >= DAILY_WARN_USD: return "warn"
+    if spend >= daily_warn_threshold: return "warn"
     if spend >= DAILY_INFO_USD: return "info"
     return "ok"
 def sev_max(a, b):
