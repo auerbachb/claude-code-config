@@ -119,7 +119,11 @@ CodeAnt and Graphite are parallel supplements; the primary chain stays CR → Bu
 1. Fetch latest CR comments via `gh api`, verify each finding against the actual file
 2. Fix **all valid findings**, commit and push **once**
 3. **Reply to every thread** ("Fixed in `abc1234`: <what changed>"). Try inline reply; on 404, PR-level comment with `@coderabbitai Fixed in ...`
-4. **Resolve each thread via GraphQL** after replying — replies alone don't resolve threads. Use `resolveReviewThread(threadId)`; fallback: `minimizeComment(subjectId, classifier: RESOLVED)`. Full mutations: `.claude/reference/graphql-thread-resolution.md`
+4. **Resolve each thread via the shared helper** — **NEVER call `resolveReviewThread` inline** (e.g., `for TID in ...; do gh api graphql ...; done`). Always use:
+   ```bash
+   bash .claude/scripts/resolve-review-threads.sh <PR> --thread-ids <id1,id2>
+   ```
+   or `--thread-ids-file <file>` for a list. The script handles retries and the `minimizeComment` fallback. Full mutations: `.claude/reference/graphql-thread-resolution.md`
 5. **Re-query `pullRequest.reviewThreads` and verify every touched thread has `isResolved: true`** before requesting a new review. Retry with the minimize fallback; surface any still-dangling URLs — do not declare success.
 6. Resume polling; repeat until CR has no more findings
 
