@@ -12,6 +12,7 @@
 #   cr-review-hourly.sh --check
 #   cr-review-hourly.sh --consume
 #   cr-review-hourly.sh --record-explicit <pr_number>
+#   cr-review-hourly.sh --peek-explicit <pr_number>
 #   cr-review-hourly.sh --help | -h
 #
 # MODES
@@ -23,6 +24,12 @@
 #                    Prune per-PR explicit-trigger timestamps >1h old; append now.
 #                    Prints JSON including explicit_triggers_in_window and surface_user
 #                    (true when count >= 2 after append — caller must surface to user).
+#   --peek-explicit <N>
+#                    Read-only per-PR cap check (NO write): exit 1 if the global
+#                    budget is exhausted OR the PR already has >=2 explicit triggers
+#                    in the rolling hour, else exit 0. Lets callers gate BEFORE
+#                    posting and record (--record-explicit) only after a successful
+#                    post, so a failed comment never burns a per-PR slot.
 #
 # FLAGS
 #   (none beyond modes) — default budget 8; env CR_HOURLY_BUDGET overrides for testing.
@@ -33,7 +40,7 @@
 #
 # EXIT STATUS
 #   0  Success.
-#   1  Global hourly budget exhausted (--check or --consume); per-PR explicit-trigger cap (--record-explicit).
+#   1  Global hourly budget exhausted (--check/--consume/--peek-explicit); per-PR explicit-trigger cap (--record-explicit/--peek-explicit).
 #   2  Usage error.
 #   5  Write failed.
 #
@@ -89,6 +96,20 @@ while [[ $# -gt 0 ]]; do
       fi
       shift 2
       ;;
+    --peek-explicit)
+      if [[ -n "$MODE" ]]; then
+        die_usage "only one mode flag allowed"
+      fi
+      MODE="peek_explicit"
+      if [[ $# -lt 2 ]]; then
+        die_usage "--peek-explicit requires a PR number"
+      fi
+      PR_EXPLICIT="$2"
+      if ! [[ "$PR_EXPLICIT" =~ ^[0-9]+$ ]]; then
+        die_usage "--peek-explicit PR must be numeric, got: $PR_EXPLICIT"
+      fi
+      shift 2
+      ;;
     --)
       shift
       break
@@ -103,7 +124,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$MODE" ]]; then
-  die_usage "one of --check, --consume, --record-explicit is required"
+  die_usage "one of --check, --consume, --record-explicit, --peek-explicit is required"
 fi
 
 if ! command -v jq >/dev/null 2>&1; then
@@ -342,5 +363,46 @@ case "$MODE" in
       inner_record
     fi
     exit $?
+    ;;
+
+  peek_explicit)
+    # Read-only per-PR cap check (NO write, no flock — like --check). Exit 1 if
+    # the global hourly budget is exhausted OR this PR already has >=2 explicit
+    # triggers in the rolling hour; exit 0 otherwise. Lets callers gate BEFORE
+    # posting and record (--record-explicit) only AFTER a successful post, so a
+    # failed `gh pr comment` never burns a per-PR slot (issue #494).
+    PR_KEY="$PR_EXPLICIT"
+    if [[ ! -f "$STATE_FILE" ]] || ! jq -e . "$STATE_FILE" >/dev/null 2>&1; then
+      PRE_EXPLICIT=0
+      GLOBAL_USED=0
+    else
+      PRE_EXPLICIT="$(jq "$PRUNE_GLOBAL | (.prs[\"$PR_KEY\"].cr_explicit_triggers // []) | length" "$STATE_FILE" 2>/dev/null || echo 0)"
+      GLOBAL_USED="$(jq "$PRUNE_GLOBAL | (.cr_hourly.events // []) | length" "$STATE_FILE" 2>/dev/null || echo 0)"
+    fi
+    [[ "$PRE_EXPLICIT" =~ ^[0-9]+$ ]] || PRE_EXPLICIT=0
+    [[ "$GLOBAL_USED" =~ ^[0-9]+$ ]] || GLOBAL_USED=0
+    if (( GLOBAL_USED >= BUDGET )); then
+      jq -n -c \
+        --argjson pr "$PR_EXPLICIT" \
+        --argjson budget "$BUDGET" \
+        --argjson used "$GLOBAL_USED" \
+        --arg now_iso "$NOW_ISO" \
+        '{pr: $pr, global_exhausted: true, explicit_triggers_in_window: 0, allowed: false, reviews_used: $used, budget: $budget, checked_at: $now_iso}'
+      exit 1
+    fi
+    if (( PRE_EXPLICIT >= 2 )); then
+      jq -n -c \
+        --argjson pr "$PR_EXPLICIT" \
+        --argjson c "$PRE_EXPLICIT" \
+        --arg now_iso "$NOW_ISO" \
+        '{pr: $pr, global_exhausted: false, explicit_triggers_in_window: $c, allowed: false, checked_at: $now_iso}'
+      exit 1
+    fi
+    jq -n -c \
+      --argjson pr "$PR_EXPLICIT" \
+      --argjson c "$PRE_EXPLICIT" \
+      --arg now_iso "$NOW_ISO" \
+      '{pr: $pr, global_exhausted: false, explicit_triggers_in_window: $c, allowed: true, checked_at: $now_iso}'
+    exit 0
     ;;
 esac

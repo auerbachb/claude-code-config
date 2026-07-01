@@ -182,6 +182,38 @@ Only after the table is printed does Step 5 execute the actions.
 
 Iterate the fleet and execute each PR's Step 3 verdict. `waiting`, `gone`, `error`, and `BLOCKED:*` verdicts do **no** work here (`BLOCKED:*` is handled by the Stop routing in Step 7).
 
+### Step 5.0: Pre-flight per discovered PR (before any dispatch — issue #493)
+
+**Before the per-PR decision tree acts, run the shared `pr-preflight.sh` once per discovered PR.** This flips a draft PR you own to ready and engages all four conditionally-triggered reviewers (CodeAnt, CodeRabbit, Cursor, Graphite) on each PR's current SHA, so the fleet is review-ready before any rebase / `/fixpr` / `/wrap` dispatch. It is the **same** script `/fixpr` Step 0c and `/babysit-pr` T1b use — PMM never re-implements the draft flip or trigger logic.
+
+```bash
+PREFLIGHT_SH=""
+for c in "$HOME/.claude/skills-worktree/.claude/scripts/pr-preflight.sh" \
+         "$HOME/.claude/scripts/pr-preflight.sh" \
+         ".claude/scripts/pr-preflight.sh"; do
+  [ -x "$c" ] && { PREFLIGHT_SH="$c"; break; }
+done
+
+# Strictly per-PR — pr-preflight.sh takes a single PR and holds NO cross-PR
+# state, so a draft flip on PR A can never leak into PR B's reviewer-trigger
+# logic. Run it in a per-PR loop over the fleet; skip verdicts gone/error.
+for N in $PR_NUMS; do
+  # Skip PRs whose Step 3 verdict was `gone` or `error` — calling pr-preflight.sh
+  # on them would cause avoidable API failures and noise.
+  _verdict=$(jq -r --arg n "$N" '.[$n].verdict // ""' <<<"${VERDICTS_JSON:-{}}" 2>/dev/null || true)
+  if [[ "$_verdict" == "gone" || "$_verdict" == "error" ]]; then continue; fi
+  if [ -n "$PREFLIGHT_SH" ]; then
+    PF_OUT=$("$PREFLIGHT_SH" "$N") || echo "[PMM] pr-preflight.sh #$N exited non-zero (exit $?) — continuing"
+    echo "$PF_OUT"   # timestamped action lines per PR feed the heartbeat
+    # stash the per-PR PREFLIGHT_SUMMARY for the Step 7 summary (keyed by PR)
+  else
+    echo "[PMM] pr-preflight.sh not found — skipping draft/reviewer pre-flight for #$N"
+  fi
+done
+```
+
+`pr-preflight.sh` is idempotent (a PR already ready with all four reviewers engaged is a no-op printing `Pre-flight clean — proceeding`), rate-cap safe (it gates `@coderabbitai full review` on `cr-review-hourly.sh` — `--check` + atomic `--record-explicit` — and skips only CR when the cap is hit, still posting the other three), never flips another user's intentional draft, and never triggers Greptile. Because the pre-flight may have just triggered reviewers, the verdicts computed in Step 3 are from *before* the triggers; the next tick re-discovers and re-classifies on the post-trigger state — the rebase / `/fixpr` / `/wrap` actions below still run on this tick's verdicts.
+
 ### Step 5a: Rebase (verdict `rebase`, i.e. `merge_state == BEHIND`)
 
 **Use `git rebase origin/main` + `git push --force-with-lease` — NEVER GitHub's update-branch API.** The API creates bot merge commits that block CI; `auto-update-prs.yml` was removed for exactly this reason.
@@ -364,6 +396,7 @@ Print a final summary:
 === PR fleet monitoring ended ===
 Reason:   <user-stop | empty-fleet | hard-block>
 Fleet:    <final status table>
+Pre-flight: <per-PR draft→ready + reviewers triggered this session, from each PR's PREFLIGHT_SUMMARY; "clean" where no-op>
 Actions:  <rebases / /fixpr / /wrap dispatched this session, per PR>
 Blocked:  <PR # + reason for each HARD_BLOCK entry — e.g. "#123 human CHANGES_REQUESTED by @alice">
 ```
@@ -379,7 +412,7 @@ This skill is an **orchestrator**. It rebases/force-pushes and dispatches `/fixp
 - **Never modify branch protection** — no calls to `.../branches/.../protection`.
 - **Never dismiss human reviews** — only Bot-allowlist `CHANGES_REQUESTED` on a stale `commit_id` (Step 5b). Human CR is a hard block.
 - **Never resolve a review thread without code-verification** — thread resolution happens only inside `/fixpr` Steps 1–4 after verifying the fix. This skill only *counts* unresolved threads.
-- **Never bypass AI-reviewer rate caps** — `cr-review-hourly.sh` gates every CR re-trigger; Greptile/CodeAnt caps are respected by the dispatched skills.
+- **Never bypass AI-reviewer rate caps** — `cr-review-hourly.sh` gates every CR re-trigger; Greptile/CodeAnt caps are respected by the dispatched skills. The Step 5.0 pre-flight (`pr-preflight.sh`, issue #493) is the sanctioned per-PR trigger path: it gates `@coderabbitai full review` on `cr-review-hourly.sh`, never triggers Greptile, never flips another user's draft, and is strictly per-PR (no shared accumulator — a flip/trigger on one PR never leaks to another).
 - **Never use GitHub's update-branch API** for `BEHIND` — only `git rebase origin/main` + `--force-with-lease`.
 - **Stay in the worktree; never run destructive commands in the root repo** — no `git clean`, `git reset --hard`, or `.env` edits anywhere.
 - **Never merge directly** — merging happens only through `/wrap` (which carries its own merge authorization), after its gate + AC verification.

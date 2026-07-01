@@ -147,6 +147,36 @@ When inference picked from multiple candidates, append the override hint on its 
 Also tracking: #458 (bugbot_review_poll), #445 (cr_confirmation_pass)
 ```
 
+### Step 0c: Pre-flight — draft→ready + four-reviewer trigger (issue #493)
+
+Run the shared pre-flight **before** the audit so the PR is out of draft and all four conditionally-triggered reviewers (CodeAnt, CodeRabbit, Cursor, Graphite) are engaged on the current SHA before any finding-classification work begins. This is the same `pr-preflight.sh` invoked by `/babysit-pr` and `/pr-monitor-and-manage`, so the behavior is identical across all three skills — do **not** re-implement the draft flip or trigger logic inline.
+
+```bash
+PREFLIGHT_SH=""
+for candidate in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/pr-preflight.sh" \
+  "$HOME/.claude/scripts/pr-preflight.sh" \
+  ".claude/scripts/pr-preflight.sh"; do
+  if [[ -x "$candidate" ]]; then PREFLIGHT_SH="$candidate"; break; fi
+done
+
+# Resolve a PR number for the pre-flight. Prefer the explicit/inferred arg from
+# Step 0a; otherwise fall back to the current branch's PR (the same PR the
+# Step 0b audit will resolve). Empty ⇒ no PR yet — skip; Step 0b reports it.
+PREFLIGHT_PR="${PR_NUMBER_ARG:-$(gh pr view --json number --jq .number 2>/dev/null || true)}"
+
+PREFLIGHT_SUMMARY_JSON=""
+if [[ -n "$PREFLIGHT_SH" && -n "$PREFLIGHT_PR" ]]; then
+  PREFLIGHT_OUT=$("$PREFLIGHT_SH" "$PREFLIGHT_PR") || echo "[PREFLIGHT] pr-preflight.sh exited non-zero (exit $?) — continuing to audit" >&2
+  echo "$PREFLIGHT_OUT"
+  PREFLIGHT_SUMMARY_JSON=$(sed -n 's/^PREFLIGHT_SUMMARY: //p' <<<"$PREFLIGHT_OUT")
+elif [[ -z "$PREFLIGHT_SH" ]]; then
+  echo "[PREFLIGHT] pr-preflight.sh not found — skipping draft/reviewer pre-flight (install from repo .claude/scripts/)"
+fi
+```
+
+`pr-preflight.sh` is idempotent and rate-cap safe: it marks the PR ready only when **you** authored it, never overrides someone else's intentional draft, never triggers Greptile, and skips `@coderabbitai full review` (still posting the other three) when `cr-review-hourly.sh` reports the cap hit. On a PR that is already ready with all four reviewers engaged it prints `Pre-flight clean — proceeding` and does nothing. Keep `$PREFLIGHT_SUMMARY_JSON` for the Step 7 "Pre-flight" line.
+
 ### Step 0b: Run the audit
 
 Call `pr-state.sh` with the resolved PR when inference or an explicit argument produced one; otherwise fall back to branch auto-detection:
@@ -869,6 +899,7 @@ After any rebase + force-push: `[MERGE] rebase complete, force-pushed (SHA: <new
 ```text
 === fixpr complete ===
 PR:              #$PR_NUMBER ($BRANCH)
+Pre-flight:      <draft→ready action if any + reviewers triggered, from $PREFLIGHT_SUMMARY_JSON; "clean" when nothing was done; "skipped" when no PR/script>
 Threads:         N total, M were unresolved
   - Addressed:   A threads replied to by /fixpr
   - Resolved:    Y addressed threads verified isResolved=true
@@ -886,6 +917,8 @@ Status:          CLEAN | THREADS_STUCK | REVIEW_PENDING | CI_PENDING | CI_FAILIN
 FIXPR_WRAP_STATUS: <exact same token as Status — single-line machine-parseable copy for /wrap issue #452>
 FIXPR_WAIT_SUMMARY: iterations=<N> total_wait_secs=<S> final=<clean|cap-exhausted|new-findings-pending>
 ```
+
+Render the **Pre-flight** line from `$PREFLIGHT_SUMMARY_JSON` (Step 0c): when `.clean == true` print `clean — already ready, all 4 reviewers engaged`; otherwise summarize `.draft_action` (e.g. `marked ready`) plus the reviewer keys whose `.status == "triggered"` (and note any `skipped-rate-cap`). When the pre-flight was skipped (no PR resolved yet, or the script was missing) print `skipped`.
 
 `/wrap` recovery may delegate here; parents grep **`FIXPR_WRAP_STATUS:`** and **`FIXPR_WAIT_SUMMARY:`** (and echo **`Status:`**) into heartbeats without re-parsing prose. `FIXPR_WAIT_SUMMARY` is the issue #454 contract: `/wrap` trusts this verdict — the bots and CI were already waited on here, so `/wrap` re-runs `merge-gate.sh` immediately with no polling of its own. `final=clean` when the last wait exited on a full bot+CI verdict (or the idempotent no-push path was already clean — `iterations=0`); `final=cap-exhausted` when the last wait hit `FIXPR_WAIT_CAP_SECS`; `final=new-findings-pending` when the outer iteration cap exhausted with findings still arriving.
 

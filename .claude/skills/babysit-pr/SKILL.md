@@ -23,7 +23,7 @@ This is reused by `/pr-monitor-and-manage` (issue #460): that skill invokes `/ba
 - **Never dismiss human-authored reviews.** Only `/fixpr`'s `dismiss-stale-bot-changes.sh` (bot allowlist, wrong `commit_id`) may dismiss, and only bot reviews.
 - **Never resolve a review thread** itself — thread resolution happens only inside `/fixpr` Steps 1–4 after code-verification. `/babysit-pr` does not call `resolveReviewThread`.
 - **Never bypass `/fixpr`'s code-verification step** — it dispatches the full `/fixpr` workflow, never a shortcut.
-- **Never post `@coderabbitai full review`** without `cr-review-hourly.sh --check` passing first (`/fixpr` owns the actual trigger + the atomic `--record-explicit` cap).
+- **Never post `@coderabbitai full review`** without `cr-review-hourly.sh --check` passing first. The **only** sanctioned trigger path in this skill is the T1b pre-flight (`pr-preflight.sh`, issue #493), which gates CR on `cr-review-hourly.sh` (`--check` + atomic `--record-explicit`) automatically, never triggers Greptile, and never flips another user's draft. `/fixpr` owns any further triggers after a push.
 
 A human `CHANGES_REQUESTED` on HEAD is `hard-blocked` → record and exit. Never auto-dismiss it.
 
@@ -72,6 +72,7 @@ MERGE_GATE_SH=$(resolve_script merge-gate.sh)     || { echo "ERROR: merge-gate.s
 SESSION_STATE_SH=$(resolve_script session-state.sh) || { echo "ERROR: session-state.sh not found" >&2; exit 1; }
 CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh)   || true   # optional; degrade gracefully
 GREPTILE_SH=$(resolve_script greptile-budget.sh)     || true   # optional; degrade gracefully
+PREFLIGHT_SH=$(resolve_script pr-preflight.sh)       || true   # optional; degrade gracefully (#493)
 ```
 
 **Always read/write `session-state.json` via `session-state.sh --get`/`--set`** (atomic, sibling-preserving) — never raw `jq` writes (`handoff-files.md`). State for this skill lives under `.prs["<N>"]`:
@@ -234,7 +235,46 @@ if [[ -z "${SKIP_STATE_READ:-}" ]]; then
 fi
 ```
 
-Pull the fields the classifier needs (only when `GATE_EXIT` was `0`/`1` and the bundle was read):
+### T1b. Pre-flight — draft→ready + four-reviewer trigger (issue #493)
+
+**Run after the gate-exit check (which sets `SKIP_STATE_READ`), then re-fetch `GATE_JSON` and `BUNDLE` so that T1c field extraction and T3 classification operate on post-trigger snapshots.** A reviewer just engaged by pre-flight is not misclassified as "missing" and does not cause a spurious `/fixpr` dispatch on the same tick.
+
+Run the shared `pr-preflight.sh` so a draft PR you own is flipped ready and all four conditionally-triggered reviewers (CodeAnt, CodeRabbit, Cursor, Graphite) are engaged on the current SHA before T2/T3 decide anything. This is the **same** script `/fixpr` Step 0c and `/pr-monitor-and-manage` use — `/babysit-pr` never re-implements the draft flip or trigger logic. It is idempotent (a clean PR is a no-op), rate-cap safe (skips only `@coderabbitai full review` when `cr-review-hourly.sh` reports the cap hit, posting the other three), never flips another user's draft, and never triggers Greptile.
+
+Run **only** on a valid state read (skip when `SKIP_STATE_READ=1` — a gone/merged/closed PR needs no pre-flight):
+
+```bash
+PREFLIGHT_SUMMARY_JSON=""
+if [[ -z "${SKIP_STATE_READ:-}" && -n "$PREFLIGHT_SH" ]]; then
+  PREFLIGHT_OUT=$("$PREFLIGHT_SH" "$PR") || echo "[babysit] pr-preflight.sh exited non-zero (exit $?) — continuing tick" >&2
+  echo "$PREFLIGHT_OUT"   # its timestamped action lines double as part of this tick's heartbeat
+  PREFLIGHT_SUMMARY_JSON=$(sed -n 's/^PREFLIGHT_SUMMARY: //p' <<<"$PREFLIGHT_OUT")
+elif [[ -z "$PREFLIGHT_SH" && -z "${SKIP_STATE_READ:-}" ]]; then
+  echo "[babysit] pr-preflight.sh not found — skipping draft/reviewer pre-flight this tick"
+fi
+```
+
+Re-fetch `GATE_JSON` and `BUNDLE` after pre-flight so that any reviewer or draft-state change made by pre-flight is captured before T3 classifies. Guard the same way as T1 — skip the tick on tooling error:
+
+```bash
+if [[ -z "${SKIP_STATE_READ:-}" ]]; then
+  GATE_JSON=$("$MERGE_GATE_SH" "$PR"); GATE_EXIT=$?
+  if [[ "$GATE_EXIT" != "0" && "$GATE_EXIT" != "1" ]]; then
+    TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
+    echo "[$TS] #$PR tick: merge-gate.sh post-preflight re-fetch failed (exit $GATE_EXIT) — skipping classification this tick."
+    "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.last_tick_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" 2>/dev/null || true
+    return 0 2>/dev/null || exit 0
+  fi
+  PR_CREATED=$(gh pr view "$PR" --json createdAt --jq '.createdAt') || {
+    echo "[babysit] gh pr view failed (post-preflight re-fetch) — skipping tick, retry next cadence." >&2; exit 0; }
+  BUNDLE=$("$PR_STATE_SH" --pr "$PR" --since "$PR_CREATED") || {
+    echo "[babysit] pr-state.sh failed (post-preflight re-fetch) — skipping tick, retry next cadence." >&2; exit 0; }
+fi
+```
+
+### T1c. Extract fields from post-preflight snapshots
+
+Pull the fields the classifier needs (only when `GATE_EXIT` was `0`/`1` and the bundle was read). These snapshots were taken after pre-flight ran, so they reflect the post-trigger bot state:
 
 ```bash
 HEAD_SHA=$(jq -r '.head_sha // ""'                 <<<"$GATE_JSON")
@@ -259,6 +299,8 @@ BUGBOT_STATE=$(jq -r '[.check_runs.all[] | select((.name//""|ascii_downcase)|con
 ```
 
 (When `SKIP_STATE_READ=1` was set above — gate exit `3` — skip straight to T3's terminal handling, which classifies `merged` vs `closed-unmerged` from `PR_NOW`.)
+
+Record the draft→ready action and any triggered reviewers in the T7 heartbeat / final summary from `$PREFLIGHT_SUMMARY_JSON`.
 
 ### T2. Rate-cap snapshot (MUST run before classification)
 
@@ -440,6 +482,7 @@ Emit the final summary:
 ```
 === babysit-pr complete ===
 PR:           #<PR>
+Pre-flight:   <last tick's draft→ready + reviewers triggered, from $PREFLIGHT_SUMMARY_JSON; "clean" when no-op across ticks>
 Final state:  <class>
 Reason:       merged | hard-blocked | closed-unmerged | blocker-tick-cap | stable-frozen | user-stop
 Ticks:        <tick_count>
