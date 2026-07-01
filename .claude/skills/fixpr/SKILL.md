@@ -544,6 +544,8 @@ THREAD_RESOLUTION_OUTPUT=$(bash .claude/scripts/resolve-review-threads.sh "$PR_N
 echo "$THREAD_RESOLUTION_OUTPUT"
 ```
 
+> **NEVER call `resolveReviewThread` inline** (e.g., `for TID in ...; do gh api graphql resolveReviewThread ...; done`). Always use `resolve-review-threads.sh <PR> --thread-ids <id1,id2>` (or `--thread-ids-file`). The script handles retries and the `minimizeComment` fallback automatically.
+
 **Unchanged-line threads:** GitHub only auto-resolves a review thread when the **exact** commented line changes. If `/fixpr` fixed the issue by editing nearby code (or declined/OBE), the thread can stay `isResolved: false` after Step 4b until the script runs `resolveReviewThread` / `minimizeComment` on that thread id. The explicit `--thread-ids-file` set forces resolution for **every** addressed thread, not only those GitHub auto-closed.
 
 The script re-fetches `pullRequest.reviewThreads` via GraphQL after each mutation pass and again before exit. For any touched thread still reporting `isResolved: false`, it retries `resolveReviewThread` and falls back to `minimizeComment(classifier: RESOLVED)`. Exit codes: `0` means every touched thread was verified resolved; `1` means at least one dangling thread remains and `/fixpr` must not declare success; `3` PR not found; `4` gh error. It prints `[VERIFY] addressed=N resolved=M dangling=K` plus `[STUCK]` lines with URLs/reasons for every dangling thread.

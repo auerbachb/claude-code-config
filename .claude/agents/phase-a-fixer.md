@@ -82,10 +82,12 @@ Exit codes: `0` inline reply posted; `1` fallback PR-level reply posted (still a
 
 After replying, resolve **only** the threads whose first-comment author is `coderabbitai`, `cursor`, or `greptile-apps` (the bots you actually handled in Step 2). Do NOT resolve threads authored by human reviewers or other bots — those may be active discussion threads unrelated to your fix work.
 
-Use the shared helper (falls back to `minimizeComment` if `resolveReviewThread` fails):
+Use the shared helper — **NEVER call `resolveReviewThread` inline**. Always use:
 
 ```bash
 bash .claude/scripts/resolve-review-threads.sh {{PR_NUMBER}}
+# or, when you already have thread IDs from a prior gh api call:
+bash .claude/scripts/resolve-review-threads.sh {{PR_NUMBER}} --thread-ids <id1,id2>
 ```
 
 The script defaults to `--authors coderabbitai,cursor,greptile-apps`. If a thread's first-comment author is anything other than those logins (e.g., a human reviewer), the script leaves it alone. Exit 1 means at least one thread failed both mutations — still write the Step 6 handoff file (include `"notes": "thread resolution partial failure"` so Phase B knows), then report the failure to the parent. Do not proceed to Phase B with unresolved bot threads.

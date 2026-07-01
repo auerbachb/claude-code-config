@@ -241,7 +241,7 @@ jq '.check_runs.in_progress_runs' "$STATE"
 1. Verify each finding against actual code before fixing
 2. Fix ALL valid findings in one commit, push once
 3. Reply to every thread (CR: include `@coderabbitai`; BugBot: plain text only, no `@cursor`; Greptile: plain text only, no `@greptileai`)
-4. Resolve threads via GraphQL
+4. Resolve threads via `resolve-review-threads.sh` — **NEVER call `resolveReviewThread` inline**; use `bash .claude/scripts/resolve-review-threads.sh {{PR_NUMBER}} --thread-ids <id1,id2>` (or `--thread-ids-file`)
 5. Resume polling
 
 > **"Duplicate" findings are NOT resolved.** Always verify against actual code before dismissing.
