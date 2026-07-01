@@ -547,11 +547,15 @@ def classify_monthly(projected_pct):
         return "info"
     return "ok"
 
-def classify_daily(spend_usd):
-    """Daily signal: capped at warn — never critical."""
-    if spend_usd >= DAILY_WARN_USD:
+def classify_daily(spend_usd, warn_usd=None, info_usd=None):
+    """Daily signal: capped at warn — never critical.
+    Thresholds derived from daily_warn_threshold so --config-cap daily-warn=N
+    stays consistent with daily_status, daily_spend_pct_of_warn, and the stop hook."""
+    w = warn_usd if warn_usd is not None else DAILY_WARN_USD
+    i = info_usd if info_usd is not None else DAILY_INFO_USD
+    if spend_usd >= w:
         return "warn"
-    if spend_usd >= DAILY_INFO_USD:
+    if spend_usd >= i:
         return "info"
     return "ok"
 
@@ -559,12 +563,15 @@ def severity_max(a, b):
     order = {"ok": 0, "info": 1, "warn": 2, "critical": 3}
     return a if order.get(a, 0) >= order.get(b, 0) else b
 
-def month_spend_usd(month_str):
-    """Sum all day entries for the given YYYY-MM month prefix."""
+def month_spend_usd(month_str, cutoff_date=None):
+    """Sum all day entries for the given YYYY-MM month prefix.
+    cutoff_date (YYYY-MM-DD): if provided, only sum days <= cutoff_date so that
+    --check --date YYYY-MM-DD past-day queries don't include later days' spend."""
     total = 0.0
     for d, e in days.items():
         if d.startswith(month_str):
-            total += e["estimated_usd"]
+            if cutoff_date is None or d <= cutoff_date:
+                total += e["estimated_usd"]
     return total
 
 def days_in_month(year, month):
@@ -646,9 +653,11 @@ is_today = (target == today_et)
 e = days.get(target, blank_day(target))
 today_spend = e["estimated_usd"]
 
-# Monthly spend: sum all days in the same ET month as 'target'
+# Monthly spend: sum all days in the same ET month as 'target', capped at target date
+# so --check --date YYYY-MM-DD past-day queries don't include later days' spend.
 target_month = target[:7]  # YYYY-MM
-monthly_spend = month_spend_usd(target_month)
+cutoff = target if not is_today else None
+monthly_spend = month_spend_usd(target_month, cutoff_date=cutoff)
 
 if is_today:
     midnight = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -686,12 +695,16 @@ projected_eom_pct = (projected_eom / monthly_cap) if monthly_cap > 0 else 0.0
 daily_spend_pct_of_warn = (today_spend / daily_warn_threshold) if daily_warn_threshold > 0 else 0.0
 
 monthly_status = classify_monthly(projected_eom_pct)
-daily_status = classify_daily(today_spend)
+# Derive daily thresholds from daily_warn_threshold so --config-cap daily-warn=N
+# stays consistent: info = 80% of warn level, warn = daily_warn_threshold itself.
+daily_info_threshold = min(DAILY_INFO_USD, daily_warn_threshold * 0.80)
+daily_status = classify_daily(today_spend, warn_usd=daily_warn_threshold, info_usd=daily_info_threshold)
 # Combined status: max severity (daily capped at warn — never escalates to critical)
 status = severity_max(monthly_status, daily_status)
 
-# Surface: emit when monthly >=60% OR daily >= $80
-surface = (projected_eom_pct >= MONTHLY_INFO) or (today_spend >= DAILY_INFO_USD)
+# Surface: emit when monthly >=60% OR daily >= daily_info_threshold
+# (daily_info_threshold is 80% of daily_warn_threshold, consistent with classify_daily)
+surface = (projected_eom_pct >= MONTHLY_INFO) or (today_spend >= daily_info_threshold)
 
 out = {
     "date": target,
