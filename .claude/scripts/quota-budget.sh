@@ -23,6 +23,8 @@
 #   quota-budget.sh --reset [--no-state]
 #   quota-budget.sh --config-cap monthly=N [daily-warn=M]
 #   quota-budget.sh --config-cap daily-warn=M
+#   quota-budget.sh --ack [--session SESSION_ID]
+#   quota-budget.sh --tail [N]
 #   quota-budget.sh --help | -h
 #
 # MODES
@@ -41,11 +43,21 @@
 #   --config-cap monthly=N       Set monthly_cap_usd to N in quota-config.json.
 #   --config-cap daily-warn=M   Set daily_warn_threshold_usd to M.
 #   --config-cap monthly=N daily-warn=M  Set both.
+#   --ack      Acknowledge the current spend warning for the rest of today's session.
+#              Silences the Stop-hook line until severity escalates or the ET day
+#              rolls over. Writes ~/.claude/quota-ack.json. Use --session to specify
+#              the session id (defaults to $CLAUDE_SESSION_ID or session-state.json).
+#   --tail [N] Show the last N entries from the ledger (default 20). Human-readable
+#              table: timestamp, model, cost, session. Useful for debugging.
 #
 # FLAGS
 #   --date D   Aggregate a specific ET day (YYYY-MM-DD) instead of today
 #              (--check only). Past days report fraction = 1.0 (no projection).
 #   --no-state Do not write the snapshot into session-state.json.
+#   --session S  Session ID for --ack (overrides $CLAUDE_SESSION_ID).
+#
+# ENV OVERRIDES (tests): QUOTA_CONFIG, QUOTA_USAGE_LOG, QUOTA_STATE_FILE,
+#   QUOTA_ACK_FILE, CLAUDE_SESSION_ID.
 #
 # OUTPUT
 #   stdout: single-line JSON. --check snapshot fields:
@@ -78,7 +90,6 @@
 #   2  Usage error.
 #   5  Read/compute/write failure.
 #
-# ENV OVERRIDES (tests): QUOTA_CONFIG, QUOTA_USAGE_LOG, QUOTA_STATE_FILE.
 #
 # DEPENDENCIES
 #   python3 (aggregation + ET grouping/projection via zoneinfo), jq (atomic
@@ -108,6 +119,9 @@ MODE="check"
 DATE_OVERRIDE=""
 WRITE_STATE=1
 CONFIG_CAP_ARGS=()
+TAIL_N=20
+SESSION_ID_OVERRIDE=""
+ACK_FILE="${QUOTA_ACK_FILE:-$HOME/.claude/quota-ack.json}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) print_help; exit 0 ;;
@@ -124,6 +138,19 @@ while [[ $# -gt 0 ]]; do
         shift
       done
       ;;
+    --ack) MODE="ack"; shift ;;
+    --tail)
+      MODE="tail"
+      shift
+      if [[ $# -gt 0 && "$1" =~ ^[0-9]+$ ]]; then
+        TAIL_N="$1"
+        shift
+      fi
+      ;;
+    --session)
+      [[ $# -ge 2 ]] || die_usage "--session requires a value"
+      SESSION_ID_OVERRIDE="$2"
+      shift 2 ;;
     --date)
       [[ $# -ge 2 ]] || die_usage "--date requires a value"
       DATE_OVERRIDE="$2"
@@ -278,6 +305,286 @@ write_quota_daily() {
     echo "quota-budget.sh: jq failed updating $STATE_FILE (snapshot still printed)" >&2
   fi
 }
+
+# --- --ack: acknowledge current severity for the rest of today's session ---
+if [[ "$MODE" == "ack" ]]; then
+  # Resolve session id: override > env > session-state.json
+  SESSION_ID="${SESSION_ID_OVERRIDE:-${CLAUDE_SESSION_ID:-}}"
+  if [[ -z "$SESSION_ID" ]] && command -v jq >/dev/null 2>&1 && [[ -f "$STATE_FILE" ]]; then
+    SESSION_ID="$(jq -r '.session_id // empty' "$STATE_FILE" 2>/dev/null || true)"
+  fi
+  if [[ -z "$SESSION_ID" ]]; then
+    echo "quota-budget.sh: --ack requires a session id; set CLAUDE_SESSION_ID or use --session" >&2
+    exit 2
+  fi
+
+  # Get current date (ET) and current severity
+  SNAP_FOR_ACK="$(python3 - "$CONFIG_PATH" "$USAGE_LOG" "$MONTHLY_CAP" "$DAILY_WARN"       "$MONTHLY_INFO" "$MONTHLY_WARN" "$MONTHLY_CRIT"       "$DAILY_INFO_USD" "$DAILY_WARN_USD"       "check" "" "" <<'PY' 2>/dev/null
+import json, os, sys
+from datetime import datetime, timezone
+(config_path, log_path, monthly_cap_s, daily_warn_s,
+ monthly_info_s, monthly_warn_s, monthly_crit_s,
+ daily_info_usd_s, daily_warn_usd_s,
+ mode, date_override, migration_note) = sys.argv[1:13]
+try:
+    import zoneinfo
+    ET = zoneinfo.ZoneInfo("America/New_York")
+    now_et = datetime.now(timezone.utc).astimezone(ET)
+except Exception:
+    now_et = datetime.now(timezone.utc)
+print(json.dumps({"date": now_et.date().isoformat(), "status": "ok"}))
+PY
+)" || true
+
+  TODAY_ET="$(printf '%s' "${SNAP_FOR_ACK:-}" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("date",""))' 2>/dev/null || TZ='America/New_York' date +%F 2>/dev/null || date +%F)"
+
+  # Read actual current status
+  SNAP_ACK="$(python3 - "$CONFIG_PATH" "$USAGE_LOG" "$MONTHLY_CAP" "$DAILY_WARN"       "$MONTHLY_INFO" "$MONTHLY_WARN" "$MONTHLY_CRIT"       "$DAILY_INFO_USD" "$DAILY_WARN_USD"       "check" "" "" <<'PY' 2>/dev/null || true
+import json, os, sys
+from datetime import datetime, timezone, timedelta
+import calendar
+
+(config_path, log_path, monthly_cap_s, daily_warn_s,
+ monthly_info_s, monthly_warn_s, monthly_crit_s,
+ daily_info_usd_s, daily_warn_usd_s,
+ mode, date_override, migration_note) = sys.argv[1:13]
+
+try:
+    monthly_cap = float(monthly_cap_s)
+    daily_warn_threshold = float(daily_warn_s)
+    MONTHLY_INFO = float(monthly_info_s)
+    MONTHLY_CRIT = float(monthly_crit_s)
+    DAILY_INFO_USD = float(daily_info_usd_s)
+    DAILY_WARN_USD = float(daily_warn_usd_s)
+except Exception:
+    monthly_cap = 1000.0; daily_warn_threshold = 100.0
+    MONTHLY_INFO = 0.60; MONTHLY_CRIT = 0.95
+    DAILY_INFO_USD = 80.0; DAILY_WARN_USD = 100.0
+
+try:
+    with open(config_path, encoding="utf-8") as f:
+        cfg = json.load(f)
+except Exception:
+    cfg = {}
+pricing = cfg.get("pricing") if isinstance(cfg.get("pricing"), dict) else {}
+default_price = pricing.get("default") if isinstance(pricing.get("default"), dict) else     {"input": 15.0, "output": 75.0, "cache_write": 18.75, "cache_read": 1.5}
+
+def num(v, fb):
+    try: return float(v)
+    except: return fb
+
+def price_for(model):
+    model = model or ""
+    best, best_len = None, -1
+    for k, v in pricing.items():
+        if k in ("default", "_comment") or not isinstance(v, dict): continue
+        if k in model and len(k) > best_len: best, best_len = k, len(k)
+    chosen = pricing.get(best, default_price) if best else default_price
+    return {k: num(chosen.get(k), num(default_price.get(k), 0.0)) for k in ("input","output","cache_write","cache_read")}
+
+try:
+    import zoneinfo
+    ET = zoneinfo.ZoneInfo("America/New_York")
+except Exception:
+    ET = None
+
+now_utc = datetime.now(timezone.utc)
+now_et = now_utc.astimezone(ET) if ET else now_utc
+today_et = now_et.date().isoformat()
+current_month_et = now_et.strftime("%Y-%m")
+
+def et_date_of(ts):
+    ts = ts.strip()
+    try:
+        if ts.endswith("Z"): ts = ts[:-1] + "+00:00"
+        dt = datetime.fromisoformat(ts)
+        if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
+        et = dt.astimezone(ET) if ET else dt
+        return et.date().isoformat(), et.strftime("%Y-%m")
+    except: return None, None
+
+days = {}
+def acc(d, model, inp, out, cr, cw):
+    e = days.setdefault(d, {"estimated_usd": 0.0})
+    p = price_for(model)
+    cost = (inp*p["input"] + out*p["output"] + cr*p["cache_read"] + cw*p["cache_write"]) / 1_000_000.0
+    e["estimated_usd"] += cost
+
+try:
+    with open(log_path, encoding="utf-8") as f:
+        for line in f:
+            parts = line.rstrip("
+").split("	")
+            if len(parts) < 7: continue
+            d, _m = et_date_of(parts[0])
+            if d is None: continue
+            model = parts[1]
+            try: inp, out, cr, cw = int(parts[2]), int(parts[3]), int(parts[4]), int(parts[5])
+            except: continue
+            acc(d, model, inp, out, cr, cw)
+except: pass
+
+today_spend = days.get(today_et, {}).get("estimated_usd", 0.0)
+monthly_spend = sum(e["estimated_usd"] for d, e in days.items() if d.startswith(current_month_et))
+
+midnight = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
+day_fraction = max(min((now_et - midnight).total_seconds() / 86400.0, 1.0), 0.0)
+year_i, month_i = now_et.year, now_et.month
+dim = calendar.monthrange(year_i, month_i)[1]
+day_of_month_frac = (now_et.day - 1 + day_fraction) / dim
+month_fraction = max(min(day_of_month_frac, 1.0), 0.0)
+MIN_MONTH_FRAC = 1.0 / dim
+proj_month_frac = max(month_fraction, MIN_MONTH_FRAC)
+projected_eom = monthly_spend / proj_month_frac if proj_month_frac > 0 else monthly_spend
+projected_eom_pct = projected_eom / monthly_cap if monthly_cap > 0 else 0.0
+
+MONTHLY_WARN = float(sys.argv[7]) if len(sys.argv) > 7 else 0.80
+def classify_monthly(pct):
+    if pct >= MONTHLY_CRIT: return "critical"
+    if pct >= MONTHLY_WARN: return "warn"
+    if pct >= MONTHLY_INFO: return "info"
+    return "ok"
+def classify_daily(spend):
+    if spend >= DAILY_WARN_USD: return "warn"
+    if spend >= DAILY_INFO_USD: return "info"
+    return "ok"
+def sev_max(a, b):
+    order = {"ok":0,"info":1,"warn":2,"critical":3}
+    return a if order.get(a,0) >= order.get(b,0) else b
+
+ms = classify_monthly(projected_eom_pct)
+ds = classify_daily(today_spend)
+st = sev_max(ms, ds)
+print(json.dumps({"date": today_et, "status": st}))
+PY
+)"
+
+  CURRENT_STATUS="$(printf '%s' "${SNAP_ACK:-}" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("status","warn"))' 2>/dev/null || echo "warn")"
+
+  # Write ack file atomically
+  python3 - "$ACK_FILE" "$SESSION_ID" "$TODAY_ET" "$CURRENT_STATUS" <<'PY' || { echo "quota-budget.sh: failed to write ack file" >&2; exit 5; }
+import json, os, sys
+path, session_id, today_et, current_status = sys.argv[1:5]
+ack = {
+    "session_id": session_id,
+    "acked_date": today_et,
+    "acked_at_severity": current_status,
+    "acked_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+}
+tmp = path + ".tmp"
+try:
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(ack, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+    print(json.dumps({"acked": True, "session_id": session_id, "date": today_et,
+                      "severity": current_status,
+                      "message": f"Stop-hook quota line quieted for today ({today_et}) — will re-surface if severity escalates beyond '{current_status}'."}))
+except Exception as e:
+    try: os.unlink(tmp)
+    except: pass
+    print(f"quota-budget.sh: could not write ack file: {e}", file=sys.stderr)
+    sys.exit(5)
+PY
+  exit 0
+fi
+
+# --- --tail: show last N ledger entries ---
+if [[ "$MODE" == "tail" ]]; then
+  python3 - "$USAGE_LOG" "$TAIL_N" "$CONFIG_PATH" <<'PY' || { echo "quota-budget.sh: failed to read ledger" >&2; exit 5; }
+import json, os, sys
+from datetime import datetime, timezone
+
+log_path, tail_n_s, config_path = sys.argv[1], sys.argv[2], sys.argv[3]
+tail_n = int(tail_n_s)
+
+try:
+    with open(config_path, encoding="utf-8") as f:
+        cfg = json.load(f)
+except Exception:
+    cfg = {}
+pricing = cfg.get("pricing") if isinstance(cfg.get("pricing"), dict) else {}
+default_price = pricing.get("default") if isinstance(pricing.get("default"), dict) else     {"input": 15.0, "output": 75.0, "cache_write": 18.75, "cache_read": 1.5}
+
+def num(v, fb):
+    try: return float(v)
+    except: return fb
+
+def price_for(model):
+    model = model or ""
+    best, best_len = None, -1
+    for k, v in pricing.items():
+        if k in ("default", "_comment") or not isinstance(v, dict): continue
+        if k in model and len(k) > best_len: best, best_len = k, len(k)
+    chosen = pricing.get(best, default_price) if best else default_price
+    return {k: num(chosen.get(k), num(default_price.get(k), 0.0)) for k in ("input","output","cache_write","cache_read")}
+
+try:
+    with open(log_path, encoding="utf-8") as f:
+        lines = [l.rstrip("\n") for l in f if l.strip()]
+except FileNotFoundError:
+    print(f"Ledger is empty (no file at {log_path})")
+    sys.exit(0)
+except Exception as e:
+    print(f"Error reading ledger: {e}", file=sys.stderr)
+    sys.exit(5)
+
+tail_lines = lines[-tail_n:] if len(lines) > tail_n else lines
+if not tail_lines:
+    print("Ledger is empty — no entries yet.")
+    sys.exit(0)
+
+rows = []
+for line in tail_lines:
+    parts = line.split("	")
+    if len(parts) < 7:
+        continue
+    ts_raw, model = parts[0], parts[1]
+    try:
+        inp, out, cr, cw = int(parts[2]), int(parts[3]), int(parts[4]), int(parts[5])
+    except ValueError:
+        continue
+    session_id = parts[6] if len(parts) > 6 else "?"
+    p = price_for(model)
+    cost = (inp * p["input"] + out * p["output"] + cr * p["cache_read"] + cw * p["cache_write"]) / 1_000_000.0
+
+    # Parse timestamp for display
+    try:
+        s = ts_raw.strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        ts_display = dt.strftime("%Y-%m-%d %H:%M:%SZ")
+    except Exception:
+        ts_display = ts_raw[:19]
+
+    # Shorten model name for display
+    model_short = model.replace("claude-", "").replace("-latest", "")[:24]
+    # Shorten session id
+    sess_short = session_id[:12] + "…" if len(session_id) > 12 else session_id
+
+    rows.append((ts_display, model_short, cost, inp + out, sess_short))
+
+if not rows:
+    print("No valid entries in ledger tail.")
+    sys.exit(0)
+
+total_lines = len(lines)
+shown = len(rows)
+print(f"Last {shown} of {total_lines} ledger entries:")
+print(f"{'Timestamp (UTC)':<22}  {'Model':<26}  {'Cost':>8}  {'Tokens':>8}  Session")
+print("-" * 82)
+total_cost = 0.0
+for ts_display, model_short, cost, tokens, sess_short in rows:
+    print(f"{ts_display:<22}  {model_short:<26}  ${cost:>7.4f}  {tokens:>8,}  {sess_short}")
+    total_cost += cost
+print("-" * 82)
+print(f"{'Total':>51}  ${total_cost:>7.4f}")
+PY
+  exit 0
+fi
 
 # --- --config-cap: update config file ---
 if [[ "$MODE" == "config-cap" ]]; then

@@ -22,6 +22,10 @@ allowed-tools:
 Report today's API spend and this month's burn against the monthly cap, with a
 secondary daily warn signal.
 
+**Subcommands (issue #496):**
+- `/quota ack` — quiet today's Stop-hook line for this session (re-surfaces on severity escalation)
+- `/quota tail [N]` — show the last N ledger entries as a human-readable table (default 20)
+
 Spend is tracked locally: the `quota-usage-hook.sh` PostToolUse hook appends one
 tab-separated line of raw token counts per assistant response to
 `~/.claude/quota-usage.log`. `quota-budget.sh` converts those counts to USD via
@@ -35,6 +39,10 @@ Run from the repo root so the script resolves `quota-config.json`:
 ```bash
 .claude/scripts/quota-budget.sh --check
 ```
+
+To quiet today's Stop-hook noise: `.claude/scripts/quota-budget.sh --ack`
+
+To debug spend: `.claude/scripts/quota-budget.sh --tail 10`
 
 It prints one JSON line and caches it under `quota_daily` in
 `~/.claude/session-state.json`. Key fields:
@@ -115,6 +123,38 @@ Map the daily verdict from `daily_status`:
 ```bash
 .claude/scripts/quota-budget.sh --check | jq -r '.by_model[] | "\(.model)\t$\(.estimated_usd)"'
 ```
+- **Acknowledge / quiet the Stop-hook for today's session:**
+
+```bash
+.claude/scripts/quota-budget.sh --ack
+# Output: {"acked": true, "session_id": "...", "date": "2026-07-01",
+#           "severity": "warn", "message": "Stop-hook quota line quieted ..."}
+```
+
+  Silences the per-turn `[quota]` Stop-hook line for the rest of the current ET day in
+  this session. Severity escalation (e.g. `warn` → `critical`) automatically breaks the
+  ack — the hook re-surfaces when things get materially worse. State is stored in
+  `~/.claude/quota-ack.json`; expires at ET midnight.
+
+  If `$CLAUDE_SESSION_ID` is not set, pass `--session <id>` explicitly:
+
+```bash
+.claude/scripts/quota-budget.sh --ack --session "my-session-id"
+```
+
+- **Tail the raw ledger (debugging):** `.claude/scripts/quota-budget.sh --tail [N]` —
+  show the last N entries (default 20) from the token ledger as a human-readable table:
+
+```
+Last 3 of 42 ledger entries:
+Timestamp (UTC)         Model                       Cost    Tokens  Session
+----------------------------------------------------------------------------------
+2026-07-01 22:10:03Z  opus-4-8                   $  7.1250  500000  sess-abc12…
+2026-07-01 22:15:44Z  sonnet-4-6                 $  0.0450   15000  sess-abc12…
+2026-07-01 22:18:01Z  opus-4-8                   $ 14.2500 1000000  sess-abc12…
+----------------------------------------------------------------------------------
+                                                  Total  $ 21.4200
+```
 
 ## Config schema
 
@@ -145,7 +185,10 @@ The migration is logged to stderr and noted in the first snapshot's `migration_n
 - A Stop hook (`quota-stop-notify.sh`) prints a one-line `[quota] …` reminder
   after a turn when monthly projected ≥ 60% of cap OR today's spend ≥ $80.
   Below both thresholds it is silent. Format:
-  `[quota] today $X / day-warn $DW (Y%) — month $A / $MC (B%) projected EoM $C — <severity>`
+  `[quota] today $X / day-warn $DW (Y%) — month $A / $MC (B%) projected EoM $C — <severity>  [/quota ack to quiet]`
+  (the ` [/quota ack to quiet]` hint appears only on the first emission per session+day).
+  Once acknowledged via `/quota ack` (or `quota-budget.sh --ack`), the hook is silent
+  for the rest of the ET day in that session, unless severity escalates to a higher level.
 - Monthly projection: `projected_eom = monthly_spend / (day_of_month_frac / days_in_month)`,
   with the denominator floored at 1 day so the first day of the month cannot
   explode the projection.
