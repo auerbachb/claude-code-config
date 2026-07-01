@@ -28,18 +28,26 @@ import sys, re
 cmd = sys.argv[1]
 expect = sys.argv[2]
 
-pat = re.compile(
-    r"(?:"
-    r"gh\s+api.*pulls/[0-9]+/reviews(?!.*select\(\.user\.login).*(?:\|\s*length\b|python3.*len\()"
-    r"|"
-    r"gh\s+api.*pulls/[0-9]+/reviews.*submitted_at.*gh\s+api.*pulls/[0-9]+/commits"
-    r"|"
-    r"gh\s+api.*pulls/[0-9]+/commits.*gh\s+api.*pulls/[0-9]+/reviews.*submitted_at"
-    r")",
-    re.S,
-)
+def _sentinel(cmd):
+    segments = re.split(r"&&|\|\|", cmd)
+    p1 = re.compile(
+        r"gh\s+api.*pulls/[0-9]+/reviews.*(?:\|\s*length\b|python3.*len\()",
+        re.S,
+    )
+    for seg in segments:
+        if p1.search(seg) and "select(.user.login" not in seg:
+            return True
+    temporal = re.compile(
+        r"(?:"
+        r"gh\s+api.*pulls/[0-9]+/reviews.*submitted_at.*gh\s+api.*pulls/[0-9]+/commits"
+        r"|"
+        r"gh\s+api.*pulls/[0-9]+/commits.*gh\s+api.*pulls/[0-9]+/reviews.*submitted_at"
+        r")",
+        re.S,
+    )
+    return bool(temporal.search(cmd))
 
-matched = bool(pat.search(cmd))
+matched = _sentinel(cmd)
 if (matched and expect == "yes") or (not matched and expect == "no"):
     print("PASS")
 else:
@@ -122,6 +130,11 @@ run_sentinel_test \
 run_sentinel_test \
   "reviews submitted_at compared to commits (temporal cycle reconstruction)" \
   'gh api repos/owner/repo/pulls/99/reviews --jq '"'"'.[].submitted_at'"'"' && gh api repos/owner/repo/pulls/99/commits --jq '"'"'.[].commit.committer.date'"'"'' \
+  "yes"
+
+run_sentinel_test \
+  "chained: raw count segment then bot-filtered segment (BugBot finding)" \
+  'gh api repos/owner/repo/pulls/123/reviews | jq '"'"'. | length'"'"' && gh api repos/owner/repo/pulls/123/reviews?per_page=100 --jq '"'"'[.[] | select(.user.login == "coderabbitai[bot]")] | length'"'"'' \
   "yes"
 
 echo ""

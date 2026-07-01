@@ -51,6 +51,42 @@ if not command:
 
 cwd = payload.get("cwd") or os.getcwd()
 
+def _cycle_count_sentinel(cmd: str) -> bool:
+    """
+    Detects manual cycle-count.sh bypasses. Returns True if cmd looks like it
+    manually counts review-fix rounds without using cycle-count.sh.
+
+    Split on && and || only (not ; or newline) so that ; inside python3 -c "..."
+    strings is not treated as a statement separator.
+
+    Pattern 1 — raw count without bot-login filter:
+        A pipeline segment fetches /reviews and uses | length or python3 len()
+        to count reviews as "rounds". Routine CR/BugBot polling ALWAYS filters
+        by .user.login; a genuine bypass does not.
+
+    Pattern 2/3 — temporal comparison:
+        Reviews submitted_at is compared against commits endpoint data in the same
+        compound command — manually reimplementing the cycle algorithm.
+    """
+    segments = re.split(r"&&|\|\|", cmd)
+    p1 = re.compile(
+        r"gh\s+api.*pulls/[0-9]+/reviews.*(?:\|\s*length\b|python3.*len\()",
+        re.S,
+    )
+    for seg in segments:
+        if p1.search(seg) and "select(.user.login" not in seg:
+            return True
+    temporal = re.compile(
+        r"(?:"
+        r"gh\s+api.*pulls/[0-9]+/reviews.*submitted_at.*gh\s+api.*pulls/[0-9]+/commits"
+        r"|"
+        r"gh\s+api.*pulls/[0-9]+/commits.*gh\s+api.*pulls/[0-9]+/reviews.*submitted_at"
+        r")",
+        re.S,
+    )
+    return bool(temporal.search(cmd))
+
+
 sentinels = [
     (
         "gh api PR reviews/comments with per_page",
@@ -75,28 +111,17 @@ sentinels = [
     (
         "gh api PR reviews counting rounds without bot filter",
         "cycle-count.sh",
-        # Matches manual cycle-count bypass: fetching PR reviews and using their raw
-        # count (length) as a proxy for review-fix rounds, without filtering by a
-        # specific bot login. select(.user.login in the command indicates routine
-        # CR/BugBot polling (checking if a bot has reviewed) — not cycle counting.
-        # Also matches commands that compare reviews + commits via submitted_at to
-        # manually reconstruct the cycle algorithm.
-        re.compile(
-            r"(?:"
-            # Pattern 1: access /reviews, no bot-login filter, output is a raw
-            # count via jq | length or python3 len(). select(.user.login anywhere
-            # in the command is a negative indicator — routine polling always
-            # filters by bot login; cycle-count bypasses do not.
-            r"gh\s+api.*pulls/[0-9]+/reviews(?!.*select\(\.user\.login).*(?:\|\s*length\b|python3.*len\()"
-            r"|"
-            # Pattern 2: manual temporal comparison of reviews and commits to
-            # reconstruct cycle count (submitted_at vs commit date).
-            r"gh\s+api.*pulls/[0-9]+/reviews.*submitted_at.*gh\s+api.*pulls/[0-9]+/commits"
-            r"|"
-            r"gh\s+api.*pulls/[0-9]+/commits.*gh\s+api.*pulls/[0-9]+/reviews.*submitted_at"
-            r")",
-            re.S,
-        ),
+        # Sentinel uses a callable instead of a bare regex to handle compound
+        # shell commands correctly. A genuine cycle-count.sh bypass either:
+        #   1. Fetches /reviews and counts them without any .user.login filter
+        #      (treating raw review count as a proxy for fix rounds). Presence of
+        #      select(.user.login in the SAME pipeline segment is a negative
+        #      indicator — routine CR/BugBot polling always filters by bot login.
+        #      We split only on && and || (not ; or newline) to avoid breaking
+        #      on ; inside python3 -c "..." strings.
+        #   2. Compares review submitted_at timestamps against commits endpoint
+        #      data to manually reconstruct the cycle algorithm.
+        _cycle_count_sentinel,
     ),
     (
         "git worktree porcelain piped to awk/sed",
@@ -106,8 +131,12 @@ sentinels = [
 ]
 
 matches = []
-for pattern_name, script_name, regex in sentinels:
-    if regex.search(command):
+for pattern_name, script_name, matcher in sentinels:
+    if callable(matcher):
+        matched = matcher(command)
+    else:
+        matched = bool(matcher.search(command))
+    if matched:
         matches.append((pattern_name, script_name))
 
 has_date_window = re.search(r"\bdate\b.*(?:-v-|-d\b)", command, re.S)
