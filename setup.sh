@@ -91,7 +91,7 @@ Anthropic's in-app usage UI is the authoritative source for quota and spend.
 {end}"""
 
 try:
-    with open(readme_path) as f:
+    with open(readme_path, encoding="utf-8") as f:
         content = f.read()
 except FileNotFoundError:
     content = ""
@@ -107,7 +107,7 @@ else:
         content += "\n"
     content += note + "\n"
 
-with open(readme_path, "w") as f:
+with open(readme_path, "w", encoding="utf-8") as f:
     f.write(content)
 PYTHON_NOTE
 then

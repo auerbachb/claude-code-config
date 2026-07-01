@@ -235,9 +235,11 @@ HOOKS_DIR="$SKILLS_WORKTREE/.claude/hooks"
 echo ""
 echo "Registering hooks in $SETTINGS_FILE..."
 
+MANAGED_LEGACY_HOOKS_DIR="$REPO_ROOT/.claude/hooks" \
 python3 - "$SETTINGS_FILE" "$HOOKS_DIR" "${HOOKS_MANIFEST[@]}" <<'PYTHON_SCRIPT'
 import json
 import os
+import shlex
 import sys
 
 settings_file = sys.argv[1]
@@ -390,8 +392,29 @@ for item in manifest:
 manifest_scripts = {item["script"] for item in manifest}
 pruned = []
 
+# Managed hook roots — restrict pruning to directories THIS installer owns so we
+# never touch a different tool's or repo's ~/.../.claude/hooks registrations:
+#   * hooks_dir            — the current skills-worktree hooks directory
+#   * MANAGED_LEGACY_HOOKS_DIR — the root-repo hooks directory (pre-worktree
+#                            installs registered hooks here before migration)
+managed_hook_roots = {
+    os.path.normpath(root)
+    for root in (hooks_dir, os.environ.get("MANAGED_LEGACY_HOOKS_DIR", ""))
+    if root
+}
+
+def command_argv0(cmd):
+    """Return the executable path from a hook command, ignoring any arguments
+    (e.g. 'foo.sh --check' -> 'foo.sh'). Falls back to whitespace split if the
+    command is not valid shell syntax."""
+    try:
+        parts = shlex.split(cmd)
+    except ValueError:
+        parts = cmd.split()
+    return parts[0] if parts else ""
+
 def is_managed_hooks_path(path):
-    return os.path.basename(os.path.dirname(path)) == "hooks" and ".claude" in path
+    return os.path.normpath(os.path.dirname(path)) in managed_hook_roots
 
 for event in list(hooks.keys()):
     event_entries = hooks[event]
@@ -409,13 +432,13 @@ for event in list(hooks.keys()):
         surviving_hooks = []
         for h in hook_list:
             if isinstance(h, dict) and h.get("type") == "command":
-                cmd = h.get("command", "")
-                script_name = os.path.basename(cmd)
-                if (cmd
+                exe = command_argv0(h.get("command", ""))
+                script_name = os.path.basename(exe)
+                if (exe
                         and script_name not in manifest_scripts
-                        and is_managed_hooks_path(cmd)
-                        and not is_placeholder_path(cmd)
-                        and not os.path.isfile(cmd)):
+                        and is_managed_hooks_path(exe)
+                        and not is_placeholder_path(exe)
+                        and not os.path.isfile(exe)):
                     pruned.append(script_name)
                     continue  # drop this stale hook entry
             surviving_hooks.append(h)
