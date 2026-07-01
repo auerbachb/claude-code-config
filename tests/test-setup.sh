@@ -329,6 +329,91 @@ test_7_no_settings_json() {
   assert "No placeholder paths" "! grep -q '/path/to/' '$HOME/.claude/settings.json'"
 }
 
+# ── Test 8: Stale hook registration pruned ───────────────────────────────────
+
+test_8_stale_hook_pruned() {
+  section "Test 8: Stale hook registration pruned"
+
+  # Simulate a decommissioned hook (e.g. the /quota rollback) whose registration
+  # still lives in settings.json pointing at a now-deleted managed hook script.
+  # setup.sh Step 7 would fail on the missing path; setup-skills-worktree.sh
+  # Step 6 must prune it — but ONLY managed roots, and it must respect command
+  # arguments. Seed three registrations:
+  #   1. stale managed hook (missing)          -> pruned
+  #   2. stale hook under a NON-managed root    -> preserved (not ours)
+  #   3. active managed hook WITH arguments     -> preserved (argv0 parsing)
+  # Use a generic name for (1) so the test survives quota being long forgotten.
+  local stale_cmd="$HOME/.claude/skills-worktree/.claude/hooks/decommissioned-quota-hook.sh"
+  local ext_cmd="/tmp/other-tool/.claude/hooks/external-hook.sh"          # different tool's dir
+  local args_cmd="$HOME/.claude/skills-worktree/.claude/hooks/trust-flag-repair.sh --check"  # real hook + args
+  assert "Stale hook target does not exist" "[ ! -f '$stale_cmd' ]"
+  assert "External hook target does not exist" "[ ! -f '$ext_cmd' ]"
+
+  local seed_output
+  seed_output=$(python3 -c "
+import json, sys
+path = '$HOME/.claude/settings.json'
+with open(path, encoding='utf-8') as f:
+    data = json.load(f)
+
+hooks = data.setdefault('hooks', {})
+stop = hooks.setdefault('Stop', [])
+stop.append({'hooks': [{'type': 'command', 'command': '$stale_cmd', 'timeout': 5}]})
+stop.append({'hooks': [{'type': 'command', 'command': '$ext_cmd', 'timeout': 5}]})
+stop.append({'hooks': [{'type': 'command', 'command': '$args_cmd', 'timeout': 10}]})
+
+with open(path, 'w', encoding='utf-8') as f:
+    json.dump(data, f, indent=2)
+print('Seeded stale + external + args hook registrations')
+" 2>&1)
+  local seed_exit=$?
+  echo "  Seed output: $seed_output"
+  assert "Stale hook seed succeeded" "[ $seed_exit -eq 0 ]"
+  assert "Stale hook is registered before setup" "grep -q 'decommissioned-quota-hook.sh' '$HOME/.claude/settings.json'"
+
+  # Run setup-skills-worktree.sh which prunes stale managed-hook registrations
+  cd "$REPO_ROOT" || { assert "Can cd to REPO_ROOT" "false"; return; }
+  local prune_output prune_exit_code
+  prune_output=$(bash setup-skills-worktree.sh 2>&1)
+  prune_exit_code=$?
+  echo "$prune_output" | grep -i 'pruned' || true
+  assert "setup-skills-worktree.sh exits 0" "[ $prune_exit_code -eq 0 ]"
+
+  # (1) stale managed registration is gone
+  assert "Stale managed hook registration pruned" "! grep -q 'decommissioned-quota-hook.sh' '$HOME/.claude/settings.json'"
+  # (2) non-managed external hook is preserved (only OUR hooks dirs are pruned)
+  assert "External non-managed hook preserved" "grep -q 'external-hook.sh' '$HOME/.claude/settings.json'"
+  # (3) active hook with arguments preserved (argv0, not whole string, is checked)
+  assert "Managed hook with arguments preserved" "grep -q 'trust-flag-repair.sh --check' '$HOME/.claude/settings.json'"
+  assert "settings.json still valid JSON" "python3 -c \"import json; json.load(open('$HOME/.claude/settings.json'))\""
+  assert "Active hook still registered (trust-flag-repair.sh)" "grep -q 'trust-flag-repair.sh' '$HOME/.claude/settings.json'"
+
+  # setup.sh Step 7 checks each hook command as a raw path, so the intentionally
+  # seeded test artifacts (the non-managed external hook, and the args-bearing
+  # entry whose literal string is not a file) would trip it. Remove both before
+  # the full setup run so the suite ends green — the prune assertions above have
+  # already verified the behavior under test.
+  python3 -c "
+import json
+path = '$HOME/.claude/settings.json'
+with open(path, encoding='utf-8') as f:
+    data = json.load(f)
+def is_artifact(cmd):
+    return 'external-hook.sh' in cmd or 'trust-flag-repair.sh --check' in cmd
+for ev, groups in list(data.get('hooks', {}).items()):
+    groups[:] = [g for g in groups
+                 if not any(is_artifact(h.get('command', '')) for h in g.get('hooks', []))]
+with open(path, 'w', encoding='utf-8') as f:
+    json.dump(data, f, indent=2)
+"
+
+  # Full setup.sh now passes Step 7 (no missing hook paths)
+  local output exit_code
+  output=$(run_setup)
+  exit_code=$?
+  assert "setup.sh exits 0 after prune" "[ $exit_code -eq 0 ]"
+}
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -345,6 +430,7 @@ test_4_hook_path_migration
 test_5_broken_symlink_recovery
 test_6_hooks_resolve
 test_7_no_settings_json
+test_8_stale_hook_pruned
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 

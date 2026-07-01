@@ -60,43 +60,6 @@ Replace `/absolute/path/to/claude-code-config` with the actual path to your clon
 - The repo must have a git remote named `origin` with a `main` branch
 - The hook script must be executable: `chmod +x .claude/hooks/post-merge-pull.sh` (the repo tracks it as executable, but some systems may strip the bit on checkout)
 
-## quota-usage-hook.sh + quota-stop-notify.sh
-
-Tracks daily API spend (issue #458).
-
-**`quota-usage-hook.sh`** (PostToolUse, all tools): reads the session transcript,
-finds the most recent assistant message and its `usage` block, and appends one
-tab-separated line of **raw token counts** to `~/.claude/quota-usage.log`
-(append-only, same family as `script-usage.log` / `skill-usage.log`). USD is
-computed downstream by `quota-budget.sh`, never stored in the log.
-
-**TSV columns (7):** `ts_utc`, `model`, `input_tokens`, `output_tokens`,
-`cache_read_tokens`, `cache_creation_tokens`, `session_id`. The log holds **only
-counts + model + session id** — never prompts, completions, or secrets.
-
-- **De-duplication:** a single assistant message can spawn several `PostToolUse`
-  events (one per tool-use block), so the hook records the last-logged message id
-  per session under `~/.claude/quota-usage.d/<session>.last` (kept out of the
-  log) and skips when unchanged — each response is counted exactly once.
-- **Graceful no-op:** if the transcript is missing or exposes no assistant
-  `usage` block (the documented payload-availability gap), the hook writes
-  nothing and exits 0.
-- **Limitation:** `PostToolUse` only fires when a tool runs, so a final
-  text-only response is not captured — the ledger still tracks the large
-  majority of spend.
-
-**`quota-stop-notify.sh`** (Stop hook): after a turn, reads today's snapshot from
-`quota-budget.sh` and injects a one-line `[quota] today $X/$cap (P%) projected
-EoD $Y — status` reminder via `additionalContext` once today's spend reaches
-`stop_hook_threshold` (default 60% of cap). Silent below the threshold.
-
-The `/quota` skill and `.claude/scripts/quota-budget.sh` read this ledger to
-report today's spend and project end-of-day spend against `daily_cap_usd`.
-
-**Non-blocking:** both hooks always exit `0`; a failure never blocks execution.
-Require `python3` (+ `jq` for the Stop hook). Env `QUOTA_CONFIG` /
-`QUOTA_USAGE_LOG` / `QUOTA_STATE_DIR` / `QUOTA_STATE_FILE` override paths (tests).
-
 ## silence-detector.sh + silence-detector-ack.sh
 
 Enforces the 5-minute heartbeat rule. If the agent goes >5 minutes without sending a visible message to the user, a warning is injected into the agent's context after every tool call until a message is sent.
