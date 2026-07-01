@@ -30,6 +30,8 @@ If no open PRs, say "No open PRs." and stop.
 
 ### Step 2: For each PR, gather review state
 
+> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read the cached JSON bundle. All review-state queries in this skill read from the `$STATE` bundle — do not add inline `gh api` calls to these three endpoints.
+
 For each open PR, run the shared PR-state helper once per PR. One invocation returns reviews, inline comments, issue comments, unresolved threads, check-runs, and bot status rollups — all derived from the same HEAD SHA:
 
 ```bash

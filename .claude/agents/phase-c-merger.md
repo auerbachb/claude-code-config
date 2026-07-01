@@ -44,6 +44,8 @@ gh pr view {{PR_NUMBER}} --json state,title,mergeStateStatus,commits
 
 ## Step 1: Verify Merge Gate (and CI)
 
+> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read the cached JSON bundle. This agent delegates to `merge-gate.sh`, which calls `pr-state.sh` internally — do not add inline `gh api` calls to these three endpoints.
+
 Run the shared merge-gate verifier. It implements the three-path gate from `.claude/rules/cr-merge-gate.md` (CR 1-clean-approval on current HEAD, BugBot 1-clean, Greptile severity-gated), plus these explicit pre-merge gates — each is a hard STOP if not satisfied:
 
 - **Gate 1a — CI terminal state.** All check-runs `status: "completed"` with no blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`). In-progress checks BLOCK — do NOT present the merge prompt; wait and re-poll.

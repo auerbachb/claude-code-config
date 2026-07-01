@@ -159,6 +159,8 @@ If the PR is already merged or closed, skip to Phase 3 (follow-up detection).
 
 ### Step 1.2: Scan for unresolved review findings
 
+> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read the cached JSON bundle. All review-state queries in this skill read from the `$BUNDLE` returned by `pr-state.sh` — do not add inline `gh api` calls to these three endpoints.
+
 Use the shared `pr-state.sh` helper to fetch and pre-classify review activity from all three endpoints in one call. It filters to `coderabbitai[bot]`, `greptile-apps[bot]`, and `cursor[bot]` (BugBot) and tags each comment with `classification.class` (`finding` vs `acknowledgment`). The classifier only runs when `--since <iso>` is passed — pass the PR's `createdAt` to include every bot comment on the PR. The helper writes the JSON bundle to a tempfile and prints its **path** on stdout — capture the path, then read with `jq < "$BUNDLE"`:
 
 `$PR_NUM` is already fixed by Step 1.1's cascade — reuse it; do **not** re-derive it from `gh pr view` (a bare call would target the current branch's PR, not the inferred one):

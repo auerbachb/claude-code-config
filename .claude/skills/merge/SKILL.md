@@ -37,6 +37,8 @@ If running in a worktree, stop here and use the message from the Worktree check 
 
 ### Step 2: Verify the merge gate
 
+> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read the cached JSON bundle. This skill delegates to `merge-gate.sh`, which calls `pr-state.sh` internally — do not add inline `gh api` calls to these three endpoints.
+
 Run the shared merge-gate verifier, which implements the authoritative gate from `.claude/rules/cr-merge-gate.md` (CR 1 explicit APPROVED review on current HEAD / BugBot 1-clean / Greptile severity, plus CI and BEHIND checks):
 
 ```bash

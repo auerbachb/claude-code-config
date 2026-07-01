@@ -144,6 +144,8 @@ Output: `Reviewer: CR` / `Reviewer: BugBot` / `Reviewer: Greptile`.
 
 ## Step 6: Check for review response
 
+> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read the cached JSON bundle. The inline `gh api` calls below are legacy check-run and rate-limit spot-checks retained because they target commit-level endpoints (`/commits/{SHA}/check-runs`, `/commits/{SHA}/statuses`) not covered by `pr-state.sh`. For review, inline comment, and conversation endpoint lookups, use `pr-state.sh` exclusively.
+
 ### If PR is on CR:
 
 Check the commit status for CodeRabbit:
