@@ -51,6 +51,45 @@ if not command:
 
 cwd = payload.get("cwd") or os.getcwd()
 
+def _cycle_count_sentinel(cmd: str) -> bool:
+    """
+    Detects manual cycle-count.sh bypasses. Returns True if cmd looks like it
+    manually counts review-fix rounds without using cycle-count.sh.
+
+    Split on &&, || and newlines so each pipeline line is a separate segment —
+    a multiline bypass with | length on one line and a select() on a later
+    line is correctly detected. Semicolons are NOT split because ; appears
+    inside python3 -c "..." strings and would fragment valid detections.
+
+    Pattern 1 — raw count without any filter:
+        A pipeline segment fetches /reviews and uses | length or python3 len()
+        to count reviews as "rounds". Routine CR/BugBot polling ALWAYS filters
+        with select(...) (e.g. by .user.login or .state); a genuine bypass does
+        not use any select() filter at all.
+
+    Pattern 2/3 — temporal comparison:
+        Reviews submitted_at is compared against commits endpoint data in the same
+        compound command — manually reimplementing the cycle algorithm.
+    """
+    segments = re.split(r"&&|\|\||\n", cmd)
+    p1 = re.compile(
+        r"gh\s+api.*pulls/[0-9]+/reviews.*(?:\|?\s*length\b|python3.*len\()",
+        re.S,
+    )
+    for seg in segments:
+        if p1.search(seg) and not re.search(r'select\s*\(', seg):
+            return True
+    temporal = re.compile(
+        r"(?:"
+        r"gh\s+api.*pulls/[0-9]+/reviews.*submitted_at.*gh\s+api.*pulls/[0-9]+/commits"
+        r"|"
+        r"gh\s+api.*pulls/[0-9]+/commits.*gh\s+api.*pulls/[0-9]+/reviews.*submitted_at"
+        r")",
+        re.S,
+    )
+    return bool(temporal.search(cmd))
+
+
 sentinels = [
     (
         "gh api PR reviews/comments with per_page",
@@ -73,9 +112,20 @@ sentinels = [
         re.compile(r"gh\s+issue\s+comment.*@coderabbitai\s+plan", re.S),
     ),
     (
-        "gh api PR reviews/commits jq length",
+        "gh api PR reviews counting rounds without bot filter",
         "cycle-count.sh",
-        re.compile(r"gh\s+api.*pulls/[0-9]+/(reviews|commits).*jq.*length", re.S),
+        # Sentinel uses a callable instead of a bare regex to handle compound
+        # shell commands correctly. A genuine cycle-count.sh bypass either:
+        #   1. Fetches /reviews and counts them without any select() filter
+        #      (treating raw review count as a proxy for fix rounds). Presence of
+        #      any select(...) in the SAME pipeline segment is a negative
+        #      indicator — routine CR/BugBot polling always filters (by bot login,
+        #      review state, etc.).
+        #      We split only on && and || (not ; or newline) to avoid breaking
+        #      on ; inside python3 -c "..." strings.
+        #   2. Compares review submitted_at timestamps against commits endpoint
+        #      data to manually reconstruct the cycle algorithm.
+        _cycle_count_sentinel,
     ),
     (
         "git worktree porcelain piped to awk/sed",
@@ -85,8 +135,14 @@ sentinels = [
 ]
 
 matches = []
-for pattern_name, script_name, regex in sentinels:
-    if regex.search(command):
+for pattern_name, script_name, matcher in sentinels:
+    if isinstance(matcher, re.Pattern):
+        matched = bool(matcher.search(command))
+    elif callable(matcher):
+        matched = matcher(command)
+    else:
+        matched = False
+    if matched:
         matches.append((pattern_name, script_name))
 
 has_date_window = re.search(r"\bdate\b.*(?:-v-|-d\b)", command, re.S)
