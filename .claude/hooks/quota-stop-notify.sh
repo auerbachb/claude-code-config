@@ -101,6 +101,12 @@ show_ack_hint="no"
 if [[ ! -f "$ACK_HINT_MARKER" ]]; then
   show_ack_hint="yes"
   touch "$ACK_HINT_MARKER" 2>/dev/null || true
+  # Prune stale markers (older than today) to prevent unbounded growth
+  _hint_dir="$(dirname "${QUOTA_ACK_FILE:-$HOME/.claude/quota-ack.json}")"
+  _hint_base="$(basename "${QUOTA_ACK_FILE:-$HOME/.claude/quota-ack.json}")"
+  find "$_hint_dir" -maxdepth 1 -name "${_hint_base}.hint_*" \
+    ! -name "${_hint_base}.hint_*_${today_et:-9999-99-99}" \
+    -delete 2>/dev/null || true
 fi
 
 line="$(python3 - "$today_spend" "$daily_warn" "$monthly_spend" "$monthly_cap" "$proj_eom" "$proj_eom_pct" "$status" "$show_ack_hint" <<'PY' 2>/dev/null
