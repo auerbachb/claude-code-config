@@ -53,7 +53,7 @@
 #       "is_draft": <bool>,            # state observed before any flip
 #       "author": "<login>",
 #       "current_user": "<login>",
-#       "draft_action": "marked-ready" | "would-mark-ready" | "skipped-not-author" | "not-draft" | "ready-failed",
+#       "draft_action": "marked-ready" | "would-mark-ready" | "skipped-not-author" | "skipped-auth-unknown" | "not-draft" | "ready-failed",
 #       "reviewers": {
 #         "codeant":   {"trigger":"@codeant-ai review","status":"<status>"},
 #         "coderabbit":{"trigger":"@coderabbitai full review","status":"<status>"},
@@ -215,7 +215,10 @@ trigger_already_posted() {
 # --- 3. draft check ---
 DRAFT_ACTION="not-draft"
 if [[ "$IS_DRAFT" == "true" ]]; then
-  if [[ -n "$CURRENT_USER" && "$PR_AUTHOR" == "$CURRENT_USER" ]]; then
+  if [[ -z "$CURRENT_USER" ]]; then
+    DRAFT_ACTION="skipped-auth-unknown"
+    surface "WARNING: could not determine current user (gh api user failed) — leaving #$PR as draft; cannot verify authorship"
+  elif [[ "$PR_AUTHOR" == "$CURRENT_USER" ]]; then
     if (( DRY_RUN )); then
       DRAFT_ACTION="would-mark-ready"
       surface "draft by you (@$PR_AUTHOR) — would mark ready (dry-run)"

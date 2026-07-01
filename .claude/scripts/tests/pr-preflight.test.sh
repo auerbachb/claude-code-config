@@ -270,6 +270,19 @@ check_eq "summary line present" "1" "$(grep -c '^PREFLIGHT_SUMMARY: ' <<<"$DEF_O
 SUM_JSON=$(sed -n 's/^PREFLIGHT_SUMMARY: //p' <<<"$DEF_OUT")
 check_eq "summary parses, clean=true" "true" "$(jq -r '.clean' <<<"$SUM_JSON")"
 
+############################################################################
+echo "== Scenario 11: draft + gh api user fails (empty GH_USER) → skipped-auth-unknown =="
+export GH_USER=""
+write_view '{"isDraft":true,"author":{"login":"me"},"state":"OPEN"}'
+write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
+OUT=$(run_json 493); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "draft_action skipped-auth-unknown" "skipped-auth-unknown" "$(jq -r '.draft_action' <<<"$OUT")"
+check_eq "no ready called" "0" "$(actions | grep -c '^READY')"
+check_eq "4 reviewers triggered" "4" "$(actions | grep -c '^COMMENT')"
+check_eq "clean=false" "false" "$(jq -r '.clean' <<<"$OUT")"
+export GH_USER="me"  # restore
+
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1
