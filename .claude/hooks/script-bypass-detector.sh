@@ -56,8 +56,10 @@ def _cycle_count_sentinel(cmd: str) -> bool:
     Detects manual cycle-count.sh bypasses. Returns True if cmd looks like it
     manually counts review-fix rounds without using cycle-count.sh.
 
-    Split on && and || only (not ; or newline) so that ; inside python3 -c "..."
-    strings is not treated as a statement separator.
+    Split on &&, || and newlines so each pipeline line is a separate segment —
+    a multiline bypass with | length on one line and select(.user.login on a
+    later line would otherwise suppress detection. Semicolons are NOT split
+    because ; inside python3 -c "..." strings would create false segments.
 
     Pattern 1 — raw count without bot-login filter:
         A pipeline segment fetches /reviews and uses | length or python3 len()
@@ -68,7 +70,7 @@ def _cycle_count_sentinel(cmd: str) -> bool:
         Reviews submitted_at is compared against commits endpoint data in the same
         compound command — manually reimplementing the cycle algorithm.
     """
-    segments = re.split(r"&&|\|\|", cmd)
+    segments = re.split(r"&&|\|\||\n", cmd)
     p1 = re.compile(
         r"gh\s+api.*pulls/[0-9]+/reviews.*(?:\|\s*length\b|python3.*len\()",
         re.S,

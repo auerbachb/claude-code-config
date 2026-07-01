@@ -29,7 +29,7 @@ cmd = sys.argv[1]
 expect = sys.argv[2]
 
 def _sentinel(cmd):
-    segments = re.split(r"&&|\|\|", cmd)
+    segments = re.split(r"&&|\|\||\n", cmd)
     p1 = re.compile(
         r"gh\s+api.*pulls/[0-9]+/reviews.*(?:\|\s*length\b|python3.*len\()",
         re.S,
@@ -146,6 +146,12 @@ run_sentinel_test \
   "whitespace-variant select( .user.login ) is still excluded (fix 2: tolerant regex)" \
   'gh api "repos/owner/repo/pulls/123/reviews?per_page=100" --jq '"'"'[.[] | select( .user.login == "coderabbitai[bot]")] | length'"'"'' \
   "no"
+
+run_sentinel_test \
+  "multiline: | length on line 1, select(.user.login on line 2 — should still match (fix 3: newline split)" \
+  'gh api repos/owner/repo/pulls/123/reviews?per_page=100 | jq '"'"'. | length'"'"'
+select(.user.login == "coderabbitai[bot]")' \
+  "yes"
 
 echo ""
 echo "=== Summary ==="
