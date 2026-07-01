@@ -47,9 +47,11 @@ Using a **unique per-launch local name** (timestamp suffix) sidesteps git's work
 
 ## Before Requesting Any New Review (MANDATORY)
 
+> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read the cached JSON bundle. All polling in this agent reads from the shared `$STATE` bundle — do not re-issue inline `gh api` calls for these three endpoints.
+
 Run the session-start / pre-review comment audit per `cr-github-review.md` ("Session-start / pre-review comment audit"):
 
-1. Fetch all 3 comment endpoints with `per_page=100`.
+1. Call `pr-state.sh --pr {{PR_NUMBER}}` and read all 3 comment endpoints from the returned JSON bundle (`per_page=100` is handled by the script).
 2. Identify any unresolved findings from `coderabbitai[bot]`, `cursor[bot]`, or `greptile-apps[bot]`.
 3. **If ANY unresolved findings exist: invoke `/fixpr`.** `/fixpr` fixes, commits once, pushes, replies to every thread, resolves via GraphQL. Do NOT fix manually and do NOT request a new review on top of unaddressed feedback.
 4. **STOP condition:** do not proceed to the polling loop (or request a new review) until step 3 completes.
