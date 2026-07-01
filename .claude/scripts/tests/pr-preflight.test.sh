@@ -82,7 +82,7 @@ case "$sub" in
       *"/pulls/"*"/comments"*) fixture="$FIX_PULL_COMMENTS" ;;
       *"/issues/"*"/comments"*) fixture="$FIX_ISSUE_COMMENTS" ;;
     esac
-    if [[ -z "$fixture" || ! -f "$fixture" ]]; then echo "[]" >/dev/null; exit 0; fi
+    if [[ -z "$fixture" || ! -f "$fixture" ]]; then echo "[]"; exit 0; fi
     jq -r "$filter" "$fixture"
     exit 0
     ;;
@@ -174,7 +174,7 @@ check_eq "clean=false" "false" "$(jq -r '.clean' <<<"$OUT")"
 echo "== Scenario 4: CR rate cap exhausted (--check fails) → skip CR, post other 3 =="
 write_view '{"isDraft":false,"author":{"login":"me"},"state":"OPEN"}'
 write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
-CR_CHECK_RC=1 OUT=$(CR_CHECK_RC=1 run_json 493); RC=$?
+OUT=$(CR_CHECK_RC=1 run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "coderabbit skipped-rate-cap" "skipped-rate-cap" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
 check_eq "codeant triggered" "triggered" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
@@ -192,6 +192,15 @@ check_eq "exit 0" 0 "$RC"
 check_eq "coderabbit skipped-rate-cap" "skipped-rate-cap" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
 check_eq "no CR trigger posted" "0" "$(actions | grep -cF '@coderabbitai full review')"
 check_eq "3 comments posted" "3" "$(actions | grep -c '^COMMENT')"
+
+############################################################################
+echo "== Scenario 4c: dry-run also respects CR per-PR cap (Fix B coverage) =="
+write_view '{"isDraft":false,"author":{"login":"me"},"state":"OPEN"}'
+write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
+OUT=$(CR_PEEK_RC=1 run_json 493 --dry-run); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "dry-run coderabbit skipped-rate-cap when peek-explicit fails" "skipped-rate-cap" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
+check_eq "no real comments in dry-run" "0" "$(actions | grep -c '^COMMENT')"
 
 ############################################################################
 echo "== Scenario 5: 3 engaged, 1 missing → trigger only the missing one =="
@@ -236,7 +245,7 @@ write_view '{"isDraft":true,"author":{"login":"me"},"state":"OPEN"}'
 write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
 OUT=$(run_json 493 --dry-run); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "draft_action marked-ready (would)" "marked-ready" "$(jq -r '.draft_action' <<<"$OUT")"
+check_eq "draft_action would-mark-ready (dry-run)" "would-mark-ready" "$(jq -r '.draft_action' <<<"$OUT")"
 check_eq "reviewers dry-run-would-trigger" "dry-run-would-trigger" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
 check_eq "no real ready" "0" "$(actions | grep -c '^READY')"
 check_eq "no real comments" "0" "$(actions | grep -c '^COMMENT')"

@@ -17,8 +17,10 @@
 #        comment for it. If neither exists, post the matching trigger comment.
 #        Greptile is intentionally NOT triggered (stays manual per greptile.md).
 #        Before posting `@coderabbitai full review`, gate on
-#        cr-review-hourly.sh (--check global budget + --record-explicit per-PR
-#        2/hour cap). If the cap is hit, skip ONLY CodeRabbit's trigger and
+#        cr-review-hourly.sh (--check global budget + read-only --peek-explicit
+#        per-PR 2/hour cap). After a successful post, record via --record-explicit
+#        under a per-PR mkdir lock so concurrent pre-flights cannot double-trigger.
+#        If the cap is hit, skip ONLY CodeRabbit's trigger and
 #        still post the other three.
 #
 #   Strictly per-PR: no shared mutable accumulator across a fleet. Running it
@@ -48,7 +50,7 @@
 #       "is_draft": <bool>,            # state observed before any flip
 #       "author": "<login>",
 #       "current_user": "<login>",
-#       "draft_action": "marked-ready" | "skipped-not-author" | "not-draft" | "ready-failed",
+#       "draft_action": "marked-ready" | "would-mark-ready" | "skipped-not-author" | "not-draft" | "ready-failed",
 #       "reviewers": {
 #         "codeant":   {"trigger":"@codeant-ai review","status":"<status>"},
 #         "coderabbit":{"trigger":"@coderabbitai full review","status":"<status>"},
@@ -123,6 +125,23 @@ for need in gh jq; do
   fi
 done
 
+# --- per-PR CR concurrency lock (mkdir atomic on macOS/Linux; Bash 3.2 compatible) ---
+CR_LOCK_DIR="${TMPDIR:-/tmp}/pr-preflight-cr-${PR}.lock"
+cr_lock_acquire() {
+  # Bounded wait ~30s; reclaim a stale lock >60s old (crashed holder); best-effort.
+  local waited=0 age
+  while ! mkdir "$CR_LOCK_DIR" 2>/dev/null; do
+    if [[ -d "$CR_LOCK_DIR" ]]; then
+      age=$(( $(date +%s) - $(stat -f %m "$CR_LOCK_DIR" 2>/dev/null || stat -c %Y "$CR_LOCK_DIR" 2>/dev/null || echo 0) ))
+      (( age > 60 )) && { rmdir "$CR_LOCK_DIR" 2>/dev/null || true; continue; }
+    fi
+    (( waited >= 30 )) && return 1
+    sleep 1; waited=$((waited + 1))
+  done
+  return 0
+}
+cr_lock_release() { rmdir "$CR_LOCK_DIR" 2>/dev/null || true; }
+
 # --- timestamped surface helper (ET, per CLAUDE.md #1) ---
 surface() {
   # Print one timestamped action line unless in --json mode.
@@ -150,7 +169,7 @@ CR_HOURLY_SH="$(resolve_cr_hourly || true)"
 
 # --- 1. read PR draft state + author ---
 PR_VIEW_ERR="$(mktemp)"
-trap 'rm -f "$PR_VIEW_ERR" 2>/dev/null' EXIT
+trap 'rm -f "$PR_VIEW_ERR" 2>/dev/null; rmdir "$CR_LOCK_DIR" 2>/dev/null || true' EXIT
 if ! PR_VIEW="$(gh pr view "$PR" --json isDraft,author,state 2>"$PR_VIEW_ERR")"; then
   if grep -qiE 'not.?found|could not resolve|no pull requests? found|no such' "$PR_VIEW_ERR"; then
     echo "pr-preflight.sh: PR #$PR not found" >&2
@@ -212,7 +231,7 @@ DRAFT_ACTION="not-draft"
 if [[ "$IS_DRAFT" == "true" ]]; then
   if [[ -n "$CURRENT_USER" && "$PR_AUTHOR" == "$CURRENT_USER" ]]; then
     if (( DRY_RUN )); then
-      DRAFT_ACTION="marked-ready"
+      DRAFT_ACTION="would-mark-ready"
       surface "draft by you (@$PR_AUTHOR) — would mark ready (dry-run)"
     elif gh pr ready "$PR" >/dev/null 2>&1; then
       DRAFT_ACTION="marked-ready"
@@ -273,8 +292,8 @@ cr_budget_allows() {
   if ! "$CR_HOURLY_SH" --check >/dev/null 2>&1; then
     return 1   # global hourly budget exhausted
   fi
-  (( DRY_RUN )) && return 0
   # Non-consuming per-PR cap check (exit 1 at global-exhausted or >=2/hour cap).
+  # Runs in dry-run too (--peek-explicit is read-only; no slot consumed).
   if ! "$CR_HOURLY_SH" --peek-explicit "$PR" >/dev/null 2>&1; then
     return 1
   fi
@@ -298,8 +317,12 @@ post_trigger() {
     # post, so a failed `gh pr comment` never consumes the cap with no trigger on
     # the PR (issue #494 BugBot). Other reviewers have no per-PR cap to record.
     if [[ "$key" == "coderabbit" && -n "$CR_HOURLY_SH" ]]; then
-      "$CR_HOURLY_SH" --record-explicit "$PR" >/dev/null 2>&1 || \
-        surface "WARNING: CR trigger posted but recording the per-PR slot failed"
+      if ! "$CR_HOURLY_SH" --record-explicit "$PR" >/dev/null 2>&1; then
+        # Retry once; if still fails, surface a loud budget-undercount warning.
+        if ! "$CR_HOURLY_SH" --record-explicit "$PR" >/dev/null 2>&1; then
+          surface "WARNING: CR trigger posted to #$PR but recording the hourly/per-PR slot FAILED twice — the global CR budget is now UNDERCOUNTED by 1. Reconcile cr_hourly.events before relying on the CR rate cap."
+        fi
+      fi
     fi
   else
     set_status "$key" "trigger-failed"
@@ -317,12 +340,17 @@ for key in "${REVIEWER_KEYS[@]}"; do
     continue
   fi
   if [[ "$key" == "coderabbit" ]]; then
+    CR_LOCKED=0
+    if (( ! DRY_RUN )); then
+      cr_lock_acquire && CR_LOCKED=1 || surface "WARNING: could not acquire CR pre-flight lock for #$PR — proceeding without concurrency guard"
+    fi
     if cr_budget_allows; then
       post_trigger "$key"
     else
       set_status "$key" "skipped-rate-cap"
       surface "skipping @coderabbitai full review — CR rate cap hit (posting the other reviewers)"
     fi
+    (( CR_LOCKED )) && cr_lock_release
   else
     post_trigger "$key"
   fi

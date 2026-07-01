@@ -198,7 +198,10 @@ done
 # state, so a draft flip on PR A can never leak into PR B's reviewer-trigger
 # logic. Run it in a per-PR loop over the fleet; skip verdicts gone/error.
 for N in $PR_NUMS; do
-  # (skip PRs whose Step 3 verdict was `gone` or `error`)
+  # Skip PRs whose Step 3 verdict was `gone` or `error` — calling pr-preflight.sh
+  # on them would cause avoidable API failures and noise.
+  _verdict=$(jq -r --arg n "$N" '.[$n].verdict // ""' <<<"${VERDICTS_JSON:-{}}" 2>/dev/null || true)
+  if [[ "$_verdict" == "gone" || "$_verdict" == "error" ]]; then continue; fi
   if [ -n "$PREFLIGHT_SH" ]; then
     PF_OUT=$("$PREFLIGHT_SH" "$N") || echo "[PMM] pr-preflight.sh #$N exited non-zero (exit $?) — continuing"
     echo "$PF_OUT"   # timestamped action lines per PR feed the heartbeat

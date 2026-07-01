@@ -235,7 +235,26 @@ if [[ -z "${SKIP_STATE_READ:-}" ]]; then
 fi
 ```
 
-Pull the fields the classifier needs (only when `GATE_EXIT` was `0`/`1` and the bundle was read):
+### T1b. Pre-flight — draft→ready + four-reviewer trigger (issue #493)
+
+**Run immediately after the bundle read, BEFORE extracting bundle-derived states.** This ensures that BUGBOT_STATE, CR_STATE, and related fields reflect the post-trigger reality — a reviewer just engaged by pre-flight is not misclassified as "missing" and does not cause a spurious `/fixpr` dispatch on the same tick.
+
+Run the shared `pr-preflight.sh` so a draft PR you own is flipped ready and all four conditionally-triggered reviewers (CodeAnt, CodeRabbit, Cursor, Graphite) are engaged on the current SHA before T2/T3 decide anything. This is the **same** script `/fixpr` Step 0c and `/pr-monitor-and-manage` use — `/babysit-pr` never re-implements the draft flip or trigger logic. It is idempotent (a clean PR is a no-op), rate-cap safe (skips only `@coderabbitai full review` when `cr-review-hourly.sh` reports the cap hit, posting the other three), never flips another user's draft, and never triggers Greptile.
+
+Run **only** on a valid state read (skip when `SKIP_STATE_READ=1` — a gone/merged/closed PR needs no pre-flight):
+
+```bash
+PREFLIGHT_SUMMARY_JSON=""
+if [[ -z "${SKIP_STATE_READ:-}" && -n "$PREFLIGHT_SH" ]]; then
+  PREFLIGHT_OUT=$("$PREFLIGHT_SH" "$PR") || echo "[babysit] pr-preflight.sh exited non-zero (exit $?) — continuing tick" >&2
+  echo "$PREFLIGHT_OUT"   # its timestamped action lines double as part of this tick's heartbeat
+  PREFLIGHT_SUMMARY_JSON=$(sed -n 's/^PREFLIGHT_SUMMARY: //p' <<<"$PREFLIGHT_OUT")
+elif [[ -z "$PREFLIGHT_SH" && -z "${SKIP_STATE_READ:-}" ]]; then
+  echo "[babysit] pr-preflight.sh not found — skipping draft/reviewer pre-flight this tick"
+fi
+```
+
+Pull the fields the classifier needs (only when `GATE_EXIT` was `0`/`1` and the bundle was read). Because pre-flight ran first, these reflect the post-trigger bot state:
 
 ```bash
 HEAD_SHA=$(jq -r '.head_sha // ""'                 <<<"$GATE_JSON")
@@ -261,24 +280,7 @@ BUGBOT_STATE=$(jq -r '[.check_runs.all[] | select((.name//""|ascii_downcase)|con
 
 (When `SKIP_STATE_READ=1` was set above — gate exit `3` — skip straight to T3's terminal handling, which classifies `merged` vs `closed-unmerged` from `PR_NOW`.)
 
-### T1b. Pre-flight — draft→ready + four-reviewer trigger (issue #493)
-
-**First action after the PR state read, before classification.** Run the shared `pr-preflight.sh` so a draft PR you own is flipped ready and all four conditionally-triggered reviewers (CodeAnt, CodeRabbit, Cursor, Graphite) are engaged on the current SHA before T2/T3 decide anything. This is the **same** script `/fixpr` Step 0c and `/pr-monitor-and-manage` use — `/babysit-pr` never re-implements the draft flip or trigger logic. It is idempotent (a clean PR is a no-op), rate-cap safe (skips only `@coderabbitai full review` when `cr-review-hourly.sh` reports the cap hit, posting the other three), never flips another user's draft, and never triggers Greptile.
-
-Run **only** on a valid state read (skip when `SKIP_STATE_READ=1` — a gone/merged/closed PR needs no pre-flight):
-
-```bash
-PREFLIGHT_SUMMARY_JSON=""
-if [[ -z "${SKIP_STATE_READ:-}" && -n "$PREFLIGHT_SH" ]]; then
-  PREFLIGHT_OUT=$("$PREFLIGHT_SH" "$PR") || echo "[babysit] pr-preflight.sh exited non-zero (exit $?) — continuing tick" >&2
-  echo "$PREFLIGHT_OUT"   # its timestamped action lines double as part of this tick's heartbeat
-  PREFLIGHT_SUMMARY_JSON=$(sed -n 's/^PREFLIGHT_SUMMARY: //p' <<<"$PREFLIGHT_OUT")
-elif [[ -z "$PREFLIGHT_SH" && -z "${SKIP_STATE_READ:-}" ]]; then
-  echo "[babysit] pr-preflight.sh not found — skipping draft/reviewer pre-flight this tick"
-fi
-```
-
-Because the pre-flight may have just triggered reviewers, the T2 rate-cap snapshot and T3 classifier that follow see an accurate, post-trigger budget/bot state. Record the draft→ready action and any triggered reviewers in the T7 heartbeat / final summary from `$PREFLIGHT_SUMMARY_JSON`.
+Record the draft→ready action and any triggered reviewers in the T7 heartbeat / final summary from `$PREFLIGHT_SUMMARY_JSON`.
 
 ### T2. Rate-cap snapshot (MUST run before classification)
 
