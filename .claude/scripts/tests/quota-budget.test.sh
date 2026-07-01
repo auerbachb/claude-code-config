@@ -287,4 +287,99 @@ printf '%s' "$MK_INPUT" | QUOTA_USAGE_LOG="$MK_LOG" QUOTA_STATE_DIR="$MK_DIR" "$
 chmod 0755 "$MK_DIR"
 [ "$(wc -l < "$MK_LOG" | tr -d ' ')" = "1" ] || fail "marker-write failure must skip append (got $(wc -l < "$MK_LOG" | tr -d ' ') lines)"
 
-echo "OK: quota tracker test passed (hook + budget monthly+daily signals + thresholds + migration + stop hook + projection floors)"
+# --- 20. --tail: human-readable table from ledger ---
+TAIL_OUT="$("$BUDGET" --tail 3 2>/dev/null)"
+# Should show header line and at least 2 ledger entries (we have 2 from earlier)
+echo "$TAIL_OUT" | grep -q "Timestamp" || fail "--tail missing header"
+echo "$TAIL_OUT" | grep -q "opus-4-8\|sonnet-4-6" || fail "--tail missing model names"
+echo "$TAIL_OUT" | grep -q "Total" || fail "--tail missing Total row"
+# --tail with no log should not error
+NO_LOG_TAIL="$(QUOTA_USAGE_LOG="$TMP_HOME/nonexistent.log" "$BUDGET" --tail 5 2>/dev/null || true)"
+echo "$NO_LOG_TAIL" | grep -qi "empty\|no file\|no entries" || fail "--tail should report empty ledger gracefully"
+
+# --- 21. --tail 1: returns exactly last 1 entry ---
+TAIL1_OUT="$("$BUDGET" --tail 1 2>/dev/null)"
+# Should say "Last 1 of 2" (2 lines in our log from earlier)
+echo "$TAIL1_OUT" | grep -q "Last 1 of" || fail "--tail 1 should say 'Last 1 of N'"
+
+# --- 22. --ack: requires session id ---
+# Without session id, should exit 2 (no CLAUDE_SESSION_ID, no --session, empty session-state.json)
+NO_SID_RESULT="$(CLAUDE_SESSION_ID="" QUOTA_STATE_FILE="$TMP_HOME/empty-state.json" "$BUDGET" --ack 2>&1 || true)"
+echo "$NO_SID_RESULT" | grep -qi "session" || fail "--ack without session id should error with session message"
+
+# --- 23. --ack with --session: writes quota-ack.json ---
+ACK_FILE_TEST="$TMP_HOME/quota-ack.json"
+QUOTA_ACK_FILE="$ACK_FILE_TEST" CLAUDE_SESSION_ID="" "$BUDGET" --ack --session "test-sess-123" >/dev/null 2>&1 || fail "--ack --session should succeed"
+[ -f "$ACK_FILE_TEST" ] || fail "--ack should create quota-ack.json"
+ACK_SESSION="$(python3 -c "import json; d=json.load(open('$ACK_FILE_TEST')); print(d['session_id'])")"
+[ "$ACK_SESSION" = "test-sess-123" ] || fail "--ack session_id wrong: $ACK_SESSION"
+ACK_DATE="$(python3 -c "import json; d=json.load(open('$ACK_FILE_TEST')); print(d['acked_date'])")"
+[ ${#ACK_DATE} -eq 10 ] || fail "--ack acked_date not YYYY-MM-DD: $ACK_DATE"
+ACK_SEV="$(python3 -c "import json; d=json.load(open('$ACK_FILE_TEST')); print(d['acked_at_severity'])")"
+[[ "$ACK_SEV" =~ ^(ok|info|warn|critical)$ ]] || fail "--ack acked_at_severity invalid: $ACK_SEV"
+
+# --- 24. --ack JSON output contains acked:true and message ---
+ACK_JSON="$(QUOTA_ACK_FILE="$ACK_FILE_TEST" CLAUDE_SESSION_ID="" "$BUDGET" --ack --session "test-sess-456" 2>/dev/null)"
+[ "$(printf '%s' "$ACK_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("acked"))')" = "True" ] || fail "--ack output missing acked:true"
+printf '%s' "$ACK_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert "message" in d' || fail "--ack output missing message field"
+
+# --- 25. Stop hook: silenced after ack with matching session+date+severity ---
+# Set up ack file matching today + current severity for a test session
+STOP_ACK_CFG="$TMP_HOME/stop-ack.json"
+jq '.monthly_cap_usd = 40 | .stop_hook_threshold = {"monthly_pct": 0.60, "daily_usd": 80}' "$QUOTA_CONFIG" > "$STOP_ACK_CFG"
+
+# First, confirm hook would emit without ack
+EMIT_NOACK="$(printf '{}' | QUOTA_CONFIG="$STOP_ACK_CFG" "$STOP_HOOK" 2>/dev/null || true)"
+printf '%s' "$EMIT_NOACK" | jq -e '.hookSpecificOutput.additionalContext | test("\\[quota\\]")' >/dev/null || fail "stop hook should emit when over threshold (pre-ack check)"
+
+# Now ack: get today's date and the status from the snap
+STOP_ACK_FILE="$TMP_HOME/stop-ack-state.json"
+STOP_ACK_SESS="sess-stop-ack-test"
+# Get today's ET date
+TODAY_ACK="$(TZ='America/New_York' date +%F 2>/dev/null || date +%F)"
+# Get current status for this config (monthly=40, spend ~29.55 => over threshold)
+STOP_STATUS="$(QUOTA_CONFIG="$STOP_ACK_CFG" "$BUDGET" --check --no-state 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status","warn"))' 2>/dev/null || echo "warn")"
+# Write ack file
+python3 -c "
+import json, sys
+path = sys.argv[1]
+ack = {'session_id': sys.argv[2], 'acked_date': sys.argv[3], 'acked_at_severity': sys.argv[4], 'acked_at': '2026-07-01T00:00:00Z'}
+with open(path, 'w') as f:
+    json.dump(ack, f)
+" "$STOP_ACK_FILE" "$STOP_ACK_SESS" "$TODAY_ACK" "$STOP_STATUS"
+
+# With matching ack: hook should be silent
+SILENT_AFTER_ACK="$(printf '{}' | QUOTA_CONFIG="$STOP_ACK_CFG" QUOTA_ACK_FILE="$STOP_ACK_FILE" CLAUDE_SESSION_ID="$STOP_ACK_SESS" "$STOP_HOOK" 2>/dev/null || true)"
+[ -z "$SILENT_AFTER_ACK" ] || fail "stop hook should be silent after ack (same session+date+severity), got: $SILENT_AFTER_ACK"
+
+# --- 26. Stop hook: NOT silenced for different session ---
+SILENT_DIFF_SESS="$(printf '{}' | QUOTA_CONFIG="$STOP_ACK_CFG" QUOTA_ACK_FILE="$STOP_ACK_FILE" CLAUDE_SESSION_ID="different-session" "$STOP_HOOK" 2>/dev/null || true)"
+printf '%s' "$SILENT_DIFF_SESS" | jq -e '.hookSpecificOutput.additionalContext | test("\\[quota\\]")' >/dev/null || fail "stop hook should emit for different session even after ack"
+
+# --- 27. Stop hook: NOT silenced when severity escalates beyond acked level ---
+# Ack at "warn" but make status "critical"
+CRIT_ACK_FILE="$TMP_HOME/crit-ack.json"
+python3 -c "
+import json, sys
+path = sys.argv[1]
+ack = {'session_id': 'crit-sess', 'acked_date': sys.argv[2], 'acked_at_severity': 'warn', 'acked_at': '2026-07-01T00:00:00Z'}
+with open(path, 'w') as f:
+    json.dump(ack, f)
+" "$CRIT_ACK_FILE" "$TODAY_ACK"
+
+# Use a cap so small that status = critical
+CRIT_CFG="$TMP_HOME/crit.json"
+jq '.monthly_cap_usd = 20 | .stop_hook_threshold = {"monthly_pct": 0.60, "daily_usd": 80}' "$QUOTA_CONFIG" > "$CRIT_CFG"
+EMIT_CRIT="$(printf '{}' | QUOTA_CONFIG="$CRIT_CFG" QUOTA_ACK_FILE="$CRIT_ACK_FILE" CLAUDE_SESSION_ID="crit-sess" "$STOP_HOOK" 2>/dev/null || true)"
+printf '%s' "$EMIT_CRIT" | jq -e '.hookSpecificOutput.additionalContext | test("\\[quota\\]")' >/dev/null || fail "stop hook should re-surface when severity escalates beyond acked level (warn->critical)"
+
+# --- 28. Stop hook: first emission includes ack hint ---
+HINT_CFG="$TMP_HOME/hint.json"
+jq '.monthly_cap_usd = 40 | .stop_hook_threshold = {"monthly_pct": 0.60, "daily_usd": 80}' "$QUOTA_CONFIG" > "$HINT_CFG"
+HINT_NO_ACK_FILE="$TMP_HOME/hint-no-ack.json"
+# Use a unique session so no hint marker exists
+HINT_SESS="hint-session-$(date +%s)"
+HINT_OUT="$(printf '{}' | QUOTA_CONFIG="$HINT_CFG" QUOTA_ACK_FILE="$HINT_NO_ACK_FILE" CLAUDE_SESSION_ID="$HINT_SESS" "$STOP_HOOK" 2>/dev/null || true)"
+printf '%s' "$HINT_OUT" | jq -e '.hookSpecificOutput.additionalContext | test("ack")' >/dev/null || fail "first emission should contain ack hint"
+
+echo "OK: quota tracker test passed (hook + budget monthly+daily signals + thresholds + migration + stop hook + projection floors + ack + tail)"
