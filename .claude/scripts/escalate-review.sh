@@ -25,6 +25,7 @@
 #   4  GitHub/API/state read error
 
 set -euo pipefail
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
 
 PR_NUMBER=""
 
