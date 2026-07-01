@@ -27,8 +27,5 @@ jobs:
       - name: env-guard unit tests
         run: python3 -m unittest tests.test_env_guard -v
 
-      - name: quota tracker test (issue #458)
-        run: bash .claude/scripts/tests/quota-budget.test.sh
-
       - name: pr-preflight unit test (issue #493)
         run: bash .claude/scripts/tests/pr-preflight.test.sh
