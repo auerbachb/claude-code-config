@@ -77,7 +77,7 @@ This applies to ALL merge paths: manual `gh pr merge`, the `/merge` skill, the `
 
 ## Step 1c — All Review Threads Resolved (NON-NEGOTIABLE)
 
-Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses cursor/copilot bots). `merge-gate.sh` enforces this — any unresolved thread blocks, regardless of author. **If any unresolved: DO NOT MERGE.** Reply + `resolveReviewThread`, then re-check.
+Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses cursor/copilot bots). `merge-gate.sh` enforces this — any unresolved thread blocks, regardless of author. **If any unresolved: DO NOT MERGE.** Reply, then `resolve-review-threads.sh <PR>`, re-check.
 
 ## Step 1d — `mergeStateStatus` and branch sync (NON-NEGOTIABLE)
 
