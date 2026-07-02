@@ -44,3 +44,6 @@ jobs:
 
       - name: skill-conventions-audit smoke test (#417)
         run: bash .claude/scripts/tests/skill-conventions-audit.test.sh
+
+      - name: pr-state classify unit test (issue #535)
+        run: bash .claude/scripts/tests/pr-state-classify.test.sh

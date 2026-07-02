@@ -342,15 +342,19 @@ CONVO=$(run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per
 #    Branch ordering in classify is deliberate — do NOT reorder without reading this:
 #      1. Explicit-resolution / clean-pass overrides (addressed marker, "actionable comments posted: 0",
 #         "no actionable comments were generated", "rate limit exceeded" / "rate-limited by coderabbit",
-#         "full review triggered")
-#         are checked FIRST. They mean CR has marked the thread resolved, hit a rate-limit notice,
-#         or posted a review-started ack — regardless of any quoted earlier finding language.
+#         "full review triggered", BugBot clean-pass "found no new issues",
+#         BugBot BUGBOT_REVIEW zero-issue summary, CR error stub "Oops, something went wrong")
+#         are checked FIRST. They mean CR/BugBot has issued a clean pass, hit a rate-limit notice,
+#         posted a review-started ack, or emitted a transient error — regardless of any quoted
+#         earlier finding language.
 #      2. The specific "actionable comments posted: 0" and "no actionable comments were
 #         generated" checks MUST precede the general "actionable comments posted" finding
 #         check — otherwise the general pattern swallows clean CR summaries as findings.
-#      3. Finding patterns (severity/badges/phrases/suggestions) come next.
-#      4. Weak-ack fallback (lgtm variants) last, so it can't hide a real finding.
-#      5. Default is finding — under-classifying is the failure mode this skill prevents.
+#      3. BugBot BUGBOT_REVIEW zero-issue check MUST precede the generic "issues? found"
+#         finding pattern — otherwise the finding pattern swallows BugBot clean summaries.
+#      4. Finding patterns (severity/badges/phrases/suggestions) come next.
+#      5. Weak-ack fallback (lgtm variants) last, so it can't hide a real finding.
+#      6. Default is finding — under-classifying is the failure mode this skill prevents.
 # ----------------------------------------------------------------------
 NEW_SINCE="null"
 if [[ -n "$SINCE" ]]; then
@@ -367,6 +371,9 @@ if [[ -n "$SINCE" ]]; then
       elif test("no actionable comments were generated"; "i") then {class: "acknowledgment", reason: "CR no actionable comments generated"}
       elif test("rate limit exceeded|rate-limited by coderabbit"; "i") then {class: "acknowledgment", reason: "rate limit notice"}
       elif test("full review triggered"; "i") then {class: "acknowledgment", reason: "review-started ack"}
+      elif test("found no new issues"; "i") then {class: "acknowledgment", reason: "BugBot clean pass"}
+      elif (test("<!--\\s*BUGBOT_REVIEW\\s*-->"; "") and (test("found [1-9][0-9]* potential issue"; "i") | not)) then {class: "acknowledgment", reason: "BugBot zero-issue summary"}
+      elif test("Oops, something went wrong"; "i") then {class: "acknowledgment", reason: "CR error stub / transient noise"}
       elif test("\\b(critical|major|minor|nitpick|p[0-2])\\b"; "i") then {class: "finding", reason: "severity keyword"}
       elif test("🔴|🟠|🟡"; "") then {class: "finding", reason: "severity badge"}
       elif test("actionable comments posted"; "i") then {class: "finding", reason: "actionable phrase"}
