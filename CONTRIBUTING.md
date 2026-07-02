@@ -29,6 +29,8 @@ Skills live in `.claude/skills/<name>/SKILL.md`.
 2. **Skill body:** step-by-step instructions, exact bash commands with absolute paths, and clear exit criteria. Subagents skip prose rules — prefer numbered checklists with explicit STOP conditions.
 
 > **Authoring judgment (not just mechanics):** for *how* to write a discoverable description and a discipline rule that holds under pressure — description-as-trigger, matching guidance form to failure type, and bulletproofing — see [`.claude/reference/skill-authoring-patterns.md`](.claude/reference/skill-authoring-patterns.md). It also applies to rules below.
+
+After adding or revising a skill, run `bash .claude/scripts/skill-conventions-audit.sh` to check frontmatter and description conventions.
 3. **Symlink checklist after merge** (via the skills worktree — never symlink directly to the root repo):
 
    ```bash
