@@ -137,6 +137,9 @@ conventions; (3) low adaptation/maintenance cost; (4) high daily-use value.
 | Date | Source repo | Pattern | PR | Adaptation notes |
 |------|-------------|---------|-----|------------------|
 | 2026-06-25 | obra/superpowers `skills/writing-skills` @ `896224c` | Skill/rule authoring-judgment patterns (SDO, match-form-to-failure, bulletproofing) | [#485](https://github.com/auerbachb/claude-code-config/pull/485) (first pass) | Distilled into `skill-authoring-patterns.md` (reference, on-demand) + CONTRIBUTING pointers. Did **not** copy the TDD-for-skills methodology (heavyweight + plugin already provides it); referenced it instead. |
+| 2026-07-02 | affaan-m/everything-claude-code `config-protection.js` @ `81af407` | `config-protection` PreToolUse hook (Python) | [#529](https://github.com/auerbachb/claude-code-config/pull/529) | Extended ECC basename list with `.coderabbit.yaml`, `rule-lint.sh`, `.budget-soft-cap`. |
+| 2026-07-02 | affaan-m/everything-claude-code `skill-comply` @ `81af407` | `skill-conventions-audit.sh` static audit | [#530](https://github.com/auerbachb/claude-code-config/pull/530) | Bash-only convention checks; no LLM harness. |
+| 2026-07-02 | obra/superpowers `verification-before-completion` @ `f268f7c` | `verification-evidence-patterns.md` reference | [#532](https://github.com/auerbachb/claude-code-config/pull/532) | Repo-specific claim→evidence map; linked from phase-protocols + AC skill. |
 
 ## Re-Survey Checklist (each cycle)
 
