@@ -211,7 +211,7 @@ Read `merge_state` / `mergeable` **literally** from the gate JSON. **Do NOT infe
 | `mergeable == CONFLICTING` | `BLOCKED:conflicts` | **Hard block** → reported, dropped from actionable fleet (recommend `/merge-conflict`; never auto-merge) |
 | `merge_state == BEHIND` | `rebase` | Rebase + force-push + stale-bot dismissal (Step 5a/5b) |
 | `CI_FAILING > 0` **or** `UNRESOLVED > 0` | `fixpr` (`has-recoverable-blockers`) | Spawn `phase-a-fixer` subagent (Step 5c) |
-| `MET == false` **and** (`STALE_BOT_CR > 0` **or** `REVIEW_DECISION == CHANGES_REQUESTED` with no human CR) | `fixpr` (`has-recoverable-blockers`) | Step 5b′ dismisses stale bot reviews + re-triggers the owning bot, re-gates; spawn `phase-a-fixer` (Step 5c) **only if** `CI_FAILING > 0` or `UNRESOLVED > 0` remain after re-gate |
+| `MET == false` **and** (`STALE_BOT_CR > 0` **or** `REVIEW_DECISION == CHANGES_REQUESTED` with no human CR) | `fixpr` (`has-recoverable-blockers`) | Step 5b′ (when `STALE_BOT_CR > 0` only) dismisses stale bot reviews + re-triggers the owning bot, re-gates; spawn `phase-a-fixer` (Step 5c) when fix work remains (`CI_FAILING > 0`, `UNRESOLVED > 0`, or fresh bot CR on HEAD) |
 | `MET == true` (clean review on HEAD + CI green + 0 unresolved threads + no blockers) | `wrap` | Dispatch `/wrap` sequentially (Step 5d) |
 | Otherwise (CI in-progress, reviewer genuinely pending, `REVIEW_REQUIRED` with no bot signal yet, `UNKNOWN`) | `waiting` | No-op — reviewer/CI owns the next move |
 
@@ -399,10 +399,11 @@ fi
 
 ### Step 5b′: Stale bot `CHANGES_REQUESTED` recovery (verdict `fixpr` — issue #514)
 
-Run **before Step 5c** for every PR whose Step 3 verdict is `fixpr` (or refined `fixpr`) **and** the stale-bot-CR condition holds: `STALE_BOT_CR > 0`, **or** `REVIEW_DECISION == CHANGES_REQUESTED` with no human CR (`HUMAN_CR` empty). This is **independent of whether Step 5a rebased** — Step 5b only runs after a force-push; without 5b′ a PR blocked *only* by a stale bot review on the current HEAD would spawn a no-op `phase-a-fixer` every tick forever.
+Run **before Step 5c** for every PR whose Step 3 verdict is `fixpr` (or refined `fixpr`) **and** `STALE_BOT_CR > 0` from the tick's gate JSON. Do **not** run when the only bot signal is a **fresh** `CHANGES_REQUESTED` on the current HEAD (`STALE_BOT_CR == 0`) — that PR needs Step 5c fix work, not dismissal/re-trigger. This is **independent of whether Step 5a rebased** — Step 5b only runs after a force-push; without 5b′ a PR blocked *only* by a stale bot review would spawn a no-op `phase-a-fixer` every tick forever.
 
-1. **Dismiss** — run the shared dismiss helper with `DISMISS_MSG="Superseded — review was on a stale commit"`. Idempotent (already-`DISMISSED` counts as success).
-2. **Re-trigger the owning bot** — `pr-preflight.sh` Step 5.0 is idempotent and **skips** bots that already have prior activity on the PR; a dismissed stale review still counts as prior activity, so post an **explicit** trigger for the owning reviewer on the current HEAD. Resolve via `.claude/scripts/reviewer-of.sh "$N"` (same mapping as `pr-preflight.sh`'s `reviewer_trigger()`):
+**Dismiss** — run the shared dismiss helper with `DISMISS_MSG="Superseded — review was on a stale commit"`. Idempotent (already-`DISMISSED` counts as success). The helper only dismisses reviews whose `commit_id` ≠ current HEAD; never touches fresh bot CR on HEAD.
+
+**Re-trigger the owning bot** — `pr-preflight.sh` Step 5.0 is idempotent and **skips** bots that already have prior activity on the PR; a dismissed stale review still counts as prior activity, so post an **explicit** trigger for the owning reviewer on the current HEAD. Resolve via `.claude/scripts/reviewer-of.sh "$N"` (same mapping as `pr-preflight.sh`'s `reviewer_trigger()`):
 
 ```bash
 REVIEWER=$(.claude/scripts/reviewer-of.sh "$N" 2>/dev/null || echo unknown)
@@ -429,6 +430,10 @@ case "$REVIEWER" in
     gh pr comment "$N" --body "@cursor review" >/dev/null 2>&1 \
       && echo "[PMM] re-triggered owning bot (bugbot) on #$N"
     ;;
+  graphite)
+    gh pr comment "$N" --body "@graphite-app re-review" >/dev/null 2>&1 \
+      && echo "[PMM] re-triggered owning bot (graphite) on #$N"
+    ;;
   greptile)
     echo "[PMM] greptile owning reviewer on #$N — no auto-trigger per greptile.md"
     ;;
@@ -440,7 +445,7 @@ esac
 
 Never batch mention strings; never auto-trigger Greptile. Set `TICK_HAD_ACTION=true` when dismissal or re-trigger posts.
 
-3. **Re-gate and gate Step 5c** — re-run `.claude/scripts/merge-gate.sh "$N"`, stash in `GATE_BY_PR[$N]`, re-read `MET`, `CI_FAILING`, `STALE_BOT_CR`, `UNRESOLVED` (re-fetch unresolved thread count if needed). Then:
+**Re-gate and gate Step 5c** — re-run `.claude/scripts/merge-gate.sh "$N"`, stash in `GATE_BY_PR[$N]`, re-read `MET`, `CI_FAILING`, `STALE_BOT_CR`, `UNRESOLVED` (re-fetch unresolved thread count if needed). Then:
    - **`MET == true`** → treat as `wrap` for Step 5d this tick (skip Step 5c spawn for this PR).
    - **`CI_FAILING > 0` or `UNRESOLVED > 0`** → proceed to Step 5c spawn (real fix work remains).
    - **Otherwise** (reviewer pending on fresh trigger, no CI/thread fix work) → skip Step 5c; verdict becomes `waiting` on the next tick when the bot lands.
