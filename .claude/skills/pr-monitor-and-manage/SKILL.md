@@ -187,6 +187,12 @@ Read `merge_state` / `mergeable` **literally** from the gate JSON. **Do NOT infe
 
 `merge-gate.sh` exit `3` (PR gone — merged/closed between Step 2 and now) → `VERDICT=gone` (drop from the fleet this tick). Exit `2`/`4` (tooling/network) → `VERDICT=error` (do not act; retry next tick).
 
+**Accumulate `VERDICTS_JSON` as each PR is classified — this is what Step 5.0's pre-flight gone/error skip reads.** Without this, `VERDICTS_JSON` stays an implicit empty object, the skip check never matches, and pre-flight runs against merged/errored PRs it should have skipped:
+
+```bash
+VERDICTS_JSON=$(jq --arg n "$N" --arg v "$VERDICT" '.[$n] = {verdict: $v}' <<<"${VERDICTS_JSON:-{}}")
+```
+
 **Collect, but do not act yet:** push every PR with a `BLOCKED:*` verdict onto a `HARD_BLOCK[]` list (with its reason). Step 7 routes to **Stop & Clean Exit** when `HARD_BLOCK[]` is non-empty. The `rebase`/`fixpr`/`wrap` verdicts are executed in Step 5.
 
 **Pre-fetch findings for fix subagents (verdict `fixpr` only):** while gathering state, also fetch review findings from the three endpoints so Step 5c can embed them in each subagent prompt without a second round-trip:
@@ -476,7 +482,7 @@ If any fix subagents are active this tick (per the definition above — spawned 
 2. On any completion — success, exhaustion, or crash — **run Step 2.5's steps 1-3 in full** (parse exit report, worktree cleanup, remove this agent's own `active_agents` record + clear `pmm_in_flight[N]`) before branching on outcome. This is unconditional, not just the success path — a failure that skips clearing `pmm_in_flight[N]` would otherwise leave a stale lock blocking Step 3's idempotency check until `PMM_LOCK_STALE_SECS` expires.
 3. Branch on outcome (per Step 2.5's step 4, cleanup from step 2 above already done):
    - **Crash / no exit report / stale >15 min:** mark `failed` in the table and add `#N` to `HARD_BLOCK[]` with reason `crashed(needs-approval)` — never re-dispatch silently. Step 7 routes to Stop & Clean Exit so the user can explicitly approve a respawn (`subagent-orchestration.md`: "Ask first only: ... respawning a crashed/no-handoff subagent").
-   - **Token/turn exhaustion with a valid handoff file:** respawn immediately **using Step 5c's spawn pattern directly** (an "Always do" action per `subagent-orchestration.md`'s Token/Turn Exhaustion Protocol) — do not wait for the next tick, and do NOT defer to Step 2.5's exhaustion handling here. Step 2.5's deferral only works at tick-*start*, before Step 3 has run — but by the time Step 5e's monitor loop is polling, Step 3 already ran earlier in this same tick (before Step 5c spawned the subagents this loop is draining), so `GATE_BY_PR`/`FINDINGS_JSON` for this PR are already fresh and available for an inline respawn right here.
+   - **Token/turn exhaustion with a valid handoff file:** respawn immediately **using Step 5c's spawn pattern**, but with **freshly re-fetched** gate and findings data for this PR — do NOT reuse tick-start `GATE_BY_PR[$N]`/`FINDINGS_JSON[$N]` verbatim. Real time has passed since Step 3 computed them, and the exhausted subagent may have pushed partial progress before running out of tokens, moving the PR's actual HEAD SHA and review state past that tick-start snapshot; a respawn using the stale SHA/findings would hand the replacement outdated context. Re-run `.claude/scripts/merge-gate.sh "$N"` (and re-fetch findings from the three endpoints, same as Step 3's pre-fetch) immediately before building the replacement's spawn record, and use *that* fresh result — not the cached tick-start one — for its `head_sha`, `GATE_BY_PR[$N]` update, and prompt findings. This is an "Always do" action per `subagent-orchestration.md`'s Token/Turn Exhaustion Protocol — do not wait for the next tick, and do NOT defer to Step 2.5's exhaustion handling here (Step 2.5's deferral only works at tick-*start*, before Step 3 has run; Step 5e is mid-tick, after Step 3 already ran, so an inline respawn is possible here — it just needs fresh data, not the tick-start cache).
 4. Send heartbeat if >5 min since last user message (timestamp prefix required).
 5. Investigate stale agents (>15 min Phase A without progress).
 
