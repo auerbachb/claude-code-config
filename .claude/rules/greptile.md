@@ -41,7 +41,7 @@ Poll every 60 seconds on all three endpoints (`per_page=100`). Filter by `grepti
 
 ## Processing Greptile Findings
 
-Classify by severity (P0/P1/P2 — use Greptile badges only), verify against code, fix all valid findings in one commit, push once, reply to every thread, resolve via GraphQL. Use 👍/👎 reactions for feedback (Greptile's only learning mechanism).
+Classify by severity (P0/P1/P2 — use Greptile badges only), verify against code, fix all valid findings in one commit, push once, reply to every thread, resolve via `.claude/scripts/resolve-review-threads.sh` (never inline GraphQL). Use 👍/👎 reactions for feedback (Greptile's only learning mechanism).
 
 > **CRITICAL: Do NOT include `@greptileai` in reply comments.** Every `@greptileai` mention triggers a new paid review ($0.50-$1.00). Use plain text only in replies.
 
