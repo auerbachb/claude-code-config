@@ -8,10 +8,12 @@ triggers:
   - PR fleet
   - watch PRs
   - manage my open PRs
-argument-hint: "[--author <login>] [--repo <owner/repo>] [--cadence Nm] [--max-parallel N] [--idle-pause-after N] [--auto-wake] [--auto-wake-cadence Nm] (defaults: author=current gh user, repo=current, cadence=5m, max-parallel=3, idle-pause-after=3, auto-wake=off, auto-wake-cadence=60m)"
+argument-hint: "[--author <login>] [--repo <owner/repo>] [--cadence Nm] [--max-parallel N] [--idle-pause-after N] [--auto-wake] [--auto-wake-cadence Nm] [--confirm-merges] (defaults: author=current gh user, repo=current, cadence=5m, max-parallel=3, idle-pause-after=3, auto-wake=off, auto-wake-cadence=60m, confirm-merges=off)"
 ---
 
 Thread-level **PR fleet manager**. This skill turns the current thread into a dedicated monitor that watches every open PR you own and drives each one to merge-ready (or a named hard block) by dispatching the per-PR decision tree on a recurring cadence. Fix work (`has-recoverable-blockers` / verdict `fixpr`) is handled by **parallel `phase-a-fixer` subagents** (default cap 3, `--max-parallel N`). Merge-ready PRs get **sequential `/wrap`** dispatch only.
+
+> **Implicit merge authorization.** Invoking `/pr-monitor-and-manage` carries merge authorization for the duration of the run — the same exception as `/wrap` and `/merge` in `CLAUDE.md`'s "PR MERGE AUTHORIZATION" block. PMM never merges directly; it lands merge-ready PRs only by dispatching the full `/wrap` workflow inline, and `/wrap`'s existing authorization covers the squash merge after gate + AC pass. Scope is precise: this auth covers only `gh pr merge --squash` via `/wrap` — never branch-protection changes, never dismissing human reviews, never bypassing gate or AC failures. With `--confirm-merges` off (default), PMM dispatches `/wrap` immediately on merge-ready PRs with no per-PR "merge now?" prompt.
 
 > **Per-PR dispatch is inlined below.** `TODO: refactor to call /babysit-pr per discovered PR after #456 lands.` Until #456 merges, Step 3's decision tree is the single owner of per-PR logic. When `/babysit-pr` exists, replace Step 3's inline branches with one `/babysit-pr <PR>` dispatch per discovered PR — the table, discovery, idempotency, and backoff scaffolding here stay unchanged.
 
@@ -47,7 +49,7 @@ A stale marker left by a killed session is safely reconciled here: the next `/pr
 
 On the **first** invocation in a thread (and after any resume), acknowledge the mode up front so the constraints are explicit and survive context compaction:
 
-> **PR-fleet-manager mode active.** My only job in this thread is to watch and manage your open PRs as a fleet — rediscover them each tick, print a status table, and dispatch rebase / parallel `phase-a-fixer` subagents (fix work) / sequential `/wrap` (merge-ready) per the decision tree. I will not write feature code, start issues, or do unrelated work here.
+> **PR-fleet-manager mode active.** My only job in this thread is to watch and manage your open PRs as a fleet — rediscover them each tick, print a status table, and dispatch rebase / parallel `phase-a-fixer` subagents (fix work) / sequential `/wrap` (merge-ready) per the decision tree. Merge-ready PRs are landed autonomously via inline `/wrap` dispatch (unless `--confirm-merges` is set). I will not write feature code, start issues, or do unrelated work here.
 
 **Prohibited in this thread (refuse and redirect):**
 
@@ -75,6 +77,7 @@ Parse `$ARGUMENTS` (re-parse every tick — a `/loop` re-invocation passes the s
 - `--idle-pause-after N` — consecutive idle ticks before auto-pause. **Default:** `3`.
 - `--auto-wake` — when set, register an hourly `CronCreate` job at pause time that lightweight-scans for fleet changes. **Default:** off.
 - `--auto-wake-cadence Nm` — cadence for the auto-wake cron. **Default:** `60m`.
+- `--confirm-merges` — require an explicit user confirmation before each `/wrap` merge dispatch. **Default:** off (invocation is authorization). This flag only adds a prompt before the `/wrap` dispatch — it never overrides hard stops (`BLOCKED:*` verdicts, gate failures, AC failures). Safety checks in `/wrap` still apply.
 
 > **`--repo` constraint (load-bearing).** `--repo` scopes **discovery** (`gh pr list`) and the GraphQL/REST reads. But the per-PR helpers (`merge-gate.sh`, `pr-issue-ref.sh`, `cr-review-hourly.sh`, `dismiss-stale-bot-changes.sh`) and all git actions (rebase, force-push, fix subagents, `/wrap`) operate on the **current checkout** — they resolve the repo via `gh repo view`, not a flag. So managing a repo requires running this skill from a worktree of **that** repo. If `--repo` names a repo other than the current checkout, **stop and reconcile** (same multi-repo hazard guard as `cr-github-review.md`) rather than acting against the wrong repo.
 
@@ -82,9 +85,11 @@ Parse `$ARGUMENTS` (re-parse every tick — a `/loop` re-invocation passes the s
 # Defaults
 PMM_AUTHOR=""; PMM_REPO=""; PMM_CADENCE="5m"; PMM_MAX_PARALLEL=3
 PMM_IDLE_PAUSE_AFTER=3; PMM_AUTO_WAKE=false; PMM_AUTO_WAKE_CADENCE="60m"
+PMM_CONFIRM_MERGES=false
 # (parse $ARGUMENTS into the vars above; bare flags override defaults)
 # When resuming from pause (Step 0a), merge: explicit $ARGUMENTS win; omitted flags
-# inherit from .pmm.config_at_pause (author, repo, cadence, max-parallel, idle-pause-after, auto-wake, auto-wake-cadence).
+# inherit from .pmm.config_at_pause (author, repo, cadence, max-parallel, idle-pause-after,
+# auto-wake, auto-wake-cadence, confirm-merges).
 
 if [ -z "$PMM_AUTHOR" ]; then
   PMM_AUTHOR=$(gh api user --jq .login 2>/dev/null || true)
@@ -103,7 +108,7 @@ if [ -n "$PMM_REPO" ] && [ "$PMM_REPO" != "$CURRENT_REPO" ]; then
 fi
 OWNER="${OWNER_REPO%/*}"; REPO="${OWNER_REPO#*/}"
 REPO_FLAG=(--repo "$OWNER_REPO")   # explicit so discovery + reads always agree
-echo "[PMM] fleet = author:$PMM_AUTHOR repo:$OWNER_REPO cadence:$PMM_CADENCE max-parallel:$PMM_MAX_PARALLEL idle-pause-after:$PMM_IDLE_PAUSE_AFTER auto-wake:$PMM_AUTO_WAKE"
+echo "[PMM] fleet = author:$PMM_AUTHOR repo:$OWNER_REPO cadence:$PMM_CADENCE max-parallel:$PMM_MAX_PARALLEL idle-pause-after:$PMM_IDLE_PAUSE_AFTER auto-wake:$PMM_AUTO_WAKE confirm-merges:$PMM_CONFIRM_MERGES"
 ```
 
 ---
@@ -280,6 +285,8 @@ echo "[$TS] PMM tick — $PR_COUNT PR(s) in fleet (author:$PMM_AUTHOR)"
 - **Verdict** — the Step 3 verdict: `rebase`, `fixpr`, `wrap`, `waiting`, `awaiting fix subagent`, `queued (cap)`, `rate-limited`, `BLOCKED:human(@x)`, `BLOCKED:conflicts`, `gone`, `error`.
 - **Subagent** — per-PR agent state for fix work: `—` (not spawned / no fix dispatch this tick), `spawned`, `working`, `complete`, `failed`, `deferred(foreign-agent)` (Step 5d/5e deferral gate closed because a foreign Phase A entry blocks this PR), `foreign-agent-stale` (Step 5e staleness timeout fired on a silent foreign entry — gate treated as drained). Populated from `active_agents` + Step 2.5 outcomes (PMM-owned only) + Step 5e foreign-drain polling. Merge-ready `/wrap` dispatches show `—` (wrap is parent-inline, not a subagent).
 
+A PR merged this tick is reported via the per-tick `merged #N` line (Step 5d) and then naturally disappears from the fleet on the next `gh pr list` discovery — no table row lingers.
+
 Only after the table is printed does Step 5 execute the actions.
 
 ---
@@ -288,7 +295,7 @@ Only after the table is printed does Step 5 execute the actions.
 
 **Blocking Phase A entry (shared gate idiom — Steps 3, 5a, 5d, 5e, 6):** An `active_agents` row with `phase == "A"` and `status` not in `{complete, failed}` blocks rebase, `/wrap`, and fix-dispatch gates unless drained. **PMM-owned** entries (`id` starts with `pmm-fix-`) are blocking until Step 2.5/5e drains them via exit report. **Foreign** entries (any other `id`) are blocking only while NOT stale: apply `PMM_LOCK_STALE_SECS` (default 3600s) to `last_seen_at` (or `launched`), and when the window is exceeded **and** there is no live progress evidence on that PR (HEAD SHA unchanged, no new bot/CI activity since the timestamp), treat the entry as **non-blocking** — PMM never mutates it, but stops deferring on it. All gate checks below use this idiom consistently.
 
-**Track actions this tick** for idle detection (Step 6). Initialize `TICK_HAD_ACTION=false` at the start of Step 5; set it to `true` whenever any of the following fire for any PR: rebase + force-push (Step 5a), stale-bot dismissal (Step 5b or 5b′), explicit owning-bot re-trigger from Step 5b′ (or post-subagent Step 2.5/5e), `phase-a-fixer` spawn (Step 5c), `/wrap` dispatch (Step 5d), or a reviewer trigger from `pr-preflight.sh` that actually posts (non-no-op output). Waiting, gone, error, `BLOCKED:*`, and no-op pre-flight do **not** set the flag.
+**Track actions this tick** for idle detection (Step 6). Initialize `TICK_HAD_ACTION=false` and `MERGED_THIS_TICK='[]'` at the start of Step 5; set `TICK_HAD_ACTION=true` whenever any of the following fire for any PR: rebase + force-push (Step 5a), stale-bot dismissal (Step 5b or 5b′), explicit owning-bot re-trigger from Step 5b′ (or post-subagent Step 2.5/5e), `phase-a-fixer` spawn (Step 5c), `/wrap` dispatch (Step 5d), or a reviewer trigger from `pr-preflight.sh` that actually posts (non-no-op output). Append PR numbers to `MERGED_THIS_TICK` when `/wrap` successfully merges a PR (Step 5d). Waiting, gone, error, `BLOCKED:*`, and no-op pre-flight do **not** set the flag.
 
 Iterate the fleet and execute each PR's Step 3 verdict. Skip PRs in `HARD_BLOCK[]` — they were reported in Step 4's table and are dropped from actionable work. `waiting`, `gone`, and `error` verdicts do **no** work here.
 
@@ -534,7 +541,7 @@ Set Subagent column to `spawned` immediately for every PR in this batch; transit
 
 ### Step 5d: Sequential `/wrap` dispatch (verdict `wrap` — merge-ready)
 
-Merge-ready PRs get **sequential** `/wrap` dispatch — one at a time, never parallelized. Merges affect main branch state (main-sync, follow-up detection, lessons) and must not race.
+Merge-ready PRs get **sequential** `/wrap` dispatch — one at a time, never parallelized. Merges affect main branch state (main-sync, follow-up detection, lessons) and must not race. PMM never runs `gh pr merge` directly — landing always flows through the full `/wrap` workflow.
 
 **Deferral gate — check this FIRST, before any lock acquisition or `/wrap` execution below.** "Fix subagents active this tick" means spawned just now by Step 5c OR still running from a prior tick — check both: any Step 5c spawn this tick, **or** a **blocking** Phase A `active_agents` entry (per Step 5's shared gate idiom — any `id`, not just `pmm-fix-` prefixed; stale foreign entries with no progress evidence are non-blocking; this must match Step 5a's rebase-skip check exactly: a foreign, non-PMM Phase A agent can hold the same PR's branch in its own worktree, and `/wrap` checking out or pushing to that branch races it just as much as a rebase would). This matters because a `/pmm-stop`-then-resume, or a tick where Step 3's refinement pass left every `fixpr` PR at `awaiting fix subagent`/`queued (cap)` with zero *new* spawns, would otherwise slip past a "spawned this tick" check while a background fixer is still mid-flight on a shared branch/worktree.
 
@@ -558,9 +565,13 @@ HEAD_SHA=$(jq -r '.head_sha' <<<"${GATE_BY_PR[$N]}")
   ".pmm_in_flight.\"$N\"={\"skill\":\"wrap\",\"status\":\"active\",\"dispatched_at\":\"$NOW\",\"head_sha\":\"$HEAD_SHA\"}"
 ```
 
-Execute the **full** `/wrap` workflow inline (all 4 phases). On completion:
+**Merge dispatch — no confirmation prompt by default.** When `VERDICT == wrap`, dispatch the **full** `/wrap` workflow inline (all 4 phases) immediately — invocation already authorized it per `CLAUDE.md`'s merge-auth exception. **Only when `PMM_CONFIRM_MERGES` is true:** emit a per-PR confirmation prompt ("Merge-ready: dispatch `/wrap` for #N?") and wait for explicit user approval before proceeding; if declined, skip this PR this tick.
 
-- `/wrap` merged the PR → clear `pmm_in_flight[N]`; PR drops from fleet on next `gh pr list`.
+Execute the **full** `/wrap` workflow inline (all 4 phases). PMM relies on `/wrap`'s own gate re-check (`merge-gate.sh`) and AC verification (`ac-checkboxes.sh`) — if the gate is no longer met (SHA moved, CI regressed) or AC fails, `/wrap` stops and returns a hard block; PMM records it and re-classifies on the next tick without re-authorizing or re-prompting.
+
+On completion:
+
+- `/wrap` merged the PR → clear `pmm_in_flight[N]`; emit `merged #N` in the tick summary; append `#N` to `MERGED_THIS_TICK` and the session-level `MERGED_THIS_SESSION` accumulator; PR drops from fleet on next `gh pr list`.
 - `/wrap` returned a hard block → clear in-flight and add `#N` to `HARD_BLOCK[]` for reporting (Step 4 next tick). Do **not** force-stop the fleet — the hard-blocked PR is dropped from actionable work and the idle counter handles convergence to Pause.
 
 ### Step 5e: Dedicated monitor mode while fix subagents are active
@@ -595,6 +606,14 @@ If any **blocking** fix subagents are active this tick (per Step 5's shared gate
 **While subagents run:** do not start rebases, new spawns for other PRs, or `/wrap` dispatches. **Exception:** an exhaustion respawn (item 3 above) for a PR already in this tick's active-fixer set is a continuation of already-approved fix work, not a new spawn — it is exempt from this restriction and proceeds inline. Deferred merge-ready PRs from Step 5d run immediately after the monitor loop exits (all fix subagents — PMM-owned or foreign — complete, fail, or are drained via staleness timeout). The tick completes only after all spawned fix subagents return (or fail) and any deferred `/wrap` dispatches finish. Then proceed to Step 6.
 
 **#497 compatibility (idle auto-pause):** when all subagents exit and no parent dispatches remain in-flight, treat the tick as idle for digest/backoff purposes — the stable-state countdown in Step 6 applies as if the tick were a no-op dispatch tick.
+
+**Tick merge summary.** After all Step 5 actions complete, if `MERGED_THIS_TICK` is non-empty, print one line per merged PR:
+
+```text
+merged #N
+```
+
+Also append each to the session-level `MERGED_THIS_SESSION` accumulator (initialize `MERGED_THIS_SESSION='[]'` on the first tick in Step 0/Step 1).
 
 ---
 
@@ -720,7 +739,8 @@ CONFIG_AT_PAUSE=$(jq -nc \
   --argjson max_parallel "$PMM_MAX_PARALLEL" \
   --argjson idle_pause_after "$PMM_IDLE_PAUSE_AFTER" \
   --argjson auto_wake "$PMM_AUTO_WAKE" --arg auto_wake_cadence "$PMM_AUTO_WAKE_CADENCE" \
-  '{author:$author, repo:$repo, cadence:$cadence, max_parallel:$max_parallel, idle_pause_after:$idle_pause_after, auto_wake:$auto_wake, auto_wake_cadence:$auto_wake_cadence}')
+  --argjson confirm_merges "$PMM_CONFIRM_MERGES" \
+  '{author:$author, repo:$repo, cadence:$cadence, max_parallel:$max_parallel, idle_pause_after:$idle_pause_after, auto_wake:$auto_wake, auto_wake_cadence:$auto_wake_cadence, confirm_merges:$confirm_merges}')
 ```
 
 > **Schema note:** pause marker fields live under nested `.pmm.*` per the AC; existing runtime fields (`pmm_active`, `pmm_digest`, `pmm_idle_streak`, etc.) remain flat.
@@ -795,6 +815,7 @@ Reason:   <user-stop>
 Fleet:    <final status table>
 Pre-flight: <per-PR draft→ready + reviewers triggered this session, from each PR's PREFLIGHT_SUMMARY; "clean" where no-op>
 Actions:  <rebases / phase-a-fixer subagents / /wrap dispatched this session, per PR — include Subagent outcomes>
+Merged:   <PR #s successfully merged this session via /wrap — e.g. "#1599, #1601"; "none" if none>
 Subagents: <per-PR spawn/complete/failed summary from active_agents audit>
 Blocked:  <PR # + reason for each HARD_BLOCK entry reported this session — e.g. "#123 human CHANGES_REQUESTED by @alice">
 ```
@@ -813,4 +834,4 @@ This skill is an **orchestrator**. It rebases/force-pushes, spawns parallel `pha
 - **Never bypass AI-reviewer rate caps** — `cr-review-hourly.sh` gates every CR re-trigger; Greptile/CodeAnt caps are respected by subagents and `/wrap`. The Step 5.0 pre-flight (`pr-preflight.sh`, issue #493) is the sanctioned per-PR trigger path: it gates `@coderabbitai full review` on `cr-review-hourly.sh`, never triggers Greptile, never flips another user's draft, and is strictly per-PR (no shared accumulator — a flip/trigger on one PR never leaks to another).
 - **Never use GitHub's update-branch API** for `BEHIND` — only `git rebase origin/main` + `--force-with-lease`.
 - **Stay in the worktree; never run destructive commands in the root repo** — no `git clean`, `git reset --hard`, or `.env` edits anywhere.
-- **Never merge directly** — merging happens only through `/wrap` (which carries its own merge authorization), after its gate + AC verification.
+- **Never merge directly** — PMM never runs `gh pr merge` itself. It lands PRs only by dispatching the full `/wrap` workflow inline; `/wrap` carries the merge authorization (after its gate + AC verification). No bypass path exists.
