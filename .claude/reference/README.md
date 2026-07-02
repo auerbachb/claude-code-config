@@ -17,6 +17,9 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `cr-polling-commands.md` — full multi-line `gh api` commands for CR review polling and CI verification
 - `cr-rate-limits.md` — full CR rate-limit caps, hourly-state mechanics, and `cr-review-hourly.sh` flags
 - `codeowner-bot-approvals.md` — CODEOWNERS handling for review bots and stale-approval re-trigger commands
+- `merge-gate-reviewer-paths.md` — per-reviewer merge-gate path details (CR/CodeAnt, BugBot, Greptile)
+- `codeant-graphite-supplemental.md` — CodeAnt and Graphite supplemental polling on the CR path
+- `wrap-fixpr-delegation.md` — `/wrap` Step 2.1 → full `/fixpr` recovery handoff contract
 - `graphql-thread-resolution.md` — full GraphQL queries/mutations for resolving PR review threads
 - `exit-report-format.md` — full structured exit report block specification
 - `greptile-setup.md` — Greptile dashboard setup notes
