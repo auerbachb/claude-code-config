@@ -100,6 +100,8 @@ PR_COUNT=$(jq 'length' <<<"$PR_LIST")
 
 Before Step 3 re-classifies the fleet, process any `phase-a-fixer` subagents that completed (or failed) since the last tick. Read `session-state.json`'s `active_agents` and match entries where `phase == "A"` and `task` references PMM fix work.
 
+**Initialize `EXHAUSTION_RESPAWN_PRS='[]'` at the start of this step, every tick — never carry it over.** Like `GATE_BY_PR`, it is a plain in-memory variable scoped to the current tick's execution (each `/loop` re-invocation is a fresh run of this skill from Step 1), not a durable field in `session-state.json` — so there is nothing to reset from a *prior* tick's memory, but the step must still start from an explicitly empty list rather than an implicit/undefined one, so a tick with zero exhaustion outcomes never accidentally inherits stale entries from a bug elsewhere in this skill's execution.
+
 For each completed subagent, run steps 1-3 **unconditionally first** (cleanup must finish before any respawn, so a replacement's fresh record can never be clobbered by the completed agent's own removal):
 
 1. **Parse the Structured Exit Report** from its output (`EXIT_REPORT` block per `.claude/reference/exit-report-format.md`). No exit report = silent failure — check GitHub for the PR's current HEAD and surface `failed` in the Subagent column.
