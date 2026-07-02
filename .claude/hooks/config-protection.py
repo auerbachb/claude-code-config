@@ -16,7 +16,6 @@ import os
 import re
 import shlex
 import sys
-from pathlib import Path
 
 BLOCK_MSG = (
     "BLOCKED: Cannot modify protected config {path}. "
@@ -75,12 +74,22 @@ DESTRUCTIVE_BINS = {
 
 BARE_REDIRECT_RE = re.compile(r'^(?:\d*>{1,2}|&>|\d*>&\d*)$')
 EMBEDDED_REDIRECT_RE = re.compile(r'(?:\d*>{1,2}|&>)([^<>&].*)$')
+WRITE_FLAG_TOKENS = frozenset({'--write', '--fix', '-w', '-i', '-inplace'})
 
 
 def normalize_path(path: str) -> str:
     if not path:
         return ''
-    return path.strip().strip('"').strip("'").replace('\\', '/')
+    return path.strip().strip('"').strip("'").replace('\\', '/').rstrip('/')
+
+
+def resolve_path(path: str, cwd: str | None) -> str:
+    normalized = normalize_path(path)
+    if not normalized:
+        return ''
+    if cwd and not os.path.isabs(normalized):
+        return os.path.normpath(os.path.join(cwd, normalized))
+    return normalized
 
 
 def is_protected_basename(path: str) -> bool:
@@ -107,13 +116,13 @@ def is_protected_path(path: str) -> bool:
     return is_protected_basename(path) or is_protected_relative(path)
 
 
-def path_exists(path: str) -> bool:
+def path_exists(path: str, cwd: str | None = None) -> bool:
     """True if something exists at path; fail closed on non-ENOENT errors."""
-    normalized = normalize_path(path)
-    if not normalized:
+    resolved = resolve_path(path, cwd)
+    if not resolved:
         return False
     try:
-        os.lstat(normalized)
+        os.lstat(resolved)
         return True
     except FileNotFoundError:
         return False
@@ -121,14 +130,14 @@ def path_exists(path: str) -> bool:
         return True
 
 
-def should_block_edit(path: str) -> bool:
+def should_block_edit(path: str, cwd: str | None = None) -> bool:
     if not is_protected_path(path):
         return False
     # Allow first-time creation (bootstrap)
-    return path_exists(path)
+    return path_exists(path, cwd)
 
 
-def bash_targets_protected(cmd: str) -> str | None:
+def bash_targets_protected(cmd: str, cwd: str | None = None) -> str | None:
     if not cmd:
         return None
     try:
@@ -151,6 +160,8 @@ def bash_targets_protected(cmd: str) -> str | None:
                 protected_targets.append(normalize_path(target))
             continue
         base = tok.rsplit('/', 1)[-1]
+        if tok in WRITE_FLAG_TOKENS:
+            has_write_op = True
         if base in DESTRUCTIVE_BINS:
             has_write_op = True
             continue
@@ -161,7 +172,7 @@ def bash_targets_protected(cmd: str) -> str | None:
         return None
 
     for target in protected_targets:
-        if should_block_edit(target):
+        if should_block_edit(target, cwd):
             return target
     return None
 
@@ -177,14 +188,16 @@ def main() -> int:
     if not isinstance(tool_input, dict):
         return 0
 
+    cwd = tool_input.get('cwd') or payload.get('cwd') or os.getcwd()
+
     if tool_name in ('Write', 'Edit', 'MultiEdit', 'NotebookEdit'):
         path = tool_input.get('file_path') or tool_input.get('notebook_path') or ''
-        if should_block_edit(path):
+        if should_block_edit(path, cwd):
             sys.stderr.write(BLOCK_MSG.format(path=path) + '\n')
             return 2
     elif tool_name == 'Bash':
         cmd = tool_input.get('command') or ''
-        blocked_path = bash_targets_protected(cmd)
+        blocked_path = bash_targets_protected(cmd, cwd)
         if blocked_path:
             sys.stderr.write(
                 BLOCK_MSG.format(path=blocked_path)
