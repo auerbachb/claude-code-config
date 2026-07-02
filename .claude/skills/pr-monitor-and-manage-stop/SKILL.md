@@ -37,7 +37,7 @@ Use `session-state.sh` so unrelated fields (other skills' state, PR tracking, bu
   --set '.pmm_next_expected_tick_at=null'
 ```
 
-Leave `pmm_in_flight`, `pmm_digest`, and `pmm_digest_streak` in place as an audit trail — they are harmless once `pmm_active=false`, and a later `/pr-monitor-and-manage` re-invocation re-evaluates them against live PR state on its first tick. Do **not** touch `cr_hourly`, `greptile_daily`, `prs`, or any non-`pmm_*` field.
+Leave `pmm_in_flight`, `pmm_digest`, and `pmm_digest_streak` in place as an audit trail — they are harmless once `pmm_active=false`, and a later `/pr-monitor-and-manage` re-invocation re-evaluates them against live PR state on its first tick. Do **not** touch `cr_hourly`, `greptile_daily`, `prs`, `active_agents`, or any non-`pmm_*` field. Note any PMM-owned entries still in `active_agents` (phase-a-fixer fix subagents) in the final summary — they may continue running until they exit on their own.
 
 ## Step 4: Final summary
 
@@ -47,6 +47,7 @@ Reason:   user /pmm-stop
 Loop:     cancelled (no further ticks)
 State:    pmm_active=false
 In-flight at stop: <list any pmm_in_flight PR # + skill, or "none">
+Active subagents: <list any active_agents entries with task "PMM fix PR #N", or "none">
 ```
 
-If any PR had an in-flight `/fixpr`/`/wrap` dispatch when stopped, name it so the user knows that dispatch was mid-flight. Re-run `/pr-monitor-and-manage` anytime to resume — it rediscovers the fleet from scratch.
+If any PR had an in-flight `phase-a-fixer` subagent or `/wrap` dispatch when stopped, name it so the user knows that work was mid-flight. Re-run `/pr-monitor-and-manage` anytime to resume — it rediscovers the fleet from scratch and Step 2.5 aggregates any subagents that completed while monitoring was stopped.
