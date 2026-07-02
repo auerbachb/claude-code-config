@@ -264,7 +264,7 @@ Read `merge_state` / `mergeable` **literally** from the gate JSON. **Do NOT infe
 | `MET == true` (clean review on HEAD + CI green + 0 unresolved threads + no blockers) | `wrap` | Dispatch `/wrap` sequentially (Step 5d) |
 | Otherwise (CI in-progress, reviewer genuinely pending, `REVIEW_REQUIRED` with no bot signal yet, `UNKNOWN`) | `waiting` | No-op — reviewer/CI owns the next move |
 
-`merge-gate.sh` exit `3` (PR gone — merged/closed between Step 2 and now) → `VERDICT=gone` (drop from the fleet this tick). Exit `2`/`4` (tooling/network) → `VERDICT=error` (do not act; retry next tick).
+`merge-gate.sh` exit `3` (PR gone — merged/closed between Step 2 and now) → `VERDICT=gone`, clear persisted block (`.claude/scripts/session-state.sh --set ".pmm_hard_block.\"$N\"=null"`), drop from fleet. When the user explicitly approves respawn of a `crashed(needs-approval)` or `conflicts(needs-human)` PR, clear the same `pmm_hard_block` key before dispatch. Exit `2`/`4` (tooling/network) → `VERDICT=error` (do not act; retry next tick).
 
 **Accumulate `VERDICTS_JSON` as each PR is classified — this is what Step 5.0's pre-flight gone/error skip reads.** Without this, `VERDICTS_JSON` stays an implicit empty object, the skip check never matches, and pre-flight runs against merged/errored PRs it should have skipped:
 
