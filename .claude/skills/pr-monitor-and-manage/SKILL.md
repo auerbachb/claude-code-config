@@ -556,13 +556,16 @@ An **idle tick** is one where **all** of the following hold:
 
 1. **No dispatch fired** — `TICK_HAD_ACTION=false` from Step 5 (no rebase, no fix subagent spawn, no `/wrap`, no reviewer trigger).
 2. **No state change vs prior tick** — fleet digest unchanged (`DIGEST == PREV` from above).
+3. **No active fix subagents** — no live `active_agents` entry with `phase == "A"` and `status` not in `{complete, failed}` (checked the same way as Step 5a/5d/5e's "carried over from a prior tick" cases). A tick can have `TICK_HAD_ACTION=false` and an unchanged digest while a long-running Phase A fixer from a prior tick is still working — that is not idle, and counting it as such risks auto-pausing mid-fix.
 
 Maintain a dedicated **`pmm_idle_streak`** counter (flat, sibling to `pmm_digest_streak`):
 
 ```bash
 IDLE_PREV=$(.claude/scripts/session-state.sh --get '.pmm_idle_streak' 2>/dev/null || echo 0)
 [ "$IDLE_PREV" = null ] && IDLE_PREV=0
-if [ "$TICK_HAD_ACTION" = false ] && [ "$DIGEST" = "$PREV" ]; then
+ACTIVE_FIXERS=$(jq '[.[] | select(.phase == "A" and (.status != "complete" and .status != "failed"))] | length' \
+  <<<"$(.claude/scripts/session-state.sh --get '.active_agents' 2>/dev/null || echo '[]')")
+if [ "$TICK_HAD_ACTION" = false ] && [ "$DIGEST" = "$PREV" ] && [ "$ACTIVE_FIXERS" -eq 0 ]; then
   IDLE_STREAK=$((IDLE_PREV + 1))
 else
   IDLE_STREAK=0
@@ -668,8 +671,21 @@ When `$PMM_AUTO_WAKE` is true, register a durable hourly scan at pause time:
 ```bash
 # Derive cadence minutes from PMM_AUTO_WAKE_CADENCE (e.g. 60m → 60)
 AW_CADENCE_MIN="${PMM_AUTO_WAKE_CADENCE%m}"
-{ read -r AW_MINUTE; read -r AW_CRON; } < <(.claude/scripts/off-peak-minute.sh --every-n-min "$AW_CADENCE_MIN")
-# CronCreate with prompt "/pr-monitor-and-manage-wake --auto-check", recurring=true, durable=true
+if [ "$AW_CADENCE_MIN" -ge 60 ] && [ $((AW_CADENCE_MIN % 60)) -eq 0 ]; then
+  # off-peak-minute.sh's --every-n-min only accepts 1..59 (it builds a step-range
+  # within one hour) — for hourly-or-longer cadences (the 60m default), use the
+  # plain no-flag minute + a */H hour step instead, matching /pm's hourly pattern.
+  AW_HOURS=$((AW_CADENCE_MIN / 60))
+  AW_MINUTE=$(.claude/scripts/off-peak-minute.sh)
+  if [ "$AW_HOURS" -eq 1 ]; then
+    AW_CRON="$AW_MINUTE * * * *"
+  else
+    AW_CRON="$AW_MINUTE */$AW_HOURS * * *"
+  fi
+else
+  { read -r AW_MINUTE; read -r AW_CRON; } < <(.claude/scripts/off-peak-minute.sh --every-n-min "$AW_CADENCE_MIN")
+fi
+# CronCreate with prompt "/pr-monitor-and-manage-wake --auto-check", cron="$AW_CRON", recurring=true, durable=true
 # Persist returned job id to .pmm.auto_wake_cron_id and append to polling_jobs[]
 ```
 
