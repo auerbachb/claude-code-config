@@ -27,6 +27,9 @@ jobs:
       - name: env-guard unit tests
         run: python3 -m unittest tests.test_env_guard -v
 
+      - name: config-protection unit tests
+        run: python3 -m unittest tests.test_config_protection -v
+
       - name: pr-preflight unit test (issue #493)
         run: bash .claude/scripts/tests/pr-preflight.test.sh
 

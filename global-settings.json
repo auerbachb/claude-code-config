@@ -82,6 +82,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/config-protection.py",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
