@@ -135,6 +135,6 @@ For `--auto-check` with detected change, add: `[auto-check] Fleet changed — cr
 
 ## Safety
 
-- Never clear the pause marker unless the auto-wake cron is confirmed deleted (Step 3).
+- Never clear the pause marker on resume unless the auto-wake cron is confirmed deleted (Step 3) — except `--auto-check` no-op exits without touching either.
 - `--auto-check` must **not** run full per-PR gate reads — only `gh pr list` + comparison.
 - Re-running `/pr-monitor-and-manage-wake` on a non-paused session is always a clean no-op (Step 2).
