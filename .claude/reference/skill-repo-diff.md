@@ -13,10 +13,10 @@ cycles.
 
 | Repo | Surveyed ref | Shape | Relevance to us |
 |------|--------------|-------|-----------------|
-| [obra/superpowers](https://github.com/obra/superpowers) | `main` @ `896224c` (2026-06-18) | 14 focused, workflow-agnostic discipline skills (TDD, debugging, planning, code review, worktrees) | **High** — overlaps our worktree + plan + review workflow; already installed as a Cursor plugin, so its skills are available at runtime but are **not** in our repo |
-| [affaan-m/everything-claude-code](https://github.com/affaan-m/everything-claude-code) | `main` @ `71d22d0` (2026-06-20) | ~270 skills (mostly polyglot/domain: per-language TDD, framework patterns, video/design), a large Node hook graph, MCP configs, multi-runtime scaffolds | **Selective** — most skills are language/domain-specific and out of scope; the hook graph and a few meta-skills have transferable ideas |
+| [obra/superpowers](https://github.com/obra/superpowers) | `main` @ `f268f7c` (2026-07-02) | 14 focused discipline skills + SDD scripts/prompts; SessionStart bootstrap hook; v6.1.0 | **High** — overlaps our worktree + plan + review workflow; already installed as a Cursor plugin, so its skills are available at runtime but are **not** in our repo |
+| [affaan-m/everything-claude-code](https://github.com/affaan-m/everything-claude-code) | `main` @ `81af407` (2026-07-02) | ~277 published skills, 67 agents, 92 commands, Node hook graph with profiles (`minimal`/`standard`/`strict`), MCP connector policy, selective install CLI | **Selective** — most skills are language/domain-specific and out of scope; the hook graph and meta-skills (`skill-comply`, `config-protection`) have transferable ideas |
 
-**Survey run:** 2026-06-25 (Opus 4.8), against the pinned commits above. Re-survey
+**Survey run:** 2026-07-02 (first-pass continuation), against the pinned commits above. Re-survey
 each cycle and record the new run date + commit SHAs — a delta is only real
 relative to a pinned ref; both repos move fast, so coarse dates hide repo churn.
 
@@ -50,15 +50,15 @@ Priority tags (`P0`/`P1`/`P2`) and short rationale follow the code where useful.
 | `writing-skills` meta-skill — authoring discipline: description-as-trigger, match-form-to-failure, bulletproofing (superpowers) | Partial — CONTRIBUTING.md "Adding a New Skill" is purely mechanical (file paths, frontmatter fields) | We lack authoring *judgment* guidance | `NA` → harvested this cycle (see Import Log) |
 | `systematic-debugging` / `root-cause-tracing` (superpowers) | No dedicated skill; available via plugin | Root-cause-before-fix discipline | `NF` — plugin covers it; not a workflow command |
 | `brainstorming` HARD-GATE before creative work (superpowers) | Partial — `issue-planning.md` + CR plan flow | Overlaps our planning flow; gate framing is novel | `NA` `P2` — evaluate vs issue-planning |
-| `verification-before-completion` (superpowers) | Partial — phase protocols + exit reports enforce evidence | Mostly covered by phase A/B/C | `NF` — duplicate |
+| `verification-before-completion` (superpowers) | Partial — phase protocols + exit reports enforce evidence | Claim→evidence gate + rationalization tables not distilled for our AC/exit-report flow | `NA` `P1` → harvesting repo-specific verification checklist (reference doc) |
 | Per-language TDD/verification skills, framework patterns, video/design (ECC) | No | Out of scope — we're a meta-config repo, not an app | `NF` |
-| `skill-scout` / `skill-stocktake` / `skill-comply` — skill-library hygiene (ECC) | Partial — `audit-skill-usage.sh`, `skill-usage-report.sh` | We track usage but have no "does this skill still comply with our conventions" audit | `NA` `P2` |
+| `skill-scout` / `skill-stocktake` / `skill-comply` — skill-library hygiene (ECC) | Partial — `audit-skill-usage.sh`, `skill-usage-report.sh` | We track usage but have no "does this skill still comply with our conventions" audit | `NA` `P1` → lightweight bash audit (not ECC's LLM-driven skill-comply) |
 
 ### 2. Hook patterns
 
 | Hook (source) | We have? | Delta | Fit |
 |---|---|---|---|
-| `pre:config-protection` — block edits to linter/formatter/CR config, steering agent to fix code not weaken config (ECC) | We have the **rule** "Never suppress linter errors" (`cr-local-review.md`) but **no enforcing hook** | Rule is advisory; a PreToolUse hook makes it mechanical | `NA` `P1` — strong candidate, next cycle |
+| `pre:config-protection` — block edits to linter/formatter/CR config, steering agent to fix code not weaken config (ECC) | We have the **rule** "Never suppress linter errors" (`cr-local-review.md`) but **no enforcing hook** | Rule is advisory; a PreToolUse hook makes it mechanical | `NA` `P1` → harvesting this cycle (Python hook, repo-specific protected paths) |
 | `post:quality-gate` — run checks after edits (ECC) | No structured post-edit gate | Could lint shell/markdown after edits | `NA` `P2` — our CI + `coderabbit review` already cover much of this |
 | `session:start` bootstrap — load prior context + detect package manager (ECC) | `session-start-sync.sh` (worktree sync + hook registration) | Different scope; ECC also loads bounded prior context | `NF` — our scope is config sync, not context restore |
 | `pre:edit-write:gateguard-fact-force` — block first edit per file until investigation done (ECC) | No | Forces "read importers/schema before editing" | `NF` — heavy; friction-prohibitive for our doc-heavy edits |
@@ -100,16 +100,20 @@ Priority tags (`P0`/`P1`/`P2`) and short rationale follow the code where useful.
 Criteria: (1) fills a genuine workflow gap, not a duplicate; (2) aligns with our
 conventions; (3) low adaptation/maintenance cost; (4) high daily-use value.
 
-- **P0 — done this cycle:** Skill/rule **authoring-judgment patterns** (SDO
-  description rule, match-form-to-failure, bulletproofing) → distilled into
-  `.claude/reference/skill-authoring-patterns.md`, linked from CONTRIBUTING.md.
-  Doc-only, zero code risk, directly improves a repo whose whole job is authoring
-  skills/rules. Source: superpowers `skills/writing-skills`.
-- **P1 — next cycle (separate PR):** `config-protection` PreToolUse hook —
-  mechanically warn/block edits to linter/formatter/`.coderabbit.yaml` severity
-  config, reinforcing our existing "never suppress linter errors" rule. Source:
-  ECC `pre:config-protection`. Needs a hook script + `global-settings.json`
-  registration + a local payload test (per CONTRIBUTING "Adding a New Hook").
+- **P0 — done (2026-06-25):** Skill/rule **authoring-judgment patterns** (SDO
+  description rule, match-form-to-failure, bulletproofing) →
+  `.claude/reference/skill-authoring-patterns.md` + CONTRIBUTING pointers.
+  Source: superpowers `skills/writing-skills`. PR [#485](https://github.com/auerbachb/claude-code-config/pull/485).
+- **P1 — first pass (2026-07-02), separate PRs each:**
+  1. **`config-protection` PreToolUse hook** — block edits to
+     `.coderabbit.yaml`, rule-lint tooling, and standard linter configs; fix code
+     instead of weakening config. Source: ECC `scripts/hooks/config-protection.js`.
+  2. **`skill-conventions-audit.sh`** — static audit that skills match our
+     frontmatter/description/exit-criteria conventions. Source: ECC
+     `skill-comply` / `skill-stocktake` (adapted to bash-only, no LLM runs).
+  3. **`verification-evidence-patterns.md`** — repo-specific claim→evidence
+     checklist for AC, exit reports, and merge claims. Source: superpowers
+     `verification-before-completion` (reference doc, not a duplicate skill).
 - **P2 — deferred (revisit, see below).**
 
 ## Deferred Patterns (P2 — revisit in future cycles)
@@ -117,7 +121,7 @@ conventions; (3) low adaptation/maintenance cost; (4) high daily-use value.
 - `post:quality-gate` post-edit lint hook for shell/markdown (overlaps CI + CR).
 - Consolidated Bash hook dispatcher (only worth it if hook count grows).
 - Automatic Stop-time lesson extraction (vs our manual `/lessons`).
-- `skill-comply` / `skill-stocktake` — audit skills against our own conventions.
+- Full ECC `skill-comply` LLM-driven compliance harness (our bash audit covers static checks only).
 - `brainstorming` HARD-GATE framing — evaluate against `issue-planning.md`.
 - MCP catalog (playwright/sequential-thinking) — revisit if we add browser/E2E.
 
