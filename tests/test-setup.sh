@@ -416,6 +416,36 @@ with open(path, 'w', encoding='utf-8') as f:
   assert "setup.sh exits 0 with args-bearing hook registered" "[ $exit_code -eq 0 ]"
   # Step 7 tolerated the args-bearing hook — it survives the full setup run.
   assert "Args-bearing hook survives full setup (Step 7 checks argv0)" "grep -q 'trust-flag-repair.sh --check' '$HOME/.claude/settings.json'"
+
+  # Negative case (#507): a command-type hook with a blank/non-string command is
+  # malformed. Step 7 must FLAG it as a verification failure, not silently skip it
+  # — otherwise setup.sh reports success on an unusable registration. Seed one
+  # under a custom event (not in the manifest, so registration/prune leave it be).
+  python3 -c "
+import json
+path = '$HOME/.claude/settings.json'
+with open(path, encoding='utf-8') as f:
+    data = json.load(f)
+data.setdefault('hooks', {}).setdefault('CustomEvent', []).append(
+    {'hooks': [{'type': 'command', 'command': ''}]})
+with open(path, 'w', encoding='utf-8') as f:
+    json.dump(data, f, indent=2)
+"
+  local malformed_out malformed_exit
+  malformed_out=$(run_setup)
+  malformed_exit=$?
+  assert "setup.sh FAILS Step 7 on a malformed (blank) command hook" "[ $malformed_exit -ne 0 ]"
+  assert "Step 7 reports the invalid command value" "printf '%s' \"\$malformed_out\" | grep -qi 'invalid command value'"
+  # Restore a clean state so the suite ends green.
+  python3 -c "
+import json
+path = '$HOME/.claude/settings.json'
+with open(path, encoding='utf-8') as f:
+    data = json.load(f)
+data.get('hooks', {}).pop('CustomEvent', None)
+with open(path, 'w', encoding='utf-8') as f:
+    json.dump(data, f, indent=2)
+"
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────
