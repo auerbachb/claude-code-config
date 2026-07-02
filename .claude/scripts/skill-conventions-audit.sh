@@ -64,19 +64,26 @@ try:
     meta = yaml.safe_load(block) or {}
     name = str(meta.get("name") or "").strip()
     desc = str(meta.get("description") or "").strip()
-except Exception:
+except ImportError:
     name = desc = ""
     for line in block.splitlines():
         if line.startswith("name:"):
             name = line.split(":", 1)[1].strip().strip('"').strip("'")
         elif line.startswith("description:"):
             desc = line.split(":", 1)[1].strip().strip('"').strip("'")
+except Exception:
+    print("INVALID_FM")
+    sys.exit(0)
 print(f"{name}|{desc}")
 PY
 )"
 
   if [[ "$fm" == "MISSING_FM" ]]; then
     err "${skill_name}: missing YAML frontmatter (--- block)"
+    return
+  fi
+  if [[ "$fm" == "INVALID_FM" ]]; then
+    err "${skill_name}: frontmatter is not valid YAML"
     return
   fi
 
