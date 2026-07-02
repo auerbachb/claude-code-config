@@ -30,8 +30,8 @@ PAUSED_AT=$(.claude/scripts/session-state.sh --get '.pmm.paused_at' 2>/dev/null 
 if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
   # 1. Read saved config (fallback defaults if missing)
   SAVED=$(.claude/scripts/session-state.sh --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
-  # 2. Delete auto-wake cron (fail-closed — see pr-monitor-and-manage-wake Step 2)
-  # 3. Clear pause marker + set pmm_active=true (atomic batch)
+  # 2. Delete auto-wake cron (fail-closed — see pr-monitor-and-manage-wake Step 3)
+  # 3. Clear pause marker + reset pmm_idle_streak=0 + set pmm_active=true (atomic batch)
   # 4. Merge flags: explicit $ARGUMENTS override saved config; unspecified fall back to saved
   echo "[PMM] Resuming from pause (paused_at=$PAUSED_AT) — flags on this invocation override saved config."
 fi
@@ -111,7 +111,7 @@ echo "[PMM] fleet = author:$PMM_AUTHOR repo:$OWNER_REPO cadence:$PMM_CADENCE max
 ```bash
 PMM_LIMIT=500   # high cap so a real fleet is never silently truncated
 PR_LIST=$(gh pr list --state open --author "$PMM_AUTHOR" "${REPO_FLAG[@]}" \
-  --json number,title,headRefName,mergeStateStatus,reviewDecision --limit "$PMM_LIMIT")
+  --json number,title,headRefName,headRefOid,mergeStateStatus,reviewDecision --limit "$PMM_LIMIT")
 PR_NUMS=$(jq -r '.[].number' <<<"$PR_LIST")
 PR_COUNT=$(jq 'length' <<<"$PR_LIST")
 ```
@@ -632,8 +632,8 @@ Cancel the recurring `/loop` (same guidance as Stop & Clean Exit):
 
 ```bash
 NOW=$(date -u +%FT%TZ)
-# fleet_at_pause: array of {pr, head_sha, state} from current PR_LIST + gate reads
-FLEET_AT_PAUSE=$(jq -c '[.[] | {pr: .number, head_sha: .headRefOid, state: .mergeStateStatus}]' <<<"$PR_LIST_ENRICHED")
+# fleet_at_pause: array of {pr, head_sha, state} from Step 2 PR_LIST (headRefOid + mergeStateStatus)
+FLEET_AT_PAUSE=$(jq -c '[.[] | {pr: .number, head_sha: .headRefOid, state: .mergeStateStatus}]' <<<"$PR_LIST")
 CONFIG_AT_PAUSE=$(jq -nc \
   --arg author "$PMM_AUTHOR" --arg repo "$OWNER_REPO" --arg cadence "$PMM_CADENCE" \
   --argjson idle_pause_after "$PMM_IDLE_PAUSE_AFTER" \

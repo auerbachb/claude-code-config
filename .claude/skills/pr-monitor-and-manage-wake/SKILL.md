@@ -45,11 +45,17 @@ PAUSED_AT=$("$SESSION_STATE_SH" --get '.pmm.paused_at' 2>/dev/null || echo null)
 ```
 
 - If `$PAUSED_AT` is `null`/empty → print **"PMM not paused — either not started or already running."** and exit 0 (idempotent no-op).
-- If present → proceed.
+- If present → route by mode:
+  - **`--auto-check`** → Step 4a (compare fleet; cron stays unless changed).
+  - **User-initiated (default)** → Step 3 (delete cron) → Step 4b (resume).
 
-## Step 3: Delete auto-wake cron (fail-closed — shared by all resume paths)
+## Step 3: Delete auto-wake cron (fail-closed — user resume and auto-check-on-change only)
 
-When an auto-wake cron exists, it must be deleted **before** clearing the pause marker or claiming resume success:
+**Do NOT run this step in `--auto-check` mode when the fleet is unchanged** — the cron must keep firing hourly until a change is detected.
+
+When `$MODE` is `--auto-check`, skip to Step 4a first; only call the cron-delete block below from Step 4b after a fleet change is confirmed, or when `$MODE` is user-initiated resume (default).
+
+For **user-initiated resume** (default, no `--auto-check`), delete the cron before clearing the pause marker:
 
 ```bash
 CRON_ID=$("$SESSION_STATE_SH" --get '.pmm.auto_wake_cron_id' 2>/dev/null || echo null)
@@ -68,7 +74,7 @@ if [[ -n "$CRON_ID" && "$CRON_ID" != "null" ]]; then
 fi
 ```
 
-Only **after** successful `CronDelete` (or when no cron was registered) proceed to marker clear / re-arm.
+Factor this block as **`pmm_delete_auto_wake_cron`** — Step 4b (auto-check detected change) and Step 0a in the main skill reuse the same fail-closed teardown. Only **after** successful `CronDelete` (or when no cron was registered) proceed to marker clear / re-arm.
 
 ## Step 4a: `--auto-check` branch (lightweight scan)
 
@@ -89,12 +95,14 @@ CURRENT_FLEET=$(jq -c '[.[] | {pr: .number, head_sha: .headRefOid, state: .merge
 SAVED_FLEET=$(jq -c 'sort_by(.pr)' <<<"$FLEET_AT_PAUSE")
 ```
 
-- If `$CURRENT_FLEET` equals `$SAVED_FLEET` (count + per-PR state) → **no-op**. Print one line: `[auto-check] Fleet unchanged — cron continues.` Exit 0. Do **not** clear the pause marker.
-- If changed → proceed to Step 4b (full resume + re-launch main skill).
+- If `$CURRENT_FLEET` equals `$SAVED_FLEET` (count + per-PR state) → **no-op**. Print one line: `[auto-check] Fleet unchanged — cron continues.` Exit 0. Do **not** delete the cron or clear the pause marker.
+- If changed → run **`pmm_delete_auto_wake_cron`** (Step 3), then proceed to Step 4b (full resume + re-launch main skill).
 
 ## Step 4b: Resume (user wake or auto-check detected change)
 
-Read config, reconstruct invocation flags, clear marker, re-arm loop:
+Run **`pmm_delete_auto_wake_cron`** (Step 3) if not already done (user-initiated resume runs it before this step; auto-check runs it only after detecting a change).
+
+Read config, reconstruct invocation flags, clear marker, reset idle streak, re-arm loop:
 
 ```bash
 CONFIG=$("$SESSION_STATE_SH" --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
@@ -106,6 +114,7 @@ CADENCE=$(jq -r '.cadence // "5m"' <<<"$CONFIG")
   --set '.pmm.paused_at=null' \
   --set '.pmm.fleet_at_pause=null' \
   --set '.pmm.config_at_pause=null' \
+  --set '.pmm_idle_streak=0' \
   --set '.pmm_active=true' \
   --set '.pmm_next_expected_tick_at=null'
 ```
