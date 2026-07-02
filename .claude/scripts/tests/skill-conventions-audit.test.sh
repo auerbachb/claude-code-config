@@ -5,17 +5,12 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 AUDIT="${REPO_ROOT}/.claude/scripts/skill-conventions-audit.sh"
 
-[[ -x "$AUDIT" ]] || {
-  echo "FAIL: $AUDIT is not executable — chmod +x in the feature worktree before running tests" >&2
-  exit 1
-}
-
 OUT=$(mktemp -t skill-audit.out.XXXXXX)
 ERR=$(mktemp -t skill-audit.err.XXXXXX)
 trap 'rm -f "$OUT" "$ERR"' EXIT
 
 # Default run: may emit warnings on legacy skills; must not error on structure
-if ! "$AUDIT" >"$OUT" 2>"$ERR"; then
+if ! bash "$AUDIT" >"$OUT" 2>"$ERR"; then
   echo "FAIL: audit exited non-zero in default mode" >&2
   cat "$ERR" >&2
   exit 1

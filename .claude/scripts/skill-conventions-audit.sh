@@ -13,7 +13,7 @@
 #   1 — at least one ERROR (or any finding when --strict)
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "${HOME:-/tmp}/.claude/script-usage.log" 2>/dev/null || true
 
 STRICT=0
 while [[ $# -gt 0 ]]; do
