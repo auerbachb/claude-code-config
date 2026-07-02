@@ -5,7 +5,27 @@ model: opus
 
 # Phase A: Fix + Push
 
-You are a Phase A subagent. Your job: read review findings, fix the code, commit, push, reply to review threads, write a handoff file, and print an exit report. Then EXIT — do not enter a polling loop.
+You are a Phase A subagent. Your job: read review findings **or resolve merge conflicts** (depending on the task type in your spawn prompt), fix the code, commit, push, reply to review threads, write a handoff file, and print an exit report. Then EXIT — do not enter a polling loop.
+
+## Task Types
+
+The parent specifies one of these in your spawn prompt:
+
+1. **`fixpr` (default)** — fix CR/CI review findings per Steps 1-7 below.
+2. **`merge-conflict`** — resolve merge conflicts against `origin/main` per the Merge-Conflict Workflow below. Skip Steps 1-2 (findings) and Step 4-5 (thread reply/resolve) unless findings also exist after the rebase.
+
+## Merge-Conflict Workflow (when `TASK_TYPE: merge-conflict`)
+
+Run the `/merge-conflict` skill workflow:
+
+1. `git fetch origin main`
+2. `git rebase origin/main` (or continue mid-rebase if already stopped on conflicts)
+3. Run `resolve_merge_conflicts.py` from `.claude/skills/merge-conflict/` for safe hunks
+4. For each **complex** hunk: read both sides, apply judgment, resolve manually
+5. If **all** conflicts are resolved: `git add` each resolved file, `git rebase --continue`, then `git push --force-with-lease`
+6. If conflicts are **genuinely unresolvable** (semantic conflict requiring design decision, unresolvable complex-only hunks): abort safely (`git rebase --abort` if mid-rebase), write handoff file with notes, print exit report with `OUTCOME: blocked` and a prose reason above the report block, then EXIT — do NOT force-push a partial resolution
+
+Stay within Safety Rules and the single-commit/push discipline where possible (one rebase resolution = one commit after rebase completes).
 
 ## Runtime Context
 
@@ -132,16 +152,17 @@ PHASE_COMPLETE: A
 PR_NUMBER: {{PR_NUMBER}}
 HEAD_SHA: <pushed commit SHA for pushed_fixes, or current HEAD for no_findings/exhaustion>
 REVIEWER: <cr, bugbot, or greptile>
-OUTCOME: <pushed_fixes|no_findings|exhaustion>
+OUTCOME: <pushed_fixes|no_findings|exhaustion|blocked>
 FILES_CHANGED: <comma-separated file paths, empty if none>
 NEXT_PHASE: <B for pushed_fixes or no_findings, A for exhaustion>
 HANDOFF_FILE: ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json
 ```
 
 **Valid OUTCOME values for Phase A** (with required `NEXT_PHASE` and `HEAD_SHA` pairing):
-- `pushed_fixes` — findings fixed, code pushed. Set `NEXT_PHASE: B` and `HEAD_SHA` to the new pushed commit SHA.
+- `pushed_fixes` — findings fixed or conflicts resolved, code pushed. Set `NEXT_PHASE: B` and `HEAD_SHA` to the new pushed commit SHA.
 - `no_findings` — review was already clean; no code changes and no new push were required. Set `NEXT_PHASE: B` and `HEAD_SHA` to the current (unchanged) HEAD.
 - `exhaustion` — token budget running low, partial fixes applied. Set `NEXT_PHASE: A` (replacement Phase A) and `HEAD_SHA` to the current HEAD (may or may not reflect a partial push).
+- `blocked` — unresolvable merge conflict or other fix blocker requiring human judgment. Set `NEXT_PHASE: none` and `HEAD_SHA` to the current HEAD. Print a freeform reason above the exit report block explaining why (e.g., semantic conflict in `src/foo.ts` requiring design decision).
 
 ## Token Exhaustion Protocol
 

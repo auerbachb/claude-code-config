@@ -17,7 +17,7 @@ Thread-level **PR fleet manager**. This skill turns the current thread into a de
 
 > **Per-PR dispatch is inlined below.** `TODO: refactor to call /babysit-pr per discovered PR after #456 lands.` Until #456 merges, Step 3's decision tree is the single owner of per-PR logic. When `/babysit-pr` exists, replace Step 3's inline branches with one `/babysit-pr <PR>` dispatch per discovered PR — the table, discovery, idempotency, and backoff scaffolding here stay unchanged.
 
-This is a **set-and-monitor** command. Once invoked it acknowledges the mode, establishes a `/loop`, and at every tick reprints the fleet table and acts. It never writes feature code and never drifts into unrelated work.
+This is a **set-and-monitor** command. Once invoked it acknowledges the mode, establishes a `/loop`, and at every tick reprints the fleet table and acts. The **parent thread** never edits feature code directly — it dispatches subagents to do that work — and never drifts into unrelated work.
 
 ---
 
@@ -49,20 +49,33 @@ A stale marker left by a killed session is safely reconciled here: the next `/pr
 
 On the **first** invocation in a thread (and after any resume), acknowledge the mode up front so the constraints are explicit and survive context compaction:
 
-> **PR-fleet-manager mode active.** My only job in this thread is to watch and manage your open PRs as a fleet — rediscover them each tick, print a status table, and dispatch rebase / parallel `phase-a-fixer` subagents (fix work) / sequential `/wrap` (merge-ready) per the decision tree. Merge-ready PRs are landed autonomously via inline `/wrap` dispatch (unless `--confirm-merges` is set). I will not write feature code, start issues, or do unrelated work here.
+> **PR-fleet-manager mode active.** My only job in **this parent thread** is to watch and manage your open PRs as a fleet — rediscover them each tick, print a status table, and dispatch rebase / parallel `phase-a-fixer` subagents (fix work, including merge conflicts) / sequential `/wrap` (merge-ready) per the decision tree. Merge-ready PRs are landed autonomously via inline `/wrap` dispatch (unless `--confirm-merges` is set). I will not edit feature code **directly in this thread**, start issues, or do unrelated work here — but I **will** dispatch subagents that edit code, resolve conflicts, fix findings, push, and reply/resolve threads.
 
-**Prohibited in this thread (refuse and redirect):**
+### Parent scope vs Subagent scope
 
-- Writing or editing **feature code** of any kind.
-- Invoking `/start-issue`, `/prompt`, or spawning coding subagents for new work.
+| Scope | Role | Allowed | Disallowed |
+|-------|------|---------|------------|
+| **Parent (this thread)** | Fleet orchestrator | Discover PRs, classify state, dispatch subagents, aggregate exit reports, update the fleet table, decide next tick; git rebase/force-push for `BEHIND` (Step 5a); stale-bot dismiss + re-trigger (Steps 5b/5b′); inline `/wrap` for merge-ready PRs | Direct code edits; direct git beyond discovery/rebase/dismiss; direct merges (`gh pr merge`); starting new issues; unrelated work |
+| **Subagents (spawned per PR)** | Fix worker | Edit files, resolve merge conflicts, fix CR/CI findings, push commits, reply to threads, resolve bot threads — one PR each, per `.claude/rules/subagent-orchestration.md` and #509 (parallel subagents) | Modify branch protection; dismiss human reviews; bypass SAFETY rules |
+
+Spawn pattern reference: `.claude/rules/subagent-orchestration.md` (Phase A fixer / Phase C merger). Every spawn includes the verbatim `SAFETY:` block from `.claude/rules/safety.md`.
+
+**Prohibited for the parent thread (refuse and redirect):**
+
+- Writing or editing **feature code directly** — dispatch a `phase-a-fixer` subagent instead (merge conflicts, CR findings, CI failures are all dispatch cases, not refusal cases).
+- Invoking `/start-issue`, `/prompt`, or spawning subagents for **new work unrelated to the discovered fleet**.
 - Creating issues or PRs (other than the follow-ups `/wrap` itself creates on merge).
 - Any task unrelated to managing the discovered PR fleet.
 
-**Refusal template** when asked for a prohibited activity:
+**Refusal template** when asked for genuinely out-of-scope *parent* work (not dispatchable fleet fix work):
 
 > That's outside PR-fleet-manager mode. I'm keeping this thread focused on monitoring your open PRs. Start a separate thread (e.g. `/start-issue`) for that work — say `/pmm-stop` first if you want me to stop monitoring here.
 
-This skill is read-only with respect to source: the only writes it performs are git rebase/force-push (Step 5a), stale-bot review dismissal + owning-bot re-trigger (Steps 5b/5b′), and the bounded mutations that `phase-a-fixer` subagents and `/wrap` already own. Fix work is delegated to parallel `phase-a-fixer` subagents (`.claude/agents/phase-a-fixer.md`); merge work stays sequential via `/wrap`. The parent never reimplements fix/merge logic beyond the shared dismiss/re-trigger helpers that `/fixpr` also uses.
+### Common misreads / Anti-patterns
+
+> If you catch yourself telling the user "I can't edit code in this thread" as a reason to **stop** rather than **dispatch**, that's wrong — the parent doesn't edit code, but its subagents do, and that's the whole point. Merge conflicts, CR findings, and CI failures are all handled by spawning fix subagents, not by refusing or hard-blocking pre-dispatch.
+
+The parent is orchestration-only with respect to source edits: the only direct writes it performs are git rebase/force-push (Step 5a), stale-bot review dismissal + owning-bot re-trigger (Steps 5b/5b′), and the bounded mutations that `phase-a-fixer` subagents and `/wrap` already own. Fix work — including merge-conflict resolution — is delegated to parallel `phase-a-fixer` subagents (`.claude/agents/phase-a-fixer.md`); merge work stays sequential via `/wrap`. The parent never reimplements fix/merge logic beyond the shared dismiss/re-trigger helpers that `/fixpr` also uses.
 
 ---
 
@@ -151,6 +164,15 @@ Before Step 3 re-classifies the fleet, process any **PMM-owned** `phase-a-fixer`
 
 **Initialize `EXHAUSTION_RESPAWN_PRS='[]'` at the start of this step, every tick — never carry it over.** Like `GATE_BY_PR`, it is a plain in-memory variable scoped to the current tick's execution (each `/loop` re-invocation is a fresh run of this skill from Step 1), not a durable field in `session-state.json` — so there is nothing to reset from a *prior* tick's memory, but the step must still start from an explicitly empty list rather than an implicit/undefined one, so a tick with zero exhaustion outcomes never accidentally inherits stale entries from a bug elsewhere in this skill's execution.
 
+**Load persisted hard blocks at tick start** so a `blocked` merge-conflict outcome from a prior tick is not re-dispatched when Step 3 still sees `mergeable == CONFLICTING`:
+
+```bash
+PERSISTED_HARD_BLOCK=$(.claude/scripts/session-state.sh --get '.pmm_hard_block // {}' 2>/dev/null || echo '{}')
+HARD_BLOCK_JSON="$PERSISTED_HARD_BLOCK"   # map PR number → reason; survives across ticks
+```
+
+When Step 2.5 (or Step 5e) adds a PR to `HARD_BLOCK[]`, also persist it: `.claude/scripts/session-state.sh --set ".pmm_hard_block.\"$N\"=\"$REASON\""`. Clear the entry only when the user explicitly approves a respawn or the PR merges/closes (Step 3 sets `VERDICT=gone` → `--set ".pmm_hard_block.\"$N\"=null"`).
+
 For each completed subagent, run steps 1-3 **unconditionally first** (cleanup must finish before any respawn, so a replacement's fresh record can never be clobbered by the completed agent's own removal):
 
 1. **Parse the Structured Exit Report** from its output (`EXIT_REPORT` block per `.claude/reference/exit-report-format.md`). No exit report = silent failure — check GitHub for the PR's current HEAD and surface `failed` in the Subagent column.
@@ -166,8 +188,9 @@ For each completed subagent, run steps 1-3 **unconditionally first** (cleanup mu
    This must be a real read-filter-write, not a no-op comment — Step 3's concurrency cap and idempotency check both count live entries in this array.
 4. **Branch on OUTCOME** (steps 1-3 above are already done, so this branch never races the cleanup):
    - `pushed_fixes` or `no_findings` → verify push SHA matches `HEAD_SHA` in the report (`gh pr view N --json commits --jq '.commits[-1].oid'`). Verify handoff file exists at `~/.claude/handoffs/pr-{N}-handoff.json` with `phase_completed: "A"`. When OUTCOME is `pushed_fixes`, run **Step 5b dismiss helper + Step 5b′ owning-bot re-trigger** on `#N` immediately (same contract as `/fixpr` Steps 3a/3b — a push without dismissal leaves obsolete bot `CHANGES_REQUESTED` on old SHAs and the gate never clears). Step 5e's inline completion path (item 2) runs the same pair when a subagent exits mid-tick.
-   - `exhaustion` → **do not launch the replacement inline here.** Step 2.5 runs before Step 3 every tick, so `GATE_BY_PR`/pre-fetched `FINDINGS_JSON` (both populated in Step 3) are not available yet — Step 5c's full spawn pattern needs them. Instead, rely on step 3 above already clearing this PR's `active_agents`/`pmm_in_flight[N]` entries: the PR falls through into Step 3's classification with a clean slate later in this same tick, and if the underlying condition (CI failing, unresolved threads, stale bot review) still holds, Step 3 naturally re-verdicts it `fixpr` and Step 5c's normal per-tick spawn respawns it — using this tick's freshly-computed `GATE_BY_PR`/`FINDINGS_JSON`. This still satisfies `subagent-orchestration.md`'s 60s Token/Turn Exhaustion Protocol SLA: Step 3 and Step 5c run seconds later in the same continuous tick execution, not on a separate `/loop` cycle. **Record `$N` into `EXHAUSTION_RESPAWN_PRS` for this tick** — Step 3's cap check (item 2) must never let this PR lose its slot to a competing fresh `fixpr` PR, since `subagent-orchestration.md` treats exhaustion-with-handoff respawn as mandatory, not slot-competitive. Report to user.
-   - Missing/corrupt report, or a crash with no handoff file → mark `failed` and add `#N` to `HARD_BLOCK[]` with reason `crashed(needs-approval)`. **Do NOT leave it eligible for silent re-dispatch** — `subagent-orchestration.md`'s Phase Transition Autonomy table requires user permission before respawning a crashed/no-handoff subagent. Reported once and dropped from the actionable fleet this tick (Step 3's `HARD_BLOCK[]` handling — it does not force-stop the fleet); the user can explicitly approve a respawn.
+   - `blocked` → add `#N` to `HARD_BLOCK[]` with reason from the exit report (e.g. `conflicts(needs-human)` for unresolvable merge conflicts). **Persist** the same reason to `pmm_hard_block` in `session-state.json` (see tick-start load above). Report once and drop from the actionable fleet this tick — the subagent already attempted resolution; do not re-dispatch silently.
+   - `exhaustion` → **do not launch the replacement inline here.** Step 2.5 runs before Step 3 every tick, so `GATE_BY_PR`/pre-fetched `FINDINGS_JSON` (both populated in Step 3) are not available yet — Step 5c's full spawn pattern needs them. Instead, rely on step 3 above already clearing this PR's `active_agents`/`pmm_in_flight[N]` entries: the PR falls through into Step 3's classification with a clean slate later in this same tick, and if the underlying condition (CI failing, unresolved threads, stale bot review, merge conflicts) still holds, Step 3 naturally re-verdicts it `fixpr` and Step 5c's normal per-tick spawn respawns it — using this tick's freshly-computed `GATE_BY_PR`/`FINDINGS_JSON`. This still satisfies `subagent-orchestration.md`'s 60s Token/Turn Exhaustion Protocol SLA: Step 3 and Step 5c run seconds later in the same continuous tick execution, not on a separate `/loop` cycle. **Record `$N` into `EXHAUSTION_RESPAWN_PRS` for this tick** — Step 3's cap check (item 2) must never let this PR lose its slot to a competing fresh `fixpr` PR, since `subagent-orchestration.md` treats exhaustion-with-handoff respawn as mandatory, not slot-competitive. Report to user.
+   - Missing/corrupt report, or a crash with no handoff file → mark `failed` and add `#N` to `HARD_BLOCK[]` with reason `crashed(needs-approval)`. **Persist** the same reason to `pmm_hard_block` in `session-state.json`. **Do NOT leave it eligible for silent re-dispatch** — `subagent-orchestration.md`'s Phase Transition Autonomy table requires user permission before respawning a crashed/no-handoff subagent. Reported once and dropped from the actionable fleet this tick (Step 3's `HARD_BLOCK[]` handling — it does not force-stop the fleet); the user can explicitly approve a respawn.
 5. **Record per-PR outcome** in a `SUBAGENT_STATUS[N]` map (`complete` / `failed`) for the Step 4 table.
 
 PMM does **not** launch Phase B/C after Phase A — it only fixes and pushes. Step 5e's monitor posture borrows `monitor-mode.md`'s orchestration-only discipline but explicitly skips `phase-protocols.md`'s Phase Completion Protocols (which would otherwise auto-launch Phase B). The next tick re-classifies each PR on its new SHA (may become `waiting`, `wrap`, or `fixpr` again).
@@ -177,6 +200,12 @@ PMM does **not** launch Phase B/C after Phase A — it only fixes and pushes. St
 ---
 
 ## Step 3: Gather per-PR state + classify (compute verdicts — NO actions)
+
+**Refresh `HARD_BLOCK_JSON` immediately before the per-PR loop** so Step 2.5 `blocked`/`crashed` persists from earlier in this same tick are visible to the decision tree (the Step 2.5 tick-start load is stale once Step 2.5 writes new entries):
+
+```bash
+HARD_BLOCK_JSON=$(.claude/scripts/session-state.sh --get '.pmm_hard_block // {}' 2>/dev/null || echo '{}')
+```
 
 This step is **side-effect-free**: it gathers state and computes a verdict per PR, but performs **no** rebases or dispatches. Actions happen in **Step 5**, after the table prints (Step 4). This ordering is required so the heartbeat table always shows the classification *before* any long-running dispatch.
 
@@ -226,20 +255,30 @@ Read `merge_state` / `mergeable` **literally** from the gate JSON. **Do NOT infe
 
 | Condition (checked in order) | `VERDICT` | Acted on in Step 5 as |
 |------------------------------|-----------|------------------------|
+| PR in persisted `pmm_hard_block` (prior-tick `blocked` / `crashed` — load at Step 2.5) | `BLOCKED:<reason>` | **Hard block** → reported, dropped; **overrides** `mergeable == CONFLICTING` so Step 5c does not re-dispatch silently |
 | `human_changes_requested` non-empty (human CR on HEAD) | `BLOCKED:human(@login)` | **Hard block** → reported, dropped from actionable fleet (name each login; never auto-dismiss) |
-| `mergeable == CONFLICTING` | `BLOCKED:conflicts` | **Hard block** → reported, dropped from actionable fleet (recommend `/merge-conflict`; never auto-merge) |
+| `mergeable == CONFLICTING` | `fixpr` (`merge-conflict`) | Spawn `phase-a-fixer` subagent tasked with `/merge-conflict` workflow (Step 5c) — resolves and pushes; never auto-merge |
 | `merge_state == BEHIND` | `rebase` | Rebase + force-push + stale-bot dismissal (Step 5a/5b) |
 | `CI_FAILING > 0` **or** `UNRESOLVED > 0` | `fixpr` (`has-recoverable-blockers`) | Spawn `phase-a-fixer` subagent (Step 5c) |
 | `MET == false` **and** (`STALE_BOT_CR > 0` **or** `REVIEW_DECISION == CHANGES_REQUESTED` with no human CR) | `fixpr` (`has-recoverable-blockers`) | Step 5b′ (when `STALE_BOT_CR > 0` only) dismisses stale bot reviews + re-triggers the owning bot, re-gates; spawn `phase-a-fixer` (Step 5c) when fix work remains (`CI_FAILING > 0`, `UNRESOLVED > 0`, or fresh bot CR on HEAD) |
 | `MET == true` (clean review on HEAD + CI green + 0 unresolved threads + no blockers) | `wrap` | Dispatch `/wrap` sequentially (Step 5d) |
 | Otherwise (CI in-progress, reviewer genuinely pending, `REVIEW_REQUIRED` with no bot signal yet, `UNKNOWN`) | `waiting` | No-op — reviewer/CI owns the next move |
 
-`merge-gate.sh` exit `3` (PR gone — merged/closed between Step 2 and now) → `VERDICT=gone` (drop from the fleet this tick). Exit `2`/`4` (tooling/network) → `VERDICT=error` (do not act; retry next tick).
+`merge-gate.sh` exit `3` (PR gone — merged/closed between Step 2 and now) → `VERDICT=gone`, clear persisted block (`.claude/scripts/session-state.sh --set ".pmm_hard_block.\"$N\"=null"`), drop from fleet. When the user explicitly approves respawn of a `crashed(needs-approval)` or `conflicts(needs-human)` PR, clear the same `pmm_hard_block` key before dispatch. Exit `2`/`4` (tooling/network) → `VERDICT=error` (do not act; retry next tick).
 
 **Accumulate `VERDICTS_JSON` as each PR is classified — this is what Step 5.0's pre-flight gone/error skip reads.** Without this, `VERDICTS_JSON` stays an implicit empty object, the skip check never matches, and pre-flight runs against merged/errored PRs it should have skipped:
 
 ```bash
-VERDICTS_JSON=$(jq --arg n "$N" --arg v "$VERDICT" '.[$n] = {verdict: $v}' <<<"${VERDICTS_JSON:-{}}")
+TAG=""
+if [[ "$VERDICT" == "fixpr" && "$MERGEABLE" == "CONFLICTING" ]]; then
+  TAG="merge-conflict"
+fi
+if [[ -n "$TAG" ]]; then
+  VERDICTS_JSON=$(jq --arg n "$N" --arg v "$VERDICT" --arg tag "$TAG" \
+    '.[$n] = {verdict: $v, tag: $tag}' <<<"${VERDICTS_JSON:-{}}")
+else
+  VERDICTS_JSON=$(jq --arg n "$N" --arg v "$VERDICT" '.[$n] = {verdict: $v}' <<<"${VERDICTS_JSON:-{}}")
+fi
 ```
 
 **Collect hard blocks for reporting, but do not force-stop the fleet.** Push every PR with a `BLOCKED:*` verdict onto a `HARD_BLOCK[]` list (with its reason). These PRs are **reported once and dropped from the actionable fleet** for this tick — they do not trigger Stop & Clean Exit. A fleet of only hard-blocked/waiting PRs converges to auto-Pause via the idle counter (Step 6/7). The `rebase`/`fixpr`/`wrap` verdicts are executed in Step 5.
@@ -292,12 +331,12 @@ echo "[$TS] PMM tick — $PR_COUNT PR(s) in fleet (author:$PMM_AUTHOR)"
 | #<issue or —> | #<N> | <merge_state> | <review_decision> | <pass>/<fail>/<prog> | <count> | <VERDICT from Step 3> | <SUBAGENT_STATUS> |
 
 - **Issue** — from `pr-issue-ref.sh`, or `—` when the PR body has no closing keyword.
-- **State** — literal `merge_state` (`CLEAN`/`BEHIND`/`BLOCKED`/`CONFLICTING`/`UNKNOWN`).
+- **State** — literal `merge_state` (`CLEAN`/`BEHIND`/`BLOCKED`/`UNKNOWN`); when `mergeable == CONFLICTING`, append `(CONFLICTING)` to the State cell so the conflict signal is visible (CONFLICTING is a `mergeable` value, not a `merge_state` value).
 - **Reviews** — literal `review_decision` (`APPROVED`/`CHANGES_REQUESTED`/`REVIEW_REQUIRED`).
 - **CI** — `passing`/`failing`/`in_progress` counts from the gate.
 - **Unresolved Threads** — count of `isResolved == false` (or `?` if the GraphQL fetch failed).
-- **Verdict** — the Step 3 verdict: `rebase`, `fixpr`, `wrap`, `waiting`, `awaiting fix subagent`, `queued (cap)`, `rate-limited`, `BLOCKED:human(@x)`, `BLOCKED:conflicts`, `gone`, `error`.
-- **Subagent** — per-PR agent state for fix work: `—` (not spawned / no fix dispatch this tick), `spawned`, `working`, `complete`, `failed`, `deferred(foreign-agent)` (Step 5d/5e deferral gate closed because a foreign Phase A entry blocks this PR), `foreign-agent-stale` (Step 5e staleness timeout fired on a silent foreign entry — gate treated as drained). Populated from `active_agents` + Step 2.5 outcomes (PMM-owned only) + Step 5e foreign-drain polling. Merge-ready `/wrap` dispatches show `—` (wrap is parent-inline, not a subagent).
+- **Verdict** — the Step 3 verdict: `rebase`, `fixpr`, `wrap`, `waiting`, `awaiting fix subagent`, `queued (cap)`, `rate-limited`, `BLOCKED:human(@x)`, `BLOCKED:conflicts(needs-human)`, `gone`, `error`.
+- **Subagent** — per-PR agent state for fix work: `—` (not spawned / no fix dispatch this tick), `dispatched (merge-conflict)` (conflict-resolution fixer spawned this tick — transitions to `spawned`/`working`/`complete`/`failed` as the subagent runs), `spawned`, `working`, `complete`, `failed`, `deferred(foreign-agent)` (Step 5d/5e deferral gate closed because a foreign Phase A entry blocks this PR), `foreign-agent-stale` (Step 5e staleness timeout fired on a silent foreign entry — gate treated as drained). Populated from `active_agents` + Step 2.5 outcomes (PMM-owned only) + Step 5e foreign-drain polling. Merge-ready `/wrap` dispatches show `—` (wrap is parent-inline, not a subagent).
 
 A PR merged this tick is reported via the per-tick `merged #N` line (Step 5d) and then naturally disappears from the fleet on the next `gh pr list` discovery — no table row lingers.
 
@@ -365,8 +404,13 @@ else
     # then run Step 5b (dismiss stale bot reviews on the new SHA)
   else
     git rebase --abort
-    echo "[PMM] PR #$N rebase hit conflicts — hard block, recommend /merge-conflict"
-    # add #N to HARD_BLOCK[] with reason "conflicts"
+    echo "[PMM] PR #$N rebase hit conflicts — routing to merge-conflict fixer dispatch (Step 5c)"
+    # Override Step 3's `rebase` verdict so Step 5c includes this PR in the *same* tick
+    # (Step 5c only dispatches PRs whose refined verdict is `fixpr`, not `rebase`):
+    VERDICTS_JSON=$(jq --arg n "$N" '.[$n] = {verdict: "fixpr", tag: "merge-conflict", refined: "fixpr"}' <<<"${VERDICTS_JSON:-{}}")
+    REFINED_VERDICT[$N]="fixpr"
+    # Do NOT add to HARD_BLOCK[] — spawn a phase-a-fixer subagent tasked with the
+    # /merge-conflict workflow instead. Step 5c dispatch runs later this tick.
   fi
 fi
 ```
@@ -471,11 +515,18 @@ Never batch mention strings; never auto-trigger Greptile. Set `TICK_HAD_ACTION=t
    - **`CI_FAILING > 0` or `UNRESOLVED > 0`** → proceed to Step 5c spawn (real fix work remains).
    - **Otherwise** (reviewer pending on fresh trigger, no CI/thread fix work) → skip Step 5c; verdict becomes `waiting` on the next tick when the bot lands.
 
-### Step 5c: Parallel `phase-a-fixer` dispatch (verdict `fixpr` — has-recoverable-blockers)
+### Step 5c: Parallel `phase-a-fixer` dispatch (verdict `fixpr` — has-recoverable-blockers or merge-conflict)
 
 Fix work runs in **parallel** via one `phase-a-fixer` subagent per PR, capped at `$PMM_MAX_PARALLEL` (default 3). Merge dispatch stays sequential (Step 5d) — merges affect main and must not race.
 
-**Idempotency and concurrency are already resolved in Step 3's refinement pass** (in-flight check + cap slot allocation), so the table printed in Step 4 already reflects which PRs will dispatch this tick. Step 5c dispatches every PR whose *refined* verdict is still `fixpr` **and** Step 5b′ did not re-gate it to `wrap`/`waiting` — it does not re-check `active_agents` or recompute slots. PRs refined to `awaiting fix subagent` or `queued (cap)` are skipped here with no further action; they are eligible again once Step 3 re-evaluates on a later tick.
+**Two fixer task types share this dispatch path:**
+
+1. **CR/CI/thread fix work** (`fixpr` from CI failing, unresolved threads, or stale bot CR) — standard Phase A fixer workflow per `.claude/agents/phase-a-fixer.md`.
+2. **Merge-conflict resolution** (`fixpr` with `merge-conflict` tag from `mergeable == CONFLICTING`, or from Step 5a rebase hitting conflicts) — same spawn shape, but the subagent prompt directs it to run the `/merge-conflict` skill workflow: rebase onto base → `resolve_merge_conflicts.py` for safe hunks → apply judgment to complex hunks → commit + force-push. Unresolvable conflicts exit with `OUTCOME: blocked` (see Step 2.5); the parent surfaces them as `BLOCKED:conflicts(needs-human)`.
+
+Conflict dispatches participate in the same parallel cap, batched `session-state.sh --set` write, and `pmm-fix-$N` tracking as CR/CI fixers. Set the Subagent column to `dispatched (merge-conflict)` when spawning for conflict resolution.
+
+**Idempotency and concurrency are already resolved in Step 3's refinement pass** (in-flight check + cap slot allocation), so the table printed in Step 4 already reflects which PRs will dispatch this tick. Step 5c dispatches every PR whose *refined* verdict is still `fixpr` **and** Step 5b′ did not re-gate it to `wrap`/`waiting` — it does not re-check `active_agents` or recompute slots. **Exception:** PRs whose Step 5a rebase aborted on conflicts override their refined verdict to `fixpr (merge-conflict)` in-place (see Step 5a) and are eligible for Step 5c dispatch in the same tick even though Step 4 already printed `rebase`. PRs refined to `awaiting fix subagent` or `queued (cap)` are skipped here with no further action; they are eligible again once Step 3 re-evaluates on a later tick.
 
 **CR hourly cap (fleet-wide).** Before spawning, snapshot the budget:
 
@@ -486,7 +537,7 @@ CR_BUDGET_OK=1
 
 If `$CR_BUDGET_OK == 0`, still spawn subagents but include `SKIP_CR_TRIGGER=1` in each prompt — subagents proceed without posting `@coderabbitai full review`. The skip surfaces in each subagent's exit report / handoff `notes`. Do **not** block spawn entirely when the cap is exhausted (unlike deferring all fix work).
 
-**Bulk spawn (one Agent call per PR, all in parallel up to the cap).** For each PR allocated a slot, invoke the Agent tool with:
+**Bulk spawn (one Agent call per PR, all in parallel up to the cap).** For each PR allocated a slot, read `VERDICTS_JSON[$N].tag` — when it is `merge-conflict` (from Step 3 `mergeable == CONFLICTING` **or** Step 5a rebase abort), set `TASK_TYPE=merge-conflict` even if GitHub still reports `BEHIND`/`MERGEABLE`. Otherwise use `TASK_TYPE=fixpr`. Invoke the Agent tool with:
 
 ```text
 subagent_type: "phase-a-fixer"
@@ -501,9 +552,10 @@ run_in_background: true
 
 - PR number, branch name (`headRefName`), repo (`$OWNER/$REPO`), linked issue number (if any)
 - Current HEAD SHA from the tick's gate JSON
-- Reviewer classification (`cr`, `bugbot`, or `greptile`)
+- Reviewer classification (`cr`, `bugbot`, or `greptile`) — omit or set to `none` for merge-conflict-only dispatches
+- **Task type:** `fixpr` (CR/CI findings) or `merge-conflict` (conflict resolution) — for `merge-conflict`, include: "Run the `/merge-conflict` skill workflow: fetch main, rebase, run `resolve_merge_conflicts.py`, resolve complex hunks with judgment, commit + force-push. Exit with `OUTCOME: blocked` if conflicts are genuinely unresolvable."
 - Handoff file path: `~/.claude/handoffs/pr-{N}-handoff.json`
-- Pre-fetched findings from Step 3 (`FINDINGS_JSON[N]`)
+- Pre-fetched findings from Step 3 (`FINDINGS_JSON[N]`) — omit for merge-conflict-only dispatches
 - `SKIP_CR_TRIGGER=1` when `$CR_BUDGET_OK == 0`
 - The verbatim `SAFETY:` block from `.claude/rules/safety.md`:
 
@@ -595,7 +647,7 @@ On completion:
 
 ### Step 5e: Dedicated monitor mode while fix subagents are active
 
-If any **blocking** fix subagents are active this tick (per Step 5's shared gate idiom and the deferral-gate definition in Step 5d — spawned now or carried over from a prior tick), **immediately enter an orchestration-only posture borrowing `monitor-mode.md`'s Dedicated Monitor Mode discipline** — the parent's ONLY job until every blocking fix subagent completes, fails, or is drained (foreign: disappearance / terminal `status` / `PMM_LOCK_STALE_SECS` staleness timeout) is orchestration (poll, verify, heartbeat); no feature code, no local CR review, no substantive source analysis. **PMM does NOT execute `monitor-mode.md`'s Monitor Loop Per-Cycle Checklist verbatim** — specifically, it never runs `phase-protocols.md`'s Phase Completion Protocols, which would otherwise auto-launch Phase B after Phase A. Step 2.5's aggregation fully replaces that: PMM fixes and pushes only, per Step 0's contract ("PMM does not launch Phase B/C after Phase A").
+If any **blocking** fix subagents are active this tick (per Step 5's shared gate idiom and the deferral-gate definition in Step 5d — spawned now or carried over from a prior tick), **immediately enter an orchestration-only posture borrowing `monitor-mode.md`'s Dedicated Monitor Mode discipline** — the **parent's** ONLY job until every blocking fix subagent completes, fails, or is drained (foreign: disappearance / terminal `status` / `PMM_LOCK_STALE_SECS` staleness timeout) is orchestration (poll, verify, heartbeat); the parent does no direct feature-code edits, no local CR review, no substantive source analysis — but its subagents edit code, resolve conflicts, and push as designed. **PMM does NOT execute `monitor-mode.md`'s Monitor Loop Per-Cycle Checklist verbatim** — specifically, it never runs `phase-protocols.md`'s Phase Completion Protocols, which would otherwise auto-launch Phase B after Phase A. Step 2.5's aggregation fully replaces that: PMM fixes and pushes only, per Step 0's contract ("PMM does not launch Phase B/C after Phase A").
 
 **PMM's own monitor loop (~60s cadence — replaces, not layers on, `monitor-mode.md`'s checklist):**
 
@@ -618,6 +670,7 @@ If any **blocking** fix subagents are active this tick (per Step 5's shared gate
 2. **On PMM-owned completion** — success, exhaustion, or crash — **run Step 2.5's steps 1-3 in full** (parse exit report, worktree cleanup, remove this agent's own `active_agents` record + clear `pmm_in_flight[N]`) before branching on outcome. When OUTCOME is `pushed_fixes`, also run **Step 5b dismiss helper + Step 5b′ owning-bot re-trigger** on that PR (issue #514 — mirrors `/fixpr` 3a/3b; set `TICK_HAD_ACTION=true` if dismissal or re-trigger posts). This is unconditional, not just the success path — a failure that skips clearing `pmm_in_flight[N]` would otherwise leave a stale lock blocking Step 3's idempotency check until `PMM_LOCK_STALE_SECS` expires. Foreign entries are out of scope for this item — they drain per item 1's poll/staleness signal only.
 3. Branch on outcome for **PMM-owned** entries only (per Step 2.5's step 4, cleanup from item 2 above already done):
    - **Crash / no exit report / stale >15 min:** mark `failed` in the table and add `#N` to `HARD_BLOCK[]` with reason `crashed(needs-approval)` — never re-dispatch silently. Reported once and dropped from the actionable fleet this tick (do **not** force-stop — see Step 3's `HARD_BLOCK[]` handling); the user can explicitly approve a respawn (`subagent-orchestration.md`: "Ask first only: ... respawning a crashed/no-handoff subagent").
+   - **`blocked` (unresolvable merge conflict or other fix blocker):** add `#N` to `HARD_BLOCK[]` with reason from the exit report (e.g. `conflicts(needs-human)`). Report once and drop from the actionable fleet — do not re-dispatch silently.
    - **Token/turn exhaustion with a valid handoff file:** respawn immediately **using Step 5c's spawn pattern**, but with **freshly re-fetched** gate and findings data for this PR — do NOT reuse tick-start `GATE_BY_PR[$N]`/`FINDINGS_JSON[$N]` verbatim. Real time has passed since Step 3 computed them, and the exhausted subagent may have pushed partial progress before running out of tokens, moving the PR's actual HEAD SHA and review state past that tick-start snapshot; a respawn using the stale SHA/findings would hand the replacement outdated context. Re-run `.claude/scripts/merge-gate.sh "$N"` (and re-fetch findings from the three endpoints, same as Step 3's pre-fetch) immediately before building the replacement's spawn record, and use *that* fresh result — not the cached tick-start one — for its `head_sha`, `GATE_BY_PR[$N]` update, and prompt findings. This is an "Always do" action per `subagent-orchestration.md`'s Token/Turn Exhaustion Protocol — do not wait for the next tick, and do NOT defer to Step 2.5's exhaustion handling here (Step 2.5's deferral only works at tick-*start*, before Step 3 has run; Step 5e is mid-tick, after Step 3 already ran, so an inline respawn is possible here — it just needs fresh data, not the tick-start cache).
 4. Send heartbeat if >5 min since last user message (timestamp prefix required).
 5. Investigate stale **PMM-owned** agents (>15 min Phase A without progress). Foreign staleness is handled by item 1's `PMM_LOCK_STALE_SECS` fallback.
@@ -847,8 +900,9 @@ Hard-blocked PRs are reported here for visibility; the fleet may auto-pause afte
 
 ## Safety boundaries (HARD STOPS — `safety.md`, `cr-merge-gate.md`)
 
-This skill is an **orchestrator**. It rebases/force-pushes, spawns parallel `phase-a-fixer` subagents for fix work, and dispatches `/wrap` sequentially for merges. It never reimplements fix/merge/resolve logic. The following are absolute:
+This skill is a **parent orchestrator**. The parent rebases/force-pushes (Step 5a), spawns parallel `phase-a-fixer` subagents for fix work (including merge conflicts), and dispatches `/wrap` sequentially for merges. Subagents edit code, resolve conflicts, fix findings, push, and reply/resolve threads — that is their purpose. The parent never reimplements fix/merge/resolve logic directly. The following are absolute:
 
+- **Parent never edits feature code directly** — dispatch a `phase-a-fixer` subagent instead. Subagents are explicitly permitted and expected to edit feature code.
 - **Never modify branch protection** — no calls to `.../branches/.../protection`. Subagents inherit this prohibition.
 - **Never dismiss human reviews** — only Bot-allowlist `CHANGES_REQUESTED` on a stale `commit_id` (Steps 5b and 5b′, plus post-subagent dismiss in Step 2.5/5e after a push). Human CR is a hard block. Subagents must not dismiss human-authored reviews.
 - **Never resolve a review thread without code-verification** — thread resolution happens only inside `phase-a-fixer` Step 5 after verifying the fix. This skill only *counts* unresolved threads.
