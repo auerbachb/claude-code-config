@@ -19,7 +19,7 @@ Keep the current caps (soft **12,000** / hard **13,000** / ratchet **+750** / pe
 1. **Corpus is healthy.** 11,453 words — 547 words under the soft cap, 1,547 under the hard cap, ~1.5% of a 1M-token window.
 2. **1M-window economics unchanged.** Opus 4.8 / Fable 5 / Sonnet 5 still ship 1M context at flat standard pricing; cached rule load is ~$0.008/turn on Opus 4.8 (~15K tokens × $0.50/MTok cache hit).
 3. **Budget exists for adherence, not context pressure** — the #443 rationale still holds; redundant/contradictory rules misfire harder on literal-following models.
-4. **Per-file balance is fine.** Largest file is `cr-github-review.md` at 1,628 words (812 below the 2,000-word warning).
+4. **Per-file balance is fine.** Largest file is `cr-github-review.md` at 1,628 words (372 below the 2,000-word warning).
 5. **Double-loading is fixed.** #461 resolved via project-local `claudeMdExcludes`; effective in-context rule size in this repo is a single ~15K-token copy (was ~30K).
 6. **Ratchet headroom is tightening.** Only **239 words** remain before the committed ratchet cap (11,692). At the observed ~741 words/month growth rate, the ratchet will bind before the soft cap unless a cut pass or `--update-cap` after intentional reduction. Monitor; no cut mandated this cycle because corpus is still under soft limit and recent additions were purposeful feature rules (wrap/fixpr delegation, thread-resolution helper, quota authority).
 
