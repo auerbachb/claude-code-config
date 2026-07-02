@@ -92,7 +92,11 @@ if [[ -z "$REVIEWS_JSON" ]] || ! echo "$REVIEWS_JSON" | jq -e . >/dev/null 2>&1;
   exit 4
 fi
 
-mapfile -t DISMISS_IDS < <(
+# Read loop, not mapfile — macOS ships bash 3.2, which has no mapfile/readarray.
+DISMISS_IDS=()
+while IFS= read -r rid; do
+  [[ -n "$rid" ]] && DISMISS_IDS+=("$rid")
+done < <(
   echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" --argjson allow "$ALLOWLIST_JSON" '
     [.[]?
       | select(.state == "CHANGES_REQUESTED")
@@ -111,10 +115,8 @@ DISMISSED_IDS=()
 DISMISS_FAILURE_IDS=()
 MESSAGE="Superseded by fixes on ${HEAD_SHA}"
 
-for rid in "${DISMISS_IDS[@]}"; do
-  if [[ -z "$rid" ]]; then
-    continue
-  fi
+# ${arr[@]+...} guard: bash 3.2 treats "${arr[@]}" on an empty array as unbound under set -u.
+for rid in ${DISMISS_IDS[@]+"${DISMISS_IDS[@]}"}; do
   # Idempotent: duplicate dismiss may fail — refetch to confirm DISMISSED.
   if gh api -X PUT \
     "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews/$rid/dismissals" \
