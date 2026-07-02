@@ -750,6 +750,8 @@ CONFIG_AT_PAUSE=$(jq -nc \
   '{author:$author, repo:$repo, cadence:$cadence, max_parallel:$max_parallel, idle_pause_after:$idle_pause_after, auto_wake:$auto_wake, auto_wake_cadence:$auto_wake_cadence, confirm_merges:$confirm_merges}')
 ```
 
+> **Wake coupling:** `/pr-monitor-and-manage-wake` Step 4b rebuilds `PMM_FLAGS` from this blob — including `--confirm-merges` when `confirm_merges` is true — before re-arming the loop.
+
 > **Schema note:** pause marker fields live under nested `.pmm.*` per the AC; existing runtime fields (`pmm_active`, `pmm_digest`, `pmm_idle_streak`, etc.) remain flat.
 
 ### 4. Write pause marker (atomic batch)
