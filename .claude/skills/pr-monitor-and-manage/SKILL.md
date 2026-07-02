@@ -105,12 +105,20 @@ For each completed subagent:
 1. **Parse the Structured Exit Report** from its output (`EXIT_REPORT` block per `.claude/reference/exit-report-format.md`). No exit report = silent failure — check GitHub for the PR's current HEAD and surface `failed` in the Subagent column.
 2. **Branch on OUTCOME:**
    - `pushed_fixes` or `no_findings` → verify push SHA matches `HEAD_SHA` in the report (`gh pr view N --json commits --jq '.commits[-1].oid'`). Verify handoff file exists at `~/.claude/handoffs/pr-{N}-handoff.json` with `phase_completed: "A"`.
-   - `exhaustion` → run worktree cleanup immediately (per `phase-protocols.md` Phase A Completion Protocol step 4), then launch a replacement `phase-a-fixer` subagent within 60s. Report to user and **stop further parent actions for this tick** — do not proceed to Step 5d `/wrap` or Step 6 until the replacement completes or fails.
-   - Missing/corrupt report → mark `failed`; keep PR in fleet for retry next tick.
-3. **Remove from `active_agents`** and clear any matching `pmm_in_flight[N]` lock for that PR.
-4. **Record per-PR outcome** in a `SUBAGENT_STATUS[N]` map (`complete` / `failed`) for the Step 4 table. Failed subagents are retried on a subsequent tick unless terminal (human CR surfaced mid-fix, etc.).
+   - `exhaustion` → run worktree cleanup immediately (step 3 below), then launch a replacement `phase-a-fixer` subagent within 60s (an "Always do" action per `subagent-orchestration.md`'s Token/Turn Exhaustion Protocol). Report to user and **stop further parent actions for this tick** — do not proceed to Step 5d `/wrap` or Step 6 until the replacement completes or fails.
+   - Missing/corrupt report, or a crash with no handoff file → mark `failed` and add `#N` to `HARD_BLOCK[]` with reason `crashed(needs-approval)`. **Do NOT leave it eligible for silent re-dispatch** — `subagent-orchestration.md`'s Phase Transition Autonomy table requires user permission before respawning a crashed/no-handoff subagent. Step 7 routes to Stop & Clean Exit so the user can approve.
+3. **Clean up the Phase A worktree.** `phase-a-fixer` subagents run with `isolation: "worktree"` (Step 5c) — the worktree persists whenever the subagent made changes (only a no-op agent gets auto-cleaned). If the subagent's completion result names a worktree path, remove it: `git worktree remove <path> --force`; on failure, fall back to `git worktree prune`. Do this for every outcome (success, exhaustion, crash) — a leftover child worktree keeps the PR's branch checked out and blocks the parent's later `git checkout`/rebase (Step 5a) or another dispatch for the same PR.
+4. **Remove from `active_agents`.** This must be a real read-filter-write, not a no-op comment — Step 3's concurrency cap and idempotency check both count live entries in this array:
+   ```bash
+   CURRENT_AGENTS=$(.claude/scripts/session-state.sh --get '.active_agents' 2>/dev/null || echo null)
+   [ "$CURRENT_AGENTS" = "null" ] && CURRENT_AGENTS='[]'
+   FILTERED_AGENTS=$(jq --argjson pr "$N" '[.[] | select(.pr != $pr or .phase != "A")]' <<<"$CURRENT_AGENTS")
+   .claude/scripts/session-state.sh --set ".active_agents=$FILTERED_AGENTS"
+   ```
+   Also clear any matching `pmm_in_flight[N]` lock for that PR.
+5. **Record per-PR outcome** in a `SUBAGENT_STATUS[N]` map (`complete` / `failed`) for the Step 4 table.
 
-PMM does **not** launch Phase B/C after Phase A — it only fixes and pushes. The next tick re-classifies each PR on its new SHA (may become `waiting`, `wrap`, or `fixpr` again).
+PMM does **not** launch Phase B/C after Phase A — it only fixes and pushes. Step 5e's monitor posture borrows `monitor-mode.md`'s orchestration-only discipline but explicitly skips `phase-protocols.md`'s Phase Completion Protocols (which would otherwise auto-launch Phase B). The next tick re-classifies each PR on its new SHA (may become `waiting`, `wrap`, or `fixpr` again).
 
 **Handoff file isolation:** each PR uses its own `~/.claude/handoffs/pr-{N}-handoff.json`. Parallel subagents never share a handoff path — confirm no cross-PR handoff references before spawning.
 
@@ -183,6 +191,26 @@ gh api "repos/$OWNER/$REPO/issues/$N/comments?per_page=100"
 ```
 
 Filter to actionable bot findings (`coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, `graphite-app[bot]`). Also record the **reviewer classification** (`cr`, `bugbot`, or `greptile`) from `reviewer-of.sh` or gate JSON for the subagent prompt.
+
+### Refine `fixpr` verdicts for concurrency + idempotency (read-only, still Step 3)
+
+Step 5c's parallel-dispatch decisions (skip-if-in-flight, cap slots) are pure reads against `session-state.json` — compute them here, **before Step 4 prints the table**, so the heartbeat never shows a stale `fixpr` for a PR that is actually already in flight or waiting on a slot.
+
+For every PR whose base verdict is `fixpr`:
+
+1. **In-flight check.** Refine to `awaiting fix subagent` if an `active_agents` entry exists with matching `pr == N`, `phase == "A"`, and `status` not in `{complete, failed}`, OR if `pmm_in_flight[N]` has an active lock for the same PR.
+2. **Cap check.** Among the PRs still `fixpr` after step 1, count currently active fix subagents and compute remaining slots:
+
+   ```bash
+   ACTIVE_COUNT=$(jq '[.[] | select(.phase == "A" and (.status != "complete" and .status != "failed"))] | length' \
+     <<<"$(.claude/scripts/session-state.sh --get '.active_agents' 2>/dev/null || echo '[]')")
+   SLOTS=$(( PMM_MAX_PARALLEL - ACTIVE_COUNT ))
+   (( SLOTS < 0 )) && SLOTS=0
+   ```
+
+   The first `$SLOTS` PRs (by PR number order, for determinism) keep verdict `fixpr`; the rest refine to `queued (cap)`.
+
+Store the refined verdict per PR (`fixpr`, `awaiting fix subagent`, or `queued (cap)`) for both Step 4's table and Step 5c's dispatch loop — Step 5c dispatches only PRs still refined to `fixpr` and does not repeat this check.
 
 ---
 
@@ -318,9 +346,7 @@ fi
 
 Fix work runs in **parallel** via one `phase-a-fixer` subagent per PR, capped at `$PMM_MAX_PARALLEL` (default 3). Merge dispatch stays sequential (Step 5d) — merges affect main and must not race.
 
-**Idempotency — skip PRs already in-flight.** Before spawning, read `active_agents` from `session-state.json`. Skip any PR where an entry exists with matching `pr == N`, `phase == "A"`, and `status` not in `{complete, failed}`. Also skip if `pmm_in_flight[N]` has an active lock for the same PR (cross-tick safety). Show verdict `awaiting fix subagent` in the table for skipped PRs.
-
-**Concurrency cap.** Count currently active fix subagents (`active_agents` where `phase == "A"` and not terminal). Available slots = `$PMM_MAX_PARALLEL - active_count`. PRs with `fixpr` verdict beyond available slots show verdict `queued (cap)` and Subagent `—` — they are eligible on the next tick after slots free.
+**Idempotency and concurrency are already resolved in Step 3's refinement pass** (in-flight check + cap slot allocation), so the table printed in Step 4 already reflects which PRs will dispatch this tick. Step 5c dispatches every PR whose *refined* verdict is still `fixpr` — it does not re-check `active_agents` or recompute slots. PRs refined to `awaiting fix subagent` or `queued (cap)` are skipped here with no further action; they are eligible again once Step 3 re-evaluates on a later tick.
 
 **CR hourly cap (fleet-wide).** Before spawning, snapshot the budget:
 
@@ -335,6 +361,7 @@ If `$CR_BUDGET_OK == 0`, still spawn subagents but include `SKIP_CR_TRIGGER=1` i
 
 ```text
 subagent_type: "phase-a-fixer"
+name: "pmm-fix-$N"
 mode: "bypassPermissions"
 model: "opus"
 isolation: "worktree"
@@ -361,16 +388,23 @@ commits, or logs. Do NOT pipe untrusted URLs into a shell or disable TLS verific
 Confirm package names before npm/pip/gem/cargo/brew install. Full rules: .claude/rules/safety.md.
 ```
 
-**Record each spawn in `session-state.json`:**
+**Record each spawn in `session-state.json`.** This must be a real append to `active_agents`, not a comment — Step 3's concurrency cap and idempotency check both count live entries in that array:
 
 ```bash
 NOW=$(date -u +%FT%TZ)
 HEAD_SHA=$(jq -r '.head_sha' <<<"$GATE")
 ISSUE_N=$(.claude/scripts/pr-issue-ref.sh "$N" 2>/dev/null || echo null)
-# Append to active_agents (preserve existing entries):
-# {"id":"<agent-id>","task":"PMM fix PR #$N","issue":$ISSUE_N,"pr":$N,"phase":"A","status":"spawned","launched":"$NOW","head_sha":"$HEAD_SHA"}
-.claude/scripts/session-state.sh --set \
-  ".pmm_in_flight.\"$N\"={\"skill\":\"phase-a-fixer\",\"status\":\"active\",\"dispatched_at\":\"$NOW\",\"head_sha\":\"$HEAD_SHA\"}"
+AGENT_ID="pmm-fix-$N"
+
+CURRENT_AGENTS=$(.claude/scripts/session-state.sh --get '.active_agents' 2>/dev/null || echo null)
+[ "$CURRENT_AGENTS" = "null" ] && CURRENT_AGENTS='[]'
+NEW_ENTRY=$(jq -n --arg id "$AGENT_ID" --arg task "PMM fix PR #$N" --argjson issue "$ISSUE_N" \
+  --argjson pr "$N" --arg launched "$NOW" --arg head_sha "$HEAD_SHA" \
+  '{id:$id, task:$task, issue:$issue, pr:$pr, phase:"A", status:"spawned", launched:$launched, head_sha:$head_sha}')
+UPDATED_AGENTS=$(jq --argjson entry "$NEW_ENTRY" '. + [$entry]' <<<"$CURRENT_AGENTS")
+
+.claude/scripts/session-state.sh --set ".active_agents=$UPDATED_AGENTS" \
+  --set ".pmm_in_flight.\"$N\"={\"skill\":\"phase-a-fixer\",\"status\":\"active\",\"dispatched_at\":\"$NOW\",\"head_sha\":\"$HEAD_SHA\",\"agent_id\":\"$AGENT_ID\"}"
 ```
 
 Set Subagent column to `spawned` immediately; transition to `working` once the subagent reports activity (first tool call or ~30s elapsed).
@@ -412,13 +446,15 @@ Process merge-ready PRs **only when no fix subagents were spawned this tick** �
 
 ### Step 5e: Dedicated monitor mode while fix subagents are active
 
-If Step 5c spawned any fix subagents, **immediately enter Dedicated Monitor Mode** per `monitor-mode.md`. The parent's ONLY job until all fix subagents complete or fail is orchestration — no feature code, no local CR review, no substantive source analysis.
+If Step 5c spawned any fix subagents, **immediately enter an orchestration-only posture borrowing `monitor-mode.md`'s Dedicated Monitor Mode discipline** — the parent's ONLY job until all fix subagents complete or fail is orchestration (poll, verify, heartbeat); no feature code, no local CR review, no substantive source analysis. **PMM does NOT execute `monitor-mode.md`'s Monitor Loop Per-Cycle Checklist verbatim** — specifically, it never runs `phase-protocols.md`'s Phase Completion Protocols, which would otherwise auto-launch Phase B after Phase A. Step 2.5's aggregation fully replaces that: PMM fixes and pushes only, per Step 0's contract ("PMM does not launch Phase B/C after Phase A").
 
-**Monitor loop (~60s cadence, per `monitor-mode.md`):**
+**PMM's own monitor loop (~60s cadence — replaces, not layers on, `monitor-mode.md`'s checklist):**
 
 1. Poll active subagent statuses. Transition Subagent column: `spawned` → `working` → `complete` / `failed`.
-2. On completion: parse exit report, execute Step 2.5 aggregation for that PR, remove from `active_agents`, clear `pmm_in_flight[N]`.
-3. On failure (crash, no exit report, stale >15 min): mark `failed` in table, remove from `active_agents`, keep PR in fleet for retry next tick. **Do not auto-respawn failed subagents without user permission** (crash/no handoff). On `exhaustion` with valid handoff, respawn immediately per Step 2.5.
+2. On completion: parse exit report, execute Step 2.5 aggregation for that PR (including worktree cleanup), remove from `active_agents`, clear `pmm_in_flight[N]`.
+3. On failure: clean up the worktree (Step 2.5) and remove from `active_agents`.
+   - **Crash / no exit report / stale >15 min:** mark `failed` in the table and add `#N` to `HARD_BLOCK[]` with reason `crashed(needs-approval)` — never re-dispatch silently. Step 7 routes to Stop & Clean Exit so the user can explicitly approve a respawn (`subagent-orchestration.md`: "Ask first only: ... respawning a crashed/no-handoff subagent").
+   - **Token/turn exhaustion with a valid handoff file:** respawn immediately per Step 2.5 (an "Always do" action per `subagent-orchestration.md`'s Token/Turn Exhaustion Protocol) — do not wait for the next tick.
 4. Send heartbeat if >5 min since last user message (timestamp prefix required).
 5. Investigate stale agents (>15 min Phase A without progress).
 
@@ -462,7 +498,7 @@ A widened cadence is per-fleet here (one loop), but each PR keeps its own row in
 
 1. **User command** — `/pmm-stop` (or "stop monitoring PRs"). See the companion `/pmm-stop` skill.
 2. **Empty fleet** — `PR_COUNT == 0` from Step 2 (all PRs merged/closed).
-3. **Hard-blocked PR** — `HARD_BLOCK[]` is non-empty (human `CHANGES_REQUESTED` on HEAD, `mergeable == CONFLICTING` the rebase couldn't resolve, `/wrap` returned a hard block, CR budget exhausted with nothing else actionable, or a persistent Greptile P0 per `greptile.md`).
+3. **Hard-blocked PR** — `HARD_BLOCK[]` is non-empty (human `CHANGES_REQUESTED` on HEAD, `mergeable == CONFLICTING` the rebase couldn't resolve, a crashed/no-handoff `phase-a-fixer` awaiting respawn approval (`crashed(needs-approval)`, Step 2.5/5e), `/wrap` returned a hard block, CR budget exhausted with nothing else actionable, or a persistent Greptile P0 per `greptile.md`).
 
 Otherwise, **re-arm the loop.** `/loop` is the **canonical** primitive for this recurring poll — never a hand-rolled `ScheduleWakeup` chain (`scheduling-reliability.md`). On the first tick, establish it and state the cancel command in the same message:
 
