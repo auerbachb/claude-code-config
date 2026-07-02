@@ -28,11 +28,15 @@ On **every** invocation, before Step 1, check for a pause marker. If present, th
 ```bash
 PAUSED_AT=$(.claude/scripts/session-state.sh --get '.pmm.paused_at' 2>/dev/null || echo null)
 if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
-  # 1. Read saved config (fallback defaults if missing)
+  # 1. Read saved config into the $SAVED shell variable (fallback defaults if missing) —
+  #    step 3 below clears .pmm.config_at_pause in session-state, so step 4 MUST use this
+  #    already-captured $SAVED variable, never re-read .pmm.config_at_pause from
+  #    session-state after step 3 has run (it will be null by then).
   SAVED=$(.claude/scripts/session-state.sh --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
   # 2. Delete auto-wake cron (fail-closed — see pr-monitor-and-manage-wake Step 3)
   # 3. Clear pause marker + reset pmm_idle_streak=0 + set pmm_active=true (atomic batch)
-  # 4. Merge flags: explicit $ARGUMENTS override saved config; unspecified fall back to saved
+  # 4. Merge flags: explicit $ARGUMENTS override $SAVED (the step-1 variable, not
+  #    session-state — that field is already cleared by step 3 at this point)
   echo "[PMM] Resuming from pause (paused_at=$PAUSED_AT) — flags on this invocation override saved config."
 fi
 ```
@@ -636,9 +640,10 @@ NOW=$(date -u +%FT%TZ)
 FLEET_AT_PAUSE=$(jq -c '[.[] | {pr: .number, head_sha: .headRefOid, state: .mergeStateStatus}]' <<<"$PR_LIST")
 CONFIG_AT_PAUSE=$(jq -nc \
   --arg author "$PMM_AUTHOR" --arg repo "$OWNER_REPO" --arg cadence "$PMM_CADENCE" \
+  --argjson max_parallel "$PMM_MAX_PARALLEL" \
   --argjson idle_pause_after "$PMM_IDLE_PAUSE_AFTER" \
   --argjson auto_wake "$PMM_AUTO_WAKE" --arg auto_wake_cadence "$PMM_AUTO_WAKE_CADENCE" \
-  '{author:$author, repo:$repo, cadence:$cadence, idle_pause_after:$idle_pause_after, auto_wake:$auto_wake, auto_wake_cadence:$auto_wake_cadence}')
+  '{author:$author, repo:$repo, cadence:$cadence, max_parallel:$max_parallel, idle_pause_after:$idle_pause_after, auto_wake:$auto_wake, auto_wake_cadence:$auto_wake_cadence}')
 ```
 
 > **Schema note:** pause marker fields live under nested `.pmm.*` per the AC; existing runtime fields (`pmm_active`, `pmm_digest`, `pmm_idle_streak`, etc.) remain flat.
@@ -662,6 +667,7 @@ When `$PMM_AUTO_WAKE` is true, register a durable hourly scan at pause time:
 
 ```bash
 # Derive cadence minutes from PMM_AUTO_WAKE_CADENCE (e.g. 60m → 60)
+AW_CADENCE_MIN="${PMM_AUTO_WAKE_CADENCE%m}"
 { read -r AW_MINUTE; read -r AW_CRON; } < <(.claude/scripts/off-peak-minute.sh --every-n-min "$AW_CADENCE_MIN")
 # CronCreate with prompt "/pr-monitor-and-manage-wake --auto-check", recurring=true, durable=true
 # Persist returned job id to .pmm.auto_wake_cron_id and append to polling_jobs[]
