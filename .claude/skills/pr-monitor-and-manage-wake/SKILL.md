@@ -106,8 +106,10 @@ Read config, reconstruct invocation flags, clear marker, reset idle streak, re-a
 
 ```bash
 CONFIG=$("$SESSION_STATE_SH" --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
-# Build flag string from config (author, repo, cadence, max-parallel, idle-pause-after, auto-wake, auto-wake-cadence)
+# Build flag string from config (author, repo, cadence, max-parallel, idle-pause-after,
+# auto-wake, auto-wake-cadence, confirm-merges)
 PMM_FLAGS="..."   # e.g. --author alice --repo org/repo --cadence 5m --max-parallel 3 --idle-pause-after 3
+# When confirm_merges is true in CONFIG, append --confirm-merges to PMM_FLAGS
 CADENCE=$(jq -r '.cadence // "5m"' <<<"$CONFIG")
 
 "$SESSION_STATE_SH" \

@@ -556,7 +556,12 @@ INFLIGHT=$(.claude/scripts/session-state.sh --get ".pmm_in_flight.\"$N\"" 2>/dev
 Decision:
 
 - `$INFLIGHT` has `status == "active"` → skip (verdict `awaiting prior /wrap`) unless stale per `PMM_LOCK_STALE_SECS` (default **3600s**) with no live progress evidence.
-- `$INFLIGHT` is `null` (or stale lock broken) → acquire lock, run `/wrap` inline:
+- `$INFLIGHT` is `null` (or stale lock broken) → proceed to merge dispatch below.
+
+**Merge dispatch — no confirmation prompt by default.** When `VERDICT == wrap`:
+
+1. **When `PMM_CONFIRM_MERGES` is true:** emit a per-PR confirmation prompt ("Merge-ready: dispatch `/wrap` for #N?") **before** acquiring any lock. If declined, skip this PR this tick with **no** `pmm_in_flight` write — do not leave a stale lock.
+2. **When confirmed (or when `PMM_CONFIRM_MERGES` is false):** acquire the idempotency lock, then dispatch immediately:
 
 ```bash
 NOW=$(date -u +%FT%TZ)
@@ -565,13 +570,13 @@ HEAD_SHA=$(jq -r '.head_sha' <<<"${GATE_BY_PR[$N]}")
   ".pmm_in_flight.\"$N\"={\"skill\":\"wrap\",\"status\":\"active\",\"dispatched_at\":\"$NOW\",\"head_sha\":\"$HEAD_SHA\"}"
 ```
 
-**Merge dispatch — no confirmation prompt by default.** When `VERDICT == wrap`, dispatch the **full** `/wrap` workflow inline (all 4 phases) immediately — invocation already authorized it per `CLAUDE.md`'s merge-auth exception. **Only when `PMM_CONFIRM_MERGES` is true:** emit a per-PR confirmation prompt ("Merge-ready: dispatch `/wrap` for #N?") and wait for explicit user approval before proceeding; if declined, skip this PR this tick.
+Default (`PMM_CONFIRM_MERGES` false): dispatch the **full** `/wrap` workflow inline (all 4 phases) immediately — invocation already authorized it per `CLAUDE.md`'s merge-auth exception.
 
 Execute the **full** `/wrap` workflow inline (all 4 phases). PMM relies on `/wrap`'s own gate re-check (`merge-gate.sh`) and AC verification (`ac-checkboxes.sh`) — if the gate is no longer met (SHA moved, CI regressed) or AC fails, `/wrap` stops and returns a hard block; PMM records it and re-classifies on the next tick without re-authorizing or re-prompting.
 
 On completion:
 
-- `/wrap` merged the PR → clear `pmm_in_flight[N]`; emit `merged #N` in the tick summary; append `#N` to `MERGED_THIS_TICK` and the session-level `MERGED_THIS_SESSION` accumulator; PR drops from fleet on next `gh pr list`.
+- `/wrap` merged the PR → clear `pmm_in_flight[N]`; append `#N` to `MERGED_THIS_TICK` and `MERGED_THIS_SESSION` (dedupe on append); PR drops from fleet on next `gh pr list`.
 - `/wrap` returned a hard block → clear in-flight and add `#N` to `HARD_BLOCK[]` for reporting (Step 4 next tick). Do **not** force-stop the fleet — the hard-blocked PR is dropped from actionable work and the idle counter handles convergence to Pause.
 
 ### Step 5e: Dedicated monitor mode while fix subagents are active
@@ -607,13 +612,13 @@ If any **blocking** fix subagents are active this tick (per Step 5's shared gate
 
 **#497 compatibility (idle auto-pause):** when all subagents exit and no parent dispatches remain in-flight, treat the tick as idle for digest/backoff purposes — the stable-state countdown in Step 6 applies as if the tick were a no-op dispatch tick.
 
-**Tick merge summary.** After all Step 5 actions complete, if `MERGED_THIS_TICK` is non-empty, print one line per merged PR:
+**Tick merge summary.** After all Step 5 actions complete, if `MERGED_THIS_TICK` is non-empty, print one line per merged PR (already recorded in `MERGED_THIS_SESSION` at `/wrap` completion — do not append again here):
 
 ```text
 merged #N
 ```
 
-Also append each to the session-level `MERGED_THIS_SESSION` accumulator (initialize `MERGED_THIS_SESSION='[]'` on the first tick in Step 0/Step 1).
+Initialize `MERGED_THIS_SESSION='[]'` on the first tick in Step 0/Step 1.
 
 ---
 
