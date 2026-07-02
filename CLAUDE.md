@@ -108,7 +108,7 @@ These files auto-load for the parent agent session. **Subagents do NOT auto-load
 
 ### Rule File Size Guidelines
 
-Rules load every turn. With the current 1M-token fleet (Opus 4.8, Fable 5, Sonnet 4.6) the corpus is ~1.5% of the window (~$0.015/turn cached on Opus 4.8), so the budget now exists for **instruction adherence and maintainability** — redundant or contradictory rules misfire on literal-following models — not context pressure. Limits apply to CLAUDE.md + `.claude/rules/*.md`:
+Rules load every turn. With the current 1M-token fleet (Opus 4.8, Fable 5, Sonnet 5) the corpus is ~1.5% of the window (~$0.015/turn cached on Opus 4.8), so the budget now exists for **instruction adherence and maintainability** — redundant or contradictory rules misfire on literal-following models — not context pressure. Limits apply to CLAUDE.md + `.claude/rules/*.md`:
 
 - **Soft warning:** 12,000 words.
 - **Ratchet cap:** `.claude/rules/.budget-soft-cap` must equal `max(current_count + 750, 8500)`. `rule-lint.sh` fails when the corpus exceeds this committed cap, independent of soft/hard checks; run `rule-lint.sh --update-cap` only after intentional cuts.

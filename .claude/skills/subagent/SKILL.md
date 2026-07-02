@@ -474,7 +474,7 @@ worktree directory at all times.
 **Phase C Agent tool call parameters:**
 - `subagent_type: "phase-c-merger"`
 - `mode: "bypassPermissions"`
-- `model: "sonnet"` (currently resolves to Sonnet 4.6; Phase C is lightweight verification plus the mechanical `/wrap` flow — see `subagent-orchestration.md` "Model Selection")
+- `model: "sonnet"` (currently resolves to Sonnet 5; Phase C is lightweight verification plus the mechanical `/wrap` flow — see `subagent-orchestration.md` "Model Selection")
 - `isolation: "worktree"` (same as Phase A — Phase C fetches and checks out the PR branch inside its own fresh worktree)
 - `run_in_background: true`
 
