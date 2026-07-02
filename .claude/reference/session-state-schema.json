@@ -69,6 +69,32 @@
     {"pr": 619, "detected_at": "2026-04-29T13:58:00Z", "digest_streak": 4, "action": "CronUpdate", "interval": "5m"},
     {"pr": 620, "detected_at": "2026-04-29T14:00:00Z", "digest_streak": 2, "action": "CronDelete", "reason": "user_input"}
   ],
+  "pmm_active": false,
+  "pmm_cadence": "5m",
+  "pmm_author": "octocat",
+  "pmm_started_at": "2026-04-29T12:00:00Z",
+  "pmm_last_tick_at": "2026-04-29T14:00:00Z",
+  "pmm_next_expected_tick_at": null,
+  "pmm_digest": "sha256:abc123...",
+  "pmm_digest_streak": 3,
+  "pmm_idle_streak": 2,
+  "pmm_in_flight": {},
+  "pmm": {
+    "paused_at": "2026-04-29T14:00:00Z",
+    "fleet_at_pause": [
+      {"pr": 618, "head_sha": "7b2cfbf", "state": "CLEAN"},
+      {"pr": 619, "head_sha": "a1b2c3d", "state": "BLOCKED"}
+    ],
+    "config_at_pause": {
+      "author": "octocat",
+      "repo": "org/repo",
+      "cadence": "5m",
+      "idle_pause_after": 3,
+      "auto_wake": false,
+      "auto_wake_cadence": "60m"
+    },
+    "auto_wake_cron_id": null
+  },
   "_token_exhaustion_example": {
     "phase": "B",
     "needs": "continue_polling",

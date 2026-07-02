@@ -9,16 +9,38 @@ triggers:
 argument-hint: "(no arguments — stops the active PR-fleet-manager loop in this thread)"
 ---
 
-Clean-cancel companion to `/pr-monitor-and-manage`. Use this to stop the PR-fleet-manager loop without leaving a dangling `/loop` or stale monitoring state behind.
+Clean-cancel companion to `/pr-monitor-and-manage`. Use this to stop the PR-fleet-manager loop without leaving a dangling `/loop`, stale monitoring state, or auto-wake cron behind.
+
+A stale pause marker left by a killed session is safely reconciled: the next `/pr-monitor-and-manage` invocation reads it and resumes (or the user runs `/pmm-stop` here to fully tear down), then re-runs discovery from scratch.
+
+## Resolve the state helper
+
+Same three-candidate lookup as `/babysit-pr-stop`:
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+SESSION_STATE_SH=$(resolve_script session-state.sh) || { echo "ERROR: session-state.sh not found" >&2; exit 1; }
+```
 
 ## Step 1: Confirm there is something to stop
 
 ```bash
-ACTIVE=$(.claude/scripts/session-state.sh --get '.pmm_active' 2>/dev/null || echo null)
+ACTIVE=$("$SESSION_STATE_SH" --get '.pmm_active' 2>/dev/null || echo null)
+PAUSED_AT=$("$SESSION_STATE_SH" --get '.pmm.paused_at' 2>/dev/null || echo null)
 ```
 
 - If `$ACTIVE` is `true` → proceed to teardown.
-- If `false`/`null` → report "No active PR-fleet-manager loop found." and stop. (Still run Step 2's loop cancel best-effort in case a loop is armed without state.)
+- If `$PAUSED_AT` is set (paused but not active) → proceed to teardown (clear pause marker + cron).
+- If both `false`/`null` → report "No active PR-fleet-manager loop found." and stop. (Still run Step 2's loop cancel best-effort in case a loop is armed without state.)
 
 ## Step 2: Tear down the loop
 
@@ -27,25 +49,50 @@ Cancel the recurring `/loop` that `/pr-monitor-and-manage` established:
 - If the runtime exposes a loop id / cancel handle, cancel it explicitly.
 - Otherwise interrupt the active loop (Ctrl+C in CLI, stop in web). Invoking `/pmm-stop` is itself the signal — the next tick must not re-arm.
 
-## Step 3: Clear monitoring state (preserve everything else)
+## Step 3: Delete auto-wake cron (fail-closed)
+
+If an auto-wake cron was registered at pause time, delete it before clearing state:
+
+```bash
+CRON_ID=$("$SESSION_STATE_SH" --get '.pmm.auto_wake_cron_id' 2>/dev/null || echo null)
+if [[ -n "$CRON_ID" && "$CRON_ID" != "null" ]]; then
+  CronDelete "$CRON_ID" || {
+    echo "ERROR: CronDelete failed for $CRON_ID — NOT clearing state; cron may still fire, retry /pmm-stop." >&2
+    exit 1
+  }
+  JOBS=$("$SESSION_STATE_SH" --get '.polling_jobs' 2>/dev/null || echo '[]')
+  if [[ "$JOBS" != "null" && -n "$JOBS" ]]; then
+    NEW_JOBS=$(jq -c --arg id "$CRON_ID" 'map(select(.id != $id))' <<<"$JOBS")
+  else
+    NEW_JOBS='[]'
+  fi
+  "$SESSION_STATE_SH" --set ".polling_jobs=$NEW_JOBS" --set '.pmm.auto_wake_cron_id=null'
+fi
+```
+
+## Step 4: Clear monitoring state (preserve everything else)
 
 Use `session-state.sh` so unrelated fields (other skills' state, PR tracking, budgets) are preserved:
 
 ```bash
-.claude/scripts/session-state.sh \
+"$SESSION_STATE_SH" \
   --set '.pmm_active=false' \
-  --set '.pmm_next_expected_tick_at=null'
+  --set '.pmm_next_expected_tick_at=null' \
+  --set '.pmm.paused_at=null' \
+  --set '.pmm.fleet_at_pause=null' \
+  --set '.pmm.config_at_pause=null'
 ```
 
-Leave `pmm_in_flight`, `pmm_digest`, and `pmm_digest_streak` in place as an audit trail — they are harmless once `pmm_active=false`, and a later `/pr-monitor-and-manage` re-invocation re-evaluates them against live PR state on its first tick. Do **not** touch `cr_hourly`, `greptile_daily`, `prs`, `active_agents`, or any non-`pmm_*` field. Note any PMM-owned entries still in `active_agents` (phase-a-fixer fix subagents) in the final summary — they may continue running until they exit on their own.
+Leave `pmm_in_flight`, `pmm_digest`, `pmm_digest_streak`, and `pmm_idle_streak` in place as an audit trail — they are harmless once `pmm_active=false`, and a later `/pr-monitor-and-manage` re-invocation re-evaluates them against live PR state on its first tick. Do **not** touch `cr_hourly`, `greptile_daily`, `prs`, `active_agents`, or any non-`pmm_*` field. Note any PMM-owned entries still in `active_agents` (phase-a-fixer fix subagents) in the final summary — they may continue running until they exit on their own.
 
-## Step 4: Final summary
+## Step 5: Final summary
 
 ```text
 === PR fleet monitoring stopped ===
 Reason:   user /pmm-stop
 Loop:     cancelled (no further ticks)
-State:    pmm_active=false
+State:    pmm_active=false, pause marker cleared
+Auto-wake cron: <deleted job id | none>
 In-flight at stop: <list any pmm_in_flight PR # + skill, or "none">
 Active subagents: <list any PMM-owned active_agents entries (match by pr + phase A, or task containing "PMM"), or "none">
 ```
