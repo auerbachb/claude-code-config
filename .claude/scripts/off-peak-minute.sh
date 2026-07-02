@@ -2,12 +2,13 @@
 # off-peak-minute.sh — Deterministic per-repo off-peak cron minute selector.
 #
 # PURPOSE
-#   Centralizes the minute-selection contract used by `/pm` Step 2.3 when
-#   scheduling CronCreate polling jobs. Each repo gets a stable minute in
-#   [0, 59] derived from its `owner/name` string, then nudged off the
-#   fleet pile-up minutes (0, 5, 30, 55) where every agent's schedule
-#   collides on the API. Deterministic so the same repo always lands on
-#   the same minute; spread so different repos fan out across the hour.
+#   Centralizes the minute-selection contract used by skills that schedule
+#   CronCreate jobs (e.g. `/pr-monitor-and-manage` auto-wake, `/babysit-pr
+#   --durable`). Each repo gets a stable minute in [0, 59] derived from its
+#   `owner/name` string, then nudged off the fleet pile-up minutes (0, 5, 30,
+#   55) where every agent's schedule collides on the API. Deterministic so
+#   the same repo always lands on the same minute; spread so different repos
+#   fan out across the hour.
 #
 #   With --every-n-min N the script also emits a cron-friendly step-range
 #   string like "7-59/10". The base minute is first reduced to its ones-
@@ -71,8 +72,8 @@ usage_error() {
 
 # Nudge MINUTE off the fleet pile-up minutes 0, 5, 30, 55 by adding 2
 # (mod 60). The +2 pattern is the same one used historically inline in
-# `/pm` Step 2.3 — kept for compatibility with any existing crons whose
-# minutes were computed that way.
+# skill cron scheduling — kept for compatibility with any existing crons
+# whose minutes were computed that way.
 nudge_pileup() {
   local m="$1"
   case "$m" in

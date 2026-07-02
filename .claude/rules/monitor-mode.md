@@ -50,15 +50,14 @@ If a summary block references prior work you do not remember, recover before all
 
 ## PM Monitoring Recovery
 
-If `monitoring_active=true` or passive mode with non-empty `prs`, rebuild from `prs`, `active_agents`, handoffs, and GitHub before re-arming.
+If `monitoring_active=true` or passive mode with non-empty `prs`/`active_agents`, rebuild from `prs`, `active_agents`, handoffs, and GitHub before continuing.
 
 - No workers left → `monitoring_active=false`, report done.
-- Was `loop` → restart recorded `/loop` unless user chose passive.
-- Was `cron` + durable → `CronList`; recreate if missing.
-- Was `cron` + not durable → recreate expired session jobs.
-- Was passive → stay passive; note user-triggered work remains.
+- `/pm`-owned monitoring is always passive — do **not** restart a `/loop` or `CronCreate` on `/pm`'s behalf.
+- For between-message PR fleet monitoring → point user at `/pr-monitor-and-manage`.
+- Jobs in `polling_jobs[]` owned by other skills (`/pr-monitor-and-manage`, `/babysit-pr`) → recover per that skill's contract, not `/pm`'s.
 
-Log drops in `polling_failures[]`. Contract: `pm-monitoring-decision.md`.
+Log drops in `polling_failures[]` when a skill-owned poll drops. Contract: `pm-monitoring-decision.md`.
 
 ### Pre-Compaction Checkpointing (Preventive)
 
