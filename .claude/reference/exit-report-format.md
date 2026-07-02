@@ -41,6 +41,7 @@ The three `FIXPR_*` fields are required whenever the phase executed the `/fixpr`
 | A | `pushed_fixes` | Findings fixed, code pushed |
 | A | `no_findings` | Review already clean, code pushed as-is |
 | A | `exhaustion` | Token budget low — partial fixes, replacement needed |
+| A | `blocked` | Unresolvable merge conflict or other fix blocker — needs human judgment (freeform reason above the report) |
 | B | `clean` | Review passed with no findings |
 | B | `fixes_pushed` | Fixed findings, pushed — needs re-review |
 | B | `merge_ready` | All checks green, merge gate satisfied |

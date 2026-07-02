@@ -30,7 +30,7 @@ Agent definitions use `{{PLACEHOLDER}}` markers for runtime context that the par
 
 | Agent | Phase | Purpose | Tool Restrictions | Default Model |
 |-------|-------|---------|-------------------|---------------|
-| `phase-a-fixer` | A | Fix findings, push, write handoff | Full access | `opus` |
+| `phase-a-fixer` | A | Fix findings, resolve merge conflicts, push, write handoff | Full access | `opus` |
 | `phase-b-reviewer` | B | Poll reviews, fix findings, update handoff | Full access | `opus` |
 | `phase-c-merger` | C | Verify merge gate and AC, then run `/wrap` when authorized | Read-only + Bash (for `gh`/git) | `sonnet` |
 | `pm-worker` | — | Issue management, repo bootstrap | Full access | `sonnet` |
