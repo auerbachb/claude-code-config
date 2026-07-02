@@ -109,8 +109,11 @@ def is_protected_path(path: str) -> bool:
 
 def path_exists(path: str) -> bool:
     """True if something exists at path; fail closed on non-ENOENT errors."""
+    normalized = normalize_path(path)
+    if not normalized:
+        return False
     try:
-        os.lstat(path)
+        os.lstat(normalized)
         return True
     except FileNotFoundError:
         return False
