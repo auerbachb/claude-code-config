@@ -47,7 +47,7 @@ Reason:   user /pmm-stop
 Loop:     cancelled (no further ticks)
 State:    pmm_active=false
 In-flight at stop: <list any pmm_in_flight PR # + skill, or "none">
-Active subagents: <list any active_agents entries with task "PMM fix PR #N", or "none">
+Active subagents: <list any PMM-owned active_agents entries (match by pr + phase A, or task containing "PMM"), or "none">
 ```
 
 If any PR had an in-flight `phase-a-fixer` subagent or `/wrap` dispatch when stopped, name it so the user knows that work was mid-flight. Re-run `/pr-monitor-and-manage` anytime to resume — it rediscovers the fleet from scratch and Step 2.5 aggregates any subagents that completed while monitoring was stopped.

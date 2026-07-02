@@ -105,7 +105,7 @@ For each completed subagent:
 1. **Parse the Structured Exit Report** from its output (`EXIT_REPORT` block per `.claude/reference/exit-report-format.md`). No exit report = silent failure — check GitHub for the PR's current HEAD and surface `failed` in the Subagent column.
 2. **Branch on OUTCOME:**
    - `pushed_fixes` or `no_findings` → verify push SHA matches `HEAD_SHA` in the report (`gh pr view N --json commits --jq '.commits[-1].oid'`). Verify handoff file exists at `~/.claude/handoffs/pr-{N}-handoff.json` with `phase_completed: "A"`.
-   - `exhaustion` → mark subagent `failed` for this tick; **do not auto-respawn within the same tick** — the next tick's Step 5c may re-queue if the PR still classifies as `fixpr`. Report to user.
+   - `exhaustion` → run worktree cleanup immediately (per `phase-protocols.md` Phase A Completion Protocol step 4), then launch a replacement `phase-a-fixer` subagent within 60s. Report to user and **stop further parent actions for this tick** — do not proceed to Step 5d `/wrap` or Step 6 until the replacement completes or fails.
    - Missing/corrupt report → mark `failed`; keep PR in fleet for retry next tick.
 3. **Remove from `active_agents`** and clear any matching `pmm_in_flight[N]` lock for that PR.
 4. **Record per-PR outcome** in a `SUBAGENT_STATUS[N]` map (`complete` / `failed`) for the Step 4 table. Failed subagents are retried on a subsequent tick unless terminal (human CR surfaced mid-fix, etc.).
@@ -408,7 +408,7 @@ Execute the **full** `/wrap` workflow inline (all 4 phases). On completion:
 - `/wrap` merged the PR → clear `pmm_in_flight[N]`; PR drops from fleet on next `gh pr list`.
 - `/wrap` returned a hard block → clear in-flight and add `#N` to `HARD_BLOCK[]`.
 
-Process merge-ready PRs **after** fix subagents are spawned (Step 5c) but **before** entering monitor mode — wrap is fast once the gate is met and does not compete for the parallel cap.
+Process merge-ready PRs **only when no fix subagents were spawned this tick** — run Step 5d sequentially before Step 5e. If Step 5c spawned any fix subagents, **defer all `/wrap` dispatches** until the Step 5e monitor loop has drained every active fix subagent. This keeps the parent out of concurrent parent work and honors dedicated monitor mode.
 
 ### Step 5e: Dedicated monitor mode while fix subagents are active
 
@@ -418,11 +418,11 @@ If Step 5c spawned any fix subagents, **immediately enter Dedicated Monitor Mode
 
 1. Poll active subagent statuses. Transition Subagent column: `spawned` → `working` → `complete` / `failed`.
 2. On completion: parse exit report, execute Step 2.5 aggregation for that PR, remove from `active_agents`, clear `pmm_in_flight[N]`.
-3. On failure (crash, no exit report, stale >15 min): mark `failed` in table, remove from `active_agents`, keep PR in fleet for retry next tick. **Do not auto-respawn failed subagents without user permission** (crash/no handoff); token exhaustion with valid handoff may be retried next tick.
+3. On failure (crash, no exit report, stale >15 min): mark `failed` in table, remove from `active_agents`, keep PR in fleet for retry next tick. **Do not auto-respawn failed subagents without user permission** (crash/no handoff). On `exhaustion` with valid handoff, respawn immediately per Step 2.5.
 4. Send heartbeat if >5 min since last user message (timestamp prefix required).
 5. Investigate stale agents (>15 min Phase A without progress).
 
-**While subagents run:** do not start rebases, additional spawns, or `/wrap` dispatches. The tick completes only after all spawned fix subagents return (or fail). Then proceed to Step 6.
+**While subagents run:** do not start rebases, additional spawns, or `/wrap` dispatches. Deferred merge-ready PRs from Step 5d run immediately after the monitor loop exits (all fix subagents complete or fail). The tick completes only after all spawned fix subagents return (or fail) and any deferred `/wrap` dispatches finish. Then proceed to Step 6.
 
 **#497 compatibility (idle auto-pause):** when all subagents exit and no parent dispatches remain in-flight, treat the tick as idle for digest/backoff purposes — the stable-state countdown in Step 6 applies as if the tick were a no-op dispatch tick.
 
