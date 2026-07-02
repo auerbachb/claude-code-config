@@ -88,8 +88,10 @@ PMM_IDLE_PAUSE_AFTER=3; PMM_AUTO_WAKE=false; PMM_AUTO_WAKE_CADENCE="60m"
 PMM_CONFIRM_MERGES=false
 # (parse $ARGUMENTS into the vars above; bare flags override defaults)
 # When resuming from pause (Step 0a), merge: explicit $ARGUMENTS win; omitted flags
-# inherit from .pmm.config_at_pause (author, repo, cadence, max-parallel, idle-pause-after,
-# auto-wake, auto-wake-cadence, confirm-merges).
+# inherit from $SAVED / .pmm.config_at_pause (author, repo, cadence, max-parallel,
+# idle-pause-after, auto-wake, auto-wake-cadence, confirm-merges). Example:
+#   if resuming && confirm-merges not on $ARGUMENTS:
+#     PMM_CONFIRM_MERGES=$(jq -r '.confirm_merges // false' <<<"${SAVED:-{}}")
 
 if [ -z "$PMM_AUTHOR" ]; then
   PMM_AUTHOR=$(gh api user --jq .login 2>/dev/null || true)
