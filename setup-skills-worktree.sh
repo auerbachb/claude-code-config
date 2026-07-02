@@ -216,6 +216,7 @@ HOOKS_MANIFEST=(
   $'PreToolUse\tBash\tscript-bypass-detector.sh\t5'
   $'PreToolUse\tWrite|Edit|NotebookEdit\tworktree-guard.sh\t5'
   $'PreToolUse\tWrite|Edit|MultiEdit|NotebookEdit|Bash\tenv-guard.py\t5'
+  $'PreToolUse\tWrite|Edit|MultiEdit|NotebookEdit|Bash\tconfig-protection.py\t5'
   $'Stop\t\tsilence-detector-ack.sh\t5'
   $'Stop\t\ttrust-flag-repair.sh\t10'
   $'Stop\t\tdirty-main-warn.sh\t10'
