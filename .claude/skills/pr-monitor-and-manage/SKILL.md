@@ -190,7 +190,7 @@ For each completed subagent, run steps 1-3 **unconditionally first** (cleanup mu
    - `pushed_fixes` or `no_findings` → verify push SHA matches `HEAD_SHA` in the report (`gh pr view N --json commits --jq '.commits[-1].oid'`). Verify handoff file exists at `~/.claude/handoffs/pr-{N}-handoff.json` with `phase_completed: "A"`. When OUTCOME is `pushed_fixes`, run **Step 5b dismiss helper + Step 5b′ owning-bot re-trigger** on `#N` immediately (same contract as `/fixpr` Steps 3a/3b — a push without dismissal leaves obsolete bot `CHANGES_REQUESTED` on old SHAs and the gate never clears). Step 5e's inline completion path (item 2) runs the same pair when a subagent exits mid-tick.
    - `blocked` → add `#N` to `HARD_BLOCK[]` with reason from the exit report (e.g. `conflicts(needs-human)` for unresolvable merge conflicts). **Persist** the same reason to `pmm_hard_block` in `session-state.json` (see tick-start load above). Report once and drop from the actionable fleet this tick — the subagent already attempted resolution; do not re-dispatch silently.
    - `exhaustion` → **do not launch the replacement inline here.** Step 2.5 runs before Step 3 every tick, so `GATE_BY_PR`/pre-fetched `FINDINGS_JSON` (both populated in Step 3) are not available yet — Step 5c's full spawn pattern needs them. Instead, rely on step 3 above already clearing this PR's `active_agents`/`pmm_in_flight[N]` entries: the PR falls through into Step 3's classification with a clean slate later in this same tick, and if the underlying condition (CI failing, unresolved threads, stale bot review, merge conflicts) still holds, Step 3 naturally re-verdicts it `fixpr` and Step 5c's normal per-tick spawn respawns it — using this tick's freshly-computed `GATE_BY_PR`/`FINDINGS_JSON`. This still satisfies `subagent-orchestration.md`'s 60s Token/Turn Exhaustion Protocol SLA: Step 3 and Step 5c run seconds later in the same continuous tick execution, not on a separate `/loop` cycle. **Record `$N` into `EXHAUSTION_RESPAWN_PRS` for this tick** — Step 3's cap check (item 2) must never let this PR lose its slot to a competing fresh `fixpr` PR, since `subagent-orchestration.md` treats exhaustion-with-handoff respawn as mandatory, not slot-competitive. Report to user.
-   - Missing/corrupt report, or a crash with no handoff file → mark `failed` and add `#N` to `HARD_BLOCK[]` with reason `crashed(needs-approval)`. **Do NOT leave it eligible for silent re-dispatch** — `subagent-orchestration.md`'s Phase Transition Autonomy table requires user permission before respawning a crashed/no-handoff subagent. Reported once and dropped from the actionable fleet this tick (Step 3's `HARD_BLOCK[]` handling — it does not force-stop the fleet); the user can explicitly approve a respawn.
+   - Missing/corrupt report, or a crash with no handoff file → mark `failed` and add `#N` to `HARD_BLOCK[]` with reason `crashed(needs-approval)`. **Persist** the same reason to `pmm_hard_block` in `session-state.json`. **Do NOT leave it eligible for silent re-dispatch** — `subagent-orchestration.md`'s Phase Transition Autonomy table requires user permission before respawning a crashed/no-handoff subagent. Reported once and dropped from the actionable fleet this tick (Step 3's `HARD_BLOCK[]` handling — it does not force-stop the fleet); the user can explicitly approve a respawn.
 5. **Record per-PR outcome** in a `SUBAGENT_STATUS[N]` map (`complete` / `failed`) for the Step 4 table.
 
 PMM does **not** launch Phase B/C after Phase A — it only fixes and pushes. Step 5e's monitor posture borrows `monitor-mode.md`'s orchestration-only discipline but explicitly skips `phase-protocols.md`'s Phase Completion Protocols (which would otherwise auto-launch Phase B). The next tick re-classifies each PR on its new SHA (may become `waiting`, `wrap`, or `fixpr` again).
@@ -200,6 +200,12 @@ PMM does **not** launch Phase B/C after Phase A — it only fixes and pushes. St
 ---
 
 ## Step 3: Gather per-PR state + classify (compute verdicts — NO actions)
+
+**Refresh `HARD_BLOCK_JSON` immediately before the per-PR loop** so Step 2.5 `blocked`/`crashed` persists from earlier in this same tick are visible to the decision tree (the Step 2.5 tick-start load is stale once Step 2.5 writes new entries):
+
+```bash
+HARD_BLOCK_JSON=$(.claude/scripts/session-state.sh --get '.pmm_hard_block // {}' 2>/dev/null || echo '{}')
+```
 
 This step is **side-effect-free**: it gathers state and computes a verdict per PR, but performs **no** rebases or dispatches. Actions happen in **Step 5**, after the table prints (Step 4). This ordering is required so the heartbeat table always shows the classification *before* any long-running dispatch.
 
@@ -522,7 +528,7 @@ CR_BUDGET_OK=1
 
 If `$CR_BUDGET_OK == 0`, still spawn subagents but include `SKIP_CR_TRIGGER=1` in each prompt — subagents proceed without posting `@coderabbitai full review`. The skip surfaces in each subagent's exit report / handoff `notes`. Do **not** block spawn entirely when the cap is exhausted (unlike deferring all fix work).
 
-**Bulk spawn (one Agent call per PR, all in parallel up to the cap).** For each PR allocated a slot, invoke the Agent tool with:
+**Bulk spawn (one Agent call per PR, all in parallel up to the cap).** For each PR allocated a slot, read `VERDICTS_JSON[$N].tag` — when it is `merge-conflict` (from Step 3 `mergeable == CONFLICTING` **or** Step 5a rebase abort), set `TASK_TYPE=merge-conflict` even if GitHub still reports `BEHIND`/`MERGEABLE`. Otherwise use `TASK_TYPE=fixpr`. Invoke the Agent tool with:
 
 ```text
 subagent_type: "phase-a-fixer"
