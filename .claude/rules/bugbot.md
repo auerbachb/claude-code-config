@@ -39,7 +39,7 @@ Verify all findings against actual code. Fix all valid findings in one commit, p
 
 **Reply format:** Use plain text only in replies — do NOT include `@cursor` in reply comments (may trigger a re-review). This matches Greptile's reply behavior.
 
-**Thread resolution:** Same GraphQL mutations as CR/Greptile — `resolveReviewThread(threadId)` or `minimizeComment(subjectId, classifier: RESOLVED)`.
+**Thread resolution:** `resolve-review-threads.sh <PR> --thread-ids <id1,id2>` (retries + `minimizeComment` fallback).
 
 ## Merge Gate
 
