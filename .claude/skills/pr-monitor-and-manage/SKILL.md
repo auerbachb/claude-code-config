@@ -137,6 +137,11 @@ For a single PR `$N` (with `$HEADREF` = its `headRefName` from the Step 2 `$PR_L
 # Gate verdict — single source of truth for merge readiness, CI, merge_state,
 # review_decision, human_changes_requested, stale_bot_changes_requested_count.
 GATE=$(.claude/scripts/merge-gate.sh "$N"); GATE_EXIT=$?
+GATE_BY_PR[$N]="$GATE"   # retain per-PR — Step 5c/5d look up THIS PR's gate by
+                          # number rather than relying on a loop-scoped $GATE,
+                          # which is only valid for whichever PR Step 3 last
+                          # iterated and goes stale/wrong once other steps
+                          # iterate their own PR lists.
 # Linked issue for the Issue column (exit 1 = no link, expected).
 ISSUE=$(.claude/scripts/pr-issue-ref.sh "$N" 2>/dev/null || true)
 # Unresolved review threads (GraphQL — covers every bot/human author).
@@ -279,7 +284,7 @@ done
 
 ### Step 5a: Rebase (verdict `rebase`, i.e. `merge_state == BEHIND`)
 
-**Skip if any Phase A agent is still active for this PR — not just PMM's own.** `BEHIND` is checked before `fixpr` in the decision tree (Step 3), so a PR with a fixer subagent still running from a prior tick can flip to verdict `rebase` if main advanced mid-fix — checking out that branch here would collide with that subagent's own worktree (git refuses to check out the same branch twice) and race its push. This check must match Step 3's in-flight check exactly (same reasoning: two Phase A fixers on one PR is risky regardless of which system spawned them) — checking only `pmm-fix-` entries would miss a foreign (non-PMM) Phase A agent sharing the same `active_agents` array, since `BEHIND`-verdict PRs never go through Step 3's `fixpr`-only refinement pass and so get no other protection. Before rebasing, check for **any** `active_agents` entry with `pr == N`, `phase == "A"`, `status` not in `{complete, failed}` (regardless of `id`), or an active `pmm_in_flight[N]` lock; if found, skip this PR this tick (verdict stays `rebase` for the table, but no action runs) — it becomes rebase-eligible once the agent completes and its worktree is cleaned up (Step 2.5 for PMM's own fixers; foreign agents clean up under their own workflow's rules).
+**Skip if any Phase A agent is still active for this PR — not just PMM's own.** `BEHIND` is checked before `fixpr` in the decision tree (Step 3), so a PR with a fixer subagent still running from a prior tick can flip to verdict `rebase` if main advanced mid-fix — checking out that branch here would collide with that subagent's own worktree (git refuses to check out the same branch twice) and race its push. This check must match Step 3's in-flight check exactly (same reasoning: two Phase A fixers on one PR is risky regardless of which system spawned them) — checking only `pmm-fix-` entries would miss a foreign (non-PMM) Phase A agent sharing the same `active_agents` array, since `BEHIND`-verdict PRs never go through Step 3's `fixpr`-only refinement pass and so get no other protection. Before rebasing, check for **any** `active_agents` entry with `pr == N`, `phase == "A"`, `status` not in `{complete, failed}` (regardless of `id`), or an active `pmm_in_flight[N]` lock **that is not stale** (same `PMM_LOCK_STALE_SECS`, default 3600s, staleness rule as Step 3's in-flight check — a stale lock is broken here too, not treated as blocking); if found, skip this PR this tick (verdict stays `rebase` for the table, but no action runs) — it becomes rebase-eligible once the agent completes and its worktree is cleaned up (Step 2.5 for PMM's own fixers; foreign agents clean up under their own workflow's rules).
 
 **Use `git rebase origin/main` + `git push --force-with-lease` — NEVER GitHub's update-branch API.** The API creates bot merge commits that block CI; `auto-update-prs.yml` was removed for exactly this reason.
 
@@ -397,24 +402,26 @@ Confirm package names before npm/pip/gem/cargo/brew install. Full rules: .claude
 ```bash
 NOW=$(date -u +%FT%TZ)
 NEW_ENTRIES='[]'
-# For each PR $N allocated a slot this tick (after issuing that PR's Agent call):
-HEAD_SHA=$(jq -r '.head_sha' <<<"$GATE")   # from that PR's tick-scoped $GATE
-ISSUE_N=$(.claude/scripts/pr-issue-ref.sh "$N" 2>/dev/null || echo null)
-AGENT_ID="pmm-fix-$N"
-ENTRY=$(jq -n --arg id "$AGENT_ID" --arg task "PMM fix PR #$N" --argjson issue "$ISSUE_N" \
-  --argjson pr "$N" --arg launched "$NOW" --arg head_sha "$HEAD_SHA" \
-  '{id:$id, task:$task, issue:$issue, pr:$pr, phase:"A", status:"spawned", launched:$launched, head_sha:$head_sha}')
-NEW_ENTRIES=$(jq --argjson entry "$ENTRY" '. + [$entry]' <<<"$NEW_ENTRIES")
-# ... repeat for every spawned PR, accumulating into $NEW_ENTRIES ...
+IN_FLIGHT_SETS=()
+# ONE loop per spawned PR — build that PR's entry AND its --set argument together,
+# each using ONLY that PR's own head_sha. Never hoist head_sha into a shared
+# variable reused across iterations or across a second loop — the last PR's SHA
+# would silently overwrite every earlier PR's lock.
+for N in $SPAWNED_PR_NUMS; do
+  N_HEAD_SHA=$(jq -r '.head_sha' <<<"${GATE_BY_PR[$N]}")   # that PR's own tick-scoped $GATE
+  ISSUE_N=$(.claude/scripts/pr-issue-ref.sh "$N" 2>/dev/null || echo null)
+  AGENT_ID="pmm-fix-$N"
+  ENTRY=$(jq -n --arg id "$AGENT_ID" --arg task "PMM fix PR #$N" --argjson issue "$ISSUE_N" \
+    --argjson pr "$N" --arg launched "$NOW" --arg head_sha "$N_HEAD_SHA" \
+    '{id:$id, task:$task, issue:$issue, pr:$pr, phase:"A", status:"spawned", launched:$launched, head_sha:$head_sha}')
+  NEW_ENTRIES=$(jq --argjson entry "$ENTRY" '. + [$entry]' <<<"$NEW_ENTRIES")
+  IN_FLIGHT_SETS+=(--set ".pmm_in_flight.\"$N\"={\"skill\":\"phase-a-fixer\",\"status\":\"active\",\"dispatched_at\":\"$NOW\",\"head_sha\":\"$N_HEAD_SHA\",\"agent_id\":\"$AGENT_ID\"}")
+done
 
 # After the loop — ONE read of the current array, ONE append of the whole batch, ONE write:
 CURRENT_AGENTS=$(.claude/scripts/session-state.sh --get '.active_agents' 2>/dev/null || echo null)
 [ "$CURRENT_AGENTS" = "null" ] && CURRENT_AGENTS='[]'
 UPDATED_AGENTS=$(jq --argjson entries "$NEW_ENTRIES" '. + $entries' <<<"$CURRENT_AGENTS")
-IN_FLIGHT_SETS=()
-for N in $SPAWNED_PR_NUMS; do   # the same PR numbers folded into $NEW_ENTRIES above
-  IN_FLIGHT_SETS+=(--set ".pmm_in_flight.\"$N\"={\"skill\":\"phase-a-fixer\",\"status\":\"active\",\"dispatched_at\":\"$NOW\",\"head_sha\":\"$HEAD_SHA\",\"agent_id\":\"pmm-fix-$N\"}")
-done
 .claude/scripts/session-state.sh --set ".active_agents=$UPDATED_AGENTS" "${IN_FLIGHT_SETS[@]}"
 ```
 
@@ -443,7 +450,7 @@ Decision:
 
 ```bash
 NOW=$(date -u +%FT%TZ)
-HEAD_SHA=$(jq -r '.head_sha' <<<"$GATE")
+HEAD_SHA=$(jq -r '.head_sha' <<<"${GATE_BY_PR[$N]}")
 .claude/scripts/session-state.sh --set \
   ".pmm_in_flight.\"$N\"={\"skill\":\"wrap\",\"status\":\"active\",\"dispatched_at\":\"$NOW\",\"head_sha\":\"$HEAD_SHA\"}"
 ```
