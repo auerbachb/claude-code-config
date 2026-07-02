@@ -160,11 +160,7 @@ You are continuing from a previous PM session. The state below reflects where th
 
 ## Bootstrap steps for this new thread
 1. Run `/pm` (without `resume`) to load config and re-scan GitHub state.
-2. **Re-establish polling.** Check the "Active Polling Jobs" table below:
-   - If it lists `durable: true` jobs → run `CronList` to confirm they're still active; skip creating duplicates.
-   - If it lists `durable: false` (session-only) jobs → those died with the previous session. Create fresh `CronCreate` job(s) with the same `cron` and `prompt` values from the table. Cite the new job ID(s) back to the user.
-   - If the table is empty and there are active cloud threads → `/pm` Step 2 will offer a fresh poll — accept the recommended option.
-3. Review the in-flight work table and verify each PR's state before taking action.
+2. **Restore orchestration state.** Review the in-flight work table and verify each PR's state before taking action. PR fleet polling is handled separately via `/pr-monitor-and-manage` if needed — `/pm` does not re-arm polls on resume.
 
 ## Your Role
 {Role section from config}
@@ -192,7 +188,7 @@ Do NOT spawn subagents or use the Agent tool to execute work yourself. Write the
 {From Step 5b — or "No in-flight work detected" if empty}
 
 ## Active Polling Jobs
-{From Step 5b2 — or "No active polling. On resume, `/pm` Step 2 will offer a fresh poll." if empty}
+{From Step 5b2 — or "No active polling jobs from other skills. For PR fleet monitoring, run `/pr-monitor-and-manage`." if empty}
 
 ## Lessons & Context
 {From Step 5c — or omit if no memory index found}
@@ -258,11 +254,11 @@ Format as a readable summary:
 
 If no state files exist, output: "No in-flight work detected. Starting fresh."
 
-### Step 5b2: Capture active polling jobs
+### Step 5b2: Capture active polling jobs (informational)
 
-The PM agent uses `CronCreate` or `/loop` to poll GitHub between user messages (see `/pm` Step 2). Capture any active polling so the new thread can re-establish it rather than falling back to passive mode.
+Snapshot any live scheduled jobs owned by **other skills** (`/pr-monitor-and-manage`, `/babysit-pr`, etc.) for informational continuity. `/pm` no longer arms its own polls — do not instruct the new thread to recreate `/pm` polls.
 
-Call the `CronList` tool to list all cron jobs scheduled in this session. For each job, record: `id`, `cron`, `prompt`, `recurring`, `durable`, and — if available from the PM's own session notes — the last heartbeat time and cycle interval.
+Call the `CronList` tool to list all cron jobs scheduled in this session. For each job, record: `id`, `cron`, `prompt`, `recurring`, `durable`, and — if available — the last heartbeat time and cycle interval.
 
 Format as:
 
@@ -271,12 +267,12 @@ Format as:
 
 | Job ID | Schedule | Prompt | Recurring | Durable | Last heartbeat |
 |--------|----------|--------|-----------|---------|----------------|
-| abc123 | 17 * * * * | /status | true | false (session-only) | {time} ET |
+| abc123 | 17 * * * * | /pr-monitor-and-manage-wake --auto-check | true | true | {time} ET |
 
-**Re-establish on resume:** Session-only jobs (`durable: false`) die with this session — the new thread must create a fresh `CronCreate` with the same `cron`, `prompt`, and `durable` values (cite this table for exact values). Durable jobs survive automatically; verify with `CronList` on resume before creating duplicates. If no jobs are active and ≥1 cloud thread is in flight, `/pm` Step 2 will offer a fresh poll.
+**On resume:** Durable jobs survive session turnover — verify with `CronList` before creating duplicates. Session-only jobs died with the previous session; re-arm via the owning skill if needed. For PR fleet monitoring, run `/pr-monitor-and-manage`.
 ```
 
-If `CronList` returns no jobs, output: "No active polling. On resume, `/pm` Step 2 will offer a fresh poll."
+If `CronList` returns no jobs, output: "No active polling jobs from other skills. For PR fleet monitoring, run `/pr-monitor-and-manage`."
 
 ### Step 5c: Memory summary
 

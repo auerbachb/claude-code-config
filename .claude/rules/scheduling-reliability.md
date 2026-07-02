@@ -18,13 +18,14 @@ The 5-minute heartbeat rule catches silence during turns; this file covers betwe
 
 ## PM Monitoring Primitive
 
-PM manager monitoring uses the hybrid decision recorded in `.claude/reference/pm-monitoring-decision.md`:
+Division of responsibility (see `.claude/reference/pm-monitoring-decision.md`):
 
-- `/loop` is canonical for explicit user-requested polling and 1-2 session-scoped PM worker threads.
-- `CronCreate` is canonical for 3+ active threads/PRs, cross-session durability, or campaigns outliving the session.
-- Passive mode is valid only with zero active workers or when the user explicitly chooses it.
+- `/pm` never creates polls — on-demand orchestration only.
+- `/pr-monitor-and-manage` owns PR-fleet between-message polling (`/loop` + optional `CronCreate` auto-wake).
+- `/loop` remains valid for explicit user-invoked "poll every N" that is not PR-fleet-specific.
+- `CronCreate` for cross-session durability or fleet jobs owned by dedicated skills.
 
-Each polling turn: update `session-state.json` monitoring fields. If a loop drops, run `monitor-mode.md` **PM Monitoring Recovery** (and apply dropped-tick handling in this file).
+Each skill-owned polling turn: update `session-state.json` as that skill's contract requires. If orchestration state is stale, run `monitor-mode.md` **PM Monitoring Recovery** (and apply dropped-tick handling in this file for skill-owned polls).
 
 ## Forbidden Pattern: Hand-Rolled One-Shot Chains
 
