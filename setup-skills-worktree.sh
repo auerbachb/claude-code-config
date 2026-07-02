@@ -295,6 +295,30 @@ hooks = settings["hooks"]
 def command_path(script_name):
     return os.path.join(hooks_dir, script_name)
 
+def command_parts(cmd):
+    """Tokenize a hook command into argv, ignoring nothing. Returns [] for a
+    non-string command (malformed settings.json) and falls back to a whitespace
+    split when the command is not valid shell syntax."""
+    if not isinstance(cmd, str):
+        return []
+    try:
+        return shlex.split(cmd)
+    except ValueError:
+        return cmd.split()
+
+def command_argv0(cmd):
+    """Return the executable path from a hook command, ignoring any arguments
+    (e.g. 'foo.sh --check' -> 'foo.sh')."""
+    parts = command_parts(cmd)
+    return parts[0] if parts else ""
+
+def command_args_tail(cmd):
+    """Return the argument portion of a hook command (everything after argv0),
+    reconstructed as a shell-safe string, or '' when there are no arguments.
+    Lets path migration fix the executable path without dropping the args."""
+    parts = command_parts(cmd)
+    return " ".join(shlex.quote(p) for p in parts[1:])
+
 def is_placeholder_path(path):
     """Detect placeholder paths from global-settings.json templates."""
     return "/path/to/" in path or not os.path.isabs(path)
@@ -321,12 +345,16 @@ def find_existing_hook(event_entries, cmd_path, matcher):
         for h in hook_list:
             if not isinstance(h, dict):
                 continue
-            existing_cmd = h.get("command", "")
-            if os.path.basename(existing_cmd) != basename:
+            # Compare by argv0 so an args-bearing registration (e.g.
+            # "foo.sh --check") still matches its manifest entry — the raw
+            # command string would basename to "--check" and never match,
+            # duplicating the hook or stripping its args on migration.
+            existing_argv0 = command_argv0(h.get("command", ""))
+            if os.path.basename(existing_argv0) != basename:
                 continue
-            if is_placeholder_path(existing_cmd):
+            if is_placeholder_path(existing_argv0):
                 return ("placeholder", h)
-            if existing_cmd == cmd_path:
+            if existing_argv0 == cmd_path:
                 return ("exact", None)
             # Same script name, different valid path — needs migration
             return ("migrate", h)
@@ -355,16 +383,12 @@ for item in manifest:
     if status == "exact":
         already_present.append(script)
         continue
-    elif status == "migrate":
-        # Update path in-place (e.g., root-repo -> skills-worktree)
-        old_path = hook_ref["command"]
-        hook_ref["command"] = cmd
-        hook_ref["timeout"] = timeout
-        migrated.append(script)
-        continue
-    elif status == "placeholder":
-        # Replace placeholder with real path in-place
-        hook_ref["command"] = cmd
+    elif status in ("migrate", "placeholder"):
+        # Fix the executable path in-place (root-repo -> skills-worktree, or
+        # placeholder -> real path) while preserving any args the registration
+        # carried, so migration never silently drops "foo.sh --check" -> "foo.sh".
+        args_tail = command_args_tail(hook_ref.get("command", ""))
+        hook_ref["command"] = f"{cmd} {args_tail}" if args_tail else cmd
         hook_ref["timeout"] = timeout
         migrated.append(script)
         continue
@@ -402,16 +426,6 @@ managed_hook_roots = {
     for root in (hooks_dir, os.environ.get("MANAGED_LEGACY_HOOKS_DIR", ""))
     if root
 }
-
-def command_argv0(cmd):
-    """Return the executable path from a hook command, ignoring any arguments
-    (e.g. 'foo.sh --check' -> 'foo.sh'). Falls back to whitespace split if the
-    command is not valid shell syntax."""
-    try:
-        parts = shlex.split(cmd)
-    except ValueError:
-        parts = cmd.split()
-    return parts[0] if parts else ""
 
 def is_managed_hooks_path(path):
     return os.path.normpath(os.path.dirname(path)) in managed_hook_roots

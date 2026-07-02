@@ -381,22 +381,33 @@ echo "Step 7: Verifying hook registration..."
 # setup-skills-worktree.sh Step 6 should have registered all hooks.
 # Verify that hook paths exist, are executable, and point to the skills worktree.
 hook_verify_errors=0
-while IFS= read -r hook_path; do
-  [[ -z "$hook_path" ]] && continue
-  if [[ ! -f "$hook_path" ]]; then
-    echo "  ERROR: Hook not found: $hook_path" >&2
+while IFS=$'\t' read -r hook_kind hook_value; do
+  [[ -z "$hook_kind" ]] && continue
+  if [[ "$hook_kind" == "invalid" ]]; then
+    echo "  ERROR: Hook has invalid command value: $hook_value" >&2
     hook_verify_errors=$((hook_verify_errors + 1))
-  elif [[ ! -x "$hook_path" ]]; then
-    echo "  ERROR: Hook not executable: $hook_path" >&2
+  elif [[ ! -f "$hook_value" ]]; then
+    echo "  ERROR: Hook not found: $hook_value" >&2
+    hook_verify_errors=$((hook_verify_errors + 1))
+  elif [[ ! -x "$hook_value" ]]; then
+    echo "  ERROR: Hook not executable: $hook_value" >&2
     hook_verify_errors=$((hook_verify_errors + 1))
   fi
 done < <(python3 - "$SETTINGS_DST" <<'PYTHON_HOOK_PATHS'
-import json, sys
+import json, shlex, sys
 with open(sys.argv[1]) as f:
     data = json.load(f)
 hooks = data.get("hooks", {})
 if not isinstance(hooks, dict):
     sys.exit(0)
+# Emit one TAB-separated "kind<TAB>value" record per command-type hook:
+#   path<TAB><argv0>    -> caller checks the executable exists and is runnable
+#   invalid<TAB><repr>  -> malformed command value; caller counts a failure
+# Verify the executable path (argv0), not the whole command string, so a hook
+# registered with args ("foo.sh --check") is not misread as a bare path. A
+# command-type hook whose command is missing, blank, non-string, or all
+# whitespace is malformed and must FAIL verification — Step 7 verifies hook
+# registrations, so silently skipping an unusable entry would report a false pass.
 for event_entries in hooks.values():
     if not isinstance(event_entries, list):
         continue
@@ -404,10 +415,20 @@ for event_entries in hooks.values():
         if not isinstance(group, dict):
             continue
         for hook in group.get("hooks", []):
-            if isinstance(hook, dict) and hook.get("type") == "command":
-                cmd = hook.get("command", "")
-                if cmd:
-                    print(cmd)
+            if not isinstance(hook, dict) or hook.get("type") != "command":
+                continue
+            cmd = hook.get("command", "")
+            if not isinstance(cmd, str) or not cmd:
+                print(f"invalid\t{cmd!r}")
+                continue
+            try:
+                argv = shlex.split(cmd)
+            except ValueError:
+                argv = cmd.split()
+            if argv:
+                print(f"path\t{argv[0]}")
+            else:
+                print(f"invalid\t{cmd!r}")
 PYTHON_HOOK_PATHS
 )
 
