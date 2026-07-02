@@ -298,7 +298,7 @@ Cross-reference the open-issue list (already fetched in Step 1) against open PRs
 
 When `ACTIVE_COUNT ≥ 3`, surface a one-line redirect (do NOT offer `CronCreate` or `/loop`):
 
-> "You have {N} active cloud threads. Once PRs start opening, run `/pr-monitor-and-manage` to auto-dispatch fixes and merges across the fleet with per-PR state tracking."
+> "You have {N} active cloud threads. Run `/pr-monitor-and-manage` to auto-dispatch fixes and merges across the fleet with per-PR state tracking."
 
 For 0–2 active threads, emit no polling offer — proceed with the assignments table and status only.
 
