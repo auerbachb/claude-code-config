@@ -106,9 +106,20 @@ Read config, reconstruct invocation flags, clear marker, reset idle streak, re-a
 
 ```bash
 CONFIG=$("$SESSION_STATE_SH" --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
-# Build flag string from config (author, repo, cadence, max-parallel, idle-pause-after, auto-wake, auto-wake-cadence)
-PMM_FLAGS="..."   # e.g. --author alice --repo org/repo --cadence 5m --max-parallel 3 --idle-pause-after 3
 CADENCE=$(jq -r '.cadence // "5m"' <<<"$CONFIG")
+
+# Rebuild PMM_FLAGS from saved config (must include every persisted field)
+PMM_FLAGS=""
+AUTHOR=$(jq -r '.author // empty' <<<"$CONFIG")
+REPO=$(jq -r '.repo // empty' <<<"$CONFIG")
+[ -n "$AUTHOR" ] && PMM_FLAGS="$PMM_FLAGS --author $AUTHOR"
+[ -n "$REPO" ]    && PMM_FLAGS="$PMM_FLAGS --repo $REPO"
+PMM_FLAGS="$PMM_FLAGS --cadence $(jq -r '.cadence // "5m"' <<<"$CONFIG")"
+PMM_FLAGS="$PMM_FLAGS --max-parallel $(jq -r '.max_parallel // 3' <<<"$CONFIG")"
+PMM_FLAGS="$PMM_FLAGS --idle-pause-after $(jq -r '.idle_pause_after // 3' <<<"$CONFIG")"
+jq -e '.auto_wake == true' <<<"$CONFIG" >/dev/null 2>&1 && PMM_FLAGS="$PMM_FLAGS --auto-wake"
+PMM_FLAGS="$PMM_FLAGS --auto-wake-cadence $(jq -r '.auto_wake_cadence // "60m"' <<<"$CONFIG")"
+jq -e '.confirm_merges == true' <<<"$CONFIG" >/dev/null 2>&1 && PMM_FLAGS="$PMM_FLAGS --confirm-merges"
 
 "$SESSION_STATE_SH" \
   --set '.pmm.paused_at=null' \
