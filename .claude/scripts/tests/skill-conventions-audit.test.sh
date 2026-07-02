@@ -10,13 +10,17 @@ AUDIT="${REPO_ROOT}/.claude/scripts/skill-conventions-audit.sh"
   exit 1
 }
 
+OUT=$(mktemp -t skill-audit.out.XXXXXX)
+ERR=$(mktemp -t skill-audit.err.XXXXXX)
+trap 'rm -f "$OUT" "$ERR"' EXIT
+
 # Default run: may emit warnings on legacy skills; must not error on structure
-if ! "$AUDIT" >/tmp/skill-audit.out 2>/tmp/skill-audit.err; then
+if ! "$AUDIT" >"$OUT" 2>"$ERR"; then
   echo "FAIL: audit exited non-zero in default mode" >&2
-  cat /tmp/skill-audit.err >&2
+  cat "$ERR" >&2
   exit 1
 fi
 
-grep -q "Summary:" /tmp/skill-audit.out || { echo "FAIL: missing summary line"; exit 1; }
+grep -q "Summary:" "$OUT" || { echo "FAIL: missing summary line"; exit 1; }
 
 echo "OK: skill-conventions-audit smoke test passed"

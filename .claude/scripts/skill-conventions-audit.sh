@@ -16,12 +16,19 @@ set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
 
 STRICT=0
-if [[ "${1:-}" == "--strict" ]]; then
-  STRICT=1
-elif [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  sed -n '2,/^# EXIT STATUS:/{ /^# EXIT STATUS:/d; s/^# \{0,1\}//; p }' "$0"
-  exit 0
-fi
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --strict) STRICT=1; shift ;;
+    --help|-h)
+      sed -n '2,/^# EXIT STATUS:/{ /^# EXIT STATUS:/d; s/^# \{0,1\}//; p }' "$0"
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      exit 2
+      ;;
+  esac
+done
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -z "$REPO_ROOT" ]]; then
@@ -52,12 +59,18 @@ if not m:
     print("MISSING_FM")
     sys.exit(0)
 block = m.group(1)
-name = desc = ""
-for line in block.splitlines():
-    if line.startswith("name:"):
-        name = line.split(":", 1)[1].strip().strip('"').strip("'")
-    elif line.startswith("description:"):
-        desc = line.split(":", 1)[1].strip().strip('"').strip("'")
+try:
+    import yaml
+    meta = yaml.safe_load(block) or {}
+    name = str(meta.get("name") or "").strip()
+    desc = str(meta.get("description") or "").strip()
+except Exception:
+    name = desc = ""
+    for line in block.splitlines():
+        if line.startswith("name:"):
+            name = line.split(":", 1)[1].strip().strip('"').strip("'")
+        elif line.startswith("description:"):
+            desc = line.split(":", 1)[1].strip().strip('"').strip("'")
 print(f"{name}|{desc}")
 PY
 )"
@@ -85,13 +98,33 @@ PY
       warn "${skill_name}: description is ${#description} chars (>320) — may summarize workflow instead of trigger conditions"
     fi
     # Soft nudge: trigger-first descriptions are easier to discover
-    if ! echo "$description" | grep -qiE '(^use when|^when |^for when|trigger|invoked when|run when)'; then
+    if ! python3 - "$description" <<'PY'
+import re, sys
+d = sys.argv[1].strip()
+patterns = [
+    r'(?i)^use when',
+    r'(?i)^when ',
+    r'(?i)^for when',
+    r'(?i)^trigger',
+    r'(?i)^invoked when',
+    r'(?i)^run when',
+]
+sys.exit(0 if any(re.search(p, d) for p in patterns) else 1)
+PY
+    then
       warn "${skill_name}: description does not lead with a trigger phrase (Use when… / When…)"
     fi
   fi
 
-  # Body: expect explicit exit/stop criteria for operational skills
-  if ! grep -qiE '(exit criteria|STOP|## exit|when done|zero uncollapsed|merge gate|do not exit)' "$skill_md"; then
+  # Body: expect explicit exit/stop criteria for operational skills (body only, not frontmatter)
+  body="$(python3 - "$skill_md" <<'PY'
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+m = re.match(r"^---\s*\n.*?\n---\s*\n", text, re.DOTALL)
+print(text[m.end():] if m else text)
+PY
+)"
+  if ! printf '%s' "$body" | grep -qiE '(exit criteria|STOP|## exit|when done|zero uncollapsed|merge gate|do not exit)'; then
     warn "${skill_name}: body may lack explicit exit/stop criteria"
   fi
 }
