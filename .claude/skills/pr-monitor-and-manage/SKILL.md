@@ -269,7 +269,16 @@ Read `merge_state` / `mergeable` **literally** from the gate JSON. **Do NOT infe
 **Accumulate `VERDICTS_JSON` as each PR is classified — this is what Step 5.0's pre-flight gone/error skip reads.** Without this, `VERDICTS_JSON` stays an implicit empty object, the skip check never matches, and pre-flight runs against merged/errored PRs it should have skipped:
 
 ```bash
-VERDICTS_JSON=$(jq --arg n "$N" --arg v "$VERDICT" '.[$n] = {verdict: $v}' <<<"${VERDICTS_JSON:-{}}")
+TAG=""
+if [[ "$VERDICT" == "fixpr" && "$MERGEABLE" == "CONFLICTING" ]]; then
+  TAG="merge-conflict"
+fi
+if [[ -n "$TAG" ]]; then
+  VERDICTS_JSON=$(jq --arg n "$N" --arg v "$VERDICT" --arg tag "$TAG" \
+    '.[$n] = {verdict: $v, tag: $tag}' <<<"${VERDICTS_JSON:-{}}")
+else
+  VERDICTS_JSON=$(jq --arg n "$N" --arg v "$VERDICT" '.[$n] = {verdict: $v}' <<<"${VERDICTS_JSON:-{}}")
+fi
 ```
 
 **Collect hard blocks for reporting, but do not force-stop the fleet.** Push every PR with a `BLOCKED:*` verdict onto a `HARD_BLOCK[]` list (with its reason). These PRs are **reported once and dropped from the actionable fleet** for this tick — they do not trigger Stop & Clean Exit. A fleet of only hard-blocked/waiting PRs converges to auto-Pause via the idle counter (Step 6/7). The `rebase`/`fixpr`/`wrap` verdicts are executed in Step 5.
