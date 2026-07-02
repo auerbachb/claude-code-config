@@ -391,7 +391,7 @@ while IFS= read -r hook_path; do
     hook_verify_errors=$((hook_verify_errors + 1))
   fi
 done < <(python3 - "$SETTINGS_DST" <<'PYTHON_HOOK_PATHS'
-import json, sys
+import json, shlex, sys
 with open(sys.argv[1]) as f:
     data = json.load(f)
 hooks = data.get("hooks", {})
@@ -406,8 +406,17 @@ for event_entries in hooks.values():
         for hook in group.get("hooks", []):
             if isinstance(hook, dict) and hook.get("type") == "command":
                 cmd = hook.get("command", "")
-                if cmd:
-                    print(cmd)
+                if not isinstance(cmd, str) or not cmd:
+                    continue
+                # Verify the executable path, not the whole command string —
+                # a hook registered with args (e.g. "foo.sh --check") must not
+                # be misread as a bare filesystem path that never exists.
+                try:
+                    argv = shlex.split(cmd)
+                except ValueError:
+                    argv = cmd.split()
+                if argv:
+                    print(argv[0])
 PYTHON_HOOK_PATHS
 )
 

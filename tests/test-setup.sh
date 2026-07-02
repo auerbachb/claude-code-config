@@ -388,18 +388,18 @@ print('Seeded stale + external + args hook registrations')
   assert "settings.json still valid JSON" "python3 -c \"import json; json.load(open('$HOME/.claude/settings.json'))\""
   assert "Active hook still registered (trust-flag-repair.sh)" "grep -q 'trust-flag-repair.sh' '$HOME/.claude/settings.json'"
 
-  # setup.sh Step 7 checks each hook command as a raw path, so the intentionally
-  # seeded test artifacts (the non-managed external hook, and the args-bearing
-  # entry whose literal string is not a file) would trip it. Remove both before
-  # the full setup run so the suite ends green — the prune assertions above have
-  # already verified the behavior under test.
+  # setup.sh Step 7 now extracts argv0 from each hook command, so the args-bearing
+  # entry (whose argv0 trust-flag-repair.sh IS a real file) must pass a full setup
+  # run untouched. Only the non-managed external hook — whose argv0 file genuinely
+  # does not exist — would (correctly) trip Step 7, so remove just that one
+  # artifact and keep the args-bearing entry to exercise the argv0 path check.
   python3 -c "
 import json
 path = '$HOME/.claude/settings.json'
 with open(path, encoding='utf-8') as f:
     data = json.load(f)
 def is_artifact(cmd):
-    return 'external-hook.sh' in cmd or 'trust-flag-repair.sh --check' in cmd
+    return 'external-hook.sh' in cmd
 for ev, groups in list(data.get('hooks', {}).items()):
     groups[:] = [g for g in groups
                  if not any(is_artifact(h.get('command', '')) for h in g.get('hooks', []))]
@@ -407,11 +407,15 @@ with open(path, 'w', encoding='utf-8') as f:
     json.dump(data, f, indent=2)
 "
 
-  # Full setup.sh now passes Step 7 (no missing hook paths)
+  # Full setup.sh passes Step 7 even with the args-bearing hook still registered:
+  # Step 7 checks argv0 (the real trust-flag-repair.sh), not the raw command.
   local output exit_code
   output=$(run_setup)
   exit_code=$?
-  assert "setup.sh exits 0 after prune" "[ $exit_code -eq 0 ]"
+  echo "$output" | tail -40
+  assert "setup.sh exits 0 with args-bearing hook registered" "[ $exit_code -eq 0 ]"
+  # Step 7 tolerated the args-bearing hook — it survives the full setup run.
+  assert "Args-bearing hook survives full setup (Step 7 checks argv0)" "grep -q 'trust-flag-repair.sh --check' '$HOME/.claude/settings.json'"
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────
