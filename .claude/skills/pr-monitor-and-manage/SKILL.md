@@ -437,7 +437,11 @@ Set Subagent column to `spawned` immediately for every PR in this batch; transit
 
 Merge-ready PRs get **sequential** `/wrap` dispatch — one at a time, never parallelized. Merges affect main branch state (main-sync, follow-up detection, lessons) and must not race.
 
-**Idempotency-gated via `pmm_in_flight`:**
+**Deferral gate — check this FIRST, before any lock acquisition or `/wrap` execution below.** "Fix subagents active this tick" means spawned just now by Step 5c OR still running from a prior tick — check both: any Step 5c spawn this tick, **or** a live PMM-spawned entry already in `active_agents` (`phase == "A"`, `id` prefixed `pmm-fix-`, `status` not in `{complete, failed}`). This matters because a `/pmm-stop`-then-resume, or a tick where Step 3's refinement pass left every `fixpr` PR at `awaiting fix subagent`/`queued (cap)` with zero *new* spawns, would otherwise slip past a "spawned this tick" check while a background fixer is still mid-flight on a shared branch/worktree.
+
+Process merge-ready PRs **only when no fix subagents are active this tick** (by the definition above) — run Step 5d sequentially before Step 5e. **If any fix subagents are active, stop here and defer all `/wrap` dispatches** until the Step 5e monitor loop has drained every active fix subagent — do not proceed to the idempotency check or lock acquisition below for any PR while the gate is closed. This keeps the parent out of concurrent parent work and honors dedicated monitor mode.
+
+**Idempotency-gated via `pmm_in_flight`** (only reached once the deferral gate above is open):
 
 ```bash
 INFLIGHT=$(.claude/scripts/session-state.sh --get ".pmm_in_flight.\"$N\"" 2>/dev/null || echo null)
@@ -459,10 +463,6 @@ Execute the **full** `/wrap` workflow inline (all 4 phases). On completion:
 
 - `/wrap` merged the PR → clear `pmm_in_flight[N]`; PR drops from fleet on next `gh pr list`.
 - `/wrap` returned a hard block → clear in-flight and add `#N` to `HARD_BLOCK[]`.
-
-**"Fix subagents active this tick" means spawned just now by Step 5c OR still running from a prior tick** — check both: any Step 5c spawn this tick, **or** a live PMM-spawned entry already in `active_agents` (`phase == "A"`, `id` prefixed `pmm-fix-`, `status` not in `{complete, failed}`). This matters because a `/pmm-stop`-then-resume, or a tick where Step 3's refinement pass left every `fixpr` PR at `awaiting fix subagent`/`queued (cap)` with zero *new* spawns, would otherwise slip past a "spawned this tick" check while a background fixer is still mid-flight on a shared branch/worktree.
-
-Process merge-ready PRs **only when no fix subagents are active this tick** (by the definition above) — run Step 5d sequentially before Step 5e. If any fix subagents are active, **defer all `/wrap` dispatches** until the Step 5e monitor loop has drained every active fix subagent. This keeps the parent out of concurrent parent work and honors dedicated monitor mode.
 
 ### Step 5e: Dedicated monitor mode while fix subagents are active
 
