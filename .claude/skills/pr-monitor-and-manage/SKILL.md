@@ -1,6 +1,6 @@
 ---
 name: pr-monitor-and-manage
-description: Thread-level PR fleet manager. Rediscovers your open PRs every tick, prints a status table, and auto-dispatches the per-PR decision tree (rebase / parallel phase-a-fixer / sequential /wrap) until the fleet is clean or hard-blocked. Triggers on "/pr-monitor-and-manage", "/pmm", "manage PRs", "PR fleet", "watch PRs".
+description: Thread-level PR fleet manager. Rediscovers your open PRs every tick, prints a status table, and auto-dispatches the per-PR decision tree (rebase / parallel phase-a-fixer / sequential /wrap) until the fleet is clean, hard-blocked, or idle. Auto-pauses when idle; resume with /pr-monitor-and-manage-wake. Triggers on "/pr-monitor-and-manage", "/pmm", "manage PRs", "PR fleet", "watch PRs".
 triggers:
   - pr-monitor-and-manage
   - pmm
@@ -8,7 +8,7 @@ triggers:
   - PR fleet
   - watch PRs
   - manage my open PRs
-argument-hint: "[--author <login>] [--repo <owner/repo>] [--cadence Nm] [--max-parallel N] (defaults: author=current gh user, repo=current, cadence=5m, max-parallel=3)"
+argument-hint: "[--author <login>] [--repo <owner/repo>] [--cadence Nm] [--max-parallel N] [--idle-pause-after N] [--auto-wake] [--auto-wake-cadence Nm] (defaults: author=current gh user, repo=current, cadence=5m, max-parallel=3, idle-pause-after=3, auto-wake=off, auto-wake-cadence=60m)"
 ---
 
 Thread-level **PR fleet manager**. This skill turns the current thread into a dedicated monitor that watches every open PR you own and drives each one to merge-ready (or a named hard block) by dispatching the per-PR decision tree on a recurring cadence. Fix work (`has-recoverable-blockers` / verdict `fixpr`) is handled by **parallel `phase-a-fixer` subagents** (default cap 3, `--max-parallel N`). Merge-ready PRs get **sequential `/wrap`** dispatch only.
@@ -21,7 +21,27 @@ This is a **set-and-monitor** command. Once invoked it acknowledges the mode, es
 
 ## Step 0: Enter PR-fleet-manager mode (MANDATORY, first tick only)
 
-On the **first** invocation in a thread, acknowledge the mode up front so the constraints are explicit and survive context compaction:
+### Step 0a: Resume from pause (when `.pmm.paused_at` is set)
+
+On **every** invocation, before Step 1, check for a pause marker. If present, this invocation is a **resume** — tear down any auto-wake cron, clear the marker, merge config, and continue into normal ticking:
+
+```bash
+PAUSED_AT=$(.claude/scripts/session-state.sh --get '.pmm.paused_at' 2>/dev/null || echo null)
+if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
+  # 1. Read saved config (fallback defaults if missing)
+  SAVED=$(.claude/scripts/session-state.sh --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
+  # 2. Delete auto-wake cron (fail-closed — see pr-monitor-and-manage-wake Step 2)
+  # 3. Clear pause marker + set pmm_active=true (atomic batch)
+  # 4. Merge flags: explicit $ARGUMENTS override saved config; unspecified fall back to saved
+  echo "[PMM] Resuming from pause (paused_at=$PAUSED_AT) — flags on this invocation override saved config."
+fi
+```
+
+Resume logic is shared with `/pr-monitor-and-manage-wake` — see `.claude/skills/pr-monitor-and-manage-wake/SKILL.md` Step 2 (cron teardown) and Step 3 (marker clear + loop re-arm). When resuming via re-invoking this skill (not `-wake`), apply the precedence rule in Step 1 after parsing `$ARGUMENTS`: any flag explicitly supplied on this invocation wins; omitted flags inherit from `.pmm.config_at_pause`. After resume, continue with Step 1 using the merged config and run a full discovery tick at **base** cadence (not the widened backoff cadence).
+
+A stale marker left by a killed session is safely reconciled here: the next `/pr-monitor-and-manage` invocation reads it, resumes (or the user runs `/pmm-stop`), and re-runs discovery from scratch.
+
+On the **first** invocation in a thread (and after any resume), acknowledge the mode up front so the constraints are explicit and survive context compaction:
 
 > **PR-fleet-manager mode active.** My only job in this thread is to watch and manage your open PRs as a fleet — rediscover them each tick, print a status table, and dispatch rebase / parallel `phase-a-fixer` subagents (fix work) / sequential `/wrap` (merge-ready) per the decision tree. I will not write feature code, start issues, or do unrelated work here.
 
@@ -48,13 +68,19 @@ Parse `$ARGUMENTS` (re-parse every tick — a `/loop` re-invocation passes the s
 - `--repo <owner/repo>` — which repo. **Default:** the current repo.
 - `--cadence Nm` — base poll interval. **Default:** `5m`.
 - `--max-parallel N` — max concurrent `phase-a-fixer` subagents for fix work. **Default:** `3`. Excess PRs needing fixes wait for a slot to free on a subsequent tick.
+- `--idle-pause-after N` — consecutive idle ticks before auto-pause. **Default:** `3`.
+- `--auto-wake` — when set, register an hourly `CronCreate` job at pause time that lightweight-scans for fleet changes. **Default:** off.
+- `--auto-wake-cadence Nm` — cadence for the auto-wake cron. **Default:** `60m`.
 
 > **`--repo` constraint (load-bearing).** `--repo` scopes **discovery** (`gh pr list`) and the GraphQL/REST reads. But the per-PR helpers (`merge-gate.sh`, `pr-issue-ref.sh`, `cr-review-hourly.sh`, `dismiss-stale-bot-changes.sh`) and all git actions (rebase, force-push, fix subagents, `/wrap`) operate on the **current checkout** — they resolve the repo via `gh repo view`, not a flag. So managing a repo requires running this skill from a worktree of **that** repo. If `--repo` names a repo other than the current checkout, **stop and reconcile** (same multi-repo hazard guard as `cr-github-review.md`) rather than acting against the wrong repo.
 
 ```bash
 # Defaults
 PMM_AUTHOR=""; PMM_REPO=""; PMM_CADENCE="5m"; PMM_MAX_PARALLEL=3
-# (parse $ARGUMENTS into the four vars above; bare flags override defaults)
+PMM_IDLE_PAUSE_AFTER=3; PMM_AUTO_WAKE=false; PMM_AUTO_WAKE_CADENCE="60m"
+# (parse $ARGUMENTS into the vars above; bare flags override defaults)
+# When resuming from pause (Step 0a), merge: explicit $ARGUMENTS win; omitted flags
+# inherit from .pmm.config_at_pause (author, repo, cadence, max-parallel, idle-pause-after, auto-wake, auto-wake-cadence).
 
 if [ -z "$PMM_AUTHOR" ]; then
   PMM_AUTHOR=$(gh api user --jq .login 2>/dev/null || true)
@@ -73,7 +99,7 @@ if [ -n "$PMM_REPO" ] && [ "$PMM_REPO" != "$CURRENT_REPO" ]; then
 fi
 OWNER="${OWNER_REPO%/*}"; REPO="${OWNER_REPO#*/}"
 REPO_FLAG=(--repo "$OWNER_REPO")   # explicit so discovery + reads always agree
-echo "[PMM] fleet = author:$PMM_AUTHOR repo:$OWNER_REPO cadence:$PMM_CADENCE max-parallel:$PMM_MAX_PARALLEL"
+echo "[PMM] fleet = author:$PMM_AUTHOR repo:$OWNER_REPO cadence:$PMM_CADENCE max-parallel:$PMM_MAX_PARALLEL idle-pause-after:$PMM_IDLE_PAUSE_AFTER auto-wake:$PMM_AUTO_WAKE"
 ```
 
 ---
@@ -92,7 +118,7 @@ PR_COUNT=$(jq 'length' <<<"$PR_LIST")
 
 > **No silent truncation.** `gh pr list` caps results at `--limit`; with `--author` it goes through the Search API (hard ceiling ~1000). Use a high `--limit` (500 above) and **warn** when the fleet hits it: if `PR_COUNT == PMM_LIMIT`, print "Showing $PMM_LIMIT PRs — fleet may be larger; results may be incomplete" and, if you genuinely expect >500 open PRs for one author, page via `gh api`/GraphQL instead. A default 30 (the `gh` default) or a small fixed cap would silently drop PRs — never rely on it.
 
-**Empty fleet → clean exit.** If `PR_COUNT == 0`, jump to **Stop & Clean Exit** with "Fleet empty — no open PRs found". Do not keep polling an empty fleet.
+**Empty fleet → immediate Pause.** If `PR_COUNT == 0`, jump to **Pause** (Step 8) with reason `empty fleet`. Do not keep polling an empty fleet — pause immediately with no 3-tick wait.
 
 ---
 
@@ -193,7 +219,7 @@ Read `merge_state` / `mergeable` **literally** from the gate JSON. **Do NOT infe
 VERDICTS_JSON=$(jq --arg n "$N" --arg v "$VERDICT" '.[$n] = {verdict: $v}' <<<"${VERDICTS_JSON:-{}}")
 ```
 
-**Collect, but do not act yet:** push every PR with a `BLOCKED:*` verdict onto a `HARD_BLOCK[]` list (with its reason). Step 7 routes to **Stop & Clean Exit** when `HARD_BLOCK[]` is non-empty. The `rebase`/`fixpr`/`wrap` verdicts are executed in Step 5.
+**Collect hard blocks for reporting, but do not force-stop the fleet.** Push every PR with a `BLOCKED:*` verdict onto a `HARD_BLOCK[]` list (with its reason). These PRs are **reported once and dropped from the actionable fleet** for this tick — they do not trigger Stop & Clean Exit. A fleet of only hard-blocked/waiting PRs converges to auto-Pause via the idle counter (Step 6/7). The `rebase`/`fixpr`/`wrap` verdicts are executed in Step 5.
 
 **Pre-fetch findings for fix subagents (verdict `fixpr` only):** while gathering state, also fetch review findings from the three endpoints so Step 5c can embed them in each subagent prompt without a second round-trip:
 
@@ -256,7 +282,9 @@ Only after the table is printed does Step 5 execute the actions.
 
 ## Step 5: Act on the verdicts (after the table)
 
-Iterate the fleet and execute each PR's Step 3 verdict. `waiting`, `gone`, `error`, and `BLOCKED:*` verdicts do **no** work here (`BLOCKED:*` is handled by the Stop routing in Step 7).
+**Track actions this tick** for idle detection (Step 6). Initialize `TICK_HAD_ACTION=false` at the start of Step 5; set it to `true` whenever any of the following fire for any PR: rebase + force-push (Step 5a), stale-bot dismissal after rebase (Step 5b), `/fixpr` or `/wrap` dispatch (Step 5c), or a reviewer trigger from `pr-preflight.sh` that actually posts (non-no-op output). Waiting, gone, error, `BLOCKED:*`, and no-op pre-flight do **not** set the flag.
+
+Iterate the fleet and execute each PR's Step 3 verdict. Skip PRs in `HARD_BLOCK[]` — they were reported in Step 4's table and are dropped from actionable work. `waiting`, `gone`, and `error` verdicts do **no** work here.
 
 ### Step 5.0: Pre-flight per discovered PR (before any dispatch — issue #493)
 
@@ -470,7 +498,7 @@ HEAD_SHA=$(jq -r '.head_sha' <<<"${GATE_BY_PR[$N]}")
 Execute the **full** `/wrap` workflow inline (all 4 phases). On completion:
 
 - `/wrap` merged the PR → clear `pmm_in_flight[N]`; PR drops from fleet on next `gh pr list`.
-- `/wrap` returned a hard block → clear in-flight and add `#N` to `HARD_BLOCK[]`.
+- `/wrap` returned a hard block → clear in-flight and add `#N` to `HARD_BLOCK[]` for reporting (Step 4 next tick). Do **not** force-stop the fleet — the hard-blocked PR is dropped from actionable work and the idle counter handles convergence to Pause.
 
 ### Step 5e: Dedicated monitor mode while fix subagents are active
 
@@ -481,7 +509,7 @@ If any fix subagents are active this tick (per the definition above — spawned 
 1. Poll active subagent statuses. Transition Subagent column: `spawned` → `working` → `complete` / `failed`.
 2. On any completion — success, exhaustion, or crash — **run Step 2.5's steps 1-3 in full** (parse exit report, worktree cleanup, remove this agent's own `active_agents` record + clear `pmm_in_flight[N]`) before branching on outcome. This is unconditional, not just the success path — a failure that skips clearing `pmm_in_flight[N]` would otherwise leave a stale lock blocking Step 3's idempotency check until `PMM_LOCK_STALE_SECS` expires.
 3. Branch on outcome (per Step 2.5's step 4, cleanup from step 2 above already done):
-   - **Crash / no exit report / stale >15 min:** mark `failed` in the table and add `#N` to `HARD_BLOCK[]` with reason `crashed(needs-approval)` — never re-dispatch silently. Step 7 routes to Stop & Clean Exit so the user can explicitly approve a respawn (`subagent-orchestration.md`: "Ask first only: ... respawning a crashed/no-handoff subagent").
+   - **Crash / no exit report / stale >15 min:** mark `failed` in the table and add `#N` to `HARD_BLOCK[]` with reason `crashed(needs-approval)` — never re-dispatch silently. Reported once and dropped from the actionable fleet this tick (do **not** force-stop — see Step 3's `HARD_BLOCK[]` handling); the user can explicitly approve a respawn (`subagent-orchestration.md`: "Ask first only: ... respawning a crashed/no-handoff subagent").
    - **Token/turn exhaustion with a valid handoff file:** respawn immediately **using Step 5c's spawn pattern**, but with **freshly re-fetched** gate and findings data for this PR — do NOT reuse tick-start `GATE_BY_PR[$N]`/`FINDINGS_JSON[$N]` verbatim. Real time has passed since Step 3 computed them, and the exhausted subagent may have pushed partial progress before running out of tokens, moving the PR's actual HEAD SHA and review state past that tick-start snapshot; a respawn using the stale SHA/findings would hand the replacement outdated context. Re-run `.claude/scripts/merge-gate.sh "$N"` (and re-fetch findings from the three endpoints, same as Step 3's pre-fetch) immediately before building the replacement's spawn record, and use *that* fresh result — not the cached tick-start one — for its `head_sha`, `GATE_BY_PR[$N]` update, and prompt findings. This is an "Always do" action per `subagent-orchestration.md`'s Token/Turn Exhaustion Protocol — do not wait for the next tick, and do NOT defer to Step 2.5's exhaustion handling here (Step 2.5's deferral only works at tick-*start*, before Step 3 has run; Step 5e is mid-tick, after Step 3 already ran, so an inline respawn is possible here — it just needs fresh data, not the tick-start cache).
 4. Send heartbeat if >5 min since last user message (timestamp prefix required).
 5. Investigate stale agents (>15 min Phase A without progress).
@@ -492,7 +520,7 @@ If any fix subagents are active this tick (per the definition above — spawned 
 
 ---
 
-## Step 6: Stable-state backoff (per `scheduling-reliability.md`)
+## Step 6: Stable-state backoff + idle streak (per `scheduling-reliability.md`)
 
 Compute a **per-tick fleet digest** and track a streak so an idle fleet stops hammering the API. Hash the per-PR tuple `(number, head_sha, merge_state, review_decision, ci_blocking_count, unresolved_threads)` across the whole fleet (sorted by PR number for stability):
 
@@ -518,15 +546,40 @@ A widened cadence is per-fleet here (one loop), but each PR keeps its own row in
 
 **#497 idle auto-pause compatibility:** when a tick finishes with all fix subagents exited and no in-flight parent dispatches, the digest/backoff logic treats the tick as idle — a stable fleet with unchanged digest increments `pmm_digest_streak` normally, and after 3 idle ticks the cadence widens to 15m.
 
+### Idle tick definition + `pmm_idle_streak`
+
+An **idle tick** is one where **all** of the following hold:
+
+1. **No dispatch fired** — `TICK_HAD_ACTION=false` from Step 5 (no rebase, no fix subagent spawn, no `/wrap`, no reviewer trigger).
+2. **No state change vs prior tick** — fleet digest unchanged (`DIGEST == PREV` from above).
+
+Maintain a dedicated **`pmm_idle_streak`** counter (flat, sibling to `pmm_digest_streak`):
+
+```bash
+IDLE_PREV=$(.claude/scripts/session-state.sh --get '.pmm_idle_streak' 2>/dev/null || echo 0)
+[ "$IDLE_PREV" = null ] && IDLE_PREV=0
+if [ "$TICK_HAD_ACTION" = false ] && [ "$DIGEST" = "$PREV" ]; then
+  IDLE_STREAK=$((IDLE_PREV + 1))
+else
+  IDLE_STREAK=0
+fi
+.claude/scripts/session-state.sh --set ".pmm_idle_streak=$IDLE_STREAK"
+```
+
+**`pmm_idle_streak` is orthogonal to cadence widening** — widening 5m→15m via `pmm_digest_streak` must **not** reset `pmm_idle_streak`. Only an action or digest change resets the idle counter. Three idle ticks at the widened 15-min cadence still counts toward auto-pause.
+
 ---
 
-## Step 7: Stop routing, then establish / re-arm the polling loop
+## Step 7: Stop routing, Pause routing, then establish / re-arm the polling loop
 
-**First, check the stop conditions.** If any holds, go to **Stop & Clean Exit** instead of re-arming the loop:
+**First, check the stop/pause conditions.** Routing order:
 
-1. **User command** — `/pmm-stop` (or "stop monitoring PRs"). See the companion `/pmm-stop` skill.
-2. **Empty fleet** — `PR_COUNT == 0` from Step 2 (all PRs merged/closed).
-3. **Hard-blocked PR** — `HARD_BLOCK[]` is non-empty (human `CHANGES_REQUESTED` on HEAD, `mergeable == CONFLICTING` the rebase couldn't resolve, a crashed/no-handoff `phase-a-fixer` awaiting respawn approval (`crashed(needs-approval)`, Step 2.5/5e), `/wrap` returned a hard block, CR budget exhausted with nothing else actionable, or a persistent Greptile P0 per `greptile.md`).
+1. **User command** — `/pmm-stop` (or "stop monitoring PRs"). See the companion `/pmm-stop` skill → **Stop & Clean Exit**.
+2. **Empty fleet** — `PR_COUNT == 0` from Step 2 → **immediate Pause** (Step 8) with reason `empty fleet` (no 3-tick wait).
+3. **Idle streak** — `pmm_idle_streak >= PMM_IDLE_PAUSE_AFTER` → **Pause** (Step 8) with reason `"$PMM_IDLE_PAUSE_AFTER idle ticks"`.
+4. Otherwise → **re-arm the loop** (below).
+
+Hard-blocked PRs (`HARD_BLOCK[]`, including a crashed/no-handoff `phase-a-fixer` awaiting respawn approval — `crashed(needs-approval)`, Step 2.5/5e) do **not** trigger Stop or Pause by themselves — they are reported and dropped from the actionable fleet; the idle counter handles convergence when nothing actionable remains.
 
 Otherwise, **re-arm the loop.** `/loop` is the **canonical** primitive for this recurring poll — never a hand-rolled `ScheduleWakeup` chain (`scheduling-reliability.md`). On the first tick, establish it and state the cancel command in the same message:
 
@@ -543,21 +596,94 @@ NOW=$(date -u +%FT%TZ)
   --set '.pmm_active=true' \
   --set ".pmm_cadence=\"$EFFECTIVE_CADENCE\"" \
   --set ".pmm_author=\"$PMM_AUTHOR\"" \
-  --set ".pmm_last_tick_at=\"$NOW\""
+  --set ".pmm_last_tick_at=\"$NOW\"" \
+  --set ".pmm_idle_streak=$IDLE_STREAK"
 # On the FIRST tick also set .pmm_started_at; every tick set the next-expected watermark.
 ```
 
 **Pre-exit checklist (run before ending every polling turn — `scheduling-reliability.md`):**
 
-1. **Next tick scheduled?** Confirm `/loop` is active/re-armed at `$EFFECTIVE_CADENCE` (or stopped per the routing above).
+1. **Next tick scheduled?** Confirm `/loop` is active/re-armed at `$EFFECTIVE_CADENCE` (or stopped/paused per the routing above).
 2. **Heartbeat sent?** The Step 4 timestamped table is the heartbeat — never end a tick silently.
-3. **State recorded?** `pmm_active`, cadence, watermarks, `pmm_in_flight`, `active_agents`, `pmm_digest(_streak)` written to `session-state.json`.
+3. **State recorded?** `pmm_active`, cadence, watermarks, `pmm_in_flight`, `active_agents`, `pmm_digest(_streak)`, `pmm_idle_streak` written to `session-state.json`.
+
+---
+
+## Pause (auto-pause — resumable)
+
+Reached from Step 7 when the fleet is empty or idle. Unlike Stop & Clean Exit, Pause preserves a resume marker so `/pr-monitor-and-manage-wake` or re-invoking this skill can pick up where it left off.
+
+### 1. Final heartbeat
+
+Print the Step 4 status table one last time, then a one-line reason:
+
+```text
+[$TS] PMM pausing — reason: <empty fleet | N idle ticks>
+```
+
+### 2. Cancel the loop
+
+Cancel the recurring `/loop` (same guidance as Stop & Clean Exit):
+
+- If the runtime exposes a loop id / cancel handle, cancel it explicitly.
+- Otherwise interrupt the active loop. The next tick must not re-arm.
+
+### 3. Build fleet snapshot + config for the pause marker
+
+```bash
+NOW=$(date -u +%FT%TZ)
+# fleet_at_pause: array of {pr, head_sha, state} from current PR_LIST + gate reads
+FLEET_AT_PAUSE=$(jq -c '[.[] | {pr: .number, head_sha: .headRefOid, state: .mergeStateStatus}]' <<<"$PR_LIST_ENRICHED")
+CONFIG_AT_PAUSE=$(jq -nc \
+  --arg author "$PMM_AUTHOR" --arg repo "$OWNER_REPO" --arg cadence "$PMM_CADENCE" \
+  --argjson idle_pause_after "$PMM_IDLE_PAUSE_AFTER" \
+  --argjson auto_wake "$PMM_AUTO_WAKE" --arg auto_wake_cadence "$PMM_AUTO_WAKE_CADENCE" \
+  '{author:$author, repo:$repo, cadence:$cadence, idle_pause_after:$idle_pause_after, auto_wake:$auto_wake, auto_wake_cadence:$auto_wake_cadence}')
+```
+
+> **Schema note:** pause marker fields live under nested `.pmm.*` per the AC; existing runtime fields (`pmm_active`, `pmm_digest`, `pmm_idle_streak`, etc.) remain flat.
+
+### 4. Write pause marker (atomic batch)
+
+```bash
+.claude/scripts/session-state.sh \
+  --set ".pmm.paused_at=\"$NOW\"" \
+  --set ".pmm.fleet_at_pause=$FLEET_AT_PAUSE" \
+  --set ".pmm.config_at_pause=$CONFIG_AT_PAUSE" \
+  --set '.pmm_active=false' \
+  --set '.pmm_next_expected_tick_at=null'
+```
+
+Preserve `pmm_digest`, `pmm_digest_streak`, and `pmm_idle_streak` as audit trail.
+
+### 5. Optional auto-wake cron (`--auto-wake`)
+
+When `$PMM_AUTO_WAKE` is true, register a durable hourly scan at pause time:
+
+```bash
+# Derive cadence minutes from PMM_AUTO_WAKE_CADENCE (e.g. 60m → 60)
+{ read -r AW_MINUTE; read -r AW_CRON; } < <(.claude/scripts/off-peak-minute.sh --every-n-min "$AW_CADENCE_MIN")
+# CronCreate with prompt "/pr-monitor-and-manage-wake --auto-check", recurring=true, durable=true
+# Persist returned job id to .pmm.auto_wake_cron_id and append to polling_jobs[]
+```
+
+Follow `scheduling-reliability.md`: cross-session durability requires `CronCreate` (not `/loop`). Tell the user the cron job id and 7-day auto-expiry.
+
+### 6. Summary line
+
+```text
+PMM paused — <N> PR(s) waiting on reviewer, no changes for <idle window>. Wake with `/pr-monitor-and-manage-wake` or re-run `/pr-monitor-and-manage <flags>`.
+```
+
+If `--auto-wake` is set, add: `Auto-wake cron registered (<job_id>) — will scan hourly for fleet changes.`
+
+> **Post-merge symlink:** after this skill's `-wake` companion merges to `main`, symlink `~/.claude/skills/pr-monitor-and-manage-wake` → the skills-worktree copy per `skill-symlinks.md`.
 
 ---
 
 ## Stop & Clean Exit
 
-Reached from Step 7 when a stop condition holds. Tear down and report:
+Reached from Step 7 when the **user** invokes `/pmm-stop`. Tear down and report (this is a terminal stop — no resume marker):
 
 ```bash
 .claude/scripts/session-state.sh --set '.pmm_active=false' --set '.pmm_next_expected_tick_at=null'
@@ -569,15 +695,15 @@ Print a final summary:
 
 ```text
 === PR fleet monitoring ended ===
-Reason:   <user-stop | empty-fleet | hard-block>
+Reason:   <user-stop>
 Fleet:    <final status table>
 Pre-flight: <per-PR draft→ready + reviewers triggered this session, from each PR's PREFLIGHT_SUMMARY; "clean" where no-op>
 Actions:  <rebases / phase-a-fixer subagents / /wrap dispatched this session, per PR — include Subagent outcomes>
 Subagents: <per-PR spawn/complete/failed summary from active_agents audit>
-Blocked:  <PR # + reason for each HARD_BLOCK entry — e.g. "#123 human CHANGES_REQUESTED by @alice">
+Blocked:  <PR # + reason for each HARD_BLOCK entry reported this session — e.g. "#123 human CHANGES_REQUESTED by @alice">
 ```
 
-For a hard-block exit, **name the blocking PR and the exact reason** so the user knows what needs them.
+Hard-blocked PRs are reported here for visibility; the fleet may auto-pause afterward when idle.
 
 ---
 
