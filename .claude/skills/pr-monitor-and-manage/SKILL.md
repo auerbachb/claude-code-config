@@ -198,11 +198,12 @@ Step 5c's parallel-dispatch decisions (skip-if-in-flight, cap slots) are pure re
 
 For every PR whose base verdict is `fixpr`:
 
-1. **In-flight check.** Refine to `awaiting fix subagent` if an `active_agents` entry exists with matching `pr == N`, `phase == "A"`, and `status` not in `{complete, failed}`, OR if `pmm_in_flight[N]` has an active lock for the same PR.
-2. **Cap check.** Among the PRs still `fixpr` after step 1, count currently active fix subagents and compute remaining slots:
+1. **In-flight check.** Refine to `awaiting fix subagent` if an `active_agents` entry exists with matching `pr == N`, `phase == "A"`, and `status` not in `{complete, failed}`, OR if `pmm_in_flight[N]` has an active lock for the same PR **that is not stale** — apply the same `PMM_LOCK_STALE_SECS` (default 3600s) staleness rule Step 5d uses for `/wrap` locks. A stale lock (e.g. a `wrap` lock left over from a crashed parent, on a PR now reclassified `fixpr`) is broken here too, not just in Step 5d — otherwise a stale non-`phase-a-fixer` lock can block fix dispatch forever with no path to clear it.
+2. **Cap check.** Among the PRs still `fixpr` after step 1, count currently active **PMM-spawned** fix subagents (`id` prefixed `pmm-fix-` — excludes Phase A agents spawned by other workflows sharing the same `active_agents` array) and compute remaining slots:
 
    ```bash
-   ACTIVE_COUNT=$(jq '[.[] | select(.phase == "A" and (.status != "complete" and .status != "failed"))] | length' \
+   ACTIVE_COUNT=$(jq '[.[] | select(.phase == "A" and (.status != "complete" and .status != "failed")
+     and ((.id // "") | startswith("pmm-fix-")))] | length' \
      <<<"$(.claude/scripts/session-state.sh --get '.active_agents' 2>/dev/null || echo '[]')")
    SLOTS=$(( PMM_MAX_PARALLEL - ACTIVE_COUNT ))
    (( SLOTS < 0 )) && SLOTS=0
@@ -276,6 +277,8 @@ done
 `pr-preflight.sh` is idempotent (a PR already ready with all four reviewers engaged is a no-op printing `Pre-flight clean — proceeding`), rate-cap safe (it gates `@coderabbitai full review` on `cr-review-hourly.sh` — `--check` + atomic `--record-explicit` — and skips only CR when the cap is hit, still posting the other three), never flips another user's intentional draft, and never triggers Greptile. Because the pre-flight may have just triggered reviewers, the verdicts computed in Step 3 are from *before* the triggers; the next tick re-discovers and re-classifies on the post-trigger state — the rebase / fix subagent / `/wrap` actions below still run on this tick's verdicts.
 
 ### Step 5a: Rebase (verdict `rebase`, i.e. `merge_state == BEHIND`)
+
+**Skip if a PMM fix subagent is still active for this PR.** `BEHIND` is checked before `fixpr` in the decision tree (Step 3), so a PR with a fixer subagent still running from a prior tick can flip to verdict `rebase` if main advanced mid-fix — checking out that branch here would collide with the subagent's own worktree (git refuses to check out the same branch twice) and race its push. Before rebasing, check for a live PMM-spawned entry (`active_agents` with `phase == "A"`, `id` prefixed `pmm-fix-$N`, `status` not in `{complete, failed}`) or an active `pmm_in_flight[N]` lock; if found, skip this PR this tick (verdict stays `rebase` for the table, but no action runs) — it becomes rebase-eligible once the fixer completes and its worktree is cleaned up (Step 2.5).
 
 **Use `git rebase origin/main` + `git push --force-with-lease` — NEVER GitHub's update-branch API.** The API creates bot merge commits that block CI; `auto-update-prs.yml` was removed for exactly this reason.
 
@@ -442,11 +445,13 @@ Execute the **full** `/wrap` workflow inline (all 4 phases). On completion:
 - `/wrap` merged the PR → clear `pmm_in_flight[N]`; PR drops from fleet on next `gh pr list`.
 - `/wrap` returned a hard block → clear in-flight and add `#N` to `HARD_BLOCK[]`.
 
-Process merge-ready PRs **only when no fix subagents were spawned this tick** — run Step 5d sequentially before Step 5e. If Step 5c spawned any fix subagents, **defer all `/wrap` dispatches** until the Step 5e monitor loop has drained every active fix subagent. This keeps the parent out of concurrent parent work and honors dedicated monitor mode.
+**"Fix subagents active this tick" means spawned just now by Step 5c OR still running from a prior tick** — check both: any Step 5c spawn this tick, **or** a live PMM-spawned entry already in `active_agents` (`phase == "A"`, `id` prefixed `pmm-fix-`, `status` not in `{complete, failed}`). This matters because a `/pmm-stop`-then-resume, or a tick where Step 3's refinement pass left every `fixpr` PR at `awaiting fix subagent`/`queued (cap)` with zero *new* spawns, would otherwise slip past a "spawned this tick" check while a background fixer is still mid-flight on a shared branch/worktree.
+
+Process merge-ready PRs **only when no fix subagents are active this tick** (by the definition above) — run Step 5d sequentially before Step 5e. If any fix subagents are active, **defer all `/wrap` dispatches** until the Step 5e monitor loop has drained every active fix subagent. This keeps the parent out of concurrent parent work and honors dedicated monitor mode.
 
 ### Step 5e: Dedicated monitor mode while fix subagents are active
 
-If Step 5c spawned any fix subagents, **immediately enter an orchestration-only posture borrowing `monitor-mode.md`'s Dedicated Monitor Mode discipline** — the parent's ONLY job until all fix subagents complete or fail is orchestration (poll, verify, heartbeat); no feature code, no local CR review, no substantive source analysis. **PMM does NOT execute `monitor-mode.md`'s Monitor Loop Per-Cycle Checklist verbatim** — specifically, it never runs `phase-protocols.md`'s Phase Completion Protocols, which would otherwise auto-launch Phase B after Phase A. Step 2.5's aggregation fully replaces that: PMM fixes and pushes only, per Step 0's contract ("PMM does not launch Phase B/C after Phase A").
+If any fix subagents are active this tick (per the definition above — spawned now or carried over from a prior tick), **immediately enter an orchestration-only posture borrowing `monitor-mode.md`'s Dedicated Monitor Mode discipline** — the parent's ONLY job until all fix subagents complete or fail is orchestration (poll, verify, heartbeat); no feature code, no local CR review, no substantive source analysis. **PMM does NOT execute `monitor-mode.md`'s Monitor Loop Per-Cycle Checklist verbatim** — specifically, it never runs `phase-protocols.md`'s Phase Completion Protocols, which would otherwise auto-launch Phase B after Phase A. Step 2.5's aggregation fully replaces that: PMM fixes and pushes only, per Step 0's contract ("PMM does not launch Phase B/C after Phase A").
 
 **PMM's own monitor loop (~60s cadence — replaces, not layers on, `monitor-mode.md`'s checklist):**
 
