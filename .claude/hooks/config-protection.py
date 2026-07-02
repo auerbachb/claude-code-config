@@ -72,9 +72,10 @@ DESTRUCTIVE_BINS = {
     'ruby', 'node', 'touch', 'ln',
 }
 
-BARE_REDIRECT_RE = re.compile(r'^(?:\d*>{1,2}|&>|\d*>&\d*)$')
-EMBEDDED_REDIRECT_RE = re.compile(r'(?:\d*>{1,2}|&>)([^<>&].*)$')
-WRITE_FLAG_TOKENS = frozenset({'--write', '--fix', '-w', '-i', '-inplace'})
+BARE_REDIRECT_RE = re.compile(r'^(?:\d*>{1,2}\|?|&>|\d*>&\d*)$')
+EMBEDDED_REDIRECT_RE = re.compile(r'(?:\d*>{1,2}\|?|&>)([^<>&].*)$')
+WRITE_FLAG_TOKENS = frozenset({'--write', '--fix', '-w', '-inplace'})
+COPY_MOVE_BINS = frozenset({'cp', 'mv'})
 
 
 def normalize_path(path: str) -> str:
@@ -147,6 +148,8 @@ def bash_targets_protected(cmd: str, cwd: str | None = None) -> str | None:
 
     has_write_op = False
     protected_targets: list[str] = []
+    last_copy_move: str | None = None
+    copy_move_protected: list[str] = []
 
     for tok in tokens:
         if BARE_REDIRECT_RE.match(tok):
@@ -162,11 +165,23 @@ def bash_targets_protected(cmd: str, cwd: str | None = None) -> str | None:
         base = tok.rsplit('/', 1)[-1]
         if tok in WRITE_FLAG_TOKENS:
             has_write_op = True
+        if base in COPY_MOVE_BINS:
+            has_write_op = True
+            last_copy_move = base
+            copy_move_protected = []
+            continue
         if base in DESTRUCTIVE_BINS:
             has_write_op = True
+            last_copy_move = None
             continue
         if is_protected_path(tok):
-            protected_targets.append(normalize_path(tok))
+            if last_copy_move in COPY_MOVE_BINS:
+                copy_move_protected.append(normalize_path(tok))
+            elif has_write_op:
+                protected_targets.append(normalize_path(tok))
+
+    if last_copy_move in COPY_MOVE_BINS and copy_move_protected:
+        protected_targets.append(copy_move_protected[-1])
 
     if not has_write_op:
         return None
