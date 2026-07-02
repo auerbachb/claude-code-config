@@ -87,11 +87,23 @@ PMM_AUTHOR=""; PMM_REPO=""; PMM_CADENCE="5m"; PMM_MAX_PARALLEL=3
 PMM_IDLE_PAUSE_AFTER=3; PMM_AUTO_WAKE=false; PMM_AUTO_WAKE_CADENCE="60m"
 PMM_CONFIRM_MERGES=false
 # (parse $ARGUMENTS into the vars above; bare flags override defaults)
-# When resuming from pause (Step 0a), merge: explicit $ARGUMENTS win; omitted flags
-# inherit from $SAVED / .pmm.config_at_pause (author, repo, cadence, max-parallel,
-# idle-pause-after, auto-wake, auto-wake-cadence, confirm-merges). Example:
-#   if resuming && confirm-merges not on $ARGUMENTS:
-#     PMM_CONFIRM_MERGES=$(jq -r '.confirm_merges // false' <<<"${SAVED:-{}}")
+
+# When resuming from pause (Step 0a), merge saved config into flags omitted on
+# this invocation — explicit $ARGUMENTS win. Detect omission via $ARGUMENTS
+# substring (or parse-time *_EXPLICIT tracking).
+if [ -n "${SAVED:-}" ] && [ "$SAVED" != "{}" ]; then
+  [[ "$ARGUMENTS" != *"--author"* ]]            && PMM_AUTHOR=$(jq -r '.author // empty' <<<"$SAVED")
+  [[ "$ARGUMENTS" != *"--repo"* ]]              && PMM_REPO=$(jq -r '.repo // empty' <<<"$SAVED")
+  [[ "$ARGUMENTS" != *"--cadence"* ]]           && PMM_CADENCE=$(jq -r '.cadence // "5m"' <<<"$SAVED")
+  [[ "$ARGUMENTS" != *"--max-parallel"* ]]      && PMM_MAX_PARALLEL=$(jq -r '.max_parallel // 3' <<<"$SAVED")
+  [[ "$ARGUMENTS" != *"--idle-pause-after"* ]]  && PMM_IDLE_PAUSE_AFTER=$(jq -r '.idle_pause_after // 3' <<<"$SAVED")
+  [[ "$ARGUMENTS" != *"--auto-wake-cadence"* ]]  && PMM_AUTO_WAKE_CADENCE=$(jq -r '.auto_wake_cadence // "60m"' <<<"$SAVED")
+  if [[ "$ARGUMENTS" != *"--auto-wake"* ]]; then
+    PMM_AUTO_WAKE=$(jq -r '.auto_wake // false' <<<"$SAVED")
+  fi
+  [[ "$ARGUMENTS" != *"--confirm-merges"* ]]    && \
+    PMM_CONFIRM_MERGES=$(jq -r '.confirm_merges // false' <<<"$SAVED")
+fi
 
 if [ -z "$PMM_AUTHOR" ]; then
   PMM_AUTHOR=$(gh api user --jq .login 2>/dev/null || true)
