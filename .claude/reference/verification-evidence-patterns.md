@@ -41,9 +41,9 @@ Skip a step = the claim is unsupported.
 |-------|---------------------------|----------------|
 | Local CR clean | `coderabbit review --agent` → zero findings on current diff | Earlier clean run before new edits |
 | Rule budget OK | `{ cat CLAUDE.md; find .claude/rules -name '*.md' -exec cat {} +; } \| wc -w` within budget; `rule-lint.sh` pass | "Looks short" |
-| Hook tests pass | `bash .claude/hooks/tests/*.test.sh` + `python3 -m unittest discover -s tests -p 'test_*.py'` | Single test file only |
+| Hook tests pass | `for f in .claude/hooks/tests/*.test.sh; do bash "$f"; done` + `python3 -m unittest discover -s tests -p 'test_*.py'` | Single test file only |
 | CI green on PR SHA | `bash .claude/scripts/ci-status.sh <PR>` or `merge-gate.sh` JSON `ci_clean: true` on current HEAD | Last run before push |
-| Review gate met | `bash .claude/scripts/merge-gate.sh <PR> --reviewer cr` exit 0 + quoted verdict JSON | Stale APPROVED on old SHA |
+| Review gate met | `bash .claude/scripts/merge-gate.sh <PR>` exit 0 + quoted verdict JSON (omit `--reviewer` — auto-detects cr/bugbot/greptile path) | Stale APPROVED on old SHA |
 | AC checkboxes honest | `ac-checkboxes.sh --extract` matches reality; only `--tick` after verification | Ticking from intent |
 | Phase A/B complete | Exit report block per `exit-report-format.md` with command output | "Fixed the findings" |
 | PR merge-ready | `merge-gate.sh` exit 0 **and** zero unresolved threads **and** CI clean on HEAD | Local review only |
