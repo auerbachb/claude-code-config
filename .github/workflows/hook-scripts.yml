@@ -29,3 +29,6 @@ jobs:
 
       - name: pr-preflight unit test (issue #493)
         run: bash .claude/scripts/tests/pr-preflight.test.sh
+
+      - name: skill-conventions-audit smoke test (#417)
+        run: bash .claude/scripts/tests/skill-conventions-audit.test.sh
