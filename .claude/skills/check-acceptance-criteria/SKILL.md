@@ -6,6 +6,8 @@ argument-hint: "[PR number, default: current branch's PR]"
 
 Verify acceptance criteria for PR $ARGUMENTS (or the current branch's PR if no argument given).
 
+Before ticking any checkbox, map each AC item to proving evidence per `.claude/reference/verification-evidence-patterns.md` — no claims without fresh command output.
+
 ## Steps
 
 ### Step 1: Identify the PR

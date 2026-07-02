@@ -32,6 +32,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `skill-sync-hooks.md` — skills worktree sync and hook registration narrative
 - `double-loading-fix.md` — decision record for suppressing the duplicate global CLAUDE.md + rules copy via project-local `claudeMdExcludes` (#461)
 - `skill-authoring-patterns.md` — authoring *judgment* for skills/rules (description-as-trigger, match-form-to-failure, bulletproofing); complements CONTRIBUTING.md mechanics
+- `verification-evidence-patterns.md` — claim→evidence checklist for AC, exit reports, and merge claims; complements phase protocols (#417 harvest from superpowers)
 
 ### Living trackers (updated each cycle — not point-in-time)
 

@@ -6,7 +6,7 @@
 
 ## Structured Exit Report (MANDATORY — all phases)
 
-Every subagent MUST print an `EXIT_REPORT` block as its **final output**. Required fields and valid `OUTCOME` values live in `.claude/reference/exit-report-format.md`.
+Every subagent MUST print an `EXIT_REPORT` block as its **final output**. Required fields and valid `OUTCOME` values live in `.claude/reference/exit-report-format.md`. Claims in the report (tests pass, CI clean, etc.) require fresh command evidence — see `.claude/reference/verification-evidence-patterns.md`.
 
 Rules: one colon-separated field per line, no extra whitespace, and on exhaustion print `OUTCOME: exhaustion` before the hard token limit.
 
