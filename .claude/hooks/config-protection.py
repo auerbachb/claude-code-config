@@ -151,6 +151,8 @@ def bash_targets_protected(cmd: str, cwd: str | None = None) -> str | None:
     last_copy_move: str | None = None
     copy_move_protected: list[str] = []
 
+    protected_in_cmd: list[str] = []
+
     for tok in tokens:
         if BARE_REDIRECT_RE.match(tok):
             has_write_op = True
@@ -175,13 +177,18 @@ def bash_targets_protected(cmd: str, cwd: str | None = None) -> str | None:
             last_copy_move = None
             continue
         if is_protected_path(tok):
+            normalized = normalize_path(tok)
+            protected_in_cmd.append(normalized)
             if last_copy_move in COPY_MOVE_BINS:
-                copy_move_protected.append(normalize_path(tok))
+                copy_move_protected.append(normalized)
             elif has_write_op:
-                protected_targets.append(normalize_path(tok))
+                protected_targets.append(normalized)
 
     if last_copy_move in COPY_MOVE_BINS and copy_move_protected:
         protected_targets.append(copy_move_protected[-1])
+
+    if has_write_op and not protected_targets and protected_in_cmd:
+        protected_targets = list(dict.fromkeys(protected_in_cmd))
 
     if not has_write_op:
         return None
