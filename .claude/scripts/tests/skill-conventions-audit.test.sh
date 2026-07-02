@@ -5,7 +5,10 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 AUDIT="${REPO_ROOT}/.claude/scripts/skill-conventions-audit.sh"
 
-[[ -x "$AUDIT" ]] || chmod +x "$AUDIT"
+[[ -x "$AUDIT" ]] || {
+  echo "FAIL: $AUDIT is not executable — chmod +x in the feature worktree before running tests" >&2
+  exit 1
+}
 
 # Default run: may emit warnings on legacy skills; must not error on structure
 if ! "$AUDIT" >/tmp/skill-audit.out 2>/tmp/skill-audit.err; then
