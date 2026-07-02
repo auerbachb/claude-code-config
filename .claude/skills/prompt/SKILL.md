@@ -8,15 +8,15 @@ triggers:
 argument-hint: "[#123 #124 ...] (issue numbers, or omit for PM auto-detect)"
 ---
 
-Analyze one or more GitHub issues, classify complexity, and produce a copy-paste-ready prompt with a model recommendation. The goal is quality-conservative right-sizing — never under-resource a task, but don't waste Opus 4.8 (1M context) tokens on a typo fix.
+Analyze one or more GitHub issues, classify complexity, and produce a copy-paste-ready prompt with a model recommendation. The goal is quality-conservative right-sizing — never under-resource a task, but don't waste Opus 4.8 tokens on a typo fix.
 
-## Model Lineup & Effort Levels (current as of 2026-06)
+## Model Lineup & Effort Levels (current as of 2026-07)
 
-The Claude Code picker offers: **Sonnet 4.6** (default), **Opus 4.8**, **Opus 4.8 (1M context)**, and **Haiku 4.5**. Opus 4.7 / 4.7 (1M) / 4.6 are Legacy — never recommend them. Bare aliases used elsewhere (agent frontmatter, spawn sites) currently resolve as: `opus` → Opus 4.8, `sonnet` → Sonnet 4.6, `haiku` → Haiku 4.5 (see `.claude/rules/subagent-orchestration.md` "Model Selection" and `.claude/agents/README.md`).
+The Claude Code picker offers: **Sonnet 5** (default), **Opus 4.8**, **Fable 5**, and **Haiku 4.5**. Opus 4.8 (1M context) / Opus 4.7 / Sonnet 4.6 / 4.7 (1M) are Legacy — never recommend them. Opus 4.8 and Sonnet 5 ship with a native 1M context window; there is no separate "(1M context)" picker option. Bare aliases used elsewhere (agent frontmatter, spawn sites) currently resolve as: `opus` → Opus 4.8, `sonnet` → Sonnet 5, `haiku` → Haiku 4.5 (see `.claude/rules/subagent-orchestration.md` "Model Selection" and `.claude/agents/README.md`).
 
-The picker also exposes **effort levels** (`low`, `medium`, `high`, `extra`, `max`, `ultracode`). This skill keeps its internal Heavy/Standard/Light tier vocabulary and decision tree unchanged, and maps each tier to a recommended effort level in the output: **Heavy → `max`**, **Standard → `high`**, **Light → `low`**. Users may adjust within a tier's range — e.g., a Heavy task that needs multi-agent orchestration can step up to `ultracode`; a borderline Standard task can step down to `medium`.
+The picker also exposes **effort levels** (`low`, `medium`, `high`, `xhigh`, `max`, plus session-only `ultracode`). This skill keeps its internal Heavy/Standard/Light tier vocabulary and decision tree unchanged, and maps each tier to a recommended effort level in the output: **Heavy → `max`**, **Standard → `high`**, **Light → `low`**. Users may adjust within a tier's range — e.g., a Heavy task that needs multi-agent orchestration can step up to `ultracode`; a borderline Standard task can step up to `xhigh` or step down to `medium`.
 
-**Fast mode:** the picker has a Fast mode toggle that trades depth for speed. `/prompt` does NOT accept a `--fast` flag and does not factor Fast mode into recommendations — it is a user-toggled picker option. For Light-tier work, **Haiku 4.5** (with or without Fast mode) is a valid cheaper alternative to Sonnet 4.6; the output notes this on Light-tier recommendations. A `--fast` flag is a possible follow-up, not part of this skill.
+**Fast mode:** the picker has a Fast mode toggle that trades depth for speed. `/prompt` does NOT accept a `--fast` flag and does not factor Fast mode into recommendations — it is a user-toggled picker option. For Light-tier work, **Haiku 4.5** (with or without Fast mode) is a valid cheaper alternative to Sonnet 5; the output notes this on Light-tier recommendations. A `--fast` flag is a possible follow-up, not part of this skill.
 
 **MANDATORY OUTPUT FORMAT:** Every per-issue prompt block MUST open and close with `~~~` tilde fences. NEVER use backtick fences as the outer prompt-block delimiter.
 
@@ -131,7 +131,7 @@ Apply this decision tree. When signals conflict, choose the **higher** tier (con
 
 **Batch handling rule:** First classify each issue independently to produce a per-issue tier (`issue_tier`). Then compute a batch tier from the most complex `issue_tier` in the set. A batch of 3 issues where one is Heavy makes the batch tier Heavy. The batch tier is used for thread-prompt output formatting and checkpoint inheritance, while per-issue decisions (like Step 5.5 subagent partitioning) must use `issue_tier`.
 
-### Heavy — Opus 4.8 (1M context), effort `max`
+### Heavy — Opus 4.8, effort `max`
 
 Assign Heavy if ANY of these are true:
 - `touches_rules` is true (rule files are highest-stakes)
@@ -150,7 +150,7 @@ Assign Standard if ANY of these are true (and Heavy was not triggered):
 - Issue body is >200 words with structural patterns (includes a user story, describes a new feature via keywords like "implement", "add", "support")
 - `is_multi_issue` with mixed complexity (at least one non-trivial issue that didn't trigger Heavy)
 
-### Light — Sonnet 4.6 (or Haiku 4.5), effort `low`
+### Light — Sonnet 5 (or Haiku 4.5), effort `low`
 
 Assign Light if ANY of these are true (and Heavy/Standard were not triggered):
 - `file_count` is 0–1
@@ -240,9 +240,9 @@ Rationale: {1-line explanation of why this tier was selected, citing the dominan
 **OUTPUT MUST USE `~~~` FENCES, NOT BACKTICKS.** The opening and closing lines of every per-issue prompt block must be exactly `~~~`.
 
 **Map tier to `{MODEL}` and `{EFFORT}` strings** (same Heavy / Standard / Light mapping for both the batch **Tier Recommendation** line and each per-issue `**Model:**` line — use **batch tier** for Tier Recommendation and **per-issue `issue_tier`** for each block):
-- **Heavy** → `Opus 4.8 (1M context)`, effort `max` (step up to `ultracode` for multi-agent orchestration work)
-- **Standard** → `Opus 4.8`, effort `high`
-- **Light** → `Sonnet 4.6`, effort `low` (Haiku 4.5 is a valid cheaper alternative — append "(or Haiku 4.5)" to Light-tier recommendations)
+- **Heavy** → `Opus 4.8`, effort `max` (step up to `ultracode` for multi-agent orchestration work)
+- **Standard** → `Opus 4.8`, effort `high` (step up to `xhigh` for demanding coding work)
+- **Light** → `Sonnet 5`, effort `low` (Haiku 4.5 is a valid cheaper alternative — append "(or Haiku 4.5)" to Light-tier recommendations)
 
 **`{REASON}` construction:** Choose a short phrase (≤10 words) that names the main complexity driver for **this issue alone** — e.g. touches `.claude/rules`, touches `CLAUDE.md`, orchestration keywords, dependency web, many files from the CR plan, high `ac_count`, skill paths, multi-file feature work, or Light-scope keywords. Do not copy the batch Tier Recommendation rationale into every block when reasons differ per issue.
 
