@@ -60,7 +60,7 @@ On the **first** invocation in a thread (and after any resume), acknowledge the 
 
 > That's outside PR-fleet-manager mode. I'm keeping this thread focused on monitoring your open PRs. Start a separate thread (e.g. `/start-issue`) for that work — say `/pmm-stop` first if you want me to stop monitoring here.
 
-This skill is read-only with respect to source: the only writes it performs are git rebase/force-push (Step 5a), and the bounded mutations that `phase-a-fixer` subagents and `/wrap` already own. Fix work is delegated to parallel `phase-a-fixer` subagents (`.claude/agents/phase-a-fixer.md`); merge work stays sequential via `/wrap`. The parent never reimplements fix/merge logic.
+This skill is read-only with respect to source: the only writes it performs are git rebase/force-push (Step 5a), stale-bot review dismissal + owning-bot re-trigger (Steps 5b/5b′), and the bounded mutations that `phase-a-fixer` subagents and `/wrap` already own. Fix work is delegated to parallel `phase-a-fixer` subagents (`.claude/agents/phase-a-fixer.md`); merge work stays sequential via `/wrap`. The parent never reimplements fix/merge logic beyond the shared dismiss/re-trigger helpers that `/fixpr` also uses.
 
 ---
 
@@ -146,7 +146,7 @@ For each completed subagent, run steps 1-3 **unconditionally first** (cleanup mu
    ```
    This must be a real read-filter-write, not a no-op comment — Step 3's concurrency cap and idempotency check both count live entries in this array.
 4. **Branch on OUTCOME** (steps 1-3 above are already done, so this branch never races the cleanup):
-   - `pushed_fixes` or `no_findings` → verify push SHA matches `HEAD_SHA` in the report (`gh pr view N --json commits --jq '.commits[-1].oid'`). Verify handoff file exists at `~/.claude/handoffs/pr-{N}-handoff.json` with `phase_completed: "A"`.
+   - `pushed_fixes` or `no_findings` → verify push SHA matches `HEAD_SHA` in the report (`gh pr view N --json commits --jq '.commits[-1].oid'`). Verify handoff file exists at `~/.claude/handoffs/pr-{N}-handoff.json` with `phase_completed: "A"`. When OUTCOME is `pushed_fixes`, run **Step 5b dismiss helper + Step 5b′ owning-bot re-trigger** on `#N` immediately (same contract as `/fixpr` Steps 3a/3b — a push without dismissal leaves obsolete bot `CHANGES_REQUESTED` on old SHAs and the gate never clears). Step 5e's inline completion path (item 2) runs the same pair when a subagent exits mid-tick.
    - `exhaustion` → **do not launch the replacement inline here.** Step 2.5 runs before Step 3 every tick, so `GATE_BY_PR`/pre-fetched `FINDINGS_JSON` (both populated in Step 3) are not available yet — Step 5c's full spawn pattern needs them. Instead, rely on step 3 above already clearing this PR's `active_agents`/`pmm_in_flight[N]` entries: the PR falls through into Step 3's classification with a clean slate later in this same tick, and if the underlying condition (CI failing, unresolved threads, stale bot review) still holds, Step 3 naturally re-verdicts it `fixpr` and Step 5c's normal per-tick spawn respawns it — using this tick's freshly-computed `GATE_BY_PR`/`FINDINGS_JSON`. This still satisfies `subagent-orchestration.md`'s 60s Token/Turn Exhaustion Protocol SLA: Step 3 and Step 5c run seconds later in the same continuous tick execution, not on a separate `/loop` cycle. **Record `$N` into `EXHAUSTION_RESPAWN_PRS` for this tick** — Step 3's cap check (item 2) must never let this PR lose its slot to a competing fresh `fixpr` PR, since `subagent-orchestration.md` treats exhaustion-with-handoff respawn as mandatory, not slot-competitive. Report to user.
    - Missing/corrupt report, or a crash with no handoff file → mark `failed` and add `#N` to `HARD_BLOCK[]` with reason `crashed(needs-approval)`. **Do NOT leave it eligible for silent re-dispatch** — `subagent-orchestration.md`'s Phase Transition Autonomy table requires user permission before respawning a crashed/no-handoff subagent. Reported once and dropped from the actionable fleet this tick (Step 3's `HARD_BLOCK[]` handling — it does not force-stop the fleet); the user can explicitly approve a respawn.
 5. **Record per-PR outcome** in a `SUBAGENT_STATUS[N]` map (`complete` / `failed`) for the Step 4 table.
@@ -211,7 +211,7 @@ Read `merge_state` / `mergeable` **literally** from the gate JSON. **Do NOT infe
 | `mergeable == CONFLICTING` | `BLOCKED:conflicts` | **Hard block** → reported, dropped from actionable fleet (recommend `/merge-conflict`; never auto-merge) |
 | `merge_state == BEHIND` | `rebase` | Rebase + force-push + stale-bot dismissal (Step 5a/5b) |
 | `CI_FAILING > 0` **or** `UNRESOLVED > 0` | `fixpr` (`has-recoverable-blockers`) | Spawn `phase-a-fixer` subagent (Step 5c) |
-| `MET == false` **and** (`STALE_BOT_CR > 0` **or** `REVIEW_DECISION == CHANGES_REQUESTED` with no human CR) | `fixpr` (`has-recoverable-blockers`) | Spawn `phase-a-fixer` subagent — it dismisses stale bot reviews + re-triggers the owning bot (Step 5c) |
+| `MET == false` **and** (`STALE_BOT_CR > 0` **or** `REVIEW_DECISION == CHANGES_REQUESTED` with no human CR) | `fixpr` (`has-recoverable-blockers`) | Step 5b′ dismisses stale bot reviews + re-triggers the owning bot, re-gates; spawn `phase-a-fixer` (Step 5c) **only if** `CI_FAILING > 0` or `UNRESOLVED > 0` remain after re-gate |
 | `MET == true` (clean review on HEAD + CI green + 0 unresolved threads + no blockers) | `wrap` | Dispatch `/wrap` sequentially (Step 5d) |
 | Otherwise (CI in-progress, reviewer genuinely pending, `REVIEW_REQUIRED` with no bot signal yet, `UNKNOWN`) | `waiting` | No-op — reviewer/CI owns the next move |
 
@@ -288,7 +288,7 @@ Only after the table is printed does Step 5 execute the actions.
 
 **Blocking Phase A entry (shared gate idiom — Steps 3, 5a, 5d, 5e, 6):** An `active_agents` row with `phase == "A"` and `status` not in `{complete, failed}` blocks rebase, `/wrap`, and fix-dispatch gates unless drained. **PMM-owned** entries (`id` starts with `pmm-fix-`) are blocking until Step 2.5/5e drains them via exit report. **Foreign** entries (any other `id`) are blocking only while NOT stale: apply `PMM_LOCK_STALE_SECS` (default 3600s) to `last_seen_at` (or `launched`), and when the window is exceeded **and** there is no live progress evidence on that PR (HEAD SHA unchanged, no new bot/CI activity since the timestamp), treat the entry as **non-blocking** — PMM never mutates it, but stops deferring on it. All gate checks below use this idiom consistently.
 
-**Track actions this tick** for idle detection (Step 6). Initialize `TICK_HAD_ACTION=false` at the start of Step 5; set it to `true` whenever any of the following fire for any PR: rebase + force-push (Step 5a), stale-bot dismissal after rebase (Step 5b), `/fixpr` or `/wrap` dispatch (Step 5c), or a reviewer trigger from `pr-preflight.sh` that actually posts (non-no-op output). Waiting, gone, error, `BLOCKED:*`, and no-op pre-flight do **not** set the flag.
+**Track actions this tick** for idle detection (Step 6). Initialize `TICK_HAD_ACTION=false` at the start of Step 5; set it to `true` whenever any of the following fire for any PR: rebase + force-push (Step 5a), stale-bot dismissal (Step 5b or 5b′), explicit owning-bot re-trigger from Step 5b′ (or post-subagent Step 2.5/5e), `phase-a-fixer` spawn (Step 5c), `/wrap` dispatch (Step 5d), or a reviewer trigger from `pr-preflight.sh` that actually posts (non-no-op output). Waiting, gone, error, `BLOCKED:*`, and no-op pre-flight do **not** set the flag.
 
 Iterate the fleet and execute each PR's Step 3 verdict. Skip PRs in `HARD_BLOCK[]` — they were reported in Step 4's table and are dropped from actionable work. `waiting`, `gone`, and `error` verdicts do **no** work here.
 
@@ -354,9 +354,11 @@ If the checkout/rebase cannot proceed (branch not present locally, multiple work
 
 ### Step 5b: Dismiss stale bot reviews after a force-push
 
-Run only after Step 5a actually force-pushed. Use the shared helper; **note the macOS bash 3.x blocker**:
+Run only after Step 5a actually force-pushed. Uses the **shared dismiss helper** below; **note the macOS bash 3.x blocker**:
 
 > ⚠️ **`dismiss-stale-bot-changes.sh` uses `mapfile` (bash 4+).** On macOS the default `/bin/bash` is 3.2, where `mapfile` is undefined and the script aborts. Until that script is fixed to be 3.x-safe, invoke it through a bash 4+ shim **or** use the inline REST fallback below. Linux CI/cloud agents ship bash 4+, so the direct call works there.
+
+**Shared dismiss helper** (Steps 5b, 5b′, Step 2.5 post-push, and Step 5e inline completion all call this — pass `$N`, optional `$DISMISS_MSG` defaulting to `"Superseded by rebase onto main"` for 5b or `"Superseded — review was on a stale commit"` for 5b′/post-push):
 
 ```bash
 DISMISS=""
@@ -369,6 +371,8 @@ done
 BASH4=""; for b in bash /opt/homebrew/bin/bash /usr/local/bin/bash; do
   v=$("$b" -c 'echo ${BASH_VERSINFO[0]}' 2>/dev/null || echo 0); [ "${v:-0}" -ge 4 ] && { BASH4="$b"; break; }
 done
+
+DISMISS_MSG="${DISMISS_MSG:-Superseded by rebase onto main}"
 
 if [ -n "$DISMISS" ] && [ -n "$BASH4" ]; then
   "$BASH4" "$DISMISS" "$N"
@@ -387,17 +391,65 @@ else
    | while read -r rid; do
        [ -n "$rid" ] && gh api -X PUT \
          "repos/$OWNER/$REPO/pulls/$N/reviews/$rid/dismissals" \
-         -f message="Superseded by rebase onto main" >/dev/null 2>&1 \
+         -f message="$DISMISS_MSG" >/dev/null 2>&1 \
          && echo "[PMM] dismissed stale bot review_id=$rid on #$N"
      done
 fi
 ```
 
+### Step 5b′: Stale bot `CHANGES_REQUESTED` recovery (verdict `fixpr` — issue #514)
+
+Run **before Step 5c** for every PR whose Step 3 verdict is `fixpr` (or refined `fixpr`) **and** the stale-bot-CR condition holds: `STALE_BOT_CR > 0`, **or** `REVIEW_DECISION == CHANGES_REQUESTED` with no human CR (`HUMAN_CR` empty). This is **independent of whether Step 5a rebased** — Step 5b only runs after a force-push; without 5b′ a PR blocked *only* by a stale bot review on the current HEAD would spawn a no-op `phase-a-fixer` every tick forever.
+
+1. **Dismiss** — run the shared dismiss helper with `DISMISS_MSG="Superseded — review was on a stale commit"`. Idempotent (already-`DISMISSED` counts as success).
+2. **Re-trigger the owning bot** — `pr-preflight.sh` Step 5.0 is idempotent and **skips** bots that already have prior activity on the PR; a dismissed stale review still counts as prior activity, so post an **explicit** trigger for the owning reviewer on the current HEAD. Resolve via `.claude/scripts/reviewer-of.sh "$N"` (same mapping as `pr-preflight.sh`'s `reviewer_trigger()`):
+
+```bash
+REVIEWER=$(.claude/scripts/reviewer-of.sh "$N" 2>/dev/null || echo unknown)
+CR_HOURLY=""
+for c in "$HOME/.claude/skills-worktree/.claude/scripts/cr-review-hourly.sh" \
+         "$HOME/.claude/scripts/cr-review-hourly.sh" \
+         ".claude/scripts/cr-review-hourly.sh"; do
+  [ -x "$c" ] && { CR_HOURLY="$c"; break; }
+done
+
+case "$REVIEWER" in
+  cr)
+    if [ -n "$CR_HOURLY" ] && "$CR_HOURLY" --check >/dev/null 2>&1 \
+       && "$CR_HOURLY" --peek-explicit "$N" >/dev/null 2>&1; then
+      if gh pr comment "$N" --body "@coderabbitai full review" >/dev/null 2>&1; then
+        "$CR_HOURLY" --record-explicit "$N" >/dev/null 2>&1 || true
+        echo "[PMM] re-triggered owning bot (cr) on #$N"
+      fi
+    else
+      echo "[PMM] CodeRabbit rate cap hit — skipping explicit re-trigger on #$N"
+    fi
+    ;;
+  bugbot)
+    gh pr comment "$N" --body "@cursor review" >/dev/null 2>&1 \
+      && echo "[PMM] re-triggered owning bot (bugbot) on #$N"
+    ;;
+  greptile)
+    echo "[PMM] greptile owning reviewer on #$N — no auto-trigger per greptile.md"
+    ;;
+  *)
+    echo "[PMM] unknown reviewer on #$N — skipping explicit re-trigger"
+    ;;
+esac
+```
+
+Never batch mention strings; never auto-trigger Greptile. Set `TICK_HAD_ACTION=true` when dismissal or re-trigger posts.
+
+3. **Re-gate and gate Step 5c** — re-run `.claude/scripts/merge-gate.sh "$N"`, stash in `GATE_BY_PR[$N]`, re-read `MET`, `CI_FAILING`, `STALE_BOT_CR`, `UNRESOLVED` (re-fetch unresolved thread count if needed). Then:
+   - **`MET == true`** → treat as `wrap` for Step 5d this tick (skip Step 5c spawn for this PR).
+   - **`CI_FAILING > 0` or `UNRESOLVED > 0`** → proceed to Step 5c spawn (real fix work remains).
+   - **Otherwise** (reviewer pending on fresh trigger, no CI/thread fix work) → skip Step 5c; verdict becomes `waiting` on the next tick when the bot lands.
+
 ### Step 5c: Parallel `phase-a-fixer` dispatch (verdict `fixpr` — has-recoverable-blockers)
 
 Fix work runs in **parallel** via one `phase-a-fixer` subagent per PR, capped at `$PMM_MAX_PARALLEL` (default 3). Merge dispatch stays sequential (Step 5d) — merges affect main and must not race.
 
-**Idempotency and concurrency are already resolved in Step 3's refinement pass** (in-flight check + cap slot allocation), so the table printed in Step 4 already reflects which PRs will dispatch this tick. Step 5c dispatches every PR whose *refined* verdict is still `fixpr` — it does not re-check `active_agents` or recompute slots. PRs refined to `awaiting fix subagent` or `queued (cap)` are skipped here with no further action; they are eligible again once Step 3 re-evaluates on a later tick.
+**Idempotency and concurrency are already resolved in Step 3's refinement pass** (in-flight check + cap slot allocation), so the table printed in Step 4 already reflects which PRs will dispatch this tick. Step 5c dispatches every PR whose *refined* verdict is still `fixpr` **and** Step 5b′ did not re-gate it to `wrap`/`waiting` — it does not re-check `active_agents` or recompute slots. PRs refined to `awaiting fix subagent` or `queued (cap)` are skipped here with no further action; they are eligible again once Step 3 re-evaluates on a later tick.
 
 **CR hourly cap (fleet-wide).** Before spawning, snapshot the budget:
 
@@ -528,7 +580,7 @@ If any **blocking** fix subagents are active this tick (per Step 5's shared gate
 
    **Gate reopen:** Once a PR has no remaining **blocking** Phase A entry of either kind (PMM-owned or foreign — foreign entries past `PMM_LOCK_STALE_SECS` with no progress evidence count as non-blocking even if the row remains in `active_agents`), the deferral gate for that PR reopens and its deferred `/wrap` dispatch proceeds after the monitor loop exits, per existing Step 5d/5e ordering.
 
-2. **On PMM-owned completion** — success, exhaustion, or crash — **run Step 2.5's steps 1-3 in full** (parse exit report, worktree cleanup, remove this agent's own `active_agents` record + clear `pmm_in_flight[N]`) before branching on outcome. This is unconditional, not just the success path — a failure that skips clearing `pmm_in_flight[N]` would otherwise leave a stale lock blocking Step 3's idempotency check until `PMM_LOCK_STALE_SECS` expires. Foreign entries are out of scope for this item — they drain per item 1's poll/staleness signal only.
+2. **On PMM-owned completion** — success, exhaustion, or crash — **run Step 2.5's steps 1-3 in full** (parse exit report, worktree cleanup, remove this agent's own `active_agents` record + clear `pmm_in_flight[N]`) before branching on outcome. When OUTCOME is `pushed_fixes`, also run **Step 5b dismiss helper + Step 5b′ owning-bot re-trigger** on that PR (issue #514 — mirrors `/fixpr` 3a/3b; set `TICK_HAD_ACTION=true` if dismissal or re-trigger posts). This is unconditional, not just the success path — a failure that skips clearing `pmm_in_flight[N]` would otherwise leave a stale lock blocking Step 3's idempotency check until `PMM_LOCK_STALE_SECS` expires. Foreign entries are out of scope for this item — they drain per item 1's poll/staleness signal only.
 3. Branch on outcome for **PMM-owned** entries only (per Step 2.5's step 4, cleanup from item 2 above already done):
    - **Crash / no exit report / stale >15 min:** mark `failed` in the table and add `#N` to `HARD_BLOCK[]` with reason `crashed(needs-approval)` — never re-dispatch silently. Reported once and dropped from the actionable fleet this tick (do **not** force-stop — see Step 3's `HARD_BLOCK[]` handling); the user can explicitly approve a respawn (`subagent-orchestration.md`: "Ask first only: ... respawning a crashed/no-handoff subagent").
    - **Token/turn exhaustion with a valid handoff file:** respawn immediately **using Step 5c's spawn pattern**, but with **freshly re-fetched** gate and findings data for this PR — do NOT reuse tick-start `GATE_BY_PR[$N]`/`FINDINGS_JSON[$N]` verbatim. Real time has passed since Step 3 computed them, and the exhausted subagent may have pushed partial progress before running out of tokens, moving the PR's actual HEAD SHA and review state past that tick-start snapshot; a respawn using the stale SHA/findings would hand the replacement outdated context. Re-run `.claude/scripts/merge-gate.sh "$N"` (and re-fetch findings from the three endpoints, same as Step 3's pre-fetch) immediately before building the replacement's spawn record, and use *that* fresh result — not the cached tick-start one — for its `head_sha`, `GATE_BY_PR[$N]` update, and prompt findings. This is an "Always do" action per `subagent-orchestration.md`'s Token/Turn Exhaustion Protocol — do not wait for the next tick, and do NOT defer to Step 2.5's exhaustion handling here (Step 2.5's deferral only works at tick-*start*, before Step 3 has run; Step 5e is mid-tick, after Step 3 already ran, so an inline respawn is possible here — it just needs fresh data, not the tick-start cache).
@@ -751,7 +803,7 @@ Hard-blocked PRs are reported here for visibility; the fleet may auto-pause afte
 This skill is an **orchestrator**. It rebases/force-pushes, spawns parallel `phase-a-fixer` subagents for fix work, and dispatches `/wrap` sequentially for merges. It never reimplements fix/merge/resolve logic. The following are absolute:
 
 - **Never modify branch protection** — no calls to `.../branches/.../protection`. Subagents inherit this prohibition.
-- **Never dismiss human reviews** — only Bot-allowlist `CHANGES_REQUESTED` on a stale `commit_id` (Step 5b). Human CR is a hard block. Subagents must not dismiss human-authored reviews.
+- **Never dismiss human reviews** — only Bot-allowlist `CHANGES_REQUESTED` on a stale `commit_id` (Steps 5b and 5b′, plus post-subagent dismiss in Step 2.5/5e after a push). Human CR is a hard block. Subagents must not dismiss human-authored reviews.
 - **Never resolve a review thread without code-verification** — thread resolution happens only inside `phase-a-fixer` Step 5 after verifying the fix. This skill only *counts* unresolved threads.
 - **Never bypass AI-reviewer rate caps** — `cr-review-hourly.sh` gates every CR re-trigger; Greptile/CodeAnt caps are respected by subagents and `/wrap`. The Step 5.0 pre-flight (`pr-preflight.sh`, issue #493) is the sanctioned per-PR trigger path: it gates `@coderabbitai full review` on `cr-review-hourly.sh`, never triggers Greptile, never flips another user's draft, and is strictly per-PR (no shared accumulator — a flip/trigger on one PR never leaks to another).
 - **Never use GitHub's update-branch API** for `BEHIND` — only `git rebase origin/main` + `--force-with-lease`.
