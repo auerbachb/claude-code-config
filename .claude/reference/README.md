@@ -31,6 +31,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `phase-decomposition.md` — phase split reference material
 - `pm-data-patterns.md` — PM skills data patterns and bot filters
 - `pm-monitoring-decision.md` — `/pm` vs `/pr-monitor-and-manage` division of responsibility
+- `pm-handoff-chips-decision.md` — decision record: `/pm-handoff` intentionally does not offer task chips; its portable prompt text is the deliverable (#562)
 - `scheduling-failure-modes.md` — recurring poll failure analysis
 - `skill-sync-hooks.md` — skills worktree sync and hook registration narrative
 - `double-loading-fix.md` — decision record for suppressing the duplicate global CLAUDE.md + rules copy via project-local `claudeMdExcludes` (#461)
