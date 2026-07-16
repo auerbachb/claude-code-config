@@ -10,7 +10,7 @@
 
 1. **Draft the issue locally** — title, body, acceptance criteria, context. Do NOT post yet.
 2. **Create the issue** via `gh issue create`. The `.github/workflows/cr-plan-on-issue.yml` workflow auto-comments `@coderabbitai plan` (skips bot-created issues). Only post manually if the workflow visibly failed.
-3. **Check for an existing CR plan** — `.claude/scripts/cr-plan.sh N`; exit 0 = substantive plan found (filters out ack-only replies).
+3. **Check for an existing CR plan** — `.claude/scripts/cr-plan.sh N`; exit 0 = substantive plan found (filters out ack-only replies and the issue-enrichment / Issue-Planner-checkbox boilerplate — real plans need actual sections/steps).
 4. **If no CR plan, request/poll:**
    - If `@coderabbitai plan` was already requested: `.claude/scripts/cr-plan.sh N --poll 5`.
    - Else: post `@coderabbitai plan`, then `.claude/scripts/cr-plan.sh N --poll 5`.

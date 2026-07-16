@@ -40,11 +40,11 @@ A GitHub Actions workflow automatically comments `@coderabbitai plan` on new iss
 
 ### 3. If starting work immediately — Issue Planning Flow
 
-1. Wait for CR's plan via `.claude/scripts/cr-plan.sh` — it encapsulates the canonical jq filter (`coderabbitai` author, skip "actions performed" ack lines, length > 200) and the 60s polling loop:
+1. Wait for CR's plan via `.claude/scripts/cr-plan.sh` — it encapsulates the canonical substantive-plan filter (`cr-plan-filter.py`: `coderabbitai` author, reject issue-enrichment/Issue-Planner boilerplate and "actions performed" ack lines, then require >200 chars of stripped content plus a heading or numbered step — issue #541) and the 60s polling loop:
    ```bash
    PLAN=$(.claude/scripts/cr-plan.sh "$ISSUE_NUMBER" --poll 10 --max-age-minutes 10 || true)
    ```
-   Exit codes: `0` plan found on stdout, `1` no plan after timeout, `3` issue closed/missing, `4` gh error. Run `.claude/scripts/cr-plan.sh --help` for full usage. Issue comments use the bare `coderabbitai` author (no `[bot]` suffix) — the script handles this.
+   Exit codes: `0` plan found on stdout, `1` no plan after timeout, `3` issue closed/missing, `4` gh/env error (network, missing `python3`, or filter failure). Run `.claude/scripts/cr-plan.sh --help` for full usage. Issue comments use the bare `coderabbitai` author (no `[bot]` suffix) — the script handles this.
 2. Build your own implementation plan (explore the codebase).
 3. Merge plans into the issue body:
    ```bash
