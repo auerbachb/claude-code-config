@@ -92,7 +92,7 @@ Priority tags (`P0`/`P1`/`P2`) and short rationale follow the code where useful.
 | Pattern (source) | We have? | Delta | Fit |
 |---|---|---|---|
 | Consolidated pre/post Bash dispatcher (one hook fans out to many checks) (ECC) | We register hooks individually in `global-settings.json` | A dispatcher reduces per-tool hook overhead | `NA` `P2` — only worth it if our hook count grows |
-| Continuous-learning / pattern-extraction at Stop (ECC `stop:evaluate-session`) | Partial — `/lessons` skill + memory system | Ours is manual/on-demand; theirs is automatic | `NA` `P2` |
+| Continuous-learning / pattern-extraction at Stop (ECC `stop:evaluate-session`) | Partial — `/wrap`'s inline lessons phase + memory system | Ours is manual/on-demand; theirs is automatic | `NA` `P2` |
 | Plugin-root resolver inlined in every hook command (ECC) | Our hooks resolve via `repo-root.sh` + worktree | Parity (different mechanism) | `—` |
 
 ## Prioritized Import Backlog
@@ -120,7 +120,7 @@ conventions; (3) low adaptation/maintenance cost; (4) high daily-use value.
 
 - `post:quality-gate` post-edit lint hook for shell/markdown (overlaps CI + CR).
 - Consolidated Bash hook dispatcher (only worth it if hook count grows).
-- Automatic Stop-time lesson extraction (vs our manual `/lessons`).
+- Automatic Stop-time lesson extraction (vs the manual lessons phase inside `/wrap`).
 - Full ECC `skill-comply` LLM-driven compliance harness (our bash audit covers static checks only).
 - `brainstorming` HARD-GATE framing — evaluate against `issue-planning.md`.
 - MCP catalog (playwright/sequential-thinking) — revisit if we add browser/E2E.

@@ -8,8 +8,7 @@
 # exact whitespace and trailing-newline profile).
 #
 # Implements the AC-verification contract from .claude/rules/cr-merge-gate.md
-# Step 2. Call sites: /check-acceptance-criteria, /merge, /wrap, /go-on,
-# /subagent, phase-c-merger.
+# Step 2. Call sites: /merge, /wrap, /go-on, /subagent, phase-c-merger.
 #
 # Usage:
 #   ac-checkboxes.sh <pr_number> --extract

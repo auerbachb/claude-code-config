@@ -1,6 +1,6 @@
 # PM Data Gathering Patterns
 
-Canonical `gh` CLI query patterns for PM skill data collection. When adding or modifying a PM skill that gathers GitHub data over a time window, use these patterns for consistency across `/pm-rate-team`, `/pm-sprint-review`, `/pm-team-standup`, `/pm-sprint-plan`, and `/prioritize`.
+Canonical `gh` CLI query patterns for PM skill data collection. When adding or modifying a PM skill that gathers GitHub data over a time window, use these patterns for consistency — `/prioritize` is the current PM consumer, and `/merge` + `/wrap` share the review-cycle pattern via `cycle-count.sh`.
 
 > **Scope:** This document covers cross-skill shared queries only. Skill-specific logic (ranking, narrative generation, per-skill filters) stays in each SKILL.md. Do NOT move query logic out of SKILL.md files — this doc is a reference, not a shared library.
 
@@ -34,7 +34,7 @@ gh pr list --state merged --search "merged:>=$SINCE_DATE" \
   --json number,title,author,mergedAt,additions,deletions,commits --limit 200
 ```
 
-Returns: PR number, title, author login, merge timestamp, code volume, commit count. Used by `/pm-rate-team`, `/pm-sprint-review`.
+Returns: PR number, title, author login, merge timestamp, code volume, commit count.
 
 ## Closed issues with closer attribution
 
@@ -50,7 +50,7 @@ gh api --paginate "repos/{owner}/{repo}/issues/$ISSUE_NUM/events?per_page=100" \
   | jq -r '[.[] | select(.event == "closed")] | last | .actor.login'
 ```
 
-Attach the `closer` value to each issue record, then compute per-contributor closed counts downstream. Used by `/pm-rate-team`, `/pm-sprint-review`.
+Attach the `closer` value to each issue record, then compute per-contributor closed counts downstream.
 
 ## Review cycles per PR
 
@@ -64,7 +64,7 @@ CYCLES=$(.claude/scripts/cycle-count.sh "$PR_NUM" --exclude-bots)
 
 Default includes all reviewers; `--exclude-bots` drops logins ending in `[bot]` or equal to `github-actions` (used for human-review metrics). See `.claude/scripts/cycle-count.sh --help` for the full contract (exit codes: `0` OK, `2` usage, `3` PR not found, `4` gh error).
 
-Internally the script fetches `pulls/$PR_NUM/reviews?per_page=100` and `pulls/$PR_NUM/commits?per_page=100`, sorts by submitted_at / committer date, and counts reviews with `review.submitted_at < commit.date < next_boundary` (next review's `submitted_at`, or `mergedAt`, or now for open PRs). Used by `/merge`, `/wrap`, `/pm-rate-team`, `/pm-sprint-review`.
+Internally the script fetches `pulls/$PR_NUM/reviews?per_page=100` and `pulls/$PR_NUM/commits?per_page=100`, sorts by submitted_at / committer date, and counts reviews with `review.submitted_at < commit.date < next_boundary` (next review's `submitted_at`, or `mergedAt`, or now for open PRs). Used by `/merge`, `/wrap`.
 
 ## Review participation (reviews given by a contributor)
 
@@ -80,7 +80,7 @@ gh api --paginate "repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=d
 done
 ```
 
-Count reviews per reviewer. Exclude self-reviews (reviewer == PR author). Used by `/pm-rate-team`, `/pm-sprint-review`, `/pm-team-standup`.
+Count reviews per reviewer. Exclude self-reviews (reviewer == PR author).
 
 ## Bot filtering
 
@@ -108,7 +108,7 @@ gh api "repos/{owner}/{repo}/pulls/$PR_NUM/reviews?per_page=100" \
 gh api "repos/{owner}/{repo}/pulls/$PR_NUM/reviews/$FIRST_CR_REVIEW_ID/comments?per_page=100"
 ```
 
-If no `coderabbitai[bot]` reviews exist across all PRs in the window, skip this metric with a note. Used by `/pm-rate-team`.
+If no `coderabbitai[bot]` reviews exist across all PRs in the window, skip this metric with a note.
 
 ## Graceful degradation
 
@@ -121,15 +121,10 @@ If no `coderabbitai[bot]` reviews exist across all PRs in the window, skip this 
 
 When updating any of the query patterns above, update this doc AND every PM skill that references it.
 
-**Currently migrated** (cite this doc in a `## Data gathering` section):
+**Currently migrated** (cite this doc in a `## Data gathering` section): none — the previously migrated PM ritual skills were removed in the July 2026 trim (issue #582).
 
-- `.claude/skills/pm-rate-team/SKILL.md`
-- `.claude/skills/pm-team-standup/SKILL.md`
-- `.claude/skills/pm-sprint-review/SKILL.md`
+**Not yet migrated** (shares the same patterns but still inlines them — migrate in follow-up work):
 
-**Not yet migrated** (share the same patterns but still inline them — migrate in follow-up work):
-
-- `.claude/skills/pm-sprint-plan/SKILL.md`
 - `.claude/skills/prioritize/SKILL.md`
 
 When onboarding a skill from the "not yet migrated" list, add a `## Data gathering` reference section near the top and move it into "currently migrated." When adding a brand-new PM skill, add it directly to "currently migrated."
