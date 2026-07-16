@@ -30,6 +30,9 @@ jobs:
       - name: config-protection unit tests
         run: python3 -m unittest tests.test_config_protection -v
 
+      - name: worktree-guard unit tests (issue #549)
+        run: python3 -m unittest tests.test_worktree_guard -v
+
       - name: pr-preflight unit test (issue #493)
         run: bash .claude/scripts/tests/pr-preflight.test.sh
 
