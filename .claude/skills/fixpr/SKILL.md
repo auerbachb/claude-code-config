@@ -792,12 +792,15 @@ jq -r '
 
 **Classification rules** (these live in `pr-state.sh`; the list below is the contract — keep the two in sync if either changes). Patterns are checked in this order; first match wins:
 
-1. **Explicit-resolution / clean-pass overrides** (checked first — these signals mean CR has already marked the thread addressed, posted a rate-limit notice, or posted a review-started ack, so they win even if the body still contains finding language from a quoted earlier review):
+1. **Explicit-resolution / clean-pass overrides** (checked first — these signals mean CR or BugBot has issued a clean pass, hit a rate-limit notice, posted a review-started ack, or emitted a transient error. They win even if the body still contains finding language from a quoted earlier review):
    - HTML marker `<!-- <review_comment_addressed> -->` → `acknowledgment`
    - `actionable comments posted: 0` → `acknowledgment`. This specific zero-count pattern MUST be checked before the general `actionable comments posted` pattern below — otherwise the general finding pattern would swallow the zero case.
    - `no actionable comments were generated` → `acknowledgment`
    - `rate limit exceeded` or `rate-limited by coderabbit` → `acknowledgment`
    - `full review triggered` → `acknowledgment`
+   - `found no new issues` (case-insensitive) → `acknowledgment` (BugBot clean-pass review body: "✅ Bugbot reviewed your changes and found no new issues!")
+   - `<!-- BUGBOT_REVIEW -->` marker present AND body does NOT match `found [1-9][0-9]* potential issue` → `acknowledgment` (BugBot zero-issue summary). This MUST be checked before the generic `issues? found` finding pattern below. Non-zero BugBot summaries ("found 3 potential issues") keep the `<!-- BUGBOT_REVIEW -->` marker but match the non-zero guard and fall through to the finding tier.
+   - `Oops, something went wrong` (case-insensitive) → `acknowledgment` (CodeRabbit transient error stub — not an actionable finding)
 2. **Finding patterns**:
    - Severity keywords `\b(critical|major|minor|nitpick|p[0-2])\b` or badges `🔴|🟠|🟡`
    - Actionable phrases: `actionable comments posted` (non-zero), `issues? found`, `findings?:`, `potential[_ ]issue`
