@@ -1,12 +1,16 @@
 ---
 name: pm
-description: Active PM orchestrator — manages issue pipeline, tracks coding threads, suggests next work. Cold-starts from GitHub state or resumes from a /pm-handoff prompt. Triggers on "pm", "project manager", "orchestrate", "what should I work on".
+description: Active PM orchestrator — manages issue pipeline, tracks coding threads, ranks the open backlog (OKR-aware) against a business goal, and suggests next work. Cold-starts from GitHub state or resumes from a /pm-handoff prompt. Triggers on "pm", "project manager", "orchestrate", "what should I work on", "rank issues".
 triggers:
   - project manager
   - orchestrate
   - what should I work on
   - manage issues
-argument-hint: "[resume] (optional — 'resume' reads in-flight state from session files to continue a previous PM session)"
+  - rank issues
+  - rank the backlog
+  - priority list
+  - full ranking
+argument-hint: "[resume] (optional — 'resume' reads in-flight state from session files to continue a previous PM session) | [business goal] (optional — ranks the backlog by impact on that goal, e.g. 'increase scraping throughput')"
 ---
 
 Active PM orchestrator. Manages which issues are being worked on across coding threads, tracks progress, and suggests next work.
@@ -17,7 +21,7 @@ Active PM orchestrator. Manages which issues are being worked on across coding t
 
 Parse `$ARGUMENTS`:
 - If `$ARGUMENTS` contains "resume" or "handoff": enter Resume mode (Step 1A).
-- Otherwise: enter Cold Start mode (Step 1B).
+- Otherwise: enter Cold Start mode (Step 1B). Any remaining text is treated as a **business goal** — the outcome to rank the backlog against (see 1B.4). No goal is fine; ranking falls back to repo signals.
 
 ---
 
@@ -199,33 +203,75 @@ gh issue view $NUMBER --json body,title,labels,comments,assignees
 ```
 
 Extract from each:
-- Scope and intent (what the issue actually asks for)
-- Dependency references: `blocked by #N`, `depends on #N`, `unblocks #N`
-- Complexity signals: number of acceptance criteria, files mentioned
-- Whether a PR is already in flight for this issue
+- Scope and intent (what the issue actually asks for, not just the title)
+- Acceptance criteria — when present, these define "done"
+- Dependency references, from the body **and** comments:
+  - Blocked direction: `blocked by #N`, `depends on #N`, `prerequisite for #N`, `after #N`
+  - Unblocking direction: `unblocks #N`, `enables #N`, `required by #N`, `before #N`
+  - In-flight signal: `Fixes #N`, `Closes #N` (a PR may already exist)
+- Complexity signals: number of acceptance criteria, files mentioned, architectural scope
+- Current assignee — who, if anyone, is already on it
 
 ### 1B.4: Score and rank issues
 
-For each candidate, assess:
+Sort candidates into four tiers — **Critical**, **High**, **Medium**, **Low**.
 
-1. **Priority signals (primary):**
+**When the user stated a business goal**, goal alignment is the primary signal and sets the tier directly:
+
+- **Critical** — directly unblocks or achieves the goal; without it the goal cannot be met.
+- **High** — significant enabler; materially accelerates progress toward the goal.
+- **Medium** — supporting work; deferrable without derailing the goal.
+- **Low** — tangential, or serves a different goal entirely.
+
+**With no stated goal (the default)**, the priority signals in (1) below set the tier instead. Either way, (2)-(6) then apply to every candidate.
+
+1. **Priority signals:**
    - Labels: `P0`/`critical` > `P1`/`bug` > `P2`/`enhancement` > unlabeled
-   - Dependency leverage: issues that unblock 2+ other issues rank higher
    - Age + activity: old unassigned issues with recent comments = neglected priority
 
-2. **OKR alignment (when `OKR_MODE=true`):**
-   - Issues that directly advance an incomplete key result get a one-tier boost
-   - Issues aligned with an objective broadly get a tiebreaker advantage
-   - Record which OKR(s) each issue aligns with
+2. **Leverage (tier-jump):** an issue inherits the urgency of what it unblocks — one that unblocks three Critical issues is itself Critical, even if its own alignment is Medium. Build a dependency map from the references collected in 1B.3:
+   - For each issue, record what blocks it and what it blocks.
+   - Follow chains: if #10 blocks #15 which blocks #20, the root (#10) gets the boost.
+   - Flag circular dependencies (A blocks B, B blocks A) — these need human resolution; surface them rather than ranking them.
 
-3. **Recent momentum:**
+3. **OKR alignment (when `OKR_MODE=true`):**
+   - Issues that directly advance an incomplete key result get a one-tier boost (unless already Critical)
+   - Issues aligned with an objective broadly get a tiebreaker advantage — ordering within the tier only; the tier label does not change
+   - Issues matching no OKR take no penalty — they rank on the other signals alone
+   - Record which OKR(s) each issue aligns with for the rationale (e.g. "Advances O1/KR2"); list at most 2, ordered by objective then key result
+
+4. **Recent momentum:**
    - What areas of the codebase have recent merged PRs? Issues in the same area benefit from warm context.
    - What themes appear in recent merges? Issues continuing that theme are cheaper to pick up.
 
-4. **Exclusions:**
-   - Skip issues that already have an open PR (someone is working on it)
+5. **Cost-benefit (tie-break within a tier):** at equal alignment, the smaller issue wins. Read effort from `complexity:quick|light|medium|heavy` labels when present, otherwise from scope signals in the body (count of acceptance criteria, files mentioned, architectural reach).
+
+6. **Exclusions:**
+   - Skip issues that already have an open PR (someone is working on it — `Fixes #N` / `Closes #N` in an open PR body means in flight)
    - Skip issues assigned to someone else (unless stale > 14 days)
    - Skip issues labeled `blocked`, `on-hold`, `wontfix`, `duplicate`
+
+**Misaligned effort ("stop doing"):** cross-reference the user's current work (their open PRs and assigned issues from 1B.2) against the tiers. If they are actively on Low/Medium work while Critical/High issues sit unassigned and within their scope, flag it — name the low-impact work and the higher-impact work to switch to. Only flag when the misalignment is clear and the alternative is materially better; when their current work is already Critical/High, say it is well-aligned instead.
+
+### 1B.4b: Judgment check (ask only when the ranking turns on a judgment call)
+
+Ranking is a recommendation, not arithmetic. Before presenting, check whether the **top** of the list depends on a call only the user can make. Any one of these triggers is enough:
+
+- **Near-tied top candidates** — two or more issues share the top tier with no OKR or cost-benefit signal separating them.
+- **Competing OKR alignments** — top candidates advance *different* objectives, and no stated business goal breaks the tie.
+- **Conflicting urgency signals** — e.g. a `P0` label on a stale, quiet issue against an unlabeled issue with active discussion and a fresh dependency.
+
+When a trigger fires, present **only** the tied candidates, one line of rationale each, and ask **one** focused question:
+
+> Two issues tie for the top:
+> - **#42 — {title}** — unblocks #50 and #53, advances O1/KR2
+> - **#38 — {title}** — labeled `P0`, but quiet for three weeks
+>
+> Which matters more right now — clearing the dependency chain, or the P0?
+
+Incorporate the answer, finalize the ranking, and continue to 1B.5.
+
+**Negative rule — this does not fire on every run.** No trigger, no question: when one candidate is clearly ahead, emit the ranking and proceed. A pause the user did not need is a failure of this step, not caution. Ask at most one question per ranking; if the answer is ambiguous, take the higher-leverage candidate, say so in one line, and move on.
 
 ### 1B.5: Present recommendations
 
@@ -270,6 +316,29 @@ Based on {N} open issues, {M} recent merges, and {OKR status}:
 ### Dependency Note
 {If any suggested issues have dependency chains, note the order}
 ```
+
+**Full ranking (on request only).** When the user asked to rank the backlog rather than "what's next" — "rank the backlog", "priority list", "full ranking" — replace the top 3-5 list with the tiered view below. "Full" means **every tier is covered**, not that every issue is listed: name the issues that earn a decision in each tier and summarize the rest (see the note after the block). Omit any tier with no issues:
+
+```
+## Critical — must do to achieve the goal
+- **#42 — {title}** — {1-line rationale tying the issue to the goal or OKR}
+  - Unblocks: #50, #53 | Advances: O1/KR2
+
+## High — significant enablers
+- **#55 — {title}** — {rationale}
+
+## Medium — supporting work (defer if necessary)
+- **#61 — {title}** — {rationale}
+
+## Low — tangential (skip for now)
+- **#70 — {title}** — {rationale}
+
+## Stop doing
+{Only when 1B.4 flagged misaligned effort: name the current low-impact work and the
+higher-impact work to switch to. Omit entirely when current work is well-aligned.}
+```
+
+Summarize rather than enumerate once a tier stops informing a decision — most often the Low tier: "68 additional issues are Low-priority relative to this goal". The tier still appears with its heading; it just carries a count instead of 68 bullets.
 
 Select the top-ranked batch by default and generate prompts immediately. State: "Generating prompts for the top issues below. Say 'adjust' to change the selection before pasting into threads."
 
@@ -426,6 +495,8 @@ fi
 
 When answering "what's next", always check the user-scoped results first (your open PRs with unresolved findings, then review requests against you) before suggesting new backlog pickup.
 
+A mid-session "re-prioritize" or "rank the backlog" request runs the same ranking as a cold start — re-score through 1B.4 and apply the 1B.4b judgment check before presenting.
+
 Cross-reference with the assignments table:
 - Detect PRs that reference tracked issues (search PR body for `Closes #N`, `Fixes #N`)
 - Mark issues as "PR open" or "Merged" accordingly
@@ -439,7 +510,7 @@ Also accept user input: "thread for #42 is done", "PR #88 merged", "#55 is block
 When one or more threads finish (PRs merged, issues closed):
 
 1. **Dismiss the chips of finished issues, then remove their rows.** Order matters: a row carries its chip's `task_id`, and once the row is gone the chip can no longer be withdrawn. So for every completed issue still at `Chip offered`, `dismiss_task` first — its work is done, the offer is dead — and only then drop it from the assignments table.
-2. Re-scan open issues (reuse 1B.2-1B.4 logic but lighter — only fetch new/changed issues)
+2. Re-scan open issues (reuse 1B.2-1B.4b logic but lighter — only re-read bodies for new/changed issues). **Re-score the whole retained candidate set, not just the changed issues:** tiers depend on the dependency map, so a closed or merged issue can change an *unchanged* issue's tier — #42 loses its leverage boost the moment the issues it unblocked are done. Refresh the map with what closed, then re-run 1B.4/1B.4b across every remaining candidate. Re-reading bodies is the expensive part and stays incremental; re-scoring is cheap and must be total.
 3. Suggest 1-3 new issues to fill the pipeline
 4. Generate prompts for the user's selected issues (Step 3.1 — chip or fallback)
 5. **Dismiss superseded and re-planned chips.** Beyond the finished issues handled in step 1, withdraw a `Chip offered` chip only when its offer is genuinely dead:
@@ -494,5 +565,6 @@ The **user** decides when and where to start work — by clicking a chip in chip
 - **1-2 lines per issue** in the suggestions list. Save detail for the coding thread prompts.
 - **Flag dependencies inline** with the issues they affect.
 - **Total suggestions should be scannable in under 1 minute.**
+- **Do not narrate the scoring process.** Rankings read as a confident recommendation, not a methodology walkthrough. The tiers and rationales are the output; the signals that produced them are not.
 - **Coding thread prompts should be complete and self-contained.** The receiving thread has zero prior context — give it everything it needs.
 - **Do not list every issue.** If 80 of 100 issues are low-priority, say "75 additional issues deferred" rather than listing them.

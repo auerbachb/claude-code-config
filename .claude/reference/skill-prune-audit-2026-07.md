@@ -35,7 +35,7 @@ Follow-up to #416 skill-usage telemetry. Audit date: 2026-07-02.
 | merge | phase A/B/C agents, orchestration rules |
 | pm + pm-* suite | `pm-worker.md`, cross-skill refs, `stale-cleanup.sh`, README |
 | pr-review-help | `subagent-orchestration.md`, `pm-config.md` |
-| prioritize | `issue-maker/SKILL.md`, reference docs |
+| prioritize *(retired)* | *Historical, as of this audit:* `issue-maker/SKILL.md`, reference docs. Folded into `/pm` and retired (#583) — those references now point at `/pm`. |
 | standup | `workday.sh`, `pm-okr/SKILL.md` |
 | subagent | phase A/B/C agents, orchestration rules |
 

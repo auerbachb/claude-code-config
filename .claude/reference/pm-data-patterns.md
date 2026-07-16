@@ -1,6 +1,6 @@
 # PM Data Gathering Patterns
 
-Canonical `gh` CLI query patterns for PM skill data collection. When adding or modifying a PM skill that gathers GitHub data over a time window, use these patterns for consistency — `/prioritize` is the current PM consumer, and `/merge` + `/wrap` share the review-cycle pattern via `cycle-count.sh`.
+Canonical `gh` CLI query patterns for PM skill data collection. When adding or modifying a PM skill that gathers GitHub data over a time window, use these patterns for consistency — `/pm` is the current PM consumer, and `/merge` + `/wrap` share the review-cycle pattern via `cycle-count.sh`.
 
 > **Scope:** This document covers cross-skill shared queries only. Skill-specific logic (ranking, narrative generation, per-skill filters) stays in each SKILL.md. Do NOT move query logic out of SKILL.md files — this doc is a reference, not a shared library.
 
@@ -125,7 +125,7 @@ When updating any of the query patterns above, update this doc AND every PM skil
 
 **Not yet migrated** (shares the same patterns but still inlines them — migrate in follow-up work):
 
-- `.claude/skills/prioritize/SKILL.md`
+- `.claude/skills/pm/SKILL.md` (inherits the backlog-scan patterns folded in from `/prioritize` — #583)
 
 When onboarding a skill from the "not yet migrated" list, add a `## Data gathering` reference section near the top and move it into "currently migrated." When adding a brand-new PM skill, add it directly to "currently migrated."
 

@@ -31,7 +31,7 @@ After setup, Claude Code will automatically:
 - **Review locally, then on GitHub** — Runs CodeRabbit CLI reviews before pushing (instant feedback, no PR noise). After PR creation, the reviewer chain is CodeRabbit primary, BugBot (Cursor) second tier, Greptile last resort, then self-review only if every reviewer is unavailable; CodeAnt and Graphite AI Reviews provide supplemental AI review signals.
 - **Verify and merge** — Checks every acceptance criteria checkbox against the code, confirms CI is green, then squash-merges with branch cleanup.
 - **Orchestrate multi-agent work** — Decomposes large tasks into phases (fix, review, merge) with health monitoring, handoff files, and heartbeat enforcement.
-- **Manage your project** — 27 slash commands for backlog prioritization, OKR tracking, daily standups, PR-fleet monitoring, and cross-thread orchestration.
+- **Manage your project** — 26 slash commands for backlog prioritization, OKR tracking, daily standups, PR-fleet monitoring, and cross-thread orchestration.
 
 Review ownership is sticky once a fallback tier takes over:
 
@@ -127,16 +127,15 @@ ls -la ~/.claude/skills/       # each skill -> ~/.claude/skills-worktree/.claude
 
 ## Slash Commands
 
-All 27 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
+All 26 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
 
 | Command | Category | Description |
 |---------|----------|-------------|
-| `/pm` | PM | Active PM orchestrator — manage backlog, track threads, suggest next work |
+| `/pm` | PM | Active PM orchestrator — rank the backlog by business-goal impact (OKR-aware), track threads, suggest next work |
 | `/pm-handoff` | PM | Generate a self-contained handoff prompt for a new PM thread |
 | `/pm-update` | PM | Re-scan repo, refresh `pm-config.md`, then run stale worktree/branch cleanup |
 | `/pm-okr` | PM | View, set, or suggest OKRs |
 | `/pm-clean` | PM | Detect stale issues and suggest closures |
-| `/prioritize` | PM | Rank backlog issues by business goal impact (OKR-aware) |
 | `/subagent` | PM | Run Quick/Light issues as Phase A/B/C subagents from a PM thread |
 | `/prompt` | Planning | Classify issue complexity, recommend a Claude 4.7/4.6 model tier, generate copy-paste prompt without the removed `effort` field |
 | `/start-issue` | Planning | End-to-end issue-to-coding setup — plan polling, plan merge, worktree, branch |
