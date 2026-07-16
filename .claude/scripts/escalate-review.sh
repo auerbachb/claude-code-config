@@ -171,19 +171,42 @@ if [[ "$CR_RATE_LIMITED" != "true" && ! ( "$AGE_SECONDS" -gt 720 && "$CR_REVIEW_
   emit "polling_cr"
 fi
 
-BUGBOT_POSTED="$(jq -r '
-  (
-    [.comments.reviews[], .comments.inline[], .comments.conversation[]
-     | select(.user.login == "cursor[bot]")]
-    | length
-  ) > 0
-  or
-  (
-    [.check_runs.all[]
-     | select((.name // "") == "Cursor Bugbot" and (.status // "") == "completed")]
-    | length
-  ) > 0
-' "$STATE_PATH")"
+# Content-aware BugBot classification (issue #552): a completed `Cursor Bugbot`
+# check-run alone does not mean BugBot actually reviewed the PR — a usage/spend
+# limit failure produces the same status=completed/conclusion=neutral tuple as
+# a genuine clean pass, and a genuinely blocking conclusion (failure/timed_out/
+# etc.) is a different kind of non-review that also isn't a real pass. The
+# check-run is already scoped to the current HEAD SHA (pr-state.sh fetches it
+# per-commit), so it anchors "what happened on this commit"; when its
+# conclusion is ambiguous (completed/neutral, non-blocking, non-failure title)
+# the LATEST cursor[bot] comment (by timestamp, not "any historical match")
+# disambiguates a usage-limit failure from a genuine clean pass/findings.
+read -r BUGBOT_FAILED BUGBOT_GENUINE < <(jq -r '
+  def is_failure_text: test("couldn.t run|could not run|usage limit|usage or spend limit"; "i");
+  def is_blocking_conclusion: . == "failure" or . == "timed_out" or . == "action_required" or . == "startup_failure" or . == "stale";
+  def cursor_comments: [.comments.reviews[], .comments.inline[], .comments.conversation[]
+    | select(.user.login == "cursor[bot]")];
+  def comment_ts: (.submitted_at // .created_at // "");
+
+  (cursor_comments | sort_by(comment_ts) | last) as $latest_comment
+  | ([.check_runs.all[] | select((.name // "") == "Cursor Bugbot")] | last) as $run
+  | ($latest_comment != null and (($latest_comment.body // "") | is_failure_text)) as $latest_comment_failed
+  | ($run != null and ((($run.conclusion // "") | is_blocking_conclusion) or (($run.title // "") | is_failure_text))) as $run_definitive_failure
+  | ($run != null and ($run.status // "") == "completed" and ($run_definitive_failure | not)) as $run_completed_ambiguous
+  | (
+      $run_definitive_failure
+      or ($run_completed_ambiguous and $latest_comment_failed)
+      or ($run == null and $latest_comment_failed)
+    ) as $failed
+  | (
+      ($run_completed_ambiguous and ($latest_comment_failed | not))
+      or ($run == null and $latest_comment != null and ($latest_comment_failed | not))
+    ) as $genuine
+  | [$failed, $genuine] | @tsv
+' "$STATE_PATH") || {
+  echo "escalate-review.sh: failed to classify BugBot activity" >&2
+  exit 4
+}
 
 BUGBOT_CHECK_PRESENT="$(jq -r '
   [.check_runs.all[] | select((.name // "") == "Cursor Bugbot")] | length > 0
@@ -195,7 +218,7 @@ case "$CACHED_BUGBOT_INSTALLED" in
     BUGBOT_INSTALLED="$CACHED_BUGBOT_INSTALLED"
     ;;
   *)
-    if [[ "$BUGBOT_CHECK_PRESENT" == "true" || "$BUGBOT_POSTED" == "true" ]]; then
+    if [[ "$BUGBOT_CHECK_PRESENT" == "true" || "$BUGBOT_FAILED" == "true" || "$BUGBOT_GENUINE" == "true" ]]; then
       BUGBOT_INSTALLED="true"
       "$SESSION_STATE" --set ".prs[\"$PR_NUMBER\"].bugbot_installed=true" 2>/dev/null || {
         echo "escalate-review.sh: failed to cache bugbot_installed=true" >&2
@@ -214,11 +237,14 @@ case "$CACHED_BUGBOT_INSTALLED" in
     ;;
 esac
 
-if [[ "$BUGBOT_POSTED" == "true" ]]; then
+if [[ "$BUGBOT_GENUINE" == "true" ]]; then
   emit "switch_bugbot"
 fi
 
-if [[ "$BUGBOT_INSTALLED" == "true" && "$AGE_SECONDS" -lt 600 ]]; then
+# A usage-limit/couldn't-run failure is not a reason to keep waiting out the
+# grace window — BugBot has already failed, so fall through to the Greptile
+# budget check below (mirrors the CodeRabbit "rate limit" fast-path).
+if [[ "$BUGBOT_FAILED" != "true" && "$BUGBOT_INSTALLED" == "true" && "$AGE_SECONDS" -lt 600 ]]; then
   emit "polling_cr"
 fi
 
