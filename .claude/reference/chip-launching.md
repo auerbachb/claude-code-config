@@ -2,6 +2,8 @@
 
 Canonical mechanics for offering a coding-thread prompt as a **task chip** the user can click to spin off a new session. Shared by `/pm` (Step 3.1) and `/prompt` (Step 6). Skill-specific wiring stays in each SKILL.md; everything below is defined once, here.
 
+**Out of scope (explicit):** `/pm-handoff` does not offer chips and will not — its handoff prompt is a context-turnover artifact whose visible, portable text is the deliverable, and it has no issue number, model line, or lifecycle for these mechanics to key on. Decided in #562; rationale in `pm-handoff-chips-decision.md`.
+
 > **NON-NEGOTIABLE — execution boundary.** Offering a chip is NOT launching a thread. Skills NEVER auto-launch: no Agent-tool spawn, no session start, no work begun on the user's behalf. **The user's chip click is the only launch path.** This does not widen any skill's existing explicit-ask exception (e.g. `/pm`'s "go ahead and run those") — it narrows nothing and grants nothing new.
 
 ## Availability detection
