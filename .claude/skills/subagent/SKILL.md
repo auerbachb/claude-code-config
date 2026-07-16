@@ -55,7 +55,7 @@ else
 fi
 ```
 
-Exit codes: `0` plan found on stdout, `1` no plan, `3` issue not found/closed, `4` gh error. Run `.claude/scripts/cr-plan.sh --help` for full usage.
+Exit codes: `0` plan found on stdout, `1` no plan, `3` issue not found/closed, `4` gh/env error (network, missing `python3`, or filter failure). Run `.claude/scripts/cr-plan.sh --help` for full usage.
 
 **If `$PLAN` is empty (no CR plan), fall back to scanning comments for a human-authored plan** — a tech lead or teammate may have written one directly on the issue. The script intentionally only matches `coderabbitai`, so the human-only fallback scan is the agent's job. Explicitly filter out bot accounts so automated comments can't become `$PLAN`:
 

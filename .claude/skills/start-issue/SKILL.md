@@ -45,9 +45,9 @@ gh issue view "$ISSUE_NUMBER" --json number,title,body,state,createdAt --comment
 
 ## Step 3: Handle CR implementation plan
 
-CR's plan is identified by a comment from `coderabbitai` (no `[bot]` suffix — issue comments use the bare name). Use `.claude/scripts/cr-plan.sh` for detection — it encapsulates the canonical jq filter (skip "actions performed" ack lines, require length > 200) and the 60s polling loop.
+CR's plan is identified by a comment from `coderabbitai` (no `[bot]` suffix — issue comments use the bare name). Use `.claude/scripts/cr-plan.sh` for detection — it encapsulates the canonical substantive-plan filter (`cr-plan-filter.py`: reject the issue-enrichment/Issue-Planner boilerplate and "actions performed" ack lines, then require >200 chars of stripped content plus a heading or numbered step — issue #541) and the 60s polling loop.
 
-Exit codes: `0` plan found (printed to stdout), `1` no plan, `3` issue not found/closed, `4` gh error. Run `.claude/scripts/cr-plan.sh --help` for full usage.
+Exit codes: `0` plan found (printed to stdout), `1` no plan, `3` issue not found/closed, `4` gh/env error (network, missing `python3`, or filter failure). Run `.claude/scripts/cr-plan.sh --help` for full usage.
 
 ### Path A: Fresh issue (age < 10 minutes)
 

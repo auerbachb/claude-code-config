@@ -33,5 +33,11 @@ jobs:
       - name: pr-preflight unit test (issue #493)
         run: bash .claude/scripts/tests/pr-preflight.test.sh
 
+      - name: cr-plan-filter unit tests (issue #541)
+        run: python3 -m unittest tests.test_cr_plan_filter -v
+
+      - name: cr-plan.sh integration test (issue #541)
+        run: bash .claude/scripts/tests/cr-plan.test.sh
+
       - name: skill-conventions-audit smoke test (#417)
         run: bash .claude/scripts/tests/skill-conventions-audit.test.sh

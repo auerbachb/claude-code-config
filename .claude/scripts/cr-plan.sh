@@ -6,8 +6,10 @@
 #
 # Scans issue comments for a substantive plan from `coderabbitai` (no [bot]
 # suffix — issue comments use the bare name). Filters out ack-only comments
-# ("Actions performed — ...") and short/non-substantive replies, returning
-# the latest plan body on stdout.
+# ("Actions performed — ..."), short/non-substantive replies, and the
+# issue-enrichment / Issue-Planner-checkbox boilerplate (issue #541),
+# returning the latest plan body on stdout. The substantive-plan filter
+# lives in cr-plan-filter.py (same directory; requires python3).
 #
 # Options:
 #   --poll <minutes>         Poll every 60s for up to this many minutes, returning
@@ -23,7 +25,7 @@
 #   1  No plan found after poll window (or on single check)
 #   2  Usage error
 #   3  Issue not found or closed
-#   4  gh / network error
+#   4  gh / network / environment error (incl. python3 or filter failure)
 #
 # See .claude/rules/issue-planning.md for the plan-merge workflow this feeds into.
 
@@ -31,7 +33,7 @@ set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
 
 usage() {
-  sed -n '3,29p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '3,31p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 if [ "$#" -eq 0 ]; then
@@ -117,6 +119,18 @@ if ! command -v gh >/dev/null 2>&1; then
   exit 4
 fi
 
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "cr-plan.sh: python3 not found on PATH (required by cr-plan-filter.py)" >&2
+  exit 4
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FILTER_PY="$SCRIPT_DIR/cr-plan-filter.py"
+if [ ! -f "$FILTER_PY" ]; then
+  echo "cr-plan.sh: missing companion filter: $FILTER_PY" >&2
+  exit 4
+fi
+
 # Fetch issue metadata once up-front so we can (a) error out cleanly on missing/
 # closed issues with exit 3 and (b) compute age for --max-age-minutes. Use
 # `gh --jq` for the field projection so we don't take an external `jq`
@@ -166,27 +180,31 @@ except Exception:
 PY
 }
 
-# Canonical filter: latest substantive coderabbitai comment, skipping ack lines
-# ("Actions performed — ...") and anything under 200 characters.
-CR_PLAN_JQ='[.comments[]
-  | select(.author.login == "coderabbitai")
-  | .body
-  | select((test("(?i)^\\s*actions performed\\b") | not))
-  | select(length > 200)
-] | last // empty'
-
+# Canonical filter: latest substantive coderabbitai comment. Substance rules
+# (ack skip, boilerplate stripping, length + plan-structure requirements) live
+# in cr-plan-filter.py so they are unit-testable offline — `gh --jq` runs
+# gojq, whose regex semantics diverge from jq/Oniguruma, making an inline jq
+# filter unsafe to extend (issue #541).
 fetch_plan() {
-  # Single-shot lookup. Prints plan body (possibly empty) on stdout; prints gh
-  # error text to stderr and returns 4 on API failure. Keeps stderr separate
-  # from stdout so incidental gh warnings never contaminate the plan body.
-  # Temp file lives under TMPDIR_CR_PLAN so the single EXIT trap cleans it up
-  # even if the script aborts between write and unlink.
-  local out err err_file
+  # Single-shot lookup. Prints plan body (possibly empty) on stdout; prints
+  # gh/filter error text to stderr and returns 4 on failure. gh output is
+  # staged to a temp file (the ac-checkboxes.sh pattern) so a gh/network
+  # failure surfaces on its own, without a knock-on parse error from the
+  # filter reading a truncated stream. Keeps stderr separate from stdout so
+  # incidental gh warnings never contaminate the plan body. Temp files live
+  # under TMPDIR_CR_PLAN so the single EXIT trap cleans them up even if the
+  # script aborts mid-call.
+  local out err_file json_file
   err_file="$TMPDIR_CR_PLAN/fetch-plan-stderr"
-  if ! out=$(gh issue view "$ISSUE_NUMBER" --json comments --jq "$CR_PLAN_JQ" 2>"$err_file"); then
-    err=$(cat "$err_file")
+  json_file="$TMPDIR_CR_PLAN/comments.json"
+  if ! gh issue view "$ISSUE_NUMBER" --json comments >"$json_file" 2>"$err_file"; then
     echo "cr-plan.sh: gh error fetching comments for issue #$ISSUE_NUMBER:" >&2
-    printf '%s\n' "$err" >&2
+    cat "$err_file" >&2
+    return 4
+  fi
+  if ! out=$(python3 "$FILTER_PY" "$json_file" 2>"$err_file"); then
+    echo "cr-plan.sh: cr-plan-filter.py failed for issue #$ISSUE_NUMBER:" >&2
+    cat "$err_file" >&2
     return 4
   fi
   printf '%s' "$out"
