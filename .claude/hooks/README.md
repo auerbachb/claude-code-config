@@ -11,6 +11,8 @@ Hooks are **automatically registered** in `~/.claude/settings.json` on every ses
 2. Add the hook entry to `global-settings.json` at the repo root (use `/path/to/claude-code-config` as the path placeholder)
 3. Merge to `main` — the next session start registers it automatically
 
+Shared code that hooks source (rather than run) lives in `lib/` and is deliberately absent from `global-settings.json` — registration matches by basename, so anything listed there would be executed as a hook in its own right.
+
 **Initial setup** is handled by `setup-skills-worktree.sh` (see `SETUP.md`). The ongoing sync is a safety net that catches hooks added after initial setup.
 
 ---
@@ -108,3 +110,18 @@ Replace `/absolute/path/to/claude-code-config` with the actual path to your clon
 ### Prerequisites
 
 - All hook scripts must be executable: `chmod +x .claude/hooks/silence-detector*.sh`
+
+## skill-usage-tracker.sh + skill-command-tracker.sh
+
+Records every skill invocation to `~/.claude/skill-usage.log` (and the aggregate `~/.claude/skill-usage.csv`), which `.claude/scripts/skill-usage-report.sh` rolls up.
+
+Two hooks are needed because invocations arrive two different ways:
+- **`skill-usage-tracker.sh`** (PostToolUse, matcher `Skill`): model- and agent-initiated calls, including chip threads.
+- **`skill-command-tracker.sh`** (UserPromptSubmit): slash commands the user types. These reach the model already expanded into the prompt and produce no `Skill` tool call, so the PostToolUse hook never sees them — user-typed skills logged nothing at all before issue #584.
+
+Both write through `lib/skill-usage-recorder.sh`, which owns the storage layout and a short-lived marker that keeps an invocation seen by both paths at exactly one line. Design notes and the audit trust boundary: `.claude/memory/skill_usage_telemetry.md`.
+
+### Prerequisites
+
+- `python3` (both hooks) and `jq` (PostToolUse tracker only)
+- Registered automatically via `global-settings.json` — see **Hook Auto-Registration** above

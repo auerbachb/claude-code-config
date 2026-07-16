@@ -116,6 +116,11 @@
             "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/issue-prefix-nudge.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/skill-command-tracker.sh",
+            "timeout": 5
           }
         ]
       }

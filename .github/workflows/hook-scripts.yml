@@ -23,6 +23,9 @@ jobs:
       - name: stale-worktree-warn integration test
         run: bash .claude/hooks/tests/stale-worktree-warn.test.sh
 
+      - name: skill-command-tracker integration test (issue #584)
+        run: bash .claude/hooks/tests/skill-command-tracker.test.sh
+
       - name: pr-state --infer-candidates unit test
         run: bash .claude/scripts/tests/pr-state-infer-candidates.test.sh
 
