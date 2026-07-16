@@ -171,19 +171,31 @@ if [[ "$CR_RATE_LIMITED" != "true" && ! ( "$AGE_SECONDS" -gt 720 && "$CR_REVIEW_
   emit "polling_cr"
 fi
 
-BUGBOT_POSTED="$(jq -r '
-  (
-    [.comments.reviews[], .comments.inline[], .comments.conversation[]
-     | select(.user.login == "cursor[bot]")]
-    | length
-  ) > 0
-  or
-  (
-    [.check_runs.all[]
-     | select((.name // "") == "Cursor Bugbot" and (.status // "") == "completed")]
-    | length
-  ) > 0
-' "$STATE_PATH")"
+# Content-aware BugBot classification (issue #552): a completed `Cursor Bugbot`
+# check-run alone does not mean BugBot actually reviewed the PR — a usage/spend
+# limit failure produces the same status=completed/conclusion=neutral tuple as
+# a genuine clean pass. Distinguish by scanning comment bodies (and, defensively,
+# check-run titles, since only `title` is captured for check-runs) for known
+# failure phrases.
+read -r BUGBOT_FAILED BUGBOT_GENUINE < <(jq -r '
+  def is_failure_text: test("couldn.t run|could not run|usage limit|usage or spend limit"; "i");
+  def cursor_comments: [.comments.reviews[], .comments.inline[], .comments.conversation[]
+    | select(.user.login == "cursor[bot]")];
+  def failure_comment_count: [cursor_comments[] | select((.body // "") | is_failure_text)] | length;
+  def genuine_comment_count: [cursor_comments[] | select(((.body // "") | is_failure_text) | not)] | length;
+  def failed_check_run_count: [.check_runs.all[]
+    | select((.name // "") == "Cursor Bugbot")
+    | select((.title // "") | is_failure_text)] | length;
+  def genuine_completed_check_run_count: [.check_runs.all[]
+    | select((.name // "") == "Cursor Bugbot" and (.status // "") == "completed")
+    | select(((.title // "") | is_failure_text) | not)] | length;
+  ((failure_comment_count > 0) or (failed_check_run_count > 0)) as $failed
+  | ((genuine_comment_count > 0) or ((genuine_completed_check_run_count > 0) and (failure_comment_count == 0))) as $genuine
+  | [$failed, $genuine] | @tsv
+' "$STATE_PATH") || {
+  echo "escalate-review.sh: failed to classify BugBot activity" >&2
+  exit 4
+}
 
 BUGBOT_CHECK_PRESENT="$(jq -r '
   [.check_runs.all[] | select((.name // "") == "Cursor Bugbot")] | length > 0
@@ -195,7 +207,7 @@ case "$CACHED_BUGBOT_INSTALLED" in
     BUGBOT_INSTALLED="$CACHED_BUGBOT_INSTALLED"
     ;;
   *)
-    if [[ "$BUGBOT_CHECK_PRESENT" == "true" || "$BUGBOT_POSTED" == "true" ]]; then
+    if [[ "$BUGBOT_CHECK_PRESENT" == "true" || "$BUGBOT_FAILED" == "true" || "$BUGBOT_GENUINE" == "true" ]]; then
       BUGBOT_INSTALLED="true"
       "$SESSION_STATE" --set ".prs[\"$PR_NUMBER\"].bugbot_installed=true" 2>/dev/null || {
         echo "escalate-review.sh: failed to cache bugbot_installed=true" >&2
@@ -214,11 +226,14 @@ case "$CACHED_BUGBOT_INSTALLED" in
     ;;
 esac
 
-if [[ "$BUGBOT_POSTED" == "true" ]]; then
+if [[ "$BUGBOT_GENUINE" == "true" ]]; then
   emit "switch_bugbot"
 fi
 
-if [[ "$BUGBOT_INSTALLED" == "true" && "$AGE_SECONDS" -lt 600 ]]; then
+# A usage-limit/couldn't-run failure is not a reason to keep waiting out the
+# grace window — BugBot has already failed, so fall through to the Greptile
+# budget check below (mirrors the CodeRabbit "rate limit" fast-path).
+if [[ "$BUGBOT_FAILED" != "true" && "$BUGBOT_INSTALLED" == "true" && "$AGE_SECONDS" -lt 600 ]]; then
   emit "polling_cr"
 fi
 

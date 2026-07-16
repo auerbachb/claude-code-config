@@ -31,6 +31,8 @@ Applies to 2nd/3rd triggers only; initial trigger requires only the budget check
 
 **Last-resort only:** trigger only after the escalation gate in `cr-github-review.md` returns `STATUS=trigger_greptile`. Always rely on `.claude/scripts/escalate-review.sh <PR_NUMBER>` for the per-cycle verdict.
 
+"BugBot also fails" includes a classified BugBot failure; see `bugbot.md`'s "BugBot failure detection" section. In that case, `escalate-review.sh` routes directly to `trigger_greptile` without waiting out the BugBot grace window.
+
 ### Sticky Assignment
 
 **Once Greptile is triggered for a PR, it stays on Greptile permanently.** Do not switch back to CR or BugBot. After fixing findings, only re-trigger `@greptileai` for P0 findings. Merge gate is severity-dependent — see `cr-merge-gate.md` (Step 1) and `.claude/reference/merge-gate-reviewer-paths.md`.

@@ -25,6 +25,8 @@ Poll alongside CR every 60 seconds on all three endpoints (same pattern — `pul
 
 **Completion signal:** BugBot creates a CI check-run named `Cursor Bugbot` that transitions to `status: "completed"` when the review finishes. The `conclusion` field is `neutral` when BugBot posted findings (still counts as a completed review — `neutral` is not a failure). Completion can also be detected via BugBot review comments appearing on any of the three endpoints.
 
+**BugBot failure detection (issue #552):** a usage/spend-limit failure produces the *same* `status: "completed"`/`conclusion: "neutral"` tuple as a genuine clean pass — the check-run alone can't distinguish them. `escalate-review.sh` scans `cursor[bot]` comment bodies (and, defensively, the check-run's `title`) for known failure phrases — `couldn't run` / `could not run`, `usage limit`, `usage or spend limit` — and treats a match as a BugBot failure, not a completed review, even alongside a completed/neutral check-run. A completed check-run counts as a genuine clean pass only when no failure phrase is present.
+
 ## When BugBot Becomes the Active Reviewer
 
 BugBot becomes the active reviewer (`reviewer: bugbot`) when:
