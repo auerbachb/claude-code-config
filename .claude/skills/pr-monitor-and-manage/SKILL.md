@@ -375,14 +375,17 @@ for N in $PR_NUMS; do
   if [ -n "$PREFLIGHT_SH" ]; then
     PF_OUT=$("$PREFLIGHT_SH" "$N") || echo "[PMM] pr-preflight.sh #$N exited non-zero (exit $?) — continuing"
     echo "$PF_OUT"   # timestamped action lines per PR feed the heartbeat
-    # stash the per-PR PREFLIGHT_SUMMARY for the Step 7 summary (keyed by PR)
+    # Stash the per-PR PREFLIGHT_SUMMARY for the Step 7 summary (keyed by PR).
+    # Step 5b′ also reads it to avoid re-triggering a bot pre-flight just poked
+    # on this same tick (issue #576).
+    PF_SUMMARY_BY_PR[$N]=$(sed -n 's/^PREFLIGHT_SUMMARY: //p' <<<"$PF_OUT" | tail -1)
   else
     echo "[PMM] pr-preflight.sh not found — skipping draft/reviewer pre-flight for #$N"
   fi
 done
 ```
 
-`pr-preflight.sh` is idempotent (a PR already ready with all four reviewers engaged is a no-op printing `Pre-flight clean — proceeding`), rate-cap safe (it gates `@coderabbitai full review` on `cr-review-hourly.sh` — `--check` + atomic `--record-explicit` — and skips only CR when the cap is hit, still posting the other three), never flips another user's intentional draft, and never triggers Greptile. Because the pre-flight may have just triggered reviewers, the verdicts computed in Step 3 are from *before* the triggers; the next tick re-discovers and re-classifies on the post-trigger state — the rebase / fix subagent / `/wrap` actions below still run on this tick's verdicts.
+`pr-preflight.sh` is idempotent (a PR already ready with all four reviewers engaged **on the current HEAD SHA** is a no-op printing `Pre-flight clean — proceeding`). Since #576 it judges engagement against HEAD, not PR-wide history, so a reviewer whose only artifact sits on a superseded commit — the normal state after any rebase or force-push — is re-triggered rather than silently counted as present. It is rate-cap safe (it gates `@coderabbitai full review` on `cr-review-hourly.sh` — `--check` + atomic `--record-explicit` — and skips only CR when the cap is hit, still posting the other three), never flips another user's intentional draft, and never triggers Greptile. Because the pre-flight may have just triggered reviewers, the verdicts computed in Step 3 are from *before* the triggers; the next tick re-discovers and re-classifies on the post-trigger state — the rebase / fix subagent / `/wrap` actions below still run on this tick's verdicts.
 
 ### Step 5a: Rebase (verdict `rebase`, i.e. `merge_state == BEHIND`)
 
@@ -468,10 +471,27 @@ Run **before Step 5c** for every PR whose Step 3 verdict is `fixpr` (or refined 
 
 **Dismiss** — run the shared dismiss helper with `DISMISS_MSG="Superseded — review was on a stale commit"`. Idempotent (already-`DISMISSED` counts as success). The helper only dismisses reviews whose `commit_id` ≠ current HEAD; never touches fresh bot CR on HEAD.
 
-**Re-trigger the owning bot** — `pr-preflight.sh` Step 5.0 is idempotent and **skips** bots that already have prior activity on the PR; a dismissed stale review still counts as prior activity, so post an **explicit** trigger for the owning reviewer on the current HEAD. Resolve via `.claude/scripts/reviewer-of.sh "$N"` (same mapping as `pr-preflight.sh`'s `reviewer_trigger()`):
+**Re-trigger the owning bot** — post an **explicit** trigger for the owning reviewer on the current HEAD. Resolve via `.claude/scripts/reviewer-of.sh "$N"` (same mapping as `pr-preflight.sh`'s `reviewer_trigger()`).
+
+> **Since #576, Step 5.0's pre-flight already re-triggers a bot whose only activity is on a superseded commit** — which is exactly this step's situation (the review just dismissed was on a stale SHA). This step therefore **skips** any reviewer pre-flight already triggered on this tick; without that guard both would post for the same PR in the same tick, and for CodeRabbit that burns two of the ≤2/PR/hour explicit-trigger slots at once. It still runs when pre-flight was unavailable, skipped the PR, or reported the reviewer `already-present` / `skipped-rate-cap` — the case this step was written for.
 
 ```bash
 REVIEWER=$(.claude/scripts/reviewer-of.sh "$N" 2>/dev/null || echo unknown)
+
+# Skip when Step 5.0's pre-flight already triggered this reviewer this tick
+# (issue #576) — it re-triggers stale-SHA bots itself now, so a second post here
+# would be a duplicate (and would double-spend CodeRabbit's per-PR cap).
+PF_KEY=""
+case "$REVIEWER" in
+  cr) PF_KEY="coderabbit" ;;   # gate-side name → pre-flight reviewer key
+  bugbot) PF_KEY="cursor" ;;
+  graphite) PF_KEY="graphite" ;;
+esac
+if [ -n "$PF_KEY" ] && [ -n "${PF_SUMMARY_BY_PR[$N]:-}" ] \
+   && [ "$(jq -r --arg k "$PF_KEY" '.reviewers[$k].status // ""' <<<"${PF_SUMMARY_BY_PR[$N]}" 2>/dev/null)" = "triggered" ]; then
+  echo "[PMM] pre-flight already re-triggered $REVIEWER on #$N this tick — skipping duplicate explicit trigger"
+  REVIEWER="__already_triggered__"
+fi
 CR_HOURLY=""
 for c in "$HOME/.claude/skills-worktree/.claude/scripts/cr-review-hourly.sh" \
          "$HOME/.claude/scripts/cr-review-hourly.sh" \
@@ -501,6 +521,9 @@ case "$REVIEWER" in
     ;;
   greptile)
     echo "[PMM] greptile owning reviewer on #$N — no auto-trigger per greptile.md"
+    ;;
+  __already_triggered__)
+    : # pre-flight covered it this tick (#576) — message already printed above
     ;;
   *)
     echo "[PMM] unknown reviewer on #$N — skipping explicit re-trigger"
