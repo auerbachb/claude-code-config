@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Unit test for the `classify` jq function inside `pr-state.sh --since`
-# (issues #535, #557).
+# (issues #535, #557, #575).
 #
 # Verifies that comment bodies observed misclassified in the wild are now correctly
 # classified as acknowledgments, and that existing patterns are not regressed:
@@ -8,6 +8,12 @@
 #     BugBot zero-issue summary, CR error stub.
 #   - #557: two bodies on auerbachb/claude-code-config PR #554 (Jul 16 2026) — CR
 #     Fair-Usage rate-limit notice, BugBot usage-limit notice.
+#   - #575: CR's auto-generated walkthrough/summary comment (PR #568) — plus two
+#     masking guards (Bug6a/Bug6b) pinning the override's load-bearing LATE position.
+#     Those guards are not vacuous: they pass pre-fix only because everything defaults
+#     to `finding`. Their real job is to fail against a WRONG fix. Verified by hoisting
+#     the override into the tier-1 group, which flips both to acknowledgment — the exact
+#     false-clean the placement prevents. Re-run that control if you touch the ordering.
 #
 # Strategy: extract the classify function definition via sed from pr-state.sh and
 # exercise it in isolation with jq -n. This tests the actual production code rather
@@ -366,6 +372,113 @@ class="${result%%|*}"
   || fail "Edge: finding discussing usage/spend limits — got $class"
 
 # ---------------------------------------------------------------------------
+# Bug 6: CodeRabbit auto-generated walkthrough / summary comment (issue #575)
+#
+# The boilerplate CR posts on nearly every PR. It matched NO branch, so it fell
+# through to default → finding and produced phantom findings during /wrap Phase 1
+# on PRs where CR had posted zero reviews and zero inline comments.
+# Was: default → finding; Should be: CR walkthrough summary → acknowledgment
+#
+# Fixture note (why this is not the verbatim live body of comment 4994462241):
+# CR edits its walkthrough comment IN PLACE. Since #575 was filed, that comment has
+# had a rate-limit notice merged into the same body, so it now classifies as
+# acknowledgment via #557's "rate limit notice" override — i.e. it would pass this
+# test even with the walkthrough override deleted, asserting nothing. The body below
+# is the walkthrough WITHOUT the rate-limit block: the normal, uncovered case that
+# CR posts whenever it is not throttled. Bug6c pins the observed composite separately.
+# ---------------------------------------------------------------------------
+BODY='<!-- This is an auto-generated comment: summarize by coderabbit.ai -->
+<!-- review_stack_entry_start -->
+
+[![Review Change Stack](https://storage.googleapis.com/coderabbit_public_assets/review-stack-in-coderabbit-ui.svg)](https://app.coderabbit.ai/change-stack/auerbachb/claude-code-config/pull/568)
+
+<!-- review_stack_entry_end -->
+
+## Walkthrough
+
+The start-issue skill now offers a handoff chip.
+
+<details>
+<summary>📒 Files selected for processing (1)</summary>
+
+* `.claude/skills/start-issue/SKILL.md`
+
+</details>
+
+<sub>Comment `@coderabbitai help` to get the list of available commands.</sub>'
+result=$(classify_body "$BODY")
+class="${result%%|*}"; reason="${result##*|}"
+if [[ "$class" == "acknowledgment" && "$reason" == "CR walkthrough summary" ]]; then
+  pass "Bug6: CR walkthrough/summary comment → acknowledgment"
+else
+  fail "Bug6: CR walkthrough/summary — expected acknowledgment/CR walkthrough summary, got $class/$reason"
+fi
+
+# ---------------------------------------------------------------------------
+# Bug6a: MASKING GUARD — walkthrough marker + non-zero actionable count stays a finding.
+#
+# This is the reason the #575 override sits immediately above the default fallback
+# instead of joining the tier-1 overrides. CR's walkthrough carries the actionable
+# count for the findings it summarizes; an early marker override would classify this
+# as an acknowledgment and drop the findings out of finding_count — a false clean on
+# the review gate, strictly worse than the phantom-finding noise #575 fixes.
+# Verified to FAIL if the override is hoisted above the finding branches.
+# ---------------------------------------------------------------------------
+BODY='<!-- This is an auto-generated comment: summarize by coderabbit.ai -->
+
+## Walkthrough
+
+Actionable comments posted: 3
+
+<details>
+<summary>📒 Files selected for processing (1)</summary>
+
+* `.claude/scripts/pr-state.sh`
+
+</details>'
+result=$(classify_body "$BODY")
+class="${result%%|*}"
+[[ "$class" == "finding" ]] && pass "Bug6a: walkthrough marker + 'Actionable comments posted: 3' → finding (real findings not masked)" \
+  || fail "Bug6a: walkthrough marker + actionable count — expected finding, got $class"
+
+# ---------------------------------------------------------------------------
+# Bug6b: MASKING GUARD — walkthrough marker + severity keyword stays a finding.
+# Same rationale as Bug6a, via the severity-keyword branch rather than the count.
+# ---------------------------------------------------------------------------
+BODY='<!-- This is an auto-generated comment: summarize by coderabbit.ai -->
+
+## Walkthrough
+
+Summary of changes, including one nitpick raised against the retry loop.'
+result=$(classify_body "$BODY")
+class="${result%%|*}"
+[[ "$class" == "finding" ]] && pass "Bug6b: walkthrough marker + severity keyword 'nitpick' → finding (real findings not masked)" \
+  || fail "Bug6b: walkthrough marker + severity keyword — expected finding, got $class"
+
+# ---------------------------------------------------------------------------
+# Bug6c: the as-observed composite — walkthrough marker AND a rate-limit notice in
+# one body (comment 4994462241 on PR #568, after CR edited it in place).
+# Satisfied by EITHER the #557 rate-limit override or the #575 walkthrough override;
+# asserting only the class keeps it robust to which one fires first. Kept so the
+# real-world body stays covered without becoming a vacuous proxy for Bug6.
+# ---------------------------------------------------------------------------
+BODY='<!-- This is an auto-generated comment: summarize by coderabbit.ai -->
+<!-- review_stack_entry_start -->
+<!-- review_stack_entry_end -->
+<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->
+
+> [!WARNING]
+> ## Review limit reached
+>
+> **Next review available in:** **16 minutes**
+
+<!-- end of auto-generated comment: rate limited by coderabbit.ai -->'
+result=$(classify_body "$BODY")
+class="${result%%|*}"
+[[ "$class" == "acknowledgment" ]] && pass "Bug6c: walkthrough marker + rate-limit notice composite → acknowledgment" \
+  || fail "Bug6c: walkthrough + rate-limit composite — expected acknowledgment, got $class"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
@@ -373,4 +486,4 @@ echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then
   exit 1
 fi
-echo "OK: pr-state.sh classify — all fixtures and regressions passed (issues #535, #557)"
+echo "OK: pr-state.sh classify — all fixtures and regressions passed (issues #535, #557, #575)"

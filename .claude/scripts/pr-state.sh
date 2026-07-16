@@ -362,8 +362,19 @@ CONVO=$(run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per
 #      3. BugBot BUGBOT_REVIEW zero-issue check MUST precede the generic "issues? found"
 #         finding pattern — otherwise the finding pattern swallows BugBot clean summaries.
 #      4. Finding patterns (severity/badges/phrases/suggestions) come next.
-#      5. Weak-ack fallback (lgtm variants) last, so it can't hide a real finding.
-#      6. Default is finding — under-classifying is the failure mode this skill prevents.
+#      5. Weak-ack fallback (lgtm variants) next, so it can't hide a real finding.
+#      6. CR walkthrough/summary marker ("<!-- ... summarize by coderabbit.ai -->") is the LAST
+#         override, immediately above the default — deliberately NOT in the tier-1 group above (#575).
+#         This is a different trigger from #557's rate-limit/usage-limit family: the walkthrough is
+#         the boilerplate CR posts on nearly every PR, and it matched no branch at all, so it fell
+#         through to default → finding and produced phantom findings.
+#         Its late placement is load-bearing: the walkthrough can carry "actionable comments posted: N"
+#         (N > 0) and severity keywords for the findings it is summarizing. Hoisting this branch up
+#         with the other overrides would mask those real findings — a false clean on the review gate,
+#         which is strictly worse than the phantom-finding noise it fixes. Every finding pattern must
+#         be evaluated first and win. Ordering alone supplies that guard, so no AND-not guard (of the
+#         BugBot zero-issue kind) is needed here.
+#      7. Default is finding — under-classifying is the failure mode this skill prevents.
 # ----------------------------------------------------------------------
 NEW_SINCE="null"
 if [[ -n "$SINCE" ]]; then
@@ -392,6 +403,7 @@ if [[ -n "$SINCE" ]]; then
       elif test("Prompt for AI Agent"; "i") then {class: "finding", reason: "CR fix prompt"}
       elif test("```suggestion"; "m") then {class: "finding", reason: "suggestion block"}
       elif test("\\b(lgtm|looks good|approved|confirmed|resolved)\\b"; "i") then {class: "acknowledgment", reason: "lgtm variant"}
+      elif test("<!--\\s*This is an auto-generated comment:\\s*summarize by coderabbit\\.ai\\s*-->"; "i") then {class: "acknowledgment", reason: "CR walkthrough summary"}
       else {class: "finding", reason: "default — no pattern matched"}
       end;
     def enrich($since; $tsfield):
