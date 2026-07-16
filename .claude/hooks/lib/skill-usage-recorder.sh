@@ -25,8 +25,11 @@
 # session + skill consumes a fresh marker and skips its own line. Consume-once
 # plus the freshness bound cap both failure modes at a single line.
 #
-# Every function is best-effort and returns 0 — telemetry must never break a
-# hook, and both callers are non-blocking.
+# record_skill_usage() itself is best-effort and always returns 0 — telemetry
+# must never break a hook, and both callers are non-blocking. Internal helpers
+# (_skill_usage_valid_skill, _skill_usage_append_log,
+# _skill_usage_consume_marker, ...) do use non-zero returns for their own
+# control flow; record_skill_usage absorbs all of that.
 
 SKILL_USAGE_LOG="${HOME}/.claude/skill-usage.log"
 SKILL_USAGE_CSV="${HOME}/.claude/skill-usage.csv"
