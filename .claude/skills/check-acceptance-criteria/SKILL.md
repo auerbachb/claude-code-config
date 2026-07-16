@@ -51,11 +51,13 @@ esac
 
 ### Step 3: Verify each criterion
 
-Filter `$ITEMS` to only the unchecked entries — already-checked items don't need re-verification. `$ITEMS` is guaranteed to be valid JSON after a successful `--extract` (exit 0), so `jq` cannot fail here unless the file was truncated:
+Filter `$ITEMS` to only the unchecked entries — already-checked items don't need re-verification. `$ITEMS` is guaranteed to be valid JSON after a successful `--extract` (exit 0), so `jq` cannot fail here as long as the payload reaches it intact:
 
 ```bash
-UNCHECKED=$(echo "$ITEMS" | jq '[.[] | select(.checked == false)]')
+UNCHECKED=$(printf '%s' "$ITEMS" | jq '[.[] | select(.checked == false)]')
 ```
+
+Pipe with `printf '%s'`, never `echo` — zsh's builtin `echo` interprets escape sequences in criterion text and corrupts the JSON, so `jq` either errors or returns empty, which reads as "all criteria pass" and falsely clears the AC gate (issue #574).
 
 Then, for each object in `$UNCHECKED`:
 
