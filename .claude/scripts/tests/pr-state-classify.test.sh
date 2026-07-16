@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Unit test for the `classify` jq function inside `pr-state.sh --since` (issue #535).
+# Unit test for the `classify` jq function inside `pr-state.sh --since`
+# (issues #535, #557).
 #
-# Verifies that the three comment bodies misclassified on auerbachb/inventory PR #2
-# (Jul 2 2026) are now correctly classified as acknowledgments, and that existing
-# patterns are not regressed.
+# Verifies that comment bodies observed misclassified in the wild are now correctly
+# classified as acknowledgments, and that existing patterns are not regressed:
+#   - #535: three bodies on auerbachb/inventory PR #2 (Jul 2 2026) — BugBot clean-pass,
+#     BugBot zero-issue summary, CR error stub.
+#   - #557: two bodies on auerbachb/claude-code-config PR #554 (Jul 16 2026) — CR
+#     Fair-Usage rate-limit notice, BugBot usage-limit notice.
 #
 # Strategy: extract the classify function definition via sed from pr-state.sh and
 # exercise it in isolation with jq -n. This tests the actual production code rather
@@ -202,6 +206,79 @@ class="${result%%|*}"
   || fail "Regression: default unknown body — got $class"
 
 # ---------------------------------------------------------------------------
+# Bug 4: CodeRabbit Fair-Usage rate-limit notice (issue #557)
+# Verbatim body of auerbachb/claude-code-config PR #554 comment 4993611774
+# (Jul 16 2026). The pre-#557 patterns ("rate limit exceeded" / "rate-limited by
+# coderabbit") do not match this wording, and CR wraps it in a "Full review
+# finished" ack — so "full review triggered" misses it too.
+# Was: default → finding; Should be: rate limit notice → acknowledgment
+# ---------------------------------------------------------------------------
+BODY='<!-- This is an auto-generated reply by CodeRabbit -->
+<details>
+<summary>✅ Action performed</summary>
+
+Full review finished.
+
+---
+
+You'"'"'re currently rate limited under our [Fair Usage Limits Policy](https://docs.coderabbit.ai/management/plans#fair-usage-limits-policy). Your recent PR review activity is in the 95th percentile or higher among CodeRabbit users, so adaptive limits apply. Your next review will be available in 22 minutes.
+
+</details>'
+result=$(classify_body "$BODY")
+class="${result%%|*}"; reason="${result##*|}"
+if [[ "$class" == "acknowledgment" && "$reason" == "rate limit notice" ]]; then
+  pass "Bug4: CR Fair-Usage rate-limit notice → acknowledgment"
+else
+  fail "Bug4: CR Fair-Usage rate-limit notice — expected acknowledgment/rate limit notice, got $class/$reason"
+fi
+
+# ---------------------------------------------------------------------------
+# Bug 5: BugBot usage-limit notice (issue #557)
+# Verbatim body of auerbachb/claude-code-config PR #554 comment 4993610715
+# (Jul 16 2026). BugBot did not run at all, so this is not a finding.
+# Was: default → finding; Should be: BugBot usage limit notice → acknowledgment
+# ---------------------------------------------------------------------------
+BODY='<h3>Bugbot couldn'"'"'t run - usage limit reached</h3>
+
+Bugbot is counted against Cursor usage for this user or team, and this run hit a usage or spend limit.
+
+A user or team admin can review and increase usage limits in the [Cursor dashboard](https://www.cursor.com/dashboard/spending).'
+result=$(classify_body "$BODY")
+class="${result%%|*}"; reason="${result##*|}"
+if [[ "$class" == "acknowledgment" && "$reason" == "BugBot usage limit notice" ]]; then
+  pass "Bug5: BugBot usage-limit notice → acknowledgment"
+else
+  fail "Bug5: BugBot usage-limit notice — expected acknowledgment/BugBot usage limit notice, got $class/$reason"
+fi
+
+# ---------------------------------------------------------------------------
+# Bug 4b: CodeRabbit "Review limit reached" variant (issue #557)
+# Excerpt of auerbachb/claude-code-config PR #565 (Jul 16 2026) — a THIRD distinct
+# CR rate-limit wording, observed while this very fix was in review.
+#
+# It deliberately pins the generalizing pattern: this body matches none of the other
+# #557 phrases — "Next review available in:" is not "next review will be available in",
+# and "adaptive limits are currently applied" is not "currently rate limited". Only
+# `fair usage limits policy` catches it, which is why that pattern must not be dropped.
+# ---------------------------------------------------------------------------
+BODY='<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->
+
+> [!WARNING]
+> ## Review limit reached
+>
+> You'"'"'ve reached a temporary PR review limit under our [Fair Usage Limits Policy](https://docs.coderabbit.ai/management/plans#fair-usage-limits-policy).<br>
+> Your recent review volume is higher than typical usage, so adaptive limits are currently applied.
+>
+> **Next review available in:** **11 minutes**'
+result=$(classify_body "$BODY")
+class="${result%%|*}"; reason="${result##*|}"
+if [[ "$class" == "acknowledgment" && "$reason" == "rate limit notice" ]]; then
+  pass "Bug4b: CR 'Review limit reached' variant → acknowledgment"
+else
+  fail "Bug4b: CR 'Review limit reached' variant — expected acknowledgment/rate limit notice, got $class/$reason"
+fi
+
+# ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
 
@@ -225,6 +302,48 @@ class="${result%%|*}"
 [[ "$class" == "finding" ]] && pass "Edge: BugBot BUGBOT_REVIEW 1 issue → finding" \
   || fail "Edge: BugBot BUGBOT_REVIEW 1 issue — got $class"
 
+# Legacy CR rate-limit phrasings must keep matching after the #557 pattern widening
+result=$(classify_body "Rate limit exceeded")
+class="${result%%|*}"
+[[ "$class" == "acknowledgment" ]] && pass "Edge: legacy 'rate limit exceeded' → acknowledgment" \
+  || fail "Edge: legacy 'rate limit exceeded' — got $class"
+
+result=$(classify_body "You are rate-limited by CodeRabbit")
+class="${result%%|*}"
+[[ "$class" == "acknowledgment" ]] && pass "Edge: legacy 'rate-limited by coderabbit' → acknowledgment" \
+  || fail "Edge: legacy 'rate-limited by coderabbit' — got $class"
+
+# Each #557 CR rate-limit phrase must match on its own, not only in the full body
+result=$(classify_body "Your next review will be available in 22 minutes.")
+class="${result%%|*}"
+[[ "$class" == "acknowledgment" ]] && pass "Edge: CR 'next review will be available in' → acknowledgment" \
+  || fail "Edge: CR 'next review will be available in' — got $class"
+
+# BugBot usage-limit: curly apostrophe + em dash (GitHub renders both variants)
+result=$(classify_body "Bugbot couldn’t run — usage limit reached")
+class="${result%%|*}"
+[[ "$class" == "acknowledgment" ]] && pass "Edge: BugBot usage-limit curly apostrophe + em dash → acknowledgment" \
+  || fail "Edge: BugBot usage-limit curly apostrophe + em dash — got $class"
+
+# BugBot spend-limit phrasing alone (no "couldn't run" header)
+result=$(classify_body "this run hit a usage or spend limit")
+class="${result%%|*}"
+[[ "$class" == "acknowledgment" ]] && pass "Edge: BugBot 'this run hit a usage or spend limit' → acknowledgment" \
+  || fail "Edge: BugBot 'this run hit a usage or spend limit' — got $class"
+
+# The spend-limit override requires BugBot's full "this run hit ..." boilerplate, so
+# prose merely discussing usage limits still reaches the finding tier. This matters in a
+# repo whose PRs routinely edit the reviewer rate-limit paths.
+#
+# Note the limit of this guard: like every override (see #535's "found no new issues"),
+# the usage-limit patterns are checked BEFORE the finding tier by design, so a finding
+# quoting BugBot's boilerplate verbatim would still classify as an acknowledgment. That
+# tradeoff is accepted repo-wide; the tight patterns keep the exposure to verbatim quotes.
+result=$(classify_body "🔴 Critical: this retry path silently succeeds when the caller has hit a usage or spend limit.")
+class="${result%%|*}"
+[[ "$class" == "finding" ]] && pass "Edge: finding discussing usage/spend limits → finding (override not over-broad)" \
+  || fail "Edge: finding discussing usage/spend limits — got $class"
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
@@ -233,4 +352,4 @@ echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then
   exit 1
 fi
-echo "OK: pr-state.sh classify — all fixtures and regressions passed (issue #535)"
+echo "OK: pr-state.sh classify — all fixtures and regressions passed (issues #535, #557)"
