@@ -129,15 +129,26 @@ run_script() {
 
 BUGBOT_CHECK_RUN_OK='{"id": 2, "name": "Cursor Bugbot", "status": "completed", "conclusion": "neutral", "title": ""}'
 BUGBOT_CHECK_RUN_FAILED_TITLE='{"id": 2, "name": "Cursor Bugbot", "status": "completed", "conclusion": "neutral", "title": "Bugbot couldn'"'"'t run - usage limit reached"}'
+BUGBOT_CHECK_RUN_TIMED_OUT='{"id": 2, "name": "Cursor Bugbot", "status": "completed", "conclusion": "timed_out", "title": ""}'
 
-FAILURE_COMMENT='{"user": {"login": "cursor[bot]"}, "body": "Bugbot couldn'"'"'t run - usage limit reached. A user or team admin can review and increase usage limits."}'
-FAILURE_COMMENT_ALT='{"user": {"login": "cursor[bot]"}, "body": "Bugbot is counted against Cursor usage for this user or team, and this run hit a usage or spend limit."}'
-GENUINE_FINDING_COMMENT='{"user": {"login": "cursor[bot]"}, "body": "Found 1 bug in this PR: possible null dereference on line 42."}'
+# Comments carry explicit created_at timestamps so "latest event wins" ordering
+# (issue #552 CodeRabbit finding) is genuinely exercised, not an accident of
+# array-literal order.
+failure_comment() {
+  printf '{"user": {"login": "cursor[bot]"}, "created_at": "%s", "body": "Bugbot couldn'"'"'t run - usage limit reached. A user or team admin can review and increase usage limits."}' "$1"
+}
+failure_comment_alt() {
+  printf '{"user": {"login": "cursor[bot]"}, "created_at": "%s", "body": "Bugbot is counted against Cursor usage for this user or team, and this run hit a usage or spend limit."}' "$1"
+}
+genuine_comment() {
+  printf '{"user": {"login": "cursor[bot]"}, "created_at": "%s", "body": "Found 1 bug in this PR: possible null dereference on line 42."}' "$1"
+}
 
 ############################################################################
 echo "== Scenario (a): usage-limit failure comment + completed check-run -> trigger_greptile =="
 reset_state
 write_commits "$(ts_seconds_ago 120)"   # recent push (AGE_SECONDS < 600) — proves grace-window skip
+FAILURE_COMMENT="$(failure_comment "$(ts_seconds_ago 60)")"
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[]" "[]" "[$FAILURE_COMMENT]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
@@ -156,7 +167,8 @@ check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
 echo "== Scenario (b): genuine BugBot findings comment -> switch_bugbot =="
 reset_state
 write_commits "$(ts_seconds_ago 7200)"
-write_state "[$BUGBOT_CHECK_RUN_OK]" "[]" "[]" "[$GENUINE_FINDING_COMMENT]"
+GENUINE_COMMENT="$(genuine_comment "$(ts_seconds_ago 7000)")"
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[]" "[]" "[$GENUINE_COMMENT]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
@@ -171,10 +183,12 @@ check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
 
 ############################################################################
-echo "== Scenario (d): failure comment followed by a later genuine review -> switch_bugbot =="
+echo "== Scenario (d): failure comment followed by a LATER genuine review (by timestamp) -> switch_bugbot =="
 reset_state
 write_commits "$(ts_seconds_ago 7200)"
-write_state "[$BUGBOT_CHECK_RUN_OK]" "[]" "[]" "[$FAILURE_COMMENT, $GENUINE_FINDING_COMMENT]"
+FAILURE_COMMENT_D="$(failure_comment "$(ts_seconds_ago 7000)")"
+GENUINE_COMMENT_D="$(genuine_comment "$(ts_seconds_ago 3000)")"
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[]" "[]" "[$FAILURE_COMMENT_D, $GENUINE_COMMENT_D]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
@@ -183,7 +197,28 @@ check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
 echo "== Scenario (e): alt failure phrasing (\"usage or spend limit\") also detected -> trigger_greptile =="
 reset_state
 write_commits "$(ts_seconds_ago 120)"
+FAILURE_COMMENT_ALT="$(failure_comment_alt "$(ts_seconds_ago 60)")"
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[]" "[]" "[$FAILURE_COMMENT_ALT]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== Scenario (f): genuine review followed by a LATER failure comment -> trigger_greptile (CodeRabbit finding) =="
+reset_state
+write_commits "$(ts_seconds_ago 120)"
+GENUINE_COMMENT_F="$(genuine_comment "$(ts_seconds_ago 7000)")"
+FAILURE_COMMENT_F="$(failure_comment "$(ts_seconds_ago 60)")"
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[]" "[]" "[$GENUINE_COMMENT_F, $FAILURE_COMMENT_F]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== Scenario (g): check-run has a blocking conclusion (timed_out) with a non-matching title, no comment -> trigger_greptile (CodeAnt finding) =="
+reset_state
+write_commits "$(ts_seconds_ago 120)"
+write_state "[$BUGBOT_CHECK_RUN_TIMED_OUT]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"

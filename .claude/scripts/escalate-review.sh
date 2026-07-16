@@ -174,23 +174,34 @@ fi
 # Content-aware BugBot classification (issue #552): a completed `Cursor Bugbot`
 # check-run alone does not mean BugBot actually reviewed the PR — a usage/spend
 # limit failure produces the same status=completed/conclusion=neutral tuple as
-# a genuine clean pass. Distinguish by scanning comment bodies (and, defensively,
-# check-run titles, since only `title` is captured for check-runs) for known
-# failure phrases.
+# a genuine clean pass, and a genuinely blocking conclusion (failure/timed_out/
+# etc.) is a different kind of non-review that also isn't a real pass. The
+# check-run is already scoped to the current HEAD SHA (pr-state.sh fetches it
+# per-commit), so it anchors "what happened on this commit"; when its
+# conclusion is ambiguous (completed/neutral, non-blocking, non-failure title)
+# the LATEST cursor[bot] comment (by timestamp, not "any historical match")
+# disambiguates a usage-limit failure from a genuine clean pass/findings.
 read -r BUGBOT_FAILED BUGBOT_GENUINE < <(jq -r '
   def is_failure_text: test("couldn.t run|could not run|usage limit|usage or spend limit"; "i");
+  def is_blocking_conclusion: . == "failure" or . == "timed_out" or . == "action_required" or . == "startup_failure" or . == "stale";
   def cursor_comments: [.comments.reviews[], .comments.inline[], .comments.conversation[]
     | select(.user.login == "cursor[bot]")];
-  def failure_comment_count: [cursor_comments[] | select((.body // "") | is_failure_text)] | length;
-  def genuine_comment_count: [cursor_comments[] | select(((.body // "") | is_failure_text) | not)] | length;
-  def failed_check_run_count: [.check_runs.all[]
-    | select((.name // "") == "Cursor Bugbot")
-    | select((.title // "") | is_failure_text)] | length;
-  def genuine_completed_check_run_count: [.check_runs.all[]
-    | select((.name // "") == "Cursor Bugbot" and (.status // "") == "completed")
-    | select(((.title // "") | is_failure_text) | not)] | length;
-  ((failure_comment_count > 0) or (failed_check_run_count > 0)) as $failed
-  | ((genuine_comment_count > 0) or ((genuine_completed_check_run_count > 0) and (failure_comment_count == 0))) as $genuine
+  def comment_ts: (.submitted_at // .created_at // "");
+
+  (cursor_comments | sort_by(comment_ts) | last) as $latest_comment
+  | ([.check_runs.all[] | select((.name // "") == "Cursor Bugbot")] | last) as $run
+  | ($latest_comment != null and (($latest_comment.body // "") | is_failure_text)) as $latest_comment_failed
+  | ($run != null and ((($run.conclusion // "") | is_blocking_conclusion) or (($run.title // "") | is_failure_text))) as $run_definitive_failure
+  | ($run != null and ($run.status // "") == "completed" and ($run_definitive_failure | not)) as $run_completed_ambiguous
+  | (
+      $run_definitive_failure
+      or ($run_completed_ambiguous and $latest_comment_failed)
+      or ($run == null and $latest_comment_failed)
+    ) as $failed
+  | (
+      ($run_completed_ambiguous and ($latest_comment_failed | not))
+      or ($run == null and $latest_comment != null and ($latest_comment_failed | not))
+    ) as $genuine
   | [$failed, $genuine] | @tsv
 ' "$STATE_PATH") || {
   echo "escalate-review.sh: failed to classify BugBot activity" >&2
