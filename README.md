@@ -55,7 +55,7 @@ Review ownership is sticky once a fallback tier takes over:
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `npm install -g @anthropic-ai/claude-code` | The CLI / desktop app itself |
 | [GitHub CLI (`gh`)](https://cli.github.com/) | `brew install gh && gh auth login` | Issue/PR creation, API calls |
 | [CodeRabbit](https://coderabbit.ai) | Install the GitHub App on your repos | AI code review on PRs |
-| [CodeRabbit CLI](https://docs.coderabbit.ai/cli) | `brew install coderabbit` (macOS) or `curl -fsSL https://cli.coderabbit.ai/install.sh \| sh`; auth via `coderabbit auth login` or `$CODERABBIT_API_KEY` | Local pre-push reviews |
+| [CodeRabbit CLI](https://docs.coderabbit.ai/cli) | `brew install coderabbit` (macOS) or `curl -fsSL https://cli.coderabbit.ai/install.sh \| sh`; then `coderabbit auth login` (see [SETUP.md](SETUP.md) for the `$CODERABBIT_API_KEY` non-interactive option) | Local pre-push reviews |
 | CodeAnt | Install the GitHub App on your repos | Supplemental AI code review on PRs |
 | [CodeAnt CLI](https://docs.codeant.ai/cli/setup.md) | `npm install -g codeant-cli` (Node.js required); auth via `codeant login` | Local pre-push reviews |
 | Graphite AI Reviews | Enable in Graphite for your repos | Supplemental AI review/check-run signal on PRs |
