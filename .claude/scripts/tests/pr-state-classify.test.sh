@@ -13,8 +13,11 @@
 # Offline: no gh, no git, no network calls needed.
 set -euo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-SCRIPT="$REPO_ROOT/.claude/scripts/pr-state.sh"
+# Resolve pr-state.sh relative to this test file — no git required, so the test
+# runs from a source archive without .git metadata (matches the "no git" note above).
+# This test lives in .claude/scripts/tests/; the script under test is one dir up.
+TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT="$TEST_DIR/../pr-state.sh"
 
 PASS=0
 FAIL=0
