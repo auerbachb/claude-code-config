@@ -134,9 +134,9 @@ expect_lines 2 "marker must not suppress a different skill"
 # --- Stale marker: suppression is time-bounded ------------------------------
 reset_state
 mkdir -p "$MARKER_DIR"
-printf '%s\n' "$(( $(date -u +%s) - 400 ))" > "$MARKER_DIR/s-stale__issue-maker"
+printf '%s\n' "$(( $(date -u +%s) - 31 ))" > "$MARKER_DIR/s-stale__issue-maker"
 track 'issue-maker' 's-stale' >/dev/null
-expect_lines 1 "stale marker (>300s) must not suppress a Skill call"
+expect_lines 1 "stale marker (just past the 30s TTL) must not suppress a Skill call"
 
 # A marker is spent whether or not it suppressed anything.
 [[ -e "$MARKER_DIR/s-stale__issue-maker" ]] && fail "stale marker should have been consumed"

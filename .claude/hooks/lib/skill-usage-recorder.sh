@@ -33,10 +33,13 @@ SKILL_USAGE_CSV="${HOME}/.claude/skill-usage.csv"
 SKILL_USAGE_SEED_CSV="${HOME}/.claude/skills-worktree/.claude/skill-usage.csv"
 SKILL_USAGE_MARKER_DIR="${HOME}/.claude/.skill-usage-pending"
 
-# How long a marker may suppress a PostToolUse line. Long enough to cover the
-# model reacting to a typed command, short enough that an unrelated Skill call
-# later in the session still counts.
-SKILL_USAGE_MARKER_TTL=300
+# How long a marker may suppress a PostToolUse line. The marker exists only to
+# cover a *future* build emitting a Skill call for the same turn as a typed
+# command — that would happen within the same turn (seconds), not minutes
+# later. Kept short so a genuinely separate later Skill call for the same
+# skill + session (e.g. the user asks to re-run it) is never misattributed as
+# the earlier typed invocation (#592 CodeAnt review).
+SKILL_USAGE_MARKER_TTL=30
 # Orphaned markers (typed command that never produced a Skill call — the normal
 # case today) are swept after this many minutes.
 SKILL_USAGE_MARKER_PRUNE_MIN=60
@@ -56,12 +59,13 @@ skill_usage_resolve_session() {
   printf '%s' "${session:-unknown}"
 }
 
-# Reject names that would corrupt the CSV or escape the marker directory.
+# Reject names that would corrupt the CSV, the tab-separated log, or escape
+# the marker directory.
 _skill_usage_valid_skill() {
   case "${1:-}" in
     '') return 1 ;;
     *,*|*'"'*|*/*) return 1 ;;
-    *$'\n'*|*$'\r'*) return 1 ;;
+    *$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
   esac
   return 0
 }
