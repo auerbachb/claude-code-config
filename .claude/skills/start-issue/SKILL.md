@@ -222,7 +222,7 @@ Ready to code. Start with step 1 of the plan above. Run the dual-CLI local revie
 | Param | Value |
 |-------|-------|
 | `title` | Verb-first, ≤60 chars, includes the issue number — built from `ISSUE_NUMBER` + `TITLE` (e.g. `Fix #42 stale worktree warning`) |
-| `prompt` | The complete self-contained coding-thread prompt — byte-identical to the **content** of the fallback block above (the fence delimiters are not part of the prompt; everything between them is), with the `**Model:**` line at the top |
+| `prompt` | The complete self-contained coding-thread prompt: the `**Model:**` line, then a blank line, then the **content** of the fallback block above reproduced verbatim (the fence delimiters are not part of the prompt; everything between them is). The Model line is the only addition — the block's own text is never reworded to suit the chip |
 | `tldr` | 1–2 plain-English sentences from `TITLE` / the merged plan: what the session will do and why. No file paths, no jargon |
 | `cwd` | `WORKTREE_PATH` — the worktree created in Step 6 |
 
@@ -230,7 +230,7 @@ Ready to code. Start with step 1 of the plan above. Run the dual-CLI local revie
 
 **Chips carry no model preset,** so the `**Model:** {MODEL} — {REASON}` line MUST appear both at the top of the chip's `prompt` text (so the spawned session sees it) and in the visible short summary (so the user can set the picker before clicking).
 
-**Record the returned `task_id` immediately,** before any dependent step — an unrecorded chip cannot be withdrawn. `/start-issue` has no Active Work table, so track it **session-locally**, keyed by issue number, and say so in the summary; the chip stays dismissable for this session only. If the issue already has a live chip recorded in this session, skip the spawn rather than offering it twice. `dismiss_task` hygiene and print-on-demand replay ("print the full prompt for #N" re-emits the complete block verbatim; the chip stays offered) follow the reference — do not restate its rules here.
+**Record the returned `task_id` immediately,** before any dependent step — an unrecorded chip cannot be withdrawn. `/start-issue` has no Active Work table, so track it **session-locally**, keyed by issue number, and say so in the summary; the chip stays dismissable for this session only. If the issue already has a live chip recorded in this session, skip the spawn rather than offering it twice. `dismiss_task` hygiene and print-on-demand replay ("print the full prompt for #N" re-emits that chip's `prompt` verbatim — Model line and block — in the fenced form fallback would have printed; the chip stays offered) follow the reference — do not restate its rules here.
 
 ### Model recommendation
 
