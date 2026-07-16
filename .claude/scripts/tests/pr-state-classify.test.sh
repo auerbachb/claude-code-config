@@ -256,10 +256,10 @@ fi
 # Excerpt of auerbachb/claude-code-config PR #565 (Jul 16 2026) — a THIRD distinct
 # CR rate-limit wording, observed while this very fix was in review.
 #
-# It deliberately pins the generalizing pattern: this body matches none of the other
-# #557 phrases — "Next review available in:" is not "next review will be available in",
-# and "adaptive limits are currently applied" is not "currently rate limited". Only
-# `fair usage limits policy` catches it, which is why that pattern must not be dropped.
+# It pins the phrasing spread: this variant shares no wording with the Bug4 body except
+# the policy link. It is caught by "rate limited by coderabbit.ai" (the auto-generated
+# marker), "Review limit reached", and "Next review available in:" — three independent
+# CR-specific signals, none of them a generic phrase. See Bug4c for why that matters.
 # ---------------------------------------------------------------------------
 BODY='<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->
 
@@ -277,6 +277,27 @@ if [[ "$class" == "acknowledgment" && "$reason" == "rate limit notice" ]]; then
 else
   fail "Bug4b: CR 'Review limit reached' variant — expected acknowledgment/rate limit notice, got $class/$reason"
 fi
+
+# ---------------------------------------------------------------------------
+# Bug4c: a real finding that merely QUOTES the Fair Usage policy stays a finding
+# (issue #557, raised by codeant-ai on PR #565).
+#
+# An earlier cut of this fix matched a bare `fair usage limits policy`. That phrase is
+# generic: because overrides are checked before the finding tier, any genuine bot finding
+# discussing the policy would classify as an acknowledgment and vanish from finding_count,
+# silently skipping remediation. Not hypothetical — this repo's own test file and PR bodies
+# contain that literal string. The phrase was dropped in favour of CR-specific wording.
+# ---------------------------------------------------------------------------
+result=$(classify_body "**Critical:** the docs cite our [Fair Usage Limits Policy](https://docs.coderabbit.ai/management/plans#fair-usage-limits-policy) but the retry loop ignores it.")
+class="${result%%|*}"
+[[ "$class" == "finding" ]] && pass "Bug4c: finding quoting Fair Usage policy → finding (generic phrase not an override)" \
+  || fail "Bug4c: finding quoting Fair Usage policy — expected finding, got $class"
+
+# Same guard, no severity keyword — must reach the default→finding tier on its own.
+result=$(classify_body "The helper links to the Fair Usage Limits Policy page, but the URL is stale and 404s.")
+class="${result%%|*}"
+[[ "$class" == "finding" ]] && pass "Bug4c: bare prose quoting Fair Usage policy → finding (via default)" \
+  || fail "Bug4c: bare prose quoting Fair Usage policy — expected finding, got $class"
 
 # ---------------------------------------------------------------------------
 # Edge cases
