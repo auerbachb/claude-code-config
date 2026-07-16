@@ -126,7 +126,29 @@ fi   # 0 single, 1 multiple, 2 none, 3/4 error
 - **Single candidate** (exactly one across both sources): proceed on it.
 - **Most-recent-unambiguous** (multiple candidates, but one was mentioned/active distinctly more recently — e.g. the top thread mention, or active within the last ~5 minutes while the others are stale): proceed on the most-recent one and surface the rest with an `Also tracking:` line.
 - **Ambiguous** (candidates tied in recency, or no clear most-recent winner): **stop** — list each candidate with its source/last-activity and ask the user to specify: `Multiple PRs in scope — please specify: /wrap <N>`.
-- **No candidates** (1.1b empty, 1.1c found nothing, `SESSION_RC == 2`): stop with the existing message: `No PR found for the current branch.`
+- **No candidates** (1.1b empty, 1.1c found nothing, `SESSION_RC == 2`): stop — but pick the stop message that matches the situation, per **1.1f** below. Either way `/wrap` does no work: Phases 1–4 are all skipped, nothing is created, and the skill exits.
+
+**1.1f — Choose the no-candidates stop message** *(AI judgment, same layer and style as 1.1c — no script, no state file)*. Scan the **current conversation** for signals that this thread never contained coding work. Count a signal only when it is actually present in the thread:
+
+- The thread ran `/issue-maker`, or otherwise declared itself capture-only / issue-only mode.
+- The thread's entire output was creating, editing, commenting on, or closing GitHub issues — no implementation.
+- The thread is PM/monitoring/orchestration only (`/pm`, `/prioritize`, `/status`, `/standup`, `/recap`) with no code written here.
+- The thread explicitly concluded the work was already solved elsewhere, or that there is nothing to implement.
+- No branch, worktree, commit, push, or PR was ever created or discussed in this thread.
+
+**Tiebreak — this bias is mandatory.** Emit the no-coding message **only** when the thread affirmatively shows those signals. If the signals are absent, weak, mixed, or you are unsure at all, emit the lookup-failed message. Telling someone "nothing to wrap" while they are sitting on a real PR is the worse failure; a redundant `/wrap <N>` hint costs nothing.
+
+- **Non-coding thread detected** — state it plainly; this is a normal outcome, not an error. Do not use "failed", "could not", "unable to find", and do not imply the user should go fix anything:
+
+  ```text
+  This thread has no coding work in it, so there's nothing to wrap. No action needed.
+  ```
+
+- **No detection signal (default)** — keep today's meaning and name the escape hatch:
+
+  ```text
+  No PR found for the current branch. If you meant a specific PR, name it: /wrap <N>
+  ```
 
 **Emit the inference result before verification.** Once a PR is resolved by inference (any of 1.1a, 1.1c, or 1.1d/e — i.e. `INFERRED_SOURCE` is set, *not* the plain 1.1b branch path), print the `[INFERRED]` line **immediately, before any Phase 1 verification work (Step 1.2 onward)**, so the user has a visible checkpoint to abort a mismatch:
 
@@ -604,7 +626,7 @@ After the per-PR follow-up report: proceed immediately to **Part B** — do not 
 
 Part B sweeps the **whole session** for loose ends the per-PR detection in Part A cannot see — deferred ideas, stale process state, decisions worth persisting, drifted tickets, time-sensitive reminders. It produces two buckets — **Auto-handled** and **Needs your decision** — and a one-line **verdict**, all rendered in the Phase 4 final report (Step 4.3).
 
-**Out of scope (explicit):** the sweep only runs as part of `/wrap`, which already requires a PR (Step 1.1 stops with "No PR found for the current branch" otherwise). Pure non-PR threads (issue-capture, PM-only, monitoring-only) never reach Part B — a standalone `/session-wrap` is a separate ticket, not this skill (issue #471 Notes).
+**Out of scope (explicit):** the sweep only runs as part of `/wrap`, which already requires a PR (Step 1.1 stops via its 1.1f no-candidates branch otherwise). Pure non-PR threads (issue-capture, PM-only, monitoring-only) never reach Part B — a standalone `/session-wrap` is a separate ticket, not this skill (issue #471 Notes).
 
 **Safety boundaries for the entire sweep (non-negotiable — issue #471):**
 
