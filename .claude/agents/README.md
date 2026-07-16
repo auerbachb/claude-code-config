@@ -74,11 +74,17 @@ Agent tool call:
            commands (rm -rf, rm, git checkout ., git stash, git reset --hard) in the
            root repo directory. Stay in your worktree directory at all times.
 
+           MINDSET: Before handing off, enumerate your actual tools (gh/git/curl/gh
+           api, MCP, skills) — don't trust inherited 'agents can't' prose. Try the
+           CLI-accessible path first. Only hand off for real walls (token-scope 403,
+           branch protection, .env, or a safety.md 'Never' item), structured like
+           /admin-merge: exact command + one-line reason.
+
            Existing findings to fix:
            <paste findings here>"
 ```
 
-The SAFETY block is mandatory in every subagent prompt (see `.claude/rules/safety.md`). The example above shows where to place it — between the task context and any findings payload.
+The SAFETY and MINDSET blocks are mandatory in every subagent prompt (see `.claude/rules/safety.md`). The example above shows where to place them — between the task context and any findings payload.
 
 The agent definition provides the workflow rules. The prompt provides the runtime context. The parent no longer needs to read and embed all rule files manually.
 
