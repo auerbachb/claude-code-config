@@ -235,8 +235,8 @@ worktree directory at all times.
 4. Run the local dual-CLI review per `cr-local-review.md`: `coderabbit review --agent` AND `codeant review --all --headless`
    - Union the findings; fix all valid findings.
    - Run all available CLIs again. Repeat until each remaining CLI has one clean pass.
-   - If a CLI hangs >2 minutes or errors twice, drop it for the session, gate on the remaining one, and note the drop in the PR body.
-   - If both are down, do one self-review instead and note it in the PR body — self-review never counts as a clean review gate.
+   - If a CLI hangs >2 minutes or errors twice, drop it for the session, resolve or explicitly waive its pre-drop findings in the PR body, gate on the remaining one, and note the drop.
+   - If both are down, do one self-review and note it in the PR body — it exits the local loop but never satisfies the GitHub merge gate.
 5. Commit all changes in ONE commit.
 6. Push the branch.
 7. Create the PR via `gh pr create` with:
