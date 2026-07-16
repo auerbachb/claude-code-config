@@ -47,3 +47,6 @@ jobs:
 
       - name: pr-state classify unit test (issue #535)
         run: bash .claude/scripts/tests/pr-state-classify.test.sh
+
+      - name: escalate-review.sh BugBot failure detection unit test (issue #552)
+        run: bash .claude/scripts/tests/escalate-review.test.sh
