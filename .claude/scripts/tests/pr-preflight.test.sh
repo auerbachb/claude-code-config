@@ -402,6 +402,33 @@ check_eq "all 4 re-triggered" "4" "$(actions | grep -c '^COMMENT')"
 check_eq "still no greptile" "0" "$(actions | grep -ciF 'greptile')"
 
 ############################################################################
+echo "== Scenario 12b: GitHub re-points commit_id on stale inline comments =="
+# Found by dogfooding the fix on PR #586, NOT by a stub: GitHub updates an inline
+# comment's .commit_id to the newest commit it still applies to, so a comment
+# written against an OLD sha reports commit_id == HEAD after a force-push. Only
+# .original_commit_id records what the reviewer actually reviewed. Keying off
+# .commit_id would re-introduce #576 through a different field.
+view_ready; commit_ok; no_checks
+write_reviews "$EMPTY"
+# Exactly the shape observed live: commit_id re-pointed to HEAD, original on OLD.
+write_pull_comments "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"original_commit_id\":\"$OLD_SHA\",\"created_at\":\"$BEFORE_HEAD\",\"body\":\"finding on the old commit\"}]"
+write_issue_comments "$EMPTY"
+OUT=$(run_json 493); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "re-pointed commit_id does NOT count as engaged on HEAD" "triggered" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
+check_eq "codeant re-triggered" "1" "$(actions | grep -cF '@codeant-ai review')"
+
+echo "== Scenario 12c: a genuine inline comment ON HEAD still counts =="
+# Guard the opposite direction: original_commit_id == HEAD means the reviewer
+# really did review HEAD, so it must remain already-present (no re-trigger).
+view_ready; commit_ok; no_checks
+write_reviews "$EMPTY"
+write_pull_comments "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"original_commit_id\":\"$HEAD_SHA\",\"created_at\":\"$AFTER_HEAD\",\"body\":\"finding on HEAD\"}]"
+write_issue_comments "$EMPTY"
+OUT=$(run_json 493)
+check_eq "inline comment genuinely on HEAD is already-present" "already-present" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
+check_eq "codeant not re-triggered" "0" "$(actions | grep -cF '@codeant-ai review')"
+
 echo "== Scenario 13: idempotent — reviewers fresh on HEAD stay a clean no-op =="
 view_ready; commit_ok; no_checks
 write_reviews "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$AFTER_HEAD\",\"body\":\"r\"},{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$AFTER_HEAD\",\"body\":\"r\"}]"

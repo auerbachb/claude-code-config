@@ -274,6 +274,22 @@ SLUGS_TMP="$(mktemp)"       # app.slug of each check-run on the HEAD commit
 GH_ERR="$(mktemp)"
 trap 'rm -f "$PR_VIEW_ERR" "$ARTIFACTS_TMP" "$SLUGS_TMP" "$GH_ERR" 2>/dev/null' EXIT
 
+# SHA field: prefer .original_commit_id, fall back to .commit_id.
+#
+# For an INLINE comment these differ, and the difference is load-bearing.
+# .original_commit_id is the commit the reviewer actually reviewed;
+# .commit_id is "the newest commit this comment still applies to" — GitHub
+# RE-POINTS it as the PR head moves. Observed live on PR #586: a CodeAnt inline
+# comment written at 18:13 against 2193d77 reported commit_id=ff42856 minutes
+# after a force-push — a SHA that did not exist when the comment was made.
+# Keying freshness off .commit_id would mark a bot "engaged on HEAD" on the
+# strength of a comment from a superseded commit: the exact #576 bug, re-entering
+# through a different field.
+#
+# Reviews (pulls/reviews) carry only .commit_id, and GitHub does NOT re-point it
+# (verified on #586: older COMMENTED reviews stayed pinned to 2193d77 across the
+# push), so the fallback is correct for them. Issue comments have neither → "".
+#
 # Field separator is ASCII Unit Separator (0x1f), NOT tab. Tab is IFS
 # *whitespace*, and bash collapses runs of IFS whitespace into ONE delimiter —
 # so a row with an empty commit_id (every issue comment: they carry no SHA)
@@ -287,7 +303,7 @@ trap 'rm -f "$PR_VIEW_ERR" "$ARTIFACTS_TMP" "$SLUGS_TMP" "$GH_ERR" 2>/dev/null' 
 US=$'\037'
 ARTIFACT_JQ='.[]? | [
     (.user.login // ""),
-    (.commit_id // ""),
+    (.original_commit_id // .commit_id // ""),
     (.submitted_at // .created_at // ""),
     ((.body // "") | gsub("[\r\n\t\u001f]+"; " "))
   ] | join("\u001f")'
