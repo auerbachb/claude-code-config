@@ -22,6 +22,12 @@ After context compaction, your FIRST action is to reconstruct monitoring state (
 
 Best-effort: lead the first user message with `[#N]` (or `[#339, #341]`) so tab titles may pick up issue numbers.
 
+## GitHub reference prefix
+
+Whenever referencing a GitHub number in human-facing prose, you **must** prefix it with its type: `PR #1234` or `Issue #1234`. Example: "Blocked on PR #1930: Issue #1931, Issue #1934" — not "Blocked on #1930: #1931, #1934".
+
+**Exceptions (bare `#N` stays correct):** GitHub closing keywords (`Closes #123`, `Fixes #456`); commit messages and code; bulk list shorthand for 5+ same-type items (`PRs #1234, #1235, #1236`); markdown link text, which keeps the type (`[PR #1234](url)`).
+
 ---
 
 ## AUTONOMOUS WORKFLOW EXECUTION — DO NOT ASK PERMISSION

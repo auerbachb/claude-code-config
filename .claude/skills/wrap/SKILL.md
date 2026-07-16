@@ -132,7 +132,7 @@ fi   # 0 single, 1 multiple, 2 none, 3/4 error
 
 ```text
 [INFERRED] PR #462 from thread context
-Also tracking: #458   ← only when other candidates exist
+Also tracking: PR #458   ← only when other candidates exist
 ```
 
 Use a `<source>` of `explicit argument`, `thread context`, or `session-state` as applicable. After emitting the line, pause briefly to let the user interrupt if the inferred PR is wrong — this is the only abort point, since `/wrap` runs end-to-end without confirmation prompts.

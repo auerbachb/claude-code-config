@@ -186,7 +186,7 @@ PR    | Draft | Title                          | CodeRabbit | CodeAnt | BugBot |
 
 Below the table, summarize:
 - **Fully covered:** PRs with all four ✅.
-- **Gaps:** one line per PR listing the missing reviewers, e.g. `#476 — missing: CodeAnt, Graphite`.
+- **Gaps:** one line per PR listing the missing reviewers, e.g. `PR #476 — missing: CodeAnt, Graphite`.
 - If every PR is fully covered, say so and skip Steps 4–5.
 
 ---
