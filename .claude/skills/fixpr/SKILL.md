@@ -144,7 +144,7 @@ jq -r '.[] | "  session-candidate: #\(.number) (phase=\(.phase // "?"), needs=\(
 When inference picked from multiple candidates, append the override hint on its own line (one line; annotate each other PR with its session `needs`/`phase`):
 
 ```text
-Also tracking: #458 (bugbot_review_poll), #445 (cr_confirmation_pass)
+Also tracking: PR #458 (bugbot_review_poll), PR #445 (cr_confirmation_pass)
 ```
 
 ### Step 0c: Pre-flight — draft→ready + four-reviewer trigger (issue #493)

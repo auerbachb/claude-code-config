@@ -889,9 +889,9 @@ Reason:   <user-stop>
 Fleet:    <final status table>
 Pre-flight: <per-PR draft→ready + reviewers triggered this session, from each PR's PREFLIGHT_SUMMARY; "clean" where no-op>
 Actions:  <rebases / phase-a-fixer subagents / /wrap dispatched this session, per PR — include Subagent outcomes>
-Merged:   <PR #s successfully merged this session via /wrap — e.g. "#1599, #1601"; "none" if none>
+Merged:   <PR #s successfully merged this session via /wrap — e.g. "PR #1599, PR #1601"; "none" if none>
 Subagents: <per-PR spawn/complete/failed summary from active_agents audit>
-Blocked:  <PR # + reason for each HARD_BLOCK entry reported this session — e.g. "#123 human CHANGES_REQUESTED by @alice">
+Blocked:  <PR # + reason for each HARD_BLOCK entry reported this session — e.g. "PR #123 human CHANGES_REQUESTED by @alice">
 ```
 
 Hard-blocked PRs are reported here for visibility; the fleet may auto-pause afterward when idle.
