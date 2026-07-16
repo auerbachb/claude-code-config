@@ -74,6 +74,19 @@ expect() {
 
 noop() { :; }
 
+# Inserts a command-shaped row ("| `/decoy` | ... |") before the
+# '## Slash Commands' header, simulating an unrelated table elsewhere in the
+# README that happens to start a row the same way a catalog row does.
+insert_decoy_row_before_catalog() {
+  local tmp
+  tmp=$(mktemp)
+  awk '
+    { print }
+    /^# Fixture/ && !done { print "\n| `/decoy` | Fake | Should be ignored |"; done=1 }
+  ' README.md > "$tmp"
+  mv "$tmp" README.md
+}
+
 # --- passing case ---------------------------------------------------------
 expect "well-formed catalog passes" 0 'skill-catalog-lint: OK' noop
 
@@ -97,6 +110,11 @@ expect "duplicate row fails" 1 \
 expect "skill dir without SKILL.md fails" 1 \
   'gamma/ has no SKILL.md' \
   bash -c 'mkdir -p .claude/skills/gamma && printf "%s\n" "| \`/gamma\` | PM | No skill file |" >> README.md'
+
+# --- section-scoping regression (CodeAnt finding on PR #594) ---------------
+expect "row outside Slash Commands section is ignored" 0 \
+  'skill-catalog-lint: OK' \
+  insert_decoy_row_before_catalog
 
 # --- count-anchor failures ------------------------------------------------
 expect "stale 'slash commands' count fails" 1 \
