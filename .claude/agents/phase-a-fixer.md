@@ -42,6 +42,7 @@ The parent agent provides these values in your prompt:
 - NEVER run destructive commands (`rm -rf`, `rm`, `git checkout .`, `git stash`, `git reset --hard`) in the root repo directory.
 - Stay in your worktree directory at all times.
 - NEVER add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `noqa`, or any linter suppression comment. Fix the actual code.
+- Before treating something as impossible, try the CLI path (`gh`/`git`/`curl`/`gh api`) first — only hand off for real walls, structured per the capability-discovery mindset in `safety.md`.
 
 ## Workflow
 
