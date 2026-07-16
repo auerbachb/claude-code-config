@@ -330,7 +330,20 @@ This is the core PM behavior. Once the user confirms which issues to work on, en
 
 ### 3.1: Generate coding thread prompts
 
-For each selected issue, generate a self-contained prompt that can be pasted into a new Claude Code thread (web or CLI). Each prompt must include:
+For each selected issue, generate a self-contained prompt. The prompt content below is the same in both delivery modes — only how it reaches the user differs.
+
+**First, check chip availability** per `.claude/reference/chip-launching.md`, then branch:
+
+- **Chip mode** (`mcp__ccd_session__spawn_task` present): call `spawn_task` once per selected issue with `title` / `prompt` / `tldr` / `cwd`, where `prompt` is the full self-contained prompt below, unchanged. Print **only** the short summary per issue (issue, title, `**Model:**` line, one-line rationale) — see the reference for the exact format. Record each returned `task_id` in the Active Work table (3.2) and set that issue's status to `Chip offered`.
+- **Fallback mode** (tool absent): emit the full prompt blocks for every selected issue exactly as before — same fences, same content.
+
+**Spawn outcomes are tracked per issue.** A failed `spawn_task` falls back for **that issue alone** — print its full block and leave it at `Prompt generated`. Issues whose spawns succeeded keep their chip, their `task_id`, and their `Chip offered` status; never re-print their block as well, or the same issue is offered twice. Every selected issue ends with exactly one of: a chip, or a printed block.
+
+Chips carry no model preset, so the `**Model:**` line must appear both in the visible summary and inside the chip's prompt text. Get the model recommendation from `/prompt`'s tier classification when it ran; otherwise infer it from the issue's signals using the same Heavy/Standard/Light mapping.
+
+If the user asks to "print the full prompt for #N" while in chip mode, re-emit that issue's complete block verbatim — the chip stays offered.
+
+Each prompt must include:
 
 ```
 You are a coding agent working on {repo URL}.
@@ -365,7 +378,7 @@ Fix/implement issue #{N}: {title}
 - Squash and merge when reviews are clean
 ```
 
-Present all prompts to the user. Do NOT spawn subagents or execute the prompts — present them for the user to paste into coding threads. Only spawn agents if the user explicitly asks (e.g., "go ahead and run those", "spin up agents for those").
+Offer or present every prompt — never execute one. Do NOT spawn subagents or run the prompts: in chip mode the user's click is the only launch path, and in fallback mode the user pastes the block into a thread. Only spawn agents if the user explicitly asks (e.g., "go ahead and run those", "spin up agents for those").
 
 ### 3.2: Track assignments
 
@@ -374,12 +387,23 @@ Maintain a state table in the conversation. Update it as work progresses:
 ```
 ## Active Work
 
-| Issue | Thread | PR | Status | Last Update |
-|-------|--------|----|--------|-------------|
-| #42 | Prompt generated | — | Awaiting thread start | {timestamp} |
-| #38 | Active | PR #88 | In review | {timestamp} |
-| #55 | Active | PR #90 | Merged | {timestamp} |
+| Issue | Thread | Task ID | PR | Status | Last Update |
+|-------|--------|---------|----|--------|-------------|
+| #42 | Chip offered | `task_abc123` | — | Awaiting thread start | {timestamp} |
+| #61 | Prompt generated | — | — | Awaiting thread start | {timestamp} |
+| #38 | Active | — | PR #88 | In review | {timestamp} |
+| #55 | Active | — | PR #90 | Merged | {timestamp} |
 ```
+
+**Thread column values:**
+
+- `Chip offered` — a chip was spawned for this issue and is waiting on a click (chip mode).
+- `Prompt generated` — a full prompt block was printed for the user to paste (fallback mode, or a failed spawn).
+- `Active` — a thread is running for this issue.
+
+**Task ID column:** every `Chip offered` row MUST carry the `task_id` returned by its `spawn_task` call — it is the only handle for dismissing that chip later, and a chip whose `task_id` was not recorded cannot be withdrawn. `Prompt generated` and `Active` rows leave it empty (`—`).
+
+`Chip offered` and `Prompt generated` are the same state from the pipeline's view — offered, not yet started — and both pair with the `Awaiting thread start` status. Both are excluded from re-offering: `/prompt`'s Path B scan treats an offered-but-unstarted chip exactly as it treats `Prompt generated`, so a re-run never double-offers the same issue.
 
 ### 3.3: Progress detection
 
@@ -406,6 +430,7 @@ Cross-reference with the assignments table:
 - Detect PRs that reference tracked issues (search PR body for `Closes #N`, `Fixes #N`)
 - Mark issues as "PR open" or "Merged" accordingly
 - Flag stale threads: if an issue was assigned > 30 minutes ago with no PR, note it
+- **Dismiss stale chips:** any issue sitting at `Chip offered` that now has an open PR is being worked already — withdraw its chip via `dismiss_task` (see `.claude/reference/chip-launching.md`). Reuse the open-PR result already fetched above and the same closing-keyword predicate — no extra API call. Only clear the tracked `task_id` after the dismiss succeeds.
 
 Also accept user input: "thread for #42 is done", "PR #88 merged", "#55 is blocked".
 
@@ -413,10 +438,17 @@ Also accept user input: "thread for #42 is done", "PR #88 merged", "#55 is block
 
 When one or more threads finish (PRs merged, issues closed):
 
-1. Remove completed items from the assignments table
+1. **Dismiss the chips of finished issues, then remove their rows.** Order matters: a row carries its chip's `task_id`, and once the row is gone the chip can no longer be withdrawn. So for every completed issue still at `Chip offered`, `dismiss_task` first — its work is done, the offer is dead — and only then drop it from the assignments table.
 2. Re-scan open issues (reuse 1B.2-1B.4 logic but lighter — only fetch new/changed issues)
 3. Suggest 1-3 new issues to fill the pipeline
-4. Generate prompts for the user's selected issues
+4. Generate prompts for the user's selected issues (Step 3.1 — chip or fallback)
+5. **Dismiss superseded and re-planned chips.** Beyond the finished issues handled in step 1, withdraw a `Chip offered` chip only when its offer is genuinely dead:
+   - **Superseded** — the issue was explicitly replaced by a newer suggestion.
+   - **Re-planned** — the issue's scope or plan changed, so the chip's prompt is stale.
+
+   An offered chip that simply isn't in the new batch is **not** superseded — a suggestion the user hasn't acted on yet stays valid and keeps its chip. Only dismiss on an explicit signal.
+
+   Re-planning is spawn-then-dismiss: create the replacement chip first, then dismiss the old one. If the dismiss fails, the issue now has two chips — withdraw the replacement to restore a single offer, and if that also fails, leave both tracked and tell the user which `task_id` is stale rather than silently dropping either. Update the Active Work table only after a dismiss succeeds.
 
 ### 3.5: Handoff awareness
 
@@ -432,11 +464,13 @@ When the conversation is getting long (many back-and-forth cycles, multiple batc
 
 The PM orchestrator's job is to:
 - Analyze the backlog and recommend what to work on
-- Generate self-contained prompts for coding threads
+- Generate self-contained prompts for coding threads, and offer them as chips when available
 - Track progress across threads
 - Suggest next work when threads finish
 
-The **user** decides when and where to paste the prompts. The user starts the coding threads. The PM tracks and coordinates.
+The **user** decides when and where to start work — by clicking a chip in chip mode, or by pasting a prompt in fallback mode. The user starts the coding threads. The PM tracks and coordinates.
+
+**Offering a chip is not launching a thread.** `spawn_task` puts a chip in front of the user; only their click starts a session. The PM never clicks for them, and never runs a coding thread's work itself — via the Agent tool or otherwise — in place of a chip the user hasn't clicked. This governs coding threads only; the read-only `pm-worker` data-gathering spawns described under "Model selection for spawned subagents" below remain allowed and are unaffected.
 
 **Exception:** If the user explicitly says "go ahead and run those", "spin up agents", or "execute those prompts" — then and only then may you spawn subagents via the Agent tool to execute the coding thread prompts.
 
