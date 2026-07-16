@@ -184,9 +184,18 @@ This creates **one canonical planning document** the coding agent can work from.
    If `pull` fails (diverged history), stop and report to the user — do not force-pull. If `checkout main` fails (uncommitted changes in the root repo), stop and report — do not stash or discard changes.
 5. **Verify:** confirm the worktree directory exists and the branch is checked out before proceeding.
 
-## Step 7: Output ready-to-code summary
+## Step 7: Deliver the ready-to-code handoff
 
-Print a compact summary to the user:
+**First, check chip availability** per `.claude/reference/chip-launching.md`, then branch. The handoff content is the same in both delivery modes — only how it reaches the user differs:
+
+- **Chip mode** (`mcp__ccd_session__spawn_task` present): call `spawn_task` once for this issue with `title` / `prompt` / `tldr` / `cwd` (shape under "Chip construction" below). Print **only** the short summary — issue, title, `**Model:**` line, one-line rationale — in the reference's exact format. Do **not** also print the fallback block, or the same work is offered twice.
+- **Fallback mode** (tool absent): print the summary block below, unchanged.
+
+**A failed `spawn_task` is treated as unavailable** (per the reference): print the full fallback block instead. Do not retry the spawn. The handoff always ends with exactly one of: a chip, or a printed block — never neither.
+
+### Fallback mode output
+
+Print a compact summary to the user. This block is the pre-chip baseline — emit it **byte-for-byte identical** to what `/start-issue` printed before chips existed (same heading, fields, plan/AC sections, and closing "Ready to code…" line), so a CLI or headless thread cannot tell this feature exists:
 
 ```
 ## Ready to code — Issue #{N}
@@ -206,7 +215,35 @@ Print a compact summary to the user:
 Ready to code. Start with step 1 of the plan above. Run the dual-CLI local review per `cr-local-review.md`, fix all valid findings, and rerun until the required clean gate is reached before pushing.
 ```
 
-Stop after printing the summary. Do NOT start coding automatically — the user may want to review the plan first.
+### Chip construction (chip mode)
+
+`.claude/reference/chip-launching.md` is authoritative for chip semantics — this table only maps the skill's existing variables onto its params:
+
+| Param | Value |
+|-------|-------|
+| `title` | Verb-first, ≤60 chars, includes the issue number — built from `ISSUE_NUMBER` + `TITLE` (e.g. `Fix #42 stale worktree warning`) |
+| `prompt` | The complete self-contained coding-thread prompt — byte-identical to the **content** of the fallback block above (the fence delimiters are not part of the prompt; everything between them is), with the `**Model:**` line at the top |
+| `tldr` | 1–2 plain-English sentences from `TITLE` / the merged plan: what the session will do and why. No file paths, no jargon |
+| `cwd` | `WORKTREE_PATH` — the worktree created in Step 6 |
+
+> **`cwd` deliberately differs from `/pm` and `/prompt`,** which pass the repo root. By Step 7, `/start-issue` has already created an issue-specific worktree, so the launched thread must start *there* — repo root would land it in the wrong checkout, on the wrong branch. This is an intentional divergence, not an inconsistency with the shared contract.
+
+**Chips carry no model preset,** so the `**Model:** {MODEL} — {REASON}` line MUST appear both at the top of the chip's `prompt` text (so the spawned session sees it) and in the visible short summary (so the user can set the picker before clicking).
+
+**Record the returned `task_id` immediately,** before any dependent step — an unrecorded chip cannot be withdrawn. `/start-issue` has no Active Work table, so track it **session-locally**, keyed by issue number, and say so in the summary; the chip stays dismissable for this session only. If the issue already has a live chip recorded in this session, skip the spawn rather than offering it twice. `dismiss_task` hygiene and print-on-demand replay ("print the full prompt for #N" re-emits the complete block verbatim; the chip stays offered) follow the reference — do not restate its rules here.
+
+### Model recommendation
+
+Chips need a `{MODEL}` and a `{REASON}`. Use this lightweight, role-based rule over the canonical roster (**Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5** — see `.claude/rules/subagent-orchestration.md` "Model Selection"):
+
+- **Default: Sonnet 5** — ordinary single-issue coding work.
+- **Step up to Opus 4.8** when the issue touches rules, `CLAUDE.md`, skills, or orchestration — instruction-adherence work where literal-following models misfire.
+
+`{REASON}` is a short phrase naming the dominant driver (e.g. `rules + skill wiring`, `single-file code change`). Do **NOT** replicate `/prompt`'s Heavy/Standard/Light multi-signal pipeline — `/start-issue` is single-issue and has no model concept beyond this rule. When `/prompt` already produced a recommendation for the issue, prefer it.
+
+### Execution boundary
+
+Stop after delivering the handoff. Do NOT start coding automatically — the user may want to review the plan first. **Offering a chip is not launching a thread:** `spawn_task` only puts a chip in front of the user, and their click is the only launch path. Never click for them, and never do the coding thread's work yourself — via the Agent tool or otherwise — in place of a chip they haven't clicked.
 
 ## Edge cases
 
