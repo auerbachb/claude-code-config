@@ -11,6 +11,11 @@
 # First-time creation of a protected basename is allowed (bootstrap path).
 # Modifying an existing protected file is blocked (exit 2 + stderr message).
 
+# Must stay importable on Python 3.9 (macOS system python3 is 3.9.6): the
+# __future__ import defers annotation evaluation so the PEP 604 unions below
+# stay legal on 3.9. Never use `X | Y` unions in runtime expressions here.
+from __future__ import annotations
+
 import json
 import os
 import re
