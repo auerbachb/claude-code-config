@@ -39,7 +39,8 @@ The script handles everything: directory creation, symlinks, settings merge, hoo
 
 Optional tools (for the full review workflow):
 - [CodeRabbit](https://coderabbit.ai) — AI code review on PRs
-- [CodeRabbit CLI](https://docs.coderabbit.ai/cli) — local pre-push reviews (`coderabbit review --agent`)
+- [CodeRabbit CLI](https://docs.coderabbit.ai/cli) — local pre-push reviews (`coderabbit review --agent`). Install via `brew install coderabbit` (macOS) or `curl -fsSL https://cli.coderabbit.ai/install.sh | sh` (cross-platform); auth via `coderabbit auth login` (browser OAuth) or the `$CODERABBIT_API_KEY` env var for non-interactive use
+- [CodeAnt CLI](https://docs.codeant.ai/cli/setup.md) — local pre-push reviews, npm/Node.js required. Install via `npm install -g codeant-cli`; auth via `codeant login` (browser OAuth, key stored in `~/.codeant/config.json`)
 - [Graphite CLI](https://graphite.dev/docs/command-line) — stacked PRs; pair with the Graphite Claude Code plugins enabled via `setup.sh` (see [README.md](README.md#getting-started))
 - [Greptile](https://greptile.com) — fallback reviewer when CodeRabbit is rate-limited
 
