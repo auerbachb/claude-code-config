@@ -808,7 +808,11 @@ jq -r '
    - Fix markers: a fenced ```` ```suggestion ```` block, or a `Prompt for AI Agent` heading
 3. **Weak-ack fallbacks** (only if no finding matched):
    - LGTM variants: `lgtm`, `looks good`, `approved`, `confirmed`, `resolved`
-4. **Default** (no pattern matched) → `finding`. The safer default — under-classifying here is the failure mode this whole skill exists to prevent.
+4. **CR walkthrough/summary override** (the LAST override, checked immediately before the default):
+   - Marker `<!-- This is an auto-generated comment: summarize by coderabbit.ai -->` → `acknowledgment` (CR's walkthrough boilerplate, posted on nearly every PR; it matched no rule at all and fell through to `default → finding`, producing phantom findings on PRs where CR posted zero reviews — #575).
+   - **Its late position is load-bearing — do not hoist it into the tier-1 override group.** The walkthrough can carry `actionable comments posted: N` (N>0) and severity keywords for the findings it summarizes, so an early override would classify a real-finding summary as an acknowledgment and drop it from `finding_count` — a false clean on the review gate, strictly worse than the phantom-finding noise it fixes. Every finding pattern in tier 2 must be evaluated first and win. Ordering alone supplies that guard, so no AND-not guard (of the `BUGBOT_REVIEW` kind) is needed. Guarded by `Bug6a`/`Bug6b` in `pr-state-classify.test.sh`.
+   - Distinct trigger from #557's rate-limit/usage-limit family in tier 1. Note CR edits this comment in place and may merge a rate-limit notice into the same body, in which case the tier-1 rate-limit rule matches it first — both yield `acknowledgment`.
+5. **Default** (no pattern matched) → `finding`. The safer default — under-classifying here is the failure mode this whole skill exists to prevent.
 
 **If `finding_count > 0`:** findings landed between the Step 4d wait exit and this verify. If `FIXPR_WAIT_ITER < FIXPR_MAX_ITERATIONS`, start the next sweep at Step 0 (a fresh `$RUN_STARTED_AT` re-audits and picks them up). At the outer cap: set `FIXPR_WAIT_FINAL=new-findings-pending`, emit `NEW_FINDINGS` in Step 7, and stop — re-running `/fixpr` resets the iteration budget.
 
