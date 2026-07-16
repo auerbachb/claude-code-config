@@ -156,9 +156,26 @@ export PATH="$STUB_BIN:$PATH"
 # date — the only freshness signal for SHA-less issue comments.
 HEAD_SHA="headsha0000000000000000000000000000001"
 OLD_SHA="oldsha00000000000000000000000000000002"
-HEAD_DATE="2026-07-16T17:00:00Z"
-BEFORE_HEAD="2026-07-16T16:30:00Z"   # stale — pre-dates HEAD
-AFTER_HEAD="2026-07-16T17:05:00Z"    # fresh — post-dates HEAD
+
+# Timestamps are computed RELATIVE TO NOW, never hard-coded. pr-preflight.sh
+# compares the HEAD commit date against the wall clock (the future-date
+# degradation guard), so absolute fixtures would make this suite time-dependent:
+# run it with a clock earlier than the literal, and the script correctly treats
+# the commit as future-dated and degrades — failing scenarios whose behavior is
+# actually right. Anchoring every fixture to `now` keeps all three in the past
+# regardless of when CI runs. (Scenario 18c hard-codes a far-future date on
+# purpose — that one is *testing* the future-date guard.)
+#
+# Portable across GNU (`date -d @epoch`) and BSD/macOS (`date -r epoch`); no
+# python/perl dependency added to a bash+jq suite.
+iso_from_now() {  # $1 = signed second offset from now
+  local target=$(( $(date -u +%s) + $1 ))
+  date -u -d "@$target" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -r "$target" +%Y-%m-%dT%H:%M:%SZ
+}
+HEAD_DATE="$(iso_from_now -3600)"     # HEAD committed 1h ago
+BEFORE_HEAD="$(iso_from_now -7200)"   # stale — 2h ago, pre-dates HEAD
+AFTER_HEAD="$(iso_from_now -1800)"    # fresh — 30m ago, post-dates HEAD
 
 # ---- fixture writers --------------------------------------------------------
 write_view() { printf '%s' "$1" > "$TMP/view.json"; export GH_PR_VIEW_JSON="$TMP/view.json"; }
