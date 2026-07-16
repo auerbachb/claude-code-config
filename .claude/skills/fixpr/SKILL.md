@@ -792,11 +792,12 @@ jq -r '
 
 **Classification rules** (these live in `pr-state.sh`; the list below is the contract — keep the two in sync if either changes). Patterns are checked in this order; first match wins:
 
-1. **Explicit-resolution / clean-pass overrides** (checked first — these signals mean CR or BugBot has issued a clean pass, hit a rate-limit notice, posted a review-started ack, or emitted a transient error. They win even if the body still contains finding language from a quoted earlier review):
+1. **Explicit-resolution / clean-pass overrides** (checked first — these signals mean CR or BugBot has issued a clean pass, reported a rate/usage limit instead of reviewing, posted a review-started ack, or emitted a transient error. They win even if the body still contains finding language from a quoted earlier review):
    - HTML marker `<!-- <review_comment_addressed> -->` → `acknowledgment`
    - `actionable comments posted: 0` → `acknowledgment`. This specific zero-count pattern MUST be checked before the general `actionable comments posted` pattern below — otherwise the general finding pattern would swallow the zero case.
    - `no actionable comments were generated` → `acknowledgment`
-   - `rate limit exceeded` or `rate-limited by coderabbit` → `acknowledgment`
+   - CR rate-limit notices — `rate limit exceeded`, `rate[- ]limited by coderabbit`, `currently rate limited`, `review limit reached`, or `next review (will be) available in` → `acknowledgment`. CR wraps its Fair-Usage notice in a "Full review **finished**" ack, so the `full review triggered` rule below does not cover it — these phrases must. Every phrase names CR's own notice wording: a bare `fair usage limits policy` was tried and rejected (#557) because a real finding *quoting* the policy would classify as an ack. Each observed CR variant matches ≥2 of these phrases, so no single generic phrase carries it.
+   - BugBot usage-limit notices — `couldn't run - usage limit reached` (apostrophe and dash variants tolerated) or `this run hit a usage or spend limit` → `acknowledgment` (BugBot did not review at all, so there is nothing actionable). Both patterns quote BugBot's boilerplate closely on purpose: a looser `hit a usage or spend limit` would swallow a genuine finding *about* rate-limit code, which this repo's PRs frequently touch.
    - `full review triggered` → `acknowledgment`
    - `found no new issues` (case-insensitive) → `acknowledgment` (BugBot clean-pass review body: "✅ Bugbot reviewed your changes and found no new issues!")
    - `<!-- BUGBOT_REVIEW -->` marker present AND body does NOT match `found [1-9][0-9]* potential issue` → `acknowledgment` (BugBot zero-issue summary). This MUST be checked before the generic `issues? found` finding pattern below. Non-zero BugBot summaries ("found 3 potential issues") keep the `<!-- BUGBOT_REVIEW -->` marker but match the non-zero guard and fall through to the finding tier.

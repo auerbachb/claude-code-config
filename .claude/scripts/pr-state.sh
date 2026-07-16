@@ -341,12 +341,21 @@ CONVO=$(run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per
 #
 #    Branch ordering in classify is deliberate — do NOT reorder without reading this:
 #      1. Explicit-resolution / clean-pass overrides (addressed marker, "actionable comments posted: 0",
-#         "no actionable comments were generated", "rate limit exceeded" / "rate-limited by coderabbit",
-#         "full review triggered", BugBot clean-pass "found no new issues",
-#         BugBot BUGBOT_REVIEW zero-issue summary, CR error stub "Oops, something went wrong")
-#         are checked FIRST. They mean CR/BugBot has issued a clean pass, hit a rate-limit notice,
-#         posted a review-started ack, or emitted a transient error — regardless of any quoted
-#         earlier finding language.
+#         "no actionable comments were generated"; CR rate-limit notices — "rate limit exceeded" /
+#         "rate[- ]limited by coderabbit" / "currently rate limited" / "review limit reached" /
+#         "next review (will be) available in"; BugBot usage-limit notices — "couldn't run - usage limit
+#         reached" / "this run hit a usage or spend limit"; "full review triggered", BugBot clean-pass
+#         "found no new issues", BugBot BUGBOT_REVIEW zero-issue summary, CR error stub
+#         "Oops, something went wrong")
+#         are checked FIRST. They mean CR/BugBot has issued a clean pass, reported a rate/usage limit
+#         instead of reviewing, posted a review-started ack, or emitted a transient error — regardless
+#         of any quoted earlier finding language. CR wraps its Fair-Usage notice in a "Full review
+#         finished" ack, so the "full review triggered" branch does NOT cover it — the rate-limit
+#         phrases must.
+#         Every CR rate-limit phrase names CR's own notice wording. A bare "fair usage limits policy"
+#         was tried and rejected (#557): it is generic enough that a real finding *quoting* the policy
+#         would classify as an ack. Each observed CR variant is caught by >=2 of the phrases above,
+#         so no single generic phrase has to carry it.
 #      2. The specific "actionable comments posted: 0" and "no actionable comments were
 #         generated" checks MUST precede the general "actionable comments posted" finding
 #         check — otherwise the general pattern swallows clean CR summaries as findings.
@@ -369,7 +378,9 @@ if [[ -n "$SINCE" ]]; then
       elif test("<!--\\s*<review_comment_addressed>\\s*-->"; "") then {class: "acknowledgment", reason: "addressed marker"}
       elif test("actionable comments posted:\\s*0\\b"; "i") then {class: "acknowledgment", reason: "CR reports zero actionable"}
       elif test("no actionable comments were generated"; "i") then {class: "acknowledgment", reason: "CR no actionable comments generated"}
-      elif test("rate limit exceeded|rate-limited by coderabbit"; "i") then {class: "acknowledgment", reason: "rate limit notice"}
+      elif test("rate limit exceeded|rate.limited by coderabbit|currently rate limited|review limit reached|next review (will be )?available in"; "i") then {class: "acknowledgment", reason: "rate limit notice"}
+      # Apostrophe is escaped as \u0027 — a raw one would close this single-quoted jq program.
+      elif test("couldn[\u0027’]t run\\s*[-–—]\\s*usage limit reached|this run hit a usage or spend limit"; "i") then {class: "acknowledgment", reason: "BugBot usage limit notice"}
       elif test("full review triggered"; "i") then {class: "acknowledgment", reason: "review-started ack"}
       elif test("found no new issues"; "i") then {class: "acknowledgment", reason: "BugBot clean pass"}
       elif (test("<!--\\s*BUGBOT_REVIEW\\s*-->"; "") and (test("found [1-9][0-9]* potential issue"; "i") | not)) then {class: "acknowledgment", reason: "BugBot zero-issue summary"}
