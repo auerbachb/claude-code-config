@@ -29,7 +29,7 @@ For each valid issue, extract and record:
 
 ## Step 2: Detect Implementation Plan
 
-For each issue, first try the shared CR plan detector — it encapsulates the canonical jq filter (CR author, skip "actions performed" ack lines, length > 200) behind a stable CLI. Branch on the exit code explicitly — don't swallow it with `|| true`, or a closed issue (exit 3) and a gh API outage (exit 4) look the same as "no plan" (exit 1):
+For each issue, first try the shared CR plan detector — it encapsulates the canonical substantive-plan filter (`cr-plan-filter.py`: CR author, reject issue-enrichment/Issue-Planner boilerplate and "actions performed" ack lines, then require >200 chars of stripped content plus a heading or numbered step — issue #541) behind a stable CLI. Branch on the exit code explicitly — don't swallow it with `|| true`, or a closed issue (exit 3) and a gh API outage (exit 4) look the same as "no plan" (exit 1):
 
 ```bash
 PLAN=""
