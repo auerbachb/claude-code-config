@@ -61,11 +61,19 @@ fi
 # --- 1. Catalog alignment check ------------------------------------------
 # Table rows look like:
 #   | `/pm` | PM | Active PM orchestrator — ... |
-# Anchoring on '^| `/' scopes the match to command rows, so inline `/foo`
-# references in prose or other tables aren't misread as catalog entries.
+# Scoped to the '## Slash Commands' section (up to the next '## ' header) so
+# a command-shaped row in an unrelated table elsewhere in the README isn't
+# misread as a catalog entry.
 # `|| true` keeps a no-match grep (exit 1) from killing the script under
 # `set -euo pipefail`; the empty case is handled by the comm logic below.
-documented_all=$(grep -oE '^\| `/[a-z0-9-]+`' "$README" \
+catalog_section=$(awk '
+  /^## Slash Commands/ { in_section=1; next }
+  in_section && /^## / { exit }
+  in_section { print }
+' "$README")
+
+documented_all=$(printf '%s\n' "$catalog_section" \
+  | grep -oE '^\| `/[a-z0-9-]+`' \
   | sed 's/^| `\///; s/`$//' \
   | sort || true)
 documented=$(printf '%s\n' "$documented_all" | sort -u)
