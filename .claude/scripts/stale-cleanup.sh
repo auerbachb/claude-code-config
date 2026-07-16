@@ -150,7 +150,16 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 4
 fi
 
-PROTECTED_BRANCHES=("main" "master" "develop")
+# skill-telemetry is the data-only usage-snapshot branch (issue #572). It is
+# updated at most weekly and must survive long gaps — a laptop that dies after
+# weeks offline is exactly the window the snapshot exists for — so it must
+# never age into the remote-stale prune set. The default name stays protected
+# even when SKILL_TELEMETRY_BRANCH points snapshots at an override branch;
+# the override (when set) is protected additionally.
+PROTECTED_BRANCHES=("main" "master" "develop" "skill-telemetry")
+if [[ -n "${SKILL_TELEMETRY_BRANCH:-}" ]]; then
+  PROTECTED_BRANCHES+=("$SKILL_TELEMETRY_BRANCH")
+fi
 is_protected() {
   local b="$1"
   for p in "${PROTECTED_BRANCHES[@]}"; do
