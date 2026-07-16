@@ -208,6 +208,10 @@ Check chip availability per `.claude/reference/chip-launching.md`, then branch. 
 
 **Spawn outcomes are tracked per issue.** A failed `spawn_task` falls back for **that issue alone** — print its full block and note the fallback once for the batch (per `chip-launching.md`); the rest of the batch keeps its chips. Do not print a block for an issue whose chip spawned successfully. Every thread-prompt issue ends with exactly one of: a chip, or a printed block.
 
+**Record every chip's `task_id`.** After each successful spawn, record the returned `task_id` against its issue and mark that issue `Chip offered` — an unrecorded chip can never be withdrawn, which would break stale-chip hygiene. In a PM thread, write it to `/pm`'s Active Work table (its `Task ID` column is the canonical home). Outside a PM thread, keep it in this thread's state so it stays dismissable within the session, and say so in the summary.
+
+**Skip issues already offered.** Before spawning, check the recorded state (Path B's Active Work scan already excludes `Chip offered` — see Step 0) and skip any issue that already has a live chip. Re-running `/prompt` must not offer the same issue twice. Issues that were never spawned, or whose spawn failed, are still eligible.
+
 Subagent candidates from Step 5.5 never get chips — they run inline via `/subagent`, so that section is unchanged in both modes.
 
 If the user asks to "print the full prompt for #N" while in chip mode, re-emit that issue's complete tilde-fenced block verbatim. The chip stays offered.

@@ -448,7 +448,13 @@ When one or more threads finish (PRs merged, issues closed):
 
    An offered chip that simply isn't in the new batch is **not** superseded — a suggestion the user hasn't acted on yet stays valid and keeps its chip. Only dismiss on an explicit signal.
 
-   Re-planning is spawn-then-dismiss: create the replacement chip first, then dismiss the old one. If the dismiss fails, the issue now has two chips — withdraw the replacement to restore a single offer, and if that also fails, leave both tracked and tell the user which `task_id` is stale rather than silently dropping either. Update the Active Work table only after a dismiss succeeds.
+   Re-planning is spawn-then-dismiss, in this order:
+
+   1. Spawn the replacement chip.
+   2. **Record the replacement's `task_id` immediately** — before touching the old chip. An unrecorded chip cannot be withdrawn, so if the next step fails you would otherwise be left with a live chip you have no handle for.
+   3. Dismiss the old chip, then reconcile the table: replacement row keeps its `task_id`, old row is cleared.
+
+   **Read the dismiss outcome — "gone" is not "failed".** If `dismiss_task` reports the chip was already clicked or already dismissed, the offer is withdrawn or acted on and the goal is met: treat it as a successful no-op, clear the old `task_id`, and move on. Only a genuine failure (the chip is still live and was not withdrawn) needs recovery: withdraw the replacement to restore a single offer, and if that also fails, keep both `task_id`s tracked and tell the user which one is stale rather than silently dropping either. Update the Active Work table only after the outcome is known.
 
 ### 3.5: Handoff awareness
 

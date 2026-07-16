@@ -35,7 +35,9 @@ Nothing else. No prompt block, no context dump, no acceptance criteria. The whol
 
 ## Chip state tracking
 
-Record the `task_id` returned by each successful `spawn_task`, keyed by issue number, so the chip can be withdrawn later. Track it wherever the skill already tracks that issue's state (e.g. `/pm`'s Active Work table). A chip whose `task_id` was not recorded cannot be dismissed.
+Record the `task_id` returned by each successful `spawn_task`, keyed by issue number, **immediately** — before any dependent step. Track it wherever the skill already tracks that issue's state (`/pm`'s Active Work table is the canonical home; `/prompt` writes there in a PM thread, and keeps session state otherwise). A chip whose `task_id` was not recorded cannot be dismissed — it is a live offer with no handle, so recording is not bookkeeping, it is the thing that makes withdrawal possible at all.
+
+An issue with a live recorded chip is **already offered**: skip it when re-running, rather than spawning a second chip for the same work.
 
 ## Stale-chip hygiene — `dismiss_task`
 
@@ -45,7 +47,11 @@ Withdraw a tracked chip via `mcp__ccd_session__dismiss_task` (pass the recorded 
 2. **Superseded** — a later batch replaced the suggestion.
 3. **Re-planned** — the issue's plan or scope changed, so the chip's prompt is stale. Spawn the replacement chip *first*, then dismiss the old one.
 
-**Fail-closed:** only clear tracked chip state after `dismiss_task` returns success. If the user already clicked or dismissed the chip, the tool says so and nothing changes — that is a normal outcome, not an error. Do not retry.
+**Fail-closed:** only clear tracked chip state once the dismiss outcome is known. Distinguish the two non-error outcomes from a real failure:
+
+- **Dismissed** — the chip is withdrawn. Clear the tracked state.
+- **Already clicked or already dismissed** — the tool says so and nothing changes. The offer is gone either way, so the goal is met: treat it as a successful no-op, clear the state, and do not retry.
+- **Genuine failure** — the chip is still live. Keep the `task_id` tracked; the chip is still withdrawable, and dropping the handle would strand it.
 
 ## Print-on-demand replay
 
