@@ -109,6 +109,7 @@ Detailed workflow rules are split into topic-specific files in `.claude/rules/`:
 | `repo-bootstrap.md` | Repo bootstrap |
 | `trust-dialog-fix.md` | Trust flags |
 | `skill-symlinks.md` | Skill symlinks |
+| `skill-first.md` | Proactive skill matching |
 
 These files auto-load for the parent agent session. **Subagents do NOT auto-load these files.** See `subagent-orchestration.md` for how to pass rules to subagents.
 
