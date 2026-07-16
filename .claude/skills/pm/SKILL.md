@@ -353,8 +353,8 @@ Fix/implement issue #{N}: {title}
 2. Read the issue body — this is the canonical implementation plan (includes merged CodeRabbit recommendations when available)
 3. Check issue comments only to detect any plan content not yet merged into the body — if found, merge it first
 4. Implement the changes
-5. Run local CodeRabbit review (`coderabbit review --agent`) — fix all findings
-6. One clean pass, then commit and push
+5. Run the local dual-CLI review per `cr-local-review.md` (`coderabbit review --agent` + `codeant review --all --headless`) — fix all findings
+6. One clean pass on both CLIs, then commit and push
 7. Create a PR with `Closes #{N}` in the body
 8. Include a Test Plan section with checkboxes for acceptance criteria
 9. Enter the review polling loop and fix any findings
