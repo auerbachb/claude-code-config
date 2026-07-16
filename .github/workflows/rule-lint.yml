@@ -1,4 +1,4 @@
-name: Rule Index & Word Count Lint
+name: Rule Index, Skill Catalog & Word Count Lint
 
 on:
   workflow_dispatch: {}
@@ -8,6 +8,9 @@ permissions:
   contents: read
 
 jobs:
+  # The job id is the required status-check name on main. Do not rename it or
+  # add a `name:` — either would silently drop the check from branch protection.
+  # New doc lints belong here as steps so they inherit that gate (issue #591).
   rule-lint:
     runs-on: ubuntu-latest
     steps:
@@ -18,3 +21,6 @@ jobs:
 
       - name: Run rule-lint
         run: bash .github/scripts/rule-lint.sh
+
+      - name: Run skill-catalog-lint
+        run: bash .github/scripts/skill-catalog-lint.sh

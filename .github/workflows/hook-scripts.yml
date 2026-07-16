@@ -53,6 +53,9 @@ jobs:
       - name: escalate-review.sh BugBot failure detection unit test (issue #552)
         run: bash .claude/scripts/tests/escalate-review.test.sh
 
+      - name: skill-catalog-lint unit tests (issue #591)
+        run: bash .github/scripts/tests/skill-catalog-lint.test.sh
+
       - name: skill-usage-merge unit test (issue #572)
         run: bash .claude/scripts/tests/skill-usage-merge.test.sh
 
