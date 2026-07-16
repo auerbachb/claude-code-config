@@ -1,15 +1,5 @@
 {
-  "check-acceptance-criteria": {
-    "use_count": 0,
-    "first_seen": "2026-04-13",
-    "last_used": null
-  },
   "go-on": {
-    "use_count": 0,
-    "first_seen": "2026-04-13",
-    "last_used": null
-  },
-  "lessons": {
     "use_count": 0,
     "first_seen": "2026-04-13",
     "last_used": null
@@ -30,26 +20,6 @@
     "last_used": null
   },
   "pm-okr": {
-    "use_count": 0,
-    "first_seen": "2026-04-13",
-    "last_used": null
-  },
-  "pm-rate-team": {
-    "use_count": 0,
-    "first_seen": "2026-04-13",
-    "last_used": null
-  },
-  "pm-sprint-plan": {
-    "use_count": 0,
-    "first_seen": "2026-04-13",
-    "last_used": null
-  },
-  "pm-sprint-review": {
-    "use_count": 0,
-    "first_seen": "2026-04-13",
-    "last_used": null
-  },
-  "pm-team-standup": {
     "use_count": 0,
     "first_seen": "2026-04-13",
     "last_used": null

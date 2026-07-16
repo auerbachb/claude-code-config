@@ -1,8 +1,9 @@
 # Verification Evidence Patterns
 
 On-demand reference for **evidence-before-claims** discipline in this repo's
-workflow. Phase A/B/C exit reports and `/check-acceptance-criteria` already
-require proof; this document distills the *judgment* — which command proves
+workflow. Phase A/B/C exit reports and the merge gate's AC verification
+(`cr-merge-gate.md` Step 2 via `ac-checkboxes.sh`) already require proof; this
+document distills the *judgment* — which command proves
 which claim — adapted from [obra/superpowers
 `verification-before-completion`](https://github.com/obra/superpowers/tree/main/skills/verification-before-completion)
 (harvested via issue #417).
@@ -71,7 +72,7 @@ Skip a step = the claim is unsupported.
 
 ## Where this applies in our skills
 
-- **`/check-acceptance-criteria`** — each AC item needs mapped evidence before `--tick`
+- **Merge-gate Step 2 AC verification** (`ac-checkboxes.sh` call sites) — each AC item needs mapped evidence before `--tick` or `--all-pass`
 - **`/wrap`, `/merge`, `/go-on`** — `merge-gate.sh` + thread/CI proof on HEAD
 - **`/fixpr`** — zero failing checks means `ci-status` output, not assumption
 - **Phase A/B/C exit reports** — include command output snippets per `exit-report-format.md`
@@ -82,5 +83,4 @@ Skip a step = the claim is unsupported.
 - `.claude/reference/exit-report-format.md` — structured proof blocks
 - `.claude/rules/cr-local-review.md` — local CR loop
 - `.claude/rules/cr-merge-gate.md` — GitHub merge gate
-- `.claude/skills/check-acceptance-criteria/SKILL.md` — AC verification skill
 - superpowers plugin `verification-before-completion` — generic discipline skill

@@ -31,7 +31,7 @@ After setup, Claude Code will automatically:
 - **Review locally, then on GitHub** — Runs CodeRabbit CLI reviews before pushing (instant feedback, no PR noise). After PR creation, the reviewer chain is CodeRabbit primary, BugBot (Cursor) second tier, Greptile last resort, then self-review only if every reviewer is unavailable; CodeAnt and Graphite AI Reviews provide supplemental AI review signals.
 - **Verify and merge** — Checks every acceptance criteria checkbox against the code, confirms CI is green, then squash-merges with branch cleanup.
 - **Orchestrate multi-agent work** — Decomposes large tasks into phases (fix, review, merge) with health monitoring, handoff files, and heartbeat enforcement.
-- **Manage your project** — 27 slash commands for backlog prioritization, sprint planning, team metrics, standups, and cross-thread orchestration.
+- **Manage your project** — 27 slash commands for backlog prioritization, OKR tracking, daily standups, PR-fleet monitoring, and cross-thread orchestration.
 
 Review ownership is sticky once a fallback tier takes over:
 
@@ -127,7 +127,7 @@ ls -la ~/.claude/skills/       # each skill -> ~/.claude/skills-worktree/.claude
 
 ## Slash Commands
 
-All 27 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
+The 21 core commands below are invoked as `/command` in a Claude Code session. All commands are defined as skill files in `.claude/skills/` and symlinked globally; operational companions (`/babysit-pr`, `/pr-monitor-and-manage`, `/merge-conflict`, and their stop/wake helpers) live there too but are not cataloged individually.
 
 | Command | Category | Description |
 |---------|----------|-------------|
@@ -137,10 +137,6 @@ All 27 commands are invoked as `/command` in a Claude Code session. They are def
 | `/pm-okr` | PM | View, set, or suggest OKRs |
 | `/pm-clean` | PM | Detect stale issues and suggest closures |
 | `/prioritize` | PM | Rank backlog issues by business goal impact (OKR-aware) |
-| `/pm-team-standup` | PM | Per-contributor activity summary (past 24h) |
-| `/pm-rate-team` | PM | Contribution metrics over a configurable period |
-| `/pm-sprint-plan` | PM | Generate a 2-week sprint plan |
-| `/pm-sprint-review` | PM | Sprint retrospective with velocity metrics |
 | `/subagent` | PM | Run Quick/Light issues as Phase A/B/C subagents from a PM thread |
 | `/prompt` | Planning | Classify issue complexity, recommend a Claude 4.7/4.6 model tier, generate copy-paste prompt without the removed `effort` field |
 | `/start-issue` | Planning | End-to-end issue-to-coding setup — plan polling, plan merge, worktree, branch |
@@ -156,8 +152,6 @@ All 27 commands are invoked as `/command` in a Claude Code session. They are def
 | `/merge` | Workflow | Squash merge with merge gate + AC verification |
 | `/admin-merge` | Workflow | Print a user-runnable bypass command to merge a solo-owner PR blocked by `enforce_admins` (Claude never modifies branch protection) |
 | `/wrap` | Workflow | End-of-session: verify, squash merge, aggressively reset root `main`, detect follow-ups, extract lessons |
-| `/check-acceptance-criteria` | Workflow | Verify Test Plan checkboxes against code |
-| `/lessons` | Workflow | Extract and save session learnings to memory |
 
 Run `/pm` first to bootstrap the PM config, then use the other PM skills as needed. Workflow commands (`/merge`, `/wrap`, `/go-on`, etc.) work independently.
 

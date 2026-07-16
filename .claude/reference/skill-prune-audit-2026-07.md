@@ -30,8 +30,8 @@ Follow-up to #416 skill-usage telemetry. Audit date: 2026-07-02.
 
 | Skill | Referenced by |
 |-------|---------------|
-| check-acceptance-criteria | `ac-checkboxes.sh`, README |
-| lessons | `phase-c-merger.md`, `cr-merge-gate.md`, `wrap/SKILL.md` |
+| check-acceptance-criteria | `ac-checkboxes.sh`, README — removed 2026-07-16 (#582); see addendum |
+| lessons | `phase-c-merger.md`, `cr-merge-gate.md`, `wrap/SKILL.md` — removed 2026-07-16 (#582); see addendum |
 | merge | phase A/B/C agents, orchestration rules |
 | pm + pm-* suite | `pm-worker.md`, cross-skill refs, `stale-cleanup.sh`, README |
 | pr-review-help | `subagent-orchestration.md`, `pm-config.md` |
@@ -39,8 +39,15 @@ Follow-up to #416 skill-usage telemetry. Audit date: 2026-07-02.
 | standup | `workday.sh`, `pm-okr/SKILL.md` |
 | subagent | phase A/B/C agents, orchestration rules |
 
-## Outcome
+## Outcome (original audit, 2026-07-02)
 
-**Zero skills pruned.** All 26 candidates are either too new or referenced by agents, rules, scripts, or other skills. Autonomous invocation (orchestrator, `/wrap`, subagents) explains zero log lines for skills like `subagent`, `merge`, `lessons`, and the PM suite.
+**Zero skills pruned.** All 26 candidates are either too new or referenced by agents, rules, scripts, or other skills. Autonomous invocation (orchestrator, `/wrap`, subagents) explains zero log lines for skills like `subagent`, `merge`, `lessons`, and the PM suite. *(2026-07-16: six of these candidates were subsequently removed — see addendum below.)*
 
 Run `bash .claude/scripts/skill-usage-report.sh` locally for live rollups; confirm each deletion out-of-band before removing any skill directory.
+
+## Addendum — 2026-07-16 (#582): July early trim
+
+The 75-day usage report recovered from the old MacBook (#572) plus owner confirmation ("never typed either") resolved six of the candidates above, removed ahead of the October audit (#573):
+
+- **PM rituals** — `pm-rate-team`, `pm-team-standup`, `pm-sprint-review`, `pm-sprint-plan`: multi-contributor ceremonies never exercised in this solo workflow.
+- **`lessons` / `check-acceptance-criteria`** — the prior "load-bearing" classification is resolved: their external references were call-site listings and mentions of `/wrap`'s inline lessons phase, not delegations. `/wrap`'s lessons phase (Steps 4.1–4.3) and the merge gate's AC verification (`cr-merge-gate.md` Step 2 + `ac-checkboxes.sh`) are self-contained, so nothing functional was lost.
