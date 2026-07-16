@@ -127,7 +127,7 @@ ls -la ~/.claude/skills/       # each skill -> ~/.claude/skills-worktree/.claude
 
 ## Slash Commands
 
-The 21 core commands below are invoked as `/command` in a Claude Code session. All commands are defined as skill files in `.claude/skills/` and symlinked globally; operational companions (`/babysit-pr`, `/pr-monitor-and-manage`, `/merge-conflict`, and their stop/wake helpers) live there too but are not cataloged individually.
+All 27 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
 
 | Command | Category | Description |
 |---------|----------|-------------|
@@ -143,12 +143,18 @@ The 21 core commands below are invoked as `/command` in a Claude Code session. A
 | `/issue-maker` | Planning | Capture-only thread mode — drafts and opens well-structured issues, reflects before writing, no implementation |
 | `/fixpr` | Review | Single-pass PR cleanup — fixes review findings and CI failures, replies to findings, resolves threads |
 | `/monitor` | Review | Audit all open PRs for engagement from the 4 AI reviewers (CodeRabbit/CodeAnt/BugBot/Graphite); render a gap matrix and post missing triggers after confirmation |
+| `/babysit-pr` | Review | Watch one PR on a recurring loop and auto-dispatch `/fixpr` or `/wrap` until it merges or hard-blocks |
+| `/babysit-pr-stop` | Review | Clean-cancel companion to `/babysit-pr` — stops the watcher for one PR |
+| `/pr-monitor-and-manage` | Review | PR fleet manager — rediscover open PRs each tick and drive the per-PR decision tree until the fleet is clean |
+| `/pr-monitor-and-manage-stop` | Review | Clean-cancel companion to `/pr-monitor-and-manage` — tears down the fleet loop and its state |
+| `/pr-monitor-and-manage-wake` | Review | Resume companion to `/pr-monitor-and-manage` — wakes a paused fleet loop and re-arms it |
 | `/pr-review-help` | Review | Executive PR review — multi-PR parallel strategic analysis |
 | `/open-code-review` | Review | Run Alibaba's self-hosted `ocr` CLI as a manual/advisory reviewer (not in the merge gate) |
 | `/recap` | Workflow | Functional summary of a single PR or issue — nested bullets or table |
 | `/standup` | Workflow | Daily standup summary (single contributor) |
 | `/status` | Workflow | Dashboard of open PRs with review state |
 | `/go-on` | Workflow | Resume an interrupted review workflow |
+| `/merge-conflict` | Workflow | Classify merge/rebase conflicts against `main`, auto-resolve safe hunks, report complex ones (also dispatched from `/fixpr`) |
 | `/merge` | Workflow | Squash merge with merge gate + AC verification |
 | `/admin-merge` | Workflow | Print a user-runnable bypass command to merge a solo-owner PR blocked by `enforce_admins` (Claude never modifies branch protection) |
 | `/wrap` | Workflow | End-of-session: verify, squash merge, aggressively reset root `main`, detect follow-ups, extract lessons |
