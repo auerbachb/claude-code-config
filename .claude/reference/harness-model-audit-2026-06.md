@@ -34,7 +34,7 @@ Issue #49's AC assumed a month of runtime telemetry (CR response times, false-cl
 | 4. Full rule blob in every subagent prompt | **Already replaced** | `.claude/agents/*.md` are self-contained; full-rule injection is now an explicit *fallback* "if `.claude/agents/` is unavailable" (`subagent-orchestration.md`). |
 | 5. Light path for trivial PRs | **Partially present** | `/prompt` Step 5.5 partitions subagent-eligible issues (file_count 0–1, ac_count ≤3) to `/subagent`; the *review* loop is not yet shortened for trivial PRs (see Finding E). |
 
-So #49 is largely **already satisfied by incremental work**, not an open greenfield audit. The two remaining stale assumptions worth acting on are the **32K output-token limit** (Finding C) and **Fable 5 absence from model selection** (Finding A). Everything else is either done or genuinely needs data.
+So #49 is largely **already satisfied by incremental work**, not an open greenfield audit. Two stale assumptions were worth acting on: **Fable 5's absence from model selection** (Finding A), resolved by FU-1 (issue #547, 2026-07-16), and the **32K output-token limit** (Finding C), which remains open pending FU-2's measurement. Everything else is either done or genuinely needs data.
 
 ---
 
@@ -51,6 +51,8 @@ So #49 is largely **already satisfied by incremental work**, not an open greenfi
 These surfaces are also **internally inconsistent about Haiku 4.5 vs Fable 5**: `CLAUDE.md`'s fleet parenthetical lists Fable 5 and omits Haiku 4.5; the selection docs list Haiku 4.5 and omit Fable 5.
 
 **Why audit-only, not fixed inline:** correctly *slotting* Fable 5 into the spawn defaults or the `/prompt` decision tree requires knowing its capability/price positioning (is it a faster/cheaper coding tier? a reasoning peer to Opus? a Haiku replacement?). That is a product fact this audit cannot verify, and guessing risks mis-routing every subagent spawn. Tracked as **FU-1** (reconcile the fleet across all selection surfaces and define Fable 5's tier).
+
+> **Resolved by FU-1** (issue #547, 2026-07-16) — see the FU-1 entry below for the fleet and tier decision this finding was waiting on.
 
 ### Finding B — 2-clean-CR-passes (#49 component 1): already gone *(Already addressed)*
 
@@ -93,8 +95,11 @@ No inline-fixable model-calibration drift in scripts/skills beyond Findings A an
 
 ### FU-1 — Reconcile model fleet across all selection surfaces; define Fable 5's tier *(small; touches CLAUDE.md + rules + skill → Heavy)*
 
+**Status: RESOLVED** (issue #547, 2026-07-16)
+
 - **Problem:** Fable 5 appears in `CLAUDE.md` but in no selection surface; Haiku 4.5 appears in selection surfaces but not the `CLAUDE.md` fleet parenthetical (Finding A).
 - **AC:** All of `CLAUDE.md`, `subagent-orchestration.md`, `agents/README.md`, and `prompt/SKILL.md` list the same fleet (Opus 4.8, Fable 5, Sonnet 4.6, Haiku 4.5); Fable 5 has a documented tier and either a spawn default or an explicit "not used for spawns, and why"; alias-resolution note updated.
+- **Resolution:** All four surfaces now name one fleet — **Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5**. The AC above says "Sonnet 4.6"; that wording was already stale when written and is **superseded by Sonnet 5**, which was the live default on every selection surface by the time FU-1 was picked up. Fable 5 got both halves of the AC's or: an explicit **Heavy-tier step-up rule** in `/prompt` (Opus 4.8 stays the Heavy default; step up only when Heavy is triggered by two or more signals — ~2× cost, hardest long-horizon work), and an explicit **"not a spawn default, and why"** in `subagent-orchestration.md` + `agents/README.md` (unattended phase spawns are cost-sensitive; Opus 4.8 already clears the bar for Phase A/B). Two adjacent errors were fixed in the same pass: `/prompt`'s legacy list named a Sonnet version that never shipped and simultaneously listed "Opus 4.8 (1M context)" as legacy while recommending Opus 4.8 as current; the fast-mode note implied a Haiku pairing that is not offered (Fast mode is Opus-only).
 
 ### FU-2 — Verify current subagent output budget; relax mandatory decomposition if warranted *(spike + rules)*
 
@@ -134,4 +139,4 @@ No inline-fixable model-calibration drift in scripts/skills beyond Findings A an
 | Collect 1 month of baseline data | Not possible without FU-5 (no telemetry pipeline exists); substituted with static evidence (current thresholds + git-history recency + capability plausibility). Gap recorded, not glossed. |
 | Analyze data, identify simplifiable components | Headline-finding table + Findings B–F: components 1, 3, 4 already simplified; component 2 (32K) is the live candidate; component 5 partially done. |
 | Propose specific rule changes | FU-1…FU-4 are concrete, scoped change proposals. |
-| Implement changes + monitor for regressions | Deferred by design — implementation gated on FU-2's measurement and FU-1's product input; this audit intentionally changes no load-bearing rule. |
+| Implement changes + monitor for regressions | Deferred by design — this audit intentionally changed no load-bearing rule. FU-1's product input has since landed (issue #547, 2026-07-16, documentation-only); remaining implementation is still gated on FU-2's measurement. |

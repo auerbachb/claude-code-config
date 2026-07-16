@@ -36,9 +36,9 @@ If agent definitions are unavailable (e.g., repo without `.claude/agents/`):
 | `pm-worker` | `sonnet` |
 | Read-only review agents (e.g., `/pr-review-help`) | `sonnet` |
 
-Aliases currently resolve to: `opus` = Opus 4.8, `sonnet` = Sonnet 5, `haiku` = Haiku 4.5 (resolution notes: `.claude/agents/README.md`).
+Current fleet: **Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5.** Aliases currently resolve to: `opus` = Opus 4.8, `sonnet` = Sonnet 5, `haiku` = Haiku 4.5 (resolution notes: `.claude/agents/README.md`). Fable 5 has no bare alias and is **not a spawn default for any phase** — automated phase spawns run unattended and are cost-sensitive, so Fable 5 is reserved for interactive hardest-work step-ups where a human is watching the spend. `/prompt`'s tier ladder is where Fable 5 is actively recommended.
 
-Rules: set `model` explicitly on every spawn; call-site value overrides frontmatter. `CLAUDE_CODE_SUBAGENT_MODEL=opus` is only a legacy safety net. If a Sonnet-tier agent underperforms, escalate to `opus` and document why.
+Rules: set `model` explicitly on every spawn; call-site value overrides frontmatter. `CLAUDE_CODE_SUBAGENT_MODEL=opus` is only a legacy safety net. If a Sonnet-tier agent underperforms, escalate to `opus` and document why; escalating a spawn to Fable 5 is a deliberate, case-by-case exception — never a new default.
 
 ## Phase Transition Autonomy (Quick Reference)
 

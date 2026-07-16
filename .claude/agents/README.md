@@ -40,7 +40,9 @@ Agent definitions use `{{PLACEHOLDER}}` markers for runtime context that the par
 
 Each agent definition declares a default `model` in frontmatter. The parent must also set `model` explicitly at every Agent tool call site per `.claude/rules/subagent-orchestration.md` "Model Selection" — the call-site parameter overrides the frontmatter default and keeps cost decisions visible at every spawn point.
 
-**Current alias resolution (verified 2026-07):** `opus` → Opus 4.8, `sonnet` → Sonnet 5, `haiku` → Haiku 4.5. Frontmatter intentionally uses bare aliases — Claude Code resolves them to the latest non-legacy model of each family, so agent definitions don't need editing when Anthropic ships a new version. If the runtime ever stops resolving bare aliases, switch frontmatter to explicit versioned IDs (e.g., `claude-opus-4-8`, `claude-sonnet-5`) and update this note.
+**Current fleet (verified 2026-07):** Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5.
+
+**Current alias resolution (verified 2026-07):** `opus` → Opus 4.8, `sonnet` → Sonnet 5, `haiku` → Haiku 4.5. Fable 5 has no bare alias — spawning it requires the explicit model ID `claude-fable-5` at the call site. Frontmatter intentionally uses bare aliases — Claude Code resolves them to the latest non-legacy model of each family, so agent definitions don't need editing when Anthropic ships a new version. If the runtime ever stops resolving bare aliases, switch frontmatter to explicit versioned IDs (e.g., `claude-opus-4-8`, `claude-sonnet-5`) and update this note.
 
 **Per-phase rationale:**
 
@@ -51,6 +53,8 @@ Each agent definition declares a default `model` in frontmatter. The parent must
 | `phase-c-merger` | `sonnet` | Lightweight verification plus canonical `/wrap` execution: reads PR body, checks boxes against code, runs `gh`/git commands, and reports blockers. Read-only tool restrictions (no Write/Edit) — the mechanical work does not need Opus-level reasoning. |
 | `pm-worker` | `sonnet` | Data gathering and formatting: issue creation, repo bootstrap checks. Each task follows a well-defined template. |
 | `researcher` | `sonnet` | Read-only exploration and summarization: reads files, runs `gh`/`git` queries, synthesizes findings. No code edits, no fixes — `sonnet` is sufficient for read-and-report work, and the restricted `allowed-tools` frontmatter prevents any write operations regardless of model. |
+
+**Why Fable 5 is not any agent's default:** Fable 5 is the strongest model in the fleet, but no agent defaults to it — the same cost logic that puts `sonnet` on `phase-c-merger` applies in the other direction. Phase spawns run unattended, often several in parallel, and Opus 4.8 already clears the reasoning bar for the heaviest phase (A/B) work; paying roughly double per spawn buys headroom these phases do not need. Fable 5 is reserved for interactive hardest-work step-ups, where a human is watching the spend and can judge the trade. `/prompt`'s tier ladder is where it is actively recommended (see `.claude/skills/prompt/SKILL.md` "Model Lineup & Effort Levels"). Escalating a specific spawn to `claude-fable-5` is a deliberate exception — document why, and do not make it a default.
 
 The global env var `CLAUDE_CODE_SUBAGENT_MODEL=opus` is a legacy safety net for unexpected/undocumented spawns only — **not** a compliant spawn pattern. Compliant calls must still set `model` explicitly at the call site and must not rely on either the frontmatter default or this env var.
 
