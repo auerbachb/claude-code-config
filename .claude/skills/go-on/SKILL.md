@@ -99,8 +99,10 @@ git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1
 
 ```bash
 PR_JSON=$(gh pr view --json number,title,body,state 2>/dev/null)
-PR_NUM=$(echo "$PR_JSON" | jq -r '.number // empty')
+PR_NUM=$(printf '%s' "$PR_JSON" | jq -r '.number // empty')
 ```
+
+Pipe with `printf '%s'`, never `echo` — zsh's builtin `echo` interprets the escape sequences in the PR body and corrupts the JSON, so `jq` errors and `PR_NUM` comes back empty, which reads as "no PR exists" (issue #574).
 
 - If a PR exists and is open: `[DONE]` — PR #$PR_NUM exists.
 - If no PR exists: `[ACTION]` — Create one.

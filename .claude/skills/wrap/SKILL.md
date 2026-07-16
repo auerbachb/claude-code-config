@@ -270,8 +270,9 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bulle
    ```bash
    GATE_JSON=$(.claude/scripts/merge-gate.sh "$PR_NUM")
    GATE_EXIT=$?
-   HEAD_NOW=$(echo "$GATE_JSON" | jq -r '.head_sha // empty')
+   HEAD_NOW=$(printf '%s' "$GATE_JSON" | jq -r '.head_sha // empty')
    ```
+   Pipe JSON with `printf '%s'`, never `echo` — zsh's builtin `echo` interprets escape sequences and corrupts the payload, yielding a parse error or an empty `HEAD_NOW` that defeats the no-stale-SHA contract (issue #574).
    - Exit `3` → PR not found / not open → Phase 3 handling as today.
    - Exit `2`/`4` → surface stderr; append to audit; stop (tooling failure).
    - Exit `0` → if Phase 1 had no outstanding findings trigger **or** findings were cleared by recovery, proceed **out** of the loop to Step 2.2. If Phase 1 still shows classified findings but gate passes (rare), prefer one `/fixpr` verification pass before merge — record in audit.
@@ -310,7 +311,7 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bulle
    **Threads-only detection + delegate heartbeat (issue #455 / #479).** Before delegating, classify whether unresolved review threads are the *only* blocker using `merge-gate.sh`'s **structured** signals — not by string-matching the prose. The gate emits `unresolved_thread_count` (the count behind the thread `missing` entry) and adds exactly **one** `missing` entry for the unresolved-thread gate, so "threads only" is `unresolved_thread_count > 0` **and** `missing` has length 1:
 
    ```bash
-   THREADS_ONLY=$(echo "$GATE_JSON" | jq -r '
+   THREADS_ONLY=$(printf '%s' "$GATE_JSON" | jq -r '
      ((.unresolved_thread_count // 0) > 0)
      and (((.missing // []) | length) == 1)')
    TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
