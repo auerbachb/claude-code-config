@@ -20,9 +20,9 @@ The picker also exposes **effort levels** (`low`, `medium`, `high`, `xhigh`, `ma
 
 Separately from Fast mode: for Light-tier work, **Haiku 4.5** is a valid cheaper alternative to Sonnet 5; the output notes this on Light-tier recommendations.
 
-**MANDATORY OUTPUT FORMAT:** Every per-issue prompt block MUST open and close with `~~~` tilde fences. NEVER use backtick fences as the outer prompt-block delimiter.
+**MANDATORY OUTPUT FORMAT:** Every per-issue prompt block printed to the transcript MUST open and close with `~~~` tilde fences. NEVER use backtick fences as the outer prompt-block delimiter. This governs fallback mode and print-on-demand replay — the two paths that print a block. In chip mode the prompt rides inside the chip rather than being printed, so it needs no fence; its content is otherwise identical.
 
-**Per-block model label (mandatory):** The first content inside each tilde-fenced block (immediately after the opening `~~~`) MUST be a single line: `**Model:** {MODEL} — {REASON}` where `{MODEL}` is the model string for **that issue's** `issue_tier` (from Step 5 — not the batch tier), and `{REASON}` is a concise task-type phrase of **at most 10 words** derived from that issue's signals (dominant drivers such as rules/CLAUDE.md, orchestration, file count, AC count, skills, dependencies, or scope keywords). The label must be **inside** the tilde fence so a pasted block is self-explanatory without surrounding prose.
+**Per-block model label (mandatory):** The first content inside each tilde-fenced block (immediately after the opening `~~~`) MUST be a single line: `**Model:** {MODEL} — {REASON}` where `{MODEL}` is the model string for **that issue's** `issue_tier` (from Step 5 — not the batch tier), and `{REASON}` is a concise task-type phrase of **at most 10 words** derived from that issue's signals (dominant drivers such as rules/CLAUDE.md, orchestration, file count, AC count, skills, dependencies, or scope keywords). The label must be **inside** the tilde fence so a pasted block is self-explanatory without surrounding prose. In chip mode the same line MUST open the chip's `prompt` text **and** appear in the visible short summary — chips cannot preset the model picker, so the user needs it before clicking and the spawned session needs it after.
 
 ## Step 0: Parse Arguments and Detect Context
 
@@ -55,7 +55,9 @@ If `$ARGUMENTS` is empty, check for PM orchestration context. PM context is dete
    - Listed in the `## Active Work` table with status "Awaiting thread start"
 
    **Then exclude** (AND NOT — remove any issue that matches any of these):
-   - Marked as "Active", "In review", "Merged", or "Prompt generated" in the `## Active Work` table
+   - Marked as "Active", "In review", "Merged", "Prompt generated", or "Chip offered" in the `## Active Work` table
+
+   "Chip offered" means `/pm` already offered that issue as a click-to-launch chip — it is offered-but-unstarted, exactly like "Prompt generated", so excluding it prevents double-offering the same issue.
 
    Example: If `## Suggested Next Issues` lists #42, #55, #61 and the Active Work table shows #42 as "In review", the result is #55 and #61.
 
@@ -195,9 +197,28 @@ If all issues are subagent-eligible, the thread-prompt group is empty — only t
 
 ## Step 6: Generate Output
 
-Produce the following output in Markdown. Use the gathered data to fill in each section. The output should be **copy-paste-ready** — a user can paste each issue's prompt directly into a new Claude Code thread as a single copyable block.
+Produce the following output in Markdown. Use the gathered data to fill in each section.
+
+### Delivery mode
+
+Check chip availability per `.claude/reference/chip-launching.md`, then branch. The **prompt content is identical either way** — only delivery differs:
+
+- **Chip mode** (`mcp__ccd_session__spawn_task` present): for each thread-prompt issue (after Step 5.5 partitioning), call `spawn_task` with `title` / `prompt` / `tldr` / `cwd`, where `prompt` is exactly the content that would sit **inside** that issue's `~~~` fences in fallback mode — the fence delimiters themselves are not part of the prompt. Everything between them, starting with the `**Model:**` line, is. Print only the short summary per issue — issue, title, `**Model:**` line, one-line rationale. The user clicks to launch; never launch for them.
+- **Fallback mode** (tool absent): print today's `~~~`-fenced blocks for every thread-prompt issue, unchanged — **copy-paste-ready**, each independently pasteable into a new thread. Byte-for-byte identical to pre-chip output.
+
+**Spawn outcomes are tracked per issue.** A failed `spawn_task` falls back for **that issue alone** — print its full block and note the fallback once for the batch (per `chip-launching.md`); the rest of the batch keeps its chips. Do not print a block for an issue whose chip spawned successfully. Every thread-prompt issue ends with exactly one of: a chip, or a printed block.
+
+**Record every chip's `task_id`.** After each successful spawn, record the returned `task_id` against its issue and mark that issue `Chip offered` — an unrecorded chip can never be withdrawn, which would break stale-chip hygiene. In a PM thread, write it to `/pm`'s Active Work table (its `Task ID` column is the canonical home). Outside a PM thread, keep it in this thread's state so it stays dismissable within the session, and say so in the summary.
+
+**Skip issues already offered.** Before spawning, check the recorded state (Path B's Active Work scan already excludes `Chip offered` — see Step 0) and skip any issue that already has a live chip. Re-running `/prompt` must not offer the same issue twice. Issues that were never spawned, or whose spawn failed, are still eligible.
+
+Subagent candidates from Step 5.5 never get chips — they run inline via `/subagent`, so that section is unchanged in both modes.
+
+If the user asks to "print the full prompt for #N" while in chip mode, re-emit that issue's complete tilde-fenced block verbatim. The chip stays offered.
 
 ### Output Structure
+
+Below is the fallback-mode structure. In chip mode, parts 2 and 3 collapse to short summaries and the block content moves inside each chip's `prompt`.
 
 The output has up to three parts:
 
@@ -334,6 +355,9 @@ This task is done when:
 - **All PM-detected issues are subagent-eligible:** Output only the Subagent Candidates section. No tier recommendation or prompt blocks needed.
 - **All PM-detected issues are thread-prompt-eligible:** Output normally — skip the Subagent Candidates section entirely. This is the same as the explicit-args path.
 - **`/subagent` skill not yet available:** The Subagent Candidates section outputs a `/subagent` command suggestion regardless of whether the skill exists. If the user runs it and the skill is missing, they will get a clear error. The `/prompt` skill does not gate on `/subagent` availability.
+- **Chip tool unavailable (CLI, headless, older client):** Fallback mode — output is identical to pre-chip behavior. Do not mention chips.
+- **Spawn fails mid-batch:** Fall back to a printed block for that issue only; the rest of the batch keeps its chips. Do not retry the failed spawn.
+- **User asks for the full prompt in chip mode:** Re-emit that issue's complete tilde-fenced block verbatim; leave the chip in place.
 
 ## Usage Examples
 
@@ -395,5 +419,11 @@ The prompt block that follows:
 ## CR Implementation Plan
 {CR plan verbatim, or "No CodeRabbit implementation plan available."}
 ~~~
+
+In **chip mode**, that same issue produces a chip plus this summary — the block above rides inside the chip instead of being printed:
+
+> - **#110 — {Title}** — chip offered
+>   **Model:** Opus 4.8 — skill file with multiple acceptance criteria
+>   Modifies a skill under `.claude/skills/` with four acceptance criteria.
 
 **Note:** This skill produces a recommendation. The user decides whether to follow the tier suggestion. When in doubt, the skill errs toward the higher tier — it's better to slightly over-resource than to get instruction adherence failures on a complex task.
