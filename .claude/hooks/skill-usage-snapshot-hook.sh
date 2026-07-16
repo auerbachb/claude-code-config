@@ -50,10 +50,12 @@ fi
 
 # Due: background the real push. The snapshot script owns the lock and the
 # authoritative under-lock throttle re-check, so concurrent Stop hooks from
-# parallel sessions collapse to a single push.
+# parallel sessions collapse to a single push. Pass the SANITIZED interval —
+# the child would otherwise inherit the original invalid env value and exit
+# on a usage error every Stop, and pushes would never succeed.
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SNAPSHOT="$HOOK_DIR/../scripts/skill-usage-snapshot.sh"
 [ -f "$SNAPSHOT" ] || exit 0
-nohup bash "$SNAPSHOT" --push --quiet >/dev/null 2>&1 &
+SNAPSHOT_INTERVAL_DAYS="$INTERVAL_DAYS" nohup bash "$SNAPSHOT" --push --quiet >/dev/null 2>&1 &
 
 exit 0

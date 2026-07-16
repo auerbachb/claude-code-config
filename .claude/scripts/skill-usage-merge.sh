@@ -52,8 +52,11 @@
 # SAFETY:
 #   - Live files are backed up to <file>.bak.<UTC-ts> (a .N suffix is added
 #     rather than ever overwriting an existing backup) before any write.
-#   - All mutations run under the same fcntl-flock sidecar lock the tracker
-#     uses (~/.claude/skill-usage.csv.lock), then atomic tmp + os.replace.
+#   - Live-file READS and all mutations run under the same fcntl-flock
+#     sidecar lock the tracker uses (~/.claude/skill-usage.csv.lock) — the
+#     lock is taken before reading so a tracker CSV increment cannot land
+#     between read and write and be overwritten. Writes are atomic
+#     (tmp + os.replace). Dry-run is read-only and lock-free.
 #   - KNOWN RACE: the tracker's log append (>>) is NOT under that lock, so a
 #     merge that rewrites the log can lose a log line appended in the same
 #     millisecond. Merges are rare and manual — run them when no active
@@ -254,6 +257,26 @@ def backup(path):
     return dest
 
 
+# ---- lock BEFORE reading live files ------------------------------------------
+# The tracker mutates the CSV under this same lock. Reading live files before
+# acquiring it would let a tracker increment land between read and write and
+# be overwritten by stale merged data. Dry-run stays lock-free: it is
+# read-only, so the worst case is a report computed from a mid-update
+# snapshot — nothing is written.
+lock_path = live_csv + ".lock"
+lock_fd = None
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # mirrors the tracker: proceed unlocked on such platforms
+
+if not dry_run and fcntl is not None:
+    try:
+        lock_fd = open(lock_path, "w")
+        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+    except OSError:
+        fail("could not acquire %s — is another merge or tracker write stuck?" % lock_path)
+
 # ---- compute merged log -----------------------------------------------------
 live_lines = read_lines(live_log)
 other_lines = read_lines(other_log) if merge_log else []
@@ -366,21 +389,7 @@ if dry_run:
     print("dry-run: no files written, no backups taken")
     sys.exit(0)
 
-# ---- write under the tracker's lock ------------------------------------------
-lock_path = live_csv + ".lock"
-lock_fd = None
-try:
-    import fcntl
-except ImportError:
-    fcntl = None  # mirrors the tracker: proceed unlocked on such platforms
-
-if fcntl is not None:
-    try:
-        lock_fd = open(lock_path, "w")
-        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
-    except OSError:
-        fail("could not acquire %s — is another merge or tracker write stuck?" % lock_path)
-
+# ---- write (still under the lock acquired before the reads) -------------------
 try:
     backups = []
     for p in ([live_log] if merge_log else []) + ([live_csv] if merge_csv else []):
