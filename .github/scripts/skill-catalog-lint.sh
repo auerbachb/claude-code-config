@@ -123,10 +123,6 @@ while IFS= read -r s; do
   fi
 done <<< "$actual"
 
-if (( errors == 0 )); then
-  echo "Skill catalog alignment: OK (${unique_count} commands)"
-fi
-
 # --- 4. Hardcoded count check --------------------------------------------
 # Each anchor must appear exactly once. Zero matches (someone reworded the
 # prose) or several (an ambiguous target) is an error, not a pass — otherwise
@@ -165,4 +161,4 @@ if (( errors > 0 )); then
   exit 1
 fi
 
-echo "skill-catalog-lint: OK"
+echo "skill-catalog-lint: OK (${unique_count} commands)"
