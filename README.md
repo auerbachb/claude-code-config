@@ -63,6 +63,8 @@ Review ownership is sticky once a fallback tier takes over:
 
 **Optional:** [Greptile](https://greptile.com) — AI code reviewer used as a fallback when CodeRabbit and BugBot are unavailable. Install the GitHub App and configure via the [Greptile dashboard](https://app.greptile.com).
 
+> **Account identity:** during setup, Claude must explicitly ask which email/account to use for git identity and for each CLI tool it authenticates (GitHub CLI, CodeRabbit, CodeAnt today — the checklist is extensible) — never assume one. See [SETUP.md — Account identity](SETUP.md#account-identity--ask-never-assume) for the checklist and where each credential is stored.
+
 ### Install
 
 > **Using an LLM to set this up?** See **[SETUP.md](SETUP.md)** — it has the same `bash ./setup.sh` command with LLM-friendly context.

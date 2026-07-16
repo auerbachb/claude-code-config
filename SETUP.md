@@ -16,6 +16,39 @@ The script handles everything: directory creation, symlinks, settings merge, hoo
 
 **Do not manually run the individual steps from README.md.** The `setup.sh` script is the single source of truth for installation. The README documents what each step does for reference, but `setup.sh` is the canonical installer.
 
+## Account identity — ask, never assume
+
+Machine setup wires several accounts together. **Claude must ask the user which email/account to use for each of these — never infer one from the Claude account, shell environment, or hostname.** (Motivating incident: a new-machine setup reused the Claude account email for git identity; GitHub couldn't link the commits, and CodeAnt refused PR reviews keyed to that email.)
+
+### 1. Git commit identity
+
+Ask the user for the email to use in `git config --global user.email`. If their GitHub account has email privacy enabled (GitHub Settings → Emails → "Keep my email addresses private"), recommend the **noreply form**: `<id>+<username>@users.noreply.github.com`.
+
+### 2. Per-tool account confirmation
+
+Before running each tool's auth command, confirm with the user which account (email) holds that tool's subscription — a browser OAuth flow will otherwise silently bind whatever account happens to be signed in:
+
+| Tool | Auth command | Confirm with the user |
+|------|--------------|-----------------------|
+| GitHub CLI (`gh`) | `gh auth login` | the GitHub account that owns your repos |
+| CodeRabbit CLI | `coderabbit auth login` | account holding the CodeRabbit seat |
+| CodeAnt CLI | `codeant login` | account holding the CodeAnt subscription |
+
+The CodeRabbit and CodeAnt **GitHub Apps** must be installed on the personal account or organization that hosts the target repositories. The CLI login account does not need to match the App installation — it needs to hold that vendor's subscription/seat, and `gh auth login` simply needs access to the repos.
+
+**Future tools follow the same pattern:** add a row here and ask before authenticating.
+
+### 3. Where this is stored (inspect any time)
+
+Default locations (may vary with your setup):
+
+| What | Where |
+|------|-------|
+| Git identity | `~/.gitconfig` (or XDG: `~/.config/git/config`) — view with `git config --global user.email` |
+| CodeAnt CLI key | `~/.codeant/config.json` (written by `codeant login`) |
+| CodeRabbit CLI auth | `~/.coderabbit/` — inspect with `coderabbit auth status` |
+| Optional CodeRabbit API key | `CODERABBIT_API_KEY` in your shell init file (e.g. `~/.zshrc`) — never commit or print it |
+
 ## What It Does
 
 > Steps below are the logical workflow — see `setup.sh` for exact step numbering in script output.
