@@ -42,7 +42,7 @@ Confirm package names before npm/pip/gem/cargo/brew install. Full rules: .claude
 
 Before handing a task to the user because it "can't" be done, verify against your actual tools — Bash (`gh`/`git`/`curl`/`gh api`), MCP tools, and custom skills — not inherited "agents can't" prose from a note, PR body, or comment.
 
-**Common false walls** (usually doable): manual Actions run → `gh workflow run <workflow> --ref <branch>`; review approve/reject → `gh pr review --approve|--request-changes`; admin-bypass merge → `gh pr merge --admin`; workflow_dispatch → `gh api repos/{owner}/{repo}/actions/workflows/{id}/dispatches`; release create → `gh release create`; comment/label/assign → `gh issue/pr edit`. Extend this list as new false walls are observed.
+**Common false walls** (usually doable): manual Actions run → `gh workflow run <workflow> --ref <branch>`; review approve/reject → `gh pr review --approve|--request-changes`; admin-bypass merge → `gh pr merge --admin`; workflow_dispatch → `gh api repos/{owner}/{repo}/actions/workflows/{id}/dispatches`; release create → `gh release create`; comment → `gh pr comment`/`gh issue comment`; label/assign → `gh issue/pr edit`. Extend this list as new false walls are observed. Agent-specific prohibitions (e.g. phase-c-merger's `/wrap`-only merge rule) always override this generic list.
 
 **Real walls** (handoff is correct, but structured): a token-scope 403 with no workaround, a branch-protection change, a `.env` edit, or anything in this file's "Never" lists. For these, use the `/admin-merge` (#451) pattern: print the exact copy-paste command, a one-line reason you can't run it, and optional terminal staging — never just describe what the user should do.
 
@@ -51,10 +51,12 @@ Before handing a task to the user because it "can't" be done, verify against you
 ```text
 MINDSET: Before handing off, enumerate your actual tools (gh/git/curl/gh api, MCP,
 skills) — don't trust inherited "agents can't" prose. Try the CLI-accessible path
-first (workflow run, pr review, pr merge --admin, api dispatches, release create,
-issue/pr edit are usually possible). Only hand off for real walls (token-scope 403,
-branch protection, .env, or a safety.md "Never" item) — and structure it like
-/admin-merge: exact command + one-line reason. Full rules: .claude/rules/safety.md.
+first (workflow run, pr review, api dispatches, release create, pr/issue comment
+or edit are usually possible) — but your own agent definition's explicit
+prohibitions always win (e.g. phase-c uses /wrap, never gh pr merge directly).
+Only hand off for real walls (token-scope 403, branch protection, .env, or a
+safety.md "Never" item) — structure it like /admin-merge: exact command + one-line
+reason. Full rules: .claude/rules/safety.md.
 ```
 
 ## Anthropic Quota & Spend Authority
