@@ -1,10 +1,10 @@
 ---
 name: pm-okr
-description: Manage the OKRs section of `.claude/pm-config.md`. Show current objectives, set new ones, or get AI-suggested updates based on recent work. OKRs drive `/prioritize` ranking. Use this whenever you want to view, set, or update project OKRs, objectives, key results, or goals. Triggers on "pm okr", "set okrs", "show okrs", "suggest okrs", "project goals", "objectives".
+description: Manage the OKRs section of `.claude/pm-config.md`. Show current objectives, set new ones, or get AI-suggested updates based on recent work. OKRs drive `/pm` ranking. Use this whenever you want to view, set, or update project OKRs, objectives, key results, or goals. Triggers on "pm okr", "set okrs", "show okrs", "suggest okrs", "project goals", "objectives".
 argument-hint: "show | set <objectives> | suggest (default: show)"
 ---
 
-Manage the OKRs (Objectives and Key Results) section of `.claude/pm-config.md`. OKRs inform `/prioritize` — keeping them current ensures prioritization reflects actual goals.
+Manage the OKRs (Objectives and Key Results) section of `.claude/pm-config.md`. OKRs inform `/pm` — keeping them current ensures prioritization reflects actual goals.
 
 Parse `$ARGUMENTS` to determine mode:
 - **No argument or "show"**: Display current OKRs
@@ -80,7 +80,7 @@ Replace the `## OKRs` section content with the text provided after "set". Preser
 2. Read the full `.claude/pm-config.md`
 3. Replace only the content between line-anchored headers: `^## OKRs` and the next `^## ` header
 4. Write back the file
-5. Confirm: "OKRs updated in `.claude/pm-config.md`. These will be used by `/prioritize` for alignment scoring."
+5. Confirm: "OKRs updated in `.claude/pm-config.md`. These will be used by `/pm` for alignment scoring."
 
 Display the new OKRs for confirmation.
 

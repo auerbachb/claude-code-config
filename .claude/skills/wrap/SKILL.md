@@ -132,7 +132,7 @@ fi   # 0 single, 1 multiple, 2 none, 3/4 error
 
 - The thread ran `/issue-maker`, or otherwise declared itself capture-only / issue-only mode.
 - The thread's entire output was creating, editing, commenting on, or closing GitHub issues — no implementation.
-- The thread is PM/monitoring/orchestration only (`/pm`, `/prioritize`, `/status`, `/standup`, `/recap`) with no code written here.
+- The thread is PM/monitoring/orchestration only (`/pm`, `/status`, `/standup`, `/recap`) with no code written here.
 - The thread explicitly concluded the work was already solved elsewhere, or that there is nothing to implement.
 - No branch, worktree, commit, push, or PR was ever created or discussed in this thread.
 
