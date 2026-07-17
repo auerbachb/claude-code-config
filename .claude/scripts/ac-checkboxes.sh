@@ -4,8 +4,12 @@
 # Parse Markdown checkboxes from the PR body's `## Test plan` section (case-
 # insensitive match; also accepts `## Test Plan` and `## Acceptance Criteria`),
 # then either emit them as JSON or flip `- [ ]` to `- [x]` via
-# `gh pr edit --body-file` (using --body-file, not --body, preserves the body's
-# exact whitespace and trailing-newline profile).
+# `gh api repos/{owner}/{repo}/pulls/{N} -X PATCH -F body=@file` (using a file
+# argument, not an inline string, preserves the body's exact whitespace and
+# trailing-newline profile). The REST endpoint is used instead of
+# `gh pr edit --body-file` because gh's edit command pre-fetches the PR via a
+# GraphQL query that still selects the deprecated `projectCards` field, which
+# GitHub now rejects — see issue #589.
 #
 # Implements the AC-verification contract from .claude/rules/cr-merge-gate.md
 # Step 2. Call sites: /merge, /wrap, /go-on, /subagent, phase-c-merger.
@@ -46,11 +50,11 @@
 #   2  Usage error (or internal script error — e.g., python parse failure,
 #      missing prerequisite)
 #   3  PR not found (or closed/merged — `gh pr view` failed)
-#   4  `gh pr edit --body-file` failed (only reachable from --tick/--all-pass)
+#   4  `gh api ... -X PATCH` failed (only reachable from --tick/--all-pass)
 #
 # Notes:
-#   - `gh pr edit --body-file` replaces the entire body; this script fetches
-#     first, mutates in memory, and writes back via --body-file to preserve
+#   - The PATCH call replaces the entire body; this script fetches first,
+#     mutates in memory, and writes back via a file argument to preserve
 #     all non-Test-Plan content verbatim (trailing newlines included).
 #   - --tick and --all-pass are no-ops (exit 0) when nothing needs ticking.
 #   - For --tick with no matches, exit is 0 and a note is printed to stderr.
@@ -407,10 +411,13 @@ case "$RESULT" in
   updated)
     BODY_PATH=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["body_path"])' "$PY_OUT")
     TICKED=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); t=d["ticked"]; n=d["items"]; print(f"ticked {len(t)} of {n} items: {t}")' "$PY_OUT")
-    # gh pr edit --body-file reads the full body verbatim (preserves newlines).
+    # Use the REST endpoint (not `gh pr edit`) to update the body: gh's edit
+    # command pre-fetches the PR via a GraphQL query that still selects the
+    # deprecated `projectCards` field, which GitHub now rejects (issue #589).
+    # `-F body=@file` reads the full body verbatim (preserves newlines).
     EDIT_ERR_FILE="$TMPDIR_AC/edit-stderr"
-    if ! gh pr edit "$PR_NUMBER" --body-file "$BODY_PATH" >/dev/null 2>"$EDIT_ERR_FILE"; then
-      echo "ERROR: gh pr edit failed for PR #$PR_NUMBER:" >&2
+    if ! gh api "repos/{owner}/{repo}/pulls/$PR_NUMBER" -X PATCH -F body=@"$BODY_PATH" >/dev/null 2>"$EDIT_ERR_FILE"; then
+      echo "ERROR: gh api PATCH failed for PR #$PR_NUMBER:" >&2
       cat "$EDIT_ERR_FILE" >&2
       exit 4
     fi

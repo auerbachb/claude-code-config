@@ -166,8 +166,8 @@ gh pr list --state merged --limit 20 --json number,title,mergedAt,author,body
 # Open issues — the backlog
 gh issue list --state open --json number,title,labels,assignees,createdAt,updatedAt --limit 500
 
-# Open PRs — detect in-flight work
-gh pr list --state open --json number,title,headRefName,author,updatedAt,additions,deletions
+# Open PRs — detect in-flight work (body is required to scan for Fixes/Closes #N)
+gh pr list --state open --json number,title,headRefName,author,updatedAt,additions,deletions,body
 
 # User-scoped views (only if $GH_USER is set from Step 0)
 if [ -n "$GH_USER" ]; then
@@ -208,7 +208,7 @@ Extract from each:
 - Dependency references, from the body **and** comments:
   - Blocked direction: `blocked by #N`, `depends on #N`, `prerequisite for #N`, `after #N`
   - Unblocking direction: `unblocks #N`, `enables #N`, `required by #N`, `before #N`
-  - In-flight signal: `Fixes #N`, `Closes #N` (a PR may already exist)
+- In-flight signal: cross-reference against the open-PR list already fetched in 1B.2 (now includes `body`) — a PR body containing a GitHub closing keyword (`close`/`closes`/`closed`, `fix`/`fixes`/`fixed`, `resolve`/`resolves`/`resolved`, case-insensitive) for this issue's number means a PR is already underway; match both local (`#N`) and cross-repo (`owner/repo#N`) reference forms. GitHub's closing keywords live in PR bodies, not in the issue's own text, so this signal is never collected from the issue body or comments — same source Section 3.3's progress detection reuses.
 - Complexity signals: number of acceptance criteria, files mentioned, architectural scope
 - Current assignee — who, if anyone, is already on it
 
@@ -224,6 +224,8 @@ Sort candidates into four tiers — **Critical**, **High**, **Medium**, **Low**.
 - **Low** — tangential, or serves a different goal entirely.
 
 **With no stated goal (the default)**, the priority signals in (1) below set the tier instead. Either way, (2)-(6) then apply to every candidate.
+
+**Precedence:** the initial tier always comes from goal-alignment (if a goal is stated) or priority-signals (1) otherwise. Leverage (2) and OKR (3) never set the tier on their own — they only modify it afterward, and only upward: leverage via an explicit tier-jump, OKR via the one-tier boost or tie-break rules in (3), never a downgrade. Momentum (4), cost-benefit (5), and exclusions (6) don't touch the tier at all — they refine ordering and the candidate pool within whatever tier (2)-(3) leave it in.
 
 1. **Priority signals:**
    - Labels: `P0`/`critical` > `P1`/`bug` > `P2`/`enhancement` > unlabeled
@@ -247,7 +249,7 @@ Sort candidates into four tiers — **Critical**, **High**, **Medium**, **Low**.
 5. **Cost-benefit (tie-break within a tier):** at equal alignment, the smaller issue wins. Read effort from `complexity:quick|light|medium|heavy` labels when present, otherwise from scope signals in the body (count of acceptance criteria, files mentioned, architectural reach).
 
 6. **Exclusions:**
-   - Skip issues that already have an open PR (someone is working on it — `Fixes #N` / `Closes #N` in an open PR body means in flight)
+   - Skip issues that already have an open PR (per the in-flight signal cross-referenced in 1B.3 — a closing keyword in an open PR body means in flight)
    - Skip issues assigned to someone else (unless stale > 14 days)
    - Skip issues labeled `blocked`, `on-hold`, `wontfix`, `duplicate`
 
@@ -541,7 +543,7 @@ Also accept user input: "thread for #42 is done", "PR #88 merged", "#55 is block
 When one or more threads finish (PRs merged, issues closed):
 
 1. **Dismiss the chips of finished issues, then remove their rows.** Order matters: a row carries its chip's `task_id`, and once the row is gone the chip can no longer be withdrawn. So for every completed issue still at `Chip offered`, `dismiss_task` first — its work is done, the offer is dead — and only then drop it from the assignments table.
-2. Re-scan open issues (reuse 1B.2-1B.4b logic but lighter — only re-read bodies for new/changed issues). **Re-score the whole retained candidate set, not just the changed issues:** tiers depend on the dependency map, so a closed or merged issue can change an *unchanged* issue's tier — #42 loses its leverage boost the moment the issues it unblocked are done. Refresh the map with what closed, then re-run 1B.4/1B.4b across every remaining candidate. Re-reading bodies is the expensive part and stays incremental; re-scoring is cheap and must be total.
+2. Re-scan open issues (reuse 1B.2-1B.4b logic but lighter — only re-read bodies **and comments** for issues whose `updatedAt` moved since the last scan's baseline, or that have no recorded baseline yet (first seen this pass — always gets a full read, same as a changed issue); track/update that baseline per issue as you go). **`updatedAt` bumps on a new comment just like a body edit**, so a dependency reference added in a comment on an otherwise-untouched issue (e.g. "blocked by #99") is still caught on the next pass — re-reading is scoped by *any* change, not just body/title edits, which is what keeps this from being a real completeness gap. **Re-score the whole retained candidate set, not just the changed issues:** tiers depend on the dependency map, so a closed or merged issue can change an *unchanged* issue's tier — #42 loses its leverage boost the moment the issues it unblocked are done. Refresh the map with what closed **and** what changed, then re-run 1B.4/1B.4b across every remaining candidate. Re-reading bodies and comments stays scoped to issues whose `updatedAt` moved or that are new — that's the expensive part and it stays incremental; re-scoring the dependency map and tiers is cheap and must be total.
 3. Suggest 1-3 new issues to fill the pipeline
 4. Generate prompts for the user's selected issues (Step 3.1 — chip or fallback)
 5. **Dismiss superseded and re-planned chips.** Beyond the finished issues handled in step 1, withdraw a `Chip offered` chip only when its offer is genuinely dead:
