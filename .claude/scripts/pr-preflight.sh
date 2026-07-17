@@ -14,9 +14,11 @@
 #        coderabbitai[bot], cursor[bot], graphite-app[bot], decide whether that
 #        reviewer is engaged ON THE CURRENT HEAD SHA (issue #576). Scans all 3
 #        PR endpoints (pulls/reviews, pulls/comments, issues/comments,
-#        per_page=100) plus the HEAD commit's check-runs. A reviewer counts as
-#        engaged only when it has a HEAD-fresh artifact, or we already posted
-#        its trigger for this HEAD. Otherwise the trigger comment is posted.
+#        per_page=100) plus the HEAD commit's check-runs and, for the
+#        SHA-less issue-comment path only, the PR timeline (issue #590). A
+#        reviewer counts as engaged only when it has a HEAD-fresh artifact,
+#        or we already posted its trigger for this HEAD. Otherwise the
+#        trigger comment is posted.
 #        Greptile is intentionally NOT triggered (stays manual per greptile.md).
 #        Before posting `@coderabbitai full review`, gate on
 #        cr-review-hourly.sh (--check global budget + read-only --peek-explicit
@@ -44,30 +46,57 @@
 #     • a review (pulls/reviews) with .commit_id == HEAD
 #     • an inline comment (pulls/comments) with .commit_id == HEAD
 #     • a check-run on the HEAD commit whose .app.slug maps to that reviewer
-#     • an issue comment (issues/comments) created at/after the HEAD commit's
-#       committer date — issue comments carry NO SHA, so a timestamp comparison
-#       is the only signal available for them
+#     • an issue comment (issues/comments) created at/after the HEAD-freshness
+#       anchor — issue comments carry NO SHA, so a timestamp comparison is the
+#       only signal available for them. The anchor prefers the PR timeline's
+#       head_ref_force_pushed/head_ref_pushed event timestamp (GitHub's own
+#       clock, stamped when the ref actually moved) and falls back to the HEAD
+#       commit's committer date when no such event exists or the timeline call
+#       fails (issue #590; see LIMITATION and DEGRADATION below).
 #
 #   Trigger-comment idempotency is scoped the same way: a trigger posted before
 #   the current HEAD existed is stale and does not suppress a fresh trigger.
 #
-#   LIMITATION (SHA-less issue comments): the HEAD committer date is a proxy for
-#   "when HEAD appeared". A rebase stamps the committer date at rebase time,
-#   which can precede the push by minutes; a bot comment about the OLD sha that
-#   lands in that window is misread as fresh. The window is narrow and the
-#   failure mode is benign — a skipped re-trigger, i.e. the pre-#576 behavior.
-#   Closing it would need the timeline's head_ref_force_pushed event (another
-#   paginated call per check).
+#   LIMITATION (SHA-less issue comments, narrowed by #590): the committer-date
+#   proxy had two gaps — a rebase stamps the committer date at REBASE time,
+#   which can precede the push by minutes, so a stale-sha comment landing in
+#   that window read as fresh; and the committer date is the LOCAL git clock,
+#   which can disagree with GitHub's clock by seconds in either direction
+#   (observed live on PR #586: an APPROVED review timestamped ~29s before its
+#   own reviewed commit's committer date). The timeline's
+#   head_ref_force_pushed/head_ref_pushed event — GitHub's own clock, stamped
+#   after the ref actually moved — closes both gaps when it exists. What
+#   remains: a PR whose HEAD has never been rebased/force-pushed has no such
+#   event, so its SHA-less issue-comment freshness still falls back to the
+#   HEAD committer date and inherits that proxy's narrower clock-skew exposure
+#   (no rebase means no rebase-window gap, just ordinary clock disagreement).
+#   Same failure mode as before, same benign direction — a skipped re-trigger,
+#   never a false one.
 #
 # DEGRADATION (deliberately asymmetric — fail toward silence, never toward
 # spamming four bots every tick)
-#   • HEAD committer date unavailable → SHA-less issue comments count as present
-#     (pre-#576 behavior), surfaced as a warning.
-#   • HEAD committer date in the FUTURE (skewed clock on whoever committed) →
-#     same path. Otherwise every real comment looks older than HEAD, i.e. every
-#     reviewer stale, spending a CodeRabbit slot for nothing.
+#   • Timeline fetch fails, or returns no head_ref_force_pushed/head_ref_pushed
+#     event → falls back to the HEAD commit's committer date (unchanged #576
+#     proxy). A fetch failure is surfaced as a warning; no matching event is
+#     the common, expected case for a PR that has never been rebased and is
+#     silent (it is not an error).
+#   • HEAD committer date unavailable (fallback path only) → SHA-less issue
+#     comments count as present (pre-#576 behavior), surfaced as a warning.
+#   • HEAD committer date in the FUTURE (fallback path only; skewed clock on
+#     whoever committed) → same path. Otherwise every real comment looks older
+#     than HEAD, i.e. every reviewer stale, spending a CodeRabbit slot for
+#     nothing.
 #   • check-runs fetch fails → that one signal is skipped; reviews and inline
 #     comments still decide.
+#
+# API COST (issue #590)
+#   One additional paginated call — repos/{owner}/{repo}/issues/{N}/timeline —
+#   per pre-flight run, on top of the existing 5 (PR view, 3 endpoint scans,
+#   commit, check-runs). Measured locally against a real (small) PR's timeline
+#   on this repo: ~0.7s wall-clock for the call alone. Pre-flight runs once per
+#   PR per tick in /babysit-pr and /pr-monitor-and-manage, so this is one extra
+#   sub-second `gh api` round-trip per PR per tick — not re-measured against a
+#   large/long-lived PR's full timeline history, which would paginate further.
 #
 # USAGE
 #   pr-preflight.sh <pr_number> [--json] [--dry-run]
@@ -271,8 +300,9 @@ CURRENT_USER="$(gh api user --jq .login 2>/dev/null || echo "")"
 # fields needed to decide freshness against HEAD.
 ARTIFACTS_TMP="$(mktemp)"   # login US commit_id US created_at US collapsed_body
 SLUGS_TMP="$(mktemp)"       # app.slug of each check-run on the HEAD commit
+TIMELINE_TMP="$(mktemp)"    # created_at of each head_ref_force_pushed/head_ref_pushed event
 GH_ERR="$(mktemp)"
-trap 'rm -f "$PR_VIEW_ERR" "$ARTIFACTS_TMP" "$SLUGS_TMP" "$GH_ERR" 2>/dev/null' EXIT
+trap 'rm -f "$PR_VIEW_ERR" "$ARTIFACTS_TMP" "$SLUGS_TMP" "$TIMELINE_TMP" "$GH_ERR" 2>/dev/null' EXIT
 
 # SHA field: prefer .original_commit_id, fall back to .commit_id.
 #
@@ -319,29 +349,53 @@ for endpoint in \
   fi
 done
 
-# HEAD committer date — the only freshness signal for SHA-less issue comments.
-# Failure is NON-fatal and degrades to pre-#576 behavior (see DEGRADATION).
-HEAD_DATE=""
+# HEAD freshness anchor for SHA-less issue comments (issue #590). Preferred
+# source: the PR timeline's head_ref_force_pushed/head_ref_pushed event —
+# GitHub's own clock, stamped when the ref actually moved. Falls back to the
+# HEAD commit's committer date (the original #576 proxy, logic unchanged
+# below) when no such event exists or the timeline call fails. Either stage
+# failing is NON-fatal (see DEGRADATION).
+TIMELINE_JQ='.[]? | select(.event=="head_ref_force_pushed" or .event=="head_ref_pushed") | (.created_at // empty)'
+HEAD_PUSH_DATE=""
 if [[ -n "$HEAD_SHA" ]]; then
-  HEAD_DATE="$(gh api "repos/{owner}/{repo}/commits/$HEAD_SHA" \
-                 --jq '.commit.committer.date // ""' 2>/dev/null || echo "")"
+  if gh api --paginate "repos/{owner}/{repo}/issues/$PR/timeline?per_page=100" \
+       --jq "$TIMELINE_JQ" >"$TIMELINE_TMP" 2>"$GH_ERR"; then
+    # Latest event wins when a PR was rebased more than once. ISO-8601 UTC
+    # timestamps sort lexicographically (same rationale as at_or_after_head).
+    HEAD_PUSH_DATE="$(LC_ALL=C sort "$TIMELINE_TMP" | tail -1)"
+  else
+    surface "WARNING: could not read PR timeline for #$PR — falling back to HEAD commit committer date: $(cat "$GH_ERR")"
+  fi
 fi
-# A future-dated HEAD commit (skewed clock on whoever rebased — committer date
-# comes from that machine's clock) would make every real comment look older than
-# HEAD, i.e. every reviewer stale. The per-SHA dedupe bounds that to one trigger
-# per SHA rather than a per-tick storm, but it still spends a CodeRabbit slot for
-# nothing. Treat it as an unreadable date and take the same degradation path.
-# The false-positive direction (a *local* clock running behind GitHub's) merely
-# degrades to "present" — the safe side, consistent with the rule above.
-if [[ -z "$HEAD_DATE" ]]; then
-  surface "WARNING: could not read HEAD commit date for ${HEAD_SHA:0:7} — treating SHA-less issue comments as engaged (pre-#576 behavior); a stale reviewer may not be re-triggered this run"
+
+if [[ -n "$HEAD_PUSH_DATE" ]]; then
+  HEAD_DATE="$HEAD_PUSH_DATE"
 else
-  # `[` is a regular builtin, so an assignment prefix is legal here — unlike the
-  # `[[` keyword (see at_or_after_head).
-  NOW_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  if LC_ALL=C [ "$HEAD_DATE" \> "$NOW_UTC" ]; then
-    surface "WARNING: HEAD commit date ($HEAD_DATE) is in the future — ignoring it (clock skew on the machine that committed?); treating SHA-less issue comments as engaged this run"
-    HEAD_DATE=""
+  # HEAD committer date — the fallback freshness signal for SHA-less issue
+  # comments. Failure is NON-fatal and degrades to pre-#576 behavior (see
+  # DEGRADATION).
+  HEAD_DATE=""
+  if [[ -n "$HEAD_SHA" ]]; then
+    HEAD_DATE="$(gh api "repos/{owner}/{repo}/commits/$HEAD_SHA" \
+                   --jq '.commit.committer.date // ""' 2>/dev/null || echo "")"
+  fi
+  # A future-dated HEAD commit (skewed clock on whoever rebased — committer date
+  # comes from that machine's clock) would make every real comment look older than
+  # HEAD, i.e. every reviewer stale. The per-SHA dedupe bounds that to one trigger
+  # per SHA rather than a per-tick storm, but it still spends a CodeRabbit slot for
+  # nothing. Treat it as an unreadable date and take the same degradation path.
+  # The false-positive direction (a *local* clock running behind GitHub's) merely
+  # degrades to "present" — the safe side, consistent with the rule above.
+  if [[ -z "$HEAD_DATE" ]]; then
+    surface "WARNING: could not read HEAD commit date for ${HEAD_SHA:0:7} — treating SHA-less issue comments as engaged (pre-#576 behavior); a stale reviewer may not be re-triggered this run"
+  else
+    # `[` is a regular builtin, so an assignment prefix is legal here — unlike the
+    # `[[` keyword (see at_or_after_head).
+    NOW_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if LC_ALL=C [ "$HEAD_DATE" \> "$NOW_UTC" ]; then
+      surface "WARNING: HEAD commit date ($HEAD_DATE) is in the future — ignoring it (clock skew on the machine that committed?); treating SHA-less issue comments as engaged this run"
+      HEAD_DATE=""
+    fi
   fi
 fi
 
