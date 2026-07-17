@@ -17,6 +17,7 @@ Re-scan the current repo and update `.claude/pm-config.md`, then sweep stale wor
 | Notes | User-edited | Preserved verbatim |
 | Infrastructure | Auto-generated | Regenerated from repo scan |
 | Architecture | Auto-generated | Regenerated from repo scan |
+| Any other section name | Non-canonical | Preserved verbatim, repositioned next to its nearest canonical neighbor (see Step 6) |
 
 ## Step 1: Verify config exists
 
@@ -31,7 +32,7 @@ If `.claude/pm-config.md` does not exist, tell the user: "No PM config found. Ru
 Enumerate section names via the shared parser, then extract each body by name:
 
 ```bash
-# List every `^## ` header in the config (one name per line).
+# List every `^## ` header in the config, in original file order.
 mapfile -t SECTIONS < <(.claude/scripts/pm-config-get.sh --list 2>/dev/null)
 
 # For each section, fetch the verbatim body.
@@ -43,6 +44,13 @@ done
 
 `pm-config-get.sh` handles line-anchored `^## ` matching (no mid-line matches), preserves body content verbatim, and stops at the next `^## ` or EOF. Preserve the file's title line (`# PM Config — ...`) separately — it sits above all `## ` sections.
 
+**Classify each section and record non-canonical anchors.** Compare every name in `SECTIONS` against the canonical list (Role, OKRs, Workflow Rules, Infrastructure, Architecture, Dependency Rules, Team, Notes — the fixed schema in Step 6):
+
+- **Canonical** — one of the eight names above. Handled by Step 3 (preserved) or Steps 4-5 (regenerated).
+- **Non-canonical** — any other name (e.g. `Complexity triggers`). Store its body verbatim, and record its **anchor**: the nearest canonical section name that precedes it in `SECTIONS`' original order. If no canonical section precedes it (it appears before the first canonical section in the file), anchor it to `TOP` (immediately below the title line, before Role).
+
+Non-canonical sections are never dropped — Step 6 re-inserts each one immediately after its recorded anchor. Sections sharing the same anchor keep their original relative order. Order is **not** guaranteed across different anchors: Step 6 emits canonical sections in the fixed schema order regardless of how they appeared in the original file, so two non-canonical sections anchored to canonical sections that were themselves out of fixed order will follow their anchors' fixed-schema order, not their original file order.
+
 ## Step 3: Preserve user-edited sections
 
 Store the content of these sections verbatim — do not modify them:
@@ -52,6 +60,8 @@ Store the content of these sections verbatim — do not modify them:
 - Dependency Rules
 - Team
 - Notes
+
+**Non-canonical sections are preserved the same way.** Any section name not in the canonical list above (see Step 6) is treated exactly like a user-edited section: store its body content unmodified and never rewrite it. Do not ask the user to re-add it — Step 6 automatically re-inserts it at the anchor recorded in Step 2. (`pm-config-get.sh` trims trailing whitespace from every extracted body per its documented contract — this applies uniformly to canonical and non-canonical sections and isn't specific to this preservation rule.)
 
 ## Step 4: Re-scan infrastructure
 
@@ -104,7 +114,7 @@ Before writing, show the user what will change:
 
 ## Step 6: Reassemble and write config
 
-Reconstruct `.claude/pm-config.md` using the fixed schema order below (regardless of the order in the existing file):
+Reconstruct `.claude/pm-config.md` using the fixed schema order below for the eight canonical sections (regardless of the order they appeared in the existing file):
 
 1. Title line (preserved from original)
 2. Role (preserved)
@@ -115,6 +125,16 @@ Reconstruct `.claude/pm-config.md` using the fixed schema order below (regardles
 7. Dependency Rules (preserved)
 8. Team (preserved)
 9. Notes (preserved)
+
+Infrastructure and Architecture are always written — Steps 4-5 regenerate them unconditionally, regardless of whether they existed in the original file. For the six *preserved* canonical sections (Role, OKRs, Workflow Rules, Dependency Rules, Team, Notes), skip any that wasn't present in the original file — do not fabricate an empty one.
+
+**Re-insert each non-canonical section at its recorded anchor** (from Step 2):
+- A section anchored to `TOP` goes immediately after the title line, before Role.
+- A section anchored to a canonical name goes immediately after that canonical section's body in the output — ahead of whatever canonical section is next in the fixed-order list, even if that next section is absent from the file entirely (e.g. `Workflow Rules` not existing doesn't push the anchored section past `Infrastructure`).
+- Sections sharing the same anchor keep their original relative order (Step 2).
+- An anchor can only ever be a canonical section that itself appeared in `SECTIONS`, so the "anchor absent from output" case should not occur; if it somehow does, fall back to `TOP`.
+
+*Worked example — this repo's own `pm-config.md`:* the original order is Role, OKRs, **Complexity triggers**, Infrastructure, Architecture, Team, Notes. `Complexity triggers` is non-canonical and anchored to OKRs (its nearest preceding canonical section). `Workflow Rules` and `Dependency Rules` are both absent and skipped. Reassembly emits Role, OKRs, **Complexity triggers**, Infrastructure, Architecture, Team, Notes, in the same content and order as the original — `Complexity triggers` stays pinned immediately after OKRs regardless of which canonical sections around it are present. (Verified reproducing this repo's actual `pm-config.md` byte-for-byte, since it already uses the file's standard single-blank-line spacing between sections — see the PR's test plan.)
 
 Write back to `.claude/pm-config.md`.
 
@@ -127,6 +147,7 @@ Output a summary showing what changed in the config:
 
 **Preserved (unchanged):**
 - Role, OKRs, Workflow Rules, Dependency Rules, Team, Notes
+- Non-canonical sections (if any), kept verbatim and reinserted at their recorded anchor — e.g. "Complexity triggers"
 
 **Regenerated:**
 - Infrastructure: {brief diff — e.g., "added Fly.io, removed Heroku"}
