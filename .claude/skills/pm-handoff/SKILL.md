@@ -112,6 +112,8 @@ You manage the backlog, track progress, write GitHub issues, and generate prompt
 
 Tell the user the config was bootstrapped and they should review/customize the Role, OKRs, Team, and Notes sections.
 
+**Non-canonical sections (e.g. `Complexity triggers`).** Step 1's dispatch to this bootstrap on `CONFIG_RC == 2` (pre-existing behavior, unchanged by this note) fires for both a missing file and an unreadable one — whether an unreadable-but-existing file should instead be treated as an error rather than silently rebuilt is a Step 1 design question, out of scope here. What matters for section preservation: whichever way Step 1 got here, this bootstrap has no parseable prior sections to work from, so there is nothing to preserve in this path. If this path is ever extended to regenerate over an existing, successfully-parsed config (rather than only creating a fresh one), it must apply the identical rule `pm-update` uses in its Step 6: Infrastructure and Architecture are always emitted (regenerated unconditionally); the other six canonical sections (Role, OKRs, Workflow Rules, Dependency Rules, Team, Notes) are emitted only if they were actually present in the original config — never fabricate an empty one; and any other section name is re-inserted verbatim, anchored immediately after the nearest canonical section that preceded it in the original file (or at the top if none did). Never silently drop a section absent from the canonical list — see `pm-update/SKILL.md` Step 6 for the full algorithm and worked example.
+
 ## Step 3: Read existing config
 
 Parse `.claude/pm-config.md` via the shared parser:
