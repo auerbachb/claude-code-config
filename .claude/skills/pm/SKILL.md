@@ -129,7 +129,7 @@ fi
 
 ### 1A.4: Present recovered state
 
-Show the user:
+**First, run Step 1C (Backlog health, below) and print its block** — it runs on every invocation, resume included. Then show the user:
 1. Verified assignments table (corrected for merges/closures since handoff)
 2. Any issues that were in-progress but whose PRs are now missing or stale
 3. Remaining open issues not yet assigned
@@ -277,7 +277,7 @@ Incorporate the answer, finalize the ranking, and continue to 1B.5.
 
 ### 1B.5: Present recommendations
 
-When `$GH_USER` is set, lead the output with user-scoped sections before the general backlog ranking. These always take precedence over backlog pickup — they represent work already on the user's plate.
+**First, run Step 1C (Backlog health, below) and print its block** — it runs on every invocation, ahead of everything else in this step. Then, when `$GH_USER` is set, lead the output with user-scoped sections before the general backlog ranking. These always take precedence over backlog pickup — they represent work already on the user's plate.
 
 ```
 ## Your Open PRs
@@ -345,6 +345,37 @@ Summarize rather than enumerate once a tier stops informing a decision — most 
 Select the top-ranked batch by default and generate prompts immediately. State: "Generating prompts for the top issues below. Say 'adjust' to change the selection before pasting into threads."
 
 Then proceed to **Step 2: Active Monitoring Setup**.
+
+---
+
+## Step 1C: Backlog health (always-on)
+
+Runs on **every** `/pm` invocation, no flag required — both the resume path (1A.4) and the cold-start path (1B.5) call this before printing anything else, so it always appears ahead of the ranking/orchestration output. Purely informational: it does not alter 1B.3 candidate narrowing, 1B.4 scoring, or the 1B.4b judgment-check contract.
+
+```bash
+.claude/scripts/backlog-health.sh --json
+```
+
+This single call aggregates: total open count; a 30-day rolling age split; a defer/close candidate count (delegated entirely to `backlog-staleness.sh` — the same script `/pm-clean` uses, so results can never diverge, issue #598); the resulting actionable backlog size; recent throughput (issues closed in the past 7 days); and a time-to-clear estimate for the actionable backlog from a 30-day rolling closure rate. See `.claude/scripts/backlog-health.sh --help` for the full field reference.
+
+Render a compact bullet block — a heading plus short one-line stats, not a table:
+
+```
+## Backlog health
+
+- **{total_open} open issues** — {opened_last_N_days} opened in the last 30 days, {older_than_N_days} older
+- **{candidate_count} defer/close candidates** among the older issues — run `/pm-clean` for details (not enumerated here)
+- **{actionable_backlog} actionable issues** — {closed_last_recent_days} closed in the past 7 days
+- **Estimated time to clear:** {estimate.value} {estimate.unit}
+```
+
+When `estimate_message` is set instead of `estimate` (the 30-day closure rate is zero), replace the last line with:
+
+```
+- **Estimated time to clear:** cadence too low to estimate
+```
+
+If `candidate_count` is 0, drop the "defer/close candidates" line rather than showing a zero. Never enumerate the flagged issues inline — a count plus the `/pm-clean` pointer is the full extent of this block; full detail (issue numbers, titles, per-category rationale) belongs to `/pm-clean`'s own output.
 
 ---
 
