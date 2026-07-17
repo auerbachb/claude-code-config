@@ -88,12 +88,15 @@ case "\$args" in
     echo "[]"
     ;;
   *"/comments"*)
+    # backlog-staleness.sh (invoked internally) fetches raw comment JSON (no
+    # --jq) and slurps it itself, so the stub must mimic the real API shape —
+    # an array of {created_at} objects, or [] when empty (never bare null).
     num=\$(echo "\$args" | grep -oE 'issues/[0-9]+/comments' | grep -oE '[0-9]+')
     file="$TMP/comments/\${num}.txt"
     if [ -f "\$file" ]; then
-      cat "\$file"
+      jq -Rn --arg d "\$(cat "\$file")" '[{created_at: \$d}]'
     else
-      echo "null"
+      echo "[]"
     fi
     ;;
   *)

@@ -83,12 +83,15 @@ case "\$args" in
     echo "[]"
     ;;
   *"/comments"*)
+    # backlog-staleness.sh fetches raw comment JSON (no --jq) and slurps it
+    # itself, so the stub must mimic the real API shape — an array of
+    # {created_at} objects, or [] when there are no comments (never bare null).
     num=\$(echo "\$args" | grep -oE 'issues/[0-9]+/comments' | grep -oE '[0-9]+')
     file="$TMP/comments/\${num}.txt"
     if [ -f "\$file" ]; then
-      cat "\$file"
+      jq -Rn --arg d "\$(cat "\$file")" '[{created_at: \$d}]'
     else
-      echo "null"
+      echo "[]"
     fi
     ;;
   *)
@@ -101,8 +104,18 @@ chmod +x "$STUB_BIN/gh"
 export PATH="$STUB_BIN:$PATH"
 mkdir -p "$TMP/comments"
 
+# Fixed calendar dates below (NOW_ISO/OLD_ISO) are safe as hardcoded literals:
+# OLD_ISO stays "more than 30 days old" indefinitely into the future, and
+# NOW_ISO is never compared against a real-time threshold. A "recent comment"
+# date is different — it must stay within the 30-day window at whatever time
+# the test actually runs, so it is computed relative to execution time.
 NOW_ISO="2026-07-16T00:00:00Z"
 OLD_ISO="2026-04-01T00:00:00Z"   # >30 days before "now" per fixture design
+
+days_ago_iso() {
+  local n="$1"
+  date -v-"${n}"d -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "${n} days ago" +%Y-%m-%dT%H:%M:%SZ
+}
 
 # ---------------------------------------------------------------------------
 # Test 1: empty backlog → empty result, exit 0
@@ -149,8 +162,10 @@ echo "[]" > "$TMP/closed_page1.json"
 OUT=$(bash "$SCRIPT" --json)
 check_json_has "Test4a: inactive flags issue #100" "$OUT" '[.[] | select(.number==100 and .category=="inactive")] | length == 1'
 
-# Negative: same issue but with a recent comment → not flagged
-echo "2026-07-15T00:00:00Z" > "$TMP/comments/100.txt"
+# Negative: same issue but with a recent comment → not flagged. Computed
+# relative to execution time (1 day ago) so this stays valid indefinitely —
+# a fixed calendar date would eventually age out of the 30-day window.
+days_ago_iso 1 > "$TMP/comments/100.txt"
 OUT=$(bash "$SCRIPT" --json)
 check_json_has "Test4b: recent comment suppresses inactive flag" "$OUT" '[.[] | select(.number==100 and .category=="inactive")] | length == 0'
 rm -f "$TMP/comments/100.txt"

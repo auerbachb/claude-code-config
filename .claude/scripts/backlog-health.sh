@@ -159,6 +159,12 @@ if ! FLAGS=$(bash "$SCRIPT_DIR/backlog-staleness.sh" --days "$DAYS" --json 2>"$T
   err "backlog-staleness.sh failed: $(cat "$TMP/staleness.err")"
   exit 3
 fi
+# A zero exit can still carry soft warnings on stderr (e.g. the 50-candidate
+# inactive-check cap) — surface them so candidate_count/actionable_backlog
+# aren't presented as more complete than they are.
+if [ -s "$TMP/staleness.err" ]; then
+  err "backlog-staleness.sh warning: $(cat "$TMP/staleness.err")"
+fi
 printf '%s' "$FLAGS" > "$TMP/flags.json"
 
 CANDIDATE_COUNT=$(jq -n --slurpfile flags "$TMP/flags.json" --slurpfile open "$TMP/open.json" --arg since "$SINCE_DATE" '

@@ -256,7 +256,13 @@ printf '%s' "$CANDIDATES_JSON" | jq -c ".[0:$CHECK_LIMIT][]" | while IFS= read -
   TITLE=$(printf '%s' "$issue" | jq -r '.title')
   UPDATED=$(printf '%s' "$issue" | jq -r '.updatedAt')
 
-  LAST_COMMENT=$(gh api "repos/{owner}/{repo}/issues/$NUM/comments" --jq '[.[] | .created_at] | sort | last' 2>/dev/null)
+  # `gh api --paginate --jq` applies the jq filter PER PAGE (each page is a
+  # separate JSON array — gh's own docs), not to the concatenated result, and
+  # `--slurp` is not supported together with `--jq` on this gh CLI version.
+  # Pipe the raw paginated stream through our own `jq -s` instead so `sort |
+  # last` sees every comment, not just the last page's.
+  LAST_COMMENT=$(gh api --paginate "repos/{owner}/{repo}/issues/$NUM/comments?per_page=100" 2>/dev/null \
+    | jq -rs '[.[][] | .created_at] | sort | last' 2>/dev/null)
   [ "$LAST_COMMENT" = "null" ] && LAST_COMMENT=""
 
   HAS_RECENT_COMMENT=0
