@@ -115,8 +115,17 @@ TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
-IFS=$'\t' read -r SINCE_DATE SINCE_ISO < <(bash "$SCRIPT_DIR/gh-window.sh" --days "$DAYS")
-IFS=$'\t' read -r RECENT_SINCE_DATE RECENT_SINCE_ISO < <(bash "$SCRIPT_DIR/gh-window.sh" --days "$RECENT_DAYS")
+if ! WINDOW_OUTPUT=$(bash "$SCRIPT_DIR/gh-window.sh" --days "$DAYS"); then
+  err "gh-window.sh failed to compute the --days $DAYS window"
+  exit 3
+fi
+IFS=$'\t' read -r SINCE_DATE SINCE_ISO <<< "$WINDOW_OUTPUT"
+
+if ! RECENT_WINDOW_OUTPUT=$(bash "$SCRIPT_DIR/gh-window.sh" --days "$RECENT_DAYS"); then
+  err "gh-window.sh failed to compute the --recent-days $RECENT_DAYS window"
+  exit 3
+fi
+IFS=$'\t' read -r RECENT_SINCE_DATE RECENT_SINCE_ISO <<< "$RECENT_WINDOW_OUTPUT"
 
 # ---------------------------------------------------------------------------
 # Total open + age split
@@ -132,7 +141,10 @@ TOTAL_OPEN=$(jq 'length' "$TMP/open.json")
 if [ "$TOTAL_OPEN" -eq 500 ]; then
   err "Open issue count hit the 500-item fetch cap — total_open/actionable_backlog may be undercounted."
 fi
-OPENED_RECENT=$(jq --arg since "$SINCE_ISO" '[.[] | select(.createdAt >= $since)] | length' "$TMP/open.json")
+# Compare on the date portion only — see the comment in backlog-staleness.sh
+# on why comparing gh-window.sh's ET-offset ISO form against GitHub's "Z"
+# timestamps via naive lexicographic ordering is unsafe near a boundary.
+OPENED_RECENT=$(jq --arg since "$SINCE_DATE" '[.[] | select((.createdAt[0:10]) >= $since)] | length' "$TMP/open.json")
 OPENED_OLDER=$((TOTAL_OPEN - OPENED_RECENT))
 
 # ---------------------------------------------------------------------------
@@ -149,9 +161,9 @@ if ! FLAGS=$(bash "$SCRIPT_DIR/backlog-staleness.sh" --days "$DAYS" --json 2>"$T
 fi
 printf '%s' "$FLAGS" > "$TMP/flags.json"
 
-CANDIDATE_COUNT=$(jq -n --slurpfile flags "$TMP/flags.json" --slurpfile open "$TMP/open.json" --arg since "$SINCE_ISO" '
+CANDIDATE_COUNT=$(jq -n --slurpfile flags "$TMP/flags.json" --slurpfile open "$TMP/open.json" --arg since "$SINCE_DATE" '
   ($flags[0] | map(select(.category=="inactive" or .category=="superseded" or .category=="potential-duplicate")) | map(.number) | unique) as $nums |
-  [$open[0][] | select(.number as $n | $nums | index($n)) | select(.createdAt < $since)] | length
+  [$open[0][] | select(.number as $n | $nums | index($n)) | select((.createdAt[0:10]) < $since)] | length
 ')
 ACTIONABLE_BACKLOG=$((TOTAL_OPEN - CANDIDATE_COUNT))
 

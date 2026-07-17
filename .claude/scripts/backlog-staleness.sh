@@ -177,7 +177,7 @@ def sigwords:
 # ---------------------------------------------------------------------------
 
 # Strong signal: closing keywords in the PR body referencing an open issue.
-jq -nc --argjson stop "$STOPWORDS_JSON" --argjson verbs "$GENERIC_VERBS_JSON" "
+if ! jq -nc --argjson stop "$STOPWORDS_JSON" --argjson verbs "$GENERIC_VERBS_JSON" "
 $JQ_SIGWORDS_DEF
 (\$open[0]) as \$open_issues |
 (\$merged[0])[] as \$pr |
@@ -190,11 +190,13 @@ $JQ_SIGWORDS_DEF
  rationale: (\"PR #\" + (\$pr.number|tostring) + \" (\\\"\" + \$pr.title + \"\\\") merged on \" + (\$pr.mergedAt // \"\" | .[0:10]) + \" references a closing keyword for #\" + (\$n|tostring) + \" but the issue remains open.\"),
  pr: \$pr.number, merged_at: \$pr.mergedAt}
 " --slurpfile open "$TMP/open.json" --slurpfile merged "$TMP/merged.json" \
-  >> "$TMP/flags.jsonl" 2>"$TMP/step4a.err" || true
+  >> "$TMP/flags.jsonl" 2>"$TMP/step4a.err"; then
+  err "solved-by-pr (closing-keyword) detection failed, continuing with partial results: $(cat "$TMP/step4a.err")"
+fi
 
 # Weak signal: branch name carries the issue number AND title/body share 2+
 # significant keywords with the open issue (avoids coincidental numbering).
-jq -nc --argjson stop "$STOPWORDS_JSON" --argjson verbs "$GENERIC_VERBS_JSON" "
+if ! jq -nc --argjson stop "$STOPWORDS_JSON" --argjson verbs "$GENERIC_VERBS_JSON" "
 $JQ_SIGWORDS_DEF
 (\$open[0]) as \$open_issues |
 (\$merged[0])[] as \$pr |
@@ -211,19 +213,33 @@ select((\$shared | length) >= 2) |
  rationale: (\"PR #\" + (\$pr.number|tostring) + \" branch '\" + \$pr.headRefName + \"' references #\" + (\$branch_num|tostring) + \" and shares keywords (\" + (\$shared | join(\", \")) + \") — verify it closes the issue.\"),
  pr: \$pr.number, merged_at: \$pr.mergedAt}
 " --slurpfile open "$TMP/open.json" --slurpfile merged "$TMP/merged.json" \
-  >> "$TMP/flags.jsonl" 2>"$TMP/step4b.err" || true
+  >> "$TMP/flags.jsonl" 2>"$TMP/step4b.err"; then
+  err "solved-by-pr (branch-name) detection failed, continuing with partial results: $(cat "$TMP/step4b.err")"
+fi
 
 # ---------------------------------------------------------------------------
 # Step 5: inactive (updatedAt threshold + comment/PR-ref/commit-ref triple check)
 # ---------------------------------------------------------------------------
 
-IFS=$'\t' read -r SINCE_DATE SINCE_ISO < <(bash "$SCRIPT_DIR/gh-window.sh" --days "$DAYS")
+if ! WINDOW_OUTPUT=$(bash "$SCRIPT_DIR/gh-window.sh" --days "$DAYS"); then
+  err "gh-window.sh failed to compute the --days $DAYS window"
+  exit 3
+fi
+IFS=$'\t' read -r SINCE_DATE SINCE_ISO <<< "$WINDOW_OUTPUT"
+
+# Compare on the date portion only (not full ISO instants): gh-window.sh's ISO
+# form carries an ET UTC offset (e.g. -04:00) while GitHub's timestamps are
+# always "Z"-suffixed UTC — naive lexicographic comparison of the two mixes
+# offset formats and can misorder timestamps near a boundary (e.g. the string
+# "...T03:59:59Z" sorts >= "...T00:00:00-04:00" even though it is earlier).
+# Date-only comparison sidesteps this and matches the day-granularity already
+# used elsewhere here via GitHub's own `closed:>=DATE` search qualifier.
 
 # Candidates: open, not label-skipped, updatedAt older than the threshold.
 # Sorted oldest-first; only the 50 oldest get the full per-issue verification
 # (comment/PR-ref/commit-ref), matching /pm-clean's performance cap.
-CANDIDATES_JSON=$(jq -c --argjson skip "$SKIP_LABELS_JSON" --arg since "$SINCE_ISO" '
-  [.[] | select(.updatedAt < $since)
+CANDIDATES_JSON=$(jq -c --argjson skip "$SKIP_LABELS_JSON" --arg since "$SINCE_DATE" '
+  [.[] | select((.updatedAt[0:10]) < $since)
         | select((.labels // []) | map(.name | ascii_downcase) | any(. as $l | $skip | index($l)) | not)]
   | sort_by(.updatedAt)
 ' "$TMP/open.json")
@@ -244,7 +260,8 @@ printf '%s' "$CANDIDATES_JSON" | jq -c ".[0:$CHECK_LIMIT][]" | while IFS= read -
   [ "$LAST_COMMENT" = "null" ] && LAST_COMMENT=""
 
   HAS_RECENT_COMMENT=0
-  if [ -n "$LAST_COMMENT" ] && [ "$LAST_COMMENT" \> "$SINCE_ISO" ]; then
+  LAST_COMMENT_DATE="${LAST_COMMENT:0:10}"
+  if [ -n "$LAST_COMMENT" ] && [[ "$LAST_COMMENT_DATE" > "$SINCE_DATE" || "$LAST_COMMENT_DATE" == "$SINCE_DATE" ]]; then
     HAS_RECENT_COMMENT=1
   fi
 
@@ -339,7 +356,7 @@ done
 # Step 7: potential-duplicate (title similarity vs. resolved closed issues)
 # ---------------------------------------------------------------------------
 
-jq -nc --argjson stop "$STOPWORDS_JSON" --argjson verbs "$GENERIC_VERBS_JSON" --argjson skip "$SKIP_LABELS_JSON" "
+if ! jq -nc --argjson stop "$STOPWORDS_JSON" --argjson verbs "$GENERIC_VERBS_JSON" --argjson skip "$SKIP_LABELS_JSON" "
 $JQ_SIGWORDS_DEF
 (\$closed[0] | map(select(.stateReason == \"completed\"))) as \$resolved |
 (\$open[0][] | select((.labels // []) | map(.name | ascii_downcase) | any(. as \$l | \$skip | index(\$l)) | not)
@@ -353,7 +370,9 @@ select((\$shared | length) >= 3) |
  rationale: (\"Similar to closed #\" + (\$c.number|tostring) + \" (\\\"\" + \$c.title + \"\\\", closed \" + (\$c.closedAt // \"\" | .[0:10]) + \"). Shared keywords: \" + (\$shared | join(\", \")) + \".\"),
  closed_issue: \$c.number, closed_title: \$c.title, closed_at: \$c.closedAt, keywords: \$shared}
 " --slurpfile open "$TMP/open.json" --slurpfile closed "$TMP/closed.json" \
-  >> "$TMP/flags.jsonl" 2>"$TMP/step7.err" || true
+  >> "$TMP/flags.jsonl" 2>"$TMP/step7.err"; then
+  err "potential-duplicate detection failed, continuing with partial results: $(cat "$TMP/step7.err")"
+fi
 
 # ---------------------------------------------------------------------------
 # Emit
