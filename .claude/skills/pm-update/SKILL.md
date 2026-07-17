@@ -51,6 +51,8 @@ done
 
 Non-canonical sections are never dropped — Step 6 re-inserts each one immediately after its recorded anchor. Sections sharing the same anchor keep their original relative order. Order is **not** guaranteed across different anchors: Step 6 emits canonical sections in the fixed schema order regardless of how they appeared in the original file, so two non-canonical sections anchored to canonical sections that were themselves out of fixed order will follow their anchors' fixed-schema order, not their original file order.
 
+**Duplicate section names are a malformed-config case, not a reassembly case.** `pm-config-get.sh --section "$name"` returns only the *first* occurrence's body — if `SECTIONS` (from `--list`) contains the same name twice (any name, canonical or non-canonical), extracting "by name" cannot recover the second occurrence's actual content; blindly reassembling would silently duplicate the first occurrence's body into both slots and lose the second one. Check for duplicates in `SECTIONS` before proceeding: if found, stop before Step 6 and tell the user which header name repeats, so they can fix the file manually — do not guess which occurrence is "correct" or attempt an automatic merge.
+
 ## Step 3: Preserve user-edited sections
 
 Store the content of these sections verbatim — do not modify them:
