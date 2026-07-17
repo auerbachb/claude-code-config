@@ -85,6 +85,8 @@ case "$sub" in
                                    [[ "$GH_CHECK_RUNS_RC" != 0 ]] && exit "$GH_CHECK_RUNS_RC" ;;
       *"/commits/"*)               fixture="${FIX_COMMIT:-}"; : "${GH_COMMIT_RC:=0}"
                                    [[ "$GH_COMMIT_RC" != 0 ]] && exit "$GH_COMMIT_RC" ;;
+      *"/issues/"*"/timeline"*)    fixture="${FIX_TIMELINE:-}"; : "${GH_TIMELINE_RC:=0}"
+                                   [[ "$GH_TIMELINE_RC" != 0 ]] && exit "$GH_TIMELINE_RC" ;;
       *"/pulls/"*"/reviews"*)  fixture="$FIX_REVIEWS" ;;
       *"/pulls/"*"/comments"*) fixture="$FIX_PULL_COMMENTS" ;;
       *"/issues/"*"/comments"*) fixture="$FIX_ISSUE_COMMENTS" ;;
@@ -184,6 +186,7 @@ write_pull_comments() { printf '%s' "$1" > "$TMP/pull_comments.json"; export FIX
 write_issue_comments() { printf '%s' "$1" > "$TMP/issue_comments.json"; export FIX_ISSUE_COMMENTS="$TMP/issue_comments.json"; }
 write_check_runs() { printf '%s' "$1" > "$TMP/check_runs.json"; export FIX_CHECK_RUNS="$TMP/check_runs.json"; }
 write_commit() { printf '%s' "$1" > "$TMP/commit.json"; export FIX_COMMIT="$TMP/commit.json"; }
+write_timeline() { printf '%s' "$1" > "$TMP/timeline.json"; export FIX_TIMELINE="$TMP/timeline.json"; }
 
 # Default view/commit/check-runs for the common case: ready PR, HEAD_SHA, known
 # HEAD date, no bot check-runs. Scenarios override as needed.
@@ -191,6 +194,10 @@ view_ready() { write_view "{\"isDraft\":false,\"author\":{\"login\":\"me\"},\"st
 view_draft() { write_view "{\"isDraft\":true,\"author\":{\"login\":\"$1\"},\"state\":\"OPEN\",\"headRefOid\":\"$HEAD_SHA\"}"; }
 commit_ok()  { write_commit "{\"commit\":{\"committer\":{\"date\":\"$HEAD_DATE\"}}}"; }
 no_checks()  { write_check_runs '{"check_runs":[]}'; }
+# No head_ref_force_pushed/head_ref_pushed event — the common case (PR never
+# rebased). Forces every scenario that doesn't opt in to a custom timeline
+# fixture to exercise the committer-date fallback, unchanged from #576.
+no_timeline() { write_timeline '[]'; unset GH_TIMELINE_RC; }
 
 run_json() {
   export GH_ACTIONS_LOG="$TMP/actions.log"
@@ -212,8 +219,8 @@ export PREFLIGHT_SESSION_STATE_SH="$TMP/no-such-session-state.sh"
 enable_state_dedupe()  { export PREFLIGHT_SESSION_STATE_SH="$STATE_STUB"; reset_state; }
 disable_state_dedupe() { export PREFLIGHT_SESSION_STATE_SH="$TMP/no-such-session-state.sh"; }
 
-# Every scenario starts from a known-good commit/check-runs baseline.
-commit_ok; no_checks
+# Every scenario starts from a known-good commit/check-runs/timeline baseline.
+commit_ok; no_checks; no_timeline
 
 ############################################################################
 echo "== Scenario 1: draft + author is me + all 4 reviewers absent =="
@@ -609,6 +616,77 @@ check_eq "the post is graphite" "1" "$(actions | grep -cF '@graphite-app re-revi
 check_eq "map REPLACED — holds graphite only, no carry-over" "graphite" \
   "$(jq -r '[.prs["493"].preflight_triggered | to_entries[] | select(.value == true) | .key] | sort | join(",")' "$STATE_JSON")"
 disable_state_dedupe
+
+############################################################################
+# Issue #590 — timeline-based freshness anchor for SHA-less issue comments,
+# replacing the committer-date-only proxy.
+############################################################################
+
+echo "== Scenario 20: REBASE WINDOW — comment on the OLD sha lands between rebase and push =="
+# The committer date is stamped at REBASE time (earliest), a bot comment about
+# the pre-rebase sha lands next, and the actual force-push (GitHub's clock, via
+# the timeline event) happens last. Under the old committer-date-only proxy the
+# comment (after the committer date) read as fresh; the timeline anchor (after
+# the comment) correctly reads it as stale, so the reviewer is re-triggered.
+REBASE_TIME="$(iso_from_now -3700)"
+COMMENT_ON_OLD_SHA="$(iso_from_now -3500)"
+PUSH_TIME_A="$(iso_from_now -3400)"
+view_ready
+write_commit "{\"commit\":{\"committer\":{\"date\":\"$REBASE_TIME\"}}}"
+write_timeline "[{\"event\":\"head_ref_force_pushed\",\"created_at\":\"$PUSH_TIME_A\",\"commit_id\":\"$HEAD_SHA\"}]"
+no_checks
+write_reviews "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$PUSH_TIME_A\",\"body\":\"r\"},{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$PUSH_TIME_A\",\"body\":\"r\"}]"
+write_pull_comments "[{\"user\":{\"login\":\"cursor[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"created_at\":\"$PUSH_TIME_A\",\"body\":\"c\"}]"
+write_issue_comments "[{\"user\":{\"login\":\"graphite-app[bot]\"},\"created_at\":\"$COMMENT_ON_OLD_SHA\",\"body\":\"finding on the pre-rebase commit\"}]"
+OUT=$(run_json 493); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "rebase-window comment judged stale — graphite re-triggered" "triggered" "$(jq -r '.reviewers.graphite.status' <<<"$OUT")"
+check_eq "codeant already-present via HEAD review (unaffected)" "already-present" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
+check_eq "coderabbit already-present via HEAD review (unaffected)" "already-present" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
+check_eq "cursor already-present via HEAD comment (unaffected)" "already-present" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
+check_eq "only graphite re-triggered" "1" "$(actions | grep -c '^COMMENT')"
+check_eq "the trigger is graphite" "1" "$(actions | grep -cF '@graphite-app re-review')"
+check_eq "clean=false" "false" "$(jq -r '.clean' <<<"$OUT")"
+no_timeline; commit_ok; no_checks
+
+echo "== Scenario 21: CLOCK SKEW — fresh comment precedes the committer date but follows the push event =="
+# Mirrors the live PR #586 observation: the committer date (local git clock)
+# can read LATER than the timeline's push event (GitHub's clock) even though
+# the push happened after the commit in real time. A bot comment posted right
+# after the real push can therefore carry a timestamp before the committer
+# date. The old committer-date-only proxy misread it as stale (wasting a
+# rate-limited CodeRabbit slot); the timeline anchor correctly reads it as
+# fresh.
+COMMITTER_DATE_SKEWED="$(iso_from_now -3600)"
+PUSH_TIME_B="$(iso_from_now -3660)"
+COMMENT_AFTER_PUSH="$(iso_from_now -3650)"
+view_ready
+write_commit "{\"commit\":{\"committer\":{\"date\":\"$COMMITTER_DATE_SKEWED\"}}}"
+write_timeline "[{\"event\":\"head_ref_force_pushed\",\"created_at\":\"$PUSH_TIME_B\",\"commit_id\":\"$HEAD_SHA\"}]"
+no_checks
+write_reviews "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$PUSH_TIME_B\",\"body\":\"r\"},{\"user\":{\"login\":\"cursor[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$PUSH_TIME_B\",\"body\":\"c\"},{\"user\":{\"login\":\"graphite-app[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$PUSH_TIME_B\",\"body\":\"g\"}]"
+write_pull_comments "$EMPTY"
+write_issue_comments "[{\"user\":{\"login\":\"coderabbitai[bot]\"},\"created_at\":\"$COMMENT_AFTER_PUSH\",\"body\":\"fresh finding, GitHub clock slightly behind the committer's\"}]"
+OUT=$(run_json 493); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "clock-skew comment judged fresh — coderabbit stays already-present" "already-present" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
+check_eq "codeant already-present via HEAD review (unaffected)" "already-present" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
+check_eq "cursor already-present via HEAD review (unaffected)" "already-present" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
+check_eq "graphite already-present via HEAD review (unaffected)" "already-present" "$(jq -r '.reviewers.graphite.status' <<<"$OUT")"
+check_eq "no CR trigger posted (budget not spent)" "0" "$(actions | grep -cF '@coderabbitai full review')"
+check_eq "fully clean — no comments posted at all" "0" "$(actions | grep -c '^COMMENT')"
+check_eq "clean=true" "true" "$(jq -r '.clean' <<<"$OUT")"
+no_timeline; commit_ok; no_checks
+
+echo "== Scenario 22: timeline fetch fails → falls back to committer date, no trigger storm =="
+view_ready; commit_ok; no_checks
+write_reviews "$EMPTY"; write_pull_comments "$EMPTY"
+write_issue_comments "[{\"user\":{\"login\":\"graphite-app[bot]\"},\"created_at\":\"$AFTER_HEAD\",\"body\":\"g\"},{\"user\":{\"login\":\"codeant-ai[bot]\"},\"created_at\":\"$AFTER_HEAD\",\"body\":\"x\"},{\"user\":{\"login\":\"cursor[bot]\"},\"created_at\":\"$AFTER_HEAD\",\"body\":\"y\"},{\"user\":{\"login\":\"coderabbitai[bot]\"},\"created_at\":\"$AFTER_HEAD\",\"body\":\"z\"}]"
+OUT=$(GH_TIMELINE_RC=1 run_json 493); RC=$?
+check_eq "exit 0 (timeline fetch failure is not an error)" 0 "$RC"
+check_eq "falls back to committer date — no trigger storm" "0" "$(actions | grep -c '^COMMENT')"
+check_eq "clean=true" "true" "$(jq -r '.clean' <<<"$OUT")"
+no_timeline
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
