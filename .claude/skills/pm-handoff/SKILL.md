@@ -12,14 +12,35 @@ Parse `$ARGUMENTS`:
 
 ## Step 1: Detect mode (bootstrap vs. standard)
 
-Probe for the config file via the shared parser — rc=2 means missing:
+Probe for the config file via the shared parser. `pm-config-get.sh` returns
+rc=2 for two distinct conditions it does not itself distinguish — "file
+missing" and "file exists but unreadable" (see its EXIT STATUS contract) —
+so disambiguate here with a plain existence check before dispatching.
+Skipping this check means a permissions glitch or transient filesystem issue
+on an *existing* config would be silently overwritten by Step 2's bootstrap.
 
 ```bash
+CONFIG_FILE=".claude/pm-config.md"
 .claude/scripts/pm-config-get.sh --list >/dev/null 2>&1
 CONFIG_RC=$?
+
+if [[ "$CONFIG_RC" -eq 0 || "$CONFIG_RC" -eq 1 ]]; then
+  MODE="CONFIG_EXISTS"
+elif [[ "$CONFIG_RC" -eq 2 && ! -e "$CONFIG_FILE" ]]; then
+  MODE="BOOTSTRAP"
+else
+  MODE="UNREADABLE"
+fi
 ```
 
-- If `CONFIG_RC == 2` (**BOOTSTRAP**): proceed to Step 2 (create config from repo scan)
+`CONFIG_RC` 0 or 1 both mean the file was read successfully (1 just means
+zero sections or an empty section body — see the script's EXIT STATUS
+contract), so both map to `CONFIG_EXISTS`. Anything else — rc=2 with the
+file present, a usage error (rc=3), or any other unexpected exit code — maps
+to `UNREADABLE` rather than being silently treated as a healthy config.
+
+- If `MODE == BOOTSTRAP` (file genuinely absent): proceed to Step 2 (create config from repo scan)
+- If `MODE == UNREADABLE` (file exists but `pm-config-get.sh` returned an error for it, or returned an exit code outside the documented contract): **STOP.** Tell the user: "`.claude/pm-config.md` exists but could not be read — check file permissions and encoding before continuing." Do NOT proceed to Step 2 — bootstrapping here would silently overwrite the existing file's content, including any user-customized Role/OKRs/Team/Notes sections and any non-canonical sections.
 - Otherwise (**CONFIG_EXISTS**): skip to Step 3 (read existing config)
 
 ## Step 2: Bootstrap — create pm-config.md from repo discovery
@@ -112,7 +133,7 @@ You manage the backlog, track progress, write GitHub issues, and generate prompt
 
 Tell the user the config was bootstrapped and they should review/customize the Role, OKRs, Team, and Notes sections.
 
-**Non-canonical sections (e.g. `Complexity triggers`).** Step 1's dispatch to this bootstrap on `CONFIG_RC == 2` (pre-existing behavior, unchanged by this note) fires for both a missing file and an unreadable one — whether an unreadable-but-existing file should instead be treated as an error rather than silently rebuilt is a Step 1 design question, out of scope here. What matters for section preservation: whichever way Step 1 got here, this bootstrap has no parseable prior sections to work from, so there is nothing to preserve in this path. If this path is ever extended to regenerate over an existing, successfully-parsed config (rather than only creating a fresh one), it must apply the identical rule `pm-update` uses in its Step 6: Infrastructure and Architecture are always emitted (regenerated unconditionally); the other six canonical sections (Role, OKRs, Workflow Rules, Dependency Rules, Team, Notes) are emitted only if they were actually present in the original config — never fabricate an empty one; and any other section name is re-inserted verbatim, anchored immediately after the nearest canonical section that preceded it in the original file (or at the top if none did). Never silently drop a section absent from the canonical list — see `pm-update/SKILL.md` Step 6 for the full algorithm and worked example.
+**Non-canonical sections (e.g. `Complexity triggers`).** Step 1 now only dispatches here (`MODE == BOOTSTRAP`) when the config file is genuinely absent — an existing-but-unreadable file instead stops with an error (`MODE == UNREADABLE`, see #606) rather than reaching this bootstrap. So this path never has parseable prior sections to work from, and there is nothing to preserve here. If this path is ever extended to regenerate over an existing, successfully-parsed config (rather than only creating a fresh one), it must apply the identical rule `pm-update` uses in its Step 6: Infrastructure and Architecture are always emitted (regenerated unconditionally); the other six canonical sections (Role, OKRs, Workflow Rules, Dependency Rules, Team, Notes) are emitted only if they were actually present in the original config — never fabricate an empty one; and any other section name is re-inserted verbatim, anchored immediately after the nearest canonical section that preceded it in the original file (or at the top if none did). Never silently drop a section absent from the canonical list — see `pm-update/SKILL.md` Step 6 for the full algorithm and worked example.
 
 ## Step 3: Read existing config
 
