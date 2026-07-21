@@ -73,6 +73,35 @@ SESSION_STATE_SH=$(resolve_script session-state.sh) || { echo "ERROR: session-st
 CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh)   || true   # optional; degrade gracefully
 GREPTILE_SH=$(resolve_script greptile-budget.sh)     || true   # optional; degrade gracefully
 PREFLIGHT_SH=$(resolve_script pr-preflight.sh)       || true   # optional; degrade gracefully (#493)
+
+to_epoch() {
+  # Portable ISO-8601 UTC (e.g. 2026-07-21T17:13:05Z) -> epoch seconds.
+  # Tries GNU date, then BSD/macOS date. Returns non-zero (no stdout) if both
+  # fail -- callers MUST check the exit code, never assume a numeric result
+  # (a silently fabricated epoch previously corrupted TTL/age math -- #634).
+  local iso="$1"
+  date -u -d "$iso" +%s 2>/dev/null && return 0
+  date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$iso" +%s 2>/dev/null && return 0
+  return 1
+}
+
+bump_parse_failure_counter() {
+  # $1 = field name under .prs["<PR>"].babysit, $2 = limit. Echoes the new
+  # count on stdout (always -- callers can log it regardless of outcome).
+  # Returns 0 while still under the limit (caller keeps its safe default).
+  # Returns 1 once the count reaches the limit, OR if persisting the
+  # increment itself fails -- an untrackable counter can never be trusted to
+  # self-heal, so a write failure is treated the same as "limit reached"
+  # (#634: a bounded counter that can silently fail to persist is really an
+  # unbounded one).
+  local field="$1" limit="$2" raw count
+  raw=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.$field" 2>/dev/null)
+  [[ "$raw" =~ ^[0-9]+$ ]] || raw=0   # missing/null/corrupt -> 0, never feed raw jq output to arithmetic
+  count=$(( raw + 1 ))
+  echo "$count"
+  "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.$field=$count" >/dev/null 2>&1 || return 1
+  (( count < limit ))
+}
 ```
 
 **Always read/write `session-state.json` via `session-state.sh --get`/`--set`** (atomic, sibling-preserving) — never raw `jq` writes (`handoff-files.md`). State for this skill lives under `.prs["<N>"]`:
@@ -86,6 +115,7 @@ PREFLIGHT_SH=$(resolve_script pr-preflight.sh)       || true   # optional; degra
   "active": true,
   "started_at": "2026-06-25T19:00:00Z",
   "last_tick_at": "2026-06-25T19:00:00Z",   // refreshed every tick — freshness signal for A2
+  "last_tick_parse_failures": 0, // consecutive A2 to_epoch() failures on last_tick_at; treated as stale (reclaimed) at BABYSIT_PARSE_FAIL_LIMIT (default 3)
   "cadence_base_minutes": 5,
   "cadence_effective_minutes": 5,
   "tick_count": 0,
@@ -95,6 +125,7 @@ PREFLIGHT_SH=$(resolve_script pr-preflight.sh)       || true   # optional; degra
   "durable": false,
   "stop_requested": false,      // set true by /babysit-pr-stop
   "dispatch_in_flight": null,   // {"skill":"fixpr"|"wrap","started_at":"…"} while a dispatch runs
+  "dispatch_parse_failures": 0, // consecutive T0 to_epoch() failures on dispatch_in_flight.started_at; force-reclaimed at BABYSIT_PARSE_FAIL_LIMIT (default 3)
   "last_dispatch": null,        // {"skill":"…","started_at":"…","completed_at":"…","status":"…"}
   "cron_job_id": null           // set when --durable arms a CronCreate job
 }
@@ -131,8 +162,22 @@ if [[ "$ALREADY" == "true" ]]; then
   EFF_MIN=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.cadence_effective_minutes" 2>/dev/null || echo 5)
   [[ "$EFF_MIN" =~ ^[0-9]+$ ]] || EFF_MIN=5
   FRESH_MIN=$(( EFF_MIN * 3 )); (( FRESH_MIN < ${BABYSIT_DISPATCH_TTL_MIN:-30} )) && FRESH_MIN=${BABYSIT_DISPATCH_TTL_MIN:-30}
+  PARSE_FAIL_LIMIT="${BABYSIT_PARSE_FAIL_LIMIT:-3}"
   AGE_MIN=999999
-  [[ -n "$LAST_TICK" && "$LAST_TICK" != "null" ]] && AGE_MIN=$(( ( $(date -u +%s) - $(date -u -d "$LAST_TICK" +%s 2>/dev/null || echo 0) ) / 60 ))
+  if [[ -n "$LAST_TICK" && "$LAST_TICK" != "null" ]]; then
+    if LAST_TICK_EPOCH=$(to_epoch "$LAST_TICK"); then
+      AGE_MIN=$(( ( $(date -u +%s) - LAST_TICK_EPOCH ) / 60 ))
+      "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.last_tick_parse_failures=0" >/dev/null 2>&1 || true
+    else
+      if A2_FAIL_COUNT=$(bump_parse_failure_counter last_tick_parse_failures "$PARSE_FAIL_LIMIT"); then
+        echo "WARNING: could not parse babysit.last_tick_at ('$LAST_TICK') as epoch on this platform's date (failure ${A2_FAIL_COUNT}/${PARSE_FAIL_LIMIT}) — treating watcher as fresh (safe default) instead of reclaiming it blind. If this persists, run /babysit-pr-stop $PR." >&2
+        AGE_MIN=0
+      else
+        echo "WARNING: babysit.last_tick_at ('$LAST_TICK') failed to parse ${A2_FAIL_COUNT} arm attempts in a row, or the failure counter itself could not be persisted — treating watcher slot as corrupted and reclaiming it rather than blocking re-arm forever." >&2
+        # AGE_MIN stays at its 999999 default above -> falls through to the stale/reclaim path below.
+      fi
+    fi
+  fi
   if (( AGE_MIN < FRESH_MIN )); then
     echo "Already babysitting PR #$PR (last tick ${AGE_MIN}m ago) — not arming a second watcher. Use /babysit-pr-stop $PR to stop."
     exit 0
@@ -148,7 +193,7 @@ Write the babysit object (one atomic `--set` batch), seeding backoff fields to a
 ```bash
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 "$SESSION_STATE_SH" \
-  --set ".prs[\"$PR\"].babysit={\"active\":true,\"started_at\":\"$NOW\",\"last_tick_at\":\"$NOW\",\"cadence_base_minutes\":$BASE_MIN,\"cadence_effective_minutes\":$BASE_MIN,\"tick_count\":0,\"blocker_streak\":0,\"max_blocker_ticks\":$MAX_ITER,\"silent\":$SILENT,\"durable\":$DURABLE,\"stop_requested\":false,\"dispatch_in_flight\":null,\"last_dispatch\":null,\"cron_job_id\":null}" \
+  --set ".prs[\"$PR\"].babysit={\"active\":true,\"started_at\":\"$NOW\",\"last_tick_at\":\"$NOW\",\"last_tick_parse_failures\":0,\"cadence_base_minutes\":$BASE_MIN,\"cadence_effective_minutes\":$BASE_MIN,\"tick_count\":0,\"blocker_streak\":0,\"max_blocker_ticks\":$MAX_ITER,\"silent\":$SILENT,\"durable\":$DURABLE,\"stop_requested\":false,\"dispatch_in_flight\":null,\"dispatch_parse_failures\":0,\"last_dispatch\":null,\"cron_job_id\":null}" \
   --set ".prs[\"$PR\"].digest_streak=0"
 ```
 
@@ -176,28 +221,44 @@ if [[ "$STOP" == "true" || "$ACTIVE" != "true" ]]; then
 fi
 ```
 
-If `dispatch_in_flight` is set, decide whether it is **still running** or **stale** using an explicit TTL (`BABYSIT_DISPATCH_TTL_MIN`, default `30` — comfortably longer than `/fixpr`'s 20-min wait cap plus `/wrap` recovery, so a live dispatch is never mistaken for stale):
+If `dispatch_in_flight` is set, decide whether it is **still running** or **stale** using an explicit TTL (`BABYSIT_DISPATCH_TTL_MIN`, default `30` — comfortably longer than `/fixpr`'s 20-min wait cap plus `/wrap` recovery, so a live dispatch is never mistaken for stale).
+
+A `started_at` that fails to parse on **both** GNU and BSD `date` (see `to_epoch()` above) is treated as still-running for that tick — the safe direction, since this check runs every tick unattended and wrongly reclaiming a live dispatch causes a duplicate `/fixpr`/`/wrap` run. But "safe for one tick" must not mean "stuck forever" if the value is genuinely corrupted (not just a transient hiccup): `dispatch_parse_failures` counts consecutive parse failures for the current `dispatch_in_flight`, and once it reaches `BABYSIT_PARSE_FAIL_LIMIT` (default `3`) the entry is force-reclaimed as corrupted rather than left blocking indefinitely:
 
 ```bash
 TTL_MIN="${BABYSIT_DISPATCH_TTL_MIN:-30}"
+PARSE_FAIL_LIMIT="${BABYSIT_PARSE_FAIL_LIMIT:-3}"
 IN_FLIGHT=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.dispatch_in_flight" 2>/dev/null || echo "null")
 DISPATCH_BLOCKING=0
 if [[ "$IN_FLIGHT" != "null" && -n "$IN_FLIGHT" ]]; then
   STARTED=$(jq -r '.started_at // empty' <<<"$IN_FLIGHT")
-  AGE_MIN=$(( ( $(date -u +%s) - $(date -u -d "$STARTED" +%s 2>/dev/null || echo 0) ) / 60 ))
-  if (( AGE_MIN < TTL_MIN )); then
-    DISPATCH_BLOCKING=1            # a prior tick's /fixpr or /wrap is genuinely still running
+  RECLAIM_REASON=""
+  if STARTED_EPOCH=$(to_epoch "$STARTED"); then
+    AGE_MIN=$(( ( $(date -u +%s) - STARTED_EPOCH ) / 60 ))
+    "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.dispatch_parse_failures=0" >/dev/null 2>&1 || true
+    (( AGE_MIN >= TTL_MIN )) && RECLAIM_REASON="stale (age ${AGE_MIN}m >= ${TTL_MIN}m TTL)"
   else
-    # Stale: a crashed/abandoned dispatch. Reclaim it so it never blocks forever.
+    if FAIL_COUNT=$(bump_parse_failure_counter dispatch_parse_failures "$PARSE_FAIL_LIMIT"); then
+      echo "WARNING: could not parse dispatch_in_flight.started_at ('$STARTED') as epoch on this platform's date (failure ${FAIL_COUNT}/${PARSE_FAIL_LIMIT}) — treating dispatch as still in-flight this tick. If this persists, run /babysit-pr-stop $PR." >&2
+    else
+      echo "WARNING: dispatch_in_flight.started_at ('$STARTED') failed to parse ${FAIL_COUNT} ticks in a row, or the failure counter itself could not be persisted — treating as corrupted and force-reclaiming rather than blocking forever." >&2
+      RECLAIM_REASON="corrupted (unparseable started_at, parse-failure counter reached ${PARSE_FAIL_LIMIT} or could not be persisted)"
+    fi
+  fi
+  if [[ -n "$RECLAIM_REASON" ]]; then
+    # Stale (TTL exceeded) or corrupted (parse-fail limit exceeded): reclaim so it never blocks forever.
     "$SESSION_STATE_SH" \
       --set ".prs[\"$PR\"].babysit.last_dispatch=$(jq -c '. + {completed_at: (now|todate), status: "stale-reclaimed"}' <<<"$IN_FLIGHT")" \
-      --set ".prs[\"$PR\"].babysit.dispatch_in_flight=null"
-    echo "[babysit] reclaimed stale dispatch (age ${AGE_MIN}m ≥ ${TTL_MIN}m TTL) — proceeding"
+      --set ".prs[\"$PR\"].babysit.dispatch_in_flight=null" \
+      --set ".prs[\"$PR\"].babysit.dispatch_parse_failures=0"
+    echo "[babysit] reclaimed $RECLAIM_REASON dispatch — proceeding"
+  else
+    DISPATCH_BLOCKING=1            # a prior tick's /fixpr or /wrap is genuinely still running (or unparseable, within grace)
   fi
 fi
 ```
 
-If `DISPATCH_BLOCKING == 1`, **skip this tick's dispatch** (idempotency — see T4): emit a "dispatch in progress" heartbeat and finish the tick without classifying-and-dispatching on top of the running dispatch. Otherwise continue normally (a stale in-flight has been reclaimed above).
+If `DISPATCH_BLOCKING == 1`, **skip this tick's dispatch** (idempotency — see T4): emit a "dispatch in progress" heartbeat and finish the tick without classifying-and-dispatching on top of the running dispatch. Otherwise continue normally (a stale or corrupted in-flight has been reclaimed above).
 
 ### T1. Read PR state (the two shared scripts — never re-implement)
 
@@ -347,7 +408,9 @@ Only classes `merge-ready` (→ `/wrap`) and `has-recoverable-blockers` (→ `/f
 
    ```bash
    START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-   "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.dispatch_in_flight={\"skill\":\"$TARGET\",\"started_at\":\"$START\"}"
+   "$SESSION_STATE_SH" \
+     --set ".prs[\"$PR\"].babysit.dispatch_in_flight={\"skill\":\"$TARGET\",\"started_at\":\"$START\"}" \
+     --set ".prs[\"$PR\"].babysit.dispatch_parse_failures=0"
    ```
 
 3. **Invoke the full skill.** Execute the complete `.claude/skills/$TARGET/SKILL.md` workflow inline (or via a Phase A subagent in `bypassPermissions` mode with the `safety.md` block when the parent is in monitor mode — `subagent-orchestration.md`). `/fixpr` runs Steps 0–7 including its Step 4d post-push wait; `/wrap` runs its merge-gate recovery + AC + squash-merge + main-sync. **Do not shortcut either.**
