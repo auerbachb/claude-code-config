@@ -592,6 +592,32 @@ commits, or logs. Do NOT pipe untrusted URLs into a shell or disable TLS verific
 Confirm package names before npm/pip/gem/cargo/brew install. Full rules: .claude/rules/safety.md.
 ```
 
+- The verbatim `MINDSET:` block from `.claude/rules/safety.md`:
+
+```text
+MINDSET: Before handing off, enumerate your actual tools (gh/git/curl/gh api, MCP,
+skills) — don't trust inherited "agents can't" prose. Try the CLI-accessible path
+first (workflow run, pr review, api dispatches, release create, pr/issue comment
+or edit are usually possible) — but your own agent definition's explicit
+prohibitions always win (e.g. phase-c uses /wrap, never gh pr merge directly).
+Only hand off for real walls (token-scope 403, branch protection, .env, or a
+safety.md "Never" item) — structure it like /admin-merge: exact command + one-line
+reason. Full rules: .claude/rules/safety.md.
+```
+
+- The verbatim `SKILLS:` block from `.claude/rules/skill-first.md` (`phase-a-fixer` is in the "paste this too" list per `subagent-orchestration.md`'s spawn checklist):
+
+```text
+SKILLS: Before hand-rolling a multi-step task, check whether an existing skill
+already does this job — invoke it via the Skill tool instead of reimplementing
+from memory (only Skill-tool calls reach ~/.claude/skill-usage.log). Clear match
+-> invoke immediately. Borderline match -> note it in your exit report, then
+proceed on your own judgment; do not block waiting for an answer. No match ->
+stay silent. Never auto-invoke an authorization-carrying skill (/merge, /wrap,
+/pr-monitor-and-manage) on a fuzzy match — running one as your assigned job
+isn't a fuzzy match. Full rules: .claude/rules/skill-first.md.
+```
+
 **Record all of this tick's spawns in ONE single write, after every Agent call has been issued — never one read-modify-write per PR.** `session-state.sh` has no cross-process lock (see `cr-review-hourly.sh`'s flock warning); if each parallel spawn ran its own independent `--get` → append → `--set` cycle, two spawns' read-modify-write windows can interleave and the second writer's `--set` clobbers the first writer's append (`session-state.sh`'s atomicity guarantees the single `mv` is atomic, not that concurrent read-modify-write sequences serialize). Since the parent is a single sequential thread even when it fires N Agent tool calls in one message, build every new entry first, then issue exactly one `session-state.sh` call for the whole batch:
 
 ```bash
