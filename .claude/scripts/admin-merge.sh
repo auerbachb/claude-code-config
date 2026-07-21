@@ -34,7 +34,8 @@
 #                      --print behaviour on Linux/Windows with a clear message.
 #   --execute          USER-INVOKED ONLY. Run the toggle-merge-toggle dance with a
 #                      trap that re-enables enforce_admins on any failure, then
-#                      verify protection is restored and the PR merged.
+#                      verify protection is restored and the PR merged. A clean-
+#                      BEHIND bypass (#631) is revalidated just before the dance.
 #
 # Options:
 #   --repo-path <path>  Absolute path of the local clone to cd into (default:
@@ -215,10 +216,38 @@ if [[ -z "$GATE_JSON" ]] || ! echo "$GATE_JSON" | jq -e . >/dev/null 2>&1; then
   exit 4
 fi
 
-# Hard blockers = every missing reason that is NOT the branch-protection
-# reviewDecision note (which is exactly what the admin bypass exists to step over).
-HARD_BLOCKERS=$(echo "$GATE_JSON" | jq -r '
-  [.missing[]? | select(test("branch protection reviewDecision") | not)]
+# Clean-BEHIND allowance (issue #631): a `mergeStateStatus: BEHIND` is normally a
+# hard blocker (rebase first). But when the base delta does NOT touch the PR's
+# files, rebasing is pure churn and an admin squash-merge is safe — `gh pr merge
+# --admin` merges a BEHIND branch regardless of the "require up to date" rule.
+# Step over BEHIND ONLY when clean-behind-check.sh confirms it is safe (gate green
+# except BEHIND, not CONFLICTING, AC verified, no base-delta↔PR-file overlap).
+# Any non-clean BEHIND (overlap, conflicts, other blockers) stays a hard blocker.
+CLEAN_BEHIND_OK=false
+BEHIND_PRESENT=$(echo "$GATE_JSON" | jq -r '[.missing[]? | select(test("BEHIND base"; "i"))] | length')
+if [[ "${BEHIND_PRESENT:-0}" -gt 0 ]]; then
+  CBC=""
+  for candidate in \
+    "$SCRIPT_DIR/clean-behind-check.sh" \
+    "$HOME/.claude/skills-worktree/.claude/scripts/clean-behind-check.sh" \
+    "$HOME/.claude/scripts/clean-behind-check.sh"; do
+    if [[ -x "$candidate" ]]; then CBC="$candidate"; break; fi
+  done
+  if [[ -n "$CBC" ]]; then
+    CBC_ARGS=("$PR_NUMBER")
+    [[ -n "$REVIEWER_OVERRIDE" ]] && CBC_ARGS+=(--reviewer "$REVIEWER_OVERRIDE")
+    # Exit 0 == safe_to_offer; suppress output (we only need the verdict).
+    if "$CBC" "${CBC_ARGS[@]}" >/dev/null 2>&1; then CLEAN_BEHIND_OK=true; fi
+  fi
+fi
+
+# Hard blockers = every missing reason that is NOT one of the two protection-
+# mechanical blockers the admin bypass is allowed to step over: (1) the branch-
+# protection reviewDecision note, and (2) a *clean* BEHIND (only when CLEAN_BEHIND_OK).
+HARD_BLOCKERS=$(echo "$GATE_JSON" | jq -r --argjson cbo "$CLEAN_BEHIND_OK" '
+  [.missing[]?
+    | select(test("branch protection reviewDecision") | not)
+    | select(($cbo | not) or (test("BEHIND base"; "i") | not))]
   | .[]')
 HUMAN_CHANGES=$(echo "$GATE_JSON" | jq -r '[.human_changes_requested[]?] | join(", ")')
 
@@ -429,6 +458,19 @@ if [[ "$MODE" == "execute" ]]; then
   if ! cd "$REPO_PATH" 2>/dev/null; then
     echo "ERROR: cannot cd into repo path '$REPO_PATH' — pass --repo-path <abs-path>." >&2
     exit 7
+  fi
+
+  # Safety-critical revalidation (issue #631): the pre-flight above computed
+  # CLEAN_BEHIND_OK from a snapshot. When this bypass is proceeding over a clean
+  # BEHIND, re-run clean-behind-check.sh right before touching protection — main
+  # may have advanced since the pre-flight, turning a clean BEHIND into one whose
+  # base delta now overlaps the PR's files. Refuse if it no longer holds. (This
+  # runs before enforce_admins is disabled, so a refusal leaves protection intact.)
+  if [[ "$CLEAN_BEHIND_OK" == true && -n "${CBC:-}" ]]; then
+    if ! "$CBC" "${CBC_ARGS[@]}" >/dev/null 2>&1; then
+      echo "REFUSED: the clean-BEHIND state no longer holds (main advanced, or a new blocker appeared) — rebase and re-run instead of bypassing." >&2
+      exit 1
+    fi
   fi
 
   ENFORCE_DISABLED=0

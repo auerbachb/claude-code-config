@@ -54,7 +54,7 @@ Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses
 **Do not infer “behind base” from `mergeStateStatus: "BLOCKED"` alone.** Read **`mergeStateStatus` and `mergeable`** explicitly (`gh pr view <N> --json mergeStateStatus,mergeable,reviewDecision` — same as `merge-gate.sh`).
 
 - **`CLEAN`** — OK for merge once Steps 1–1c and 1b pass.
-- **`BEHIND`** — Not merge-ready; `/fixpr` rebase, **force-push only** after `dirty-main-guard.sh --check`.
+- **`BEHIND`** — Run `.claude/scripts/clean-behind-check.sh <N>` (#631). Exit 0 (`safe_to_offer` — clean BEHIND, base delta doesn't touch PR files) → **offer `/admin-merge`** (user choice, never auto-run; churn advisory), not another rebase. Else (not safe) rebase → re-run — `/fixpr` (`fixpr/SKILL.md` / `pr-state.sh`), **force-push only** after `dirty-main-guard.sh --check`; `merge-gate.sh` stays failing.
 - **`BLOCKED`** — Use `reviewDecision`, CI, threads — not a substitute for **`BEHIND`**.
 - **`UNSTABLE` / `DIRTY` / `UNKNOWN`** — Not merge-ready; wait, rebase, or resolve per `fixpr` / Step 1b.
 

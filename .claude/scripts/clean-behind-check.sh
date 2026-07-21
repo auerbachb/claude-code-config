@@ -1,0 +1,409 @@
+#!/usr/bin/env bash
+# clean-behind-check.sh — Detect the "clean BEHIND, safe to offer admin-merge" state (issue #631).
+#
+# When a PR is fully done — review-approved on HEAD, CI green, all threads
+# resolved, AC verified — and the ONLY remaining blocker is a purely mechanical
+# `mergeStateStatus: BEHIND`, rebasing into a fast-moving `main` can loop
+# forever (main lands new commits faster than a rebase → re-approve cycle
+# converges). A rebase is genuinely needed when `main`'s new commits could
+# interact with the PR — but when the base delta does NOT touch any file the PR
+# changed, the rebase is pure churn and an admin-merge (via /admin-merge) is the
+# responsible shortcut. This script decides, mechanically, whether that "clean
+# BEHIND, safe to offer" condition holds so the offer fires consistently.
+#
+# It NEVER merges, NEVER modifies branch protection, and NEVER runs a bypass —
+# it only reports state. The agent surfaces the offer as a user choice and
+# routes an accepted offer through the existing /admin-merge skill (which runs
+# its own merge-gate pre-flight before printing anything). See
+# .claude/rules/cr-merge-gate.md Step 1d and .claude/skills/fixpr/ (Step 6).
+#
+# Safety gate (ALL required for safe_to_offer=true):
+#   1. merge gate green EXCEPT the BEHIND blocker — merge-gate.sh reports no
+#      `missing` reason other than the BEHIND one (this folds in approved review
+#      on HEAD, CI passing/complete, and all threads resolved).
+#   2. mergeStateStatus == BEHIND.
+#   3. mergeable == MERGEABLE (CONFLICTING and UNKNOWN are both unsafe).
+#   4. AC verified — every Test Plan checkbox in the PR body is ticked
+#      (mechanical proxy via ac-checkboxes.sh; genuine per-criterion
+#      verification remains the agent's cr-merge-gate.md Step 2 job).
+#   5. no file overlap — the base delta's changed files (main since the merge
+#      base) share NO file with the PR's changed files (file-level granularity).
+#
+# Churn / rebase-race signal is ADVISORY context only — it raises the value of
+# the offer but never gates it. `churn.advisory` is true when main has advanced
+# (base_ahead_by >= 1) and its newest commit is newer than the PR's HEAD commit,
+# i.e. main moved after the PR was last updated — the rebase-race window is live.
+#
+# File-overlap uses GitHub's three-dot compare (compare/{head}...{base}), which
+# reports files changed from merge-base(head, base) to the base tip = the base
+# delta, without any local fetch. GitHub caps compare file lists at 300 files;
+# that is comfortably above any realistic clean-BEHIND diff. The base side of the
+# compare is the base branch tip SHA (baseRefOid), not the ref name, so a
+# slash-named base branch (e.g. release/2026.07) needs no path escaping.
+#
+# Usage:
+#   clean-behind-check.sh <pr_number> [--reviewer cr|bugbot|greptile]
+#   clean-behind-check.sh --help
+#
+# --reviewer is passed through to merge-gate.sh (which path's gate applies).
+#
+# Output (single-line JSON on stdout, even when not safe):
+#   {
+#     "pr": 631,
+#     "safe_to_offer": true|false,
+#     "reasons_not_safe": ["...", ...],     // empty when safe_to_offer
+#     "merge_state": "BEHIND",
+#     "mergeable": "MERGEABLE",
+#     "gate_met": false,
+#     "gate_green_except_behind": true,
+#     "residual_blockers": ["..."],          // merge-gate `missing` minus BEHIND
+#     "ac": {"available":true,"total":6,"checked":6,"unchecked":0,
+#            "all_checked":true,"note":""},
+#     "file_overlap": {"count":0,"files":[],"pr_file_count":N,
+#            "base_delta_file_count":M,"pr_files":[...],"base_delta_files":[...]},
+#     "churn": {"base_ahead_by":2,"newest_base_commit_at":"...",
+#            "pr_head_commit_at":"...","advisory":true},
+#     "head_sha": "abc123...",
+#     "base_ref": "main"
+#   }
+#
+# Exit codes:
+#   0 — safe_to_offer == true
+#   1 — safe_to_offer == false (JSON `reasons_not_safe` explains why)
+#   2 — usage error
+#   3 — PR not found / not open
+#   4 — gh / network / jq / helper-not-found error
+
+set -uo pipefail
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+print_usage() {
+  awk 'NR == 1 { next } /^$/ { exit } { print }' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# --------------------------------------------------------------------------
+# Arg parsing
+# --------------------------------------------------------------------------
+PR_NUMBER=""
+REVIEWER_OVERRIDE=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      print_usage
+      exit 0
+      ;;
+    --reviewer)
+      REVIEWER_OVERRIDE="${2:-}"
+      case "$REVIEWER_OVERRIDE" in
+        cr|bugbot|greptile) ;;
+        *)
+          echo "ERROR: --reviewer must be one of: cr, bugbot, greptile (got: ${REVIEWER_OVERRIDE:-})" >&2
+          exit 2
+          ;;
+      esac
+      shift 2
+      ;;
+    -*)
+      echo "ERROR: unknown flag: $1" >&2
+      exit 2
+      ;;
+    *)
+      if [[ -n "$PR_NUMBER" ]]; then
+        echo "ERROR: unexpected argument: $1 (PR number already set to $PR_NUMBER)" >&2
+        exit 2
+      fi
+      PR_NUMBER="$1"
+      shift
+      ;;
+  esac
+done
+
+if [[ -z "$PR_NUMBER" ]]; then
+  echo "ERROR: <pr_number> is required" >&2
+  print_usage >&2
+  exit 2
+fi
+if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: <pr_number> must be a positive integer (got: $PR_NUMBER)" >&2
+  exit 2
+fi
+
+# --------------------------------------------------------------------------
+# Resolve owner/repo + PR metadata
+# --------------------------------------------------------------------------
+OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
+if [[ -z "$OWNER_REPO" ]]; then
+  echo "ERROR: 'gh repo view' failed — not in a git repo or no remote configured." >&2
+  exit 4
+fi
+OWNER="${OWNER_REPO%/*}"
+REPO="${OWNER_REPO#*/}"
+
+PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,headRefOid,baseRefName,baseRefOid,mergeStateStatus,mergeable,files 2>/dev/null || true)
+if [[ -z "$PR_JSON" ]] || ! jq -e . >/dev/null 2>&1 <<<"$PR_JSON"; then
+  echo "ERROR: PR #$PR_NUMBER not found in $OWNER_REPO." >&2
+  exit 3
+fi
+PR_STATE=$(jq -r '.state // "UNKNOWN"' <<<"$PR_JSON")
+HEAD_SHA=$(jq -r '.headRefOid // ""' <<<"$PR_JSON")
+BASE_REF=$(jq -r '.baseRefName // ""' <<<"$PR_JSON")
+BASE_SHA=$(jq -r '.baseRefOid // ""' <<<"$PR_JSON")
+MERGE_STATE=$(jq -r '.mergeStateStatus // ""' <<<"$PR_JSON")
+MERGEABLE=$(jq -r '.mergeable // ""' <<<"$PR_JSON")
+
+if [[ "$PR_STATE" != "OPEN" ]]; then
+  echo "ERROR: PR #$PR_NUMBER is $PR_STATE — not open." >&2
+  exit 3
+fi
+if [[ -z "$HEAD_SHA" || -z "$BASE_REF" ]]; then
+  echo "ERROR: could not determine HEAD SHA / base ref for PR #$PR_NUMBER." >&2
+  exit 4
+fi
+
+# --------------------------------------------------------------------------
+# Resolve sibling helpers (prefer next-to-self, then global installs)
+# --------------------------------------------------------------------------
+resolve_helper() {
+  local name="$1" c
+  for c in \
+    "$SCRIPT_DIR/$name" \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name"; do
+    if [[ -x "$c" ]]; then echo "$c"; return 0; fi
+  done
+  return 1
+}
+
+MERGE_GATE=$(resolve_helper merge-gate.sh) || {
+  echo "ERROR: merge-gate.sh not found — cannot evaluate the merge gate." >&2
+  exit 4
+}
+AC_CHECKBOXES=$(resolve_helper ac-checkboxes.sh || true)
+
+# --------------------------------------------------------------------------
+# Merge gate — the only remaining blocker must be BEHIND
+# --------------------------------------------------------------------------
+# set -e is off, so a non-zero merge-gate exit (1 = gate not met, which is
+# ALWAYS the case for a BEHIND PR) does not abort — capture the code, read JSON.
+GATE_ARGS=("$PR_NUMBER")
+[[ -n "$REVIEWER_OVERRIDE" ]] && GATE_ARGS+=(--reviewer "$REVIEWER_OVERRIDE")
+GATE_JSON="$("$MERGE_GATE" "${GATE_ARGS[@]}" 2>/dev/null)"
+GATE_EXIT=$?
+if [[ -z "$GATE_JSON" ]] || ! jq -e . >/dev/null 2>&1 <<<"$GATE_JSON"; then
+  echo "ERROR: merge-gate.sh produced no parseable JSON (exit $GATE_EXIT)." >&2
+  exit 4
+fi
+case "$GATE_EXIT" in
+  3) echo "ERROR: merge-gate.sh reports PR #$PR_NUMBER not found/closed." >&2; exit 3 ;;
+  4) echo "ERROR: merge-gate.sh hit a gh/network/jq error." >&2; exit 4 ;;
+esac
+
+GATE_MET=$(jq -r '.met' <<<"$GATE_JSON")
+# residual = every `missing` reason EXCEPT the BEHIND one. Only the BEHIND
+# message contains "BEHIND base" (merge-gate.sh). CONFLICTING / CI / thread /
+# review blockers all remain here, so any of them keeps gate_green_except_behind
+# false — mirroring how admin-merge.sh filters only the reviewDecision note.
+RESIDUAL_JSON=$(jq -c '[.missing[]? | select(test("BEHIND base"; "i") | not)]' <<<"$GATE_JSON")
+RESIDUAL_COUNT=$(jq 'length' <<<"$RESIDUAL_JSON")
+GATE_GREEN_EXCEPT_BEHIND=false
+[[ "$RESIDUAL_COUNT" -eq 0 ]] && GATE_GREEN_EXCEPT_BEHIND=true
+
+IS_BEHIND=false
+[[ "$MERGE_STATE" == "BEHIND" ]] && IS_BEHIND=true
+# Only an explicit MERGEABLE state is safe. CONFLICTING (textual conflict) and
+# UNKNOWN/empty (GitHub still computing mergeability) both make the offer
+# premature — the base delta and no-overlap comparison aren't trustworthy yet.
+MERGEABLE_OK=false
+[[ "$MERGEABLE" == "MERGEABLE" ]] && MERGEABLE_OK=true
+
+# --------------------------------------------------------------------------
+# AC verification — mechanical check that every Test Plan checkbox is ticked
+# --------------------------------------------------------------------------
+AC_AVAILABLE=false
+AC_TOTAL=0
+AC_CHECKED=0
+AC_UNCHECKED=0
+AC_ALL_CHECKED=false
+AC_NOTE=""
+if [[ -n "$AC_CHECKBOXES" ]]; then
+  AC_JSON="$("$AC_CHECKBOXES" "$PR_NUMBER" --extract 2>/dev/null)"
+  AC_EXIT=$?
+  if [[ "$AC_EXIT" -eq 0 ]] && jq -e . >/dev/null 2>&1 <<<"$AC_JSON"; then
+    AC_AVAILABLE=true
+    AC_TOTAL=$(jq 'length' <<<"$AC_JSON")
+    AC_CHECKED=$(jq '[.[] | select(.checked)] | length' <<<"$AC_JSON")
+    AC_UNCHECKED=$(jq '[.[] | select(.checked | not)] | length' <<<"$AC_JSON")
+    if [[ "$AC_TOTAL" -gt 0 && "$AC_UNCHECKED" -eq 0 ]]; then
+      AC_ALL_CHECKED=true
+    elif [[ "$AC_TOTAL" -eq 0 ]]; then
+      AC_NOTE="Test Plan section has no checkbox items"
+    else
+      AC_NOTE="$AC_UNCHECKED unchecked Test Plan checkbox(es)"
+    fi
+  elif [[ "$AC_EXIT" -eq 3 ]]; then
+    echo "ERROR: ac-checkboxes.sh reports PR #$PR_NUMBER not found." >&2
+    exit 3
+  elif [[ "$AC_EXIT" -eq 1 ]]; then
+    AC_NOTE="no Test Plan section or no checkboxes (ac-checkboxes.sh exit 1)"
+  else
+    AC_NOTE="ac-checkboxes.sh error (exit $AC_EXIT) — cannot confirm AC"
+  fi
+else
+  AC_NOTE="ac-checkboxes.sh not found — cannot confirm AC"
+fi
+
+# --------------------------------------------------------------------------
+# File overlap + churn — GitHub three-dot compare (no local fetch)
+# --------------------------------------------------------------------------
+# compare/{head_sha}...{base_sha}: base=head_sha, head=base tip → files changed
+# from merge-base(head_sha, base) to the base tip = the BASE DELTA. `ahead_by`
+# is how many commits the base tip is ahead of the merge base (new main commits).
+# Use the base tip SHA (baseRefOid), not the ref name, so a slash-named base
+# branch does not produce an invalid compare path; fall back to the ref name.
+COMPARE_BASE="${BASE_SHA:-$BASE_REF}"
+COMPARE_JSON="$(gh api "repos/$OWNER/$REPO/compare/$HEAD_SHA...$COMPARE_BASE" 2>/dev/null || true)"
+if [[ -z "$COMPARE_JSON" ]] || ! jq -e . >/dev/null 2>&1 <<<"$COMPARE_JSON"; then
+  echo "ERROR: could not compare $HEAD_SHA...$COMPARE_BASE via the GitHub API." >&2
+  exit 4
+fi
+BASE_DELTA_FILES=$(jq -c '[.files[]?.filename] | unique' <<<"$COMPARE_JSON")
+BASE_AHEAD_BY=$(jq -r '.ahead_by // 0' <<<"$COMPARE_JSON")
+[[ "$BASE_AHEAD_BY" =~ ^[0-9]+$ ]] || BASE_AHEAD_BY=0
+NEWEST_BASE_COMMIT_AT=$(jq -r '(.commits // []) | if length > 0 then (.[-1].commit.committer.date // .[-1].commit.author.date // "") else "" end' <<<"$COMPARE_JSON")
+
+# PR's changed files — reuse the PR_JSON already fetched above (no second call).
+PR_FILES_JSON="$(jq -c '[.files[]?.path] | unique' <<<"$PR_JSON" 2>/dev/null || echo '[]')"
+if ! jq -e . >/dev/null 2>&1 <<<"$PR_FILES_JSON"; then PR_FILES_JSON='[]'; fi
+
+# Intersection = a - (a - b): elements of PR files that are also in the base delta.
+OVERLAP_JSON=$(jq -cn --argjson a "$PR_FILES_JSON" --argjson b "$BASE_DELTA_FILES" '$a - ($a - $b) | unique')
+OVERLAP_COUNT=$(jq 'length' <<<"$OVERLAP_JSON")
+NO_OVERLAP=true
+[[ "$OVERLAP_COUNT" -gt 0 ]] && NO_OVERLAP=false
+
+# Churn advisory (never gates): main advanced AND its newest commit is newer than
+# the PR's HEAD commit — the rebase-race window is live.
+PR_HEAD_COMMIT_AT="$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date // .commit.author.date // ""' 2>/dev/null || echo "")"
+CHURN_ADVISORY=false
+if [[ "$BASE_AHEAD_BY" -ge 1 ]]; then
+  if [[ -n "$NEWEST_BASE_COMMIT_AT" && -n "$PR_HEAD_COMMIT_AT" ]]; then
+    [[ "$NEWEST_BASE_COMMIT_AT" > "$PR_HEAD_COMMIT_AT" ]] && CHURN_ADVISORY=true
+  else
+    # Timestamps unavailable (e.g. compare commit list truncated) — flag on the
+    # bare fact that the base moved, so the advisory errs toward surfacing churn.
+    CHURN_ADVISORY=true
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# Compose safe_to_offer + reasons
+# --------------------------------------------------------------------------
+SAFE=false
+if [[ "$IS_BEHIND" == true && "$MERGEABLE_OK" == true \
+      && "$GATE_GREEN_EXCEPT_BEHIND" == true && "$AC_ALL_CHECKED" == true \
+      && "$NO_OVERLAP" == true ]]; then
+  SAFE=true
+fi
+
+REASONS=()
+if [[ "$IS_BEHIND" != true ]]; then
+  REASONS+=("mergeStateStatus is ${MERGE_STATE:-unknown}, not BEHIND — no clean-behind bypass to offer")
+fi
+if [[ "$MERGEABLE" == "CONFLICTING" ]]; then
+  REASONS+=("mergeable is CONFLICTING — resolve conflicts via rebase; no bypass")
+elif [[ "$MERGEABLE_OK" != true ]]; then
+  REASONS+=("mergeable is ${MERGEABLE:-unknown}, not MERGEABLE — GitHub still computing mergeability; wait and re-check")
+fi
+if [[ "$GATE_GREEN_EXCEPT_BEHIND" != true ]]; then
+  while IFS= read -r r; do
+    [[ -z "$r" ]] && continue
+    # CONFLICTING is already surfaced by the mergeable axis above.
+    [[ "$r" == *CONFLICTING* ]] && continue
+    REASONS+=("merge gate blocker: $r")
+  done < <(jq -r '.[]' <<<"$RESIDUAL_JSON")
+fi
+if [[ "$AC_ALL_CHECKED" != true ]]; then
+  REASONS+=("acceptance criteria not fully verified: ${AC_NOTE:-unchecked Test Plan checkboxes}")
+fi
+if [[ "$NO_OVERLAP" != true ]]; then
+  OV=$(jq -r 'join(", ")' <<<"$OVERLAP_JSON")
+  REASONS+=("base delta overlaps PR files ($OV) — rebase so CI + review re-run on the integrated result")
+fi
+
+if [[ "${#REASONS[@]}" -gt 0 ]]; then
+  REASONS_JSON=$(printf '%s\n' "${REASONS[@]}" | jq -R . | jq -cs .)
+else
+  REASONS_JSON='[]'
+fi
+
+# --------------------------------------------------------------------------
+# Emit
+# --------------------------------------------------------------------------
+jq -n \
+  --argjson pr "$PR_NUMBER" \
+  --argjson safe "$SAFE" \
+  --argjson reasons "$REASONS_JSON" \
+  --arg merge_state "$MERGE_STATE" \
+  --arg mergeable "$MERGEABLE" \
+  --argjson gate_met "$GATE_MET" \
+  --argjson gate_green_except_behind "$GATE_GREEN_EXCEPT_BEHIND" \
+  --argjson residual "$RESIDUAL_JSON" \
+  --argjson ac_available "$AC_AVAILABLE" \
+  --argjson ac_total "$AC_TOTAL" \
+  --argjson ac_checked "$AC_CHECKED" \
+  --argjson ac_unchecked "$AC_UNCHECKED" \
+  --argjson ac_all_checked "$AC_ALL_CHECKED" \
+  --arg ac_note "$AC_NOTE" \
+  --argjson overlap_count "$OVERLAP_COUNT" \
+  --argjson overlap_files "$OVERLAP_JSON" \
+  --argjson pr_files "$PR_FILES_JSON" \
+  --argjson base_delta_files "$BASE_DELTA_FILES" \
+  --argjson base_ahead_by "$BASE_AHEAD_BY" \
+  --arg newest_base_commit_at "$NEWEST_BASE_COMMIT_AT" \
+  --arg pr_head_commit_at "$PR_HEAD_COMMIT_AT" \
+  --argjson churn_advisory "$CHURN_ADVISORY" \
+  --arg head_sha "$HEAD_SHA" \
+  --arg base_ref "$BASE_REF" \
+  '{
+    pr: $pr,
+    safe_to_offer: $safe,
+    reasons_not_safe: $reasons,
+    merge_state: $merge_state,
+    mergeable: $mergeable,
+    gate_met: $gate_met,
+    gate_green_except_behind: $gate_green_except_behind,
+    residual_blockers: $residual,
+    ac: {
+      available: $ac_available,
+      total: $ac_total,
+      checked: $ac_checked,
+      unchecked: $ac_unchecked,
+      all_checked: $ac_all_checked,
+      note: $ac_note
+    },
+    file_overlap: {
+      count: $overlap_count,
+      files: $overlap_files,
+      pr_file_count: ($pr_files | length),
+      base_delta_file_count: ($base_delta_files | length),
+      pr_files: $pr_files,
+      base_delta_files: $base_delta_files
+    },
+    churn: {
+      base_ahead_by: $base_ahead_by,
+      newest_base_commit_at: $newest_base_commit_at,
+      pr_head_commit_at: $pr_head_commit_at,
+      advisory: $churn_advisory
+    },
+    head_sha: $head_sha,
+    base_ref: $base_ref
+  }'
+
+if [[ "$SAFE" == true ]]; then
+  exit 0
+else
+  exit 1
+fi
