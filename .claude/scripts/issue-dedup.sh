@@ -74,15 +74,27 @@ MIN_COVERAGE=0.34
 MAX_RESULTS=5
 EXCLUDE=""
 
+# Every option below takes a value. Without this guard a trailing bare flag
+# (`--repo` with nothing after it) makes `shift 2` fail under `set -e`, which
+# exits 1 — indistinguishable from "searched, found nothing" to a caller that
+# reads exit codes. Usage errors must always be 2.
+need_value() {
+  # need_value <flag> <remaining-arg-count>
+  if [ "$2" -lt 2 ]; then
+    echo "issue-dedup.sh: option '$1' requires a value" >&2
+    exit 2
+  fi
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --repo)         REPO="${2:-}"; shift 2 ;;
-    --open-limit)   OPEN_LIMIT="${2:-}"; shift 2 ;;
-    --closed-days)  CLOSED_DAYS="${2:-}"; shift 2 ;;
-    --closed-limit) CLOSED_LIMIT="${2:-}"; shift 2 ;;
-    --min-coverage) MIN_COVERAGE="${2:-}"; shift 2 ;;
-    --max-results)  MAX_RESULTS="${2:-}"; shift 2 ;;
-    --exclude)      EXCLUDE="${2:-}"; shift 2 ;;
+    --repo)         need_value "$1" "$#"; REPO="$2"; shift 2 ;;
+    --open-limit)   need_value "$1" "$#"; OPEN_LIMIT="$2"; shift 2 ;;
+    --closed-days)  need_value "$1" "$#"; CLOSED_DAYS="$2"; shift 2 ;;
+    --closed-limit) need_value "$1" "$#"; CLOSED_LIMIT="$2"; shift 2 ;;
+    --min-coverage) need_value "$1" "$#"; MIN_COVERAGE="$2"; shift 2 ;;
+    --max-results)  need_value "$1" "$#"; MAX_RESULTS="$2"; shift 2 ;;
+    --exclude)      need_value "$1" "$#"; EXCLUDE="$2"; shift 2 ;;
     -h|--help)      usage; exit 0 ;;
     *) echo "issue-dedup.sh: unknown option '$1'" >&2; usage >&2; exit 2 ;;
   esac

@@ -212,6 +212,14 @@ set +e
 "$DEDUP" "keywords here" --min-coverage 1.5 >/dev/null 2>&1; rc_range=$?
 set -e
 assert_eq "--min-coverage above 1 → exit 2" "2" "$rc_range"
+# A trailing bare flag must be a usage error, not a `shift 2` failure under
+# set -e — that exits 1, which callers read as "searched, found nothing".
+for flag in --repo --open-limit --closed-days --closed-limit --min-coverage --max-results --exclude; do
+  set +e
+  "$DEDUP" "some keywords" "$flag" >/dev/null 2>&1; rc_missing=$?
+  set -e
+  assert_eq "$flag with no value → exit 2" "2" "$rc_missing"
+done
 assert_eq "unknown option → exit 2" "2" "$rc_badopt"
 assert_eq "non-numeric limit → exit 2" "2" "$rc_badnum"
 assert_eq "--help → exit 0" "0" "$rc_help"
