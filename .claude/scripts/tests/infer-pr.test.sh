@@ -148,6 +148,28 @@ check_exit "root-repo filter exit" 1 "$RC"
 check_json "root filter keeps match + unknown" '[.candidates[].number] | sort | @csv' '800,802' "$OUT"
 check_json "root filter drops other repo" '[.candidates[].number] | any(. == 801)' "false" "$OUT"
 
+echo "== session-state inference: malformed last_cron_action degrades gracefully (issue #640) =="
+cat > "$HOME/.claude/session-state.json" <<EOF
+{
+  "prs": {
+    "542": {"owner_repo": "org/repo", "last_cron_action": "a bare string, not an object"},
+    "544": {"owner_repo": "org/repo", "last_cron_action": {"at": "2026-04-29T14:10:00Z"}}
+  }
+}
+EOF
+STDERR_FILE="$(mktemp)"
+OUT=$(run 2>"$STDERR_FILE"); RC=$?
+check_exit "malformed last_cron_action does not hard-error" 1 "$RC"
+check_json "malformed entry still produced as a candidate" '.candidates | length' "2" "$OUT"
+check_json "malformed entry ranks as if last_activity were unset (sorts last)" '.candidates[-1].number' "542" "$OUT"
+WARN_COUNT="$(grep -c "malformed last_cron_action" "$STDERR_FILE" 2>/dev/null || echo 0)"
+if [[ "$WARN_COUNT" -ge 1 ]]; then
+  PASS=$((PASS + 1)); echo "ok   — warns on stderr about the malformed field"
+else
+  FAIL=$((FAIL + 1)); echo "FAIL — expected a stderr warning about the malformed field, got none"
+fi
+rm -f "$STDERR_FILE"
+
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1

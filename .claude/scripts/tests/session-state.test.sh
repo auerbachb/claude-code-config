@@ -105,6 +105,59 @@ check_eq "nulling a nested prs field does not trip the object-type guard" "0" "$
 check_eq "prs stays an object with the null applied" '{"287":{"reviewer":"greptile","blocker":null}}' "$(jq -c '.prs' "$STATE_FILE")"
 
 echo
+echo "== Write-time guard: per-PR nested field contract (issue #640) =="
+reset_state
+OUT=$(run --set '.prs["999"].last_cron_action=some bare string' 2>&1); RC=$?
+check_eq "bare-string last_cron_action rejected (exit 4)" "4" "$RC"
+check_eq "error names the nested field and both types" "1" "$(grep -c "field '.prs\[\"999\"\].last_cron_action' would become type 'string' but must be 'object'" <<<"$OUT")"
+check_eq "state file never created for a rejected nested write" "1" "$([[ ! -f "$STATE_FILE" ]] && echo 1 || echo 0)"
+
+run --set '.prs["999"].last_cron_action={"type":"create","at":"2026-04-29T13:55:00Z","interval":"1m"}'
+check_eq "well-formed last_cron_action object accepted" "0" "$?"
+check_eq "last_cron_action holds the written object" '{"type":"create","at":"2026-04-29T13:55:00Z","interval":"1m"}' "$(jq -c '.prs["999"].last_cron_action' "$STATE_FILE")"
+
+OUT=$(run --set '.prs["999"].last_cron_action=overwritten with a bad string' 2>&1); RC=$?
+check_eq "a subsequent bad overwrite is still rejected (exit 4)" "4" "$RC"
+check_eq "the prior good value is untouched by the rejected overwrite" '{"type":"create","at":"2026-04-29T13:55:00Z","interval":"1m"}' "$(jq -c '.prs["999"].last_cron_action' "$STATE_FILE")"
+
+run --set '.prs["999"].reviewer=greptile'
+check_eq "a nested field NOT on the known list stays unvalidated" "0" "$?"
+check_eq "the unknown nested field is written as given" '"greptile"' "$(jq -c '.prs["999"].reviewer' "$STATE_FILE")"
+
+OUT=$(run --set '.prs["999"].babysit.active=true' 2>&1); RC=$?
+check_eq "sub-path write into a known object-typed nested field is accepted" "0" "$RC"
+check_eq "babysit ends up an object with the sub-path write applied" '{"active":true}' "$(jq -c '.prs["999"].babysit' "$STATE_FILE")"
+
+run --set '.prs["999"].cr_explicit_triggers=["2026-04-29T22:30:00Z"]'
+check_eq "well-formed array cr_explicit_triggers accepted" "0" "$?"
+OUT=$(run --set '.prs["999"].cr_explicit_triggers=2' 2>&1); RC=$?
+check_eq "number-for-array cr_explicit_triggers rejected (exit 4)" "4" "$RC"
+check_eq "error names cr_explicit_triggers and both types" "1" "$(grep -c "field '.prs\[\"999\"\].cr_explicit_triggers' would become type 'number' but must be 'array'" <<<"$OUT")"
+check_eq "prior valid cr_explicit_triggers array is untouched" '["2026-04-29T22:30:00Z"]' "$(jq -c '.prs["999"].cr_explicit_triggers' "$STATE_FILE")"
+
+OUT=$(run --set '.prs["998"].digest_streak=not-a-number' 2>&1); RC=$?
+check_eq "string-for-number digest_streak rejected (exit 4)" "4" "$RC"
+run --set '.prs["998"].digest_streak=3'
+check_eq "well-formed number digest_streak accepted" "0" "$?"
+check_eq "digest_streak holds the written number" "3" "$(jq -c '.prs["998"].digest_streak' "$STATE_FILE")"
+
+echo
+echo "== Write-time guard: whole-PR-entry writes (issue #640, CodeAnt finding on PR #654) =="
+reset_state
+OUT=$(run --set '.prs["999"]={"phase":"B","last_cron_action":"bare string","digest_streak":"not-a-number"}' 2>&1); RC=$?
+check_eq "whole-entry write embedding a malformed known field rejected (exit 4)" "4" "$RC"
+check_eq "error names the embedded nested field" "1" "$(grep -c "field '.prs\[\"999\"\].last_cron_action' would become type 'string' but must be 'object'" <<<"$OUT")"
+check_eq "state file never created for a rejected whole-entry write" "1" "$([[ ! -f "$STATE_FILE" ]] && echo 1 || echo 0)"
+
+run --set '.prs["999"]={"phase":"B","last_cron_action":{"type":"create","at":"2026-01-01T00:00:00Z"},"digest_streak":3,"reviewer":"greptile"}'
+check_eq "well-formed whole-entry write accepted" "0" "$?"
+check_eq "whole-entry write applied correctly" '{"phase":"B","last_cron_action":{"type":"create","at":"2026-01-01T00:00:00Z"},"digest_streak":3,"reviewer":"greptile"}' "$(jq -c '.prs["999"]' "$STATE_FILE")"
+
+run --set '.prs["1000"]={"phase":"A","reviewer":"cr"}'
+check_eq "whole-entry write with no known nested fields at all accepted" "0" "$?"
+check_eq "entry with no known fields written as given" '{"phase":"A","reviewer":"cr"}' "$(jq -c '.prs["1000"]' "$STATE_FILE")"
+
+echo
 echo "== Write-time guard: unknown fields stay unvalidated (forward-compat) =="
 run --set '.monitoring_active=true' --set '.root_repo=/tmp/foo'
 check_eq "unknown-field batch write exits 0" "0" "$?"

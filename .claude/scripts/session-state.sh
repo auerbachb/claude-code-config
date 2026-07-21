@@ -54,34 +54,51 @@
 #   5  Write failed — could not create temp file, could not mv into place,
 #      or jq filter pipeline failed during the atomic write.
 #
-# FIELD-TYPE CONTRACT (issue #625)
-#   A small set of top-level fields are known, from
-#   .claude/reference/session-state-schema.json, to always hold a specific
-#   JSON type — arrays (active_agents, polling_jobs, polling_failures,
-#   polling_backoffs) or objects (prs, cr_quota, cr_hourly, greptile_daily,
-#   pmm_in_flight, pmm). Fields outside this list are unvalidated, preserving
-#   forward-compatibility with the "preserve unknown fields" convention.
+# FIELD-TYPE CONTRACT (issues #625, #640)
+#   A known set of fields always hold a specific JSON type — top-level
+#   fields (arrays: active_agents, polling_jobs, polling_failures,
+#   polling_backoffs; objects: prs, cr_quota, cr_hourly, greptile_daily,
+#   pmm_in_flight, pmm) and per-PR nested fields under `.prs["<N>"]`
+#   (objects: last_cron_action, preflight_triggered, babysit, wrap_sweep;
+#   array: cr_explicit_triggers; number: digest_streak). Fields outside
+#   these lists are unvalidated, preserving forward-compatibility with the
+#   "preserve unknown fields" convention.
+#
+#   The contract is loaded at runtime from
+#   .claude/reference/session-state-schema.json's `_field_types` object —
+#   that file is the single source of truth, not a hardcoded list in this
+#   script, so the two can never drift apart. If the schema file can't be
+#   found or parsed (unusual invocation context, e.g. this script copied
+#   somewhere without its .claude/reference/ sibling), the contract is
+#   disabled for this run with a warning on stderr — --get/--set still work,
+#   just without the type guard, rather than hard-failing every state-file
+#   operation because a side file is missing.
 #
 #   --set checks the FINAL value of any touched known field after the whole
 #   batch is applied (not just the raw value passed in), so both whole-field
 #   writes (`--set '.active_agents=...'`) and element/sub-path writes
-#   (`--set '.active_agents[0]=...'`) are covered. If a touched known field
-#   would end up the wrong type, the entire batch is rejected (exit 4) and
-#   the state file is left unmodified — this is what should have caught the
-#   original corruption: a caller passed an unevaluated jq filter expression
-#   (e.g. `(.active_agents // [] | map(select(.pr_number != 71)))`) as a
-#   --set value; since it isn't valid JSON it fell into the --arg (string)
-#   branch below and was written verbatim as `.active_agents`'s value.
-#   Callers must evaluate any filter locally first (read → jq-filter → pass
-#   the resulting JSON array/object as the --set value) — see the
+#   (`--set '.active_agents[0]=...'` or, for a per-PR nested field,
+#   `--set '.prs["287"].babysit.active=...'`) are covered. If a touched
+#   known field would end up the wrong type, the entire batch is rejected
+#   (exit 4) and the state file is left unmodified — this is what should
+#   have caught the original corruption: a caller passed an unevaluated jq
+#   filter expression (e.g.
+#   `(.active_agents // [] | map(select(.pr_number != 71)))`) as a --set
+#   value; since it isn't valid JSON it fell into the --arg (string) branch
+#   below and was written verbatim as `.active_agents`'s value. Callers must
+#   evaluate any filter locally first (read → jq-filter → pass the
+#   resulting JSON array/object as the --set value) — see the
 #   read-filter-write pattern in .claude/skills/pr-monitor-and-manage/SKILL.md.
 #
-#   --get on a known field whose *stored* value doesn't match the contract
-#   (state corrupted before this guard existed, or written by something
-#   bypassing this script) prints a warning to stderr and returns a safe
-#   default (`[]`/`{}`) on stdout instead of the corrupt value, exiting 0 so
-#   existing read-modify-write callers keep working — the next validated
-#   --set through this same field then heals the corruption for good.
+#   --get on a known top-level field whose *stored* value doesn't match the
+#   contract (state corrupted before this guard existed, or written by
+#   something bypassing this script) prints a warning to stderr and returns
+#   a safe default (`[]`/`{}`) on stdout instead of the corrupt value,
+#   exiting 0 so existing read-modify-write callers keep working — the next
+#   validated --set through this same field then heals the corruption for
+#   good. Per-PR nested fields are validated on --set only (not --get):
+#   callers read them through infer-pr.sh or ad-hoc jq, not this script's
+#   --get, so there's no read-modify-write caller to protect symmetrically.
 #
 # OUTPUT
 #   --get: raw value on stdout (one line per jq output, like `jq -r`).
@@ -129,11 +146,26 @@
 #   # write pattern):
 #   session-state.sh --set '.active_agents=(.active_agents // [] | map(select(.pr_number != 71)))'
 #   # -> exit 4: field '.active_agents' would become type 'string' but must be 'array'
+#
+#   # Rejected: last_cron_action is a known object-typed per-PR nested field
+#   # (issue #640) — a bare string isn't a JSON object, so this exits 4 and
+#   # leaves the state file unmodified:
+#   session-state.sh --set '.prs["287"].last_cron_action=some bare string'
+#   # -> exit 4: field '.prs["287"].last_cron_action' would become type 'string' but must be 'object'
 
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
 
 STATE_FILE="${HOME}/.claude/session-state.json"
+
+# Sibling reference file that is the single source of truth for the
+# FIELD-TYPE CONTRACT (issues #625, #640) — resolved relative to this
+# script's own location (not $STATE_FILE's directory) so it works from every
+# known invocation path (repo-local .claude/scripts/, the skills worktree,
+# or a caller's own $SELF_DIR-relative lookup) without hardcoding an
+# absolute path.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCHEMA_FILE="${SCRIPT_DIR}/../reference/session-state-schema.json"
 
 print_help() {
   sed -n '/^# PURPOSE$/,/^$/p' "$0" | sed '$d; s/^# \{0,1\}//'
@@ -156,19 +188,65 @@ is_single_object_state_file() {
   jq -s -e 'length == 1 and (.[0] | type == "object")' "$1" >/dev/null 2>&1
 }
 
-# Field-type contract (issue #625) — mirrors
-# .claude/reference/session-state-schema.json. Prints the expected JSON type
-# ("array"/"object") for a known top-level field, or nothing for fields
-# outside the contract (left unvalidated for forward-compatibility). A plain
-# function rather than an associative array so this script stays compatible
-# with bash 3.2 (macOS system bash has no `declare -A`).
+# Field-type contract (issues #625, #640) — loaded once, lazily, from
+# .claude/reference/session-state-schema.json's `_field_types` object (the
+# single source of truth; see the FIELD-TYPE CONTRACT header comment). Two
+# newline-separated "key=type" caches, one for top-level fields and one for
+# per-PR nested fields, parsed by known_field_type()/known_nested_field_type()
+# below. Plain variables (not associative arrays) so this script stays
+# compatible with bash 3.2 (macOS system bash has no `declare -A`).
+FIELD_TYPES_LOADED=0
+FIELD_TYPES_TOP=""
+FIELD_TYPES_NESTED=""
+
+load_field_types() {
+  if [[ "$FIELD_TYPES_LOADED" -eq 1 ]]; then
+    return 0
+  fi
+  FIELD_TYPES_LOADED=1
+  if [[ ! -f "$SCHEMA_FILE" ]]; then
+    echo "session-state.sh: warning: field-type contract schema not found at $SCHEMA_FILE — type guard disabled for this run (see issue #640)" >&2
+    return 0
+  fi
+  local top nested
+  if ! top="$(jq -r '._field_types.top_level // {} | to_entries[] | "\(.key)=\(.value)"' "$SCHEMA_FILE" 2>/dev/null)"; then
+    echo "session-state.sh: warning: could not parse field-type contract from $SCHEMA_FILE — type guard disabled for this run (see issue #640)" >&2
+    return 0
+  fi
+  nested="$(jq -r '._field_types.pr_nested // {} | to_entries[] | "\(.key)=\(.value)"' "$SCHEMA_FILE" 2>/dev/null)" || nested=""
+  FIELD_TYPES_TOP="$top"
+  FIELD_TYPES_NESTED="$nested"
+}
+
+# Prints the expected JSON type ("array"/"object"/etc) for a known top-level
+# field per the schema-driven contract, or nothing for fields outside it
+# (left unvalidated for forward-compatibility).
 known_field_type() {
-  case "$1" in
-    active_agents|polling_jobs|polling_failures|polling_backoffs)
-      echo "array" ;;
-    prs|cr_quota|cr_hourly|greptile_daily|pmm_in_flight|pmm)
-      echo "object" ;;
-  esac
+  load_field_types
+  local key="$1" line
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if [[ "${line%%=*}" == "$key" ]]; then
+      printf '%s' "${line#*=}"
+      return 0
+    fi
+  done <<<"$FIELD_TYPES_TOP"
+}
+
+# Prints the expected JSON type for a known per-PR nested field (e.g.
+# "last_cron_action" -> "object"), or nothing for fields outside the
+# contract. Field name only — callers resolve the concrete `.prs["<N>"].<key>`
+# check path themselves via pr_number_of()/pr_nested_key_of() below.
+known_nested_field_type() {
+  load_field_types
+  local key="$1" line
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if [[ "${line%%=*}" == "$key" ]]; then
+      printf '%s' "${line#*=}"
+      return 0
+    fi
+  done <<<"$FIELD_TYPES_NESTED"
 }
 
 # Extract the leading top-level key from a jq path, e.g.
@@ -191,6 +269,94 @@ top_level_key_of() {
   else
     printf '%s' "${path%%[.[]*}"
   fi
+}
+
+# Extract the PR-number key from a path whose top-level key is "prs", e.g.
+# `.prs["287"].last_cron_action` -> "287". Every known caller uses bracket
+# notation for the PR-number selector (`.prs["<N>"]`), so only that form is
+# recognized; a bare `.prs.287...` (unusual — jq requires bracket or quoted-
+# dot notation for a numeric key) returns empty, same as an absent selector.
+pr_number_of() {
+  local path="${1#.prs}"
+  if [[ "$path" != \[* ]]; then
+    printf '%s' ""
+    return 0
+  fi
+  path="${path#\[}"
+  path="${path%%]*}"
+  path="${path#[\"\']}"
+  path="${path%[\"\']}"
+  printf '%s' "$path"
+}
+
+# Extract the per-PR nested field name immediately after the PR-number
+# selector, e.g. `.prs["287"].babysit.active` -> "babysit" (the known field
+# two levels up from a subpath write — the same principle top_level_key_of()
+# applies for top-level fields, e.g. `.active_agents[0].id` -> "active_agents").
+# Returns empty if the path's top-level key isn't "prs", there's no bracket
+# PR-number selector, or nothing follows it (a whole-`.prs["<N>"]` entry
+# replacement isn't checked here — the existing top-level object-type check
+# on `prs` itself still applies).
+pr_nested_key_of() {
+  if [[ "$(top_level_key_of "$1")" != "prs" ]]; then
+    printf '%s' ""
+    return 0
+  fi
+  local path
+  path="$(pr_number_of "$1")"
+  if [[ -z "$path" ]]; then
+    printf '%s' ""
+    return 0
+  fi
+  # Re-derive the remainder after the PR-number selector (pr_number_of()
+  # only returns the extracted number, not the leftover path).
+  path="${1#.prs}"
+  path="${path#\[*\]}"
+  path="${path#.}"
+  if [[ -z "$path" ]]; then
+    printf '%s' ""
+    return 0
+  fi
+  if [[ "$path" == \[* ]]; then
+    path="${path#\[}"
+    path="${path%%]*}"
+    path="${path#[\"\']}"
+    path="${path%[\"\']}"
+    printf '%s' "$path"
+  else
+    printf '%s' "${path%%[.[]*}"
+  fi
+}
+
+# Returns the PR number when `path` is a WHOLE-entry write, e.g. `.prs["999"]`
+# -> "999" (nothing follows the PR-number selector) — as opposed to a nested
+# write like `.prs["999"].reviewer`, which returns empty here even though
+# "reviewer" isn't a known field. This distinction matters (CodeAnt finding,
+# issue #640, PR #654): pr_nested_key_of() deliberately returns empty for a
+# whole-entry write since there's no single nested key to check — but that
+# left a real gap, since a whole-entry write's value can still embed a
+# malformed known nested field (e.g. `--set '.prs["999"]={"last_cron_action":
+# "bare string"}'`) that the top-level `.prs` object-type check alone can't
+# catch. Used below to trigger a full per-known-field scan of the written
+# entry, not just the single-path check pr_nested_key_of() enables.
+pr_whole_entry_write_number_of() {
+  if [[ "$(top_level_key_of "$1")" != "prs" ]]; then
+    printf '%s' ""
+    return 0
+  fi
+  local num
+  num="$(pr_number_of "$1")"
+  if [[ -z "$num" ]]; then
+    printf '%s' ""
+    return 0
+  fi
+  local rest="${1#.prs}"
+  rest="${rest#\[*\]}"
+  if [[ -n "$rest" ]]; then
+    printf '%s' ""
+    return 0
+  fi
+  printf '%s' "$num"
 }
 
 # --- arg parsing ---
@@ -379,6 +545,8 @@ trap "rm -f '$OUT_TMP' '$JQ_ERR' ${SEEDED_TMP:+'$SEEDED_TMP'} 2>/dev/null" EXIT
 JQ_FILTER=""
 JQ_ARGS=()
 TOUCHED_KNOWN_FIELDS=""
+TOUCHED_NESTED_CHECKS=""
+WHOLE_ENTRY_PRS=""
 for i in "${!SET_PATHS[@]}"; do
   path="${SET_PATHS[$i]}"
   value="${SET_VALUES[$i]}"
@@ -408,6 +576,39 @@ for i in "${!SET_PATHS[@]}"; do
     case " $TOUCHED_KNOWN_FIELDS " in
       *" $set_top_level_key "*) ;;
       *) TOUCHED_KNOWN_FIELDS="$TOUCHED_KNOWN_FIELDS $set_top_level_key" ;;
+    esac
+  fi
+  # Same tracking for per-PR nested fields (issue #640): a touched path whose
+  # top-level key is "prs" and whose immediate post-PR-number segment is a
+  # known nested field (e.g. `.prs["287"].last_cron_action` or a deeper
+  # subpath like `.prs["287"].babysit.active`) is recorded as a "<PR>:<key>"
+  # pair so the post-write loop below can check that specific PR entry's
+  # field, not every PR in the file.
+  set_nested_key="$(pr_nested_key_of "$path")"
+  if [[ -n "$set_nested_key" ]] && [[ -n "$(known_nested_field_type "$set_nested_key")" ]]; then
+    set_pr_number="$(pr_number_of "$path")"
+    # PR numbers are always plain digits (GitHub PR numbers). Requiring that
+    # shape here — before $set_pr_number gets interpolated into the jq
+    # filter string built for nested_check_path below — keeps that
+    # interpolation injection-safe without needing full jq-string escaping.
+    if [[ "$set_pr_number" =~ ^[0-9]+$ ]]; then
+      nested_pair="${set_pr_number}:${set_nested_key}"
+      case " $TOUCHED_NESTED_CHECKS " in
+        *" $nested_pair "*) ;;
+        *) TOUCHED_NESTED_CHECKS="$TOUCHED_NESTED_CHECKS $nested_pair" ;;
+      esac
+    fi
+  fi
+  # Track whole-PR-entry writes (issue #640, CodeAnt finding on PR #654):
+  # `--set '.prs["999"]={...}'` replaces the entire entry in one shot, so no
+  # single nested-field path is touched above — but the embedded object can
+  # still carry a malformed known field. Record the PR number so the
+  # post-write loop below can scan every known nested key in that entry.
+  set_whole_entry_pr="$(pr_whole_entry_write_number_of "$path")"
+  if [[ "$set_whole_entry_pr" =~ ^[0-9]+$ ]]; then
+    case " $WHOLE_ENTRY_PRS " in
+      *" $set_whole_entry_pr "*) ;;
+      *) WHOLE_ENTRY_PRS="$WHOLE_ENTRY_PRS $set_whole_entry_pr" ;;
     esac
   fi
 done
@@ -444,6 +645,52 @@ for set_touched_key in $TOUCHED_KNOWN_FIELDS; do
     exit 4
   fi
 done
+
+# Field-type contract, per-PR nested fields (issue #640): same principle as
+# the top-level loop above, extended to reach fields nested under a specific
+# `.prs["<N>"]` entry — e.g. PR #542's `last_cron_action` holding a bare
+# string where every consumer (infer-pr.sh, wrap, babysit-pr) expects an
+# object. Checked against the FINAL value at the concrete `.prs["<N>"].<key>`
+# path, so sub-path writes (e.g. `.prs["287"].babysit.active=...`) are
+# covered by checking the whole `babysit` object's final type, not just the
+# raw --set value.
+for nested_pair in $TOUCHED_NESTED_CHECKS; do
+  nested_pr_number="${nested_pair%%:*}"
+  nested_field_key="${nested_pair#*:}"
+  nested_expected_type="$(known_nested_field_type "$nested_field_key")"
+  nested_check_path=".prs[\"${nested_pr_number}\"].${nested_field_key}"
+  nested_actual_type="$(jq -r "${nested_check_path} | type" "$OUT_TMP" 2>/dev/null)"
+  if [[ "$nested_actual_type" != "$nested_expected_type" ]]; then
+    echo "session-state.sh: refusing to write — field '$nested_check_path' would become type '$nested_actual_type' but must be '$nested_expected_type' (see issue #640); $STATE_FILE left unmodified" >&2
+    exit 4
+  fi
+done
+
+# Field-type contract, whole-PR-entry writes (issue #640, CodeAnt finding on
+# PR #654): a write like `.prs["999"]={...}` replaces the whole entry, so the
+# per-path tracking above never sees a specific nested-field path to check —
+# but the embedded object can still carry a malformed known field (e.g.
+# `last_cron_action` as a bare string) that the top-level `.prs` object-type
+# check alone can't catch. For every PR written as a whole entry this batch,
+# check EVERY known nested key present in the FINAL entry (absent keys are
+# type "null" and are skipped — a whole-entry write simply omitting a known
+# field is not corruption, same as any other unset nested field).
+if [[ -n "$WHOLE_ENTRY_PRS" ]]; then
+  load_field_types
+  KNOWN_NESTED_KEYS="$(printf '%s\n' "$FIELD_TYPES_NESTED" | cut -d= -f1)"
+  for whole_entry_pr in $WHOLE_ENTRY_PRS; do
+    while IFS= read -r whole_entry_key; do
+      [[ -z "$whole_entry_key" ]] && continue
+      whole_entry_expected_type="$(known_nested_field_type "$whole_entry_key")"
+      whole_entry_check_path=".prs[\"${whole_entry_pr}\"].${whole_entry_key}"
+      whole_entry_actual_type="$(jq -r "${whole_entry_check_path} | type" "$OUT_TMP" 2>/dev/null)"
+      if [[ "$whole_entry_actual_type" != "null" && "$whole_entry_actual_type" != "$whole_entry_expected_type" ]]; then
+        echo "session-state.sh: refusing to write — field '$whole_entry_check_path' would become type '$whole_entry_actual_type' but must be '$whole_entry_expected_type' (see issue #640); $STATE_FILE left unmodified" >&2
+        exit 4
+      fi
+    done <<<"$KNOWN_NESTED_KEYS"
+  done
+fi
 
 if ! mv "$OUT_TMP" "$STATE_FILE" 2>/dev/null; then
   echo "session-state.sh: could not write $STATE_FILE" >&2

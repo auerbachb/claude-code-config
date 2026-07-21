@@ -1,4 +1,27 @@
 {
+  "_field_types": {
+    "_description": "Machine-readable field-type contract consumed at runtime by session-state.sh's FIELD-TYPE CONTRACT (issues #625, #640) — the single source of truth for which fields must hold a specific JSON type. `top_level` keys index the root document; `pr_nested` keys index each entry under `.prs[\"<N>\"]` (checked wherever that key appears, at any nesting depth under a PR entry). Values are the expected `jq ... | type` string. Fields absent from both maps are left unvalidated, preserving the 'preserve unknown fields' forward-compat convention documented in handoff-files.md.",
+    "top_level": {
+      "active_agents": "array",
+      "polling_jobs": "array",
+      "polling_failures": "array",
+      "polling_backoffs": "array",
+      "prs": "object",
+      "cr_quota": "object",
+      "cr_hourly": "object",
+      "greptile_daily": "object",
+      "pmm_in_flight": "object",
+      "pmm": "object"
+    },
+    "pr_nested": {
+      "last_cron_action": "object",
+      "preflight_triggered": "object",
+      "babysit": "object",
+      "wrap_sweep": "object",
+      "cr_explicit_triggers": "array",
+      "digest_streak": "number"
+    }
+  },
   "last_updated": "2026-04-29T14:00:00Z",
   "monitoring_active": true,
   "monitoring_mode": "cron",

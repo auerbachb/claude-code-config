@@ -150,7 +150,13 @@ if [[ "$INFER_CANDIDATES" -eq 1 ]]; then
           blocker_kind: (.value.blocker_kind // null),
           owner_repo: (.value.owner_repo // null),
           root_repo: (.value.root_repo // null),
-          last_action_at: (.value.last_cron_action.at // ""),
+          # `?` (issue #640, CodeAnt finding on PR #654) suppresses the
+          # "Cannot index string with \"at\"" error a pre-existing malformed
+          # (non-object) last_cron_action would otherwise raise — without it,
+          # ONE corrupted entry aborts this whole array comprehension and the
+          # caller falls back to printing "[]" for every candidate, not just
+          # the bad one.
+          last_action_at: (.value.last_cron_action.at? // ""),
           same_repo: (
             if $cur == "" or (.value.owner_repo // "") == "" then null
             else (.value.owner_repo == $cur) end

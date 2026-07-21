@@ -233,12 +233,34 @@ if [[ -z "$PRS_JSON" || "$PRS_JSON" == "null" ]]; then
   PRS_JSON="{}"
 fi
 
+# Defense in depth (issue #640): session-state.sh's per-PR field-type guard
+# rejects new writes that would leave `last_cron_action` as anything but an
+# object, but state files written before that guard existed can still carry
+# a malformed value (the exact corruption found in PRs #542/#544 — a bare
+# string where every consumer expects `{type, at, interval}`). Warn and
+# degrade rather than let the jq pipeline below hard-error when it indexes
+# `.last_cron_action.at`.
+MALFORMED_CRON_ACTION_KEYS="$(jq -r '
+  to_entries[]
+  | select(.value.last_cron_action != null and (.value.last_cron_action | type) != "object")
+  | .key
+' <<<"$PRS_JSON" 2>/dev/null || true)"
+if [[ -n "$MALFORMED_CRON_ACTION_KEYS" ]]; then
+  while IFS= read -r bad_pr_key; do
+    [[ -z "$bad_pr_key" ]] && continue
+    echo "infer-pr.sh: warning: PR #$bad_pr_key has a malformed last_cron_action (not an object) — ranking it as if last activity were unset (see issue #640)" >&2
+  done <<<"$MALFORMED_CRON_ACTION_KEYS"
+fi
+
 # Build the candidate list:
 #   - one record per PR key
 #   - filter to --root-repo when provided (keep entries whose recorded
 #     root_repo matches, plus entries with no recorded root_repo — their repo
 #     is simply unknown, and dropping them would hide legitimately-tracked PRs)
 #   - sort by last_cron_action.at descending (missing timestamp sorts last)
+# `.last_cron_action.at?` uses jq's `?` postfix to suppress the "Cannot index
+# string with \"at\"" error a malformed (non-object) last_cron_action would
+# otherwise raise, falling through to the `// null` default instead.
 if ! RESULT=$(jq -c \
     --arg root_repo "$ROOT_REPO" \
     '
@@ -250,7 +272,7 @@ if ! RESULT=$(jq -c \
         | {
             number: $n,
             owner_repo: ( .value.owner_repo // null ),
-            last_activity: ( .value.last_cron_action.at // null ),
+            last_activity: ( .value.last_cron_action.at? // null ),
             _root: ( .value.root_repo // null )
           }
       )
