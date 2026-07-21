@@ -195,9 +195,12 @@ This creates **one canonical planning document** the coding agent can work from.
 
 ### Fallback mode output
 
-Print a compact summary to the user. This block is the pre-chip baseline — emit it **byte-for-byte identical** to what `/start-issue` printed before chips existed (same heading, fields, plan/AC sections, and closing "Ready to code…" line), so a CLI or headless thread cannot tell this feature exists:
+Print a compact summary to the user. Per `chip-launching.md`, the content **inside** this block (not the fence delimiters themselves) is now **byte-identical to the chip `prompt`** (model-guard preamble included) rather than byte-for-byte identical to pre-chip behavior — see `chip-model-guard-decision.md` for the trade-off. One consequence: the `**Model:**` line, previously a chip-only addition here, is now baked into the base block below, so the guard has a recommendation to compare against in fallback mode too:
 
 ```
+**Model:** {MODEL} — {REASON}
+{Model-guard preamble — insert verbatim from `chip-launching.md` "Model-guard preamble", immediately after this line, no blank line between}
+
 ## Ready to code — Issue #{N}
 
 **Title:** {TITLE}
@@ -222,19 +225,19 @@ Ready to code. Start with step 1 of the plan above. Run the dual-CLI local revie
 | Param | Value |
 |-------|-------|
 | `title` | Verb-first, ≤60 chars, includes the issue number — built from `ISSUE_NUMBER` + `TITLE` (e.g. `Fix #42 stale worktree warning`) |
-| `prompt` | The complete self-contained coding-thread prompt: the `**Model:**` line, then a blank line, then the **content** of the fallback block above reproduced verbatim (the fence delimiters are not part of the prompt; everything between them is). The Model line is the only addition — the block's own text is never reworded to suit the chip |
+| `prompt` | The complete self-contained coding-thread prompt: the **content inside** the fallback fence above (not the fence delimiters themselves), reproduced **verbatim** — Model line and model-guard preamble included. No further additions are made for chip mode; the block content above is already the full chip payload |
 | `tldr` | 1–2 plain-English sentences from `TITLE` / the merged plan: what the session will do and why. No file paths, no jargon |
 | `cwd` | `WORKTREE_PATH` — the worktree created in Step 6 |
 
 > **`cwd` deliberately differs from `/pm` and `/prompt`,** which pass the repo root. By Step 7, `/start-issue` has already created an issue-specific worktree, so the launched thread must start *there* — repo root would land it in the wrong checkout, on the wrong branch. This is an intentional divergence, not an inconsistency with the shared contract.
 
-**Chips carry no model preset,** so the `**Model:** {MODEL} — {REASON}` line MUST appear both at the top of the chip's `prompt` text (so the spawned session sees it) and in the visible short summary (so the user can set the picker before clicking).
+**The `**Model:** {MODEL} — {REASON}` line and its guard live in the base block, not as a chip-only addition** — chips cannot preset the model picker, so both a fallback-mode reader and a chip-mode spawned session need the recommendation and the guard in the text itself. The visible short summary in chip mode still repeats just the `**Model:**` line (not the guard) so the user can set the picker before clicking.
 
-**Record the returned `task_id` immediately,** before any dependent step — an unrecorded chip cannot be withdrawn. `/start-issue` has no Active Work table, so track it **session-locally**, keyed by issue number, and say so in the summary; the chip stays dismissable for this session only. If the issue already has a live chip recorded in this session, skip the spawn rather than offering it twice. `dismiss_task` hygiene and print-on-demand replay ("print the full prompt for #N" re-emits that chip's `prompt` verbatim — Model line and block — in the fenced form fallback would have printed; the chip stays offered) follow the reference — do not restate its rules here.
+**Record the returned `task_id` immediately,** before any dependent step — an unrecorded chip cannot be withdrawn. `/start-issue` has no Active Work table, so track it **session-locally**, keyed by issue number, and say so in the summary; the chip stays dismissable for this session only. If the issue already has a live chip recorded in this session, skip the spawn rather than offering it twice. `dismiss_task` hygiene and print-on-demand replay ("print the full prompt for #N" re-emits that chip's `prompt` verbatim — Model line, guard preamble, and block — in the fenced form fallback would have printed; the chip stays offered) follow the reference — do not restate its rules here.
 
 ### Model recommendation
 
-Chips need a `{MODEL}` and a `{REASON}`. Use this lightweight, role-based rule over the canonical roster (**Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5** — see `.claude/rules/subagent-orchestration.md` "Model Selection"):
+Every handoff — chip or fallback — needs a `{MODEL}` and a `{REASON}`. Use this lightweight, role-based rule over the canonical roster (**Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5** — see `.claude/rules/subagent-orchestration.md` "Model Selection"):
 
 - **Default: Sonnet 5** — ordinary single-issue coding work.
 - **Step up to Opus 4.8** when the issue touches rules, `CLAUDE.md`, skills, or orchestration — instruction-adherence work where literal-following models misfire.
@@ -253,6 +256,7 @@ Stop after delivering the handoff. Do NOT start coding automatically — the use
 - **New issue description matches an existing open issue** (e.g. duplicate title): the skill will still create a new issue. It does not dedupe — that is the user's responsibility.
 - **Empty argument:** stop and ask the user for input.
 - **`gh` not authenticated or repo lookup fails:** stop and report the underlying `gh` error to the user.
+- **Launched thread's running model mismatches its `**Model:**` line:** guard rules live in `chip-launching.md`, not here — the launched thread stops on any mismatch as its first action and waits for the user, per the model-guard preamble. `/start-issue` only has to ensure the preamble is present in the block; it does not itself detect or resolve mismatches.
 
 ## Usage examples
 

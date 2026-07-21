@@ -437,17 +437,20 @@ For each selected issue, generate a self-contained prompt. The prompt content be
 **First, check chip availability** per `.claude/reference/chip-launching.md`, then branch:
 
 - **Chip mode** (`mcp__ccd_session__spawn_task` present): call `spawn_task` once per selected issue with `title` / `prompt` / `tldr` / `cwd`, where `prompt` is the full self-contained prompt below, unchanged. Print **only** the short summary per issue (issue, title, `**Model:**` line, one-line rationale) — see the reference for the exact format. Record each returned `task_id` in the Active Work table (3.2) and set that issue's status to `Chip offered`.
-- **Fallback mode** (tool absent): emit the full prompt blocks for every selected issue exactly as before — same fences, same content.
+- **Fallback mode** (tool absent): emit the full prompt blocks for every selected issue — same fences, same content, model-guard preamble included. `chip-launching.md` redefines the fallback baseline as byte-identical to the chip `prompt` (guard included), not pre-chip output — see `chip-model-guard-decision.md`.
 
 **Spawn outcomes are tracked per issue.** A failed `spawn_task` falls back for **that issue alone** — print its full block and leave it at `Prompt generated`. Issues whose spawns succeeded keep their chip, their `task_id`, and their `Chip offered` status; never re-print their block as well, or the same issue is offered twice. Every selected issue ends with exactly one of: a chip, or a printed block.
 
-Chips carry no model preset, so the `**Model:**` line must appear both in the visible summary and inside the chip's prompt text. Get the model recommendation from `/prompt`'s tier classification when it ran; otherwise infer it from the issue's signals using the same Heavy/Standard/Light mapping.
+Chips carry no model preset, so the `**Model:**` line must appear both in the visible summary and inside the chip's prompt text. Get the model recommendation from `/prompt`'s tier classification when it ran; otherwise infer it from the issue's signals using the same Heavy/Standard/Light mapping. Immediately after the `**Model:**` line, the prompt also carries the mandatory model-guard preamble defined in `chip-launching.md` — insert it verbatim, never reworded.
 
-If the user asks to "print the full prompt for #N" while in chip mode, re-emit that issue's complete block verbatim — the chip stays offered.
+If the user asks to "print the full prompt for #N" while in chip mode, re-emit that issue's complete block verbatim, guard included — the chip stays offered.
 
 Each prompt must include:
 
 ```
+**Model:** {MODEL} — {REASON}
+{Model-guard preamble — insert verbatim from `chip-launching.md` "Model-guard preamble", immediately after this line, no blank line between}
+
 You are a coding agent working on {repo URL}.
 
 ## Task
