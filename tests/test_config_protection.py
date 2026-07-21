@@ -230,6 +230,39 @@ class ConfigProtectionBashTests(unittest.TestCase):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
 
+    def test_bash_newline_is_a_command_separator(self) -> None:
+        # CodeAnt review finding: a multi-line Bash payload (common for
+        # Claude Code tool calls) is a sequence of commands just like
+        # `;`-joined ones. Without treating newline as a boundary, an
+        # in-place edit armed on one line stays armed for an unrelated -i
+        # on a later, unrelated line.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            cmd = f"sed -i 's/x/y/' notes.txt\ngrep -i pattern {target}"
+            self.assertIsNone(config_protection.bash_targets_protected(cmd))
+            # A real write on a later line must still be caught.
+            cmd2 = f"echo hi\nsed -i 's/x/y/' {target}"
+            self.assertEqual(config_protection.bash_targets_protected(cmd2), str(target))
+
+    def test_bash_perl_option_parsing_ends_at_first_non_switch_token(self) -> None:
+        # CodeAnt review finding: unlike GNU sed (which permutes flags after
+        # positional args), perl's own switch parser stops at the first
+        # non-switch token (the script filename, or its first @ARGV element
+        # if -e/-E supplied the code) -- everything after belongs to the
+        # running script, not to perl itself. `perl checker.pl -i file`
+        # never runs perl's in-place edit at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            cmd = f"perl checker.pl -i {target}"
+            self.assertIsNone(config_protection.bash_targets_protected(cmd))
+            # A clustered -e (e.g. -pe) still consumes the next token as its
+            # own inline-code value rather than ending option parsing, so a
+            # real -i appearing after it is still caught.
+            cmd2 = f"perl -pe 's/x/y/' -i {target}"
+            self.assertEqual(config_protection.bash_targets_protected(cmd2), str(target))
+
     def test_bash_write_op_does_not_leak_across_command_separators(self) -> None:
         # CodeAnt review finding: an earlier unrelated write (to a different
         # file) in a compound line must not cause a later plain read of a

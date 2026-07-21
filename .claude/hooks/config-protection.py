@@ -92,6 +92,18 @@ IN_PLACE_EDIT_BINS = frozenset({'sed', 'perl'})
 # Also matches GNU's long form `--in-place[=SUFFIX]`.
 IN_PLACE_FLAG_RE = re.compile(r'^(?:-[npsalwuzrE]*i.*|--in-place(?:=.*)?)$')
 
+# Unlike GNU sed (which uses getopt_long and freely permutes flags after
+# positional args), perl's own switch parser stops at the first token that
+# isn't a recognized switch — that token is either the script filename or,
+# if -e/-E already supplied the code, the first @ARGV element — and every
+# token after it is data for the running script, not another perl switch.
+# `perl checker.pl -i file` never runs sed/perl's -i at all: "checker.pl"
+# already ended perl's own option parsing. A cluster ending in a bare e/E
+# (`-pe`, `-npe`) also consumes the next token as -e's inline-code value,
+# same as bare `-e`/`-E`, so that token doesn't end the option-parsing
+# phase either.
+PERL_VALUE_FLAG_RE = re.compile(r'^-[npsalwuzrE]*[eE]$')
+
 # A leading `VAR=value` env assignment, a thin wrapper (sudo/env/xargs/...), or
 # one of the wrapper's own flags (`sudo -u root`, `env -i`, `nice -n 10`)
 # doesn't occupy the executable slot — the real command still follows. Any
@@ -138,8 +150,15 @@ COPY_MOVE_BINS = frozenset({'cp', 'mv'})
 
 def _split_into_command_segments(cmd: str) -> list[str]:
     """Split a raw shell command string into command segments at unquoted,
-    unsubstituted `;`/`&&`/`||`/`|`/`&` boundaries, tracking quote and
-    `$(...)`/backtick command-substitution state char-by-char.
+    unsubstituted `;`/`&&`/`||`/`|`/`&`/newline boundaries, tracking quote
+    and `$(...)`/backtick command-substitution state char-by-char. A
+    multi-line Bash payload (a common shape for Claude Code tool calls) is
+    a sequence of commands exactly like `;`-joined ones — without this, an
+    in-place edit armed on one line stays armed for an unrelated `-i` on a
+    later line. A backslash immediately before a newline is a real bash
+    line continuation (join two physical lines into one logical line) and
+    is already preserved verbatim by the backslash-escape handling below,
+    so it does not split.
 
     This must run on the RAW string, before shlex.split() — shlex strips
     quotes, so a post-tokenization regex split can't tell a real shell
@@ -206,7 +225,7 @@ def _split_into_command_segments(cmd: str) -> list[str]:
             current = []
             i += 2
             continue
-        if ch in (';', '|', '&', '(', ')'):
+        if ch in (';', '|', '&', '(', ')', '\n'):
             if ch == '&':
                 prev_ch = cmd[i - 1] if i > 0 else ''
                 next_ch = cmd[i + 1] if i + 1 < n else ''
@@ -300,6 +319,8 @@ def _scan_command_segment(tokens: list[str], cwd: str | None) -> str | None:
     last_copy_move: str | None = None
     copy_move_protected: list[str] = []
     seen_in_place_capable_bin = False
+    in_place_bin_kind: str | None = None  # None | 'sed' | 'perl'
+    expect_perl_flag_value = False
     expect_command_name = True
     current_wrapper: str | None = None
     expect_wrapper_flag_value = False
@@ -335,8 +356,24 @@ def _scan_command_segment(tokens: list[str], cwd: str | None) -> str | None:
             else:
                 if base in IN_PLACE_EDIT_BINS:
                     seen_in_place_capable_bin = True
+                    in_place_bin_kind = base
                 expect_command_name = False
                 current_wrapper = None
+        elif in_place_bin_kind == 'perl':
+            if expect_perl_flag_value:
+                expect_perl_flag_value = False
+            elif tok.startswith('-'):
+                if IN_PLACE_FLAG_RE.match(tok):
+                    has_write_op = True
+                if PERL_VALUE_FLAG_RE.match(tok):
+                    expect_perl_flag_value = True
+            else:
+                # First non-switch token: perl's own option parsing has
+                # ended (this is the script filename, or perl's first
+                # @ARGV element if -e/-E supplied the code) — everything
+                # after is data for the running script, not another switch.
+                seen_in_place_capable_bin = False
+                in_place_bin_kind = None
         elif seen_in_place_capable_bin and IN_PLACE_FLAG_RE.match(tok):
             has_write_op = True
         if base in COPY_MOVE_BINS:
