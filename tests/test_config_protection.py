@@ -258,6 +258,39 @@ class ConfigProtectionBashTests(unittest.TestCase):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
 
+    def test_bash_quoted_separator_chars_do_not_split_the_command(self) -> None:
+        # CodeAnt review finding: splitting on separator characters AFTER
+        # shlex.split() loses quote context, so a sed/perl script's own `;`
+        # or `|` (substitution-chaining syntax, not a shell separator) got
+        # fake-split into disconnected fragments — silently missing a real
+        # in-place edit where -i (via GNU flag permutation) landed in a
+        # different fragment than the sed/perl executable it belongs to.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            for cmd in [
+                f"sed 's/a;b/c;d/' -i {target}",
+                f"sed 's/a|b/c|d/' -i {target}",
+                f"perl -i -pe 's/a;b/c/' {target}",
+            ]:
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
+
+    def test_bash_blocks_in_place_edit_through_long_form_wrapper_flag(self) -> None:
+        # CodeAnt review finding: a wrapper's long-form value flag
+        # (`sudo --user root`, `nice --adjustment 10`) must be recognized
+        # the same way as its short form, or the real executable after it
+        # gets missed.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            for cmd in [
+                f"sudo --user root sed -i 's/x/y/' {target}",
+                f"nice --adjustment 10 sed -i 's/x/y/' {target}",
+            ]:
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
+
     def test_bash_allows_in_place_bin_name_as_plain_argument(self) -> None:
         # CodeRabbit/CodeAnt review finding: `sed`/`perl` must only arm
         # in-place detection when they are the executable, not when their

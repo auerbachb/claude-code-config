@@ -101,30 +101,29 @@ IN_PLACE_FLAG_RE = re.compile(r'^(?:-[npsalwuzrE]*i.*|--in-place(?:=.*)?)$')
 ENV_ASSIGNMENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*=')
 COMMAND_WRAPPER_BINS = frozenset({'sudo', 'env', 'nice', 'nohup', 'time', 'command', 'exec', 'xargs'})
 # A handful of each wrapper's flags take the NEXT token as their own argument
-# (`sudo -u root`, `nice -n 10`) rather than the target executable — without
-# this, that argument gets mistaken for the executable slot and the real
-# command (e.g. sed) right after it is missed entirely.
+# (`sudo -u root`, `sudo --user root`, `nice -n 10`) rather than the target
+# executable — without this, that argument gets mistaken for the executable
+# slot and the real command (e.g. sed) right after it is missed entirely.
+# Long forms only need listing for the space-separated case (`--user root`)
+# — the `--user=root` equals-attached form is already one whole token, so it
+# can't split flag from value across two tokens in the first place.
 WRAPPER_VALUE_FLAGS = {
-    'sudo': frozenset({'-u', '-g', '-p', '-h', '-C', '-r', '-t'}),
-    'env': frozenset({'-u', '-C', '-S'}),
-    'nice': frozenset({'-n'}),
+    'sudo': frozenset({
+        '-u', '-g', '-p', '-h', '-C', '-r', '-t',
+        '--user', '--group', '--prompt', '--host', '--close-from', '--role', '--type',
+    }),
+    'env': frozenset({'-u', '-C', '-S', '--unset', '--chdir', '--split-string'}),
+    'nice': frozenset({'-n', '--adjustment'}),
     'nohup': frozenset(),
     'time': frozenset(),
     'command': frozenset(),
-    'exec': frozenset({'-a'}),
-    'xargs': frozenset({'-I', '-n', '-P', '-d', '-s', '-a', '-E', '-L'}),
+    'exec': frozenset({'-a', '--as'}),
+    'xargs': frozenset({
+        '-I', '-n', '-P', '-d', '-s', '-a', '-E', '-L',
+        '--replace', '--max-args', '--max-procs', '--delimiter', '--max-chars',
+        '--arg-file', '--eof', '--max-lines',
+    }),
 }
-
-# Command-separator characters: in-place-flag state and executable-position
-# tracking must not leak across these, or an earlier unrelated `sed`/`perl`
-# call would make a later `grep -i` (or any other unrelated `-i`) in the same
-# compound line look like a write. shlex has no concept of shell metacharacters
-# — `cmd1;cmd2` (no spaces at all) comes back as one glued token — so these are
-# split out of every token into their own entries before the main scan runs.
-# A single `&` is excluded when adjacent to `>` (`2>&1` fd-dup, `&>file`
-# combined redirect) so those stay intact as one token for the redirect checks.
-COMMAND_SEPARATOR_SPLIT_RE = re.compile(r'(&&|\|\||;|\||\(|\)|(?<!>)&(?!>))')
-COMMAND_SEPARATOR_RE = re.compile(r'^[;&|()]+$')
 
 # Deliberately excludes fd-duplication (`2>&1`, `1>&2`): digits on both sides of
 # `>&` duplicate one existing stream onto another (e.g. merging stderr into
@@ -136,11 +135,70 @@ WRITE_FLAG_TOKENS = frozenset({'--write', '--fix', '-w', '-inplace'})
 COPY_MOVE_BINS = frozenset({'cp', 'mv'})
 
 
-def _split_command_separators(tokens: list[str]) -> list[str]:
-    expanded: list[str] = []
-    for tok in tokens:
-        expanded.extend(part for part in COMMAND_SEPARATOR_SPLIT_RE.split(tok) if part)
-    return expanded
+def _split_into_command_segments(cmd: str) -> list[str]:
+    """Split a raw shell command string into command segments at unquoted
+    `;`/`&&`/`||`/`|`/`&` boundaries, tracking quote state char-by-char.
+
+    This must run on the RAW string, before shlex.split() — shlex strips
+    quotes, so a post-tokenization regex split can't tell a real shell
+    separator from a literal one inside a quoted argument (e.g. a sed/perl
+    script's own `s/a;b/c;d/` substitution syntax). Splitting the wrong `;`
+    there breaks one logical command into fragments that individually don't
+    show both "sed is the executable" and "-i is present", silently missing
+    a real in-place edit. Doesn't track `$()`/backtick command-substitution
+    nesting — a `;` inside one of those is rare in practice and, worst case,
+    only causes an extra (safe-direction) split, never a missed detection of
+    those two specific signals in the same fragment they already are in.
+    A single `&` is skipped when adjacent to `>` (`2>&1` fd-dup, `&>file`
+    combined redirect) so those stay intact for the redirect checks.
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    i = 0
+    n = len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if quote:
+            current.append(ch)
+            if ch == quote:
+                quote = None
+            elif quote == '"' and ch == '\\' and i + 1 < n:
+                current.append(cmd[i + 1])
+                i += 1
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+            current.append(ch)
+            i += 1
+            continue
+        if ch == '\\' and i + 1 < n:
+            current.append(ch)
+            current.append(cmd[i + 1])
+            i += 2
+            continue
+        if cmd[i:i + 2] in ('&&', '||'):
+            segments.append(''.join(current))
+            current = []
+            i += 2
+            continue
+        if ch in (';', '|', '&', '(', ')'):
+            if ch == '&':
+                prev_ch = cmd[i - 1] if i > 0 else ''
+                next_ch = cmd[i + 1] if i + 1 < n else ''
+                if prev_ch == '>' or next_ch == '>':
+                    current.append(ch)
+                    i += 1
+                    continue
+            segments.append(''.join(current))
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    segments.append(''.join(current))
+    return segments
 
 
 def normalize_path(path: str) -> str:
@@ -287,24 +345,19 @@ def _scan_command_segment(tokens: list[str], cwd: str | None) -> str | None:
 def bash_targets_protected(cmd: str, cwd: str | None = None) -> str | None:
     if not cmd:
         return None
-    try:
-        tokens = shlex.split(cmd, posix=True)
-    except ValueError:
-        tokens = cmd.split()
-    tokens = _split_command_separators(tokens)
-
-    segment: list[str] = []
-    for tok in tokens:
-        if COMMAND_SEPARATOR_RE.match(tok):
-            if segment:
-                blocked = _scan_command_segment(segment, cwd)
-                if blocked:
-                    return blocked
-                segment = []
+    for segment_str in _split_into_command_segments(cmd):
+        segment_str = segment_str.strip()
+        if not segment_str:
             continue
-        segment.append(tok)
-    if segment:
-        return _scan_command_segment(segment, cwd)
+        try:
+            tokens = shlex.split(segment_str, posix=True)
+        except ValueError:
+            tokens = segment_str.split()
+        if not tokens:
+            continue
+        blocked = _scan_command_segment(tokens, cwd)
+        if blocked:
+            return blocked
     return None
 
 
