@@ -65,6 +65,12 @@ jobs:
       - name: skill-usage-merge unit test (issue #572)
         run: bash .claude/scripts/tests/skill-usage-merge.test.sh
 
+      - name: polling-state-gate.sh repo-scoping unit test (issue #647)
+        run: bash .claude/scripts/tests/polling-state-gate.test.sh
+
+      - name: polling-state-gate.sh compaction-resume test (issue #315)
+        run: bash .claude/scripts/tests/compaction-resume-polling-state-gate.test.sh
+
       - name: session-state.sh field-type contract unit test (issue #625)
         run: bash .claude/scripts/tests/session-state.test.sh
 

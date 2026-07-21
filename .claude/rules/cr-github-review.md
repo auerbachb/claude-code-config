@@ -16,8 +16,8 @@ After pushing to a PR, enter this loop automatically.
 
 Before the first poll tick:
 
-1. `.claude/scripts/polling-state-gate.sh <PR_NUMBER> --ensure-session` (`--root-repo <path>` if cwd is not the PR repo). Registers the PR, sets `root_repo`, creates/refreshes `~/.claude/handoffs/pr-<PR_NUMBER>-handoff.json`.
-2. If session `root_repo` ≠ your checkout, stop and reconcile (multi-repo hazard).
+1. `.claude/scripts/polling-state-gate.sh <PR_NUMBER> --ensure-session` (`--root-repo <path>` if cwd is not the PR repo). Registers the PR, records repo scoping, creates/refreshes `~/.claude/handoffs/pr-<PR_NUMBER>-handoff.json`.
+2. Refusal = genuine cross-repo mismatch (#647); stop and reconcile.
 
 **Each cycle:** `.claude/scripts/polling-state-gate.sh <PR_NUMBER>` — validates state then runs `merge-gate.sh`. Exit `0` = gate met; `1` = keep polling (plus `/fixpr` triggers below).
 
