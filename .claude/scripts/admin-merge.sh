@@ -472,12 +472,21 @@ if [[ "$MODE" == "execute" ]]; then
     exit 7
   fi
 
-  # Post-verify: protection restored + PR merged.
+  # Post-verify: protection restored + PR merged. Retry the merge-state read a
+  # few times — a successful `gh pr merge --admin` does not guarantee an
+  # immediately-consistent read of PR state (read-after-write lag, or a
+  # queued/deferred merge on repos with a merge queue enabled) — before
+  # concluding the merge did not complete.
   FINAL_ENFORCE=$(gh api "repos/$OWNER/$REPO/branches/$BRANCH/protection/enforce_admins" --jq '.enabled' 2>/dev/null || echo "unknown")
-  FINAL_MERGED=$(gh pr view "$PR_NUMBER" --json state --jq '(.state == "MERGED")' 2>/dev/null || echo "unknown")
+  FINAL_MERGED="unknown"
+  for _attempt in 1 2 3; do
+    FINAL_MERGED=$(gh pr view "$PR_NUMBER" --json state --jq '(.state == "MERGED")' 2>/dev/null || echo "unknown")
+    [[ "$FINAL_MERGED" == "true" ]] && break
+    (( _attempt < 3 )) && sleep 2
+  done
   echo "[admin-merge] done: PR merged=$FINAL_MERGED, enforce_admins enabled=$FINAL_ENFORCE"
   if [[ "$FINAL_MERGED" != "true" ]]; then
-    echo "WARNING: PR does not report state=MERGED — the merge may not have completed (e.g. a queued/deferred merge). Verify manually: gh pr view $PR_NUMBER --json state,mergedAt" >&2
+    echo "WARNING: PR does not report state=MERGED after retrying — the merge may not have completed (e.g. a queued/deferred merge). Verify manually: gh pr view $PR_NUMBER --json state,mergedAt" >&2
     exit 7
   fi
   if [[ "$FINAL_ENFORCE" != "true" ]]; then
