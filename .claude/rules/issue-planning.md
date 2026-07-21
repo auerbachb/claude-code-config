@@ -48,4 +48,4 @@
 
 ## Capture-only issue threads
 
-For threads whose only job is *opening* issues (no coding, no worktrees), use `/issue-maker` (`.claude/skills/issue-maker/SKILL.md`): session-invariant capture mode, reflects before writing (1–3 scope questions), emits the canonical 6-section body, refuses workflow-advancing actions. It deliberately does **not** poll for the CR plan in-thread — `cr-plan-on-issue.yml` posts `@coderabbitai plan` on the issue itself, and the plan-merge gate (steps 5–7 above) runs later when the issue is picked up via `/start-issue`.
+For threads whose only job is *opening* issues, use `/issue-maker`: capture-only mode, reflects before writing, canonical 6-section body, refuses workflow-advancing actions. It deliberately does **not** poll for the CR plan in-thread — the plan-merge gate (steps 5–7) runs later when the issue is picked up via `/start-issue`.

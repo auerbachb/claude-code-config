@@ -9,7 +9,7 @@
 
 Stop polling ONLY when one current-HEAD review path below is satisfied:
 
-1. **CR path:** explicit clean `APPROVED` from **CodeRabbit** (`coderabbitai[bot]`) **or** **CodeAnt** (`codeant-ai[bot]`) on current HEAD, same SHA-freshness and same-SHA retraction rules as legacy CR-only; **and** when CodeAnt has participated on that SHA, CodeAnt clean per supplemental rule (`cr-github-review.md`, `merge-gate.sh`).
+1. **CR path:** explicit clean `APPROVED` from CodeRabbit or CodeAnt on current HEAD (freshness/retraction rules in Step 1); when CodeAnt participated on that SHA, CodeAnt must also be clean.
 2. **BugBot:** clean BugBot pass on current HEAD.
 3. **Greptile:** severity gate passed.
 
@@ -17,50 +17,23 @@ Stop polling ONLY when one current-HEAD review path below is satisfied:
 
 ## Step 1 — Confirm reviews are clean (merge gate)
 
-The merge gate depends on which reviewer owns the PR:
+The merge gate depends on which reviewer owns the PR. Compact per-path gates below (every binding condition retained); expanded per-path prose: `.claude/reference/merge-gate-reviewer-paths.md`.
 
-**CR path** (neither BugBot nor Greptile was triggered — `merge-gate.sh` reviewer `cr`):
+**CR path** (neither BugBot nor Greptile triggered — `merge-gate.sh` reviewer `cr`): **CodeRabbit** (`coderabbitai[bot]`) or **CodeAnt** (`codeant-ai[bot]`) with `state: "APPROVED"` and `commit_id == current HEAD SHA` — either bot alone suffices. Routing: CodeAnt/CodeRabbit in PR history → CR path; cursor-only → BugBot (`reviewer-of.sh`). Stale-SHA approvals never count — re-trigger the bot that must refresh (rate cap applies) and keep polling. A newer same-SHA `CHANGES_REQUESTED` from the same bot retracts its earlier `APPROVED` until fixed, pushed, re-approved. Bot `CHANGES_REQUESTED` on an old SHA is obsolete after a fix push — `/fixpr` dismisses via `dismiss-stale-bot-changes.sh` (bots only, never humans); dismiss leftovers rather than reading their `reviewDecision: CHANGES_REQUESTED` as a human block. Human `CHANGES_REQUESTED` on current HEAD blocks until addressed/withdrawn. **Not approvals:** the "Full review triggered" ack; "0 unresolved threads" without an APPROVED on current SHA; early absence of findings; a completed CR check-run without an APPROVED review object. **Re-trigger policy:** 12 min without approval → `@coderabbitai full review`, max 2 per SHA within the 2/PR/hour cap (rate-limit signals override the timeout); after 2 failures on one SHA, fall back BugBot → Greptile → self-review.
 
-- **Gate:** at least one of: **CodeRabbit** (`coderabbitai[bot]`) or **CodeAnt** (`codeant-ai[bot]`) with `state: "APPROVED"` and `commit_id == current HEAD SHA`. Either bot satisfies the primary review; you do not need both when only one reviewed.
-- **Routing (live scan):** CodeAnt or CodeRabbit in PR history → CR path; cursor-only → BugBot (`merge-gate.sh`, `reviewer-of.sh`).
-- **SHA freshness:** stale approvals do not count (wrong `commit_id`); re-trigger `@coderabbitai full review` or `@codeant-ai review` for the bot that must refresh, subject to the rate cap, and keep polling.
-- **Retraction:** a newer same-SHA `CHANGES_REQUESTED` from the **same** bot retracts that bot's earlier `APPROVED` until findings are fixed, pushed, and re-approved (same rule as legacy CR-only, evaluated per bot).
-- **Stale bot `CHANGES_REQUESTED`:** A bot review with `state: CHANGES_REQUESTED` but `commit_id` **not** equal to the current PR head is obsolete after you push fixes. **`/fixpr` dismisses these** via `.claude/scripts/dismiss-stale-bot-changes.sh` after every push (bots only — never humans). If `merge-gate.sh` or GitHub still shows `reviewDecision: CHANGES_REQUESTED` because of leftover bot reviews on old SHAs, **dismiss those reviews** (automation or GitHub UI) rather than treating it as a human change request. Human-authored `CHANGES_REQUESTED` on the current HEAD still blocks until addressed or withdrawn by that reviewer.
-- **Not approvals:**
-  - The "Actions performed — Full review triggered" ack comment (review started, not finished).
-  - "0 unresolved threads right now" without an APPROVED review on the current SHA.
-  - Absence of findings in the first N minutes after triggering (CR can run slowly or time out).
-  - CR check-run `status: "completed"` without an accompanying APPROVED review object on the current SHA.
-- **Re-trigger policy:** after 12 min without approval, re-trigger `@coderabbitai full review` up to 2 times on the same SHA, capped at 2 explicit triggers/PR/hour. Rate-limit signals override the timeout. After 2 failed re-triggers on one SHA, fall back BugBot → Greptile → self-review.
+**CodeAnt on the CR path:** applies when CodeAnt has a review/comment or check-run on current HEAD. Clean = `APPROVED` on HEAD or completed CodeAnt check with `conclusion: success`; `CHANGES_REQUESTED` blocks only if newer than the latest clean signal on that SHA. Threads: Step 1c.
 
-**CodeAnt on the CR path** (`codeant-ai[bot]`; parallel to CR — see `cr-github-review.md`):
+**BugBot path** (CR failed, BugBot responded — sticky; `bugbot.md`): 1 clean BugBot review on current HEAD satisfies the gate. Re-review after fixes: `bugbot.md` §Re-Reviews. Never switch back to CR; ignore late CR reviews.
 
-- **Applies** when CodeAnt has review/comment on current HEAD **or** a CodeAnt check-run on that commit.
-- **Clean:** `APPROVED` on HEAD **or** completed CodeAnt check with `conclusion: success`.
-- **Retraction:** `CHANGES_REQUESTED` blocks only if newer than latest clean signal on that SHA. Threads: Step 1c.
+**Greptile path** (both CR and BugBot failed — sticky; `greptile.md`): merge-ready when ANY of: **clean review** (👍, no inline comments); **no P0** (only P1/P2 — fix all, push, reply; no re-review required); or **P0 fixed + re-triggered review clean**. Max 3 Greptile reviews per PR; at 3 with persistent P0, self-review and report the blocker. Never switch back to CR/BugBot; ignore their late reviews.
 
-**BugBot path** (CR failed, BugBot responded, Greptile never triggered — sticky; see `bugbot.md`):
-
-- 1 clean BugBot review on the current HEAD SHA satisfies the gate (BugBot's completion signals are reliable).
-- Re-review after fixes: see `bugbot.md` (**Re-Reviews**).
-- Sticky (`cr-github-review.md`); ignore late CR reviews.
-
-**Greptile path** (triggered at any point — both CR and BugBot failed — sticky; see `greptile.md`):
-
-- Severity-gated: merge-ready when ANY of these hold:
-  1. **Clean review:** no findings (thumbs-up with no inline comments).
-  2. **No P0 findings:** only P1/P2 findings present — fix all of them, push, reply to threads; no re-review required.
-  3. **P0 fixed + re-review clean:** P0 findings were present, fixed, and a re-triggered `@greptileai` review came back clean.
-- Sticky (`cr-github-review.md`); ignore late CR/BugBot reviews.
-- Max 3 Greptile reviews per PR (initial + up to 2 P0 re-reviews). At 3 with persistent P0, self-review and report blocker.
-
-**If CR, BugBot, and Greptile are all down:** self-review for risk reduction only. A clean self-review does NOT satisfy the gate; report the blocker.
+**All three down:** self-review for risk reduction only — it never satisfies the gate; report the blocker.
 
 **CR detection order:** ack means started; CodeRabbit check-run success means complete; only an APPROVED review object on current HEAD satisfies the gate. Once Step 1 passes, proceed immediately to Step 1b.
 
 ### Code-owner bots
 
-When branch protection requires code-owner reviews and a review bot (CR / Greptile / CodeAnt) is in `CODEOWNERS`, that bot's fresh `APPROVED` on current HEAD satisfies the code-owner requirement — do not ask the author to self-approve; `merge-gate.sh` enforces this runtime check. If a prior bot approval is stale/dismissed after a push, re-trigger that bot and keep polling. Full CODEOWNERS handling + per-bot re-trigger commands: `.claude/reference/codeowner-bot-approvals.md`.
+When branch protection requires code-owner reviews and a review bot is in `CODEOWNERS`, that bot's fresh `APPROVED` on current HEAD satisfies the requirement — don't ask the author to self-approve (`merge-gate.sh` enforces this). Stale/dismissed after a push → re-trigger and keep polling. Full handling + commands: `.claude/reference/codeowner-bot-approvals.md`.
 
 ## Step 1b — CI Must Pass Before Merge (NON-NEGOTIABLE)
 
@@ -68,12 +41,9 @@ Before running `gh pr merge` on ANY PR, verify ALL CI check-runs are complete an
 
 **If any check-run is incomplete: DO NOT MERGE.** Wait; null conclusion means not reported, not passed.
 
-**If any check-run has blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`): DO NOT MERGE.** Instead:
-1. Read the failure output and fix the issue
-2. Commit, push, and wait for CI to re-run
-3. Only merge after ALL checks are `status: "completed"` with non-blocking conclusions
+**If any check-run has a blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`): DO NOT MERGE.** Read the failure output, fix, push, and merge only after ALL checks complete with non-blocking conclusions.
 
-This applies to ALL merge paths: manual `gh pr merge`, the `/merge` skill, the `/wrap` skill, and Phase C verify-and-wrap.
+Applies to ALL merge paths: `gh pr merge`, `/merge`, `/wrap`, Phase C verify-and-wrap.
 
 ## Step 1c — All Review Threads Resolved (NON-NEGOTIABLE)
 
@@ -84,7 +54,7 @@ Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses
 **Do not infer “behind base” from `mergeStateStatus: "BLOCKED"` alone.** Read **`mergeStateStatus` and `mergeable`** explicitly (`gh pr view <N> --json mergeStateStatus,mergeable,reviewDecision` — same as `merge-gate.sh`).
 
 - **`CLEAN`** — OK for merge once Steps 1–1c and 1b pass.
-- **`BEHIND`** — Not merge-ready. `/fixpr` rebase (see `fixpr/SKILL.md` / `pr-state.sh`); **force-push only** after `dirty-main-guard.sh --check`. `merge-gate.sh` fails until resolved; polling invokes `/fixpr`.
+- **`BEHIND`** — Not merge-ready; `/fixpr` rebase, **force-push only** after `dirty-main-guard.sh --check`.
 - **`BLOCKED`** — Use `reviewDecision`, CI, threads — not a substitute for **`BEHIND`**.
 - **`UNSTABLE` / `DIRTY` / `UNKNOWN`** — Not merge-ready; wait, rebase, or resolve per `fixpr` / Step 1b.
 
@@ -101,7 +71,7 @@ Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses
 > 5. If any item fails, fix the code first — do NOT offer to merge with unchecked boxes
 > 6. Only after **ALL** boxes are checked, proceed to Step 3
 >
-> Re-run after every review round. Re-verify all AC items if code changed during review; verification reflects the code **at merge time**, not an earlier checkpoint.
+> Re-run after every review round — verification reflects the code **at merge time**, not an earlier checkpoint.
 >
 > Skipping this step is a **blocking failure** — the user should never see unchecked AC boxes when asked about merge.
 

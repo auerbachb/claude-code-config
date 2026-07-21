@@ -14,7 +14,7 @@ The 5-minute heartbeat rule catches silence during turns; this file covers betwe
 | ≥3 concurrent polls or cross-session durability | **`CronCreate`** | Durable fleet job |
 | One-shot "wake me in N minutes" | `ScheduleWakeup` | Single tick only |
 
-> **Default recurring user-facing poll: `/loop`.** Use `CronCreate` only for cross-session durability or fleet jobs. Never hand-roll one-shot chains.
+> **Default recurring user-facing poll: `/loop`.** Use `CronCreate` only for ≥3 concurrent polls, cross-session durability, or fleet jobs. Never hand-roll "do work, then schedule the next one-shot wakeup" chains — a forgotten re-arm silently kills the poll; `/loop` re-arms itself.
 
 ## PM Monitoring Primitive
 
@@ -25,11 +25,7 @@ Division of responsibility (see `.claude/reference/pm-monitoring-decision.md`):
 - `/loop` remains valid for explicit user-invoked "poll every N" that is not PR-fleet-specific.
 - `CronCreate` for cross-session durability or fleet jobs owned by dedicated skills.
 
-Each skill-owned polling turn: update `session-state.json` as that skill's contract requires. If orchestration state is stale, run `monitor-mode.md` **PM Monitoring Recovery** (and apply dropped-tick handling in this file for skill-owned polls).
-
-## Forbidden Pattern: Hand-Rolled One-Shot Chains
-
-Do not recur as "do work, then schedule the next one-shot wakeup." Forgetting or failing the re-arm silently kills the poll. Use `/loop N <command>` once; the runtime re-arms it.
+Skill-owned polling turns update `session-state.json` per that skill's contract; stale orchestration state → `monitor-mode.md` PM Monitoring Recovery + this file's dropped-tick handling.
 
 ## Mandatory Pre-Exit Checklist for Polling Turns
 
@@ -48,15 +44,8 @@ Each tick hash `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_c
 
 ## Failure Recovery
 
-If the user reports a dropped tick:
-
-1. Acknowledge it.
-2. Re-establish with `/loop`, not another one-shot chain; state cadence and command.
-3. Record `polling_failures[]` in `session-state.json`.
-4. If new, append the failure mode to `.claude/reference/scheduling-failure-modes.md` after the session.
+If the user reports a dropped tick: acknowledge; re-establish with `/loop` (state cadence + command), never another one-shot chain; record in `polling_failures[]`; if the failure mode is new, append it to `.claude/reference/scheduling-failure-modes.md` post-session.
 
 ## Related
 
-- `monitor-mode.md` — in-turn heartbeat and monitor loop
-- `.claude/reference/scheduling-failure-modes.md` — canonical list of observed failure modes with case studies
-- `handoff-files.md` — `session-state.json` schema, including the polling-state fields this file requires
+`monitor-mode.md` (in-turn heartbeat/monitor loop) · `.claude/reference/scheduling-failure-modes.md` (observed failure modes) · `handoff-files.md` (`session-state.json` schema).

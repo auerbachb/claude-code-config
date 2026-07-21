@@ -4,7 +4,7 @@
 > **Ask first:** Never — fix findings autonomously.
 > **Never:** Trigger Greptile before checking if BugBot already posted a review. Include `@cursor` in reply comments (may trigger a re-review). Ignore BugBot findings.
 
-BugBot is the **second-tier** reviewer (Cursor, per-seat) between CR and Greptile. Chain and parallel CodeAnt/Graphite: `cr-github-review.md`.
+BugBot (Cursor, per-seat) is the **second-tier** reviewer in the escalation chain (`cr-github-review.md` §Three-Tier).
 
 **Always-trigger:** CI posts `@cursor review` on every PR open/push (`cursor-review-pr-comment.yml`); GitHub auto-trigger is unreliable — see `feedback_bugbot_auto_trigger_unreliable.md`.
 
@@ -13,19 +13,19 @@ BugBot is the **second-tier** reviewer (Cursor, per-seat) between CR and Greptil
 ## BugBot Basics
 
 - **Bot username:** `cursor[bot]`
-- **Triggers:** GitHub auto-trigger is best-effort only. This repo: CI + agents always post `@cursor review` on open/push (`cursor-review-pr-comment.yml`, `/fixpr`); duplicates OK. Manual: same comment if needed.
+- **Trigger:** `@cursor review` comment (auto-posted by CI + `/fixpr` per the Always-trigger note above; duplicates OK).
 - **Cost:** Per-seat — safe to always-trigger.
 - **Review time:** ~1–3 min. **No CLI** (GitHub-only).
 
 ## Polling for BugBot Reviews
 
-Poll alongside CR every 60 s on all three endpoints — same pattern as `cr-github-review.md` **Polling**. Filter by `.user.login == "cursor[bot]"`.
+Poll alongside CR per the shared cadence/endpoints (`cr-github-review.md` §Polling); filter `.user.login == "cursor[bot]"`.
 
 **Fallback timing:** Do not maintain a separate CR-owned BugBot timeout here — the escalation gate owns that decision (`cr-github-review.md`). Once BugBot owns the PR, keep 60 s cadence and use the `Cursor Bugbot` completion signal below.
 
 **Completion signal:** BugBot creates a CI check-run named `Cursor Bugbot` that transitions to `status: "completed"` when the review finishes. The `conclusion` field is `neutral` when BugBot posted findings (still counts as a completed review — `neutral` is not a failure). Completion can also be detected via BugBot review comments appearing on any of the three endpoints.
 
-**BugBot failure detection (issue #552):** a usage/spend-limit failure produces the *same* `status: "completed"`/`conclusion: "neutral"` tuple as a genuine clean pass — the check-run alone can't distinguish them. `escalate-review.sh` scans `cursor[bot]` comment bodies (and, defensively, the check-run's `title`) for known failure phrases — `couldn't run` / `could not run`, `usage limit`, `usage or spend limit` — and treats a match as a BugBot failure, not a completed review, even alongside a completed/neutral check-run. A completed check-run counts as a genuine clean pass only when no failure phrase is present.
+**BugBot failure detection (issue #552):** a usage/spend-limit failure produces the *same* completed/`neutral` tuple as a clean pass. `escalate-review.sh` scans `cursor[bot]` comment bodies (and the check-run title) for failure phrases (`couldn't run`, `usage limit`, …) and treats a match as a failure — a completed check-run is a genuine clean pass only when no failure phrase is present.
 
 ## When BugBot Becomes the Active Reviewer
 
@@ -49,4 +49,4 @@ Verify all findings against actual code. Fix all valid findings in one commit, p
 
 ## Re-Reviews
 
-After fixing BugBot findings and pushing, expect a new BugBot pass on the new HEAD: CI already posted `@cursor review` on that push. If anything still looks stale after polling, post `@cursor review` again — duplicates are acceptable.
+After a fix push, CI already posted `@cursor review` on the new HEAD; if stale after polling, post it again (duplicates OK).
