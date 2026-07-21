@@ -3,9 +3,11 @@
 #
 # PURPOSE
 #   Replaces the self-cleanup that /wrap used to do (worktree removal + branch
-#   deletion in the running session). Runs out-of-band as part of /pm-update so
-#   the active session never deletes itself. Detects three classes of stale
-#   refs on the root repo:
+#   deletion in the running session). Runs out-of-band so the active session
+#   never deletes itself. Two skills consume this script as the single source of
+#   truth for stale worktree/branch detection and safety — /pm-update (Step 8)
+#   and /pm-clean (workspace sweep) — so their results can never diverge (issue
+#   #618). Detects three classes of stale refs on the root repo:
 #     1. Local worktrees whose HEAD commit is older than STALE_DAYS.
 #     2. Local branches whose tip commit is older than STALE_DAYS.
 #     3. Remote branches (refs/remotes/origin/*) whose tip commit is older
