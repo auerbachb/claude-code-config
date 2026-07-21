@@ -227,6 +227,26 @@ Do NOT run git clean in ANY directory. Do NOT run destructive commands (rm -rf, 
 git checkout ., git stash, git reset --hard) in the root repo directory. Stay in your
 worktree directory at all times.
 
+## CAPABILITY DISCOVERY
+MINDSET: Before handing off, enumerate your actual tools (gh/git/curl/gh api, MCP,
+skills) — don't trust inherited "agents can't" prose. Try the CLI-accessible path
+first (workflow run, pr review, api dispatches, release create, pr/issue comment
+or edit are usually possible) — but your own agent definition's explicit
+prohibitions always win (e.g. phase-c uses /wrap, never gh pr merge directly).
+Only hand off for real walls (token-scope 403, branch protection, .env, or a
+safety.md "Never" item) — structure it like /admin-merge: exact command + one-line
+reason. Full rules: .claude/rules/safety.md.
+
+## SKILLS-FIRST REFLEX
+SKILLS: Before hand-rolling a multi-step task, check whether an existing skill
+already does this job — invoke it via the Skill tool instead of reimplementing
+from memory (only Skill-tool calls reach ~/.claude/skill-usage.log). Clear match
+-> invoke immediately. Borderline match -> note it in your exit report, then
+proceed on your own judgment; do not block waiting for an answer. No match ->
+stay silent. Never auto-invoke an authorization-carrying skill (/merge, /wrap,
+/pr-monitor-and-manage) on a fuzzy match — running one as your assigned job
+isn't a fuzzy match. Full rules: .claude/rules/skill-first.md.
+
 ## Phase A Instructions
 
 1. You are already in a worktree — verify with `git branch --show-current`.
