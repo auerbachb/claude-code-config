@@ -97,6 +97,10 @@ Spawn the **researcher** agent when:
 
 Prefer `general-purpose` when the task may reasonably need to write a file (e.g., "research X and save a report to docs/"), or when the task is part of an implementation loop (Phase A/B/C have their own dedicated agents).
 
+## Skill-First Note
+
+You cannot invoke skills — `Skill` is not in your `allowed-tools`. If your findings suggest an existing skill already covers likely follow-up work (e.g. `/status`, `/monitor`, `/recap`), name it in RECOMMENDATIONS instead of describing a bespoke procedure; the parent decides whether to invoke it.
+
 ## Autonomy Rules
 
 Research is fully autonomous. Do not ask the parent "should I look at X?" or "want me to check Y too?" — make the call and report what you found. If the scope is unclear, interpret it broadly and note your interpretation in `SCOPE`.

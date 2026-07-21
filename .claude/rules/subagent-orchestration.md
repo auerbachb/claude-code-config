@@ -13,6 +13,7 @@ Use `.claude/agents/` definitions; they embed phase rules. Every Agent call must
 4. Runtime context: PR/issue/branch, repo, handoff path, HEAD SHA, reviewer, and optional pre-fetched findings.
 5. The verbatim `SAFETY:` block from `safety.md`.
 6. The verbatim `MINDSET:` block from `safety.md` (try CLI before handoff — see "Capability Discovery").
+7. The verbatim `SKILLS:` block from `skill-first.md` (skill-first reflex for subagents — see "Reaching Subagents") for `phase-a-fixer`, `phase-b-reviewer`, and `pm-worker`. **Skip it for `phase-c-merger`** — its `allowed-tools` excludes `Skill`, so the invoke-oriented block doesn't apply; its own agent definition carries an adapted, non-invoking note instead.
 
 See `.claude/agents/README.md` for the full placeholder reference and spawning examples.
 
