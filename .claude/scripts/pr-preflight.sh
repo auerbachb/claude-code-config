@@ -402,9 +402,18 @@ fi
 # Check-runs on the HEAD commit. Keyed by commit, so a matching app slug is a
 # strong HEAD-freshness signal (verified: Cursor posts `Cursor Bugbot` under
 # slug `cursor`). Non-fatal: one signal among several.
+# Fetches whole run objects and reads the slug off the deduped set, so this script
+# sees the same check-runs view as ci-status.sh and pr-state.sh (issue #675). The
+# slug SET is provably unchanged by that dedup — grouping is per (app, check name)
+# and every group keeps at least one run, so no app can lose its only run. It is
+# applied anyway to keep one shared view across all three consumers, and to stay
+# correct if this extraction ever widens past `app.slug` to a field a superseded
+# run could distort.
 if [[ -n "$HEAD_SHA" ]]; then
   gh api --paginate "repos/{owner}/{repo}/commits/$HEAD_SHA/check-runs?per_page=100" \
-    --jq '.check_runs[]? | (.app.slug // empty)' >>"$SLUGS_TMP" 2>/dev/null || true
+    --jq '.check_runs[]?' 2>/dev/null \
+    | "$(cd "$(dirname "$0")" && pwd)/check-runs-dedup.sh" 2>/dev/null \
+    | jq -r '.[] | (.app.slug // empty)' >>"$SLUGS_TMP" 2>/dev/null || true
 fi
 
 # ISO-8601 UTC (`...Z`) timestamps from the GitHub API sort lexicographically,

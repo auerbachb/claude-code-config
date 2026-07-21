@@ -43,6 +43,8 @@ Before running `gh pr merge` on ANY PR, verify ALL CI check-runs are complete an
 
 **If any check-run has a blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`): DO NOT MERGE.** Read the failure output, fix, push, and merge only after ALL checks complete with non-blocking conclusions.
 
+Check-runs are deduped per `(app, check name)` to the newest check suite before classification, matching GitHub's merge box — a re-run supersedes its earlier result, so a stale failure never blocks (#675, `check-runs-dedup.sh`).
+
 Applies to ALL merge paths: `gh pr merge`, `/merge`, `/wrap`, Phase C verify-and-wrap.
 
 ## Step 1c — All Review Threads Resolved (NON-NEGOTIABLE)

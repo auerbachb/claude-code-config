@@ -6,6 +6,12 @@
 # Blocking conclusions: failure, timed_out, action_required, startup_failure, stale.
 # Non-blocking: success, neutral, skipped, cancelled.
 #
+# Check-runs are deduped through check-runs-dedup.sh before classification: per
+# (app, check name) only runs from that check's newest check suite are counted, so a
+# superseded failure from an earlier re-trigger on the same commit stops blocking the
+# moment a newer run of that check lands (issue #675). This matches what GitHub's own
+# merge box shows. Matrix legs sharing a name inside the newest suite are all kept.
+#
 # Used by .claude/scripts/merge-gate.sh (internally) and can be called standalone
 # from any skill/agent that needs a CI-only health check without running the full
 # merge gate.
@@ -52,7 +58,7 @@
 #   2 — usage error
 #   3 — blocking failures present (failing>0)               [caller: FIX]
 #   4 — SHA or PR not found
-#   5 — gh / network / jq error
+#   5 — gh / network / jq error, or check-runs-dedup.sh missing / unusable
 #
 # Exit-code priority when both failing and in_progress are present: 3 (fix) wins over
 # 1 (wait) — a broken check is actionable immediately while the in-progress ones might
@@ -210,8 +216,19 @@ else
   fi
 fi
 
-# gh --paginate concatenates per-page objects; flatten to a single check_runs array.
-RUNS_JSON=$(echo "$CHECK_RUNS_RAW" | jq -s '[.[].check_runs[]?]' 2>/dev/null || true)
+# Flatten the per-page objects `gh --paginate` concatenates AND collapse the result
+# to one verdict per check (newest check suite wins) — both done by
+# check-runs-dedup.sh, so every consumer of check-runs classifies the same set.
+# Without the dedup, a superseded failed run from an earlier re-trigger of the same
+# check counts as currently blocking, and this script reports a commit as failing
+# that GitHub's own merge box shows as green (issue #675). Applies to both input
+# paths: the stdin caller hands us its raw fetch, same as the live fetch above.
+CHECK_RUNS_DEDUP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-runs-dedup.sh"
+if [[ ! -x "$CHECK_RUNS_DEDUP" ]]; then
+  echo "ERROR: check-runs-dedup.sh not found or not executable at $CHECK_RUNS_DEDUP" >&2
+  exit 5
+fi
+RUNS_JSON=$(printf '%s\n' "$CHECK_RUNS_RAW" | "$CHECK_RUNS_DEDUP" 2>/dev/null || true)
 if [[ -z "$RUNS_JSON" ]]; then
   echo "ERROR: could not parse check-runs JSON" >&2
   exit 5

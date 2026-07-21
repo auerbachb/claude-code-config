@@ -212,12 +212,34 @@ die_api() {
   exit 4
 }
 
+# Same fail-closed shape as die_api, for failures that are ours rather than
+# GitHub's — blaming "gh api failed" for a missing local helper sends whoever
+# reads `missing` after the wrong problem.
+die_local() {
+  emit_json false "${REVIEWER_OVERRIDE:-unknown}" "unknown" "[\"$1\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
+  exit 4
+}
+
 if ! CHECK_RUNS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" 2>/dev/null); then
   die_api "check-runs"
 fi
-# `gh --paginate` concatenates per-page objects; flatten to a single
-# {check_runs: [...]} object so downstream `.check_runs[]` jq queries work.
-CHECK_RUNS_JSON=$(echo "$CHECK_RUNS_RAW" | jq -s '{check_runs: [.[].check_runs[]?]}' 2>/dev/null || true)
+# `gh --paginate` concatenates per-page objects; flatten AND dedup (newest check
+# suite wins per (app, check name) — see check-runs-dedup.sh), then re-wrap as a
+# single {check_runs: [...]} object so downstream `.check_runs[]` jq queries work.
+#
+# The CI pass/fail verdict is NOT classified here — that stays delegated to
+# ci-status.sh below, which dedups its own input too (the transform is idempotent,
+# so feeding it an already-deduped list changes nothing). Deduping at the fetch is
+# for this script's OTHER reader of the raw list: the CodeAnt supplemental gate
+# further down scans for a *successful* CodeAnt check-run. Given a stale success
+# and a newer failure of the same check on one SHA, the undeduped list would hand
+# it the superseded success and pass the gate — the same bug as issue #675, but
+# failing toward merge instead of away from it.
+CHECK_RUNS_DEDUP="$(dirname "$0")/check-runs-dedup.sh"
+if [[ ! -x "$CHECK_RUNS_DEDUP" ]]; then
+  die_local "check-runs-dedup.sh not found or not executable at $CHECK_RUNS_DEDUP"
+fi
+CHECK_RUNS_JSON=$(printf '%s\n' "$CHECK_RUNS_RAW" | "$CHECK_RUNS_DEDUP" 2>/dev/null | jq -c '{check_runs: .}' 2>/dev/null || true)
 if [[ -z "$CHECK_RUNS_JSON" ]] || ! echo "$CHECK_RUNS_JSON" | jq -e . >/dev/null 2>&1; then
   die_api "check-runs parse"
 fi

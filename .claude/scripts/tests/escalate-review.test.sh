@@ -262,6 +262,27 @@ check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
 
 echo
+echo "== Scenario K: check-run data still comes only from pr-state.sh's bundle (#675) =="
+# escalate-review.sh reads check-runs via pr-state.sh's `check_runs.all`, which is
+# deduped at the source (newest check suite per (app, name)). That inheritance is
+# the whole reason this script needs no dedup of its own — so guard it: a direct
+# `commits/<sha>/check-runs` fetch added here later would silently reintroduce the
+# superseded-run bug, and no behavioral test would catch it.
+ESCALATE_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../escalate-review.sh"
+if grep -qE 'commits/[^"]*/check-runs' "$ESCALATE_SRC"; then
+  check_eq "no direct check-runs fetch in escalate-review.sh" "absent" "present"
+else
+  check_eq "no direct check-runs fetch in escalate-review.sh" "absent" "absent"
+fi
+# ...and it does still read the bundle, so the guard above cannot pass by the
+# script having dropped check-runs entirely.
+if grep -q 'check_runs\.all' "$ESCALATE_SRC"; then
+  check_eq "escalate-review.sh reads check_runs.all from the bundle" "present" "present"
+else
+  check_eq "escalate-review.sh reads check_runs.all from the bundle" "present" "absent"
+fi
+
+echo
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1
 echo "OK: escalate-review.sh tests passed"
