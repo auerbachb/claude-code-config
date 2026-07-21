@@ -10,7 +10,7 @@ triggers:
   - rank the backlog
   - priority list
   - full ranking
-argument-hint: "[resume] (optional — 'resume' reads in-flight state from session files to continue a previous PM session) | [business goal] (optional — ranks the backlog by impact on that goal, e.g. 'increase scraping throughput')"
+argument-hint: "[resume] (optional — 'resume' reads in-flight state from session files to continue a previous PM session) | [--no-clean | fast] (optional — skip the always-on inline /pm-clean cleanup for a ranking-only run) | [business goal] (optional — ranks the backlog by impact on that goal, e.g. 'increase scraping throughput')"
 ---
 
 Active PM orchestrator. Manages which issues are being worked on across coding threads, tracks progress, and suggests next work.
@@ -19,9 +19,9 @@ Active PM orchestrator. Manages which issues are being worked on across coding t
 - **Cold start (default):** Scan GitHub state, suggest next 3-5 issues, enter orchestration loop.
 - **Resume:** Read in-flight state from session files and continue where the previous PM left off.
 
-Parse `$ARGUMENTS`:
-- If `$ARGUMENTS` contains "resume" or "handoff": enter Resume mode (Step 1A).
-- Otherwise: enter Cold Start mode (Step 1B). Any remaining text is treated as a **business goal** — the outcome to rank the backlog against (see 1B.4). No goal is fine; ranking falls back to repo signals.
+Parse `$ARGUMENTS` — the cleanup flag and the mode are independent; resolve the flag first, then the mode:
+- **Cleanup escape hatch:** if `$ARGUMENTS` contains the `--no-clean` flag or a bare `fast` token (its own whitespace-delimited word, e.g. `/pm fast`), set `NO_CLEAN=true` and strip that flag/token from the arguments before the checks below (so it is never read as a business goal); otherwise `NO_CLEAN=false`. `NO_CLEAN=true` suppresses the always-on Step 1C inline cleanup in **both** modes — see Step 1C.
+- **Mode:** if the remaining `$ARGUMENTS` contains "resume" or "handoff", enter Resume mode (Step 1A). Otherwise enter Cold Start mode (Step 1B). Any remaining text is treated as a **business goal** — the outcome to rank the backlog against (see 1B.4). No goal is fine; ranking falls back to repo signals.
 
 ---
 
@@ -129,7 +129,7 @@ fi
 
 ### 1A.4: Present recovered state
 
-**First, run Step 1C (Backlog health, below) and print its block** — it runs on every invocation, resume included. Then show the user:
+**First, run Step 1C (Backlog & workspace cleanup, below) — the full inline `/pm-clean` flow, with its confirm gates resolved (acted on or declined) before anything below** — it runs on every invocation, resume included (unless `--no-clean` / `fast` was passed, which prints only the ranking-only health line and skips the gates). Then show the user:
 1. Verified assignments table (corrected for merges/closures since handoff)
 2. Any issues that were in-progress but whose PRs are now missing or stale
 3. Remaining open issues not yet assigned
@@ -277,7 +277,7 @@ Incorporate the answer, finalize the ranking, and continue to 1B.5.
 
 ### 1B.5: Present recommendations
 
-**First, run Step 1C (Backlog health, below) and print its block** — it runs on every invocation, ahead of everything else in this step. Then, when `$GH_USER` is set, lead the output with user-scoped sections before the general backlog ranking. These always take precedence over backlog pickup — they represent work already on the user's plate.
+**First, run Step 1C (Backlog & workspace cleanup, below) — the full inline `/pm-clean` flow — ahead of everything else in this step, with its confirm gates resolved (acted on or declined) before any ranking output** (unless `--no-clean` / `fast` was passed, which prints only the ranking-only health line and skips the gates). Then, when `$GH_USER` is set, lead the output with user-scoped sections before the general backlog ranking. These always take precedence over backlog pickup — they represent work already on the user's plate.
 
 ```
 ## Your Open PRs
@@ -348,23 +348,42 @@ Then proceed to **Step 2: Active Monitoring Setup**.
 
 ---
 
-## Step 1C: Backlog health (always-on)
+## Step 1C: Backlog & workspace cleanup (always-on)
 
-Runs on **every** `/pm` invocation, no flag required — both the resume path (1A.4) and the cold-start path (1B.5) call this before printing anything else, so it always appears ahead of the ranking/orchestration output. Purely informational: it does not alter 1B.3 candidate narrowing, 1B.4 scoring, or the 1B.4b judgment-check contract.
+Runs on **every** `/pm` invocation — both the resume path (1A.4) and the cold-start path (1B.5) call this before printing any ranking/orchestration output, so cleanup is reviewed and acted on (or declined) *before* the ranking appears. This step never scores or ranks: it runs after state load/scoring, must complete before the ranking presentation, and must not alter 1B.3 candidate narrowing, 1B.4 scoring, or the 1B.4b judgment-check contract.
+
+**Unless `NO_CLEAN=true`** (the `--no-clean` / `fast` escape hatch parsed in the preamble — see "Escape hatch" below), **execute the complete `.claude/skills/pm-clean/SKILL.md` workflow inline** — its Step 0 (argument parse) through Step 4 (confirm-and-act), using default thresholds (no `[days]` argument → 30-day issue inactivity and 30-day workspace age). This is the same "invoke the full SKILL.md workflow inline, no shortcuts" idiom `/babysit-pr` uses for `/wrap` and `/fixpr`: **do not shortcut, and do not duplicate `/pm-clean`'s logic here.** `/pm-clean` stays the single source of the cleanup flow, so its gates, tables, and detection can never drift from a re-implementation in `/pm`.
+
+Running the full flow means both of `/pm-clean`'s scans and both of its independent confirm gates run inline:
+
+- **Issue-staleness scan** — `backlog-staleness.sh` (`/pm-clean` Step 1), presented then gated by its **Step 4.1 close gate** before any `gh issue close`.
+- **Workspace sweep** — `stale-cleanup.sh --check` (`/pm-clean` Step 2), then `--apply` only after its **Step 4.2 delete gate**.
+
+The two scans are independent — one finding nothing never suppresses the other — and each keeps its **own** confirmation. `/pm` still **NEVER auto-closes an issue or auto-deletes a worktree/branch**: every closure and every deletion waits on the user's explicit confirmation inside `/pm-clean`'s gates.
+
+**No double-scan.** Because only `/pm-clean`'s single pass runs, `backlog-staleness.sh` and `stale-cleanup.sh` each execute **exactly once** per `/pm` invocation. `/pm` no longer calls `backlog-health.sh` on this default path — the count-only "Backlog health" summary it used to print (issue #598) is now subsumed by `/pm-clean`'s fuller, actionable report.
+
+**Clean repo → no friction.** When both scans come back clean, `/pm-clean` emits its one-line status — `Backlog is clean · No stale worktrees or branches.` — with no confirm prompts, and `/pm` proceeds straight into ranking.
+
+Once the cleanup is done (gates acted on or declined, or the clean-status line printed), return here and continue with the rest of the calling step (1A.4 or 1B.5), then Step 2.
+
+**Reconcile the cleanup's effect before ranking.** If the inline cleanup closed any issues, remove those now-closed issues from the candidate set, the assignments table, and the ranking before the calling step (1A.4 / 1B.5) presents them — `/pm` must never suggest or list an issue the user just closed. This is a filter on the already-computed results, not a re-score, so the non-scoring contract above still holds (the dependency map and tiers are not recomputed). Workspace deletions do not affect the issue ranking and need no reconciliation.
+
+### Escape hatch: `--no-clean` / `fast`
+
+When `NO_CLEAN=true`, **skip the inline `/pm-clean` flow entirely** — none of its cleanup scans or confirm gates run, so there is no friction. For a lightweight, non-interactive health signal, still print the count-only Backlog-health line from the shared aggregator (`backlog-health.sh`, which wraps the same detector without any interactive gate), then proceed directly to ranking:
 
 ```bash
 .claude/scripts/backlog-health.sh --json
 ```
 
-This single call aggregates: total open count; a 30-day rolling age split; a defer/close candidate count (delegated entirely to `backlog-staleness.sh` — the same script `/pm-clean` uses, so results can never diverge, issue #598); the resulting actionable backlog size; recent throughput (issues closed in the past 7 days); and a time-to-clear estimate for the actionable backlog from a 30-day rolling closure rate. See `.claude/scripts/backlog-health.sh --help` for the full field reference.
-
-Render a compact bullet block — a heading plus short one-line stats, not a table:
+This wraps the same `backlog-staleness.sh` detection (issue #598); see `.claude/scripts/backlog-health.sh --help` for the full field reference. Render a compact bullet block — a heading plus short one-line stats, not a table:
 
 ```
-## Backlog health
+## Backlog health (ranking-only run — cleanup skipped)
 
 - **{total_open} open issues** — {opened_last_N_days} opened in the last 30 days, {older_than_N_days} older
-- **{candidate_count} defer/close candidates** among the older issues — run `/pm-clean` for details (not enumerated here)
+- **{candidate_count} defer/close candidates** among the older issues — run `/pm-clean` (or `/pm` without `--no-clean`) to review and act on them
 - **{actionable_backlog} actionable issues** — {closed_last_recent_days} closed in the past 7 days
 - **Estimated time to clear:** {estimate.value} {estimate.unit}
 ```
@@ -375,7 +394,7 @@ When `estimate_message` is set instead of `estimate` (the 30-day closure rate is
 - **Estimated time to clear:** cadence too low to estimate
 ```
 
-If `candidate_count` is 0, drop the "defer/close candidates" line rather than showing a zero. Never enumerate the flagged issues inline — a count plus the `/pm-clean` pointer is the full extent of this block; full detail (issue numbers, titles, per-category rationale) belongs to `/pm-clean`'s own output.
+If `candidate_count` is 0, drop the "defer/close candidates" line rather than showing a zero. This fallback stays purely informational — it never enumerates the flagged issues and never prompts for action; the full interactive cleanup is the default (no flag).
 
 ---
 

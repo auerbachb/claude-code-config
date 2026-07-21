@@ -119,7 +119,7 @@ If no `coderabbitai[bot]` reviews exist across all PRs in the window, skip this 
 
 ## Backlog staleness and health
 
-Detection for "should this issue be deferred or closed" (no-activity 30+ days, superseded, potential-duplicate — plus the separate solved-by-merged-PR factual signal) lives in `.claude/scripts/backlog-staleness.sh`, not inline in any skill. `.claude/scripts/backlog-health.sh` wraps it to add the age-bucket split, actionable-backlog size, and a 30-day rolling-closure-rate time-to-clear estimate (with graceful zero-rate degradation). `/pm-clean` calls `backlog-staleness.sh` directly for its Cleanup Recommendations; `/pm`'s always-on Backlog health block (Step 1C) calls `backlog-health.sh`. Both consume the identical detection — see `.claude/scripts/README.md` for full usage and exit codes.
+Detection for "should this issue be deferred or closed" (no-activity 30+ days, superseded, potential-duplicate — plus the separate solved-by-merged-PR factual signal) lives in `.claude/scripts/backlog-staleness.sh`, not inline in any skill. `.claude/scripts/backlog-health.sh` wraps it to add the age-bucket split, actionable-backlog size, and a 30-day rolling-closure-rate time-to-clear estimate (with graceful zero-rate degradation). `/pm-clean` calls `backlog-staleness.sh` directly for its Cleanup Recommendations; since issue #656 `/pm`'s always-on Step 1C runs the full `/pm-clean` flow inline by default (reaching `backlog-staleness.sh` through that flow, not a separate call), with `backlog-health.sh` kept only for `/pm`'s `--no-clean` / `fast` ranking-only fallback. All paths consume the identical detection — see `.claude/scripts/README.md` for full usage and exit codes.
 
 ## Maintenance
 
@@ -129,7 +129,7 @@ When updating any of the query patterns above, update this doc AND every PM skil
 
 **Not yet migrated** (shares the same patterns but still inlines them — migrate in follow-up work):
 
-- `.claude/skills/pm/SKILL.md` (inherits the backlog-scan patterns folded in from `/prioritize` — #583; its Backlog health step (1C) is separately migrated onto `backlog-health.sh` per the "Backlog staleness and health" section above)
+- `.claude/skills/pm/SKILL.md` (inherits the backlog-scan patterns folded in from `/prioritize` — #583; its Step 1C runs the full `/pm-clean` cleanup flow inline — #656 — falling back to `backlog-health.sh` only under `--no-clean` / `fast`, per the "Backlog staleness and health" section above)
 
 When onboarding a skill from the "not yet migrated" list, add a `## Data gathering` reference section near the top and move it into "currently migrated." When adding a brand-new PM skill, add it directly to "currently migrated."
 
