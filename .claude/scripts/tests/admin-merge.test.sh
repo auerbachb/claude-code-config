@@ -31,6 +31,15 @@ exit "${FAKE_GATE_EXIT:-1}"
 EOF
 chmod +x "$SCRIPTS/merge-gate.sh"
 
+# --- Fake clean-behind-check.sh: exit code IS the safe_to_offer verdict -------
+# (0 = safe to offer / clean BEHIND, 1 = not safe). Only consulted when the gate
+# lists a BEHIND blocker (issue #631).
+cat > "$SCRIPTS/clean-behind-check.sh" <<'EOF'
+#!/usr/bin/env bash
+exit "${FAKE_CBC_EXIT:-1}"
+EOF
+chmod +x "$SCRIPTS/clean-behind-check.sh"
+
 # --- Fake gh (safe defaults: no brace-heavy ${VAR:-...} expansions) ----------
 cat > "$BIN/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -140,9 +149,33 @@ else
   bad "execute mode does not cd into \$REPO_PATH before running gh"
 fi
 
+# 9c. Static: execute mode revalidates a clean-BEHIND bypass BEFORE disabling
+#     protection (issue #631) — the CLEAN_BEHIND_OK re-check must precede ENFORCE_DISABLED=0.
+if awk '/MODE" == "execute"/{f=1} f && /CLEAN_BEHIND_OK" == true/{seen=1} f && seen && /ENFORCE_DISABLED=0/{good=1; exit} END{exit !good}' "$SRC"; then
+  ok "execute mode revalidates clean-BEHIND before disabling protection"
+else
+  bad "execute mode does not revalidate clean-BEHIND before the dance"
+fi
+
 # 10. Mutually exclusive modes.
 run 1 --print --execute --repo-path "$CLONE" --branch main
 expect_rc 2 "mutually exclusive modes rejected (exit 2)"
+
+# 11. Clean BEHIND (issue #631): BEHIND is the only blocker AND clean-behind-check
+#     reports safe → bypassable, prints the command.
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 \
+  FAKE_GATE_MISSING='["branch is BEHIND base — rebase + force-push before merging"]' \
+  run 1 --print --repo-path "$CLONE" --branch main
+expect_rc 0 "clean BEHIND (clean-behind-check safe) is bypassable (exit 0)"
+grep_ok "gh pr merge 1 --squash --admin" "clean BEHIND still prints the admin merge command"
+
+# 12. Non-clean BEHIND: BEHIND blocker but clean-behind-check reports NOT safe
+#     (e.g. base delta touches the PR's files) → stays a hard blocker, refuse.
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=1 \
+  FAKE_GATE_MISSING='["branch is BEHIND base — rebase + force-push before merging"]' \
+  run 1 --print --repo-path "$CLONE" --branch main
+expect_rc 1 "non-clean BEHIND stays a hard blocker (exit 1)"
+grep_absent "gh pr merge 1 --squash --admin" "no admin-merge command printed for non-clean BEHIND"
 
 echo "----------------------------------------"
 echo "admin-merge.test.sh: $PASS passed, $FAIL failed"

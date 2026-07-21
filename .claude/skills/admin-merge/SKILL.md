@@ -19,6 +19,7 @@ If you ever find yourself about to run a protection-modifying `gh api` call, sto
 
 1. **Explicit:** the user runs `/admin-merge <PR> [--launch-terminal]`.
 2. **From `/wrap`:** `/wrap` detected a merge blocked by `enforce_admins` + a code-owner requirement and suggested `/admin-merge` as the next step.
+3. **From the clean-BEHIND offer (issue #631):** on a green PR whose only remaining blocker is a *clean* `mergeStateStatus: BEHIND`, `cr-merge-gate.md` Step 1d / `/fixpr`'s BEHIND path surfaced `/admin-merge` as a user-chosen escape hatch instead of looping rebases. The Step 2 pre-flight re-verifies the merge gate (including the clean-BEHIND safety check) before printing anything — the user still authorizes the bypass.
 
 ## Scope: solo-owner repos only
 
@@ -46,7 +47,7 @@ ADMIN_EXIT=$?
 
 The script, before printing anything:
 
-1. **Verifies merge-readiness** via `merge-gate.sh` — CI green, primary reviewer (CR/CodeAnt) APPROVED on HEAD, all threads resolved, no human `CHANGES_REQUESTED`, not BEHIND/CONFLICTING. The **only** blocker it steps over is the branch-protection `reviewDecision` (the thing the bypass addresses). Any other missing reason is a hard blocker.
+1. **Verifies merge-readiness** via `merge-gate.sh` — CI green, primary reviewer (CR/CodeAnt) APPROVED on HEAD, all threads resolved, no human `CHANGES_REQUESTED`, not CONFLICTING. It steps over exactly two protection-mechanical blockers: the branch-protection `reviewDecision` (the thing the bypass addresses) and a **clean `BEHIND`** — a `mergeStateStatus: BEHIND` that `.claude/scripts/clean-behind-check.sh` confirms is safe (gate green except BEHIND, `mergeable != CONFLICTING`, AC verified, and the base delta's files do **not** overlap the PR's files; issue #631). A non-clean BEHIND (base delta touches the PR's files) or any other missing reason is a hard blocker → the script refuses and points back to the rebase → re-run path.
 2. **Confirms solo-owner** (heuristic above).
 3. **Diagnoses the protection blocker** — confirms `enforce_admins` is actually enabled and tailors the command to it (it does **not** print a generic "disable everything" command).
 4. **Resolves the local clone's absolute path** and prepends `cd "<abs-path>" && ` so the command runs from any cwd.
