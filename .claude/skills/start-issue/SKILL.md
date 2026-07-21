@@ -195,7 +195,7 @@ This creates **one canonical planning document** the coding agent can work from.
 
 ### Fallback mode output
 
-Print a compact summary to the user. Per `chip-launching.md`, this block is now **byte-identical to the chip `prompt`** (model-guard preamble included) rather than byte-for-byte identical to pre-chip behavior — see `chip-model-guard-decision.md` for the trade-off. One consequence: the `**Model:**` line, previously a chip-only addition here, is now baked into the base block below so the guard has a recommendation to compare against in fallback mode too:
+Print a compact summary to the user. Per `chip-launching.md`, the content **inside** this block (not the fence delimiters themselves) is now **byte-identical to the chip `prompt`** (model-guard preamble included) rather than byte-for-byte identical to pre-chip behavior — see `chip-model-guard-decision.md` for the trade-off. One consequence: the `**Model:**` line, previously a chip-only addition here, is now baked into the base block below, so the guard has a recommendation to compare against in fallback mode too:
 
 ```
 **Model:** {MODEL} — {REASON}
@@ -225,7 +225,7 @@ Ready to code. Start with step 1 of the plan above. Run the dual-CLI local revie
 | Param | Value |
 |-------|-------|
 | `title` | Verb-first, ≤60 chars, includes the issue number — built from `ISSUE_NUMBER` + `TITLE` (e.g. `Fix #42 stale worktree warning`) |
-| `prompt` | The complete self-contained coding-thread prompt: the fallback block above, reproduced **verbatim** — Model line and model-guard preamble included. No further additions are made for chip mode; the block above is already the full chip payload |
+| `prompt` | The complete self-contained coding-thread prompt: the **content inside** the fallback fence above (not the fence delimiters themselves), reproduced **verbatim** — Model line and model-guard preamble included. No further additions are made for chip mode; the block content above is already the full chip payload |
 | `tldr` | 1–2 plain-English sentences from `TITLE` / the merged plan: what the session will do and why. No file paths, no jargon |
 | `cwd` | `WORKTREE_PATH` — the worktree created in Step 6 |
 
