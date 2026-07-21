@@ -30,7 +30,7 @@ This bypass is only legitimate when it does **not** skip a real human review. Th
 
 ```bash
 PR_NUM="${1:-$(gh pr view --json number --jq .number)}"
-gh pr view "$PR_NUM" --json number,title,state,merged,baseRefName --jq '{number,title,state,merged,baseRefName}'
+gh pr view "$PR_NUM" --json number,title,state,baseRefName --jq '{number,title,state,baseRefName}'
 ```
 
 If no PR is found, stop: "No PR found — pass a PR number: `/admin-merge <PR>`." If already merged/closed, stop and say so.
@@ -81,10 +81,10 @@ Note the inline `&&` failure mode loudly: if the merge fails, the final re-enabl
 After the user reports running the command (or you detect it), poll until the PR is merged:
 
 ```bash
-gh pr view "$PR_NUM" --json merged,state --jq '{merged,state}'
+gh pr view "$PR_NUM" --json state --jq '{state}'
 ```
 
-Once `merged: true`, also confirm protection was restored:
+Once `state: MERGED`, also confirm protection was restored:
 
 ```bash
 # owner/repo/branch come from the PR; <branch> is the PR base branch

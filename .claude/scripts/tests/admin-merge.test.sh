@@ -38,9 +38,9 @@ ARGS="$*"
 case "$ARGS" in
   "repo view --json nameWithOwner --jq .nameWithOwner")
     echo "${FAKE_OWNER_REPO:-solo/repo}"; exit 0 ;;
-  "pr view "*"--json number,state,baseRefName,headRefName,merged")
+  "pr view "*"--json number,state,baseRefName,headRefName")
     if [ -n "${FAKE_PR_JSON:-}" ]; then echo "$FAKE_PR_JSON"
-    else echo '{"number":1,"state":"OPEN","baseRefName":"main","headRefName":"feat","merged":false}'; fi
+    else echo '{"number":1,"state":"OPEN","baseRefName":"main","headRefName":"feat"}'; fi
     exit 0 ;;
   "api user --jq .login")
     echo "${FAKE_USER:-solouser}"; exit 0 ;;
