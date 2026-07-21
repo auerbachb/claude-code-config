@@ -182,7 +182,7 @@ HANDOFF_FILE: ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json
 
 ## Skill-First Reflex
 
-Before hand-rolling any side-task not covered by Steps 1-3 above, check whether an existing skill already does it — invoke it via the Skill tool. Clear match → invoke immediately. Borderline match → note it in your exit report and proceed on your own judgment; don't block the phase waiting for an answer. No match → stay silent. Never auto-invoke `/merge` or `/pr-monitor-and-manage` on a fuzzy match — and Step 3's mandated `/wrap` execution is your assigned task, not a fuzzy match, so keep running it as instructed. Full rules: `.claude/rules/skill-first.md`.
+Before hand-rolling any side-task not covered by Steps 1-3 above, check whether an existing skill already does it. You don't have Skill tool access (`allowed-tools` is `Read, Glob, Grep, Bash`) — read the skill's `SKILL.md` directly and follow it, the same way Step 3 reads and executes `/wrap` without invoking the Skill tool. Clear match → read and follow it. Borderline match → note it in your exit report and proceed on your own judgment; don't block the phase waiting for an answer. No match → stay silent. Never treat `/merge` or `/pr-monitor-and-manage` as a fuzzy-match default — and Step 3's mandated `/wrap` execution is your assigned task, not a fuzzy match, so keep running it as instructed. Full rules: `.claude/rules/skill-first.md`.
 
 ## Autonomy Rules
 

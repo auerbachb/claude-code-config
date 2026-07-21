@@ -29,6 +29,8 @@ Subagents inherit the parent's instruction **snapshot** at spawn — they never 
 
 Subagents run autonomously and can't pause for a user answer, so the ladder adapts: borderline match → note it in the exit report and proceed on your own judgment, don't block the phase waiting for input.
 
+**Requires `Skill` tool access.** Paste the block below only into spawns that have it — `phase-a-fixer`, `phase-b-reviewer`, `pm-worker`, and most ad-hoc spawns. Agents lacking `Skill` (e.g. `phase-c-merger`, `researcher`) carry an adapted, non-invoking note in their own `.claude/agents/*.md` definition instead — don't paste this block there.
+
 ```text
 SKILLS: Before hand-rolling a multi-step task, check whether an existing skill
 already does this job — invoke it via the Skill tool instead of reimplementing
@@ -36,7 +38,6 @@ from memory (only Skill-tool calls reach ~/.claude/skill-usage.log). Clear match
 -> invoke immediately. Borderline match -> note it in your exit report, then
 proceed on your own judgment; do not block waiting for an answer. No match ->
 stay silent. Never auto-invoke an authorization-carrying skill (/merge, /wrap,
-/pr-monitor-and-manage) on a fuzzy match — and this never overrides your own
-phase's assigned task (e.g. Phase C's mandated /wrap run is the assigned task,
-not a fuzzy match). Full rules: .claude/rules/skill-first.md.
+/pr-monitor-and-manage) on a fuzzy match — running one as your assigned job
+isn't a fuzzy match. Full rules: .claude/rules/skill-first.md.
 ```
