@@ -1,12 +1,12 @@
 ---
 name: babysit-pr
-description: Watch a single PR on a recurring /loop and auto-dispatch /fixpr (recoverable blockers) or /wrap (merge-ready). Reads PR state via pr-state.sh + merge-gate.sh each tick, classifies into {merged, merge-ready, has-recoverable-blockers, waiting-on-bots, hard-blocked}, tracks in-flight dispatches in session-state for idempotency, applies stable-state backoff, emits a timestamped heartbeat per tick, and hard-terminates on merge/hard-blocked/N blocker ticks/user stop. Stop with /babysit-pr-stop. Invoke as `/babysit-pr <PR> [--cadence Nm] [--max-iter N] [--silent] [--durable]`.
+description: Watch a single PR on a recurring /loop and auto-dispatch /fixpr (recoverable blockers) or /wrap (merge-ready). Reads PR state via pr-state.sh + merge-gate.sh each tick, classifies into {merged, merge-ready, conflicting, has-recoverable-blockers, waiting-on-bots, hard-blocked}, tracks in-flight dispatches in session-state for idempotency, applies stable-state backoff, emits a timestamped heartbeat per tick, and hard-terminates on merge/hard-blocked/N blocker ticks/user stop. Stop with /babysit-pr-stop. Invoke as `/babysit-pr <PR> [--cadence Nm] [--max-iter N] [--silent] [--durable] [--auto-resolve-conflicts] [--max-conflict-rounds N]`.
 triggers:
   - babysit pr
   - babysit this pr
   - watch this pr
   - keep an eye on pr
-argument-hint: "<PR> [--cadence Nm] [--max-iter N] [--silent] [--durable]"
+argument-hint: "<PR> [--cadence Nm] [--max-iter N] [--silent] [--durable] [--auto-resolve-conflicts] [--max-conflict-rounds N]"
 ---
 
 Watch one PR and drive it toward merge **without looping forever**. Each tick reads the PR's state through the shared scripts, classifies it, and dispatches the right skill — `/fixpr` to fix recoverable blockers, `/wrap` to merge when the gate is met — then re-arms the poll until a terminal condition fires.
@@ -27,6 +27,8 @@ This is reused by `/pr-monitor-and-manage` (issue #460): that skill invokes `/ba
 
 A human `CHANGES_REQUESTED` on HEAD is `hard-blocked` → record and exit. Never auto-dismiss it.
 
+- **Auto-resolve mode (`--auto-resolve-conflicts`) performs unattended rebases and force-pushes.** The resolver (`.claude/skills/merge-conflict/resolve_merge_conflicts.py`) only applies mechanically-simple hunks per its "when in doubt, complex" contract; any complex hunk aborts the rebase and reports the specific file + line range + reason instead of applying it. Because unattended force-pushes are a bigger authorization step than the rest of the dispatch table, this mode is **opt-in** — the default on `CONFLICTING` is a conservative stop that recommends `/merge-conflict`.
+
 ## Arguments & knobs
 
 | Argument | Default | Meaning |
@@ -36,8 +38,10 @@ A human `CHANGES_REQUESTED` on HEAD is `hard-blocked` → record and exit. Never
 | `--max-iter N` | `6` | Hard termination after N **consecutive blocker-state ticks** (≈90 min once backoff widens to 15m). |
 | `--silent` | off | Suppress the per-tick heartbeat **except** on state change, dispatch, or termination (those always print). |
 | `--durable` | off | Use `CronCreate` instead of `/loop` for cross-session durability (per `scheduling-reliability.md`). Default is `/loop` (session-scoped). |
+| `--auto-resolve-conflicts` | off | Opt-in: on `CONFLICTING`, dispatch `/fixpr` in safe-only mode (`BABYSIT_SAFE_CONFLICT_MODE=1`) to rebase and auto-resolve mechanically-simple hunks. Any complex hunk aborts the rebase and terminates with a per-hunk report. Off by default — performs unattended rebases and force-pushes. |
+| `--max-conflict-rounds N` | `3` | Hard termination after N consecutive conflict rounds. Each round that enters the auto-resolve path increments `conflict_streak`, which does not reset on SHA change — only on a non-`conflicting` tick. |
 
-Parse from `$ARGUMENTS`. The first bare integer is `<PR>`. Validate `--cadence` matches `^[0-9]+m$`; clamp `< 1m` to `1m`. Validate `--max-iter` is a positive integer.
+Parse from `$ARGUMENTS`. The first bare integer is `<PR>`. Validate `--cadence` matches `^[0-9]+m$`; clamp `< 1m` to `1m`. Validate `--max-iter` is a positive integer. `--auto-resolve-conflicts` is a boolean flag (present = true, absent = false; stored as `AUTO_RESOLVE_CONFLICTS=true|false`). `--max-conflict-rounds N` must be a positive integer; default `3` (stored as `MAX_CONFLICT_ROUNDS`).
 
 ## Two modes: arm vs tick
 
@@ -127,7 +131,10 @@ bump_parse_failure_counter() {
   "dispatch_in_flight": null,   // {"skill":"fixpr"|"wrap","started_at":"…"} while a dispatch runs
   "dispatch_parse_failures": 0, // consecutive T0 to_epoch() failures on dispatch_in_flight.started_at; force-reclaimed at BABYSIT_PARSE_FAIL_LIMIT (default 3)
   "last_dispatch": null,        // {"skill":"…","started_at":"…","completed_at":"…","status":"…"}
-  "cron_job_id": null           // set when --durable arms a CronCreate job
+  "cron_job_id": null,           // set when --durable arms a CronCreate job
+  "auto_resolve_conflicts": false, // from --auto-resolve-conflicts; enables unattended rebase+force-push on simple conflicts
+  "max_conflict_rounds": 3,        // from --max-conflict-rounds; hard cap on consecutive conflict rounds
+  "conflict_streak": 0             // consecutive conflict rounds entered this watcher run; does not reset on SHA change — only on a non-conflicting tick
 }
 ```
 
@@ -193,7 +200,7 @@ Write the babysit object (one atomic `--set` batch), seeding backoff fields to a
 ```bash
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 "$SESSION_STATE_SH" \
-  --set ".prs[\"$PR\"].babysit={\"active\":true,\"started_at\":\"$NOW\",\"last_tick_at\":\"$NOW\",\"last_tick_parse_failures\":0,\"cadence_base_minutes\":$BASE_MIN,\"cadence_effective_minutes\":$BASE_MIN,\"tick_count\":0,\"blocker_streak\":0,\"max_blocker_ticks\":$MAX_ITER,\"silent\":$SILENT,\"durable\":$DURABLE,\"stop_requested\":false,\"dispatch_in_flight\":null,\"dispatch_parse_failures\":0,\"last_dispatch\":null,\"cron_job_id\":null}" \
+  --set ".prs[\"$PR\"].babysit={\"active\":true,\"started_at\":\"$NOW\",\"last_tick_at\":\"$NOW\",\"last_tick_parse_failures\":0,\"cadence_base_minutes\":$BASE_MIN,\"cadence_effective_minutes\":$BASE_MIN,\"tick_count\":0,\"blocker_streak\":0,\"max_blocker_ticks\":$MAX_ITER,\"silent\":$SILENT,\"durable\":$DURABLE,\"stop_requested\":false,\"dispatch_in_flight\":null,\"dispatch_parse_failures\":0,\"last_dispatch\":null,\"cron_job_id\":null,\"auto_resolve_conflicts\":$AUTO_RESOLVE_CONFLICTS,\"max_conflict_rounds\":$MAX_CONFLICT_ROUNDS,\"conflict_streak\":0}" \
   --set ".prs[\"$PR\"].digest_streak=0"
 ```
 
@@ -394,14 +401,63 @@ PR_MERGED=$(jq -r '(.state == "MERGED")' <<<"$PR_NOW")
 | 1 | `merged` | `PR_MERGED == true` (or gate exit 3 because merged) | **Exit** — terminal success. |
 | 2 | `hard-blocked` | `HUMAN_CR > 0` (human `CHANGES_REQUESTED` on HEAD), **or** PR `CLOSED` unmerged, **or** the only gap is a fresh review and both budgets are exhausted (`CR_BUDGET_OK == 0 && GREP_BUDGET_OK == 0`, from T2), **or** a Greptile P0 needing design input persists | **Record blocker, exit.** Never auto-dismiss. |
 | 3 | `merge-ready` | `GATE_MET == true` (gate exit 0) | **Dispatch `/wrap`** (T4). |
-| 4 | `has-recoverable-blockers` | gate exit 1 **and** any of: `UNRESOLVED > 0`, `NEW_FINDINGS > 0`, `CI_FAILING > 0`, `STALE_BOT_CR > 0`, `MERGE_STATE` ∈ {`BEHIND`,`DIRTY`}, `MERGEABLE == CONFLICTING` | **Dispatch `/fixpr`** (T4). |
-| 5 | `waiting-on-bots` | gate exit 1 and the only gaps are pending review/CI: `CI_INCOMPLETE > 0`, or a missing-but-pending bot approval / `REVIEW_REQUIRED` with no findings/threads/failing-CI (and at least one review budget remains per T2) | **Heartbeat only, no dispatch.** Bots are still working on the current SHA. |
+| 4 | `conflicting` | `MERGEABLE == CONFLICTING` (checked before other recoverable signals; first-match priority) | See T4 `conflicting` dispatch — branches on `--auto-resolve-conflicts` flag and `conflict_streak` cap. |
+| 5 | `has-recoverable-blockers` | gate exit 1 **and** any of: `UNRESOLVED > 0`, `NEW_FINDINGS > 0`, `CI_FAILING > 0`, `STALE_BOT_CR > 0`, `MERGE_STATE` ∈ {`BEHIND`,`DIRTY`} | **Dispatch `/fixpr`** (T4). |
+| 6 | `waiting-on-bots` | gate exit 1 and the only gaps are pending review/CI: `CI_INCOMPLETE > 0`, or a missing-but-pending bot approval / `REVIEW_REQUIRED` with no findings/threads/failing-CI (and at least one review budget remains per T2) | **Heartbeat only, no dispatch.** Bots are still working on the current SHA. |
 
 `waiting-on-bots` is the "do nothing, just wait" state — the gate isn't met but there is nothing actionable yet (no findings to fix, no threads to resolve, CI still running, a bot hasn't posted its verdict). Do **not** dispatch `/fixpr` here — that would burn CR/CI cycles on a PR that just needs time. `/fixpr` owns its own bounded post-push wait (#454); `/babysit-pr` simply tolerates the gap across ticks.
 
 ### T4. Dispatch with idempotency (`session-state.json` is the source of truth)
 
-Only classes `merge-ready` (→ `/wrap`) and `has-recoverable-blockers` (→ `/fixpr`) dispatch.
+Only classes `merge-ready` (→ `/wrap`), `conflicting` (→ `/fixpr` in safe-only mode **or** terminate), and `has-recoverable-blockers` (→ `/fixpr`) dispatch.
+
+#### T4: `conflicting` dispatch
+
+Read the watcher's config from session-state:
+
+```bash
+AUTO_RESOLVE=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.auto_resolve_conflicts" 2>/dev/null || echo "false")
+MAX_ROUNDS=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.max_conflict_rounds" 2>/dev/null || echo 3)
+[[ "$MAX_ROUNDS" =~ ^[0-9]+$ ]] || MAX_ROUNDS=3
+CONFLICT_STREAK=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.conflict_streak" 2>/dev/null || echo 0)
+[[ "$CONFLICT_STREAK" =~ ^[0-9]+$ ]] || CONFLICT_STREAK=0
+```
+
+Branch:
+
+- **If `AUTO_RESOLVE != "true"`** (flag not set — default): **terminate**. Record blocker `merge-conflict` and emit:
+  ```
+  [babysit] PR #$PR is CONFLICTING — stopping (default). Run /merge-conflict to classify hunks, then re-arm babysit. Use --auto-resolve-conflicts to enable unattended rebase.
+  ```
+  → go to T-END with reason `hard-blocked`, blocker `merge-conflict`.
+
+- **If `AUTO_RESOLVE == "true"` and `CONFLICT_STREAK >= MAX_ROUNDS`**: **terminate** (churn cap hit). Emit:
+  ```
+  [babysit] conflict-round-cap: $CONFLICT_STREAK consecutive conflict rounds on PR #$PR (cap=$MAX_ROUNDS). Surfacing to a human.
+  ```
+  → go to T-END with reason `conflict-round-cap`.
+
+- **Otherwise** (`AUTO_RESOLVE == "true"` and `CONFLICT_STREAK < MAX_ROUNDS`): increment `conflict_streak`, then dispatch `/fixpr` in safe-only mode:
+
+  ```bash
+  NEW_STREAK=$((CONFLICT_STREAK + 1))
+  "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.conflict_streak=$NEW_STREAK" >/dev/null
+  # Mark in-flight (standard idempotency guard — step 2 of the shared dispatch protocol below)
+  # Pass BABYSIT_SAFE_CONFLICT_MODE=1 so /fixpr Step 6 invokes the resolver directly
+  TARGET="fixpr"
+  EXTRA_ENV="BABYSIT_SAFE_CONFLICT_MODE=1"
+  ```
+
+  After dispatch completes, branch on `DISPATCH_STATUS`:
+  - `CONFLICTS` (complex hunk found, rebase aborted): **terminate**. Parse `CONFLICT_COMPLEX_REPORT_JSON` from the fixpr output (the `CONFLICT_COMPLEX_REPORT_JSON:` line) and store into `.babysit.last_dispatch`:
+    ```bash
+    "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.last_dispatch=$(
+      jq -c --argjson report "$COMPLEX_REPORT_JSON" \
+        '. + {complex_report: $report}' <<<"$LAST_DISPATCH_JSON"
+    )" >/dev/null 2>&1 || true
+    ```
+    → go to T-END with reason `hard-blocked`, blocker `merge-conflict-complex`.
+  - Any other status (`CLEAN`, `REVIEW_PENDING`, `BEHIND`, etc.): rebase+push succeeded (all hunks were simple). **Reset `blocker_streak` to 0** (forward progress); let `conflict_streak` persist for the next tick. Resume normal polling — the next tick re-reads the new HEAD SHA from the gate.
 
 1. **Idempotency guard (already evaluated in T0).** `DISPATCH_BLOCKING` from T0 is authoritative: it is `1` only when a prior `dispatch_in_flight` is **within** the `BABYSIT_DISPATCH_TTL_MIN` window (genuinely still running) — a stale entry was already reclaimed to `null` there. If `DISPATCH_BLOCKING == 1`, **refuse to re-dispatch**: emit "dispatch in progress (<skill>), skipping" and finish the tick. This prevents two overlapping `/fixpr` (or `/wrap`) runs racing on the same PR when a dispatch outlives the cadence, while the TTL guarantees a crashed dispatch cannot wedge the watcher forever.
 2. **Mark in-flight before invoking:**
@@ -463,7 +519,24 @@ WIDE_MIN=$(( BASE_MIN * 3 )); (( WIDE_MIN < 15 )) && WIDE_MIN=15
 
 **Revert to base cadence on any state change** (digest differs → `STREAK` reset to 1 → `cadence_effective_minutes` returns to `BASE_MIN`).
 
-**Blocker-streak** (drives `--max-iter` termination): a tick is a *blocker-state tick* when `CLASS` ∈ {`has-recoverable-blockers`, `waiting-on-bots`} **and** the digest did not change (no forward progress). Increment `blocker_streak` on such ticks; reset to `0` on `merge-ready`/`merged` or on any digest change.
+**Blocker-streak** (drives `--max-iter` termination): a tick is a *blocker-state tick* when `CLASS` ∈ {`has-recoverable-blockers`, `waiting-on-bots`} **and** the digest did not change (no forward progress). Increment `blocker_streak` on such ticks; reset to `0` on `merge-ready`/`merged` or on any digest change. A `conflicting` tick that successfully auto-resolved and pushed counts as forward progress — reset `blocker_streak` to `0` (the new SHA will change the digest on the next tick); `conflict_streak` is NOT reset by a SHA change, only by a non-`conflicting` tick (any class other than `conflicting`).
+
+**Conflict-streak** bookkeeping per tick:
+- `CLASS == conflicting` and dispatch status was `CONFLICTS` (complex hunk, aborted): `conflict_streak` was already incremented in T4 dispatch; tick terminates via T-END (no T5 persist needed).
+- `CLASS == conflicting` and dispatch succeeded (rebase+push): `conflict_streak` was already incremented in T4; `blocker_streak` reset to `0`; do NOT reset `conflict_streak`.
+- `CLASS != conflicting` (any other class, including after a successful rebase): reset `conflict_streak` to `0`.
+
+Compute `CONFLICT_STREAK_NEW` for the persist block:
+
+```bash
+# If T4 incremented conflict_streak (conflicting dispatch), it already wrote the new value
+# and stored it in $NEW_STREAK. Otherwise (non-conflicting tick), reset to 0.
+if [[ "$CLASS" == "conflicting" ]]; then
+  CONFLICT_STREAK_NEW="${NEW_STREAK:-$CONFLICT_STREAK}"  # T4 set NEW_STREAK on a conflicting dispatch
+else
+  CONFLICT_STREAK_NEW=0
+fi
+```
 
 Persist all counters atomically, then increment the tick count. `$DIGEST` (the `sha256:…` string computed above) is not valid JSON, so `session-state.sh --set` stores it as a string literal:
 
@@ -473,6 +546,7 @@ NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   --set ".prs[\"$PR\"].digest=$DIGEST" \
   --set ".prs[\"$PR\"].digest_streak=$STREAK" \
   --set ".prs[\"$PR\"].babysit.blocker_streak=$BLOCKER_STREAK" \
+  --set ".prs[\"$PR\"].babysit.conflict_streak=$CONFLICT_STREAK_NEW" \
   --set ".prs[\"$PR\"].babysit.tick_count=$NEW_TICK_COUNT" \
   --set ".prs[\"$PR\"].babysit.cadence_effective_minutes=$EFFECTIVE_MIN" \
   --set ".prs[\"$PR\"].babysit.last_tick_at=$NOW"
@@ -486,6 +560,9 @@ Terminate (→ T-END) when **any** hold:
 
 - `CLASS == merged` → reason `merged`.
 - `CLASS == hard-blocked` → reason `hard-blocked` (record the specific blocker: human reviewer login(s), conflict, budget exhaustion, persistent P0).
+- `CLASS == conflicting` and `AUTO_RESOLVE != "true"` → reason `hard-blocked`, blocker `merge-conflict` (terminated from T4; see T-END for recommended command).
+- `CLASS == conflicting` and `conflict_streak >= max_conflict_rounds` → reason `conflict-round-cap` (churn cap hit; see T-END for round count and blocker report).
+- `CLASS == conflicting` and dispatch returned `CONFLICTS` (complex hunk) → reason `hard-blocked`, blocker `merge-conflict-complex` (see T-END for per-hunk report).
 - PR `CLOSED` unmerged → reason `closed-unmerged`.
 - `blocker_streak >= max_blocker_ticks` (default 6) → reason `blocker-tick-cap` (≈90 min once backed off to 15m).
 - `digest_streak >= 9` → reason `stable-frozen` (`scheduling-reliability.md` ≥9 stop).
@@ -547,12 +624,37 @@ Emit the final summary:
 PR:           #<PR>
 Pre-flight:   <last tick's draft→ready + reviewers triggered, from $PREFLIGHT_SUMMARY_JSON; "clean" when no-op across ticks>
 Final state:  <class>
-Reason:       merged | hard-blocked | closed-unmerged | blocker-tick-cap | stable-frozen | user-stop
+Reason:       merged | hard-blocked | conflict-round-cap | closed-unmerged | blocker-tick-cap | stable-frozen | user-stop
 Ticks:        <tick_count>
 Dispatches:   <count> (/fixpr ×N, /wrap ×M)
 Last dispatch: <skill> → <status>
-Blocker:      <named blocker when hard-blocked / blocker-tick-cap, else "none">
+Blocker:      <named blocker when hard-blocked / blocker-tick-cap / conflict-round-cap, else "none">
+Conflict rounds: <conflict_streak> of <max_conflict_rounds> (omit when conflict_streak == 0)
 ```
+
+**Conflict-specific terminal output:**
+
+- **`conflict-round-cap`** (churn cap hit): after the standard summary, print:
+  ```
+  Conflict rounds attempted: <conflict_streak> (cap=<max_conflict_rounds>)
+  Branch kept re-conflicting — resolve manually, then re-arm babysit.
+  ```
+
+- **`hard-blocked` with blocker `merge-conflict`** (default behavior, flag not set): after the standard summary, print:
+  ```
+  PR is CONFLICTING. Run /merge-conflict to classify hunks and resolve manually,
+  or re-arm with --auto-resolve-conflicts to enable unattended simple-hunk resolution.
+  ```
+
+- **`hard-blocked` with blocker `merge-conflict-complex`** (auto-resolve mode, complex hunk found): after the standard summary, print the per-hunk report from the resolver verbatim — one entry per line:
+  ```
+  Complex conflict hunks (require human resolution):
+    <file>: <location> — <reason>
+    <file>: <location> — <reason>
+    ...
+  Rebase was aborted. Resolve the above hunks manually, then re-arm babysit.
+  ```
+  The per-hunk entries come from `complex_report` stored in `.babysit.last_dispatch.complex_report` (set in T4 on `CONFLICTS` return). Parse via `jq -r '.complex_report[] | "  \(.file): \(.location) — \(.reason)"'`.
 
 ---
 
