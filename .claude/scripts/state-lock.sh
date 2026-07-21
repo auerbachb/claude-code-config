@@ -256,7 +256,14 @@ state_lock_acquire() {
         printf 'epoch=%s\n' "${stamp%% *}"
         printf 'started=%s\n' "${stamp#* }"
         printf 'cmd=%s\n' "${0##*/}"
-      } > "$lock_dir/owner" 2>/dev/null || true
+      } > "$lock_dir/owner" 2>/dev/null || {
+        # Ownership is proven by this file at release time, so a lock we
+        # cannot stamp is a lock we could never safely release. Give it back
+        # immediately rather than holding something unreleasable.
+        rm -rf "$lock_dir" 2>/dev/null || true
+        echo "state-lock: could not write owner metadata to $lock_dir/owner — releasing" >&2
+        return "$STATE_LOCK_EXIT_TIMEOUT"
+      }
       STATE_LOCK_DIR="$lock_dir"
       export CLAUDE_STATE_LOCK_HELD="$lock_dir"
       # Chain onto whatever EXIT trap the caller already installed for its own
@@ -296,8 +303,14 @@ state_lock_release() {
   unset CLAUDE_STATE_LOCK_HELD
   [[ -d "$lock_dir" ]] || return 0
   owner_pid="$(_state_lock_meta "$lock_dir/owner" pid)"
-  if [[ -n "$owner_pid" && "$owner_pid" != "$$" ]]; then
-    # Someone else owns it now (ours was broken as stale). Leave theirs alone.
+  # Delete ONLY on a positive ownership match. An empty/unreadable owner pid
+  # is NOT ours by default: it also occurs in the window between another
+  # process winning `mkdir` and writing its owner file, so treating empty as
+  # "probably still mine" would delete a lock that just changed hands
+  # (CodeAnt, PR #662). Declining to delete is the safe error — a lock we
+  # fail to release ages out via the staleness rules; one we wrongly delete
+  # lets two writers into the critical section at once.
+  if [[ "$owner_pid" != "$$" ]]; then
     return 0
   fi
   rm -rf "$lock_dir" 2>/dev/null || true

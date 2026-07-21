@@ -188,12 +188,27 @@ read_state() {
   fi
 }
 
-# Serialize the WHOLE read-modify-write cycle (issue #639): the lock is taken
-# BEFORE the read below, so a concurrent --consume cannot read the same
-# counter we did and overwrite our decrement. Every mode acquires it, because
-# --check also persists on a cross-day rollover or a --budget override.
-state_lock_acquire "$STATE_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
+# Serialize the read-modify-write cycle (issue #639): for the modes that
+# ALWAYS write (--consume, --reset) the lock is taken BEFORE the read below,
+# so a concurrent --consume cannot read the same counter we did and overwrite
+# our decrement.
+#
+# --check is the exception. It is read-only in the common case (same day, no
+# --budget override) and only persists on a cross-day rollover or an override,
+# so acquiring here would make an ordinary read-only check block behind
+# writers and fail with exit 6 (CodeAnt, PR #662). Instead --check reads
+# lock-free and, if it turns out a write IS needed, acquires the lock and
+# re-derives everything under it (derive_state below) before writing — the
+# usual double-checked pattern, so the write decision is never based on a
+# pre-lock read.
+if [[ "$MODE" != "check" ]]; then
+  state_lock_acquire "$STATE_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
+fi
 
+# Read the state file and derive every downstream variable from it. Called
+# once up front, and AGAIN under the lock on --check's write path so the
+# values that reach write_state reflect what the file holds at write time.
+derive_state() {
 CURRENT_RAW="$(read_state)"
 # Extract fields with defaults.
 CURRENT_DATE="$(printf '%s' "$CURRENT_RAW" | jq -r '.date // ""')"
@@ -223,6 +238,9 @@ if [[ "$CURRENT_DATE" != "$TODAY" ]]; then
 else
   VIEW_USED="$CURRENT_USED"
 fi
+}
+
+derive_state
 
 # --- write helper (atomic jq + temp-file + mv) ---
 # Writes greptile_daily and last_updated, preserving all other top-level
@@ -286,11 +304,21 @@ case "$MODE" in
   check)
     # Read-only semantics on same-day. On cross-day (stored date != today),
     # persist the reset so subsequent --consume starts from 0.
-    if [[ "$CURRENT_DATE" != "$TODAY" ]]; then
-      write_state 0 "$EFFECTIVE_BUDGET"
-    elif [[ -n "$BUDGET_OVERRIDE" && "$BUDGET_OVERRIDE" != "$CURRENT_BUDGET" ]]; then
-      # Budget override on same day — persist so later calls pick it up.
-      write_state "$VIEW_USED" "$EFFECTIVE_BUDGET"
+    # Lock-free fast path: no write needed -> never touch the lock, so a
+    # read-only --check can neither block on a writer nor exit 6.
+    if [[ "$CURRENT_DATE" != "$TODAY" ]] || \
+       [[ -n "$BUDGET_OVERRIDE" && "$BUDGET_OVERRIDE" != "$CURRENT_BUDGET" ]]; then
+      state_lock_acquire "$STATE_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
+      # Re-derive under the lock: another writer may have rolled the day over
+      # or changed the budget between our lock-free read and this point, in
+      # which case the write is no longer needed at all.
+      derive_state
+      if [[ "$CURRENT_DATE" != "$TODAY" ]]; then
+        write_state 0 "$EFFECTIVE_BUDGET"
+      elif [[ -n "$BUDGET_OVERRIDE" && "$BUDGET_OVERRIDE" != "$CURRENT_BUDGET" ]]; then
+        # Budget override on same day — persist so later calls pick it up.
+        write_state "$VIEW_USED" "$EFFECTIVE_BUDGET"
+      fi
     fi
     if (( VIEW_USED >= EFFECTIVE_BUDGET )); then
       print_state "$VIEW_USED" "$EFFECTIVE_BUDGET" true

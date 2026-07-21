@@ -170,6 +170,45 @@ check_eq "rejected write still exits 4 (field-type contract preserved)" "4" "$RC
 check_eq "lock released after the rejected write" "0" "$([[ -e "$LOCK_DIR" ]] && echo 1 || echo 0)"
 
 echo
+echo "== Release only deletes a lock we still own (CodeAnt, PR #662) =="
+reset_state
+# Ours was broken as stale and re-acquired by someone else: release must
+# leave the new holder's lock alone.
+bash -c 'source "$1"; state_lock_acquire "$2" || exit 6
+         printf "pid=999999\nhost=%s\nepoch=%s\n" "$(hostname)" "$(date +%s)" > "$2.lock/owner"
+         state_lock_release' _ "$LOCK_LIB" "$STATE_FILE"
+check_eq "foreign-owned lock is NOT deleted by our release" "1" "$([[ -d "$LOCK_DIR" ]] && echo 1 || echo 0)"
+rm -rf "$LOCK_DIR"
+# Empty/unwritten owner file is the mkdir-then-stamp window of ANOTHER
+# process — also not ours, so it must survive our release.
+bash -c 'source "$1"; state_lock_acquire "$2" || exit 6
+         : > "$2.lock/owner"
+         state_lock_release' _ "$LOCK_LIB" "$STATE_FILE"
+check_eq "empty-owner lock is NOT deleted by our release" "1" "$([[ -d "$LOCK_DIR" ]] && echo 1 || echo 0)"
+rm -rf "$LOCK_DIR"
+# Sanity: the normal case still releases.
+bash -c 'source "$1"; state_lock_acquire "$2" || exit 6; state_lock_release' _ "$LOCK_LIB" "$STATE_FILE"
+check_eq "our own lock IS released normally" "0" "$([[ -e "$LOCK_DIR" ]] && echo 1 || echo 0)"
+
+echo
+echo "== Read-only greptile-budget --check never blocks on the lock (CodeAnt, PR #662) =="
+reset_state
+GB="$REPO_ROOT/.claude/scripts/greptile-budget.sh"
+# Seed today's counter so --check has nothing to persist (no cross-day
+# rollover, no --budget override) — the read-only common case.
+bash "$GB" --consume >/dev/null 2>&1
+mkdir -p "$LOCK_DIR"
+{ printf 'pid=%s\n' "$$"; printf 'host=%s\n' "$(hostname)"; printf 'epoch=%s\n' "$(date +%s)"; } > "$LOCK_DIR/owner"
+OUT="$(CLAUDE_STATE_LOCK_TIMEOUT=1 bash "$GB" --check 2>/dev/null)"; RC=$?
+check_eq "read-only --check succeeds while a writer holds the lock" "0" "$RC"
+check_eq "--check still reports the seeded counter" "1" "$(printf '%s' "$OUT" | jq -r '.reviews_used')"
+# The write path (cross-day rollover) DOES serialize: with the lock held it
+# must time out with 6 rather than write unserialized.
+CLAUDE_STATE_LOCK_TIMEOUT=1 bash "$GB" --check --budget 99 >/dev/null 2>&1; RC=$?
+check_eq "--check that must persist still respects the lock (exit 6)" "6" "$RC"
+rm -rf "$LOCK_DIR"
+
+echo
 echo "== summary: $PASS passed, $FAIL failed =="
 if [[ "$FAIL" -gt 0 ]]; then
   echo "FAILED: state-lock tests" >&2
