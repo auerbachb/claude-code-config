@@ -148,21 +148,31 @@ For each issue the user describes (see Step 6 for batches):
 
 ## Step 4: Dedup search
 
-Before creating, search open and recently-closed issues for likely duplicates and surface any matches.
+Before creating, search open and recently-closed issues for likely duplicates and surface any matches. Use the shared helper `.claude/scripts/issue-dedup.sh`, which scores **titles and bodies** — a title-only search misses the case that motivated it (issue #647 restated issue #638's second acceptance criterion while sharing almost no title words; issue #652):
 
 ```bash
-# Extract 2–5 significant keywords from the proposed title (drop stopwords/punctuation).
-KEYWORDS="<significant words from the title>"
-if [ -n "$KEYWORDS" ]; then
-  gh issue list --repo "$REPO" --state open \
-    --search "$KEYWORDS in:title" --json number,title,url --limit 5
-  gh issue list --repo "$REPO" --state closed \
-    --search "$KEYWORDS in:title closed:>$(date -d '30 days ago' +%F 2>/dev/null || date -v-30d +%F)" \
-    --json number,title,url --limit 5
+# 2–6 significant keywords from the proposed title AND the problem statement —
+# body scoring is what catches a duplicate that was worded differently.
+KEYWORDS="<significant words from the title and problem statement>"
+ISSUE_DEDUP=""
+for candidate in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh" \
+  "$HOME/.claude/scripts/issue-dedup.sh" \
+  ".claude/scripts/issue-dedup.sh"; do
+  if [ -x "$candidate" ]; then ISSUE_DEDUP="$candidate"; break; fi
+done
+DEDUP_RC=0
+if [ -n "$KEYWORDS" ] && [ -n "$ISSUE_DEDUP" ]; then
+  "$ISSUE_DEDUP" "$KEYWORDS" ${REPO:+--repo "$REPO"} || DEDUP_RC=$?
 fi
+# Only exit 1 means "searched, found nothing". Exit 2/4 (usage, gh/env failure)
+# means the check did not run — fall back below and say so; never present an
+# unrun check as a clean result.
 ```
 
 - **Guard:** if no significant keywords remain, skip the dedup search.
+- **Helper missing, or `DEDUP_RC` ≥ 2:** fall back to the title-only `gh issue list --search "$KEYWORDS in:title"` over open and recently-closed issues, and say the check was degraded when surfacing results.
+- **Interpreting matches:** `/issue-maker` always has a human in the loop, so it only ever *surfaces* candidates — it never auto-comments in place of filing. The strong/weak/none thresholds in `.claude/reference/autofile-dedup.md` govern autonomous filers (`/wrap`); here they are useful as ranking context when presenting the matches.
 - **Matches found (default mode):** list them and ask *"Similar issues found — create anyway? (y/N)"*.
 - **Rapid-fire:** show matches but proceed unless there is an **exact title match** (then block and ask).
 
