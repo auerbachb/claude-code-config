@@ -27,6 +27,8 @@ Audit the open PR backlog and confirm that **all four AI code reviewers** have a
 | BugBot (Cursor) | `cursor[bot]` | `@cursor review` |
 | Graphite | `graphite-app[bot]` | `@graphite-app re-review` |
 
+> **Graphite known outage (issue #610):** Graphite has shown zero engagement — no comments, no check-runs — on every PR since 2026-05-08 (confirmed repo-wide, not per-PR or docs-only). A ❌ in the Graphite column most likely reflects this ongoing outage, not a fresh gap; see `.claude/reference/codeant-graphite-supplemental.md` for evidence and the re-enablement path. Still triggered per Step 5 — the outage is a user-side fix (GitHub App reinstall/billing), not a reason to stop auditing.
+
 `/monitor` is **audit-and-trigger only**. It is the action-oriented sibling of read-only `/status`: where `/status` reports merge-readiness, `/monitor` reports *reviewer coverage* and closes gaps. It does **not** drive the fix/resolve loop (that stays with `/fixpr` and the per-PR coding threads) and it never auto-flips drafts, auto-merges, or modifies review-bot config.
 
 ## Scope boundaries (HARD STOPS)

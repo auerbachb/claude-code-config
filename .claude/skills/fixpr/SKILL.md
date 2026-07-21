@@ -379,6 +379,8 @@ The script only dismisses **`CHANGES_REQUESTED`** reviews where **`commit_id` â‰
 
 Only run this step when Step 3 made a push. If Step 3 skipped the commit/push, skip this step too.
 
+> **Graphite known outage (issue #610):** the `@graphite-app re-review` trigger below has produced zero engagement (no comments, no check-runs) on any PR since 2026-05-08 â€” a confirmed external GitHub App issue, not something this step can fix. Still posted (cheap, self-healing); see `.claude/reference/codeant-graphite-supplemental.md` for evidence and the re-enablement path.
+
 Re-resolve the hourly helper path (Step 3 may not have run in the same shell):
 
 ```bash

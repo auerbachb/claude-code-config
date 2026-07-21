@@ -7,6 +7,11 @@
 #   3) @graphite-app re-review
 # Optional 4th: /pr-review-help (see pm-config.md).
 #
+# Graphite known outage (issue #610, confirmed 2026-07-21): the graphite trigger
+# above has produced zero engagement since 2026-05-08 — external GitHub App
+# issue, kept anyway (cheap, self-healing). See
+# .claude/reference/codeant-graphite-supplemental.md.
+#
 # Config: `.claude/pm-config.md` section **Complexity triggers** (see template in repo).
 # Env vars COMPLEXITY_THRESHOLD_SCORE, COMPLEXITY_FIRST_CR_ROUND, COMPLEXITY_CADENCE_ROUNDS
 # override file values when set.
