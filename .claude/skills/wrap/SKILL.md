@@ -261,9 +261,14 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bulle
 
 **Recovery loop:** For `i` from `1` through `$WRAP_RECOVERY_MAX_ITERATIONS`:
 
-1. **Terminal checks**
-   - If `gh pr view` shows `merged: true` → exit loop for Phase 3 (merged terminal — Phase 3 + 4 unchanged).
-   - If PR closed without merge → stop with status (do not merge).
+1. **Terminal checks** — read the PR state with the same field set Step 3.8 uses. There is **no `merged` field** on `gh pr view --json`; requesting one fails the whole call with `Unknown JSON field: "merged"`, so the merged terminal goes undetected and the iteration is burned (issue #608):
+
+   ```bash
+   PR_STATE=$(gh pr view "$PR_NUM" --json state,mergedAt --jq '.state')
+   ```
+
+   - If `PR_STATE` is `MERGED` → exit loop for Phase 3 (merged terminal — Phase 3 + 4 unchanged).
+   - If `PR_STATE` is `CLOSED` (closed without merge) → stop with status (do not merge).
 
 2. **Refresh gate (always)**  
    ```bash
