@@ -89,6 +89,9 @@ jobs:
       - name: issue-dedup.sh body-search unit test (issue #652)
         run: bash .claude/scripts/tests/issue-dedup.test.sh
 
+      - name: forgotten-pr-triage.sh classifier unit test (issue #657)
+        run: bash .claude/scripts/tests/forgotten-pr-triage.test.sh
+
   # macOS system python3 is 3.9.6 (Xcode CLT) while ubuntu-latest ships 3.10+,
   # so a hook that crashes on 3.9 (e.g. eagerly-evaluated PEP 604 unions,
   # issue #560) passes the job above yet fails open locally. Pin 3.9 here.
