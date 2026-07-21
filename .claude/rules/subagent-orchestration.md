@@ -1,7 +1,7 @@
 # Subagent Context
 
 > **Always:** Spawn subagents via custom agent definitions in `.claude/agents/` (see "How to Spawn Subagents" below). Use `mode: "bypassPermissions"` on every Agent tool call. Set `model` explicitly at every call site per the Model Selection policy (see below). Use phase decomposition (A/B/C). Timestamp every message (see `monitor-mode.md`). Write handoff files on phase completion (see `handoff-files.md`). Print Structured Exit Report before every subagent exit (see `phase-protocols.md`). Only fall back to manually passing all rule files if `.claude/agents/` is unavailable in the current repo.
-> **Ask first:** Respawning a failed subagent (crash/no handoff state) — tell the user what happened first. Exhaustion with valid handoff is auto-respawn ("Always do").
+> **Ask first:** Respawning a crashed/no-handoff subagent — tell the user what happened first; exhaustion with valid handoff auto-respawns ("Always do").
 > **Never:** Summarize rules for subagents. Spawn subagents without `mode: "bypassPermissions"`. Spawn without an explicit `model` parameter. Fire-and-forget subagents.
 
 ## How to Spawn Subagents
@@ -13,7 +13,7 @@ Use `.claude/agents/` definitions; they embed phase rules. Every Agent call must
 4. Runtime context: PR/issue/branch, repo, handoff path, HEAD SHA, reviewer, and optional pre-fetched findings.
 5. The verbatim `SAFETY:` block from `safety.md`.
 6. The verbatim `MINDSET:` block from `safety.md` (try CLI before handoff — see "Capability Discovery").
-7. The verbatim `SKILLS:` block from `skill-first.md` (skill-first reflex for subagents — see "Reaching Subagents") for `phase-a-fixer`, `phase-b-reviewer`, and `pm-worker`. **Skip it for `phase-c-merger`** — its `allowed-tools` excludes `Skill`, so the invoke-oriented block doesn't apply; its own agent definition carries an adapted, non-invoking note instead.
+7. The verbatim `SKILLS:` block from `skill-first.md` for `phase-a-fixer`, `phase-b-reviewer`, and `pm-worker` — **skip it for `phase-c-merger`** (no `Skill` tool; see `skill-first.md` "Reaching Subagents").
 
 See `.claude/agents/README.md` for the full placeholder reference and spawning examples.
 
@@ -37,9 +37,9 @@ If agent definitions are unavailable (e.g., repo without `.claude/agents/`):
 | `pm-worker` | `sonnet` |
 | Read-only review agents (e.g., `/pr-review-help`) | `sonnet` |
 
-Current fleet: **Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5.** Aliases currently resolve to: `opus` = Opus 4.8, `sonnet` = Sonnet 5, `haiku` = Haiku 4.5 (resolution notes: `.claude/agents/README.md`). Fable 5 has no bare alias and is **not a spawn default for any phase** — automated phase spawns run unattended and are cost-sensitive, so Fable 5 is reserved for interactive hardest-work step-ups where a human is watching the spend. `/prompt`'s tier ladder is where Fable 5 is actively recommended.
+Current fleet: **Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5**; alias resolution and the full per-phase + Fable-5 rationale live in `.claude/agents/README.md` §Model Selection. Fable 5 has no bare alias and is **never a spawn default** — reserve it for interactive step-ups where a human watches the spend.
 
-Rules: set `model` explicitly on every spawn; call-site value overrides frontmatter. `CLAUDE_CODE_SUBAGENT_MODEL=opus` is only a legacy safety net. If a Sonnet-tier agent underperforms, escalate to `opus` and document why; escalating a spawn to Fable 5 is a deliberate, case-by-case exception — never a new default.
+Rules: set `model` explicitly on every spawn (call-site overrides frontmatter; `CLAUDE_CODE_SUBAGENT_MODEL` is only a legacy safety net). If a Sonnet-tier agent underperforms, escalate to `opus` and document why.
 
 ## Phase Transition Autonomy (Quick Reference)
 
@@ -47,13 +47,13 @@ Rules: set `model` explicitly on every spawn; call-site value overrides frontmat
 
 **Ask first only:** merging (ask before Phase C launch, or pass prior authorization in the prompt); respawning a crashed/no-handoff subagent.
 
-> **Anti-pattern:** If you find yourself composing "Should I...?" or "Want me to...?" for any "Always do" row, stop — the answer is always yes. Execute immediately.
+> **Anti-pattern:** composing "Should I...?" for any "Always do" row — the answer is always yes (CLAUDE.md); execute immediately.
 
 ## Token/Turn Exhaustion Protocol (MANDATORY)
 
-Subagents have a 32K output token limit. Near exhaustion: write the token-exhaustion handoff to `~/.claude/session-state.json` (schema in `handoff-files.md`), report what was done/remaining, and exit cleanly. Parent reads state and launches a replacement automatically.
+Subagents have a 32K output token limit. Near exhaustion: write the token-exhaustion handoff to `~/.claude/session-state.json` (schema: `handoff-files.md`), report done/remaining, exit cleanly; the parent auto-launches a replacement.
 
-**NEVER:** Ask "should I continue?", silently die without writing handoff state, or try to finish "just one more thing."
+**NEVER:** ask "should I continue?", die without handoff state, or try to finish "just one more thing."
 
 ## Task Decomposition (Token Safety)
 
@@ -61,21 +61,15 @@ The 32K limit is binding. Give each subagent one phase with explicit exit criter
 
 - **Phase A: Fix + Push** (heaviest) — fix findings, commit once, push once, reply to threads, write handoff, EXIT (parent cleanup detailed in Orchestration rules below).
 - **Phase B: Review Loop** (lighter) — poll/trigger reviewer, fix new findings, update handoff, EXIT.
-- **Phase C: Verify + Wrap** (lightest) — verify merge gate + AC, then run `/wrap` to squash-merge, sync main, and report `merged`. Do not duplicate `/wrap` logic. `/wrap`'s Phase 3 now also runs a full-session sweep (Part B); in a Phase C subagent's narrow transcript it degrades gracefully (usually "Clear to archive") and is **advisory only — never block a merge on a sweep finding**.
+- **Phase C: Verify + Wrap** (lightest) — verify merge gate + AC, then run `/wrap` to squash-merge, sync main, report `merged`. Do not duplicate `/wrap` logic; its session-sweep output is **advisory only — never block a merge on a sweep finding**.
 
-**Orchestration:** parent launches Phase A (parallel across PRs allowed); Phase A complete → cleanup per `phase-protocols.md` then Phase B; Phase B `merge_ready` → get merge authorization, then launch Phase C. Keep 3-4 active CR-polled PRs max; at 7+ CR reviews/hour expect Greptile fallback. This same 3-4 ceiling is the concurrent-pipeline cap `/pm` and `/subagent` reuse for inline A→B→C execution: queue issues beyond it. Queue mechanics, terminal-state and `merge_ready` slot semantics: `.claude/skills/subagent/SKILL.md` Step 7.
+**Orchestration:** parent launches Phase A (parallel across PRs allowed); Phase A complete → cleanup per `phase-protocols.md` then Phase B; Phase B `merge_ready` → get merge authorization, then launch Phase C. Keep 3-4 active CR-polled PRs max; at 7+ CR reviews/hour expect Greptile fallback. The same 3-4 ceiling is the inline A→B→C pipeline cap for `/pm` and `/subagent` — queue issues beyond it (mechanics + slot semantics: `.claude/skills/subagent/SKILL.md` Step 7).
 
 ## Subagent Review Protocol
 
-Review protocol is defined authoritatively in these canonical sources — do NOT duplicate:
-
-- **CR polling, CI checks, thread resolution:** `cr-github-review.md`
-- **Merge gate, CI-must-pass, AC verification:** `cr-merge-gate.md`
-- **BugBot (Cursor) second-tier reviewer, auto-trigger, merge gate:** `bugbot.md`
-- **Greptile trigger, severity classification, daily budget, reply format:** `greptile.md`
-- **Local review before push, fix loop, 1 clean pass to exit:** `cr-local-review.md`
+Review protocol lives in the canonical sources — `cr-github-review.md` (polling, CI, threads), `cr-merge-gate.md` (gate, AC), `bugbot.md`, `greptile.md`, `cr-local-review.md` (local loop) — do NOT duplicate them.
 
 **Three reminders for subagents:**
-1. **AUTONOMY:** Every phase transition is automatic — do NOT ask "should I?" See the Phase Transition Autonomy table above.
-2. **EXIT REPORT:** Print a Structured Exit Report as your final output. See `phase-protocols.md` for format and valid OUTCOME values.
-3. **HANDOFF FILE:** Write/update/read `~/.claude/handoffs/pr-{N}-handoff.json` per lifecycle in `handoff-files.md`.
+1. **AUTONOMY:** every phase transition is automatic — do NOT ask "should I?" (table above).
+2. **EXIT REPORT:** print a Structured Exit Report as final output (`phase-protocols.md`).
+3. **HANDOFF FILE:** write/update/read `~/.claude/handoffs/pr-{N}-handoff.json` per `handoff-files.md`.

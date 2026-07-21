@@ -12,7 +12,7 @@
 
 Update `session-state.json` on phase transitions and key events (agent launched/completed, review received, dropped poll recovered). Prefer `.claude/scripts/session-state.sh --set <jq-path>=<value>` / `--get <jq-path>`; it preserves siblings and writes atomically.
 
-**Field-type contract (issue #625):** `session-state.sh` enforces the expected JSON type (array or object, per `session-state-schema.json`) on known top-level fields like `active_agents` and `prs`. A `--set` that would leave one of these fields holding the wrong type — e.g. an unevaluated jq filter expression passed as the value instead of the filter's evaluated result — is rejected (exit 4) with the state file left unmodified; a `--get` on an already-corrupted field warns on stderr and returns a safe default (`[]`/`{}`) so read-modify-write callers self-heal on their next validated write. Never pass a raw jq filter as a `--set` value — evaluate it locally first (read → filter with `jq` → pass the resulting JSON as the value), as `pr-monitor-and-manage/SKILL.md` does when pruning its own `active_agents` entries. Full contract: `session-state.sh`'s own header comment (single source of truth).
+**Field-type contract (issue #625):** `session-state.sh` enforces expected JSON types on known top-level fields (`active_agents`, `prs`, …): a `--set` storing the wrong type is rejected (exit 4, file unmodified); a `--get` on a corrupted field warns and returns a safe default so the next validated write self-heals. **Never pass a raw jq filter as a `--set` value** — evaluate it locally first and pass the resulting JSON. Full contract: `session-state.sh`'s header comment (single source of truth).
 
 ## Handoff File Storage
 
@@ -27,7 +27,7 @@ Update `session-state.json` on phase transitions and key events (agent launched/
 |-------|-----------|
 | A | Create with fixed/dismissed findings, replied/resolved threads, files changed, HEAD SHA |
 | B | Read-modify-write; append arrays, update scalars, preserve unknown fields |
-| C | Read only; parent deletes after `OUTCOME: merged` confirmed by GitHub |
+| C | Read only; deletion timing per `phase-protocols.md` |
 
 Schema reference: `.claude/reference/handoff-file-schema.json`. Required fields: `schema_version`, `pr_number`, `head_sha`, `reviewer`, `phase_completed`, `created_at`, `findings_fixed`, `threads_replied`, `threads_resolved`, `files_changed`, `push_timestamp`. Optional: `findings_dismissed`, `stale_bot_reviews_dismissed` (GitHub review IDs dismissed by `dismiss-stale-bot-changes.sh` after a `/fixpr` push — issue #426), `notes`.
 
@@ -35,9 +35,5 @@ Schema reference: `.claude/reference/handoff-file-schema.json`. Required fields:
 
 ## Token Exhaustion Handoff
 
-When approaching token exhaustion (see `subagent-orchestration.md` "Token/Turn Exhaustion Protocol"), write a handoff to `session-state.json` with `{phase, needs: "continue_polling", handoff_reason: "token_exhaustion", last_action, remaining_work, head_sha}`. Full example: `.claude/reference/session-state-schema.json` (see `_token_exhaustion_example`).
-
-Report concisely to the parent/user what was done and what remains. Exit cleanly — do not squeeze in one more tool call.
-
-**Parent response to exhaustion:** Read `session-state.json`, launch a replacement subagent for the same phase. This is an **"Always do"** action — do not ask the user.
+Near exhaustion (protocol: `subagent-orchestration.md`), write `{phase, needs: "continue_polling", handoff_reason: "token_exhaustion", last_action, remaining_work, head_sha}` to `session-state.json` (full example: `.claude/reference/session-state-schema.json`, `_token_exhaustion_example`), report done/remaining, and exit cleanly — the parent auto-launches a replacement for the same phase.
 

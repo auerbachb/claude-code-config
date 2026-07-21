@@ -4,7 +4,7 @@
 > **Ask first:** Never — fix findings autonomously.
 > **Never:** Trigger Greptile before both CR AND BugBot have failed. Ignore Greptile findings. Switch a PR back to CR/BugBot after Greptile has been triggered. Include `@greptileai` in reply comments (triggers a paid re-review with no learning benefit).
 
-Greptile is the **last-resort paid** AI code reviewer — only triggered when both CR and BugBot (Cursor) have failed. Chain and supplemental CodeAnt/Graphite: `cr-github-review.md`.
+Greptile is the **last-resort paid** reviewer — only after both CR and BugBot fail (chain + supplemental CodeAnt/Graphite: `cr-github-review.md` §Three-Tier).
 
 **Escalation gate:** `cr-github-review.md` owns triggers/STOP conditions. This file only defines Greptile behavior after `escalate-review.sh` returns `STATUS=trigger_greptile`.
 
@@ -16,7 +16,7 @@ Bot username: `greptile-apps[bot]`. Trigger: PR comment `@greptileai` (no suffix
 
 Default budget: 40 reviews/day. `~/.claude/session-state.json` tracks `greptile_daily.{reviews_used,date,budget}` (ET date). `.claude/scripts/greptile-budget.sh` is authoritative; every `@greptileai` trigger point MUST run `greptile-budget.sh --consume` first. Exit 0 = consumed; exit 1 = exhausted.
 
-If exhausted, perform self-review, report budget exhaustion with actual counters. Self-review does NOT satisfy the merge gate.
+If exhausted: self-review (never satisfies the gate) and report the actual counters.
 
 ## Before EVERY `@greptileai` Re-Trigger (MANDATORY — after initial trigger)
 
@@ -39,13 +39,13 @@ Sticky per `cr-github-review.md`: once triggered, Greptile owns the PR permanent
 
 ## Polling for Greptile Response
 
-Poll every 60 seconds on all three endpoints (`per_page=100`). Filter by `greptile-apps[bot]`. **Timeout:** 10 minutes. **Completion:** 👍 or review comments = done. 😕 = failed. No signal after 10 min = timeout.
+Poll per the shared cadence/endpoints (`cr-github-review.md` §Polling); filter `greptile-apps[bot]`. **Completion:** 👍 or review comments = done; 😕 = failed; no signal after **10 min** = timeout.
 
 ## Processing Greptile Findings
 
 Classify by severity (P0/P1/P2 — use Greptile badges only), verify against code, fix all valid findings in one commit, push once, reply to every thread, resolve via `.claude/scripts/resolve-review-threads.sh` (never inline GraphQL). Use 👍/👎 reactions for feedback (Greptile's only learning mechanism).
 
-> **CRITICAL: Do NOT include `@greptileai` in reply comments.** Every `@greptileai` mention triggers a new paid review ($0.50-$1.00). Use plain text only in replies.
+> **CRITICAL: plain text only in replies** — every `@greptileai` mention triggers a new paid review.
 
 Reply commands and CR-vs-Greptile comparison: `.claude/reference/greptile-reply-format.md`.
 

@@ -21,19 +21,15 @@ Every ~60s, in order:
 4. Send heartbeat if due (≤5 min; include active agents, PR phases, pending transitions, blockers).
 5. Investigate stale agents: >15 min Phase A, >10 min Phase B, >5 min Phase C.
 
-## Timestamped Status Updates (MANDATORY)
-
-Every message must start with an Eastern time timestamp. NEVER estimate — always run `date`. See CLAUDE.md #1 for format and command. Survives context compaction.
-
 ## Subagent Health Monitoring (MANDATORY)
 
 Poll every cycle; never fire-and-forget. Report successes and failures immediately, naming PR/issue, phase, failure mode, and remaining work. Verify outputs before marking complete (`gh pr view` for pushes, comments/replies for feedback handling).
 
-Crash/no handoff requires user permission to respawn. Token exhaustion with valid handoff auto-respawns.
+Respawn permissions: crash asks, exhaustion auto (`phase-protocols.md`).
 
 ## User Heartbeat (MANDATORY)
 
-CLAUDE.md #3 is canonical: timestamped status at least every 5 min. In monitor mode, heartbeat is part of each loop; outside it, send status before/after multi-step operations. If the silence hook warns, stop and message immediately. For between-turn polling reliability, use `scheduling-reliability.md`.
+CLAUDE.md #3 is canonical (timestamped status ≤5 min). In monitor mode it is part of each loop; outside it, send status before/after multi-step operations; if the silence hook warns, message immediately. Between-turn polling: `scheduling-reliability.md`.
 
 ## File-Write Status Updates (MANDATORY)
 
@@ -43,7 +39,7 @@ For operations touching 4+ files, emit one-line status after every 3 writes/edit
 
 If a summary block references prior work you do not remember, recover before all other work:
 1. Timestamp; rerun session-start checks.
-2. Read `session-state.json` + handoffs; reconcile each open PR on GitHub (`per_page=100` on reviews, inline, issue comments).
+2. Read `session-state.json` + handoffs; reconcile each open PR on GitHub (all 3 endpoints per `cr-github-review.md`).
 3. Per polled PR: `polling-state-gate.sh <N> --verify-state` (optional `--root-repo`), then resume with `polling-state-gate.sh <N>` (shells `merge-gate.sh`).
 4. Dashboard (PR, HEAD, reviewer, pending); verify stale agents and stalled transitions; launch as needed.
 5. Report: "Resuming after context compaction. Reconstructed state from GitHub." then resume monitoring.
@@ -53,11 +49,8 @@ If a summary block references prior work you do not remember, recover before all
 If `monitoring_active=true` or passive mode with non-empty `prs`/`active_agents`, rebuild from `prs`, `active_agents`, handoffs, and GitHub before continuing.
 
 - No workers left → `monitoring_active=false`, report done.
-- `/pm`-owned monitoring is always passive — do **not** restart a `/loop` or `CronCreate` on `/pm`'s behalf.
-- For between-message PR fleet monitoring → point user at `/pr-monitor-and-manage`.
-- Jobs in `polling_jobs[]` owned by other skills (`/pr-monitor-and-manage`, `/babysit-pr`) → recover per that skill's contract, not `/pm`'s.
-
-Log drops in `polling_failures[]` when a skill-owned poll drops. Contract: `pm-monitoring-decision.md`.
+- `/pm`-owned monitoring is always passive — never restart a `/loop`/`CronCreate` on `/pm`'s behalf; point fleet monitoring at `/pr-monitor-and-manage`.
+- Jobs in `polling_jobs[]` owned by other skills → recover per that skill's contract; log drops in `polling_failures[]`. Contract: `pm-monitoring-decision.md`.
 
 ### Pre-Compaction Checkpointing (Preventive)
 

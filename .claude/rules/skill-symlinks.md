@@ -6,9 +6,7 @@
 
 ## Source of Truth
 
-This repo (`claude-code-config`) is the single source of truth for all Claude Code skills, global rules, and CLAUDE.md. The global config directory (`~/.claude/`) must contain **symlinks** pointing to a dedicated skills worktree — never standalone copies, and never direct symlinks to the root repo.
-
-The following symlinks all go through the skills worktree:
+This repo is the single source of truth for skills, global rules, and CLAUDE.md. `~/.claude/` must contain **symlinks** through a dedicated skills worktree — never copies, never direct root-repo symlinks:
 - `~/.claude/skills/<name>` -> `~/.claude/skills-worktree/.claude/skills/<name>`
 - `~/.claude/CLAUDE.md` -> `~/.claude/skills-worktree/CLAUDE.md`
 - `~/.claude/rules` -> `~/.claude/skills-worktree/.claude/rules`
@@ -17,7 +15,7 @@ The following symlinks all go through the skills worktree:
 
 ## Why a Dedicated Worktree
 
-Served from `~/.claude/skills-worktree/`, a worktree permanently on `main`. Decouples config availability from the root repo's branch state — without it, symlink targets break when the root repo is on a feature branch.
+`~/.claude/skills-worktree/` stays permanently on `main`, so symlink targets survive the root repo being on a feature branch.
 
 ## Session-Start Sync & Hook Auto-Registration
 
@@ -40,9 +38,7 @@ fi
 
 ## After Creating a New Skill
 
-Every time a new skill is created in `.claude/skills/<name>/SKILL.md`, the agent must also symlink it globally via the skills worktree.
-
-**Checklist (do all three, every time):**
+**Checklist for every new skill (do all three, every time):**
 1. Create the skill in the repo: `.claude/skills/<name>/SKILL.md`
 2. Commit and ensure it reaches `main` (via PR merge)
 3. After it's on `main`, update the worktree and symlink:
@@ -64,13 +60,4 @@ If `~/.claude/skills/` does not exist, create it first: `mkdir -p ~/.claude/skil
 ls -la ~/.claude/skills/ ~/.claude/CLAUDE.md ~/.claude/rules
 ```
 
-Every entry should `->` to `~/.claude/skills-worktree/...`. Regular files (not symlinks) trigger a setup-script warning but aren't overwritten; root-repo-targeted symlinks are migrated by re-running the setup script:
-
-```bash
-REPO_ROOT="$(.claude/scripts/repo-root.sh 2>/dev/null || true)"
-if [[ -n "$REPO_ROOT" && -d "$REPO_ROOT" ]]; then
-  bash "$REPO_ROOT/setup-skills-worktree.sh"
-else
-  echo "ERROR: could not resolve root repo" >&2
-fi
-```
+Every entry should `->` to `~/.claude/skills-worktree/...`. Regular files (not symlinks) trigger a setup-script warning but aren't overwritten; migrate root-repo-targeted symlinks by running `bash "$(.claude/scripts/repo-root.sh)"/setup-skills-worktree.sh` unconditionally (skip the session-start snippet's missing-worktree guard).

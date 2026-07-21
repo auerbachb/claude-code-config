@@ -13,7 +13,7 @@ These apply to EVERY message the parent agent sends to the user. No exceptions, 
 1. **Timestamp prefix.** Start every message with Eastern time (`Mon Mar 16 02:34 AM ET`). **Windows (Git Bash):** `TZ=America/New_York` is often wrong — use PowerShell `TimeZoneInfo` for ET first; **Linux/macOS:** `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`. Never estimate — run a command; for elapsed time, compare two outputs.
 2. **Active monitoring declaration.** If monitoring background agents, state how many and which PRs at the end of every message.
 3. **5-minute heartbeat.** Never go >5 minutes without a status message. During operations touching 4+ files, emit a one-line status after every 3 writes/edits (see `monitor-mode.md` "User Heartbeat" and "File-Write Status Updates" for details).
-4. **`/loop` for recurring polls.** Any user request phrased as "poll every N / check every N / watch for X" must be backed by `/loop` (or `CronCreate` for ≥3 concurrent autonomous polls and/or cross-session durability) — never a hand-rolled chain of one-shot wake-ups. See `scheduling-reliability.md` for the decision tree and pre-exit checklist.
+4. **`/loop` for recurring polls.** Back any "poll/check/watch every N" request with `/loop` (or `CronCreate` for ≥3 concurrent polls / cross-session durability) — never a hand-rolled chain of one-shot wake-ups. Decision tree + pre-exit checklist: `scheduling-reliability.md`.
 5. **Dedicated monitor mode.** With active subagents, your ONLY job is orchestration — do NOT do substantive work. See `monitor-mode.md` "Dedicated Monitor Mode" for full rules.
 
 After context compaction, your FIRST action is to reconstruct monitoring state (see "Post-Compaction Recovery" in `monitor-mode.md`) and report it WITH a timestamp.
@@ -70,14 +70,14 @@ If you catch yourself composing a "should I...?" question about any workflow ste
 
 ## PR & ISSUE WORKFLOW
 
-**The flow is always:** GitHub issue → CR plan → implementation plan → feature branch → code → local review → push → PR → GitHub review → merge. Never jump straight to coding. See `issue-planning.md` for the full issue creation and planning flow.
+**The flow is always:** GitHub issue → CR plan (when available) → implementation plan → feature branch → code → local review → push → PR → GitHub review → merge. Never jump straight to coding (full flow: `issue-planning.md`).
 
 **Key rules:**
 - **Every PR must link to a GitHub issue.** No exceptions — create one via `gh issue create` first. Use `Closes #N` in the PR body.
 - **Every PR must include a Test plan section** with checkboxes for acceptance criteria.
 - **We do not use TDD** unless the user explicitly requests it. AC is verified via code review and manual testing.
-- **CI must pass before merge.** See `cr-merge-gate.md` "CI Must Pass Before Merge" for the check-runs verification procedure.
-- **Never suppress linter errors.** See `cr-local-review.md` "Never Suppress Linter Errors" — fix the actual code, never add suppression comments.
+- **CI must pass before merge** — check-runs procedure: `cr-merge-gate.md` Step 1b.
+- **Never suppress linter errors** — fix the actual code, never add suppression comments (`cr-local-review.md`).
 
 **Branching & merging:**
 - **NEVER work on `main`.** All code changes happen in worktrees on feature branches. Every change requires: issue → feature branch → PR → squash merge.
@@ -115,7 +115,7 @@ These files auto-load for the parent agent session. **Subagents do NOT auto-load
 
 ### Rule File Size Guidelines
 
-Rules load every turn. With the current fleet (Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5) the corpus is ~1.5% of a 1M-token window (~$0.015/turn cached on Opus 4.8), so the budget now exists for **instruction adherence and maintainability** — redundant or contradictory rules misfire on literal-following models — not context pressure. Limits apply to CLAUDE.md + `.claude/rules/*.md`:
+Rules load every turn. The budget exists for **instruction adherence and maintainability** — redundant or contradictory rules misfire on literal-following models. Limits apply to CLAUDE.md + `.claude/rules/*.md`:
 
 - **Soft warning:** 12,000 words.
 - **Ratchet cap:** `.claude/rules/.budget-soft-cap` must equal `max(current_count + 750, 8500)`. `rule-lint.sh` fails when the corpus exceeds this committed cap, independent of soft/hard checks; run `rule-lint.sh --update-cap` only after intentional cuts.

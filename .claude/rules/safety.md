@@ -40,13 +40,7 @@ Confirm package names before npm/pip/gem/cargo/brew install. Full rules: .claude
 
 ## Capability Discovery — Try CLI Before Handoff
 
-Before handing a task to the user because it "can't" be done, verify against your actual tools — Bash (`gh`/`git`/`curl`/`gh api`), MCP tools, and custom skills — not inherited "agents can't" prose from a note, PR body, or comment.
-
-**Common false walls** (usually doable): manual Actions run → `gh workflow run <workflow> --ref <branch>`; review approve/reject → `gh pr review --approve|--request-changes`; admin-bypass merge → `gh pr merge --admin`; workflow_dispatch → `gh api repos/{owner}/{repo}/actions/workflows/{id}/dispatches`; release create → `gh release create`; comment → `gh pr comment`/`gh issue comment`; label/assign → `gh issue/pr edit`. Extend this list as new false walls are observed (an agent's own explicit prohibitions still win).
-
-**Real walls** (handoff is correct, but structured): a token-scope 403 with no workaround, a branch-protection change, a `.env` edit, or anything in this file's "Never" lists. Use the `/admin-merge` (#451) pattern: exact copy-paste command, a one-line reason, optional terminal staging — never just a description.
-
-**Anti-pattern:** if you catch yourself typing "agents can't do X" where X sounds like something `gh` or `git` handles, stop and verify — the default answer is you probably CAN. This doesn't loosen any prohibition — check the list before assuming a capability is off-limits.
+Before handing a task to the user because it "can't" be done, verify against your actual tools — Bash (`gh`/`git`/`curl`/`gh api`), MCP tools, and custom skills — not inherited "agents can't" prose. Most "can't do X" claims that sound like `gh`/`git` territory are **false walls** — workflow runs, PR review, releases, comments, labels are usually one CLI command; the living catalog with exact commands is `.claude/reference/capability-discovery-examples.md` (extend it as new false walls are observed). An agent's own explicit prohibitions always win. **Real walls** (token-scope 403, branch protection, `.env`, this file's "Never" lists) get a structured handoff per the `/admin-merge` (#451) pattern: exact copy-paste command + one-line reason — never just a description.
 
 ```text
 MINDSET: Before handing off, enumerate your actual tools (gh/git/curl/gh api, MCP,
@@ -61,4 +55,4 @@ reason. Full rules: .claude/rules/safety.md.
 
 ## Anthropic Quota & Spend Authority
 
-Anthropic's in-app usage UI is the **authoritative** source for quota and spend enforcement. Locally-computed spend estimation is unreliable and **MUST NOT gate agent decisions** — never pause, downgrade, defer, or refuse work based on a locally-tracked quota or spend figure. Do not re-implement local quota tracking without a corresponding upstream signal from Anthropic.
+Anthropic's in-app usage UI is the **authoritative** source for quota and spend. Locally-computed spend estimation is unreliable and **MUST NOT gate agent decisions** — never pause, downgrade, defer, or refuse work over a locally-tracked figure, and do not re-implement local quota tracking without an upstream Anthropic signal.

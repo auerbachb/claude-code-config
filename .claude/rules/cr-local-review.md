@@ -8,7 +8,7 @@ Primary review workflow — catches issues before PR noise/quota; does not repla
 
 ### Anti–rate-limit pre-flight (local-first)
 
-**~8 CR reviews/hour** (hidden cap, tier-dependent). **Batch locally:** run the Fix loop below to a clean pass, then **one commit, one push**. `/fixpr` matches: all threads + CI, **one** commit/push; cap + session tracking: `cr-github-review.md` and `cr-review-hourly.sh`.
+**~8 CR reviews/hour** (shared cap — details: `cr-github-review.md`). **Batch locally:** run the Fix loop below to a clean pass, then **one commit, one push** (`/fixpr` matches this shape).
 
 ### Prerequisites
 
@@ -57,8 +57,4 @@ Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `noqa`, or equival
 ### Exit criteria
 
 - **One verified-successful clean pass on both CLIs** (or on the surviving CLI + PR-body note; one clean self-review if both are unavailable). "No findings" alone is not a clean pass.
-- Once clean, commit and push immediately — this transition is automatic, do not ask
-
-### Post-Clean: Push, PR, GitHub Review
-
-After a clean local review: commit, push, create/update PR with `Closes #N` and Test Plan checkboxes, then enter `cr-github-review.md` immediately. Local review never satisfies `cr-merge-gate.md`.
+- Once clean, **immediately** commit, push, create/update the PR (`Closes #N` + Test Plan checkboxes), and enter `cr-github-review.md` — this transition is automatic, do not ask. Local review never satisfies `cr-merge-gate.md`.

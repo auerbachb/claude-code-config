@@ -6,7 +6,7 @@
 
 ## Session Start: Required Configuration Checks
 
-At the start of every session, after creating the worktree but before any code work, run the bootstrap script. It is idempotent and safe to repeat.
+Run at session start — after worktree creation, before code work. Idempotent; safe to repeat.
 
 ### Run the bootstrap check
 
@@ -32,13 +32,10 @@ The script reports state as `[OK]` / `[MISSING]` / `[SKIP]` (token lacks read pe
 
 1. **Discover CI check names** from latest `main` commit's check-runs; fall back to parsing `.github/workflows/*.yml` job names.
 2. **Ask the user:** "No required status checks on `main` — PRs can merge with failing CI. Found checks: `lint`, `test`, `build`. Want me to enable protection?"
-3. **If approved:** Read existing protection first (`gh api repos/{owner}/{repo}/branches/main/protection`; ignore 404). PUT to the same endpoint, merging `required_status_checks.contexts` with `strict: true` into any existing protection settings; use sensible defaults (`enforce_admins: false`) if 404.
+3. **If approved:** read existing protection first (`gh api repos/{owner}/{repo}/branches/main/protection`; ignore 404), then PUT back the full read payload changing only `required_status_checks.contexts` (merged) and `strict: true`; full sensible-default payload (`enforce_admins: false`) if 404.
 4. **If declined:** move on. Do not ask again in the same session.
 
 ### Rules
 
-- **Only add missing workflows.** Never modify existing workflow files — owner may have customized them.
-- **Idempotent.** Safe to re-run; only acts when files are missing.
-- **Branch protection requires user confirmation** — never modify autonomously.
 - **Do not downgrade existing protection.** Preserve required reviews, admin enforcement, etc. when adding status checks.
-- **Prefer installed CLI tools** (`vercel`, `neonctl`, `railway`, `cloudinary`) over web dashboards — see `.claude/reference/cli-tool-defaults.md` for commands.
+- **Prefer installed CLI tools** (`vercel`, `neonctl`, `railway`, `cloudinary`) over web dashboards — commands: `.claude/reference/cli-tool-defaults.md`.

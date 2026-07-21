@@ -16,20 +16,18 @@
 
 ## Why
 
-Skills encode hard-won process. Hand-rolling does the work worse and skips `~/.claude/skill-usage.log`, undercounting live skills and poisoning prune audits (issue #431) and durable telemetry (issue #572).
-
-Scope: parent-agent sessions read this file directly; subagents reach it via "Reaching Subagents" below (issue #587).
+Hand-rolling does the work worse and skips `~/.claude/skill-usage.log`, poisoning prune audits (issue #431) and durable telemetry (issue #572). Parent sessions read this file directly; subagents get it via "Reaching Subagents" (issue #587).
 
 ## Reaching Subagents
 
 Subagents inherit the parent's instruction **snapshot** at spawn — they never re-read this file from disk afterward (verified during PR #585). Two paths deliver the reflex anyway:
 
 1. **Custom agent types** (`phase-a-fixer`, `phase-b-reviewer`, `phase-c-merger`, `pm-worker`) carry a short embedded reminder in their own `.claude/agents/*.md` definition, loaded as system context regardless of prompt content.
-2. **Everyone else** (ad-hoc / `general-purpose` spawns with no custom definition) gets the verbatim `SKILLS:` block below, pasted into every spawn prompt per `subagent-orchestration.md`'s "How to Spawn Subagents" checklist.
+2. **Everyone else** (ad-hoc spawns with no custom definition) gets the verbatim `SKILLS:` block below in the spawn prompt (`subagent-orchestration.md` checklist).
 
 Subagents run autonomously and can't pause for a user answer, so the ladder adapts: borderline match → note it in the exit report and proceed on your own judgment, don't block the phase waiting for input.
 
-**Requires `Skill` tool access.** Paste the block below only into spawns that have it — `phase-a-fixer`, `phase-b-reviewer`, `pm-worker`, and most ad-hoc spawns. Agents lacking `Skill` (e.g. `phase-c-merger`, `researcher`) carry an adapted, non-invoking note in their own `.claude/agents/*.md` definition instead — don't paste this block there.
+**Requires `Skill` tool access.** Paste the block only into spawns that have it (`phase-a-fixer`, `phase-b-reviewer`, `pm-worker`, most ad-hoc spawns). Agents lacking `Skill` (`phase-c-merger`, `researcher`) carry an adapted, non-invoking note in their own `.claude/agents/*.md` definition — don't paste this block there.
 
 ```text
 SKILLS: Before hand-rolling a multi-step task, check whether an existing skill

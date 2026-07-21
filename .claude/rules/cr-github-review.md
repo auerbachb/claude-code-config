@@ -1,8 +1,8 @@
 ## GitHub CodeRabbit Review Loop (Fallback)
 
-> **NEVER declare a PR done immediately after pushing.** Every push triggers new CR/BugBot review activity; **Greptile** runs only when escalated. **CodeAnt** and **Graphite** may also run in parallel on the CR path. Poll until `cr-merge-gate.md` is met; "0 unresolved threads" is not an exit condition.
+> **NEVER declare a PR done immediately after pushing.** Every push triggers new review activity (CR/BugBot; CodeAnt/Graphite in parallel; Greptile only when escalated). Poll until `cr-merge-gate.md` is met; "0 unresolved threads" is not an exit condition.
 >
-> **Always:** Poll all 3 endpoints + check-runs every cycle (`per_page=100`, filter `coderabbitai[bot]`). Batch fixes into one commit. Reply to every thread. Resolve via `resolve-review-threads.sh`. Enter the polling loop immediately after push — do NOT ask. Invoke `/fixpr` when any trigger condition fires.
+> **Always:** Poll all 3 endpoints + check-runs every cycle (`per_page=100`; filter per-bot logins like `coderabbitai[bot]` after fetching). Batch fixes into one commit. Reply to every thread. Resolve via `resolve-review-threads.sh`. Enter the polling loop immediately after push — do NOT ask. Invoke `/fixpr` when any trigger condition fires.
 > **Ask first:** Merging only.
 > **Never:** Poll only 1-2 endpoints. Use bare `coderabbitai` without `[bot]`. Push per-finding. Trigger `@coderabbitai full review` more than twice per PR per hour. Trigger Greptile proactively. Merge without meeting the merge gate. Exit polling on "nothing unresolved right now."
 >
@@ -27,8 +27,7 @@ Run before the first poll tick and before any new review trigger on fresh push, 
 
 1. Fetch all 3 comment endpoints (**Polling** below).
 2. Identify unresolved findings from `coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, or `graphite-app[bot]` (no fix reply, code unchanged, not outdated/resolved).
-3. **If ANY unresolved findings exist: invoke `/fixpr` now** — do NOT request a new review on top of unaddressed feedback.
-4. Do not poll/request review until step 3 completes.
+3. **If ANY unresolved findings exist: invoke `/fixpr` now** — no polling or new review requests until it completes.
 
 ### Per-cycle check (every 60 seconds)
 
@@ -57,11 +56,11 @@ Run **every poll cycle while `reviewer == cr`** after PR snapshot + CI:
 STATUS=$(.claude/scripts/escalate-review.sh <PR_NUMBER> | sed -n 's/^STATUS=//p')
 ```
 
-Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget_exhausted`, `self_review` — follow `escalate-review.sh` / `bugbot.md` / `greptile.md` (rate-limit → BugBot → Greptile; cache `bugbot_installed` in session-state). `gate_met` means CodeRabbit or CodeAnt already has a valid `APPROVED` review on current HEAD (checked before any escalation, ahead of the CR-rate-limit/BugBot-failure logic) — do not escalate further; let the merge gate exit polling normally.
+Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget_exhausted`, `self_review` — follow `escalate-review.sh` / `bugbot.md` / `greptile.md` (rate-limit → BugBot → Greptile; cache `bugbot_installed` in session-state). `gate_met` = CodeRabbit or CodeAnt already holds a valid `APPROVED` on current HEAD (checked before any escalation) — stop escalating; let the merge gate exit polling.
 
 ### Rate Limits & Behavior (Pro Tier)
 
-**Cap:** ~**8** CR PR reviews/hour (plan on 8). Batch fixes into one commit/push; max **2** explicit `@coderabbitai full review`/PR/hour (surface the user at the 2nd recorded trigger). On cooldown/exhaustion, local review first, then escalate per **Timeout & Fallback** below. Consumption tracked via `cr-review-hourly.sh`. Full caps and script flags: `.claude/reference/cr-rate-limits.md`.
+**Cap:** ~**8** CR reviews/hour. Batch fixes into one commit/push; max **2** explicit `@coderabbitai full review`/PR/hour (surface the user at the 2nd). On cooldown/exhaustion: local review first, then escalate per **Timeout & Fallback** below. Tracking: `cr-review-hourly.sh`; full caps/flags: `.claude/reference/cr-rate-limits.md`.
 
 ### Polling
 
@@ -71,37 +70,26 @@ Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget
   2. `repos/{owner}/{repo}/pulls/{N}/comments` — inline diff comments
   3. `repos/{owner}/{repo}/issues/{N}/comments` — PR conversation (summary, ack, general findings). Missing this endpoint causes indefinite polling on clean passes.
 - **Check merge metadata every cycle:** fetch `mergeStateStatus` and `mergeable` every cycle (same PR JSON as `merge-gate.sh`).
-- **Check commit status every cycle.** Query CodeRabbit check-runs; fallback commands: `.claude/reference/cr-polling-commands.md`.
-  - **Completion signal:** `status: "completed"` + `conclusion: "success"` = review done.
-- **Fast-path rate limit:** "rate limit" in failed CodeRabbit check/status output goes through the escalation gate above.
-  - **Ack ≠ completion.** "Actions performed — Full review triggered" = CR started. "CodeRabbit — Review completed" CI check = CR finished.
+- **Check commit status every cycle.** Query CodeRabbit check-runs (fallback commands: `.claude/reference/cr-polling-commands.md`). Check-run `completed`/`success` = review done; the "Full review triggered" ack only means started.
+- **Fast-path rate limit:** "rate limit" in failed CR check/status output routes to the escalation gate.
 - **CR username:** `coderabbitai[bot]` (with `[bot]` suffix). Filter by `.user.login == "coderabbitai[bot]"` — NOT bare `coderabbitai`.
 - **Watermark:** Track highest review ID from `pulls/{N}/reviews`. For `issues/{N}/comments`, track by comment ID.
-- **CR silence threshold:** Cadence 60 s; a CR `status: "completed"` exits polling immediately. Otherwise, the escalation gate owns silence, BugBot grace, and Greptile fallback.
+- **CR silence:** a completed CR check-run ends the silence wait (the merge gate still decides exit); otherwise the escalation gate owns silence, BugBot grace, and Greptile fallback.
 
 ### CI Health Check (MANDATORY — every poll cycle)
 
-**Check ALL check-runs every poll cycle — not just CodeRabbit.** Query `repos/{owner}/{repo}/commits/{SHA}/check-runs?per_page=100`; full command in `.claude/reference/cr-polling-commands.md`.
-
-**Rules:**
-- **Blocking conclusions:** `failure`, `timed_out`, `action_required`, `startup_failure`, `stale`. If any appear, **invoke `/fixpr` immediately**. (`cancelled`, `neutral`, `skipped` are non-blocking.)
-- CI failures block merge independently of CR — a PR with passing CR but failing tests is not merge-ready. Report pass/fail summary.
+**Check ALL check-runs every poll cycle — not just CodeRabbit:** `repos/{owner}/{repo}/commits/{SHA}/check-runs?per_page=100` (full command: `.claude/reference/cr-polling-commands.md`). Any blocking conclusion (per-cycle trigger #2 list; `cancelled`/`neutral`/`skipped` are non-blocking) → **invoke `/fixpr` immediately**. CI failures block merge independently of CR — passing CR + failing tests is not merge-ready; report a pass/fail summary.
 
 ### Timeout & Fallback — Three-Tier Review Chain
 
-**Review chain:** CR → BugBot → Greptile → self-review. **Supplemental (CR path):** CodeAnt + Graphite — `.claude/reference/codeant-graphite-supplemental.md`.
-
-When CR fails or stalls, the reviewer escalation gate checks BugBot before Greptile and caches whether BugBot is installed for the PR. See `bugbot.md` and `greptile.md`.
-
-- **Sticky assignment:** CR fail → BugBot owns the PR. If BugBot also fails → Greptile owns permanently. Do not switch back up the chain.
-- **If all three fail:** fall back to **self-review**. Self-review does NOT satisfy the merge gate. Tell the user which fallback was used and why.
+**Review chain:** CR → BugBot → Greptile → self-review. **Supplemental (CR path):** CodeAnt + Graphite — `.claude/reference/codeant-graphite-supplemental.md`. When CR fails or stalls, the escalation gate checks BugBot before Greptile (`bugbot.md`, `greptile.md`). **Sticky:** once a PR falls to BugBot or Greptile it never moves back up the chain (per-path gates: `cr-merge-gate.md` Step 1). **If all three fail:** self-review — it does NOT satisfy the merge gate; tell the user which fallback ran and why.
 
 ### Processing CR Feedback
 
 1. Fetch latest CR comments via `gh api`, verify each finding against the actual file
 2. Fix **all valid findings**, commit and push **once**
 3. **Reply to every thread** ("Fixed in `abc1234`: <what changed>"). Try inline reply; on 404, PR-level comment with `@coderabbitai Fixed in ...`
-4. **Resolve each thread via the shared helper** — **NEVER call `resolveReviewThread` inline**. Always use `.claude/scripts/resolve-review-threads.sh <PR> --thread-ids <id1,id2>` (or `--thread-ids-file`). Full mutations: `.claude/reference/graphql-thread-resolution.md`
+4. **Resolve via `.claude/scripts/resolve-review-threads.sh <PR> --thread-ids <id1,id2>`** (or `--thread-ids-file`) — **NEVER call `resolveReviewThread` inline** (full mutations: `.claude/reference/graphql-thread-resolution.md`)
 5. **Re-query `pullRequest.reviewThreads` and verify every touched thread has `isResolved: true`** before requesting a new review.
 6. Resume polling; repeat until CR has no more findings
 

@@ -28,11 +28,11 @@ Canonical script: `.claude/scripts/dirty-main-guard.sh`. See `--help` for the fu
 
 ## Session-start integration
 
-`CLAUDE.md` calls `--check` before the main pull; if dirty, runs `--quarantine` and then pulls. When the guard reports `quarantined: recovery/dirty-main-*`, surface the branch name to the user so they know where to find the rescued state.
+`CLAUDE.md` §Worktree owns the sequence (check → quarantine → pull) and requires surfacing `quarantined: recovery/dirty-main-*` branch names to the user.
 
 ## Stop hook (mid-session safety net)
 
-`.claude/hooks/dirty-main-warn.sh` is registered as a Stop hook in `global-settings.json`. It runs `--check` after every agent response and emits a loud `additionalContext` warning plus the `--quarantine` command when main is dirty. The hook never quarantines on its own — quarantine is an intentional, session-start operation.
+The `dirty-main-warn.sh` Stop hook (`global-settings.json`) runs `--check` after every response and emits a loud warning + the `--quarantine` command when main is dirty; it never quarantines on its own.
 
 ## Recovery workflow
 
@@ -43,10 +43,4 @@ cd "$(.claude/scripts/repo-root.sh)"
 git branch --list 'recovery/dirty-main-*'
 ```
 
-Then, with `<recovery-branch>` substituted:
-
-1. Inspect: `git log <recovery-branch> --oneline` or `git diff main..<recovery-branch> --stat`.
-2. Cherry-pick, rebase, or open a PR like any other branch.
-3. After landing (or confirming unneeded), delete: `git branch -D <recovery-branch>`.
-
-Recovery branches are the user's audit trail — never auto-delete; ask first.
+Then inspect (`git log` / `git diff main..<recovery-branch> --stat`), land via cherry-pick/rebase/PR, and only then delete with `git branch -D <recovery-branch>`. Recovery branches are the user's audit trail — never auto-delete; ask first.

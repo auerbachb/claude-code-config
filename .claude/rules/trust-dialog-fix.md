@@ -16,9 +16,9 @@ Three flags must be `true` per project:
 | `hasClaudeMdExternalIncludesApproved` | Suppresses external includes re-approval |
 | `hasClaudeMdExternalIncludesWarningShown` | Suppresses external includes warning |
 
-Worktrees are the primary cause — each gets a unique path registered as a new project with `false` defaults. The `claude-code-config` repo is especially affected because global symlinks point back into it, triggering "external includes" detection.
+New worktree paths register as new projects with `false` defaults; this repo's global symlinks amplify it via external-includes detection.
 
-> **Related (separate symptom, same topology):** the same symlink setup also caused this repo's `CLAUDE.md` + rules to double-load. That is fixed independently via project-local `claudeMdExcludes` in `.claude/settings.json` — see `.claude/reference/double-loading-fix.md`. This trust-dialog content is unaffected.
+> **Related:** the same symlinks also caused CLAUDE.md + rules double-loading, fixed separately via project-local `claudeMdExcludes` — `.claude/reference/double-loading-fix.md`.
 
 ## Manual Repair
 
@@ -31,4 +31,4 @@ Both use atomic writes (`tempfile` + `os.replace`) for safety.
 
 ## Automatic Hook
 
-The `trust-flag-repair.sh` Stop hook (`.claude/hooks/trust-flag-repair.sh`, registered in `global-settings.json`) repairs all flags after every agent response. It cannot prevent the initial prompt on brand-new worktrees — the project entry doesn't exist yet. The hook repairs it after the first response.
+The `trust-flag-repair.sh` Stop hook (`global-settings.json`) repairs all flags after every response; brand-new worktrees still see the first prompt (no project entry yet), repaired after the first response.
