@@ -1,6 +1,6 @@
 # Chip Launching — One-Click Coding Threads
 
-Canonical mechanics for offering a coding-thread prompt as a **task chip** the user can click to spin off a new session. Shared by `/pm` (Step 3.1), `/prompt` (Step 6), and `/start-issue` (Step 7). Skill-specific wiring stays in each SKILL.md; everything below is defined once, here.
+Canonical mechanics for offering a coding-thread prompt as a **task chip** the user can click to spin off a new session. Shared by `/pm` (Step 3.1), `/prompt` (Step 6), `/start-issue` (Step 7), and `/issue-maker` (Step 9). Skill-specific wiring stays in each SKILL.md; everything below is defined once, here.
 
 **Out of scope (explicit):** `/pm-handoff` does not offer chips and will not — its handoff prompt is a context-turnover artifact whose visible, portable text is the deliverable, and it has no issue number, model line, or lifecycle for these mechanics to key on. Decided in #562; rationale in `pm-handoff-chips-decision.md`.
 

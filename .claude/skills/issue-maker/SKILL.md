@@ -1,6 +1,6 @@
 ---
 name: issue-maker
-description: Capture-only thread mode for drafting and opening well-structured GitHub issues. Puts the thread into issue-capture mode — the only job is creating, editing, and closing issues (no implementation, no worktrees, no /start-issue). Always reflects before writing (1–3 scope/clarifying questions), creates canonical 6-section bodies with functional-first tone, runs dedup search, suggests labels, supports batch + cross-references, and prints the issue URL as the closing line of every create/update. Supports /update <N> <statement>, natural-language edit-in-place, and retract. Invoke as `/issue-maker [rapid-fire] [--export-prompt]`.
+description: Capture-only thread mode for drafting and opening well-structured GitHub issues. Puts the thread into issue-capture mode — the only job is creating, editing, and closing issues (no implementation, no worktrees, no /start-issue). Always reflects before writing (1–3 scope/clarifying questions), creates canonical 6-section bodies with functional-first tone, runs dedup search, suggests labels, supports batch + cross-references, and prints the issue URL as the closing line of every create/update. Offers a one-click coding chip alongside every created issue's link (dismissed automatically on retract). Supports /update <N> <statement>, natural-language edit-in-place, and retract. Invoke as `/issue-maker [rapid-fire] [--export-prompt]`.
 triggers:
   - open an issue
   - new issue
@@ -65,9 +65,12 @@ LOG="$HOME/.claude/handoffs/issue-maker-${SESSION_ID}-log.json"
 ```bash
 if [ -f "$LOG" ]; then
   jq -r '"Resuming capture mode for \(.target_repo) — \(.mode) mode. \(([.issues[]|select(.status=="open")]|length)) issue(s) opened so far:",
-         (.issues[] | "  #\(.number) — \(.title) [\(.status)]")' "$LOG"
+         (.issues[] | "  #\(.number) — \(.title) [\(.status)]" +
+                      (if .chip_task_id then " — chip offered" else "" end))' "$LOG"
 fi
 ```
+
+Chip state survives compaction because it lives in `$LOG` (Step 9b writes `chip_task_id` there, not just in-memory) — the recap line above is what surfaces it back to the user after a fresh invocation.
 
 Then re-affirm: *"Still in capture mode — describe issues to create, or use `/update #N …`, `edit #N …`, or `close #N`."* If the log is corrupt/unreadable, warn the user and offer to start a fresh session log.
 
@@ -220,7 +223,7 @@ ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
 
 ## Step 6: Batch input
 
-If the user describes multiple issues in one message (a numbered/bulleted list, or a `batch:` prefix), treat each as its own issue: run the full per-issue flow (reflect → dedup → draft → labels → confirm-unless-rapid-fire → create) **sequentially**, one `gh issue create` per issue. After the batch, print a summary table (number, title, labels, URL) — each URL still a clickable link.
+If the user describes multiple issues in one message (a numbered/bulleted list, or a `batch:` prefix), treat each as its own issue: run the full per-issue flow (reflect → dedup → draft → labels → confirm-unless-rapid-fire → create) **sequentially**, one `gh issue create` per issue. Step 9's chip offering also runs once per issue — a batch of N issues yields N independent chip-or-block outcomes, not one chip for the batch. After the batch, print a summary table (number, title, labels, URL) — each URL still a clickable link.
 
 ---
 
@@ -251,7 +254,7 @@ Detect `#N` mentions in the user's description and verify each exists (`gh issue
 
 ---
 
-## Step 9: Record + print the URL (the closing-line rule)
+## Step 9: Record + offer a coding chip + print the URL (the closing-line rule)
 
 After **every** create — and after every update/close — append/refresh the session log and **print the GitHub issue URL as a clickable markdown link as the final line of the response.** This rule is absolute: the link is never buried in prose, never mid-paragraph — it is the closing line.
 
@@ -263,10 +266,69 @@ Build the labels as a JSON array from the accepted labels (the same set passed v
 LABELS_JSON=$(printf '%s\n' "$ACCEPTED_LABELS" | jq -R . | jq -s 'map(select(length>0))')
 
 set_log '.issues += [{number:($n|tonumber), title:$t, url:$u, labels:$labels,
-                      created_at:$ts, status:"open"}]' \
+                      created_at:$ts, status:"open", chip_task_id:null}]' \
   --arg n "$ISSUE_NUMBER" --arg t "$TITLE" --arg u "$ISSUE_URL" \
   --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" --argjson labels "$LABELS_JSON"
 ```
+
+### Step 9a: Infer a coding tier (for the chip's Model line)
+
+`/issue-maker` does no tier classification during capture, but the chip requires a `**Model:** {MODEL} — {REASON}` line (`chip-launching.md`). Rather than invoking `/prompt` for a single line, infer the tier directly from the body just drafted in Step 5, using a trimmed, single-issue version of `/prompt`'s Heavy/Standard/Light mapping (`prompt/SKILL.md` Steps 4–5) — no batch aggregation, no dependency counting, no Fable 5 step-up:
+
+- `file_count` — paths under `## Related Files` plus backticked paths in the body containing `/` and a file extension
+- `ac_count` — count of `- [ ]` lines under `## Acceptance Criteria`
+- `touches_rules` / `touches_claude_md` / `touches_skill` — any counted path matches `.claude/rules/`, `CLAUDE.md`, or `.claude/skills/`
+- `has_orchestration_keywords` — body mentions "subagent", "Phase A/B/C", "multi-phase", "orchestration", "monitor mode", "handoff"
+- `scope_keywords` — title/body mentions "typo", "rename", "comment", "config", "doc update", "README", "formatting"
+
+| Tier | Trigger | Model / effort |
+|------|---------|-----------------|
+| **Heavy** | `touches_rules`, `touches_claude_md`, `has_orchestration_keywords`, or `file_count > 5` | Opus 4.8, effort `max` |
+| **Standard** | not Heavy, and `file_count` 2–5, `ac_count > 3`, or `touches_skill` | Opus 4.8, effort `high` |
+| **Light** | not Heavy/Standard, or any `scope_keywords` present | Sonnet 5, effort `low` |
+
+Default to **Standard** when signals are too sparse to classify confidently (thin bodies, terse rapid-fire captures) — it's the safer default absent a strong signal either way.
+
+### Step 9b: Offer a coding chip (default-on, alongside the closing link)
+
+Immediately after logging the issue, offer a one-click coding chip **in addition to**, never in place of, the closing URL line below. This runs unconditionally — including in rapid-fire mode, with no extra confirmation and no opt-out flag today.
+
+Check chip availability per `.claude/reference/chip-launching.md`. The coding-thread prompt is the same regardless of mode:
+
+```
+**Model:** {MODEL from Step 9a} — {one-line reason, e.g. "rules + skill wiring" or "single-file addition"}
+{Model-guard preamble — insert verbatim from `chip-launching.md` "Model-guard preamble", immediately after this line, no blank line between}
+
+You are picking up a freshly captured issue from an `/issue-maker` capture thread — no CR plan, worktree, or codebase exploration has happened yet.
+
+## Task
+Start coding issue #{ISSUE_NUMBER}: {TITLE}
+{ISSUE_URL}
+
+## Workflow
+Run `/start-issue {ISSUE_NUMBER}`. It polls for CodeRabbit's implementation plan, merges it into the issue body, creates a worktree and branch, and hands you a ready-to-code summary — continue from there.
+
+## Constraints
+- Do NOT work on main — use the worktree /start-issue creates
+- Do NOT modify .env files
+- Squash and merge only after the merge gate passes and issue-author/user merge authorization is confirmed (CLAUDE.md)
+```
+
+Why delegate to `/start-issue` instead of a fuller inline template (like `/pm`'s or `/prompt`'s): at the moment this chip is offered the issue has no CR plan yet (it posts asynchronously) and no codebase exploration has happened — `/issue-maker` never does that by design (Step 2). `/start-issue` already owns exactly that sequencing; duplicating it here would drift out of sync with its own logic.
+
+- **Chip mode** (`mcp__ccd_session__spawn_task` present): call `spawn_task` with `title` (verb-first, ≤60 chars, includes the issue number, e.g. `Fix #42 stale worktree warning`), `prompt` (the block above, verbatim), `tldr` (1–2 plain sentences from `TITLE`), `cwd` (repo root — no worktree exists yet at capture time, unlike `/start-issue`'s own chip, which points at the worktree it just created). On success, **record the returned `task_id` immediately** — before printing anything else:
+
+  ```bash
+  set_log '(.issues[] | select(.number == ($n|tonumber)) | .chip_task_id) = $tid' \
+    --arg n "$ISSUE_NUMBER" --arg tid "$TASK_ID"
+  ```
+
+  Print only the short summary per issue (per `chip-launching.md` "Short-summary transcript format") — never the full block in chip mode.
+- **Fallback mode** (tool absent, or this issue's `spawn_task` call failed): print the full fenced block above and leave `chip_task_id` as `null`. A failed spawn degrades **only that issue** — note the fallback once per batch; the rest keep their chips.
+
+Every created issue ends with exactly one of: a chip, or a printed block — never neither, and never both. (Batches: this repeats once per issue in the loop — see Step 6.)
+
+If the user asks to "print the full prompt for #N" while in chip mode, re-emit that issue's complete block verbatim (Model line + guard preamble included) — the chip stays offered (`chip-launching.md` "Print-on-demand replay").
 
 Closing line format:
 
@@ -274,7 +336,7 @@ Closing line format:
 Created #N: [<owner>/<repo>#N — <title>](<ISSUE_URL>)
 ```
 
-**Running tally:** the log is the source of truth for "issues opened in this thread." Surface a tally after every 5 issues and on explicit request — a compact table of number / title / labels / status. The compaction recap in Step 1 reads the same log.
+**Running tally:** the log is the source of truth for "issues opened in this thread." Surface a tally after every 5 issues and on explicit request — a compact table of number / title / labels / status / chip. The compaction recap in Step 1 reads the same log.
 
 ---
 
@@ -308,10 +370,12 @@ A first-class command for adding information to an existing issue **without leav
    set_log 'if any(.issues[]; .number == ($n|tonumber))
             then (.issues[] | select(.number == ($n|tonumber)) | .edited_at) = $ts
             else .issues += [{number:($n|tonumber), title:$t, url:$u, labels:[],
-                              created_at:$ts, edited_at:$ts, status:"open"}] end' \
+                              created_at:$ts, edited_at:$ts, status:"open", chip_task_id:null}] end' \
      --arg n "$N" --arg t "$TITLE" --arg u "$ISSUE_URL" \
      --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
    ```
+
+   **Chips are create-time only.** `/update`/edit-in-place never spawns or refreshes a chip — a chip offered at Step 9 stays as-is even if the body changes materially afterward. Re-planning the chip itself is out of scope for this skill (open question in issue #635's Notes); if the drift matters, retract and re-create.
 
 ---
 
@@ -325,14 +389,30 @@ Phrases like **"also add X to issue #N"**, **"edit #N …"**, **"update #N with 
 
 Phrases like **"scratch that, close #N"**, **"retract #N"**, **"never mind on #N"**:
 
+**First, dismiss any live chip** (`chip-launching.md` "Stale-chip hygiene" — "gained an open PR" / "superseded" both cover a retracted issue, since the work is now cancelled). Look up the tracked `task_id`:
+
+```bash
+TASK_ID=$(jq -r --arg n "$N" '(.issues[] | select(.number == ($n|tonumber)) | .chip_task_id) // empty' "$LOG")
+```
+
+- **No `TASK_ID`** (never offered, or already cleared) — skip straight to closing the issue.
+- **`TASK_ID` present** — call `mcp__ccd_session__dismiss_task` with that `task_id` and a reason (e.g. `"Issue retracted via /issue-maker"`). Apply the fail-closed outcome rules from `chip-launching.md`:
+  - **Dismissed**, or **already clicked/already dismissed** — both mean the offer is gone; clear `chip_task_id` to `null`.
+  - **Genuine failure** — the chip is still live. Leave `chip_task_id` set (don't strand the handle) and say so when reporting the close, but proceed to close the issue anyway — a live chip on a closed issue is a stale-but-recoverable state, not a reason to block the retract.
+
 ```bash
 gh issue close "$N" --repo "$REPO" --comment "Retracted via /issue-maker — not needed."
 
-# Flip the matching log entry to closed so tallies + compaction recaps stay accurate.
-set_log '(.issues[] | select(.number == ($n|tonumber)) | .status) = "closed"' --arg n "$N"
+# Flip status to closed and clear chip_task_id only if the dismiss above succeeded (or found none to dismiss).
+# $CHIP_RESULT is empty on success/no-op (clears the field), or the still-live $TASK_ID string on genuine
+# dismiss failure (--arg, not --argjson: a bare task-id string isn't valid JSON on its own).
+set_log '(.issues[] | select(.number == ($n|tonumber)) | .status) = "closed" |
+         (.issues[] | select(.number == ($n|tonumber)) | .chip_task_id) =
+           (if $chip == "" then null else $chip end)' \
+  --arg n "$N" --arg chip "${CHIP_RESULT:-}"
 ```
 
-Then print: *"Issue #N closed."* (with the issue link as the closing line).
+Then print: *"Issue #N closed."* — append *"(chip withdrawal failed — it may still be clickable)"* only in the genuine-failure case above. Issue link as the closing line either way.
 
 ---
 
