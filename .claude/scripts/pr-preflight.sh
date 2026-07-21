@@ -546,6 +546,10 @@ fi
 
 # --- 4. reviewer-trigger check ---
 # Ordered list: key | bot-login | trigger-string. Greptile intentionally absent.
+# Graphite known outage (issue #610, confirmed 2026-07-21): zero engagement (no
+# comments, no check-runs) on every PR since 2026-05-08 — external GitHub App
+# issue, not fixable from this script. Kept in the trigger set anyway (cheap,
+# self-healing) — see .claude/reference/codeant-graphite-supplemental.md.
 REVIEWER_KEYS=(codeant coderabbit cursor graphite)
 # Bash 3.2-compatible (macOS default ships Bash 3.2): NO associative arrays.
 # `declare -A` is a syntax error on Bash 3 and, under `set -euo pipefail`, aborts
