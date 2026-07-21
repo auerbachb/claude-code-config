@@ -805,6 +805,7 @@ jq -r '
    - `found no new issues` (case-insensitive) → `acknowledgment` (BugBot clean-pass review body: "✅ Bugbot reviewed your changes and found no new issues!")
    - `<!-- BUGBOT_REVIEW -->` marker present AND body does NOT match `found [1-9][0-9]* potential issue` → `acknowledgment` (BugBot zero-issue summary). This MUST be checked before the generic `issues? found` finding pattern below. Non-zero BugBot summaries ("found 3 potential issues") keep the `<!-- BUGBOT_REVIEW -->` marker but match the non-zero guard and fall through to the finding tier.
    - `Oops, something went wrong` (case-insensitive) → `acknowledgment` (CodeRabbit transient error stub — not an actionable finding)
+   - HTML marker `<!-- This is an auto-generated reply by CodeRabbit -->` (case-insensitive) → `acknowledgment` (CR auto-reply ack — CR posts this on its own reply-ack comments, e.g. "Received — CodeRabbit is reviewing…"; observed producing phantom findings on PR #659 while wrapping #638, issue #669). Marker-only to avoid the #557 generic-phrase risk: the prose "Received — CodeRabbit is reviewing" is NOT matched, so a real finding quoting that phrase still reaches the finding tier. Safe in tier 1 unlike the §4 walkthrough marker: reply-ack comments never carry their own findings, so an early override cannot mask an active finding.
 2. **Finding patterns**:
    - Severity keywords `\b(critical|major|minor|nitpick|p[0-2])\b` or badges `🔴|🟠|🟡`
    - Actionable phrases: `actionable comments posted` (non-zero), `issues? found`, `findings?:`, `potential[_ ]issue`

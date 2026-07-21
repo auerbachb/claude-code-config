@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Unit test for the `classify` jq function inside `pr-state.sh --since`
-# (issues #535, #557, #575).
+# (issues #535, #557, #575, #669).
 #
 # Verifies that comment bodies observed misclassified in the wild are now correctly
 # classified as acknowledgments, and that existing patterns are not regressed:
@@ -548,6 +548,46 @@ class="${result%%|*}"
   || fail "Bug7a: bare prose 'withdrawing the finding' — expected finding, got $class"
 
 # ---------------------------------------------------------------------------
+# Bug 8: CodeRabbit auto-reply ack (issue #669)
+#
+# When you reply to a CR thread, CodeRabbit posts an automated acknowledgment
+# comment tagged with the HTML marker:
+#   <!-- This is an auto-generated reply by CodeRabbit -->
+# followed by "Received — CodeRabbit is reviewing…" prose. Pre-fix, this matched
+# no branch and fell through to default → finding, producing 5 phantom findings
+# during /wrap Phase 1 on PR #659 (one per replied thread) on a PR whose merge
+# gate was fully met.
+# Was: default → finding; Should be: CR auto-reply ack → acknowledgment
+#
+# Fixture: faithful reproduction of the auto-reply body — marker plus prose.
+# ---------------------------------------------------------------------------
+BODY='<!-- This is an auto-generated reply by CodeRabbit -->
+
+@auerbachb: Received — CodeRabbit is reviewing the changes. I will report back once the analysis is complete.'
+result=$(classify_body "$BODY")
+class="${result%%|*}"; reason="${result##*|}"
+if [[ "$class" == "acknowledgment" && "$reason" == "CR auto-reply ack" ]]; then
+  pass "Bug8: CR auto-reply ack marker → acknowledgment"
+else
+  fail "Bug8: CR auto-reply ack — expected acknowledgment/CR auto-reply ack, got $class/$reason"
+fi
+
+# ---------------------------------------------------------------------------
+# Bug8a: MARKER-ONLY GUARD — prose "Received — CodeRabbit is reviewing" WITHOUT
+# the HTML marker must NOT reclassify (mirrors Bug4c and Bug7a).
+#
+# The marker-only decision avoids the #557 generic-phrase false-ack risk: a real
+# finding that happens to quote the phrase "Received — CodeRabbit is reviewing"
+# (e.g., a PR body or test describing the ack flow) still reaches the finding
+# tier. Verified to FAIL if a prose-phrase override for "Received" or "CodeRabbit
+# is reviewing" is ever added; re-run this guard if you touch the branch.
+# ---------------------------------------------------------------------------
+result=$(classify_body "**nitpick:** the error handler logs 'Received — CodeRabbit is reviewing' before the timeout fires, leaking internal state.")
+class="${result%%|*}"
+[[ "$class" == "finding" ]] && pass "Bug8a: finding quoting 'Received — CodeRabbit is reviewing' without marker → finding (prose not an override)" \
+  || fail "Bug8a: finding quoting CR auto-reply prose — expected finding, got $class"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
@@ -555,4 +595,4 @@ echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then
   exit 1
 fi
-echo "OK: pr-state.sh classify — all fixtures and regressions passed (issues #535, #557, #575)"
+echo "OK: pr-state.sh classify — all fixtures and regressions passed (issues #535, #557, #575, #669)"

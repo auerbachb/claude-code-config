@@ -403,7 +403,8 @@ CONVO=$(run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per
 #         "next review (will be) available in"; BugBot usage-limit notices — "couldn't run - usage limit
 #         reached" / "this run hit a usage or spend limit"; "full review triggered", BugBot clean-pass
 #         "found no new issues", BugBot BUGBOT_REVIEW zero-issue summary, CR error stub
-#         "Oops, something went wrong")
+#         "Oops, something went wrong"; CR auto-reply ack marker
+#         "<!-- This is an auto-generated reply by CodeRabbit -->")
 #         are checked FIRST. They mean CR/BugBot has issued a clean pass, reported a rate/usage limit
 #         instead of reviewing, posted a review-started ack, or emitted a transient error — regardless
 #         of any quoted earlier finding language. CR wraps its Fair-Usage notice in a "Full review
@@ -418,6 +419,11 @@ CONVO=$(run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per
 #         thread — there is no *other* active finding for an early override to mask — so hoisting it
 #         here cannot produce a false clean. Marker-only, mirroring the addressed marker: the prose
 #         "Withdrawing the finding" is NOT matched, avoiding the #557 generic-phrase false-ack risk.
+#         The CR auto-reply ack marker (#669) is likewise safe in tier 1: CR posts it only on its own
+#         reply-ack comments ("Received — CodeRabbit is reviewing…"), which never carry their own
+#         findings. Keyed on the HTML marker, not the prose "Received — CodeRabbit is reviewing",
+#         so a real finding quoting that phrase cannot be falsely reclassified (#557 discipline).
+#         Case-insensitive "i" flag, consistent with CR-authored boilerplate (subject to casing drift).
 #      2. The specific "actionable comments posted: 0" and "no actionable comments were
 #         generated" checks MUST precede the general "actionable comments posted" finding
 #         check — otherwise the general pattern swallows clean CR summaries as findings.
@@ -459,6 +465,7 @@ if [[ -n "$SINCE" ]]; then
       elif test("found no new issues"; "i") then {class: "acknowledgment", reason: "BugBot clean pass"}
       elif (test("<!--\\s*BUGBOT_REVIEW\\s*-->"; "") and (test("found [1-9][0-9]* potential issue"; "i") | not)) then {class: "acknowledgment", reason: "BugBot zero-issue summary"}
       elif test("Oops, something went wrong"; "i") then {class: "acknowledgment", reason: "CR error stub / transient noise"}
+      elif test("<!--\\s*This is an auto-generated reply by CodeRabbit\\s*-->"; "i") then {class: "acknowledgment", reason: "CR auto-reply ack"}
       elif test("\\b(critical|major|minor|nitpick|p[0-2])\\b"; "i") then {class: "finding", reason: "severity keyword"}
       elif test("🔴|🟠|🟡"; "") then {class: "finding", reason: "severity badge"}
       elif test("actionable comments posted"; "i") then {class: "finding", reason: "actionable phrase"}
