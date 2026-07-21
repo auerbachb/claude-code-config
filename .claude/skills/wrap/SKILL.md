@@ -1,7 +1,7 @@
 ---
 name: wrap
-description: End-of-session command — verify no unresolved findings, squash merge, sync main, detect per-PR follow-ups, run a full-session loose-ends sweep, and extract lessons. Accepts an optional PR reference (`/wrap <URL>`, `/wrap #N`, `/wrap N`); with no argument it infers the PR from the current branch, then thread context, then session-state.
-argument-hint: "[URL | #N | N]"
+description: End-of-session command — verify no unresolved findings, squash merge, sync main, detect per-PR follow-ups, run a full-session loose-ends sweep, and extract lessons. Terse by default — output is a concise merged + follow-ups summary; pass `--verbose` for the full per-phase report. Accepts an optional PR reference (`/wrap <URL>`, `/wrap #N`, `/wrap N`); with no argument it infers the PR from the current branch, then thread context, then session-state.
+argument-hint: "[URL | #N | N] [--verbose]"
 ---
 
 Wrap up the current PR and session. This is the "we're done here" command that handles final verification through merge, root-main sync, follow-up detection, a full-session sweep for loose ends, and lessons.
@@ -51,11 +51,39 @@ Autonomy does not mean filing blind: every candidate goes through the body-aware
 
 > **"Threads only" defined (issue #455):** the unresolved-review-threads auto-recovery rows above apply when unresolved review threads are the **sole** blocker — i.e. no other blocker category is present (no CI failing/incomplete, no `BEHIND`/`DIRTY`/`CONFLICTING` merge state, no stale or human `CHANGES_REQUESTED`, no missing fresh bot `APPROVED`). When any of those co-occur, the broader Step 2.1 decision tree (issue #452) owns dispatch — first matching branch wins — rather than a single threads-only pass. The single-attempt / stop-on-mixed-blocker semantics from #455 are realized here as the threads-only branch of the bounded #452 loop, not a separate one-shot path.
 
+## Output modes
+
+`/wrap` is **terse by default**: it runs all four phases in full but collapses its human-facing output to a short merged + follow-ups summary. Pass `--verbose` for the complete per-phase narration and the detailed final report.
+
+| Mode | Flag | Effect |
+|------|------|--------|
+| **Terse** | *(default)* | Two concise blocks — **Merged** (≤3 sentences) and **Follow-ups** (≤3 sentences, or "No follow-ups opened.") — plus a one-line lessons ack and, only when the sweep left decisions pending, a one-line verdict. Per-phase narration is suppressed. |
+| **Verbose** | `--verbose` | The full report: per-cycle recovery heartbeats, the Session Lessons block, and the multi-section "Wrap-Up Complete" report (Issues filed, Filings suppressed as duplicates, Session sweep, Verdict, Lessons). |
+
+**Verbosity is additive and human-facing only.** Every phase — inference, the merge-gate recovery loop, `/fixpr` delegation, the follow-up + full-session sweep, and the lessons/memory write — executes **identically** in both modes; only narration differs (the `babysit-pr --silent` "work continues, output suppressed" model). Three things always print regardless of mode:
+
+- **State-changing blockers and stop conditions** — a merge that can't proceed, `CONFLICTING`, human `CHANGES_REQUESTED`, no PR found, the recovery cap — surface as a short one-line reason even in terse mode (Step 4.3 **Blocker path**). Terseness never swallows a blocker.
+- **The `[INFERRED]` merge-safety checkpoint** (Step 1.1). It is the user's only catch point for a mis-inferred **merge**, so it is a safety guardrail rather than phase chatter — it prints in both modes (it fires only on the inference path, never on the normal branch path, so it barely affects terseness).
+- **The CLAUDE.md 5-minute heartbeat** during long `/fixpr` waits. Terse mode suppresses the *routine* per-cycle recovery heartbeat, but never the obligation to break silence during a long-running operation.
+
+When `/wrap` is invoked by a phase-C subagent, the machine **`EXIT_REPORT`** block (per `phase-protocols.md`) is emitted **identically regardless of verbosity** — `--verbose` governs only the prose report, never the structured exit contract.
+
 ## Phase 1: Pre-Merge Verification — Check for Unresolved Findings
 
 Before merging, verify that all reviewer feedback has been addressed.
 
 ### Step 1.1: Identify the PR
+
+**Parse flags first (before any PR resolution).** Following `recap`'s "extract flags first, then interpret the remainder as the target" rule, scan `$ARGUMENTS` for `--verbose` (anywhere, any order), set `WRAP_VERBOSE`, and **strip it** so only the PR reference remains for the cascade below. Absence of the flag ⇒ terse mode (the default). See **Output modes** above for what each mode prints.
+
+```bash
+WRAP_VERBOSE=0
+REST=""
+for tok in ${ARGUMENTS:-}; do
+  if [ "$tok" = "--verbose" ]; then WRAP_VERBOSE=1; else REST="${REST:+$REST }$tok"; fi
+done
+ARGUMENTS="$REST"   # remainder is a clean PR reference for 1.1a onward (may be empty)
+```
 
 `/wrap` resolves its target PR through an ordered inference cascade. The first sub-step that yields a PR wins; later sub-steps are skipped. The shared helper `.claude/scripts/infer-pr.sh` handles explicit-argument normalization and session-state lookup (issue #448 — the same helper `/fixpr` adopts under issue #447, so the two skills cannot drift). Thread scanning (1.1c) is judgment the AI layer performs directly.
 
@@ -217,11 +245,13 @@ For each finding:
 WRAP_UNRESOLVED_THREADS=$(jq -r '.threads.unresolved_count // 0' < "$BUNDLE")
 ```
 
-If `WRAP_UNRESOLVED_THREADS > 0`, emit a timestamped detection heartbeat. Do **not** assert that threads are the sole blocker or that recovery will happen — that is Branch B's call once the gate's full `missing` set is known:
+If `WRAP_UNRESOLVED_THREADS > 0`, record it. In `--verbose` mode, also emit a timestamped detection heartbeat (terse mode suppresses this narration — the detection and the Step 2.1 routing happen either way). Do **not** assert that threads are the sole blocker or that recovery will happen — that is Branch B's call once the gate's full `missing` set is known:
 
 ```bash
-TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
-echo "[$TS] Phase 1: $WRAP_UNRESOLVED_THREADS unresolved review thread(s) detected — Step 2.1 will route to /fixpr if they are the sole gate blocker (issue #455)"
+if [ "$WRAP_VERBOSE" = "1" ]; then
+  TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
+  echo "[$TS] Phase 1: $WRAP_UNRESOLVED_THREADS unresolved review thread(s) detected — Step 2.1 will route to /fixpr if they are the sole gate blocker (issue #455)"
+fi
 ```
 
 **Do not invoke `/fixpr` from Phase 1** — that would double-invoke against Phase 2 Branch B and re-burn a CR review. Phase 1 only *detects and records*; the single delegation point is Step 2.1 Branch B. The actual threads-only stop-or-recover decision (single bounded pass, code-verified resolution, re-check) lives there. This preserves the single-`/fixpr`-per-blocker contract and the bounded loop (no infinite delegation).
@@ -246,16 +276,23 @@ WRAP_RECOVERY_MAX_ITERATIONS="${WRAP_RECOVERY_MAX_ITERATIONS:-5}"
 
 **Polling ownership (issue #454):** `/wrap` has NO polling cadence of its own — no sleeps, no micro-polls between gate checks. All waiting for bot verdicts and CI happens inside `/fixpr`'s Step 4d review-wait loop (30–60s cadence, 20-min cap per iteration, outer cap 5). `/wrap` delegates, trusts the returned verdict, and re-runs `merge-gate.sh` immediately.
 
-**Per-iteration heartbeat (mandatory):** Before acting, emit one user-visible line:
+**Per-iteration heartbeat:** In `--verbose` mode, before acting, emit one user-visible line per cycle:
 
 ```bash
-TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
-echo "[$TS] /wrap recovery cycle $i/$WRAP_RECOVERY_MAX_ITERATIONS — gate check"
+if [ "$WRAP_VERBOSE" = "1" ]; then
+  TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
+  echo "[$TS] /wrap recovery cycle $i/$WRAP_RECOVERY_MAX_ITERATIONS — gate check"
+fi
 ```
 
-The first line of each cycle must include Eastern time (same `TZ='America/New_York' date` pattern as `CLAUDE.md`). Optional: append **`— blocker → action → result`** after each recovery step for scanability.
+The verbose cycle line includes Eastern time (same `TZ='America/New_York' date` pattern as `CLAUDE.md`); optionally append **`— blocker → action → result`** for scanability.
 
-After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bullets): cycle number, blocker summary, action taken, result (`merge-gate` exit code + short `missing` summary or success). Include any **`FIXPR_WRAP_STATUS:…`** / **`Status:`** line parsed from a delegated `/fixpr` run.
+**Terse mode keeps two non-negotiable recovery-loop signals** (the `babysit-pr --silent` model — routine ticks quiet, meaningful transitions loud), so the *routine* per-cycle "gate check" line above is verbose-only but recovery never runs invisibly:
+
+- **The CLAUDE.md 5-minute heartbeat is never suppressed.** Recovery may delegate to `/fixpr`, which can wait minutes for bots/CI. If a wait approaches 5 minutes, emit a brief timestamped progress line even in terse mode — silence during a long op is a heartbeat-rule violation, not terseness.
+- **Dispatch and blocker transitions always print.** When this loop invokes `/fixpr` (the Branch B/C/D delegate heartbeats below) or hits a genuine block/stop, that short line prints in both modes — it doubles as the "recovery underway" / long-wait anchor and only ever fires on the non-merge-ready path (a merge-ready `/wrap` skips the loop entirely).
+
+After each action, append to **`WRAP_RECOVERY_AUDIT`** (free-form lines or bullets): cycle number, blocker summary, action taken, result (`merge-gate` exit code + short `missing` summary or success). Include any **`FIXPR_WRAP_STATUS:…`** / **`Status:`** line parsed from a delegated `/fixpr` run. The audit is always built (it backs the stop-condition report and the verbose final report); it is *rendered* to the user only under `--verbose`.
 
 **Merge-ready shortcut:** Before entering the loop, run `merge-gate.sh` once. If exit `0` **and** Phase 1 recorded no `WRAP_PHASE1_FINDINGS`, **and** you are not carrying forward a half-applied recovery from a prior turn, skip straight to Step 2.2 — **no extra overhead**.
 
@@ -466,8 +503,14 @@ else
   # success / 1 skipped / 2 failed / 4 aborted (unpushed commits on main).
   MAIN_SYNC_STATUS=$(bash .claude/scripts/main-sync.sh --reset --repo "$ROOT_REPO" 2>&1 || true)
 fi
-echo "Main quarantine: $QUARANTINE_STATUS"
-echo "Main sync: $MAIN_SYNC_STATUS"
+# Verbose-only narration. Both values are captured above and reused by the
+# final report either way. Terse surfaces main-sync status in the Merged block
+# ONLY when noteworthy (an `aborted:` outcome or a quarantine actually ran);
+# a clean/up-to-date sync adds no line.
+if [ "$WRAP_VERBOSE" = "1" ]; then
+  echo "Main quarantine: $QUARANTINE_STATUS"
+  echo "Main sync: $MAIN_SYNC_STATUS"
+fi
 ```
 
 See `.claude/scripts/main-sync.sh --help` and `.claude/scripts/dirty-main-guard.sh --help` for the full contracts.
@@ -906,7 +949,7 @@ Calculate a complexity signal:
 
 ### Step 4.2: Run lessons (or skip)
 
-**If trivial:** Output "Clean session — no lessons to capture." and skip to Step 4.3 (final report).
+**If trivial:** no lessons to capture — set `WRAP_LESSONS_COUNT=0` and skip to Step 4.3. (Verbose prints "Clean session — no lessons to capture."; terse folds it into the one-line lessons ack.)
 
 **If non-trivial:** Reflect on the session:
 
@@ -923,20 +966,64 @@ For each actionable, novel lesson (including the merged sweep candidates):
 - Write memory files with proper frontmatter (`feedback`, `project`, or `user` type)
 - Add pointers to `MEMORY.md`
 
-Present the summary:
-```
-## Session Lessons
+**The memory writes above happen in both modes.** Record the number saved as `WRAP_LESSONS_COUNT`. How the outcome is *presented* depends on the output mode:
 
-### Saved to memory:
-1. **<title>** — <summary> (saved as <type>)
+- **Verbose (`--verbose`):** print the full block —
 
-### Observations (not saved):
-- <things noted but not actionable>
-```
+  ```
+  ## Session Lessons
+
+  ### Saved to memory:
+  1. **<title>** — <summary> (saved as <type>)
+
+  ### Observations (not saved):
+  - <things noted but not actionable>
+  ```
+
+- **Terse (default):** suppress the block; carry a one-line acknowledgment into the Step 4.3 terse report — `{WRAP_LESSONS_COUNT} lesson(s) captured to memory` (or `Clean session — no lessons` when `WRAP_LESSONS_COUNT` is 0).
 
 After lessons (or skip): emit the final report below — do not ask.
 
 ### Step 4.3: Final report
+
+`/wrap` renders one of two **success** reports based on the output mode parsed in Step 1.1; the **Blocker path** below prints in *both* modes. The mode governs only the verbosity of the success report — it never suppresses a stop.
+
+#### Terse report (default)
+
+Two concise blocks drawn from the already-structured data (`WRAP_FILED_ISSUES`, the Step 3.13 verdict, `WRAP_LESSONS_COUNT`, the Step 2.5 statuses), plus at most two one-line acks — nothing else:
+
+```
+## Wrapped up
+
+**Merged:** PR #{N} ({title}) — {≤3 sentences on the gist of what changed}.{ Only when main-sync was noteworthy — an `aborted:` outcome or a quarantine actually ran: " Main: {one-line status}."}
+
+**Follow-ups:** {either "Opened [#{a}](url) — {one line}; [#{b}](url) — {one line}." listing every `WRAP_FILED_ISSUES` entry as number + one-line + link (≤3 sentences), or "No follow-ups opened."}{ When any filing was suppressed as a duplicate: " {M} finding(s) appended to existing issues." — never drop a suppressed finding silently.}
+
+{lessons ack, one line: "{WRAP_LESSONS_COUNT} lesson(s) captured to memory." | "Clean session — no lessons."}
+{sweep line — ONLY when the Step 3.13 verdict is "N items pending your decision before archive": "Session sweep: {N} item(s) pending your decision — run `/wrap --verbose` for detail." Omit this line entirely on "Clear to archive".}
+```
+
+Rules for the terse report:
+
+- **Merged ≤3 sentences; Follow-ups ≤3 sentences.** These two blocks are the whole point of terse mode — keep them skimmable.
+- **Every opened issue is listed** (number + one-line + clickable link) from `WRAP_FILED_ISSUES`; an opened issue that isn't listed is indistinguishable from one silently dropped. However many were opened, list them all (they are the payload), one line each.
+- **Suppressed-as-duplicate findings are never silently dropped** — surface the count in one clause. The full "who deferred to which issue" detail lives in the verbose report and `session-state.json`.
+- The **sweep verdict** appears only when decisions are pending; a routine "Clear to archive" adds no line. Full Auto-handled / Needs-your-decision detail is persisted in Step 3.13 and shown under `--verbose`.
+
+#### Blocker path (both modes)
+
+If `/wrap` stopped instead of merging, print a **single short line** naming the reason. Reuse the canonical stop strings already defined elsewhere in this skill (Phase Transition Autonomy table; Step 1.1f no-candidates messages; Step 2.1 stop conditions) rather than inventing new wording; under `--verbose`, append the full `WRAP_RECOVERY_AUDIT` / `missing` detail:
+
+- **Merge gate not met after the recovery cap** → `Merge blocked: {last missing summary}. Re-run /wrap or /fixpr.`
+- **`mergeable == CONFLICTING`** → `Merge blocked: merge conflicts — run /merge-conflict.`
+- **Human `CHANGES_REQUESTED` on HEAD** → `Merge blocked: changes requested by {login(s)}.`
+- **No PR found** → the Step 1.1f message verbatim ("This thread has no coding work…" or "No PR found for the current branch…").
+
+The blocker line is **mandatory in terse mode** — terseness must never swallow a stop.
+
+#### Verbose report (`--verbose`)
+
+Emit the full multi-section report with the existing capping/omission rules unchanged:
 
 ```
 ## Wrap-Up Complete
@@ -976,7 +1063,7 @@ After lessons (or skip): emit the final report below — do not ask.
 - **Lessons:** {summary or "clean session" — recap of Step 4.2}
 ```
 
-**Rendering rules for the Session sweep section:**
+**Rendering rules for the verbose report's Session sweep section** (terse mode uses only the single verdict line from the Terse report above):
 
 - Cap **Auto-handled** and **Needs your decision** at **3–5 bullets** each; if more, show the top items and summarize the remainder as one bullet linking to `.prs["$PR_NUMBER"].wrap_sweep`. **Auto-filed tickets are exempt from the cap** — every created issue's title + body is surfaced in full (never collapsed into the "+ N more" summary), since silently hiding a ticket you just created would violate the Step 3.7 surface-the-body contract.
 - The **Issues filed** section is never capped or truncated, however many issues the run opened: one line per issue, each a clickable link with its number, title, and one-line rationale. An issue filed but not reported is the one failure mode this design cannot tolerate — it can't be retracted if it was never seen.
