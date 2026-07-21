@@ -24,6 +24,8 @@ Separately from Fast mode: for Light-tier work, **Haiku 4.5** is a valid cheaper
 
 **Per-block model label (mandatory):** The first content inside each tilde-fenced block (immediately after the opening `~~~`) MUST be a single line: `**Model:** {MODEL} — {REASON}` where `{MODEL}` is the model string for **that issue's** `issue_tier` (from Step 5 — not the batch tier), and `{REASON}` is a concise task-type phrase of **at most 10 words** derived from that issue's signals (dominant drivers such as rules/CLAUDE.md, orchestration, file count, AC count, skills, dependencies, or scope keywords). The label must be **inside** the tilde fence so a pasted block is self-explanatory without surrounding prose. In chip mode the same line MUST open the chip's `prompt` text **and** appear in the visible short summary — chips cannot preset the model picker, so the user needs it before clicking and the spawned session needs it after.
 
+**Model-guard preamble (mandatory):** Immediately after the `**Model:**` line — no blank line between — insert the model-guard preamble defined in `.claude/reference/chip-launching.md` "Model-guard preamble," verbatim, never reworded. It applies in both delivery modes: the launched thread's first action is to compare its actual running model against the `**Model:**` line and stop on any mismatch. See `chip-model-guard-decision.md` for why the guard rides in both the chip `prompt` and the fallback block.
+
 ## Step 0: Parse Arguments and Detect Context
 
 Parse `$ARGUMENTS` as space-separated issue references. Strip `#` prefixes to get bare issue numbers.
@@ -204,7 +206,7 @@ Produce the following output in Markdown. Use the gathered data to fill in each 
 Check chip availability per `.claude/reference/chip-launching.md`, then branch. The **prompt content is identical either way** — only delivery differs:
 
 - **Chip mode** (`mcp__ccd_session__spawn_task` present): for each thread-prompt issue (after Step 5.5 partitioning), call `spawn_task` with `title` / `prompt` / `tldr` / `cwd`, where `prompt` is exactly the content that would sit **inside** that issue's `~~~` fences in fallback mode — the fence delimiters themselves are not part of the prompt. Everything between them, starting with the `**Model:**` line, is. Print only the short summary per issue — issue, title, `**Model:**` line, one-line rationale. The user clicks to launch; never launch for them.
-- **Fallback mode** (tool absent): print today's `~~~`-fenced blocks for every thread-prompt issue, unchanged — **copy-paste-ready**, each independently pasteable into a new thread. Byte-for-byte identical to pre-chip output.
+- **Fallback mode** (tool absent): print today's `~~~`-fenced blocks for every thread-prompt issue — **copy-paste-ready**, each independently pasteable into a new thread. Byte-identical to the chip `prompt` (model-guard preamble included) — see `chip-model-guard-decision.md` for why this is no longer byte-for-byte identical to pre-chip output.
 
 **Spawn outcomes are tracked per issue.** A failed `spawn_task` falls back for **that issue alone** — print its full block and note the fallback once for the batch (per `chip-launching.md`); the rest of the batch keeps its chips. Do not print a block for an issue whose chip spawned successfully. Every thread-prompt issue ends with exactly one of: a chip, or a printed block.
 
@@ -275,6 +277,7 @@ Then, for each issue, output a self-contained prompt block. Use tilde fences (`~
 
 ~~~
 **Model:** Opus 4.8 — skill change with many acceptance checks
+{Model-guard preamble — insert verbatim from `chip-launching.md` "Model-guard preamble", immediately after this line, no blank line between}
 ### Issue #{NUMBER}: {TITLE}
 
 **Acceptance Criteria:**
@@ -355,9 +358,10 @@ This task is done when:
 - **All PM-detected issues are subagent-eligible:** Output only the Subagent Candidates section. No tier recommendation or prompt blocks needed.
 - **All PM-detected issues are thread-prompt-eligible:** Output normally — skip the Subagent Candidates section entirely. This is the same as the explicit-args path.
 - **`/subagent` skill not yet available:** The Subagent Candidates section outputs a `/subagent` command suggestion regardless of whether the skill exists. If the user runs it and the skill is missing, they will get a clear error. The `/prompt` skill does not gate on `/subagent` availability.
-- **Chip tool unavailable (CLI, headless, older client):** Fallback mode — output is identical to pre-chip behavior. Do not mention chips.
+- **Chip tool unavailable (CLI, headless, older client):** Fallback mode — output is byte-identical to the chip `prompt`, model-guard preamble included (see `chip-model-guard-decision.md`). Do not mention chips.
 - **Spawn fails mid-batch:** Fall back to a printed block for that issue only; the rest of the batch keeps its chips. Do not retry the failed spawn.
-- **User asks for the full prompt in chip mode:** Re-emit that issue's complete tilde-fenced block verbatim; leave the chip in place.
+- **User asks for the full prompt in chip mode:** Re-emit that issue's complete tilde-fenced block verbatim, guard included; leave the chip in place.
+- **Launched thread's running model mismatches its `**Model:**` line:** The guard rules live in `chip-launching.md`, not here — the launched thread stops on any mismatch as its first action and waits for the user, per the model-guard preamble. `/prompt` only has to ensure the preamble is present in every block; it does not itself detect or resolve mismatches.
 
 ## Usage Examples
 
@@ -395,6 +399,7 @@ The prompt block that follows:
 
 ~~~
 **Model:** Opus 4.8 — skill file with multiple acceptance criteria
+{model-guard preamble — see "Model-guard preamble" above, verbatim, omitted here for brevity}
 ### Issue #110: {Title}
 
 **Acceptance Criteria:**
