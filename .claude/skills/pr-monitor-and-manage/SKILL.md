@@ -19,6 +19,8 @@ Thread-level **PR fleet manager**. This skill turns the current thread into a de
 
 This is a **set-and-monitor** command. Once invoked it acknowledges the mode, establishes a `/loop`, and at every tick reprints the fleet table and acts. The **parent thread** never edits feature code directly — it dispatches subagents to do that work — and never drifts into unrelated work.
 
+> **Scope vs `/pm`'s forgotten-PR triage (issue #657).** `/pm` runs a **one-shot** startup triage of *forgotten* PRs (last activity older than a few days), recommends close/merge, and hands merges off to `/wrap` subagents — then it stops. This skill is the opposite: **continuous** fleet monitoring on a recurring `/loop`, driving *every* open PR to merge-ready or a named hard block tick after tick. Reach for `/pm`'s triage to clear a backlog of stale PRs once at startup; reach for `/pr-monitor-and-manage` to actively babysit the whole fleet until it is clean.
+
 ---
 
 ## Step 0: Enter PR-fleet-manager mode (MANDATORY, first tick only)

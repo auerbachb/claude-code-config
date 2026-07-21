@@ -17,6 +17,7 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 - /wrap includes everything /merge does, plus follow-ups and lessons. Don't run both.
 - Phase C invokes this skill after gate and AC verification; keep merge, main-sync, follow-up, and cleanup behavior here so Phase C and `/wrap` cannot drift.
 - **Target PR:** `/wrap` operates on the PR resolved in Step 1.1. Pass an explicit reference (`/wrap <URL>`, `/wrap #N`, `/wrap N`) to wrap a PR that is **not** on the current branch — common in orchestration threads that ran `/fixpr <URL>` against another worktree. With no argument, Step 1.1's cascade infers the PR; see **Step 1.1: Identify the PR**.
+- **Callers of the `/wrap #N` form:** Phase C (`phase-c-merger`), `/pr-monitor-and-manage` (merge-ready fleet PRs), and **`/pm`'s one-shot forgotten-PR triage** (issue #657) all merge an already-open PR by dispatching this workflow rather than reimplementing merge logic — the merge gate, AC verification, and squash-merge live here so every caller stays consistent.
 
 ## Execution Model
 

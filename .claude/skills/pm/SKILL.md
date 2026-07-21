@@ -134,6 +134,8 @@ fi
 2. Any issues that were in-progress but whose PRs are now missing or stale
 3. Remaining open issues not yet assigned
 
+**Then run Step 1D (Forgotten-PR triage, below) and print its `## Forgotten PRs` block** — always-on on the resume path too, rendered after the recovered-PR context above.
+
 Proceed with current assignments by default. State: "Continuing with current assignments. Say 're-prioritize' to change strategy."
 
 Then proceed to **Step 2: Active Monitoring Setup** (resume mode restores passive tracking — see Step 2).
@@ -277,11 +279,14 @@ Incorporate the answer, finalize the ranking, and continue to 1B.5.
 
 ### 1B.5: Present recommendations
 
-**First, run Step 1C (Backlog & workspace cleanup, below) — the full inline `/pm-clean` flow — ahead of everything else in this step, with its confirm gates resolved (acted on or declined) before any ranking output** (unless `--no-clean` / `fast` was passed, which prints only the ranking-only health line and skips the gates). Then, when `$GH_USER` is set, lead the output with user-scoped sections before the general backlog ranking. These always take precedence over backlog pickup — they represent work already on the user's plate.
+**First, run Step 1C (Backlog & workspace cleanup, below) — the full inline `/pm-clean` flow — ahead of everything else in this step, with its confirm gates resolved (acted on or declined) before any ranking output** (unless `--no-clean` / `fast` was passed, which prints only the ranking-only health line and skips the gates). Then, when `$GH_USER` is set, lead the output with user-scoped sections before the general backlog ranking. These always take precedence over backlog pickup — they represent work already on the user's plate. **Immediately after `## Your Open PRs`, run Step 1D (Forgotten-PR triage, below) and print its `## Forgotten PRs` block** — like Step 1C it is always-on and informational, and it renders before `## Suggested Next Issues`. If `$GH_USER` is unset so no `## Your Open PRs` section renders, the block still appears — `forgotten-pr-triage.sh` defaults to `@me` — placed after whatever user-scoped sections did render (or on its own if none), still before `## Suggested Next Issues`.
 
 ```
 ## Your Open PRs
 {List of open PRs authored by $GH_USER with last update time — or "none" if empty}
+
+## Forgotten PRs (>N days)
+{Step 1D output — the forgotten set with per-PR close/merge recommendations, or a one-line "none" note when empty. Informational; never alters the ranking below.}
 
 ## PRs Awaiting Your Review
 {List of open PRs where $GH_USER is a requested reviewer — or "none" if empty}
@@ -395,6 +400,55 @@ When `estimate_message` is set instead of `estimate` (the 30-day closure rate is
 ```
 
 If `candidate_count` is 0, drop the "defer/close candidates" line rather than showing a zero. This fallback stays purely informational — it never enumerates the flagged issues and never prompts for action; the full interactive cleanup is the default (no flag).
+
+---
+
+## Step 1D: Forgotten-PR triage (always-on)
+
+Runs on **every** `/pm` invocation, no flag required — both 1A.4 (resume) and 1B.5 (cold start) call it, rendering its block **immediately after `## Your Open PRs` and before `## Suggested Next Issues`**. Like Step 1C it is informational-first: printing the block never alters 1B.3 narrowing, 1B.4 scoring, or the 1B.4b judgment check. Its scope is deliberately narrow — a **one-shot startup triage** of PRs you have likely forgotten, then a hand-off. It does **not** enter a monitoring loop; continuous PR-fleet monitoring remains `/pr-monitor-and-manage`'s job (bounded by #460/#522).
+
+### 1D.1: Detection
+
+```bash
+# Threshold defaults to 3 days; override via FORGOTTEN_PR_DAYS (or a pm-config.md
+# "Forgotten PR threshold" note resolved into it). --author defaults to @me; pass
+# $GH_USER when Step 0 resolved it. The script re-validates --days and falls back
+# to 3 on a non-numeric/non-positive value, so a bad override degrades safely.
+DAYS="${FORGOTTEN_PR_DAYS:-3}"
+.claude/scripts/forgotten-pr-triage.sh --json --days "$DAYS" ${GH_USER:+--author "$GH_USER"}
+```
+
+`forgotten-pr-triage.sh` (read-only — it never closes, merges, or deletes) enumerates your open PRs, keeps those whose **last activity** (`updatedAt`, the documented age basis) is strictly more than the threshold ago, and classifies each `close` or `merge` using exactly two close signals (first match wins; otherwise `merge`):
+
+- **linked issue closed** — the PR's `Closes/Fixes #N` issue is already `CLOSED` (rationale `linked issue #N closed`).
+- **superseded / already in main** — the PR contributes zero net-new commits to `main` (every commit already landed, including via another merged PR, by `git cherry` patch-id equivalence; rationale `superseded / already in main`).
+
+CI/conflict state is **not** a close signal — a red or conflicted PR is surfaced as a `merge` candidate and will fail the gate visibly downstream. Each JSON record carries `number`, `title`, `url`, `headRefName`, `age_days`, `recommendation`, and `rationale`, so the block below renders and the action paths act without extra `gh` calls. Exit `0` (including the empty set) is success; only exit `2`/`3` (usage / environment) is a real error to surface.
+
+### 1D.2: Render
+
+```
+## Forgotten PRs (>N days)
+
+- **PR #123 — {title}** — {age_days}d idle → **close** (superseded / already in main)
+- **PR #130 — {title}** — {age_days}d idle → **close** (linked issue #99 closed)
+- **PR #141 — {title}** — {age_days}d idle → **merge**
+```
+
+`N` is the active `--days` threshold (default 3). If the forgotten set is empty, print a single line — `## Forgotten PRs — none older than N days` — and skip the action paths entirely.
+
+### 1D.3: Close flow (confirmation-gated)
+
+For every `close`-classified PR, present the PR and its rationale and **ask for explicit confirmation** before touching anything (recommend → confirm → apply, mirroring `/pm-clean`). Declining leaves the PR open.
+
+- On confirmation: `gh pr close <N> --comment "<rationale>"`.
+- **Separately** — a second, independent gate, never bundled with the close confirmation — offer to delete the PR's head branch. When confirmed, delete `<headRefName>` honoring `stale-cleanup.sh`'s branch-deletion safety rules (never a protected name — `main`/`master`/`develop`; never a branch checked out in a worktree), skipping with a one-line note if any check fails. Do **not** reimplement those safety checks — treat `stale-cleanup.sh` as their source of truth; its out-of-band sweep (via `/pm-update`) also reaps the branch later once it ages past the stale threshold.
+
+### 1D.4: Merge flow (confirmation-gated, delegated to `/wrap`)
+
+For the `merge`-classified PRs, present them and require an explicit **"yes"** per CLAUDE.md's merge-authorization rule — no auto-merge. Declining leaves everything unmerged. The "yes" is the authorization; do not add a second per-PR merge prompt.
+
+On confirmation, **dispatch one subagent per approved PR that executes the `/wrap #N` workflow** (the arbitrary-PR form) so the existing merge gate + AC verification + squash-merge run unchanged — **do not reimplement merge logic**. Spawn per `.claude/agents/README.md` and `subagent-orchestration.md`: `subagent_type: "phase-c-merger"`, `mode: "bypassPermissions"`, explicit `model: "sonnet"`, the verbatim SAFETY block, and the handoff path. Respect the **3–4 concurrent-pipeline ceiling** from `subagent-orchestration.md` — launch up to the cap and queue the rest, starting a queued merge as each running one finishes. This is a one-shot hand-off: once the merge subagents are dispatched, Step 1D is done — it does not poll them (polling is monitoring, which belongs to `/pr-monitor-and-manage`).
 
 ---
 
