@@ -430,22 +430,27 @@ After setup, proceed to **Step 3: Orchestration Loop**.
 
 This is the core PM behavior. Once the user confirms which issues to work on, enter the orchestration loop.
 
-### 3.1: Generate coding thread prompts
+### 3.1: Launch selected issues (inline by default)
 
-For each selected issue, generate a self-contained prompt. The prompt content below is the same in both delivery modes — only how it reaches the user differs.
+Once the user has selected which issues to work on, **partition them** with the "too big for any subagent" test from `/subagent` Step 4 — Phase A won't fit one subagent's output budget, needs interactive human judgment mid-build, or should be split into multiple PRs. This is a judgment call about *whole-issue size and interactivity*, not tier, and not file/AC/dependency counts. Touching `.claude/rules`, `CLAUDE.md`, or `.claude/skills` does **not** make an issue too big. Then:
+
+- **Inline-eligible issues (the default — most issues):** run them inline through the `/subagent` A→B→C flow. This is the default action; selecting the issue is the go-ahead — no "go ahead and run those" needed. Invoke `/subagent #{a} #{b} …` with the eligible set; it runs Phase A then Phase B under Dedicated Monitor Mode, driving each to `merge_ready`, and runs Phase C **only after you authorize the merge**. Launch up to the **3–4 concurrent-pipeline** ceiling from `subagent-orchestration.md` and queue the rest, starting a queued pipeline as each running one **merges or blocks** — a pipeline parked at `merge_ready` keeps its slot through Phase C (see 3.4). Inline runs **stop at `merge_ready` and ask for merge authorization before Phase C** (`/subagent` Step 10) — PM never auto-merges a batch. Mark each such issue `Inline` in the Active Work table (3.2).
+- **Too-big issues (the exception):** hand these out as thread prompts for the user to launch in a separate thread, each with a **one-line reason** naming which criterion fired. This is the only path that produces a chip or a printed prompt block. Everything from here to the end of 3.1 governs the too-big subset only.
+
+**Thread-prompt delivery for too-big issues.** For each too-big issue, generate a self-contained prompt. The prompt content below is the same in both delivery modes — only how it reaches the user differs.
 
 **First, check chip availability** per `.claude/reference/chip-launching.md`, then branch:
 
-- **Chip mode** (`mcp__ccd_session__spawn_task` present): call `spawn_task` once per selected issue with `title` / `prompt` / `tldr` / `cwd`, where `prompt` is the full self-contained prompt below, unchanged. Print **only** the short summary per issue (issue, title, `**Model:**` line, one-line rationale) — see the reference for the exact format. Record each returned `task_id` in the Active Work table (3.2) and set that issue's status to `Chip offered`.
-- **Fallback mode** (tool absent): emit the full prompt blocks for every selected issue — same fences, same content, model-guard preamble included. `chip-launching.md` redefines the fallback baseline as byte-identical to the chip `prompt` (guard included), not pre-chip output — see `chip-model-guard-decision.md`.
+- **Chip mode** (`mcp__ccd_session__spawn_task` present): call `spawn_task` once per too-big issue with `title` / `prompt` / `tldr` / `cwd`, where `prompt` is the full self-contained prompt below, unchanged. Print **only** the short summary per issue (issue, title, `**Model:**` line, one-line too-big reason) — see the reference for the exact format. Record each returned `task_id` in the Active Work table (3.2) and set that issue's status to `Chip offered`.
+- **Fallback mode** (tool absent): emit the full prompt blocks for every too-big issue — same fences, same content, model-guard preamble included. `chip-launching.md` redefines the fallback baseline as byte-identical to the chip `prompt` (guard included), not pre-chip output — see `chip-model-guard-decision.md`.
 
-**Spawn outcomes are tracked per issue.** A failed `spawn_task` falls back for **that issue alone** — print its full block and leave it at `Prompt generated`. Issues whose spawns succeeded keep their chip, their `task_id`, and their `Chip offered` status; never re-print their block as well, or the same issue is offered twice. Every selected issue ends with exactly one of: a chip, or a printed block.
+**Spawn outcomes are tracked per issue.** A failed `spawn_task` falls back for **that issue alone** — print its full block and leave it at `Prompt generated`. Issues whose spawns succeeded keep their chip, their `task_id`, and their `Chip offered` status; never re-print their block as well, or the same issue is offered twice. Every too-big issue ends with exactly one of: a chip, or a printed block.
 
 Chips carry no model preset, so the `**Model:**` line must appear both in the visible summary and inside the chip's prompt text. Get the model recommendation from `/prompt`'s tier classification when it ran; otherwise infer it from the issue's signals using the same Heavy/Standard/Light mapping. Immediately after the `**Model:**` line, the prompt also carries the mandatory model-guard preamble defined in `chip-launching.md` — insert it verbatim, never reworded.
 
 If the user asks to "print the full prompt for #N" while in chip mode, re-emit that issue's complete block verbatim, guard included — the chip stays offered.
 
-Each prompt must include:
+Each too-big issue's thread prompt must include:
 
 ```
 **Model:** {MODEL} — {REASON}
@@ -483,7 +488,7 @@ Fix/implement issue #{N}: {title}
 - Squash and merge when reviews are clean
 ```
 
-Offer or present every prompt — never execute one. Do NOT spawn subagents or run the prompts: in chip mode the user's click is the only launch path, and in fallback mode the user pastes the block into a thread. Only spawn agents if the user explicitly asks (e.g., "go ahead and run those", "spin up agents for those").
+For too-big issues, offer or present the prompt — never execute it: in chip mode the user's click is the only launch path, and in fallback mode the user pastes the block into a thread. Inline-eligible issues are the opposite — PM runs them itself via `/subagent` per the default at the top of 3.1, no extra "go ahead and run those" required.
 
 ### 3.2: Track assignments
 
@@ -494,6 +499,7 @@ Maintain a state table in the conversation. Update it as work progresses:
 
 | Issue | Thread | Task ID | PR | Status | Last Update |
 |-------|--------|---------|----|--------|-------------|
+| #40 | Inline | — | PR #87 | Phase B (in review) | {timestamp} |
 | #42 | Chip offered | `task_abc123` | — | Awaiting thread start | {timestamp} |
 | #61 | Prompt generated | — | — | Awaiting thread start | {timestamp} |
 | #38 | Active | — | PR #88 | In review | {timestamp} |
@@ -502,9 +508,10 @@ Maintain a state table in the conversation. Update it as work progresses:
 
 **Thread column values:**
 
-- `Chip offered` — a chip was spawned for this issue and is waiting on a click (chip mode).
-- `Prompt generated` — a full prompt block was printed for the user to paste (fallback mode, or a failed spawn).
-- `Active` — a thread is running for this issue.
+- `Inline` — PM is running this issue itself via the `/subagent` A→B→C flow (its phase shows in the Status column). Not a separate thread and carries no chip; this is the default for inline-eligible issues.
+- `Chip offered` — a chip was spawned for this (too-big) issue and is waiting on a click (chip mode).
+- `Prompt generated` — a full prompt block was printed for the user to paste (too-big issue; fallback mode, or a failed spawn).
+- `Active` — a separate thread is running for this issue.
 
 **Task ID column:** every `Chip offered` row MUST carry the `task_id` returned by its `spawn_task` call — it is the only handle for dismissing that chip later, and a chip whose `task_id` was not recorded cannot be withdrawn. `Prompt generated` and `Active` rows leave it empty (`—`).
 
@@ -543,7 +550,9 @@ Also accept user input: "thread for #42 is done", "PR #88 merged", "#55 is block
 
 ### 3.4: Suggest next batch
 
-When one or more threads finish (PRs merged, issues closed):
+**Refill inline slots first.** A pipeline frees its concurrency slot only when its `/subagent` run reaches a terminal `OUTCOME` — `merged` or `blocked` — one parked at `merge_ready` still has merge authorization and Phase C ahead, so it keeps its slot until it actually merges. When a slot frees, start the next issue queued behind the 3–4 ceiling from 3.1 before anything else — but first re-validate that queued issue with a quick current-state + too-big check (3.1 / `/subagent` Steps 4–5): if it has since closed, gained its own PR, or become too big, skip it and take the next queued one. This keeps up to the cap running without exceeding it, and is separate from suggesting *new* backlog issues below. If every slot is parked at `merge_ready`, ask for merge authorization rather than launching more — each authorized merge frees a slot.
+
+When one or more pipelines or threads finish (PRs merged, issues closed):
 
 1. **Dismiss the chips of finished issues, then remove their rows.** Order matters: a row carries its chip's `task_id`, and once the row is gone the chip can no longer be withdrawn. So for every completed issue still at `Chip offered`, `dismiss_task` first — its work is done, the offer is dead — and only then drop it from the assignments table.
 2. Re-scan open issues (reuse 1B.2-1B.4b logic but lighter — only re-read bodies **and comments** for issues whose `updatedAt` moved since the last scan's baseline, or that have no recorded baseline yet (first seen this pass — always gets a full read, same as a changed issue); track/update that baseline per issue as you go). **`updatedAt` bumps on a new comment just like a body edit**, so a dependency reference added in a comment on an otherwise-untouched issue (e.g. "blocked by #99") is still caught on the next pass — re-reading is scoped by *any* change, not just body/title edits, which is what keeps this from being a real completeness gap. **Re-score the whole retained candidate set, not just the changed issues:** tiers depend on the dependency map, so a closed or merged issue can change an *unchanged* issue's tier — #42 loses its leverage boost the moment the issues it unblocked are done. Refresh the map with what closed **and** what changed, then re-run 1B.4/1B.4b across every remaining candidate. Re-reading bodies and comments stays scoped to issues whose `updatedAt` moved or that are new — that's the expensive part and it stays incremental; re-scoring the dependency map and tiers is cheap and must be total.
@@ -573,19 +582,11 @@ When the conversation is getting long (many back-and-forth cycles, multiple batc
 
 ## Execution Boundary (CRITICAL)
 
-**This skill does NOT write code, create PRs, or spawn subagents.**
+**PM's default for a selected inline-eligible issue is to run it inline via the `/subagent` A→B→C flow** — the routing, concurrency, and queueing mechanics live in 3.1. Three guardrails sit on top of that:
 
-The PM orchestrator's job is to:
-- Analyze the backlog and recommend what to work on
-- Generate self-contained prompts for coding threads, and offer them as chips when available
-- Track progress across threads
-- Suggest next work when threads finish
-
-The **user** decides when and where to start work — by clicking a chip in chip mode, or by pasting a prompt in fallback mode. The user starts the coding threads. The PM tracks and coordinates.
-
-**Offering a chip is not launching a thread.** `spawn_task` puts a chip in front of the user; only their click starts a session. The PM never clicks for them, and never runs a coding thread's work itself — via the Agent tool or otherwise — in place of a chip the user hasn't clicked. This governs coding threads only; the read-only `pm-worker` data-gathering spawns described under "Model selection for spawned subagents" below remain allowed and are unaffected.
-
-**Exception:** If the user explicitly says "go ahead and run those", "spin up agents", or "execute those prompts" — then and only then may you spawn subagents via the Agent tool to execute the coding thread prompts.
+- **PM writes no code itself.** The Phase A/B/C subagents implement, review, and merge; PM only orchestrates and monitors (Dedicated Monitor Mode). The read-only `pm-worker` data-gathering spawns described under "Model selection for spawned subagents" below remain allowed and unaffected.
+- **No batch auto-merge — merge authorization is still required.** Inline runs stop at `merge_ready` and wait for merge authorization before Phase C (`/subagent` Step 10, CLAUDE.md's merge-authorization rule). PM never merges a batch on its own.
+- **Too-big issues are the user's to start.** They get a thread prompt (chip or printed block); `spawn_task` only *offers* a chip — the user's click is what starts the thread. PM never clicks for them, and never runs a too-big issue inline in place of a chip the user hasn't clicked.
 
 **Model selection for spawned subagents:**
 
@@ -602,5 +603,5 @@ The **user** decides when and where to start work — by clicking a chip in chip
 - **Flag dependencies inline** with the issues they affect.
 - **Total suggestions should be scannable in under 1 minute.**
 - **Do not narrate the scoring process.** Rankings read as a confident recommendation, not a methodology walkthrough. The tiers and rationales are the output; the signals that produced them are not.
-- **Coding thread prompts should be complete and self-contained.** The receiving thread has zero prior context — give it everything it needs.
+- **Thread prompts (for too-big issues) should be complete and self-contained.** The receiving thread has zero prior context — give it everything it needs.
 - **Do not list every issue.** If 80 of 100 issues are low-priority, say "75 additional issues deferred" rather than listing them.
