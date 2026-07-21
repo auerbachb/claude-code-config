@@ -1,8 +1,8 @@
 # Issue Flow
 
-> **Always:** Create a GitHub issue before any code work. Merge CR's plan into the issue body before coding.
-> **Ask first:** Never — issue creation and planning are autonomous.
-> **Never:** Skip the issue. Start coding without a plan. Post the plan as scattered comments instead of editing the issue body.
+> **Always:** Create a GitHub issue before any code work. Merge CR's plan into the issue body before coding. A skill may open issues autonomously — provided it reports each one in-thread with number, title, one-line rationale, and clickable link (`/issue-maker`'s closing-URL convention).
+> **Ask first:** Never — issue creation and planning are autonomous. Filing is reversible; closing an unwanted issue is the escape hatch, not a confirmation prompt.
+> **Never:** Skip the issue. Start coding without a plan. Post the plan as scattered comments instead of editing the issue body. Open an issue without reporting it.
 
 ## Issue Planning Flow — Procedural Checklist
 
@@ -48,4 +48,4 @@
 
 ## Capture-only issue threads
 
-For brainstorming threads whose only job is *opening* issues (no coding, no worktrees, no in-thread CR-plan polling), use the `/issue-maker` skill (`.claude/skills/issue-maker/SKILL.md`). It establishes a session-invariant capture mode, reflects before writing (1–3 scope questions), emits the canonical 6-section body with functional-first tone, and refuses workflow-advancing actions. It deliberately does **not** poll for the CR plan in-thread — `cr-plan-on-issue.yml` posts `@coderabbitai plan` on the issue itself, and the plan-merge gate (steps 5–7 above) runs later when the issue is picked up via `/start-issue`.
+For threads whose only job is *opening* issues (no coding, no worktrees), use `/issue-maker` (`.claude/skills/issue-maker/SKILL.md`): session-invariant capture mode, reflects before writing (1–3 scope questions), emits the canonical 6-section body, refuses workflow-advancing actions. It deliberately does **not** poll for the CR plan in-thread — `cr-plan-on-issue.yml` posts `@coderabbitai plan` on the issue itself, and the plan-merge gate (steps 5–7 above) runs later when the issue is picked up via `/start-issue`.
