@@ -204,6 +204,16 @@ expect_rc 4 "other gh error (unknown field) → exit 4"
 grep_absent "not found in" "exit-4 path must NOT print the not-found message"
 grep_ok 'Unknown JSON field' "exit-4 path surfaces the real gh error text"
 
+# 15. Repo-level gh error must NOT be mis-classified as PR not found → exit 4 (not exit 3).
+FAKE_PRVIEW_ERR='GraphQL: Could not resolve to a Repository with the login of "solo" and the name "repo". (organization)' run 999
+expect_rc 4 "repo-level not-found routes to exit 4 (not misclassified as PR missing)"
+grep_absent "not found in" "repo-level error must NOT print the PR-not-found message"
+
+# 16. Generic HTTP 404 error must NOT be mis-classified as PR not found → exit 4.
+FAKE_PRVIEW_ERR='HTTP 404 Not Found' run 999
+expect_rc 4 "HTTP 404 not-found routes to exit 4 (not misclassified as PR missing)"
+grep_absent "not found in" "HTTP 404 error must NOT print the PR-not-found message"
+
 # 13. Base-SHA-fetch failure: git/ref/heads call fails → ref-name fallback, still exit 0.
 FAKE_BASEREF_FAIL=1 run 1
 expect_rc 0 "base-SHA fetch failure → ref-name fallback, still safe to offer (exit 0)"
