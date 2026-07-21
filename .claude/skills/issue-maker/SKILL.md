@@ -148,23 +148,75 @@ For each issue the user describes (see Step 6 for batches):
 
 ## Step 4: Dedup search
 
-Before creating, search open and recently-closed issues for likely duplicates and surface any matches.
+Before drafting further, search open and recently-closed issues for likely duplicates and surface any matches.
+
+Dedup runs through the **shared retrieval script** `issue-dedup.sh` — the same one `/wrap` uses (`wrap/SKILL.md` Step 3.3a). **Do not hand-roll a `gh issue list --search` call here.** This step used to run its own `"<keywords> in:title"` query; that inline query is the defect issue #652 documented, and routing every auto-dedup path through one script is what stops the call sites drifting into it again.
+
+**Resolve the script once per invocation**, before the first dedup run. `/issue-maker` is a global skill — in a repo that is not this config repo a bare `.claude/scripts/…` path does not exist, and the skills-worktree copy is the one that does:
 
 ```bash
-# Extract 2–5 significant keywords from the proposed title (drop stopwords/punctuation).
-KEYWORDS="<significant words from the title>"
-if [ -n "$KEYWORDS" ]; then
-  gh issue list --repo "$REPO" --state open \
-    --search "$KEYWORDS in:title" --json number,title,url --limit 5
-  gh issue list --repo "$REPO" --state closed \
-    --search "$KEYWORDS in:title closed:>$(date -d '30 days ago' +%F 2>/dev/null || date -v-30d +%F)" \
-    --json number,title,url --limit 5
+DEDUP_SH=""
+for candidate in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh" \
+  "$HOME/.claude/scripts/issue-dedup.sh" \
+  ".claude/scripts/issue-dedup.sh"; do
+  if [[ -x "$candidate" ]]; then DEDUP_SH="$candidate"; break; fi
+done
+```
+
+**Build the search terms from the proposed title *and* the description material** — the user's own words plus their answers to the clarifying questions. (This step runs *before* the body is drafted in Step 5, so the body-to-be is that description material.) Lead with identifier-shaped tokens — filenames, config keys, script names — then add the few words that name the underlying problem.
+
+> **Do not extract "2–5 significant keywords" from the title.** That older instruction was not merely narrow, it was backwards — see *Why the old query failed* below. The script ranks and queries the terms itself; hand it the distinctive ones and let it work.
+
+```bash
+TERMS="<identifiers first, then problem words, drawn from title + description>"
+
+# Keep stderr — it carries the reason (API error, bad repo) that the
+# `dedup unavailable` message has to name.
+DEDUP_ERR=$(mktemp)
+DEDUP_JSON=""; DEDUP_RC=0
+if [ -n "$DEDUP_SH" ]; then
+  DEDUP_JSON=$("$DEDUP_SH" --terms "$TERMS" --repo "$REPO" 2>"$DEDUP_ERR") || DEDUP_RC=$?
+else
+  DEDUP_RC=127        # sentinel: script not installed at any candidate path
 fi
 ```
 
-- **Guard:** if no significant keywords remain, skip the dedup search.
-- **Matches found (default mode):** list them and ask *"Similar issues found — create anyway? (y/N)"*.
-- **Rapid-fire:** show matches but proceed unless there is an **exact title match** (then block and ask).
+`--repo "$REPO"` keeps the search on the target repo established in Step 1, consistent with every other `gh issue …` call in this skill. The script searches open issues plus issues closed within the last 30 days by default — the same recently-closed window this step used to spell out inline; pass `--closed-days N` to widen it.
+
+**Exit `0` is the only "searched" outcome — treat every non-zero code as `dedup unavailable`.** Reading the table as a closed set is the trap: a code not listed here must still fail toward "unavailable", never toward "clean".
+
+| `DEDUP_RC` | Meaning | What to do |
+|------------|---------|------------|
+| `0` | Search ran | Classify `.candidates` — an empty array is a genuine "no match" |
+| `2` | Usage error (e.g. `TERMS` came out empty) | **dedup unavailable** |
+| `3` | No usable terms after stopword filtering | **dedup unavailable** |
+| `4` | `gh` / GitHub API error — reason in `$DEDUP_ERR` | **dedup unavailable** |
+| `127` | Script not resolved at any candidate path | **dedup unavailable** |
+| _anything else_ | Unknown failure | **dedup unavailable** |
+
+**`dedup unavailable` is not "no duplicates found."** Say so plainly — *"Dedup search unavailable (\<reason\>) — I could not check for duplicates"* — naming the reason from `$DEDUP_ERR` where there is one, and let the user decide with that caveat in hand. Reporting a failed search as a clean one is how a duplicate gets filed with false confidence.
+
+**Classify each candidate** by reading its `title` and `excerpt`: does it cover the *same underlying problem*, not merely the same area of the codebase (same test as `wrap/SKILL.md` Step 3.3a)? `specificity` calibrates — a candidate matched at the full conjunction width shares most of the finding's vocabulary, while a `specificity: 1` hit matched on a single anchor term and is usually weak at best.
+
+| Verdict | Test | How to surface it |
+|---------|------|-------------------|
+| **Strong** | Same root cause or same fix — acting on that issue would resolve this too. | Lead with it and recommend commenting there instead: *"#N looks like the same problem — comment there instead of opening a new issue? (comment / create anyway)"* |
+| **Weak** | Same component or adjacent symptom but a distinct fix — or you are simply unsure. | Show it, then proceed to draft. If the user creates, offer a `Possibly duplicates #N` line in the body. |
+| **None** | No candidate covers this ground. | Proceed to draft normally — no prompt. |
+
+**Surface, never suppress.** `/wrap` auto-files, so a strong match there *replaces* the filing. `/issue-maker` asks — so classification decides what the user sees and how it is ranked, never whether the issue gets filed. Show the candidate's number, title, and excerpt and let them make the call.
+
+**Bias toward filing.** A duplicate ticket costs one `gh issue close`; a real issue folded into an unrelated ticket disappears. When torn between strong and weak, choose **weak**.
+
+**Rapid-fire** still runs dedup and still proceeds without asking — show candidates inline and block only on an **exact title match**. Report `dedup unavailable` inline rather than blocking on it.
+
+**Why the old query failed.** The replaced inline search ran `"$KEYWORDS in:title"` over open and recently-closed issues. Two defects, both verified against real tickets in this repo:
+
+1. **Title-only scope.** Duplicates that restate a problem in different words share *body* text, not title text. #638 and #647 have almost no title words in common, so #638 was unreachable from any title query built out of #647's finding.
+2. **Unbounded conjunction.** GitHub ANDs every bare term, so each added keyword makes the query *stricter*, not better targeted. For the #663 finding a 4-term query matched nothing but the new issue itself, while querying its anchor terms individually surfaced #643 as the top hit.
+
+`issue-dedup.sh` fixes both mechanically — `in:title,body`, plus a conjunction pass *and* a per-anchor-term pass whose results are merged and ranked — and deliberately returns **candidates, not a verdict**: broader recall means noisier top hits, and taking `.[0]` from a body search will confidently return an unrelated issue.
 
 ---
 
