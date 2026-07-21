@@ -45,12 +45,22 @@
 #   1  Global hourly budget exhausted (--check/--consume/--peek-explicit); per-PR explicit-trigger cap (--record-explicit/--peek-explicit).
 #   2  Usage error.
 #   5  Write failed.
+#   6  Lock timeout — another writer held the session-state lock past the
+#      acquisition timeout (default 30s, CLAUDE_STATE_LOCK_TIMEOUT). No write
+#      is performed; the state file is left unmodified.
+#
+# LOCKING (issue #639)
+#   Every write path serializes on the shared session-state lock implemented in
+#   .claude/scripts/state-lock.sh — a portable `mkdir` lock directory with
+#   explicit stale-holder recovery. This REPLACES the previous optional
+#   flock(1) path, which silently degraded to no locking at all on macOS
+#   (flock is not installed there by default), leaving exactly the
+#   read-modify-write race this lock closes.
 #
 # DEPENDENCIES
-#   jq, date (UTC ISO), mktemp, mv; flock optional (Linux — advisory lock; macOS falls back with stderr warning)
+#   jq, date (UTC ISO), mktemp, mv; .claude/scripts/state-lock.sh
 
 STATE_FILE="${HOME}/.claude/session-state.json"
-LOCK_FILE="${STATE_FILE}.lock"
 
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
@@ -134,11 +144,17 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 5
 fi
 
-USE_FLOCK=0
-if command -v flock >/dev/null 2>&1; then
-  USE_FLOCK=1
-else
-  echo "cr-review-hourly.sh: WARNING: 'flock' not found — proceeding without cross-process lock (macOS/default); parallel agents may race like greptile-budget.sh" >&2
+# Shared session-state write lock (issue #639). Sourced so the lock is owned
+# by this process and released by its EXIT trap.
+SELF_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ ! -f "$SELF_DIR/state-lock.sh" || ! -r "$SELF_DIR/state-lock.sh" ]]; then
+  echo "cr-review-hourly.sh: missing sibling library: $SELF_DIR/state-lock.sh" >&2
+  exit 5
+fi
+# shellcheck source=./state-lock.sh
+if ! source "$SELF_DIR/state-lock.sh"; then
+  echo "cr-review-hourly.sh: failed to load $SELF_DIR/state-lock.sh" >&2
+  exit 5
 fi
 
 if ! [[ "$BUDGET" =~ ^[0-9]+$ ]]; then
@@ -206,8 +222,10 @@ write_merged_state() {
   cleanup_tmp() {
     rm -f "$jq_err" "$tmp" ${seeded:+"$seeded"} 2>/dev/null || true
   }
+  # Chain the lock release into this trap — re-installing an EXIT trap would
+  # otherwise drop the release that state_lock_acquire installed (#639).
   # shellcheck disable=SC2064
-  trap cleanup_tmp EXIT
+  trap 'cleanup_tmp; state_lock_release' EXIT
 
   if ! jq --arg now_iso "$NOW_ISO" \
     "$PRUNE_GLOBAL | $jq_post | .last_updated = \$now_iso" \
@@ -221,7 +239,7 @@ write_merged_state() {
     exit 5
   fi
   cleanup_tmp
-  trap - EXIT
+  trap 'state_lock_release' EXIT
 }
 
 case "$MODE" in
@@ -296,17 +314,9 @@ case "$MODE" in
       echo "$POST"
       exit 0
     }
-    if [[ "$USE_FLOCK" -eq 1 ]]; then
-      (
-        flock -w 120 9 || {
-          echo "cr-review-hourly.sh: could not acquire lock on $LOCK_FILE (timeout)" >&2
-          exit 5
-        }
-        inner_consume
-      ) 9>>"$LOCK_FILE"
-    else
-      inner_consume
-    fi
+    # Serialize the whole read-modify-write cycle, not just the mv (#639).
+    state_lock_acquire "$STATE_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
+    inner_consume
     exit $?
     ;;
 
@@ -369,22 +379,14 @@ case "$MODE" in
       fi
       exit 0
     }
-    if [[ "$USE_FLOCK" -eq 1 ]]; then
-      (
-        flock -w 120 9 || {
-          echo "cr-review-hourly.sh: could not acquire lock on $LOCK_FILE (timeout)" >&2
-          exit 5
-        }
-        inner_record
-      ) 9>>"$LOCK_FILE"
-    else
-      inner_record
-    fi
+    # Serialize the whole read-modify-write cycle, not just the mv (#639).
+    state_lock_acquire "$STATE_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
+    inner_record
     exit $?
     ;;
 
   peek_explicit)
-    # Read-only per-PR cap check (NO write, no flock — like --check). Exit 1 if
+    # Read-only per-PR cap check (NO write, no lock — like --check). Exit 1 if
     # the global hourly budget is exhausted OR this PR already has >=2 explicit
     # triggers in the rolling hour; exit 0 otherwise. Lets callers gate BEFORE
     # posting and record (--record-explicit) only AFTER a successful post, so a

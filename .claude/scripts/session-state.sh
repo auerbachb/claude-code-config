@@ -106,7 +106,34 @@
 #      the wrong JSON type — the write is rejected and the state file is left
 #      unmodified.
 #   5  Write failed — could not create temp file, could not mv into place,
-#      or jq filter pipeline failed during the atomic write.
+#      or jq filter pipeline failed during the atomic write. Also returned
+#      when the state-lock library (see LOCKING) cannot be loaded.
+#   6  Lock timeout — another writer held the state-file lock for longer than
+#      the acquisition timeout (default 30s, CLAUDE_STATE_LOCK_TIMEOUT). The
+#      write is ABANDONED and the state file is left unmodified; this script
+#      never falls back to writing unserialized.
+#
+# LOCKING (issue #639)
+#   --set takes an exclusive advisory lock around the ENTIRE read-modify-write
+#   cycle — read, jq pipeline, type-contract check, and the final mv — not
+#   just the mv. Without it, two writers could each read the same document,
+#   each apply their own change, and each write back, silently losing one of
+#   the two changes (last writer wins, no error).
+#
+#   The lock is a `mkdir`-based lock directory at `<state-file>.lock`, because
+#   this fleet runs on macOS where `flock(1)` is not installed by default.
+#   A stale lock (holder died mid-write) is detected via the pid/host/epoch
+#   metadata inside the lock and broken automatically, so a dead writer cannot
+#   wedge every future session. Full contract, tunables, and failure modes:
+#   `.claude/scripts/state-lock.sh`.
+#
+#   --get does NOT lock: `mv` is atomic, so a reader always observes either
+#   the pre-write or the post-write document, never a partial one. Reads stay
+#   contention-free.
+#
+#   Every writer of this file must go through this script (or source the same
+#   state-lock library) — a lock only one writer respects is not a lock. See
+#   `.claude/rules/handoff-files.md`.
 #
 # FIELD-TYPE CONTRACT (issues #625, #640)
 #   A known set of fields always hold a specific JSON type — top-level
@@ -173,13 +200,14 @@
 #   `.last_updated` refresh, written to `${STATE_FILE}.tmp.$$`, and then
 #   atomically renamed via `mv`. `mv` within the same filesystem is atomic
 #   on POSIX. Sibling fields outside the assigned paths are preserved
-#   verbatim — a fresh top-level key added by some other writer between our
-#   read and write will survive (subject to the standard last-writer-wins
-#   race that exists in the inline blocks this helper replaces).
+#   verbatim, and since issue #639 the surrounding read-modify-write cycle is
+#   serialized by the lock described in LOCKING — a concurrent writer's change
+#   is no longer lost, it simply lands before or after ours.
 #
 # DEPENDENCIES
 #   - jq
 #   - mktemp, mv (POSIX)
+#   - .claude/scripts/state-lock.sh (sibling library — write serialization)
 #   - date (any platform — only TZ-agnostic `date -u +'%Y-%m-%dT%H:%M:%SZ'`)
 #
 # EXAMPLES
@@ -249,6 +277,19 @@ STATE_FILE="${HOME}/.claude/session-state.json"
 # absolute path.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCHEMA_FILE="${SCRIPT_DIR}/../reference/session-state-schema.json"
+
+# Write serialization (issue #639). Sourced rather than exec'd so the lock is
+# owned by THIS process and released by its EXIT trap. Reuses $SCRIPT_DIR
+# above rather than resolving this script's directory a second time.
+if [[ ! -f "$SCRIPT_DIR/state-lock.sh" || ! -r "$SCRIPT_DIR/state-lock.sh" ]]; then
+  echo "session-state.sh: missing sibling library: $SCRIPT_DIR/state-lock.sh" >&2
+  exit 5
+fi
+# shellcheck source=./state-lock.sh
+if ! source "$SCRIPT_DIR/state-lock.sh"; then
+  echo "session-state.sh: failed to load $SCRIPT_DIR/state-lock.sh" >&2
+  exit 5
+fi
 
 print_help() {
   sed -n '/^# PURPOSE$/,/^$/p' "$0" | sed '$d; s/^# \{0,1\}//'
@@ -917,6 +958,12 @@ if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
   exit 5
 fi
 
+# Serialize the WHOLE read-modify-write cycle (issue #639) — acquired BEFORE
+# the file is read below and held until this process exits, so a concurrent
+# writer cannot slip a write in between our read and our mv. Exits 6 (a code
+# distinct from every other failure) rather than writing unserialized.
+state_lock_acquire "$STATE_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
+
 # Build the input file: existing state if present + valid; seeded `{}` otherwise.
 # Require a single top-level JSON object — see is_single_object_state_file().
 # Every assignment in the pipeline indexes the root with a string key, so
@@ -937,7 +984,10 @@ fi
 OUT_TMP="$STATE_FILE.tmp.$$"
 JQ_ERR="$(mktemp)"
 # shellcheck disable=SC2064
-trap "rm -f '$OUT_TMP' '$JQ_ERR' ${SEEDED_TMP:+'$SEEDED_TMP'} 2>/dev/null" EXIT
+# Re-installing an EXIT trap replaces the one state_lock_acquire set, so the
+# lock release is chained in explicitly here — otherwise an early exit below
+# would leak the lock until it aged out as stale.
+trap "state_lock_release; rm -f '$OUT_TMP' '$JQ_ERR' ${SEEDED_TMP:+'$SEEDED_TMP'} 2>/dev/null" EXIT
 
 # Build the jq pipeline. Each --set becomes one assignment in the pipeline,
 # bound to a unique --argjson or --arg variable. The final stage refreshes
