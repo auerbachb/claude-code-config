@@ -328,6 +328,37 @@ pr_nested_key_of() {
   fi
 }
 
+# Returns the PR number when `path` is a WHOLE-entry write, e.g. `.prs["999"]`
+# -> "999" (nothing follows the PR-number selector) — as opposed to a nested
+# write like `.prs["999"].reviewer`, which returns empty here even though
+# "reviewer" isn't a known field. This distinction matters (CodeAnt finding,
+# issue #640, PR #654): pr_nested_key_of() deliberately returns empty for a
+# whole-entry write since there's no single nested key to check — but that
+# left a real gap, since a whole-entry write's value can still embed a
+# malformed known nested field (e.g. `--set '.prs["999"]={"last_cron_action":
+# "bare string"}'`) that the top-level `.prs` object-type check alone can't
+# catch. Used below to trigger a full per-known-field scan of the written
+# entry, not just the single-path check pr_nested_key_of() enables.
+pr_whole_entry_write_number_of() {
+  if [[ "$(top_level_key_of "$1")" != "prs" ]]; then
+    printf '%s' ""
+    return 0
+  fi
+  local num
+  num="$(pr_number_of "$1")"
+  if [[ -z "$num" ]]; then
+    printf '%s' ""
+    return 0
+  fi
+  local rest="${1#.prs}"
+  rest="${rest#\[*\]}"
+  if [[ -n "$rest" ]]; then
+    printf '%s' ""
+    return 0
+  fi
+  printf '%s' "$num"
+}
+
 # --- arg parsing ---
 MODE=""
 GET_PATH=""
@@ -515,6 +546,7 @@ JQ_FILTER=""
 JQ_ARGS=()
 TOUCHED_KNOWN_FIELDS=""
 TOUCHED_NESTED_CHECKS=""
+WHOLE_ENTRY_PRS=""
 for i in "${!SET_PATHS[@]}"; do
   path="${SET_PATHS[$i]}"
   value="${SET_VALUES[$i]}"
@@ -566,6 +598,18 @@ for i in "${!SET_PATHS[@]}"; do
         *) TOUCHED_NESTED_CHECKS="$TOUCHED_NESTED_CHECKS $nested_pair" ;;
       esac
     fi
+  fi
+  # Track whole-PR-entry writes (issue #640, CodeAnt finding on PR #654):
+  # `--set '.prs["999"]={...}'` replaces the entire entry in one shot, so no
+  # single nested-field path is touched above — but the embedded object can
+  # still carry a malformed known field. Record the PR number so the
+  # post-write loop below can scan every known nested key in that entry.
+  set_whole_entry_pr="$(pr_whole_entry_write_number_of "$path")"
+  if [[ "$set_whole_entry_pr" =~ ^[0-9]+$ ]]; then
+    case " $WHOLE_ENTRY_PRS " in
+      *" $set_whole_entry_pr "*) ;;
+      *) WHOLE_ENTRY_PRS="$WHOLE_ENTRY_PRS $set_whole_entry_pr" ;;
+    esac
   fi
 done
 
@@ -621,6 +665,32 @@ for nested_pair in $TOUCHED_NESTED_CHECKS; do
     exit 4
   fi
 done
+
+# Field-type contract, whole-PR-entry writes (issue #640, CodeAnt finding on
+# PR #654): a write like `.prs["999"]={...}` replaces the whole entry, so the
+# per-path tracking above never sees a specific nested-field path to check —
+# but the embedded object can still carry a malformed known field (e.g.
+# `last_cron_action` as a bare string) that the top-level `.prs` object-type
+# check alone can't catch. For every PR written as a whole entry this batch,
+# check EVERY known nested key present in the FINAL entry (absent keys are
+# type "null" and are skipped — a whole-entry write simply omitting a known
+# field is not corruption, same as any other unset nested field).
+if [[ -n "$WHOLE_ENTRY_PRS" ]]; then
+  load_field_types
+  KNOWN_NESTED_KEYS="$(printf '%s\n' "$FIELD_TYPES_NESTED" | cut -d= -f1)"
+  for whole_entry_pr in $WHOLE_ENTRY_PRS; do
+    while IFS= read -r whole_entry_key; do
+      [[ -z "$whole_entry_key" ]] && continue
+      whole_entry_expected_type="$(known_nested_field_type "$whole_entry_key")"
+      whole_entry_check_path=".prs[\"${whole_entry_pr}\"].${whole_entry_key}"
+      whole_entry_actual_type="$(jq -r "${whole_entry_check_path} | type" "$OUT_TMP" 2>/dev/null)"
+      if [[ "$whole_entry_actual_type" != "null" && "$whole_entry_actual_type" != "$whole_entry_expected_type" ]]; then
+        echo "session-state.sh: refusing to write — field '$whole_entry_check_path' would become type '$whole_entry_actual_type' but must be '$whole_entry_expected_type' (see issue #640); $STATE_FILE left unmodified" >&2
+        exit 4
+      fi
+    done <<<"$KNOWN_NESTED_KEYS"
+  done
+fi
 
 if ! mv "$OUT_TMP" "$STATE_FILE" 2>/dev/null; then
   echo "session-state.sh: could not write $STATE_FILE" >&2

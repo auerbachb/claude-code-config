@@ -142,6 +142,22 @@ check_eq "well-formed number digest_streak accepted" "0" "$?"
 check_eq "digest_streak holds the written number" "3" "$(jq -c '.prs["998"].digest_streak' "$STATE_FILE")"
 
 echo
+echo "== Write-time guard: whole-PR-entry writes (issue #640, CodeAnt finding on PR #654) =="
+reset_state
+OUT=$(run --set '.prs["999"]={"phase":"B","last_cron_action":"bare string","digest_streak":"not-a-number"}' 2>&1); RC=$?
+check_eq "whole-entry write embedding a malformed known field rejected (exit 4)" "4" "$RC"
+check_eq "error names the embedded nested field" "1" "$(grep -c "field '.prs\[\"999\"\].last_cron_action' would become type 'string' but must be 'object'" <<<"$OUT")"
+check_eq "state file never created for a rejected whole-entry write" "1" "$([[ ! -f "$STATE_FILE" ]] && echo 1 || echo 0)"
+
+run --set '.prs["999"]={"phase":"B","last_cron_action":{"type":"create","at":"2026-01-01T00:00:00Z"},"digest_streak":3,"reviewer":"greptile"}'
+check_eq "well-formed whole-entry write accepted" "0" "$?"
+check_eq "whole-entry write applied correctly" '{"phase":"B","last_cron_action":{"type":"create","at":"2026-01-01T00:00:00Z"},"digest_streak":3,"reviewer":"greptile"}' "$(jq -c '.prs["999"]' "$STATE_FILE")"
+
+run --set '.prs["1000"]={"phase":"A","reviewer":"cr"}'
+check_eq "whole-entry write with no known nested fields at all accepted" "0" "$?"
+check_eq "entry with no known fields written as given" '{"phase":"A","reviewer":"cr"}' "$(jq -c '.prs["1000"]' "$STATE_FILE")"
+
+echo
 echo "== Write-time guard: unknown fields stay unvalidated (forward-compat) =="
 run --set '.monitoring_active=true' --set '.root_repo=/tmp/foo'
 check_eq "unknown-field batch write exits 0" "0" "$?"

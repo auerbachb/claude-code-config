@@ -90,4 +90,22 @@ echo '{"prs":{"1":{"reviewer":"cr"},"2":{"head_sha":"abc"}}}' > "$HOME/.claude/s
 out=$(bash "$SCRIPT" --infer-candidates)
 [[ "$out" == "[]" ]] || fail "no-active: expected [] got: $out"
 
-echo "OK: pr-state.sh --infer-candidates (missing file, ordering, active filter, same_repo, flag combos, empty prs)"
+# --- Case 6: a malformed last_cron_action (bare string, not object) on one
+# entry must not abort candidates for every OTHER entry (issue #640, CodeAnt
+# finding on PR #654 — pr-state.sh has the same last_cron_action.at indexing
+# pattern infer-pr.sh was already hardened against).
+cat > "$HOME/.claude/session-state.json" <<'JSON'
+{ "prs": {
+  "542": {"phase":"external_thread","reviewer":"greptile","last_cron_action":"a bare narrative string"},
+  "544": {"phase":"merged","reviewer":"greptile","last_cron_action":{"at":"2026-07-16T02:54:00Z"}}
+}}
+JSON
+out=$(bash "$SCRIPT" --infer-candidates)
+count=$(jq 'length' <<<"$out")
+[[ "$count" == "2" ]] || fail "malformed-entry: expected 2 candidates (both still present), got $count: $out"
+malformed_activity=$(jq -r '.[]|select(.number==542)|.last_action_at' <<<"$out")
+[[ "$malformed_activity" == "" ]] || fail "malformed-entry: expected empty last_action_at for #542, got: $malformed_activity"
+valid_activity=$(jq -r '.[]|select(.number==544)|.last_action_at' <<<"$out")
+[[ "$valid_activity" == "2026-07-16T02:54:00Z" ]] || fail "malformed-entry: #544's last_action_at not preserved, got: $valid_activity"
+
+echo "OK: pr-state.sh --infer-candidates (missing file, ordering, active filter, same_repo, flag combos, empty prs, malformed last_cron_action)"
