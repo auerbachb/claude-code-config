@@ -37,9 +37,12 @@
 # File-overlap uses GitHub's three-dot compare (compare/{head}...{base}), which
 # reports files changed from merge-base(head, base) to the base tip = the base
 # delta, without any local fetch. GitHub caps compare file lists at 300 files;
-# that is comfortably above any realistic clean-BEHIND diff. The base side of the
-# compare is the base branch tip SHA (baseRefOid), not the ref name, so a
-# slash-named base branch (e.g. release/2026.07) needs no path escaping.
+# that is comfortably above any realistic clean-BEHIND diff. The base tip SHA is
+# resolved via `gh api repos/.../git/ref/heads/<base>` (the git-ref REST path,
+# which handles slash-named branches like release/2026.07 natively — no URL
+# escaping needed). If that call fails, the compare falls back to the ref name.
+# NOTE: gh 2.48.0 does not support `baseRefOid` on `gh pr view --json`; the
+# git-ref API call is the gh-version-safe way to get the base tip SHA.
 #
 # Usage:
 #   clean-behind-check.sh <pr_number> [--reviewer cr|bugbot|greptile]
@@ -142,15 +145,31 @@ fi
 OWNER="${OWNER_REPO%/*}"
 REPO="${OWNER_REPO#*/}"
 
-PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,headRefOid,baseRefName,baseRefOid,mergeStateStatus,mergeable,files 2>/dev/null || true)
-if [[ -z "$PR_JSON" ]] || ! jq -e . >/dev/null 2>&1 <<<"$PR_JSON"; then
-  echo "ERROR: PR #$PR_NUMBER not found in $OWNER_REPO." >&2
-  exit 3
+# `baseRefOid` is NOT requested here — gh 2.48.0 does not support it on
+# `gh pr view --json` and the call fails with "Unknown JSON field: baseRefOid".
+# The base tip SHA is resolved separately via the git-ref REST path below.
+# Adopt the pr-state.sh (PR #616) error-classification pattern: capture 2>&1,
+# then distinguish genuine not-found (exit 3) from other tooling errors (exit 4).
+RC=0
+PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,headRefOid,baseRefName,mergeStateStatus,mergeable,files 2>&1) || RC=$?
+if [[ "$RC" -ne 0 ]]; then
+  if echo "$PR_JSON" | grep -qiE 'not found|could not resolve|no pull request'; then
+    echo "ERROR: PR #$PR_NUMBER not found in $OWNER_REPO." >&2
+    exit 3
+  else
+    echo "ERROR: gh pr view failed for PR #$PR_NUMBER: $PR_JSON" >&2
+    exit 4
+  fi
+fi
+# A zero-exit gh call that emits unparseable output is a tooling error (exit 4),
+# not proof the PR doesn't exist.
+if ! jq -e . >/dev/null 2>&1 <<<"$PR_JSON"; then
+  echo "ERROR: gh pr view returned unparseable output for PR #$PR_NUMBER: $PR_JSON" >&2
+  exit 4
 fi
 PR_STATE=$(jq -r '.state // "UNKNOWN"' <<<"$PR_JSON")
 HEAD_SHA=$(jq -r '.headRefOid // ""' <<<"$PR_JSON")
 BASE_REF=$(jq -r '.baseRefName // ""' <<<"$PR_JSON")
-BASE_SHA=$(jq -r '.baseRefOid // ""' <<<"$PR_JSON")
 MERGE_STATE=$(jq -r '.mergeStateStatus // ""' <<<"$PR_JSON")
 MERGEABLE=$(jq -r '.mergeable // ""' <<<"$PR_JSON")
 
@@ -162,6 +181,12 @@ if [[ -z "$HEAD_SHA" || -z "$BASE_REF" ]]; then
   echo "ERROR: could not determine HEAD SHA / base ref for PR #$PR_NUMBER." >&2
   exit 4
 fi
+
+# Resolve the base tip SHA via the git-ref REST path (gh-2.48.0-compatible,
+# handles slash-named branches like release/2026.07 natively). This is best-effort:
+# if the call fails, BASE_SHA stays empty and the existing COMPARE_BASE fallback
+# below uses the ref name — no new exit path for this call.
+BASE_SHA=$(gh api "repos/$OWNER/$REPO/git/ref/heads/$BASE_REF" --jq '.object.sha' 2>/dev/null || true)
 
 # --------------------------------------------------------------------------
 # Resolve sibling helpers (prefer next-to-self, then global installs)
@@ -261,8 +286,9 @@ fi
 # compare/{head_sha}...{base_sha}: base=head_sha, head=base tip → files changed
 # from merge-base(head_sha, base) to the base tip = the BASE DELTA. `ahead_by`
 # is how many commits the base tip is ahead of the merge base (new main commits).
-# Use the base tip SHA (baseRefOid), not the ref name, so a slash-named base
-# branch does not produce an invalid compare path; fall back to the ref name.
+# Prefer the base tip SHA resolved via git/ref/heads above (gh-2.48.0-compatible);
+# fall back to the ref name when the SHA fetch failed. Using the SHA avoids
+# path-escaping issues with slash-named base branches (e.g. release/2026.07).
 COMPARE_BASE="${BASE_SHA:-$BASE_REF}"
 COMPARE_JSON="$(gh api "repos/$OWNER/$REPO/compare/$HEAD_SHA...$COMPARE_BASE" 2>/dev/null || true)"
 if [[ -z "$COMPARE_JSON" ]] || ! jq -e . >/dev/null 2>&1 <<<"$COMPARE_JSON"; then
