@@ -162,6 +162,8 @@ If nothing changed in the auto-generated sections, say so: "Infrastructure and A
 
 `/wrap` no longer self-removes the running worktree or deletes its branch (issue #338). Stale cleanup is `/pm-update`'s job — invoke `.claude/scripts/stale-cleanup.sh` to detect and (after user confirmation) prune long-abandoned refs.
 
+> **Shared implementation (issue #618).** `/pm-clean` now calls this same `stale-cleanup.sh` for its workspace sweep — `stale-cleanup.sh` is the single source of truth for stale worktree/branch detection and safety, so the two skills can never diverge (mirroring the `/pm` ↔ `/pm-clean` #598 shared-script precedent). This step's behavior is unchanged; keep both callers in sync by changing only the script. `/pm-update` runs it at the `STALE_DAYS=7` default below; `/pm-clean` runs it at its own threshold (default 30, see that skill).
+
 ### Step 8.1: Run the dry-run pass
 
 Always run `--check` first. The script never deletes in this mode.
