@@ -85,15 +85,17 @@ done
 # `-s` slurps the concatenated-object stream into an array; the normalizer below
 # then flattens whichever of the accepted shapes each element turns out to be.
 #
-# Non-object elements are deliberately NOT filtered out: `.app` on a scalar raises
-# a jq error, which surfaces as exit 5 here and as a parse error in the caller.
-# Silently dropping unparseable entries could hide a failing run.
+# Non-object elements are deliberately NOT filtered out: a scalar inside an array
+# raises a jq error in group_by, and a top-level scalar raises an explicit error
+# in the normalizer itself — both surface as exit 5 here and as a parse error in
+# the caller. Silently dropping unparseable entries could hide a failing run or
+# let malformed input read as a legitimate zero-check result.
 DEDUPED=$(jq -s -c '
   [ .[]
     | if type == "array" then .[]
       elif (type == "object" and has("check_runs")) then (.check_runs[]?)
       elif type == "object" then .
-      else empty
+      else error("unexpected top-level \(type) in check-runs input")
       end
   ]
   | group_by([.app.slug, .app.id, .name])

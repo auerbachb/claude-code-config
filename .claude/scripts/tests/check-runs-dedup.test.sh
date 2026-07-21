@@ -168,6 +168,12 @@ check_eq "" "$OUT" "unparseable stdin writes no partial output"
 run '["oops"]'
 check_eq 5 "$RC" "a non-object entry exits 5 rather than being silently discarded"
 
+# A top-level scalar is malformed input, not an empty check-run list — it must
+# exit 5, never read as a legitimate zero-check result.
+run '"malformed"'
+check_eq 5 "$RC" "a top-level scalar exits 5 rather than reading as zero checks"
+check_eq "" "$OUT" "a top-level scalar writes no partial output"
+
 "$SUT" bogus </dev/null >/dev/null 2>&1
 check_eq 2 "$?" "an unexpected positional argument exits 2"
 

@@ -347,8 +347,13 @@ UNRESOLVED=$(echo "$ALL_THREADS" | jq '[.[] | select(.isResolved == false)]')
 # check suite's runs are kept, so a superseded failure from an earlier re-trigger on
 # this SHA is not reported as currently failing. `--jq` runs once per page, so the
 # fetch emits a stream of bare run objects — one of the shapes the helper accepts.
+CHECK_RUNS_DEDUP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-runs-dedup.sh"
+if [[ ! -x "$CHECK_RUNS_DEDUP" ]]; then
+  echo "ERROR: check-runs-dedup.sh not found or not executable at $CHECK_RUNS_DEDUP" >&2
+  exit 5
+fi
 CHECK_RUNS=$(run_gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" \
-  --jq '.check_runs[]' | "$(cd "$(dirname "$0")" && pwd)/check-runs-dedup.sh")
+  --jq '.check_runs[]' | "$CHECK_RUNS_DEDUP")
 
 CR_SPLIT=$(echo "$CHECK_RUNS" | jq '
   def is_blocking: . == "failure" or . == "timed_out" or . == "action_required" or . == "startup_failure" or . == "stale";

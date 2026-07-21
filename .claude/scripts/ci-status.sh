@@ -223,7 +223,7 @@ fi
 # check counts as currently blocking, and this script reports a commit as failing
 # that GitHub's own merge box shows as green (issue #675). Applies to both input
 # paths: the stdin caller hands us its raw fetch, same as the live fetch above.
-CHECK_RUNS_DEDUP="$(dirname "$0")/check-runs-dedup.sh"
+CHECK_RUNS_DEDUP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-runs-dedup.sh"
 if [[ ! -x "$CHECK_RUNS_DEDUP" ]]; then
   echo "ERROR: check-runs-dedup.sh not found or not executable at $CHECK_RUNS_DEDUP" >&2
   exit 5
