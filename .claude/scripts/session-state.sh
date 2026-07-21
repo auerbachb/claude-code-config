@@ -14,9 +14,44 @@
 #   partial-write race window between them.
 #
 # USAGE
-#   session-state.sh --get <jq-path>
-#   session-state.sh --set <jq-path>=<value> [--set <jq-path>=<value> ...]
+#   session-state.sh [--repo <owner/name>] --get <jq-path>
+#   session-state.sh [--repo <owner/name>] --set <jq-path>=<value> [--set ...]
+#   session-state.sh --repo-key
+#   session-state.sh --migrate [--dry-run]
 #   session-state.sh --help | -h
+#
+# REPO SCOPING (issue #638)
+#   PR state is scoped per repository: `.repos["<owner>/<name>"].prs["<N>"]`.
+#   Before this, `.prs` was a flat map keyed by bare PR number, so two repos
+#   that both reached PR #84 silently overwrote each other's tracking data.
+#   `.root_repo` had the same defect at the top level — one global scalar
+#   naming whichever repo wrote last, which is what made
+#   polling-state-gate.sh refuse a perfectly valid checkout as "wrong".
+#
+#   Callers do NOT have to rewrite their jq paths. A path whose leading
+#   component is `.prs` or `.root_repo` is transparently rewritten into the
+#   active repo's scope, so `--get '.prs["84"].reviewer'` reads
+#   `.repos["<repo>"].prs["84"].reviewer`. Pass --raw-path to address the
+#   literal top-level path instead (migration, inspection, tests).
+#
+#   The active repo key is resolved in this order:
+#     1. --repo <owner/name>
+#     2. $CLAUDE_SESSION_REPO
+#     3. the `origin` remote of the current working directory's git repo
+#     4. "_unknown" — a reserved bucket (no `/`, so it can never collide with
+#        a real owner/name) used when no repo context is available. A warning
+#        is printed to stderr; state is kept, not dropped.
+#
+# MIGRATION (issue #638)
+#   A legacy flat file (`.prs` and/or `.root_repo` at the top level) is
+#   migrated into the scoped layout on read and on write, keyed by each
+#   entry's own `owner_repo`. Entries with no `owner_repo` fall back to the
+#   repo identity of their recorded `root_repo` path when that path still
+#   resolves, and otherwise land in `_unknown` — they are preserved, never
+#   dropped. Where a scoped entry already exists, its fields win over the
+#   legacy ones. `--get` migrates in memory only (a read never rewrites the
+#   file); `--set` and `--migrate` persist the migrated layout and stamp
+#   `.schema_version = 2`.
 #
 # MODES
 #   --get <jq-path>    Read the value at <jq-path> from the state file and
@@ -24,6 +59,24 @@
 #                      state file does not exist; exits 4 on jq parse errors.
 #                      Returns "null" with exit 0 if the path is absent but
 #                      the file is a valid JSON object — matches jq semantics.
+#
+#   --repo-key         Print the resolved repo key (see REPO SCOPING) and
+#                      exit 0. For consumers that must build their own jq
+#                      paths against the state file — e.g.
+#                      `jq --arg r "$(session-state.sh --repo-key)" \
+#                          '.repos[$r].prs'`.
+#
+#   --migrate          Persist the legacy -> scoped migration described above
+#                      and exit. Idempotent: a already-scoped file is left
+#                      alone (beyond the `.last_updated` refresh). With
+#                      --dry-run, print the migrated document to stdout and
+#                      leave the state file untouched.
+#
+# FLAGS
+#   --repo <owner/name>  Override the active repo key for this invocation.
+#   --raw-path           Disable repo-scope path rewriting; `--get`/`--set`
+#                        paths address the document root verbatim.
+#   --dry-run            With --migrate, print instead of writing.
 #
 #   --set <path>=<v>   Set <jq-path> to <value> in the state file, preserving
 #                      all other top-level fields. <value> may be:
@@ -45,7 +98,8 @@
 #      a corrupted known-typed field (see FIELD-TYPE CONTRACT) also exits 0,
 #      printing a safe default instead of the corrupt value.
 #   2  Usage error — missing/invalid mode, unknown flag, malformed --set
-#      argument (no `=`), or no jq path given for --get.
+#      argument (no `=`), no jq path given for --get, or a --repo value that
+#      is not a plausible repo key (`[A-Za-z0-9._/-]+`).
 #   3  State file missing on --get. (--set creates the file from `{}`.)
 #   4  jq failed to parse the file or evaluate the path/expression, OR a
 #      --set would leave a known-typed field (see FIELD-TYPE CONTRACT) holding
@@ -73,6 +127,14 @@
 #   disabled for this run with a warning on stderr — --get/--set still work,
 #   just without the type guard, rather than hard-failing every state-file
 #   operation because a side file is missing.
+#
+#   Repo scoping (issue #638) moves PR state one level down, so the same
+#   contract follows it there: `repos` itself must be an object, every
+#   `.repos[*]` must be an object, and every `.repos[*].prs` present must be
+#   an object. The `pr_nested` checks apply to entries under each repo's
+#   `prs` map. Classification runs on the caller's ORIGINAL path (which
+#   still reads `.prs["<N>"].<field>`) while the jq check path is scoped,
+#   so #640's guarantee is not quietly lost to the restructure.
 #
 #   --set checks the FINAL value of any touched known field after the whole
 #   batch is applied (not just the raw value passed in), so both whole-field
@@ -125,8 +187,29 @@
 #   session-state.sh --get '.greptile_daily.reviews_used'
 #   # -> 3
 #
-#   # Set a single value (string auto-detected):
+#   # Set a single value (string auto-detected). The path is scoped to the
+#   # repo of the current working directory, so this writes
+#   # .repos["org/repo"].prs["287"].reviewer:
 #   session-state.sh --set '.prs["287"].reviewer=greptile'
+#
+#   # Same write, against an explicitly named repo (no cwd dependency):
+#   session-state.sh --repo org/other --set '.prs["287"].reviewer=greptile'
+#
+#   # Two repos, same PR number, no collision:
+#   session-state.sh --repo org/a --set '.prs["84"].phase=B'
+#   session-state.sh --repo org/b --set '.prs["84"].phase=C'
+#   session-state.sh --repo org/a --get '.prs["84"].phase'   # -> B
+#
+#   # Address the document root verbatim (no scoping) — e.g. to inspect a
+#   # not-yet-migrated legacy file, or read a genuinely global field:
+#   session-state.sh --raw-path --get '.repos | keys'
+#
+#   # Build your own scoped jq path in a consumer script:
+#   REPO_KEY="$(session-state.sh --repo-key)"
+#   jq --arg r "$REPO_KEY" '.repos[$r].prs' ~/.claude/session-state.json
+#
+#   # Preview the legacy -> scoped migration without touching the file:
+#   session-state.sh --migrate --dry-run | jq '.repos | keys'
 #
 #   # Set multiple values atomically (all in one write):
 #   session-state.sh \
@@ -249,6 +332,199 @@ known_nested_field_type() {
   done <<<"$FIELD_TYPES_NESTED"
 }
 
+# ---------------------------------------------------------------------------
+# Repo scoping (issue #638)
+# ---------------------------------------------------------------------------
+
+# Reserved bucket for state we cannot attribute to a repo. Contains no `/`,
+# so it can never be confused with a real `owner/name` key.
+UNKNOWN_REPO_KEY="_unknown"
+
+# Accept only plausible repo keys. This value is interpolated into a jq path,
+# so anything with quotes/brackets/backslashes is rejected outright rather
+# than escaped — there is no legitimate owner/name containing them.
+is_valid_repo_key() {
+  [[ "$1" =~ ^[A-Za-z0-9._/-]+$ ]]
+}
+
+# Derive `owner/name` from a git remote URL. Handles every form git uses:
+#   https://github.com/owner/name(.git)
+#   git@github.com:owner/name(.git)          (scp-like, no scheme)
+#   ssh://git@github.com:22/owner/name(.git) (explicit port)
+# Prints nothing when the URL doesn't yield two trailing path segments.
+#
+# The scp-like form is why this normalizes the separator instead of stripping
+# a host segment: after the scheme and `user@` come off, `github.com/owner/name`
+# still carries a host to drop but `github.com:owner/name` does not — stripping
+# one path segment from both collapses the scp form to just `name`, losing the
+# owner entirely and sending every SSH-remote checkout into the "_unknown"
+# bucket. Turning `:` into `/` first makes both shapes the same problem: take
+# the last two segments.
+repo_key_from_remote_url() {
+  local url="${1%.git}"
+  url="${url%/}"
+  url="${url##*://}"   # drop scheme
+  url="${url##*@}"     # drop user@
+  url="${url/:/\/}"    # scp-like (and :port) separator -> path separator
+  local name="${url##*/}"
+  local owner_path="${url%/*}"
+  local owner="${owner_path##*/}"
+  # A single-segment remainder leaves owner == name; that is not a repo key.
+  if [[ -n "$owner" && -n "$name" && "$owner_path" != "$url" ]]; then
+    printf '%s/%s' "$owner" "$name"
+  fi
+}
+
+# Repo identity of a checkout path (worktrees included — `git -C` resolves
+# them to the same origin as their root repo, which is exactly the property
+# that makes this a safer scope key than the checkout path itself).
+repo_key_of_path() {
+  local path="$1" url=""
+  [[ -d "$path" ]] || return 0
+  url="$(git -C "$path" remote get-url origin 2>/dev/null || true)"
+  [[ -n "$url" ]] || return 0
+  repo_key_from_remote_url "$url"
+}
+
+# Resolve the active repo key per the order documented in REPO SCOPING.
+# Warns exactly once when falling through to the reserved bucket, so a caller
+# running outside any git repo still works instead of failing hard.
+REPO_KEY=""
+resolve_repo_key() {
+  if [[ -n "$REPO_KEY" ]]; then
+    printf '%s' "$REPO_KEY"
+    return 0
+  fi
+  local key=""
+  if [[ -n "$REPO_ARG" ]]; then
+    key="$REPO_ARG"
+  elif [[ -n "${CLAUDE_SESSION_REPO:-}" ]]; then
+    key="$CLAUDE_SESSION_REPO"
+  else
+    key="$(repo_key_of_path "$PWD")"
+  fi
+  if [[ -z "$key" ]] || ! is_valid_repo_key "$key"; then
+    if [[ -n "$key" ]]; then
+      echo "session-state.sh: ignoring implausible repo key '$key'; using '$UNKNOWN_REPO_KEY'" >&2
+    else
+      echo "session-state.sh: no repo context (not in a git repo with an 'origin' remote, and no --repo/\$CLAUDE_SESSION_REPO); scoping to '$UNKNOWN_REPO_KEY'" >&2
+    fi
+    key="$UNKNOWN_REPO_KEY"
+  fi
+  REPO_KEY="$key"
+  printf '%s' "$REPO_KEY"
+}
+
+# Rewrite a caller's jq path into the active repo's scope when its leading
+# component is one of the per-repo fields. Only the leading component is
+# touched, so trailing jq syntax survives intact:
+#   .prs["84"].reviewer  ->  .repos["org/x"].prs["84"].reviewer
+#   .prs | keys          ->  .repos["org/x"].prs | keys
+#   .prs // {}           ->  .repos["org/x"].prs // {}
+# Any other path (including `.` and genuinely global fields like
+# .active_agents) is returned unchanged.
+scope_path() {
+  local path="$1"
+  if [[ "$RAW_PATH" == "1" ]]; then
+    printf '%s' "$path"
+    return 0
+  fi
+  local field rest=""
+  for field in prs root_repo; do
+    # Match `.<field>` only at a real token boundary — `.prs_backup` and
+    # `.root_repo_history` must not be rewritten. `?` is included because
+    # jq's optional-index form (`.prs?[...]`) is a legal way to spell the
+    # same read, and silently leaving it unscoped would return null from the
+    # now-empty top level: a wrong answer rather than an error.
+    if [[ "$path" == ".${field}" || "$path" == ".${field}?" ]]; then
+      rest="${path#.${field}}"
+    elif [[ "$path" == ".${field}."* || "$path" == ".${field}["* || "$path" == ".${field} "* || \
+            "$path" == ".${field}|"* || "$path" == ".${field})"* || "$path" == ".${field}?"* ]]; then
+      rest="${path#.${field}}"
+    else
+      continue
+    fi
+    printf '.repos["%s"].%s%s' "$(resolve_repo_key)" "$field" "$rest"
+    return 0
+  done
+  printf '%s' "$path"
+}
+
+# ---------------------------------------------------------------------------
+# Legacy -> scoped migration (issue #638)
+# ---------------------------------------------------------------------------
+
+# Build a JSON map of {<root_repo path>: <owner/name>} for every distinct
+# checkout path recorded in the legacy document. Entries that never carried
+# an `owner_repo` can then still be attributed correctly whenever their
+# recorded path still resolves to a checkout on disk.
+build_path_map() {
+  local file="$1" path key
+  local map="{}"
+  local paths
+  paths="$(jq -r '
+      [ (.root_repo // empty),
+        ( if (.prs | type) == "object" then (.prs[] | .root_repo // empty) else empty end )
+      ] | map(select(type == "string" and length > 0)) | unique | .[]' "$file" 2>/dev/null || true)"
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    key="$(repo_key_of_path "$path")"
+    [[ -n "$key" ]] && is_valid_repo_key "$key" || continue
+    map="$(jq -c --arg p "$path" --arg k "$key" '. + {($p): $k}' <<<"$map")"
+  done <<<"$paths"
+  printf '%s' "$map"
+}
+
+# jq program text. Applied to the whole document; a no-op on an
+# already-scoped file beyond stamping `.schema_version`.
+#
+# Conflict rule: `$e.value + (existing // {})` — the already-scoped entry's
+# fields win over the legacy ones, since scoped state is by definition newer
+# than the flat state it replaced.
+MIGRATE_JQ='
+def _scoped($pathmap; $unknown):
+  . as $doc
+  | (if ($doc.prs | type) == "object" then $doc.prs else {} end) as $legacy
+  | reduce ($legacy | to_entries[]) as $e (
+      $doc;
+      ( ($e.value.owner_repo? // null) as $o
+      | ($e.value.root_repo? // null) as $r
+      | (if ($o | type) == "string" and ($o | length) > 0 then $o
+         elif ($r | type) == "string" and ($pathmap[$r] != null) then $pathmap[$r]
+         else $unknown end) as $key
+      | .repos = ( (.repos // {})
+          | .[$key] = ( (.[$key] // {})
+              | .prs = ( (.prs // {})
+                  | .[$e.key] = ($e.value + (.[$e.key] // {})) ) ) )
+      )
+    )
+  | ( if ($doc.root_repo | type) == "string" and ($doc.root_repo | length) > 0
+      then ( ($pathmap[$doc.root_repo] // $unknown) as $rk
+             | .repos = ( (.repos // {})
+                 | .[$rk] = ( (.[$rk] // {})
+                     | if (.root_repo // null) == null then .root_repo = $doc.root_repo else . end ) ) )
+      else . end )
+  | del(.prs) | del(.root_repo)
+  | .schema_version = 2;
+
+def migrate($pathmap; $unknown):
+  if (.prs != null and (.prs | type) != "object")
+     or (.root_repo != null and (.root_repo | type) != "string")
+  then .
+  elif (.prs != null) or (.root_repo != null)
+  then _scoped($pathmap; $unknown)
+  else (.schema_version // 2) as $v | .schema_version = $v
+  end;
+'
+
+# True when the document carries legacy top-level keys whose shape we refuse
+# to migrate (corrupt `.prs`/`.root_repo`). Callers warn rather than silently
+# leaving the data stranded.
+has_unmigratable_legacy() {
+  jq -e '(.prs != null and (.prs | type) != "object")
+         or (.root_repo != null and (.root_repo | type) != "string")' "$1" >/dev/null 2>&1
+}
+
 # Extract the leading top-level key from a jq path, e.g.
 # ".active_agents[0].id" -> "active_agents", `.prs["287"].reviewer` -> "prs".
 # Also handles bracket notation for the top-level key itself, e.g.
@@ -362,6 +638,9 @@ pr_whole_entry_write_number_of() {
 # --- arg parsing ---
 MODE=""
 GET_PATH=""
+REPO_ARG=""
+RAW_PATH="0"
+DRY_RUN="0"
 # Parallel arrays for --set: SET_PATHS[i] is the jq path, SET_VALUES[i] is
 # the literal text the user passed after the `=`. They are interpreted as
 # JSON-or-string at write time so we keep their raw form here.
@@ -374,9 +653,41 @@ while [[ $# -gt 0 ]]; do
       print_help
       exit 0
       ;;
+    --repo)
+      if [[ $# -lt 2 || -z "${2:-}" ]]; then
+        die_usage "--repo requires an <owner/name> value"
+      fi
+      if ! is_valid_repo_key "$2"; then
+        die_usage "--repo value is not a plausible repo key: $2"
+      fi
+      REPO_ARG="$2"
+      shift 2
+      ;;
+    --raw-path)
+      RAW_PATH="1"
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN="1"
+      shift
+      ;;
+    --repo-key)
+      if [[ -n "$MODE" ]]; then
+        die_usage "--repo-key cannot be combined with --$MODE"
+      fi
+      MODE="repo-key"
+      shift
+      ;;
+    --migrate)
+      if [[ -n "$MODE" ]]; then
+        die_usage "--migrate cannot be combined with --$MODE"
+      fi
+      MODE="migrate"
+      shift
+      ;;
     --get)
       if [[ -n "$MODE" && "$MODE" != "get" ]]; then
-        die_usage "--get cannot be combined with --set"
+        die_usage "--get cannot be combined with --$MODE"
       fi
       if [[ $# -lt 2 ]]; then
         die_usage "--get requires a jq path"
@@ -390,7 +701,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --set)
       if [[ -n "$MODE" && "$MODE" != "set" ]]; then
-        die_usage "--set cannot be combined with --get"
+        die_usage "--set cannot be combined with --$MODE"
       fi
       if [[ $# -lt 2 ]]; then
         die_usage "--set requires <jq-path>=<value>"
@@ -426,7 +737,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$MODE" ]]; then
-  die_usage "one of --get or --set is required"
+  die_usage "one of --get, --set, --repo-key or --migrate is required"
 fi
 
 # --- dependency check ---
@@ -437,6 +748,33 @@ fi
 
 # --- ensure state-file directory exists (only needed for --set) ---
 STATE_DIR="$(dirname "$STATE_FILE")"
+
+# ============================================================================
+# --repo-key
+# ============================================================================
+if [[ "$MODE" == "repo-key" ]]; then
+  resolve_repo_key
+  echo
+  exit 0
+fi
+
+# Warn (once) when the file carries legacy keys we refuse to reshape, so the
+# data is never silently stranded under an old path nobody reads any more.
+warn_if_unmigratable() {
+  if [[ -f "$1" ]] && has_unmigratable_legacy "$1"; then
+    echo "session-state.sh: legacy '.prs'/'.root_repo' present but malformed (expected object/string); leaving them in place unmigrated — repair them, then re-run --migrate (see issue #638)" >&2
+  fi
+}
+
+# Emit the jq args that make the migration program available to a filter.
+# Building the path map is only worth the git calls when legacy keys exist.
+migrate_jq_args() {
+  local file="$1" pathmap="{}"
+  if [[ -f "$file" ]] && jq -e '(.prs != null) or (.root_repo != null)' "$file" >/dev/null 2>&1; then
+    pathmap="$(build_path_map "$file")"
+  fi
+  printf '%s' "$pathmap"
+}
 
 # ============================================================================
 # --get
@@ -472,16 +810,34 @@ if [[ "$MODE" == "get" ]]; then
   # bracket group with no leading dot (`["active_agents"]`) is deliberately
   # NOT matched here — in jq that's an array-literal constructor, not a way
   # to index the input document, so it never reads the real field either way.
-  get_top_level_key="$(top_level_key_of "$GET_PATH")"
-  get_expected_type="$(known_field_type "$get_top_level_key")"
-  if [[ -n "$get_expected_type" ]]; then
+  #
+  # The path is scoped BEFORE the guard runs, so the check follows `.prs`
+  # down into its new per-repo home: `--get '.prs'` guards
+  # `.repos["org/x"].prs` and still returns `{}` if that is corrupt.
+  warn_if_unmigratable "$STATE_FILE"
+  GET_PATHMAP="$(migrate_jq_args "$STATE_FILE")"
+  SCOPED_GET_PATH="$(scope_path "$GET_PATH")"
+
+  get_expected_type=""
+  if [[ "$SCOPED_GET_PATH" == "$GET_PATH" ]]; then
+    get_top_level_key="$(top_level_key_of "$GET_PATH")"
+    get_expected_type="$(known_field_type "$get_top_level_key")"
+    if [[ -n "$get_expected_type" ]]; then
+      case "$GET_PATH" in
+        ".$get_top_level_key"|".[\"$get_top_level_key\"]") ;;
+        *) get_expected_type="" ;;
+      esac
+    fi
+  else
+    # A rewritten path addresses exactly one per-repo field; only the
+    # whole-field forms (`.prs`, `.root_repo`) carry a type contract.
     case "$GET_PATH" in
-      ".$get_top_level_key"|".[\"$get_top_level_key\"]") ;;
-      *) get_expected_type="" ;;
+      ".prs") get_expected_type="object" ;;
     esac
   fi
   if [[ -n "$get_expected_type" ]]; then
-    get_actual_type="$(jq -r "$GET_PATH | type" "$STATE_FILE" 2>/dev/null)"
+    get_actual_type="$(jq -r --argjson __pathmap "$GET_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY" \
+      "$MIGRATE_JQ migrate(\$__pathmap; \$__unknown) | $SCOPED_GET_PATH | type" "$STATE_FILE" 2>/dev/null)"
     if [[ "$get_actual_type" != "$get_expected_type" && "$get_actual_type" != "null" ]]; then
       echo "session-state.sh: field '$GET_PATH' is corrupted — expected $get_expected_type but found $get_actual_type; returning a safe default (see issue #625)" >&2
       if [[ "$get_expected_type" == "array" ]]; then
@@ -495,11 +851,56 @@ if [[ "$MODE" == "get" ]]; then
 
   # Use jq -r so callers get the raw value (string without quotes, number
   # as-is, etc.). jq exits non-zero on parse errors — translate to 4.
+  #
+  # The migration runs in memory only: a read never rewrites the state file,
+  # but it still sees legacy entries in their scoped home, so a session that
+  # only ever reads is not blind to state written before the restructure.
   jq_err="$(mktemp)"
   trap "rm -f '$jq_err' 2>/dev/null" EXIT
-  if ! jq -r "$GET_PATH" "$STATE_FILE" 2>"$jq_err"; then
+  if ! jq -r --argjson __pathmap "$GET_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY" \
+       "$MIGRATE_JQ migrate(\$__pathmap; \$__unknown) | $SCOPED_GET_PATH" "$STATE_FILE" 2>"$jq_err"; then
     echo "session-state.sh: jq failed reading $STATE_FILE: $(cat "$jq_err")" >&2
     exit 4
+  fi
+  exit 0
+fi
+
+# ============================================================================
+# --migrate
+# ============================================================================
+if [[ "$MODE" == "migrate" ]]; then
+  if [[ ! -f "$STATE_FILE" ]]; then
+    echo "session-state.sh: state file not found: $STATE_FILE" >&2
+    exit 3
+  fi
+  if ! is_single_object_state_file "$STATE_FILE"; then
+    echo "session-state.sh: $STATE_FILE must contain exactly one top-level JSON object" >&2
+    exit 4
+  fi
+  warn_if_unmigratable "$STATE_FILE"
+  MIG_PATHMAP="$(migrate_jq_args "$STATE_FILE")"
+  MIG_ERR="$(mktemp)"
+  MIG_TMP="$STATE_FILE.tmp.$$"
+  # shellcheck disable=SC2064
+  trap "rm -f '$MIG_TMP' '$MIG_ERR' 2>/dev/null" EXIT
+  MIG_FILTER="$MIGRATE_JQ migrate(\$__pathmap; \$__unknown)"
+  if [[ "$DRY_RUN" != "1" ]]; then
+    MIG_FILTER="$MIG_FILTER | .last_updated = \$__last_updated"
+  fi
+  if ! jq --argjson __pathmap "$MIG_PATHMAP" \
+          --arg __unknown "$UNKNOWN_REPO_KEY" \
+          --arg __last_updated "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+          "$MIG_FILTER" "$STATE_FILE" > "$MIG_TMP" 2>"$MIG_ERR"; then
+    echo "session-state.sh: migration failed: $(cat "$MIG_ERR")" >&2
+    exit 5
+  fi
+  if [[ "$DRY_RUN" == "1" ]]; then
+    cat "$MIG_TMP"
+    exit 0
+  fi
+  if ! mv "$MIG_TMP" "$STATE_FILE" 2>/dev/null; then
+    echo "session-state.sh: could not write $STATE_FILE" >&2
+    exit 5
   fi
   exit 0
 fi
@@ -548,7 +949,17 @@ TOUCHED_KNOWN_FIELDS=""
 TOUCHED_NESTED_CHECKS=""
 WHOLE_ENTRY_PRS=""
 for i in "${!SET_PATHS[@]}"; do
-  path="${SET_PATHS[$i]}"
+  # Two views of the same write (issues #638 + #640):
+  #   orig_path — what the caller asked for, e.g. `.prs["287"].babysit`
+  #   path      — where it actually lands, e.g. `.repos["org/x"].prs["287"].babysit`
+  # The assignment and the TOP-LEVEL type check use `path`, because that is
+  # the shape of the final document. The per-PR classification helpers below
+  # use `orig_path`: they match on a leading `.prs`, and handing them the
+  # scoped path would make every lookup return empty — silently disabling
+  # #640's nested guard the moment #638 moved the data. Their concrete jq
+  # check paths are scoped back at the point of use.
+  orig_path="${SET_PATHS[$i]}"
+  path="$(scope_path "$orig_path")"
   value="${SET_VALUES[$i]}"
   varname="v$i"
   # Try to parse as JSON; fall back to string. Use `jq empty` (not `jq -e .`)
@@ -584,9 +995,9 @@ for i in "${!SET_PATHS[@]}"; do
   # subpath like `.prs["287"].babysit.active`) is recorded as a "<PR>:<key>"
   # pair so the post-write loop below can check that specific PR entry's
   # field, not every PR in the file.
-  set_nested_key="$(pr_nested_key_of "$path")"
+  set_nested_key="$(pr_nested_key_of "$orig_path")"
   if [[ -n "$set_nested_key" ]] && [[ -n "$(known_nested_field_type "$set_nested_key")" ]]; then
-    set_pr_number="$(pr_number_of "$path")"
+    set_pr_number="$(pr_number_of "$orig_path")"
     # PR numbers are always plain digits (GitHub PR numbers). Requiring that
     # shape here — before $set_pr_number gets interpolated into the jq
     # filter string built for nested_check_path below — keeps that
@@ -604,7 +1015,7 @@ for i in "${!SET_PATHS[@]}"; do
   # single nested-field path is touched above — but the embedded object can
   # still carry a malformed known field. Record the PR number so the
   # post-write loop below can scan every known nested key in that entry.
-  set_whole_entry_pr="$(pr_whole_entry_write_number_of "$path")"
+  set_whole_entry_pr="$(pr_whole_entry_write_number_of "$orig_path")"
   if [[ "$set_whole_entry_pr" =~ ^[0-9]+$ ]]; then
     case " $WHOLE_ENTRY_PRS " in
       *" $set_whole_entry_pr "*) ;;
@@ -620,6 +1031,15 @@ done
 LAST_UPDATED="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 JQ_ARGS+=(--arg __last_updated "$LAST_UPDATED")
 JQ_FILTER="$JQ_FILTER | .last_updated = \$__last_updated"
+
+# Migrate first, in the same atomic write (issue #638). A write through this
+# helper is therefore what permanently heals a legacy flat file — the scoped
+# assignments above then land alongside the migrated entries rather than
+# racing them.
+warn_if_unmigratable "$input_file"
+SET_PATHMAP="$(migrate_jq_args "$input_file")"
+JQ_ARGS+=(--argjson __pathmap "$SET_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY")
+JQ_FILTER="$MIGRATE_JQ migrate(\$__pathmap; \$__unknown) | $JQ_FILTER"
 
 if ! jq "${JQ_ARGS[@]}" "$JQ_FILTER" "$input_file" > "$OUT_TMP" 2>"$JQ_ERR"; then
   # Write-stage pipeline failure → exit 5 per the contract documented in the
@@ -658,7 +1078,7 @@ for nested_pair in $TOUCHED_NESTED_CHECKS; do
   nested_pr_number="${nested_pair%%:*}"
   nested_field_key="${nested_pair#*:}"
   nested_expected_type="$(known_nested_field_type "$nested_field_key")"
-  nested_check_path=".prs[\"${nested_pr_number}\"].${nested_field_key}"
+  nested_check_path="$(scope_path ".prs[\"${nested_pr_number}\"].${nested_field_key}")"
   nested_actual_type="$(jq -r "${nested_check_path} | type" "$OUT_TMP" 2>/dev/null)"
   if [[ "$nested_actual_type" != "$nested_expected_type" ]]; then
     echo "session-state.sh: refusing to write — field '$nested_check_path' would become type '$nested_actual_type' but must be '$nested_expected_type' (see issue #640); $STATE_FILE left unmodified" >&2
@@ -682,7 +1102,7 @@ if [[ -n "$WHOLE_ENTRY_PRS" ]]; then
     while IFS= read -r whole_entry_key; do
       [[ -z "$whole_entry_key" ]] && continue
       whole_entry_expected_type="$(known_nested_field_type "$whole_entry_key")"
-      whole_entry_check_path=".prs[\"${whole_entry_pr}\"].${whole_entry_key}"
+      whole_entry_check_path="$(scope_path ".prs[\"${whole_entry_pr}\"].${whole_entry_key}")"
       whole_entry_actual_type="$(jq -r "${whole_entry_check_path} | type" "$OUT_TMP" 2>/dev/null)"
       if [[ "$whole_entry_actual_type" != "null" && "$whole_entry_actual_type" != "$whole_entry_expected_type" ]]; then
         echo "session-state.sh: refusing to write — field '$whole_entry_check_path' would become type '$whole_entry_actual_type' but must be '$whole_entry_expected_type' (see issue #640); $STATE_FILE left unmodified" >&2
@@ -690,6 +1110,37 @@ if [[ -n "$WHOLE_ENTRY_PRS" ]]; then
       fi
     done <<<"$KNOWN_NESTED_KEYS"
   done
+fi
+
+# Per-repo scope contract (issue #638): `.prs` kept its object-typed
+# guarantee when it moved down a level, so check the shape of every repo
+# scope — `.repos` an object, each `.repos[*]` an object, each
+# `.repos[*].prs` present an object. Without this, the write-time guard that
+# #625 added for a top-level `.prs` would have been quietly lost to the
+# restructure. Reported as the offending scope's own path so the message
+# still names the exact field, as before.
+#
+# The offending scope is emitted as `<path><US><actual-type>` (U+001F unit
+# separator) rather than whitespace-joined: repo keys are caller data and a
+# whitespace split would mangle any key containing one.
+BAD_SCOPE="$(jq -r '
+  def bad:
+    if (.repos // null) == null then empty
+    elif (.repos | type) != "object" then ".repos\u001f" + (.repos | type)
+    else
+      ( .repos | to_entries[]
+        | if (.value | type) != "object"
+          then ".repos[\"" + .key + "\"]\u001f" + (.value | type)
+          elif (.value.prs != null) and ((.value.prs | type) != "object")
+          then ".repos[\"" + .key + "\"].prs\u001f" + (.value.prs | type)
+          else empty end )
+    end;
+  [bad] | (first // "")' "$OUT_TMP" 2>/dev/null || echo "")"
+if [[ -n "$BAD_SCOPE" ]]; then
+  bad_path="${BAD_SCOPE%%$'\x1f'*}"
+  bad_actual="${BAD_SCOPE##*$'\x1f'}"
+  echo "session-state.sh: refusing to write — field '$bad_path' would become type '$bad_actual' but must be 'object' (see issue #638); $STATE_FILE left unmodified" >&2
+  exit 4
 fi
 
 if ! mv "$OUT_TMP" "$STATE_FILE" 2>/dev/null; then

@@ -28,15 +28,29 @@ GH
 chmod +x "$FAKE_BIN/gh"
 
 # Stub git: intercept `git remote get-url origin` (used by the offline same_repo
-# detection path) and return a fixed repo URL so the result is deterministic.
-# All other git subcommands are forwarded to the real git binary.
+# detection path and by session-state.sh's repo-scope resolution) and return a
+# fixed repo URL so the result is deterministic.
+#
+# Two details this stub has to get right:
+#   - It must also match when the call carries a leading `-C <path>`, which is
+#     how session-state.sh asks about a specific checkout (issue #638).
+#   - Forwarding to the real git must NOT go through `command -v git`: this
+#     stub's own directory is first on PATH, so that resolves back to the stub
+#     and recurses forever. Drop our directory from PATH before forwarding.
 cat > "$FAKE_BIN/git" <<'GIT'
 #!/usr/bin/env bash
-if [[ "${1:-}" == "remote" && "${2:-}" == "get-url" && "${3:-}" == "origin" ]]; then
+args=("$@")
+# Skip a leading `-C <path>` when matching the subcommand.
+if [[ "${args[0]:-}" == "-C" ]]; then
+  args=("${args[@]:2}")
+fi
+if [[ "${args[0]:-}" == "remote" && "${args[1]:-}" == "get-url" && "${args[2]:-}" == "origin" ]]; then
   echo "https://github.com/auerbachb/skingod.git"
   exit 0
 fi
-exec "$(command -v git 2>/dev/null || true)" "$@"
+self_dir="$(cd "$(dirname "$0")" && pwd)"
+clean_path="$(printf '%s' "$PATH" | tr ':' '\n' | grep -vFx "$self_dir" | paste -sd: -)"
+PATH="$clean_path" exec git "$@"
 GIT
 chmod +x "$FAKE_BIN/git"
 
@@ -61,16 +75,23 @@ cat > "$HOME/.claude/session-state.json" <<'JSON'
 }}
 JSON
 out=$(bash "$SCRIPT" --infer-candidates)
-# 999 has no phase -> excluded; 4 active candidates remain.
+# 999 has no phase -> excluded.
+# 777 belongs to other/repo -> excluded entirely under per-repo scoping
+# (issue #638): a PR known to live in a DIFFERENT repo is no longer a
+# candidate here at all, which is the collision this scoping ends.
+# 888 has no owner_repo and no resolvable root_repo -> genuinely unattributed,
+# so it is still offered (same_repo null), preserving the original
+# "unknown repo - do not hide it" behavior.
 count=$(jq 'length' <<<"$out")
-[[ "$count" == "4" ]] || fail "expected 4 active candidates, got $count: $out"
-# Newest activity first: 777 (16:59) > 462 (16:48) > 458 (16:40) > 888 (16:30).
+[[ "$count" == "3" ]] || fail "expected 3 active candidates, got $count: $out"
+# Newest activity first: 462 (16:48) > 458 (16:40) > 888 (16:30).
 order=$(jq -r '[.[].number] | join(",")' <<<"$out")
-[[ "$order" == "777,462,458,888" ]] || fail "bad recency order: $order"
-# same_repo: matching owner_repo -> true, different -> false, missing -> null.
+[[ "$order" == "462,458,888" ]] || fail "bad recency order: $order"
+# same_repo: this repo's scope -> true; unattributed -> null.
 [[ "$(jq -r '.[]|select(.number==462)|.same_repo' <<<"$out")" == "true" ]]  || fail "462 same_repo != true"
-[[ "$(jq -r '.[]|select(.number==777)|.same_repo' <<<"$out")" == "false" ]] || fail "777 same_repo != false"
 [[ "$(jq -r '.[]|select(.number==888)|.same_repo' <<<"$out")" == "null" ]]  || fail "888 same_repo != null"
+# The other repo's PR must not leak in under any flag.
+[[ "$(jq -r '[.[]|select(.number==777)]|length' <<<"$out")" == "0" ]] || fail "777 (other/repo) leaked into candidates"
 # number is emitted as an integer, not a string.
 [[ "$(jq -r '.[0].number | type' <<<"$out")" == "number" ]] || fail "number not emitted as integer"
 

@@ -85,9 +85,11 @@ Flags:
                        https://github.com/owner/repo/pull/N (with optional
                        trailing /files, #anchor, ?query, or slash),
                        github.com/owner/repo/pull/N, owner/repo#N, #N, or N.
-  --root-repo <path> Filter session-state candidates to PRs recorded against
-                     this repo path (entries without a recorded root_repo are
-                     kept, since their repo is simply unknown).
+  --root-repo <path> Read session-state candidates from the repo that <path>
+                     belongs to, instead of the current working directory's
+                     repo. Since state is scoped per repo (issue #638), this
+                     selects a scope rather than filtering a shared map — any
+                     worktree of the repo names the same scope.
 
 Output: a single JSON object on stdout (see header for shape).
 
@@ -219,8 +221,27 @@ else
     fi
   done
 
-  if [[ -n "$SESSION_STATE_SH" ]] && PRS_JSON=$("$SESSION_STATE_SH" --get '.prs // {}' 2>/dev/null); then
-    :
+  # The helper scopes `.prs` to the active repo (issue #638) and migrates a
+  # legacy flat file in memory, so this read already returns only THIS repo's
+  # PRs. --root-repo picks a different repo's scope by running the helper
+  # from that checkout.
+  #
+  # Two buckets are read and merged, matching pr-state.sh --infer-candidates:
+  # this repo's scope, plus the reserved "_unknown" scope holding legacy
+  # entries whose repo genuinely cannot be determined. A PR known to belong
+  # to a DIFFERENT repo is never a candidate; an unattributed one still is,
+  # which keeps the pre-#638 "unknown repo — do not hide it" behavior. The
+  # scoped entry wins on a key conflict, since it is the attributed one.
+  STATE_CWD="${ROOT_REPO:-$PWD}"
+  [[ -d "$STATE_CWD" ]] || STATE_CWD="$PWD"
+  if [[ -n "$SESSION_STATE_SH" ]] && PRS_SCOPED=$(cd "$STATE_CWD" && "$SESSION_STATE_SH" --get '.prs // {}' 2>/dev/null); then
+    [[ -z "$PRS_SCOPED" || "$PRS_SCOPED" == "null" ]] && PRS_SCOPED="{}"
+    PRS_UNKNOWN=$(cd "$STATE_CWD" && "$SESSION_STATE_SH" --raw-path --get '.repos["_unknown"].prs // {}' 2>/dev/null || echo '{}')
+    [[ -z "$PRS_UNKNOWN" || "$PRS_UNKNOWN" == "null" ]] && PRS_UNKNOWN="{}"
+    PRS_JSON=$(jq -c -n --argjson u "$PRS_UNKNOWN" --argjson s "$PRS_SCOPED" '$u + $s' 2>/dev/null || printf '%s' "$PRS_SCOPED")
+  # Fallback only for a helper that is missing or broken. It reads the
+  # pre-#638 top-level `.prs`, which a migrated file no longer has — so this
+  # degrades to "no candidates" rather than to another repo's PRs.
   elif ! PRS_JSON=$(jq -c '.prs // {}' "$STATE_FILE" 2>/dev/null); then
     echo "Error: could not parse $STATE_FILE as JSON" >&2
     exit 4
@@ -254,15 +275,18 @@ fi
 
 # Build the candidate list:
 #   - one record per PR key
-#   - filter to --root-repo when provided (keep entries whose recorded
-#     root_repo matches, plus entries with no recorded root_repo — their repo
-#     is simply unknown, and dropping them would hide legitimately-tracked PRs)
 #   - sort by last_cron_action.at descending (missing timestamp sorts last)
 # `.last_cron_action.at?` uses jq's `?` postfix to suppress the "Cannot index
 # string with \"at\"" error a malformed (non-object) last_cron_action would
 # otherwise raise, falling through to the `// null` default instead.
+#
+# No repo filtering happens here any more: the map read above is already
+# scoped to one repo (issue #638). The old path-equality filter has become a
+# liability rather than a safeguard — it compared recorded checkout paths, so
+# a PR registered from a sibling worktree of the SAME repo failed the match
+# and vanished from the candidate list. Scope membership is the correct test,
+# and it is now applied at read time.
 if ! RESULT=$(jq -c \
-    --arg root_repo "$ROOT_REPO" \
     '
     ( . // {} )
     | to_entries
@@ -272,19 +296,10 @@ if ! RESULT=$(jq -c \
         | {
             number: $n,
             owner_repo: ( .value.owner_repo // null ),
-            last_activity: ( .value.last_cron_action.at? // null ),
-            _root: ( .value.root_repo // null )
+            last_activity: ( .value.last_cron_action.at? // null )
           }
       )
-    | map(
-        select(
-          $root_repo == ""
-          or ._root == null
-          or ._root == $root_repo
-        )
-      )
     | sort_by( .last_activity // "" ) | reverse
-    | map( del(._root) )
     | { candidates: .,
         most_recent: ( if length > 0 then .[0] else null end ),
         source: "session-state" }

@@ -185,15 +185,21 @@ if [[ -f "$STATE_FILE" ]] && ! jq empty "$STATE_FILE" >/dev/null 2>&1; then
   exit 4
 fi
 if [[ -f "$STATE_FILE" ]]; then
-  LAST_FIRED_ROUND="$(jq -r --arg k "$PR_KEY" '.prs[$k].ai_review_trigger_last_cr_round // empty' "$STATE_FILE" 2>/dev/null || true)"
-  LAST_SHA="$(jq -r --arg k "$PR_KEY" '.prs[$k].ai_review_trigger_head_sha // empty' "$STATE_FILE" 2>/dev/null || true)"
+  LAST_FIRED_ROUND="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].ai_review_trigger_last_cr_round // empty" 2>/dev/null || true)"
+  LAST_SHA="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].ai_review_trigger_head_sha // empty" 2>/dev/null || true)"
 fi
 
 # Incomplete multi-step post from a prior run (resume without re-firing completed mentions).
 steps_incomplete() {
   [[ ! -f "$STATE_FILE" ]] && return 1
-  jq -e --arg k "$PR_KEY" --arg h "$HEAD_SHA" --argjson r "$CR_ROUNDS" --argjson need_help "$ENABLE_PR_REVIEW_HELP" '
-    .prs[$k].ai_review_trigger_steps? as $st
+  # Read the scoped step record through the helper (issue #638), then test it
+  # locally — the dedupe key is per PR per repo, so a same-numbered PR in
+  # another repo must not satisfy "already posted" here.
+  local st
+  st="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].ai_review_trigger_steps // null" 2>/dev/null || echo null)"
+  [[ -n "$st" && "$st" != "null" ]] || return 1
+  jq -e --arg h "$HEAD_SHA" --argjson r "$CR_ROUNDS" --argjson need_help "$ENABLE_PR_REVIEW_HELP" '
+    . as $st
     | $st != null
       and ($st.head_sha == $h)
       and ($st.cr_rounds == $r)
@@ -203,7 +209,7 @@ steps_incomplete() {
         or ($st.graphite | not)
         or ($need_help == 1 and ($st.pr_help | not))
       )
-  ' "$STATE_FILE" >/dev/null 2>&1
+  ' <<<"$st" >/dev/null 2>&1
 }
 
 SKIP_REASON=""
@@ -297,7 +303,7 @@ INIT_STEPS="$(jq -cn \
   }')"
 
 if [[ -f "$STATE_FILE" ]]; then
-  EXISTING="$(jq -c --arg k "$PR_KEY" '.prs[$k].ai_review_trigger_steps // empty' "$STATE_FILE" 2>/dev/null || true)"
+  EXISTING="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].ai_review_trigger_steps // empty" 2>/dev/null || true)"
   if [[ -n "$EXISTING" && "$EXISTING" != "null" && "$EXISTING" != "" ]]; then
     MATCH="$(jq -n --argjson ex "$EXISTING" --arg h "$HEAD_SHA" --argjson r "$CR_ROUNDS" '$ex | select(.head_sha == $h and .cr_rounds == $r)' 2>/dev/null || true)"
     if [[ -n "$MATCH" && "$MATCH" != "null" ]]; then
@@ -315,7 +321,7 @@ post_one() {
   local step_key="$1"
   local body="$2"
   local posted
-  posted="$(jq -r --arg k "$PR_KEY" --arg s "$step_key" '.prs[$k].ai_review_trigger_steps[$s] // empty' "$STATE_FILE" 2>/dev/null || true)"
+  posted="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].ai_review_trigger_steps[\"$step_key\"] // empty" 2>/dev/null || true)"
   if [[ "$posted" == "true" ]]; then
     return 0
   fi

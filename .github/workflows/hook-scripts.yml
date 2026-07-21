@@ -29,6 +29,15 @@ jobs:
       - name: pr-state --infer-candidates unit test
         run: bash .claude/scripts/tests/pr-state-infer-candidates.test.sh
 
+      - name: session-state.sh per-repo migration unit tests (issue #638)
+        run: bash .claude/scripts/tests/session-state-migration.test.sh
+
+      - name: infer-pr.sh unit tests (issues #447 / #448 / #638)
+        run: bash .claude/scripts/tests/infer-pr.test.sh
+
+      - name: polling-state-gate.sh multi-repo regression test (issue #638)
+        run: bash .claude/scripts/tests/polling-state-gate-multirepo.test.sh
+
       - name: env-guard unit tests
         run: python3 -m unittest tests.test_env_guard -v
 
@@ -71,7 +80,7 @@ jobs:
       - name: polling-state-gate.sh compaction-resume test (issue #315)
         run: bash .claude/scripts/tests/compaction-resume-polling-state-gate.test.sh
 
-      - name: session-state.sh field-type contract unit test (issue #625)
+      - name: session-state.sh field-type + repo-scoping unit tests (issues #625 / #640 / #638)
         run: bash .claude/scripts/tests/session-state.test.sh
 
       - name: clean-behind-check.sh unit test (issue #631)

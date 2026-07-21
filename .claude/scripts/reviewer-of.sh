@@ -169,70 +169,24 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 # --- atomic write helper (--sticky path) ---
-# Writes .prs["$PR_NUMBER"].reviewer = "$1" to $STATE_FILE, preserving all
-# sibling keys (other PRs, greptile_daily, cr_quota, active_agents, etc.).
-# Creates the file with a minimal `{}` object ONLY when it is missing. When
-# the file exists but is not a JSON object (corrupt, wrong shape, or non-JSON
-# text), the function exits 5 rather than overwriting — the sibling-preservation
-# contract depends on merging into an existing object, and silently replacing
-# a corrupt file would discard unrelated session data that may still be
-# recoverable by hand.
+# Writes .prs["$PR_NUMBER"].reviewer = "$1", scoped to the active repo
+# (issue #638): the value actually lands at
+# .repos["<owner>/<name>"].prs["$PR_NUMBER"].reviewer, so a sticky escalation
+# recorded for PR #84 here cannot overwrite PR #84's reviewer in a different
+# repo. Delegated to session-state.sh, which owns the atomic replace, the
+# sibling-preservation contract, the field-type guard, and the scoping rule —
+# this used to be a hand-rolled duplicate of that same write, and keeping a
+# second raw-jq writer would mean two places to teach about scoping.
+SESSION_STATE="$(cd "$(dirname "$0")" && pwd)/session-state.sh"
+
 write_sticky() {
   local value="$1"
-  local state_dir
-  state_dir="$(dirname "$STATE_FILE")"
-  if ! mkdir -p "$state_dir" 2>/dev/null; then
-    echo "reviewer-of.sh: could not create state dir: $state_dir" >&2
-    exit 5
-  fi
-
-  local input_file="$STATE_FILE"
-  local seeded_tmp=""
-  if [[ ! -f "$STATE_FILE" ]]; then
-    # File missing — seed a temp file with an empty object so jq has valid
-    # input. The original file path is written atomically at the end.
-    seeded_tmp="$(mktemp)"
-    printf '%s\n' '{}' > "$seeded_tmp"
-    input_file="$seeded_tmp"
-  elif ! jq -e 'type == "object"' "$STATE_FILE" >/dev/null 2>&1; then
-    # File exists but is not a JSON object. Refuse to overwrite — the sibling-
-    # preservation contract depends on merging into the existing object, and
-    # silently replacing a corrupt file would discard unrelated session data
-    # (cr_quota, greptile_daily, active_agents, etc.) that may still be
-    # recoverable by hand. Uses `-e 'type == "object"'` rather than `-e .` so
-    # valid-but-wrong-shape JSON (null, false, arrays, scalars) is treated
-    # as corrupt instead of silently accepted; `-e` is required because the
-    # bare `type == "object"' filter prints true/false to stdout and always
-    # exits 0 on syntactically valid JSON.
-    echo "reviewer-of.sh: $STATE_FILE is not a JSON object; refusing to overwrite" >&2
-    exit 5
-  fi
-
-  local tmp="$STATE_FILE.tmp.$$"
-  local jq_err
-  jq_err="$(mktemp)"
-
-  # Cleanup on any exit from this function onwards. Values are captured at
-  # trap-definition time; we conditionally include seeded_tmp only when set.
-  # shellcheck disable=SC2064
-  if [[ -n "$seeded_tmp" ]]; then
-    trap "rm -f '$tmp' '$jq_err' '$seeded_tmp' 2>/dev/null" EXIT
-  else
-    trap "rm -f '$tmp' '$jq_err' 2>/dev/null" EXIT
-  fi
-
-  if ! jq \
-    --arg pr "$PR_NUMBER" \
-    --arg rev "$value" \
-    '.prs = ((.prs // {}) | .[$pr] = ((.[$pr] // {}) | .reviewer = $rev))
-     | .last_updated = (now | todate)' \
-    "$input_file" > "$tmp" 2>"$jq_err"; then
-    echo "reviewer-of.sh: jq failed updating $STATE_FILE: $(cat "$jq_err")" >&2
-    exit 5
-  fi
-
-  if ! mv "$tmp" "$STATE_FILE" 2>/dev/null; then
-    echo "reviewer-of.sh: could not write $STATE_FILE" >&2
+  # session-state.sh exits 4 on a corrupt/multi-document state file and 5 on
+  # a failed write — it refuses to overwrite rather than discarding unrelated
+  # session data, which is the same contract this function had before. A
+  # missing file is created from `{}` (exit 0), also as before.
+  if ! "$SESSION_STATE" --set ".prs[\"$PR_NUMBER\"].reviewer=$value"; then
+    echo "reviewer-of.sh: failed to persist sticky reviewer for PR #$PR_NUMBER" >&2
     exit 5
   fi
 }
@@ -274,10 +228,23 @@ if [[ -f "$STATE_FILE" ]]; then
   # fail the `.prs[$pr]` lookup below — masking the error and falling through
   # to live-history, defeating the fail-fast contract. Accept `.prs` missing
   # (null) because a fresh session-state legitimately has no PRs recorded yet.
-  if ! jq -e 'type == "object" and (.prs == null or (.prs | type == "object"))' "$STATE_FILE" >/dev/null 2>&1; then
-    echo "reviewer-of.sh: $STATE_FILE is not a JSON object with an object-shaped .prs; refusing to fall back to live-history (sticky escalation decisions are stored in session-state). Repair or remove the file to continue." >&2
+  #
+  # Both the guard and the read go through session-state.sh so they see the
+  # repo-scoped view (issue #638) — including a legacy flat file, which the
+  # helper migrates in memory on read. Asking for `.prs | type` rather than
+  # `.prs` deliberately bypasses the helper's safe-default masking, so a
+  # corrupt map still fails fast here instead of reading as an empty one.
+  if ! STATE_PRS_TYPE="$("$SESSION_STATE" --get '.prs | type' 2>/dev/null)"; then
+    echo "reviewer-of.sh: could not read .prs from $STATE_FILE; refusing to fall back to live-history (sticky escalation decisions are stored in session-state). Repair or remove the file to continue." >&2
     exit 5
   fi
+  case "$STATE_PRS_TYPE" in
+    object|null) ;;
+    *)
+      echo "reviewer-of.sh: $STATE_FILE is not a JSON object with an object-shaped .prs (found $STATE_PRS_TYPE); refusing to fall back to live-history (sticky escalation decisions are stored in session-state). Repair or remove the file to continue." >&2
+      exit 5
+      ;;
+  esac
   # No `|| echo ""` mask: the guard above guarantees `.prs` is an object (or
   # null), so jq's `.prs[$pr].reviewer // ""` will always succeed. If jq does
   # fail here it means the state file raced underneath us (truncated, removed,
@@ -286,7 +253,7 @@ if [[ -f "$STATE_FILE" ]]; then
   # runs with `set -uo pipefail` (no `-e`), so a failed command substitution
   # in an assignment does NOT halt execution on its own — we MUST wrap the
   # assignment in an explicit `if !` check to enforce the fail-fast contract.
-  if ! FROM_STATE="$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].reviewer // ""' "$STATE_FILE")"; then
+  if ! FROM_STATE="$("$SESSION_STATE" --get ".prs[\"$PR_NUMBER\"].reviewer // \"\"")"; then
     echo "reviewer-of.sh: jq read of $STATE_FILE failed after validation (file may have been modified or removed mid-read); refusing to fall back to live-history. Repair or remove the file to continue." >&2
     exit 5
   fi

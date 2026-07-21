@@ -309,7 +309,11 @@ resolve_reviewer() {
   local state_file="${HOME}/.claude/session-state.json"
   if [[ -f "$state_file" ]]; then
     local from_state
-    from_state=$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].reviewer // ""' "$state_file" 2>/dev/null || echo "")
+    # Scoped to the active repo (issue #638) — reading the flat `.prs[$pr]`
+    # here would pick up a same-numbered PR from whichever other repo last
+    # wrote, and hand this gate the wrong reviewer.
+    from_state=$("$(cd "$(dirname "$0")" && pwd)/session-state.sh" \
+      --get ".prs[\"$PR_NUMBER\"].reviewer // \"\"" 2>/dev/null || echo "")
     case "$from_state" in
       cr|bugbot|greptile) echo "$from_state"; return ;;
       g) echo "greptile"; return ;;

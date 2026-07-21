@@ -140,10 +140,14 @@ chmod +x "$STUB_BIN/gh"
 rm -f "$STATE" "$HANDOFF"
 out="$(cd "$REPO_A" && PATH="$STUB_BIN:$PATH" "$SCRIPT" "$PR_NUM" --ensure-session 2>&1)"; rc=$?
 check_eq "--ensure-session succeeds on a fresh PR" "0" "$rc"
+# Per-PR state is stored under the repo's own scope since issue #638
+# (`.repos["<owner>/<name>"].prs["<N>"]`), so these read the scoped path. The
+# recorded values themselves are unchanged — owner_repo is still #647's
+# scoping signal, and is also the migration key for pre-#638 state.
 check_eq "--ensure-session records per-PR owner_repo" "org/a" \
-  "$(jq -r --arg pr "$PR_NUM" '.prs[$pr].owner_repo // ""' "$STATE")"
+  "$(jq -r --arg pr "$PR_NUM" '.repos["org/a"].prs[$pr].owner_repo // ""' "$STATE")"
 check_eq "--ensure-session records per-PR root_repo" "$REPO_A" \
-  "$(jq -r --arg pr "$PR_NUM" '.prs[$pr].root_repo // ""' "$STATE")"
+  "$(jq -r --arg pr "$PR_NUM" '.repos["org/a"].prs[$pr].root_repo // ""' "$STATE")"
 
 # A later tick validates against that scoping even after another session
 # overwrites the global field.
