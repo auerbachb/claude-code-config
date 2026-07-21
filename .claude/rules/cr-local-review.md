@@ -45,6 +45,8 @@ jq -e 'select(.type=="error")' cr.out >/dev/null && echo "FAILED RUN"
 
 A hit is a **failed run** (Timeout & fallback below), never a clean pass. An empty result is clean **only** when its error check is clean and, for CodeAnt, `meta.capped` is `false`. Failure shapes, 403 triage, 15-file cap: `.claude/reference/local-review-cli-failure-modes.md`.
 
+> **Never run `codeant logout` / `codeant login` to clear a 403.** The CLI hardcodes that advice for every 403 — it throws before reading the server's body. The real cause is an undocumented **daily cap (~10) on CLI agent reviews**, which re-auth cannot fix; running it nulls the stored token and opens a browser login page, on a loop. On a CodeAnt 403: **one retry maximum**, then drop CodeAnt for the session (Timeout & fallback) and note it in the PR body. The CodeAnt **GitHub App** is unaffected and satisfies the merge gate alone, so a capped CLI never blocks a merge.
+
 ### Never Suppress Linter Errors (NON-NEGOTIABLE)
 
 Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `noqa`, or equivalent just to pass CI. Read the lint/type errors and fix the code, even in a file you did not modify. Suppression is allowed only when the linter is provably wrong and the comment explains why.

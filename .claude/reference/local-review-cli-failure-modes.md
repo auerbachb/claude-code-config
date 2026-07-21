@@ -44,22 +44,51 @@ API Error: Access denied (403). Please run `codeant logout` and then `codeant lo
 Note `[progress] 0 files have suggestions` — the reflector runs and reports zero suggestions
 even though nothing was successfully analyzed.
 
-## Classifying a 403: entitlement vs credentials
+## Classifying a 403: the daily cap, not credentials
 
-The CLI's 403 text always says to re-authenticate. **That advice is often wrong.** A 403 is
-authorization, not authentication, and a valid token can still be denied.
+The CLI's 403 text always says to re-authenticate. **That advice is wrong, and following it is
+actively harmful** — it cannot fix a quota, it nulls the stored token, and it throws a browser
+login page at the user. On repeat it becomes an endless loop.
 
-Probe before re-authenticating:
+The real cause is an **undocumented daily cap on CLI agent reviews**. The server says so plainly;
+the CLI discards the message (see `fetchApi.js` above). Read it yourself by replaying the request
+— never echo the token:
 
 ```bash
-codeant scans orgs     # valid token -> returns {"connections":[{"organizationName":...}],"email":...}
+TOK=$(jq -r '.apiKeyV2' ~/.codeant/config.json)
+curl -sS -w '\nHTTP %{http_code}\n' -X POST \
+  'https://service.codeant.ai/extension/pr-review/agent/turn' \
+  -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
+  -d '{"diff_content":"diff --git a/t.js b/t.js\n+const b=2;\n","file_content":"const b=2;\n","file_path":"t.js"}'
 ```
+
+Observed 2026-07-21:
+
+```json
+{"error":"Unable to process request. Either the API key is invalid or the daily limit of 10 for agent review has been reached."}
+```
+
+**That message names two causes with opposite remedies, so it is not decisive alone.**
+Discriminate with `codeant scans orgs`:
 
 | `scans orgs` | `review` | Diagnosis |
 |---|---|---|
 | OK | OK | Healthy |
-| OK | 403 | **Entitlement / plan / quota.** Do not re-authenticate — it will not help. Check the account plan at app.codeant.ai. |
+| OK | 403 | **Daily agent-review cap reached.** Token is fine. Do NOT re-authenticate. Drop CodeAnt for the session — the cap resets the next day. |
 | 403 | 403 | Credentials. `codeant logout` then `codeant login` (browser flow). |
+
+Further proof the request authorizes: a *minimal* payload to the same endpoint returns
+`400 {"error":"session_id is required for subsequent turns"}`. A 400 means it reached body
+validation, so auth and authorization both passed.
+
+**One `codeant review` is not one unit.** `reviewHeadless.js` batches up to 5 files per turn loop
+(`MAX_TURNS = 5`), then runs a reflector loop per file with suggestions, so one invocation issues
+several `agent/turn` calls. Budget only a few reviews per day.
+
+**The cap is invisible in the dashboard.** "AI Code Reviews: Unlimited" there describes the
+**GitHub App** surface, which has a separate counter and keeps working normally — 234 runs on the
+same day the CLI was locked out. The GitHub App also satisfies the CR-path merge gate on its own,
+so a capped CLI is never blocking.
 
 Corroborating probes when `scans orgs` succeeds but `review` does not:
 
@@ -70,8 +99,10 @@ Corroborating probes when `scans orgs` succeeds but `review` does not:
 
 Worked example (2026-07-21, `auerbachb`): `scans orgs` returned the org and account email,
 `settings repos` listed 63 onboarded repos, `secrets` ran clean, and `review` returned 403 in
-two different repos. `logout` + `login` completed successfully and installed a fresh token;
-the 403 was unchanged. Root cause was account entitlement, not credentials.
+two different repos. `logout` + `login` completed successfully and installed a fresh token; the
+403 was unchanged — **twice**. Plan was Premium ACTIVE with a seat assigned and 234 GitHub App
+reviews that same day. Root cause was the daily cap; every credential, seat, plan, and onboarding
+hypothesis was a dead end.
 
 ## The 15-file cap
 
