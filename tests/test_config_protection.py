@@ -276,6 +276,23 @@ class ConfigProtectionBashTests(unittest.TestCase):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
 
+    def test_bash_noclobber_override_redirect_not_split_into_pipe(self) -> None:
+        # CodeAnt review finding: `>|` (bash's noclobber-override redirect)
+        # must survive the command-separator split intact — splitting it
+        # into `>` + `|` moves the redirect target into a separate pipeline
+        # segment with no write signal of its own, letting the write evade
+        # detection entirely.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            for cmd in [
+                f"echo x >| {target}",
+                f"echo x>|{target}",
+                f"echo x >>| {target}",
+            ]:
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
+
     def test_bash_blocks_in_place_edit_through_long_form_wrapper_flag(self) -> None:
         # CodeAnt review finding: a wrapper's long-form value flag
         # (`sudo --user root`, `nice --adjustment 10`) must be recognized

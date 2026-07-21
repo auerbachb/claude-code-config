@@ -150,7 +150,9 @@ def _split_into_command_segments(cmd: str) -> list[str]:
     only causes an extra (safe-direction) split, never a missed detection of
     those two specific signals in the same fragment they already are in.
     A single `&` is skipped when adjacent to `>` (`2>&1` fd-dup, `&>file`
-    combined redirect) so those stay intact for the redirect checks.
+    combined redirect), and a `|` immediately after `>` is skipped too
+    (`>|`/`>>|`, bash's noclobber-override redirect) — both stay intact as
+    one token for the redirect checks instead of being split apart.
     """
     segments: list[str] = []
     current: list[str] = []
@@ -188,6 +190,12 @@ def _split_into_command_segments(cmd: str) -> list[str]:
                 prev_ch = cmd[i - 1] if i > 0 else ''
                 next_ch = cmd[i + 1] if i + 1 < n else ''
                 if prev_ch == '>' or next_ch == '>':
+                    current.append(ch)
+                    i += 1
+                    continue
+            if ch == '|':
+                prev_ch = cmd[i - 1] if i > 0 else ''
+                if prev_ch == '>':
                     current.append(ch)
                     i += 1
                     continue
