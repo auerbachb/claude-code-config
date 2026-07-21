@@ -57,7 +57,7 @@ Run **every poll cycle while `reviewer == cr`** after PR snapshot + CI:
 STATUS=$(.claude/scripts/escalate-review.sh <PR_NUMBER> | sed -n 's/^STATUS=//p')
 ```
 
-Verdicts: `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget_exhausted`, `self_review` — follow `escalate-review.sh` / `bugbot.md` / `greptile.md` (rate-limit → BugBot → Greptile; cache `bugbot_installed` in session-state).
+Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget_exhausted`, `self_review` — follow `escalate-review.sh` / `bugbot.md` / `greptile.md` (rate-limit → BugBot → Greptile; cache `bugbot_installed` in session-state). `gate_met` means CodeRabbit or CodeAnt already has a valid `APPROVED` review on current HEAD (checked before any escalation, ahead of the CR-rate-limit/BugBot-failure logic) — do not escalate further; let the merge gate exit polling normally.
 
 ### Rate Limits & Behavior (Pro Tier)
 

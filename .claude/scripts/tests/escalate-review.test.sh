@@ -223,6 +223,40 @@ OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
 
+############################################################################
+echo "== Scenario (h): CR rate-limited + BugBot usage-limit failure + CodeAnt already APPROVED on HEAD -> gate_met (NOT trigger_greptile) =="
+reset_state
+write_commits "$(ts_seconds_ago 120)"
+FAILURE_COMMENT_H="$(failure_comment "$(ts_seconds_ago 60)")"
+CODEANT_APPROVED_H='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "submitted_at": "'"$(ts_seconds_ago 90)"'"}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H]" "[]" "[$FAILURE_COMMENT_H]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=gate_met" "STATUS=gate_met" "$OUT"
+
+############################################################################
+echo "== Scenario (i): CodeAnt APPROVED on an OLDER SHA (not HEAD) -> still trigger_greptile (stale approval doesn't satisfy the gate) =="
+reset_state
+write_commits "$(ts_seconds_ago 120)"
+FAILURE_COMMENT_I="$(failure_comment "$(ts_seconds_ago 60)")"
+CODEANT_APPROVED_STALE='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "stale0000000000000000000000000000000000", "state": "APPROVED", "submitted_at": "'"$(ts_seconds_ago 9000)"'"}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_STALE]" "[]" "[$FAILURE_COMMENT_I]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== Scenario (j): CodeAnt APPROVED on HEAD but retracted by a LATER CHANGES_REQUESTED on HEAD -> still trigger_greptile =="
+reset_state
+write_commits "$(ts_seconds_ago 120)"
+FAILURE_COMMENT_J="$(failure_comment "$(ts_seconds_ago 60)")"
+CODEANT_APPROVED_J='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "submitted_at": "'"$(ts_seconds_ago 200)"'"}'
+CODEANT_RETRACT_J='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "CHANGES_REQUESTED", "submitted_at": "'"$(ts_seconds_ago 100)"'"}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_J, $CODEANT_RETRACT_J]" "[]" "[$FAILURE_COMMENT_J]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1

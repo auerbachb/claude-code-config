@@ -91,6 +91,11 @@ After the shared `$STATE` snapshot and CI check, run the canonical escalation ga
 ```bash
 ESCALATION_STATUS=$(.claude/scripts/escalate-review.sh {{PR_NUMBER}} | sed -n 's/^STATUS=//p')
 case "$ESCALATION_STATUS" in
+  gate_met)
+    : # CodeRabbit or CodeAnt already has a valid APPROVED review on current HEAD —
+      # do not escalate to BugBot/Greptile; the CR Merge Gate check below will
+      # confirm and exit polling.
+    ;;
   polling_cr)
     : # keep waiting on CodeRabbit/BugBot grace window
     ;;
