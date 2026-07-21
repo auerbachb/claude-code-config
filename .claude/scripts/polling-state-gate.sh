@@ -5,10 +5,21 @@
 #   1) Handoff file exists at ~/.claude/handoffs/pr-{N}-handoff.json (parent agent
 #      owns creation/refresh for the polling loop; Phase A/B subagents use the same
 #      path for phase handoffs — see handoff-files.md).
-#   2) PR is registered in ~/.claude/session-state.json with a correct root_repo
-#      (top-level .root_repo and per-PR .prs["N"].root_repo when multiple repos).
+#   2) PR is registered in ~/.claude/session-state.json and scoped to this repo via
+#      per-PR .prs["N"].owner_repo / .prs["N"].root_repo (issue #647).
 #   3) Each poll cycle evaluates exit via .claude/scripts/merge-gate.sh (not inline
 #      paraphrase of cr-merge-gate.md).
+#
+# Repo scoping (issue #647): ~/.claude/session-state.json is shared by every
+# concurrent session, so the single global .root_repo is owned by whichever session
+# wrote last and is NEVER a refusal signal. Scoping is validated per PR, by repo
+# *identity* (normalized `origin` remote, falling back to the shared git common dir
+# so sibling worktrees of one repo agree) rather than by checkout path:
+#   a) .prs["N"].owner_repo present -> must equal the active checkout's identity
+#   b) else .prs["N"].root_repo present -> its identity must equal the active one
+#   c) scoping recorded but not comparable (no `origin`, stale path) -> refuse
+#   d) else (state from an older version) -> notice on stderr, then pass
+# A genuine cross-repo mismatch is still refused, naming the PR and both repos.
 #
 # Usage:
 #   polling-state-gate.sh <pr_number> --ensure-session [--root-repo <path>]
@@ -17,7 +28,8 @@
 #
 # Modes:
 #   --ensure-session  Run once before the first poll tick: write/update session-state,
-#                      create handoff if missing, set root_repo. Exits 0 on success.
+#                      create handoff if missing, record per-PR repo scoping
+#                      (owner_repo + root_repo). Exits 0 on success.
 #                      Does not require the merge gate to be met.
 #   --verify-state     Offline recovery check: confirm handoff + session-state and
 #                      root_repo consistency (no gh, no merge-gate). Exit 0 if OK.
@@ -42,7 +54,7 @@ MODE="cycle"
 ROOT_REPO_ARG=""
 
 usage() {
-  sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -87,6 +99,45 @@ if [[ -z "$PR_NUMBER" ]] || ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
   exit 2
 fi
 
+# repo_identity <path> — stable identity for the repo a checkout belongs to.
+# Prefers the normalized `origin` remote ("owner/repo", lowercased) so any worktree
+# or clone of the same repo compares equal. Falls back to the absolute git common
+# dir ("gitdir:<path>", shared by all worktrees of one clone), then to the raw path
+# ("path:<path>") when the argument is not a git checkout at all.
+repo_identity() {
+  local path="$1"
+  [[ -n "$path" && -d "$path" ]] || { printf 'path:%s\n' "$path"; return 0; }
+  local url id owner repo
+  url="$(git -C "$path" remote get-url origin 2>/dev/null || true)"
+  if [[ -n "$url" ]]; then
+    id="${url%.git}"
+    id="${id%/}"
+    id="${id#*://}"   # drop scheme (https://, ssh://, git://)
+    id="${id#*@}"     # drop user@ (git@github.com:owner/repo)
+    id="${id/:/\/}"   # scp-style host:owner/repo -> host/owner/repo
+    # Last two segments are owner/repo; a URL with no separator carries no identity.
+    if [[ "$id" == */* ]]; then
+      repo="${id##*/}"
+      id="${id%/*}"
+      owner="${id##*/}"
+      if [[ -n "$owner" && -n "$repo" ]]; then
+        printf '%s/%s\n' "$owner" "$repo" | tr '[:upper:]' '[:lower:]'
+        return 0
+      fi
+    fi
+  fi
+  local common=""
+  common="$(cd "$path" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null || true)"
+  if [[ -n "$common" ]]; then
+    common="$(cd "$path" && cd "$common" 2>/dev/null && pwd -P || true)"
+  fi
+  if [[ -n "$common" ]]; then
+    printf 'gitdir:%s\n' "$common"
+  else
+    printf 'path:%s\n' "$path"
+  fi
+}
+
 resolve_root_repo() {
   local from_arg="$1"
   local from_state_pr=""
@@ -96,14 +147,19 @@ resolve_root_repo() {
     from_state_top=$(jq -r '.root_repo // empty' "$STATE_FILE" 2>/dev/null || true)
   fi
   local chosen=""
+  local live=""
+  live="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  # Precedence: explicit arg -> per-PR scoping -> live checkout -> global .root_repo.
+  # The global field is shared across concurrent sessions (issue #647), so it must
+  # never outrank the checkout the caller is actually standing in.
   if [[ -n "$from_arg" ]]; then
     chosen="$from_arg"
-  elif [[ -n "$from_state_pr" && "$from_state_pr" != "null" ]]; then
+  elif [[ -n "$from_state_pr" && "$from_state_pr" != "null" && -d "$from_state_pr" ]]; then
     chosen="$from_state_pr"
+  elif [[ -n "$live" ]]; then
+    chosen="$live"
   elif [[ -n "$from_state_top" && "$from_state_top" != "null" ]]; then
     chosen="$from_state_top"
-  else
-    chosen="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   fi
   if [[ -z "$chosen" || ! -d "$chosen" ]]; then
     echo "polling-state-gate.sh: could not resolve root repo path (set --root-repo or .root_repo in session-state)" >&2
@@ -114,31 +170,61 @@ resolve_root_repo() {
   echo "$canon"
 }
 
+# validate_root_match <resolved_root> — refuse only on a genuine cross-repo mismatch.
+# Compares repo identity against PER-PR scoping; the shared global .root_repo is
+# never consulted here (issue #647).
 validate_root_match() {
   local resolved="$1"
-  local from_state_pr=""
-  local from_state_top=""
+  local stored_owner=""
+  local stored_root=""
   if [[ -f "$STATE_FILE" ]]; then
-    from_state_pr=$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].root_repo // empty' "$STATE_FILE" 2>/dev/null || true)
-    from_state_top=$(jq -r '.root_repo // empty' "$STATE_FILE" 2>/dev/null || true)
+    stored_owner=$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].owner_repo // empty' "$STATE_FILE" 2>/dev/null || true)
+    stored_root=$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].root_repo // empty' "$STATE_FILE" 2>/dev/null || true)
   fi
-  local canon
+  if [[ "$stored_owner" == "null" ]]; then stored_owner=""; fi
+  if [[ "$stored_root" == "null" ]]; then stored_root=""; fi
+
+  local canon active_id
   canon=$(cd "$resolved" && git rev-parse --show-toplevel 2>/dev/null || echo "$resolved")
-  if [[ -n "$from_state_pr" && "$from_state_pr" != "null" && "$from_state_pr" != "" ]]; then
-    local canon_pr
-    canon_pr=$(cd "$from_state_pr" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || echo "$from_state_pr")
-    if [[ "$canon_pr" != "$canon" ]]; then
-      echo "polling-state-gate.sh: session-state .prs[\"$PR_NUMBER\"].root_repo ($from_state_pr) does not match active root ($canon) — multi-repo hazard" >&2
+  active_id="$(repo_identity "$canon")"
+
+  # (a) owner/repo scoping — usable only when the active checkout also resolves to
+  #     an owner/repo identity (i.e. it has an `origin` remote to compare against).
+  if [[ -n "$stored_owner" && "$active_id" == */* && "$active_id" != gitdir:* && "$active_id" != path:* ]]; then
+    local stored_owner_lc
+    stored_owner_lc="$(printf '%s' "$stored_owner" | tr '[:upper:]' '[:lower:]')"
+    if [[ "$stored_owner_lc" != "$active_id" ]]; then
+      echo "polling-state-gate.sh: PR #$PR_NUMBER is scoped to repo '$stored_owner' but the active checkout is '$active_id' ($canon) — refuse to poll from the wrong repo" >&2
       return 1
     fi
+    return 0
   fi
-  if [[ -n "$from_state_top" && "$from_state_top" != "null" && "$from_state_top" != "" ]]; then
-    local canon_top
-    canon_top=$(cd "$from_state_top" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || echo "$from_state_top")
-    if [[ "$canon_top" != "$canon" ]]; then
-      echo "polling-state-gate.sh: session-state .root_repo ($from_state_top) does not match active root ($canon) — refuse to poll from wrong checkout" >&2
+
+  # (b) fall back to per-PR checkout path, compared by identity so sibling worktrees
+  #     of the same repo agree. A stale/absent path carries no signal.
+  if [[ -n "$stored_root" && -d "$stored_root" ]]; then
+    local stored_id
+    stored_id="$(repo_identity "$stored_root")"
+    if [[ "$stored_id" != "$active_id" ]]; then
+      echo "polling-state-gate.sh: PR #$PR_NUMBER is scoped to repo '$stored_id' ($stored_root) but the active checkout is '$active_id' ($canon) — refuse to poll from the wrong repo" >&2
       return 1
     fi
+    return 0
+  fi
+
+  # (c) scoping IS recorded but nothing above could compare it — the active checkout
+  #     has no usable `origin` identity and the recorded path is stale/absent. Fail
+  #     closed: this is not legacy state, so silently proceeding would validate
+  #     nothing. (--ensure-session is exempt; it is about to (re)record the scoping.)
+  if [[ -n "$stored_owner" && "${2:-}" != "quiet" ]]; then
+    echo "polling-state-gate.sh: PR #$PR_NUMBER is scoped to repo '$stored_owner' but the active checkout ($canon) has no comparable repo identity ('$active_id') — refuse to poll; re-run from a checkout with an 'origin' remote, or: polling-state-gate.sh $PR_NUMBER --ensure-session" >&2
+    return 1
+  fi
+
+  # (d) state written before per-PR scoping existed: degrade gracefully, never refuse
+  #     on the shared global .root_repo.
+  if [[ "${2:-}" != "quiet" ]]; then
+    echo "polling-state-gate.sh: no per-PR repo scoping recorded for PR #$PR_NUMBER — proceeding with the active checkout ($canon); run: polling-state-gate.sh $PR_NUMBER --ensure-session" >&2
   fi
   return 0
 }
@@ -206,7 +292,7 @@ ensure_session() {
     echo "polling-state-gate.sh: could not resolve root for --ensure-session" >&2
     exit 4
   fi
-  if ! validate_root_match "$resolved"; then
+  if ! validate_root_match "$resolved" quiet; then
     exit 4
   fi
   local canon
@@ -229,6 +315,15 @@ ensure_session() {
   fi
 
   owner_repo="$(cd "$canon" && gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)"
+  if [[ -z "$owner_repo" ]]; then
+    # gh unavailable/unauthenticated: derive the same owner/repo identity from the
+    # `origin` remote so later ticks still have per-PR scoping to validate against.
+    local derived
+    derived="$(repo_identity "$canon")"
+    if [[ "$derived" == */* && "$derived" != gitdir:* && "$derived" != path:* ]]; then
+      owner_repo="$derived"
+    fi
+  fi
   local reviewer="cr"
   if [[ -f "$STATE_FILE" ]]; then
     local r
@@ -288,16 +383,13 @@ require_handoff_and_state() {
     echo "polling-state-gate.sh: PR $PR_NUMBER not registered in session-state — run --ensure-session first" >&2
     exit 4
   fi
-  local top rr state_sha handoff_sha handoff_pr canon live_head
-  top=$(jq -r '.root_repo // empty' "$STATE_FILE")
+  local rr state_sha handoff_sha handoff_pr canon live_head
   rr=$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].root_repo // empty' "$STATE_FILE")
   state_sha=$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].head_sha // empty' "$STATE_FILE")
   handoff_sha=$(jq -r '.head_sha // empty' "$handoff_path")
   handoff_pr=$(jq -r 'if .pr_number == null then "" else (.pr_number | tostring) end' "$handoff_path")
-  if [[ -z "$top" || "$top" == "null" ]]; then
-    echo "polling-state-gate.sh: session-state missing top-level .root_repo" >&2
-    exit 4
-  fi
+  # The global .root_repo is deliberately NOT required or validated here (issue #647):
+  # it is shared across concurrent sessions, so it says nothing about this PR.
   if [[ -z "$rr" || "$rr" == "null" ]]; then
     echo "polling-state-gate.sh: session-state missing .prs[\"$PR_NUMBER\"].root_repo" >&2
     exit 4
