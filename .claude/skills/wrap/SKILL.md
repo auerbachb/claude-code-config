@@ -501,7 +501,8 @@ for candidate in \
   if [[ -x "$candidate" ]]; then ISSUE_DEDUP="$candidate"; break; fi
 done
 DEDUP_EXCLUDE=""   # comma-separated issue numbers filed earlier in THIS run
-DEDUP_DEGRADED=""  # non-empty once any search ran without the helper
+DEDUP_DEGRADED=""      # THIS search only — reset on every dedup_search call
+DEDUP_ANY_DEGRADED=""  # sticky across the run — drives the Step 4.3 report line
 
 # Both parts call this; it is the ONLY dedup entry point. Exit 1 ("searched,
 # found nothing") is the sole status that may be read as "no duplicate" —
@@ -510,15 +511,19 @@ DEDUP_DEGRADED=""  # non-empty once any search ran without the helper
 dedup_search() {   # dedup_search <keywords> -> sets DEDUP_JSON/DUP_NUM/DUP_STATE
   local kw="$1" rc=0
   DEDUP_JSON='[]'
+  DEDUP_DEGRADED=""   # per-call: a candidate is classified on ITS OWN search,
+                      # never on an earlier one's transient failure
   if [ -n "$ISSUE_DEDUP" ] && [ -n "$kw" ]; then
     DEDUP_JSON=$("$ISSUE_DEDUP" "$kw" ${DEDUP_EXCLUDE:+--exclude "$DEDUP_EXCLUDE"}) || rc=$?
     if [ "$rc" -gt 1 ]; then
       DEDUP_DEGRADED="helper exit $rc"
+      DEDUP_ANY_DEGRADED="$DEDUP_DEGRADED"
       DEDUP_JSON=$(gh issue list --search "${kw} in:title" --state open \
         --json number,title,state --jq '[.[0] // empty]' 2>/dev/null || echo '[]')
     fi
   elif [ -n "$kw" ]; then
     DEDUP_DEGRADED="helper not installed"
+    DEDUP_ANY_DEGRADED="$DEDUP_DEGRADED"
     DEDUP_JSON=$(gh issue list --search "${kw} in:title" --state open \
       --json number,title,state --jq '[.[0] // empty]' 2>/dev/null || echo '[]')
   fi
@@ -530,7 +535,7 @@ dedup_search() {   # dedup_search <keywords> -> sets DEDUP_JSON/DUP_NUM/DUP_STAT
 
 `issue-dedup.sh <keywords>` prints ranked candidates as JSON (`number`, `title`, `state`, `coverage`, `terms_matched`, …), scoring **title and body** across open plus recently-closed issues. Exit `0` = candidates, `1` = none (the only "no duplicate" verdict), `2`/`4` = usage or gh/environment failure.
 
-**A degraded search is never a strong match.** When `DEDUP_DEGRADED` is non-empty the check saw titles only, so it cannot satisfy the strong-match criteria — file, and add the degradation to the Step 4.3 report once.
+**A degraded search is never a strong match.** When `DEDUP_DEGRADED` is non-empty *for that candidate's own search*, the check saw titles only, so it cannot satisfy the strong-match criteria — file. `DEDUP_DEGRADED` resets per call precisely so one transient `gh` hiccup does not force every later candidate in the run down the degraded path; `DEDUP_ANY_DEGRADED` is the sticky flag, and it drives one line in the Step 4.3 report, not any classification.
 
 **The helper only finds candidates — it never decides.** The strong / weak / none classification, the four strong-match criteria, and the comment-vs-file rule are specified once in **`.claude/reference/autofile-dedup.md`**; both Step 3.3 and Step 3.7 apply them unchanged. Two invariants carry across every branch:
 
