@@ -16,6 +16,7 @@
 # USAGE
 #   session-state.sh [--repo <owner/name>] --get <jq-path>
 #   session-state.sh [--repo <owner/name>] --set <jq-path>=<value> [--set ...]
+#   session-state.sh [--repo <owner/name>] --session-view [--all-repos]
 #   session-state.sh --repo-key
 #   session-state.sh --migrate [--dry-run]
 #   session-state.sh --help | -h
@@ -66,6 +67,42 @@
 #                      `jq --arg r "$(session-state.sh --repo-key)" \
 #                          '.repos[$r].prs'`.
 #
+#   --session-view     Print a repo-scoped projection of the WHOLE state file
+#                      (issue #687) — the read every orchestration skill (`/pm`,
+#                      `/pm-handoff`, …) uses instead of `--get .` so its default
+#                      view stays in the invoking repo's lane. The invoking repo
+#                      is resolved by the same precedence as every other mode
+#                      (see REPO SCOPING: --repo / $CLAUDE_SESSION_REPO / cwd
+#                      origin). The projection, applied to the migrated document:
+#                        • .prs        = .repos[<key>].prs // {}   (this repo only)
+#                        • .root_repo  = .repos[<key>].root_repo // null
+#                        • .active_agents = the global array with every entry
+#                          that belongs to a DIFFERENT repo removed. Attribution,
+#                          in order: an explicit .owner_repo on the entry wins
+#                          (kept iff it equals <key>) — the array has no repo
+#                          field today, but honoring it here means stamping it at
+#                          the write sites later needs no reader change. Absent
+#                          that, an entry with no .pr is kept (unattributable);
+#                          otherwise it is kept UNLESS its .pr is tracked by some
+#                          other repo, which drops both other-repo agents and the
+#                          ambiguous same-PR-number-in-two-repos case (a scoped
+#                          view under-showing a thread beats leaking another
+#                          repo's — the entry is still visible via --all-repos).
+#                        • .repos is deleted (no other repo's block remains) and
+#                          .repo = <key> is added for reference.
+#                        • all other top-level fields (monitoring_active,
+#                          cr_hourly, greptile_daily, pmm*, …) pass through — they
+#                          are account/session-global, not another repo's PR data.
+#                      A read: never rewrites the file (migration is in memory).
+#                      Exits 3 if the state file is missing, 4 on a parse error —
+#                      same as --get, so `--session-view 2>/dev/null || echo
+#                      NO_SESSION_STATE` is a safe caller idiom.
+#
+#                      With --all-repos, the projection is skipped and the whole
+#                      migrated document is printed verbatim — the explicit,
+#                      user-initiated cross-repo opt-in (issue #687 AC6). Default
+#                      output is always scoped; spanning repos requires the flag.
+#
 #   --migrate          Persist the legacy -> scoped migration described above
 #                      and exit. Idempotent: a already-scoped file is left
 #                      alone (beyond the `.last_updated` refresh). With
@@ -77,6 +114,10 @@
 #   --raw-path           Disable repo-scope path rewriting; `--get`/`--set`
 #                        paths address the document root verbatim.
 #   --dry-run            With --migrate, print instead of writing.
+#   --all-repos          With --session-view, emit the whole (migrated) document
+#                        unscoped instead of the invoking-repo projection — the
+#                        explicit cross-repo reporting opt-in (issue #687). No
+#                        effect on other modes.
 #
 #   --set <path>=<v>   Set <jq-path> to <value> in the state file, preserving
 #                      all other top-level fields. <value> may be:
@@ -231,6 +272,14 @@
 #   # Address the document root verbatim (no scoping) — e.g. to inspect a
 #   # not-yet-migrated legacy file, or read a genuinely global field:
 #   session-state.sh --raw-path --get '.repos | keys'
+#
+#   # Repo-scoped session view — what /pm and /pm-handoff read instead of
+#   # `--get .`, so their default output never spans repos (issue #687):
+#   session-state.sh --session-view          # scoped to the cwd repo
+#   session-state.sh --repo org/x --session-view
+#
+#   # Explicit cross-repo opt-in (whole migrated document, unscoped):
+#   session-state.sh --session-view --all-repos
 #
 #   # Build your own scoped jq path in a consumer script:
 #   REPO_KEY="$(session-state.sh --repo-key)"
@@ -682,6 +731,7 @@ GET_PATH=""
 REPO_ARG=""
 RAW_PATH="0"
 DRY_RUN="0"
+ALL_REPOS="0"
 # Parallel arrays for --set: SET_PATHS[i] is the jq path, SET_VALUES[i] is
 # the literal text the user passed after the `=`. They are interpreted as
 # JSON-or-string at write time so we keep their raw form here.
@@ -712,11 +762,22 @@ while [[ $# -gt 0 ]]; do
       DRY_RUN="1"
       shift
       ;;
+    --all-repos)
+      ALL_REPOS="1"
+      shift
+      ;;
     --repo-key)
       if [[ -n "$MODE" ]]; then
         die_usage "--repo-key cannot be combined with --$MODE"
       fi
       MODE="repo-key"
+      shift
+      ;;
+    --session-view)
+      if [[ -n "$MODE" ]]; then
+        die_usage "--session-view cannot be combined with --$MODE"
+      fi
+      MODE="session-view"
       shift
       ;;
     --migrate)
@@ -778,7 +839,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$MODE" ]]; then
-  die_usage "one of --get, --set, --repo-key or --migrate is required"
+  die_usage "one of --get, --set, --session-view, --repo-key or --migrate is required"
 fi
 
 # --- dependency check ---
@@ -901,6 +962,73 @@ if [[ "$MODE" == "get" ]]; then
   if ! jq -r --argjson __pathmap "$GET_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY" \
        "$MIGRATE_JQ migrate(\$__pathmap; \$__unknown) | $SCOPED_GET_PATH" "$STATE_FILE" 2>"$jq_err"; then
     echo "session-state.sh: jq failed reading $STATE_FILE: $(cat "$jq_err")" >&2
+    exit 4
+  fi
+  exit 0
+fi
+
+# ============================================================================
+# --session-view (issue #687)
+#   Repo-scoped projection of the whole document — the read orchestration skills
+#   use instead of `--get .` so their default view never spans repos. Modeled on
+#   --get: file-missing -> 3, non-single-object -> 4, migration in memory only
+#   (a read never rewrites the file). See the --session-view MODES header for the
+#   projection contract and the active_agents attribution rule.
+# ============================================================================
+if [[ "$MODE" == "session-view" ]]; then
+  if [[ ! -f "$STATE_FILE" ]]; then
+    echo "session-state.sh: state file not found: $STATE_FILE" >&2
+    exit 3
+  fi
+  if ! is_single_object_state_file "$STATE_FILE"; then
+    echo "session-state.sh: $STATE_FILE must contain exactly one top-level JSON object" >&2
+    exit 4
+  fi
+  warn_if_unmigratable "$STATE_FILE"
+  SV_PATHMAP="$(migrate_jq_args "$STATE_FILE")"
+  SV_ERR="$(mktemp)"
+  # shellcheck disable=SC2064
+  trap "rm -f '$SV_ERR' 2>/dev/null" EXIT
+
+  SV_ARGS=(--argjson __pathmap "$SV_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY")
+  SV_PROGRAM="$MIGRATE_JQ
+migrate(\$__pathmap; \$__unknown)"
+  if [[ "$ALL_REPOS" != "1" ]]; then
+    # Resolve the invoking repo only on the scoped path, so --all-repos never
+    # emits the spurious "no repo context" warning resolve_repo_key prints when
+    # it falls through to the _unknown bucket.
+    SV_RK="$(resolve_repo_key)"
+    SV_ARGS+=(--arg __rk "$SV_RK")
+    # active_agents attribution (issue #687). Entries carry no repo field, so:
+    #   1. Honor an explicit .owner_repo when present (exact match) — this reader
+    #      already respects it, so a later change that stamps owner_repo at the
+    #      write sites needs no change here.
+    #   2. Else keep an entry with no .pr (unattributable).
+    #   3. Else correlate by PR number: keep UNLESS .pr is tracked by some OTHER
+    #      repo ($otherpr = every PR key under a repo != this one). That drops
+    #      other-repo agents AND, conservatively, the ambiguous case where the
+    #      same PR number is tracked by two repos — a scoped view that
+    #      under-shows a thread is safer than one that leaks another repo's. The
+    #      entry stays visible via --all-repos. Numeric .pr is stringified to
+    #      compare against the string PR-map keys.
+    SV_PROGRAM="$SV_PROGRAM
+| (.repos[\$__rk] // {}) as \$mine
+| ([ (.repos // {}) | to_entries[] | select(.key != \$__rk) | (.value.prs // {}) | keys[] ]) as \$otherpr
+| .prs = (\$mine.prs // {})
+| .root_repo = (\$mine.root_repo // null)
+| .active_agents = ((.active_agents // [])
+    | map(select(
+        if (.owner_repo != null) then (.owner_repo == \$__rk)
+        elif (.pr == null) then true
+        else ((.pr | tostring) as \$p | (\$otherpr | index(\$p)) == null)
+        end
+      )))
+| del(.repos)
+| .repo = \$__rk"
+  fi
+
+  if ! jq "${SV_ARGS[@]}" "$SV_PROGRAM" "$STATE_FILE" 2>"$SV_ERR"; then
+    echo "session-state.sh: jq failed building session view of $STATE_FILE: $(cat "$SV_ERR")" >&2
     exit 4
   fi
   exit 0

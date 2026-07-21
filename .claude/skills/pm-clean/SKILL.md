@@ -11,6 +11,13 @@ argument-hint: "[days] (optional — default 30; applies to issue inactivity and
 
 The two scans never gate each other: one finding nothing does **not** suppress the other, and the summary always reports both. Nothing is closed or deleted without explicit confirmation.
 
+> **Invoking-repo scope (issue #687).** Both scans stay in the invoking repo's lane:
+> the issue scan (`backlog-staleness.sh`) runs `gh issue list` cwd-repo-scoped, and
+> the workspace sweep (`stale-cleanup.sh`) enumerates worktrees/branches via
+> `git -C "$ROOT"` where `$ROOT` is *this* repo's root — never another project's
+> worktrees. `/pm-clean` therefore never offers to close an issue or delete a
+> worktree/branch outside the invoking repo, whether run directly or inline from `/pm`.
+
 ## Step 0: Parse arguments
 
 Parse `$ARGUMENTS`:
