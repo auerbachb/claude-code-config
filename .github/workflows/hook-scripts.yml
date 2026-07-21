@@ -44,6 +44,9 @@ jobs:
       - name: cr-plan-filter unit tests (issue #541)
         run: python3 -m unittest tests.test_cr_plan_filter -v
 
+      - name: memory-audit unit tests (issue #620)
+        run: python3 -m unittest tests.test_memory_audit -v
+
       - name: cr-plan.sh integration test (issue #541)
         run: bash .claude/scripts/tests/cr-plan.test.sh
 
@@ -79,7 +82,7 @@ jobs:
           python-version: '3.9'
 
       - name: Python hook unit tests (3.9)
-        run: python3 -m unittest tests.test_env_guard tests.test_config_protection tests.test_worktree_guard tests.test_cr_plan_filter -v
+        run: python3 -m unittest tests.test_env_guard tests.test_config_protection tests.test_worktree_guard tests.test_cr_plan_filter tests.test_memory_audit -v
 
       - name: Hooks import smoke (3.9)
         run: |
