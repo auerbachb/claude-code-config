@@ -2,17 +2,19 @@
 
 > **Always:** Write handoff files on phase completion. Read handoff files before reconstructing state from GitHub API. Update session-state.json on phase transitions. Preserve unknown fields in handoff files.
 > **Ask first:** Never — handoff file operations are autonomous.
-> **Never:** Skip writing the handoff file. Delete a handoff file before successful merge. Strip unrecognized fields from handoff files.
+> **Never:** Skip writing the handoff file. Delete one before successful merge. Strip unrecognized fields. Write `session-state.json` outside `session-state.sh` — an inline `jq … > tmp && mv tmp` bypasses the write lock.
 
 ## State Files
 
 - `~/.claude/session-state.json`: session-wide orchestration (per-repo `prs`, active agents, Greptile daily budget, **CodeRabbit hourly consumption** in `cr_hourly.events`, per-PR `cr_explicit_triggers`, polling failures). Full schema: `.claude/reference/session-state-schema.json`.
 - `~/.claude/handoffs/pr-{N}-handoff.json`: per-PR phase details consumed by the next phase.
-- **Polling:** Parent runs `polling-state-gate.sh N --ensure-session` once, then `polling-state-gate.sh N` each cycle (see script). Subagent handoffs overwrite the same file when a phase finishes.
+- **Polling:** Parent runs `polling-state-gate.sh N --ensure-session` once, then `polling-state-gate.sh N` each cycle. Subagent handoffs overwrite the same file at phase end.
 
 **Repo scoping (issue #638):** PR state lives at `.repos["<owner>/<name>"].prs["<N>"]`, so two repos at one PR number no longer collide; `root_repo` is per-repo too. Callers keep existing paths — `session-state.sh` rewrites a leading `.prs`/`.root_repo` into the active scope (`--repo`, `$CLAUDE_SESSION_REPO`, or cwd's `origin`) and migrates legacy state, keeping unattributable entries under `_unknown`. Account-level fields (`cr_hourly`, `greptile_daily`) stay global. See `session-state.sh --help`.
 
-Update `session-state.json` on phase transitions and key events (agent launched/completed, review received, dropped poll recovered). Prefer `.claude/scripts/session-state.sh --set <jq-path>=<value>` / `--get <jq-path>`; it preserves siblings and writes atomically.
+Update `session-state.json` on phase transitions and key events (agent launched/completed, review received, dropped poll recovered). **All writes go through `.claude/scripts/session-state.sh --set <jq-path>=<value>`** (read with `--get`); it preserves siblings, writes atomically, and holds the lock below.
+
+**Write lock (issue #639):** `session-state.sh` serializes the whole read-modify-write cycle, not just the `mv`, via `.claude/scripts/state-lock.sh` (portable `mkdir` lockdir; macOS has no `flock(1)`). Unserialized, concurrent writers silently lost each other's changes. `greptile-budget.sh` and `cr-review-hourly.sh` source the same library. A writer that can't acquire the lock (30s default, `CLAUDE_STATE_LOCK_TIMEOUT`) exits **6** having written nothing — treat 6 as "unchanged, retry". Dead-holder locks self-heal; reads don't lock. Failure modes: `state-lock.sh`'s header.
 
 **Field-type contract (issue #625):** `session-state.sh` enforces expected JSON types on known fields (`active_agents`, `prs`, per-PR nested fields per #640, and each repo scope per #638): a `--set` storing the wrong type is rejected (exit 4, file unmodified); a `--get` on a corrupted field warns and returns a safe default so the next validated write self-heals. **Never pass a raw jq filter as a `--set` value** — evaluate it locally first and pass the resulting JSON. Full contract: `session-state.sh`'s header comment (single source of truth).
 
@@ -32,9 +34,9 @@ Update `session-state.json` on phase transitions and key events (agent launched/
 | B | Read-modify-write; append arrays, update scalars, preserve unknown fields |
 | C | Read only; deletion timing per `phase-protocols.md` |
 
-Schema reference: `.claude/reference/handoff-file-schema.json`. Required fields: `schema_version`, `pr_number`, `head_sha`, `reviewer`, `phase_completed`, `created_at`, `findings_fixed`, `threads_replied`, `threads_resolved`, `files_changed`, `push_timestamp`. Optional: `findings_dismissed`, `stale_bot_reviews_dismissed` (GitHub review IDs dismissed by `dismiss-stale-bot-changes.sh` after a `/fixpr` push — issue #426), `notes`.
+Required and optional fields: `.claude/reference/handoff-file-schema.json` (single source of truth). Note `stale_bot_reviews_dismissed` — review IDs dismissed by `dismiss-stale-bot-changes.sh` after a `/fixpr` push (issue #426).
 
-**Forward compatibility:** preserve unknown fields; dedupe string arrays by exact value and `findings_dismissed` by `.id`.
+**Forward compatibility:** preserve unknown fields; dedupe string arrays by value, `findings_dismissed` by `.id`.
 
 ## Token Exhaustion Handoff
 

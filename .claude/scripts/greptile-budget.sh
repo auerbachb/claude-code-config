@@ -48,17 +48,26 @@
 #      snapshot reported (--check). JSON still printed on stdout.
 #   2  Usage error (missing/invalid mode, unknown flag, bad --budget value).
 #   5  Write failed (jq parse error, mv failed, disk full, etc.).
+#   6  Lock timeout — another writer held the session-state lock past the
+#      acquisition timeout (default 30s, CLAUDE_STATE_LOCK_TIMEOUT). Nothing
+#      is consumed and the state file is left unmodified.
 #
 # ATOMICITY
 #   All writes go through `jq ... > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp"
 #   "$STATE_FILE"`. `mv` within the same filesystem is atomic on POSIX.
-#   Concurrent subagents may race on the read, but the window is tiny and
-#   the worst case is a single extra decrement — the check+consume sequence
-#   is the same race that exists in the inline blocks this script replaces.
+#   Since issue #639 the read+decrement+write cycle of the writing modes
+#   (--consume / --reset / a cross-day --check rollover) also holds the shared
+#   session-state lock from .claude/scripts/state-lock.sh — a portable `mkdir`
+#   lock directory with explicit stale-holder recovery, chosen because macOS
+#   has no flock(1). Concurrent subagents therefore no longer race on the
+#   read, so the "one extra decrement" window this header used to describe is
+#   closed. Read-only paths do not lock: `mv` is atomic, so a reader always
+#   sees one whole document.
 #
 # DEPENDENCIES
 #   - jq
 #   - date (BSD or GNU — only uses TZ='America/New_York' +%Y-%m-%d)
+#   - .claude/scripts/state-lock.sh (sibling library — write serialization)
 #
 # EXAMPLES
 #   # Gate a @greptileai trigger — exit 1 means "do not trigger":
@@ -77,6 +86,19 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >>
 
 STATE_FILE="${HOME}/.claude/session-state.json"
 DEFAULT_BUDGET=40
+
+# Shared session-state write lock (issue #639). Sourced so the lock is owned
+# by this process and released by its EXIT trap.
+SELF_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ ! -f "$SELF_DIR/state-lock.sh" || ! -r "$SELF_DIR/state-lock.sh" ]]; then
+  echo "greptile-budget.sh: missing sibling library: $SELF_DIR/state-lock.sh" >&2
+  exit 5
+fi
+# shellcheck source=./state-lock.sh
+if ! source "$SELF_DIR/state-lock.sh"; then
+  echo "greptile-budget.sh: failed to load $SELF_DIR/state-lock.sh" >&2
+  exit 5
+fi
 
 print_help() {
   sed -n '/^# PURPOSE$/,/^# EXAMPLES$/p' "$0" | sed 's/^# \{0,1\}//'
@@ -166,6 +188,27 @@ read_state() {
   fi
 }
 
+# Serialize the read-modify-write cycle (issue #639): for the modes that
+# ALWAYS write (--consume, --reset) the lock is taken BEFORE the read below,
+# so a concurrent --consume cannot read the same counter we did and overwrite
+# our decrement.
+#
+# --check is the exception. It is read-only in the common case (same day, no
+# --budget override) and only persists on a cross-day rollover or an override,
+# so acquiring here would make an ordinary read-only check block behind
+# writers and fail with exit 6 (CodeAnt, PR #662). Instead --check reads
+# lock-free and, if it turns out a write IS needed, acquires the lock and
+# re-derives everything under it (derive_state below) before writing — the
+# usual double-checked pattern, so the write decision is never based on a
+# pre-lock read.
+if [[ "$MODE" != "check" ]]; then
+  state_lock_acquire "$STATE_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
+fi
+
+# Read the state file and derive every downstream variable from it. Called
+# once up front, and AGAIN under the lock on --check's write path so the
+# values that reach write_state reflect what the file holds at write time.
+derive_state() {
 CURRENT_RAW="$(read_state)"
 # Extract fields with defaults.
 CURRENT_DATE="$(printf '%s' "$CURRENT_RAW" | jq -r '.date // ""')"
@@ -195,6 +238,9 @@ if [[ "$CURRENT_DATE" != "$TODAY" ]]; then
 else
   VIEW_USED="$CURRENT_USED"
 fi
+}
+
+derive_state
 
 # --- write helper (atomic jq + temp-file + mv) ---
 # Writes greptile_daily and last_updated, preserving all other top-level
@@ -209,11 +255,13 @@ write_state() {
   if [[ ! -f "$STATE_FILE" ]] || ! jq -e . "$STATE_FILE" >/dev/null 2>&1; then
     input_file="$(mktemp)"
     printf '%s\n' '{}' > "$input_file"
+    # Chain the lock release into these traps — re-installing an EXIT trap
+    # would otherwise drop the release state_lock_acquire installed (#639).
     # shellcheck disable=SC2064
-    trap "rm -f '$input_file' '$tmp' 2>/dev/null" EXIT
+    trap "state_lock_release; rm -f '$input_file' '$tmp' 2>/dev/null" EXIT
   else
     # shellcheck disable=SC2064
-    trap "rm -f '$tmp' 2>/dev/null" EXIT
+    trap "state_lock_release; rm -f '$tmp' 2>/dev/null" EXIT
   fi
 
   # Capture jq stderr separately so a failure surfaces the underlying cause
@@ -256,11 +304,21 @@ case "$MODE" in
   check)
     # Read-only semantics on same-day. On cross-day (stored date != today),
     # persist the reset so subsequent --consume starts from 0.
-    if [[ "$CURRENT_DATE" != "$TODAY" ]]; then
-      write_state 0 "$EFFECTIVE_BUDGET"
-    elif [[ -n "$BUDGET_OVERRIDE" && "$BUDGET_OVERRIDE" != "$CURRENT_BUDGET" ]]; then
-      # Budget override on same day — persist so later calls pick it up.
-      write_state "$VIEW_USED" "$EFFECTIVE_BUDGET"
+    # Lock-free fast path: no write needed -> never touch the lock, so a
+    # read-only --check can neither block on a writer nor exit 6.
+    if [[ "$CURRENT_DATE" != "$TODAY" ]] || \
+       [[ -n "$BUDGET_OVERRIDE" && "$BUDGET_OVERRIDE" != "$CURRENT_BUDGET" ]]; then
+      state_lock_acquire "$STATE_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
+      # Re-derive under the lock: another writer may have rolled the day over
+      # or changed the budget between our lock-free read and this point, in
+      # which case the write is no longer needed at all.
+      derive_state
+      if [[ "$CURRENT_DATE" != "$TODAY" ]]; then
+        write_state 0 "$EFFECTIVE_BUDGET"
+      elif [[ -n "$BUDGET_OVERRIDE" && "$BUDGET_OVERRIDE" != "$CURRENT_BUDGET" ]]; then
+        # Budget override on same day — persist so later calls pick it up.
+        write_state "$VIEW_USED" "$EFFECTIVE_BUDGET"
+      fi
     fi
     if (( VIEW_USED >= EFFECTIVE_BUDGET )); then
       print_state "$VIEW_USED" "$EFFECTIVE_BUDGET" true

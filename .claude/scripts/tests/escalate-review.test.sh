@@ -36,6 +36,10 @@ mkdir -p "$STUB_DIR"
 cp "$REPO_ROOT/.claude/scripts/escalate-review.sh" "$STUB_DIR/escalate-review.sh"
 cp "$REPO_ROOT/.claude/scripts/session-state.sh" "$STUB_DIR/session-state.sh"
 cp "$REPO_ROOT/.claude/scripts/greptile-budget.sh" "$STUB_DIR/greptile-budget.sh"
+# Sibling write-lock library (issue #639) — session-state.sh and
+# greptile-budget.sh source it from their own directory and hard-fail without
+# it rather than writing unserialized, so the stub dir needs it too.
+cp "$REPO_ROOT/.claude/scripts/state-lock.sh" "$STUB_DIR/state-lock.sh"
 chmod +x "$STUB_DIR/escalate-review.sh" "$STUB_DIR/session-state.sh" "$STUB_DIR/greptile-budget.sh"
 
 cat > "$STUB_DIR/pr-state.sh" <<'STUB'
