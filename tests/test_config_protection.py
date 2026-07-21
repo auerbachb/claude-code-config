@@ -293,6 +293,47 @@ class ConfigProtectionBashTests(unittest.TestCase):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
 
+    def test_bash_command_substitution_parens_not_split(self) -> None:
+        # CodeAnt architect-review finding: the segmenter treated every `(`
+        # and `)` as a hard separator, including inside `$(...)` command
+        # substitution, so the write signal (-i) and the protected path
+        # ended up in different segments and the real edit evaded detection.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            for cmd in [
+                f"sed -i $(printf 's/x/y/') {target}",
+                f"sed -i $(echo $(echo 's/x/y/')) {target}",
+            ]:
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
+
+    def test_bash_subshell_grouping_parens_still_split(self) -> None:
+        # A bare `(...)` subshell (not a $() substitution) is still a real
+        # segment boundary — an unrelated write inside it must not leak
+        # into a later unrelated read outside it.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            other = pathlib.Path(tmp) / 'notes.txt'
+            other.write_text('unrelated\n', encoding='utf-8')
+            cmd = f"(sed -i 's/x/y/' {other}); cat {target}"
+            self.assertIsNone(config_protection.bash_targets_protected(cmd))
+
+    def test_bash_blocks_append_both_streams_redirect(self) -> None:
+        # CodeAnt review finding: `&>>` (append both stdout and stderr to a
+        # file) wasn't recognized by either redirect regex at all, so a
+        # write via `&>>` evaded detection entirely.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            for cmd in [
+                f"echo x &>> {target}",
+                f"echo x&>>{target}",
+            ]:
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
+
     def test_bash_blocks_in_place_edit_through_long_form_wrapper_flag(self) -> None:
         # CodeAnt review finding: a wrapper's long-form value flag
         # (`sudo --user root`, `nice --adjustment 10`) must be recognized

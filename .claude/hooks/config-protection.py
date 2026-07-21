@@ -128,28 +128,34 @@ WRAPPER_VALUE_FLAGS = {
 # Deliberately excludes fd-duplication (`2>&1`, `1>&2`): digits on both sides of
 # `>&` duplicate one existing stream onto another (e.g. merging stderr into
 # stdout for capture) — there is no file target, so it is never a write. Only
-# `N>`/`N>>`/`&>` (redirect to an actual filename) count as a write signal.
-BARE_REDIRECT_RE = re.compile(r'^(?:\d*>{1,2}\|?|&>)$')
-EMBEDDED_REDIRECT_RE = re.compile(r'(?:\d*>{1,2}\|?|&>)([^<>&].*)$')
+# `N>`/`N>>`/`&>`/`&>>` (redirect to an actual filename — `&>>` appends both
+# stdout and stderr) count as a write signal.
+BARE_REDIRECT_RE = re.compile(r'^(?:\d*>{1,2}\|?|&>{1,2})$')
+EMBEDDED_REDIRECT_RE = re.compile(r'(?:\d*>{1,2}\|?|&>{1,2})([^<>&].*)$')
 WRITE_FLAG_TOKENS = frozenset({'--write', '--fix', '-w', '-inplace'})
 COPY_MOVE_BINS = frozenset({'cp', 'mv'})
 
 
 def _split_into_command_segments(cmd: str) -> list[str]:
-    """Split a raw shell command string into command segments at unquoted
-    `;`/`&&`/`||`/`|`/`&` boundaries, tracking quote state char-by-char.
+    """Split a raw shell command string into command segments at unquoted,
+    unsubstituted `;`/`&&`/`||`/`|`/`&` boundaries, tracking quote and
+    `$(...)`/backtick command-substitution state char-by-char.
 
     This must run on the RAW string, before shlex.split() — shlex strips
     quotes, so a post-tokenization regex split can't tell a real shell
     separator from a literal one inside a quoted argument (e.g. a sed/perl
-    script's own `s/a;b/c;d/` substitution syntax). Splitting the wrong `;`
-    there breaks one logical command into fragments that individually don't
-    show both "sed is the executable" and "-i is present", silently missing
-    a real in-place edit. Doesn't track `$()`/backtick command-substitution
-    nesting — a `;` inside one of those is rare in practice and, worst case,
-    only causes an extra (safe-direction) split, never a missed detection of
-    those two specific signals in the same fragment they already are in.
-    A single `&` is skipped when adjacent to `>` (`2>&1` fd-dup, `&>file`
+    script's own `s/a;b/c;d/` substitution syntax) or inside a `$(...)`
+    command substitution. Splitting the wrong character there breaks one
+    logical command into fragments that individually don't show both "sed
+    is the executable" and "-i is present" (or "the write signal" and "the
+    protected path" for a substitution's parens), silently missing a real
+    write. `$(...)` nesting is tracked by depth so a nested substitution
+    (`$(echo $(date))`) stays opaque all the way to its matching `)`; a
+    backtick region is treated like a quote (no nesting — matches bash's
+    own rule that backticks can't nest without escaping). A bare `(`/`)`
+    outside any substitution (e.g. `(cmd1; cmd2)` subshell grouping) is
+    still a segment boundary — only substitution-owned parens are protected.
+    A single `&` is skipped when adjacent to `>` (`2>&1` fd-dup, `&>`/`&>>`
     combined redirect), and a `|` immediately after `>` is skipped too
     (`>|`/`>>|`, bash's noclobber-override redirect) — both stay intact as
     one token for the redirect checks instead of being split apart.
@@ -157,6 +163,7 @@ def _split_into_command_segments(cmd: str) -> list[str]:
     segments: list[str] = []
     current: list[str] = []
     quote: str | None = None
+    subst_depth = 0
     i = 0
     n = len(cmd)
     while i < n:
@@ -170,7 +177,7 @@ def _split_into_command_segments(cmd: str) -> list[str]:
                 i += 1
             i += 1
             continue
-        if ch in ('"', "'"):
+        if ch in ('"', "'", '`'):
             quote = ch
             current.append(ch)
             i += 1
@@ -179,6 +186,20 @@ def _split_into_command_segments(cmd: str) -> list[str]:
             current.append(ch)
             current.append(cmd[i + 1])
             i += 2
+            continue
+        if ch == '$' and i + 1 < n and cmd[i + 1] == '(':
+            subst_depth += 1
+            current.append(ch)
+            current.append('(')
+            i += 2
+            continue
+        if subst_depth > 0:
+            if ch == '(':
+                subst_depth += 1
+            elif ch == ')':
+                subst_depth -= 1
+            current.append(ch)
+            i += 1
             continue
         if cmd[i:i + 2] in ('&&', '||'):
             segments.append(''.join(current))
