@@ -173,11 +173,24 @@ known_field_type() {
 
 # Extract the leading top-level key from a jq path, e.g.
 # ".active_agents[0].id" -> "active_agents", `.prs["287"].reviewer` -> "prs".
+# Also handles bracket notation for the top-level key itself, e.g.
+# `.["active_agents"]` -> "active_agents" — without this, a path starting
+# with `[` fell straight through the dot-form pattern below (which cuts at
+# the first `.` or `[`) and produced an empty string, silently exempting
+# that field from the contract (CodeAnt finding on PR #630, issue #625).
 # Used to look up known_field_type() regardless of how deep the caller's
 # path indexes below that top-level field.
 top_level_key_of() {
   local path="${1#.}"
-  printf '%s' "${path%%[.[]*}"
+  if [[ "$path" == \[* ]]; then
+    path="${path#\[}"
+    path="${path%%]*}"
+    path="${path#[\"\']}"
+    path="${path%[\"\']}"
+    printf '%s' "$path"
+  else
+    printf '%s' "${path%%[.[]*}"
+  fi
 }
 
 # --- arg parsing ---
@@ -285,9 +298,23 @@ if [[ "$MODE" == "get" ]]; then
   # caller idioms like `[ "$X" = "null" ] && X='[]'`. Callers that
   # read-modify-write this field (e.g. pr-monitor-and-manage/SKILL.md) then
   # self-heal it on their next validated --set.
+  #
+  # "Exactly" is checked against both dot form (.active_agents) and jq's
+  # equivalent bracket form (.["active_agents"]) — comparing only against
+  # the dot form let a bracket-form GET_PATH slip past this guard even after
+  # top_level_key_of() learned to parse it (CodeAnt finding on PR #630). A
+  # bracket group with no leading dot (`["active_agents"]`) is deliberately
+  # NOT matched here — in jq that's an array-literal constructor, not a way
+  # to index the input document, so it never reads the real field either way.
   get_top_level_key="$(top_level_key_of "$GET_PATH")"
   get_expected_type="$(known_field_type "$get_top_level_key")"
-  if [[ -n "$get_expected_type" && ".$get_top_level_key" == "$GET_PATH" ]]; then
+  if [[ -n "$get_expected_type" ]]; then
+    case "$GET_PATH" in
+      ".$get_top_level_key"|".[\"$get_top_level_key\"]") ;;
+      *) get_expected_type="" ;;
+    esac
+  fi
+  if [[ -n "$get_expected_type" ]]; then
     get_actual_type="$(jq -r "$GET_PATH | type" "$STATE_FILE" 2>/dev/null)"
     if [[ "$get_actual_type" != "$get_expected_type" && "$get_actual_type" != "null" ]]; then
       echo "session-state.sh: field '$GET_PATH' is corrupted — expected $get_expected_type but found $get_actual_type; returning a safe default (see issue #625)" >&2

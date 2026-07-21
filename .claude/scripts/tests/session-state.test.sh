@@ -67,6 +67,28 @@ check_eq "sub-path write on a known array field exits 0" "0" "$?"
 check_eq "sub-path write preserved array-ness and applied the edit" '[{"id":"pmm-fix-71","pr":71,"status":"done"}]' "$(jq -c '.active_agents' "$STATE_FILE")"
 
 echo
+echo "== Write-time guard: bracket-notation top-level paths are not a bypass (CodeAnt finding, PR #630) =="
+reset_state
+OUT=$(run --set '.["active_agents"]=corrupted string value' 2>&1); RC=$?
+check_eq "bracket-notation write rejected (exit 4)" "4" "$RC"
+check_eq "error still names active_agents" "1" "$(grep -c "field '.active_agents' would become type 'string' but must be 'array'" <<<"$OUT")"
+check_eq "state file never created for a rejected bracket-notation write" "1" "$([[ ! -f "$STATE_FILE" ]] && echo 1 || echo 0)"
+
+run --set '.["active_agents"]=[{"id":"a1"}]'
+check_eq "valid array write via bracket notation exits 0" "0" "$?"
+check_eq "bracket-notation write applied correctly" '[{"id":"a1"}]' "$(jq -c '.active_agents' "$STATE_FILE")"
+
+echo
+echo "== Read-time guard: bracket-notation top-level paths are not a bypass (CodeAnt finding, PR #630) =="
+printf '%s\n' '{"active_agents": "corrupted string value"}' > "$STATE_FILE"
+ERR_FILE="$(mktemp)"
+OUT=$(run --get '.["active_agents"]' 2>"$ERR_FILE"); RC=$?
+check_eq "bracket-notation corrupted --get still exits 0" "0" "$RC"
+check_eq "bracket-notation corrupted --get returns the safe default '[]'" "[]" "$OUT"
+check_eq "bracket-notation corrupted --get warns on stderr" "1" "$(grep -c "field '.\[\"active_agents\"\]' is corrupted — expected array but found string" "$ERR_FILE")"
+rm -f "$ERR_FILE"
+
+echo
 echo "== Write-time guard: object-typed field (prs) contract, not just active_agents-specific =="
 reset_state
 OUT=$(run --set '.prs=[1,2,3]' 2>&1); RC=$?
