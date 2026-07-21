@@ -30,7 +30,20 @@ After implementation, before push. Optional mid-development. Run from repo root:
 2. Union the findings — verify each against the actual code before fixing
 3. Fix **all valid findings**
 4. Run both CLIs again
-5. Repeat until **each available CLI** returns no findings
+5. Repeat until **each available CLI** returns a verified-successful run with no findings
+
+### A "clean" result may be a failed run (NON-NEGOTIABLE)
+
+**Both CLIs exit `0` on total failure**, each hiding the error on a different stream — CodeAnt on **stderr**, CodeRabbit as a stdout NDJSON `type: "error"` record. Capture both streams and check before trusting any "no findings":
+
+```bash
+codeant review --all --headless >ca.json 2>ca.err
+grep -qE 'API Error|\[error\]|40[13]' ca.err && echo "FAILED RUN"
+coderabbit review --agent >cr.out 2>cr.err
+jq -e 'select(.type=="error")' cr.out >/dev/null && echo "FAILED RUN"
+```
+
+A hit is a **failed run** (Timeout & fallback below), never a clean pass. An empty result is clean **only** when its error check is clean and, for CodeAnt, `meta.capped` is `false`. Failure shapes, 403 triage, 15-file cap: `.claude/reference/local-review-cli-failure-modes.md`.
 
 ### Never Suppress Linter Errors (NON-NEGOTIABLE)
 
@@ -43,9 +56,8 @@ Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `noqa`, or equival
 
 ### Exit criteria
 
-- **One clean pass on both CLIs** (or on the surviving CLI + PR-body note; one clean self-review if both are unavailable)
-- Once clean, commit all changes and push the branch
-- **This transition is automatic.** After a clean pass, IMMEDIATELY commit and push — do not ask "should I push now?" or "ready to create a PR?"
+- **One verified-successful clean pass on both CLIs** (or on the surviving CLI + PR-body note; one clean self-review if both are unavailable). "No findings" alone is not a clean pass.
+- Once clean, commit and push immediately — this transition is automatic, do not ask
 
 ### Post-Clean: Push, PR, GitHub Review
 

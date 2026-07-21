@@ -4,7 +4,7 @@
 > **Ask first:** Never — fix findings autonomously.
 > **Never:** Trigger Greptile before both CR AND BugBot have failed. Ignore Greptile findings. Switch a PR back to CR/BugBot after Greptile has been triggered. Include `@greptileai` in reply comments (triggers a paid re-review with no learning benefit).
 
-Greptile is the **last-resort paid** AI code reviewer — only triggered when both CR and BugBot (Cursor) have failed. Review chain: **CR → BugBot → Greptile → self-review.** CodeAnt/Graphite: `cr-github-review.md`.
+Greptile is the **last-resort paid** AI code reviewer — only triggered when both CR and BugBot (Cursor) have failed. Chain and supplemental CodeAnt/Graphite: `cr-github-review.md`.
 
 **Escalation gate:** `cr-github-review.md` owns triggers/STOP conditions. This file only defines Greptile behavior after `escalate-review.sh` returns `STATUS=trigger_greptile`.
 
@@ -35,7 +35,7 @@ Applies to 2nd/3rd triggers only; initial trigger requires only the budget check
 
 ### Sticky Assignment
 
-**Once Greptile is triggered for a PR, it stays on Greptile permanently.** Do not switch back to CR or BugBot. After fixing findings, only re-trigger `@greptileai` for P0 findings. Merge gate is severity-dependent — see `cr-merge-gate.md` (Step 1) and `.claude/reference/merge-gate-reviewer-paths.md`.
+Sticky per `cr-github-review.md`: once triggered, Greptile owns the PR permanently. Re-trigger `@greptileai` only for P0 findings. Merge gate is severity-dependent — see **Merge Gate** below.
 
 ## Polling for Greptile Response
 

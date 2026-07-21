@@ -42,16 +42,16 @@ The merge gate depends on which reviewer owns the PR:
 **BugBot path** (CR failed, BugBot responded, Greptile never triggered — sticky; see `bugbot.md`):
 
 - 1 clean BugBot review on the current HEAD SHA satisfies the gate (BugBot's completion signals are reliable).
-- After fixing BugBot findings, CI already posted `@cursor review` on that push; `/fixpr` also posts it after agent pushes. If BugBot still hasn't completed after polling, post `@cursor review` again — duplicates are acceptable (see `bugbot.md`).
-- Stay on BugBot — do not switch back to CR. Ignore late CR reviews.
+- Re-review after fixes: see `bugbot.md` (**Re-Reviews**).
+- Sticky (`cr-github-review.md`); ignore late CR reviews.
 
-**Greptile path** (Greptile was triggered at any point — both CR and BugBot failed — sticky assignment, see `greptile.md`):
+**Greptile path** (triggered at any point — both CR and BugBot failed — sticky; see `greptile.md`):
 
 - Severity-gated: merge-ready when ANY of these hold:
   1. **Clean review:** no findings (thumbs-up with no inline comments).
   2. **No P0 findings:** only P1/P2 findings present — fix all of them, push, reply to threads; no re-review required.
   3. **P0 fixed + re-review clean:** P0 findings were present, fixed, and a re-triggered `@greptileai` review came back clean.
-- Stay on Greptile — do not switch back to CR or BugBot. Ignore any late CR/BugBot reviews.
+- Sticky (`cr-github-review.md`); ignore late CR/BugBot reviews.
 - Max 3 Greptile reviews per PR (initial + up to 2 P0 re-reviews). At 3 with persistent P0, self-review and report blocker.
 
 **If CR, BugBot, and Greptile are all down:** self-review for risk reduction only. A clean self-review does NOT satisfy the gate; report the blocker.
