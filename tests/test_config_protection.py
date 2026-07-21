@@ -74,6 +74,256 @@ class ConfigProtectionBashTests(unittest.TestCase):
             blocked = config_protection.bash_targets_protected(cmd)
             self.assertIsNone(blocked)
 
+    def test_bash_allows_read_only_interpreter_invocations(self) -> None:
+        # issue #624: merely running sed/awk/perl/python/node/ruby against a
+        # protected path is not a write — only an actual write signal is.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            read_only_cmds = [
+                f"sed -n '1,5p' {target}",
+                f"awk '{{print}}' {target}",
+                f"perl -ne 'print' {target}",
+                f"python3 read_only_checker.py {target}",
+                f"python read_only_checker.py {target}",
+                f"node lint.js {target}",
+                f"ruby check.rb {target}",
+                f"python3 -i {target}",  # -i here is python's interactive flag, not in-place
+            ]
+            for cmd in read_only_cmds:
+                with self.subTest(cmd=cmd):
+                    self.assertIsNone(config_protection.bash_targets_protected(cmd))
+
+    def test_bash_blocks_perl_in_place_edit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            cmd = f"perl -i -pe 's/x/y/' {target}"
+            blocked = config_protection.bash_targets_protected(cmd)
+            self.assertEqual(blocked, str(target))
+
+    def test_bash_blocks_sed_in_place_edit_with_backup_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            cmd = f"sed -i.bak 's/x/y/' {target}"
+            blocked = config_protection.bash_targets_protected(cmd)
+            self.assertEqual(blocked, str(target))
+
+    def test_bash_blocks_explicit_write_flag_on_interpreter_script(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            cmd = f"python3 fixer.py --fix {target}"
+            blocked = config_protection.bash_targets_protected(cmd)
+            self.assertEqual(blocked, str(target))
+
+    def test_bash_blocks_tee_to_protected_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            cmd = f"tee {target}"
+            blocked = config_protection.bash_targets_protected(cmd)
+            self.assertEqual(blocked, str(target))
+
+    def test_bash_allows_read_with_trailing_stderr_merge(self) -> None:
+        # issue #624: a trailing `2>&1` (duplicating stderr onto stdout, e.g.
+        # to capture combined output) has no file target and must not be
+        # treated as a write, even though it looks like a redirect operator.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            read_only_cmds = [
+                f"cat {target} 2>&1",
+                f"bash {target} 2>&1",
+                f"cat {target} 1>&2",
+            ]
+            for cmd in read_only_cmds:
+                with self.subTest(cmd=cmd):
+                    self.assertIsNone(config_protection.bash_targets_protected(cmd))
+
+    def test_bash_blocks_write_with_trailing_stderr_merge(self) -> None:
+        # A real write (redirect to a named file) must still be caught even
+        # when followed by an unrelated fd-duplication token.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            cmd = f"sed -i 's/x/y/' {target} 2>&1"
+            blocked = config_protection.bash_targets_protected(cmd)
+            self.assertEqual(blocked, str(target))
+
+    def test_bash_blocks_clustered_in_place_short_flags(self) -> None:
+        # CodeRabbit/CodeAnt review finding: bundled short flags (-i last in
+        # the cluster) must still count as in-place edits.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            for cmd in [
+                f"sed -ni 's/x/y/p' {target}",
+                f"perl -npi -e 's/x/y/' {target}",
+                f"perl -pi -e 's/x/y/' {target}",
+                # CodeAnt review finding: BSD/macOS sed's common "extended
+                # regex + in-place" idiom, capital E.
+                f"sed -Ei '' 's/x/y/' {target}",
+                f"sed -Ei.bak 's/x/y/' {target}",
+            ]:
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
+
+    def test_bash_blocks_gnu_long_form_in_place(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            for cmd in [
+                f"sed --in-place 's/x/y/' {target}",
+                f"sed --in-place=.bak 's/x/y/' {target}",
+            ]:
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
+
+    def test_bash_allows_unrelated_attached_arg_flags_containing_i(self) -> None:
+        # perl's -I<dir> and -m<module> take an attached argument that can
+        # itself contain the letter 'i' — must not be mistaken for -i.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            for cmd in [
+                f"perl -Ilib checker.pl {target}",
+                f"perl -mstrict checker.pl {target}",
+            ]:
+                with self.subTest(cmd=cmd):
+                    self.assertIsNone(config_protection.bash_targets_protected(cmd))
+
+    def test_bash_in_place_state_does_not_leak_across_command_separators(self) -> None:
+        # CodeRabbit/CodeAnt review finding: an earlier unrelated sed/perl call
+        # must not make a later unrelated `-i` (e.g. grep's case-insensitive
+        # flag) in the same compound line look like a write. Covers both the
+        # spaced and glued-to-the-prior-word separator styles.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            read_only_cmds = [
+                f"sed -n 'p' notes.txt; grep -i pattern {target}",
+                f"sed -n 'p' notes.txt ; grep -i pattern {target}",
+                f"sed -n 'p' notes.txt && grep -i pattern {target}",
+                f"sed -n 'p' notes.txt | grep -i pattern {target}",
+                # Fully glued, no spaces at all around the separator — shlex
+                # returns these as one token, unlike the space-padded forms
+                # above, so they exercise a different code path.
+                f"sed -n 'p' notes.txt&&grep -i pattern {target}",
+                f"sed -n 'p' notes.txt&& grep -i pattern {target}",
+                f"sed -n 'p' notes.txt |grep -i pattern {target}",
+            ]
+            for cmd in read_only_cmds:
+                with self.subTest(cmd=cmd):
+                    self.assertIsNone(config_protection.bash_targets_protected(cmd))
+
+    def test_bash_blocks_real_write_around_command_separators(self) -> None:
+        # A genuine sed/perl -i must still be caught next to a separator.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            for cmd in [
+                f"sed -i 's/x/y/' {target}; echo done",
+                f"echo start && sed -i 's/x/y/' {target}",
+            ]:
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
+
+    def test_bash_write_op_does_not_leak_across_command_separators(self) -> None:
+        # CodeAnt review finding: an earlier unrelated write (to a different
+        # file) in a compound line must not cause a later plain read of a
+        # protected file to be falsely blocked.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            other = pathlib.Path(tmp) / 'notes.txt'
+            other.write_text('unrelated\n', encoding='utf-8')
+            read_only_cmds = [
+                f"sed -i 's/x/y/' {other}; cat {target}",
+                f"sed -i 's/x/y/' {other} && cat {target}",
+                f"sed -i 's/x/y/' {other} | cat {target}",
+                # cp/mv target-tracking must also stay scoped to its own
+                # segment, not leak into a later unrelated read.
+                f"cp a b; cat {target}",
+            ]
+            for cmd in read_only_cmds:
+                with self.subTest(cmd=cmd):
+                    self.assertIsNone(config_protection.bash_targets_protected(cmd))
+            # The real write must still be caught wherever it lands.
+            for cmd in [
+                f"cat {other}; sed -i 's/x/y/' {target}",
+                f"echo ok && sed -i 's/x/y/' {target}",
+            ]:
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
+
+    def test_bash_allows_in_place_bin_name_as_plain_argument(self) -> None:
+        # CodeRabbit/CodeAnt review finding: `sed`/`perl` must only arm
+        # in-place detection when they are the executable, not when their
+        # name merely appears as another command's argument (e.g. a grep
+        # search pattern) — otherwise an unrelated `-i` later in the same
+        # single command gets misread as a write.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            cmd = f"grep -l sed *.txt -i {target}"
+            self.assertIsNone(config_protection.bash_targets_protected(cmd))
+
+    def test_bash_blocks_in_place_edit_through_env_prefix_and_wrapper(self) -> None:
+        # A leading `VAR=value` or a thin wrapper (sudo/env/xargs/...) must
+        # not hide the real sed/perl executable that follows it.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            for cmd in [
+                f"sudo sed -i 's/x/y/' {target}",
+                f"env sed -i 's/x/y/' {target}",
+                f"FOO=bar sed -i 's/x/y/' {target}",
+                f"FOO=bar BAZ=qux sed -i 's/x/y/' {target}",
+            ]:
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
+
+    def test_bash_blocks_in_place_edit_past_wrapper_own_bare_flag(self) -> None:
+        # CodeAnt review finding: a wrapper's own bare flag (no separate-token
+        # argument) — e.g. env's unrelated -i — must not be mistaken for
+        # sed/perl's in-place flag, and must not swallow the real executable.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            cmd = f"env -i sed -i 's/x/y/' {target}"
+            self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
+
+    def test_bash_blocks_in_place_edit_past_wrapper_value_flag(self) -> None:
+        # CodeAnt review finding: a wrapper flag that takes its own
+        # separate-token argument (sudo's -u, nice's -n) must not be
+        # mistaken for the target executable, or the real sed/perl right
+        # after it gets missed entirely.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            for cmd in [
+                f"sudo -u root sed -i 's/x/y/' {target}",
+                f"nice -n 10 sed -i 's/x/y/' {target}",
+            ]:
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
+
+    def test_bash_fd_duplication_not_split_into_separators(self) -> None:
+        # `2>&1`/`1>&2` must survive the command-separator split intact —
+        # splitting on the embedded `&` would otherwise turn `2>&1` into
+        # `2>` (a real redirect operator) + `&` + `1`, reblocking reads.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            for cmd in [
+                f"cat {target} 2>&1",
+                f"cat {target} 1>&2",
+            ]:
+                with self.subTest(cmd=cmd):
+                    self.assertIsNone(config_protection.bash_targets_protected(cmd))
+
 
 if __name__ == '__main__':
     unittest.main()

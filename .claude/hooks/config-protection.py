@@ -73,14 +73,74 @@ PROTECTED_RELATIVE_SUFFIXES = (
 
 DESTRUCTIVE_BINS = {
     'rm', 'mv', 'cp', 'rsync', 'install', 'dd', 'truncate', 'shred',
-    'chmod', 'chown', 'tee', 'sed', 'awk', 'perl', 'python', 'python3',
-    'ruby', 'node', 'touch', 'ln',
+    'chmod', 'chown', 'tee', 'touch', 'ln',
 }
 
-BARE_REDIRECT_RE = re.compile(r'^(?:\d*>{1,2}\|?|&>|\d*>&\d*)$')
+# Interpreters/utilities that are routinely invoked read-only (a lint checker,
+# a one-off analysis script, `sed -n`/`perl -ne` to print) — merely appearing
+# in a command is not a write signal. Only their in-place-edit flag is, and
+# only when they are the actual command being run (see the executable-position
+# tracking in bash_targets_protected, using ENV_ASSIGNMENT_RE/COMMAND_WRAPPER_BINS
+# below) — e.g. `grep sed file` searches for the literal text "sed", it never runs it.
+IN_PLACE_EDIT_BINS = frozenset({'sed', 'perl'})
+# Matches bare `-i`/`-i<suffix>` (dot optional — GNU sed accepts either) and
+# clustered short flags with -i last (`-ni`, `-pi`, `-npi`, `-Ei` — BSD/macOS
+# sed's common "extended regex + in-place" idiom), restricted to a safe
+# no-argument-flag letter set so it can't match an unrelated attached-arg flag
+# that happens to contain 'i' (e.g. perl's `-Ilib`, `-mstrict` — both always
+# take their value as a separate token in practice, unlike this filler set).
+# Also matches GNU's long form `--in-place[=SUFFIX]`.
+IN_PLACE_FLAG_RE = re.compile(r'^(?:-[npsalwuzrE]*i.*|--in-place(?:=.*)?)$')
+
+# A leading `VAR=value` env assignment, a thin wrapper (sudo/env/xargs/...), or
+# one of the wrapper's own flags (`sudo -u root`, `env -i`, `nice -n 10`)
+# doesn't occupy the executable slot — the real command still follows. Any
+# `-`-prefixed token is treated as "still preamble" while a wrapper is pending,
+# so a wrapper's own flag (e.g. env's unrelated `-i`) is never mistaken for
+# sed/perl's in-place flag.
+ENV_ASSIGNMENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*=')
+COMMAND_WRAPPER_BINS = frozenset({'sudo', 'env', 'nice', 'nohup', 'time', 'command', 'exec', 'xargs'})
+# A handful of each wrapper's flags take the NEXT token as their own argument
+# (`sudo -u root`, `nice -n 10`) rather than the target executable — without
+# this, that argument gets mistaken for the executable slot and the real
+# command (e.g. sed) right after it is missed entirely.
+WRAPPER_VALUE_FLAGS = {
+    'sudo': frozenset({'-u', '-g', '-p', '-h', '-C', '-r', '-t'}),
+    'env': frozenset({'-u', '-C', '-S'}),
+    'nice': frozenset({'-n'}),
+    'nohup': frozenset(),
+    'time': frozenset(),
+    'command': frozenset(),
+    'exec': frozenset({'-a'}),
+    'xargs': frozenset({'-I', '-n', '-P', '-d', '-s', '-a', '-E', '-L'}),
+}
+
+# Command-separator characters: in-place-flag state and executable-position
+# tracking must not leak across these, or an earlier unrelated `sed`/`perl`
+# call would make a later `grep -i` (or any other unrelated `-i`) in the same
+# compound line look like a write. shlex has no concept of shell metacharacters
+# — `cmd1;cmd2` (no spaces at all) comes back as one glued token — so these are
+# split out of every token into their own entries before the main scan runs.
+# A single `&` is excluded when adjacent to `>` (`2>&1` fd-dup, `&>file`
+# combined redirect) so those stay intact as one token for the redirect checks.
+COMMAND_SEPARATOR_SPLIT_RE = re.compile(r'(&&|\|\||;|\||\(|\)|(?<!>)&(?!>))')
+COMMAND_SEPARATOR_RE = re.compile(r'^[;&|()]+$')
+
+# Deliberately excludes fd-duplication (`2>&1`, `1>&2`): digits on both sides of
+# `>&` duplicate one existing stream onto another (e.g. merging stderr into
+# stdout for capture) — there is no file target, so it is never a write. Only
+# `N>`/`N>>`/`&>` (redirect to an actual filename) count as a write signal.
+BARE_REDIRECT_RE = re.compile(r'^(?:\d*>{1,2}\|?|&>)$')
 EMBEDDED_REDIRECT_RE = re.compile(r'(?:\d*>{1,2}\|?|&>)([^<>&].*)$')
 WRITE_FLAG_TOKENS = frozenset({'--write', '--fix', '-w', '-inplace'})
 COPY_MOVE_BINS = frozenset({'cp', 'mv'})
+
+
+def _split_command_separators(tokens: list[str]) -> list[str]:
+    expanded: list[str] = []
+    for tok in tokens:
+        expanded.extend(part for part in COMMAND_SEPARATOR_SPLIT_RE.split(tok) if part)
+    return expanded
 
 
 def normalize_path(path: str) -> str:
@@ -143,18 +203,19 @@ def should_block_edit(path: str, cwd: str | None = None) -> bool:
     return path_exists(path, cwd)
 
 
-def bash_targets_protected(cmd: str, cwd: str | None = None) -> str | None:
-    if not cmd:
-        return None
-    try:
-        tokens = shlex.split(cmd, posix=True)
-    except ValueError:
-        tokens = cmd.split()
-
+def _scan_command_segment(tokens: list[str], cwd: str | None) -> str | None:
+    """Scan one separator-free command segment for a write targeting a
+    protected path. Every piece of state here is local to this single
+    segment — nothing from an earlier or later `;`/`&&`/`|`-separated
+    segment on the same line can leak in, in either direction."""
     has_write_op = False
     protected_targets: list[str] = []
     last_copy_move: str | None = None
     copy_move_protected: list[str] = []
+    seen_in_place_capable_bin = False
+    expect_command_name = True
+    current_wrapper: str | None = None
+    expect_wrapper_flag_value = False
 
     protected_in_cmd: list[str] = []
 
@@ -171,6 +232,25 @@ def bash_targets_protected(cmd: str, cwd: str | None = None) -> str | None:
             continue
         base = tok.rsplit('/', 1)[-1]
         if tok in WRITE_FLAG_TOKENS:
+            has_write_op = True
+        if expect_command_name:
+            if expect_wrapper_flag_value:
+                # This token is a wrapper flag's own argument (e.g. the "root"
+                # in `sudo -u root`), not the target executable.
+                expect_wrapper_flag_value = False
+            elif ENV_ASSIGNMENT_RE.match(tok):
+                pass
+            elif base in COMMAND_WRAPPER_BINS:
+                current_wrapper = base
+            elif tok.startswith('-'):
+                if current_wrapper and tok in WRAPPER_VALUE_FLAGS.get(current_wrapper, ()):
+                    expect_wrapper_flag_value = True
+            else:
+                if base in IN_PLACE_EDIT_BINS:
+                    seen_in_place_capable_bin = True
+                expect_command_name = False
+                current_wrapper = None
+        elif seen_in_place_capable_bin and IN_PLACE_FLAG_RE.match(tok):
             has_write_op = True
         if base in COPY_MOVE_BINS:
             has_write_op = True
@@ -201,6 +281,30 @@ def bash_targets_protected(cmd: str, cwd: str | None = None) -> str | None:
     for target in protected_targets:
         if should_block_edit(target, cwd):
             return target
+    return None
+
+
+def bash_targets_protected(cmd: str, cwd: str | None = None) -> str | None:
+    if not cmd:
+        return None
+    try:
+        tokens = shlex.split(cmd, posix=True)
+    except ValueError:
+        tokens = cmd.split()
+    tokens = _split_command_separators(tokens)
+
+    segment: list[str] = []
+    for tok in tokens:
+        if COMMAND_SEPARATOR_RE.match(tok):
+            if segment:
+                blocked = _scan_command_segment(segment, cwd)
+                if blocked:
+                    return blocked
+                segment = []
+            continue
+        segment.append(tok)
+    if segment:
+        return _scan_command_segment(segment, cwd)
     return None
 
 
