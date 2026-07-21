@@ -26,13 +26,9 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 > **Ask first:** Never — all phases are autonomous once /wrap is invoked.
 > **Never:** Stop to ask "should I continue?" between phases; insert confirmation prompts for non-blocker transitions. Delete the running worktree or its branch — that's `/pm-update`'s job, not /wrap's.
 
-### Invocation flags
+### Follow-up filing is autonomous (issue #633)
 
-| Flag | Default | Effect |
-|------|---------|--------|
-| `--auto-file-followups` | off | When set, Phase 3 **Part B** session-sweep loose ends (category 2) are auto-filed as GitHub issues (with the issue body surfaced in the report) instead of being surfaced under "Needs your decision". The per-PR follow-ups in **Part A** (HHG + linked-issue sub-tasks) always auto-file regardless of this flag — they are derived from the PR/issue, not from ambiguous transcript signal. |
-
-Parse the flag from the invocation arguments once at the top of the run; record it as `WRAP_AUTO_FILE_FOLLOWUPS` (`true`/`false`, default `false`) for Phase 3 Part B. Without the flag, the safe default is **ask first** — surface candidate tickets, never silently create them (issue #471 Confirmation-UX note).
+Both Phase 3 passes — **Part A** (per-PR follow-ups) and **Part B** (full-session sweep) — file every novel candidate as a GitHub issue **without asking**. There is no opt-out flag and no "file as new issue?" prompt anywhere in this skill. The deal is two-sided: filing is unconditional, and **every** filed issue is reported in the closing message (Step 4.3) with number, title, one-line rationale, and clickable link. Retraction (`gh issue close`) is the escape hatch, not a confirmation round-trip. The norm is stated once for all skills in `.claude/rules/issue-planning.md`.
 
 ### Phase Transition Autonomy
 
@@ -481,10 +477,12 @@ Store `MAIN_SYNC_STATUS` and `QUARANTINE_STATUS` for the final report at the end
 
 Phase 3 has **two parts**, run in order:
 
-- **Part A — Per-PR follow-up detection (Steps 3.1–3.4):** the original behavior — derive follow-ups from the **merging PR** and its linked issue (HHG two-ticket pattern, linked-issue sub-tasks), dedup, and **auto-create** GitHub issues. Unchanged.
-- **Part B — Full-session sweep (Steps 3.5–3.13):** answer "is there anything I should have ticketed but didn't?" across the **entire session**, not just the PR. Seven categories: loose ends, ticket coverage, external/process state, memory persistence, PM hygiene, time-sensitive items, future-self handoff. Each finding is either **auto-handled** (safe process cleanup or, with `--auto-file-followups`, an auto-filed ticket) or **surfaced** to the user under "needs your decision".
+- **Part A — Per-PR follow-up detection (Steps 3.1–3.4):** derive follow-ups from the **merging PR** and its linked issue (HHG two-ticket pattern, linked-issue sub-tasks), dedup, and **auto-create** GitHub issues.
+- **Part B — Full-session sweep (Steps 3.5–3.13):** answer "is there anything I should have ticketed but didn't?" across the **entire session**, not just the PR. Seven categories: loose ends, ticket coverage, external/process state, memory persistence, PM hygiene, time-sensitive items, future-self handoff. Each finding is either **auto-handled** (safe process cleanup, or an auto-filed ticket) or **surfaced** to the user under "needs your decision".
 
-Both parts feed the Phase 4 final report. Part A's "Follow-ups" block and Part B's "Session sweep" block are reported separately.
+**Shared filed-issue registry (`WRAP_FILED_ISSUES`) — initialize before Step 3.1.** Both parts file into the *same* run-scoped registry, so a loose end visible to both produces exactly **one** issue and every filing lands in one closing announcement. Each entry is `{number, title, keywords, rationale}` — `rationale` being the one-line "why" rendered in Step 4.3 (e.g. `follow-up from PR #471`, `loose end: retry cap never revisited`). Part A appends in Step 3.3; Part B checks the registry *before* its own dedup search in Step 3.7 and appends there. The registry is per-run and in-memory; it composes with — and never replaces — the cross-run `SWEEP_PRIOR_FILED` record persisted in Step 3.13.
+
+Both parts feed the Phase 4 final report, which announces every registry entry in a single block (Step 4.3).
 
 > **Phase C / subagent context:** When `/wrap` is invoked by a Phase C subagent (per `subagent-orchestration.md`), the subagent's transcript is narrow and short-lived. Part B degrades gracefully: transcript-derived categories (1, 6, 7) will usually find nothing and the verdict will be "Clear to archive". Part A and the state-file-derived categories (3, 5) still run normally. Never block a Phase C merge on a Part B finding — Part B is advisory.
 
@@ -569,12 +567,18 @@ Each body should reference the source PR (`Follow-up from PR #{PR_NUMBER}`) and 
 
 For each follow-up item (the HHG pair or the generic list):
 
-1. **Dedup check** — search for an existing open issue with matching keywords in the title. **Guard against empty keywords**: an empty search string returns every open issue and would silently block creation of the follow-up.
+1. **Dedup check** — search **open and recently-closed** issues for a matching title (same lookback `/issue-maker` Step 4 uses, so a repeat observation across sessions does not file a near-duplicate). **Guard against empty keywords**: an empty search string returns every issue and would silently block creation of the follow-up.
    ```bash
    if [ -z "$KEYWORDS" ]; then
      DUP_NUM=""  # no keywords → skip dedup, always create
    else
-     DUP_NUM=$(gh issue list --search "${KEYWORDS} in:title" --state open --json number,title --jq '.[0].number // empty')
+     CLOSED_SINCE=$(date -d '30 days ago' +%F 2>/dev/null || date -v-30d +%F)
+     DUP_NUM=$(gh issue list --search "${KEYWORDS} in:title" --state open \
+       --json number,title --jq '.[0].number // empty')
+     if [ -z "$DUP_NUM" ]; then
+       DUP_NUM=$(gh issue list --search "${KEYWORDS} in:title closed:>${CLOSED_SINCE}" --state closed \
+         --json number,title --jq '.[0].number // empty')
+     fi
    fi
    ```
    If `DUP_NUM` is non-empty, skip creation and record the item as `skipped (dup of #{DUP_NUM})` in the report.
@@ -589,36 +593,37 @@ For each follow-up item (the HHG pair or the generic list):
      --title "{derived title}" \
      --body "Follow-up from PR #${PR_NUMBER}.
 
-   {context from detection}${LINKED_SOURCE}" 2>&1); then
+   {context from detection}${LINKED_SOURCE}
+
+   _Filed via /wrap._" 2>&1); then
      NEW_NUM=$(echo "$NEW_URL" | grep -oE '[0-9]+$')
      if [ -z "$NEW_NUM" ]; then
        echo "WARNING: created issue but could not parse number from: $NEW_URL"
        # record as failure and continue
      fi
+     # Append to the run-scoped registry: {number, title, keywords, rationale}.
+     # Rationale for Part A items is "follow-up from PR #${PR_NUMBER}".
    else
      echo "WARNING: gh issue create failed: $NEW_URL"
      # record as failure and continue — do not abort Phase 3
    fi
    ```
 
+   Every successful creation appends `{number, title, keywords, rationale: "follow-up from PR #${PR_NUMBER}"}` to **`WRAP_FILED_ISSUES`**. The `_Filed via /wrap._` footer is the audit marker that makes automation-opened issues findable later (same role as `/issue-maker`'s `_Captured via /issue-maker._`); it is zero-config and requires no repo label to exist.
+
 **Non-HHG PRs still get generic follow-up creation** — any items collected in Step 3.1 that are not overridden by the HHG path go through the dedup + create flow above.
 
-### Step 3.4: Report follow-ups
+### Step 3.4: Carry Part A results into the unified report
 
-Present the results:
+Part A does **not** print its own "Created" list — every issue it filed is already in `WRAP_FILED_ISSUES` and is announced once, alongside Part B's filings, in the single closing block rendered by Step 4.3. Printing here too would report the same issue twice.
 
-```
-## Follow-ups
+What Part A *does* carry forward:
 
-### Created
-- Issue #{NEW_NUM}: {title}
-- Issue #{NEW_NUM}: {title}
+- **Filed** — already in `WRAP_FILED_ISSUES` (number, title, rationale `follow-up from PR #{PR_NUMBER}`).
+- **Skipped (duplicates)** — record as `"{title}" — already tracked in #{DUP_NUM}` for the Step 4.3 follow-ups line.
+- **Failures** — any `gh issue create` that failed or whose number would not parse; these must appear in the report so a dropped follow-up is never silent.
 
-### Skipped (duplicates)
-- "{title}" — already tracked in #{DUP_NUM}
-```
-
-If nothing was detected: "No follow-up items detected."
+If nothing was detected and nothing was filed, the Step 4.3 follow-ups line reads "No follow-up items detected."
 If HHG was detected but no state code was found (so auto-creation was skipped): append "⚠️ HHG detected but no state code found in PR/issue — auto-creation skipped. Create the scraping and ETL issues manually once you know the state."
 
 After the per-PR follow-up report: proceed immediately to **Part B** — do not ask.
@@ -631,7 +636,7 @@ Part B sweeps the **whole session** for loose ends the per-PR detection in Part 
 
 **Safety boundaries for the entire sweep (non-negotiable — issue #471):**
 
-- **Never auto-file a ticket without surfacing its body** in the report. Auto-filing (only with `--auto-file-followups`) still prints the created issue's title + body.
+- **Never auto-file a ticket without surfacing its body** in the report. Filing is unconditional (issue #633), so this boundary is what keeps it honest: every created issue's title + body is printed in the closing report.
 - **Never auto-act on anything affecting shared state** — durable `CronCreate` jobs, active subagents, human-owned issues/PRs, recovery branches. Surface them; let the user decide.
 - **Never modify branch protection** (same prohibition as Phase 2).
 - Auto-handling is limited to: stopping a **dead** session `/loop` job (target PR already merged/closed) and deleting a **stale** handoff file (its PR already merged). Everything else is surfaced.
@@ -666,7 +671,7 @@ Initialize two accumulators (free-form bullet lists) used by every category and 
 - **`SWEEP_AUTO_HANDLED`** — things the sweep did safely without asking.
 - **`SWEEP_NEEDS_DECISION`** — things surfaced for the user to decide.
 
-Each entry should be one short bullet. **Cap each rendered section at 3–5 bullets** (issue #471 final-report-length note); if a category produces more, keep the top items, summarize the rest as one bullet ("+ N more — see session-state log"), and write the full list to `.prs["$PR_NUMBER"].wrap_sweep` in Step 3.13. **Exception:** auto-filed tickets (the `--auto-file-followups` path) are **never** capped away — every created issue's title + body must be surfaced (Step 3.7 contract), so they render in full regardless of the 3–5 cap (count summary-only bullets toward the cap, not auto-filed-ticket bullets).
+Each entry should be one short bullet. **Cap each rendered section at 3–5 bullets** (issue #471 final-report-length note); if a category produces more, keep the top items, summarize the rest as one bullet ("+ N more — see session-state log"), and write the full list to `.prs["$PR_NUMBER"].wrap_sweep` in Step 3.13. **Exception:** auto-filed tickets are **never** capped away — every created issue's title + body must be surfaced (Step 3.7 contract), so they render in full regardless of the 3–5 cap (count summary-only bullets toward the cap, not auto-filed-ticket bullets).
 
 #### Step 3.6: Category 1 — Session loose ends (transcript introspection)
 
@@ -676,36 +681,58 @@ This is the **load-bearing capability** (issue #471): scan **this session's conv
 
 Collect each loose end as `{summary, context, keywords}` where `keywords` is a 2–5 word phrase for the Step 3.7 dedup search. If none found, Category 1 produces no output.
 
-#### Step 3.7: Category 2 — Ticket coverage (dedup, then propose or file)
+#### Step 3.7: Category 2 — Ticket coverage (dedup, then file)
 
-For **each** loose end from Step 3.6, dedup against open issues **before** proposing anything (AC: never propose a new ticket without checking first). Guard empty keywords (an empty search returns every issue):
+For **each** loose end from Step 3.6, dedup **before** filing anything (AC: never file a new ticket without checking first). Dedup runs in two stages:
+
+**Stage 1 — cross-batch (this run).** Check the candidate against `WRAP_FILED_ISSUES` first: if its keywords match an entry Part A already filed during this run, **skip it entirely** — do not file, do not re-announce. This is what guarantees a loose end visible to both passes yields exactly one issue.
+
+**Stage 2 — cross-session (the repo).** Search open **and** recently-closed issues, matching `/issue-maker` Step 4's lookback so a repeat observation across sessions does not file a near-duplicate. Guard empty keywords (an empty search returns every issue):
 
 ```bash
 if [ -z "$KEYWORDS" ]; then
-  DUP_NUM=""   # no keywords → can't dedup safely → surface, never auto-file
+  DUP_NUM=""   # no keywords → can't dedup safely → file with the surfaced body
 else
-  DUP_NUM=$(gh issue list --search "${KEYWORDS} in:title" --state open --json number,title --jq '.[0].number // empty')
+  CLOSED_SINCE=$(date -d '30 days ago' +%F 2>/dev/null || date -v-30d +%F)
+  DUP_NUM=$(gh issue list --search "${KEYWORDS} in:title" --state open \
+    --json number,title --jq '.[0].number // empty')
+  if [ -z "$DUP_NUM" ]; then
+    DUP_NUM=$(gh issue list --search "${KEYWORDS} in:title closed:>${CLOSED_SINCE}" --state closed \
+      --json number,title --jq '.[0].number // empty')
+  fi
 fi
 ```
 
+The empty-keywords case files rather than surfacing — a loose end with no usable keywords is still a loose end, and the surfaced body plus the closing report give the user everything needed to retract it.
+
 **Idempotency** is provided by the dedup search above, **not** by `SWEEP_PRIOR_FILED`: an issue auto-filed by a previous `/wrap` sweep is still an open issue, so a recurring loose end matches it via `gh issue list --search` and resolves to `DUP_NUM`. `SWEEP_PRIOR_FILED` is a JSON array of **issue numbers** (not keywords) recorded by earlier sweeps; when `DUP_NUM` is one of those numbers, treat the loose end as **already handled by this sweep** — do not re-file it and do not re-surface it as a new "needs decision" item.
 
-- **Duplicate found** (`DUP_NUM` non-empty) → if `DUP_NUM` is in `SWEEP_PRIOR_FILED`, **omit** (this sweep already filed it on a prior run — idempotent). Otherwise add to `SWEEP_NEEDS_DECISION`: `"<summary>" — already tracked in #<DUP_NUM>` (or omit if no action needed; surface only when the existing ticket may need an update).
-- **No duplicate, default (ask first)** → add to `SWEEP_NEEDS_DECISION`: `TODO from conversation: "<summary>" — no existing ticket, file as new issue?`
-- **No duplicate, `--auto-file-followups` set** → create the issue, **surface its title + body**, add to `SWEEP_AUTO_HANDLED`. Use the same robust `gh issue create` guard as Step 3.3 (validate the parsed number; on failure record and continue):
+Then take exactly one of two paths — there is no third "ask the user" path:
+
+- **Duplicate found** (`DUP_NUM` non-empty) → reference the existing issue; do **not** file. If `DUP_NUM` is in `SWEEP_PRIOR_FILED`, **omit** entirely (this sweep already filed it on a prior run — idempotent). Otherwise add to `SWEEP_NEEDS_DECISION`: `"<summary>" — already tracked in #<DUP_NUM>` (or omit if no action needed; surface only when the existing ticket may need an update).
+- **No duplicate** → **create the issue immediately**, **surface its title + body**, append it to `WRAP_FILED_ISSUES` with rationale `loose end: <summary>`, and add it to `SWEEP_AUTO_HANDLED`. Use the same robust `gh issue create` guard as Step 3.3 (validate the parsed number; on failure record and continue — never abort Phase 3):
 
   ```bash
   if NEW_URL=$(gh issue create \
       --title "<derived title>" \
       --body "Follow-up surfaced by /wrap session sweep on PR #${PR_NUMBER}.
 
-  <context from transcript>" 2>&1); then
+  <context from transcript>
+
+  _Filed via /wrap._" 2>&1); then
     NEW_NUM=$(echo "$NEW_URL" | grep -oE '[0-9]+$')
-    [ -n "$NEW_NUM" ] && SWEEP_FILED="${SWEEP_FILED} ${NEW_NUM}"
+    if [ -n "$NEW_NUM" ]; then
+      SWEEP_FILED="${SWEEP_FILED} ${NEW_NUM}"
+      # Append {number, title, keywords, rationale} to WRAP_FILED_ISSUES.
+    else
+      echo "WARNING: created issue but could not parse number from: $NEW_URL"
+    fi
+  else
+    echo "WARNING: gh issue create failed: $NEW_URL"
   fi
   ```
 
-Never auto-file without `--auto-file-followups`; never auto-file without printing the body.
+**No cap on how many issues one run may file.** A cap would reintroduce the confirmation round-trip this design removes; instead every filing is announced in full (Step 4.3), and closing an unwanted issue is one command. Never file without printing the body.
 
 #### Step 3.8: Category 3 — External / process state
 
@@ -859,7 +886,14 @@ After lessons (or skip): emit the final report below — do not ask.
 - **PR #{N}** merged ({title})
 - **Main quarantine** {QUARANTINE_STATUS from Step 2.5 — e.g. "clean" (literal output of `dirty-main-guard.sh --check` on a clean main), "quarantined: recovery/dirty-main-20260424-003012 (uncommitted)", or "no-op: main is clean" (only produced if `--quarantine` ran on an already-clean tree)}
 - **Main branch** {MAIN_SYNC_STATUS from Step 2.5 — e.g. "reset abc1234 → def5678", "up to date (abc1234)", "aborted: local main has 1 unpushed commit(s) — inspect: git log origin/main..main, resolve manually before re-running", or "failed: ..."}
-- **Follow-ups:** {Part A summary or "none"}
+- **Follow-ups:** {skipped-as-duplicate items and any creation failures from Part A, or "No follow-up items detected." — filed issues are listed under "Issues filed" below, not here}
+
+## Issues filed
+
+- [#{number}](https://github.com/{owner}/{repo}/issues/{number}) — {title} — {rationale}
+- [#{number}](https://github.com/{owner}/{repo}/issues/{number}) — {title} — {rationale}
+
+{One line per `WRAP_FILED_ISSUES` entry, Part A and Part B together, in one message. Omit the whole section only when the registry is empty.}
 
 ## Session sweep
 
@@ -879,7 +913,8 @@ After lessons (or skip): emit the final report below — do not ask.
 
 **Rendering rules for the Session sweep section:**
 
-- Cap **Auto-handled** and **Needs your decision** at **3–5 bullets** each; if more, show the top items and summarize the remainder as one bullet linking to `.prs["$PR_NUMBER"].wrap_sweep`. **Auto-filed tickets are exempt from the cap** — with `--auto-file-followups`, every created issue's title + body is surfaced in full (never collapsed into the "+ N more" summary), since silently hiding a ticket you just created would violate the Step 3.7 surface-the-body contract.
+- Cap **Auto-handled** and **Needs your decision** at **3–5 bullets** each; if more, show the top items and summarize the remainder as one bullet linking to `.prs["$PR_NUMBER"].wrap_sweep`. **Auto-filed tickets are exempt from the cap** — every created issue's title + body is surfaced in full (never collapsed into the "+ N more" summary), since silently hiding a ticket you just created would violate the Step 3.7 surface-the-body contract.
+- The **Issues filed** section is never capped or truncated, however many issues the run opened: one line per issue, each a clickable link with its number, title, and one-line rationale. An issue filed but not reported is the one failure mode this design cannot tolerate — it can't be retracted if it was never seen.
 - Omit an empty subsection rather than printing "none".
 - The **Verdict** line is mandatory and is one of the two canonical strings only.
 - If Part B was skipped (e.g. Phase C subagent with an empty transcript and no state findings), still print `### Verdict` → `Clear to archive`.
