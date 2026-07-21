@@ -22,6 +22,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `codeant-graphite-supplemental.md` — CodeAnt and Graphite supplemental polling on the CR path
 - `local-review-cli-failure-modes.md` — how CodeAnt/CodeRabbit fake a clean pass on failure, 403 triage, 15-file cap (#642)
 - `wrap-fixpr-delegation.md` — `/wrap` Step 2.1 → full `/fixpr` recovery handoff contract
+- `autofile-dedup.md` — duplicate-check thresholds for autonomous issue filing (`/wrap` Phase 3); strong/weak/none classification and the comment-vs-file rule
 - `graphql-thread-resolution.md` — full GraphQL queries/mutations for resolving PR review threads
 - `exit-report-format.md` — full structured exit report block specification
 - `greptile-setup.md` — Greptile dashboard setup notes

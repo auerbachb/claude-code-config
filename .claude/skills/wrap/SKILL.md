@@ -30,6 +30,8 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 
 Both Phase 3 passes — **Part A** (per-PR follow-ups) and **Part B** (full-session sweep) — file every novel candidate as a GitHub issue **without asking**. There is no opt-out flag and no "file as new issue?" prompt anywhere in this skill. The deal is two-sided: filing is unconditional, and **every** filed issue is reported in the closing message (Step 4.3) with number, title, one-line rationale, and clickable link. Retraction (`gh issue close`) is the escape hatch, not a confirmation round-trip. The norm is stated once for all skills in `.claude/rules/issue-planning.md`.
 
+Autonomy does not mean filing blind: every candidate goes through the body-aware duplicate check in **Step 3.0** first (issue #652). That check can only ever *redirect* a filing onto an existing issue or *annotate* it — it never drops a finding, and every filing it suppresses is named in the closing report alongside the issue it deferred to.
+
 ### Phase Transition Autonomy
 
 | Transition | Action | Classification |
@@ -484,6 +486,64 @@ Phase 3 has **two parts**, run in order:
 
 Both parts feed the Phase 4 final report, which announces every registry entry in a single block (Step 4.3).
 
+### Step 3.0: Dedup helper setup (both parts — issue #652)
+
+Autonomous filing without a duplicate check files rival tickets: issue #647 was filed thirteen minutes after issue #638 restating its second acceptance criterion, because the sweep searched titles only and the two share almost no title words. Both parts therefore run the same **body-aware** check before every filing.
+
+Resolve the helper once, before Step 3.1, with the standard three-candidate lookup:
+
+```bash
+ISSUE_DEDUP=""
+for candidate in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh" \
+  "$HOME/.claude/scripts/issue-dedup.sh" \
+  ".claude/scripts/issue-dedup.sh"; do
+  if [[ -x "$candidate" ]]; then ISSUE_DEDUP="$candidate"; break; fi
+done
+DEDUP_EXCLUDE=""   # comma-separated issue numbers filed earlier in THIS run
+DEDUP_DEGRADED=""      # THIS search only — reset on every dedup_search call
+DEDUP_ANY_DEGRADED=""  # sticky across the run — drives the Step 4.3 report line
+
+# Both parts call this; it is the ONLY dedup entry point. Exit 1 ("searched,
+# found nothing") is the sole status that may be read as "no duplicate" —
+# a missing helper or a gh/env error (exit 2/4) degrades to the title-only
+# check and is reported, never silently treated as a clean no-match.
+dedup_search() {   # dedup_search <keywords> -> sets DEDUP_JSON/DUP_NUM/DUP_STATE
+  local kw="$1" rc=0
+  DEDUP_JSON='[]'
+  DEDUP_DEGRADED=""   # per-call: a candidate is classified on ITS OWN search,
+                      # never on an earlier one's transient failure
+  if [ -n "$ISSUE_DEDUP" ] && [ -n "$kw" ]; then
+    DEDUP_JSON=$("$ISSUE_DEDUP" "$kw" ${DEDUP_EXCLUDE:+--exclude "$DEDUP_EXCLUDE"}) || rc=$?
+    if [ "$rc" -gt 1 ]; then
+      DEDUP_DEGRADED="helper exit $rc"
+      DEDUP_ANY_DEGRADED="$DEDUP_DEGRADED"
+      DEDUP_JSON=$(gh issue list --search "${kw} in:title" --state open \
+        --json number,title,state --jq '[.[0] // empty]' 2>/dev/null || echo '[]')
+    fi
+  elif [ -n "$kw" ]; then
+    DEDUP_DEGRADED="helper not installed"
+    DEDUP_ANY_DEGRADED="$DEDUP_DEGRADED"
+    DEDUP_JSON=$(gh issue list --search "${kw} in:title" --state open \
+      --json number,title,state --jq '[.[0] // empty]' 2>/dev/null || echo '[]')
+  fi
+  DUP_NUM=$(printf '%s' "$DEDUP_JSON" | jq -r '.[0].number // empty')
+  DUP_STATE=$(printf '%s' "$DEDUP_JSON" | jq -r '.[0].state // empty' | tr '[:lower:]' '[:upper:]')
+  WEAK_DUP_NUM=""   # set to $DUP_NUM by the weak/closed branch at each call site
+}
+```
+
+`issue-dedup.sh <keywords>` prints ranked candidates as JSON (`number`, `title`, `state`, `coverage`, `terms_matched`, …), scoring **title and body** across open plus recently-closed issues. Exit `0` = candidates, `1` = none (the only "no duplicate" verdict), `2`/`4` = usage or gh/environment failure.
+
+**A degraded search is never a strong match.** When `DEDUP_DEGRADED` is non-empty *for that candidate's own search*, the check saw titles only, so it cannot satisfy the strong-match criteria — file. `DEDUP_DEGRADED` resets per call precisely so one transient `gh` hiccup does not force every later candidate in the run down the degraded path; `DEDUP_ANY_DEGRADED` is the sticky flag, and it drives one line in the Step 4.3 report, not any classification.
+
+**The helper only finds candidates — it never decides.** The strong / weak / none classification, the four strong-match criteria, and the comment-vs-file rule are specified once in **`.claude/reference/autofile-dedup.md`**; both Step 3.3 and Step 3.7 apply them unchanged. Two invariants carry across every branch:
+
+- **Bias toward filing.** A duplicate ticket is noise you close in one command; a real finding appended to an issue whose scope never covered it is simply lost. Ambiguity resolves to "file, with a `Possibly duplicates #N` line".
+- **Suppression is never silent.** Every filing the check suppressed appears in the Step 4.3 report naming the issue it deferred to.
+
+**If `ISSUE_DEDUP` is empty** (helper not installed), fall back to the pre-#652 title-only `gh issue list --search "$KEYWORDS in:title"` check, and note the degraded check once in the Step 4.3 report — never skip dedup entirely, and never let a missing helper block a filing.
+
 > **Phase C / subagent context:** When `/wrap` is invoked by a Phase C subagent (per `subagent-orchestration.md`), the subagent's transcript is narrow and short-lived. Part B degrades gracefully: transcript-derived categories (1, 6, 7) will usually find nothing and the verdict will be "Clear to archive". Part A and the state-file-derived categories (3, 5) still run normally. Never block a Phase C merge on a Part B finding — Part B is advisory.
 
 ### Part A — Per-PR follow-up detection
@@ -567,31 +627,30 @@ Each body should reference the source PR (`Follow-up from PR #{PR_NUMBER}`) and 
 
 For each follow-up item (the HHG pair or the generic list):
 
-1. **Dedup check** — search **open and recently-closed** issues for a matching title (same lookback `/issue-maker` Step 4 uses, so a repeat observation across sessions does not file a near-duplicate). **Guard against empty keywords**: an empty search string returns every issue and would silently block creation of the follow-up.
+1. **Dedup check** — run the shared helper (Step 3.0), which scores **titles and bodies** of open and recently-closed issues. Classify the top candidate as **strong / weak / none** per `.claude/reference/autofile-dedup.md`. **Guard against empty keywords**: with no usable keywords the helper exits 1 with `[]`, which means *file* — never treat "couldn't search" as "duplicate found".
    ```bash
-   if [ -z "$KEYWORDS" ]; then
-     DUP_NUM=""  # no keywords → skip dedup, always create
-   else
-     CLOSED_SINCE=$(date -d '30 days ago' +%F 2>/dev/null || date -v-30d +%F)
-     DUP_NUM=$(gh issue list --search "${KEYWORDS} in:title" --state open \
-       --json number,title --jq '.[0].number // empty')
-     if [ -z "$DUP_NUM" ]; then
-       DUP_NUM=$(gh issue list --search "${KEYWORDS} in:title closed:>${CLOSED_SINCE}" --state closed \
-         --json number,title --jq '.[0].number // empty')
-     fi
-   fi
+   dedup_search "$KEYWORDS"   # Step 3.0 — sets DEDUP_JSON, DUP_NUM, DUP_STATE, WEAK_DUP_NUM
    ```
-   If `DUP_NUM` is non-empty, skip creation and record the item as `skipped (dup of #{DUP_NUM})` in the report.
+   Then take the branch the classification names:
+   - **Strong** (open issue, same primary artifact, a quotable covering criterion, `coverage ≥ 0.6`) → **do not file**. Comment the follow-up onto `#{DUP_NUM}` with the template in `autofile-dedup.md`, and record `"{title}" — appended to #{DUP_NUM} instead of filing` for the Step 4.3 report.
+   - **Weak / ambiguous**, or the top candidate is **closed** → set `WEAK_DUP_NUM="$DUP_NUM"` and **file**; step 2 renders it as a `Possibly duplicates #{DUP_NUM}` line in the body, and the ambiguity is recorded in the report.
+   - **None** → file exactly as before.
 
-2. **Create the issue** (only if no duplicate found). Check the exit status and validate the parsed number before logging — if creation fails or the URL doesn't parse, record the failure in the report and continue with the next item. **Guard the `Linked source` line** — only include it when `ISSUE_N` is non-empty, otherwise the body will render a broken `#` reference on GitHub:
+   When in doubt, file. A duplicate ticket is recoverable; a finding buried as a comment on an unrelated issue is not.
+
+2. **Create the issue** (strong match excepted). Check the exit status and validate the parsed number before logging — if creation fails or the URL doesn't parse, record the failure in the report and continue with the next item. **Guard the `Linked source` line** — only include it when `ISSUE_N` is non-empty, otherwise the body will render a broken `#` reference on GitHub. `POSSIBLE_DUP` carries the weak-match pointer and is empty otherwise:
    ```bash
    LINKED_SOURCE=""
    if [ -n "$ISSUE_N" ]; then
      LINKED_SOURCE=$'\n\n'"Linked source: #${ISSUE_N}"
    fi
+   POSSIBLE_DUP=""   # weak-match pointer only; empty on a clean no-match
+   if [ -n "${WEAK_DUP_NUM:-}" ]; then
+     POSSIBLE_DUP=$'\n\n'"Possibly duplicates #${WEAK_DUP_NUM} — {one line on the overlap and what is unclear}."
+   fi
    if NEW_URL=$(gh issue create \
      --title "{derived title}" \
-     --body "Follow-up from PR #${PR_NUMBER}.
+     --body "Follow-up from PR #${PR_NUMBER}.${POSSIBLE_DUP}
 
    {context from detection}${LINKED_SOURCE}
 
@@ -609,7 +668,7 @@ For each follow-up item (the HHG pair or the generic list):
    fi
    ```
 
-   Every successful creation appends `{number, title, keywords, rationale: "follow-up from PR #${PR_NUMBER}"}` to **`WRAP_FILED_ISSUES`**. The `_Filed via /wrap._` footer is the audit marker that makes automation-opened issues findable later (same role as `/issue-maker`'s `_Captured via /issue-maker._`); it is zero-config and requires no repo label to exist.
+   Every successful creation appends `{number, title, keywords, rationale: "follow-up from PR #${PR_NUMBER}"}` to **`WRAP_FILED_ISSUES`** and appends `$NEW_NUM` to **`DEDUP_EXCLUDE`**, so an issue this run just opened cannot come back as its own dedup candidate a step later. The `_Filed via /wrap._` footer is the audit marker that makes automation-opened issues findable later (same role as `/issue-maker`'s `_Captured via /issue-maker._`); it is zero-config and requires no repo label to exist.
 
 **Non-HHG PRs still get generic follow-up creation** — any items collected in Step 3.1 that are not overridden by the HHG path go through the dedup + create flow above.
 
@@ -620,7 +679,8 @@ Part A does **not** print its own "Created" list — every issue it filed is alr
 What Part A *does* carry forward:
 
 - **Filed** — already in `WRAP_FILED_ISSUES` (number, title, rationale `follow-up from PR #{PR_NUMBER}`).
-- **Skipped (duplicates)** — record as `"{title}" — already tracked in #{DUP_NUM}` for the Step 4.3 follow-ups line.
+- **Suppressed as duplicates** — record as `Appended to #{DUP_NUM} instead of filing — "{title}"` for the Step 4.3 **Filings suppressed as duplicates** section (not the follow-ups line).
+- **Filed with a duplicate caveat** — weak matches were filed; note `"{title}" — filed, possible duplicate of #{DUP_NUM}` so the ambiguity shows in the report as well as the issue body.
 - **Failures** — any `gh issue create` that failed or whose number would not parse; these must appear in the report so a dropped follow-up is never silent.
 
 If nothing was detected and nothing was filed, the Step 4.3 follow-ups line reads "No follow-up items detected."
@@ -685,37 +745,34 @@ Collect each loose end as `{summary, context, keywords}` where `keywords` is a 2
 
 For **each** loose end from Step 3.6, dedup **before** filing anything (AC: never file a new ticket without checking first). Dedup runs in two stages:
 
-**Stage 1 — cross-batch (this run).** Check the candidate against `WRAP_FILED_ISSUES` first: if its keywords match an entry Part A already filed during this run, **skip it entirely** — do not file, do not re-announce. This is what guarantees a loose end visible to both passes yields exactly one issue.
+**Stage 1 — cross-batch (this run).** Check the candidate against `WRAP_FILED_ISSUES` first. **Keyword overlap alone is not enough to collapse** — two unrelated findings about the same script share keywords, and collapsing them loses one silently. Apply the same bar as a cross-session strong match: same primary artifact, and the already-filed issue's stated scope covers this finding. Only then — **do not file**. Record it as `Collapsed into #{N} (filed earlier this run) — "<summary>"` in `SWEEP_AUTO_HANDLED`. This is what guarantees a loose end visible to both passes, or two findings in one sweep that restate each other, yield exactly one issue — and the collapse is reported rather than silently dropped.
 
-**Stage 2 — cross-session (the repo).** Search open **and** recently-closed issues, matching `/issue-maker` Step 4's lookback so a repeat observation across sessions does not file a near-duplicate. Guard empty keywords (an empty search returns every issue):
+**Stage 2 — cross-session (the repo).** Run the shared helper from Step 3.0, which scores **titles and bodies** of open plus recently-closed issues — the coverage a title-only search lacked when issue #647 duplicated issue #638:
 
 ```bash
-if [ -z "$KEYWORDS" ]; then
-  DUP_NUM=""   # no keywords → can't dedup safely → file with the surfaced body
-else
-  CLOSED_SINCE=$(date -d '30 days ago' +%F 2>/dev/null || date -v-30d +%F)
-  DUP_NUM=$(gh issue list --search "${KEYWORDS} in:title" --state open \
-    --json number,title --jq '.[0].number // empty')
-  if [ -z "$DUP_NUM" ]; then
-    DUP_NUM=$(gh issue list --search "${KEYWORDS} in:title closed:>${CLOSED_SINCE}" --state closed \
-      --json number,title --jq '.[0].number // empty')
-  fi
-fi
+dedup_search "$KEYWORDS"   # Step 3.0 — sets DEDUP_JSON, DUP_NUM, DUP_STATE, WEAK_DUP_NUM
 ```
 
-The empty-keywords case files rather than surfacing — a loose end with no usable keywords is still a loose end, and the surfaced body plus the closing report give the user everything needed to retract it.
+Empty or unusable keywords make the helper exit `1` with `[]`, which means **file** — a loose end with no usable keywords is still a loose end, and the surfaced body plus the closing report give the user everything needed to retract it. Never read "couldn't search" as "duplicate found".
 
-**Idempotency** is provided by the dedup search above, **not** by `SWEEP_PRIOR_FILED`: an issue auto-filed by a previous `/wrap` sweep is still an open issue, so a recurring loose end matches it via `gh issue list --search` and resolves to `DUP_NUM`. `SWEEP_PRIOR_FILED` is a JSON array of **issue numbers** (not keywords) recorded by earlier sweeps; when `DUP_NUM` is one of those numbers, treat the loose end as **already handled by this sweep** — do not re-file it and do not re-surface it as a new "needs decision" item.
+**Idempotency** is provided by the dedup search above, **not** by `SWEEP_PRIOR_FILED`: an issue auto-filed by a previous `/wrap` sweep is still an open issue, so a recurring loose end matches it through `issue-dedup.sh` and resolves to `DUP_NUM` — and because that issue was written from the same finding, the match is normally a **strong** one. `SWEEP_PRIOR_FILED` is a JSON array of **issue numbers** (not keywords) recorded by earlier sweeps; when `DUP_NUM` is one of those numbers, treat the loose end as **already handled by this sweep** — do not re-file it and do not re-surface it as a new "needs decision" item.
 
-Then take exactly one of two paths — there is no third "ask the user" path:
+Then classify the top candidate **strong / weak / none** per `.claude/reference/autofile-dedup.md` and take exactly one of three paths — there is no fourth "ask the user" path:
 
-- **Duplicate found** (`DUP_NUM` non-empty) → reference the existing issue; do **not** file. If `DUP_NUM` is in `SWEEP_PRIOR_FILED`, **omit** entirely (this sweep already filed it on a prior run — idempotent). Otherwise add to `SWEEP_NEEDS_DECISION`: `"<summary>" — already tracked in #<DUP_NUM>` (or omit if no action needed; surface only when the existing ticket may need an update).
-- **No duplicate** → **create the issue immediately**, **surface its title + body**, append it to `WRAP_FILED_ISSUES` with rationale `loose end: <summary>`, and add it to `SWEEP_AUTO_HANDLED`. Use the same robust `gh issue create` guard as Step 3.3 (validate the parsed number; on failure record and continue — never abort Phase 3):
+- **Strong match** (`DUP_STATE` is `OPEN`, same primary artifact, a quotable criterion in that issue already covers the finding, `coverage ≥ 0.6`) → **do not file**. Comment the finding onto `#{DUP_NUM}` using the `autofile-dedup.md` template, and record `Appended to #{DUP_NUM} instead of filing — "<summary>"` in `SWEEP_AUTO_HANDLED`. If `DUP_NUM` is in `SWEEP_PRIOR_FILED`, **omit** entirely — this sweep already filed it on a prior run (idempotent), and re-commenting on every re-run would spam it. That omission is conditional on the strong-match test above having passed, `DUP_STATE` included: a prior-run issue that has since been **closed** fails criterion 1, so it falls through to the weak branch and is re-filed with the `Possibly duplicates #{DUP_NUM}` caveat rather than vanishing into a closed ticket.
+- **Weak / ambiguous match**, or the top candidate is **CLOSED** (a closed issue cannot absorb a finding) → set `WEAK_DUP_NUM="$DUP_NUM"` and **file**, which puts `Possibly duplicates #{DUP_NUM} — <what is unclear>` in the body, and add `"<summary>" — filed, possible duplicate of #{DUP_NUM}` to `SWEEP_NEEDS_DECISION` so the ambiguity is visible outside the issue body too.
+- **No match** → file exactly as before.
+
+On both filing paths: **create the issue immediately**, **surface its title + body**, append it to `WRAP_FILED_ISSUES` with rationale `loose end: <summary>`, append the new number to `DEDUP_EXCLUDE`, and add it to `SWEEP_AUTO_HANDLED`. Use the same robust `gh issue create` guard as Step 3.3 (validate the parsed number; on failure record and continue — never abort Phase 3):
 
   ```bash
+  POSSIBLE_DUP=""   # weak-match pointer only; empty on a clean no-match
+  if [ -n "${WEAK_DUP_NUM:-}" ]; then
+    POSSIBLE_DUP=$'\n\n'"Possibly duplicates #${WEAK_DUP_NUM} — <one line on the overlap and what is unclear>."
+  fi
   if NEW_URL=$(gh issue create \
       --title "<derived title>" \
-      --body "Follow-up surfaced by /wrap session sweep on PR #${PR_NUMBER}.
+      --body "Follow-up surfaced by /wrap session sweep on PR #${PR_NUMBER}.${POSSIBLE_DUP}
 
   <context from transcript>
 
@@ -895,6 +952,13 @@ After lessons (or skip): emit the final report below — do not ask.
 
 {One line per `WRAP_FILED_ISSUES` entry, Part A and Part B together, in one message. Omit the whole section only when the registry is empty.}
 
+## Filings suppressed as duplicates
+
+- Appended to [#{N}](https://github.com/{owner}/{repo}/issues/{N}) instead of filing — "{finding summary}"
+- Collapsed into [#{N}](https://github.com/{owner}/{repo}/issues/{N}) (filed earlier this run) — "{finding summary}"
+
+{One line per suppressed filing, from Part A's Step 3.3 and Part B's Step 3.7 Stage 1/Stage 2 strong-match branches. Omit the whole section only when nothing was suppressed. A suppressed filing that does not appear here is indistinguishable from a finding that was silently dropped — see `.claude/reference/autofile-dedup.md`.}
+
 ## Session sweep
 
 ### Auto-handled
@@ -915,6 +979,7 @@ After lessons (or skip): emit the final report below — do not ask.
 
 - Cap **Auto-handled** and **Needs your decision** at **3–5 bullets** each; if more, show the top items and summarize the remainder as one bullet linking to `.prs["$PR_NUMBER"].wrap_sweep`. **Auto-filed tickets are exempt from the cap** — every created issue's title + body is surfaced in full (never collapsed into the "+ N more" summary), since silently hiding a ticket you just created would violate the Step 3.7 surface-the-body contract.
 - The **Issues filed** section is never capped or truncated, however many issues the run opened: one line per issue, each a clickable link with its number, title, and one-line rationale. An issue filed but not reported is the one failure mode this design cannot tolerate — it can't be retracted if it was never seen.
+- The **Filings suppressed as duplicates** section is likewise never capped: every finding the dedup check kept out of a new issue names the issue it deferred to (issue #652). Suppression is the higher-risk direction — a wrongly filed ticket is visible, a wrongly suppressed finding is not — so it always renders in full.
 - Omit an empty subsection rather than printing "none".
 - The **Verdict** line is mandatory and is one of the two canonical strings only.
 - If Part B was skipped (e.g. Phase C subagent with an empty transcript and no state findings), still print `### Verdict` → `Clear to archive`.
