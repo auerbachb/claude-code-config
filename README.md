@@ -137,6 +137,7 @@ All 27 commands are invoked as `/command` in a Claude Code session. They are def
 | `/pm-okr` | PM | View, set, or suggest OKRs |
 | `/pm-clean` | PM | Detect stale issues and suggest closures |
 | `/subagent` | PM | Run Quick/Light issues as Phase A/B/C subagents from a PM thread |
+| `/wave` | PM | Offer the largest dependency- and overlap-free set of backlog issues as click-to-launch chips, capped at the concurrent-pipeline ceiling |
 | `/prompt` | Planning | Classify issue complexity, recommend a Claude 4.7/4.6 model tier, generate copy-paste prompt without the removed `effort` field |
 | `/start-issue` | Planning | End-to-end issue-to-coding setup — plan polling, plan merge, worktree, branch |
 | `/issue-maker` | Planning | Capture-only thread mode — drafts and opens well-structured issues, reflects before writing, no implementation |
