@@ -139,6 +139,12 @@ class="${result%%|*}"
 [[ "$class" == "acknowledgment" ]] && pass "Regression: addressed marker → acknowledgment" \
   || fail "Regression: addressed marker — got $class"
 
+# Withdrawn marker (issue #611) — CR retracts its own finding; mirrors the addressed marker above.
+result=$(classify_body "<!-- <review_comment_withdrawn> -->")
+class="${result%%|*}"; reason="${result##*|}"
+[[ "$class" == "acknowledgment" && "$reason" == "withdrawn marker" ]] && pass "Regression: withdrawn marker → acknowledgment" \
+  || fail "Regression: withdrawn marker — expected acknowledgment/withdrawn marker, got $class/$reason"
+
 # CR zero actionable (old format)
 result=$(classify_body "actionable comments posted: 0 — all good!")
 class="${result%%|*}"
@@ -477,6 +483,69 @@ result=$(classify_body "$BODY")
 class="${result%%|*}"
 [[ "$class" == "acknowledgment" ]] && pass "Bug6c: walkthrough marker + rate-limit notice composite → acknowledgment" \
   || fail "Bug6c: walkthrough + rate-limit composite — expected acknowledgment, got $class"
+
+# ---------------------------------------------------------------------------
+# Bug 7: CodeRabbit finding-withdrawal reply (issue #611)
+#
+# When you push back on a CR finding and CR agrees, it posts a reply retracting
+# its own earlier finding ("Withdrawing the finding. 🐇") tagged with the machine
+# marker <!-- <review_comment_withdrawn> -->. Seen live on still-point PR #601
+# (comment 5034433530). The withdrawal body carries the analysis-chain script
+# output; pre-fix it matched no branch and fell through to default → finding,
+# inflating /fixpr's post-sweep new-findings count.
+# Was: default → finding; Should be: withdrawn marker → acknowledgment.
+#
+# Fixture is a faithful, abbreviated copy of that reply: the auto-generated
+# header, an analysis-chain <details> block, the "Withdrawing the finding" line,
+# and the marker. The tier-1 marker override must win despite the analysis-chain
+# body carrying no finding language of its own.
+# ---------------------------------------------------------------------------
+BODY='<!-- This is an auto-generated reply by CodeRabbit -->
+<details>
+<summary>🧩 Analysis chain</summary>
+
+🏁 Script executed:
+
+```shell
+rg -n CURRENT_PROJECT_VERSION ios/project.yml
+```
+
+Length of output: 3362
+
+</details>
+
+`@auerbachb` You'"'"'re right — verified. With no label there is no path to an automatic build bump.
+
+Withdrawing the finding. 🐇
+
+<!-- <review_comment_withdrawn> -->'
+result=$(classify_body "$BODY")
+class="${result%%|*}"; reason="${result##*|}"
+if [[ "$class" == "acknowledgment" && "$reason" == "withdrawn marker" ]]; then
+  pass "Bug7: CR finding-withdrawal reply → acknowledgment"
+else
+  fail "Bug7: CR finding-withdrawal reply — expected acknowledgment/withdrawn marker, got $class/$reason"
+fi
+
+# ---------------------------------------------------------------------------
+# Bug7a: MARKER-ONLY GUARD — prose "withdrawing the finding" WITHOUT the HTML
+# marker must NOT reclassify (mirrors Bug4c). The marker-only decision avoids the
+# #557 generic-phrase false-ack risk: a real finding discussing a withdrawal, or a
+# human quoting the phrase, still reaches the finding tier. The bare-prose variant
+# is the load-bearing guard — it FAILS if a future edit adds any prose-phrase
+# override for "withdrawing the finding"; re-run it if you touch the branch.
+# ---------------------------------------------------------------------------
+# With a severity keyword: even a genuine finding mentioning withdrawal stays a finding.
+result=$(classify_body "**Critical:** the bot keeps withdrawing the finding before the fix is verified.")
+class="${result%%|*}"
+[[ "$class" == "finding" ]] && pass "Bug7a: finding quoting 'withdrawing the finding' → finding (prose is not an override)" \
+  || fail "Bug7a: finding quoting 'withdrawing the finding' — expected finding, got $class"
+
+# Bare prose, no marker, no severity — must reach the default → finding tier on its own.
+result=$(classify_body "The reviewer mentioned withdrawing the finding but never posted the marker.")
+class="${result%%|*}"
+[[ "$class" == "finding" ]] && pass "Bug7a: bare prose 'withdrawing the finding' → finding (via default)" \
+  || fail "Bug7a: bare prose 'withdrawing the finding' — expected finding, got $class"
 
 # ---------------------------------------------------------------------------
 # Summary

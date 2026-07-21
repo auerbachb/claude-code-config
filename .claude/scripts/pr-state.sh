@@ -340,7 +340,7 @@ CONVO=$(run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per
 #    in sync with the regex branches below.
 #
 #    Branch ordering in classify is deliberate — do NOT reorder without reading this:
-#      1. Explicit-resolution / clean-pass overrides (addressed marker, "actionable comments posted: 0",
+#      1. Explicit-resolution / clean-pass overrides (addressed marker, withdrawn marker, "actionable comments posted: 0",
 #         "no actionable comments were generated"; CR rate-limit notices — "rate limit exceeded" /
 #         "rate[- ]limited by coderabbit" / "currently rate limited" / "review limit reached" /
 #         "next review (will be) available in"; BugBot usage-limit notices — "couldn't run - usage limit
@@ -356,6 +356,11 @@ CONVO=$(run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per
 #         was tried and rejected (#557): it is generic enough that a real finding *quoting* the policy
 #         would classify as an ack. Each observed CR variant is caught by >=2 of the phrases above,
 #         so no single generic phrase has to carry it.
+#         The withdrawn marker (#611) is safe in this tier-1 group even though the walkthrough marker
+#         (override #6 below) is deliberately not: a withdrawal retracts the single finding in its own
+#         thread — there is no *other* active finding for an early override to mask — so hoisting it
+#         here cannot produce a false clean. Marker-only, mirroring the addressed marker: the prose
+#         "Withdrawing the finding" is NOT matched, avoiding the #557 generic-phrase false-ack risk.
 #      2. The specific "actionable comments posted: 0" and "no actionable comments were
 #         generated" checks MUST precede the general "actionable comments posted" finding
 #         check — otherwise the general pattern swallows clean CR summaries as findings.
@@ -387,6 +392,7 @@ if [[ -n "$SINCE" ]]; then
     def classify:
       if . == null or . == "" then {class: "acknowledgment", reason: "empty body"}
       elif test("<!--\\s*<review_comment_addressed>\\s*-->"; "") then {class: "acknowledgment", reason: "addressed marker"}
+      elif test("<!--\\s*<review_comment_withdrawn>\\s*-->"; "") then {class: "acknowledgment", reason: "withdrawn marker"}
       elif test("actionable comments posted:\\s*0\\b"; "i") then {class: "acknowledgment", reason: "CR reports zero actionable"}
       elif test("no actionable comments were generated"; "i") then {class: "acknowledgment", reason: "CR no actionable comments generated"}
       elif test("rate limit exceeded|rate.limited by coderabbit|currently rate limited|review limit reached|next review (will be )?available in"; "i") then {class: "acknowledgment", reason: "rate limit notice"}
