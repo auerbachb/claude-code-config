@@ -361,6 +361,7 @@ If missing, reconstruct state from GitHub API.
 3. Check ALL CI check-runs. Fix any failures before continuing.
 4. Poll for CR review every 60s on all 3 endpoints. Filter by coderabbitai[bot].
 5. Run `.claude/scripts/escalate-review.sh {PR_NUMBER}` every CR-owned poll cycle and branch on its single `STATUS=` verdict:
+   - `gate_met`: CodeRabbit or CodeAnt already has a valid APPROVED review on current HEAD — do not escalate; continue to the merge gate check.
    - `polling_cr`: continue polling CR.
    - `switch_bugbot`: persist `reviewer: bugbot` and follow the BugBot path.
    - `trigger_greptile`: run `greptile-budget.sh --consume`, post `@greptileai`, persist `reviewer: greptile`, and follow the Greptile path.

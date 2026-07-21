@@ -13,6 +13,9 @@
 #
 # OUTPUT
 #   stdout: one line, exactly one of:
+#     STATUS=gate_met         CR-path primary review already satisfied (CodeRabbit or
+#                             CodeAnt has a valid APPROVED review on current HEAD) —
+#                             do not escalate; the merge gate will pick this up
 #     STATUS=polling_cr       keep polling CodeRabbit/BugBot grace window
 #     STATUS=switch_bugbot    BugBot has responded; make BugBot sticky reviewer
 #     STATUS=trigger_greptile CR failed and BugBot is absent/timed out; trigger Greptile
@@ -107,6 +110,36 @@ read -r OWNER REPO HEAD_SHA < <(jq -r '[.pr.owner, .pr.repo, .pr.head_sha] | @ts
 if [[ -z "$OWNER" || -z "$REPO" || -z "$HEAD_SHA" ]]; then
   echo "escalate-review.sh: PR state missing owner/repo/head_sha" >&2
   exit 4
+fi
+
+# Gate-already-met short-circuit (issue reported on PR #619, 2026-07-21): before
+# evaluating ANY CR->BugBot->Greptile escalation, check whether the CR-path
+# primary review requirement is already satisfied by CodeRabbit OR CodeAnt.
+# Per cr-merge-gate.md Step 1, "at least one of: CodeRabbit or CodeAnt with
+# state: APPROVED ... Either bot satisfies the primary review; you do not need
+# both when only one reviewed." If so, the merge gate (merge-gate.sh) is
+# already on track regardless of whether CR is rate-limited or BugBot failed —
+# escalating to a paid Greptile review would be unwarranted. This mirrors
+# merge-gate.sh's CR_APPROVAL_VALID / CA_APPROVAL_VALID retraction-aware logic
+# (see merge-gate.sh's `primary_review_met` field) against the PR state already
+# fetched above, so no extra gh API calls are needed.
+PRIMARY_REVIEW_MET="$(jq -r --arg sha "$HEAD_SHA" '
+  def approval_valid(login):
+    ([.comments.reviews[]?
+      | select(.user.login == login and (.commit_id // "") == $sha and .state == "APPROVED")
+      | .submitted_at] | sort | last // "") as $approved_at
+    | ([.comments.reviews[]?
+      | select(.user.login == login and (.commit_id // "") == $sha and .state == "CHANGES_REQUESTED")
+      | .submitted_at] | sort | last // "") as $changes_at
+    | ($approved_at != "") and (($changes_at == "") or ($changes_at <= $approved_at));
+  approval_valid("coderabbitai[bot]") or approval_valid("codeant-ai[bot]")
+' "$STATE_PATH")" || {
+  echo "escalate-review.sh: failed to evaluate primary-review-met check" >&2
+  exit 4
+}
+
+if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
+  emit "gate_met"
 fi
 
 COMMITS_JSON="$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/commits?per_page=100" 2>/dev/null | jq -s 'add // []')" || {
