@@ -141,7 +141,16 @@ WRAPPER_VALUE_FLAGS = {
 # `>&` duplicate one existing stream onto another (e.g. merging stderr into
 # stdout for capture) — there is no file target, so it is never a write. Only
 # `N>`/`N>>`/`&>`/`&>>` (redirect to an actual filename — `&>>` appends both
-# stdout and stderr) count as a write signal.
+# stdout and stderr) name a file target. A redirect is a RESOLVED write: it
+# says exactly where its bytes go (the embedded form carries the target in
+# its own token; a bare operator's target is the next token). Only a
+# protected target blocks — an unprotected one (`>/dev/null`, `2>err.log`)
+# contributes nothing, and in particular must not arm the segment-wide
+# write flag, which would smear "modification" onto a protected path that
+# is merely executed/read in the same segment (issue #668:
+# `bash .github/scripts/rule-lint.sh >/dev/null`). The segment-wide flag is
+# reserved for UNRESOLVED write signals whose file targets are implicit:
+# destructive bins, sed/perl -i, --fix-style flags, cp/mv.
 BARE_REDIRECT_RE = re.compile(r'^(?:\d*>{1,2}\|?|&>{1,2})$')
 EMBEDDED_REDIRECT_RE = re.compile(r'(?:\d*>{1,2}\|?|&>{1,2})([^<>&].*)$')
 WRITE_FLAG_TOKENS = frozenset({'--write', '--fix', '-w', '-inplace'})
@@ -313,7 +322,15 @@ def _scan_command_segment(tokens: list[str], cwd: str | None) -> str | None:
     """Scan one separator-free command segment for a write targeting a
     protected path. Every piece of state here is local to this single
     segment — nothing from an earlier or later `;`/`&&`/`|`-separated
-    segment on the same line can leak in, in either direction."""
+    segment on the same line can leak in, in either direction.
+
+    `has_write_op` tracks only UNRESOLVED write signals — writes whose file
+    target is implicit (destructive bins, sed/perl in-place flags,
+    --fix-style flags, cp/mv) — so while one is armed, any protected path
+    in the segment is suspect. Redirects are RESOLVED writes: each names
+    its own file target (the next token for a bare operator, the attached
+    text for the embedded form), so a protected target blocks directly and
+    an unprotected one contributes nothing at all (issue #668)."""
     has_write_op = False
     protected_targets: list[str] = []
     last_copy_move: str | None = None
@@ -324,16 +341,25 @@ def _scan_command_segment(tokens: list[str], cwd: str | None) -> str | None:
     expect_command_name = True
     current_wrapper: str | None = None
     expect_wrapper_flag_value = False
+    expect_redirect_target = False
 
     protected_in_cmd: list[str] = []
 
     for tok in tokens:
+        if expect_redirect_target:
+            # This token is the preceding bare redirect operator's file
+            # target. A protected target is a direct write into it; any
+            # other target fully accounts for the redirect's bytes, so it
+            # must not taint the rest of the segment.
+            expect_redirect_target = False
+            if is_protected_path(tok):
+                protected_targets.append(normalize_path(tok))
+            continue
         if BARE_REDIRECT_RE.match(tok):
-            has_write_op = True
+            expect_redirect_target = True
             continue
         redirect_m = EMBEDDED_REDIRECT_RE.search(tok)
         if redirect_m:
-            has_write_op = True
             target = redirect_m.group(1)
             if is_protected_path(target):
                 protected_targets.append(normalize_path(target))
@@ -396,10 +422,15 @@ def _scan_command_segment(tokens: list[str], cwd: str | None) -> str | None:
     if last_copy_move in COPY_MOVE_BINS and copy_move_protected:
         protected_targets.append(copy_move_protected[-1])
 
+    # Unresolved-write fallback: a write signal with no identified target
+    # makes every protected path mentioned in the segment suspect. Resolved
+    # redirects never arm has_write_op, so they cannot trigger this.
     if has_write_op and not protected_targets and protected_in_cmd:
         protected_targets = list(dict.fromkeys(protected_in_cmd))
 
-    if not has_write_op:
+    # protected_targets alone (a redirect into a protected file) must still
+    # block even when no unresolved write signal is armed.
+    if not has_write_op and not protected_targets:
         return None
 
     for target in protected_targets:

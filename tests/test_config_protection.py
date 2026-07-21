@@ -448,6 +448,75 @@ class ConfigProtectionBashTests(unittest.TestCase):
                 with self.subTest(cmd=cmd):
                     self.assertIsNone(config_protection.bash_targets_protected(cmd))
 
+    def test_bash_allows_read_only_use_with_redirect_to_unprotected_target(self) -> None:
+        # issue #668: a redirect names exactly where its bytes go. Running or
+        # reading a protected file while redirecting OUTPUT to an unprotected
+        # target (`bash rule-lint.sh >/dev/null`) is not a write to the
+        # protected file — the redirect must not arm the segment-wide write
+        # flag and smear "modification" onto it via the unresolved-write
+        # fallback.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            read_only_cmds = [
+                f"bash {target} >/dev/null",
+                f"bash {target} > /dev/null",
+                f"bash {target} 2>/dev/null",
+                f"bash {target} >> /tmp/lint.log",
+                f"bash {target} >/dev/null 2>&1",
+                f"grep -c foo {target} > /tmp/count",
+                f"sed -n 'p' {target} > /tmp/out",
+            ]
+            for cmd in read_only_cmds:
+                with self.subTest(cmd=cmd):
+                    self.assertIsNone(config_protection.bash_targets_protected(cmd))
+
+    def test_bash_allows_reported_compound_with_redirected_lint_run(self) -> None:
+        # issue #668: the exact reported shape — write-ish git verbs in
+        # earlier segments plus a read-only protected-script run redirected
+        # to /dev/null. The git segments were always inert (segments are
+        # isolated); only the redirect co-located with the protected path
+        # triggered the false positive.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            cmd = (
+                'git add -A && git commit --amend -m "msg" && git log --oneline -1 '
+                f'&& bash {target} >/dev/null && echo "LINT_STILL_OK"'
+            )
+            self.assertIsNone(config_protection.bash_targets_protected(cmd))
+
+    def test_bash_blocks_redirect_into_existing_protected_file(self) -> None:
+        # issue #668 regression guard: a bare operator's target is the NEXT
+        # token — consuming it must still block writes into an existing
+        # protected file, in every operator form (first-time creation of a
+        # missing protected file stays bootstrap-allowed, covered above).
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            for cmd in [
+                f"echo x > {target}",
+                f"printf y >> {target}",
+                f"echo x >{target}",
+                f"bash {target} > {target}",
+            ]:
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
+
+    def test_bash_resolved_redirect_does_not_mask_real_write_elsewhere(self) -> None:
+        # issue #668: an unprotected (resolved) redirect in one segment must
+        # not mask a genuine protected write in another — for both a
+        # redirect-write and an in-place edit, on either side.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target.write_text('existing: true\n', encoding='utf-8')
+            for cmd in [
+                f"bash lint.sh >/dev/null && echo y > {target}",
+                f"bash {target} >/dev/null; sed -i 's/x/y/' {target}",
+            ]:
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
+
 
 if __name__ == '__main__':
     unittest.main()
