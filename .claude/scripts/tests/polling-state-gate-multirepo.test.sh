@@ -14,7 +14,7 @@
 # A second, subtler false positive: `--show-toplevel` returns the WORKTREE
 # path, so polling from a sibling worktree of the SAME repo also refused.
 #
-# Both are false negatives of a check whose real question is "does this state
+# Both are false POSITIVES of a check whose real question is "does this state
 # belong to the repo I am in?" — now answered by repo identity, not by path.
 #
 # Uses --verify-state, the offline mode (no gh, no merge-gate), so the test is

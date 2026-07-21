@@ -154,12 +154,17 @@ if [[ "$INFER_CANDIDATES" -eq 1 ]]; then
   # legitimately-tracked PRs) while still excluding every PR known to belong
   # to a DIFFERENT repo — which is the collision the scoping exists to end.
   # On key conflict the scoped entry wins: it is attributed, the other is not.
+  # A failed read is reported, never silently downgraded to "no candidates":
+  # defaulting quietly to {} would hide a corrupt session-state.json behind an
+  # empty candidate list and make PR-tracking bugs undiagnosable.
   _state_sh="$(cd "$(dirname "$0")" && pwd)/session-state.sh"
   if ! _prs_scoped=$("$_state_sh" --get '.prs // {}' 2>/dev/null); then
+    echo "WARNING: pr-state.sh --infer-candidates: could not read this repo's PR scope from $STATE_FILE (session-state.sh failed); treating as empty — state may be corrupt" >&2
     _prs_scoped="{}"
   fi
   [[ -z "$_prs_scoped" || "$_prs_scoped" == "null" ]] && _prs_scoped="{}"
   if ! _prs_unknown=$("$_state_sh" --raw-path --get '.repos["_unknown"].prs // {}' 2>/dev/null); then
+    echo "WARNING: pr-state.sh --infer-candidates: could not read the _unknown PR scope from $STATE_FILE; treating as empty — state may be corrupt" >&2
     _prs_unknown="{}"
   fi
   [[ -z "$_prs_unknown" || "$_prs_unknown" == "null" ]] && _prs_unknown="{}"
@@ -185,14 +190,17 @@ if [[ "$INFER_CANDIDATES" -eq 1 ]]; then
           # the bad one.
           last_action_at: (.value.last_cron_action.at? // ""),
           same_repo: (
-            # Membership is now structural: an entry read from the scope of
-            # this repo belongs here. Entries from the "_unknown" bucket
+            # Tri-state, in strict order: unattributed entry -> null;
+            # current repo not resolvable -> null (never claim certainty we do
+            # not have, even for a scoped entry, since an unresolvable context
+            # is exactly when the scope itself may be the "_unknown" bucket);
+            # otherwise structural membership. Entries from the "_unknown" bucket
             # keep the original "unknown - do not filter" meaning of null.
             # owner_repo is still consulted when present so a mismatch left
             # behind by pre-#638 state stays visible rather than asserted away.
             if .value._scope == "unknown" then null
-            elif (.value.owner_repo // "") == "" then true
             elif $cur == "" then null
+            elif (.value.owner_repo // "") == "" then true
             else (.value.owner_repo == $cur) end
           )
         }

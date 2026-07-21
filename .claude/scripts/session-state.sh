@@ -436,11 +436,11 @@ scope_path() {
     # jq's optional-index form (`.prs?[...]`) is a legal way to spell the
     # same read, and silently leaving it unscoped would return null from the
     # now-empty top level: a wrong answer rather than an error.
-    if [[ "$path" == ".$field" || "$path" == ".$field?" ]]; then
-      rest="${path#.$field}"
-    elif [[ "$path" == ".$field."* || "$path" == ".$field["* || "$path" == ".$field "* || \
-            "$path" == ".$field|"* || "$path" == ".$field)"* || "$path" == ".$field?"* ]]; then
-      rest="${path#.$field}"
+    if [[ "$path" == ".${field}" || "$path" == ".${field}?" ]]; then
+      rest="${path#.${field}}"
+    elif [[ "$path" == ".${field}."* || "$path" == ".${field}["* || "$path" == ".${field} "* || \
+            "$path" == ".${field}|"* || "$path" == ".${field})"* || "$path" == ".${field}?"* ]]; then
+      rest="${path#.${field}}"
     else
       continue
     fi

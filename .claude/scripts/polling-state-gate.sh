@@ -250,9 +250,17 @@ validate_root_match() {
   local pr_scope active_id_pre
   pr_scope="$(resolve_pr_scope)"
   active_id_pre="$ACTIVE_REPO_KEY"
-  if [[ -n "$pr_scope" && "$pr_scope" != "_unknown" && -n "$active_id_pre" \
+  # "_unknown" is NOT an identity — session-state.sh returns it whenever repo
+  # context cannot be resolved (no origin remote, not a git dir). Comparing it
+  # like a repo name would refuse a valid session outright, re-introducing the
+  # false refusal this change exists to remove. When either side is unresolved,
+  # skip this check and fall through to #647's rules below, whose repo_identity()
+  # has a git-common-dir fallback that can still compare such checkouts (and
+  # which fails closed on its own terms when they genuinely cannot be compared).
+  if [[ -n "$pr_scope" && "$pr_scope" != "_unknown" \
+        && -n "$active_id_pre" && "$active_id_pre" != "_unknown" \
         && "$active_id_pre" != gitdir:* && "$active_id_pre" != path:* \
-        && "$pr_scope" != "_unknown" && "$pr_scope" != "$active_id_pre" ]]; then
+        && "$pr_scope" != "$active_id_pre" ]]; then
     echo "polling-state-gate.sh: PR #$PR_NUMBER is scoped to repo '$pr_scope' but the active checkout is '$active_id_pre' — refuse to poll from the wrong repo" >&2
     return 1
   fi
