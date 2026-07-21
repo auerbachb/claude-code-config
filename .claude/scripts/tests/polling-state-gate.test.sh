@@ -166,6 +166,25 @@ write_state "$REPO_B" "$(jq -n --arg r "$REPO_SAME" '{root_repo:$r, owner_repo:"
 out="$(cd "$REPO_SAME" && "$SCRIPT" "$PR_NUM" --verify-state 2>&1)"; rc=$?
 check_eq "owner/repo with identical names resolves and passes" "0" "$rc"
 
+# ---- 9. recorded scoping that cannot be compared fails closed --------------
+# owner_repo is recorded, but the active checkout has no `origin` remote and the
+# recorded path is gone — nothing is verifiable, so the gate must refuse rather
+# than fall through to the legacy "proceed" path.
+REPO_NOREMOTE="$TMP/repo-noremote"
+mkdir -p "$REPO_NOREMOTE"
+git -C "$REPO_NOREMOTE" init --quiet
+git -C "$REPO_NOREMOTE" config user.email test@example.com
+git -C "$REPO_NOREMOTE" config user.name Test
+: > "$REPO_NOREMOTE/README.md"
+git -C "$REPO_NOREMOTE" add README.md
+git -C "$REPO_NOREMOTE" commit --quiet -m init
+write_handoff
+write_state "$REPO_B" "$(jq -n '{root_repo:"/nonexistent/gone", owner_repo:"org/a", head_sha:"deadbeef", reviewer:"cr"}')"
+out="$(cd "$REPO_NOREMOTE" && "$SCRIPT" "$PR_NUM" --verify-state 2>&1)"; rc=$?
+check_eq "uncomparable identity with recorded scoping fails closed" "4" "$rc"
+check_contains "fail-closed message names the PR" "PR #$PR_NUM" "$out"
+check_contains "fail-closed message names the scoped repo" "org/a" "$out"
+
 echo ""
 echo "polling-state-gate.test.sh: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

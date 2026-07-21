@@ -17,7 +17,8 @@
 # so sibling worktrees of one repo agree) rather than by checkout path:
 #   a) .prs["N"].owner_repo present -> must equal the active checkout's identity
 #   b) else .prs["N"].root_repo present -> its identity must equal the active one
-#   c) else (state from an older version) -> notice on stderr, then pass
+#   c) scoping recorded but not comparable (no `origin`, stale path) -> refuse
+#   d) else (state from an older version) -> notice on stderr, then pass
 # A genuine cross-repo mismatch is still refused, naming the PR and both repos.
 #
 # Usage:
@@ -211,9 +212,17 @@ validate_root_match() {
     return 0
   fi
 
-  # (c) state written before per-PR scoping existed: degrade gracefully, never refuse
-  #     on the shared global .root_repo. (--ensure-session is about to record the
-  #     scoping itself, so it suppresses the notice.)
+  # (c) scoping IS recorded but nothing above could compare it — the active checkout
+  #     has no usable `origin` identity and the recorded path is stale/absent. Fail
+  #     closed: this is not legacy state, so silently proceeding would validate
+  #     nothing. (--ensure-session is exempt; it is about to (re)record the scoping.)
+  if [[ -n "$stored_owner" && "${2:-}" != "quiet" ]]; then
+    echo "polling-state-gate.sh: PR #$PR_NUMBER is scoped to repo '$stored_owner' but the active checkout ($canon) has no comparable repo identity ('$active_id') — refuse to poll; re-run from a checkout with an 'origin' remote, or: polling-state-gate.sh $PR_NUMBER --ensure-session" >&2
+    return 1
+  fi
+
+  # (d) state written before per-PR scoping existed: degrade gracefully, never refuse
+  #     on the shared global .root_repo.
   if [[ "${2:-}" != "quiet" ]]; then
     echo "polling-state-gate.sh: no per-PR repo scoping recorded for PR #$PR_NUMBER — proceeding with the active checkout ($canon); run: polling-state-gate.sh $PR_NUMBER --ensure-session" >&2
   fi
