@@ -465,6 +465,39 @@ check_eq "others still triggered" "3" "$(actions | grep -c '^COMMENT')"
 no_checks
 
 ############################################################################
+echo "== Scenario 14b: re-run check suites on one SHA still prove engagement (#675) =="
+# The check-run fetch now reads whole run objects and pipes them through
+# check-runs-dedup.sh before pulling app.slug. A reviewer whose check re-ran on
+# this SHA (superseded suite 100 + current suite 200) must still read as engaged:
+# the dedup keeps the newest suite's run, which carries the same slug.
+view_ready; commit_ok
+write_check_runs '{"check_runs":[
+  {"app":{"slug":"cursor","id":1},"name":"Cursor Bugbot","status":"completed","conclusion":"failure","check_suite":{"id":100}},
+  {"app":{"slug":"cursor","id":1},"name":"Cursor Bugbot","status":"completed","conclusion":"neutral","check_suite":{"id":200}}]}'
+write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
+OUT=$(run_json 493); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "cursor still already-present after dedup" "already-present" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
+check_eq "cursor not re-triggered" "0" "$(actions | grep -cF '@cursor review')"
+no_checks
+
+############################################################################
+echo "== Scenario 14c: same check name from two apps keeps BOTH slugs (#675) =="
+# Grouping is per (app, name), so two vendors publishing an identically named
+# check never collapse into one another — both reviewers stay recognized.
+view_ready; commit_ok
+write_check_runs '{"check_runs":[
+  {"app":{"slug":"cursor","id":1},"name":"review","status":"completed","conclusion":"success","check_suite":{"id":100}},
+  {"app":{"slug":"codeant-ai","id":2},"name":"review","status":"completed","conclusion":"success","check_suite":{"id":200}}]}'
+write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
+OUT=$(run_json 493); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "both apps recognized from one check name" "already-present already-present" \
+  "$(jq -r '[.reviewers.cursor.status, .reviewers.codeant.status] | join(" ")' <<<"$OUT")"
+check_eq "only the 2 reviewers without a check-run are triggered" "2" "$(actions | grep -c '^COMMENT')"
+no_checks
+
+############################################################################
 echo "== Scenario 15: issue comment BEFORE head date is stale → re-triggered =="
 view_ready; commit_ok; no_checks
 write_reviews "$EMPTY"; write_pull_comments "$EMPTY"

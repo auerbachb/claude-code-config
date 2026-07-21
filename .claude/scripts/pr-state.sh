@@ -343,8 +343,12 @@ UNRESOLVED=$(echo "$ALL_THREADS" | jq '[.[] | select(.isResolved == false)]')
 # ----------------------------------------------------------------------
 # 3. CI check-runs (paginated)
 # ----------------------------------------------------------------------
+# Deduped before classification (issue #675): per (app, check name) only the newest
+# check suite's runs are kept, so a superseded failure from an earlier re-trigger on
+# this SHA is not reported as currently failing. `--jq` runs once per page, so the
+# fetch emits a stream of bare run objects — one of the shapes the helper accepts.
 CHECK_RUNS=$(run_gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" \
-  --jq '.check_runs[]' | jq -s '.')
+  --jq '.check_runs[]' | "$(cd "$(dirname "$0")" && pwd)/check-runs-dedup.sh")
 
 CR_SPLIT=$(echo "$CHECK_RUNS" | jq '
   def is_blocking: . == "failure" or . == "timed_out" or . == "action_required" or . == "startup_failure" or . == "stale";

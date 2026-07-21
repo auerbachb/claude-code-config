@@ -95,6 +95,15 @@ jobs:
       - name: session-state write lock — unit + concurrency (issue #639)
         run: bash .claude/scripts/tests/state-lock.test.sh
 
+      - name: check-runs-dedup.sh unit test (issue #675)
+        run: bash .claude/scripts/tests/check-runs-dedup.test.sh
+
+      - name: ci-status.sh check-run dedup unit test (issue #675)
+        run: bash .claude/scripts/tests/ci-status.test.sh
+
+      - name: merge-gate.sh check-run dedup integration test (issue #675)
+        run: bash .claude/scripts/tests/merge-gate-ci-dedup.test.sh
+
   # macOS system python3 is 3.9.6 (Xcode CLT) while ubuntu-latest ships 3.10+,
   # so a hook that crashes on 3.9 (e.g. eagerly-evaluated PEP 604 unions,
   # issue #560) passes the job above yet fails open locally. Pin 3.9 here.
