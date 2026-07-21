@@ -17,7 +17,10 @@ FAIL=0
 
 # Run the script with a fresh PATH so the session-state.sh sibling resolves via
 # the in-repo path only (the temp HOME has no ~/.claude/scripts copy).
-run() { ( cd "$REPO_ROOT" && bash "$SCRIPT" "$@" ); }
+# CLAUDE_SESSION_REPO pins the repo scope session-state.sh resolves to
+# (issue #638), so these fixtures are read back from a deterministic scope
+# instead of depending on the checkout the test happens to run in.
+run() { ( cd "$REPO_ROOT" && CLAUDE_SESSION_REPO="${SCOPE_REPO:-org/repo}" bash "$SCRIPT" "$@" ); }
 
 check_exit() {
   local desc="$1" expected="$2" actual="$3"
@@ -138,15 +141,21 @@ cat > "$HOME/.claude/session-state.json" <<EOF
   "prs": {
     "800": {"owner_repo": "org/a", "root_repo": "/repos/a", "last_cron_action": {"at": "2026-04-29T14:10:00Z"}},
     "801": {"owner_repo": "org/b", "root_repo": "/repos/b", "last_cron_action": {"at": "2026-04-29T14:20:00Z"}},
-    "802": {"owner_repo": "org/c", "last_cron_action": {"at": "2026-04-29T14:30:00Z"}}
+    "802": {"owner_repo": "org/c", "last_cron_action": {"at": "2026-04-29T14:30:00Z"}},
+    "803": {"last_cron_action": {"at": "2026-04-29T14:35:00Z"}}
   }
 }
 EOF
-OUT=$(run --root-repo "/repos/a"); RC=$?
-check_exit "root-repo filter exit" 1 "$RC"
-# /repos/a matches #800; #802 has no root_repo (unknown) so it's kept; #801 dropped.
-check_json "root filter keeps match + unknown" '[.candidates[].number] | sort | @csv' '800,802' "$OUT"
-check_json "root filter drops other repo" '[.candidates[].number] | any(. == 801)' "false" "$OUT"
+# Under per-repo scoping (issue #638) this is no longer a path filter over a
+# shared map: #800 comes from org/a's own scope, #801 lives in org/b's scope
+# and is therefore not a candidate here at all, and #803 — carrying no
+# owner_repo and no resolvable root_repo — stays visible as an unattributed
+# entry, preserving the pre-#638 "unknown repo, do not hide it" behavior.
+OUT=$(SCOPE_REPO=org/a run); RC=$?
+check_exit "scoped inference exit" 1 "$RC"
+check_json "keeps this repo + unattributed" '[.candidates[].number] | sort | @csv' '800,803' "$OUT"
+check_json "drops the other repo entirely" '[.candidates[].number] | any(. == 801)' "false" "$OUT"
+check_json "drops a third repo too" '[.candidates[].number] | any(. == 802)' "false" "$OUT"
 
 echo "== session-state inference: malformed last_cron_action degrades gracefully (issue #640) =="
 cat > "$HOME/.claude/session-state.json" <<EOF

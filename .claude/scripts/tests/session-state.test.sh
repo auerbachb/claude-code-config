@@ -90,78 +90,101 @@ rm -f "$ERR_FILE"
 
 echo
 echo "== Write-time guard: object-typed field (prs) contract, not just active_agents-specific =="
+# `.prs` is repo-scoped since issue #638, so the guard now fires on
+# `.repos["<repo>"].prs` — the same contract, one level down. --repo pins the
+# scope so the assertions do not depend on the checkout running the test.
 reset_state
-OUT=$(run --set '.prs=[1,2,3]' 2>&1); RC=$?
+OUT=$(run --repo test/repo --set '.prs=[1,2,3]' 2>&1); RC=$?
 check_eq "array-for-object rejected (exit 4)" "4" "$RC"
-check_eq "error names prs and the object/array types" "1" "$(grep -c "field '.prs' would become type 'array' but must be 'object'" <<<"$OUT")"
+check_eq "error names the scoped prs and the object/array types" "1" "$(grep -c "field '.repos\[\"test/repo\"\].prs' would become type 'array' but must be 'object'" <<<"$OUT")"
 check_eq "prs was never created by the rejected write" "1" "$([[ ! -f "$STATE_FILE" ]] && echo 1 || echo 0)"
 
-run --set '.prs["287"].reviewer=greptile'
+run --repo test/repo --set '.prs["287"].reviewer=greptile'
 check_eq "valid nested object write to prs exits 0" "0" "$?"
-check_eq "prs holds the nested write" '{"287":{"reviewer":"greptile"}}' "$(jq -c '.prs' "$STATE_FILE")"
+check_eq "scoped prs holds the nested write" '{"287":{"reviewer":"greptile"}}' "$(jq -c '.repos["test/repo"].prs' "$STATE_FILE")"
+check_eq "no flat top-level .prs is created" "null" "$(jq -c '.prs' "$STATE_FILE")"
 
-run --set '.prs["287"].blocker=null'
+run --repo test/repo --set '.prs["287"].blocker=null'
 check_eq "nulling a nested prs field does not trip the object-type guard" "0" "$?"
-check_eq "prs stays an object with the null applied" '{"287":{"reviewer":"greptile","blocker":null}}' "$(jq -c '.prs' "$STATE_FILE")"
+check_eq "scoped prs stays an object with the null applied" '{"287":{"reviewer":"greptile","blocker":null}}' "$(jq -c '.repos["test/repo"].prs' "$STATE_FILE")"
+
+echo
+echo "== Repo scoping: same PR number in two repos does not collide (issue #638) =="
+reset_state
+run --repo org/a --set '.prs["84"].phase=B'
+run --repo org/b --set '.prs["84"].phase=C'
+check_eq "repo A keeps its own PR 84" "B" "$(run --repo org/a --get '.prs["84"].phase')"
+check_eq "repo B keeps its own PR 84" "C" "$(run --repo org/b --get '.prs["84"].phase')"
+check_eq "a third repo sees neither" "null" "$(run --repo org/c --get '.prs["84"].phase')"
+check_eq "root_repo is per-repo, not one global scalar" "null" "$(jq -c '.root_repo' "$STATE_FILE")"
+run --repo org/a --set '.root_repo=/tmp/a'
+run --repo org/b --set '.root_repo=/tmp/b'
+check_eq "each repo keeps its own root_repo" '["/tmp/a","/tmp/b"]' "$(jq -c '[.repos["org/a"].root_repo, .repos["org/b"].root_repo]' "$STATE_FILE")"
+
+echo
+echo "== --raw-path addresses the document root verbatim =="
+check_eq "raw-path reads the real top-level shape" '"org/a","org/b"' "$(run --raw-path --get '.repos | keys | @csv')"
 
 echo
 echo "== Write-time guard: per-PR nested field contract (issue #640) =="
+# Paths are scoped per repo since issue #638: callers still write `.prs["999"]`,
+# but it lands at `.repos["test/repo"].prs["999"]`, and the guard names it there.
 reset_state
-OUT=$(run --set '.prs["999"].last_cron_action=some bare string' 2>&1); RC=$?
+OUT=$(run --repo test/repo --set '.prs["999"].last_cron_action=some bare string' 2>&1); RC=$?
 check_eq "bare-string last_cron_action rejected (exit 4)" "4" "$RC"
-check_eq "error names the nested field and both types" "1" "$(grep -c "field '.prs\[\"999\"\].last_cron_action' would become type 'string' but must be 'object'" <<<"$OUT")"
+check_eq "error names the nested field and both types" "1" "$(grep -c "field '.repos\[\"test/repo\"\].prs\[\"999\"\].last_cron_action' would become type 'string' but must be 'object'" <<<"$OUT")"
 check_eq "state file never created for a rejected nested write" "1" "$([[ ! -f "$STATE_FILE" ]] && echo 1 || echo 0)"
 
-run --set '.prs["999"].last_cron_action={"type":"create","at":"2026-04-29T13:55:00Z","interval":"1m"}'
+run --repo test/repo --set '.prs["999"].last_cron_action={"type":"create","at":"2026-04-29T13:55:00Z","interval":"1m"}'
 check_eq "well-formed last_cron_action object accepted" "0" "$?"
-check_eq "last_cron_action holds the written object" '{"type":"create","at":"2026-04-29T13:55:00Z","interval":"1m"}' "$(jq -c '.prs["999"].last_cron_action' "$STATE_FILE")"
+check_eq "last_cron_action holds the written object" '{"type":"create","at":"2026-04-29T13:55:00Z","interval":"1m"}' "$(jq -c '.repos["test/repo"].prs["999"].last_cron_action' "$STATE_FILE")"
 
-OUT=$(run --set '.prs["999"].last_cron_action=overwritten with a bad string' 2>&1); RC=$?
+OUT=$(run --repo test/repo --set '.prs["999"].last_cron_action=overwritten with a bad string' 2>&1); RC=$?
 check_eq "a subsequent bad overwrite is still rejected (exit 4)" "4" "$RC"
-check_eq "the prior good value is untouched by the rejected overwrite" '{"type":"create","at":"2026-04-29T13:55:00Z","interval":"1m"}' "$(jq -c '.prs["999"].last_cron_action' "$STATE_FILE")"
+check_eq "the prior good value is untouched by the rejected overwrite" '{"type":"create","at":"2026-04-29T13:55:00Z","interval":"1m"}' "$(jq -c '.repos["test/repo"].prs["999"].last_cron_action' "$STATE_FILE")"
 
-run --set '.prs["999"].reviewer=greptile'
+run --repo test/repo --set '.prs["999"].reviewer=greptile'
 check_eq "a nested field NOT on the known list stays unvalidated" "0" "$?"
-check_eq "the unknown nested field is written as given" '"greptile"' "$(jq -c '.prs["999"].reviewer' "$STATE_FILE")"
+check_eq "the unknown nested field is written as given" '"greptile"' "$(jq -c '.repos["test/repo"].prs["999"].reviewer' "$STATE_FILE")"
 
-OUT=$(run --set '.prs["999"].babysit.active=true' 2>&1); RC=$?
+OUT=$(run --repo test/repo --set '.prs["999"].babysit.active=true' 2>&1); RC=$?
 check_eq "sub-path write into a known object-typed nested field is accepted" "0" "$RC"
-check_eq "babysit ends up an object with the sub-path write applied" '{"active":true}' "$(jq -c '.prs["999"].babysit' "$STATE_FILE")"
+check_eq "babysit ends up an object with the sub-path write applied" '{"active":true}' "$(jq -c '.repos["test/repo"].prs["999"].babysit' "$STATE_FILE")"
 
-run --set '.prs["999"].cr_explicit_triggers=["2026-04-29T22:30:00Z"]'
+run --repo test/repo --set '.prs["999"].cr_explicit_triggers=["2026-04-29T22:30:00Z"]'
 check_eq "well-formed array cr_explicit_triggers accepted" "0" "$?"
-OUT=$(run --set '.prs["999"].cr_explicit_triggers=2' 2>&1); RC=$?
+OUT=$(run --repo test/repo --set '.prs["999"].cr_explicit_triggers=2' 2>&1); RC=$?
 check_eq "number-for-array cr_explicit_triggers rejected (exit 4)" "4" "$RC"
-check_eq "error names cr_explicit_triggers and both types" "1" "$(grep -c "field '.prs\[\"999\"\].cr_explicit_triggers' would become type 'number' but must be 'array'" <<<"$OUT")"
-check_eq "prior valid cr_explicit_triggers array is untouched" '["2026-04-29T22:30:00Z"]' "$(jq -c '.prs["999"].cr_explicit_triggers' "$STATE_FILE")"
+check_eq "error names cr_explicit_triggers and both types" "1" "$(grep -c "field '.repos\[\"test/repo\"\].prs\[\"999\"\].cr_explicit_triggers' would become type 'number' but must be 'array'" <<<"$OUT")"
+check_eq "prior valid cr_explicit_triggers array is untouched" '["2026-04-29T22:30:00Z"]' "$(jq -c '.repos["test/repo"].prs["999"].cr_explicit_triggers' "$STATE_FILE")"
 
-OUT=$(run --set '.prs["998"].digest_streak=not-a-number' 2>&1); RC=$?
+OUT=$(run --repo test/repo --set '.prs["998"].digest_streak=not-a-number' 2>&1); RC=$?
 check_eq "string-for-number digest_streak rejected (exit 4)" "4" "$RC"
-run --set '.prs["998"].digest_streak=3'
+run --repo test/repo --set '.prs["998"].digest_streak=3'
 check_eq "well-formed number digest_streak accepted" "0" "$?"
-check_eq "digest_streak holds the written number" "3" "$(jq -c '.prs["998"].digest_streak' "$STATE_FILE")"
+check_eq "digest_streak holds the written number" "3" "$(jq -c '.repos["test/repo"].prs["998"].digest_streak' "$STATE_FILE")"
 
 echo
 echo "== Write-time guard: whole-PR-entry writes (issue #640, CodeAnt finding on PR #654) =="
 reset_state
-OUT=$(run --set '.prs["999"]={"phase":"B","last_cron_action":"bare string","digest_streak":"not-a-number"}' 2>&1); RC=$?
+OUT=$(run --repo test/repo --set '.prs["999"]={"phase":"B","last_cron_action":"bare string","digest_streak":"not-a-number"}' 2>&1); RC=$?
 check_eq "whole-entry write embedding a malformed known field rejected (exit 4)" "4" "$RC"
-check_eq "error names the embedded nested field" "1" "$(grep -c "field '.prs\[\"999\"\].last_cron_action' would become type 'string' but must be 'object'" <<<"$OUT")"
+check_eq "error names the embedded nested field" "1" "$(grep -c "field '.repos\[\"test/repo\"\].prs\[\"999\"\].last_cron_action' would become type 'string' but must be 'object'" <<<"$OUT")"
 check_eq "state file never created for a rejected whole-entry write" "1" "$([[ ! -f "$STATE_FILE" ]] && echo 1 || echo 0)"
 
-run --set '.prs["999"]={"phase":"B","last_cron_action":{"type":"create","at":"2026-01-01T00:00:00Z"},"digest_streak":3,"reviewer":"greptile"}'
+run --repo test/repo --set '.prs["999"]={"phase":"B","last_cron_action":{"type":"create","at":"2026-01-01T00:00:00Z"},"digest_streak":3,"reviewer":"greptile"}'
 check_eq "well-formed whole-entry write accepted" "0" "$?"
-check_eq "whole-entry write applied correctly" '{"phase":"B","last_cron_action":{"type":"create","at":"2026-01-01T00:00:00Z"},"digest_streak":3,"reviewer":"greptile"}' "$(jq -c '.prs["999"]' "$STATE_FILE")"
+check_eq "whole-entry write applied correctly" '{"phase":"B","last_cron_action":{"type":"create","at":"2026-01-01T00:00:00Z"},"digest_streak":3,"reviewer":"greptile"}' "$(jq -c '.repos["test/repo"].prs["999"]' "$STATE_FILE")"
 
-run --set '.prs["1000"]={"phase":"A","reviewer":"cr"}'
+run --repo test/repo --set '.prs["1000"]={"phase":"A","reviewer":"cr"}'
 check_eq "whole-entry write with no known nested fields at all accepted" "0" "$?"
-check_eq "entry with no known fields written as given" '{"phase":"A","reviewer":"cr"}' "$(jq -c '.prs["1000"]' "$STATE_FILE")"
+check_eq "entry with no known fields written as given" '{"phase":"A","reviewer":"cr"}' "$(jq -c '.repos["test/repo"].prs["1000"]' "$STATE_FILE")"
 
 echo
 echo "== Write-time guard: unknown fields stay unvalidated (forward-compat) =="
-run --set '.monitoring_active=true' --set '.root_repo=/tmp/foo'
+run --set '.monitoring_active=true' --set '.some_future_field=/tmp/foo'
 check_eq "unknown-field batch write exits 0" "0" "$?"
-check_eq "unknown fields written as given" '{"monitoring_active":true,"root_repo":"/tmp/foo"}' "$(jq -c '{monitoring_active, root_repo}' "$STATE_FILE")"
+check_eq "unknown fields written as given" '{"monitoring_active":true,"some_future_field":"/tmp/foo"}' "$(jq -c '{monitoring_active, some_future_field}' "$STATE_FILE")"
 
 echo
 echo "== Read-time guard: --get on a pre-corrupted known array field =="

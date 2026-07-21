@@ -4,9 +4,11 @@
 # PURPOSE
 #   Tracks consumption against CodeRabbit's ~8 PR reviews/hour (Pro) hidden ceiling and
 #   records explicit `@coderabbitai full review` posts per PR for the "2/hour" surfacing
-#   rule in `cr-github-review.md`. Mutates `cr_hourly` and `.prs[<N>].cr_explicit_triggers`
+#   rule in `cr-github-review.md`. Mutates the account-global `cr_hourly` and the
+#   repo-scoped `.repos["<owner>/<name>"].prs[<N>].cr_explicit_triggers` (issue #638)
 #   under ~/.claude/session-state.json with the same atomic jq + temp-file + mv pattern as
-#   greptile-budget.sh.
+#   greptile-budget.sh. The hourly ceiling is a CodeRabbit ACCOUNT limit, so it stays
+#   global and is counted across every repo; only the per-PR trigger log is scoped.
 #
 # USAGE
 #   cr-review-hourly.sh --check
@@ -149,7 +151,19 @@ if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
   exit 5
 fi
 
-# jq filter: prune cr_hourly.events to last 3600s; prune each .prs[].cr_explicit_triggers similarly.
+# Repo scope for per-PR paths (issue #638). `cr_hourly` itself stays global —
+# the CodeRabbit rate limit is per-account, not per-repo, so pruning and
+# budget accounting must continue to see every repo's events. Only the
+# per-PR `cr_explicit_triggers` move under `.repos["<owner>/<name>"].prs`.
+STATE_SH="$(cd "$(dirname "$0")" && pwd)/session-state.sh"
+REPO_KEY="$("$STATE_SH" --repo-key 2>/dev/null || echo "_unknown")"
+[[ -n "$REPO_KEY" ]] || REPO_KEY="_unknown"
+# jq path prefix for this repo's PR map, built once and interpolated below.
+PRS_PATH=".repos[\"$REPO_KEY\"].prs"
+
+# jq filter: prune cr_hourly.events to last 3600s; prune each PR's
+# cr_explicit_triggers similarly, across EVERY repo scope (a stale trigger
+# timestamp is stale regardless of which repo recorded it).
 # Events are ISO8601 Z strings; jq's fromdateiso8601 parses them.
 PRUNE_GLOBAL='def prune_events($events):
   ($events // []) as $e
@@ -170,7 +184,11 @@ def prune_pr_triggers($prs):
 
 . as $root
 | .cr_hourly = (($root.cr_hourly // {}) | .events = prune_events(.events))
-| .prs = prune_pr_triggers(.prs)'
+| (if .prs != null then .prs = prune_pr_triggers(.prs) else . end)
+| if (.repos | type) == "object" then
+    .repos = ( .repos | map_values(
+      if (type == "object") then .prs = prune_pr_triggers(.prs) else . end) )
+  else . end'
 
 write_merged_state() {
   local jq_post="$1"
@@ -298,7 +316,7 @@ case "$MODE" in
       if [[ ! -f "$STATE_FILE" ]] || ! jq -e . "$STATE_FILE" >/dev/null 2>&1; then
         PRE_EXPLICIT=0
       else
-        PRE_EXPLICIT="$(jq "$PRUNE_GLOBAL | (.prs[\"$PR_KEY\"].cr_explicit_triggers // []) | length" "$STATE_FILE")"
+        PRE_EXPLICIT="$(jq "$PRUNE_GLOBAL | (${PRS_PATH}[\"$PR_KEY\"].cr_explicit_triggers // []) | length" "$STATE_FILE")"
       fi
       if ! [[ "$PRE_EXPLICIT" =~ ^[0-9]+$ ]]; then
         PRE_EXPLICIT=0
@@ -326,9 +344,9 @@ case "$MODE" in
       fi
 
       write_merged_state \
-        ".prs[\"$PR_KEY\"] = ((.prs[\"$PR_KEY\"] // {}) + {})
-         | .prs[\"$PR_KEY\"].cr_explicit_triggers = (
-             ((.prs[\"$PR_KEY\"].cr_explicit_triggers // []) + [\$now_iso])
+        "${PRS_PATH}[\"$PR_KEY\"] = ((${PRS_PATH}[\"$PR_KEY\"] // {}) + {})
+         | ${PRS_PATH}[\"$PR_KEY\"].cr_explicit_triggers = (
+             ((${PRS_PATH}[\"$PR_KEY\"].cr_explicit_triggers // []) + [\$now_iso])
            )
          | .cr_hourly.events = ((.cr_hourly.events // []) + [\$now_iso])"
 
@@ -336,7 +354,7 @@ case "$MODE" in
         --arg pr "$PR_EXPLICIT" \
         --arg now_iso "$NOW_ISO" \
         "$PRUNE_GLOBAL
-      | (.prs[\$pr].cr_explicit_triggers // []) as \$t
+      | (${PRS_PATH}[\$pr].cr_explicit_triggers // []) as \$t
       | (\$t | length) as \$c
       | {
           pr: (\$pr | tonumber),
@@ -376,7 +394,7 @@ case "$MODE" in
       PRE_EXPLICIT=0
       GLOBAL_USED=0
     else
-      PRE_EXPLICIT="$(jq "$PRUNE_GLOBAL | (.prs[\"$PR_KEY\"].cr_explicit_triggers // []) | length" "$STATE_FILE" 2>/dev/null || echo 0)"
+      PRE_EXPLICIT="$(jq "$PRUNE_GLOBAL | (${PRS_PATH}[\"$PR_KEY\"].cr_explicit_triggers // []) | length" "$STATE_FILE" 2>/dev/null || echo 0)"
       GLOBAL_USED="$(jq "$PRUNE_GLOBAL | (.cr_hourly.events // []) | length" "$STATE_FILE" 2>/dev/null || echo 0)"
     fi
     [[ "$PRE_EXPLICIT" =~ ^[0-9]+$ ]] || PRE_EXPLICIT=0

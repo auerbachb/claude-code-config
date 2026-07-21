@@ -139,8 +139,35 @@ if [[ "$INFER_CANDIDATES" -eq 1 ]]; then
   # numeric PR strings in practice).
   # Only the missing-file / empty-prs cases return []; parse/runtime errors are
   # surfaced on stderr so state corruption is visible rather than silently masked.
-  _jq_out=$(jq -c --arg cur "$CUR_OWNER_REPO" '
-    [ (.prs // {}) | to_entries[]
+  # Read the PR map through session-state.sh so it comes back scoped to this
+  # repo (issue #638) and a legacy flat file is migrated in memory. Reading
+  # the raw top-level `.prs` here used to mix in other repos' PRs, which is
+  # exactly what `same_repo` below was invented to paper over.
+  #
+  # Two buckets are read, not one:
+  #   - this repo's scope — PRs known to belong here
+  #   - the reserved "_unknown" scope — legacy entries that carried no
+  #     owner_repo and whose recorded checkout path no longer resolves, so
+  #     their repo genuinely cannot be determined
+  # Including the second preserves this helper's original promise (entries
+  # with an unknown repo are kept, because dropping them would hide
+  # legitimately-tracked PRs) while still excluding every PR known to belong
+  # to a DIFFERENT repo — which is the collision the scoping exists to end.
+  # On key conflict the scoped entry wins: it is attributed, the other is not.
+  _state_sh="$(cd "$(dirname "$0")" && pwd)/session-state.sh"
+  if ! _prs_scoped=$("$_state_sh" --get '.prs // {}' 2>/dev/null); then
+    _prs_scoped="{}"
+  fi
+  [[ -z "$_prs_scoped" || "$_prs_scoped" == "null" ]] && _prs_scoped="{}"
+  if ! _prs_unknown=$("$_state_sh" --raw-path --get '.repos["_unknown"].prs // {}' 2>/dev/null); then
+    _prs_unknown="{}"
+  fi
+  [[ -z "$_prs_unknown" || "$_prs_unknown" == "null" ]] && _prs_unknown="{}"
+  _jq_out=$(jq -c --arg cur "$CUR_OWNER_REPO" \
+      --argjson scoped "$_prs_scoped" --argjson unknown "$_prs_unknown" '
+    [ ( ($unknown | map_values(. + {_scope: "unknown"}))
+        + ($scoped  | map_values(. + {_scope: "repo"})) )
+      | to_entries[]
       | select(.value.phase != null)
       | {
           number: (.key | tonumber? // .key),
@@ -158,13 +185,20 @@ if [[ "$INFER_CANDIDATES" -eq 1 ]]; then
           # the bad one.
           last_action_at: (.value.last_cron_action.at? // ""),
           same_repo: (
-            if $cur == "" or (.value.owner_repo // "") == "" then null
+            # Membership is now structural: an entry read from the scope of
+            # this repo belongs here. Entries from the "_unknown" bucket
+            # keep the original "unknown - do not filter" meaning of null.
+            # owner_repo is still consulted when present so a mismatch left
+            # behind by pre-#638 state stays visible rather than asserted away.
+            if .value._scope == "unknown" then null
+            elif (.value.owner_repo // "") == "" then true
+            elif $cur == "" then null
             else (.value.owner_repo == $cur) end
           )
         }
     ]
     | sort_by(.last_action_at) | reverse
-  ' "$STATE_FILE" 2>&1)
+  ' <<<'{}' 2>&1)
   _jq_rc=$?
   if [[ $_jq_rc -ne 0 ]]; then
     echo "WARNING: pr-state.sh --infer-candidates: failed to parse $STATE_FILE (jq exit $_jq_rc): $_jq_out" >&2

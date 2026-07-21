@@ -6,7 +6,8 @@
 #      owns creation/refresh for the polling loop; Phase A/B subagents use the same
 #      path for phase handoffs — see handoff-files.md).
 #   2) PR is registered in ~/.claude/session-state.json and scoped to this repo via
-#      per-PR .prs["N"].owner_repo / .prs["N"].root_repo (issue #647).
+#      per-PR owner_repo / root_repo (issue #647), read from this repo's own
+#      scope in session-state (`.repos["<owner>/<name>"].prs["N"]`, issue #638).
 #   3) Each poll cycle evaluates exit via .claude/scripts/merge-gate.sh (not inline
 #      paraphrase of cr-merge-gate.md).
 #
@@ -77,6 +78,8 @@ while [[ $# -gt 0 ]]; do
         echo "polling-state-gate.sh: --root-repo requires a path" >&2
         exit 2
       fi
+      # An explicit repo also decides which repo's scope we read (issue #638).
+      [[ -d "$ROOT_REPO_ARG" ]] && STATE_READ_DIR="$ROOT_REPO_ARG"
       shift 2
       ;;
     -*)
@@ -98,6 +101,66 @@ if [[ -z "$PR_NUMBER" ]] || ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
   echo "polling-state-gate.sh: positive integer <pr_number> is required" >&2
   exit 2
 fi
+
+# Directory whose repo identity scopes every session-state read below (issue
+# #638). Defaults to the active checkout; --root-repo overrides it.
+STATE_READ_DIR="${STATE_READ_DIR:-$PWD}"
+
+# Which repo scope holds this PR (issue #638). Resolved once, then reused by
+# state_pr_field() so every read below comes from one consistent entry.
+#
+# Preference order, and why:
+#   1. this repo's own scope — the normal case
+#   2. the reserved "_unknown" scope — legacy state that predates scoping and
+#      could not be attributed. Reading it here is what preserves #647's
+#      "state from an older version -> notice, then pass" behavior: those
+#      entries still reach validate_root_match() and are judged on their own
+#      recorded owner_repo/root_repo exactly as before.
+#   3. some other named repo's scope — a genuine cross-repo poll, refused by
+#      the caller (never read, so another repo's PR #84 can't answer for ours)
+# Empty output means the PR is registered nowhere.
+# Identity of the checkout the caller is ACTUALLY standing in, captured before
+# resolve_root_repo() can redirect to a recorded path. Without this anchor the
+# cross-repo check compares the redirected root against itself and always
+# agrees — a poll from repo C for a PR scoped to repo A would silently operate
+# on repo A's checkout instead of being refused.
+ACTIVE_REPO_KEY=""
+PR_SCOPE=""
+PR_SCOPE_RESOLVED=0
+resolve_pr_scope() {
+  if [[ "$PR_SCOPE_RESOLVED" -eq 1 ]]; then
+    printf '%s' "$PR_SCOPE"
+    return 0
+  fi
+  PR_SCOPE_RESOLVED=1
+  PR_SCOPE=""
+  [[ -f "$STATE_FILE" ]] || { printf '%s' ""; return 0; }
+  local active="$ACTIVE_REPO_KEY"
+  if [[ -z "$active" ]]; then
+    active="$(cd "$STATE_READ_DIR" 2>/dev/null && "$STATE_HELPER" --repo-key 2>/dev/null || true)"
+  fi
+  # `--raw-path` addresses the document root, so this sees every scope at once
+  # (the helper still migrates a legacy flat file in memory first).
+  PR_SCOPE="$(cd "$STATE_READ_DIR" 2>/dev/null && "$STATE_HELPER" --raw-path --get \
+    "[(.repos // {}) | to_entries[] | select(.value.prs[\"$PR_NUMBER\"] != null) | .key] as \$holders
+     | ((\$holders | map(select(. == \"$active\")) | first)
+        // (\$holders | map(select(. == \"_unknown\")) | first)
+        // (\$holders | first) // \"\")" 2>/dev/null || true)"
+  [[ "$PR_SCOPE" == "null" ]] && PR_SCOPE=""
+  printf '%s' "$PR_SCOPE"
+}
+
+# Read a per-PR field from the scope resolved above, so a same-numbered PR in
+# another repo can never answer for this one.
+state_pr_field() {
+  local field="$1" scope out=""
+  scope="$(resolve_pr_scope)"
+  [[ -n "$scope" ]] || { printf '%s' ""; return 0; }
+  out="$(cd "$STATE_READ_DIR" 2>/dev/null && "$STATE_HELPER" --raw-path --get \
+    ".repos[\"$scope\"].prs[\"$PR_NUMBER\"].$field" 2>/dev/null || true)"
+  [[ "$out" == "null" ]] && out=""
+  printf '%s' "$out"
+}
 
 # repo_identity <path> — stable identity for the repo a checkout belongs to.
 # Prefers the normalized `origin` remote ("owner/repo", lowercased) so any worktree
@@ -138,13 +201,16 @@ repo_identity() {
   fi
 }
 
+ACTIVE_REPO_KEY="$(cd "$STATE_READ_DIR" 2>/dev/null && "$STATE_HELPER" --repo-key 2>/dev/null || true)"
+
 resolve_root_repo() {
   local from_arg="$1"
   local from_state_pr=""
   local from_state_top=""
   if [[ -f "$STATE_FILE" ]]; then
-    from_state_pr=$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].root_repo // empty' "$STATE_FILE" 2>/dev/null || true)
-    from_state_top=$(jq -r '.root_repo // empty' "$STATE_FILE" 2>/dev/null || true)
+    from_state_pr="$(state_pr_field root_repo)"
+    from_state_top="$(cd "$STATE_READ_DIR" 2>/dev/null && "$STATE_HELPER" --get '.root_repo' 2>/dev/null || true)"
+    [[ "$from_state_top" == "null" ]] && from_state_top=""
   fi
   local chosen=""
   local live=""
@@ -175,11 +241,26 @@ resolve_root_repo() {
 # never consulted here (issue #647).
 validate_root_match() {
   local resolved="$1"
+  # Cross-repo short-circuit (issue #638): the PR is registered, but under
+  # ANOTHER named repo's scope. That is the collision this scoping exists to
+  # catch, and it is decided before any per-PR field is read — reading the
+  # other repo's entry is exactly the bug. "_unknown" is not a named repo:
+  # those entries are unattributed legacy state and fall through to the
+  # recorded-scoping rules below, preserving #647's behavior for them.
+  local pr_scope active_id_pre
+  pr_scope="$(resolve_pr_scope)"
+  active_id_pre="$ACTIVE_REPO_KEY"
+  if [[ -n "$pr_scope" && "$pr_scope" != "_unknown" && -n "$active_id_pre" \
+        && "$active_id_pre" != gitdir:* && "$active_id_pre" != path:* \
+        && "$pr_scope" != "_unknown" && "$pr_scope" != "$active_id_pre" ]]; then
+    echo "polling-state-gate.sh: PR #$PR_NUMBER is scoped to repo '$pr_scope' but the active checkout is '$active_id_pre' — refuse to poll from the wrong repo" >&2
+    return 1
+  fi
   local stored_owner=""
   local stored_root=""
   if [[ -f "$STATE_FILE" ]]; then
-    stored_owner=$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].owner_repo // empty' "$STATE_FILE" 2>/dev/null || true)
-    stored_root=$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].root_repo // empty' "$STATE_FILE" 2>/dev/null || true)
+    stored_owner="$(state_pr_field owner_repo)"
+    stored_root="$(state_pr_field root_repo)"
   fi
   if [[ "$stored_owner" == "null" ]]; then stored_owner=""; fi
   if [[ "$stored_root" == "null" ]]; then stored_root=""; fi
@@ -297,6 +378,8 @@ ensure_session() {
   fi
   local canon
   canon="$(cd "$resolved" && git rev-parse --show-toplevel)"
+  # Everything from here reads and writes THIS repo's scope.
+  STATE_READ_DIR="$canon"
   local pr_json head_sha owner_repo
   if ! pr_json="$(cd "$canon" && gh pr view "$PR_NUMBER" --json headRefOid,state 2>/dev/null)"; then
     echo "polling-state-gate.sh: gh pr view failed for PR #$PR_NUMBER in $canon" >&2
@@ -327,22 +410,26 @@ ensure_session() {
   local reviewer="cr"
   if [[ -f "$STATE_FILE" ]]; then
     local r
-    r="$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].reviewer // "cr"' "$STATE_FILE" 2>/dev/null || echo cr)"
-    reviewer="$r"
+    r="$(state_pr_field reviewer)"
+    [[ -n "$r" ]] && reviewer="$r"
   fi
 
-  # Single atomic write — session-state.sh merges multiple --set in one transaction.
+  # Single atomic write — session-state.sh merges multiple --set in one
+  # transaction. Running it from $canon scopes every path to THIS repo
+  # (issue #638), so PR #84 here cannot overwrite PR #84 elsewhere.
+  # owner_repo stays recorded: it is both #647's scoping signal and the
+  # migration key for state written before scoping existed.
   if [[ -n "$owner_repo" ]]; then
-    "$STATE_HELPER" \
-      --set ".root_repo=\"$canon\"" \
-      --set ".prs[\"$PR_NUMBER\"].root_repo=\"$canon\"" \
-      --set ".prs[\"$PR_NUMBER\"].head_sha=\"$head_sha\"" \
-      --set ".prs[\"$PR_NUMBER\"].owner_repo=\"$owner_repo\""
+    ( cd "$canon" && "$STATE_HELPER" \
+        --set ".root_repo=\"$canon\"" \
+        --set ".prs[\"$PR_NUMBER\"].root_repo=\"$canon\"" \
+        --set ".prs[\"$PR_NUMBER\"].head_sha=\"$head_sha\"" \
+        --set ".prs[\"$PR_NUMBER\"].owner_repo=\"$owner_repo\"" )
   else
-    "$STATE_HELPER" \
-      --set ".root_repo=\"$canon\"" \
-      --set ".prs[\"$PR_NUMBER\"].root_repo=\"$canon\"" \
-      --set ".prs[\"$PR_NUMBER\"].head_sha=\"$head_sha\""
+    ( cd "$canon" && "$STATE_HELPER" \
+        --set ".root_repo=\"$canon\"" \
+        --set ".prs[\"$PR_NUMBER\"].root_repo=\"$canon\"" \
+        --set ".prs[\"$PR_NUMBER\"].head_sha=\"$head_sha\"" )
   fi
 
   local handoff_path="${HANDOFF_DIR}/pr-${PR_NUMBER}-handoff.json"
@@ -370,6 +457,8 @@ ensure_session() {
 require_handoff_and_state() {
   local resolved="$1"
   local gate_mode="${2:-live}"
+  # Pin every scoped read below to the repo we actually resolved to (#638).
+  [[ -d "$resolved" ]] && STATE_READ_DIR="$resolved"
   local handoff_path="${HANDOFF_DIR}/pr-${PR_NUMBER}-handoff.json"
   if [[ ! -f "$handoff_path" ]]; then
     echo "polling-state-gate.sh: missing handoff $handoff_path — run: polling-state-gate.sh $PR_NUMBER --ensure-session" >&2
@@ -379,13 +468,13 @@ require_handoff_and_state() {
     echo "polling-state-gate.sh: missing $STATE_FILE — run --ensure-session first" >&2
     exit 4
   fi
-  if ! jq -e --arg pr "$PR_NUMBER" '.prs[$pr] != null' "$STATE_FILE" >/dev/null 2>&1; then
-    echo "polling-state-gate.sh: PR $PR_NUMBER not registered in session-state — run --ensure-session first" >&2
+  if [[ -z "$(state_pr_field head_sha)$(state_pr_field root_repo)$(state_pr_field reviewer)" ]]; then
+    echo "polling-state-gate.sh: PR $PR_NUMBER not registered in session-state for $(cd "$STATE_READ_DIR" 2>/dev/null && "$STATE_HELPER" --repo-key 2>/dev/null || echo "this repo") — run --ensure-session first" >&2
     exit 4
   fi
   local rr state_sha handoff_sha handoff_pr canon live_head
-  rr=$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].root_repo // empty' "$STATE_FILE")
-  state_sha=$(jq -r --arg pr "$PR_NUMBER" '.prs[$pr].head_sha // empty' "$STATE_FILE")
+  rr="$(state_pr_field root_repo)"
+  state_sha="$(state_pr_field head_sha)"
   handoff_sha=$(jq -r '.head_sha // empty' "$handoff_path")
   handoff_pr=$(jq -r 'if .pr_number == null then "" else (.pr_number | tostring) end' "$handoff_path")
   # The global .root_repo is deliberately NOT required or validated here (issue #647):
