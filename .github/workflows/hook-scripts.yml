@@ -65,6 +65,9 @@ jobs:
       - name: skill-usage-merge unit test (issue #572)
         run: bash .claude/scripts/tests/skill-usage-merge.test.sh
 
+      - name: session-state.sh field-type contract unit test (issue #625)
+        run: bash .claude/scripts/tests/session-state.test.sh
+
   # macOS system python3 is 3.9.6 (Xcode CLT) while ubuntu-latest ships 3.10+,
   # so a hook that crashes on 3.9 (e.g. eagerly-evaluated PEP 604 unions,
   # issue #560) passes the job above yet fails open locally. Pin 3.9 here.

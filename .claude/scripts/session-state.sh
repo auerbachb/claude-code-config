@@ -41,13 +41,47 @@
 #                      greptile-budget.sh and reviewer-of.sh.
 #
 # EXIT STATUS
-#   0  Success — value printed (--get) or write completed (--set).
+#   0  Success — value printed (--get) or write completed (--set). A --get on
+#      a corrupted known-typed field (see FIELD-TYPE CONTRACT) also exits 0,
+#      printing a safe default instead of the corrupt value.
 #   2  Usage error — missing/invalid mode, unknown flag, malformed --set
 #      argument (no `=`), or no jq path given for --get.
 #   3  State file missing on --get. (--set creates the file from `{}`.)
-#   4  jq failed to parse the file or evaluate the path/expression.
+#   4  jq failed to parse the file or evaluate the path/expression, OR a
+#      --set would leave a known-typed field (see FIELD-TYPE CONTRACT) holding
+#      the wrong JSON type — the write is rejected and the state file is left
+#      unmodified.
 #   5  Write failed — could not create temp file, could not mv into place,
 #      or jq filter pipeline failed during the atomic write.
+#
+# FIELD-TYPE CONTRACT (issue #625)
+#   A small set of top-level fields are known, from
+#   .claude/reference/session-state-schema.json, to always hold a specific
+#   JSON type — arrays (active_agents, polling_jobs, polling_failures,
+#   polling_backoffs) or objects (prs, cr_quota, cr_hourly, greptile_daily,
+#   pmm_in_flight, pmm). Fields outside this list are unvalidated, preserving
+#   forward-compatibility with the "preserve unknown fields" convention.
+#
+#   --set checks the FINAL value of any touched known field after the whole
+#   batch is applied (not just the raw value passed in), so both whole-field
+#   writes (`--set '.active_agents=...'`) and element/sub-path writes
+#   (`--set '.active_agents[0]=...'`) are covered. If a touched known field
+#   would end up the wrong type, the entire batch is rejected (exit 4) and
+#   the state file is left unmodified — this is what should have caught the
+#   original corruption: a caller passed an unevaluated jq filter expression
+#   (e.g. `(.active_agents // [] | map(select(.pr_number != 71)))`) as a
+#   --set value; since it isn't valid JSON it fell into the --arg (string)
+#   branch below and was written verbatim as `.active_agents`'s value.
+#   Callers must evaluate any filter locally first (read → jq-filter → pass
+#   the resulting JSON array/object as the --set value) — see the
+#   read-filter-write pattern in .claude/skills/pr-monitor-and-manage/SKILL.md.
+#
+#   --get on a known field whose *stored* value doesn't match the contract
+#   (state corrupted before this guard existed, or written by something
+#   bypassing this script) prints a warning to stderr and returns a safe
+#   default (`[]`/`{}`) on stdout instead of the corrupt value, exiting 0 so
+#   existing read-modify-write callers keep working — the next validated
+#   --set through this same field then heals the corruption for good.
 #
 # OUTPUT
 #   --get: raw value on stdout (one line per jq output, like `jq -r`).
@@ -87,6 +121,14 @@
 #
 #   # Cache that BugBot is installed for PR 287 (used by escalate-review.sh):
 #   session-state.sh --set '.prs["287"].bugbot_installed=true'
+#
+#   # Rejected: .active_agents is a known array-typed field (issue #625) — a
+#   # jq filter expression is not a JSON array, so this exits 4 and leaves
+#   # the state file unmodified. Evaluate the filter locally first, then pass
+#   # the resulting array (see pr-monitor-and-manage/SKILL.md's read-filter-
+#   # write pattern):
+#   session-state.sh --set '.active_agents=(.active_agents // [] | map(select(.pr_number != 71)))'
+#   # -> exit 4: field '.active_agents' would become type 'string' but must be 'array'
 
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
@@ -112,6 +154,30 @@ die_usage() {
 # multi-document, scalar/array/null at top level.
 is_single_object_state_file() {
   jq -s -e 'length == 1 and (.[0] | type == "object")' "$1" >/dev/null 2>&1
+}
+
+# Field-type contract (issue #625) — mirrors
+# .claude/reference/session-state-schema.json. Prints the expected JSON type
+# ("array"/"object") for a known top-level field, or nothing for fields
+# outside the contract (left unvalidated for forward-compatibility). A plain
+# function rather than an associative array so this script stays compatible
+# with bash 3.2 (macOS system bash has no `declare -A`).
+known_field_type() {
+  case "$1" in
+    active_agents|polling_jobs|polling_failures|polling_backoffs)
+      echo "array" ;;
+    prs|cr_quota|cr_hourly|greptile_daily|pmm_in_flight|pmm)
+      echo "object" ;;
+  esac
+}
+
+# Extract the leading top-level key from a jq path, e.g.
+# ".active_agents[0].id" -> "active_agents", `.prs["287"].reviewer` -> "prs".
+# Used to look up known_field_type() regardless of how deep the caller's
+# path indexes below that top-level field.
+top_level_key_of() {
+  local path="${1#.}"
+  printf '%s' "${path%%[.[]*}"
 }
 
 # --- arg parsing ---
@@ -210,6 +276,30 @@ if [[ "$MODE" == "get" ]]; then
     echo "session-state.sh: $STATE_FILE must contain exactly one top-level JSON object" >&2
     exit 4
   fi
+
+  # Read-time type guard (issue #625): if GET_PATH addresses a known
+  # top-level field exactly (not a deeper sub-path) and the stored value's
+  # type doesn't match the field-type contract, warn and return a safe
+  # default instead of the corrupt value — a "null" (field absent) is not
+  # corruption and falls through to the normal read below, matching existing
+  # caller idioms like `[ "$X" = "null" ] && X='[]'`. Callers that
+  # read-modify-write this field (e.g. pr-monitor-and-manage/SKILL.md) then
+  # self-heal it on their next validated --set.
+  get_top_level_key="$(top_level_key_of "$GET_PATH")"
+  get_expected_type="$(known_field_type "$get_top_level_key")"
+  if [[ -n "$get_expected_type" && ".$get_top_level_key" == "$GET_PATH" ]]; then
+    get_actual_type="$(jq -r "$GET_PATH | type" "$STATE_FILE" 2>/dev/null)"
+    if [[ "$get_actual_type" != "$get_expected_type" && "$get_actual_type" != "null" ]]; then
+      echo "session-state.sh: field '$GET_PATH' is corrupted — expected $get_expected_type but found $get_actual_type; returning a safe default (see issue #625)" >&2
+      if [[ "$get_expected_type" == "array" ]]; then
+        echo '[]'
+      else
+        echo '{}'
+      fi
+      exit 0
+    fi
+  fi
+
   # Use jq -r so callers get the raw value (string without quotes, number
   # as-is, etc.). jq exits non-zero on parse errors — translate to 4.
   jq_err="$(mktemp)"
@@ -261,6 +351,7 @@ trap "rm -f '$OUT_TMP' '$JQ_ERR' ${SEEDED_TMP:+'$SEEDED_TMP'} 2>/dev/null" EXIT
 # invocation → single atomic write.
 JQ_FILTER=""
 JQ_ARGS=()
+TOUCHED_KNOWN_FIELDS=""
 for i in "${!SET_PATHS[@]}"; do
   path="${SET_PATHS[$i]}"
   value="${SET_VALUES[$i]}"
@@ -283,6 +374,15 @@ for i in "${!SET_PATHS[@]}"; do
   else
     JQ_FILTER="$JQ_FILTER | $path = \$$varname"
   fi
+  # Track known-typed fields touched by this batch (deduped) for the
+  # post-write field-type contract check below — see FIELD-TYPE CONTRACT.
+  set_top_level_key="$(top_level_key_of "$path")"
+  if [[ -n "$(known_field_type "$set_top_level_key")" ]]; then
+    case " $TOUCHED_KNOWN_FIELDS " in
+      *" $set_top_level_key "*) ;;
+      *) TOUCHED_KNOWN_FIELDS="$TOUCHED_KNOWN_FIELDS $set_top_level_key" ;;
+    esac
+  fi
 done
 
 # Append the .last_updated refresh — done in jq (not bash) so it shares the
@@ -299,6 +399,24 @@ if ! jq "${JQ_ARGS[@]}" "$JQ_FILTER" "$input_file" > "$OUT_TMP" 2>"$JQ_ERR"; the
   echo "session-state.sh: jq failed updating $STATE_FILE: $(cat "$JQ_ERR")" >&2
   exit 5
 fi
+
+# Field-type contract (issue #625): reject the write if any known
+# array/object-typed field touched by this batch would end up the wrong
+# type in the FINAL document — not just the raw --set value, so subpath/
+# element writes (e.g. `.active_agents[0]=...`) are covered too, not just
+# whole-field writes. This is what should have caught the original
+# corruption: an unevaluated jq filter expression passed as a --set value
+# falls into the --arg (string) branch above and would otherwise be written
+# verbatim, turning an array field into a literal string. Checked before
+# the atomic mv below, so a rejected batch leaves $STATE_FILE untouched.
+for set_touched_key in $TOUCHED_KNOWN_FIELDS; do
+  set_expected_type="$(known_field_type "$set_touched_key")"
+  set_actual_type="$(jq -r ".${set_touched_key} | type" "$OUT_TMP" 2>/dev/null)"
+  if [[ "$set_actual_type" != "$set_expected_type" ]]; then
+    echo "session-state.sh: refusing to write — field '.$set_touched_key' would become type '$set_actual_type' but must be '$set_expected_type' (see issue #625); $STATE_FILE left unmodified" >&2
+    exit 4
+  fi
+done
 
 if ! mv "$OUT_TMP" "$STATE_FILE" 2>/dev/null; then
   echo "session-state.sh: could not write $STATE_FILE" >&2

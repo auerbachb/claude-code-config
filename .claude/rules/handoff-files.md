@@ -12,6 +12,8 @@
 
 Update `session-state.json` on phase transitions and key events (agent launched/completed, review received, dropped poll recovered). Prefer `.claude/scripts/session-state.sh --set <jq-path>=<value>` / `--get <jq-path>`; it preserves siblings and writes atomically.
 
+**Field-type contract (issue #625):** `session-state.sh` enforces the expected JSON type (array or object, per `session-state-schema.json`) on known top-level fields like `active_agents` and `prs`. A `--set` that would leave one of these fields holding the wrong type — e.g. an unevaluated jq filter expression passed as the value instead of the filter's evaluated result — is rejected (exit 4) with the state file left unmodified; a `--get` on an already-corrupted field warns on stderr and returns a safe default (`[]`/`{}`) so read-modify-write callers self-heal on their next validated write. Never pass a raw jq filter as a `--set` value — evaluate it locally first (read → filter with `jq` → pass the resulting JSON as the value), as `pr-monitor-and-manage/SKILL.md` does when pruning its own `active_agents` entries. Full contract: `session-state.sh`'s own header comment (single source of truth).
+
 ## Handoff File Storage
 
 - **Location:** `~/.claude/handoffs/` (create if missing: `mkdir -p ~/.claude/handoffs/`)
