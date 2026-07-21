@@ -209,6 +209,23 @@ check_eq "--check that must persist still respects the lock (exit 6)" "6" "$RC"
 rm -rf "$LOCK_DIR"
 
 echo
+echo "== Concurrency holds across the per-repo scoped write path (issue #638) =="
+reset_state
+# #638 rewrites a leading .prs/.root_repo into .repos["<owner>/<name>"], so a
+# scoped --set does strictly more work between read and mv than the flat paths
+# above. The lock has to cover that rewrite too, not just the plain assignment.
+export CLAUDE_SESSION_REPO="auerbachb/claude-code-config"
+for i in $(seq 1 20); do
+  ( CLAUDE_STATE_LOCK_TIMEOUT=120 run --set ".prs[\"$i\"].phase=B" ) &
+done
+wait
+check_eq "all 20 scoped per-PR writes survive" "20" \
+  "$(jq -r '[.repos[]?.prs // {} | keys[]] | length' "$STATE_FILE")"
+check_eq "scoped state file is valid JSON" "0" "$(jq -e . "$STATE_FILE" >/dev/null 2>&1; echo $?)"
+check_eq "no lock directory left behind (scoped path)" "0" "$([[ -e "$LOCK_DIR" ]] && echo 1 || echo 0)"
+unset CLAUDE_SESSION_REPO
+
+echo
 echo "== summary: $PASS passed, $FAIL failed =="
 if [[ "$FAIL" -gt 0 ]]; then
   echo "FAILED: state-lock tests" >&2
