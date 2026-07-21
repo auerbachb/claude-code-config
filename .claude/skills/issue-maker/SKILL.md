@@ -1,6 +1,6 @@
 ---
 name: issue-maker
-description: Capture-only thread mode for drafting and opening well-structured GitHub issues. Puts the thread into issue-capture mode — the only job is creating, editing, and closing issues (no implementation, no worktrees, no /start-issue). Always reflects before writing (1–3 scope/clarifying questions), creates canonical 6-section bodies with functional-first tone, runs dedup search, suggests labels, supports batch + cross-references, and prints the issue URL as the closing line of every create/update. Offers a one-click coding chip alongside every created issue's link (dismissed automatically on retract). Supports /update <N> <statement>, natural-language edit-in-place, and retract. Invoke as `/issue-maker [rapid-fire] [--export-prompt]`.
+description: Capture-only thread mode for drafting and opening well-structured GitHub issues. Puts the thread into issue-capture mode — the only job is creating, editing, and closing issues (no implementation, no worktrees, no /start-issue). Auto-opens issues (no approval gate) and reports back a concise summary plus the scope calls it made as decision points; creates canonical 6-section bodies with functional-first tone, runs dedup search, auto-applies validated labels, supports batch + cross-references, and prints the issue URL as the closing line of every create/update. Offers a one-click coding chip alongside every created issue's link (dismissed automatically on retract). Supports /update <N> <statement>, natural-language edit-in-place, and retract. Invoke as `/issue-maker [rapid-fire] [--export-prompt]`.
 triggers:
   - open an issue
   - new issue
@@ -17,22 +17,24 @@ argument-hint: "<issue description | 'batch: ...' | '/update #N: ...' | 'close #
 
 This skill switches the **whole thread** into issue-capture mode and keeps it there. The only work that happens here is creating, editing, and closing GitHub issues. No implementation, no worktrees, no branches, no `/start-issue`, no in-thread CR-plan polling. Capture mode is a **session invariant** — it never turns off mid-thread.
 
-## TOP-LEVEL RULE — reflect before you write (NON-NEGOTIABLE)
+## TOP-LEVEL RULE — reflect before you file (NON-NEGOTIABLE)
 
-> **Always pause and ask 1–3 clarifying / scope questions before drafting any issue.** This rule is first on purpose — it is not a checklist item to skim past.
+> **Never pass a user's sentence straight through to `gh issue create`.** Every issue gets the reflection pass below — the skill just no longer *gates* on it. Default mode auto-opens the issue, then reports the scope calls it made as **decision points** (Step 9a); it does not stop to ask first.
 
-**Why this is rule #1 — the LLM pass-through bias.** LLMs have a strong bias toward passing input straight through the model to a quick output — the machine analogue of a human making assumptions instead of stopping to think before writing something down. Without an explicit, top-of-file guardrail, this skill *will* degrade into a thin wrapper around `gh issue create`: a user sentence in, a half-baked issue out. The reflection discipline below is the entire point of the skill. **Do not water it down, move it lower, or "optimize" it away under time pressure.** A future maintainer reading this should treat any change that weakens the reflection step as a regression.
+**Why this is rule #1 — the LLM pass-through bias.** LLMs have a strong bias toward passing input straight through the model to a quick output — the machine analogue of a human making assumptions instead of stopping to think before writing something down. Without an explicit, top-of-file guardrail, this skill *will* degrade into a thin wrapper around `gh issue create`: a user sentence in, a half-baked issue out. The reflection discipline is the entire point of the skill. **Do not water it down or "optimize" it away under time pressure.** Issue #691 changed *where* the reflection surfaces — as a post-create decision-points report instead of an upfront Q&A — **not whether it happens.** Treat any change that removes the reflection pass, or lets an issue be filed with no decision-points report naming the calls made, as a regression.
 
-Before drafting **every** issue, ask 1–3 questions drawn from:
+Run this reflection pass on **every** issue, before and after drafting:
 
 1. **Scope check (narrow):** "Is this tighter than it sounds — is the real ask just X?"
 2. **Scope check (expand):** "Is there an adjacent concern (Y) that should ride along so the change is coherent?"
-3. **Split check:** "This sounds like 2+ distinct issues — should I split it into subsidiary issues?"
-4. **Ambiguity:** name any concrete word/phrase whose meaning materially changes the issue and ask what was meant.
+3. **Split check:** "This sounds like 2+ distinct issues — should it be split into subsidiary issues?"
+4. **Ambiguity:** name any concrete word/phrase whose meaning materially changes the issue.
 
-Also: **surface assumptions explicitly.** When the description leaves something implicit, restate the assumption and ask for confirmation rather than silently encoding it in the body.
+Also **surface assumptions explicitly**: when the description leaves something implicit, name the assumption you encoded rather than burying it silently.
 
-**Rapid-fire override (escape hatch).** The user can opt out of questions — per issue (`"just create it"`, `"skip questions"`) or per thread (`/issue-maker rapid-fire`, `"switch to rapid-fire mode"`). Rapid-fire skips the clarifying questions and confirmation prompts and auto-applies suggested labels, but **still** runs dedup (blocking only on an exact title match), still emits the canonical body, and still prints the issue URL as the closing line. Switch back with `"switch to default mode"`.
+**Where the reflection goes.** In default mode you make these calls yourself and **report them as decision points after filing** (Step 9a) — the user reads what you decided and can `/update #N` or `close #N` in one step if a call was wrong (issues are cheap to change). Ask up front **only** when a call is genuinely blocking: the ask spans two clearly separate issues and filing one combined issue would be actively wrong, or a word is so ambiguous the body cannot be written without it. Bias hard toward filing and reporting — a blocking question is the rare exception, not the rhythm.
+
+**Rapid-fire override (leaner escape hatch).** Rapid-fire — per thread (`/issue-maker rapid-fire`, `"switch to rapid-fire mode"`) or per issue (`"just file it"`, `"skip the commentary"`) — is now the *leaner* of two auto-opening modes, not "the one without the gate" (default has no gate either). It never asks up front even on an ambiguous call, blocks dedup only on an exact title match (default pauses on a strong-or-exact match — Step 4), and emits a terser report: the closing URL, optionally a one-line summary, without the decision-points elaboration. It still auto-applies labels, still emits the 6-section body, still prints the closing URL. Switch back with `"switch to default mode"`.
 
 ## Issue body tone & audience (default — NON-NEGOTIABLE)
 
@@ -70,7 +72,7 @@ if [ -f "$LOG" ]; then
 fi
 ```
 
-Chip state survives compaction because it lives in `$LOG` (Step 9b writes `chip_task_id` there, not just in-memory) — the recap line above is what surfaces it back to the user after a fresh invocation.
+Chip state survives compaction because it lives in `$LOG` (Step 9c writes `chip_task_id` there, not just in-memory) — the recap line above is what surfaces it back to the user after a fresh invocation.
 
 Then re-affirm: *"Still in capture mode — describe issues to create, or use `/update #N …`, `edit #N …`, or `close #N`."* If the log is corrupt/unreadable, warn the user and offer to start a fresh session log.
 
@@ -88,7 +90,7 @@ jq -n --arg repo "$REPO" --arg now "$NOW" --arg sid "$SESSION_ID" --arg mode "$M
     created_at:$now, last_updated_at:$now, issues:[]}' > "$TMP" && mv "$TMP" "$LOG"
 ```
 
-Banner: *"Thread is now in issue-capture mode. I will only create, edit, or close issues — no implementation, no worktrees, no branches. Describe an issue and I'll ask a couple of scope questions before drafting."*
+Banner: *"Thread is now in issue-capture mode. I will only create, edit, or close issues — no implementation, no worktrees, no branches. Describe an issue and I'll open it, then report a quick summary and the scope calls I made."*
 
 **Repo detection (AC):** the `gh repo view` above auto-detects the target repo from cwd. If it returns empty (not a git repo / `gh` failed / ambiguous), **ask the user** which `owner/repo` to target before creating anything, then **persist it to the log** so compaction recovery and later `--repo` calls see it:
 
@@ -132,17 +134,17 @@ Never create worktrees/branches, never edit code, and **never poll for a CodeRab
 
 ---
 
-## Step 3: Reflect, then draft (the create flow)
+## Step 3: Reflect, then draft, then auto-file (the create flow)
 
 For each issue the user describes (see Step 6 for batches):
 
-1. **Reflect** — unless rapid-fire is active, ask the 1–3 scope/clarifying questions from the top-level rule. If the description plausibly spans two or more distinct concerns, **explicitly propose splitting** into subsidiary issues and let the user decide. Surface assumptions for confirmation.
-2. **Dedup search** (Step 4) — surface likely duplicates before drafting further.
+1. **Reflect** — run the reflection pass from the top-level rule (narrow / expand / split / ambiguity / assumptions). You make these calls yourself; they resurface as decision points in the report (Step 9a). Ask up front only on a genuinely blocking call (top-level rule); otherwise proceed.
+2. **Dedup search** (Step 4) — surface likely duplicates; pause before filing only on a strong or exact match.
 3. **Draft the body** using the canonical 6-section template (Step 5), honoring the tone defaults. Detect any explicit-ask override and flip to technical-first for that issue only.
-4. **Title** — concise, **≤70 characters**. If it would exceed 70, propose a trimmed version (or, in rapid-fire, auto-trim and note it).
-5. **Labels** (Step 7) and **cross-references** (Step 8).
-6. **Confirm** — default mode shows the draft title + body and asks *"Create this issue? (Y / n / edit)"*. Rapid-fire skips this.
-7. **Create**, record in the log (Step 9), and **print the URL as the closing line** (Step 9).
+4. **Title** — concise, **≤70 characters**. If it would exceed 70, auto-trim and note the trim in the decision points.
+5. **Labels** (Step 7, auto-applied) and **cross-references** (Step 8).
+6. **Create automatically** — no full-body reprint, no "Create this issue? (Y/n/edit)" gate. Record in the log (Step 9).
+7. **Report + print the URL** — emit the concise summary + decision points (Step 9a), offer the coding chip (Step 9c), and **print the URL as the closing line** (Step 9).
 
 ---
 
@@ -172,9 +174,9 @@ fi
 
 - **Guard:** if no significant keywords remain, skip the dedup search.
 - **Helper missing, or `DEDUP_RC` ≥ 2:** fall back to the title-only `gh issue list --search "$KEYWORDS in:title"` over open and recently-closed issues, and say the check was degraded when surfacing results.
-- **Interpreting matches:** `/issue-maker` always has a human in the loop, so it only ever *surfaces* candidates — it never auto-comments in place of filing. The strong/weak/none thresholds in `.claude/reference/autofile-dedup.md` govern autonomous filers (`/wrap`); here they are useful as ranking context when presenting the matches.
-- **Matches found (default mode):** list them and ask *"Similar issues found — create anyway? (y/N)"*.
-- **Rapid-fire:** show matches but proceed unless there is an **exact title match** (then block and ask).
+- **Interpreting matches:** `/issue-maker` always has a human in the loop, so it only ever *surfaces* candidates — it never auto-comments in place of filing. Use the strong/weak/none thresholds in `.claude/reference/autofile-dedup.md` to classify the **top** candidate: a **strong match** (an open issue naming the same primary artifact, with a body sentence or acceptance criterion that already covers this) or an **exact title match** is a genuine pause point; weak/ambiguous matches are not.
+- **Default mode — pause only on a strong or exact match:** if the top candidate clears that bar, surface it and ask *"Looks like a duplicate of #N — file anyway? (y/N)"* before creating. On a weak/ambiguous match, **do not block** — file, and name the near-duplicate as a decision point (Step 9a: "possibly overlaps #N"). No match → file normally.
+- **Rapid-fire:** show any matches but proceed unless there is an **exact title match** (then block and ask).
 
 ---
 
@@ -233,7 +235,7 @@ ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
 
 ## Step 6: Batch input
 
-If the user describes multiple issues in one message (a numbered/bulleted list, or a `batch:` prefix), treat each as its own issue: run the full per-issue flow (reflect → dedup → draft → labels → confirm-unless-rapid-fire → create) **sequentially**, one `gh issue create` per issue. Step 9's chip offering also runs once per issue — a batch of N issues yields N independent chip-or-block outcomes, not one chip for the batch. After the batch, print a summary table (number, title, labels, URL) — each URL still a clickable link.
+If the user describes multiple issues in one message (a numbered/bulleted list, or a `batch:` prefix), treat each as its own issue: run the full per-issue flow (reflect → dedup → draft → labels → auto-create → report) **sequentially**, one `gh issue create` per issue. Step 9's chip offering also runs once per issue — a batch of N issues yields N independent chip-or-block outcomes, not one chip for the batch. After the batch, print a summary table (number, title, labels, URL) — each URL still a clickable link.
 
 ---
 
@@ -247,8 +249,8 @@ REPO_LABELS=$(gh label list --repo "$REPO" --json name --jq '.[].name')
 
 Keyword → label mapping: `bug`/`fix`/`broken` → `bug`; `feature`/`add`/`new` → `feature`; `refactor`/`clean` → `refactor`; `docs`/`documentation` → `docs`; `skill` → `skill`; `rule` → `rule`. Intersect suggestions with `$REPO_LABELS` and drop any that don't exist.
 
-- **Default mode:** propose — *"Suggested labels: `skill`, `docs` — accept? (Y / n / edit)"*.
-- **Rapid-fire:** auto-apply the validated suggestions without asking.
+- **Default mode:** auto-apply the validated suggestions (intersected with `$REPO_LABELS`) and name them in the decision points (Step 9a) — no separate accept prompt.
+- **Rapid-fire:** auto-apply the validated suggestions the same way (they just don't get a decision-points line — see the terser report).
 
 Pass accepted labels as repeated `--label` flags (`LABEL_FLAGS="--label skill --label docs"`).
 
@@ -281,7 +283,18 @@ set_log '.issues += [{number:($n|tonumber), title:$t, url:$u, labels:$labels,
   --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" --argjson labels "$LABELS_JSON"
 ```
 
-### Step 9a: Infer a coding tier (for the chip's Model line)
+### Step 9a: The post-create report — summary + decision points
+
+The report is what replaces the old draft-reprint-and-approve gate, and it is the safety valve that makes auto-filing low-risk. Emit it **immediately after logging the issue** — before the chip (Step 9c) and before the closing URL. Two short parts:
+
+1. **Summary (1–3 sentences).** What issue you just opened, in plain functional terms — the same voice as the body's lead sections, not a section-by-section readout.
+2. **Decision points (1–3 sentences).** The actual calls you made that the user might want to revisit — scope you narrowed or expanded, a split you considered but did *not* make, assumptions you encoded, the labels you auto-applied, a weak-duplicate pointer (Step 4). **Name the concrete call** (e.g. *"scoped to the create flow only; assumed rapid-fire keeps its narrower dedup bar; applied `skill`, `enhancement`"*), never boilerplate like "made some scope decisions." If you genuinely made no non-obvious call, say so in one line rather than padding.
+
+Close by reminding the user the issue is cheap to change — a wrong call is one `/update #N …` or `close #N` away. This report is emitted **in addition to**, never in place of, the closing URL line (Step 9). **Rapid-fire** emits a terser version instead: the closing URL, optionally a one-line summary, and no decision-points elaboration.
+
+Tone precedent: `/wrap`'s terse "here's what I decided — flag anything wrong" framing and `issue-planning.md`'s number/title/rationale/link quartet. Keep the whole report to a few lines; its value is signal density, not length.
+
+### Step 9b: Infer a coding tier (for the chip's Model line)
 
 `/issue-maker` does no tier classification during capture, but the chip requires a `**Model:** {MODEL} — {REASON}` line (`chip-launching.md`). Rather than invoking `/prompt` for a single line, infer the tier directly from the body just drafted in Step 5, using a trimmed, single-issue version of `/prompt`'s Heavy/Standard/Light mapping (`prompt/SKILL.md` Steps 4–5) — no batch aggregation, no dependency counting, no Fable 5 step-up:
 
@@ -299,14 +312,14 @@ set_log '.issues += [{number:($n|tonumber), title:$t, url:$u, labels:$labels,
 
 Default to **Standard** when signals are too sparse to classify confidently (thin bodies, terse rapid-fire captures) — it's the safer default absent a strong signal either way.
 
-### Step 9b: Offer a coding chip (default-on, alongside the closing link)
+### Step 9c: Offer a coding chip (default-on, alongside the closing link)
 
 Immediately after logging the issue, offer a one-click coding chip **in addition to**, never in place of, the closing URL line below. This runs unconditionally — including in rapid-fire mode, with no extra confirmation and no opt-out flag today.
 
 Check chip availability per `.claude/reference/chip-launching.md`. The coding-thread prompt is the same regardless of mode:
 
 ```
-**Model:** {MODEL from Step 9a} — {one-line reason, e.g. "rules + skill wiring" or "single-file addition"}
+**Model:** {MODEL from Step 9b} — {one-line reason, e.g. "rules + skill wiring" or "single-file addition"}
 {Model-guard preamble — insert verbatim from `chip-launching.md` "Model-guard preamble", immediately after this line, no blank line between}
 
 You are picking up a freshly captured issue from an `/issue-maker` capture thread — no CR plan, worktree, or codebase exploration has happened yet.
@@ -340,6 +353,14 @@ Every created issue ends with exactly one of: a chip, or a printed block — nev
 
 If the user asks to "print the full prompt for #N" while in chip mode, re-emit that issue's complete block verbatim (Model line + guard preamble included) — the chip stays offered (`chip-launching.md` "Print-on-demand replay").
 
+**Print the full issue for #N (on demand).** Because default mode no longer reprints the body at create time, the whole body is available on request instead: when the user asks to **"print the full issue for #N"** (or "show me the whole body of #N"), re-emit that issue's complete 6-section canonical body, sourced from GitHub as the source of truth so the reprint always matches what was filed:
+
+```bash
+gh issue view "$N" --repo "$REPO" --json body --jq .body
+```
+
+This is distinct from the "print the full prompt for #N" replay just above, which re-emits the coding-chip *prompt*, not the issue body. Printing is not a state change — the issue stays exactly as-is (mirrors `chip-launching.md` "Print-on-demand replay").
+
 Closing line format:
 
 ```
@@ -365,7 +386,7 @@ A first-class command for adding information to an existing issue **without leav
    - a **comment** on the issue rather than a body edit (status/context that doesn't belong in the canonical spec)?
 
    Default bias: prefer **body edits** for AC/scope, prefer **comments** for status/context.
-3. **Reflect** — apply the same scope / split / clarifying-question discipline as a fresh issue. If the new statement implies the issue should be **split**, surface that instead of blindly appending.
+3. **Reflect** — apply the same scope / split / reflection discipline as a fresh issue. If the new statement implies the issue should be **split**, surface that instead of blindly appending.
 4. **Propose** the concrete diff (the edited body, or the comment text) and ask for confirmation.
 5. **Apply** once confirmed:
    ```bash
@@ -428,16 +449,18 @@ Then print: *"Issue #N closed."* — append *"(chip withdrawal failed — it may
 
 ## Step 13: Portable-prompt emission (`--export-prompt`)
 
-When invoked with `--export-prompt`, **do not create anything** — instead emit a standalone, paste-in prompt that codifies the same capture-mode behavior (reflection discipline + LLM pass-through rationale, functional-first tone, 6-section body, dedup, refusal of workflow-advancing actions, closing-line URL rule). This lets the user carry the same discipline into a repo or thread where this skill isn't installed. Output the prompt in a fenced block and stop.
+When invoked with `--export-prompt`, **do not create anything** — instead emit a standalone, paste-in prompt that codifies the same capture-mode behavior (reflection surfaced as a post-create decision-points report + LLM pass-through rationale, auto-open with no approval gate, functional-first tone, 6-section body, dedup, refusal of workflow-advancing actions, closing-line URL rule). This lets the user carry the same discipline into a repo or thread where this skill isn't installed. Output the prompt in a fenced block and stop.
 
 ---
 
 ## Modes summary
 
-| Mode | Clarifying questions | Confirmation prompt | Labels | Dedup |
-|------|---------------------|---------------------|--------|-------|
-| **default** | ask 1–3 | show draft, ask Y/n/edit | propose, confirm | surface matches, ask |
-| **rapid-fire** | skipped | skipped | auto-apply validated | run; block only on exact title match |
+Both modes **auto-open** the issue — no draft reprint, no approval gate — and both auto-apply validated labels. What distinguishes them is the **report** and the **dedup bar**:
+
+| Mode | Upfront questions | Create | Post-create report | Labels | Dedup pause |
+|------|-------------------|--------|--------------------|--------|-------------|
+| **default** | none (blocking ask only on a genuinely undecidable call) | auto-open | summary + decision points (Step 9a) | auto-apply validated | strong **or** exact match |
+| **rapid-fire** | none, ever | auto-open | terser — closing URL, optional one-liner | auto-apply validated | exact title match only |
 
 Mode is stored in `.mode` in the session log and persists across compaction — both on first invocation (seeded from `/issue-maker rapid-fire`, Step 1) and on an explicit switch. A switch is a log write, not just an in-memory note, so compaction recovery reads the right mode:
 
@@ -445,7 +468,7 @@ Mode is stored in `.mode` in the session log and persists across compaction — 
 set_log '.mode = $v' --arg v rapid-fire   # or: --arg v default
 ```
 
-Switch with `"switch to rapid-fire mode"` / `"switch to default mode"`. Rapid-fire never suspends the closing-line URL rule or the 6-section body shape.
+Switch with `"switch to rapid-fire mode"` / `"switch to default mode"`. Neither mode ever suspends the closing-line URL rule or the 6-section body shape.
 
 ---
 
@@ -463,9 +486,10 @@ ln -s "$HOME/.claude/skills-worktree/.claude/skills/issue-maker" "$HOME/.claude/
 
 ## Usage examples
 
-- `/issue-maker` — enter capture mode; describe issues and the skill asks scope questions before drafting each.
-- `/issue-maker rapid-fire` — capture mode with questions/confirmations skipped (URL + 6-section body still enforced).
+- `/issue-maker` — enter capture mode; describe an issue and the skill auto-opens it, then reports a concise summary + the scope calls it made as decision points.
+- `/issue-maker rapid-fire` — leaner capture mode: same auto-open, terser report (URL only), dedup blocks only on an exact title match.
 - `/update 449 "add an edge case for empty input"` — fetch #449, classify the statement, propose a diff/comment, confirm, apply, print the link.
 - `"also add a Test Plan item to #312"` — natural-language edit-in-place.
 - `"scratch that, close #318"` — retract.
+- `"print the full issue for #312"` — re-emit #312's complete 6-section body (fetched from GitHub).
 - `/issue-maker --export-prompt` — emit a portable capture-mode prompt for use elsewhere.
