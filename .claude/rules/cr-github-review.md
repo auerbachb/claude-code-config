@@ -25,7 +25,7 @@ Before the first poll tick:
 
 Run before the first poll tick and before any new review trigger on fresh push, resume, or post-compaction re-entry.
 
-1. Fetch all 3 comment endpoints (`per_page=100`): reviews, inline comments, issue comments.
+1. Fetch all 3 comment endpoints (**Polling** below).
 2. Identify unresolved findings from `coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, or `graphite-app[bot]` (no fix reply, code unchanged, not outdated/resolved).
 3. **If ANY unresolved findings exist: invoke `/fixpr` now** — do NOT request a new review on top of unaddressed feedback.
 4. Do not poll/request review until step 3 completes.
@@ -61,7 +61,7 @@ Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget
 
 ### Rate Limits & Behavior (Pro Tier)
 
-**Cap:** ~**8** CR PR reviews/hour (plan on 8). Batch fixes into one commit/push; max **2** explicit `@coderabbitai full review`/PR/hour (surface the user at the 2nd recorded trigger). On cooldown/exhaustion, local review first, then escalate CR → BugBot → Greptile → self-review. Consumption tracked via `cr-review-hourly.sh`. Full caps and script flags: `.claude/reference/cr-rate-limits.md`.
+**Cap:** ~**8** CR PR reviews/hour (plan on 8). Batch fixes into one commit/push; max **2** explicit `@coderabbitai full review`/PR/hour (surface the user at the 2nd recorded trigger). On cooldown/exhaustion, local review first, then escalate per **Timeout & Fallback** below. Consumption tracked via `cr-review-hourly.sh`. Full caps and script flags: `.claude/reference/cr-rate-limits.md`.
 
 ### Polling
 

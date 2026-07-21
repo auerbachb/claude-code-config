@@ -4,7 +4,7 @@
 > **Ask first:** Never — fix findings autonomously.
 > **Never:** Trigger Greptile before checking if BugBot already posted a review. Include `@cursor` in reply comments (may trigger a re-review). Ignore BugBot findings.
 
-BugBot is the **second-tier** reviewer (Cursor, per-seat) between CR and Greptile: **CR → BugBot → Greptile → self-review.** Parallel CodeAnt/Graphite: `cr-github-review.md`.
+BugBot is the **second-tier** reviewer (Cursor, per-seat) between CR and Greptile. Chain and parallel CodeAnt/Graphite: `cr-github-review.md`.
 
 **Always-trigger:** CI posts `@cursor review` on every PR open/push (`cursor-review-pr-comment.yml`); GitHub auto-trigger is unreliable — see `feedback_bugbot_auto_trigger_unreliable.md`.
 
@@ -19,9 +19,9 @@ BugBot is the **second-tier** reviewer (Cursor, per-seat) between CR and Greptil
 
 ## Polling for BugBot Reviews
 
-Poll alongside CR every 60 seconds on all three endpoints (same pattern — `pulls/{N}/reviews`, `pulls/{N}/comments`, `issues/{N}/comments` with `per_page=100`). Filter by `.user.login == "cursor[bot]"`.
+Poll alongside CR every 60 s on all three endpoints — same pattern as `cr-github-review.md` **Polling**. Filter by `.user.login == "cursor[bot]"`.
 
-**Fallback timing:** Do not maintain a separate CR-owned BugBot timeout here. The escalation gate decides whether to keep polling, switch to BugBot, trigger Greptile, or self-review. Once BugBot owns the PR, keep 60 s cadence and use the `Cursor Bugbot` completion signal below.
+**Fallback timing:** Do not maintain a separate CR-owned BugBot timeout here — the escalation gate owns that decision (`cr-github-review.md`). Once BugBot owns the PR, keep 60 s cadence and use the `Cursor Bugbot` completion signal below.
 
 **Completion signal:** BugBot creates a CI check-run named `Cursor Bugbot` that transitions to `status: "completed"` when the review finishes. The `conclusion` field is `neutral` when BugBot posted findings (still counts as a completed review — `neutral` is not a failure). Completion can also be detected via BugBot review comments appearing on any of the three endpoints.
 
@@ -33,7 +33,7 @@ BugBot becomes the active reviewer (`reviewer: bugbot`) when:
 1. The escalation gate returns `STATUS=switch_bugbot`, and
 2. The caller persists sticky ownership with `.claude/scripts/reviewer-of.sh <PR_NUMBER> --sticky bugbot`.
 
-**Sticky assignment:** Once a PR is assigned to BugBot (CR failed, BugBot responded), it stays on BugBot unless BugBot also fails — then Greptile takes over permanently.
+**Sticky assignment:** canonical in `cr-github-review.md` (Timeout & Fallback).
 
 ## Processing BugBot Findings
 
@@ -45,7 +45,7 @@ Verify all findings against actual code. Fix all valid findings in one commit, p
 
 ## Merge Gate
 
-**A clean BugBot review satisfies the merge gate alone.** CR path needs an explicit `APPROVED` on current HEAD (see `cr-merge-gate.md` Step 1).
+**A clean BugBot review on current HEAD satisfies the merge gate alone** (`cr-merge-gate.md` Step 1).
 
 ## Re-Reviews
 
