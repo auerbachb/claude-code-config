@@ -109,7 +109,7 @@ Run only when invoked **without** `--tick`.
 ### A1. Validate the PR
 
 ```bash
-PR_JSON=$(gh pr view "$PR" --json number,state,merged,headRefOid 2>&1) || {
+PR_JSON=$(gh pr view "$PR" --json number,state,headRefOid 2>&1) || {
   echo "ERROR: PR #$PR not found or gh failed: $PR_JSON" >&2; exit 1; }
 PR_PR_STATE=$(jq -r '.state' <<<"$PR_JSON")     # OPEN | MERGED | CLOSED
 if [[ "$PR_PR_STATE" != "OPEN" ]]; then
@@ -212,7 +212,7 @@ GATE_JSON=$("$MERGE_GATE_SH" "$PR"); GATE_EXIT=$?
 case "$GATE_EXIT" in
   0|1) ;;                                  # valid gate JSON — proceed to classify
   3)  # PR not found / closed / merged — let T3's terminal handling decide (merged vs closed)
-      PR_NOW=$(gh pr view "$PR" --json state,merged --jq '{state,merged}' 2>/dev/null || echo '{}')
+      PR_NOW=$(gh pr view "$PR" --json state --jq '{state}' 2>/dev/null || echo '{}')
       # fall through to T3 with GATE_JSON unused; T3 row 1/2 classify merged/closed
       SKIP_STATE_READ=1 ;;
   *)  # exit 2/4/other — tooling/transient error. Heartbeat + skip this tick (no classify, no dispatch).
@@ -323,9 +323,9 @@ The classifier (T3) consumes `CR_BUDGET_OK` / `GREP_BUDGET_OK`: a PR whose only 
 Re-fetch the authoritative open/merged state once:
 
 ```bash
-PR_NOW=$(gh pr view "$PR" --json state,merged --jq '{state,merged}')
+PR_NOW=$(gh pr view "$PR" --json state --jq '{state}')
 PR_STATE_NOW=$(jq -r '.state' <<<"$PR_NOW")
-PR_MERGED=$(jq -r '.merged'   <<<"$PR_NOW")
+PR_MERGED=$(jq -r '(.state == "MERGED")' <<<"$PR_NOW")
 ```
 
 | # | Class | Condition | Action |

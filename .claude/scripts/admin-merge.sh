@@ -136,13 +136,13 @@ fi
 OWNER="${OWNER_REPO%/*}"
 REPO="${OWNER_REPO#*/}"
 
-PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,baseRefName,headRefName,merged 2>/dev/null || true)
+PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,baseRefName,headRefName 2>/dev/null || true)
 if [[ -z "$PR_JSON" ]]; then
   echo "ERROR: PR #$PR_NUMBER not found in $OWNER_REPO." >&2
   exit 3
 fi
 PR_STATE=$(echo "$PR_JSON" | jq -r '.state // "UNKNOWN"')
-PR_MERGED=$(echo "$PR_JSON" | jq -r '.merged // false')
+PR_MERGED=$(echo "$PR_JSON" | jq -r '(.state == "MERGED")')
 BASE_REF=$(echo "$PR_JSON" | jq -r '.baseRefName // ""')
 
 if [[ "$PR_MERGED" == "true" ]]; then
@@ -474,7 +474,7 @@ if [[ "$MODE" == "execute" ]]; then
 
   # Post-verify: protection restored + PR merged.
   FINAL_ENFORCE=$(gh api "repos/$OWNER/$REPO/branches/$BRANCH/protection/enforce_admins" --jq '.enabled' 2>/dev/null || echo "unknown")
-  FINAL_MERGED=$(gh pr view "$PR_NUMBER" --json merged --jq '.merged' 2>/dev/null || echo "unknown")
+  FINAL_MERGED=$(gh pr view "$PR_NUMBER" --json state --jq '(.state == "MERGED")' 2>/dev/null || echo "unknown")
   echo "[admin-merge] done: PR merged=$FINAL_MERGED, enforce_admins enabled=$FINAL_ENFORCE"
   if [[ "$FINAL_ENFORCE" != "true" ]]; then
     echo "WARNING: enforce_admins did not report enabled=true — verify manually." >&2

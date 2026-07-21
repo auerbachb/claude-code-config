@@ -233,7 +233,7 @@ Proceed immediately to Phase 2 — do not ask.
 
 ### Step 2.1: Merge gate + autonomous recovery loop (issue #452)
 
-**Authority:** `.claude/scripts/merge-gate.sh` JSON on stdout is the single source of truth for merge readiness. After **every** recovery action, re-fetch the PR HEAD SHA (`gh pr view "$PR_NUM" --json headRefOid,state,merged`) and re-run `merge-gate.sh` — **no stale cache** of gate JSON across iterations.
+**Authority:** `.claude/scripts/merge-gate.sh` JSON on stdout is the single source of truth for merge readiness. After **every** recovery action, re-fetch the PR HEAD SHA (`gh pr view "$PR_NUM" --json headRefOid,state`) and re-run `merge-gate.sh` — **no stale cache** of gate JSON across iterations.
 
 **Environment (optional):** Assign defaults once before looping:
 
@@ -717,7 +717,7 @@ Read session/process state and clean up only what is **provably dead**; surface 
 ```
 
 - **Dead `/loop` jobs (auto-stop).** For each non-durable `/loop` poll in `polling_jobs[]` (or per-PR `babysit` watcher) whose target PR is **merged or closed**, stop it: set the watcher's stop flag (`.prs["$N"].babysit.stop_requested=true` via `session-state.sh --set`, same as `/babysit-pr-stop`) so the next tick exits, and record `Stopped stale /loop job (PR #N watcher — PR already merged)` in `SWEEP_AUTO_HANDLED`. The PR just merged in Phase 2 is the most common case.
-- **Stale handoffs (auto-delete).** For each `~/.claude/handoffs/pr-{N}-handoff.json`, if PR `N` is **merged** (`gh pr view N --json state,merged --jq '.merged'`), delete the file and record `Deleted handoff file pr-N-handoff.json (PR merged)` in `SWEEP_AUTO_HANDLED`. Deleting an already-gone file is a no-op (idempotent). Do **not** delete handoffs for open/un-merged PRs.
+- **Stale handoffs (auto-delete).** For each `~/.claude/handoffs/pr-{N}-handoff.json`, if PR `N` is **merged** (`gh pr view N --json state --jq '.state == "MERGED"'`), delete the file and record `Deleted handoff file pr-N-handoff.json (PR merged)` in `SWEEP_AUTO_HANDLED`. Deleting an already-gone file is a no-op (idempotent). Do **not** delete handoffs for open/un-merged PRs.
 - **Surface (never auto-act).** Add to `SWEEP_NEEDS_DECISION`: durable `CronCreate` jobs still scheduled (`CronList`), any `active_agents` entries (running subagents), monitor-mode flags (`monitoring_active=true`), and any `recovery/dirty-main-*` branches left by `dirty-main-guard.sh`. Word each as e.g. `Active subagent still running: PR #620 Phase C — stop it or let it finish?` or `Durable cron job <id> still scheduled (<prompt>) — keep or CronDelete?`.
 
 #### Step 3.9: Category 4 — Memory persistence (defers to Phase 4)
