@@ -180,6 +180,10 @@ HANDOFF_FILE: ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json
 
 **Note:** Do NOT delete the handoff file. The parent deletes it only after `OUTCOME: merged` and GitHub confirms the PR is merged.
 
+## Skill-First Reflex
+
+Before hand-rolling any side-task not covered by Steps 1-3 above, check whether an existing skill already does it — invoke it via the Skill tool. Clear match → invoke immediately. Borderline match → note it in your exit report and proceed on your own judgment; don't block the phase waiting for an answer. No match → stay silent. Never auto-invoke `/merge` or `/pr-monitor-and-manage` on a fuzzy match — and Step 3's mandated `/wrap` execution is your assigned task, not a fuzzy match, so keep running it as instructed. Full rules: `.claude/rules/skill-first.md`.
+
 ## Autonomy Rules
 
 AC verification and merge gate checking are autonomous. The merge decision is user-gated before Phase C launch: the parent must either ask the user before launching Phase C or pass explicit authorization already provided by the user in the prompt. Once authorized Phase C starts, `/wrap` is set-and-forget and must not ask additional confirmation questions.

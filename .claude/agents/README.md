@@ -84,11 +84,20 @@ Agent tool call:
            branch protection, .env, or a safety.md 'Never' item), structured like
            /admin-merge: exact command + one-line reason.
 
+           SKILLS: Before hand-rolling a multi-step task, check whether an existing
+           skill already does this job — invoke it via the Skill tool instead of
+           reimplementing from memory. Clear match -> invoke immediately. Borderline
+           match -> note it in your exit report, then proceed on your own judgment.
+           No match -> stay silent. Never auto-invoke an authorization-carrying skill
+           (/merge, /wrap, /pr-monitor-and-manage) on a fuzzy match — and this never
+           overrides your own phase's assigned task. Full rules:
+           .claude/rules/skill-first.md.
+
            Existing findings to fix:
            <paste findings here>"
 ```
 
-The SAFETY and MINDSET blocks are mandatory in every subagent prompt (see `.claude/rules/safety.md`). The example above shows where to place them — between the task context and any findings payload.
+The SAFETY, MINDSET, and SKILLS blocks are mandatory in every subagent prompt (see `.claude/rules/safety.md` and `.claude/rules/skill-first.md`). The example above shows where to place them — between the task context and any findings payload.
 
 The agent definition provides the workflow rules. The prompt provides the runtime context. The parent no longer needs to read and embed all rule files manually.
 
