@@ -4,7 +4,7 @@
 
 Division of responsibility between orchestration and fleet monitoring:
 
-- **`/pm` never creates polls.** It is a strictly on-demand orchestrator: cold-start scan, prompt generation, on-demand status when the user asks, and handoff generation. At ≥3 active threads it redirects to `/pr-monitor-and-manage`; it does not offer `CronCreate` or `/loop`.
+- **`/pm` never creates polls.** It is a strictly on-demand orchestrator: cold-start scan, inline execution of selected issues via the `/subagent` A→B→C flow (in-turn Dedicated Monitor Mode, not a recurring poll), thread prompts for the few issues too big for a subagent, on-demand status when the user asks, and handoff generation. At ≥3 active threads it redirects to `/pr-monitor-and-manage`; it does not offer `CronCreate` or `/loop`.
 - **`/pr-monitor-and-manage` owns PR-fleet between-message polling.** It establishes `/loop` at the configured cadence, optionally registers `CronCreate` auto-wake on idle pause, and dispatches per-PR fixes/merges.
 - **`/loop` remains valid for explicit user-invoked "poll every N"** that is not PR-fleet-specific (e.g., "poll every 5m /status" on a single thread). Hand-rolled one-shot `ScheduleWakeup` chains are forbidden for recurring polls.
 - **`CronCreate` is for cross-session durability or fleet jobs owned by dedicated skills** (`/pr-monitor-and-manage` auto-wake, `/babysit-pr --durable`, etc.) — not `/pm`.
@@ -76,7 +76,7 @@ This extends existing recovery; it does not create a second PM-specific recovery
 
 ## Skill integration decision
 
-- `/pm`: detects active worker threads after cold start/resume. At ≥3 threads, redirects to `/pr-monitor-and-manage`. Never creates polls. Records passive tracking in `session-state.json`.
+- `/pm`: runs selected inline-eligible issues via the `/subagent` A→B→C flow (in-turn monitoring) and hands issues too big for a subagent to threads; detects active worker threads after cold start/resume. At ≥3 threads, redirects to `/pr-monitor-and-manage`. Never creates polls. Records passive tracking in `session-state.json`.
 - `/pr-monitor-and-manage`: owns PR-fleet between-message polling with `/loop`, optional `CronCreate` auto-wake, per-PR dispatch, and idle auto-pause.
 - `/subagent`: when it spawns Phase A/B/C agents, it immediately enters Dedicated Monitor Mode for in-turn orchestration and records state. For between-turn PR fleet monitoring, point the user at `/pr-monitor-and-manage`; for explicit user "poll every N" on non-PR work, use `/loop` per `scheduling-reliability.md`.
 - `/status`: remains the default on-demand scan command because it already reconciles PRs, review state, checks, session state, and active agents.

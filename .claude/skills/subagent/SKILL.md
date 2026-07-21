@@ -1,10 +1,10 @@
 ---
 name: subagent
-description: Run Quick/Light issues as subagents directly from a PM thread. Validates complexity, spawns Phase A/B/C agents, monitors progress, and reports merge readiness. Use when small issues should be executed inline instead of in separate coding threads.
+description: Run issues inline as subagents directly from a PM thread — any tier, except issues too big for a subagent. Assesses subagent fit, spawns Phase A/B/C agents, monitors progress, and reports merge readiness. Use to execute selected issues inline instead of in separate coding threads.
 argument-hint: "#42 [#55 #61 ...] (one or more issue numbers)"
 ---
 
-Execute one or more small issues as subagents within the current thread. Each issue goes through the full Phase A/B/C orchestration protocol (fix, review, merge prep) while this skill monitors progress and manages transitions.
+Execute one or more issues as subagents within the current thread. Each issue goes through the full Phase A/B/C orchestration protocol (fix, review, merge prep) while this skill monitors progress and manages transitions. Inline execution is the default for issues of any tier; the only issues routed out to a separate thread are those too big for a subagent (Step 4).
 
 Parse `$ARGUMENTS` as space-separated issue references. Strip `#` prefixes to get bare issue numbers. If no arguments provided, ask the user which issue(s) to execute.
 
@@ -76,66 +76,49 @@ From the returned comments, prefer the most structured/detailed **human-authored
   - Normalize: trim whitespace, strip leading `./`, deduplicate, skip non-path lines
 - Store the CR plan content verbatim for inclusion in the subagent prompt
 
-## Step 3: Extract Complexity Signals
+## Step 3: Gather Scope Signals (inputs to the too-big judgment)
 
-Compute these signals per issue (same logic as `/prompt` Steps 3-4):
+The gate in Step 4 is **not** tier-based and **not** arithmetic — it is a judgment call about whether a single subagent can carry the issue. Collect only the signals that inform that judgment; none of them rejects an issue on its own:
 
-| Signal | How to compute |
-|--------|---------------|
-| `file_count` | Count of files from CR plan file list. If no CR plan, count path-like strings in the issue body (contain `/`, end with a file extension, don't start with `http`). Default: 0. |
-| `dependency_count` | Count of dependency references: `blocked by #N`, `depends on #N`, `blocks #N`, `after #N`, etc. Scan both issue body and comments. |
-| `is_multi_issue` | `true` if more than one issue number was provided as input. |
-| `touches_rules` | `true` if any file path matches `.claude/rules/*.md` OR body mentions "rule file", "workflow protocol". |
-| `touches_claude_md` | `true` if any file path matches `CLAUDE.md` (case-insensitive) OR body mentions "CLAUDE.md". |
-| `touches_skill` | `true` if any file path matches `.claude/skills/` OR issue is about creating/modifying a skill. |
-| `ac_count` | Count of acceptance criteria checkboxes (both `- [ ]` and `- [x]`/`- [X]`) in issue body. |
-| `has_orchestration_keywords` | `true` if body contains: "subagent", "Phase A", "Phase B", "Phase C", "multi-phase", "orchestration", "monitor mode", "handoff". |
-| `scope_keywords` | Collect any of: "typo", "rename", "comment", "config", "doc update", "README", "formatting". |
+| Signal | How to compute | Feeds |
+|--------|---------------|-------|
+| `file_list` / `file_count` | Files from the canonical plan `$PLAN` (Step 2 — CR- or human-authored) when it lists them; otherwise path-like strings in the issue body (contain `/`, end with a file extension, don't start with `http`). A **soft input** to "Phase A won't fit" — read it as *how sweeping* the change is, not as a fixed threshold. | Criterion 1 |
+| `ac_count` | Count of acceptance-criteria checkboxes (both `- [ ]` and `- [x]`/`- [X]`) in the issue body. Scope context only; never a gate on its own. | Criterion 1 |
+| `interactive_markers` | `true` if the issue body **or `$PLAN`** carries genuinely **unresolved** product/design decisions that must be settled mid-build — an open "Open questions"/"Decisions needed" section, "needs discussion", "TBD", "we should decide". An open-questions section the issue already answers does **not** count. | Criterion 2 |
+| `split_markers` | `true` if the issue body **or `$PLAN`** asks to be split — "split into N PRs", "multiple PRs", "break this up" — or its scope spans several independent deliverables. | Criterion 3 |
 
-## Step 4: Classify Tier (Same as `/prompt` Step 5)
+What is deliberately **absent** here: touching `.claude/rules`, `CLAUDE.md`, or `.claude/skills`; high AC or dependency counts; and orchestration keywords no longer route an issue to a thread. Tier (Quick/Light/Standard/Heavy) is not computed — it does not gate inline execution.
 
-Apply this decision tree. When signals conflict, choose the **higher** tier.
+## Step 4: Assess "Too Big for Any Subagent"
 
-### Heavy — reject
-Assign Heavy if ANY: `touches_rules`, `touches_claude_md`, `has_orchestration_keywords`, `file_count > 5`, `dependency_count > 2`, or (`is_multi_issue` AND at least one issue has `file_count > 1` or `ac_count > 3`).
+Tier does **not** decide this — most issues, of any tier, run inline. An issue is **too big** (→ route to a separate thread in Step 5) only if **ANY** of these three criteria hold. This is a judgment call, not arithmetic:
 
-### Standard — reject
-Assign Standard if ANY (and Heavy not triggered): `file_count` 2–5, `ac_count > 3`, `touches_skill`, body >200 words with feature keywords, or `is_multi_issue` with mixed complexity.
+1. **Phase A won't fit one subagent's output budget.** The initial implementation is a very large, many-file change that a single Phase A subagent (~32K output-token budget) couldn't produce in one pass — a sweeping migration across many files, or a large new subsystem. Judge from the `file_list`/scope gathered in Step 3, **not** a fixed file count.
+2. **Needs interactive human judgment mid-build.** The issue carries genuinely unresolved product/design decisions that must be settled *while* implementing and can't be pinned down up front (`interactive_markers`). An "Open questions" section the issue already answers does **not** count — only open calls that would block a subagent mid-build.
+3. **Should be split into multiple PRs.** The issue explicitly asks to be split, or its scope spans several independent deliverables that each deserve their own PR and review cycle (`split_markers`).
 
-### Quick — accept
-Assign Quick only if ALL: `scope_keywords` exclusively from "typo"/"rename"/"comment"/"formatting", `file_count` 0–1, `ac_count` <= 2, `dependency_count` 0, no orchestration/rule/skill signals.
+If **none** hold, the issue is **inline-eligible** — proceed to Step 5 and run it. If **any** holds, mark it **too big** and record the one triggering reason for the Step 5 hand-off message.
 
-### Light — accept
-Assign Light if ANY (and Heavy/Standard/Quick not triggered): `file_count` 0–1, `scope_keywords` include "config"/"doc update"/"README", or issue describes a single-file change.
+**Removed with this gate:** the old Quick/Light-only accept list and its blanket rejections for touching `.claude/rules` / `CLAUDE.md` / `.claude/skills`, for high file/AC/dependency counts, or for orchestration keywords. None of those route an issue to a thread anymore — only the three criteria above do.
 
-### Fallback
-If unclear, default to **Standard** (which means rejection).
+## Step 5: Gate Outcome — Run Inline, or Route Too-Big to a Thread
 
-## Step 5: Gate Check — Validate Candidate Criteria
+Apply Step 4's verdict per issue. **Being too big is not a failure — it routes the issue to a thread so nothing is dropped.**
 
-For each issue, verify ALL of the following:
+- **Inline-eligible** issues → proceed to Step 6 and run them.
+- **Too-big** issues → do NOT execute them here. Emit a thread prompt so the work isn't lost:
 
-| Signal | Threshold |
-|--------|-----------|
-| `file_count` | 0–1 files |
-| `ac_count` | <= 3 acceptance criteria |
-| `dependency_count` | 0 (no blockers or blocked-by) |
-| `touches_rules` | `false` |
-| `touches_claude_md` | `false` |
-| `has_orchestration_keywords` | `false` |
-| Tier classification | Quick or Light only |
+  ```
+  Issue #N is too big for inline subagent execution ({one-line reason: Phase A won't fit in one subagent / needs interactive judgment mid-build / should be split into multiple PRs}).
+  Routing to a separate thread — run `/prompt #N` to generate the thread prompt.
+  ```
 
-**If any signal exceeds its threshold, reject the issue:**
+  (`/prompt #N` with an explicit issue number always produces a full thread-prompt block — see `/prompt` Path A. Routing to a thread is the whole point of the rejection; it never means the issue is dropped.)
 
-```
-Issue #N is too complex for subagent execution (classified as {tier}).
-Failing signals: {list signals that exceeded thresholds}
-Use `/prompt #N` to generate a thread prompt instead.
-```
-
-**If all issues are rejected**, stop and report the rejections. Do not proceed.
-
-**If some pass and some fail**, report the rejections and proceed with the qualifying issues. Ask: "Proceeding with qualifying issues: #{a}, #{b}. The rejected issues need `/prompt` instead."
+**Batch outcomes:**
+- **All inline-eligible** → proceed with all of them (Step 6).
+- **All too-big** → report each issue's reason and its `/prompt` routing. This is a clean outcome, not an error — stop here.
+- **Mixed** → run the inline-eligible issues now and list the too-big ones: "Running inline: #{a}, #{b}. Too big for a subagent (routed to threads): #{c} ({reason}) — run `/prompt #c` for that one."
 
 ## Step 6: Pre-Spawn Setup
 
@@ -196,10 +179,11 @@ Store the complete output — do NOT summarize or excerpt.
 
 For each qualifying issue, spawn a Phase A subagent using the Agent tool.
 
-**Parallel execution rules:**
-- Spawn up to 4 Phase A subagents in parallel (soft limit from subagent-orchestration.md)
-- If more than 4 qualifying issues, stagger: spawn the first 4, then spawn additional agents as earlier ones complete
-- Each subagent gets its own worktree (use `isolation: "worktree"` on the Agent tool call)
+**Parallel execution rules — the 3–4 concurrent-pipeline ceiling:**
+- Treat each issue's A→B→C run as one **pipeline**. Keep at most the concurrency ceiling from `subagent-orchestration.md` ("keep 3-4 active CR-polled PRs max") running at once — **3–4 concurrent pipelines**. Reuse that number; do not invent a new one.
+- If more issues qualify than the ceiling, launch the first 3–4 now and **queue** the rest. Start a queued pipeline only when a running one reaches a **genuinely terminal state — `merged` or `blocked`.** A pipeline parked at `merge_ready` is **not** terminal: merge authorization and Phase C are still ahead, so it keeps its slot until it actually merges (or blocks). Freeing the slot at `merge_ready` would let a new pipeline start while the parked one's Phase C is still pending, pushing total in-flight pipelines past the ceiling.
+- When every slot is held by pipelines parked at `merge_ready`, don't launch more — surface the merge-authorization ask (Step 10). Each authorized merge finishes Phase C and frees a slot for the next queued pipeline.
+- Each subagent gets its own worktree (use `isolation: "worktree"` on the Agent tool call).
 
 **Subagent prompt template** (fill in variables per issue):
 
@@ -570,4 +554,4 @@ When all subagent PRs are either merged or blocked:
 ```
 /subagent #42 #55
 ```
-(Quick/Light issues run as subagents; remaining issues get `/prompt` for separate threads)
+(Issues run inline as subagents by default, regardless of tier; only issues too big for a subagent — Phase A won't fit, needs interactive judgment mid-build, or should be split into multiple PRs — get `/prompt` for separate threads)

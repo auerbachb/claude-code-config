@@ -1,6 +1,6 @@
 ---
 name: prompt
-description: Analyze GitHub issues to assess complexity, recommend a model tier, and generate tailored prompts with pre-extracted context. Use when starting work, planning sprints, right-sizing model choice, or analyzing issue batches. When called with no args in a PM thread, auto-detects suggested issues and partitions subagent candidates from thread prompts.
+description: Analyze GitHub issues to assess complexity, recommend a model tier, and generate tailored prompts with pre-extracted context. Use when starting work, planning sprints, right-sizing model choice, or analyzing issue batches. When called with no args in a PM thread, auto-detects suggested issues, partitioning inline subagent runs (the default) from the few too-big issues that need a separate thread.
 triggers:
   - analyze issue
   - generate prompt
@@ -57,9 +57,9 @@ If `$ARGUMENTS` is empty, check for PM orchestration context. PM context is dete
    - Listed in the `## Active Work` table with status "Awaiting thread start"
 
    **Then exclude** (AND NOT — remove any issue that matches any of these):
-   - Marked as "Active", "In review", "Merged", "Prompt generated", or "Chip offered" in the `## Active Work` table
+   - Marked as "Inline", "Active", "In review", "Merged", "Prompt generated", or "Chip offered" in the `## Active Work` table
 
-   "Chip offered" means `/pm` already offered that issue as a click-to-launch chip — it is offered-but-unstarted, exactly like "Prompt generated", so excluding it prevents double-offering the same issue.
+   "Chip offered" means `/pm` already offered that issue as a click-to-launch chip — it is offered-but-unstarted, exactly like "Prompt generated", so excluding it prevents double-offering the same issue. "Inline" means `/pm` is already running the issue as a subagent, so it is excluded for the same reason.
 
    Example: If `## Suggested Next Issues` lists #42, #55, #61 and the Active Work table shows #42 as "In review", the result is #55 and #61.
 
@@ -173,27 +173,19 @@ If classification is unclear, default to **Standard**. It is better to slightly 
 
 **Skip this step entirely if `PM_AUTO_DETECT` is not `true`** (i.e., when explicit arguments were provided via Path A, or if Path C was taken). When skipped, all issues proceed to Step 6 as thread-prompt issues.
 
-When `PM_AUTO_DETECT=true`, partition the classified issues into two groups using the subagent candidate criteria. Eligibility must be evaluated **per issue**. An issue is **subagent-eligible** if ALL of the following are true:
+When `PM_AUTO_DETECT=true`, partition the classified issues into two groups. **The default is subagent-eligible (inline execution); an issue falls into the thread-prompt group only if it is "too big for any subagent."** Evaluate the too-big test **per issue**, using the same three criteria as `/subagent` Step 4 — a judgment call about whole-issue size and interactivity, **not** tier and **not** file/AC/dependency arithmetic:
 
-| Signal | Subagent-eligible threshold |
-|--------|---------------------------|
-| `file_count` | 0–1 |
-| `ac_count` | ≤ 3 |
+1. **Phase A won't fit one subagent's output budget** — a very large, many-file initial implementation a single Phase A subagent (~32K output budget) couldn't produce in one pass. Judge from the CR-plan file list and scope, not a fixed `file_count`.
+2. **Needs interactive human judgment mid-build** — genuinely unresolved product/design decisions that must be settled *during* implementation. An "Open questions" section the issue already answers does not count.
+3. **Should be split into multiple PRs** — the issue asks to be split, or its scope spans several independent deliverables.
 
-| `dependency_count_per_issue` | 0 (count only dependencies referencing or referenced by this specific issue, not the batch total) |
-
-| `touches_rules` | `false` |
-| `touches_claude_md` | `false` |
-| `has_orchestration_keywords` | `false` |
-| `issue_tier` | Light |
-
-Use per-issue signal values from Steps 4–5, including `issue_tier` (the per-issue tier from the classification decision tree — not the batch tier). Do not use batch-aggregated values for per-issue gating. Apply the table as a gate: if ANY signal exceeds its threshold, the issue is **not** subagent-eligible.
+If **none** hold, the issue is **subagent-eligible** (runs inline). If **any** holds, it is a **thread-prompt issue** (too big). Touching `.claude/rules`, `CLAUDE.md`, or `.claude/skills`, a high `ac_count`, dependencies, orchestration keywords, or a Heavy/Standard `issue_tier` no longer force the thread-prompt group on their own — none of them is a gate here.
 
 **Result of partitioning:**
-- **Subagent-eligible issues** — reported in a separate section with a `/subagent` command suggestion (see Step 6)
-- **Thread-prompt issues** — everything else. These get full prompt blocks as normal.
+- **Subagent-eligible issues (the default, usually the majority)** — reported in a separate section with a `/subagent` command suggestion (see Step 6).
+- **Thread-prompt issues (too big)** — everything the too-big test flagged. These get full prompt blocks as normal, each with a one-line too-big reason.
 
-If all issues are subagent-eligible, the thread-prompt group is empty — only the Subagent Candidates section is output. If no issues are subagent-eligible, the Subagent Candidates section is omitted entirely.
+If all issues are subagent-eligible, the thread-prompt group is empty — only the Subagent Candidates section is output. If no issues are subagent-eligible (every detected issue is too big), the Subagent Candidates section is omitted entirely.
 
 **Batch tier recomputation:** When `PM_AUTO_DETECT=true` and partitioning produces a non-empty subagent-eligible group, the batch tier from Step 5 may be incorrect (it was computed over all issues including the now-partitioned subagent candidates). Recompute the batch tier using only the thread-prompt issues. This includes recomputing all derived signals for that subset (e.g., `is_multi_issue`, dependency totals, and other batch-level aggregates) before reapplying the Step 5 decision tree. If all issues were subagent-eligible (empty thread-prompt group), skip tier computation entirely.
 
@@ -241,9 +233,9 @@ For single-issue input, there is one prompt block. For batch input, there are mu
 When `PM_AUTO_DETECT=true` and subagent-eligible issues exist, output this section first:
 
 ```
-## Subagent Candidates (skip thread — run inline)
+## Subagent Candidates (run inline — default)
 
-These issues are small enough to run as subagents directly in this PM thread:
+These issues run inline as subagents directly in this PM thread — the default for anything not too big for a subagent:
 - #{N} — {Title} ({Tier} tier, {file_count} file(s))
 - #{M} — {Title} ({Tier} tier, {file_count} file(s))
 
@@ -356,7 +348,7 @@ This task is done when:
 - **Multiple issues with mixed complexity:** See the batch handling rule in Step 5 — the most complex issue determines the batch tier.
 - **PM auto-detect finds no issues:** If PM context is detected but no extractable issue numbers are found (e.g., the "Suggested Next Issues" section has no valid issue references), tell the user: "PM context detected but no unstarted issues found in the latest suggestions. Provide issue numbers explicitly: `/prompt #N #M`"
 - **All PM-detected issues are subagent-eligible:** Output only the Subagent Candidates section. No tier recommendation or prompt blocks needed.
-- **All PM-detected issues are thread-prompt-eligible:** Output normally — skip the Subagent Candidates section entirely. This is the same as the explicit-args path.
+- **All PM-detected issues are too big (thread-prompt):** Output normally — skip the Subagent Candidates section entirely. This is the same as the explicit-args path.
 - **`/subagent` skill not yet available:** The Subagent Candidates section outputs a `/subagent` command suggestion regardless of whether the skill exists. If the user runs it and the skill is missing, they will get a clear error. The `/prompt` skill does not gate on `/subagent` availability.
 - **Chip tool unavailable (CLI, headless, older client):** Fallback mode — output is byte-identical to the chip `prompt`, model-guard preamble included (see `chip-model-guard-decision.md`). Do not mention chips.
 - **Spawn fails mid-batch:** Fall back to a printed block for that issue only; the rest of the batch keeps its chips. Do not retry the failed spawn.
@@ -379,7 +371,7 @@ This task is done when:
 ```
 /prompt
 ```
-When called with no args in a PM thread, auto-detects recently suggested issues, classifies each, and partitions into subagent candidates (with `/subagent` command suggestion) and thread prompts.
+When called with no args in a PM thread, auto-detects recently suggested issues, classifies each, and partitions into subagent candidates (the default — run inline via `/subagent`) and the few too-big issues that get thread prompts.
 
 **No arguments outside PM context:**
 ```
