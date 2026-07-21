@@ -476,6 +476,10 @@ if [[ "$MODE" == "execute" ]]; then
   FINAL_ENFORCE=$(gh api "repos/$OWNER/$REPO/branches/$BRANCH/protection/enforce_admins" --jq '.enabled' 2>/dev/null || echo "unknown")
   FINAL_MERGED=$(gh pr view "$PR_NUMBER" --json state --jq '(.state == "MERGED")' 2>/dev/null || echo "unknown")
   echo "[admin-merge] done: PR merged=$FINAL_MERGED, enforce_admins enabled=$FINAL_ENFORCE"
+  if [[ "$FINAL_MERGED" != "true" ]]; then
+    echo "WARNING: PR does not report state=MERGED — the merge may not have completed (e.g. a queued/deferred merge). Verify manually: gh pr view $PR_NUMBER --json state,mergedAt" >&2
+    exit 7
+  fi
   if [[ "$FINAL_ENFORCE" != "true" ]]; then
     echo "WARNING: enforce_admins did not report enabled=true — verify manually." >&2
     exit 7
