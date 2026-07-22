@@ -232,6 +232,7 @@ detect_static() {
           + [ ($doc.repos // {}) | to_entries[] as $r
               | select(($r.value | type) == "object")
               | ($r.value.prs // {}) | to_entries[] as $p
+              | select(($p.value | type) == "object")
               | ($nested | to_entries[])
               | select($p.value[.key] != null and ($p.value[.key] | type) != .value)
               | { path: ".repos[\"\($r.key)\"].prs[\"\($p.key)\"].\(.key)",
@@ -451,7 +452,16 @@ source "$SCRIPT_DIR/state-lock.sh" || die_error "failed to load $SCRIPT_DIR/stat
 
 state_lock_acquire "$STATE_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
 
-# Backup first, never overwriting an existing snapshot.
+# Own the cleanup before anything below can fail. state_lock_acquire chains its
+# release onto the existing trap, so the lock would be freed regardless — but
+# that is subtle enough not to lean on, and every path from here (a failed
+# backup, a failed mktemp) must release the lock and remove the temp files.
+OUT_TMP="${STATE_FILE}.audit.tmp.$$"
+JQ_ERR="$(mktemp)"
+# shellcheck disable=SC2064
+trap "state_lock_release; rm -rf '$SHA_CACHE_DIR' 2>/dev/null; rm -f '$OUT_TMP' '$JQ_ERR' 2>/dev/null" EXIT
+
+# Backup, never overwriting an existing snapshot.
 BACKUP="${STATE_FILE}.bak.$(date -u +%Y%m%dT%H%M%SZ)"
 if [[ -e "$BACKUP" ]]; then
   n=1
@@ -459,11 +469,6 @@ if [[ -e "$BACKUP" ]]; then
   BACKUP="${BACKUP}.${n}"
 fi
 cp "$STATE_FILE" "$BACKUP" || die_error "could not write backup: $BACKUP"
-
-OUT_TMP="${STATE_FILE}.audit.tmp.$$"
-JQ_ERR="$(mktemp)"
-# shellcheck disable=SC2064
-trap "state_lock_release; rm -rf '$SHA_CACHE_DIR' 2>/dev/null; rm -f '$OUT_TMP' '$JQ_ERR' 2>/dev/null" EXIT
 
 # PR keys deliberately targeted by this run — the integrity check below allows
 # these to disappear and nothing else.
@@ -559,6 +564,7 @@ NEW_VIOLATIONS="$(jq -r --argjson top "$FIELD_TYPES_TOP" --argjson nested "$FIEL
     + [ ($doc.repos // {}) | to_entries[] as $r
         | select(($r.value | type) == "object")
         | ($r.value.prs // {}) | to_entries[] as $p
+        | select(($p.value | type) == "object")
         | ($nested | to_entries[])
         | select($p.value[.key] != null and ($p.value[.key] | type) != .value)
         | ".repos[\"\($r.key)\"].prs[\"\($p.key)\"].\(.key)" ] )

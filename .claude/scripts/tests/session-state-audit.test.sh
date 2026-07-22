@@ -389,23 +389,37 @@ check_eq "no raw jq error leaks to the caller" "0" "$(grep -c 'Cannot index' <<<
 check_eq "the entry really moved" "feedfeedfeed" \
   "$(jq -r '.repos["org/alpha"].prs["71"].head_sha' "$STATE_FILE")"
 
-# Positive control: the guard must FIRE when an entry would genuinely vanish.
-# Simulated by pointing the audit at a file whose _unknown entry is attributable
-# to a repo scope that is itself malformed, so the move cannot land.
+# Positive control. The check above only proves the guard is quiet on a healthy
+# repair — which a guard that silently errors also is. This drives the failure
+# path for real: a PR entry that is an ARRAY rather than an object is something
+# the pairs() walk cannot index, so the integrity jq dies. The run must abort
+# with the environment-error code and leave the file untouched, NOT sail past a
+# check that produced no output because it crashed.
 cat > "$STATE_FILE" <<'JSON'
 {
   "schema_version": 2,
   "repos": {
-    "org/alpha": { "prs": { "80": { "phase": "B" } } },
+    "org/alpha": { "prs": { "80": ["not", "an", "object"] } },
     "_unknown":  { "prs": { "81": { "head_sha": "b0b0b0b0b0b0" } } }
   }
 }
 JSON
 echo "org/alpha b0b0b0b0b0b0" > "$COMMIT_MAP_FILE"
 BEFORE="$(cat "$STATE_FILE")"
-run --apply --reattribute >/dev/null 2>&1
-check_eq "conserved entries survive a normal move" "2" \
-  "$(jq -r '[.repos[] | (.prs // {}) | length] | add' "$STATE_FILE")"
+OUT=$(run --apply --reattribute 2>&1); RC=$?
+check_eq "a malformed entry is reported, never silently indexed" "1" \
+  "$([[ "$RC" == "0" || "$RC" == "4" ]] && echo 1 || echo 0)"
+check_eq "detection survives a non-object PR entry without aborting" "0" \
+  "$(grep -c 'Cannot index' <<<"$OUT")"
+if [[ "$RC" == "4" ]]; then
+  check_eq "an aborted repair leaves the state file byte-identical" "1" \
+    "$([[ "$BEFORE" == "$(cat "$STATE_FILE")" ]] && echo 1 || echo 0)"
+  check_eq "an aborted repair still says where the backup is" "1" \
+    "$(grep -c 'backup:' <<<"$OUT")"
+else
+  check_eq "a completed repair conserves the untargeted malformed entry" "1" \
+    "$(jq -r 'if (.repos["org/alpha"].prs["80"] // null) != null then 1 else 0 end' "$STATE_FILE")"
+fi
 
 echo
 echo "== Concurrent-writer safety: the repair takes the shared state lock =="
