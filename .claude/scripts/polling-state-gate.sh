@@ -363,8 +363,11 @@ write_checkpoint_handoff() {
     echo "polling-state-gate.sh: failed to build handoff JSON: $handoff_path" >&2
     exit 4
   fi
-  if ! "$HANDOFF_HELPER" --create "$PR_NUMBER" "$json_body"; then
-    echo "polling-state-gate.sh: handoff-state.sh --create failed for PR #$PR_NUMBER" >&2
+  # Use --init (not --create) so the existence check and write are both inside
+  # the advisory lock: if Phase A writes a richer handoff between our check and
+  # this call, --init is a no-op that preserves Phase A's data (Greptile P1, #682).
+  if ! "$HANDOFF_HELPER" --init "$PR_NUMBER" "$json_body"; then
+    echo "polling-state-gate.sh: handoff-state.sh --init failed for PR #$PR_NUMBER" >&2
     exit 4
   fi
 }

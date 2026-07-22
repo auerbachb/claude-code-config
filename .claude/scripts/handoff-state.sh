@@ -17,6 +17,7 @@
 # USAGE
 #   handoff-state.sh --get    <pr_number>                     # lock-free read
 #   handoff-state.sh --create <pr_number> <json-body>         # locked create/overwrite
+#   handoff-state.sh --init   <pr_number> <json-body>         # locked create-if-absent (no-op if exists)
 #   handoff-state.sh --set    <pr_number> <jq-path>=<value>   # locked scalar update
 #   handoff-state.sh --append <pr_number> <field> <value>     # locked array append
 #   handoff-state.sh --delete <pr_number>                     # locked delete
@@ -108,6 +109,14 @@ case "$1" in
     JSON_BODY="${3:-}"
     if [[ -z "$PR_NUMBER" || -z "$JSON_BODY" ]]; then
       echo "handoff-state.sh: --create requires <pr_number> <json-body>" >&2; exit 2
+    fi
+    ;;
+  --init)
+    MODE="init"
+    PR_NUMBER="${2:-}"
+    JSON_BODY="${3:-}"
+    if [[ -z "$PR_NUMBER" || -z "$JSON_BODY" ]]; then
+      echo "handoff-state.sh: --init requires <pr_number> <json-body>" >&2; exit 2
     fi
     ;;
   --set)
@@ -210,6 +219,26 @@ if [[ "$MODE" == "create" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# --init: create the handoff file ONLY if it does not already exist. The
+# existence check and the write both happen inside the advisory lock, so there
+# is no race between a concurrent Phase A writer and a polling checkpoint.
+# If the file already exists (e.g., Phase A beat us here), exit 0 without
+# touching it — preserving the richer phase handoff (Greptile P1, issue #682).
+# ---------------------------------------------------------------------------
+if [[ "$MODE" == "init" ]]; then
+  if ! printf '%s\n' "$JSON_BODY" | jq -e . >/dev/null 2>&1; then
+    echo "handoff-state.sh: --init body is not valid JSON" >&2
+    state_lock_release; exit 4
+  fi
+  if [[ -f "$HANDOFF_FILE" ]]; then
+    # File already exists — another writer (Phase A/B) got here first; no-op.
+    state_lock_release; exit 0
+  fi
+  _atomic_write "$JSON_BODY"
+  state_lock_release; exit 0
+fi
+
+# ---------------------------------------------------------------------------
 # --delete: lock-guarded delete to prevent a delete from racing a still-running
 # writer on the same PR. Idempotent — deleting an absent file exits 0.
 # ---------------------------------------------------------------------------
@@ -269,8 +298,12 @@ if [[ "$MODE" == "append" ]]; then
       state_lock_release; exit 4
     }
   else
-    # String array: detect whether value is JSON or bare string.
-    if printf '%s' "$ARRAY_VALUE" | jq -e . >/dev/null 2>&1; then
+    # String array: only treat value as pre-encoded JSON when it IS a JSON string
+    # (starts with '"'). Numbers and other JSON scalars must be coerced to strings to
+    # preserve the string-array contract — a bare numeric ID like 1234567890 would
+    # otherwise parse as a JSON number and break exact-value deduplication and
+    # downstream string consumers (Greptile P1, issue #682).
+    if [[ "$ARRAY_VALUE" == '"'* ]] && printf '%s' "$ARRAY_VALUE" | jq -e 'type == "string"' >/dev/null 2>&1; then
       UPDATED="$(printf '%s\n' "$CURRENT" | jq \
         --argjson elem "$ARRAY_VALUE" \
         --arg field "$ARRAY_FIELD" \

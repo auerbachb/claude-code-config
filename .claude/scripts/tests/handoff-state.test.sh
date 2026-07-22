@@ -187,8 +187,55 @@ check_eq "live holder's lock NOT broken" "1" "$([[ -d "$LOCK_DIR" ]] && echo 1 |
 rm -rf "$LOCK_DIR"
 
 echo
+echo "== --init: create-if-absent (no-op when file exists) =="
+reset_handoff
+run --init "$PR" "$SEED_JSON"
+check_eq "--init exits 0 (file absent)" "0" "$?"
+check_eq "file created by --init" "1" "$([[ -f "$HANDOFF_FILE" ]] && echo 1 || echo 0)"
+check_eq "--init creates valid JSON" "0" "$(jq -e . "$HANDOFF_FILE" >/dev/null 2>&1; echo $?)"
+check_eq "--init pr_number correct" "99" "$(jq -r '.pr_number' "$HANDOFF_FILE")"
+# Now overwrite with different content and confirm --init is a no-op
+run --set "$PR" ".notes=already_exists"
+run --init "$PR" "$SEED_JSON"
+check_eq "--init exits 0 when file exists (no-op)" "0" "$?"
+check_eq "--init preserves existing content" "already_exists" "$(jq -r '.notes' "$HANDOFF_FILE")"
+
+echo
+echo "== --init: concurrent race — Phase A beats checkpoint =="
+reset_handoff
+# Simulate: two concurrent --init calls; first one wins, second is a no-op.
+( run --init "$PR" "$SEED_JSON" ) &
+( run --init "$PR" "$(jq -n --argjson s "$SEED_JSON" '$s | .notes = "phase_a_data"')" ) &
+wait
+check_eq "file valid JSON after concurrent --init" "0" \
+  "$(jq -e . "$HANDOFF_FILE" >/dev/null 2>&1; echo $?)"
+check_eq "exactly one --init won, file has pr_number 99" "99" "$(jq -r '.pr_number' "$HANDOFF_FILE")"
+
+echo
+echo "== --append: numeric IDs stored as strings (not JSON numbers) =="
+reset_handoff
+run --create "$PR" "$SEED_JSON"
+run --append "$PR" "findings_fixed" "1734629876"
+check_eq "--append numeric ID exits 0" "0" "$?"
+check_eq "numeric ID stored as string type" "string" \
+  "$(jq -r '.findings_fixed[0] | type' "$HANDOFF_FILE")"
+check_eq "numeric ID value correct as string" "1734629876" \
+  "$(jq -r '.findings_fixed[0]' "$HANDOFF_FILE")"
+# Ensure dedup still works for string-coerced numerics
+run --append "$PR" "findings_fixed" "1734629876"
+check_eq "duplicate numeric ID deduped" "1" \
+  "$(jq '.findings_fixed | length' "$HANDOFF_FILE")"
+# Quoted JSON string IDs still work
+run --append "$PR" "findings_fixed" '"abc-id-1"'
+check_eq "quoted JSON string ID stored correctly" "abc-id-1" \
+  "$(jq -r '.findings_fixed[1]' "$HANDOFF_FILE")"
+check_eq "quoted JSON string ID is string type" "string" \
+  "$(jq -r '.findings_fixed[1] | type' "$HANDOFF_FILE")"
+
+echo
 echo "== Usage errors: exit 2 on bad args =="
 run --create 2>/dev/null; check_eq "--create missing args exits 2" "2" "$?"
+run --init 2>/dev/null;   check_eq "--init missing args exits 2" "2" "$?"
 run --set 2>/dev/null;    check_eq "--set missing args exits 2" "2" "$?"
 run --append 2>/dev/null; check_eq "--append missing args exits 2" "2" "$?"
 run --delete 2>/dev/null; check_eq "--delete missing args exits 2" "2" "$?"
