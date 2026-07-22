@@ -38,6 +38,8 @@ The workflow is fully autonomous. At every phase transition — local review, pu
 - Merging (except `/wrap` / `/merge` / `/pr-monitor-and-manage` — see above)
 - Respawning a failed subagent
 
+**Monitoring is never a permission-gated action — babysitting an in-flight PR is the default, never a question.** When a PR is open and not yet merge-ready, arm the watch yourself and report it; never present a "watch it / babysit / review it yourself — which?" menu, and never wait for the user to say "watch it" first. A CodeRabbit timeout or rate-limit is not a stop-and-ask — it routes autonomously into the reviewer-escalation chain (BugBot → Greptile → self-review, `cr-github-review.md`). Keep it token-safe: arm `/loop` (or `CronCreate` for durable/fleet) so it pauses between ticks and widens on stable-state backoff — never a continuous poll (`scheduling-reliability.md`). Use the existing skills (`/babysit-pr`, `/pr-monitor-and-manage`); add no new machinery. The only authorization left in the babysit→merge loop is the **merge** itself (see "PR MERGE AUTHORIZATION" above and issue #674).
+
 If you catch yourself composing a "should I...?" question about any workflow step, stop — the answer is always yes. Just do it.
 
 ---
