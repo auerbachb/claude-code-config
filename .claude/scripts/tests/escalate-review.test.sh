@@ -261,8 +261,28 @@ OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
 
+############################################################################
+echo "== Scenario (k): CR commit-status rate-limit via state:success + description only (issue #708) -> skips CR gate immediately, no 12-min wait =="
+reset_state
+write_commits "$(ts_seconds_ago 60)"   # recent push (AGE_SECONDS well under 720) — proves no dependency on the AGE_SECONDS fallback
+CR_STATUS_RATE_LIMITED='{"context": "CodeRabbit", "state": "success", "description": "Review rate limited"}'
+jq -n \
+  --arg owner "$OWNER" --arg repo "$REPO" --arg sha "$HEAD_SHA" \
+  --argjson bugbot_run "$BUGBOT_CHECK_RUN_OK" \
+  --argjson status "$CR_STATUS_RATE_LIMITED" \
+  '{
+    pr: {owner: $owner, repo: $repo, head_sha: $sha},
+    check_runs: {all: [$bugbot_run]},
+    commit_statuses: [$status],
+    comments: {reviews: [], inline: [], conversation: []}
+  }' > "$TMP/state.json"
+export FIXTURE_STATE_JSON="$TMP/state.json"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+
 echo
-echo "== Scenario K: check-run data still comes only from pr-state.sh's bundle (#675) =="
+echo "== Scenario L: check-run data still comes only from pr-state.sh's bundle (#675) =="
 # escalate-review.sh reads check-runs via pr-state.sh's `check_runs.all`, which is
 # deduped at the source (newest check suite per (app, name)). That inheritance is
 # the whole reason this script needs no dedup of its own — so guard it: a direct

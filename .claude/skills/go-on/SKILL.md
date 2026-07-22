@@ -163,7 +163,7 @@ gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
   --jq '.[] | select(.context | test("CodeRabbit"; "i")) | {state: .state, description: .description}'
 ```
 
-**Rate limit detection:** If check-run shows `conclusion: "failure"` with title containing "rate limit" (case-insensitive), OR status shows `state: "failure"`/`state: "error"` with description containing "rate limit":
+**Rate limit detection:** If check-run shows `conclusion: "failure"` with title containing "rate limit" (case-insensitive), OR status shows `description` containing "rate limit" — CodeRabbit reports this status as non-blocking `state: "success"`, so do not gate on `state`:
 - `[ACTION]` — CR is rate-limited. Check BugBot (second-tier reviewer) before falling through to Greptile — BugBot auto-triggers on every push, so it may already have responded while CR was blocked:
   ```bash
   gh api "repos/{owner}/{repo}/pulls/$PR_NUM/reviews?per_page=100" \
