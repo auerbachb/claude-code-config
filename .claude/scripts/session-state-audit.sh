@@ -294,7 +294,12 @@ repo_has_commit() {
 
 ATTRIBUTIONS="[]"   # [{pr, repo, sha}]
 UNATTRIBUTABLE="[]" # [{pr, reason, has_notes}]
-if [[ "$OFFLINE" == "0" && "${#REAL_REPOS[@]:-0}" != "0" ]]; then
+# `${#arr[@]}` plainly — REAL_REPOS is always initialized to () above, so this is
+# safe under `set -u` without a :- fallback. The earlier `${#REAL_REPOS[@]:-0}`
+# spelling evaluated correctly on bash 3.2 (macOS) but not on bash 5 (CI), where
+# it silently skipped the whole attribution block: every attribution test failed
+# with an empty result while passing locally.
+if [[ "$OFFLINE" == "0" ]] && (( ${#REAL_REPOS[@]} > 0 )); then
   while IFS=$'\x1f' read -r pr shas_json has_notes; do
     [[ -n "$pr" ]] || continue
     matched_repo=""

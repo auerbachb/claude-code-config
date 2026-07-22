@@ -217,6 +217,14 @@ org/alpha d00dd00dd00d
 org/beta d00dd00dd00d
 MAP
 OUT=$(run --json 2>/dev/null)
+# Assert the attribution block actually RAN before asserting what it found. If
+# it is skipped (no gh, or a guard that misfires on another bash version) every
+# check below fails with an empty result and the cause is invisible — which is
+# exactly how a bash-3.2-only array guard passed locally and failed on CI.
+check_eq "attribution ran (not silently skipped as offline)" "false" \
+  "$(jq -r '.offline' <<<"$OUT")"
+check_eq "candidate repos were discovered" "2" \
+  "$(jq -r '.scopes | map(select(.attributed)) | length' <<<"$OUT")"
 check_eq "single-repo SHA match is attributable" "org/alpha" \
   "$(jq -r '.reattributable[] | select(.pr == "30") | .repo' <<<"$OUT")"
 check_eq "attribution follows preflight_trigger_head_sha too" "org/beta" \
