@@ -54,10 +54,14 @@
 #   --check    Report stale items without deleting. Exit 0 if none, 1 if any.
 #   --apply    Delete stale items that pass safety checks. Exit 0 on success
 #              (or no stale items), 2 on partial failure.
-#   --json     Emit a JSON object instead of human-readable text.
+#   --json     Emit a JSON object instead of human-readable text. Includes a
+#              top-level "root" (the resolved main-worktree root being swept)
+#              plus the stale_*/skipped_* arrays (issue #707).
 #   --root     Path to (or inside) the repo to sweep. Defaults to the caller's
 #              current directory, so the sweep targets the invoking repo even
 #              when the script runs from another checkout (issues #687/#697).
+#              Also accepts --root=<path>. An empty or flag-like value (e.g.
+#              `--root --json`) is a usage error (exit 3).
 #
 # OUTPUT (human-readable, default)
 #   Stale worktrees (older than 7 days):
@@ -117,11 +121,23 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --root)
-      if [[ $# -lt 2 || -z "$2" ]]; then
+      # Flag-like values (e.g. `--root --json`) are a usage error too —
+      # letting them through would fail later at repo resolution with exit 4,
+      # misreporting an argument mistake as an environment error (issue #707).
+      if [[ $# -lt 2 || -z "$2" || "$2" == -* ]]; then
         usage_error "--root requires a non-empty path argument"
       fi
       ROOT_OVERRIDE="$2"
       shift 2
+      ;;
+    --root=*)
+      ROOT_OVERRIDE="${1#--root=}"
+      # Same rejection as the two-arg form. A path that genuinely starts with
+      # '-' can be written as --root=./-name.
+      if [[ -z "$ROOT_OVERRIDE" || "$ROOT_OVERRIDE" == -* ]]; then
+        usage_error "--root requires a non-empty path argument"
+      fi
+      shift
       ;;
     --)
       shift
@@ -552,7 +568,9 @@ emit_json() {
         --argjson sw "$sw_json" --argjson sl "$sl_json" --argjson sr "$sr_json" \
         --arg threshold_days "$STALE_DAYS" \
         --arg threshold_ts "$THRESHOLD" \
-        '{stale_days:($threshold_days|tonumber),
+        --arg root "$ROOT" \
+        '{root:$root,
+          stale_days:($threshold_days|tonumber),
           threshold_ts:($threshold_ts|tonumber),
           stale_worktrees:$wt,
           stale_local_branches:$lb,

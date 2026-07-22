@@ -110,6 +110,9 @@ jobs:
       - name: stale-cleanup.sh + dirty-main-guard.sh invoking-repo scope unit test (issue #697)
         run: bash .claude/scripts/tests/stale-cleanup.test.sh
 
+      - name: dirty-main-guard.sh quarantine-path scope unit test (issue #707)
+        run: bash .claude/scripts/tests/dirty-main-guard.test.sh
+
   # macOS system python3 is 3.9.6 (Xcode CLT) while ubuntu-latest ships 3.10+,
   # so a hook that crashes on 3.9 (e.g. eagerly-evaluated PEP 604 unions,
   # issue #560) passes the job above yet fails open locally. Pin 3.9 here.

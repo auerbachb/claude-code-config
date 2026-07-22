@@ -208,6 +208,34 @@ RC=$?
 check_eq "T7b: unpushed commit on repoB main exits 1" 1 "$RC"
 check_contains "T7b: reports unpushed commit" "unpushed commit" "$OUT"
 
+# ---- T8: --json root key + --root= form + flag-like values (issue #707) ------
+OUT="$(cd "$REPO_B" && "$SUT" --check --json 2>&1)"
+check_json "T8a: --json includes top-level root ending in repoB" "$OUT" \
+  '.root | endswith("/repoB")'
+check_json "T8a: all documented JSON keys present alongside root" "$OUT" \
+  'has("root") and has("stale_days") and has("threshold_ts")
+   and has("stale_worktrees") and has("stale_local_branches") and has("stale_remote_branches")
+   and has("skipped_worktrees") and has("skipped_local_branches") and has("skipped_remote_branches")'
+
+# --root=<path> must behave exactly like the two-arg form.
+OUT_TWOARG="$(cd "$TMP/plain" && "$SUT" --check --json --root "$REPO_B" 2>&1)"
+RC_TWOARG=$?
+OUT_EQFORM="$(cd "$TMP/plain" && "$SUT" --check --json --root="$REPO_B" 2>&1)"
+RC_EQFORM=$?
+check_eq "T8b: --root=<path> exit code matches two-arg form" "$RC_TWOARG" "$RC_EQFORM"
+check_eq "T8b: --root=<path> resolves the same root" \
+  "$(printf '%s' "$OUT_TWOARG" | jq -r '.root')" \
+  "$(printf '%s' "$OUT_EQFORM" | jq -r '.root')"
+
+# Empty or flag-like --root values are usage errors (3), never resolution
+# failures (4) — `--root --json` previously swallowed --json as the path.
+( cd "$REPO_B" && "$SUT" --check --root --json >/dev/null 2>&1 )
+check_eq "T8c: --root with flag-like value exits 3" 3 "$?"
+( cd "$REPO_B" && "$SUT" --check --root=--json >/dev/null 2>&1 )
+check_eq "T8c: --root= with flag-like value exits 3" 3 "$?"
+( cd "$REPO_B" && "$SUT" --check --root= >/dev/null 2>&1 )
+check_eq "T8c: --root= with empty value exits 3" 3 "$?"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then
