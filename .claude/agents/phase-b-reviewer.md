@@ -254,12 +254,40 @@ jq '.check_runs.in_progress_runs' "$STATE"
 
 ## Update Handoff File
 
-On completion, read-modify-write `{{HANDOFF_FILE}}`:
-- Set `phase_completed` to `"B"`
-- Refresh `head_sha` if there was a new push
-- Merge new entries into `findings_fixed`, `threads_replied`, `threads_resolved`, `files_changed`
-- **Deduplicate:** `string[]` fields by exact value; `findings_dismissed` by `.id`
-- Preserve unknown fields (forward compatibility)
+On completion, update `{{HANDOFF_FILE}}` via `handoff-state.sh` so every write is serialized
+under the shared state-lock.sh advisory lock (issue #682). Never write inline with
+`jq … > tmp && mv tmp` — that bypasses the lock and loses concurrent appends.
+
+```bash
+# Resolve handoff-state.sh:
+HANDOFF_STATE_SH=""
+for _candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/handoff-state.sh" \
+    "$HOME/.claude/scripts/handoff-state.sh" \
+    ".claude/scripts/handoff-state.sh"; do
+  if [[ -x "$_candidate" ]]; then HANDOFF_STATE_SH="$_candidate"; break; fi
+done
+if [[ -z "$HANDOFF_STATE_SH" ]]; then
+  echo "ERROR: handoff-state.sh not found" >&2; exit 5
+fi
+PR="{{PR_NUMBER}}"
+
+# Scalar updates (--set):
+"$HANDOFF_STATE_SH" --set "$PR" '.phase_completed="B"'
+"$HANDOFF_STATE_SH" --set "$PR" ".head_sha=$NEW_HEAD_SHA"   # only if a push occurred
+
+# Array appends (--append, one call per new entry; dedup is inside handoff-state.sh):
+"$HANDOFF_STATE_SH" --append "$PR" "findings_fixed"   "$finding_id"
+"$HANDOFF_STATE_SH" --append "$PR" "threads_replied"  "$thread_id"
+"$HANDOFF_STATE_SH" --append "$PR" "threads_resolved" "$thread_id"
+"$HANDOFF_STATE_SH" --append "$PR" "files_changed"    "$filename"
+# findings_dismissed uses object identity (.id field):
+dismissed_json='{"id":"<comment-id>","reason":"<why>"}'
+"$HANDOFF_STATE_SH" --append "$PR" "findings_dismissed" "$dismissed_json"
+```
+
+Deduplication rules enforced by `handoff-state.sh`: `string[]` fields by exact value;
+`findings_dismissed` by `.id`. Unknown fields are always preserved (forward compatibility).
 
 ## Exit criteria — merge gate ONLY (MANDATORY)
 

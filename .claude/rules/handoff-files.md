@@ -2,7 +2,7 @@
 
 > **Always:** Write handoff files on phase completion. Read handoff files before reconstructing state from GitHub API. Update session-state.json on phase transitions. Preserve unknown fields in handoff files.
 > **Ask first:** Never — handoff file operations are autonomous.
-> **Never:** Skip writing the handoff file. Delete one before successful merge. Strip unrecognized fields. Write `session-state.json` outside `session-state.sh` — an inline `jq … > tmp && mv tmp` bypasses the write lock.
+> **Never:** Skip writing the handoff file. Delete one before successful merge. Strip unrecognized fields. Write `session-state.json` outside `session-state.sh` — an inline `jq … > tmp && mv tmp` bypasses the write lock. Write the handoff file outside `handoff-state.sh` — an inline `jq … > tmp && mv tmp` bypasses the handoff write lock.
 
 ## State Files
 
@@ -17,6 +17,8 @@
 Update `session-state.json` on phase transitions and key events (agent launched/completed, review received, dropped poll recovered). **All writes go through `.claude/scripts/session-state.sh --set <jq-path>=<value>`** (read with `--get`); it preserves siblings, writes atomically, and holds the lock below.
 
 **Write lock (issue #639):** `session-state.sh` serializes the whole read-modify-write cycle, not just the `mv`, via `.claude/scripts/state-lock.sh` (portable `mkdir` lockdir; macOS has no `flock(1)`). Unserialized, concurrent writers silently lost each other's changes. `greptile-budget.sh` and `cr-review-hourly.sh` source the same library. A writer that can't acquire the lock (30s default, `CLAUDE_STATE_LOCK_TIMEOUT`) exits **6** having written nothing — treat 6 as "unchanged, retry". Dead-holder locks self-heal; reads don't lock. Failure modes: `state-lock.sh`'s header.
+
+**Write lock (issue #682):** `handoff-state.sh` serializes the whole read-modify-write cycle for per-PR handoff files via the same `state-lock.sh` library. `/babysit-pr`, `/pr-monitor-and-manage`, and Phase B subagents can all race on one PR's handoff simultaneously — concurrent appends without this lock silently lose one writer's changes. All writes — `--create`, `--set`, `--append`, `--delete` — go through `handoff-state.sh`; reads (`--get`, Phase C) are lock-free because `mv` is atomic on POSIX. Exit code **6** = lock timeout (unchanged, retry). Lock path: `~/.claude/handoffs/pr-{N}-handoff.json.lock/`.
 
 **Scoping is not retroactive (issue #651):** #638's migration attributes a legacy entry by its own `owner_repo`, else by its recorded `root_repo` when that path still resolves — legacy entries usually have neither, so they land in `_unknown`, which `infer-pr.sh` and `pr-state.sh` merge into *every* repo's candidates (so the collision persists there) while `--session-view` hides it. Repair with `.claude/scripts/session-state-audit.sh` — read-only by default; `--apply --reattribute` moves entries by verified commit SHA, `--prune` drops long-merged ones but withholds any carrying unactioned `wrap_sweep.needs_decision` notes. Backs up first, holds the lock, re-checks integrity.
 

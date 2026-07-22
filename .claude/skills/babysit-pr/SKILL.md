@@ -74,6 +74,7 @@ resolve_script() {
 PR_STATE_SH=$(resolve_script pr-state.sh)        || { echo "ERROR: pr-state.sh not found" >&2; exit 1; }
 MERGE_GATE_SH=$(resolve_script merge-gate.sh)     || { echo "ERROR: merge-gate.sh not found" >&2; exit 1; }
 SESSION_STATE_SH=$(resolve_script session-state.sh) || { echo "ERROR: session-state.sh not found" >&2; exit 1; }
+HANDOFF_STATE_SH=$(resolve_script handoff-state.sh)  || { echo "ERROR: handoff-state.sh not found" >&2; exit 1; }
 CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh)   || true   # optional; degrade gracefully
 GREPTILE_SH=$(resolve_script greptile-budget.sh)     || true   # optional; degrade gracefully
 PREFLIGHT_SH=$(resolve_script pr-preflight.sh)       || true   # optional; degrade gracefully (#493)

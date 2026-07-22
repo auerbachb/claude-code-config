@@ -56,6 +56,7 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >>
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATE_HELPER="${SCRIPT_DIR}/session-state.sh"
+HANDOFF_HELPER="${SCRIPT_DIR}/handoff-state.sh"
 MERGE_GATE="${SCRIPT_DIR}/merge-gate.sh"
 STATE_FILE="${HOME}/.claude/session-state.json"
 HANDOFF_DIR="${HOME}/.claude/handoffs"
@@ -336,12 +337,10 @@ write_checkpoint_handoff() {
   local handoff_path="${HANDOFF_DIR}/pr-${PR_NUMBER}-handoff.json"
   local now
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  mkdir -p "$HANDOFF_DIR"
-  # Atomic write: temp in same directory as handoff (same filesystem for mv)
-  local tmp
-  tmp="$(mktemp "${HANDOFF_DIR}/.pr-${PR_NUMBER}-handoff-new.XXXXXX")"
-  # Minimal valid handoff: parent polling checkpoint (schema handoff-file-schema.json)
-  if ! jq -n \
+  # Build the JSON body first, then route through handoff-state.sh --create so the
+  # write is protected by the shared state-lock.sh advisory lock (issue #682).
+  local json_body
+  if ! json_body="$(jq -n \
     --argjson pr "$PR_NUMBER" \
     --arg sha "$head_sha" \
     --arg rev "$reviewer" \
@@ -360,14 +359,12 @@ write_checkpoint_handoff() {
       files_changed: [],
       push_timestamp: $now,
       notes: "Polling checkpoint — written by polling-state-gate.sh --ensure-session; Phase A/B handoffs supersede when present from subagents."
-    }' > "$tmp"; then
-    rm -f "$tmp"
-    echo "polling-state-gate.sh: failed to write handoff JSON: $handoff_path" >&2
+    }')"; then
+    echo "polling-state-gate.sh: failed to build handoff JSON: $handoff_path" >&2
     exit 4
   fi
-  if ! mv "$tmp" "$handoff_path"; then
-    rm -f "$tmp"
-    echo "polling-state-gate.sh: could not write handoff: $handoff_path" >&2
+  if ! "$HANDOFF_HELPER" --create "$PR_NUMBER" "$json_body"; then
+    echo "polling-state-gate.sh: handoff-state.sh --create failed for PR #$PR_NUMBER" >&2
     exit 4
   fi
 }
@@ -457,16 +454,10 @@ ensure_session() {
     write_checkpoint_handoff "$head_sha" "$reviewer"
   else
     # Refresh head_sha only — preserve phase_completed, reviewer, and other Phase A/B fields.
-    local tmp
-    tmp="$(mktemp "${HANDOFF_DIR}/.pr-${PR_NUMBER}-handoff-refresh.XXXXXX")"
-    if ! jq --arg sha "$head_sha" '.head_sha = $sha' "$handoff_path" > "$tmp"; then
-      rm -f "$tmp"
-      echo "polling-state-gate.sh: failed to refresh handoff JSON: $handoff_path" >&2
-      exit 4
-    fi
-    if ! mv "$tmp" "$handoff_path"; then
-      rm -f "$tmp"
-      echo "polling-state-gate.sh: could not write handoff: $handoff_path" >&2
+    # Route through handoff-state.sh --set so the whole RMW cycle is under the advisory lock
+    # (issue #682 — same fix as #639 applied to session-state.json).
+    if ! "$HANDOFF_HELPER" --set "$PR_NUMBER" ".head_sha=$head_sha"; then
+      echo "polling-state-gate.sh: handoff-state.sh --set .head_sha failed for PR #$PR_NUMBER" >&2
       exit 4
     fi
   fi
