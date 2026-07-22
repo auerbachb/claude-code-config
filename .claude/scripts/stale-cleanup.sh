@@ -7,11 +7,20 @@
 #   never deletes itself. Two skills consume this script as the single source of
 #   truth for stale worktree/branch detection and safety — /pm-update (Step 8)
 #   and /pm-clean (workspace sweep) — so their results can never diverge (issue
-#   #618). Detects three classes of stale refs on the root repo:
+#   #618). Detects three classes of stale refs on the target repo's root:
 #     1. Local worktrees whose HEAD commit is older than STALE_DAYS.
 #     2. Local branches whose tip commit is older than STALE_DAYS.
 #     3. Remote branches (refs/remotes/origin/*) whose tip commit is older
 #        than STALE_DAYS.
+#
+#   TARGET REPO RESOLUTION (invoking-repo scope — issues #687/#697): the swept
+#   repo is resolved from the CALLER's current directory (or an explicit
+#   --root <path>), never from this script's own location. The script is
+#   routinely invoked from other projects via the ~/.claude/skills-worktree
+#   checkout; resolving from its own path would sweep claude-code-config's
+#   workspace no matter where the caller was standing. The open-PR safety
+#   check runs inside the resolved root for the same reason — the PR set must
+#   describe the repo actually being swept.
 #
 #   Default mode is --check (dry-run). --apply performs the deletions only
 #   for items that pass every safety check below. Nothing is ever deleted in
@@ -39,12 +48,16 @@
 #   stale-cleanup.sh --check                    # dry-run (default)
 #   stale-cleanup.sh --apply                    # delete stale items
 #   stale-cleanup.sh --check --json             # machine-readable output
+#   stale-cleanup.sh --check --root <path>      # sweep a specific repo
 #   stale-cleanup.sh --help | -h
 #
 #   --check    Report stale items without deleting. Exit 0 if none, 1 if any.
 #   --apply    Delete stale items that pass safety checks. Exit 0 on success
 #              (or no stale items), 2 on partial failure.
 #   --json     Emit a JSON object instead of human-readable text.
+#   --root     Path to (or inside) the repo to sweep. Defaults to the caller's
+#              current directory, so the sweep targets the invoking repo even
+#              when the script runs from another checkout (issues #687/#697).
 #
 # OUTPUT (human-readable, default)
 #   Stale worktrees (older than 7 days):
@@ -84,6 +97,7 @@ usage_error() {
 MODE="check"
 JSON=0
 MODE_SET=0
+ROOT_OVERRIDE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
@@ -101,6 +115,13 @@ while [[ $# -gt 0 ]]; do
     --json)
       JSON=1
       shift
+      ;;
+    --root)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        usage_error "--root requires a non-empty path argument"
+      fi
+      ROOT_OVERRIDE="$2"
+      shift 2
       ;;
     --)
       shift
@@ -124,6 +145,8 @@ fi
 NOW="$(date +%s)"
 THRESHOLD=$(( NOW - STALE_DAYS * 86400 ))
 
+# SCRIPT_DIR is used ONLY to locate the repo-root.sh helper next to this
+# script — never to pick the repo to sweep (see TARGET REPO RESOLUTION above).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT_SH="$SCRIPT_DIR/repo-root.sh"
 if [[ ! -x "$REPO_ROOT_SH" ]]; then
@@ -131,10 +154,21 @@ if [[ ! -x "$REPO_ROOT_SH" ]]; then
   exit 4
 fi
 
+# Resolve the repo to sweep from the caller's context — cwd by default, or an
+# explicit --root override. Passing "$SCRIPT_DIR" here was the issue-#697 bug:
+# invoked via ~/.claude/skills-worktree from another project, it swept
+# claude-code-config's workspace instead of the invoking repo's.
 ROOT=""
-if ! ROOT="$("$REPO_ROOT_SH" "$SCRIPT_DIR" 2>/dev/null)"; then
-  echo "error: could not resolve root repo" >&2
-  exit 4
+if [[ -n "$ROOT_OVERRIDE" ]]; then
+  if ! ROOT="$("$REPO_ROOT_SH" "$ROOT_OVERRIDE" 2>/dev/null)"; then
+    echo "error: could not resolve a git repo from --root: $ROOT_OVERRIDE" >&2
+    exit 4
+  fi
+else
+  if ! ROOT="$("$REPO_ROOT_SH" 2>/dev/null)"; then
+    echo "error: could not resolve a git repo from the current directory — run from inside the repo to sweep, or pass --root <path>" >&2
+    exit 4
+  fi
 fi
 if [[ -z "$ROOT" || ! -d "$ROOT" ]]; then
   echo "error: resolved root repo is empty or missing" >&2
@@ -194,7 +228,11 @@ gh_pr_page() {
   if [[ -n "$cursor" ]]; then
     query="$query created:<$cursor"
   fi
-  gh pr list --search "$query" --limit 1000 --json headRefName,createdAt 2>"$GH_TMPERR"
+  # Run gh from the resolved root: gh derives the repo from its cwd, and the
+  # PR set must describe the repo being swept — not the caller's cwd repo,
+  # which differs under --root (and differed under the pre-#697 scope bug,
+  # silently voiding the open-PR safety check).
+  ( cd "$ROOT" && gh pr list --search "$query" --limit 1000 --json headRefName,createdAt ) 2>"$GH_TMPERR"
 }
 fetch_open_prs() {
   local cursor=""

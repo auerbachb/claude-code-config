@@ -19,6 +19,11 @@
 #   repo is on any branch other than main — feature branches are expected
 #   to have dirty state.
 #
+#   The guarded repo is resolved from the CALLER's current directory (the
+#   invoking repo's root), never from this script's own location — the script
+#   is invoked from any project repo, including via the ~/.claude/
+#   skills-worktree checkout (issues #687/#697).
+#
 # USAGE
 #   dirty-main-guard.sh --check
 #   dirty-main-guard.sh --quarantine
@@ -109,8 +114,12 @@ done
 
 [[ -n "$MODE" ]] || usage_error "one of --check or --quarantine is required"
 
-# Resolve root repo via the canonical helper. Script lives in .claude/scripts/
-# inside the root repo, so BASH_SOURCE walks up two levels.
+# Resolve the root repo from the caller's cwd via the canonical helper.
+# SCRIPT_DIR is used only to locate repo-root.sh next to this script — the
+# guard must target the INVOKING repo, not the repo this script happens to
+# live in: passing "$SCRIPT_DIR" to repo-root.sh made cross-repo sessions
+# (invoking via ~/.claude/skills-worktree) check — and on dirty state
+# quarantine — claude-code-config's main instead (issue #697).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT_SH="$SCRIPT_DIR/repo-root.sh"
 if [[ ! -x "$REPO_ROOT_SH" ]]; then
@@ -119,8 +128,8 @@ if [[ ! -x "$REPO_ROOT_SH" ]]; then
 fi
 
 ROOT=""
-if ! ROOT="$("$REPO_ROOT_SH" "$SCRIPT_DIR" 2>/dev/null)"; then
-  echo "error: could not resolve root repo"
+if ! ROOT="$("$REPO_ROOT_SH" 2>/dev/null)"; then
+  echo "error: could not resolve root repo from the current directory"
   exit 2
 fi
 if [[ -z "$ROOT" || ! -d "$ROOT" ]]; then
