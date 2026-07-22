@@ -47,6 +47,9 @@ EOF
 chmod +x "$SCRIPTS/ac-checkboxes.sh"
 
 # --- Fake gh (safe defaults describe a green, clean-BEHIND, no-overlap PR). ---
+# Emulates gh 2.48.0: rejects any `pr view` field list containing `baseRefOid`.
+# FAKE_PRVIEW_ERR: if set, `pr view` prints this to stderr and exits 1 (error injection).
+# FAKE_BASEREF_FAIL: if set to 1, the git/ref/heads call exits 1 (fallback test).
 cat > "$BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 ARGS="$*"
@@ -54,11 +57,27 @@ case "$ARGS" in
   "repo view --json nameWithOwner --jq .nameWithOwner")
     echo "${FAKE_OWNER_REPO:-solo/repo}"; exit 0 ;;
   *"pr view "*"headRefOid"*)
+    # Reject baseRefOid in the field list (gh 2.48.0 does not support it)
+    if echo "$ARGS" | grep -q 'baseRefOid'; then
+      echo 'Unknown JSON field: "baseRefOid"' >&2; exit 1
+    fi
+    # Allow injecting a gh error for error-classification tests
+    if [[ -n "${FAKE_PRVIEW_ERR:-}" ]]; then
+      echo "$FAKE_PRVIEW_ERR" >&2; exit 1
+    fi
     jq -cn \
       --arg ms "${FAKE_MERGESTATE:-BEHIND}" \
       --arg mg "${FAKE_MERGEABLE:-MERGEABLE}" \
       --argjson files "${FAKE_PR_FILES:-[\"mine.txt\"]}" \
-      '{number:1,state:"OPEN",headRefOid:"deadbeefcafedeadbeefcafedeadbeefcafedead",baseRefName:"main",baseRefOid:"ba5eba5eba5eba5eba5eba5eba5eba5eba5eba5e",mergeStateStatus:$ms,mergeable:$mg,files:($files|map({path:.}))}'
+      '{number:1,state:"OPEN",headRefOid:"deadbeefcafedeadbeefcafedeadbeefcafedead",baseRefName:"main",mergeStateStatus:$ms,mergeable:$mg,files:($files|map({path:.}))}'
+    exit 0 ;;
+  *"git/ref/heads/"*)
+    # Best-effort base-SHA resolution; simulate failure via FAKE_BASEREF_FAIL=1
+    if [[ "${FAKE_BASEREF_FAIL:-0}" == "1" ]]; then
+      echo "ERROR: failed to resolve ref" >&2; exit 1
+    fi
+    jq -cn --arg sha "${FAKE_BASE_SHA:-ba5eba5eba5eba5eba5eba5eba5eba5eba5eba5e}" \
+      '{"object":{"sha":$sha}}'
     exit 0 ;;
   *compare/*)
     jq -cn \
@@ -94,6 +113,9 @@ expect_field() {  # expect_field <jq-filter> <want> <desc>
 }
 grep_ok() {    # grep_ok <pattern> <desc>
   if printf '%s\n' "$OUT" | grep -q "$1"; then ok "$2"; else bad "$2 (output: $OUT)"; fi
+}
+grep_absent() {  # grep_absent <pattern> <desc> — asserts pattern is NOT in $OUT
+  if printf '%s\n' "$OUT" | grep -q "$1"; then bad "$2 (pattern '$1' found but should be absent; output: $OUT)"; else ok "$2"; fi
 }
 
 # 1. Green PR, clean BEHIND, base delta does NOT touch PR files → safe (exit 0),
@@ -163,6 +185,47 @@ run
 expect_rc 2 "missing PR number → exit 2"
 run 1 --reviewer bogus
 expect_rc 2 "invalid --reviewer value → exit 2"
+
+# 10. gh 2.48.0 regression: open PR still resolves without baseRefOid in field list.
+#     The stub now rejects baseRefOid, so the happy-path tests above already cover
+#     this implicitly; this is an explicit regression assertion.
+run 1
+expect_rc 0 "open PR resolves correctly with baseRefOid absent from field list (gh 2.48.0 regression)"
+expect_field '.safe_to_offer' 'true' "safe_to_offer true when baseRefOid absent"
+
+# 11. Genuine not-found: gh error text matches not-found phrases → exit 3.
+FAKE_PRVIEW_ERR='GraphQL: Could not resolve to a PullRequest with the number of 999. (repository.pullRequest)' run 999
+expect_rc 3 "genuine not-found gh error → exit 3"
+grep_ok "not found" "not-found message surfaced on exit 3"
+
+# 12. Other gh error (unknown field, rate-limit, network): → exit 4, no not-found message.
+FAKE_PRVIEW_ERR='Unknown JSON field: "wat"' run 1
+expect_rc 4 "other gh error (unknown field) → exit 4"
+grep_absent "not found in" "exit-4 path must NOT print the not-found message"
+grep_ok 'Unknown JSON field' "exit-4 path surfaces the real gh error text"
+
+# 15. Repo-level gh error must NOT be mis-classified as PR not found → exit 4 (not exit 3).
+FAKE_PRVIEW_ERR='GraphQL: Could not resolve to a Repository with the login of "solo" and the name "repo". (organization)' run 999
+expect_rc 4 "repo-level not-found routes to exit 4 (not misclassified as PR missing)"
+grep_absent "not found in" "repo-level error must NOT print the PR-not-found message"
+
+# 16. Generic HTTP 404 error must NOT be mis-classified as PR not found → exit 4.
+FAKE_PRVIEW_ERR='HTTP 404 Not Found' run 999
+expect_rc 4 "HTTP 404 not-found routes to exit 4 (not misclassified as PR missing)"
+grep_absent "not found in" "HTTP 404 error must NOT print the PR-not-found message"
+
+# 13. Base-SHA-fetch failure: git/ref/heads call fails → ref-name fallback, still exit 0.
+FAKE_BASEREF_FAIL=1 run 1
+expect_rc 0 "base-SHA fetch failure → ref-name fallback, still safe to offer (exit 0)"
+expect_field '.safe_to_offer' 'true' "safe_to_offer true even when BASE_SHA not resolved"
+
+# 14. Static: ensure `pr view` never requests `baseRefOid` in actual code (regression guard).
+#     Exclude comment lines (# ...) — the script documents the removed field in comments.
+if grep -E 'pr view.*baseRefOid' "$SRC" | grep -v '^[[:space:]]*#' >/dev/null 2>&1; then
+  bad "source must not request baseRefOid via 'pr view' in code (gh 2.48.0 compat)"
+else
+  ok "source does not request baseRefOid via 'pr view' in code (gh 2.48.0 compat)"
+fi
 
 echo "----------------------------------------"
 echo "clean-behind-check.test.sh: $PASS passed, $FAIL failed"
