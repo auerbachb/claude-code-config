@@ -8,6 +8,20 @@ Canonical mechanics for offering a coding-thread prompt as a **task chip** the u
 
 > **NON-NEGOTIABLE — execution boundary.** Offering a chip is NOT launching a thread. Skills NEVER auto-launch: no Agent-tool spawn, no session start, no work begun on the user's behalf. **The user's chip click is the only launch path.** This does not widen any skill's existing explicit-ask exception (e.g. `/pm`'s "go ahead and run those") — it narrows nothing and grants nothing new.
 
+## PM-context inline gate (before offering a chip)
+
+Per [#613](https://github.com/auerbachb/claude-code-config/issues/613), inline execution is the default for subagent-fit work; a separate thread is for work too big for a subagent. `/pm`, `/prompt`, and `/subagent` already partition inline-vs-thread with `/subagent` Step 4's three-criterion too-big test, so they satisfy this by construction. The **chip surfaces that do not partition** — `/wave`, `/issue-maker`, `/start-issue` — apply this gate **before offering a standalone-thread chip** for subagent-fit work. Audit + rationale: `pm-routing-audit-2026-07.md` (#701).
+
+Check for **live PM context with a free inline slot**:
+
+- **PM context** — a `## Active Work` table is present in the thread (its canonical home, `/pm` 3.2). Its non-terminal rows (`Inline`, `Active`, `Chip offered`, `Prompt generated`) are the in-flight count, `IN_FLIGHT`.
+- **Free slot** — `IN_FLIGHT` is below the 3–4 concurrent-pipeline ceiling (`.claude/rules/subagent-orchestration.md`, derived from CodeRabbit throughput in `cr-rate-limits.md`).
+- **Subagent-fit** — the issue is not "too big for any subagent" by `/subagent` Step 4's three criteria.
+
+**All three hold → prefer inline:** recommend the issue be run inline via `/subagent #N` in the PM thread (or queued behind the ceiling), *instead of* spawning a separate-thread chip. **Any false → offer the chip as before:** no PM context (the common standalone case), a full pipeline, or a too-big issue each make the thread the right hand-off. **Every separate-thread offer made while an inline slot was free must carry a one-line "too big because X" rationale** naming which of `/subagent` Step 4's three criteria forced the thread.
+
+This gate chooses only which *recommendation* to surface — it **never launches anything** (the execution boundary above is absolute). Reuse the existing `## Active Work` / `IN_FLIGHT` state; do not invent a parallel ledger.
+
 ## Availability detection
 
 Chip mode is active **only** when the `mcp__ccd_session__spawn_task` tool is present in the session. Otherwise (CLI, headless, older client) the skill is in **fallback mode**.

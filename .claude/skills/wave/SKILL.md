@@ -14,7 +14,7 @@ Answer one question: **what is the largest set of backlog issues I can start rig
 
 `/wave` ranks nothing itself, launches nothing itself, and writes no code. It selects, caps, and offers.
 
-> **NON-NEGOTIABLE — `/wave` never auto-launches.** Every issue in the wave is *offered* as a chip (or a printed prompt block in fallback mode). **The user's click is the only launch path.** `/wave` does not spawn Agent-tool subagents, does not invoke `/subagent`, and does not treat its own selection as go-ahead. Selecting an issue for the wave is the recommendation; it is not permission. See "Execution boundary" at the end of this file.
+> **NON-NEGOTIABLE — `/wave` never auto-launches.** Every issue in the wave is either *offered* as a chip (or a printed prompt block in fallback mode) or — in a live PM thread with free inline slots — *recommended* for inline execution via `/subagent` (Step 7.0). **The user's action (a chip click, or running `/subagent`) is the only launch path.** `/wave` never spawns Agent-tool subagents and never invokes `/subagent` itself, and does not treat its own selection as go-ahead. Selecting an issue for the wave is the recommendation; it is not permission. See "Execution boundary" at the end of this file.
 
 ---
 
@@ -155,11 +155,13 @@ Take the first `SLOTS` issues from the independent set. Anything past that is ex
 
 ---
 
-## Step 7: Offer the wave as chips
+## Step 7: Offer the wave — inline when PM context is live, else chips
 
-Follow `.claude/reference/chip-launching.md` **verbatim** — availability detection, `spawn_task` shape, model-guard preamble, short-summary format, per-issue fallback on spawn failure. Nothing in this section overrides it.
+**7.0 — PM-context inline gate (before offering any chip).** Apply the gate from `.claude/reference/chip-launching.md` "PM-context inline gate". When this thread already has a `## Active Work` table (PM context) **and** a free inline slot (the `IN_FLIGHT` you computed in Step 2 is below the ceiling), the subagent-fit wave issues should be **recommended for inline parallel execution** — lead with a single `/subagent #{a} #{b} …` line for them rather than spawning chips. Inline runs them in parallel up to the same ceiling, which is exactly what a wave is for, and it keeps them in the one PM thread instead of scattering tabs (#613). Fall through to the chip offer below for issues that are **too big** for a subagent (each carrying its one-line "too big because X" reason), or whenever there is **no PM context** or **no free slot** — a separate thread is the right hand-off there. `/wave` still launches nothing: recommending `/subagent` is not running it (Execution boundary); the user's `/subagent` or click is the only launch path.
 
-For each issue in the final wave:
+**7.1 — Offer the (remaining) wave as chips.** Follow `.claude/reference/chip-launching.md` **verbatim** — availability detection, `spawn_task` shape, model-guard preamble, short-summary format, per-issue fallback on spawn failure. Nothing in this section overrides it.
+
+For each issue still offered as a chip:
 
 - **`prompt`** — the full self-contained thread prompt from `/pm` Step 3.1's template (`**Model:**` line first, model-guard preamble immediately after with no blank line between, then the task / issue body / codebase context / workflow / constraints sections). Reuse that template as written; `/wave` does not define a prompt format of its own.
 - **`title`** — ≤60 chars, starts with a verb, includes the issue number.
@@ -231,7 +233,7 @@ When chip mode is unavailable (CLI, headless, older client), the wave is deliver
 | Rationalization | Reality |
 |---|---|
 | "The user asked for a wave, so they clearly want these running." | They asked for the *set*. Which ones actually run is the click. |
-| "These are all small — running them inline is what `/pm` would do." | `/pm`'s inline default is `/pm`'s. `/wave`'s whole contract is that launch is elective; running them inline deletes the choice this skill exists to give. |
+| "These are all small — I'll just run them inline myself like `/pm` does." | *Recommending* inline via `/subagent` (Step 7.0) is the #613 default in a PM thread — but `/wave` *running them itself* is not. Launch stays elective: which issues run, and how, is the user's action (a chip click or their own `/subagent`), never `/wave`'s. |
 | "I'll just start the top one to save a round-trip." | One auto-launch is the whole violation. There is no partial version of this rule. |
 | "Fallback mode has no chips, so I'll spawn subagents instead." | Fallback prints blocks. Absent chips means fewer delivery options, not a different execution boundary. |
 | "The user said 'go' after seeing the wave." | An explicit user instruction to run specific issues is honored by `/subagent` — invoke that, and only for the issues they named. `/wave` still never launches on its own. |

@@ -314,7 +314,9 @@ Default to **Standard** when signals are too sparse to classify confidently (thi
 
 ### Step 9c: Offer a coding chip (default-on, alongside the closing link)
 
-Immediately after logging the issue, offer a one-click coding chip **in addition to**, never in place of, the closing URL line below. This runs unconditionally — including in rapid-fire mode, with no extra confirmation and no opt-out flag today.
+Immediately after logging the issue, offer a one-click coding chip **in addition to**, never in place of, the closing URL line below. This is default-on — including in rapid-fire mode, with no extra confirmation and no opt-out flag today.
+
+**PM-context inline gate (before the chip).** Apply the gate from `.claude/reference/chip-launching.md` "PM-context inline gate". In the rare case this capture thread also carries live PM context (a `## Active Work` table) with a free inline slot, and the freshly-created issue is subagent-fit, **prefer noting it can be picked up inline via `/subagent #N` in the PM thread** over offering a standalone-thread chip (#613). This is a recommendation in the report, not an in-thread action — capture mode still performs no worktree/branch/implementation work (Step 2). In the common case — a dedicated capture thread with no PM context — there is no free inline pipeline to use, so the chip is the right hand-off and Step 9c proceeds unchanged.
 
 Check chip availability per `.claude/reference/chip-launching.md`. The coding-thread prompt is the same regardless of mode:
 
@@ -351,7 +353,7 @@ Why delegate to `/start-issue` instead of a fuller inline template (like `/pm`'s
   Print only the short summary per issue (per `chip-launching.md` "Short-summary transcript format") — never the full block in chip mode.
 - **Fallback mode** (tool absent, or this issue's `spawn_task` call failed): print the full fenced block above and leave `chip_task_id` as `null`. A failed spawn degrades **only that issue** — note the fallback once per batch; the rest keep their chips.
 
-Every created issue ends with exactly one of: a chip, or a printed block — never neither, and never both. (Batches: this repeats once per issue in the loop — see Step 6.)
+Every created issue ends with exactly one of: a chip, a printed block, or — when the PM-context inline gate above routed it — an inline `/subagent` recommendation; never neither, and never two of them. (Batches: this repeats once per issue in the loop — see Step 6.)
 
 If the user asks to "print the full prompt for #N" while in chip mode, re-emit that issue's complete block verbatim (Model line + guard preamble included) — the chip stays offered (`chip-launching.md` "Print-on-demand replay").
 

@@ -186,12 +186,14 @@ This creates **one canonical planning document** the coding agent can work from.
 
 ## Step 7: Deliver the ready-to-code handoff
 
+**PM-context inline gate (before the chip).** Apply the gate from `.claude/reference/chip-launching.md` "PM-context inline gate". `/start-issue` creates no `## Active Work` table of its own, but when it is invoked *inside* a PM thread that has one — with a free inline slot and a subagent-fit issue — **prefer recommending the issue run inline via `/subagent #N` in that PM thread** over spawning a chip that opens yet another thread (#613); the worktree prepared in Step 6 stays ready if the user would rather code it here instead. In the common case — `/start-issue` as the front door to a fresh coding thread, no PM context — there is no inline pipeline to use, so the chip/handoff below is the right delivery and Step 7 proceeds unchanged. Recommending inline is not launching it (Execution boundary).
+
 **First, check chip availability** per `.claude/reference/chip-launching.md`, then branch. The handoff content is the same in both delivery modes — only how it reaches the user differs:
 
 - **Chip mode** (`mcp__ccd_session__spawn_task` present): call `spawn_task` once for this issue with `title` / `prompt` / `tldr` / `cwd` (shape under "Chip construction" below). Print **only** the short summary — issue, title, `**Model:**` line, one-line rationale — in the reference's exact format. Do **not** also print the fallback block, or the same work is offered twice.
 - **Fallback mode** (tool absent): print the summary block below, unchanged.
 
-**A failed `spawn_task` is treated as unavailable** (per the reference): print the full fallback block instead. Do not retry the spawn. The handoff always ends with exactly one of: a chip, or a printed block — never neither.
+**A failed `spawn_task` is treated as unavailable** (per the reference): print the full fallback block instead. Do not retry the spawn. The handoff always ends with exactly one of: a chip, a printed block, or — when the PM-context inline gate above routed it — an inline `/subagent` recommendation; never neither.
 
 ### Fallback mode output
 
