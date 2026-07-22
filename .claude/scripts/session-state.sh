@@ -1017,12 +1017,14 @@ migrate(\$__pathmap; \$__unknown)"
 | .prs = (\$mine.prs // {})
 | .root_repo = (\$mine.root_repo // null)
 | .active_agents = ((.active_agents // [])
-    | map(select(
+    | if type != \"array\" then [] else . end
+    | map(select(type == \"object\"
+        and (
         if (.owner_repo != null) then (.owner_repo == \$__rk)
         elif (.pr == null) then true
         else ((.pr | tostring) as \$p | (\$otherpr | index(\$p)) == null)
         end
-      )))
+        ))))
 | del(.repos)
 | .repo = \$__rk"
   fi
