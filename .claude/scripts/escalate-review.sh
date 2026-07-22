@@ -188,7 +188,7 @@ CR_RATE_LIMITED="$(jq -r '
   or
   (
     [.commit_statuses[]
-     | select(((.context // "") | test("CodeRabbit"; "i")) and (((.state // "") == "failure") or ((.state // "") == "error")))
+     | select((.context // "") | test("CodeRabbit"; "i"))
      | select((text | test("rate limit"; "i")))]
     | length
   ) > 0
