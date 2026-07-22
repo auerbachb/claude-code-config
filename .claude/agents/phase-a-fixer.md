@@ -163,7 +163,6 @@ HANDOFF_JSON="$(jq -n \
   }')"
 "$HANDOFF_STATE_SH" --create "{{PR_NUMBER}}" "$HANDOFF_JSON"
 ```
-```
 
 ### Step 7: Print Exit Report and EXIT
 
