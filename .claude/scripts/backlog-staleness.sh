@@ -50,6 +50,17 @@ err() {
   printf 'backlog-staleness.sh: %s\n' "$1" >&2
 }
 
+to_epoch() {
+  # Portable ISO-8601 UTC (e.g. 2026-07-21T17:13:05Z) -> epoch seconds.
+  # Tries GNU date, then BSD/macOS date. Returns non-zero (no stdout) if both
+  # fail -- callers MUST check the exit code, never assume a numeric result
+  # (a silently fabricated epoch previously corrupted TTL/age math -- #634).
+  local iso="$1"
+  date -u -d "$iso" +%s 2>/dev/null && return 0
+  date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$iso" +%s 2>/dev/null && return 0
+  return 1
+}
+
 DAYS=30
 EMIT_JSON=0
 
@@ -282,12 +293,16 @@ printf '%s' "$CANDIDATES_JSON" | jq -c ".[0:$CHECK_LIMIT][]" | while IFS= read -
 
   if [ "$HAS_RECENT_COMMENT" -eq 0 ] && [ "$HAS_PR_REF" = "false" ] && [ "$HAS_COMMIT_REF" -eq 0 ]; then
     LAST_ACTIVITY="${LAST_COMMENT:-$UPDATED}"
-    AGE_DAYS=$(( ( $(date -u +%s) - $(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$UPDATED" +%s 2>/dev/null || date -u -d "$UPDATED" +%s 2>/dev/null || echo 0) ) / 86400 ))
-    jq -cn --arg num "$NUM" --arg title "$TITLE" --arg last "$LAST_ACTIVITY" --arg age "$AGE_DAYS" '
-      {number: ($num|tonumber), title: $title, category: "inactive",
-       rationale: ("No activity for " + $age + " days (last updated: " + $last + "). No recent comments, PR references, or commit references."),
-       last_activity: $last, age_days: ($age|tonumber)}
-    ' >> "$TMP/flags.jsonl"
+    if UPDATED_EPOCH=$(to_epoch "$UPDATED"); then
+      AGE_DAYS=$(( ( $(date -u +%s) - UPDATED_EPOCH ) / 86400 ))
+      jq -cn --arg num "$NUM" --arg title "$TITLE" --arg last "$LAST_ACTIVITY" --arg age "$AGE_DAYS" '
+        {number: ($num|tonumber), title: $title, category: "inactive",
+         rationale: ("No activity for " + $age + " days (last updated: " + $last + "). No recent comments, PR references, or commit references."),
+         last_activity: $last, age_days: ($age|tonumber)}
+      ' >> "$TMP/flags.jsonl"
+    else
+      err "issue #$NUM: unparseable updatedAt '$UPDATED' — skipping inactive flag (treating as still-active to avoid premature cleanup)"
+    fi
   fi
 done
 
