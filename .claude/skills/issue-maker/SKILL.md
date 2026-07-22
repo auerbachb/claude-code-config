@@ -346,6 +346,8 @@ Why delegate to `/start-issue` instead of a fuller inline template (like `/pm`'s
     --arg n "$ISSUE_NUMBER" --arg tid "$TASK_ID"
   ```
 
+  This write is not just local bookkeeping — `$LOG` is the shared, cross-thread record other chip-offering skills consult (`chip-launching.md` "Cross-skill chip visibility"), so recording `chip_task_id` here is what makes this chip visible to `/wave` and `/pm` before either offers a second one for the same issue.
+
   Print only the short summary per issue (per `chip-launching.md` "Short-summary transcript format") — never the full block in chip mode.
 - **Fallback mode** (tool absent, or this issue's `spawn_task` call failed): print the full fenced block above and leave `chip_task_id` as `null`. A failed spawn degrades **only that issue** — note the fallback once per batch; the rest keep their chips.
 
@@ -406,7 +408,7 @@ A first-class command for adding information to an existing issue **without leav
      --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
    ```
 
-   **Chips are create-time only.** `/update`/edit-in-place never spawns or refreshes a chip — a chip offered at Step 9 stays as-is even if the body changes materially afterward. Re-planning the chip itself is out of scope for this skill (open question in issue #635's Notes); if the drift matters, retract and re-create.
+   **Chips are create-time only.** `/update`/edit-in-place never spawns or refreshes a chip — a chip offered at Step 9 stays as-is even if the body changes materially afterward. Re-planning the chip itself is out of scope for this skill (open question in issue #635's Notes); if the drift matters, retract and re-create. This also means `/update` can never cause the reverse double-offer (`/wave` or `/pm` already offered a chip for this issue, then someone edits it here via `/update`): the step above never *reads* an existing `chip_task_id` to decide anything, and the only value it ever *writes* is `null` (when backfilling a minimal entry for an issue this thread's log didn't already track) — never a live one, so it has no way to spawn a competing chip.
 
 ---
 
@@ -430,6 +432,8 @@ TASK_ID=$(jq -r --arg n "$N" '(.issues[] | select(.number == ($n|tonumber)) | .c
 - **`TASK_ID` present** — call `mcp__ccd_session__dismiss_task` with that `task_id` and a reason (e.g. `"Issue retracted via /issue-maker"`). Apply the fail-closed outcome rules from `chip-launching.md`:
   - **Dismissed**, or **already clicked/already dismissed** — both mean the offer is gone; clear `chip_task_id` to `null`.
   - **Genuine failure** — the chip is still live. Leave `chip_task_id` set (don't strand the handle) and say so when reporting the close, but proceed to close the issue anyway — a live chip on a closed issue is a stale-but-recoverable state, not a reason to block the retract.
+
+Clearing `chip_task_id` to `null` in `$LOG` below **is** the shared-record cleanup (`chip-launching.md` "Cross-skill chip visibility") — `/wave` and `/pm` read this same log, so the moment the field goes to `null` the issue stops being "already offered" for them too. There is no second store to clear.
 
 ```bash
 gh issue close "$N" --repo "$REPO" --comment "Retracted via /issue-maker — not needed."

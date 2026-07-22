@@ -66,6 +66,29 @@ Record the `task_id` returned by each successful `spawn_task`, keyed by issue nu
 
 An issue with a live recorded chip is **already offered**: skip it when re-running, rather than spawning a second chip for the same work.
 
+## Cross-skill chip visibility
+
+The rule above — track a chip "wherever the skill already tracks that issue's state" — assumes the offering skill has somewhere to write that other skills can read back. `/pm`, `/prompt`, and `/wave` all share the Active Work table for that. `/issue-maker` doesn't: it runs in its own capture-only thread (`issue-maker/SKILL.md` Step 2), usually isn't a PM thread at all, and never writes to that table. Its chips still need to be visible to `/wave` or `/pm` re-ranking the same issue later in a *different* thread — the Active Work table is transcript-scoped and can't see across threads.
+
+**The shared record is `/issue-maker`'s own session log**, `~/.claude/handoffs/issue-maker-*-log.json` (one file per capture thread, per `issue-maker/SKILL.md` Step 1). No separate store exists or is needed: the log already tracks `chip_task_id` per issue via an atomic read-modify-write helper, survives compaction, and already goes to `null` on retract.
+
+**Liveness rule:** an issue has a **live issue-maker chip** when some `issue-maker-*-log.json` file has an `issues[]` entry for that issue's `number` with `status: "open"` and a non-null `chip_task_id`. `chip_task_id == null` (never offered, retracted, or dismissed) means no live chip. The `status: "open"` qualifier excludes the one edge case where a chip dismiss failed during retract — the issue is closed but the chip handle is still tracked as live-but-stale; a closed issue is never a candidate for `/wave` or `/pm` regardless, so this never surfaces as a false "already offered."
+
+**Discovery.** Any skill about to offer a chip for a ranked/backlog issue consults this before spawning, the same way `/pm` globs `~/.claude/handoffs/pr-*-handoff.json`:
+
+```bash
+for f in "$HOME"/.claude/handoffs/issue-maker-*-log.json; do
+  [ -f "$f" ] || continue
+  jq -r '.issues[] | select(.status == "open" and .chip_task_id != null) | .number' "$f"
+done | sort -u
+```
+
+A missing file (no glob match) is silently skipped — that's simply no chips offered yet. A **present but unparseable** file is not: leave jq's stderr unredirected so a malformed log surfaces as a visible error rather than looking identical to "no live chip found" — a swallowed parse error here is a false negative that could let a duplicate chip through undetected. **If this command's stderr shows a jq error, treat that log's contents as unknown — not as "no chip" — and investigate before offering a chip for any issue it might have covered.** This should be rare in practice: `set_log` (`issue-maker/SKILL.md` Step 1) is the only writer to these files and validates the write with jq before the atomic `mv`, so a malformed log implies external corruption, not a normal write path.
+
+An issue whose number appears in the command's output already has a live offer — skip it exactly like the "already offered" rule above, rather than spawning a second chip. `/wave` Step 2 and `/pm` Step 3.1 both consult this; see each skill's own Step for its exact wiring into that skill's dedup/candidate logic.
+
+**Clearing the record is automatic.** `/issue-maker`'s retract path (Step 12) already nulls `chip_task_id` in this same log on a successful or no-op dismiss — that single write is the entire "clear the shared record" mechanism. There is no second store to update.
+
 ## Stale-chip hygiene — `dismiss_task`
 
 Withdraw a tracked chip via `mcp__ccd_session__dismiss_task` (pass the recorded `task_id` and a short `reason`) on any of these three triggers:

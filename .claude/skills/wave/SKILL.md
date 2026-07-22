@@ -47,12 +47,22 @@ Ranking is `/pm`'s job. `/wave` consumes a ranking; it does not produce one.
 Start from the ranked order and remove, in this sequence:
 
 1. **Already offered or already running.** Drop any issue whose row in `/pm`'s `## Active Work` table has Thread status `Chip offered`, `Inline`, `Active`, or `Prompt generated`. The first three are the acceptance criterion; `Prompt generated` joins them because `/pm` 3.2 defines it and `Chip offered` as the same state — offered, not yet started — and `chip-launching.md` treats an issue with a live offer as already offered. Re-running `/wave` immediately must therefore produce **no** duplicate chips.
-2. **Already in flight on GitHub.** Drop any issue referenced by a closing keyword (`close`/`closes`/`closed`, `fix`/`fixes`/`fixed`, `resolve`/`resolves`/`resolved`, case-insensitive) in an open PR body — local (`#N`) and cross-repo (`owner/repo#N`) forms both. Reuse the open-PR data `/pm` already fetched; do not re-query.
-3. **Explicitly blocked labels.** Drop `blocked`, `on-hold`, `wontfix`, `duplicate` (`/pm` 1B.4 already excludes these — this is a cheap re-check, not a re-ranking).
+2. **Already offered by `/issue-maker` in another thread.** The Active Work table check above only sees chips offered inside this PM thread — `/issue-maker` runs in its own capture-only thread and never writes to it (`chip-launching.md` "Cross-skill chip visibility"). Consult the shared cross-thread record instead:
+
+   ```bash
+   for f in "$HOME"/.claude/handoffs/issue-maker-*-log.json; do
+     [ -f "$f" ] || continue
+     jq -r '.issues[] | select(.status == "open" and .chip_task_id != null) | .number' "$f"
+   done | sort -u
+   ```
+
+   Leave jq's stderr unredirected — a malformed log file should surface as a visible error, not look identical to "no live chip found" (`chip-launching.md` "Cross-skill chip visibility"). Drop any candidate whose number appears in the command's output, silently — same treatment as (1). An issue-maker thread already offering a chip for #N is the same "already offered" state as a `Chip offered` row, just recorded in a different store.
+3. **Already in flight on GitHub.** Drop any issue referenced by a closing keyword (`close`/`closes`/`closed`, `fix`/`fixes`/`fixed`, `resolve`/`resolves`/`resolved`, case-insensitive) in an open PR body — local (`#N`) and cross-repo (`owner/repo#N`) forms both. Reuse the open-PR data `/pm` already fetched; do not re-query.
+4. **Explicitly blocked labels.** Drop `blocked`, `on-hold`, `wontfix`, `duplicate` (`/pm` 1B.4 already excludes these — this is a cheap re-check, not a re-ranking).
 
 Every issue removed here is **silent** — it is not a wave exclusion and does not appear in the excluded list (Step 9). The excluded list is for issues that were genuine candidates and lost on independence or cap.
 
-Record `IN_FLIGHT` = the count of rows dropped by (1) and (2) — Step 6 subtracts it. Offered-but-unstarted issues count toward it deliberately: a chip the user clicks a minute from now consumes the same reviewer budget as one already running, and the point of the cap is to avoid discovering that after the fact.
+Record `IN_FLIGHT` = the count of rows dropped by (1), (2), and (3) — Step 6 subtracts it. Offered-but-unstarted issues count toward it deliberately: a chip the user clicks a minute from now consumes the same reviewer budget as one already running, and the point of the cap is to avoid discovering that after the fact.
 
 ---
 
