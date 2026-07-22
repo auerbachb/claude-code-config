@@ -237,17 +237,41 @@ Do NOT spawn subagents or use the Agent tool to execute work yourself. Write the
 Scan for orchestration state files:
 
 ```bash
-# Session state (high-level orchestration)
-.claude/scripts/session-state.sh --get . 2>/dev/null || echo "NO_SESSION_STATE"
+# Session state (high-level orchestration) — SCOPED to the invoking repo (issue
+# #687). A handoff for repo X must not carry repo Y's PRs, so read the repo-scoped
+# session view, not `--get .` (which dumps every repo). Resolution reuses
+# session-state.sh's precedence (--repo / $CLAUDE_SESSION_REPO / cwd origin).
+SESSION_VIEW=$(.claude/scripts/session-state.sh --session-view 2>/dev/null || echo "NO_SESSION_STATE")
+echo "$SESSION_VIEW"
 
-# Per-PR handoff files (emit valid JSON content per file)
+# Per-PR handoff files — read ONLY the ones for PRs in this repo's scope. The
+# handoff filename is still global (issue #655), so two repos at one PR number
+# share a file; gate on the scoped PR set AND verify each payload's repo.
+if [ "$SESSION_VIEW" != "NO_SESSION_STATE" ]; then
+  SCOPED_PRS=$(jq -r '(.prs // {}) | keys[]' <<<"$SESSION_VIEW" 2>/dev/null)
+  CUR_REPO=$(jq -r '.repo // ""' <<<"$SESSION_VIEW" 2>/dev/null)
+else
+  SCOPED_PRS=""
+  CUR_REPO=""
+fi
 found_handoffs=false
-for f in ~/.claude/handoffs/pr-*-handoff.json; do
+# Read-safe iteration: quoted, one key per line, numeric PR keys only.
+while IFS= read -r n; do
+  [ -n "$n" ] || continue
+  case "$n" in *[!0-9]*) continue ;; esac
+  f="$HOME/.claude/handoffs/pr-${n}-handoff.json"
   [ -f "$f" ] || continue
+  # A payload naming a different repo than this one is the other repo's handoff
+  # colliding on this PR number (#655) — skip it. Null/absent owner_repo is
+  # unknown, not a mismatch, so fall back to the PR-number scope.
+  ho_repo=$(jq -r '.owner_repo // ""' "$f" 2>/dev/null)
+  if [ -n "$ho_repo" ] && [ -n "$CUR_REPO" ] && [ "$ho_repo" != "$CUR_REPO" ]; then
+    continue
+  fi
   found_handoffs=true
   echo "--- $f ---"
   cat "$f"
-done
+done < <(printf '%s\n' "$SCOPED_PRS")
 $found_handoffs || echo "NO_HANDOFF_FILES"
 ```
 

@@ -18,6 +18,12 @@ allowed-tools:
 
 Build a status dashboard of all open PRs in this repo.
 
+> **Invoking-repo scope (issue #687).** "in this repo" is load-bearing: the `gh pr list`
+> below is cwd-repo-scoped by `gh`, and `pr-state.sh --pr N` resolves the repo via
+> `gh repo view` — so the dashboard never surfaces another repo's PRs. `/status`
+> reads no cross-repo session-state aggregate; if that ever changes, use
+> `session-state.sh --session-view` (repo-scoped), never `--get .`.
+
 ## Steps
 
 ### Step 1: List open PRs

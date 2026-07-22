@@ -71,6 +71,12 @@ CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh) || true   # optional; degrade
 [[ -n "$REPO_ARG" ]] && export GH_REPO="$REPO_ARG"
 ```
 
+> **Invoking-repo scope (issue #687).** With no `--repo`, every `gh pr list` /
+> `pr-state.sh` call is cwd-repo-scoped by `gh`, so `/monitor` audits only the
+> invoking repo. `--repo` is the explicit, user-initiated opt-in to a *different*
+> single repo — it never fans out across repos. `/monitor` reads no cross-repo
+> session-state aggregate.
+
 ---
 
 ## Step 1 — Inventory open PRs

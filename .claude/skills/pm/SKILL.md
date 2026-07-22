@@ -85,19 +85,56 @@ LIST_RC=$?
 ### 1A.2: Load in-flight state
 
 ```bash
-# Session-wide orchestration state
-.claude/scripts/session-state.sh --get . 2>/dev/null || echo "NO_SESSION_STATE"
+# Session-wide orchestration state — SCOPED to the invoking repo (issue #687).
+# --session-view projects the whole state file down to THIS repo's `.prs`,
+# `.root_repo`, and the `.active_agents` that belong here; other repos never
+# appear in the default view. Repo resolution reuses session-state.sh's
+# precedence (--repo / $CLAUDE_SESSION_REPO / cwd origin, per #638). NEVER use
+# `--get .` here — it dumps every repo's state and is the leak this scoping fixes.
+SESSION_VIEW=$(.claude/scripts/session-state.sh --session-view 2>/dev/null || echo "NO_SESSION_STATE")
+echo "$SESSION_VIEW"
 
-# Per-PR handoff files (iterate to emit valid JSON per file)
+# Per-PR handoff files — read ONLY the ones for PRs in this repo's scope. The
+# handoff filename is still global (issue #655), so two repos at one PR number
+# share a file; gating on the scoped PR set AND verifying each payload's repo
+# bounds that leak on the read side without the rename #655 tracks.
+if [ "$SESSION_VIEW" != "NO_SESSION_STATE" ]; then
+  SCOPED_PRS=$(jq -r '(.prs // {}) | keys[]' <<<"$SESSION_VIEW" 2>/dev/null)
+  CUR_REPO=$(jq -r '.repo // ""' <<<"$SESSION_VIEW" 2>/dev/null)
+else
+  SCOPED_PRS=""
+  CUR_REPO=""
+fi
 found_handoffs=false
-for f in ~/.claude/handoffs/pr-*-handoff.json; do
+# Read-safe iteration: quoted, one key per line, numeric PR keys only (never
+# word-split an unquoted list into the path below).
+while IFS= read -r n; do
+  [ -n "$n" ] || continue
+  case "$n" in *[!0-9]*) continue ;; esac
+  f="$HOME/.claude/handoffs/pr-${n}-handoff.json"
   [ -f "$f" ] || continue
+  # If the payload names a DIFFERENT repo than this one, it's the other repo's
+  # handoff colliding on this PR number (#655) — skip it. A null/absent
+  # owner_repo is unknown, not a mismatch, so fall back to the PR-number scope.
+  ho_repo=$(jq -r '.owner_repo // ""' "$f" 2>/dev/null)
+  if [ -n "$ho_repo" ] && [ -n "$CUR_REPO" ] && [ "$ho_repo" != "$CUR_REPO" ]; then
+    continue
+  fi
   found_handoffs=true
   echo "--- $f ---"
   cat "$f"
-done
+done < <(printf '%s\n' "$SCOPED_PRS")
 $found_handoffs || echo "NO_HANDOFF_FILES"
 ```
+
+> **Invoking-repo scope (issue #687).** Every default surface of `/pm` — the
+> assignments table, rankings, suggestions, and offered actions — stays in the
+> invoking repo's lane. The scoped read above is where that starts; the GitHub
+> views (`gh pr/issue list`) are already cwd-repo-scoped by `gh`. **Cross-repo
+> reporting is opt-in:** only when the user explicitly asks to see other repos'
+> work, read `session-state.sh --session-view --all-repos` (or `--get .`) — and
+> never *offer or perform* a write action (cleanup, merge, rebase, close)
+> against a PR/issue outside the invoking repo.
 
 Parse any found state into an assignments table:
 

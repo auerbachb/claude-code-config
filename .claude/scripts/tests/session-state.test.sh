@@ -214,6 +214,111 @@ check_eq "read-filter-write round trip exits 0" "0" "$?"
 check_eq "read-filter-write round trip removed the targeted entry" '[{"id":"pmm-fix-99","pr":99}]' "$(jq -c '.active_agents' "$STATE_FILE")"
 
 echo
+echo "== --session-view: repo-scoped projection of the whole document (issue #687) =="
+# Two repos + global fields + an orphan/unattributable agent in one file.
+cat > "$STATE_FILE" <<'JSON'
+{
+  "schema_version": 2,
+  "monitoring_active": true,
+  "greptile_daily": {"date":"2026-07-21","reviews_used":3,"budget":40},
+  "active_agents": [
+    {"id":"a-mine","task":"PR #84 Phase B","pr":84,"phase":"B"},
+    {"id":"a-other","task":"PR #200 Phase A","pr":200,"phase":"A"},
+    {"id":"a-orphan","task":"PR #999 Phase C","pr":999,"phase":"C"},
+    {"id":"a-nopr","task":"scan backlog"}
+  ],
+  "repos": {
+    "org/a": {"prs": {"84": {"phase":"B","reviewer":"cr"}}, "root_repo":"/tmp/a"},
+    "org/b": {"prs": {"200": {"phase":"A","reviewer":"cr"}}, "root_repo":"/tmp/b"}
+  }
+}
+JSON
+VIEW_A="$(run --repo org/a --session-view)"
+check_eq "scoped view exits 0" "0" "$?"
+check_eq "prs is scoped to this repo only" '{"84":{"phase":"B","reviewer":"cr"}}' "$(jq -c '.prs' <<<"$VIEW_A")"
+check_eq "root_repo is this repo's" "/tmp/a" "$(jq -r '.root_repo' <<<"$VIEW_A")"
+check_eq ".repos aggregate is removed from the view" "null" "$(jq -c '.repos' <<<"$VIEW_A")"
+check_eq ".repo names the resolved key" "org/a" "$(jq -r '.repo' <<<"$VIEW_A")"
+check_eq "global fields pass through (monitoring_active)" "true" "$(jq -c '.monitoring_active' <<<"$VIEW_A")"
+check_eq "global fields pass through (greptile_daily)" "3" "$(jq -c '.greptile_daily.reviews_used' <<<"$VIEW_A")"
+
+echo
+echo "== --session-view: active_agents scoped by PR-number attribution =="
+# Keep: this repo's PR (a-mine), an unattributable PR tracked by no repo
+# (a-orphan), and an entry with no .pr (a-nopr). Drop: another repo's PR (a-other).
+check_eq "keeps mine + unattributable + no-pr, drops other-repo agents" '["a-mine","a-orphan","a-nopr"]' "$(jq -c '[.active_agents[].id]' <<<"$VIEW_A")"
+# Reciprocal: org/b keeps only its own PR-200 agent.
+VIEW_B="$(run --repo org/b --session-view)"
+check_eq "reciprocal: org/b prs scoped to 200" '{"200":{"phase":"A","reviewer":"cr"}}' "$(jq -c '.prs' <<<"$VIEW_B")"
+check_eq "reciprocal: org/b keeps a-other + unattributable, drops a-mine" '["a-other","a-orphan","a-nopr"]' "$(jq -c '[.active_agents[].id]' <<<"$VIEW_B")"
+
+echo
+echo "== --session-view --all-repos: explicit cross-repo opt-in (AC6) =="
+VIEW_ALL="$(run --repo org/a --session-view --all-repos)"
+check_eq "all-repos keeps the full .repos aggregate" '["org/a","org/b"]' "$(jq -c '.repos | keys' <<<"$VIEW_ALL")"
+check_eq "all-repos does not flatten .prs to one repo" "null" "$(jq -c '.prs' <<<"$VIEW_ALL")"
+check_eq "all-repos keeps every active_agent" '["a-mine","a-other","a-orphan","a-nopr"]' "$(jq -c '[.active_agents[].id]' <<<"$VIEW_ALL")"
+
+echo
+echo "== --session-view: repo resolved via \$CLAUDE_SESSION_REPO when no --repo (AC5) =="
+VIEW_ENV="$(CLAUDE_SESSION_REPO=org/b run --session-view)"
+check_eq "env-var repo scopes the view without --repo" '{"200":{"phase":"A","reviewer":"cr"}}' "$(jq -c '.prs' <<<"$VIEW_ENV")"
+check_eq "env-var repo names the key" "org/b" "$(jq -r '.repo' <<<"$VIEW_ENV")"
+# --repo overrides $CLAUDE_SESSION_REPO (precedence order).
+VIEW_OVERRIDE="$(CLAUDE_SESSION_REPO=org/b run --repo org/a --session-view)"
+check_eq "--repo wins over \$CLAUDE_SESSION_REPO" "org/a" "$(jq -r '.repo' <<<"$VIEW_OVERRIDE")"
+
+echo
+echo "== --session-view: same PR number in two repos + explicit owner_repo (issue #687) =="
+# PR 84 is tracked by BOTH repos. An un-tagged agent {pr:84} is therefore
+# ambiguous and dropped from the scoped view; an agent carrying owner_repo is
+# attributed exactly regardless of the collision.
+cat > "$STATE_FILE" <<'JSON'
+{
+  "active_agents": [
+    {"id":"ambiguous-84","pr":84},
+    {"id":"tagged-a","pr":84,"owner_repo":"org/a"},
+    {"id":"tagged-b","pr":84,"owner_repo":"org/b"},
+    {"id":"tagged-a-nopr","owner_repo":"org/a"}
+  ],
+  "repos": {
+    "org/a": {"prs": {"84": {"phase":"A"}}},
+    "org/b": {"prs": {"84": {"phase":"B"}}}
+  }
+}
+JSON
+VIEW_COLLIDE_A="$(run --repo org/a --session-view)"
+check_eq "ambiguous same-PR agent dropped; owner_repo attributed exactly (org/a)" '["tagged-a","tagged-a-nopr"]' "$(jq -c '[.active_agents[].id]' <<<"$VIEW_COLLIDE_A")"
+check_eq "collision: org/a prs still scoped to its own PR 84 entry" '{"84":{"phase":"A"}}' "$(jq -c '.prs' <<<"$VIEW_COLLIDE_A")"
+VIEW_COLLIDE_B="$(run --repo org/b --session-view)"
+check_eq "reciprocal: org/b keeps only its owner_repo-tagged agent" '["tagged-b"]' "$(jq -c '[.active_agents[].id]' <<<"$VIEW_COLLIDE_B")"
+
+echo
+echo "== --session-view: legacy flat file is migrated in memory then scoped =="
+# A pre-#638 flat file carrying owner_repo attribution should scope correctly
+# without the read rewriting the file (migration is in-memory for reads).
+cat > "$STATE_FILE" <<'JSON'
+{"prs": {"84": {"phase":"B","owner_repo":"org/a"}, "200": {"phase":"A","owner_repo":"org/b"}}}
+JSON
+VIEW_LEGACY="$(run --repo org/a --session-view)"
+check_eq "legacy file: scoped prs contains only org/a's PR" "84" "$(jq -r '.prs | keys | join(",")' <<<"$VIEW_LEGACY")"
+check_eq "legacy file: read did not rewrite the file (still flat .prs)" '{"84":{"phase":"B","owner_repo":"org/a"},"200":{"phase":"A","owner_repo":"org/b"}}' "$(jq -c '.prs' "$STATE_FILE")"
+
+echo
+echo "== --session-view: missing state file exits 3 (matches --get) =="
+reset_state
+OUT=$(run --session-view 2>/dev/null); RC=$?
+check_eq "missing file exits 3" "3" "$RC"
+
+echo
+echo "== --session-view: empty-but-valid file yields an empty scoped view =="
+printf '%s\n' '{}' > "$STATE_FILE"
+VIEW_EMPTY="$(run --repo org/none --session-view)"
+check_eq "empty file exits 0 with empty prs" "{}" "$(jq -c '.prs' <<<"$VIEW_EMPTY")"
+check_eq "empty file: active_agents defaults to []" "[]" "$(jq -c '.active_agents' <<<"$VIEW_EMPTY")"
+check_eq "empty file: root_repo is null" "null" "$(jq -c '.root_repo' <<<"$VIEW_EMPTY")"
+
+echo
 echo "== summary: $PASS passed, $FAIL failed =="
 if [[ "$FAIL" -eq 0 ]]; then
   echo "OK: session-state.sh field-type contract tests passed"
