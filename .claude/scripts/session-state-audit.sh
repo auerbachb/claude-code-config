@@ -248,6 +248,17 @@ detect_static() {
               | select((.value | type) != "object")
               | { path: ".repos[\"\(.key)\"]", found: (.value | type), want: "object",
                   scope: .key, pr: null } ]
+          # A PR entry that is not an object is corruption in its own right. The
+          # nested-field pass above has to skip it (it cannot be indexed), so
+          # without this it would be safely ignored and never reported —
+          # crash-proof but invisible, which is not the same as handled.
+          + [ ($doc.repos // {}) | to_entries[] as $r
+              | select(($r.value | type) == "object")
+              | ($r.value.prs // {}) | to_entries[]
+              | select((.value | type) != "object")
+              | { path: ".repos[\"\($r.key)\"].prs[\"\(.key)\"]",
+                  found: (.value | type), want: "object",
+                  scope: $r.key, pr: .key } ]
         ),
         legacy_keys: (
           [ (if $doc.prs != null then "prs" else empty end),
@@ -280,9 +291,15 @@ UNKNOWN_ENTRIES="$(jq -c --arg u "$UNKNOWN_REPO_KEY" '
   ((if ((.repos[$u] // null) | type) == "object" then (.repos[$u].prs // {}) else {} end) | to_entries)
   | map(select((.value | type) == "object"))
   | map({ pr: .key,
+          # Hex is matched case-insensitively and normalized to lowercase: a
+          # SHA stored uppercase is perfectly valid, and a lowercase-only
+          # filter silently dropped it — the entry then looked like it had no
+          # usable SHA and stayed stranded in `_unknown` forever, which is the
+          # opposite of what this tool is for.
           shas: ( [ (.value.head_sha? // empty),
                     (.value.preflight_trigger_head_sha? // empty) ]
-                  | map(select(type == "string" and (test("^[0-9a-f]{7,40}$")))) | unique ),
+                  | map(select(type == "string" and (test("^[0-9a-fA-F]{7,40}$"))) | ascii_downcase)
+                  | unique ),
           has_notes: (((.value.wrap_sweep.needs_decision? // []) | length) > 0) })' "$STATE_FILE")"
 
 # --- attribution (network) --------------------------------------------------

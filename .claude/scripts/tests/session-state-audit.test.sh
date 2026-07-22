@@ -252,6 +252,27 @@ check_eq "a pre-existing entry in the destination scope is untouched" "B" \
 check_eq "total PR entries are conserved by a move" "6" \
   "$(jq -r '[.repos[] | (.prs // {}) | length] | add' "$STATE_FILE")"
 
+echo "== An uppercase SHA is still a valid SHA (CodeAnt, #651) =="
+cat > "$STATE_FILE" <<'JSON'
+{
+  "schema_version": 2,
+  "repos": {
+    "org/alpha": { "prs": { "34": { "phase": "B" } } },
+    "_unknown":  { "prs": { "35": { "head_sha": "ABCDEF1234AB" } } }
+  }
+}
+JSON
+# The stub matches the lowercase form, so this only passes if the audit
+# normalizes before asking — a case-sensitive filter would drop the entry
+# entirely and report it as having no usable SHA.
+echo "org/alpha abcdef1234ab" > "$COMMIT_MAP_FILE"
+echo '{}' > "$PR_LIST_FILE"
+OUT=$(run --json 2>/dev/null)
+check_eq "uppercase SHA is attributed, not discarded" "org/alpha" \
+  "$(jq -r '.reattributable[] | select(.pr == "35") | .repo' <<<"$OUT")"
+check_eq "uppercase SHA is not reported as missing" "0" \
+  "$(jq -r '[.unattributable[] | select(.pr == "35")] | length' <<<"$OUT")"
+
 echo
 echo "== An emptied _unknown scope is dropped entirely =="
 write_state
@@ -415,19 +436,19 @@ JSON
 echo "org/alpha b0b0b0b0b0b0" > "$COMMIT_MAP_FILE"
 BEFORE="$(cat "$STATE_FILE")"
 OUT=$(run --apply --reattribute 2>&1); RC=$?
-check_eq "a malformed entry is reported, never silently indexed" "1" \
-  "$([[ "$RC" == "0" || "$RC" == "4" ]] && echo 1 || echo 0)"
+# Assert ONE outcome, not "0 or 4". Accepting either lets a regression in
+# whichever branch is not taken pass unnoticed — the same can't-fail assertion
+# shape this whole section exists to catch (CodeAnt, #651). The contract is
+# specific: a malformed entry is data to be reported, so the run COMPLETES.
+check_eq "a malformed entry does not abort the repair" "0" "$RC"
 check_eq "detection survives a non-object PR entry without aborting" "0" \
   "$(grep -c 'Cannot index' <<<"$OUT")"
-if [[ "$RC" == "4" ]]; then
-  check_eq "an aborted repair leaves the state file byte-identical" "1" \
-    "$([[ "$BEFORE" == "$(cat "$STATE_FILE")" ]] && echo 1 || echo 0)"
-  check_eq "an aborted repair still says where the backup is" "1" \
-    "$(grep -c 'backup:' <<<"$OUT")"
-else
-  check_eq "a completed repair conserves the untargeted malformed entry" "1" \
-    "$(jq -r 'if (.repos["org/alpha"].prs["80"] // null) != null then 1 else 0 end' "$STATE_FILE")"
-fi
+check_eq "the untargeted malformed entry is conserved, not dropped" "array" \
+  "$(jq -r '.repos["org/alpha"].prs["80"] | type' "$STATE_FILE")"
+check_eq "the attributable entry still moved despite the malformed sibling" "b0b0b0b0b0b0" \
+  "$(jq -r '.repos["org/alpha"].prs["81"].head_sha' "$STATE_FILE")"
+check_eq "the malformed entry is surfaced as a type violation" "1" \
+  "$(run --offline --json 2>/dev/null | jq -r '[.type_violations[] | select(.pr == "80" and .want == "object" and .found == "array")] | length')"
 
 echo "== Malformed repo SCOPE never aborts the audit (CodeAnt, #651) =="
 # One level up from the PR-entry guard: a scope whose value is an array or a
