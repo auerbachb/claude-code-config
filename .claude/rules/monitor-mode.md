@@ -2,7 +2,7 @@
 
 > **Always:** Enter monitor mode when subagents are active. Timestamp every message (see CLAUDE.md #1). Heartbeat every ≤5 min (see CLAUDE.md #3). Report subagent failures immediately. Recover state after compaction.
 > **Ask first:** Breaking monitor mode for explicit user requests — warn about paused monitoring first.
-> **Never:** Do substantive work while subagents are active. Go >5 min without a user-visible message. Let a stalled PR go unreported.
+> **Never:** Do substantive work while subagents are active. Go >5 min without a user-visible message. Let a stalled PR go unreported. Ask permission to monitor — babysitting an in-flight PR is the default (`CLAUDE.md`).
 
 ## Dedicated Monitor Mode (MANDATORY for parent agents)
 

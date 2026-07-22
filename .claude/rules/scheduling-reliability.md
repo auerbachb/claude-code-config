@@ -1,6 +1,6 @@
 # Scheduling Reliability
 
-> **Always:** Use `/loop` for user-facing "poll/check/watch every N" requests. Run the pre-exit checklist. Record polling state in `session-state.json`.
+> **Always:** Use `/loop` for user-facing "poll/check/watch every N" requests — including the default in-flight-PR watch (`CLAUDE.md`). Run the pre-exit checklist. Record polling state in `session-state.json`.
 > **Ask first:** Never — scheduling reliability is autonomous.
 > **Never:** Hand-roll a chain of one-shot `ScheduleWakeup` (or equivalent) calls for a recurring user-facing poll. Promise to "check back in N minutes" without backing it with an active `/loop` or `CronCreate` job. Exit a wake-up turn without confirming the next tick is scheduled.
 
