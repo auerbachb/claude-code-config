@@ -75,6 +75,22 @@ Hooks live in `.claude/hooks/` and run automatically during Claude Code sessions
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) "Hook Lifecycle" and "Hook Auto-Registration" for details on event types and the registration flow.
 
+## Adding a Test
+
+Tests are **auto-discovered** by the [`hook-scripts.yml`](.github/workflows/hook-scripts.yml) CI workflow — you do **not** edit the workflow to register one (issue #681, which retired the hand-maintained per-test step list that made that file a merge-conflict hotspot).
+
+- **Bash tests** — drop a `<name>.test.sh` into `.claude/scripts/tests/`, `.claude/hooks/tests/`, or `.github/scripts/tests/`. They are discovered and run by [`.github/scripts/run-hook-tests.sh`](.github/scripts/run-hook-tests.sh).
+- **Python tests** — drop a `test_*.py` unittest module into `tests/`. It runs under **both** the default-Python job and the pinned-3.9 job, so keep it **Python 3.9-compatible** (e.g. `from __future__ import annotations` before any PEP 604 `X | Y` annotation; no `match`/`case`).
+
+**Discovery contract** (a test must satisfy these to be picked up correctly): exit `0` on pass / non-zero on fail; be invoked via `bash` (the executable bit is **not** required — some suites are intentionally non-exec); and require **no** positional arguments.
+
+Run the whole suite locally from the repo root before pushing:
+
+```bash
+bash .github/scripts/run-hook-tests.sh                       # all bash suites
+python3 -m unittest discover -s tests -p 'test_*.py' -v       # all Python suites
+```
+
 ## Git Pre-commit Hook (Worktree Enforcement)
 
 `setup.sh` installs `.claude/git-hooks/pre-commit` into the shared git hooks directory on first run (and reuses it on later runs when unchanged). When this hook is installed and not bypassed, it rejects commits made on `main` in the root checkout, enforcing the "never work on main" rule at the git level for any committer — human, Claude, Cursor, Codex, or a random terminal session.

@@ -6,6 +6,12 @@ on:
 permissions:
   contents: read
 
+# Tests are AUTO-DISCOVERED, not listed by name (issue #681). Adding a test used
+# to mean appending a `- name:/run:` step at the shared tail of these jobs, so
+# every in-flight PR collided here (PRs #657/#658/#660/#661/#672/#676; #676 took
+# 3 rebases). Now: drop a `*.test.sh` into a discovered dir, or a
+# `tests/test_*.py` module, and CI runs it with NO edit to this file.
+# See CONTRIBUTING.md "Adding a Test".
 jobs:
   hook-tests:
     runs-on: ubuntu-latest
@@ -20,102 +26,28 @@ jobs:
           git config --global user.email "ci@example.com"
           git config --global user.name "CI"
 
-      - name: stale-worktree-warn integration test
-        run: bash .claude/hooks/tests/stale-worktree-warn.test.sh
+      - name: Run bash hook + script test suites (auto-discovered)
+        run: bash .github/scripts/run-hook-tests.sh
 
-      - name: skill-command-tracker integration test (issue #584)
-        run: bash .claude/hooks/tests/skill-command-tracker.test.sh
-
-      - name: pr-state --infer-candidates unit test
-        run: bash .claude/scripts/tests/pr-state-infer-candidates.test.sh
-
-      - name: session-state.sh per-repo migration unit tests (issue #638)
-        run: bash .claude/scripts/tests/session-state-migration.test.sh
-
-      - name: infer-pr.sh unit tests (issues #447 / #448 / #638)
-        run: bash .claude/scripts/tests/infer-pr.test.sh
-
-      - name: polling-state-gate.sh multi-repo regression test (issue #638)
-        run: bash .claude/scripts/tests/polling-state-gate-multirepo.test.sh
-
-      - name: env-guard unit tests
-        run: python3 -m unittest tests.test_env_guard -v
-
-      - name: config-protection unit tests
-        run: python3 -m unittest tests.test_config_protection -v
-
-      - name: worktree-guard unit tests (issue #549)
-        run: python3 -m unittest tests.test_worktree_guard -v
-
-      - name: pr-preflight unit test (issue #493)
-        run: bash .claude/scripts/tests/pr-preflight.test.sh
-
-      - name: cr-plan-filter unit tests (issue #541)
-        run: python3 -m unittest tests.test_cr_plan_filter -v
-
-      - name: memory-audit unit tests (issue #620)
-        run: python3 -m unittest tests.test_memory_audit -v
-
-      - name: cr-plan.sh integration test (issue #541)
-        run: bash .claude/scripts/tests/cr-plan.test.sh
-
-      - name: skill-conventions-audit smoke test (#417)
-        run: bash .claude/scripts/tests/skill-conventions-audit.test.sh
-
-      - name: pr-state classify unit test (issue #535)
-        run: bash .claude/scripts/tests/pr-state-classify.test.sh
-
-      - name: escalate-review.sh BugBot failure detection unit test (issue #552)
-        run: bash .claude/scripts/tests/escalate-review.test.sh
-
-      - name: skill-catalog-lint unit tests (issue #591)
-        run: bash .github/scripts/tests/skill-catalog-lint.test.sh
-
-      - name: skill-usage-merge unit test (issue #572)
-        run: bash .claude/scripts/tests/skill-usage-merge.test.sh
-
-      - name: polling-state-gate.sh repo-scoping unit test (issue #647)
-        run: bash .claude/scripts/tests/polling-state-gate.test.sh
-
-      - name: polling-state-gate.sh compaction-resume test (issue #315)
-        run: bash .claude/scripts/tests/compaction-resume-polling-state-gate.test.sh
-
-      - name: session-state.sh field-type + repo-scoping unit tests (issues #625 / #640 / #638)
-        run: bash .claude/scripts/tests/session-state.test.sh
-
-      - name: clean-behind-check.sh unit test (issue #631)
-        run: bash .claude/scripts/tests/clean-behind-check.test.sh
-
-      - name: issue-dedup.sh body-search unit test (issue #652)
-        run: bash .claude/scripts/tests/issue-dedup.test.sh
-
-      - name: forgotten-pr-triage.sh classifier unit test (issue #657)
-        run: bash .claude/scripts/tests/forgotten-pr-triage.test.sh
-
-      - name: session-state write lock — unit + concurrency (issue #639)
-        run: bash .claude/scripts/tests/state-lock.test.sh
-
-      - name: session-state-audit.sh unit tests (issue #651)
-        run: bash .claude/scripts/tests/session-state-audit.test.sh
-
-      - name: check-runs-dedup.sh unit test (issue #675)
-        run: bash .claude/scripts/tests/check-runs-dedup.test.sh
-
-      - name: ci-status.sh check-run dedup unit test (issue #675)
-        run: bash .claude/scripts/tests/ci-status.test.sh
-
-      - name: merge-gate.sh check-run dedup integration test (issue #675)
-        run: bash .claude/scripts/tests/merge-gate-ci-dedup.test.sh
-
-      - name: stale-cleanup.sh + dirty-main-guard.sh invoking-repo scope unit test (issue #697)
-        run: bash .claude/scripts/tests/stale-cleanup.test.sh
-
-      - name: dirty-main-guard.sh quarantine-path scope unit test (issue #707)
-        run: bash .claude/scripts/tests/dirty-main-guard.test.sh
+      - name: Run Python hook unit tests (auto-discovered)
+        run: |
+          set -euo pipefail
+          # Discover tests/test_*.py and fail loud on an empty set — a silent
+          # "Ran 0 tests ... OK" must never pass green (issue #681).
+          shopt -s nullglob
+          mods=(tests/test_*.py)
+          if [ "${#mods[@]}" -eq 0 ]; then
+            echo "::error::No tests/test_*.py modules discovered"
+            exit 1
+          fi
+          echo "Discovered ${#mods[@]} Python test module(s)."
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
 
   # macOS system python3 is 3.9.6 (Xcode CLT) while ubuntu-latest ships 3.10+,
   # so a hook that crashes on 3.9 (e.g. eagerly-evaluated PEP 604 unions,
-  # issue #560) passes the job above yet fails open locally. Pin 3.9 here.
+  # issue #560) passes the job above yet fails open locally. Pin 3.9 here. This
+  # job runs the SAME Python discovery, so a new test is covered by both jobs
+  # with no edit — retiring the "keep both job lists in sync" footgun.
   hook-tests-py39:
     runs-on: ubuntu-latest
     steps:
@@ -129,8 +61,17 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Python hook unit tests (3.9)
-        run: python3 -m unittest tests.test_env_guard tests.test_config_protection tests.test_worktree_guard tests.test_cr_plan_filter tests.test_memory_audit -v
+      - name: Python hook unit tests (3.9, auto-discovered)
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          mods=(tests/test_*.py)
+          if [ "${#mods[@]}" -eq 0 ]; then
+            echo "::error::No tests/test_*.py modules discovered"
+            exit 1
+          fi
+          echo "Discovered ${#mods[@]} Python test module(s)."
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
 
       - name: Hooks import smoke (3.9)
         run: |
