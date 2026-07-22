@@ -21,7 +21,8 @@
       "babysit": "object",
       "wrap_sweep": "object",
       "cr_explicit_triggers": "array",
-      "digest_streak": "number"
+      "digest_streak": "number",
+      "conflict_streak": "number"
     }
   },
   "last_updated": "2026-04-29T14:00:00Z",
