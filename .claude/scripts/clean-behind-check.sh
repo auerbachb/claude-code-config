@@ -405,8 +405,17 @@ NO_OVERLAP=true
 # When the file-level check finds shared filenames, refine to hunk-level:
 # fetch patches for those files and test old-side line-range intersection.
 # Conservative fallback: if a patch is unavailable (binary, truncated, API
-# failure) → treat the file as overlapping (file-level conservative behavior).
+# failure) or its length is at/above the GitHub character cap (i.e. the patch
+# may be non-empty but missing later hunks) → treat the file as overlapping
+# (file-level conservative behavior).
 # Ambiguity always resolves toward "not safe to offer", never the reverse.
+#
+# GitHub caps the PR-files endpoint patch field at 20,000 characters and
+# distributes a tighter line-count budget across compare-response file patches.
+# When a patch reaches or exceeds 20,000 characters it may be silently truncated
+# mid-diff, causing later hunks (which may contain the actual overlap) to be
+# absent. The PATCH_TRUNCATION_THRESHOLD constant is the guard; any patch at or
+# above this size falls back to file-level conservative behaviour.
 
 HUNK_OVERLAPPING_FILES_JSON='[]'
 FALLBACK_FILES_JSON='[]'
@@ -422,6 +431,7 @@ if [[ "$OVERLAP_COUNT" -gt 0 ]]; then
   if [[ "$RC_PF" -eq 0 ]] && jq -e . >/dev/null 2>&1 <<<"$PR_FILES_PATCH_JSON"; then
     HUNK_OVERLAPPING_FILES=()
     FALLBACK_FILES=()
+    PATCH_TRUNCATION_THRESHOLD=20000
 
     while IFS= read -r CANDIDATE_FILE; do
       # Extract base-delta patch for this file (already in COMPARE_JSON)
@@ -430,8 +440,20 @@ if [[ "$OVERLAP_COUNT" -gt 0 ]]; then
       PR_PATCH="$(jq -r --arg f "$CANDIDATE_FILE" '.[] | select(.filename == $f) | .patch // ""' <<<"$PR_FILES_PATCH_JSON")"
 
       # Conservative fallback: no patch available (binary, newly added/deleted,
-      # or truncated by GitHub's diff-size limit) → treat file as overlapping.
+      # or completely omitted by GitHub's diff-size limit) → treat file as overlapping.
       if [[ -z "$BASE_PATCH" || -z "$PR_PATCH" ]]; then
+        FALLBACK_FILES+=("$CANDIDATE_FILE")
+        HUNK_OVERLAPPING_FILES+=("$CANDIDATE_FILE")
+        continue
+      fi
+
+      # Conservative fallback: non-empty but potentially truncated patch.
+      # GitHub caps the PR-files patch field at 20,000 characters; the compare
+      # endpoint distributes a tighter budget across files. A patch at or above
+      # this threshold may be missing later hunks that contain the actual overlap,
+      # so hunk analysis is unreliable — fall back to file-level conservative behaviour.
+      if [[ "${#BASE_PATCH}" -ge "$PATCH_TRUNCATION_THRESHOLD" || \
+            "${#PR_PATCH}" -ge "$PATCH_TRUNCATION_THRESHOLD" ]]; then
         FALLBACK_FILES+=("$CANDIDATE_FILE")
         HUNK_OVERLAPPING_FILES+=("$CANDIDATE_FILE")
         continue

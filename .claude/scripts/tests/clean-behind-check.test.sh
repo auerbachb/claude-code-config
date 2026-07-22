@@ -376,6 +376,24 @@ FAKE_AHEAD_BY=0 FAKE_NEWEST_BASE_AT='2026-07-21T10:00:00Z' run 1 --churn-thresho
 expect_field '.churn.advisory' 'false' "threshold=0 + ahead_by=0 + base not newer: advisory false (timestamp gating)"
 expect_field '.churn.threshold' '0' "threshold=0 present in output"
 
+# 32. Hunk-level: non-empty but oversized patch (>= 20,000 chars, potentially
+#     truncated) → conservative fallback → exit 1 (not safe).
+#     The DISJOINT_PR_PATCHES fixture would produce safe_to_offer=true if the
+#     large base patch were parsed as-is (disjoint ranges). The truncation guard
+#     must kick in before range parsing and force the conservative fallback.
+OVERSIZED_PATCH="$(printf '@@ -1,1 +1,1 @@\n-old\n+new\n'; printf 'x%.0s' {1..20000})"
+OVERSIZED_BASE_PATCHES="$(jq -cn --arg p "$OVERSIZED_PATCH" '{"shared.sh": $p}')"
+FAKE_PR_FILES='["shared.sh","mine.sh"]' \
+  FAKE_BASE_DELTA_FILES='["shared.sh"]' \
+  FAKE_BASE_DELTA_PATCHES="$OVERSIZED_BASE_PATCHES" \
+  FAKE_PR_FILE_PATCHES="$DISJOINT_PR_PATCHES" \
+  run 1
+expect_rc 1 "hunk: oversized base patch (>= 20000 chars) → conservative fallback → exit 1"
+expect_field '.safe_to_offer' 'false' "safe_to_offer false for oversized base patch"
+expect_field '.file_overlap.granularity' 'hunk' "granularity is hunk even with oversized patch"
+expect_field '.file_overlap.fallback_files | length' '1' "oversized patch triggers fallback_files"
+expect_field '.file_overlap.hunk_overlapping_files | length' '1' "hunk_overlapping_files includes fallback file"
+
 echo "----------------------------------------"
 echo "clean-behind-check.test.sh: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
