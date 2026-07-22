@@ -171,6 +171,24 @@ check_json_has "Test4b: recent comment suppresses inactive flag" "$OUT" '[.[] | 
 rm -f "$TMP/comments/100.txt"
 
 # ---------------------------------------------------------------------------
+# Test 4c: malformed updatedAt — never fabricates an epoch-0 age (issue #648,
+# same failure class as #634). The value is unparseable by both GNU and BSD
+# `date`, but its year ("2020") still sorts lexicographically before the
+# --days cutoff, so it still enters the inactive-candidate set and exercises
+# the to_epoch() failure path rather than being filtered out beforehand.
+# ---------------------------------------------------------------------------
+MALFORMED_ISO="2020-13-45T99:99:99Z"
+jq -n --arg c "$NOW_ISO" --arg u "$MALFORMED_ISO" '[{number: 102, title: "Issue with a corrupted updatedAt", labels: [], assignees: [],
+  createdAt: $c, updatedAt: $u, body: "nothing interesting here"}]' > "$TMP/open.json"
+echo "[]" > "$TMP/merged.json"
+echo "[]" > "$TMP/openprs.json"
+echo "[]" > "$TMP/closed_page1.json"
+
+OUT=$(bash "$SCRIPT" --json 2>"$TMP/malformed.err")
+check_json_has "Test4c: malformed updatedAt is never flagged inactive (no fabricated epoch-0 age)" "$OUT" '[.[] | select(.number==102)] | length == 0'
+check_contains "Test4c: malformed updatedAt warns on stderr" "issue #102" "$(cat "$TMP/malformed.err")"
+
+# ---------------------------------------------------------------------------
 # Test 5: label-skip — pinned issue is never flagged inactive
 # ---------------------------------------------------------------------------
 jq -n --arg u "$OLD_ISO" '[{number: 101, title: "Pinned stale issue", labels: [{name:"pinned"}], assignees: [],
