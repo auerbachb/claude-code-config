@@ -95,6 +95,9 @@ jobs:
       - name: session-state write lock — unit + concurrency (issue #639)
         run: bash .claude/scripts/tests/state-lock.test.sh
 
+      - name: session-state-audit.sh unit tests (issue #651)
+        run: bash .claude/scripts/tests/session-state-audit.test.sh
+
       - name: check-runs-dedup.sh unit test (issue #675)
         run: bash .claude/scripts/tests/check-runs-dedup.test.sh
 

@@ -11,11 +11,21 @@
 #   3) Each poll cycle evaluates exit via .claude/scripts/merge-gate.sh (not inline
 #      paraphrase of cr-merge-gate.md).
 #
-# Repo scoping (issue #647): ~/.claude/session-state.json is shared by every
-# concurrent session, so the single global .root_repo is owned by whichever session
-# wrote last and is NEVER a refusal signal. Scoping is validated per PR, by repo
-# *identity* (normalized `origin` remote, falling back to the shared git common dir
-# so sibling worktrees of one repo agree) rather than by checkout path:
+# Repo scoping (issues #647 + #638). Two mechanisms, deliberately kept — they
+# answer different questions and neither subsumes the other (audited in #651):
+#   #638 decides WHICH SCOPE to read: `.repos["<owner>/<name>"]`, so two repos at
+#        the same PR number never share an entry.
+#   #647 decides WHETHER THIS CHECKOUT MAY POLL that entry, by comparing per-PR
+#        `owner_repo`/`root_repo` against the active checkout's identity.
+# `.root_repo` is no longer a single global scalar: session-state.sh rewrites a
+# leading `.root_repo` into the active repo's own scope, so what this script reads
+# below is THIS repo's recorded checkout, not whichever session wrote last. It is
+# still never a refusal signal — a stale path from a removed worktree carries no
+# authority over the checkout the caller is actually standing in.
+#
+# Scoping is validated per PR, by repo *identity* (normalized `origin` remote,
+# falling back to the shared git common dir so sibling worktrees of one repo
+# agree) rather than by checkout path:
 #   a) .prs["N"].owner_repo present -> must equal the active checkout's identity
 #   b) else .prs["N"].root_repo present -> its identity must equal the active one
 #   c) scoping recorded but not comparable (no `origin`, stale path) -> refuse
@@ -215,9 +225,11 @@ resolve_root_repo() {
   local chosen=""
   local live=""
   live="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-  # Precedence: explicit arg -> per-PR scoping -> live checkout -> global .root_repo.
-  # The global field is shared across concurrent sessions (issue #647), so it must
-  # never outrank the checkout the caller is actually standing in.
+  # Precedence: explicit arg -> per-PR scoping -> live checkout -> scope .root_repo.
+  # Since issue #638 the last of those is this repo's OWN recorded checkout rather
+  # than a cross-session global, but it stays last on purpose: it is a remembered
+  # path that may name a worktree since removed, so it must never outrank the
+  # checkout the caller is actually standing in.
   if [[ -n "$from_arg" ]]; then
     chosen="$from_arg"
   elif [[ -n "$from_state_pr" && "$from_state_pr" != "null" && -d "$from_state_pr" ]]; then
@@ -237,8 +249,8 @@ resolve_root_repo() {
 }
 
 # validate_root_match <resolved_root> — refuse only on a genuine cross-repo mismatch.
-# Compares repo identity against PER-PR scoping; the shared global .root_repo is
-# never consulted here (issue #647).
+# Compares repo identity against PER-PR scoping; the scope-level .root_repo is
+# never consulted here (issue #647) — only the per-PR fields carry authority.
 validate_root_match() {
   local resolved="$1"
   # Cross-repo short-circuit (issue #638): the PR is registered, but under
@@ -311,7 +323,7 @@ validate_root_match() {
   fi
 
   # (d) state written before per-PR scoping existed: degrade gracefully, never refuse
-  #     on the shared global .root_repo.
+  #     on the scope-level .root_repo alone.
   if [[ "${2:-}" != "quiet" ]]; then
     echo "polling-state-gate.sh: no per-PR repo scoping recorded for PR #$PR_NUMBER — proceeding with the active checkout ($canon); run: polling-state-gate.sh $PR_NUMBER --ensure-session" >&2
   fi
@@ -485,8 +497,9 @@ require_handoff_and_state() {
   state_sha="$(state_pr_field head_sha)"
   handoff_sha=$(jq -r '.head_sha // empty' "$handoff_path")
   handoff_pr=$(jq -r 'if .pr_number == null then "" else (.pr_number | tostring) end' "$handoff_path")
-  # The global .root_repo is deliberately NOT required or validated here (issue #647):
-  # it is shared across concurrent sessions, so it says nothing about this PR.
+  # The scope-level .root_repo is deliberately NOT required or validated here
+  # (issue #647): it records a checkout for the repo as a whole, not for this PR,
+  # so it says nothing about whether THIS PR belongs to the active checkout.
   if [[ -z "$rr" || "$rr" == "null" ]]; then
     echo "polling-state-gate.sh: session-state missing .prs[\"$PR_NUMBER\"].root_repo" >&2
     exit 4
