@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# clean-behind-check.test.sh — Offline unit tests for clean-behind-check.sh (issue #631).
+# clean-behind-check.test.sh — Offline unit tests for clean-behind-check.sh (issues #631, #667).
 # Stubs `gh`, `merge-gate.sh`, and `ac-checkboxes.sh` so no network / real repo is
 # touched. Run from repo root: bash .claude/scripts/tests/clean-behind-check.test.sh
 set -uo pipefail
@@ -50,6 +50,9 @@ chmod +x "$SCRIPTS/ac-checkboxes.sh"
 # Emulates gh 2.48.0: rejects any `pr view` field list containing `baseRefOid`.
 # FAKE_PRVIEW_ERR: if set, `pr view` prints this to stderr and exits 1 (error injection).
 # FAKE_BASEREF_FAIL: if set to 1, the git/ref/heads call exits 1 (fallback test).
+# FAKE_BASE_DELTA_PATCHES: JSON object {filename: patchtext} for compare response.
+# FAKE_PR_FILE_PATCHES: JSON object {filename: patchtext} for pulls/{N}/files response.
+# FAKE_PR_PATCHES_FAIL: if set to 1, pulls/{N}/files call exits 1 (API failure test).
 cat > "$BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 ARGS="$*"
@@ -79,12 +82,30 @@ case "$ARGS" in
     jq -cn --arg sha "${FAKE_BASE_SHA:-ba5eba5eba5eba5eba5eba5eba5eba5eba5eba5e}" \
       '{"object":{"sha":$sha}}'
     exit 0 ;;
+  *"pulls/"*"files"*)
+    # PR file patches endpoint (pulls/{N}/files --paginate)
+    if [[ "${FAKE_PR_PATCHES_FAIL:-0}" == "1" ]]; then
+      echo "ERROR: failed to fetch PR files" >&2; exit 1
+    fi
+    PATCHES="${FAKE_PR_FILE_PATCHES:-null}"
+    PR_FILES="${FAKE_PR_FILES:-[\"mine.txt\"]}"
+    jq -cn \
+      --argjson pr_files "$PR_FILES" \
+      --argjson patches "$PATCHES" \
+      '[$pr_files[] | {filename: ., patch: (if $patches != null then ($patches[.] // null) else null end), status: "modified"}]'
+    exit 0 ;;
   *compare/*)
+    PATCHES="${FAKE_BASE_DELTA_PATCHES:-null}"
     jq -cn \
       --argjson files "${FAKE_BASE_DELTA_FILES:-[\"other.txt\"]}" \
+      --argjson patches "$PATCHES" \
       --argjson ahead "${FAKE_AHEAD_BY:-2}" \
       --arg newest "${FAKE_NEWEST_BASE_AT:-2026-07-21T18:00:00Z}" \
-      '{ahead_by:$ahead, files:($files|map({filename:.})), commits:[{commit:{committer:{date:$newest}}}]}'
+      '{
+        ahead_by: $ahead,
+        files: ($files | map({filename: ., patch: (if $patches != null then ($patches[.] // null) else null end)})),
+        commits: [{commit:{committer:{date:$newest}}}]
+      }'
     exit 0 ;;
   *commits/*)
     echo "${FAKE_HEAD_AT:-2026-07-21T12:00:00Z}"; exit 0 ;;
@@ -128,11 +149,13 @@ expect_field '.merge_state' 'BEHIND' "merge_state reported as BEHIND"
 expect_field '.file_overlap.count' '0' "zero file overlap"
 expect_field '.churn.advisory' 'true' "churn advisory fires on rapid-main replay"
 expect_field '.churn.base_ahead_by' '2' "churn reports base_ahead_by"
+expect_field '.churn.threshold' '1' "churn.threshold is 1 (default)"
 if jq -e . >/dev/null 2>&1 <<<"$OUT"; then ok "stdout is valid JSON"; else bad "stdout not valid JSON: $OUT"; fi
 
 # 2. Green PR, BEHIND, base delta TOUCHES the PR's files → not safe (rebase).
+#    With no patch data, hunk analysis falls back to file-level (conservative).
 FAKE_PR_FILES='["shared.txt","mine.txt"]' FAKE_BASE_DELTA_FILES='["shared.txt"]' run 1
-expect_rc 1 "file overlap → exit 1 (not safe)"
+expect_rc 1 "file overlap (no patch data → file-level fallback) → exit 1 (not safe)"
 expect_field '.safe_to_offer' 'false' "safe_to_offer false on overlap"
 expect_field '.file_overlap.count' '1' "overlap count is 1"
 grep_ok "base delta overlaps PR files" "reason names the file overlap"
@@ -226,6 +249,132 @@ if grep -E 'pr view.*baseRefOid' "$SRC" | grep -v '^[[:space:]]*#' >/dev/null 2>
 else
   ok "source does not request baseRefOid via 'pr view' in code (gh 2.48.0 compat)"
 fi
+
+# ============================================================
+# Issue #667: hunk-level overlap + tunable churn threshold
+# ============================================================
+
+# Patch fixtures — unified diff hunk strings (JSON-safe, actual newline via $'...' not needed
+# since we pass them as JSON string values through jq).
+# Disjoint: base modifies lines 1-3, PR modifies lines 10-12 → no intersection.
+DISJOINT_BASE_PATCHES='{"shared.sh":"@@ -1,3 +1,3 @@\n context\n-old\n+new\n context2"}'
+DISJOINT_PR_PATCHES='{"shared.sh":"@@ -10,3 +10,3 @@\n context8\n-old10\n+new10\n context12"}'
+
+# Overlapping: base modifies lines 5-9, PR modifies lines 7-9 → intersect at 7-9.
+OVERLAPPING_BASE_PATCHES='{"shared.sh":"@@ -5,5 +5,5 @@\n c5\n-o6\n+n6\n c7\n-o8\n+n8\n c9"}'
+OVERLAPPING_PR_PATCHES='{"shared.sh":"@@ -7,3 +7,3 @@\n c7\n-o8\n+n8\n c9"}'
+
+# 17. Hunk-level: same file but DISJOINT hunks → hunk analysis says safe_to_offer=true.
+#     This is the key regression the issue exists to fix: file-level would have said unsafe.
+FAKE_PR_FILES='["shared.sh","mine.sh"]' \
+  FAKE_BASE_DELTA_FILES='["shared.sh"]' \
+  FAKE_BASE_DELTA_PATCHES="$DISJOINT_BASE_PATCHES" \
+  FAKE_PR_FILE_PATCHES="$DISJOINT_PR_PATCHES" \
+  run 1
+expect_rc 0 "hunk: same-file disjoint hunks → exit 0 (safe to offer — false positive eliminated)"
+expect_field '.safe_to_offer' 'true' "safe_to_offer true when hunks are disjoint"
+expect_field '.file_overlap.count' '0' "overlap count 0 after hunk analysis shows disjoint"
+expect_field '.file_overlap.granularity' 'hunk' "granularity is hunk when analysis ran"
+expect_field '.file_overlap.hunk_overlapping_files | length' '0' "hunk_overlapping_files empty for disjoint"
+expect_field '.file_overlap.fallback_files | length' '0' "no fallback files for disjoint case"
+
+# 18. Hunk-level: same file with OVERLAPPING hunks → unsafe.
+FAKE_PR_FILES='["shared.sh","mine.sh"]' \
+  FAKE_BASE_DELTA_FILES='["shared.sh"]' \
+  FAKE_BASE_DELTA_PATCHES="$OVERLAPPING_BASE_PATCHES" \
+  FAKE_PR_FILE_PATCHES="$OVERLAPPING_PR_PATCHES" \
+  run 1
+expect_rc 1 "hunk: same-file overlapping hunks → exit 1 (not safe)"
+expect_field '.safe_to_offer' 'false' "safe_to_offer false when hunks overlap"
+expect_field '.file_overlap.count' '1' "overlap count 1 for overlapping hunks"
+expect_field '.file_overlap.granularity' 'hunk' "granularity is hunk"
+expect_field '.file_overlap.hunk_overlapping_files | length' '1' "hunk_overlapping_files has the shared file"
+grep_ok "base delta overlaps PR files" "reason names the overlapping file"
+
+# 19. Hunk-level: missing patch (binary file or no patch field) → conservative fallback → unsafe.
+FAKE_PR_FILES='["binary.bin","mine.txt"]' \
+  FAKE_BASE_DELTA_FILES='["binary.bin"]' \
+  FAKE_BASE_DELTA_PATCHES='{}' \
+  FAKE_PR_FILE_PATCHES='{}' \
+  run 1
+expect_rc 1 "hunk: missing patch (binary/truncated) → conservative fallback → exit 1 (not safe)"
+expect_field '.safe_to_offer' 'false' "safe_to_offer false on conservative fallback"
+expect_field '.file_overlap.granularity' 'hunk' "granularity is hunk even when falling back"
+expect_field '.file_overlap.fallback_files | length' '1' "fallback_files lists the binary file"
+expect_field '.file_overlap.hunk_overlapping_files | length' '1' "hunk_overlapping_files includes fallback file"
+grep_ok "fell back to file-level" "note documents the fallback"
+
+# 20. Hunk-level: PR files API failure → keep file-level verdict (conservative).
+FAKE_PR_FILES='["shared.txt","mine.txt"]' \
+  FAKE_BASE_DELTA_FILES='["shared.txt"]' \
+  FAKE_PR_PATCHES_FAIL=1 \
+  run 1
+expect_rc 1 "hunk: PR files API failure → file-level result kept → exit 1 (not safe)"
+expect_field '.safe_to_offer' 'false' "safe_to_offer false when hunk analysis unavailable"
+expect_field '.file_overlap.granularity' 'file' "granularity is file when hunk analysis fails"
+grep_ok "hunk analysis unavailable" "note documents API failure"
+
+# 21. New JSON fields exist and are valid on a standard safe run.
+run 1
+expect_field '.file_overlap.granularity' 'file' "granularity is file when no file-level overlap (no hunk analysis needed)"
+expect_field '.file_overlap.hunk_overlapping_files | length' '0' "hunk_overlapping_files empty when no overlap"
+expect_field '.file_overlap.fallback_files | length' '0' "fallback_files empty when no overlap"
+expect_field '.churn.threshold' '1' "churn.threshold present in output"
+
+# ============================================================
+# Churn threshold tuning (issue #667)
+# ============================================================
+
+# 22. Default threshold=1: ahead_by=1 fires advisory (existing behavior preserved).
+FAKE_AHEAD_BY=1 run 1
+expect_field '.churn.advisory' 'true' "threshold=1 default: ahead_by=1 fires advisory"
+expect_field '.churn.threshold' '1' "churn.threshold=1 in output"
+
+# 23. Custom threshold via env var: ahead_by < threshold → advisory false.
+FAKE_AHEAD_BY=2 CHURN_THRESHOLD=3 run 1
+expect_field '.churn.advisory' 'false' "CHURN_THRESHOLD=3: ahead_by=2 does not fire advisory"
+expect_field '.churn.threshold' '3' "churn.threshold reflects env var value"
+
+# 24. Custom threshold via env var: ahead_by >= threshold → advisory true.
+FAKE_AHEAD_BY=3 CHURN_THRESHOLD=3 run 1
+expect_field '.churn.advisory' 'true' "CHURN_THRESHOLD=3: ahead_by=3 fires advisory"
+
+# 25. --churn-threshold flag: ahead_by < threshold → advisory false.
+FAKE_AHEAD_BY=1 run 1 --churn-threshold 5
+expect_field '.churn.advisory' 'false' "--churn-threshold 5: ahead_by=1 does not fire advisory"
+expect_field '.churn.threshold' '5' "churn.threshold reflects flag value"
+
+# 26. --churn-threshold flag: ahead_by >= threshold → advisory true.
+FAKE_AHEAD_BY=5 run 1 --churn-threshold 5
+expect_field '.churn.advisory' 'true' "--churn-threshold 5: ahead_by=5 fires advisory"
+expect_rc 0 "--churn-threshold 5 with safe PR still exits 0 (churn is advisory only)"
+
+# 27. --churn-threshold flag overrides env var (flag wins).
+FAKE_AHEAD_BY=2 CHURN_THRESHOLD=1 run 1 --churn-threshold 5
+expect_field '.churn.advisory' 'false' "flag overrides env var: threshold=5, ahead_by=2 → advisory false"
+expect_field '.churn.threshold' '5' "flag threshold value wins over env var"
+
+# 28. Churn advisory never gates safe_to_offer.
+FAKE_AHEAD_BY=100 CHURN_THRESHOLD=1 run 1
+expect_rc 0 "churn advisory never gates safe_to_offer — high churn still safe (exit 0)"
+expect_field '.churn.advisory' 'true' "advisory fires with high churn"
+expect_field '.safe_to_offer' 'true' "safe_to_offer true regardless of churn"
+
+# 29. Usage: invalid --churn-threshold value → exit 2.
+run 1 --churn-threshold bad
+expect_rc 2 "invalid --churn-threshold value → exit 2"
+
+# 30. Usage: --churn-threshold with no value → exit 2.
+run 1 --churn-threshold
+expect_rc 2 "--churn-threshold with no value → exit 2"
+
+# 31. Threshold=0: when ahead_by=0 but base commit is NOT newer than PR HEAD → advisory false.
+#     With threshold=0, `0 >= 0` passes the numeric check, so the timestamp comparison
+#     is the deciding factor. Use a base timestamp older than the PR HEAD to confirm
+#     the timestamp gate still applies.
+FAKE_AHEAD_BY=0 FAKE_NEWEST_BASE_AT='2026-07-21T10:00:00Z' run 1 --churn-threshold 0
+expect_field '.churn.advisory' 'false' "threshold=0 + ahead_by=0 + base not newer: advisory false (timestamp gating)"
+expect_field '.churn.threshold' '0' "threshold=0 present in output"
 
 echo "----------------------------------------"
 echo "clean-behind-check.test.sh: $PASS passed, $FAIL failed"

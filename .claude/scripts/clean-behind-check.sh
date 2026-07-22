@@ -6,7 +6,7 @@
 # `mergeStateStatus: BEHIND`, rebasing into a fast-moving `main` can loop
 # forever (main lands new commits faster than a rebase → re-approve cycle
 # converges). A rebase is genuinely needed when `main`'s new commits could
-# interact with the PR — but when the base delta does NOT touch any file the PR
+# interact with the PR — but when the base delta does NOT touch any line the PR
 # changed, the rebase is pure churn and an admin-merge (via /admin-merge) is the
 # responsible shortcut. This script decides, mechanically, whether that "clean
 # BEHIND, safe to offer" condition holds so the offer fires consistently.
@@ -26,29 +26,39 @@
 #   4. AC verified — every Test Plan checkbox in the PR body is ticked
 #      (mechanical proxy via ac-checkboxes.sh; genuine per-criterion
 #      verification remains the agent's cr-merge-gate.md Step 2 job).
-#   5. no file overlap — the base delta's changed files (main since the merge
-#      base) share NO file with the PR's changed files (file-level granularity).
+#   5. no hunk-level overlap — the base delta's changed line ranges and the
+#      PR's changed line ranges share NO overlapping interval for every shared
+#      file. Detection uses GitHub's three-dot compare to get base-delta patches
+#      and the PR files API for PR patches, then intersects old-side hunk
+#      ranges. Conservative fallback to file-level applies when a patch is
+#      unavailable (binary, truncated, or API failure), so any ambiguity is
+#      treated as overlapping, never the reverse.
 #
 # Churn / rebase-race signal is ADVISORY context only — it raises the value of
 # the offer but never gates it. `churn.advisory` is true when main has advanced
-# (base_ahead_by >= 1) and its newest commit is newer than the PR's HEAD commit,
-# i.e. main moved after the PR was last updated — the rebase-race window is live.
+# by at least CHURN_THRESHOLD commits (default: 1; configurable via the
+# CHURN_THRESHOLD env var or --churn-threshold flag) and its newest commit is
+# newer than the PR's HEAD commit, i.e. main moved after the PR was last updated
+# — the rebase-race window is live.
 #
 # File-overlap uses GitHub's three-dot compare (compare/{head}...{base}), which
-# reports files changed from merge-base(head, base) to the base tip = the base
-# delta, without any local fetch. GitHub caps compare file lists at 300 files;
-# that is comfortably above any realistic clean-BEHIND diff. The base tip SHA is
-# resolved via `gh api repos/.../git/ref/heads/<base>` (the git-ref REST path,
-# which handles slash-named branches like release/2026.07 natively — no URL
-# escaping needed). If that call fails, the compare falls back to the ref name.
-# NOTE: gh 2.48.0 does not support `baseRefOid` on `gh pr view --json`; the
-# git-ref API call is the gh-version-safe way to get the base tip SHA.
+# reports files and patches changed from merge-base(head, base) to the base tip
+# = the base delta, without any local fetch. GitHub caps compare file lists at
+# 300 files; that is comfortably above any realistic clean-BEHIND diff. The base
+# tip SHA is resolved via `gh api repos/.../git/ref/heads/<base>` (the git-ref
+# REST path, which handles slash-named branches like release/2026.07 natively —
+# no URL escaping needed). If that call fails, the compare falls back to the ref
+# name. NOTE: gh 2.48.0 does not support `baseRefOid` on `gh pr view --json`;
+# the git-ref API call is the gh-version-safe way to get the base tip SHA.
 #
 # Usage:
 #   clean-behind-check.sh <pr_number> [--reviewer cr|bugbot|greptile]
+#                         [--churn-threshold N]
 #   clean-behind-check.sh --help
 #
 # --reviewer is passed through to merge-gate.sh (which path's gate applies).
+# --churn-threshold N: advisory fires when base_ahead_by >= N (default: 1;
+#   env var CHURN_THRESHOLD overrides default; flag overrides env var).
 #
 # Output (single-line JSON on stdout, even when not safe):
 #   {
@@ -62,9 +72,15 @@
 #     "residual_blockers": ["..."],          // merge-gate `missing` minus BEHIND
 #     "ac": {"available":true,"total":6,"checked":6,"unchecked":0,
 #            "all_checked":true,"note":""},
-#     "file_overlap": {"count":0,"files":[],"pr_file_count":N,
+#     "file_overlap": {"count":0,"files":[],
+#            "granularity":"hunk",           // "hunk" | "file"
+#            "hunk_overlapping_files":[],    // files with intersecting hunk ranges
+#            "fallback_files":[],            // files that fell back to file-level
+#            "note":"",
+#            "pr_file_count":N,
 #            "base_delta_file_count":M,"pr_files":[...],"base_delta_files":[...]},
-#     "churn": {"base_ahead_by":2,"newest_base_commit_at":"...",
+#     "churn": {"base_ahead_by":2,"threshold":1,
+#            "newest_base_commit_at":"...",
 #            "pr_head_commit_at":"...","advisory":true},
 #     "head_sha": "abc123...",
 #     "base_ref": "main"
@@ -87,10 +103,62 @@ print_usage() {
 }
 
 # --------------------------------------------------------------------------
+# Hunk-level overlap helpers
+# --------------------------------------------------------------------------
+
+# Extract old-side (merge-base-relative) hunk ranges from a unified-diff patch.
+# Prints one "start:end" pair per line. Empty output if no hunks found.
+# @@ -l,s +l,s @@ → old range is [l, l+s-1]; omitted `,s` means s=1; s=0 = pure addition.
+_parse_old_side_ranges() {
+  local patch="$1"
+  local line l s
+  while IFS= read -r line; do
+    if [[ "$line" == @@* ]]; then
+      # Extract the old-side spec: first group matching -N or -N,M
+      local old_spec
+      old_spec="$(printf '%s\n' "$line" | grep -oE -- '-[0-9]+(,[0-9]+)?' | head -1)"
+      [[ -z "$old_spec" ]] && continue
+      l="${old_spec#-}"
+      if [[ "$l" == *,* ]]; then
+        s="${l#*,}"
+        l="${l%%,*}"
+      else
+        s=1
+      fi
+      # s=0 means a pure-addition hunk (no old lines touched) — no intersection possible
+      [[ "$s" -eq 0 ]] && continue
+      printf '%s:%s\n' "$l" "$((l + s - 1))"
+    fi
+  done <<<"$patch"
+}
+
+# Test whether two newline-separated sets of "start:end" ranges intersect.
+# Returns 0 (true) if any pair intersects, 1 if not.
+_ranges_intersect() {
+  local a_ranges="$1" b_ranges="$2"
+  local a b as ae bs be
+  while IFS= read -r a; do
+    [[ "$a" == *:* ]] || continue
+    as="${a%%:*}" ae="${a##*:}"
+    while IFS= read -r b; do
+      [[ "$b" == *:* ]] || continue
+      bs="${b%%:*}" be="${b##*:}"
+      # [as,ae] and [bs,be] overlap iff as <= be AND ae >= bs
+      if [[ "$as" -le "$be" && "$ae" -ge "$bs" ]]; then
+        return 0
+      fi
+    done <<<"$b_ranges"
+  done <<<"$a_ranges"
+  return 1
+}
+
+# --------------------------------------------------------------------------
 # Arg parsing
 # --------------------------------------------------------------------------
+DEFAULT_CHURN_THRESHOLD=1
 PR_NUMBER=""
 REVIEWER_OVERRIDE=""
+CHURN_THRESHOLD_FLAG=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -107,6 +175,14 @@ while [[ $# -gt 0 ]]; do
           exit 2
           ;;
       esac
+      shift 2
+      ;;
+    --churn-threshold)
+      if [[ -z "${2:-}" ]]; then
+        echo "ERROR: --churn-threshold requires a non-negative integer value" >&2
+        exit 2
+      fi
+      CHURN_THRESHOLD_FLAG="$2"
       shift 2
       ;;
     -*)
@@ -131,6 +207,19 @@ if [[ -z "$PR_NUMBER" ]]; then
 fi
 if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
   echo "ERROR: <pr_number> must be a positive integer (got: $PR_NUMBER)" >&2
+  exit 2
+fi
+
+# Resolve effective churn threshold: flag > CHURN_THRESHOLD env var > default.
+if [[ -n "$CHURN_THRESHOLD_FLAG" ]]; then
+  CHURN_THRESHOLD_VAL="$CHURN_THRESHOLD_FLAG"
+elif [[ -n "${CHURN_THRESHOLD:-}" ]]; then
+  CHURN_THRESHOLD_VAL="${CHURN_THRESHOLD}"
+else
+  CHURN_THRESHOLD_VAL="$DEFAULT_CHURN_THRESHOLD"
+fi
+if ! [[ "$CHURN_THRESHOLD_VAL" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: churn threshold must be a non-negative integer (got: '$CHURN_THRESHOLD_VAL')" >&2
   exit 2
 fi
 
@@ -281,7 +370,7 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# File overlap + churn — GitHub three-dot compare (no local fetch)
+# File-level overlap + churn — GitHub three-dot compare (no local fetch)
 # --------------------------------------------------------------------------
 # compare/{head_sha}...{base_sha}: base=head_sha, head=base tip → files changed
 # from merge-base(head_sha, base) to the base tip = the BASE DELTA. `ahead_by`
@@ -304,17 +393,108 @@ NEWEST_BASE_COMMIT_AT=$(jq -r '(.commits // []) | if length > 0 then (.[-1].comm
 PR_FILES_JSON="$(jq -c '[.files[]?.path] | unique' <<<"$PR_JSON" 2>/dev/null || echo '[]')"
 if ! jq -e . >/dev/null 2>&1 <<<"$PR_FILES_JSON"; then PR_FILES_JSON='[]'; fi
 
-# Intersection = a - (a - b): elements of PR files that are also in the base delta.
+# File-level intersection = a - (a - b): elements of PR files also in base delta.
 OVERLAP_JSON=$(jq -cn --argjson a "$PR_FILES_JSON" --argjson b "$BASE_DELTA_FILES" '$a - ($a - $b) | unique')
 OVERLAP_COUNT=$(jq 'length' <<<"$OVERLAP_JSON")
 NO_OVERLAP=true
 [[ "$OVERLAP_COUNT" -gt 0 ]] && NO_OVERLAP=false
 
-# Churn advisory (never gates): main advanced AND its newest commit is newer than
+# --------------------------------------------------------------------------
+# Hunk-level overlap refinement (only runs on file-level overlap candidates)
+# --------------------------------------------------------------------------
+# When the file-level check finds shared filenames, refine to hunk-level:
+# fetch patches for those files and test old-side line-range intersection.
+# Conservative fallback: if a patch is unavailable (binary, truncated, API
+# failure) → treat the file as overlapping (file-level conservative behavior).
+# Ambiguity always resolves toward "not safe to offer", never the reverse.
+
+HUNK_OVERLAPPING_FILES_JSON='[]'
+FALLBACK_FILES_JSON='[]'
+HUNK_GRANULARITY="file"
+HUNK_NOTE=""
+
+if [[ "$OVERLAP_COUNT" -gt 0 ]]; then
+  # Fetch PR file patches — scoped to the candidate overlap set.
+  # `--paginate` handles PRs with many files; results include `.patch` per file.
+  RC_PF=0
+  PR_FILES_PATCH_JSON="$(gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/files" --paginate 2>/dev/null)" || RC_PF=$?
+
+  if [[ "$RC_PF" -eq 0 ]] && jq -e . >/dev/null 2>&1 <<<"$PR_FILES_PATCH_JSON"; then
+    HUNK_OVERLAPPING_FILES=()
+    FALLBACK_FILES=()
+
+    while IFS= read -r CANDIDATE_FILE; do
+      # Extract base-delta patch for this file (already in COMPARE_JSON)
+      BASE_PATCH="$(jq -r --arg f "$CANDIDATE_FILE" '.files[]? | select(.filename == $f) | .patch // ""' <<<"$COMPARE_JSON")"
+      # Extract PR patch for this file
+      PR_PATCH="$(jq -r --arg f "$CANDIDATE_FILE" '.[] | select(.filename == $f) | .patch // ""' <<<"$PR_FILES_PATCH_JSON")"
+
+      # Conservative fallback: no patch available (binary, newly added/deleted,
+      # or truncated by GitHub's diff-size limit) → treat file as overlapping.
+      if [[ -z "$BASE_PATCH" || -z "$PR_PATCH" ]]; then
+        FALLBACK_FILES+=("$CANDIDATE_FILE")
+        HUNK_OVERLAPPING_FILES+=("$CANDIDATE_FILE")
+        continue
+      fi
+
+      BASE_RANGES="$(_parse_old_side_ranges "$BASE_PATCH")"
+      PR_RANGES="$(_parse_old_side_ranges "$PR_PATCH")"
+
+      # No parseable ranges (e.g., pure additions or unrecognized format) →
+      # conservative fallback: treat file as overlapping.
+      if [[ -z "$BASE_RANGES" || -z "$PR_RANGES" ]]; then
+        FALLBACK_FILES+=("$CANDIDATE_FILE")
+        HUNK_OVERLAPPING_FILES+=("$CANDIDATE_FILE")
+        continue
+      fi
+
+      # Test hunk-level intersection; only truly overlapping hunks count.
+      if _ranges_intersect "$BASE_RANGES" "$PR_RANGES"; then
+        HUNK_OVERLAPPING_FILES+=("$CANDIDATE_FILE")
+      fi
+      # If no intersection: file is NOT added — disjoint hunks → no real conflict.
+
+    done < <(jq -r '.[]' <<<"$OVERLAP_JSON")
+
+    # Build JSON arrays (check length first to avoid set -u issues on empty arrays)
+    if [[ "${#HUNK_OVERLAPPING_FILES[@]}" -gt 0 ]]; then
+      HUNK_OVERLAPPING_FILES_JSON="$(printf '%s\n' "${HUNK_OVERLAPPING_FILES[@]}" | jq -R . | jq -cs .)"
+    else
+      HUNK_OVERLAPPING_FILES_JSON='[]'
+    fi
+    if [[ "${#FALLBACK_FILES[@]}" -gt 0 ]]; then
+      FALLBACK_FILES_JSON="$(printf '%s\n' "${FALLBACK_FILES[@]}" | jq -R . | jq -cs .)"
+    else
+      FALLBACK_FILES_JSON='[]'
+    fi
+
+    HUNK_GRANULARITY="hunk"
+    if [[ "${#FALLBACK_FILES[@]}" -gt 0 ]]; then
+      HUNK_NOTE="${#FALLBACK_FILES[@]} file(s) fell back to file-level (no usable patch)"
+    fi
+
+    # Recompute overlap based on hunk-level result
+    OVERLAP_JSON="$HUNK_OVERLAPPING_FILES_JSON"
+    OVERLAP_COUNT="${#HUNK_OVERLAPPING_FILES[@]}"
+    NO_OVERLAP=true
+    [[ "$OVERLAP_COUNT" -gt 0 ]] && NO_OVERLAP=false
+
+  else
+    # PR files API call failed → hunk analysis unavailable; keep file-level result
+    HUNK_NOTE="hunk analysis unavailable (PR files API fetch failed) — file-level verdict kept"
+    FALLBACK_FILES_JSON="$OVERLAP_JSON"
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# Churn advisory (never gates safe_to_offer)
+# --------------------------------------------------------------------------
+# Fires when base advanced by >= threshold AND its newest commit is newer than
 # the PR's HEAD commit — the rebase-race window is live.
+# `churn.threshold` in JSON reflects the effective configured value.
 PR_HEAD_COMMIT_AT="$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date // .commit.author.date // ""' 2>/dev/null || echo "")"
 CHURN_ADVISORY=false
-if [[ "$BASE_AHEAD_BY" -ge 1 ]]; then
+if [[ "$BASE_AHEAD_BY" -ge "$CHURN_THRESHOLD_VAL" ]]; then
   if [[ -n "$NEWEST_BASE_COMMIT_AT" && -n "$PR_HEAD_COMMIT_AT" ]]; then
     [[ "$NEWEST_BASE_COMMIT_AT" > "$PR_HEAD_COMMIT_AT" ]] && CHURN_ADVISORY=true
   else
@@ -385,9 +565,14 @@ jq -n \
   --arg ac_note "$AC_NOTE" \
   --argjson overlap_count "$OVERLAP_COUNT" \
   --argjson overlap_files "$OVERLAP_JSON" \
+  --arg hunk_granularity "$HUNK_GRANULARITY" \
+  --argjson hunk_overlapping_files "$HUNK_OVERLAPPING_FILES_JSON" \
+  --argjson fallback_files "$FALLBACK_FILES_JSON" \
+  --arg hunk_note "$HUNK_NOTE" \
   --argjson pr_files "$PR_FILES_JSON" \
   --argjson base_delta_files "$BASE_DELTA_FILES" \
   --argjson base_ahead_by "$BASE_AHEAD_BY" \
+  --argjson churn_threshold "$CHURN_THRESHOLD_VAL" \
   --arg newest_base_commit_at "$NEWEST_BASE_COMMIT_AT" \
   --arg pr_head_commit_at "$PR_HEAD_COMMIT_AT" \
   --argjson churn_advisory "$CHURN_ADVISORY" \
@@ -413,6 +598,10 @@ jq -n \
     file_overlap: {
       count: $overlap_count,
       files: $overlap_files,
+      granularity: $hunk_granularity,
+      hunk_overlapping_files: $hunk_overlapping_files,
+      fallback_files: $fallback_files,
+      note: $hunk_note,
       pr_file_count: ($pr_files | length),
       base_delta_file_count: ($base_delta_files | length),
       pr_files: $pr_files,
@@ -420,6 +609,7 @@ jq -n \
     },
     churn: {
       base_ahead_by: $base_ahead_by,
+      threshold: $churn_threshold,
       newest_base_commit_at: $newest_base_commit_at,
       pr_head_commit_at: $pr_head_commit_at,
       advisory: $churn_advisory
