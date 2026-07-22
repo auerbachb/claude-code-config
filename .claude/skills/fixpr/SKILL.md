@@ -880,8 +880,8 @@ jq -r '
 
 For each bot present in `.bot_statuses` or the current-head check-runs:
 
-- `description` containing "rate limit" (case-insensitive) → CR rate-limited, fall back to Greptile per `cr-github-review.md`. CodeRabbit reports this as non-blocking `state: "success"` — check this **before** the `state: success` clean-pass rule below, not just on `failure`/`error`.
-- `state: success` (and not the rate-limit case above) → review completed on this SHA. Clean-pass signal.
+- **CodeRabbit specifically** (by status `context` / bot name) with `description` containing "rate limit" (case-insensitive) → CR rate-limited, fall back to Greptile per `cr-github-review.md`. CodeRabbit reports this as non-blocking `state: "success"` — check this **before** the `state: success` clean-pass rule below, not just on `failure`/`error`. Other bots are not subject to this rule — a Greptile or other status whose text happens to contain "rate limit" is not CR rate-limiting and falls through to the rules below.
+- `state: success` (and not the CodeRabbit rate-limit case above) → review completed on this SHA. Clean-pass signal.
 - `state: pending` or check-run `status != "completed"` → bot still running. **Do NOT declare CLEAN.** Emit `REVIEW_PENDING` and stop.
 - No activity from CodeRabbit, Graphite, CodeAnt, or Cursor after a pushed fix commit → the Step 3b trigger check should already have posted the reviewer-specific comment. Emit `REVIEW_PENDING` and re-run `/fixpr` after the reviewer responds.
 
