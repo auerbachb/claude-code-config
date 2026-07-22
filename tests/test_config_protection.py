@@ -19,8 +19,8 @@ spec.loader.exec_module(config_protection)
 class ConfigProtectionPathTests(unittest.TestCase):
     def test_is_protected_basename(self) -> None:
         protected = [
-            '.coderabbit.yaml',
-            'path/to/.coderabbit.yaml',
+            '.eslintrc.json',
+            'path/to/.eslintrc.json',
             'biome.json',
             '.shellcheckrc',
         ]
@@ -44,16 +44,26 @@ class ConfigProtectionPathTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(config_protection.is_protected_path(path))
 
+    def test_coderabbit_yaml_is_deliberately_unprotected(self) -> None:
+        # issue #714: .coderabbit.yaml's path_filters is a scope setting, not
+        # a strictness setting — see the PROTECTED_BASENAMES comment in
+        # config-protection.py for the full rationale. Widening edits (e.g.
+        # meeting_insights_and_actions#55) must not be blocked.
+        unprotected = ['.coderabbit.yaml', 'path/to/.coderabbit.yaml']
+        for path in unprotected:
+            with self.subTest(path=path):
+                self.assertFalse(config_protection.is_protected_path(path))
+
 
 class ConfigProtectionEditTests(unittest.TestCase):
     def test_allows_create_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             self.assertFalse(config_protection.should_block_edit(str(target)))
 
     def test_blocks_edit_when_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             self.assertTrue(config_protection.should_block_edit(str(target)))
 
@@ -61,7 +71,7 @@ class ConfigProtectionEditTests(unittest.TestCase):
 class ConfigProtectionBashTests(unittest.TestCase):
     def test_bash_blocks_mutation_of_existing_protected_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             cmd = f"sed -i 's/x/y/' {target}"
             blocked = config_protection.bash_targets_protected(cmd)
@@ -69,7 +79,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
 
     def test_bash_allows_create_of_missing_protected_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             cmd = f"printf 'new' > {target}"
             blocked = config_protection.bash_targets_protected(cmd)
             self.assertIsNone(blocked)
@@ -78,7 +88,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # issue #624: merely running sed/awk/perl/python/node/ruby against a
         # protected path is not a write — only an actual write signal is.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             read_only_cmds = [
                 f"sed -n '1,5p' {target}",
@@ -96,7 +106,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
 
     def test_bash_blocks_perl_in_place_edit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             cmd = f"perl -i -pe 's/x/y/' {target}"
             blocked = config_protection.bash_targets_protected(cmd)
@@ -104,7 +114,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
 
     def test_bash_blocks_sed_in_place_edit_with_backup_suffix(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             cmd = f"sed -i.bak 's/x/y/' {target}"
             blocked = config_protection.bash_targets_protected(cmd)
@@ -112,7 +122,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
 
     def test_bash_blocks_explicit_write_flag_on_interpreter_script(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             cmd = f"python3 fixer.py --fix {target}"
             blocked = config_protection.bash_targets_protected(cmd)
@@ -120,7 +130,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
 
     def test_bash_blocks_tee_to_protected_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             cmd = f"tee {target}"
             blocked = config_protection.bash_targets_protected(cmd)
@@ -131,7 +141,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # to capture combined output) has no file target and must not be
         # treated as a write, even though it looks like a redirect operator.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             read_only_cmds = [
                 f"cat {target} 2>&1",
@@ -146,7 +156,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # A real write (redirect to a named file) must still be caught even
         # when followed by an unrelated fd-duplication token.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             cmd = f"sed -i 's/x/y/' {target} 2>&1"
             blocked = config_protection.bash_targets_protected(cmd)
@@ -156,7 +166,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # CodeRabbit/CodeAnt review finding: bundled short flags (-i last in
         # the cluster) must still count as in-place edits.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             for cmd in [
                 f"sed -ni 's/x/y/p' {target}",
@@ -172,7 +182,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
 
     def test_bash_blocks_gnu_long_form_in_place(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             for cmd in [
                 f"sed --in-place 's/x/y/' {target}",
@@ -185,7 +195,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # perl's -I<dir> and -m<module> take an attached argument that can
         # itself contain the letter 'i' — must not be mistaken for -i.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             for cmd in [
                 f"perl -Ilib checker.pl {target}",
@@ -200,7 +210,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # flag) in the same compound line look like a write. Covers both the
         # spaced and glued-to-the-prior-word separator styles.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             read_only_cmds = [
                 f"sed -n 'p' notes.txt; grep -i pattern {target}",
@@ -221,7 +231,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
     def test_bash_blocks_real_write_around_command_separators(self) -> None:
         # A genuine sed/perl -i must still be caught next to a separator.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             for cmd in [
                 f"sed -i 's/x/y/' {target}; echo done",
@@ -237,7 +247,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # in-place edit armed on one line stays armed for an unrelated -i
         # on a later, unrelated line.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             cmd = f"sed -i 's/x/y/' notes.txt\ngrep -i pattern {target}"
             self.assertIsNone(config_protection.bash_targets_protected(cmd))
@@ -253,7 +263,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # running script, not to perl itself. `perl checker.pl -i file`
         # never runs perl's in-place edit at all.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             cmd = f"perl checker.pl -i {target}"
             self.assertIsNone(config_protection.bash_targets_protected(cmd))
@@ -268,7 +278,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # file) in a compound line must not cause a later plain read of a
         # protected file to be falsely blocked.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             other = pathlib.Path(tmp) / 'notes.txt'
             other.write_text('unrelated\n', encoding='utf-8')
@@ -299,7 +309,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # in-place edit where -i (via GNU flag permutation) landed in a
         # different fragment than the sed/perl executable it belongs to.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             for cmd in [
                 f"sed 's/a;b/c;d/' -i {target}",
@@ -316,7 +326,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # segment with no write signal of its own, letting the write evade
         # detection entirely.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             for cmd in [
                 f"echo x >| {target}",
@@ -332,7 +342,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # substitution, so the write signal (-i) and the protected path
         # ended up in different segments and the real edit evaded detection.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             for cmd in [
                 f"sed -i $(printf 's/x/y/') {target}",
@@ -346,7 +356,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # segment boundary — an unrelated write inside it must not leak
         # into a later unrelated read outside it.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             other = pathlib.Path(tmp) / 'notes.txt'
             other.write_text('unrelated\n', encoding='utf-8')
@@ -358,7 +368,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # file) wasn't recognized by either redirect regex at all, so a
         # write via `&>>` evaded detection entirely.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             for cmd in [
                 f"echo x &>> {target}",
@@ -373,7 +383,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # the same way as its short form, or the real executable after it
         # gets missed.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             for cmd in [
                 f"sudo --user root sed -i 's/x/y/' {target}",
@@ -389,7 +399,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # search pattern) — otherwise an unrelated `-i` later in the same
         # single command gets misread as a write.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             cmd = f"grep -l sed *.txt -i {target}"
             self.assertIsNone(config_protection.bash_targets_protected(cmd))
@@ -398,7 +408,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # A leading `VAR=value` or a thin wrapper (sudo/env/xargs/...) must
         # not hide the real sed/perl executable that follows it.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             for cmd in [
                 f"sudo sed -i 's/x/y/' {target}",
@@ -414,7 +424,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # argument) — e.g. env's unrelated -i — must not be mistaken for
         # sed/perl's in-place flag, and must not swallow the real executable.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             cmd = f"env -i sed -i 's/x/y/' {target}"
             self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
@@ -425,7 +435,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # mistaken for the target executable, or the real sed/perl right
         # after it gets missed entirely.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             for cmd in [
                 f"sudo -u root sed -i 's/x/y/' {target}",
@@ -439,7 +449,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # splitting on the embedded `&` would otherwise turn `2>&1` into
         # `2>` (a real redirect operator) + `&` + `1`, reblocking reads.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             for cmd in [
                 f"cat {target} 2>&1",
@@ -456,7 +466,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # flag and smear "modification" onto it via the unresolved-write
         # fallback.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             read_only_cmds = [
                 f"bash {target} >/dev/null",
@@ -478,7 +488,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # isolated); only the redirect co-located with the protected path
         # triggered the false positive.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             cmd = (
                 'git add -A && git commit --amend -m "msg" && git log --oneline -1 '
@@ -492,7 +502,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # protected file, in every operator form (first-time creation of a
         # missing protected file stays bootstrap-allowed, covered above).
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             for cmd in [
                 f"echo x > {target}",
@@ -508,7 +518,7 @@ class ConfigProtectionBashTests(unittest.TestCase):
         # not mask a genuine protected write in another — for both a
         # redirect-write and an in-place edit, on either side.
         with tempfile.TemporaryDirectory() as tmp:
-            target = pathlib.Path(tmp) / '.coderabbit.yaml'
+            target = pathlib.Path(tmp) / '.eslintrc.json'
             target.write_text('existing: true\n', encoding='utf-8')
             for cmd in [
                 f"bash lint.sh >/dev/null && echo y > {target}",

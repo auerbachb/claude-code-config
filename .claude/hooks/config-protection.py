@@ -6,10 +6,19 @@
 #
 # Adapted from affaan-m/everything-claude-code scripts/hooks/config-protection.js
 # (issue #417). ECC blocks ESLint/Prettier/Biome/etc.; we extend with repo-specific
-# paths (.coderabbit.yaml, rule-lint tooling) and use Python to match env-guard.py.
+# paths (rule-lint tooling) and use Python to match env-guard.py.
 #
 # First-time creation of a protected basename is allowed (bootstrap path).
 # Modifying an existing protected file is blocked (exit 2 + stderr message).
+#
+# .coderabbit.yaml is deliberately NOT in PROTECTED_BASENAMES (issue #714).
+# Unlike ESLint/Prettier/Biome/etc., whose typical edit is "loosen a rule to
+# dodge a finding," .coderabbit.yaml's reviews.path_filters is a *scope*
+# setting (which files get reviewed at all), not a *strictness* setting — and
+# in practice the risk runs toward under-scoping, not over-relaxing (a narrow
+# path_filters silently let scripts/**, .github/**, and root docs go unreviewed
+# in meeting_insights_and_actions#55, twice, before being caught). Do not
+# re-add it without an equally considered case for the widening direction.
 
 # Must stay importable on Python 3.9 (macOS system python3 is 3.9.6): the
 # __future__ import defers annotation evaluation so the PEP 604 unions below
@@ -62,7 +71,6 @@ PROTECTED_BASENAMES = frozenset({
     '.markdownlint.json',
     '.markdownlint.yaml',
     '.markdownlintrc',
-    '.coderabbit.yaml',
 })
 
 # Repo-relative paths (any path component match) — our meta-config tooling
