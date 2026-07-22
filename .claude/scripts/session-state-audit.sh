@@ -525,7 +525,14 @@ fi
 jq -s -e 'length == 1 and (.[0] | type == "object")' "$OUT_TMP" >/dev/null 2>&1 \
   || die_error "repair produced a malformed document — $STATE_FILE left unmodified (backup: $BACKUP)"
 
-LOST="$(jq -r -n \
+# Every element is bound to $e before use: `index(f)` evaluates f against the
+# ARRAY it is called on, not against the element being selected, so a bare
+# `index(.pr)` here resolves `.pr` on $after_prs and dies with "Cannot index
+# array with string". That error would print to stderr and leave $LOST empty —
+# the check would pass by failing, which is why its exit status is trapped
+# below rather than assumed.
+LOST=""
+if ! LOST="$(jq -r -n \
   --slurpfile before "$STATE_FILE" --slurpfile after "$OUT_TMP" \
   --argjson prunes "$PRUNE_SET" --arg unknown "$UNKNOWN_REPO_KEY" '
   def pairs($d): [ ($d.repos // {}) | to_entries[] as $r
@@ -536,9 +543,12 @@ LOST="$(jq -r -n \
   # explicitly pruned.
   | ( pairs($after[0]) | map(.pr) | unique ) as $after_prs
   | pairs($before[0])
-  | map(select( (("\(.scope)#\(.pr)") as $k | ($expected_gone | index($k)) | not)
-                and (($after_prs | index(.pr)) | not) ))
-  | map("\(.scope)#\(.pr)") | join(", ")')"
+  | map(. as $e
+        | select( ($expected_gone | index("\($e.scope)#\($e.pr)")) == null
+                  and ($after_prs | index($e.pr)) == null ))
+  | map("\(.scope)#\(.pr)") | join(", ")' 2>"$JQ_ERR")"; then
+  die_error "integrity check could not run: $(cat "$JQ_ERR") — $STATE_FILE left unmodified (backup: $BACKUP)"
+fi
 if [[ -n "$LOST" ]]; then
   die_error "repair would drop PR entries that were not targeted ($LOST) — $STATE_FILE left unmodified (backup: $BACKUP)"
 fi
