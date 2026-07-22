@@ -429,6 +429,121 @@ else
     "$(jq -r 'if (.repos["org/alpha"].prs["80"] // null) != null then 1 else 0 end' "$STATE_FILE")"
 fi
 
+echo "== Malformed repo SCOPE never aborts the audit (CodeAnt, #651) =="
+# One level up from the PR-entry guard: a scope whose value is an array or a
+# string would make every `.value.prs` dereference abort the whole jq program,
+# taking down the audit that exists to report exactly this corruption.
+cat > "$STATE_FILE" <<'JSON'
+{
+  "schema_version": 2,
+  "repos": {
+    "org/alpha": { "prs": { "90": { "phase": "B" } } },
+    "org/broken": ["not", "an", "object"],
+    "org/alsobroken": "a bare string",
+    "_unknown": { "prs": { "91": { "head_sha": "cabcabcabcab" } } }
+  }
+}
+JSON
+OUT=$(run --offline --json 2>/dev/null); RC=$?
+check_eq "audit still produces findings despite malformed scopes" "2" "$RC"
+check_eq "malformed scopes are REPORTED, not fatal" "2" \
+  "$(jq -r '[.type_violations[] | select(.path | startswith(".repos[")) | select(.pr == null)] | length' <<<"$OUT")"
+check_eq "a malformed scope counts as zero PRs rather than crashing" "0" \
+  "$(jq -r '.scopes[] | select(.repo == "org/broken") | .pr_count' <<<"$OUT")"
+check_eq "healthy scopes are still counted correctly" "2" \
+  "$(jq -r '.summary.total_prs' <<<"$OUT")"
+check_eq "no jq index error reaches the caller" "0" \
+  "$(run --offline 2>&1 >/dev/null | grep -c 'Cannot index')"
+
+echo
+echo "== Repair plan is re-validated under the lock (CodeAnt, #651) =="
+# Detection runs before the lock (its network calls would otherwise stall every
+# other writer). A target that changed in that window must be DROPPED, not
+# applied to state it was never computed from.
+cat > "$STATE_FILE" <<'JSON'
+{
+  "schema_version": 2,
+  "repos": {
+    "org/alpha": { "prs": { "95": { "phase": "B" } } },
+    "_unknown":  { "prs": { "96": { "head_sha": "d1d1d1d1d1d1" } } }
+  }
+}
+JSON
+echo "org/alpha d1d1d1d1d1d1" > "$COMMIT_MAP_FILE"
+echo '{}' > "$PR_LIST_FILE"
+# Simulate the concurrent writer: a gh stub that removes the move target the
+# moment attribution reads it, i.e. between detection and the lock.
+cat > "$STUB_DIR/gh" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "api" ]]; then
+  target="${2:-}"; sha="${target##*/}"
+  repo="${target#repos/}"; repo="${repo%%/commits/*}"
+  if grep -qxF "$repo $sha" "$COMMIT_MAP_FILE" 2>/dev/null; then
+    if [[ -n "${RACE_STATE_FILE:-}" && -f "$RACE_STATE_FILE" ]]; then
+      jq 'del(.repos["_unknown"].prs["96"])' "$RACE_STATE_FILE" > "$RACE_STATE_FILE.race" \
+        && mv "$RACE_STATE_FILE.race" "$RACE_STATE_FILE"
+    fi
+    exit 0
+  fi
+  exit 1
+fi
+if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then echo '[]'; exit 0; fi
+exit 0
+STUB
+chmod +x "$STUB_DIR/gh"
+export RACE_STATE_FILE="$STATE_FILE"
+OUT=$(run --apply --reattribute 2>&1); RC=$?
+check_eq "a target that vanished mid-flight does not fail the run" "0" "$RC"
+check_eq "the stale move is dropped, not applied" "null" \
+  "$(jq -r '.repos["org/alpha"].prs["96"] // "null"' "$STATE_FILE")"
+check_eq "the drop is reported, never silent" "1" \
+  "$([[ "$OUT" == *"changed between detection and the lock"* ]] && echo 1 || echo 0)"
+check_eq "untargeted state is untouched by the aborted move" "B" \
+  "$(jq -r '.repos["org/alpha"].prs["95"].phase' "$STATE_FILE")"
+unset RACE_STATE_FILE
+
+# Restore the standard stub for any later section.
+cat > "$STUB_DIR/gh" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "api" ]]; then
+  target="${2:-}"; sha="${target##*/}"
+  repo="${target#repos/}"; repo="${repo%%/commits/*}"
+  grep -qxF "$repo $sha" "$COMMIT_MAP_FILE" 2>/dev/null && exit 0
+  exit 1
+fi
+if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
+  repo=""
+  while [[ $# -gt 0 ]]; do [[ "$1" == "--repo" ]] && repo="$2"; shift; done
+  jq -c --arg r "$repo" '.[$r] // []' "$PR_LIST_FILE" 2>/dev/null || echo '[]'
+  exit 0
+fi
+if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
+  num="${3:-}"
+  jq -c --arg n "$num" '[.[][]] | map(select((.number|tostring) == $n)) | .[0] // empty' "$PR_LIST_FILE" 2>/dev/null
+  exit 0
+fi
+exit 0
+STUB
+chmod +x "$STUB_DIR/gh"
+
+echo
+echo "== A prune target that gained sweep notes mid-flight is withheld =="
+OLD2="$(date -u -v-90d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '90 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+cat > "$STATE_FILE" <<'JSON'
+{ "schema_version": 2, "repos": { "org/alpha": { "prs": { "97": { "phase": "C" } } } } }
+JSON
+jq -n --arg old "$OLD2" '{"org/alpha":[{number:97,state:"MERGED",closedAt:$old}]}' > "$PR_LIST_FILE"
+: > "$COMMIT_MAP_FILE"
+OUT=$(run --json 2>/dev/null)
+check_eq "entry is prunable before the race" "1" \
+  "$(jq -r '[.stale_prunable[] | select(.pr == "97")] | length' <<<"$OUT")"
+# A writer adds an unactioned follow-up after detection but before the lock.
+jq '.repos["org/alpha"].prs["97"].wrap_sweep = {"needs_decision":["added after detection"]}' \
+  "$STATE_FILE" > "$STATE_FILE.t" && mv "$STATE_FILE.t" "$STATE_FILE"
+run --apply --prune >/dev/null 2>&1
+check_eq "re-validation re-withholds it instead of deleting the note" "C" \
+  "$(jq -r '.repos["org/alpha"].prs["97"].phase // "GONE"' "$STATE_FILE")"
+
 echo
 echo "== Concurrent-writer safety: the repair takes the shared state lock =="
 write_state

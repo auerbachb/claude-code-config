@@ -219,10 +219,16 @@ detect_static() {
         --arg unknown "$UNKNOWN_REPO_KEY" '
     . as $doc
     | {
+        # `.value` is guarded before `.prs` is read: a malformed scope (an array
+        # or string where an object belongs) would otherwise abort the whole jq
+        # program with "Cannot index array with string" and take the audit down
+        # with it — exactly the state this tool exists to report on. A bad scope
+        # counts as 0 PRs here and is reported by the type_violations pass below.
         scopes: (
           ($doc.repos // {}) | to_entries
           | map({ repo: .key,
-                  pr_count: ((.value.prs // {}) | length),
+                  pr_count: (if (.value | type) == "object"
+                             then ((.value.prs // {}) | length) else 0 end),
                   attributed: (.key != $unknown) })
         ),
         type_violations: (
@@ -248,7 +254,8 @@ detect_static() {
             (if $doc.root_repo != null then "root_repo" else empty end) ]
         ),
         schema_version: ($doc.schema_version // null),
-        total_prs: ( [ ($doc.repos // {})[] | (.prs // {}) | length ] | add // 0 )
+        total_prs: ( [ ($doc.repos // {})[]
+                       | select(type == "object") | (.prs // {}) | length ] | add // 0 )
       }' "$STATE_FILE"
 }
 
@@ -263,11 +270,15 @@ REAL_REPOS=()
 while IFS= read -r _repo_key; do
   [[ -n "$_repo_key" ]] || continue
   REAL_REPOS+=("$_repo_key")
-done < <(jq -r --arg u "$UNKNOWN_REPO_KEY" '(.repos // {}) | keys[] | select(. != $u)' "$STATE_FILE")
+done < <(jq -r --arg u "$UNKNOWN_REPO_KEY" '
+  (.repos // {}) | to_entries[]
+  | select((.value | type) == "object")
+  | .key | select(. != $u)' "$STATE_FILE")
 
 # Every `_unknown` entry with the SHAs that could identify it.
 UNKNOWN_ENTRIES="$(jq -c --arg u "$UNKNOWN_REPO_KEY" '
-  ((.repos[$u].prs // {}) | to_entries)
+  ((if ((.repos[$u] // null) | type) == "object" then (.repos[$u].prs // {}) else {} end) | to_entries)
+  | map(select((.value | type) == "object"))
   | map({ pr: .key,
           shas: ( [ (.value.head_sha? // empty),
                     (.value.preflight_trigger_head_sha? // empty) ]
@@ -348,6 +359,25 @@ if [[ "$OFFLINE" == "0" ]]; then
     prlist="$(gh pr list --repo "$repo" --state all --limit 300 \
                 --json number,state,closedAt 2>/dev/null || echo '[]')"
     [[ -n "$prlist" ]] || prlist='[]'
+    # The bulk list is an optimization, not the source of truth. A repo with
+    # more than 300 PRs would otherwise leave older tracked entries invisible —
+    # they would never be reported stale, and the summary would understate the
+    # real total while looking complete. Fill the gap by asking directly about
+    # the PRs this repo's scope actually tracks (usually zero extra calls), and
+    # say so rather than capping silently.
+    MISSING_PRS="$(jq -r --arg scope "$repo" --argjson prlist "$prlist" \
+      --slurpfile doc "$STATE_FILE" '
+      ($prlist | map(.number | tostring)) as $have
+      | ($doc[0].repos[$scope] // {}) as $s
+      | (if ($s | type) == "object" then ($s.prs // {}) else {} end)
+      | keys - $have | .[]' <<<'null' 2>/dev/null || true)"
+    while IFS= read -r missing_pr; do
+      [[ -n "$missing_pr" ]] || continue
+      echo "session-state-audit.sh: $repo PR #$missing_pr is tracked in state but outside the 300-PR bulk listing — querying it directly" >&2
+      extra="$(gh pr view "$missing_pr" --repo "$repo" --json number,state,closedAt 2>/dev/null || true)"
+      [[ -n "$extra" ]] || continue
+      prlist="$(jq -c --argjson e "$extra" '. + [$e]' <<<"$prlist")"
+    done <<<"$MISSING_PRS"
     STALE="$(jq -c \
       --arg scope "$repo" \
       --argjson prlist "$prlist" \
@@ -487,6 +517,67 @@ MOVE_SET="$(jq -c --argjson want "$WANT_REATTRIBUTE" '
 HEAL_SET="$(jq -c --argjson want "$WANT_HEAL_TYPES" '
   if $want == 0 then []
   else (.type_violations | map(select(.want == "array" or .want == "object"))) end' <<<"$FINDINGS")"
+
+# Re-validate every target against the document as it is NOW (issue #651,
+# CodeAnt). Detection ran BEFORE the lock — it has to, because attribution and
+# staleness make network calls and holding the lock across them would stall
+# every other writer past its timeout. That leaves a window in which another
+# session can legitimately change the file, so the plan is re-checked against
+# the locked document and any target that no longer holds is dropped rather
+# than applied to state it was not computed from. Nothing here widens the plan;
+# it can only shrink.
+REVALIDATED="$(jq -c -n \
+  --slurpfile doc "$STATE_FILE" \
+  --argjson moves "$MOVE_SET" \
+  --argjson prunes "$PRUNE_SET" \
+  --argjson heals "$HEAL_SET" \
+  --argjson top "$FIELD_TYPES_TOP" \
+  --argjson nested "$FIELD_TYPES_NESTED" \
+  --argjson with_notes "$WANT_PRUNE_WITH_NOTES" \
+  --arg unknown "$UNKNOWN_REPO_KEY" '
+  ($doc[0] // {}) as $d
+  | def entry($scope; $pr):
+      ( ($d.repos[$scope] // null)
+        | if type == "object" then (.prs // {})[$pr] else null end );
+  {
+    moves: ( $moves | map(select(entry($unknown; .pr) != null)) ),
+    # A prune target must still exist AND still be safe: if a writer added
+    # unactioned sweep notes since detection, withhold it again.
+    prunes: ( $prunes | map(select(
+        entry(.scope; .pr) as $e
+        | $e != null
+        and ( $with_notes == 1
+              or ((($e.wrap_sweep.needs_decision? // []) | length) == 0) ) )) ),
+    # A heal target must still be the wrong type — another writer may have
+    # already healed it, in which case resetting it would discard real data.
+    heals: ( $heals | map(select(
+        if .scope == null then
+          ( ($d[(.path | ltrimstr("."))] // null) as $v
+            | $v != null and ($v | type) != .want )
+        elif .pr == null then
+          ( ($d.repos[.scope] // null) as $v | $v != null and ($v | type) != .want )
+        else
+          ( entry(.scope; .pr) as $e
+            | $e != null
+            and ( ($e[(.path | split(".") | last)] // null) as $v
+                  | $v != null and ($v | type) != .want ) )
+        end )) )
+  }')" || die_error "could not re-validate the repair plan under the lock — $STATE_FILE left unmodified (backup: $BACKUP)"
+
+# Report anything the re-validation dropped. Silence here would make a shrunk
+# plan look like a completed one.
+for _pair in "moves:$MOVE_SET" "prunes:$PRUNE_SET" "heals:$HEAL_SET"; do
+  _set="${_pair%%:*}"
+  _before="$(jq -r 'length' <<<"${_pair#*:}" 2>/dev/null || echo 0)"
+  _after="$(jq -r --arg k "$_set" '.[$k] | length' <<<"$REVALIDATED" 2>/dev/null || echo 0)"
+  if [[ "$_before" =~ ^[0-9]+$ && "$_after" =~ ^[0-9]+$ ]] && (( _after < _before )); then
+    echo "session-state-audit.sh: dropped $(( _before - _after )) $_set target(s) that changed between detection and the lock — re-run to pick them up" >&2
+  fi
+done
+
+MOVE_SET="$(jq -c '.moves'  <<<"$REVALIDATED")"
+PRUNE_SET="$(jq -c '.prunes' <<<"$REVALIDATED")"
+HEAL_SET="$(jq -c '.heals'  <<<"$REVALIDATED")"
 
 if ! jq \
     --argjson moves "$MOVE_SET" \
