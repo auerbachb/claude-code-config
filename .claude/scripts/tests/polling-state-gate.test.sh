@@ -16,6 +16,7 @@ set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT="$REPO_ROOT/.claude/scripts/polling-state-gate.sh"
+HANDOFF_HELPER="$REPO_ROOT/.claude/scripts/handoff-state.sh"
 
 TMP="$(mktemp -d)"
 TMP_HOME="$(mktemp -d)"
@@ -74,13 +75,29 @@ HANDOFF="$HOME/.claude/handoffs/pr-${PR_NUM}-handoff.json"
 STATE="$HOME/.claude/session-state.json"
 
 write_handoff() {
-  jq -n --argjson pr "$PR_NUM" --arg sha "deadbeef" \
+  # Optional first arg: owner/repo slug (e.g. "org/a"). When supplied the
+  # handoff is written to the scoped path via handoff-state.sh so it lands
+  # in ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json (issue #655).
+  # Using --create (not --init) ensures any stale handoff at that path is
+  # replaced, providing test-to-test isolation: --ensure-session (test 6)
+  # creates a scoped handoff for "org/a" that would otherwise shadow a
+  # fresh flat write in tests 8/9 (root cause of CI head_sha mismatch).
+  # Use if/else rather than "${arr[@]}" expansion to stay compatible with
+  # bash 3.2 (macOS system bash), which raises "unbound variable" for empty
+  # arrays under set -u.
+  local owner_repo="${1:-}"
+  local json_body
+  json_body="$(jq -n --argjson pr "$PR_NUM" --arg sha "deadbeef" \
     '{schema_version:"1.0", pr_number:$pr, head_sha:$sha, reviewer:"cr",
       phase_completed:"B", created_at:"2026-07-21T00:00:00Z",
       findings_fixed:[], threads_replied:[], threads_resolved:[],
-      files_changed:[], push_timestamp:"2026-07-21T00:00:00Z"}' > "$HANDOFF"
+      files_changed:[], push_timestamp:"2026-07-21T00:00:00Z"}')"
+  if [[ -n "$owner_repo" ]]; then
+    "$HANDOFF_HELPER" --owner-repo "$owner_repo" --create "$PR_NUM" "$json_body"
+  else
+    "$HANDOFF_HELPER" --create "$PR_NUM" "$json_body"
+  fi
 }
-
 # write_state <global_root_repo> <per-pr fields as jq object or 'null'>
 write_state() {
   local global_root="$1" per_pr="$2"
@@ -165,7 +182,7 @@ check_eq "owner_repo comparison ignores case" "0" "$rc"
 # ---- 8. owner and repo sharing a name is still a valid identity ------------
 REPO_SAME="$TMP/repo-same"
 mk_repo "$REPO_SAME" "git@github.com:foo/foo.git"
-write_handoff
+write_handoff "foo/foo"
 write_state "$REPO_B" "$(jq -n --arg r "$REPO_SAME" '{root_repo:$r, owner_repo:"foo/foo", head_sha:"deadbeef", reviewer:"cr"}')"
 out="$(cd "$REPO_SAME" && "$SCRIPT" "$PR_NUM" --verify-state 2>&1)"; rc=$?
 check_eq "owner/repo with identical names resolves and passes" "0" "$rc"
@@ -182,7 +199,7 @@ git -C "$REPO_NOREMOTE" config user.name Test
 : > "$REPO_NOREMOTE/README.md"
 git -C "$REPO_NOREMOTE" add README.md
 git -C "$REPO_NOREMOTE" commit --quiet -m init
-write_handoff
+write_handoff "org/a"
 write_state "$REPO_B" "$(jq -n '{root_repo:"/nonexistent/gone", owner_repo:"org/a", head_sha:"deadbeef", reviewer:"cr"}')"
 out="$(cd "$REPO_NOREMOTE" && "$SCRIPT" "$PR_NUM" --verify-state 2>&1)"; rc=$?
 check_eq "uncomparable identity with recorded scoping fails closed" "4" "$rc"
