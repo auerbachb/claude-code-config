@@ -43,9 +43,9 @@ Rules: set `model` explicitly on every spawn (call-site overrides frontmatter; `
 
 ## Phase Transition Autonomy (Quick Reference)
 
-**Always do:** local CR review; commit/push after clean local review; create PR after push; enter 60s GitHub polling; fix valid reviewer findings; follow CR→BugBot→Greptile→self-review fallback timing; launch Phase B after Phase A; launch Phase C after `merge_ready` with merge authorization; verify AC after merge gate; respawn exhaustion with valid handoff.
+**Always do:** local CR review; commit/push after clean local review; create PR after push; enter 60s GitHub polling; fix valid reviewer findings; follow CR→BugBot→Greptile→self-review fallback timing; launch Phase B after Phase A; launch Phase C after `merge_ready` (auto — no merge-approval pause); verify AC after merge gate; respawn exhaustion with valid handoff.
 
-**Ask first only:** merging (ask before Phase C launch, or pass prior authorization in the prompt); respawning a crashed/no-handoff subagent.
+**Ask first only:** respawning a crashed/no-handoff subagent.
 
 > **Anti-pattern:** composing "Should I...?" for any "Always do" row — the answer is always yes (CLAUDE.md); execute immediately.
 
@@ -63,7 +63,7 @@ The 32K limit is binding. Give each subagent one phase with explicit exit criter
 - **Phase B: Review Loop** (lighter) — poll/trigger reviewer, fix new findings, update handoff, EXIT.
 - **Phase C: Verify + Wrap** (lightest) — verify merge gate + AC, then `/wrap` to squash-merge, sync main, report `merged`. Do not duplicate `/wrap` logic; its session-sweep output is **advisory only — never block a merge on a sweep finding**.
 
-**Orchestration:** parent launches Phase A (parallel across PRs allowed); Phase A complete → cleanup per `phase-protocols.md`, then Phase B; Phase B `merge_ready` → get merge authorization, then Phase C. Keep 3-4 active CR-polled PRs max; at 7+ CR reviews/hour expect Greptile fallback. **This ceiling counts only PRs you authored (`@me`)** — a collaborator's or bot's PRs never enter it or gate your own work (shared-budget contention is context, never a gate). The same ceiling caps the inline A→B→C pipeline for `/pm` and `/subagent` — queue issues beyond it (slot semantics: `.claude/skills/subagent/SKILL.md` Step 7).
+**Orchestration:** parent launches Phase A (parallel across PRs allowed); Phase A complete → cleanup per `phase-protocols.md` then Phase B; Phase B `merge_ready` → launch Phase C within 60s (auto `/wrap`, silent merge). Keep 3-4 active CR-polled PRs max; at 7+ CR reviews/hour expect Greptile fallback. **This ceiling counts only PRs you authored (`@me`)** — a collaborator's or bot's PRs never enter it or gate your own work (shared-budget contention is context, never a gate). The same 3-4 ceiling is the inline A→B→C pipeline cap for `/pm` and `/subagent` — queue issues beyond it (mechanics + slot semantics: `.claude/skills/subagent/SKILL.md` Step 7).
 
 ## Subagent Review Protocol
 

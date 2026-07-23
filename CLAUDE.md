@@ -1,8 +1,12 @@
 # PR MERGE AUTHORIZATION
 
-Do not merge a PR or commit to `main` unless the issue author approved on the PR/issue **or** the user confirmed that approval in chat. If unclear, ask.
+When the merge gate passes (`cr-merge-gate.md` Steps 1–1d, 1b) and every Test Plan box verifies (Step 2), **auto-run full `/wrap`** (squash-merge, sync main, follow-ups, session sweep, lessons) — **no approval pause, no pre-merge message**. Post-merge report is the user's first signal.
 
-**Exception:** `/wrap` / `/merge` / `/pr-monitor-and-manage` = merge auth for that run; no extra merge prompt after gate+AC (see those skills).
+**Hard stops:** human `CHANGES_REQUESTED` on HEAD; failing/incomplete CI; unresolved threads; unchecked AC; branch-protection / `enforce_admins` → print `/admin-merge`, never auto-bypass.
+
+**Opt-out:** user says "don't merge" / "wait for my approval" in chat — honor for that PR/thread. `/pr-monitor-and-manage --confirm-merges` restores per-PR prompts.
+
+Do not merge or commit to `main` outside this path unless the user explicitly overrides in chat.
 
 ---
 
@@ -34,11 +38,10 @@ Whenever referencing a GitHub number in human-facing prose, you **must** prefix 
 
 The workflow is fully autonomous. At every phase transition — local review, push, PR creation, polling, feedback processing, subagent spawning — **proceed immediately without asking the user.** See `subagent-orchestration.md` "Phase Transition Autonomy" for the complete table.
 
-**The ONLY actions that require user permission:**
-- Merging (except `/wrap` / `/merge` / `/pr-monitor-and-manage` — see above)
+**The ONLY action that requires user permission:**
 - Respawning a failed subagent
 
-**Monitoring is never permission-gated — babysitting an in-flight PR is the default, never a question.** When a PR is open and not merge-ready, arm the watch yourself and report it; never offer a "watch it / babysit / review it yourself?" menu, and never wait to be told. A CodeRabbit timeout or rate-limit is not a stop-and-ask — it routes autonomously into the escalation chain (BugBot → Greptile → self-review, `cr-github-review.md`). Keep it token-safe: `/loop` (or `CronCreate` for durable/fleet), pausing between ticks and widening on stable-state backoff — never a continuous poll (`scheduling-reliability.md`). Use the existing skills (`/babysit-pr`, `/pr-monitor-and-manage`); add no new machinery. The only authorization left in the babysit→merge loop is the **merge** itself (above; Issue #674).
+**Monitoring is never a permission-gated action — babysitting an in-flight PR is the default, never a question.** When a PR is open and not yet merge-ready, arm the watch yourself and report it; never present a "watch it / babysit / review it yourself — which?" menu, and never wait for the user to say "watch it" first. A CodeRabbit timeout or rate-limit is not a stop-and-ask — it routes autonomously into the reviewer-escalation chain (BugBot → Greptile → self-review, `cr-github-review.md`). Keep it token-safe: arm `/loop` (or `CronCreate` for durable/fleet) so it pauses between ticks and widens on stable-state backoff — never a continuous poll (`scheduling-reliability.md`). Use the existing skills (`/babysit-pr`, `/pr-monitor-and-manage`); add no new machinery. When the gate + AC pass, the babysit→merge loop auto-dispatches `/wrap` silently (see "PR MERGE AUTHORIZATION" above).
 
 If you catch yourself composing a "should I...?" question about any workflow step, stop — the answer is always yes. Just do it.
 

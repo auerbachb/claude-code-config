@@ -1,8 +1,8 @@
 # Phase Completion Protocols & Exit Reports
 
 > **Always:** Print a Structured Exit Report as the final output before every subagent exits. Execute the appropriate Completion Protocol immediately when a subagent returns. Verify outputs before marking complete.
-> **Ask first:** Merging — ask before Phase C launch or pass prior authorization in the prompt. Crashed/no-handoff respawns — tell the user first; exhaustion with valid handoff auto-respawns ("Always do").
-> **Never:** Skip the exit report. Launch the next phase without verifying the previous phase's outputs. Do NOT ask permission for autonomous phase transitions (except the Phase C merge gate).
+> **Ask first:** Crashed/no-handoff respawns — tell the user first; exhaustion with valid handoff auto-respawns ("Always do").
+> **Never:** Skip the exit report. Launch the next phase without verifying the previous phase's outputs. Do NOT ask permission for autonomous phase transitions — including Phase C after `merge_ready`.
 
 ## Structured Exit Report (MANDATORY — all phases)
 
@@ -36,7 +36,7 @@ Rules: one colon-separated field per line, no extra whitespace, and on exhaustio
    - `merge_ready` → proceed to step 3 (launch Phase C). This is the single Phase-C-advancing terminal.
    - `clean`, `fixes_pushed`, or `exhaustion` → launch replacement Phase B within 60s, update `session-state.json` (keep phase B; record new SHA/remaining work as applicable), report with timestamp, and **STOP**.
 3. **Verify review state via GitHub API.** Confirm the merge gate per `cr-merge-gate.md` Step 1. If verification fails, launch replacement Phase B instead of Phase C — STOP.
-4. **Launch Phase C within 60 seconds only with merge authorization.** Ask before launch or pass authorization in the prompt; include the handoff path.
+4. **Launch Phase C within 60 seconds.** No merge-approval pause — Phase C runs `/wrap` silently once gate + AC pass (`CLAUDE.md` "PR MERGE AUTHORIZATION"). Include the handoff path.
 5. **Update `session-state.json`.** Record phase transition and HEAD SHA.
 6. **Report to user (with timestamp).**
 

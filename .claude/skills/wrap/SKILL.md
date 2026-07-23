@@ -468,7 +468,7 @@ After the recovery loop, **Step 2.1** must have returned gate exit `0` immediate
 
 ### Step 2.4: Squash merge
 
-**Merge authorization:** `/wrap` invocation authorizes merge. After blockers clear (Phase 1 + Step 2.1 recovery + Step 2.2), run `gh pr merge --squash` with no merge prompt — overrides `CLAUDE.md` "PR MERGE AUTHORIZATION" and `cr-merge-gate.md` Step 3 **for `/wrap` only**; real blockers above still stop the flow.
+**Merge execution:** After blockers clear (Phase 1 + Step 2.1 recovery + Step 2.2), run `gh pr merge --squash` with no pre-merge prompt — per `CLAUDE.md` "PR MERGE AUTHORIZATION" and `cr-merge-gate.md` Step 3. Gate/CI/AC/human-CR/admin-merge blockers above still stop the flow.
 
 ```bash
 gh pr merge --squash

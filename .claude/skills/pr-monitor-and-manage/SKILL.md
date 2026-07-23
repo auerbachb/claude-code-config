@@ -13,7 +13,7 @@ argument-hint: "[--author <login>] [--repo <owner/repo>] [--cadence Nm] [--max-p
 
 Thread-level **PR fleet manager**. This skill turns the current thread into a dedicated monitor that watches every open PR you own and drives each one to merge-ready (or a named hard block) by dispatching the per-PR decision tree on a recurring cadence. Fix work (`has-recoverable-blockers` / verdict `fixpr`) is handled by **parallel `phase-a-fixer` subagents** (default cap 3, `--max-parallel N`). Merge-ready PRs get **sequential `/wrap`** dispatch only.
 
-> **Implicit merge authorization.** Invoking `/pr-monitor-and-manage` carries merge authorization for the duration of the run — the same exception as `/wrap` and `/merge` in `CLAUDE.md`'s "PR MERGE AUTHORIZATION" block. PMM never merges directly; it lands merge-ready PRs only by dispatching the full `/wrap` workflow inline, and `/wrap`'s existing authorization covers the squash merge after gate + AC pass. Scope is precise: this auth covers only `gh pr merge --squash` via `/wrap` — never branch-protection changes, never dismissing human reviews, never bypassing gate or AC failures. With `--confirm-merges` off (default), PMM dispatches `/wrap` immediately on merge-ready PRs with no per-PR "merge now?" prompt.
+> **Auto-merge via `/wrap`.** PMM never merges directly; merge-ready PRs dispatch the full `/wrap` workflow inline once gate + AC pass (`CLAUDE.md` "PR MERGE AUTHORIZATION"). Scope: only `gh pr merge --squash` via `/wrap` — never branch-protection changes, never dismissing human reviews, never bypassing gate or AC failures. With `--confirm-merges` off (default), PMM dispatches `/wrap` immediately on merge-ready PRs with no per-PR "merge now?" prompt.
 
 > **Per-PR dispatch is inlined below.** `TODO: refactor to call /babysit-pr per discovered PR after #456 lands.` Until #456 merges, Step 3's decision tree is the single owner of per-PR logic. When `/babysit-pr` exists, replace Step 3's inline branches with one `/babysit-pr <PR>` dispatch per discovered PR — the table, discovery, idempotency, and backoff scaffolding here stay unchanged.
 
@@ -703,7 +703,7 @@ HEAD_SHA=$(jq -r '.head_sha' <<<"${GATE_BY_PR[$N]}")
   ".pmm_in_flight.\"$N\"={\"skill\":\"wrap\",\"status\":\"active\",\"dispatched_at\":\"$NOW\",\"head_sha\":\"$HEAD_SHA\"}"
 ```
 
-Default (`PMM_CONFIRM_MERGES` false): dispatch the **full** `/wrap` workflow inline (all 4 phases) immediately — invocation already authorized it per `CLAUDE.md`'s merge-auth exception.
+Default (`PMM_CONFIRM_MERGES` false): dispatch the **full** `/wrap` workflow inline (all 4 phases) immediately — silent merge per `CLAUDE.md` "PR MERGE AUTHORIZATION".
 
 Execute the **full** `/wrap` workflow inline (all 4 phases). PMM relies on `/wrap`'s own gate re-check (`merge-gate.sh`) and AC verification (`ac-checkboxes.sh`) — if the gate is no longer met (SHA moved, CI regressed) or AC fails, `/wrap` stops and returns a hard block; PMM records it and re-classifies on the next tick without re-authorizing or re-prompting.
 
@@ -976,4 +976,4 @@ This skill is a **parent orchestrator**. The parent rebases/force-pushes (Step 5
 - **Never bypass AI-reviewer rate caps** — `cr-review-hourly.sh` gates every CR re-trigger; Greptile/CodeAnt caps are respected by subagents and `/wrap`. The Step 5.0 pre-flight (`pr-preflight.sh`, issue #493) is the sanctioned per-PR trigger path: it gates `@coderabbitai full review` on `cr-review-hourly.sh`, never triggers Greptile, never flips another user's draft, and is strictly per-PR (no shared accumulator — a flip/trigger on one PR never leaks to another).
 - **Never use GitHub's update-branch API** for `BEHIND` — only `git rebase origin/main` + `--force-with-lease`.
 - **Stay in the worktree; never run destructive commands in the root repo** — no `git clean`, `git reset --hard`, or `.env` edits anywhere.
-- **Never merge directly** — PMM never runs `gh pr merge` itself. It lands PRs only by dispatching the full `/wrap` workflow inline; `/wrap` carries the merge authorization (after its gate + AC verification). No bypass path exists.
+- **Never merge directly** — PMM never runs `gh pr merge` itself. It lands PRs only by dispatching the full `/wrap` workflow inline after gate + AC pass. No bypass path exists.
