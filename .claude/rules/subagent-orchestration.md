@@ -63,7 +63,7 @@ The 32K limit is binding. Give each subagent one phase with explicit exit criter
 - **Phase B: Review Loop** (lighter) — poll/trigger reviewer, fix new findings, update handoff, EXIT.
 - **Phase C: Verify + Wrap** (lightest) — verify merge gate + AC, then run `/wrap` to squash-merge, sync main, report `merged`. Do not duplicate `/wrap` logic; its session-sweep output is **advisory only — never block a merge on a sweep finding**.
 
-**Orchestration:** parent launches Phase A (parallel across PRs allowed); Phase A complete → cleanup per `phase-protocols.md` then Phase B; Phase B `merge_ready` → get merge authorization, then launch Phase C. Keep 3-4 active CR-polled PRs max; at 7+ CR reviews/hour expect Greptile fallback. The same 3-4 ceiling is the inline A→B→C pipeline cap for `/pm` and `/subagent` — queue issues beyond it (mechanics + slot semantics: `.claude/skills/subagent/SKILL.md` Step 7).
+**Orchestration:** parent launches Phase A (parallel across PRs allowed); Phase A complete → cleanup per `phase-protocols.md` then Phase B; Phase B `merge_ready` → get merge authorization, then launch Phase C. Keep 3-4 active CR-polled PRs max; at 7+ CR reviews/hour expect Greptile fallback. **This ceiling counts only PRs you authored (`@me`)** — a collaborator's or bot's PRs never enter it or gate your own work (shared-budget contention is context, never a gate). The same 3-4 ceiling is the inline A→B→C pipeline cap for `/pm` and `/subagent` — queue issues beyond it (mechanics + slot semantics: `.claude/skills/subagent/SKILL.md` Step 7).
 
 ## Subagent Review Protocol
 
