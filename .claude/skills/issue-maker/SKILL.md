@@ -320,6 +320,8 @@ Immediately after logging the issue, offer a one-click coding chip **in addition
 
 Check chip availability per `.claude/reference/chip-launching.md`. The coding-thread prompt is the same regardless of mode:
 
+**Chip model contract (non-negotiable):** The chip `prompt` MUST open with the `**Model:**` line from Step 9b, immediately followed by the model-guard preamble from `chip-launching.md` (no blank line between). The visible short summary MUST repeat the same `**Model:**` line (not the guard) per `chip-launching.md` "Short-summary transcript format". When the parent thread is on Fable 5 and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
+
 ```
 **Model:** {MODEL from Step 9b} — {one-line reason, e.g. "rules + skill wiring" or "single-file addition"}
 {Model-guard preamble — insert verbatim from `chip-launching.md` "Model-guard preamble", immediately after this line, no blank line between}
