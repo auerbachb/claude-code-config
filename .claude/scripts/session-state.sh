@@ -1005,15 +1005,18 @@ migrate(\$__pathmap; \$__unknown)"
     #      write sites needs no change here.
     #   2. Else keep an entry with no .pr (unattributable).
     #   3. Else correlate by PR number: keep UNLESS .pr is tracked by some OTHER
-    #      repo ($otherpr = every PR key under a repo != this one). That drops
-    #      other-repo agents AND, conservatively, the ambiguous case where the
-    #      same PR number is tracked by two repos — a scoped view that
-    #      under-shows a thread is safer than one that leaks another repo's. The
-    #      entry stays visible via --all-repos. Numeric .pr is stringified to
-    #      compare against the string PR-map keys.
+    #      repo ($otherpr = every PR key under a real repo != this one). The
+    #      _unknown bucket is excluded from $otherpr (issue #712): it holds
+    #      unattributed/legacy entries and is not a real repo, so a PR number
+    #      there is not evidence the PR belongs to someone else. That drops
+    #      genuine other-repo agents AND, conservatively, the ambiguous case
+    #      where the same PR number is tracked by two real repos — a scoped
+    #      view that under-shows a thread is safer than one that leaks another
+    #      repo's. The entry stays visible via --all-repos. Numeric .pr is
+    #      stringified to compare against the string PR-map keys.
     SV_PROGRAM="$SV_PROGRAM
 | (.repos[\$__rk] // {}) as \$mine
-| ([ (.repos // {}) | to_entries[] | select(.key != \$__rk) | (.value.prs // {}) | keys[] ]) as \$otherpr
+| ([ (.repos // {}) | to_entries[] | select(.key != \$__rk and .key != \$__unknown) | (.value.prs // {}) | keys[] ]) as \$otherpr
 | .prs = (\$mine.prs // {})
 | .root_repo = (\$mine.root_repo // null)
 | .active_agents = ((.active_agents // [])
