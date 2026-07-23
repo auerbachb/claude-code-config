@@ -99,11 +99,12 @@ greptile_comment() { # created_at thumbsup_count
       reactions:{url:"",total_count:$up,"+1":$up,"-1":0}}'
 }
 
-# Helper: build a Greptile inline diff comment with a P0 badge.
+# Helper: build a Greptile inline diff comment with a formal P0 severity badge.
+# Uses the <img alt="P0"> format Greptile actually emits (issue #729).
 greptile_p0_inline() {
   jq -cn --arg sha "$HEAD_SHA" \
     '{id:2001, user:{login:"greptile-apps[bot]"},
-      body:"**P0** — critical issue found",
+      body:"<img alt=\"P0\" src=\"badge.svg\" /> Critical issue found.",
       created_at:"'"$FRESH_TS"'",
       commit_id:$sha, original_commit_id:$sha}'
 }
@@ -197,6 +198,44 @@ check_eq "1"     "$RC"     "stale inline only: exit code 1"
 # yet" guard fires and reports exactly this missing entry.
 check_eq "yes" "$(missing_has "no Greptile review")" \
   "stale inline only: missing says 'no Greptile review yet'"
+
+# --------------------------------------------------------------------------
+# Test 5: Prose "no P0" must NOT count as a P0 badge (regression for #729).
+# A Greptile issue comment whose body contains the words "no P0" but no
+# <img alt="P0"> badge must yield P0_COUNT=0 — the severity gate passes.
+# Before the fix, grep -oE '\bP0\b' would match "P0" in "no P0" and wrongly
+# inflate P0_COUNT, flipping the gate to "P0 present" on a P1/P2-only review.
+# --------------------------------------------------------------------------
+echo "--- Test 5: prose 'no P0' must not count as badge ---"
+# A fresh Greptile issue comment with thumbsup=0 and prose "no P0".
+# thumbsup=0 → G_COMMENT_CLEAN=false → Path B; P0 prose in G_BODY must not count.
+COMMENT5="$(jq -cn \
+  '{id:4001, user:{login:"greptile-apps[bot]"},
+    body:"P1: minor nit — there are no P0 issues, this is purely a style concern.",
+    created_at:"'"$FRESH_TS"'",
+    reactions:{url:"",total_count:0,"+1":0,"-1":0}}')"
+run_gate "$PUSH_TS" "[$COMMENT5]" "[]"
+
+check_eq "true" "$(met)"           "prose no-P0: met == true (P0_COUNT=0)"
+check_eq "0"    "$(missing_count)" "prose no-P0: no missing entries"
+check_eq "0"    "$RC"              "prose no-P0: exit code 0"
+
+# --------------------------------------------------------------------------
+# Test 6: Formal <img alt="P0"> badge must be detected and fail the gate.
+# An inline comment whose body contains <img alt="P0"> must yield P0_COUNT>=1,
+# so the severity gate blocks merge until a clean re-review (regression for #729).
+# --------------------------------------------------------------------------
+echo "--- Test 6: formal P0 badge is detected ---"
+P0_BADGE="$(jq -cn --arg sha "$HEAD_SHA" \
+  '{id:5001, user:{login:"greptile-apps[bot]"},
+    body:"<img alt=\"P0\" src=\"badge.svg\" /> Critical: null pointer dereference in handler.",
+    created_at:"'"$FRESH_TS"'",
+    commit_id:$sha, original_commit_id:$sha}')"
+run_gate "$PUSH_TS" "[]" "[$P0_BADGE]"
+
+check_eq "false" "$(met)"              "P0 badge: met == false"
+check_eq "yes"   "$(missing_has "P0")" "P0 badge: missing contains P0 message"
+check_eq "1"     "$RC"                 "P0 badge: exit code 1"
 
 echo "----------------------------------------"
 echo "merge-gate-greptile-comment.test.sh: $PASS passed, $FAIL failed"
