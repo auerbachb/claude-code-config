@@ -32,10 +32,13 @@
 #                      the clipboard (pbcopy), and echo a marker line in the new
 #                      terminal. Never auto-executes the command. Falls back to
 #                      --print behaviour on Linux/Windows with a clear message.
-#   --execute          USER-INVOKED ONLY. Run the toggle-merge-toggle dance with a
-#                      trap that re-enables enforce_admins on any failure, then
-#                      verify protection is restored and the PR merged. A clean-
-#                      BEHIND bypass (#631) is revalidated just before the dance.
+#   --execute          USER-INVOKED ONLY. Toggle shape: run the toggle-merge-toggle
+#                      dance with a trap that re-enables enforce_admins on any
+#                      failure, then verify protection is restored and the PR merged.
+#                      Plain shape (enforce_admins=false + strict=true + clean-BEHIND):
+#                      run a bare `gh pr merge --squash --admin` with no protection
+#                      changes. Both shapes revalidate the clean-BEHIND state (#631)
+#                      just before executing.
 #
 # Options:
 #   --repo-path <path>  Absolute path of the local clone to cd into (default:
@@ -52,7 +55,9 @@
 #   3 — PR not found / not open
 #   4 — gh / network / jq error
 #   5 — refused: repo is not solo-owned (would skip a real review)
-#   6 — refused: no enforce_admins protection block detected (nothing to bypass)
+#   6 — refused: enforce_admins is disabled and strict+clean-BEHIND bypass does
+#        not apply — no bypass path detected (inspect branch protection for the
+#        actual blocker)
 #   7 — execute-mode failure (merge failed; trap re-enabled protection)
 
 set -uo pipefail
