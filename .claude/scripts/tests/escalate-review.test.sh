@@ -40,6 +40,11 @@ cp "$REPO_ROOT/.claude/scripts/greptile-budget.sh" "$STUB_DIR/greptile-budget.sh
 # greptile-budget.sh source it from their own directory and hard-fail without
 # it rather than writing unserialized, so the stub dir needs it too.
 cp "$REPO_ROOT/.claude/scripts/state-lock.sh" "$STUB_DIR/state-lock.sh"
+# Shared case-normalizer library (issue #704) — session-state.sh sources it
+# from $SCRIPT_DIR/lib/ and hard-fails without it, so the stub dir needs the
+# lib/ subdirectory mirrored alongside the other siblings.
+mkdir -p "$STUB_DIR/lib"
+cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$STUB_DIR/lib/repo-normalizer.sh"
 chmod +x "$STUB_DIR/escalate-review.sh" "$STUB_DIR/session-state.sh" "$STUB_DIR/greptile-budget.sh"
 
 cat > "$STUB_DIR/pr-state.sh" <<'STUB'
