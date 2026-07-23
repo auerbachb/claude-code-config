@@ -319,6 +319,38 @@ check_eq "empty file: active_agents defaults to []" "[]" "$(jq -c '.active_agent
 check_eq "empty file: root_repo is null" "null" "$(jq -c '.root_repo' <<<"$VIEW_EMPTY")"
 
 echo
+echo "== --session-view: _unknown does not mask PR attribution (issue #712) =="
+# Three cases for active_agents entries (no owner_repo, correlated by .pr):
+#   PR 501 — lives ONLY under _unknown         → agent retained (unattributed)
+#   PR 502 — lives under a real other repo     → agent dropped  (other repo wins)
+#   PR 503 — lives under BOTH _unknown and a   → agent dropped  (real repo wins
+#              real other repo                    even when _unknown also has it)
+cat > "$STATE_FILE" <<'JSON'
+{
+  "active_agents": [
+    {"id":"only-unknown","pr":501},
+    {"id":"real-other","pr":502},
+    {"id":"both-unknown-and-real","pr":503}
+  ],
+  "repos": {
+    "org/invoking": {"prs": {"600": {"phase":"A"}}},
+    "org/other":    {"prs": {"502": {"phase":"B"}, "503": {"phase":"C"}}},
+    "_unknown":     {"prs": {"501": {"phase":"A"}, "503": {"phase":"A"}}}
+  }
+}
+JSON
+VIEW_712="$(run --repo org/invoking --session-view)"
+check_eq "#712: agent with PR only in _unknown is retained" '["only-unknown"]' \
+  "$(jq -c '[.active_agents[].id]' <<<"$VIEW_712")"
+check_eq "#712: agent with PR in a real other repo is dropped" "0" \
+  "$(jq '[.active_agents[].id] | map(select(. == "real-other")) | length' <<<"$VIEW_712")"
+check_eq "#712: agent with PR in both _unknown and a real other repo is dropped" "0" \
+  "$(jq '[.active_agents[].id] | map(select(. == "both-unknown-and-real")) | length' <<<"$VIEW_712")"
+# Confirm the invoking repo's own PRs still scope correctly alongside.
+check_eq "#712: invoking repo prs unaffected" '{"600":{"phase":"A"}}' \
+  "$(jq -c '.prs' <<<"$VIEW_712")"
+
+echo
 echo "== summary: $PASS passed, $FAIL failed =="
 if [[ "$FAIL" -eq 0 ]]; then
   echo "OK: session-state.sh field-type contract tests passed"
