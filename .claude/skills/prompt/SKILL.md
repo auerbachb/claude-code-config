@@ -208,6 +208,8 @@ Check chip availability per `.claude/reference/chip-launching.md`, then branch. 
 
 Subagent candidates from Step 5.5 never get chips — they run inline via `/subagent`, so that section is unchanged in both modes.
 
+`/prompt` introduces **no all-open-PR ceiling count of its own**: Path B's issue set comes from the PM thread's own `## Suggested Next Issues` / `## Active Work` (your work), and any slot/ceiling gating is delegated — chip offers follow `chip-launching.md`'s PM-context inline gate and inline runs follow `/subagent`'s concurrency ceiling, both author-scoped per `subagent-orchestration.md` (the canonical ceiling). The `Fixes #N` / `Closes #N` signal read during classification (Step 2) is a per-issue in-flight/dedup hint, not a `/prompt`-owned slot count, and never gates a launch on a collaborator's PR. (`/wave` is different: an issue covered by a PR *you* authored **does** count toward its `IN_FLIGHT` and reduces available slots — that is `/wave`'s slot accounting, not `/prompt`'s.)
+
 If the user asks to "print the full prompt for #N" while in chip mode, re-emit that issue's complete tilde-fenced block verbatim. The chip stays offered.
 
 ### Output Structure

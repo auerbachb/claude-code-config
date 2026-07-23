@@ -214,7 +214,11 @@ gh pr list --state merged --limit 20 --json number,title,mergedAt,author,body
 # Open issues — the backlog
 gh issue list --state open --json number,title,labels,assignees,createdAt,updatedAt --limit 500
 
-# Open PRs — detect in-flight work (body is required to scan for Fixes/Closes #N)
+# Open PRs (ALL authors) — used ONLY to detect in-flight work for dedup: skip an
+# issue that already has a PR, no matter whose. The author field distinguishes
+# yours from collaborators'. Ceiling/slot COUNTS and merge/actionable OFFERS are
+# built only from PRs you authored (author == $GH_USER / @me) — never this full
+# set. A collaborator's backlog is at most FYI context, never a gate (issue #732).
 gh pr list --state open --json number,title,headRefName,author,updatedAt,additions,deletions,body
 
 # User-scoped views (only if $GH_USER is set from Step 0)
@@ -508,12 +512,12 @@ For explicit user-initiated "poll every N" requests that are not PR-fleet-specif
 
 ### 2.1: Detect active threads
 
-An active cloud thread is an open issue (assigned to `$GH_USER` if set, otherwise any) where ANY of:
-- A feature branch referencing the issue exists on the remote
-- A local worktree exists for the issue
-- An open PR has `Closes #N` / `Fixes #N` referencing the issue
+An active cloud thread is an open issue that is yours and in progress, established by ANY of the ownership triggers below — assignment to `$GH_USER` is **not** required when a trigger already proves the issue yours (it is only a weak fallback signal for otherwise-unowned issues):
+- A feature branch referencing the issue exists on the remote **and is attributable to you** — it has a matching local worktree (yours) or an open PR you authored. A bare remote branch whose ownership can't be verified does **not** count: a `git branch -r` name carries no author, so a collaborator's pushed branch would otherwise inflate your count.
+- A local worktree exists for the issue (inherently yours — you created it)
+- An open PR **you authored** (`author.login == $GH_USER` / `@me`) has `Closes #N` / `Fixes #N` referencing the issue
 
-Cross-reference the open-issue list (already fetched in Step 1) against open PRs and `git branch -r` / `git worktree list`. Count the result as `ACTIVE_COUNT`.
+Cross-reference the open-issue list (already fetched in Step 1) against open PRs and `git branch -r` / `git worktree list`. Count the result as `ACTIVE_COUNT`. **`ACTIVE_COUNT` is your own active threads only** — a collaborator's PR or bare remote branch does not make an issue one of yours, and `/pr-monitor-and-manage` (the ≥3 redirect target in 2.2) manages `--author @me` PRs, so the count feeding the redirect must match its scope (issue #732).
 
 ### 2.2: Fleet monitoring redirect (≥3 active threads)
 
@@ -643,7 +647,8 @@ Maintain a state table in the conversation. Update it as work progresses:
 When the user asks "status", "what's next", or "update" — or periodically when it makes sense:
 
 ```bash
-# Check for new/merged PRs
+# Check for new/merged PRs (ALL authors — progress/dedup detection only, not a
+# ceiling count; author-scoped counts/offers use the user-scoped re-check below)
 gh pr list --state open --json number,title,headRefName,body
 gh pr list --state merged --limit 10 --json number,title,mergedAt,body
 
