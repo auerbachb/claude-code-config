@@ -201,6 +201,12 @@ if [[ -z "$HEAD_SHA" ]]; then
   exit 4
 fi
 
+# Fetch last commit timestamp for Greptile freshness gate (issue #723).
+# Used in the greptile) branch to confirm a 👍 issue comment is post-push.
+# Non-fatal: an empty result disables the freshness filter (comments accepted
+# regardless of age), which is preferable to silently blocking a clean review.
+LAST_COMMIT_TS=$(gh api "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null | jq -r '.committer.date // ""' 2>/dev/null || echo "")
+
 # --------------------------------------------------------------------------
 # Fetch data once, reuse everywhere
 # --------------------------------------------------------------------------
@@ -654,42 +660,94 @@ case "$REVIEWER" in
     # Severity-gated. Greptile-specific count handling is intentionally NOT here —
     # the universal unresolved-thread gate above already reports the count for any
     # unresolved thread. This path adds severity context (P0 vs P1/P2) only.
+    #
+    # Greptile posts via issue comments (not formal PR review objects). Detection
+    # (issue #723 — observed live on PR #721):
+    #   Clean pass: latest fresh greptile-apps[bot] issue comment with 👍 (+1)
+    #     reaction AND zero greptile-apps[bot] inline diff comments on the PR.
+    #   Freshness: comment.created_at > LAST_COMMIT_TS (mirrors the BugBot
+    #     push-timestamp lesson — repo memory feedback_bugbot_commit_id_stale).
+    #   Formal review objects (pulls/{N}/reviews) are kept as supplemental signal.
 
-    # Latest Greptile review.
+    # All Greptile inline diff comments on this PR (used in both sub-paths below).
+    G_INLINE_COUNT=$(echo "$PR_COMMENTS_JSON" | jq \
+      '[.[]? | select(.user.login == "greptile-apps[bot]")] | length')
+
+    # Latest FRESH Greptile issue comment (created after the last push).
+    LATEST_G_COMMENT=$(echo "$ISSUE_COMMENTS_JSON" | jq -c --arg after "${LAST_COMMIT_TS:-}" '
+      [.[]?
+        | select(.user.login == "greptile-apps[bot]")
+        | select(if $after == "" then true else .created_at > $after end)]
+      | sort_by(.created_at) | last // empty')
+
+    # Latest Greptile formal review (belt-and-suspenders supplemental signal).
     LATEST_G=$(echo "$REVIEWS_JSON" | jq -c '
       [.[]? | select(.user.login == "greptile-apps[bot]")]
       | sort_by(.submitted_at) | last // empty')
 
-    if [[ -z "$LATEST_G" ]]; then
+    if [[ -z "$LATEST_G" && -z "$LATEST_G_COMMENT" && "$G_INLINE_COUNT" -eq 0 ]]; then
+      # No formal review, no fresh issue comment, no inline findings — nothing to evaluate.
+      # A stale issue comment (created before the last push) does NOT count here;
+      # LATEST_G_COMMENT is already empty when the only comments are pre-push.
       MISSING+=("no Greptile review yet")
     else
-      # Did the latest Greptile review include a P0 finding (in its body or its
-      # inline comments)? Used for severity-gated logic below.
-      G_BODY=$(echo "$LATEST_G" | jq -r '.body // ""')
-      G_SUBMITTED=$(echo "$LATEST_G" | jq -r '.submitted_at // ""')
-      G_INLINE_BODIES=$(echo "$PR_COMMENTS_JSON" | jq -r --arg ts "$G_SUBMITTED" '
-        [.[]? | select(.user.login == "greptile-apps[bot]" and .created_at >= $ts) | .body] | join("\n---\n")')
-      P0_COUNT=$( { echo "$G_BODY"; echo "$G_INLINE_BODIES"; } | grep -oE '\bP0\b' | wc -l | tr -d ' ')
-
-      # Are there unresolved Greptile-authored threads? If so, P0 vs P1/P2 changes
-      # whether a re-review is required after fixing.
-      UNRESOLVED_G=$(echo "$THREADS_JSON" | jq -r '
-        [.data.repository.pullRequest.reviewThreads.nodes[]?
-          | select(.isResolved == false)
-          | select(any(.comments.nodes[]?; .author.login == "greptile-apps[bot]"))]
-        | length')
-
-      if [[ "$UNRESOLVED_G" -gt 0 && "$P0_COUNT" -gt 0 ]]; then
-        # Universal gate already reports the count; add severity-aware advice only.
-        MISSING+=("Greptile threads include P0 finding(s) — need clean re-review after fix")
-      elif [[ "$UNRESOLVED_G" -eq 0 && "$P0_COUNT" -gt 0 ]]; then
-        # Threads are resolved but the latest (most recent) Greptile review had P0.
-        # Since LATEST_G is already the last review by submitted_at, a clean re-review
-        # would BE the latest review and wouldn't have P0. So if we're here, no clean
-        # re-review exists yet — always require one.
-        MISSING+=("latest Greptile review had P0 findings — need clean re-review after fix (trigger @greptileai)")
+      # --- Path A: comment-based clean pass (primary Greptile channel) ---
+      G_COMMENT_CLEAN=false
+      if [[ -n "$LATEST_G_COMMENT" ]]; then
+        G_THUMBSUP=$(echo "$LATEST_G_COMMENT" | jq -r '.reactions["+1"] // 0')
+        # Clean = 👍 present AND no inline findings posted at all.
+        if [[ "$G_THUMBSUP" -gt 0 && "$G_INLINE_COUNT" -eq 0 ]]; then
+          G_COMMENT_CLEAN=true
+        fi
       fi
-      # No unresolved threads + no P0 in latest review → gate is met.
+
+      if [[ "$G_COMMENT_CLEAN" != true ]]; then
+        # --- Path B: severity gate ---
+        # Build a review body from the most-recent Greptile signal (issue comment
+        # or formal review), then check inline bodies anchored at that timestamp.
+        G_ANCHOR_TS=""
+        G_BODY=""
+        if [[ -n "$LATEST_G" ]]; then
+          G_BODY=$(echo "$LATEST_G" | jq -r '.body // ""')
+          G_ANCHOR_TS=$(echo "$LATEST_G" | jq -r '.submitted_at // ""')
+        fi
+        if [[ -n "$LATEST_G_COMMENT" ]]; then
+          G_COMMENT_TS=$(echo "$LATEST_G_COMMENT" | jq -r '.created_at // ""')
+          # Issue comment supersedes formal review when it is more recent.
+          if [[ -z "$G_ANCHOR_TS" || "$G_COMMENT_TS" > "$G_ANCHOR_TS" ]]; then
+            G_BODY=$(echo "$LATEST_G_COMMENT" | jq -r '.body // ""')
+            G_ANCHOR_TS="$G_COMMENT_TS"
+          fi
+        fi
+
+        # Inline bodies associated with the latest Greptile review (by timestamp).
+        G_INLINE_BODIES=$(echo "$PR_COMMENTS_JSON" | jq -r --arg ts "${G_ANCHOR_TS:-}" '
+          [.[]? | select(.user.login == "greptile-apps[bot]")
+                | select(if $ts == "" then true else .created_at >= $ts end) | .body]
+          | join("\n---\n")')
+
+        # Count P0 badges across the review body and inline comments.
+        P0_COUNT=$( { echo "$G_BODY"; echo "$G_INLINE_BODIES"; } | grep -oE '\bP0\b' | wc -l | tr -d ' ')
+
+        # Are there unresolved Greptile-authored threads? If so, P0 vs P1/P2 changes
+        # whether a re-review is required after fixing.
+        UNRESOLVED_G=$(echo "$THREADS_JSON" | jq -r '
+          [.data.repository.pullRequest.reviewThreads.nodes[]?
+            | select(.isResolved == false)
+            | select(any(.comments.nodes[]?; .author.login == "greptile-apps[bot]"))]
+          | length')
+
+        if [[ "$UNRESOLVED_G" -gt 0 && "$P0_COUNT" -gt 0 ]]; then
+          # Universal gate already reports the count; add severity-aware advice only.
+          MISSING+=("Greptile threads include P0 finding(s) — need clean re-review after fix")
+        elif [[ "$UNRESOLVED_G" -eq 0 && "$P0_COUNT" -gt 0 ]]; then
+          # Threads are resolved but P0 in latest review body / inline bodies.
+          # A clean re-review would supersede this — require one.
+          MISSING+=("latest Greptile review had P0 findings — need clean re-review after fix (trigger @greptileai)")
+        fi
+        # Unresolved G > 0 && P0 == 0: universal thread gate already covered.
+        # Unresolved G == 0 && P0 == 0: only P1/P2 all resolved — gate met.
+      fi
     fi
     ;;
 esac
