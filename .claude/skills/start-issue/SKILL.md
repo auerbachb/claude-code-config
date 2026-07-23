@@ -44,7 +44,7 @@ Only when a description was provided.
    ISSUE_URL=$(gh issue create --title "<title>" --body "<body>")
    ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
    ```
-4. The repo's `cr-plan-on-issue.yml` workflow will auto-post `@coderabbitai plan` within ~30s. Record `ISSUE_CREATED_AT=$(date -u +%s)` so Step 3 knows to use the "< 10 min" polling path.
+4. The repo's `cr-plan-on-issue.yml` workflow will auto-post `@coderabbitai plan` within ~30s. Record `ISSUE_CREATED_AT=$(date -u +%s)` so the outer **Step 3: Handle CR implementation plan** knows to use the "< 10 min" polling path.
 
 ## Step 2: Read the issue
 

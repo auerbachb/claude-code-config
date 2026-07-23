@@ -45,12 +45,14 @@ for DEDUP in \
 If the helper is found, run it with a 2–6 keyword phrase from the issue title:
 
 ```bash
-DEDUP_JSON=$("$DEDUP" "<keywords from issue title>" 2>/dev/null) || DEDUP_RC=$?
+if [ -n "$DEDUP" ]; then
+  DEDUP_JSON=$("$DEDUP" "<keywords from issue title>" 2>/dev/null) || DEDUP_RC=$?
+fi
 ```
 
 Classify the top candidate per `.claude/reference/autofile-dedup.md`:
 
-- **Strong match** (open issue, same primary artifact, a quotable covering criterion, `coverage ≥ 0.6`) → **do not file**. Post the finding as a comment on the existing issue using the template in `autofile-dedup.md`. Record in your exit report: `"<title>" — appended to #<N> instead of filing`. Proceed to the exit report (Step 4 is skipped).
+- **Strong match** (open issue, same primary artifact, a quotable covering criterion, `coverage ≥ 0.6`) → **do not file**. Post the finding as a comment on the existing issue using the template in `autofile-dedup.md`. Record in your exit report: `"<title>" — appended to #<N> instead of filing`. Proceed to the exit report (Steps 3 and 4 are skipped).
 - **Weak / ambiguous match** → file as normal (Step 3), and include `Possibly duplicates #<N> — <one line on the overlap>` in the issue body.
 - **No match** or helper not found → file as normal (Step 3). If the helper was missing, note the degraded check once in your exit report.
 
