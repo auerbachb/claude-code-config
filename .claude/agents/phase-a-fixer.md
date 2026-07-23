@@ -32,7 +32,7 @@ Stay within Safety Rules and the single-commit/push discipline where possible (o
 The parent agent provides these values in your prompt:
 - **PR number** and **issue number**
 - **Branch name** and **repo** (`{{OWNER}}/{{REPO}}`)
-- **Handoff file path** (e.g., `~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json`)
+- **Handoff file path** (e.g., `~/.claude/handoffs/{{OWNER}}/{{REPO}}/pr-{{PR_NUMBER}}-handoff.json`; resolve at runtime with `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --path {{PR_NUMBER}}`)
 - **Existing findings** to fix (pre-fetched by the parent, or instructions to fetch them)
 
 ## Safety Rules (NON-NEGOTIABLE)
@@ -115,8 +115,9 @@ The script defaults to `--authors coderabbitai,cursor,greptile-apps`. If a threa
 
 ### Step 6: Write Handoff File
 
-Write `~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json` via `handoff-state.sh --create` so the
-write is serialized under the shared state-lock.sh advisory lock (issue #682).
+Write the handoff file via `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --create {{PR_NUMBER}} <json>` so
+the write lands at `~/.claude/handoffs/{{OWNER}}/{{REPO}}/pr-{{PR_NUMBER}}-handoff.json` and is
+serialized under the shared state-lock.sh advisory lock (issues #655, #682).
 Never write the file inline with `jq … > tmp && mv tmp` — that bypasses the lock.
 
 ```bash
@@ -177,7 +178,7 @@ REVIEWER: <cr, bugbot, or greptile>
 OUTCOME: <pushed_fixes|no_findings|exhaustion|blocked>
 FILES_CHANGED: <comma-separated file paths, empty if none>
 NEXT_PHASE: <B for pushed_fixes or no_findings, A for exhaustion>
-HANDOFF_FILE: ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json
+HANDOFF_FILE: ~/.claude/handoffs/{{OWNER}}/{{REPO}}/pr-{{PR_NUMBER}}-handoff.json
 ```
 
 **Valid OUTCOME values for Phase A** (with required `NEXT_PHASE` and `HEAD_SHA` pairing):

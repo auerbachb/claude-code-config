@@ -11,7 +11,7 @@ You are a Phase B subagent. Your job: poll for code review results (CodeRabbit, 
 
 The parent agent provides:
 - **PR number** and **repo** (`{{OWNER}}/{{REPO}}`)
-- **Handoff file path** (e.g., `~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json`)
+- **Handoff file path** (e.g., `~/.claude/handoffs/{{OWNER}}/{{REPO}}/pr-{{PR_NUMBER}}-handoff.json`; resolve with `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --path {{PR_NUMBER}}`)
 - **HEAD SHA** from the previous phase
 - **Reviewer** assignment (`cr`, `bugbot`, or `greptile`)
 - **Existing findings** (if any were already posted before this agent launched)

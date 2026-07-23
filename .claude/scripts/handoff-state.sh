@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# handoff-state.sh — Locked read/write helper for ~/.claude/handoffs/pr-{N}-handoff.json.
+# handoff-state.sh — Locked read/write helper for per-repo handoff files.
 #
 # PURPOSE
 #   Serializes the WHOLE read-modify-write cycle of every writer that touches
@@ -14,33 +14,43 @@
 #   prompts, parent/wrap deletes — routes through this script so only one lock
 #   path exists. A lock only one writer respects is not a lock (lesson from #639).
 #
+# REPO SCOPING (issue #655)
+#   Handoff files are stored in a per-repo subdirectory to prevent two repos at
+#   the same PR number from sharing one file:
+#     ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json
+#   Pass --owner-repo <owner/repo> (e.g., --owner-repo auerbachb/myrepo) as
+#   the FIRST argument (before the mode flag) to use the scoped path.  Without
+#   --owner-repo the legacy flat path is used:
+#     ~/.claude/handoffs/pr-{N}-handoff.json
+#   The flat path is preserved for backward compatibility during migration; new
+#   code should always pass --owner-repo.  The handoff-migrate.sh script moves
+#   existing flat files into the scoped layout.
+#
 # USAGE
-#   handoff-state.sh --get    <pr_number>                     # lock-free read
-#   handoff-state.sh --create <pr_number> <json-body>         # locked create/overwrite
-#   handoff-state.sh --init   <pr_number> <json-body>         # locked create-if-absent (no-op if exists)
-#   handoff-state.sh --set    <pr_number> <jq-path>=<value>   # locked scalar update
-#   handoff-state.sh --append <pr_number> <field> <value>     # locked array append
-#   handoff-state.sh --delete <pr_number>                     # locked delete
+#   handoff-state.sh [--owner-repo <owner/repo>] --path   <pr_number>        # print canonical path (no lock)
+#   handoff-state.sh [--owner-repo <owner/repo>] --get    <pr_number>        # lock-free read
+#   handoff-state.sh [--owner-repo <owner/repo>] --create <pr_number> <json> # locked create/overwrite
+#   handoff-state.sh [--owner-repo <owner/repo>] --init   <pr_number> <json> # locked create-if-absent (no-op if exists)
+#   handoff-state.sh [--owner-repo <owner/repo>] --set    <pr_number> <jq-path>=<value>
+#   handoff-state.sh [--owner-repo <owner/repo>] --append <pr_number> <field> <value>
+#   handoff-state.sh [--owner-repo <owner/repo>] --delete <pr_number>        # locked delete
 #
 # CONCURRENCY MODEL
 #   The lock is a `mkdir`-based advisory lock directory at
 #   <handoff-file>.lock/, reusing the same state-lock.sh library as
 #   session-state.sh (#639). Every writer acquires state_lock_acquire before
-#   reading the file; the mv back is already atomic. Reads (--get, Phase C,
-#   require_handoff_and_state) are lock-free because mv is atomic on POSIX.
+#   reading the file; the mv back is already atomic. Reads (--path, --get,
+#   Phase C, require_handoff_and_state) are lock-free because mv is atomic on
+#   POSIX.
 #
-#   Lock path: ~/.claude/handoffs/pr-{N}-handoff.json.lock/
+#   Lock path: ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json.lock/
+#              (flat legacy: ~/.claude/handoffs/pr-{N}-handoff.json.lock/)
 #   Same stale-holder recovery (dead pid, age > STALE_AGE), timeout
 #   (CLAUDE_STATE_LOCK_TIMEOUT, default 30s), and re-entrancy rules as the
 #   parent library. Full contract: state-lock.sh header.
 #
 #   A writer that cannot acquire the lock exits STATE_LOCK_EXIT_TIMEOUT (6)
 #   having written nothing — treat 6 as "unchanged, retry".
-#
-# KNOWN LIMITATION
-#   The handoff file name is still global (issue #655 — two repos at the same PR
-#   number share one file). That scoping gap is deliberately deferred; the
-#   write-lock is correct within the current single-name scheme.
 #
 # DEDUP CONTRACT (from handoff-files.md)
 #   --append enforces:
@@ -86,16 +96,38 @@ JQ_PATH_VALUE=""
 ARRAY_FIELD=""
 ARRAY_VALUE=""
 JSON_BODY=""
+OWNER_REPO=""
 
 print_usage() {
-  sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,67p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 if [[ $# -eq 0 ]]; then
   print_usage >&2; exit 2
 fi
 
+# Optional global flag: --owner-repo must come before the mode flag.
+# Enables per-repo path scoping: ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json
+# Without it the legacy flat path is used: ~/.claude/handoffs/pr-{N}-handoff.json
+if [[ "${1:-}" == "--owner-repo" ]]; then
+  OWNER_REPO="${2:-}"
+  if [[ -z "$OWNER_REPO" ]]; then
+    echo "handoff-state.sh: --owner-repo requires a value (e.g., --owner-repo owner/repo)" >&2; exit 2
+  fi
+  shift 2
+  if [[ $# -eq 0 ]]; then
+    echo "handoff-state.sh: --owner-repo requires a mode flag after it" >&2; exit 2
+  fi
+fi
+
 case "$1" in
+  --path)
+    MODE="path"
+    PR_NUMBER="${2:-}"
+    if [[ -z "$PR_NUMBER" ]]; then
+      echo "handoff-state.sh: --path requires <pr_number>" >&2; exit 2
+    fi
+    ;;
   --get)
     MODE="get"
     PR_NUMBER="${2:-}"
@@ -158,16 +190,61 @@ if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
   echo "handoff-state.sh: pr_number must be a positive integer (got: $PR_NUMBER)" >&2; exit 2
 fi
 
-HANDOFF_FILE="${HANDOFF_DIR}/pr-${PR_NUMBER}-handoff.json"
+# ---------------------------------------------------------------------------
+# Validate and resolve the handoff file path.
+#
+# With --owner-repo: ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json
+# Without          : ~/.claude/handoffs/pr-{N}-handoff.json (legacy flat)
+# ---------------------------------------------------------------------------
+_resolve_handoff_path() {
+  local pr="$1" owner_repo="$2"
+  if [[ -n "$owner_repo" ]]; then
+    local owner="${owner_repo%%/*}"
+    local repo="${owner_repo#*/}"
+    # Validate: must have a non-empty owner and repo separated by exactly one slash.
+    if [[ -z "$owner" || -z "$repo" || "$owner" == "$owner_repo" ]]; then
+      echo "handoff-state.sh: invalid --owner-repo '$owner_repo' (expected owner/repo)" >&2
+      return 2
+    fi
+    # Guard against path traversal (GitHub slugs are alphanumeric+hyphen, but be safe).
+    if [[ "$owner" == ".."* || "$repo" == ".."* || "$owner" == *"/"* || "$repo" == *"/"* ]]; then
+      echo "handoff-state.sh: unsafe --owner-repo value: $owner_repo" >&2
+      return 2
+    fi
+    printf '%s/%s/%s/pr-%s-handoff.json\n' "$HANDOFF_DIR" "$owner" "$repo" "$pr"
+  else
+    printf '%s/pr-%s-handoff.json\n' "$HANDOFF_DIR" "$pr"
+  fi
+}
+
+HANDOFF_FILE="$(_resolve_handoff_path "$PR_NUMBER" "$OWNER_REPO")" || exit 2
+
+# ---------------------------------------------------------------------------
+# --path: print the canonical handoff file path and exit (no lock needed).
+# ---------------------------------------------------------------------------
+if [[ "$MODE" == "path" ]]; then
+  printf '%s\n' "$HANDOFF_FILE"
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # --get: lock-free read (mv is atomic on POSIX, so readers always see a
 # complete document — never a partial write). Matches the read-doesn't-lock
 # rule from session-state.sh and handoff-files.md.
+#
+# Soft owner_repo assertion: warns on mismatch but never fails hard so that
+# callers reading a just-migrated file see the warning rather than an error.
 # ---------------------------------------------------------------------------
 if [[ "$MODE" == "get" ]]; then
   if [[ ! -f "$HANDOFF_FILE" ]]; then
     echo "handoff-state.sh: handoff file not found: $HANDOFF_FILE" >&2; exit 3
+  fi
+  # Soft read-time assertion when --owner-repo was provided.
+  if [[ -n "$OWNER_REPO" ]]; then
+    stored_owner="$(jq -r '.owner_repo // ""' "$HANDOFF_FILE" 2>/dev/null || true)"
+    if [[ -n "$stored_owner" && "$stored_owner" != "$OWNER_REPO" ]]; then
+      echo "handoff-state.sh: WARNING: owner_repo mismatch in $HANDOFF_FILE: expected '$OWNER_REPO', found '$stored_owner'" >&2
+    fi
   fi
   cat "$HANDOFF_FILE"
   exit 0
@@ -176,7 +253,8 @@ fi
 # ---------------------------------------------------------------------------
 # All write modes: ensure the directory exists, then acquire the lock.
 # ---------------------------------------------------------------------------
-mkdir -p "$HANDOFF_DIR"
+_file_dir="$(dirname "$HANDOFF_FILE")"
+mkdir -p "$_file_dir"
 
 state_lock_acquire "$HANDOFF_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
 
@@ -187,8 +265,8 @@ state_lock_acquire "$HANDOFF_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
 _atomic_write() {
   local content="$1"
   local tmp
-  tmp="$(mktemp "${HANDOFF_DIR}/.pr-${PR_NUMBER}-handoff.XXXXXX")" || {
-    echo "handoff-state.sh: mktemp failed in ${HANDOFF_DIR}" >&2
+  tmp="$(mktemp "${_file_dir}/.pr-${PR_NUMBER}-handoff.XXXXXX")" || {
+    echo "handoff-state.sh: mktemp failed in ${_file_dir}" >&2
     state_lock_release
     exit 5
   }

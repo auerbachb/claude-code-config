@@ -111,7 +111,16 @@ found_handoffs=false
 while IFS= read -r n; do
   [ -n "$n" ] || continue
   case "$n" in *[!0-9]*) continue ;; esac
-  f="$HOME/.claude/handoffs/pr-${n}-handoff.json"
+  # Resolve handoff path: scoped layout takes priority (issue #655); flat fallback for legacy files.
+  or=$([ -f "$HOME/.claude/session-state.json" ] && \
+    jq -r --arg n "$n" '(.repos // {}) | to_entries[] | select(.value.prs[$n].owner_repo?) | .value.prs[$n].owner_repo' \
+    "$HOME/.claude/session-state.json" 2>/dev/null | head -1 || true)
+  if [ -n "$or" ] && [ "$or" != "null" ]; then
+    f="$HOME/.claude/handoffs/${or}/pr-${n}-handoff.json"
+    [ -f "$f" ] || f="$HOME/.claude/handoffs/pr-${n}-handoff.json"
+  else
+    f="$HOME/.claude/handoffs/pr-${n}-handoff.json"
+  fi
   [ -f "$f" ] || continue
   # If the payload names a DIFFERENT repo than this one, it's the other repo's
   # handoff colliding on this PR number (#655) — skip it. A null/absent
@@ -549,7 +558,7 @@ Once the user has selected which issues to work on, **partition them** with the 
 
 **Thread-prompt delivery for too-big issues.** For each too-big issue, generate a self-contained prompt. The prompt content below is the same in both delivery modes — only how it reaches the user differs.
 
-**Before offering anything, consult the shared issue-maker record** (`chip-launching.md` "Cross-skill chip visibility") — `/issue-maker` runs in its own capture-only thread and can't write to this thread's Active Work table, so a chip it already offered is invisible to the table alone. Glob `~/.claude/handoffs/issue-maker-*-log.json` the same way this step's session-view read already globs `~/.claude/handoffs/pr-*-handoff.json`, and for any too-big issue with a live issue-maker chip (`status: "open"` and non-null `chip_task_id`): skip spawning or printing a new chip for it, and instead add (or refresh) its Active Work row directly — Thread `Chip offered`, Task ID the issue-maker `chip_task_id`, Status `Awaiting thread start`. This is the one case where an Active Work row's Task ID didn't come from a `spawn_task` call this thread made itself. Run the remaining too-big issues (the ones with no live issue-maker chip) through the normal flow below.
+**Before offering anything, consult the shared issue-maker record** (`chip-launching.md` "Cross-skill chip visibility") — `/issue-maker` runs in its own capture-only thread and can't write to this thread's Active Work table, so a chip it already offered is invisible to the table alone. Glob `~/.claude/handoffs/issue-maker-*-log.json` the same way this step's session-view read already globs both `~/.claude/handoffs/pr-*-handoff.json` (legacy flat) and `~/.claude/handoffs/*/*/pr-*-handoff.json` (scoped, issue #655), and for any too-big issue with a live issue-maker chip (`status: "open"` and non-null `chip_task_id`): skip spawning or printing a new chip for it, and instead add (or refresh) its Active Work row directly — Thread `Chip offered`, Task ID the issue-maker `chip_task_id`, Status `Awaiting thread start`. This is the one case where an Active Work row's Task ID didn't come from a `spawn_task` call this thread made itself. Run the remaining too-big issues (the ones with no live issue-maker chip) through the normal flow below.
 
 **First, check chip availability** per `.claude/reference/chip-launching.md`, then branch:
 

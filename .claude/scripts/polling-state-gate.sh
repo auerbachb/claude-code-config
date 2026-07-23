@@ -334,39 +334,51 @@ validate_root_match() {
 write_checkpoint_handoff() {
   local head_sha="$1"
   local reviewer="${2:-cr}"
-  local handoff_path="${HANDOFF_DIR}/pr-${PR_NUMBER}-handoff.json"
+  local owner_repo="${3:-}"
   local now
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   # Build the JSON body first, then route through handoff-state.sh --create so the
   # write is protected by the shared state-lock.sh advisory lock (issue #682).
+  # Include owner_repo in the JSON body so migrate and read-time assertions can use it.
   local json_body
+  local owner_repo_jq_arg=()
+  local owner_repo_jq_field=""
+  if [[ -n "$owner_repo" ]]; then
+    owner_repo_jq_arg=(--arg "or_" "$owner_repo")
+    owner_repo_jq_field=', owner_repo: $or_'
+  fi
   if ! json_body="$(jq -n \
     --argjson pr "$PR_NUMBER" \
     --arg sha "$head_sha" \
     --arg rev "$reviewer" \
     --arg now "$now" \
-    '{
-      schema_version: "1.0",
-      pr_number: $pr,
-      head_sha: $sha,
-      reviewer: $rev,
-      phase_completed: "B",
-      created_at: $now,
+    "${owner_repo_jq_arg[@]}" \
+    "{
+      schema_version: \"1.0\",
+      pr_number: \$pr,
+      head_sha: \$sha,
+      reviewer: \$rev,
+      phase_completed: \"B\",
+      created_at: \$now,
       findings_fixed: [],
       findings_dismissed: [],
       threads_replied: [],
       threads_resolved: [],
       files_changed: [],
-      push_timestamp: $now,
-      notes: "Polling checkpoint — written by polling-state-gate.sh --ensure-session; Phase A/B handoffs supersede when present from subagents."
-    }')"; then
-    echo "polling-state-gate.sh: failed to build handoff JSON: $handoff_path" >&2
+      push_timestamp: \$now,
+      notes: \"Polling checkpoint — written by polling-state-gate.sh --ensure-session; Phase A/B handoffs supersede when present from subagents.\"${owner_repo_jq_field}
+    }")"; then
+    echo "polling-state-gate.sh: failed to build handoff JSON" >&2
     exit 4
   fi
   # Use --init (not --create) so the existence check and write are both inside
   # the advisory lock: if Phase A writes a richer handoff between our check and
   # this call, --init is a no-op that preserves Phase A's data (Greptile P1, #682).
-  if ! "$HANDOFF_HELPER" --init "$PR_NUMBER" "$json_body"; then
+  # Pass --owner-repo when available so the file lands in the scoped subdirectory
+  # (issue #655: ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json).
+  local or_flag=()
+  [[ -n "$owner_repo" ]] && or_flag=(--owner-repo "$owner_repo")
+  if ! "$HANDOFF_HELPER" "${or_flag[@]}" --init "$PR_NUMBER" "$json_body"; then
     echo "polling-state-gate.sh: handoff-state.sh --init failed for PR #$PR_NUMBER" >&2
     exit 4
   fi
@@ -452,14 +464,29 @@ ensure_session() {
         --set ".prs[\"$PR_NUMBER\"].head_sha=\"$head_sha\"" )
   fi
 
-  local handoff_path="${HANDOFF_DIR}/pr-${PR_NUMBER}-handoff.json"
+  # Resolve the canonical handoff path (scoped when owner_repo is known).
+  # Use handoff-state.sh --path so path computation is in one place (issue #655).
+  local or_flag=()
+  [[ -n "$owner_repo" ]] && or_flag=(--owner-repo "$owner_repo")
+  local handoff_path
+  handoff_path="$("$HANDOFF_HELPER" "${or_flag[@]}" --path "$PR_NUMBER")"
+  # Backward-compat: also check the flat path so a polling session started before
+  # this change can refresh an already-existing flat handoff without moving it.
+  local flat_path="${HANDOFF_DIR}/pr-${PR_NUMBER}-handoff.json"
+  if [[ ! -f "$handoff_path" && -f "$flat_path" && "$handoff_path" != "$flat_path" ]]; then
+    echo "polling-state-gate.sh: notice: using existing flat handoff $flat_path (not yet migrated to $handoff_path)" >&2
+    handoff_path="$flat_path"
+  fi
   if [[ ! -f "$handoff_path" ]]; then
-    write_checkpoint_handoff "$head_sha" "$reviewer"
+    write_checkpoint_handoff "$head_sha" "$reviewer" "$owner_repo"
   else
     # Refresh head_sha only — preserve phase_completed, reviewer, and other Phase A/B fields.
     # Route through handoff-state.sh --set so the whole RMW cycle is under the advisory lock
     # (issue #682 — same fix as #639 applied to session-state.json).
-    if ! "$HANDOFF_HELPER" --set "$PR_NUMBER" ".head_sha=$head_sha"; then
+    # Pass --owner-repo when path is the scoped one so we hold the right lock.
+    local set_or_flag=()
+    [[ "$handoff_path" != "$flat_path" ]] && [[ -n "$owner_repo" ]] && set_or_flag=(--owner-repo "$owner_repo")
+    if ! "$HANDOFF_HELPER" "${set_or_flag[@]}" --set "$PR_NUMBER" ".head_sha=$head_sha"; then
       echo "polling-state-gate.sh: handoff-state.sh --set .head_sha failed for PR #$PR_NUMBER" >&2
       exit 4
     fi
@@ -473,9 +500,34 @@ require_handoff_and_state() {
   local gate_mode="${2:-live}"
   # Pin every scoped read below to the repo we actually resolved to (#638).
   [[ -d "$resolved" ]] && STATE_READ_DIR="$resolved"
-  local handoff_path="${HANDOFF_DIR}/pr-${PR_NUMBER}-handoff.json"
-  if [[ ! -f "$handoff_path" ]]; then
-    echo "polling-state-gate.sh: missing handoff $handoff_path — run: polling-state-gate.sh $PR_NUMBER --ensure-session" >&2
+
+  # Resolve the handoff path — prefer the scoped layout introduced by issue #655.
+  # Backward-compat: fall back to the legacy flat path when the scoped file is absent
+  # but the flat file exists; this is the normal state during the migration window.
+  local owner_repo_for_path
+  owner_repo_for_path="$(state_pr_field owner_repo)"
+  [[ "$owner_repo_for_path" == "null" ]] && owner_repo_for_path=""
+  local handoff_path=""
+  if [[ -n "$owner_repo_for_path" ]]; then
+    local scoped_path
+    scoped_path="$("$HANDOFF_HELPER" --owner-repo "$owner_repo_for_path" --path "$PR_NUMBER" 2>/dev/null || true)"
+    if [[ -n "$scoped_path" && -f "$scoped_path" ]]; then
+      handoff_path="$scoped_path"
+    fi
+  fi
+  local flat_path="${HANDOFF_DIR}/pr-${PR_NUMBER}-handoff.json"
+  if [[ -z "$handoff_path" ]]; then
+    if [[ -f "$flat_path" ]]; then
+      if [[ -n "$owner_repo_for_path" ]]; then
+        echo "polling-state-gate.sh: notice: scoped handoff not found for '$owner_repo_for_path' PR #$PR_NUMBER; falling back to flat $flat_path (run handoff-migrate.sh to migrate)" >&2
+      fi
+      handoff_path="$flat_path"
+    fi
+  fi
+  if [[ -z "$handoff_path" || ! -f "$handoff_path" ]]; then
+    local expected_path="${flat_path}"
+    [[ -n "$owner_repo_for_path" ]] && expected_path="${HANDOFF_DIR}/${owner_repo_for_path}/pr-${PR_NUMBER}-handoff.json"
+    echo "polling-state-gate.sh: missing handoff $expected_path — run: polling-state-gate.sh $PR_NUMBER --ensure-session" >&2
     exit 4
   fi
   if [[ ! -f "$STATE_FILE" ]]; then

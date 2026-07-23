@@ -20,7 +20,7 @@ Rules: one colon-separated field per line, no extra whitespace, and on exhaustio
    - `exhaustion` → **run step 4 (worktree cleanup) now**, then launch replacement Phase A within 60s. Report to user. **STOP — do not execute steps 3, 5-8** (skipping cleanup makes the replacement hit "branch already checked out").
 3. **Verify the push.** `gh pr view N --json commits --jq '.commits[-1].oid'` — confirm SHA matches. Mismatch = silent failure.
 4. **Clean up the Phase A worktree.** Remove it with `git worktree remove <path> --force` (required for uncommitted state). On failure, fall back to `git worktree prune`. Cleanup releases the branch lock for Phase B.
-5. **Verify handoff file.** Check `~/.claude/handoffs/pr-{N}-handoff.json` exists with `phase_completed: "A"`. If missing, reconstruct and write it yourself.
+5. **Verify handoff file.** Resolve path with `handoff-state.sh [--owner-repo owner/repo] --path N` and confirm the file exists with `phase_completed: "A"`. If missing, reconstruct and write it yourself.
 6. **Launch Phase B within 60 seconds.** Check all 3 comment endpoints for existing findings; include findings and handoff path. If throttled, tell user and auto-retry.
 7. **Update `session-state.json`.** Record phase transition and HEAD SHA.
 8. **Report to user.** "Phase A complete for PR #N — fixes pushed (SHA `abc1234`). Phase B launched."
@@ -51,7 +51,7 @@ Rules: one colon-separated field per line, no extra whitespace, and on exhaustio
    - `merged` → verify GitHub confirms the PR is merged (`merged == true`), then proceed to cleanup.
    - `blocked` → report blocker details to user. Do NOT merge.
 3. **Update `session-state.json`.** Mark Phase C complete, remove from `active_agents`.
-4. **Handoff cleanup (after successful merge only).** Delete `~/.claude/handoffs/pr-{N}-handoff.json` after `OUTCOME: merged` confirmed by GitHub. If merge fails or is aborted, do NOT delete.
+4. **Handoff cleanup (after successful merge only).** Delete the handoff file (`handoff-state.sh [--owner-repo owner/repo] --delete N`) after `OUTCOME: merged` confirmed by GitHub. If merge fails or is aborted, do NOT delete.
 5. **Report to user (with timestamp).**
 
 ## `/wrap` → `/fixpr` Delegation Contract (issues #452 / #455)
