@@ -36,6 +36,23 @@ set -uo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
   >> "${HOME}/.claude/script-usage.log" 2>/dev/null || true
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Shared case-normalizer (issue #704): lowercase owner_repo values before
+# building destination paths so a mixed-case embedded owner_repo field
+# (e.g. "AuerbachB/Skingod") doesn't produce a differently-cased directory
+# than the lowercase path session-state.sh and handoff-state.sh would use.
+# Use the library when available; fall back to inline so the script is
+# self-contained in environments without the lib (e.g. pre-#704 worktrees).
+_NORMALIZER_LIB="${SCRIPT_DIR}/lib/repo-normalizer.sh"
+if [[ -f "$_NORMALIZER_LIB" ]]; then
+  # shellcheck source=./lib/repo-normalizer.sh
+  source "$_NORMALIZER_LIB"
+else
+  normalize_repo_key() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+fi
+unset _NORMALIZER_LIB
+
 HANDOFF_DIR="${HOME}/.claude/handoffs"
 STATE_FILE="${HOME}/.claude/session-state.json"
 APPLY=0
@@ -140,6 +157,10 @@ for src in "${FLAT_FILES[@]}"; do
   state_owner_repo="$(_lookup_owner_repo "$pr_number")"
 
   owner_repo="${file_owner_repo:-$state_owner_repo}"
+  # Lowercase-normalize before building the destination path (issue #704):
+  # a stored owner_repo like "AuerbachB/Skingod" must land in
+  # auerbachb/skingod/ not a separately-cased directory.
+  [[ -n "$owner_repo" ]] && owner_repo="$(normalize_repo_key "$owner_repo")"
 
   # 3. Unattributable → _unknown.
   local_dest_dir="$HANDOFF_DIR/_unknown"

@@ -206,6 +206,51 @@ check_eq "uncomparable identity with recorded scoping fails closed" "4" "$rc"
 check_contains "fail-closed message names the PR" "PR #$PR_NUM" "$out"
 check_contains "fail-closed message names the scoped repo" "org/a" "$out"
 
+# ---- 10. case-parity regression (issue #704) ----------------------------------
+# A checkout whose `origin` remote has mixed-case owner/repo (e.g.
+# "AuerbachB/Skingod") must produce the SAME scope key from both
+# session-state.sh (--repo-key) and polling-state-gate.sh (repo_identity()),
+# so --ensure-session writes to the same .repos bucket that --verify-state
+# reads from.  Before issue #704 the two functions disagreed on case, so a
+# mixed-case remote silently created two .repos scopes for the same repo.
+REPO_MIXED="$TMP/repo-mixed"
+STATE_HELPER="$(cd "$(dirname "$SCRIPT")" && pwd)/session-state.sh"
+mk_repo "$REPO_MIXED" "git@github.com:AuerbachB/Skingod.git"
+
+# session-state.sh --repo-key must return the lowercase form.
+mixed_session_key="$(cd "$REPO_MIXED" && "$STATE_HELPER" --repo-key 2>/dev/null || true)"
+check_eq "session-state.sh --repo-key lowercases mixed-case remote" \
+  "auerbachb/skingod" "$mixed_session_key"
+
+# Simulate --ensure-session: write state under the key session-state.sh
+# produced (already lowercase from test above), then --verify-state from the
+# same checkout should pass (not refuse as a cross-repo mismatch).
+STUB_BIN2="$TMP/bin2"
+mkdir -p "$STUB_BIN2"
+cat > "$STUB_BIN2/gh" <<'STUB'
+#!/usr/bin/env bash
+set -uo pipefail
+case "${1:-}" in
+  pr)   echo '{"headRefOid":"c0ffee","state":"OPEN"}' ;;
+  repo) echo 'AuerbachB/Skingod' ;;
+  *)    exit 1 ;;
+esac
+STUB
+chmod +x "$STUB_BIN2/gh"
+
+rm -f "$STATE"
+out2="$(cd "$REPO_MIXED" && PATH="$STUB_BIN2:$PATH" "$SCRIPT" "$PR_NUM" --ensure-session 2>&1)"; rc2=$?
+check_eq "--ensure-session with mixed-case remote exits 0" "0" "$rc2"
+
+# The key stored in session-state.json must be lowercase.
+stored_key="$(jq -r --arg pr "$PR_NUM" '.repos | keys[]' "$STATE" 2>/dev/null | head -1 || true)"
+check_eq "state stored under lowercase key after ensure-session" \
+  "auerbachb/skingod" "$stored_key"
+
+# --verify-state from the same mixed-case-remote checkout must pass.
+out3="$(cd "$REPO_MIXED" && PATH="$STUB_BIN2:$PATH" "$SCRIPT" "$PR_NUM" --verify-state 2>&1)"; rc3=$?
+check_eq "--verify-state passes for mixed-case-remote checkout (no false cross-repo refusal)" "0" "$rc3"
+
 echo ""
 echo "polling-state-gate.test.sh: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

@@ -1,5 +1,6 @@
 {
   "schema_version": 2,
+  "_scope_key_contract": "The .repos[\"<owner>/<name>\"] scope key is ALWAYS lowercase (issue #704). All derivation points — session-state.sh repo_key_from_remote_url()/resolve_repo_key(), polling-state-gate.sh repo_identity(), and handoff-state.sh's path resolver — share lib/repo-normalizer.sh so a mixed-case remote URL (e.g. AuerbachB/Skingod) and its lowercase form (auerbachb/skingod) always map to the same .repos bucket. Handoff paths follow the same contract. Existing live keys are already lowercase; this normalization is backward-compatible.",
   "_field_types": {
     "_description": "Machine-readable field-type contract consumed at runtime by session-state.sh's FIELD-TYPE CONTRACT (issues #625, #640) — the single source of truth for which fields must hold a specific JSON type. `top_level` keys index the root document; `pr_nested` keys index each entry under a repo scope\u2019s PR map, `.repos[\"<owner>/<name>\"].prs[\"<N>\"]` (issue #638) (checked wherever that key appears, at any nesting depth under a PR entry). Values are the expected `jq ... | type` string. Fields absent from both maps are left unvalidated, preserving the 'preserve unknown fields' forward-compat convention documented in handoff-files.md.",
     "top_level": {
