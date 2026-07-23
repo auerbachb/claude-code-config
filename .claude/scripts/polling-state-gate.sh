@@ -55,6 +55,20 @@ set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Shared case-normalizer (issue #704).  Use the library when available so
+# repo_identity() and session-state.sh's repo_key_from_remote_url() share one
+# definition and can never diverge.  Fall back to an inline equivalent if the
+# lib is somehow absent so this script remains self-contained.
+_NORMALIZER_LIB="${SCRIPT_DIR}/lib/repo-normalizer.sh"
+if [[ -f "$_NORMALIZER_LIB" ]]; then
+  # shellcheck source=./lib/repo-normalizer.sh
+  source "$_NORMALIZER_LIB"
+else
+  normalize_repo_key() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+fi
+unset _NORMALIZER_LIB
+
 STATE_HELPER="${SCRIPT_DIR}/session-state.sh"
 HANDOFF_HELPER="${SCRIPT_DIR}/handoff-state.sh"
 MERGE_GATE="${SCRIPT_DIR}/merge-gate.sh"
@@ -195,7 +209,10 @@ repo_identity() {
       id="${id%/*}"
       owner="${id##*/}"
       if [[ -n "$owner" && -n "$repo" ]]; then
-        printf '%s/%s\n' "$owner" "$repo" | tr '[:upper:]' '[:lower:]'
+        # normalize_repo_key() from lib/repo-normalizer.sh (issue #704) so
+        # repo_identity() and session-state.sh's repo_key_from_remote_url()
+        # always agree on the same lowercase key.
+        printf '%s\n' "$(normalize_repo_key "${owner}/${repo}")"
         return 0
       fi
     fi
@@ -294,7 +311,7 @@ validate_root_match() {
   #     an owner/repo identity (i.e. it has an `origin` remote to compare against).
   if [[ -n "$stored_owner" && "$active_id" == */* && "$active_id" != gitdir:* && "$active_id" != path:* ]]; then
     local stored_owner_lc
-    stored_owner_lc="$(printf '%s' "$stored_owner" | tr '[:upper:]' '[:lower:]')"
+    stored_owner_lc="$(normalize_repo_key "$stored_owner")"
     if [[ "$stored_owner_lc" != "$active_id" ]]; then
       echo "polling-state-gate.sh: PR #$PR_NUMBER is scoped to repo '$stored_owner' but the active checkout is '$active_id' ($canon) — refuse to poll from the wrong repo" >&2
       return 1

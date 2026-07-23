@@ -12,6 +12,8 @@
 
 **Repo scoping (issue #638):** State lives at `.repos["<owner>/<name>"].prs["<N>"]`; `session-state.sh` auto-scopes calls via `--repo`, `$CLAUDE_SESSION_REPO`, or cwd origin. Unattributable legacy entries land in `_unknown`. Account-level fields stay global. See `session-state.sh --help`.
 
+**Scope-key case normalization (issue #704):** The `.repos["<owner>/<name>"]` scope key is **always lowercase**. All three derivation points — `session-state.sh`'s `repo_key_from_remote_url()`/`resolve_repo_key()`, `polling-state-gate.sh`'s `repo_identity()`, and `handoff-state.sh`'s path resolver — share a single normalizer (`lib/repo-normalizer.sh`) so a mixed-case remote URL (`AuerbachB/Skingod`) and its lowercase form (`auerbachb/skingod`) always map to the same scope. Handoff paths follow the same contract: `~/.claude/handoffs/{owner}/{repo}/` directories are always lowercase. Existing live keys are already lowercase, so this is backward-compatible.
+
 **Invoking-repo scope (issue #687):** Orchestration skills use `session-state.sh --session-view` (repo-scoped projection) — **never `--get .`** (aggregates every repo; cross-repo leak). Cross-repo reporting is opt-in via `--session-view --all-repos`. Never write (merge/rebase/close) against a PR outside the invoking repo.
 
 Update `session-state.json` on phase transitions and key events (agent launched/completed, review received, dropped poll recovered). **All writes go through `.claude/scripts/session-state.sh --set <jq-path>=<value>`** (read with `--get`); it preserves siblings, writes atomically, and holds the lock below.

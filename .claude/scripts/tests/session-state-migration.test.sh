@@ -153,6 +153,50 @@ for form in \
 done
 
 echo
+echo "== Case-divergence regression (issue #704): mixed-case remote lowercased =="
+# repo_key_from_remote_url() must lowercase so a mixed-case origin remote
+# (e.g. AuerbachB/Skingod) produces the same .repos scope key as the lowercase
+# form (auerbachb/skingod) that polling-state-gate.sh's repo_identity() emits.
+for mc_form in \
+  "https://github.com/AuerbachB/Skingod.git" \
+  "git@github.com:AuerbachB/Skingod.git" \
+  "ssh://git@github.com:22/AuerbachB/Skingod.git"; do
+  d="$WORK_DIR/case-$RANDOM$$"
+  mkdir -p "$d"
+  git -C "$d" init --quiet
+  git -C "$d" remote add origin "$mc_form"
+  check_eq "mixed-case remote lowercased: $mc_form" "auerbachb/skingod" \
+    "$( cd "$d" && run --repo-key )"
+done
+
+# --repo flag with mixed-case must also lowercase (covers REPO_ARG branch of
+# resolve_repo_key, which bypasses repo_key_from_remote_url entirely).
+check_eq "--repo flag with mixed case lowercased" "auerbachb/skingod" \
+  "$(run --repo AuerbachB/Skingod --repo-key)"
+
+echo
+echo "== Case-divergence regression (issue #704): mixed-case owner_repo in migration =="
+# A legacy flat entry whose owner_repo carries GitHub's canonical mixed case
+# must migrate into the lowercase .repos scope, not a mixed-case one.
+cat > "$STATE_FILE" <<'JSON'
+{
+  "prs": {
+    "200": {"owner_repo": "AuerbachB/Skingod", "phase": "A"},
+    "201": {"owner_repo": "Org/CAPS",           "phase": "B"}
+  }
+}
+JSON
+run --migrate
+check_eq "mixed-case owner_repo #200 lands in lowercase scope" "A" \
+  "$(jq -r '.repos["auerbachb/skingod"].prs["200"].phase' "$STATE_FILE")"
+check_eq "mixed-case owner_repo #201 lands in lowercase scope" "B" \
+  "$(jq -r '.repos["org/caps"].prs["201"].phase' "$STATE_FILE")"
+check_eq "no mixed-case scope created for #200" "null" \
+  "$(jq -r '.repos["AuerbachB/Skingod"] // "null"' "$STATE_FILE")"
+check_eq "no mixed-case scope created for #201" "null" \
+  "$(jq -r '.repos["Org/CAPS"] // "null"' "$STATE_FILE")"
+
+echo
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1
 echo "OK: session-state.sh migration tests passed"

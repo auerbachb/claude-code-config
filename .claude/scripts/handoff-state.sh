@@ -87,6 +87,18 @@ fi
 # shellcheck source=state-lock.sh
 source "$LOCK_LIB"
 
+# Shared case-normalizer (issue #704). Lowercases the --owner-repo value so
+# ~/.claude/handoffs/{owner}/{repo}/ paths are always lowercase, preventing a
+# mixed-case owner_repo from routing to a different directory than the lowercase
+# form written by session-state.sh and polling-state-gate.sh.
+NORMALIZER_LIB="${SCRIPT_DIR}/lib/repo-normalizer.sh"
+if [[ ! -f "$NORMALIZER_LIB" ]]; then
+  echo "handoff-state.sh: missing sibling library: $NORMALIZER_LIB" >&2
+  exit 5
+fi
+# shellcheck source=./lib/repo-normalizer.sh
+source "$NORMALIZER_LIB"
+
 # ---------------------------------------------------------------------------
 # Argument parsing.
 # ---------------------------------------------------------------------------
@@ -114,6 +126,9 @@ if [[ "${1:-}" == "--owner-repo" ]]; then
   if [[ -z "$OWNER_REPO" ]]; then
     echo "handoff-state.sh: --owner-repo requires a value (e.g., --owner-repo owner/repo)" >&2; exit 2
   fi
+  # Lowercase-normalize immediately so ~/.claude/handoffs/{owner}/{repo}/ paths
+  # are always lowercase (issue #704 — mirrors session-state.sh's key contract).
+  OWNER_REPO="$(normalize_repo_key "$OWNER_REPO")"
   shift 2
   if [[ $# -eq 0 ]]; then
     echo "handoff-state.sh: --owner-repo requires a mode flag after it" >&2; exit 2

@@ -340,6 +340,23 @@ if ! source "$SCRIPT_DIR/state-lock.sh"; then
   exit 5
 fi
 
+# Shared case-normalizer (issue #704). Provides normalize_repo_key() so every
+# path that produces a .repos["<key>"] scope key lowercases consistently,
+# preventing a mixed-case origin remote from splitting PR tracking across two
+# scopes.  Sourced by session-state.sh, polling-state-gate.sh, and
+# handoff-state.sh — that single shared definition means the three scripts
+# can never drift on case normalization again.
+NORMALIZER_LIB="${SCRIPT_DIR}/lib/repo-normalizer.sh"
+if [[ ! -f "$NORMALIZER_LIB" || ! -r "$NORMALIZER_LIB" ]]; then
+  echo "session-state.sh: missing sibling library: $NORMALIZER_LIB" >&2
+  exit 5
+fi
+# shellcheck source=./lib/repo-normalizer.sh
+if ! source "$NORMALIZER_LIB"; then
+  echo "session-state.sh: failed to load $NORMALIZER_LIB" >&2
+  exit 5
+fi
+
 print_help() {
   sed -n '/^# PURPOSE$/,/^$/p' "$0" | sed '$d; s/^# \{0,1\}//'
 }
@@ -460,8 +477,12 @@ repo_key_from_remote_url() {
   local owner_path="${url%/*}"
   local owner="${owner_path##*/}"
   # A single-segment remainder leaves owner == name; that is not a repo key.
+  # Lowercase via the shared normalizer (issue #704) so a mixed-case origin
+  # remote ("AuerbachB/Skingod") produces the same scope key as the lowercase
+  # form ("auerbachb/skingod") that polling-state-gate.sh's repo_identity()
+  # has always emitted.
   if [[ -n "$owner" && -n "$name" && "$owner_path" != "$url" ]]; then
-    printf '%s/%s' "$owner" "$name"
+    normalize_repo_key "${owner}/${name}"
   fi
 }
 
@@ -493,6 +514,14 @@ resolve_repo_key() {
   else
     key="$(repo_key_of_path "$PWD")"
   fi
+  # Lowercase-normalize at a single point covering all three key sources:
+  #   (a) cwd origin via repo_key_from_remote_url (already normalized, but
+  #       belt-and-suspenders is cheap),
+  #   (b) --repo <REPO_ARG> (caller may pass mixed-case "Owner/Repo"),
+  #   (c) $CLAUDE_SESSION_REPO (same concern).
+  # Issue #704: this is what prevents a caller like `--repo AuerbachB/Skingod`
+  # from landing in a different .repos scope than `auerbachb/skingod`.
+  [[ -n "$key" ]] && key="$(normalize_repo_key "$key")"
   if [[ -z "$key" ]] || ! is_valid_repo_key "$key"; then
     if [[ -n "$key" ]]; then
       echo "session-state.sh: ignoring implausible repo key '$key'; using '$UNKNOWN_REPO_KEY'" >&2
@@ -581,7 +610,7 @@ def _scoped($pathmap; $unknown):
       | ($e.value.root_repo? // null) as $r
       | (if ($o | type) == "string" and ($o | length) > 0 then $o
          elif ($r | type) == "string" and ($pathmap[$r] != null) then $pathmap[$r]
-         else $unknown end) as $key
+         else $unknown end | ascii_downcase) as $key
       | .repos = ( (.repos // {})
           | .[$key] = ( (.[$key] // {})
               | .prs = ( (.prs // {})
@@ -589,7 +618,7 @@ def _scoped($pathmap; $unknown):
       )
     )
   | ( if ($doc.root_repo | type) == "string" and ($doc.root_repo | length) > 0
-      then ( ($pathmap[$doc.root_repo] // $unknown) as $rk
+      then ( ($pathmap[$doc.root_repo] // $unknown | ascii_downcase) as $rk
              | .repos = ( (.repos // {})
                  | .[$rk] = ( (.[$rk] // {})
                      | if (.root_repo // null) == null then .root_repo = $doc.root_repo else . end ) ) )

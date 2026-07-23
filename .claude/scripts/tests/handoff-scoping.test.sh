@@ -269,6 +269,73 @@ if [[ -f "${MIG_HANDOFF_DIR}/org/repoa/pr-101-handoff.json" ]]; then
 else fail "re-run broke pr-101"; fi
 
 # ---------------------------------------------------------------------------
+# 10. Case-divergence regression (issue #704) — mixed-case --owner-repo
+#     must produce a lowercase path, not a case-preserved one.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== 10. Mixed-case --owner-repo produces lowercase path (issue #704) ==="
+
+path_mc="$("$HANDOFF_STATE" --owner-repo "AuerbachB/Skingod" --path 77)"
+check "--path with mixed-case --owner-repo is lowercased" \
+  "${HANDOFF_DIR}/auerbachb/skingod/pr-77-handoff.json" "$path_mc"
+
+# Two callers using different-case spellings of the same repo must resolve
+# to the same path and therefore the same file (no split-state).
+path_mc_lc="$("$HANDOFF_STATE" --owner-repo "auerbachb/skingod" --path 77)"
+check "lowercase and mixed-case --owner-repo resolve to the same path" \
+  "$path_mc_lc" "$path_mc"
+
+# Create via mixed-case slug; verify the file lands in the lowercase directory.
+BODY_MC='{"schema_version":"1.0","pr_number":77,"head_sha":"mc01","owner_repo":"AuerbachB/Skingod","phase_completed":"A"}'
+"$HANDOFF_STATE" --owner-repo "AuerbachB/Skingod" --create 77 "$BODY_MC"
+if [[ -f "${HANDOFF_DIR}/auerbachb/skingod/pr-77-handoff.json" ]]; then
+  ok "file created at lowercase path despite mixed-case --owner-repo"
+else fail "file NOT created at lowercase path"; fi
+# Use ls -1 rather than [[ -d ]] to check the on-disk case-preserved name.
+# On macOS (case-insensitive filesystem), [[ -d "${HANDOFF_DIR}/AuerbachB" ]]
+# returns true even when only auerbachb/ exists, because the filesystem treats
+# the two names as identical.  ls -1 + grep -qx matches the literal entry name.
+if ! ls -1 "${HANDOFF_DIR}" | grep -qx 'AuerbachB'; then
+  ok "no mixed-case directory created"
+else fail "mixed-case directory AuerbachB/ was erroneously created"; fi
+
+# Read back via lowercase slug must work (same file).
+sha_mc="$("$HANDOFF_STATE" --owner-repo "auerbachb/skingod" --get 77 | jq -r '.head_sha')"
+check "--get via lowercase slug reads file created with mixed-case slug" "mc01" "$sha_mc"
+
+# ---------------------------------------------------------------------------
+# 11. Migration: mixed-case embedded owner_repo → lowercase scoped path
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== 11. Migration: mixed-case owner_repo migrates to lowercase path ==="
+
+MIG3_TMP="$(mktemp -d)"
+mig3_cleanup() { rm -rf "$MIG3_TMP"; }
+trap "cleanup; migrate_cleanup; mig2_cleanup; mig3_cleanup" EXIT
+MIG3_DIR="${MIG3_TMP}/.claude/handoffs"
+mkdir -p "$MIG3_DIR"
+
+# Flat file with a mixed-case embedded owner_repo.
+cat > "${MIG3_DIR}/pr-301-handoff.json" <<'JSON'
+{"schema_version":"1.0","pr_number":301,"head_sha":"mc02","owner_repo":"AuerbachB/Skingod","phase_completed":"A"}
+JSON
+
+HOME="$MIG3_TMP" "$MIGRATE" --apply
+
+if [[ -f "${MIG3_DIR}/auerbachb/skingod/pr-301-handoff.json" ]]; then
+  ok "mixed-case owner_repo migrated to lowercase scoped path"
+else fail "mixed-case owner_repo NOT migrated to lowercase path"; fi
+
+# Same case-insensitive-filesystem caveat as test 10: use ls -1 + grep -qx.
+if ! ls -1 "${MIG3_DIR}" | grep -qx 'AuerbachB'; then
+  ok "no mixed-case directory created during migration"
+else fail "migration created a mixed-case directory AuerbachB/"; fi
+
+if [[ ! -f "${MIG3_DIR}/pr-301-handoff.json" ]]; then
+  ok "flat file removed after migration"
+else fail "flat file still present after migration"; fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
