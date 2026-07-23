@@ -224,6 +224,134 @@ assert_eq "unknown option → exit 2" "2" "$rc_badopt"
 assert_eq "non-numeric limit → exit 2" "2" "$rc_badnum"
 assert_eq "--help → exit 0" "0" "$rc_help"
 
+# ---- regression #696: fix 1 — score-first ranking ----------------------------
+echo "== regression #696: high-score closed beats low-score open (score-first ranking) =="
+# Before the fix, (state=="OPEN") led the sort key, so every open issue
+# outranked every closed one regardless of score.  A perfect-1.0 closed match
+# was pushed past position 5 by five lower-scoring open issues and silently
+# dropped by --max-results 5 — the #638/#647 mechanism.
+# After the fix, score is the primary key; OPEN is only the tiebreak at equal
+# score, matching what the sort comment already promised.
+#
+# Fixture: 5 open issues each matching 2/5 terms (coverage 0.40, score 0.40),
+# plus 1 closed issue matching all 5 (coverage 1.0, score 1.0).
+cat > "$WORK/open_rank.json" <<'JSON'
+[
+  {"number": 101, "title": "Unrelated issue one",   "url": "https://github.com/o/r/issues/101", "state": "OPEN",   "body": "xyzzy quuxbaz"},
+  {"number": 102, "title": "Unrelated issue two",   "url": "https://github.com/o/r/issues/102", "state": "OPEN",   "body": "xyzzy quuxbaz"},
+  {"number": 103, "title": "Unrelated issue three", "url": "https://github.com/o/r/issues/103", "state": "OPEN",   "body": "xyzzy quuxbaz"},
+  {"number": 104, "title": "Unrelated issue four",  "url": "https://github.com/o/r/issues/104", "state": "OPEN",   "body": "xyzzy quuxbaz"},
+  {"number": 105, "title": "Unrelated issue five",  "url": "https://github.com/o/r/issues/105", "state": "OPEN",   "body": "xyzzy quuxbaz"}
+]
+JSON
+cat > "$WORK/closed_rank.json" <<'JSON'
+[
+  {"number": 999, "title": "Another unrelated", "url": "https://github.com/o/r/issues/999",
+   "state": "CLOSED", "body": "xyzzy quuxbaz frobble wibble narf"}
+]
+JSON
+cat > "$WORK/bin/gh" <<EOF
+#!/usr/bin/env bash
+state="open"
+for a in "\$@"; do case "\$prev" in --state) state="\$a" ;; esac; prev="\$a"; done
+case "\$state" in
+  open)   cat "$WORK/open_rank.json" ;;
+  closed) cat "$WORK/closed_rank.json" ;;
+  *)      echo "[]" ;;
+esac
+EOF
+chmod +x "$WORK/bin/gh"
+run "xyzzy quuxbaz frobble wibble narf"
+assert_eq "exit 0 (candidates found)" "0" "$RC"
+assert_eq "closed #999 (score 1.0) ranks first over five open issues (score 0.40)" "999" "$(top_number)"
+if has_number 101; then
+  ok "low-score open #101 still surfaces (not suppressed)"
+else
+  fail "open #101 should still surface"
+fi
+
+echo "== regression #696: open still wins at equal score (tiebreak preserved) =="
+# This guards the /wrap use-case: a closed issue does not suppress an open one
+# at the same match quality, because the open one can still absorb a comment.
+cat > "$WORK/open_tie.json" <<'JSON'
+[
+  {"number": 200, "title": "Open full match", "url": "https://github.com/o/r/issues/200",
+   "state": "OPEN", "body": "xyzzy quuxbaz frobble wibble narf"}
+]
+JSON
+cat > "$WORK/closed_tie.json" <<'JSON'
+[
+  {"number": 201, "title": "Closed full match", "url": "https://github.com/o/r/issues/201",
+   "state": "CLOSED", "body": "xyzzy quuxbaz frobble wibble narf"}
+]
+JSON
+cat > "$WORK/bin/gh" <<EOF
+#!/usr/bin/env bash
+state="open"
+for a in "\$@"; do case "\$prev" in --state) state="\$a" ;; esac; prev="\$a"; done
+case "\$state" in
+  open)   cat "$WORK/open_tie.json" ;;
+  closed) cat "$WORK/closed_tie.json" ;;
+  *)      echo "[]" ;;
+esac
+EOF
+chmod +x "$WORK/bin/gh"
+run "xyzzy quuxbaz frobble wibble narf"
+assert_eq "exit 0" "0" "$RC"
+assert_eq "open #200 ranks first at equal score (tiebreak preserved)" "200" "$(top_number)"
+if has_number 201; then
+  ok "closed #201 also surfaces"
+else
+  fail "closed #201 should also surface"
+fi
+
+# ---- regression #696: fix 2 — numeric tokens kept ---------------------------
+echo "== regression #696: numeric token '403' contributes to terms_matched and coverage =="
+# Before the fix, t.isdigit() silently dropped '403' from the term set.
+# For keywords "codeant 403 re-authenticate daily cap":
+#   OLD (4 terms, 403 gone): issue matching only "codeant" scores 1/4 = 0.25 — below
+#     the 0.34 floor, filtered out.
+#   NEW (5 terms, 403 kept): same issue also matches "403", scoring 2/5 = 0.40 —
+#     above the floor, surfaces.
+# The len < 3 guard already drops noisy short numbers; removing isdigit() only
+# affects identifiers of length ≥ 3 such as error codes and PR/issue numbers.
+cat > "$WORK/open_403.json" <<'JSON'
+[]
+JSON
+cat > "$WORK/closed_403.json" <<'JSON'
+[
+  {"number": 643, "title": "Unexpected error from review CLI",
+   "url": "https://github.com/o/r/issues/643", "state": "CLOSED",
+   "body": "codeant 403 error response unauthorized"}
+]
+JSON
+cat > "$WORK/bin/gh" <<EOF
+#!/usr/bin/env bash
+state="open"
+for a in "\$@"; do case "\$prev" in --state) state="\$a" ;; esac; prev="\$a"; done
+case "\$state" in
+  open)   cat "$WORK/open_403.json" ;;
+  closed) cat "$WORK/closed_403.json" ;;
+  *)      echo "[]" ;;
+esac
+EOF
+chmod +x "$WORK/bin/gh"
+# Keywords produce 5 terms: codeant, 403, re-authenticate, daily, cap.
+# Issue #643 body matches "codeant" and "403" → 2/5 = 0.40 ≥ 0.34 floor.
+run "codeant 403 re-authenticate daily cap"
+assert_eq "exit 0 (numeric token raises coverage above 0.34 floor)" "0" "$RC"
+if printf '%s' "$OUT" | jq -e '.[0].terms_matched | contains(["403"])' >/dev/null 2>&1; then
+  ok "'403' appears in terms_matched"
+else
+  fail "'403' missing from terms_matched"
+fi
+if awk -v c="$(printf '%s' "$OUT" | jq -r '.[0].coverage // 0')" \
+       'BEGIN { exit !(c >= 0.34) }'; then
+  ok "coverage is at or above the 0.34 floor (numeric token contributed)"
+else
+  fail "coverage below 0.34 — got $(printf '%s' "$OUT" | jq -r '.[0].coverage // 0')"
+fi
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

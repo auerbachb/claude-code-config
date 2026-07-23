@@ -192,7 +192,7 @@ def tokenize(text):
     terms = []
     for t in raw:
         t = t.strip("./-")
-        if len(t) < 3 or t in STOPWORDS or t.isdigit():
+        if len(t) < 3 or t in STOPWORDS:
             continue
         if t not in terms:
             terms.append(t)
@@ -259,7 +259,7 @@ def score_all():
         })
     # Open issues outrank closed ones at equal score: only an open issue can
     # absorb a finding as a comment.
-    candidates.sort(key=lambda c: (c["state"] == "OPEN", c["score"], c["title_hits"], -c["number"]), reverse=True)
+    candidates.sort(key=lambda c: (c["score"], c["state"] == "OPEN", c["title_hits"], -c["number"]), reverse=True)
     return candidates[:max_results]
 
 # An unexpected exception must not exit 1: exit 1 is the documented "searched,
