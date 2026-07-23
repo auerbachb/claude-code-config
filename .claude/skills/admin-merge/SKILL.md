@@ -49,15 +49,15 @@ The script, before printing anything:
 
 1. **Verifies merge-readiness** via `merge-gate.sh` — CI green, primary reviewer (CR/CodeAnt) APPROVED on HEAD, all threads resolved, no human `CHANGES_REQUESTED`, not CONFLICTING. It steps over exactly two protection-mechanical blockers: the branch-protection `reviewDecision` (the thing the bypass addresses) and a **clean `BEHIND`** — a `mergeStateStatus: BEHIND` that `.claude/scripts/clean-behind-check.sh` confirms is safe (gate green except BEHIND, `mergeable != CONFLICTING`, AC verified, and the base delta's changed line ranges do **not** intersect the PR's changed line ranges at hunk level; conservative file-level fallback when patches are unavailable; issues #631, #667). A non-clean BEHIND (overlapping hunks at hunk level, or file-level overlap when patch data is absent) or any other missing reason is a hard blocker → the script refuses and points back to the rebase → re-run path.
 2. **Confirms solo-owner** (heuristic above).
-3. **Diagnoses the protection blocker** — confirms `enforce_admins` is actually enabled and tailors the command to it (it does **not** print a generic "disable everything" command).
+3. **Diagnoses the protection blocker and selects the bypass shape** — if `enforce_admins` is enabled, it builds the toggle chain (disable → merge → re-enable); if `enforce_admins` is off but `required_status_checks.strict` is blocking a clean-BEHIND branch, it uses a plain `--admin` merge (no protection changes); otherwise it refuses with exit 6. It does **not** print a generic "disable everything" command.
 4. **Resolves the local clone's absolute path** and prepends `cd "<abs-path>" && ` so the command runs from any cwd.
 
 Handle the exit code — **do not** print a bypass yourself when the script refused:
 
-- `0` → command printed. Relay the script's full output (warning block + command) to the user verbatim. Proceed to Step 4.
+- `0` → command printed. Relay the script's full output (warning block + command) to the user verbatim. The printed command is either the protection-toggle chain (`enforce_admins=true` shape: DELETE + merge + POST) or a plain `gh pr merge --squash --admin` (`enforce_admins=false` + `required_status_checks.strict=true` + clean-BEHIND shape); relay whichever was printed without substituting. Proceed to Step 4.
 - `1` → not merge-ready. Surface the script's listed blockers; tell the user to fix them (run `/fixpr`) first. **Do not** generate any bypass. Stop.
 - `5` → not solo-owned. Tell the user the bypass is refused because it would skip a real review; point to the standard review flow. Stop.
-- `6` → `enforce_admins` is not enabled — the merge is blocked by something else. Tell the user to inspect `gh api repos/<owner>/<repo>/branches/<branch>/protection`. Stop.
+- `6` → `enforce_admins` is off **and** the blocker is not an explainable `strict` + clean-BEHIND case — the merge is blocked by something else. Tell the user to inspect `gh api repos/<owner>/<repo>/branches/<branch>/protection`. Stop.
 - `3` → PR not found/closed. Stop.
 - `2`/`4` → usage or gh/network error. Surface stderr and stop.
 
@@ -73,9 +73,10 @@ On macOS this opens a new **iTerm2** window (preferred when installed, else **Te
 
 ### Step 4: One-line warning to the user
 
-Along with the printed command, tell the user plainly: *"Claude can't run this — modifying branch protection is prohibited by Claude's safety rules. Run the command above yourself; it disables `enforce_admins`, squash-merges with `--admin`, then re-enables `enforce_admins`."*
+Along with the printed command, tell the user what the command does — the framing depends on which shape was printed (the warning block in the script's output identifies it):
 
-Note the inline `&&` failure mode loudly: if the merge fails, the final re-enable is skipped and protection stays OFF until the user re-runs the bare `POST`. Offer the trap-protected alternative the script prints: `bash .claude/scripts/admin-merge.sh <PR> --execute` (the **user** runs this in their terminal — never Claude).
+- **Toggle shape** (command includes DELETE + POST calls, `enforce_admins=true`): *"Claude can't run this — modifying branch protection is prohibited by Claude's safety rules. Run the command above yourself; it disables `enforce_admins`, squash-merges with `--admin`, then re-enables `enforce_admins`."* Note the inline `&&` failure mode: if the merge fails, the final re-enable is skipped and protection stays OFF until the user re-runs the bare `POST`. Offer the trap-protected alternative the script prints: `bash .claude/scripts/admin-merge.sh <PR> --execute` (the **user** runs this — never Claude).
+- **Plain shape** (command is just `gh pr merge --squash --admin`, no protection calls): *"Run the command above; it does an ordinary admin squash-merge that bypasses the strict up-to-date requirement on a verified clean-BEHIND branch. No protection settings are modified."*
 
 ### Step 5: Confirm the merge, then run `/wrap` follow-ups
 
@@ -85,7 +86,7 @@ After the user reports running the command (or you detect it), poll until the PR
 gh pr view "$PR_NUM" --json state --jq '{state}'
 ```
 
-Once `state: MERGED`, also confirm protection was restored:
+Once `state: MERGED`, if the **toggle shape** was used (the command included protection changes), confirm protection was restored:
 
 ```bash
 # owner/repo/branch come from the PR; <branch> is the PR base branch
