@@ -351,8 +351,15 @@ done
 Optional handoff path (per `handoff-files.md`, one JSON file per PR):
 
 ```bash
-HANDOFF_JSON="${HANDOFF_JSON:-$HOME/.claude/handoffs/pr-${PR_NUMBER}-handoff.json}"
-# mkdir -p "$(dirname "$HANDOFF_JSON")"  # if the file may not exist yet
+# Resolve the canonical handoff path (issue #655: scoped per repo when owner_repo is known).
+# The caller should set OWNER_REPO to <owner>/<repo> (e.g., from `gh repo view --json nameWithOwner`).
+# With --owner-repo: ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json
+# Without         : ~/.claude/handoffs/pr-{N}-handoff.json (legacy flat, backward compat)
+if [[ -n "${OWNER_REPO:-}" ]]; then
+  HANDOFF_JSON="${HANDOFF_JSON:-$(.claude/scripts/handoff-state.sh --owner-repo "$OWNER_REPO" --path "$PR_NUMBER" 2>/dev/null || echo "$HOME/.claude/handoffs/pr-${PR_NUMBER}-handoff.json")}"
+else
+  HANDOFF_JSON="${HANDOFF_JSON:-$HOME/.claude/handoffs/pr-${PR_NUMBER}-handoff.json}"
+fi
 ```
 
 Run dismissal (idempotent where PUT succeeds or review already **DISMISSED**; genuine dismissal failures cause **exit 4**). Handoff: append **only** when `--handoff-file` exists and parses as JSON; missing path logs a warn and skips append (caller creates full handoff); invalid JSON exits **4**.

@@ -72,4 +72,4 @@ Review protocol lives in the canonical sources — `cr-github-review.md` (pollin
 **Three reminders for subagents:**
 1. **AUTONOMY:** every phase transition is automatic — do NOT ask "should I?" (table above).
 2. **EXIT REPORT:** print a Structured Exit Report as final output (`phase-protocols.md`).
-3. **HANDOFF FILE:** write/update/read `~/.claude/handoffs/pr-{N}-handoff.json` per `handoff-files.md`.
+3. **HANDOFF FILE:** write/update/read `~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json` (resolve path: `handoff-state.sh --owner-repo <owner/repo> --path N`) per `handoff-files.md`.

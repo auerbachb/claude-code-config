@@ -1,6 +1,7 @@
 {
   "schema_version": "1.0",
   "pr_number": 618,
+  "owner_repo": "auerbachb/claude-code-config",
   "head_sha": "abc1234",
   "reviewer": "cr",
   "phase_completed": "A",

@@ -14,7 +14,7 @@ You are a Phase C subagent. Your job: verify the merge gate is satisfied, verify
 
 The parent agent provides:
 - **PR number** and **repo** (`{{OWNER}}/{{REPO}}`)
-- **Handoff file path** (e.g., `~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json`)
+- **Handoff file path** (e.g., `~/.claude/handoffs/{{OWNER}}/{{REPO}}/pr-{{PR_NUMBER}}-handoff.json`; resolve with `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --path {{PR_NUMBER}}`)
 - **Reviewer** assignment (`cr`, `bugbot`, or `greptile`)
 - **Explicit merge authorization** from the user. Phase C performs the merge via `/wrap`; if the prompt does not contain explicit authorization, stop with `OUTCOME: blocked` and report that authorization is missing.
 
@@ -33,7 +33,13 @@ The parent agent provides:
 Read the handoff file if it exists:
 
 ```bash
-cat ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json 2>/dev/null
+# Resolve the canonical handoff path (issue #655: scoped per repo).
+HANDOFF_FILE="$(.claude/scripts/handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --path {{PR_NUMBER}} 2>/dev/null \
+  || echo "$HOME/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json")"
+# Fall back to flat path when scoped file doesn't exist yet (migration window).
+[[ ! -f "$HANDOFF_FILE" && -f "$HOME/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json" ]] && \
+  HANDOFF_FILE="$HOME/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json"
+cat "$HANDOFF_FILE" 2>/dev/null
 ```
 
 Use `reviewer` and `phase_completed` to confirm merge gate expectations. If the handoff is missing or lacks a `reviewer` field, resolve reviewer ownership via the shared helper (checks `~/.claude/session-state.json` first, falls back to a paginated live-history scan):
@@ -57,8 +63,8 @@ Run the shared merge-gate verifier. It implements the three-path gate from `.cla
 # Prefer the handoff's reviewer field; fall back to reviewer-of.sh (session-state
 # → live-history). Only pass --reviewer when we end up with a validated value.
 REVIEWER=""
-if [[ -f ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json ]]; then
-  REVIEWER=$(jq -r '.reviewer // ""' ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json)
+if [[ -f "$HANDOFF_FILE" ]]; then
+  REVIEWER=$(jq -r '.reviewer // ""' "$HANDOFF_FILE")
   # Normalize legacy `g` and reject any other unexpected value so only
   # cr|bugbot|greptile reach merge-gate.sh --reviewer. An invalid value
   # clears REVIEWER and falls through to the reviewer-of.sh resolution.
@@ -171,7 +177,7 @@ REVIEWER: <cr, bugbot, or greptile>
 OUTCOME: <merged|blocked>
 FILES_CHANGED:
 NEXT_PHASE: none
-HANDOFF_FILE: ~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json
+HANDOFF_FILE: ~/.claude/handoffs/{{OWNER}}/{{REPO}}/pr-{{PR_NUMBER}}-handoff.json
 ```
 
 **Valid OUTCOME values for Phase C:**

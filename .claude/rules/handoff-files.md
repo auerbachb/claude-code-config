@@ -7,7 +7,7 @@
 ## State Files
 
 - `~/.claude/session-state.json`: session-wide orchestration (per-repo `prs`, active agents, Greptile daily budget, **CodeRabbit hourly consumption** in `cr_hourly.events`, per-PR `cr_explicit_triggers`, polling failures). Full schema: `.claude/reference/session-state-schema.json`.
-- `~/.claude/handoffs/pr-{N}-handoff.json`: per-PR phase details consumed by the next phase.
+- `~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json`: per-PR phase details consumed by the next phase. Pass `--owner-repo <owner>/<repo>` to `handoff-state.sh`; use `handoff-state.sh --owner-repo ... --path <N>` to resolve the canonical path. Legacy flat path `~/.claude/handoffs/pr-{N}-handoff.json` is preserved during migration; run `handoff-migrate.sh --apply` to move flat files to the scoped layout.
 - **Polling:** Parent runs `polling-state-gate.sh N --ensure-session` once, then `polling-state-gate.sh N` each cycle. Subagent handoffs overwrite the same file at phase end.
 
 **Repo scoping (issue #638):** State lives at `.repos["<owner>/<name>"].prs["<N>"]`; `session-state.sh` auto-scopes calls via `--repo`, `$CLAUDE_SESSION_REPO`, or cwd origin. Unattributable legacy entries land in `_unknown`. Account-level fields stay global. See `session-state.sh --help`.
@@ -26,10 +26,9 @@ Update `session-state.json` on phase transitions and key events (agent launched/
 
 ## Handoff File Storage
 
-- **Location:** `~/.claude/handoffs/` (create if missing: `mkdir -p ~/.claude/handoffs/`)
-- **Naming:** `pr-{N}-handoff.json` (e.g., `pr-618-handoff.json`)
-- **One file per PR at any time.**
-- **Known gap (issue #655):** this name is still global, so two repos at one PR number share a file — the cause of "pr-84-handoff.json exists but PR #84 does not resolve in this repo". Scoped out of #638 deliberately: renaming it touches every protocol, script, and skill hard-coding the name.
+- **Location:** `~/.claude/handoffs/{owner}/{repo}/` (create via `handoff-state.sh --owner-repo <owner>/<repo> --create`; the helper calls `mkdir -p` on the subdirectory automatically). Legacy flat files live at `~/.claude/handoffs/` — run `handoff-migrate.sh --apply` to migrate them.
+- **Naming:** `{owner}/{repo}/pr-{N}-handoff.json` (e.g., `auerbachb/claude-code-config/pr-618-handoff.json`). Resolve the canonical path with `handoff-state.sh [--owner-repo <owner>/<repo>] --path <N>`.
+- **One file per PR per repo at any time.** Two repos at the same PR number now occupy different paths (issue #655 fixed).
 - **Lifecycle:** Created by Phase A → read/updated by Phase B → read by Phase C → deleted by **parent** after `OUTCOME: merged` confirmed by GitHub (see `phase-protocols.md`).
 
 ### Phase Operations

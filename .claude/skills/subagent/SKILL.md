@@ -283,7 +283,7 @@ isn't a fuzzy match. Full rules: .claude/rules/skill-first.md.
    OUTCOME: {pushed_fixes|no_findings|exhaustion}
    FILES_CHANGED: {comma-separated file paths}
    NEXT_PHASE: B
-   HANDOFF_FILE: ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json
+   HANDOFF_FILE: ~/.claude/handoffs/{owner}/{repo}/pr-{PR_NUMBER}-handoff.json  # resolve with: handoff-state.sh [--owner-repo owner/repo] --path {PR_NUMBER}
    ```
 10. EXIT immediately after printing the exit report. Do NOT enter a polling loop.
 ```
@@ -337,7 +337,7 @@ When a Phase A subagent returns:
    - `pushed_fixes` or `no_findings` -> proceed to step 3.
    - `exhaustion` -> launch a replacement Phase A subagent within 60s. Report to user.
 3. **Verify the push:** `gh pr view {PR_NUMBER} --json commits --jq '.commits[-1].oid'` — confirm SHA matches.
-4. **Verify handoff file:** `cat ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json` — confirm valid JSON with `phase_completed: "A"`.
+4. **Verify handoff file:** resolve path with `handoff-state.sh [--owner-repo owner/repo] --path {PR_NUMBER}` and `cat` it — confirm valid JSON with `phase_completed: "A"`.
 5. **Launch Phase B within 60 seconds.** Check if reviewers already posted findings. Include handoff file path in the Phase B prompt.
 6. **Update `session-state.json`** — record phase transition.
 7. **Report to user** with timestamp.
@@ -348,7 +348,7 @@ When a Phase A subagent returns:
 You are a Phase B review-loop agent for PR #{PR_NUMBER} (Issue #{ISSUE_NUMBER}).
 
 ## Handoff File
-Read ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json first. Use it to avoid duplicate work.
+Read the handoff file first (resolve path: `handoff-state.sh [--owner-repo owner/repo] --path {PR_NUMBER}`). Use it to avoid duplicate work.
 If missing, reconstruct state from GitHub API.
 
 ## RULES (MANDATORY)
@@ -359,7 +359,7 @@ If missing, reconstruct state from GitHub API.
 
 ## Phase B Instructions
 
-1. Read the handoff file at ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json.
+1. Read the handoff file (resolve path: `handoff-state.sh [--owner-repo owner/repo] --path {PR_NUMBER}`).
 2. Check for unresolved findings BEFORE requesting any review:
    - Fetch all 3 endpoints (reviews, inline comments, issue comments) with per_page=100.
    - If unresolved findings from coderabbitai[bot] or greptile-apps[bot] exist, fix them first.
@@ -389,7 +389,7 @@ If missing, reconstruct state from GitHub API.
     OUTCOME: {clean|fixes_pushed|merge_ready|blocked_self_review|exhaustion}
     FILES_CHANGED: {files changed in this phase}
     NEXT_PHASE: {C|B}
-    HANDOFF_FILE: ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json
+    HANDOFF_FILE: ~/.claude/handoffs/{owner}/{repo}/pr-{PR_NUMBER}-handoff.json  # resolve with: handoff-state.sh [--owner-repo owner/repo] --path {PR_NUMBER}
     ```
 12. EXIT immediately.
 ```
@@ -423,7 +423,7 @@ You are a Phase C verify-and-wrap agent for PR #{PR_NUMBER} (Issue #{ISSUE_NUMBE
 The user has authorized merging; execute the canonical `/wrap` flow after verification.
 
 ## Handoff File
-Read ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json first.
+Resolve the path with `handoff-state.sh [--owner-repo owner/repo] --path {PR_NUMBER}` and read that file first.
 
 ## RULES (MANDATORY)
 {COMPLETE contents of CLAUDE.md and all .claude/rules/*.md}
@@ -477,7 +477,7 @@ worktree directory at all times.
    OUTCOME: {merged|blocked}
    FILES_CHANGED:
    NEXT_PHASE: none
-   HANDOFF_FILE: ~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json
+   HANDOFF_FILE: ~/.claude/handoffs/{owner}/{repo}/pr-{PR_NUMBER}-handoff.json  # resolve with: handoff-state.sh [--owner-repo owner/repo] --path {PR_NUMBER}
    ```
 11. EXIT immediately.
 ```

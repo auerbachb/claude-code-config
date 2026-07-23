@@ -259,7 +259,16 @@ found_handoffs=false
 while IFS= read -r n; do
   [ -n "$n" ] || continue
   case "$n" in *[!0-9]*) continue ;; esac
-  f="$HOME/.claude/handoffs/pr-${n}-handoff.json"
+  # Resolve handoff path: scoped layout takes priority (issue #655); flat fallback for legacy files.
+  or=$([ -f "$HOME/.claude/session-state.json" ] && \
+    jq -r --arg n "$n" '(.repos // {}) | to_entries[] | select(.value.prs[$n].owner_repo?) | .value.prs[$n].owner_repo' \
+    "$HOME/.claude/session-state.json" 2>/dev/null | head -1 || true)
+  if [ -n "$or" ] && [ "$or" != "null" ]; then
+    f="$HOME/.claude/handoffs/${or}/pr-${n}-handoff.json"
+    [ -f "$f" ] || f="$HOME/.claude/handoffs/pr-${n}-handoff.json"
+  else
+    f="$HOME/.claude/handoffs/pr-${n}-handoff.json"
+  fi
   [ -f "$f" ] || continue
   # A payload naming a different repo than this one is the other repo's handoff
   # colliding on this PR number (#655) — skip it. Null/absent owner_repo is
