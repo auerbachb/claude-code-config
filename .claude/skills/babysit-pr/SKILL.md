@@ -19,6 +19,7 @@ This is reused by `/pr-monitor-and-manage` (issue #460): that skill invokes `/ba
 
 `/babysit-pr` is read-only plus the dispatches below. It MUST NOT:
 
+- **Never babysit a PR you did not author (issue #733, `safety.md`).** Enrolling a PR in a watch loop is a "touch". Before the first tick, gate the target: `.claude/scripts/pr-authorship.sh <PR>` (exit 0 = yours). Not yours / undetermined → refuse with one line naming the authorship guard, and do NOT enrol — unless the user named this specific PR in chat this session (per-PR override; say you are operating under it). `polling-state-gate.sh --ensure-session` also refuses non-author enrolment as a fail-safe (bypass only with `--allow-nonauthor` under that override).
 - **Never modify branch protection** — no calls to `.../branches/.../protection`.
 - **Never dismiss human-authored reviews.** Only `/fixpr`'s `dismiss-stale-bot-changes.sh` (bot allowlist, wrong `commit_id`) may dismiss, and only bot reviews.
 - **Never resolve a review thread** itself — thread resolution happens only inside `/fixpr` Steps 1–4 after code-verification. `/babysit-pr` does not call `resolveReviewThread`.

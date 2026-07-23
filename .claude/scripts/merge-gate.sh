@@ -20,8 +20,14 @@
 # dismiss-stale-bot-changes.sh after push — do not treat as a human block.
 #
 # Usage:
-#   merge-gate.sh <pr_number> [--reviewer cr|bugbot|greptile]
+#   merge-gate.sh <pr_number> [--reviewer cr|bugbot|greptile] [--allow-nonauthor]
 #   merge-gate.sh --help
+#
+# Authorship guard (issue #733): a merge is a write, so the gate BLOCKS a
+# confirmed foreign-author PR (adds a `missing` entry; the `authorship` field is
+# emitted on every result). "unknown" does not block here — the strict
+# fail-closed lives at polling-state-gate --ensure-session and pr-authorship.sh.
+# --allow-nonauthor suppresses the block ONLY under an explicit per-PR user override.
 #
 # Reviewer resolution order (unless --reviewer is passed):
 #   1. ~/.claude/session-state.json  .prs["<N>"].reviewer  ("cr"/"bugbot"/"greptile"/"g")
@@ -51,8 +57,15 @@
 #     "human_changes_requested": ["login", ...],
 #     "stale_bot_changes_requested_count": N,
 #     "unresolved_thread_count": N,
-#     "primary_review_met": true|false
+#     "primary_review_met": true|false,
+#     "authorship": "mine"|"not_mine"|"unknown"
 #   }
+#
+# `authorship` (issue #733): "mine" when the PR author == the authenticated user,
+# "not_mine" when it is someone else (a confirmed foreign author blocks the merge
+# via a `missing` entry unless --allow-nonauthor is passed), "unknown" when the
+# author or viewer login could not be resolved (does not block here — see the
+# guard note above). Read-only callers use it to separate collaborator PRs.
 #
 # `unresolved_thread_count` is the structured count behind the human-readable
 # "N unresolved review thread(s)" entry in `missing` — orchestrators (e.g.
@@ -83,6 +96,10 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >>
 # --------------------------------------------------------------------------
 PR_NUMBER=""
 REVIEWER_OVERRIDE=""
+# Authorship guard (issue #733): block a merge on a PR the authenticated user did
+# not author. --allow-nonauthor suppresses the block only under an explicit
+# per-PR user override. The `authorship` field is emitted regardless.
+ALLOW_NONAUTHOR=false
 
 print_usage() {
   awk 'NR == 1 { next } /^$/ { exit } { print }' "$0"
@@ -93,6 +110,10 @@ while [[ $# -gt 0 ]]; do
     -h|--help)
       print_usage
       exit 0
+      ;;
+    --allow-nonauthor)
+      ALLOW_NONAUTHOR=true
+      shift
       ;;
     --reviewer)
       REVIEWER_OVERRIDE="${2:-}"
@@ -140,7 +161,7 @@ fi
 # --------------------------------------------------------------------------
 emit_json() {
   # emit_json <met> <reviewer> <path> <missing_json_array> <head_sha> <ci_status_json> <merge_state> <mergeable> <review_decision> <code_owner_bots_json> <human_changes_json_array> <stale_bot_changes_requested_count_number> [unresolved_thread_count_number] [primary_review_met_bool]
-  local met="$1" reviewer="$2" path="$3" missing="$4" head_sha="$5" ci_status="$6" merge_state="$7" mergeable="$8" review_decision="$9" code_owner_bots="${10}" human_changes="${11}" stale_bot_count="${12}" unresolved_thread_count="${13:-0}" primary_review_met="${14:-false}"
+  local met="$1" reviewer="$2" path="$3" missing="$4" head_sha="$5" ci_status="$6" merge_state="$7" mergeable="$8" review_decision="$9" code_owner_bots="${10}" human_changes="${11}" stale_bot_count="${12}" unresolved_thread_count="${13:-0}" primary_review_met="${14:-false}" authorship="${15:-unknown}"
   jq -cn \
     --argjson met "$met" \
     --arg reviewer "$reviewer" \
@@ -156,7 +177,8 @@ emit_json() {
     --argjson stale_bot_changes_requested_count "$stale_bot_count" \
     --argjson unresolved_thread_count "$unresolved_thread_count" \
     --argjson primary_review_met "$primary_review_met" \
-    '{met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met}'
+    --arg authorship "$authorship" \
+    '{met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship}'
 }
 
 emit_empty_ci() {
@@ -178,7 +200,7 @@ fi
 OWNER="${OWNER_REPO%/*}"
 REPO="${OWNER_REPO#*/}"
 
-PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,headRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision 2>/dev/null || true)
+PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,headRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision,author 2>/dev/null || true)
 if [[ -z "$PR_JSON" ]]; then
   emit_json false unknown cr "[\"PR #$PR_NUMBER not found\"]" "" "$(emit_empty_ci)" "" "" "" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 3
@@ -190,6 +212,7 @@ BASE_REF=$(echo "$PR_JSON" | jq -r '.baseRefName // ""')
 MERGE_STATE=$(echo "$PR_JSON" | jq -r '.mergeStateStatus // ""')
 MERGEABLE=$(echo "$PR_JSON" | jq -r '.mergeable // ""')
 REVIEW_DECISION=$(echo "$PR_JSON" | jq -r '.reviewDecision // ""')
+PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.author.login // ""')
 
 if [[ "$PR_STATE" != "OPEN" ]]; then
   emit_json false unknown cr "[\"PR #$PR_NUMBER is $PR_STATE — not open\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
@@ -380,6 +403,22 @@ REVIEWER=$(resolve_reviewer)
 # Gate evaluation — collect MISSING reasons; determinism comes from jq data paths.
 # --------------------------------------------------------------------------
 MISSING=()
+
+# Authorship guard (issue #733) — the `authorship` field is emitted on every
+# result so read-only callers (/status) can display and separate collaborator
+# PRs. A merge is a write, and /wrap + /merge run this gate before `gh pr merge`,
+# so a merge is BLOCKED on a CONFIRMED foreign author. "unknown" (author or
+# viewer unresolvable) does NOT block here — the strict fail-closed lives at the
+# enrolment gate (polling-state-gate --ensure-session) and pr-authorship.sh, so
+# a transient `gh api user` blip cannot wedge merges on the user's own PRs.
+VIEWER_LOGIN="$(gh api user --jq '.login' 2>/dev/null || true)"
+AUTHORSHIP="unknown"
+if [[ -n "$VIEWER_LOGIN" && -n "$PR_AUTHOR" ]]; then
+  if [[ "$PR_AUTHOR" == "$VIEWER_LOGIN" ]]; then AUTHORSHIP="mine"; else AUTHORSHIP="not_mine"; fi
+fi
+if [[ "$ALLOW_NONAUTHOR" != true && "$AUTHORSHIP" == "not_mine" ]]; then
+  MISSING+=("PR #$PR_NUMBER is authored by $PR_AUTHOR (not you, $VIEWER_LOGIN) — automated merge is blocked by the authorship guard (.claude/rules/safety.md); pass --allow-nonauthor only under an explicit per-PR user override")
+fi
 
 # BEHIND / merge metadata (#273, Step 1d in cr-merge-gate.md) — applies to all paths.
 if [[ "$MERGE_STATE" == "BEHIND" ]]; then
@@ -787,7 +826,7 @@ STALE_JSON=$(jq -n --argjson c "${STALE_BOT_CHANGES_COUNT:-0}" '$c')
 
 MISSING_JSON=$(printf '%s\n' "${MISSING[@]:-}" | jq -R . | jq -cs 'map(select(length > 0))')
 
-emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON" "${UNRESOLVED_TOTAL:-0}" "$PRIMARY_REVIEW_MET"
+emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON" "${UNRESOLVED_TOTAL:-0}" "$PRIMARY_REVIEW_MET" "$AUTHORSHIP"
 
 if [[ "$MET" == true ]]; then
   exit 0

@@ -206,6 +206,12 @@ gh pr view "$PR_NUM" --json number,title,headRefName,body,state \
 
 If the PR is already merged or closed, skip to Phase 3 (follow-up detection).
 
+> **Authorship guard (issue #733, `safety.md`) — gate before any verification or merge.** `/wrap` implicitly authorizes a squash merge, the most consequential PR write. Once `$PR_NUM` is resolved, confirm you authored it:
+> ```bash
+> .claude/scripts/pr-authorship.sh "$PR_NUM"   # exit 0 = yours
+> ```
+> Not yours (exit 1) or undetermined (exit 4) → **stop** with one line: "PR #$PR_NUM is authored by someone else — the authorship guard blocks automated merges; name this PR explicitly to override." Proceed only under an explicit per-PR user override (say you are operating under it; pass `--allow-nonauthor` to `merge-gate.sh` in Step 2). `merge-gate.sh` also blocks a confirmed foreign author as a fail-safe, so the gate cannot be met on someone else's PR without the override.
+
 ### Step 1.2: Scan for unresolved review findings
 
 > **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read the cached JSON bundle. All review-state queries in this skill read from the `$BUNDLE` returned by `pr-state.sh` — do not add inline `gh api` calls to these three endpoints.

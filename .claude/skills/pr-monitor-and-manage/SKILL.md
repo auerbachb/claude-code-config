@@ -166,6 +166,14 @@ PR_COUNT=$(jq 'length' <<<"$PR_LIST")
 
 **Empty fleet → immediate Pause.** If `PR_COUNT == 0`, jump to **Pause** (Step 8) with reason `empty fleet`. Do not keep polling an empty fleet — pause immediately with no 3-tick wait.
 
+> **Authorship guard (issue #733, `safety.md`).** `/pr-monitor-and-manage` dispatches **writes** — `/fixpr` (rebase/force-push), `/wrap` (merge), review triggers — so it manages only PRs **you** authored. `--author` defaults to the authenticated user; discovery is already `--author "$PMM_AUTHOR"`-scoped. If `$PMM_AUTHOR` is not the authenticated user, the fleet is **read-only**: print the status table for context (AC6) and **dispatch nothing**.
+> ```bash
+> GH_ME=$(gh api user --jq .login 2>/dev/null || echo "")
+> READ_ONLY_FLEET=0
+> if [[ -z "$GH_ME" || "$PMM_AUTHOR" != "$GH_ME" ]]; then READ_ONLY_FLEET=1; fi  # fail-closed
+> ```
+> When `READ_ONLY_FLEET=1`, skip every dispatch in the decision tree (rebase, `phase-a-fixer`, `/wrap`) — display only. The per-PR helpers (`polling-state-gate.sh --ensure-session`, `merge-gate.sh`, `admin-merge.sh`) also refuse non-author PRs as a fail-safe. Override only when the user names a specific PR in chat (per-PR, per-session).
+
 ---
 
 ## Step 2.5: Aggregate prior-tick subagent exit reports (every tick — BEFORE classification)

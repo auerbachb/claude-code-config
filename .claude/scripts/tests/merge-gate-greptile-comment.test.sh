@@ -52,11 +52,16 @@ ARGS="$*"
 case "$ARGS" in
   "repo view --json nameWithOwner --jq .nameWithOwner")
     echo "solo/repo"; exit 0 ;;
+  "api user --jq .login")
+    # Authorship guard (issue #733): viewer login; matches the PR author below
+    # so authorship == "mine" and the merge is not blocked.
+    echo "solouser"; exit 0 ;;
   *"pr view "*headRefOid*)
     jq -cn \
       --arg sha  "$HEAD_SHA" \
       '{number:1, state:"OPEN", headRefOid:$sha, baseRefName:"main",
-        mergeStateStatus:"CLEAN", mergeable:"MERGEABLE", reviewDecision:"APPROVED"}'
+        mergeStateStatus:"CLEAN", mergeable:"MERGEABLE", reviewDecision:"APPROVED",
+        author:{login:"solouser", type:"User"}}'
     exit 0 ;;
   *"git/commits/"*)
     # Return FAKE_COMMIT_TS as the committer date — used for Greptile freshness.

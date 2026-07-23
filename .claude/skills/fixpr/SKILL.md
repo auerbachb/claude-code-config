@@ -147,6 +147,12 @@ When inference picked from multiple candidates, append the override hint on its 
 Also tracking: PR #458 (bugbot_review_poll), PR #445 (cr_confirmation_pass)
 ```
 
+> **Authorship guard (issue #733, `safety.md`) — gate before Step 0c.** `/fixpr` pushes commits, force-pushes rebases, posts review triggers, and resolves threads — all writes. Once `$PR_NUMBER_ARG` is resolved, confirm you authored it:
+> ```bash
+> .claude/scripts/pr-authorship.sh "$PR_NUMBER_ARG"   # exit 0 = yours
+> ```
+> Not yours (exit 1) or undetermined (exit 4) → **stop** with one line: "PR #$PR_NUMBER_ARG is authored by someone else — the authorship guard blocks automated writes; name this PR explicitly to override." Continue only under an explicit per-PR user override (say you are operating under it). Do this **before** Step 0c, since the pre-flight posts reviewer triggers.
+
 ### Step 0c: Pre-flight — draft→ready + four-reviewer trigger (issue #493)
 
 Run the shared pre-flight **before** the audit so the PR is out of draft and all four conditionally-triggered reviewers (CodeAnt, CodeRabbit, Cursor, Graphite) are engaged on the current SHA before any finding-classification work begins. This is the same `pr-preflight.sh` invoked by `/babysit-pr` and `/pr-monitor-and-manage`, so the behavior is identical across all three skills — do **not** re-implement the draft flip or trigger logic inline.

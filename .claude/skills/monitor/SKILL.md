@@ -85,7 +85,11 @@ CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh) || true   # optional; degrade
 # Cover the WHOLE open backlog, not just the first page. gh pr list paginates
 # internally up to --limit, so set it well above any realistic backlog (raise it
 # further if a repo can exceed this). A low cap would silently skip later PRs.
-PRS=$(gh pr list --state open --limit 1000 --json number,title,isDraft,headRefOid,url)
+# Authorship guard (issue #733): resolve the authenticated user so Step 4 can
+# block trigger posts (a WRITE) on PRs you did not author. Fetch `author` so each
+# row carries it. Fail-closed: an empty GH_USER treats every PR as not-yours.
+GH_USER=$(gh api user --jq .login 2>/dev/null || echo "")
+PRS=$(gh pr list --state open --limit 1000 --json number,title,isDraft,headRefOid,url,author)
 
 # Narrow to a single PR BEFORE counting, so a targeted audit of a closed/missing
 # PR yields COUNT == 0 (an open-list count would mask the empty result).
@@ -202,6 +206,17 @@ Below the table, summarize:
 ## Step 4 — Detect blockers before triggering
 
 Run these checks per PR with gaps; they gate (or annotate) the triggers proposed in Step 5.
+
+### Step 4.0 — Authorship guard (issue #733, `safety.md`) — HARD STOP for triggers
+
+Posting a reviewer trigger (`@coderabbitai` / `@codeant-ai` / `@cursor` / `@graphite-app`) is a **write** — it spends the PR author's reviewer budgets and notifies people. So triggers are proposed/posted **only for PRs you authored**:
+
+```bash
+# Per PR row: mine iff GH_USER is known AND the row's author == GH_USER (fail-closed).
+IS_MINE=$(jq -r --arg me "$GH_USER" '($me != "" and .author.login == $me)' <<<"$PR_ROW")
+```
+
+If `IS_MINE == false`, **do not propose or post any trigger** for that PR. It still appears in the Step 3 gap matrix as **read-only context**, clearly separated from your actionable rows (AC6) — annotate its row `read-only (not yours)`. Override only if the user named that specific PR in chat this session (per-PR override; say you are operating under it). This is a hard stop even under `--apply`.
 
 ### 4a. Draft state
 
