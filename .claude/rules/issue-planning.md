@@ -35,13 +35,7 @@
    ```
 
    If it fails: **STOP** — go back and merge before coding.
-8. **Comment confirming the merge** with source attribution:
-
-   ```bash
-   gh issue comment N --body "Implementation plan merged into issue body (<source>). Ready for implementation."
-   ```
-
-   Source: "Claude's analysis + CodeRabbit's recommendations" or "Claude's analysis only — CodeRabbit plan was not available".
+8. **Comment confirming the merge** with source attribution — `gh issue comment N --body "Implementation plan merged into issue body (<source>). Ready for implementation."` where `<source>` is "Claude's analysis + CodeRabbit's recommendations" or "Claude's analysis only — CodeRabbit plan was not available".
 9. **Start coding only after the gate passes** — create branch `issue-N-short-description`, read the issue body (not scattered comments) as canonical spec, implement, then run Local CodeRabbit Review Loop (`cr-local-review.md`) + Post-Clean checklist.
 
 > Do NOT jump to step 9 without passing step 7. The `## Implementation Plan` section in the issue body is the canonical spec for the coding work.

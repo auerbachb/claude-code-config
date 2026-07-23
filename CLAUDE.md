@@ -26,7 +26,7 @@ Best-effort: lead the first user message with `[#N]` (or `[#339, #341]`) so tab 
 
 Whenever referencing a GitHub number in human-facing prose, you **must** prefix it with its type: `PR #1234` or `Issue #1234`. Example: "Blocked on PR #1930: Issue #1931, Issue #1934" — not "Blocked on #1930: #1931, #1934".
 
-**Exceptions:** bare `#N` stays correct for GitHub closing keywords (`Closes #123`, `Fixes #456`), commit messages/code, bulk list shorthand for 5+ same-type items (`PRs #1234, #1235, #1236`), and the thread-title `[#N]` prefix above. Markdown link text must still include the type: `[PR #1234](url)`, not `[#1234](url)`.
+**Exceptions** (bare `#N` is correct): GitHub closing keywords (`Closes #123`), commit messages/code, bulk shorthand for 5+ same-type items (`PRs #1234, #1235, #1236, #1237, #1238`), and the thread-title prefix above. Markdown link text still needs the type: `[PR #1234](url)`, not `[#1234](url)`.
 
 ---
 
@@ -38,7 +38,7 @@ The workflow is fully autonomous. At every phase transition — local review, pu
 - Merging (except `/wrap` / `/merge` / `/pr-monitor-and-manage` — see above)
 - Respawning a failed subagent
 
-**Monitoring is never a permission-gated action — babysitting an in-flight PR is the default, never a question.** When a PR is open and not yet merge-ready, arm the watch yourself and report it; never present a "watch it / babysit / review it yourself — which?" menu, and never wait for the user to say "watch it" first. A CodeRabbit timeout or rate-limit is not a stop-and-ask — it routes autonomously into the reviewer-escalation chain (BugBot → Greptile → self-review, `cr-github-review.md`). Keep it token-safe: arm `/loop` (or `CronCreate` for durable/fleet) so it pauses between ticks and widens on stable-state backoff — never a continuous poll (`scheduling-reliability.md`). Use the existing skills (`/babysit-pr`, `/pr-monitor-and-manage`); add no new machinery. The only authorization left in the babysit→merge loop is the **merge** itself (see "PR MERGE AUTHORIZATION" above and issue #674).
+**Monitoring is never permission-gated — babysitting an in-flight PR is the default, never a question.** When a PR is open and not merge-ready, arm the watch yourself and report it; never offer a "watch it / babysit / review it yourself?" menu, and never wait to be told. A CodeRabbit timeout or rate-limit is not a stop-and-ask — it routes autonomously into the escalation chain (BugBot → Greptile → self-review, `cr-github-review.md`). Keep it token-safe: `/loop` (or `CronCreate` for durable/fleet), pausing between ticks and widening on stable-state backoff — never a continuous poll (`scheduling-reliability.md`). Use the existing skills (`/babysit-pr`, `/pr-monitor-and-manage`); add no new machinery. The only authorization left in the babysit→merge loop is the **merge** itself (above; Issue #674).
 
 If you catch yourself composing a "should I...?" question about any workflow step, stop — the answer is always yes. Just do it.
 
@@ -51,17 +51,12 @@ If you catch yourself composing a "should I...?" question about any workflow ste
 1. **Pull remote main into local main** (quarantine dirty state first):
 
    ```bash
-   ROOT_REPO=$(.claude/scripts/repo-root.sh 2>/dev/null || true)
-   if [[ -z "$ROOT_REPO" || ! -d "$ROOT_REPO" ]]; then
-     echo "ERROR: could not resolve root repo path" >&2; exit 1
-   fi
-   if ! .claude/scripts/dirty-main-guard.sh --check >/dev/null; then
-     .claude/scripts/dirty-main-guard.sh --quarantine
-   fi
+   ROOT_REPO=$(.claude/scripts/repo-root.sh) && [[ -d "$ROOT_REPO" ]] || { echo "ERROR: cannot resolve root repo" >&2; exit 1; }
+   .claude/scripts/dirty-main-guard.sh --check >/dev/null || .claude/scripts/dirty-main-guard.sh --quarantine
    git -C "$ROOT_REPO" pull origin main --ff-only
    ```
 
-   If the guard reports `quarantined: recovery/dirty-main-*`, mention the recovery branch to the user so they know where their prior work lives. If the pull itself fails (e.g., diverged history after quarantine), tell the user — do not force-pull or reset. See `main-hygiene.md` for the full guard contract.
+   If the guard reports `quarantined: recovery/dirty-main-*`, name the recovery branch to the user so they know where their prior work lives. If the pull itself fails (e.g. diverged history after quarantine), tell the user — do not force-pull or reset. Full guard contract: `main-hygiene.md`.
 2. **Create a worktree** via the `EnterWorktree` tool for isolated work. The branch must include the issue number (`issue-N-*`).
 
 **Do not write code, edit files, stage changes, commit, or push while on `main`. Ever.** If you cannot create a worktree, fall back to `git checkout -b issue-N-short-description`.
@@ -91,8 +86,6 @@ If you catch yourself composing a "should I...?" question about any workflow ste
 
 ## Rule Files (`.claude/rules/`)
 
-Detailed workflow rules are split into topic-specific files in `.claude/rules/`:
-
 | File | Contents |
 |------|----------|
 | `issue-planning.md` | Issue + planning flow |
@@ -119,17 +112,15 @@ These files auto-load for the parent agent session. **Subagents do NOT auto-load
 
 Rules load every turn. The budget exists for **instruction adherence and maintainability** — redundant or contradictory rules misfire on literal-following models. Limits apply to CLAUDE.md + `.claude/rules/*.md`:
 
-- **Soft warning:** 12,000 words.
+- **Soft warning:** 12,000 words. **Hard fail:** 13,000. **Per-file warning:** >2,000 words; split or extract reference material.
 - **Ratchet cap:** `.claude/rules/.budget-soft-cap` must equal `max(current_count + 750, 8500)`. `rule-lint.sh` fails when the corpus exceeds this committed cap, independent of soft/hard checks; run `rule-lint.sh --update-cap` only after intentional cuts.
-- **Hard fail:** 13,000 words.
-- **Per-file warning:** >2,000 words; split or extract reference material.
-- **Verify on every PR touching CLAUDE.md or `.claude/rules/`:**
+- **Verify on every PR touching CLAUDE.md or `.claude/rules/`** — condense before merging if it exceeds any enforced limit:
 
   ```bash
   { cat CLAUDE.md; find .claude/rules -name '*.md' -exec cat {} +; } | wc -w
   ```
 
-  If the total exceeds any enforced limit, condense before merging.
+**Keep growth out of the corpus.** A fix documents its *rule* here and its mechanism, rationale, and backward-compat notes in `.claude/reference/` — not auto-loaded, so free.
 
 ---
 

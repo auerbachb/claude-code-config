@@ -8,7 +8,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 
 ### Schemas
 
-- `handoff-file-schema.json` — full JSON schema for `~/.claude/handoffs/pr-{N}-handoff.json`
+- `handoff-file-schema.json` — full JSON schema for `~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json`
 - `session-state-schema.json` — full JSON schema for `~/.claude/session-state.json`
 
 ### Runbooks and long command forms
@@ -22,6 +22,8 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `codeant-graphite-supplemental.md` — CodeAnt and Graphite supplemental polling on the CR path
 - `local-review-cli-failure-modes.md` — how CodeAnt/CodeRabbit fake a clean pass on failure, 403 triage, 15-file cap (#642)
 - `wrap-fixpr-delegation.md` — `/wrap` Step 2.1 → full `/fixpr` recovery handoff contract
+- `state-file-contracts.md` — expanded scoping, write-lock, migration, and field-type mechanics for `session-state.json` + handoffs (`handoff-files.md`; #625, #638, #639, #651, #655, #682, #687, #704)
+- `authorship-guard.md` — `pr-authorship.sh` exit-code semantics, the three shared-script fail-safes, and `--allow-nonauthor` override plumbing (`safety.md` §Authorship; #733)
 - `autofile-dedup.md` — duplicate-check thresholds for autonomous issue filing (`/wrap` Phase 3); strong/weak/none classification and the comment-vs-file rule
 - `graphql-thread-resolution.md` — full GraphQL queries/mutations for resolving PR review threads
 - `exit-report-format.md` — full structured exit report block specification
@@ -38,6 +40,8 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `chip-model-guard-decision.md` — decision record: the chip model-guard preamble rides in both the chip `prompt` and the fallback block, redefining the fallback baseline (#601)
 - `scheduling-failure-modes.md` — recurring poll failure analysis
 - `skill-sync-hooks.md` — skills worktree sync and hook registration narrative
+- `skill-symlink-setup.md` — why a dedicated worktree, session-start bootstrap, symlink install, and migration commands (`skill-symlinks.md`)
+- `trust-dialog-repair.md` — why `~/.claude.json` re-prompts per worktree, the three flags, and repair-script behavior (`trust-dialog-fix.md`)
 - `double-loading-fix.md` — decision record for suppressing the duplicate global CLAUDE.md + rules copy via project-local `claudeMdExcludes` (#461)
 - `skill-authoring-patterns.md` — authoring *judgment* for skills/rules (description-as-trigger, match-form-to-failure, bulletproofing); complements CONTRIBUTING.md mechanics
 - `verification-evidence-patterns.md` — claim→evidence checklist for AC, exit reports, and merge claims; complements phase protocols (#417 harvest from superpowers)

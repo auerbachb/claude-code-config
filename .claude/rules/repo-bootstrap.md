@@ -14,7 +14,7 @@ Run at session start — after worktree creation, before code work. Idempotent; 
 .claude/scripts/repo-bootstrap.sh --check
 ```
 
-The script reports the workflow + branch-protection state without mutating anything. Exit codes: `0` clean, `1` gaps detected, `2` usage error, `3` environment error (not in a git repo / no `gh`), `4` `gh`/network error, `5` write failure (only from `--apply`). See `repo-bootstrap.sh --help` for the full contract.
+The script reports the workflow + branch-protection state without mutating anything. Exit `0` clean, `1` gaps detected; `2`–`5` are usage/environment/network/write errors. Full contract: `repo-bootstrap.sh --help`.
 
 If the report shows `[MISSING] .github/workflows/cr-plan-on-issue.yml`, install it as part of the first feature PR — do not open a bootstrap-only PR:
 

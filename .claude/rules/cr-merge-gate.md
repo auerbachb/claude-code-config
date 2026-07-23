@@ -56,7 +56,7 @@ Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses
 **Do not infer “behind base” from `mergeStateStatus: "BLOCKED"` alone.** Read **`mergeStateStatus` and `mergeable`** explicitly (`gh pr view <N> --json mergeStateStatus,mergeable,reviewDecision` — same as `merge-gate.sh`).
 
 - **`CLEAN`** — OK for merge once Steps 1–1c and 1b pass.
-- **`BEHIND`** — Run `.claude/scripts/clean-behind-check.sh <N>` (#631, #667). Exit 0 (`safe_to_offer` — clean BEHIND, base delta line ranges don't intersect PR line ranges at hunk level; conservative file-level fallback when patches unavailable) → **offer `/admin-merge`** (user choice, never auto-run; `churn.advisory` is context, not a gate; configure advisory sensitivity via `--churn-threshold N` or `CHURN_THRESHOLD` env var), not another rebase. Else (not safe) rebase → re-run — `/fixpr` (`fixpr/SKILL.md` / `pr-state.sh`), **force-push only** after `dirty-main-guard.sh --check`; `merge-gate.sh` stays failing.
+- **`BEHIND`** — Run `.claude/scripts/clean-behind-check.sh <N>` (#631, #667). Exit 0 (`safe_to_offer`) → **offer `/admin-merge`** — user choice, never auto-run; `churn.advisory` is context, not a gate. Otherwise rebase → re-run via `/fixpr` (`fixpr/SKILL.md` / `pr-state.sh`), **force-push only** after `dirty-main-guard.sh --check`; `merge-gate.sh` stays failing. Overlap detection and `--churn-threshold`: `clean-behind-check.sh --help`.
 - **`BLOCKED`** — Use `reviewDecision`, CI, threads — not a substitute for **`BEHIND`**.
 - **`UNSTABLE` / `DIRTY` / `UNKNOWN`** — Not merge-ready; wait, rebase, or resolve per `fixpr` / Step 1b.
 
@@ -64,18 +64,16 @@ Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses
 
 ## Step 2 — Verify every Test Plan checkbox (MANDATORY — do NOT skip)
 
-> After Steps 1c and 1d pass (`merge-gate.sh` enforces resolved threads and merge metadata including `mergeStateStatus`), verify AC before merge.
+> After Steps 1b–1d pass (`merge-gate.sh` enforces CI, resolved threads, and merge metadata), verify AC before merge.
 >
 > 1. Fetch the PR body via `gh pr view N --json body`
-> 2. Parse **every** checkbox in the **Test plan** section of the PR description
+> 2. Parse **every** checkbox in the **Test plan** section
 > 3. For each item, read the relevant source file(s) and verify the criterion is met
-> 4. Check off passing items by editing the PR body (replace `- [ ]` with `- [x]`)
+> 4. Check off passing items by editing the PR body (`- [ ]` → `- [x]`)
 > 5. If any item fails, fix the code first — do NOT offer to merge with unchecked boxes
 > 6. Only after **ALL** boxes are checked, proceed to Step 3
 >
-> Re-run after every review round — verification reflects the code **at merge time**, not an earlier checkpoint.
->
-> Skipping this step is a **blocking failure** — the user should never see unchecked AC boxes when asked about merge.
+> Re-run after every review round — verification reflects the code **at merge time**, not an earlier checkpoint. Skipping this step is a **blocking failure**; the user should never see unchecked AC boxes when asked about merge.
 
 ## Step 3 — Confirm merge intent with the user
 

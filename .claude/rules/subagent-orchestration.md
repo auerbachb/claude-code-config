@@ -37,7 +37,7 @@ If agent definitions are unavailable (e.g., repo without `.claude/agents/`):
 | `pm-worker` | `sonnet` |
 | Read-only review agents (e.g., `/pr-review-help`) | `sonnet` |
 
-Current fleet: **Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5**; alias resolution and the full per-phase + Fable-5 rationale live in `.claude/agents/README.md` §Model Selection. Fable 5 has no bare alias and is **never a spawn default** — reserve it for interactive step-ups where a human watches the spend.
+Fleet: **Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5**. Fable 5 has no bare alias and is **never a spawn default** — reserve it for interactive step-ups where a human watches the spend. Alias resolution and per-phase rationale: `.claude/agents/README.md` §Model Selection.
 
 Rules: set `model` explicitly on every spawn (call-site overrides frontmatter; `CLAUDE_CODE_SUBAGENT_MODEL` is only a legacy safety net). If a Sonnet-tier agent underperforms, escalate to `opus` and document why.
 
@@ -57,13 +57,13 @@ Subagents have a 32K output token limit. Near exhaustion: write the token-exhaus
 
 ## Task Decomposition (Token Safety)
 
-The 32K limit is binding. Give each subagent one phase with explicit exit criteria. Detailed procedures live in `.claude/agents/phase-{a,b,c}-*.md`; fallback: `.claude/reference/phase-decomposition.md`.
+The 32K limit is binding. Give each subagent one phase with explicit exit criteria. Procedures: `.claude/agents/phase-{a,b,c}-*.md`; fallback: `.claude/reference/phase-decomposition.md`.
 
-- **Phase A: Fix + Push** (heaviest) — fix findings, commit once, push once, reply to threads, write handoff, EXIT (parent cleanup detailed in Orchestration rules below).
+- **Phase A: Fix + Push** (heaviest) — fix findings, commit once, push once, reply to threads, write handoff, EXIT (parent cleanup: Orchestration below).
 - **Phase B: Review Loop** (lighter) — poll/trigger reviewer, fix new findings, update handoff, EXIT.
-- **Phase C: Verify + Wrap** (lightest) — verify merge gate + AC, then run `/wrap` to squash-merge, sync main, report `merged`. Do not duplicate `/wrap` logic; its session-sweep output is **advisory only — never block a merge on a sweep finding**.
+- **Phase C: Verify + Wrap** (lightest) — verify merge gate + AC, then `/wrap` to squash-merge, sync main, report `merged`. Do not duplicate `/wrap` logic; its session-sweep output is **advisory only — never block a merge on a sweep finding**.
 
-**Orchestration:** parent launches Phase A (parallel across PRs allowed); Phase A complete → cleanup per `phase-protocols.md` then Phase B; Phase B `merge_ready` → get merge authorization, then launch Phase C. Keep 3-4 active CR-polled PRs max; at 7+ CR reviews/hour expect Greptile fallback. **This ceiling counts only PRs you authored (`@me`)** — a collaborator's or bot's PRs never enter it or gate your own work (shared-budget contention is context, never a gate). The same 3-4 ceiling is the inline A→B→C pipeline cap for `/pm` and `/subagent` — queue issues beyond it (mechanics + slot semantics: `.claude/skills/subagent/SKILL.md` Step 7).
+**Orchestration:** parent launches Phase A (parallel across PRs allowed); Phase A complete → cleanup per `phase-protocols.md`, then Phase B; Phase B `merge_ready` → get merge authorization, then Phase C. Keep 3-4 active CR-polled PRs max; at 7+ CR reviews/hour expect Greptile fallback. **This ceiling counts only PRs you authored (`@me`)** — a collaborator's or bot's PRs never enter it or gate your own work (shared-budget contention is context, never a gate). The same ceiling caps the inline A→B→C pipeline for `/pm` and `/subagent` — queue issues beyond it (slot semantics: `.claude/skills/subagent/SKILL.md` Step 7).
 
 ## Subagent Review Protocol
 

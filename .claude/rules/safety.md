@@ -26,17 +26,17 @@
 
 ## Authorship — Automated PR Writes (issue #733)
 
-Every automated PR flow — sweeper, monitor, babysitter, fixer, merger — may **write only to PRs authored by the authenticated user** (`gh api user --jq .login`; discovery scopes to `--author "@me"`). A collaborator's or bot's (dependabot/renovate) PR is read-only context at most. This is the author-dimension analog of the invoking-repo scope (issue #687).
+Every automated PR flow — sweeper, monitor, babysitter, fixer, merger — may **write only to PRs authored by the authenticated user** (`gh api user --jq .login`; discovery scopes to `--author "@me"`). A collaborator's or bot's PR is read-only context at most. Author-dimension analog of the invoking-repo scope (issue #687).
 
-**"Touch" = any write:** merge, rebase, force-push, close, comment, trigger a review (`@coderabbitai`/`@cursor`/`@greptileai` — these spend the author's reviewer budgets and notify people), resolve a thread, or enroll in babysit/polling. All are blocked on a PR you did not author.
+**"Touch" = any write:** merge, rebase, force-push, close, comment, trigger a review (`@coderabbitai`/`@cursor`/`@greptileai` — these spend the author's reviewer budgets and notify people), resolve a thread, enroll in babysit/polling. All are blocked on a PR you did not author.
 
 **Fail closed:** when authorship cannot be determined (gh error, empty author), treat the PR as **not yours** and skip it with a visible note — never act on an unverified author.
 
-**Override:** the ONLY way an automated tool acts on someone else's PR is you naming that specific PR in chat — a per-PR, per-session authorization the agent applies, never inferred and never a default. When it does, the tool must state it is operating under an override.
+**Override:** the ONLY way an automated tool acts on someone else's PR is you naming that specific PR in chat — per-PR, per-session, never inferred and never a default. The tool must state it is operating under an override.
 
 **Read-only visibility is preserved:** status tables may still display collaborator PRs as context, clearly separated from your own actionable rows.
 
-**Enforcement.** `.claude/scripts/pr-authorship.sh <pr> [--repo owner/repo] [--json]` is the gate — **only exit 0 (mine) authorizes a write**; 1 = not yours (refuse, naming this guard), 3 = not found, 4 = undetermined (fail-closed → treat as not yours). The fail-safe also lives in the shared scripts so the guard holds even if a skill's prose degrades or context compacts: `polling-state-gate.sh --ensure-session` (enrolment) and `admin-merge.sh` (bypass merge) refuse non-author PRs by default; `merge-gate.sh` blocks a **confirmed** foreign author and emits an `authorship` field so read-only callers (e.g. `/status`) can display and separate collaborator PRs. All three accept `--allow-nonauthor`, which a skill passes only under an explicit user override.
+**Enforcement.** `.claude/scripts/pr-authorship.sh <pr>` is the gate — **only exit 0 (mine) authorizes a write**; 1 (not yours), 3 (not found), 4 (undetermined) all refuse, naming this guard. The same fail-safe is built into `polling-state-gate.sh --ensure-session` (enrolment) and `admin-merge.sh` (bypass merge), so it holds even when a skill's prose degrades or context compacts. `merge-gate.sh` blocks a **confirmed** foreign author and emits an `authorship` field, so read-only callers (e.g. `/status`) can still show collaborator PRs as clearly-marked non-actionable context — display is never write authorization. All three accept `--allow-nonauthor`, passed only under an explicit user override. Per-script detail: `.claude/reference/authorship-guard.md`.
 
 ## Subagent Warning (MANDATORY)
 
@@ -54,7 +54,7 @@ Confirm package names before npm/pip/gem/cargo/brew install. Full rules: .claude
 
 ## Capability Discovery — Try CLI Before Handoff
 
-Before handing a task to the user because it "can't" be done, verify against your actual tools — Bash (`gh`/`git`/`curl`/`gh api`), MCP tools, and custom skills — not inherited "agents can't" prose. Most "can't do X" claims that sound like `gh`/`git` territory are **false walls** — workflow runs, PR review, releases, comments, labels are usually one CLI command; the living catalog with exact commands is `.claude/reference/capability-discovery-examples.md` (extend it as new false walls are observed). An agent's own explicit prohibitions always win. **Real walls** (token-scope 403, branch protection, `.env`, this file's "Never" lists) get a structured handoff per the `/admin-merge` (#451) pattern: exact copy-paste command + one-line reason — never just a description.
+Before handing a task to the user because it "can't" be done, verify against your actual tools — Bash (`gh`/`git`/`curl`/`gh api`), MCP tools, custom skills — not inherited "agents can't" prose. Most `gh`/`git`-shaped "can't do X" claims are **false walls**: workflow runs, PR review, releases, comments, labels are usually one CLI command (catalog: `.claude/reference/capability-discovery-examples.md` — extend it as new false walls appear). An agent's own explicit prohibitions always win. **Real walls** (token-scope 403, branch protection, `.env`, this file's "Never" lists) get a structured handoff per the `/admin-merge` (#451) pattern: exact copy-paste command + one-line reason, never just a description.
 
 ```text
 MINDSET: Before handing off, enumerate your actual tools (gh/git/curl/gh api, MCP,
