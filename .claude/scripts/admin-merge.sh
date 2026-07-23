@@ -32,10 +32,13 @@
 #                      the clipboard (pbcopy), and echo a marker line in the new
 #                      terminal. Never auto-executes the command. Falls back to
 #                      --print behaviour on Linux/Windows with a clear message.
-#   --execute          USER-INVOKED ONLY. Run the toggle-merge-toggle dance with a
-#                      trap that re-enables enforce_admins on any failure, then
-#                      verify protection is restored and the PR merged. A clean-
-#                      BEHIND bypass (#631) is revalidated just before the dance.
+#   --execute          USER-INVOKED ONLY. Toggle shape: run the toggle-merge-toggle
+#                      dance with a trap that re-enables enforce_admins on any
+#                      failure, then verify protection is restored and the PR merged.
+#                      Plain shape (enforce_admins=false + strict=true + clean-BEHIND):
+#                      run a bare `gh pr merge --squash --admin` with no protection
+#                      changes. Both shapes revalidate the clean-BEHIND state (#631)
+#                      just before executing.
 #
 # Options:
 #   --repo-path <path>  Absolute path of the local clone to cd into (default:
@@ -52,7 +55,9 @@
 #   3 — PR not found / not open
 #   4 — gh / network / jq error
 #   5 — refused: repo is not solo-owned (would skip a real review)
-#   6 — refused: no enforce_admins protection block detected (nothing to bypass)
+#   6 — refused: enforce_admins is disabled and strict+clean-BEHIND bypass does
+#        not apply — no bypass path detected (inspect branch protection for the
+#        actual blocker)
 #   7 — execute-mode failure (merge failed; trap re-enabled protection)
 
 set -uo pipefail
@@ -335,12 +340,24 @@ if [[ -z "$PROTECTION_JSON" ]] || ! echo "$PROTECTION_JSON" | jq -e . >/dev/null
   exit 4
 fi
 ENFORCE_ADMINS=$(echo "$PROTECTION_JSON" | jq -r '.enforce_admins.enabled // false')
+STRICT=$(echo "$PROTECTION_JSON" | jq -r '.required_status_checks.strict // false')
+
+# Default bypass shape: the existing disable→merge→re-enable toggle chain.
+BYPASS_MODE=toggle
 
 if [[ "$ENFORCE_ADMINS" != "true" ]]; then
-  echo "REFUSED: enforce_admins is not enabled on $OWNER/$REPO@$BRANCH — no admin bypass needed." >&2
-  echo "If the merge is still blocked, the blocker is something else; inspect:" >&2
-  echo "  gh api repos/$OWNER/$REPO/branches/$BRANCH/protection" >&2
-  exit 6
+  # enforce_admins is off — still a legitimate admin bypass when the branch is
+  # clean-BEHIND and required_status_checks.strict blocks a normal merge.
+  # gh pr merge --squash --admin bypasses the strict up-to-date constraint
+  # without touching any protection settings.
+  if [[ "$STRICT" == "true" && "$CLEAN_BEHIND_OK" == "true" ]]; then
+    BYPASS_MODE=plain
+  else
+    echo "REFUSED: enforce_admins is not enabled on $OWNER/$REPO@$BRANCH — no admin bypass needed." >&2
+    echo "If the merge is still blocked, the blocker is something else; inspect:" >&2
+    echo "  gh api repos/$OWNER/$REPO/branches/$BRANCH/protection" >&2
+    exit 6
+  fi
 fi
 
 # Surface adjacent (non-enforce_admins) protection settings as informational notes.
@@ -352,28 +369,41 @@ EXTRA_NOTES=()
 
 # --------------------------------------------------------------------------
 # Build the bypass command (single source of truth for the command shape).
-# NOTE: the re-enable POST is sent with NO body. GitHub returns HTTP 422
+# Toggle shape: the re-enable POST is sent with NO body. GitHub returns HTTP 422
 # ("enabled is not a permitted key") if a body is supplied (verified on PR #535).
+# Plain shape: no protection calls at all — just gh pr merge --squash --admin.
 # --------------------------------------------------------------------------
 DELETE_CALL="gh api -X DELETE repos/$OWNER/$REPO/branches/$BRANCH/protection/enforce_admins"
 MERGE_CALL="gh pr merge $PR_NUMBER --squash --admin"
 REENABLE_CALL="gh api -X POST repos/$OWNER/$REPO/branches/$BRANCH/protection/enforce_admins"
 
-BYPASS_CMD=$(printf 'cd %q && \\\n%s && \\\n%s && \\\n%s' \
-  "$REPO_PATH" "$DELETE_CALL" "$MERGE_CALL" "$REENABLE_CALL")
+if [[ "$BYPASS_MODE" == "plain" ]]; then
+  # Plain shape: ordinary --admin merge, no protection toggles.
+  BYPASS_CMD=$(printf 'cd %q && \\\n%s' "$REPO_PATH" "$MERGE_CALL")
+else
+  # Toggle shape: disable enforce_admins → merge → re-enable.
+  BYPASS_CMD=$(printf 'cd %q && \\\n%s && \\\n%s && \\\n%s' \
+    "$REPO_PATH" "$DELETE_CALL" "$MERGE_CALL" "$REENABLE_CALL")
+fi
 
 print_warning_block() {
   echo "# ───────────────────────────────────────────────────────────────────"
   echo "# /admin-merge bypass for PR #$PR_NUMBER ($OWNER_REPO @ $BRANCH)"
-  echo "# Claude CANNOT run this — modifying branch protection is prohibited by"
-  echo "# Claude's safety rules. You (the repo admin) must run it yourself."
-  echo "# It: (1) disables enforce_admins, (2) squash-merges with --admin,"
-  echo "#     (3) re-enables enforce_admins (bare POST, no body)."
-  echo "# WARNING: this is chained with '&&'. If the merge fails, the final"
-  echo "# re-enable is skipped and enforce_admins stays OFF until you re-run:"
-  echo "#   $REENABLE_CALL"
-  echo "# (Use 'bash .claude/scripts/admin-merge.sh $PR_NUMBER --execute' instead"
-  echo "#  to run a trap-protected version that always re-enables protection.)"
+  if [[ "$BYPASS_MODE" == "plain" ]]; then
+    echo "# Ordinary --admin squash-merge: the PR is clean-BEHIND and"
+    echo "# required_status_checks.strict prevents a normal merge — --admin"
+    echo "# bypasses that constraint. No protection settings are modified."
+  else
+    echo "# Claude CANNOT run this — modifying branch protection is prohibited by"
+    echo "# Claude's safety rules. You (the repo admin) must run it yourself."
+    echo "# It: (1) disables enforce_admins, (2) squash-merges with --admin,"
+    echo "#     (3) re-enables enforce_admins (bare POST, no body)."
+    echo "# WARNING: this is chained with '&&'. If the merge fails, the final"
+    echo "# re-enable is skipped and enforce_admins stays OFF until you re-run:"
+    echo "#   $REENABLE_CALL"
+    echo "# (Use 'bash .claude/scripts/admin-merge.sh $PR_NUMBER --execute' instead"
+    echo "#  to run a trap-protected version that always re-enables protection.)"
+  fi
   echo "# $SOLO_NOTE"
   [[ -n "$REPO_PATH_NOTE" ]] && echo "# $REPO_PATH_NOTE"
   for n in "${EXTRA_NOTES[@]:-}"; do [[ -n "$n" ]] && echo "# note: $n"; done
@@ -473,6 +503,29 @@ if [[ "$MODE" == "execute" ]]; then
     fi
   fi
 
+  # Plain shape (no protection toggles): just run the admin merge directly.
+  if [[ "$BYPASS_MODE" == "plain" ]]; then
+    print_warning_block
+    echo "[admin-merge] squash-merging PR #$PR_NUMBER with --admin (strict up-to-date + clean-BEHIND) ..."
+    if ! $MERGE_CALL; then
+      echo "ERROR: 'gh pr merge --admin' failed." >&2
+      exit 7
+    fi
+    FINAL_MERGED="unknown"
+    for _attempt in 1 2 3; do
+      FINAL_MERGED=$(gh pr view "$PR_NUMBER" --json state --jq '(.state == "MERGED")' 2>/dev/null || echo "unknown")
+      [[ "$FINAL_MERGED" == "true" ]] && break
+      (( _attempt < 3 )) && sleep 2
+    done
+    echo "[admin-merge] done: PR merged=$FINAL_MERGED"
+    if [[ "$FINAL_MERGED" != "true" ]]; then
+      echo "WARNING: PR does not report state=MERGED after retrying — verify manually: gh pr view $PR_NUMBER --json state,mergedAt" >&2
+      exit 7
+    fi
+    exit 0
+  fi
+
+  # Toggle shape (enforce_admins=true): disable → merge → re-enable.
   ENFORCE_DISABLED=0
   ENFORCE_REENABLED=0
 

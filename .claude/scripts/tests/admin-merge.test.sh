@@ -177,6 +177,36 @@ FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=1 \
 expect_rc 1 "non-clean BEHIND stays a hard blocker (exit 1)"
 grep_absent "gh pr merge 1 --squash --admin" "no admin-merge command printed for non-clean BEHIND"
 
+# 13. Plain shape: enforce_admins=false + strict=true + clean-BEHIND → exit 0,
+#     prints plain --admin merge command exactly once, no protection toggle calls.
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 \
+  FAKE_GATE_MISSING='["branch is BEHIND base — rebase + force-push before merging"]' \
+  FAKE_PROTECTION='{"enforce_admins":{"enabled":false},"required_status_checks":{"strict":true}}' \
+  run 1 --print --repo-path "$CLONE" --branch main
+expect_rc 0 "plain shape: enforce_admins=false + strict=true + clean-BEHIND exits 0"
+grep_ok "gh pr merge 1 --squash --admin" "plain shape: plain --admin merge command printed"
+grep_absent "protection/enforce_admins" "plain shape: no protection toggle calls in output"
+PLAIN_COUNT=$(printf '%s\n' "$OUT" | grep -c "gh pr merge 1 --squash --admin" 2>/dev/null || echo 0)
+if [[ "$PLAIN_COUNT" -eq 1 ]]; then ok "plain shape: merge command appears exactly once"; else bad "plain shape: merge command should appear exactly once (found $PLAIN_COUNT: $OUT)"; fi
+
+# 14. Gate-not-met (non-BEHIND hard blocker) with enforce_admins=false → exit 1;
+#     gate short-circuits before the protection check, no bypass or protection call printed.
+FAKE_GATE_EXIT=1 \
+  FAKE_GATE_MISSING='["1 unresolved review thread(s) — resolve via GraphQL before merge"]' \
+  FAKE_PROTECTION='{"enforce_admins":{"enabled":false}}' \
+  run 1 --print --repo-path "$CLONE" --branch main
+expect_rc 1 "gate-not-met (non-BEHIND) with enforce_admins=false still refuses (exit 1)"
+grep_absent "gh pr merge" "no merge command when gate not met with enforce_admins=false"
+grep_absent "protection/enforce_admins" "no protection API call when gate not met with enforce_admins=false"
+
+# 15. Regression: enforce_admins=true path unchanged — toggle chain still printed.
+FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' \
+  FAKE_PROTECTION='{"enforce_admins":{"enabled":true}}' \
+  run 1 --print --repo-path "$CLONE" --branch main
+expect_rc 0 "enforce_admins=true toggle path unchanged (regression, exit 0)"
+grep_ok "gh api -X DELETE repos/solo/repo/branches/main/protection/enforce_admins" "enforce_admins=true: DELETE toggle call still present"
+grep_ok "gh api -X POST repos/solo/repo/branches/main/protection/enforce_admins" "enforce_admins=true: POST re-enable call still present"
+
 echo "----------------------------------------"
 echo "admin-merge.test.sh: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
