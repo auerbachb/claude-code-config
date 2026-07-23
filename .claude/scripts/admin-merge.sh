@@ -46,11 +46,19 @@
 #   --branch <name>     Protected branch (default: the PR's base branch).
 #   --force-solo        Skip the solo-owner heuristic (treat repo as solo-owned).
 #   --reviewer cr|bugbot|greptile   Pass through to merge-gate.sh.
+#   --allow-nonauthor   Bypass the issue #733 authorship guard (see below). Pass
+#                       ONLY under an explicit per-PR user override — the default
+#                       refuses a bypass merge on a PR you did not author.
 #   -h, --help          Print this header.
+#
+# Authorship guard (issue #733): before any pre-flight, this refuses when the
+# authenticated user did not author the PR (delegated to pr-authorship.sh;
+# fail-closed). A bypass merge is a write, so it is restricted to your own PRs.
 #
 # Exit codes:
 #   0 — bypass command printed (print/launch) OR dance completed (execute)
-#   1 — refused: PR not merge-ready (hard blockers / human changes requested)
+#   1 — refused: PR not merge-ready (hard blockers / human changes requested),
+#        OR refused by the issue #733 authorship guard (non-author PR, no override)
 #   2 — usage error
 #   3 — PR not found / not open
 #   4 — gh / network / jq error
@@ -79,6 +87,10 @@ REPO_PATH_OVERRIDE=""
 BRANCH_OVERRIDE=""
 FORCE_SOLO=false
 REVIEWER_OVERRIDE=""
+# Authorship guard (issue #733): a bypass merge is the most consequential PR
+# write. Refuse non-author PRs unless the caller passes --allow-nonauthor under
+# an explicit per-PR user override.
+ALLOW_NONAUTHOR=false
 
 set_mode() {
   if [[ -n "$MODE_EXPLICIT" && "$MODE_EXPLICIT" != "$1" ]]; then
@@ -104,6 +116,7 @@ while [[ $# -gt 0 ]]; do
       [[ -z "$BRANCH_OVERRIDE" ]] && { echo "ERROR: --branch requires a value" >&2; exit 2; }
       shift 2 ;;
     --force-solo) FORCE_SOLO=true; shift ;;
+    --allow-nonauthor) ALLOW_NONAUTHOR=true; shift ;;
     --reviewer)
       REVIEWER_OVERRIDE="${2:-}"
       case "$REVIEWER_OVERRIDE" in
@@ -158,6 +171,32 @@ fi
 if [[ "$PR_STATE" != "OPEN" ]]; then
   echo "ERROR: PR #$PR_NUMBER is $PR_STATE — not open." >&2
   exit 3
+fi
+
+# --------------------------------------------------------------------------
+# Authorship guard (issue #733) — refuse a bypass merge on a PR the
+# authenticated user did not author. Delegated to pr-authorship.sh (single
+# source of truth); fail-closed on any non-zero (not_mine / unknown / not_found).
+# --allow-nonauthor bypasses ONLY under an explicit per-PR user override.
+# --------------------------------------------------------------------------
+if [[ "$ALLOW_NONAUTHOR" != true ]]; then
+  PR_AUTHORSHIP=""
+  for candidate in \
+    "$SCRIPT_DIR/pr-authorship.sh" \
+    "$HOME/.claude/skills-worktree/.claude/scripts/pr-authorship.sh" \
+    "$HOME/.claude/scripts/pr-authorship.sh"; do
+    if [[ -x "$candidate" ]]; then PR_AUTHORSHIP="$candidate"; break; fi
+  done
+  if [[ -z "$PR_AUTHORSHIP" ]]; then
+    echo "REFUSED: pr-authorship.sh not found — cannot verify PR authorship (issue #733 guard); refusing fail-closed." >&2
+    exit 1
+  fi
+  AUTH_OUT="$("$PR_AUTHORSHIP" "$PR_NUMBER" 2>&1)"; AUTH_RC=$?
+  if [[ "$AUTH_RC" -ne 0 ]]; then
+    echo "REFUSED: admin-merge will not act on PR #$PR_NUMBER — authorship guard (.claude/rules/safety.md): ${AUTH_OUT}" >&2
+    echo "Pass --allow-nonauthor ONLY under an explicit per-PR user override." >&2
+    exit 1
+  fi
 fi
 
 BRANCH="${BRANCH_OVERRIDE:-$BASE_REF}"

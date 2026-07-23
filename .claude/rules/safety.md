@@ -1,8 +1,8 @@
 # Safety — Destructive Command & Secret Prohibitions
 
-> **Always:** Stay in your worktree. Treat `.env` files and any unencrypted secret as untouchable. Pin and inspect installers. Warn subagents of these rules. Treat Anthropic's in-app UI as the sole authority on quota and spend.
+> **Always:** Stay in your worktree. Treat `.env` files and any unencrypted secret as untouchable. Pin and inspect installers. Warn subagents of these rules. Treat Anthropic's in-app UI as the sole authority on quota and spend. Restrict automated PR writes to PRs you authored.
 > **Ask first:** Never — these are absolute prohibitions with no exceptions.
-> **Never:** Delete `.env` files. Run `git clean`. Run destructive commands in the root repo. Commit secrets. Pipe untrusted URLs into a shell. Pass raw credentials to subagents. Gate agent decisions on locally-estimated quota or spend.
+> **Never:** Delete `.env` files. Run `git clean`. Run destructive commands in the root repo. Commit secrets. Pipe untrusted URLs into a shell. Pass raw credentials to subagents. Gate agent decisions on locally-estimated quota or spend. Have an automated tool write to (merge, rebase, comment, trigger a review, resolve threads, close, enroll in polling) a PR you did not author, absent an explicit per-PR chat override.
 
 ## Destructive Commands
 
@@ -23,6 +23,20 @@
 1. **NEVER `curl ... | sh` (or `bash`/`zsh`/`python`) untrusted URLs.** Download, inspect, then run. Vendor-published installers referenced by these rule files (e.g., `cli.coderabbit.ai/install.sh`) are pre-vetted exceptions.
 2. **NEVER install packages without confirming the name.** `npm`/`pip`/`gem`/`cargo`/`brew install` — typosquatted packages run arbitrary code. Match the name against the project's existing deps or official docs first.
 3. **NEVER disable TLS verification** (`curl -k`, `--no-check-certificate`, `NODE_TLS_REJECT_UNAUTHORIZED=0`) to work around errors. Investigate the cert; do not bypass it.
+
+## Authorship — Automated PR Writes (issue #733)
+
+Every automated PR flow — sweeper, monitor, babysitter, fixer, merger — may **write only to PRs authored by the authenticated user** (`gh api user --jq .login`; discovery scopes to `--author "@me"`). A collaborator's or bot's (dependabot/renovate) PR is read-only context at most. This is the author-dimension analog of the invoking-repo scope (issue #687).
+
+**"Touch" = any write:** merge, rebase, force-push, close, comment, trigger a review (`@coderabbitai`/`@cursor`/`@greptileai` — these spend the author's reviewer budgets and notify people), resolve a thread, or enroll in babysit/polling. All are blocked on a PR you did not author.
+
+**Fail closed:** when authorship cannot be determined (gh error, empty author), treat the PR as **not yours** and skip it with a visible note — never act on an unverified author.
+
+**Override:** the ONLY way an automated tool acts on someone else's PR is you naming that specific PR in chat — a per-PR, per-session authorization the agent applies, never inferred and never a default. When it does, the tool must state it is operating under an override.
+
+**Read-only visibility is preserved:** status tables may still display collaborator PRs as context, clearly separated from your own actionable rows.
+
+**Enforcement.** `.claude/scripts/pr-authorship.sh <pr> [--repo owner/repo] [--json]` is the gate — **only exit 0 (mine) authorizes a write**; 1 = not yours (refuse, naming this guard), 3 = not found, 4 = undetermined (fail-closed → treat as not yours). The fail-safe also lives in the shared scripts so the guard holds even if a skill's prose degrades or context compacts: `polling-state-gate.sh --ensure-session` (enrolment) and `admin-merge.sh` (bypass merge) refuse non-author PRs by default; `merge-gate.sh` blocks a **confirmed** foreign author and emits an `authorship` field so read-only callers (e.g. `/status`) can display and separate collaborator PRs. All three accept `--allow-nonauthor`, which a skill passes only under an explicit user override.
 
 ## Subagent Warning (MANDATORY)
 

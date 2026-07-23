@@ -149,6 +149,17 @@ set -uo pipefail
 case "${1:-}" in
   pr)   echo '{"headRefOid":"cafebabe","state":"OPEN"}' ;;
   repo) echo 'org/a' ;;
+  api)
+    # Authorship guard (issue #733): --ensure-session now calls pr-authorship.sh,
+    # which reads `gh api user` (viewer) + `gh api repos/.../pulls/N` (author).
+    # Return a matching author so the PR reads as the viewer's own → gate passes.
+    shift
+    case "${1:-}" in
+      user)            echo 'testuser' ;;
+      repos/*/pulls/*) echo '{"user":{"login":"testuser","type":"User"}}' ;;
+      *)               exit 1 ;;
+    esac
+    ;;
   *)    exit 1 ;;
 esac
 STUB
@@ -233,6 +244,15 @@ set -uo pipefail
 case "${1:-}" in
   pr)   echo '{"headRefOid":"c0ffee","state":"OPEN"}' ;;
   repo) echo 'AuerbachB/Skingod' ;;
+  api)
+    # Authorship guard (issue #733): supply matching viewer + PR author.
+    shift
+    case "${1:-}" in
+      user)            echo 'testuser' ;;
+      repos/*/pulls/*) echo '{"user":{"login":"testuser","type":"User"}}' ;;
+      *)               exit 1 ;;
+    esac
+    ;;
   *)    exit 1 ;;
 esac
 STUB
@@ -250,6 +270,43 @@ check_eq "state stored under lowercase key after ensure-session" \
 # --verify-state from the same mixed-case-remote checkout must pass.
 out3="$(cd "$REPO_MIXED" && PATH="$STUB_BIN2:$PATH" "$SCRIPT" "$PR_NUM" --verify-state 2>&1)"; rc3=$?
 check_eq "--verify-state passes for mixed-case-remote checkout (no false cross-repo refusal)" "0" "$rc3"
+
+# ---- 11. authorship guard (issue #733): --ensure-session refuses a non-author PR ----
+# gh api user (viewer) and the PR author disagree, so pr-authorship.sh returns
+# not_mine and enrolment is refused. Enrolling a PR in polling is a "touch".
+STUB_BIN3="$TMP/bin3"
+mkdir -p "$STUB_BIN3"
+cat > "$STUB_BIN3/gh" <<'STUB'
+#!/usr/bin/env bash
+set -uo pipefail
+case "${1:-}" in
+  pr)   echo '{"headRefOid":"feed1234","state":"OPEN"}' ;;
+  repo) echo 'org/a' ;;
+  api)
+    shift
+    case "${1:-}" in
+      user)            echo 'testuser' ;;                                 # viewer
+      repos/*/pulls/*) echo '{"user":{"login":"collab","type":"User"}}' ;; # someone else
+      *)               exit 1 ;;
+    esac
+    ;;
+  *)    exit 1 ;;
+esac
+STUB
+chmod +x "$STUB_BIN3/gh"
+
+rm -f "$STATE" "$HANDOFF"
+out="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" "$SCRIPT" "$PR_NUM" --ensure-session 2>&1)"; rc=$?
+check_eq "--ensure-session refuses a collaborator-authored PR" "4" "$rc"
+check_contains "refusal names the authorship guard" "authorship guard" "$out"
+check_eq "no session-state written for the refused PR" "" \
+  "$(jq -r --arg pr "$PR_NUM" '.repos["org/a"].prs[$pr] // ""' "$STATE" 2>/dev/null || echo "")"
+
+# ---- 12. --allow-nonauthor bypasses the guard (explicit user override) ------
+out="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" "$SCRIPT" "$PR_NUM" --ensure-session --allow-nonauthor 2>&1)"; rc=$?
+check_eq "--allow-nonauthor lets --ensure-session enrol a non-author PR" "0" "$rc"
+check_eq "override records per-PR owner_repo" "org/a" \
+  "$(jq -r --arg pr "$PR_NUM" '.repos["org/a"].prs[$pr].owner_repo // ""' "$STATE")"
 
 echo ""
 echo "polling-state-gate.test.sh: $PASS passed, $FAIL failed"

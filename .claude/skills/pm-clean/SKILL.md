@@ -33,6 +33,8 @@ Record two values for the rest of the run: `DAYS` (issue-inactivity threshold) a
 
 ## Step 1: Issue staleness scan
 
+> **Authorship guard (issue #733, `safety.md`).** `/pm-clean` performs **no PR writes** — it closes issues (after confirmation) and cleans local worktrees/branches; it never merges, comments on, or closes a PR. Any merged-PR data it reads (e.g. "solved by merged PR") is **read-only context**, and may legitimately reference a collaborator's PR. Workspace cleanup already protects **every** open PR's branch (yours and collaborators') from deletion via `stale-cleanup.sh`, so no author filter is applied there by design.
+
 ### Step 1.1: Count the open backlog
 
 ```bash

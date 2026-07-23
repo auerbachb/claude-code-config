@@ -40,6 +40,17 @@ exit "${FAKE_CBC_EXIT:-1}"
 EOF
 chmod +x "$SCRIPTS/clean-behind-check.sh"
 
+# --- Fake pr-authorship.sh: exit code IS the authorship verdict (issue #733) --
+# 0 = mine (default → guard passes), non-zero = not_mine/unknown → admin-merge
+# refuses. Faked here so the admin-merge authorship guard is exercised without a
+# real gh author lookup (pr-authorship.sh has its own dedicated test).
+cat > "$SCRIPTS/pr-authorship.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "${FAKE_AUTHORSHIP_MSG:-mine}"
+exit "${FAKE_AUTHORSHIP_EXIT:-0}"
+EOF
+chmod +x "$SCRIPTS/pr-authorship.sh"
+
 # --- Fake gh (safe defaults: no brace-heavy ${VAR:-...} expansions) ----------
 cat > "$BIN/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -206,6 +217,22 @@ FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' \
 expect_rc 0 "enforce_admins=true toggle path unchanged (regression, exit 0)"
 grep_ok "gh api -X DELETE repos/solo/repo/branches/main/protection/enforce_admins" "enforce_admins=true: DELETE toggle call still present"
 grep_ok "gh api -X POST repos/solo/repo/branches/main/protection/enforce_admins" "enforce_admins=true: POST re-enable call still present"
+
+# 16. Authorship guard (issue #733): non-author PR → refuse, exit 1, no bypass.
+#     The refusal fires before the merge-readiness pre-flight even with a clean gate.
+FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' FAKE_AUTHORSHIP_EXIT=1 FAKE_AUTHORSHIP_MSG='not_mine' \
+  run 1 --print --repo-path "$CLONE" --branch main
+expect_rc 1 "authorship guard refuses a non-author PR (exit 1)"
+grep_ok "authorship guard" "refusal names the authorship guard"
+grep_absent "gh pr merge" "no merge command printed for a non-author PR"
+grep_absent "protection/enforce_admins" "no protection API call for a non-author PR"
+
+# 17. --allow-nonauthor overrides the authorship guard (explicit user override).
+FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' FAKE_AUTHORSHIP_EXIT=1 \
+  FAKE_PROTECTION='{"enforce_admins":{"enabled":true}}' \
+  run 1 --print --allow-nonauthor --repo-path "$CLONE" --branch main
+expect_rc 0 "--allow-nonauthor overrides the authorship guard (exit 0)"
+grep_ok "gh pr merge 1 --squash --admin" "override lets the bypass command print"
 
 echo "----------------------------------------"
 echo "admin-merge.test.sh: $PASS passed, $FAIL failed"

@@ -34,6 +34,13 @@ Determine the {owner}/{repo} from git remote:
 gh repo view --json owner,name --jq '"\(.owner.login)/\(.name)"'
 ```
 
+> **Authorship guard (issue #733, `safety.md`).** `/go-on` resumes a write workflow (push, review triggers, thread resolution, merge). Confirm you authored the PR before resuming any write step:
+> ```bash
+> PR_NUM=$(gh pr view --json number --jq .number 2>/dev/null)
+> [ -n "$PR_NUM" ] && .claude/scripts/pr-authorship.sh "$PR_NUM"   # exit 0 = yours
+> ```
+> Not yours (exit 1) or undetermined (exit 4) → `[BLOCKED]`: "PR #$PR_NUM is not yours — the authorship guard blocks automated writes; name it explicitly to override." Proceed only under an explicit per-PR user override (say you are operating under it). Read-only status inspection is fine.
+
 ---
 
 ## Step 1: Check for uncommitted changes

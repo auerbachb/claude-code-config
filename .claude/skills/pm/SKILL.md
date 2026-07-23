@@ -167,6 +167,8 @@ if [ -n "$GH_USER" ]; then
 fi
 ```
 
+> **Authorship guard (issue #733, `safety.md`).** `/pm` ranks and suggests, but any PR work it **dispatches** (monitoring, `/fixpr`, `/wrap`, `/subagent` against an existing PR) is a write and is scoped to PRs **you** authored. The unscoped `gh pr list` above is for context only — annotate each PR "yours" vs "others" (as this step already does) and treat collaborator PRs as **read-only** (AC6): never dispatch a fix/merge/trigger against one. The per-PR helpers (`merge-gate.sh`, `polling-state-gate.sh --ensure-session`, `pr-authorship.sh`) enforce this as a fail-safe. Override only when the user names a specific PR in chat.
+
 **Truncation check:** If the returned issue count equals 500, warn: "Showing 500 issues — repo may have more. Results may be incomplete."
 
 - PRs that have merged since the handoff: mark as complete, remove from assignments.

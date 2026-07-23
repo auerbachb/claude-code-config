@@ -47,9 +47,14 @@ ARGS="\$*"
 case "\$ARGS" in
   "repo view --json nameWithOwner --jq .nameWithOwner")
     echo "solo/repo"; exit 0 ;;
+  "api user --jq .login")
+    # Authorship guard (issue #733): viewer login; matches the PR author below
+    # so authorship == "mine" and the merge is not blocked.
+    echo "solouser"; exit 0 ;;
   *"pr view "*headRefOid*)
     jq -cn '{number:1, state:"OPEN", headRefOid:"$HEAD_SHA", baseRefName:"main",
-             mergeStateStatus:"CLEAN", mergeable:"MERGEABLE", reviewDecision:"APPROVED"}'
+             mergeStateStatus:"CLEAN", mergeable:"MERGEABLE", reviewDecision:"APPROVED",
+             author:{login:"solouser", type:"User"}}'
     exit 0 ;;
   *check-runs*)
     printf '%s' "\$FAKE_CHECK_RUNS"; exit 0 ;;

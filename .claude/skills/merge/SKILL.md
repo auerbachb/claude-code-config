@@ -24,6 +24,12 @@ If no PR exists on the current branch, stop and tell the user: "No PR found for 
 
 If the PR is already merged or closed, stop and tell the user.
 
+> **Authorship guard (issue #733, `safety.md`).** A merge is a write, so `/merge` acts only on PRs **you** authored. Confirm before merging:
+> ```bash
+> .claude/scripts/pr-authorship.sh "$PR_NUM"   # exit 0 = yours
+> ```
+> If it is not yours (exit 1) or undetermined (exit 4), **refuse** with one line — "PR #$PR_NUM is authored by someone else — the authorship guard blocks automated merges; name this PR explicitly to override" — unless the user named this specific PR in chat this session (per-PR override; say you are operating under it, and pass `--allow-nonauthor` to `merge-gate.sh`). `merge-gate.sh` also blocks a confirmed foreign author as a fail-safe.
+
 **Worktree check:** If running inside a git worktree where the feature branch is checked out, `git branch -D` will fail even after checking out away — git refuses to delete a branch checked out in any worktree. Detect this and abort early:
 
 ```bash

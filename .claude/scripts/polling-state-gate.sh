@@ -33,7 +33,7 @@
 # A genuine cross-repo mismatch is still refused, naming the PR and both repos.
 #
 # Usage:
-#   polling-state-gate.sh <pr_number> --ensure-session [--root-repo <path>]
+#   polling-state-gate.sh <pr_number> --ensure-session [--root-repo <path>] [--allow-nonauthor]
 #   polling-state-gate.sh <pr_number> [--root-repo <path>]
 #   polling-state-gate.sh <pr_number> --verify-state [--root-repo <path>]
 #
@@ -42,6 +42,11 @@
 #                      create handoff if missing, record per-PR repo scoping
 #                      (owner_repo + root_repo). Exits 0 on success.
 #                      Does not require the merge gate to be met.
+#                      Authorship guard (issue #733): refuses to enrol a PR the
+#                      authenticated user did not author (delegated to
+#                      pr-authorship.sh; fail-closed). Enrolling a PR in polling is
+#                      a write. Bypass with --allow-nonauthor ONLY under an explicit
+#                      per-PR user override.
 #   --verify-state     Offline recovery check: confirm handoff + session-state and
 #                      root_repo consistency (no gh, no merge-gate). Exit 0 if OK.
 #   (default)         Validate handoff + session-state, cd to resolved root_repo, run
@@ -72,12 +77,17 @@ unset _NORMALIZER_LIB
 STATE_HELPER="${SCRIPT_DIR}/session-state.sh"
 HANDOFF_HELPER="${SCRIPT_DIR}/handoff-state.sh"
 MERGE_GATE="${SCRIPT_DIR}/merge-gate.sh"
+PR_AUTHORSHIP="${SCRIPT_DIR}/pr-authorship.sh"
 STATE_FILE="${HOME}/.claude/session-state.json"
 HANDOFF_DIR="${HOME}/.claude/handoffs"
 
 PR_NUMBER=""
 MODE="cycle"
 ROOT_REPO_ARG=""
+# Authorship guard (issue #733): enrolling a PR in polling is a "touch", so
+# --ensure-session refuses PRs the authenticated user did not author. A skill
+# passes --allow-nonauthor only under an explicit per-PR user override.
+ALLOW_NONAUTHOR=0
 
 usage() {
   sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
@@ -95,6 +105,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --verify-state)
       MODE="verify"
+      shift
+      ;;
+    --allow-nonauthor)
+      ALLOW_NONAUTHOR=1
       shift
       ;;
     --root-repo)
@@ -444,6 +458,20 @@ ensure_session() {
   if [[ -z "$head_sha" ]]; then
     echo "polling-state-gate.sh: could not read head SHA" >&2
     exit 4
+  fi
+
+  # Authorship guard (issue #733). Enrolling a PR in polling is a write; only the
+  # authenticated user's own PRs may be enrolled. Delegated to pr-authorship.sh
+  # (single source of truth) so this fail-safe agrees with the skill-layer gate.
+  # Fail-closed: any non-zero (not_mine / unknown / not_found) refuses. Bypassed
+  # only when the caller passed --allow-nonauthor under an explicit user override.
+  if [[ "$ALLOW_NONAUTHOR" -eq 0 && -x "$PR_AUTHORSHIP" ]]; then
+    local a_out a_rc=0
+    a_out="$(cd "$canon" && "$PR_AUTHORSHIP" "$PR_NUMBER" 2>&1)" || a_rc=$?
+    if [[ "$a_rc" -ne 0 ]]; then
+      echo "polling-state-gate.sh: refusing to enroll PR #$PR_NUMBER in polling — authorship guard (.claude/rules/safety.md): ${a_out}. Pass --allow-nonauthor only under an explicit per-PR user override." >&2
+      exit 4
+    fi
   fi
 
   owner_repo="$(cd "$canon" && gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)"
