@@ -145,28 +145,26 @@ if [[ ${#DISMISS_IDS[@]} -eq 0 ]]; then
 fi
 
 if [[ -n "$HANDOFF_FILE" && ${#DISMISSED_IDS[@]} -gt 0 ]]; then
-  ids_json=$(printf '%s\n' "${DISMISSED_IDS[@]}" | jq -R . | jq -cs '.')
   if [[ -e "$HANDOFF_FILE" ]]; then
     if ! jq -e . "$HANDOFF_FILE" >/dev/null 2>&1; then
       echo "[DISMISS-STALE] ERROR: handoff file is not valid JSON: $HANDOFF_FILE (PR #$PR_NUMBER, HEAD $HEAD_SHA)" >&2
       exit 4
     fi
-    tmp=$(mktemp)
-    if jq --argjson new_ids "$ids_json" '
-      .stale_bot_reviews_dismissed = ((.stale_bot_reviews_dismissed // []) + $new_ids | unique)
-    ' "$HANDOFF_FILE" >"$tmp"; then
-      if mv "$tmp" "$HANDOFF_FILE"; then
-        echo "[DISMISS-STALE] appended review IDs to handoff file: $HANDOFF_FILE"
-      else
-        rm -f "$tmp"
-        echo "[DISMISS-STALE] ERROR: failed to write handoff file: $HANDOFF_FILE" >&2
+    # Route through handoff-state.sh --append so the whole RMW cycle is serialized
+    # under the shared state-lock.sh advisory lock (issue #682 — mirrors #639 fix on
+    # session-state.json). The old code used bare mktemp (cross-filesystem temp) with
+    # no lock around the read-modify-write, allowing concurrent orchestrators to
+    # silently lose each other's dismissed-review-ID appends.
+    _ds_script_dir="$(cd "$(dirname "$0")" && pwd)"
+    _ds_handoff_helper="${_ds_script_dir}/handoff-state.sh"
+    for id in "${DISMISSED_IDS[@]}"; do
+      id_json="$(jq -n --arg x "$id" '$x')"
+      if ! "$_ds_handoff_helper" --append "$PR_NUMBER" "stale_bot_reviews_dismissed" "$id_json"; then
+        echo "[DISMISS-STALE] ERROR: failed to update handoff file for review_id=$id" >&2
         exit 4
       fi
-    else
-      rm -f "$tmp"
-      echo "[DISMISS-STALE] ERROR: failed to merge handoff JSON: $HANDOFF_FILE" >&2
-      exit 4
-    fi
+    done
+    echo "[DISMISS-STALE] appended review IDs to handoff file: $HANDOFF_FILE"
   else
     echo "[DISMISS-STALE] WARN: handoff file missing; skipping append (create full handoff first): $HANDOFF_FILE" >&2
   fi

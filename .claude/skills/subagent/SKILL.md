@@ -246,27 +246,32 @@ isn't a fuzzy match. Full rules: .claude/rules/skill-first.md.
 7. Create the PR via `gh pr create` with:
    - `Closes #{NUMBER}` in the body
    - A **Test plan** section with acceptance criteria checkboxes from the issue
-8. Write the handoff file:
+8. Write the handoff file via `handoff-state.sh --create` so the write is serialized under
+   the shared state-lock.sh advisory lock (issue #682). Never write inline with
+   `jq … > tmp && mv tmp` — that bypasses the lock.
    ```bash
-   mkdir -p ~/.claude/handoffs/
-   ```
-   Then write `~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json` with:
-   ```json
-   {
-     "schema_version": "1.0",
-     "pr_number": {PR_NUMBER},
-     "head_sha": "{HEAD_SHA}",
-     "reviewer": "cr",
-     "phase_completed": "A",
-     "created_at": "{ISO 8601 now}",
-     "findings_fixed": [],
-     "findings_dismissed": [],
-     "threads_replied": [],
-     "threads_resolved": [],
-     "files_changed": ["{list of files you changed}"],
-     "push_timestamp": "{ISO 8601 now}",
-     "notes": "{brief summary of what was done}"
-   }
+   # Resolve handoff-state.sh:
+   HANDOFF_STATE_SH=""
+   for _c in \
+       "$HOME/.claude/skills-worktree/.claude/scripts/handoff-state.sh" \
+       "$HOME/.claude/scripts/handoff-state.sh" \
+       ".claude/scripts/handoff-state.sh"; do
+     [[ -x "$_c" ]] && { HANDOFF_STATE_SH="$_c"; break; }
+   done
+   [[ -z "$HANDOFF_STATE_SH" ]] && { echo "ERROR: handoff-state.sh not found" >&2; exit 5; }
+
+   NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+   HANDOFF_JSON="$(jq -n \
+     --argjson pr "{PR_NUMBER}" \
+     --arg sha "{HEAD_SHA}" \
+     --arg now "$NOW" \
+     --argjson files '["{list of files you changed}"]' \
+     --arg notes "{brief summary of what was done}" \
+     '{schema_version:"1.0",pr_number:$pr,head_sha:$sha,reviewer:"cr",
+       phase_completed:"A",created_at:$now,findings_fixed:[],
+       findings_dismissed:[],threads_replied:[],threads_resolved:[],
+       files_changed:$files,push_timestamp:$now,notes:$notes}')"
+   "$HANDOFF_STATE_SH" --create "{PR_NUMBER}" "$HANDOFF_JSON"
    ```
 9. Print the Structured Exit Report as your FINAL output:
    ```
@@ -490,7 +495,7 @@ When a Phase C subagent returns:
 
 1. **Parse exit report.**
 2. **Branch on OUTCOME:**
-   - `merged` -> verify GitHub shows the PR merged, then delete the handoff file.
+   - `merged` -> verify GitHub shows the PR merged, then delete the handoff file via `handoff-state.sh --delete {PR_NUMBER}` (serialized under the shared lock — never `rm -f` the file directly).
    - `blocked` -> report blocker details to user. Do NOT merge.
 3. **Update `session-state.json`** — mark PR as Phase C complete.
 4. **Report to user** with timestamp.

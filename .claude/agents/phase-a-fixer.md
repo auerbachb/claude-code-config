@@ -115,32 +115,53 @@ The script defaults to `--authors coderabbitai,cursor,greptile-apps`. If a threa
 
 ### Step 6: Write Handoff File
 
-Create `~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json`:
+Write `~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json` via `handoff-state.sh --create` so the
+write is serialized under the shared state-lock.sh advisory lock (issue #682).
+Never write the file inline with `jq … > tmp && mv tmp` — that bypasses the lock.
 
 ```bash
-mkdir -p ~/.claude/handoffs
-```
+# Resolve handoff-state.sh — try standard locations in order:
+HANDOFF_STATE_SH=""
+for _candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/handoff-state.sh" \
+    "$HOME/.claude/scripts/handoff-state.sh" \
+    ".claude/scripts/handoff-state.sh"; do
+  if [[ -x "$_candidate" ]]; then
+    HANDOFF_STATE_SH="$_candidate"; break
+  fi
+done
+if [[ -z "$HANDOFF_STATE_SH" ]]; then
+  echo "ERROR: handoff-state.sh not found — cannot write locked handoff" >&2; exit 5
+fi
 
-Write JSON with this schema:
-
-```json
-{
-  "schema_version": "1.0",
-  "pr_number": {{PR_NUMBER}},
-  "head_sha": "<HEAD after Step 3 — pushed commit SHA if a push occurred, otherwise current HEAD>",
-  "reviewer": "<cr, bugbot, or greptile>",
-  "phase_completed": "A",
-  "created_at": "<ISO 8601 timestamp>",
-  "findings_fixed": ["<comment-id-1>", "<comment-id-2>"],
-  "findings_dismissed": [
-    {"id": "<comment-id>", "reason": "<why it's a false positive>"}
-  ],
-  "threads_replied": ["<thread-id-1>", "<thread-id-2>"],
-  "threads_resolved": ["<thread-id-1>", "<thread-id-2>"],
-  "files_changed": ["<file1>", "<file2>"],
-  "push_timestamp": "<ISO 8601 timestamp>",
-  "notes": "<summary of what was done>"
-}
+NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+HANDOFF_JSON="$(jq -n \
+  --argjson pr "{{PR_NUMBER}}" \
+  --arg sha "<HEAD after Step 3 — pushed commit SHA if a push occurred, otherwise current HEAD>" \
+  --arg rev "<cr, bugbot, or greptile>" \
+  --arg now "$NOW" \
+  --argjson fixed '["<comment-id-1>"]' \
+  --argjson dismissed '[{"id":"<comment-id>","reason":"<why>"}]' \
+  --argjson replied '["<thread-id-1>"]' \
+  --argjson resolved '["<thread-id-1>"]' \
+  --argjson files '["<file1>"]' \
+  --arg notes "<summary of what was done>" \
+  '{
+    schema_version: "1.0",
+    pr_number: $pr,
+    head_sha: $sha,
+    reviewer: $rev,
+    phase_completed: "A",
+    created_at: $now,
+    findings_fixed: $fixed,
+    findings_dismissed: $dismissed,
+    threads_replied: $replied,
+    threads_resolved: $resolved,
+    files_changed: $files,
+    push_timestamp: $now,
+    notes: $notes
+  }')"
+"$HANDOFF_STATE_SH" --create "{{PR_NUMBER}}" "$HANDOFF_JSON"
 ```
 
 ### Step 7: Print Exit Report and EXIT

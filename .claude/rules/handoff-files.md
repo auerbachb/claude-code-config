@@ -2,7 +2,7 @@
 
 > **Always:** Write handoff files on phase completion. Read handoff files before reconstructing state from GitHub API. Update session-state.json on phase transitions. Preserve unknown fields in handoff files.
 > **Ask first:** Never — handoff file operations are autonomous.
-> **Never:** Skip writing the handoff file. Delete one before successful merge. Strip unrecognized fields. Write `session-state.json` outside `session-state.sh` — an inline `jq … > tmp && mv tmp` bypasses the write lock.
+> **Never:** Skip writing the handoff file. Delete one before successful merge. Strip unrecognized fields. Write `session-state.json` outside `session-state.sh` or handoff files outside `handoff-state.sh` — inline `jq … > tmp && mv tmp` bypasses the respective write lock.
 
 ## State Files
 
@@ -10,17 +10,19 @@
 - `~/.claude/handoffs/pr-{N}-handoff.json`: per-PR phase details consumed by the next phase.
 - **Polling:** Parent runs `polling-state-gate.sh N --ensure-session` once, then `polling-state-gate.sh N` each cycle. Subagent handoffs overwrite the same file at phase end.
 
-**Repo scoping (issue #638):** PR state lives at `.repos["<owner>/<name>"].prs["<N>"]`, so two repos at one PR number no longer collide; `root_repo` is per-repo too. Callers keep existing paths — `session-state.sh` rewrites a leading `.prs`/`.root_repo` into the active scope (`--repo`, `$CLAUDE_SESSION_REPO`, or cwd's `origin`) and migrates legacy state, keeping unattributable entries under `_unknown`. Account-level fields (`cr_hourly`, `greptile_daily`) stay global. See `session-state.sh --help`.
+**Repo scoping (issue #638):** State lives at `.repos["<owner>/<name>"].prs["<N>"]`; `session-state.sh` auto-scopes calls via `--repo`, `$CLAUDE_SESSION_REPO`, or cwd origin. Unattributable legacy entries land in `_unknown`. Account-level fields stay global. See `session-state.sh --help`.
 
-**Invoking-repo scope (issue #687):** #638 scoped *storage*; this scopes *behavior*. Orchestration skills (`/pm`, `/pm-handoff`, siblings) read the whole state file through `session-state.sh --session-view` — a repo-scoped projection (this repo's `.prs`/`.root_repo` + only its `.active_agents`; other repos dropped) resolved by the same precedence — **never `--get .`**, which aggregates every repo and is the cross-repo leak. Default output stays in the invoking repo's lane; cross-repo reporting is opt-in via `--session-view --all-repos`. Never *offer or perform* a write (cleanup/merge/rebase/close) against a PR/issue outside the invoking repo.
+**Invoking-repo scope (issue #687):** Orchestration skills use `session-state.sh --session-view` (repo-scoped projection) — **never `--get .`** (aggregates every repo; cross-repo leak). Cross-repo reporting is opt-in via `--session-view --all-repos`. Never write (merge/rebase/close) against a PR outside the invoking repo.
 
 Update `session-state.json` on phase transitions and key events (agent launched/completed, review received, dropped poll recovered). **All writes go through `.claude/scripts/session-state.sh --set <jq-path>=<value>`** (read with `--get`); it preserves siblings, writes atomically, and holds the lock below.
 
-**Write lock (issue #639):** `session-state.sh` serializes the whole read-modify-write cycle, not just the `mv`, via `.claude/scripts/state-lock.sh` (portable `mkdir` lockdir; macOS has no `flock(1)`). Unserialized, concurrent writers silently lost each other's changes. `greptile-budget.sh` and `cr-review-hourly.sh` source the same library. A writer that can't acquire the lock (30s default, `CLAUDE_STATE_LOCK_TIMEOUT`) exits **6** having written nothing — treat 6 as "unchanged, retry". Dead-holder locks self-heal; reads don't lock. Failure modes: `state-lock.sh`'s header.
+**Write lock (issue #639):** `session-state.sh` serializes reads/writes via `state-lock.sh` (`mkdir` lockdir; macOS has no `flock(1)`). Exit **6** = lock timeout (unchanged, retry); dead-holder locks self-heal. `greptile-budget.sh` and `cr-review-hourly.sh` share the same library. Failure modes: `state-lock.sh` header.
 
-**Scoping is not retroactive (issue #651):** #638's migration attributes a legacy entry by its own `owner_repo`, else by its recorded `root_repo` when that path still resolves — legacy entries usually have neither, so they land in `_unknown`, which `infer-pr.sh` and `pr-state.sh` merge into *every* repo's candidates (so the collision persists there) while `--session-view` hides it. Repair with `.claude/scripts/session-state-audit.sh` — read-only by default; `--apply --reattribute` moves entries by verified commit SHA, `--prune` drops long-merged ones but withholds any carrying unactioned `wrap_sweep.needs_decision` notes. Backs up first, holds the lock, re-checks integrity.
+**Write lock (issue #682):** Handoff writes use `handoff-state.sh` (same `state-lock.sh` as #639). Exit **6** = lock timeout (unchanged, retry).
 
-**Field-type contract (issue #625):** `session-state.sh` enforces expected JSON types on known fields (`active_agents`, `prs`, per-PR nested fields per #640, and each repo scope per #638): a `--set` storing the wrong type is rejected (exit 4, file unmodified); a `--get` on a corrupted field warns and returns a safe default so the next validated write self-heals. **Never pass a raw jq filter as a `--set` value** — evaluate it locally first and pass the resulting JSON. Full contract: `session-state.sh`'s header comment (single source of truth).
+**Scoping is not retroactive (issue #651):** Legacy entries without `owner_repo`/`root_repo` land in `_unknown` and still collide in `infer-pr.sh`/`pr-state.sh` candidates. Repair: `session-state-audit.sh --apply --reattribute` (moves entries by SHA; `--prune` drops merged ones). Backs up first, holds the lock, re-checks integrity.
+
+**Field-type contract (issue #625):** `session-state.sh` enforces JSON types on known fields: wrong-type `--set` exits **4** (file unmodified); corrupted `--get` warns + returns a safe default. **Never pass a raw jq filter as a `--set` value** — evaluate first. Full contract: `session-state.sh` header (single source of truth).
 
 ## Handoff File Storage
 
