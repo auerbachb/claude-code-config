@@ -26,12 +26,25 @@ Only when a description was provided.
 1. **Draft locally** (do NOT post yet):
    - Title: concise version of the description (≤70 chars)
    - Body: one paragraph of context plus an `## Acceptance Criteria` section with placeholder checkbox items derived from the description
-2. **Create the issue:**
+2. **Dedup surface check** (human-in-the-loop — surface only, never auto-suppress):
+   Run `.claude/scripts/issue-dedup.sh` with a 2–6 keyword phrase from the draft title. Try the three standard paths:
+   ```bash
+   for DEDUP in \
+     "$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh" \
+     "$HOME/.claude/scripts/issue-dedup.sh" \
+     ".claude/scripts/issue-dedup.sh"; do
+     [ -x "$DEDUP" ] && break; DEDUP=""; done
+   ```
+   If the helper is found and returns candidates, classify the top candidate per `.claude/reference/autofile-dedup.md`:
+   - **Strong match** (open issue, same primary artifact, a quotable covering criterion, `coverage ≥ 0.6`) → surface it to the user: "This may duplicate #N — `<title>`. Should I file a new issue anyway, or add context to #N instead?" Wait for confirmation before creating.
+   - **Weak match** → note it once ("Similar open issue: #N — `<title>`") and continue to Step 3.
+   - **No match** or helper not found → continue to Step 3.
+3. **Create the issue:**
    ```bash
    ISSUE_URL=$(gh issue create --title "<title>" --body "<body>")
    ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
    ```
-3. The repo's `cr-plan-on-issue.yml` workflow will auto-post `@coderabbitai plan` within ~30s. Record `ISSUE_CREATED_AT=$(date -u +%s)` so Step 3 knows to use the "< 10 min" polling path.
+4. The repo's `cr-plan-on-issue.yml` workflow will auto-post `@coderabbitai plan` within ~30s. Record `ISSUE_CREATED_AT=$(date -u +%s)` so Step 3 knows to use the "< 10 min" polling path.
 
 ## Step 2: Read the issue
 
@@ -255,7 +268,7 @@ Stop after delivering the handoff. Do NOT start coding automatically — the use
 - **Issue already has a branch / worktree:** if `git worktree list` shows an existing worktree for `issue-$ISSUE_NUMBER-*`, stop and report the path instead of creating a duplicate (see Step 6).
 - **Issue is closed:** stop in Step 2.
 - **CR plan is an "Actions performed" ack only** (no actual plan content): treat as "no plan" and proceed.
-- **New issue description matches an existing open issue** (e.g. duplicate title): the skill will still create a new issue. It does not dedupe — that is the user's responsibility.
+- **New issue description matches an existing open issue**: Step 1a runs `issue-dedup.sh` and surfaces any strong match before creating. The user decides whether to file or defer to the existing issue.
 - **Empty argument:** stop and ask the user for input.
 - **`gh` not authenticated or repo lookup fails:** stop and report the underlying `gh` error to the user.
 - **Launched thread's running model mismatches its `**Model:**` line:** guard rules live in `chip-launching.md`, not here — the launched thread stops on any mismatch as its first action and waits for the user, per the model-guard preamble. `/start-issue` only has to ensure the preamble is present in the block; it does not itself detect or resolve mismatches.

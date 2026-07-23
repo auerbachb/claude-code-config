@@ -43,8 +43,10 @@
 #   4  gh / network / environment error (gh or python3 missing or failing, or
 #      unparseable gh output)
 #
-# Callers: .claude/skills/wrap/SKILL.md (Steps 3.3 / 3.7),
-#          .claude/skills/issue-maker/SKILL.md (Step 4).
+# Callers: .claude/skills/wrap/SKILL.md (Steps 3.3 / 3.7) — autonomous,
+#          .claude/skills/issue-maker/SKILL.md (Step 4) — human-in-the-loop,
+#          .claude/agents/pm-worker.md (Step 2) — autonomous,
+#          .claude/skills/start-issue/SKILL.md (Step 1a) — human-in-the-loop.
 # Thresholds and the comment-vs-file decision: .claude/reference/autofile-dedup.md
 
 set -euo pipefail
