@@ -1,6 +1,26 @@
 # Auto-file dedup — thresholds and the comment-vs-file decision
 
-Canonical rules for any skill that opens GitHub issues **without a human in the loop** (`/wrap` Phase 3 Parts A and B today; the same rules apply to any future autonomous filer). Mechanical recall lives in `.claude/scripts/issue-dedup.sh`; the judgment described here is the caller's.
+This is a **repo-wide contract** that applies to every code path that can call `gh issue create` without a human confirmation step. It is not a per-skill rule. Mechanical recall lives in `.claude/scripts/issue-dedup.sh`; the judgment described here is the caller's.
+
+## Filer inventory
+
+Run `grep -rn "gh issue create" .claude/` to reproduce this list. Every site must be classified; adding a new autonomous filer requires updating this table before merging.
+
+| Site | Classification | Dedup behavior |
+|------|---------------|----------------|
+| `.claude/skills/wrap/SKILL.md` (Phase 3, Parts A + B) | **Autonomous** | Strong/weak/none — suppress + report (wired since PR #661) |
+| `.claude/agents/pm-worker.md` (Task: Issue Creation) | **Autonomous** | Strong/weak/none — suppress + report (wired since PR #680) |
+| `.claude/skills/issue-maker/SKILL.md` (Step 4) | **Human-in-the-loop** | Surface-only — never auto-suppress (wired since PR #661) |
+| `.claude/skills/start-issue/SKILL.md` (Step 1a) | **Human-in-the-loop** | Surface strong matches, pause for confirmation (wired since PR #680) |
+| `.claude/agents/researcher.md` | **Non-filer** | `gh issue create` appears in the agent's forbidden-command list |
+| `.claude/skills/pm-clean/SKILL.md` | **Non-filer** | Confirmed — only calls `gh issue close`, never `gh issue create` |
+| `.claude/rules/issue-planning.md` | **Documentation** | Describes the human-driven issue-creation flow; not itself a filer |
+
+### Asymmetry rule
+
+**Autonomous filers** (no human confirmation step): apply the full strong/weak/none suppression logic and always report suppressed filings — naming the issue deferred to, never silently.
+
+**Human-present callers**: run the same helper and surface strong matches to the user for confirmation; do not auto-suppress. A human can judge context that the script cannot.
 
 ## Why this exists
 
@@ -32,7 +52,7 @@ All four must hold:
 
 If you cannot quote the covering criterion, it is **not** a strong match — drop to weak. Criterion 3 is the load-bearing one; the numeric floor in 4 is a guard against thin matches, not a substitute for reading the issue.
 
-Action: `gh issue comment <N>` with the finding, using the template below. Record it in the sweep report as a **suppressed filing naming the target issue** — never silently.
+Action: `gh issue comment <N>` with the finding, using the template below. Record it in the run report as a **suppressed filing naming the target issue** — never silently.
 
 ### Weak / ambiguous match → file anyway, with the pointer
 
@@ -44,7 +64,7 @@ Action: file as normal, and include in the body, immediately under the title con
 Possibly duplicates #<N> — <one line on the overlap and what is unclear>.
 ```
 
-Flag it in the sweep report too, so the ambiguity is visible in two places rather than buried in an issue body.
+Flag it in the run report too, so the ambiguity is visible in two places rather than buried in an issue body.
 
 ### No match → file normally
 
@@ -52,29 +72,33 @@ Behavior is unchanged from before this check existed.
 
 ## Same-run batch self-check
 
-Before filing, compare the candidate against issues **this run** already filed (`WRAP_FILED_ISSUES` in `/wrap`), not just against the repo. Two findings in one sweep that duplicate each other collapse into one issue; the second is recorded as suppressed, naming the first. Pass the run's already-filed numbers as `--exclude` so they cannot also come back as repo candidates and be double-counted.
+Before filing, compare the candidate against issues **this run** already filed (tracked in a run-scoped registry such as `WRAP_FILED_ISSUES` in `/wrap`), not just against the repo. Two findings in one sweep that duplicate each other collapse into one issue; the second is recorded as suppressed, naming the first. Pass the run's already-filed numbers as `--exclude` so they cannot also come back as repo candidates and be double-counted.
 
-## Never silent
+## Never silent (shared obligation for every autonomous caller)
 
-Every suppressed filing appears in the report with the issue it deferred to, in one of two shapes:
+Every suppressed filing from any autonomous caller appears in that caller's run/sweep report with the issue it deferred to, in one of two shapes:
 
 - `Appended to #638 instead of filing — "<finding summary>"`
 - `Collapsed into #660 (filed earlier this run) — "<finding summary>"`
 
-A finding that is neither filed nor reported is the outcome this whole mechanism exists to prevent.
+A finding that is neither filed nor reported is the outcome this whole mechanism exists to prevent. `/wrap`'s "Filings suppressed as duplicates" report section is the reference shape; every other autonomous caller must produce an equivalent — same content, its own format.
 
 ## Comment template (strong match)
 
 ```markdown
-Additional observation from a /wrap session sweep on PR #<PR_NUMBER>:
+Additional observation from an automated filing:
 
 <finding summary and context>
 
 Filed here rather than as a new issue: this restates <the covering criterion>.
 
-_Appended by /wrap._
+_Auto-filed by <caller name>._
 ```
 
 ## Tuning
 
 `--min-coverage` (default `0.34`) controls **recall** — how many candidates you get to look at. Lowering it surfaces more candidates and costs only reading time; it does not by itself suppress anything, because suppression requires the four strong-match criteria. Raising it risks hiding the one candidate you needed to see. If in doubt, lower it.
+
+## Reconciliation — Issue #677
+
+Issue #677 ("improve /issue-maker title-only dedup") was closed as stale before this PR. Its premise — that `/issue-maker` used only title-matching — was superseded by PR #661, which pointed `/issue-maker` Step 4 at the shared body-aware `issue-dedup.sh` helper. Issue #677 covered no other autonomous filers (those are the subject of PR #680). There is no remaining work from #677 to carry forward.

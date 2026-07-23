@@ -30,7 +30,33 @@ When creating a new GitHub issue:
 
 Write the title, body, acceptance criteria, and relevant context.
 
-### 2. Create the issue
+### 2. Dedup check (MANDATORY before filing)
+
+Run `.claude/scripts/issue-dedup.sh` (try the three standard paths in order):
+
+```bash
+for DEDUP in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh" \
+  "$HOME/.claude/scripts/issue-dedup.sh" \
+  ".claude/scripts/issue-dedup.sh"; do
+  [ -x "$DEDUP" ] && break; DEDUP=""; done
+```
+
+If the helper is found, run it with a 2–6 keyword phrase from the issue title:
+
+```bash
+if [ -n "$DEDUP" ]; then
+  DEDUP_JSON=$("$DEDUP" "<keywords from issue title>" 2>/dev/null) || DEDUP_RC=$?
+fi
+```
+
+Classify the top candidate per `.claude/reference/autofile-dedup.md`:
+
+- **Strong match** (open issue, same primary artifact, a quotable covering criterion, `coverage ≥ 0.6`) → **do not file**. Post the finding as a comment on the existing issue using the template in `autofile-dedup.md`. Record in your exit report: `"<title>" — appended to #<N> instead of filing`. Proceed to the exit report (Steps 3 and 4 are skipped).
+- **Weak / ambiguous match** → file as normal (Step 3), and include `Possibly duplicates #<N> — <one line on the overlap>` in the issue body.
+- **No match** or helper not found → file as normal (Step 3). If the helper was missing, note the degraded check once in your exit report.
+
+### 3. Create the issue
 
 ```bash
 gh issue create --title "<title>" --body "<body>" --label "<labels>"
@@ -38,7 +64,7 @@ gh issue create --title "<title>" --body "<body>" --label "<labels>"
 
 A GitHub Actions workflow automatically comments `@coderabbitai plan` on new issues — you do not need to trigger it manually.
 
-### 3. If starting work immediately — Issue Planning Flow
+### 4. If starting work immediately — Issue Planning Flow
 
 1. Wait for CR's plan via `.claude/scripts/cr-plan.sh` — it encapsulates the canonical substantive-plan filter (`cr-plan-filter.py`: `coderabbitai` author, reject issue-enrichment/Issue-Planner boilerplate and "actions performed" ack lines, then require >200 chars of stripped content plus a heading or numbered step — issue #541) and the 60s polling loop:
    ```bash
@@ -99,7 +125,7 @@ PHASE_COMPLETE: pm
 PR_NUMBER: <PR number if a PR was created or referenced, else "none">
 HEAD_SHA: <current HEAD SHA if applicable, else "none">
 REVIEWER: <cr, bugbot, greptile, or none>
-OUTCOME: <issue_created|repo_bootstrapped|blocked|exhaustion>
+OUTCOME: <issue_created|issue_deferred|repo_bootstrapped|blocked|exhaustion>
 FILES_CHANGED: <comma-separated paths, or empty>
 NEXT_PHASE: none
 HANDOFF_FILE: none
@@ -108,6 +134,7 @@ HANDOFF_FILE: none
 **Valid OUTCOME values for pm-worker:**
 
 - `issue_created` — a GitHub issue was created (include issue number in your output before the exit report)
+- `issue_deferred` — dedup check found a strong match; finding was commented on the existing issue instead of filing (include the target issue number and a one-line summary in your output before the exit report)
 - `repo_bootstrapped` — a required workflow file was added or branch-protection gap reported
 - `blocked` — a task requires user confirmation (e.g., branch protection changes) or cannot proceed autonomously
 - `exhaustion` — token budget low, partial work applied
