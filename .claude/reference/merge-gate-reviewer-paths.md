@@ -52,8 +52,10 @@ CR failed, BugBot responded, Greptile never triggered — sticky; see `bugbot.md
 
 Greptile was triggered at any point — both CR and BugBot failed — sticky assignment, see `greptile.md`.
 
+- **Detection channel:** Greptile posts via **issue comments** (`issues/{N}/comments`), not formal PR review objects (`pulls/{N}/reviews`). `merge-gate.sh` detects a clean pass from the latest fresh `greptile-apps[bot]` issue comment with a 👍 reaction (`+1 >= 1`) and zero `greptile-apps[bot]` inline diff comments on the PR. Formal review objects are kept as a supplemental fallback signal. (Issue #723 — observed live on PR #721 where the script missed a clean pass because it only checked the formal-review endpoint.)
+- **Freshness:** the issue comment's `created_at` must be after the last commit's committer date (mirrors the BugBot push-timestamp lesson). A 👍 comment from a previous push does not count.
 - Severity-gated: merge-ready when ANY of these hold:
-  1. **Clean review:** no findings (thumbs-up with no inline comments).
+  1. **Clean review:** fresh `greptile-apps[bot]` issue comment with 👍 AND zero inline diff comments.
   2. **No P0 findings:** only P1/P2 findings present — fix all of them, push, reply to threads; no re-review required.
   3. **P0 fixed + re-review clean:** P0 findings were present, fixed, and a re-triggered `@greptileai` review came back clean.
 - Stay on Greptile — do not switch back to CR or BugBot. Ignore any late CR/BugBot reviews.
