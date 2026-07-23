@@ -669,9 +669,15 @@ case "$REVIEWER" in
     #     push-timestamp lesson — repo memory feedback_bugbot_commit_id_stale).
     #   Formal review objects (pulls/{N}/reviews) are kept as supplemental signal.
 
-    # All Greptile inline diff comments on this PR (used in both sub-paths below).
-    G_INLINE_COUNT=$(echo "$PR_COMMENTS_JSON" | jq \
-      '[.[]? | select(.user.login == "greptile-apps[bot]")] | length')
+    # Fresh Greptile inline diff comments (post-push only — mirrors the BugBot
+    # push-timestamp lesson, feedback_bugbot_commit_id_stale). Stale inline comments
+    # from a prior push must NOT count: without this freshness gate, the "no review
+    # yet" guard would skip when stale inline comments exist, and Path B would then
+    # pass cleanly on an empty review body (no fresh Greptile signal on the new HEAD).
+    # G_INLINE_BODIES in Path B is anchored separately to G_ANCHOR_TS.
+    G_INLINE_COUNT=$(echo "$PR_COMMENTS_JSON" | jq --arg after "${LAST_COMMIT_TS:-}" \
+      '[.[]? | select(.user.login == "greptile-apps[bot]")
+              | select(if $after == "" then true else .created_at > $after end)] | length')
 
     # Latest FRESH Greptile issue comment (created after the last push).
     LATEST_G_COMMENT=$(echo "$ISSUE_COMMENTS_JSON" | jq -c --arg after "${LAST_COMMIT_TS:-}" '

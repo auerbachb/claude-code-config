@@ -168,6 +168,36 @@ check_eq "1"     "$RC"     "stale comment: exit code 1"
 check_eq "yes" "$(missing_has "no Greptile review")" \
   "stale comment: missing says 'no Greptile review yet'"
 
+# --------------------------------------------------------------------------
+# Test 4: Stale inline comments only — no fresh review on the new HEAD.
+# Prior push left greptile-apps[bot] inline comments (now resolved as stale).
+# No fresh issue comment and no formal review exist for the new HEAD.
+# Without the freshness gate on G_INLINE_COUNT the "no review yet" guard would
+# not fire (G_INLINE_COUNT > 0) and Path B would pass on an empty review body.
+# Gate MUST report "no Greptile review yet" — not met.
+# --------------------------------------------------------------------------
+echo "--- Test 4: stale inline comments only (no fresh review) ---"
+
+# Build a stale inline comment (created before the push timestamp).
+greptile_stale_inline() {
+  jq -cn --arg ts "$STALE_TS" \
+    '{id:3001, user:{login:"greptile-apps[bot]"},
+      body:"P1 — minor nit from prior review round.",
+      created_at:$ts,
+      commit_id:"aabbccddeeff0011223344556677889900aabbcc",
+      original_commit_id:"aabbccddeeff0011223344556677889900aabbcc"}'
+}
+
+STALE_INLINE="$(greptile_stale_inline)"
+run_gate "$PUSH_TS" "[]" "[$STALE_INLINE]"
+
+check_eq "false" "$(met)"  "stale inline only: met == false"
+check_eq "1"     "$RC"     "stale inline only: exit code 1"
+# G_INLINE_COUNT freshness gate must exclude the stale comment, so the "no review
+# yet" guard fires and reports exactly this missing entry.
+check_eq "yes" "$(missing_has "no Greptile review")" \
+  "stale inline only: missing says 'no Greptile review yet'"
+
 echo "----------------------------------------"
 echo "merge-gate-greptile-comment.test.sh: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
