@@ -732,8 +732,10 @@ case "$REVIEWER" in
                 | select(if $ts == "" then true else .created_at >= $ts end) | .body]
           | join("\n---\n")')
 
-        # Count P0 badges across the review body and inline comments.
-        P0_COUNT=$( { echo "$G_BODY"; echo "$G_INLINE_BODIES"; } | grep -oE '\bP0\b' | wc -l | tr -d ' ')
+        # Count P0 severity badges across the review body and inline comments.
+        # Match only formal Greptile badges (<img alt="P0">) — not bare-word prose
+        # mentions like "no P0" which inflate the count (issue #729).
+        P0_COUNT=$( { echo "$G_BODY"; echo "$G_INLINE_BODIES"; } | grep -oF 'alt="P0"' | wc -l | tr -d ' ')
 
         # Are there unresolved Greptile-authored threads? If so, P0 vs P1/P2 changes
         # whether a re-review is required after fixing.
