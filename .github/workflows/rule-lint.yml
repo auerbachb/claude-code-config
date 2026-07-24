@@ -24,6 +24,3 @@ jobs:
 
       - name: Run skill-catalog-lint
         run: bash .github/scripts/skill-catalog-lint.sh
-
-      - name: Run chip-model-guard-lint
-        run: bash .github/scripts/chip-model-guard-lint.sh

@@ -2,10 +2,12 @@
 # Lint chip model-guard conformance across canonical emitters (issue #731).
 #
 # Validates:
-#   1. chip-launching.md still defines the MODEL GUARD preamble and lists all
-#      five canonical emitters.
-#   2. Each canonical emitter SKILL.md still requires spawn_task, **Model:**,
-#      model-guard preamble, and short-summary model line.
+#   1. chip-launching.md defines the full contract: MODEL GUARD preamble,
+#      all five canonical emitters, first-line/no-blank-line placement,
+#      short-summary format, and Fable pre-click warning guidance.
+#   2. Each canonical emitter SKILL.md requires spawn_task, **Model:** as
+#      first prompt line, model-guard preamble (no blank line), short-summary
+#      repetition, and Fable pre-click warning when parent/chip models differ.
 #   3. chip-model-guard-decision.md references all five emitters.
 #   4. Global enforcement exists in chip-spawn.md (indexed from CLAUDE.md).
 #
@@ -74,10 +76,17 @@ require_file "$CLAUDE_MD" || true
 if [[ -f "$CHIP_LAUNCHING" ]]; then
   require_pattern "$CHIP_LAUNCHING" 'MODEL GUARD:' 'MODEL GUARD preamble marker'
   require_pattern "$CHIP_LAUNCHING" 'Your very first action' 'guard first-action text'
-  require_pattern "$CHIP_LAUNCHING" '/wave' 'wave emitter reference'
-  require_pattern "$CHIP_LAUNCHING" '/issue-maker' 'issue-maker emitter reference'
+  require_pattern "$CHIP_LAUNCHING" 'five canonical emitters' 'canonical emitters preamble'
+  require_pattern "$CHIP_LAUNCHING" 'first line of the `prompt`' 'first-line placement rule'
+  require_pattern "$CHIP_LAUNCHING" 'no blank line' 'no-blank-line placement rule'
+  require_pattern "$CHIP_LAUNCHING" 'Short-summary transcript format' 'short-summary format section'
+  require_pattern "$CHIP_LAUNCHING" 'Fable 5 parent' 'Fable pre-click warning guidance'
   require_pattern "$CHIP_LAUNCHING" 'Upstream requirement' 'upstream requirement section'
   require_pattern "$CHIP_LAUNCHING" '#735' 'upstream tracking issue link'
+
+  for skill in "${CANONICAL_EMITTERS[@]}"; do
+    require_pattern "$CHIP_LAUNCHING" "/${skill}" "chip-launching /${skill} emitter reference"
+  done
 fi
 
 # --- 2. Canonical emitter skills -----------------------------------------
@@ -90,17 +99,12 @@ for skill in "${CANONICAL_EMITTERS[@]}"; do
   fi
 
   require_pattern "$skill_file" 'spawn_task' "${skill} spawn_task reference"
-  require_pattern "$skill_file" '\*\*Model:\*\*|`\\*\\*Model:\\*\\*`' "${skill} **Model:** requirement"
+  require_pattern "$skill_file" '\*\*Model:\*\*' "${skill} **Model:** requirement"
   require_pattern "$skill_file" 'model-guard preamble|MODEL GUARD' "${skill} model-guard requirement"
-
-  if ! grep -qiE 'short summary|Short-summary transcript format' "$skill_file"; then
-    echo "::error file=${skill_file}::Missing short-summary requirement for ${skill}"
-    errors=$((errors + 1))
-  fi
-  if ! grep -qE '\*\*Model:\*\*|`\\*\\*Model:\\*\\*`' "$skill_file"; then
-    echo "::error file=${skill_file}::Missing **Model:** line requirement for ${skill}"
-    errors=$((errors + 1))
-  fi
+  require_pattern "$skill_file" 'first line|first prompt|MUST open|open the chip|MUST open with|first content|base block' "${skill} first-line **Model:** placement"
+  require_pattern "$skill_file" 'no blank line' "${skill} no-blank-line guard placement"
+  require_pattern "$skill_file" 'short summary|Short-summary transcript format' "${skill} short-summary repetition"
+  require_pattern "$skill_file" 'Fable 5' "${skill} Fable pre-click warning requirement"
 done
 
 # --- 3. Decision record lists all five -----------------------------------
@@ -115,6 +119,7 @@ if [[ -f "$CHIP_RULE" ]]; then
   require_pattern "$CHIP_RULE" 'spawn_task' 'chip-spawn.md spawn_task rule'
   require_pattern "$CHIP_RULE" 'MODEL GUARD' 'chip-spawn.md MODEL GUARD rule'
   require_pattern "$CHIP_RULE" 'chip-launching\.md' 'chip-spawn.md chip-launching reference'
+  require_pattern "$CHIP_RULE" 'Fable 5' 'chip-spawn.md Fable pre-click warning rule'
 fi
 
 if [[ -f "$CLAUDE_MD" ]]; then

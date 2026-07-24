@@ -175,6 +175,15 @@ for f in "${rule_files[@]}"; do
   fi
 done
 
+# --- 4. Chip model-guard conformance (issue #731) -------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! bash "${SCRIPT_DIR}/chip-model-guard-lint.sh"; then
+  errors=$((errors + 1))
+fi
+if ! bash "${SCRIPT_DIR}/tests/chip-model-guard-lint.test.sh"; then
+  errors=$((errors + 1))
+fi
+
 if (( errors > 0 )); then
   echo "rule-lint: ${errors} error(s) found"
   exit 1

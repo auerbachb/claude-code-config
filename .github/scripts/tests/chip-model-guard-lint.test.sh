@@ -60,9 +60,25 @@ expect "missing MODEL GUARD in chip-launching fails" 1 \
   'Missing required MODEL GUARD preamble marker' \
   sed -i.bak '/MODEL GUARD:/d' .claude/reference/chip-launching.md
 
+expect "missing /pm emitter in chip-launching fails" 1 \
+  'chip-launching /pm emitter reference' \
+  sed -i.bak '/\/pm/d' .claude/reference/chip-launching.md
+
+expect "missing Fable guidance in chip-launching fails" 1 \
+  'Fable pre-click warning guidance' \
+  sed -i.bak '/Fable 5 parent/d' .claude/reference/chip-launching.md
+
 expect "missing model-guard in pm skill fails" 1 \
   'pm model-guard requirement' \
   sed -i.bak '/model-guard preamble/d' .claude/skills/pm/SKILL.md
+
+expect "missing first-line placement in wave skill fails" 1 \
+  'wave first-line \*\*Model:\*\* placement' \
+  sed -i.bak '/Chip model contract/d' .claude/skills/wave/SKILL.md
+
+expect "missing Fable warning in start-issue skill fails" 1 \
+  'start-issue Fable pre-click warning requirement' \
+  sed -i.bak '/Fable 5/d' .claude/skills/start-issue/SKILL.md
 
 expect "missing chip-spawn rule index fails" 1 \
   'CLAUDE.md chip-spawn rule index entry' \
