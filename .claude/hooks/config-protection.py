@@ -163,6 +163,100 @@ BARE_REDIRECT_RE = re.compile(r'^(?:\d*>{1,2}\|?|&>{1,2})$')
 EMBEDDED_REDIRECT_RE = re.compile(r'(?:\d*>{1,2}\|?|&>{1,2})([^<>&].*)$')
 WRITE_FLAG_TOKENS = frozenset({'--write', '--fix', '-w', '-inplace'})
 COPY_MOVE_BINS = frozenset({'cp', 'mv'})
+# Commands whose regular arguments are payload text, not file targets. A
+# protected path that appears only inside a quoted argument to one of these
+# is prose/data (issue #744), not a write target.
+PAYLOAD_COMMAND_BINS = frozenset({'echo', 'printf', 'gh'})
+
+
+def _extract_quoted_literal_contents(segment: str) -> frozenset[str]:
+    """Return inner text of single- and double-quoted literals in segment."""
+    contents: set[str] = set()
+    quote: str | None = None
+    buf: list[str] = []
+    i = 0
+    n = len(segment)
+    while i < n:
+        ch = segment[i]
+        if quote:
+            if ch == quote:
+                contents.add(''.join(buf))
+                buf = []
+                quote = None
+            elif quote == '"' and ch == '\\' and i + 1 < n:
+                buf.append(segment[i + 1])
+                i += 1
+            else:
+                buf.append(ch)
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+            buf = []
+            i += 1
+            continue
+        i += 1
+    return frozenset(contents)
+
+
+def _here_string_data_tokens(tokens: list[str]) -> frozenset[str]:
+    """Tokens that are here-string (<<<) payload, never file targets."""
+    data: set[str] = set()
+    after_op = False
+    for tok in tokens:
+        if after_op:
+            data.add(tok)
+            after_op = False
+            continue
+        if tok == '<<<':
+            after_op = True
+            continue
+        if tok.startswith('<<<') and len(tok) > 3:
+            data.add(tok[3:])
+    return frozenset(data)
+
+
+def _resolve_executable_bin(tokens: list[str]) -> str | None:
+    """Best-effort executable basename, skipping env assignments and wrappers."""
+    expect_command_name = True
+    current_wrapper: str | None = None
+    expect_wrapper_flag_value = False
+    for tok in tokens:
+        base = tok.rsplit('/', 1)[-1]
+        if expect_command_name:
+            if expect_wrapper_flag_value:
+                expect_wrapper_flag_value = False
+            elif ENV_ASSIGNMENT_RE.match(tok):
+                pass
+            elif base in COMMAND_WRAPPER_BINS:
+                current_wrapper = base
+            elif tok.startswith('-'):
+                if current_wrapper and tok in WRAPPER_VALUE_FLAGS.get(current_wrapper, ()):
+                    expect_wrapper_flag_value = True
+            else:
+                return base
+        else:
+            break
+    return None
+
+
+def _non_target_data_tokens(segment: str, tokens: list[str]) -> frozenset[str]:
+    """Tokens that carry quoted/heredoc payload text, not write targets.
+
+    Issue #744: a protected path mentioned only inside quoted text or a
+    here-string must not be treated as the command's write target."""
+    data = set(_here_string_data_tokens(tokens))
+    quoted_contents = _extract_quoted_literal_contents(segment)
+    if not quoted_contents:
+        return frozenset(data)
+
+    executable = _resolve_executable_bin(tokens)
+    if executable in PAYLOAD_COMMAND_BINS:
+        for tok in tokens:
+            if tok in quoted_contents:
+                data.add(tok)
+
+    return frozenset(data)
 
 
 def _split_into_command_segments(cmd: str) -> list[str]:
@@ -326,7 +420,11 @@ def should_block_edit(path: str, cwd: str | None = None) -> bool:
     return path_exists(path, cwd)
 
 
-def _scan_command_segment(tokens: list[str], cwd: str | None) -> str | None:
+def _scan_command_segment(
+    segment: str,
+    tokens: list[str],
+    cwd: str | None,
+) -> str | None:
     """Scan one separator-free command segment for a write targeting a
     protected path. Every piece of state here is local to this single
     segment — nothing from an earlier or later `;`/`&&`/`|`-separated
@@ -352,6 +450,7 @@ def _scan_command_segment(tokens: list[str], cwd: str | None) -> str | None:
     expect_redirect_target = False
 
     protected_in_cmd: list[str] = []
+    data_tokens = _non_target_data_tokens(segment, tokens)
 
     for tok in tokens:
         if expect_redirect_target:
@@ -419,7 +518,7 @@ def _scan_command_segment(tokens: list[str], cwd: str | None) -> str | None:
             has_write_op = True
             last_copy_move = None
             continue
-        if is_protected_path(tok):
+        if is_protected_path(tok) and tok not in data_tokens:
             normalized = normalize_path(tok)
             protected_in_cmd.append(normalized)
             if last_copy_move in COPY_MOVE_BINS:
@@ -460,7 +559,7 @@ def bash_targets_protected(cmd: str, cwd: str | None = None) -> str | None:
             tokens = segment_str.split()
         if not tokens:
             continue
-        blocked = _scan_command_segment(tokens, cwd)
+        blocked = _scan_command_segment(segment_str, tokens, cwd)
         if blocked:
             return blocked
     return None
