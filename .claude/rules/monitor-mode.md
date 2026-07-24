@@ -6,9 +6,9 @@
 
 ## Dedicated Monitor Mode (MANDATORY for parent agents)
 
-**Entry:** any active subagent or non-empty `active_agents` in `session-state.json`. **Exit:** all subagents complete/failed, pending B/C launches executed, and state updated.
+**Entry:** any active subagent or non-empty `active_agents` in `session-state.json`. **Exit:** all subagents complete/failed, pending B/C launches executed, state updated.
 
-While active, the parent only orchestrates: poll subagents, verify outputs, execute phase transitions, update state, report heartbeats, recover after compaction, and answer user questions. No code edits, issue/PR creation, local CR review, or source analysis; delegate fix work to subagents.
+While active, the parent only orchestrates: poll subagents, verify outputs, execute phase transitions, update state, report heartbeats, recover after compaction, answer user questions. No code edits, issue/PR creation, local CR review, or source analysis — delegate fix work to subagents.
 
 If the user explicitly requests substantive work, warn that monitoring N active PR(s) will pause, do the work, then immediately re-enter monitor mode.
 

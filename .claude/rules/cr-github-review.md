@@ -31,9 +31,9 @@ Run before the first poll tick and before any new review trigger on fresh push, 
 
 ### Per-cycle check (every 60 seconds)
 
-Each cycle, query everything in “Polling” for every open PR owned by this session. **Re-read current HEAD SHA every cycle** so stale approvals never exit polling.
+Query everything in “Polling” for every open PR owned by this session. **Re-read current HEAD SHA every cycle** so stale approvals never exit polling.
 
-If **ANY** of the conditions below hold, invoke `/fixpr` and do NOT request a new review until `/fixpr` completes:
+If **ANY** condition below holds, invoke `/fixpr` and do NOT request a new review until it completes:
 
 1. New bot findings since the last poll watermark (not old unresolved threads awaiting reviewer ack)
 2. Any check-run with a blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`)
@@ -64,25 +64,25 @@ Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget
 
 ### Polling
 
-- Poll every 60 seconds. Always use `per_page=100` on all GitHub API calls.
-- **Poll ALL THREE endpoints every cycle** (`per_page=100`):
+- Poll every 60 seconds, `per_page=100` on every GitHub API call.
+- **Poll ALL THREE endpoints every cycle:**
   1. `repos/{owner}/{repo}/pulls/{N}/reviews` — review objects
   2. `repos/{owner}/{repo}/pulls/{N}/comments` — inline diff comments
-  3. `repos/{owner}/{repo}/issues/{N}/comments` — PR conversation (summary, ack, general findings). Missing this endpoint causes indefinite polling on clean passes.
-- **Check merge metadata every cycle:** fetch `mergeStateStatus` and `mergeable` every cycle (same PR JSON as `merge-gate.sh`).
-- **Check commit status every cycle.** Query CodeRabbit check-runs (fallback commands: `.claude/reference/cr-polling-commands.md`). Check-run `completed`/`success` = review done; the "Full review triggered" ack only means started.
+  3. `repos/{owner}/{repo}/issues/{N}/comments` — PR conversation (summary, ack, general findings). Skipping this one causes indefinite polling on clean passes.
+- **Merge metadata every cycle:** `mergeStateStatus` and `mergeable` (same PR JSON as `merge-gate.sh`).
+- **Commit status every cycle.** Query CodeRabbit check-runs (fallback commands: `.claude/reference/cr-polling-commands.md`). Check-run `completed`/`success` = review done; the "Full review triggered" ack only means started.
 - **Fast-path rate limit:** "rate limit" in failed CR check/status output routes to the escalation gate.
-- **CR username:** `coderabbitai[bot]` (with `[bot]` suffix). Filter by `.user.login == "coderabbitai[bot]"` — NOT bare `coderabbitai`.
-- **Watermark:** Track highest review ID from `pulls/{N}/reviews`. For `issues/{N}/comments`, track by comment ID.
+- **CR username:** `coderabbitai[bot]`. Filter by `.user.login == "coderabbitai[bot]"` — NOT bare `coderabbitai`.
+- **Watermark:** highest review ID from `pulls/{N}/reviews`; for `issues/{N}/comments`, track by comment ID.
 - **CR silence:** a completed CR check-run ends the silence wait (the merge gate still decides exit); otherwise the escalation gate owns silence, BugBot grace, and Greptile fallback.
 
 ### CI Health Check (MANDATORY — every poll cycle)
 
-**Check ALL check-runs every poll cycle — not just CodeRabbit:** `repos/{owner}/{repo}/commits/{SHA}/check-runs?per_page=100` (full command: `.claude/reference/cr-polling-commands.md`). Any blocking conclusion (per-cycle trigger #2 list; `cancelled`/`neutral`/`skipped` are non-blocking) → **invoke `/fixpr` immediately**. CI failures block merge independently of CR — passing CR + failing tests is not merge-ready; report a pass/fail summary.
+**Check ALL check-runs, not just CodeRabbit:** `repos/{owner}/{repo}/commits/{SHA}/check-runs?per_page=100` (full command: `.claude/reference/cr-polling-commands.md`). Any blocking conclusion (per-cycle trigger #2 list; `cancelled`/`neutral`/`skipped` are non-blocking) → **invoke `/fixpr` immediately**. CI failures block merge independently of CR — passing CR + failing tests is not merge-ready; report a pass/fail summary.
 
 ### Timeout & Fallback — Three-Tier Review Chain
 
-**Review chain:** CR → BugBot → Greptile → self-review. **Supplemental (CR path):** CodeAnt + Graphite — `.claude/reference/codeant-graphite-supplemental.md`. When CR fails or stalls, the escalation gate checks BugBot before Greptile (`bugbot.md`, `greptile.md`). **Sticky:** once a PR falls to BugBot or Greptile it never moves back up the chain (per-path gates: `cr-merge-gate.md` Step 1). **If all three fail:** self-review — it does NOT satisfy the merge gate; tell the user which fallback ran and why.
+**Chain:** CR → BugBot → Greptile → self-review. **Supplemental (CR path):** CodeAnt + Graphite — `.claude/reference/codeant-graphite-supplemental.md`. When CR fails or stalls, the escalation gate checks BugBot before Greptile (`bugbot.md`, `greptile.md`). **Sticky:** once a PR falls to BugBot or Greptile it never moves back up the chain (per-path gates: `cr-merge-gate.md` Step 1). **If all three fail:** self-review — it does NOT satisfy the merge gate; tell the user which fallback ran and why.
 
 ### Processing CR Feedback
 
