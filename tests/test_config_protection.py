@@ -527,6 +527,70 @@ class ConfigProtectionBashTests(unittest.TestCase):
                 with self.subTest(cmd=cmd):
                     self.assertEqual(config_protection.bash_targets_protected(cmd), str(target))
 
+    def test_bash_allows_protected_path_mentioned_in_quoted_text(self) -> None:
+        # issue #744: a protected path mentioned only inside quoted payload
+        # text must not be blocked when the actual write goes elsewhere.
+        with tempfile.TemporaryDirectory() as tmp:
+            rule_lint = pathlib.Path(tmp) / '.github' / 'scripts'
+            rule_lint.mkdir(parents=True)
+            protected = rule_lint / 'rule-lint.sh'
+            protected.write_text('#!/bin/sh\n', encoding='utf-8')
+            protected_path = str(protected)
+            rel_path = '.github/scripts/rule-lint.sh'
+            scratch = pathlib.Path(tmp) / 'out.md'
+            allow_cmds = [
+                f"echo 'see {rel_path} for the budget limit' > {scratch}",
+                f'echo "docs mention {rel_path} in prose" > {scratch}',
+                f"printf '%s' 'text about {rel_path}' > {scratch}",
+                f"tee {scratch} <<< '{rel_path}'",
+                f"tee {scratch} <<<'mention {rel_path} in prose'",
+                f"gh issue create --body 'See {rel_path} for details'",
+                (
+                    f"cat > {scratch} <<'EOF'\n"
+                    f"the soft-warning limit in `{rel_path}`\n"
+                    f"EOF"
+                ),
+            ]
+            for cmd in allow_cmds:
+                with self.subTest(cmd=cmd):
+                    self.assertIsNone(
+                        config_protection.bash_targets_protected(cmd, cwd=str(tmp))
+                    )
+
+    def test_bash_allows_issue_repro_heredoc_shape(self) -> None:
+        # issue #744: exact reported shape — write to scratchpad, protected
+        # path only in heredoc prose, then gh issue create.
+        with tempfile.TemporaryDirectory() as tmp:
+            rule_lint = pathlib.Path(tmp) / '.github' / 'scripts'
+            rule_lint.mkdir(parents=True)
+            protected = rule_lint / 'rule-lint.sh'
+            protected.write_text('#!/bin/sh\n', encoding='utf-8')
+            rel_path = '.github/scripts/rule-lint.sh'
+            cmd = (
+                f"cat > {tmp}/issue-body.md <<'EOF'\n"
+                f"the 12,000-word soft-warning limit in `{rel_path}`\n"
+                f"EOF\n"
+                f'gh issue create --title "test" --body-file {tmp}/issue-body.md'
+            )
+            self.assertIsNone(config_protection.bash_targets_protected(cmd, cwd=str(tmp)))
+
+    def test_bash_still_blocks_real_writes_after_quote_fix(self) -> None:
+        # issue #744 regression guard: genuine writes must stay blocked.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / '.eslintrc.json'
+            target.write_text('existing: true\n', encoding='utf-8')
+            rel = str(target)
+            block_cmds = [
+                f"echo x > {rel}",
+                f"sed -i 's/x/y/' {rel}",
+                f"tee {rel}",
+                f"tee {rel} <<<'harmless stdin'",
+                f"rm -f '{rel}'",
+            ]
+            for cmd in block_cmds:
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(config_protection.bash_targets_protected(cmd), rel)
+
 
 if __name__ == '__main__':
     unittest.main()
