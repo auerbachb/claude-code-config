@@ -105,6 +105,7 @@ If you catch yourself composing a "should I...?" question about any workflow ste
 | `trust-dialog-fix.md` | Trust flags |
 | `skill-symlinks.md` | Skill symlinks |
 | `skill-first.md` | Proactive skill matching |
+| `chip-spawn.md` | Chip / spawn_task model + guard contract |
 
 These files auto-load for the parent agent session. **Subagents do NOT auto-load these files.** See `subagent-orchestration.md` for how to pass rules to subagents.
 

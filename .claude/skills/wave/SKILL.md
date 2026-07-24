@@ -161,6 +161,8 @@ Take the first `SLOTS` issues from the independent set. Anything past that is ex
 
 **7.1 — Offer the (remaining) wave as chips.** Follow `.claude/reference/chip-launching.md` **verbatim** — availability detection, `spawn_task` shape, model-guard preamble, short-summary format, per-issue fallback on spawn failure. Nothing in this section overrides it.
 
+**Chip model contract (non-negotiable):** For each chip, the `prompt` MUST open with `**Model:** {MODEL} — {REASON}`, immediately followed by the model-guard preamble (no blank line between). The visible short summary MUST repeat the same `**Model:**` line. When the parent thread is on Fable 5 and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
+
 For each issue still offered as a chip:
 
 - **`prompt`** — the full self-contained thread prompt from `/pm` Step 3.1's template (`**Model:**` line first, model-guard preamble immediately after with no blank line between, then the task / issue body / codebase context / workflow / constraints sections). Reuse that template as written; `/wave` does not define a prompt format of its own.

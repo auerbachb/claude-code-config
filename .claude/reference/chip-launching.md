@@ -1,6 +1,6 @@
 # Chip Launching — One-Click Coding Threads
 
-Canonical mechanics for offering a coding-thread prompt as a **task chip** the user can click to spin off a new session. Shared by `/pm` (Step 3.1), `/prompt` (Step 6), `/start-issue` (Step 7), and `/issue-maker` (Step 9). Skill-specific wiring stays in each SKILL.md; everything below is defined once, here.
+Canonical mechanics for offering a coding-thread prompt as a **task chip** the user can click to spin off a new session. Shared by the five canonical emitters: `/pm` (Step 3.1), `/prompt` (Step 6), `/start-issue` (Step 7), `/issue-maker` (Step 9c), and `/wave` (Step 7.1). Skill-specific wiring stays in each SKILL.md; everything below is defined once, here. Any other `spawn_task` / chip offer — including ad-hoc agent suggestions — inherits the same contract via `chip-spawn.md`.
 
 **Out of scope (explicit):** `/pm-handoff` does not offer chips and will not — its handoff prompt is a context-turnover artifact whose visible, portable text is the deliverable, and it has no issue number, model line, or lifecycle for these mechanics to key on. Decided in #562; rationale in `pm-handoff-chips-decision.md`.
 
@@ -61,6 +61,18 @@ active model, so the check relies on the model naming itself accurately.
 **Placement rule:** for every emitter, the `**Model:**` line is the first line of the `prompt` payload and this preamble is the content that immediately follows it — see each skill's Step for how its own template maps onto this shape.
 
 **Why prompt-level, not tooling-level:** there is no `spawn_task` model/effort parameter and no runtime mechanism for a thread to introspect its own active model — model identity is always asserted by the caller, never read back. The guard is therefore a best-effort self-report, not a hard technical guarantee. Full trade-off: `chip-model-guard-decision.md`.
+
+## Upstream requirement — `spawn_task` model parameter
+
+**Tracking issue:** [#735](https://github.com/auerbachb/claude-code-config/issues/735)
+
+The harness should add optional **`model`** (and optionally **`effort`**) parameters to `mcp__ccd_session__spawn_task` so a chip click sets the picker to the recommended model instead of inheriting the parent thread's setting. Until that ships:
+
+- Every chip `prompt` MUST still carry the `**Model:**` line and MODEL GUARD preamble (non-negotiable — enforced repo-wide in Issue #731).
+- The visible short summary MUST still repeat the `**Model:**` line so the user can set the picker manually before clicking.
+- When parent and chip models differ — especially **Fable 5 parent → Sonnet/Opus chip** — emitters SHOULD add a one-line pre-click warning in the short summary (e.g. `**Parent is Fable — switch picker before click**`). Title/`tldr` alone do not enforce anything; the guard inside the spawned thread remains the hard stop.
+
+After #735 ships, chips should pass the recommended model at the tool layer **and** keep the guard as a safety net for paste/fallback flows.
 
 ## Short-summary transcript format (chip mode)
 

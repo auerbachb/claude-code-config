@@ -2,7 +2,7 @@
 
 ## Decision
 
-**The model guard rides in both the chip `prompt` and the fallback block.** Every chip-launched or pasted coding thread carries a mandatory model-guard preamble, positioned immediately after the `**Model:** {MODEL} — {REASON}` line, defined once in `chip-launching.md` and inherited by reference — not restated — in `/pm` (Step 3.1), `/prompt` (Step 6), and `/start-issue` (Step 7).
+**The model guard rides in both the chip `prompt` and the fallback block.** Every chip-launched or pasted coding thread carries a mandatory model-guard preamble, positioned immediately after the `**Model:** {MODEL} — {REASON}` line, defined once in `chip-launching.md` and inherited by reference — not restated — in all five canonical chip emitters: `/pm` (Step 3.1), `/prompt` (Step 6), `/start-issue` (Step 7), `/issue-maker` (Step 9c), and `/wave` (Step 7.1). Ad-hoc `spawn_task` offers inherit the same contract via `chip-spawn.md` (Issue #731).
 
 This redefines the fallback baseline. Before #601, `chip-launching.md` guaranteed fallback output was **byte-for-byte identical to pre-chip behavior** — a CLI thread could not tell the chip feature existed. That guarantee is retired. The new guarantee is **byte-identical to the chip `prompt`**: whatever a chip carries, the fallback block carries too, guard included. Print-on-demand replay stays pinned to the chip's actual `prompt` content, so replay, chip, and fallback block never diverge.
 
@@ -32,6 +32,8 @@ Adding a guard that only some threads receive forces a choice: put it in the chi
 
 - Issue [#601](https://github.com/auerbachb/claude-code-config/issues/601) — this decision
 - `chip-launching.md` — canonical chip mechanics; defines the model-guard preamble this decision authorizes
-- `.claude/skills/pm/SKILL.md` Step 3.1, `.claude/skills/prompt/SKILL.md` Step 6, `.claude/skills/start-issue/SKILL.md` Step 7 — the three chip emitters that inherit the guard by reference
+- `.claude/skills/pm/SKILL.md` Step 3.1, `.claude/skills/prompt/SKILL.md` Step 6, `.claude/skills/start-issue/SKILL.md` Step 7, `.claude/skills/issue-maker/SKILL.md` Step 9c, `.claude/skills/wave/SKILL.md` Step 7.1 — the five canonical chip emitters that inherit the guard by reference; ad-hoc offers via `.claude/rules/chip-spawn.md`
+- Issue [#731](https://github.com/auerbachb/claude-code-config/issues/731) — universal enforcement + conformance lint
+- Issue [#735](https://github.com/auerbachb/claude-code-config/issues/735) — upstream ask for `spawn_task` `model` parameter
 - `pm-handoff-chips-decision.md` — the house style this record follows (`## Decision` / `## Rationale` / `## Explicitly Rejected` / `## References`)
 - Issue [#547](https://github.com/auerbachb/claude-code-config/issues/547) (closed) — model fleet reconciliation across selection surfaces, the related prior work this ticket builds on
