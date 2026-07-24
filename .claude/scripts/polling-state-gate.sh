@@ -77,6 +77,7 @@ unset _NORMALIZER_LIB
 STATE_HELPER="${SCRIPT_DIR}/session-state.sh"
 HANDOFF_HELPER="${SCRIPT_DIR}/handoff-state.sh"
 MERGE_GATE="${SCRIPT_DIR}/merge-gate.sh"
+POLL_WATERMARKS="${SCRIPT_DIR}/poll-watermarks.sh"
 PR_AUTHORSHIP="${SCRIPT_DIR}/pr-authorship.sh"
 STATE_FILE="${HOME}/.claude/session-state.json"
 HANDOFF_DIR="${HOME}/.claude/handoffs"
@@ -533,6 +534,14 @@ ensure_session() {
     [[ "$handoff_path" != "$flat_path" ]] && [[ -n "$owner_repo" ]] && set_or_flag=(--owner-repo "$owner_repo")
     if ! "$HANDOFF_HELPER" "${set_or_flag[@]}" --set "$PR_NUMBER" ".head_sha=$head_sha"; then
       echo "polling-state-gate.sh: handoff-state.sh --set .head_sha failed for PR #$PR_NUMBER" >&2
+      exit 4
+    fi
+  fi
+
+  # Initialize poll watermarks for all three comment endpoints (issue #741).
+  if [[ -x "$POLL_WATERMARKS" ]]; then
+    if ! ( cd "$canon" && "$POLL_WATERMARKS" "$PR_NUMBER" --init >/dev/null ); then
+      echo "polling-state-gate.sh: poll-watermarks.sh --init failed for PR #$PR_NUMBER" >&2
       exit 4
     fi
   fi

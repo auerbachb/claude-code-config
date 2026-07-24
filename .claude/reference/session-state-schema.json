@@ -23,7 +23,8 @@
       "wrap_sweep": "object",
       "cr_explicit_triggers": "array",
       "digest_streak": "number",
-      "conflict_streak": "number"
+      "conflict_streak": "number",
+      "poll_watermarks": "object"
     }
   },
   "last_updated": "2026-04-29T14:00:00Z",
@@ -58,7 +59,12 @@
           },
           "cr_explicit_triggers": [
             "2026-04-29T22:30:00Z"
-          ]
+          ],
+          "poll_watermarks": {
+            "last_review_id": 91234,
+            "last_inline_comment_id": 567890,
+            "last_issue_comment_id": 445566
+          }
         },
         "619": {
           "phase": "B",
