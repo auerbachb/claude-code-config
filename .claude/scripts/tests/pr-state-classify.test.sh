@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Unit test for the `classify` jq function inside `pr-state.sh --since`
-# (issues #535, #557, #575, #669).
+# (issues #535, #557, #575, #669, #743).
 #
 # Verifies that comment bodies observed misclassified in the wild are now correctly
 # classified as acknowledgments, and that existing patterns are not regressed:
@@ -588,6 +588,62 @@ class="${result%%|*}"
   || fail "Bug8a: finding quoting CR auto-reply prose — expected finding, got $class"
 
 # ---------------------------------------------------------------------------
+# Bug 9: Greptile clean-pass summary comment (issue #743)
+#
+# Greptile posts a "Greptile Summary" issue comment on nearly every PR. Pre-fix,
+# it matched no branch and fell through to default → finding, inflating /wrap
+# Phase 1 finding_count on PRs where Greptile had a fully clean pass.
+# Was: default → finding; Should be: Greptile clean-pass summary → acknowledgment
+#
+# Fixture: faithful reproduction of PR #742's clean-pass summary shape.
+# ---------------------------------------------------------------------------
+BODY='<h3>Greptile Summary</h3> This PR condenses the auto-loaded rule corpus.
+
+<h3>Confidence Score: 5/5</h3> Safe to merge — no issues found.'
+result=$(classify_body "$BODY")
+class="${result%%|*}"; reason="${result##*|}"
+if [[ "$class" == "acknowledgment" && "$reason" == "Greptile clean-pass summary" ]]; then
+  pass "Bug9: Greptile clean-pass summary → acknowledgment"
+else
+  fail "Bug9: Greptile clean-pass summary — expected acknowledgment/Greptile clean-pass summary, got $class/$reason"
+fi
+
+# ---------------------------------------------------------------------------
+# Bug9a: MASKING GUARD — Greptile summary heading + severity keyword stays a finding.
+# Same rationale as Bug6a/Bug6b: the summary can mention findings it summarizes.
+# ---------------------------------------------------------------------------
+BODY='<h3>Greptile Summary</h3>
+
+Summary of changes, including one nitpick raised against the retry loop.'
+result=$(classify_body "$BODY")
+class="${result%%|*}"
+[[ "$class" == "finding" ]] && pass "Bug9a: Greptile summary + severity keyword 'nitpick' → finding (real findings not masked)" \
+  || fail "Bug9a: Greptile summary + severity keyword — expected finding, got $class"
+
+# ---------------------------------------------------------------------------
+# Bug9b: genuine Greptile inline finding with P0 badge stays a finding (no regression).
+# Uses the <img alt="P0"> format Greptile actually emits (issue #729).
+# ---------------------------------------------------------------------------
+BODY='<img alt="P0" src="badge.svg" /> Critical issue found in auth flow.'
+result=$(classify_body "$BODY")
+class="${result%%|*}"
+[[ "$class" == "finding" ]] && pass "Bug9b: Greptile P0 inline badge → finding (unchanged behavior)" \
+  || fail "Bug9b: Greptile P0 inline badge — expected finding, got $class"
+
+# ---------------------------------------------------------------------------
+# Bug9c: MASKING GUARD — Greptile summary + non-zero "issues found" stays a finding.
+# The #743 override requires either no "issues found" prose or the explicit
+# "no issues found" clean-pass wording; a summary reporting N>0 must not ack.
+# ---------------------------------------------------------------------------
+BODY='<h3>Greptile Summary</h3>
+
+3 issues found in the diff.'
+result=$(classify_body "$BODY")
+class="${result%%|*}"
+[[ "$class" == "finding" ]] && pass "Bug9c: Greptile summary + '3 issues found' → finding (non-clean summary not masked)" \
+  || fail "Bug9c: Greptile summary + issue count — expected finding, got $class"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
@@ -595,4 +651,4 @@ echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then
   exit 1
 fi
-echo "OK: pr-state.sh classify — all fixtures and regressions passed (issues #535, #557, #575, #669)"
+echo "OK: pr-state.sh classify — all fixtures and regressions passed (issues #535, #557, #575, #669, #743)"

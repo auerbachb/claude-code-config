@@ -431,8 +431,10 @@ CONVO=$(run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per
 #         finding pattern — otherwise the finding pattern swallows BugBot clean summaries.
 #      4. Finding patterns (severity/badges/phrases/suggestions) come next.
 #      5. Weak-ack fallback (lgtm variants) next, so it can't hide a real finding.
-#      6. CR walkthrough/summary marker ("<!-- ... summarize by coderabbit.ai -->") is the LAST
-#         override, immediately above the default — deliberately NOT in the tier-1 group above (#575).
+#      6. Greptile clean-pass summary ("Greptile Summary" heading, placed after severity
+#         checks but before the generic "issues? found" finding phrase — #743) sits with the
+#         CR walkthrough/summary marker as the LAST overrides, immediately above the default
+#         — deliberately NOT in the tier-1 group above (#575, #743).
 #         This is a different trigger from #557's rate-limit/usage-limit family: the walkthrough is
 #         the boilerplate CR posts on nearly every PR, and it matched no branch at all, so it fell
 #         through to default → finding and produced phantom findings.
@@ -442,6 +444,12 @@ CONVO=$(run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per
 #         which is strictly worse than the phantom-finding noise it fixes. Every finding pattern must
 #         be evaluated first and win. Ordering alone supplies that guard, so no AND-not guard (of the
 #         BugBot zero-issue kind) is needed here.
+#         Greptile's issue-comment summary (#743) follows the same late-placement rule for the
+#         walkthrough half of this tier; the Greptile branch itself sits just above the generic
+#         "issues? found" phrase because clean summaries say "no issues found" — caught by that
+#         phrase if the Greptile branch were any later. The branch requires the summary heading
+#         and either no "issues found" prose or the explicit "no issues found" clean-pass wording,
+#         so a summary that reports N>0 issues still reaches the finding phrase below.
 #      7. Default is finding — under-classifying is the failure mode this skill prevents.
 # ----------------------------------------------------------------------
 NEW_SINCE="null"
@@ -469,6 +477,7 @@ if [[ -n "$SINCE" ]]; then
       elif test("\\b(critical|major|minor|nitpick|p[0-2])\\b"; "i") then {class: "finding", reason: "severity keyword"}
       elif test("🔴|🟠|🟡"; "") then {class: "finding", reason: "severity badge"}
       elif test("actionable comments posted"; "i") then {class: "finding", reason: "actionable phrase"}
+      elif (test("Greptile Summary"; "i") and ((test("issues? found"; "i") | not) or test("no issues found"; "i"))) then {class: "acknowledgment", reason: "Greptile clean-pass summary"}
       elif test("potential[_ ]issue|issues? found|findings?:"; "i") then {class: "finding", reason: "finding phrase"}
       elif test("Prompt for AI Agent"; "i") then {class: "finding", reason: "CR fix prompt"}
       elif test("```suggestion"; "m") then {class: "finding", reason: "suggestion block"}
