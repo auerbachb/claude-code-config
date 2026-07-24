@@ -22,7 +22,7 @@ Canonical reference for per-phase subagent procedures. Used by agent definitions
 
 ## Phase C: Verify + Wrap (lightest)
 
-1. Start only after the parent has user merge authorization or passes explicit prior authorization in the prompt.
+1. Start when the parent launches Phase C after `merge_ready` — auto `/wrap`, no approval pause.
 2. Read handoff file. Verify merge gate per `cr-merge-gate.md` (reviewer path, CI, resolved threads, and BEHIND checks).
 3. Read PR body, verify all AC against final code, check off all boxes.
 4. If any gate or AC check fails, report `OUTCOME: blocked` and do not merge.

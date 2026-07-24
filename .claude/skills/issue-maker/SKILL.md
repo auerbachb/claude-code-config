@@ -338,7 +338,7 @@ Run `/start-issue {ISSUE_NUMBER}`. It polls for CodeRabbit's implementation plan
 ## Constraints
 - Do NOT work on main — use the worktree /start-issue creates
 - Do NOT modify .env files
-- Squash and merge only after the merge gate passes and issue-author/user merge authorization is confirmed (CLAUDE.md)
+- Squash and merge via full `/wrap` only after the merge gate passes and every AC checkbox verifies (`CLAUDE.md`)
 ```
 
 Why delegate to `/start-issue` instead of a fuller inline template (like `/pm`'s or `/prompt`'s): at the moment this chip is offered the issue has no CR plan yet (it posts asynchronously) and no codebase exploration has happened — `/issue-maker` never does that by design (Step 2). `/start-issue` already owns exactly that sequencing; duplicating it here would drift out of sync with its own logic.

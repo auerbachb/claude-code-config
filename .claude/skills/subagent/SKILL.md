@@ -181,8 +181,8 @@ For each qualifying issue, spawn a Phase A subagent using the Agent tool.
 
 **Parallel execution rules — the 3–4 concurrent-pipeline ceiling:**
 - Treat each issue's A→B→C run as one **pipeline**. Keep at most the concurrency ceiling from `subagent-orchestration.md` ("keep 3-4 active CR-polled PRs max") running at once — **3–4 concurrent pipelines**. Reuse that number; do not invent a new one. The count is **your own pipelines** — the ones this skill launches, all authored by you. Per `subagent-orchestration.md` (the canonical author-scoped ceiling), a collaborator's open PRs never enter it, so they can never block you from launching a queued pipeline.
-- If more issues qualify than the ceiling, launch the first 3–4 now and **queue** the rest. Start a queued pipeline only when a running one reaches a **genuinely terminal state — `merged` or `blocked`.** A pipeline parked at `merge_ready` is **not** terminal: merge authorization and Phase C are still ahead, so it keeps its slot until it actually merges (or blocks). Freeing the slot at `merge_ready` would let a new pipeline start while the parked one's Phase C is still pending, pushing total in-flight pipelines past the ceiling.
-- When every slot is held by pipelines parked at `merge_ready`, don't launch more — surface the merge-authorization ask (Step 10). Each authorized merge finishes Phase C and frees a slot for the next queued pipeline.
+- If more issues qualify than the ceiling, launch the first 3–4 now and **queue** the rest. Start a queued pipeline only when a running one reaches a **genuinely terminal state — `merged` or `blocked`.** A pipeline parked at `merge_ready` is **not** terminal: Phase C (auto `/wrap`) is still ahead, so it keeps its slot until it actually merges (or blocks). Freeing the slot at `merge_ready` would let a new pipeline start while the parked one's Phase C is still pending, pushing total in-flight pipelines past the ceiling.
+- When every slot is held by pipelines at `merge_ready` or in Phase C, don't launch more queued pipelines — wait for a terminal `merged`/`blocked` outcome to free a slot.
 - Each subagent gets its own worktree (use `isolation: "worktree"` on the Agent tool call).
 
 **Subagent prompt template** (fill in variables per issue):
@@ -407,7 +407,7 @@ When a Phase B subagent returns:
 
 1. **Parse exit report.**
 2. **Branch on OUTCOME:**
-   - `merge_ready` -> ask for merge authorization if it has not already been provided, then launch Phase C within 60s.
+   - `merge_ready` -> launch Phase C within 60s (auto `/wrap`, no approval pause).
    - `clean` -> launch replacement Phase B within 60s (no explicit CR approval on current HEAD yet, or latest approval is on a stale SHA).
    - `fixes_pushed` -> launch replacement Phase B within 60s.
    - `blocked_self_review` -> report blocker to user; do NOT auto-loop Phase B without a reviewer availability change.
@@ -420,7 +420,7 @@ When a Phase B subagent returns:
 
 ```
 You are a Phase C verify-and-wrap agent for PR #{PR_NUMBER} (Issue #{ISSUE_NUMBER}).
-The user has authorized merging; execute the canonical `/wrap` flow after verification.
+Execute the canonical `/wrap` flow after verification — no pre-merge prompt.
 
 ## Handoff File
 Resolve the path with `handoff-state.sh [--owner-repo owner/repo] --path {PR_NUMBER}` and read that file first.
@@ -500,22 +500,15 @@ When a Phase C subagent returns:
 3. **Update `session-state.json`** — mark PR as Phase C complete.
 4. **Report to user** with timestamp.
 
-## Step 10: Merge Authorization (User Input Required)
+## Step 10: Auto-merge via Phase C (gate + AC required)
 
-This is the **only step requiring user permission**.
+When Phase B reports `merge_ready`, **launch Phase C within 60 seconds** — no approval pause (`CLAUDE.md` "PR MERGE AUTHORIZATION").
 
-For each PR where Phase B reported `merge_ready` and the user has not already authorized merging:
+1. Launch Phase C with the prompt template above.
+2. Phase C runs the shared `/wrap` flow silently and exits with `OUTCOME: merged` or `OUTCOME: blocked`.
+3. After `OUTCOME: merged`, verify GitHub shows the PR merged, delete the handoff file, update `session-state.json`, and report the post-merge summary from `/wrap` — not a pre-merge ask.
 
-```
-Reviews are clean for PR #{PR_NUMBER} (Issue #{ISSUE_NUMBER}). Phase C will re-check the merge gate, verify and tick AC, then run `/wrap` to squash-merge, sync root main, and detect follow-ups. Want me to launch Phase C now, or do you want to review the diff yourself first?
-```
-
-**If user approves:**
-1. Launch Phase C with the explicit authorization text in the prompt.
-2. Phase C runs the shared `/wrap` flow and exits with `OUTCOME: merged` or `OUTCOME: blocked`.
-3. After `OUTCOME: merged`, verify GitHub shows the PR merged, delete the handoff file, update `session-state.json`, and report: "PR #{PR_NUMBER} merged. Issue #{ISSUE_NUMBER} closed."
-
-**If user wants to review first:** wait for their response before merging.
+**User opt-out:** if the user said "don't merge" / "wait for my approval" for this PR in chat, hold Phase C until they clear it.
 
 ## Step 11: Completion
 

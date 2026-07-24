@@ -367,5 +367,4 @@ Acceptance criteria: ALL PASSED / N FAILED
 Status: Ready for wrap
 ```
 
-If the merge gate is met and all AC pass, ask:
-"Reviews clean, all AC verified and checked off. Want me to run `/wrap` to squash-merge, sync root main, and detect follow-ups, or do you want to review the diff yourself first?"
+If the merge gate is met and all AC pass, run `/wrap` immediately — no pre-merge prompt (`CLAUDE.md` "PR MERGE AUTHORIZATION"). Honor an explicit user opt-out ("don't merge" / "wait for my approval") if given in chat.

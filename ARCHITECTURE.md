@@ -119,9 +119,9 @@ The parent agent stays in **monitor mode** while subagents are active — pollin
 **Orchestration flow:**
 - Parent launches Phase A subagents (can run in parallel across different PRs)
 - When Phase A completes, parent launches Phase B within 60 seconds
-- When Phase B reports clean, parent launches Phase C
-- Phase C verifies acceptance criteria and reports ready for merge
-- Parent asks user for merge confirmation
+- When Phase B reports clean, parent launches Phase C within 60s
+- Phase C verifies acceptance criteria and runs `/wrap` (silent auto-merge)
+- Post-merge report is the user's first signal — no pre-merge approval pause
 
 ---
 

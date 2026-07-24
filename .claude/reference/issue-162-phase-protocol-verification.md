@@ -33,7 +33,7 @@
 1. Parse the exit report  
 2. Branch on OUTCOME (`merge_ready` vs replacement path)  
 3. Verify review state via GitHub API before Phase C  
-4. Launch Phase C within 60s only with merge authorization  
+4. Launch Phase C within 60s — auto `/wrap`, no approval pause
 5. Update `session-state.json`  
 6. Report to user (with timestamp)  
 

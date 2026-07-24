@@ -97,4 +97,4 @@ Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget
 
 ### Completion
 
-Exit only through `cr-merge-gate.md` (review gate, CI, resolved threads, AC, user merge confirmation). This file owns polling/feedback only.
+Exit only through `cr-merge-gate.md` (review gate, CI, resolved threads, AC, then auto-`/wrap`). This file owns polling/feedback only.

@@ -16,7 +16,6 @@ The parent agent provides:
 - **PR number** and **repo** (`{{OWNER}}/{{REPO}}`)
 - **Handoff file path** (e.g., `~/.claude/handoffs/{{OWNER}}/{{REPO}}/pr-{{PR_NUMBER}}-handoff.json`; resolve with `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --path {{PR_NUMBER}}`)
 - **Reviewer** assignment (`cr`, `bugbot`, or `greptile`)
-- **Explicit merge authorization** from the user. Phase C performs the merge via `/wrap`; if the prompt does not contain explicit authorization, stop with `OUTCOME: blocked` and report that authorization is missing.
 
 ## Safety Rules (NON-NEGOTIABLE)
 
@@ -153,14 +152,13 @@ Only when `REVIEWER_ERROR` is unset, branch on `GATE_EXIT`:
 
 After Step 1 and Step 2 both pass:
 
-1. Confirm the prompt includes explicit merge authorization from the user. If not, set `OUTCOME: blocked` and report: "Phase C cannot merge without explicit user authorization passed by the parent."
-2. Read `.claude/skills/wrap/SKILL.md`.
-3. Execute that skill's phases exactly from the current PR branch:
+1. Read `.claude/skills/wrap/SKILL.md`.
+2. Execute that skill's phases exactly from the current PR branch:
    - Phase 1: unresolved finding scan
    - Phase 2: merge gate, AC verification, squash merge, and root-main sync
    - Phase 3: follow-up detection/creation
    - Phase 4: lessons/final report
-4. Treat every `/wrap` stop condition as `OUTCOME: blocked` and include the missing gate, failed AC, CI, unresolved finding, or command error details before the exit report.
+3. Treat every `/wrap` stop condition as `OUTCOME: blocked` and include the missing gate, failed AC, CI, unresolved finding, or command error details before the exit report.
 
 Do not duplicate the merge, main-sync, follow-up, or stale-cleanup rules here. `.claude/skills/wrap/SKILL.md` is the canonical source; Phase C only gates entry to that shared flow and reports the result.
 
@@ -182,7 +180,7 @@ HANDOFF_FILE: ~/.claude/handoffs/{{OWNER}}/{{REPO}}/pr-{{PR_NUMBER}}-handoff.jso
 
 **Valid OUTCOME values for Phase C:**
 - `merged` — all acceptance criteria verified and checked off, `/wrap` completed the squash merge and follow-up flow.
-- `blocked` — merge blocked. Include details in your output before the exit report: what's blocking (missing authorization, CI failure, unmet AC, merge gate not satisfied, unresolved findings, or `/wrap` stop condition).
+- `blocked` — merge blocked. Include details in your output before the exit report: what's blocking (CI failure, unmet AC, merge gate not satisfied, unresolved findings, or `/wrap` stop condition).
 
 **Note:** Do NOT delete the handoff file. The parent deletes it only after `OUTCOME: merged` and GitHub confirms the PR is merged.
 
@@ -192,4 +190,4 @@ Before hand-rolling any side-task not covered by Steps 1-3 above, check whether 
 
 ## Autonomy Rules
 
-AC verification and merge gate checking are autonomous. The merge decision is user-gated before Phase C launch: the parent must either ask the user before launching Phase C or pass explicit authorization already provided by the user in the prompt. Once authorized Phase C starts, `/wrap` is set-and-forget and must not ask additional confirmation questions.
+AC verification and merge gate checking are autonomous. Once Phase C starts after `merge_ready`, execute `/wrap` set-and-forget — no pre-merge prompt; the post-merge report is the user's first signal (`CLAUDE.md` "PR MERGE AUTHORIZATION").

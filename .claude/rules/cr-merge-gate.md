@@ -1,8 +1,8 @@
 # Merge Gate & Pre-Merge Verification
 
 > **This is the single authoritative definition of the merge gate.** All other rule files reference this file instead of duplicating it.
-> **Always:** Verify merge gate before any merge. Verify CI. Verify AC checkboxes against code. Ask user before merging (except `/wrap`/`/merge`; Step 3).
-> **Ask first:** Merging; `/wrap`/`/merge` skip this step (Step 3).
+> **Always:** Verify merge gate before any merge. Verify CI. Verify AC checkboxes against code. After gate + AC pass, auto-run full `/wrap` (Step 3).
+> **Ask first:** Never for merge once gate + AC pass — proceed silently via `/wrap` (Step 3).
 > **Never:** Merge without meeting the gate. Merge with failing CI. Merge with unchecked AC boxes. Stop polling because "nothing is unresolved right now" — see "Polling exit criterion" below.
 
 ## Polling exit criterion
@@ -73,11 +73,14 @@ Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses
 > 5. If any item fails, fix the code first — do NOT offer to merge with unchecked boxes
 > 6. Only after **ALL** boxes are checked, proceed to Step 3
 >
-> Re-run after every review round — verification reflects the code **at merge time**, not an earlier checkpoint. Skipping this step is a **blocking failure**; the user should never see unchecked AC boxes when asked about merge.
+> Re-run after every review round — verification reflects the code **at merge time**, not an earlier checkpoint.
+>
+> Skipping this step is a **blocking failure** — the user should never see unchecked AC boxes at merge time.
 
-## Step 3 — Confirm merge intent with the user
+## Step 3 — Auto-merge via `/wrap`
 
-**Default:** ask squash-merge vs review. **`/wrap` / `/merge`:** after Steps 1–2, `gh pr merge --squash` with no extra prompt; overrides this step and `CLAUDE.md` for that scope (see skills).
+**Default:** after Steps 1–2 pass, run **full `/wrap`** silently — no pre-merge prompt. `/merge` skips follow-ups/lessons but also proceeds without asking.
 
 - Always use **squash and merge** (never regular merge or rebase)
 - `/wrap`'s post-merge phases (follow-ups, session sweep, lessons; see `wrap/SKILL.md`) run **after** the gate clears — they never gate the merge.
+- Branch-protection / `enforce_admins` solo-owner block → stop and print `/admin-merge` — never auto-bypass.
