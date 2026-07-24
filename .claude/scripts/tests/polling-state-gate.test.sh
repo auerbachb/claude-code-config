@@ -44,6 +44,46 @@ check_contains() {
   fi
 }
 
+# Shared gh stub for --ensure-session tests. poll-watermarks.sh (issue #741) calls
+# pr-state.sh during --ensure-session, so the stub must satisfy pr-state's gh
+# surface in addition to polling-state-gate / pr-authorship.
+write_ensure_session_gh_stub() {
+  local bin_dir="$1" pr_json="$2" repo_slug="$3" author_login="${4:-testuser}"
+  mkdir -p "$bin_dir"
+  cat > "$bin_dir/gh" <<STUB
+#!/usr/bin/env bash
+set -uo pipefail
+case "\${1:-}" in
+  pr)   echo '$pr_json' ;;
+  repo) echo '$repo_slug' ;;
+  api)
+    shift
+    [[ "\${1:-}" == "--paginate" ]] && shift
+    endpoint="\${1:-}"
+    case "\$endpoint" in
+      user) echo 'testuser' ;;
+      graphql)
+        echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'
+        ;;
+      repos/*/pulls/*)
+        if [[ "\$*" == *"/reviews"* || "\$*" == *"/comments"* ]]; then
+          echo '[]'
+        else
+          echo '{"user":{"login":"$author_login","type":"User"}}'
+        fi
+        ;;
+      repos/*/issues/*/comments*) echo '[]' ;;
+      repos/*/commits/*/check-runs*) echo '{"check_runs":[]}' ;;
+      repos/*/commits/*/statuses*) echo '[]' ;;
+      *) echo '[]' ;;
+    esac
+    ;;
+  *) exit 1 ;;
+esac
+STUB
+  chmod +x "$bin_dir/gh"
+}
+
 # ---- throwaway repos --------------------------------------------------------
 # mk_repo <dir> <origin-url>
 mk_repo() {
@@ -142,28 +182,9 @@ check_contains "unscoped state emits a notice recommending --ensure-session" "--
 
 # ---- 6. --ensure-session records per-PR scoping ----------------------------
 STUB_BIN="$TMP/bin"
-mkdir -p "$STUB_BIN"
-cat > "$STUB_BIN/gh" <<'STUB'
-#!/usr/bin/env bash
-set -uo pipefail
-case "${1:-}" in
-  pr)   echo '{"headRefOid":"cafebabe","state":"OPEN"}' ;;
-  repo) echo 'org/a' ;;
-  api)
-    # Authorship guard (issue #733): --ensure-session now calls pr-authorship.sh,
-    # which reads `gh api user` (viewer) + `gh api repos/.../pulls/N` (author).
-    # Return a matching author so the PR reads as the viewer's own → gate passes.
-    shift
-    case "${1:-}" in
-      user)            echo 'testuser' ;;
-      repos/*/pulls/*) echo '{"user":{"login":"testuser","type":"User"}}' ;;
-      *)               exit 1 ;;
-    esac
-    ;;
-  *)    exit 1 ;;
-esac
-STUB
-chmod +x "$STUB_BIN/gh"
+write_ensure_session_gh_stub "$STUB_BIN" \
+  '{"headRefOid":"cafebabe","state":"OPEN","number":99647,"headRefName":"feature","url":"https://github.com/org/a/pull/99647","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}' \
+  "org/a"
 
 rm -f "$STATE" "$HANDOFF"
 out="$(cd "$REPO_A" && PATH="$STUB_BIN:$PATH" "$SCRIPT" "$PR_NUM" --ensure-session 2>&1)"; rc=$?
@@ -176,6 +197,8 @@ check_eq "--ensure-session records per-PR owner_repo" "org/a" \
   "$(jq -r --arg pr "$PR_NUM" '.repos["org/a"].prs[$pr].owner_repo // ""' "$STATE")"
 check_eq "--ensure-session records per-PR root_repo" "$REPO_A" \
   "$(jq -r --arg pr "$PR_NUM" '.repos["org/a"].prs[$pr].root_repo // ""' "$STATE")"
+check_eq "--ensure-session initializes poll_watermarks" "0" \
+  "$(jq -r --arg pr "$PR_NUM" '.repos["org/a"].prs[$pr].poll_watermarks.last_review_id // "missing"' "$STATE")"
 
 # A later tick validates against that scoping even after another session
 # overwrites the global field.
@@ -237,26 +260,9 @@ check_eq "session-state.sh --repo-key lowercases mixed-case remote" \
 # produced (already lowercase from test above), then --verify-state from the
 # same checkout should pass (not refuse as a cross-repo mismatch).
 STUB_BIN2="$TMP/bin2"
-mkdir -p "$STUB_BIN2"
-cat > "$STUB_BIN2/gh" <<'STUB'
-#!/usr/bin/env bash
-set -uo pipefail
-case "${1:-}" in
-  pr)   echo '{"headRefOid":"c0ffee","state":"OPEN"}' ;;
-  repo) echo 'AuerbachB/Skingod' ;;
-  api)
-    # Authorship guard (issue #733): supply matching viewer + PR author.
-    shift
-    case "${1:-}" in
-      user)            echo 'testuser' ;;
-      repos/*/pulls/*) echo '{"user":{"login":"testuser","type":"User"}}' ;;
-      *)               exit 1 ;;
-    esac
-    ;;
-  *)    exit 1 ;;
-esac
-STUB
-chmod +x "$STUB_BIN2/gh"
+write_ensure_session_gh_stub "$STUB_BIN2" \
+  '{"headRefOid":"c0ffee","state":"OPEN","number":99647,"headRefName":"feature","url":"https://github.com/AuerbachB/Skingod/pull/99647","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}' \
+  "AuerbachB/Skingod"
 
 rm -f "$STATE"
 out2="$(cd "$REPO_MIXED" && PATH="$STUB_BIN2:$PATH" "$SCRIPT" "$PR_NUM" --ensure-session 2>&1)"; rc2=$?
@@ -275,25 +281,10 @@ check_eq "--verify-state passes for mixed-case-remote checkout (no false cross-r
 # gh api user (viewer) and the PR author disagree, so pr-authorship.sh returns
 # not_mine and enrolment is refused. Enrolling a PR in polling is a "touch".
 STUB_BIN3="$TMP/bin3"
-mkdir -p "$STUB_BIN3"
-cat > "$STUB_BIN3/gh" <<'STUB'
-#!/usr/bin/env bash
-set -uo pipefail
-case "${1:-}" in
-  pr)   echo '{"headRefOid":"feed1234","state":"OPEN"}' ;;
-  repo) echo 'org/a' ;;
-  api)
-    shift
-    case "${1:-}" in
-      user)            echo 'testuser' ;;                                 # viewer
-      repos/*/pulls/*) echo '{"user":{"login":"collab","type":"User"}}' ;; # someone else
-      *)               exit 1 ;;
-    esac
-    ;;
-  *)    exit 1 ;;
-esac
-STUB
-chmod +x "$STUB_BIN3/gh"
+write_ensure_session_gh_stub "$STUB_BIN3" \
+  '{"headRefOid":"feed1234","state":"OPEN","number":99647,"headRefName":"feature","url":"https://github.com/org/a/pull/99647","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}' \
+  "org/a" \
+  "collab"
 
 rm -f "$STATE" "$HANDOFF"
 out="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" "$SCRIPT" "$PR_NUM" --ensure-session 2>&1)"; rc=$?

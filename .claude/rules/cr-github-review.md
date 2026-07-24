@@ -16,7 +16,7 @@ After pushing to a PR, enter this loop automatically.
 
 Before the first poll tick:
 
-1. `.claude/scripts/polling-state-gate.sh <PR_NUMBER> --ensure-session` (`--root-repo <path>` if cwd is not the PR repo). Registers the PR, records repo scoping, creates/refreshes `~/.claude/handoffs/pr-<PR_NUMBER>-handoff.json`.
+1. `.claude/scripts/polling-state-gate.sh <PR_NUMBER> --ensure-session` (`--root-repo <path>` if cwd is not the PR repo). Registers the PR, records repo scoping, creates/refreshes `~/.claude/handoffs/pr-<PR_NUMBER>-handoff.json`, and initializes poll watermarks (`poll-watermarks.sh <PR> --init`).
 2. Refusal = genuine cross-repo mismatch (#647); stop and reconcile.
 
 **Each cycle:** `.claude/scripts/polling-state-gate.sh <PR_NUMBER>` — validates state then runs `merge-gate.sh`. Exit `0` = gate met; `1` = keep polling (plus `/fixpr` triggers below).
@@ -35,7 +35,7 @@ Query everything in “Polling” for every open PR owned by this session. **Re-
 
 If **ANY** condition below holds, invoke `/fixpr` and do NOT request a new review until it completes:
 
-1. New bot findings since the last poll watermark (not old unresolved threads awaiting reviewer ack)
+1. New bot findings since the last poll watermark on **any** of the three endpoints (`pulls/{N}/reviews`, `pulls/{N}/comments`, `issues/{N}/comments`) — run `.claude/scripts/poll-watermarks.sh <PR> --check` (`NEW_FINDINGS=1`); not old unresolved threads awaiting reviewer ack
 2. Any check-run with a blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`)
 3. **`mergeStateStatus == “BEHIND”`** — read explicitly each cycle. **Do not treat `BLOCKED` as “behind base”.** Only literal `BEHIND` triggers rebase + force-push via `/fixpr`.
 4. `mergeable == “CONFLICTING”` (merge conflicts; `/fixpr` handles rebase + surfaces blockers)
@@ -46,7 +46,7 @@ If **ANY** condition below holds, invoke `/fixpr` and do NOT request a new revie
 
 **SHA freshness (every cycle).** CR approval must have `.commit_id == current HEAD SHA`; otherwise re-trigger (respecting 2/hour cap) and keep polling. See `cr-merge-gate.md` for retraction rules.
 
-**Exit polling ONLY when the merge gate (`cr-merge-gate.md`) is met.** After any `/fixpr` push, reset the watermark and keep polling for the reviewer's response to the new SHA.
+**Exit polling ONLY when the merge gate (`cr-merge-gate.md`) is met.** After any `/fixpr` push, reset all three watermarks (`poll-watermarks.sh <PR> --reset`) and keep polling for the reviewer's response to the new SHA.
 
 ### Reviewer escalation gate (MANDATORY per cycle)
 
@@ -73,7 +73,7 @@ Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget
 - **Commit status every cycle.** Query CodeRabbit check-runs (fallback commands: `.claude/reference/cr-polling-commands.md`). Check-run `completed`/`success` = review done; the "Full review triggered" ack only means started.
 - **Fast-path rate limit:** "rate limit" in failed CR check/status output routes to the escalation gate.
 - **CR username:** `coderabbitai[bot]`. Filter by `.user.login == "coderabbitai[bot]"` — NOT bare `coderabbitai`.
-- **Watermark:** highest review ID from `pulls/{N}/reviews`; for `issues/{N}/comments`, track by comment ID.
+- **Watermark (all three endpoints):** highest review ID from `pulls/{N}/reviews`; highest comment ID from `pulls/{N}/comments` (inline diff comments); highest comment ID from `issues/{N}/comments`. Persist via `poll-watermarks.sh` → `.prs["N"].poll_watermarks` in `session-state.json` (schema: `.claude/reference/session-state-schema.json`).
 - **CR silence:** a completed CR check-run ends the silence wait (the merge gate still decides exit); otherwise the escalation gate owns silence, BugBot grace, and Greptile fallback.
 
 ### CI Health Check (MANDATORY — every poll cycle)

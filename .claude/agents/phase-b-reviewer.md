@@ -82,7 +82,7 @@ jq '.comments.conversation | map(select(.user.login == "coderabbitai[bot]"))' "$
 
 **Filter by:** `.user.login == "coderabbitai[bot]"` (with `[bot]` suffix — NOT bare `coderabbitai`).
 
-**Track the highest review ID** as your watermark (not inline comment IDs — they use different sequences).
+**Track all three poll watermarks** via `poll-watermarks.sh <PR> --check` / `--reset` (highest review ID, highest inline comment ID, highest issue comment ID — see `cr-github-review.md` §Polling).
 
 ### Reviewer Escalation Gate (MANDATORY every CR poll cycle)
 
