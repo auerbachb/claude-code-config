@@ -306,7 +306,7 @@ Tone precedent: `/wrap`'s terse "here's what I decided — flag anything wrong" 
 
 | Tier | Trigger | Model / effort |
 |------|---------|-----------------|
-| **Heavy** | `touches_rules`, `touches_claude_md`, `has_orchestration_keywords`, or `file_count > 5` | Opus 4.8, effort `max` |
+| **Heavy** | `touches_rules`, `touches_claude_md`, `has_orchestration_keywords`, or `file_count > 5` | Opus 4.8, effort `xhigh` (step up to `max` for correctness-critical work — see `prompt/SKILL.md` Step 5) |
 | **Standard** | not Heavy, and `file_count` 2–5, `ac_count > 3`, or `touches_skill` | Opus 4.8, effort `high` |
 | **Light** | not Heavy/Standard, or any `scope_keywords` present | Sonnet 5, effort `low` |
 

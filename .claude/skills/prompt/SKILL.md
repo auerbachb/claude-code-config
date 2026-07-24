@@ -14,7 +14,7 @@ Analyze one or more GitHub issues, classify complexity, and produce a copy-paste
 
 The current fleet is **Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5** — the same four models named in `CLAUDE.md`, `.claude/rules/subagent-orchestration.md` "Model Selection", and `.claude/agents/README.md`. In the Claude Code picker, **Sonnet 5** is the default. **Opus 4.7 / Opus 4.6** and **Sonnet 4.6 / Sonnet 4.5** are Legacy — never recommend them. Opus 4.8 and Sonnet 5 ship with a native 1M context window; there is no separate "(1M context)" picker option, so an entry like "Opus 4.8 (1M context)" is not a distinct model. Bare aliases used elsewhere (agent frontmatter, spawn sites) currently resolve as: `opus` → Opus 4.8, `sonnet` → Sonnet 5, `haiku` → Haiku 4.5; Fable 5 has no bare alias and must be named explicitly (`claude-fable-5`).
 
-The picker also exposes **effort levels** (`low`, `medium`, `high`, `xhigh`, `max`, plus session-only `ultracode`). This skill keeps its internal Heavy/Standard/Light tier vocabulary and decision tree unchanged, and maps each tier to a recommended effort level in the output: **Heavy → `max`**, **Standard → `high`**, **Light → `low`**. Users may adjust within a tier's range — e.g., a Heavy task that needs multi-agent orchestration can step up to `ultracode`; a borderline Standard task can step up to `xhigh` or step down to `medium`. Model choice has its own step-up: the hardest long-horizon / orchestration work can move from Opus 4.8 up to **Fable 5** (see Heavy, below).
+The picker also exposes **effort levels** (`low`, `medium`, `high`, `xhigh`, `max`, plus session-only `ultracode`). This skill keeps its internal Heavy/Standard/Light tier vocabulary and decision tree unchanged, and maps each tier to a recommended effort level in the output: **Heavy → `xhigh`**, **Standard → `high`**, **Light → `low`**. Users may adjust within a tier's range — e.g., a Heavy task with correctness-critical work can step up to `max`; a Heavy task that needs multi-agent orchestration can step up to `ultracode`; a borderline Standard task can step up to `xhigh` or step down to `medium`. Model choice has its own step-up: the hardest long-horizon / orchestration work can move from Opus 4.8 up to **Fable 5** (see Heavy, below).
 
 **Fast mode:** the picker has a Fast mode toggle that gives Claude Opus faster output — it does not downgrade to a smaller model. It applies to **Opus 4.8 only** (and deprecated Opus 4.7); it is not offered for Sonnet 5, Haiku 4.5, or Fable 5, so it never pairs with a Light-tier recommendation. `/prompt` does NOT accept a `--fast` flag and does not factor Fast mode into recommendations — it is a user-toggled picker option. A `--fast` flag is a possible follow-up, not part of this skill.
 
@@ -137,7 +137,7 @@ Apply this decision tree. When signals conflict, choose the **higher** tier (con
 
 **Batch handling rule:** First classify each issue independently to produce a per-issue tier (`issue_tier`). Then compute a batch tier from the most complex `issue_tier` in the set. A batch of 3 issues where one is Heavy makes the batch tier Heavy. The batch tier is used for thread-prompt output formatting and checkpoint inheritance, while per-issue decisions (like Step 5.5 subagent partitioning) must use `issue_tier`.
 
-### Heavy — Opus 4.8, effort `max` (step up to Fable 5 for the hardest long-horizon work)
+### Heavy — Opus 4.8, effort `xhigh` (step up to Fable 5 for the hardest long-horizon work)
 
 Assign Heavy if ANY of these are true:
 - `touches_rules` is true (rule files are highest-stakes)
@@ -148,6 +148,10 @@ Assign Heavy if ANY of these are true:
 - `dependency_count > 2`
 
 **Fable 5 step-up (within Heavy).** Opus 4.8 is the Heavy default. Recommend stepping up to **Fable 5** — the strongest model in the fleet, at roughly 2× Opus 4.8's cost — only for the hardest long-horizon work at the top of the Heavy band. Step up when Heavy was triggered AND at least two of: `has_orchestration_keywords`, `touches_rules` or `touches_claude_md`, `file_count > 5`, `dependency_count > 2`. A Heavy issue that trips exactly one trigger (the common case — e.g. a rules-only wording change) stays on Opus 4.8. Phrase it as a step-up, never a replacement: the recommendation line stays `Opus 4.8`, with the Fable 5 option noted alongside it.
+
+**`max` effort step-up (within Heavy).** `xhigh` is the Heavy effort default — the documented sweet spot for demanding coding work, which every Heavy issue qualifies as. Step up to `max` (correctness-over-cost) only when the penalty for a wrong answer is high: security-adjacent edits (auth, secrets handling, permissions), merge-gate or state-machine logic where an error propagates silently, or when prior review rounds surfaced significant correctness failures (e.g., Greptile P0 findings or repeated CR rounds on the same issue). Issues that also meet the Fable 5 model step-up threshold (at least two of `has_orchestration_keywords`, `touches_rules`/`touches_claude_md`, `file_count > 5`, `dependency_count > 2`) are strong `max` candidates if they also carry a correctness signal. Single-trigger Heavy issues — the common case (e.g., a rules-only wording change) — stay on `xhigh`. Phrase it as a step-up: the recommendation line stays `xhigh`, with `max` noted as an option when warranted.
+
+> **Effort rationale (Issue #558):** Heavy previously defaulted to `max`, skipping `xhigh` entirely. This over-spent on the most common Heavy cases (a single `touches_rules` trigger) that already run on Opus 4.8. `xhigh` is the documented sweet spot for demanding coding work; `max` is correctness-over-cost for cases where errors propagate at high cost. The new default mirrors the Fable-5 model step-up pattern from PR #554: default to capable-but-not-maximum, reserve the higher setting for cases where the extra cost is justified.
 
 ### Standard — Opus 4.8, effort `high`
 
@@ -261,7 +265,7 @@ Rationale: {1-line explanation of why this tier was selected, citing the dominan
 **OUTPUT MUST USE `~~~` FENCES, NOT BACKTICKS.** The opening and closing lines of every per-issue prompt block must be exactly `~~~`.
 
 **Map tier to `{MODEL}` and `{EFFORT}` strings** (same Heavy / Standard / Light mapping for both the batch **Tier Recommendation** line and each per-issue `**Model:**` line — use **batch tier** for Tier Recommendation and **per-issue `issue_tier`** for each block):
-- **Heavy** → `Opus 4.8`, effort `max` (step up to `ultracode` for multi-agent orchestration work; append "(or Fable 5 — ~2× cost, for the hardest long-horizon work)" only when the Step 5 Fable 5 step-up rule is met)
+- **Heavy** → `Opus 4.8`, effort `xhigh` (step up to `max` for correctness-critical work — see Step 5 `max` effort step-up rule; step up to `ultracode` for multi-agent orchestration; append "(or Fable 5 — ~2× cost, for the hardest long-horizon work)" only when the Step 5 Fable 5 step-up rule is met)
 - **Standard** → `Opus 4.8`, effort `high` (step up to `xhigh` for demanding coding work)
 - **Light** → `Sonnet 5`, effort `low` (Haiku 4.5 is a valid cheaper alternative — append "(or Haiku 4.5)" to Light-tier recommendations)
 
