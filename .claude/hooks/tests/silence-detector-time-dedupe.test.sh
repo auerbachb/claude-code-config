@@ -73,6 +73,14 @@ CTX=$(run_hook "$SID" | context_of)
 CTX=$(run_hook "$SID" | context_of)
 [[ -z "$CTX" ]] || fail "warned-cooldown call should emit no context, got: '$CTX'"
 
+# --- 5b. New session with a leftover marker still gets its first timestamp ---
+# Simulates same-session-id reuse (e.g. the shared "default" id): heartbeat
+# file absent, fresh time marker present — the first call must force-emit.
+touch "/tmp/claude-time-injected-${SID}"          # fresh marker, deterministically
+rm -f "/tmp/claude-heartbeat-${SID}" "/tmp/claude-silence-warned-${SID}"
+CTX=$(run_hook "$SID" | context_of)
+[[ "$CTX" == Current\ system\ time:* ]] || fail "new session with leftover marker should force-inject, got: '$CTX'"
+
 # --- 6. Env override is respected --------------------------------------------
 SID2="dedupe-test-env-$$-$RANDOM"
 rm -f $(tmp_files "$SID2")

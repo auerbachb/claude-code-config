@@ -95,7 +95,10 @@ TIME_INJECT_S="${SILENCE_TIME_INJECT_S:-60}"
 
 emit_time_if_due() {
   # Dedupe (issue #773): skip the time injection when one landed < TIME_INJECT_S ago.
-  if [[ -f "$TIME_FILE" ]]; then
+  # $1 = "force": bypass the dedupe check — new-session paths must always emit,
+  # even when a marker from a prior same-id session (e.g. the shared "default"
+  # id) survives in /tmp.
+  if [[ "${1:-}" != "force" && -f "$TIME_FILE" ]]; then
     local last_inject inject_age
     last_inject=$(file_mtime "$TIME_FILE")
     if [[ -n "$last_inject" ]]; then
@@ -128,7 +131,7 @@ touch "$ACTIVE_FILE" 2>/dev/null || true
 # If heartbeat file doesn't exist, create it (first tool call in session)
 if [[ ! -f "$HEARTBEAT_FILE" ]]; then
   touch "$HEARTBEAT_FILE"
-  emit_time_if_due
+  emit_time_if_due force
   exit 0
 fi
 last_ack=$(file_mtime "$HEARTBEAT_FILE")
@@ -136,7 +139,7 @@ last_ack=$(file_mtime "$HEARTBEAT_FILE")
 # Fallback if stat failed
 if [[ -z "$last_ack" ]]; then
   touch "$HEARTBEAT_FILE"
-  emit_time_if_due
+  emit_time_if_due force
   exit 0
 fi
 
