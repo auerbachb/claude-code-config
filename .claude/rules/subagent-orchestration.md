@@ -37,7 +37,7 @@ If agent definitions are unavailable (e.g., repo without `.claude/agents/`):
 | `pm-worker` | `sonnet` |
 | Read-only review agents (e.g., `/pr-review-help`) | `sonnet` |
 
-Fleet: **Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5**. Fable 5 has no bare alias and is **never a spawn default** — reserve it for interactive step-ups where a human watches the spend. Alias resolution and per-phase rationale: `.claude/agents/README.md` §Model Selection.
+Fleet: **Fable 5, Opus 5, Sonnet 5, Haiku 4.5**. Fable 5 has no bare alias and is **never a spawn default** — reserve it for interactive step-ups where a human watches the spend. Alias resolution and per-phase rationale: `.claude/agents/README.md` §Model Selection.
 
 Rules: set `model` explicitly on every spawn (call-site overrides frontmatter; `CLAUDE_CODE_SUBAGENT_MODEL` is only a legacy safety net). If a Sonnet-tier agent underperforms, escalate to `opus` and document why.
 

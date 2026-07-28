@@ -290,7 +290,7 @@ isn't a fuzzy match. Full rules: .claude/rules/skill-first.md.
 
 **Agent tool call parameters:**
 - `mode: "bypassPermissions"`
-- `model: "opus"` (currently resolves to Opus 4.8; heavy reasoning — initial implementation, multi-file edits, PR creation — see `subagent-orchestration.md` "Model Selection")
+- `model: "opus"` (currently resolves to Opus 5; heavy reasoning — initial implementation, multi-file edits, PR creation — see `subagent-orchestration.md` "Model Selection")
 - `isolation: "worktree"`
 - `run_in_background: true` (so you can monitor multiple agents)
 
@@ -397,7 +397,7 @@ If missing, reconstruct state from GitHub API.
 **Phase B Agent tool call parameters:**
 - `subagent_type: "phase-b-reviewer"`
 - `mode: "bypassPermissions"`
-- `model: "opus"` (currently resolves to Opus 4.8; Phase B evaluates review findings and fixes code — see `subagent-orchestration.md` "Model Selection")
+- `model: "opus"` (currently resolves to Opus 5; Phase B evaluates review findings and fixes code — see `subagent-orchestration.md` "Model Selection")
 - `isolation: "worktree"` (same as Phase A — Phase B fetches and checks out the PR branch inside its own fresh worktree)
 - `run_in_background: true`
 

@@ -252,10 +252,10 @@ Ready to code. Start with step 1 of the plan above. Run the dual-CLI local revie
 
 ### Model recommendation
 
-Every handoff — chip or fallback — needs a `{MODEL}` and a `{REASON}`. Use this lightweight, role-based rule over the canonical roster (**Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5** — see `.claude/rules/subagent-orchestration.md` "Model Selection"):
+Every handoff — chip or fallback — needs a `{MODEL}` and a `{REASON}`. Use this lightweight, role-based rule over the canonical roster (**Fable 5, Opus 5, Sonnet 5, Haiku 4.5** — see `.claude/rules/subagent-orchestration.md` "Model Selection"):
 
 - **Default: Sonnet 5** — ordinary single-issue coding work.
-- **Step up to Opus 4.8** when the issue touches rules, `CLAUDE.md`, skills, or orchestration — instruction-adherence work where literal-following models misfire.
+- **Step up to Opus 5** when the issue touches rules, `CLAUDE.md`, skills, or orchestration — instruction-adherence work where literal-following models misfire.
 
 `{REASON}` is a short phrase naming the dominant driver (e.g. `rules + skill wiring`, `single-file code change`). Do **NOT** replicate `/prompt`'s Heavy/Standard/Light multi-signal pipeline — `/start-issue` is single-issue and has no model concept beyond this rule. When `/prompt` already produced a recommendation for the issue, prefer it.
 

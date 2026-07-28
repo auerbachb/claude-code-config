@@ -42,7 +42,7 @@ Persistent (non-secret) config lives in `~/.opencodereview/config.json`. The vet
 
 ```bash
 ocr config set provider anthropic
-ocr config set providers.anthropic.model claude-opus-4-8   # current lineup (Opus 4.8)
+ocr config set providers.anthropic.model claude-opus-5      # current lineup (Opus 5)
 ocr config set providers.anthropic.auth_header x-api-key    # required for sk-ant-* keys
 ```
 
