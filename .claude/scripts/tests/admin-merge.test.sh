@@ -292,7 +292,7 @@ BEHIND_ONLY='["branch is BEHIND base — rebase + force-push before merging"]'
 # 18. Plain shape → merges, issues no protection call, prints the evidence report.
 new_log
 FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
-  run 1 --auto-plain --repo-path "$CLONE" --branch main
+  run 1 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
 expect_rc 0 "--auto-plain merges the plain shape (exit 0)"
 log_present "^pr merge 1 --squash --admin" "auto-plain issued the admin squash-merge"
 log_absent "protection/enforce_admins" "auto-plain issued NO protection API call"
@@ -307,7 +307,7 @@ grep_ok "solo-owner verified" "evidence report carries the solo-owner note"
 # 19. Repeat guard: a second --auto-plain on the SAME PR refuses and prints.
 new_log
 FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
-  run 1 --auto-plain --repo-path "$CLONE" --branch main
+  run 1 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
 expect_rc 8 "--auto-plain refuses a second attempt on the same PR (exit 8)"
 grep_ok "AUTO_PLAIN_REFUSED: reason=repeat" "repeat refusal names the repeat guard"
 log_absent "^pr merge" "repeat refusal issues no merge call"
@@ -316,7 +316,7 @@ grep_ok "gh pr merge 1 --squash --admin" "repeat refusal falls back to printing 
 # 20. HARD SHAPE GATE: toggle shape → refuse, print only, zero protection calls.
 new_log
 FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' FAKE_PROTECTION='{"enforce_admins":{"enabled":true}}' \
-  run 4 --auto-plain --repo-path "$CLONE" --branch main
+  run 4 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
 expect_rc 8 "--auto-plain refuses the toggle shape (exit 8)"
 grep_ok "AUTO_PLAIN_REFUSED: shape=toggle" "toggle refusal names the diagnosed shape"
 log_absent "-X DELETE" "toggle refusal issued NO protection DELETE call"
@@ -327,7 +327,7 @@ grep_ok "gh api -X DELETE repos/solo/repo/branches/main/protection/enforce_admin
 # 21. Non-clean BEHIND (clean-behind-check exit 1) → refuse, route to rebase.
 new_log
 FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=1 FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
-  run 3 --auto-plain --repo-path "$CLONE" --branch main
+  run 3 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
 expect_rc 1 "--auto-plain refuses a non-clean BEHIND (exit 1)"
 grep_ok "rebase" "non-clean BEHIND refusal routes to the rebase path"
 log_absent "^pr merge" "non-clean BEHIND: no merge call issued"
@@ -339,7 +339,7 @@ new_log
 CBC_COUNT="$TMP/cbc.count"; rm -f "$CBC_COUNT"
 FAKE_GATE_EXIT=1 FAKE_CBC_EXIT_SEQ="0 1" FAKE_CBC_COUNT_FILE="$CBC_COUNT" \
   FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
-  run 2 --auto-plain --repo-path "$CLONE" --branch main
+  run 2 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
 expect_rc 1 "--auto-plain catches a base that moved between pre-flight and merge (exit 1)"
 grep_ok "clean-BEHIND state no longer holds" "TOCTOU refusal names the stale clean-BEHIND state"
 log_absent "^pr merge" "TOCTOU refusal issues no merge call"
@@ -354,11 +354,35 @@ fi
 new_log
 FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 FAKE_AUTHORSHIP_EXIT=1 FAKE_AUTHORSHIP_MSG='not_mine' \
   FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
-  run 5 --auto-plain --repo-path "$CLONE" --branch main
+  run 5 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
 expect_rc 1 "authorship guard refuses --auto-plain on a non-author PR (exit 1)"
 grep_ok "authorship guard" "auto-plain refusal names the authorship guard"
 log_absent "^pr merge" "no merge call for a non-author PR under --auto-plain"
 log_absent "protection/enforce_admins" "no protection API call for a non-author PR under --auto-plain"
+
+# 23b. AC gate: --auto-plain without --ac-verified refuses and prints. The ticked-
+#      checkbox proxy in clean-behind-check.sh is not per-criterion verification,
+#      and an unattended merge must not rest on it (BugBot high-severity finding).
+new_log
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 7 --auto-plain --repo-path "$CLONE" --branch main
+expect_rc 8 "--auto-plain without --ac-verified refuses (exit 8)"
+grep_ok "AUTO_PLAIN_REFUSED: reason=ac-unverified" "AC refusal names the missing attestation"
+grep_ok "Step 2" "AC refusal points at cr-merge-gate.md Step 2"
+log_absent "^pr merge" "AC refusal issues no merge call"
+log_absent "protection/enforce_admins" "AC refusal issues no protection API call"
+grep_ok "gh pr merge 7 --squash --admin" "AC refusal falls back to printing the command"
+
+# 23c. Repeat guard must FAIL CLOSED: when the marker cannot be written, refuse
+#      rather than merge with the retry guard silently disarmed (BugBot finding).
+#      $HOME/.claude/admin-merge-auto is a regular file here, so mkdir -p fails.
+new_log
+RO_HOME="$TMP/home-noguard"; mkdir -p "$RO_HOME/.claude"; : > "$RO_HOME/.claude/admin-merge-auto"
+HOME="$RO_HOME" FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 8 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
+expect_rc 8 "--auto-plain refuses when the repeat-guard marker is unwritable (exit 8)"
+grep_ok "AUTO_PLAIN_REFUSED: reason=guard-unwritable" "unwritable-guard refusal names the cause"
+log_absent "^pr merge" "unwritable guard: no merge issued (fails closed, never unguarded)"
 
 # 24. Modes stay mutually exclusive.
 run 6 --auto-plain --execute --repo-path "$CLONE" --branch main

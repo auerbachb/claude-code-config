@@ -45,7 +45,8 @@
 #                      merge, and prints an evidence report. Contains no
 #                      protection-modifying call. Any other diagnosed shape is a
 #                      hard refusal (exit 8) that falls back to printing, as does a
-#                      second attempt on the same PR (repeat guard).
+#                      second attempt on the same PR (repeat guard) and a missing
+#                      --ac-verified attestation. REQUIRES --ac-verified.
 #   --execute          USER-INVOKED ONLY. Toggle shape: run the toggle-merge-toggle
 #                      dance with a trap that re-enables enforce_admins on any
 #                      failure, then verify protection is restored and the PR merged.
@@ -58,6 +59,14 @@
 #   --repo-path <path>  Absolute path of the local clone to cd into (default:
 #                       repo-root.sh / git toplevel of the cwd).
 #   --branch <name>     Protected branch (default: the PR's base branch).
+#   --ac-verified       REQUIRED by --auto-plain. Caller attests it has completed
+#                       cr-merge-gate.md Step 2 — per-criterion Test Plan
+#                       verification against the code at the CURRENT SHA — for this
+#                       PR. clean-behind-check.sh only confirms the checkboxes are
+#                       ticked, which is a mechanical proxy, not verification; an
+#                       unattended merge must not rest on the proxy alone. Without
+#                       this flag --auto-plain refuses (exit 8) and prints instead.
+#                       Ignored by every other mode.
 #   --force-solo        Skip the solo-owner heuristic (treat repo as solo-owned).
 #   --reviewer cr|bugbot|greptile   Pass through to merge-gate.sh.
 #   --allow-nonauthor   Bypass the issue #733 authorship guard (see below). Pass
@@ -86,8 +95,9 @@
 #        never reported state=MERGED; in execute's toggle shape the trap
 #        re-enabled protection)
 #   8 — refused by --auto-plain: the diagnosed shape is not `plain` (protection
-#        modification is prohibited for Claude), or an auto attempt already ran for
-#        this PR. The bypass command is printed for the user; nothing was executed.
+#        modification is prohibited for Claude), --ac-verified was not passed, an
+#        auto attempt already ran for this PR, or the repeat-guard marker could not
+#        be written. The bypass command is printed; nothing was executed.
 
 set -uo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
@@ -108,6 +118,10 @@ REPO_PATH_OVERRIDE=""
 BRANCH_OVERRIDE=""
 FORCE_SOLO=false
 REVIEWER_OVERRIDE=""
+# AC attestation (issue #754 review): --auto-plain merges unattended, so it must
+# not rest on clean-behind-check.sh's ticked-checkbox proxy alone. The caller
+# asserts it ran cr-merge-gate.md Step 2 against the code at the current SHA.
+AC_VERIFIED=false
 # Authorship guard (issue #733): a bypass merge is the most consequential PR
 # write. Refuse non-author PRs unless the caller passes --allow-nonauthor under
 # an explicit per-PR user override.
@@ -138,6 +152,7 @@ while [[ $# -gt 0 ]]; do
       [[ -z "$BRANCH_OVERRIDE" ]] && { echo "ERROR: --branch requires a value" >&2; exit 2; }
       shift 2 ;;
     --force-solo) FORCE_SOLO=true; shift ;;
+    --ac-verified) AC_VERIFIED=true; shift ;;
     --allow-nonauthor) ALLOW_NONAUTHOR=true; shift ;;
     --reviewer)
       REVIEWER_OVERRIDE="${2:-}"
@@ -556,6 +571,18 @@ if [[ "$MODE" == "auto-plain" ]]; then
     exit 8
   fi
 
+  # AC gate — clean-behind-check.sh only confirms the Test Plan checkboxes are
+  # ticked, which is a mechanical proxy; cr-merge-gate.md Step 2's per-criterion
+  # verification against the code at the current SHA is a separate, NON-NEGOTIABLE
+  # step. With a human pasting the command, Step 2 had a second chance to happen;
+  # unattended it does not, so the caller must attest it ran.
+  if [[ "$AC_VERIFIED" != true ]]; then
+    echo "AUTO_PLAIN_REFUSED: reason=ac-unverified — pass --ac-verified only after completing cr-merge-gate.md Step 2 (per-criterion Test Plan verification against the code at this SHA). Ticked checkboxes alone are a proxy, not verification. Printing the command instead." >&2
+    print_warning_block
+    echo "$BYPASS_CMD"
+    exit 8
+  fi
+
   # Repeat guard — one auto attempt per PR. A successful merge is terminal, so a
   # second attempt can only follow a failure the pre-flight could not see;
   # retrying it on every /babysit-pr tick would hammer the API and mask the real
@@ -605,8 +632,17 @@ if [[ "$MODE" == "auto-plain" ]]; then
   }
   AUTO_HEAD_SHA="$(ev '.head_sha')"
 
-  mkdir -p "$AUTO_MARKER_DIR" 2>/dev/null || true
-  printf '%s\tpr=%s\thead=%s\n' "$(date -u +%FT%TZ)" "$PR_NUMBER" "$AUTO_HEAD_SHA" > "$AUTO_MARKER" 2>/dev/null || true
+  # Arm the repeat guard BEFORE merging, and fail closed if it cannot be armed —
+  # merging with a silently-disarmed guard is exactly the unbounded-retry scenario
+  # the guard exists to prevent (an unwritable $HOME would otherwise let every
+  # /babysit-pr tick re-attempt an --admin merge).
+  if ! mkdir -p "$AUTO_MARKER_DIR" 2>/dev/null ||
+     ! printf '%s\tpr=%s\thead=%s\n' "$(date -u +%FT%TZ)" "$PR_NUMBER" "$AUTO_HEAD_SHA" > "$AUTO_MARKER" 2>/dev/null; then
+    echo "AUTO_PLAIN_REFUSED: reason=guard-unwritable — could not write the repeat-guard marker ($AUTO_MARKER); refusing rather than merging with the retry guard disarmed. Fix the path (or its permissions) and re-run. Printing the command instead." >&2
+    print_warning_block
+    echo "$BYPASS_CMD"
+    exit 8
+  fi
 
   print_warning_block
   echo "[admin-merge] auto-plain: squash-merging PR #$PR_NUMBER with --admin (strict up-to-date + re-validated clean-BEHIND) ..."

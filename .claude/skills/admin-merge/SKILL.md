@@ -44,19 +44,23 @@ If no PR is found, stop: "No PR found — pass a PR number: `/admin-merge <PR>`.
 
 ### Step 1b: Auto-path — execute the plain shape (do this first)
 
-Always try the auto path before printing anything. It runs the **same** pre-flight as `--print` and refuses (exit 8) unless the diagnosed shape is `plain`, so it is safe to attempt unconditionally — you never have to diagnose the shape yourself:
+**Skip this step entirely when the user asked for the command rather than a merge** — `--launch-terminal`, "give me the command", "open a terminal", "just print it". An explicit request for the command outranks the auto path; go straight to Step 2/3. Step 1b is for the cases that arrive *without* a stated preference: `/admin-merge <PR>` on its own, and the `/wrap`, `/fixpr`, `/babysit-pr`, and clean-`BEHIND` routes.
+
+**First complete `cr-merge-gate.md` Step 2** — read the PR body's Test Plan and verify **every** checkbox against the source at the current SHA. `clean-behind-check.sh` only confirms the boxes are *ticked*, which is a proxy; an unattended merge must not rest on it. If any criterion fails, fix it first — do not merge. Only then attest with `--ac-verified` (the script refuses without it):
 
 ```bash
-.claude/scripts/admin-merge.sh "$PR_NUM" --auto-plain
+.claude/scripts/admin-merge.sh "$PR_NUM" --auto-plain --ac-verified
 AUTO_EXIT=$?
 ```
 
+It runs the **same** pre-flight as `--print` and refuses (exit 8) unless the diagnosed shape is `plain`, so it is safe to attempt without diagnosing the shape yourself:
+
 - `0` → **merged.** Relay the script's `AUTO_PLAIN_MERGED` evidence block verbatim (PR, shape, head SHA, `base_ahead_by`, file overlap + granularity, AC counts, solo-owner note) — every auto-executed bypass must be reported after the fact. Skip Steps 2–4 and go to Step 5.
-- `8` → **refused, nothing executed.** Either the shape is `toggle` (protection modification — Claude must not run it) or an auto attempt already ran for this PR. The script has already printed the command; continue with Step 2's exit-code handling and Step 4's user warning as if you had run `--print`. Do **not** retry `--auto-plain`.
+- `8` → **refused, nothing executed.** The stderr line names which: `shape=toggle` (protection modification — Claude must not run it), `reason=ac-unverified` (you skipped Step 2 — go do it, then re-run), `reason=repeat` (an auto attempt already ran), or `reason=guard-unwritable` (the repeat-guard marker could not be written, so the retry guard could not be armed). The script has already printed the command; continue with Step 2's exit-code handling and Step 4's user warning as if you had run `--print`. Do **not** retry `--auto-plain` except after fixing an `ac-unverified` or `guard-unwritable` cause.
 - `1` → not merge-ready, refused by the authorship guard, or the clean-BEHIND state no longer held at merge time (`main` advanced). Surface the reason and route to rebase / `/fixpr`. **Do not** print a bypass. Stop.
 - `5`/`6`/`3`/`2`/`4`/`7` → same handling as Step 2's table (`7` = the merge ran but did not confirm; verify manually, do not retry).
 
-Never pass `--force-solo` or `--allow-nonauthor` here. `--auto-plain` runs one attempt per PR by design; if it refuses with `reason=repeat`, that is a signal a human should look, not a marker to delete.
+Never pass `--force-solo` or `--allow-nonauthor` here, and never pass `--ac-verified` without having actually done Step 2 — it is an attestation, and a false one merges unverified work. `--auto-plain` runs one attempt per PR by design; if it refuses with `reason=repeat`, that is a signal a human should look, not a marker to delete.
 
 ### Step 2: Generate the bypass (script does pre-flight)
 
