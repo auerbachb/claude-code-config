@@ -43,6 +43,8 @@ PUSH_TS="2026-07-23T13:00:00Z"
 FRESH_TS="2026-07-23T13:05:00Z"
 # A timestamp clearly BEFORE the push (comment is stale).
 STALE_TS="2026-07-23T12:55:00Z"
+# A timestamp AFTER FRESH_TS — simulates a summary edited later than its inlines.
+LATE_FRESH_TS="2026-07-23T13:10:00Z"
 
 # --- Fake gh: stubs the endpoints merge-gate.sh calls. ----------------------
 BIN="$TMP/bin"; mkdir -p "$BIN"
@@ -274,6 +276,33 @@ check_eq "false" "$(met)"  "both-stale comment: met == false"
 check_eq "1"     "$RC"     "both-stale comment: exit code 1"
 check_eq "yes" "$(missing_has "no Greptile review")" \
   "both-stale comment: missing says 'no Greptile review yet'"
+
+# --------------------------------------------------------------------------
+# Test 9: P0 inline posted BEFORE in-place summary edit must still be caught.
+# Reproduces the BugBot finding from PR #751: G_INLINE_BODIES was anchored to
+# G_ANCHOR_TS (summary updated_at), which could be LATER than the inline's
+# created_at, silently excluding the P0 from badge scanning.
+#
+# Timeline:
+#   PUSH_TS (13:00) < FRESH_TS (13:05, inline created) < LATE_FRESH_TS (13:10, summary updated_at)
+#
+# G_INLINE_COUNT must count the inline (created_at > PUSH_TS ✓).
+# G_INLINE_BODIES must include the inline (created_at > PUSH_TS ✓) — not gate
+# on G_ANCHOR_TS=LATE_FRESH_TS, which would exclude it.
+# P0_COUNT must be 1 → gate remains unmet.
+# --------------------------------------------------------------------------
+echo "--- Test 9: P0 inline created before in-place summary edit ---"
+COMMENT9="$(greptile_comment "$STALE_TS" 0 "$LATE_FRESH_TS")"
+INLINE_P0_EARLY="$(jq -cn --arg sha "$HEAD_SHA" \
+  '{id:6001, user:{login:"greptile-apps[bot]"},
+    body:"<img alt=\"P0\" src=\"badge.svg\" /> Critical: use-after-free in destructor.",
+    created_at:"'"$FRESH_TS"'",
+    commit_id:$sha, original_commit_id:$sha}')"
+run_gate "$PUSH_TS" "[$COMMENT9]" "[$INLINE_P0_EARLY]"
+
+check_eq "false" "$(met)"              "P0 inline pre-summary-edit: met == false"
+check_eq "yes"   "$(missing_has "P0")" "P0 inline pre-summary-edit: missing contains P0 message"
+check_eq "1"     "$RC"                 "P0 inline pre-summary-edit: exit code 1"
 
 echo "----------------------------------------"
 echo "merge-gate-greptile-comment.test.sh: $PASS passed, $FAIL failed"

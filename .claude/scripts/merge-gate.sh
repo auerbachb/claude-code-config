@@ -773,10 +773,15 @@ case "$REVIEWER" in
           fi
         fi
 
-        # Inline bodies associated with the latest Greptile review (by timestamp).
-        G_INLINE_BODIES=$(echo "$PR_COMMENTS_JSON" | jq -r --arg ts "${G_ANCHOR_TS:-}" '
+        # Inline bodies associated with the latest Greptile review (fresh post-push).
+        # Use LAST_COMMIT_TS (push time) rather than G_ANCHOR_TS (summary updated_at):
+        # when Greptile posts inlines before editing its summary in-place (issue #748),
+        # G_ANCHOR_TS > inline.created_at and those inlines would be excluded from P0
+        # scanning — identical asymmetry to the BugBot commit_id lesson. Using the push
+        # timestamp keeps G_INLINE_BODIES consistent with G_INLINE_COUNT (same filter).
+        G_INLINE_BODIES=$(echo "$PR_COMMENTS_JSON" | jq -r --arg ts "${LAST_COMMIT_TS:-}" '
           [.[]? | select(.user.login == "greptile-apps[bot]")
-                | select(if $ts == "" then true else .created_at >= $ts end) | .body]
+                | select(if $ts == "" then true else .created_at > $ts end) | .body]
           | join("\n---\n")')
 
         # Count P0 severity badges across the review body and inline comments.
