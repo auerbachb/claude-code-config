@@ -440,7 +440,7 @@ Print the **full table** (below the lead line) when ANY of:
 - (d) Step 2.5 processed any subagent outcome, or `HARD_BLOCK[]` gained a new entry this tick;
 - (e) Step 3.6 held or batched anything (the merge-sequence annotation must stay visible).
 
-**Quiet tick** (none of a–e): append `— no change` plus the PR numbers to the lead line, and when `HARD_BLOCK[]` is non-empty append the standing blocks with reasons (e.g. `… (author:x) — no change (#101 #102; hard-blocked: #99 human-CR)`); print **only that line** — no table. **New** hard blocks, gate failures, and terminations always get the full table on the tick they appear ((b)/(c)/(d)); already-reported blocks stay visible via the hard-blocked suffix on every quiet line — never silently dropped.
+**Quiet tick** (none of a–e): append `— no change` plus the PR numbers to the lead line, and when `HARD_BLOCK[]` is non-empty append the standing blocks with reasons (e.g. `… (author:x) — no change (#101 #102; hard-blocked: #99 human-CR)`); print **only that line** — no table. **New** hard blocks, gate failures, and terminations always get the full table on the tick they appear ((b)/(c)/(d)); already-reported blocks stay visible via the hard-blocked suffix on every quiet line — never silently dropped. Terminal snapshots (Pause / Stop & Clean Exit) always print the full table regardless of quiet-tick status.
 
 | Issue | PR | State | Reviews | CI | Unresolved Threads | Verdict | Subagent |
 |-------|----|-------|---------|----|--------------------|---------|----------|
@@ -996,7 +996,7 @@ Reached from Step 7 when the fleet is empty or idle. Unlike Stop & Clean Exit, P
 
 ### 1. Final heartbeat
 
-Print the Step 4 status table one last time, then a one-line reason:
+Print the **full** Step 4 status table one last time — terminal snapshots (Pause here, Stop & Clean Exit) are an explicit exception to Step 4's quiet-tick suppression, so the user always gets a final fleet snapshot even when the pause tick itself was quiet — then a one-line reason:
 
 ```text
 [$TS] PMM pausing — reason: <empty fleet | N idle ticks>
