@@ -54,6 +54,7 @@ case "$ARGS" in
     cat "$FIXTURES/files.$PR"; exit 0 ;;
   *"headRefOid"*)
     PR="$(printf '%s\n' "$ARGS" | sed -n 's|.*pr view \([0-9][0-9]*\).*|\1|p')"
+    case " ${FAKE_HEADSHA_FAIL:-} " in *" $PR "*) echo "gh: could not resolve PR" >&2; exit 1 ;; esac
     if [ -f "$FIXTURES/sha.$PR" ]; then cat "$FIXTURES/sha.$PR"; else echo "sha$PR"; fi
     exit 0 ;;
 esac
@@ -373,6 +374,50 @@ reset
 files 1300 "F.md:10"
 PLAN="$("$SUT" --prs 1300,1300)"     # duplicate input
 check "duplicate PRs deduped" "$(jq -r '.prs_considered | length' <<<"$PLAN")" "1"
+
+# =============================================================================
+echo "[12c] Non-canonical PR numbers are usage errors, not mid-run failures"
+# =============================================================================
+# `001` is not valid JSON, so it would survive a bare ^[0-9]+$ check and then
+# break `jq --argjson` deep inside plan generation. `0` is never a real PR.
+reset
+"$SUT" --prs 001 >/dev/null 2>&1;   check "leading-zero PR → exit 2" "$?" "2"
+"$SUT" --prs 0 >/dev/null 2>&1;     check "zero PR → exit 2"         "$?" "2"
+"$SUT" --prs 1,007 >/dev/null 2>&1; check "one bad entry rejects all → exit 2" "$?" "2"
+
+# =============================================================================
+echo "[12d] --repo must be exactly owner/name"
+# =============================================================================
+# A component-only check accepts owner/repo/extra and silently queries the
+# DIFFERENT real repo `owner/extra`.
+reset
+files 1310 "F.md:10"
+"$SUT" --prs 1310 --repo solo/repo/extra >/dev/null 2>&1; check "3-part repo → exit 2" "$?" "2"
+"$SUT" --prs 1310 --repo solo >/dev/null 2>&1;            check "no slash → exit 2"    "$?" "2"
+"$SUT" --prs 1310 --repo "solo/re po" >/dev/null 2>&1;    check "space in repo → exit 2" "$?" "2"
+"$SUT" --prs 1310 --repo solo/repo >/dev/null 2>&1;       check "valid owner/name → accepted" "$?" "1"
+
+# =============================================================================
+echo "[13b] An unresolvable anchor head SHA fails loudly, never fabricates one"
+# =============================================================================
+# Regression guard for the critical case: substituting a placeholder yields a
+# STABLE signature across ticks, so the stall counter advances on an anchor that
+# was never observed and releases followers as a batch on invented evidence.
+reset
+files 1320 "F.md:300"
+files 1321 "F.md:10"
+export FAKE_HEADSHA_FAIL="1320"
+OUT=$("$SUT" --prs 1320,1321 2>&1); RC=$?
+unset FAKE_HEADSHA_FAIL
+check "unresolvable anchor SHA → exit 4" "$RC" "4"
+if grep -q "refusing to" <<<"$OUT"; then ok "error explains the refusal"; else bad "error explains the refusal" "got: $OUT"; fi
+if grep -q "unknown:" <<<"$OUT"; then bad "no fabricated sentinel" "emitted an 'unknown:' signature"; else ok "no fabricated sentinel in output"; fi
+# --heads supplies the SHA, so the same fleet plans fine without any gh lookup.
+export FAKE_HEADSHA_FAIL="1320"
+PLAN=$("$SUT" --prs 1320,1321 --heads '{"1320":"abc123"}'); RC=$?
+unset FAKE_HEADSHA_FAIL
+check "--heads avoids the failing lookup" "$RC" "0"
+check "signature uses supplied SHA"       "$(jq -r '.groups[0].anchor_signature' <<<"$PLAN")" "abc123:wrap"
 
 # =============================================================================
 echo "[13] Read-only: the planner never writes state or calls a write endpoint"

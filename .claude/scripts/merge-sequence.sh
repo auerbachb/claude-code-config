@@ -105,9 +105,13 @@
 #   0  sequencing applies — at least one PR is held or batched.
 #   1  no sequencing needed — no overlap among merge candidates. The plan is
 #      still printed and every PR reads `merge`; behaviour is unchanged.
-#   2  usage error.
-#   3  a requested PR was not found.
-#   4  gh / jq / helper error.
+#   2  usage error (includes a non-canonical PR number such as `0` or `001`, and
+#      a --repo that is not exactly owner/name).
+#   3  a requested PR was not found (unless --skip-missing).
+#   4  gh / jq / helper error — including an anchor whose head SHA cannot be
+#      resolved. That is deliberately fatal rather than defaulted: a placeholder
+#      would be a STABLE signature across ticks, advancing the stall counter on
+#      an anchor that was never actually observed.
 #
 # DEPENDENCIES
 #   gh (authenticated), jq, pr-authorship.sh (resolved next to this script)
@@ -184,7 +188,12 @@ PR_LIST=()
 _seen=""
 while IFS= read -r _p || [[ -n "$_p" ]]; do
   [[ -z "$_p" ]] && continue
-  [[ "$_p" =~ ^[0-9]+$ ]] || { echo "ERROR: --prs entries must be numbers (got: $_p)" >&2; exit 2; }
+  # Canonical positive decimals only. `0` is never a PR, and a leading-zero form
+  # like `001` is NOT valid JSON — it would survive this check and then blow up
+  # inside `jq --argjson pr 001` further down, turning a usage error into a
+  # mid-run plan failure.
+  [[ "$_p" =~ ^[1-9][0-9]*$ ]] || {
+    echo "ERROR: --prs entries must be canonical positive PR numbers (got: $_p)" >&2; exit 2; }
   case " $_seen " in *" $_p "*) continue ;; esac
   _seen="$_seen $_p"
   PR_LIST+=("$_p")
@@ -205,10 +214,14 @@ if [[ -z "$REPO_FULL" ]]; then
   REPO_FULL="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || REPO_FULL=""
   [[ -z "$REPO_FULL" ]] && { echo "ERROR: could not resolve the repo (pass --repo owner/name)" >&2; exit 4; }
 fi
+# Validate the WHOLE value, not just that the split halves are non-empty: a
+# component check alone accepts `owner/repo/extra`, whose `%%/*` / `##*/` split
+# yields owner=`owner` repo=`extra` — a *different, real* repo that the API would
+# be queried against silently. Exactly one slash, both sides legal repo chars.
+[[ "$REPO_FULL" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
+  echo "ERROR: --repo must be exactly owner/name (got: $REPO_FULL)" >&2; exit 2; }
 OWNER="${REPO_FULL%%/*}"
 REPO="${REPO_FULL##*/}"
-[[ -z "$OWNER" || -z "$REPO" || "$OWNER" == "$REPO_FULL" ]] && {
-  echo "ERROR: --repo must be owner/name (got: $REPO_FULL)" >&2; exit 2; }
 
 # --------------------------------------------------------------------------
 # Authorship gate + per-PR file footprints
@@ -307,13 +320,26 @@ done
 # --------------------------------------------------------------------------
 # Head SHAs (for the anchor signature) — only for PRs we kept.
 # --------------------------------------------------------------------------
+# Resolve an anchor's head SHA, or FAIL — never substitute a placeholder.
+#
+# A fabricated sentinel here is worse than a hard error: the signature would be
+# a stable `unknown:<verdict>` across ticks, so the stall counter would advance
+# on evidence that was never observed and release followers as a batch without
+# the anchor's state ever having been read. Same class of bug as a fabricated
+# epoch corrupting TTL math (issue #634) — a stable-looking value that means
+# "we failed to look", not "nothing changed".
+#
+# Returns non-zero on failure; the caller turns that into exit 4 (the documented
+# gh/helper-error code). `exit` cannot be used here: this runs inside command
+# substitution, where it would only kill the subshell and be silently ignored.
 head_sha_of() {
   local pr="$1" sha
   sha="$(jq -r --arg pr "$pr" '.[$pr] // empty' <<<"$HEADS_JSON")"
   if [[ -z "$sha" ]]; then
-    sha="$(gh pr view "$pr" --repo "$REPO_FULL" --json headRefOid --jq .headRefOid 2>/dev/null)" || sha=""
+    sha="$(gh pr view "$pr" --repo "$REPO_FULL" --json headRefOid --jq .headRefOid 2>/dev/null)" || return 1
   fi
-  printf '%s' "${sha:-unknown}"
+  [[ -n "$sha" && "$sha" != "null" ]] || return 1
+  printf '%s' "$sha"
 }
 
 verdict_of() {
@@ -398,7 +424,13 @@ while IFS= read -r rep; do
 
   ANCHOR_VERDICT="$(verdict_of "$ANCHOR")"
   ANCHOR_STATE="$(anchor_state_of "$ANCHOR_VERDICT")"
-  ANCHOR_SIG="$(head_sha_of "$ANCHOR"):$ANCHOR_VERDICT"
+  if ! ANCHOR_SHA="$(head_sha_of "$ANCHOR")"; then
+    echo "ERROR: could not resolve head SHA for anchor PR #$ANCHOR — refusing to" >&2
+    echo "       fabricate a signature (it would advance the stall counter on an" >&2
+    echo "       unobserved anchor). Pass --heads, or retry when gh is reachable." >&2
+    exit 4
+  fi
+  ANCHOR_SIG="$ANCHOR_SHA:$ANCHOR_VERDICT"
 
   # --- Stall counter: unchanged signature since last tick means no progress.
   PRIOR_SIG="$(jq -r --arg a "$ANCHOR" '.[$a].signature // empty' <<<"$HOLDS_IN")"
