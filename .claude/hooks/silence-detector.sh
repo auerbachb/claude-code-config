@@ -107,7 +107,12 @@ emit_time_if_due() {
       fi
     fi
   fi
-  touch "$TIME_FILE" 2>/dev/null || true
+  if ! touch "$TIME_FILE" 2>/dev/null; then
+    # Deliberate fail-open: an unwritable marker degrades to the pre-dedupe
+    # behavior (inject every call) rather than losing time context. Surface it
+    # so the condition is visible in hook logs instead of silent.
+    echo "silence-detector: cannot write $TIME_FILE — time-injection dedupe disabled this call" >&2
+  fi
   emit_context "Current system time: ${current_time}"
 }
 LOG_DIR="$HOME/.claude/logs"
