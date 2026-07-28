@@ -32,7 +32,7 @@ Writing a markdown file full of copy-paste commands **and then saying "you'll ha
 
 ## Rungs 1–3 in practice — the not-installed case
 
-**Rung 1 — look locally, by absolute path.** The Bash tool runs with a minimal PATH, so a bare `which railway` can report nothing for a tool that is in fact installed. Check the real path instead:
+**Rung 1 — look at what you already have.** MCP tools and custom skills count here too: a connected MCP server or an existing skill may already cover the task, in which case no CLI is needed at all. For the CLI itself, check by absolute path — the Bash tool runs with a minimal PATH, so a bare `which railway` can report nothing for a tool that is in fact installed:
 
 ```bash
 ls -l /opt/homebrew/bin/railway || command -v railway

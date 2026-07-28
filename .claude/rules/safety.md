@@ -54,9 +54,9 @@ Confirm package names before npm/pip/gem/cargo/brew install. Full rules: .claude
 
 ## Capability Discovery — Try the CLI Before Handoff
 
-Before telling the user a task "can't" be done, walk this ladder. It covers **any** provider — `gh`, `git`, `vercel`, `neonctl`, `railway`, `cloudinary`, MCP tools, custom skills, or a service you have never used — not just GitHub.
+Before telling the user a task "can't" be done, walk this ladder. It covers **any** provider — `gh`, `git`, `vercel`, `neonctl`, `railway`, `cloudinary`, or a service you have never used — not just GitHub.
 
-1. **Look locally**, by absolute path (`/opt/homebrew/bin/<tool>`) — the Bash tool's PATH is minimal, so a bare `which` under-reports what is installed.
+1. **Look at what you already have** — MCP tools, custom skills, and the provider's CLI on disk, the last checked by absolute path (`/opt/homebrew/bin/<tool>`): the Bash tool's PATH is minimal, so a bare `which` under-reports what is installed.
 2. **Absent? Check whether the provider ships a CLI at all** — most do. One lookup, then move on; a research detour mid-task is not warranted.
 3. **Install it yourself** when a non-interactive path exists and the rails above hold: package name confirmed against official docs, no `curl … | sh` of an unvetted URL, no TLS bypass, no `sudo`. Any rail that blocks — or an install whose auth step opens a browser — drops to rung 4. Note a new install in your response; don't edit the CLI docs as a side effect.
 4. **Hand off a runbook, not a description** — exact copy-paste command(s) plus one line on why it needs a human, in the `/admin-merge` (#451) shape, covering the `<tool> login` step when auth is interactive.
@@ -65,14 +65,15 @@ Only a dead-ended ladder licenses "I can't", and the answer must **name the rung
 
 ```text
 MINDSET: Before handing off, walk the capability ladder for ANY provider CLI
-(gh, git, railway, vercel, neonctl, …): (1) look locally by absolute path
-(/opt/homebrew/bin/<tool>) — minimal PATH makes bare `which` lie; (2) if absent,
-check whether the provider ships one, one lookup max; (3) install it when
-non-interactive and safety rails hold (docs-confirmed name, no curl-pipe-sh, no
-TLS bypass, no sudo); (4) else hand off an /admin-merge-shaped runbook: exact
-commands + one-line reason, incl. interactive auth. Your own definition's
-prohibitions still win (phase-c uses /wrap, never gh pr merge). "I can't" is
-valid only after the ladder dead-ends, naming the rung and reason.
+(gh, git, railway, vercel, neonctl, …): (1) look at what you already have — MCP
+tools, skills, and the CLI on disk by absolute path (/opt/homebrew/bin/<tool>),
+since minimal PATH makes bare `which` lie; (2) if absent, check whether the
+provider ships one, one lookup max; (3) install it when non-interactive and
+safety rails hold (docs-confirmed name, no curl-pipe-sh, no TLS bypass, no
+sudo); (4) else hand off an /admin-merge-shaped runbook: exact commands +
+one-line reason, incl. interactive auth. Your own definition's prohibitions
+still win (phase-c uses /wrap, never gh pr merge). "I can't" is valid only
+after the ladder dead-ends, naming the rung and reason.
 Full rules: .claude/rules/safety.md.
 ```
 

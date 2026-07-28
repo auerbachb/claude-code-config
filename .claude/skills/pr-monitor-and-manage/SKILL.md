@@ -614,14 +614,15 @@ Confirm package names before npm/pip/gem/cargo/brew install. Full rules: .claude
 
 ```text
 MINDSET: Before handing off, walk the capability ladder for ANY provider CLI
-(gh, git, railway, vercel, neonctl, …): (1) look locally by absolute path
-(/opt/homebrew/bin/<tool>) — minimal PATH makes bare `which` lie; (2) if absent,
-check whether the provider ships one, one lookup max; (3) install it when
-non-interactive and safety rails hold (docs-confirmed name, no curl-pipe-sh, no
-TLS bypass, no sudo); (4) else hand off an /admin-merge-shaped runbook: exact
-commands + one-line reason, incl. interactive auth. Your own definition's
-prohibitions still win (phase-c uses /wrap, never gh pr merge). "I can't" is
-valid only after the ladder dead-ends, naming the rung and reason.
+(gh, git, railway, vercel, neonctl, …): (1) look at what you already have — MCP
+tools, skills, and the CLI on disk by absolute path (/opt/homebrew/bin/<tool>),
+since minimal PATH makes bare `which` lie; (2) if absent, check whether the
+provider ships one, one lookup max; (3) install it when non-interactive and
+safety rails hold (docs-confirmed name, no curl-pipe-sh, no TLS bypass, no
+sudo); (4) else hand off an /admin-merge-shaped runbook: exact commands +
+one-line reason, incl. interactive auth. Your own definition's prohibitions
+still win (phase-c uses /wrap, never gh pr merge). "I can't" is valid only
+after the ladder dead-ends, naming the rung and reason.
 Full rules: .claude/rules/safety.md.
 ```
 

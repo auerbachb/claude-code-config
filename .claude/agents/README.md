@@ -80,8 +80,9 @@ Agent tool call:
 
            MINDSET: Before handing off, walk the capability ladder for ANY provider
            CLI (gh, git, vercel, neonctl, railway, cloudinary, or one you've never
-           used): look locally by absolute path (/opt/homebrew/bin/<tool>); if
-           absent, check whether the provider ships a CLI; install it yourself when
+           used): look at what you already have — MCP tools, skills, and the CLI on
+           disk by absolute path (/opt/homebrew/bin/<tool>); if absent, check
+           whether the provider ships a CLI; install it yourself when
            non-interactive and the safety rails hold; else hand off an
            /admin-merge-shaped runbook — exact commands + one-line reason. 'I can't'
            is valid only after the ladder dead-ends, and must name the rung and the
