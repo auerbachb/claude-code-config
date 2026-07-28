@@ -13,8 +13,9 @@ Resolve **local** merge conflicts while reconciling with **latest `origin/main`*
 ## Hard rules
 
 1. **`git fetch origin main` first** — always refresh main before inspecting conflicts (the helper does this unless `--skip-fetch`).
-2. **Do not `git commit`** — only **`git add`** paths that are fully marker-free after simple resolution. The caller continues merge/rebase or commits separately.
-3. **When in doubt, complex** — the resolver is intentionally conservative; anything ambiguous stays in the file with conflict markers and appears in the report.
+2. **Snapshot the diff before resolving** (issue #757) — immediately after the fetch, run `.claude/scripts/diff-survival-check.sh snapshot --if-absent`. Marker-free is not the same as change-preserving: a resolution that quietly keeps the other side satisfies git while dropping the entire change the PR exists to deliver. `--if-absent` keeps a snapshot `/fixpr` already took; when this skill is entered mid-rebase with nothing on disk, the guard reconstructs the baseline from the rebase's `orig-head` (never from the half-replayed HEAD).
+3. **Do not `git commit`** — only **`git add`** paths that are fully marker-free after simple resolution. The caller continues merge/rebase or commits separately.
+4. **When in doubt, complex** — the resolver is intentionally conservative; anything ambiguous stays in the file with conflict markers and appears in the report.
 
 ## Mechanical step (script)
 
@@ -80,7 +81,19 @@ For **mixed** files (some simple, some complex): simple hunks are written into t
 1. Print the **human summary** from the script (or pretty-print `--json`).
 2. For each **complex** entry: confirm **file path**, **line range / labels**, and **why** (use the script’s `reason` verbatim; add context only if you open the file and can cite the two sides briefly).
 3. **Do not edit** complex hunks in this pass unless the user explicitly asks for a proposal-only suggestion — the skill’s contract is report-first.
-4. Tell the user the exact **next git commands** based on state:
+4. **Run the diff-survival gate before handing back any commit/continue command** (issue #757). Once the resolver has staged the marker-free files:
+
+   ```bash
+   .claude/scripts/diff-survival-check.sh verify; GUARD_RC=$?
+   ```
+
+   - `0` — intact (or `deferred`: a rebase still has commits queued, so re-run after `git rebase --continue`). Give the next commands below.
+   - `1` — the branch's whole diff is gone. Report it verbatim and **do not** hand back a commit command: the guard names the one legitimate case (main independently landed the identical change → close the PR rather than force-push an empty branch).
+   - `2` — the named files lost their changes; a change surviving only as whitespace counts as lost. Tell the user those files must be re-resolved and that this is an **unresolved conflict**, not something to commit.
+   - `4` — either conflicts are still unresolved (nothing to judge yet), or `unverifiable`: the snapshot's baseline commit *is* the commit being checked, so it proves nothing. That is what a snapshot taken **after** the resolution finished looks like — report the resolution as UNVERIFIED and do not hand back a commit command. `5` — no snapshot, so run hard rule 2 first.
+
+   The guard only blocks and reports — it never repairs, and recovery (`git rebase --abort`, resetting to `ORIG_HEAD`) stays the user's call.
+5. Tell the user the exact **next git commands** based on state — only after step 4 came back clean:
    - Mid-merge: `git status` → if all conflicts cleared, `git commit` (merge) or continue as their workflow dictates.
    - Mid-rebase: fix remaining files → `git add` each → `git rebase --continue`.
 

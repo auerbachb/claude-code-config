@@ -79,3 +79,7 @@ Resolve the canonical path for any PR with:
 ```
 
 `handoff-state.sh --owner-repo <owner>/<repo> --create` calls `mkdir -p` on the subdirectory automatically, so callers never need to pre-create it.
+
+## Diff-survival snapshot — deliberately outside these mechanisms (issue #757)
+
+`diff-survival-check.sh` persists one file at `git rev-parse --git-path claude-diff-survival.json` — `.git/claude-diff-survival.json` in the main worktree, `.git/worktrees/<name>/claude-diff-survival.json` in a linked one. It is **not** session state and **not** a handoff file: it is written and read only by `diff-survival-check.sh`, scoped to a single worktree's in-flight rebase/merge rather than to a PR or a session, untracked, and transient — deleting it (or running `diff-survival-check.sh clear`) costs nothing but the ability to verify the current resolution. It lives in the git dir precisely so it survives a session being killed mid-rebase, which is the scenario it exists for. Full rationale: `.claude/reference/diff-survival-guard.md`.
