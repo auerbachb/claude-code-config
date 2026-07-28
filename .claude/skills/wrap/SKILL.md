@@ -897,13 +897,18 @@ Two conditions end the category immediately, filing nothing and adding no report
 
 One condition files nothing but *is* reported: **`existing_lookup_failed == true`** means the script could not check which hotspots already have an open issue, and filing blind risks a duplicate. Add one bullet to `SWEEP_NEEDS_DECISION` — ``Churn hotspot check ran but the existing-issue lookup failed — re-run `churn-hotspots.sh --json` before filing.``
 
-**At most ONE new hotspot issue per run.** This category is deliberately capped where Category 2 is not: on an active repo the detector routinely reports dozens of candidates above the default threshold (measured on this repo: 63 in a single 14-day window), and filing them together would bury the backlog it exists to inform. Take the **highest-scoring hotspot whose `existing_hotspot_issue` is null** — the list is already sorted by score, so it is the first such entry. Each filed issue is found by the lookup on later runs, so successive wraps work down the list one at a time.
+**The two branches operate on different sets — do not select once and then branch.** Filing is capped; commenting is not, and the two are chosen independently. Selecting a single hotspot first and then branching on `existing_hotspot_issue` would make one of the branches unreachable by construction, so evidence would never reach an existing hotspot issue.
 
-**The remainder is never dropped silently.** When candidates were held back, record exactly one bullet in `SWEEP_AUTO_HANDLED`: ``Churn: filed the top hotspot; {N} further candidate(s) above threshold — run `churn-hotspots.sh` to see them.``
+- **Comment set** — **every** hotspot that already has an `existing_hotspot_issue` **and** whose `pr_numbers` include the PR this wrap just merged. Uncapped: it is bounded naturally, since a merging PR touches few files and contributes to each at most once.
+- **File set** — **at most one**: the highest-scoring hotspot whose `existing_hotspot_issue` is null (the list is already sorted by score, so it is the first such entry), or none when every hotspot already has an issue.
 
-For the selected hotspot, take exactly one branch:
+**Why filing is capped and commenting is not.** On an active repo the detector routinely reports dozens of candidates above the default threshold (measured on this repo: 63 in a single 14-day window); filing those together would bury the backlog the category exists to inform. Each filed issue is found by the lookup on later runs, so successive wraps work down the list one at a time. Appending evidence to an issue that already exists adds no new tickets, so it needs no cap.
 
-- **`existing_hotspot_issue` is null → file one issue.** Title is the exact convention the script re-finds later — `Refactor hotspot: {file}` — and the body carries the `<!-- churn-hotspot: {file} -->` marker verbatim, since an edited title falls back to that marker. Keep the body **observational**: state the evidence, do not prescribe the split (the CodeRabbit plan that lands on the filed issue proposes that).
+**The remainder is never dropped silently.** When the file cap held candidates back, record exactly one bullet in `SWEEP_AUTO_HANDLED`: ``Churn: filed the top hotspot; {N} further candidate(s) above threshold — run `churn-hotspots.sh` to see them.``
+
+Then run both branches:
+
+- **File set (≤1) → file one issue.** Title is the exact convention the script re-finds later — `Refactor hotspot: {file}` — and the body carries the `<!-- churn-hotspot: {file} -->` marker verbatim, since an edited title falls back to that marker. Keep the body **observational**: state the evidence, do not prescribe the split (the CodeRabbit plan that lands on the filed issue proposes that).
 
   ```bash
   if NEW_URL=$(gh issue create \
@@ -933,7 +938,9 @@ For the selected hotspot, take exactly one branch:
 
   `CONFLICT_CLAUSE` is empty when `conflict_rounds` is 0, and otherwise reads ` and re-resolved conflicts {conflict_rounds} time(s)`.
 
-- **`existing_hotspot_issue` is set → append evidence, never a second issue** — but **only when the PR this wrap just merged is itself one of the hotspot's `pr_numbers`.** That guard is what keeps the category idempotent: without it every later wrap would append another comment to the same issue reporting the same history. A merging PR appears in that list exactly once, so the comment fires exactly once per contributing merge, and a wrap that did not touch the file stays silent.
+- **Comment set → append evidence to each, never a second issue.** Membership already requires that the PR this wrap just merged is one of the hotspot's `pr_numbers`, and that guard is what keeps the category idempotent: without it every later wrap would append another comment to the same issue reporting the same history. A merging PR appears in that list exactly once, so the comment fires exactly once per contributing merge, and a wrap that did not touch the file stays silent.
+
+  For **each** member of the comment set:
 
   ```bash
   gh issue comment "$EXISTING" --body "Still churning: ${PR_COUNT} distinct merged PRs have touched \`${FILE}\` since ${SINCE}${CONFLICT_CLAUSE}: ${PR_LIST}.
@@ -941,7 +948,7 @@ For the selected hotspot, take exactly one branch:
   _Evidence appended by /wrap after PR #${PR_NUMBER} merged._"
   ```
 
-  Record `Appended to #{EXISTING} instead of filing — churn hotspot \`{file}\`` for the Step 4.3 **Filings suppressed as duplicates** section.
+  Record `Appended evidence to #{EXISTING} — churn hotspot \`{file}\`` per member for the Step 4.3 **Filings suppressed as duplicates** section. These are reported, never silent, even though no ticket was created.
 
 This category's authoritative re-find is the script's **exact** title/marker match, **not** the fuzzy `dedup_search()` helper: a path-keyed artifact needs exact identity, and GitHub's `in:title` search tokenizes paths well enough to match a sibling file. Do not run `dedup_search` here.
 

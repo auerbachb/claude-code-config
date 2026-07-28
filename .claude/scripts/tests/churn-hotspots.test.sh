@@ -255,6 +255,21 @@ run_in "$R1" --since "$WINDOW_START" --json
 check_jq "9a: a sibling-file hotspot issue does not match" "$OUT" \
   '.hotspots[] | select(.file=="src/Form.tsx") | .existing_hotspot_issue == null'
 
+# A capped issue lookup is an INCOMPLETE lookup: a matching issue may sit beyond
+# the cap, so absence of a match no longer proves absence of an issue. Callers
+# gate filing on existing_lookup_failed, so the cap must set it — reporting only
+# `truncated` would let a caller file a duplicate.
+python3 - "$TMP/issue_list.json" <<'PY'
+import json, sys
+# 200 non-matching issues == ISSUE_LOOKUP_CAP, so the lookup is capped out.
+json.dump([{"number": 1000 + i, "title": "Refactor hotspot: src/Unrelated%d.ts" % i, "body": ""}
+           for i in range(200)], open(sys.argv[1], "w"))
+PY
+run_in "$R1" --since "$WINDOW_START" --json
+check_jq "9b: a capped issue lookup sets existing_lookup_failed" "$OUT" '.existing_lookup_failed == true'
+check_jq "9c: a capped issue lookup is also reported as truncated" "$OUT" '.truncated == true'
+printf '[]\n' > "$TMP/issue_list.json"
+
 # =============================================================================
 # Scenario 10 — default exclusions
 # =============================================================================
@@ -305,6 +320,44 @@ check_jq "11d: a PR merged outside the window is excluded" "$OUT" \
 # auto falls through to gh when git history carries no PR markers
 run_in "$R11" --since "$WINDOW_START" --json
 check_jq "11e: --source auto falls back to gh on an unmarked history" "$OUT" '.source == "gh"'
+
+# The window is day-granular on BOTH paths. --since is a calendar date (ET-anchored
+# via gh-window.sh) while mergedAt is a UTC instant, so comparing against a
+# T00:00:00Z stamp made the gh path's window disagree with `git log --since` for
+# the same input. A PR merged LATE on the boundary day must be included.
+cat > "$TMP/pr_list.json" <<'EOF'
+[{"number":811,"mergedAt":"2026-03-01T23:59:00Z"},
+ {"number":812,"mergedAt":"2026-03-02T00:30:00Z"},
+ {"number":813,"mergedAt":"2026-03-03T12:00:00Z"},
+ {"number":814,"mergedAt":"2026-02-28T23:59:00Z"}]
+EOF
+for n in 811 812 813 814; do printf 'src/Edge.ts\n' > "$TMP/files_$n.txt"; done
+run_in "$R11" --since "2026-03-01" --source gh --json
+check_jq "11f: a PR merged late on the boundary day is inside the window" "$OUT" \
+  '.hotspots[] | select(.file=="src/Edge.ts") | (.pr_numbers | index(811)) != null'
+check_jq "11g: the day before the boundary is still excluded" "$OUT" \
+  '.hotspots[] | select(.file=="src/Edge.ts") | (.pr_numbers | index(814)) == null'
+check_jq "11h: exactly the three in-window PRs are counted" "$OUT" \
+  '.hotspots[] | select(.file=="src/Edge.ts") | .pr_numbers == [811,812,813]'
+
+# A git ref resolves --since to a timestamp carrying a LOCAL offset (e.g.
+# 2026-03-01T18:00:00-05:00). String-comparing that against UTC `Z` instants is
+# unsound: lexicographically "2026-03-01T18:00:00-05:00" > "2026-03-01T12:00:00Z"
+# even though the UTC instant 12:00Z is LATER than 18:00-05:00 (= 23:00Z is not,
+# but 12:00Z vs 23:00Z shows the ordering flip). Comparing date-to-date removes
+# the offset from the comparison entirely.
+R11B=$(new_repo r11b)
+commit_touch "$R11B" "2026-03-01T18:00:00" "boundary marker commit" src/Anchor.ts
+REF_SHA=$(git -C "$R11B" rev-parse HEAD)
+cat > "$TMP/pr_list.json" <<'EOF'
+[{"number":821,"mergedAt":"2026-03-01T12:00:00Z"},
+ {"number":822,"mergedAt":"2026-03-01T20:00:00Z"},
+ {"number":823,"mergedAt":"2026-03-04T09:00:00Z"}]
+EOF
+for n in 821 822 823; do printf 'src/Ref.ts\n' > "$TMP/files_$n.txt"; done
+run_in "$R11B" --since "$REF_SHA" --source gh --json
+check_jq "11i: a git-ref --since counts every PR merged on that calendar day" "$OUT" \
+  '.hotspots[] | select(.file=="src/Ref.ts") | .pr_numbers == [821,822,823]'
 
 # =============================================================================
 # Scenario 12 — --top bounds output without hiding the total

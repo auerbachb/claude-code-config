@@ -65,6 +65,8 @@ When a subject holds more than one marker — `fix(#749): repair thing (#750)` �
 
 The fallback is gated on *marker count*, not on an empty result. A run whose every touched path was excluded is a legitimate empty answer, not a reason to re-enumerate over the API.
 
+**The window is day-granular on both paths.** `--since` is a calendar date (ET-anchored via `gh-window.sh`, or a git ref resolved to that commit's date), while `mergedAt` is a UTC instant. Comparing the two as instants made the gh path disagree with `git log --since` for the same input, and was outright unsound on the ref path: a resolved ref carries a local offset (`2026-03-01T18:00:00-05:00`) that string-compares incorrectly against UTC `Z` timestamps. Both paths now compare calendar date to calendar date, inclusive at the start boundary (`>=`, never `>` — per the boundary-inclusivity lesson).
+
 **Renames are not followed.** A renamed file reads as two paths. `git log --follow` is single-path-only, so rename tracking is out of scope; a rename resets a file's apparent history.
 
 ## Exclusions
@@ -76,6 +78,8 @@ The list is deliberately **universal**. Repo-specific by-design churn belongs in
 ## The dedup key
 
 Hotspots are keyed by **file path**, which has an exact answer, so the fuzzy `issue-dedup.sh` ladder is the wrong instrument. Full rationale and the contract live in `autofile-dedup.md` under "Exact-artifact dedup". In short: title `Refactor hotspot: <path>` or body marker `<!-- churn-hotspot: <path> -->`, compared **client-side with string equality** because GitHub tokenizes paths in `in:title` search and would match sibling files. A failed lookup (`existing_lookup_failed`) blocks filing rather than risking a duplicate.
+
+**A capped lookup counts as a failed one.** When the search hits `ISSUE_LOOKUP_CAP` (200), a matching issue may sit beyond the cap, so "no match" no longer proves "no issue". Setting only `truncated` would leave callers — which gate filing on `existing_lookup_failed` — free to file a duplicate for a hotspot that already has a ticket. Both flags are set.
 
 ## Implementation notes worth keeping
 

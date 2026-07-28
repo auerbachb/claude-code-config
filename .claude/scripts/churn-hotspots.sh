@@ -287,7 +287,6 @@ fi
 
 # ---- resolve window ---------------------------------------------------------
 # A bare date is used as-is; anything else is resolved as a git ref/SHA.
-SINCE_ISO=""
 if [ -z "$SINCE" ]; then
   GW="$SCRIPT_DIR/gh-window.sh"
   if [ -x "$GW" ] || [ -f "$GW" ]; then
@@ -297,11 +296,9 @@ if [ -z "$SINCE" ]; then
     SINCE=$(date -u -v-14d +%Y-%m-%d 2>/dev/null || date -u -d '14 days ago' +%Y-%m-%d 2>/dev/null || echo "")
   fi
   [ -n "$SINCE" ] || { err "could not compute the default 14-day window"; exit 3; }
-  SINCE_ISO="${SINCE}T00:00:00Z"
 else
   case "$SINCE" in
     [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
-      SINCE_ISO="${SINCE}T00:00:00Z"
       ;;
     *)
       if [ "$IN_CHECKOUT" -eq 1 ]; then
@@ -313,11 +310,16 @@ else
         err "--since '$SINCE' is neither a YYYY-MM-DD date nor a resolvable git ref"
         exit 3
       fi
-      SINCE_ISO="$REF_DATE"
       SINCE="$REF_DATE"
       ;;
   esac
 fi
+
+# The window is day-granular on BOTH enumeration paths: `git log --since` takes
+# the calendar date, and the gh path compares mergedAt's date portion against
+# this. Keeping one canonical date string is what stops the two paths from
+# disagreeing about the same --since value.
+SINCE_DATE_ONLY="${SINCE:0:10}"
 
 # ---- exclusion matching -----------------------------------------------------
 EXCLUDE_LIST=""
@@ -407,9 +409,16 @@ enumerate_gh() {
   total_merged=$(printf '%s' "$pr_json" | jq 'length' 2>/dev/null || echo 0)
   [ "$total_merged" -ge "$PR_CAP" ] && TRUNCATED=true
 
+  # Compare CALENDAR DATE to calendar date, not instant to instant. --since is a
+  # day-granular value (gh-window.sh anchors it to ET; a git ref resolves to that
+  # commit's date), while mergedAt is a UTC instant. Stamping the date as
+  # T00:00:00Z compared an ET-anchored day against a UTC midnight, so the same
+  # --since produced a different window on the gh path than `git log --since`
+  # gives on the git path. Day-granular comparison makes both paths agree and
+  # stays inclusive at the start boundary (>=, never >).
   local in_window
-  in_window=$(printf '%s' "$pr_json" | jq -r --arg since "$SINCE_ISO" \
-    '[.[] | select(.mergedAt != null and .mergedAt >= $since)]
+  in_window=$(printf '%s' "$pr_json" | jq -r --arg since "$SINCE_DATE_ONLY" \
+    '[.[] | select(.mergedAt != null and (.mergedAt[0:10]) >= $since)]
      | .[] | "\(.number)\t\(.mergedAt)"' 2>/dev/null)
 
   local pr merged_at files
@@ -550,8 +559,14 @@ if command -v gh >/dev/null 2>&1; then
     OPEN_ISSUES=$(printf '%s' "$ISSUES_RAW" | jq -c '.' 2>/dev/null) || { OPEN_ISSUES='[]'; LOOKUP_FAILED=true; }
     ISSUE_HITS=$(printf '%s' "$OPEN_ISSUES" | jq 'length' 2>/dev/null || echo 0)
     if [ "$ISSUE_HITS" -ge "$ISSUE_LOOKUP_CAP" ]; then
-      err "issue lookup hit the ${ISSUE_LOOKUP_CAP}-issue cap — an existing hotspot issue may have been missed"
+      # A capped lookup is an INCOMPLETE lookup: an existing hotspot issue may
+      # sit beyond the cap, so absence of a match no longer proves absence of an
+      # issue. Callers gate filing on existing_lookup_failed, so it must be set
+      # here too — reporting only `truncated` would let a caller file a
+      # duplicate for a hotspot that already has one.
+      err "issue lookup hit the ${ISSUE_LOOKUP_CAP}-issue cap — an existing hotspot issue may have been missed; not safe to file"
       TRUNCATED=true
+      LOOKUP_FAILED=true
     fi
   fi
 else
