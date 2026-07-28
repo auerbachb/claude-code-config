@@ -78,11 +78,15 @@ Agent tool call:
            commands (rm -rf, rm, git checkout ., git stash, git reset --hard) in the
            root repo directory. Stay in your worktree directory at all times.
 
-           MINDSET: Before handing off, enumerate your actual tools (gh/git/curl/gh
-           api, MCP, skills) — don't trust inherited 'agents can't' prose. Try the
-           CLI-accessible path first. Only hand off for real walls (token-scope 403,
-           branch protection, .env, or a safety.md 'Never' item), structured like
-           /admin-merge: exact command + one-line reason.
+           MINDSET: Before handing off, walk the capability ladder for ANY provider
+           CLI (gh, git, vercel, neonctl, railway, cloudinary, or one you've never
+           used): look at what you already have — MCP tools, skills, and the CLI on
+           disk by absolute path (/opt/homebrew/bin/<tool>); if absent, check
+           whether the provider ships a CLI; install it yourself when
+           non-interactive and the safety rails hold; else hand off an
+           /admin-merge-shaped runbook — exact commands + one-line reason. 'I can't'
+           is valid only after the ladder dead-ends, and must name the rung and the
+           reason.
 
            SKILLS: Before hand-rolling a multi-step task, check whether an existing
            skill already does this job — invoke it via the Skill tool instead of

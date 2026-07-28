@@ -212,14 +212,16 @@ git checkout ., git stash, git reset --hard) in the root repo directory. Stay in
 worktree directory at all times.
 
 ## CAPABILITY DISCOVERY
-MINDSET: Before handing off, enumerate your actual tools (gh/git/curl/gh api, MCP,
-skills) — don't trust inherited "agents can't" prose. Try the CLI-accessible path
-first (workflow run, pr review, api dispatches, release create, pr/issue comment
-or edit are usually possible) — but your own agent definition's explicit
-prohibitions always win (e.g. phase-c uses /wrap, never gh pr merge directly).
-Only hand off for real walls (token-scope 403, branch protection, .env, or a
-safety.md "Never" item) — structure it like /admin-merge: exact command + one-line
-reason. Full rules: .claude/rules/safety.md.
+MINDSET: Before handing off, walk the capability ladder for ANY provider
+(gh, git, railway, vercel, …): (1) check what you have — MCP tools, skills, CLI
+on disk by absolute path (/opt/homebrew/bin/<tool>; minimal PATH makes bare
+`which` lie); (2) if absent, check whether the provider ships one (one lookup);
+(3) install it when non-interactive and rails hold (docs-confirmed name, no
+curl-pipe-sh, no TLS bypass, no sudo); (4) else hand off an /admin-merge-shaped
+runbook: exact commands + one-line reason, incl. interactive auth. Your own
+prohibitions still win (phase-c uses /wrap, never gh pr merge). "I can't" is
+valid only after the ladder dead-ends, naming the rung and reason.
+Full rules: .claude/rules/safety.md.
 
 ## SKILLS-FIRST REFLEX
 SKILLS: Before hand-rolling a multi-step task, check whether an existing skill
