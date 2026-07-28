@@ -33,10 +33,36 @@ chmod +x "$SCRIPTS/merge-gate.sh"
 
 # --- Fake clean-behind-check.sh: exit code IS the safe_to_offer verdict -------
 # (0 = safe to offer / clean BEHIND, 1 = not safe). Only consulted when the gate
-# lists a BEHIND blocker (issue #631).
+# lists a BEHIND blocker (issue #631). Emits a realistic subset of the real
+# script's JSON so --auto-plain's evidence report can be asserted (issue #754).
+#
+# FAKE_CBC_EXIT     — exit code for every call (default 1).
+# FAKE_CBC_EXIT_SEQ — space-separated per-call exit codes ("0 1" = safe on the
+#                     pre-flight call, unsafe on the pre-merge re-validation).
+#                     Requires FAKE_CBC_COUNT_FILE to count calls.
 cat > "$SCRIPTS/clean-behind-check.sh" <<'EOF'
 #!/usr/bin/env bash
-exit "${FAKE_CBC_EXIT:-1}"
+N=1
+if [ -n "${FAKE_CBC_COUNT_FILE:-}" ]; then
+  N=$(cat "$FAKE_CBC_COUNT_FILE" 2>/dev/null || echo 0)
+  N=$((N + 1))
+  echo "$N" > "$FAKE_CBC_COUNT_FILE"
+fi
+RC="${FAKE_CBC_EXIT:-1}"
+if [ -n "${FAKE_CBC_EXIT_SEQ:-}" ]; then
+  I=0
+  for code in $FAKE_CBC_EXIT_SEQ; do
+    I=$((I + 1))
+    if [ "$I" -eq "$N" ]; then RC="$code"; fi
+  done
+fi
+jq -cn --argjson rc "$RC" '{
+  safe_to_offer: ($rc == 0), head_sha: "abc1234def",
+  ac: {checked: 6, total: 6},
+  file_overlap: {count: 0, granularity: "hunk"},
+  churn: {base_ahead_by: 2}
+}'
+exit "$RC"
 EOF
 chmod +x "$SCRIPTS/clean-behind-check.sh"
 
@@ -52,16 +78,24 @@ EOF
 chmod +x "$SCRIPTS/pr-authorship.sh"
 
 # --- Fake gh (safe defaults: no brace-heavy ${VAR:-...} expansions) ----------
+# Every invocation is appended to $FAKE_GH_LOG when set, so tests can assert on
+# the calls actually ISSUED (e.g. "no protection API call") rather than only on
+# printed output (issue #754).
 cat > "$BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 ARGS="$*"
+if [ -n "${FAKE_GH_LOG:-}" ]; then printf '%s\n' "$ARGS" >> "$FAKE_GH_LOG"; fi
 case "$ARGS" in
   "repo view --json nameWithOwner --jq .nameWithOwner")
     echo "${FAKE_OWNER_REPO:-solo/repo}"; exit 0 ;;
-  "pr view "*"--json number,state,baseRefName,headRefName")
+  "pr merge "*)
+    exit "${FAKE_MERGE_EXIT:-0}" ;;
+  "pr view "*baseRefName*)
     if [ -n "${FAKE_PR_JSON:-}" ]; then echo "$FAKE_PR_JSON"
     else echo '{"number":1,"state":"OPEN","baseRefName":"main","headRefName":"feat"}'; fi
     exit 0 ;;
+  "pr view "*"--json state"*)
+    echo "${FAKE_MERGED_STATE:-true}"; exit 0 ;;
   "api user --jq .login")
     echo "${FAKE_USER:-solouser}"; exit 0 ;;
   api*collaborators*)
@@ -95,6 +129,19 @@ grep_ok() {    # grep_ok <pattern> <desc>
 }
 grep_absent() {  # grep_absent <pattern> <desc>
   if printf '%s\n' "$OUT" | grep -q "$1"; then bad "$2 (output: $OUT)"; else ok "$2"; fi
+}
+
+# --- gh call-log helpers (issue #754) ---------------------------------------
+# Assert on the gh calls actually ISSUED, not just on printed output — the
+# difference is the whole point of "the toggle command is printed, never run".
+LOG_N=0
+new_log() { LOG_N=$((LOG_N + 1)); export FAKE_GH_LOG="$TMP/ghcalls.$LOG_N"; : > "$FAKE_GH_LOG"; }
+log_calls() { tr '\n' '|' < "$FAKE_GH_LOG" 2>/dev/null; }
+log_present() {  # log_present <ere> <desc>
+  if grep -qE -- "$1" "$FAKE_GH_LOG" 2>/dev/null; then ok "$2"; else bad "$2 (calls: $(log_calls))"; fi
+}
+log_absent() {   # log_absent <ere> <desc>
+  if grep -qE -- "$1" "$FAKE_GH_LOG" 2>/dev/null; then bad "$2 (calls: $(log_calls))"; else ok "$2"; fi
 }
 
 # 1. Happy path: solo + enforce_admins + clean gate → print exact command.
@@ -233,6 +280,131 @@ FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' FAKE_AUTHORSHIP_EXIT=1 \
   run 1 --print --allow-nonauthor --repo-path "$CLONE" --branch main
 expect_rc 0 "--allow-nonauthor overrides the authorship guard (exit 0)"
 grep_ok "gh pr merge 1 --squash --admin" "override lets the bypass command print"
+
+# ============================================================================
+# --auto-plain: the Claude-invocable executor for the PLAIN shape (issue #754).
+# Distinct PR numbers per case so the per-PR repeat guard does not cross-talk
+# (test 19 deliberately reuses PR 1 to exercise it).
+# ============================================================================
+PLAIN_PROT='{"enforce_admins":{"enabled":false},"required_status_checks":{"strict":true}}'
+BEHIND_ONLY='["branch is BEHIND base — rebase + force-push before merging"]'
+
+# 18. Plain shape → merges, issues no protection call, prints the evidence report.
+new_log
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 1 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
+expect_rc 0 "--auto-plain merges the plain shape (exit 0)"
+log_present "^pr merge 1 --squash --admin" "auto-plain issued the admin squash-merge"
+log_absent "protection/enforce_admins" "auto-plain issued NO protection API call"
+grep_ok "AUTO_PLAIN_MERGED: PR #1" "auto-plain reports the merged PR after the fact"
+grep_ok "shape:      plain" "evidence report names the shape"
+grep_ok "head SHA:   abc1234def" "evidence report carries the head SHA"
+grep_ok "base ahead by:  2 commit" "evidence report carries base_ahead_by from the re-validation"
+grep_ok "file overlap:   0 (hunk granularity)" "evidence report carries the hunk-level overlap count"
+grep_ok "AC checkboxes:  6/6" "evidence report carries the AC counts"
+grep_ok "solo-owner verified" "evidence report carries the solo-owner note"
+
+# 19. Repeat guard: a second --auto-plain on the SAME PR refuses and prints.
+new_log
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 1 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
+expect_rc 8 "--auto-plain refuses a second attempt on the same PR (exit 8)"
+grep_ok "AUTO_PLAIN_REFUSED: reason=repeat" "repeat refusal names the repeat guard"
+log_absent "^pr merge" "repeat refusal issues no merge call"
+grep_ok "gh pr merge 1 --squash --admin" "repeat refusal falls back to printing the command"
+
+# 20. HARD SHAPE GATE: toggle shape → refuse, print only, zero protection calls.
+new_log
+FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' FAKE_PROTECTION='{"enforce_admins":{"enabled":true}}' \
+  run 4 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
+expect_rc 8 "--auto-plain refuses the toggle shape (exit 8)"
+grep_ok "AUTO_PLAIN_REFUSED: shape=toggle" "toggle refusal names the diagnosed shape"
+log_absent "-X DELETE" "toggle refusal issued NO protection DELETE call"
+log_absent "-X POST" "toggle refusal issued NO protection POST call"
+log_absent "^pr merge" "toggle refusal issued no merge call"
+grep_ok "gh api -X DELETE repos/solo/repo/branches/main/protection/enforce_admins" "toggle refusal still PRINTS the command for the user"
+
+# 21. Non-clean BEHIND (clean-behind-check exit 1) → refuse, route to rebase.
+new_log
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=1 FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 3 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
+expect_rc 1 "--auto-plain refuses a non-clean BEHIND (exit 1)"
+grep_ok "rebase" "non-clean BEHIND refusal routes to the rebase path"
+log_absent "^pr merge" "non-clean BEHIND: no merge call issued"
+log_absent "protection/enforce_admins" "non-clean BEHIND: no protection API call issued"
+
+# 22. TOCTOU: clean-behind-check safe at pre-flight, UNSAFE at merge time (main
+#     advanced in between) → refuse, no merge. Proves the re-validation is real.
+new_log
+CBC_COUNT="$TMP/cbc.count"; rm -f "$CBC_COUNT"
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT_SEQ="0 1" FAKE_CBC_COUNT_FILE="$CBC_COUNT" \
+  FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 2 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
+expect_rc 1 "--auto-plain catches a base that moved between pre-flight and merge (exit 1)"
+grep_ok "clean-BEHIND state no longer holds" "TOCTOU refusal names the stale clean-BEHIND state"
+log_absent "^pr merge" "TOCTOU refusal issues no merge call"
+CBC_CALLS=$(cat "$CBC_COUNT" 2>/dev/null || echo 0)
+if [[ "$CBC_CALLS" -eq 2 ]]; then
+  ok "clean-behind-check.sh genuinely runs twice (pre-flight + pre-merge re-validation)"
+else
+  bad "expected 2 clean-behind-check.sh calls, got $CBC_CALLS"
+fi
+
+# 23. Authorship guard (issue #733) still refuses under the new auto path.
+new_log
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 FAKE_AUTHORSHIP_EXIT=1 FAKE_AUTHORSHIP_MSG='not_mine' \
+  FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 5 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
+expect_rc 1 "authorship guard refuses --auto-plain on a non-author PR (exit 1)"
+grep_ok "authorship guard" "auto-plain refusal names the authorship guard"
+log_absent "^pr merge" "no merge call for a non-author PR under --auto-plain"
+log_absent "protection/enforce_admins" "no protection API call for a non-author PR under --auto-plain"
+
+# 23b. AC gate: --auto-plain without --ac-verified refuses and prints. The ticked-
+#      checkbox proxy in clean-behind-check.sh is not per-criterion verification,
+#      and an unattended merge must not rest on it (BugBot high-severity finding).
+new_log
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 7 --auto-plain --repo-path "$CLONE" --branch main
+expect_rc 8 "--auto-plain without --ac-verified refuses (exit 8)"
+grep_ok "AUTO_PLAIN_REFUSED: reason=ac-unverified" "AC refusal names the missing attestation"
+grep_ok "Step 2" "AC refusal points at cr-merge-gate.md Step 2"
+log_absent "^pr merge" "AC refusal issues no merge call"
+log_absent "protection/enforce_admins" "AC refusal issues no protection API call"
+grep_ok "gh pr merge 7 --squash --admin" "AC refusal falls back to printing the command"
+
+# 23c. Repeat guard must FAIL CLOSED: when the marker cannot be written, refuse
+#      rather than merge with the retry guard silently disarmed (BugBot finding).
+#      $HOME/.claude/admin-merge-auto is a regular file here, so mkdir -p fails.
+new_log
+RO_HOME="$TMP/home-noguard"; mkdir -p "$RO_HOME/.claude"; : > "$RO_HOME/.claude/admin-merge-auto"
+HOME="$RO_HOME" FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 8 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
+expect_rc 8 "--auto-plain refuses when the repeat-guard marker is unwritable (exit 8)"
+grep_ok "AUTO_PLAIN_REFUSED: reason=guard-unwritable" "unwritable-guard refusal names the cause"
+log_absent "^pr merge" "unwritable guard: no merge issued (fails closed, never unguarded)"
+
+# 24. Modes stay mutually exclusive.
+run 6 --auto-plain --execute --repo-path "$CLONE" --branch main
+expect_rc 2 "--auto-plain and --execute are mutually exclusive (exit 2)"
+
+# 25. Static: the auto-plain branch contains NO protection-modifying call. This
+#     is the structural guarantee — Claude cannot reach the toggle through it.
+AUTO_BLOCK=$(awk '/^if \[\[ "\$MODE" == "auto-plain" \]\]; then/{f=1} f{print} f && /^fi$/{exit}' "$SRC")
+if [[ -z "$AUTO_BLOCK" ]]; then
+  bad "could not extract the auto-plain branch for static analysis"
+elif printf '%s\n' "$AUTO_BLOCK" | grep -qE '\$(DELETE_CALL|REENABLE_CALL)|-X (DELETE|POST)'; then
+  bad "auto-plain branch contains a protection-modifying call"
+else
+  ok "auto-plain branch contains no protection-modifying call (static)"
+fi
+
+# 26. Static: the shape gate precedes the merge call inside the auto-plain branch.
+if awk '/MODE" == "auto-plain"/{f=1} f && /BYPASS_MODE" != "plain"/{seen=1} f && seen && /MERGE_CALL/{good=1; exit} END{exit !good}' "$SRC"; then
+  ok "auto-plain: the hard shape gate precedes the merge call"
+else
+  bad "auto-plain: shape gate does not precede the merge call"
+fi
 
 echo "----------------------------------------"
 echo "admin-merge.test.sh: $PASS passed, $FAIL failed"

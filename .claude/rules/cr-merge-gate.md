@@ -56,7 +56,7 @@ Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses
 **Do not infer “behind base” from `mergeStateStatus: "BLOCKED"` alone.** Read **`mergeStateStatus` and `mergeable`** explicitly (`gh pr view <N> --json mergeStateStatus,mergeable,reviewDecision` — same as `merge-gate.sh`).
 
 - **`CLEAN`** — OK for merge once Steps 1–1c and 1b pass.
-- **`BEHIND`** — Run `.claude/scripts/clean-behind-check.sh <N>` (#631, #667). Exit 0 (`safe_to_offer`) → **offer `/admin-merge`** — user choice, never auto-run; `churn.advisory` is context, not a gate. Otherwise rebase → re-run via `/fixpr` (`fixpr/SKILL.md` / `pr-state.sh`), **force-push only** after `dirty-main-guard.sh --check`; `merge-gate.sh` stays failing. Overlap detection and `--churn-threshold`: `clean-behind-check.sh --help`.
+- **`BEHIND`** — Run `.claude/scripts/clean-behind-check.sh <N>` (#631, #667). Exit 0 (`safe_to_offer`) → do **Step 2 first** (checkboxes ticked is only a proxy), then **auto-merge via `admin-merge.sh <N> --auto-plain --ac-verified`** (#754), no user turn; report its evidence block after. Exit 8 = not the plain shape (protection change) or a repeat → **offer `/admin-merge`**, never auto-run. `churn.advisory` is context, not a gate. Otherwise rebase → re-run via `/fixpr` (`fixpr/SKILL.md` / `pr-state.sh`), **force-push only** after `dirty-main-guard.sh --check`; `merge-gate.sh` stays failing. Overlap detection and `--churn-threshold`: `clean-behind-check.sh --help`.
 - **`BLOCKED`** — Use `reviewDecision`, CI, threads — not a substitute for **`BEHIND`**.
 - **`UNSTABLE` / `DIRTY` / `UNKNOWN`** — Not merge-ready; wait, rebase, or resolve per `fixpr` / Step 1b.
 
@@ -83,4 +83,4 @@ Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses
 
 - Always use **squash and merge** (never regular merge or rebase)
 - `/wrap`'s post-merge phases (follow-ups, session sweep, lessons; see `wrap/SKILL.md`) run **after** the gate clears — they never gate the merge.
-- Branch-protection / `enforce_admins` solo-owner block → stop and print `/admin-merge` — never auto-bypass.
+- Protection-**modifying** block (`enforce_admins` toggle) → stop and print `/admin-merge` — never auto-bypass. The plain shape (no protection change) auto-runs per Step 1d.

@@ -1,17 +1,23 @@
 ---
 name: admin-merge
-description: Print a user-runnable script that bypasses branch protection (enforce_admins) to squash-merge a solo-owner PR, after verifying the merge gate. Claude NEVER modifies branch protection itself — it only prints (or clipboards) the command for the repo admin to run. Triggers on /admin-merge and when /wrap hits an enforce_admins-style block.
+description: Merge a solo-owner PR whose only blocker is branch protection, after verifying the merge gate. Two shapes with different authority — Claude auto-runs the plain shape (a bare `gh pr merge --squash --admin`, no protection change); the `enforce_admins` toggle shape stays print-only for the repo admin. Triggers on /admin-merge and when /wrap or /babysit-pr hits a branch-protection block.
 ---
 
-Print a user-runnable bypass command to squash-merge a PR whose only remaining blocker is branch protection (`enforce_admins: true` plus a code-owner review an AI reviewer auto-skipped) on a **solo-owner** repo.
+Merge a PR whose only remaining blocker is branch protection on a **solo-owner** repo — either by auto-running the no-protection-change shape, or by printing the protection-toggle command for the user.
 
-## The safety boundary (non-negotiable)
+## The safety boundary (non-negotiable) — a split, not a blanket
 
-Claude's safety rules **permanently prohibit Claude from modifying branch protection** — non-negotiable, applies to every user and repo regardless of authorization or workflow history. This skill stays inside that boundary:
+Claude's safety rules **permanently prohibit Claude from modifying branch protection** — non-negotiable, applies to every user and repo regardless of authorization or workflow history. That prohibition is about **protection modification**, not about the `--admin` flag, and the two bypass shapes fall on opposite sides of it (issues #720, #754):
 
-- Claude **prints** (or copies to the clipboard) the exact bypass command. **The user runs it.**
-- Claude **NEVER** executes `gh api -X DELETE .../protection/enforce_admins`, `gh api -X POST .../protection/...`, or any other protection-modification command — not directly, not via a subprocess, not via `--execute`.
-- The skill invokes `.claude/scripts/admin-merge.sh` **only** with `--print` or `--launch-terminal`. It must **never** invoke it with `--execute` (that mode is reserved for the *user* running the script in their own terminal).
+| Shape | Condition | Command | Authority |
+|-------|-----------|---------|-----------|
+| **plain** | `enforce_admins: false` + `required_status_checks.strict: true` + verified clean-`BEHIND` | `gh pr merge --squash --admin` — nothing else | **Claude auto-runs it** via `--auto-plain` |
+| **toggle** | `enforce_admins: true` | DELETE `…/enforce_admins` → merge → POST `…/enforce_admins` | **Print-only. The user runs it.** |
+
+- Claude **MAY** execute the **plain** shape via `.claude/scripts/admin-merge.sh <PR> --auto-plain`. It modifies no setting and steps over a *staleness* requirement, not a review; every safety condition is re-verified programmatically immediately before the merge. No user turn is required.
+- Claude **NEVER** executes `gh api -X DELETE .../protection/enforce_admins`, `gh api -X POST .../protection/...`, or any other protection-modification command — not directly, not via a subprocess, not via `--execute`. For the **toggle** shape Claude only ever prints (or clipboards) the command.
+- The skill invokes `admin-merge.sh` with `--auto-plain`, `--print`, or `--launch-terminal`. It must **never** invoke `--execute` (that mode can run the toggle dance and is reserved for the *user* in their own terminal).
+- `--auto-plain` is structurally incapable of the toggle shape: its branch contains no protection-modifying call, and any non-plain shape is a hard refusal (exit 8) that falls back to printing. Mechanism: `.claude/reference/admin-merge-auto-plain.md`.
 
 If you ever find yourself about to run a protection-modifying `gh api` call, stop — that is the exact action this skill exists to avoid.
 
@@ -19,7 +25,7 @@ If you ever find yourself about to run a protection-modifying `gh api` call, sto
 
 1. **Explicit:** the user runs `/admin-merge <PR> [--launch-terminal]`.
 2. **From `/wrap`:** `/wrap` detected a merge blocked by `enforce_admins` + a code-owner requirement and suggested `/admin-merge` as the next step.
-3. **From the clean-BEHIND offer (issue #631):** on a green PR whose only remaining blocker is a *clean* `mergeStateStatus: BEHIND`, `cr-merge-gate.md` Step 1d / `/fixpr`'s BEHIND path surfaced `/admin-merge` as a user-chosen escape hatch instead of looping rebases. The Step 2 pre-flight re-verifies the merge gate (including the clean-BEHIND safety check) before printing anything — the user still authorizes the bypass.
+3. **From the clean-BEHIND path (issues #631, #754):** on a green PR whose only remaining blocker is a *clean* `mergeStateStatus: BEHIND`, `cr-merge-gate.md` Step 1d, `/fixpr`, `/wrap`, or `/babysit-pr` routed here instead of looping rebases. This is the **plain** shape, so it goes straight to Step 1b and merges without a user turn; a non-plain shape falls back to the Step 2 print flow.
 
 ## Scope: solo-owner repos only
 
@@ -36,9 +42,29 @@ gh pr view "$PR_NUM" --json number,title,state,baseRefName --jq '{number,title,s
 
 If no PR is found, stop: "No PR found — pass a PR number: `/admin-merge <PR>`." If already merged/closed, stop and say so.
 
+### Step 1b: Auto-path — execute the plain shape (do this first)
+
+**Skip this step entirely when the user asked for the command rather than a merge** — `--launch-terminal`, "give me the command", "open a terminal", "just print it". An explicit request for the command outranks the auto path; go straight to Step 2/3. Step 1b is for the cases that arrive *without* a stated preference: `/admin-merge <PR>` on its own, and the `/wrap`, `/fixpr`, `/babysit-pr`, and clean-`BEHIND` routes.
+
+**First complete `cr-merge-gate.md` Step 2** — read the PR body's Test Plan and verify **every** checkbox against the source at the current SHA. `clean-behind-check.sh` only confirms the boxes are *ticked*, which is a proxy; an unattended merge must not rest on it. If any criterion fails, fix it first — do not merge. Only then attest with `--ac-verified` (the script refuses without it):
+
+```bash
+.claude/scripts/admin-merge.sh "$PR_NUM" --auto-plain --ac-verified
+AUTO_EXIT=$?
+```
+
+It runs the **same** pre-flight as `--print` and refuses (exit 8) unless the diagnosed shape is `plain`, so it is safe to attempt without diagnosing the shape yourself:
+
+- `0` → **merged.** Relay the script's `AUTO_PLAIN_MERGED` evidence block verbatim (PR, shape, head SHA, `base_ahead_by`, file overlap + granularity, AC counts, solo-owner note) — every auto-executed bypass must be reported after the fact. Skip Steps 2–4 and go to Step 5.
+- `8` → **refused, nothing executed.** The stderr line names which: `shape=toggle` (protection modification — Claude must not run it), `reason=ac-unverified` (you skipped Step 2 — go do it, then re-run), `reason=repeat` (an auto attempt already ran), or `reason=guard-unwritable` (the repeat-guard marker could not be written, so the retry guard could not be armed). The script has already printed the command; continue with Step 2's exit-code handling and Step 4's user warning as if you had run `--print`. Do **not** retry `--auto-plain` except after fixing an `ac-unverified` or `guard-unwritable` cause.
+- `1` → not merge-ready, refused by the authorship guard, or the clean-BEHIND state no longer held at merge time (`main` advanced). Surface the reason and route to rebase / `/fixpr`. **Do not** print a bypass. Stop.
+- `5`/`6`/`3`/`2`/`4`/`7` → same handling as Step 2's table (`7` = the merge ran but did not confirm; verify manually, do not retry).
+
+Never pass `--force-solo` or `--allow-nonauthor` here, and never pass `--ac-verified` without having actually done Step 2 — it is an attestation, and a false one merges unverified work. `--auto-plain` runs one attempt per PR by design; if it refuses with `reason=repeat`, that is a signal a human should look, not a marker to delete.
+
 ### Step 2: Generate the bypass (script does pre-flight)
 
-Run the helper in `--print` mode. It performs all pre-flight checks itself and only prints a command when every check passes:
+Reached when Step 1b returned exit 8 (already printed the command — reuse that output, don't re-run the script) or when the user explicitly asked for the command rather than a merge. It performs all pre-flight checks itself and only prints a command when every check passes:
 
 ```bash
 .claude/scripts/admin-merge.sh "$PR_NUM" --print
@@ -76,11 +102,11 @@ On macOS this opens a new **iTerm2** window (preferred when installed, else **Te
 Along with the printed command, tell the user what the command does — the framing depends on which shape was printed (the warning block in the script's output identifies it):
 
 - **Toggle shape** (command includes DELETE + POST calls, `enforce_admins=true`): *"Claude can't run this — modifying branch protection is prohibited by Claude's safety rules. Run the command above yourself; it disables `enforce_admins`, squash-merges with `--admin`, then re-enables `enforce_admins`."* Note the inline `&&` failure mode: if the merge fails, the final re-enable is skipped and protection stays OFF until the user re-runs the bare `POST`. Offer the trap-protected alternative the script prints: `bash .claude/scripts/admin-merge.sh <PR> --execute` (the **user** runs this — never Claude).
-- **Plain shape** (command is just `gh pr merge --squash --admin`, no protection calls): *"Run the command above; it does an ordinary admin squash-merge that bypasses the strict up-to-date requirement on a verified clean-BEHIND branch. No protection settings are modified."*
+- **Plain shape** (command is just `gh pr merge --squash --admin`, no protection calls) — only reached when Step 1b refused with `reason=repeat`, or the user asked for the command instead of a merge: *"Run the command above; it does an ordinary admin squash-merge that bypasses the strict up-to-date requirement on a verified clean-BEHIND branch. No protection settings are modified."* Say which of the two reasons applies — a repeat refusal means an earlier auto attempt did not confirm, so the PR is worth a look before re-running.
 
 ### Step 5: Confirm the merge, then run `/wrap` follow-ups
 
-After the user reports running the command (or you detect it), poll until the PR is merged:
+If Step 1b exited `0` the merge is already verified (`state == MERGED`, retried) — skip straight to the follow-ups below. Otherwise, after the user reports running the command (or you detect it), poll until the PR is merged:
 
 ```bash
 gh pr view "$PR_NUM" --json state --jq '{state}'
@@ -100,6 +126,7 @@ Then run the standard `/wrap` follow-ups: sync root `main`, detect follow-up iss
 
 ## Notes
 
+- **Auto-path mechanism** (shape gate, repeat guard, TOCTOU re-validation, exit-code contract, evidence-report shape, and the resolved #754 open questions): `.claude/reference/admin-merge-auto-plain.md`.
 - **API contract (verified on PR #535):** the re-enable `POST .../protection/enforce_admins` is sent with **no body**. A body (`-f enabled=true`) returns HTTP 422 "`enabled` is not a permitted key". `admin-merge.sh` generates the bare POST — never add a field flag.
 - **Repo path:** if the script can't resolve the local clone, pass `--repo-path <abs-path>`. The `cd`-prefix is what makes the command safe to run from any directory.
 - **Other protection blockers** (required signed commits, required linear history, required status checks): start with `enforce_admins`; the script surfaces adjacent settings as informational notes. Extend as new cases come up.

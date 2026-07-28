@@ -2,7 +2,7 @@
 
 When the merge gate passes (`cr-merge-gate.md` Steps 1–1d, 1b) and every Test Plan box verifies (Step 2), **auto-run full `/wrap`** (squash-merge, sync main, follow-ups, session sweep, lessons) — **no approval pause, no pre-merge message**. Post-merge report is the user's first signal.
 
-**Hard stops:** human `CHANGES_REQUESTED` on HEAD; failing/incomplete CI; unresolved threads; unchecked AC; branch-protection / `enforce_admins` → print `/admin-merge`, never auto-bypass.
+**Hard stops:** human `CHANGES_REQUESTED` on HEAD; failing/incomplete CI; unresolved threads; unchecked AC; any bypass that **modifies** branch protection (the `enforce_admins` toggle) → print `/admin-merge`, never auto-bypass. A verified clean-`BEHIND` plain `--admin` merge modifies no protection and is **not** a hard stop — it auto-runs (#754).
 
 **Opt-out:** user says "don't merge" / "wait for my approval" in chat — honor for that PR/thread. `/pr-monitor-and-manage --confirm-merges` restores per-PR prompts.
 
