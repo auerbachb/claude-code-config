@@ -38,7 +38,9 @@ if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
   #    session-state after step 3 has run (it will be null by then).
   SAVED=$(.claude/scripts/session-state.sh --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
   # 2. Delete auto-wake cron (fail-closed — see pr-monitor-and-manage-wake Step 3)
-  # 3. Clear pause marker + reset pmm_idle_streak=0 + set pmm_active=true (atomic batch)
+  # 3. Clear pause marker + reset pmm_idle_streak=0 + set pmm_active=true
+  #    + null .pmm_digest and .pmm_row_digest (atomic batch) — the digest reset
+  #    forces Step 4's full table on the first post-resume tick (condition a/b)
   # 4. Merge flags: explicit $ARGUMENTS override $SAVED (the step-1 variable, not
   #    session-state — that field is already cleared by step 3 at this point)
   echo "[PMM] Resuming from pause (paused_at=$PAUSED_AT) — flags on this invocation override saved config."
@@ -49,7 +51,7 @@ Resume logic is shared with `/pr-monitor-and-manage-wake` — see `.claude/skill
 
 A stale marker left by a killed session is safely reconciled here: the next `/pr-monitor-and-manage` invocation reads it, resumes (or the user runs `/pmm-stop`), and re-runs discovery from scratch.
 
-On the **first** invocation in a thread (and after any resume), acknowledge the mode up front so the constraints are explicit and survive context compaction:
+On the **first** invocation in a thread (and after any resume), null the table digests — `session-state.sh --set '.pmm_digest=null' --set '.pmm_row_digest=null'` — so Step 4's first tick always prints the full table, and acknowledge the mode up front so the constraints are explicit and survive context compaction:
 
 > **PR-fleet-manager mode active.** My only job in **this parent thread** is to watch and manage your open PRs as a fleet — rediscover them each tick, print a status table, and dispatch rebase / parallel `phase-a-fixer` subagents (fix work, including merge conflicts) / sequential `/wrap` (merge-ready) per the decision tree. Merge-ready PRs are landed autonomously via inline `/wrap` dispatch (unless `--confirm-merges` is set). I will not edit feature code **directly in this thread**, start issues, or do unrelated work here — but I **will** dispatch subagents that edit code, resolve conflicts, fix findings, push, and reply/resolve threads.
 
@@ -418,7 +420,7 @@ Evaluate the `jq` first and pass the resulting JSON as the value — never a raw
 
 A heartbeat prints **every tick**, **before** Step 5 runs any rebase or dispatch — but the **full table only when something changed or is about to happen** (issue #773; `monitor-mode.md` one-line default). Compute two digests **here** (Step 6 reuses and persists them):
 
-- `FLEET_TUPLE_SORTED` — Step 3's per-PR state tuples `(number, head_sha, merge_state, review_decision, ci_blocking_count, unresolved_threads)`, sorted by PR number. Drives backoff (Step 6) and quiet-tick detection.
+- `FLEET_TUPLE_SORTED` — Step 3's per-PR state tuples `(number, head_sha, merge_state, review_decision, ci_failing_count, unresolved_threads)`, sorted by PR number, where `ci_failing_count` is Step 3's `CI_FAILING` (`.ci_status.failing` from the gate JSON). Drives backoff (Step 6) and quiet-tick detection.
 - `ROW_TUPLE_SORTED` — everything the table *displays* per PR: `(number, issue_ref, merge_state, conflicting_flag, review_decision, ci_summary, unresolved_threads, refined_verdict, subagent_cell)`, sorted by PR number. Catches display-only changes the state tuple misses (verdict refinements like `rate-limited` → `waiting`, subagent `spawned` → `working`, `mergeable` flips) so a quiet tick can never mask them.
 
 ```bash
@@ -432,13 +434,13 @@ echo "[$TS] PMM tick — $PR_COUNT PR(s) in fleet (author:$PMM_AUTHOR)"
 
 Print the **full table** (below the lead line) when ANY of:
 
-- (a) this is the arm-mode immediate tick or the first tick after a resume;
+- (a) this is the first tick of a fresh invocation (Step 0 mode entry) or the first tick after a resume (Step 0a) — both null `.pmm_digest`/`.pmm_row_digest`, so (b) also fires mechanically;
 - (b) `DIGEST != PREV` or `ROW_DIGEST != ROW_PREV` (or either previous value is null);
 - (c) any PR's verdict this tick is actionable — `rebase`, `fixpr`, `wrap`, or `batch(#A)` — so the classification is always visible before Step 5 acts;
 - (d) Step 2.5 processed any subagent outcome, or `HARD_BLOCK[]` gained a new entry this tick;
 - (e) Step 3.6 held or batched anything (the merge-sequence annotation must stay visible).
 
-**Quiet tick** (none of a–e): append `— no change` plus the PR numbers to the lead line (e.g. `… (author:x) — no change (#101 #102)`) and print **only that line** — no table. Hard blocks, gate failures, and terminations are never quiet: they hit (b)/(c)/(d) by construction.
+**Quiet tick** (none of a–e): append `— no change` plus the PR numbers to the lead line, and when `HARD_BLOCK[]` is non-empty append the standing blocks with reasons (e.g. `… (author:x) — no change (#101 #102; hard-blocked: #99 human-CR)`); print **only that line** — no table. **New** hard blocks, gate failures, and terminations always get the full table on the tick they appear ((b)/(c)/(d)); already-reported blocks stay visible via the hard-blocked suffix on every quiet line — never silently dropped.
 
 | Issue | PR | State | Reviews | CI | Unresolved Threads | Verdict | Subagent |
 |-------|----|-------|---------|----|--------------------|---------|----------|
