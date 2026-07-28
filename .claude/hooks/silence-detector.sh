@@ -100,7 +100,8 @@ emit_time_if_due() {
     last_inject=$(file_mtime "$TIME_FILE")
     if [[ -n "$last_inject" ]]; then
       inject_age=$(( $(date +%s) - last_inject ))
-      if (( inject_age < TIME_INJECT_S )); then
+      # Negative age = future-dated marker (clock rollback) — treat as stale, re-inject.
+      if (( inject_age >= 0 && inject_age < TIME_INJECT_S )); then
         echo '{}'
         return
       fi

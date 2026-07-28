@@ -4,8 +4,17 @@
 # does not touch real session state.
 set -euo pipefail
 
+# Isolate from caller environment — default-window assertions must not inherit
+# a CI/user override; test 6 passes the env var explicitly.
+unset SILENCE_TIME_INJECT_S
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 HOOK="$REPO_ROOT/.claude/hooks/silence-detector.sh"
+
+# Relative timestamps (BSD/macOS then GNU date) — never a hard-coded calendar
+# date, which flips future/past depending on when the test runs.
+PAST_STAMP=$(date -v-2H +%Y%m%d%H%M 2>/dev/null || date -d '2 hours ago' +%Y%m%d%H%M)
+FUTURE_STAMP=$(date -v+2H +%Y%m%d%H%M 2>/dev/null || date -d '2 hours' +%Y%m%d%H%M)
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -41,14 +50,19 @@ CTX=$(printf '%s' "$OUT" | context_of)
 printf '%s' "$OUT" | python3 -c "import json,sys; json.load(sys.stdin)" || fail "deduped output is not valid JSON"
 
 # --- 3. An aged marker re-injects --------------------------------------------
-touch -t 202601010000 "/tmp/claude-time-injected-${SID}"
+touch -t "$PAST_STAMP" "/tmp/claude-time-injected-${SID}"
 CTX=$(run_hook "$SID" | context_of)
 [[ "$CTX" == Current\ system\ time:* ]] || fail "aged marker should re-inject time, got: '$CTX'"
 
+# --- 3b. A future-dated marker (clock rollback) re-injects -------------------
+touch -t "$FUTURE_STAMP" "/tmp/claude-time-injected-${SID}"
+CTX=$(run_hook "$SID" | context_of)
+[[ "$CTX" == Current\ system\ time:* ]] || fail "future-dated marker should be treated as stale and re-inject, got: '$CTX'"
+
 # --- 4. Warning path fires with time even inside the dedupe window -----------
-# Fresh time marker (just injected in step 3) + stale heartbeat => warning must
+# Fresh time marker (just injected in step 3b) + stale heartbeat => warning must
 # still be emitted and must carry the timestamp.
-touch -t 202601010000 "/tmp/claude-heartbeat-${SID}"
+touch -t "$PAST_STAMP" "/tmp/claude-heartbeat-${SID}"
 rm -f "/tmp/claude-silence-warned-${SID}"
 CTX=$(run_hook "$SID" | context_of)
 [[ "$CTX" == *"HEARTBEAT WARNING"* ]] || fail "stale heartbeat should warn, got: '$CTX'"
