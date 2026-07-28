@@ -134,6 +134,28 @@ gh pr list --search "head:issue-{NUMBER}" --json number,title,state
 
 If a PR already exists for the issue, skip it: "Issue #N already has PR #{M} — skipping."
 
+### 6.0b: Serialize overlapping issues (launch-side overlap filter — issue #756)
+
+Two subagents landing in the same file produce exactly the merge-time conflict that overlap-aware merge sequencing exists to clean up afterwards. It is far cheaper not to create it. **Issues in this batch that overlap on a file run one after another, not concurrently.**
+
+Reuse `/wave`'s existing footprint model verbatim — do not invent a second one:
+
+1. **Footprint per issue** — `/wave` Step 3: the CR/human plan's file list, else a `## Related Files` section, else backticked paths in the body, else subject inference ("the `/pm` skill" → that SKILL.md). No signal at all → `undeclared`.
+2. **Map to collision surfaces** — `/wave` Step 4, including the coarse shared ones: `CLAUDE.md` + `.claude/rules/*` + `.budget-soft-cap` are all one **`rule-corpus`** surface (two branches adding words to *different* rule files still collide on the ratchet cap), and each shared settings file is one surface. A shared *directory* is **not** a surface.
+3. **Group and order.** Issues sharing a surface form a chain. Within a chain, the issue with the larger expected footprint in the shared surface starts first — same "biggest first" rule as merge time; ties break to the lower issue number. `undeclared` footprints are conservative: at most one runs concurrently with the rest, exactly as `/wave` Step 5.4 does.
+
+**Launch the head of each chain now; queue the rest behind it.** A queued issue starts when the one ahead of it reaches a **genuinely terminal state — `merged` or `blocked`** — the same rule Step 7 already uses for the concurrency ceiling. `merge_ready` is not terminal: the PR has not landed, so the file is still contested.
+
+Chains are independent of each other: three disjoint chains still run three pipelines in parallel, subject to the usual 3–4 ceiling. Serialization narrows *which* issues may run together; it never raises or lowers the ceiling.
+
+Report the decision in one line so the slower launch is explained rather than mysterious:
+
+```text
+Serializing #61 behind #42 — both touch `.claude/skills/pm/SKILL.md`. Starting #42 now.
+```
+
+> Merge-time sequencing (`merge-sequence.sh`) is the safety net for overlaps that reach open PRs anyway — a collaborator's PR, or issues launched from different threads. This step reduces how often that net is needed; it does not replace it. Full model: `.claude/reference/merge-sequencing.md`.
+
 ### 6.1: Ensure handoff directory exists
 
 ```bash
@@ -184,6 +206,7 @@ For each qualifying issue, spawn a Phase A subagent using the Agent tool.
 - If more issues qualify than the ceiling, launch the first 3–4 now and **queue** the rest. Start a queued pipeline only when a running one reaches a **genuinely terminal state — `merged` or `blocked`.** A pipeline parked at `merge_ready` is **not** terminal: Phase C (auto `/wrap`) is still ahead, so it keeps its slot until it actually merges (or blocks). Freeing the slot at `merge_ready` would let a new pipeline start while the parked one's Phase C is still pending, pushing total in-flight pipelines past the ceiling.
 - When every slot is held by pipelines at `merge_ready` or in Phase C, don't launch more queued pipelines — wait for a terminal `merged`/`blocked` outcome to free a slot.
 - Each subagent gets its own worktree (use `isolation: "worktree"` on the Agent tool call).
+- **Respect Step 6.0b's chains.** Only the head of each overlap chain is launchable; a queued chain member waits for the one ahead of it to reach `merged`/`blocked`, even when a ceiling slot is free. Overlap serialization and the concurrency ceiling are separate limits — a free slot is permission to launch *some* issue, never permission to launch one whose file is still contested.
 
 **Subagent prompt template** (fill in variables per issue):
 

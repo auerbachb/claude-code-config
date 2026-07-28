@@ -286,16 +286,21 @@ Read `merge_state` / `mergeable` **literally** from the gate JSON. **Do NOT infe
 
 **Accumulate `VERDICTS_JSON` as each PR is classified — this is what Step 5.0's pre-flight gone/error skip reads.** Without this, `VERDICTS_JSON` stays an implicit empty object, the skip check never matches, and pre-flight runs against merged/errored PRs it should have skipped:
 
+**Initialize `VERDICTS_JSON='{}'` once, before the per-PR loop — never via a `${VERDICTS_JSON:-{}}` default.** A brace-containing parameter-expansion default terminates at its **first literal `}`**, so once the variable holds real content that form expands to the JSON *plus a stray trailing brace* (`{"618":{"verdict":"wrap"}}` + `}`) and every subsequent `jq` in the loop fails on invalid input. The bug only shows up from the second PR onward, which is exactly when it is hardest to spot.
+
 ```bash
+VERDICTS_JSON='{}'   # once, before the loop — plain expansion everywhere below
+
+# ... per PR:
 TAG=""
 if [[ "$VERDICT" == "fixpr" && "$MERGEABLE" == "CONFLICTING" ]]; then
   TAG="merge-conflict"
 fi
 if [[ -n "$TAG" ]]; then
   VERDICTS_JSON=$(jq --arg n "$N" --arg v "$VERDICT" --arg tag "$TAG" \
-    '.[$n] = {verdict: $v, tag: $tag}' <<<"${VERDICTS_JSON:-{}}")
+    '.[$n] = {verdict: $v, tag: $tag}' <<<"$VERDICTS_JSON")
 else
-  VERDICTS_JSON=$(jq --arg n "$N" --arg v "$VERDICT" '.[$n] = {verdict: $v}' <<<"${VERDICTS_JSON:-{}}")
+  VERDICTS_JSON=$(jq --arg n "$N" --arg v "$VERDICT" '.[$n] = {verdict: $v}' <<<"$VERDICTS_JSON")
 fi
 ```
 
@@ -335,6 +340,80 @@ Store the refined verdict per PR (`fixpr`, `awaiting fix subagent`, or `queued (
 
 ---
 
+## Step 3.6: Overlap-aware merge sequencing (read-only, still pre-action — issue #756)
+
+First-ready-first-merged is backwards when one PR's diff dwarfs its siblings' in a shared file: every small PR that lands first forces the big one into another conflict round. Before Step 4 prints and Step 5d dispatches, compute a **merge order** over the fleet so the largest footprint in a contested file lands first and the smaller ones wait.
+
+This step is **side-effect-free** — `merge-sequence.sh` reads `pulls/{N}/files` and prints a plan; it never merges, rebases, or comments. Mechanism, state machine, and rationale: `.claude/reference/merge-sequencing.md`.
+
+```bash
+# Prior tick's hold state — this is what makes stall detection work across ticks.
+PRIOR_HOLDS=$(.claude/scripts/session-state.sh --get '.pmm_merge_holds // {}' 2>/dev/null || echo '{}')
+
+# Flatten Step 3's VERDICTS_JSON ({"<n>":{verdict,tag}}) to {"<n>":"<verdict>"},
+# then overwrite each entry with the REFINED verdict where Step 3's refinement
+# pass produced one (`awaiting fix subagent`, `queued (cap)`, `held(#A)` from a
+# prior tick). Pass the WHOLE fleet, not just the `wrap` PRs: the planner needs a
+# non-`wrap` anchor's verdict to tell "progressing" from "hard-blocked", and that
+# is exactly what decides whether its followers hold or release.
+VERDICTS_MAP=$(jq -c 'map_values(.verdict)' <<<"$VERDICTS_JSON")
+HEADS_MAP='{}'   # plain init — never a ${HEADS_MAP:-{}} default (see Step 3 above)
+for N in $PR_NUMS; do
+  VERDICTS_MAP=$(jq -c --arg n "$N" --arg v "${REFINED_VERDICT[$N]:-}" \
+    'if $v == "" then . else .[$n] = $v end' <<<"$VERDICTS_MAP")
+  HEADS_MAP=$(jq -c --arg n "$N" --arg sha "$(jq -r '.head_sha // ""' <<<"${GATE_BY_PR[$N]}")" \
+    'if $sha == "" then . else .[$n] = $sha end' <<<"$HEADS_MAP")
+done
+
+# Sequence only PRs that still exist. A PR classified `gone` (merged/closed
+# between Step 2 and now) would 404 in the planner and, without --skip-missing,
+# take the WHOLE fleet's plan down with exit 3. Filter the known-gone ones here,
+# and pass --skip-missing so a PR that merges during this very step is demoted to
+# an excluded_prs[] entry instead of failing the run.
+SEQ_PRS=$(for N in $PR_NUMS; do
+  V=$(jq -r --arg n "$N" '.[$n] // ""' <<<"$VERDICTS_MAP")
+  [[ "$V" == "gone" || "$V" == "error" ]] || echo "$N"
+done | tr '\n' ',' | sed 's/,$//')
+
+SEQ=""; SEQ_RC=1
+if [[ -n "$SEQ_PRS" ]]; then
+  SEQ=$(.claude/scripts/merge-sequence.sh --prs "$SEQ_PRS" --skip-missing \
+    --verdicts "$VERDICTS_MAP" --heads "$HEADS_MAP" --holds "$PRIOR_HOLDS")
+  SEQ_RC=$?
+fi
+```
+
+`HEADS_MAP` comes from the gate JSON you already fetched, so passing it saves one `gh pr view` per PR. Both maps are plain in-memory tick state — initialize `HEADS_MAP='{}'` at the top of this step every tick, never carried across ticks.
+
+`SEQ_RC` is `0` when sequencing applies (≥1 hold or batch), `1` when the fleet has no overlap (plan still printed, every PR reads `merge`, dispatch unchanged), and `2`/`3`/`4` on usage/not-found/gh errors. **On any error exit, log one line and continue the tick with sequencing disabled** — treat every PR as `merge`. A planner failure must never block the fleet; the merge gate is still the authority on whether anything lands.
+
+**Refine the verdicts once more** from `SEQ`'s per-PR action, for PRs currently verdicted `wrap`:
+
+| `plan[N].action` | Refined verdict | Step 5d does |
+|------------------|-----------------|--------------|
+| `merge` | `wrap` (unchanged) | dispatch normally |
+| `hold` | `held(#A)` | skip this tick — `#A` is landing ahead of it |
+| `batch` | `batch(#A)` | dispatch in this tick's single batch window |
+| `not_merge_ready` | unchanged | n/a — it was never a merge candidate |
+
+**Persist the returned hold state — only on a successful run** (`SEQ_RC` `0` or `1`) so the next tick's stall counter advances. **Never persist after an error exit:** `$SEQ` is empty or partial then, `.holds` evaluates to `null`, and writing it would *wipe* the prior tick's stall counters — turning a transient planner failure into a silent reset that re-holds already-released PRs:
+
+```bash
+if [[ "$SEQ_RC" -eq 0 || "$SEQ_RC" -eq 1 ]]; then
+  NEW_HOLDS=$(jq -c '.holds // {}' <<<"$SEQ")
+  .claude/scripts/session-state.sh --set ".pmm_merge_holds=$NEW_HOLDS"
+else
+  echo "[PMM] merge-sequence.sh failed (exit $SEQ_RC) — sequencing disabled this tick; prior holds left intact"
+  SEQ=""   # every PR falls through to `merge`; Step 4 prints no annotation
+fi
+```
+
+Evaluate the `jq` first and pass the resulting JSON as the value — never a raw filter expression (`handoff-files.md` field-type contract). Keep `SEQ` for Step 4's annotation and Step 5d's dispatch order; an empty `SEQ` means "no sequencing this tick", which every consumer below already treats as `merge`.
+
+> **Authorship is enforced inside the planner** (`pr-authorship.sh`, fail-closed): a collaborator's PR touching the same file is excluded before grouping, so it can never become an anchor holding your PRs behind a merge you have no authority to perform. Under `READ_ONLY_FLEET=1` this step still runs — the plan is display-only context, like the rest of the table.
+
+---
+
 ## Step 4: Print the status table (the per-tick heartbeat — EVERY tick, BEFORE any action)
 
 The table is this skill's heartbeat. Print it **every tick** and **before** Step 5 runs any rebase or dispatch, so the classification is visible even if a dispatch is long-running. Lead with an Eastern-time timestamp (per `CLAUDE.md` #1):
@@ -353,10 +432,23 @@ echo "[$TS] PMM tick — $PR_COUNT PR(s) in fleet (author:$PMM_AUTHOR)"
 - **Reviews** — literal `review_decision` (`APPROVED`/`CHANGES_REQUESTED`/`REVIEW_REQUIRED`).
 - **CI** — `passing`/`failing`/`in_progress` counts from the gate.
 - **Unresolved Threads** — count of `isResolved == false` (or `?` if the GraphQL fetch failed).
-- **Verdict** — the Step 3 verdict: `rebase`, `fixpr`, `wrap`, `waiting`, `awaiting fix subagent`, `queued (cap)`, `rate-limited`, `BLOCKED:human(@x)`, `BLOCKED:conflicts(needs-human)`, `gone`, `error`.
+- **Verdict** — the Step 3 verdict: `rebase`, `fixpr`, `wrap`, `waiting`, `awaiting fix subagent`, `queued (cap)`, `rate-limited`, `BLOCKED:human(@x)`, `BLOCKED:conflicts(needs-human)`, `gone`, `error`, plus Step 3.6's merge-sequencing refinements `held(#A)` and `batch(#A)`.
 - **Subagent** — per-PR agent state for fix work: `—` (not spawned / no fix dispatch this tick), `dispatched (merge-conflict)` (conflict-resolution fixer spawned this tick — transitions to `spawned`/`working`/`complete`/`failed` as the subagent runs), `spawned`, `working`, `complete`, `failed`, `deferred(foreign-agent)` (Step 5d/5e deferral gate closed because a foreign Phase A entry blocks this PR), `foreign-agent-stale` (Step 5e staleness timeout fired on a silent foreign entry — gate treated as drained). Populated from `active_agents` + Step 2.5 outcomes (PMM-owned only) + Step 5e foreign-drain polling. Merge-ready `/wrap` dispatches show `—` (wrap is parent-inline, not a subagent).
 
 A PR merged this tick is reported via the per-tick `merged #N` line (Step 5d) and then naturally disappears from the fleet on the next `gh pr list` discovery — no table row lingers.
+
+**Merge-sequence annotation (part of the table block — print it whenever Step 3.6 held or batched anything).** Emit `SEQ`'s `summary` verbatim on the line directly under the table. It names the held PRs, the anchor they are waiting on, and **the shared file(s)** — which is what makes the ordering visible rather than mysterious:
+
+```bash
+jq -e '[.plan[] | select(.action == "hold" or .action == "batch")] | length > 0' >/dev/null <<<"$SEQ" \
+  && echo "Merge sequence: $(jq -r .summary <<<"$SEQ")"
+```
+
+```text
+Merge sequence: holding #101, #102 until #100 lands — they share `.claude/skills/pm/SKILL.md`
+```
+
+Omit the line entirely when nothing is held or batched — a fleet with no overlap gets no annotation and no behavioural change. When `SEQ`'s `excluded_prs[]` is non-empty, add one short line naming the count and reason (e.g. "1 PR excluded from sequencing: not yours") so a collaborator's PR silently sitting out is visible rather than invisible.
 
 Only after the table is printed does Step 5 execute the actions.
 
@@ -388,7 +480,7 @@ done
 for N in $PR_NUMS; do
   # Skip PRs whose Step 3 verdict was `gone` or `error` — calling pr-preflight.sh
   # on them would cause avoidable API failures and noise.
-  _verdict=$(jq -r --arg n "$N" '.[$n].verdict // ""' <<<"${VERDICTS_JSON:-{}}" 2>/dev/null || true)
+  _verdict=$(jq -r --arg n "$N" '.[$n].verdict // ""' <<<"$VERDICTS_JSON" 2>/dev/null || true)
   if [[ "$_verdict" == "gone" || "$_verdict" == "error" ]]; then continue; fi
   if [ -n "$PREFLIGHT_SH" ]; then
     PF_OUT=$("$PREFLIGHT_SH" "$N") || echo "[PMM] pr-preflight.sh #$N exited non-zero (exit $?) — continuing"
@@ -428,7 +520,7 @@ else
     echo "[PMM] PR #$N rebase hit conflicts — routing to merge-conflict fixer dispatch (Step 5c)"
     # Override Step 3's `rebase` verdict so Step 5c includes this PR in the *same* tick
     # (Step 5c only dispatches PRs whose refined verdict is `fixpr`, not `rebase`):
-    VERDICTS_JSON=$(jq --arg n "$N" '.[$n] = {verdict: "fixpr", tag: "merge-conflict", refined: "fixpr"}' <<<"${VERDICTS_JSON:-{}}")
+    VERDICTS_JSON=$(jq --arg n "$N" '.[$n] = {verdict: "fixpr", tag: "merge-conflict", refined: "fixpr"}' <<<"$VERDICTS_JSON")
     REFINED_VERDICT[$N]="fixpr"
     # Do NOT add to HARD_BLOCK[] — spawn a phase-a-fixer subagent tasked with the
     # /merge-conflict workflow instead. Step 5c dispatch runs later this tick.
@@ -682,6 +774,28 @@ Merge-ready PRs get **sequential** `/wrap` dispatch — one at a time, never par
 
 Process merge-ready PRs **only when no fix subagents are active this tick** (by the definition above) — run Step 5d sequentially before Step 5e. **If any fix subagents are active, stop here and defer all `/wrap` dispatches** until the Step 5e monitor loop has drained every active fix subagent — do not proceed to the idempotency check or lock acquisition below for any PR while the gate is closed. This keeps the parent out of concurrent parent work and honors dedicated monitor mode. **Foreign Phase A entries** blocking `/wrap` are drained by Step 5e's poll-based condition (entry disappearance from `active_agents`, terminal `status` flip, or `PMM_LOCK_STALE_SECS` staleness timeout with no progress evidence) — not by parsing an exit report — so the deferral gate always has a documented reopen path.
 
+**Merge-sequencing gate (issue #756) — apply after the deferral gate, before any lock.** Read each PR's Step 3.6 action from `SEQ`:
+
+- **`held(#A)`** → **skip this tick entirely.** No confirmation prompt, no lock write, no `/wrap`. The PR keeps its `wrap` readiness and is re-evaluated next tick, by which point `#A` has usually landed and this PR is `BEHIND` — one cheap rebase on the small PR instead of a conflict round on the big one. A hold is bounded by Step 3.6's stall counter, so it always has an exit.
+- **`batch(#A)`** → dispatch it in **this** tick, alongside every other `batch` member of the same anchor. They still merge **one at a time** (merges must not race), but all within this single tick's merge window — that is what bounds `#A` to one re-sync per batch rather than one per follower.
+- **`merge`** → dispatch normally.
+
+**Order within the tick:** anchors first (they are why the followers waited), then batch members in ascending PR number, then everything else. When Step 3.6 errored or was skipped, every PR reads `merge` and this gate is a no-op.
+
+**The merge-dispatch set is `wrap` ∪ `batch(#A)`, minus `held(#A)`** — define it explicitly before the loop below. Step 3.6 *replaces* a PR's `wrap` verdict with `batch(#A)` when it releases a hold, so a dispatch condition written as "`VERDICT == wrap`" alone would silently skip every released PR and they would never merge — the batch mechanism would be inert:
+
+```bash
+MERGE_SET=()
+for N in $PR_NUMS; do
+  case "${REFINED_VERDICT[$N]:-${VERDICT_BY_PR[$N]}}" in
+    wrap|batch\(*) MERGE_SET+=("$N") ;;   # both dispatch
+    held\(*)       ;;                      # held this tick — no lock, no /wrap
+  esac
+done
+```
+
+Sequencing never authorizes a merge — it only decides whether a PR is being held. Each dispatched PR still runs `/wrap`'s own gate re-check and AC verification below.
+
 **Idempotency-gated via `pmm_in_flight`** (only reached once the deferral gate above is open):
 
 ```bash
@@ -693,7 +807,7 @@ Decision:
 - `$INFLIGHT` has `status == "active"` → skip (verdict `awaiting prior /wrap`) unless stale per `PMM_LOCK_STALE_SECS` (default **3600s**) with no live progress evidence.
 - `$INFLIGHT` is `null` (or stale lock broken) → proceed to merge dispatch below.
 
-**Merge dispatch — no confirmation prompt by default.** When `VERDICT == wrap`:
+**Merge dispatch — no confirmation prompt by default.** For each `$N` in `MERGE_SET` (verdict `wrap` **or** `batch(#A)` — never `held(#A)`), in the order above:
 
 1. **When `PMM_CONFIRM_MERGES` is true:** emit a per-PR confirmation prompt ("Merge-ready: dispatch `/wrap` for #N?") **before** acquiring any lock. If declined, skip this PR this tick with **no** `pmm_in_flight` write — do not leave a stale lock.
 2. **When confirmed (or when `PMM_CONFIRM_MERGES` is false):** acquire the idempotency lock, then dispatch immediately:
@@ -791,6 +905,7 @@ An **idle tick** is one where **all** of the following hold:
 1. **No dispatch fired** — `TICK_HAD_ACTION=false` from Step 5 (no rebase, no fix subagent spawn, no `/wrap`, no reviewer trigger).
 2. **No state change vs prior tick** — fleet digest unchanged (`DIGEST == PREV` from above).
 3. **No active fix subagents** — no **blocking** Phase A `active_agents` entry (per Step 5's shared gate idiom — stale foreign entries with no progress evidence do not count). A tick can have `TICK_HAD_ACTION=false` and an unchanged digest while a long-running Phase A fixer from a prior tick is still working — that is not idle, and counting it as such risks auto-pausing mid-fix.
+4. **Nothing held by merge sequencing** — no PR carries Step 3.6's `held(#A)` verdict. A held PR is merge-ready work deliberately deferred one tick, which looks exactly like idleness (no dispatch, unchanged digest, no subagents). At the default `--stall-ticks 1` a hold resolves within one tick either way, so this can't reach the 3-tick pause threshold on its own — but making it explicit means raising `stall_ticks` later can never strand a ready fleet at Pause with its merges still queued.
 
 Maintain a dedicated **`pmm_idle_streak`** counter (flat, sibling to `pmm_digest_streak`):
 
@@ -799,7 +914,13 @@ IDLE_PREV=$(.claude/scripts/session-state.sh --get '.pmm_idle_streak' 2>/dev/nul
 [ "$IDLE_PREV" = null ] && IDLE_PREV=0
 ACTIVE_FIXERS=$(jq '[.[] | select(.phase == "A" and (.status != "complete" and .status != "failed"))] | length' \
   <<<"$(.claude/scripts/session-state.sh --get '.active_agents' 2>/dev/null || echo '[]')")
-if [ "$TICK_HAD_ACTION" = false ] && [ "$DIGEST" = "$PREV" ] && [ "$ACTIVE_FIXERS" -eq 0 ]; then
+# Plain if-guard, NOT ${SEQ:-{}} — a brace-containing parameter-expansion
+# default terminates at its first literal `}` and would feed jq garbage.
+HELD_COUNT=0
+if [ -n "${SEQ:-}" ]; then
+  HELD_COUNT=$(jq '[.plan[]? | select(.action == "hold")] | length' <<<"$SEQ" 2>/dev/null || echo 0)
+fi
+if [ "$TICK_HAD_ACTION" = false ] && [ "$DIGEST" = "$PREV" ] && [ "$ACTIVE_FIXERS" -eq 0 ] && [ "$HELD_COUNT" -eq 0 ]; then
   IDLE_STREAK=$((IDLE_PREV + 1))
 else
   IDLE_STREAK=0

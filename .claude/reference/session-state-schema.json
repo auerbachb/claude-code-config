@@ -14,6 +14,7 @@
       "cr_hourly": "object",
       "greptile_daily": "object",
       "pmm_in_flight": "object",
+      "pmm_merge_holds": "object",
       "pmm": "object"
     },
     "pr_nested": {
@@ -197,6 +198,19 @@
   "pmm_digest_streak": 3,
   "pmm_idle_streak": 2,
   "pmm_in_flight": {},
+  "_pmm_merge_holds_comment": "Overlap-aware merge sequencing state (issue #756), written by /pr-monitor-and-manage Step 3.6 from merge-sequence.sh's `holds` output. Keyed by ANCHOR PR number. `signature` is the anchor's <head_sha>:<verdict> — an unchanged signature across ticks means no progress, and once `ticks` passes --stall-ticks the held `members` release as one batch. Entries for anchors no longer in the fleet simply stop being regenerated; there is no separate cleanup pass. Overlap groups themselves are NEVER cached here — they are recomputed every tick from live pulls/{N}/files. Model: .claude/reference/merge-sequencing.md.",
+  "pmm_merge_holds": {
+    "618": {
+      "anchor": 618,
+      "signature": "7b2cfbf9a1c4e2d8f0b3a5c7e9d1f3b5a7c9e1d3:wrap",
+      "ticks": 1,
+      "members": [
+        619,
+        620
+      ],
+      "released": false
+    }
+  },
   "pmm": {
     "paused_at": "2026-04-29T14:00:00Z",
     "fleet_at_pause": [
