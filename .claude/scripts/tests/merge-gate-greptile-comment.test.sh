@@ -95,12 +95,16 @@ export HEAD_SHA
 export PUSH_TS
 
 # Helper: build a Greptile issue comment JSON object.
-greptile_comment() { # created_at thumbsup_count
-  local ts="$1" up="$2"
-  jq -cn --arg ts "$ts" --argjson up "$up" \
+# Third arg (updated_at) is optional — defaults to created_at.
+# GitHub's API always includes updated_at; we default it here so existing tests
+# continue to produce a comment that has updated_at == created_at (pre-push when
+# created_at is pre-push), preserving the stale-comment test expectations.
+greptile_comment() { # created_at thumbsup_count [updated_at]
+  local ts="$1" up="$2" upd="${3:-$1}"
+  jq -cn --arg ts "$ts" --argjson up "$up" --arg upd "$upd" \
     '{id:1001, user:{login:"greptile-apps[bot]"},
       body:"<h3>Greptile Summary</h3>\nClean review.",
-      created_at:$ts,
+      created_at:$ts, updated_at:$upd,
       reactions:{url:"",total_count:$up,"+1":$up,"-1":0}}'
 }
 
@@ -241,6 +245,35 @@ run_gate "$PUSH_TS" "[]" "[$P0_BADGE]"
 check_eq "false" "$(met)"              "P0 badge: met == false"
 check_eq "yes"   "$(missing_has "P0")" "P0 badge: missing contains P0 message"
 check_eq "1"     "$RC"                 "P0 badge: exit code 1"
+
+# --------------------------------------------------------------------------
+# Test 7: In-place re-review — created_at pre-push, updated_at post-push.
+# Greptile edits its summary comment in-place on re-review (observed on PR #734).
+# The original created_at pre-dates the force-push; updated_at is post-push.
+# merge-gate.sh must treat updated_at as sufficient freshness and report met:true.
+# This is the primary regression test for issue #748.
+# --------------------------------------------------------------------------
+echo "--- Test 7: in-place re-review — created_at pre-push, updated_at post-push ---"
+COMMENT7="$(greptile_comment "$STALE_TS" 1 "$FRESH_TS")"
+run_gate "$PUSH_TS" "[$COMMENT7]" "[]"
+
+check_eq "true"  "$(met)"           "in-place re-review: met == true"
+check_eq "0"     "$(missing_count)" "in-place re-review: missing array empty"
+check_eq "0"     "$RC"              "in-place re-review: exit code 0"
+
+# --------------------------------------------------------------------------
+# Test 8: Both created_at and updated_at pre-push — truly stale, gate must fail.
+# A comment that was both created and last edited before the push is not a fresh
+# review signal and must not satisfy the gate (no Greptile review yet).
+# --------------------------------------------------------------------------
+echo "--- Test 8: both created_at and updated_at pre-push — truly stale ---"
+COMMENT8="$(greptile_comment "$STALE_TS" 1 "$STALE_TS")"
+run_gate "$PUSH_TS" "[$COMMENT8]" "[]"
+
+check_eq "false" "$(met)"  "both-stale comment: met == false"
+check_eq "1"     "$RC"     "both-stale comment: exit code 1"
+check_eq "yes" "$(missing_has "no Greptile review")" \
+  "both-stale comment: missing says 'no Greptile review yet'"
 
 echo "----------------------------------------"
 echo "merge-gate-greptile-comment.test.sh: $PASS passed, $FAIL failed"

@@ -718,11 +718,16 @@ case "$REVIEWER" in
       '[.[]? | select(.user.login == "greptile-apps[bot]")
               | select(if $after == "" then true else .created_at > $after end)] | length')
 
-    # Latest FRESH Greptile issue comment (created after the last push).
+    # Latest FRESH Greptile issue comment (created OR updated after the last push).
+    # Greptile edits its summary comment in-place on re-review rather than posting a
+    # new one (observed on PR #734 — rebased + force-pushed; re-review updated the
+    # existing summary comment at updated_at 03:05:28Z after the 02:50:10Z push while
+    # created_at stayed at the original post time). Accept the comment as fresh when
+    # either timestamp is post-push (issue #748).
     LATEST_G_COMMENT=$(echo "$ISSUE_COMMENTS_JSON" | jq -c --arg after "${LAST_COMMIT_TS:-}" '
       [.[]?
         | select(.user.login == "greptile-apps[bot]")
-        | select(if $after == "" then true else .created_at > $after end)]
+        | select(if $after == "" then true else (.created_at > $after or .updated_at > $after) end)]
       | sort_by(.created_at) | last // empty')
 
     # Latest Greptile formal review (belt-and-suspenders supplemental signal).
@@ -757,7 +762,10 @@ case "$REVIEWER" in
           G_ANCHOR_TS=$(echo "$LATEST_G" | jq -r '.submitted_at // ""')
         fi
         if [[ -n "$LATEST_G_COMMENT" ]]; then
-          G_COMMENT_TS=$(echo "$LATEST_G_COMMENT" | jq -r '.created_at // ""')
+          # Prefer updated_at over created_at: Greptile edits its summary in-place
+          # (issue #748), so updated_at is the effective review timestamp after a
+          # re-review. Falls back to created_at for comments without updated_at.
+          G_COMMENT_TS=$(echo "$LATEST_G_COMMENT" | jq -r '(.updated_at // .created_at) // ""')
           # Issue comment supersedes formal review when it is more recent.
           if [[ -z "$G_ANCHOR_TS" || "$G_COMMENT_TS" > "$G_ANCHOR_TS" ]]; then
             G_BODY=$(echo "$LATEST_G_COMMENT" | jq -r '.body // ""')
