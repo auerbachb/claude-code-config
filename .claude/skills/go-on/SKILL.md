@@ -43,7 +43,38 @@ gh repo view --json owner,name --jq '"\(.owner.login)/\(.name)"'
 
 ---
 
-## Step 1: Check for uncommitted changes
+## Step 1: Check for an inherited rebase / conflict resolution (issue #757)
+
+**Run this before Step 1b and before any commit or push.** The incident that motivated this guard was exactly a resumed session: an interrupted rebase left a resolution with no conflict markers that was nonetheless byte-identical to main — the whole fix the PR existed to deliver had been silently dropped, and every other gate (clean status, green CI, review) passed it.
+
+```bash
+GUARD=".claude/scripts/diff-survival-check.sh"
+REBASE_IN_PROGRESS=0
+{ [ -d "$(git rev-parse --git-path rebase-merge)" ] || [ -d "$(git rev-parse --git-path rebase-apply)" ]; } && REBASE_IN_PROGRESS=1
+SNAPSHOT_PRESENT=$("$GUARD" status --json | jq -r '.present')
+```
+
+- **Neither** a rebase in progress nor a snapshot on disk → `[SKIP]` — no inherited resolution to verify. Go to Step 1b.
+- **Otherwise** (mid-rebase, or a snapshot left by a just-completed rebase) → `[ACTION]`:
+
+  ```bash
+  "$GUARD" snapshot --if-absent   # mid-rebase this reconstructs from orig-head, not the half-replayed HEAD
+  "$GUARD" verify; GUARD_RC=$?
+  ```
+
+  - `0` — `[DONE]` diff survived the resolution; continue. (`deferred` also exits 0: commits are still queued for replay — finish the rebase, then re-run before pushing.)
+  - `1` — `[BLOCKED]` the branch's entire diff vanished. Report the guard's output verbatim, including its one legitimate case (main independently landed the identical change → **close the PR**, never force-push an empty branch). Do not commit, push, or "fix" anything.
+  - `2` — `[BLOCKED]` name the files that lost their changes and stop. This is an **unresolved conflict**, not a resumable state — re-resolve those files (whitespace-only survival still counts as lost), then re-run.
+  - `4` — two shapes, both stop-and-report:
+    - `unresolved_conflicts` → `[ACTION]` finish the resolution (optionally via `/merge-conflict`), then re-run `verify` before continuing.
+    - `unverifiable` → `[BLOCKED]` the snapshot's baseline commit *is* the commit being checked, so it proves nothing. This is what a **just-completed** rebase with no snapshot looks like: a baseline cannot be reconstructed after the fact (`--if-absent` only reconstructs from `orig-head` while the rebase is still in progress). Say plainly that the resolution **cannot be verified**, and let the user decide — never report it as clean.
+  - `5` — no snapshot could be established at all → `[BLOCKED]`: same handling as `unverifiable`. Never proceed silently on an unverifiable resolution.
+
+  The guard never repairs; `git rebase --abort` or resetting to `ORIG_HEAD` stays the user's call. After a verified push completes, `"$GUARD" clear` retires the snapshot.
+
+---
+
+## Step 1b: Check for uncommitted changes
 
 ```bash
 git status --porcelain
@@ -325,7 +356,7 @@ Branch on the exit code:
   - BugBot path with **"no BugBot review on HEAD"**: BugBot hasn't reviewed the current HEAD yet; return to **Step 6** to poll for the review.
   - BugBot path with **"latest BugBot review on HEAD has findings"**: return to **Step 7** to process findings.
   - Greptile path with **"unresolved Greptile thread(s)"**: return to **Step 7** to process; if P0 remains after fix, re-trigger `@greptileai` (subject to the 3-review cap per `.claude/rules/greptile.md`).
-  - **"branch is BEHIND base"**: `[ACTION]` — rebase onto base, force-push, wait for a fresh review, then re-run the gate.
+  - **"branch is BEHIND base"**: `[ACTION]` — `diff-survival-check.sh snapshot`, rebase onto base, then `diff-survival-check.sh verify` (Step 1 branch table) and force-push **only** on exit 0; wait for a fresh review, then re-run the gate.
   - **"CI has N failing check-run(s)"** or **"CI has N incomplete check-run(s)"**: fix CI or wait for incomplete runs, then re-run the gate.
 - `3` → `[BLOCKED]` — PR not found (closed or merged).
 - `2`/`4` → `[BLOCKED]` — script or gh error; surface the message to the user.
