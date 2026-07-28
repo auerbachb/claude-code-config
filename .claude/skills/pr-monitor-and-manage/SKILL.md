@@ -1,6 +1,6 @@
 ---
 name: pr-monitor-and-manage
-description: Thread-level PR fleet manager. Rediscovers your open PRs every tick, prints a status table, and auto-dispatches the per-PR decision tree (rebase / parallel phase-a-fixer / sequential /wrap) until the fleet is clean, hard-blocked, or idle. Auto-pauses when idle; resume with /pr-monitor-and-manage-wake. Triggers on "/pr-monitor-and-manage", "/pmm", "manage PRs", "PR fleet", "watch PRs".
+description: Thread-level PR fleet manager. Rediscovers your open PRs every tick, prints a delta-aware status table (one-line heartbeat when nothing changed), and auto-dispatches the per-PR decision tree (rebase / parallel phase-a-fixer / sequential /wrap) until the fleet is clean, hard-blocked, or idle. Auto-pauses when idle; resume with /pr-monitor-and-manage-wake. Triggers on "/pr-monitor-and-manage", "/pmm", "manage PRs", "PR fleet", "watch PRs".
 triggers:
   - pr-monitor-and-manage
   - pmm
@@ -225,7 +225,7 @@ PMM does **not** launch Phase B/C after Phase A — it only fixes and pushes. St
 HARD_BLOCK_JSON=$(.claude/scripts/session-state.sh --get '.pmm_hard_block // {}' 2>/dev/null || echo '{}')
 ```
 
-This step is **side-effect-free**: it gathers state and computes a verdict per PR, but performs **no** rebases or dispatches. Actions happen in **Step 5**, after the table prints (Step 4). This ordering is required so the heartbeat table always shows the classification *before* any long-running dispatch.
+This step performs no PR mutations or dispatches: it gathers state, computes verdicts, and may persist orchestration bookkeeping (e.g. Step 3.6's `.pmm_merge_holds`). PR mutations and dispatches happen in **Step 5**, after the heartbeat/table prints (Step 4). This ordering is required so the classification is always visible *before* any long-running dispatch.
 
 For **each** PR number, gather state. Run the per-PR fetches **in parallel across PRs** (one batch of background jobs, then collect), since they are independent network calls.
 
@@ -414,14 +414,31 @@ Evaluate the `jq` first and pass the resulting JSON as the value — never a raw
 
 ---
 
-## Step 4: Print the status table (the per-tick heartbeat — EVERY tick, BEFORE any action)
+## Step 4: Heartbeat + status table (EVERY tick, BEFORE any action — table only when it carries news)
 
-The table is this skill's heartbeat. Print it **every tick** and **before** Step 5 runs any rebase or dispatch, so the classification is visible even if a dispatch is long-running. Lead with an Eastern-time timestamp (per `CLAUDE.md` #1):
+A heartbeat prints **every tick**, **before** Step 5 runs any rebase or dispatch — but the **full table only when something changed or is about to happen** (issue #773; `monitor-mode.md` one-line default). Compute two digests **here** (Step 6 reuses and persists them):
+
+- `FLEET_TUPLE_SORTED` — Step 3's per-PR state tuples `(number, head_sha, merge_state, review_decision, ci_blocking_count, unresolved_threads)`, sorted by PR number. Drives backoff (Step 6) and quiet-tick detection.
+- `ROW_TUPLE_SORTED` — everything the table *displays* per PR: `(number, issue_ref, merge_state, conflicting_flag, review_decision, ci_summary, unresolved_threads, refined_verdict, subagent_cell)`, sorted by PR number. Catches display-only changes the state tuple misses (verdict refinements like `rate-limited` → `waiting`, subagent `spawned` → `working`, `mergeable` flips) so a quiet tick can never mask them.
 
 ```bash
+DIGEST=$(printf '%s' "$FLEET_TUPLE_SORTED" | sha256sum | awk '{print $1}')
+ROW_DIGEST=$(printf '%s' "$ROW_TUPLE_SORTED" | sha256sum | awk '{print $1}')
+PREV=$(.claude/scripts/session-state.sh --get '.pmm_digest' 2>/dev/null || echo null)       # read-only here —
+ROW_PREV=$(.claude/scripts/session-state.sh --get '.pmm_row_digest' 2>/dev/null || echo null) # Step 6 owns the persist
 TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
 echo "[$TS] PMM tick — $PR_COUNT PR(s) in fleet (author:$PMM_AUTHOR)"
 ```
+
+Print the **full table** (below the lead line) when ANY of:
+
+- (a) this is the arm-mode immediate tick or the first tick after a resume;
+- (b) `DIGEST != PREV` or `ROW_DIGEST != ROW_PREV` (or either previous value is null);
+- (c) any PR's verdict this tick is actionable — `rebase`, `fixpr`, `wrap`, or `batch(#A)` — so the classification is always visible before Step 5 acts;
+- (d) Step 2.5 processed any subagent outcome, or `HARD_BLOCK[]` gained a new entry this tick;
+- (e) Step 3.6 held or batched anything (the merge-sequence annotation must stay visible).
+
+**Quiet tick** (none of a–e): append `— no change` plus the PR numbers to the lead line (e.g. `… (author:x) — no change (#101 #102)`) and print **only that line** — no table. Hard blocks, gate failures, and terminations are never quiet: they hit (b)/(c)/(d) by construction.
 
 | Issue | PR | State | Reviews | CI | Unresolved Threads | Verdict | Subagent |
 |-------|----|-------|---------|----|--------------------|---------|----------|
@@ -450,7 +467,7 @@ Merge sequence: holding #101, #102 until #100 lands — they share `.claude/skil
 
 Omit the line entirely when nothing is held or batched — a fleet with no overlap gets no annotation and no behavioural change. When `SEQ`'s `excluded_prs[]` is non-empty, add one short line naming the count and reason (e.g. "1 PR excluded from sequencing: not yours") so a collaborator's PR silently sitting out is visible rather than invisible.
 
-Only after the table is printed does Step 5 execute the actions.
+Only after the heartbeat (and the table, when any of a–e fired) is printed does Step 5 execute the actions. A quiet tick has no actionable verdicts by construction (condition c); if Step 5.0 pre-flight nonetheless acts on a quiet tick (draft flip, reviewer trigger), its own timestamped output lines report it.
 
 ---
 
@@ -874,15 +891,15 @@ Initialize `MERGED_THIS_SESSION='[]'` on the first tick in Step 0/Step 1.
 
 ## Step 6: Stable-state backoff + idle streak (per `scheduling-reliability.md`)
 
-Compute a **per-tick fleet digest** and track a streak so an idle fleet stops hammering the API. Hash the per-PR tuple `(number, head_sha, merge_state, review_decision, ci_blocking_count, unresolved_threads)` across the whole fleet (sorted by PR number for stability):
+Track a streak over the fleet digest so an idle fleet stops hammering the API. `DIGEST`/`PREV` and `ROW_DIGEST`/`ROW_PREV` were already computed in Step 4 this tick (hashed once) — reuse them, do not recompute. **Only the state digest feeds the streak**: `ROW_DIGEST` exists solely for Step 4's table decision, so a display-only change (verdict refinement, subagent cell) never resets backoff or the idle counter.
 
 ```bash
-DIGEST=$(printf '%s' "$FLEET_TUPLE_SORTED" | sha256sum | awk '{print $1}')
-PREV=$(.claude/scripts/session-state.sh --get '.pmm_digest' 2>/dev/null || echo null)
+# DIGEST/PREV + ROW_DIGEST/ROW_PREV come from Step 4 (read pre-persist).
 STREAK=$(.claude/scripts/session-state.sh --get '.pmm_digest_streak' 2>/dev/null || echo 0)
 [ "$STREAK" = null ] && STREAK=0
 if [ "$DIGEST" = "$PREV" ]; then STREAK=$((STREAK+1)); else STREAK=0; fi
-.claude/scripts/session-state.sh --set ".pmm_digest=\"$DIGEST\"" --set ".pmm_digest_streak=$STREAK"
+.claude/scripts/session-state.sh --set ".pmm_digest=\"$DIGEST\"" --set ".pmm_digest_streak=$STREAK" \
+  --set ".pmm_row_digest=\"$ROW_DIGEST\""
 
 # Resolve the effective cadence from the streak (used by Step 7's loop re-arm).
 if [ "$STREAK" -ge 3 ]; then EFFECTIVE_CADENCE="15m"; else EFFECTIVE_CADENCE="$PMM_CADENCE"; fi
@@ -966,8 +983,8 @@ NOW=$(date -u +%FT%TZ)
 **Pre-exit checklist (run before ending every polling turn — `scheduling-reliability.md`):**
 
 1. **Next tick scheduled?** Confirm `/loop` is active/re-armed at `$EFFECTIVE_CADENCE` (or stopped/paused per the routing above).
-2. **Heartbeat sent?** The Step 4 timestamped table is the heartbeat — never end a tick silently.
-3. **State recorded?** `pmm_active`, cadence, watermarks, `pmm_in_flight`, `active_agents`, `pmm_digest(_streak)`, `pmm_idle_streak` written to `session-state.json`.
+2. **Heartbeat sent?** The Step 4 timestamped line (plus the table when it carried news) is the heartbeat — never end a tick silently.
+3. **State recorded?** `pmm_active`, cadence, watermarks, `pmm_in_flight`, `active_agents`, `pmm_digest(_streak)`, `pmm_row_digest`, `pmm_idle_streak` written to `session-state.json`.
 
 ---
 

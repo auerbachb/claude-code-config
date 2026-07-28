@@ -14,7 +14,7 @@ The 5-minute heartbeat rule catches silence during turns; this file covers betwe
 | ≥3 concurrent polls or cross-session durability | **`CronCreate`** | Durable fleet job |
 | One-shot "wake me in N minutes" | `ScheduleWakeup` | Single tick only |
 
-> **Default recurring user-facing poll: `/loop`.** Use `CronCreate` only for ≥3 concurrent polls, cross-session durability, or fleet jobs. Never hand-roll "do work, then schedule the next one-shot wakeup" chains — a forgotten re-arm silently kills the poll; `/loop` re-arms itself.
+> Why the "Never" above: a forgotten re-arm silently kills a hand-rolled one-shot chain; `/loop` re-arms itself.
 
 ## PM Monitoring Primitive
 
@@ -35,7 +35,7 @@ Before any polling turn ends (`/loop`, `CronCreate`, or legacy one-shot), verify
    - `/loop`: verify it is active/re-armed.
    - `CronCreate`: confirm with `CronList`; prior `CronDelete` or 7-day expiry may remove it.
    - Legacy `ScheduleWakeup`: confirm this turn made the next-tick call and it returned cleanly. If skipped/errored, switch to `/loop`.
-2. **User heartbeat sent this turn?** Timestamped visible message summarizing what happened and what is next.
+2. **User heartbeat sent this turn?** Timestamped one-liner: what happened, what's next.
 3. **Monitoring state recorded?** Update `~/.claude/session-state.json` with tick time, next expected tick, and watermarks (last review ID, last HEAD SHA, etc.). See `handoff-files.md`.
 
 ## Stable-State Backoff

@@ -15,8 +15,8 @@ Do not merge or commit to `main` outside this path unless the user explicitly ov
 These apply to EVERY message the parent agent sends to the user. No exceptions, no degradation over time, no skipping after context compaction.
 
 1. **Timestamp prefix.** Start every message with Eastern time (`Mon Mar 16 02:34 AM ET`). **Windows (Git Bash):** `TZ=America/New_York` is often wrong — use PowerShell `TimeZoneInfo` for ET first; **Linux/macOS:** `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`. Never estimate — run a command; for elapsed time, compare two outputs.
-2. **Active monitoring declaration.** If monitoring background agents, state how many and which PRs at the end of every message.
-3. **5-minute heartbeat.** Never go >5 minutes without a status message. During operations touching 4+ files, emit a one-line status after every 3 writes/edits (see `monitor-mode.md` "User Heartbeat" and "File-Write Status Updates" for details).
+2. **Active monitoring declaration.** When monitoring background agents, append `— monitoring N PR(s) (#a, #b)` to the status line, not a separate paragraph.
+3. **5-minute heartbeat — one line by default.** Never go >5 minutes without a status message; routine ones are one line (format: `monitor-mode.md` "User Heartbeat"). Multi-line detail only for state changes, dispatches, blockers, failures, and final reports — hard stops (CI red, `CHANGES_REQUESTED`, safety) always in full. Don't restate the task or narrate routine tool use. During operations touching 4+ files, emit a one-line status after every 3 writes/edits (`monitor-mode.md`).
 4. **`/loop` for recurring polls.** Back any "poll/check/watch every N" request with `/loop` (or `CronCreate` for ≥3 concurrent polls / cross-session durability) — never a hand-rolled chain of one-shot wake-ups. Decision tree + pre-exit checklist: `scheduling-reliability.md`.
 5. **Dedicated monitor mode.** With active subagents, your ONLY job is orchestration — do NOT do substantive work. See `monitor-mode.md` "Dedicated Monitor Mode" for full rules.
 

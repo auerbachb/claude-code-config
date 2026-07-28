@@ -60,6 +60,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `graphite-stacked-prs-research-2026-05.md` — stacked PR economics (#418 / #433)
 - `codeant-code-quality-eval-2026-06.md` — deeper CodeAnt Code Quality integration eval; verdict: keep advisory (#444)
 - `instruction-set-audit-2026-07.md` — 1-month instruction-set size & optimization re-check; verdict: keep caps (#462)
+- `token-efficiency-audit-2026-07.md` — token-efficiency playbook: adopt/skip/adapt verdicts, ranked cuts, shipped v1 (one-line heartbeats, delta PMM table, silence-detector dedupe) + FU-1…FU-7 (#773)
 - `pm-routing-audit-2026-07.md` — thread-vs-inline routing effectiveness audit of #613; ground-truth attribution + the shared PM-context inline gate for chip surfaces (#701)
 
 ### Diagrams (mermaid stubs and indexes)
