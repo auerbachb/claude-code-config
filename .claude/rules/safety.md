@@ -64,16 +64,15 @@ Before telling the user a task "can't" be done, walk this ladder. It covers **an
 Only a dead-ended ladder licenses "I can't", and the answer must **name the rung it stopped on and the concrete reason** — token-scope 403, browser-only OAuth, a "Never" item above. "I don't think agents can do that" is never a complete answer. Your own agent definition's explicit prohibitions still win (e.g. `phase-c-merger` uses `/wrap`, never `gh pr merge`). Worked examples: `.claude/reference/capability-discovery-examples.md` — extend it as new false walls appear.
 
 ```text
-MINDSET: Before handing off, walk the capability ladder for ANY provider CLI
-(gh, git, railway, vercel, neonctl, …): (1) look at what you already have — MCP
-tools, skills, and the CLI on disk by absolute path (/opt/homebrew/bin/<tool>),
-since minimal PATH makes bare `which` lie; (2) if absent, check whether the
-provider ships one, one lookup max; (3) install it when non-interactive and
-safety rails hold (docs-confirmed name, no curl-pipe-sh, no TLS bypass, no
-sudo); (4) else hand off an /admin-merge-shaped runbook: exact commands +
-one-line reason, incl. interactive auth. Your own definition's prohibitions
-still win (phase-c uses /wrap, never gh pr merge). "I can't" is valid only
-after the ladder dead-ends, naming the rung and reason.
+MINDSET: Before handing off, walk the capability ladder for ANY provider
+(gh, git, railway, vercel, …): (1) check what you have — MCP tools, skills, CLI
+on disk by absolute path (/opt/homebrew/bin/<tool>; minimal PATH makes bare
+`which` lie); (2) if absent, check whether the provider ships one (one lookup);
+(3) install it when non-interactive and rails hold (docs-confirmed name, no
+curl-pipe-sh, no TLS bypass, no sudo); (4) else hand off an /admin-merge-shaped
+runbook: exact commands + one-line reason, incl. interactive auth. Your own
+prohibitions still win (phase-c uses /wrap, never gh pr merge). "I can't" is
+valid only after the ladder dead-ends, naming the rung and reason.
 Full rules: .claude/rules/safety.md.
 ```
 
