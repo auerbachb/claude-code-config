@@ -68,7 +68,7 @@ Enforces the 5-minute heartbeat rule. If the agent goes >5 minutes without sendi
 
 **How it works:** Two hooks work together:
 - **`silence-detector-ack.sh`** (Stop hook): Fires when Claude finishes a response. Touches a heartbeat file in `/tmp` to record the timestamp.
-- **`silence-detector.sh`** (PostToolUse hook, all tools): After every tool call, checks the heartbeat file's mtime. If >5 min elapsed, injects a warning via `additionalContext` that the agent sees.
+- **`silence-detector.sh`** (PostToolUse hook, all tools): After every tool call, checks the heartbeat file's mtime. If >5 min elapsed, injects a warning via `additionalContext` that the agent sees. Below the threshold it injects `Current system time` at most once per `SILENCE_TIME_INJECT_S` (default 60s; marker `/tmp/claude-time-injected-$SESSION_ID`) and emits `{}` otherwise, so tool-call bursts don't re-inject a near-identical timestamp on every call (issue #773).
 
 The heartbeat file is session-scoped (`/tmp/claude-heartbeat-$CLAUDE_SESSION_ID`) and cleaned up automatically by the OS.
 

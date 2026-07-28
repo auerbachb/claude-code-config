@@ -3,6 +3,11 @@
 # Checks if >5 minutes have passed since the agent last sent a visible message.
 # If so, injects an additionalContext warning into the agent's context.
 #
+# Steady-state time injection is deduped (issue #773): the "Current system
+# time" context is emitted at most once per SILENCE_TIME_INJECT_S (default
+# 60s), so bursts of tool calls don't re-inject a near-identical value into
+# the transcript on every call. The >5-min warning path always emits.
+#
 # Acknowledgment is handled automatically by the companion Stop hook
 # (silence-detector-ack.sh), which touches the heartbeat file whenever
 # Claude finishes a response.
@@ -81,9 +86,38 @@ SESSION_ID="${SESSION_ID//[^[:alnum:]_.-]/_}"
 HEARTBEAT_FILE="/tmp/claude-heartbeat-${SESSION_ID}"
 WARNED_FILE="/tmp/claude-silence-warned-${SESSION_ID}"
 ACTIVE_FILE="/tmp/claude-active-${SESSION_ID}"
+TIME_FILE="/tmp/claude-time-injected-${SESSION_ID}"
 THRESHOLD=300  # 5 minutes in seconds
 COOLDOWN_S="${SILENCE_WARN_COOLDOWN_S:-90}"
 [[ "$COOLDOWN_S" =~ ^[0-9]+$ ]] || COOLDOWN_S=90
+TIME_INJECT_S="${SILENCE_TIME_INJECT_S:-60}"
+[[ "$TIME_INJECT_S" =~ ^[0-9]+$ ]] || TIME_INJECT_S=60
+
+emit_time_if_due() {
+  # Dedupe (issue #773): skip the time injection when one landed < TIME_INJECT_S ago.
+  # $1 = "force": bypass the dedupe check — new-session paths must always emit,
+  # even when a marker from a prior same-id session (e.g. the shared "default"
+  # id) survives in /tmp.
+  if [[ "${1:-}" != "force" && -f "$TIME_FILE" ]]; then
+    local last_inject inject_age
+    last_inject=$(file_mtime "$TIME_FILE")
+    if [[ -n "$last_inject" ]]; then
+      inject_age=$(( $(date +%s) - last_inject ))
+      # Negative age = future-dated marker (clock rollback) — treat as stale, re-inject.
+      if (( inject_age >= 0 && inject_age < TIME_INJECT_S )); then
+        echo '{}'
+        return
+      fi
+    fi
+  fi
+  if ! touch "$TIME_FILE" 2>/dev/null; then
+    # Deliberate fail-open: an unwritable marker degrades to the pre-dedupe
+    # behavior (inject every call) rather than losing time context. Surface it
+    # so the condition is visible in hook logs instead of silent.
+    echo "silence-detector: cannot write $TIME_FILE — time-injection dedupe disabled this call" >&2
+  fi
+  emit_context "Current system time: ${current_time}"
+}
 LOG_DIR="$HOME/.claude/logs"
 LOG_FILE="$LOG_DIR/silence.log"
 LOG_MAX_SIZE=$((10 * 1024 * 1024))
@@ -97,7 +131,7 @@ touch "$ACTIVE_FILE" 2>/dev/null || true
 # If heartbeat file doesn't exist, create it (first tool call in session)
 if [[ ! -f "$HEARTBEAT_FILE" ]]; then
   touch "$HEARTBEAT_FILE"
-  emit_context "Current system time: ${current_time}"
+  emit_time_if_due force
   exit 0
 fi
 last_ack=$(file_mtime "$HEARTBEAT_FILE")
@@ -105,7 +139,7 @@ last_ack=$(file_mtime "$HEARTBEAT_FILE")
 # Fallback if stat failed
 if [[ -z "$last_ack" ]]; then
   touch "$HEARTBEAT_FILE"
-  emit_context "Current system time: ${current_time}"
+  emit_time_if_due force
   exit 0
 fi
 
@@ -127,9 +161,10 @@ if [[ $elapsed -ge $THRESHOLD ]]; then
   elapsed_min=$((elapsed / 60))
   ( write_log "$elapsed" ) || true
   touch "$WARNED_FILE"
+  touch "$TIME_FILE" 2>/dev/null || true  # warning carries a fresh time — restart the dedupe window
   emit_context "Current system time: ${current_time}. HEARTBEAT WARNING: No visible message to user in ${elapsed_min}+ minutes (${elapsed}s). Per the 5-minute heartbeat rule, you MUST send a status update to the user NOW — before making any more tool calls. Include: what you are doing, what is pending, any blockers. Use the timestamp above as your prefix."
 else
-  emit_context "Current system time: ${current_time}"
+  emit_time_if_due
 fi
 
 exit 0
