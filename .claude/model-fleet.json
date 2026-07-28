@@ -1,0 +1,27 @@
+{
+  "_note": "Single source of truth for the Claude model fleet. Resolve it with .claude/scripts/model-fleet.sh — never hardcode a model name in a new skill, rule, or agent body. When the fleet changes, editing this file is sufficient for every consumer that resolves through the script (today: /harness-audit). It is NOT yet sufficient repo-wide: /prompt, chip **Model:** lines, and .claude/agents/*.md still carry model literals and must be updated separately until they migrate here. That migration is tracked in issue #749 and was deliberately out of scope for issue #770, which introduced this file, its resolver, and the first consumer.",
+  "verified": "2026-07-28",
+  "top_tier": "claude-fable-5",
+  "fleet": [
+    {
+      "id": "claude-fable-5",
+      "display": "Fable 5",
+      "alias": null
+    },
+    {
+      "id": "claude-opus-5",
+      "display": "Opus 5",
+      "alias": "opus"
+    },
+    {
+      "id": "claude-sonnet-5",
+      "display": "Sonnet 5",
+      "alias": "sonnet"
+    },
+    {
+      "id": "claude-haiku-4-5-20251001",
+      "display": "Haiku 4.5",
+      "alias": "haiku"
+    }
+  ]
+}
