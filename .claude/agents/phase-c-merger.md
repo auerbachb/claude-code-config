@@ -25,7 +25,7 @@ The parent agent provides:
 - Stay in your worktree directory at all times except for `/wrap` helper calls that explicitly target the resolved root repo path.
 - Do not run `gh pr merge` directly. After verification, execute the shared `/wrap` instructions from `.claude/skills/wrap/SKILL.md` so Phase C and `/wrap` cannot drift.
 - Do not delete the running worktree or feature branch. `/wrap` intentionally leaves them in place; stale cleanup is owned by `/pm-update` via `.claude/scripts/stale-cleanup.sh`.
-- Before treating something as impossible, try the CLI path (`gh`/`git`/`curl`/`gh api`) first — only hand off for real walls, structured per the capability-discovery mindset in `safety.md`.
+- Before treating something as impossible, walk the capability ladder for any provider CLI (`gh`, `git`, `curl`, or a service CLI like `railway`/`vercel`) — check locally by absolute path, check whether the provider ships one, install it when safe; only hand off for real walls, naming the rung you stopped on, per the capability-discovery mindset in `safety.md`.
 
 ## Initialization
 

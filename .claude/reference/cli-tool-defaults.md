@@ -2,6 +2,8 @@
 
 Four service CLIs are installed on this machine (`vercel` v53.0.1, `neonctl` v2.22.0, `railway` v4.30.5, `cloudinary` v1.14.1). **Default to these CLIs for every operation they support — never direct the user to a web dashboard for something a CLI can do.** Referenced from `.claude/rules/repo-bootstrap.md`.
 
+**These four are examples, not the allowed set.** Any other provider — Supabase, Fly, Stripe, Cloudflare, one you have never used — follows the same capability-discovery ladder in `.claude/rules/safety.md`: look locally by absolute path, check whether the provider ships a CLI, install it when the safety rails hold, and only then hand off a runbook. A provider's absence from this file is not a reason to send the user to a dashboard.
+
 **Secrets:** several commands below print or write credentials (connection strings, pulled env files). Treat that output as secret — never paste it into issues, PRs, commits, or logs (`.claude/rules/safety.md`). Reference env vars by name only (e.g. `CLOUDINARY_URL`), never inline values.
 
 ## Vercel
@@ -104,4 +106,12 @@ cloudinary url {public_id} {transformation}    # e.g. w_200,h_200,c_fill
 
 ## When a CLI is unavailable
 
-Fall back to the web UI **only** when the CLI fails (auth error, outage, missing subcommand) or genuinely lacks the capability. State which CLI command failed and why before suggesting the dashboard. If a CLI is missing entirely, verify with `which {tool}` and report that, rather than assuming the dashboard is the default.
+Fall back to the web UI **only** when the CLI fails (auth error, outage, missing subcommand) or genuinely lacks the capability. State which CLI command failed and why before suggesting the dashboard.
+
+If a CLI looks missing, **verify by absolute path before believing it** — the Bash tool's PATH is minimal, so a bare `which {tool}` under-reports what is installed:
+
+```bash
+ls -l /opt/homebrew/bin/{tool} || command -v {tool}
+```
+
+Genuinely absent is rung 1 of the ladder, not a dead end: continue to rung 2 (does the provider ship a CLI?) and rung 3 (install it, if non-interactive and within the safety rails) before handing anything off. When you do install a CLI, note it in your response — don't append it to this file as a side effect of unrelated work.

@@ -52,19 +52,28 @@ commits, or logs. Do NOT pipe untrusted URLs into a shell or disable TLS verific
 Confirm package names before npm/pip/gem/cargo/brew install. Full rules: .claude/rules/safety.md.
 ```
 
-## Capability Discovery — Try CLI Before Handoff
+## Capability Discovery — Try the CLI Before Handoff
 
-Before handing a task to the user because it "can't" be done, verify against your actual tools — Bash (`gh`/`git`/`curl`/`gh api`), MCP tools, custom skills — not inherited "agents can't" prose. Most `gh`/`git`-shaped "can't do X" claims are **false walls**: workflow runs, PR review, releases, comments, labels are usually one CLI command (catalog: `.claude/reference/capability-discovery-examples.md` — extend it as new false walls appear). An agent's own explicit prohibitions always win. **Real walls** (token-scope 403, branch protection, `.env`, this file's "Never" lists) get a structured handoff per the `/admin-merge` (#451) pattern: exact copy-paste command + one-line reason, never just a description.
+Before telling the user a task "can't" be done, walk this ladder. It covers **any** provider — `gh`, `git`, `vercel`, `neonctl`, `railway`, `cloudinary`, MCP tools, custom skills, or a service you have never used — not just GitHub.
+
+1. **Look locally**, by absolute path (`/opt/homebrew/bin/<tool>`) — the Bash tool's PATH is minimal, so a bare `which` under-reports what is installed.
+2. **Absent? Check whether the provider ships a CLI at all** — most do. One lookup, then move on; a research detour mid-task is not warranted.
+3. **Install it yourself** when a non-interactive path exists and the rails above hold: package name confirmed against official docs, no `curl … | sh` of an unvetted URL, no TLS bypass, no `sudo`. Any rail that blocks — or an install whose auth step opens a browser — drops to rung 4. Note a new install in your response; don't edit the CLI docs as a side effect.
+4. **Hand off a runbook, not a description** — exact copy-paste command(s) plus one line on why it needs a human, in the `/admin-merge` (#451) shape, covering the `<tool> login` step when auth is interactive.
+
+Only a dead-ended ladder licenses "I can't", and the answer must **name the rung it stopped on and the concrete reason** — token-scope 403, browser-only OAuth, a "Never" item above. "I don't think agents can do that" is never a complete answer. Your own agent definition's explicit prohibitions still win (e.g. `phase-c-merger` uses `/wrap`, never `gh pr merge`). Worked examples: `.claude/reference/capability-discovery-examples.md` — extend it as new false walls appear.
 
 ```text
-MINDSET: Before handing off, enumerate your actual tools (gh/git/curl/gh api, MCP,
-skills) — don't trust inherited "agents can't" prose. Try the CLI-accessible path
-first (workflow run, pr review, api dispatches, release create, pr/issue comment
-or edit are usually possible) — but your own agent definition's explicit
-prohibitions always win (e.g. phase-c uses /wrap, never gh pr merge directly).
-Only hand off for real walls (token-scope 403, branch protection, .env, or a
-safety.md "Never" item) — structure it like /admin-merge: exact command + one-line
-reason. Full rules: .claude/rules/safety.md.
+MINDSET: Before handing off, walk the capability ladder for ANY provider CLI
+(gh, git, railway, vercel, neonctl, …): (1) look locally by absolute path
+(/opt/homebrew/bin/<tool>) — minimal PATH makes bare `which` lie; (2) if absent,
+check whether the provider ships one, one lookup max; (3) install it when
+non-interactive and safety rails hold (docs-confirmed name, no curl-pipe-sh, no
+TLS bypass, no sudo); (4) else hand off an /admin-merge-shaped runbook: exact
+commands + one-line reason, incl. interactive auth. Your own definition's
+prohibitions still win (phase-c uses /wrap, never gh pr merge). "I can't" is
+valid only after the ladder dead-ends, naming the rung and reason.
+Full rules: .claude/rules/safety.md.
 ```
 
 ## Anthropic Quota & Spend Authority
