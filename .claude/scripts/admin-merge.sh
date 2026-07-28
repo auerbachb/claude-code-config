@@ -11,14 +11,21 @@
 #   3. Re-enable enforce_admins
 #
 # Claude's safety rules permanently prohibit Claude from modifying branch
-# protection. This script keeps that boundary intact: in its DEFAULT mode it only
-# *prints* the exact bypass command for the user to run — it never modifies
-# protection itself. The protection-modifying dance runs ONLY when the USER
-# invokes the script with the explicit `--execute` flag (and even then a `trap`
-# re-enables protection if anything fails mid-dance).
+# protection. This script keeps that boundary intact, and issue #754 draws it
+# precisely where the prohibition actually applies — at *protection modification*,
+# not at the `--admin` merge flag:
 #
-# The `/admin-merge` skill always invokes this script in `--print` (or
-# `--launch-terminal`) mode — never `--execute`. See .claude/skills/admin-merge/.
+#   * TOGGLE shape (enforce_admins: true) — needs disable → merge → re-enable.
+#     Print-only for Claude. It runs ONLY when the USER invokes `--execute`
+#     (and even then a `trap` re-enables protection if the dance fails).
+#   * PLAIN shape (enforce_admins: false + required_status_checks.strict + a
+#     verified clean-BEHIND) — a bare `gh pr merge --squash --admin` that touches
+#     no protection setting at all. Claude MAY execute this via `--auto-plain`,
+#     a mode that is structurally incapable of the toggle shape.
+#
+# The `/admin-merge` skill invokes this script in `--print`, `--launch-terminal`,
+# or `--auto-plain` mode — never `--execute`. See .claude/skills/admin-merge/ and
+# .claude/reference/admin-merge-auto-plain.md.
 #
 # Usage:
 #   admin-merge.sh <pr_number> [mode] [options]
@@ -32,6 +39,13 @@
 #                      the clipboard (pbcopy), and echo a marker line in the new
 #                      terminal. Never auto-executes the command. Falls back to
 #                      --print behaviour on Linux/Windows with a clear message.
+#   --auto-plain       CLAUDE-INVOCABLE (issue #754). Executes the PLAIN shape and
+#                      ONLY the plain shape: re-validates the clean-BEHIND state,
+#                      runs a bare `gh pr merge --squash --admin`, verifies the
+#                      merge, and prints an evidence report. Contains no
+#                      protection-modifying call. Any other diagnosed shape is a
+#                      hard refusal (exit 8) that falls back to printing, as does a
+#                      second attempt on the same PR (repeat guard).
 #   --execute          USER-INVOKED ONLY. Toggle shape: run the toggle-merge-toggle
 #                      dance with a trap that re-enables enforce_admins on any
 #                      failure, then verify protection is restored and the PR merged.
@@ -57,8 +71,10 @@
 #
 # Exit codes:
 #   0 — bypass command printed (print/launch) OR dance completed (execute)
+#        OR the plain shape was auto-merged (auto-plain)
 #   1 — refused: PR not merge-ready (hard blockers / human changes requested),
-#        OR refused by the issue #733 authorship guard (non-author PR, no override)
+#        OR refused by the issue #733 authorship guard (non-author PR, no override),
+#        OR (auto-plain) the clean-BEHIND state no longer holds at merge time
 #   2 — usage error
 #   3 — PR not found / not open
 #   4 — gh / network / jq error
@@ -66,7 +82,12 @@
 #   6 — refused: enforce_admins is disabled and strict+clean-BEHIND bypass does
 #        not apply — no bypass path detected (inspect branch protection for the
 #        actual blocker)
-#   7 — execute-mode failure (merge failed; trap re-enabled protection)
+#   7 — execute/auto-plain failure (unusable --repo-path, merge failed, or the PR
+#        never reported state=MERGED; in execute's toggle shape the trap
+#        re-enabled protection)
+#   8 — refused by --auto-plain: the diagnosed shape is not `plain` (protection
+#        modification is prohibited for Claude), or an auto attempt already ran for
+#        this PR. The bypass command is printed for the user; nothing was executed.
 
 set -uo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
@@ -106,6 +127,7 @@ while [[ $# -gt 0 ]]; do
     -h|--help) print_usage; exit 0 ;;
     --print) set_mode print; shift ;;
     --launch-terminal) set_mode launch-terminal; shift ;;
+    --auto-plain) set_mode auto-plain; shift ;;
     --execute|--run) set_mode execute; shift ;;
     --repo-path)
       REPO_PATH_OVERRIDE="${2:-}"
@@ -513,6 +535,113 @@ OSA
   print_warning_block
   echo "Opened a new $launched window at: $REPO_PATH"
   echo "The bypass command is in your clipboard — paste (Cmd+V) and Enter to run it."
+  exit 0
+fi
+
+# --------------------------------------------------------------------------
+# Mode: auto-plain (CLAUDE-INVOCABLE, issue #754) — execute the PLAIN shape only.
+#
+# This branch contains no protection-modifying call, and a non-plain BYPASS_MODE
+# refuses before any write — so Claude cannot reach protection modification
+# through it even under a degraded context or an injected instruction. The
+# structure is the guarantee; the refusal below is a hard gate, not a warning.
+# Mechanism + rationale: .claude/reference/admin-merge-auto-plain.md
+# --------------------------------------------------------------------------
+if [[ "$MODE" == "auto-plain" ]]; then
+  # Hard shape gate — anything other than `plain` falls back to printing.
+  if [[ "$BYPASS_MODE" != "plain" ]]; then
+    echo "AUTO_PLAIN_REFUSED: shape=$BYPASS_MODE — only the plain (no-protection-change) shape may be auto-run; this one modifies branch protection, which Claude must never do. Printing the command for the user instead." >&2
+    print_warning_block
+    echo "$BYPASS_CMD"
+    exit 8
+  fi
+
+  # Repeat guard — one auto attempt per PR. A successful merge is terminal, so a
+  # second attempt can only follow a failure the pre-flight could not see;
+  # retrying it on every /babysit-pr tick would hammer the API and mask the real
+  # blocker. The marker is written BEFORE the merge call, so a crash mid-merge
+  # disarms the auto path too.
+  AUTO_MARKER_DIR="$HOME/.claude/admin-merge-auto"
+  AUTO_MARKER="$AUTO_MARKER_DIR/${OWNER}__${REPO}__${PR_NUMBER}"
+  if [[ -e "$AUTO_MARKER" ]]; then
+    echo "AUTO_PLAIN_REFUSED: reason=repeat — an auto-plain attempt already ran for PR #$PR_NUMBER ($(tr '\n' ' ' < "$AUTO_MARKER" 2>/dev/null)). Printing the command instead; re-arm with: rm \"$AUTO_MARKER\"" >&2
+    print_warning_block
+    echo "$BYPASS_CMD"
+    exit 8
+  fi
+
+  # Run from the resolved clone so `gh pr merge` (which infers owner/repo from the
+  # cwd's git remote) targets the intended repo regardless of the invoker's cwd.
+  if ! cd "$REPO_PATH" 2>/dev/null; then
+    echo "ERROR: cannot cd into repo path '$REPO_PATH' — pass --repo-path <abs-path>." >&2
+    exit 7
+  fi
+
+  # Mandatory re-validation (TOCTOU): CLEAN_BEHIND_OK above is a snapshot, and
+  # main may have advanced since — turning a clean BEHIND into one whose base
+  # delta now overlaps this PR's lines. Capture the JSON this time: the evidence
+  # report must describe the state that actually authorized the merge, not the
+  # stale pre-flight snapshot. Reaching `plain` at all requires CLEAN_BEHIND_OK,
+  # which requires CBC to have been found and to have exited 0 — so this check
+  # can never be skipped by a missing helper, but verify rather than assume.
+  if [[ -z "${CBC:-}" ]]; then
+    echo "REFUSED: clean-behind-check.sh unavailable — cannot re-validate the clean-BEHIND state before an auto merge." >&2
+    exit 1
+  fi
+  CBC_JSON="$("$CBC" "${CBC_ARGS[@]}" 2>/dev/null)"
+  CBC_RC=$?
+  if [[ "$CBC_RC" -ne 0 ]]; then
+    echo "REFUSED: the clean-BEHIND state no longer holds (main advanced, or a new blocker appeared) — rebase and re-run instead of bypassing." >&2
+    exit 1
+  fi
+
+  # Evidence field extractor: tolerate missing/unparseable JSON rather than
+  # aborting a verified-safe merge over a cosmetic report field.
+  ev() {
+    local v
+    v=$(printf '%s' "$CBC_JSON" | jq -r "$1" 2>/dev/null || true)
+    if [[ -z "$v" || "$v" == "null" ]]; then v="?"; fi
+    printf '%s' "$v"
+  }
+  AUTO_HEAD_SHA="$(ev '.head_sha')"
+
+  mkdir -p "$AUTO_MARKER_DIR" 2>/dev/null || true
+  printf '%s\tpr=%s\thead=%s\n' "$(date -u +%FT%TZ)" "$PR_NUMBER" "$AUTO_HEAD_SHA" > "$AUTO_MARKER" 2>/dev/null || true
+
+  print_warning_block
+  echo "[admin-merge] auto-plain: squash-merging PR #$PR_NUMBER with --admin (strict up-to-date + re-validated clean-BEHIND) ..."
+  if ! $MERGE_CALL; then
+    echo "ERROR: 'gh pr merge --admin' failed." >&2
+    exit 7
+  fi
+
+  # A successful `gh pr merge --admin` does not guarantee an immediately
+  # consistent read of PR state (read-after-write lag, or a queued/deferred merge
+  # on repos with a merge queue) — retry before concluding it did not complete.
+  FINAL_MERGED="unknown"
+  for _attempt in 1 2 3; do
+    FINAL_MERGED=$(gh pr view "$PR_NUMBER" --json state --jq '(.state == "MERGED")' 2>/dev/null || echo "unknown")
+    [[ "$FINAL_MERGED" == "true" ]] && break
+    (( _attempt < 3 )) && sleep 2
+  done
+  if [[ "$FINAL_MERGED" != "true" ]]; then
+    echo "[admin-merge] auto-plain: PR merged=$FINAL_MERGED"
+    echo "WARNING: PR does not report state=MERGED after retrying — the merge may not have completed (e.g. a queued/deferred merge). Verify manually: gh pr view $PR_NUMBER --json state,mergedAt" >&2
+    exit 7
+  fi
+
+  # After-the-fact report (issue #754): which PR, which shape, and the
+  # clean-BEHIND evidence that authorized the bypass. Relay this to the user.
+  echo "# ───────────────────────────────────────────────────────────────────"
+  echo "# AUTO_PLAIN_MERGED: PR #$PR_NUMBER ($OWNER_REPO @ $BRANCH)"
+  echo "# shape:      plain — bare 'gh pr merge --squash --admin'; NO branch-protection call"
+  echo "# head SHA:   $AUTO_HEAD_SHA"
+  echo "# authorized by clean-behind-check.sh, re-validated immediately before the merge:"
+  echo "#   base ahead by:  $(ev '.churn.base_ahead_by') commit(s)"
+  echo "#   file overlap:   $(ev '.file_overlap.count') ($(ev '.file_overlap.granularity') granularity)"
+  echo "#   AC checkboxes:  $(ev '.ac.checked')/$(ev '.ac.total') checked"
+  echo "# $SOLO_NOTE"
+  echo "# ───────────────────────────────────────────────────────────────────"
   exit 0
 fi
 
