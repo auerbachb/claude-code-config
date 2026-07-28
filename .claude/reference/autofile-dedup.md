@@ -9,6 +9,7 @@ Run `grep -rn "gh issue create" .claude/` to reproduce this list. Every site mus
 | Site | Classification | Dedup behavior |
 |------|---------------|----------------|
 | `.claude/skills/wrap/SKILL.md` (Phase 3, Parts A + B) | **Autonomous** | Strong/weak/none — suppress + report (wired since PR #661) |
+| `.claude/skills/wrap/SKILL.md` (Phase 3, Step 3.10a — churn hotspots) | **Autonomous** | **Exact-match** on a path key, not strong/weak/none — see "Exact-artifact dedup" below (issue #755) |
 | `.claude/agents/pm-worker.md` (Task: Issue Creation) | **Autonomous** | Strong/weak/none — suppress + report (wired since PR #680) |
 | `.claude/skills/issue-maker/SKILL.md` (Step 4) | **Human-in-the-loop** | Surface-only — never auto-suppress (wired since PR #661) |
 | `.claude/skills/start-issue/SKILL.md` (Step 1a) | **Human-in-the-loop** | Surface strong matches, pause for confirmation (wired since PR #680) |
@@ -21,6 +22,23 @@ Run `grep -rn "gh issue create" .claude/` to reproduce this list. Every site mus
 **Autonomous filers** (no human confirmation step): apply the full strong/weak/none suppression logic and always report suppressed filings — naming the issue deferred to, never silently.
 
 **Human-present callers**: run the same helper and surface strong matches to the user for confirmation; do not auto-suppress. A human can judge context that the script cannot.
+
+### Exact-artifact dedup (the narrow complement — issue #755)
+
+The strong/weak/none ladder above is the default because most findings are prose: two tickets can describe the same problem in entirely different words, so recall has to be fuzzy and the judgment has to be a human-grade one.
+
+A finding keyed to a **single unambiguous artifact** is a different problem. `/wrap`'s churn-hotspot category files one issue per **file path**, and "is there already an issue for `src/Form.tsx`?" has an exact answer. Fuzzy coverage scoring is the wrong instrument twice over: it can miss the existing issue (filing a duplicate) and it can match a *sibling* file (suppressing a real finding).
+
+That category therefore uses an exact key instead of `dedup_search`:
+
+- **Title convention** — `Refactor hotspot: <path>`, matched with string equality.
+- **Body marker** — `<!-- churn-hotspot: <path> -->`, which still matches after a human edits the title.
+- **Search is recall only.** `gh issue list --search "Refactor hotspot in:title"` narrows the candidate set; the decision is a **client-side exact comparison**, because GitHub tokenizes paths in `in:title` and would otherwise match `src/OtherForm.tsx` for `src/Form.tsx`.
+- **A failed lookup blocks filing.** `churn-hotspots.sh` reports `existing_lookup_failed`; the caller surfaces it and files nothing rather than risk a duplicate.
+
+Both invariants from the fuzzy path still hold: suppression is reported (the evidence goes onto the existing issue as a comment, named in the closing report), and no finding is dropped silently.
+
+**Use exact-artifact dedup only when the artifact genuinely is the key.** If a finding is about behavior, a decision, or a cross-cutting concern, it is prose — use `dedup_search`.
 
 ## Why this exists
 

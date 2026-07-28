@@ -530,7 +530,7 @@ Store `MAIN_SYNC_STATUS` and `QUARANTINE_STATUS` for the final report at the end
 Phase 3 has **two parts**, run in order:
 
 - **Part A — Per-PR follow-up detection (Steps 3.1–3.4):** derive follow-ups from the **merging PR** and its linked issue (HHG two-ticket pattern, linked-issue sub-tasks), dedup, and **auto-create** GitHub issues.
-- **Part B — Full-session sweep (Steps 3.5–3.13):** answer "is there anything I should have ticketed but didn't?" across the **entire session**, not just the PR. Seven categories: loose ends, ticket coverage, external/process state, memory persistence, PM hygiene, time-sensitive items, future-self handoff. Each finding is either **auto-handled** (safe process cleanup, or an auto-filed ticket) or **surfaced** to the user under "needs your decision".
+- **Part B — Full-session sweep (Steps 3.5–3.13):** answer "is there anything I should have ticketed but didn't?" across the **entire session**, not just the PR. Eight categories: loose ends, ticket coverage, external/process state, memory persistence, PM hygiene, churn hotspots, time-sensitive items, future-self handoff. Each finding is either **auto-handled** (safe process cleanup, or an auto-filed ticket) or **surfaced** to the user under "needs your decision".
 
 **Shared filed-issue registry (`WRAP_FILED_ISSUES`) — initialize before Step 3.1.** Both parts file into the *same* run-scoped registry, so a loose end visible to both produces exactly **one** issue and every filing lands in one closing announcement. Each entry is `{number, title, keywords, rationale}` — `rationale` being the one-line "why" rendered in Step 4.3 (e.g. `follow-up from PR #471`, `loose end: retry cap never revisited`). Part A appends in Step 3.3; Part B checks the registry *before* its own dedup search in Step 3.7 and appends there. The registry is per-run and in-memory; it composes with — and never replaces — the cross-run `SWEEP_PRIOR_FILED` record persisted in Step 3.13.
 
@@ -594,7 +594,7 @@ dedup_search() {   # dedup_search <keywords> -> sets DEDUP_JSON/DUP_NUM/DUP_STAT
 
 **If `ISSUE_DEDUP` is empty** (helper not installed), fall back to the pre-#652 title-only `gh issue list --search "$KEYWORDS in:title"` check, and note the degraded check once in the Step 4.3 report — never skip dedup entirely, and never let a missing helper block a filing.
 
-> **Phase C / subagent context:** When `/wrap` is invoked by a Phase C subagent (per `subagent-orchestration.md`), the subagent's transcript is narrow and short-lived. Part B degrades gracefully: transcript-derived categories (1, 6, 7) will usually find nothing and the verdict will be "Clear to archive". Part A and the state-file-derived categories (3, 5) still run normally. Never block a Phase C merge on a Part B finding — Part B is advisory.
+> **Phase C / subagent context:** When `/wrap` is invoked by a Phase C subagent (per `subagent-orchestration.md`), the subagent's transcript is narrow and short-lived. Part B degrades gracefully: transcript-derived categories (1, 6, 7) will usually find nothing and the verdict will be "Clear to archive". Part A and the categories derived from state files or merge history (3, 5, 5a) still run normally — churn hotspots in particular read git/`gh` data, so they are unaffected by a narrow transcript. Never block a Phase C merge on a Part B finding — Part B is advisory.
 
 ### Part A — Per-PR follow-up detection
 
@@ -878,6 +878,79 @@ For each, check and flag **drift** under `SWEEP_NEEDS_DECISION` (do not auto-edi
 - **AC checkbox truthfulness** — Test Plan boxes checked that the code does not actually satisfy (spot-check via `ac-checkboxes.sh "$N" --extract`)?
 
 Word each as e.g. `Issue #312 still open but PR #471 merged its work — close #312?`.
+
+#### Step 3.10a: Category 5a — Churn hotspots (issue #755)
+
+A file that keeps reappearing across merged PRs charges every long-lived branch a conflict tax, and the evidence — the same path across many distinct PRs in a short window — is already sitting in merge history. This category reads it mechanically, so a hotspot surfaces itself while the pain is fresh instead of waiting for someone to spot the pattern in a wrap report.
+
+Run it **after** Step 2.5's root-main sync, so `main` history is current:
+
+```bash
+CHURN_SH=$(resolve_script churn-hotspots.sh || true)   # Step 3.5 helper
+CHURN_JSON=""; CHURN_RC=0
+if [ -n "$CHURN_SH" ]; then
+  CHURN_JSON=$("$CHURN_SH" --json 2>/dev/null) || CHURN_RC=$?
+fi
+```
+
+Two conditions end the category immediately, filing nothing and adding no report line: **exit `1`** (nothing crossed the threshold) and **a missing or erroring script**. A churn check never blocks a wrap.
+
+One condition files nothing but *is* reported: **`existing_lookup_failed == true`** means the script could not check which hotspots already have an open issue, and filing blind risks a duplicate. Add one bullet to `SWEEP_NEEDS_DECISION` — ``Churn hotspot check ran but the existing-issue lookup failed — re-run `churn-hotspots.sh --json` before filing.``
+
+**The two branches operate on different sets — do not select once and then branch.** Filing is capped; commenting is not, and the two are chosen independently. Selecting a single hotspot first and then branching on `existing_hotspot_issue` would make one of the branches unreachable by construction, so evidence would never reach an existing hotspot issue.
+
+- **Comment set** — **every** hotspot that already has an `existing_hotspot_issue` **and** whose `pr_numbers` include the PR this wrap just merged. Uncapped: it is bounded naturally, since a merging PR touches few files and contributes to each at most once.
+- **File set** — **at most one**: the highest-scoring hotspot whose `existing_hotspot_issue` is null (the list is already sorted by score, so it is the first such entry), or none when every hotspot already has an issue.
+
+**Why filing is capped and commenting is not.** On an active repo the detector routinely reports dozens of candidates above the default threshold (measured on this repo: 63 in a single 14-day window); filing those together would bury the backlog the category exists to inform. Each filed issue is found by the lookup on later runs, so successive wraps work down the list one at a time. Appending evidence to an issue that already exists adds no new tickets, so it needs no cap.
+
+**The remainder is never dropped silently.** When the file cap held candidates back, record exactly one bullet in `SWEEP_AUTO_HANDLED`: ``Churn: filed the top hotspot; {N} further candidate(s) above threshold — run `churn-hotspots.sh` to see them.``
+
+Then run both branches:
+
+- **File set (≤1) → file one issue.** Title is the exact convention the script re-finds later — `Refactor hotspot: {file}` — and the body carries the `<!-- churn-hotspot: {file} -->` marker verbatim, since an edited title falls back to that marker. Keep the body **observational**: state the evidence, do not prescribe the split (the CodeRabbit plan that lands on the filed issue proposes that).
+
+  ```bash
+  if NEW_URL=$(gh issue create \
+      --title "Refactor hotspot: ${FILE}" \
+      --body "Filed by /wrap churn detection after PR #${PR_NUMBER} merged.
+
+  \`${FILE}\` was touched by ${PR_COUNT} distinct merged PRs since ${SINCE}${CONFLICT_CLAUSE}: ${PR_LIST}.
+
+  This is an observational report, not a prescription — it flags a file worth a
+  closer look, not a decision that it should be split.
+
+  <!-- churn-hotspot: ${FILE} -->
+
+  _Filed via /wrap._" 2>&1); then
+    NEW_NUM=$(echo "$NEW_URL" | grep -oE '[0-9]+$')
+    if [ -n "$NEW_NUM" ]; then
+      SWEEP_FILED="${SWEEP_FILED} ${NEW_NUM}"
+      # Append {number, title, keywords, rationale: "churn hotspot: {file}"}
+      # to WRAP_FILED_ISSUES and $NEW_NUM to DEDUP_EXCLUDE.
+    else
+      echo "WARNING: created issue but could not parse number from: $NEW_URL"
+    fi
+  else
+    echo "WARNING: gh issue create failed: $NEW_URL"
+  fi
+  ```
+
+  `CONFLICT_CLAUSE` is empty when `conflict_rounds` is 0, and otherwise reads ` and re-resolved conflicts {conflict_rounds} time(s)`.
+
+- **Comment set → append evidence to each, never a second issue.** Membership already requires that the PR this wrap just merged is one of the hotspot's `pr_numbers`, and that guard is what keeps the category idempotent: without it every later wrap would append another comment to the same issue reporting the same history. A merging PR appears in that list exactly once, so the comment fires exactly once per contributing merge, and a wrap that did not touch the file stays silent.
+
+  For **each** member of the comment set:
+
+  ```bash
+  gh issue comment "$EXISTING" --body "Still churning: ${PR_COUNT} distinct merged PRs have touched \`${FILE}\` since ${SINCE}${CONFLICT_CLAUSE}: ${PR_LIST}.
+
+  _Evidence appended by /wrap after PR #${PR_NUMBER} merged._"
+  ```
+
+  Record `Appended evidence to #{EXISTING} — churn hotspot \`{file}\`` per member for the Step 4.3 **Filings suppressed as duplicates** section. These are reported, never silent, even though no ticket was created.
+
+This category's authoritative re-find is the script's **exact** title/marker match, **not** the fuzzy `dedup_search()` helper: a path-keyed artifact needs exact identity, and GitHub's `in:title` search tokenizes paths well enough to match a sibling file. Do not run `dedup_search` here.
 
 #### Step 3.11: Category 6 — Time-sensitive items
 
