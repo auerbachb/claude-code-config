@@ -191,7 +191,7 @@ An unrecorded chip cannot be dismissed later — recording is what makes withdra
 ## Wave — {K} issue(s) ready to run in parallel
 
 - **#42 — {Title}** — chip offered
-  **Model:** Opus 4.8 — {reason}
+  **Model:** Opus 5 — {reason}
   {one-line rationale, carried from /pm's ranking}
 
 - **#55 — {Title}** — chip offered
