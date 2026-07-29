@@ -229,6 +229,11 @@ Print a compact summary to the user. Per `chip-launching.md`, the content **insi
 ### Acceptance Criteria
 {unchecked checkbox items from the issue body}
 
+### Constraints
+- Do NOT work on main — use the worktree above
+- Do NOT modify .env files
+- Merging is automatic and yours to do: once the merge gate passes and every Test Plan / AC checkbox verifies, run the full `/wrap` yourself to squash-merge — no approval pause, no pre-merge message (`CLAUDE.md` "PR MERGE AUTHORIZATION")
+
 ---
 Ready to code. Start with step 1 of the plan above. Run the dual-CLI local review per `cr-local-review.md`, fix all valid findings, and rerun until the required clean gate is reached before pushing.
 ```
@@ -249,6 +254,10 @@ Ready to code. Start with step 1 of the plan above. Run the dual-CLI local revie
 **The `**Model:** {MODEL} — {REASON}` line and its guard live in the base block, not as a chip-only addition** — chips cannot preset the model picker, so both a fallback-mode reader and a chip-mode spawned session need the recommendation and the guard in the text itself. The visible short summary in chip mode still repeats just the `**Model:**` line (not the guard) so the user can set the picker before clicking. When the parent thread is on Fable 5 and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
 
 **Record the returned `task_id` immediately,** before any dependent step — an unrecorded chip cannot be withdrawn. `/start-issue` has no Active Work table, so track it **session-locally**, keyed by issue number, and say so in the summary; the chip stays dismissable for this session only. If the issue already has a live chip recorded in this session, skip the spawn rather than offering it twice. `dismiss_task` hygiene and print-on-demand replay ("print the full prompt for #N" re-emits that chip's `prompt` verbatim — Model line, guard preamble, and block — in the fenced form fallback would have printed; the chip stays offered) follow the reference — do not restate its rules here.
+
+### Merge authority in the Constraints block
+
+The `### Constraints` section's merge-authority bullet is the shared contract from `chip-launching.md` "Merge-authority line" — reproduce it **verbatim**, the same way the model-guard preamble is copied unchanged. It asserts the default out loud so the launched thread never has to infer it from a rule file it may not have loaded: it merges itself via full `/wrap` once the gate passes and every AC verifies. Never soften it into an approval request; a PR that genuinely needs a hold is the user saying so in chat, never a line in a generated block.
 
 ### Model recommendation
 

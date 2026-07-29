@@ -338,8 +338,10 @@ Run `/start-issue {ISSUE_NUMBER}`. It polls for CodeRabbit's implementation plan
 ## Constraints
 - Do NOT work on main — use the worktree /start-issue creates
 - Do NOT modify .env files
-- Squash and merge via full `/wrap` only after the merge gate passes and every AC checkbox verifies (`CLAUDE.md`)
+- Merging is automatic and yours to do: once the merge gate passes and every Test Plan / AC checkbox verifies, run the full `/wrap` yourself to squash-merge — no approval pause, no pre-merge message (`CLAUDE.md` "PR MERGE AUTHORIZATION")
 ```
+
+The merge-authority bullet is the shared contract from `chip-launching.md` "Merge-authority line" — reproduce it **verbatim**, never softened into an approval request.
 
 Why delegate to `/start-issue` instead of a fuller inline template (like `/pm`'s or `/prompt`'s): at the moment this chip is offered the issue has no CR plan yet (it posts asynchronously) and no codebase exploration has happened — `/issue-maker` never does that by design (Step 2). `/start-issue` already owns exactly that sequencing; duplicating it here would drift out of sync with its own logic.
 
@@ -458,6 +460,8 @@ Then print: *"Issue #N closed."* — append *"(chip withdrawal failed — it may
 ## Step 13: Portable-prompt emission (`--export-prompt`)
 
 When invoked with `--export-prompt`, **do not create anything** — instead emit a standalone, paste-in prompt that codifies the same capture-mode behavior (reflection surfaced as a post-create decision-points report + LLM pass-through rationale, auto-open with no approval gate, functional-first tone, 6-section body, dedup, refusal of workflow-advancing actions, closing-line URL rule). This lets the user carry the same discipline into a repo or thread where this skill isn't installed. Output the prompt in a fenced block and stop.
+
+**The exported prompt reproduces Step 9c's coding-chip block verbatim** — `**Model:**` line, model-guard preamble, and the Constraints block including its merge-authority bullet (`chip-launching.md` "Merge-authority line"). A portable prompt that drops the merge-authority line recreates exactly the gap this exists to close: a thread that reaches merge-readiness in a repo without these rules installed, finds nothing asserting the default, and stops to ask. Never paraphrase the bullet and never soften it into an approval request.
 
 ---
 
