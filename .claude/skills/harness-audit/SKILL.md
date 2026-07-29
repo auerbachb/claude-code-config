@@ -210,7 +210,11 @@ validate, and only then publish:
 
 ```bash
 TMP_INV="$STATE_DIR/.inventory-$MONTH.json.tmp"
-if ! "$INVENTORY" > "$TMP_INV"; then
+# --repo-root is REQUIRED, not optional: inventory.sh otherwise resolves the
+# repo from the caller's cwd, so a run from a linked worktree would audit that
+# worktree (or, from an unrelated repo, the wrong project entirely) while the
+# report still claims to cover the canonical config repo.
+if ! "$INVENTORY" --repo-root "$REPO_ROOT" > "$TMP_INV"; then
   rm -f "$TMP_INV"
   echo "ERROR: inventory.sh failed — aborting the audit rather than judging a partial surface." >&2
   exit 1
@@ -246,7 +250,11 @@ invisible.
 the manifest but missing from disk never fires; a file on disk that nothing
 registers is dead weight or a missed registration. Carry both into Step 7.
 
-If this is a `--tick`, stop here and go to Step 5.
+**If this is a `--tick` or `--arm`, stop here and go to Step 5** — both are
+inventory-only paths, and neither may fall through into the judgment pass
+(Steps 4 and 6–9). `--arm` in particular exists to *offer* the expensive pass;
+running it would defeat the top-tier invariant this skill is built around. Only
+an on-demand run continues to Step 4.
 
 ---
 
@@ -331,7 +339,12 @@ again. Claiming first makes the check-and-claim a single decision:
 
 **A skill cannot change its own thread's model.** So compare and route:
 
-- **Running model == `$TOP_ID`** → run the judgment pass inline (Steps 6–9).
+- **Running model matches the top tier** → run the judgment pass inline (Steps 6–9).
+  Match against **either** `$TOP_ID` or `$TOP_DISPLAY`, compared
+  case-insensitively and ignoring surrounding whitespace. A model self-reports
+  its *display* name far more often than its API id, so an id-only comparison
+  would report a mismatch on the very model it was asked to check for — and the
+  inline path would never run.
 - **Mismatch** → say so plainly, offer the same step-up chip, and stop. The user
   either clicks it or re-runs with `--force-here`.
 - **`--force-here`** → proceed on the current model and stamp
@@ -453,16 +466,33 @@ duplicate) and it can match a *sibling* path (suppressing a real finding).
 - **Search is recall only:**
 
   ```bash
-  gh issue list --search "Harness redundancy in:title" --state all --limit 100 \
-    --json number,title,body,state
+  DEDUP_LIMIT=200
+  CANDIDATES="$(gh issue list --search "Harness redundancy in:title" --state all \
+    --limit "$DEDUP_LIMIT" --json number,title,body,state)" || CANDIDATES=""
+  ```
+
+  **A saturated result set is a failed lookup, not a clean one.** If the fetch
+  returns exactly `DEDUP_LIMIT` rows, the candidate set was truncated and the
+  issue you needed to see may be the one that got cut — treat it exactly like a
+  command failure below (block the filing, surface it), rather than concluding
+  "no match" from a page that was never complete. This matches
+  `churn-hotspots.sh`, which caps at 200 and reports `existing_lookup_failed`
+  on saturation.
+
+  ```bash
+  COUNT="$(jq 'length' <<<"${CANDIDATES:-[]}")"
+  if [[ -z "$CANDIDATES" ]] || (( COUNT >= DEDUP_LIMIT )); then
+    echo "existing_lookup_failed — blocking this filing" >&2
+  fi
   ```
 
   GitHub tokenizes paths in `in:title`, so the search narrows candidates; the
   **decision is the exact comparison**, never the search ranking.
-- **A failed lookup BLOCKS filing.** If `gh issue list` errors or returns
-  unparseable output, file nothing for that artifact, surface the failure by
-  name, and carry it into the report's suppressed section. Never risk a duplicate
-  on an unverified lookup.
+- **A failed lookup BLOCKS filing.** If `gh issue list` errors, returns
+  unparseable output, **or saturates `DEDUP_LIMIT`** (see above), file nothing
+  for that artifact, surface the failure by name, and carry it into the report's
+  suppressed section. Never risk a duplicate on an unverified lookup — and note
+  that a truncated page is unverified, however clean it looks.
 - **Open match** → comment the new evidence onto the existing issue instead of
   filing. **Closed match** → file, and link it as prior context.
 
@@ -480,8 +510,12 @@ search may not even have indexed yet.
   filed (add the finding as a comment, or fold it into the grouped body while
   preserving every artifact's marker). Record it as suppressed, naming the
   earlier issue: `Collapsed into #N (filed earlier this run)`.
-- Pass the run's already-filed numbers as `--exclude` to any repo-side search so
-  they cannot return as candidates and be double-counted.
+- Filter the run's already-filed numbers out of any repo-side result
+  **client-side, after the fetch**. `gh issue list` has no `--exclude` flag —
+  only the `issue-dedup.sh` helper `/wrap` uses does, and this path does not go
+  through it. Drop those numbers from the candidate set yourself before
+  comparing, so an issue filed minutes ago in this same run cannot come back as
+  a repo candidate and be double-counted.
 
 ### Body shape
 
