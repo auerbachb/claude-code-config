@@ -9,8 +9,9 @@
 1. **NEVER delete, overwrite, move, or modify `.env` files** — anywhere, any repo.
    - **Template exception:** `.env.{example,sample,template}` (case-insensitive) are non-secret templates — safe to edit. Bare `.env`, `.env.local`, `.env.production`, and unrecognized suffixes stay blocked. Allow-list: `.claude/hooks/env-guard.py` (`TEMPLATE_SUFFIXES`).
 2. **NEVER run `git clean` in ANY directory** — it deletes untracked files, including gitignored `.env`.
-3. **NEVER run destructive commands in the root repo:** `rm -rf`, `rm`, `git checkout .`, `git stash` (drops untracked), `git reset --hard`.
-4. **NEVER `cd` to the root repo and run file operations.** Safe root operations are read-only: `git worktree list`, `find`, file reads.
+3. **NEVER run destructive commands in the root repo:** recursive `rm` (`-r`/`-R`/`-rf`), `git checkout .`, `git stash` (drops untracked), `git reset --hard`.
+   - **Untracked-only exception:** non-recursive `rm` is allowed on paths `git ls-files --others --exclude-standard` emits — untracked and non-ignored, so a gitignored `.env` is unselectable. Never recursive, never a tracked path.
+4. **NEVER `cd` to the root repo and run file operations.** Safe root operations are read-only: `git worktree list`, `find`, file reads — plus the `rm` above.
 
 ## Secrets & Credentials
 
@@ -41,8 +42,10 @@ Include in every subagent prompt **and** set `mode: "bypassPermissions"` on the 
 ```text
 SAFETY: Do NOT delete/overwrite/move/modify .env files anywhere (exception:
 .env.<example|sample|template>, case-insensitive, are safe to edit).
-Do NOT run git clean. Do NOT run destructive commands (rm -rf, rm, git checkout .,
-git stash, git reset --hard) in the root repo. Stay in your worktree.
+Do NOT run git clean. Do NOT run destructive commands (recursive rm -r/-R/-rf,
+git checkout ., git stash, git reset --hard) in the root repo. Stay in your worktree.
+Non-recursive rm there is allowed ONLY on paths emitted by
+`git ls-files --others --exclude-standard`; never recursive, never a tracked path.
 Do NOT commit secrets or paste raw credentials into prompts, issues, PRs, comments,
 commits, or logs. Do NOT pipe untrusted URLs into a shell or disable TLS verification.
 Confirm package names before npm/pip/gem/cargo/brew install. Full rules: .claude/rules/safety.md.
