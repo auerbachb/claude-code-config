@@ -62,6 +62,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `instruction-set-audit-2026-07.md` — 1-month instruction-set size & optimization re-check; verdict: keep caps (#462)
 - `token-efficiency-audit-2026-07.md` — token-efficiency playbook: adopt/skip/adapt verdicts, ranked cuts, shipped v1 (one-line heartbeats, delta PMM table, silence-detector dedupe) + FU-1…FU-7 (#773)
 - `pm-routing-audit-2026-07.md` — thread-vs-inline routing effectiveness audit of #613; ground-truth attribution + the shared PM-context inline gate for chip surfaces (#701)
+- `too-big-recalibration-2026-07.md` — re-derivation of the "too big for a subagent" fit bar against current capability: criterion 1 narrowed from size to non-resumability, A/B/C confirmed on grounds independent of the unverified 32K figure, ceiling held, and the chip-gate overflow defect fixed (#776)
 
 ### Diagrams (mermaid stubs and indexes)
 
