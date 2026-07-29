@@ -10,7 +10,7 @@ Use `.claude/agents/` definitions; they embed phase rules. Every Agent call must
 1. `mode: "bypassPermissions"`.
 2. `subagent_type`: `phase-a-fixer`, `phase-b-reviewer`, `phase-c-merger`, or `pm-worker`.
 3. Explicit `model` (see "Model Selection").
-4. Runtime context: PR/issue/branch, repo, handoff path, HEAD SHA, reviewer, and optional pre-fetched findings.
+4. Runtime context: PR/issue/branch, repo, handoff path, HEAD SHA, reviewer, optional pre-fetched findings.
 5. The verbatim `SAFETY:` block from `safety.md`.
 6. The verbatim `MINDSET:` block from `safety.md` (try CLI before handoff — see "Capability Discovery").
 7. The verbatim `SKILLS:` block from `skill-first.md` for `phase-a-fixer`, `phase-b-reviewer`, and `pm-worker` — **skip it for `phase-c-merger`** (no `Skill` tool; see `skill-first.md` "Reaching Subagents").
@@ -19,15 +19,11 @@ See `.claude/agents/README.md` for the full placeholder reference and spawning e
 
 ### Fallback: Manual Rule Injection
 
-If agent definitions are unavailable (e.g., repo without `.claude/agents/`):
-
-1. Read project-local `CLAUDE.md`, then all project-local `.claude/rules/*.md`.
-2. If missing, fall back to global copies.
-3. Paste complete contents; do NOT summarize.
+If agent definitions are unavailable (repo without `.claude/agents/`): read project-local `CLAUDE.md`, then **every** rule file (`find .claude/rules -name '*.md'` — recursive, matching the budget check), falling back to global copies if missing. Paste complete contents; do NOT summarize.
 
 ## Model Selection
 
-**Defaults (set at every spawn site).** Full rationale: `.claude/agents/README.md`.
+**Defaults (set at every spawn site).**
 
 | Phase / Agent | Model |
 |---------------|-------|
@@ -51,19 +47,24 @@ Rules: set `model` explicitly on every spawn (call-site overrides frontmatter; `
 
 ## Token/Turn Exhaustion Protocol (MANDATORY)
 
-Subagents have a 32K output token limit. Near exhaustion: write the token-exhaustion handoff to `~/.claude/session-state.json` (schema: `handoff-files.md`), report done/remaining, exit cleanly; the parent auto-launches a replacement.
+Subagents have a 32K output token limit (unverified — `harness-model-audit-2026-06.md` FU-2). Near exhaustion: write the token-exhaustion handoff to `~/.claude/session-state.json` (schema: `handoff-files.md`), report done/remaining, exit cleanly; the parent auto-launches a replacement.
 
 **NEVER:** ask "should I continue?", die without handoff state, or try to finish "just one more thing."
 
-## Task Decomposition (Token Safety)
+## Task Decomposition
 
-The 32K limit is binding. Give each subagent one phase with explicit exit criteria. Procedures: `.claude/agents/phase-{a,b,c}-*.md`; fallback: `.claude/reference/phase-decomposition.md`.
+Give each subagent one phase with explicit exit criteria. **A/B/C confirmed (#776)** — Phase B is an unbounded reviewer wait, Phase C independent verification. Procedures: `.claude/agents/phase-{a,b,c}-*.md`; rationale: `.claude/reference/too-big-recalibration-2026-07.md`; fallback: `.claude/reference/phase-decomposition.md`.
 
 - **Phase A: Fix + Push** (heaviest) — fix findings, commit once, push once, reply to threads, write handoff, EXIT (parent cleanup: Orchestration below).
 - **Phase B: Review Loop** (lighter) — poll/trigger reviewer, fix new findings, update handoff, EXIT.
 - **Phase C: Verify + Wrap** (lightest) — verify merge gate + AC, then `/wrap` to squash-merge, sync main, report `merged`. Do not duplicate `/wrap` logic; its session-sweep output is **advisory only — never block a merge on a sweep finding**.
 
-**Orchestration:** parent launches Phase A (parallel across PRs allowed); Phase A complete → cleanup per `phase-protocols.md` then Phase B; Phase B `merge_ready` → launch Phase C within 60s (auto `/wrap`, silent merge). Keep 3-4 active CR-polled PRs max; at 7+ CR reviews/hour expect Greptile fallback. **This ceiling counts only PRs you authored (`@me`)** — a collaborator's or bot's PRs never enter it or gate your own work (shared-budget contention is context, never a gate). The same 3-4 ceiling is the inline A→B→C pipeline cap for `/pm` and `/subagent` — queue issues beyond it (mechanics + slot semantics: `.claude/skills/subagent/SKILL.md` Step 7).
+**Orchestration:**
+
+- **Transitions:** parent launches Phase A (parallel across PRs allowed); A complete → cleanup per `phase-protocols.md`, then B; B `merge_ready` → launch C within 60s (C verifies gate + AC before `/wrap`).
+- **Ceiling:** keep 3-4 active CR-polled PRs max — CR-throughput-bound, not capability-bound; at 7+ CR reviews/hour expect Greptile fallback.
+- **Scope:** counts only PRs you authored (`@me`); a collaborator's or bot's PRs never enter it (contention is context, never a gate).
+- **Overflow:** also the inline A→B→C cap for `/pm` and `/subagent` — past-ceiling work **queues inline, never becomes a thread chip** (#776; slots: `.claude/skills/subagent/SKILL.md` Step 7).
 
 ## Subagent Review Protocol
 

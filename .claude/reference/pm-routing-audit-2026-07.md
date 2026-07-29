@@ -88,13 +88,15 @@ Each surface's current thread-vs-inline criterion, whether it honors #613, and t
 
 ### The shared PM-context inline gate (`chip-launching.md`)
 
-A single canonical gate, defined once in the shared chip contract and referenced by the three gap surfaces (DRY — no divergent per-skill copies). Before offering a **standalone thread** chip for subagent-fit work, a surface checks for **live PM context with a free inline slot**:
+A single canonical gate, defined once in the shared chip contract and referenced by the three gap surfaces (DRY — no divergent per-skill copies). **As shipped by #701** — partly superseded, see the note at the end of this section. Before offering a **standalone thread** chip for subagent-fit work, a surface checks for **live PM context with a free inline slot**:
 
 - **PM context** — a `## Active Work` table is present (the canonical home, `/pm` 3.2); its non-terminal rows are `IN_FLIGHT`.
 - **Free slot** — `IN_FLIGHT` is below the 3–4 concurrent-pipeline ceiling (`subagent-orchestration.md`, derived from CR throughput in `cr-rate-limits.md`).
 - **Subagent-fit** — the issue is not too big by `/subagent` Step 4's three criteria.
 
 When all three hold → **prefer inline**: recommend `/subagent #N` in the PM thread (or queue behind the ceiling) rather than a chip. When any is false — no PM context (the common standalone case), pipeline full, or too big — offer the chip as before, and **any separate-thread offer made while an inline slot was free carries a one-line "too big because X" rationale**.
+
+> **Superseded in part by [#776](https://github.com/auerbachb/claude-code-config/issues/776) (2026-07-28).** Treating "pipeline full" as a reason to offer a chip was a defect: it pushed past-ceiling *subagent-fit* work into a separate thread. The gate is now **two** routing conditions (PM context + subagent-fit); slot availability decides only run-now vs **queue inline**, never inline-vs-thread. Every separate-thread offer must state its reason, and the too-big case must name which Step 4 criterion fired — not just offers made while a slot was free. The standalone (no-PM-context) case names *that* as its reason and needs no too-big criterion, since no inline path exists to prefer. The rest of this section stands as the #701 record. See [too-big-recalibration-2026-07.md](too-big-recalibration-2026-07.md); `chip-launching.md` carries the live wording.
 
 **The execution boundary is untouched.** The gate never launches anything — it only chooses which *recommendation* to surface. The user's action (running `/subagent`, or clicking a chip) remains the only execution path (`chip-launching.md` "execution boundary", NON-NEGOTIABLE).
 
@@ -138,6 +140,6 @@ When all three hold → **prefer inline**: recommend `/subagent #N` in the PM th
 | Ground truth: attribute recent spend to threads vs inline | Phase 1 Task 1 — thread-count proxy over `skill-usage.log`, bucketed at the #613 merge, with explicit "proxy not spend" caveats. Diagnosis confirmed pre-#613, improving post. |
 | Verify #613 is actually live | Phase 1 Task 2 — deployed copies == `origin/main`; inline-first language encoded; `/wave` symlink anomaly noted. |
 | Audit every thread-vs-inline surface | Phase 2 per-surface table for `/pm`, `/prompt`, `/subagent`, `/wave`, `/issue-maker`, `/start-issue`. |
-| Tighten routing; inline default; "too big because X" on thread offers | Phase 3 — shared PM-context inline gate in `chip-launching.md`, referenced by the three gap surfaces; one-line rationale required on slot-available thread offers. |
+| Tighten routing; inline default; "too big because X" on thread offers | Phase 3 — shared PM-context inline gate in `chip-launching.md`, referenced by the three gap surfaces; one-line rationale required on slot-available thread offers. *(#776 later extended the rationale to every thread offer and removed slot state from the routing decision entirely.)* |
 | Queue-over-spawn when slots full | AC5 — verified already satisfied in `/pm`, `/subagent`, `subagent-orchestration.md`; no rule change needed. |
 | Follow-ups filed for out-of-scope work | FU-1 [#710](https://github.com/auerbachb/claude-code-config/issues/710) (telemetry), FU-2 [#711](https://github.com/auerbachb/claude-code-config/issues/711) (`/wave` symlink). |

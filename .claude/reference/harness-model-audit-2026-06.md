@@ -103,8 +103,11 @@ No inline-fixable model-calibration drift in scripts/skills beyond Findings A an
 
 ### FU-2 — Verify current subagent output budget; relax mandatory decomposition if warranted *(spike + rules)*
 
+**Status: OPEN, but no longer blocking** (see [too-big-recalibration-2026-07.md](too-big-recalibration-2026-07.md), issue #776, 2026-07-28)
+
 - **Problem:** The "32K output token limit" justifying mandatory Phase A/B/C may be stale on the current fleet (Finding C).
 - **AC:** Measure the real per-turn output ceiling for the spawn-tier models; record the number + method; if it is materially larger than 32K, allow small PRs (<50 lines, <5 findings) to run the lifecycle in a single agent and update `subagent-orchestration.md` + `graphite-stacked-prs-research-2026-05.md`; otherwise annotate both with the verified current number.
+- **Update (#776) — the AC's conditional action is WITHDRAWN.** The clause above that says a materially-larger measurement would "allow small PRs to run the lifecycle in a single agent" no longer holds: #776 **confirmed** the A/B/C split on grounds independent of the output budget, so no measurement result authorizes collapsing phases. What survives of this AC is the measurement itself — the number and the method. The measurement is still unperformed, so this stays open. What changed is that two decisions that used to depend on it no longer do. (1) The **A/B/C split is now confirmed** on grounds independent of the number: Phase B is an unbounded reviewer wait, and Phase C is independent verification of work the agent did not produce. (2) The **too-big fit bar** no longer cites output size at all — criterion 1 now tests whether work is *resumable* across sequential subagent turns, which resolves the same way under either reading of the 32K figure, because the token-exhaustion handoff already carries large work across agents. FU-2 is therefore reclassified from load-bearing to informational: worth measuring for latency tuning (can a small PR skip a phase?) and to replace an unverified number in an auto-loaded rule, but it no longer gates a policy decision. The decomposition guard itself remains **unrelaxed**, per this audit's warning.
 
 ### FU-3 — Calibrate the 12-minute CR escalation timeout against observed response times *(data + script)*
 
@@ -127,7 +130,7 @@ No inline-fixable model-calibration drift in scripts/skills beyond Findings A an
 
 - **Merge-gate semantics** — explicit CR approval on current HEAD, BugBot/Greptile fallbacks, CI-before-merge. Finding E's trivial-diff path must not erode this without an explicit, recorded decision (FU-4).
 - **BugBot trigger strategy** — unreliable auto-trigger is a known production pattern (memory note); do not "simplify".
-- **The 32K decomposition guard** until FU-2 measures the real ceiling — relaxing it on a guess risks mid-task exhaustion with no handoff.
+- **The 32K decomposition guard.** Originally: hold until FU-2 measures the real ceiling, since relaxing it on a guess risks mid-task exhaustion with no handoff. **As of #776 this is no longer conditional** — A/B/C is confirmed on grounds independent of the number, so no measurement result reopens it. FU-2's measurement is now informational.
 
 ---
 

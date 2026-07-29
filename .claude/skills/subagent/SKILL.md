@@ -82,7 +82,7 @@ The gate in Step 4 is **not** tier-based and **not** arithmetic — it is a judg
 
 | Signal | How to compute | Feeds |
 |--------|---------------|-------|
-| `file_list` / `file_count` | Files from the canonical plan `$PLAN` (Step 2 — CR- or human-authored) when it lists them; otherwise path-like strings in the issue body (contain `/`, end with a file extension, don't start with `http`). A **soft input** to "Phase A won't fit" — read it as *how sweeping* the change is, not as a fixed threshold. | Criterion 1 |
+| `file_list` / `file_count` | Files from the canonical plan `$PLAN` (Step 2 — CR- or human-authored) when it lists them; otherwise path-like strings in the issue body (contain `/`, end with a file extension, don't start with `http`). Read it as *how the work decomposes* — a long file list usually means **more** resumable, not less. Never a threshold, and a large count alone never routes an issue out. | Criterion 1 |
 | `ac_count` | Count of acceptance-criteria checkboxes (both `- [ ]` and `- [x]`/`- [X]`) in the issue body. Scope context only; never a gate on its own. | Criterion 1 |
 | `interactive_markers` | `true` if the issue body **or `$PLAN`** carries genuinely **unresolved** product/design decisions that must be settled mid-build — an open "Open questions"/"Decisions needed" section, "needs discussion", "TBD", "we should decide". An open-questions section the issue already answers does **not** count. | Criterion 2 |
 | `split_markers` | `true` if the issue body **or `$PLAN`** asks to be split — "split into N PRs", "multiple PRs", "break this up" — or its scope spans several independent deliverables. | Criterion 3 |
@@ -93,13 +93,17 @@ What is deliberately **absent** here: touching `.claude/rules`, `CLAUDE.md`, or 
 
 Tier does **not** decide this — most issues, of any tier, run inline. An issue is **too big** (→ route to a separate thread in Step 5) only if **ANY** of these three criteria hold. This is a judgment call, not arithmetic:
 
-1. **Phase A won't fit one subagent's output budget.** The initial implementation is a very large, many-file change that a single Phase A subagent (~32K output-token budget) couldn't produce in one pass — a sweeping migration across many files, or a large new subsystem. Judge from the `file_list`/scope gathered in Step 3, **not** a fixed file count.
+1. **The implementation can't be carried across sequential subagent turns.** Route out only when the work resists being cut into resumable pieces — a single indivisible artifact that must be emitted in one pass, where a replacement agent could not pick up from a handoff and continue. **Size is not the test.** A sweeping many-file migration is the *most* resumable shape there is and stays inline: a subagent emits across many turns, and if one genuinely runs out, the token-exhaustion protocol (`subagent-orchestration.md`) writes a handoff and the parent auto-launches a replacement that resumes — still inline, still in this thread.
 2. **Needs interactive human judgment mid-build.** The issue carries genuinely unresolved product/design decisions that must be settled *while* implementing and can't be pinned down up front (`interactive_markers`). An "Open questions" section the issue already answers does **not** count — only open calls that would block a subagent mid-build.
 3. **Should be split into multiple PRs.** The issue explicitly asks to be split, or its scope spans several independent deliverables that each deserve their own PR and review cycle (`split_markers`).
 
-If **none** hold, the issue is **inline-eligible** — proceed to Step 5 and run it. If **any** holds, mark it **too big** and record the one triggering reason for the Step 5 hand-off message.
+If **none** hold, the issue is **inline-eligible** — proceed to Step 5 and run it. If **any** holds, mark it **too big** and record which criterion fired for the Step 5 hand-off message.
 
-**Removed with this gate:** the old Quick/Light-only accept list and its blanket rejections for touching `.claude/rules` / `CLAUDE.md` / `.claude/skills`, for high file/AC/dependency counts, or for orchestration keywords. None of those route an issue to a thread anymore — only the three criteria above do.
+**A route-to-thread verdict MUST name its disqualifier** — which of the three criteria fired, and why, in one line. A verdict you cannot pin to a named criterion is not valid: queue the issue inline instead. Per-criterion rationale: `.claude/reference/too-big-recalibration-2026-07.md` (#776).
+
+**When it's a close call, run it inline.** If you can't articulate why a handoff would fail to carry the work, that isn't a close call — it's inline. Inline's failure mode is a respawn inside this thread; a thread's failure mode is a tab the user now has to babysit.
+
+**Never a disqualifier on its own** — none of these routes an issue to a thread, and none substitutes for a named criterion: file count, AC count, dependency count, "feels complex"/"looks large", touching `.claude/rules` / `CLAUDE.md` / `.claude/skills`, orchestration keywords, or tier (Quick/Light/Standard/Heavy). **A full pipeline is not a disqualifier either** — past-ceiling subagent-fit work queues inline (Step 7); it never becomes a separate thread.
 
 ## Step 5: Gate Outcome — Run Inline, or Route Too-Big to a Thread
 
@@ -109,9 +113,11 @@ Apply Step 4's verdict per issue. **Being too big is not a failure — it routes
 - **Too-big** issues → do NOT execute them here. Emit a thread prompt so the work isn't lost:
 
   ```
-  Issue #N is too big for inline subagent execution ({one-line reason: Phase A won't fit in one subagent / needs interactive judgment mid-build / should be split into multiple PRs}).
+  Issue #N is too big for inline subagent execution — {named criterion: implementation can't be carried across sequential subagent turns / needs interactive judgment mid-build / should be split into multiple PRs}: {why, in one line}.
   Routing to a separate thread — run `/prompt #N` to generate the thread prompt.
   ```
+
+  The named criterion is mandatory (Step 4) — "too big" without one is not a valid verdict.
 
   (`/prompt #N` with an explicit issue number always produces a full thread-prompt block — see `/prompt` Path A. Routing to a thread is the whole point of the rejection; it never means the issue is dropped.)
 
@@ -204,6 +210,7 @@ For each qualifying issue, spawn a Phase A subagent using the Agent tool.
 **Parallel execution rules — the 3–4 concurrent-pipeline ceiling:**
 - Treat each issue's A→B→C run as one **pipeline**. Keep at most the concurrency ceiling from `subagent-orchestration.md` ("keep 3-4 active CR-polled PRs max") running at once — **3–4 concurrent pipelines**. Reuse that number; do not invent a new one. The count is **your own pipelines** — the ones this skill launches, all authored by you. Per `subagent-orchestration.md` (the canonical author-scoped ceiling), a collaborator's open PRs never enter it, so they can never block you from launching a queued pipeline.
 - If more issues qualify than the ceiling, launch the first 3–4 now and **queue** the rest. Start a queued pipeline only when a running one reaches a **genuinely terminal state — `merged` or `blocked`.** A pipeline parked at `merge_ready` is **not** terminal: Phase C (auto `/wrap`) is still ahead, so it keeps its slot until it actually merges (or blocks). Freeing the slot at `merge_ready` would let a new pipeline start while the parked one's Phase C is still pending, pushing total in-flight pipelines past the ceiling.
+- **A full ceiling means queue, never route out.** Subagent-fit work that arrives with every slot busy **waits inline** — it does not become a separate-thread chip or prompt. Only a named Step 4 disqualifier sends an issue to a thread; a busy pipeline is a scheduling state, not a fit verdict. (Shared gate: `.claude/reference/chip-launching.md`; rationale: `too-big-recalibration-2026-07.md`.)
 - When every slot is held by pipelines at `merge_ready` or in Phase C, don't launch more queued pipelines — wait for a terminal `merged`/`blocked` outcome to free a slot.
 - Each subagent gets its own worktree (use `isolation: "worktree"` on the Agent tool call).
 - **Respect Step 6.0b's chains.** Only the head of each overlap chain is launchable; a queued chain member waits for the one ahead of it to reach `merged`/`blocked`, even when a ceiling slot is free. Overlap serialization and the concurrency ceiling are separate limits — a free slot is permission to launch *some* issue, never permission to launch one whose file is still contested.
@@ -578,4 +585,4 @@ When all subagent PRs are either merged or blocked:
 ```
 /subagent #42 #55
 ```
-(Issues run inline as subagents by default, regardless of tier; only issues too big for a subagent — Phase A won't fit, needs interactive judgment mid-build, or should be split into multiple PRs — get `/prompt` for separate threads)
+(Issues run inline as subagents by default, regardless of tier; only issues too big for a subagent — implementation can't be carried across sequential subagent turns, needs interactive judgment mid-build, or should be split into multiple PRs — get `/prompt` for separate threads, each naming which criterion fired)
