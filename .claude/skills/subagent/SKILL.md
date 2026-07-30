@@ -280,7 +280,7 @@ isn't a fuzzy match. Full rules: .claude/rules/skill-first.md.
    - Run all available CLIs again. Repeat until each remaining CLI has one clean pass.
    - If a CLI hangs >2 minutes or errors twice, drop it for the session, resolve or explicitly waive its pre-drop findings in the PR body, gate on the remaining one, and note the drop.
    - If both are down, do one self-review and note it in the PR body — it exits the local loop but never satisfies the GitHub merge gate.
-   - **Before committing/pushing**, classify coverage: `both | cr-only | codeant-only | none` (per `cr-local-review.md` "Coverage classification"). Print `[COVERAGE] <level> — <reason>` in-thread. For `none`, this line is mandatory and must be visible before the push.
+   - **Before committing/pushing**, classify coverage: `both | cr-only | codeant-only | none` (per `cr-local-review.md` "Coverage classification"). Print `[COVERAGE] <level> — <reason>` in-thread. For any degraded state (`none`, `cr-only`, or `codeant-only`), this line is mandatory and must be visible before the push.
 5. Commit all changes in ONE commit.
 6. Push the branch.
 7. Create the PR via `gh pr create` with:

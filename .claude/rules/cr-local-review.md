@@ -57,5 +57,5 @@ Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `noqa`, or equival
 ### Exit criteria
 
 - **One verified-successful clean pass on both CLIs** (or on the surviving CLI + PR-body note; one clean self-review if both are unavailable). "No findings" alone is not a clean pass.
-- **Determine and record coverage** (see Timeout & fallback above) before committing/pushing. Surface `none` in-thread and in the PR body.
+- **Determine and record coverage** (see Timeout & fallback above) before committing/pushing. Surface any degraded state (`none`, `cr-only`, or `codeant-only`) in-thread and in the PR body.
 - Once clean, **immediately** commit, push, create/update the PR (`Closes #N` + Test Plan checkboxes), and enter `cr-github-review.md`. Local review never satisfies `cr-merge-gate.md`.
