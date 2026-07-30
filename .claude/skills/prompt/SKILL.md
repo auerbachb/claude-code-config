@@ -8,23 +8,36 @@ triggers:
 argument-hint: "[#123 #124 ...] (issue numbers, or omit for PM auto-detect)"
 ---
 
-Analyze one or more GitHub issues, classify complexity, and produce a copy-paste-ready prompt with a model recommendation. The goal is quality-conservative right-sizing — never under-resource a task, but don't waste Opus 5 tokens on a typo fix.
+Analyze one or more GitHub issues, classify complexity, and produce a copy-paste-ready prompt with a model recommendation. The goal is quality-conservative right-sizing — never under-resource a task, but don't waste Opus tokens on a typo fix.
 
-## Model Lineup & Effort Levels (current as of 2026-07-28)
+## Model Lineup & Effort Levels
 
-The current fleet is **Fable 5, Opus 5, Sonnet 5, Haiku 4.5** — the same four models named in `CLAUDE.md`, `.claude/rules/subagent-orchestration.md` "Model Selection", and `.claude/agents/README.md`. In the Claude Code picker, **Opus 5** is the default. Every **Opus 4.x** and **Sonnet 4.x** release — including the immediately-previous Opus default — is Legacy; never recommend one. (Named by generation rather than version so the list doesn't go stale at the next fleet bump.) Opus 5 and Sonnet 5 ship with a native 1M context window; there is no separate "(1M context)" picker option, so an entry like "Opus 5 (1M context)" is not a distinct model. Bare aliases used elsewhere (agent frontmatter, spawn sites) resolve as (verified 2026-07-28): `opus` → Opus 5, `sonnet` → Sonnet 5, `haiku` → Haiku 4.5; Fable 5 has no bare alias and must be named explicitly (`claude-fable-5`). Model IDs, where named explicitly: `claude-fable-5`, `claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5-20251001`.
+The fleet is **Fable, Opus, Sonnet, Haiku** — the same four families named in `CLAUDE.md`, `.claude/rules/subagent-orchestration.md` "Model Selection", and `.claude/agents/README.md`. In the Claude Code picker, **Opus** is the default.
 
-The picker also exposes **effort levels** (`low`, `medium`, `high`, `xhigh`, `max`, plus session-only `ultracode`). This skill keeps its internal Heavy/Standard/Light tier vocabulary and decision tree unchanged, and maps each tier to a recommended effort level in the output: **Heavy → `xhigh`**, **Standard → `high`**, **Light → `low`**. Users may adjust within a tier's range — e.g., a Heavy task with correctness-critical work can step up to `max`; a Heavy task that needs multi-agent orchestration can step up to `ultracode`; a borderline Standard task can step up to `xhigh` or step down to `medium`. Model choice has its own step-up: the hardest long-horizon / orchestration work can move from Opus 5 up to **Fable 5** (see Heavy, below).
+**Always name the family, never the version** (#791). A bare family name means the current non-legacy model of that family, so it never goes stale — earlier generations still listed in the picker are Legacy and are never recommended. The bare aliases used elsewhere (agent frontmatter, spawn sites) resolve the same way: `opus`, `sonnet`, `haiku`, and `fable` each resolve to the newest non-legacy model of that family. Write an explicit model ID (e.g. `claude-opus-5`) **only** where a tool literally consumes the string. Full rule and its scope: `.claude/agents/README.md` "Model naming".
 
-**Fast mode:** the picker has a Fast mode toggle (also `/fast`) that gives Claude Opus faster output — it speeds output without downgrading to a smaller model. It is offered on **Opus 5** (and on the legacy Opus 4.x models that still carry it); it is not offered for Sonnet 5, Haiku 4.5, or Fable 5, so it never pairs with a Light-tier recommendation. `/prompt` does NOT accept a `--fast` flag and does not factor Fast mode into recommendations — it is a user-toggled picker option. A `--fast` flag is a possible follow-up, not part of this skill.
+The picker's second control is **effort**, and this skill recommends one on every issue. Use the picker's own labels — **Low**, **Medium**, **High**, **Extra**, **Max** — because a recommendation the user cannot map onto the control in front of them is one they ignore. This is the **one place** the label↔token mapping is taught, for the cases where something downstream consumes the raw token: Low (`low`), Medium (`medium`), High (`high`), Extra (`xhigh`), Max (`max`). Everywhere else, and in every recommendation this skill emits, the label alone is the value.
 
-Separately from Fast mode: for Light-tier work, **Haiku 4.5** is a valid cheaper alternative to Sonnet 5; the output notes this on Light-tier recommendations.
+**Ultra code** (`ultracode`) is **not** a step on that ladder — it is a session-level orchestration mode, opted into for the whole session rather than set per turn (the per-call effort enum stops at `max`). Name it only as a step-up note alongside a real level, never as the recommended level itself.
+
+The internal Heavy/Standard/Light tier vocabulary and decision tree are unchanged; each tier maps to a recommended effort in the output: **Heavy → Extra**, **Standard → High**, **Light → Low**. Users may adjust within a tier's range — a Heavy task with correctness-critical work steps up to **Max**; a Heavy task needing multi-agent orchestration steps up to **Ultra code**; a borderline Standard task steps up to **Extra** or down to **Medium**. Model choice has its own step-up: the hardest long-horizon / orchestration work can move from Opus up to **Fable** (see Heavy, below).
+
+**Fast mode:** the picker has a Fast mode toggle (also `/fast`) that gives Claude Opus faster output — it speeds output without downgrading to a smaller model. It is offered on **Opus**; it is not offered for Sonnet, Haiku, or Fable, so it never pairs with a Light-tier recommendation. `/prompt` does NOT accept a `--fast` flag and does not factor Fast mode into recommendations — it is a user-toggled picker option. A `--fast` flag is a possible follow-up, not part of this skill.
+
+Separately from Fast mode: for Light-tier work, **Haiku** is a valid cheaper alternative to Sonnet; the output notes this on Light-tier recommendations.
 
 **MANDATORY OUTPUT FORMAT:** Every per-issue prompt block printed to the transcript MUST open and close with `~~~` tilde fences. NEVER use backtick fences as the outer prompt-block delimiter. This governs fallback mode and print-on-demand replay — the two paths that print a block. In chip mode the prompt rides inside the chip rather than being printed, so it needs no fence; its content is otherwise identical.
 
-**Per-block model label (mandatory):** The first content inside each tilde-fenced block (immediately after the opening `~~~`) MUST be a single line: `**Model:** {MODEL} — {REASON}` where `{MODEL}` is the model string for **that issue's** `issue_tier` (from Step 5 — not the batch tier), and `{REASON}` is a concise task-type phrase of **at most 10 words** derived from that issue's signals (dominant drivers such as rules/CLAUDE.md, orchestration, file count, AC count, skills, dependencies, or scope keywords). The label must be **inside** the tilde fence so a pasted block is self-explanatory without surrounding prose. In chip mode the same line MUST open the chip's `prompt` text **and** appear in the visible short summary — chips cannot preset the model picker, so the user needs it before clicking and the spawned session needs it after.
+**Per-block model and effort labels (mandatory):** The first content inside each tilde-fenced block (immediately after the opening `~~~`) MUST be two lines, in this order and with no blank line between them:
 
-**Model-guard preamble (mandatory):** Immediately after the `**Model:**` line — no blank line between — insert the model-guard preamble defined in `.claude/reference/chip-launching.md` "Model-guard preamble," verbatim, never reworded. It applies in both delivery modes: the launched thread's first action is to compare its actual running model against the `**Model:**` line and stop on any mismatch. See `chip-model-guard-decision.md` for why the guard rides in both the chip `prompt` and the fallback block. In chip mode the `**Model:**` line MUST also appear in the visible short summary; when the parent thread is on Fable 5 and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
+```text
+**Model:** {MODEL} — {REASON}
+**Effort:** {LEVEL} — {REASON}
+```
+
+`{MODEL}` is the bare family name for **that issue's** `issue_tier` (from Step 5 — not the batch tier) and `{LEVEL}` is that tier's picker label. Each `{REASON}` is a concise task-type phrase of **at most 10 words** derived from that issue's signals (dominant drivers such as rules/CLAUDE.md, orchestration, file count, AC count, skills, dependencies, or scope keywords). Both labels must be **inside** the tilde fence so a pasted block is self-explanatory without surrounding prose. In chip mode the same two lines MUST open the chip's `prompt` text **and** appear in the visible short summary — chips preset neither picker control, so the user needs both before clicking and the spawned session needs them after.
+
+**Model-guard preamble (mandatory):** Immediately after the `**Effort:**` line — no blank line between the three — insert the model-guard preamble defined in `.claude/reference/chip-launching.md` "Model-guard preamble," verbatim, never reworded. It applies in both delivery modes: the launched thread's first action is to compare its actual running model against the `**Model:**` line and stop on any mismatch. The guard covers the model only — effort is a pre-click recommendation, not a guarded self-report (`chip-model-guard-decision.md`, which also explains why the guard rides in both the chip `prompt` and the fallback block). In chip mode both lines MUST also appear in the visible short summary; when the parent thread is on Fable and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
 
 ## Step 0: Parse Arguments and Detect Context
 
@@ -137,7 +150,7 @@ Apply this decision tree. When signals conflict, choose the **higher** tier (con
 
 **Batch handling rule:** First classify each issue independently to produce a per-issue tier (`issue_tier`). Then compute a batch tier from the most complex `issue_tier` in the set. A batch of 3 issues where one is Heavy makes the batch tier Heavy. The batch tier is used for thread-prompt output formatting and checkpoint inheritance, while per-issue decisions (like Step 5.5 subagent partitioning) must use `issue_tier`.
 
-### Heavy — Opus 5, effort `xhigh` (step up to Fable 5 for the hardest long-horizon work)
+### Heavy — Opus, effort Extra (step up to Fable for the hardest long-horizon work)
 
 Assign Heavy if ANY of these are true:
 - `touches_rules` is true (rule files are highest-stakes)
@@ -147,13 +160,13 @@ Assign Heavy if ANY of these are true:
 - `file_count > 5`
 - `dependency_count > 2`
 
-**Fable 5 step-up (within Heavy).** Opus 5 is the Heavy default. Recommend stepping up to **Fable 5** — the strongest model in the fleet, at roughly 2× Opus 5's cost — only for the hardest long-horizon work at the top of the Heavy band. Step up when Heavy was triggered AND at least two of: `has_orchestration_keywords`, `touches_rules` or `touches_claude_md`, `file_count > 5`, `dependency_count > 2`. A Heavy issue that trips exactly one trigger (the common case — e.g. a rules-only wording change) stays on Opus 5. Phrase it as a step-up, never a replacement: the recommendation line stays `Opus 5`, with the Fable 5 option noted alongside it.
+**Fable step-up (within Heavy).** Opus is the Heavy default. Recommend stepping up to **Fable** — the strongest model in the fleet, at roughly 2× Opus's cost — only for the hardest long-horizon work at the top of the Heavy band. Step up when Heavy was triggered AND at least two of: `has_orchestration_keywords`, `touches_rules` or `touches_claude_md`, `file_count > 5`, `dependency_count > 2`. A Heavy issue that trips exactly one trigger (the common case — e.g. a rules-only wording change) stays on Opus. Phrase it as a step-up, never a replacement: the recommendation line stays `Opus`, with the Fable option noted alongside it.
 
-**`max` effort step-up (within Heavy).** `xhigh` is the Heavy effort default — the documented sweet spot for demanding coding work, which every Heavy issue qualifies as. Step up to `max` (correctness-over-cost) only when the penalty for a wrong answer is high: security-adjacent edits (auth, secrets handling, permissions), merge-gate or state-machine logic where an error propagates silently, or when prior review rounds surfaced significant correctness failures (e.g., Greptile P0 findings or repeated CR rounds on the same issue). Issues that also meet the Fable 5 model step-up threshold (at least two of `has_orchestration_keywords`, `touches_rules`/`touches_claude_md`, `file_count > 5`, `dependency_count > 2`) are strong `max` candidates if they also carry a correctness signal. Single-trigger Heavy issues — the common case (e.g., a rules-only wording change) — stay on `xhigh`. Phrase it as a step-up: the recommendation line stays `xhigh`, with `max` noted as an option when warranted.
+**Max effort step-up (within Heavy).** Extra is the Heavy effort default — the documented sweet spot for demanding coding work, which every Heavy issue qualifies as. Step up to **Max** (correctness-over-cost) only when the penalty for a wrong answer is high: security-adjacent edits (auth, secrets handling, permissions), merge-gate or state-machine logic where an error propagates silently, or when prior review rounds surfaced significant correctness failures (e.g., Greptile P0 findings or repeated CR rounds on the same issue). Issues that also meet the Fable model step-up threshold (at least two of `has_orchestration_keywords`, `touches_rules`/`touches_claude_md`, `file_count > 5`, `dependency_count > 2`) are strong Max candidates if they also carry a correctness signal. Single-trigger Heavy issues — the common case (e.g., a rules-only wording change) — stay on Extra. Phrase it as a step-up: the recommendation line stays `Extra`, with Max noted as an option when warranted.
 
-> **Effort rationale (Issue #558):** Heavy previously defaulted to `max`, skipping `xhigh` entirely. This over-spent on the most common Heavy cases (a single `touches_rules` trigger) that already run on Opus 5. `xhigh` is the documented sweet spot for demanding coding work; `max` is correctness-over-cost for cases where errors propagate at high cost. The new default mirrors the Fable-5 model step-up pattern from PR #554: default to capable-but-not-maximum, reserve the higher setting for cases where the extra cost is justified.
+> **Effort rationale (Issue #558):** Heavy previously defaulted to Max, skipping Extra entirely. This over-spent on the most common Heavy cases (a single `touches_rules` trigger) that already run on Opus. Extra is the documented sweet spot for demanding coding work; Max is correctness-over-cost for cases where errors propagate at high cost. The new default mirrors the Fable model step-up pattern from PR #554: default to capable-but-not-maximum, reserve the higher setting for cases where the extra cost is justified.
 
-### Standard — Opus 5, effort `high`
+### Standard — Opus, effort High
 
 Assign Standard if ANY of these are true (and Heavy was not triggered):
 - `file_count` is 2–5
@@ -162,7 +175,7 @@ Assign Standard if ANY of these are true (and Heavy was not triggered):
 - Issue body is >200 words with structural patterns (includes a user story, describes a new feature via keywords like "implement", "add", "support")
 - `is_multi_issue` with mixed complexity (at least one non-trivial issue that didn't trigger Heavy)
 
-### Light — Sonnet 5 (or Haiku 4.5), effort `low`
+### Light — Sonnet (or Haiku), effort Low
 
 Assign Light if ANY of these are true (and Heavy/Standard were not triggered):
 - `file_count` is 0–1
@@ -257,17 +270,17 @@ Output the Tier Recommendation as plain text first (skip if all issues are subag
 ```
 ## Tier Recommendation
 
-**{TIER_NAME}** — {MODEL} — effort: {EFFORT}
+**{TIER_NAME}** — {MODEL} — effort: {LEVEL}
 
 Rationale: {1-line explanation of why this tier was selected, citing the dominant signal}
 ```
 
 **OUTPUT MUST USE `~~~` FENCES, NOT BACKTICKS.** The opening and closing lines of every per-issue prompt block must be exactly `~~~`.
 
-**Map tier to `{MODEL}` and `{EFFORT}` strings** (same Heavy / Standard / Light mapping for both the batch **Tier Recommendation** line and each per-issue `**Model:**` line — use **batch tier** for Tier Recommendation and **per-issue `issue_tier`** for each block):
-- **Heavy** → `Opus 5`, effort `xhigh` (step up to `max` for correctness-critical work — see Step 5 `max` effort step-up rule; step up to `ultracode` for multi-agent orchestration; append "(or Fable 5 — ~2× cost, for the hardest long-horizon work)" only when the Step 5 Fable 5 step-up rule is met)
-- **Standard** → `Opus 5`, effort `high` (step up to `xhigh` for demanding coding work)
-- **Light** → `Sonnet 5`, effort `low` (Haiku 4.5 is a valid cheaper alternative — append "(or Haiku 4.5)" to Light-tier recommendations)
+**Map tier to `{MODEL}` and `{LEVEL}` strings** (same Heavy / Standard / Light mapping for both the batch **Tier Recommendation** line and each per-issue `**Model:**` / `**Effort:**` pair — use **batch tier** for Tier Recommendation and **per-issue `issue_tier`** for each block). Model values are bare family names; effort values are picker labels:
+- **Heavy** → `Opus`, effort `Extra` (step up to `Max` for correctness-critical work — see Step 5's Max effort step-up rule; note `Ultra code` as a step-up for multi-agent orchestration, never as the level itself; append "(or Fable — ~2× cost, for the hardest long-horizon work)" only when the Step 5 Fable step-up rule is met)
+- **Standard** → `Opus`, effort `High` (step up to `Extra` for demanding coding work)
+- **Light** → `Sonnet`, effort `Low` (Haiku is a valid cheaper alternative — append "(or Haiku)" to Light-tier recommendations)
 
 **Constraints block (every block, every tier).** The `## Constraints` section near the end of each prompt block is not tier-gated the way Protocol Checkpoints are — it ships in every block. Its merge-authority bullet is the shared contract from `chip-launching.md` "Merge-authority line": reproduce it **verbatim**, exactly as the model-guard preamble is copied unchanged, and never soften it into an approval request.
 
@@ -276,8 +289,9 @@ Rationale: {1-line explanation of why this tier was selected, citing the dominan
 Then, for each issue, output a self-contained prompt block. Use tilde fences (`~~~`, shown here as the outer boundary):
 
 ~~~
-**Model:** Opus 5 — skill change with many acceptance checks
-{Model-guard preamble — insert verbatim from `chip-launching.md` "Model-guard preamble", immediately after this line, no blank line between}
+**Model:** Opus — skill change with many acceptance checks
+**Effort:** Extra — rules-adjacent change, many acceptance checks
+{Model-guard preamble — insert verbatim from `chip-launching.md` "Model-guard preamble", immediately after these lines, no blank line between}
 ### Issue #{NUMBER}: {TITLE}
 
 **Acceptance Criteria:**
@@ -399,14 +413,15 @@ Falls back to asking: "Which issue(s) should I analyze?"
 
 For an issue with `touches_skill=true` and `ac_count=4`, the skill emits the Tier Recommendation as plain text first, then a self-contained prompt block in a tilde fence. The recommendation rendered to the chat looks like:
 
-> **Standard** — Opus 5 — effort: high
+> **Standard** — Opus — effort: High
 >
 > Rationale: touches_skill=true (modifies a file under .claude/skills/) drives Standard.
 
 The prompt block that follows:
 
 ~~~
-**Model:** Opus 5 — skill file with multiple acceptance criteria
+**Model:** Opus — skill file with multiple acceptance criteria
+**Effort:** High — single skill file, four acceptance criteria
 {model-guard preamble — see "Model-guard preamble" above, verbatim, omitted here for brevity}
 ### Issue #110: {Title}
 
@@ -436,7 +451,8 @@ The prompt block that follows:
 In **chip mode**, that same issue produces a chip plus this summary — the block above rides inside the chip instead of being printed:
 
 > - **#110 — {Title}** — chip offered
->   **Model:** Opus 5 — skill file with multiple acceptance criteria
+>   **Model:** Opus — skill file with multiple acceptance criteria
+>   **Effort:** High — single skill file, four acceptance criteria
 >   Modifies a skill under `.claude/skills/` with four acceptance criteria.
 
 **Note:** This skill produces a recommendation. The user decides whether to follow the tier suggestion. When in doubt, the skill errs toward the higher tier — it's better to slightly over-resource than to get instruction adherence failures on a complex task.

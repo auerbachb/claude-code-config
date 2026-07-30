@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# Lint chip model-guard conformance across canonical emitters (issue #731).
+# Lint chip model-guard conformance across canonical emitters (issues #731, #791).
 #
 # Validates:
 #   1. chip-launching.md defines the full contract: MODEL GUARD preamble,
-#      all six canonical emitters, first-line/no-blank-line placement,
-#      short-summary format, and Fable pre-click warning guidance.
+#      the **Model:**/**Effort:** unit, all six canonical emitters,
+#      first-line/no-blank-line placement, short-summary format, and the
+#      parent/chip model-mismatch pre-click warning.
 #   2. Each canonical emitter SKILL.md requires spawn_task, **Model:** as
-#      first prompt line, model-guard preamble (no blank line), short-summary
-#      repetition, and the parent/chip model-mismatch pre-click warning.
+#      first prompt line, an **Effort:** line, model-guard preamble (no blank
+#      line), short-summary repetition, and the pre-click warning.
 #   3. chip-model-guard-decision.md references all six emitters.
 #   4. Global enforcement exists in chip-spawn.md (indexed from CLAUDE.md).
+#   5. No versioned model name ("Opus 5", "Haiku 4.5", ...) appears anywhere
+#      in the operative corpus — families only (#791). Dated .claude/reference/
+#      audit records are deliberately out of scan scope; they are point-in-time
+#      history (see .claude/reference/README.md).
 #
 # Two emitter classes (issue #770):
 #   LITERAL emitters name the model directly, so the pre-click warning is
@@ -112,7 +117,10 @@ if [[ -f "$CHIP_LAUNCHING" ]]; then
   require_pattern "$CHIP_LAUNCHING" 'first line of the `prompt`' 'first-line placement rule'
   require_pattern "$CHIP_LAUNCHING" 'no blank line' 'no-blank-line placement rule'
   require_pattern "$CHIP_LAUNCHING" 'Short-summary transcript format' 'short-summary format section'
-  require_pattern "$CHIP_LAUNCHING" 'Fable 5 parent' 'Fable pre-click warning guidance'
+  require_pattern "$CHIP_LAUNCHING" '\*\*Effort:\*\*' 'Effort line contract'
+  require_pattern "$CHIP_LAUNCHING" 'Model and effort lines' 'model+effort placement section'
+  require_pattern "$CHIP_LAUNCHING" 'Ultra code' 'Ultra-code-is-not-a-level guidance'
+  require_pattern "$CHIP_LAUNCHING" 'Fable parent' 'Fable pre-click warning guidance'
   require_pattern "$CHIP_LAUNCHING" 'Upstream requirement' 'upstream requirement section'
   require_pattern "$CHIP_LAUNCHING" '#735' 'upstream tracking issue link'
 
@@ -132,6 +140,7 @@ for skill in "${CANONICAL_EMITTERS[@]}"; do
 
   require_pattern "$skill_file" 'spawn_task' "${skill} spawn_task reference"
   require_pattern "$skill_file" '\*\*Model:\*\*' "${skill} **Model:** requirement"
+  require_pattern "$skill_file" '\*\*Effort:\*\*' "${skill} **Effort:** requirement"
   require_pattern "$skill_file" 'model-guard preamble|MODEL GUARD' "${skill} model-guard requirement"
   require_pattern "$skill_file" 'first line|first prompt|MUST open|open the chip|MUST open with|first content|base block' "${skill} first-line **Model:** placement"
   require_pattern "$skill_file" 'no blank line' "${skill} no-blank-line guard placement"
@@ -155,7 +164,11 @@ for skill in "${CANONICAL_EMITTERS[@]}"; do
       errors=$((errors + 1))
     fi
   else
-    require_pattern "$skill_file" 'Fable 5' "${skill} Fable pre-click warning requirement"
+    # Literal emitter: require the pre-click warning in context, not a bare
+    # mention of the model. Before #791 the literal "Fable 5" supplied that
+    # context by itself; the versionless rename would have reduced it to a
+    # match on any passing use of the word, so the phrase carries it now.
+    require_pattern "$skill_file" 'parent thread is on Fable' "${skill} Fable pre-click warning requirement"
   fi
 done
 
@@ -170,12 +183,40 @@ fi
 if [[ -f "$CHIP_RULE" ]]; then
   require_pattern "$CHIP_RULE" 'spawn_task' 'chip-spawn.md spawn_task rule'
   require_pattern "$CHIP_RULE" 'MODEL GUARD' 'chip-spawn.md MODEL GUARD rule'
+  require_pattern "$CHIP_RULE" '\*\*Effort:\*\*' 'chip-spawn.md Effort line rule'
   require_pattern "$CHIP_RULE" 'chip-launching\.md' 'chip-spawn.md chip-launching reference'
-  require_pattern "$CHIP_RULE" 'Fable 5' 'chip-spawn.md Fable pre-click warning rule'
+  require_pattern "$CHIP_RULE" 'parent thread is on Fable' 'chip-spawn.md Fable pre-click warning rule'
 fi
 
 if [[ -f "$CLAUDE_MD" ]]; then
   require_pattern "$CLAUDE_MD" 'chip-spawn\.md' 'CLAUDE.md chip-spawn rule index entry'
+fi
+
+# --- 5. No versioned model names in the operative corpus (#791) -----------
+# Families only. `claude-opus-5` and `claude-haiku-4-5-20251001` do not match:
+# the pattern requires "Family<space>digit", and those IDs are lowercase and
+# hyphenated. Scope is the operative corpus plus the two living contract docs
+# in .claude/reference/ — dated audit records there keep their versioned names
+# by design (.claude/reference/README.md, "Audits and research").
+VERSIONED_RE='(Opus|Sonnet|Fable|Haiku) [0-9]+(\.[0-9]+)?'
+
+scan_targets=()
+for target in "$CLAUDE_MD" .claude/rules .claude/skills .claude/agents \
+              "$CHIP_LAUNCHING" "$CHIP_DECISION"; do
+  # A missing path is not a violation — the lint's own test harness builds a
+  # partial tree, and a repo may legitimately lack a directory.
+  [[ -e "$target" ]] && scan_targets+=("$target")
+done
+
+if (( ${#scan_targets[@]} > 0 )); then
+  while IFS= read -r hit; do
+    [[ -n "$hit" ]] || continue
+    hit_file="${hit%%:*}"
+    hit_rest="${hit#*:}"
+    hit_line="${hit_rest%%:*}"
+    echo "::error file=${hit_file},line=${hit_line}::Versioned model name — use the bare family name (Opus/Sonnet/Fable/Haiku). See .claude/agents/README.md \"Model naming\" (#791)"
+    errors=$((errors + 1))
+  done < <(grep -rnE "$VERSIONED_RE" --include='*.md' "${scan_targets[@]}" || true)
 fi
 
 if (( errors > 0 )); then

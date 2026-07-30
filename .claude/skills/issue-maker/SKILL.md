@@ -294,9 +294,9 @@ Close by reminding the user the issue is cheap to change — a wrong call is one
 
 Tone precedent: `/wrap`'s terse "here's what I decided — flag anything wrong" framing and `issue-planning.md`'s number/title/rationale/link quartet. Keep the whole report to a few lines; its value is signal density, not length.
 
-### Step 9b: Infer a coding tier (for the chip's Model line)
+### Step 9b: Infer a coding tier (for the chip's Model and Effort lines)
 
-`/issue-maker` does no tier classification during capture, but the chip requires a `**Model:** {MODEL} — {REASON}` line (`chip-launching.md`). Rather than invoking `/prompt` for a single line, infer the tier directly from the body just drafted in Step 5, using a trimmed, single-issue version of `/prompt`'s Heavy/Standard/Light mapping (`prompt/SKILL.md` Steps 4–5) — no batch aggregation, no dependency counting, no Fable 5 step-up:
+`/issue-maker` does no tier classification during capture, but the chip requires a `**Model:** {MODEL} — {REASON}` line **and** an `**Effort:** {LEVEL} — {REASON}` line (`chip-launching.md`). Rather than invoking `/prompt` for two lines, infer the tier directly from the body just drafted in Step 5, using a trimmed, single-issue version of `/prompt`'s Heavy/Standard/Light mapping (`prompt/SKILL.md` Steps 4–5) — no batch aggregation, no dependency counting, no Fable step-up:
 
 - `file_count` — paths under `## Related Files` plus backticked paths in the body containing `/` and a file extension
 - `ac_count` — count of `- [ ]` lines under `## Acceptance Criteria`
@@ -306,11 +306,19 @@ Tone precedent: `/wrap`'s terse "here's what I decided — flag anything wrong" 
 
 | Tier | Trigger | Model / effort |
 |------|---------|-----------------|
-| **Heavy** | `touches_rules`, `touches_claude_md`, `has_orchestration_keywords`, or `file_count > 5` | Opus 5, effort `xhigh` (step up to `max` for correctness-critical work — see `prompt/SKILL.md` Step 5) |
-| **Standard** | not Heavy, and `file_count` 2–5, `ac_count > 3`, or `touches_skill` | Opus 5, effort `high` |
-| **Light** | not Heavy/Standard, or any `scope_keywords` present | Sonnet 5, effort `low` |
+| **Heavy** | `touches_rules`, `touches_claude_md`, `has_orchestration_keywords`, or `file_count > 5` | Opus, effort Extra (step up to Max for correctness-critical work — see `prompt/SKILL.md` Step 5) |
+| **Standard** | not Heavy, and `file_count` 2–5, `ac_count > 3`, or `touches_skill` | Opus, effort High |
+| **Light** | not Heavy/Standard, **and** a positive Light signal: any `scope_keywords` present, or `file_count ≤ 1` with a clear single-file scope | Sonnet, effort Low |
+
+**Evaluate in table order and stop at the first match** — Heavy, then Standard, then Light — matching `/prompt`'s "when signals conflict, choose the higher tier" rule. A `touches_rules` or orchestration trigger therefore wins over a `scope_keywords` hit on the same issue.
+
+Light requires a **positive** signal, not merely the absence of the other two. Were it the plain complement of Heavy/Standard it would match every remaining issue, and the Standard default below could never fire — a thin, unclassifiable body would silently land on the cheapest tier instead of the safe one.
+
+Model values are bare family names and effort values are picker labels — never a version number, never a bare API token (`chip-launching.md` "Model and effort lines").
 
 Default to **Standard** when signals are too sparse to classify confidently (thin bodies, terse rapid-fire captures) — it's the safer default absent a strong signal either way.
+
+**Both values from this step reach Step 9c** — the model on the `**Model:**` line and the effort on the `**Effort:**` line, in the chip `prompt` and in the visible short summary. A tier computed here and then dropped is the defect #791 fixed.
 
 ### Step 9c: Offer a coding chip (default-on, alongside the closing link)
 
@@ -320,11 +328,12 @@ Immediately after logging the issue, offer a one-click coding chip **in addition
 
 Check chip availability per `.claude/reference/chip-launching.md`. The coding-thread prompt is the same regardless of mode:
 
-**Chip model contract (non-negotiable):** The chip `prompt` MUST open with the `**Model:**` line from Step 9b, immediately followed by the model-guard preamble from `chip-launching.md` (no blank line between). The visible short summary MUST repeat the same `**Model:**` line (not the guard) per `chip-launching.md` "Short-summary transcript format". When the parent thread is on Fable 5 and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
+**Chip model + effort contract (non-negotiable):** The chip `prompt` MUST open with the `**Model:**` line from Step 9b, then that step's `**Effort:**` line, then the model-guard preamble from `chip-launching.md` — no blank line between the three. The visible short summary MUST repeat both lines (not the guard) per `chip-launching.md` "Short-summary transcript format". When the parent thread is on Fable and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
 
 ```
 **Model:** {MODEL from Step 9b} — {one-line reason, e.g. "rules + skill wiring" or "single-file addition"}
-{Model-guard preamble — insert verbatim from `chip-launching.md` "Model-guard preamble", immediately after this line, no blank line between}
+**Effort:** {LEVEL from Step 9b} — {one-line reason, e.g. "rules-touching change" or "single-file addition"}
+{Model-guard preamble — insert verbatim from `chip-launching.md` "Model-guard preamble", immediately after these lines, no blank line between}
 
 You are picking up a freshly captured issue from an `/issue-maker` capture thread — no CR plan, worktree, or codebase exploration has happened yet.
 
@@ -461,7 +470,7 @@ Then print: *"Issue #N closed."* — append *"(chip withdrawal failed — it may
 
 When invoked with `--export-prompt`, **do not create anything** — instead emit a standalone, paste-in prompt that codifies the same capture-mode behavior (reflection surfaced as a post-create decision-points report + LLM pass-through rationale, auto-open with no approval gate, functional-first tone, 6-section body, dedup, refusal of workflow-advancing actions, closing-line URL rule). This lets the user carry the same discipline into a repo or thread where this skill isn't installed. Output the prompt in a fenced block and stop.
 
-**The exported prompt reproduces Step 9c's coding-chip block verbatim** — `**Model:**` line, model-guard preamble, and the Constraints block including its merge-authority bullet (`chip-launching.md` "Merge-authority line"). A portable prompt that drops the merge-authority line recreates exactly the gap this exists to close: a thread that reaches merge-readiness in a repo without these rules installed, finds nothing asserting the default, and stops to ask. Never paraphrase the bullet and never soften it into an approval request.
+**The exported prompt reproduces Step 9c's coding-chip block verbatim** — `**Model:**` line, `**Effort:**` line, model-guard preamble, and the Constraints block including its merge-authority bullet (`chip-launching.md` "Merge-authority line"). A portable prompt that drops the merge-authority line recreates exactly the gap this exists to close: a thread that reaches merge-readiness in a repo without these rules installed, finds nothing asserting the default, and stops to ask. Never paraphrase the bullet and never soften it into an approval request.
 
 ---
 

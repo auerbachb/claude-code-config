@@ -1,26 +1,26 @@
 {
-  "_note": "Single source of truth for the Claude model fleet. Resolve it with .claude/scripts/model-fleet.sh — never hardcode a model name in a new skill, rule, or agent body. When the fleet changes, editing this file is sufficient for every consumer that resolves through the script (today: /harness-audit). It is NOT yet sufficient repo-wide: /prompt, chip **Model:** lines, and .claude/agents/*.md still carry model literals and must be updated separately until they migrate here. That migration is tracked in issue #749 and was deliberately out of scope for issue #770, which introduced this file, its resolver, and the first consumer.",
+  "_note": "Single source of truth for the Claude model fleet. Resolve it with .claude/scripts/model-fleet.sh \u2014 never hardcode a model name in a new skill, rule, or agent body. When the fleet changes, editing this file is sufficient for every consumer that resolves through the script. `display` values are versionless family names (issue #791): every human-facing mention across CLAUDE.md, .claude/rules/, .claude/skills/, and .claude/agents/ names the family, so a new model within an existing family needs no edit here or anywhere else \u2014 only a genuinely new family, or a change of top_tier, does. `id` stays fully versioned because tools consume that string literally. Enforced by .github/scripts/chip-model-guard-lint.sh.",
   "verified": "2026-07-28",
   "top_tier": "claude-fable-5",
   "fleet": [
     {
       "id": "claude-fable-5",
-      "display": "Fable 5",
+      "display": "Fable",
       "alias": null
     },
     {
       "id": "claude-opus-5",
-      "display": "Opus 5",
+      "display": "Opus",
       "alias": "opus"
     },
     {
       "id": "claude-sonnet-5",
-      "display": "Sonnet 5",
+      "display": "Sonnet",
       "alias": "sonnet"
     },
     {
       "id": "claude-haiku-4-5-20251001",
-      "display": "Haiku 4.5",
+      "display": "Haiku",
       "alias": "haiku"
     }
   ]

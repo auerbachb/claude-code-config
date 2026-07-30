@@ -322,7 +322,7 @@ isn't a fuzzy match. Full rules: .claude/rules/skill-first.md.
 
 **Agent tool call parameters:**
 - `mode: "bypassPermissions"`
-- `model: "opus"` (currently resolves to Opus 5; heavy reasoning — initial implementation, multi-file edits, PR creation — see `subagent-orchestration.md` "Model Selection")
+- `model: "opus"` (heavy reasoning — initial implementation, multi-file edits, PR creation — see `subagent-orchestration.md` "Model Selection")
 - `isolation: "worktree"`
 - `run_in_background: true` (so you can monitor multiple agents)
 
@@ -429,7 +429,7 @@ If missing, reconstruct state from GitHub API.
 **Phase B Agent tool call parameters:**
 - `subagent_type: "phase-b-reviewer"`
 - `mode: "bypassPermissions"`
-- `model: "opus"` (currently resolves to Opus 5; Phase B evaluates review findings and fixes code — see `subagent-orchestration.md` "Model Selection")
+- `model: "opus"` (Phase B evaluates review findings and fixes code — see `subagent-orchestration.md` "Model Selection")
 - `isolation: "worktree"` (same as Phase A — Phase B fetches and checks out the PR branch inside its own fresh worktree)
 - `run_in_background: true`
 
@@ -517,7 +517,7 @@ worktree directory at all times.
 **Phase C Agent tool call parameters:**
 - `subagent_type: "phase-c-merger"`
 - `mode: "bypassPermissions"`
-- `model: "sonnet"` (currently resolves to Sonnet 5; Phase C is lightweight verification plus the mechanical `/wrap` flow — see `subagent-orchestration.md` "Model Selection")
+- `model: "sonnet"` (Phase C is lightweight verification plus the mechanical `/wrap` flow — see `subagent-orchestration.md` "Model Selection")
 - `isolation: "worktree"` (same as Phase A — Phase C fetches and checks out the PR branch inside its own fresh worktree)
 - `run_in_background: true`
 

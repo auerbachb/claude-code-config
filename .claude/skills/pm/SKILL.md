@@ -578,12 +578,12 @@ Once the user has selected which issues to work on, **partition them** with the 
 
 **First, check chip availability** per `.claude/reference/chip-launching.md`, then branch:
 
-- **Chip mode** (`mcp__ccd_session__spawn_task` present): call `spawn_task` once per too-big issue with `title` / `prompt` / `tldr` / `cwd`, where `prompt` is the full self-contained prompt below, unchanged. Print **only** the short summary per issue (issue, title, `**Model:**` line, one-line too-big reason) — see the reference for the exact format. Record each returned `task_id` in the Active Work table (3.2) and set that issue's status to `Chip offered`.
+- **Chip mode** (`mcp__ccd_session__spawn_task` present): call `spawn_task` once per too-big issue with `title` / `prompt` / `tldr` / `cwd`, where `prompt` is the full self-contained prompt below, unchanged. Print **only** the short summary per issue (issue, title, `**Model:**` line, `**Effort:**` line, one-line too-big reason) — see the reference for the exact format. Record each returned `task_id` in the Active Work table (3.2) and set that issue's status to `Chip offered`.
 - **Fallback mode** (tool absent): emit the full prompt blocks for every too-big issue — same fences, same content, model-guard preamble included. `chip-launching.md` redefines the fallback baseline as byte-identical to the chip `prompt` (guard included), not pre-chip output — see `chip-model-guard-decision.md`.
 
 **Spawn outcomes are tracked per issue.** A failed `spawn_task` falls back for **that issue alone** — print its full block and leave it at `Prompt generated`. Issues whose spawns succeeded keep their chip, their `task_id`, and their `Chip offered` status; never re-print their block as well, or the same issue is offered twice. Every too-big issue ends with exactly one of: a chip, or a printed block.
 
-Chips carry no model preset, so the `**Model:**` line must appear both in the visible summary and inside the chip's prompt text — as the **first line** of the `prompt`, with the model-guard preamble immediately after (no blank line). Get the model recommendation from `/prompt`'s tier classification when it ran; otherwise infer it from the issue's signals using the same Heavy/Standard/Light mapping. Insert the mandatory model-guard preamble defined in `chip-launching.md` verbatim, never reworded. When the parent thread is on Fable 5 and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement" in the short summary.
+Chips preset neither picker control, so the `**Model:**` and `**Effort:**` lines must appear both in the visible summary and inside the chip's prompt text — the `**Model:**` line as the **first line** of the `prompt`, the `**Effort:**` line next, the model-guard preamble immediately after (no blank line between the three). Get both recommendations from `/prompt`'s tier classification when it ran; otherwise infer them from the issue's signals using the same Heavy/Standard/Light mapping. `{MODEL}` is a bare family name (`Opus`, `Sonnet`, `Haiku`, `Fable`) and `{LEVEL}` is a picker label (**Low**/**Medium**/**High**/**Extra**/**Max**). Insert the mandatory model-guard preamble defined in `chip-launching.md` verbatim, never reworded. When the parent thread is on Fable and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement" in the short summary.
 
 If the user asks to "print the full prompt for #N" while in chip mode, re-emit that issue's complete block verbatim, guard included — the chip stays offered.
 
@@ -591,7 +591,8 @@ Each too-big issue's thread prompt must include:
 
 ```
 **Model:** {MODEL} — {REASON}
-{Model-guard preamble — insert verbatim from `chip-launching.md` "Model-guard preamble", immediately after this line, no blank line between}
+**Effort:** {LEVEL} — {REASON}
+{Model-guard preamble — insert verbatim from `chip-launching.md` "Model-guard preamble", immediately after these lines, no blank line between}
 
 You are a coding agent working on {repo URL}.
 
@@ -730,7 +731,7 @@ When the conversation is getting long (many back-and-forth cycles, multiple batc
 
 **Model selection for spawned subagents:**
 
-- **Coding subagents** (Phase A/B executing a selected issue): prefer the `/subagent` skill, which already enforces per-phase model selection (`opus` for Phase A/B, `sonnet` for Phase C; these aliases currently resolve to Opus 5 and Sonnet 5). See `.claude/rules/subagent-orchestration.md` "Model Selection".
+- **Coding subagents** (Phase A/B executing a selected issue): prefer the `/subagent` skill, which already enforces per-phase model selection (`opus` for Phase A/B, `sonnet` for Phase C). See `.claude/rules/subagent-orchestration.md` "Model Selection".
 - **Read-only PM data-gathering subagents** (e.g., scanning GitHub for backlog context, summarizing recent PR activity, reviewing progress on in-flight threads): spawn with `subagent_type: "pm-worker"`, `mode: "bypassPermissions"`, and `model: "sonnet"`. These tasks are template-driven data collection — Sonnet is the right cost tier and the frontmatter default on `pm-worker` matches.
 - **Never omit `model`** at the call site. Explicit model selection keeps cost decisions visible at every spawn point and prevents silent Opus usage for lightweight work.
 
