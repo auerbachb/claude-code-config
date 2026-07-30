@@ -103,9 +103,18 @@ expect "missing model-guard in pm skill fails" 1 \
   'pm model-guard requirement' \
   mutate .claude/skills/pm/SKILL.md '/model-guard preamble/d'
 
+# After the co-occurrence tightening (#802) wave has TWO lines that satisfy the
+# check: the "Chip model + effort contract" line (has "MUST open" + **Model:**)
+# and the prompt-description line (`**Model:**` line first).  Removing only the
+# first still leaves the second, so both must be cleared to prove the check fires.
+decouple_wave_placement() {
+  mutate .claude/skills/wave/SKILL.md '/Chip model + effort contract/d'
+  mutate .claude/skills/wave/SKILL.md 's/`\*\*Model:\*\*` line first,/the Model line first,/'
+}
+
 expect "missing first-line placement in wave skill fails" 1 \
   'wave first-line \*\*Model:\*\* placement' \
-  mutate .claude/skills/wave/SKILL.md '/Chip model + effort contract/d'
+  decouple_wave_placement
 
 expect "missing Fable warning in start-issue skill fails" 1 \
   'start-issue Fable pre-click warning requirement' \
@@ -290,6 +299,57 @@ plant_versioned_literal_in_pm() {
 expect "versioned literal fails even in a literal emitter" 1 \
   'Versioned model name' \
   plant_versioned_literal_in_pm
+
+# --- #802: co-occurrence check (placement phrase must be *about* **Model:**) ---
+
+# The too-loose direction: a placement phrase on a line that does NOT also carry
+# **Model:**.  The issue body calls out "MUST open with the task description" as
+# the canonical example of a claim that the old loose alternation accepted (it
+# matched "MUST open") but the new co-occurrence check rejects.  The mutation
+# replaces issue-maker's real placement claim ("MUST open with the `**Model:**`
+# line") with that exact example text so the replacement deliberately keeps the
+# phrase — otherwise a loose /MUST open/ check would still fail here and the
+# case would not distinguish strict from loose.
+must_open_task_description() {
+  mutate .claude/skills/issue-maker/SKILL.md \
+    's/MUST open with the `\*\*Model:\*\*` line from/MUST open with the task description from/'
+}
+
+expect "placement phrase without **Model:** co-occurrence fails (Issue #802 example)" 1 \
+  'issue-maker first-line \*\*Model:\*\* placement' \
+  must_open_task_description
+
+# The too-brittle direction: PR #799 proposed rewording "the **Model:** line
+# first" — more direct than "as the first line of the prompt" but broke the old
+# loose check because bare "first" was not in its vocabulary. The new
+# co-occurrence check must accept it because **Model:** and "first" appear on
+# the same line. The replacement deliberately retains both so the case proves
+# co-occurrence strictness, not mere phrase-absence.
+rewording_pr799() {
+  mutate .claude/skills/pm/SKILL.md \
+    's/ as the \*\*first line\*\* of the / **first** in the chip /'
+}
+
+expect "PR#799 rewording (**Model:** line first in chip prompt) still passes" 0 \
+  'chip-model-guard-lint: OK' \
+  rewording_pr799
+
+# The right-side over-match: bare `\bfirst\b` before **Model:** on the same line
+# was accepted even in non-contractual prose such as "the first time we reference
+# **Model:**".  The fix removes `\bfirst\b` from the right-side alternation, so
+# only the specific placement phrases (first line, first content, MUST open, …)
+# satisfy the check when the phrase precedes **Model:** on the same line.  Bare
+# "first" that precedes **Model:** is now correctly rejected as insufficient.
+# (Bare "first" that FOLLOWS **Model:** on the same line still satisfies the
+# left-side alternation — preserving the PR #799 rewording above.)
+noncontractual_first_before_model() {
+  mutate .claude/skills/issue-maker/SKILL.md \
+    's/MUST open with the `\*\*Model:\*\*` line from/the first time we reference `\*\*Model:\*\*` is from/'
+}
+
+expect "non-contractual 'first' before **Model:** does not satisfy placement (#802 fix)" 1 \
+  'issue-maker first-line \*\*Model:\*\* placement' \
+  noncontractual_first_before_model
 
 if (cd "$REPO_ROOT" && bash "$LINT" >/dev/null 2>&1); then
   echo "ok   — real repo conformance is intact"
