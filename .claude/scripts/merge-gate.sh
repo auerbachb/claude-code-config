@@ -715,14 +715,28 @@ case "$REVIEWER" in
       # Fail-closed: when LAST_COMMIT_TS is empty we cannot verify freshness,
       # so the check-run does not satisfy the supplemental gate.
       CODEANT_CHECK_OK=false
-      if [[ -n "$LATEST_CA_CHECK_OK_AT" && -n "$LAST_COMMIT_TS" \
-            && ! "$LATEST_CA_CHECK_OK_AT" < "$LAST_COMMIT_TS" ]]; then
-        CODEANT_CHECK_OK=true
+      CODEANT_CHECK_FRESHNESS_UNKNOWN=false
+      if [[ -n "$LATEST_CA_CHECK_OK_AT" ]]; then
+        if [[ -z "$LAST_COMMIT_TS" ]]; then
+          # Cannot verify whether the check-run predates the current commit.
+          CODEANT_CHECK_FRESHNESS_UNKNOWN=true
+        elif [[ ! "$LATEST_CA_CHECK_OK_AT" < "$LAST_COMMIT_TS" ]]; then
+          CODEANT_CHECK_OK=true
+        fi
+        # else: check-run completed before the HEAD commit — stale; CODEANT_CHECK_OK stays false
       fi
 
-      LATEST_CA_CLEAN_AT="$LATEST_CA_APPROVED_AT"
-      if [[ -n "$LATEST_CA_CHECK_OK_AT" && ( -z "$LATEST_CA_CLEAN_AT" || "$LATEST_CA_CHECK_OK_AT" > "$LATEST_CA_CLEAN_AT" ) ]]; then
-        LATEST_CA_CLEAN_AT="$LATEST_CA_CHECK_OK_AT"
+      # LATEST_CA_CLEAN_AT: most-recent FRESH clean signal — only signals that have
+      # passed the freshness guard (issue #836) qualify. Stale or unverifiable signals
+      # must not suppress a CHANGES_REQUESTED that postdates the last genuine clean pass.
+      LATEST_CA_CLEAN_AT=""
+      if [[ "$CA_APPROVAL_VALID" == true ]]; then
+        LATEST_CA_CLEAN_AT="$LATEST_CA_APPROVED_AT"
+      fi
+      if [[ "$CODEANT_CHECK_OK" == true ]]; then
+        if [[ -z "$LATEST_CA_CLEAN_AT" || "$LATEST_CA_CHECK_OK_AT" > "$LATEST_CA_CLEAN_AT" ]]; then
+          LATEST_CA_CLEAN_AT="$LATEST_CA_CHECK_OK_AT"
+        fi
       fi
 
       if [[ -n "$LATEST_CA_CHANGES_REQUESTED_AT" && ( -z "$LATEST_CA_CLEAN_AT" || "$LATEST_CA_CHANGES_REQUESTED_AT" > "$LATEST_CA_CLEAN_AT" ) ]]; then
@@ -735,9 +749,19 @@ case "$REVIEWER" in
           # Guard: CA_STALE_MISSING_EMITTED prevents a duplicate entry when the
           # primary review block already reported this condition above.
           MISSING+=("CodeAnt approval on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — trigger @codeant-ai review")
-        elif [[ "$CA_APPROVAL_FRESHNESS_UNKNOWN" != true && "$CA_APPROVAL_STALE" != true ]]; then
-          # Freshness-unknown case is already reported in the primary block above;
-          # only emit the generic "no review" message when neither applies.
+        elif [[ "$CA_APPROVAL_FRESHNESS_UNKNOWN" == true ]]; then
+          # Primary block already emitted "cannot verify approval freshness" above.
+          # No-op: avoids a misleading "no review" message in the approval-unknown path.
+          :
+        elif [[ "$CODEANT_CHECK_FRESHNESS_UNKNOWN" == true ]]; then
+          # A successful CodeAnt check-run exists but its freshness cannot be verified
+          # because LAST_COMMIT_TS is unavailable. Emit a distinct message so callers
+          # know a check-run IS present — the blocker is freshness, not absence of review.
+          MISSING+=("cannot verify CodeAnt check-run freshness — HEAD commit timestamp unavailable; retrying next cycle")
+        elif [[ "$CA_APPROVAL_STALE" != true ]]; then
+          # None of the freshness/stale conditions apply — emit the generic "no review"
+          # message. The CA_APPROVAL_STALE guard prevents emitting this alongside the
+          # stale message when CA_STALE_MISSING_EMITTED was already set by the primary block.
           MISSING+=("CodeAnt participated on HEAD ${HEAD_SHA:0:7} but no explicit APPROVED review and no successful CodeAnt check-run (have $TOTAL_CA_ON_HEAD CodeAnt review(s) on this SHA) — wait or comment @codeant-ai review")
         fi
       fi
