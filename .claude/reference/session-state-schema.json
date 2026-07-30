@@ -19,8 +19,10 @@
     },
     "pr_nested": {
       "last_cron_action": "object",
+      "_last_cron_action_inner_keys": "Inner fields read by polling-backoff-warn.sh (issue #794): type (string: create/update/delete), interval (string: e.g. 1m/5m/15m/paused), at (ISO-8601 UTC). Write via session-state.sh after every CronCreate/CronUpdate/CronDelete. The hook skips re-emitting a widen when type==update && interval==${WIDE_MIN}m; skips re-emitting stop when type==delete. Using other field names (e.g. action/to_minutes) causes the guard to miss and the hook to fire repeatedly.",
       "preflight_triggered": "object",
       "babysit": "object",
+      "_babysit_backoff_fields": "Cadence fields inside .babysit read by polling-backoff-warn.sh (issue #794): cadence_base_minutes (number, set at arm-time from --cadence, default 5) drives WIDE_MIN=max(15,3*base); cadence_effective_minutes (number) is the currently-active cadence updated at tier crossings. Both are written by /babysit-pr; the hook defaults cadence_base_minutes to 5 when absent.",
       "wrap_sweep": "object",
       "cr_explicit_triggers": "array",
       "digest_streak": "number",
@@ -79,7 +81,14 @@
           "last_cron_action": {
             "type": "update",
             "at": "2026-04-29T13:58:00Z",
-            "interval": "5m"
+            "interval": "15m"
+          },
+          "babysit": {
+            "active": true,
+            "cadence_base_minutes": 5,
+            "cadence_effective_minutes": 15,
+            "tick_count": 4,
+            "blocker_streak": 4
           }
         },
         "620": {

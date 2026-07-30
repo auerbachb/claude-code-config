@@ -74,10 +74,18 @@ blocker=$("$state_helper" --get "${pr_jq}.blocker // empty" 2>/dev/null || true)
 blocker_kind=$("$state_helper" --get "${pr_jq}.blocker_kind // empty" 2>/dev/null || true)
 last_cron_type=$("$state_helper" --get "${pr_jq}.last_cron_action.type // empty" 2>/dev/null || true)
 last_cron_interval=$("$state_helper" --get "${pr_jq}.last_cron_action.interval // empty" 2>/dev/null || true)
+base_min=$("$state_helper" --get "${pr_jq}.babysit.cadence_base_minutes // 5" 2>/dev/null || printf '5')
 
 if ! [[ "$streak" =~ ^[0-9]+$ ]]; then
   streak=0
 fi
+if ! [[ "$base_min" =~ ^[0-9]+$ ]]; then
+  base_min=5
+fi
+
+# Widened cadence: max(15m, 3 × base) — always strictly greater than the default 5m base.
+WIDE_MIN=$(( base_min * 3 ))
+(( WIDE_MIN < 15 )) && WIDE_MIN=15
 
 user_blocker=0
 if [[ "$blocker_kind" == "user_input" ]]; then
@@ -98,21 +106,12 @@ if (( user_blocker == 1 || streak >= 9 )); then
   exit 0
 fi
 
-if (( streak >= 6 )); then
-  [[ "$last_cron_type" == "delete" ]] && exit 0
-  if [[ "$last_cron_type" == "update" && "$last_cron_interval" == "15m" ]]; then
-    exit 0
-  fi
-  emit_context "STOP - PR #${pr_number} has ${streak} identical polling ticks. Call CronUpdate to widen the interval to 15m before exiting this turn, update prs.${pr_number}.last_cron_action, and suppress duplicate heartbeat noise."
-  exit 0
-fi
-
 if (( streak >= 3 )); then
   [[ "$last_cron_type" == "delete" ]] && exit 0
-  if [[ "$last_cron_type" == "update" && ( "$last_cron_interval" == "5m" || "$last_cron_interval" == "15m" ) ]]; then
+  if [[ "$last_cron_type" == "update" && "$last_cron_interval" == "${WIDE_MIN}m" ]]; then
     exit 0
   fi
-  emit_context "STOP - PR #${pr_number} has ${streak} identical polling ticks. Call CronUpdate to widen the interval to 5m before exiting this turn, update prs.${pr_number}.last_cron_action, and suppress duplicate heartbeat noise."
+  emit_context "STOP - PR #${pr_number} has ${streak} identical polling ticks. Call CronUpdate to widen the interval to ${WIDE_MIN}m before exiting this turn, update prs.${pr_number}.last_cron_action, and suppress duplicate heartbeat noise."
 fi
 
 exit 0

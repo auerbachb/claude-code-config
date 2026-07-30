@@ -48,7 +48,9 @@ The common thread: **between-turn scheduling has no in-turn observer.** Once the
 
 **Root cause.** The scheduler had no stable-state digest or backoff gate, so "nothing changed" was treated like actionable progress forever. In PR #359 on 2026-04-25, cron `e7230e2f` kept a 1-minute cadence while orphan one-shot `4e56074f` also remained alive; ticks #45-#93 repeated the same state for roughly 50 minutes until the user manually stopped it.
 
-**Fix.** Apply `scheduling-reliability.md` "Stable-State Backoff & Auto-Pause": compute the digest, increment `digest_streak`, widen to 5m at streak 3, widen to 15m at streak 6, and pause at streak 9. If `blocker_kind == "user_input"` or the blocker text says the agent is awaiting the user's direction, pause after the first visible message. When deleting or promoting the cron, also cancel sibling `ScheduleWakeup` jobs.
+**Fix.** Apply `scheduling-reliability.md` "Stable-State Backoff": compute the digest, increment `digest_streak`, widen to `max(15m, 3×base)` at streak 3 (for the default 5m base this is 15m — always strictly greater than the base), and pause at streak 9. If `blocker_kind == "user_input"` or the blocker text says the agent is awaiting the user's direction, pause after the first visible message. When deleting or promoting the cron, also cancel sibling `ScheduleWakeup` jobs.
+
+> **Authoritative source decision (issue #794):** the base-relative formula `max(15m, 3×base)` from `babysit-pr/SKILL.md` T5 was made authoritative over the earlier absolute `5m`/`15m` ladder in `scheduling-reliability.md`, because absolute minutes silently no-op at the documented 5m default (widening to 5m from 5m is no change). The base-relative form is correct at every `--cadence` value and was validated live on PR #775.
 
 ## Pattern 6 — Background Work With No Armed Observer
 

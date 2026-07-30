@@ -42,7 +42,7 @@ Before any polling turn ends (`/loop`, `CronCreate`, legacy one-shot, or a turn 
 
 ## Stable-State Backoff
 
-Each tick hash `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)` into `prs.{N}.digest_streak` (free-text `blocker` excluded). Widen at streak ≥3→5m, ≥6→15m; `CronDelete` at ≥9 or `blocker_kind == "user_input"`. Resume at base cadence after user message or changed digest. `polling-backoff-warn.sh` enforces this. Backoff cannot reach the ceiling watch: it widens and deletes cron jobs; the watch is a `Monitor`.
+Each tick hash `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)` into `prs.{N}.digest_streak` (free-text `blocker` excluded). Widen at streak ≥3 to `max(15m, 3×base)`; `CronDelete` at ≥9 or `blocker_kind == "user_input"`. Resume at base cadence after user message or changed digest. `polling-backoff-warn.sh` enforces this (reads `babysit.cadence_base_minutes`, defaults to 5). Backoff cannot reach the ceiling watch: it widens and deletes cron jobs; the watch is a `Monitor`.
 
 ## Failure Recovery
 
