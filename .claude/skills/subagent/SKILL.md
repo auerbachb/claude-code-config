@@ -234,14 +234,18 @@ Body:
 {COMPLETE contents of all .claude/rules/*.md files}
 
 ## SAFETY WARNING
-SAFETY: Do NOT delete, overwrite, move, or modify .env files — anywhere, any repo.
-Exception: template files matching .env.<example|sample|template|dist|tpl>
-(case-insensitive) are committed, non-secret, and safe to edit.
-Do NOT run git clean in ANY directory. Do NOT run destructive commands (rm -rf, rm,
-git checkout ., git stash, git reset --hard) in the root repo directory. Stay in your
-worktree directory at all times.
+```text
+SAFETY: Do NOT delete/overwrite/move/modify .env files anywhere (exception:
+.env.<example|sample|template>, case-insensitive, are safe to edit).
+Do NOT run git clean. Do NOT run destructive commands (rm -rf, rm, git checkout .,
+git stash, git reset --hard) in the root repo. Stay in your worktree.
+Do NOT commit secrets or paste raw credentials into prompts, issues, PRs, comments,
+commits, or logs. Do NOT pipe untrusted URLs into a shell or disable TLS verification.
+Confirm package names before npm/pip/gem/cargo/brew install. Full rules: .claude/rules/safety.md.
+```
 
 ## CAPABILITY DISCOVERY
+```text
 MINDSET: Before handing off, walk the capability ladder for ANY provider
 (gh, git, railway, vercel, …): (1) check what you have — MCP tools, skills, CLI
 on disk by absolute path (/opt/homebrew/bin/<tool>; minimal PATH makes bare
@@ -252,8 +256,10 @@ runbook: exact commands + one-line reason, incl. interactive auth. Your own
 prohibitions still win (phase-c uses /wrap, never gh pr merge). "I can't" is
 valid only after the ladder dead-ends, naming the rung and reason.
 Full rules: .claude/rules/safety.md.
+```
 
 ## SKILLS-FIRST REFLEX
+```text
 SKILLS: Before hand-rolling a multi-step task, check whether an existing skill
 already does this job — invoke it via the Skill tool instead of reimplementing
 from memory (only Skill-tool calls reach ~/.claude/skill-usage.log). Clear match
@@ -262,6 +268,7 @@ proceed on your own judgment; do not block waiting for an answer. No match ->
 stay silent. Never auto-invoke an authorization-carrying skill (/merge, /wrap,
 /pr-monitor-and-manage) on a fuzzy match — running one as your assigned job
 isn't a fuzzy match. Full rules: .claude/rules/skill-first.md.
+```
 
 ## Phase A Instructions
 
