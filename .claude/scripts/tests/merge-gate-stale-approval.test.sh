@@ -214,6 +214,26 @@ check_eq "no"    "$(missing_has "$RETARGET_MSG")" \
 check_eq "0"     "$RC"      "(g) bugbot fresh: exit 0"
 
 # -------------------------------------------------------------------------
+# (h) CR has a fresh APPROVED + CA has approval with empty submitted_at.
+#     PRIMARY_REVIEW_MET=true (CR satisfies it), so the primary freshness-
+#     unknown block is skipped. The supplemental CodeAnt gate must still
+#     block because CA_APPROVAL_FRESHNESS_UNKNOWN=true and we cannot pass
+#     without a verified CodeAnt clean signal.
+# -------------------------------------------------------------------------
+echo "--- (h) CR fresh + CA approval missing submitted_at (supplemental freshness) ---"
+CA_FRESHNESS_MSG="cannot verify CodeAnt approval freshness"
+BOTH_REVIEWS=$(jq -cn --arg sha "$HEAD_SHA" --arg cr_ts "$FRESH_TS" \
+  '[{user:{login:"coderabbitai[bot]",type:"Bot"},
+     commit_id:$sha, state:"APPROVED", submitted_at:$cr_ts},
+    {user:{login:"codeant-ai[bot]",type:"Bot"},
+     commit_id:$sha, state:"APPROVED", submitted_at:""}]')
+run_gate cr "$COMMIT_TS" "$BOTH_REVIEWS"
+check_eq "false" "$(met)"   "(h) cr fresh + ca no-ts: met == false"
+check_eq "yes"   "$(missing_has "$CA_FRESHNESS_MSG")" \
+                             "(h) cr fresh + ca no-ts: missing has CA freshness reason"
+check_eq "1"     "$RC"      "(h) cr fresh + ca no-ts: exit 1"
+
+# -------------------------------------------------------------------------
 # Summary
 # -------------------------------------------------------------------------
 echo "----------------------------------------"

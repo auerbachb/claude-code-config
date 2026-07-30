@@ -769,9 +769,14 @@ case "$REVIEWER" in
           # primary review block already reported this condition above.
           MISSING+=("CodeAnt approval on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — trigger @codeant-ai review")
         elif [[ "$CA_APPROVAL_FRESHNESS_UNKNOWN" == true ]]; then
-          # Primary block already emitted "cannot verify approval freshness" above.
-          # No-op: avoids a misleading "no review" message in the approval-unknown path.
-          :
+          if [[ "$PRIMARY_REVIEW_MET" == true ]]; then
+            # CR already satisfies the primary gate, so the primary block was skipped
+            # (it only runs when PRIMARY_REVIEW_MET=false) and did NOT emit the
+            # freshness-unknown message. The supplemental gate still requires a
+            # verified CodeAnt clean signal when CodeAnt participated — emit here.
+            MISSING+=("cannot verify CodeAnt approval freshness — HEAD commit timestamp unavailable; retrying next cycle")
+          fi
+          # else: PRIMARY_REVIEW_MET=false — primary block already emitted the message.
         elif [[ "$CODEANT_CHECK_FRESHNESS_UNKNOWN" == true ]]; then
           # A successful CodeAnt check-run exists but its freshness cannot be verified
           # because LAST_COMMIT_TS is unavailable. Emit a distinct message so callers
