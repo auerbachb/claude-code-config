@@ -610,7 +610,11 @@ case "$REVIEWER" in
     if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && "$CR_RETRACTED" == false ]]; then
       if [[ -z "$LAST_COMMIT_TS" ]]; then
         CR_APPROVAL_FRESHNESS_UNKNOWN=true
-      elif [[ -n "$LATEST_CR_APPROVED_AT" && "$LATEST_CR_APPROVED_AT" < "$LAST_COMMIT_TS" ]]; then
+      elif [[ -z "$LATEST_CR_APPROVED_AT" ]]; then
+        # submitted_at is missing — cannot verify freshness without a timestamp
+        # to compare against; treat as unknown (fail-closed, issue #836).
+        CR_APPROVAL_FRESHNESS_UNKNOWN=true
+      elif [[ "$LATEST_CR_APPROVED_AT" < "$LAST_COMMIT_TS" ]]; then
         CR_APPROVAL_STALE=true
       fi
     fi
@@ -619,7 +623,10 @@ case "$REVIEWER" in
     if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && "$CA_RETRACTED" == false ]]; then
       if [[ -z "$LAST_COMMIT_TS" ]]; then
         CA_APPROVAL_FRESHNESS_UNKNOWN=true
-      elif [[ -n "$LATEST_CA_APPROVED_AT" && "$LATEST_CA_APPROVED_AT" < "$LAST_COMMIT_TS" ]]; then
+      elif [[ -z "$LATEST_CA_APPROVED_AT" ]]; then
+        # submitted_at is missing — cannot verify freshness (fail-closed, issue #836).
+        CA_APPROVAL_FRESHNESS_UNKNOWN=true
+      elif [[ "$LATEST_CA_APPROVED_AT" < "$LAST_COMMIT_TS" ]]; then
         CA_APPROVAL_STALE=true
       fi
     fi
@@ -739,7 +746,19 @@ case "$REVIEWER" in
         fi
       fi
 
-      if [[ -n "$LATEST_CA_CHANGES_REQUESTED_AT" && ( -z "$LATEST_CA_CLEAN_AT" || "$LATEST_CA_CHANGES_REQUESTED_AT" > "$LATEST_CA_CLEAN_AT" ) ]]; then
+      # Stale CHANGES_REQUESTED guard (issue #836): GitHub retargets commit_id on
+      # force-push, so a pre-push CHANGES_REQUESTED can have commit_id==HEAD while
+      # its submitted_at predates the current commit. dismiss-stale-bot-changes.sh
+      # only handles wrong commit_id, not retargeted timestamps; this freshness
+      # check is needed. If LAST_COMMIT_TS is unavailable, treat as blocking (fail-closed).
+      CA_CHANGES_BLOCKING=false
+      if [[ -n "$LATEST_CA_CHANGES_REQUESTED_AT" ]]; then
+        if [[ -z "$LAST_COMMIT_TS" || ! "$LATEST_CA_CHANGES_REQUESTED_AT" < "$LAST_COMMIT_TS" ]]; then
+          CA_CHANGES_BLOCKING=true
+        fi
+      fi
+
+      if [[ "$CA_CHANGES_BLOCKING" == true && ( -z "$LATEST_CA_CLEAN_AT" || "$LATEST_CA_CHANGES_REQUESTED_AT" > "$LATEST_CA_CLEAN_AT" ) ]]; then
         MISSING+=("CodeAnt CHANGES_REQUESTED on HEAD ${HEAD_SHA:0:7} is newer than the latest CodeAnt clean signal — address findings or wait for APPROVED / successful CodeAnt check-run")
       elif [[ "$CA_APPROVAL_VALID" != true && "$CODEANT_CHECK_OK" != true ]]; then
         if [[ "$CA_APPROVAL_STALE" == true && "$CA_STALE_MISSING_EMITTED" != true ]]; then
@@ -790,7 +809,11 @@ case "$REVIEWER" in
         # so the review does not satisfy the gate (callers poll every ~60 s).
         if [[ -z "$LAST_COMMIT_TS" ]]; then
           MISSING+=("cannot verify BugBot review freshness — HEAD commit timestamp unavailable; retrying next cycle")
-        elif [[ -n "$BB_SUBMITTED_AT" && "$BB_SUBMITTED_AT" < "$LAST_COMMIT_TS" ]]; then
+        elif [[ -z "$BB_SUBMITTED_AT" ]]; then
+          # submitted_at is missing — cannot verify freshness without a timestamp
+          # to compare against; treat as unknown (fail-closed, issue #836).
+          MISSING+=("cannot verify BugBot review freshness — submitted_at unavailable; retrying next cycle")
+        elif [[ "$BB_SUBMITTED_AT" < "$LAST_COMMIT_TS" ]]; then
           MISSING+=("BugBot review on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — re-review required; post @cursor review")
         else
           BB_STATE=$(echo "$LATEST_BB" | jq -r '.state // ""')
