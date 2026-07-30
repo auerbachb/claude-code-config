@@ -591,16 +591,26 @@ case "$REVIEWER" in
       | length')
 
     # Retraction: later CHANGES_REQUESTED on same SHA invalidates APPROVED (ISO timestamps).
+    # Freshness guard (issue #836): GitHub retargets commit_id on force-push, so a
+    # pre-push CHANGES_REQUESTED can appear on HEAD while predating the commit.
+    # Only treat as retraction if the CHANGES_REQUESTED is itself fresh
+    # (submitted_at >= LAST_COMMIT_TS). When LAST_COMMIT_TS is unknown, skip
+    # retraction — the approval's own freshness check will block via
+    # CR/CA_APPROVAL_FRESHNESS_UNKNOWN.
     CR_RETRACTED=false
     if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && -n "$LATEST_CR_CHANGES_REQUESTED_AT" && -n "$LATEST_CR_APPROVED_AT" ]]; then
       if [[ "$(norm_ts "$LATEST_CR_CHANGES_REQUESTED_AT")" > "$(norm_ts "$LATEST_CR_APPROVED_AT")" ]]; then
-        CR_RETRACTED=true
+        if [[ -n "$LAST_COMMIT_TS" && ! "$(norm_ts "$LATEST_CR_CHANGES_REQUESTED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
+          CR_RETRACTED=true
+        fi
       fi
     fi
     CA_RETRACTED=false
     if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && -n "$LATEST_CA_CHANGES_REQUESTED_AT" && -n "$LATEST_CA_APPROVED_AT" ]]; then
       if [[ "$(norm_ts "$LATEST_CA_CHANGES_REQUESTED_AT")" > "$(norm_ts "$LATEST_CA_APPROVED_AT")" ]]; then
-        CA_RETRACTED=true
+        if [[ -n "$LAST_COMMIT_TS" && ! "$(norm_ts "$LATEST_CA_CHANGES_REQUESTED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
+          CA_RETRACTED=true
+        fi
       fi
     fi
 

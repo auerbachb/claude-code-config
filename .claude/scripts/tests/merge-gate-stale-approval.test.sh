@@ -266,6 +266,41 @@ check_eq "yes"   "$(missing_has "$STALE_CHECK_MSG")"  "(i) stale ca check: missi
 check_eq "1"     "$RC"                                "(i) stale ca check: exit 1"
 
 # -------------------------------------------------------------------------
+# Test (j): stale CHANGES_REQUESTED should not retract stale APPROVED
+# (issue #836, BugBot round 6). When both APPROVED and CHANGES_REQUESTED
+# predate the HEAD commit (force-push retargeting), the retraction guard
+# must skip CR_RETRACTED and let the stale-approval guard report the real
+# blocker. Without the freshness guard the old code would set CR_RETRACTED=true
+# and emit the retraction message instead of the stale message.
+# -------------------------------------------------------------------------
+echo "--- (j) stale CHANGES_REQUESTED should not retract stale APPROVED ---"
+PRE_COMMIT_CHANGES_TS="2026-07-30T19:25:00Z"   # between STALE_TS and COMMIT_TS
+J_REVIEWS=$(jq -cn \
+  --arg sha "$HEAD_SHA" \
+  --arg approved_ts "$STALE_TS" \
+  --arg changes_ts "$PRE_COMMIT_CHANGES_TS" \
+  '[
+    {id:1,user:{login:"coderabbitai[bot]"},state:"APPROVED",
+     commit_id:$sha,submitted_at:$approved_ts},
+    {id:2,user:{login:"coderabbitai[bot]"},state:"CHANGES_REQUESTED",
+     commit_id:$sha,submitted_at:$changes_ts}
+  ]')
+STALE_MSG="predates the HEAD commit (force-push retargeting)"
+RETRACT_MSG="retracted by later CHANGES_REQUESTED"
+OUT=$(PATH="$BIN:$PATH" \
+      FAKE_COMMIT_TS="$COMMIT_TS" \
+      FAKE_COMMIT_TS_FAIL="" \
+      FAKE_REVIEWS="$J_REVIEWS" \
+      FAKE_PR_COMMENTS="[]" \
+      FAKE_ISSUE_COMMENTS="[]" \
+      "$SUT" 1 --reviewer cr 2>/dev/null)
+RC=$?
+check_eq "false" "$(met)"                             "(j) stale changes+approved: met == false"
+check_eq "yes"   "$(missing_has "$STALE_MSG")"        "(j) stale changes+approved: stale msg present"
+check_eq "no"    "$(missing_has "$RETRACT_MSG")"      "(j) stale changes+approved: no retract msg"
+check_eq "1"     "$RC"                                "(j) stale changes+approved: exit 1"
+
+# -------------------------------------------------------------------------
 # Summary
 # -------------------------------------------------------------------------
 echo "----------------------------------------"
