@@ -161,15 +161,15 @@ Take the first `SLOTS` issues from the independent set. Anything past that is ex
 
 **7.1 — Offer the (remaining) wave as chips.** Follow `.claude/reference/chip-launching.md` **verbatim** — availability detection, `spawn_task` shape, model-guard preamble, short-summary format, per-issue fallback on spawn failure. Nothing in this section overrides it.
 
-**Chip model contract (non-negotiable):** For each chip, the `prompt` MUST open with `**Model:** {MODEL} — {REASON}`, immediately followed by the model-guard preamble (no blank line between). The visible short summary MUST repeat the same `**Model:**` line. When the parent thread is on Fable 5 and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
+**Chip model + effort contract (non-negotiable):** For each chip, the `prompt` MUST open with `**Model:** {MODEL} — {REASON}`, then `**Effort:** {LEVEL} — {REASON}`, then the model-guard preamble — no blank line between the three. The visible short summary MUST repeat both lines. `{MODEL}` is a bare family name and `{LEVEL}` a picker label (`chip-launching.md` "Model and effort lines"). When the parent thread is on Fable and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
 
 For each issue still offered as a chip:
 
-- **`prompt`** — the full self-contained thread prompt from `/pm` Step 3.1's template (`**Model:**` line first, model-guard preamble immediately after with no blank line between, then the task / issue body / codebase context / workflow / constraints sections). Reuse that template as written; `/wave` does not define a prompt format of its own. That includes its **Constraints** block and, within it, the merge-authority bullet — the shared contract from `chip-launching.md` "Merge-authority line", which asserts that the launched thread merges itself via full `/wrap` once the merge gate passes and every AC checkbox verifies. Carry it **verbatim**; never fork a `/wave`-local copy and never soften it into an approval request.
+- **`prompt`** — the full self-contained thread prompt from `/pm` Step 3.1's template (`**Model:**` line first, `**Effort:**` line next, model-guard preamble immediately after with no blank line between the three, then the task / issue body / codebase context / workflow / constraints sections). Reuse that template as written; `/wave` does not define a prompt format of its own. That includes its **Constraints** block and, within it, the merge-authority bullet — the shared contract from `chip-launching.md` "Merge-authority line", which asserts that the launched thread merges itself via full `/wrap` once the merge gate passes and every AC checkbox verifies. Carry it **verbatim**; never fork a `/wave`-local copy and never soften it into an approval request.
 - **`title`** — ≤60 chars, starts with a verb, includes the issue number.
 - **`tldr`** — 1–2 plain sentences, no paths, no jargon.
 - **`cwd`** — repo root.
-- **Model line** (`**Model:** {MODEL} — {REASON}`) — take the recommendation from `/prompt`'s tier classification if it ran in this thread; otherwise infer it from the issue's signals with the same Heavy/Standard/Light mapping (`/prompt` Steps 4–5). The line appears **both** inside the chip prompt and in the visible summary, because chips cannot preset the model picker.
+- **Model and effort lines** (`**Model:** {MODEL} — {REASON}` then `**Effort:** {LEVEL} — {REASON}`) — take both recommendations from `/prompt`'s tier classification if it ran in this thread; otherwise infer them from the issue's signals with the same Heavy/Standard/Light mapping (`/prompt` Steps 4–5). Both lines appear **both** inside the chip prompt and in the visible summary, because chips preset neither picker control.
 
 Print only the short summary per issue. A failed `spawn_task` falls back to a printed block **for that issue alone**; the rest of the wave keeps its chips. Every issue in the wave ends with exactly one of: a chip, or a printed block — never both, never neither.
 
@@ -191,11 +191,13 @@ An unrecorded chip cannot be dismissed later — recording is what makes withdra
 ## Wave — {K} issue(s) ready to run in parallel
 
 - **#42 — {Title}** — chip offered
-  **Model:** Opus 5 — {reason}
+  **Model:** Opus — {reason}
+  **Effort:** Extra — {reason}
   {one-line rationale, carried from /pm's ranking}
 
 - **#55 — {Title}** — chip offered
-  **Model:** Sonnet 5 — {reason}
+  **Model:** Sonnet — {reason}
+  **Effort:** Low — {reason}
   {one-line rationale}
 
 Click a chip to start that thread. To run these inline in this thread instead, say `/subagent #42 #55`.

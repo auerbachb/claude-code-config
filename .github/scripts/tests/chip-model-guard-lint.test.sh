@@ -39,7 +39,11 @@ expect() {
   case_num=$((case_num + 1))
   local dir="${TMP_ROOT}/case${case_num}"
   make_fixture "$dir"
-  ( cd "$dir" && "$@" )
+  if ! ( cd "$dir" && "$@" ); then
+    echo "FAIL — ${name}: fixture mutation failed (see error above)"
+    failures=$((failures + 1))
+    return
+  fi
 
   local out got
   out=$(cd "$dir" && bash "$LINT" 2>&1) && got=0 || got=$?
@@ -63,35 +67,128 @@ expect() {
 
 noop() { :; }
 
+# A sed mutation whose pattern silently stops matching — a reworded heading, a
+# renamed section — leaves the fixture pristine, so the lint passes for the
+# ordinary reason and the case "succeeds" without testing anything. #791 hit
+# exactly that while authoring these fixtures. `mutate` makes a no-op loud.
+mutate() {  # mutate <file> <sed-expression>
+  local file="$1" expr="$2" before after
+  before=$(cksum < "$file")
+  sed -i.bak "$expr" "$file"
+  after=$(cksum < "$file")
+  if [[ "$before" == "$after" ]]; then
+    echo "       FIXTURE ERROR — no-op mutation on ${file}: ${expr}" >&2
+    return 90
+  fi
+}
+
+# Appends cannot no-op, so they need no such guard.
+append_line() { printf '\n%s\n' "$2" >> "$1"; }
+
 expect "well-formed repo passes" 0 'chip-model-guard-lint: OK' noop
 
 expect "missing MODEL GUARD in chip-launching fails" 1 \
   'Missing required MODEL GUARD preamble marker' \
-  sed -i.bak '/MODEL GUARD:/d' .claude/reference/chip-launching.md
+  mutate .claude/reference/chip-launching.md '/MODEL GUARD:/d'
 
 expect "missing /pm emitter in chip-launching fails" 1 \
   'chip-launching /pm emitter reference' \
-  sed -i.bak '/\/pm/d' .claude/reference/chip-launching.md
+  mutate .claude/reference/chip-launching.md '/\/pm/d'
 
 expect "missing Fable guidance in chip-launching fails" 1 \
   'Fable pre-click warning guidance' \
-  sed -i.bak '/Fable 5 parent/d' .claude/reference/chip-launching.md
+  mutate .claude/reference/chip-launching.md '/Fable parent/d'
 
 expect "missing model-guard in pm skill fails" 1 \
   'pm model-guard requirement' \
-  sed -i.bak '/model-guard preamble/d' .claude/skills/pm/SKILL.md
+  mutate .claude/skills/pm/SKILL.md '/model-guard preamble/d'
 
 expect "missing first-line placement in wave skill fails" 1 \
   'wave first-line \*\*Model:\*\* placement' \
-  sed -i.bak '/Chip model contract/d' .claude/skills/wave/SKILL.md
+  mutate .claude/skills/wave/SKILL.md '/Chip model + effort contract/d'
 
 expect "missing Fable warning in start-issue skill fails" 1 \
   'start-issue Fable pre-click warning requirement' \
-  sed -i.bak '/Fable 5/d' .claude/skills/start-issue/SKILL.md
+  mutate .claude/skills/start-issue/SKILL.md '/Fable/d'
 
 expect "missing chip-spawn rule index fails" 1 \
   'CLAUDE.md chip-spawn rule index entry' \
-  sed -i.bak '/chip-spawn\.md/d' CLAUDE.md
+  mutate CLAUDE.md '/chip-spawn\.md/d'
+
+# --- #791: the effort line and the versionless rule ------------------------
+
+# Functions rather than inline commands: `expect` runs "$@" in a subshell of
+# this shell, so shell functions resolve there just like `noop` above.
+drop_effort_from_prompt() { mutate .claude/skills/prompt/SKILL.md '/\*\*Effort:\*\*/d'; }
+drop_effort_from_contract() { mutate .claude/reference/chip-launching.md '/\*\*Effort:\*\*/d'; }
+drop_effort_from_rule() { mutate .claude/rules/chip-spawn.md '/\*\*Effort:\*\*/d'; }
+reintroduce_versioned_name() { append_line .claude/rules/chip-spawn.md 'Historical aside: Opus 5 was once the picker default.'; }
+reintroduce_versioned_name_in_skill() { append_line .claude/skills/wave/SKILL.md 'Step up to Sonnet 4.6 for cheap work.'; }
+drop_model_effort_section() { mutate .claude/reference/chip-launching.md '/Model and effort lines/d'; }
+drop_ultra_code_guidance() { mutate .claude/reference/chip-launching.md '/Ultra code/d'; }
+# A bare "Fable" mention must not satisfy the pre-click-warning check: the
+# rename from "Fable 5" to "Fable" would otherwise have weakened it into a
+# match on any passing mention of the model. The replacement text deliberately
+# still says "Fable" — otherwise a loose /Fable/ check would fail here too and
+# the case would pass whether or not the check is strict, proving nothing.
+weaken_fable_warning() { mutate .claude/skills/wave/SKILL.md 's/parent thread is on Fable/chip may recommend Fable/'; }
+
+expect "missing Effort line in prompt skill fails" 1 \
+  'prompt \*\*Effort:\*\* requirement' \
+  drop_effort_from_prompt
+
+expect "missing Effort line in chip-launching fails" 1 \
+  'Missing required Effort line contract' \
+  drop_effort_from_contract
+
+expect "missing Effort line in chip-spawn rule fails" 1 \
+  'chip-spawn.md Effort line rule' \
+  drop_effort_from_rule
+
+expect "reintroduced versioned model name in a rule file fails" 1 \
+  'Versioned model name' \
+  reintroduce_versioned_name
+
+expect "reintroduced versioned model name in a skill file fails" 1 \
+  'Versioned model name' \
+  reintroduce_versioned_name_in_skill
+
+expect "missing model+effort placement section in chip-launching fails" 1 \
+  'model\+effort placement section' \
+  drop_model_effort_section
+
+expect "missing Ultra-code guidance in chip-launching fails" 1 \
+  'Ultra-code-is-not-a-level guidance' \
+  drop_ultra_code_guidance
+
+expect "bare Fable mention does not satisfy the pre-click warning check" 1 \
+  'wave Fable pre-click warning requirement' \
+  weaken_fable_warning
+
+# Tool-consumed model IDs must NOT trip the versioned-name scan: they are
+# lowercase and hyphenated, so "Family<space>digit" cannot match them. Without
+# this case, tightening the regex could silently start failing every explicit
+# `claude-opus-5` in the repo.
+add_explicit_model_ids() { append_line .claude/rules/chip-spawn.md 'Config value the CLI parses: `claude-opus-5`, `claude-haiku-4-5-20251001`.'; }
+
+expect "explicit tool-consumed model IDs still pass" 0 \
+  'chip-model-guard-lint: OK' \
+  add_explicit_model_ids
+
+# Dated .claude/reference/ audit records are point-in-time history and keep
+# their versioned model names by design (.claude/reference/README.md, "Audits
+# and research"). The scan names its two living-contract files explicitly
+# rather than scanning the directory, so an audit file must not trip it —
+# this case is what stops a future "just scan .claude/reference" from
+# quietly rewriting history to make the lint pass.
+add_dated_audit_record() {
+  append_line .claude/reference/harness-model-audit-2026-06.md \
+    'As of this audit the picker default was Opus 5 and Haiku 4.5 was the cheap tier.'
+}
+
+expect "dated reference audit records are exempt from the versioned-name scan" 0 \
+  'chip-model-guard-lint: OK' \
+  add_dated_audit_record
 
 # --- sixth emitter + resolver class (issue #770) -----------------------------
 
@@ -174,12 +271,25 @@ expect "bare alias in ordinary prose still passes" 0 \
 
 # A literal emitter must NOT be subject to the inverted rule — naming the model
 # is the whole point there. This guards against the classes being swapped.
+# The literal is a bare family name: since #791 a *versioned* one fails
+# everywhere, so this case would otherwise pass for the wrong reason and stop
+# testing the class split at all (the next case pins that half).
 plant_literal_in_pm() {
-  printf '\nFable 5 remains the top tier for this pass.\n' >> .claude/skills/pm/SKILL.md
+  printf '\nFable remains the top tier for this pass.\n' >> .claude/skills/pm/SKILL.md
 }
 expect "model literal in a literal emitter still passes" 0 \
   'chip-model-guard-lint: OK' \
   plant_literal_in_pm
+
+# ...but a versioned literal fails even in a literal emitter (#791). Together
+# with the case above this pins both halves: family names are fine in a literal
+# emitter, version numbers are fine nowhere.
+plant_versioned_literal_in_pm() {
+  printf '\nFable 5 remains the top tier for this pass.\n' >> .claude/skills/pm/SKILL.md
+}
+expect "versioned literal fails even in a literal emitter" 1 \
+  'Versioned model name' \
+  plant_versioned_literal_in_pm
 
 if (cd "$REPO_ROOT" && bash "$LINT" >/dev/null 2>&1); then
   echo "ok   — real repo conformance is intact"

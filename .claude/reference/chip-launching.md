@@ -51,11 +51,31 @@ Chip mode is active **only** when the `mcp__ccd_session__spawn_task` tool is pre
 | `tldr` | 1–2 plain-English sentences: what the spawned session will do and why. No file paths, no jargon |
 | `cwd` | Repo root |
 
-**Chips carry no model or effort preset.** The tool has no such parameter and cannot drive the picker. Therefore the recommended model **MUST** appear as a `**Model:** {MODEL} — {REASON}` line inside the `prompt` text itself, so the spawned session sees the recommendation, **and** in the visible short summary, so the user can set the picker before clicking. The `**Model:**` line is immediately followed by the model-guard preamble below — the two travel together as a unit.
+**Chips carry no model or effort preset.** The tool has no such parameter and cannot drive the picker. Therefore the recommended model **MUST** appear as a `**Model:** {MODEL} — {REASON}` line inside the `prompt` text itself, so the spawned session sees the recommendation, **and** in the visible short summary, so the user can set the picker before clicking.
+
+## Model and effort lines
+
+The picker the user sets before clicking has **two** controls, so a recommendation that names only one of them is half a recommendation. Both lines are part of the baseline contract, in this fixed order, with **no blank lines anywhere in the unit**:
+
+```text
+**Model:** {MODEL} — {REASON}
+**Effort:** {LEVEL} — {REASON}
+{MODEL GUARD preamble, verbatim}
+```
+
+The `**Model:**` line is the **first line** of the `prompt` payload; the `**Effort:**` line immediately follows it; the model-guard preamble immediately follows that. The three travel together as a unit — an emitter copies the shape, it does not re-derive it.
+
+**`{MODEL}` is a bare family name** — `Opus`, `Sonnet`, `Haiku`, `Fable` — never a version number. A bare family name resolves to the newest non-legacy model of that family, so it does not go stale; see `.claude/agents/README.md` "Model naming" for the rule and its scope.
+
+**`{LEVEL}` is one of the picker's own labels** — **Low**, **Medium**, **High**, **Extra**, **Max** — written exactly as the picker writes them. A recommendation the user cannot map onto the control in front of them is a recommendation they ignore, so a bare API token (`xhigh`, `ultracode`) is never the value of this line. Append the API token parenthetically — `Extra` (`xhigh`) — only where something downstream consumes the token, e.g. a Workflow script's `agent()` call; `/prompt` is the one place the full label↔token mapping is taught.
+
+**Ultra code is not a step on this ladder.** It is a session-level orchestration mode, opted into for the whole session, not a per-turn effort setting (the per-call effort enum is `low | medium | high | xhigh | max`). Name it only as a step-up note alongside a real `{LEVEL}` — never as the `{LEVEL}` value itself.
+
+**The guard covers the model line only.** Effort is a pre-click recommendation, not a guarded self-report — rationale in `chip-model-guard-decision.md`.
 
 ## Model-guard preamble
 
-The recommended model is worthless if nothing checks it at launch time. Every `prompt` payload — chip or fallback — MUST include this preamble immediately after the `**Model:** {MODEL} — {REASON}` line (no blank line in between, matching the existing fence-adjacent placement of the `**Model:**` line itself). Reproduce it **verbatim** — do not reword it per skill, the same way `safety.md`'s `SAFETY:`/`MINDSET:` blocks are copied into subagent prompts unchanged:
+The recommended model is worthless if nothing checks it at launch time. Every `prompt` payload — chip or fallback — MUST include this preamble immediately after the `**Effort:**` line that follows the `**Model:**` line (no blank line between the three, matching the fence-adjacent placement of the `**Model:**` line itself). Reproduce it **verbatim** — do not reword it per skill, the same way `safety.md`'s `SAFETY:`/`MINDSET:` blocks are copied into subagent prompts unchanged:
 
 ```text
 MODEL GUARD: Your very first action — before any repo reads, file edits, or
@@ -72,7 +92,7 @@ This is a best-effort self-report: no runtime API exists to introspect the
 active model, so the check relies on the model naming itself accurately.
 ```
 
-**Placement rule:** for every emitter, the `**Model:**` line is the first line of the `prompt` payload and this preamble is the content that immediately follows it — see each skill's Step for how its own template maps onto this shape.
+**Placement rule:** for every emitter, the `**Model:**` line is the first line of the `prompt` payload, the `**Effort:**` line is next, and this preamble is the content that immediately follows them — see each skill's Step for how its own template maps onto this shape.
 
 ### Literal vs resolved model names (emitter classes)
 
@@ -87,7 +107,9 @@ This makes two emitter classes, both enforced by `chip-model-guard-lint.sh`:
 | **Literal** | `/pm`, `/prompt`, `/start-issue`, `/issue-maker`, `/wave` | Named in the skill body | Must contain the top-tier literal (the pre-click warning) |
 | **Resolver** | `/harness-audit` | Resolved via `model-fleet.sh` | Must reference the resolver and the pre-click warning, and must **not** contain any model literal |
 
-The resolver check is strictly stronger, not a carve-out: a literal appearing in a resolver emitter is a lint **error**, since it would reintroduce precisely the drift the indirection removes. Everything else in this document — first-line placement, the verbatim guard, the short-summary repetition, the pre-click picker warning — applies identically to both classes. A resolver emitter still repeats its `**Model:**` line in the visible summary; it just computes the name instead of quoting it.
+The resolver check is strictly stronger, not a carve-out: a literal appearing in a resolver emitter is a lint **error**, since it would reintroduce precisely the drift the indirection removes. Everything else in this document — first-line placement, the `**Effort:**` line, the verbatim guard, the short-summary repetition, the pre-click picker warning — applies identically to both classes. A resolver emitter still repeats its `**Model:**` line in the visible summary; it just computes the name instead of quoting it.
+
+**The classes split on the model line only — effort is a literal in both.** What makes the model resolvable is that "the top of the fleet" is a fact about the fleet, which moves; the effort a piece of work needs is a judgment about the work, which does not. So a resolver emitter writes its `**Effort:**` level out like everyone else. Since #791 the resolved model name is itself versionless (`model-fleet.json`'s `display` values are family names), so the two indirections compose: #770 removed the drift of *where* the name is written, #791 removed the drift *inside* it.
 
 Use the resolver class only when the right model genuinely is "the top of the fleet" (or another position in it) rather than a per-task judgment. Everything else stays literal.
 
@@ -99,11 +121,11 @@ Use the resolver class only when the right model genuinely is "the top of the fl
 
 The harness should add optional **`model`** (and optionally **`effort`**) parameters to `mcp__ccd_session__spawn_task` so a chip click sets the picker to the recommended model instead of inheriting the parent thread's setting. Until that ships:
 
-- Every chip `prompt` MUST still carry the `**Model:**` line and MODEL GUARD preamble (non-negotiable — enforced repo-wide in Issue #731).
-- The visible short summary MUST still repeat the `**Model:**` line so the user can set the picker manually before clicking.
-- When parent and chip models differ — especially **Fable 5 parent → Sonnet/Opus chip** — emitters SHOULD add a one-line pre-click warning in the short summary (e.g. `**Parent is Fable — switch picker before click**`). Title/`tldr` alone do not enforce anything; the guard inside the spawned thread remains the hard stop.
+- Every chip `prompt` MUST still carry the `**Model:**` line, the `**Effort:**` line, and the MODEL GUARD preamble (non-negotiable — enforced repo-wide in Issue #731).
+- The visible short summary MUST still repeat both the `**Model:**` and `**Effort:**` lines so the user can set the picker manually before clicking.
+- When parent and chip models differ — especially **Fable parent → Sonnet/Opus chip** — emitters SHOULD add a one-line pre-click warning in the short summary (e.g. `**Parent is Fable — switch picker before click**`). Title/`tldr` alone do not enforce anything; the guard inside the spawned thread remains the hard stop.
 
-After #735 ships, chips should pass the recommended model at the tool layer **and** keep the guard as a safety net for paste/fallback flows.
+After #735 ships, chips should pass the recommended model and effort at the tool layer **and** keep the guard as a safety net for paste/fallback flows.
 
 ## Merge-authority line
 
@@ -124,10 +146,11 @@ In chip mode the transcript shows **only** the short summary per issue — the f
 ```text
 - **#42 — {Title}** — chip offered
   **Model:** {MODEL} — {REASON}
+  **Effort:** {LEVEL} — {REASON}
   {One-line rationale}
 ```
 
-Nothing else. No prompt block, no context dump, no acceptance criteria. The whole point of chip mode is that the transcript stays scannable status output rather than a wall of prompt text.
+Both lines, every time — the picker has two controls and the summary is the only place the user sees either before clicking. Nothing else, though: no prompt block, no context dump, no acceptance criteria. The whole point of chip mode is that the transcript stays scannable status output rather than a wall of prompt text.
 
 ## Chip state tracking
 

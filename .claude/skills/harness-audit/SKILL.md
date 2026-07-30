@@ -376,15 +376,22 @@ state_lock_release; trap - EXIT
   `judged_on_model: <actual>` into the report header, so a reader can weigh the
   verdicts against the tier that produced them.
 
-### Chip model contract
+### Chip model + effort contract
 
 The chip `prompt` **MUST open with** the `**Model:**` line as its literal first
-line, immediately followed — **no blank line** between them — by the verbatim
-MODEL GUARD preamble from `chip-launching.md`. Reproduce that preamble unchanged;
-do not reword it for this skill.
+line, then the `**Effort:**` line, then — **no blank line** between the three —
+the verbatim MODEL GUARD preamble from `chip-launching.md`. Reproduce that
+preamble unchanged; do not reword it for this skill.
+
+The effort recommendation is a literal here, unlike the model. `{TOP_DISPLAY}` is
+resolved because "the top of the fleet" changes when the fleet does; the effort
+this work needs does not — a judgment pass over the whole harness is Max-effort
+work by its nature, and pinning it says so. `{LEVEL}` uses the picker's own
+labels (`chip-launching.md` "Model and effort lines"), never a bare API token.
 
 ```text
 **Model:** {TOP_DISPLAY} — deep judgment pass; distinguishing "the harness does this now" from "ours is stricter" degrades badly on a cheaper tier
+**Effort:** Max — correctness-over-cost: a wrong "the harness covers this" verdict silently deletes a working guard
 {verbatim MODEL GUARD preamble from chip-launching.md}
 
 Run /harness-audit {SAFE_MODIFIERS} for {MONTH} against {REPO}. The inventory
@@ -405,13 +412,14 @@ Modifiers that only affect *this* thread's execution (`--force-here`, `--tick`,
 routed itself, not what the work is permitted to do. When in doubt, ask whether
 dropping the flag could cause a side effect the user declined; if yes, carry it.
 
-Per `chip-launching.md`, the same `**Model:**` line is repeated in the visible
-short summary so the user can set the picker **before** clicking, since
-`spawn_task` carries no model parameter (upstream issue #735). When the parent
-thread's model differs from the chip's recommendation, add the one-line pre-click
-warning to that short summary — the picker is set by the user, and the in-thread
-guard is only the backstop. Resolve both model names through `model-fleet.sh` and
-the running-model self-report; never spell either into this file.
+Per `chip-launching.md`, both the `**Model:**` and `**Effort:**` lines are
+repeated in the visible short summary so the user can set the picker **before**
+clicking, since `spawn_task` carries neither parameter (upstream issue #735).
+When the parent thread's model differs from the chip's recommendation, add the
+one-line pre-click warning to that short summary — the picker is set by the user,
+and the in-thread guard is only the backstop, and it covers the model line only.
+Resolve both model names through `model-fleet.sh` and the running-model
+self-report; never spell either into this file.
 
 Fallback (no `spawn_task` in session): print the byte-identical block in a fence,
 per `chip-launching.md`'s fallback mode.

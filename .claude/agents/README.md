@@ -40,9 +40,22 @@ Agent definitions use `{{PLACEHOLDER}}` markers for runtime context that the par
 
 Each agent definition declares a default `model` in frontmatter. The parent must also set `model` explicitly at every Agent tool call site per `.claude/rules/subagent-orchestration.md` "Model Selection" — the call-site parameter overrides the frontmatter default and keeps cost decisions visible at every spawn point.
 
-**Current fleet (verified 2026-07-28):** Fable 5, Opus 5, Sonnet 5, Haiku 4.5. Opus 5 is the top-of-fleet default.
+**Fleet:** Fable, Opus, Sonnet, Haiku. Opus is the default for unattended and heavy-phase spawns; Fable is the strongest model in the fleet but is never a spawn default (see below).
 
-**Current alias resolution (verified 2026-07-28):** `opus` → Opus 5, `sonnet` → Sonnet 5, `haiku` → Haiku 4.5. Fable 5 has no bare alias — spawning it requires the explicit model ID `claude-fable-5` at the call site. Frontmatter intentionally uses bare aliases — Claude Code resolves them to the latest non-legacy model of each family, so agent definitions don't need editing when Anthropic ships a new version. If the runtime ever stops resolving bare aliases, switch frontmatter to explicit versioned IDs (e.g., `claude-opus-5`, `claude-sonnet-5`) and update this note.
+**Aliases:** the Agent tool's `model` parameter accepts exactly four values — `sonnet`, `opus`, `haiku`, `fable` — and each resolves to the newest non-legacy model of that family. Frontmatter intentionally uses these bare aliases, so agent definitions need no editing when Anthropic ships a new version. Write an explicit model ID (e.g. `claude-opus-5`) only where a tool literally consumes the string; if the runtime ever stops resolving bare aliases, switch frontmatter to explicit IDs and update this note.
+
+### Model naming — families, never versions (#791)
+
+**Say "Opus", "Sonnet", "Haiku", "Fable".** Every human-facing mention of a model across `CLAUDE.md`, `.claude/rules/`, `.claude/skills/`, and `.claude/agents/` — plus the living contract docs in `.claude/reference/` those files consume normatively (`chip-launching.md`, `chip-model-guard-decision.md`) — uses the bare family name. The family is the part that carries a decision; the version is maintenance we would be volunteering for. A bare name also stays true on its own: it means the current non-legacy model of that family, so a new release inside an existing family needs no edits anywhere. A genuinely new family gets added when it ships.
+
+Two things are exempt:
+
+- **Tool-consumed strings.** `claude-opus-5` in an `ocr config set` value, `claude-haiku-4-5-20251001` in an API call — the version is load-bearing there, because something parses it.
+- **Dated point-in-time records** under `.claude/reference/` — audits, evals, and research snapshots. Rewriting them to today's vocabulary falsifies the history they exist to preserve. Stated durably in `.claude/reference/README.md` under "Audits and research (point-in-time)".
+
+This reverses the version-pinning call made in #749. That change wanted the docs to track the current fleet; naming families reaches the same goal without the sweep, since an alias already resolves forward on its own. `.github/scripts/chip-model-guard-lint.sh` enforces the rule over exactly the scope above.
+
+**Effort is not a spawn parameter.** The Agent tool takes `model` but has no `effort` — a subagent inherits the parent session's effort. Effort *is* settable per agent inside a Workflow script, via `agent()`'s `opts.effort`. Never write an effort instruction into a subagent prompt expecting it to change anything.
 
 **Per-phase rationale:**
 
@@ -54,7 +67,7 @@ Each agent definition declares a default `model` in frontmatter. The parent must
 | `pm-worker` | `sonnet` | Data gathering and formatting: issue creation, repo bootstrap checks. Each task follows a well-defined template. |
 | `researcher` | `sonnet` | Read-only exploration and summarization: reads files, runs `gh`/`git` queries, synthesizes findings. No code edits, no fixes — `sonnet` is sufficient for read-and-report work, and the restricted `allowed-tools` frontmatter prevents any write operations regardless of model. |
 
-**Why Fable 5 is not any agent's default:** Fable 5 is the strongest model in the fleet, but no agent defaults to it — the same cost logic that puts `sonnet` on `phase-c-merger` applies in the other direction. Phase spawns run unattended, often several in parallel, and Opus 5 already clears the reasoning bar for the heaviest phase (A/B) work; paying roughly double per spawn buys headroom these phases do not need. Fable 5 is reserved for interactive hardest-work step-ups, where a human is watching the spend and can judge the trade. `/prompt`'s tier ladder is where it is actively recommended (see `.claude/skills/prompt/SKILL.md` "Model Lineup & Effort Levels"). Escalating a specific spawn to `claude-fable-5` is a deliberate exception — document why, and do not make it a default.
+**Why Fable is not any agent's default:** Fable is the strongest model in the fleet, but no agent defaults to it — the same cost logic that puts `sonnet` on `phase-c-merger` applies in the other direction. Phase spawns run unattended, often several in parallel, and Opus already clears the reasoning bar for the heaviest phase (A/B) work; paying roughly double per spawn buys headroom these phases do not need. Fable is reserved for interactive hardest-work step-ups, where a human is watching the spend and can judge the trade. `/prompt`'s tier ladder is where it is actively recommended (see `.claude/skills/prompt/SKILL.md` "Model Lineup & Effort Levels"). Escalating a specific spawn to `fable` is a deliberate exception — document why, and do not make it a default.
 
 The global env var `CLAUDE_CODE_SUBAGENT_MODEL=opus` is a legacy safety net for unexpected/undocumented spawns only — **not** a compliant spawn pattern. Compliant calls must still set `model` explicitly at the call site and must not rely on either the frontmatter default or this env var.
 

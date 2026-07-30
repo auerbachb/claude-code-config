@@ -203,7 +203,7 @@ This creates **one canonical planning document** the coding agent can work from.
 
 **First, check chip availability** per `.claude/reference/chip-launching.md`, then branch. The handoff content is the same in both delivery modes — only how it reaches the user differs:
 
-- **Chip mode** (`mcp__ccd_session__spawn_task` present): call `spawn_task` once for this issue with `title` / `prompt` / `tldr` / `cwd` (shape under "Chip construction" below). Print **only** the short summary — issue, title, `**Model:**` line, one-line rationale — in the reference's exact format. Do **not** also print the fallback block, or the same work is offered twice.
+- **Chip mode** (`mcp__ccd_session__spawn_task` present): call `spawn_task` once for this issue with `title` / `prompt` / `tldr` / `cwd` (shape under "Chip construction" below). Print **only** the short summary — issue, title, `**Model:**` line, `**Effort:**` line, one-line rationale — in the reference's exact format. Do **not** also print the fallback block, or the same work is offered twice.
 - **Fallback mode** (tool absent): print the summary block below, unchanged.
 
 **A failed `spawn_task` is treated as unavailable** (per the reference): print the full fallback block instead. Do not retry the spawn. The handoff always ends with exactly one of: a chip, a printed block, or — when the PM-context inline gate above routed it — an inline `/subagent` recommendation; never neither.
@@ -214,7 +214,8 @@ Print a compact summary to the user. Per `chip-launching.md`, the content **insi
 
 ```
 **Model:** {MODEL} — {REASON}
-{Model-guard preamble — insert verbatim from `chip-launching.md` "Model-guard preamble", immediately after this line, no blank line between}
+**Effort:** {LEVEL} — {REASON}
+{Model-guard preamble — insert verbatim from `chip-launching.md` "Model-guard preamble", immediately after these lines, no blank line between}
 
 ## Ready to code — Issue #{N}
 
@@ -251,7 +252,7 @@ Ready to code. Start with step 1 of the plan above. Run the dual-CLI local revie
 
 > **`cwd` deliberately differs from `/pm` and `/prompt`,** which pass the repo root. By Step 7, `/start-issue` has already created an issue-specific worktree, so the launched thread must start *there* — repo root would land it in the wrong checkout, on the wrong branch. This is an intentional divergence, not an inconsistency with the shared contract.
 
-**The `**Model:** {MODEL} — {REASON}` line and its guard live in the base block, not as a chip-only addition** — chips cannot preset the model picker, so both a fallback-mode reader and a chip-mode spawned session need the recommendation and the guard in the text itself. The visible short summary in chip mode still repeats just the `**Model:**` line (not the guard) so the user can set the picker before clicking. When the parent thread is on Fable 5 and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
+**The `**Model:**` line, the `**Effort:**` line, and the guard live in the base block, not as a chip-only addition** — chips preset neither picker control, so both a fallback-mode reader and a chip-mode spawned session need the recommendations and the guard in the text itself. The visible short summary in chip mode still repeats both lines (not the guard) so the user can set the picker before clicking. When the parent thread is on Fable and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
 
 **Record the returned `task_id` immediately,** before any dependent step — an unrecorded chip cannot be withdrawn. `/start-issue` has no Active Work table, so track it **session-locally**, keyed by issue number, and say so in the summary; the chip stays dismissable for this session only. If the issue already has a live chip recorded in this session, skip the spawn rather than offering it twice. `dismiss_task` hygiene and print-on-demand replay ("print the full prompt for #N" re-emits that chip's `prompt` verbatim — Model line, guard preamble, and block — in the fenced form fallback would have printed; the chip stays offered) follow the reference — do not restate its rules here.
 
@@ -259,14 +260,19 @@ Ready to code. Start with step 1 of the plan above. Run the dual-CLI local revie
 
 The `### Constraints` section's merge-authority bullet is the shared contract from `chip-launching.md` "Merge-authority line" — reproduce it **verbatim**, the same way the model-guard preamble is copied unchanged. It asserts the default out loud so the launched thread never has to infer it from a rule file it may not have loaded: it merges itself via full `/wrap` once the gate passes and every AC verifies. Never soften it into an approval request; a PR that genuinely needs a hold is the user saying so in chat, never a line in a generated block.
 
-### Model recommendation
+### Model and effort recommendation
 
-Every handoff — chip or fallback — needs a `{MODEL}` and a `{REASON}`. Use this lightweight, role-based rule over the canonical roster (**Fable 5, Opus 5, Sonnet 5, Haiku 4.5** — see `.claude/rules/subagent-orchestration.md` "Model Selection"):
+Every handoff — chip or fallback — needs a `{MODEL}`, a `{LEVEL}`, and a `{REASON}` for each. Use this lightweight, role-based rule over the canonical roster (**Fable, Opus, Sonnet, Haiku** — see `.claude/rules/subagent-orchestration.md` "Model Selection"). Model names are always bare family names, never versions:
 
-- **Default: Sonnet 5** — ordinary single-issue coding work.
-- **Step up to Opus 5** when the issue touches rules, `CLAUDE.md`, skills, or orchestration — instruction-adherence work where literal-following models misfire.
+- **Default: Sonnet, effort Low** — ordinary single-issue coding work.
+- **Opus, effort High** when the issue touches **skills**.
+- **Opus, effort Extra** when the issue touches **rules**, **`CLAUDE.md`**, or **orchestration** — instruction-adherence work where literal-following models misfire.
 
-`{REASON}` is a short phrase naming the dominant driver (e.g. `rules + skill wiring`, `single-file code change`). Do **NOT** replicate `/prompt`'s Heavy/Standard/Light multi-signal pipeline — `/start-issue` is single-issue and has no model concept beyond this rule. When `/prompt` already produced a recommendation for the issue, prefer it.
+`{LEVEL}` is a picker label — **Low**, **Medium**, **High**, **Extra**, **Max** — never a bare API token. **Medium** is the middle ground: an ordinary multi-file change that is neither trivial nor rules-adjacent.
+
+The two step-ups are separate on purpose. Collapsing them would put skill-only work on Extra while `/prompt` classifies exactly that as Standard → High, so the same issue would get a different recommendation depending on which surface handed it over — and a user comparing the two has no way to tell which is right. These levels match `/prompt`'s tier mapping (`touches_skill` → Standard → High; `touches_rules` / `touches_claude_md` / orchestration → Heavy → Extra) without importing its multi-signal pipeline.
+
+Each `{REASON}` is a short phrase naming the dominant driver (e.g. `rules + skill wiring`, `single-file code change`). Do **NOT** replicate `/prompt`'s Heavy/Standard/Light multi-signal pipeline — `/start-issue` is single-issue and has no model or effort concept beyond this rule. When `/prompt` already produced recommendations for the issue, prefer them.
 
 ### Execution boundary
 

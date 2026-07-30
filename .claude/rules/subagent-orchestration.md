@@ -33,7 +33,9 @@ If agent definitions are unavailable (repo without `.claude/agents/`): read proj
 | `pm-worker` | `sonnet` |
 | Read-only review agents (e.g., `/pr-review-help`) | `sonnet` |
 
-Fleet: **Fable 5, Opus 5, Sonnet 5, Haiku 4.5**. Fable 5 has no bare alias and is **never a spawn default** — reserve it for interactive step-ups where a human watches the spend. `/harness-audit`'s cron honors this via a step-up chip, never an unattended spawn. Alias resolution and per-phase rationale: `.claude/agents/README.md` §Model Selection.
+Fleet: **Fable, Opus, Sonnet, Haiku** — named by family, never by version. The Agent tool's `model` accepts `sonnet`, `opus`, `haiku`, `fable`. Fable is **never a spawn default** — reserve it for interactive step-ups where a human watches the spend; `/harness-audit`'s cron honors this via a step-up chip, never an unattended spawn. Naming rule, alias resolution, and per-phase rationale: `.claude/agents/README.md` §Model naming / §Model Selection.
+
+**Effort is not settable on a spawn.** The Agent tool has no `effort` parameter; a subagent inherits the parent session's. It *is* settable per agent via a Workflow script's `agent()` (`opts.effort`) — so never write an effort instruction into a subagent prompt expecting it to take.
 
 Rules: set `model` explicitly on every spawn (call-site overrides frontmatter; `CLAUDE_CODE_SUBAGENT_MODEL` is only a legacy safety net). If a Sonnet-tier agent underperforms, escalate to `opus` and document why.
 
