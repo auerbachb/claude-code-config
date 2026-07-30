@@ -113,6 +113,37 @@ require_file "$CLAUDE_MD" || true
 if [[ -f "$CHIP_LAUNCHING" ]]; then
   require_pattern "$CHIP_LAUNCHING" 'MODEL GUARD:' 'MODEL GUARD preamble marker'
   require_pattern "$CHIP_LAUNCHING" 'Your very first action' 'guard first-action text'
+  # The guard compares FAMILIES, not strings (#837). Chips stay clickable
+  # indefinitely, so ones emitted before the versionless rename still name a
+  # version; a reword back to string equality would make every one of them a
+  # false stop. Each of the three sentences that carry that semantics is
+  # asserted separately — one assertion would leave the other two free to go.
+  #
+  # Each pattern spans enough of its sentence to survive a SEMANTIC INVERSION —
+  # a reword that keeps the vocabulary but reverses the rule ("...qualifier:
+  # honor it on both sides"). Matching the noun alone would pass such a reword,
+  # which is the #802 lesson applied to this contract: assert the instruction,
+  # not the keyword.
+  #
+  # Scope of that promise: these anchors catch an inversion written INTO the
+  # asserted sentence. No line-oriented pattern can catch a contradiction
+  # planted in a different sentence of the same file, and none of these claims
+  # to — that residual case is what review is for.
+  #
+  # The trailing em dash is load-bearing, not incidental punctuation: it pins
+  # the phrase to the family list that follows, so "Compare families only, and
+  # the exact model strings must match," cannot satisfy the check by keeping
+  # the substring.
+  require_pattern "$CHIP_LAUNCHING" 'Compare families only —' 'family-level comparison rule'
+  require_pattern "$CHIP_LAUNCHING" 'old-style version qualifier: ignore it on either side' \
+    'version-qualifier-is-noise rule'
+  # Anchored to the Match branch specifically: {FAMILY} loose in the document
+  # does not prove the MATCH branch reports a family, and the mismatch branch
+  # deliberately still reports full model names (see the decision record).
+  # Bracket expressions, not \{ — literal braces are unambiguous this way under
+  # both GNU and BSD ERE, where \{ shades into interval-expression territory.
+  require_pattern "$CHIP_LAUNCHING" 'Match \(same family\): state "Running on [{]FAMILY[}]' \
+    'family self-report in match branch'
   require_pattern "$CHIP_LAUNCHING" 'six canonical emitters' 'canonical emitters preamble'
   require_pattern "$CHIP_LAUNCHING" 'first line of the `prompt`' 'first-line placement rule'
   require_pattern "$CHIP_LAUNCHING" 'no blank line' 'no-blank-line placement rule'

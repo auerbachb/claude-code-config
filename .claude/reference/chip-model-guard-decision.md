@@ -18,6 +18,26 @@ Issue #791 added an `**Effort:** {LEVEL} — {REASON}` line to the same unit, an
 
 Keeping the guard's promise narrow is what makes it worth trusting. If #735 ships `model`/`effort` parameters on `spawn_task`, both become tool-layer settings and the question is moot for chips — the guard reverts to a paste-flow safety net, exactly as this record's closing note anticipated.
 
+### Amendment (#837): the comparison is family-level
+
+**Family is the guarded axis; a trailing version number is noise.** The preamble compares the family the thread is running — `Opus`, `Sonnet`, `Haiku`, `Fable` — against the family named on the `**Model:**` line, ignoring any trailing version qualifier on either side. A cross-family difference still stops the thread cold in both directions, with the stop wording untouched.
+
+This follows from what the guard is *for*. It catches a thread running at the wrong **tier** — the judgment a chip encodes is "this work deserves this much model" — and tier is the family. Two versions inside one family are the same recommendation, so stopping on the difference between them reports a disagreement that does not exist. String equality was never the intended rule; it was simply the only reading the old wording left available.
+
+**The two branches report differently, on purpose.** The match branch names the *family* it is running, because echoing back a possibly-stale qualifier would assert the thread is running a version it is not — a one-line confirmation is no place for a claim that is false. The mismatch branch keeps reporting **both models in full**, qualifier included: that message exists to help a human decide whether to switch models or continue, and the qualifier is part of what they are deciding on. Reducing it to families there would strip detail at precisely the moment the most of it is wanted. So the asymmetry is not an oversight in the rewrite — comparison is family-level on both branches, and only the *reporting* differs.
+
+It composes with #791 rather than repeating it. #791 fixed which name gets **written** onto a `**Model:**` line — a bare family name, which resolves forward to the newest non-legacy model of its family on its own. This fixes what a thread **does** with a name it did not expect, a question none of #791's acceptance criteria reached, because every one of them is about what gets written into the corpus.
+
+**Scope limit — this does not retroactively fix chips already offered.** #837 was captured on the premise that a wording change "fixes every past and future stale payload at once." That holds for the future half only, and the correction is worth stating plainly because the premise is load-bearing: the preamble is copied into a chip's `prompt` **at spawn time**, so an already-offered chip carries a frozen copy of the old wording, is read under it, and never consults this file. Editing here cannot rewrite a payload sitting in a task list. What does change is that every payload rendered from this point — a chip spawned now, a fallback block printed now — is family-safe by construction. Replay is deliberately *not* in that list: it stays pinned to the chip's own `prompt` so the printed block and the chip never diverge (an invariant this record's opening already fixes), which means replaying an old chip faithfully reproduces its old guard wording. The class stops growing; the existing backlog is unaffected and is tracked as [#838](https://github.com/auerbachb/claude-code-config/issues/838).
+
+**Rejected as the primary fix: sweeping and re-emitting the stale chips.** A one-time cleanup does not answer a recurring problem, it needs a handle on every outstanding chip, and it does nothing for a paste block saved in someone's notes — so the reading rule had to change first regardless. With the recurring half now closed, a sweep is the right shape for the remaining one-time backlog *if* it proves big enough to be worth it, which is the call #838 makes.
+
+**Known gap — a retired family.** If a family is ever dropped from the fleet, a chip naming it would compare against nothing, and should stop. Not a live case today (the fleet has only gained families), so the preamble carries no wording for it; recorded here so a future retirement is a known open question rather than a surprise.
+
+**Terminology.** The preamble calls a trailing version number an *old-style* qualifier, not a *legacy* one. "Legacy" already means "a superseded model within a family" in `.claude/agents/README.md` ("the newest non-legacy model of that family"), and reusing it here would invite exactly the wrong reading — that only qualifiers naming an outdated version are ignorable. Every qualifier of the documented form is ignored, whichever version it names.
+
+**And only that form.** What the preamble discards is the numeric grammar it names — a trailing `<N>` or `<N>.<N>` — because that is what the pre-#791 lines actually carried. A non-numeric suffix is deliberately *not* covered: it is not a version number, nothing in the fleet's history produced one, and a rule that waved through any trailing token would quietly turn an unrecognized name into a match. If such a form ever appears, it should reach the mismatch branch and be looked at, like the retired-family case above.
+
 ## Rationale
 
 Two invariants existed before this ticket and a new preamble can preserve at most one of them:
@@ -48,5 +68,8 @@ Adding a guard that only some threads receive forces a choice: put it in the chi
 - Issue [#731](https://github.com/auerbachb/claude-code-config/issues/731) — universal enforcement + conformance lint
 - Issue [#735](https://github.com/auerbachb/claude-code-config/issues/735) — upstream ask for `spawn_task` `model` parameter
 - Issue [#791](https://github.com/auerbachb/claude-code-config/issues/791) — versionless model names + the `**Effort:**` line; amended this record to hold the guard at model-only
+- Issue [#837](https://github.com/auerbachb/claude-code-config/issues/837) — family-level comparison; the read side of the contract #791 fixed on the write side
+- Issue [#749](https://github.com/auerbachb/claude-code-config/issues/749) — the version-pin that put version numbers on these lines in the first place; #791 and #837 reversed it on the write and read sides respectively
+- Issue [#838](https://github.com/auerbachb/claude-code-config/issues/838) — the stale-chip backlog #837 does not reach; see the scope limit above
 - `pm-handoff-chips-decision.md` — the house style this record follows (`## Decision` / `## Rationale` / `## Explicitly Rejected` / `## References`)
 - Issue [#547](https://github.com/auerbachb/claude-code-config/issues/547) (closed) — model fleet reconciliation across selection surfaces, the related prior work this ticket builds on
