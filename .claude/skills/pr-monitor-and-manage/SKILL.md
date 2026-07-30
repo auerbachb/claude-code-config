@@ -112,7 +112,7 @@ READ_ONLY_FLEET=0
 if [[ -z "$GH_ME" || "$PMM_AUTHOR" != "$GH_ME" ]]; then READ_ONLY_FLEET=1; fi  # fail-closed
 ```
 
-When `READ_ONLY_FLEET=1`, skip every dispatch in the decision tree — display only.
+When `READ_ONLY_FLEET=1`, skip every dispatch in the decision tree — display only. Override only when the user names a specific PR in chat (per-PR, per-session).
 
 ---
 
