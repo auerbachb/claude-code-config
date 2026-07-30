@@ -169,7 +169,45 @@ def main(argv):
         live[event].append(group)
         added += 1
 
-    if added == 0:
+    # Remove stale event registrations: when a hook script has been moved from
+    # one event type to another in the template (e.g. PostToolUse -> SessionStart),
+    # the live settings still have the old entry. Without cleanup the script fires
+    # on both the old and new events. Removing the sentinel guard on session-
+    # start-sync.sh (issue #792) makes this critical — a stale PostToolUse entry
+    # would run the full sync on every tool call.
+    script_to_canonical_event = {item["script"]: item["event"] for item in manifest}
+    removed_stale = 0
+    for event in list(live.keys()):
+        if not isinstance(live[event], list):
+            continue
+        surviving_groups = []
+        for group in live[event]:
+            if not isinstance(group, dict):
+                surviving_groups.append(group)
+                continue
+            surviving_hooks = []
+            for h in (group.get("hooks") or []):
+                if not isinstance(h, dict):
+                    surviving_hooks.append(h)
+                    continue
+                basename = os.path.basename(h.get("command", ""))
+                canonical = script_to_canonical_event.get(basename)
+                if canonical is not None and canonical != event:
+                    # Script has moved events; drop the stale registration.
+                    removed_stale += 1
+                else:
+                    surviving_hooks.append(h)
+            if surviving_hooks:
+                new_group = dict(group)
+                new_group["hooks"] = surviving_hooks
+                surviving_groups.append(new_group)
+            # else: all hooks in this group were stale — drop the group.
+        if surviving_groups:
+            live[event] = surviving_groups
+        else:
+            del live[event]
+
+    if added == 0 and removed_stale == 0:
         return 0
 
     # Atomic write
@@ -191,7 +229,12 @@ def main(argv):
         print(f"hook-sync: atomic write failed: {e}", file=sys.stderr)
         return 1
 
-    print(f"hook-sync: registered {added} new hook(s)", file=sys.stderr)
+    parts = []
+    if added:
+        parts.append(f"registered {added} new hook(s)")
+    if removed_stale:
+        parts.append(f"removed {removed_stale} stale event registration(s)")
+    print(f"hook-sync: {', '.join(parts)}", file=sys.stderr)
     return 0
 
 

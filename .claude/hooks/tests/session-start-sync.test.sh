@@ -85,10 +85,14 @@ cleanup() { rm -rf "$TMP_HOME"; }
 trap cleanup EXIT
 
 out=$(HOME="$TMP_HOME" echo '{}' | bash "$HOOK" 2>/dev/null || true)
-# The script should produce JSON with hookEventName: "SessionStart" on error
-echo "$out" | python3 - <<'PY' || fail "error path does not emit hookEventName: 'SessionStart'; got: $out"
-import json, sys
-text = sys.stdin.read().strip()
+# The script should produce JSON with hookEventName: "SessionStart" on error.
+# Pass hook output via an environment variable — combining a pipe with a
+# heredoc (echo "$out" | python3 - <<'PY') silently discards the pipe because
+# the heredoc wins fd 0 (see feedback_bash_heredoc_pipe_stdin.md), leaving
+# sys.stdin.read() empty and the hookEventName assertion unreachable.
+HOOK_OUT="$out" python3 - <<'PY' || fail "error path does not emit hookEventName: 'SessionStart'; got: $out"
+import json, sys, os
+text = os.environ.get("HOOK_OUT", "").strip()
 if not text or text == '{}':
     # Clean exit (e.g. idempotent setup script ran and succeeded) — no assertion needed
     sys.exit(0)

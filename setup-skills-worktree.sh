@@ -417,6 +417,8 @@ for item in manifest:
 # is present — are never touched, so re-runs are no-ops (idempotent; see
 # tests/test-setup.sh).
 manifest_scripts = {item["script"] for item in manifest}
+# Map script basename -> canonical event for migration pruning (see below).
+script_to_canonical_event = {item["script"]: item["event"] for item in manifest}
 pruned = []
 
 # Managed hook roots — restrict pruning to directories THIS installer owns so we
@@ -458,6 +460,19 @@ for event in list(hooks.keys()):
                         and not os.path.isfile(exe)):
                     pruned.append(script_name)
                     continue  # drop this stale hook entry
+                # Also prune hooks that have moved to a different event in the
+                # manifest (e.g. PostToolUse -> SessionStart for issue #792).
+                # Without this, the old event entry survives and the script fires
+                # on both the old and new event — critical after the sentinel guard
+                # was removed from session-start-sync.sh.
+                canonical_event = script_to_canonical_event.get(script_name)
+                if (exe
+                        and canonical_event is not None
+                        and canonical_event != event
+                        and is_managed_hooks_path(exe)
+                        and not is_placeholder_path(exe)):
+                    pruned.append(f"{script_name} (moved to {canonical_event})")
+                    continue  # drop stale event registration
             surviving_hooks.append(h)
         if surviving_hooks:
             group["hooks"] = surviving_hooks
