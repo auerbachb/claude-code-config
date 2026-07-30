@@ -24,3 +24,6 @@ jobs:
 
       - name: Run skill-catalog-lint
         run: bash .github/scripts/skill-catalog-lint.sh
+
+      - name: Run verbatim-block-lint
+        run: bash .github/scripts/verbatim-block-lint.sh
