@@ -43,3 +43,9 @@ The parent is orchestration-only with respect to source edits: the only direct w
 `--repo` scopes **discovery** (`gh pr list`) and the GraphQL/REST reads. But the per-PR helpers (`merge-gate.sh`, `pr-issue-ref.sh`, `cr-review-hourly.sh`, `dismiss-stale-bot-changes.sh`) and all git actions (rebase, force-push, fix subagents, `/wrap`) operate on the **current checkout** — they resolve the repo via `gh repo view`, not a flag. So managing a repo requires running this skill from a worktree of **that** repo. If `--repo` names a repo other than the current checkout, **stop and reconcile** (same multi-repo hazard guard as `cr-github-review.md`) rather than acting against the wrong repo.
 
 **Invoking-repo scope (issue #687).** The `--repo` constraint above already keeps discovery + actions in one repo's lane. The one shared-state read that spans repos is the global `.active_agents` array; PMM already scopes its own work by `id` prefix (`pmm-fix-`) and treats foreign entries as read-only. When a broader, repo-scoped view of session state is needed, prefer `session-state.sh --session-view` (drops other repos' PRs and their agents) over `--get .`. Cross-repo fleet management is never implicit — point it at one repo per invocation.
+
+---
+
+## Scope vs `/pm` (issue #657)
+
+`/pm` runs a **one-shot** startup triage of *forgotten* PRs, recommends close/merge, and hands merges off to `/wrap` subagents — then it stops. `/pr-monitor-and-manage` is the opposite: **continuous** fleet monitoring on a recurring `/loop`, driving *every* open PR to merge-ready or a named hard block tick after tick.

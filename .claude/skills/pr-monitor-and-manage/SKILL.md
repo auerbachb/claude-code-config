@@ -17,10 +17,6 @@ Thread-level **PR fleet manager**. This skill turns the current thread into a de
 
 > **Per-PR dispatch is inlined below.** `TODO: refactor to call /babysit-pr per discovered PR after #456 lands.` Until #456 merges, Step 3's decision tree is the single owner of per-PR logic. When `/babysit-pr` exists, replace Step 3's inline branches with one `/babysit-pr <PR>` dispatch per discovered PR — the table, discovery, idempotency, and backoff scaffolding here stay unchanged.
 
-This is a **set-and-monitor** command. Once invoked it acknowledges the mode, establishes a `/loop`, and at every tick reprints the fleet table and acts. The **parent thread** never edits feature code directly — it dispatches subagents to do that work — and never drifts into unrelated work.
-
-> **Scope vs `/pm`'s forgotten-PR triage (issue #657).** `/pm` runs a **one-shot** startup triage of *forgotten* PRs, recommends close/merge, and hands merges off to `/wrap` subagents — then it stops. This skill is the opposite: **continuous** fleet monitoring on a recurring `/loop`, driving *every* open PR to merge-ready or a named hard block tick after tick.
-
 Parent/subagent scope, prohibited actions, refusal template, and common misreads: `references/pmm-scope.md`.
 
 ---
@@ -42,8 +38,6 @@ fi
 ```
 
 After any resume (and on the **first** invocation in a thread), null the table digests — `session-state.sh --set '.pmm_digest=null' --set '.pmm_row_digest=null'` — so Step 4's first tick always prints the full table.
-
-Acknowledge mode up front so the constraints survive context compaction:
 
 > **PR-fleet-manager mode active.** My only job in **this parent thread** is to watch and manage your open PRs as a fleet — rediscover them each tick, print a status table, and dispatch rebase / parallel `phase-a-fixer` subagents (fix work, including merge conflicts) / sequential `/wrap` (merge-ready) per the decision tree. Merge-ready PRs are landed autonomously via inline `/wrap` dispatch (unless `--confirm-merges` is set). I will not edit feature code **directly in this thread**, start issues, or do unrelated work here — but I **will** dispatch subagents that edit code, resolve conflicts, fix findings, push, and reply/resolve threads.
 
@@ -126,9 +120,7 @@ When `READ_ONLY_FLEET=1`, skip every dispatch in the decision tree — display o
 
 Before Step 3 re-classifies the fleet, process any **PMM-owned** `phase-a-fixer` subagents (`id` starts with `pmm-fix-`) that completed since the last tick.
 
-**Initialize `EXHAUSTION_RESPAWN_PRS='[]'` at the start of this step, every tick — never carry it over.**
-
-**Load persisted hard blocks at tick start:**
+**Initialize `EXHAUSTION_RESPAWN_PRS='[]'` at the start of this step, every tick — never carry it over. Load persisted hard blocks:**
 
 ```bash
 HARD_BLOCK_JSON=$(.claude/scripts/session-state.sh --get '.pmm_hard_block // {}' 2>/dev/null || echo '{}')
@@ -153,8 +145,6 @@ Full protocol detail (handoff file isolation, tick-start refresh pattern): `refe
 ---
 
 ## Step 3: Gather per-PR state + classify (compute verdicts — NO actions)
-
-Refresh `HARD_BLOCK_JSON` before the per-PR loop:
 
 ```bash
 HARD_BLOCK_JSON=$(.claude/scripts/session-state.sh --get '.pmm_hard_block // {}' 2>/dev/null || echo '{}')
@@ -192,13 +182,9 @@ Read `merge_state` / `mergeable` **literally** from the gate JSON. **Do NOT infe
 
 `merge-gate.sh` exit `3` → `VERDICT=gone`, clear persisted block. Exit `2`/`4` → `VERDICT=error` (retry next tick).
 
-**Initialize `VERDICTS_JSON='{}'` once, before the per-PR loop — never via `${VERDICTS_JSON:-{}}`.** A brace-containing default terminates at its first literal `}` and appends a stray trailing brace, breaking every subsequent `jq` from the second PR onward.
+**Initialize `VERDICTS_JSON='{}'` before the per-PR loop — never via `${VERDICTS_JSON:-{}}` (brace default terminates at first `}`, stray brace breaks subsequent `jq` from PR 2 onward).** Collect hard blocks for reporting only — do not force-stop; idle counter handles convergence (Steps 6/7).
 
-**Collect hard blocks for reporting, but do not force-stop the fleet.** A fleet of only hard-blocked/waiting PRs converges to auto-Pause via the idle counter (Steps 6/7).
-
-**Pre-fetch findings for fix subagents (verdict `fixpr` only)** — stash in `FINDINGS_JSON[N]` for Step 5c.
-
-**Refine `fixpr` verdicts** for concurrency + idempotency: in-flight check → `awaiting fix subagent`; cap check → `queued (cap)`. Exhaustion respawn PRs hold slots unconditionally (tier 1); remaining slots go to fresh `fixpr` PRs by PR number (tier 2).
+**Pre-fetch findings for `fixpr` PRs** — stash in `FINDINGS_JSON[N]` for Step 5c. **Refine `fixpr` verdicts** for concurrency + idempotency: in-flight → `awaiting fix subagent`; cap → `queued (cap)`. Exhaustion respawn holds slots unconditionally (tier 1); fresh `fixpr` PRs by PR# (tier 2).
 
 Full per-row rationale, VERDICTS_JSON accumulation, findings pre-fetch, refinement-pass bash: `references/pmm-classify.md`.
 
@@ -318,10 +304,7 @@ if [ "$DIGEST" = "$PREV" ]; then STREAK=$((STREAK+1)); else STREAK=0; fi
 if [ "$STREAK" -ge 3 ]; then EFFECTIVE_CADENCE="15m"; else EFFECTIVE_CADENCE="$PMM_CADENCE"; fi
 ```
 
-Backoff schedule:
-- **Streak ≥ 3** → `EFFECTIVE_CADENCE=15m`; re-arm with `/loop 15m /pr-monitor-and-manage <same args>`.
-- **Any digest change** (or new user message) → streak resets to 0.
-- **Streak ≥ 9** → suggest `/pmm-stop`; do not force-stop unless a hard block is also present.
+Backoff: **streak ≥ 3** → `EFFECTIVE_CADENCE=15m`, re-arm `/loop 15m /pr-monitor-and-manage <args>`; digest change or user message → reset to 0; **streak ≥ 9** → suggest `/pmm-stop`.
 
 **Idle streak (`pmm_idle_streak`)** — an **idle tick** requires ALL of: (1) `TICK_HAD_ACTION=false`; (2) digest unchanged; (3) no blocking Phase A agents; (4) nothing held by merge sequencing. Orthogonal to cadence widening — widening must **not** reset the idle counter.
 
@@ -373,7 +356,6 @@ NOW=$(date -u +%FT%TZ)
 ```
 
 **Pre-exit checklist (run before ending every polling turn — `scheduling-reliability.md`):**
-
 1. **Next tick scheduled?** Confirm `/loop` is active/re-armed (or stopped/paused per routing above).
 2. **Heartbeat sent?** The Step 4 timestamped line (plus the table when it carried news) is the heartbeat — never end a tick silently.
 3. **State recorded?** `pmm_active`, cadence, watermarks, `pmm_in_flight`, `active_agents`, `pmm_digest(_streak)`, `pmm_row_digest`, `pmm_idle_streak` written to `session-state.json`.
@@ -385,8 +367,6 @@ NOW=$(date -u +%FT%TZ)
 Reached from Step 7 when the fleet is empty or idle. Preserves a resume marker so `/pr-monitor-and-manage-wake` or re-invoking this skill can pick up where it left off.
 
 Full pause procedure (final heartbeat, loop cancel, fleet snapshot + config build, pause marker write, auto-wake cron registration, summary line): `references/pmm-lifecycle.md`.
-
-Key pause marker write:
 
 ```bash
 .claude/scripts/session-state.sh \
