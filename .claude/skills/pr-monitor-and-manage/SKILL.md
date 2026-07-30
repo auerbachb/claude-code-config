@@ -1047,7 +1047,9 @@ Preserve `pmm_digest`, `pmm_digest_streak`, and `pmm_idle_streak` as audit trail
 
 ### 5. Optional auto-wake cron (`--auto-wake`)
 
-When `$PMM_AUTO_WAKE` is true, register a durable hourly scan at pause time:
+When `$PMM_AUTO_WAKE` is true, register an hourly scan at pause time:
+
+> **Warning:** `CronCreate` is **session-only** — this job fires only while Claude is running in the current session. `durable: true` has no effect. `--auto-wake` does **not** survive session turnover. (Behavioral redesign tracked as a follow-up ticket.)
 
 ```bash
 # Derive cadence minutes from PMM_AUTO_WAKE_CADENCE (e.g. 60m → 60)
@@ -1070,7 +1072,7 @@ fi
 # Persist returned job id to .pmm.auto_wake_cron_id and append to polling_jobs[]
 ```
 
-Follow `scheduling-reliability.md`: cross-session durability requires `CronCreate` (not `/loop`). Tell the user the cron job id and 7-day auto-expiry.
+Tell the user the cron job id and 7-day auto-expiry; note that the job is session-scoped (see `scheduling-reliability.md` contract note).
 
 ### 6. Summary line
 

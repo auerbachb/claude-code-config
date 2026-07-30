@@ -38,7 +38,7 @@ A human `CHANGES_REQUESTED` on HEAD is `hard-blocked` → record and exit. Never
 | `--cadence Nm` | `5m` | Base poll cadence. Floor `1m` (60s) — clamp anything lower. |
 | `--max-iter N` | `6` | Hard termination after N **consecutive blocker-state ticks** (≈90 min once backoff widens to 15m). |
 | `--silent` | off | Suppress the per-tick heartbeat **except** on state change, dispatch, or termination (those always print). |
-| `--durable` | off | Use `CronCreate` instead of `/loop` for cross-session durability (per `scheduling-reliability.md`). Default is `/loop` (session-scoped). |
+| `--durable` | off | Use `CronCreate` instead of `/loop` for wall-clock-cadence ticking. **Does not provide cross-session durability** — `CronCreate` is session-only; `durable: true` has no effect. The job dies when Claude exits. Default is `/loop` (session-scoped). (Behavioral redesign tracked as a follow-up ticket.) |
 | `--auto-resolve-conflicts` | off | Opt-in: on `CONFLICTING`, dispatch `/fixpr` in safe-only mode (`BABYSIT_SAFE_CONFLICT_MODE=1`) to rebase and auto-resolve mechanically-simple hunks. Any complex hunk aborts the rebase and terminates with a per-hunk report. Off by default — performs unattended rebases and force-pushes. |
 | `--max-conflict-rounds N` | `3` | Hard termination after N consecutive conflict rounds. Each round that enters the auto-resolve path increments `conflict_streak`, which does not reset on SHA change — only on a non-`conflicting` tick. |
 
@@ -205,7 +205,9 @@ NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   --set ".prs[\"$PR\"].digest_streak=0"
 ```
 
-Arm the recurring poll. **`/loop` is the default primitive** (`scheduling-reliability.md` decision tree); `CronCreate` only when `--durable` is set (cross-session durability).
+Arm the recurring poll. **`/loop` is the default primitive** (`scheduling-reliability.md` decision tree); `CronCreate` only when `--durable` is set.
+
+**Warning:** `CronCreate` is **session-only** — the job is held in memory and dies when Claude exits. The `durable: true` field has **no effect**. `--durable` does not provide cross-session continuity for this watcher. (Behavioral redesign of `--durable` is tracked as a follow-up ticket.)
 
 - **`/loop` (default):** arm `/loop <cadence> /babysit-pr <PR> --tick`. The runtime owns the cadence and re-arms each cycle.
 - **`--durable` (CronCreate):** pick an off-peak minute via `.claude/scripts/off-peak-minute.sh`, create a recurring (`recurring: true`, `durable: true`) job whose prompt is `/babysit-pr <PR> --tick`, and persist the returned job id to `.prs["<N>"].babysit.cron_job_id` and to top-level `polling_jobs[]` (so `/babysit-pr-stop` and recovery can find it).

@@ -325,7 +325,7 @@ Format as:
 |--------|----------|--------|-----------|---------|----------------|
 | abc123 | 17 * * * * | /pr-monitor-and-manage-wake --auto-check | true | true | {time} ET |
 
-**On resume:** Durable jobs survive session turnover — verify with `CronList` before creating duplicates. Session-only jobs died with the previous session; re-arm via the owning skill if needed. For PR fleet monitoring, run `/pr-monitor-and-manage`.
+**On resume:** All `CronCreate` jobs are **session-scoped** and do not survive session turnover — `durable: true` has no effect. Any job listed here died with the previous session. Re-arm via the owning skill if needed (do not use `CronList` to check for survivors — there will be none). For PR fleet monitoring, run `/pr-monitor-and-manage`.
 ```
 
 If `CronList` returns no jobs, output: "No active polling jobs from other skills. For PR fleet monitoring, run `/pr-monitor-and-manage`."

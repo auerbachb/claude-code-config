@@ -156,6 +156,7 @@
       "last_seen_at": "2026-03-16T15:58:00Z"
     }
   ],
+  "_polling_jobs_comment": "CronCreate jobs are SESSION-ONLY and in-memory — they die when Claude exits regardless of the durable field. durable:true is recorded for bookkeeping only and has no effect on persistence. expires_at reflects the 7-day auto-expiry within a session, not cross-session durability. On session resume, any prior polling_jobs entries are gone; owning skills must re-arm if needed.",
   "polling_jobs": [
     {
       "primitive": "CronCreate",
@@ -164,8 +165,10 @@
       "prompt": "/pr-monitor-and-manage-wake --auto-check",
       "recurring": true,
       "durable": true,
+      "_durable_comment": "no-op — CronCreate is session-only regardless of this field",
       "created_at": "2026-03-16T15:00:00Z",
-      "expires_at": "2026-03-23T15:00:00Z"
+      "expires_at": "2026-03-23T15:00:00Z",
+      "_expires_at_comment": "7-day session-internal auto-expiry, not a cross-session durability guarantee"
     }
   ],
   "polling_failures": [

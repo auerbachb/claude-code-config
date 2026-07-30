@@ -555,7 +555,7 @@ If orchestration state is stale after context turnover, recover using `.claude/r
 
 ### 2.4: Backwards compatibility
 
-Any `/pm`-created `CronCreate` jobs from before this change persist until the 7-day auto-expiry or explicit `CronDelete`. New `/pm` sessions do not create replacement polls.
+Any `/pm`-created `CronCreate` jobs from before this change died with their originating session (`CronCreate` is session-scoped; `durable: true` has no effect). New `/pm` sessions do not create replacement polls.
 
 After setup, proceed to **Step 3: Orchestration Loop**.
 

@@ -90,6 +90,8 @@ A daily tick gated on a monthly watermark costs almost nothing (29 of 30 ticks
 are a file read and an exit) and gives seven chances to notice an expired job
 inside the expiry window.
 
+> **Warning:** `CronCreate` is **session-only** — the job is held in memory and dies when Claude exits, regardless of `durable: true`. The daily registration design assumes the job survives long enough within a session to re-register itself; it does **not** persist across session boundaries. The current scheduling design therefore relies on a guarantee the harness does not provide. Redesign of the audit's scheduling cadence is tracked as a follow-up ticket.
+
 ### `--arm`
 
 ```bash
