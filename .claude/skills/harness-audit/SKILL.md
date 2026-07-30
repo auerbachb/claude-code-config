@@ -463,6 +463,13 @@ duplicate) and it can match a *sibling* path (suppressing a real finding).
   string equality**.
 - **Body marker:** `<!-- harness-audit: <artifact path> -->` — survives a human
   retitling the issue, and is the authority when title and marker disagree.
+  **Compare the fully-substituted marker, never the `<!-- harness-audit:`
+  prefix.** Observed on the first live run: issue #770 (this skill's own
+  tracking issue) contains the *template* text `<!-- harness-audit: <artifact
+  path> -->` because it documents the convention, and a prefix-only match
+  treated that as an existing filing for every artifact. Any issue describing
+  the mechanism will do the same. Build the exact string for the one path you
+  are checking, closing `-->` included, and require a full match.
 - **Search is recall only:**
 
   ```bash
