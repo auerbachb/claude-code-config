@@ -23,6 +23,8 @@ The common thread: **between-turn scheduling has no in-turn observer.** Once the
 
 **Fix.** For genuinely long intervals, use `CronCreate` — it fires a fresh invocation with a self-contained prompt, so there is no in-memory state to lose. For short intervals (≤5 min), `/loop` stays warm and avoids the problem entirely. Don't optimize cadence inside a flaky chain — fix the chain by switching primitive.
 
+**Note:** `CronCreate` solves the cold-cache fragility because each tick is a fresh invocation. It does **not** provide cross-session continuity — the job itself is session-scoped and dies when Claude exits (`scheduling-reliability.md` contract note).
+
 ## Pattern 3 — Silent Re-Schedule Failures
 
 **Symptom.** Same as Pattern 1 (user must prompt to discover the drop), but the re-schedule call was actually made — it just failed.

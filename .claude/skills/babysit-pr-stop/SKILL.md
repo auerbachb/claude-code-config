@@ -11,7 +11,9 @@ argument-hint: "<PR>"
 
 Stop the `/babysit-pr` watcher for one PR. This is the clean-cancel companion to `/babysit-pr` — it does not merge, fix, or touch the PR itself; it only tears down the watcher loop and its state.
 
-Stopping is **cooperative and idempotent**: it flags the watcher to terminate on its next tick (the watcher's `T0` short-circuit handles the actual clean exit) and cancels the durable poll job when one exists. Running it on a PR with no active watcher is a safe no-op.
+Stopping is **cooperative and idempotent**: it flags the watcher to terminate on its next tick (the watcher's `T0` short-circuit handles the actual clean exit) and `CronDelete`s the scheduled job when `--durable` mode is active. Running it on a PR with no active watcher is a safe no-op.
+
+**Note:** `CronCreate` jobs (`--durable` mode) are session-scoped and die when Claude exits; `CronDelete` is still required to stop the job within the current session, since a session-scoped cron fires until explicitly deleted.
 
 ## Resolve the state helper
 

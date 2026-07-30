@@ -103,6 +103,8 @@ So the job is registered **daily** and gated on a **monthly watermark**. Twenty-
 nine ticks in thirty are a file read and an exit. The daily cadence buys seven
 chances to notice an expired job inside the expiry window and re-arm it.
 
+> **Caveat:** `CronCreate` is **session-only** (`durable: true` has no effect) — the job dies when Claude exits regardless of how it was created. The daily re-registration design fires only within the session that armed it. Redesign of this cadence is tracked as a follow-up ticket (`scheduling-reliability.md` contract note).
+
 ### Two watermarks, not one
 
 `~/.claude/harness-audit/last-run.json` holds both:

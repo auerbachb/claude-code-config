@@ -11,7 +11,7 @@ The 5-minute heartbeat rule catches silence during turns; this file covers betwe
 | User request / context | Primitive | Why |
 |------------------------|-----------|-----|
 | Recurring: "poll/check/watch every N", "keep running /skill" | **`/loop`** | Runtime owns cadence |
-| ≥3 concurrent polls or cross-session durability | **`CronCreate`** | Durable fleet job |
+| ≥3 concurrent polls or wall-clock-cadence fleet ticks | **`CronCreate`** | Scheduled fleet job — **session-only** (see contract note below) |
 | One-shot "wake me in N minutes" | `ScheduleWakeup` | Single tick only |
 | Background work in flight (subagent, background process, watcher) | **ceiling watch** — `bgwork-ceiling.sh --arm-command` → `Monitor` | Backstop, not a poll — still `/loop` if status is due |
 
@@ -24,9 +24,15 @@ Division of responsibility (see `.claude/reference/pm-monitoring-decision.md`):
 - `/pm` never creates polls — on-demand orchestration only.
 - `/pr-monitor-and-manage` owns PR-fleet between-message polling (`/loop` + optional `CronCreate` auto-wake).
 - `/loop` remains valid for explicit user-invoked "poll every N" that is not PR-fleet-specific.
-- `CronCreate` for cross-session durability or fleet jobs owned by dedicated skills.
+- `CronCreate` for wall-clock-cadence fleet ticks or scheduled jobs owned by dedicated skills — **not** for cross-session durability (see contract note below).
 
 Skill-owned polling turns update `session-state.json` per that skill's contract; stale orchestration state → `monitor-mode.md` PM Monitoring Recovery + this file's dropped-tick handling.
+
+### CronCreate contract (authoritative)
+
+`CronCreate` is **session-only and in-memory**: the job lives in the harness process and is gone when Claude exits. The `durable` parameter has **no effect** — it is recorded in state for bookkeeping only. Recurring jobs auto-expire after **7 days** if not explicitly deleted first with `CronDelete`. Nothing about a `CronCreate` job persists across session boundaries. For the rejected alternatives see `.claude/reference/bgwork-ceiling.md`.
+
+> **Behavioral follow-up:** `--durable` in `/babysit-pr`, `--auto-wake` in `/pr-monitor-and-manage`, and `/harness-audit`'s daily registration cadence all relied on the false durability promise. Correcting those features' scheduling design is tracked as a separate ticket.
 
 ## Mandatory Pre-Exit Checklist for Polling Turns
 

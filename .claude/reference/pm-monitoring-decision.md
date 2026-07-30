@@ -7,7 +7,7 @@ Division of responsibility between orchestration and fleet monitoring:
 - **`/pm` never creates polls.** It is a strictly on-demand orchestrator: cold-start scan, inline execution of selected issues via the `/subagent` A→B→C flow (in-turn Dedicated Monitor Mode, not a recurring poll), thread prompts for the few issues too big for a subagent, on-demand status when the user asks, and handoff generation. At ≥3 active threads it redirects to `/pr-monitor-and-manage`; it does not offer `CronCreate` or `/loop`.
 - **`/pr-monitor-and-manage` owns PR-fleet between-message polling.** It establishes `/loop` at the configured cadence, optionally registers `CronCreate` auto-wake on idle pause, and dispatches per-PR fixes/merges.
 - **`/loop` remains valid for explicit user-invoked "poll every N"** that is not PR-fleet-specific (e.g., "poll every 5m /status" on a single thread). Hand-rolled one-shot `ScheduleWakeup` chains are forbidden for recurring polls.
-- **`CronCreate` is for cross-session durability or fleet jobs owned by dedicated skills** (`/pr-monitor-and-manage` auto-wake, `/babysit-pr --durable`, etc.) — not `/pm`.
+- **`CronCreate` is for wall-clock-cadence fleet ticks or scheduled jobs owned by dedicated skills** (`/pr-monitor-and-manage` auto-wake, `/babysit-pr --durable`, etc.) — not `/pm`. It is **session-only** and does not survive Claude exiting; see `scheduling-reliability.md` contract note.
 
 ## Rationale
 
@@ -21,7 +21,7 @@ The canonical PM manager use case is **tracking worker output across GitHub-visi
 - easy cancellation,
 - already mandated for explicit "poll/check/watch every N" user requests per `scheduling-reliability.md`.
 
-`CronCreate` remains best for skill-owned durable jobs that must survive session turnover.
+`CronCreate` remains the right primitive for skill-owned wall-clock-cadence fleet ticks. It is **session-scoped** — jobs do not survive session turnover regardless of the `durable` flag. See `scheduling-reliability.md` for the authoritative contract.
 
 ## State contract: `session-state.json`
 
