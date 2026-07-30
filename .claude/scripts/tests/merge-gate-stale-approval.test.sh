@@ -16,7 +16,7 @@
 #       same missing reason
 #   (d) BugBot review submitted BEFORE HEAD, matching commit_id → not met,
 #       same missing reason
-#   (e) Empty LAST_COMMIT_TS (API failure) → guard disabled, gate met
+#   (e) Empty LAST_COMMIT_TS (API failure) → fail-closed, gate NOT met, distinct reason
 #   (f) Equal timestamps (submitted_at == committer date) → accepted (met)
 #
 # Only `gh` is stubbed; merge-gate.sh, ci-status.sh, check-runs-dedup.sh,
@@ -179,16 +179,20 @@ check_eq "yes"   "$(missing_has "$RETARGET_MSG")" \
 check_eq "1"     "$RC"      "(d) bugbot stale: exit 1"
 
 # -------------------------------------------------------------------------
-# (e) Empty LAST_COMMIT_TS (API failure) — guard disabled, gate met
+# (e) Empty LAST_COMMIT_TS (API failure) — fail-closed: gate NOT met,
+#     distinct "cannot verify freshness" reason (not the retargeting message)
 # -------------------------------------------------------------------------
-echo "--- (e) LAST_COMMIT_TS empty (guard disabled) ---"
+FRESHNESS_MSG="cannot verify approval freshness"
+echo "--- (e) LAST_COMMIT_TS empty (fail-closed) ---"
 FAKE_COMMIT_TS_FAIL=1
 run_gate cr "" "$(cr_approved "$STALE_TS")"
 unset FAKE_COMMIT_TS_FAIL
-check_eq "true"  "$(met)"   "(e) guard disabled when ts empty: met == true"
+check_eq "false" "$(met)"   "(e) fail-closed when ts empty: met == false"
+check_eq "yes"   "$(missing_has "$FRESHNESS_MSG")" \
+                             "(e) fail-closed: missing has freshness reason"
 check_eq "no"    "$(missing_has "$RETARGET_MSG")" \
-                             "(e) guard disabled: no retarget message"
-check_eq "0"     "$RC"      "(e) guard disabled: exit 0"
+                             "(e) fail-closed: no retarget message (distinct from stale)"
+check_eq "1"     "$RC"      "(e) fail-closed: exit 1"
 
 # -------------------------------------------------------------------------
 # (f) submitted_at EQUAL to committer date — boundary, must be accepted (met)

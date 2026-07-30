@@ -597,32 +597,41 @@ case "$REVIEWER" in
     # Stale-approval guard (issue #836): GitHub retargets commit_id on force-push
     # but does NOT update submitted_at. An approval whose submitted_at predates
     # the HEAD commit's committer date was submitted before the current commit
-    # and must not count even when commit_id matches. Guard fires only when
-    # LAST_COMMIT_TS is non-empty; an empty value (API failure) disables the
-    # guard to avoid silently blocking a valid review. Equal timestamps are
+    # and must not count even when commit_id matches. Equal timestamps are
     # accepted (submitted_at >= LAST_COMMIT_TS). ISO 8601 strings are
     # lexicographically comparable so bash [[ < ]] is correct here.
+    #
+    # Fail-closed (issue #836): when LAST_COMMIT_TS is empty (HEAD timestamp API
+    # failure) we CANNOT verify freshness, so qualifying approvals do NOT satisfy
+    # the gate. Callers poll every ~60 s, so a transient API failure self-heals
+    # on the next cycle without wedging a merge indefinitely.
     CR_APPROVAL_STALE=false
-    if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && "$CR_RETRACTED" == false \
-          && -n "$LAST_COMMIT_TS" && -n "$LATEST_CR_APPROVED_AT" ]]; then
-      if [[ "$LATEST_CR_APPROVED_AT" < "$LAST_COMMIT_TS" ]]; then
+    CR_APPROVAL_FRESHNESS_UNKNOWN=false
+    if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && "$CR_RETRACTED" == false ]]; then
+      if [[ -z "$LAST_COMMIT_TS" ]]; then
+        CR_APPROVAL_FRESHNESS_UNKNOWN=true
+      elif [[ -n "$LATEST_CR_APPROVED_AT" && "$LATEST_CR_APPROVED_AT" < "$LAST_COMMIT_TS" ]]; then
         CR_APPROVAL_STALE=true
       fi
     fi
     CA_APPROVAL_STALE=false
-    if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && "$CA_RETRACTED" == false \
-          && -n "$LAST_COMMIT_TS" && -n "$LATEST_CA_APPROVED_AT" ]]; then
-      if [[ "$LATEST_CA_APPROVED_AT" < "$LAST_COMMIT_TS" ]]; then
+    CA_APPROVAL_FRESHNESS_UNKNOWN=false
+    if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && "$CA_RETRACTED" == false ]]; then
+      if [[ -z "$LAST_COMMIT_TS" ]]; then
+        CA_APPROVAL_FRESHNESS_UNKNOWN=true
+      elif [[ -n "$LATEST_CA_APPROVED_AT" && "$LATEST_CA_APPROVED_AT" < "$LAST_COMMIT_TS" ]]; then
         CA_APPROVAL_STALE=true
       fi
     fi
 
     CR_APPROVAL_VALID=false
-    if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && "$CR_RETRACTED" == false && "$CR_APPROVAL_STALE" == false ]]; then
+    if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && "$CR_RETRACTED" == false \
+          && "$CR_APPROVAL_STALE" == false && "$CR_APPROVAL_FRESHNESS_UNKNOWN" == false ]]; then
       CR_APPROVAL_VALID=true
     fi
     CA_APPROVAL_VALID=false
-    if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && "$CA_RETRACTED" == false && "$CA_APPROVAL_STALE" == false ]]; then
+    if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && "$CA_RETRACTED" == false \
+          && "$CA_APPROVAL_STALE" == false && "$CA_APPROVAL_FRESHNESS_UNKNOWN" == false ]]; then
       CA_APPROVAL_VALID=true
     fi
 
@@ -631,6 +640,9 @@ case "$REVIEWER" in
       PRIMARY_REVIEW_MET=true
     fi
 
+    # Track whether the CA stale message was emitted here, to prevent the
+    # supplemental CodeAnt gate below from adding a duplicate entry.
+    CA_STALE_MISSING_EMITTED=false
     if [[ "$PRIMARY_REVIEW_MET" != true ]]; then
       if [[ "$CR_RETRACTED" == true && "$CA_APPROVAL_VALID" != true ]]; then
         MISSING+=("CodeRabbit approval on HEAD ${HEAD_SHA:0:7} retracted by later CHANGES_REQUESTED — fix and re-trigger @coderabbitai full review")
@@ -643,9 +655,17 @@ case "$REVIEWER" in
       fi
       if [[ "$CA_APPROVAL_STALE" == true && "$CR_APPROVAL_VALID" != true ]]; then
         MISSING+=("CodeAnt approval on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — re-review required; trigger @codeant-ai review")
+        CA_STALE_MISSING_EMITTED=true
+      fi
+      if [[ "$CR_APPROVAL_FRESHNESS_UNKNOWN" == true || "$CA_APPROVAL_FRESHNESS_UNKNOWN" == true ]]; then
+        # Fail-closed (issue #836): HEAD commit timestamp unavailable — cannot
+        # verify whether the approval predates the current commit. Callers retry
+        # every ~60 s so this self-heals on the next cycle.
+        MISSING+=("cannot verify approval freshness — HEAD commit timestamp unavailable; retrying next cycle")
       fi
       if [[ "$CR_RETRACTED" != true && "$CA_RETRACTED" != true \
-            && "$CR_APPROVAL_STALE" != true && "$CA_APPROVAL_STALE" != true ]]; then
+            && "$CR_APPROVAL_STALE" != true && "$CA_APPROVAL_STALE" != true \
+            && "$CR_APPROVAL_FRESHNESS_UNKNOWN" != true && "$CA_APPROVAL_FRESHNESS_UNKNOWN" != true ]]; then
         MISSING+=("need 1 explicit CodeRabbit or CodeAnt APPROVED review on HEAD ${HEAD_SHA:0:7} (have $TOTAL_CR_ON_HEAD CodeRabbit, $TOTAL_CA_ON_HEAD CodeAnt review(s) on this SHA)")
       fi
     fi
@@ -692,11 +712,12 @@ case "$REVIEWER" in
         | sort | last // ""')
       # Stale-approval guard (issue #836): check-run completed_at must postdate
       # the HEAD committer date, mirroring the APPROVED review guard above.
+      # Fail-closed: when LAST_COMMIT_TS is empty we cannot verify freshness,
+      # so the check-run does not satisfy the supplemental gate.
       CODEANT_CHECK_OK=false
-      if [[ -n "$LATEST_CA_CHECK_OK_AT" ]]; then
-        if [[ -z "$LAST_COMMIT_TS" || ! "$LATEST_CA_CHECK_OK_AT" < "$LAST_COMMIT_TS" ]]; then
-          CODEANT_CHECK_OK=true
-        fi
+      if [[ -n "$LATEST_CA_CHECK_OK_AT" && -n "$LAST_COMMIT_TS" \
+            && ! "$LATEST_CA_CHECK_OK_AT" < "$LAST_COMMIT_TS" ]]; then
+        CODEANT_CHECK_OK=true
       fi
 
       LATEST_CA_CLEAN_AT="$LATEST_CA_APPROVED_AT"
@@ -707,12 +728,16 @@ case "$REVIEWER" in
       if [[ -n "$LATEST_CA_CHANGES_REQUESTED_AT" && ( -z "$LATEST_CA_CLEAN_AT" || "$LATEST_CA_CHANGES_REQUESTED_AT" > "$LATEST_CA_CLEAN_AT" ) ]]; then
         MISSING+=("CodeAnt CHANGES_REQUESTED on HEAD ${HEAD_SHA:0:7} is newer than the latest CodeAnt clean signal — address findings or wait for APPROVED / successful CodeAnt check-run")
       elif [[ "$CA_APPROVAL_VALID" != true && "$CODEANT_CHECK_OK" != true ]]; then
-        if [[ "$CA_APPROVAL_STALE" == true ]]; then
+        if [[ "$CA_APPROVAL_STALE" == true && "$CA_STALE_MISSING_EMITTED" != true ]]; then
           # Stale-approval guard (issue #836): CodeAnt's approval is retargeted;
           # emit a stale-specific message so callers know to re-trigger rather than
           # interpret this as a complete absence of CodeAnt review.
+          # Guard: CA_STALE_MISSING_EMITTED prevents a duplicate entry when the
+          # primary review block already reported this condition above.
           MISSING+=("CodeAnt approval on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — trigger @codeant-ai review")
-        else
+        elif [[ "$CA_APPROVAL_FRESHNESS_UNKNOWN" != true && "$CA_APPROVAL_STALE" != true ]]; then
+          # Freshness-unknown case is already reported in the primary block above;
+          # only emit the generic "no review" message when neither applies.
           MISSING+=("CodeAnt participated on HEAD ${HEAD_SHA:0:7} but no explicit APPROVED review and no successful CodeAnt check-run (have $TOTAL_CA_ON_HEAD CodeAnt review(s) on this SHA) — wait or comment @codeant-ai review")
         fi
       fi
@@ -736,9 +761,12 @@ case "$REVIEWER" in
         BB_SUBMITTED_AT=$(echo "$LATEST_BB" | jq -r '.submitted_at // ""')
         # Stale-approval guard (issue #836): same retargeting risk as CR/CodeAnt —
         # BugBot review commit_id can be advanced by GitHub on force-push while
-        # submitted_at stays at the pre-push time. Guard is disabled when
-        # LAST_COMMIT_TS is empty (prefer leniency to blocking a valid review).
-        if [[ -n "$LAST_COMMIT_TS" && -n "$BB_SUBMITTED_AT" && "$BB_SUBMITTED_AT" < "$LAST_COMMIT_TS" ]]; then
+        # submitted_at stays at the pre-push time.
+        # Fail-closed: when LAST_COMMIT_TS is empty we cannot verify freshness,
+        # so the review does not satisfy the gate (callers poll every ~60 s).
+        if [[ -z "$LAST_COMMIT_TS" ]]; then
+          MISSING+=("cannot verify BugBot review freshness — HEAD commit timestamp unavailable; retrying next cycle")
+        elif [[ -n "$BB_SUBMITTED_AT" && "$BB_SUBMITTED_AT" < "$LAST_COMMIT_TS" ]]; then
           MISSING+=("BugBot review on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — re-review required; post @cursor review")
         else
           BB_STATE=$(echo "$LATEST_BB" | jq -r '.state // ""')
