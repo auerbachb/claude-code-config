@@ -30,7 +30,6 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `exit-report-format.md` — full structured exit report block specification
 - `greptile-setup.md` — Greptile dashboard setup notes
 - `greptile-reply-format.md` — reply conventions for Greptile threads
-- `ocr-eval.md` — Open Code Review (`ocr`) self-host stand-up, config decision, and side-by-side eval methodology (#470)
 
 ### Workflow decomposition and PM helpers
 
