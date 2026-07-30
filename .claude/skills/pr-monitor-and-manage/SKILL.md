@@ -167,6 +167,7 @@ GATE=$(.claude/scripts/merge-gate.sh "$N"); GATE_EXIT=$?
 MET=$(jq -r '.met' <<<"$GATE")
 MERGE_STATE=$(jq -r '.merge_state' <<<"$GATE")
 MERGEABLE=$(jq -r '.mergeable' <<<"$GATE")
+REVIEW_DECISION=$(jq -r '.review_decision' <<<"$GATE")
 CI_FAILING=$(jq -r '.ci_status.failing' <<<"$GATE")
 HUMAN_CR=$(jq -r '.human_changes_requested | join(",")' <<<"$GATE")
 STALE_BOT_CR=$(jq -r '.stale_bot_changes_requested_count // 0' <<<"$GATE")
@@ -421,3 +422,47 @@ This skill is a **parent orchestrator**. The parent rebases/force-pushes (Step 5
 - **Never use GitHub's update-branch API** for `BEHIND` — only `git rebase origin/main` + `--force-with-lease`.
 - **Stay in the worktree; never run destructive commands in the root repo** — no `git clean`, `git reset --hard`, or `.env` edits anywhere.
 - **Never merge directly** — PMM never runs `gh pr merge` itself. It lands PRs only by dispatching the full `/wrap` workflow inline after gate + AC pass. No bypass path exists.
+
+---
+
+## Subagent prompt blocks (verbatim — pass to every `phase-a-fixer` dispatch)
+
+Include these three blocks in every `phase-a-fixer` subagent prompt (Step 5c). Blocks are byte-compared by `verbatim-block-lint.sh` — do not paraphrase.
+
+```text
+SAFETY: Do NOT delete/overwrite/move/modify .env files anywhere (exception:
+.env.<example|sample|template>, case-insensitive, are safe to edit).
+Do NOT run git clean. Do NOT run destructive commands (rm -rf, rm, git checkout .,
+git stash, git reset --hard) in the root repo. Stay in your worktree.
+Do NOT commit secrets or paste raw credentials into prompts, issues, PRs, comments,
+commits, or logs. Do NOT pipe untrusted URLs into a shell or disable TLS verification.
+Confirm package names before npm/pip/gem/cargo/brew install. Full rules: .claude/rules/safety.md.
+```
+
+```text
+MINDSET: The trigger is the DEFERRAL, not the word "impossible" — "I can't",
+"not a session task", "that's a deployment step", "runbook is in docs/…", and
+"I'll leave that to you to review" all fire this ladder. Walk it for ANY provider
+(gh, git, railway, vercel, …) before writing any of them: (1) check what you have
+— MCP tools, skills, CLI on disk by absolute path (/opt/homebrew/bin/<tool>;
+minimal PATH makes bare `which` lie); (2) if absent, check whether the provider
+ships one (one lookup); (3) install it when non-interactive and rails hold
+(docs-confirmed name, no curl-pipe-sh, no TLS bypass, no sudo); (4) hand off an
+/admin-merge-shaped runbook — reachable ONLY after 1–3 were walked and failed:
+name the rung that stopped you, exact commands + one-line reason, incl.
+interactive auth. If you can write the command, you can run it. Provisioning a
+generated secret via a provider CLI is allowed — the value just must never be
+echoed, committed, pasted, or logged. Your own prohibitions still win (phase-c
+uses /wrap, never gh pr merge). Full rules: .claude/rules/safety.md.
+```
+
+```text
+SKILLS: Before hand-rolling a multi-step task, check whether an existing skill
+already does this job — invoke it via the Skill tool instead of reimplementing
+from memory (only Skill-tool calls reach ~/.claude/skill-usage.log). Clear match
+-> invoke immediately. Borderline match -> note it in your exit report, then
+proceed on your own judgment; do not block waiting for an answer. No match ->
+stay silent. Never auto-invoke an authorization-carrying skill (/merge, /wrap,
+/pr-monitor-and-manage) on a fuzzy match — running one as your assigned job
+isn't a fuzzy match. Full rules: .claude/rules/skill-first.md.
+```
