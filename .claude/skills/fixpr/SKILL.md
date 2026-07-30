@@ -20,7 +20,7 @@ CodeRabbit caps **~8 GitHub PR reviews per hour** per account; **each push** con
 
 ## How this skill is structured
 
-> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read the cached JSON bundle. Inline `gh api` calls for these three endpoints are only permitted inside Step 3b's reviewer-activity detection block, which requires a custom post-push timestamp filter that `pr-state.sh` does not expose. Every other polling or review-state lookup MUST go through `pr-state.sh`.
+> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read the cached JSON bundle. Inline `gh api` calls for these three endpoints are only permitted inside the `reviewer-activity.sh` script (Step 3b delegate), which requires a custom post-push timestamp filter that `pr-state.sh` does not expose. Every other polling or review-state lookup MUST go through `pr-state.sh`.
 
 All mechanical GitHub API work — pagination, GraphQL queries, comment classification — lives in the shared script `.claude/scripts/pr-state.sh`. This file tells the AI layer how to invoke the script and what to do with its output (the JSON bundle).
 
@@ -420,52 +420,24 @@ sleep 120
 Detect activity from the 3 conditionally triggered reviewers (CodeRabbit, Graphite, CodeAnt) on the pushed SHA. Check all three PR comment endpoints plus check-runs for activity after `$PUSHED_AT`. Conversation-level comments do not expose a `commit_id`, so they only count as activity on the pushed SHA when the body mentions the full SHA or short SHA; otherwise, use SHA-scoped reviews, inline comments, or check-runs to avoid treating a late summary from the previous SHA as coverage for the new one:
 
 ```bash
-REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" | jq -s 'add // []')
-INLINE=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" | jq -s 'add // []')
-CONVO=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" | jq -s 'add // []')
-CHECK_RUNS=$(gh api --paginate "repos/$OWNER/$REPO/commits/$PUSHED_SHA/check-runs?per_page=100" --jq '.check_runs[]' | jq -s '.')
-
-REVIEWER_ACTIVITY=$(jq -n \
-  --arg pushed_at "$PUSHED_AT" \
-  --arg sha "$PUSHED_SHA" \
-  --argjson reviews "$REVIEWS" \
-  --argjson inline "$INLINE" \
-  --argjson convo "$CONVO" \
-  --argjson checks "$CHECK_RUNS" \
-  '
-  def recent($ts): ($ts // "") >= $pushed_at;
-  def matches_any($value; $needles):
-    ($value // "" | ascii_downcase) as $haystack
-    | any($needles[]; (. | ascii_downcase) as $needle | $haystack | contains($needle));
-  def check_by($names):
-    any($checks[]?;
-      (((.name // "") as $name
-        | (.app.slug // "") as $slug
-        | (.app.name // "") as $app
-        | (matches_any($name; $names) or matches_any($slug; $names) or matches_any($app; $names))))
-      and recent(.started_at // .created_at // .completed_at));
-  def convo_by($login):
-    any($convo[]?;
-      .user.login == $login
-      and recent(.created_at)
-      and (((.body // "") | contains($sha)) or ((.body // "") | contains($sha[0:7]))));
-  {
-    coderabbit:
-      (any($reviews[]?; .user.login == "coderabbitai[bot]" and .commit_id == $sha and recent(.submitted_at))
-       or any($inline[]?; .user.login == "coderabbitai[bot]" and ((.commit_id // .original_commit_id // "") == $sha) and recent(.created_at))
-       or convo_by("coderabbitai[bot]")
-       or check_by(["CodeRabbit", "coderabbitai"])),
-    graphite:
-      (any($reviews[]?; .user.login == "graphite-app[bot]" and .commit_id == $sha and recent(.submitted_at))
-       or any($inline[]?; .user.login == "graphite-app[bot]" and ((.commit_id // .original_commit_id // "") == $sha) and recent(.created_at))
-       or convo_by("graphite-app[bot]")
-       or check_by(["Graphite", "graphite-app"])),
-    codeant:
-      (any($reviews[]?; .user.login == "codeant-ai[bot]" and .commit_id == $sha and recent(.submitted_at))
-       or any($inline[]?; .user.login == "codeant-ai[bot]" and ((.commit_id // .original_commit_id // "") == $sha) and recent(.created_at))
-       or convo_by("codeant-ai[bot]")
-       or check_by(["CodeAnt", "codeant-ai"])),
-  }')
+# Delegate reviewer-activity detection to the extracted script.
+# The script fetches all 3 comment endpoints + check-runs and emits
+# { coderabbit, graphite, codeant } booleans. The trigger rate-cap /
+# @coderabbitai full review decision logic stays below (in-turn judgment).
+# Full detection logic: .claude/scripts/reviewer-activity.sh
+REVIEWER_ACTIVITY_SH=""
+for _candidate in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/reviewer-activity.sh" \
+  "$HOME/.claude/scripts/reviewer-activity.sh" \
+  ".claude/scripts/reviewer-activity.sh"; do
+  if [[ -x "$_candidate" ]]; then REVIEWER_ACTIVITY_SH="$_candidate"; break; fi
+done
+if [[ -n "$REVIEWER_ACTIVITY_SH" ]]; then
+  REVIEWER_ACTIVITY=$("$REVIEWER_ACTIVITY_SH" "$PR_NUMBER" "$PUSHED_SHA" "$PUSHED_AT")
+else
+  echo "[REVIEWERS] reviewer-activity.sh not found — re-run after .claude/scripts/ is synced from main" >&2
+  REVIEWER_ACTIVITY='{"coderabbit":false,"graphite":false,"codeant":false}'
+fi
 ```
 
 For each of **coderabbit**, **graphite**, **codeant** whose value is `false`, post exactly one dedicated PR-level trigger comment. Do not batch mentions; combined-mention comments fail to trigger reliably. Post these comments sequentially in this order, skipping reviewers that already auto-triggered. CodeRabbit is additionally capped at 2 manual `@coderabbitai full review` triggers per PR in the trailing hour:
@@ -615,43 +587,7 @@ if [[ "${DID_PUSH:-0}" -eq 0 ]]; then
   WATCH_SHA=$HEAD_SHA
   WAIT_BASELINE=$RUN_STARTED_AT
   TICK=$("$SCRIPT" --pr "$PR_NUMBER" --since "$WAIT_BASELINE")
-  WAIT_STATE=$(jq -c --arg sha "$WATCH_SHA" '
-    . as $root
-    | ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]","graphite-app[bot]"] as $botlist
-    | {"coderabbitai[bot]":"coderabbit","cursor[bot]":"bugbot","codeant-ai[bot]":"codeant",
-       "greptile-apps[bot]":"greptile","graphite-app[bot]":"graphite"} as $needles
-    | def is_review_check($n):
-        ($n // "" | ascii_downcase) as $name
-        | any("coderabbit","graphite","codeant","cursor","bugbot","greptile";
-              . as $x | $name | contains($x));
-    ([$root.comments.reviews[]?.user.login,
-      $root.comments.inline[]?.user.login,
-      $root.comments.conversation[]?.user.login]
-     | map(select(. as $l | $botlist | index($l) != null)) | unique) as $participants
-    | ($root.check_runs.all // []) as $checks
-    | ($root.bot_statuses // {}) as $bstat
-    | ($participants | map(. as $bot
-        | $needles[$bot] as $needle
-        | {bot: $bot,
-           done: (
-             ( $bot != "cursor[bot]"
-               and any($root.comments.reviews[]?;
-                       .user.login == $bot and (.commit_id // "") == $sha) )
-             or any($checks[]?;
-                    ((.name // "") | ascii_downcase | contains($needle))
-                    and .status == "completed")
-             or ( $bot == "coderabbitai[bot]" and (($bstat.CodeRabbit.state // "pending") != "pending") )
-             or ( $bot == "greptile-apps[bot]" and (($bstat.Greptile.state // "pending") != "pending") )
-           )})) as $bots
-    | {head_moved: ($root.pr.head_sha != $sha),
-       bots_pending: ($bots | map(select(.done | not) | .bot)),
-       ci_pending: [ $checks[] | select((is_review_check(.name) | not) and .status != "completed") | .name ],
-       ci_failing: [ $checks[] | select((is_review_check(.name) | not)
-                     and (.conclusion == "failure" or .conclusion == "timed_out"
-                          or .conclusion == "action_required" or .conclusion == "startup_failure"
-                          or .conclusion == "stale")) | .name ],
-       new_findings: ($root.new_since_baseline.finding_count // 0)}
-  ' "$TICK")
+  WAIT_STATE=$("$SCRIPT" --wait-state-eval "$WATCH_SHA" "$TICK")
   BOTS_PENDING=$(jq -r '.bots_pending | join(", ") | if . == "" then "none" else . end' <<<"$WAIT_STATE")
   CI_PENDING=$(jq -r '.ci_pending | join(", ") | if . == "" then "none" else . end' <<<"$WAIT_STATE")
   if [[ "$BOTS_PENDING" == "none" && "$CI_PENDING" == "none"
@@ -678,50 +614,7 @@ if [[ "$SKIP_WAIT_LOOP" -eq 0 ]]; then
   RETRIGGERED_THIS_WAIT=0
   while :; do
   TICK=$("$SCRIPT" --pr "$PR_NUMBER" --since "$WAIT_BASELINE")
-  WAIT_STATE=$(jq -c --arg sha "$WATCH_SHA" '
-    . as $root
-    | ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]","graphite-app[bot]"] as $botlist
-    | {"coderabbitai[bot]":"coderabbit","cursor[bot]":"bugbot","codeant-ai[bot]":"codeant",
-       "greptile-apps[bot]":"greptile","graphite-app[bot]":"graphite"} as $needles
-    | def is_review_check($n):
-        ($n // "" | ascii_downcase) as $name
-        | any("coderabbit","graphite","codeant","cursor","bugbot","greptile";
-              . as $x | $name | contains($x));
-    ([$root.comments.reviews[]?.user.login,
-      $root.comments.inline[]?.user.login,
-      $root.comments.conversation[]?.user.login]
-     | map(select(. as $l | $botlist | index($l) != null)) | unique) as $participants
-    | ($root.check_runs.all // []) as $checks
-    | ($root.bot_statuses // {}) as $bstat
-    | ($participants | map(. as $bot
-        | $needles[$bot] as $needle
-        | {bot: $bot,
-           done: (
-             # Review object pinned to the watched SHA. EXCLUDED for BugBot:
-             # cursor[bot] commit_id is stale/unreliable — gate BugBot by its
-             # check-run only (memory feedback_bugbot_commit_id_stale).
-             ( $bot != "cursor[bot]"
-               and any($root.comments.reviews[]?;
-                       .user.login == $bot and (.commit_id // "") == $sha) )
-             # Completed check-run on the watched SHA (check_runs are fetched per
-             # HEAD SHA, so SHA scoping is implicit). conclusion neutral still
-             # counts as complete — BugBot uses neutral for "findings posted".
-             or any($checks[]?;
-                    ((.name // "") | ascii_downcase | contains($needle))
-                    and .status == "completed")
-             # CR/Greptile also report via commit statuses on the watched SHA.
-             or ( $bot == "coderabbitai[bot]" and (($bstat.CodeRabbit.state // "pending") != "pending") )
-             or ( $bot == "greptile-apps[bot]" and (($bstat.Greptile.state // "pending") != "pending") )
-           )})) as $bots
-    | {head_moved: ($root.pr.head_sha != $sha),
-       bots_pending: ($bots | map(select(.done | not) | .bot)),
-       ci_pending: [ $checks[] | select((is_review_check(.name) | not) and .status != "completed") | .name ],
-       ci_failing: [ $checks[] | select((is_review_check(.name) | not)
-                     and (.conclusion == "failure" or .conclusion == "timed_out"
-                          or .conclusion == "action_required" or .conclusion == "startup_failure"
-                          or .conclusion == "stale")) | .name ],
-       new_findings: ($root.new_since_baseline.finding_count // 0)}
-  ' "$TICK")
+  WAIT_STATE=$("$SCRIPT" --wait-state-eval "$WATCH_SHA" "$TICK")
 
   ELAPSED=$(( $(date +%s) - WAIT_STARTED ))
   BOTS_PENDING=$(jq -r '.bots_pending | join(", ") | if . == "" then "none" else . end' <<<"$WAIT_STATE")
@@ -805,31 +698,7 @@ jq -r '
 ' "$VERIFY"
 ```
 
-**Classification rules** (these live in `pr-state.sh`; the list below is the contract — keep the two in sync if either changes). Patterns are checked in this order; first match wins:
-
-1. **Explicit-resolution / clean-pass overrides** (checked first — these signals mean CR or BugBot has issued a clean pass, reported a rate/usage limit instead of reviewing, posted a review-started ack, or emitted a transient error. They win even if the body still contains finding language from a quoted earlier review):
-   - HTML marker `<!-- <review_comment_addressed> -->` → `acknowledgment`
-   - HTML marker `<!-- <review_comment_withdrawn> -->` → `acknowledgment` (CR retracts its own finding after you push back — "Withdrawing the finding"; observed on PR #601). Marker-only, mirroring the addressed marker, so the prose phrase alone never reclassifies (#557 generic-phrase risk). Safe in tier 1 unlike the walkthrough marker in §4: a withdrawal retracts the single finding in its own thread, so it cannot mask another active finding.
-   - `actionable comments posted: 0` → `acknowledgment`. This specific zero-count pattern MUST be checked before the general `actionable comments posted` pattern below — otherwise the general finding pattern would swallow the zero case.
-   - `no actionable comments were generated` → `acknowledgment`
-   - CR rate-limit notices — `rate limit exceeded`, `rate[- ]limited by coderabbit`, `currently rate limited`, `review limit reached`, or `next review (will be) available in` → `acknowledgment`. CR wraps its Fair-Usage notice in a "Full review **finished**" ack, so the `full review triggered` rule below does not cover it — these phrases must. Every phrase names CR's own notice wording: a bare `fair usage limits policy` was tried and rejected (#557) because a real finding *quoting* the policy would classify as an ack. Each observed CR variant matches ≥2 of these phrases, so no single generic phrase carries it.
-   - BugBot usage-limit notices — `couldn't run - usage limit reached` (apostrophe and dash variants tolerated) or `this run hit a usage or spend limit` → `acknowledgment` (BugBot did not review at all, so there is nothing actionable). Both patterns quote BugBot's boilerplate closely on purpose: a looser `hit a usage or spend limit` would swallow a genuine finding *about* rate-limit code, which this repo's PRs frequently touch.
-   - `full review triggered` → `acknowledgment`
-   - `found no new issues` (case-insensitive) → `acknowledgment` (BugBot clean-pass review body: "✅ Bugbot reviewed your changes and found no new issues!")
-   - `<!-- BUGBOT_REVIEW -->` marker present AND body does NOT match `found [1-9][0-9]* potential issue` → `acknowledgment` (BugBot zero-issue summary). This MUST be checked before the generic `issues? found` finding pattern below. Non-zero BugBot summaries ("found 3 potential issues") keep the `<!-- BUGBOT_REVIEW -->` marker but match the non-zero guard and fall through to the finding tier.
-   - `Oops, something went wrong` (case-insensitive) → `acknowledgment` (CodeRabbit transient error stub — not an actionable finding)
-   - HTML marker `<!-- This is an auto-generated reply by CodeRabbit -->` (case-insensitive) → `acknowledgment` (CR auto-reply ack — CR posts this on its own reply-ack comments, e.g. "Received — CodeRabbit is reviewing…"; observed producing phantom findings on PR #659 while wrapping #638, issue #669). Marker-only to avoid the #557 generic-phrase risk: the prose "Received — CodeRabbit is reviewing" is NOT matched, so a real finding quoting that phrase still reaches the finding tier. Safe in tier 1 unlike the §4 walkthrough marker: reply-ack comments never carry their own findings, so an early override cannot mask an active finding.
-2. **Finding patterns**:
-   - Severity keywords `\b(critical|major|minor|nitpick|p[0-2])\b` or badges `🔴|🟠|🟡`
-   - Actionable phrases: `actionable comments posted` (non-zero), `issues? found`, `findings?:`, `potential[_ ]issue`
-   - Fix markers: a fenced ```` ```suggestion ```` block, or a `Prompt for AI Agent` heading
-3. **Weak-ack fallbacks** (only if no finding matched):
-   - LGTM variants: `lgtm`, `looks good`, `approved`, `confirmed`, `resolved`
-4. **CR walkthrough/summary override** (the LAST override, checked immediately before the default):
-   - Marker `<!-- This is an auto-generated comment: summarize by coderabbit.ai -->` → `acknowledgment` (CR's walkthrough boilerplate, posted on nearly every PR; it matched no rule at all and fell through to `default → finding`, producing phantom findings on PRs where CR posted zero reviews — #575).
-   - **Its late position is load-bearing — do not hoist it into the tier-1 override group.** The walkthrough can carry `actionable comments posted: N` (N>0) and severity keywords for the findings it summarizes, so an early override would classify a real-finding summary as an acknowledgment and drop it from `finding_count` — a false clean on the review gate, strictly worse than the phantom-finding noise it fixes. Every finding pattern in tier 2 must be evaluated first and win. Ordering alone supplies that guard, so no AND-not guard (of the `BUGBOT_REVIEW` kind) is needed. Guarded by `Bug6a`/`Bug6b` in `pr-state-classify.test.sh`.
-   - Distinct trigger from #557's rate-limit/usage-limit family in tier 1. Note CR edits this comment in place and may merge a rate-limit notice into the same body, in which case the tier-1 rate-limit rule matches it first — both yield `acknowledgment`.
-5. **Default** (no pattern matched) → `finding`. The safer default — under-classifying here is the failure mode this whole skill exists to prevent.
+**Classification rules** live in `.claude/scripts/pr-state.sh`'s `classify` jq function (the block comment above the `def classify:` line is the authoritative contract — do NOT duplicate it here). Key ordering invariants: tier-1 explicit-resolution overrides (addressed/withdrawn markers, zero-actionable phrases, rate-limit notices, BugBot usage-limit notices, full-review-triggered ack, clean-pass phrases, error stub, auto-reply ack) are checked first and win even if finding language appears in quoted context. Finding patterns (severity, badges, actionable phrases, suggestion blocks) come next. Weak-ack fallbacks (lgtm variants) follow. The CR walkthrough summary override and Greptile clean-pass summary come LAST — their late placement is load-bearing (a walkthrough can carry N>0 finding count; hoisting it would produce false-clean verdicts). Default → finding (under-classifying is the failure mode).
 
 **If `finding_count > 0`:** findings landed between the Step 4d wait exit and this verify. If `FIXPR_WAIT_ITER < FIXPR_MAX_ITERATIONS`, start the next sweep at Step 0 (a fresh `$RUN_STARTED_AT` re-audits and picks them up). At the outer cap: set `FIXPR_WAIT_FINAL=new-findings-pending`, emit `NEW_FINDINGS` in Step 7, and stop — re-running `/fixpr` resets the iteration budget.
 
