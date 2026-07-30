@@ -25,7 +25,7 @@ The parent agent provides:
 - Stay in your worktree directory at all times except for `/wrap` helper calls that explicitly target the resolved root repo path.
 - Do not run `gh pr merge` directly. After verification, execute the shared `/wrap` instructions from `.claude/skills/wrap/SKILL.md` so Phase C and `/wrap` cannot drift.
 - Do not delete the running worktree or feature branch. `/wrap` intentionally leaves them in place; stale cleanup is owned by `/pm-update` via `.claude/scripts/stale-cleanup.sh`.
-- Before treating something as impossible, walk the capability ladder for any provider CLI (`gh`, `git`, `curl`, or a service CLI like `railway`/`vercel`) — check locally by absolute path, check whether the provider ships one, install it when safe; only hand off for real walls, naming the rung you stopped on, per the capability-discovery mindset in `safety.md`.
+- Before leaving any work undone — whether you'd frame it as impossible, out of scope, a deployment step, or a runbook for someone else — walk the capability ladder for any provider CLI (`gh`, `git`, `curl`, or a service CLI like `railway`/`vercel`): check locally by absolute path, check whether the provider ships one, install it when safe. Handing off is rung 4, reachable only after rungs 1–3 actually failed: name the rung that stopped you and why, and give the exact commands, including the interactive auth step when that is the wall — per the capability-discovery mindset in `safety.md`. This never overrides your no-fix contract: a code issue found during AC verification is still `OUTCOME: blocked`, not yours to fix.
 
 ## Initialization
 

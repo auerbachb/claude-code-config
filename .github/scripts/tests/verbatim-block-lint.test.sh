@@ -66,9 +66,36 @@ noop() { :; }
 expect "well-formed repo passes" 0 'verbatim-block-lint: OK' noop
 
 # (b) Drifted verbatim copy fails naming the file and block
+# The substitution target must be a string that appears inside the MINDSET block
+# and nowhere else in the copy file — otherwise the sed is a no-op there, no drift
+# is injected, and this negative test silently passes for the wrong reason (#810).
+# The guard below fails loudly if a future reword breaks that assumption.
+DRIFT_TOKEN='ANY provider'
+
+# The token is used unescaped as a sed pattern, so keep it metacharacter-free.
+if [[ ! "$DRIFT_TOKEN" =~ ^[A-Za-z0-9\ ]+$ ]]; then
+  echo "FAIL — drift token '${DRIFT_TOKEN}' must contain only letters, digits, and spaces"
+  failures=$(( failures + 1 ))
+fi
+
+# Count fixed-string OCCURRENCES, not matching lines: grep -c collapses two hits
+# on one line to 1, which would let a non-unique token slip through this guard.
+for copy in .claude/skills/subagent/SKILL.md; do
+  # grep exits 1 on no match; under `set -euo pipefail` that would abort the whole
+  # script before this guard could report — the exact case it exists to catch. Fail
+  # closed to 0 instead, which trips the != 1 branch below.
+  occurrences=$(grep -o -F -- "$DRIFT_TOKEN" "${REPO_ROOT}/${copy}" 2>/dev/null | wc -l | tr -d '[:space:]') || occurrences=0
+  [[ "$occurrences" =~ ^[0-9]+$ ]] || occurrences=0
+  if (( occurrences != 1 )); then
+    echo "FAIL — drift fixture token '${DRIFT_TOKEN}' occurs ${occurrences}x in ${copy};" \
+         "pick a token that appears exactly once, inside the MINDSET block"
+    failures=$(( failures + 1 ))
+  fi
+done
+
 expect "drifted MINDSET in subagent SKILL.md fails naming file and block" 1 \
   'MINDSET.*drifted|drifted.*MINDSET' \
-  sed -i.bak 's/capability ladder/DRIFTED ladder/' \
+  sed -i.bak "s/${DRIFT_TOKEN}/DRIFTED provider/" \
     .claude/skills/subagent/SKILL.md
 
 # (c) Missing copy file fails
