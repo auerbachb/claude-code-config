@@ -468,12 +468,13 @@ Resolve the path with `handoff-state.sh [--owner-repo owner/repo] --path {PR_NUM
 {COMPLETE contents of CLAUDE.md and all .claude/rules/*.md}
 
 ## SAFETY WARNING
-SAFETY: Do NOT delete, overwrite, move, or modify .env files — anywhere, any repo.
-Exception: template files matching .env.<example|sample|template|dist|tpl>
-(case-insensitive) are committed, non-secret, and safe to edit.
-Do NOT run git clean in ANY directory. Do NOT run destructive commands (rm -rf, rm,
-git checkout ., git stash, git reset --hard) in the root repo directory. Stay in your
-worktree directory at all times.
+SAFETY: Do NOT delete/overwrite/move/modify .env files anywhere (exception:
+.env.<example|sample|template>, case-insensitive, are safe to edit).
+Do NOT run git clean. Do NOT run destructive commands (rm -rf, rm, git checkout .,
+git stash, git reset --hard) in the root repo. Stay in your worktree.
+Do NOT commit secrets or paste raw credentials into prompts, issues, PRs, comments,
+commits, or logs. Do NOT pipe untrusted URLs into a shell or disable TLS verification.
+Confirm package names before npm/pip/gem/cargo/brew install. Full rules: .claude/rules/safety.md.
 
 ## Phase C Instructions
 
