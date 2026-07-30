@@ -23,12 +23,12 @@ make_fixture() {
   local dir="$1"
   mkdir -p \
     "$dir/.claude/rules" \
-    "$dir/.claude/skills/subagent" \
+    "$dir/.claude/reference" \
     "$dir/.claude/skills/pr-monitor-and-manage"
   cp "$REPO_ROOT/.claude/rules/safety.md" "$dir/.claude/rules/"
   cp "$REPO_ROOT/.claude/rules/skill-first.md" "$dir/.claude/rules/"
-  cp "$REPO_ROOT/.claude/skills/subagent/SKILL.md" \
-     "$dir/.claude/skills/subagent/"
+  cp "$REPO_ROOT/.claude/reference/subagent-phase-guardrails.md" \
+     "$dir/.claude/reference/"
   cp "$REPO_ROOT/.claude/skills/pr-monitor-and-manage/SKILL.md" \
      "$dir/.claude/skills/pr-monitor-and-manage/"
 }
@@ -80,7 +80,7 @@ fi
 
 # Count fixed-string OCCURRENCES, not matching lines: grep -c collapses two hits
 # on one line to 1, which would let a non-unique token slip through this guard.
-for copy in .claude/skills/subagent/SKILL.md; do
+for copy in .claude/reference/subagent-phase-guardrails.md; do
   # grep exits 1 on no match; under `set -euo pipefail` that would abort the whole
   # script before this guard could report — the exact case it exists to catch. Fail
   # closed to 0 instead, which trips the != 1 branch below.
@@ -93,21 +93,21 @@ for copy in .claude/skills/subagent/SKILL.md; do
   fi
 done
 
-expect "drifted MINDSET in subagent SKILL.md fails naming file and block" 1 \
+expect "drifted MINDSET in subagent-phase-guardrails.md fails naming file and block" 1 \
   'MINDSET.*drifted|drifted.*MINDSET' \
   sed -i.bak "s/${DRIFT_TOKEN}/DRIFTED provider/" \
-    .claude/skills/subagent/SKILL.md
+    .claude/reference/subagent-phase-guardrails.md
 
 # (c) Missing copy file fails
 expect "missing copy file fails" 1 \
   'Required file not found' \
-  rm -f .claude/skills/subagent/SKILL.md
+  rm -f .claude/reference/subagent-phase-guardrails.md
 
 # (d) Missing block within a copy file fails
-expect "missing SKILLS block in subagent SKILL.md fails" 1 \
+expect "missing SKILLS block in subagent-phase-guardrails.md fails" 1 \
   'Missing SKILLS|SKILLS.*not found' \
   sed -i.bak 's/^SKILLS: /REMOVED: /' \
-    .claude/skills/subagent/SKILL.md
+    .claude/reference/subagent-phase-guardrails.md
 
 # Final: real repo conformance
 if (cd "$REPO_ROOT" && bash "$LINT" >/dev/null 2>&1); then
