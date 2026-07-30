@@ -6,17 +6,19 @@
 #   - cr        : prepends `@coderabbitai ` to the body if not already present
 #   - bugbot    : strips any `@cursor` tokens from the body (may trigger re-review)
 #   - greptile  : strips any `@greptileai` tokens from the body (paid re-review)
+#   - codeant   : strips any `@codeant-ai` tokens from the body (no auto-mention;
+#                 plain-text reply — triggering CodeAnt is rate-limited)
 #
 # The strip rules are case-insensitive and match the literal @token only — they
 # do NOT mangle surrounding text. Both strip and prepend are idempotent.
 #
 # Usage:
-#   reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile --body "<text>" [--pr N]
+#   reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant --body "<text>" [--pr N]
 #   reply-thread.sh --help
 #
 # Arguments:
 #   <comment_id>     Numeric databaseId of the review comment to reply to.
-#   --reviewer X     One of: cr, bugbot, greptile. Controls @mention handling.
+#   --reviewer X     One of: cr, bugbot, greptile, codeant. Controls @mention handling.
 #   --body "<text>"  Reply body (after transformation rules are applied).
 #   --pr N           PR number. Required only for the PR-comment fallback path;
 #                    optional for inline. If omitted and inline returns 404,
@@ -47,7 +49,8 @@
 #
 # See .claude/rules/cr-github-review.md "Processing CR Feedback" step 3 and
 # .claude/rules/greptile.md / .claude/rules/bugbot.md for the reply conventions
-# this script enforces.
+# this script enforces. For CodeAnt reply conventions, see
+# .claude/reference/codeant-graphite-supplemental.md.
 
 set -euo pipefail
 mkdir -p "${HOME}/.claude" 2>/dev/null || true
@@ -73,7 +76,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --reviewer)
       if [[ -z "${2:-}" ]]; then
-        echo "ERROR: --reviewer requires a value (cr|bugbot|greptile)" >&2
+        echo "ERROR: --reviewer requires a value (cr|bugbot|greptile|codeant)" >&2
         exit 2
       fi
       REVIEWER="$2"
@@ -112,7 +115,7 @@ done
 
 if [[ -z "$COMMENT_ID" ]]; then
   echo "ERROR: <comment_id> is required" >&2
-  echo "Usage: $(basename "$0") <comment_id> --reviewer cr|bugbot|greptile --body \"<text>\" [--pr N]" >&2
+  echo "Usage: $(basename "$0") <comment_id> --reviewer cr|bugbot|greptile|codeant --body \"<text>\" [--pr N]" >&2
   exit 2
 fi
 
@@ -122,13 +125,13 @@ if [[ ! "$COMMENT_ID" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 case "$REVIEWER" in
-  cr|bugbot|greptile) ;;
+  cr|bugbot|greptile|codeant) ;;
   "")
-    echo "ERROR: --reviewer is required (cr|bugbot|greptile)" >&2
+    echo "ERROR: --reviewer is required (cr|bugbot|greptile|codeant)" >&2
     exit 2
     ;;
   *)
-    echo "ERROR: --reviewer must be one of: cr, bugbot, greptile (got: $REVIEWER)" >&2
+    echo "ERROR: --reviewer must be one of: cr, bugbot, greptile, codeant (got: $REVIEWER)" >&2
     exit 2
     ;;
 esac
@@ -190,6 +193,12 @@ case "$REVIEWER" in
     # Strip standalone @greptileai tokens (every mention = paid re-review).
     strip_standalone_token '@[Gg][Rr][Ee][Pp][Tt][Ii][Ll][Ee][Aa][Ii]'
     ;;
+  codeant)
+    # Strip standalone @codeant-ai tokens (triggering CodeAnt via @mention is
+    # rate-limited; plain-text reply mirrors bugbot/greptile semantics). The
+    # hyphen is a literal character in the pattern, not a range separator.
+    strip_standalone_token '@[Cc][Oo][Dd][Ee][Aa][Nn][Tt]-[Aa][Ii]'
+    ;;
 esac
 
 # Collapse only runs of spaces/tabs left by token removal; preserve newlines
@@ -197,7 +206,7 @@ esac
 # whitespace from each line. [[:blank:]] is portable across BSD and GNU sed —
 # [ \t] is NOT: BSD sed's -E treats `\t` as literal `\` + `t` inside a bracket
 # expression, which would eat real `t` characters at line ends.
-if [[ "$REVIEWER" == "bugbot" || "$REVIEWER" == "greptile" ]]; then
+if [[ "$REVIEWER" == "bugbot" || "$REVIEWER" == "greptile" || "$REVIEWER" == "codeant" ]]; then
   BODY=$(printf '%s' "$BODY" | sed -E 's/[[:blank:]]{2,}/ /g; s/^[[:blank:]]+//; s/[[:blank:]]+$//')
 fi
 
