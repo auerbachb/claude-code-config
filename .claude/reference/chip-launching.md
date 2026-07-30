@@ -1,6 +1,6 @@
 # Chip Launching — One-Click Coding Threads
 
-Canonical mechanics for offering a coding-thread prompt as a **task chip** the user can click to spin off a new session. Shared by the five canonical emitters: `/pm` (Step 3.1), `/prompt` (Step 6), `/start-issue` (Step 7), `/issue-maker` (Step 9c), and `/wave` (Step 7.1). Skill-specific wiring stays in each SKILL.md; everything below is defined once, here. Any other `spawn_task` / chip offer — including ad-hoc agent suggestions — inherits the same contract via `chip-spawn.md`.
+Canonical mechanics for offering a coding-thread prompt as a **task chip** the user can click to spin off a new session. Shared by the six canonical emitters: `/pm` (Step 3.1), `/prompt` (Step 6), `/start-issue` (Step 7), `/issue-maker` (Step 9c), `/wave` (Step 7.1), and `/harness-audit` (Step 5). Skill-specific wiring stays in each SKILL.md; everything below is defined once, here. Any other `spawn_task` / chip offer — including ad-hoc agent suggestions — inherits the same contract via `chip-spawn.md`.
 
 **Out of scope (explicit):** `/pm-handoff` does not offer chips and will not — its handoff prompt is a context-turnover artifact whose visible, portable text is the deliverable, and it has no issue number, model line, or lifecycle for these mechanics to key on. Decided in #562; rationale in `pm-handoff-chips-decision.md`.
 
@@ -73,6 +73,23 @@ active model, so the check relies on the model naming itself accurately.
 ```
 
 **Placement rule:** for every emitter, the `**Model:**` line is the first line of the `prompt` payload and this preamble is the content that immediately follows it — see each skill's Step for how its own template maps onto this shape.
+
+### Literal vs resolved model names (emitter classes)
+
+Most emitters write the recommended model straight into the `**Model:**` line, because the recommendation is a judgment about *that issue* — a small mechanical fix and a subtle concurrency bug want different tiers, and neither answer comes from a lookup table.
+
+`/harness-audit` is the exception, and the reason generalizes. Its recommendation is always "whatever the strongest model is right now" — it is not reasoning about the work, it is naming the top of the fleet. A literal there is guaranteed to go stale the next time the fleet moves, which is exactly what happened across surfaces in #749. So it resolves the tier at run time through `.claude/scripts/model-fleet.sh` and carries **no model name in its body at all**.
+
+This makes two emitter classes, both enforced by `chip-model-guard-lint.sh`:
+
+| Class | Emitters | Model line | Lint check |
+|-------|----------|------------|------------|
+| **Literal** | `/pm`, `/prompt`, `/start-issue`, `/issue-maker`, `/wave` | Named in the skill body | Must contain the top-tier literal (the pre-click warning) |
+| **Resolver** | `/harness-audit` | Resolved via `model-fleet.sh` | Must reference the resolver and the pre-click warning, and must **not** contain any model literal |
+
+The resolver check is strictly stronger, not a carve-out: a literal appearing in a resolver emitter is a lint **error**, since it would reintroduce precisely the drift the indirection removes. Everything else in this document — first-line placement, the verbatim guard, the short-summary repetition, the pre-click picker warning — applies identically to both classes. A resolver emitter still repeats its `**Model:**` line in the visible summary; it just computes the name instead of quoting it.
+
+Use the resolver class only when the right model genuinely is "the top of the fleet" (or another position in it) rather than a per-task judgment. Everything else stays literal.
 
 **Why prompt-level, not tooling-level:** there is no `spawn_task` model/effort parameter and no runtime mechanism for a thread to introspect its own active model — model identity is always asserted by the caller, never read back. The guard is therefore a best-effort self-report, not a hard technical guarantee. Full trade-off: `chip-model-guard-decision.md`.
 

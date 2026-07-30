@@ -11,6 +11,7 @@ Run `grep -rn "gh issue create" .claude/` to reproduce this list. Every site mus
 | `.claude/skills/wrap/SKILL.md` (Phase 3, Parts A + B) | **Autonomous** | Strong/weak/none — suppress + report (wired since PR #661) |
 | `.claude/skills/wrap/SKILL.md` (Phase 3, Step 3.10a — churn hotspots) | **Autonomous** | **Exact-match** on a path key, not strong/weak/none — see "Exact-artifact dedup" below (issue #755) |
 | `.claude/agents/pm-worker.md` (Task: Issue Creation) | **Autonomous** | Strong/weak/none — suppress + report (wired since PR #680) |
+| `.claude/skills/harness-audit/SKILL.md` (Step 7) | **Autonomous** | **Exact-artifact** on the audited path — see "Exact-artifact dedup" below (issue #770) |
 | `.claude/skills/issue-maker/SKILL.md` (Step 4) | **Human-in-the-loop** | Surface-only — never auto-suppress (wired since PR #661) |
 | `.claude/skills/start-issue/SKILL.md` (Step 1a) | **Human-in-the-loop** | Surface strong matches, pause for confirmation (wired since PR #680) |
 | `.claude/agents/researcher.md` | **Non-filer** | `gh issue create` appears in the agent's forbidden-command list |
@@ -29,11 +30,13 @@ The strong/weak/none ladder above is the default because most findings are prose
 
 A finding keyed to a **single unambiguous artifact** is a different problem. `/wrap`'s churn-hotspot category files one issue per **file path**, and "is there already an issue for `src/Form.tsx`?" has an exact answer. Fuzzy coverage scoring is the wrong instrument twice over: it can miss the existing issue (filing a duplicate) and it can match a *sibling* file (suppressing a real finding).
 
+**A second category joined it in #770.** `/harness-audit` files findings keyed to one audited artifact — a rule file, a skill, a script, a hook. "Is there already an issue about `.claude/rules/safety.md`?" has the same exact answer, and the same two failure modes if scored fuzzily: a sibling rule file scores highly enough to suppress a real finding, while the genuine prior issue about that exact path can be missed. Both categories use the identical mechanism below, differing only in their title prefix and marker name.
+
 That category therefore uses an exact key instead of `dedup_search`:
 
-- **Title convention** — `Refactor hotspot: <path>`, matched with string equality.
-- **Body marker** — `<!-- churn-hotspot: <path> -->`, which still matches after a human edits the title.
-- **Search is recall only.** `gh issue list --search "Refactor hotspot in:title"` narrows the candidate set; the decision is a **client-side exact comparison**, because GitHub tokenizes paths in `in:title` and would otherwise match `src/OtherForm.tsx` for `src/Form.tsx`.
+- **Title convention** — `Refactor hotspot: <path>` (`/wrap`) or `Harness redundancy: <path>` (`/harness-audit`), matched with string equality.
+- **Body marker** — `<!-- churn-hotspot: <path> -->` / `<!-- harness-audit: <path> -->`, which still matches after a human edits the title. A **grouped** issue covering several artifacts that share one fix carries one marker per artifact, so each path still dedups independently.
+- **Search is recall only.** `gh issue list --search "Refactor hotspot in:title"` (`/wrap`) or `gh issue list --search "Harness redundancy in:title"` (`/harness-audit`) narrows the candidate set; the decision is a **client-side exact comparison**, because GitHub tokenizes paths in `in:title` and would otherwise match `src/OtherForm.tsx` for `src/Form.tsx` — or `.claude/rules/cr-github-review.md` for `.claude/rules/cr-merge-gate.md`.
 - **A failed lookup blocks filing.** `churn-hotspots.sh` reports `existing_lookup_failed`; the caller surfaces it and files nothing rather than risk a duplicate.
 
 Both invariants from the fuzzy path still hold: suppression is reported (the evidence goes onto the existing issue as a comment, named in the closing report), and no finding is dropped silently.
