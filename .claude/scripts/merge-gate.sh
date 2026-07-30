@@ -538,6 +538,16 @@ if [[ -n "$REVIEW_DECISION" && "$REVIEW_DECISION" != "APPROVED" ]]; then
   fi
 fi
 
+# Timestamp normaliser — used by all reviewer paths below (issue #836, BugBot round 5).
+# GitHub can return mixed ISO-8601 UTC forms ("…Z" and "…+00:00"). Bash [[ < ]] is
+# purely lexicographic; Z (ASCII 90) > + (ASCII 43), so "…Z" > "…+00:00" even for
+# equal instants, breaking stale-approval comparisons. Strip the timezone suffix to
+# produce a bare "YYYY-MM-DDTHH:MM:SS" string that sorts correctly for UTC timestamps.
+norm_ts() {
+  local t="${1%Z}"       # strip trailing Z
+  echo "${t%+00:00}"     # strip trailing +00:00 (all GitHub timestamps are UTC)
+}
+
 # Path-specific checks.
 # Default false — only the cr) branch below computes a meaningful value.
 PRIMARY_REVIEW_MET=false
@@ -583,13 +593,13 @@ case "$REVIEWER" in
     # Retraction: later CHANGES_REQUESTED on same SHA invalidates APPROVED (ISO timestamps).
     CR_RETRACTED=false
     if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && -n "$LATEST_CR_CHANGES_REQUESTED_AT" && -n "$LATEST_CR_APPROVED_AT" ]]; then
-      if [[ "$LATEST_CR_CHANGES_REQUESTED_AT" > "$LATEST_CR_APPROVED_AT" ]]; then
+      if [[ "$(norm_ts "$LATEST_CR_CHANGES_REQUESTED_AT")" > "$(norm_ts "$LATEST_CR_APPROVED_AT")" ]]; then
         CR_RETRACTED=true
       fi
     fi
     CA_RETRACTED=false
     if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && -n "$LATEST_CA_CHANGES_REQUESTED_AT" && -n "$LATEST_CA_APPROVED_AT" ]]; then
-      if [[ "$LATEST_CA_CHANGES_REQUESTED_AT" > "$LATEST_CA_APPROVED_AT" ]]; then
+      if [[ "$(norm_ts "$LATEST_CA_CHANGES_REQUESTED_AT")" > "$(norm_ts "$LATEST_CA_APPROVED_AT")" ]]; then
         CA_RETRACTED=true
       fi
     fi
@@ -598,8 +608,8 @@ case "$REVIEWER" in
     # but does NOT update submitted_at. An approval whose submitted_at predates
     # the HEAD commit's committer date was submitted before the current commit
     # and must not count even when commit_id matches. Equal timestamps are
-    # accepted (submitted_at >= LAST_COMMIT_TS). ISO 8601 strings are
-    # lexicographically comparable so bash [[ < ]] is correct here.
+    # accepted (submitted_at >= LAST_COMMIT_TS). Use norm_ts for comparisons
+    # to handle mixed Z/+00:00 UTC suffixes (issue #836, BugBot round 5).
     #
     # Fail-closed (issue #836): when LAST_COMMIT_TS is empty (HEAD timestamp API
     # failure) we CANNOT verify freshness, so qualifying approvals do NOT satisfy
@@ -617,7 +627,7 @@ case "$REVIEWER" in
         # submitted_at is missing from the approval itself (not a transient API
         # failure) — cannot verify freshness (fail-closed, issue #836).
         CR_APPROVAL_SUBMITTED_AT_MISSING=true
-      elif [[ "$LATEST_CR_APPROVED_AT" < "$LAST_COMMIT_TS" ]]; then
+      elif [[ "$(norm_ts "$LATEST_CR_APPROVED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
         CR_APPROVAL_STALE=true
       fi
     fi
@@ -629,7 +639,7 @@ case "$REVIEWER" in
         CA_APPROVAL_FRESHNESS_UNKNOWN=true
       elif [[ -z "$LATEST_CA_APPROVED_AT" ]]; then
         CA_APPROVAL_SUBMITTED_AT_MISSING=true
-      elif [[ "$LATEST_CA_APPROVED_AT" < "$LAST_COMMIT_TS" ]]; then
+      elif [[ "$(norm_ts "$LATEST_CA_APPROVED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
         CA_APPROVAL_STALE=true
       fi
     fi
@@ -739,7 +749,7 @@ case "$REVIEWER" in
         if [[ -z "$LAST_COMMIT_TS" ]]; then
           # Cannot verify whether the check-run predates the current commit.
           CODEANT_CHECK_FRESHNESS_UNKNOWN=true
-        elif [[ ! "$LATEST_CA_CHECK_OK_AT" < "$LAST_COMMIT_TS" ]]; then
+        elif [[ ! "$(norm_ts "$LATEST_CA_CHECK_OK_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
           CODEANT_CHECK_OK=true
         else
           # check-run completed before the HEAD commit — stale via force-push
@@ -757,7 +767,7 @@ case "$REVIEWER" in
         LATEST_CA_CLEAN_AT="$LATEST_CA_APPROVED_AT"
       fi
       if [[ "$CODEANT_CHECK_OK" == true ]]; then
-        if [[ -z "$LATEST_CA_CLEAN_AT" || "$LATEST_CA_CHECK_OK_AT" > "$LATEST_CA_CLEAN_AT" ]]; then
+        if [[ -z "$LATEST_CA_CLEAN_AT" || "$(norm_ts "$LATEST_CA_CHECK_OK_AT")" > "$(norm_ts "$LATEST_CA_CLEAN_AT")" ]]; then
           LATEST_CA_CLEAN_AT="$LATEST_CA_CHECK_OK_AT"
         fi
       fi
@@ -769,12 +779,12 @@ case "$REVIEWER" in
       # check is needed. If LAST_COMMIT_TS is unavailable, treat as blocking (fail-closed).
       CA_CHANGES_BLOCKING=false
       if [[ -n "$LATEST_CA_CHANGES_REQUESTED_AT" ]]; then
-        if [[ -z "$LAST_COMMIT_TS" || ! "$LATEST_CA_CHANGES_REQUESTED_AT" < "$LAST_COMMIT_TS" ]]; then
+        if [[ -z "$LAST_COMMIT_TS" || ! "$(norm_ts "$LATEST_CA_CHANGES_REQUESTED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
           CA_CHANGES_BLOCKING=true
         fi
       fi
 
-      if [[ "$CA_CHANGES_BLOCKING" == true && ( -z "$LATEST_CA_CLEAN_AT" || "$LATEST_CA_CHANGES_REQUESTED_AT" > "$LATEST_CA_CLEAN_AT" ) ]]; then
+      if [[ "$CA_CHANGES_BLOCKING" == true && ( -z "$LATEST_CA_CLEAN_AT" || "$(norm_ts "$LATEST_CA_CHANGES_REQUESTED_AT")" > "$(norm_ts "$LATEST_CA_CLEAN_AT")" ) ]]; then
         MISSING+=("CodeAnt CHANGES_REQUESTED on HEAD ${HEAD_SHA:0:7} is newer than the latest CodeAnt clean signal — address findings or wait for APPROVED / successful CodeAnt check-run")
       elif [[ "$CA_APPROVAL_VALID" != true && "$CODEANT_CHECK_OK" != true ]]; then
         if [[ "$CA_APPROVAL_STALE" == true && "$CA_STALE_MISSING_EMITTED" != true ]]; then
@@ -845,7 +855,7 @@ case "$REVIEWER" in
           # submitted_at is missing — cannot verify freshness without a timestamp
           # to compare against; treat as unknown (fail-closed, issue #836).
           MISSING+=("cannot verify BugBot review freshness — submitted_at unavailable; retrying next cycle")
-        elif [[ "$BB_SUBMITTED_AT" < "$LAST_COMMIT_TS" ]]; then
+        elif [[ "$(norm_ts "$BB_SUBMITTED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
           MISSING+=("BugBot review on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — re-review required; post @cursor review")
         else
           BB_STATE=$(echo "$LATEST_BB" | jq -r '.state // ""')
