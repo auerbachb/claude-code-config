@@ -14,6 +14,46 @@ Checking one stream catches one CLI and misses the other:
 
 Observed with `codeant` v0.5.1 and `coderabbit` v0.6.5 on 2026-07-21.
 
+## CodeAnt CLI not installed (issue #819)
+
+This is the third, simplest CodeAnt failure state — the binary is absent entirely. It is distinct from the false-clean (#642) and 403 daily-cap (#643) states: there is no API call to fail, no stderr error, and no ambiguity. The only signal is a shell error before any review runs.
+
+| Signal | Value | Usable? |
+|---|---|---|
+| Shell exit code | non-zero (`127` on most shells) | Yes — `codeant: command not found` |
+| stderr | `command not found: codeant` (or similar) | Yes — unambiguous before any API call |
+| stdout JSON | (none) | N/A |
+
+**Contrast with the other two states:**
+
+| State | Binary present? | API call made? | stderr signal |
+|---|---|---|---|
+| Not installed (#819) | **No** | No | `command not found` before any review |
+| False-clean (#642) | Yes | Yes (fails silently) | `API Error` / `[error] Failed to review` on stderr |
+| 403 daily-cap (#643) | Yes | Yes (quota exhausted) | 403 text on stderr; token is fine |
+
+**Rung-1 evidence shape.** When checking for the binary, probe absolute paths — the Bash tool's minimal PATH makes a bare `which` unreliable:
+
+```bash
+for p in /opt/homebrew/bin/codeant ~/.local/bin/codeant ~/bin/codeant /usr/local/bin/codeant; do
+  ls "$p" 2>/dev/null && echo "FOUND: $p" || true
+done
+npm list -g codeant-cli 2>/dev/null
+```
+
+**Coverage-enum mapping:** CodeAnt `command not found` / not installed → CodeAnt **not covered** → `cr-only` coverage (see table below).
+
+**Restore path (capability-ladder rung 3 → 4).** The package name `codeant-cli` is confirmed in this doc and in `.claude/reference/codeant-graphite-supplemental.md`. Install is non-interactive and satisfies all rails (no `curl|sh`, no TLS bypass, no `sudo` required at the Homebrew npm prefix):
+
+```bash
+npm install -g codeant-cli   # rung 3 — installs the binary
+codeant login                 # rung 4 — browser OAuth; cannot be run non-interactively
+```
+
+Auth (`codeant login`) opens a browser flow against `app.codeant.ai` and is the only blocker for a non-interactive agent. Full runbook with Option B (API key) and the proof-run stderr check: `.claude/reference/codeant-graphite-supplemental.md` §Install state. Ladder definition: `.claude/rules/safety.md` §Capability Discovery.
+
+**Standing state on this machine (as of 2026-07-30):** binary installed (v0.5.1 at `/opt/homebrew/bin/codeant`), auth pending — `cr-only` baseline until `codeant login` or `codeant set-codeant-api-key` is run interactively.
+
 ## The false-clean
 
 On total API failure, `codeant review` produces a result that is indistinguishable from a

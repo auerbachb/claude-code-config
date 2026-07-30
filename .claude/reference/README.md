@@ -20,7 +20,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `capability-discovery-examples.md` — false-walls vs real-walls catalog for try-CLI-before-handoff (`safety.md` Capability Discovery)
 - `merge-gate-reviewer-paths.md` — per-reviewer merge-gate path details (CR/CodeAnt, BugBot, Greptile)
 - `codeant-graphite-supplemental.md` — CodeAnt and Graphite supplemental polling on the CR path
-- `local-review-cli-failure-modes.md` — how CodeAnt/CodeRabbit fake a clean pass on failure, 403 triage, 15-file cap (#642)
+- `local-review-cli-failure-modes.md` — how CodeAnt/CodeRabbit fake a clean pass on failure, 403 triage, 15-file cap, and binary-absent detection (#642, #819)
 - `wrap-fixpr-delegation.md` — `/wrap` Step 2.1 → full `/fixpr` recovery handoff contract
 - `state-file-contracts.md` — expanded scoping, write-lock, migration, and field-type mechanics for `session-state.json` + handoffs (`handoff-files.md`; #625, #638, #639, #651, #655, #682, #687, #704)
 - `authorship-guard.md` — `pr-authorship.sh` exit-code semantics, the three shared-script fail-safes, and `--allow-nonauthor` override plumbing (`safety.md` §Authorship; #733)

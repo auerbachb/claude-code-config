@@ -31,3 +31,31 @@ CodeAnt and Graphite are parallel supplements; the primary chain stays CR → Bu
 - `--fail-on <severity>`: `BLOCKER` / `CRITICAL` / `MAJOR` / `MINOR` / `INFO` (default `CRITICAL`) — sets the exit-code threshold.
 - `--headless`: JSON results on stdout, progress/status on stderr — for agent/CI parsing.
 - An MCP server mode and a Claude Code integration also exist (`docs.codeant.ai/cli/mcp-server`, `docs.codeant.ai/cli/claude-code-integration`) — not wired into this repo's workflow yet.
+
+### Install state on this machine (updated 2026-07-30, issue #819)
+
+**Binary:** `npm install -g codeant-cli` was run successfully 2026-07-30. `codeant --version` = 0.5.1 at `/opt/homebrew/bin/codeant`.
+
+**Auth:** blocked at capability-ladder rung 3. `codeant login` is a browser OAuth flow (`app.codeant.ai`) — no non-interactive path exists. The CLI also accepts `codeant set-codeant-api-key <key>` (no browser), but no API key is stored in shell config, env vars, or `~/.codeant/config.json` (which does not yet exist).
+
+**Current baseline:** `cr-only` — every local review runs CodeRabbit only until auth completes. The CodeAnt **GitHub App** is independent and unaffected; it continues to satisfy the CR-path merge gate on its own.
+
+**Rung-4 restore runbook (user must run interactively):**
+
+```bash
+# Option A — browser OAuth (standard):
+codeant login
+# Opens app.codeant.ai in your browser; key saved to ~/.codeant/config.json.
+
+# Option B — API key (non-interactive, if you have a key from the CodeAnt dashboard):
+codeant set-codeant-api-key <your-api-key>
+
+# Verify auth (safe — reads org membership, no write):
+codeant scans orgs
+
+# Run a proof review (check stderr for errors before trusting "no findings"):
+codeant review --all --headless >ca.json 2>ca.err
+grep -qE 'API Error|\[error\]|40[13]' ca.err && echo "FAILED RUN" || echo "clean"
+```
+
+Failure modes once installed: false-clean on API failure and 403 daily-cap — see `local-review-cli-failure-modes.md`.

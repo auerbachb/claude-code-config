@@ -17,3 +17,5 @@ During PR #763, both local review CLIs were unavailable simultaneously: CodeRabb
 3. **Self-review is risk-reduction, not coverage.** A self-review exits the local loop correctly per the rules but never satisfies the GitHub merge gate. It should be surfaced in-thread, not only as a footnote in the PR body.
 
 **Provenance:** Issue #769, PR #763 incident; related issues #642 (CodeAnt false-clean on API failure), #643 (403 entitlement), #663 (CodeAnt 403 re-auth advice).
+
+**Standing state update (2026-07-30, Issue #819):** CodeAnt CLI binary is now installed (`npm install -g codeant-cli` ran during PR #819, v0.5.1 at `/opt/homebrew/bin/codeant`). Auth (`codeant login`) is blocked at rung 3 — browser OAuth only, no non-interactive path. Coverage remains `cr-only` until a human runs `codeant login` or `codeant set-codeant-api-key <key>`. Merge gate is unaffected — CodeAnt GitHub App still approves independently. Restore runbook: `.claude/reference/codeant-graphite-supplemental.md` §Install state.
