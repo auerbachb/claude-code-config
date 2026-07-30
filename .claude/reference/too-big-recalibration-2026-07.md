@@ -167,3 +167,52 @@ Every separate-thread verdict must **name which of the three criteria fired and 
 | Evaluate A/B/C against the one-thread goal; confirm or refactor, with recorded reasoning | Phase 3 — confirmed on two capability-independent grounds; rejected options recorded; phase count shown to be orthogonal to routing. |
 | Ceiling and queue stay coherent; past-ceiling work queues inline, never a chip | Phase 4 — ceiling held with rationale; the overflow defect in `chip-launching.md` found and fixed by splitting what the slot check decides. |
 | Rule corpus stays within budget | Only `subagent-orchestration.md` is counted, and all rationale is held here where it is free. Corpus grew 15 words (11,957 → 11,972) against a 12,310 cap: the A/B/C pointer and the queue-not-chip clause cost more than the offsetting trims recovered, and bulleting the dense Orchestration block for scannability added the rest. `rule-lint.sh` passes. |
+
+---
+
+## Live-run outcome — Issue #784 (2026-07-30)
+
+**Issue:** [#784](https://github.com/auerbachb/claude-code-config/issues/784) — smoke-test: run a formerly-too-big issue fully inline from a PM thread.
+
+### The run
+
+**Subject:** [Issue #790](https://github.com/auerbachb/claude-code-config/issues/790) — "Compress the auto-loaded rule corpus" / [PR #804](https://github.com/auerbachb/claude-code-config/pull/804). A 17-file change touching `CLAUDE.md` and every `.claude/rules/*.md` file, compressing the corpus from 12,166 to 10,999 words (−1,167 words).
+
+**Why the old criterion would have rejected it.** Criterion 1's old form asked whether the change was a "very large, many-file change — a sweeping migration across many files." A 17-file pass touching `CLAUDE.md` and all 16 rule files is exactly the shape that phrase was read to cover in practice. The named-disqualifier requirement did not yet exist, so the routing would have been made on size and scope alone, with no obligation to articulate why the work couldn't be carried inline. The corpus edit would have gone to a separate coding thread.
+
+**Why the new criterion admitted it.** Criterion 1 now asks whether the work can be carried across sequential subagent turns via the token-exhaustion handoff — whether a replacement agent could pick up from a handoff and continue. For a corpus compression across 17 files, the answer is straightforwardly yes: the file list is its own progress ledger, each file is an independent, self-contained edit, and a replacement agent can read which files were already compressed and which remain. No named disqualifier fired.
+
+**Phase chain and commit record:**
+
+- **Phase A** — commit `be73ad8`: 17-file corpus compression landed in a single agent pass. The ratchet cap was reset (`rule-lint.sh --update-cap`).
+- **Phase B** — commit `2ce3fa67`: BugBot (`cursor[bot]`) caught one finding — a semantic deletion: the word "unresolved" had been dropped from the merge-gate stop-polling definition, making "0 threads right now" read as an exit condition when the rule's intent is that it is not. This was a real defect that all four lint checks missed; BugBot caught it on the phase B review pass. Fixed in the second commit. CodeAnt approved on `2ce3fa67`.
+- **Phase C** — `/wrap` auto-merged via squash: commit `609452c` landed at 2026-07-30T15:48:47Z. Issue #790 auto-closed at 15:48:49Z. No human turn between Phase B clean and merge.
+
+**Dispatch source (AC1 attestation).** Dispatched inline from the PM thread session on 2026-07-30. The PM-thread origin is attested by the dispatching session (parent orchestrator — the session that ran this pipeline). No `/pm` dispatch comment appears on Issue #790 or PR #804's public GitHub record; this is expected — the dispatch mechanism invokes `/subagent` inline without posting a GitHub artifact. This doc edit is the record.
+
+**No separate coding thread opened.** Confirmed. No `spawn_task` chip and no fallback paste-block was generated for Issue #790 at any dispatch surface.
+
+**Corroborating runs from the same session.** PRs #806, #811, #812, #820, #821, and #822 were dispatched inline from the same PM thread on 2026-07-30 — several touching files in categories (rules-touching, skill-lifecycle) that the old criterion would have treated as "too big." None were routed to a separate coding thread.
+
+### Exhaustion/respawn findings (AC2)
+
+No token exhaustion occurred. Phase A completed in a single agent pass; the token-exhaustion handoff protocol was not invoked.
+
+This is recorded honestly rather than overclaimed. A zero-exhaustion merge confirms the routing decision — the work was decomposable and ran cleanly inline — but it is weaker evidence for the resumability claim than an observed respawn would be. The stronger claim is that *if* a Phase A agent exhausts, the handoff carries state correctly and a replacement continues without duplicating work. This run does not test that path; it demonstrates that the path was not needed.
+
+The resumability path remains covered by the token-exhaustion protocol as designed (`subagent-orchestration.md`, `handoff-files.md`). FU-2 (measuring the real per-turn output ceiling) and [#710](https://github.com/auerbachb/claude-code-config/issues/710) (threads-per-merged-PR telemetry) remain the right instruments for the stronger empirical claims.
+
+### Verdict
+
+**Recalibration confirmed.** Issue #790 / PR #804 demonstrates end-to-end that a 17-file change across the entire rule corpus — work that old criterion 1 would have bumped to a separate thread on scope alone — runs cleanly through the A→B→C inline pipeline, including a BugBot Phase B round that caught a real finding. The recalibration's central claim holds: the routing decision should be made on resumability, not size, and the three-phase pipeline handles large-but-resumable work without a human-visible coding thread.
+
+**No unanticipated failure occurred.** BugBot's Phase B finding was a legitimate semantic deletion, caught and fixed through normal review mechanics. No correction issue is needed.
+
+### Coverage vs Issue #784 acceptance criteria
+
+| #784 AC | Status | Evidence |
+|---------|--------|---------|
+| One formerly-too-big issue dispatched from a PM thread and carried to merge entirely inline, no separate coding thread opened | **Met** | Issue #790 / PR #804 — 17-file rules change, dispatched inline, A→B→C to squash merge `609452c`. PM-thread origin attested by dispatching session (this doc is the record); not verifiable from public GitHub artifacts alone. |
+| Exhaustion/respawn behavior observed and recorded | **Met (zero exhaustion)** | Single Phase A pass; handoff path not exercised. Recorded honestly as weaker evidence for the resumability claim. Stronger evidence awaits FU-2 and Issue #710. |
+| Outcome appended to `.claude/reference/too-big-recalibration-2026-07.md` | **Met** | This section. |
+| If a phase failed in a way the recalibration did not anticipate, file the correction as its own issue | **Met (N/A)** | BugBot's finding was a legitimate defect caught in normal Phase B review — within what the recalibration anticipated. No correction issue needed. |
