@@ -11,6 +11,8 @@ permissions:
 # every in-flight PR collided here (PRs #657/#658/#660/#661/#672/#676; #676 took
 # 3 rebases). Now: drop a `*.test.sh` into a discovered dir, or a
 # `tests/test_*.py` module, and CI runs it with NO edit to this file.
+# Bash discovery: .github/scripts/run-hook-tests.sh
+# Python discovery: .github/scripts/run-python-tests.sh (issue #771)
 # See CONTRIBUTING.md "Adding a Test".
 jobs:
   hook-tests:
@@ -30,18 +32,7 @@ jobs:
         run: bash .github/scripts/run-hook-tests.sh
 
       - name: Run Python hook unit tests (auto-discovered)
-        run: |
-          set -euo pipefail
-          # Discover tests/test_*.py and fail loud on an empty set — a silent
-          # "Ran 0 tests ... OK" must never pass green (issue #681).
-          shopt -s nullglob
-          mods=(tests/test_*.py)
-          if [ "${#mods[@]}" -eq 0 ]; then
-            echo "::error::No tests/test_*.py modules discovered"
-            exit 1
-          fi
-          echo "Discovered ${#mods[@]} Python test module(s)."
-          python3 -m unittest discover -s tests -p 'test_*.py' -v
+        run: bash .github/scripts/run-python-tests.sh
 
   # macOS system python3 is 3.9.6 (Xcode CLT) while ubuntu-latest ships 3.10+,
   # so a hook that crashes on 3.9 (e.g. eagerly-evaluated PEP 604 unions,
@@ -62,16 +53,7 @@ jobs:
           python-version: '3.9'
 
       - name: Python hook unit tests (3.9, auto-discovered)
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          mods=(tests/test_*.py)
-          if [ "${#mods[@]}" -eq 0 ]; then
-            echo "::error::No tests/test_*.py modules discovered"
-            exit 1
-          fi
-          echo "Discovered ${#mods[@]} Python test module(s)."
-          python3 -m unittest discover -s tests -p 'test_*.py' -v
+        run: bash .github/scripts/run-python-tests.sh
 
       - name: Hooks import smoke (3.9)
         run: |

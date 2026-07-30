@@ -87,8 +87,8 @@ Tests are **auto-discovered** by the [`hook-scripts.yml`](.github/workflows/hook
 Run the whole suite locally from the repo root before pushing:
 
 ```bash
-bash .github/scripts/run-hook-tests.sh                       # all bash suites
-python3 -m unittest discover -s tests -p 'test_*.py' -v       # all Python suites
+bash .github/scripts/run-hook-tests.sh        # all bash suites
+bash .github/scripts/run-python-tests.sh      # all Python suites
 ```
 
 ## Git Pre-commit Hook (Worktree Enforcement)
