@@ -10,7 +10,7 @@
 #   SKILLS:  → .claude/rules/skill-first.md
 #
 # Verbatim-copy surfaces (byte-compared):
-#   .claude/skills/subagent/SKILL.md
+#   .claude/reference/subagent-phase-guardrails.md  (subagent skill; extracted from SKILL.md #805)
 #   .claude/skills/pr-monitor-and-manage/SKILL.md
 #
 # Paraphrased surfaces (out of scope for byte comparison — intentionally excluded):
@@ -84,9 +84,9 @@ CANONICAL_FILES=(
 # One-line change to add or remove a copy surface.
 # ---------------------------------------------------------------------------
 VERBATIM_COPIES=(
-  "SAFETY|.claude/skills/subagent/SKILL.md"
-  "MINDSET|.claude/skills/subagent/SKILL.md"
-  "SKILLS|.claude/skills/subagent/SKILL.md"
+  "SAFETY|.claude/reference/subagent-phase-guardrails.md"
+  "MINDSET|.claude/reference/subagent-phase-guardrails.md"
+  "SKILLS|.claude/reference/subagent-phase-guardrails.md"
   "SAFETY|.claude/skills/pr-monitor-and-manage/SKILL.md"
   "MINDSET|.claude/skills/pr-monitor-and-manage/SKILL.md"
   "SKILLS|.claude/skills/pr-monitor-and-manage/SKILL.md"

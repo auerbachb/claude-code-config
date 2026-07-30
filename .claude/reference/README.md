@@ -46,6 +46,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `trust-dialog-repair.md` — why `~/.claude.json` re-prompts per worktree, the three flags, and repair-script behavior (`trust-dialog-fix.md`)
 - `double-loading-fix.md` — decision record for suppressing the duplicate global CLAUDE.md + rules copy via project-local `claudeMdExcludes` (#461)
 - `skill-authoring-patterns.md` — authoring *judgment* for skills/rules (description-as-trigger, match-form-to-failure, bulletproofing); complements CONTRIBUTING.md mechanics
+- `subagent-phase-guardrails.md` — canonical single home for the SAFETY/MINDSET/SKILLS verbatim blocks and RULES placeholder shared by `/subagent` Phase A/B/C spawn-prompt templates; CI-guarded by `verbatim-block-lint.sh` (#805)
 - `verification-evidence-patterns.md` — claim→evidence checklist for AC, exit reports, and merge claims; complements phase protocols (#417 harvest from superpowers)
 
 ### Living trackers (updated each cycle — not point-in-time)
