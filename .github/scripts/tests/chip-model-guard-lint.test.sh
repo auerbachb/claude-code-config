@@ -351,6 +351,93 @@ expect "non-contractual 'first' before **Model:** does not satisfy placement (#8
   'issue-maker first-line \*\*Model:\*\* placement' \
   noncontractual_first_before_model
 
+# --- #837: the guard compares families, not strings --------------------------
+
+# Three preamble sentences carry the family-level semantics, and each can be
+# reverted independently — so each gets its own revert-fails case. A suite that
+# only covered one would leave the other two free to regress silently.
+# None of these mutations touch an em dash: BSD sed's handling of multibyte
+# patterns is locale-dependent, and a pattern that quietly stops matching would
+# be caught by `mutate`'s no-op guard but only after wasting a debugging round.
+drop_family_comparison() {
+  mutate .claude/reference/chip-launching.md '/Compare families only/d'
+}
+
+expect "missing family-comparison rule in chip-launching fails" 1 \
+  'Missing required family-level comparison rule' \
+  drop_family_comparison
+
+drop_version_qualifier_rule() {
+  mutate .claude/reference/chip-launching.md '/old-style version qualifier/d'
+}
+
+expect "missing version-qualifier rule in chip-launching fails" 1 \
+  'version-qualifier-is-noise rule' \
+  drop_version_qualifier_rule
+
+# The literal pre-#837 regression: the match branch echoing whatever string it
+# read ({MODEL}) instead of naming the family it is running ({FAMILY}).
+revert_family_self_report() {
+  mutate .claude/reference/chip-launching.md 's/Running on {FAMILY}/Running on {MODEL}/'
+}
+
+expect "match branch reporting {MODEL} instead of {FAMILY} fails" 1 \
+  'family self-report in match branch' \
+  revert_family_self_report
+
+# A bare mention of "families" must not satisfy the comparison check — the
+# assertion has to bind to the contractual instruction, not to the word. The
+# replacement deliberately keeps "families" AND states the string-equality rule
+# this ticket removed, so the case proves strictness in both directions at once:
+# a loose /families/ check would pass here, and only the phrase check fails it.
+weaken_family_comparison() {
+  mutate .claude/reference/chip-launching.md \
+    's/Compare families only/Compare the exact strings; the families are listed as/'
+}
+
+expect "bare 'families' mention does not satisfy the family-comparison check" 1 \
+  'family-level comparison rule' \
+  weaken_family_comparison
+
+# Semantic inversion, not deletion: a reword that keeps every keyword but
+# reverses the rule is the failure mode a keyword-presence check cannot see.
+# Both cases below deliberately leave the vocabulary intact, so a looser
+# pattern would pass them and the case would prove nothing.
+
+# "old-style version qualifier" survives verbatim; only the instruction flips.
+invert_version_qualifier_rule() {
+  mutate .claude/reference/chip-launching.md \
+    's/qualifier: ignore it on either side/qualifier: honor it on both sides/'
+}
+
+expect "inverted version-qualifier rule (keyword intact) fails" 1 \
+  'version-qualifier-is-noise rule' \
+  invert_version_qualifier_rule
+
+# "Running on {FAMILY}" survives in the document but leaves the Match branch,
+# so the branch that must report a family no longer does.
+unbind_family_report_from_match_branch() {
+  mutate .claude/reference/chip-launching.md \
+    's/Match (same family): state "Running on {FAMILY} as recommended."/Match: say you are proceeding. (Docs elsewhere use "Running on {FAMILY}".)/'
+}
+
+expect "{FAMILY} outside the Match branch does not satisfy the self-report check" 1 \
+  'family self-report in match branch' \
+  unbind_family_report_from_match_branch
+
+# The third inversion: "Compare families only" survives as an exact substring
+# while the sentence goes on to re-require string equality — the precise reword
+# this ticket exists to prevent. Only the em-dash anchor rejects it; a bare
+# substring check would pass it, which is why the anchor is not cosmetic.
+readd_string_equality_after_family_rule() {
+  mutate .claude/reference/chip-launching.md \
+    's/Compare families only/Compare families only, and the exact model strings must match,/'
+}
+
+expect "family rule re-requiring exact strings (substring intact) fails" 1 \
+  'family-level comparison rule' \
+  readd_string_equality_after_family_rule
+
 if (cd "$REPO_ROOT" && bash "$LINT" >/dev/null 2>&1); then
   echo "ok   — real repo conformance is intact"
 else

@@ -79,18 +79,26 @@ The recommended model is worthless if nothing checks it at launch time. Every `p
 
 ```text
 MODEL GUARD: Your very first action — before any repo reads, file edits, or
-other tool calls — is to compare the model you are actually running as
-against the recommendation on the **Model:** line above.
-- Match: state "Running on {MODEL} as recommended." (one line) and proceed
-  immediately — no further prompts.
-- Mismatch, in EITHER direction (under- or over-powered): STOP. Do no other
-  work. Report, in one message, the model you are actually running as and the
-  model recommended above, then wait. Resume only on an explicit user reply
-  (e.g. "continue anyway"), proceeding on the current model — switching
-  models and relaunching is the recommended path instead.
+other tool calls — is to compare the model family you are actually running as
+against the family named on the **Model:** line above. Compare families only —
+`Opus`, `Sonnet`, `Haiku`, `Fable`. A trailing `<N>` or `<N>.<N>` after a
+family name is an old-style version qualifier: ignore it on either side, it is
+never evidence of a mismatch.
+- Match (same family): state "Running on {FAMILY} as recommended." (one line,
+  naming the family you are running — not the possibly-qualified string you
+  read) and proceed immediately — no further prompts.
+- Mismatch (different family), in EITHER direction (under- or over-powered):
+  STOP. Do no other work. Report, in one message, the model you are actually
+  running as and the model recommended above, then wait. Resume only on an
+  explicit user reply (e.g. "continue anyway"), proceeding on the current
+  model — switching models and relaunching is the recommended path instead.
 This is a best-effort self-report: no runtime API exists to introspect the
 active model, so the check relies on the model naming itself accurately.
 ```
+
+**Why family-level:** the guard exists to catch a thread running at the wrong *tier*, and tier is the family — a bare family name already resolves to the newest non-legacy model of that family ("Model and effort lines" above), so two versions inside one family are the same recommendation, and stopping between them reports a disagreement that does not exist.
+
+**What that reaches — and what it does not.** Every payload rendered from this file after the change is family-safe: a chip spawned from here on, a fallback block printed from here on. A chip **already offered** does not change — it froze a copy of the preamble into its `prompt` at spawn time, so it is still read under whatever wording it was emitted with, and editing this file cannot rewrite a payload sitting in a task list. Replaying such a chip reproduces that frozen wording too, and correctly so: replay is pinned to the chip's own `prompt` ("Print-on-demand replay" below), because a printed block that disagreed with the chip it describes would be the worse bug. The fix closes the class going forward rather than draining the existing backlog; that backlog is [#838](https://github.com/auerbachb/claude-code-config/issues/838). Rationale, scope limit, and the retired-family gap: `chip-model-guard-decision.md`.
 
 **Placement rule:** for every emitter, the `**Model:**` line is the first line of the `prompt` payload, the `**Effort:**` line is next, and this preamble is the content that immediately follows them — see each skill's Step for how its own template maps onto this shape.
 
