@@ -10,6 +10,19 @@
 #
 # Output uses GitHub Actions annotations (::error::, ::warning::) so
 # issues surface directly on PR checks. Exits 1 on any error condition.
+#
+# --update-cap (one-way ratchet):
+#   Writes min(current_cap, max(count + 750, 8500)) to .budget-soft-cap.
+#   The cap can only decrease or hold — it never auto-raises.  This prevents
+#   a small intentional cut from silently widening the budget.
+#
+#   Bootstrap (missing / invalid cap file): the raw formula result is written
+#   because there is no prior value to clamp toward.
+#
+# --allow-raise (escape hatch, must be used with --update-cap):
+#   Overrides the ratchet and writes the raw formula result even if it
+#   exceeds the current cap.  Prints old value, new value, and the delta so
+#   the raise is visible in CI output and review history.
 
 set -euo pipefail
 shopt -s nullglob
@@ -26,13 +39,20 @@ BUDGET_CAP_FILE="${RULES_DIR}/.budget-soft-cap"
 
 errors=0
 update_cap=0
+allow_raise=0
 
 usage() {
   cat <<'EOF'
-Usage: .github/scripts/rule-lint.sh [--update-cap]
+Usage: .github/scripts/rule-lint.sh [--update-cap [--allow-raise]]
 
-  --update-cap  Rewrite .claude/rules/.budget-soft-cap to max(current_count + 750, 8500),
-                then continue linting against the updated cap.
+  --update-cap   Rewrite .claude/rules/.budget-soft-cap to
+                 min(current_cap, max(current_count + 750, 8500)).
+                 The cap can only decrease or hold (one-way ratchet).
+                 Then continue linting against the updated cap.
+
+  --allow-raise  Override the ratchet: allow the cap to increase.
+                 Only takes effect when combined with --update-cap.
+                 Prints old value, new value, and the delta.
 EOF
 }
 
@@ -40,6 +60,9 @@ while (( $# > 0 )); do
   case "$1" in
     --update-cap)
       update_cap=1
+      ;;
+    --allow-raise)
+      allow_raise=1
       ;;
     -h|--help)
       usage
@@ -139,10 +162,53 @@ fi
 echo "Total auto-loaded word count: ${total} (soft=${SOFT_LIMIT}, hard=${HARD_LIMIT})"
 
 if (( update_cap )); then
-  updated_cap=$(( total + RATCHET_HEADROOM ))
-  if (( updated_cap < RATCHET_FLOOR )); then
-    updated_cap=$RATCHET_FLOOR
+  # One-way ratchet: the cap may only decrease or hold; it never auto-raises.
+  # Formula is still max(count + RATCHET_HEADROOM, RATCHET_FLOOR) — unchanged.
+  formula_cap=$(( total + RATCHET_HEADROOM ))
+  if (( formula_cap < RATCHET_FLOOR )); then
+    formula_cap=$RATCHET_FLOOR
   fi
+
+  # Read the current cap for the ratchet comparison.  A separate RC variable is
+  # required because set -e aborts the script when a command-substitution exits
+  # non-zero, even when the failure is expected (bootstrap / invalid file case).
+  prev_cap_rc=0
+  prev_cap="$(python3 - "$BUDGET_CAP_FILE" <<'PY'
+import re, sys
+try:
+    data = open(sys.argv[1], "rb").read()
+    if not re.fullmatch(rb"[0-9]+(\r?\n)?", data):
+        sys.exit(1)
+    sys.stdout.write(str(int(data.strip().decode("ascii"))))
+except Exception:
+    sys.exit(1)
+PY
+  )" || prev_cap_rc=$?
+
+  if (( prev_cap_rc != 0 )); then
+    # Bootstrap: no valid prior cap to clamp toward; write the raw formula result.
+    echo "Budget soft cap: no valid prior value — bootstrapping to formula result (${formula_cap})"
+    updated_cap=$formula_cap
+  elif (( allow_raise )); then
+    # Explicit escape hatch: allow the cap to increase.
+    updated_cap=$formula_cap
+    delta=$(( formula_cap - prev_cap ))
+    echo "Budget soft cap: ${prev_cap} → ${formula_cap} (+${delta}) [--allow-raise]"
+  elif (( formula_cap < prev_cap )); then
+    # Corpus shrank enough that the formula dips below the current cap: tighten.
+    updated_cap=$formula_cap
+    delta=$(( prev_cap - formula_cap ))
+    echo "Budget soft cap: ${prev_cap} → ${formula_cap} (-${delta}) [lowered]"
+  elif (( formula_cap == prev_cap )); then
+    # Formula matches the current cap exactly: no change needed.
+    updated_cap=$prev_cap
+    echo "Budget soft cap: ${prev_cap} unchanged (formula matches cap)"
+  else
+    # Formula would raise the cap; ratchet holds.
+    updated_cap=$prev_cap
+    echo "Budget soft cap: ${prev_cap} unchanged (formula ${formula_cap} would raise — use --allow-raise to override)"
+  fi
+
   tmp_cap=$(mktemp "${BUDGET_CAP_FILE}.tmp.XXXXXX")
   printf '%s' "$updated_cap" > "$tmp_cap"
   mv "$tmp_cap" "$BUDGET_CAP_FILE"
