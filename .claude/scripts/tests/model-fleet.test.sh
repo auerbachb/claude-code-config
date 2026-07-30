@@ -129,8 +129,25 @@ check_eq "--file flag wins over the env var" \
 check_eq "missing display falls back to the id" \
   "model-a" "$(bash "$SCRIPT" --file "$TMP/no-display.json" --top-tier-display)"
 
-check_eq "--help exits 0 and prints usage" \
+check_eq "--help exits 0" \
   "0" "$(bash "$SCRIPT" --help >/dev/null 2>&1; echo $?)"
+
+# Exit code alone would accept a help block that printed nothing useful, so
+# assert the documented flags actually appear. The header uses `#` continuation
+# lines throughout, so the awk extractor (which stops at the first *empty* line)
+# reaches the end of the block -- this test is what keeps that true if the
+# header ever gains a real blank line.
+HELP_OUT="$(bash "$SCRIPT" --help 2>/dev/null)"
+for flag in --top-tier --top-tier-display --list --json --file; do
+  case "$HELP_OUT" in
+    *"$flag"*) pass "--help documents $flag" ;;
+    *)         fail "--help does not mention $flag" ;;
+  esac
+done
+case "$HELP_OUT" in
+  *"EXIT STATUS"*) pass "--help includes the EXIT STATUS section (block not truncated early)" ;;
+  *)               fail "--help truncated before EXIT STATUS" ;;
+esac
 
 # ---- fleet-change simulation (Test Plan item 5) -----------------------------
 # The whole contract in one assertion: one file changed, every consumer moves.

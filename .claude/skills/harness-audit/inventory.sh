@@ -149,14 +149,23 @@ artifacts.append({"category": "rule", "path": "CLAUDE.md", "name": "CLAUDE.md"})
 rules_dir = os.path.join(root, ".claude", "rules")
 if not os.path.isdir(rules_dir):
     fail(".claude/rules directory not found")
-for entry in sorted(os.listdir(rules_dir)):
-    if not entry.endswith(".md") or entry == "README.md":
-        continue
-    artifacts.append({
-        "category": "rule",
-        "path": rel(os.path.join(rules_dir, entry)),
-        "name": entry,
-    })
+# Recursive, matching how the corpus is actually loaded and measured elsewhere:
+# CLAUDE.md's budget check and subagent-orchestration.md's fallback rule
+# injection both use `find .claude/rules -name '*.md'`. A shallow listdir would
+# silently omit a nested rule the moment one is added -- and "no silent
+# omissions" is this audit's central promise, so it cannot depend on nobody
+# ever creating a subdirectory.
+for dirpath, dirnames, filenames in os.walk(rules_dir):
+    dirnames.sort()
+    for entry in sorted(filenames):
+        if not entry.endswith(".md") or entry == "README.md":
+            continue
+        full = os.path.join(dirpath, entry)
+        artifacts.append({
+            "category": "rule",
+            "path": rel(full),
+            "name": os.path.relpath(full, rules_dir),
+        })
 
 # --- skills ------------------------------------------------------------------
 skills_dir = os.path.join(root, ".claude", "skills")

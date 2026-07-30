@@ -239,7 +239,8 @@ python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["counts"]; [print("%
 Never reuse a previous month's inventory file as a fallback; a stale surface
 would silently exempt everything added since.
 
-The script enumerates four categories — `rule` (CLAUDE.md + `.claude/rules/*.md`),
+The script enumerates four categories — `rule` (CLAUDE.md + `.claude/rules/**/*.md`,
+recursive, matching how the corpus is loaded and budgeted),
 `skill` (every `.claude/skills/*/SKILL.md`), `script` (`.claude/scripts/`, minus
 `lib/` and `tests/`), and `hook` (the union of `global-settings.json`'s `hooks`
 map and `.claude/hooks/`, cross-checked). Its declared `exclusions` are part of
@@ -319,11 +320,35 @@ Never run the judgment pass. **Claim the month, then offer it.**
 Claim *before* offering, not after. A tick that offers first and records second
 has a window in which a second tick — an overlapping cron, or a manual run
 alongside one — reads `last_offered_month` as unset and offers the same month
-again. Claiming first makes the check-and-claim a single decision:
+again.
 
-1. **Re-read** `last_offered_month` immediately before writing. If it already
-   equals `$MONTH`, another run claimed it — **exit**, offer nothing.
-2. **Write** `last_offered_month = $MONTH` with `delivery: "pending"`.
+**Ordering alone is not enough: read-then-write is still a TOCTOU race.** Two
+ticks can both read an unset watermark, both conclude they won, and both offer.
+The check and the claim must be *one* mutually-exclusive operation, so hold the
+repo's existing advisory lock across both — the same primitive every
+`session-state.json` writer uses (`state-lock.sh`, issue #639), which exists
+because "each write is atomic" did not make the surrounding read-modify-write
+safe:
+
+```bash
+source "$REPO_ROOT/.claude/scripts/state-lock.sh"
+state_lock_acquire "$WATERMARK" || { echo "[harness-audit] watermark lock busy — another tick holds the claim; exiting." >&2; exit 0; }
+trap 'state_lock_release' EXIT
+# --- critical section: check AND claim, nothing between them ---
+CLAIMED=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("last_offered_month") or "")' "$WATERMARK" 2>/dev/null || echo "")
+if [[ "$CLAIMED" == "$MONTH" ]]; then
+  state_lock_release; trap - EXIT
+  echo "[harness-audit] $MONTH already claimed by another tick — offering nothing."; exit 0
+fi
+# write last_offered_month=$MONTH with delivery:"pending", preserving siblings
+state_lock_release; trap - EXIT
+```
+
+1. **Under the lock**, read `last_offered_month`. If it already equals `$MONTH`,
+   another run claimed it — release and **exit**, offer nothing.
+2. **Still under the lock**, write `last_offered_month = $MONTH` with
+   `delivery: "pending"`, preserving the rest of the watermark document. Release
+   only after the write lands.
 3. **Offer**, by whichever path is available:
    - **Chip** via `mcp__ccd_session__spawn_task`, per `chip-launching.md`.
      On success record the returned `task_id` and set `delivery: "chip"`, so
@@ -362,10 +387,23 @@ do not reword it for this skill.
 **Model:** {TOP_DISPLAY} — deep judgment pass; distinguishing "the harness does this now" from "ours is stricter" degrades badly on a cheaper tier
 {verbatim MODEL GUARD preamble from chip-launching.md}
 
-Run /harness-audit for {MONTH} against {REPO}. The inventory pass is already
-done — {N} artifacts at {STATE_DIR}/inventory-{MONTH}.json. Do Steps 4 and 6-9
-of .claude/skills/harness-audit/SKILL.md ...
+Run /harness-audit {SAFE_MODIFIERS} for {MONTH} against {REPO}. The inventory
+pass is already done — {N} artifacts at {STATE_DIR}/inventory-{MONTH}.json. Do
+Steps 4 and 6-9 of .claude/skills/harness-audit/SKILL.md ...
 ```
+
+**`{SAFE_MODIFIERS}` is not optional garnish — it is a side-effect guard.** Carry
+every restricting modifier from the invoking run into the generated prompt:
+`--report-only` and `--report-to-repo`. A run the user deliberately made
+side-effect-free must not hand out a chip whose prompt reads bare
+`Run /harness-audit`, because clicking that lands on the **default** path and
+files issues the user explicitly asked not to be filed. The step-up changes the
+*model*, never the user's stated constraints.
+
+Modifiers that only affect *this* thread's execution (`--force-here`, `--tick`,
+`--arm`, `--stop`) are deliberately **not** carried — they describe how this run
+routed itself, not what the work is permitted to do. When in doubt, ask whether
+dropping the flag could cause a side effect the user declined; if yes, carry it.
 
 Per `chip-launching.md`, the same `**Model:**` line is repeated in the visible
 short summary so the user can set the picker **before** clicking, since
