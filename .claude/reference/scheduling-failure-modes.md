@@ -50,6 +50,18 @@ The common thread: **between-turn scheduling has no in-turn observer.** Once the
 
 **Fix.** Apply `scheduling-reliability.md` "Stable-State Backoff & Auto-Pause": compute the digest, increment `digest_streak`, widen to 5m at streak 3, widen to 15m at streak 6, and pause at streak 9. If `blocker_kind == "user_input"` or the blocker text says the agent is awaiting the user's direction, pause after the first visible message. When deleting or promoting the cron, also cancel sibling `ScheduleWakeup` jobs.
 
+## Pattern 6 — Background Work With No Armed Observer
+
+**Symptom.** The thread hands work to a subagent (or starts a long background process, or arms a watcher), ends its turn, and goes silent. The last chat message is 15–25 minutes old. Nothing is wrong with the subagent — it is simply still running — but the transcript cannot distinguish "grinding away" from "wedged" from "dead", and the user has to ask "status?" to learn anything.
+
+**Root cause.** Printing a message requires a turn, and nothing in the spawn path guaranteed a turn would happen. The in-context nag (`silence-detector.sh`) is a PostToolUse hook, and a thread waiting on a completion notification makes no tool calls; the launchd watchdog notices the stall but can only raise an OS notification, and it skips sessions whose `claude-active-<id>` marker is gone — which is precisely the ended-its-turn state. The deeper miss: monitoring background work was never *classified* as polling, so none of this file's discipline was applied to it.
+
+**Fix.** `scheduling-reliability.md` now classifies a thread with background work in flight as a polling context, and starting that work arms a turn-independent ceiling watch (`bgwork-ceiling.sh --arm-command` → `Monitor`). The Stop hook blocks a turn that would end unarmed, so this pattern cannot recur through forgetfulness.
+
+**It is mitigation, not an absolute guarantee.** Blocking is bounded at 2 consecutive turns; past that the guard stands down and an unarmed turn *is* allowed to end. That fallback is deliberately loud — stderr, `~/.claude/logs/bgwork-ceiling.log`, and an unguarded marker resurfaced on every later tool call — so a thread that ends up without a ceiling says so, rather than looking identical to a healthy one. Mechanism: `.claude/reference/bgwork-ceiling.md` (#803).
+
+**Note the shape difference from Patterns 1–4.** Those are *dropped* ticks — a schedule existed and stopped. This one is a schedule that was never armed at all, because nobody recognised the situation as scheduling. Detection heuristics keyed on "a polling context with no live job" therefore missed it entirely: there was no polling context recorded to check against.
+
 ## Detection Heuristics
 
 Treat any of these as a scheduling failure until proven otherwise:

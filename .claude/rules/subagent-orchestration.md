@@ -1,6 +1,6 @@
 # Subagent Context
 
-> **Always:** Spawn subagents via custom agent definitions in `.claude/agents/` (see "How to Spawn Subagents" below). Use `mode: "bypassPermissions"` on every Agent tool call. Set `model` explicitly at every call site per the Model Selection policy (see below). Use phase decomposition (A/B/C). Timestamp every message (see `monitor-mode.md`). Write handoff files on phase completion (see `handoff-files.md`). Print Structured Exit Report before every subagent exit (see `phase-protocols.md`). Only fall back to manually passing all rule files if `.claude/agents/` is unavailable in the current repo.
+> **Always:** Spawn subagents via custom agent definitions in `.claude/agents/` (see "How to Spawn Subagents" below). Use `mode: "bypassPermissions"` on every Agent tool call. Set `model` explicitly at every call site per the Model Selection policy (see below). Use phase decomposition (A/B/C). Timestamp every message (see `monitor-mode.md`). Write handoff files on phase completion (see `handoff-files.md`). Print Structured Exit Report before every subagent exit (see `phase-protocols.md`). Arm the silence ceiling in the same step as the spawn (`scheduling-reliability.md`). Only fall back to manually passing all rule files if `.claude/agents/` is unavailable in the current repo.
 > **Ask first:** Respawning a crashed/no-handoff subagent — tell the user what happened first; exhaustion with valid handoff auto-respawns ("Always do").
 > **Never:** Summarize rules for subagents. Spawn subagents without `mode: "bypassPermissions"`. Spawn without an explicit `model` parameter. Fire-and-forget subagents.
 
@@ -14,6 +14,7 @@ Use `.claude/agents/` definitions; they embed phase rules. Every Agent call must
 5. The verbatim `SAFETY:` block from `safety.md`.
 6. The verbatim `MINDSET:` block from `safety.md` (try CLI before handoff — see "Capability Discovery").
 7. The verbatim `SKILLS:` block from `skill-first.md` — **skip for `phase-c-merger`** (no `Skill` tool).
+8. Same step, but not part of the call: arm the silence ceiling — `bgwork-ceiling.sh --arm-command` → `Monitor` (`persistent: true`). The Stop hook blocks the turn otherwise.
 
 See `.claude/agents/README.md` for the full placeholder reference and spawning examples.
 

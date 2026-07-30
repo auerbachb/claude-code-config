@@ -41,6 +41,11 @@
           },
           {
             "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/bgwork-ceiling-guard.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/trust-flag-repair.sh",
             "timeout": 10
           },
@@ -165,6 +170,11 @@
           {
             "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/silence-detector.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/bgwork-ceiling-arm.sh",
             "timeout": 5
           }
         ]
