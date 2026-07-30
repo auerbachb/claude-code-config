@@ -711,6 +711,7 @@ Also accept user input: "thread for #42 is done", "PR #88 merged", "#55 is block
 REPO_KEY=$(.claude/scripts/session-state.sh --repo-key)
 RC=0
 PAUSED=$(.claude/scripts/session-state.sh --get ".repos[\"$REPO_KEY\"].refill.paused") || RC=$?
+SCOPE=$(.claude/scripts/session-state.sh --get ".repos[\"$REPO_KEY\"].refill.scope" 2>/dev/null)
 ```
 
 Read the exit code, not just the value — **an unreadable pause is a pause**:
@@ -721,6 +722,8 @@ Read the exit code, not just the value — **an unreadable pause is a pause**:
 | 0 | `false` / `null` | Yes — the default (the field only exists once someone paused) |
 | 3 | — | Yes — no state file has ever been written, so nothing was ever paused |
 | 4, 6, other | — | **No** — the state is unreadable (parse error, lock timeout). Report `paused (state unreadable)` and say so; never treat "we failed to look" as "not paused" |
+
+**A non-null `$SCOPE` constrains both refill sources** — it is a narrowing, not a stop, and it is worthless if it is only recorded. Every candidate, queued or from the backlog, must fall inside it; one that doesn't is skipped exactly like a failed re-validation, and if that empties the candidate set the reason is `nothing eligible (scope: <scope>)`. Reading `refill.scope` and then ranking the whole backlog would auto-launch precisely the work the user just excluded.
 
 Write it **only** when a human says stop in chat, and clear it **only** on an explicit human resume — never on an unrelated later message:
 
@@ -747,13 +750,14 @@ SCOPE_JSON=$(jq -cn --arg s "<label>" --arg at "$NOW" \
 
 Refill from two sources, in this order:
 
-**(a) Queue refill — existing, automatic.** Start the next issue queued behind the ceiling from 3.1 before touching the backlog.
+**(a) Queue refill — existing, automatic.** Start the next issue queued behind the ceiling from 3.1 before touching the backlog. When `$SCOPE` is non-null, skip queued issues outside it (they stay queued — a narrowing defers work, it does not drop it).
 
 **(b) Backlog refill — automatic.** When the queue is empty and slots remain, go back to the backlog and launch, with **no "suggest 1–3 and wait for a selection" round-trip**:
 
 1. Re-scan and re-score using the incremental re-read + **total** re-score described in step 2 of "When one or more pipelines or threads finish" below.
-2. Take the highest-ranked **inline-eligible** candidates, up to the number of free slots.
-3. Launch them through 3.1's inline path (`/subagent` A→B→C) and mark each `Inline` in the Active Work table (3.2).
+2. **Apply `$SCOPE` first when it is non-null** — drop every candidate outside it before ranking decides anything, so a narrowed refill can never launch excluded work.
+3. Take the highest-ranked **inline-eligible** candidates from what survives, up to the number of free slots.
+4. Launch them through 3.1's inline path (`/subagent` A→B→C) and mark each `Inline` in the Active Work table (3.2).
 
 **Re-validate every pick, from either source, immediately before launching it** — the quick current-state + too-big check from 3.1 / `/subagent` Steps 4–5. Closed, already has its own PR, or now too big → skip it and take the next candidate (a failing queued pick leaves the queue; a failing backlog pick is passed over). Backlog refill reuses this validation rather than defining its own.
 
@@ -773,7 +777,7 @@ Redirecting after the fact is the correction mechanism that replaces the removed
 
 | Reason | Meaning |
 |--------|---------|
-| `nothing eligible` | No inline-eligible candidate left — backlog empty, everything closed, or every remaining issue already has a PR |
+| `nothing eligible` | No inline-eligible candidate left — backlog empty, everything closed, or every remaining issue already has a PR. Append `(scope: <scope>)` when a non-null `$SCOPE` is what emptied the set, so a narrowing never looks like an exhausted backlog |
 | `chained` | Every remaining candidate is serialized behind a contested file (`/subagent` Step 6.0b) |
 | `paused` | The user said stop, or the pause state is unreadable (Execution Boundary) — refilling stays off until a human explicitly resumes it |
 

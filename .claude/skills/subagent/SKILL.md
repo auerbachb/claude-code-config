@@ -215,6 +215,16 @@ For each qualifying issue, spawn a Phase A subagent using the Agent tool.
 - Each subagent gets its own worktree (use `isolation: "worktree"` on the Agent tool call).
 - **Respect Step 6.0b's chains.** Only the head of each overlap chain is launchable; a queued chain member waits for the one ahead of it to reach `merged`/`blocked`, even when a ceiling slot is free. Overlap serialization and the concurrency ceiling are separate limits — a free slot is permission to launch *some* issue, never permission to launch one whose file is still contested.
 - **A free slot is a trigger, not a resting state** (`CLAUDE.md` "KEEP THE PIPELINE FULL"). Below the ceiling with issues still queued, launch eligible chain heads on the current monitor tick — don't wait to be asked, and keep launching within the tick until slots are full or no eligible head remains (fill, don't ramp one-per-tick). Below the ceiling with the queue **empty**: under `/pm`, hand the free capacity to `/pm` Step 3.4's backlog refill; standalone, report the free slots and the idle reason (backlog ranking is `/pm`'s job, not this skill's) rather than sitting on them silently.
+- **Check the refill pause before every one of those launches — standalone runs included.** The stop the user said in a `/pm` thread is persisted, not remembered, so it binds here too:
+
+  ```bash
+  REPO_KEY=$(.claude/scripts/session-state.sh --repo-key)
+  RC=0
+  PAUSED=$(.claude/scripts/session-state.sh --get ".repos[\"$REPO_KEY\"].refill.paused") || RC=$?
+  SCOPE=$(.claude/scripts/session-state.sh --get ".repos[\"$REPO_KEY\"].refill.scope" 2>/dev/null)
+  ```
+
+  Same fail-closed reading as `/pm` Step 3.4's table: `RC=0` + `true` → launch nothing, report `paused`; `RC=0` + `false`/`null`, or `RC=3` (no state file) → proceed; any other `RC` → treat as paused and say the state was unreadable. A non-null `$SCOPE` skips queued issues outside it. This is the only pause gate a standalone `/subagent` run has — without it, a queued pipeline launches straight through an explicit stop.
 
 **Subagent prompt template** (fill in variables per issue):
 
@@ -357,7 +367,7 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    - Parse the Structured Exit Report from its output.
    - Execute the appropriate Completion Protocol (see below).
 3. **Check for pending transitions from prior cycles.** Read `session-state.json` for PRs where a phase completed but the next phase was not launched.
-4. **Refill free capacity.** Below the ceiling — slot freed *or* never filled — launch per Step 7's refill rule on this tick, chains and re-validation intact. Report the picks; if a slot stays empty, name why (`/pm` Step 3.4's reasons).
+4. **Refill free capacity.** Below the ceiling — slot freed *or* never filled — launch per Step 7's refill rule on this tick: read the refill pause first (Step 7), then chains and re-validation. Report the picks; if a slot stays empty, name why (`/pm` Step 3.4's reasons).
 5. **Send heartbeat.** If >5 minutes since last user message, send a status update. Include: active agents, PR phases, pending transitions, blockers. Always start with a timestamp: `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`.
 6. **Check for stale agents.** >15 min for Phase A, >10 min for Phase B, >5 min for Phase C without reporting — investigate.
 
