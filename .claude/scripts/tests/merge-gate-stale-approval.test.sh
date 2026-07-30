@@ -76,6 +76,9 @@ case "$ARGS" in
     jq -cn --arg d "$FAKE_COMMIT_TS" '{committer:{date:$d}}'
     exit 0 ;;
   *check-runs*)
+    if [[ -n "${FAKE_CHECK_RUNS:-}" ]]; then
+      printf '%s' "$FAKE_CHECK_RUNS"; exit 0
+    fi
     jq -cn '{check_runs:[{id:1,name:"ci",status:"completed",conclusion:"success",
                completed_at:"2026-07-30T19:32:00Z",
                check_suite:{id:1},app:{slug:"gha",id:1}}]}'
@@ -215,13 +218,13 @@ check_eq "0"     "$RC"      "(g) bugbot fresh: exit 0"
 
 # -------------------------------------------------------------------------
 # (h) CR has a fresh APPROVED + CA has approval with empty submitted_at.
-#     PRIMARY_REVIEW_MET=true (CR satisfies it), so the primary freshness-
-#     unknown block is skipped. The supplemental CodeAnt gate must still
-#     block because CA_APPROVAL_FRESHNESS_UNKNOWN=true and we cannot pass
-#     without a verified CodeAnt clean signal.
+#     PRIMARY_REVIEW_MET=true (CR satisfies it), so the primary block is
+#     skipped. The supplemental CodeAnt gate must still block because
+#     CA_APPROVAL_SUBMITTED_AT_MISSING=true — the approval's timestamp is
+#     absent and freshness cannot be verified (fail-closed, issue #836).
 # -------------------------------------------------------------------------
 echo "--- (h) CR fresh + CA approval missing submitted_at (supplemental freshness) ---"
-CA_FRESHNESS_MSG="cannot verify CodeAnt approval freshness"
+CA_SUBMITTED_AT_MSG="cannot verify CodeAnt approval freshness"
 BOTH_REVIEWS=$(jq -cn --arg sha "$HEAD_SHA" --arg cr_ts "$FRESH_TS" \
   '[{user:{login:"coderabbitai[bot]",type:"Bot"},
      commit_id:$sha, state:"APPROVED", submitted_at:$cr_ts},
@@ -229,9 +232,38 @@ BOTH_REVIEWS=$(jq -cn --arg sha "$HEAD_SHA" --arg cr_ts "$FRESH_TS" \
      commit_id:$sha, state:"APPROVED", submitted_at:""}]')
 run_gate cr "$COMMIT_TS" "$BOTH_REVIEWS"
 check_eq "false" "$(met)"   "(h) cr fresh + ca no-ts: met == false"
-check_eq "yes"   "$(missing_has "$CA_FRESHNESS_MSG")" \
+check_eq "yes"   "$(missing_has "$CA_SUBMITTED_AT_MSG")" \
                              "(h) cr fresh + ca no-ts: missing has CA freshness reason"
 check_eq "1"     "$RC"      "(h) cr fresh + ca no-ts: exit 1"
+
+# -------------------------------------------------------------------------
+# (i) Stale CodeAnt check-run (completed_at < COMMIT_TS) — must NOT met.
+#     The message must say "predates the HEAD commit" (stale), not "no
+#     successful CodeAnt check-run" (absent). CODEANT_PARTICIPATED is true
+#     because the CodeAnt check-run is present in check-runs.
+# -------------------------------------------------------------------------
+echo "--- (i) stale CodeAnt check-run (force-push retargeting) ---"
+STALE_CA_CHECK=$(jq -cn \
+  --arg ca_ts "$STALE_TS" \
+  '{check_runs:[
+      {id:1,name:"ci",status:"completed",conclusion:"success",
+       completed_at:"2026-07-30T19:32:00Z",check_suite:{id:1},app:{slug:"gha",id:1}},
+      {id:2,name:"CodeAnt AI",status:"completed",conclusion:"success",
+       completed_at:$ca_ts,check_suite:{id:2},app:{slug:"codeant",id:2}}
+    ]}')
+STALE_CHECK_MSG="predates the HEAD commit (force-push retargeting)"
+OUT=$(PATH="$BIN:$PATH" \
+      FAKE_COMMIT_TS="$COMMIT_TS" \
+      FAKE_COMMIT_TS_FAIL="" \
+      FAKE_REVIEWS="[]" \
+      FAKE_PR_COMMENTS="[]" \
+      FAKE_ISSUE_COMMENTS="[]" \
+      FAKE_CHECK_RUNS="$STALE_CA_CHECK" \
+      "$SUT" 1 --reviewer cr 2>/dev/null)
+RC=$?
+check_eq "false" "$(met)"                             "(i) stale ca check: met == false"
+check_eq "yes"   "$(missing_has "$STALE_CHECK_MSG")"  "(i) stale ca check: missing has retarget reason"
+check_eq "1"     "$RC"                                "(i) stale ca check: exit 1"
 
 # -------------------------------------------------------------------------
 # Summary

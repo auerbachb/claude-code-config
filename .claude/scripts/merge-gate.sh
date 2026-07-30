@@ -607,25 +607,28 @@ case "$REVIEWER" in
     # on the next cycle without wedging a merge indefinitely.
     CR_APPROVAL_STALE=false
     CR_APPROVAL_FRESHNESS_UNKNOWN=false
+    # Separate flag for missing submitted_at (distinct from LAST_COMMIT_TS missing):
+    # the approval's timestamp is absent — different cause, different user message.
+    CR_APPROVAL_SUBMITTED_AT_MISSING=false
     if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && "$CR_RETRACTED" == false ]]; then
       if [[ -z "$LAST_COMMIT_TS" ]]; then
         CR_APPROVAL_FRESHNESS_UNKNOWN=true
       elif [[ -z "$LATEST_CR_APPROVED_AT" ]]; then
-        # submitted_at is missing — cannot verify freshness without a timestamp
-        # to compare against; treat as unknown (fail-closed, issue #836).
-        CR_APPROVAL_FRESHNESS_UNKNOWN=true
+        # submitted_at is missing from the approval itself (not a transient API
+        # failure) — cannot verify freshness (fail-closed, issue #836).
+        CR_APPROVAL_SUBMITTED_AT_MISSING=true
       elif [[ "$LATEST_CR_APPROVED_AT" < "$LAST_COMMIT_TS" ]]; then
         CR_APPROVAL_STALE=true
       fi
     fi
     CA_APPROVAL_STALE=false
     CA_APPROVAL_FRESHNESS_UNKNOWN=false
+    CA_APPROVAL_SUBMITTED_AT_MISSING=false
     if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && "$CA_RETRACTED" == false ]]; then
       if [[ -z "$LAST_COMMIT_TS" ]]; then
         CA_APPROVAL_FRESHNESS_UNKNOWN=true
       elif [[ -z "$LATEST_CA_APPROVED_AT" ]]; then
-        # submitted_at is missing — cannot verify freshness (fail-closed, issue #836).
-        CA_APPROVAL_FRESHNESS_UNKNOWN=true
+        CA_APPROVAL_SUBMITTED_AT_MISSING=true
       elif [[ "$LATEST_CA_APPROVED_AT" < "$LAST_COMMIT_TS" ]]; then
         CA_APPROVAL_STALE=true
       fi
@@ -633,12 +636,14 @@ case "$REVIEWER" in
 
     CR_APPROVAL_VALID=false
     if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && "$CR_RETRACTED" == false \
-          && "$CR_APPROVAL_STALE" == false && "$CR_APPROVAL_FRESHNESS_UNKNOWN" == false ]]; then
+          && "$CR_APPROVAL_STALE" == false && "$CR_APPROVAL_FRESHNESS_UNKNOWN" == false \
+          && "$CR_APPROVAL_SUBMITTED_AT_MISSING" == false ]]; then
       CR_APPROVAL_VALID=true
     fi
     CA_APPROVAL_VALID=false
     if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && "$CA_RETRACTED" == false \
-          && "$CA_APPROVAL_STALE" == false && "$CA_APPROVAL_FRESHNESS_UNKNOWN" == false ]]; then
+          && "$CA_APPROVAL_STALE" == false && "$CA_APPROVAL_FRESHNESS_UNKNOWN" == false \
+          && "$CA_APPROVAL_SUBMITTED_AT_MISSING" == false ]]; then
       CA_APPROVAL_VALID=true
     fi
 
@@ -670,9 +675,15 @@ case "$REVIEWER" in
         # every ~60 s so this self-heals on the next cycle.
         MISSING+=("cannot verify approval freshness — HEAD commit timestamp unavailable; retrying next cycle")
       fi
+      if [[ "$CR_APPROVAL_SUBMITTED_AT_MISSING" == true || "$CA_APPROVAL_SUBMITTED_AT_MISSING" == true ]]; then
+        # submitted_at is absent from the approval itself (not a transient API
+        # failure) — distinct message from the LAST_COMMIT_TS-unavailable case above.
+        MISSING+=("cannot verify approval freshness — submitted_at missing from approval (fail-closed, issue #836)")
+      fi
       if [[ "$CR_RETRACTED" != true && "$CA_RETRACTED" != true \
             && "$CR_APPROVAL_STALE" != true && "$CA_APPROVAL_STALE" != true \
-            && "$CR_APPROVAL_FRESHNESS_UNKNOWN" != true && "$CA_APPROVAL_FRESHNESS_UNKNOWN" != true ]]; then
+            && "$CR_APPROVAL_FRESHNESS_UNKNOWN" != true && "$CA_APPROVAL_FRESHNESS_UNKNOWN" != true \
+            && "$CR_APPROVAL_SUBMITTED_AT_MISSING" != true && "$CA_APPROVAL_SUBMITTED_AT_MISSING" != true ]]; then
         MISSING+=("need 1 explicit CodeRabbit or CodeAnt APPROVED review on HEAD ${HEAD_SHA:0:7} (have $TOTAL_CR_ON_HEAD CodeRabbit, $TOTAL_CA_ON_HEAD CodeAnt review(s) on this SHA)")
       fi
     fi
@@ -723,14 +734,19 @@ case "$REVIEWER" in
       # so the check-run does not satisfy the supplemental gate.
       CODEANT_CHECK_OK=false
       CODEANT_CHECK_FRESHNESS_UNKNOWN=false
+      CODEANT_CHECK_STALE=false
       if [[ -n "$LATEST_CA_CHECK_OK_AT" ]]; then
         if [[ -z "$LAST_COMMIT_TS" ]]; then
           # Cannot verify whether the check-run predates the current commit.
           CODEANT_CHECK_FRESHNESS_UNKNOWN=true
         elif [[ ! "$LATEST_CA_CHECK_OK_AT" < "$LAST_COMMIT_TS" ]]; then
           CODEANT_CHECK_OK=true
+        else
+          # check-run completed before the HEAD commit — stale via force-push
+          # retargeting. A stale check-run must not satisfy the gate, and the
+          # error message must say "stale", not "no successful check-run".
+          CODEANT_CHECK_STALE=true
         fi
-        # else: check-run completed before the HEAD commit — stale; CODEANT_CHECK_OK stays false
       fi
 
       # LATEST_CA_CLEAN_AT: most-recent FRESH clean signal — only signals that have
@@ -777,11 +793,22 @@ case "$REVIEWER" in
             MISSING+=("cannot verify CodeAnt approval freshness — HEAD commit timestamp unavailable; retrying next cycle")
           fi
           # else: PRIMARY_REVIEW_MET=false — primary block already emitted the message.
+        elif [[ "$CA_APPROVAL_SUBMITTED_AT_MISSING" == true ]]; then
+          if [[ "$PRIMARY_REVIEW_MET" == true ]]; then
+            # Same rationale as FRESHNESS_UNKNOWN case above — primary block skipped.
+            # Distinct message: the missing timestamp is on the approval, not LAST_COMMIT_TS.
+            MISSING+=("cannot verify CodeAnt approval freshness — submitted_at missing from approval (fail-closed, issue #836)")
+          fi
+          # else: PRIMARY_REVIEW_MET=false — primary block already emitted the message.
         elif [[ "$CODEANT_CHECK_FRESHNESS_UNKNOWN" == true ]]; then
           # A successful CodeAnt check-run exists but its freshness cannot be verified
           # because LAST_COMMIT_TS is unavailable. Emit a distinct message so callers
           # know a check-run IS present — the blocker is freshness, not absence of review.
           MISSING+=("cannot verify CodeAnt check-run freshness — HEAD commit timestamp unavailable; retrying next cycle")
+        elif [[ "$CODEANT_CHECK_STALE" == true ]]; then
+          # A successful CodeAnt check-run exists but it predates the HEAD commit —
+          # report stale, not absent, so callers know to wait for a re-check.
+          MISSING+=("CodeAnt check-run on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — wait for CodeAnt re-check or trigger @codeant-ai review")
         elif [[ "$CA_APPROVAL_STALE" != true ]]; then
           # None of the freshness/stale conditions apply — emit the generic "no review"
           # message. The CA_APPROVAL_STALE guard prevents emitting this alongside the
