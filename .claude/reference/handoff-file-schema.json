@@ -15,5 +15,6 @@
   "files_changed": ["src/foo.ts", "src/bar.ts"],
   "push_timestamp": "2026-03-24T17:00:00Z",
   "stale_bot_reviews_dismissed": ["987654321"],
-  "notes": "CR had 3 findings, all fixed. 1 dismissed as false positive."
+  "local_review_coverage": "none",
+  "notes": "CR had 3 findings, all fixed. 1 dismissed as false positive. Local review coverage: none — CR rate-limited, CodeAnt not installed."
 }

@@ -280,11 +280,13 @@ isn't a fuzzy match. Full rules: .claude/rules/skill-first.md.
    - Run all available CLIs again. Repeat until each remaining CLI has one clean pass.
    - If a CLI hangs >2 minutes or errors twice, drop it for the session, resolve or explicitly waive its pre-drop findings in the PR body, gate on the remaining one, and note the drop.
    - If both are down, do one self-review and note it in the PR body — it exits the local loop but never satisfies the GitHub merge gate.
+   - **Before committing/pushing**, classify coverage: `both | cr-only | codeant-only | none` (per `cr-local-review.md` "Coverage classification"). Print `[COVERAGE] <level> — <reason>` in-thread. For any degraded state (`none`, `cr-only`, or `codeant-only`), this line is mandatory and must be visible before the push.
 5. Commit all changes in ONE commit.
 6. Push the branch.
 7. Create the PR via `gh pr create` with:
    - `Closes #{NUMBER}` in the body
    - A **Test plan** section with acceptance criteria checkboxes from the issue
+   - A `**Local review coverage:** <level>` labeled line (e.g. `**Local review coverage:** none — both CLIs unavailable, self-review only`). This is mandatory for `none` and `cr-only`/`codeant-only`; omit only when coverage is `both`.
 8. Write the handoff file via `handoff-state.sh --create` so the write is serialized under
    the shared state-lock.sh advisory lock (issue #682). Never write inline with
    `jq … > tmp && mv tmp` — that bypasses the lock.
@@ -306,10 +308,12 @@ isn't a fuzzy match. Full rules: .claude/rules/skill-first.md.
      --arg now "$NOW" \
      --argjson files '["{list of files you changed}"]' \
      --arg notes "{brief summary of what was done}" \
+     --arg coverage "{both|cr-only|codeant-only|none}" \
      '{schema_version:"1.0",pr_number:$pr,head_sha:$sha,reviewer:"cr",
        phase_completed:"A",created_at:$now,findings_fixed:[],
        findings_dismissed:[],threads_replied:[],threads_resolved:[],
-       files_changed:$files,push_timestamp:$now,notes:$notes}')"
+       files_changed:$files,push_timestamp:$now,notes:$notes,
+       local_review_coverage:$coverage}')"
    "$HANDOFF_STATE_SH" --create "{PR_NUMBER}" "$HANDOFF_JSON"
    ```
 9. Print the Structured Exit Report as your FINAL output:

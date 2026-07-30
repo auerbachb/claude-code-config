@@ -60,11 +60,12 @@ Autonomy does not mean filing blind: every candidate goes through the body-aware
 | **Terse** | *(default)* | Two concise blocks — **Merged** (≤3 sentences) and **Follow-ups** (≤3 sentences, or "No follow-ups opened.") — plus a one-line lessons ack and, only when the sweep left decisions pending, a one-line verdict. Per-phase narration is suppressed. |
 | **Verbose** | `--verbose` | The full report: per-cycle recovery heartbeats, the Session Lessons block, and the multi-section "Wrap-Up Complete" report (Issues filed, Filings suppressed as duplicates, Session sweep, Verdict, Lessons). |
 
-**Verbosity is additive and human-facing only.** Every phase — inference, the merge-gate recovery loop, `/fixpr` delegation, the follow-up + full-session sweep, and the lessons/memory write — executes **identically** in both modes; only narration differs (the `babysit-pr --silent` "work continues, output suppressed" model). Three things always print regardless of mode:
+**Verbosity is additive and human-facing only.** Every phase — inference, the merge-gate recovery loop, `/fixpr` delegation, the follow-up + full-session sweep, and the lessons/memory write — executes **identically** in both modes; only narration differs (the `babysit-pr --silent` "work continues, output suppressed" model). Four things always print regardless of mode:
 
 - **State-changing blockers and stop conditions** — a merge that can't proceed, `CONFLICTING`, human `CHANGES_REQUESTED`, no PR found, the recovery cap — surface as a short one-line reason even in terse mode (Step 4.3 **Blocker path**). Terseness never swallows a blocker.
 - **The `[INFERRED]` merge-safety checkpoint** (Step 1.1). It is the user's only catch point for a mis-inferred **merge**, so it is a safety guardrail rather than phase chatter — it prints in both modes (it fires only on the inference path, never on the normal branch path, so it barely affects terseness).
 - **The CLAUDE.md 5-minute heartbeat** during long `/fixpr` waits. Terse mode suppresses the *routine* per-cycle recovery heartbeat, but never the obligation to break silence during a long-running operation.
+- **`[COVERAGE]` when local review was degraded** (`cr-only`, `codeant-only`, or `none`). When the session-sweep or per-PR detection surfaces that the pre-push local review ran with less than full CLI coverage, emit one line in the follow-up report: e.g. `[COVERAGE] none — both CLIs unavailable, self-review only`. Full coverage (`both`) is terse-suppressible routine state.
 
 When `/wrap` is invoked by a phase-C subagent, the machine **`EXIT_REPORT`** block (per `phase-protocols.md`) is emitted **identically regardless of verbosity** — `--verbose` governs only the prose report, never the structured exit contract.
 
