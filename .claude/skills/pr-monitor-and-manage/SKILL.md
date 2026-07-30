@@ -164,6 +164,7 @@ For each PR `$N`, fetch gate + unresolved threads in parallel, then pull fields:
 
 ```bash
 GATE=$(.claude/scripts/merge-gate.sh "$N"); GATE_EXIT=$?
+GATE_BY_PR[$N]="$GATE"   # Step 5c/5d look up per-PR gate by number — never rely on loop-scoped $GATE
 MET=$(jq -r '.met' <<<"$GATE")
 MERGE_STATE=$(jq -r '.merge_state' <<<"$GATE")
 MERGEABLE=$(jq -r '.mergeable' <<<"$GATE")
