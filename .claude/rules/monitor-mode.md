@@ -8,7 +8,7 @@
 
 **Entry:** any active subagent or non-empty `active_agents` in `session-state.json`. **Exit:** all subagents complete/failed, pending B/C launches executed, state updated.
 
-While active: poll subagents, verify outputs, execute phase transitions, update state, report heartbeats. No code edits, issue/PR creation, or source analysis — delegate fix work to subagents.
+While active: poll subagents, verify outputs, execute phase transitions, refill free capacity, update state, report heartbeats. No code edits, issue/PR creation, or source analysis — delegate fix work to subagents.
 
 If the user explicitly requests substantive work, warn that monitoring N active PR(s) will pause, do the work, then immediately re-enter monitor mode.
 
@@ -18,9 +18,10 @@ Every ~60s, in order:
 1. Process completed subagents and parse exit reports.
 2. Execute phase transitions via `phase-protocols.md`; also launch transitions stalled in `session-state.json`.
 3. For every session PR still on `reviewer == cr`, run `.claude/scripts/escalate-review.sh <PR_NUMBER>` and act on its `STATUS=` verdict before sleeping.
-4. Send any due heartbeat (one line — User Heartbeat below).
-5. Investigate stale agents: >15 min Phase A, >10 min Phase B, >5 min Phase C.
-6. Before ending the turn, confirm the ceiling is still armed: `bgwork-ceiling.sh --check`.
+4. Below the pipeline ceiling? Refill: queued chain heads, then `/pm` Step 3.4's backlog pass (under `/pm` only). Chains, re-validation, pause still bind.
+5. Send any due heartbeat (one line — User Heartbeat below).
+6. Investigate stale agents: >15 min Phase A, >10 min Phase B, >5 min Phase C.
+7. Before ending the turn, confirm the ceiling is still armed: `bgwork-ceiling.sh --check`.
 
 ## Subagent Health Monitoring (MANDATORY)
 
@@ -33,6 +34,8 @@ Respawn permissions: crash asks, exhaustion auto (`phase-protocols.md`).
 CLAUDE.md #3 is canonical for the one-line default and for when full detail is owed. Routine-beat format:
 
 `[<ET timestamp>] <state / what's running> · next: <action or cadence> — monitoring N PR(s) (#a, #b)`
+
+Below the pipeline ceiling, append `· slots {used}/{cap}: {nothing eligible | chained | paused}`.
 
 No tables, plan restating, or rule quoting on routine beats. If the silence hook warns, message immediately. Between-turn polling: `scheduling-reliability.md`.
 
