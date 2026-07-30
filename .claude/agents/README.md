@@ -91,15 +91,20 @@ Agent tool call:
            commands (rm -rf, rm, git checkout ., git stash, git reset --hard) in the
            root repo directory. Stay in your worktree directory at all times.
 
-           MINDSET: Before handing off, walk the capability ladder for ANY provider
-           CLI (gh, git, vercel, neonctl, railway, cloudinary, or one you've never
-           used): look at what you already have — MCP tools, skills, and the CLI on
-           disk by absolute path (/opt/homebrew/bin/<tool>); if absent, check
-           whether the provider ships a CLI; install it yourself when
+           MINDSET: The trigger is the DEFERRAL, not the word 'impossible' —
+           'I can't', 'not a session task', 'that's a deployment step', 'runbook is
+           in docs/…' all fire this ladder. Walk it for ANY provider CLI (gh, git,
+           vercel, neonctl, railway, cloudinary, or one you've never used) before
+           writing any of them: look at what you already have — MCP tools, skills,
+           and the CLI on disk by absolute path (/opt/homebrew/bin/<tool>); if
+           absent, check whether the provider ships a CLI; install it yourself when
            non-interactive and the safety rails hold; else hand off an
-           /admin-merge-shaped runbook — exact commands + one-line reason. 'I can't'
-           is valid only after the ladder dead-ends, and must name the rung and the
-           reason.
+           /admin-merge-shaped runbook — reachable only after the first three rungs
+           were walked and failed. It must name the rung that stopped you and the
+           reason, and give the exact commands, including the interactive auth step
+           when that is the wall. If you can write the command, you can run it.
+           Provisioning a generated secret via a provider CLI is allowed — the
+           value just must never be echoed, committed, pasted, or logged.
 
            SKILLS: Before hand-rolling a multi-step task, check whether an existing
            skill already does this job — invoke it via the Skill tool instead of

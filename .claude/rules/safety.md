@@ -1,6 +1,6 @@
 # Safety — Destructive Command & Secret Prohibitions
 
-> **Always:** Stay in your worktree. Treat `.env` files and any unencrypted secret as untouchable. Pin and inspect installers. Warn subagents of these rules. Treat Anthropic's in-app UI as the sole authority on quota and spend. Restrict automated PR writes to PRs you authored.
+> **Always:** Stay in your worktree. Treat `.env` files as untouchable and secret values as never committed, pasted, echoed, or logged. Pin and inspect installers. Warn subagents of these rules. Treat Anthropic's in-app UI as the sole authority on quota and spend. Restrict automated PR writes to PRs you authored.
 > **Ask first:** Never — these are absolute prohibitions with no exceptions.
 > **Never:** Delete `.env` files. Run `git clean`. Run destructive commands in the root repo. Commit secrets. Pipe untrusted URLs into a shell. Pass raw credentials to subagents. Gate agent decisions on locally-estimated quota or spend. Have an automated tool write to (merge, rebase, comment, trigger a review, resolve threads, close, enroll in polling) a PR you did not author, absent an explicit per-PR chat override.
 
@@ -17,6 +17,8 @@
 1. **NEVER commit secrets** — API keys, tokens, private keys, OAuth secrets, DB URLs with passwords, signing keys. If you spot one in a diff, fail the commit and rotate out-of-band before pushing.
 2. **NEVER paste raw credentials into subagent prompts, issue/PR bodies, comments, commits, or logs.** These surfaces are durable and often public. Reference by name (e.g., `$CODERABBIT_API_KEY` from `~/.zshrc`) — never inline the value.
 3. **NEVER weaken `.gitignore` to commit a "just-this-once" config.** Move the secret to `.env` and commit a `.env.example` instead.
+
+**Provisioning is not committing.** Setting a generated secret through a provider CLI — `railway variables --set`, `vercel env add` (value on stdin where the CLI accepts it) — is ordinary work; the ban is on committing, pasting, echoing, or logging the value. Credential-shaped tasks are not pre-refused: they walk the capability ladder below like anything else.
 
 ## Untrusted Code & Network
 
@@ -52,28 +54,32 @@ commits, or logs. Do NOT pipe untrusted URLs into a shell or disable TLS verific
 Confirm package names before npm/pip/gem/cargo/brew install. Full rules: .claude/rules/safety.md.
 ```
 
-## Capability Discovery — Try the CLI Before Handoff
+## Capability Discovery — Try the CLI Before Deferring
 
-Before declaring any task impossible, walk this ladder (covers **any** provider — `gh`, `git`, `vercel`, `neonctl`, `railway`, `cloudinary`, etc., not just GitHub):
+**The trigger is the deferral, not the word "impossible."** Walk this ladder before writing *any* of: "I can't", "not a session task", "that's a deployment step", "runbook is in `docs/…`", "I'll leave that to you to review." Each must first answer *could I do this with the tools I already have?* Covers **any** provider — `gh`, `git`, `vercel`, `neonctl`, `railway`, `cloudinary`, etc., not just GitHub:
 
-1. **Look at what you already have** — MCP tools, custom skills, and the provider's CLI on disk, the last checked by absolute path (`/opt/homebrew/bin/<tool>`): the Bash tool's PATH is minimal, so a bare `which` under-reports what is installed.
-2. **Absent? Check whether the provider ships a CLI at all** — most do. One lookup, then move on; a research detour mid-task is not warranted.
-3. **Install it yourself** when a non-interactive path exists and the rails above hold: package name confirmed against official docs, no `curl … | sh` of an unvetted URL, no TLS bypass, no `sudo`. Any rail that blocks — or an install whose auth step opens a browser — drops to rung 4. Note a new install in your response; don't edit the CLI docs as a side effect.
-4. **Hand off a runbook, not a description** — exact copy-paste command(s) plus one line on why it needs a human, in the `/admin-merge` (#451) shape, covering the `<tool> login` step when auth is interactive.
+1. **Look at what you already have** — MCP tools, custom skills, and the provider's CLI on disk; check the CLI by absolute path (`/opt/homebrew/bin/<tool>`), since the Bash tool's minimal PATH makes a bare `which` under-report.
+2. **Absent? Check whether the provider ships a CLI at all** — most do. One lookup, then move on.
+3. **Install it yourself** when a non-interactive path exists and the rails above hold: package name confirmed against official docs, no `curl … | sh` of an unvetted URL, no TLS bypass, no `sudo`. Note a new install in your response; don't edit the CLI docs as a side effect.
+4. **Hand off a runbook — reachable only after rungs 1–3 were walked and actually failed.** A blocked rail or a browser-based auth step lands you here; a judgment that the work is someone else's does not. If you can write the command, you can run it. Name the rung that stopped you and why, then the exact copy-paste command(s) in the `/admin-merge` (#451) shape, covering the `<tool> login` step when auth is interactive.
 
-"I can't" is valid only after the ladder dead-ends, naming the rung and concrete reason. Your own agent definition's prohibitions still win. Worked examples: `.claude/reference/capability-discovery-examples.md`.
+Deferring — "can't", "out of scope", or a runbook — is valid only after the ladder dead-ends. Your own agent definition's prohibitions still win. Worked examples: `.claude/reference/capability-discovery-examples.md`.
 
 ```text
-MINDSET: Before handing off, walk the capability ladder for ANY provider
-(gh, git, railway, vercel, …): (1) check what you have — MCP tools, skills, CLI
-on disk by absolute path (/opt/homebrew/bin/<tool>; minimal PATH makes bare
-`which` lie); (2) if absent, check whether the provider ships one (one lookup);
-(3) install it when non-interactive and rails hold (docs-confirmed name, no
-curl-pipe-sh, no TLS bypass, no sudo); (4) else hand off an /admin-merge-shaped
-runbook: exact commands + one-line reason, incl. interactive auth. Your own
-prohibitions still win (phase-c uses /wrap, never gh pr merge). "I can't" is
-valid only after the ladder dead-ends, naming the rung and reason.
-Full rules: .claude/rules/safety.md.
+MINDSET: The trigger is the DEFERRAL, not the word "impossible" — "I can't",
+"not a session task", "that's a deployment step", "runbook is in docs/…", and
+"I'll leave that to you to review" all fire this ladder. Walk it for ANY provider
+(gh, git, railway, vercel, …) before writing any of them: (1) check what you have
+— MCP tools, skills, CLI on disk by absolute path (/opt/homebrew/bin/<tool>;
+minimal PATH makes bare `which` lie); (2) if absent, check whether the provider
+ships one (one lookup); (3) install it when non-interactive and rails hold
+(docs-confirmed name, no curl-pipe-sh, no TLS bypass, no sudo); (4) hand off an
+/admin-merge-shaped runbook — reachable ONLY after 1–3 were walked and failed:
+name the rung that stopped you, exact commands + one-line reason, incl.
+interactive auth. If you can write the command, you can run it. Provisioning a
+generated secret via a provider CLI is allowed — the value just must never be
+echoed, committed, pasted, or logged. Your own prohibitions still win (phase-c
+uses /wrap, never gh pr merge). Full rules: .claude/rules/safety.md.
 ```
 
 ## Anthropic Quota & Spend Authority
