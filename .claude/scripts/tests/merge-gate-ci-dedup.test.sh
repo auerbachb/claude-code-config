@@ -66,6 +66,12 @@ case "\$ARGS" in
     printf '%s' "\${FAKE_ISSUE_COMMENTS:-[]}"; exit 0 ;;
   *graphql*)
     jq -cn '{data:{repository:{pullRequest:{reviewThreads:{nodes:[]}}}}}'; exit 0 ;;
+  *"git/commits/"*)
+    # Return a HEAD committer date earlier than all check-run completed_at values
+    # (which are derived from check-run id as "2026-07-21T10:00:0{id}Z"). This
+    # lets the stale-approval guard (issue #836) treat every check-run as fresh
+    # — the important variable for CI-dedup tests is suite ordering, not freshness.
+    jq -cn '{committer:{date:"2026-07-21T09:59:00Z"}}'; exit 0 ;;
   *contents/*)
     # No CODEOWNERS file — merge-gate.sh tolerates the 404.
     echo "Not Found" >&2; exit 1 ;;

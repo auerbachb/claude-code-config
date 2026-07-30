@@ -10,6 +10,15 @@
 #                     clean signal (APPROVED or successful check completion).
 #   - BugBot path   : 1 clean BugBot review on current HEAD + zero unresolved BugBot threads
 #   - Greptile path : severity-gated — clean OR only P1/P2 (fixed) OR P0 fixed + re-review clean
+#
+# Stale-approval guard (issue #836): GitHub retargets review commit_id to the new
+#   HEAD SHA after a force-push, but submitted_at is never updated. An approval
+#   whose submitted_at predates the HEAD commit's committer date is rejected even
+#   when commit_id matches — distinct missing[] reason so callers know to re-trigger
+#   rather than rebase. Applied to: CR/CodeAnt APPROVED reviews, CodeAnt clean
+#   check-run completed_at, BugBot reviews. Grace window: none (submitted_at must
+#   be >= committer date; equal timestamps are accepted). Guard is disabled when
+#   LAST_COMMIT_TS is empty (API failure) to avoid silently blocking clean reviews.
 # Also enforces the pre-merge CI gate from .claude/rules/cr-merge-gate.md Step 1b
 # (incomplete runs OR blocking conclusions = not merge-ready), merge metadata
 # (mergeStateStatus including BEHIND, mergeable including CONFLICTING) per
@@ -224,9 +233,11 @@ if [[ -z "$HEAD_SHA" ]]; then
   exit 4
 fi
 
-# Fetch last commit timestamp for Greptile freshness gate (issue #723).
-# Used in the greptile) branch to confirm a 👍 issue comment is post-push.
-# Non-fatal: an empty result disables the freshness filter (comments accepted
+# Fetch last commit timestamp for Greptile freshness gate (issue #723) and the
+# stale-approval guard (issue #836). Used in greptile) to confirm a 👍 issue
+# comment is post-push; used in cr) and bugbot) to reject approvals whose
+# submitted_at predates this committer date (force-push retargeting).
+# Non-fatal: an empty result disables both filters (comments/approvals accepted
 # regardless of age), which is preferable to silently blocking a clean review.
 LAST_COMMIT_TS=$(gh api "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null | jq -r '.committer.date // ""' 2>/dev/null || echo "")
 
@@ -527,6 +538,16 @@ if [[ -n "$REVIEW_DECISION" && "$REVIEW_DECISION" != "APPROVED" ]]; then
   fi
 fi
 
+# Timestamp normaliser — used by all reviewer paths below (issue #836, BugBot round 5).
+# GitHub can return mixed ISO-8601 UTC forms ("…Z" and "…+00:00"). Bash [[ < ]] is
+# purely lexicographic; Z (ASCII 90) > + (ASCII 43), so "…Z" > "…+00:00" even for
+# equal instants, breaking stale-approval comparisons. Strip the timezone suffix to
+# produce a bare "YYYY-MM-DDTHH:MM:SS" string that sorts correctly for UTC timestamps.
+norm_ts() {
+  local t="${1%Z}"       # strip trailing Z
+  echo "${t%+00:00}"     # strip trailing +00:00 (all GitHub timestamps are UTC)
+}
+
 # Path-specific checks.
 # Default false — only the cr) branch below computes a meaningful value.
 PRIMARY_REVIEW_MET=false
@@ -570,25 +591,79 @@ case "$REVIEWER" in
       | length')
 
     # Retraction: later CHANGES_REQUESTED on same SHA invalidates APPROVED (ISO timestamps).
+    # Freshness guard (issue #836): GitHub retargets commit_id on force-push, so a
+    # pre-push CHANGES_REQUESTED can appear on HEAD while predating the commit.
+    # Only treat as retraction if the CHANGES_REQUESTED is itself fresh
+    # (submitted_at >= LAST_COMMIT_TS). When LAST_COMMIT_TS is unknown, skip
+    # retraction — the approval's own freshness check will block via
+    # CR/CA_APPROVAL_FRESHNESS_UNKNOWN.
     CR_RETRACTED=false
     if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && -n "$LATEST_CR_CHANGES_REQUESTED_AT" && -n "$LATEST_CR_APPROVED_AT" ]]; then
-      if [[ "$LATEST_CR_CHANGES_REQUESTED_AT" > "$LATEST_CR_APPROVED_AT" ]]; then
-        CR_RETRACTED=true
+      if [[ "$(norm_ts "$LATEST_CR_CHANGES_REQUESTED_AT")" > "$(norm_ts "$LATEST_CR_APPROVED_AT")" ]]; then
+        if [[ -n "$LAST_COMMIT_TS" && ! "$(norm_ts "$LATEST_CR_CHANGES_REQUESTED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
+          CR_RETRACTED=true
+        fi
       fi
     fi
     CA_RETRACTED=false
     if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && -n "$LATEST_CA_CHANGES_REQUESTED_AT" && -n "$LATEST_CA_APPROVED_AT" ]]; then
-      if [[ "$LATEST_CA_CHANGES_REQUESTED_AT" > "$LATEST_CA_APPROVED_AT" ]]; then
-        CA_RETRACTED=true
+      if [[ "$(norm_ts "$LATEST_CA_CHANGES_REQUESTED_AT")" > "$(norm_ts "$LATEST_CA_APPROVED_AT")" ]]; then
+        if [[ -n "$LAST_COMMIT_TS" && ! "$(norm_ts "$LATEST_CA_CHANGES_REQUESTED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
+          CA_RETRACTED=true
+        fi
+      fi
+    fi
+
+    # Stale-approval guard (issue #836): GitHub retargets commit_id on force-push
+    # but does NOT update submitted_at. An approval whose submitted_at predates
+    # the HEAD commit's committer date was submitted before the current commit
+    # and must not count even when commit_id matches. Equal timestamps are
+    # accepted (submitted_at >= LAST_COMMIT_TS). Use norm_ts for comparisons
+    # to handle mixed Z/+00:00 UTC suffixes (issue #836, BugBot round 5).
+    #
+    # Fail-closed (issue #836): when LAST_COMMIT_TS is empty (HEAD timestamp API
+    # failure) we CANNOT verify freshness, so qualifying approvals do NOT satisfy
+    # the gate. Callers poll every ~60 s, so a transient API failure self-heals
+    # on the next cycle without wedging a merge indefinitely.
+    CR_APPROVAL_STALE=false
+    CR_APPROVAL_FRESHNESS_UNKNOWN=false
+    # Separate flag for missing submitted_at (distinct from LAST_COMMIT_TS missing):
+    # the approval's timestamp is absent — different cause, different user message.
+    CR_APPROVAL_SUBMITTED_AT_MISSING=false
+    if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && "$CR_RETRACTED" == false ]]; then
+      if [[ -z "$LAST_COMMIT_TS" ]]; then
+        CR_APPROVAL_FRESHNESS_UNKNOWN=true
+      elif [[ -z "$LATEST_CR_APPROVED_AT" ]]; then
+        # submitted_at is missing from the approval itself (not a transient API
+        # failure) — cannot verify freshness (fail-closed, issue #836).
+        CR_APPROVAL_SUBMITTED_AT_MISSING=true
+      elif [[ "$(norm_ts "$LATEST_CR_APPROVED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
+        CR_APPROVAL_STALE=true
+      fi
+    fi
+    CA_APPROVAL_STALE=false
+    CA_APPROVAL_FRESHNESS_UNKNOWN=false
+    CA_APPROVAL_SUBMITTED_AT_MISSING=false
+    if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && "$CA_RETRACTED" == false ]]; then
+      if [[ -z "$LAST_COMMIT_TS" ]]; then
+        CA_APPROVAL_FRESHNESS_UNKNOWN=true
+      elif [[ -z "$LATEST_CA_APPROVED_AT" ]]; then
+        CA_APPROVAL_SUBMITTED_AT_MISSING=true
+      elif [[ "$(norm_ts "$LATEST_CA_APPROVED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
+        CA_APPROVAL_STALE=true
       fi
     fi
 
     CR_APPROVAL_VALID=false
-    if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && "$CR_RETRACTED" == false ]]; then
+    if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && "$CR_RETRACTED" == false \
+          && "$CR_APPROVAL_STALE" == false && "$CR_APPROVAL_FRESHNESS_UNKNOWN" == false \
+          && "$CR_APPROVAL_SUBMITTED_AT_MISSING" == false ]]; then
       CR_APPROVAL_VALID=true
     fi
     CA_APPROVAL_VALID=false
-    if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && "$CA_RETRACTED" == false ]]; then
+    if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && "$CA_RETRACTED" == false \
+          && "$CA_APPROVAL_STALE" == false && "$CA_APPROVAL_FRESHNESS_UNKNOWN" == false \
+          && "$CA_APPROVAL_SUBMITTED_AT_MISSING" == false ]]; then
       CA_APPROVAL_VALID=true
     fi
 
@@ -597,6 +672,9 @@ case "$REVIEWER" in
       PRIMARY_REVIEW_MET=true
     fi
 
+    # Track whether the CA stale message was emitted here, to prevent the
+    # supplemental CodeAnt gate below from adding a duplicate entry.
+    CA_STALE_MISSING_EMITTED=false
     if [[ "$PRIMARY_REVIEW_MET" != true ]]; then
       if [[ "$CR_RETRACTED" == true && "$CA_APPROVAL_VALID" != true ]]; then
         MISSING+=("CodeRabbit approval on HEAD ${HEAD_SHA:0:7} retracted by later CHANGES_REQUESTED — fix and re-trigger @coderabbitai full review")
@@ -604,7 +682,28 @@ case "$REVIEWER" in
       if [[ "$CA_RETRACTED" == true && "$CR_APPROVAL_VALID" != true ]]; then
         MISSING+=("CodeAnt approval on HEAD ${HEAD_SHA:0:7} retracted by later CHANGES_REQUESTED — fix and re-trigger @codeant-ai review")
       fi
-      if [[ "$CR_RETRACTED" != true && "$CA_RETRACTED" != true ]]; then
+      if [[ "$CR_APPROVAL_STALE" == true && "$CA_APPROVAL_VALID" != true ]]; then
+        MISSING+=("CodeRabbit approval on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — re-review required; trigger @coderabbitai full review")
+      fi
+      if [[ "$CA_APPROVAL_STALE" == true && "$CR_APPROVAL_VALID" != true ]]; then
+        MISSING+=("CodeAnt approval on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — re-review required; trigger @codeant-ai review")
+        CA_STALE_MISSING_EMITTED=true
+      fi
+      if [[ "$CR_APPROVAL_FRESHNESS_UNKNOWN" == true || "$CA_APPROVAL_FRESHNESS_UNKNOWN" == true ]]; then
+        # Fail-closed (issue #836): HEAD commit timestamp unavailable — cannot
+        # verify whether the approval predates the current commit. Callers retry
+        # every ~60 s so this self-heals on the next cycle.
+        MISSING+=("cannot verify approval freshness — HEAD commit timestamp unavailable; retrying next cycle")
+      fi
+      if [[ "$CR_APPROVAL_SUBMITTED_AT_MISSING" == true || "$CA_APPROVAL_SUBMITTED_AT_MISSING" == true ]]; then
+        # submitted_at is absent from the approval itself (not a transient API
+        # failure) — distinct message from the LAST_COMMIT_TS-unavailable case above.
+        MISSING+=("cannot verify approval freshness — submitted_at missing from approval (fail-closed, issue #836)")
+      fi
+      if [[ "$CR_RETRACTED" != true && "$CA_RETRACTED" != true \
+            && "$CR_APPROVAL_STALE" != true && "$CA_APPROVAL_STALE" != true \
+            && "$CR_APPROVAL_FRESHNESS_UNKNOWN" != true && "$CA_APPROVAL_FRESHNESS_UNKNOWN" != true \
+            && "$CR_APPROVAL_SUBMITTED_AT_MISSING" != true && "$CA_APPROVAL_SUBMITTED_AT_MISSING" != true ]]; then
         MISSING+=("need 1 explicit CodeRabbit or CodeAnt APPROVED review on HEAD ${HEAD_SHA:0:7} (have $TOTAL_CR_ON_HEAD CodeRabbit, $TOTAL_CA_ON_HEAD CodeAnt review(s) on this SHA)")
       fi
     fi
@@ -649,20 +748,93 @@ case "$REVIEWER" in
             )
           | (.completed_at // .started_at // "")]
         | sort | last // ""')
+      # Stale-approval guard (issue #836): check-run completed_at must postdate
+      # the HEAD committer date, mirroring the APPROVED review guard above.
+      # Fail-closed: when LAST_COMMIT_TS is empty we cannot verify freshness,
+      # so the check-run does not satisfy the supplemental gate.
       CODEANT_CHECK_OK=false
+      CODEANT_CHECK_FRESHNESS_UNKNOWN=false
+      CODEANT_CHECK_STALE=false
       if [[ -n "$LATEST_CA_CHECK_OK_AT" ]]; then
-        CODEANT_CHECK_OK=true
+        if [[ -z "$LAST_COMMIT_TS" ]]; then
+          # Cannot verify whether the check-run predates the current commit.
+          CODEANT_CHECK_FRESHNESS_UNKNOWN=true
+        elif [[ ! "$(norm_ts "$LATEST_CA_CHECK_OK_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
+          CODEANT_CHECK_OK=true
+        else
+          # check-run completed before the HEAD commit — stale via force-push
+          # retargeting. A stale check-run must not satisfy the gate, and the
+          # error message must say "stale", not "no successful check-run".
+          CODEANT_CHECK_STALE=true
+        fi
       fi
 
-      LATEST_CA_CLEAN_AT="$LATEST_CA_APPROVED_AT"
-      if [[ -n "$LATEST_CA_CHECK_OK_AT" && ( -z "$LATEST_CA_CLEAN_AT" || "$LATEST_CA_CHECK_OK_AT" > "$LATEST_CA_CLEAN_AT" ) ]]; then
-        LATEST_CA_CLEAN_AT="$LATEST_CA_CHECK_OK_AT"
+      # LATEST_CA_CLEAN_AT: most-recent FRESH clean signal — only signals that have
+      # passed the freshness guard (issue #836) qualify. Stale or unverifiable signals
+      # must not suppress a CHANGES_REQUESTED that postdates the last genuine clean pass.
+      LATEST_CA_CLEAN_AT=""
+      if [[ "$CA_APPROVAL_VALID" == true ]]; then
+        LATEST_CA_CLEAN_AT="$LATEST_CA_APPROVED_AT"
+      fi
+      if [[ "$CODEANT_CHECK_OK" == true ]]; then
+        if [[ -z "$LATEST_CA_CLEAN_AT" || "$(norm_ts "$LATEST_CA_CHECK_OK_AT")" > "$(norm_ts "$LATEST_CA_CLEAN_AT")" ]]; then
+          LATEST_CA_CLEAN_AT="$LATEST_CA_CHECK_OK_AT"
+        fi
       fi
 
-      if [[ -n "$LATEST_CA_CHANGES_REQUESTED_AT" && ( -z "$LATEST_CA_CLEAN_AT" || "$LATEST_CA_CHANGES_REQUESTED_AT" > "$LATEST_CA_CLEAN_AT" ) ]]; then
+      # Stale CHANGES_REQUESTED guard (issue #836): GitHub retargets commit_id on
+      # force-push, so a pre-push CHANGES_REQUESTED can have commit_id==HEAD while
+      # its submitted_at predates the current commit. dismiss-stale-bot-changes.sh
+      # only handles wrong commit_id, not retargeted timestamps; this freshness
+      # check is needed. If LAST_COMMIT_TS is unavailable, treat as blocking (fail-closed).
+      CA_CHANGES_BLOCKING=false
+      if [[ -n "$LATEST_CA_CHANGES_REQUESTED_AT" ]]; then
+        if [[ -z "$LAST_COMMIT_TS" || ! "$(norm_ts "$LATEST_CA_CHANGES_REQUESTED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
+          CA_CHANGES_BLOCKING=true
+        fi
+      fi
+
+      if [[ "$CA_CHANGES_BLOCKING" == true && ( -z "$LATEST_CA_CLEAN_AT" || "$(norm_ts "$LATEST_CA_CHANGES_REQUESTED_AT")" > "$(norm_ts "$LATEST_CA_CLEAN_AT")" ) ]]; then
         MISSING+=("CodeAnt CHANGES_REQUESTED on HEAD ${HEAD_SHA:0:7} is newer than the latest CodeAnt clean signal — address findings or wait for APPROVED / successful CodeAnt check-run")
       elif [[ "$CA_APPROVAL_VALID" != true && "$CODEANT_CHECK_OK" != true ]]; then
-        MISSING+=("CodeAnt participated on HEAD ${HEAD_SHA:0:7} but no explicit APPROVED review and no successful CodeAnt check-run (have $TOTAL_CA_ON_HEAD CodeAnt review(s) on this SHA) — wait or comment @codeant-ai review")
+        if [[ "$CA_APPROVAL_STALE" == true && "$CA_STALE_MISSING_EMITTED" != true ]]; then
+          # Stale-approval guard (issue #836): CodeAnt's approval is retargeted;
+          # emit a stale-specific message so callers know to re-trigger rather than
+          # interpret this as a complete absence of CodeAnt review.
+          # Guard: CA_STALE_MISSING_EMITTED prevents a duplicate entry when the
+          # primary review block already reported this condition above.
+          MISSING+=("CodeAnt approval on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — trigger @codeant-ai review")
+        elif [[ "$CA_APPROVAL_FRESHNESS_UNKNOWN" == true ]]; then
+          if [[ "$PRIMARY_REVIEW_MET" == true ]]; then
+            # CR already satisfies the primary gate, so the primary block was skipped
+            # (it only runs when PRIMARY_REVIEW_MET=false) and did NOT emit the
+            # freshness-unknown message. The supplemental gate still requires a
+            # verified CodeAnt clean signal when CodeAnt participated — emit here.
+            MISSING+=("cannot verify CodeAnt approval freshness — HEAD commit timestamp unavailable; retrying next cycle")
+          fi
+          # else: PRIMARY_REVIEW_MET=false — primary block already emitted the message.
+        elif [[ "$CA_APPROVAL_SUBMITTED_AT_MISSING" == true ]]; then
+          if [[ "$PRIMARY_REVIEW_MET" == true ]]; then
+            # Same rationale as FRESHNESS_UNKNOWN case above — primary block skipped.
+            # Distinct message: the missing timestamp is on the approval, not LAST_COMMIT_TS.
+            MISSING+=("cannot verify CodeAnt approval freshness — submitted_at missing from approval (fail-closed, issue #836)")
+          fi
+          # else: PRIMARY_REVIEW_MET=false — primary block already emitted the message.
+        elif [[ "$CODEANT_CHECK_FRESHNESS_UNKNOWN" == true ]]; then
+          # A successful CodeAnt check-run exists but its freshness cannot be verified
+          # because LAST_COMMIT_TS is unavailable. Emit a distinct message so callers
+          # know a check-run IS present — the blocker is freshness, not absence of review.
+          MISSING+=("cannot verify CodeAnt check-run freshness — HEAD commit timestamp unavailable; retrying next cycle")
+        elif [[ "$CODEANT_CHECK_STALE" == true ]]; then
+          # A successful CodeAnt check-run exists but it predates the HEAD commit —
+          # report stale, not absent, so callers know to wait for a re-check.
+          MISSING+=("CodeAnt check-run on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — wait for CodeAnt re-check or trigger @codeant-ai review")
+        elif [[ "$CA_APPROVAL_STALE" != true ]]; then
+          # None of the freshness/stale conditions apply — emit the generic "no review"
+          # message. The CA_APPROVAL_STALE guard prevents emitting this alongside the
+          # stale message when CA_STALE_MISSING_EMITTED was already set by the primary block.
+          MISSING+=("CodeAnt participated on HEAD ${HEAD_SHA:0:7} but no explicit APPROVED review and no successful CodeAnt check-run (have $TOTAL_CA_ON_HEAD CodeAnt review(s) on this SHA) — wait or comment @codeant-ai review")
+        fi
       fi
     fi
 
@@ -681,15 +853,31 @@ case "$REVIEWER" in
         [.[]? | select(.user.login == "cursor[bot]" and .commit_id == $sha)]
         | sort_by(.submitted_at) | last // empty')
       if [[ -n "$LATEST_BB" ]]; then
-        BB_STATE=$(echo "$LATEST_BB" | jq -r '.state // ""')
-        # Always check for inline findings — BugBot can post inline diff comments
-        # without a review body, so gating on body length would miss them.
-        # Filter by original_commit_id == sha to exclude stale comments GitHub
-        # "moves" to the new HEAD when commit_id advances but the diff line persists.
-        INLINE_BB=$(echo "$PR_COMMENTS_JSON" | jq --arg sha "$HEAD_SHA" '
-          [.[]? | select(.user.login == "cursor[bot]" and .commit_id == $sha and (.original_commit_id // .commit_id) == $sha)] | length')
-        if [[ "$BB_STATE" == "CHANGES_REQUESTED" ]] || [[ "$INLINE_BB" -gt 0 ]]; then
-          MISSING+=("latest BugBot review on HEAD has findings ($INLINE_BB inline)")
+        BB_SUBMITTED_AT=$(echo "$LATEST_BB" | jq -r '.submitted_at // ""')
+        # Stale-approval guard (issue #836): same retargeting risk as CR/CodeAnt —
+        # BugBot review commit_id can be advanced by GitHub on force-push while
+        # submitted_at stays at the pre-push time.
+        # Fail-closed: when LAST_COMMIT_TS is empty we cannot verify freshness,
+        # so the review does not satisfy the gate (callers poll every ~60 s).
+        if [[ -z "$LAST_COMMIT_TS" ]]; then
+          MISSING+=("cannot verify BugBot review freshness — HEAD commit timestamp unavailable; retrying next cycle")
+        elif [[ -z "$BB_SUBMITTED_AT" ]]; then
+          # submitted_at is missing — cannot verify freshness without a timestamp
+          # to compare against; treat as unknown (fail-closed, issue #836).
+          MISSING+=("cannot verify BugBot review freshness — submitted_at unavailable; retrying next cycle")
+        elif [[ "$(norm_ts "$BB_SUBMITTED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
+          MISSING+=("BugBot review on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — re-review required; post @cursor review")
+        else
+          BB_STATE=$(echo "$LATEST_BB" | jq -r '.state // ""')
+          # Always check for inline findings — BugBot can post inline diff comments
+          # without a review body, so gating on body length would miss them.
+          # Filter by original_commit_id == sha to exclude stale comments GitHub
+          # "moves" to the new HEAD when commit_id advances but the diff line persists.
+          INLINE_BB=$(echo "$PR_COMMENTS_JSON" | jq --arg sha "$HEAD_SHA" '
+            [.[]? | select(.user.login == "cursor[bot]" and .commit_id == $sha and (.original_commit_id // .commit_id) == $sha)] | length')
+          if [[ "$BB_STATE" == "CHANGES_REQUESTED" ]] || [[ "$INLINE_BB" -gt 0 ]]; then
+            MISSING+=("latest BugBot review on HEAD has findings ($INLINE_BB inline)")
+          fi
         fi
       fi
     fi
