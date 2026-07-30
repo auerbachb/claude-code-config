@@ -142,7 +142,7 @@ for skill in "${CANONICAL_EMITTERS[@]}"; do
   require_pattern "$skill_file" '\*\*Model:\*\*' "${skill} **Model:** requirement"
   require_pattern "$skill_file" '\*\*Effort:\*\*' "${skill} **Effort:** requirement"
   require_pattern "$skill_file" 'model-guard preamble|MODEL GUARD' "${skill} model-guard requirement"
-  require_pattern "$skill_file" '\*\*Model:\*\*.*(first line|first prompt|first content|MUST open|open the chip|base block|\bfirst\b)|(first line|first prompt|first content|MUST open|open the chip|base block|\bfirst\b).*\*\*Model:\*\*' "${skill} first-line **Model:** placement"
+  require_pattern "$skill_file" '\*\*Model:\*\*.*(first line|first prompt|first content|MUST open|open the chip|base block|\bfirst\b)|(first line|first prompt|first content|MUST open|open the chip|base block).*\*\*Model:\*\*' "${skill} first-line **Model:** placement"
   require_pattern "$skill_file" 'no blank line' "${skill} no-blank-line guard placement"
   require_pattern "$skill_file" 'short summary|Short-summary transcript format' "${skill} short-summary repetition"
 

@@ -334,6 +334,23 @@ expect "PR#799 rewording (**Model:** line first in chip prompt) still passes" 0 
   'chip-model-guard-lint: OK' \
   rewording_pr799
 
+# The right-side over-match: bare `\bfirst\b` before **Model:** on the same line
+# was accepted even in non-contractual prose such as "the first time we reference
+# **Model:**".  The fix removes `\bfirst\b` from the right-side alternation, so
+# only the specific placement phrases (first line, first content, MUST open, …)
+# satisfy the check when the phrase precedes **Model:** on the same line.  Bare
+# "first" that precedes **Model:** is now correctly rejected as insufficient.
+# (Bare "first" that FOLLOWS **Model:** on the same line still satisfies the
+# left-side alternation — preserving the PR #799 rewording above.)
+noncontractual_first_before_model() {
+  mutate .claude/skills/issue-maker/SKILL.md \
+    's/MUST open with the `\*\*Model:\*\*` line from/the first time we reference `\*\*Model:\*\*` is from/'
+}
+
+expect "non-contractual 'first' before **Model:** does not satisfy placement (#802 fix)" 1 \
+  'issue-maker first-line \*\*Model:\*\* placement' \
+  noncontractual_first_before_model
+
 if (cd "$REPO_ROOT" && bash "$LINT" >/dev/null 2>&1); then
   echo "ok   — real repo conformance is intact"
 else
