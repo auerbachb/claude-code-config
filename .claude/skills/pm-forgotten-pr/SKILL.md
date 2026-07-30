@@ -10,11 +10,17 @@ argument-hint: "[days] (optional — default 3; PRs idle longer than this are su
 
 One-shot startup triage of open PRs that have gone idle. Does **not** enter a monitoring loop — continuous PR-fleet monitoring remains `/pr-monitor-and-manage`'s job.
 
-When invoked by `/pm` Step 1D inline, `$GH_USER` and `$FORGOTTEN_PR_DAYS` are already set from the calling context. When run standalone, both default safely.
+When invoked by `/pm` Step 1D inline, `$GH_USER` and `$FORGOTTEN_PR_DAYS` are already set from the calling context. When run standalone, parse `$ARGUMENTS` as the days threshold (e.g. `/pm-forgotten-pr 7` → 7-day threshold); non-numeric or absent values fall back to 3 safely.
 
 ## Step 1: Detection
 
 ```bash
+# Standalone: parse optional [days] argument from $ARGUMENTS into FORGOTTEN_PR_DAYS.
+# When called inline by /pm Step 1D, FORGOTTEN_PR_DAYS is already set — skip.
+if [[ -z "${FORGOTTEN_PR_DAYS:-}" ]] && [[ -n "${ARGUMENTS:-}" ]]; then
+  _ARG=$(printf '%s' "$ARGUMENTS" | awk '{print $1}')
+  [[ "$_ARG" =~ ^[1-9][0-9]*$ ]] && FORGOTTEN_PR_DAYS="$_ARG"
+fi
 # Threshold defaults to 3 days; override via FORGOTTEN_PR_DAYS (or a pm-config.md
 # "Forgotten PR threshold" note resolved into it). --author defaults to @me; pass
 # $GH_USER when Step 0 resolved it. The script re-validates --days and falls back
