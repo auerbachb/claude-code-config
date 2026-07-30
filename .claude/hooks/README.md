@@ -143,3 +143,27 @@ Both write through `lib/skill-usage-recorder.sh`, which owns the storage layout 
 
 - `python3` (both hooks) and `jq` (PostToolUse tracker only)
 - Registered automatically via `global-settings.json` — see **Hook Auto-Registration** above
+
+## usage-limit-record.sh
+
+Records a durable breadcrumb when a turn dies because the account hit an Anthropic usage limit, so the next session finds a pointer instead of silence (issue #824).
+
+Registered on **`StopFailure`** with matcher **`rate_limit`** — the first use of that event in this repo. The runtime fires `StopFailure` instead of `Stop` when an API error ends a turn, and matches on the payload's `error` field.
+
+**This is a recorder, not a wind-down.** `StopFailure` is documented by the runtime as *"Fire-and-forget — hook output and exit codes are ignored"*, and it fires only after the turn has already failed. The hook therefore cannot warn the session, inject context, or gate any decision — it writes to disk and exits 0.
+
+Claude Code exposes **no** approaching-limit signal to any hook, skill, or session; the only surface carrying `rate_limits` is the status line, which is display-only and never executes in a headless desktop-app session. Full evidence: `.claude/reference/usage-limit-signal-audit-2026-07.md`.
+
+**Safety.** Its sole input is the runtime's own `error` classification. It estimates nothing and gates nothing, so `.claude/rules/safety.md` §"Anthropic Quota & Spend Authority" is satisfied as written and was not amended.
+
+**Outputs**
+
+- `~/.claude/usage-limit-events.jsonl` — append-only history, rotated to `.1` past 256 KiB
+- `~/.claude/usage-limit-last.json` — the most recent event, written atomically; read this first when resuming
+
+Each record carries `recorded_at`, `session_id`, `cwd`, `transcript_path`, a truncated `last_assistant_message`, and a `resume_hint`.
+
+### Prerequisites
+
+- `jq` must be installed — the hook exits 0 silently without it
+- Override the output directory with `CLAUDE_USAGE_LIMIT_DIR` (used by the tests)
