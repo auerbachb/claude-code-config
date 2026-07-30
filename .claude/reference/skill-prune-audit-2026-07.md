@@ -24,7 +24,7 @@ Follow-up to #416 skill-usage telemetry. Audit date: 2026-07-02.
 
 ### Added on/after log start (2026-05-01)
 
-`go-on`, `babysit-pr`, `babysit-pr-stop`, `pr-monitor-and-manage`, `pr-monitor-and-manage-stop`, `admin-merge`, `issue-maker`, `monitor`, `open-code-review`, `recap`
+`go-on`, `babysit-pr`, `babysit-pr-stop`, `pr-monitor-and-manage`, `pr-monitor-and-manage-stop`, `admin-merge`, `issue-maker`, `monitor`, `recap`
 
 ### Pre-May skills with external references (load-bearing)
 
@@ -51,3 +51,15 @@ The 75-day usage report recovered from the old MacBook (#572) plus owner confirm
 
 - **PM rituals** — `pm-rate-team`, `pm-team-standup`, `pm-sprint-review`, `pm-sprint-plan`: multi-contributor ceremonies never exercised in this solo workflow.
 - **`lessons` / `check-acceptance-criteria`** — the prior "load-bearing" classification is resolved: their external references were call-site listings and mentions of `/wrap`'s inline lessons phase, not delegations. `/wrap`'s lessons phase (Steps 4.1–4.3) and the merge gate's AC verification (`cr-merge-gate.md` Step 2 + `ac-checkboxes.sh`) are self-contained, so nothing functional was lost.
+
+## Addendum — 2026-07-30 (#793): CUT verdict for the ocr CLI wrapper
+
+The skill wrapping Alibaba's `ocr` CLI was resolved to **CUT** via Issue #793, the first dedicated keep/cut decision for this candidate:
+
+- **Zero recorded invocations** across 511 skill-usage.log entries; telemetry tracking since 2026-05-01.
+- **`ocr` excludes `.md` files** as `unsupported_ext` — in this doc/config-heavy repo, the tool reviews almost nothing without a custom rule config.
+- **Live side-by-side eval was permanently blocked** (no Anthropic credential in the eval VM); no concrete `ocr`-only differentiator was ever substantiated.
+- **Native `/code-review`** (with `--fix`, `--comment`, `ultra`) now fills the same advisory, non-gating role.
+- The prior `keep` verdict from the harness audit was only the mechanical "uncertainty resolves to keep" default, not a real case.
+
+Removed: the `ocr` skill directory, README catalog row + count anchors (`29` → `28`), `.claude/reference/ocr-eval.md`, and its reference-index entry. Resurrection path: `git log -- .claude/skills/ocr-wrapper/SKILL.md` or search commit history for the removal PR (`Closes #793`).
