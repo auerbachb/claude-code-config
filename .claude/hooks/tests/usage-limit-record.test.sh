@@ -134,9 +134,19 @@ grep -q 'Verdict' "$AUDIT_DOC" || fail "finding doc does not state a verdict"
 
 # --- 11. State files are owner-only ---
 # The record embeds conversation content and absolute paths.
+# Switch on uname, matching the hook's own file_size() helper: GNU `stat -f`
+# means "filesystem status" and SUCCEEDS with unrelated output, so a
+# `stat -f ... || stat -c ...` fallback never reaches the GNU form on Linux.
+file_mode() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    stat -f '%Lp' "$1" 2>/dev/null
+  else
+    stat -c '%a' "$1" 2>/dev/null
+  fi
+}
 for f in "$EVENTS" "$LAST"; do
-  MODE=$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f" 2>/dev/null)
-  [[ "$MODE" == "600" ]] || fail "$(basename "$f") is mode $MODE, expected 600 (owner-only)"
+  MODE=$(file_mode "$f")
+  [[ "$MODE" == "600" ]] || fail "$(basename "$f") is mode '$MODE', expected 600 (owner-only)"
 done
 
 # --- 12. Concurrent invocations lose no records ---
@@ -164,5 +174,35 @@ UNIQ=$(jq -r '.session_id' "$CONC_LOG" | sort -u | wc -l | tr -d ' ')
 
 [[ -d "$CONC_DIR/.usage-limit-record.lock" ]] && fail "lock directory was left behind"
 true
+
+# --- 13. Non-string fields are truncated too ---
+# A structured error_details object must not bypass the breadcrumb limit.
+STRUCT_DIR="$TMP_DIR/struct"
+mkdir -p "$STRUCT_DIR"
+BIG_VAL=$(printf 'y%.0s' $(seq 1 4000))
+printf '%s' "{\"hook_event_name\":\"StopFailure\",\"error\":\"rate_limit\",\"error_details\":{\"blob\":\"$BIG_VAL\"},\"last_assistant_message\":{\"nested\":\"$BIG_VAL\"}}" \
+  | CLAUDE_USAGE_LIMIT_DIR="$STRUCT_DIR" bash "$HOOK"
+
+STRUCT_LAST="$STRUCT_DIR/usage-limit-last.json"
+[[ -f "$STRUCT_LAST" ]] || fail "structured payload produced no record"
+jq -e . "$STRUCT_LAST" >/dev/null || fail "structured payload produced invalid JSON"
+ED_LEN=$(jq -r '.error_details | length' "$STRUCT_LAST")
+LAM_LEN=$(jq -r '.last_assistant_message | length' "$STRUCT_LAST")
+[[ "$ED_LEN" -le 500 ]] || fail "object error_details not truncated (len=$ED_LEN)"
+[[ "$LAM_LEN" -le 1000 ]] || fail "object last_assistant_message not truncated (len=$LAM_LEN)"
+
+# --- 14. Rotation fires at the cap and preserves the archive ---
+ROT_DIR="$TMP_DIR/rotate"
+mkdir -p "$ROT_DIR"
+ROT_LOG="$ROT_DIR/usage-limit-events.jsonl"
+# Seed just past the 256 KiB cap so the next append must rotate.
+head -c 262200 /dev/zero | tr '\0' 'a' >"$ROT_LOG"
+printf '\n' >>"$ROT_LOG"
+printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":"rot","last_assistant_message":"em—dashes—are—multibyte"}' \
+  | CLAUDE_USAGE_LIMIT_DIR="$ROT_DIR" bash "$HOOK"
+
+[[ -f "$ROT_LOG.1" ]] || fail "rotation did not create the .1 archive"
+[[ "$(wc -l <"$ROT_LOG" | tr -d ' ')" == "1" ]] || fail "post-rotation log should hold exactly the new record"
+jq -e '.session_id == "rot"' <"$ROT_LOG" >/dev/null || fail "post-rotation log lost the new record"
 
 echo "PASS: usage-limit-record.sh"

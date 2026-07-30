@@ -85,8 +85,14 @@ RECORD=$(printf '%s' "$STDIN_JSON" | jq -c \
      session_id: (.session_id // null),
      cwd: (.cwd // null),
      transcript_path: (.transcript_path // null),
-     error_details: ((.error_details // null) | if type == "string" then .[0:500] else . end),
-     last_assistant_message: ((.last_assistant_message // null) | if type == "string" then .[0:1000] else . end),
+     error_details: ((.error_details // null)
+       | if . == null then null
+         elif type == "string" then .[0:500]
+         else (tojson | .[0:500]) end),
+     last_assistant_message: ((.last_assistant_message // null)
+       | if . == null then null
+         elif type == "string" then .[0:1000]
+         else (tojson | .[0:1000]) end),
      resume_hint: "Turn ended on an Anthropic usage limit. Reconstruct in-flight state from the transcript above, then resume; see .claude/reference/usage-limit-signal-audit-2026-07.md."
    }' 2>/dev/null)
 
@@ -121,11 +127,23 @@ if (( LOCKED )); then
   trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
 fi
 
-SIZE=$(file_size "$EVENTS_LOG")
-[[ -n "$SIZE" ]] || SIZE=0
-if (( SIZE + ${#RECORD} >= LOG_MAX_SIZE )); then
-  rm -f "${EVENTS_LOG}.1" 2>/dev/null
-  mv "$EVENTS_LOG" "${EVENTS_LOG}.1" 2>/dev/null
+# Rotate ONLY while holding the lock. Rotation is rm + mv — two unsynchronized
+# rotations near the cap can replace the archive with a freshly-emptied log and
+# discard the previous one. Appending unlocked risks at worst an interleave;
+# rotating unlocked risks losing history, so the unlocked path skips it and
+# lets a later locked run rotate instead.
+if (( LOCKED )); then
+  SIZE=$(file_size "$EVENTS_LOG")
+  [[ -n "$SIZE" ]] || SIZE=0
+  # Byte count, not ${#RECORD}: that is a character count, so multibyte UTF-8 in
+  # the captured message would under-measure and defer rotation past the cap.
+  # The +1 the newline adds is included by printf'ing exactly what gets appended.
+  RECORD_BYTES=$(printf '%s\n' "$RECORD" | wc -c | tr -d '[:space:]')
+  [[ "$RECORD_BYTES" =~ ^[0-9]+$ ]] || RECORD_BYTES=${#RECORD}
+  if (( SIZE + RECORD_BYTES >= LOG_MAX_SIZE )); then
+    rm -f "${EVENTS_LOG}.1" 2>/dev/null
+    mv "$EVENTS_LOG" "${EVENTS_LOG}.1" 2>/dev/null
+  fi
 fi
 
 # Publish `last` only if the durable append succeeded — otherwise the pointer
