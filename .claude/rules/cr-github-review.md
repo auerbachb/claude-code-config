@@ -26,7 +26,7 @@ Before the first poll tick:
 Run before the first poll tick and before any new review trigger on push, resume, or post-compaction re-entry.
 
 1. Fetch all 3 comment endpoints (**Polling** below).
-2. Identify unresolved findings from `coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, or `graphite-app[bot]`.
+2. Identify unresolved findings from `coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, or `graphite-app[bot]` (no fix reply, code unchanged, not outdated/resolved).
 3. **If ANY unresolved: invoke `/fixpr` now** — no polling or new reviews until complete.
 
 ### Per-cycle check (every 60 seconds)
