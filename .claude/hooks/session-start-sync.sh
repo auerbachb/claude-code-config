@@ -1,26 +1,11 @@
 #!/bin/bash
-# Session-start sync — PostToolUse hook (fires after every tool call)
-# Syncs the skills worktree and root repo ONCE per session to ensure
-# skills, rules, and CLAUDE.md are up to date with origin/main.
-#
-# Uses a sentinel file to run only once per session.
+# Session-start sync — SessionStart hook (fires at session start and on resume)
+# Syncs the skills worktree and root repo to ensure skills, rules, and
+# CLAUDE.md are up to date with origin/main. Runs on every session start
+# (fresh session, resume, clear, compact, fork).
 
 # Consume stdin (required by hook protocol)
 cat > /dev/null
-
-# Session-scoped sentinel file
-session_id="${CLAUDE_SESSION_ID:-${PPID:-$$}}"
-session_id="${session_id//[^[:alnum:]_.-]/_}"
-sentinel="/tmp/claude-config-synced-${session_id}"
-
-# Already synced this session — exit fast
-if [[ -f "$sentinel" ]]; then
-  echo '{}'
-  exit 0
-fi
-
-# Mark as synced (even if sync fails — don't retry every tool call)
-touch "$sentinel"
 
 # --- Sync skills worktree ---
 skills_wt="$HOME/.claude/skills-worktree"
@@ -101,7 +86,7 @@ fi
 if [[ -n "$errors" ]]; then
   jq -n --arg errors "$errors" '{
     hookSpecificOutput: {
-      hookEventName: "PostToolUse",
+      hookEventName: "SessionStart",
       additionalContext: ("SESSION SYNC WARNING: Config sync encountered errors: " + $errors + ". Skills, rules, or CLAUDE.md may be stale. Run manually: git -C ~/.claude/skills-worktree fetch origin main && git -C ~/.claude/skills-worktree reset --hard origin/main")
     }
   }'

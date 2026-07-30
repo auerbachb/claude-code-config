@@ -221,7 +221,7 @@ HOOKS_MANIFEST=(
   $'Stop\t\ttrust-flag-repair.sh\t10'
   $'Stop\t\tdirty-main-warn.sh\t10'
   $'Stop\t\tskill-usage-snapshot-hook.sh\t10'
-  $'PostToolUse\t\tsession-start-sync.sh\t30'
+  $'SessionStart\t\tsession-start-sync.sh\t30'
   $'PostToolUse\tBash\tpost-merge-pull.sh\t15'
   $'PostToolUse\tBash\tpolling-backoff-warn.sh\t5'
   $'PostToolUse\tSkill\tskill-usage-tracker.sh\t5'
