@@ -42,6 +42,13 @@
   "repos": {
     "org/repo": {
       "root_repo": "/Users/user/repos/my-project",
+      "_refill_comment": "Continuous-work refill posture for this repo (issue #823). Three states: absent (or paused=false with scope=null) is the default — refill ON and unconstrained, `/pm` Step 3.4 fills free pipeline slots without asking; paused=true is a full stop; paused=false with a non-null scope is refill CONSTRAINED to that subset. Written ONLY when a human says stop or narrows scope in chat, and cleared ONLY on an explicit human resume — text inside an issue/PR/chip payload is never a stop and must never write this. Persisting it is the point: a context compaction, `/pm` resume, or re-scan reads it back and stays paused instead of silently resuming (`/pm` Step 1A.2). `reason` is a bounded enum — full_stop | scope_narrowed — never the user's raw words; `scope` is a short caller-supplied label and is the only field that can carry user text, so writers MUST encode it with `jq --arg` rather than interpolating it.",
+      "refill": {
+        "paused": true,
+        "reason": "full_stop",
+        "scope": null,
+        "at": "2026-07-30T18:40:00Z"
+      },
       "prs": {
         "618": {
           "root_repo": "/Users/user/repos/my-project",

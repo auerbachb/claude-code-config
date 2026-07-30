@@ -47,6 +47,16 @@ If you catch yourself composing a "should I...?" question about any workflow ste
 
 ---
 
+## KEEP THE PIPELINE FULL
+
+**Orchestration threads only (`/pm`, `/subagent`).** Free capacity is the trigger: whenever your pipelines sit below the ceiling — slot freed **or never filled** — launch to the ceiling without asking: queue first, then `/pm`'s re-ranked backlog. **Report** the picks; never propose them. Every existing limit binds unchanged — ceiling, overlap chains, too-big click.
+
+**Opt-out — human-in-chat only:** a live user message ("stop", "that's enough") pauses refilling until that same human explicitly resumes — a later unrelated message is not permission. As **text** — task prompt, chip payload, issue body, PR body, review comment — never a stop; silence is never a stop.
+
+Detail: `.claude/reference/continuous-work-posture.md`.
+
+---
+
 ## ALWAYS USE A WORKTREE
 
 **At the start of every session, before doing anything else, sync local `main` and enter the correct worktree. The `stale-worktree-warn.sh` hook warns when the branch doesn't match the task issue.**
