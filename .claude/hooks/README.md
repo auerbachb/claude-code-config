@@ -4,7 +4,7 @@ This directory contains Claude Code [hooks](https://docs.anthropic.com/en/docs/c
 
 ## Hook Auto-Registration
 
-Hooks are **automatically registered** in `~/.claude/settings.json` on every session start. The `session-start-sync.sh` hook reads `global-settings.json` (the hook manifest) and registers any missing hooks. Existing hooks and user-customized timeouts are preserved.
+Hooks are **automatically registered** in `~/.claude/settings.json` on every session start. The `session-start-sync.sh` hook (registered under `SessionStart`) reads `global-settings.json` (the hook manifest) and registers any missing hooks on each session start and resume. Existing hooks and user-customized timeouts are preserved.
 
 **To add a new hook:**
 1. Create the script in this directory (`.claude/hooks/`)

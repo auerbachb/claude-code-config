@@ -7,13 +7,15 @@ sequenceDiagram
   participant U as User
   participant CC as Claude Code
   participant H as Hooks
+  CC->>H: SessionStart
+  Note over H: session-start-sync.sh
   U->>CC: prompt
   CC->>H: UserPromptSubmit
   Note over H: timestamp-injector.sh, stale-worktree-warn.sh, issue-prefix-nudge.sh, skill-command-tracker.sh
   CC->>H: PreToolUse
   Note over H: worktree-guard.sh, env-guard.py, script-bypass-detector.sh
   CC->>H: PostToolUse
-  Note over H: session-start-sync.sh, post-merge-pull.sh, polling-backoff-warn.sh, skill-usage-tracker.sh, silence-detector.sh, bgwork-ceiling-arm.sh
+  Note over H: post-merge-pull.sh, polling-backoff-warn.sh, skill-usage-tracker.sh, silence-detector.sh, bgwork-ceiling-arm.sh
   CC->>H: Stop
   Note over H: silence-detector-ack.sh, bgwork-ceiling-guard.sh, trust-flag-repair.sh, dirty-main-warn.sh
 ```
