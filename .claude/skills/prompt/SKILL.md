@@ -28,7 +28,7 @@ Separately from Fast mode: for Light-tier work, **Haiku** is a valid cheaper alt
 
 **MANDATORY OUTPUT FORMAT:** Every per-issue prompt block printed to the transcript MUST open and close with `~~~` tilde fences. NEVER use backtick fences as the outer prompt-block delimiter. This governs fallback mode and print-on-demand replay — the two paths that print a block. In chip mode the prompt rides inside the chip rather than being printed, so it needs no fence; its content is otherwise identical.
 
-**Per-block model and effort labels (mandatory):** The first content inside each tilde-fenced block (immediately after the opening `~~~`) MUST be two lines, in this order and with no blank line between them:
+**Per-block model and effort labels (mandatory):** The `**Model:**` line is the first content inside each tilde-fenced block (immediately after the opening `~~~`), immediately followed by the `**Effort:**` line — no blank line between the two:
 
 ```text
 **Model:** {MODEL} — {REASON}
