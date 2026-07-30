@@ -28,15 +28,15 @@
 
 Every automated PR flow — sweeper, monitor, babysitter, fixer, merger — may **write only to PRs authored by the authenticated user** (`gh api user --jq .login`; discovery scopes to `--author "@me"`). A collaborator's or bot's PR is read-only context at most. Author-dimension analog of the invoking-repo scope (issue #687).
 
-**"Touch" = any write:** merge, rebase, force-push, close, comment, trigger a review (`@coderabbitai`/`@cursor`/`@greptileai` — these spend the author's reviewer budgets and notify people), resolve a thread, enroll in babysit/polling. All are blocked on a PR you did not author.
+**"Touch" = any write:** merge, rebase, force-push, close, comment, trigger a review (`@coderabbitai`/`@cursor`/`@greptileai`), resolve a thread, enroll in babysit/polling. All are blocked on a PR you did not author.
 
-**Fail closed:** when authorship cannot be determined (gh error, empty author), treat the PR as **not yours** and skip it with a visible note — never act on an unverified author.
+**Fail closed:** when authorship cannot be determined, treat the PR as **not yours** and skip with a visible note — never act on an unverified author.
 
 **Override:** the ONLY way an automated tool acts on someone else's PR is you naming that specific PR in chat — per-PR, per-session, never inferred and never a default. The tool must state it is operating under an override.
 
 **Read-only visibility is preserved:** status tables may still display collaborator PRs as context, clearly separated from your own actionable rows.
 
-**Enforcement.** `.claude/scripts/pr-authorship.sh <pr>` is the gate — **only exit 0 (mine) authorizes a write**; 1 (not yours), 3 (not found), 4 (undetermined) all refuse, naming this guard. The same fail-safe is built into `polling-state-gate.sh --ensure-session` (enrolment) and `admin-merge.sh` (bypass merge), so it holds even when a skill's prose degrades or context compacts. `merge-gate.sh` blocks a **confirmed** foreign author and emits an `authorship` field, so read-only callers (e.g. `/status`) can still show collaborator PRs as clearly-marked non-actionable context — display is never write authorization. All three accept `--allow-nonauthor`, passed only under an explicit user override. Per-script detail: `.claude/reference/authorship-guard.md`.
+**Enforcement.** `.claude/scripts/pr-authorship.sh <pr>` is the gate — **only exit 0 (mine) authorizes a write**; 1/3/4 all refuse. The same check is in `polling-state-gate.sh --ensure-session` and `admin-merge.sh`. All three accept `--allow-nonauthor` only under explicit user override. Per-script detail: `.claude/reference/authorship-guard.md`.
 
 ## Subagent Warning (MANDATORY)
 
@@ -54,14 +54,14 @@ Confirm package names before npm/pip/gem/cargo/brew install. Full rules: .claude
 
 ## Capability Discovery — Try the CLI Before Handoff
 
-Before telling the user a task "can't" be done, walk this ladder. It covers **any** provider — `gh`, `git`, `vercel`, `neonctl`, `railway`, `cloudinary`, or a service you have never used — not just GitHub.
+Before declaring any task impossible, walk this ladder (covers **any** provider — `gh`, `git`, `vercel`, `neonctl`, `railway`, `cloudinary`, etc., not just GitHub):
 
 1. **Look at what you already have** — MCP tools, custom skills, and the provider's CLI on disk, the last checked by absolute path (`/opt/homebrew/bin/<tool>`): the Bash tool's PATH is minimal, so a bare `which` under-reports what is installed.
 2. **Absent? Check whether the provider ships a CLI at all** — most do. One lookup, then move on; a research detour mid-task is not warranted.
 3. **Install it yourself** when a non-interactive path exists and the rails above hold: package name confirmed against official docs, no `curl … | sh` of an unvetted URL, no TLS bypass, no `sudo`. Any rail that blocks — or an install whose auth step opens a browser — drops to rung 4. Note a new install in your response; don't edit the CLI docs as a side effect.
 4. **Hand off a runbook, not a description** — exact copy-paste command(s) plus one line on why it needs a human, in the `/admin-merge` (#451) shape, covering the `<tool> login` step when auth is interactive.
 
-Only a dead-ended ladder licenses "I can't", and the answer must **name the rung it stopped on and the concrete reason** — token-scope 403, browser-only OAuth, a "Never" item above. "I don't think agents can do that" is never a complete answer. Your own agent definition's explicit prohibitions still win (e.g. `phase-c-merger` uses `/wrap`, never `gh pr merge`). Worked examples: `.claude/reference/capability-discovery-examples.md` — extend it as new false walls appear.
+"I can't" is valid only after the ladder dead-ends, naming the rung and concrete reason. Your own agent definition's prohibitions still win. Worked examples: `.claude/reference/capability-discovery-examples.md`.
 
 ```text
 MINDSET: Before handing off, walk the capability ladder for ANY provider

@@ -44,7 +44,7 @@ Each tick hash `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_c
 
 ## Failure Recovery
 
-If the user reports a dropped tick: acknowledge; re-establish with `/loop` (state cadence + command), never another one-shot chain; record in `polling_failures[]`; if the failure mode is new, append it to `.claude/reference/scheduling-failure-modes.md` post-session.
+If the user reports a dropped tick: re-establish with `/loop` (never a one-shot chain); record in `polling_failures[]`; if new, append to `.claude/reference/scheduling-failure-modes.md`.
 
 ## Related
 
