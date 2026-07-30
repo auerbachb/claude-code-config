@@ -269,6 +269,8 @@ Rationale: {1-line explanation of why this tier was selected, citing the dominan
 - **Standard** → `Opus 5`, effort `high` (step up to `xhigh` for demanding coding work)
 - **Light** → `Sonnet 5`, effort `low` (Haiku 4.5 is a valid cheaper alternative — append "(or Haiku 4.5)" to Light-tier recommendations)
 
+**Constraints block (every block, every tier).** The `## Constraints` section near the end of each prompt block is not tier-gated the way Protocol Checkpoints are — it ships in every block. Its merge-authority bullet is the shared contract from `chip-launching.md` "Merge-authority line": reproduce it **verbatim**, exactly as the model-guard preamble is copied unchanged, and never soften it into an approval request.
+
 **`{REASON}` construction:** Choose a short phrase (≤10 words) that names the main complexity driver for **this issue alone** — e.g. touches `.claude/rules`, touches `CLAUDE.md`, orchestration keywords, dependency web, many files from the CR plan, high `ac_count`, skill paths, multi-file feature work, or Light-scope keywords. Do not copy the batch Tier Recommendation rationale into every block when reasons differ per issue.
 
 Then, for each issue, output a self-contained prompt block. Use tilde fences (`~~~`, shown here as the outer boundary):
@@ -331,6 +333,14 @@ These are mandatory verification points. The executing agent MUST follow these:
 - [ ] Verify ALL AC checkboxes are checked against final code
 - [ ] Confirm merge gate: 1 explicit CR APPROVED review on current HEAD (CR path), or 1 clean BugBot pass on current HEAD, or severity-gated Greptile pass
 - [ ] Check ALL CI check-runs pass before merging — never merge with failing CI
+
+---
+
+{ALWAYS include this section, at every tier:}
+## Constraints
+- Do NOT work on main — use a worktree or feature branch
+- Do NOT modify .env files
+- Merging is automatic and yours to do: once the merge gate passes and every Test Plan / AC checkbox verifies, run the full `/wrap` yourself to squash-merge — no approval pause, no pre-merge message (`CLAUDE.md` "PR MERGE AUTHORIZATION")
 
 ---
 

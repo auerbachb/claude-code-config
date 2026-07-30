@@ -165,7 +165,7 @@ Take the first `SLOTS` issues from the independent set. Anything past that is ex
 
 For each issue still offered as a chip:
 
-- **`prompt`** — the full self-contained thread prompt from `/pm` Step 3.1's template (`**Model:**` line first, model-guard preamble immediately after with no blank line between, then the task / issue body / codebase context / workflow / constraints sections). Reuse that template as written; `/wave` does not define a prompt format of its own.
+- **`prompt`** — the full self-contained thread prompt from `/pm` Step 3.1's template (`**Model:**` line first, model-guard preamble immediately after with no blank line between, then the task / issue body / codebase context / workflow / constraints sections). Reuse that template as written; `/wave` does not define a prompt format of its own. That includes its **Constraints** block and, within it, the merge-authority bullet — the shared contract from `chip-launching.md` "Merge-authority line", which asserts that the launched thread merges itself via full `/wrap` once the merge gate passes and every AC checkbox verifies. Carry it **verbatim**; never fork a `/wave`-local copy and never soften it into an approval request.
 - **`title`** — ≤60 chars, starts with a verb, includes the issue number.
 - **`tldr`** — 1–2 plain sentences, no paths, no jargon.
 - **`cwd`** — repo root.
