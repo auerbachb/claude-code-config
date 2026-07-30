@@ -145,8 +145,8 @@ done
 #    Pure read of ~/.claude/session-state.json — no GitHub state is gathered.
 # ----------------------------------------------------------------------
 if [[ "$INFER_CANDIDATES" -eq 1 ]]; then
-  if [[ -n "$PR_ARG" || -n "$SINCE" ]]; then
-    echo "ERROR: --infer-candidates cannot be combined with --pr or --since" >&2
+  if [[ -n "$PR_ARG" || -n "$SINCE" || "$WAIT_STATE_EVAL" -eq 1 ]]; then
+    echo "ERROR: --infer-candidates cannot be combined with --pr, --since, or --wait-state-eval" >&2
     exit 2
   fi
   STATE_FILE="$HOME/.claude/session-state.json"

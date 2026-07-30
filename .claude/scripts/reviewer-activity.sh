@@ -43,16 +43,23 @@ PR_NUMBER="$1"
 PUSHED_SHA="$2"
 PUSHED_AT="$3"
 
-# Resolve owner/repo from the git remote (same pattern as other scripts).
-_remote_url=$(git remote get-url origin 2>/dev/null || echo "")
-if [[ -z "$_remote_url" ]]; then
-  echo "ERROR: could not resolve owner/repo from git remote" >&2
-  exit 2
+# Resolve owner/repo: respect GH_REPO override (same as gh CLI) then fall back
+# to the git remote, matching the pattern used by other scripts in this directory.
+if [[ -n "${GH_REPO:-}" ]]; then
+  OWNER_REPO="$GH_REPO"
+  OWNER="${OWNER_REPO%%/*}"
+  REPO="${OWNER_REPO##*/}"
+else
+  _remote_url=$(git remote get-url origin 2>/dev/null || echo "")
+  if [[ -z "$_remote_url" ]]; then
+    echo "ERROR: could not resolve owner/repo from git remote" >&2
+    exit 2
+  fi
+  _remote_url="${_remote_url%.git}"
+  OWNER_REPO="${_remote_url##*github.com[:/]}"
+  OWNER="${OWNER_REPO%%/*}"
+  REPO="${OWNER_REPO##*/}"
 fi
-_remote_url="${_remote_url%.git}"
-OWNER_REPO="${_remote_url##*github.com[:/]}"
-OWNER="${OWNER_REPO%%/*}"
-REPO="${OWNER_REPO##*/}"
 
 # Fetch all three PR comment endpoints + check-runs for the pushed SHA.
 # Using || exit 2 to map gh failures to the documented error code.
