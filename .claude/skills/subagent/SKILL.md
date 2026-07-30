@@ -245,7 +245,7 @@ Body:
 {COMPLETE contents of all .claude/rules/*.md files}
 
 ## Guardrails (MANDATORY)
-**Read `.claude/reference/subagent-phase-guardrails.md` and insert its full contents verbatim at this point** — SAFETY, MINDSET/capability-discovery, SKILLS-first reflex, RULES placeholder convention, and exit-report pointer. That file is the single canonical home for these blocks; `verbatim-block-lint.sh` CI-guards them there.
+**Read `.claude/reference/subagent-phase-guardrails.md` and insert its full contents verbatim at this point** — SAFETY, MINDSET/capability-discovery, and SKILLS-first reflex. That file is the single canonical home for these blocks; `verbatim-block-lint.sh` CI-guards them there.
 
 ## Phase A Instructions
 
