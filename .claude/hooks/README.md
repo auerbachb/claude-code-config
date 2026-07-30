@@ -111,6 +111,24 @@ Replace `/absolute/path/to/claude-code-config` with the actual path to your clon
 
 - All hook scripts must be executable: `chmod +x .claude/hooks/silence-detector*.sh`
 
+## bgwork-ceiling-arm.sh + bgwork-ceiling-guard.sh
+
+Puts a hard ceiling on chat silence while background work runs (issue #803). The pair above enforces the 5-minute heartbeat *within* a turn; this pair covers what happens *after* one ends — a thread that spawns a subagent, ends its turn, and waits makes no tool calls, so no PostToolUse hook can ever fire for it.
+
+**How it works:** the measurement is not re-implemented. `/tmp/claude-heartbeat-$SESSION_ID` already means "last user-visible message"; what these hooks add is an observer of it that can force a turn, plus a gate making that observer non-optional.
+
+- **`bgwork-ceiling-arm.sh`** (PostToolUse, all tools): records background work — an `Agent` spawn, a `Workflow`, a `Monitor`, or a `Bash` call with `run_in_background: true` — and, while the ceiling is unarmed, injects the exact arming call into context. Arming is recognised by the `--tick` sentinel in the command text, so the ceiling watch is never miscounted as new background work. **Advisory only.**
+- **`bgwork-ceiling-guard.sh`** (Stop): returns `decision: block` when background work is in flight and the ceiling is unarmed, so the turn cannot end silently. **This is the enforcement.** Blocking is bounded at 2 consecutive turns (`CLAUDE_BGWORK_MAX_BLOCKS`); past the bound it stands down loudly — stderr, `~/.claude/logs/bgwork-ceiling.log`, and an unguarded marker the arm hook resurfaces on every later tool call.
+
+The armed watch is a `Monitor` running `bgwork-ceiling.sh --tick` on a loop. It prints nothing unless the heartbeat file is genuinely stale, so a thread sending normal heartbeats never sees a message from it, and `persistent: true` means the ceiling is armed **once per session** rather than once per spawn.
+
+All state lives in `/tmp` markers (overridable as a set via `CLAUDE_BGWORK_MARKER_DIR`, which is what the test suites use) and in `.claude/scripts/bgwork-ceiling.sh`, which owns the ceiling duration — no rule file states it. Rationale, the `Monitor`-vs-`ScheduleWakeup`-vs-`CronCreate` call, and the derived-timing invariant: `.claude/reference/bgwork-ceiling.md`.
+
+### Prerequisites
+
+- `jq` must be installed
+- `.claude/scripts/bgwork-ceiling.sh` must be present and executable — both hooks exit 0 silently without it, so a checkout missing it degrades rather than breaks
+
 ## skill-usage-tracker.sh + skill-command-tracker.sh
 
 Records every skill invocation to `~/.claude/skill-usage.log` (and the aggregate `~/.claude/skill-usage.csv`), which `.claude/scripts/skill-usage-report.sh` rolls up.

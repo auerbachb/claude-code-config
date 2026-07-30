@@ -1,6 +1,6 @@
 # Monitor Mode, Heartbeats & Recovery
 
-> **Always:** Enter monitor mode when subagents are active. Timestamp every message and heartbeat ≤5 min (CLAUDE.md #1/#3). Report subagent failures immediately. Recover state after compaction.
+> **Always:** Enter monitor mode when subagents are active. Timestamp every message and heartbeat ≤5 min (CLAUDE.md #1/#3). Arm the silence ceiling when background work starts (`scheduling-reliability.md`). Report subagent failures immediately. Recover state after compaction.
 > **Ask first:** Breaking monitor mode for explicit user requests — warn about paused monitoring first.
 > **Never:** Do substantive work while subagents are active. Go >5 min without a user-visible message. Let a stalled PR go unreported. Ask permission to monitor — babysitting an in-flight PR is the default (`CLAUDE.md`).
 
@@ -20,6 +20,7 @@ Every ~60s, in order:
 3. For every session PR still on `reviewer == cr`, run `.claude/scripts/escalate-review.sh <PR_NUMBER>` and act on its `STATUS=` verdict before sleeping.
 4. Send any due heartbeat (one line — User Heartbeat below).
 5. Investigate stale agents: >15 min Phase A, >10 min Phase B, >5 min Phase C.
+6. Before ending the turn, confirm the ceiling is still armed: `bgwork-ceiling.sh --check`.
 
 ## Subagent Health Monitoring (MANDATORY)
 
