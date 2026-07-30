@@ -280,11 +280,13 @@ isn't a fuzzy match. Full rules: .claude/rules/skill-first.md.
    - Run all available CLIs again. Repeat until each remaining CLI has one clean pass.
    - If a CLI hangs >2 minutes or errors twice, drop it for the session, resolve or explicitly waive its pre-drop findings in the PR body, gate on the remaining one, and note the drop.
    - If both are down, do one self-review and note it in the PR body — it exits the local loop but never satisfies the GitHub merge gate.
+   - **Before committing/pushing**, classify coverage: `both | cr-only | codeant-only | none` (per `cr-local-review.md` "Coverage classification"). Print `[COVERAGE] <level> — <reason>` in-thread. For `none`, this line is mandatory and must be visible before the push.
 5. Commit all changes in ONE commit.
 6. Push the branch.
 7. Create the PR via `gh pr create` with:
    - `Closes #{NUMBER}` in the body
    - A **Test plan** section with acceptance criteria checkboxes from the issue
+   - A `**Local review coverage:** <level>` labeled line (e.g. `**Local review coverage:** none — both CLIs unavailable, self-review only`). This is mandatory for `none` and `cr-only`/`codeant-only`; omit only when coverage is `both`.
 8. Write the handoff file via `handoff-state.sh --create` so the write is serialized under
    the shared state-lock.sh advisory lock (issue #682). Never write inline with
    `jq … > tmp && mv tmp` — that bypasses the lock.

@@ -146,6 +146,23 @@ dropped CLI for the session — note it in the PR body; do not retry more than o
 Related: a CodeRabbit *GitHub* check-run can report `success` while its description says
 "Review rate limited" — read the description, not the state.
 
+## Coverage enum — mapping failure states
+
+`cr-local-review.md` defines coverage as `both | cr-only | codeant-only | none`. A CLI contributes to coverage **only** when it produced a verified-successful clean pass. Failures map as:
+
+| Failure state | Coverage contribution |
+|---|---|
+| CodeRabbit `rate_limit` NDJSON error record | CR **not covered** |
+| CodeRabbit `type: "error"` (any `errorType`) | CR **not covered** |
+| CodeRabbit emits only `review_context`/`status` records with no `review` or finding records | CR **not covered** |
+| CodeAnt stderr API Error / 403 daily-cap | CodeAnt **not covered** |
+| CodeAnt `meta.capped == true` (15-file cap) | CodeAnt **not covered** (partial coverage is not full coverage) |
+| CodeAnt `command not found` / not installed | CodeAnt **not covered** |
+| CodeAnt false-clean (stderr error, stdout `{"issues":[]}`) | CodeAnt **not covered** |
+| Either CLI hangs >2 min or errors twice (dropped) | That CLI **not covered** |
+
+Enforcement ownership stays in `cr-local-review.md`. This table only maps failure appearances to the enum.
+
 ## CodeAnt auth storage
 
 `codeant login` is a browser flow (prints a URL, polls every 10s, 10-minute timeout) and

@@ -52,7 +52,10 @@ Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `noqa`, or equival
 - Per CLI: hangs for more than **2 minutes** or errors out twice → drop that CLI for the session and note it in the PR body. Preserve any findings it already emitted — the remaining CLI gates only after those are resolved or explicitly waived in the PR body. Do not retry a failed CLI more than once.
 - If both CLIs are down, run a **self-review** instead (see self-review fallback rules).
 
+**Coverage classification (determine before every push):** Based on which CLIs produced a verified-successful clean pass (not merely exit 0, applying the false-clean checks above), classify as one of: `both` (both passed) | `cr-only` | `codeant-only` | `none` (both unavailable — self-review only). A rate-limited, stderr-erroring, binary-absent, or no-review-records CLI counts as **not covered** for that CLI. Coverage is visibility-only and never feeds the merge gate (`cr-merge-gate.md`). Failure-state-to-enum mapping: `.claude/reference/local-review-cli-failure-modes.md`.
+
 ### Exit criteria
 
 - **One verified-successful clean pass on both CLIs** (or on the surviving CLI + PR-body note; one clean self-review if both are unavailable). "No findings" alone is not a clean pass.
+- **Determine and record coverage** (see Timeout & fallback above) before committing/pushing. Surface `none` in-thread and in the PR body.
 - Once clean, **immediately** commit, push, create/update the PR (`Closes #N` + Test Plan checkboxes), and enter `cr-github-review.md`. Local review never satisfies `cr-merge-gate.md`.

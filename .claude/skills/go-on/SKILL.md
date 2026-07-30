@@ -106,6 +106,7 @@ $CR_BIN review --agent
   BASE=$(gh pr view --json baseRefName --jq '.baseRefName' 2>/dev/null || echo main)
   git diff "$BASE"...HEAD
   ```
+- **After the local review loop completes**, classify and print coverage: `[COVERAGE] <level> — <reason>` (per `cr-local-review.md` "Coverage classification": `both | cr-only | codeant-only | none`). This flow reaches at most `cr-only` or `none`. For `none`, the line is mandatory before any push.
 
 ---
 
@@ -153,7 +154,7 @@ Pipe with `printf '%s'`, never `echo` — zsh's builtin `echo` interprets the es
     ```bash
     gh issue view $ISSUE_NUM --json title,body 2>/dev/null
     ```
-  - Create the PR with a proper body (including `Closes #N` if issue was found) and a Test plan section. After creation, capture the PR number:
+  - Create the PR with a proper body (including `Closes #N` if issue was found) and a Test plan section. Include a `**Local review coverage:** <level>` labeled line when coverage is anything other than `both` (mandatory for `none` and single-CLI cases). After creation, capture the PR number:
     ```bash
     PR_NUM=$(gh pr view --json number --jq '.number')
     ```
