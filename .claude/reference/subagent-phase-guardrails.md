@@ -1,10 +1,8 @@
 # Subagent Phase Guardrails
 
-Extracted from `.claude/skills/subagent/SKILL.md`. Single canonical home for the SAFETY/MINDSET/SKILLS verbatim blocks and the RULES placeholder convention shared by the Phase A, B, and C spawn-prompt templates.
+Verbatim SAFETY/MINDSET/SKILLS blocks for subagent spawn prompts. Single canonical home; `verbatim-block-lint.sh` byte-compares these blocks against `.claude/rules/safety.md` and `.claude/rules/skill-first.md`.
 
-**Usage in phase templates:** insert this file verbatim into the subagent prompt at the guardrails insertion point. Phase C (`phase-c-merger`) carries only the SAFETY block per `subagent-orchestration.md` (that agent definition has no `Skill` tool access, so MINDSET and SKILLS do not apply).
-
-**CI drift guard:** `verbatim-block-lint.sh` byte-compares the SAFETY/MINDSET/SKILLS blocks below against the canonical sources in `.claude/rules/safety.md` and `.claude/rules/skill-first.md`.
+**Phase C (`phase-c-merger`)** carries only the SAFETY block — no MINDSET or SKILLS per `subagent-orchestration.md`.
 
 ---
 
@@ -51,22 +49,3 @@ stay silent. Never auto-invoke an authorization-carrying skill (/merge, /wrap,
 /pr-monitor-and-manage) on a fuzzy match — running one as your assigned job
 isn't a fuzzy match. Full rules: .claude/rules/skill-first.md.
 ```
-
----
-
-## RULES Placeholder Convention
-
-When building a subagent prompt, include the full RULES section before the guardrails above:
-
-```
-## RULES (MANDATORY — read all of these)
-{COMPLETE contents of CLAUDE.md}
-
-{COMPLETE contents of all .claude/rules/*.md files}
-```
-
-See `subagent-orchestration.md` Step 6.3 for how the parent reads these files.
-
-## Exit Report
-
-Every subagent phase must print a Structured Exit Report as its final output. Full field reference and valid OUTCOME values: `.claude/reference/exit-report-format.md`.
