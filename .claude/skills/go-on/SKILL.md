@@ -143,7 +143,7 @@ PR_NUM=$(printf '%s' "$PR_JSON" | jq -r '.number // empty')
 
 Pipe with `printf '%s'`, never `echo` — zsh's builtin `echo` interprets the escape sequences in the PR body and corrupts the JSON, so `jq` errors and `PR_NUM` comes back empty, which reads as "no PR exists" (issue #574).
 
-- If a PR exists and is open: `[DONE]` — PR #$PR_NUM exists.
+- If a PR exists and is open: `[DONE]` — PR #$PR_NUM exists. Additionally, if coverage is not `both`, update (or add) the `**Local review coverage:**` line in the PR body so it reflects the current run's classification — fetch the PR body, replace the line if present or append it if missing, then `gh pr edit "$PR_NUM" --body "$UPDATED_BODY"`.
 - If no PR exists: `[ACTION]` — Create one.
   - Look for an issue number from the branch name (pattern: `issue-N-*`):
     ```bash

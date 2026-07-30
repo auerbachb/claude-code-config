@@ -308,10 +308,12 @@ isn't a fuzzy match. Full rules: .claude/rules/skill-first.md.
      --arg now "$NOW" \
      --argjson files '["{list of files you changed}"]' \
      --arg notes "{brief summary of what was done}" \
+     --arg coverage "{both|cr-only|codeant-only|none}" \
      '{schema_version:"1.0",pr_number:$pr,head_sha:$sha,reviewer:"cr",
        phase_completed:"A",created_at:$now,findings_fixed:[],
        findings_dismissed:[],threads_replied:[],threads_resolved:[],
-       files_changed:$files,push_timestamp:$now,notes:$notes}')"
+       files_changed:$files,push_timestamp:$now,notes:$notes,
+       local_review_coverage:$coverage}')"
    "$HANDOFF_STATE_SH" --create "{PR_NUMBER}" "$HANDOFF_JSON"
    ```
 9. Print the Structured Exit Report as your FINAL output:
