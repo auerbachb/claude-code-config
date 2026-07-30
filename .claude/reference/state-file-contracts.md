@@ -80,6 +80,24 @@ Resolve the canonical path for any PR with:
 
 `handoff-state.sh --owner-repo <owner>/<repo> --create` calls `mkdir -p` on the subdirectory automatically, so callers never need to pre-create it.
 
+## Backoff schema fields consumed by `polling-backoff-warn.sh` (issue #794)
+
+The hook reads three groups of fields from `.prs["<N>"]` to enforce the stable-state backoff ladder without re-emitting a widen/stop that was already applied.
+
+**`last_cron_action`** — object, written by the agent after each CronCreate/CronUpdate/CronDelete:
+
+| Sub-field | Type | Values |
+|-----------|------|--------|
+| `.type` | string | `"create"` / `"update"` / `"delete"` |
+| `.interval` | string | e.g. `"1m"` / `"5m"` / `"15m"` / `"paused"` |
+| `.at` | string | ISO-8601 UTC timestamp of the action |
+
+The hook skips re-emitting a widen instruction when `.type == "update"` and `.interval` already equals the computed widened value (`${WIDE_MIN}m`). It skips the stop instruction when `.type == "delete"`. Field names `action`/`to_minutes` (written before this schema was documented) caused the hook to keep firing — always use the names above.
+
+**`babysit.cadence_base_minutes`** — number, set by `/babysit-pr` arm mode from the `--cadence` argument (default `5`). The hook reads this to compute `WIDE_MIN = max(15, 3 × base)`. When absent or unparseable the hook defaults to `5`, matching the skill default.
+
+**`babysit.cadence_effective_minutes`** — number, updated by `/babysit-pr` T5 whenever the effective cadence crosses a tier boundary. Informational; the hook does not read it (it derives the widened value from `cadence_base_minutes` directly).
+
 ## Diff-survival snapshot — deliberately outside these mechanisms (issue #757)
 
 `diff-survival-check.sh` persists one file at `git rev-parse --git-path claude-diff-survival.json` — `.git/claude-diff-survival.json` in the main worktree, `.git/worktrees/<name>/claude-diff-survival.json` in a linked one. It is **not** session state and **not** a handoff file: it is written and read only by `diff-survival-check.sh`, scoped to a single worktree's in-flight rebase/merge rather than to a PR or a session, untracked, and transient — deleting it (or running `diff-survival-check.sh clear`) costs nothing but the ability to verify the current resolution. It lives in the git dir precisely so it survives a session being killed mid-rebase, which is the scenario it exists for. Full rationale: `.claude/reference/diff-survival-guard.md`.
