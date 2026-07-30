@@ -6,14 +6,10 @@
 
 Primary review workflow — catches issues before PR noise/quota; does not replace the GitHub merge gate.
 
-### Anti–rate-limit pre-flight (local-first)
-
-**~8 CR reviews/hour** (shared cap — details: `cr-github-review.md`). **Batch locally:** run the Fix loop below to a clean pass, then **one commit, one push** (`/fixpr` matches this shape).
-
 ### Prerequisites
 
 - CodeRabbit CLI installed/authenticated (`coderabbit --version`); `.coderabbit.yaml` if the repo uses CR. `CODERABBIT_API_KEY` may live in shell config — never print or commit.
-- CodeAnt CLI installed/authenticated (`codeant --version`); `codeant login` stores the key in `~/.codeant/config.json` — never print or commit it.
+- CodeAnt CLI installed/authenticated (`codeant --version`); never print or commit its key.
 
 ### When/how to run
 
@@ -45,7 +41,7 @@ jq -e 'select(.type=="error")' cr.out >/dev/null && echo "FAILED RUN"
 
 A hit is a **failed run** (Timeout & fallback below), never a clean pass. An empty result is clean **only** when its error check is clean and, for CodeAnt, `meta.capped` is `false`. Failure shapes, 403 triage, 15-file cap: `.claude/reference/local-review-cli-failure-modes.md`.
 
-> **Never run `codeant logout` / `codeant login` to clear a 403.** The CLI hardcodes that advice for every 403, but the real cause is an undocumented **daily cap (~10) on CLI agent reviews** — re-auth cannot fix it, and it nulls the stored token into a browser-login loop. On a CodeAnt 403: **one retry maximum**, then drop CodeAnt for the session (Timeout & fallback) and note it in the PR body. The CodeAnt **GitHub App** is unaffected and satisfies the merge gate alone, so a capped CLI never blocks a merge.
+> **Never run `codeant logout`/`login` to clear a 403** — the cause is an undocumented daily cap (~10 agent reviews), not auth. On a CodeAnt 403: one retry, then drop for the session and note it in the PR body. The CodeAnt GitHub App is unaffected and satisfies the merge gate alone.
 
 ### Never Suppress Linter Errors (NON-NEGOTIABLE)
 
@@ -59,4 +55,4 @@ Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `noqa`, or equival
 ### Exit criteria
 
 - **One verified-successful clean pass on both CLIs** (or on the surviving CLI + PR-body note; one clean self-review if both are unavailable). "No findings" alone is not a clean pass.
-- Once clean, **immediately** commit, push, create/update the PR (`Closes #N` + Test Plan checkboxes), and enter `cr-github-review.md` — this transition is automatic, do not ask. Local review never satisfies `cr-merge-gate.md`.
+- Once clean, **immediately** commit, push, create/update the PR (`Closes #N` + Test Plan checkboxes), and enter `cr-github-review.md`. Local review never satisfies `cr-merge-gate.md`.

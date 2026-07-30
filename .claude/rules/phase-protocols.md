@@ -6,9 +6,7 @@
 
 ## Structured Exit Report (MANDATORY — all phases)
 
-Every subagent MUST print an `EXIT_REPORT` block as its **final output**. Required fields and valid `OUTCOME` values live in `.claude/reference/exit-report-format.md`. Claims in the report (tests pass, CI clean, etc.) require fresh command evidence — see `.claude/reference/verification-evidence-patterns.md`.
-
-Rules: one colon-separated field per line, no extra whitespace, and on exhaustion print `OUTCOME: exhaustion` before the hard token limit.
+Every subagent MUST print an `EXIT_REPORT` block as its **final output** — one colon-separated field per line, no extra whitespace. Fields + valid `OUTCOME` values: `.claude/reference/exit-report-format.md`; evidence requirements: `.claude/reference/verification-evidence-patterns.md`. On exhaustion, print `OUTCOME: exhaustion` before the token limit.
 
 ## Phase A Completion Protocol (MANDATORY)
 
@@ -19,13 +17,11 @@ Rules: one colon-separated field per line, no extra whitespace, and on exhaustio
    - `pushed_fixes` or `no_findings` → proceed to step 3
    - `exhaustion` → **run step 4 (worktree cleanup) now**, then launch replacement Phase A within 60s. Report to user. **STOP — do not execute steps 3, 5-8** (skipping cleanup makes the replacement hit "branch already checked out").
 3. **Verify the push.** `gh pr view N --json commits --jq '.commits[-1].oid'` — confirm SHA matches. Mismatch = silent failure.
-4. **Clean up the Phase A worktree.** Remove it with `git worktree remove <path> --force` (required for uncommitted state). On failure, fall back to `git worktree prune`. Cleanup releases the branch lock for Phase B.
+4. **Clean up the Phase A worktree:** `git worktree remove <path> --force` (or `git worktree prune` on failure). Releases the branch lock for Phase B.
 5. **Verify handoff file.** Resolve path with `handoff-state.sh [--owner-repo owner/repo] --path N` and confirm the file exists with `phase_completed: "A"`. If missing, reconstruct and write it yourself.
-6. **Launch Phase B within 60 seconds.** Check all 3 comment endpoints for existing findings; include findings and handoff path. If throttled, tell user and auto-retry.
+6. **Launch Phase B within 60 seconds.** Check all 3 comment endpoints; include findings and handoff path.
 7. **Update `session-state.json`.** Record phase transition and HEAD SHA.
 8. **Report to user.** "Phase A complete for PR #N — fixes pushed (SHA `abc1234`). Phase B launched."
-
-**Phase B launch is the highest-priority action after Phase A reports.** Do not start other work until Phase B is launched for every completed Phase A.
 
 ## Phase B Completion Protocol (MANDATORY)
 
@@ -36,11 +32,9 @@ Rules: one colon-separated field per line, no extra whitespace, and on exhaustio
    - `merge_ready` → proceed to step 3 (launch Phase C). This is the single Phase-C-advancing terminal.
    - `clean`, `fixes_pushed`, or `exhaustion` → launch replacement Phase B within 60s, update `session-state.json` (keep phase B; record new SHA/remaining work as applicable), report with timestamp, and **STOP**.
 3. **Verify review state via GitHub API.** Confirm the merge gate per `cr-merge-gate.md` Step 1. If verification fails, launch replacement Phase B instead of Phase C — STOP.
-4. **Launch Phase C within 60 seconds.** No merge-approval pause — Phase C runs `/wrap` silently once gate + AC pass (`CLAUDE.md` "PR MERGE AUTHORIZATION"). Include the handoff path.
+4. **Launch Phase C within 60 seconds.** No merge-approval pause — Phase C runs `/wrap` silently once gate + AC pass. Include the handoff path.
 5. **Update `session-state.json`.** Record phase transition and HEAD SHA.
 6. **Report to user (with timestamp).**
-
-**Phase C launch is top priority after Phase B reports `merge_ready`.**
 
 ## Phase C Completion Protocol (MANDATORY)
 
@@ -54,6 +48,6 @@ Rules: one colon-separated field per line, no extra whitespace, and on exhaustio
 4. **Handoff cleanup (after successful merge only).** Delete the handoff file (`handoff-state.sh [--owner-repo owner/repo] --delete N`) after `OUTCOME: merged` confirmed by GitHub. If merge fails or is aborted, do NOT delete.
 5. **Report to user (with timestamp).**
 
-## `/wrap` → `/fixpr` Delegation Contract (issues #452 / #455)
+## `/wrap` → `/fixpr` Delegation Contract
 
-`/wrap` Step 2.1 delegates recovery to the **full** `/fixpr` workflow — including when unresolved review threads are the only blocker (#455). Full handoff semantics: `.claude/reference/wrap-fixpr-delegation.md`.
+`/wrap` Step 2.1 delegates recovery to the **full** `/fixpr` workflow — including when unresolved review threads are the only blocker. Full handoff semantics: `.claude/reference/wrap-fixpr-delegation.md`.

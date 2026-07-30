@@ -14,7 +14,7 @@ Run at session start — after worktree creation, before code work. Idempotent; 
 .claude/scripts/repo-bootstrap.sh --check
 ```
 
-The script reports the workflow + branch-protection state without mutating anything. Exit `0` clean, `1` gaps detected; `2`–`5` are usage/environment/network/write errors. Full contract: `repo-bootstrap.sh --help`.
+Reports workflow + branch-protection state without mutating. Exit `0` clean, `1` gaps. Full contract: `repo-bootstrap.sh --help`.
 
 If the report shows `[MISSING] .github/workflows/cr-plan-on-issue.yml`, install it as part of the first feature PR — do not open a bootstrap-only PR:
 
@@ -22,11 +22,11 @@ If the report shows `[MISSING] .github/workflows/cr-plan-on-issue.yml`, install 
 .claude/scripts/repo-bootstrap.sh --apply
 ```
 
-`--apply` only installs the missing workflow. It never overwrites an existing workflow file (even if the content differs — the repo owner may have customized it) and never modifies branch protection.
+`--apply` only installs the missing workflow — never overwrites existing files and never modifies branch protection.
 
 ### Branch protection — required status checks
 
-The script reports state as `[OK]` / `[MISSING]` / `[SKIP]` (token lacks read perm) / `[UNKNOWN]` (investigate stderr). Without required status checks on `main`, PRs can merge with red CI. The script never changes branch protection — user confirmation required for any write.
+The script reports state as `[OK]` / `[MISSING]` / `[SKIP]` (token lacks read perm) / `[UNKNOWN]` (investigate stderr). Without required status checks on `main`, PRs can merge with red CI. The script never changes branch protection — user confirmation required.
 
 **Remediation (requires user confirmation):**
 

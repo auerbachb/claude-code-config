@@ -10,13 +10,11 @@ Greptile is the **last-resort paid** reviewer — only after both CR and BugBot 
 
 ## Greptile Basics
 
-Bot username: `greptile-apps[bot]`. Trigger: PR comment `@greptileai` (no suffix). Auto-trigger is OFF. Review time is usually 1-3 minutes. Signals: 👀 analyzing, 👍 complete, 😕 failed. Config/setup details: `.claude/reference/greptile-setup.md`.
+Bot: `greptile-apps[bot]`. Trigger: `@greptileai` PR comment. Auto-trigger OFF. Signals: 👀 analyzing, 👍 complete, 😕 failed. Setup: `.claude/reference/greptile-setup.md`.
 
 ## Daily Budget
 
-Default budget: 40 reviews/day. `~/.claude/session-state.json` tracks `greptile_daily.{reviews_used,date,budget}` (ET date). `.claude/scripts/greptile-budget.sh` is authoritative; every `@greptileai` trigger point MUST run `greptile-budget.sh --consume` first. Exit 0 = consumed; exit 1 = exhausted.
-
-If exhausted: self-review (never satisfies the gate) and report the actual counters.
+Default budget: 40 reviews/day (tracked in `session-state.json`). Every `@greptileai` trigger MUST run `greptile-budget.sh --consume` first (exit 0 = consumed, exit 1 = exhausted). If exhausted: self-review (never satisfies gate).
 
 ## Before EVERY `@greptileai` Re-Trigger (MANDATORY — after initial trigger)
 
@@ -31,7 +29,7 @@ Applies to 2nd/3rd triggers only; initial trigger requires only the budget check
 
 **Last-resort only:** trigger only after the escalation gate in `cr-github-review.md` returns `STATUS=trigger_greptile`. Always rely on `.claude/scripts/escalate-review.sh <PR_NUMBER>` for the per-cycle verdict.
 
-"BugBot also fails" includes a classified BugBot failure; see `bugbot.md`'s "BugBot failure detection" section. In that case, `escalate-review.sh` routes directly to `trigger_greptile` without waiting out the BugBot grace window.
+"BugBot also fails" includes a classified BugBot failure (`bugbot.md`); `escalate-review.sh` routes directly to `trigger_greptile`.
 
 ### Sticky Assignment
 

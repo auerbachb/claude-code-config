@@ -4,7 +4,7 @@
 > **Ask first:** Never — `--check` is read-only and `--quarantine` is non-destructive (creates a recovery branch before resetting main).
 > **Never:** Call `--quarantine` on a worktree / feature branch. Delete recovery branches without the user's say-so. Hand-roll `git reset --hard origin/main` on the root repo — use the guard so dirty state is preserved.
 
-Enforces "never leave anything on main" from `CLAUDE.md`. Complements the #323 pre-commit hook (which blocks new commits) by catching pre-existing drift at session start.
+Enforces the main-hygiene rule from `CLAUDE.md`, catching pre-existing drift at session start.
 
 ## Using the guard
 

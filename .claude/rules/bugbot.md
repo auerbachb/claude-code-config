@@ -25,15 +25,13 @@ Poll alongside CR per the shared cadence/endpoints (`cr-github-review.md` §Poll
 
 **Completion signal:** BugBot creates a CI check-run named `Cursor Bugbot` that transitions to `status: "completed"` when the review finishes. The `conclusion` field is `neutral` when BugBot posted findings (still counts as a completed review — `neutral` is not a failure). Completion can also be detected via BugBot review comments appearing on any of the three endpoints.
 
-**BugBot failure detection (issue #552):** a usage/spend-limit failure produces the *same* completed/`neutral` tuple as a clean pass. `escalate-review.sh` scans `cursor[bot]` comment bodies (and the check-run title) for failure phrases (`couldn't run`, `usage limit`, …) and treats a match as a failure — a completed check-run is a genuine clean pass only when no failure phrase is present.
+**BugBot failure detection:** a spend-limit failure produces the same completed/`neutral` result as a clean pass. `escalate-review.sh` scans for failure phrases (`couldn't run`, `usage limit`, …) — a clean pass requires no failure phrase.
 
 ## When BugBot Becomes the Active Reviewer
 
-BugBot becomes the active reviewer (`reviewer: bugbot`) when:
+BugBot becomes the active reviewer when:
 1. The escalation gate returns `STATUS=switch_bugbot`, and
 2. The caller persists sticky ownership with `.claude/scripts/reviewer-of.sh <PR_NUMBER> --sticky bugbot`.
-
-**Sticky assignment:** canonical in `cr-github-review.md` (Timeout & Fallback).
 
 ## Processing BugBot Findings
 
@@ -41,7 +39,7 @@ Verify all findings against actual code. Fix all valid findings in one commit, p
 
 **Reply format:** Use plain text only in replies — do NOT include `@cursor` in reply comments (may trigger a re-review). This matches Greptile's reply behavior.
 
-**Thread resolution:** `resolve-review-threads.sh <PR> --thread-ids <id1,id2>` (retries + `minimizeComment` fallback).
+**Thread resolution:** `resolve-review-threads.sh <PR> --thread-ids <id1,id2>`.
 
 ## Merge Gate
 

@@ -12,11 +12,11 @@ Do not merge or commit to `main` outside this path unless the user explicitly ov
 
 # EVERY MESSAGE — NON-NEGOTIABLE BEHAVIORS
 
-These apply to EVERY message the parent agent sends to the user. No exceptions, no degradation over time, no skipping after context compaction.
+These apply to EVERY parent-agent message. No exceptions, no degradation, no skipping after compaction.
 
 1. **Timestamp prefix.** Start every message with Eastern time (`Mon Mar 16 02:34 AM ET`). **Windows (Git Bash):** `TZ=America/New_York` is often wrong — use PowerShell `TimeZoneInfo` for ET first; **Linux/macOS:** `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`. Never estimate — run a command; for elapsed time, compare two outputs.
 2. **Active monitoring declaration.** When monitoring background agents, append `— monitoring N PR(s) (#a, #b)` to the status line, not a separate paragraph.
-3. **5-minute heartbeat — one line by default.** Never go >5 minutes without a status message; routine ones are one line (format: `monitor-mode.md` "User Heartbeat"). Multi-line detail only for state changes, dispatches, blockers, failures, and final reports — hard stops (CI red, `CHANGES_REQUESTED`, safety) always in full. Don't restate the task or narrate routine tool use. During operations touching 4+ files, emit a one-line status after every 3 writes/edits (`monitor-mode.md`).
+3. **5-minute heartbeat — one line by default.** Never go >5 min without a status message; routine format: `monitor-mode.md` "User Heartbeat". Multi-line only for state changes, blockers, failures, and final reports — hard stops always in full. During operations touching 4+ files, emit one-line status every 3 writes/edits (`monitor-mode.md`).
 4. **`/loop` for recurring polls.** Back any "poll/check/watch every N" request with `/loop` (or `CronCreate` for ≥3 concurrent polls / cross-session durability) — never a hand-rolled chain of one-shot wake-ups. Decision tree + pre-exit checklist: `scheduling-reliability.md`.
 5. **Dedicated monitor mode.** With active subagents, your ONLY job is orchestration — do NOT do substantive work. See `monitor-mode.md` "Dedicated Monitor Mode" for full rules.
 
@@ -41,7 +41,7 @@ The workflow is fully autonomous. At every phase transition — local review, pu
 **The ONLY action that requires user permission:**
 - Respawning a failed subagent
 
-**Monitoring is never a permission-gated action — babysitting an in-flight PR is the default, never a question.** When a PR is open and not yet merge-ready, arm the watch yourself and report it; never present a "watch it / babysit / review it yourself — which?" menu, and never wait for the user to say "watch it" first. A CodeRabbit timeout or rate-limit is not a stop-and-ask — it routes autonomously into the reviewer-escalation chain (BugBot → Greptile → self-review, `cr-github-review.md`). Keep it token-safe: arm `/loop` (or `CronCreate` for durable/fleet) so it pauses between ticks and widens on stable-state backoff — never a continuous poll (`scheduling-reliability.md`). Use the existing skills (`/babysit-pr`, `/pr-monitor-and-manage`); add no new machinery. When the gate + AC pass, the babysit→merge loop auto-dispatches `/wrap` silently (see "PR MERGE AUTHORIZATION" above).
+**Monitoring is never a permission-gated action — babysitting an in-flight PR is the default, never a question.** Arm the watch when a PR is open; never present a "watch it or not?" menu, and never wait for the user to say so first. CR timeout routes autonomously through the escalation chain (`cr-github-review.md`). Use `/loop`/`CronCreate` — never a continuous poll (`scheduling-reliability.md`). Use existing skills (`/babysit-pr`, `/pr-monitor-and-manage`). When gate + AC pass, auto-dispatch `/wrap` (see "PR MERGE AUTHORIZATION" above).
 
 If you catch yourself composing a "should I...?" question about any workflow step, stop — the answer is always yes. Just do it.
 
@@ -80,7 +80,7 @@ If you catch yourself composing a "should I...?" question about any workflow ste
 - **Never suppress linter errors** — fix the actual code, never add suppression comments (`cr-local-review.md`).
 
 **Branching & merging:**
-- **NEVER work on `main`.** All code changes happen in worktrees on feature branches. Every change requires: issue → feature branch → PR → squash merge.
+- **NEVER work on `main`.** All code changes happen in worktrees on feature branches.
 - Branch naming: `issue-N-short-description`.
 - Always **squash and merge** via `gh pr merge --squash`.
 - **Never merge immediately after a rebase or force-push.** Wait for CR to review the rebased commit and confirm clean before merging.
@@ -114,17 +114,13 @@ These files auto-load for the parent agent session. **Subagents do NOT auto-load
 
 ### Rule File Size Guidelines
 
-Rules load every turn. The budget exists for **instruction adherence and maintainability** — redundant or contradictory rules misfire on literal-following models. Limits apply to CLAUDE.md + `.claude/rules/*.md`:
+Rules load every turn — redundant or contradictory rules misfire. Limits apply to CLAUDE.md + `.claude/rules/*.md`:
 
-- **Soft warning:** 12,000 words. **Hard fail:** 13,000. **Per-file warning:** >2,000 words; split or extract reference material.
-- **Ratchet cap:** `.claude/rules/.budget-soft-cap` must equal `max(current_count + 750, 8500)`. `rule-lint.sh` fails when the corpus exceeds this committed cap, independent of soft/hard checks; run `rule-lint.sh --update-cap` only after intentional cuts.
-- **Verify on every PR touching CLAUDE.md or `.claude/rules/`** — condense before merging if it exceeds any enforced limit:
+- **Soft warning:** 12,000 words. **Hard fail:** 13,000. **Per-file warning:** >2,000 words.
+- **Ratchet cap:** `.claude/rules/.budget-soft-cap` = `max(count + 750, 8500)`. `rule-lint.sh` fails if exceeded; `--update-cap` only after intentional cuts.
+- **Verify on any PR touching these files:** `{ cat CLAUDE.md; find .claude/rules -name '*.md' -exec cat {} +; } | wc -w`
 
-  ```bash
-  { cat CLAUDE.md; find .claude/rules -name '*.md' -exec cat {} +; } | wc -w
-  ```
-
-**Keep growth out of the corpus.** A fix documents its *rule* here and its mechanism, rationale, and backward-compat notes in `.claude/reference/` — not auto-loaded, so free.
+**Keep growth out of the corpus.** Mechanism, rationale, and backward-compat notes go in `.claude/reference/` — not auto-loaded, so free.
 
 ---
 

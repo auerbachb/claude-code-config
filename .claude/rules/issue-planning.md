@@ -42,4 +42,4 @@
 
 ## Capture-only issue threads
 
-For threads whose only job is *opening* issues, use `/issue-maker`: capture-only mode, reflects before writing, canonical 6-section body, refuses workflow-advancing actions. It deliberately does **not** poll for the CR plan in-thread — the plan-merge gate (steps 5–7) runs later when the issue is picked up via `/start-issue`.
+For capture-only threads (just opening issues), use `/issue-maker`. The plan-merge gate (steps 5–7) runs later at `/start-issue` time.

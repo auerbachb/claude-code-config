@@ -16,11 +16,11 @@
 
 ## Why
 
-Hand-rolling does the work worse and skips `~/.claude/skill-usage.log`, poisoning prune audits (issue #431) and durable telemetry (issue #572). Parent sessions read this file directly; subagents get it via "Reaching Subagents" (issue #587).
+Hand-rolling skips `~/.claude/skill-usage.log`, breaking prune audits and telemetry. Subagents get this reflex via "Reaching Subagents" below.
 
 ## Reaching Subagents
 
-Subagents inherit the parent's instruction **snapshot** at spawn — they never re-read this file from disk afterward (verified during PR #585). Two paths deliver the reflex anyway:
+Subagents inherit the parent's instruction **snapshot** at spawn and never re-read this file from disk. Two paths deliver the reflex anyway:
 
 1. **Custom agent types** (`phase-a-fixer`, `phase-b-reviewer`, `phase-c-merger`, `pm-worker`) carry a short embedded reminder in their own `.claude/agents/*.md` definition, loaded as system context regardless of prompt content.
 2. **Everyone else** (ad-hoc spawns with no custom definition) gets the verbatim `SKILLS:` block below in the spawn prompt (`subagent-orchestration.md` checklist).

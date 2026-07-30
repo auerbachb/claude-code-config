@@ -16,18 +16,18 @@ After pushing to a PR, enter this loop automatically.
 
 Before the first poll tick:
 
-1. `.claude/scripts/polling-state-gate.sh <PR_NUMBER> --ensure-session` (`--root-repo <path>` if cwd is not the PR repo). Registers the PR, records repo scoping, creates/refreshes `~/.claude/handoffs/pr-<PR_NUMBER>-handoff.json`, and initializes poll watermarks (`poll-watermarks.sh <PR> --init`).
-2. Refusal = genuine cross-repo mismatch (#647); stop and reconcile.
+1. `.claude/scripts/polling-state-gate.sh <PR_NUMBER> --ensure-session` (`--root-repo <path>` if cwd is not the PR repo). Registers the PR, creates the handoff file, and initializes poll watermarks.
+2. Refusal = genuine cross-repo mismatch; stop and reconcile.
 
 **Each cycle:** `.claude/scripts/polling-state-gate.sh <PR_NUMBER>` — validates state then runs `merge-gate.sh`. Exit `0` = gate met; `1` = keep polling (plus `/fixpr` triggers below).
 
 ### Session-start / pre-review comment audit (MANDATORY)
 
-Run before the first poll tick and before any new review trigger on fresh push, resume, or post-compaction re-entry.
+Run before the first poll tick and before any new review trigger on push, resume, or post-compaction re-entry.
 
 1. Fetch all 3 comment endpoints (**Polling** below).
 2. Identify unresolved findings from `coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, or `graphite-app[bot]` (no fix reply, code unchanged, not outdated/resolved).
-3. **If ANY unresolved findings exist: invoke `/fixpr` now** — no polling or new review requests until it completes.
+3. **If ANY unresolved: invoke `/fixpr` now** — no polling or new reviews until complete.
 
 ### Per-cycle check (every 60 seconds)
 
@@ -42,9 +42,9 @@ If **ANY** condition below holds, invoke `/fixpr` and do NOT request a new revie
 
 > **Unresolved threads are NOT a trigger.** After a fix push, keep polling for reviewer catch-up unless conditions 1-4 occur.
 
-**#362:** If this cycle does not require `/fixpr` **and** the session-start audit confirmed no unresolved bot findings for the current SHA, run `maybe-trigger-ai-review.sh <PR>` (`pm-config.md` **Complexity triggers**; dedupe `session-state.json` `.prs[N].ai_review_trigger_*`).
+If this cycle requires no `/fixpr` and the audit was clean for current SHA, run `maybe-trigger-ai-review.sh <PR>` (dedupe `session-state.json` `.prs[N].ai_review_trigger_*`).
 
-**SHA freshness (every cycle).** CR approval must have `.commit_id == current HEAD SHA`; otherwise re-trigger (respecting 2/hour cap) and keep polling. See `cr-merge-gate.md` for retraction rules.
+**SHA freshness:** CR approval `.commit_id` must match current HEAD SHA; otherwise re-trigger (respecting 2/hour cap) and keep polling.
 
 **Exit polling ONLY when the merge gate (`cr-merge-gate.md`) is met.** After any `/fixpr` push, reset all three watermarks (`poll-watermarks.sh <PR> --reset`) and keep polling for the reviewer's response to the new SHA.
 
@@ -56,11 +56,11 @@ Run **every poll cycle while `reviewer == cr`** after PR snapshot + CI:
 STATUS=$(.claude/scripts/escalate-review.sh <PR_NUMBER> | sed -n 's/^STATUS=//p')
 ```
 
-Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget_exhausted`, `self_review` — follow `escalate-review.sh` / `bugbot.md` / `greptile.md` (rate-limit → BugBot → Greptile; cache `bugbot_installed` in session-state). `gate_met` = CodeRabbit or CodeAnt already holds a valid `APPROVED` on current HEAD (checked before any escalation) — stop escalating; let the merge gate exit polling.
+Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget_exhausted`, `self_review` — follow `escalate-review.sh` / `bugbot.md` / `greptile.md`. `gate_met` = CodeRabbit or CodeAnt holds a valid `APPROVED` on current HEAD — stop escalating; let the merge gate exit polling.
 
 ### Rate Limits & Behavior (Pro Tier)
 
-**Cap:** ~**8** CR reviews/hour. Batch fixes into one commit/push; max **2** explicit `@coderabbitai full review`/PR/hour (surface the user at the 2nd). On cooldown/exhaustion: local review first, then escalate per **Timeout & Fallback** below. Tracking: `cr-review-hourly.sh`; full caps/flags: `.claude/reference/cr-rate-limits.md`.
+**Cap:** ~8 CR reviews/hour; max 2 explicit `@coderabbitai full review`/PR/hour (surface user at 2nd). On cooldown: local review first, then escalate. Tracking: `cr-review-hourly.sh`; details: `.claude/reference/cr-rate-limits.md`.
 
 ### Polling
 
@@ -73,28 +73,25 @@ Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget
 - **Commit status every cycle.** Query CodeRabbit check-runs (fallback commands: `.claude/reference/cr-polling-commands.md`). Check-run `completed`/`success` = review done; the "Full review triggered" ack only means started.
 - **Fast-path rate limit:** "rate limit" in failed CR check/status output routes to the escalation gate.
 - **CR username:** `coderabbitai[bot]`. Filter by `.user.login == "coderabbitai[bot]"` — NOT bare `coderabbitai`.
-- **Watermark (all three endpoints):** highest review ID from `pulls/{N}/reviews`; highest comment ID from `pulls/{N}/comments` (inline diff comments); highest comment ID from `issues/{N}/comments`. Persist via `poll-watermarks.sh` → `.prs["N"].poll_watermarks` in `session-state.json` (schema: `.claude/reference/session-state-schema.json`).
+- **Watermark:** highest ID per endpoint; persist via `poll-watermarks.sh` → `session-state.json` (schema: `.claude/reference/session-state-schema.json`).
 - **CR silence:** a completed CR check-run ends the silence wait (the merge gate still decides exit); otherwise the escalation gate owns silence, BugBot grace, and Greptile fallback.
 
 ### CI Health Check (MANDATORY — every poll cycle)
 
-**Check ALL check-runs, not just CodeRabbit:** `repos/{owner}/{repo}/commits/{SHA}/check-runs?per_page=100` (full command: `.claude/reference/cr-polling-commands.md`). Any blocking conclusion (per-cycle trigger #2 list; `cancelled`/`neutral`/`skipped` are non-blocking) → **invoke `/fixpr` immediately**. CI failures block merge independently of CR — passing CR + failing tests is not merge-ready; report a pass/fail summary.
+**Check ALL check-runs:** `repos/{owner}/{repo}/commits/{SHA}/check-runs?per_page=100` (full command: `.claude/reference/cr-polling-commands.md`). Any blocking conclusion → **invoke `/fixpr` immediately** (`cancelled`/`neutral`/`skipped` are non-blocking). CI failures block merge independently of CR; report a pass/fail summary.
 
 ### Timeout & Fallback — Three-Tier Review Chain
 
-**Chain:** CR → BugBot → Greptile → self-review. **Supplemental (CR path):** CodeAnt + Graphite — `.claude/reference/codeant-graphite-supplemental.md`. When CR fails or stalls, the escalation gate checks BugBot before Greptile (`bugbot.md`, `greptile.md`). **Sticky:** once a PR falls to BugBot or Greptile it never moves back up the chain (per-path gates: `cr-merge-gate.md` Step 1). **If all three fail:** self-review — it does NOT satisfy the merge gate; tell the user which fallback ran and why.
+**Chain:** CR → BugBot → Greptile → self-review. **Supplemental (CR path):** CodeAnt + Graphite — `.claude/reference/codeant-graphite-supplemental.md`. **Sticky:** once a PR falls to BugBot or Greptile, it never moves back up the chain. **If all three fail:** self-review (does NOT satisfy gate); tell the user which fallback ran and why.
 
 ### Processing CR Feedback
 
 1. Fetch latest CR comments via `gh api`, verify each finding against the actual file
 2. Fix **all valid findings**, commit and push **once**
 3. **Reply to every thread** ("Fixed in `abc1234`: <what changed>"). Try inline reply; on 404, PR-level comment with `@coderabbitai Fixed in ...`
-4. **Resolve via `.claude/scripts/resolve-review-threads.sh <PR> --thread-ids <id1,id2>`** (or `--thread-ids-file`) — **NEVER call `resolveReviewThread` inline** (full mutations: `.claude/reference/graphql-thread-resolution.md`)
-5. **Re-query `pullRequest.reviewThreads` and verify every touched thread has `isResolved: true`** before requesting a new review.
-6. Resume polling; repeat until CR has no more findings
+4. **Resolve via `.claude/scripts/resolve-review-threads.sh <PR> --thread-ids <id1,id2>`** — **NEVER call `resolveReviewThread` inline** (mutations: `.claude/reference/graphql-thread-resolution.md`)
+5. Resume polling; repeat until CR has no more findings
 
-> **"Duplicate" findings are NOT resolved.** CR labels a comment "duplicate" when it raised the same issue before — this does NOT mean it was fixed. Always verify against actual code before dismissing any CR comment.
+> **"Duplicate" findings are NOT resolved** — always verify against code before dismissing.
 
-### Completion
-
-Exit only through `cr-merge-gate.md` (review gate, CI, resolved threads, AC, then auto-`/wrap`). This file owns polling/feedback only.
+Exit only when `cr-merge-gate.md` is met. This file owns polling/feedback only.
