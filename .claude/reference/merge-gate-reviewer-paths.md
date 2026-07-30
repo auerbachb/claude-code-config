@@ -16,6 +16,10 @@ GitHub keeps a record for **every** run of a check on a commit, and each re-trig
 
 **Consequence for polling:** a check that failed and was re-run stops blocking the moment the newer run lands — no rebase or new push required. If tooling still reports a failure GitHub's merge box shows as green, suspect the fetch bypassed the helper, not the dedup rule.
 
+## Stale-approval guard — all review paths (issue #836)
+
+GitHub retargets a review's `commit_id` to the new HEAD SHA after a force-push (when diff context persists), but `submitted_at` is never changed. An approval submitted _before_ the force-push therefore shows `commit_id == HEAD` with a `submitted_at` that predates the HEAD commit's `committer.date`. `merge-gate.sh` rejects such approvals even when `commit_id` matches, using `LAST_COMMIT_TS` (HEAD committer date, already fetched for the Greptile freshness gate). Applies to: CR/CodeAnt `APPROVED` reviews, CodeAnt clean check-run `completed_at`, and BugBot reviews. Guard is disabled when `LAST_COMMIT_TS` is empty (API failure). Distinct `missing[]` reason: "predates the HEAD commit (force-push retargeting) — re-review required".
+
 ## CR path
 
 Applies when neither BugBot nor Greptile was triggered (`merge-gate.sh` reviewer `cr`).
