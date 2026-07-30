@@ -67,6 +67,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `token-efficiency-audit-2026-07.md` — token-efficiency playbook: adopt/skip/adapt verdicts, ranked cuts, shipped v1 (one-line heartbeats, delta PMM table, silence-detector dedupe) + FU-1…FU-7 (#773)
 - `pm-routing-audit-2026-07.md` — thread-vs-inline routing effectiveness audit of #613; ground-truth attribution + the shared PM-context inline gate for chip surfaces (#701)
 - `too-big-recalibration-2026-07.md` — re-derivation of the "too big for a subagent" fit bar against current capability: criterion 1 narrowed from size to non-resumability, A/B/C confirmed on grounds independent of the unverified 32K figure, ceiling held, and the chip-gate overflow defect fixed (#776)
+- `subagent-orchestration-churn-audit-2026-07.md` — churn hotspot analysis for `subagent-orchestration.md` (13 PRs in 14 days); verdict: KEEP single file + dedup Phase A/B/C bullet descriptions toward canonical owners; ownership decisions recorded (#814)
 
 ### Diagrams (mermaid stubs and indexes)
 

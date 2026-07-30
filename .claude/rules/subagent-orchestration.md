@@ -56,11 +56,9 @@ Near token exhaustion: write the handoff per `handoff-files.md` and exit; parent
 
 ## Task Decomposition
 
-Give each subagent one phase with explicit exit criteria. **A/B/C decomposition:** Phase B is an unbounded reviewer wait, Phase C is independent verification. Procedures: `.claude/agents/phase-{a,b,c}-*.md`; rationale: `.claude/reference/too-big-recalibration-2026-07.md`.
+Give each subagent one phase with explicit exit criteria. **A/B/C decomposition:** procedures in `.claude/agents/phase-{a,b,c}-*.md`; step details: `.claude/reference/phase-decomposition.md`; rationale: `.claude/reference/too-big-recalibration-2026-07.md`.
 
-- **Phase A: Fix + Push** (heaviest) — fix findings, commit once, push once, reply to threads, write handoff, EXIT (parent cleanup: Orchestration below).
-- **Phase B: Review Loop** (lighter) — poll/trigger reviewer, fix new findings, update handoff, EXIT.
-- **Phase C: Verify + Wrap** (lightest) — verify merge gate + AC, then `/wrap` to squash-merge, sync main, report `merged`. Do not duplicate `/wrap` logic; its session-sweep output is **advisory only — never block a merge on a sweep finding**.
+**Phase C:** Do not duplicate `/wrap` logic; its session-sweep output is **advisory only — never block a merge on a sweep finding**.
 
 **Orchestration:**
 
