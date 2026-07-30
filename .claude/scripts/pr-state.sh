@@ -7,12 +7,13 @@
 # via jq instead of re-issuing overlapping gh api calls inline.
 #
 # Usage:
-#   pr-state.sh                          # Auto-detect PR from current branch
-#   pr-state.sh --pr 123                 # Use explicit PR number (skips branch detect)
-#   pr-state.sh --since <iso-8601>       # Pre-classify bot comments posted since baseline
-#   pr-state.sh --pr 123 --since <iso>   # Combined
-#   pr-state.sh --infer-candidates       # List session-tracked PR candidates (no GitHub state)
-#   pr-state.sh --help                   # Print usage
+#   pr-state.sh                                  # Auto-detect PR from current branch
+#   pr-state.sh --pr 123                         # Use explicit PR number (skips branch detect)
+#   pr-state.sh --since <iso-8601>               # Pre-classify bot comments posted since baseline
+#   pr-state.sh --pr 123 --since <iso>           # Combined
+#   pr-state.sh --infer-candidates               # List session-tracked PR candidates (no GitHub state)
+#   pr-state.sh --wait-state-eval <sha> <bundle> # Evaluate wait-state predicate on fetched bundle
+#   pr-state.sh --help                           # Print usage
 #
 # Output: writes JSON to /tmp/pr-state-<PR>-<epoch>.json and prints the path on stdout.
 #         (--infer-candidates prints a JSON array to stdout instead — see below.)
@@ -31,6 +32,19 @@
 #   the candidate's stored owner_repo are known, else null ("unknown — don't filter
 #   it out"). Always exits 0 with `[]` when the state file is missing or tracks no
 #   active PRs. Cannot be combined with --pr or --since.
+#
+# --wait-state-eval <sha> <bundle_file> (extracted from /fixpr Step 4d, Issue #788):
+#   Evaluates the wait-state predicate on an already-fetched bundle file (written by a
+#   prior pr-state.sh --pr call), scoped to the given SHA. Outputs a JSON object:
+#     { "head_moved": bool, "bots_pending": [str], "ci_pending": [str],
+#       "ci_failing": [str], "new_findings": int }
+#   head_moved is true when pr.head_sha != <sha> (external push while waiting).
+#   bots_pending lists bot logins still running (participating bots not yet done).
+#   ci_pending lists non-review-bot CI check names not yet completed.
+#   ci_failing lists non-review-bot CI checks with a blocking conclusion.
+#   new_findings is the finding count from new_since_baseline.
+#   Cannot be combined with --pr, --since, or --infer-candidates.
+#   Exit code 0 on success; 2 on usage error.
 #
 # Exit codes:
 #   0  OK
@@ -62,11 +76,28 @@ run_gh() {
 PR_ARG=""
 SINCE=""
 INFER_CANDIDATES=0
+WAIT_STATE_EVAL=0
+WAIT_STATE_SHA=""
+WAIT_STATE_BUNDLE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --infer-candidates)
       INFER_CANDIDATES=1
       shift
+      ;;
+    --wait-state-eval)
+      WAIT_STATE_EVAL=1
+      WAIT_STATE_SHA="${2:-}"
+      if [[ -z "$WAIT_STATE_SHA" ]]; then
+        echo "ERROR: --wait-state-eval requires a SHA argument" >&2
+        exit 2
+      fi
+      WAIT_STATE_BUNDLE="${3:-}"
+      if [[ -z "$WAIT_STATE_BUNDLE" ]]; then
+        echo "ERROR: --wait-state-eval requires a bundle file argument" >&2
+        exit 2
+      fi
+      shift 3
       ;;
     --pr)
       PR_ARG="${2:-}"
@@ -214,6 +245,69 @@ if [[ "$INFER_CANDIDATES" -eq 1 ]]; then
   else
     echo "$_jq_out"
   fi
+  exit 0
+fi
+
+# ----------------------------------------------------------------------
+# 0b. --wait-state-eval: evaluate the per-tick wait-state predicate on an
+#     already-fetched bundle file and exit.
+#     Extracted from /fixpr Step 4d (Issue #788 hotspot extraction).
+#     The surrounding in-turn loop, sleep/cap, and heartbeat control flow
+#     stay in fixpr/SKILL.md — only the shared predicate lives here.
+# ----------------------------------------------------------------------
+if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
+  if [[ -n "$PR_ARG" || -n "$SINCE" || "$INFER_CANDIDATES" -eq 1 ]]; then
+    echo "ERROR: --wait-state-eval cannot be combined with --pr, --since, or --infer-candidates" >&2
+    exit 2
+  fi
+  if [[ ! -f "$WAIT_STATE_BUNDLE" ]]; then
+    echo "ERROR: --wait-state-eval bundle file not found: $WAIT_STATE_BUNDLE" >&2
+    exit 2
+  fi
+  jq -c --arg sha "$WAIT_STATE_SHA" '
+    . as $root
+    | ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]","graphite-app[bot]"] as $botlist
+    | {"coderabbitai[bot]":"coderabbit","cursor[bot]":"bugbot","codeant-ai[bot]":"codeant",
+       "greptile-apps[bot]":"greptile","graphite-app[bot]":"graphite"} as $needles
+    | def is_review_check($n):
+        ($n // "" | ascii_downcase) as $name
+        | any("coderabbit","graphite","codeant","cursor","bugbot","greptile";
+              . as $x | $name | contains($x));
+    ([$root.comments.reviews[]?.user.login,
+      $root.comments.inline[]?.user.login,
+      $root.comments.conversation[]?.user.login]
+     | map(select(. as $l | $botlist | index($l) != null)) | unique) as $participants
+    | ($root.check_runs.all // []) as $checks
+    | ($root.bot_statuses // {}) as $bstat
+    | ($participants | map(. as $bot
+        | $needles[$bot] as $needle
+        | {bot: $bot,
+           done: (
+             # Review object pinned to the watched SHA. EXCLUDED for BugBot:
+             # cursor[bot] commit_id is stale/unreliable — gate BugBot by its
+             # check-run only (memory feedback_bugbot_commit_id_stale).
+             ( $bot != "cursor[bot]"
+               and any($root.comments.reviews[]?;
+                       .user.login == $bot and (.commit_id // "") == $sha) )
+             # Completed check-run on the watched SHA (check_runs are fetched per
+             # HEAD SHA, so SHA scoping is implicit). conclusion neutral still
+             # counts as complete — BugBot uses neutral for "findings posted".
+             or any($checks[]?;
+                    ((.name // "") | ascii_downcase | contains($needle))
+                    and .status == "completed")
+             # CR/Greptile also report via commit statuses on the watched SHA.
+             or ( $bot == "coderabbitai[bot]" and (($bstat.CodeRabbit.state // "pending") != "pending") )
+             or ( $bot == "greptile-apps[bot]" and (($bstat.Greptile.state // "pending") != "pending") )
+           )})) as $bots
+    | {head_moved: ($root.pr.head_sha != $sha),
+       bots_pending: ($bots | map(select(.done | not) | .bot)),
+       ci_pending: [ $checks[] | select((is_review_check(.name) | not) and .status != "completed") | .name ],
+       ci_failing: [ $checks[] | select((is_review_check(.name) | not)
+                     and (.conclusion == "failure" or .conclusion == "timed_out"
+                          or .conclusion == "action_required" or .conclusion == "startup_failure"
+                          or .conclusion == "stale")) | .name ],
+       new_findings: ($root.new_since_baseline.finding_count // 0)}
+  ' "$WAIT_STATE_BUNDLE"
   exit 0
 fi
 
