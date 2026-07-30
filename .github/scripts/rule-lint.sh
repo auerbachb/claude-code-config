@@ -199,6 +199,10 @@ PY
     updated_cap=$formula_cap
     delta=$(( prev_cap - formula_cap ))
     echo "Budget soft cap: ${prev_cap} → ${formula_cap} (-${delta}) [lowered]"
+  elif (( formula_cap == prev_cap )); then
+    # Formula matches the current cap exactly: no change needed.
+    updated_cap=$prev_cap
+    echo "Budget soft cap: ${prev_cap} unchanged (formula matches cap)"
   else
     # Formula would raise the cap; ratchet holds.
     updated_cap=$prev_cap

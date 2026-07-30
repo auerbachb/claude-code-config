@@ -5,9 +5,10 @@
 #   (a) small cut  → formula exceeds current cap  → cap unchanged (ratchet holds)
 #   (b) large cut  → formula below current cap    → cap lowered to formula
 #   (c) --allow-raise                             → cap raised, old/new/delta printed
-# Plus two bonus cases:
+# Plus three bonus cases:
 #   (d) bootstrap  → corrupt/missing prior cap    → formula result written
 #   (e) real repo conformance (default run, no --update-cap)
+#   (f) equal case → formula == current cap       → unchanged, no "would raise" message
 
 set -euo pipefail
 
@@ -162,6 +163,17 @@ expect \
   "no valid prior value — bootstrapping to formula result" \
   "NOT_A_NUMBER" \
   "$FORMULA"
+
+# ---------------------------------------------------------------------------
+# (f) Equal case: formula == prev_cap — cap unchanged, no "would raise" message
+# ---------------------------------------------------------------------------
+F_CAP=$FORMULA
+expect \
+  "(f) equal: formula == cap — unchanged, no 'would raise'" \
+  0 \
+  "unchanged.*formula matches cap" \
+  "$F_CAP" \
+  "$F_CAP"
 
 # ---------------------------------------------------------------------------
 # (e) Real repo conformance — default run (no --update-cap)
