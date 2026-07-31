@@ -300,6 +300,7 @@ ISSUE_DEDUP=$(resolve_script issue-dedup.sh || true)
 DEDUP_EXCLUDE=""
 DEDUP_DEGRADED=""
 DEDUP_ANY_DEGRADED=""
+WRAP_FILED_ISSUES=""   # newline-separated JSON objects: {number, title, keywords, rationale}; both Part A and Part B append here
 
 dedup_search() {   # sets DEDUP_JSON/DUP_NUM/DUP_STATE
   local kw="$1" rc=0
@@ -424,7 +425,7 @@ For each follow-up item (the HHG pair or the generic list):
 {context from detection}${LINKED_SOURCE}
 
 _Filed via /wrap._"
-  # Surface title+body before filing (visible in --verbose; always printed when about to file):
+  # Surface title+body before filing (visible in --verbose mode only; all filings announced in Step 4.3 regardless):
   if [ "$WRAP_VERBOSE" = "1" ]; then
     echo "Filing follow-up: $ISSUE_TITLE"
     echo "$ISSUE_BODY"
