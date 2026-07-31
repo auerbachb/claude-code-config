@@ -1,44 +1,152 @@
 # .claude/scripts/
 
-Manually-invoked utility scripts. Run these from the command line when needed.
+> **This is an index only.** Each entry gives the script name and a one-sentence purpose. For flags, exit codes, and full contract details, run `.claude/scripts/<name> --help` or read the script header.
+>
+> **Adding a new script?** Add one row in the matching category below. Put the full contract (usage, flags, exit codes) in the script header and `--help` output — not here.
+
+Manually-invoked utility scripts. See [scripts/ vs hooks/](#scripts-vs-hooks) for the distinction.
+
+## PR State & Polling
+
+Scripts that read PR state, track comment watermarks, and determine reviewer ownership.
 
 | Script | Purpose |
 |--------|---------|
-| `pr-state.sh [--pr N] [--since <iso-8601>]` | Gather full PR state into a single JSON file (threads, CI check-runs, commit statuses, 3 comment endpoints, merge state, optional since-baseline classifier). Shared by `/fixpr`, `/merge`, `/wrap`, `/go-on`, `/status`, `phase-b-reviewer`, `phase-c-merger`. **Output:** writes to `/tmp/pr-state-<PR>-<epoch>.json` and prints the path on stdout — the OS reclaims `/tmp/` on reboot, so callers need not delete these files. Exit codes: `0` OK, `2` usage, `3` no branch + no `--pr`, `4` PR closed/not found, `5` gh/network error. |
-| `infer-pr.sh --explicit <URL_or_N> \| [--root-repo <path>]` | Shared PR inference helper for `/wrap` (issue #448) and `/fixpr` (issue #447). `--explicit` normalizes a PR reference (`https://github.com/owner/repo/pull/N`, `owner/repo#N`, `#N`, or `N`) into `{number, owner_repo}`. With no `--explicit`, reads the per-PR map from `~/.claude/session-state.json` (via `session-state.sh --get`, direct-read fallback), scoped to the active repo plus unattributed legacy entries (issue #638; `--root-repo` selects a different repo's scope), and sorts candidates by `last_cron_action.at` (most recent first). Output: one JSON object `{candidates[], most_recent, source}`. Exit codes: `0` exactly one candidate (or valid explicit ref), `1` multiple candidates, `2` none, `3` explicit ref unparseable, `4` internal/jq error, `64` usage error. |
-| `escalate-review.sh <pr_number>` | Run the mandatory CR→BugBot→Greptile escalation gate from `.claude/rules/cr-github-review.md`. Prints exactly one deterministic verdict: `STATUS=gate_met` (CodeRabbit or CodeAnt already has a valid APPROVED review on current HEAD — checked before any escalation, so a rate-limited CR + failed BugBot doesn't trigger a paid Greptile review when CodeAnt already approved), `STATUS=polling_cr`, `STATUS=switch_bugbot`, `STATUS=trigger_greptile`, `STATUS=budget_exhausted`, or `STATUS=self_review`; exits `0` for every verdict. Caches `.prs["N"].bugbot_installed` in `~/.claude/session-state.json` on first BugBot check so repos without BugBot skip the grace wait on later cycles. Used by `phase-b-reviewer` and monitor-mode poll loops. |
-| `pr-preflight.sh <pr_number> [--json] [--dry-run]` | **PR pre-flight (issue #493):** the shared draft→ready + four-reviewer trigger run by `/fixpr` (Step 0c), `/babysit-pr` (T1b), and `/pr-monitor-and-manage` (Step 5.0). (1) Flips `isDraft`→ready **only** when the current `gh` user authored the PR (never overrides another user's draft). (2) Scans all 3 PR endpoints (`pulls/reviews`, `pulls/comments`, `issues/comments`, `per_page=100`) for each of `codeant-ai[bot]`, `coderabbitai[bot]`, `cursor[bot]`, `graphite-app[bot]` and posts the matching trigger (`@codeant-ai review`, `@coderabbitai full review`, `@cursor review`, `@graphite-app re-review`) when absent. Idempotent — a prior trigger comment counts as engaged. Gates `@coderabbitai full review` on `cr-review-hourly.sh` (`--check` + atomic `--record-explicit`), skipping **only** CR when the cap is hit. **Greptile is never triggered.** Strictly per-PR (no shared accumulator). Prints timestamped action lines + a `PREFLIGHT_SUMMARY: <json>` line (or pure JSON with `--json`) for skill exit reports. Exits `0` success (incl. clean no-op / rate-cap skip), `2` usage, `3` PR not found/closed, `4` gh error. |
-| `cr-review-hourly.sh --check \| --consume \| --record-explicit <PR>` | Track CodeRabbit **~8 reviews/hour** (rolling 3600s) in `cr_hourly.events` and manual `@coderabbitai full review` posts under `.prs["N"].cr_explicit_triggers`. `--check` snapshots JSON (exit `1` if exhausted); `--consume` records one push-level review event; `--record-explicit` logs a manual trigger and prints `surface_user` when ≥2/hour on that PR. Documented in `cr-github-review.md`. Env `CR_HOURLY_BUDGET` overrides default **8** (tests only). |
-| `issue-dedup.sh <keywords> [--repo R] [--min-coverage F] [--exclude N,N] [--max-results N] [--closed-days N]` | **Duplicate-candidate search for automated issue filing (issue #652):** scores the repo's open issues plus those closed within `--closed-days` (default 30) against the finding's keywords over **both title and body** — the coverage a title-only search lacked when issue #647 duplicated issue #638. Prints ranked candidates as JSON (`number`, `title`, `state`, `score`, `coverage`, `title_hits`, `body_hits`, `terms_matched`). **Recall only — it never decides**; the strong/weak/none classification and the comment-vs-file rule live in `.claude/reference/autofile-dedup.md`. Exits `0` candidates found, `1` none (prints `[]`, including the no-usable-keywords case, which means *file*), `2` usage, `4` gh/python3 error. Used by `/wrap` Phase 3 (Steps 3.0/3.3/3.7) and `/issue-maker` Step 4. |
-| `cr-plan.sh <issue_number> [--poll <min>] [--max-age-minutes N]` | Detect a CodeRabbit implementation-plan comment on a GitHub issue. Prints plan body on stdout. Substance detection is delegated to `cr-plan-filter.py` (issue #541): rejects ack replies **and** the issue-enrichment / Issue-Planner-checkbox boilerplate by stripping non-plan blocks, then requiring >200 chars **and** plan structure (heading or numbered step). Requires `python3`. Exits `0` plan found, `1` no plan, `2` usage error, `3` issue not found/closed, `4` gh/env error. Used by `/start-issue`, `/subagent`, `pm-worker`. |
-| `repair-trust-single.sh <absolute-project-path>` | Fix trust flags for one project in `~/.claude.json` |
+| `pr-state.sh` | Gather full PR state (threads, CI, comments, merge state) into a JSON snapshot |
+| `infer-pr.sh` | Resolve a PR reference from an explicit URL/number or from session-state candidates |
+| `poll-watermarks.sh` | Track high-water IDs for the three PR comment endpoints to detect new bot findings |
+| `polling-state-gate.sh` | CR polling procedural gate — registers PR in session-state and runs merge-gate.sh each cycle |
+| `pr-preflight.sh` | Flip a draft PR to ready and trigger the four AI reviewers when absent |
+| `pr-authorship.sh` | Hard authorship gate — verify the authenticated user authored a PR before any automated write |
+| `pr-issue-ref.sh` | Extract the linked issue number from a PR body via GitHub's issue-closing keywords |
+| `reviewer-of.sh` | Determine which reviewer (cr/bugbot/greptile) owns a PR; reads session-state then GitHub history |
+| `reviewer-activity.sh` | Detect whether each AI reviewer has posted activity on a specific pushed SHA |
+
+## Review & Escalation
+
+Scripts that manage the CR→BugBot→Greptile reviewer chain, budgets, and round gating.
+
+| Script | Purpose |
+|--------|---------|
+| `escalate-review.sh` | Run the CR→BugBot→Greptile escalation gate; emits a single deterministic `STATUS=` verdict — see `--help` |
+| `cr-review-hourly.sh` | Track CodeRabbit's rolling hourly review cap and per-PR explicit trigger count |
+| `cr-plan.sh` | Detect a substantive CodeRabbit implementation-plan comment on a GitHub issue |
+| `greptile-budget.sh` | Guard the daily Greptile review budget counter in session-state |
+| `maybe-trigger-ai-review.sh` | Post supplemental AI reviewer triggers when complexity and CR-round gates pass |
+| `complexity-score.sh` | Compute a PR complexity score from additions, deletions, and changed-file count |
+| `cycle-count.sh` | Reconstruct per-PR review-then-fix cycle count for round gating |
+
+## Merge Gate & Sequencing
+
+Scripts that verify merge readiness and sequence a PR fleet to avoid conflict rounds.
+
+| Script | Purpose |
+|--------|---------|
+| `merge-gate.sh` | Verify the full merge gate (reviewer approval, CI, threads, mergeStateStatus) |
+| `clean-behind-check.sh` | Decide whether a BEHIND PR is safe for /admin-merge (hunk-level overlap check) vs a rebase |
+| `admin-merge.sh` | Generate or execute the solo-owner branch-protection bypass |
+| `merge-sequence.sh` | Overlap-aware merge dispatch planner to avoid conflict rounds across a PR fleet |
+| `ci-status.sh` | Summarize CI check-run health for a commit or PR |
+| `check-runs-dedup.sh` | Collapse a check-run list to one verdict per check (newest check suite wins) |
+| `ac-checkboxes.sh` | Parse and update the PR body's Test plan checkboxes |
+| `dismiss-stale-bot-changes.sh` | Dismiss stale bot CHANGES_REQUESTED reviews on old SHAs after a push |
+
+## Review Threads & Diffs
+
+Scripts that resolve review threads and guard the branch diff through a rebase.
+
+| Script | Purpose |
+|--------|---------|
+| `resolve-review-threads.sh` | Fetch PR review threads via GraphQL, resolve them, and verify `isResolved` |
+| `reply-thread.sh` | Post a reviewer-aware reply to a PR review thread (inline endpoint, PR-level fallback) |
+| `diff-survival-check.sh` | Verify a rebase or conflict resolution did not vaporize the branch's own diff |
+
+## Session State & Locking
+
+Scripts that read and write `~/.claude/session-state.json` and per-PR handoff files.
+
+| Script | Purpose |
+|--------|---------|
+| `session-state.sh` | Canonical read/write helper for `~/.claude/session-state.json` (atomic, scoped, field-typed) |
+| `state-lock.sh` | *(library — source, do not execute)* Portable mkdir-based advisory lock for session-state writes |
+| `session-state-audit.sh` | Audit and guarded repair of `~/.claude/session-state.json` |
+| `handoff-state.sh` | Locked read/write helper for per-repo handoff files (`~/.claude/handoffs/`) |
+| `handoff-migrate.sh` | One-time migration of flat handoff files to per-repo scoped paths |
+
+## Scheduling & Monitoring
+
+Scripts that manage the background-silence ceiling, launchd watchdog, and time helpers.
+
+| Script | Purpose |
+|--------|---------|
+| `bgwork-ceiling.sh` | Hard ceiling on chat silence while background work (subagents, watchers) runs |
+| `install-silence-watchdog.sh` | Install the macOS launchd watchdog that monitors Claude heartbeat files |
+| `uninstall-silence-watchdog.sh` | Uninstall the macOS launchd silence watchdog |
+| `silence-watchdog.sh` | External launchd watchdog that checks heartbeat files when Claude is stalled (macOS only) |
+| `off-peak-minute.sh` | Deterministic per-repo off-peak cron minute selector for CronCreate jobs |
+| `gh-window.sh` | GitHub date-window builder (ET-anchored, macOS + GNU dual-syntax) |
+| `workday.sh` | US business-day calculator (ET-anchored, macOS + GNU date) |
+
+## Backlog & PM
+
+Scripts that surface stale issues, duplicate candidates, forgotten PRs, and backlog metrics.
+
+| Script | Purpose |
+|--------|---------|
+| `backlog-staleness.sh` | Detect stale backlog issues (solved by merged PR, inactive, superseded, potential duplicate) |
+| `backlog-health.sh` | Aggregate backlog health metrics wrapping `backlog-staleness.sh` |
+| `churn-hotspots.sh` | Detect files touched by many distinct merged PRs as refactor candidates |
+| `issue-dedup.sh` | Score open issues against keywords to find duplicate candidates before filing |
+| `forgotten-pr-triage.sh` | Detect and classify open PRs that have gone quiet past a staleness threshold |
+| `pm-config-get.sh` | Extract a named section from `.claude/pm-config.md` |
+
+## Skills & Telemetry
+
+Scripts that audit, report, and sync skill and script usage telemetry.
+
+| Script | Purpose |
+|--------|---------|
+| `skill-usage-report.sh` | Read `~/.claude/skill-usage.log` and print usage tables and dead-skill candidates |
+| `skill-usage-snapshot.sh` | Push/restore skill telemetry to/from the repo's dedicated `skill-telemetry` branch |
+| `skill-usage-merge.sh` | Merge another machine's skill-usage telemetry into the live log files |
+| `audit-skill-usage.sh` | Legacy monthly skill-usage audit against `.claude/data/skill-usage.json` |
+| `skill-conventions-audit.sh` | Static audit that `.claude/skills/*/SKILL.md` files match repo conventions |
+| `script-usage-report.sh` | Summarize script adherence telemetry from `~/.claude/script-usage.log` |
+
+## Trust, Worktree & Repo
+
+Scripts that repair trust flags, detect stale worktrees, and sync main.
+
+| Script | Purpose |
+|--------|---------|
+| `repair-trust-single.sh` | Fix trust flags for one project in `~/.claude.json` |
 | `repair-trust-all.sh` | Fix trust flags for all projects in `~/.claude.json` |
-| `repair-worktrees.sh [--apply]` | Detect stale git worktrees (branch merged to main or deleted on origin) and optionally remove them. Dry-run by default; skips worktrees with uncommitted changes and never touches the main worktree. |
-| `cycle-count.sh <pr_number> [--exclude-bots] [--cr-only]` | Reconstruct per-PR review-then-fix cycle count. Prints an integer on stdout. **`--cr-only`** restricts to CodeRabbit (`coderabbitai[bot]`) for issue #362 round gating. Used by `/merge`, `/wrap`. See `--help` and `.claude/reference/pm-data-patterns.md` "Review cycles per PR". |
-| `complexity-score.sh <pr_number> [--json]` | PR complexity score: `additions + deletions + file_weight × changedFiles` (default `file_weight=5`, tunable via `.claude/pm-config.md` **Complexity triggers**). Used by `maybe-trigger-ai-review.sh`. |
-| `maybe-trigger-ai-review.sh <pr_number> [--dry-run] [--json]` | Issue #362: when complexity + CR-round gates pass, posts three **separate** PR comments (`@codeant-ai review`, `@cursor review`, `@graphite-app re-review`); optional `/pr-review-help`. Reads thresholds from `.claude/pm-config.md`. |
-| `audit-skill-usage.sh` | Legacy monthly skill-usage audit against `.claude/data/skill-usage.json` (not fed by the PostToolUse hook). |
-| `skill-conventions-audit.sh [--strict]` | Static audit that `.claude/skills/*/SKILL.md` files match repo conventions (frontmatter, name/dir alignment, trigger-first descriptions, exit criteria). Adapted from ECC `skill-comply` (#417); no LLM runs. |
-| `skill-usage-report.sh [--days N]` | Reads `~/.claude/skill-usage.log` (tab: UTC time, skill, session_id), prints markdown tables and dead-skill candidates (90d stale or never invoked after 30d of telemetry). |
-| `resolve-review-threads.sh <pr_number> [--authors a,b,c] [--thread-ids ids\|--thread-ids-file path] [--max-attempts N] [--dry-run] [--verify-only]` | Fetch PR review threads via GraphQL, filter to bot authors or an explicit addressed-thread set, resolve via `resolveReviewThread` (fallback: `minimizeComment`), then re-query and verify `isResolved=true`. `--verify-only` with explicit thread ids re-fetches and exits non-zero if any id is missing or still unresolved (no mutations); an empty explicit id list is a no-op success. Used by `/fixpr`, `/go-on`, and `phase-a-fixer`. Exit codes: 0 all addressed/matching threads verified resolved, 1 ≥1 dangling thread remains after retries/fallback (or verify-only failed), 2 usage, 3 PR not found, 4 gh error. |
-| `reply-thread.sh <comment_id> --reviewer cr\|bugbot\|greptile\|codeant --body "<text>" [--pr N]` | Post a reviewer-aware reply to a PR review thread. Tries the inline `pulls/comments/{id}/replies` endpoint first; on 404 falls back to `gh pr comment` (requires `--pr`). Auto-prepends `@coderabbitai` in CR mode; strips `@cursor` / `@greptileai` / `@codeant-ai` tokens in BugBot / Greptile / CodeAnt modes (all plain-text, no auto-mention). Used by `phase-a-fixer`, `phase-b-reviewer`, `/fixpr`, `/go-on`. Exits (see `reply-thread.sh --help` for the authoritative contract): `0` inline reply posted, `1` fallback PR-level reply posted, `2` usage, `3` inline 404 with no `--pr` to fall back to OR both endpoints returned 404, `4` inline 404 then fallback failed with a non-404 error, `5` gh/network error. |
-| `clean-behind-check.sh <pr_number> [--reviewer cr\|bugbot\|greptile] [--churn-threshold N]` | Issues #631, #667. Decide whether a `mergeStateStatus: BEHIND` PR is safe to offer `/admin-merge` (rather than rebasing). **Safety gate:** merge gate green except BEHIND, `mergeable == MERGEABLE`, all AC checkboxes ticked, and no hunk-level overlap between the base delta's changed line ranges and the PR's changed line ranges. Overlap detection uses GitHub's three-dot compare for base-delta patches and `pulls/{N}/files` for PR patches; conservative file-level fallback when a patch is unavailable (binary, truncated, or API failure) — any ambiguity resolves toward "not safe". **Churn advisory:** fires when `base_ahead_by >= threshold` (default `1`, overridable via `CHURN_THRESHOLD` env var or `--churn-threshold N` flag) and the newest base commit is newer than the PR HEAD commit — advisory-only, never gates `safe_to_offer`. **Key JSON fields:** `safe_to_offer`, `file_overlap.count`, `file_overlap.granularity` (`hunk`\|`file`), `file_overlap.hunk_overlapping_files`, `file_overlap.fallback_files`, `churn.advisory`, `churn.threshold`, `churn.base_ahead_by`. **Exit codes:** `0` safe to offer, `1` not safe (see `reasons_not_safe`), `2` usage, `3` PR not found/closed, `4` gh/jq/helper error. Called by `admin-merge.sh` at both pre-flight and pre-execute re-check. |
-| `diff-survival-check.sh snapshot\|verify\|status\|clear [--base <ref>] [--head <ref>] [--if-absent] [--json]` | Issue #757. Verify a rebase / conflict resolution did not vaporize the branch's own diff. `snapshot` (run **before** the operation) records which files carry *substantive* changes against the base; `verify` (run **after** the resolution, **before** the commit/force-push) confirms the branch still does something and that every such file still carries a change. **Whitespace-aware:** a change surviving only as re-indentation counts as lost — computed via a per-path `git diff -w --quiet` probe, because `git diff -w --name-only` still lists whitespace-only files. **Mid-rebase**, the baseline comes from the rebase's `orig-head`, never the half-replayed HEAD, so a session resuming someone else's rebase can still snapshot correctly; a rebase with commits left to replay returns verdict `deferred` rather than a false loss. Snapshot lives at `git rev-parse --git-path claude-diff-survival.json` — per-worktree, survives session interruption, untracked, safe to delete. **Never repairs** — blocks and reports only. **Exit codes:** `0` intact/deferred, `1` entire diff vanished (message names the one legitimate "identical change already on main → close the PR" case), `2` named files lost their changes, `3` usage, `4` git error / branch mismatch / unresolved conflicts / `unverifiable`, `5` no snapshot. A baseline cannot be reconstructed after an operation finishes — a snapshot whose `pre_head` is the commit being verified yields `unverifiable` (exit 4), never a false `intact`. Called by `/fixpr` (Step 6a, incl. `BABYSIT_SAFE_CONFLICT_MODE=1`), `/merge-conflict`, and `/go-on` (Step 1 resume). Mechanism: `.claude/reference/diff-survival-guard.md`. |
-| `merge-gate.sh <pr_number> [--reviewer cr\|bugbot\|greptile]` | Verify the merge gate per `.claude/rules/cr-merge-gate.md` (CR path includes CodeAnt when it participated; BugBot / Greptile paths; CI + `mergeStateStatus`/`mergeable`). JSON includes `merge_state`, `mergeable`, `review_decision`, `human_changes_requested` (logins with human `CHANGES_REQUESTED` on current HEAD), `stale_bot_changes_requested_count` (dismissable bot reviews on old SHAs), and `unresolved_thread_count` (structured count behind the thread `missing` entry — key threads-only orchestration off this, not the prose). Exits `0` gate met, `1` gate not met, `2` usage, `3` PR not found, `4` gh error. Called from `/merge`, `/wrap`, `/go-on`, `/status`, and the `phase-c-merger` agent. |
-| `merge-sequence.sh --prs <n1,n2,...> [--repo owner/name] [--verdicts <json>] [--heads <json>] [--holds <json>] [--stall-ticks N] [--allow-nonauthor] [--skip-missing]` | Issue #756. **Overlap-aware merge dispatch planner** — decides which of your open PRs merges first when several touch the same file, so a large diff isn't forced into a conflict round by every small PR that lands ahead of it. PRs sharing a changed file form a group (transitive); the **anchor** is the member with the largest changed-line footprint *across the shared files only* (ties → lowest PR number) and merges first, with the rest **held** behind it. Holds are bounded: a hard-blocked anchor releases its followers immediately, and an anchor whose `<head_sha>:<verdict>` signature is unchanged past `--stall-ticks` (default 1) releases them as **one batch**, so the anchor re-syncs once rather than once per follower. Authorship is enforced per PR via `pr-authorship.sh` and **fails closed** — a collaborator's PR is excluded before grouping and can never anchor or hold yours. **Read-only:** it never merges, rebases, comments, or writes state. **Key JSON fields:** `plan.<pr>.action` (`merge`\|`hold`\|`batch`\|`not_merge_ready`), `groups[].anchor`, `groups[].shared_files`, `groups[].footprints`, `batches[]`, `holds` (persist and pass back as `--holds`), `summary` (print verbatim under the fleet status table — it names the shared files). **Exit codes:** `0` sequencing applies (≥1 hold/batch), `1` no overlap (plan still printed; dispatch unchanged), `2` usage, `3` PR not found, `4` gh/jq error. **`--skip-missing`** demotes a 404 to an `excluded_prs[]` entry instead of exit `3` — fleet callers pass it so one PR merging mid-run cannot discard the whole plan; the strict default is kept for explicit single-PR calls. Called by `/pr-monitor-and-manage` (Steps 3.6/4/5d) and `/pm` (Step 1D.4). Model + rationale: `.claude/reference/merge-sequencing.md`. |
-| `admin-merge.sh <pr_number> [--print\|--launch-terminal\|--auto-plain\|--execute] [--repo-path <path>] [--branch <name>] [--force-solo] [--reviewer cr\|bugbot\|greptile]` | Issues #451, #720, #754. Generate — or, for the plain shape, run — the solo-owner branch-protection bypass. **`--print`** (default) verifies merge-readiness (`merge-gate.sh`, stepping over only the branch-protection `reviewDecision` blocker), confirms the solo-owner heuristic, diagnoses that `enforce_admins` is enabled, resolves the local clone's absolute path, and prints a `cd "<abs>" && gh api -X DELETE …/enforce_admins && gh pr merge <PR> --squash --admin && gh api -X POST …/enforce_admins` one-liner (re-enable POST sent with **no body** — a body returns HTTP 422). **`--launch-terminal`** (macOS) opens iTerm2 (preferred) or Terminal.app at the repo, copies the command to the clipboard, and echoes a marker line — never auto-executing; falls back to inline print on Linux/Windows. **`--auto-plain`** is the **Claude-invocable** executor for the **plain** shape only (issue #754): same pre-flight, then a hard shape gate (`BYPASS_MODE != plain` → print + exit `8`), a one-attempt-per-PR repeat guard (marker under `$HOME/.claude/admin-merge-auto/`), a mandatory `clean-behind-check.sh` re-validation immediately before the merge (TOCTOU — a base that moved is refused with exit `1`), the bare `gh pr merge --squash --admin`, the 3-attempt `state == MERGED` verify, and an `AUTO_PLAIN_MERGED` evidence report sourced from the re-validation JSON. Its branch contains **no** protection-modifying call — asserted statically by the test suite. **`--execute`** is **user-invoked only** — runs the dance with a `trap` that re-enables `enforce_admins` on failure, then verifies protection restored + PR merged. The `/admin-merge` skill calls this **only** in `--print`/`--launch-terminal`/`--auto-plain`. Exit codes: `0` printed/merged, `1` not merge-ready or stale clean-BEHIND, `2` usage, `3` PR not found, `4` gh/jq error, `5` not solo-owned, `6` no bypass path, `7` execute/auto-plain failure, `8` auto-plain refused (non-plain shape or repeat — command printed, nothing run). Mechanism: `.claude/reference/admin-merge-auto-plain.md`. |
-| `session-state.sh [--repo <owner/name>] --get <jq-path> \| --set <jq-path>=<value> ... \| --repo-key \| --migrate [--dry-run]` | **Canonical read/write helper for `~/.claude/session-state.json`** — atomic replace, sibling preservation, and the field-type contract (issue #625). PR state is scoped per repo (issue #638): a leading `.prs`/`.root_repo` in any path is rewritten into `.repos["<owner>/<name>"]`, resolved from `--repo`, `$CLAUDE_SESSION_REPO`, or the cwd's `origin` remote — so existing callers keep their paths and two repos at the same PR number no longer overwrite each other. `--raw-path` addresses the document root verbatim; `--repo-key` prints the resolved scope for scripts building their own jq paths; `--migrate` persists the legacy-flat → scoped migration (`--dry-run` previews it). Legacy entries are attributed by `owner_repo`, then by their recorded `root_repo` when it still resolves, and otherwise preserved under the reserved `_unknown` key — never dropped. Exit codes: `0` OK, `2` usage, `3` state file missing on `--get`, `4` parse error or field-type violation (write rejected, file untouched), `5` write failure. |
-| `polling-state-gate.sh <pr_number> [--ensure-session\|--verify-state] [--root-repo <path>]` | **CR polling procedural gate (issue #315):** `--ensure-session` registers the PR under the active repo's scope in `~/.claude/session-state.json` (`.repos["<owner>/<name>"].prs["<N>"]`, issue #638), sets its `root_repo`, ensures `~/.claude/handoffs/pr-{N}-handoff.json`, and initializes `.poll_watermarks` via `poll-watermarks.sh --init` (issue #741). Refusals are keyed on repo identity, not checkout path, so a sibling worktree or a second repo's session no longer triggers a false "wrong checkout". Default mode validates state then runs `merge-gate.sh` in the correct checkout (never substitute prose for the script). `--verify-state` is offline-only for post-compaction recovery. |
-| `poll-watermarks.sh <pr_number> --init\|--reset\|--check [--root-repo <path>]` | **Poll watermark persistence (issue #741):** tracks high-water IDs for all three polled comment endpoints (`pulls/reviews`, `pulls/comments`, `issues/comments`) in `.prs["N"].poll_watermarks`. `--init`/`--reset` snapshot current max IDs; `--check` compares stored watermarks to live bot findings (stdout `NEW_FINDINGS=0\|1` plus per-endpoint flags) and advances watermarks when clean. Called from `cr-github-review.md` per-cycle trigger #1 and after `/fixpr` push. |
-| `ac-checkboxes.sh <pr_number> [--extract\|--tick <spec>\|--all-pass]` | Parse and update the PR body's `## Test plan` checkboxes. `--extract` emits JSON `[{index, checked, text}]`; `--tick 0,2,3` (indexes) or `--tick "regex"` flips matching unchecked items; `--all-pass` ticks every unchecked item. Implements the AC contract from `.claude/rules/cr-merge-gate.md` Step 2. Called from `/merge`, `/wrap`, `/go-on`, `/subagent`, and `phase-c-merger`. Exits `0` OK, `1` no Test Plan section, `2` usage, `3` PR not found, `4` gh edit failed. |
-| `repo-bootstrap.sh [--check\|--apply]` | Check (and optionally install) required repo configuration per `.claude/rules/repo-bootstrap.md`: ensures `.github/workflows/cr-plan-on-issue.yml` exists; reports branch-protection state on `main` (read-only — never modified, per the rule's user-confirmation requirement). `--check` (default) reports `[OK]`/`[MISSING]`/`[SKIP]`/`[UNKNOWN]` without mutating; `--apply` installs the missing workflow but never overwrites existing files. Used by `repo-bootstrap.md` rule and `pm-worker` "Repo Bootstrap" task. Exit codes: `0` clean, `1` gaps detected, `2` usage, `3` env error (no `gh`, not in git repo), `4` `gh`/network error, `5` write failure during `--apply`. |
-| `graphite-repo-init.sh [path]` | When [Graphite CLI](https://graphite.dev/docs/command-line) (`gt`) is installed, runs `gt repo init` in the given git repo (default: cwd) to create `.git/.graphite_repo_config` for the [claude-code-graphite](https://github.com/georgeguimaraes/claude-code-graphite) plugins. Exits 0 if `gt` is missing or the repo is already initialized; exits **1** if `gt repo init` fails (so callers like `setup.sh` can surface the failure). |
-| `backlog-staleness.sh [--days N] [--json]` | **Shared backlog staleness detection (issue #598):** reproduces `/pm-clean`'s solved-by-merged-PR, inactive (updatedAt + comment/PR-ref/commit-ref triple check, 50-oldest performance cap), superseded (file/keyword references + commit thresholds), and potential-duplicate (title word overlap vs. resolved closed issues, cross-reference suppression) detection as one shared script: `/pm-clean` calls it directly, and `/pm` reaches it by running the full `/pm-clean` flow inline by default (issue #656), so results can never diverge. `--days N` (default 30) sets the inactivity threshold; `--json` emits a JSON array of `{number, title, category, rationale, ...evidence}` records (default: tab-separated lines). Exit codes: `0` OK (including zero flags), `2` usage, `3` gh error. |
-| `backlog-health.sh [--days N] [--recent-days N] [--json]` | **Backlog health aggregator (issue #598):** no longer on `/pm`'s default hot path — since issue #656 `/pm` runs the full `/pm-clean` flow inline instead of only surfacing this aggregate count; retained behind `/pm`'s `--no-clean` / `fast` ranking-only fallback (and usable standalone). Wraps `backlog-staleness.sh` (never re-derives detection) to compute total open count, a rolling age split (`--days`, default 30), defer/close candidate count (inactive/superseded/potential-duplicate only, intersected with the older-than-`--days` bucket), actionable backlog, recent throughput (`--recent-days`, default 7), and a time-to-clear estimate from the `--days`-window rolling closure rate — presented in days or weeks. When the closure rate is zero, emits `estimate_message: "cadence too low to estimate"` instead of dividing by zero. `--json` emits a single JSON object (default: `key: value` lines). Exit codes: `0` OK, `2` usage, `3` gh error. |
-| `churn-hotspots.sh [--since <date|ref>] [--threshold N] [--repo <owner/repo>] [--conflict-weight N] [--exclude <globs>] [--no-default-excludes] [--source auto\|git\|gh] [--pr-cap N] [--top N] [--json]` | **Multi-PR file churn detection (issue #755):** lists files touched by many distinct merged PRs inside a window, so a conflict-magnet file surfaces itself as a refactor candidate instead of waiting to be noticed. **Read-only** — never files an issue, comments, or writes state; `/wrap` Step 3.10a owns that decision. **Score:** `distinct_pr_count + conflict_weight * conflict_rounds` (weight default 2), a hotspot when `score >= threshold` (default 3) **and** `distinct_pr_count >= 2` — the floor stops one conflict-heavy PR from masquerading as multi-PR churn. Conflict rounds come from session state (`babysit.conflict_streak`, maxed with `conflict_rounds`, never summed) and read as 0 when absent, so a fresh clone works. **Window** is day-granular and inclusive on both paths (`--since` is a calendar date; `mergedAt` dates are compared date-to-date, never as instants). **Enumeration:** local `git log` squash-marker parsing (zero API calls; the *last* `(#N)` in a subject is the PR), falling back to `gh pr list` + `pulls/{N}/files` when history carries no PR markers or `--repo` names another repo. **Existing-issue lookup** matches `Refactor hotspot: <path>` or a `<!-- churn-hotspot: <path> -->` body marker **exactly, client-side** (GitHub tokenizes paths in `in:title`, which would match sibling files); `existing_lookup_failed` means callers must not file (a lookup capped at 200 issues sets it too — an incomplete lookup cannot prove an issue's absence). Lockfiles and `CHANGELOG.md` are excluded by default. **Key JSON fields:** `hotspots[].{file,pr_count,pr_numbers,conflict_rounds,score,existing_hotspot_issue}`, `total_hotspot_count` (full count before `--top`), `existing_lookup_failed`, `source`. **Exit codes:** `0` hotspots found, `1` clean, `2` usage, `3` env error, `4` gh error. |
-| `memory-audit.py [--check\|--apply] [--dir DIR] [--json] [--budget-bytes N] [--files a.md,b.md] [--drop-index x.md]` | **Memory-store audit engine (issue #620)** behind `/memory-clean`. `--check` (default, read-only) reports orphaned `.md` files (on disk, no index pointer), dangling index pointers (pointer → missing file), index byte-size + entry-count vs a soft budget (default 24576 = 24 KB), and advisory superseded/duplicate entries (each citing its replacement; bare keyword hits excluded). `--apply` performs a boundary-guarded atomic prune: validates every target (bare `.md` basename, direct child of the memory dir, never `MEMORY.md`, TOCTOU-rechecked), deletes `--files`, drops `--drop-index` dangling lines, rewrites `MEMORY.md` atomically (temp + `os.replace`), and fails if it created any dangling pointer. Auto-detects the current project's (root, not worktree) memory dir; `--dir` overrides. Never deletes without an explicit file list from `/memory-clean`'s confirm step. Exit codes: `0` OK, `2` usage, `3` memory dir not found, `4` safety refusal / integrity failure. |
-| `session-state-audit.sh [--check] [--apply] [--reattribute \| --prune [--prune-with-notes] \| --heal-types] [--json] [--retention-days N] [--offline] [--state-file <path>]` | **Audit + guarded repair for `~/.claude/session-state.json`** (issue #651) — the convergence pass over the file after #638/#639/#640/#647. Detection is the default and never writes: scope census, field-type violations (read from the same `_field_types` contract `session-state.sh` uses), `_unknown` entries attributable by commit SHA, and PR entries merged/closed past the retention window. Repair is opt-in per category, snapshots the file to `<state-file>.bak.<UTC>[.N]` first, holds the #639 state lock across the whole read-modify-write, and re-checks integrity (single object, no untargeted entry dropped, no new type violation) before the atomic move. `_unknown` entries are attributed by verified commit SHA — never PR number — and zero or 2+ matches leave the entry put. Stale entries carrying unactioned `wrap_sweep.needs_decision` notes are withheld until `--prune-with-notes`. Exit codes: `0` clean/applied, `2` findings, `3` usage, `4` environment/IO or failed integrity check, `6` lock timeout. |
-| `state-lock.sh` *(library — source, do not execute)* | **Session-state write lock (issue #639):** portable `mkdir`-based advisory lock serializing the ENTIRE read-modify-write cycle of every writer of `~/.claude/session-state.json` — previously each write was atomic but the surrounding read was not, so two concurrent writers silently lost one of the two changes. `mkdir` rather than `flock(1)`, which macOS does not ship. Sourced by `session-state.sh`, `greptile-budget.sh`, and `cr-review-hourly.sh` (replacing its dead macOS flock path); each exits `6` when the lock cannot be acquired instead of writing unserialized. `reviewer-of.sh` needs no lock of its own — issue #638 routed its write through `session-state.sh`. Stale locks (holder died mid-write) are detected via pid/host/epoch metadata and broken automatically, so a dead writer never wedges future sessions. Tunables: `CLAUDE_STATE_LOCK_TIMEOUT` (default 30s), `CLAUDE_STATE_LOCK_STALE_AGE` (default 120s). |
+| `repair-worktrees.sh` | Detect stale git worktrees (merged/deleted branch) and optionally remove them |
+| `dirty-main-guard.sh` | Detect and quarantine dirty tracked state on the root repo's main branch |
+| `repo-bootstrap.sh` | Check and optionally install required repo configuration (CR workflow, branch protection) |
+| `repo-root.sh` | Resolve the absolute path of the root (main) worktree |
+| `stale-cleanup.sh` | Detect and optionally remove stale worktrees and branches (out-of-band, safe) |
+| `main-sync.sh` | Sync a repo's local main branch with `origin/main` |
+
+## Utilities
+
+Miscellaneous helpers used by skills and hooks.
+
+| Script | Purpose |
+|--------|---------|
+| `model-fleet.sh` | Resolve the current Claude model fleet from `.claude/model-fleet.json` |
+| `verify-exit-report-block.sh` | Verify stdin contains a parseable EXIT_REPORT with all required fields |
+| `graphite-repo-init.sh` | Run `gt repo init` to create `.git/.graphite_repo_config` for Graphite CLI |
+| `hhg-state.sh` | Extract a 2-letter USPS state code from HHG-formatted text |
+
+## Python helpers
+
+Called by other scripts; run `python3 .claude/scripts/<name>.py --help` for usage.
+
+| Script | Purpose |
+|--------|---------|
+| `cr-plan-filter.py` | Substantive-plan filter for CodeRabbit issue comments (called by `cr-plan.sh`) |
+| `memory-audit.py` | Memory-store audit engine behind `/memory-clean` |
 
 ## scripts/ vs hooks/
 
@@ -49,19 +157,47 @@ The `trust-flag-repair.sh` hook in `hooks/` runs automatically after every agent
 
 ## tests/
 
-| Script | Purpose |
-|--------|---------|
-| `compaction-resume-polling-state-gate.test.sh` | Offline simulation for issue #315 — verifies `--verify-state` after synthetic handoff + session-state in a temp `HOME`. Run from repo root: `bash .claude/scripts/tests/compaction-resume-polling-state-gate.test.sh`. |
-| `session-state.test.sh` | Unit tests for `session-state.sh` — the issue #625 field-type contract (write-time rejection, read-time safe defaults, bracket-form paths) plus issue #638 repo scoping: the same PR number in two repos stays independent, `root_repo` is per-repo, and `--raw-path` still reaches the document root. Run from repo root: `bash .claude/scripts/tests/session-state.test.sh`. |
-| `session-state-audit.test.sh` | Unit tests for `session-state-audit.sh` (issue #651) — stubs `gh` (commit lookup + `pr list`) on `$PATH` and asserts the restraint properties: detection never mutates, every repair category is opt-in, a backup exists and restores before any mutation, ambiguous SHA matches are refused rather than guessed, entries with unactioned sweep notes are withheld from `--prune`, and a held state lock makes the repair exit 6 instead of writing. Run from repo root: `bash .claude/scripts/tests/session-state-audit.test.sh`. |
-| `session-state-migration.test.sh` | Unit tests for the legacy-flat → per-repo migration (issue #638) — attribution by `owner_repo` and by `root_repo` remote, preservation of unattributable entries under `_unknown`, idempotency, `--dry-run`, already-scoped-wins conflict resolution, read-migrates-in-memory vs write-persists, and refusal to reshape a corrupt legacy `.prs`. Run from repo root: `bash .claude/scripts/tests/session-state-migration.test.sh`. |
-| `polling-state-gate-multirepo.test.sh` | Regression test for the false "wrong checkout" refusal (issue #638) — two real temp git repos with distinct `origin` remotes both tracking PR #84; asserts polling is allowed from either repo and from a sibling worktree, while an unregistered repo is still refused. Reproduces on pre-fix code, passes after. Run from repo root: `bash .claude/scripts/tests/polling-state-gate-multirepo.test.sh`. |
-| `poll-watermarks.test.sh` | Offline unit tests for `poll-watermarks.sh` (issue #741) — stubs `pr-state.sh` and exercises `--init`, `--check`, and `--reset` across all three comment endpoints, including inline-only bot findings. Run from repo root: `bash .claude/scripts/tests/poll-watermarks.test.sh`. |
-| `pr-preflight.test.sh` | Offline unit tests for `pr-preflight.sh` (issue #493) — stubs `gh` (PR view / 3-endpoint scans / `pr ready` / `pr comment`) and `cr-review-hourly.sh` to cover all 10 AC scenarios: draft+author→ready+4 triggers, clean no-op, draft-not-author skip, CR global + per-PR cap skip, partial-engagement, prior-trigger idempotency, Greptile-ignored, dry-run, usage/closed, and default-mode summary. Run from repo root: `bash .claude/scripts/tests/pr-preflight.test.sh`. |
-| `cr-plan.test.sh` | Offline integration tests for `cr-plan.sh` (issue #541) — stubs `gh` to cover the exit-code wiring: usage errors, enrichment-only → `1`, enrichment+plan → `0` with plan on stdout, empty comments → `1`, closed/missing issue → `3`, gh or filter failure → `4`. Filter semantics are unit-tested in `tests/test_cr_plan_filter.py`. Run from repo root: `bash .claude/scripts/tests/cr-plan.test.sh`. |
-| `admin-merge.test.sh` | Offline unit tests for `admin-merge.sh` (issues #451, #754) — stubs `gh` + `merge-gate.sh` + `clean-behind-check.sh` + `pr-authorship.sh` to verify the printed command shape (cd-prefix, DELETE/merge/POST, no-body POST), refusal on hard blockers / human change requests / non-solo repos / no `enforce_admins`, `--force-solo` override, `--launch-terminal` non-macOS fallback, and the execute-mode re-enable `trap`. The `--auto-plain` cases assert on a **gh call log** (not just printed output) so "no protection API call was issued" is proven on calls: plain shape merges + reports evidence, toggle shape refuses with exit `8` and issues zero protection/merge calls, repeat guard refuses a second attempt, a base that moves between pre-flight and merge is caught (stub returns safe then unsafe; the helper is asserted to run twice), the authorship guard still refuses, and static checks confirm the auto-plain branch has no protection-modifying call and gates the shape before merging. Run from repo root: `bash .claude/scripts/tests/admin-merge.test.sh`. |
-| `backlog-staleness.test.sh` | Offline tests for `backlog-staleness.sh` (issue #598) — stubs `gh`, runs inside a real temp git repo (real `git log`) to cover empty backlog, `--days` validation fallback, all four detection categories (solved-by-pr, inactive, superseded, potential-duplicate), label-skip, cross-reference suppression, the not-`completed` duplicate-source exclusion, the 50-candidate performance cap, and text-mode output. Run from repo root: `bash .claude/scripts/tests/backlog-staleness.test.sh`. |
-| `backlog-health.test.sh` | Offline tests for `backlog-health.sh` (issue #598) — stubs `gh` and exercises the real `backlog-staleness.sh` composition (not mocked out) to cover the age split, candidate/age-bucket intersection, actionable backlog, 7-day and 30-day throughput counts, a normal weeks-scale estimate, the zero-closure-rate graceful degradation (`estimate_message`, no divide-by-zero), and the empty-backlog edge case. Run from repo root: `bash .claude/scripts/tests/backlog-health.test.sh`. |
-| `churn-hotspots.test.sh` | Offline tests for `churn-hotspots.sh` (issue #755) — builds real temp git repos with squash-style `(#N)` subjects and stubs `gh` on `$PATH` to cover: above/below threshold and the exit `0`/`1` contract, last-marker-wins subject parsing, unmarked commits contributing nothing, conflict weighting from `babysit.conflict_streak` (maxed with `conflict_rounds`, not summed), the `min_prs` floor rejecting a single conflict-heavy PR, a fresh clone with no session-state file, the existing-issue lookup on both the file and comment paths plus near-miss titles that must NOT match, default and custom exclusions, gh-only enumeration and the auto fallback, `--top` bounding output without hiding `total_hotspot_count`, and usage/`--flag=value`/git-ref argument handling. Run from repo root: `bash .claude/scripts/tests/churn-hotspots.test.sh`. |
-| `merge-sequence.test.sh` | Offline unit tests for `merge-sequence.sh` (issue #756) — stubs `gh` and `pr-authorship.sh` so no network or real repo is touched. Covers the fixture fleet (one ~300-line PR plus two small ready PRs in the same file → anchor merges, followers hold, summary names the file), the no-overlap fleet (exit 1, dispatch unchanged), both hold-expiry paths (hard-blocked anchor releases immediately; unchanged signature past `--stall-ticks` releases as one batch), progress resetting the stall counter, fail-closed authorship (`not_mine` and `unknown` excluded before grouping; `--allow-nonauthor` override), footprint measured in the shared file rather than overall diff size, tie-break to the lowest PR number, transitive grouping, `--stall-ticks 0`, and the full usage/not-found/gh-error exit matrix. Run from repo root: `bash .claude/scripts/tests/merge-sequence.test.sh`. |
-| `state-lock.test.sh` | Unit + concurrency tests for the session-state write lock (issue #639) — two writers to different paths, 20 concurrent writers (all present, valid JSON, every writer exit 0), SIGKILL mid-hold → stale recovery, live-holder timeout → exit `6` with the state file byte-identical, age-based staleness, foreign-host lock respected, legacy flock-file cleanup, re-entrancy under a held lock, unblocked reads, and lock release after a rejected write. Run from repo root: `bash .claude/scripts/tests/state-lock.test.sh`. |
+All tests live in `tests/` and run offline (no network required). Run from the repo root:
+`bash .claude/scripts/tests/<name>.test.sh`
+
+| Test | What it covers |
+|------|----------------|
+| `admin-merge.test.sh` | Tests for `admin-merge.sh` |
+| `backlog-health.test.sh` | Tests for `backlog-health.sh` |
+| `backlog-staleness.test.sh` | Tests for `backlog-staleness.sh` |
+| `bgwork-ceiling.test.sh` | Tests for `bgwork-ceiling.sh` |
+| `check-runs-dedup.test.sh` | Tests for `check-runs-dedup.sh` |
+| `churn-hotspots.test.sh` | Tests for `churn-hotspots.sh` |
+| `ci-status.test.sh` | Tests for `ci-status.sh` |
+| `clean-behind-check.test.sh` | Tests for `clean-behind-check.sh` |
+| `compaction-resume-polling-state-gate.test.sh` | Tests `polling-state-gate.sh --verify-state` after synthetic post-compaction recovery |
+| `cr-plan.test.sh` | Tests for `cr-plan.sh` |
+| `diff-survival-check.test.sh` | Tests for `diff-survival-check.sh` |
+| `dirty-main-guard.test.sh` | Tests for `dirty-main-guard.sh` |
+| `escalate-review.test.sh` | Tests for `escalate-review.sh` |
+| `forgotten-pr-triage.test.sh` | Tests for `forgotten-pr-triage.sh` |
+| `handoff-scoping.test.sh` | Tests per-repo handoff path scoping in `handoff-state.sh` |
+| `handoff-state.test.sh` | Tests for `handoff-state.sh` |
+| `infer-pr.test.sh` | Tests for `infer-pr.sh` |
+| `issue-dedup.test.sh` | Tests for `issue-dedup.sh` |
+| `merge-gate-authorship.test.sh` | Tests the authorship guard in `merge-gate.sh` |
+| `merge-gate-ci-dedup.test.sh` | Tests CI check-run deduplication in `merge-gate.sh` |
+| `merge-gate-greptile-comment.test.sh` | Tests Greptile comment handling in `merge-gate.sh` |
+| `merge-gate-stale-approval.test.sh` | Tests stale-approval rejection in `merge-gate.sh` |
+| `merge-sequence.test.sh` | Tests for `merge-sequence.sh` |
+| `model-fleet.test.sh` | Tests for `model-fleet.sh` |
+| `poll-watermarks.test.sh` | Tests for `poll-watermarks.sh` |
+| `polling-state-gate-multirepo.test.sh` | Tests multi-repo isolation in `polling-state-gate.sh` |
+| `polling-state-gate.test.sh` | Tests for `polling-state-gate.sh` |
+| `pr-authorship.test.sh` | Tests for `pr-authorship.sh` |
+| `pr-preflight.test.sh` | Tests for `pr-preflight.sh` |
+| `pr-state-classify.test.sh` | Tests the `classify` jq function inside `pr-state.sh --since` |
+| `pr-state-infer-candidates.test.sh` | Tests `pr-state.sh --infer-candidates` |
+| `reply-thread.test.sh` | Tests for `reply-thread.sh` |
+| `session-state-audit.test.sh` | Tests for `session-state-audit.sh` |
+| `session-state-migration.test.sh` | Tests the legacy-flat → per-repo migration in `session-state.sh` |
+| `session-state.test.sh` | Tests for `session-state.sh` |
+| `skill-conventions-audit.test.sh` | Tests for `skill-conventions-audit.sh` |
+| `skill-usage-merge.test.sh` | Tests for `skill-usage-merge.sh` |
+| `stale-cleanup.test.sh` | Tests for `stale-cleanup.sh` |
+| `state-lock.test.sh` | Tests for `state-lock.sh` |
