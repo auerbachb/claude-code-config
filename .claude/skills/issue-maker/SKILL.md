@@ -112,6 +112,7 @@ for candidate in \
   "$HOME/.claude/skills/issue-maker/scripts/set-log.sh"; do
   [ -x "$candidate" ] && { SET_LOG="$candidate"; break; }
 done
+[[ -n "$SET_LOG" ]] || { echo "FATAL: scripts/set-log.sh not found — is the issue-maker skill installed?" >&2; exit 1; }
 set_log() { "$SET_LOG" "$LOG" "$@"; }
 ```
 
