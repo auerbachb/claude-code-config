@@ -856,10 +856,18 @@ case "$REVIEWER" in
     # by a failure-phrase comment is NOT a clean pass (bugbot.md "BugBot failure
     # detection"). Scan PR comments + issue/conversation comments; review bodies
     # are handled inside the review-object path below.
+    # Freshness filter (issue #844 fix): only comments posted AFTER the HEAD commit
+    # count as blocking. Stale failure-phrase comments from a prior push must not
+    # strand the gate after a fresh success check-run arrives. Fail-open when
+    # LAST_COMMIT_TS is unknown; fail-closed when the comment has no created_at.
     BB_HAS_FAILURE_COMMENT=$(
-      { printf '%s\n' "$PR_COMMENTS_JSON"; printf '%s\n' "$ISSUE_COMMENTS_JSON"; } | jq -rs '
+      { printf '%s\n' "$PR_COMMENTS_JSON"; printf '%s\n' "$ISSUE_COMMENTS_JSON"; } | jq -rs --arg after "${LAST_COMMIT_TS:-}" '
         def is_failure_text: test("couldn'"'"'t run|could not run|usage limit|usage or spend limit"; "i");
-        add // [] | [.[]? | select(.user.login == "cursor[bot]") | select((.body // "") | is_failure_text)]
+        add // [] | [.[]? | select(.user.login == "cursor[bot]")
+            | select((.body // "") | is_failure_text)
+            | select(if $after == "" then true
+                     elif (.created_at // "") == "" then true
+                     else .created_at > $after end)]
         | length > 0')
 
     # Check-run-based clean pass (issue #844): Cursor Bugbot check-run with
@@ -883,7 +891,13 @@ case "$REVIEWER" in
             # Callers poll every ~60 s, so a transient API failure self-heals.
             MISSING+=("cannot verify BugBot check-run freshness — HEAD commit timestamp unavailable; retrying next cycle")
             BB_CHECK_FRESHNESS_ERR=true
-          elif [[ -n "$BB_CHECK_TS" && "$(norm_ts "$BB_CHECK_TS")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
+          elif [[ -z "$BB_CHECK_TS" ]]; then
+            # Fail-closed: cannot verify freshness without check-run timestamp
+            # (mirrors CodeAnt supplemental gate — empty completed_at/started_at
+            # never counts as clean when LAST_COMMIT_TS is known).
+            MISSING+=("cannot verify BugBot check-run freshness — completed_at/started_at unavailable; retrying next cycle")
+            BB_CHECK_FRESHNESS_ERR=true
+          elif [[ "$(norm_ts "$BB_CHECK_TS")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
             # check-run completed before the HEAD commit — stale (force-push retargeting
             # or a prior push's run). Report explicitly so callers know to wait for a
             # new run rather than interpret as absent.

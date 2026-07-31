@@ -105,6 +105,7 @@ has_codeant_no_clean_entry() { echo "$OUT" | jq -e '[.missing[]? | select(contai
 # BugBot-specific missing-entry helpers.
 has_bugbot_no_review_entry() { echo "$OUT" | jq -e '[.missing[]? | select(startswith("no BugBot review on HEAD"))] | length > 0' >/dev/null && echo yes || echo no; }
 has_bugbot_findings_entry() { echo "$OUT" | jq -e '[.missing[]? | select(startswith("latest BugBot review on HEAD has findings"))] | length > 0' >/dev/null && echo yes || echo no; }
+has_bugbot_ts_unavail_entry() { echo "$OUT" | jq -e '[.missing[]? | select(contains("completed_at/started_at unavailable"))] | length > 0' >/dev/null && echo yes || echo no; }
 
 # `completed_at` matters here in a way it does not for ci-status.sh: the CodeAnt
 # supplemental gate reads it to find CodeAnt's latest clean signal, and a run
@@ -228,6 +229,35 @@ FAKE_ISSUE_COMMENTS='[]'
 run_gate_bugbot "$(bundle "$(cr 1 "Cursor Bugbot" neutral 100)")"
 check_eq "false" "$(echo "$OUT" | jq -r '.met')" "BugBot CHANGES_REQUESTED: gate blocked"
 check_eq "yes"   "$(has_bugbot_findings_entry)"  "BugBot CHANGES_REQUESTED: findings entry in missing"
+
+# --------------------------------------------------------------------------
+# (m) Stale failure-phrase comment (pre-HEAD created_at) must NOT block.
+#     The freshness filter on BB_HAS_FAILURE_COMMENT only counts comments
+#     posted AFTER the HEAD commit. HEAD committer date is 2026-07-21T09:59:00Z
+#     (set by the fake gh git/commits endpoint); a comment with created_at
+#     2026-07-21T09:00:00Z is stale and must be ignored.
+# --------------------------------------------------------------------------
+FAKE_REVIEWS='[]'
+FAKE_PR_COMMENTS='[]'
+FAKE_ISSUE_COMMENTS="$(jq -cn '[{user:{login:"cursor[bot]"},body:"I could not run this review — usage limit reached",created_at:"2026-07-21T09:00:00Z"}]')"
+run_gate_bugbot "$(bundle "$(cr 1 "Cursor Bugbot" success 100)")"
+check_eq "true" "$(echo "$OUT" | jq -r '.met')"           "BugBot stale failure comment: gate met (comment predates HEAD commit)"
+check_eq "no"   "$(has_bugbot_no_review_entry)"            "BugBot stale failure comment: no 'no BugBot review' entry"
+
+# --------------------------------------------------------------------------
+# (n) Success check-run with empty completed_at/started_at must fail-closed.
+#     When LAST_COMMIT_TS is known but neither timestamp field is set,
+#     freshness cannot be verified — gate must block (mirrors CodeAnt gate).
+# --------------------------------------------------------------------------
+BB_NO_TS_RUN="$(jq -cn '{id:1, name:"Cursor Bugbot", status:"completed",
+  conclusion:"success", completed_at:null, started_at:null,
+  check_suite:{id:100}, app:{slug:"cursor",id:1}}')"
+FAKE_REVIEWS='[]'
+FAKE_PR_COMMENTS='[]'
+FAKE_ISSUE_COMMENTS='[]'
+run_gate_bugbot "$(bundle "$BB_NO_TS_RUN")"
+check_eq "false" "$(echo "$OUT" | jq -r '.met')"          "BugBot empty check timestamp: gate blocked (cannot verify freshness)"
+check_eq "yes"   "$(has_bugbot_ts_unavail_entry)"          "BugBot empty check timestamp: 'completed_at/started_at unavailable' in missing"
 
 # Reset BugBot-specific env vars so they don't bleed into a re-run.
 unset FAKE_REVIEWS FAKE_PR_COMMENTS FAKE_ISSUE_COMMENTS

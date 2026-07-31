@@ -23,14 +23,9 @@ Poll alongside CR per the shared cadence/endpoints (`cr-github-review.md` §Poll
 
 **Fallback timing:** Do not maintain a separate CR-owned BugBot timeout here — the escalation gate owns that decision (`cr-github-review.md`). Once BugBot owns the PR, keep 60 s cadence and use the `Cursor Bugbot` completion signal below.
 
-**Completion signal:** BugBot creates a CI check-run named `Cursor Bugbot` that transitions to `status: "completed"` when the review finishes. Two shapes to distinguish:
+**Completion signal:** BugBot creates a CI check-run named `Cursor Bugbot` that transitions to `status: "completed"` when the review finishes. `conclusion: "success"` = no findings, no review object (silent pass — gate conditions at §Merge Gate). `conclusion: "neutral"` = findings posted; review object required. Completion also detected via review comments on any endpoint.
 
-- `conclusion: "success"` — BugBot found nothing and posted **no review object** (silent pass). `merge-gate.sh` accepts this as a clean BugBot pass when freshness checks pass and no failure-phrase `cursor[bot]` comment is present (issue #844).
-- `conclusion: "neutral"` — BugBot posted findings (review object and/or inline comments). Gate is satisfied only when the latest review object on current HEAD has no `CHANGES_REQUESTED` and no inline findings.
-
-Completion can also be detected via BugBot review comments appearing on any of the three endpoints.
-
-**BugBot failure detection:** a spend-limit failure can produce a `conclusion: "success"` check-run alongside a failure-phrase comment (`couldn't run`, `usage limit`, …). `escalate-review.sh` scans for failure phrases; `merge-gate.sh` also blocks the silent-pass path when a failure-phrase `cursor[bot]` comment exists — a clean pass requires no failure phrase on either endpoint.
+**BugBot failure detection:** a spend-limit failure produces a `conclusion: "success"` check-run alongside a failure-phrase cursor[bot] comment (`couldn't run`, `usage limit`, …); `merge-gate.sh` blocks the silent-pass path when any such comment postdates the HEAD commit.
 
 ## When BugBot Becomes the Active Reviewer
 
@@ -48,10 +43,7 @@ Verify all findings against actual code. Fix all valid findings in one commit, p
 
 ## Merge Gate
 
-**A clean BugBot pass on current HEAD satisfies the merge gate alone** (`cr-merge-gate.md` Step 1). Two accepted shapes:
-
-1. A `cursor[bot]` review object on current HEAD with no `CHANGES_REQUESTED` and no inline findings.
-2. A completed `Cursor Bugbot` check-run with `conclusion: "success"` on HEAD, no failure-phrase `cursor[bot]` comment, and timestamp postdating the HEAD commit (issue #844 — the silent-pass shape).
+**A clean BugBot pass on current HEAD satisfies the merge gate alone** (`cr-merge-gate.md` Step 1). Two accepted shapes: (1) a `cursor[bot]` review object on HEAD with no `CHANGES_REQUESTED` and no inline findings; (2) a `Cursor Bugbot` check-run with `conclusion: "success"`, no post-HEAD failure-phrase comment, and a fresh timestamp (issue #844). Full conditions: `.claude/reference/merge-gate-reviewer-paths.md` §BugBot path.
 
 ## Re-Reviews
 
