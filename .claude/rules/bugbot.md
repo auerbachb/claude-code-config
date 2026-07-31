@@ -23,9 +23,9 @@ Poll alongside CR per the shared cadence/endpoints (`cr-github-review.md` §Poll
 
 **Fallback timing:** Do not maintain a separate CR-owned BugBot timeout here — the escalation gate owns that decision (`cr-github-review.md`). Once BugBot owns the PR, keep 60 s cadence and use the `Cursor Bugbot` completion signal below.
 
-**Completion signal:** BugBot creates a CI check-run named `Cursor Bugbot` that transitions to `status: "completed"` when the review finishes. The `conclusion` field is `neutral` when BugBot posted findings (still counts as a completed review — `neutral` is not a failure). Completion can also be detected via BugBot review comments appearing on any of the three endpoints.
+**Completion signal:** BugBot creates a CI check-run named `Cursor Bugbot` that transitions to `status: "completed"` when the review finishes. `conclusion: "success"` = no findings, no review object (silent pass — gate conditions at §Merge Gate). `conclusion: "neutral"` = findings posted; review object required. Completion also detected via review comments on any endpoint.
 
-**BugBot failure detection:** a spend-limit failure produces the same completed/`neutral` result as a clean pass. `escalate-review.sh` scans for failure phrases (`couldn't run`, `usage limit`, …) — a clean pass requires no failure phrase.
+**BugBot failure detection:** a spend-limit failure produces a `conclusion: "success"` check-run alongside a failure-phrase cursor[bot] comment (`couldn't run`, `usage limit`, …); `merge-gate.sh` blocks the silent-pass path when any such comment postdates the HEAD commit.
 
 ## When BugBot Becomes the Active Reviewer
 
@@ -43,7 +43,7 @@ Verify all findings against actual code. Fix all valid findings in one commit, p
 
 ## Merge Gate
 
-**A clean BugBot review on current HEAD satisfies the merge gate alone** (`cr-merge-gate.md` Step 1).
+**A clean BugBot pass on current HEAD satisfies the merge gate alone** (`cr-merge-gate.md` Step 1). Two accepted shapes: (1) a `cursor[bot]` review object on HEAD with no `CHANGES_REQUESTED` and no inline findings; (2) a `Cursor Bugbot` check-run with `conclusion: "success"`, no post-HEAD failure-phrase comment, and a fresh timestamp (issue #844). Full conditions: `.claude/reference/merge-gate-reviewer-paths.md` §BugBot path.
 
 ## Re-Reviews
 

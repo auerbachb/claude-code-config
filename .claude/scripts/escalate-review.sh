@@ -270,6 +270,15 @@ case "$CACHED_BUGBOT_INSTALLED" in
     ;;
 esac
 
+# Design note (issue #844): after the merge-gate.sh fix, switch_bugbot leads to a
+# satisfiable gate for BOTH BugBot shapes that BUGBOT_GENUINE covers:
+#   - conclusion:success check-run (no review object) — accepted by merge-gate.sh's
+#     new check-run path (BB_CHECK_CLEAN); freshness + failure-phrase check there.
+#   - conclusion:neutral check-run + review object — accepted by the original review-
+#     object path in merge-gate.sh.
+# This script derives everything from the pre-built STATE_PATH bundle — no new gh api
+# fetch added here (meta-guard test L). The gate-satisfiable evaluation lives in
+# merge-gate.sh where CHECK_RUNS_JSON and LAST_COMMIT_TS are already available.
 if [[ "$BUGBOT_GENUINE" == "true" ]]; then
   emit "switch_bugbot"
 fi

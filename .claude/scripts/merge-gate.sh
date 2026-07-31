@@ -841,13 +841,83 @@ case "$REVIEWER" in
     ;;
 
   bugbot)
-    # Need at least 1 BugBot review on current HEAD, with no actionable findings.
-    # Unresolved BugBot threads are caught by the universal unresolved-thread gate above.
+    # BugBot clean pass (issue #844 — aligned with bugbot.md "Completion signal"):
+    # either a cursor[bot] review object on current HEAD (original path), OR a
+    # completed Cursor Bugbot check-run with conclusion:success on HEAD (the
+    # "silent pass" shape — BugBot passes cleanly but posts no review object).
+    # Only conclusion:success counts; conclusion:neutral means BugBot posted findings
+    # and still requires a review object. Unresolved BugBot threads are caught by
+    # the universal unresolved-thread gate above.
     BB_REVIEWS_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
       [.[]? | select(.user.login == "cursor[bot]" and .commit_id == $sha)] | length')
 
+    # Failure-phrase scan across all cursor[bot] comment endpoints (mirrors the
+    # is_failure_text regex in escalate-review.sh). A success check-run accompanied
+    # by a failure-phrase comment is NOT a clean pass (bugbot.md "BugBot failure
+    # detection"). Scan PR comments + issue/conversation comments; review bodies
+    # are handled inside the review-object path below.
+    # Freshness filter (issue #844 fix): only comments posted AFTER the HEAD commit
+    # count as blocking. Stale failure-phrase comments from a prior push must not
+    # strand the gate after a fresh success check-run arrives. Fail-open when
+    # LAST_COMMIT_TS is unknown; fail-closed when the comment has no created_at.
+    BB_HAS_FAILURE_COMMENT=$(
+      { printf '%s\n' "$PR_COMMENTS_JSON"; printf '%s\n' "$ISSUE_COMMENTS_JSON"; } | jq -rs --arg after "${LAST_COMMIT_TS:-}" '
+        def is_failure_text: test("couldn'"'"'t run|could not run|usage limit|usage or spend limit"; "i");
+        add // [] | [.[]? | select(.user.login == "cursor[bot]")
+            | select((.body // "") | is_failure_text)
+            | select(if $after == "" then true
+                     elif (.created_at // "") == "" then true
+                     else .created_at > $after end)]
+        | length > 0')
+
+    # Check-run-based clean pass (issue #844): Cursor Bugbot check-run with
+    # conclusion:success on HEAD, no failure-phrase cursor[bot] comment, and
+    # freshness (completed_at/started_at >= LAST_COMMIT_TS). Read from the
+    # already-deduped HEAD-scoped CHECK_RUNS_JSON — no new gh api fetch.
+    # Only evaluated when no review object exists; if a review object is present,
+    # the review-object path below applies (and may add its own MISSING entries).
+    BB_CHECK_CLEAN=false
+    BB_CHECK_FRESHNESS_ERR=false
+    if [[ "$BB_REVIEWS_ON_HEAD" -lt 1 && "$BB_HAS_FAILURE_COMMENT" != "true" ]]; then
+      BB_CHECK_RUN=$(echo "$CHECK_RUNS_JSON" | jq -c '
+        [.check_runs[]? | select((.name // "") == "Cursor Bugbot")] | last // empty')
+      if [[ -n "$BB_CHECK_RUN" ]]; then
+        BB_CHECK_CONCLUSION=$(echo "$BB_CHECK_RUN" | jq -r '.conclusion // ""')
+        BB_CHECK_STATUS=$(echo "$BB_CHECK_RUN" | jq -r '.status // ""')
+        BB_CHECK_TS=$(echo "$BB_CHECK_RUN" | jq -r '(.completed_at // .started_at // "")')
+        if [[ "$BB_CHECK_STATUS" == "completed" && "$BB_CHECK_CONCLUSION" == "success" ]]; then
+          if [[ -z "$LAST_COMMIT_TS" ]]; then
+            # Fail-closed: cannot verify freshness without HEAD committer date.
+            # Callers poll every ~60 s, so a transient API failure self-heals.
+            MISSING+=("cannot verify BugBot check-run freshness — HEAD commit timestamp unavailable; retrying next cycle")
+            BB_CHECK_FRESHNESS_ERR=true
+          elif [[ -z "$BB_CHECK_TS" ]]; then
+            # Fail-closed: cannot verify freshness without check-run timestamp
+            # (mirrors CodeAnt supplemental gate — empty completed_at/started_at
+            # never counts as clean when LAST_COMMIT_TS is known).
+            MISSING+=("cannot verify BugBot check-run freshness — completed_at/started_at unavailable; retrying next cycle")
+            BB_CHECK_FRESHNESS_ERR=true
+          elif [[ "$(norm_ts "$BB_CHECK_TS")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
+            # check-run completed before the HEAD commit — stale (force-push retargeting
+            # or a prior push's run). Report explicitly so callers know to wait for a
+            # new run rather than interpret as absent.
+            MISSING+=("BugBot check-run on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (stale) — wait for re-run or post @cursor review")
+            BB_CHECK_FRESHNESS_ERR=true
+          else
+            # Fresh success check-run, no failure comments — clean silent pass.
+            BB_CHECK_CLEAN=true
+          fi
+        fi
+      fi
+    fi
+
     if [[ "$BB_REVIEWS_ON_HEAD" -lt 1 ]]; then
-      MISSING+=("no BugBot review on HEAD ${HEAD_SHA:0:7}")
+      if [[ "$BB_CHECK_CLEAN" != true && "$BB_CHECK_FRESHNESS_ERR" != true ]]; then
+        # No review object, no clean check-run, no freshness error already reported.
+        MISSING+=("no BugBot review on HEAD ${HEAD_SHA:0:7}")
+      fi
+      # BB_CHECK_CLEAN=true  → silent-pass check-run satisfies the gate (issue #844)
+      # BB_CHECK_FRESHNESS_ERR=true → freshness error already added to MISSING above
     else
       LATEST_BB=$(echo "$REVIEWS_JSON" | jq -c --arg sha "$HEAD_SHA" '
         [.[]? | select(.user.login == "cursor[bot]" and .commit_id == $sha)]

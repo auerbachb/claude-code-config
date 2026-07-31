@@ -23,7 +23,7 @@ The merge gate depends on which reviewer owns the PR. Compact per-path gates bel
 
 **CodeAnt on the CR path:** applies when CodeAnt has a review/comment or check-run on current HEAD. Clean = `APPROVED` on HEAD or completed CodeAnt check with `conclusion: success`; `CHANGES_REQUESTED` blocks only if newer than the latest clean signal on that SHA. Threads: Step 1c.
 
-**BugBot path** (CR failed, BugBot responded — sticky; `bugbot.md`): 1 clean BugBot review on current HEAD satisfies the gate. Re-review after fixes: `bugbot.md` §Re-Reviews. Never switch back to CR; ignore late CR reviews.
+**BugBot path** (CR failed, BugBot responded — sticky; `bugbot.md`): 1 clean BugBot pass on current HEAD satisfies the gate (review object or silent-pass success check-run — issue #844; see `bugbot.md` §Merge Gate for accepted shapes). Re-review after fixes: `bugbot.md` §Re-Reviews. Never switch back to CR; ignore late CR reviews.
 
 **Greptile path** (sticky; `greptile.md`): merge-ready on **clean review** (👍); **no P0** (fix P1/P2, push, no re-review); or **P0 fixed + re-review clean**. Max 3 reviews per PR; at 3 with persistent P0, self-review and report. Never switch back to CR/BugBot; ignore their late reviews.
 
