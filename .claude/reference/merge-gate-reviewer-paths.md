@@ -48,7 +48,9 @@ Applies when neither BugBot nor Greptile was triggered (`merge-gate.sh` reviewer
 
 CR failed, BugBot responded, Greptile never triggered — sticky; see `bugbot.md`.
 
-- 1 clean BugBot review on the current HEAD SHA satisfies the gate (BugBot's completion signals are reliable).
+- A clean BugBot pass on the current HEAD SHA satisfies the gate. Two accepted shapes (issue #844):
+  1. A `cursor[bot]` review object on HEAD with no `CHANGES_REQUESTED` and no fresh inline findings.
+  2. A completed `Cursor Bugbot` check-run with `conclusion: "success"` on HEAD, no failure-phrase `cursor[bot]` comment, and `completed_at`/`started_at` postdating the HEAD commit — the "silent pass" shape where BugBot found nothing and posted no review object.
 - After fixing BugBot findings, CI already posted `@cursor review` on that push; `/fixpr` also posts it after agent pushes. If BugBot still hasn't completed after polling, post `@cursor review` again — duplicates are acceptable (see `bugbot.md`).
 - Stay on BugBot — do not switch back to CR. Ignore late CR reviews.
 

@@ -139,6 +139,10 @@ run_script() {
 BUGBOT_CHECK_RUN_OK='{"id": 2, "name": "Cursor Bugbot", "status": "completed", "conclusion": "neutral", "title": ""}'
 BUGBOT_CHECK_RUN_FAILED_TITLE='{"id": 2, "name": "Cursor Bugbot", "status": "completed", "conclusion": "neutral", "title": "Bugbot couldn'"'"'t run - usage limit reached"}'
 BUGBOT_CHECK_RUN_TIMED_OUT='{"id": 2, "name": "Cursor Bugbot", "status": "completed", "conclusion": "timed_out", "title": ""}'
+# Silent-pass shape (issue #844): conclusion:success — BugBot found no issues.
+# merge-gate.sh now accepts this as a clean BugBot pass, but escalate-review.sh
+# still emits switch_bugbot so the caller persists sticky ownership before polling.
+BUGBOT_CHECK_RUN_SUCCESS='{"id": 2, "name": "Cursor Bugbot", "status": "completed", "conclusion": "success", "title": ""}'
 
 # Comments carry explicit created_at timestamps so "latest event wins" ordering
 # (issue #552 CodeRabbit finding) is genuinely exercised, not an accident of
@@ -306,6 +310,20 @@ if grep -q 'check_runs\.all' "$ESCALATE_SRC"; then
 else
   check_eq "escalate-review.sh reads check_runs.all from the bundle" "present" "absent"
 fi
+
+############################################################################
+echo
+echo "== Scenario (m): silent-pass shape — conclusion:success check-run, no comments -> switch_bugbot (issue #844) =="
+# BUGBOT_GENUINE is true for a completed/non-failure check-run with no failure comment,
+# regardless of conclusion:success vs neutral. escalate-review.sh must still emit
+# switch_bugbot so the caller persists sticky ownership; merge-gate.sh's new check-run
+# path (issue #844 primary fix) then accepts the success shape as gate-satisfied.
+reset_state
+write_commits "$(ts_seconds_ago 7200)"
+write_state "[$BUGBOT_CHECK_RUN_SUCCESS]" "[]" "[]" "[]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
