@@ -103,21 +103,17 @@ Every `gh issue …` call below passes `--repo "$REPO"`.
 
 ### Writing to the session log (one canonical helper)
 
-Every mutation of `$LOG` — recording a created issue, switching mode, marking an issue closed, saving the target repo — goes through one atomic read-modify-write helper so no snippet ever leaves the log stale. Define it once per invocation and reuse it everywhere below:
+Every mutation of `$LOG` goes through `scripts/set-log.sh` (skill-local) — an atomic read-modify-write helper. Resolve and bind it once per invocation:
 
 ```bash
-# set_log <jq-filter> [--argjson|--arg NAME VALUE ...]
-# Applies <jq-filter> to $LOG and refreshes .last_updated_at, atomically.
-set_log() {
-  local filter="$1"; shift
-  local now; now=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-  local tmp; tmp=$(mktemp)
-  if jq "$@" --arg __now "$now" "$filter | .last_updated_at = \$__now" "$LOG" > "$tmp"; then
-    mv "$tmp" "$LOG"
-  else
-    rm -f "$tmp"; echo "WARN: failed to update session log ($filter)" >&2; return 1
-  fi
-}
+SET_LOG=""
+for candidate in \
+  "$HOME/.claude/skills-worktree/.claude/skills/issue-maker/scripts/set-log.sh" \
+  "$HOME/.claude/skills/issue-maker/scripts/set-log.sh"; do
+  [ -x "$candidate" ] && { SET_LOG="$candidate"; break; }
+done
+[[ -n "$SET_LOG" ]] || { echo "FATAL: scripts/set-log.sh not found — is the issue-maker skill installed?" >&2; exit 1; }
+set_log() { "$SET_LOG" "$LOG" "$@"; }
 ```
 
 Examples used below: `set_log '.target_repo = $v' --arg v "$REPO"`, `set_log '.mode = $v' --arg v rapid-fire`, and the create/close updates in Steps 9 and 12.
@@ -174,7 +170,7 @@ fi
 
 - **Guard:** if no significant keywords remain, skip the dedup search.
 - **Helper missing, or `DEDUP_RC` ≥ 2:** fall back to the title-only `gh issue list --search "$KEYWORDS in:title"` over open and recently-closed issues, and say the check was degraded when surfacing results.
-- **Interpreting matches:** `/issue-maker` always has a human in the loop, so it only ever *surfaces* candidates — it never auto-comments in place of filing. Use the strong/weak/none thresholds in `.claude/reference/autofile-dedup.md` to classify the **top** candidate: a **strong match** (an open issue naming the same primary artifact, with a body sentence or acceptance criterion that already covers this) or an **exact title match** is a genuine pause point; weak/ambiguous matches are not.
+- **Interpreting matches:** `/issue-maker` always has a human in the loop, so it only ever *surfaces* candidates — it never auto-comments in place of filing. Use the strong/weak/none thresholds in `.claude/reference/autofile-dedup.md` to classify the **top** candidate: a **strong match** or an **exact title match** is a genuine pause point; weak/ambiguous matches are not.
 - **Default mode — pause only on a strong or exact match:** if the top candidate clears that bar, surface it and ask *"Looks like a duplicate of #N — file anyway? (y/N)"* before creating. On a weak/ambiguous match, **do not block** — file, and name the near-duplicate as a decision point (Step 9a: "possibly overlaps #N"). No match → file normally.
 - **Rapid-fire:** show any matches but proceed unless there is an **exact title match** (then block and ask).
 
@@ -296,27 +292,15 @@ Tone precedent: `/wrap`'s terse "here's what I decided — flag anything wrong" 
 
 ### Step 9b: Infer a coding tier (for the chip's Model and Effort lines)
 
-`/issue-maker` does no tier classification during capture, but the chip requires a `**Model:** {MODEL} — {REASON}` line **and** an `**Effort:** {LEVEL} — {REASON}` line (`chip-launching.md`). Rather than invoking `/prompt` for two lines, infer the tier directly from the body just drafted in Step 5, using a trimmed, single-issue version of `/prompt`'s Heavy/Standard/Light mapping (`prompt/SKILL.md` Steps 4–5) — no batch aggregation, no dependency counting, no Fable step-up:
+`/issue-maker` does no tier classification during capture, but the chip requires a `**Model:** {MODEL} — {REASON}` line **and** an `**Effort:** {LEVEL} — {REASON}` line (`chip-launching.md`). Rather than invoking `/prompt` for two lines, infer the tier directly from the body just drafted in Step 5. Full signal definitions, tier table, and evaluation rules: `references/tier-inference.md`. Summary:
 
-- `file_count` — paths under `## Related Files` plus backticked paths in the body containing `/` and a file extension
-- `ac_count` — count of `- [ ]` lines under `## Acceptance Criteria`
-- `touches_rules` / `touches_claude_md` / `touches_skill` — any counted path matches `.claude/rules/`, `CLAUDE.md`, or `.claude/skills/`
-- `has_orchestration_keywords` — body mentions "subagent", "Phase A/B/C", "multi-phase", "orchestration", "monitor mode", "handoff"
-- `scope_keywords` — title/body mentions "typo", "rename", "comment", "config", "doc update", "README", "formatting"
+| Tier | Trigger (any is sufficient) | Model / effort |
+|------|-----------------------------|----------------|
+| **Heavy** | `touches_rules`, `touches_claude_md`, `has_orchestration_keywords`, or `file_count > 5` | Opus, Extra |
+| **Standard** | not Heavy, and (`file_count` 2–5, `ac_count > 3`, or `touches_skill`) | Opus, High |
+| **Light** | not Heavy/Standard, **and** a positive Light signal (`scope_keywords` or `file_count ≤ 1` with clear scope) | Sonnet, Low |
 
-| Tier | Trigger | Model / effort |
-|------|---------|-----------------|
-| **Heavy** | `touches_rules`, `touches_claude_md`, `has_orchestration_keywords`, or `file_count > 5` | Opus, effort Extra (step up to Max for correctness-critical work — see `prompt/SKILL.md` Step 5) |
-| **Standard** | not Heavy, and `file_count` 2–5, `ac_count > 3`, or `touches_skill` | Opus, effort High |
-| **Light** | not Heavy/Standard, **and** a positive Light signal: any `scope_keywords` present, or `file_count ≤ 1` with a clear single-file scope | Sonnet, effort Low |
-
-**Evaluate in table order and stop at the first match** — Heavy, then Standard, then Light — matching `/prompt`'s "when signals conflict, choose the higher tier" rule. A `touches_rules` or orchestration trigger therefore wins over a `scope_keywords` hit on the same issue.
-
-Light requires a **positive** signal, not merely the absence of the other two. Were it the plain complement of Heavy/Standard it would match every remaining issue, and the Standard default below could never fire — a thin, unclassifiable body would silently land on the cheapest tier instead of the safe one.
-
-Model values are bare family names and effort values are picker labels — never a version number, never a bare API token (`chip-launching.md` "Model and effort lines").
-
-Default to **Standard** when signals are too sparse to classify confidently (thin bodies, terse rapid-fire captures) — it's the safer default absent a strong signal either way.
+Default to **Standard** when signals are sparse. Values are bare family names / picker labels — never version numbers or API tokens (`chip-launching.md` "Model and effort lines").
 
 **Both values from this step reach Step 9c** — the model on the `**Model:**` line and the effort on the `**Effort:**` line, in the chip `prompt` and in the visible short summary. A tier computed here and then dropped is the defect #791 fixed.
 
@@ -351,8 +335,6 @@ Run `/start-issue {ISSUE_NUMBER}`. It polls for CodeRabbit's implementation plan
 ```
 
 The merge-authority bullet is the shared contract from `chip-launching.md` "Merge-authority line" — reproduce it **verbatim**, never softened into an approval request.
-
-Why delegate to `/start-issue` instead of a fuller inline template (like `/pm`'s or `/prompt`'s): at the moment this chip is offered the issue has no CR plan yet (it posts asynchronously) and no codebase exploration has happened — `/issue-maker` never does that by design (Step 2). `/start-issue` already owns exactly that sequencing; duplicating it here would drift out of sync with its own logic.
 
 - **Chip mode** (`mcp__ccd_session__spawn_task` present): call `spawn_task` with `title` (verb-first, ≤60 chars, includes the issue number, e.g. `Fix #42 stale worktree warning`), `prompt` (the block above, verbatim), `tldr` (1–2 plain sentences from `TITLE`), `cwd` (repo root — no worktree exists yet at capture time, unlike `/start-issue`'s own chip, which points at the worktree it just created). On success, **record the returned `task_id` immediately** — before printing anything else:
 
