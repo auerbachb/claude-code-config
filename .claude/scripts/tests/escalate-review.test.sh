@@ -373,6 +373,56 @@ check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=gate_met" "STATUS=gate_met" "$OUT"
 
 ############################################################################
+echo "== Scenario (h6c): approval earlier in the SAME second as a fractional commit date -> trigger_greptile (must agree with merge-gate.sh) =="
+reset_state
+# BugBot review on 7de2a4c (PR #883): escalate-review.sh and merge-gate.sh
+# implement one rule (#836), so they must order the same pair identically. The
+# commit date carries fractional seconds and the approval lands earlier within
+# that same second, so merge-gate.sh's norm_ts (strip zone suffix, KEEP the
+# fraction) rules the approval stale and blocks. The old canon_ts here dropped
+# the fraction, collapsing the two to the same instant and reporting gate_met on
+# a PR the gate refuses — escalation must never be the more permissive of the two.
+PUSH_H6C="$(python3 -c "
+from datetime import datetime, timedelta, timezone
+print((datetime.now(timezone.utc) - timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%S.900000Z'))
+")"
+APPROVED_H6C="$(python3 -c "
+from datetime import datetime, timedelta, timezone
+print((datetime.now(timezone.utc) - timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%SZ'))
+")"
+write_commits "$PUSH_H6C"
+FAILURE_COMMENT_H6C="$(failure_comment "$(ts_seconds_ago 60)")"
+CODEANT_APPROVED_H6C='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed every changed file; no blocking issues found.", "submitted_at": "'"$APPROVED_H6C"'"}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H6C]" "[]" "[$FAILURE_COMMENT_H6C]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== Scenario (h6d): fractional-second approval AFTER a whole-second commit date -> gate_met (fraction must not invert the order) =="
+reset_state
+# The mirror of (h6c), and the reason the fix strips the zone suffix instead of
+# rewriting it to "Z": under a trailing "Z", "." (0x2E) sorts below "Z" (0x5A),
+# so the LATER instant "…49.900Z" would compare BELOW "…49Z" and a genuinely
+# fresh approval would be withheld. With the suffix stripped, plain lexicographic
+# order is correct for whole and fractional seconds alike.
+PUSH_H6D="$(python3 -c "
+from datetime import datetime, timedelta, timezone
+print((datetime.now(timezone.utc) - timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%SZ'))
+")"
+APPROVED_H6D="$(python3 -c "
+from datetime import datetime, timedelta, timezone
+print((datetime.now(timezone.utc) - timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%S.900000Z'))
+")"
+write_commits "$PUSH_H6D"
+FAILURE_COMMENT_H6D="$(failure_comment "$(ts_seconds_ago 60)")"
+CODEANT_APPROVED_H6D='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed every changed file; no blocking issues found.", "submitted_at": "'"$APPROVED_H6D"'"}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H6D]" "[]" "[$FAILURE_COMMENT_H6D]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=gate_met" "STATUS=gate_met" "$OUT"
+
+############################################################################
 echo "== Scenario (h7): HEAD commit timestamp unavailable -> fail closed, no gate_met =="
 reset_state
 write_commits "$(ts_seconds_ago 300)"

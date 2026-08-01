@@ -180,12 +180,32 @@ if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
       # Canonicalise before comparing (BugBot review, PR #883): this is a
       # lexicographic string compare, and "…T10:00:22+00:00" sorts BEFORE
       # "…T10:00:16Z", so a mixed spelling would mark a fresh approval stale and
-      # withhold gate_met on a PR merge-gate.sh considers fine. Same rule as
-      # review-substance.sh canon_ts and merge-gate.sh norm_ts.
+      # withhold gate_met on a PR merge-gate.sh considers fine.
+      #
+      # STRIP the zone suffix, do NOT rewrite it to "Z", and KEEP fractional
+      # seconds — this must reproduce exactly the ordering that norm_ts in
+      # merge-gate.sh produces, because the two scripts implement one rule
+      # (#836) and a caller more permissive than the gate is a bug (BugBot
+      # review on 7de2a4c, PR #883). The earlier form dropped fractions and
+      # appended "Z", diverging in BOTH directions:
+      #   * dropping ".900" made "…49.900Z" and "…49Z" compare EQUAL, so an
+      #     approval the gate rules stale read as fresh here and escalation
+      #     could report gate_met on a PR merge-gate.sh blocks;
+      #   * a fraction retained under a trailing "Z" sorts the WRONG WAY —
+      #     "." (0x2E) is below "Z" (0x5A), so the LATER instant "…49.900Z"
+      #     compares below "…49Z".
+      # With the suffix gone, plain lexicographic order is correct for whole
+      # and fractional seconds alike. canon_ts in review-substance.sh keeps its
+      # own fraction-stripping form: every timestamp it compares passes through
+      # that one function, so it stays internally consistent and is never
+      # compared against a merge-gate value.
+      #
+      # NOTE: this comment sits inside a single-quoted jq program — no
+      # apostrophes, or the quoting ends here and bash mis-parses the block.
       def canon_ts:
         (. // "")
         | if . == "" then ""
-          else sub("\\.[0-9]+"; "") | sub("(\\+00:00|\\+0000)$"; "Z")
+          else sub("(Z|\\+00:00|\\+0000)$"; "")
           end;
       ($logins | split(",") | map(select(length > 0))) as $candidates
       | ($doc[0] // {}) as $d
