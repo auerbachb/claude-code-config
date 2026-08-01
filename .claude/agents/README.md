@@ -87,8 +87,8 @@ Agent tool call:
            Handoff file: ~/.claude/handoffs/pr-618-handoff.json
 
            SAFETY: Do NOT delete, overwrite, move, or modify .env files — anywhere,
-           any repo. Exception: template files matching .env.<example|sample|template
-           |dist|tpl> (case-insensitive) are committed, non-secret, and safe to edit.
+           any repo. Exception: template files matching .env.<example|sample|template>
+           (case-insensitive) are committed, non-secret, and safe to edit.
            Do NOT run git clean in ANY directory. Do NOT run destructive
            commands (recursive rm -r/-R/-rf, git checkout ., git stash,
            git reset --hard) in the root repo directory. Stay in your worktree
