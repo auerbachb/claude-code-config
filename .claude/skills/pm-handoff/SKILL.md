@@ -152,25 +152,11 @@ done
 
 ## Step 4: Fetch live GitHub state
 
-Query current repo state:
+Run **§1 Live GitHub state** of `.claude/reference/session-state-collector.md` — the shared collector this skill and `/pause` both read from, so the two cannot drift apart on what a handoff sees. It carries the queries and the empty-result handling.
 
-```bash
-# Repo identity
-gh repo view --json nameWithOwner,description,url
+**Surface both truncation warnings it can raise** — one when open issues come back at exactly 500, one when open pull requests do. A handoff that omits the 501st item while reading as complete is the failure those warnings exist to prevent, and it is the receiving thread that pays for it.
 
-# Open issues
-gh issue list --state open --json number,title,labels,assignees,createdAt --limit 500
-
-# Open PRs
-gh pr list --state open --json number,title,headRefName,author,updatedAt,additions,deletions
-
-# Recent merges (last 20)
-gh pr list --state merged --limit 20 --json number,title,mergedAt,author
-```
-
-**Truncation check:** If the returned issue count equals 500, warn: "Showing 500 issues — repo may have more. Results may be incomplete."
-
-If any command returns empty results, note that gracefully (e.g., "No open issues" rather than failing).
+Rendering stays here: Step 5's `## Current State` lists are this skill's own shape.
 
 ## Step 5: Assemble the handoff prompt
 
@@ -234,68 +220,9 @@ Do NOT spawn subagents or use the Agent tool to execute work yourself. Write the
 
 ### Step 5b: Capture in-flight thread state
 
-Scan for orchestration state files:
+Run **§2 Tracked pull requests and their per-PR handoff files** of `.claude/reference/session-state-collector.md`. It carries the repo-scoped `--session-view` read, the per-PR handoff resolution (scoped layout first, flat fallback), the cross-repo PR-number collision guard, and the field list to extract from each source — including the reminder that `active_agents` is a list to verify, not current fact.
 
-```bash
-# Session state (high-level orchestration) — SCOPED to the invoking repo (issue
-# #687). A handoff for repo X must not carry repo Y's PRs, so read the repo-scoped
-# session view, not `--get .` (which dumps every repo). Resolution reuses
-# session-state.sh's precedence (--repo / $CLAUDE_SESSION_REPO / cwd origin).
-SESSION_VIEW=$(.claude/scripts/session-state.sh --session-view 2>/dev/null || echo "NO_SESSION_STATE")
-echo "$SESSION_VIEW"
-
-# Per-PR handoff files — read ONLY the ones for PRs in this repo's scope. The
-# handoff filename is still global (issue #655), so two repos at one PR number
-# share a file; gate on the scoped PR set AND verify each payload's repo.
-if [ "$SESSION_VIEW" != "NO_SESSION_STATE" ]; then
-  SCOPED_PRS=$(jq -r '(.prs // {}) | keys[]' <<<"$SESSION_VIEW" 2>/dev/null)
-  CUR_REPO=$(jq -r '.repo // ""' <<<"$SESSION_VIEW" 2>/dev/null)
-else
-  SCOPED_PRS=""
-  CUR_REPO=""
-fi
-found_handoffs=false
-# Read-safe iteration: quoted, one key per line, numeric PR keys only.
-while IFS= read -r n; do
-  [ -n "$n" ] || continue
-  case "$n" in *[!0-9]*) continue ;; esac
-  # Resolve handoff path: scoped layout takes priority (issue #655); flat fallback for legacy files.
-  or=$([ -f "$HOME/.claude/session-state.json" ] && \
-    jq -r --arg n "$n" '(.repos // {}) | to_entries[] | select(.value.prs[$n].owner_repo?) | .value.prs[$n].owner_repo' \
-    "$HOME/.claude/session-state.json" 2>/dev/null | head -1 || true)
-  if [ -n "$or" ] && [ "$or" != "null" ]; then
-    f="$HOME/.claude/handoffs/${or}/pr-${n}-handoff.json"
-    [ -f "$f" ] || f="$HOME/.claude/handoffs/pr-${n}-handoff.json"
-  else
-    f="$HOME/.claude/handoffs/pr-${n}-handoff.json"
-  fi
-  [ -f "$f" ] || continue
-  # A payload naming a different repo than this one is the other repo's handoff
-  # colliding on this PR number (#655) — skip it. Null/absent owner_repo is
-  # unknown, not a mismatch, so fall back to the PR-number scope.
-  ho_repo=$(jq -r '.owner_repo // ""' "$f" 2>/dev/null)
-  if [ -n "$ho_repo" ] && [ -n "$CUR_REPO" ] && [ "$ho_repo" != "$CUR_REPO" ]; then
-    continue
-  fi
-  found_handoffs=true
-  echo "--- $f ---"
-  cat "$f"
-done < <(printf '%s\n' "$SCOPED_PRS")
-$found_handoffs || echo "NO_HANDOFF_FILES"
-```
-
-If `session-state.json` exists, extract and summarize:
-- Which PRs are tracked and in which phase (A/B/C)
-- Which reviewer owns each PR (CR or Greptile)
-- Any `needs` or `remaining_work` fields
-- Active agents (may be stale — note they need verification)
-
-If handoff files exist, for each one extract:
-- PR number, phase completed, reviewer, HEAD SHA
-- Files changed, findings fixed count
-- Notes field
-
-Format as a readable summary:
+Render what it returns in this skill's own shape. The table below has a column for the common fields; **`needs` and `remaining_work` do not have one and must not be folded into the `Status` column** — emit each as its own bullet under that PR's row, omitted only when that specific field is empty. They are the only record of what the previous thread knew was still outstanding, and a receiving thread cannot re-derive them from GitHub.
 
 ```
 ### In-Flight Work
@@ -305,6 +232,10 @@ Format as a readable summary:
 | #88 | #42 | B (Review) | CR | Awaiting review | abc1234 |
 | #90 | #55 | A (Fix+Push) | — | Fixes pushed | def5678 |
 
+- **#88 needs:** {the `needs` field from that PR's handoff — omit this bullet only when `needs` itself is empty}
+- **#88 remaining work:** {the `remaining_work` field — its own bullet, omitted independently of `needs`}
+- **Active agents (verify — may be stale):** {active_agents entries, or "none recorded"}
+
 **Note:** Thread state may be stale. Verify PR status on GitHub before acting.
 ```
 
@@ -312,9 +243,7 @@ If no state files exist, output: "No in-flight work detected. Starting fresh."
 
 ### Step 5b2: Capture active polling jobs (informational)
 
-Snapshot any live scheduled jobs owned by **other skills** (`/pr-monitor-and-manage`, `/babysit-pr`, etc.) for informational continuity. `/pm` no longer arms its own polls — do not instruct the new thread to recreate `/pm` polls.
-
-Since issue #827 no skill in this repo registers a cron job, so this section is normally a single line. Still call `CronList` — a job from an older session build, or one a user armed by hand, should be reported rather than assumed away. For each job record `id`, `cron`, `prompt`, and `recurring`.
+Run **§3 Active polling jobs** of `.claude/reference/session-state-collector.md` — jobs owned by **other skills** (`/pr-monitor-and-manage`, `/babysit-pr`, etc.), snapshotted for informational continuity. `/pm` no longer arms its own polls, so do not instruct the new thread to recreate `/pm` polls.
 
 Format as:
 
@@ -332,20 +261,7 @@ If `CronList` returns no jobs (the expected case), output: "No active polling jo
 
 ### Step 5c: Memory summary
 
-Locate and read the memory index file:
-
-```bash
-# Derive the project memory path from the repo root
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-if [ -z "$REPO_ROOT" ]; then
-  echo "NO_MEMORY_INDEX"
-else
-  # The memory path uses the absolute path with slashes replaced by dashes
-  REPO_SLUG="$(echo "$REPO_ROOT" | sed 's|^/||; s|/|-|g')"
-  MEMORY_PATH="$HOME/.claude/projects/-${REPO_SLUG}/memory/MEMORY.md"
-  test -f "$MEMORY_PATH" && cat "$MEMORY_PATH" || echo "NO_MEMORY_INDEX"
-fi
-```
+Run **§4 Memory index** of `.claude/reference/session-state-collector.md` — it derives the per-project memory path from the repo root and reads the index, emitting `NO_MEMORY_INDEX` when there is none.
 
 If the memory index exists, include its entries as a "Lessons & Context" section:
 
