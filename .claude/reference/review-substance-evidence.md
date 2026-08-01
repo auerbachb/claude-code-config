@@ -205,9 +205,19 @@ identity, so a run that matches HEAD is HEAD wherever it appears. Only rule 3
 infers commit-hood from surrounding punctuation, so only rule 3 needs that
 punctuation to be trustworthy.
 
-> The fence strip is `gsub("```.*?```"; " "; "m")`. The flag is **`m`, not `s`** —
+> Four Markdown code-block shapes are stripped before rule 3 runs (issue #897):
+>
+> ```
+> gsub("```.*?```"; " "; "m")   # 1. closed triple-backtick fences (lazy)
+> gsub("~~~.*?~~~"; " "; "m")   # 2. closed tilde fences (lazy)
+> gsub("```.*"; " "; "m")       # 3. unclosed backtick opener → end-of-body
+> gsub("\n    [^\n]*"; " "; "m") # 4. four-space-indented lines
+> ```
+>
+> Steps run in order: closed fences first so the unclosed-opener rule does not
+> swallow content belonging to a later valid close. The flag is **`m`, not `s`** —
 > jq inverts the PCRE convention: jq's `m` is what makes `.` match a newline, and
-> its `s` only rebinds `^` and `$`. Written with `s` the gsub matches nothing at
+> its `s` only rebinds `^` and `$`. Written with `s` the gsubs match nothing at
 > all and every fenced block is silently scanned as prose.
 
 ### Why rule 3 cannot weaken the gate

@@ -86,7 +86,11 @@
 #                             matching HEAD. SHA-like = \b[0-9a-f]{7,40}\b with at
 #                             least one a-f letter, PLUS two all-decimal admissions
 #                             (issue #894): a run that prefix-matches HEAD, and a
-#                             run that is a complete inline code span. Bare digit
+#                             run that is a complete inline code span. The code-span
+#                             scan reads fence-stripped text (issue #897) so that
+#                             a decimal run quoted inside a tilde fence, a
+#                             four-space-indented block, or an unclosed backtick
+#                             opener is not mistaken for a self-report. Bare digit
 #                             runs in prose (dates, counts, IDs) still cannot
 #                             manufacture a mismatch. See sha_tokens for why the
 #                             code-span rule can only ever withhold coverage.
@@ -289,14 +293,28 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
   # remain unadmitted under all three rules — pinned by case (k).
   | def sha_tokens:
       ((. // "") | ascii_downcase) as $btxt
-      # Fenced blocks blanked for rule 3 only. The flag is "m", NOT "s": jq
+      # Fence-stripped text for rule 3 only. Rules 1-2 keep reading $btxt (raw)
+      # by design — "HEAD is HEAD wherever it appears", and rule 1 must stay
+      # byte-identical to its pre-#894 behaviour. The flag is "m", NOT "s": jq
       # inverts the PCRE convention — jq"s "m" is what makes . match a newline,
-      # and its "s" only rebinds ^ and $. With "s" this gsub silently matches
-      # nothing and every fenced block is scanned as prose. The lazy quantifier
-      # stops at the FIRST closing fence, so consecutive blocks are not swallowed
-      # whole along with the prose between them. An unclosed fence matches
-      # nothing and is simply scanned as prose.
-      | ($btxt | gsub("```.*?```"; " "; "m")) as $unfenced
+      # and its "s" only rebinds ^ and $. With "s" these gsubs silently match
+      # nothing and every fenced block is scanned as prose.
+      #
+      # Four shapes are stripped, in order:
+      #   1. Closed ``` fences  — lazy quantifier stops at the FIRST closing
+      #      fence so consecutive blocks are not swallowed with the prose between.
+      #   2. Closed ~~~ fences  — same lazy discipline.
+      #   3. Unclosed ``` opener → end-of-body — runs AFTER closed fences are
+      #      removed, so it cannot swallow a later valid close.
+      #   4. Four-space-indented lines — \n    [^\n]* matches each indented line
+      #      (the leading newline is part of the match; the line-anchor flag "s"
+      #      is not used because it does not do what PCRE multiline would do).
+      | ($btxt
+         | gsub("```.*?```"; " "; "m")
+         | gsub("~~~.*?~~~"; " "; "m")
+         | gsub("```.*"; " "; "m")
+         | gsub("\n    [^\n]*"; " "; "m")
+        ) as $unfenced
       | [ ( $btxt | scan("\\b[0-9a-f]{7,40}\\b") | select(test("[a-f]")) ),
           ( $btxt | scan("\\b[0-9]{7,40}\\b") | . as $t
                   | select(($sha | length) > 0
