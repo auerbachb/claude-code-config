@@ -280,23 +280,89 @@ fi
 check_eq "substance rule sees the same pair as EQUAL (more permissive)" "$SUB_APPROVAL" "$SUB_PUSH"
 
 # That extra permissiveness is safe ONLY because the two verdicts are ANDed with
-# freshness on the OUTSIDE: merge-gate.sh computes CR_APPROVAL_STALE with
+# freshness on the OUTSIDE: merge-gate.sh computes <PREFIX>_APPROVAL_STALE with
 # norm_ts and tests the substance verdict INSIDE that guard, so substance can
 # only ever subtract coverage — never restore an approval norm_ts ruled stale.
-# If a refactor ever inverts that nesting, a canon_ts-fresh / norm_ts-stale
-# approval would slip through. Pin the nesting itself.
-GUARD_BLOCK="$(awk '/^[[:space:]]*CR_APPROVAL_VALID=false/ { n = 12 } n-- > 0' "$MERGE_GATE")"
-[[ -n "$GUARD_BLOCK" ]] || die "could not locate the CR_APPROVAL_VALID block in merge-gate.sh — this safety guard cannot be checked"
-if grep -q 'CR_APPROVAL_STALE" == false' <<<"$GUARD_BLOCK"; then
-  ok "merge-gate.sh gates CR_APPROVAL_VALID on the norm_ts staleness verdict"
-else
-  bad "merge-gate.sh no longer requires CR_APPROVAL_STALE == false before validating a CR approval — a substance-fresh but gate-stale approval could now satisfy the gate"
-fi
-if grep -q 'CR_SUBSTANTIVE" == true' <<<"$GUARD_BLOCK"; then
-  ok "substance is tested INSIDE the freshness guard, so it can only subtract coverage"
-else
-  bad "the CR substance check has moved out of the freshness guard in merge-gate.sh — substance may now be able to override a stale approval"
-fi
+#
+# WHAT THIS HAS TO CATCH, and why presence-greps are not enough.
+# Asserting only that both tokens appear near each other catches a DELETED
+# staleness check, but not the refactor that actually breaks the invariant:
+# folding the two into one DISJUNCTION —
+#
+#     if [[ "$CR_SUBSTANTIVE" == true || "$CR_APPROVAL_STALE" == true ]]; then
+#
+# still contains both strings, so two `grep -q`s pass while a substantive but
+# norm_ts-stale approval now validates. So pin the STRUCTURE, not the tokens:
+# the staleness test must sit on an EARLIER (outer) line than the substance
+# test, and neither of those two lines may be a disjunction.
+#
+# Both reviewer paths are checked. The CR and CA blocks are structurally
+# identical and carry the identical hazard, and CodeAnt hollow approvals are
+# what motivated #875 — pinning only CR would leave the other half unguarded.
+#
+# The block is delimited by its closing `fi` rather than a fixed line count, so
+# adding a comment inside it cannot push the substance test out of view and
+# produce a spurious failure.
+extract_guard_block() { # <prefix>
+  awk -v pat="^[[:space:]]*$1_APPROVAL_VALID=false" '
+    $0 ~ pat { inblock = 1 }
+    inblock { print }
+    inblock && /^    fi[[:space:]]*$/ { exit }
+  ' "$MERGE_GATE"
+}
+
+check_guard_nesting() { # <prefix>
+  local p="$1" block stale_needle sub_needle stale_no sub_no stale_line sub_line
+  block="$(extract_guard_block "$p")"
+  [[ -n "$block" ]] || die "could not locate the ${p}_APPROVAL_VALID block in merge-gate.sh — this safety guard cannot be checked"
+  grep -q '^    fi[[:space:]]*$' <<<"$block" \
+    || die "${p}_APPROVAL_VALID block in merge-gate.sh does not terminate in a matching 'fi' — extraction is unreliable and this guard cannot be trusted"
+
+  # grep -F: these are literal shell fragments, not patterns.
+  stale_needle="\"\$${p}_APPROVAL_STALE\" == false"
+  sub_needle="\"\$${p}_SUBSTANTIVE\" == true"
+  stale_no="$(grep -nF "$stale_needle" <<<"$block" | head -1 | cut -d: -f1)"
+  sub_no="$(grep -nF "$sub_needle" <<<"$block" | head -1 | cut -d: -f1)"
+
+  if [[ -n "$stale_no" ]]; then
+    ok "merge-gate.sh gates ${p}_APPROVAL_VALID on the norm_ts staleness verdict"
+  else
+    bad "merge-gate.sh no longer requires ${p}_APPROVAL_STALE == false before validating a ${p} approval — a substance-fresh but gate-stale approval could now satisfy the gate"
+    return
+  fi
+  if [[ -n "$sub_no" ]]; then
+    ok "merge-gate.sh tests the ${p} substance verdict inside that block"
+  else
+    bad "the ${p} substance check has left the ${p}_APPROVAL_VALID block in merge-gate.sh — substance may now be able to override a stale approval"
+    return
+  fi
+
+  # Ordering: the freshness test must be the OUTER one. Strictly earlier also
+  # proves the two are not folded onto a single condition line.
+  if [[ "$stale_no" -lt "$sub_no" ]]; then
+    ok "${p} substance is tested INSIDE the freshness guard, so it can only subtract coverage"
+  else
+    bad "${p}_SUBSTANTIVE is no longer nested inside the ${p}_APPROVAL_STALE guard in merge-gate.sh (staleness on block line $stale_no, substance on $sub_no) — substance may now be able to restore a gate-stale approval"
+  fi
+
+  # Neither test may be an OR: a disjunction lets either side alone validate the
+  # approval, which is exactly the "substance overrides staleness" break.
+  stale_line="$(sed -n "${stale_no}p" <<<"$block")"
+  sub_line="$(sed -n "${sub_no}p" <<<"$block")"
+  if [[ "$stale_line" != *"||"* ]]; then
+    ok "${p} freshness test is a conjunction, not a disjunction"
+  else
+    bad "the ${p}_APPROVAL_STALE test in merge-gate.sh is now part of a disjunction ('$stale_line') — staleness can be bypassed by the other operand"
+  fi
+  if [[ "$sub_line" != *"||"* ]]; then
+    ok "${p} substance test is a conjunction, not a disjunction"
+  else
+    bad "the ${p}_SUBSTANTIVE test in merge-gate.sh is now part of a disjunction ('$sub_line') — a norm_ts-stale approval could validate on substance alone"
+  fi
+}
+
+check_guard_nesting CR
+check_guard_nesting CA
 
 ############################################################################
 echo "== structural guards: no re-inlined copy of the rule =="
