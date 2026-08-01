@@ -296,6 +296,24 @@ check_eq "empty value stored as string type" "string" \
 check_eq "empty value is the empty string" "" \
   "$(jq -r '.push_timestamp' "$HANDOFF_FILE")"
 
+# Whitespace-only values are the empty case's near miss: `jq empty` ACCEPTS
+# " " and "\t" (zero JSON values, same as "") but `--argjson` REJECTS all
+# three, so probing with `jq empty` would send whitespace down the JSON branch
+# and hard-fail the write. Probing with `--argjson` itself keeps them strings.
+run --set "$PR" ".notes= "
+check_eq "--set single-space value exits 0 (not a write failure)" "0" "$?"
+check_eq "single space stored as string type" "string" \
+  "$(jq -r '.notes | type' "$HANDOFF_FILE")"
+check_eq "single space preserved verbatim" " " \
+  "$(jq -r '.notes' "$HANDOFF_FILE")"
+
+run --set "$PR" ".notes=$(printf '\t')"
+check_eq "--set tab-only value exits 0" "0" "$?"
+check_eq "tab stored as string type" "string" \
+  "$(jq -r '.notes | type' "$HANDOFF_FILE")"
+check_eq "tab preserved verbatim" "$(printf '\t')" \
+  "$(jq -r '.notes' "$HANDOFF_FILE")"
+
 check_eq "file still valid JSON after all coercion writes" "0" \
   "$(jq -e . "$HANDOFF_FILE" >/dev/null 2>&1; echo $?)"
 check_eq "unrelated fields preserved across coercion writes" "99" \

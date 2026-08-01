@@ -351,6 +351,62 @@ check_eq "#712: invoking repo prs unaffected" '{"600":{"phase":"A"}}' \
   "$(jq -c '.prs' <<<"$VIEW_712")"
 
 echo
+echo "== --set: value type coercion (issue #853) =="
+# The literal-vs-string probe must accept exactly what `--argjson` accepts.
+# `jq -e .` keys off output truthiness, so `false`/`null` fail it and become the
+# strings "false"/"null" ("false" is truthy in jq). `jq empty` overshoots the
+# other way: it accepts empty and whitespace-only input that `--argjson` then
+# rejects, hard-failing the write. Probing with `--argjson` itself gets both
+# ends right. session-state.sh already resisted the false/null half of this;
+# these tests pin the whole contract so neither end regresses.
+reset_state
+run --repo test/repo --set '.prs["853"].merge_gate_met=false'
+check_eq "--set false exits 0" "0" "$?"
+check_eq "false stored as boolean" "boolean" \
+  "$(jq -r '.repos["test/repo"].prs["853"].merge_gate_met | type' "$STATE_FILE")"
+check_eq "stored false is falsy in jq" "not-taken" \
+  "$(jq -r 'if .repos["test/repo"].prs["853"].merge_gate_met then "taken" else "not-taken" end' "$STATE_FILE")"
+
+run --repo test/repo --set '.prs["853"].blocker=null'
+check_eq "null stored as null type" "null" \
+  "$(jq -r '.repos["test/repo"].prs["853"].blocker | type' "$STATE_FILE")"
+
+run --repo test/repo --set '.prs["853"].ci_green=true'
+check_eq "true stored as boolean" "boolean" \
+  "$(jq -r '.repos["test/repo"].prs["853"].ci_green | type' "$STATE_FILE")"
+
+run --repo test/repo --set '.prs["853"].digest_streak=7'
+check_eq "number stored as number" "number" \
+  "$(jq -r '.repos["test/repo"].prs["853"].digest_streak | type' "$STATE_FILE")"
+
+run --repo test/repo --set '.prs["853"].phase=B'
+check_eq "bare word stored as string" "string" \
+  "$(jq -r '.repos["test/repo"].prs["853"].phase | type' "$STATE_FILE")"
+check_eq "bare word value round-trips" "B" \
+  "$(jq -r '.repos["test/repo"].prs["853"].phase' "$STATE_FILE")"
+
+run --repo test/repo --set '.prs["853"].reviewer="quoted"'
+check_eq "quoted JSON string decoded exactly once" "quoted" \
+  "$(jq -r '.repos["test/repo"].prs["853"].reviewer' "$STATE_FILE")"
+
+run --repo test/repo --set '.prs["853"].blocker='
+check_eq "--set empty value exits 0" "0" "$?"
+check_eq "empty value stored as empty string" "string" \
+  "$(jq -r '.repos["test/repo"].prs["853"].blocker | type' "$STATE_FILE")"
+
+run --repo test/repo --set '.prs["853"].blocker= '
+check_eq "--set single-space value exits 0 (not a write failure)" "0" "$?"
+check_eq "single space stored as string" "string" \
+  "$(jq -r '.repos["test/repo"].prs["853"].blocker | type' "$STATE_FILE")"
+check_eq "single space preserved verbatim" " " \
+  "$(jq -r '.repos["test/repo"].prs["853"].blocker' "$STATE_FILE")"
+
+run --repo test/repo --set ".prs[\"853\"].blocker=$(printf '\t')"
+check_eq "--set tab-only value exits 0" "0" "$?"
+check_eq "tab preserved verbatim" "$(printf '\t')" \
+  "$(jq -r '.repos["test/repo"].prs["853"].blocker' "$STATE_FILE")"
+
+echo
 echo "== summary: $PASS passed, $FAIL failed =="
 if [[ "$FAIL" -eq 0 ]]; then
   echo "OK: session-state.sh field-type contract tests passed"

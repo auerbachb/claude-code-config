@@ -1174,15 +1174,18 @@ for i in "${!SET_PATHS[@]}"; do
   path="$(scope_path "$orig_path")"
   value="${SET_VALUES[$i]}"
   varname="v$i"
-  # Try to parse as JSON; fall back to string. Use `jq empty` (not `jq -e .`)
-  # because `-e` exits non-zero on null/false even when parse succeeds — so
-  # legitimate JSON values null and false would be silently coerced to the
-  # strings "null" and "false". `empty` validates parse only.
+  # Try to parse as JSON; fall back to string. Probe with `--argjson` itself —
+  # the exact operation the JSON branch performs — so the probe can never accept
+  # a value the write then rejects.
   #
-  # Empty value short-circuit: `jq empty` accepts zero-value stdin and exits 0,
-  # but `--argjson v ""` then fails ("invalid JSON text"). Treat an empty
-  # `--set <path>=` as the literal empty string.
-  if [[ -n "$value" ]] && printf '%s' "$value" | jq empty >/dev/null 2>&1; then
+  # NOT `jq -e .`: `-e` exits non-zero on null/false even when parse succeeds, so
+  # legitimate JSON values null and false would be silently coerced to the strings
+  # "null" and "false" ("false" being truthy in jq — issue #853).
+  #
+  # NOT `jq empty`: it accepts zero-value stdin — empty AND whitespace-only
+  # ("", " ", "\t") — while `--argjson` rejects all three, so those values would
+  # pass the probe and then hard-fail the write instead of storing as strings.
+  if jq -n --argjson "$varname" "$value" 'empty' >/dev/null 2>&1; then
     JQ_ARGS+=(--argjson "$varname" "$value")
   else
     JQ_ARGS+=(--arg "$varname" "$value")
