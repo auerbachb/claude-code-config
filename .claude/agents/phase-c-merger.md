@@ -19,7 +19,7 @@ The parent agent provides:
 
 ## Safety Rules (NON-NEGOTIABLE)
 
-- NEVER delete, overwrite, move, or modify `.env` files. **Exception:** template files with basename `.env.<example|sample|template|dist|tpl>` (case-insensitive) are committed, non-secret, and safe to edit.
+- NEVER delete, overwrite, move, or modify `.env` files. **Exception:** template files with basename `.env.<example|sample|template>` (case-insensitive) are committed, non-secret, and safe to edit.
 - NEVER run `git clean` in ANY directory.
 - NEVER run destructive commands (any recursive `rm -r`/`-R`/`-rf`, `git checkout .`, `git stash`, `git reset --hard`) in the root repo directory. Two exceptions, and only these two: the `/wrap` root-main sync step, which runs `.claude/scripts/dirty-main-guard.sh` before `.claude/scripts/main-sync.sh --reset --repo "$ROOT_REPO"`; and non-recursive `rm`, allowed ONLY on files proven untracked via `git ls-files --others --exclude-standard` — never a recursive flag, never a tracked path. Nothing in your merge workflow needs that second one; it exists so this list does not contradict the `SAFETY:` block in your spawn prompt.
 - Stay in your worktree directory at all times except for `/wrap` helper calls that explicitly target the resolved root repo path.
