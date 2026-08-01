@@ -25,6 +25,9 @@
 #   (j) rate-limit notice followed by a real review   -> met  (false-negative guard)
 #   (k) digit-only hex-shaped tokens                  -> no manufactured mismatch
 #   (l) review_evidence present on non-cr paths       -> emitted, does not gate
+#   (ee) sha_tokens admission rules on a decimal HEAD -> issue #894, both
+#        directions plus the invariant that the code-span rule can only ever
+#        withhold coverage, never grant it
 #
 # Only `gh` is stubbed; merge-gate.sh, review-substance.sh, ci-status.sh,
 # check-runs-dedup.sh and session-state.sh are the real scripts.
@@ -475,6 +478,88 @@ FAKE_ISSUE_COMMENTS="$(convo "coderabbitai[bot]" "We could not run the review du
 OUT="$(run_gate)"
 check_eq "true" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["coderabbitai[bot]"].capability_failure')" "(dd) same-second failure notice is still post-push"
 check_eq "false" "$(echo "$OUT" | jq -r '.met')" "(dd) and the gate does not pass on it"
+
+echo "=== (ee) sha_tokens admission rules, at the evaluator (issue #894) ==="
+# Case (k) above pins that BARE digit runs are not commit ids. This case pins the
+# two all-decimal admissions added for #894 and, more importantly, the ASYMMETRY
+# that makes the second one safe. Driven through review-substance.sh directly so
+# the token rules are pinned independently of merge-gate.sh's plumbing.
+#
+# HEAD here has an ALL-DECIMAL 7-char short form — 3.5% of real commits (15 of
+# the last 431 on main). Under the pre-#894 rule NO token could be extracted from
+# a comment naming it, so status_comment_names_head was structurally false and
+# the #876 redemption could never fire on those commits.
+DEC_HEAD="1234567abcdef0123456789abcdef0123456789a"
+ee_eval() { # <comment-body>  -> the codeant reviewer object
+  jq -cn --arg sha "$DEC_HEAD" --arg b "$1" \
+    '{head_sha:$sha, push_ts:"2026-07-31T10:00:00Z",
+      reviews:[{user:{login:"codeant-ai[bot]"},commit_id:$sha,state:"APPROVED",
+                submitted_at:"2026-07-31T10:04:00Z",body:""}],
+      pr_comments:[],
+      issue_comments:[{user:{login:"codeant-ai[bot]"},
+                       created_at:"2026-07-31T10:05:00Z",
+                       updated_at:"2026-07-31T10:05:00Z", body:$b}]}' \
+  | "$EVAL_SUT" 2>/dev/null | jq -c '.reviewers["codeant-ai[bot]"]'
+}
+SUMMARY_TAIL=$'\n\nReviewed the modal root change and the two updated call sites. No blocking issues found.'
+
+# Rule 2 — IDENTITY. An all-decimal run that prefix-matches HEAD is a commit id.
+R2="$(ee_eval "## Review summary for \`1234567\`${SUMMARY_TAIL}")"
+check_eq "true"  "$(echo "$R2" | jq -r '.status_comment_names_head')"  "(ee) rule 2: a decimal run prefix-matching HEAD names HEAD"
+check_eq "true"  "$(echo "$R2" | jq -r '.external_evidence_on_head')"  "(ee) rule 2: and so supplies evidence outside the approval"
+check_eq "false" "$(echo "$R2" | jq -r '.self_report_mismatch')"       "(ee) rule 2: with no mismatch, because it names this commit"
+
+# Rule 3 — CODE SPAN. An all-decimal run in a complete inline code span is a
+# self-report candidate even when it is NOT HEAD. This is what keeps the #875
+# mismatch diagnostic alive when the SHA a rubber stamp names is all decimal.
+R3="$(ee_eval "## Review summary for \`9998887\`${SUMMARY_TAIL}")"
+check_eq "true"  "$(echo "$R3" | jq -r '.self_report_mismatch')"       "(ee) rule 3: an older all-decimal SHA is still recorded as a mismatch"
+check_eq "9998887" "$(echo "$R3" | jq -r '.status_comment_shas[0] // "NONE"')" "(ee) rule 3: and is reported, so the blocker names the SHA it read"
+
+# THE INVARIANT that makes rule 3 safe, asserted rather than argued. A token
+# admitted by rule 3 and not by rule 2 is by construction an all-decimal run that
+# does NOT prefix-match HEAD, so it can never satisfy tokens_name_head. Rule 3
+# therefore cannot move names_head or external_evidence_on_head at all — its ONLY
+# reachable effect is self_report_mismatch false -> true, i.e. WITHHOLDING
+# coverage. If a future change ever lets a code-span token redeem an approval,
+# these two flip to true and this case fails.
+check_eq "false" "$(echo "$R3" | jq -r '.status_comment_names_head')"  "(ee) invariant: a rule-3-only token can never name HEAD"
+check_eq "false" "$(echo "$R3" | jq -r '.external_evidence_on_head')"  "(ee) invariant: and can never redeem a stale approval"
+
+# Neither rule admits bare prose decimals — the (k) guarantee, restated against a
+# decimal HEAD so the widening cannot have quietly relaxed it.
+R0="$(ee_eval "CodeAnt AI reviewed 20260801 files across 1234567890 lines of diff for issue 4128773 and found nothing worth reporting.")"
+check_eq "false" "$(echo "$R0" | jq -r '.status_comment_names_head')"  "(ee) prose decimals still name nothing"
+check_eq "false" "$(echo "$R0" | jq -r '.self_report_mismatch')"       "(ee) prose decimals still manufacture no mismatch"
+check_eq "[]"    "$(echo "$R0" | jq -c '.status_comment_shas')"        "(ee) prose decimals yield no tokens at all"
+
+# Rule 3 reads FENCE-STRIPPED text (CodeRabbit CLI review of PR for #894). A
+# walkthrough quotes diff hunks in ``` fences, and quoted code carries backticks
+# of its own — a JS template literal is a numeric literal being DISCUSSED, not a
+# commit the bot claims to have read. Without the strip this fixture manufactures
+# a self_report_mismatch out of someone else's source code and withholds coverage
+# from an honest reviewer.
+# Backticks are escaped inside double quotes rather than protected by single
+# quotes: the single-quoted form is equivalent but trips shellcheck SC2016, and
+# the fix here is to write it unambiguously, not to silence the check.
+RF="$(ee_eval "$(printf "Walkthrough of the changed files, covering both call sites in detail.\n\n\`\`\`js\nconst id = \`1234599\`;\n\`\`\`\n")")"
+check_eq "false" "$(echo "$RF" | jq -r '.self_report_mismatch')"       "(ee) fenced code: a template literal is not a self-report"
+check_eq "[]"    "$(echo "$RF" | jq -c '.status_comment_shas')"        "(ee) fenced code: and yields no tokens"
+# Prose is still scanned when a fence appears elsewhere in the same comment —
+# the strip must remove the block, not give up on the whole body.
+RF2="$(ee_eval "$(printf "Reviewed for \`9998887\`, which changed both call sites.\n\n\`\`\`js\nconst id = \`1234599\`;\n\`\`\`\n")")"
+check_eq "true"  "$(echo "$RF2" | jq -r '.self_report_mismatch')"      "(ee) fenced code: a real self-report outside the fence still counts"
+check_eq "9998887" "$(echo "$RF2" | jq -r '.status_comment_shas[0] // "NONE"')" "(ee) fenced code: and only the out-of-fence token is admitted"
+# Rule 2 is NOT fence-stripped, deliberately: it is anchored on HEAD's identity,
+# so a run that matches HEAD is HEAD wherever it appears.
+RF3="$(ee_eval "$(printf "Walkthrough of the changed files, covering both call sites in detail.\n\n\`\`\`\nreviewed 1234567 across both call sites\n\`\`\`\n")")"
+check_eq "true"  "$(echo "$RF3" | jq -r '.status_comment_names_head')" "(ee) rule 2 is not fence-stripped: HEAD is HEAD wherever it appears"
+
+# Rule 1 is untouched: a hex-letter token still works exactly as before, and a
+# hex SHA that is NOT HEAD still mismatches on a decimal-short HEAD.
+R1="$(ee_eval "Re-analysis complete. The reviewed commit for this run was \`abc1234\`, covering the modal root change.")"
+check_eq "true"  "$(echo "$R1" | jq -r '.self_report_mismatch')"       "(ee) rule 1: an older hex SHA still mismatches"
+check_eq "false" "$(echo "$R1" | jq -r '.external_evidence_on_head')"  "(ee) rule 1: and still cannot redeem"
 
 echo "=== (m) evaluator rejects malformed stdin ==="
 echo "not json" | "$EVAL_SUT" >/dev/null 2>&1

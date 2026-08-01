@@ -347,6 +347,131 @@ else
   bad "(h) fresh approval: redemption fired on a non-stale approval (stderr: '$ERRTXT')"
 fi
 
+# =========================================================================
+# ISSUE #894 — the SAME redemption, on a HEAD whose 7-char short form is
+# ALL DECIMAL. Every case above uses a hex-containing SHA, so all of them
+# passed while 3.5% of real commits (15 of the last 431 on main;
+# (10/16)^7 in general) could not be redeemed at all: sha_tokens discarded
+# any token with no a-f letter, so a status comment naming the short SHA
+# produced no tokens, status_comment_names_head was structurally false, and
+# external_evidence_on_head could never become true. The #876 wedge, back
+# for one commit in thirty.
+#
+# Cases (i)-(n) are the discrimination set. (i) is the fix; (j)-(n) are the
+# reasons the fix is not "delete the [a-f] filter".
+# =========================================================================
+HEAD_SHA="1234567abcdef0123456789abcdef0123456789a"   # short form: 1234567
+DEC_SHORT="${HEAD_SHA:0:7}"
+OLD_DEC_SHA="9998887fedcba9876543210fedcba9876543210f"  # short form: 9998887
+
+# The genuine post-push trail, naming HEAD by its ALL-DECIMAL short form —
+# which is how these bots actually quote a short SHA.
+dec_convo_genuine() { # login
+  jq -cn --arg login "${1:-codeant-ai[bot]}" --arg short "$DEC_SHORT" \
+    --arg m "$MARKER_TS" --arg s "$SUMMARY_TS" --arg f "$FINISH_TS" \
+    '[{user:{login:$login,type:"Bot"}, created_at:$m, updated_at:$m,
+       body:"CodeAnt AI is running the review."},
+      {user:{login:$login,type:"Bot"}, created_at:$s, updated_at:$s,
+       body:("## Review summary for `" + $short + "`\n\nThis change adds a SafeAreaProvider inside the native modal root so the sheet respects the notch inset. Two call sites were updated and the snapshot baseline regenerated. No blocking issues found.")},
+      {user:{login:$login,type:"Bot"}, created_at:$f, updated_at:$f,
+       body:"CodeAnt AI finished running the review."}]'
+}
+
+echo "--- (i) #894: an ALL-DECIMAL short SHA redeems exactly as a hex one does ---"
+run_gate "$(ca_inplace_review)" "$(dec_convo_genuine)"
+check_eq "true"  "$(met)"                       "(i) decimal short SHA: met == true"
+check_eq "true"  "$(primary_met)"               "(i) decimal short SHA: primary_review_met == true"
+check_eq "0"     "$RC"                          "(i) decimal short SHA: exit 0"
+check_eq "no"    "$(missing_has "$STALE_MSG")"  "(i) decimal short SHA: no stale-retargeting blocker"
+check_eq "true"  "$(ev "codeant-ai[bot]" status_comment_names_head)" \
+                                                "(i) decimal short SHA: the status comment is seen to name HEAD"
+check_eq "true"  "$(ev "codeant-ai[bot]" external_evidence_on_head)" \
+                                                "(i) decimal short SHA: external_evidence_on_head is what redeemed it"
+check_eq "0"     "$(ev "codeant-ai[bot]" body_len)" \
+                                                "(i) decimal short SHA: the stale approval body still counted for 0"
+# Revert guard, stated positively: on the pre-#894 evaluator this token list is
+# EMPTY, so this assertion is what fails loudly if sha_tokens is narrowed back.
+check_eq "1234567" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].status_comment_shas[0] // "NONE"')" \
+                                                "(i) decimal short SHA: the decimal token was admitted (empty before the fix)"
+
+echo "--- (j) #894 discriminator: bare decimal runs in prose are NOT SHAs ---"
+# Same HEAD, same stale review. The comment is long and post-push, but names
+# only an issue number, a date and a line count. Nothing here identifies the
+# commit, so nothing may redeem — this is the case the [a-f] filter existed for,
+# and it must survive the widening intact.
+J_CONVO=$(jq -cn --arg s "$SUMMARY_TS" \
+  '[{user:{login:"codeant-ai[bot]",type:"Bot"}, created_at:$s, updated_at:$s,
+     body:"CodeAnt AI reviewed 20260801 files across 1234567890 lines of diff for issue 4128773 and found nothing at all worth reporting in this revision."}]')
+run_gate "$(ca_inplace_review)" "$J_CONVO"
+check_eq "false" "$(met)"                       "(j) prose decimals: met == false"
+check_eq "yes"   "$(missing_has "$STALE_MSG")"  "(j) prose decimals: unchanged #836 reason"
+check_eq "1"     "$RC"                          "(j) prose decimals: exit 1"
+check_eq "false" "$(ev "codeant-ai[bot]" status_comment_names_head)" \
+                                                "(j) prose decimals: no decimal run was read as HEAD"
+check_eq "false" "$(ev "codeant-ai[bot]" external_evidence_on_head)" \
+                                                "(j) prose decimals: nothing to redeem with"
+check_eq "false" "$(ev "codeant-ai[bot]" self_report_mismatch)" \
+                                                "(j) prose decimals: and no mismatch was manufactured either"
+
+echo "--- (k) #894: a code-span decimal that is NOT HEAD records a mismatch, never a redemption ---"
+# The asymmetry that makes the code-span rule safe. `9998887` is admitted as a
+# SHA-shaped self-report, so the contradiction is RECORDED — but it cannot
+# prefix-match HEAD, so it can never satisfy tokens_name_head. The only
+# direction this rule can move the verdict is toward withholding coverage.
+K_CONVO=$(jq -cn --arg old "${OLD_DEC_SHA:0:7}" --arg s "$SUMMARY_TS" \
+  '[{user:{login:"codeant-ai[bot]",type:"Bot"}, created_at:$s, updated_at:$s,
+     body:("## Review summary for `" + $old + "`\n\nReviewed the modal root change and the two updated call sites. No blocking issues found.")}]')
+run_gate "$(ca_empty_review "$APPROVAL_TS")" "$K_CONVO"
+check_eq "false" "$(met)"                       "(k) old decimal SHA: met == false"
+check_eq "1"     "$RC"                          "(k) old decimal SHA: exit 1"
+check_eq "true"  "$(ev "codeant-ai[bot]" self_report_mismatch)" \
+                                                "(k) old decimal SHA: self_report_mismatch IS recorded (issue #894 AC3)"
+check_eq "false" "$(ev "codeant-ai[bot]" status_comment_names_head)" \
+                                                "(k) old decimal SHA: it did not name HEAD"
+check_eq "false" "$(ev "codeant-ai[bot]" external_evidence_on_head)" \
+                                                "(k) old decimal SHA: and so could not redeem the stale timestamp"
+
+echo "--- (l) #894 launder guard: a long comment naming an OLDER hex SHA still mismatches ---"
+L_CONVO=$(jq -cn --arg old "$OLD_SHA" --arg s "$SUMMARY_TS" \
+  '[{user:{login:"codeant-ai[bot]",type:"Bot"}, created_at:$s, updated_at:$s,
+     body:("Re-analysis complete for this pull request. The reviewed commit for this run was `" + $old + "`, covering the modal root change and the two updated call sites.")}]')
+run_gate "$(ca_empty_review "$APPROVAL_TS")" "$L_CONVO"
+check_eq "false" "$(met)"                       "(l) launder attempt: met == false"
+check_eq "1"     "$RC"                          "(l) launder attempt: exit 1"
+check_eq "true"  "$(ev "codeant-ai[bot]" self_report_mismatch)" \
+                                                "(l) launder attempt: self_report_mismatch still recorded on a decimal HEAD"
+check_eq "false" "$(ev "codeant-ai[bot]" external_evidence_on_head)" \
+                                                "(l) launder attempt: nothing external to redeem with"
+
+echo "--- (m) #894: a hollow approval on a decimal HEAD still blocks on the #875 reason ---"
+# FRESH (post-push) empty approval, no footprint anywhere. Staleness is not in
+# play, so the blocker must be the #875 substance reason and nothing else. The
+# widening must not have made "no evidence" look like evidence.
+run_gate "$(ca_empty_review "$SUMMARY_TS")" "[]"
+check_eq "false" "$(met)"                        "(m) hollow on decimal HEAD: met == false"
+check_eq "false" "$(primary_met)"                "(m) hollow on decimal HEAD: primary_review_met == false"
+check_eq "yes"   "$(missing_has "$HOLLOW_MSG")"  "(m) hollow on decimal HEAD: blocked on the #875 substance reason"
+check_eq "1"     "$RC"                           "(m) hollow on decimal HEAD: exit 1"
+check_eq "false" "$(ev "codeant-ai[bot]" substantive)" \
+                                                 "(m) hollow on decimal HEAD: nothing reads as substance"
+
+echo "--- (n) #894: the full 40-char form still redeems on a decimal-short HEAD ---"
+# Rule 1 (hex-letter form) is untouched: a decimal-PREFIXED but hex-containing
+# full SHA worked before the fix and must still work after it. If (n) ever fails
+# while (i) passes, the widening replaced the old rule instead of adding to it.
+run_gate "$(ca_inplace_review)" "$(ca_convo_genuine)"
+check_eq "true"  "$(met)"                       "(n) full 40-char SHA: met == true"
+check_eq "0"     "$RC"                          "(n) full 40-char SHA: exit 0"
+check_eq "true"  "$(ev "codeant-ai[bot]" external_evidence_on_head)" \
+                                                "(n) full 40-char SHA: redeemed by the unchanged form rule"
+
+echo "--- (o) #894: identity is still not the test — CodeRabbit gets the same decimal redemption ---"
+run_gate "$(cr_inplace_review)" "$(dec_convo_genuine "coderabbitai[bot]")"
+check_eq "true"  "$(met)"                       "(o) CodeRabbit decimal redemption: met == true"
+check_eq "0"     "$RC"                          "(o) CodeRabbit decimal redemption: exit 0"
+check_eq "true"  "$(ev "coderabbitai[bot]" external_evidence_on_head)" \
+                                                "(o) CodeRabbit decimal redemption: same mechanism, not a per-bot waiver"
+
 # -------------------------------------------------------------------------
 echo "----------------------------------------"
 echo "merge-gate-codeant-inplace-review.test.sh: $PASS passed, $FAIL failed"
