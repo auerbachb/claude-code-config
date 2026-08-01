@@ -19,6 +19,21 @@
 #   check-run completed_at, BugBot reviews. Grace window: none (submitted_at must
 #   be >= committer date; equal timestamps are accepted). Guard is disabled when
 #   LAST_COMMIT_TS is empty (API failure) to avoid silently blocking clean reviews.
+#
+# Stale-approval redemption (issue #876): CodeAnt PATCHes its EXISTING review on
+#   a re-review — same review id, commit_id advanced to the new HEAD,
+#   submitted_at frozen — so a genuinely completed post-push re-review reads as
+#   #836-stale forever. A stale approval is therefore REDEEMED when that same
+#   reviewer left substantive evidence on the current SHA outside the review
+#   object (review-substance.sh `external_evidence_on_head`: HEAD-anchored inline
+#   comments, a status comment naming HEAD, or a substantive non-APPROVED review
+#   on HEAD). Redemption is by EVIDENCE, never by reviewer identity — CodeRabbit
+#   is treated identically, and an approval's own body can never redeem its own
+#   timestamp. `<P>_APPROVAL_STALE` keeps the unchanged norm_ts meaning;
+#   `<P>_APPROVAL_STALE_BLOCKING` (stale AND NOT redeemed) is what the path
+#   consumes. Redemption is announced on stderr and never bypasses the substance
+#   verdict, so a rubber stamp whose status comment names an older SHA still
+#   fails as `self_report_mismatch`.
 # Also enforces the pre-merge CI gate from .claude/rules/cr-merge-gate.md Step 1b
 # (incomplete runs OR blocking conclusions = not merge-ready), merge metadata
 # (mergeStateStatus including BEHIND, mergeable including CONFLICTING) per
@@ -793,8 +808,67 @@ case "$REVIEWER" in
         >/dev/null 2>&1 && echo true || echo false
     }
 
+    # Stale-approval redemption (issue #876). CodeAnt PATCHes its EXISTING review
+    # object on a re-review — same review id, commit_id correctly advanced to the
+    # new HEAD, submitted_at frozen at the original submission — and GitHub treats
+    # submitted_at as immutable creation time. So a genuinely completed post-push
+    # re-review reads as #836-stale and the gate wedges (auerbachb/skingod PR
+    # #2596: 8 poll ticks, 15+ minutes, on a review that had demonstrably run).
+    #
+    # The redemption term is external_evidence_on_head, NOT the reviewer's
+    # identity. "CodeAnt's submitted_at is unreliable, so skip staleness for
+    # CodeAnt" would re-open exactly the hole #875 closed the same night — that
+    # bot also emits genuinely hollow approvals (bodylen=0, four in one second,
+    # one approving a commit that did not exist for another 16 minutes). A stale
+    # timestamp may be redeemed by evidence on the current SHA; it is never
+    # waived by who submitted it. CodeRabbit gets the identical treatment.
+    #
+    # Nor is CodeAnt's own "finished running the review" notice the redeemer: it
+    # is a fixed, content-free string, so accepting it would let a bot certify
+    # its own freshness with a constant. external_evidence_on_head requires a
+    # SUBSTANTIVE footprint anchored to HEAD and produced OUTSIDE the review
+    # object whose timestamp is in doubt (review-substance.sh):
+    #   - inline diff comments with commit_id AND original_commit_id == HEAD, or
+    #   - a >= min_chars conversation comment naming HEAD's SHA that is not a
+    #     capability-failure notice, or
+    #   - a substantive non-APPROVED review on HEAD with submitted_at >= push.
+    # Each is anchored to the post-push commit, and the approval's own body is
+    # excluded by construction — an approval can never redeem its own timestamp.
+    #
+    # Fail-closed: any jq failure (missing/unparseable evidence) yields false, so
+    # a broken evaluator can only withhold redemption, never grant it.
+    external_evidence_ok() { # <login>
+      echo "$REVIEW_EVIDENCE" | jq -e --arg l "$1" \
+        '.reviewers[$l].external_evidence_on_head // false' >/dev/null 2>&1 && echo true || echo false
+    }
+
     CR_SUBSTANTIVE=$(substance_ok "coderabbitai[bot]")
     CA_SUBSTANTIVE=$(substance_ok "codeant-ai[bot]")
+
+    # <P>_APPROVAL_STALE above is the unchanged #836 norm_ts verdict and stays
+    # that way — redemption is a SEPARATE, separately-named term rather than a
+    # loosening of the ordering rule, so the timestamp comparison keeps exactly
+    # one meaning. <P>_APPROVAL_STALE_BLOCKING is what the rest of the path
+    # consumes. Redemption cannot fire unless the approval is stale in the first
+    # place, so the fresh path is byte-for-byte unaffected.
+    CR_STALE_REDEEMED=false
+    CA_STALE_REDEEMED=false
+    if [[ "$CR_APPROVAL_STALE" == true && "$(external_evidence_ok "coderabbitai[bot]")" == true ]]; then
+      CR_STALE_REDEEMED=true
+      echo "[merge-gate] CodeRabbit APPROVED on ${HEAD_SHA:0:7} has a stale submitted_at ($LATEST_CR_APPROVED_AT < $LAST_COMMIT_TS) but left substantive evidence on this SHA outside the review object — counting it as fresh (issue #876)." >&2
+    fi
+    if [[ "$CA_APPROVAL_STALE" == true && "$(external_evidence_ok "codeant-ai[bot]")" == true ]]; then
+      CA_STALE_REDEEMED=true
+      echo "[merge-gate] CodeAnt APPROVED on ${HEAD_SHA:0:7} has a stale submitted_at ($LATEST_CA_APPROVED_AT < $LAST_COMMIT_TS) but left substantive evidence on this SHA outside the review object — in-place re-review edit, counting it as fresh (issue #876)." >&2
+    fi
+    CR_APPROVAL_STALE_BLOCKING=false
+    CA_APPROVAL_STALE_BLOCKING=false
+    if [[ "$CR_APPROVAL_STALE" == true && "$CR_STALE_REDEEMED" == false ]]; then
+      CR_APPROVAL_STALE_BLOCKING=true
+    fi
+    if [[ "$CA_APPROVAL_STALE" == true && "$CA_STALE_REDEEMED" == false ]]; then
+      CA_APPROVAL_STALE_BLOCKING=true
+    fi
 
     # CR_HOLLOW / CA_HOLLOW: the approval cleared every pre-#875 check (present,
     # fresh, not retracted) but nothing evidences that a review happened. Kept
@@ -803,7 +877,7 @@ case "$REVIEWER" in
     CR_APPROVAL_VALID=false
     CR_HOLLOW=false
     if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && "$CR_RETRACTED" == false \
-          && "$CR_APPROVAL_STALE" == false && "$CR_APPROVAL_FRESHNESS_UNKNOWN" == false \
+          && "$CR_APPROVAL_STALE_BLOCKING" == false && "$CR_APPROVAL_FRESHNESS_UNKNOWN" == false \
           && "$CR_APPROVAL_SUBMITTED_AT_MISSING" == false ]]; then
       if [[ "$CR_SUBSTANTIVE" == true ]]; then
         CR_APPROVAL_VALID=true
@@ -817,7 +891,7 @@ case "$REVIEWER" in
     CA_APPROVAL_VALID=false
     CA_HOLLOW=false
     if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && "$CA_RETRACTED" == false \
-          && "$CA_APPROVAL_STALE" == false && "$CA_APPROVAL_FRESHNESS_UNKNOWN" == false \
+          && "$CA_APPROVAL_STALE_BLOCKING" == false && "$CA_APPROVAL_FRESHNESS_UNKNOWN" == false \
           && "$CA_APPROVAL_SUBMITTED_AT_MISSING" == false ]]; then
       if [[ "$CA_SUBSTANTIVE" == true ]]; then
         CA_APPROVAL_VALID=true
@@ -844,10 +918,10 @@ case "$REVIEWER" in
       if [[ "$CA_RETRACTED" == true && "$CR_APPROVAL_VALID" != true ]]; then
         MISSING+=("CodeAnt approval on HEAD ${HEAD_SHA:0:7} retracted by later CHANGES_REQUESTED — fix and re-trigger @codeant-ai review")
       fi
-      if [[ "$CR_APPROVAL_STALE" == true && "$CA_APPROVAL_VALID" != true ]]; then
+      if [[ "$CR_APPROVAL_STALE_BLOCKING" == true && "$CA_APPROVAL_VALID" != true ]]; then
         MISSING+=("CodeRabbit approval on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — re-review required; trigger @coderabbitai full review")
       fi
-      if [[ "$CA_APPROVAL_STALE" == true && "$CR_APPROVAL_VALID" != true ]]; then
+      if [[ "$CA_APPROVAL_STALE_BLOCKING" == true && "$CR_APPROVAL_VALID" != true ]]; then
         MISSING+=("CodeAnt approval on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — re-review required; trigger @codeant-ai review")
         CA_STALE_MISSING_EMITTED=true
       fi
@@ -872,7 +946,7 @@ case "$REVIEWER" in
         MISSING+=("CodeAnt APPROVED on HEAD ${HEAD_SHA:0:7} is not review coverage: $(substance_reasons "codeant-ai[bot]") — wait for a real review pass or comment @codeant-ai review (issue #875)")
       fi
       if [[ "$CR_RETRACTED" != true && "$CA_RETRACTED" != true \
-            && "$CR_APPROVAL_STALE" != true && "$CA_APPROVAL_STALE" != true \
+            && "$CR_APPROVAL_STALE_BLOCKING" != true && "$CA_APPROVAL_STALE_BLOCKING" != true \
             && "$CR_APPROVAL_FRESHNESS_UNKNOWN" != true && "$CA_APPROVAL_FRESHNESS_UNKNOWN" != true \
             && "$CR_APPROVAL_SUBMITTED_AT_MISSING" != true && "$CA_APPROVAL_SUBMITTED_AT_MISSING" != true \
             && "$CR_HOLLOW" != true && "$CA_HOLLOW" != true ]]; then
@@ -969,7 +1043,7 @@ case "$REVIEWER" in
       if [[ "$CA_CHANGES_BLOCKING" == true && ( -z "$LATEST_CA_CLEAN_AT" || "$(norm_ts "$LATEST_CA_CHANGES_REQUESTED_AT")" > "$(norm_ts "$LATEST_CA_CLEAN_AT")" ) ]]; then
         MISSING+=("CodeAnt CHANGES_REQUESTED on HEAD ${HEAD_SHA:0:7} is newer than the latest CodeAnt clean signal — address findings or wait for APPROVED / successful CodeAnt check-run")
       elif [[ "$CA_APPROVAL_VALID" != true && "$CODEANT_CHECK_OK" != true ]]; then
-        if [[ "$CA_APPROVAL_STALE" == true && "$CA_STALE_MISSING_EMITTED" != true ]]; then
+        if [[ "$CA_APPROVAL_STALE_BLOCKING" == true && "$CA_STALE_MISSING_EMITTED" != true ]]; then
           # Stale-approval guard (issue #836): CodeAnt's approval is retargeted;
           # emit a stale-specific message so callers know to re-trigger rather than
           # interpret this as a complete absence of CodeAnt review.
@@ -1001,9 +1075,9 @@ case "$REVIEWER" in
           # A successful CodeAnt check-run exists but it predates the HEAD commit —
           # report stale, not absent, so callers know to wait for a re-check.
           MISSING+=("CodeAnt check-run on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — wait for CodeAnt re-check or trigger @codeant-ai review")
-        elif [[ "$CA_APPROVAL_STALE" != true && "$CA_HOLLOW" != true ]]; then
+        elif [[ "$CA_APPROVAL_STALE_BLOCKING" != true && "$CA_HOLLOW" != true ]]; then
           # None of the freshness/stale conditions apply — emit the generic "no review"
-          # message. The CA_APPROVAL_STALE guard prevents emitting this alongside the
+          # message. The CA_APPROVAL_STALE_BLOCKING guard prevents emitting this alongside the
           # stale message when CA_STALE_MISSING_EMITTED was already set by the primary block.
           # CA_HOLLOW (issue #875) is excluded for the same reason: an approval DOES
           # exist, it just is not coverage, and the primary block already said so —

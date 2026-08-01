@@ -281,8 +281,33 @@ check_eq "substance rule sees the same pair as EQUAL (more permissive)" "$SUB_AP
 
 # That extra permissiveness is safe ONLY because the two verdicts are ANDed with
 # freshness on the OUTSIDE: merge-gate.sh computes <PREFIX>_APPROVAL_STALE with
-# norm_ts and tests the substance verdict INSIDE that guard, so substance can
-# only ever subtract coverage — never restore an approval norm_ts ruled stale.
+# norm_ts and tests the substance verdict INSIDE that guard, so the substance
+# TIMESTAMP RULE can only ever subtract coverage — it can never reorder an
+# approval norm_ts ruled stale.
+#
+# ISSUE #876 UPDATED THIS PIN DELIBERATELY — read before "restoring" it.
+# The outer guard now reads <PREFIX>_APPROVAL_STALE_BLOCKING, which is
+# <PREFIX>_APPROVAL_STALE (the unchanged norm_ts verdict) AND NOT
+# <PREFIX>_STALE_REDEEMED. CodeAnt PATCHes its existing review object on a
+# re-review, advancing commit_id to the new HEAD while GitHub keeps submitted_at
+# frozen at creation time, so a genuinely completed post-push re-review is
+# permanently norm_ts-stale and wedges the gate.
+#
+# What makes that safe, and what the assertions below now have to protect:
+#   - The redemption is NOT a timestamp comparison. canon_ts's extra
+#     permissiveness still cannot leak into the freshness ordering, which is the
+#     exact hazard the original pin existed for. That property is unchanged.
+#   - The redemption term is external_evidence_on_head — substantive evidence on
+#     the current SHA produced OUTSIDE the review object under suspicion. It is
+#     strictly STRONGER than the substance verdict it feeds (it is `substantive`
+#     minus the approval's own body), so an approval can never redeem itself.
+#   - Reviewer identity is not consulted. "Skip staleness for CodeAnt" would
+#     re-open the #875 hollow-approval hole; evidence, not identity, decides.
+#   - The substance verdict is still tested INSIDE, so a redeemed approval whose
+#     status comment names an older SHA still fails as self_report_mismatch.
+# So two NEW structural assertions are added below: the derivation of
+# _STALE_BLOCKING, and the derivation of _STALE_REDEEMED. Together they keep the
+# redemption channel exactly one term wide.
 #
 # WHAT THIS HAS TO CATCH, and why presence-greps are not enough.
 # Asserting only that both tokens appear near each other catches a DELETED
@@ -319,7 +344,10 @@ check_guard_nesting() { # <prefix>
     || die "${p}_APPROVAL_VALID block in merge-gate.sh does not terminate in a matching 'fi' — extraction is unreliable and this guard cannot be trusted"
 
   # grep -F: these are literal shell fragments, not patterns.
-  stale_needle="\"\$${p}_APPROVAL_STALE\" == false"
+  # _STALE_BLOCKING, not _STALE, since #876 — the derivation of that variable is
+  # itself pinned by check_redemption_channel below, so widening the needle here
+  # does not widen what can reach the guard.
+  stale_needle="\"\$${p}_APPROVAL_STALE_BLOCKING\" == false"
   sub_needle="\"\$${p}_SUBSTANTIVE\" == true"
   stale_no="$(grep -nF "$stale_needle" <<<"$block" | head -1 | cut -d: -f1)"
   sub_no="$(grep -nF "$sub_needle" <<<"$block" | head -1 | cut -d: -f1)"
@@ -327,7 +355,7 @@ check_guard_nesting() { # <prefix>
   if [[ -n "$stale_no" ]]; then
     ok "merge-gate.sh gates ${p}_APPROVAL_VALID on the norm_ts staleness verdict"
   else
-    bad "merge-gate.sh no longer requires ${p}_APPROVAL_STALE == false before validating a ${p} approval — a substance-fresh but gate-stale approval could now satisfy the gate"
+    bad "merge-gate.sh no longer requires ${p}_APPROVAL_STALE_BLOCKING == false before validating a ${p} approval — a substance-fresh but gate-stale approval could now satisfy the gate"
     return
   fi
   if [[ -n "$sub_no" ]]; then
@@ -342,7 +370,7 @@ check_guard_nesting() { # <prefix>
   if [[ "$stale_no" -lt "$sub_no" ]]; then
     ok "${p} substance is tested INSIDE the freshness guard, so it can only subtract coverage"
   else
-    bad "${p}_SUBSTANTIVE is no longer nested inside the ${p}_APPROVAL_STALE guard in merge-gate.sh (staleness on block line $stale_no, substance on $sub_no) — substance may now be able to restore a gate-stale approval"
+    bad "${p}_SUBSTANTIVE is no longer nested inside the ${p}_APPROVAL_STALE_BLOCKING guard in merge-gate.sh (staleness on block line $stale_no, substance on $sub_no) — substance may now be able to restore a gate-stale approval"
   fi
 
   # Neither test may be an OR: a disjunction lets either side alone validate the
@@ -352,7 +380,7 @@ check_guard_nesting() { # <prefix>
   if [[ "$stale_line" != *"||"* ]]; then
     ok "${p} freshness test is a conjunction, not a disjunction"
   else
-    bad "the ${p}_APPROVAL_STALE test in merge-gate.sh is now part of a disjunction ('$stale_line') — staleness can be bypassed by the other operand"
+    bad "the ${p}_APPROVAL_STALE_BLOCKING test in merge-gate.sh is now part of a disjunction ('$stale_line') — staleness can be bypassed by the other operand"
   fi
   if [[ "$sub_line" != *"||"* ]]; then
     ok "${p} substance test is a conjunction, not a disjunction"
@@ -363,6 +391,160 @@ check_guard_nesting() { # <prefix>
 
 check_guard_nesting CR
 check_guard_nesting CA
+
+# --------------------------------------------------------------------------
+# Redemption channel (issue #876) — the widened needle above is only safe while
+# _STALE_BLOCKING and _STALE_REDEEMED are each derived from exactly one thing.
+#
+# Two independent breaks are in scope, and a presence-grep catches neither:
+#   1. _STALE_BLOCKING picking up a THIRD operand (say `|| $FORCE`), which would
+#      turn the outer guard back into a bypassable disjunction under a new name.
+#   2. _STALE_REDEEMED being set from something other than external_evidence_ok
+#      — counts_as_coverage (circular: the approval's own body would redeem its
+#      own timestamp), a reviewer-login test (identity waiver, the #875 hole), or
+#      a timestamp comparison (which is what norm_ts already decided).
+# So assert the assignment lines themselves, not merely that the names exist.
+# --------------------------------------------------------------------------
+# Extract the guarded condition of the `if` that assigns <VAR>=true, i.e. the
+# line above it. Both derivations are written as a two-line if/assign pair in
+# merge-gate.sh; a rewrite into any other shape fails loudly here rather than
+# silently escaping the check.
+#
+# Exactly ONE assignment site per variable is required. With two, `head -1`
+# would silently pin the first and leave the second — a laxer duplicate added
+# later — completely unguarded, which is the same silent-false-clean this suite
+# exists to prevent. Ambiguity returns empty so the caller reports it as a
+# missing derivation rather than passing on a partial view.
+# Emits "AMBIGUOUS" (never a real derivation line) when there is more than one
+# assignment site, so callers can distinguish "the variable vanished" from "a
+# second, possibly laxer, assignment appeared" — different breaks, different
+# fixes. Indentation-independent: a reindent must not read as a deletion.
+derivation_line() { # <assigned-var>
+  local pat n
+  pat="^[[:space:]]*$1=true[[:space:]]*$"
+  n="$(grep -cE "$pat" "$MERGE_GATE")"
+  if [[ "$n" == "0" ]]; then return 0; fi
+  if [[ "$n" != "1" ]]; then echo "AMBIGUOUS"; return 0; fi
+  grep -B1 -E "$pat" "$MERGE_GATE" | head -1
+}
+
+check_blocking_derivation() { # <prefix>
+  local p="$1" line
+  line="$(derivation_line "${p}_APPROVAL_STALE_BLOCKING")"
+  if [[ -z "$line" ]]; then
+    bad "could not find the ${p}_APPROVAL_STALE_BLOCKING derivation in merge-gate.sh — the outer freshness guard is now fed by something this suite cannot see"
+    return
+  fi
+  if [[ "$line" == "AMBIGUOUS" ]]; then
+    bad "merge-gate.sh has MORE THAN ONE ${p}_APPROVAL_STALE_BLOCKING=true assignment — a second, laxer path may set it and this suite can only see one"
+    return
+  fi
+  if [[ "$line" == *"${p}_APPROVAL_STALE\" == true"* && "$line" == *"${p}_STALE_REDEEMED\" == false"* ]]; then
+    ok "${p}_APPROVAL_STALE_BLOCKING is the norm_ts verdict minus redemption, and nothing else"
+  else
+    bad "${p}_APPROVAL_STALE_BLOCKING is no longer derived from ${p}_APPROVAL_STALE AND NOT ${p}_STALE_REDEEMED ('$line') — the outer freshness guard has gained an operand"
+  fi
+  if [[ "$line" != *"||"* ]]; then
+    ok "${p}_APPROVAL_STALE_BLOCKING derivation is a conjunction, not a disjunction"
+  else
+    bad "the ${p}_APPROVAL_STALE_BLOCKING derivation is a disjunction ('$line') — staleness can be bypassed by the other operand"
+  fi
+  # Exactly the two expected operands. The substring checks above prove both
+  # REQUIRED terms are present but say nothing about a THIRD one: a smuggled
+  # `&& "$SOME_OVERRIDE" == true` keeps every assertion above passing while
+  # narrowing when staleness blocks. Two conditions means exactly one `&&`.
+  local and_count
+  and_count="$(grep -o '&&' <<<"$line" | wc -l | tr -d ' ')"
+  if [[ "$and_count" == "1" ]]; then
+    ok "${p}_APPROVAL_STALE_BLOCKING derivation has exactly the two expected conditions"
+  else
+    bad "the ${p}_APPROVAL_STALE_BLOCKING derivation has $and_count '&&' operator(s) ('$line') — a third operand may have been smuggled in"
+  fi
+}
+
+check_redemption_channel() { # <prefix> <login>
+  local p="$1" login="$2" line
+  line="$(derivation_line "${p}_STALE_REDEEMED")"
+  if [[ -z "$line" ]]; then
+    bad "could not find the ${p}_STALE_REDEEMED derivation in merge-gate.sh — the #876 redemption channel is unpinned"
+    return
+  fi
+  if [[ "$line" == "AMBIGUOUS" ]]; then
+    bad "merge-gate.sh has MORE THAN ONE ${p}_STALE_REDEEMED=true assignment — redemption may now be granted on a second path this suite cannot see"
+    return
+  fi
+  if [[ "$line" == *"external_evidence_ok \"$login\""* ]]; then
+    ok "${p}_STALE_REDEEMED is granted only by external_evidence_ok (evidence outside the review object)"
+  else
+    bad "${p}_STALE_REDEEMED is no longer granted by external_evidence_ok ('$line') — an approval may now be able to redeem its own stale timestamp"
+  fi
+  # Redemption must not be reachable on a FRESH approval either: gating it on
+  # _APPROVAL_STALE keeps the non-stale path byte-for-byte unchanged.
+  if [[ "$line" == *"${p}_APPROVAL_STALE\" == true"* ]]; then
+    ok "${p}_STALE_REDEEMED can only fire on an approval norm_ts already ruled stale"
+  else
+    bad "${p}_STALE_REDEEMED is no longer gated on ${p}_APPROVAL_STALE ('$line') — redemption has escaped the stale-only path"
+  fi
+  # Same disjunction hazard as check_blocking_derivation: `external_evidence_ok
+  # … || <anything>` satisfies every substring assertion above while granting
+  # redemption on the other operand — an identity test, a status string, a
+  # per-PR flag. The redemption channel must stay exactly one term wide.
+  if [[ "$line" != *"||"* ]]; then
+    ok "${p}_STALE_REDEEMED derivation is a conjunction, not a disjunction"
+  else
+    bad "the ${p}_STALE_REDEEMED derivation in merge-gate.sh is a disjunction ('$line') — redemption could now be granted by something other than external_evidence_ok"
+  fi
+  # The three ways this could be laundered back into an identity waiver or a
+  # circular self-vouch. substance_ok is counts_as_coverage, which INCLUDES the
+  # approval's own body; counts_as_coverage is that same field by name.
+  #
+  # Bare tokens, deliberately NOT dot-prefixed (`.norm_ts`, `.substance_ok`).
+  # Two of the three are bash FUNCTION calls in merge-gate.sh, not JSON field
+  # accesses, so a dot-prefixed needle would never match the shape it is meant
+  # to reject and the guard would silently stop guarding. The false-positive it
+  # would buy does not exist either: every shell variable on this line is
+  # SCREAMING_CASE, so a lowercase token cannot appear except as a real call.
+  local needle
+  for needle in 'substance_ok' 'counts_as_coverage' 'norm_ts'; do
+    if [[ "$line" != *"$needle"* ]]; then
+      ok "${p}_STALE_REDEEMED does not consult $needle"
+    else
+      bad "${p}_STALE_REDEEMED now consults $needle ('$line') — redemption must be external evidence only, never the approval's own substance verdict or a timestamp"
+    fi
+  done
+}
+
+check_blocking_derivation CR
+check_blocking_derivation CA
+check_redemption_channel CR "coderabbitai[bot]"
+check_redemption_channel CA "codeant-ai[bot]"
+
+# The redemption helper itself must read external_evidence_on_head — the field
+# review-substance.sh defines as substance EXCLUDING the approval body. If it
+# ever reads a different field, every assertion above is checking a name rather
+# than a property.
+#
+# Scoped to the external_evidence_ok BODY, not the whole file: merge-gate.sh's
+# header prose names external_evidence_on_head several times, so a file-wide
+# grep would keep passing after the helper was repointed at counts_as_coverage
+# and only the comments still mentioned the right field.
+EXT_HELPER_BODY="$(awk '
+  /^[[:space:]]*external_evidence_ok\(\)[[:space:]]*\{/ { inblock = 1 }
+  inblock && !/^[[:space:]]*#/ { print }
+  inblock && /^[[:space:]]*\}[[:space:]]*$/ { exit }
+' "$MERGE_GATE")"
+if [[ -z "$EXT_HELPER_BODY" ]]; then
+  bad "could not locate the external_evidence_ok helper in merge-gate.sh — the #876 redemption source is unpinned"
+elif grep -q 'external_evidence_on_head' <<<"$EXT_HELPER_BODY"; then
+  ok "merge-gate.sh's external_evidence_ok helper reads external_evidence_on_head"
+else
+  bad "merge-gate.sh's external_evidence_ok helper no longer reads external_evidence_on_head — the #876 redemption is sourced from an unknown field"
+fi
+if grep -q 'external_evidence_on_head' "$SUBSTANCE"; then
+  ok "review-substance.sh still emits external_evidence_on_head"
+else
+  bad "review-substance.sh no longer emits external_evidence_on_head — merge-gate.sh's redemption will silently fail closed on every PR"
+fi
 
 ############################################################################
 echo "== structural guards: no re-inlined copy of the rule =="
