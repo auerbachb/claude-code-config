@@ -111,7 +111,7 @@ if (( streak >= 3 )); then
   if [[ "$last_cron_type" == "update" && "$last_cron_interval" == "${WIDE_MIN}m" ]]; then
     exit 0
   fi
-  emit_context "STOP - PR #${pr_number} has ${streak} identical polling ticks. Widen the interval to ${WIDE_MIN}m before exiting this turn - re-arm the /loop at the wider cadence, or CronUpdate if this poll is a cron job - then update prs.${pr_number}.last_cron_action and suppress duplicate heartbeat noise."
+  emit_context "WIDEN (do NOT stop the poll) - PR #${pr_number} has ${streak} identical polling ticks. The poll must KEEP RUNNING at a slower cadence: widen it to ${WIDE_MIN}m before exiting this turn - re-arm the /loop at the wider cadence, or CronUpdate if this poll is a cron job - then update prs.${pr_number}.last_cron_action and suppress duplicate heartbeat noise. Stopping is only for the streak>=9 / user-blocked branch."
 fi
 
 exit 0

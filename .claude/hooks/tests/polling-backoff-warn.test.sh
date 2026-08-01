@@ -134,6 +134,18 @@ ctx="$(run_hook "$PR" | context_of)"
 [[ -z "$ctx" ]] || fail "the stop marker /babysit-pr T-END writes must suppress a second STOP, got: $ctx"
 ok "/loop stop marker suppresses the repeat STOP"
 
+# ── 10c. The widen advisory must never read as "stop the poll" ───────────────
+# streak 3..8 means keep polling, slower. The stop instruction belongs only to
+# the >=9 / user-blocked branch; conflating them silently kills the watcher at
+# the first backoff threshold.
+write_state "$PR" '{"digest_streak":4,"babysit":{"cadence_base_minutes":5}}'
+ctx="$(run_hook "$PR" | context_of)"
+[[ -n "$ctx" ]] || fail "expected a widen advisory at streak=4"
+echo "$ctx" | grep -q "WIDEN" || fail "widen advisory should be labelled WIDEN, got: $ctx"
+echo "$ctx" | grep -q "KEEP RUNNING" || fail "widen advisory must say the poll keeps running, got: $ctx"
+echo "$ctx" | grep -q "Stop the poll" && fail "widen advisory must not carry a stop-the-poll instruction, got: $ctx"
+ok "widen advisory (streak 3..8) says keep running, never stop"
+
 # ── 11. Streak >= 9 → stop the poll ──────────────────────────────────────────
 write_state "$PR" '{"digest_streak":9,"babysit":{"cadence_base_minutes":5}}'
 ctx="$(run_hook "$PR" | context_of)"
