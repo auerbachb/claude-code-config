@@ -222,7 +222,15 @@ fi
 # opening bracket or quote in between). Spaces inside the path are then
 # irrelevant, while `repo/…` and `./…` still have no such start and stay
 # visible to harness-path.
-ABS_PATH_START_RE='(^|[[:space:]])[([<"'"'"'`]*/'
+# The marker is part of an absolute path only when the run of text immediately
+# before it starts at a `/` that follows line-start or whitespace AND contains
+# no prose punctuation on the way. Searching the whole prefix for *any*
+# absolute start was too loose: in
+#   "See /tmp/build, then repo/.claude/worktrees/x"
+# the unrelated /tmp earlier in the sentence would vouch for the relative path
+# that follows. Spaces stay legal inside the run — that is the whole reason this
+# is not a whitespace-token test — but a comma, semicolon, or colon ends it.
+ABS_PATH_START_RE='(^|[[:space:]])[([<"'"'"'`]*/[^,;:!?"`]*$'
 
 # A URL is an address any reader can open, so a repository link that happens to
 # point at a harness file is a portable reference — unlike a local path, which

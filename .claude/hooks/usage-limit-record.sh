@@ -121,6 +121,17 @@ HANDOFF_MAX_AGE_DAYS="${CLAUDE_HANDOFF_MAX_AGE_DAYS:-7}"
 [[ "$HANDOFF_MAX_AGE_DAYS" =~ ^[0-9]+$ ]] && (( HANDOFF_MAX_AGE_DAYS > 0 )) \
   || HANDOFF_MAX_AGE_DAYS=7
 
+# Bound the work this optional enrichment can do. The hook runs under a 5s
+# timeout and the durable append is the part that must not be lost, so the
+# pointer lookup never gets to be open-ended: one non-recursive directory read,
+# newest names first, capped. Filenames sort chronologically, so the newest by
+# mtime is inside this window in any realistic directory.
+#
+# In scale terms this adds one readdir to a filesystem the hook already writes
+# to several times (mkdir, chmod, append, atomic rename) — a home slow enough to
+# blow the budget here was already blowing it on those.
+HANDOFF_SCAN_CAP=50
+
 newest_portable_handoff() {
   local dir="$1" newest="" f
   [[ -d "$dir" ]] || return 0
@@ -134,7 +145,8 @@ newest_portable_handoff() {
       newest="$f"
     fi
   done < <(find "$dir" -maxdepth 1 -type f -name 'portable-handoff-*.md' \
-             -mtime "-${HANDOFF_MAX_AGE_DAYS}" 2>/dev/null)
+             -mtime "-${HANDOFF_MAX_AGE_DAYS}" 2>/dev/null \
+             | sort -r | head -n "$HANDOFF_SCAN_CAP")
   printf '%s' "$newest"
 }
 

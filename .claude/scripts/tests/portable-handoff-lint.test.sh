@@ -125,6 +125,10 @@ assert_catches harness-path "Helper at /Users/b/repo/.claude/scripts/merge-gate.
 # "/.claude/worktrees/" appearing anywhere — a repo-relative path contains that
 # substring too and is exactly what harness-path is for.
 assert_catches harness-path "Second copy is at repo/.claude/worktrees/issue-42-other now."
+# An unrelated absolute path earlier in the same sentence must not vouch for a
+# relative harness path later in it.
+assert_catches harness-path "See /tmp/build, then repo/.claude/worktrees/issue-42-other."
+assert_catches harness-path "Logs in /var/log; also ./.claude/worktrees/issue-42-other."
 assert_catches harness-path "Or at ./.claude/worktrees/issue-42-other instead."
 assert_catches harness-path "Try ../other/.claude/worktrees/issue-42-other too."
 
