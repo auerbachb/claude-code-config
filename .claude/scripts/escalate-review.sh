@@ -178,27 +178,31 @@ if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
     FRESH_APPROVERS="$(jq -rn --arg sha "$HEAD_SHA" --arg push "$HEAD_COMMIT_TS" \
       --arg logins "$VALID_APPROVERS" --slurpfile doc "$STATE_PATH" '
       # Canonicalise before comparing (BugBot review, PR #883): this is a
-      # lexicographic string compare, and "…T10:00:22+00:00" sorts BEFORE
-      # "…T10:00:16Z", so a mixed spelling would mark a fresh approval stale and
-      # withhold gate_met on a PR merge-gate.sh considers fine.
+      # lexicographic string compare, so when two timestamps share a
+      # whole-second prefix the zone suffix is the first differing character —
+      # and "+" (0x2B) is below "Z" (0x5A), so "…T10:00:16+00:00" sorts BELOW
+      # "…T10:00:16Z" despite being the SAME instant. A push stamped "…16Z"
+      # against an approval stamped "…16+00:00" therefore reads as
+      # approval-before-push: a fresh approval is marked stale and gate_met is
+      # withheld on a PR merge-gate.sh considers fine.
       #
       # STRIP the zone suffix, do NOT rewrite it to "Z", and KEEP fractional
-      # seconds — this must reproduce exactly the ordering that norm_ts in
-      # merge-gate.sh produces, because the two scripts implement one rule
+      # seconds — this is the jq mirror of norm_ts in lib/ts-normalizer.sh and
+      # must reproduce its ordering exactly, because the two implement one rule
       # (#836) and a caller more permissive than the gate is a bug (BugBot
-      # review on 7de2a4c, PR #883). The earlier form dropped fractions and
-      # appended "Z", diverging in BOTH directions:
-      #   * dropping ".900" made "…49.900Z" and "…49Z" compare EQUAL, so an
-      #     approval the gate rules stale read as fresh here and escalation
-      #     could report gate_met on a PR merge-gate.sh blocks;
-      #   * a fraction retained under a trailing "Z" sorts the WRONG WAY —
-      #     "." (0x2E) is below "Z" (0x5A), so the LATER instant "…49.900Z"
-      #     compares below "…49Z".
-      # With the suffix gone, plain lexicographic order is correct for whole
-      # and fractional seconds alike. canon_ts in review-substance.sh keeps its
-      # own fraction-stripping form: every timestamp it compares passes through
-      # that one function, so it stays internally consistent and is never
-      # compared against a merge-gate value.
+      # review on 7de2a4c, PR #883). jq cannot source a bash function and this
+      # repo has no jq-module convention, so the mirror stays inline by design.
+      #
+      # It is NOT kept in step by hand (issue #885):
+      # tests/ts-normalizer-parity.test.sh extracts THIS def block from THIS
+      # file and asserts it agrees with norm_ts byte for byte across the whole
+      # spelling matrix (Z, +00:00, +0000, fractional, mixed, empty). Any edit
+      # that diverges — including a well-meant superset — fails that test.
+      #
+      # canon_ts in review-substance.sh keeps its own fraction-stripping form:
+      # every timestamp it compares passes through that one function, so it
+      # stays internally consistent and is never compared against a merge-gate
+      # value. The parity test pins that divergence too.
       #
       # NOTE: this comment sits inside a single-quoted jq program — no
       # apostrophes, or the quoting ends here and bash mis-parses the block.

@@ -193,6 +193,13 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
   # same trap `norm_ts` guards against in merge-gate.sh. Fold the UTC spellings
   # onto `Z` and drop fractional seconds. A genuine non-UTC offset is left
   # untouched rather than mangled into a wrong instant.
+  #
+  # DELIBERATELY different from lib/ts-normalizer.sh (issue #885), which strips
+  # the suffix and KEEPS the fraction. Safe here because every timestamp this
+  # script compares passes through this one function, so it is internally
+  # consistent and is never compared against a merge-gate value. Do not "unify"
+  # the two: tests/ts-normalizer-parity.test.sh pins the difference, so a
+  # refactor that erases it fails loudly instead of silently reordering.
   def canon_ts:
     (. // "")
     | if . == "" then ""
