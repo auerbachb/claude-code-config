@@ -272,14 +272,20 @@ if [[ -f "$STATE_FILE" ]]; then
     # polling_jobs: per-record verdict from the bash precompute above.
     # Index into $pj_verdicts by array position; treat out-of-range as "unknown"
     # (fail-closed: a concurrent write could have shifted the array).
+    #
+    # We compute dead fingerprints (pid+host pairs) from the snapshot rather than
+    # a "kept" list, then filter the LIVE .polling_jobs at write time.  Using the
+    # live array means jobs added by sibling sessions after the snapshot was taken
+    # are preserved — writing the snapshot kept-list would silently drop them.
     | ( if ($pj_snapshot | type == "array") then
           ( $pj_snapshot | to_entries
-            | { dead:    map(select(($pj_verdicts[.key] // "unknown") == "dead"))    | length,
-                unknown: map(select(($pj_verdicts[.key] // "unknown") == "unknown")) | length,
-                kept:    map(select(($pj_verdicts[.key] // "unknown") != "dead"))
-                         | map(.value) }
+            | { dead:     map(select(($pj_verdicts[.key] // "unknown") == "dead"))    | length,
+                unknown:  map(select(($pj_verdicts[.key] // "unknown") == "unknown")) | length,
+                dead_fps: map(select(($pj_verdicts[.key] // "unknown") == "dead"))
+                          | map(.value | {pid:  (.owner_session.pid  // "" | tostring),
+                                          host: (.owner_session.host // "")}) }
           )
-        else {dead: 0, unknown: 0, kept: []} end ) as $pj
+        else {dead: 0, unknown: 0, dead_fps: []} end ) as $pj
 
     # auto_wake_cron_id: only clear when the bash precompute determined "dead".
     | ( (.pmm.auto_wake_cron_id? // null) != null ) as $aw_exists
@@ -296,7 +302,15 @@ if [[ -f "$STATE_FILE" ]]; then
                   babysit_cron_ids:   ($cron_ids | length),
                   babysit_watchers:   ($dead_watchers | length) },
         sets: ( ( if $pj.dead > 0 then
-                    [".polling_jobs=" + ($pj.kept | tojson)]
+                    [".polling_jobs=" + (
+                       (.polling_jobs? // [])
+                       | map(
+                           (. | {pid:  (.owner_session.pid  // "" | tostring),
+                                 host: (.owner_session.host // "")}) as $fp
+                           | select($pj.dead_fps | map(. == $fp) | any | not)
+                         )
+                       | tojson
+                     )]
                   else [] end )
               + ( if $aw.clear then [".pmm.auto_wake_cron_id=null"] else [] end )
               + ( $cron_ids    | map(. + "=null") )
