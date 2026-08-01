@@ -360,8 +360,17 @@ fi
 if [[ "$MODE" == "set" ]]; then
   JQ_PATH="${JQ_PATH_VALUE%%=*}"
   JQ_VAL="${JQ_PATH_VALUE#*=}"
-  # Detect whether the value is a valid JSON literal or a bare string.
-  if printf '%s' "$JQ_VAL" | jq -e . >/dev/null 2>&1; then
+  # Detect whether the value is a valid JSON literal or a bare string. Use
+  # `jq empty` (not `jq -e .`) because `-e` sets its exit status from the OUTPUT
+  # value's truthiness, not from parse success — so the perfectly valid literals
+  # `null` and `false` exit non-zero and would be silently coerced to the strings
+  # "null"/"false". "false" is TRUTHY in jq, so a later `if .merge_gate_met then`
+  # would read a failed gate as passed (issue #853). `empty` validates parse only.
+  #
+  # Empty value short-circuit: `jq empty` accepts zero-byte stdin and exits 0,
+  # but `--argjson v ""` then fails ("invalid JSON text"). Treat an empty
+  # `--set <path>=` as the literal empty string. Mirrors session-state.sh.
+  if [[ -n "$JQ_VAL" ]] && printf '%s' "$JQ_VAL" | jq empty >/dev/null 2>&1; then
     UPDATED="$(printf '%s\n' "$CURRENT" | jq --argjson v "$JQ_VAL" "${JQ_PATH} = \$v")" || {
       echo "handoff-state.sh: jq --set failed on path $JQ_PATH" >&2
       state_lock_release; exit 4
