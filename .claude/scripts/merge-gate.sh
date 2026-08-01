@@ -110,16 +110,18 @@
 # /wrap Step 2.1 Branch B) should key the threads-only decision off this field
 # (and `missing | length`) rather than string-matching the prose (#455 / #479).
 #
-# `primary_review_met` is meaningful only on the `cr` path: true when CodeRabbit
-# OR CodeAnt has a valid (non-retracted, fresh, and — since issue #875 —
-# SUBSTANTIVE) APPROVED review on current HEAD SHA — i.e. the "1 explicit
-# CodeRabbit or CodeAnt APPROVED review" requirement from
-# cr-merge-gate.md Step 1 is satisfied, independent of CI/threads/merge-state.
+# `primary_review_met`: true when CodeRabbit OR CodeAnt has a valid
+# (non-retracted, fresh, and — since issue #875 — SUBSTANTIVE) APPROVED review
+# on current HEAD SHA — i.e. the "1 explicit CodeRabbit or CodeAnt APPROVED
+# review" requirement from cr-merge-gate.md Step 1 is satisfied, independent of
+# CI/threads/merge-state. On the `cr` path this is the primary gate signal; on
+# the `bugbot` path it can also be true when a fresh CR/CodeAnt APPROVED
+# satisfies the gate via the #865 bypass (sticky reviewer pointer stays bugbot).
 # The field name and type are unchanged; #875 only stopped an approval that
 # nothing actually reviewed from setting it — the meaning every consumer of this
 # field already assumed. `review_evidence` carries the per-reviewer detail, and
 # `review_evidence.hollow[]` names any approver that was discounted.
-# `false` on the bugbot/greptile paths (not applicable). Consumers that only
+# `false` on the greptile path. Consumers that only
 # care "does this PR still need more review" (e.g. escalate-review.sh deciding
 # whether to trigger a paid Greptile review) should key off this field rather
 # than the overall `met`, which also folds in CI/threads/merge-state.
@@ -501,31 +503,40 @@ REVIEWER=$(resolve_reviewer)
 # and escalate-review.sh share one definition of "this approval actually read the
 # commit". Pure evaluator over payloads already fetched above: no extra API calls.
 #
-# Scoped to the cr path deliberately. It is only consulted there, and running it
-# everywhere would let an evaluator failure block a BugBot- or Greptile-owned PR
-# over a CR-path concern — a false negative introduced by a guard that path never
-# uses. Off the cr path the field is emitted as {}.
+# Runs on both cr and bugbot paths (issue #865): the bugbot path uses the evidence
+# to verify a fresh CR/CodeAnt APPROVED before the #865 bypass fires. Graceful
+# degradation on the bugbot path: if the evaluator is absent or returns bad JSON,
+# REVIEW_EVIDENCE stays '{}' and CR_PATH_APPROVED_ON_HEAD remains false — the
+# normal BugBot gate runs unchanged. Only the cr path is hard-fatal on failure.
 REVIEW_EVIDENCE='{}'
-if [[ "$REVIEWER" == "cr" ]]; then
+if [[ "$REVIEWER" == "cr" || "$REVIEWER" == "bugbot" ]]; then
   REVIEW_SUBSTANCE_SH="$(dirname "$0")/review-substance.sh"
   if [[ ! -x "$REVIEW_SUBSTANCE_SH" ]]; then
-    die_local "review-substance.sh not found or not executable at $REVIEW_SUBSTANCE_SH"
-  fi
-  # The three payloads are piped in, NOT passed as --argjson: a busy PR's comment
-  # JSON runs to ~1 MB and three of those on one command line can exceed ARG_MAX.
-  # printf is a shell builtin writing to a pipe, so no exec limit applies; `jq -s`
-  # then slurps the three values in order.
-  REVIEW_EVIDENCE=$(printf '%s\n%s\n%s\n' "$REVIEWS_JSON" "$PR_COMMENTS_JSON" "$ISSUE_COMMENTS_JSON" \
-    | jq -cs --arg sha "$HEAD_SHA" --arg push "${LAST_COMMIT_TS:-}" \
-        '{head_sha: $sha, push_ts: $push, reviews: .[0], pr_comments: .[1], issue_comments: .[2]}' \
-        2>/dev/null \
-    | "$REVIEW_SUBSTANCE_SH" 2>/dev/null || true)
-  # Structure, not just parseability: substance_ok reads .reviewers[<login>], and
-  # a well-formed-but-wrong shape (say a bare string) would silently read as
-  # "not substantive" and block every approval.
-  if [[ -z "$REVIEW_EVIDENCE" ]] || ! echo "$REVIEW_EVIDENCE" \
-      | jq -e 'type == "object" and (.reviewers | type == "object")' >/dev/null 2>&1; then
-    die_local "review-substance.sh produced no usable JSON (expected an object with a .reviewers object)"
+    if [[ "$REVIEWER" == "cr" ]]; then
+      die_local "review-substance.sh not found or not executable at $REVIEW_SUBSTANCE_SH"
+    fi
+    # On the bugbot path: evaluator absent — REVIEW_EVIDENCE stays '{}'.
+  else
+    # The three payloads are piped in, NOT passed as --argjson: a busy PR's comment
+    # JSON runs to ~1 MB and three of those on one command line can exceed ARG_MAX.
+    # printf is a shell builtin writing to a pipe, so no exec limit applies; `jq -s`
+    # then slurps the three values in order.
+    REVIEW_EVIDENCE=$(printf '%s\n%s\n%s\n' "$REVIEWS_JSON" "$PR_COMMENTS_JSON" "$ISSUE_COMMENTS_JSON" \
+      | jq -cs --arg sha "$HEAD_SHA" --arg push "${LAST_COMMIT_TS:-}" \
+          '{head_sha: $sha, push_ts: $push, reviews: .[0], pr_comments: .[1], issue_comments: .[2]}' \
+          2>/dev/null \
+      | "$REVIEW_SUBSTANCE_SH" 2>/dev/null || true)
+    # Structure, not just parseability: substance_ok reads .reviewers[<login>], and
+    # a well-formed-but-wrong shape (say a bare string) would silently read as
+    # "not substantive" and block every approval.
+    if [[ -z "$REVIEW_EVIDENCE" ]] || ! echo "$REVIEW_EVIDENCE" \
+        | jq -e 'type == "object" and (.reviewers | type == "object")' >/dev/null 2>&1; then
+      if [[ "$REVIEWER" == "cr" ]]; then
+        die_local "review-substance.sh produced no usable JSON (expected an object with a .reviewers object)"
+      fi
+      # On the bugbot path: bad evidence — REVIEW_EVIDENCE stays '{}'.
+      REVIEW_EVIDENCE='{}'
+    fi
   fi
 fi
 
@@ -665,248 +676,280 @@ fi
 # not by a hand-maintained note. Rationale and the PR #883 failures it prevents
 # are in the library header.
 
+# Helper functions for CR-path approval checks (issue #875). Defined here —
+# outside the case statement — so both the cr) path (primary) and the bugbot)
+# path's #865 bypass can call them without duplication.
+substance_ok() { # <login>
+  echo "$REVIEW_EVIDENCE" | jq -e --arg l "$1" \
+    '.reviewers[$l].counts_as_coverage // false' >/dev/null 2>&1 && echo true || echo false
+}
+substance_reasons() { # <login> — human-readable, comma-joined
+  echo "$REVIEW_EVIDENCE" | jq -r --arg l "$1" '
+    (.reviewers[$l] // {}) as $r
+    | [ ($r.disqualified_by // [])[]
+        | if . == "temporal_inversion" then
+            "approved before \($l) announced it had started reviewing"
+          elif . == "capability_failure" then
+            "\($l) reported it could not review this commit"
+          elif . == "self_report_mismatch" then
+            "\($l)'"'"'s own status comment names \(($r.status_comment_shas // []) | join(", ")) — not this SHA"
+          else
+            "no substantive review footprint (body \($r.body_len // 0) chars, \($r.inline_comments_on_head // 0) inline comment(s), no status comment naming this SHA)"
+          end ]
+    | join("; ")' 2>/dev/null || echo "no substantive review footprint"
+}
+# --allow-hollow-approval covers exactly ONE disqualifier: the approval left
+# no substantive footprint, and a human is saying they read the diff instead.
+# It must NOT wave through an integrity failure — an approval that names a
+# different SHA, predates the bot's own start marker, or follows that bot
+# saying it could not review is not "unevidenced", it is evidence AGAINST a
+# review having happened, and no per-PR override should launder it.
+# Fail-closed: any jq failure (missing/unparseable evidence) yields false.
+override_eligible() { # <login>
+  echo "$REVIEW_EVIDENCE" | jq -e --arg l "$1" \
+    '((.reviewers[$l].disqualified_by // []) - ["no_substantive_footprint"]) | length == 0' \
+    >/dev/null 2>&1 && echo true || echo false
+}
+# Stale-approval redemption (issue #876). CodeAnt PATCHes its EXISTING review
+# object on a re-review — same review id, commit_id correctly advanced to the
+# new HEAD, submitted_at frozen at the original submission — and GitHub treats
+# submitted_at as immutable creation time. So a genuinely completed post-push
+# re-review reads as #836-stale and the gate wedges (auerbachb/skingod PR
+# #2596: 8 poll ticks, 15+ minutes, on a review that had demonstrably run).
+#
+# The redemption term is external_evidence_on_head, NOT the reviewer's
+# identity. "CodeAnt's submitted_at is unreliable, so skip staleness for
+# CodeAnt" would re-open exactly the hole #875 closed the same night — that
+# bot also emits genuinely hollow approvals (bodylen=0, four in one second,
+# one approving a commit that did not exist for another 16 minutes). A stale
+# timestamp may be redeemed by evidence on the current SHA; it is never
+# waived by who submitted it. CodeRabbit gets the identical treatment.
+#
+# Nor is CodeAnt's own "finished running the review" notice the redeemer: it
+# is a fixed, content-free string, so accepting it would let a bot certify
+# its own freshness with a constant. external_evidence_on_head requires a
+# SUBSTANTIVE footprint anchored to HEAD and produced OUTSIDE the review
+# object whose timestamp is in doubt (review-substance.sh):
+#   - inline diff comments with commit_id AND original_commit_id == HEAD, or
+#   - a >= min_chars conversation comment naming HEAD's SHA that is not a
+#     capability-failure notice, or
+#   - a substantive non-APPROVED review on HEAD with submitted_at >= push.
+# Each is anchored to the post-push commit, and the approval's own body is
+# excluded by construction — an approval can never redeem its own timestamp.
+#
+# Fail-closed: any jq failure (missing/unparseable evidence) yields false, so
+# a broken evaluator can only withhold redemption, never grant it.
+external_evidence_ok() { # <login>
+  echo "$REVIEW_EVIDENCE" | jq -e --arg l "$1" \
+    '.reviewers[$l].external_evidence_on_head // false' >/dev/null 2>&1 && echo true || echo false
+}
+
+# CR-path approval detection — shared by the cr) and bugbot) cases (issue #865).
+# On the cr) path these variables are also consumed by the MISSING-entry section
+# and the supplemental CodeAnt gate below. On the bugbot) path only
+# CR_PATH_APPROVED_ON_HEAD is used (for the bypass). Guard ensures the jq
+# computations only run when relevant; all variables are zero-valued here so
+# the cr) MISSING section works correctly even when the guard does not fire.
+CR_PATH_APPROVED_ON_HEAD=false
+LATEST_CR_APPROVED_AT=""
+LATEST_CR_CHANGES_REQUESTED_AT=""
+APPROVED_CR_ON_HEAD=0
+TOTAL_CR_ON_HEAD=0
+LATEST_CA_APPROVED_AT=""
+LATEST_CA_CHANGES_REQUESTED_AT=""
+APPROVED_CA_ON_HEAD=0
+TOTAL_CA_ON_HEAD=0
+CR_RETRACTED=false
+CA_RETRACTED=false
+CR_APPROVAL_STALE=false
+CR_APPROVAL_FRESHNESS_UNKNOWN=false
+CR_APPROVAL_SUBMITTED_AT_MISSING=false
+CA_APPROVAL_STALE=false
+CA_APPROVAL_FRESHNESS_UNKNOWN=false
+CA_APPROVAL_SUBMITTED_AT_MISSING=false
+CR_APPROVAL_STALE_BLOCKING=false
+CA_APPROVAL_STALE_BLOCKING=false
+if [[ "$REVIEWER" == "cr" || "$REVIEWER" == "bugbot" ]]; then
+  # Require 1 explicit CodeRabbit APPROVED on HEAD (SHA freshness in the jq filter).
+  # Retraction: CHANGES_REQUESTED newer than APPROVED on same SHA invalidates approval.
+  LATEST_CR_APPROVED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
+    [.[]?
+      | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha and .state == "APPROVED")
+      | .submitted_at]
+    | sort | last // ""')
+  LATEST_CR_CHANGES_REQUESTED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
+    [.[]?
+      | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha and .state == "CHANGES_REQUESTED")
+      | .submitted_at]
+    | sort | last // ""')
+  APPROVED_CR_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
+    [.[]? | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha and .state == "APPROVED")]
+    | length')
+  TOTAL_CR_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
+    [.[]? | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha)]
+    | length')
+
+  LATEST_CA_APPROVED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
+    [.[]?
+      | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha and .state == "APPROVED")
+      | .submitted_at]
+    | sort | last // ""')
+  LATEST_CA_CHANGES_REQUESTED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
+    [.[]?
+      | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha and .state == "CHANGES_REQUESTED")
+      | .submitted_at]
+    | sort | last // ""')
+  APPROVED_CA_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
+    [.[]? | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha and .state == "APPROVED")]
+    | length')
+  TOTAL_CA_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
+    [.[]? | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha)]
+    | length')
+
+  # Retraction: later CHANGES_REQUESTED on same SHA invalidates APPROVED (ISO timestamps).
+  # Freshness guard (issue #836): GitHub retargets commit_id on force-push, so a
+  # pre-push CHANGES_REQUESTED can appear on HEAD while predating the commit.
+  # Only treat as retraction if the CHANGES_REQUESTED is itself fresh
+  # (submitted_at >= LAST_COMMIT_TS). When LAST_COMMIT_TS is unknown, skip
+  # retraction — the approval's own freshness check will block via
+  # CR/CA_APPROVAL_FRESHNESS_UNKNOWN.
+  CR_RETRACTED=false
+  if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && -n "$LATEST_CR_CHANGES_REQUESTED_AT" && -n "$LATEST_CR_APPROVED_AT" ]]; then
+    if [[ "$(norm_ts "$LATEST_CR_CHANGES_REQUESTED_AT")" > "$(norm_ts "$LATEST_CR_APPROVED_AT")" ]]; then
+      if [[ -n "$LAST_COMMIT_TS" && ! "$(norm_ts "$LATEST_CR_CHANGES_REQUESTED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
+        CR_RETRACTED=true
+      fi
+    fi
+  fi
+  CA_RETRACTED=false
+  if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && -n "$LATEST_CA_CHANGES_REQUESTED_AT" && -n "$LATEST_CA_APPROVED_AT" ]]; then
+    if [[ "$(norm_ts "$LATEST_CA_CHANGES_REQUESTED_AT")" > "$(norm_ts "$LATEST_CA_APPROVED_AT")" ]]; then
+      if [[ -n "$LAST_COMMIT_TS" && ! "$(norm_ts "$LATEST_CA_CHANGES_REQUESTED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
+        CA_RETRACTED=true
+      fi
+    fi
+  fi
+
+  # Stale-approval guard (issue #836): GitHub retargets commit_id on force-push
+  # but does NOT update submitted_at. An approval whose submitted_at predates
+  # the HEAD commit's committer date was submitted before the current commit
+  # and must not count even when commit_id matches. Equal timestamps are
+  # accepted (submitted_at >= LAST_COMMIT_TS). Use norm_ts for comparisons
+  # to handle mixed Z/+00:00 UTC suffixes (issue #836, BugBot round 5).
+  #
+  # Fail-closed (issue #836): when LAST_COMMIT_TS is empty (HEAD timestamp API
+  # failure) we CANNOT verify freshness, so qualifying approvals do NOT satisfy
+  # the gate. Callers poll every ~60 s, so a transient API failure self-heals
+  # on the next cycle without wedging a merge indefinitely.
+  CR_APPROVAL_STALE=false
+  CR_APPROVAL_FRESHNESS_UNKNOWN=false
+  # Separate flag for missing submitted_at (distinct from LAST_COMMIT_TS missing):
+  # the approval's timestamp is absent — different cause, different user message.
+  CR_APPROVAL_SUBMITTED_AT_MISSING=false
+  if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && "$CR_RETRACTED" == false ]]; then
+    if [[ -z "$LAST_COMMIT_TS" ]]; then
+      CR_APPROVAL_FRESHNESS_UNKNOWN=true
+    elif [[ -z "$LATEST_CR_APPROVED_AT" ]]; then
+      # submitted_at is missing from the approval itself (not a transient API
+      # failure) — cannot verify freshness (fail-closed, issue #836).
+      CR_APPROVAL_SUBMITTED_AT_MISSING=true
+    elif [[ "$(norm_ts "$LATEST_CR_APPROVED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
+      CR_APPROVAL_STALE=true
+    fi
+  fi
+  CA_APPROVAL_STALE=false
+  CA_APPROVAL_FRESHNESS_UNKNOWN=false
+  CA_APPROVAL_SUBMITTED_AT_MISSING=false
+  if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && "$CA_RETRACTED" == false ]]; then
+    if [[ -z "$LAST_COMMIT_TS" ]]; then
+      CA_APPROVAL_FRESHNESS_UNKNOWN=true
+    elif [[ -z "$LATEST_CA_APPROVED_AT" ]]; then
+      CA_APPROVAL_SUBMITTED_AT_MISSING=true
+    elif [[ "$(norm_ts "$LATEST_CA_APPROVED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
+      CA_APPROVAL_STALE=true
+    fi
+  fi
+
+  # Review-substance verdict per bot (issue #875). `counts_as_coverage` folds
+  # temporal inversion, capability failure, self-report SHA mismatch and
+  # footprint substance into one boolean; `disqualified_by` carries the reasons
+  # so the missing[] entry can say WHY rather than "need 1 approval".
+  CR_SUBSTANTIVE=$(substance_ok "coderabbitai[bot]")
+  CA_SUBSTANTIVE=$(substance_ok "codeant-ai[bot]")
+
+  # <P>_APPROVAL_STALE above is the unchanged #836 norm_ts verdict and stays
+  # that way — redemption is a SEPARATE, separately-named term rather than a
+  # loosening of the ordering rule, so the timestamp comparison keeps exactly
+  # one meaning. <P>_APPROVAL_STALE_BLOCKING is what the rest of the path
+  # consumes. Redemption cannot fire unless the approval is stale in the first
+  # place, so the fresh path is byte-for-byte unaffected.
+  CR_STALE_REDEEMED=false
+  CA_STALE_REDEEMED=false
+  if [[ "$CR_APPROVAL_STALE" == true && "$(external_evidence_ok "coderabbitai[bot]")" == true ]]; then
+    CR_STALE_REDEEMED=true
+    echo "[merge-gate] CodeRabbit APPROVED on ${HEAD_SHA:0:7} has a stale submitted_at ($LATEST_CR_APPROVED_AT < $LAST_COMMIT_TS) but left substantive evidence on this SHA outside the review object — counting it as fresh (issue #876)." >&2
+  fi
+  if [[ "$CA_APPROVAL_STALE" == true && "$(external_evidence_ok "codeant-ai[bot]")" == true ]]; then
+    CA_STALE_REDEEMED=true
+    echo "[merge-gate] CodeAnt APPROVED on ${HEAD_SHA:0:7} has a stale submitted_at ($LATEST_CA_APPROVED_AT < $LAST_COMMIT_TS) but left substantive evidence on this SHA outside the review object — in-place re-review edit, counting it as fresh (issue #876)." >&2
+  fi
+  CR_APPROVAL_STALE_BLOCKING=false
+  CA_APPROVAL_STALE_BLOCKING=false
+  if [[ "$CR_APPROVAL_STALE" == true && "$CR_STALE_REDEEMED" == false ]]; then
+    CR_APPROVAL_STALE_BLOCKING=true
+  fi
+  if [[ "$CA_APPROVAL_STALE" == true && "$CA_STALE_REDEEMED" == false ]]; then
+    CA_APPROVAL_STALE_BLOCKING=true
+  fi
+
+  # CR_HOLLOW / CA_HOLLOW: the approval cleared every pre-#875 check (present,
+  # fresh, not retracted) but nothing evidences that a review happened. Kept
+  # distinct from "absent" so callers know to wait for the reviewer's real pass
+  # rather than conclude no approval exists.
+  CR_APPROVAL_VALID=false
+  CR_HOLLOW=false
+  if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && "$CR_RETRACTED" == false \
+        && "$CR_APPROVAL_STALE_BLOCKING" == false && "$CR_APPROVAL_FRESHNESS_UNKNOWN" == false \
+        && "$CR_APPROVAL_SUBMITTED_AT_MISSING" == false ]]; then
+    if [[ "$CR_SUBSTANTIVE" == true ]]; then
+      CR_APPROVAL_VALID=true
+    elif [[ "$ALLOW_HOLLOW" == true && "$(override_eligible "coderabbitai[bot]")" == true ]]; then
+      CR_APPROVAL_VALID=true
+      echo "[merge-gate] --allow-hollow-approval: counting CodeRabbit APPROVED on ${HEAD_SHA:0:7} despite no substantive review evidence ($(substance_reasons "coderabbitai[bot]"))." >&2
+    else
+      CR_HOLLOW=true
+    fi
+  fi
+  CA_APPROVAL_VALID=false
+  CA_HOLLOW=false
+  if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && "$CA_RETRACTED" == false \
+        && "$CA_APPROVAL_STALE_BLOCKING" == false && "$CA_APPROVAL_FRESHNESS_UNKNOWN" == false \
+        && "$CA_APPROVAL_SUBMITTED_AT_MISSING" == false ]]; then
+    if [[ "$CA_SUBSTANTIVE" == true ]]; then
+      CA_APPROVAL_VALID=true
+    elif [[ "$ALLOW_HOLLOW" == true && "$(override_eligible "codeant-ai[bot]")" == true ]]; then
+      CA_APPROVAL_VALID=true
+      echo "[merge-gate] --allow-hollow-approval: counting CodeAnt APPROVED on ${HEAD_SHA:0:7} despite no substantive review evidence ($(substance_reasons "codeant-ai[bot]"))." >&2
+    else
+      CA_HOLLOW=true
+    fi
+  fi
+
+  if [[ "$CR_APPROVAL_VALID" == true || "$CA_APPROVAL_VALID" == true ]]; then
+    CR_PATH_APPROVED_ON_HEAD=true
+  fi
+fi
+
 # Path-specific checks.
-# Default false — only the cr) branch below computes a meaningful value.
+# Default false — the cr) and bugbot) paths set a meaningful value.
 PRIMARY_REVIEW_MET=false
 case "$REVIEWER" in
   cr)
 
-    # Require 1 explicit CodeRabbit APPROVED on HEAD (SHA freshness in the jq filter).
-    # Retraction: CHANGES_REQUESTED newer than APPROVED on same SHA invalidates approval.
-    LATEST_CR_APPROVED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
-      [.[]?
-        | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha and .state == "APPROVED")
-        | .submitted_at]
-      | sort | last // ""')
-    LATEST_CR_CHANGES_REQUESTED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
-      [.[]?
-        | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha and .state == "CHANGES_REQUESTED")
-        | .submitted_at]
-      | sort | last // ""')
-    APPROVED_CR_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
-      [.[]? | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha and .state == "APPROVED")]
-      | length')
-    TOTAL_CR_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
-      [.[]? | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha)]
-      | length')
-
-    LATEST_CA_APPROVED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
-      [.[]?
-        | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha and .state == "APPROVED")
-        | .submitted_at]
-      | sort | last // ""')
-    LATEST_CA_CHANGES_REQUESTED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
-      [.[]?
-        | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha and .state == "CHANGES_REQUESTED")
-        | .submitted_at]
-      | sort | last // ""')
-    APPROVED_CA_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
-      [.[]? | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha and .state == "APPROVED")]
-      | length')
-    TOTAL_CA_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
-      [.[]? | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha)]
-      | length')
-
-    # Retraction: later CHANGES_REQUESTED on same SHA invalidates APPROVED (ISO timestamps).
-    # Freshness guard (issue #836): GitHub retargets commit_id on force-push, so a
-    # pre-push CHANGES_REQUESTED can appear on HEAD while predating the commit.
-    # Only treat as retraction if the CHANGES_REQUESTED is itself fresh
-    # (submitted_at >= LAST_COMMIT_TS). When LAST_COMMIT_TS is unknown, skip
-    # retraction — the approval's own freshness check will block via
-    # CR/CA_APPROVAL_FRESHNESS_UNKNOWN.
-    CR_RETRACTED=false
-    if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && -n "$LATEST_CR_CHANGES_REQUESTED_AT" && -n "$LATEST_CR_APPROVED_AT" ]]; then
-      if [[ "$(norm_ts "$LATEST_CR_CHANGES_REQUESTED_AT")" > "$(norm_ts "$LATEST_CR_APPROVED_AT")" ]]; then
-        if [[ -n "$LAST_COMMIT_TS" && ! "$(norm_ts "$LATEST_CR_CHANGES_REQUESTED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
-          CR_RETRACTED=true
-        fi
-      fi
-    fi
-    CA_RETRACTED=false
-    if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && -n "$LATEST_CA_CHANGES_REQUESTED_AT" && -n "$LATEST_CA_APPROVED_AT" ]]; then
-      if [[ "$(norm_ts "$LATEST_CA_CHANGES_REQUESTED_AT")" > "$(norm_ts "$LATEST_CA_APPROVED_AT")" ]]; then
-        if [[ -n "$LAST_COMMIT_TS" && ! "$(norm_ts "$LATEST_CA_CHANGES_REQUESTED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
-          CA_RETRACTED=true
-        fi
-      fi
-    fi
-
-    # Stale-approval guard (issue #836): GitHub retargets commit_id on force-push
-    # but does NOT update submitted_at. An approval whose submitted_at predates
-    # the HEAD commit's committer date was submitted before the current commit
-    # and must not count even when commit_id matches. Equal timestamps are
-    # accepted (submitted_at >= LAST_COMMIT_TS). Use norm_ts for comparisons
-    # to handle mixed Z/+00:00 UTC suffixes (issue #836, BugBot round 5).
-    #
-    # Fail-closed (issue #836): when LAST_COMMIT_TS is empty (HEAD timestamp API
-    # failure) we CANNOT verify freshness, so qualifying approvals do NOT satisfy
-    # the gate. Callers poll every ~60 s, so a transient API failure self-heals
-    # on the next cycle without wedging a merge indefinitely.
-    CR_APPROVAL_STALE=false
-    CR_APPROVAL_FRESHNESS_UNKNOWN=false
-    # Separate flag for missing submitted_at (distinct from LAST_COMMIT_TS missing):
-    # the approval's timestamp is absent — different cause, different user message.
-    CR_APPROVAL_SUBMITTED_AT_MISSING=false
-    if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && "$CR_RETRACTED" == false ]]; then
-      if [[ -z "$LAST_COMMIT_TS" ]]; then
-        CR_APPROVAL_FRESHNESS_UNKNOWN=true
-      elif [[ -z "$LATEST_CR_APPROVED_AT" ]]; then
-        # submitted_at is missing from the approval itself (not a transient API
-        # failure) — cannot verify freshness (fail-closed, issue #836).
-        CR_APPROVAL_SUBMITTED_AT_MISSING=true
-      elif [[ "$(norm_ts "$LATEST_CR_APPROVED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
-        CR_APPROVAL_STALE=true
-      fi
-    fi
-    CA_APPROVAL_STALE=false
-    CA_APPROVAL_FRESHNESS_UNKNOWN=false
-    CA_APPROVAL_SUBMITTED_AT_MISSING=false
-    if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && "$CA_RETRACTED" == false ]]; then
-      if [[ -z "$LAST_COMMIT_TS" ]]; then
-        CA_APPROVAL_FRESHNESS_UNKNOWN=true
-      elif [[ -z "$LATEST_CA_APPROVED_AT" ]]; then
-        CA_APPROVAL_SUBMITTED_AT_MISSING=true
-      elif [[ "$(norm_ts "$LATEST_CA_APPROVED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
-        CA_APPROVAL_STALE=true
-      fi
-    fi
-
-    # Review-substance verdict per bot (issue #875). `counts_as_coverage` folds
-    # temporal inversion, capability failure, self-report SHA mismatch and
-    # footprint substance into one boolean; `disqualified_by` carries the reasons
-    # so the missing[] entry can say WHY rather than "need 1 approval".
-    substance_ok() { # <login>
-      echo "$REVIEW_EVIDENCE" | jq -e --arg l "$1" \
-        '.reviewers[$l].counts_as_coverage // false' >/dev/null 2>&1 && echo true || echo false
-    }
-    substance_reasons() { # <login> — human-readable, comma-joined
-      echo "$REVIEW_EVIDENCE" | jq -r --arg l "$1" '
-        (.reviewers[$l] // {}) as $r
-        | [ ($r.disqualified_by // [])[]
-            | if . == "temporal_inversion" then
-                "approved before \($l) announced it had started reviewing"
-              elif . == "capability_failure" then
-                "\($l) reported it could not review this commit"
-              elif . == "self_report_mismatch" then
-                "\($l)'"'"'s own status comment names \(($r.status_comment_shas // []) | join(", ")) — not this SHA"
-              else
-                "no substantive review footprint (body \($r.body_len // 0) chars, \($r.inline_comments_on_head // 0) inline comment(s), no status comment naming this SHA)"
-              end ]
-        | join("; ")' 2>/dev/null || echo "no substantive review footprint"
-    }
-
-    # --allow-hollow-approval covers exactly ONE disqualifier: the approval left
-    # no substantive footprint, and a human is saying they read the diff instead.
-    # It must NOT wave through an integrity failure — an approval that names a
-    # different SHA, predates the bot's own start marker, or follows that bot
-    # saying it could not review is not "unevidenced", it is evidence AGAINST a
-    # review having happened, and no per-PR override should launder it.
-    # Fail-closed: any jq failure (missing/unparseable evidence) yields false.
-    override_eligible() { # <login>
-      echo "$REVIEW_EVIDENCE" | jq -e --arg l "$1" \
-        '((.reviewers[$l].disqualified_by // []) - ["no_substantive_footprint"]) | length == 0' \
-        >/dev/null 2>&1 && echo true || echo false
-    }
-
-    # Stale-approval redemption (issue #876). CodeAnt PATCHes its EXISTING review
-    # object on a re-review — same review id, commit_id correctly advanced to the
-    # new HEAD, submitted_at frozen at the original submission — and GitHub treats
-    # submitted_at as immutable creation time. So a genuinely completed post-push
-    # re-review reads as #836-stale and the gate wedges (auerbachb/skingod PR
-    # #2596: 8 poll ticks, 15+ minutes, on a review that had demonstrably run).
-    #
-    # The redemption term is external_evidence_on_head, NOT the reviewer's
-    # identity. "CodeAnt's submitted_at is unreliable, so skip staleness for
-    # CodeAnt" would re-open exactly the hole #875 closed the same night — that
-    # bot also emits genuinely hollow approvals (bodylen=0, four in one second,
-    # one approving a commit that did not exist for another 16 minutes). A stale
-    # timestamp may be redeemed by evidence on the current SHA; it is never
-    # waived by who submitted it. CodeRabbit gets the identical treatment.
-    #
-    # Nor is CodeAnt's own "finished running the review" notice the redeemer: it
-    # is a fixed, content-free string, so accepting it would let a bot certify
-    # its own freshness with a constant. external_evidence_on_head requires a
-    # SUBSTANTIVE footprint anchored to HEAD and produced OUTSIDE the review
-    # object whose timestamp is in doubt (review-substance.sh):
-    #   - inline diff comments with commit_id AND original_commit_id == HEAD, or
-    #   - a >= min_chars conversation comment naming HEAD's SHA that is not a
-    #     capability-failure notice, or
-    #   - a substantive non-APPROVED review on HEAD with submitted_at >= push.
-    # Each is anchored to the post-push commit, and the approval's own body is
-    # excluded by construction — an approval can never redeem its own timestamp.
-    #
-    # Fail-closed: any jq failure (missing/unparseable evidence) yields false, so
-    # a broken evaluator can only withhold redemption, never grant it.
-    external_evidence_ok() { # <login>
-      echo "$REVIEW_EVIDENCE" | jq -e --arg l "$1" \
-        '.reviewers[$l].external_evidence_on_head // false' >/dev/null 2>&1 && echo true || echo false
-    }
-
-    CR_SUBSTANTIVE=$(substance_ok "coderabbitai[bot]")
-    CA_SUBSTANTIVE=$(substance_ok "codeant-ai[bot]")
-
-    # <P>_APPROVAL_STALE above is the unchanged #836 norm_ts verdict and stays
-    # that way — redemption is a SEPARATE, separately-named term rather than a
-    # loosening of the ordering rule, so the timestamp comparison keeps exactly
-    # one meaning. <P>_APPROVAL_STALE_BLOCKING is what the rest of the path
-    # consumes. Redemption cannot fire unless the approval is stale in the first
-    # place, so the fresh path is byte-for-byte unaffected.
-    CR_STALE_REDEEMED=false
-    CA_STALE_REDEEMED=false
-    if [[ "$CR_APPROVAL_STALE" == true && "$(external_evidence_ok "coderabbitai[bot]")" == true ]]; then
-      CR_STALE_REDEEMED=true
-      echo "[merge-gate] CodeRabbit APPROVED on ${HEAD_SHA:0:7} has a stale submitted_at ($LATEST_CR_APPROVED_AT < $LAST_COMMIT_TS) but left substantive evidence on this SHA outside the review object — counting it as fresh (issue #876)." >&2
-    fi
-    if [[ "$CA_APPROVAL_STALE" == true && "$(external_evidence_ok "codeant-ai[bot]")" == true ]]; then
-      CA_STALE_REDEEMED=true
-      echo "[merge-gate] CodeAnt APPROVED on ${HEAD_SHA:0:7} has a stale submitted_at ($LATEST_CA_APPROVED_AT < $LAST_COMMIT_TS) but left substantive evidence on this SHA outside the review object — in-place re-review edit, counting it as fresh (issue #876)." >&2
-    fi
-    CR_APPROVAL_STALE_BLOCKING=false
-    CA_APPROVAL_STALE_BLOCKING=false
-    if [[ "$CR_APPROVAL_STALE" == true && "$CR_STALE_REDEEMED" == false ]]; then
-      CR_APPROVAL_STALE_BLOCKING=true
-    fi
-    if [[ "$CA_APPROVAL_STALE" == true && "$CA_STALE_REDEEMED" == false ]]; then
-      CA_APPROVAL_STALE_BLOCKING=true
-    fi
-
-    # CR_HOLLOW / CA_HOLLOW: the approval cleared every pre-#875 check (present,
-    # fresh, not retracted) but nothing evidences that a review happened. Kept
-    # distinct from "absent" so callers know to wait for the reviewer's real pass
-    # rather than conclude no approval exists.
-    CR_APPROVAL_VALID=false
-    CR_HOLLOW=false
-    if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && "$CR_RETRACTED" == false \
-          && "$CR_APPROVAL_STALE_BLOCKING" == false && "$CR_APPROVAL_FRESHNESS_UNKNOWN" == false \
-          && "$CR_APPROVAL_SUBMITTED_AT_MISSING" == false ]]; then
-      if [[ "$CR_SUBSTANTIVE" == true ]]; then
-        CR_APPROVAL_VALID=true
-      elif [[ "$ALLOW_HOLLOW" == true && "$(override_eligible "coderabbitai[bot]")" == true ]]; then
-        CR_APPROVAL_VALID=true
-        echo "[merge-gate] --allow-hollow-approval: counting CodeRabbit APPROVED on ${HEAD_SHA:0:7} despite no substantive review evidence ($(substance_reasons "coderabbitai[bot]"))." >&2
-      else
-        CR_HOLLOW=true
-      fi
-    fi
-    CA_APPROVAL_VALID=false
-    CA_HOLLOW=false
-    if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && "$CA_RETRACTED" == false \
-          && "$CA_APPROVAL_STALE_BLOCKING" == false && "$CA_APPROVAL_FRESHNESS_UNKNOWN" == false \
-          && "$CA_APPROVAL_SUBMITTED_AT_MISSING" == false ]]; then
-      if [[ "$CA_SUBSTANTIVE" == true ]]; then
-        CA_APPROVAL_VALID=true
-      elif [[ "$ALLOW_HOLLOW" == true && "$(override_eligible "codeant-ai[bot]")" == true ]]; then
-        CA_APPROVAL_VALID=true
-        echo "[merge-gate] --allow-hollow-approval: counting CodeAnt APPROVED on ${HEAD_SHA:0:7} despite no substantive review evidence ($(substance_reasons "codeant-ai[bot]"))." >&2
-      else
-        CA_HOLLOW=true
-      fi
-    fi
-
-    PRIMARY_REVIEW_MET=false
-    if [[ "$CR_APPROVAL_VALID" == true || "$CA_APPROVAL_VALID" == true ]]; then
-      PRIMARY_REVIEW_MET=true
-    fi
+    # Set PRIMARY_REVIEW_MET from the shared pre-case detection block (issue #865).
+    # All CR/CA approval variables (CR_APPROVAL_VALID, CA_APPROVAL_VALID, etc.)
+    # were computed there for both the cr and bugbot paths.
+    PRIMARY_REVIEW_MET=$CR_PATH_APPROVED_ON_HEAD
 
     # Track whether the CA stale message was emitted here, to prevent the
     # supplemental CodeAnt gate below from adding a duplicate entry.
@@ -1098,112 +1141,121 @@ case "$REVIEWER" in
     ;;
 
   bugbot)
-    # BugBot clean pass (issue #844 — aligned with bugbot.md "Completion signal"):
-    # either a cursor[bot] review object on current HEAD (original path), OR a
-    # completed Cursor Bugbot check-run with conclusion:success on HEAD (the
-    # "silent pass" shape — BugBot passes cleanly but posts no review object).
-    # Only conclusion:success counts; conclusion:neutral means BugBot posted findings
-    # and still requires a review object. Unresolved BugBot threads are caught by
-    # the universal unresolved-thread gate above.
-    BB_REVIEWS_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
-      [.[]? | select(.user.login == "cursor[bot]" and .commit_id == $sha)] | length')
+    # Issue #865: a fresh CR-path APPROVED on the current HEAD SHA satisfies the
+    # gate even when the reviewer is sticky-bugbot. The sticky pointer in
+    # session-state.json remains unchanged; only the gate outcome changes.
+    # All freshness, retraction, and substance guards (#836, #875, #876, #893)
+    # apply — set in the shared pre-case block above.
+    if [[ "$CR_PATH_APPROVED_ON_HEAD" == true ]]; then
+      PRIMARY_REVIEW_MET=true
+    else
+      # BugBot clean pass (issue #844 — aligned with bugbot.md "Completion signal"):
+      # either a cursor[bot] review object on current HEAD (original path), OR a
+      # completed Cursor Bugbot check-run with conclusion:success on HEAD (the
+      # "silent pass" shape — BugBot passes cleanly but posts no review object).
+      # Only conclusion:success counts; conclusion:neutral means BugBot posted findings
+      # and still requires a review object. Unresolved BugBot threads are caught by
+      # the universal unresolved-thread gate above.
+      BB_REVIEWS_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
+        [.[]? | select(.user.login == "cursor[bot]" and .commit_id == $sha)] | length')
 
-    # Failure-phrase scan across all cursor[bot] comment endpoints (mirrors the
-    # is_failure_text regex in escalate-review.sh). A success check-run accompanied
-    # by a failure-phrase comment is NOT a clean pass (bugbot.md "BugBot failure
-    # detection"). Scan PR comments + issue/conversation comments; review bodies
-    # are handled inside the review-object path below.
-    # Freshness filter (issue #844 fix): only comments posted AFTER the HEAD commit
-    # count as blocking. Stale failure-phrase comments from a prior push must not
-    # strand the gate after a fresh success check-run arrives. Fail-open when
-    # LAST_COMMIT_TS is unknown; fail-closed when the comment has no created_at.
-    BB_HAS_FAILURE_COMMENT=$(
-      { printf '%s\n' "$PR_COMMENTS_JSON"; printf '%s\n' "$ISSUE_COMMENTS_JSON"; } | jq -rs --arg after "${LAST_COMMIT_TS:-}" '
-        def is_failure_text: test("couldn'"'"'t run|could not run|usage limit|usage or spend limit"; "i");
-        add // [] | [.[]? | select(.user.login == "cursor[bot]")
-            | select((.body // "") | is_failure_text)
-            | select(if $after == "" then true
-                     elif (.created_at // "") == "" then true
-                     else .created_at > $after end)]
-        | length > 0')
+      # Failure-phrase scan across all cursor[bot] comment endpoints (mirrors the
+      # is_failure_text regex in escalate-review.sh). A success check-run accompanied
+      # by a failure-phrase comment is NOT a clean pass (bugbot.md "BugBot failure
+      # detection"). Scan PR comments + issue/conversation comments; review bodies
+      # are handled inside the review-object path below.
+      # Freshness filter (issue #844 fix): only comments posted AFTER the HEAD commit
+      # count as blocking. Stale failure-phrase comments from a prior push must not
+      # strand the gate after a fresh success check-run arrives. Fail-open when
+      # LAST_COMMIT_TS is unknown; fail-closed when the comment has no created_at.
+      BB_HAS_FAILURE_COMMENT=$(
+        { printf '%s\n' "$PR_COMMENTS_JSON"; printf '%s\n' "$ISSUE_COMMENTS_JSON"; } | jq -rs --arg after "${LAST_COMMIT_TS:-}" '
+          def is_failure_text: test("couldn'"'"'t run|could not run|usage limit|usage or spend limit"; "i");
+          add // [] | [.[]? | select(.user.login == "cursor[bot]")
+              | select((.body // "") | is_failure_text)
+              | select(if $after == "" then true
+                       elif (.created_at // "") == "" then true
+                       else .created_at > $after end)]
+          | length > 0')
 
-    # Check-run-based clean pass (issue #844): Cursor Bugbot check-run with
-    # conclusion:success on HEAD, no failure-phrase cursor[bot] comment, and
-    # freshness (completed_at/started_at >= LAST_COMMIT_TS). Read from the
-    # already-deduped HEAD-scoped CHECK_RUNS_JSON — no new gh api fetch.
-    # Only evaluated when no review object exists; if a review object is present,
-    # the review-object path below applies (and may add its own MISSING entries).
-    BB_CHECK_CLEAN=false
-    BB_CHECK_FRESHNESS_ERR=false
-    if [[ "$BB_REVIEWS_ON_HEAD" -lt 1 && "$BB_HAS_FAILURE_COMMENT" != "true" ]]; then
-      BB_CHECK_RUN=$(echo "$CHECK_RUNS_JSON" | jq -c '
-        [.check_runs[]? | select((.name // "") == "Cursor Bugbot")] | last // empty')
-      if [[ -n "$BB_CHECK_RUN" ]]; then
-        BB_CHECK_CONCLUSION=$(echo "$BB_CHECK_RUN" | jq -r '.conclusion // ""')
-        BB_CHECK_STATUS=$(echo "$BB_CHECK_RUN" | jq -r '.status // ""')
-        BB_CHECK_TS=$(echo "$BB_CHECK_RUN" | jq -r '(.completed_at // .started_at // "")')
-        if [[ "$BB_CHECK_STATUS" == "completed" && "$BB_CHECK_CONCLUSION" == "success" ]]; then
-          if [[ -z "$LAST_COMMIT_TS" ]]; then
-            # Fail-closed: cannot verify freshness without HEAD committer date.
-            # Callers poll every ~60 s, so a transient API failure self-heals.
-            MISSING+=("cannot verify BugBot check-run freshness — HEAD commit timestamp unavailable; retrying next cycle")
-            BB_CHECK_FRESHNESS_ERR=true
-          elif [[ -z "$BB_CHECK_TS" ]]; then
-            # Fail-closed: cannot verify freshness without check-run timestamp
-            # (mirrors CodeAnt supplemental gate — empty completed_at/started_at
-            # never counts as clean when LAST_COMMIT_TS is known).
-            MISSING+=("cannot verify BugBot check-run freshness — completed_at/started_at unavailable; retrying next cycle")
-            BB_CHECK_FRESHNESS_ERR=true
-          elif [[ "$(norm_ts "$BB_CHECK_TS")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
-            # check-run completed before the HEAD commit — stale (force-push retargeting
-            # or a prior push's run). Report explicitly so callers know to wait for a
-            # new run rather than interpret as absent.
-            MISSING+=("BugBot check-run on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (stale) — wait for re-run or post @cursor review")
-            BB_CHECK_FRESHNESS_ERR=true
-          else
-            # Fresh success check-run, no failure comments — clean silent pass.
-            BB_CHECK_CLEAN=true
+      # Check-run-based clean pass (issue #844): Cursor Bugbot check-run with
+      # conclusion:success on HEAD, no failure-phrase cursor[bot] comment, and
+      # freshness (completed_at/started_at >= LAST_COMMIT_TS). Read from the
+      # already-deduped HEAD-scoped CHECK_RUNS_JSON — no new gh api fetch.
+      # Only evaluated when no review object exists; if a review object is present,
+      # the review-object path below applies (and may add its own MISSING entries).
+      BB_CHECK_CLEAN=false
+      BB_CHECK_FRESHNESS_ERR=false
+      if [[ "$BB_REVIEWS_ON_HEAD" -lt 1 && "$BB_HAS_FAILURE_COMMENT" != "true" ]]; then
+        BB_CHECK_RUN=$(echo "$CHECK_RUNS_JSON" | jq -c '
+          [.check_runs[]? | select((.name // "") == "Cursor Bugbot")] | last // empty')
+        if [[ -n "$BB_CHECK_RUN" ]]; then
+          BB_CHECK_CONCLUSION=$(echo "$BB_CHECK_RUN" | jq -r '.conclusion // ""')
+          BB_CHECK_STATUS=$(echo "$BB_CHECK_RUN" | jq -r '.status // ""')
+          BB_CHECK_TS=$(echo "$BB_CHECK_RUN" | jq -r '(.completed_at // .started_at // "")')
+          if [[ "$BB_CHECK_STATUS" == "completed" && "$BB_CHECK_CONCLUSION" == "success" ]]; then
+            if [[ -z "$LAST_COMMIT_TS" ]]; then
+              # Fail-closed: cannot verify freshness without HEAD committer date.
+              # Callers poll every ~60 s, so a transient API failure self-heals.
+              MISSING+=("cannot verify BugBot check-run freshness — HEAD commit timestamp unavailable; retrying next cycle")
+              BB_CHECK_FRESHNESS_ERR=true
+            elif [[ -z "$BB_CHECK_TS" ]]; then
+              # Fail-closed: cannot verify freshness without check-run timestamp
+              # (mirrors CodeAnt supplemental gate — empty completed_at/started_at
+              # never counts as clean when LAST_COMMIT_TS is known).
+              MISSING+=("cannot verify BugBot check-run freshness — completed_at/started_at unavailable; retrying next cycle")
+              BB_CHECK_FRESHNESS_ERR=true
+            elif [[ "$(norm_ts "$BB_CHECK_TS")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
+              # check-run completed before the HEAD commit — stale (force-push retargeting
+              # or a prior push's run). Report explicitly so callers know to wait for a
+              # new run rather than interpret as absent.
+              MISSING+=("BugBot check-run on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (stale) — wait for re-run or post @cursor review")
+              BB_CHECK_FRESHNESS_ERR=true
+            else
+              # Fresh success check-run, no failure comments — clean silent pass.
+              BB_CHECK_CLEAN=true
+            fi
           fi
         fi
       fi
-    fi
 
-    if [[ "$BB_REVIEWS_ON_HEAD" -lt 1 ]]; then
-      if [[ "$BB_CHECK_CLEAN" != true && "$BB_CHECK_FRESHNESS_ERR" != true ]]; then
-        # No review object, no clean check-run, no freshness error already reported.
-        MISSING+=("no BugBot review on HEAD ${HEAD_SHA:0:7}")
-      fi
-      # BB_CHECK_CLEAN=true  → silent-pass check-run satisfies the gate (issue #844)
-      # BB_CHECK_FRESHNESS_ERR=true → freshness error already added to MISSING above
-    else
-      LATEST_BB=$(echo "$REVIEWS_JSON" | jq -c --arg sha "$HEAD_SHA" '
-        [.[]? | select(.user.login == "cursor[bot]" and .commit_id == $sha)]
-        | sort_by(.submitted_at) | last // empty')
-      if [[ -n "$LATEST_BB" ]]; then
-        BB_SUBMITTED_AT=$(echo "$LATEST_BB" | jq -r '.submitted_at // ""')
-        # Stale-approval guard (issue #836): same retargeting risk as CR/CodeAnt —
-        # BugBot review commit_id can be advanced by GitHub on force-push while
-        # submitted_at stays at the pre-push time.
-        # Fail-closed: when LAST_COMMIT_TS is empty we cannot verify freshness,
-        # so the review does not satisfy the gate (callers poll every ~60 s).
-        if [[ -z "$LAST_COMMIT_TS" ]]; then
-          MISSING+=("cannot verify BugBot review freshness — HEAD commit timestamp unavailable; retrying next cycle")
-        elif [[ -z "$BB_SUBMITTED_AT" ]]; then
-          # submitted_at is missing — cannot verify freshness without a timestamp
-          # to compare against; treat as unknown (fail-closed, issue #836).
-          MISSING+=("cannot verify BugBot review freshness — submitted_at unavailable; retrying next cycle")
-        elif [[ "$(norm_ts "$BB_SUBMITTED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
-          MISSING+=("BugBot review on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — re-review required; post @cursor review")
-        else
-          BB_STATE=$(echo "$LATEST_BB" | jq -r '.state // ""')
-          # Always check for inline findings — BugBot can post inline diff comments
-          # without a review body, so gating on body length would miss them.
-          # Filter by original_commit_id == sha to exclude stale comments GitHub
-          # "moves" to the new HEAD when commit_id advances but the diff line persists.
-          INLINE_BB=$(echo "$PR_COMMENTS_JSON" | jq --arg sha "$HEAD_SHA" '
-            [.[]? | select(.user.login == "cursor[bot]" and .commit_id == $sha and (.original_commit_id // .commit_id) == $sha)] | length')
-          if [[ "$BB_STATE" == "CHANGES_REQUESTED" ]] || [[ "$INLINE_BB" -gt 0 ]]; then
-            MISSING+=("latest BugBot review on HEAD has findings ($INLINE_BB inline)")
+      if [[ "$BB_REVIEWS_ON_HEAD" -lt 1 ]]; then
+        if [[ "$BB_CHECK_CLEAN" != true && "$BB_CHECK_FRESHNESS_ERR" != true ]]; then
+          # No review object, no clean check-run, no freshness error already reported.
+          MISSING+=("no BugBot review on HEAD ${HEAD_SHA:0:7}")
+        fi
+        # BB_CHECK_CLEAN=true  → silent-pass check-run satisfies the gate (issue #844)
+        # BB_CHECK_FRESHNESS_ERR=true → freshness error already added to MISSING above
+      else
+        LATEST_BB=$(echo "$REVIEWS_JSON" | jq -c --arg sha "$HEAD_SHA" '
+          [.[]? | select(.user.login == "cursor[bot]" and .commit_id == $sha)]
+          | sort_by(.submitted_at) | last // empty')
+        if [[ -n "$LATEST_BB" ]]; then
+          BB_SUBMITTED_AT=$(echo "$LATEST_BB" | jq -r '.submitted_at // ""')
+          # Stale-approval guard (issue #836): same retargeting risk as CR/CodeAnt —
+          # BugBot review commit_id can be advanced by GitHub on force-push while
+          # submitted_at stays at the pre-push time.
+          # Fail-closed: when LAST_COMMIT_TS is empty we cannot verify freshness,
+          # so the review does not satisfy the gate (callers poll every ~60 s).
+          if [[ -z "$LAST_COMMIT_TS" ]]; then
+            MISSING+=("cannot verify BugBot review freshness — HEAD commit timestamp unavailable; retrying next cycle")
+          elif [[ -z "$BB_SUBMITTED_AT" ]]; then
+            # submitted_at is missing — cannot verify freshness without a timestamp
+            # to compare against; treat as unknown (fail-closed, issue #836).
+            MISSING+=("cannot verify BugBot review freshness — submitted_at unavailable; retrying next cycle")
+          elif [[ "$(norm_ts "$BB_SUBMITTED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
+            MISSING+=("BugBot review on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — re-review required; post @cursor review")
+          else
+            BB_STATE=$(echo "$LATEST_BB" | jq -r '.state // ""')
+            # Always check for inline findings — BugBot can post inline diff comments
+            # without a review body, so gating on body length would miss them.
+            # Filter by original_commit_id == sha to exclude stale comments GitHub
+            # "moves" to the new HEAD when commit_id advances but the diff line persists.
+            INLINE_BB=$(echo "$PR_COMMENTS_JSON" | jq --arg sha "$HEAD_SHA" '
+              [.[]? | select(.user.login == "cursor[bot]" and .commit_id == $sha and (.original_commit_id // .commit_id) == $sha)] | length')
+            if [[ "$BB_STATE" == "CHANGES_REQUESTED" ]] || [[ "$INLINE_BB" -gt 0 ]]; then
+              MISSING+=("latest BugBot review on HEAD has findings ($INLINE_BB inline)")
+            fi
           fi
         fi
       fi
@@ -1360,6 +1412,12 @@ fi
 STALE_JSON=$(jq -n --argjson c "${STALE_BOT_CHANGES_COUNT:-0}" '$c')
 
 MISSING_JSON=$(printf '%s\n' "${MISSING[@]:-}" | jq -R . | jq -cs 'map(select(length > 0))')
+
+# review_evidence is scoped to the cr path in the output (comment at line ~99).
+# The evaluator runs on the bugbot path for bypass computation but must not
+# surface its results in the JSON — a failed evaluator must never block a PR
+# over a guard the bugbot path never consults.
+[[ "$REVIEWER" != "cr" ]] && REVIEW_EVIDENCE='{}'
 
 emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON" "${UNRESOLVED_TOTAL:-0}" "$PRIMARY_REVIEW_MET" "$AUTHORSHIP" "$REVIEW_EVIDENCE"
 
