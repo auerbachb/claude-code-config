@@ -30,6 +30,8 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `review-substance-evidence.md` — why a bot APPROVED requires a substantive review footprint; hollow APPROVED failure mode and evidence checks in `merge-gate.sh` (#875)
 - `wrap-fixpr-delegation.md` — `/wrap` Step 2.1 → full `/fixpr` recovery handoff contract
 - `state-file-contracts.md` — expanded scoping, write-lock, migration, and field-type mechanics for `session-state.json` + handoffs (`handoff-files.md`; #625, #638, #639, #651, #655, #682, #687, #704)
+- `session-state-collector.md` — the single definition of what a handoff *reads*, shared by `/pm-handoff` (Claude-native rendering) and `/pause` (portable rendering); one collector, two renderers (#901)
+- `portable-handoff.md` — the `/pause` artifact: naming, atomic single-writer write, why it is a sibling to the PR-scoped JSON handoffs rather than one of them, and how `portable-handoff-lint.sh` enforces portability (#901)
 - `authorship-guard.md` — `pr-authorship.sh` exit-code semantics, the three shared-script fail-safes, and `--allow-nonauthor` override plumbing (`safety.md` §Authorship; #733)
 - `issue-claim.md` — `issue-claim.sh` mechanism: the three GitHub claim artifacts, why the holder token is finer-grained than the login, block-at-holder / release-at-account, staleness, the `--allow-claimed` override, and every call site (`issue-planning.md` step 0; #873)
 - `autofile-dedup.md` — duplicate-check thresholds for autonomous issue filing (`/wrap` Phase 3, `/harness-audit` Step 7); strong/weak/none classification, exact-artifact dedup, and the comment-vs-file rule
