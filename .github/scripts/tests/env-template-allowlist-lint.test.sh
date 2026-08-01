@@ -66,6 +66,12 @@ inject_dist_tpl() {
   sed -i.bak 's/\.env\.<example|sample|template>/.env.<example|sample|template|dist|tpl>/g' "$file"
 }
 
+# Injects partial drift: adds only |dist after the canonical suffixes (no |tpl).
+inject_dist_only() {
+  local file="$1"
+  sed -i.bak 's/\.env\.<example|sample|template>/.env.<example|sample|template|dist>/g' "$file"
+}
+
 # Removes the canonical token from a file to simulate a missing allow-list.
 remove_prompt_token() {
   local file="$1"
@@ -84,6 +90,10 @@ expect "well-formed repo passes" 0 'env-template-allowlist-lint: OK' noop
 expect "phase-a-fixer with dist|tpl suffix fails" 1 \
   'phase-a-fixer.md' \
   inject_dist_tpl .claude/agents/phase-a-fixer.md
+
+expect "phase-a-fixer with dist-only suffix fails (partial-append gap)" 1 \
+  'phase-a-fixer.md' \
+  inject_dist_only .claude/agents/phase-a-fixer.md
 
 expect "phase-b-reviewer with dist|tpl suffix fails" 1 \
   'phase-b-reviewer.md' \

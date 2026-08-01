@@ -26,7 +26,11 @@ PROMPT_TOKEN='.env.<example|sample|template>'
 PROSE_TOKEN='.env.{example,sample,template}'
 
 # Drifted tokens that must not appear in any .env template-exception clause.
-DRIFTED_TOKENS=('|dist|tpl>' '.env.dist' '.env.tpl')
+# '|dist>' and '|tpl>' close the partial-append gap where only one extra suffix
+# is added after the canonical three (e.g. .env.<example|sample|template|dist>).
+# '|tpl>' is also a substring of '|dist|tpl>', so the combined pattern becomes
+# technically redundant; it is kept for clarity.
+DRIFTED_TOKENS=('|dist|tpl>' '|dist>' '|tpl>' '.env.dist' '.env.tpl')
 
 # All six drifted prompt surfaces (Phase 1 narrowed all of these).
 PROMPT_SURFACES=(
