@@ -100,17 +100,23 @@ GHEOF
 chmod +x "$BIN/gh"
 export HEAD_SHA
 
+# Review bodies are substantive on purpose (issue #875): these fixtures stand in
+# for GENUINE approvals, and the gate now discounts an approval with no evidence
+# that anything read the commit. A body-less fixture here would fail for the
+# wrong reason and stop exercising the freshness logic this file is about.
+APPROVAL_BODY="Actionable comments posted: 0. Reviewed the changed files; no issues found."
+
 # Build a CR (coderabbitai) APPROVED review with configurable submitted_at.
 cr_approved() { # submitted_at
-  jq -cn --arg sha "$HEAD_SHA" --arg ts "$1" \
+  jq -cn --arg sha "$HEAD_SHA" --arg ts "$1" --arg b "$APPROVAL_BODY" \
     '[{user:{login:"coderabbitai[bot]",type:"Bot"},
-       commit_id:$sha, state:"APPROVED", submitted_at:$ts}]'
+       commit_id:$sha, state:"APPROVED", body:$b, submitted_at:$ts}]'
 }
 # Build a CodeAnt (codeant-ai) APPROVED review.
 ca_approved() { # submitted_at
-  jq -cn --arg sha "$HEAD_SHA" --arg ts "$1" \
+  jq -cn --arg sha "$HEAD_SHA" --arg ts "$1" --arg b "$APPROVAL_BODY" \
     '[{user:{login:"codeant-ai[bot]",type:"Bot"},
-       commit_id:$sha, state:"APPROVED", submitted_at:$ts}]'
+       commit_id:$sha, state:"APPROVED", body:$b, submitted_at:$ts}]'
 }
 # Build a BugBot (cursor) review with configurable state and submitted_at.
 bb_review() { # submitted_at state
@@ -225,11 +231,11 @@ check_eq "0"     "$RC"      "(g) bugbot fresh: exit 0"
 # -------------------------------------------------------------------------
 echo "--- (h) CR fresh + CA approval missing submitted_at (supplemental freshness) ---"
 CA_SUBMITTED_AT_MSG="cannot verify CodeAnt approval freshness"
-BOTH_REVIEWS=$(jq -cn --arg sha "$HEAD_SHA" --arg cr_ts "$FRESH_TS" \
+BOTH_REVIEWS=$(jq -cn --arg sha "$HEAD_SHA" --arg cr_ts "$FRESH_TS" --arg b "$APPROVAL_BODY" \
   '[{user:{login:"coderabbitai[bot]",type:"Bot"},
-     commit_id:$sha, state:"APPROVED", submitted_at:$cr_ts},
+     commit_id:$sha, state:"APPROVED", body:$b, submitted_at:$cr_ts},
     {user:{login:"codeant-ai[bot]",type:"Bot"},
-     commit_id:$sha, state:"APPROVED", submitted_at:""}]')
+     commit_id:$sha, state:"APPROVED", body:$b, submitted_at:""}]')
 run_gate cr "$COMMIT_TS" "$BOTH_REVIEWS"
 check_eq "false" "$(met)"   "(h) cr fresh + ca no-ts: met == false"
 check_eq "yes"   "$(missing_has "$CA_SUBMITTED_AT_MSG")" \

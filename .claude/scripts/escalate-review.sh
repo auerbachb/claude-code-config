@@ -123,20 +123,160 @@ fi
 # merge-gate.sh's CR_APPROVAL_VALID / CA_APPROVAL_VALID retraction-aware logic
 # (see merge-gate.sh's `primary_review_met` field) against the PR state already
 # fetched above, so no extra gh API calls are needed.
-PRIMARY_REVIEW_MET="$(jq -r --arg sha "$HEAD_SHA" '
-  def approval_valid(login):
+# Emits the LOGINS whose approval is valid, not just a boolean: the substance
+# guard below has to test the same reviewer on both conditions, and a bare
+# boolean loses which bot it came from (CodeAnt review, PR #883).
+VALID_APPROVERS="$(jq -r --arg sha "$HEAD_SHA" '
+  def approval_valid($login):
     ([.comments.reviews[]?
-      | select(.user.login == login and (.commit_id // "") == $sha and .state == "APPROVED")
+      | select(.user.login == $login and (.commit_id // "") == $sha and .state == "APPROVED")
       | .submitted_at] | sort | last // "") as $approved_at
     | ([.comments.reviews[]?
-      | select(.user.login == login and (.commit_id // "") == $sha and .state == "CHANGES_REQUESTED")
+      | select(.user.login == $login and (.commit_id // "") == $sha and .state == "CHANGES_REQUESTED")
       | .submitted_at] | sort | last // "") as $changes_at
     | ($approved_at != "") and (($changes_at == "") or ($changes_at <= $approved_at));
-  approval_valid("coderabbitai[bot]") or approval_valid("codeant-ai[bot]")
+  . as $doc
+  | [ "coderabbitai[bot]", "codeant-ai[bot]" ]
+  # `. as $l` first: with a `$login`-style parameter jq evaluates the argument
+  # closure against the DEF"s input, so `approval_valid(.)` here would pass the
+  # whole document rather than the login string.
+  | map(. as $l | select($doc | approval_valid($l)))
+  | join(",")
 ' "$STATE_PATH")" || {
   echo "escalate-review.sh: failed to evaluate primary-review-met check" >&2
   exit 4
 }
+PRIMARY_REVIEW_MET=false
+[[ -n "$VALID_APPROVERS" ]] && PRIMARY_REVIEW_MET=true
+
+# Approval FRESHNESS (issue #836), applied here too (BugBot review, PR #883).
+# The check above only asks "exists and not retracted". merge-gate.sh also
+# requires submitted_at not to predate the HEAD commit, because GitHub retargets
+# commit_id onto HEAD after a force-push without touching submitted_at — so a
+# stale approval plus fresh evidence would emit gate_met here while the gate
+# itself stayed blocked, which is the same escalation stall this file exists to
+# prevent. Fetched once, only when an approval actually exists.
+HEAD_COMMIT_TS=""
+if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
+  HEAD_COMMIT_TS="$(gh api "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null | jq -r '.committer.date // ""' 2>/dev/null || echo "")"
+  if [[ -z "$HEAD_COMMIT_TS" ]]; then
+    # Fail closed, matching merge-gate.sh's CR_APPROVAL_FRESHNESS_UNKNOWN: an
+    # unverifiable approval must not short-circuit escalation. Callers re-poll
+    # every ~60 s, so a transient API failure self-heals rather than sticking.
+    PRIMARY_REVIEW_MET=false
+    VALID_APPROVERS=""
+    echo "escalate-review.sh: cannot verify approval freshness — HEAD commit timestamp unavailable; not reporting gate_met (issues #836, #875)" >&2
+  else
+    # Evaluated into a temporary first so a jq FAILURE is distinguishable from a
+    # successful "every approval is stale" (BugBot review, PR #883). Both clear
+    # VALID_APPROVERS, but only one is a degraded run, and silently reporting it
+    # as "no valid approvers" would escalate to a PAID Greptile review on what is
+    # really a tooling fault. The two sibling guards in this block both announce
+    # themselves on stderr; this one used to be the exception.
+    FRESH_APPROVERS=""
+    FRESHNESS_OK=true
+    FRESH_APPROVERS="$(jq -rn --arg sha "$HEAD_SHA" --arg push "$HEAD_COMMIT_TS" \
+      --arg logins "$VALID_APPROVERS" --slurpfile doc "$STATE_PATH" '
+      # Canonicalise before comparing (BugBot review, PR #883): this is a
+      # lexicographic string compare, and "…T10:00:22+00:00" sorts BEFORE
+      # "…T10:00:16Z", so a mixed spelling would mark a fresh approval stale and
+      # withhold gate_met on a PR merge-gate.sh considers fine.
+      #
+      # STRIP the zone suffix, do NOT rewrite it to "Z", and KEEP fractional
+      # seconds — this must reproduce exactly the ordering that norm_ts in
+      # merge-gate.sh produces, because the two scripts implement one rule
+      # (#836) and a caller more permissive than the gate is a bug (BugBot
+      # review on 7de2a4c, PR #883). The earlier form dropped fractions and
+      # appended "Z", diverging in BOTH directions:
+      #   * dropping ".900" made "…49.900Z" and "…49Z" compare EQUAL, so an
+      #     approval the gate rules stale read as fresh here and escalation
+      #     could report gate_met on a PR merge-gate.sh blocks;
+      #   * a fraction retained under a trailing "Z" sorts the WRONG WAY —
+      #     "." (0x2E) is below "Z" (0x5A), so the LATER instant "…49.900Z"
+      #     compares below "…49Z".
+      # With the suffix gone, plain lexicographic order is correct for whole
+      # and fractional seconds alike. canon_ts in review-substance.sh keeps its
+      # own fraction-stripping form: every timestamp it compares passes through
+      # that one function, so it stays internally consistent and is never
+      # compared against a merge-gate value.
+      #
+      # NOTE: this comment sits inside a single-quoted jq program — no
+      # apostrophes, or the quoting ends here and bash mis-parses the block.
+      def canon_ts:
+        (. // "")
+        | if . == "" then ""
+          else sub("(Z|\\+00:00|\\+0000)$"; "")
+          end;
+      ($logins | split(",") | map(select(length > 0))) as $candidates
+      | ($doc[0] // {}) as $d
+      | ($push | canon_ts) as $push_c
+      | [ $candidates[]
+          | . as $l
+          | select(
+              ([ $d.comments.reviews[]?
+                 | select(.user.login == $l and (.commit_id // "") == $sha
+                          and .state == "APPROVED")
+                 | (.submitted_at | canon_ts) ] | sort | last // "") as $approved_at
+              | ($approved_at != "") and ($approved_at >= $push_c)) ]
+      | join(",")')" || FRESHNESS_OK=false
+    if [[ "$FRESHNESS_OK" == "true" ]]; then
+      VALID_APPROVERS="$FRESH_APPROVERS"
+    else
+      VALID_APPROVERS=""
+      echo "escalate-review.sh: approval-freshness filter failed to evaluate (malformed state payload or jq error) — treating every approval as unverifiable; not reporting gate_met (issues #836, #875)" >&2
+    fi
+    PRIMARY_REVIEW_MET=false
+    [[ -n "$VALID_APPROVERS" ]] && PRIMARY_REVIEW_MET=true
+  fi
+fi
+
+# Review-substance guard (issue #875): the check above only asks whether an
+# APPROVED exists on HEAD, not whether anything reviewed it. merge-gate.sh now
+# discounts hollow approvals, so without the same test here a rubber stamp would
+# short-circuit escalation ("gate_met") while the gate itself stays blocked —
+# the PR would sit with no reviewer working on it and no escalation in flight.
+# Same evaluator, same definition, no extra API calls (pr-state.sh already
+# fetched reviews + both comment endpoints).
+if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
+  REVIEW_SUBSTANCE_SH="$(dirname "$0")/review-substance.sh"
+  if [[ ! -x "$REVIEW_SUBSTANCE_SH" ]]; then
+    PRIMARY_REVIEW_MET=false
+    echo "escalate-review.sh: review-substance.sh not found or not executable at $REVIEW_SUBSTANCE_SH — cannot verify that the APPROVED on HEAD represents a real review; not reporting gate_met (issue #875)" >&2
+  else
+    # HEAD_COMMIT_TS was fetched by the freshness guard above and is guaranteed
+    # non-empty here (that guard clears PRIMARY_REVIEW_MET otherwise), so the
+    # evaluator always gets the push_ts its temporal-inversion and
+    # capability-failure signals need.
+    SUBSTANCE_JSON="$(jq -c --arg sha "$HEAD_SHA" --arg push "$HEAD_COMMIT_TS" '{
+        head_sha: $sha,
+        push_ts: $push,
+        reviews: (.comments.reviews // []),
+        pr_comments: (.comments.inline // []),
+        issue_comments: (.comments.conversation // [])
+      }' "$STATE_PATH" 2>/dev/null | "$REVIEW_SUBSTANCE_SH" 2>/dev/null || true)"
+    if [[ -z "$SUBSTANCE_JSON" ]] || ! echo "$SUBSTANCE_JSON" \
+        | jq -e 'type == "object" and (.reviewers | type == "object")' >/dev/null 2>&1; then
+      # Unusable evaluator output. Fail closed to match merge-gate.sh, which
+      # die_local()s on the same condition: claiming gate_met here would stop
+      # escalation on a PR whose gate is simultaneously refusing to pass, leaving
+      # it stalled with no reviewer working on it.
+      PRIMARY_REVIEW_MET=false
+      echo "escalate-review.sh: review-substance.sh produced no usable JSON — cannot verify that the APPROVED on HEAD represents a real review; not reporting gate_met (issue #875)" >&2
+    elif ! echo "$SUBSTANCE_JSON" | jq -e --arg valid "$VALID_APPROVERS" '
+            ($valid | split(",") | map(select(length > 0))) as $v
+            | [ (.substantive // [])[] | select(. as $s | $v | index($s)) ]
+            | length > 0' >/dev/null 2>&1; then
+      # The SAME reviewer must clear both gates (CodeAnt review, PR #883).
+      # Testing `.substantive | length > 0` on its own let a substantive but
+      # RETRACTED CodeRabbit approval satisfy the check while the fresh approval
+      # actually on the table was a hollow CodeAnt stamp — emitting gate_met
+      # while merge-gate.sh rejected both, which strands the PR with no reviewer
+      # working on it and no escalation in flight.
+      PRIMARY_REVIEW_MET=false
+      echo "escalate-review.sh: no reviewer holds BOTH a valid APPROVED on HEAD and substantive review evidence (valid approvals: ${VALID_APPROVERS:-none}; substantive: $(echo "$SUBSTANCE_JSON" | jq -r '(.substantive // []) | join(", ") | if . == "" then "none" else . end'); hollow: $(echo "$SUBSTANCE_JSON" | jq -r '(.hollow // []) | join(", ") | if . == "" then "none" else . end')) — not treating the gate as met (issue #875)" >&2
+    fi
+  fi
+fi
 
 if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
   emit "gate_met"

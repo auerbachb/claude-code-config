@@ -28,8 +28,21 @@
 # When stderr notes stale bot CHANGES_REQUESTED (issue #426), dismiss via
 # dismiss-stale-bot-changes.sh after push — do not treat as a human block.
 #
+# Review-substance guard (issue #875): a bot APPROVED on HEAD is counted as
+#   review coverage only when the reviewer left evidence that it actually read
+#   that commit. Delegated to review-substance.sh, which reports (in order of
+#   decisiveness) temporal inversion — an APPROVED timestamped before that same
+#   reviewer's own "is running the review" marker; a capability-failure notice
+#   ("no PR Review subscription", rate limit, "couldn't run") with no later work;
+#   self-report mismatch — the reviewer's own status comment naming a different
+#   SHA; and finally substance across the reviewer's whole footprint. Body length
+#   alone is deliberately NOT the test: a genuine CodeRabbit APPROVED with
+#   bodylen=0 whose walkthrough named the exact reviewed range must keep passing.
+#   Applied to the CR path only; the full evidence is emitted as `review_evidence`.
+#
 # Usage:
 #   merge-gate.sh <pr_number> [--reviewer cr|bugbot|greptile] [--allow-nonauthor]
+#                             [--allow-hollow-approval]
 #   merge-gate.sh --help
 #
 # Authorship guard (issue #733): a merge is a write, so the gate BLOCKS a
@@ -67,7 +80,8 @@
 #     "stale_bot_changes_requested_count": N,
 #     "unresolved_thread_count": N,
 #     "primary_review_met": true|false,
-#     "authorship": "mine"|"not_mine"|"unknown"
+#     "authorship": "mine"|"not_mine"|"unknown",
+#     "review_evidence": { … }   # review-substance.sh output; {} off the cr path
 #   }
 #
 # `authorship` (issue #733): "mine" when the PR author == the authenticated user,
@@ -82,9 +96,14 @@
 # (and `missing | length`) rather than string-matching the prose (#455 / #479).
 #
 # `primary_review_met` is meaningful only on the `cr` path: true when CodeRabbit
-# OR CodeAnt has a valid (non-retracted) APPROVED review on current HEAD SHA —
-# i.e. the "1 explicit CodeRabbit or CodeAnt APPROVED review" requirement from
+# OR CodeAnt has a valid (non-retracted, fresh, and — since issue #875 —
+# SUBSTANTIVE) APPROVED review on current HEAD SHA — i.e. the "1 explicit
+# CodeRabbit or CodeAnt APPROVED review" requirement from
 # cr-merge-gate.md Step 1 is satisfied, independent of CI/threads/merge-state.
+# The field name and type are unchanged; #875 only stopped an approval that
+# nothing actually reviewed from setting it — the meaning every consumer of this
+# field already assumed. `review_evidence` carries the per-reviewer detail, and
+# `review_evidence.hollow[]` names any approver that was discounted.
 # `false` on the bugbot/greptile paths (not applicable). Consumers that only
 # care "does this PR still need more review" (e.g. escalate-review.sh deciding
 # whether to trigger a paid Greptile review) should key off this field rather
@@ -109,6 +128,16 @@ REVIEWER_OVERRIDE=""
 # not author. --allow-nonauthor suppresses the block only under an explicit
 # per-PR user override. The `authorship` field is emitted regardless.
 ALLOW_NONAUTHOR=false
+# Review-substance guard (issue #875): --allow-hollow-approval lets an approval
+# with no substantive footprint satisfy the primary review requirement anyway.
+# Explicit per-PR user override ONLY — an agent must never pass it on its own.
+# The evidence is still computed, still emitted in `review_evidence`, and the
+# override is announced on stderr, so nothing about the bypass is silent.
+# Scope is deliberately narrow: it covers `no_substantive_footprint` and NOTHING
+# else. Temporal inversion, capability failure and self-report SHA mismatch stay
+# blocking even with the flag — those are not "the bot said nothing", they are
+# the bot's own record contradicting the claim that it reviewed this commit.
+ALLOW_HOLLOW=false
 
 print_usage() {
   awk 'NR == 1 { next } /^$/ { exit } { print }' "$0"
@@ -122,6 +151,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-nonauthor)
       ALLOW_NONAUTHOR=true
+      shift
+      ;;
+    --allow-hollow-approval)
+      ALLOW_HOLLOW=true
       shift
       ;;
     --reviewer)
@@ -169,8 +202,12 @@ fi
 # Helpers
 # --------------------------------------------------------------------------
 emit_json() {
-  # emit_json <met> <reviewer> <path> <missing_json_array> <head_sha> <ci_status_json> <merge_state> <mergeable> <review_decision> <code_owner_bots_json> <human_changes_json_array> <stale_bot_changes_requested_count_number> [unresolved_thread_count_number] [primary_review_met_bool]
+  # emit_json <met> <reviewer> <path> <missing_json_array> <head_sha> <ci_status_json> <merge_state> <mergeable> <review_decision> <code_owner_bots_json> <human_changes_json_array> <stale_bot_changes_requested_count_number> [unresolved_thread_count_number] [primary_review_met_bool] [authorship] [review_evidence_json]
   local met="$1" reviewer="$2" path="$3" missing="$4" head_sha="$5" ci_status="$6" merge_state="$7" mergeable="$8" review_decision="$9" code_owner_bots="${10}" human_changes="${11}" stale_bot_count="${12}" unresolved_thread_count="${13:-0}" primary_review_met="${14:-false}" authorship="${15:-unknown}"
+  # review_evidence (issue #875) — arg 16. Defaulted separately rather than with
+  # ${16:-{}} because a literal `{}` inside brace-default expansion is ambiguous.
+  local review_evidence="${16:-}"
+  if [[ -z "$review_evidence" ]]; then review_evidence='{}'; fi
   jq -cn \
     --argjson met "$met" \
     --arg reviewer "$reviewer" \
@@ -187,7 +224,8 @@ emit_json() {
     --argjson unresolved_thread_count "$unresolved_thread_count" \
     --argjson primary_review_met "$primary_review_met" \
     --arg authorship "$authorship" \
-    '{met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship}'
+    --argjson review_evidence "$review_evidence" \
+    '{met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship, review_evidence: $review_evidence}'
 }
 
 emit_empty_ci() {
@@ -302,11 +340,25 @@ REVIEWS_JSON=$(echo "$REVIEWS_RAW" | jq -s 'add // []')
 if [[ -z "$REVIEWS_JSON" ]] || ! echo "$REVIEWS_JSON" | jq -e . >/dev/null 2>&1; then
   die_api "reviews parse"
 fi
-if ! PR_COMMENTS_JSON=$(gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
+# Both comment endpoints are paginated like reviews above (issue #875, BugBot
+# review). These used to be a single page each, which was survivable while they
+# only fed thread bookkeeping — but they are now the substance evaluator's
+# evidence payload, and a busy PR pushes the walkthrough or the inline findings
+# past comment 100. Losing them there does not merely under-report: it turns a
+# genuine approval hollow and blocks the merge.
+if ! PR_COMMENTS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
   die_api "pull-comments"
 fi
-if ! ISSUE_COMMENTS_JSON=$(gh api "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
+PR_COMMENTS_JSON=$(echo "$PR_COMMENTS_RAW" | jq -s 'add // []')
+if [[ -z "$PR_COMMENTS_JSON" ]] || ! echo "$PR_COMMENTS_JSON" | jq -e . >/dev/null 2>&1; then
+  die_api "pull-comments parse"
+fi
+if ! ISSUE_COMMENTS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
   die_api "issue-comments"
+fi
+ISSUE_COMMENTS_JSON=$(echo "$ISSUE_COMMENTS_RAW" | jq -s 'add // []')
+if [[ -z "$ISSUE_COMMENTS_JSON" ]] || ! echo "$ISSUE_COMMENTS_JSON" | jq -e . >/dev/null 2>&1; then
+  die_api "issue-comments parse"
 fi
 
 # Unresolved review threads via GraphQL (covers all bot authors consistently).
@@ -409,6 +461,38 @@ resolve_reviewer() {
 }
 
 REVIEWER=$(resolve_reviewer)
+
+# Review substance (issue #875) — delegated to review-substance.sh so merge-gate
+# and escalate-review.sh share one definition of "this approval actually read the
+# commit". Pure evaluator over payloads already fetched above: no extra API calls.
+#
+# Scoped to the cr path deliberately. It is only consulted there, and running it
+# everywhere would let an evaluator failure block a BugBot- or Greptile-owned PR
+# over a CR-path concern — a false negative introduced by a guard that path never
+# uses. Off the cr path the field is emitted as {}.
+REVIEW_EVIDENCE='{}'
+if [[ "$REVIEWER" == "cr" ]]; then
+  REVIEW_SUBSTANCE_SH="$(dirname "$0")/review-substance.sh"
+  if [[ ! -x "$REVIEW_SUBSTANCE_SH" ]]; then
+    die_local "review-substance.sh not found or not executable at $REVIEW_SUBSTANCE_SH"
+  fi
+  # The three payloads are piped in, NOT passed as --argjson: a busy PR's comment
+  # JSON runs to ~1 MB and three of those on one command line can exceed ARG_MAX.
+  # printf is a shell builtin writing to a pipe, so no exec limit applies; `jq -s`
+  # then slurps the three values in order.
+  REVIEW_EVIDENCE=$(printf '%s\n%s\n%s\n' "$REVIEWS_JSON" "$PR_COMMENTS_JSON" "$ISSUE_COMMENTS_JSON" \
+    | jq -cs --arg sha "$HEAD_SHA" --arg push "${LAST_COMMIT_TS:-}" \
+        '{head_sha: $sha, push_ts: $push, reviews: .[0], pr_comments: .[1], issue_comments: .[2]}' \
+        2>/dev/null \
+    | "$REVIEW_SUBSTANCE_SH" 2>/dev/null || true)
+  # Structure, not just parseability: substance_ok reads .reviewers[<login>], and
+  # a well-formed-but-wrong shape (say a bare string) would silently read as
+  # "not substantive" and block every approval.
+  if [[ -z "$REVIEW_EVIDENCE" ]] || ! echo "$REVIEW_EVIDENCE" \
+      | jq -e 'type == "object" and (.reviewers | type == "object")' >/dev/null 2>&1; then
+    die_local "review-substance.sh produced no usable JSON (expected an object with a .reviewers object)"
+  fi
+fi
 
 # --------------------------------------------------------------------------
 # Gate evaluation — collect MISSING reasons; determinism comes from jq data paths.
@@ -543,9 +627,18 @@ fi
 # purely lexicographic; Z (ASCII 90) > + (ASCII 43), so "…Z" > "…+00:00" even for
 # equal instants, breaking stale-approval comparisons. Strip the timezone suffix to
 # produce a bare "YYYY-MM-DDTHH:MM:SS" string that sorts correctly for UTC timestamps.
+# `+0000` is stripped too (BugBot review on c90b32a, PR #883). escalate-review.sh
+# normalises all three UTC spellings for the same #836 freshness rule, so leaving
+# one of them out here made the two disagree: a `+0000` commit date against a `Z`
+# approval kept its suffix, the gate called a fresh approval stale, and escalation
+# — having stripped it — called the same pair fresh and could report gate_met on a
+# PR the gate blocks. Two implementations of one rule have to normalise the same
+# set. Purely additive: a suffix that used to survive and compare wrongly now does
+# not, and no other spelling changes.
 norm_ts() {
   local t="${1%Z}"       # strip trailing Z
-  echo "${t%+00:00}"     # strip trailing +00:00 (all GitHub timestamps are UTC)
+  t="${t%+00:00}"        # strip trailing +00:00 (all GitHub timestamps are UTC)
+  echo "${t%+0000}"      # strip trailing +0000 (same instant, compact spelling)
 }
 
 # Path-specific checks.
@@ -654,17 +747,77 @@ case "$REVIEWER" in
       fi
     fi
 
+    # Review-substance verdict per bot (issue #875). `counts_as_coverage` folds
+    # temporal inversion, capability failure, self-report SHA mismatch and
+    # footprint substance into one boolean; `disqualified_by` carries the reasons
+    # so the missing[] entry can say WHY rather than "need 1 approval".
+    substance_ok() { # <login>
+      echo "$REVIEW_EVIDENCE" | jq -e --arg l "$1" \
+        '.reviewers[$l].counts_as_coverage // false' >/dev/null 2>&1 && echo true || echo false
+    }
+    substance_reasons() { # <login> — human-readable, comma-joined
+      echo "$REVIEW_EVIDENCE" | jq -r --arg l "$1" '
+        (.reviewers[$l] // {}) as $r
+        | [ ($r.disqualified_by // [])[]
+            | if . == "temporal_inversion" then
+                "approved before \($l) announced it had started reviewing"
+              elif . == "capability_failure" then
+                "\($l) reported it could not review this commit"
+              elif . == "self_report_mismatch" then
+                "\($l)'"'"'s own status comment names \(($r.status_comment_shas // []) | join(", ")) — not this SHA"
+              else
+                "no substantive review footprint (body \($r.body_len // 0) chars, \($r.inline_comments_on_head // 0) inline comment(s), no status comment naming this SHA)"
+              end ]
+        | join("; ")' 2>/dev/null || echo "no substantive review footprint"
+    }
+
+    # --allow-hollow-approval covers exactly ONE disqualifier: the approval left
+    # no substantive footprint, and a human is saying they read the diff instead.
+    # It must NOT wave through an integrity failure — an approval that names a
+    # different SHA, predates the bot's own start marker, or follows that bot
+    # saying it could not review is not "unevidenced", it is evidence AGAINST a
+    # review having happened, and no per-PR override should launder it.
+    # Fail-closed: any jq failure (missing/unparseable evidence) yields false.
+    override_eligible() { # <login>
+      echo "$REVIEW_EVIDENCE" | jq -e --arg l "$1" \
+        '((.reviewers[$l].disqualified_by // []) - ["no_substantive_footprint"]) | length == 0' \
+        >/dev/null 2>&1 && echo true || echo false
+    }
+
+    CR_SUBSTANTIVE=$(substance_ok "coderabbitai[bot]")
+    CA_SUBSTANTIVE=$(substance_ok "codeant-ai[bot]")
+
+    # CR_HOLLOW / CA_HOLLOW: the approval cleared every pre-#875 check (present,
+    # fresh, not retracted) but nothing evidences that a review happened. Kept
+    # distinct from "absent" so callers know to wait for the reviewer's real pass
+    # rather than conclude no approval exists.
     CR_APPROVAL_VALID=false
+    CR_HOLLOW=false
     if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && "$CR_RETRACTED" == false \
           && "$CR_APPROVAL_STALE" == false && "$CR_APPROVAL_FRESHNESS_UNKNOWN" == false \
           && "$CR_APPROVAL_SUBMITTED_AT_MISSING" == false ]]; then
-      CR_APPROVAL_VALID=true
+      if [[ "$CR_SUBSTANTIVE" == true ]]; then
+        CR_APPROVAL_VALID=true
+      elif [[ "$ALLOW_HOLLOW" == true && "$(override_eligible "coderabbitai[bot]")" == true ]]; then
+        CR_APPROVAL_VALID=true
+        echo "[merge-gate] --allow-hollow-approval: counting CodeRabbit APPROVED on ${HEAD_SHA:0:7} despite no substantive review evidence ($(substance_reasons "coderabbitai[bot]"))." >&2
+      else
+        CR_HOLLOW=true
+      fi
     fi
     CA_APPROVAL_VALID=false
+    CA_HOLLOW=false
     if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && "$CA_RETRACTED" == false \
           && "$CA_APPROVAL_STALE" == false && "$CA_APPROVAL_FRESHNESS_UNKNOWN" == false \
           && "$CA_APPROVAL_SUBMITTED_AT_MISSING" == false ]]; then
-      CA_APPROVAL_VALID=true
+      if [[ "$CA_SUBSTANTIVE" == true ]]; then
+        CA_APPROVAL_VALID=true
+      elif [[ "$ALLOW_HOLLOW" == true && "$(override_eligible "codeant-ai[bot]")" == true ]]; then
+        CA_APPROVAL_VALID=true
+        echo "[merge-gate] --allow-hollow-approval: counting CodeAnt APPROVED on ${HEAD_SHA:0:7} despite no substantive review evidence ($(substance_reasons "codeant-ai[bot]"))." >&2
+      else
+        CA_HOLLOW=true
+      fi
     fi
 
     PRIMARY_REVIEW_MET=false
@@ -700,10 +853,20 @@ case "$REVIEWER" in
         # failure) — distinct message from the LAST_COMMIT_TS-unavailable case above.
         MISSING+=("cannot verify approval freshness — submitted_at missing from approval (fail-closed, issue #836)")
       fi
+      # Hollow approvals (issue #875) — an APPROVED exists and is fresh, but
+      # nothing evidences a review of this commit. Distinct message per bot so
+      # the reader sees which reviewer rubber-stamped and on what basis.
+      if [[ "$CR_HOLLOW" == true ]]; then
+        MISSING+=("CodeRabbit APPROVED on HEAD ${HEAD_SHA:0:7} is not review coverage: $(substance_reasons "coderabbitai[bot]") — wait for a real review pass or trigger @coderabbitai full review (issue #875)")
+      fi
+      if [[ "$CA_HOLLOW" == true ]]; then
+        MISSING+=("CodeAnt APPROVED on HEAD ${HEAD_SHA:0:7} is not review coverage: $(substance_reasons "codeant-ai[bot]") — wait for a real review pass or comment @codeant-ai review (issue #875)")
+      fi
       if [[ "$CR_RETRACTED" != true && "$CA_RETRACTED" != true \
             && "$CR_APPROVAL_STALE" != true && "$CA_APPROVAL_STALE" != true \
             && "$CR_APPROVAL_FRESHNESS_UNKNOWN" != true && "$CA_APPROVAL_FRESHNESS_UNKNOWN" != true \
-            && "$CR_APPROVAL_SUBMITTED_AT_MISSING" != true && "$CA_APPROVAL_SUBMITTED_AT_MISSING" != true ]]; then
+            && "$CR_APPROVAL_SUBMITTED_AT_MISSING" != true && "$CA_APPROVAL_SUBMITTED_AT_MISSING" != true \
+            && "$CR_HOLLOW" != true && "$CA_HOLLOW" != true ]]; then
         MISSING+=("need 1 explicit CodeRabbit or CodeAnt APPROVED review on HEAD ${HEAD_SHA:0:7} (have $TOTAL_CR_ON_HEAD CodeRabbit, $TOTAL_CA_ON_HEAD CodeAnt review(s) on this SHA)")
       fi
     fi
@@ -829,10 +992,21 @@ case "$REVIEWER" in
           # A successful CodeAnt check-run exists but it predates the HEAD commit —
           # report stale, not absent, so callers know to wait for a re-check.
           MISSING+=("CodeAnt check-run on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — wait for CodeAnt re-check or trigger @codeant-ai review")
-        elif [[ "$CA_APPROVAL_STALE" != true ]]; then
+        elif [[ "$CA_APPROVAL_STALE" != true && "$CA_HOLLOW" != true ]]; then
           # None of the freshness/stale conditions apply — emit the generic "no review"
           # message. The CA_APPROVAL_STALE guard prevents emitting this alongside the
           # stale message when CA_STALE_MISSING_EMITTED was already set by the primary block.
+          # CA_HOLLOW (issue #875) is excluded for the same reason: an approval DOES
+          # exist, it just is not coverage, and the primary block already said so —
+          # claiming "no explicit APPROVED review" here would contradict it.
+          #
+          # A hollow CodeAnt deliberately does NOT block when CodeRabbit's approval is
+          # genuine (BugBot review, PR #883). cr-merge-gate.md's CR path is "either bot
+          # alone suffices", and coverage demonstrably exists. Blocking here would make
+          # every PR hostage to a bot that is currently rubber-stamping — the
+          # false-negative cost this evaluator is explicitly written to avoid. The
+          # rubber stamp is not absorbed silently either way: it stays in
+          # review_evidence.hollow[] and is announced on stderr below.
           MISSING+=("CodeAnt participated on HEAD ${HEAD_SHA:0:7} but no explicit APPROVED review and no successful CodeAnt check-run (have $TOTAL_CA_ON_HEAD CodeAnt review(s) on this SHA) — wait or comment @codeant-ai review")
         fi
       fi
@@ -1093,11 +1267,18 @@ if [[ "$REVIEW_DECISION" == "CHANGES_REQUESTED" ]] && [[ "${STALE_BOT_CHANGES_CO
   echo "[merge-gate] reviewDecision is CHANGES_REQUESTED with ${STALE_BOT_CHANGES_COUNT} stale bot CHANGES_REQUESTED review(s) (commit_id != HEAD ${HEAD_SHA:0:7}). Dismiss via .claude/scripts/dismiss-stale-bot-changes.sh after push (see fixpr Step 3a, cr-merge-gate.md) — not human escalation." >&2
 fi
 
+# Discounted approvals (issue #875) — say so on stderr even when the gate passes
+# on another reviewer, so a hollow rubber stamp is never silently absorbed.
+HOLLOW_LOGINS=$(echo "$REVIEW_EVIDENCE" | jq -r '(.hollow // []) | join(", ")' 2>/dev/null || echo "")
+if [[ -n "$HOLLOW_LOGINS" && "$REVIEWER" == "cr" ]]; then
+  echo "[merge-gate] discounted APPROVED review(s) with no substantive review evidence on HEAD ${HEAD_SHA:0:7}: ${HOLLOW_LOGINS}. See .review_evidence for the per-reviewer detail (issue #875)." >&2
+fi
+
 STALE_JSON=$(jq -n --argjson c "${STALE_BOT_CHANGES_COUNT:-0}" '$c')
 
 MISSING_JSON=$(printf '%s\n' "${MISSING[@]:-}" | jq -R . | jq -cs 'map(select(length > 0))')
 
-emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON" "${UNRESOLVED_TOTAL:-0}" "$PRIMARY_REVIEW_MET" "$AUTHORSHIP"
+emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON" "${UNRESOLVED_TOTAL:-0}" "$PRIMARY_REVIEW_MET" "$AUTHORSHIP" "$REVIEW_EVIDENCE"
 
 if [[ "$MET" == true ]]; then
   exit 0

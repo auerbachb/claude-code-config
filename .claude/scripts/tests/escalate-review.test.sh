@@ -36,6 +36,10 @@ mkdir -p "$STUB_DIR"
 cp "$REPO_ROOT/.claude/scripts/escalate-review.sh" "$STUB_DIR/escalate-review.sh"
 cp "$REPO_ROOT/.claude/scripts/session-state.sh" "$STUB_DIR/session-state.sh"
 cp "$REPO_ROOT/.claude/scripts/greptile-budget.sh" "$STUB_DIR/greptile-budget.sh"
+# Real script, not a stub (issue #875): escalate-review.sh fails closed when the
+# substance evaluator is unavailable, so omitting it here would turn every
+# gate_met scenario into trigger_greptile.
+cp "$REPO_ROOT/.claude/scripts/review-substance.sh" "$STUB_DIR/review-substance.sh"
 # Sibling write-lock library (issue #639) — session-state.sh and
 # greptile-budget.sh source it from their own directory and hard-fail without
 # it rather than writing unserialized, so the stub dir needs it too.
@@ -67,6 +71,15 @@ case "$sub" in
       case "$arg" in
         repos/*/pulls/*/commits*)
           cat "$FIXTURE_COMMITS_JSON"
+          exit 0
+          ;;
+        repos/*/git/commits/*)
+          # HEAD committer date (issue #875). escalate-review.sh feeds this to
+          # review-substance.sh as push_ts, and BOTH the temporal-inversion and
+          # capability-failure signals are scoped to "post-push" — an empty
+          # push_ts silently disables them, so a stub returning [] here would let
+          # every scenario below pass while those branches were never executed.
+          cat "$FIXTURE_GIT_COMMIT_JSON"
           exit 0
           ;;
       esac
@@ -108,6 +121,14 @@ write_commits() {
 [{"sha": "$HEAD_SHA", "commit": {"committer": {"date": "$push_ts"}, "author": {"date": "$push_ts"}}}]
 EOF
   export FIXTURE_COMMITS_JSON="$TMP/commits.json"
+  # Separate shape: `git/commits/{sha}` returns a single object with .committer.date,
+  # not the array `pulls/{n}/commits` returns. escalate-review.sh reads
+  # `.committer.date` from it — feeding it the array form yields "" and disables
+  # the post-push signals.
+  cat > "$TMP/git-commit.json" <<EOF
+{"sha": "$HEAD_SHA", "committer": {"date": "$push_ts"}, "author": {"date": "$push_ts"}}
+EOF
+  export FIXTURE_GIT_COMMIT_JSON="$TMP/git-commit.json"
 }
 
 # CodeRabbit rate-limited check-run — included in every scenario so the script
@@ -241,11 +262,202 @@ echo "== Scenario (h): CR rate-limited + BugBot usage-limit failure + CodeAnt al
 reset_state
 write_commits "$(ts_seconds_ago 120)"
 FAILURE_COMMENT_H="$(failure_comment "$(ts_seconds_ago 60)")"
-CODEANT_APPROVED_H='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "submitted_at": "'"$(ts_seconds_ago 90)"'"}'
+# The approval body is substantive on purpose (issue #875): escalate-review now
+# discounts an APPROVED with no evidence anything read the commit, so a body-less
+# fixture would fail for the wrong reason instead of testing the gate_met path.
+CODEANT_APPROVED_H='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed the changed files; no issues found.", "submitted_at": "'"$(ts_seconds_ago 90)"'"}'
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H]" "[]" "[$FAILURE_COMMENT_H]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=gate_met" "STATUS=gate_met" "$OUT"
+
+############################################################################
+# Scenarios (h2)-(h4) exist because the gh stub originally returned [] for
+# `git/commits/{sha}`, leaving push_ts empty in EVERY scenario above. Both
+# post-push signals are `if $push == "" then null` guarded, so temporal
+# inversion and capability failure were structurally unreachable from this
+# suite — (h) passed and would have kept passing with either branch deleted.
+echo "== Scenario (h2): CodeAnt APPROVED before its own run-start marker, nothing else -> trigger_greptile (temporal inversion) =="
+reset_state
+write_commits "$(ts_seconds_ago 300)"
+FAILURE_COMMENT_H2="$(failure_comment "$(ts_seconds_ago 60)")"
+# Empty body, no inline comments, no status comment naming HEAD — approved at
+# T-200 while the bot only announced it had started at T-190. ccc#867's shape.
+CODEANT_APPROVED_H2='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "", "submitted_at": "'"$(ts_seconds_ago 200)"'"}'
+CODEANT_MARKER_H2='{"user": {"login": "codeant-ai[bot]"}, "created_at": "'"$(ts_seconds_ago 190)"'", "body": "CodeAnt AI is running the review on your pull request. Results will be posted shortly."}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H2]" "[]" "[$FAILURE_COMMENT_H2, $CODEANT_MARKER_H2]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== Scenario (h3): same inversion, but inline comments on HEAD prove a real read -> gate_met =="
+reset_state
+write_commits "$(ts_seconds_ago 300)"
+FAILURE_COMMENT_H3="$(failure_comment "$(ts_seconds_ago 60)")"
+CODEANT_APPROVED_H3='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "", "submitted_at": "'"$(ts_seconds_ago 200)"'"}'
+CODEANT_MARKER_H3='{"user": {"login": "codeant-ai[bot]"}, "created_at": "'"$(ts_seconds_ago 190)"'", "body": "CodeAnt AI is running the review on your pull request. Results will be posted shortly."}'
+# Evidence outside the approval object redeems it even though it lands AFTER the
+# approval — the documented bodylen=0 + walkthrough shape (mia#172 396ced5).
+CODEANT_INLINE_H3='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "original_commit_id": "'"$HEAD_SHA"'", "created_at": "'"$(ts_seconds_ago 180)"'", "path": "a.sh", "body": "Suggestion: this branch is unreachable."}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H3]" "[$CODEANT_INLINE_H3]" "[$FAILURE_COMMENT_H3, $CODEANT_MARKER_H3]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=gate_met" "STATUS=gate_met" "$OUT"
+
+############################################################################
+echo "== Scenario (h4): CodeAnt APPROVED after saying it could not review -> trigger_greptile (capability failure) =="
+reset_state
+write_commits "$(ts_seconds_ago 300)"
+FAILURE_COMMENT_H4="$(failure_comment "$(ts_seconds_ago 60)")"
+# The notice is long and names HEAD — before this was fixed it counted as the
+# reviewer's own substantive status comment AND, by being the latest evidence,
+# suppressed the capability-failure check meant to catch it.
+CODEANT_NOSUB_H4='{"user": {"login": "codeant-ai[bot]"}, "created_at": "'"$(ts_seconds_ago 210)"'", "body": "User ci@example.com does not have a PR Review subscription, so commit '"$HEAD_SHA"' was not reviewed. Contact your administrator to enable reviews for this account."}'
+CODEANT_APPROVED_H4='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "", "submitted_at": "'"$(ts_seconds_ago 200)"'"}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H4]" "[]" "[$FAILURE_COMMENT_H4, $CODEANT_NOSUB_H4]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== Scenario (h5): substantive-but-RETRACTED CR + fresh hollow CodeAnt -> trigger_greptile (same reviewer must clear both gates) =="
+reset_state
+write_commits "$(ts_seconds_ago 300)"
+FAILURE_COMMENT_H5="$(failure_comment "$(ts_seconds_ago 60)")"
+# CodeRabbit's approval is substantive, so it lands in the evaluator's
+# substantive[] — but it is retracted by a later CHANGES_REQUESTED, so it is not
+# a valid approval. CodeAnt's approval IS valid but is an empty rubber stamp.
+# Testing "substantive[] is non-empty" on its own reported gate_met here, while
+# merge-gate.sh rejected both — stranding the PR with no reviewer and no
+# escalation in flight.
+CR_APPROVED_H5='{"user": {"login": "coderabbitai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed every changed file; behaviour preserved throughout.", "submitted_at": "'"$(ts_seconds_ago 250)"'"}'
+CR_RETRACT_H5='{"user": {"login": "coderabbitai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "CHANGES_REQUESTED", "submitted_at": "'"$(ts_seconds_ago 200)"'"}'
+CA_HOLLOW_H5='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "", "submitted_at": "'"$(ts_seconds_ago 150)"'"}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CR_APPROVED_H5, $CR_RETRACT_H5, $CA_HOLLOW_H5]" "[]" "[$FAILURE_COMMENT_H5]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== Scenario (h6): approval RETARGETED onto HEAD but predating the commit -> trigger_greptile (issue #836 freshness) =="
+reset_state
+write_commits "$(ts_seconds_ago 300)"
+FAILURE_COMMENT_H6="$(failure_comment "$(ts_seconds_ago 60)")"
+# GitHub retargets commit_id onto HEAD after a force-push without touching
+# submitted_at. This approval is substantive AND on HEAD, but it was submitted
+# an hour before the commit existed, so merge-gate.sh rejects it — escalation
+# must not short-circuit on it either.
+CODEANT_STALE_H6='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed every changed file; no blocking issues found.", "submitted_at": "'"$(ts_seconds_ago 3600)"'"}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_STALE_H6]" "[]" "[$FAILURE_COMMENT_H6]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== Scenario (h6b): fresh approval spelled +00:00 against a Z commit date -> gate_met (no false stale) =="
+reset_state
+# Commit date carries an explicit +00:00 offset while the approval uses Z. As
+# raw strings "...+00:00" sorts BEFORE "...Z", so without canonicalisation the
+# freshness filter would call this fresh approval stale and withhold gate_met.
+PUSH_H6B="$(python3 -c "
+from datetime import datetime, timedelta, timezone
+print((datetime.now(timezone.utc) - timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%S+00:00'))
+")"
+write_commits "$PUSH_H6B"
+FAILURE_COMMENT_H6B="$(failure_comment "$(ts_seconds_ago 60)")"
+CODEANT_APPROVED_H6B='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed every changed file; no blocking issues found.", "submitted_at": "'"$(ts_seconds_ago 90)"'"}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H6B]" "[]" "[$FAILURE_COMMENT_H6B]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=gate_met" "STATUS=gate_met" "$OUT"
+
+############################################################################
+echo "== Scenario (h6e): fresh approval spelled Z against a +0000 commit date -> gate_met (all three UTC spellings normalise) =="
+reset_state
+# The compact "+0000" spelling of the same instant. BugBot flagged (on c90b32a)
+# that this filter stripped it while norm_ts in merge-gate.sh did not, so the two
+# disagreed on identical inputs; norm_ts now strips it too. Pins that the spelling
+# is normalised rather than compared raw — as raw strings "...+0000" sorts BEFORE
+# "...Z", which would mark this fresh approval stale and withhold gate_met.
+PUSH_H6E="$(python3 -c "
+from datetime import datetime, timedelta, timezone
+print((datetime.now(timezone.utc) - timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%S+0000'))
+")"
+write_commits "$PUSH_H6E"
+FAILURE_COMMENT_H6E="$(failure_comment "$(ts_seconds_ago 60)")"
+CODEANT_APPROVED_H6E='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed every changed file; no blocking issues found.", "submitted_at": "'"$(ts_seconds_ago 90)"'"}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H6E]" "[]" "[$FAILURE_COMMENT_H6E]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=gate_met" "STATUS=gate_met" "$OUT"
+
+############################################################################
+echo "== Scenario (h6c): approval earlier in the SAME second as a fractional commit date -> trigger_greptile (must agree with merge-gate.sh) =="
+reset_state
+# BugBot review on 7de2a4c (PR #883): escalate-review.sh and merge-gate.sh
+# implement one rule (#836), so they must order the same pair identically. The
+# commit date carries fractional seconds and the approval lands earlier within
+# that same second, so merge-gate.sh's norm_ts (strip zone suffix, KEEP the
+# fraction) rules the approval stale and blocks. The old canon_ts here dropped
+# the fraction, collapsing the two to the same instant and reporting gate_met on
+# a PR the gate refuses — escalation must never be the more permissive of the two.
+PUSH_H6C="$(python3 -c "
+from datetime import datetime, timedelta, timezone
+print((datetime.now(timezone.utc) - timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%S.900000Z'))
+")"
+APPROVED_H6C="$(python3 -c "
+from datetime import datetime, timedelta, timezone
+print((datetime.now(timezone.utc) - timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%SZ'))
+")"
+write_commits "$PUSH_H6C"
+FAILURE_COMMENT_H6C="$(failure_comment "$(ts_seconds_ago 60)")"
+CODEANT_APPROVED_H6C='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed every changed file; no blocking issues found.", "submitted_at": "'"$APPROVED_H6C"'"}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H6C]" "[]" "[$FAILURE_COMMENT_H6C]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== Scenario (h6d): fractional-second approval AFTER a whole-second commit date -> gate_met (fraction must not invert the order) =="
+reset_state
+# The mirror of (h6c), and the reason the fix strips the zone suffix instead of
+# rewriting it to "Z": under a trailing "Z", "." (0x2E) sorts below "Z" (0x5A),
+# so the LATER instant "…49.900Z" would compare BELOW "…49Z" and a genuinely
+# fresh approval would be withheld. With the suffix stripped, plain lexicographic
+# order is correct for whole and fractional seconds alike.
+PUSH_H6D="$(python3 -c "
+from datetime import datetime, timedelta, timezone
+print((datetime.now(timezone.utc) - timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%SZ'))
+")"
+APPROVED_H6D="$(python3 -c "
+from datetime import datetime, timedelta, timezone
+print((datetime.now(timezone.utc) - timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%S.900000Z'))
+")"
+write_commits "$PUSH_H6D"
+FAILURE_COMMENT_H6D="$(failure_comment "$(ts_seconds_ago 60)")"
+CODEANT_APPROVED_H6D='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed every changed file; no blocking issues found.", "submitted_at": "'"$APPROVED_H6D"'"}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H6D]" "[]" "[$FAILURE_COMMENT_H6D]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=gate_met" "STATUS=gate_met" "$OUT"
+
+############################################################################
+echo "== Scenario (h7): HEAD commit timestamp unavailable -> fail closed, no gate_met =="
+reset_state
+write_commits "$(ts_seconds_ago 300)"
+# Blank out ONLY the git/commits fixture: freshness becomes unverifiable, which
+# merge-gate.sh treats as blocking (CR_APPROVAL_FRESHNESS_UNKNOWN). Escalation
+# must match rather than reporting gate_met on an approval it cannot vouch for.
+echo '{}' > "$TMP/git-commit-empty.json"
+FIXTURE_GIT_COMMIT_JSON="$TMP/git-commit-empty.json"
+export FIXTURE_GIT_COMMIT_JSON
+FAILURE_COMMENT_H7="$(failure_comment "$(ts_seconds_ago 60)")"
+CODEANT_APPROVED_H7='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed every changed file; no blocking issues found.", "submitted_at": "'"$(ts_seconds_ago 90)"'"}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H7]" "[]" "[$FAILURE_COMMENT_H7]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (i): CodeAnt APPROVED on an OLDER SHA (not HEAD) -> still trigger_greptile (stale approval doesn't satisfy the gate) =="
@@ -263,7 +475,7 @@ echo "== Scenario (j): CodeAnt APPROVED on HEAD but retracted by a LATER CHANGES
 reset_state
 write_commits "$(ts_seconds_ago 120)"
 FAILURE_COMMENT_J="$(failure_comment "$(ts_seconds_ago 60)")"
-CODEANT_APPROVED_J='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "submitted_at": "'"$(ts_seconds_ago 200)"'"}'
+CODEANT_APPROVED_J='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed the changed files; no issues found.", "submitted_at": "'"$(ts_seconds_ago 200)"'"}'
 CODEANT_RETRACT_J='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "CHANGES_REQUESTED", "submitted_at": "'"$(ts_seconds_ago 100)"'"}'
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_J, $CODEANT_RETRACT_J]" "[]" "[$FAILURE_COMMENT_J]"
 OUT=$(run_script); RC=$?
