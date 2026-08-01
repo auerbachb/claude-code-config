@@ -147,6 +147,9 @@ printf '%s\n' "Background: https://github.com/auerbachb/claude-code-config/blob/
 # one-character delimiter strip leaves the second asterisk in front of the slash.
 printf '%s\n' "Bold: **/Users/b/repo/.claude/worktrees/issue-45-bold**" >>"$ALLOWED"
 printf '%s\n' "Quoted URL: **https://github.com/auerbachb/claude-code-config/blob/main/.claude/rules/safety.md**" >>"$ALLOWED"
+# A Markdown link puts the destination after "](", so the leading run is link
+# TEXT — stripping delimiters one at a time never reaches the path.
+printf '%s\n' "Link: [working tree](/Users/b/repo/.claude/worktrees/issue-46-link)" >>"$ALLOWED"
 run_lint "$ALLOWED" >/dev/null 2>&1 \
   || fail "an absolute /.claude/worktrees/ path must be allowed — it is the reader's own uncommitted work"
 
@@ -204,6 +207,15 @@ cat >"$EMPTY" <<'EOF'
 
 ## Local state on this machine
 EOF
+# Structural-only markup is not an answer to the reader: a section holding just
+# a fence pair or an HTML comment must still count as empty.
+STRUCTURAL="$TMP_DIR/structural.md"
+sed 's|^Adding a command that produces a handoff document any agent can act on, so a$|```|; s|^session ending on a usage limit does not lose where the work stood.$|```|' "$GOLDEN" >"$STRUCTURAL"
+out=$(run_lint "$STRUCTURAL" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "a section holding only fence markers must count as empty (got $rc)"
+printf '%s' "$out" | grep -q 'present but empty' \
+  || fail "fence-only section was not reported as empty"$'\n'"got: $out"
+
 out=$(run_lint "$EMPTY" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "an all-headings-no-content shell must fail (got $rc)"
 printf '%s' "$out" | grep -q 'present but empty' \

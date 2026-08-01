@@ -257,6 +257,10 @@ fi
 # perfectly valid absolute path reads as relative and gets rejected.
 strip_open_delims() {
   local v="$1"
+  # A Markdown link puts the destination after "](", so the leading run is link
+  # TEXT, not delimiters — stripping characters one at a time never reaches the
+  # path. Jump to the destination first.
+  case "$v" in *']('*) v="${v##*](}" ;; esac
   while [[ -n "$v" && "$v" == [\`\(\[\<\"\'*_~]* ]]; do v="${v:1}"; done
   printf '%s' "$v"
 }
@@ -368,7 +372,15 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     IS_HEADING=1
   fi
 
-  if (( ! IS_HEADING )) && [[ -n "${line//[[:space:]]/}" && -n "$section" ]]; then
+  # Structural-only markup is not an answer to the reader. A section holding
+  # just a fence pair or an HTML comment would otherwise satisfy the
+  # non-empty check while telling them nothing, which is the empty-shell
+  # failure wearing a disguise.
+  IS_STRUCTURAL_ONLY=0
+  case "${line//[[:space:]]/}" in
+    '```'*|'~~~'*|'<!--'*'-->'|'') IS_STRUCTURAL_ONLY=1 ;;
+  esac
+  if (( ! IS_HEADING )) && (( ! IS_STRUCTURAL_ONLY )) && [[ -n "$section" ]]; then
     NONEMPTY_SECTIONS+=("$section")
   fi
 
