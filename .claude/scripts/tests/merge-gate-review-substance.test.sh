@@ -420,6 +420,30 @@ check_eq "0" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]
 check_eq "0" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].other_review_body_len')" "(aa) pre-commit COMMENTED body contributes nothing"
 check_eq "false" "$(echo "$OUT" | jq -r '.met')" "(aa) stale evidence does not satisfy the gate"
 
+echo "=== (bb) a pooled approval body does NOT clear inversion (BugBot, PR #883) ==="
+# Pins a deliberate decision. BugBot asked that case (x)'s pooled APPROVED body
+# suppress temporal_inversion too. Declined: $ext_substantive excludes every
+# approval body ON PURPOSE, because CodeAnt raised the circular form of exactly
+# this as a Critical earlier on this PR — a verbose stamp posted before its own
+# start marker would exonerate itself and inversion would never fire on it.
+# Content produced before the bot says it began working is the anomaly, not the
+# alibi. The innocent shape stays clear via evidence outside the approval, which
+# cases (w) and (z) cover.
+FAKE_REVIEWS="$(jq -cn --arg sha "$HEAD_SHA" \
+  '[{user:{login:"codeant-ai[bot]",type:"Bot"},commit_id:$sha,state:"APPROVED",
+     body:"Actionable comments posted: 0. Reviewed all changed files; no blocking issues found.",
+     submitted_at:"2026-07-31T10:04:00Z"},
+    {user:{login:"codeant-ai[bot]",type:"Bot"},commit_id:$sha,state:"APPROVED",
+     body:"",submitted_at:"2026-07-31T10:04:02Z"}]')"
+FAKE_ISSUE_COMMENTS="$(convo \
+  "codeant-ai[bot]" "CodeAnt AI is running the review, this may take a few minutes." "2026-07-31T10:05:00Z")"
+OUT="$(run_gate)"
+check_eq "84" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].body_len')" "(bb) the pooled body is still reported"
+check_eq "true" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].substantive')" "(bb) and still counts as substance"
+check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].external_evidence_on_head')" "(bb) but is not evidence outside the approval"
+check_eq "true" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].temporal_inversion')" "(bb) so the inversion stands"
+check_eq "false" "$(echo "$OUT" | jq -r '.met')" "(bb) and the gate does not pass on it"
+
 echo "=== (m) evaluator rejects malformed stdin ==="
 echo "not json" | "$EVAL_SUT" >/dev/null 2>&1
 check_eq "4" "$?" "(m) non-JSON stdin exits 4"

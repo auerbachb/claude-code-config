@@ -402,6 +402,15 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         # why canon_ts strips fractional seconds in the first place.
         # $ext_substantive still guards the innocent shape — a bot that really
         # reviewed leaves evidence outside the approval and is never flagged.
+        #
+        # The pooled $body_len deliberately does NOT feed this term, so a
+        # reviewer can be `substantive` and `temporal_inversion` at once (BugBot
+        # review, PR #883, declined; pinned by case (bb)). That asymmetry IS the
+        # rule: $substantive asks whether content exists, inversion asks whether
+        # it existed before the work did. Letting a pooled approval body clear
+        # inversion restores the circular form CodeAnt raised as a Critical
+        # earlier on this PR — a verbose stamp posted before its own start
+        # marker exonerating itself.
         | ( $ap != null and $marker != null and $ap_ts != ""
             and ($ap_ts <= $marker.created)
             and ($ext_substantive | not) )                                 as $inversion
