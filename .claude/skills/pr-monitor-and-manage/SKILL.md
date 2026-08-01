@@ -401,7 +401,7 @@ This skill is a **parent orchestrator**. The parent rebases/force-pushes (Step 5
 - **Never resolve a review thread without code-verification** — thread resolution happens only inside `phase-a-fixer` Step 5 after verifying the fix. This skill only *counts* unresolved threads.
 - **Never bypass AI-reviewer rate caps** — `cr-review-hourly.sh` gates every CR re-trigger; Greptile/CodeAnt caps are respected by subagents and `/wrap`. The Step 5.0 pre-flight (`pr-preflight.sh`, issue #493) is the sanctioned per-PR trigger path: it gates `@coderabbitai full review` on `cr-review-hourly.sh`, never triggers Greptile, never flips another user's draft, and is strictly per-PR (no shared accumulator).
 - **Never use GitHub's update-branch API** for `BEHIND` — only `git rebase origin/main` + `--force-with-lease`.
-- **Stay in the worktree; never run destructive commands in the root repo** — no `git clean`, `git reset --hard`, or `.env` edits anywhere.
+- **Stay in the worktree; never run destructive commands in the root repo** — no `git clean`, `git reset --hard`, recursive `rm`, or `.env` edits anywhere. The one exception is `safety.md`'s: non-recursive `rm` of paths `git ls-files --others --exclude-standard` emits.
 - **Never merge directly** — PMM never runs `gh pr merge` itself. It lands PRs only by dispatching the full `/wrap` workflow inline after gate + AC pass. No bypass path exists.
 
 ---
