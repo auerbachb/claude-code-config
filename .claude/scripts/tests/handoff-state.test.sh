@@ -233,6 +233,93 @@ check_eq "quoted JSON string ID is string type" "string" \
   "$(jq -r '.findings_fixed[1] | type' "$HANDOFF_FILE")"
 
 echo
+echo "== --set: type coercion (JSON literal vs bare string) =="
+# Issue #853: the --set literal-vs-string detection used `jq -e .`, whose exit
+# status keys off the OUTPUT's truthiness, not parse success. `false` and `null`
+# parse fine but exit 1, so they fell to the --arg branch and landed as the
+# STRINGS "false"/"null". "false" is truthy in jq, so a later
+# `if .merge_gate_met then …` read a failed gate as passed. `jq empty` exits 0 on
+# any valid JSON; the -n guard keeps an empty value on the string path, since
+# `jq empty` also accepts empty stdin but `--argjson v ""` would then fail.
+reset_handoff
+run --create "$PR" "$SEED_JSON"
+
+run --set "$PR" ".merge_gate_met=false"
+check_eq "--set false exits 0" "0" "$?"
+check_eq "false stored as boolean type" "boolean" \
+  "$(jq -r '.merge_gate_met | type' "$HANDOFF_FILE")"
+check_eq "false value round-trips" "false" \
+  "$(jq -r '.merge_gate_met' "$HANDOFF_FILE")"
+check_eq "false is falsy in jq (not the truthy string \"false\")" "not-taken" \
+  "$(jq -r 'if .merge_gate_met then "taken" else "not-taken" end' "$HANDOFF_FILE")"
+
+run --set "$PR" ".blocked_on=null"
+check_eq "--set null exits 0" "0" "$?"
+check_eq "null stored as null type" "null" \
+  "$(jq -r '.blocked_on | type' "$HANDOFF_FILE")"
+
+run --set "$PR" ".ci_green=true"
+check_eq "--set true exits 0" "0" "$?"
+check_eq "true stored as boolean type" "boolean" \
+  "$(jq -r '.ci_green | type' "$HANDOFF_FILE")"
+check_eq "true value round-trips" "true" "$(jq -r '.ci_green' "$HANDOFF_FILE")"
+
+run --set "$PR" ".review_rounds=42"
+check_eq "--set number exits 0" "0" "$?"
+check_eq "42 stored as number type" "number" \
+  "$(jq -r '.review_rounds | type' "$HANDOFF_FILE")"
+check_eq "42 value round-trips" "42" "$(jq -r '.review_rounds' "$HANDOFF_FILE")"
+
+run --set "$PR" '.meta={"a":1}'
+check_eq "--set object exits 0" "0" "$?"
+check_eq "object stored as object type" "object" \
+  "$(jq -r '.meta | type' "$HANDOFF_FILE")"
+check_eq "object field round-trips" "1" "$(jq -r '.meta.a' "$HANDOFF_FILE")"
+
+run --set "$PR" ".notes=abc"
+check_eq "--set bare word exits 0" "0" "$?"
+check_eq "bare word (invalid JSON) stored as string type" "string" \
+  "$(jq -r '.notes | type' "$HANDOFF_FILE")"
+check_eq "bare word value round-trips" "abc" "$(jq -r '.notes' "$HANDOFF_FILE")"
+
+run --set "$PR" '.reviewer="quoted"'
+check_eq "--set quoted JSON string exits 0" "0" "$?"
+check_eq "quoted JSON string stored as string type" "string" \
+  "$(jq -r '.reviewer | type' "$HANDOFF_FILE")"
+check_eq "quoted JSON string decoded exactly once (no double-decode)" "quoted" \
+  "$(jq -r '.reviewer' "$HANDOFF_FILE")"
+
+run --set "$PR" ".push_timestamp="
+check_eq "--set empty value exits 0 (no parse failure)" "0" "$?"
+check_eq "empty value stored as string type" "string" \
+  "$(jq -r '.push_timestamp | type' "$HANDOFF_FILE")"
+check_eq "empty value is the empty string" "" \
+  "$(jq -r '.push_timestamp' "$HANDOFF_FILE")"
+
+# Whitespace-only values are the empty case's near miss: `jq empty` ACCEPTS
+# " " and "\t" (zero JSON values, same as "") but `--argjson` REJECTS all
+# three, so probing with `jq empty` would send whitespace down the JSON branch
+# and hard-fail the write. Probing with `--argjson` itself keeps them strings.
+run --set "$PR" ".notes= "
+check_eq "--set single-space value exits 0 (not a write failure)" "0" "$?"
+check_eq "single space stored as string type" "string" \
+  "$(jq -r '.notes | type' "$HANDOFF_FILE")"
+check_eq "single space preserved verbatim" " " \
+  "$(jq -r '.notes' "$HANDOFF_FILE")"
+
+run --set "$PR" ".notes=$(printf '\t')"
+check_eq "--set tab-only value exits 0" "0" "$?"
+check_eq "tab stored as string type" "string" \
+  "$(jq -r '.notes | type' "$HANDOFF_FILE")"
+check_eq "tab preserved verbatim" "$(printf '\t')" \
+  "$(jq -r '.notes' "$HANDOFF_FILE")"
+
+check_eq "file still valid JSON after all coercion writes" "0" \
+  "$(jq -e . "$HANDOFF_FILE" >/dev/null 2>&1; echo $?)"
+check_eq "unrelated fields preserved across coercion writes" "99" \
+  "$(jq -r '.pr_number' "$HANDOFF_FILE")"
+
+echo
 echo "== Usage errors: exit 2 on bad args =="
 run --create 2>/dev/null; check_eq "--create missing args exits 2" "2" "$?"
 run --init 2>/dev/null;   check_eq "--init missing args exits 2" "2" "$?"
