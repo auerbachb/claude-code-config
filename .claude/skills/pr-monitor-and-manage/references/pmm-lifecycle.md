@@ -14,12 +14,12 @@ Pause marker fields live under nested `.pmm.*`. Existing runtime fields
 | Field | Type | Written by | Read by |
 |-------|------|-----------|---------|
 | `.pmm.paused_at` | ISO-8601 string | Main skill Pause step 4 | Step 0a, `-wake` Step 2 |
-| `.pmm.fleet_at_pause` | `[{pr, head_sha, state}]` | Main skill Pause step 3 | `-wake` Step 4a |
-| `.pmm.config_at_pause` | object | Main skill Pause step 3 | Step 0a, `-wake` Step 4b |
+| `.pmm.fleet_at_pause` | `[{pr, head_sha, state}]` | Main skill Pause step 4 (built in step 3) | `-wake` Step 4a |
+| `.pmm.config_at_pause` | object | Main skill Pause step 4 (built in step 3) | Step 0a, `-wake` Step 4a, `-wake` Step 4b |
 
 `config_at_pause` fields: `author`, `repo`, `cadence`, `max_parallel`, `idle_pause_after`, `auto_wake`, `auto_wake_cadence`, `confirm_merges`.
 
-> **Wake coupling:** `/pr-monitor-and-manage-wake` Step 4b rebuilds `PMM_FLAGS` from the `config_at_pause` blob — including `--confirm-merges` when `confirm_merges` is true — before re-arming the loop. The main skill's Step 0a uses the same blob for flag merging on direct re-invocation.
+> **Wake coupling:** `/pr-monitor-and-manage-wake` Step 4b rebuilds `PMM_FLAGS` from the `config_at_pause` blob — including `--confirm-merges` when `confirm_merges` is true — before re-arming the loop. The main skill's Step 0a uses the same blob for flag merging on direct re-invocation. `-wake` Step 4a reads it too, but only for `author` / `repo`, to scope its lightweight fleet scan (issue #871) — which is why a missing blob fails that scan closed rather than resuming.
 
 ---
 
@@ -57,7 +57,7 @@ fi
 
 > **The digest reset has two owners, one per resume path.** The branch above is guarded on a non-null `.pmm.paused_at`, so it covers only **direct re-invocation** of this skill. On the **`-wake`** path, Step 4b clears the marker before re-arming the loop — this branch is already skipped by the time the loop's first tick runs — so `-wake` Step 4b nulls `.pmm_digest` and `.pmm_row_digest` in its own atomic `--set` batch (issue #872). The guarantee "both digests are null after **any** resume" holds only while both sides do it; neither is redundant.
 
-Resume logic is shared with `/pr-monitor-and-manage-wake` — see `.claude/skills/pr-monitor-and-manage-wake/SKILL.md` Step 2 (re-scan teardown) and Step 3 (marker clear + loop re-arm). When resuming via re-invoking this skill (not `-wake`), apply the precedence rule in Step 1 after parsing `$ARGUMENTS`: any flag explicitly supplied on this invocation wins; omitted flags inherit from `.pmm.config_at_pause`. After resume, continue with Step 1 using the merged config and run a full discovery tick at **base** cadence (not the widened backoff cadence).
+Resume logic is shared with `/pr-monitor-and-manage-wake` — see `.claude/skills/pr-monitor-and-manage-wake/SKILL.md` Step 3 (re-scan teardown) and Step 4b (marker clear + loop re-arm). When resuming via re-invoking this skill (not `-wake`), apply the precedence rule in Step 1 after parsing `$ARGUMENTS`: any flag explicitly supplied on this invocation wins; omitted flags inherit from `.pmm.config_at_pause`. After resume, continue with Step 1 using the merged config and run a full discovery tick at **base** cadence (not the widened backoff cadence).
 
 A stale marker left by a killed session is safely reconciled here: the next `/pr-monitor-and-manage` invocation reads it, resumes (or the user runs `/pmm-stop`), and re-runs discovery from scratch.
 
