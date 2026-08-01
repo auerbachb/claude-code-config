@@ -25,13 +25,13 @@ Every ~60s, in order:
 
 ## Subagent Health Monitoring (MANDATORY)
 
-Poll every cycle; never fire-and-forget. Report successes and failures immediately, naming PR/issue, phase, failure mode, and remaining work. Verify outputs before marking complete (`gh pr view` for pushes, comments/replies for feedback handling).
+Poll every cycle; never fire-and-forget. Report failures and blockers immediately — PR/issue, phase, failure mode, remaining work; successes fold into the heartbeat. Verify outputs before marking complete (`gh pr view` for pushes, comments/replies for feedback handling).
 
 Respawn permissions: crash asks, exhaustion auto (`phase-protocols.md`).
 
 ## User Heartbeat (MANDATORY)
 
-CLAUDE.md #3 is canonical for the one-line default and for when full detail is owed. Routine-beat format:
+CLAUDE.md #3 is canonical. Routine-beat format:
 
 `[<ET timestamp>] <state / what's running> · next: <action or cadence> — monitoring N PR(s) (#a, #b)`
 
@@ -49,14 +49,14 @@ If a summary block references prior work you do not remember, recover before all
 1. Timestamp; rerun session-start checks.
 2. Read `session-state.json` + handoffs; reconcile each open PR on GitHub (all 3 endpoints per `cr-github-review.md`).
 3. Per polled PR: `polling-state-gate.sh <N> --verify-state` (optional `--root-repo`), then resume with `polling-state-gate.sh <N>` (shells `merge-gate.sh`).
-4. Dashboard (PR, HEAD, reviewer, pending); verify stale agents and stalled transitions; launch as needed.
-5. Report: "Resuming after context compaction. Reconstructed state from GitHub." then resume monitoring.
+4. Reconcile state (PR, HEAD, reviewer, pending); verify stale agents and stalled transitions; launch as needed.
+5. Resume monitoring — one heartbeat line, no report.
 
 ## PM Monitoring Recovery
 
 If `monitoring_active=true` or passive mode with non-empty `prs`/`active_agents`, rebuild from `prs`, `active_agents`, handoffs, and GitHub before continuing.
 
-- No workers left → `monitoring_active=false`, report done.
+- No workers left → `monitoring_active=false`.
 - `/pm`-owned monitoring is always passive — never restart a `/loop`/`CronCreate` on `/pm`'s behalf; point fleet monitoring at `/pr-monitor-and-manage`.
 - Jobs in `polling_jobs[]` → recover per that skill's contract (`pm-monitoring-decision.md`); log drops in `polling_failures[]`.
 

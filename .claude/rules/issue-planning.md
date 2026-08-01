@@ -1,8 +1,8 @@
 # Issue Flow
 
-> **Always:** Create a GitHub issue before any code work. Merge CR's plan into the issue body before coding. A skill may open issues autonomously — provided it reports each one in-thread with number, title, one-line rationale, and clickable link (`/issue-maker`'s closing-URL convention).
+> **Always:** Create a GitHub issue before any code work. Merge CR's plan into the issue body before coding. A skill may open issues autonomously — reported in-thread only when filing is the ask (`/issue-maker`: number, title, rationale, link); incidental filings are recorded, not narrated.
 > **Ask first:** Never — issue creation and planning are autonomous. Filing is reversible; closing an unwanted issue is the escape hatch, not a confirmation prompt.
-> **Never:** Skip the issue. Start coding without a plan. Post the plan as scattered comments instead of editing the issue body. Open an issue without reporting it.
+> **Never:** Skip the issue. Start coding without a plan. Post the plan as scattered comments instead of editing the issue body. Open an issue without recording it.
 
 ## Issue Planning Flow — Procedural Checklist
 

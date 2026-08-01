@@ -26,6 +26,8 @@
 
 **Note on issue #162 wording:** Test scenarios asked for a “fenced” block; agent instructions use a ```text fence in markdown for readability. The runtime contract is the plain `EXIT_REPORT` header plus colon-separated lines (see `exit-report-format.md`).
 
+> **Superseded in part (issue #851).** The step *counts* below are a snapshot of `phase-protocols.md` as it stood at this verification. Issue #851 removed the routine "Report to user" steps — Phase A now ends at step 7, Phase B at step 5, Phase C at step 4 — because routine completion reports are suppressed under `CLAUDE.md` #3. Every other finding here still holds.
+
 ## 2. Phase B Completion Protocol (6-step checklist)
 
 **Source:** `.claude/rules/phase-protocols.md` — “Phase B Completion Protocol (MANDATORY)”, numbered steps 1–6:
@@ -35,7 +37,7 @@
 3. Verify review state via GitHub API before Phase C  
 4. Launch Phase C within 60s — auto `/wrap`, no approval pause
 5. Update `session-state.json`  
-6. Report to user (with timestamp)  
+6. ~~Report to user (with timestamp)~~ — **removed by issue #851**; Phase B now ends at step 5.  
 
 **Verification:** Checklist is explicit and ordered; “Phase C launch is top priority after Phase B reports `merge_ready`” is stated immediately after the list. **Behavioral enforcement** in-repo is via parent-agent rules (`phase-protocols.md`, `subagent-orchestration.md`); this pass did not execute a live parent loop.
 
@@ -43,7 +45,7 @@
 
 ## 3. Phase C Completion Protocol
 
-**Source:** `.claude/rules/phase-protocols.md` — “Phase C Completion Protocol (MANDATORY)” lists **five** numbered steps (parse → branch on OUTCOME → update session-state → handoff cleanup after confirmed merge → report). Issue #162 AC called this “4-step”; the committed rule file has five numbered items — align AC with the file or renumber in a follow-up doc edit.
+**Source:** `.claude/rules/phase-protocols.md` — “Phase C Completion Protocol (MANDATORY)” listed **five** numbered steps at the time of this pass (parse → branch on OUTCOME → update session-state → handoff cleanup after confirmed merge → report). Issue #162 AC called this “4-step”. **Resolved by issue #851:** the trailing report step is gone, so the file now lists four steps and matches the AC.
 
 **Merge / handoff:** Phase C agent template (`phase-c-merger.md`) states the parent deletes the handoff only after `OUTCOME: merged` and GitHub confirms merge — consistent with `phase-protocols.md` Phase C step 4.
 

@@ -1,6 +1,6 @@
 ---
 name: wrap
-description: End-of-session command — verify no unresolved findings, squash merge, sync main, detect per-PR follow-ups, run a full-session loose-ends sweep, and extract lessons. Terse by default — output is a concise merged + follow-ups summary; pass `--verbose` for the full per-phase report. Accepts an optional PR reference (`/wrap <URL>`, `/wrap #N`, `/wrap N`); with no argument it infers the PR from the current branch, then thread context, then session-state.
+description: End-of-session command — verify no unresolved findings, squash merge, sync main, detect per-PR follow-ups, run a full-session loose-ends sweep, and extract lessons. Silent by default — a clean merge prints nothing but items needing your decision; pass `--verbose` (or just ask) for the merged + follow-ups summary and the full per-phase report. Accepts an optional PR reference (`/wrap <URL>`, `/wrap #N`, `/wrap N`); with no argument it infers the PR from the current branch, then thread context, then session-state.
 argument-hint: "[URL | #N | N] [--verbose]"
 ---
 
@@ -29,9 +29,9 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 
 ### Follow-up filing is autonomous (issue #633)
 
-Both Phase 3 passes — **Part A** (per-PR follow-ups) and **Part B** (full-session sweep) — file every novel candidate as a GitHub issue **without asking**. There is no opt-out flag and no "file as new issue?" prompt anywhere in this skill. The deal is two-sided: filing is unconditional, and **every** filed issue is reported in the closing message (Step 4.3) with number, title, one-line rationale, and clickable link. Retraction (`gh issue close`) is the escape hatch, not a confirmation round-trip. The norm is stated once for all skills in `.claude/rules/issue-planning.md`.
+Both Phase 3 passes — **Part A** (per-PR follow-ups) and **Part B** (full-session sweep) — file every novel candidate as a GitHub issue **without asking**. There is no opt-out flag and no "file as new issue?" prompt anywhere in this skill. The deal is two-sided: filing is unconditional, and **every** filed issue is durably **recorded** — the GitHub issue itself, the run-scoped `WRAP_FILED_ISSUES` registry, and `session-state.json` `wrap_sweep.filed_issues` (Step 3.13). **Recording is not narrating (issue #851):** filings do *not* print on the default path. They are listed with number, title, one-line rationale, and clickable link under `--verbose` or on request, and any filing that needs a decision — a failed `gh issue create`, or one carrying a `Possibly duplicates #{N}` caveat — surfaces immediately in either mode. Retraction (`gh issue close`) is the escape hatch, not a confirmation round-trip. The norm is stated once for all skills in `.claude/rules/issue-planning.md`.
 
-Autonomy does not mean filing blind: every candidate goes through the body-aware duplicate check in **Step 3.0** first (issue #652). That check can only ever *redirect* a filing onto an existing issue or *annotate* it — it never drops a finding, and every filing it suppresses is named in the closing report alongside the issue it deferred to.
+Autonomy does not mean filing blind: every candidate goes through the body-aware duplicate check in **Step 3.0** first (issue #652). That check can only ever *redirect* a filing onto an existing issue or *annotate* it — it never drops a finding, and every filing it suppresses is named in the `--verbose` report alongside the issue it deferred to.
 
 ### Wrap-Internal Phase Transitions
 
@@ -55,19 +55,19 @@ Autonomy does not mean filing blind: every candidate goes through the body-aware
 
 ## Output modes
 
-`/wrap` is **terse by default**: it runs all four phases in full but collapses its human-facing output to a short merged + follow-ups summary. Pass `--verbose` for the complete per-phase narration and the detailed final report.
+`/wrap` is **silent by default** (issue #851): it runs all four phases in full and says nothing about a clean merge — only items that need an explicit decision from you. Pass `--verbose`, or simply ask ("what did you just do?", "summarize"), for the merged + follow-ups summary, the per-phase narration, and the detailed final report. This implements `CLAUDE.md` #3 for this skill.
 
 | Mode | Flag | Effect |
 |------|------|--------|
-| **Terse** | *(default)* | Two concise blocks — **Merged** (≤3 sentences) and **Follow-ups** (≤3 sentences, or "No follow-ups opened.") — plus a one-line lessons ack and, only when the sweep left decisions pending, a one-line verdict. Per-phase narration is suppressed. |
-| **Verbose** | `--verbose` | The full report: per-cycle recovery heartbeats, the Session Lessons block, and the multi-section "Wrap-Up Complete" report (Issues filed, Filings suppressed as duplicates, Session sweep, Verdict, Lessons). Full template: `references/wrap-report-templates.md`. |
+| **Silent** | *(default)* | Nothing on a clean run — no merge line, no follow-up list, no lessons ack, no sweep summary. Only decision-requiring items print, one terse line each (Step 4.3 **Silent default**). |
+| **Verbose** | `--verbose` *(or an explicit request)* | The full report: the `## Wrapped up` merged + follow-ups block, per-cycle recovery heartbeats, the Session Lessons block, and the multi-section "Wrap-Up Complete" report (Issues filed, Filings suppressed as duplicates, Session sweep, Verdict, Lessons). Full template: `references/wrap-report-templates.md`. |
 
-**Verbosity is additive and human-facing only.** Every phase executes **identically** in both modes; only narration differs. Four things always print regardless of mode:
+**Verbosity is additive and human-facing only.** Every phase executes **identically** in both modes; only narration differs. Suppression is never deletion — the merge, the filings, the sweep, and the lessons are all recorded (GitHub, `WRAP_FILED_ISSUES`, `session-state.json` `wrap_sweep`, memory), so an explicit request re-renders the verbose report in full from that state. Four things always print regardless of mode:
 
-- **State-changing blockers and stop conditions** — a merge that can't proceed, `CONFLICTING`, human `CHANGES_REQUESTED`, no PR found, the recovery cap — surface as a short one-line reason even in terse mode (Step 4.3 **Blocker path**).
+- **State-changing blockers and stop conditions** — a merge that can't proceed, `CONFLICTING`, human `CHANGES_REQUESTED`, no PR found, the recovery cap — surface as a short one-line reason even on the silent default (Step 4.3 **Blocker path**).
 - **The `[INFERRED]` merge-safety checkpoint** (Step 1.1). Prints only on the inference path, never on the normal branch path.
-- **The CLAUDE.md 5-minute heartbeat** during long `/fixpr` waits.
-- **`[COVERAGE]` when local review was degraded** (`cr-only`, `codeant-only`, or `none`). Full coverage (`both`) is terse-suppressible.
+- **The CLAUDE.md 5-minute heartbeat** during long `/fixpr` waits. Silence never extends past the heartbeat — that is what keeps a suppressed run distinguishable from a stalled one (issue #803).
+- **`[COVERAGE]` when local review was degraded** (`cr-only`, `codeant-only`, or `none`). Full coverage (`both`) is suppressible.
 
 When `/wrap` is invoked by a phase-C subagent, the machine **`EXIT_REPORT`** block (per `phase-protocols.md`) is emitted **identically regardless of verbosity**.
 
@@ -189,7 +189,7 @@ if [ "$WRAP_VERBOSE" = "1" ]; then
 fi
 ```
 
-**Terse mode keeps two non-negotiable signals:** (a) the CLAUDE.md 5-minute heartbeat during `/fixpr` waits, and (b) dispatch/blocker transitions always print.
+**The silent default keeps two non-negotiable signals:** (a) the CLAUDE.md 5-minute heartbeat during `/fixpr` waits, and (b) dispatch/blocker transitions always print.
 
 After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker summary, action taken, result. Always built; rendered to the user only under `--verbose`.
 
@@ -425,7 +425,7 @@ For each follow-up item (the HHG pair or the generic list):
 {context from detection}${LINKED_SOURCE}
 
 _Filed via /wrap._"
-  # Surface title+body before filing (visible in --verbose mode only; all filings announced in Step 4.3 regardless):
+  # Surface title+body before filing (--verbose only; the silent default records without printing):
   if [ "$WRAP_VERBOSE" = "1" ]; then
     echo "Filing follow-up: $ISSUE_TITLE"
     echo "$ISSUE_BODY"
@@ -446,13 +446,13 @@ _Filed via /wrap._"
 
 ### Step 3.4: Carry Part A results into the unified report
 
-Part A does **not** print its own "Created" list — every issue it filed is in `WRAP_FILED_ISSUES` and announced once in Step 4.3. Carry forward: filed issues (already in registry), suppressed-as-duplicates, filed-with-caveat, and failures. If nothing detected and nothing filed, Step 4.3 reads "No follow-up items detected." Proceed immediately to Part B.
+Part A does **not** print its own "Created" list — every issue it filed is in `WRAP_FILED_ISSUES` and rendered once in Step 4.3's verbose report. Carry forward: filed issues (already in registry), suppressed-as-duplicates, filed-with-caveat, and failures. Filed-with-caveat entries and creation failures are the two that also print on the silent default. If nothing detected and nothing filed, the verbose report reads "No follow-up items detected." Proceed immediately to Part B.
 
 ### Part B — Full-session sweep
 
 Part B sweeps the **whole session** for loose ends the per-PR detection in Part A cannot see. It produces two buckets — **Auto-handled** and **Needs your decision** — and a one-line **verdict**.
 
-**Safety boundaries (non-negotiable — issue #471):** never auto-file without surfacing the body; never auto-act on anything affecting shared state (live crons, active subagents, human-owned issues/PRs, recovery branches); auto-handling limited to: stopping a **dead** session `/loop` job and deleting a **stale** handoff file.
+**Safety boundaries (non-negotiable — issue #471):** never auto-file without recording the full body (rendered under `--verbose` or on request — issue #851); never auto-act on anything affecting shared state (live crons, active subagents, human-owned issues/PRs, recovery branches); auto-handling limited to: stopping a **dead** session `/loop` job and deleting a **stale** handoff file.
 
 #### Step 3.5: Sweep setup & idempotency guard
 
@@ -465,7 +465,7 @@ if [[ -n "$SESSION_STATE_SH" ]]; then
 fi
 ```
 
-Initialize `SWEEP_AUTO_HANDLED` and `SWEEP_NEEDS_DECISION` (free-form bullet lists). Cap each rendered section at 3–5 bullets (overflow → "+ N more" summary); auto-filed tickets are **exempt** from the cap — every created issue's title + body is surfaced in full.
+Initialize `SWEEP_AUTO_HANDLED` and `SWEEP_NEEDS_DECISION` (free-form bullet lists). Cap each rendered section at 3–5 bullets (overflow → "+ N more" summary); auto-filed tickets are **exempt** from the cap — every created issue's title + body is surfaced in full under `--verbose`.
 
 #### Step 3.6: Category 1 — Session loose ends (transcript introspection)
 
@@ -491,7 +491,7 @@ Classify per `.claude/reference/autofile-dedup.md` and take exactly one path:
 - **Weak / closed** → set `WEAK_DUP_NUM` and file with `Possibly duplicates #{DUP_NUM}` body line; add to `SWEEP_NEEDS_DECISION`.
 - **None** → file.
 
-On filing: create immediately, **surface title + body**, append to `WRAP_FILED_ISSUES` (rationale `loose end: <summary>`), append number to `DEDUP_EXCLUDE`, add to `SWEEP_AUTO_HANDLED`. Use same `gh issue create` guard as Step 3.3 (validate parsed number; on failure record and continue):
+On filing: create immediately, **surface title + body under `--verbose`**, append to `WRAP_FILED_ISSUES` (rationale `loose end: <summary>`), append number to `DEDUP_EXCLUDE`, add to `SWEEP_AUTO_HANDLED`. Use same `gh issue create` guard as Step 3.3 (validate parsed number; on failure record and continue):
 
 ```bash
 POSSIBLE_DUP=""
@@ -671,13 +671,28 @@ For each actionable, novel lesson:
 - Write memory files with proper frontmatter (`feedback`, `project`, or `user` type)
 - Add pointers to `MEMORY.md`
 
-Memory writes happen in both modes. Record `WRAP_LESSONS_COUNT`. Verbose mode prints the full `## Session Lessons` block; terse carries only a one-line ack into Step 4.3.
+Memory writes happen in both modes. Record `WRAP_LESSONS_COUNT`. Verbose mode prints the full `## Session Lessons` block; the silent default prints no lessons ack at all — the memory files are the record.
 
 ### Step 4.3: Final report
 
-`/wrap` renders one of two **success** reports based on the output mode; the **Blocker path** prints in *both* modes.
+`/wrap` has three output paths: the **silent default**, the **verbose report**, and the **Blocker path** (prints in *both* modes).
 
-#### Terse report (default)
+#### Silent default
+
+On a clean run, print **nothing** — no merge line, no follow-up list, no lessons ack, no sweep summary. All of it is already recorded (GitHub, `WRAP_FILED_ISSUES`, `session-state.json` `wrap_sweep`, memory) and re-renders in full under `--verbose` or on request.
+
+Print **only** items that need an explicit decision from the user, one terse line each:
+
+- **Blocker or stop condition** → the Blocker path below. Mandatory — silence must never swallow a stop.
+- **A filing that needs your judgment** → `gh issue create` failed, or the issue was filed with a `Possibly duplicates #{N}` caveat: `Filed [#{a}](url) — possibly duplicates #{b}.` A filing with no caveat is recorded silently.
+- **Sweep verdict, only when items are pending** → `{N} item(s) pending your decision — run /wrap --verbose for detail.` Omit entirely on `Clear to archive`.
+- **`[COVERAGE]` degraded** and the **`[INFERRED]` checkpoint** — per the always-print list in **Output modes**.
+
+When none of those apply, `/wrap` produces no output at all. A clean merge is silent (`CLAUDE.md` #3).
+
+#### Verbose report (`--verbose`, or on explicit request)
+
+Print this block first:
 
 ```
 ## Wrapped up
@@ -692,6 +707,8 @@ Memory writes happen in both modes. Record `WRAP_LESSONS_COUNT`. Verbose mode pr
 
 Rules: **Merged ≤3 sentences; Follow-ups ≤3 sentences.** Every opened issue is listed (number + one-line + clickable link) — an issue not listed is indistinguishable from one silently dropped. Suppressed-as-duplicate findings: never silently dropped (surface count). Sweep verdict: appears only when decisions are pending.
 
+Then the full `## Wrap-Up Complete` multi-section template, rendering rules, section caps, and exemptions: **`references/wrap-report-templates.md`**.
+
 #### Blocker path (both modes)
 
 Print a **single short line** naming the reason. Under `--verbose`, also append the full `WRAP_RECOVERY_AUDIT` / `missing` detail:
@@ -703,10 +720,6 @@ Print a **single short line** naming the reason. Under `--verbose`, also append 
 - **`/fixpr` delegation failure (Step 2.1 Branch B)** → `Merge blocked: /fixpr could not resolve {blocker} — {FIXPR_WRAP_STATUS}.`
 - **No PR found** → the Step 1.1f message verbatim.
 
-The blocker line is **mandatory in terse mode** — terseness must never swallow a stop.
-
-#### Verbose report (`--verbose`)
-
-Full `## Wrap-Up Complete` multi-section template, rendering rules, section caps, and exemptions: **`references/wrap-report-templates.md`**.
+The blocker line is **mandatory on the silent default** — silence must never swallow a stop.
 
 The worktree and feature branch are intentionally left in place, reaped out-of-band by `/pm-update`'s stale-cleanup pass. See `.claude/scripts/stale-cleanup.sh --help`.

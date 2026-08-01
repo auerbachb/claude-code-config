@@ -78,7 +78,7 @@ Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget
 
 ### CI Health Check (MANDATORY — every poll cycle)
 
-**Check ALL check-runs:** `repos/{owner}/{repo}/commits/{SHA}/check-runs?per_page=100` (full command: `.claude/reference/cr-polling-commands.md`). Any blocking conclusion → **invoke `/fixpr` immediately** (`cancelled`/`neutral`/`skipped` are non-blocking). CI failures block merge independently of CR; report a pass/fail summary.
+**Check ALL check-runs:** `repos/{owner}/{repo}/commits/{SHA}/check-runs?per_page=100` (full command: `.claude/reference/cr-polling-commands.md`). Any blocking conclusion → **invoke `/fixpr` immediately** (`cancelled`/`neutral`/`skipped` are non-blocking). CI failures block merge independently of CR.
 
 ### Timeout & Fallback — Three-Tier Review Chain
 
