@@ -305,14 +305,19 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
       #      fence so consecutive blocks are not swallowed with the prose between.
       #   2. Closed ~~~ fences  — same lazy discipline.
       #   3. Unclosed ``` opener → end-of-body — runs AFTER closed fences are
-      #      removed, so it cannot swallow a later valid close.
+      #      removed, so it cannot swallow a later valid close. Two passes are
+      #      needed: one for the start-of-body edge case (no preceding \n), then
+      #      a gsub for every other line-starting opener. The pattern requires
+      #      \n immediately before ``` so that inline triple-backticks inside
+      #      prose (e.g. "use ``` for fencing") are NOT stripped.
       #   4. Four-space-indented lines — \n    [^\n]* matches each indented line
       #      (the leading newline is part of the match; the line-anchor flag "s"
       #      is not used because it does not do what PCRE multiline would do).
       | ($btxt
          | gsub("```.*?```"; " "; "m")
          | gsub("~~~.*?~~~"; " "; "m")
-         | gsub("```.*"; " "; "m")
+         | (if startswith("```") then sub("```.*"; " "; "m") else . end)
+         | gsub("\n```.*"; " "; "m")
          | gsub("\n    [^\n]*"; " "; "m")
         ) as $unfenced
       | [ ( $btxt | scan("\\b[0-9a-f]{7,40}\\b") | select(test("[a-f]")) ),

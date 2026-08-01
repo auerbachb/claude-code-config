@@ -595,6 +595,18 @@ check_eq "[]"    "$(echo "$RF_UNCLOSED" | jq -c '.status_comment_shas')"       "
 check_eq "false" "$(echo "$RF_UNCLOSED" | jq -r '.status_comment_names_head')" "(ee-897) unclosed fence: one-directional invariant: cannot name HEAD"
 check_eq "false" "$(echo "$RF_UNCLOSED" | jq -r '.external_evidence_on_head')" "(ee-897) unclosed fence: one-directional invariant: cannot redeem"
 
+echo "=== (ee-897) inline triple-backtick in prose: code span AFTER it is still scanned ==="
+# A ``` that appears mid-sentence (not at start of line) must not strip the rest of
+# the body. Without the line-start anchor fix, gsub("```.*";"m") swallows everything
+# from the inline ``` forward, hiding the mismatch-inducing code span `1234599`.
+RF_INLINE_TICK="$(ee_eval "$(printf "Review uses \`\`\` syntax for fences. Old commit \`1234599\` was not HEAD.\n")")"
+check_eq "true"  "$(echo "$RF_INLINE_TICK" | jq -r '.self_report_mismatch')"   "(ee-897) inline-tick: code span after inline fence marker is not suppressed"
+check_eq "1234599" "$(echo "$RF_INLINE_TICK" | jq -r '.status_comment_shas[0] // "NONE"')" "(ee-897) inline-tick: token is collected correctly"
+# Same assertion for start-of-body ``` (the sub() path) — must still strip the fence
+RF_BODY_START_FENCE="$(ee_eval "$(printf "\`\`\`js\nconst id = \`1234599\`;\n")")"
+check_eq "false" "$(echo "$RF_BODY_START_FENCE" | jq -r '.self_report_mismatch')"   "(ee-897) body-start fence: template literal inside fence is not a self-report"
+check_eq "[]"    "$(echo "$RF_BODY_START_FENCE" | jq -c '.status_comment_shas')"    "(ee-897) body-start fence: yields no tokens"
+
 echo "=== (m) evaluator rejects malformed stdin ==="
 echo "not json" | "$EVAL_SUT" >/dev/null 2>&1
 check_eq "4" "$?" "(m) non-JSON stdin exits 4"
