@@ -362,6 +362,33 @@ OUT="$(run_gate)"
 check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].temporal_inversion')" "(w) real inline evidence still clears it"
 FAKE_PR_COMMENTS='[]'
 
+echo "=== (x) a duplicate empty APPROVED does not discard the substantive one (BugBot, PR #883) ==="
+# These bots approve in bursts — CodeAnt posted four identical APPROVEDs in the
+# same second on this PR. Keying substance off only the latest one threw away a
+# real review body whenever an empty duplicate landed after it.
+FAKE_REVIEWS="$(jq -cn --arg sha "$HEAD_SHA" \
+  '[{user:{login:"codeant-ai[bot]",type:"Bot"},commit_id:$sha,state:"APPROVED",
+     body:"Actionable comments posted: 0. Reviewed all changed files; no blocking issues found.",
+     submitted_at:"2026-07-31T10:04:00Z"},
+    {user:{login:"codeant-ai[bot]",type:"Bot"},commit_id:$sha,state:"APPROVED",
+     body:"",submitted_at:"2026-07-31T10:04:02Z"}]')"
+FAKE_ISSUE_COMMENTS='[]'
+OUT="$(run_gate)"
+check_eq "true" "$(echo "$OUT" | jq -r '.met')" "(x) the substantive approval still counts"
+check_eq "codeant-ai[bot]" "$(echo "$OUT" | jq -r '.review_evidence.substantive[0]')" "(x) reported as substantive, not hollow"
+
+echo "=== (y) a 'review triggered' ack is not a run-start marker (BugBot, PR #883) ==="
+# pr-state.sh and poll-watermarks.sh both classify this as an acknowledgment.
+# Admitting it as a marker let a content-free ack become the EARLIEST post-push
+# marker and mask a real inversion against the genuine notice that followed.
+FAKE_REVIEWS="$(approval "codeant-ai[bot]" "" "2026-07-31T10:00:16Z")"
+FAKE_ISSUE_COMMENTS="$(convo \
+  "codeant-ai[bot]" "Actions performed: Full review triggered." "2026-07-31T10:00:05Z" \
+  "codeant-ai[bot]" "CodeAnt AI is running the review." "2026-07-31T10:00:22Z")"
+OUT="$(run_gate)"
+check_eq "codeant-ai[bot]" "$(echo "$OUT" | jq -r '.review_evidence.inverted[0]')" "(y) ack does not mask the real inversion"
+check_eq "2026-07-31T10:00:22Z" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].run_start_marker_at')" "(y) marker is the genuine notice, not the ack"
+
 echo "=== (m) evaluator rejects malformed stdin ==="
 echo "not json" | "$EVAL_SUT" >/dev/null 2>&1
 check_eq "4" "$?" "(m) non-JSON stdin exits 4"

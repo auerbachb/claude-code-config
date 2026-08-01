@@ -232,7 +232,16 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
             tokens:  $tok,
             names_head: ($tok | tokens_name_head),
             # "the review has started" markers, used for temporal inversion
-            marker:  ($b | test("is running the review|is reviewing|review in progress|currently processing|started reviewing|started the review|review triggered|is analyzing"; "i")),
+            # "the review has started" markers. Deliberately NOT "review
+            # triggered" (BugBot review, PR #883): that is the request being
+            # ACCEPTED, not work beginning — pr-state.sh and poll-watermarks.sh
+            # both classify "full review triggered" as an acknowledgment, and a
+            # regression test pins it. Admitting it here contradicted that and
+            # could mask a real inversion, because $marker takes the EARLIEST
+            # post-push marker: a content-free ack landing first becomes the
+            # marker, and an approval after it stops looking inverted against
+            # the bot"s genuine "is running the review" notice later on.
+            marker:  ($b | test("is running the review|is reviewing|review in progress|currently processing|started reviewing|started the review|is analyzing"; "i")),
             # explicit "I cannot review this" notices
             failure: ($b | test("does not have a pr review subscription|no active subscription|not have an active subscription|rate limit|rate-limit|usage limit|usage or spend limit|quota exceeded|could not run|couldn'"'"'t run|unable to run|unable to review|unable to complete|failed to run|failed to review"; "i")) } ]
       | sort_by(.ts) ) as $cidx
@@ -266,9 +275,16 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
     ( [ $approvers[]
         | . as $login
         | ( [ $cidx[] | select(.login == $login) ] )                       as $mine
-        | ( [ $ridx[] | select(.login == $login and .state == "APPROVED") ]
-            | sort_by(.submitted_at) | last )                              as $ap
-        | ($ap.body_len // 0)                                              as $body_len
+        | ( [ $ridx[] | select(.login == $login and .state == "APPROVED") ] )
+                                                                           as $aps
+        | ( $aps | sort_by(.submitted_at) | last )                         as $ap
+        # Body length is the MAX across every APPROVED this bot left on HEAD, not
+        # the latest one"s (BugBot review, PR #883). These bots emit approvals in
+        # bursts — CodeAnt posted four identical APPROVEDs in the same second on
+        # this PR — so a substantive approval followed by an empty duplicate
+        # would otherwise have its body discarded and be reported hollow. Timing
+        # still keys off the latest approval; only substance is pooled.
+        | ( [ $aps[] | .body_len ] | max // 0 )                            as $body_len
         | ($ap.submitted_at // "")                                         as $ap_ts
         | ( [ $iidx[] | select(.login == $login) ] )                       as $inl
         # A status comment only evidences a review if it is not the reviewer
