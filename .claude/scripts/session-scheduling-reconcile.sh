@@ -94,6 +94,18 @@ PURGED_JSON='{}'
 # through `.repos[]` (the scoped layout, issue #638) AND at the top level, so a
 # not-yet-migrated legacy file is reconciled too rather than silently skipped.
 
+SESSION_STATE_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/session-state.sh"
+
+# Migrate BEFORE planning. session-state.sh migrates a legacy top-level `.prs`
+# into `.repos[...]` as a side effect of any write, THEN applies our assignments
+# — so a plan built against the pre-migration layout would recreate a clean
+# top-level record while the migrated scoped record kept its stale cron_job_id
+# and active flag. Real consumers read the scoped path, so the purge would have
+# looked successful and changed nothing that matters.
+if [[ -f "$STATE_FILE" && -x "$SESSION_STATE_SH" && "$CHECK_ONLY" -eq 0 ]]; then
+  "$SESSION_STATE_SH" --migrate >/dev/null 2>&1 || true
+fi
+
 if [[ -f "$STATE_FILE" ]]; then
   NOW_EPOCH="$(date -u +%s)"
 
@@ -168,7 +180,6 @@ if [[ -f "$STATE_FILE" ]]; then
     [[ "$TOTAL" =~ ^[0-9]+$ ]] || TOTAL=0
 
     if (( CHECK_ONLY == 0 && TOTAL > 0 )); then
-      SESSION_STATE_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/session-state.sh"
       if [[ -x "$SESSION_STATE_SH" ]]; then
         # One atomic multi---set call under the helper's lock, not N writes.
         SET_ARGS=()

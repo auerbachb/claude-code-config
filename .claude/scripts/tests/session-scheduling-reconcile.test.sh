@@ -202,9 +202,17 @@ ok "a watcher with no last_tick_at is still reclaimed"
 # --- 6. A legacy (unmigrated, top-level .prs) file is reconciled too ---------
 new_home '{"prs":{"7":{"babysit":{"active":true,"cron_job_id":"cron_z","last_tick_at":"2020-01-01T00:00:00Z"}}}}'
 "$SCRIPT" >/dev/null
-[[ "$(jq -r '.prs["7"].babysit.cron_job_id' "$STATE")" == "null" ]] \
-  || fail "legacy top-level .prs layout should be reconciled, not skipped"
-ok "reconciles the legacy top-level .prs layout"
+# Assert on EVERY babysit record in the document, not just the top-level one.
+# session-state.sh migrates legacy `.prs` into `.repos[...]` as a side effect of
+# writing, so checking only `.prs["7"]` would pass while a migrated scoped copy
+# kept the stale values that real consumers actually read.
+STALE=$(jq -c '[.. | objects | select(has("cron_job_id")) | select(.cron_job_id != null or .active == true)]' "$STATE")
+[[ "$STALE" == "[]" ]] \
+  || fail "every babysit record must be reconciled, incl. the migrated scoped copy; stale: $STALE"
+COUNT=$(jq '[.. | objects | select(has("cron_job_id"))] | length' "$STATE")
+[[ "$COUNT" == "1" ]] \
+  || fail "expected exactly one babysit record after migration, got $COUNT (a duplicate means the purge recreated a legacy record beside the migrated one)"
+ok "reconciles the legacy layout without leaving a stale migrated copy"
 
 # --- 7. harness-audit watermark drives the nudge -----------------------------
 MONTH="$(TZ='America/New_York' date +%Y-%m)"
