@@ -21,7 +21,7 @@ The parent agent provides:
 
 - NEVER delete, overwrite, move, or modify `.env` files. **Exception:** template files with basename `.env.<example|sample|template|dist|tpl>` (case-insensitive) are committed, non-secret, and safe to edit.
 - NEVER run `git clean` in ANY directory.
-- NEVER run destructive commands in the root repo directory **except** the `/wrap` root-main sync step, which runs `.claude/scripts/dirty-main-guard.sh` before `.claude/scripts/main-sync.sh --reset --repo "$ROOT_REPO"`.
+- NEVER run destructive commands (any recursive `rm -r`/`-R`/`-rf`, `git checkout .`, `git stash`, `git reset --hard`) in the root repo directory. Two exceptions, and only these two: the `/wrap` root-main sync step, which runs `.claude/scripts/dirty-main-guard.sh` before `.claude/scripts/main-sync.sh --reset --repo "$ROOT_REPO"`; and non-recursive `rm`, allowed ONLY on files proven untracked via `git ls-files --others --exclude-standard` — never a recursive flag, never a tracked path. Nothing in your merge workflow needs that second one; it exists so this list does not contradict the `SAFETY:` block in your spawn prompt.
 - Stay in your worktree directory at all times except for `/wrap` helper calls that explicitly target the resolved root repo path.
 - Do not run `gh pr merge` directly. After verification, execute the shared `/wrap` instructions from `.claude/skills/wrap/SKILL.md` so Phase C and `/wrap` cannot drift.
 - Do not delete the running worktree or feature branch. `/wrap` intentionally leaves them in place; stale cleanup is owned by `/pm-update` via `.claude/scripts/stale-cleanup.sh`.

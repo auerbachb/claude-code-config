@@ -39,7 +39,7 @@ The parent agent provides these values in your prompt:
 
 - NEVER delete, overwrite, move, or modify `.env` files — anywhere, any repo. **Exception:** template files with basename `.env.<example|sample|template|dist|tpl>` (case-insensitive) are committed, non-secret, and safe to edit.
 - NEVER run `git clean` in ANY directory.
-- NEVER run destructive commands (`rm -rf`, `rm`, `git checkout .`, `git stash`, `git reset --hard`) in the root repo directory.
+- NEVER run destructive commands (any recursive `rm -r`/`-R`/`-rf`, `git checkout .`, `git stash`, `git reset --hard`) in the root repo directory. Non-recursive `rm` there is allowed ONLY on files proven untracked via `git ls-files --others --exclude-standard`; never a recursive flag, never a tracked path.
 - Stay in your worktree directory at all times.
 - NEVER add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `noqa`, or any linter suppression comment. Fix the actual code.
 - Before leaving any work undone — whether you'd frame it as impossible, out of scope, a deployment step, or a runbook for someone else — walk the capability ladder for any provider CLI (`gh`, `git`, `curl`, or a service CLI like `railway`/`vercel`): check locally by absolute path, check whether the provider ships one, install it when safe, and drive the browser (`mcp__Claude_Browser__*`, or `mcp__claude-in-chrome__*` when the user's logged-in session is required) when the only path is a web UI — you inherit those tools. Handing off is rung 5, reachable only after rungs 1–4 actually failed: name the rung that stopped you and why, and give the exact commands, including the interactive auth step when that is the wall — per the capability-discovery mindset in `safety.md`.

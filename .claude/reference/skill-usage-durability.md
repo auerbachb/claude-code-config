@@ -65,6 +65,16 @@ Limitations, by design: a CSV baseline cannot back-date the log-derived
 lines), and recompute-mode restores preserve baseline counts via the `max`
 rule but never regenerate the underlying events.
 
+## Why the skill-first reflex protects this record
+
+Only `Skill`-tool invocations reach `~/.claude/skill-usage.log` — the
+PostToolUse hook has nothing to fire on when a skill is hand-rolled from
+memory instead. Every hand-rolled run is therefore an invisible use: the
+skill looks unused, prune audits (`audit-skill-usage.sh`,
+`skill-prune-audit-2026-07.md`) under-count it, and a live skill can be
+recommended for deletion. That is the reason `.claude/rules/skill-first.md`
+requires the Skill tool rather than merely suggesting it.
+
 ## Related
 
 - `skill-usage-merge.sh --help` / `skill-usage-snapshot.sh --help` — full

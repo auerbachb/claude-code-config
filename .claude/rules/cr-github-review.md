@@ -5,12 +5,8 @@
 > **Always:** Poll all 3 endpoints + check-runs every cycle (`per_page=100`; filter per-bot logins like `coderabbitai[bot]` after fetching). Batch fixes into one commit. Reply to every thread. Resolve via `resolve-review-threads.sh`. Enter the polling loop immediately after push — do NOT ask. Invoke `/fixpr` when any trigger condition fires.
 > **Ask first:** Merging only.
 > **Never:** Poll only 1-2 endpoints. Use bare `coderabbitai` without `[bot]`. Push per-finding. Trigger `@coderabbitai full review` more than twice per PR per hour. Trigger Greptile proactively. Merge without meeting the merge gate. Exit polling on "nothing unresolved right now."
->
-> **This fallback workflow runs after every push/PR.** Local review reduces findings; it does not replace GitHub review.
 
 **Prerequisite:** Confirm the repo uses CodeRabbit (`.coderabbit.yaml` or prior `coderabbitai[bot]` PR reviews). If not configured, skip CR-specific polling but still verify CI/AC through `cr-merge-gate.md`.
-
-After pushing to a PR, enter this loop automatically.
 
 ### Pre-polling procedural gate (MANDATORY — issue #315)
 
@@ -94,4 +90,4 @@ Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget
 
 > **"Duplicate" findings are NOT resolved** — always verify against code before dismissing.
 
-Exit only when `cr-merge-gate.md` is met. This file owns polling/feedback only.
+This file owns polling/feedback only.
