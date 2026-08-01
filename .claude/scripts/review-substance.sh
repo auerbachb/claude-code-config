@@ -339,8 +339,19 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
 
         # EARLIEST post-push run-start marker. Earliest, not latest: a re-review
         # kicked off AFTER a genuine approval would otherwise look inverted.
+        #
+        # ">=", not ">" — the push second is INCLUSIVE, matching fresh_review
+        # above (BugBot review on c90b32a, PR #883). canon_ts has already
+        # stripped fractional seconds, so a marker posted a fraction of a second
+        # after the commit carries the SAME string as $push; under a strict ">"
+        # it was discarded and temporal_inversion could not fire at all — which
+        # is precisely when these bots post, seconds either side of the push.
+        # One evaluator cannot read the push second as inclusive for reviews and
+        # exclusive for markers. Including it is also the conservative direction:
+        # inversion additionally requires the approval to be at or before the
+        # marker, and $ext_substantive still clears any bot that really worked.
         | ( if $push == "" then null
-            else ( [ $mine[] | select(.created > $push and .marker) ]
+            else ( [ $mine[] | select(.created >= $push and .marker) ]
                    | sort_by(.created) | first )
             end )                                                          as $marker
 
@@ -360,8 +371,11 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         #    coderabbit-rate-limit-is-temporary); it is equally often a limit hit
         #    on a LATER re-review request, which must not retroactively void the
         #    walkthrough that already named this SHA.
+        # ">=" for the same reason as $marker above: the push second is
+        # inclusive, so a "cannot review" notice landing in the same second as
+        # the commit is still a post-push notice (BugBot review on c90b32a).
         | ( if $push == "" or $ext_substantive then null
-            else ( [ $mine[] | select(.created > $push and .failure) ]
+            else ( [ $mine[] | select(.created >= $push and .failure) ]
                    | sort_by(.created) | last )
             end )                                                          as $fail
 

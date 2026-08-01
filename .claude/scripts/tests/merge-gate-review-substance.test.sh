@@ -444,6 +444,38 @@ check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[
 check_eq "true" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].temporal_inversion')" "(bb) so the inversion stands"
 check_eq "false" "$(echo "$OUT" | jq -r '.met')" "(bb) and the gate does not pass on it"
 
+echo "=== (cc) a run marker in the PUSH second is still post-push (BugBot, PR #883) ==="
+# FAKE_COMMIT_TS is 10:00:00Z. The marker selector used a STRICT "> \$push" while
+# review freshness one screen above used an INCLUSIVE ">=", so a marker landing
+# in the same second as the commit was discarded and temporal_inversion could not
+# fire at all — exactly when these bots post, seconds either side of a push.
+# canon_ts has already dropped fractional seconds, so "a fraction of a second
+# after the push" IS the push second. With a body long enough to clear min_chars,
+# the old asymmetry let a stamp that announced its own start after approving
+# count as full coverage.
+FAKE_REVIEWS="$(approval "codeant-ai[bot]" "Actionable comments posted: 0. Reviewed all changed files; no blocking issues found." "2026-07-31T10:00:00Z")"
+FAKE_ISSUE_COMMENTS="$(convo "codeant-ai[bot]" "CodeAnt AI is running the review." "2026-07-31T10:00:00Z")"
+FAKE_PR_COMMENTS='[]'
+OUT="$(run_gate)"
+check_eq "true" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].substantive')" "(cc) the body alone still reads as substance"
+check_eq "true" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].temporal_inversion')" "(cc) but the same-second marker now inverts it"
+check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].counts_as_coverage')" "(cc) so it is not coverage"
+check_eq "false" "$(echo "$OUT" | jq -r '.met')" "(cc) and the gate does not pass on it"
+# The innocent shape is still protected: evidence outside the approval clears it.
+FAKE_PR_COMMENTS="$(jq -cn --arg sha "$HEAD_SHA" '[{user:{login:"codeant-ai[bot]",type:"Bot"},commit_id:$sha,original_commit_id:$sha,created_at:"2026-07-31T10:00:40Z",path:"a.sh",body:"Suggestion: unreachable branch."}]')"
+OUT="$(run_gate)"
+check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].temporal_inversion')" "(cc) external evidence still clears the same-second inversion"
+FAKE_PR_COMMENTS='[]'
+
+echo "=== (dd) a capability-failure notice in the PUSH second still counts (BugBot, PR #883) ==="
+# Same off-by-one on the sibling selector: a "cannot review" notice posted in the
+# commit second was ignored, so an approval right behind it read as clean.
+FAKE_REVIEWS="$(approval "coderabbitai[bot]" "" "2026-07-31T10:00:30Z")"
+FAKE_ISSUE_COMMENTS="$(convo "coderabbitai[bot]" "We could not run the review due to a rate limit on your organization." "2026-07-31T10:00:00Z")"
+OUT="$(run_gate)"
+check_eq "true" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["coderabbitai[bot]"].capability_failure')" "(dd) same-second failure notice is still post-push"
+check_eq "false" "$(echo "$OUT" | jq -r '.met')" "(dd) and the gate does not pass on it"
+
 echo "=== (m) evaluator rejects malformed stdin ==="
 echo "not json" | "$EVAL_SUT" >/dev/null 2>&1
 check_eq "4" "$?" "(m) non-JSON stdin exits 4"

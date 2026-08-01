@@ -373,6 +373,26 @@ check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=gate_met" "STATUS=gate_met" "$OUT"
 
 ############################################################################
+echo "== Scenario (h6e): fresh approval spelled Z against a +0000 commit date -> gate_met (all three UTC spellings normalise) =="
+reset_state
+# The compact "+0000" spelling of the same instant. BugBot flagged (on c90b32a)
+# that this filter stripped it while norm_ts in merge-gate.sh did not, so the two
+# disagreed on identical inputs; norm_ts now strips it too. Pins that the spelling
+# is normalised rather than compared raw — as raw strings "...+0000" sorts BEFORE
+# "...Z", which would mark this fresh approval stale and withhold gate_met.
+PUSH_H6E="$(python3 -c "
+from datetime import datetime, timedelta, timezone
+print((datetime.now(timezone.utc) - timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%S+0000'))
+")"
+write_commits "$PUSH_H6E"
+FAILURE_COMMENT_H6E="$(failure_comment "$(ts_seconds_ago 60)")"
+CODEANT_APPROVED_H6E='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed every changed file; no blocking issues found.", "submitted_at": "'"$(ts_seconds_ago 90)"'"}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H6E]" "[]" "[$FAILURE_COMMENT_H6E]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=gate_met" "STATUS=gate_met" "$OUT"
+
+############################################################################
 echo "== Scenario (h6c): approval earlier in the SAME second as a fractional commit date -> trigger_greptile (must agree with merge-gate.sh) =="
 reset_state
 # BugBot review on 7de2a4c (PR #883): escalate-review.sh and merge-gate.sh

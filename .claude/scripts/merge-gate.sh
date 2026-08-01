@@ -627,9 +627,18 @@ fi
 # purely lexicographic; Z (ASCII 90) > + (ASCII 43), so "…Z" > "…+00:00" even for
 # equal instants, breaking stale-approval comparisons. Strip the timezone suffix to
 # produce a bare "YYYY-MM-DDTHH:MM:SS" string that sorts correctly for UTC timestamps.
+# `+0000` is stripped too (BugBot review on c90b32a, PR #883). escalate-review.sh
+# normalises all three UTC spellings for the same #836 freshness rule, so leaving
+# one of them out here made the two disagree: a `+0000` commit date against a `Z`
+# approval kept its suffix, the gate called a fresh approval stale, and escalation
+# — having stripped it — called the same pair fresh and could report gate_met on a
+# PR the gate blocks. Two implementations of one rule have to normalise the same
+# set. Purely additive: a suffix that used to survive and compare wrongly now does
+# not, and no other spelling changes.
 norm_ts() {
   local t="${1%Z}"       # strip trailing Z
-  echo "${t%+00:00}"     # strip trailing +00:00 (all GitHub timestamps are UTC)
+  t="${t%+00:00}"        # strip trailing +00:00 (all GitHub timestamps are UTC)
+  echo "${t%+0000}"      # strip trailing +0000 (same instant, compact spelling)
 }
 
 # Path-specific checks.
