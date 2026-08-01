@@ -352,6 +352,7 @@ These are mandatory verification points. The executing agent MUST follow these:
 
 {ALWAYS include this section, at every tier:}
 ## Constraints
+- Claim the issue before anything else: run `.claude/scripts/issue-claim.sh <N> --check`, and if it clears, `.claude/scripts/issue-claim.sh <N> --claim`. Do this after the model-guard check and before any repo read, edit, or planning. Exit 1 (`claimed`) or 4 (`unknown`) → stop and report the claim rather than proceeding; `stale` → say so and continue. If `--claim` itself fails, stop — a passing check is not a held claim.
 - Do NOT work on main — use a worktree or feature branch
 - Do NOT modify .env files
 - Merging is automatic and yours to do: once the merge gate passes and every Test Plan / AC checkbox verifies, run the full `/wrap` yourself to squash-merge — no approval pause, no pre-merge message (`CLAUDE.md` "PR MERGE AUTHORIZATION")

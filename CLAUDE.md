@@ -80,7 +80,7 @@ Detail: `.claude/reference/continuous-work-posture.md`.
 
 ## PR & ISSUE WORKFLOW
 
-**The flow is always:** GitHub issue → CR plan (when available) → implementation plan → feature branch → code → local review → push → PR → GitHub review → merge. Never jump straight to coding (full flow: `issue-planning.md`).
+**The flow is always:** GitHub issue → claim → CR plan (when available) → implementation plan → feature branch → code → local review → push → PR → GitHub review → merge. Never jump straight to coding (full flow: `issue-planning.md`).
 
 **Key rules:**
 - **Every PR must link to a GitHub issue.** No exceptions — create one via `gh issue create` first. Use `Closes #N` in the PR body.

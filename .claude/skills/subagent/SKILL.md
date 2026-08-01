@@ -130,15 +130,31 @@ Apply Step 4's verdict per issue. **Being too big is not a failure — it routes
 
 For each qualifying issue:
 
-### 6.0: Check for existing open PRs
+### 6.0: Check for existing open PRs *and* for a live claim
 
-For each qualifying issue, verify no PR is already open:
+For each qualifying issue, verify no PR is already open **and** that no other thread has claimed it. A PR is the *last* artifact a thread produces, so the PR check alone comes back clean for the entire plan-and-code window (issue #873) — both checks run, every time:
 
 ```bash
 gh pr list --search "head:issue-{NUMBER}" --json number,title,state
+.claude/scripts/issue-claim.sh {NUMBER} --check
 ```
 
-If a PR already exists for the issue, skip it: "Issue #N already has PR #{M} — skipping."
+Either signal skips the issue, and the skip line names **which** one fired:
+
+- PR exists → "Issue #N already has PR #{M} — skipping."
+- claim check exits `1` (`claimed`) or `4` (`unknown`) → "Issue #N is already being worked — claimed by `{claimant}` at {time} — skipping." `unknown` is treated exactly as `claimed`; it never reads as permission.
+- `stale` (exit 0) → not a skip. Surface the stale warning and continue.
+
+When both checks pass, **take the claim before spawning Phase A** so it is held for the whole pipeline, not just this step — and **gate the spawn on it succeeding**. A passing `--check` is not a held claim: another thread can win the race between the two calls, and the write itself can fail. Spawning on an unheld claim reopens the exact window this guards:
+
+```bash
+.claude/scripts/issue-claim.sh {NUMBER} --claim || {
+  echo "Issue #{NUMBER} — could not take the claim; skipping (not spawning Phase A)."; }
+```
+
+Skip the issue on any non-zero exit (`1` = lost the race, `4` = write failed/undetermined), reporting it the same way as a `claimed` verdict. Do not spawn.
+
+`/wrap` releases it at merge. If the user explicitly says to start a claimed issue anyway — naming that issue, in chat — pass `--allow-claimed` and say in the report that you are overriding a live claim; it is per-issue and per-session, never inferred and never a default. Contract: `.claude/reference/issue-claim.md`.
 
 ### 6.0b: Serialize overlapping issues (launch-side overlap filter — issue #756)
 
