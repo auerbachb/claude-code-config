@@ -123,20 +123,31 @@ fi
 # merge-gate.sh's CR_APPROVAL_VALID / CA_APPROVAL_VALID retraction-aware logic
 # (see merge-gate.sh's `primary_review_met` field) against the PR state already
 # fetched above, so no extra gh API calls are needed.
-PRIMARY_REVIEW_MET="$(jq -r --arg sha "$HEAD_SHA" '
-  def approval_valid(login):
+# Emits the LOGINS whose approval is valid, not just a boolean: the substance
+# guard below has to test the same reviewer on both conditions, and a bare
+# boolean loses which bot it came from (CodeAnt review, PR #883).
+VALID_APPROVERS="$(jq -r --arg sha "$HEAD_SHA" '
+  def approval_valid($login):
     ([.comments.reviews[]?
-      | select(.user.login == login and (.commit_id // "") == $sha and .state == "APPROVED")
+      | select(.user.login == $login and (.commit_id // "") == $sha and .state == "APPROVED")
       | .submitted_at] | sort | last // "") as $approved_at
     | ([.comments.reviews[]?
-      | select(.user.login == login and (.commit_id // "") == $sha and .state == "CHANGES_REQUESTED")
+      | select(.user.login == $login and (.commit_id // "") == $sha and .state == "CHANGES_REQUESTED")
       | .submitted_at] | sort | last // "") as $changes_at
     | ($approved_at != "") and (($changes_at == "") or ($changes_at <= $approved_at));
-  approval_valid("coderabbitai[bot]") or approval_valid("codeant-ai[bot]")
+  . as $doc
+  | [ "coderabbitai[bot]", "codeant-ai[bot]" ]
+  # `. as $l` first: with a `$login`-style parameter jq evaluates the argument
+  # closure against the DEF"s input, so `approval_valid(.)` here would pass the
+  # whole document rather than the login string.
+  | map(. as $l | select($doc | approval_valid($l)))
+  | join(",")
 ' "$STATE_PATH")" || {
   echo "escalate-review.sh: failed to evaluate primary-review-met check" >&2
   exit 4
 }
+PRIMARY_REVIEW_MET=false
+[[ -n "$VALID_APPROVERS" ]] && PRIMARY_REVIEW_MET=true
 
 # Review-substance guard (issue #875): the check above only asks whether an
 # APPROVED exists on HEAD, not whether anything reviewed it. merge-gate.sh now
@@ -171,9 +182,18 @@ if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
       # it stalled with no reviewer working on it.
       PRIMARY_REVIEW_MET=false
       echo "escalate-review.sh: review-substance.sh produced no usable JSON — cannot verify that the APPROVED on HEAD represents a real review; not reporting gate_met (issue #875)" >&2
-    elif ! echo "$SUBSTANCE_JSON" | jq -e '(.substantive // []) | length > 0' >/dev/null 2>&1; then
+    elif ! echo "$SUBSTANCE_JSON" | jq -e --arg valid "$VALID_APPROVERS" '
+            ($valid | split(",") | map(select(length > 0))) as $v
+            | [ (.substantive // [])[] | select(. as $s | $v | index($s)) ]
+            | length > 0' >/dev/null 2>&1; then
+      # The SAME reviewer must clear both gates (CodeAnt review, PR #883).
+      # Testing `.substantive | length > 0` on its own let a substantive but
+      # RETRACTED CodeRabbit approval satisfy the check while the fresh approval
+      # actually on the table was a hollow CodeAnt stamp — emitting gate_met
+      # while merge-gate.sh rejected both, which strands the PR with no reviewer
+      # working on it and no escalation in flight.
       PRIMARY_REVIEW_MET=false
-      echo "escalate-review.sh: APPROVED on HEAD has no substantive review evidence ($(echo "$SUBSTANCE_JSON" | jq -r '(.hollow // []) | join(", ")')) — not treating the gate as met (issue #875)" >&2
+      echo "escalate-review.sh: no reviewer holds BOTH a valid APPROVED on HEAD and substantive review evidence (valid approvals: ${VALID_APPROVERS:-none}; substantive: $(echo "$SUBSTANCE_JSON" | jq -r '(.substantive // []) | join(", ") | if . == "" then "none" else . end'); hollow: $(echo "$SUBSTANCE_JSON" | jq -r '(.hollow // []) | join(", ") | if . == "" then "none" else . end')) — not treating the gate as met (issue #875)" >&2
     fi
   fi
 fi

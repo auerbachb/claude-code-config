@@ -21,6 +21,7 @@ in its prompt not to trust the gate's verdict.
 | mia#172 | `476798e` | CodeAnt `APPROVED` `bodylen=0` naming `cb1f770`; CodeRabbit `APPROVED` `bodylen=0` one minute after its own CLI reported an org-wide rate limit |
 | mia#172 | `396ced5` | CodeRabbit `APPROVED`, `bodylen=0` — **but genuine**: its comment named the exact `95febff…396ced5` range, listed all 3 changed files, carried an accurate walkthrough |
 | ccc#867 | `f54effb7` | CodeAnt `APPROVED` at 06:24:44Z; its own "CodeAnt AI is running the review" marker at 06:24:50Z — **six seconds later**; and "User … does not have a PR Review subscription" 11 s *before* the approval. Same inversion on the prior SHA `5a4a9d8d` (approved 06:18:05Z, marker 06:18:22Z) |
+| ccc#883 | 5 SHAs | **This PR, during its own review.** CodeAnt `APPROVED` every SHA with `bodylen=0` — once **four identical approvals in the same second** (`8ef311a`, 07:50:35Z), never once updating the status comment past `a1c03ed`. On `e1cccbb` it approved 6 s after the push at 08:20:54Z and posted "CodeAnt AI is running the review" at 08:22:17Z — **83 s later** — then completed a real review that named no SHA at all. Caught live by this file's own evaluator: `temporal_inversion`, `self_report_mismatch`, `no_substantive_footprint`. Meanwhile GitHub's `reviewDecision` read `APPROVED` throughout |
 
 ## Why body length alone was rejected
 
@@ -86,7 +87,14 @@ Implemented in `.claude/scripts/review-substance.sh` (pure evaluator; no network
    itself, and external evidence that the reviewer read this SHA redeems it
    whenever it arrives.**
 3. **Self-report SHA mismatch.** Among the reviewer's comments that mention any
-   commit id, the most recent names none matching HEAD. This fired on every
+   commit id, the most recently **posted** names none matching HEAD. Ordered by
+   `created_at`, never `updated_at` (BugBot, PR #883): these bots edit in place —
+   CodeRabbit rewrote its rate-limit notice three times on PR #883 alone to name
+   each new commit range as the branch moved — so an older comment naming HEAD,
+   edited later for unrelated reasons, would otherwise sort last and mask the
+   bot's genuinely newest SHA-naming post. Post time is the stable, monotonic
+   dimension; the tokens still come from the comment's *current* body, which is
+   what "what does this bot claim now" should mean. This fired on every
    hollow approval in the mia traces and on none of the genuine ones.
    Restricting to SHA-naming comments keeps content-free acks ("Full review
    triggered") from masking the walkthrough that carries the self-report.
@@ -108,6 +116,29 @@ Implemented in `.claude/scripts/review-substance.sh` (pure evaluator; no network
 
 `counts_as_coverage = approved ∧ substantive ∧ ¬inversion ∧ ¬capability_failure ∧ ¬mismatch`.
 
+### What counts as a run-start marker
+
+Only phrases denoting work **in progress** — "is running the review", "is
+reviewing", "review in progress", "currently processing", "started reviewing",
+"is analyzing". Deliberately **not** "review triggered" (BugBot, PR #883): that
+is the request being *accepted*, not work beginning. `pr-state.sh` and
+`poll-watermarks.sh` both classify "full review triggered" as an
+`acknowledgment`, with a regression test pinning it, so admitting it here
+contradicted the repo's own classification — and because `$marker` takes the
+*earliest* post-push marker, a content-free ack landing first became the marker
+and stopped a later approval from looking inverted against the bot's genuine
+notice.
+
+### Substance is pooled across a bot's approvals on one SHA
+
+`body_len` is the maximum across every `APPROVED` that reviewer left on HEAD, not
+the latest one's. These bots approve in bursts — CodeAnt posted **four identical
+empty `APPROVED` reviews in the same second** on PR #883 — so keying substance to
+the newest approval let an empty duplicate discard a real review body, and the
+ordering inside a same-second burst is arbitrary enough to make that
+intermittent. Timing still keys off the latest approval; only substance pools
+(BugBot, PR #883).
+
 ### Two deliberate anti-false-positive choices
 
 - **SHA-like tokens must contain at least one `a-f` letter.** `\b[0-9a-f]{7,40}\b`
@@ -123,6 +154,22 @@ Implemented in `.claude/scripts/review-substance.sh` (pure evaluator; no network
   UTC spellings onto `Z` and drops fractional seconds — the same trap `norm_ts`
   guards in `merge-gate.sh` (BugBot, PR #883). A genuine non-UTC offset is left
   untouched rather than mangled into a wrong instant.
+  Dropping fractional seconds means an approval and a marker in the **same
+  second** cannot be ordered, so inversion compares with `<=`: no real review
+  begins and finishes inside one second, and `external_evidence_on_head` still
+  clears the innocent shape. Keeping sub-second precision was not the
+  alternative — under mixed precision `"10:00:22.5Z"` sorts *before*
+  `"10:00:22Z"` (`.` < `Z`), which would corrupt ordering outright.
+
+## The evidence payload must be complete
+
+`merge-gate.sh` paginates both comment endpoints, not just reviews (BugBot,
+PR #883). One page each was survivable while those payloads only fed thread
+bookkeeping; they are now this evaluator's evidence. On a PR busy enough to push
+a walkthrough or the inline findings past comment 100, the evaluator sees no
+external evidence, calls a genuine approval hollow, and blocks the merge — a
+false negative, which this file weights as heavily as a false positive. PR #883
+itself passed 40 comments across the two endpoints during its own review.
 
 ## What the gate does with it
 

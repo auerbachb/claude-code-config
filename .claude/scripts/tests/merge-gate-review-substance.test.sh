@@ -389,6 +389,37 @@ OUT="$(run_gate)"
 check_eq "codeant-ai[bot]" "$(echo "$OUT" | jq -r '.review_evidence.inverted[0]')" "(y) ack does not mask the real inversion"
 check_eq "2026-07-31T10:00:22Z" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].run_start_marker_at')" "(y) marker is the genuine notice, not the ack"
 
+echo "=== (z) a substantive COMMENTED review on HEAD is evidence (BugBot, PR #883) ==="
+# BugBot's normal shape, and CodeAnt's genuine pass on a1c03ed, are COMMENTED
+# reviews. Pooling substance from APPROVED bodies only ignored them.
+FAKE_REVIEWS="$(jq -cn --arg sha "$HEAD_SHA" \
+  '[{user:{login:"codeant-ai[bot]",type:"Bot"},commit_id:$sha,state:"COMMENTED",
+     body:"Reviewed the changed files. The evaluator now folds inversion and capability failure into one rule; no blocking issues.",
+     submitted_at:"2026-07-31T10:03:00Z"},
+    {user:{login:"codeant-ai[bot]",type:"Bot"},commit_id:$sha,state:"APPROVED",
+     body:"",submitted_at:"2026-07-31T10:04:00Z"}]')"
+FAKE_ISSUE_COMMENTS='[]'
+OUT="$(run_gate)"
+check_eq "true" "$(echo "$OUT" | jq -r '.met')" "(z) a real COMMENTED review backs the empty approval"
+check_eq "true" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].external_evidence_on_head')" "(z) counted as evidence outside the approval"
+
+echo "=== (aa) a STALE retargeted review cannot supply substance (CodeAnt, PR #883) ==="
+# GitHub retargets commit_id onto HEAD after a force-push without touching
+# submitted_at, so an older substantive review can surface attached to a commit
+# it never saw. FAKE_COMMIT_TS is 10:00:00Z; both reviews below predate it.
+FAKE_REVIEWS="$(jq -cn --arg sha "$HEAD_SHA" \
+  '[{user:{login:"codeant-ai[bot]",type:"Bot"},commit_id:$sha,state:"APPROVED",
+     body:"Actionable comments posted: 0. Reviewed every changed file; no blocking issues found here.",
+     submitted_at:"2026-07-30T09:00:00Z"},
+    {user:{login:"codeant-ai[bot]",type:"Bot"},commit_id:$sha,state:"COMMENTED",
+     body:"Reviewed the changed files in detail and found nothing blocking in this revision.",
+     submitted_at:"2026-07-30T09:00:30Z"}]')"
+FAKE_ISSUE_COMMENTS='[]'
+OUT="$(run_gate)"
+check_eq "0" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].body_len')" "(aa) pre-commit approval body contributes nothing"
+check_eq "0" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].other_review_body_len')" "(aa) pre-commit COMMENTED body contributes nothing"
+check_eq "false" "$(echo "$OUT" | jq -r '.met')" "(aa) stale evidence does not satisfy the gate"
+
 echo "=== (m) evaluator rejects malformed stdin ==="
 echo "not json" | "$EVAL_SUT" >/dev/null 2>&1
 check_eq "4" "$?" "(m) non-JSON stdin exits 4"

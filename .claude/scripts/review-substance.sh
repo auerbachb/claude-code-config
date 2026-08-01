@@ -278,14 +278,31 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         | ( [ $ridx[] | select(.login == $login and .state == "APPROVED") ] )
                                                                            as $aps
         | ( $aps | sort_by(.submitted_at) | last )                         as $ap
-        # Body length is the MAX across every APPROVED this bot left on HEAD, not
-        # the latest one"s (BugBot review, PR #883). These bots emit approvals in
-        # bursts — CodeAnt posted four identical APPROVEDs in the same second on
-        # this PR — so a substantive approval followed by an empty duplicate
-        # would otherwise have its body discarded and be reported hollow. Timing
-        # still keys off the latest approval; only substance is pooled.
-        | ( [ $aps[] | .body_len ] | max // 0 )                            as $body_len
         | ($ap.submitted_at // "")                                         as $ap_ts
+
+        # Only reviews that POSTDATE the HEAD commit may contribute substance
+        # (CodeAnt review, PR #883). GitHub retargets commit_id onto HEAD after a
+        # force-push WITHOUT touching submitted_at, so an older substantive
+        # review can surface here attached to a commit it never saw. merge-gate
+        # freshness-checks the selected approval only, so pooling across every
+        # commit_id match would let a stale body vouch for a fresh empty
+        # duplicate. Mirrors the #836 stale-approval rule. When $push is
+        # unavailable the filter opens up rather than guessing — merge-gate fails
+        # closed on unverifiable freshness separately.
+        | def fresh_review: select($push == "" or (.submitted_at >= $push));
+
+          ( [ $aps[] | fresh_review | .body_len ] | max // 0 )             as $body_len
+
+        # Substance is not APPROVED-only (BugBot review, PR #883). A bot that
+        # leaves a long COMMENTED review on this SHA and then an empty APPROVED
+        # has demonstrably read the commit — that is BugBot"s normal shape, and
+        # CodeAnt"s genuine pass on a1c03ed was a COMMENTED review too. Tracked
+        # separately from $body_len so the reported figure still describes the
+        # approval itself.
+        | ( [ $ridx[]
+              | select(.login == $login and .state != "APPROVED")
+              | fresh_review | .body_len ] | max // 0 )                    as $other_review_len
+
         | ( [ $iidx[] | select(.login == $login) ] )                       as $inl
         # A status comment only evidences a review if it is not the reviewer
         # ANNOUNCING IT COULD NOT REVIEW. Capability-failure notices routinely
@@ -297,12 +314,14 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         | ( [ $mine[]
               | select(.len >= $min_chars and .names_head and (.failure | not)) ] ) as $status_ev
         | (($status_ev | length) > 0)                                      as $names_head
-        | ( ($body_len >= $min_chars) or (($inl | length) > 0) or $names_head ) as $substantive
-
         # Substance that exists INDEPENDENTLY of the approval object itself:
-        # inline comments anchored to HEAD, or a status comment naming HEAD. The
-        # approval"s own body is excluded on purpose — see $inversion below.
-        | ( (($inl | length) > 0) or $names_head )                         as $ext_substantive
+        # inline comments anchored to HEAD, a status comment naming HEAD, or a
+        # substantive non-APPROVED review on HEAD. The approval"s own body is
+        # excluded on purpose — see $inversion below.
+        | ( (($inl | length) > 0) or $names_head
+            or ($other_review_len >= $min_chars) )                         as $ext_substantive
+
+        | ( ($body_len >= $min_chars) or $ext_substantive )                as $substantive
 
         # Self-report mismatch: of this bot"s comments that mention ANY commit
         # id, the most recent one mentions none matching HEAD. Restricting to
@@ -400,6 +419,7 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
               body_len:                  $body_len,
               inline_comments_on_head:   ($inl | length),
               status_comment_names_head: $names_head,
+              other_review_body_len:     $other_review_len,
               external_evidence_on_head: $ext_substantive,
               status_comment_shas:       (($selfrep.tokens // []) | unique),
               self_report_mismatch:      ($ap != null and $mismatch),

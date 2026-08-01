@@ -321,6 +321,25 @@ check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
 
 ############################################################################
+echo "== Scenario (h5): substantive-but-RETRACTED CR + fresh hollow CodeAnt -> trigger_greptile (same reviewer must clear both gates) =="
+reset_state
+write_commits "$(ts_seconds_ago 300)"
+FAILURE_COMMENT_H5="$(failure_comment "$(ts_seconds_ago 60)")"
+# CodeRabbit's approval is substantive, so it lands in the evaluator's
+# substantive[] — but it is retracted by a later CHANGES_REQUESTED, so it is not
+# a valid approval. CodeAnt's approval IS valid but is an empty rubber stamp.
+# Testing "substantive[] is non-empty" on its own reported gate_met here, while
+# merge-gate.sh rejected both — stranding the PR with no reviewer and no
+# escalation in flight.
+CR_APPROVED_H5='{"user": {"login": "coderabbitai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed every changed file; behaviour preserved throughout.", "submitted_at": "'"$(ts_seconds_ago 250)"'"}'
+CR_RETRACT_H5='{"user": {"login": "coderabbitai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "CHANGES_REQUESTED", "submitted_at": "'"$(ts_seconds_ago 200)"'"}'
+CA_HOLLOW_H5='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "", "submitted_at": "'"$(ts_seconds_ago 150)"'"}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CR_APPROVED_H5, $CR_RETRACT_H5, $CA_HOLLOW_H5]" "[]" "[$FAILURE_COMMENT_H5]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
 echo "== Scenario (i): CodeAnt APPROVED on an OLDER SHA (not HEAD) -> still trigger_greptile (stale approval doesn't satisfy the gate) =="
 reset_state
 write_commits "$(ts_seconds_ago 120)"
