@@ -16,12 +16,27 @@ trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   — $*"; }
 
+# Build state fixtures.  The reconcile script is fail-closed: only records with
+# a verifiable dead-owner stamp are purged.  The STAMPED variant carries a dead
+# PID so startup can provably purge it; UNSTAMPED has no stamp and must survive
+# startup unchanged (fail-closed guarantee).
+( : ) &
+_DEAD_PID=$!
+wait "$_DEAD_PID" 2>/dev/null || true
+_THIS_HOST="${HOSTNAME:-$(hostname 2>/dev/null || echo "localhost")}"
+STAMPED_STATE="$(printf \
+  '{"polling_jobs":[{"id":"live_job","owner_session":{"pid":%s,"host":"%s"}}],"pmm":{"auto_wake_cron_id":"live_cron","auto_wake_owner_session":{"pid":%s,"host":"%s"}}}' \
+  "$_DEAD_PID" "$_THIS_HOST" "$_DEAD_PID" "$_THIS_HOST")"
+UNSTAMPED_STATE='{"polling_jobs":[{"id":"live_job"}],"pmm":{"auto_wake_cron_id":"live_cron"}}'
+
 CASE_N=0
 OUT=""
 STATE=""
-# run_hook <source-json> — fresh HOME seeded with purgeable state.
+# run_hook <source-json> [initial-state] — fresh HOME seeded with scheduling state.
 # Sets $STATE and $OUT in the CALLER's scope: a command substitution would run
 # this in a subshell and the $STATE assignment would never escape it.
+# The optional second argument overrides the initial state written to $STATE;
+# defaults to UNSTAMPED_STATE when omitted.
 run_hook() {
   CASE_N=$((CASE_N + 1))
   export HOME="$TMP_DIR/home$CASE_N"
@@ -33,17 +48,25 @@ run_hook() {
   mkdir -p "$HOME/.claude/skills-worktree/.claude/skills"
   : > "$HOME/.claude/skills-worktree/.git"
   STATE="$HOME/.claude/session-state.json"
-  printf '%s' '{"polling_jobs":[{"id":"live_job"}],"pmm":{"auto_wake_cron_id":"live_cron"}}' > "$STATE"
+  printf '%s' "${2:-$UNSTAMPED_STATE}" > "$STATE"
   OUT="$(printf '%s' "$1" | bash "$HOOK" 2>/dev/null)"
 }
 
-# --- 1. startup purges -------------------------------------------------------
-run_hook '{"source":"startup"}'
+# --- 1. startup purges dead-stamped records ----------------------------------
+run_hook '{"source":"startup"}' "$STAMPED_STATE"
 [[ "$(jq -c '.polling_jobs' "$STATE")" == "[]" ]] \
-  || fail "startup should purge polling_jobs, got $(jq -c '.polling_jobs' "$STATE")"
+  || fail "startup should purge dead-stamped polling_jobs, got $(jq -c '.polling_jobs' "$STATE")"
 [[ "$(jq -r '.pmm.auto_wake_cron_id' "$STATE")" == "null" ]] \
-  || fail "startup should clear auto_wake_cron_id"
-ok "source=startup purges dead scheduling bookkeeping"
+  || fail "startup should clear dead-stamped auto_wake_cron_id"
+ok "source=startup purges dead-stamped scheduling bookkeeping"
+
+# --- 1b. fail-closed: startup must NOT purge unstamped records ---------------
+run_hook '{"source":"startup"}'
+[[ "$(jq -c '.polling_jobs' "$STATE")" == '[{"id":"live_job"}]' ]] \
+  || fail "startup must NOT purge unstamped polling_jobs (fail-closed), got $(jq -c '.polling_jobs' "$STATE")"
+[[ "$(jq -r '.pmm.auto_wake_cron_id' "$STATE")" == "live_cron" ]] \
+  || fail "startup must NOT clear unstamped auto_wake_cron_id (fail-closed)"
+ok "source=startup preserves unstamped records (fail-closed)"
 
 # --- 2. compact/resume/clear must NOT purge ----------------------------------
 # These fire inside a live session: the recorded job may still be running.

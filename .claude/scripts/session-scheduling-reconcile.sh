@@ -111,7 +111,7 @@ PURGED_JSON='{}'
 # Session liveness helper — mirrors the dead-holder test in state-lock.sh.
 # Fail-closed: anything we cannot verify is NOT treated as dead.
 # ---------------------------------------------------------------------------
-CURRENT_HOST="$(hostname 2>/dev/null || echo "")"
+CURRENT_HOST="${HOSTNAME:-$(hostname 2>/dev/null || echo "")}"
 
 # session_is_dead <pid> <host>
 # Exit 0 (true) only when the owning session is provably dead on THIS host.
@@ -156,13 +156,16 @@ fi
 # Fail-closed: unknown ownership => verdict "unknown" => skip (do not purge).
 # ---------------------------------------------------------------------------
 PJ_VERDICTS_JSON="[]"    # per-index verdict array for .polling_jobs[]
+PJ_SNAPSHOT="[]"         # snapshot of .polling_jobs used for jq plan (index-aligned)
 AW_VERDICT="unknown"     # verdict for .pmm.auto_wake_cron_id
 
 if [[ -f "$STATE_FILE" ]]; then
   # --- .polling_jobs[] -------------------------------------------------------
-  # Read (index, pid, host) tuples from every polling_job entry; build a
-  # verdict for each aligned to the array so the jq plan can filter by index.
-  if jq -e '(.polling_jobs // []) | length > 0' "$STATE_FILE" >/dev/null 2>&1; then
+  # Capture exactly one snapshot so the verdict index stays aligned with what
+  # the jq plan sees: a concurrent --set between the bash read and the jq pass
+  # would otherwise shift entries and mis-classify their verdicts.
+  PJ_SNAPSHOT="$(jq -c '.polling_jobs // []' "$STATE_FILE" 2>/dev/null || echo "[]")"
+  if jq -e 'length > 0' <<<"$PJ_SNAPSHOT" >/dev/null 2>&1; then
     VERDICTS=()
     while IFS=$'\t' read -r _idx pid host; do
       if session_is_dead "$pid" "$host"; then
@@ -173,12 +176,12 @@ if [[ -f "$STATE_FILE" ]]; then
         VERDICTS+=("\"unknown\"")
       fi
     done < <(jq -r '
-      .polling_jobs | to_entries[] |
+      to_entries[] |
       [ (.key | tostring),
         (.value.owner_session.pid  // "" | tostring),
         (.value.owner_session.host // "")
       ] | @tsv
-    ' "$STATE_FILE" 2>/dev/null)
+    ' <<<"$PJ_SNAPSHOT" 2>/dev/null)
     if (( ${#VERDICTS[@]} > 0 )); then
       # IFS=, in a subshell to join without a trailing newline (printf avoids
       # the echo newline that would corrupt the JSON literal).
@@ -227,6 +230,7 @@ if [[ -f "$STATE_FILE" ]]; then
   PLAN="$(jq -c \
       --argjson now "$NOW_EPOCH" \
       --argjson pj_verdicts "$PJ_VERDICTS_JSON" \
+      --argjson pj_snapshot "$PJ_SNAPSHOT" \
       --arg aw_verdict "$AW_VERDICT" \
       --argjson ttl "${BABYSIT_DISPATCH_TTL_MIN:-30}" '
     def prs_paths:
@@ -268,8 +272,8 @@ if [[ -f "$STATE_FILE" ]]; then
     # polling_jobs: per-record verdict from the bash precompute above.
     # Index into $pj_verdicts by array position; treat out-of-range as "unknown"
     # (fail-closed: a concurrent write could have shifted the array).
-    | ( if ((.polling_jobs? // []) | type == "array") then
-          ( (.polling_jobs // []) | to_entries
+    | ( if ($pj_snapshot | type == "array") then
+          ( $pj_snapshot | to_entries
             | { dead:    map(select(($pj_verdicts[.key] // "unknown") == "dead"))    | length,
                 unknown: map(select(($pj_verdicts[.key] // "unknown") == "unknown")) | length,
                 kept:    map(select(($pj_verdicts[.key] // "unknown") != "dead"))
