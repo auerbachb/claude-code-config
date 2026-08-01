@@ -259,6 +259,46 @@ check_ne "substance != gate on an offset input" \
   "$(norm_ts "2026-08-01T10:00:16+00:00")" "$(canon_substance "2026-08-01T10:00:16+00:00")"
 
 ############################################################################
+echo "== the divergence is one-directional, and merge-gate.sh keeps it safe =="
+############################################################################
+# merge-gate.sh hands review-substance.sh the SAME raw HEAD committer date it
+# uses as LAST_COMMIT_TS (as push_ts), so a merge-gate value really does get
+# compared here — just never ACROSS the two rules.
+#
+# Pin the direction of the difference: dropping the fraction makes canon_ts
+# MORE permissive than norm_ts. On this pair the gate orders approval < push
+# (stale) while substance sees them as equal (fresh).
+GATE_APPROVAL="$(norm_ts "2026-08-01T10:00:16Z")"
+GATE_PUSH="$(norm_ts "2026-08-01T10:00:16.900000Z")"
+SUB_APPROVAL="$(canon_substance "2026-08-01T10:00:16Z")"
+SUB_PUSH="$(canon_substance "2026-08-01T10:00:16.900000Z")"
+if [[ "$GATE_APPROVAL" < "$GATE_PUSH" ]]; then
+  ok "gate rule orders this approval BEFORE the push (stale)"
+else
+  bad "gate rule no longer orders …16Z before …16.900000Z — norm_ts has stopped keeping fractions"
+fi
+check_eq "substance rule sees the same pair as EQUAL (more permissive)" "$SUB_APPROVAL" "$SUB_PUSH"
+
+# That extra permissiveness is safe ONLY because the two verdicts are ANDed with
+# freshness on the OUTSIDE: merge-gate.sh computes CR_APPROVAL_STALE with
+# norm_ts and tests the substance verdict INSIDE that guard, so substance can
+# only ever subtract coverage — never restore an approval norm_ts ruled stale.
+# If a refactor ever inverts that nesting, a canon_ts-fresh / norm_ts-stale
+# approval would slip through. Pin the nesting itself.
+GUARD_BLOCK="$(awk '/^[[:space:]]*CR_APPROVAL_VALID=false/ { n = 12 } n-- > 0' "$MERGE_GATE")"
+[[ -n "$GUARD_BLOCK" ]] || die "could not locate the CR_APPROVAL_VALID block in merge-gate.sh — this safety guard cannot be checked"
+if grep -q 'CR_APPROVAL_STALE" == false' <<<"$GUARD_BLOCK"; then
+  ok "merge-gate.sh gates CR_APPROVAL_VALID on the norm_ts staleness verdict"
+else
+  bad "merge-gate.sh no longer requires CR_APPROVAL_STALE == false before validating a CR approval — a substance-fresh but gate-stale approval could now satisfy the gate"
+fi
+if grep -q 'CR_SUBSTANTIVE" == true' <<<"$GUARD_BLOCK"; then
+  ok "substance is tested INSIDE the freshness guard, so it can only subtract coverage"
+else
+  bad "the CR substance check has moved out of the freshness guard in merge-gate.sh — substance may now be able to override a stale approval"
+fi
+
+############################################################################
 echo "== structural guards: no re-inlined copy of the rule =="
 ############################################################################
 # The whole point of #885 is that there is ONE bash definition and ONE jq mirror

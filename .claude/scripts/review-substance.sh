@@ -195,11 +195,26 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
   # untouched rather than mangled into a wrong instant.
   #
   # DELIBERATELY different from lib/ts-normalizer.sh (issue #885), which strips
-  # the suffix and KEEPS the fraction. Safe here because every timestamp this
-  # script compares passes through this one function, so it is internally
-  # consistent and is never compared against a merge-gate value. Do not "unify"
-  # the two: tests/ts-normalizer-parity.test.sh pins the difference, so a
-  # refactor that erases it fails loudly instead of silently reordering.
+  # the suffix and KEEPS the fraction.
+  #
+  # Precisely: merge-gate.sh does hand this script the SAME raw HEAD committer
+  # date it uses as LAST_COMMIT_TS (arriving as `push_ts`), and that value is
+  # compared against approval timestamps here. What never happens is a
+  # comparison ACROSS the two rules — both sides of every compare below are
+  # normalised by THIS function, so the ordering stays internally consistent.
+  #
+  # Dropping the fraction is more permissive than norm_ts (it can call equal
+  # what the gate orders), and that is safe because the two verdicts are
+  # independent and ANDed, not alternatives: merge-gate.sh evaluates
+  # CR_APPROVAL_STALE / CA_APPROVAL_STALE with norm_ts and uses it as the OUTER
+  # guard, with the counts_as_coverage verdict tested INSIDE it. Substance can
+  # therefore only ever subtract coverage — it can never restore an approval
+  # norm_ts has already ruled stale. Keep that nesting if either side is
+  # refactored.
+  #
+  # Do not "unify" the two: tests/ts-normalizer-parity.test.sh pins both the
+  # difference and that outer-guard ordering, so a refactor that erases either
+  # fails loudly instead of silently reordering.
   def canon_ts:
     (. // "")
     | if . == "" then ""

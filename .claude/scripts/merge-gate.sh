@@ -130,7 +130,7 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >>
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TS_NORMALIZER_LIB="${SCRIPT_DIR}/lib/ts-normalizer.sh"
 if [[ ! -f "$TS_NORMALIZER_LIB" || ! -r "$TS_NORMALIZER_LIB" ]]; then
-  echo "merge-gate.sh: missing sibling library: $TS_NORMALIZER_LIB" >&2
+  echo "merge-gate.sh: sibling library missing or unreadable: $TS_NORMALIZER_LIB" >&2
   exit 4
 fi
 # shellcheck source=./lib/ts-normalizer.sh
