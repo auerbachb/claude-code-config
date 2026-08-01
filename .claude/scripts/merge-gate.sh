@@ -769,10 +769,6 @@ CA_APPROVAL_FRESHNESS_UNKNOWN=false
 CA_APPROVAL_SUBMITTED_AT_MISSING=false
 CR_APPROVAL_STALE_BLOCKING=false
 CA_APPROVAL_STALE_BLOCKING=false
-CR_APPROVAL_VALID=false
-CA_APPROVAL_VALID=false
-CR_HOLLOW=false
-CA_HOLLOW=false
 if [[ "$REVIEWER" == "cr" || "$REVIEWER" == "bugbot" ]]; then
   # Require 1 explicit CodeRabbit APPROVED on HEAD (SHA freshness in the jq filter).
   # Retraction: CHANGES_REQUESTED newer than APPROVED on same SHA invalidates approval.
@@ -1416,6 +1412,12 @@ fi
 STALE_JSON=$(jq -n --argjson c "${STALE_BOT_CHANGES_COUNT:-0}" '$c')
 
 MISSING_JSON=$(printf '%s\n' "${MISSING[@]:-}" | jq -R . | jq -cs 'map(select(length > 0))')
+
+# review_evidence is scoped to the cr path in the output (comment at line ~99).
+# The evaluator runs on the bugbot path for bypass computation but must not
+# surface its results in the JSON — a failed evaluator must never block a PR
+# over a guard the bugbot path never consults.
+[[ "$REVIEWER" != "cr" ]] && REVIEW_EVIDENCE='{}'
 
 emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON" "${UNRESOLVED_TOTAL:-0}" "$PRIMARY_REVIEW_MET" "$AUTHORSHIP" "$REVIEW_EVIDENCE"
 
