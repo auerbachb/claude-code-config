@@ -33,6 +33,16 @@ resolve_script() {
 }
 SESSION_STATE_SH=$(resolve_script session-state.sh) || SESSION_STATE_SH=""
 HANDOFF_LINT_SH=$(resolve_script portable-handoff-lint.sh) || HANDOFF_LINT_SH=""
+
+# The collector is a document, not a script, so resolve it the same way but
+# test for readability rather than the executable bit.
+for candidate in \
+  "$HOME/.claude/skills-worktree/.claude/reference/session-state-collector.md" \
+  "$HOME/.claude/reference/session-state-collector.md" \
+  ".claude/reference/session-state-collector.md"; do
+  [[ -r "$candidate" ]] && { COLLECTOR_DOC="$candidate"; break; }
+done
+COLLECTOR_DOC="${COLLECTOR_DOC:-}"
 ```
 
 Neither is fatal. An unresolved `session-state.sh` means the wind-down cannot be persisted — say so in Step 2's report and carry on, because the document is the part that matters. An unresolved checker is handled by Step 5's "could not run" branch.
@@ -92,7 +102,9 @@ Nothing in this block is a question. If a running unit looks stuck, say so on it
 
 ## Step 3: Collect the state
 
-Follow `.claude/reference/session-state-collector.md` — the same collector `/pm-handoff` uses. Collect all five categories, including §5 (uncommitted and unpushed local state), which only this command needs.
+Follow the collector resolved as `$COLLECTOR_DOC` in Step 0 — the same one `/pm-handoff` uses. Collect all five categories, including §5 (uncommitted and unpushed local state), which only this command needs.
+
+**Read it by its resolved path, not by a repo-relative one.** From another checkout `.claude/reference/session-state-collector.md` simply does not exist, and an unreadable collector produces the same silence as an empty session. If `$COLLECTOR_DOC` is empty, say in Step 2's report that collection ran without it and gather what you can directly — an unguided pass is worth more than a document that reports nothing in flight because it could not look.
 
 **Substitute the paths resolved in Step 0 for the collector's `.claude/scripts/…` literals.** Those literals resolve only from this repo, and a `/pause` run from anywhere else would get command-not-found on every read — which looks exactly like a session with nothing in flight. Reporting "no in-flight work" when the truth is "could not look" is the one mistake this document cannot afford, because the reader has no way to detect it.
 

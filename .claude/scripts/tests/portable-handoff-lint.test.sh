@@ -100,6 +100,10 @@ assert_catches harness-path           "Config lives in .claude/rules/safety.md t
 assert_catches phase-vocabulary       "Pick it up again at Phase B."
 assert_catches phase-vocabulary       "The pipeline reached merge_ready last night."
 assert_catches phase-vocabulary       "A phase-a-fixer subagent was running."
+# A capital letter cannot be what decides whether the jargon ships.
+assert_catches phase-vocabulary       "Pick it up again at phase b."
+assert_catches phase-vocabulary       "It was at Phase c last night."
+assert_catches phase-vocabulary       "The pipeline hit Merge_Ready earlier."
 assert_catches state-file             "The tracked list is in session-state.json."
 assert_catches state-file             "Read handoff-state.sh for the rest."
 assert_catches state-file             "See pr-903-handoff.json for findings."

@@ -197,7 +197,12 @@ COMMAND_ALTERNATION=$(
 # Bash ERE. Each is checked per line, against a copy of the line with any
 # permitted text already masked out.
 RE_HARNESS_PATH='\.claude/'
-RE_PHASE_VOCAB='(^|[^[:alnum:]_-])(Phase[[:space:]]+[ABC]|merge_ready|phase-[abc]-[a-z]+)([^[:alnum:]_-]|$)'
+# Case-insensitive on purpose. "phase b" carries exactly the same internal
+# meaning as "Phase B", so a capital letter cannot be what decides whether the
+# jargon ships. The cost is a possible false positive on prose like "in a later
+# phase a decision was made" — worth paying, because a false positive is a
+# reword and a false negative is a reader who cannot act on the document.
+RE_PHASE_VOCAB='(^|[^[:alnum:]_-])([Pp]hase[[:space:]]+[ABCabc]|[Mm]erge_[Rr]eady|[Pp]hase-[abcABC]-[a-zA-Z]+)([^[:alnum:]_-]|$)'
 RE_STATE_FILE='(session-state|session_state|handoff-state|handoff_state|pr-[0-9]+-handoff)'
 RE_PLACEHOLDER='\{[A-Z][A-Z0-9_]*\}'
 if (( CATALOG_RESOLVED )) && [[ -n "$COMMAND_ALTERNATION" ]]; then

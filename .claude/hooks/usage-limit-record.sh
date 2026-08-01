@@ -317,10 +317,14 @@ ENRICHED=$(build_record "$PORTABLE_HANDOFF")
 # The guard is exact rather than clever: if `last` no longer holds the very
 # record this invocation wrote, a newer one has published and it owns the file.
 # Skip — it will run its own phase 2.
+# Without the lock the guard is not a guard: another invocation can replace the
+# file between the read below and the rename, which is exactly the clobber this
+# block exists to prevent. Enrichment is optional and `last` being correct is
+# not, so losing the race means skipping — the invocation that won it publishes
+# its own pointer anyway.
 LOCKED=$(take_lock)
-if (( LOCKED )); then
-  trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
-fi
+(( LOCKED )) || exit 0
+trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
 
 CURRENT_LAST=$(cat "$LAST_FILE" 2>/dev/null)
 if [[ "$CURRENT_LAST" == "$RECORD" ]]; then
