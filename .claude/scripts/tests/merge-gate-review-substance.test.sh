@@ -332,6 +332,36 @@ OUT="$(run_gate)"
 check_eq "true" "$(echo "$OUT" | jq -r '.met')" "(u) a later rate limit does not erase completed work"
 check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["coderabbitai[bot]"].capability_failure')" "(u) capability_failure cleared by external evidence"
 
+echo "=== (v) an edited older comment cannot mask a newer SHA self-report (BugBot, PR #883) ==="
+# $cidx sorts on updated_at, and these bots edit in place — CodeRabbit rewrites
+# its rate-limit notice to name each new range. An older comment naming HEAD,
+# edited after a newer comment named a different commit, used to sort last and
+# win the self-report. Post time is the stable dimension.
+FAKE_REVIEWS="$(approval "codeant-ai[bot]" "")"
+FAKE_ISSUE_COMMENTS="$(jq -cn --arg sha "$HEAD_SHA" '[
+  {user:{login:"codeant-ai[bot]",type:"Bot"},
+   body:("CodeAnt AI finished reviewing commit " + $sha + " and found no blocking issues in the changes."),
+   created_at:"2026-07-31T10:01:00Z", updated_at:"2026-07-31T10:09:00Z"},
+  {user:{login:"codeant-ai[bot]",type:"Bot"},
+   body:"CodeAnt AI finished reviewing commit 98f0bd0 and found no blocking issues in the changes.",
+   created_at:"2026-07-31T10:03:00Z", updated_at:"2026-07-31T10:03:00Z"}]')"
+OUT="$(run_gate)"
+check_eq "codeant-ai[bot]" "$(echo "$OUT" | jq -r '.review_evidence.mismatched[0]')" "(v) newest POSTED self-report wins over an edited older one"
+check_eq "false" "$(echo "$OUT" | jq -r '.met')" "(v) gate blocks on the mismatch"
+
+echo "=== (w) same-second approval and run marker counts as inversion (BugBot, PR #883) ==="
+# GitHub timestamps are whole-second, so this ordering is unknowable from the
+# data — and no real review starts and finishes inside one second.
+FAKE_REVIEWS="$(approval "codeant-ai[bot]" "" "2026-07-31T10:00:22Z")"
+FAKE_ISSUE_COMMENTS="$(convo "codeant-ai[bot]" "CodeAnt AI is running the review." "2026-07-31T10:00:22Z")"
+OUT="$(run_gate)"
+check_eq "codeant-ai[bot]" "$(echo "$OUT" | jq -r '.review_evidence.inverted[0]')" "(w) same-second marker still inverts"
+# ...and the innocent shape is still protected by external evidence.
+FAKE_PR_COMMENTS="$(jq -cn --arg sha "$HEAD_SHA" '[{user:{login:"codeant-ai[bot]",type:"Bot"},commit_id:$sha,original_commit_id:$sha,created_at:"2026-07-31T10:00:30Z",path:"a.sh",body:"Suggestion: unreachable branch."}]')"
+OUT="$(run_gate)"
+check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].temporal_inversion')" "(w) real inline evidence still clears it"
+FAKE_PR_COMMENTS='[]'
+
 echo "=== (m) evaluator rejects malformed stdin ==="
 echo "not json" | "$EVAL_SUT" >/dev/null 2>&1
 check_eq "4" "$?" "(m) non-JSON stdin exits 4"

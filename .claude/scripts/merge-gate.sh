@@ -340,11 +340,25 @@ REVIEWS_JSON=$(echo "$REVIEWS_RAW" | jq -s 'add // []')
 if [[ -z "$REVIEWS_JSON" ]] || ! echo "$REVIEWS_JSON" | jq -e . >/dev/null 2>&1; then
   die_api "reviews parse"
 fi
-if ! PR_COMMENTS_JSON=$(gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
+# Both comment endpoints are paginated like reviews above (issue #875, BugBot
+# review). These used to be a single page each, which was survivable while they
+# only fed thread bookkeeping — but they are now the substance evaluator's
+# evidence payload, and a busy PR pushes the walkthrough or the inline findings
+# past comment 100. Losing them there does not merely under-report: it turns a
+# genuine approval hollow and blocks the merge.
+if ! PR_COMMENTS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
   die_api "pull-comments"
 fi
-if ! ISSUE_COMMENTS_JSON=$(gh api "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
+PR_COMMENTS_JSON=$(echo "$PR_COMMENTS_RAW" | jq -s 'add // []')
+if [[ -z "$PR_COMMENTS_JSON" ]] || ! echo "$PR_COMMENTS_JSON" | jq -e . >/dev/null 2>&1; then
+  die_api "pull-comments parse"
+fi
+if ! ISSUE_COMMENTS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
   die_api "issue-comments"
+fi
+ISSUE_COMMENTS_JSON=$(echo "$ISSUE_COMMENTS_RAW" | jq -s 'add // []')
+if [[ -z "$ISSUE_COMMENTS_JSON" ]] || ! echo "$ISSUE_COMMENTS_JSON" | jq -e . >/dev/null 2>&1; then
+  die_api "issue-comments parse"
 fi
 
 # Unresolved review threads via GraphQL (covers all bot authors consistently).

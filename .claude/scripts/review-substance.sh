@@ -292,7 +292,14 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         # id, the most recent one mentions none matching HEAD. Restricting to
         # SHA-naming comments keeps content-free acks ("Full review triggered")
         # from masking the walkthrough that carries the self-report.
-        | ( [ $mine[] | select((.tokens | length) > 0) ] | last )          as $selfrep
+        # Ordered by .created, NOT by $cidx order: $cidx sorts on .ts, which is
+        # updated_at, and these bots edit comments in place — CodeRabbit rewrites
+        # its rate-limit notice to name each new commit range as the PR moves. So
+        # an older comment naming HEAD, edited later for unrelated reasons, could
+        # sort last and mask the bot"s genuinely newest SHA-naming post (BugBot
+        # review, PR #883). Post time is the stable, monotonic dimension.
+        | ( [ $mine[] | select((.tokens | length) > 0) ]
+            | sort_by(.created) | last )                                   as $selfrep
         | ( $selfrep != null and ($selfrep.names_head | not) )             as $mismatch
 
         # EARLIEST post-push run-start marker. Earliest, not latest: a re-review
@@ -338,15 +345,30 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         #    the documented genuine shape: CodeRabbit"s `bodylen=0` APPROVED whose
         #    walkthrough lands moments later (mia#172 `396ced5`). Evidence that
         #    the reviewer really did read this SHA redeems the approval whenever
-        #    it arrives — the same "later real work wins" rule the capability
-        #    failure check already applies to a temporary rate limit.
+        #    it arrives.
+        #
+        # $fail above resolves to the same rule from the other direction, so
+        # signals 1 and 2 now share one invariant: an approval"s own body never
+        # vouches for itself, and external evidence redeems it whenever it lands.
         #
         # What survives both: an approval with no inline comments and no status
         # comment naming HEAD, posted before that bot said it had started. That
         # is the ccc#867 shape — approved 06:24:44Z, marker 06:24:50Z, nothing
         # else — and it stays disqualified.
+        #
+        # `<=`, not `<`: GitHub emits these timestamps at whole-second
+        # granularity, so an approval and that bot"s own start marker landing in
+        # the SAME second cannot be ordered from the data — and no real review
+        # begins and finishes inside one second, so the same-second case belongs
+        # with the inversions rather than with the clean approvals (BugBot
+        # review, PR #883). Restoring sub-second precision is not the
+        # alternative: mixed precision breaks the lexicographic compare outright,
+        # because "10:00:22.5Z" sorts BEFORE "10:00:22Z" ("." < "Z"), which is
+        # why canon_ts strips fractional seconds in the first place.
+        # $ext_substantive still guards the innocent shape — a bot that really
+        # reviewed leaves evidence outside the approval and is never flagged.
         | ( $ap != null and $marker != null and $ap_ts != ""
-            and ($ap_ts < $marker.created)
+            and ($ap_ts <= $marker.created)
             and ($ext_substantive | not) )                                 as $inversion
         | ( $ap != null and $fail != null )                                as $cap_fail
 
