@@ -189,10 +189,48 @@ check_eq "\$CLAUDE_SESSION_REPO selects the named scope too" "0" "$RC"
 RC=0; OUT="$( cd "$NOREMOTE" && CLAUDE_SESSION_REPO=org/b bash "$GATE" 84 --verify-state --repo org/a 2>&1 )" || RC=$?
 check_eq "--repo outranks \$CLAUDE_SESSION_REPO" "0" "$RC"
 # A malformed value is a usage error (exit 2), not a silent "_unknown" fallback.
+# The charset must match session-state.sh's is_valid_repo_key() ([A-Za-z0-9._/-]):
+# checking slash placement alone let "org/repo name" through to be exported and
+# then silently rewritten to "_unknown" by the helper (CodeAnt, PR #856).
 RC=0; OUT="$( cd "$REPO_A" && bash "$GATE" 84 --verify-state --repo not-a-repo-key 2>&1 )" || RC=$?
 check_eq "malformed --repo is a usage error (exit 2)" "2" "$RC"
 RC=0; OUT="$( cd "$REPO_A" && bash "$GATE" 84 --verify-state --repo 2>&1 )" || RC=$?
 check_eq "--repo with no value is a usage error (exit 2)" "2" "$RC"
+for BAD in 'org/repo name' 'org/repo:x' 'org//repo' 'org/a/b' '/org/repo' 'org/repo!'; do
+  RC=0; OUT="$( cd "$REPO_A" && bash "$GATE" 84 --verify-state --repo "$BAD" 2>&1 )" || RC=$?
+  check_eq "--repo '$BAD' is a usage error, not a silent _unknown scope" "2" "$RC"
+done
+
+echo
+echo "== a declared repo key may supply an identity, never override one (issue #854) =="
+# --repo / \$CLAUDE_SESSION_REPO answer "which scope key"; --root-repo answers
+# "which checkout". When both resolve to a real owner/repo and disagree, the old
+# code validated every per-PR field against the DECLARED repo while gh,
+# merge-gate.sh and the session-state writes all ran against the checkout —
+# polling one repo's PR while acting on another (CodeAnt Major + BugBot, PR #856).
+write_handoff 84 aaa1111
+RC=0; OUT="$( cd "$REPO_B" && bash "$GATE" 84 --verify-state --repo org/a --root-repo "$REPO_B" 2>&1 )" || RC=$?
+check_eq "--repo contradicting --root-repo is refused" "4" "$RC"
+check_eq "…and the refusal names both sides" "1" "$(grep -c "contradicts the checkout being operated on" <<<"$OUT")"
+check_eq "…and it did not operate on the declared repo" "0" "$(grep -c 'gate met' <<<"$OUT")"
+# Same hazard via the environment variable, which has identical mechanics.
+RC=0; OUT="$( cd "$REPO_B" && CLAUDE_SESSION_REPO=org/a bash "$GATE" 84 --verify-state --root-repo "$REPO_B" 2>&1 )" || RC=$?
+check_eq "\$CLAUDE_SESSION_REPO contradicting the checkout is refused" "4" "$RC"
+check_eq "…env-var refusal names both sides too" "1" "$(grep -c "contradicts the checkout being operated on" <<<"$OUT")"
+# Declaring org/a from inside repo B with NO --root-repo is NOT the hazard: the
+# per-PR root_repo redirects the checkout to repo A as well, so the scope read
+# and the checkout acted on are both org/a — coherent, and allowed. The bug was
+# state and actions DIVERGING, which the pinned-checkout cases above cover.
+RC=0; OUT="$( cd "$REPO_B" && CLAUDE_SESSION_REPO=org/a bash "$GATE" 84 --verify-state 2>&1 )" || RC=$?
+check_eq "declared key redirecting to its own checkout stays coherent" "0" "$RC"
+# A key merely DERIVED from the checkout can never contradict it, so the ordinary
+# no-override path must stay clean — this is the regression guard for the fix.
+RC=0; OUT="$( cd "$REPO_A" && bash "$GATE" 84 --verify-state 2>&1 )" || RC=$?
+check_eq "no declared key: ordinary poll is unaffected" "0" "$RC"
+check_eq "…and emits no contradiction message" "0" "$(grep -c 'contradicts the checkout' <<<"$OUT")"
+# And a declared key that AGREES with the checkout is still fine.
+RC=0; OUT="$( cd "$REPO_A" && bash "$GATE" 84 --verify-state --repo org/a 2>&1 )" || RC=$?
+check_eq "declared key agreeing with the checkout passes" "0" "$RC"
 
 echo
 echo "== every refusal exits non-zero (issue #854) =="

@@ -79,6 +79,15 @@
 #                            (no `origin` remote, or not a git checkout at all) —
 #                            with a normal checkout the origin remote already
 #                            gives the right answer.
+#                            A declared key may SUPPLY an identity the checkout
+#                            lacks; it may never OVERRIDE one the checkout
+#                            states. `--repo` and `--root-repo` answer different
+#                            questions, so when both resolve to a real owner/repo
+#                            and disagree the invocation is refused rather than
+#                            validating against one repo while acting on another.
+#                            Value must match session-state.sh's key charset
+#                            ([A-Za-z0-9._/-]); anything else is a usage error,
+#                            never a silent fall-through to "_unknown".
 #   --allow-nonauthor        See --ensure-session above.
 #
 # Exit codes (default mode): same as merge-gate.sh (0 met, 1 not met, 2 usage, 3 PR, 4 error)
@@ -164,7 +173,12 @@ while [[ $# -gt 0 ]]; do
       fi
       # Same shape check session-state.sh applies, made here so a typo is a usage
       # error rather than a silent fall-through to the "_unknown" bucket.
-      if [[ "$REPO_ARG" != */* || "$REPO_ARG" == */*/* || "$REPO_ARG" == /* || "$REPO_ARG" == */ ]]; then
+      # The character class must match session-state.sh's is_valid_repo_key()
+      # exactly ([A-Za-z0-9._/-]): checking slash placement alone let values like
+      # "org/repo name" through, which then got exported and silently rewritten
+      # to "_unknown" by the helper — the exact silent-wrong-scope outcome this
+      # validation exists to prevent (CodeAnt, PR #856).
+      if [[ ! "$REPO_ARG" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
         echo "polling-state-gate.sh: --repo value is not a plausible repo key: $REPO_ARG" >&2
         exit 2
       fi
@@ -200,6 +214,15 @@ STATE_READ_DIR="${STATE_READ_DIR:-$PWD}"
 # gate, poll-watermarks.sh, and every other child agree on a single scope key —
 # and it is what makes a pre-set $CLAUDE_SESSION_REPO work here too, since we
 # simply leave it in place when --repo is absent.
+# Was the repo key DECLARED by the caller, or merely derived from the checkout?
+# Only a declared key can contradict the checkout, so only a declared key is
+# subject to the contradiction guard in validate_root_match(). Captured before
+# the export below, which would otherwise make every --repo run look like it
+# also had the environment variable set.
+REPO_KEY_DECLARED=0
+if [[ -n "$REPO_ARG" || -n "${CLAUDE_SESSION_REPO:-}" ]]; then
+  REPO_KEY_DECLARED=1
+fi
 if [[ -n "$REPO_ARG" ]]; then
   export CLAUDE_SESSION_REPO="$REPO_ARG"
 fi
@@ -401,22 +424,49 @@ validate_root_match() {
 
   local canon active_id
   canon=$(cd "$resolved" && git rev-parse --show-toplevel 2>/dev/null || echo "$resolved")
-  # Identity of the checkout the caller is standing in. ACTIVE_REPO_KEY is
-  # preferred when it names a real owner/repo because it is the key that
-  # session-state.sh actually scoped our reads by — it honors --repo and
-  # $CLAUDE_SESSION_REPO (issue #854), and it is anchored to STATE_READ_DIR
-  # rather than to a `resolved` root that per-PR root_repo may have redirected.
-  # "_unknown" is NOT an identity: session-state.sh returns it whenever repo
-  # context cannot be resolved, so treating it as a repo name would refuse valid
-  # sessions. In that case fall back to repo_identity(), whose git-common-dir
-  # fallback can still compare such checkouts and which fails closed on its own
-  # terms in (c) when they genuinely cannot be compared.
-  if [[ -n "$ACTIVE_REPO_KEY" && "$ACTIVE_REPO_KEY" == */* \
+  # Identity of the checkout the caller is standing in.
+  #
+  # A DECLARED key (--repo / $CLAUDE_SESSION_REPO, surfacing here as
+  # ACTIVE_REPO_KEY) may SUPPLY an identity the checkout lacks; it may never
+  # OVERRIDE one the checkout states. Without that rule
+  # `--repo org/a --root-repo /repo-b` validated every per-PR field against
+  # org/a while gh, merge-gate.sh, and the session-state writes all ran against
+  # repo B — a poll evaluating the wrong repo's PR, and --ensure-session
+  # recording B's head_sha in A's lane (CodeAnt + BugBot, PR #856). The two
+  # flags answer different questions (--root-repo = which checkout, --repo =
+  # which scope key), so when both resolve to a real owner/repo and disagree,
+  # that is a contradiction in the invocation, not something to silently pick a
+  # winner for. Refuse, and say which is which. Not suppressed by "quiet": a
+  # contradictory invocation is never something --ensure-session should paper
+  # over by (re)recording scoping.
+  local checkout_id
+  checkout_id="$(repo_identity "$canon")"
+  # Only a key the caller DECLARED counts here. An ACTIVE_REPO_KEY merely derived
+  # from the checkout cannot "contradict" that same checkout, and treating it as
+  # declared would mislabel a corrupt same-scope root_repo (caught by (a)/(b)
+  # below) as an override the caller never passed.
+  local declared=""
+  if [[ "$REPO_KEY_DECLARED" -eq 1 && -n "$ACTIVE_REPO_KEY" && "$ACTIVE_REPO_KEY" == */* \
         && "$ACTIVE_REPO_KEY" != "_unknown" \
         && "$ACTIVE_REPO_KEY" != gitdir:* && "$ACTIVE_REPO_KEY" != path:* ]]; then
-    active_id="$(normalize_repo_key "$ACTIVE_REPO_KEY")"
+    declared="$(normalize_repo_key "$ACTIVE_REPO_KEY")"
+  fi
+  if [[ -n "$declared" && "$checkout_id" == */* \
+        && "$checkout_id" != gitdir:* && "$checkout_id" != path:* \
+        && "$declared" != "$checkout_id" ]]; then
+    echo "polling-state-gate.sh: repo key '$declared' (from --repo or \$CLAUDE_SESSION_REPO) contradicts the checkout being operated on, which is '$checkout_id' ($canon) — refuse to validate against one repo while acting on another. Drop the override, or point --root-repo at a '$declared' checkout." >&2
+    return 1
+  fi
+  # "_unknown" is NOT an identity: session-state.sh returns it whenever repo
+  # context cannot be resolved, so treating it as a repo name would refuse valid
+  # sessions. When the checkout cannot name itself, the declared key is what
+  # makes it comparable at all; otherwise fall back to repo_identity(), whose
+  # git-common-dir fallback can still compare such checkouts and which fails
+  # closed on its own terms in (c) when they genuinely cannot be compared.
+  if [[ -n "$declared" ]]; then
+    active_id="$declared"
   else
-    active_id="$(repo_identity "$canon")"
+    active_id="$checkout_id"
   fi
 
   # (a) owner/repo scoping — usable only when the active checkout also resolves to
