@@ -251,6 +251,16 @@ fi
 # The `Working directory:` line is different: its entire value is one path by
 # definition, so a space in it is unambiguous and must be honoured — that is the
 # real case (`/Users/n/My Work/repo/...`) this exemption exists for.
+# Strip every leading Markdown/quoting delimiter, not just one character. A
+# path is routinely written as `**/Users/u/repo/...**` or `"/Users/..."`, and a
+# single-character strip leaves the second asterisk in front of the slash — so a
+# perfectly valid absolute path reads as relative and gets rejected.
+strip_open_delims() {
+  local v="$1"
+  while [[ -n "$v" && "$v" == [\`\(\[\<\"\'*_~]* ]]; do v="${v:1}"; done
+  printf '%s' "$v"
+}
+
 # A URL is an address any reader can open, so a repository link that happens to
 # point at a harness file is a portable reference — unlike a local path, which
 # only resolves inside this checkout. Whitespace tokenizing IS sound here
@@ -260,7 +270,7 @@ mask_urls() {
   local -a parts
   read -ra parts <<<"$in"
   for tok in ${parts+"${parts[@]}"}; do
-    bare="${tok#[\`\(\[\<\"\']}"
+    bare=$(strip_open_delims "$tok")
     if [[ "$bare" == http://* || "$bare" == https://* ]]; then
       tok="${tok//.claude\//<url>/}"
     fi
@@ -287,7 +297,7 @@ mask_worktree_paths() { # $1 = line, $2 = 1 when this is the Working directory l
 
   read -ra parts <<<"$in"
   for tok in ${parts+"${parts[@]}"}; do
-    bare="${tok#[\`\(\[\<\"\']}"
+    bare=$(strip_open_delims "$tok")
     if [[ "$bare" == /*"$WORKTREE_PATH_PREFIX"* ]]; then
       tok="${tok//"$WORKTREE_PATH_PREFIX"//<worktree>/}"
     fi

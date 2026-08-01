@@ -143,6 +143,10 @@ printf '%s\n' "Quoted: \`/Users/b/repo/.claude/worktrees/issue-43-x\` is fine to
 # A URL is an address any reader can open, so a repository link that happens to
 # point at a harness file is a portable reference, unlike a local path.
 printf '%s\n' "Background: https://github.com/auerbachb/claude-code-config/blob/main/.claude/rules/safety.md" >>"$ALLOWED"
+# Markdown emphasis around a path must not make it read as relative — a
+# one-character delimiter strip leaves the second asterisk in front of the slash.
+printf '%s\n' "Bold: **/Users/b/repo/.claude/worktrees/issue-45-bold**" >>"$ALLOWED"
+printf '%s\n' "Quoted URL: **https://github.com/auerbachb/claude-code-config/blob/main/.claude/rules/safety.md**" >>"$ALLOWED"
 run_lint "$ALLOWED" >/dev/null 2>&1 \
   || fail "an absolute /.claude/worktrees/ path must be allowed — it is the reader's own uncommitted work"
 
