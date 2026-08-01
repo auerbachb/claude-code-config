@@ -39,14 +39,31 @@ Implemented in `.claude/scripts/review-substance.sh` (pure evaluator; no network
 — callers pass payloads they already fetched).
 
 1. **Temporal inversion.** The `APPROVED` predates the *earliest post-push*
-   "is running the review" marker from that same reviewer. A review that had not
-   started cannot have finished; it is a pure ordering violation with no
-   plausible innocent shape.
+   "is running the review" marker from that same reviewer, **and** that reviewer
+   left no evidence outside the approval object that it read this commit. A
+   review that had not started cannot have finished; it is a pure ordering
+   violation with no plausible innocent shape.
    *Earliest*, not latest, is load-bearing: a re-review kicked off **after** a
    genuine approval posts its own start marker, and keying off the latest marker
    would read that as an inversion. Requires the HEAD committer date; when that
    is unavailable the check is skipped rather than guessed, so a transient API
    failure cannot invent a blocker.
+   The suppressing term is `external_evidence_on_head` — inline comments on HEAD
+   or a status comment naming HEAD — and it is deliberately **not** time-bounded.
+   Both halves were review findings on PR #883 itself, pulling in opposite
+   directions, and both are right:
+   - Keying off the approval's *own body* is circular (CodeAnt): the body is the
+     thing under suspicion, so a verbose rubber stamp posted before its own start
+     marker would exonerate itself and inversion could never fire on it.
+   - Requiring that external evidence *predate* the approval breaks the genuine
+     `396ced5` shape (BugBot): CodeRabbit's `bodylen=0` approval whose walkthrough
+     lands moments later. Evidence that the reviewer really did read this SHA
+     redeems the approval whenever it arrives — the same "later real work wins"
+     rule signal 2 already applies to a temporary rate limit.
+
+   What survives both: an approval with no inline comments and no status comment
+   naming HEAD, posted before that bot said it had started. That is the ccc#867
+   shape, and it stays disqualified.
 2. **Capability failure.** The reviewer said on this SHA that it could not review
    ("does not have a PR Review subscription", rate limit, "couldn't run"), and
    produced no substantive evidence *after* saying so. The trailing condition
@@ -60,7 +77,17 @@ Implemented in `.claude/scripts/review-substance.sh` (pure evaluator; no network
    triggered") from masking the walkthrough that carries the self-report.
 4. **Substance across the whole footprint.** Review body ≥ `min_chars` **or**
    inline diff comments anchored to HEAD **or** a same-SHA status comment naming
-   HEAD. Never body length on its own.
+   HEAD. Never body length on its own — and never a comment whose content is the
+   reviewer *declining* to review.
+   That last clause closes a loop this file's own live payload demonstrated
+   (CodeAnt, PR #883). Capability-failure notices routinely name HEAD and run
+   well past `min_chars`: CodeRabbit's rate-limit warning quotes the exact commit
+   range it declined to review. Counted as a status comment, such a notice made
+   itself substantive **and**, by becoming the reviewer's newest evidence,
+   suppressed the signal-2 check that exists to catch it — so "I could not review
+   commit X" would have satisfied coverage for commit X. Failure notices are now
+   excluded from status evidence, which is what the documented
+   failure-before-substance priority order always implied.
 5. **Timing proximity to the push.** Reported as `seconds_after_push`,
    corroborating only. An 8-second approval is suspicious, not disqualifying.
 
@@ -74,6 +101,13 @@ Implemented in `.claude/scripts/review-substance.sh` (pure evaluator; no network
 - **A comment naming HEAD needs no freshness filter.** Naming HEAD's SHA is
   itself proof the comment postdates HEAD, so the substance signal survives a
   missing push timestamp.
+- **Timestamps are canonicalised before any comparison.** Every ordering test in
+  the evaluator is a string compare, which is only correct while all timestamps
+  share one spelling: `…T10:00:22+00:00` sorts *before* `…T10:00:16Z`, so a
+  single non-`Z` form would silently erase an inversion. `canon_ts` folds the
+  UTC spellings onto `Z` and drops fractional seconds — the same trap `norm_ts`
+  guards in `merge-gate.sh` (BugBot, PR #883). A genuine non-UTC offset is left
+  untouched rather than mangled into a wrong instant.
 
 ## What the gate does with it
 
@@ -91,7 +125,26 @@ Implemented in `.claude/scripts/review-substance.sh` (pure evaluator; no network
   another reviewer, so a rubber stamp is never silently absorbed.
 - `--allow-hollow-approval` exists as an explicit per-PR user override. An agent
   must never pass it on its own; the evidence is still computed and emitted and
-  the override is announced on stderr.
+  the override is announced on stderr. Its scope is exactly one disqualifier,
+  `no_substantive_footprint`, and nothing else (CodeAnt, PR #883): an approval
+  naming a different SHA, predating the bot's own start marker, or following that
+  bot's capability-failure notice is not *unevidenced* — it is evidence **against**
+  a review of this commit, and no per-PR override should launder it. "The bot said
+  nothing and I read the diff myself" is a defensible human claim; "the bot's own
+  record contradicts its approval" is not.
+
+## What a hollow approval does *not* do
+
+A hollow approval from one bot does **not** block when the other bot's approval is
+genuine. BugBot argued on PR #883 that a rubber-stamping CodeAnt should fail the
+supplemental CodeAnt gate even when CodeRabbit passed. Declined, for two reasons:
+`cr-merge-gate.md`'s CR path is "either bot alone suffices" and real coverage
+demonstrably exists, so blocking would hold every PR hostage to whichever bot is
+malfunctioning that day — the false-negative cost this evaluator is written to
+avoid. The guarantee BugBot actually wanted, that a rubber stamp is never absorbed
+*silently*, is already met: the approver stays in `review_evidence.hollow[]` and
+merge-gate.sh announces every discounted approval on stderr even when the gate
+passes. Pinned by case (r) in `merge-gate-review-substance.test.sh`.
 
 ## Corroboration is reported, not gating
 

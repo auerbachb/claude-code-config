@@ -73,6 +73,15 @@ case "$sub" in
           cat "$FIXTURE_COMMITS_JSON"
           exit 0
           ;;
+        repos/*/git/commits/*)
+          # HEAD committer date (issue #875). escalate-review.sh feeds this to
+          # review-substance.sh as push_ts, and BOTH the temporal-inversion and
+          # capability-failure signals are scoped to "post-push" — an empty
+          # push_ts silently disables them, so a stub returning [] here would let
+          # every scenario below pass while those branches were never executed.
+          cat "$FIXTURE_GIT_COMMIT_JSON"
+          exit 0
+          ;;
       esac
     done
     echo "[]"
@@ -112,6 +121,14 @@ write_commits() {
 [{"sha": "$HEAD_SHA", "commit": {"committer": {"date": "$push_ts"}, "author": {"date": "$push_ts"}}}]
 EOF
   export FIXTURE_COMMITS_JSON="$TMP/commits.json"
+  # Separate shape: `git/commits/{sha}` returns a single object with .committer.date,
+  # not the array `pulls/{n}/commits` returns. escalate-review.sh reads
+  # `.committer.date` from it — feeding it the array form yields "" and disables
+  # the post-push signals.
+  cat > "$TMP/git-commit.json" <<EOF
+{"sha": "$HEAD_SHA", "committer": {"date": "$push_ts"}, "author": {"date": "$push_ts"}}
+EOF
+  export FIXTURE_GIT_COMMIT_JSON="$TMP/git-commit.json"
 }
 
 # CodeRabbit rate-limited check-run — included in every scenario so the script
@@ -253,6 +270,55 @@ write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H]" "[]" "[$FAILURE_COM
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=gate_met" "STATUS=gate_met" "$OUT"
+
+############################################################################
+# Scenarios (h2)-(h4) exist because the gh stub originally returned [] for
+# `git/commits/{sha}`, leaving push_ts empty in EVERY scenario above. Both
+# post-push signals are `if $push == "" then null` guarded, so temporal
+# inversion and capability failure were structurally unreachable from this
+# suite — (h) passed and would have kept passing with either branch deleted.
+echo "== Scenario (h2): CodeAnt APPROVED before its own run-start marker, nothing else -> trigger_greptile (temporal inversion) =="
+reset_state
+write_commits "$(ts_seconds_ago 300)"
+FAILURE_COMMENT_H2="$(failure_comment "$(ts_seconds_ago 60)")"
+# Empty body, no inline comments, no status comment naming HEAD — approved at
+# T-200 while the bot only announced it had started at T-190. ccc#867's shape.
+CODEANT_APPROVED_H2='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "", "submitted_at": "'"$(ts_seconds_ago 200)"'"}'
+CODEANT_MARKER_H2='{"user": {"login": "codeant-ai[bot]"}, "created_at": "'"$(ts_seconds_ago 190)"'", "body": "CodeAnt AI is running the review on your pull request. Results will be posted shortly."}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H2]" "[]" "[$FAILURE_COMMENT_H2, $CODEANT_MARKER_H2]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== Scenario (h3): same inversion, but inline comments on HEAD prove a real read -> gate_met =="
+reset_state
+write_commits "$(ts_seconds_ago 300)"
+FAILURE_COMMENT_H3="$(failure_comment "$(ts_seconds_ago 60)")"
+CODEANT_APPROVED_H3='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "", "submitted_at": "'"$(ts_seconds_ago 200)"'"}'
+CODEANT_MARKER_H3='{"user": {"login": "codeant-ai[bot]"}, "created_at": "'"$(ts_seconds_ago 190)"'", "body": "CodeAnt AI is running the review on your pull request. Results will be posted shortly."}'
+# Evidence outside the approval object redeems it even though it lands AFTER the
+# approval — the documented bodylen=0 + walkthrough shape (mia#172 396ced5).
+CODEANT_INLINE_H3='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "original_commit_id": "'"$HEAD_SHA"'", "created_at": "'"$(ts_seconds_ago 180)"'", "path": "a.sh", "body": "Suggestion: this branch is unreachable."}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H3]" "[$CODEANT_INLINE_H3]" "[$FAILURE_COMMENT_H3, $CODEANT_MARKER_H3]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=gate_met" "STATUS=gate_met" "$OUT"
+
+############################################################################
+echo "== Scenario (h4): CodeAnt APPROVED after saying it could not review -> trigger_greptile (capability failure) =="
+reset_state
+write_commits "$(ts_seconds_ago 300)"
+FAILURE_COMMENT_H4="$(failure_comment "$(ts_seconds_ago 60)")"
+# The notice is long and names HEAD — before this was fixed it counted as the
+# reviewer's own substantive status comment AND, by being the latest evidence,
+# suppressed the capability-failure check meant to catch it.
+CODEANT_NOSUB_H4='{"user": {"login": "codeant-ai[bot]"}, "created_at": "'"$(ts_seconds_ago 210)"'", "body": "User ci@example.com does not have a PR Review subscription, so commit '"$HEAD_SHA"' was not reviewed. Contact your administrator to enable reviews for this account."}'
+CODEANT_APPROVED_H4='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "", "submitted_at": "'"$(ts_seconds_ago 200)"'"}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H4]" "[]" "[$FAILURE_COMMENT_H4, $CODEANT_NOSUB_H4]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (i): CodeAnt APPROVED on an OLDER SHA (not HEAD) -> still trigger_greptile (stale approval doesn't satisfy the gate) =="

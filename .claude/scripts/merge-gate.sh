@@ -133,6 +133,10 @@ ALLOW_NONAUTHOR=false
 # Explicit per-PR user override ONLY — an agent must never pass it on its own.
 # The evidence is still computed, still emitted in `review_evidence`, and the
 # override is announced on stderr, so nothing about the bypass is silent.
+# Scope is deliberately narrow: it covers `no_substantive_footprint` and NOTHING
+# else. Temporal inversion, capability failure and self-report SHA mismatch stay
+# blocking even with the flag — those are not "the bot said nothing", they are
+# the bot's own record contradicting the claim that it reviewed this commit.
 ALLOW_HOLLOW=false
 
 print_usage() {
@@ -744,6 +748,19 @@ case "$REVIEWER" in
         | join("; ")' 2>/dev/null || echo "no substantive review footprint"
     }
 
+    # --allow-hollow-approval covers exactly ONE disqualifier: the approval left
+    # no substantive footprint, and a human is saying they read the diff instead.
+    # It must NOT wave through an integrity failure — an approval that names a
+    # different SHA, predates the bot's own start marker, or follows that bot
+    # saying it could not review is not "unevidenced", it is evidence AGAINST a
+    # review having happened, and no per-PR override should launder it.
+    # Fail-closed: any jq failure (missing/unparseable evidence) yields false.
+    override_eligible() { # <login>
+      echo "$REVIEW_EVIDENCE" | jq -e --arg l "$1" \
+        '((.reviewers[$l].disqualified_by // []) - ["no_substantive_footprint"]) | length == 0' \
+        >/dev/null 2>&1 && echo true || echo false
+    }
+
     CR_SUBSTANTIVE=$(substance_ok "coderabbitai[bot]")
     CA_SUBSTANTIVE=$(substance_ok "codeant-ai[bot]")
 
@@ -758,7 +775,7 @@ case "$REVIEWER" in
           && "$CR_APPROVAL_SUBMITTED_AT_MISSING" == false ]]; then
       if [[ "$CR_SUBSTANTIVE" == true ]]; then
         CR_APPROVAL_VALID=true
-      elif [[ "$ALLOW_HOLLOW" == true ]]; then
+      elif [[ "$ALLOW_HOLLOW" == true && "$(override_eligible "coderabbitai[bot]")" == true ]]; then
         CR_APPROVAL_VALID=true
         echo "[merge-gate] --allow-hollow-approval: counting CodeRabbit APPROVED on ${HEAD_SHA:0:7} despite no substantive review evidence ($(substance_reasons "coderabbitai[bot]"))." >&2
       else
@@ -772,7 +789,7 @@ case "$REVIEWER" in
           && "$CA_APPROVAL_SUBMITTED_AT_MISSING" == false ]]; then
       if [[ "$CA_SUBSTANTIVE" == true ]]; then
         CA_APPROVAL_VALID=true
-      elif [[ "$ALLOW_HOLLOW" == true ]]; then
+      elif [[ "$ALLOW_HOLLOW" == true && "$(override_eligible "codeant-ai[bot]")" == true ]]; then
         CA_APPROVAL_VALID=true
         echo "[merge-gate] --allow-hollow-approval: counting CodeAnt APPROVED on ${HEAD_SHA:0:7} despite no substantive review evidence ($(substance_reasons "codeant-ai[bot]"))." >&2
       else
@@ -959,6 +976,14 @@ case "$REVIEWER" in
           # CA_HOLLOW (issue #875) is excluded for the same reason: an approval DOES
           # exist, it just is not coverage, and the primary block already said so —
           # claiming "no explicit APPROVED review" here would contradict it.
+          #
+          # A hollow CodeAnt deliberately does NOT block when CodeRabbit's approval is
+          # genuine (BugBot review, PR #883). cr-merge-gate.md's CR path is "either bot
+          # alone suffices", and coverage demonstrably exists. Blocking here would make
+          # every PR hostage to a bot that is currently rubber-stamping — the
+          # false-negative cost this evaluator is explicitly written to avoid. The
+          # rubber stamp is not absorbed silently either way: it stays in
+          # review_evidence.hollow[] and is announced on stderr below.
           MISSING+=("CodeAnt participated on HEAD ${HEAD_SHA:0:7} but no explicit APPROVED review and no successful CodeAnt check-run (have $TOTAL_CA_ON_HEAD CodeAnt review(s) on this SHA) — wait or comment @codeant-ai review")
         fi
       fi

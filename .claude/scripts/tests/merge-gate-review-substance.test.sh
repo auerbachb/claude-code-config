@@ -233,6 +233,84 @@ check_eq "true" "$(echo "$OUT" | jq -e 'has("review_evidence")' >/dev/null && ec
 check_eq "{}" "$(echo "$OUT" | jq -c '.review_evidence')" "(l) evidence is empty off the cr path"
 check_eq "true" "$(echo "$OUT" | jq -r '.met')" "(l) bugbot path verdict unchanged by #875"
 
+############################################################################
+# (n)-(r): review findings on PR #883 itself. Each is a way the FIRST cut of
+# this guard could still be satisfied by a reviewer that never read the commit.
+############################################################################
+
+echo "=== (n) a capability-failure notice naming HEAD is not substance (CodeAnt, PR #883) ==="
+FAKE_REVIEWS="$(approval "coderabbitai[bot]" "" "2026-07-31T10:05:00Z")"
+# The live shape: CodeRabbit's rate-limit notice quotes the exact commit range it
+# DECLINED to review, so it is long and it names HEAD. Counting it as a status
+# comment made it substance and — by becoming the newest evidence — also
+# suppressed the capability_failure check that exists to catch precisely this.
+FAKE_ISSUE_COMMENTS="$(convo "coderabbitai[bot]" "Review limit reached. You have reached a temporary PR review limit under our Fair Usage Limits Policy. Next review available in 18 minutes. Reviewing files that changed between 97149cc and $HEAD_SHA." "2026-07-31T10:04:30Z")"
+OUT="$(run_gate)"
+check_eq "false" "$(echo "$OUT" | jq -r '.met')" "(n) a declined review does not satisfy the gate"
+check_eq "coderabbitai[bot]" "$(echo "$OUT" | jq -r '.review_evidence.capability_failed[0]')" "(n) still flagged as a capability failure"
+check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["coderabbitai[bot]"].status_comment_names_head')" "(n) failure notice rejected as status evidence"
+
+echo "=== (o) a VERBOSE approval predating its own run marker still inverts (CodeAnt, PR #883) ==="
+# The first cut let $ev include the approval's own body, so a long-bodied rubber
+# stamp exonerated itself and inversion could never fire on it. Same trace as
+# (h), only the body is no longer empty.
+FAKE_REVIEWS="$(approval "codeant-ai[bot]" "Actionable comments posted: 0. Reviewed the changed files; no blocking issues found anywhere." "2026-07-31T10:00:16Z")"
+FAKE_ISSUE_COMMENTS="$(convo "codeant-ai[bot]" "CodeAnt AI is running the review." "2026-07-31T10:00:22Z")"
+OUT="$(run_gate)"
+check_eq "false" "$(echo "$OUT" | jq -r '.met')" "(o) a verbose body cannot vouch for its own timing"
+check_eq "codeant-ai[bot]" "$(echo "$OUT" | jq -r '.review_evidence.inverted[0]')" "(o) evidence still flags temporal inversion"
+check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].external_evidence_on_head')" "(o) no evidence outside the approval object"
+
+echo "=== (p) evidence outside the approval redeems the inversion (BugBot, PR #883) ==="
+# Symmetric false-negative guard: the documented genuine bodylen=0 + walkthrough
+# shape must survive even when a later re-review posts its own start marker.
+FAKE_REVIEWS="$(approval "coderabbitai[bot]" "" "2026-07-31T10:00:16Z")"
+FAKE_ISSUE_COMMENTS="$(convo \
+  "coderabbitai[bot]" "CodeRabbit is running the review." "2026-07-31T10:00:22Z" \
+  "coderabbitai[bot]" "$WALKTHROUGH" "2026-07-31T10:00:40Z")"
+OUT="$(run_gate)"
+check_eq "true" "$(echo "$OUT" | jq -r '.met')" "(p) a real walkthrough redeems the approval whenever it lands"
+check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["coderabbitai[bot]"].temporal_inversion')" "(p) inversion suppressed by external evidence"
+
+echo "=== (q) --allow-hollow-approval never launders an integrity failure (CodeAnt, PR #883) ==="
+# The flag's documented scope is 'no substantive footprint'. An approval naming
+# ANOTHER SHA is not unevidenced — it is evidence against a review of this one.
+FAKE_REVIEWS="$(approval "codeant-ai[bot]" "")"
+FAKE_ISSUE_COMMENTS="$(convo "codeant-ai[bot]" "CodeAnt AI finished reviewing commit 98f0bd0 and found no blocking issues in the changes." "2026-07-31T10:03:00Z")"
+OUT="$(run_gate --allow-hollow-approval)"
+check_eq "false" "$(echo "$OUT" | jq -r '.met')" "(q) override does not cover a self-report SHA mismatch"
+check_eq "codeant-ai[bot]" "$(echo "$OUT" | jq -r '.review_evidence.mismatched[0]')" "(q) mismatch still reported"
+# ...while the case it IS scoped to keeps working (regression guard on (f)).
+FAKE_ISSUE_COMMENTS='[]'
+OUT="$(run_gate --allow-hollow-approval)"
+check_eq "true" "$(echo "$OUT" | jq -r '.met')" "(q) override still covers a plain empty footprint"
+
+echo "=== (r) a hollow CodeAnt is reported, not blocking, when CodeRabbit passes (BugBot, PR #883) ==="
+# BugBot argued this should BLOCK. It must not: cr-merge-gate.md's CR path is
+# "either bot alone suffices" and CodeRabbit's coverage here is genuine, so
+# blocking would hold every PR hostage to whichever bot is rubber-stamping today
+# — the false-negative cost this evaluator is written to avoid. The guarantee
+# BugBot actually wanted (never absorbed SILENTLY) is met by hollow[] plus the
+# stderr notice, which is what this case pins.
+FAKE_REVIEWS="$(jq -cn --arg sha "$HEAD_SHA" --arg t "$APPROVE_TS" \
+  '[{user:{login:"coderabbitai[bot]",type:"Bot"},commit_id:$sha,state:"APPROVED",
+     body:"Actionable comments posted: 0. Reviewed 3 files; behaviour preserved.",submitted_at:$t},
+    {user:{login:"codeant-ai[bot]",type:"Bot"},commit_id:$sha,state:"APPROVED",
+     body:"",submitted_at:$t}]')"
+FAKE_ISSUE_COMMENTS='[]'
+OUT="$(run_gate)"
+check_eq "codeant-ai[bot]" "$(echo "$OUT" | jq -r '.review_evidence.hollow[0]')" "(r) hollow CodeAnt still reported in evidence"
+check_eq "true" "$(echo "$OUT" | jq -r '.met')" "(r) a genuine CodeRabbit pass still satisfies the CR path"
+check_contains "discounted APPROVED review(s)" "$(cat "$TMP/err.txt")" "(r) the rubber stamp is announced on stderr, not absorbed"
+
+echo "=== (s) +00:00 timestamps order correctly against Z (BugBot, PR #883) ==="
+# All ordering below is string comparison, and '…T10:00:22+00:00' sorts BEFORE
+# '…T10:00:16Z'. Without normalisation this inversion silently disappears.
+FAKE_REVIEWS="$(approval "codeant-ai[bot]" "" "2026-07-31T10:00:16+00:00")"
+FAKE_ISSUE_COMMENTS="$(convo "codeant-ai[bot]" "CodeAnt AI is running the review." "2026-07-31T10:00:22+00:00")"
+OUT="$(run_gate)"
+check_eq "codeant-ai[bot]" "$(echo "$OUT" | jq -r '.review_evidence.inverted[0]')" "(s) inversion detected across mixed timestamp spellings"
+
 echo "=== (m) evaluator rejects malformed stdin ==="
 echo "not json" | "$EVAL_SUT" >/dev/null 2>&1
 check_eq "4" "$?" "(m) non-JSON stdin exits 4"

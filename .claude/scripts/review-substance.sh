@@ -16,8 +16,10 @@
 #
 #   1. temporal_inversion    — the APPROVED predates the FIRST post-push
 #                              "is running the review" marker from that same
-#                              reviewer. A review that had not started cannot
-#                              have finished. Pure ordering violation.
+#                              reviewer, AND that reviewer left no evidence
+#                              outside the approval object that it read this
+#                              commit. A review that had not started cannot have
+#                              finished. Pure ordering violation.
 #   2. capability_failure    — that reviewer said on this SHA that it could not
 #                              review (no subscription / rate limited / couldn't
 #                              run) and produced no substantive evidence after
@@ -26,7 +28,8 @@
 #                              a commit other than the one it approved.
 #   4. substantive           — review body OR inline comments on HEAD OR a
 #                              same-SHA status comment naming HEAD. Never body
-#                              length on its own.
+#                              length on its own, and never a comment whose
+#                              content is the reviewer declining to review.
 #   5. seconds_after_push    — reported only. Timing corroborates, never decides.
 #
 # This is a pure evaluator: no network, no gh calls. Callers pass the review and
@@ -98,6 +101,9 @@
 #                             that later evidence must win.
 #   substantive               body_len >= min_chars OR inline_comments_on_head > 0
 #                             OR status_comment_names_head
+#   external_evidence_on_head substantive footprint OTHER than the approval body
+#                             (inline comments, or a status comment naming HEAD);
+#                             what suppresses a temporal_inversion verdict
 #   counts_as_coverage        approved AND substantive AND none of the three
 #                             disqualifiers above
 #
@@ -179,8 +185,22 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
   # raw comment list per reviewer turned a millisecond job into ~1s per comment
   # on a real PR. The indexes below are built once and then only filtered.
 
+  # Every ordering comparison below is a plain string compare, which is correct
+  # only while all timestamps share one representation. GitHub REST returns
+  # ISO-8601 UTC with a `Z` suffix, but `2026-08-01T07:26:30+00:00` sorts BEFORE
+  # `2026-08-01T07:00:00Z` lexicographically, so a single non-`Z` spelling would
+  # silently invert the marker / capability-failure / inversion ordering — the
+  # same trap `norm_ts` guards against in merge-gate.sh. Fold the UTC spellings
+  # onto `Z` and drop fractional seconds. A genuine non-UTC offset is left
+  # untouched rather than mangled into a wrong instant.
+  def canon_ts:
+    (. // "")
+    | if . == "" then ""
+      else sub("\\.[0-9]+"; "") | sub("(\\+00:00|\\+0000)$"; "Z")
+      end;
+
   (.head_sha // "" | ascii_downcase)  as $sha
-  | (.push_ts // "")                  as $push
+  | ((.push_ts // "") | canon_ts)     as $push
   | (.reviews // [])                  as $reviews
   | (.pr_comments // [])              as $inline
   | (.issue_comments // [])           as $convo
@@ -207,8 +227,8 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         | { login:   (.user.login // ""),
             body:    $b,
             len:     ($b | length),
-            ts:      ((.updated_at // .created_at) // ""),
-            created: ((.created_at // .updated_at) // ""),
+            ts:      (((.updated_at // .created_at) // "") | canon_ts),
+            created: (((.created_at // .updated_at) // "") | canon_ts),
             tokens:  $tok,
             names_head: ($tok | tokens_name_head),
             # "the review has started" markers, used for temporal inversion
@@ -225,7 +245,7 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
           | select(((.commit_id // "") | ascii_downcase) == $sha)
           | select((((.original_commit_id // .commit_id) // "") | ascii_downcase) == $sha)
           | { login: (.user.login // ""),
-              ts: ((.updated_at // .created_at) // "") } ] ) as $iidx
+              ts: (((.updated_at // .created_at) // "") | canon_ts) } ] ) as $iidx
 
     # ---- Latest review per login on HEAD -----------------------------------
     | ( [ $reviews[]?
@@ -233,7 +253,7 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
           | { login: (.user.login // ""),
               state: (.state // ""),
               body_len: ((.body // "") | length),
-              submitted_at: (.submitted_at // "") } ] ) as $ridx
+              submitted_at: ((.submitted_at // "") | canon_ts) } ] ) as $ridx
 
     | def secs_after_push($ts):
         if ($push == "" or ($ts // "") == "") then null
@@ -251,9 +271,22 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         | ($ap.body_len // 0)                                              as $body_len
         | ($ap.submitted_at // "")                                         as $ap_ts
         | ( [ $iidx[] | select(.login == $login) ] )                       as $inl
-        | ( [ $mine[] | select(.len >= $min_chars and .names_head) ] )     as $status_ev
+        # A status comment only evidences a review if it is not the reviewer
+        # ANNOUNCING IT COULD NOT REVIEW. Capability-failure notices routinely
+        # name HEAD and run well past $min_chars — CodeRabbit"s rate-limit notice
+        # quotes the exact commit range it declined to review — so without this
+        # filter the notice would make itself substantive AND, by landing in $ev
+        # below, suppress the capability_failure check that exists to catch it.
+        # Priority order is documented failure-before-substance; this enforces it.
+        | ( [ $mine[]
+              | select(.len >= $min_chars and .names_head and (.failure | not)) ] ) as $status_ev
         | (($status_ev | length) > 0)                                      as $names_head
         | ( ($body_len >= $min_chars) or (($inl | length) > 0) or $names_head ) as $substantive
+
+        # Substance that exists INDEPENDENTLY of the approval object itself:
+        # inline comments anchored to HEAD, or a status comment naming HEAD. The
+        # approval"s own body is excluded on purpose — see $inversion below.
+        | ( (($inl | length) > 0) or $names_head )                         as $ext_substantive
 
         # Self-report mismatch: of this bot"s comments that mention ANY commit
         # id, the most recent one mentions none matching HEAD. Restricting to
@@ -286,9 +319,31 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
                    | sort_by(.created) | last )
             end )                                                          as $fail
 
+        # Temporal inversion: the approval predates this reviewer"s own
+        # "I have started reviewing" marker, and the reviewer left NO evidence
+        # outside the approval object that it ever read this commit.
+        #
+        # The suppressing term is $ext_substantive, deliberately, and it is not
+        # time-bounded. Two failure modes are being avoided at once:
+        #
+        #  - Keying off the approval"s own body is circular. The body is the
+        #    thing under suspicion, so a verbose rubber stamp posted before its
+        #    own start marker would exonerate itself and inversion would never
+        #    fire on it.
+        #  - Requiring the external evidence to PREDATE the approval would break
+        #    the documented genuine shape: CodeRabbit"s `bodylen=0` APPROVED whose
+        #    walkthrough lands moments later (mia#172 `396ced5`). Evidence that
+        #    the reviewer really did read this SHA redeems the approval whenever
+        #    it arrives — the same "later real work wins" rule the capability
+        #    failure check already applies to a temporary rate limit.
+        #
+        # What survives both: an approval with no inline comments and no status
+        # comment naming HEAD, posted before that bot said it had started. That
+        # is the ccc#867 shape — approved 06:24:44Z, marker 06:24:50Z, nothing
+        # else — and it stays disqualified.
         | ( $ap != null and $marker != null and $ap_ts != ""
             and ($ap_ts < $marker.created)
-            and ((($ev | first) // "") == "" or (($ev | first) // "") > $ap_ts) ) as $inversion
+            and ($ext_substantive | not) )                                 as $inversion
         | ( $ap != null and $fail != null )                                as $cap_fail
 
         | ( [ (if ($ap != null and ($substantive | not)) then "no_substantive_footprint" else empty end),
@@ -303,6 +358,7 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
               body_len:                  $body_len,
               inline_comments_on_head:   ($inl | length),
               status_comment_names_head: $names_head,
+              external_evidence_on_head: $ext_substantive,
               status_comment_shas:       (($selfrep.tokens // []) | unique),
               self_report_mismatch:      ($ap != null and $mismatch),
               temporal_inversion:        $inversion,
@@ -326,7 +382,7 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
               ( [ $ridx[] | select(.login == $login) ]
                 | sort_by(.submitted_at) | last | (.body_len // 0) ) >= $min_chars
               or ( [ $iidx[] | select(.login == $login) ] | length ) > 0
-              or ( [ $cidx[] | select(.login == $login and .len >= $min_chars and .names_head) ] | length ) > 0
+              or ( [ $cidx[] | select(.login == $login and .len >= $min_chars and .names_head and (.failure | not)) ] | length ) > 0
             ) ] ) as $corroborating
 
     | {
