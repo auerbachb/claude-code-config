@@ -36,6 +36,10 @@ mkdir -p "$STUB_DIR"
 cp "$REPO_ROOT/.claude/scripts/escalate-review.sh" "$STUB_DIR/escalate-review.sh"
 cp "$REPO_ROOT/.claude/scripts/session-state.sh" "$STUB_DIR/session-state.sh"
 cp "$REPO_ROOT/.claude/scripts/greptile-budget.sh" "$STUB_DIR/greptile-budget.sh"
+# Real script, not a stub (issue #875): escalate-review.sh fails closed when the
+# substance evaluator is unavailable, so omitting it here would turn every
+# gate_met scenario into trigger_greptile.
+cp "$REPO_ROOT/.claude/scripts/review-substance.sh" "$STUB_DIR/review-substance.sh"
 # Sibling write-lock library (issue #639) — session-state.sh and
 # greptile-budget.sh source it from their own directory and hard-fail without
 # it rather than writing unserialized, so the stub dir needs it too.
@@ -241,7 +245,10 @@ echo "== Scenario (h): CR rate-limited + BugBot usage-limit failure + CodeAnt al
 reset_state
 write_commits "$(ts_seconds_ago 120)"
 FAILURE_COMMENT_H="$(failure_comment "$(ts_seconds_ago 60)")"
-CODEANT_APPROVED_H='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "submitted_at": "'"$(ts_seconds_ago 90)"'"}'
+# The approval body is substantive on purpose (issue #875): escalate-review now
+# discounts an APPROVED with no evidence anything read the commit, so a body-less
+# fixture would fail for the wrong reason instead of testing the gate_met path.
+CODEANT_APPROVED_H='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed the changed files; no issues found.", "submitted_at": "'"$(ts_seconds_ago 90)"'"}'
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H]" "[]" "[$FAILURE_COMMENT_H]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
@@ -263,7 +270,7 @@ echo "== Scenario (j): CodeAnt APPROVED on HEAD but retracted by a LATER CHANGES
 reset_state
 write_commits "$(ts_seconds_ago 120)"
 FAILURE_COMMENT_J="$(failure_comment "$(ts_seconds_ago 60)")"
-CODEANT_APPROVED_J='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "submitted_at": "'"$(ts_seconds_ago 200)"'"}'
+CODEANT_APPROVED_J='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed the changed files; no issues found.", "submitted_at": "'"$(ts_seconds_ago 200)"'"}'
 CODEANT_RETRACT_J='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "CHANGES_REQUESTED", "submitted_at": "'"$(ts_seconds_ago 100)"'"}'
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_J, $CODEANT_RETRACT_J]" "[]" "[$FAILURE_COMMENT_J]"
 OUT=$(run_script); RC=$?

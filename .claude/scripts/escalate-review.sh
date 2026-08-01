@@ -138,6 +138,46 @@ PRIMARY_REVIEW_MET="$(jq -r --arg sha "$HEAD_SHA" '
   exit 4
 }
 
+# Review-substance guard (issue #875): the check above only asks whether an
+# APPROVED exists on HEAD, not whether anything reviewed it. merge-gate.sh now
+# discounts hollow approvals, so without the same test here a rubber stamp would
+# short-circuit escalation ("gate_met") while the gate itself stays blocked —
+# the PR would sit with no reviewer working on it and no escalation in flight.
+# Same evaluator, same definition, no extra API calls (pr-state.sh already
+# fetched reviews + both comment endpoints).
+if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
+  REVIEW_SUBSTANCE_SH="$(dirname "$0")/review-substance.sh"
+  if [[ ! -x "$REVIEW_SUBSTANCE_SH" ]]; then
+    PRIMARY_REVIEW_MET=false
+    echo "escalate-review.sh: review-substance.sh not found or not executable at $REVIEW_SUBSTANCE_SH — cannot verify that the APPROVED on HEAD represents a real review; not reporting gate_met (issue #875)" >&2
+  else
+    # pr-state.sh does not carry the HEAD committer date, and the temporal
+    # inversion / capability-failure signals need it to scope "post-push". One
+    # cheap call, made only when an APPROVED actually exists; an empty result
+    # simply narrows the check to substance + SHA-mismatch.
+    HEAD_COMMIT_TS="$(gh api "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null | jq -r '.committer.date // ""' 2>/dev/null || echo "")"
+    SUBSTANCE_JSON="$(jq -c --arg sha "$HEAD_SHA" --arg push "$HEAD_COMMIT_TS" '{
+        head_sha: $sha,
+        push_ts: $push,
+        reviews: (.comments.reviews // []),
+        pr_comments: (.comments.inline // []),
+        issue_comments: (.comments.conversation // [])
+      }' "$STATE_PATH" 2>/dev/null | "$REVIEW_SUBSTANCE_SH" 2>/dev/null || true)"
+    if [[ -z "$SUBSTANCE_JSON" ]] || ! echo "$SUBSTANCE_JSON" \
+        | jq -e 'type == "object" and (.reviewers | type == "object")' >/dev/null 2>&1; then
+      # Unusable evaluator output. Fail closed to match merge-gate.sh, which
+      # die_local()s on the same condition: claiming gate_met here would stop
+      # escalation on a PR whose gate is simultaneously refusing to pass, leaving
+      # it stalled with no reviewer working on it.
+      PRIMARY_REVIEW_MET=false
+      echo "escalate-review.sh: review-substance.sh produced no usable JSON — cannot verify that the APPROVED on HEAD represents a real review; not reporting gate_met (issue #875)" >&2
+    elif ! echo "$SUBSTANCE_JSON" | jq -e '(.substantive // []) | length > 0' >/dev/null 2>&1; then
+      PRIMARY_REVIEW_MET=false
+      echo "escalate-review.sh: APPROVED on HEAD has no substantive review evidence ($(echo "$SUBSTANCE_JSON" | jq -r '(.hollow // []) | join(", ")')) — not treating the gate as met (issue #875)" >&2
+    fi
+  fi
+fi
+
 if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
   emit "gate_met"
 fi

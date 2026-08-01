@@ -47,7 +47,11 @@ case "$ARGS" in
   *git/commits/*)
     jq -cn '{committer:{date:"2026-07-23T12:00:00Z"}}'; exit 0 ;;
   *pulls/*/reviews*)
+    # body is substantive on purpose (issue #875): the gate discounts an approval
+    # with no evidence anything read the commit, and this fixture stands in for a
+    # genuine review so the authorship logic stays the only thing under test.
     jq -cn '[{user:{login:"coderabbitai[bot]",type:"Bot"},commit_id:"deadbeef",
+              body:"Actionable comments posted: 0. Reviewed the changed files; no issues found.",
               state:"APPROVED",submitted_at:"2026-07-23T13:00:00Z"}]'; exit 0 ;;
   *pulls/*/comments*)  echo "[]"; exit 0 ;;
   *issues/*/comments*) echo "[]"; exit 0 ;;
