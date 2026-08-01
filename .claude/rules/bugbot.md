@@ -6,14 +6,14 @@
 
 BugBot (Cursor, per-seat) is the **second-tier** reviewer in the escalation chain (`cr-github-review.md` §Three-Tier).
 
-**Always-trigger:** CI posts `@cursor review` on every PR open/push (`cursor-review-pr-comment.yml`); GitHub auto-trigger is unreliable — see `feedback_bugbot_auto_trigger_unreliable.md`.
+**Always-trigger:** CI posts `@cursor review` via `CURSOR_REVIEW_PAT` PAT (`cursor-review-pr-comment.yml`); BugBot ignores bot-authored triggers; absent secret → no post, warns — see `feedback_bugbot_auto_trigger_unreliable.md`.
 
 **Escalation authority:** The numbered gate + STOP conditions live in `cr-github-review.md` ("Reviewer escalation gate"). Use `.claude/scripts/escalate-review.sh <PR_NUMBER>` for the per-cycle `STATUS=` verdict; this file only defines BugBot behavior after `STATUS=switch_bugbot`.
 
 ## BugBot Basics
 
 - **Bot username:** `cursor[bot]`
-- **Trigger:** `@cursor review` comment (auto-posted by CI + `/fixpr` per the Always-trigger note above; duplicates OK).
+- **Trigger:** `@cursor review` comment (`/fixpr` or CI when `CURSOR_REVIEW_PAT` set — duplicates OK).
 - **Cost:** Per-seat — safe to always-trigger.
 - **Review time:** ~1–3 min. **No CLI** (GitHub-only).
 
@@ -47,4 +47,4 @@ Verify all findings against actual code. Fix all valid findings in one commit, p
 
 ## Re-Reviews
 
-After a fix push, CI already posted `@cursor review` on the new HEAD; if stale after polling, post it again (duplicates OK).
+After a fix push, CI posts `@cursor review` when `CURSOR_REVIEW_PAT` is set (BugBot doesn't auto-review pushes); if absent or stale, post it manually (duplicates OK).
