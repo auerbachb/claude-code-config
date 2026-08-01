@@ -21,7 +21,7 @@
 #   churn-hotspots.sh [--since <date|ref>] [--threshold N] [--repo <owner/repo>]
 #                     [--conflict-weight N] [--exclude <glob,glob>]
 #                     [--no-default-excludes] [--source auto|git|gh]
-#                     [--pr-cap N] [--top N] [--json]
+#                     [--ref <ref>] [--fetch] [--pr-cap N] [--top N] [--json]
 #   churn-hotspots.sh --help
 #
 #   --since <date|ref>   Window start. A date (YYYY-MM-DD) is used as-is; any
@@ -30,6 +30,20 @@
 #   --threshold N        Hotspot score threshold. Default 3.
 #   --repo <owner/repo>  Target repo. Defaults to the current checkout. Naming a
 #                        repo other than the checkout forces --source gh.
+#   --ref <ref>          Scan this ref on the git path instead of the
+#                        auto-resolved default branch. Exits 3 when it does not
+#                        resolve — an explicit ref is never silently ignored.
+#                        git path only (rejected with --source gh / --repo).
+#                        Also exits 3 when the ref resolves but carries no
+#                        PR-marked commits under --source auto: the gh fallback
+#                        scans repo-wide and cannot honour a ref, so the run
+#                        refuses rather than measuring something else.
+#   --fetch              Best-effort `git fetch origin` before resolving the
+#                        scan ref, so a stale remote-tracking ref cannot narrow
+#                        the window. OFF by default: this script is otherwise
+#                        read-only, and a blocking fetch inside /wrap is a
+#                        hazard. A failed fetch is non-fatal (warned, not
+#                        fatal); skipped when there is no `origin` remote.
 #   --conflict-weight N  Score added per recorded conflict round. Default 2.
 #   --exclude <globs>    Comma-separated globs to ignore, in addition to the
 #                        defaults below.
@@ -83,11 +97,21 @@
 #   belongs in --exclude, not baked in here.
 #
 # ENUMERATION:
-#   git path (primary) — `git log --no-merges --name-only` over the window on
-#     the current checkout. Squash-merged PRs carry GitHub's appended `(#N)`
-#     marker in the commit subject. When a subject holds more than one marker
-#     (e.g. `fix(#749): ... (#750)`), the LAST one is the PR number; earlier
-#     ones are issue references. Zero API calls; works in a fresh clone.
+#   git path (primary) — `git log --no-merges --name-only` over the window,
+#     scoped to an EXPLICIT ref, never to the invoking checkout's `HEAD`. The
+#     ref is resolved in order: --ref, `origin/HEAD` (honours a default branch
+#     not named `main`), then `origin/main`, `origin/master`, `main`, `master`.
+#     Nothing resolving degrades to `HEAD` with a loud warning, and every run
+#     reports what it scanned (`scan_ref` / `scan_ref_source`). This matters
+#     because callers run from a feature-branch worktree: that `HEAD` misses the
+#     squash commits on the default branch and carries pre-squash commits the
+#     default branch will never have (issue #861).
+#     PR attribution: a squash-merged PR carries GitHub's appended `(#N)` marker
+#     at the END of the subject, so ONLY a trailing marker counts. A leading
+#     `type(#N):` conventional-commit prefix is an ISSUE reference — a subject
+#     with only that (`docs(#838): summary`, the shape of every unsquashed
+#     feature-branch commit here) contributes nothing. `fix(#749): x (#750)`
+#     still attributes to 750. Zero API calls; works in a fresh clone.
 #   gh path (fallback) — `gh pr list --state merged` plus per-PR
 #     `pulls/{N}/files`, capped by --pr-cap. Used when the git path finds no
 #     PR-marked commits (merge-commit or rebase-merge repos) or when --repo
@@ -109,7 +133,9 @@
 #     path <TAB> pr_count <TAB> conflict_rounds <TAB> score <TAB> pr_numbers <TAB> existing_issue
 #   (pr_numbers comma-separated; existing_issue is the issue number or "-")
 #   --json: a single object with `repo`, `since`, `threshold`, `conflict_weight`,
-#   `min_prs`, `source`, `scanned_pr_count`, `excluded_count`, `truncated`,
+#   `min_prs`, `source`, `scan_ref`, `scan_ref_source` (one of `explicit`,
+#   `origin-head`, `candidate`, `head-fallback`, or `n/a` on the gh path),
+#   `scanned_pr_count`, `excluded_count`, `truncated`,
 #   `existing_lookup_failed`, `total_hotspot_count` (before any --top bound),
 #   and `hotspots[]` (each: `file`, `pr_count`,
 #   `pr_numbers`, `conflict_rounds`, `conflict_prs`, `score`, `first_merged_at`,
@@ -120,7 +146,8 @@
 #   0  At least one hotspot found
 #   1  Clean — no file crossed the threshold
 #   2  Usage error (unknown flag, missing or invalid value)
-#   3  Environment error (missing dependency, not a git repo, no window)
+#   3  Environment error (missing dependency, not a git repo, no window,
+#      unresolvable --ref, or a --ref the chosen enumeration path cannot honour)
 #   4  gh/API error during enumeration
 #
 # EXAMPLES:
@@ -137,7 +164,10 @@ set -uo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
 
 print_help() {
-  sed -n '2,118p' "$0" | sed 's/^# \{0,1\}//'
+  # Self-terminating: print the contiguous comment header and stop at the first
+  # line that is not one. A hardcoded end line silently truncates help the next
+  # time the header grows.
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
 }
 
 err() {
@@ -155,6 +185,8 @@ MIN_PRS=2
 EXTRA_EXCLUDES=""
 USE_DEFAULT_EXCLUDES=1
 SOURCE_MODE="auto"
+REF=""
+DO_FETCH=0
 PR_CAP=150
 TOP=0
 AS_JSON=0
@@ -178,6 +210,9 @@ while [ $# -gt 0 ]; do
     --no-default-excludes) USE_DEFAULT_EXCLUDES=0 ;;
     --source=*)           SOURCE_MODE="${1#*=}" ;;
     --source)             shift; [ $# -gt 0 ] || { err "--source requires a value"; exit 2; }; SOURCE_MODE="$1" ;;
+    --ref=*)              REF="${1#*=}" ;;
+    --ref)                shift; [ $# -gt 0 ] || { err "--ref requires a value"; exit 2; }; REF="$1" ;;
+    --fetch)              DO_FETCH=1 ;;
     --pr-cap=*)           PR_CAP="${1#*=}" ;;
     --pr-cap)             shift; [ $# -gt 0 ] || { err "--pr-cap requires a value"; exit 2; }; PR_CAP="$1" ;;
     --top=*)              TOP="${1#*=}" ;;
@@ -202,6 +237,8 @@ command -v git >/dev/null 2>&1 || { err "git is required but not installed"; exi
 # ---- emit helpers -----------------------------------------------------------
 # Every exit path emits valid (possibly empty) output before returning.
 SOURCE_USED="$SOURCE_MODE"
+SCAN_REF=""
+SCAN_REF_SOURCE="n/a"
 SCANNED_PR_COUNT=0
 EXCLUDED_COUNT=0
 TRUNCATED=false
@@ -229,6 +266,8 @@ emit_and_exit() {  # $1 hotspots JSON array, $2 exit code
       --arg repo "$REPO" \
       --arg since "$SINCE" \
       --arg source "$SOURCE_USED" \
+      --arg scan_ref "$SCAN_REF" \
+      --arg scan_ref_source "$SCAN_REF_SOURCE" \
       --argjson threshold "$THRESHOLD" \
       --argjson conflict_weight "$CONFLICT_WEIGHT" \
       --argjson min_prs "$MIN_PRS" \
@@ -238,7 +277,8 @@ emit_and_exit() {  # $1 hotspots JSON array, $2 exit code
       --argjson lookup_failed "$LOOKUP_FAILED" \
       --argjson total "$TOTAL_HOTSPOT_COUNT" \
       --argjson hotspots "$hotspots" \
-      '{repo:$repo, since:$since, source:$source, threshold:$threshold,
+      '{repo:$repo, since:$since, source:$source,
+        scan_ref:$scan_ref, scan_ref_source:$scan_ref_source, threshold:$threshold,
         conflict_weight:$conflict_weight, min_prs:$min_prs,
         scanned_pr_count:$scanned, excluded_count:$excluded,
         truncated:$truncated, existing_lookup_failed:$lookup_failed,
@@ -284,6 +324,75 @@ if [ "$SOURCE_MODE" = "git" ] && [ "$IN_CHECKOUT" -eq 0 ]; then
   err "--source git requires running inside a git checkout"
   exit 3
 fi
+
+# --ref and --fetch only mean anything on the git enumeration path. Accepting
+# --ref silently on the gh path would let a caller believe it scoped a scan it
+# did not scope, so that is a usage error; --fetch is merely inert, so it warns.
+if [ "$SOURCE_MODE" = "gh" ] || [ "$IN_CHECKOUT" -eq 0 ]; then
+  if [ -n "$REF" ]; then
+    err "--ref applies to the git enumeration path only (not --source gh or a --repo outside this checkout)"
+    exit 2
+  fi
+  [ "$DO_FETCH" -eq 1 ] && err "--fetch has no effect on the gh enumeration path — ignoring"
+fi
+
+# ---- resolve the scan ref ---------------------------------------------------
+# NEVER scan a bare `HEAD` by default (issue #861). Callers run from a
+# feature-branch worktree whose HEAD both MISSES the squash commits GitHub
+# created on the default branch and CONTAINS pre-squash commits that branch will
+# never have — so a HEAD-scoped scan can overcount and undercount at once.
+# Resolution is deliberately independent of HEAD, so a worktree or a detached
+# HEAD resolves the same ref as the root checkout.
+resolve_scan_ref() {
+  local cand branch
+  # Fetch BEFORE resolving anything, --ref included: `--ref origin/main --fetch`
+  # must validate the refreshed ref, not the stale one it would otherwise see.
+  if [ "$DO_FETCH" -eq 1 ]; then
+    if git remote get-url origin >/dev/null 2>&1; then
+      GIT_TERMINAL_PROMPT=0 git fetch --quiet origin >/dev/null 2>&1 \
+        || err "--fetch: 'git fetch origin' failed — continuing with the refs already on disk"
+    else
+      err "--fetch: no 'origin' remote — continuing with the refs already on disk"
+    fi
+  fi
+
+  if [ -n "$REF" ]; then
+    if ! git rev-parse --verify --quiet "${REF}^{commit}" >/dev/null 2>&1; then
+      # An explicit ref that does not resolve is a hard error: silently scanning
+      # something else is exactly the failure this flag exists to prevent.
+      err "--ref '$REF' does not resolve to a commit in this checkout"
+      exit 3
+    fi
+    SCAN_REF="$REF"; SCAN_REF_SOURCE="explicit"; return 0
+  fi
+
+  # origin/HEAD first: it names the remote's actual default branch, so a repo
+  # whose default is not `main` resolves correctly without a hardcoded guess.
+  cand=$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo "")
+  if [ -n "$cand" ] && git rev-parse --verify --quiet "${cand}^{commit}" >/dev/null 2>&1; then
+    SCAN_REF="$cand"; SCAN_REF_SOURCE="origin-head"; return 0
+  fi
+
+  # Remote-tracking refs before local branches: a local `main` can lag origin.
+  for cand in origin/main origin/master main master; do
+    if git rev-parse --verify --quiet "${cand}^{commit}" >/dev/null 2>&1; then
+      SCAN_REF="$cand"; SCAN_REF_SOURCE="candidate"; return 0
+    fi
+  done
+
+  # Last resort — the pre-#861 behaviour, but never silent. Reaching here means
+  # the repo has NO origin remote AND no main/master branch, in which case the
+  # checked-out branch is almost certainly the only long-lived one, so HEAD is
+  # usually the right answer rather than the wrong one. That is why this warns
+  # and reports (`scan_ref_source: head-fallback`) instead of exiting: a hard
+  # failure here would refuse a correct scan in a local-only repo and take the
+  # /wrap churn check down with it. Callers that cannot tolerate the ambiguity
+  # read `scan_ref_source`, or pin the ref with --ref.
+  SCAN_REF="HEAD"; SCAN_REF_SOURCE="head-fallback"
+  branch=$(git symbolic-ref -q --short HEAD 2>/dev/null || echo "a detached HEAD")
+  err "no default-branch ref resolved (tried origin/HEAD, origin/main, origin/master, main, master) — scanning ${branch}; counts may reflect unmerged branch history. Pass --ref <ref> to scan a specific ref."
+  return 0
+}
 
 # ---- resolve window ---------------------------------------------------------
 # A bare date is used as-is; anything else is resolved as a git ref/SHA.
@@ -368,8 +477,12 @@ enumerate_git() {
         rest="${line#@@C@@}"
         commit_date="${rest%%@@S@@*}"
         subject="${rest#*@@S@@}"
-        # The LAST (#N) marker is the PR; earlier ones are issue references.
-        pr=$(printf '%s' "$subject" | grep -oE '\(#[0-9]+\)' 2>/dev/null | tail -1 | tr -dc '0-9')
+        # ONLY a TRAILING (#N) marker is a PR number — that is the suffix GitHub
+        # appends when it squash-merges. A leading `type(#N):` prefix is an ISSUE
+        # reference, so a subject carrying only that (every unsquashed
+        # feature-branch commit under this repo's convention) yields no PR and
+        # contributes nothing. `fix(#749): repair (#750)` still yields 750.
+        pr=$(printf '%s' "$subject" | grep -oE '\(#[0-9]+\)[[:space:]]*$' 2>/dev/null | tr -dc '0-9')
         [ -n "$pr" ] && GIT_MARKED_COMMITS=$((GIT_MARKED_COMMITS + 1))
         ;;
       '')
@@ -386,7 +499,7 @@ enumerate_git() {
         ;;
     esac
   done < <(git -c core.quotePath=false log --no-merges --since="$SINCE" --name-only \
-             --pretty=format:'@@C@@%cI@@S@@%s' 2>/dev/null)
+             --pretty=format:'@@C@@%cI@@S@@%s' "$SCAN_REF" 2>/dev/null)
 }
 
 enumerate_gh() {
@@ -445,6 +558,7 @@ enumerate_gh() {
 
 if [ "$SOURCE_MODE" = "git" ] || [ "$SOURCE_MODE" = "auto" ]; then
   if [ "$IN_CHECKOUT" -eq 1 ]; then
+    resolve_scan_ref
     enumerate_git
     SOURCE_USED="git"
   fi
@@ -455,9 +569,26 @@ fi
 # than an empty result matters: a run whose every touched path was excluded is a
 # legitimate empty answer, not a reason to re-enumerate over the API.
 if [ "$SOURCE_MODE" = "gh" ] || { [ "$SOURCE_MODE" = "auto" ] && [ "$GIT_MARKED_COMMITS" -eq 0 ]; }; then
+  # An explicit --ref is a promise about WHAT gets measured, and the gh path
+  # cannot keep it: it enumerates merged PRs repo-wide, so it would answer a
+  # different question than the one asked. `--source gh --ref` is already
+  # rejected up front (exit 2); reaching the same destination via the auto
+  # fallback must not be softer just because it is discovered later. A stderr
+  # warning is not enough — /wrap's documented call site is
+  # `"$CHURN_SH" --json 2>/dev/null`, which discards it, leaving a repo-wide
+  # scan wearing a caller-supplied ref's authority. That is exactly the
+  # measuring-the-wrong-thing failure issue #861 exists to prevent.
+  if [ -n "$REF" ]; then
+    err "--ref '$REF' resolved, but carries no PR-marked commits, and --source auto's fallback (the gh path) enumerates merged PRs repo-wide and cannot honour a ref. Re-run with --source git to scan the ref as-is, or drop --ref to accept a repo-wide gh scan."
+    exit 3
+  fi
   : > "$TOUCH_TSV"
   : > "$SEEN_PRS"
   EXCLUDED_COUNT=0
+  # The gh path enumerates merged PRs over the API — no ref is involved, and
+  # reporting a leftover one would misdescribe what was scanned.
+  SCAN_REF=""
+  SCAN_REF_SOURCE="n/a"
   enumerate_gh
   GH_RC=$?
   if [ "$GH_RC" -ne 0 ]; then
