@@ -76,15 +76,20 @@
 #                             original_commit_id == HEAD, so comments GitHub
 #                             "moved" forward on force-push do not count)
 #   status_comment_names_head a conversation comment by that bot containing the
-#                             HEAD SHA (full, or a >=7-char hex token that
-#                             prefix-matches HEAD) and >= min_chars long. No
+#                             HEAD SHA (full, or a >=7-char token that
+#                             prefix-matches HEAD — hex OR all-decimal, issue
+#                             #894) and >= min_chars long. No
 #                             freshness filter is applied or needed: naming
 #                             HEAD's SHA is itself proof the comment postdates it.
 #   self_report_mismatch      among that bot's conversation comments containing any
 #                             SHA-like token, the MOST RECENT one names no SHA
-#                             matching HEAD. SHA-like = \b[0-9a-f]{7,40}\b that
-#                             contains at least one a-f letter, so bare digit runs
-#                             (dates, counts, IDs) cannot manufacture a mismatch.
+#                             matching HEAD. SHA-like = \b[0-9a-f]{7,40}\b with at
+#                             least one a-f letter, PLUS two all-decimal admissions
+#                             (issue #894): a run that prefix-matches HEAD, and a
+#                             run that is a complete inline code span. Bare digit
+#                             runs in prose (dates, counts, IDs) still cannot
+#                             manufacture a mismatch. See sha_tokens for why the
+#                             code-span rule can only ever withhold coverage.
 #   temporal_inversion        approval submitted_at < the EARLIEST post-push
 #                             run-start marker from that reviewer. The earliest
 #                             marker (not the latest) is deliberate: a re-review
@@ -229,12 +234,75 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
   | ($reviewers | split(",") | map(select(length > 0)))     as $approvers
   | ($corroborators | split(",") | map(select(length > 0))) as $others
 
-  # SHA-like token: 7-40 hex chars on a word boundary containing at least one a-f
-  # letter. The letter requirement stops "20260731" or a line count from being
-  # read as a commit id and manufacturing a false mismatch.
+  # SHA-like tokens. THREE admission rules, deliberately asymmetric: each of the
+  # two additions can move the verdict in exactly ONE direction, and which
+  # direction is a structural property of the rule, not of the fixture that
+  # happens to exercise it.
+  #
+  #  1. FORM (unchanged, issue #875). \b[0-9a-f]{7,40}\b containing at least one
+  #     a-f letter. Form alone is enough here: prose does not emit hex-letter
+  #     runs by accident, so no corroboration is required.
+  #
+  #  2. IDENTITY (issue #894). An ALL-DECIMAL \b[0-9]{7,40}\b run that
+  #     prefix-matches the known HEAD SHA (or is prefixed by it) — precisely the
+  #     comparison tokens_name_head is about to make anyway. Rule 1 alone
+  #     discards a GENUINE short SHA that happens to be all decimal: 15 of the
+  #     last 431 commits on this repo"s main (3.5%; (10/16)^7 in general). When
+  #     HEAD is one of those, NO comment can name it, status_comment_names_head
+  #     is structurally false, and the #876 stale-approval redemption can never
+  #     fire — reinstating the exact wedge PR #893 was written to remove.
+  #     Corroborating against HEAD"s IDENTITY rather than against token FORM is
+  #     what makes this safe: a decimal run that is a genuine prefix of the
+  #     actual HEAD SHA is not a coincidence worth guarding against (~1e-7), and
+  #     it is the same exposure rule 1 has always carried for hex tokens.
+  #
+  #  3. CODE SPAN (issue #894). An ALL-DECIMAL run that is a COMPLETE inline
+  #     code span (`1234567`) — the shape both bots use when naming the commit
+  #     they reviewed ("## Review summary for `<sha>`"). This exists ONLY for
+  #     the self_report_mismatch diagnostic: without it, a rubber stamp whose
+  #     status comment names an OLDER all-decimal SHA yields no tokens at all,
+  #     is therefore not a self-report candidate, and a long-bodied approval
+  #     sails through with the contradiction unrecorded.
+  #
+  #     Rule 3 alone reads FENCE-STRIPPED text. A CodeRabbit walkthrough quotes
+  #     diff hunks in ``` fences, and quoted code contains backticks of its own —
+  #     a JS template literal `1234567` inside a fenced hunk is a numeric literal
+  #     being DISCUSSED, not a commit the bot claims to have read (CodeRabbit CLI
+  #     review of this PR). Rules 1-2 deliberately keep scanning the whole body:
+  #     rule 1 must stay byte-identical to its pre-#894 behaviour, and rule 2 is
+  #     anchored on HEAD"s identity, so a run that matches HEAD is HEAD wherever
+  #     it appears. Only rule 3 infers commit-hood from surrounding punctuation,
+  #     so only rule 3 needs the surrounding punctuation to be trustworthy.
+  #
+  # WHY RULE 3 CANNOT WEAKEN THE GATE (the load-bearing argument). Any token
+  # admitted by rule 3 and not by rules 1-2 is, by construction, an all-decimal
+  # run that does NOT prefix-match HEAD — otherwise rule 2 would already have
+  # admitted it. So a rule-3-only token can never satisfy tokens_name_head:
+  # names_head is byte-identical with and without rule 3. Its only reachable
+  # effect is to ADD a self-report candidate that fails to name HEAD, i.e. to
+  # move self_report_mismatch false -> true. It can never redeem a stale
+  # approval, never clear a mismatch, never grant coverage. A false positive
+  # here withholds a merge (recoverable — re-review and push); the direction it
+  # structurally cannot take is the one that grants one.
+  #
+  # Bare decimal runs in prose ("reviewed 20260731 files across 1234567 lines")
+  # remain unadmitted under all three rules — pinned by case (k).
   | def sha_tokens:
-      [ (. // "") | ascii_downcase | scan("\\b[0-9a-f]{7,40}\\b")
-        | select(test("[a-f]")) ];
+      ((. // "") | ascii_downcase) as $btxt
+      # Fenced blocks blanked for rule 3 only. The flag is "m", NOT "s": jq
+      # inverts the PCRE convention — jq"s "m" is what makes . match a newline,
+      # and its "s" only rebinds ^ and $. With "s" this gsub silently matches
+      # nothing and every fenced block is scanned as prose. The lazy quantifier
+      # stops at the FIRST closing fence, so consecutive blocks are not swallowed
+      # whole along with the prose between them. An unclosed fence matches
+      # nothing and is simply scanned as prose.
+      | ($btxt | gsub("```.*?```"; " "; "m")) as $unfenced
+      | [ ( $btxt | scan("\\b[0-9a-f]{7,40}\\b") | select(test("[a-f]")) ),
+          ( $btxt | scan("\\b[0-9]{7,40}\\b") | . as $t
+                  | select(($sha | length) > 0
+                           and (($sha | startswith($t)) or ($t | startswith($sha)))) ),
+          ( $unfenced | scan("`([0-9]{7,40})`") | .[0] ) ]
+        | unique;
 
     # Does this token list identify $sha? A token matches when it prefixes the
     # full HEAD SHA (short form) or the full HEAD SHA prefixes it.

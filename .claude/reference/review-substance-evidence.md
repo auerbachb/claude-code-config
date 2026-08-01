@@ -141,9 +141,11 @@ intermittent. Timing still keys off the latest approval; only substance pools
 
 ### Two deliberate anti-false-positive choices
 
-- **SHA-like tokens must contain at least one `a-f` letter.** `\b[0-9a-f]{7,40}\b`
-  alone would read `20260731` or a line count as a commit id and manufacture a
-  mismatch out of an ordinary sentence.
+- **SHA-like tokens are not decided by form alone.** `\b[0-9a-f]{7,40}\b` with no
+  further test would read `20260731` or a line count as a commit id and
+  manufacture a mismatch out of an ordinary sentence. Requiring an `a-f` letter
+  fixed that, but then discarded a *genuine* short SHA that happens to be all
+  decimal — 3.5% of commits. See "Three admission rules" below.
 - **A comment naming HEAD needs no freshness filter.** Naming HEAD's SHA is
   itself proof the comment postdates HEAD, so the substance signal survives a
   missing push timestamp.
@@ -160,6 +162,91 @@ intermittent. Timing still keys off the latest approval; only substance pools
   clears the innocent shape. Keeping sub-second precision was not the
   alternative — under mixed precision `"10:00:22.5Z"` sorts *before*
   `"10:00:22Z"` (`.` < `Z`), which would corrupt ordering outright.
+
+## Three admission rules for SHA-like tokens (issue #894)
+
+A 7-character short SHA is all decimal with probability (10/16)^7 ≈ 3.7%; measured
+against this repo's real history, **15 of the last 431 commits on `main` (3.5%)**.
+For every one of those commits the `a-f` requirement made `sha_tokens` return an
+empty list for any comment naming HEAD's short form, so `status_comment_names_head`
+was *structurally* false, `external_evidence_on_head` with it, and the #876
+stale-approval redemption could not fire. A reviewer that did the work, said so,
+and named the commit was still not believed — the exact wedge PR #893 removed,
+back for one commit in thirty.
+
+The fix stops deciding token-hood purely by form. `sha_tokens` now admits a token
+under any of three rules, and **each addition can move the verdict in exactly one
+direction**:
+
+| # | Rule | Admits | Can grant coverage? | Can withhold coverage? |
+|---|---|---|---|---|
+| 1 | **FORM** (unchanged, #875) | `\b[0-9a-f]{7,40}\b` with at least one `a-f` | yes | yes |
+| 2 | **IDENTITY** (#894) | all-decimal `\b[0-9]{7,40}\b` that prefix-matches the known HEAD SHA | yes | yes |
+| 3 | **CODE SPAN** (#894) | all-decimal run that is a complete inline code span (`` `1234567` ``) | **no — structurally impossible** | yes |
+
+**Rule 2 corroborates against HEAD's identity, not against token form** — precisely
+the comparison `tokens_name_head` was about to make anyway, so nothing is guessed.
+A decimal run that is a genuine prefix of the actual HEAD SHA is not a coincidence
+worth guarding against (~1e-7), and it is the same exposure rule 1 has always
+carried for hex tokens.
+
+**Rule 3 exists only for the `self_report_mismatch` diagnostic.** Without it, a
+rubber stamp whose status comment names an *older* all-decimal SHA yields no
+tokens at all, is therefore not a self-report candidate, and a long-bodied
+approval naming a different commit counts as full coverage.
+
+**Rule 3 alone reads fence-stripped text.** A CodeRabbit walkthrough quotes diff
+hunks inside ``` fences, and quoted code carries backticks of its own — a JS
+template literal in a fenced hunk is a numeric literal being *discussed*, not a
+commit the reviewer claims to have read (raised by the CodeRabbit CLI on the #894
+PR). Rules 1-2 keep scanning the whole body on purpose: rule 1 must stay
+byte-identical to its pre-#894 behaviour, and rule 2 is anchored on HEAD's
+identity, so a run that matches HEAD is HEAD wherever it appears. Only rule 3
+infers commit-hood from surrounding punctuation, so only rule 3 needs that
+punctuation to be trustworthy.
+
+> The fence strip is `gsub("```.*?```"; " "; "m")`. The flag is **`m`, not `s`** —
+> jq inverts the PCRE convention: jq's `m` is what makes `.` match a newline, and
+> its `s` only rebinds `^` and `$`. Written with `s` the gsub matches nothing at
+> all and every fenced block is silently scanned as prose.
+
+### Why rule 3 cannot weaken the gate
+
+Any token admitted by rule 3 and **not** by rules 1-2 is, by construction, an
+all-decimal run that does *not* prefix-match HEAD — otherwise rule 2 would already
+have admitted it. So a rule-3-only token can never satisfy `tokens_name_head`:
+
+- `status_comment_names_head` is byte-identical with and without rule 3;
+- `external_evidence_on_head`, and so the #876 redemption, is byte-identical too;
+- `$selfrep` is the newest token-bearing comment, so adding a candidate that fails
+  to name HEAD can only move `self_report_mismatch` **false → true**, never back.
+
+Rule 3's only reachable effect is to *withhold* coverage. A false positive there
+blocks a merge, which is recoverable by a re-review and a push; the direction it
+structurally cannot take is the one that grants a merge. `merge-gate-review-substance.test.sh`
+case `(ee)` asserts this invariant directly rather than leaving it as an argument.
+
+### What was rejected
+
+- **Dropping the `a-f` filter outright.** Any 7-digit issue number, date or epoch
+  becomes a commit id, able both to falsely redeem a stale approval and to falsely
+  clear a mismatch — the failure the filter exists to prevent, in the direction
+  that grants merges.
+- **Rule 2 alone.** Fixes the redemption wedge but silently drops the mismatch
+  diagnostic for all-decimal SHAs, which is a real hole and not merely a lost
+  message (see rule 3 above).
+- **Matching against a `known_shas` set (the PR's commit list).** The SHA a rubber
+  stamp names is typically a *pre-rebase* commit that no longer appears in
+  `gh pr view --json commits` — the exact #876 trace — so it would miss the case it
+  was added for, at the cost of a new input contract.
+- **Cue words (`commit`/`sha`/`for`/`at`).** The cues these bots actually use include
+  `for`, `at`, `and` and `between` — broad enough to be meaningless. The inline
+  code-span shape is what both bots genuinely emit (`` ## Review summary for `<sha>` ``)
+  and it excludes prose numbers, `#1234` refs, and fenced-block contents.
+
+This change is **upstream** of the redemption channel, not part of it: it alters what
+`external_evidence_on_head` can *see*, never what redeems. The #876 channel stays
+exactly one term wide, and `tests/ts-normalizer-parity.test.sh` passes unmodified.
 
 ## The evidence payload must be complete
 
