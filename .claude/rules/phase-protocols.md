@@ -2,7 +2,7 @@
 
 > **Always:** Print a Structured Exit Report as the final output before every subagent exits. Execute the appropriate Completion Protocol immediately when a subagent returns. Verify outputs before marking complete.
 > **Ask first:** Crashed/no-handoff respawns — tell the user first; exhaustion with valid handoff auto-respawns ("Always do").
-> **Never:** Skip the exit report. Launch the next phase without verifying the previous phase's outputs. Do NOT ask permission for autonomous phase transitions — including Phase C after `merge_ready`. Emit routine completion reports; blockers and failures still surface (`CLAUDE.md` #3).
+> **Never:** Skip the exit report. Launch the next phase without verifying the previous phase's outputs. Do NOT ask permission for autonomous phase transitions — including Phase C after `merge_ready`.
 
 ## Structured Exit Report (MANDATORY — all phases)
 
@@ -29,7 +29,7 @@ Every subagent MUST print an `EXIT_REPORT` block as its **final output** — one
 1. **Parse the exit report.** No exit report = silent failure.
 2. **Branch on OUTCOME:**
    - `merge_ready` → proceed to step 3 (launch Phase C). This is the single Phase-C-advancing terminal.
-   - `clean`, `fixes_pushed`, or `exhaustion` → launch replacement Phase B within 60s, update `session-state.json` (keep phase B; record new SHA/remaining work as applicable), and **STOP**.
+   - `clean`, `fixes_pushed`, or `exhaustion` → launch replacement Phase B within 60s, update `session-state.json` (keep phase B; record new SHA/remaining work as applicable), and **STOP**. Report `exhaustion` (a failure); `clean`/`fixes_pushed` are silent (`CLAUDE.md` #3).
 3. **Verify review state via GitHub API.** Confirm the merge gate per `cr-merge-gate.md` Step 1. If verification fails, launch replacement Phase B instead of Phase C — STOP.
 4. **Launch Phase C within 60 seconds.** No merge-approval pause — Phase C runs `/wrap` silently once gate + AC pass. Include the handoff path.
 5. **Update `session-state.json`.** Record phase transition and HEAD SHA.

@@ -215,7 +215,7 @@ Evaluate the `jq` first and pass the resulting JSON as the value — never a raw
 Print the **full table** (below the lead line) when ANY of:
 
 - (a) this is the first tick of a fresh invocation (Step 0 mode entry) or the first tick after a resume (Step 0a) — both null `.pmm_digest`/`.pmm_row_digest`; (a) is independently sufficient, so the table prints regardless of (b). The user asking for the table also fires (a);
-- (b) `DIGEST != PREV` or `ROW_DIGEST != ROW_PREV` (or either previous value is null) **and** the delta is decision-relevant — a new hard block, a gate failure, a termination, or a PR entering/leaving the fleet. A purely informational delta (a new bot comment, a CI count, a display-only change) does **not** print the table (issue #851); the digests are still computed and persisted for backoff;
+- (b) a digest change — `DIGEST != PREV` **or** `ROW_DIGEST != ROW_PREV` **or** either previous value is null — **that is also** decision-relevant: a new hard block, a gate failure, a termination, or a PR entering/leaving the fleet. Both halves must hold; a digest change on its own does not fire (b). A purely informational delta (a new bot comment, a CI count, a display-only change) does **not** print the table (issue #851); the digests are still computed and persisted for backoff;
 - (c) any PR's verdict this tick is actionable — `rebase`, `fixpr`, `wrap`, or `batch(#A)` — so the classification is always visible before Step 5 acts;
 - (d) Step 2.5 processed any subagent outcome, or `HARD_BLOCK[]` gained a new entry this tick;
 - (e) Step 3.6 held or batched anything (the merge-sequence annotation must stay visible).
