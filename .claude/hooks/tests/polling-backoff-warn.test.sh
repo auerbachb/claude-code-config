@@ -120,6 +120,20 @@ ctx="$(run_hook "$PR" | context_of)"
 [[ -z "$ctx" ]] || fail "expected no re-emit when delete already applied, got: $ctx"
 ok "delete already applied → no re-emit from widen branch"
 
+# ── 10b. /loop path: no cron record at all → STOP fires, and the marker
+#         /babysit-pr T-END writes suppresses the second one. Since #827 the
+#         watcher is /loop-only, so this is now the DEFAULT path — case 10
+#         above only ever exercised a cron-backed poll.
+write_state "$PR" '{"digest_streak":9,"babysit":{"cadence_base_minutes":5}}'
+ctx="$(run_hook "$PR" | context_of)"
+[[ -n "$ctx" ]] || fail "expected STOP on a /loop poll with no last_cron_action"
+ok "/loop poll (no cron record) → STOP emitted"
+
+write_state "$PR" '{"digest_streak":9,"babysit":{"cadence_base_minutes":5},"last_cron_action":{"type":"delete","interval":"paused"}}'
+ctx="$(run_hook "$PR" | context_of)"
+[[ -z "$ctx" ]] || fail "the stop marker /babysit-pr T-END writes must suppress a second STOP, got: $ctx"
+ok "/loop stop marker suppresses the repeat STOP"
+
 # ── 11. Streak >= 9 → stop the poll ──────────────────────────────────────────
 write_state "$PR" '{"digest_streak":9,"babysit":{"cadence_base_minutes":5}}'
 ctx="$(run_hook "$PR" | context_of)"

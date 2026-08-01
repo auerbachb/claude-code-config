@@ -83,10 +83,12 @@ entirely.
 ## Step 1 — `--arm` / `--stop` (recurrence lifecycle)
 
 **The recurrence is a session-start check, not a scheduled job** (issue #827).
-No scheduler in this harness outlives the session that armed it, so a monthly
-audit cannot be driven by one: the job would die at session exit and the audit
-would silently never run — the worst possible failure for a skill whose whole
-job is noticing silent staleness.
+`CronCreate` — the scheduler this skill used — does not outlive the session that
+armed it, so a monthly audit cannot be driven by one: the job dies at session
+exit and the audit silently never runs, the worst possible failure for a skill
+whose whole job is noticing silent staleness. A genuinely durable scheduler does
+exist (`mcp__scheduled-tasks__*`); why this skill still declines it is in
+`.claude/reference/cross-session-durability.md`.
 
 What *is* durable is the watermark file, and it already records everything the
 cadence needs. So the tick moved to the one event that recurs reliably: **the
@@ -99,14 +101,24 @@ this needs no job id, no expiry window, and no `CronList` reconciliation.
 
 ### `--arm`
 
+Hold the shared lock and replace atomically. A concurrent `--tick` writing
+`last_offered_month` must not be clobbered, and an interrupted write must not
+leave invalid JSON where the next session start will read it:
+
 ```bash
-python3 - "$WATERMARK" <<'PY'
-import json, os, sys
-p = sys.argv[1]
+source "$REPO_ROOT/.claude/scripts/state-lock.sh"
+state_lock_acquire "$WATERMARK"
+python3 - "$WATERMARK" true <<'PY'
+import json, os, sys, tempfile
+p, val = sys.argv[1], sys.argv[2] == "true"
 d = json.load(open(p)) if os.path.exists(p) else {}
-d["nudge_enabled"] = True
-json.dump(d, open(p, "w"), indent=2)
+d["nudge_enabled"] = val
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p))
+with os.fdopen(fd, "w") as f:
+    json.dump(d, f, indent=2)
+os.replace(tmp, p)
 PY
+state_lock_release "$WATERMARK"
 ```
 
 Then run the single inventory-only tick described in Step 0 so the user sees the
@@ -117,9 +129,9 @@ so no way to double an offer.
 
 ### `--stop`
 
-Set `nudge_enabled` to `false` the same way. Nothing else to tear down: there is
-no job, so there is nothing that can keep firing against state that says it is
-gone. Report that the nudge is off and **STOP** — `--stop` never runs an audit.
+Run the identical locked block with `false` in place of `true`. Nothing else to
+tear down: there is no job, so nothing can keep firing against state that claims
+it is gone. Report that the nudge is off and **STOP** — `--stop` never audits.
 
 Both modes leave `last_completed_month` / `last_offered_month` untouched, so
 disabling and re-enabling the nudge never re-audits a month that is already done.

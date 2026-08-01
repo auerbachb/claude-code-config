@@ -26,6 +26,12 @@ run_hook() {
   CASE_N=$((CASE_N + 1))
   export HOME="$TMP_DIR/home$CASE_N"
   mkdir -p "$HOME/.claude"
+  # Pre-create a worktree-shaped stub so the hook's bootstrap branch is skipped.
+  # Without it every case shells out to setup-skills-worktree.sh, which runs
+  # `git fetch origin main` — making a pure state-reconciliation test
+  # network-dependent, slow, and flaky offline.
+  mkdir -p "$HOME/.claude/skills-worktree/.claude/skills"
+  : > "$HOME/.claude/skills-worktree/.git"
   STATE="$HOME/.claude/session-state.json"
   printf '%s' '{"polling_jobs":[{"id":"live_job"}],"pmm":{"auto_wake_cron_id":"live_cron"}}' > "$STATE"
   OUT="$(printf '%s' "$1" | bash "$HOOK" 2>/dev/null)"

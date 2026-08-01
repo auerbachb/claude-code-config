@@ -94,11 +94,13 @@ This PR introduces the source and one consumer.
 
 ## Why a session-start check for a monthly audit
 
-The audit needs a cadence measured in weeks, and no scheduler in this harness
-survives that long. `CronCreate` is in-memory and dies at session exit; its
-7-day expiry means even a literal monthly cron could lapse before firing. Both
-failure modes are *silence* — the worst possible outcome for a skill whose
-entire job is noticing silent staleness.
+The audit needs a cadence measured in weeks, and `CronCreate` — the scheduler
+this skill used — does not last that long. It is in-memory and dies at session
+exit; its 7-day expiry means even a literal monthly cron could lapse before
+firing. Both failure modes are *silence* — the worst possible outcome for a
+skill whose entire job is noticing silent staleness. (A durable scheduler *does*
+exist in the harness; the separate reason this skill declines it is in
+`.claude/reference/cross-session-durability.md`.)
 
 An earlier design worked around this by registering the job **daily** and gating
 on a monthly watermark, reasoning that seven daily chances would catch an

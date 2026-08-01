@@ -41,11 +41,13 @@ WHAT IT PURGES (writes go through session-state.sh, the locked single writer)
   .pmm.auto_wake_cron_id               -> null
   .repos[*].prs[*].babysit.cron_job_id -> null
   .repos[*].prs[*].babysit.active      -> false, but ONLY past /babysit-pr's
-                                          own freshness window,
-                                          max(3 x cadence, 30m) — SessionStart
-                                          also fires on compact, when a live
-                                          watcher's last tick is legitimately
-                                          minutes old
+                                          own freshness window (its A2 check;
+                                          canonical definition and the reason
+                                          both copies must agree:
+                                          .claude/reference/cross-session-durability.md
+                                          "Freshness window"). SessionStart also
+                                          fires on compact, when a live watcher's
+                                          last tick is legitimately minutes old.
 
 WHAT IT SURFACES (durable, still meaningful)
   harness-audit due this month  (~/.claude/harness-audit/last-run.json)

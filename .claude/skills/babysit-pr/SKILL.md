@@ -211,6 +211,18 @@ NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 Arm the recurring poll: `/loop <cadence> /babysit-pr <PR> --tick`. The runtime owns the cadence and re-arms each cycle. `/loop` is the only primitive this watcher uses (`scheduling-reliability.md` decision tree) — the watcher is session-scoped by design, and a watcher that outlived its session would be auto-dispatching `/wrap` merges into an empty room.
 
+**Roll back if arming fails.** The `--set` above already published `active=true` with a fresh `last_tick_at`, so a failed arm leaves a watcher that A2 reads as *live* for the whole freshness window (30m by default) while nothing is ticking — re-arm is blocked precisely when it is needed. Treat init+arm as one transaction:
+
+```bash
+if ! arm_loop "$BASE_MIN" "$PR"; then
+  "$SESSION_STATE_SH" \
+    --set ".prs[\"$PR\"].babysit.active=false" \
+    --set ".prs[\"$PR\"].babysit.last_tick_at=null"
+  echo "ERROR: could not arm the /loop for PR #$PR — watcher state rolled back, re-run /babysit-pr $PR." >&2
+  exit 1
+fi
+```
+
 Then **run one tick immediately** (fall through to TICK MODE below) so the user gets instant feedback, and emit the initial heartbeat. Per the `scheduling-reliability.md` **pre-exit checklist**, before ending the arm turn confirm: (1) the loop is active, (2) a timestamped heartbeat was sent, (3) state was recorded.
 
 ---
@@ -556,6 +568,12 @@ NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 **Re-arm cadence only when it crosses a tier boundary.** `/loop` owns the cadence, so to change it: stop the current loop and re-arm `/loop <new-cadence> /babysit-pr <PR> --tick`. If the effective cadence is unchanged, do nothing — never re-arm an unchanged loop (forbidden hand-rolled re-arm churn).
 
+On an actual widen, record it so `polling-backoff-warn.sh` stops re-emitting its widen advisory (it dedupes on `type == "update"` at the new interval):
+
+```bash
+"$SESSION_STATE_SH" --set ".prs[\"$PR\"].last_cron_action={\"type\":\"update\",\"interval\":\"${WIDE_MIN}m\",\"at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+```
+
 ### T6. Termination check
 
 Terminate (→ T-END) when **any** hold:
@@ -599,6 +617,12 @@ Append context: blocker reason on `hard-blocked`/`waiting-on-bots`; dispatch tar
 ```
 
 **Cancelling the poll is a required terminal action — the loop does NOT lapse on its own** (`/loop` re-arms every cycle). Cancel the active loop now (runtime loop-stop / "stop polling") and do not re-arm it.
+
+**Record the stop.** `polling-backoff-warn.sh` suppresses a repeated STOP advisory by reading `.prs["<N>"].last_cron_action.type == "delete"`. Nothing else writes that field on the `/loop` path, so without this the hook re-emits its STOP context on every subsequent tick. The field name is historical — it records the poll-lifecycle action, whatever primitive backs the poll:
+
+```bash
+"$SESSION_STATE_SH" --set ".prs[\"$PR\"].last_cron_action={\"type\":\"delete\",\"interval\":\"paused\",\"at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+```
 
 Belt-and-suspenders: even if cancellation is delayed, the T0 short-circuit (`active != true`) makes every subsequent tick an immediate no-op terminate — but cancellation is still mandatory so the runtime stops invoking the watcher.
 

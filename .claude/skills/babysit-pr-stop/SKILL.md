@@ -70,22 +70,36 @@ Do **not** clear `active` here — let the watcher's terminate path own that so 
 
 The watcher always runs on `/loop` (issue #827 removed `--durable`, the only other mode). The session loop stops re-arming once the watcher terminates; if you can cancel the active `/loop` immediately (runtime stop / "stop polling"), do so — otherwise the `stop_requested` flag set in Step 3 guarantees the next tick is the last.
 
-If you cancelled the loop outright rather than letting it tick once more, the watcher's T-END cleanup never runs — so perform the terminal cleanup here, clearing `dispatch_in_flight` as well as `active` so no stale in-flight marker is left behind:
+If you cancelled the loop outright rather than letting it tick once more, the watcher's T-END cleanup never runs — so perform the terminal cleanup here. **Clear `dispatch_in_flight` only when nothing is actually in flight:** a `/fixpr` or `/wrap` started by an earlier tick keeps running after the loop is cancelled, and clearing its marker lets a later `/babysit-pr` arm dispatch a second one on the same PR — while the original, on completion, overwrites whatever state that new dispatch had written.
 
 ```bash
-"$SESSION_STATE_SH" \
-  --set ".prs[\"$PR\"].babysit.active=false" \
-  --set ".prs[\"$PR\"].babysit.dispatch_in_flight=null"
+IN_FLIGHT=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.dispatch_in_flight" 2>/dev/null || echo "null")
+if [[ "$IN_FLIGHT" == "null" || -z "$IN_FLIGHT" ]]; then
+  "$SESSION_STATE_SH" \
+    --set ".prs[\"$PR\"].babysit.active=false" \
+    --set ".prs[\"$PR\"].babysit.dispatch_in_flight=null"
+else
+  # Leave the marker: T0's TTL reclaim owns it, so it can never wedge forever.
+  "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.active=false"
+fi
 ```
+
+Say which happened — a stop that leaves a dispatch running is not the same promise as a stop that does not.
 
 ### 5. Confirm
 
 Word the confirmation to match what actually happened:
 
-- **Loop cancelled outright (full cleanup done in Step 4):**
+- **Loop cancelled outright, nothing in flight:**
 
   ```
   Stopped babysitting PR #<PR>. Poll cancelled and watcher state cleared — no next tick will run. No further /fixpr or /wrap dispatches will be made.
+  ```
+
+- **Loop cancelled with a dispatch still running:**
+
+  ```
+  Stopped babysitting PR #<PR>. Poll cancelled — no new dispatch will start, but the in-flight <skill> may still complete and finish its own work.
   ```
 
 - **Cooperative stop (flag set, one tick remaining):**

@@ -77,8 +77,19 @@ be correct. Every other source runs the reconciler in `--check` mode: notices
 only, no writes. An absent `source` is treated as not-startup — a stale record
 lingering one more session is strictly cheaper than clearing a live one.
 
-A watcher's freshness window (`max(3x cadence, 30m)`, matching `/babysit-pr`'s
-A2 check) is kept as a second line of defence, not the primary guard.
+A watcher's freshness window is kept as a second line of defence, not the
+primary guard.
+
+### Freshness window (canonical)
+
+**`max(3 x cadence_effective_minutes, BABYSIT_DISPATCH_TTL_MIN)`**, default TTL
+`30` minutes. Two places implement it: `/babysit-pr`'s A2 duplicate-watcher
+check and `session-scheduling-reconcile.sh`. They must stay identical — a
+*narrower* window in the reconciler reaps a watcher A2 still considers fresh; a
+*wider* one lets a dead watcher linger. Change one, change the other, and update
+this definition. Note that A2 tests with a bash numeric regex and so accepts a
+numeric string, which is why the reconciler coerces with `tonumber` instead of
+type-checking for a JSON number.
 
 Per feature: `--durable` was **dropped** from `/babysit-pr` (accepted and
 ignored, so an old chip payload does not hard-error); `--auto-wake` was
