@@ -216,6 +216,17 @@ out=$(run_lint "$STRUCTURAL" 2>&1); rc=$?
 printf '%s' "$out" | grep -q 'present but empty' \
   || fail "fence-only section was not reported as empty"$'\n'"got: $out"
 
+# Step 6 prints the finished document inside a fence, so a render that captured
+# its own fence would put every heading inside a code block. That must not
+# satisfy the structural rules — the reader would see one undifferentiated code
+# block with no sections at all.
+FENCED="$TMP_DIR/fenced.md"
+{ printf '%s\n' '```'; cat "$GOLDEN"; printf '%s\n' '```'; } >"$FENCED"
+out=$(run_lint "$FENCED" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "a document whose headings are all inside a code fence must fail (got $rc)"
+printf '%s' "$out" | grep -q 'is missing' \
+  || fail "fenced headings should be reported as missing sections"$'\n'"got: $out"
+
 out=$(run_lint "$EMPTY" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "an all-headings-no-content shell must fail (got $rc)"
 printf '%s' "$out" | grep -q 'present but empty' \

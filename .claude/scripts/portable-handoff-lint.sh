@@ -346,6 +346,7 @@ declare -a NONEMPTY_SECTIONS=()
 section=""
 lineno=0
 WORKDIR_SEEN=0
+IN_FENCE=0
 
 while IFS= read -r line || [[ -n "$line" ]]; do
   lineno=$((lineno + 1))
@@ -361,14 +362,22 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   # was neither counted as content nor scanned for violations. Headings are
   # text the reader sees, so every rule below runs on every line; only the
   # non-empty-content tally excludes headings.
+  # Track fenced-code state. A `## ...` inside a code block is sample text, not
+  # a section — and Step 6 prints the finished document inside a fence, so a
+  # render that accidentally captured its own fence would otherwise satisfy
+  # every structural rule while the reader sees one undifferentiated code block.
+  case "${line//[[:space:]]/}" in
+    '```'*|'~~~'*) IN_FENCE=$(( IN_FENCE ? 0 : 1 )) ;;
+  esac
+
   IS_HEADING=0
-  if [[ "$line" == '## '* ]]; then
+  if (( ! IN_FENCE )) && [[ "$line" == '## '* ]]; then
     section="${line#'## '}"
     # Trim trailing whitespace so " Open work " matches "Open work".
     section="${section%"${section##*[![:space:]]}"}"
     SEEN_SECTIONS+=("$section")
     IS_HEADING=1
-  elif [[ "$line" =~ ^#{1,6}([[:space:]]|$) ]]; then
+  elif (( ! IN_FENCE )) && [[ "$line" =~ ^#{1,6}([[:space:]]|$) ]]; then
     IS_HEADING=1
   fi
 
@@ -386,7 +395,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
 
   # The working-directory field: present, and an absolute path.
   IS_WORKDIR_LINE=0
-  if (( ! IS_HEADING )) && [[ "$section" == "$WORKDIR_SECTION" && "$line" == "$WORKDIR_ANCHOR"* ]]; then
+  if (( ! IS_HEADING )) && (( ! IN_FENCE )) && [[ "$section" == "$WORKDIR_SECTION" && "$line" == "$WORKDIR_ANCHOR"* ]]; then
     IS_WORKDIR_LINE=1
   fi
   if (( IS_WORKDIR_LINE )); then
