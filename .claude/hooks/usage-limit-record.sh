@@ -226,20 +226,21 @@ RECORD=$(build_record "")
 # mkdir is the portable atomic mutex — macOS ships no flock(1). The wait is
 # bounded (~1s); if the lock cannot be taken we proceed anyway, because losing
 # the record is worse than a rare interleave.
-LOCKED=0
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  if mkdir "$LOCK_DIR" 2>/dev/null; then
-    LOCKED=1
-    break
-  fi
-  # Reap a lock orphaned by a killed hook (the runtime kills us at the timeout).
-  LOCK_AGE_REF=$(find "$LOCK_DIR" -maxdepth 0 -mmin +1 2>/dev/null)
-  if [[ -n "$LOCK_AGE_REF" ]]; then
-    rmdir "$LOCK_DIR" 2>/dev/null
-    continue
-  fi
-  sleep 0.1
-done
+take_lock() {  # echoes 1 when acquired, 0 otherwise
+  local _
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if mkdir "$LOCK_DIR" 2>/dev/null; then echo 1; return 0; fi
+    # Reap a lock orphaned by a killed hook (the runtime kills us at the timeout).
+    if [[ -n "$(find "$LOCK_DIR" -maxdepth 0 -mmin +1 2>/dev/null)" ]]; then
+      rmdir "$LOCK_DIR" 2>/dev/null
+      continue
+    fi
+    sleep 0.1
+  done
+  echo 0
+}
+
+LOCKED=$(take_lock)
 if (( LOCKED )); then
   # Single quotes on purpose: expand LOCK_DIR at trap time, so a state dir
   # containing a quote character cannot break the trap string.
@@ -277,10 +278,10 @@ if printf '%s\n' "$RECORD" >>"$EVENTS_LOG" 2>/dev/null; then
   fi
 fi
 
-# Release the lock before phase 2. The enrichment must not hold up the other
-# sessions that hit the same limit at the same instant, and it needs no
-# serialization of its own: every one of them would resolve the same newest
-# handoff, so a last-writer-wins atomic rename is correct.
+# Release the lock before phase 2 so the slow part does not hold up the other
+# sessions that hit the same limit at the same instant. Phase 2 re-takes it
+# before publishing (see below) — dropping it here buys concurrency, it does not
+# make the publish unserialized.
 if (( LOCKED )); then
   rmdir "$LOCK_DIR" 2>/dev/null
   trap - EXIT
@@ -305,9 +306,28 @@ PORTABLE_HANDOFF=$(newest_portable_handoff "$HANDOFF_DIR")
 ENRICHED=$(build_record "$PORTABLE_HANDOFF")
 [[ -n "$ENRICHED" ]] || exit 0
 
-TMP_LAST="${LAST_FILE}.tmp.$$"
-if printf '%s\n' "$ENRICHED" >"$TMP_LAST" 2>/dev/null; then
-  mv -f "$TMP_LAST" "$LAST_FILE" 2>/dev/null || rm -f "$TMP_LAST" 2>/dev/null
+# Re-serialize, and only replace OUR OWN record.
+#
+# Concurrency is the expected case here — one account limit fails every active
+# session at once — so a slow invocation can reach this point after a newer one
+# has already published. Overwriting blind would roll `last` back to an older
+# session_id, transcript, and cwd while the events log ends with the newer
+# event, breaking the one thing `last` promises: that it is the most recent.
+#
+# The guard is exact rather than clever: if `last` no longer holds the very
+# record this invocation wrote, a newer one has published and it owns the file.
+# Skip — it will run its own phase 2.
+LOCKED=$(take_lock)
+if (( LOCKED )); then
+  trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+fi
+
+CURRENT_LAST=$(cat "$LAST_FILE" 2>/dev/null)
+if [[ "$CURRENT_LAST" == "$RECORD" ]]; then
+  TMP_LAST="${LAST_FILE}.tmp.$$"
+  if printf '%s\n' "$ENRICHED" >"$TMP_LAST" 2>/dev/null; then
+    mv -f "$TMP_LAST" "$LAST_FILE" 2>/dev/null || rm -f "$TMP_LAST" 2>/dev/null
+  fi
 fi
 
 exit 0

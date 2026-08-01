@@ -203,6 +203,23 @@ printf '%s' "$out" | grep -q 'present but empty' \
 EMPTY_HITS=$(printf '%s' "$out" | grep -c 'present but empty')
 [[ "$EMPTY_HITS" -eq 5 ]] || fail "expected all 5 required sections flagged empty, got $EMPTY_HITS"
 
+# A duplicated required heading defeats the emptiness check: content under the
+# second copy vouches for an empty first one, and the reader hits the empty one
+# first. Rejected outright rather than guessing which copy counts.
+DUPE="$TMP_DIR/dupe.md"
+{ printf '%s\n\n' "# Session handoff"
+  printf '%s\n\n' "## Start here"          # deliberately empty
+  printf '%s\n\n%s\n\n' "## Start here" "Actually do this."
+  printf '%s\n\n%s\n\n' "## What we're working on" "x"
+  printf '%s\n\n%s\n\n' "## Open work" "y"
+  printf '%s\n\n%s\n\n' "## Decisions made this session" "z"
+  printf '%s\n\n%s\n' "## Local state on this machine" "Working directory: /tmp/x"
+} >"$DUPE"
+out=$(run_lint "$DUPE" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "a duplicated required heading must fail (got $rc)"
+printf '%s' "$out" | grep -q 'appears 2 times' \
+  || fail "duplicate heading was not reported as a duplicate"$'\n'"got: $out"
+
 # --- 6. The template's section list and the checker's agree --------------
 # These are two files that must describe the same document. When they drift,
 # every rendered handoff fails a rule nobody changed on purpose.

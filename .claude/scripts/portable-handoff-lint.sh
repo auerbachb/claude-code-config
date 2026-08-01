@@ -397,10 +397,27 @@ contains() {
   return 1
 }
 
+count_of() {
+  local needle="$1"; shift
+  local item n=0
+  for item in "$@"; do [[ "$item" == "$needle" ]] && n=$((n + 1)); done
+  echo "$n"
+}
+
 for want in "${REQUIRED_SECTIONS[@]}"; do
-  if ! contains "$want" ${SEEN_SECTIONS+"${SEEN_SECTIONS[@]}"}; then
+  seen=$(count_of "$want" ${SEEN_SECTIONS+"${SEEN_SECTIONS[@]}"})
+  if (( seen == 0 )); then
     report "required-sections" "0" "$want" "required section is missing"
-  elif ! contains "$want" ${NONEMPTY_SECTIONS+"${NONEMPTY_SECTIONS[@]}"}; then
+    continue
+  fi
+  # A duplicate heading defeats the emptiness check: content under the second
+  # copy would vouch for an empty first one, and the reader hits the empty one
+  # first. Reject the duplication rather than trying to decide which copy counts.
+  if (( seen > 1 )); then
+    report "required-sections" "0" "$want" "required section appears $seen times — one copy per document"
+    continue
+  fi
+  if ! contains "$want" ${NONEMPTY_SECTIONS+"${NONEMPTY_SECTIONS[@]}"}; then
     report "required-sections" "0" "$want" "required section is present but empty"
   fi
 done

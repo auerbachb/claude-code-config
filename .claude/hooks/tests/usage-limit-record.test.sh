@@ -389,4 +389,31 @@ jq -e --arg h "$BASE_HINT" '.resume_hint == $h' <"$SOME_DIR/usage-limit-events.j
 jq -e '.portable_handoff != null' "$SOME_LAST" >/dev/null \
   || fail "usage-limit-last.json lost its handoff pointer after the phase split"
 
+# 15j. Concurrency with a handoff present: `last` must still agree with the
+# newest event. Splitting the write into two phases opened the door for a slow
+# invocation to finish its enrichment after a newer one published and roll
+# `last` back to an older session — breaking the one thing that file promises.
+# Concurrency is the EXPECTED case here: one account limit fails every active
+# session at once.
+RACE_DIR="$TMP_DIR/race"
+mkdir -p "$RACE_DIR/handoffs"
+RACE_HANDOFF="$RACE_DIR/handoffs/portable-handoff-20260801T120000Z-sess.md"
+printf 'handoff\n' >"$RACE_HANDOFF"
+touch_ago "$RACE_HANDOFF" 300
+RACE_N=8
+for i in $(seq 1 "$RACE_N"); do
+  printf '%s' "{\"hook_event_name\":\"StopFailure\",\"error\":\"rate_limit\",\"session_id\":\"race$i\"}" \
+    | CLAUDE_USAGE_LIMIT_DIR="$RACE_DIR" CLAUDE_HANDOFF_DIR="$RACE_DIR/handoffs" bash "$HOOK" &
+done
+wait
+
+RACE_LOG="$RACE_DIR/usage-limit-events.jsonl"
+RACE_COUNT=$(wc -l <"$RACE_LOG" | tr -d ' ')
+[[ "$RACE_COUNT" == "$RACE_N" ]] || fail "concurrent writes with a handoff lost records: got $RACE_COUNT, expected $RACE_N"
+
+RACE_LAST_SID=$(jq -r '.session_id' "$RACE_DIR/usage-limit-last.json")
+RACE_TAIL_SID=$(tail -1 "$RACE_LOG" | jq -r '.session_id')
+[[ "$RACE_LAST_SID" == "$RACE_TAIL_SID" ]] \
+  || fail "usage-limit-last.json ($RACE_LAST_SID) disagrees with the newest event ($RACE_TAIL_SID) — an older invocation's phase 2 clobbered a newer record"
+
 echo "PASS: usage-limit-record.sh"
