@@ -120,6 +120,26 @@ set -uo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
 
 # --------------------------------------------------------------------------
+# Shared timestamp normaliser (issue #885)
+# --------------------------------------------------------------------------
+# norm_ts() — the canonical #836 ordering rule — lives in lib/ts-normalizer.sh
+# so it has exactly one bash definition, and so the jq mirror in
+# escalate-review.sh has a single, testable thing to agree with. See that
+# library's header for the rule, the PR #883 failures that motivated it, and why
+# review-substance.sh keeps a deliberately different variant.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TS_NORMALIZER_LIB="${SCRIPT_DIR}/lib/ts-normalizer.sh"
+if [[ ! -f "$TS_NORMALIZER_LIB" || ! -r "$TS_NORMALIZER_LIB" ]]; then
+  echo "merge-gate.sh: sibling library missing or unreadable: $TS_NORMALIZER_LIB" >&2
+  exit 4
+fi
+# shellcheck source=./lib/ts-normalizer.sh
+if ! source "$TS_NORMALIZER_LIB"; then
+  echo "merge-gate.sh: failed to load $TS_NORMALIZER_LIB" >&2
+  exit 4
+fi
+
+# --------------------------------------------------------------------------
 # Arg parsing
 # --------------------------------------------------------------------------
 PR_NUMBER=""
@@ -622,24 +642,13 @@ if [[ -n "$REVIEW_DECISION" && "$REVIEW_DECISION" != "APPROVED" ]]; then
   fi
 fi
 
-# Timestamp normaliser — used by all reviewer paths below (issue #836, BugBot round 5).
-# GitHub can return mixed ISO-8601 UTC forms ("…Z" and "…+00:00"). Bash [[ < ]] is
-# purely lexicographic; Z (ASCII 90) > + (ASCII 43), so "…Z" > "…+00:00" even for
-# equal instants, breaking stale-approval comparisons. Strip the timezone suffix to
-# produce a bare "YYYY-MM-DDTHH:MM:SS" string that sorts correctly for UTC timestamps.
-# `+0000` is stripped too (BugBot review on c90b32a, PR #883). escalate-review.sh
-# normalises all three UTC spellings for the same #836 freshness rule, so leaving
-# one of them out here made the two disagree: a `+0000` commit date against a `Z`
-# approval kept its suffix, the gate called a fresh approval stale, and escalation
-# — having stripped it — called the same pair fresh and could report gate_met on a
-# PR the gate blocks. Two implementations of one rule have to normalise the same
-# set. Purely additive: a suffix that used to survive and compare wrongly now does
-# not, and no other spelling changes.
-norm_ts() {
-  local t="${1%Z}"       # strip trailing Z
-  t="${t%+00:00}"        # strip trailing +00:00 (all GitHub timestamps are UTC)
-  echo "${t%+0000}"      # strip trailing +0000 (same instant, compact spelling)
-}
+# Timestamp normaliser — used by all reviewer paths below (issue #836).
+# norm_ts() is sourced from lib/ts-normalizer.sh near the top of this file
+# (issue #885): strip one trailing UTC suffix (Z / +00:00 / +0000), KEEP
+# fractional seconds. escalate-review.sh mirrors the rule in jq and must match it
+# byte for byte — that parity is enforced by tests/ts-normalizer-parity.test.sh,
+# not by a hand-maintained note. Rationale and the PR #883 failures it prevents
+# are in the library header.
 
 # Path-specific checks.
 # Default false — only the cr) branch below computes a meaningful value.
