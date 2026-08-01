@@ -191,17 +191,18 @@ An issue whose number appears in the command's output already has a live offer �
 
 ## Stale-chip hygiene — `dismiss_task`
 
-Withdraw a tracked chip via `mcp__ccd_session__dismiss_task` (pass the recorded `task_id` and a short `reason`) on any of these three triggers:
+Withdraw a tracked chip via `mcp__ccd_session__dismiss_task` (pass the recorded `task_id` and a short `reason`) on any of these four triggers:
 
 1. **Gained an open PR** — someone is already doing the work.
 2. **Superseded** — a later batch replaced the suggestion.
 3. **Re-planned** — the issue's plan or scope changed, so the chip's prompt is stale. Spawn the replacement chip *first*, then dismiss the old one.
+4. **Issue closed** — the underlying issue is closed (merged, resolved, declined, or duplicate). The chip's work no longer exists to launch; dismiss with no replacement. Distinct from trigger 1: a closed issue may never have had an *open* PR (e.g. "won't fix" or duplicate closures), so trigger 1 alone doesn't reliably catch it. Added by the [#838](https://github.com/auerbachb/claude-code-config/issues/838) sweep, where it was 28/28 of the stale chips found.
 
 **Fail-closed:** only clear tracked chip state once the dismiss outcome is known. Distinguish the two non-error outcomes from a real failure:
 
 - **Dismissed** — the chip is withdrawn. Clear the tracked state.
 - **Already clicked or already dismissed** — the tool says so and nothing changes. The offer is gone either way, so the goal is met: treat it as a successful no-op, clear the state, and do not retry.
-- **Genuine failure** — the chip is still live. Keep the `task_id` tracked; the chip is still withdrawable, and dropping the handle would strand it.
+- **Genuine failure** — the chip is still live. Keep the `task_id` tracked; the chip is still withdrawable, and dropping the handle would strand it. A `task_id` recorded by a *different* session hits this same "no pending task" response, but retrying from here can never succeed: `dismiss_task` only reaches chips spawned in the calling session. Treat that case separately — record the chip for the user to dismiss manually from the task list UI rather than retrying or treating it as resolved.
 
 ## Print-on-demand replay
 
