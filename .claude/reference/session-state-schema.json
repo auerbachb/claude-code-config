@@ -35,7 +35,6 @@
   "monitoring_mode": "cron",
   "monitoring_command": "/status",
   "monitoring_interval_minutes": 60,
-  "monitoring_durable": false,
   "monitoring_started_at": "2026-03-16T15:00:00Z",
   "last_poll_at": "2026-03-16T15:58:00Z",
   "next_expected_poll_at": "2026-03-16T16:58:00Z",
@@ -163,21 +162,8 @@
       "last_seen_at": "2026-03-16T15:58:00Z"
     }
   ],
-  "_polling_jobs_comment": "CronCreate jobs are SESSION-ONLY and in-memory — they die when Claude exits regardless of the durable field. durable:true is recorded for bookkeeping only and has no effect on persistence. expires_at reflects the 7-day auto-expiry within a session, not cross-session durability. On session resume, any prior polling_jobs entries are gone; owning skills must re-arm if needed.",
-  "polling_jobs": [
-    {
-      "primitive": "CronCreate",
-      "id": "cron_abc123",
-      "cron": "17 * * * *",
-      "prompt": "/pr-monitor-and-manage-wake --auto-check",
-      "recurring": true,
-      "durable": true,
-      "_durable_comment": "no-op — CronCreate is session-only regardless of this field",
-      "created_at": "2026-03-16T15:00:00Z",
-      "expires_at": "2026-03-23T15:00:00Z",
-      "_expires_at_comment": "7-day session-internal auto-expiry, not a cross-session durability guarantee"
-    }
-  ],
+  "_polling_jobs_comment": "CronCreate jobs are SESSION-ONLY and in-memory — they die when Claude exits regardless of the durable field, which is a no-op. Since issue #827 no skill in this repo registers one: /babysit-pr --durable was removed, /pr-monitor-and-manage --auto-wake uses /loop, and /harness-audit uses a session-start watermark check. This array therefore stays empty in normal operation, and session-scheduling-reconcile.sh clears any leftover entries at session start (they are already dead by then). Kept in the schema so a stale file from before #827 still validates. Why we do not use the durable scheduler that does exist: .claude/reference/cross-session-durability.md",
+  "polling_jobs": [],
   "polling_failures": [
     {
       "detected_at": "2026-03-16T15:58:00Z",
@@ -252,7 +238,7 @@
       "auto_wake": false,
       "auto_wake_cadence": "60m"
     },
-    "auto_wake_cron_id": null
+    "_auto_wake_comment": "auto_wake arms a /loop re-scan at pause time (issue #827) — session-scoped, with no job id to record. Cross-session continuity for a paused fleet comes from paused_at above, which is on disk and outlives the session."
   },
   "_token_exhaustion_example": {
     "phase": "B",

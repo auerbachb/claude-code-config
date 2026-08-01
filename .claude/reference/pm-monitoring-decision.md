@@ -5,9 +5,9 @@
 Division of responsibility between orchestration and fleet monitoring:
 
 - **`/pm` never creates polls.** It is a strictly on-demand orchestrator: cold-start scan, inline execution of selected issues via the `/subagent` A→B→C flow (in-turn Dedicated Monitor Mode, not a recurring poll), thread prompts for the few issues too big for a subagent, on-demand status when the user asks, and handoff generation. At ≥3 active threads it redirects to `/pr-monitor-and-manage`; it does not offer `CronCreate` or `/loop`.
-- **`/pr-monitor-and-manage` owns PR-fleet between-message polling.** It establishes `/loop` at the configured cadence, optionally registers `CronCreate` auto-wake on idle pause, and dispatches per-PR fixes/merges.
+- **`/pr-monitor-and-manage` owns PR-fleet between-message polling.** It establishes `/loop` at the configured cadence, optionally keeps a low-frequency `/loop` re-scan running after an idle pause (`--auto-wake`), and dispatches per-PR fixes/merges.
 - **`/loop` remains valid for explicit user-invoked "poll every N"** that is not PR-fleet-specific (e.g., "poll every 5m /status" on a single thread). Hand-rolled one-shot `ScheduleWakeup` chains are forbidden for recurring polls.
-- **`CronCreate` is for wall-clock-cadence fleet ticks or scheduled jobs owned by dedicated skills** (`/pr-monitor-and-manage` auto-wake, `/babysit-pr --durable`, etc.) — not `/pm`. It is **session-only** and does not survive Claude exiting; see `scheduling-reliability.md` contract note.
+- **`CronCreate` is for wall-clock-cadence fleet ticks** — not `/pm`. It is **session-only** and does not survive Claude exiting (`scheduling-reliability.md` contract note). Since issue #827 no skill in this repo registers one; durable work uses on-disk state reconciled at session start (`.claude/reference/cross-session-durability.md`).
 
 ## Rationale
 
@@ -21,7 +21,7 @@ The canonical PM manager use case is **tracking worker output across GitHub-visi
 - easy cancellation,
 - already mandated for explicit "poll/check/watch every N" user requests per `scheduling-reliability.md`.
 
-`CronCreate` remains the right primitive for skill-owned wall-clock-cadence fleet ticks. It is **session-scoped** — jobs do not survive session turnover regardless of the `durable` flag. See `scheduling-reliability.md` for the authoritative contract.
+`CronCreate` remains the right primitive for a skill-owned wall-clock-cadence fleet tick, should one be needed. It is **session-scoped** — jobs do not survive session turnover regardless of the `durable` flag. See `scheduling-reliability.md` for the authoritative contract.
 
 ## State contract: `session-state.json`
 
@@ -34,7 +34,7 @@ PM orchestration reads and writes `~/.claude/session-state.json`. Unknown fields
 - `root_repo`: absolute path to the **git root** of the repo where PR helpers run (must match `git rev-parse --show-toplevel` for that checkout). This top-level field is a *default only*: the session file is shared across concurrent sessions, so whichever session wrote last owns it, and it must never gate polling (issue #647). Repo scoping is per PR — `.prs["N"].owner_repo` plus `.prs["N"].root_repo`, written by `polling-state-gate.sh --ensure-session` and validated by **repo identity** (normalized `origin` remote, falling back to the shared git common dir) rather than path equality, so sibling worktrees of one repo agree while a genuine cross-repo mismatch is still refused. "Genuine" means scoping recorded *inside the scope being read*: PR numbers are per-repo, so another repo also tracking an `N` is an expected collision, never a refusal (issue #854) — the gate reads only this repo's scope (or the legacy `_unknown` one), and a PR absent from it is simply unregistered here, which `--ensure-session` fixes.
 - `prs`: tracked PR map. Each entry may include `issue`, `phase`, `head_sha`, `reviewer`, `needs`, `status`, `worker`, and `updated_at`.
 - `active_agents`: subagent records. Each entry should include `id`, `task`, `issue`, `pr`, `phase`, `launched`, and optional `last_seen_at`.
-- `polling_jobs`: active scheduled jobs **owned by other skills** (`/pr-monitor-and-manage`, `/babysit-pr`, etc.). Each entry should include `primitive`, `id`, `cron`, `prompt`, `recurring`, `durable`, `created_at`, and `expires_at` when known. `/pm` does not create or clear this array.
+- `polling_jobs`: active scheduled jobs **owned by other skills**. Empty in normal operation since issue #827 — no skill registers a cron, and `session-scheduling-reconcile.sh` clears leftovers at session start. `/pm` does not create or clear this array.
 - `polling_failures`: prior dropped-loop recoveries.
 - `cr_quota` and `greptile_daily`: review-budget state used by Phase B decisions.
 - `pmm_*` fields: owned by `/pr-monitor-and-manage`.

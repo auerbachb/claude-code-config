@@ -2,7 +2,7 @@
 # Tests for polling-backoff-warn.sh (issue #794).
 #
 # Verifies the base-relative stable-state backoff ladder:
-#   digest_streak >= 3 → widen to max(15m, 3×base); streak >= 9 → CronDelete
+#   digest_streak >= 3 → widen to max(15m, 3×base); streak >= 9 → stop the poll
 # Covers multiple base cadences, the "already applied" no-op guard, and the
 # user_input blocker stop. Never touches real session state.
 set -euo pipefail
@@ -114,31 +114,58 @@ ctx="$(run_hook "$PR" | context_of)"
 [[ -z "$ctx" ]] || fail "expected no re-emit when update to 60m already applied, got: $ctx"
 ok "already-applied guard: update to 60m not re-emitted at base=20m"
 
-# ── 10. CronDelete already issued → no re-emit for either branch ─────────────
+# ── 10. stop already issued → no re-emit for either branch ───────────────────
 write_state "$PR" '{"digest_streak":5,"babysit":{"cadence_base_minutes":5},"last_cron_action":{"type":"delete","interval":"paused"}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -z "$ctx" ]] || fail "expected no re-emit when delete already applied, got: $ctx"
 ok "delete already applied → no re-emit from widen branch"
 
-# ── 11. Streak >= 9 → stop (CronDelete) ──────────────────────────────────────
+# ── 10b. /loop path: no cron record at all → STOP fires, and the marker
+#         /babysit-pr T-END writes suppresses the second one. Since #827 the
+#         watcher is /loop-only, so this is now the DEFAULT path — case 10
+#         above only ever exercised a cron-backed poll.
+write_state "$PR" '{"digest_streak":9,"babysit":{"cadence_base_minutes":5}}'
+ctx="$(run_hook "$PR" | context_of)"
+[[ -n "$ctx" ]] || fail "expected STOP on a /loop poll with no last_cron_action"
+ok "/loop poll (no cron record) → STOP emitted"
+
+write_state "$PR" '{"digest_streak":9,"babysit":{"cadence_base_minutes":5},"last_cron_action":{"type":"delete","interval":"paused"}}'
+ctx="$(run_hook "$PR" | context_of)"
+[[ -z "$ctx" ]] || fail "the stop marker /babysit-pr T-END writes must suppress a second STOP, got: $ctx"
+ok "/loop stop marker suppresses the repeat STOP"
+
+# ── 10c. The widen advisory must never read as "stop the poll" ───────────────
+# streak 3..8 means keep polling, slower. The stop instruction belongs only to
+# the >=9 / user-blocked branch; conflating them silently kills the watcher at
+# the first backoff threshold.
+write_state "$PR" '{"digest_streak":4,"babysit":{"cadence_base_minutes":5}}'
+ctx="$(run_hook "$PR" | context_of)"
+[[ -n "$ctx" ]] || fail "expected a widen advisory at streak=4"
+echo "$ctx" | grep -q "WIDEN" || fail "widen advisory should be labelled WIDEN, got: $ctx"
+echo "$ctx" | grep -q "KEEP RUNNING" || fail "widen advisory must say the poll keeps running, got: $ctx"
+echo "$ctx" | grep -q "Stop the poll" && fail "widen advisory must not carry a stop-the-poll instruction, got: $ctx"
+ok "widen advisory (streak 3..8) says keep running, never stop"
+
+# ── 11. Streak >= 9 → stop the poll ──────────────────────────────────────────
 write_state "$PR" '{"digest_streak":9,"babysit":{"cadence_base_minutes":5}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -n "$ctx" ]] || fail "expected STOP message at streak=9"
-echo "$ctx" | grep -q "CronDelete" || fail "expected CronDelete in stop message, got: $ctx"
-ok "streak>=9 → STOP with CronDelete"
+echo "$ctx" | grep -q "Stop the poll" || fail "expected a stop-the-poll instruction, got: $ctx"
+echo "$ctx" | grep -q "CronDelete" || fail "stop message should still name CronDelete for cron-backed polls, got: $ctx"
+ok "streak>=9 → STOP the poll (naming both /loop and cron)"
 
 # ── 12. blocker_kind=user_input → stop immediately (any streak) ──────────────
 write_state "$PR" '{"digest_streak":1,"blocker_kind":"user_input","babysit":{"cadence_base_minutes":5}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -n "$ctx" ]] || fail "expected STOP message on user_input even at streak=1"
-echo "$ctx" | grep -q "CronDelete" || fail "expected CronDelete in user_input stop, got: $ctx"
-ok "blocker_kind=user_input → STOP with CronDelete regardless of streak"
+echo "$ctx" | grep -q "Stop the poll" || fail "expected a stop-the-poll instruction in user_input stop, got: $ctx"
+ok "blocker_kind=user_input → STOP the poll regardless of streak"
 
 # ── 13. Stop branch "already applied" guard ───────────────────────────────────
 write_state "$PR" '{"digest_streak":9,"babysit":{"cadence_base_minutes":5},"last_cron_action":{"type":"delete","interval":"paused"}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -z "$ctx" ]] || fail "expected no re-emit on stop branch when delete already applied, got: $ctx"
-ok "stop branch: CronDelete already applied → no re-emit"
+ok "stop branch: stop already applied → no re-emit"
 
 # ── 14. Non-polling command exits silently ────────────────────────────────────
 write_state "$PR" '{"digest_streak":5,"babysit":{"cadence_base_minutes":5}}'

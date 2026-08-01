@@ -2,9 +2,12 @@
 # off-peak-minute.sh — Deterministic per-repo off-peak cron minute selector.
 #
 # PURPOSE
-#   Centralizes the minute-selection contract used by skills that schedule
-#   CronCreate jobs (e.g. `/pr-monitor-and-manage` auto-wake, `/babysit-pr
-#   --durable`). Each repo gets a stable minute in [0, 59] derived from its
+#   Centralizes the minute-selection contract for any skill that needs a
+#   wall-clock cron minute. No skill currently registers one — issue #827
+#   moved the last three (/babysit-pr --durable, /pr-monitor-and-manage
+#   auto-wake, /harness-audit) onto /loop and session-start reconciliation.
+#   Kept because the contract is the hard part, not the caller.
+#   Each repo gets a stable minute in [0, 59] derived from its
 #   `owner/name` string, then nudged off the fleet pile-up minutes (0, 5, 30,
 #   55) where every agent's schedule collides on the API. Deterministic so
 #   the same repo always lands on the same minute; spread so different repos

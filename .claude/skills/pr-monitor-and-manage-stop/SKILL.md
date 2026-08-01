@@ -9,7 +9,7 @@ triggers:
 argument-hint: "(no arguments — stops the active PR-fleet-manager loop in this thread)"
 ---
 
-Clean-cancel companion to `/pr-monitor-and-manage`. Use this to stop the PR-fleet-manager loop without leaving a dangling `/loop`, stale monitoring state, or auto-wake cron behind.
+Clean-cancel companion to `/pr-monitor-and-manage`. Use this to stop the PR-fleet-manager loop without leaving a dangling `/loop`, stale monitoring state, or auto-wake re-scan behind.
 
 A stale pause marker left by a killed session is safely reconciled: the next `/pr-monitor-and-manage` invocation reads it and resumes (or the user runs `/pmm-stop` here to fully tear down), then re-runs discovery from scratch.
 
@@ -39,7 +39,7 @@ PAUSED_AT=$("$SESSION_STATE_SH" --get '.pmm.paused_at' 2>/dev/null || echo null)
 ```
 
 - If `$ACTIVE` is `true` → proceed to teardown.
-- If `$PAUSED_AT` is set (paused but not active) → proceed to teardown (clear pause marker + cron).
+- If `$PAUSED_AT` is set (paused but not active) → proceed to teardown (clear pause marker + any re-scan loop).
 - If both `false`/`null` → report "No active PR-fleet-manager loop found." and stop. (Still run Step 2's loop cancel best-effort in case a loop is armed without state.)
 
 ## Step 2: Tear down the loop
@@ -49,26 +49,9 @@ Cancel the recurring `/loop` that `/pr-monitor-and-manage` established:
 - If the runtime exposes a loop id / cancel handle, cancel it explicitly.
 - Otherwise interrupt the active loop (Ctrl+C in CLI, stop in web). Invoking `/pmm-stop` is itself the signal — the next tick must not re-arm.
 
-## Step 3: Delete auto-wake cron (fail-closed)
+## Step 3: Cancel the auto-wake re-scan
 
-If an auto-wake cron was registered at pause time, delete it before clearing state:
-
-```bash
-CRON_ID=$("$SESSION_STATE_SH" --get '.pmm.auto_wake_cron_id' 2>/dev/null || echo null)
-if [[ -n "$CRON_ID" && "$CRON_ID" != "null" ]]; then
-  CronDelete "$CRON_ID" || {
-    echo "ERROR: CronDelete failed for $CRON_ID — NOT clearing state; cron may still fire, retry /pmm-stop." >&2
-    exit 1
-  }
-  JOBS=$("$SESSION_STATE_SH" --get '.polling_jobs' 2>/dev/null || echo '[]')
-  if [[ "$JOBS" != "null" && -n "$JOBS" ]]; then
-    NEW_JOBS=$(jq -c --arg id "$CRON_ID" 'map(select(.id != $id))' <<<"$JOBS")
-  else
-    NEW_JOBS='[]'
-  fi
-  "$SESSION_STATE_SH" --set ".polling_jobs=$NEW_JOBS" --set '.pmm.auto_wake_cron_id=null'
-fi
-```
+If `--auto-wake` armed a re-scan at pause time, cancel that `/loop` the same way as Step 2. Since issue #827 it is a plain `/loop` with no recorded job id, so there is nothing to reconcile in state and nothing that can outlive this turn.
 
 ## Step 4: Clear monitoring state (preserve everything else)
 
@@ -92,7 +75,7 @@ Leave `pmm_in_flight`, `pmm_digest`, `pmm_digest_streak`, and `pmm_idle_streak` 
 Reason:   user /pmm-stop
 Loop:     cancelled (no further ticks)
 State:    pmm_active=false, pause marker cleared
-Auto-wake cron: <deleted job id | none>
+Auto-wake re-scan: <cancelled | none>
 In-flight at stop: <list any pmm_in_flight PR # + skill, or "none">
 Active subagents: <list any PMM-owned active_agents entries (match by pr + phase A, or task containing "PMM"), or "none">
 ```

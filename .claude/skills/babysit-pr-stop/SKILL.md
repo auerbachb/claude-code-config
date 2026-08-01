@@ -1,6 +1,6 @@
 ---
 name: babysit-pr-stop
-description: Cleanly stop an active /babysit-pr watcher for a PR. Sets the watcher's stop flag in session-state so its next tick terminates, cancels the recurring poll (CronDelete in durable mode), and confirms. Invoke as `/babysit-pr-stop <PR>`.
+description: Cleanly stop an active /babysit-pr watcher for a PR. Sets the watcher's stop flag in session-state so its next tick terminates, cancels the recurring /loop, and confirms. Invoke as `/babysit-pr-stop <PR>`.
 triggers:
   - babysit-pr-stop
   - unwatch pr
@@ -11,9 +11,7 @@ argument-hint: "<PR>"
 
 Stop the `/babysit-pr` watcher for one PR. This is the clean-cancel companion to `/babysit-pr` — it does not merge, fix, or touch the PR itself; it only tears down the watcher loop and its state.
 
-Stopping is **cooperative and idempotent**: it flags the watcher to terminate on its next tick (the watcher's `T0` short-circuit handles the actual clean exit) and `CronDelete`s the scheduled job when `--durable` mode is active. Running it on a PR with no active watcher is a safe no-op.
-
-**Note:** `CronCreate` jobs (`--durable` mode) are session-scoped and die when Claude exits; `CronDelete` is still required to stop the job within the current session, since a session-scoped cron fires until explicitly deleted.
+Stopping is **cooperative and idempotent**: it flags the watcher to terminate on its next tick (the watcher's `T0` short-circuit handles the actual clean exit). Running it on a PR with no active watcher is a safe no-op.
 
 ## Resolve the state helper
 
@@ -70,57 +68,41 @@ Do **not** clear `active` here — let the watcher's terminate path own that so 
 
 ### 4. Cancel the recurring poll
 
-Branch on the watcher's recorded mode (`babysit.durable`):
+The watcher always runs on `/loop` (issue #827 removed `--durable`, the only other mode). The session loop stops re-arming once the watcher terminates; if you can cancel the active `/loop` immediately (runtime stop / "stop polling"), do so — otherwise the `stop_requested` flag set in Step 3 guarantees the next tick is the last.
+
+If you cancelled the loop outright rather than letting it tick once more, the watcher's T-END cleanup never runs — so perform the terminal cleanup here. **Clear `dispatch_in_flight` only when nothing is actually in flight:** a `/fixpr` or `/wrap` started by an earlier tick keeps running after the loop is cancelled, and clearing its marker lets a later `/babysit-pr` arm dispatch a second one on the same PR — while the original, on completion, overwrites whatever state that new dispatch had written.
 
 ```bash
-DURABLE=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.durable" 2>/dev/null || echo "false")
-```
-
-- **`/loop` mode (`DURABLE != true`):** the session loop stops re-arming once the watcher terminates; if you can cancel the active `/loop` immediately (runtime stop / "stop polling"), do so — otherwise the `stop_requested` flag set in Step 3 guarantees the next tick is the last.
-- **Durable mode (`DURABLE == true`, `CronCreate`):** the recorded cron must actually be deleted before claiming a stop.
-
-  **Fail closed** — do not report "stopped", prune `polling_jobs[]`, or clear `active`/`dispatch_in_flight` unless the cron is genuinely gone. A **missing** `cron_job_id` in durable mode is itself a fail-closed condition (the job is orphaned — we cannot target it), not a license to skip `CronDelete` and still report success:
-
-  ```bash
-  CRON_ID=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.cron_job_id") || {
-    echo "ERROR: could not read cron_job_id — aborting stop; cron still active, retry /babysit-pr-stop $PR." >&2; exit 1; }
-  if [[ -z "$CRON_ID" || "$CRON_ID" == "null" ]]; then
-    echo "ERROR: durable watcher for PR #$PR has no recorded cron_job_id — the poll is orphaned. Run CronList, delete the matching job manually, then re-run /babysit-pr-stop $PR. NOT clearing state." >&2
-    exit 1
-  fi
-  CronDelete "$CRON_ID" || {
-    echo "ERROR: CronDelete failed for $CRON_ID — NOT clearing state; cron may still fire, retry /babysit-pr-stop $PR." >&2; exit 1; }
-  ```
-
-  Only **after** `CronDelete` succeeds, prune `polling_jobs[]` and clear the per-PR state. `session-state.sh --set` only **assigns** a path — it cannot splice an array element — so read the array, filter it locally with `jq` (a read/transform, not a state write), and write the whole new array back via `--set` (the only writer, keeping the atomic guarantee and the "no raw `jq` writes" rule):
-
-  ```bash
-  JOBS=$("$SESSION_STATE_SH" --get '.polling_jobs')              # JSON array (or "null")
-  if [[ "$JOBS" != "null" && -n "$JOBS" ]]; then
-    NEW_JOBS=$(jq -c --arg id "$CRON_ID" 'map(select(.id != $id))' <<<"$JOBS")
-  else
-    NEW_JOBS='[]'
-  fi
+IN_FLIGHT=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.dispatch_in_flight" 2>/dev/null || echo "null")
+if [[ "$IN_FLIGHT" == "null" || -z "$IN_FLIGHT" ]]; then
   "$SESSION_STATE_SH" \
-    --set ".polling_jobs=$NEW_JOBS" \
-    --set ".prs[\"$PR\"].babysit.cron_job_id=null" \
     --set ".prs[\"$PR\"].babysit.active=false" \
     --set ".prs[\"$PR\"].babysit.dispatch_in_flight=null"
-  ```
+else
+  # Leave the marker: T0's TTL reclaim owns it, so it can never wedge forever.
+  "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.active=false"
+fi
+```
 
-  After a successful `CronDelete` **no further tick will fire**, so the watcher's normal T-END cleanup never runs — this branch therefore performs the **full** terminal cleanup itself: it clears `active` **and** `dispatch_in_flight` (not just `active`), mirroring T-END so no stale in-flight marker is left behind (`pm/SKILL.md` mode-switch cleanup contract: `polling_jobs[]` stays authoritative).
+Say which happened — a stop that leaves a dispatch running is not the same promise as a stop that does not.
 
 ### 5. Confirm
 
-Word the confirmation to match what actually happened — do **not** promise a "next tick" in durable mode, where `CronDelete` already terminated the watcher and this skill performed the full cleanup:
+Word the confirmation to match what actually happened:
 
-- **Durable mode (cron deleted in Step 4):**
+- **Loop cancelled outright, nothing in flight:**
 
   ```
-  Stopped babysitting PR #<PR>. Durable poll cancelled (cron_job_id <ID> deleted) and watcher state fully cleared — no next tick will run. No further /fixpr or /wrap dispatches will be made.
+  Stopped babysitting PR #<PR>. Poll cancelled and watcher state cleared — no next tick will run. No further /fixpr or /wrap dispatches will be made.
   ```
 
-- **`/loop` mode (cooperative stop via the flag):**
+- **Loop cancelled with a dispatch still running:**
+
+  ```
+  Stopped babysitting PR #<PR>. Poll cancelled — no new dispatch will start, but the in-flight <skill> may still complete and finish its own work.
+  ```
+
+- **Cooperative stop (flag set, one tick remaining):**
 
   ```
   Stopped babysitting PR #<PR>. The watcher will exit on its next tick (stop_requested set). No further /fixpr or /wrap dispatches will be made.

@@ -39,17 +39,17 @@ just as confidently either way. So the judgment wants the top of the fleet.
 
 But `subagent-orchestration.md` reserves the top tier for **interactive step-ups
 where a human watches the spend**, and states it is never a spawn default. A
-monthly cron quietly burning top-tier tokens unattended contradicts that rule's
+monthly tick quietly burning top-tier tokens unattended contradicts that rule's
 *stated harm model*, not merely its wording.
 
 Issue #770 offered two resolutions: (a) carve a narrow exception into the rule,
-or (b) have the cron do the cheap pass and *offer* the expensive one. **We took
+or (b) have the tick do the cheap pass and *offer* the expensive one. **We took
 (b).**
 
 Why (b) over (a):
 
 - The invariant's rationale (`agents/README.md`) is specifically about unattended
-  spend with nobody watching. A cron is the purest instance of that. An exception
+  spend with nobody watching. An unattended tick is the purest instance of that. An exception
   would contradict the reasoning while satisfying the letter — the worst kind of
   carve-out, because the next reader inherits a rule whose stated reason no
   longer matches its scope.
@@ -92,18 +92,32 @@ Migrating `/prompt`, the chip `**Model:**` lines, and `.claude/agents/*.md` off
 their own literals is deliberately **out of scope** here and tracked in #749.
 This PR introduces the source and one consumer.
 
-## Why a daily cron for a monthly audit
+## Why a session-start check for a monthly audit
 
-`CronCreate` jobs can be removed by a 7-day expiry
-(`scheduling-reliability.md`). A literal monthly cron can therefore expire before
-it ever fires — and its failure mode is silence, which is the worst possible
-outcome for a skill whose entire job is noticing silent staleness.
+The audit needs a cadence measured in weeks, and `CronCreate` — the scheduler
+this skill used — does not last that long. It is in-memory and dies at session
+exit; its 7-day expiry means even a literal monthly cron could lapse before
+firing. Both failure modes are *silence* — the worst possible outcome for a
+skill whose entire job is noticing silent staleness. (A durable scheduler *does*
+exist in the harness; the separate reason this skill declines it is in
+`.claude/reference/cross-session-durability.md`.)
 
-So the job is registered **daily** and gated on a **monthly watermark**. Twenty-
-nine ticks in thirty are a file read and an exit. The daily cadence buys seven
-chances to notice an expired job inside the expiry window and re-arm it.
+An earlier design worked around this by registering the job **daily** and gating
+on a monthly watermark, reasoning that seven daily chances would catch an
+expired job inside the expiry window. That reasoning assumed the job outlived
+the session, which it never did (issue #808, corrected in PR #825): a daily
+re-registration only ever fired inside the session that armed it.
 
-> **Caveat:** `CronCreate` is **session-only** (`durable: true` has no effect) — the job dies when Claude exits regardless of how it was created. The daily re-registration design fires only within the session that armed it. Redesign of this cadence is tracked as a follow-up ticket (`scheduling-reliability.md` contract note).
+Issue #827 replaced the scheduler with the thing that is actually durable. The
+watermark file already persists and already records everything the cadence
+needs, so the tick moved to **session start** — `session-scheduling-reconcile.sh`
+reads the watermark on every session start and nudges when the month is due.
+Sessions start many times a day, so a month cannot be missed, and there is no
+job id, expiry window, or `CronList` reconciliation to get wrong. `--arm` and
+`--stop` toggle `nudge_enabled` in the same file.
+
+Why not the genuinely durable scheduler the harness *does* provide
+(`mcp__scheduled-tasks__*`): `.claude/reference/cross-session-durability.md`.
 
 ### Two watermarks, not one
 
@@ -112,11 +126,11 @@ chances to notice an expired job inside the expiry window and re-arm it.
 | Field | Set when | Prevents |
 |-------|----------|----------|
 | `last_completed_month` | A judgment pass finished (including `--report-only`) | Re-auditing a month already done |
-| `last_offered_month` | A step-up chip was successfully spawned | Re-offering the same chip every single day |
+| `last_offered_month` | A step-up chip was successfully spawned | Re-offering the same chip on every session start |
 
 One field alone forces a choice between two bad behaviors. Set it on offer, and
 an unclicked chip marks the month done when nothing was audited. Set it only on
-completion, and an ignored chip is re-offered daily until someone clicks it out
+completion, and an ignored chip is re-offered every session until someone clicks it out
 of irritation. Two fields make "offered but not yet done" a representable state,
 which is what it actually is.
 
@@ -129,7 +143,7 @@ nothing.
 The CR plan for #770 had every run write `.claude/reference/harness-audit-YYYY-MM.md`.
 That is wrong for the unattended path.
 
-A cron tick can land in a session sitting on the **root repo, on `main`**.
+A tick can land in a session sitting on the **root repo, on `main`**.
 Writing a report there puts changes on `main` — against `CLAUDE.md` §ALWAYS USE A
 WORKTREE — and trips `dirty-main-guard` on the next session start. The tick would
 be manufacturing exactly the dirty-main state another part of the harness exists

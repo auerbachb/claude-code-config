@@ -16,7 +16,6 @@ Pause marker fields live under nested `.pmm.*`. Existing runtime fields
 | `.pmm.paused_at` | ISO-8601 string | Main skill Pause step 4 | Step 0a, `-wake` Step 2 |
 | `.pmm.fleet_at_pause` | `[{pr, head_sha, state}]` | Main skill Pause step 3 | `-wake` Step 4a |
 | `.pmm.config_at_pause` | object | Main skill Pause step 3 | Step 0a, `-wake` Step 4b |
-| `.pmm.auto_wake_cron_id` | string or null | Main skill Pause step 5 | `-stop` Step 3, `-wake` Step 3 |
 
 `config_at_pause` fields: `author`, `repo`, `cadence`, `max_parallel`, `idle_pause_after`, `auto_wake`, `auto_wake_cadence`, `confirm_merges`.
 
@@ -26,7 +25,7 @@ Pause marker fields live under nested `.pmm.*`. Existing runtime fields
 
 ## Step 0a: Resume from pause
 
-On **every** invocation, before Step 1, check for a pause marker. If present, this invocation is a **resume** — tear down any auto-wake cron, clear the marker, merge config, and continue into normal ticking:
+On **every** invocation, before Step 1, check for a pause marker. If present, this invocation is a **resume** — stop any auto-wake re-scan, clear the marker, merge config, and continue into normal ticking:
 
 ```bash
 PAUSED_AT=$(.claude/scripts/session-state.sh --get '.pmm.paused_at' 2>/dev/null || echo null)
@@ -36,21 +35,9 @@ if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
   #    already-captured $SAVED variable, never re-read .pmm.config_at_pause from
   #    session-state after step 3 has run (it will be null by then).
   SAVED=$(.claude/scripts/session-state.sh --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
-  # 2. Delete auto-wake cron (fail-closed — see pr-monitor-and-manage-wake Step 3)
-  CRON_ID=$(.claude/scripts/session-state.sh --get '.pmm.auto_wake_cron_id' 2>/dev/null || echo null)
-  if [[ -n "$CRON_ID" && "$CRON_ID" != "null" ]]; then
-    CronDelete "$CRON_ID" || {
-      echo "ERROR: CronDelete failed for $CRON_ID — NOT clearing pause marker; cron may still fire, retry." >&2
-      exit 1
-    }
-    JOBS=$(.claude/scripts/session-state.sh --get '.polling_jobs' 2>/dev/null || echo '[]')
-    if [[ "$JOBS" != "null" && -n "$JOBS" ]]; then
-      NEW_JOBS=$(jq -c --arg id "$CRON_ID" 'map(select(.id != $id))' <<<"$JOBS")
-    else
-      NEW_JOBS='[]'
-    fi
-    .claude/scripts/session-state.sh --set ".polling_jobs=$NEW_JOBS" --set '.pmm.auto_wake_cron_id=null'
-  fi
+  # 2. Cancel the auto-wake re-scan loop, if one is running (runtime loop-stop).
+  #    Nothing to reconcile in state: since #827 the re-scan is a /loop, not a
+  #    recorded cron job, so there is no id that can outlive this turn.
   # 3. Clear pause marker + reset pmm_idle_streak=0 + set pmm_active=true
   #    + null .pmm_digest and .pmm_row_digest (atomic batch) — the digest reset
   #    forces Step 4's full table on the first post-resume tick (condition a)
@@ -68,9 +55,11 @@ if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
 fi
 ```
 
-Resume logic is shared with `/pr-monitor-and-manage-wake` — see `.claude/skills/pr-monitor-and-manage-wake/SKILL.md` Step 2 (cron teardown) and Step 3 (marker clear + loop re-arm). When resuming via re-invoking this skill (not `-wake`), apply the precedence rule in Step 1 after parsing `$ARGUMENTS`: any flag explicitly supplied on this invocation wins; omitted flags inherit from `.pmm.config_at_pause`. After resume, continue with Step 1 using the merged config and run a full discovery tick at **base** cadence (not the widened backoff cadence).
+Resume logic is shared with `/pr-monitor-and-manage-wake` — see `.claude/skills/pr-monitor-and-manage-wake/SKILL.md` Step 2 (re-scan teardown) and Step 3 (marker clear + loop re-arm). When resuming via re-invoking this skill (not `-wake`), apply the precedence rule in Step 1 after parsing `$ARGUMENTS`: any flag explicitly supplied on this invocation wins; omitted flags inherit from `.pmm.config_at_pause`. After resume, continue with Step 1 using the merged config and run a full discovery tick at **base** cadence (not the widened backoff cadence).
 
 A stale marker left by a killed session is safely reconciled here: the next `/pr-monitor-and-manage` invocation reads it, resumes (or the user runs `/pmm-stop`), and re-runs discovery from scratch.
+
+**This marker is the fleet's cross-session continuity** (issue #827). It lives on disk in `session-state.json`, so it outlives the session that wrote it — which the `--auto-wake` cron never did, despite being documented as if it had. A session start also surfaces the marker unprompted (`session-scheduling-reconcile.sh`), so a paused fleet is offered back rather than waiting to be remembered.
 
 ---
 
@@ -120,34 +109,17 @@ CONFIG_AT_PAUSE=$(jq -nc \
 
 Preserve `pmm_digest`, `pmm_digest_streak`, and `pmm_idle_streak` as audit trail.
 
-### 5. Optional auto-wake cron (`--auto-wake`)
+### 5. Optional auto-wake re-scan (`--auto-wake`)
 
-When `$PMM_AUTO_WAKE` is true, register an hourly scan at pause time:
+When `$PMM_AUTO_WAKE` is true, keep a low-frequency re-scan running instead of going fully quiet at pause:
 
-> **Warning:** `CronCreate` is **session-only** — this job fires only while Claude is running in the current session. `durable: true` has no effect. `--auto-wake` does **not** survive session turnover. (Behavioral redesign tracked as a follow-up ticket.)
-
-```bash
-# Derive cadence minutes from PMM_AUTO_WAKE_CADENCE (e.g. 60m → 60)
-AW_CADENCE_MIN="${PMM_AUTO_WAKE_CADENCE%m}"
-if [ "$AW_CADENCE_MIN" -ge 60 ] && [ $((AW_CADENCE_MIN % 60)) -eq 0 ]; then
-  # off-peak-minute.sh's --every-n-min only accepts 1..59 (it builds a step-range
-  # within one hour) — for hourly-or-longer cadences (the 60m default), use the
-  # plain no-flag minute + a */H hour step instead, matching /pm's hourly pattern.
-  AW_HOURS=$((AW_CADENCE_MIN / 60))
-  AW_MINUTE=$(.claude/scripts/off-peak-minute.sh)
-  if [ "$AW_HOURS" -eq 1 ]; then
-    AW_CRON="$AW_MINUTE * * * *"
-  else
-    AW_CRON="$AW_MINUTE */$AW_HOURS * * *"
-  fi
-else
-  { read -r AW_MINUTE; read -r AW_CRON; } < <(.claude/scripts/off-peak-minute.sh --every-n-min "$AW_CADENCE_MIN")
-fi
-# CronCreate with prompt "/pr-monitor-and-manage-wake --auto-check", cron="$AW_CRON", recurring=true, durable=true
-# Persist returned job id to .pmm.auto_wake_cron_id and append to polling_jobs[]
+```text
+/loop $PMM_AUTO_WAKE_CADENCE /pr-monitor-and-manage-wake --auto-check
 ```
 
-Tell the user the cron job id and 7-day auto-expiry; note that the job is session-scoped (see `scheduling-reliability.md` contract note).
+Nothing is recorded in `polling_jobs[]` and there is no job id to track — a `/loop` cannot outlive the turn that armed it, so there is no orphan to fail closed against. This replaces the `CronCreate` job that issue #827 removed: that job was session-scoped too, but was documented as surviving session turnover, and the fail-closed teardown it needed was duplicated across three files.
+
+Cross-session continuity is the pause marker's job, not this loop's — see the note under Step 0a.
 
 ### 6. Summary line
 
@@ -155,7 +127,7 @@ Tell the user the cron job id and 7-day auto-expiry; note that the job is sessio
 PMM paused — <N> PR(s) waiting on reviewer, no changes for <idle window>. Wake with `/pr-monitor-and-manage-wake` or re-run `/pr-monitor-and-manage <flags>`.
 ```
 
-If `--auto-wake` is set, add: `Auto-wake cron registered (<job_id>) — will scan hourly for fleet changes.`
+If `--auto-wake` is set, add: `Auto-wake re-scan armed — will scan every <cadence> for fleet changes while this session lasts.`
 
 > **Post-merge symlink:** after this skill's `-wake` companion merges to `main`, symlink `~/.claude/skills/pr-monitor-and-manage-wake` → the skills-worktree copy per `skill-symlinks.md`.
 
@@ -193,6 +165,6 @@ Hard-blocked PRs are reported here for visibility; the fleet may auto-pause afte
 The following were intentionally left out of this PR (scope: bounded dedup + reference-extraction per Issue #815 / Issue #778 Option 2):
 
 - **`resolve_script()` dedup across `-stop`/`-wake` family** — the same three-candidate lookup appears verbatim in `-stop/SKILL.md` and `-wake/SKILL.md`. A shared canonical location would prevent drift, but touching companion skills is out of scope here. Tracked for a future PR.
-- **`pmm_delete_auto_wake_cron` helper** — the cron teardown block is duplicated in `-stop/SKILL.md`, `-wake/SKILL.md`, and now this file (Step 0a). A single shared helper (bash script or reference) would prevent lock-step edits. Tracked for a future PR.
+- ~~**`pmm_delete_auto_wake_cron` helper**~~ — **resolved by issue #827**, which removed the auto-wake cron entirely. The teardown block it would have factored no longer exists in any of the three files.
 - **Full FU-2 ≤150-line dispatcher collapse** — this bounded refactor brings SKILL.md to ~400 lines. The full collapse to ≤150 lines (with a script-side no-change short-circuit) remains deferred until the `/babysit-pr` delegation contract (#456/#460) is settled, per `token-efficiency-audit-2026-07.md` FU-2.
 - **Per-PR `/babysit-pr` delegation** (#456/#460) — replacing Step 3's inline per-PR decision tree with one `/babysit-pr <PR>` dispatch per PR. The table, discovery, idempotency, and backoff scaffolding in SKILL.md stay unchanged until this lands.

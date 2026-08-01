@@ -458,7 +458,7 @@ If orchestration state is stale after context turnover, recover using `.claude/r
 
 ### 2.4: Backwards compatibility
 
-Any `/pm`-created `CronCreate` jobs from before this change died with their originating session (`CronCreate` is session-scoped; `durable: true` has no effect). New `/pm` sessions do not create replacement polls.
+Any `/pm`-created `CronCreate` jobs from before this change died with their originating session (`CronCreate` is session-scoped; `durable: true` has no effect). New `/pm` sessions do not create replacement polls, and `session-scheduling-reconcile.sh` clears the dead records at session start (issue #827).
 
 After setup, proceed to **Step 3: Orchestration Loop**.
 

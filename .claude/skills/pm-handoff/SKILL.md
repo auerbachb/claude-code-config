@@ -314,21 +314,21 @@ If no state files exist, output: "No in-flight work detected. Starting fresh."
 
 Snapshot any live scheduled jobs owned by **other skills** (`/pr-monitor-and-manage`, `/babysit-pr`, etc.) for informational continuity. `/pm` no longer arms its own polls — do not instruct the new thread to recreate `/pm` polls.
 
-Call the `CronList` tool to list all cron jobs scheduled in this session. For each job, record: `id`, `cron`, `prompt`, `recurring`, `durable`, and — if available — the last heartbeat time and cycle interval.
+Since issue #827 no skill in this repo registers a cron job, so this section is normally a single line. Still call `CronList` — a job from an older session build, or one a user armed by hand, should be reported rather than assumed away. For each job record `id`, `cron`, `prompt`, and `recurring`.
 
 Format as:
 
 ```
 ### Active Polling Jobs
 
-| Job ID | Schedule | Prompt | Recurring | Durable | Last heartbeat |
-|--------|----------|--------|-----------|---------|----------------|
-| abc123 | 17 * * * * | /pr-monitor-and-manage-wake --auto-check | true | true | {time} ET |
+| Job ID | Schedule | Prompt | Recurring |
+|--------|----------|--------|-----------|
+| abc123 | 17 * * * * | /some-skill --tick | true |
 
-**On resume:** All `CronCreate` jobs are **session-scoped** and do not survive session turnover — `durable: true` has no effect. Any job listed here died with the previous session. Re-arm via the owning skill if needed (do not use `CronList` to check for survivors — there will be none). For PR fleet monitoring, run `/pr-monitor-and-manage`.
+**On resume:** All `CronCreate` jobs are **session-scoped** and do not survive session turnover — `durable: true` has no effect. Any job listed here died with the previous session; do not use `CronList` to check for survivors, there will be none. Re-arm via the owning skill if needed. For PR fleet monitoring, run `/pr-monitor-and-manage` — a paused fleet resumes from its on-disk marker, not from a job.
 ```
 
-If `CronList` returns no jobs, output: "No active polling jobs from other skills. For PR fleet monitoring, run `/pr-monitor-and-manage`."
+If `CronList` returns no jobs (the expected case), output: "No active polling jobs from other skills. For PR fleet monitoring, run `/pr-monitor-and-manage`."
 
 ### Step 5c: Memory summary
 

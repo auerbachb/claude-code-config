@@ -1,15 +1,15 @@
 ---
 name: pr-monitor-and-manage-wake
-description: Resume companion to /pr-monitor-and-manage. Wakes a paused PR-fleet-manager loop from its saved pause marker, tears down any auto-wake cron, and re-arms the main loop. Also serves as the lightweight --auto-check target for the hourly auto-wake cron. Triggers on "/pr-monitor-and-manage-wake", "/pmm-wake", "wake PR monitor".
+description: Resume companion to /pr-monitor-and-manage. Wakes a paused PR-fleet-manager loop from its saved pause marker, cancels any auto-wake re-scan, and re-arms the main loop. Also serves as the lightweight --auto-check target for that re-scan. Triggers on "/pr-monitor-and-manage-wake", "/pmm-wake", "wake PR monitor".
 triggers:
   - pr-monitor-and-manage-wake
   - pmm-wake
   - wake PR monitor
   - resume PR fleet
-argument-hint: "[--auto-check] (default: user-initiated resume; --auto-check = lightweight fleet scan from auto-wake cron)"
+argument-hint: "[--auto-check] (default: user-initiated resume; --auto-check = lightweight fleet scan from the auto-wake re-scan)"
 ---
 
-Resume companion to `/pr-monitor-and-manage`. Wakes a **paused** PR-fleet-manager loop: reads the pause marker, deletes any auto-wake cron, clears the marker, and re-arms the main loop at base cadence.
+Resume companion to `/pr-monitor-and-manage`. Wakes a **paused** PR-fleet-manager loop: reads the pause marker, cancels any auto-wake re-scan, clears the marker, and re-arms the main loop at base cadence.
 
 Idempotent: running on a non-paused session is a clean no-op.
 
@@ -35,8 +35,8 @@ SESSION_STATE_SH=$(resolve_script session-state.sh) || { echo "ERROR: session-st
 
 ## Step 1: Parse mode
 
-- **`--auto-check`** — lightweight fleet scan (invoked by the hourly auto-wake `CronCreate` job). Compare `gh pr list` against `.pmm.fleet_at_pause`; re-launch main skill only if changed.
-- **No flags (default)** — user-initiated resume: clear marker, delete cron, re-arm loop.
+- **`--auto-check`** — lightweight fleet scan (invoked by the auto-wake re-scan `/loop`). Compare `gh pr list` against `.pmm.fleet_at_pause`; re-launch main skill only if changed.
+- **No flags (default)** — user-initiated resume: clear marker, cancel the re-scan, re-arm loop.
 
 ## Step 2: Check pause marker
 
@@ -46,35 +46,16 @@ PAUSED_AT=$("$SESSION_STATE_SH" --get '.pmm.paused_at' 2>/dev/null || echo null)
 
 - If `$PAUSED_AT` is `null`/empty → print **"PMM not paused — either not started or already running."** and exit 0 (idempotent no-op).
 - If present → route by mode:
-  - **`--auto-check`** → Step 4a (compare fleet; cron stays unless changed).
-  - **User-initiated (default)** → Step 3 (delete cron) → Step 4b (resume).
+  - **`--auto-check`** → Step 4a (compare fleet; the re-scan stays unless changed).
+  - **User-initiated (default)** → Step 3 (cancel re-scan) → Step 4b (resume).
 
-## Step 3: Delete auto-wake cron (fail-closed — user resume and auto-check-on-change only)
+## Step 3: Cancel the auto-wake re-scan (user resume and auto-check-on-change only)
 
-**Do NOT run this step in `--auto-check` mode when the fleet is unchanged** — the cron must keep firing hourly until a change is detected.
+**Do NOT run this step in `--auto-check` mode when the fleet is unchanged** — the re-scan must keep running until a change is detected.
 
-When `$MODE` is `--auto-check`, skip to Step 4a first; only call the cron-delete block below from Step 4b after a fleet change is confirmed, or when `$MODE` is user-initiated resume (default).
+When `$MODE` is `--auto-check`, skip to Step 4a first; only cancel the re-scan from Step 4b after a fleet change is confirmed, or when `$MODE` is user-initiated resume (default).
 
-For **user-initiated resume** (default, no `--auto-check`), delete the cron before clearing the pause marker:
-
-```bash
-CRON_ID=$("$SESSION_STATE_SH" --get '.pmm.auto_wake_cron_id' 2>/dev/null || echo null)
-if [[ -n "$CRON_ID" && "$CRON_ID" != "null" ]]; then
-  CronDelete "$CRON_ID" || {
-    echo "ERROR: CronDelete failed for $CRON_ID — NOT clearing pause marker; cron may still fire, retry /pr-monitor-and-manage-wake." >&2
-    exit 1
-  }
-  JOBS=$("$SESSION_STATE_SH" --get '.polling_jobs' 2>/dev/null || echo '[]')
-  if [[ "$JOBS" != "null" && -n "$JOBS" ]]; then
-    NEW_JOBS=$(jq -c --arg id "$CRON_ID" 'map(select(.id != $id))' <<<"$JOBS")
-  else
-    NEW_JOBS='[]'
-  fi
-  "$SESSION_STATE_SH" --set ".polling_jobs=$NEW_JOBS" --set '.pmm.auto_wake_cron_id=null'
-fi
-```
-
-Factor this block as **`pmm_delete_auto_wake_cron`** — Step 4b (auto-check detected change) and Step 0a in the main skill reuse the same fail-closed teardown. Only **after** successful `CronDelete` (or when no cron was registered) proceed to marker clear / re-arm.
+Cancel the `/loop` armed at pause time (runtime loop-stop), then proceed to marker clear / re-arm. Since issue #827 the re-scan is a plain `/loop` rather than a `CronCreate` job, so there is no id to delete, no `polling_jobs[]` entry to prune, and no fail-closed teardown to get wrong — a loop cannot outlive the turn that armed it.
 
 ## Step 4a: `--auto-check` branch (lightweight scan)
 
@@ -95,12 +76,12 @@ CURRENT_FLEET=$(jq -c '[.[] | {pr: .number, head_sha: .headRefOid, state: .merge
 SAVED_FLEET=$(jq -c 'sort_by(.pr)' <<<"$FLEET_AT_PAUSE")
 ```
 
-- If `$CURRENT_FLEET` equals `$SAVED_FLEET` (count + per-PR state) → **no-op**. Print one line: `[auto-check] Fleet unchanged — cron continues.` Exit 0. Do **not** delete the cron or clear the pause marker.
-- If changed → run **`pmm_delete_auto_wake_cron`** (Step 3), then proceed to Step 4b (full resume + re-launch main skill).
+- If `$CURRENT_FLEET` equals `$SAVED_FLEET` (count + per-PR state) → **no-op**. Print one line: `[auto-check] Fleet unchanged — re-scan continues.` Exit 0. Do **not** cancel the re-scan or clear the pause marker.
+- If changed → cancel the re-scan (Step 3), then proceed to Step 4b (full resume + re-launch main skill).
 
 ## Step 4b: Resume (user wake or auto-check detected change)
 
-Run **`pmm_delete_auto_wake_cron`** (Step 3) if not already done (user-initiated resume runs it before this step; auto-check runs it only after detecting a change).
+Cancel the re-scan (Step 3) if not already done (user-initiated resume does it before this step; auto-check does it only after detecting a change).
 
 Read config, reconstruct invocation flags, clear marker, reset idle streak, re-arm loop:
 
@@ -142,10 +123,10 @@ The next tick runs full discovery + per-PR state read. Print:
 PMM resumed — re-armed at <CADENCE>. Fleet will be rediscovered on the next tick.
 ```
 
-For `--auto-check` with detected change, add: `[auto-check] Fleet changed — cron deleted, main loop re-launched.`
+For `--auto-check` with detected change, add: `[auto-check] Fleet changed — re-scan cancelled, main loop re-launched.`
 
 ## Safety
 
-- Never clear the pause marker on resume unless the auto-wake cron is confirmed deleted (Step 3) — except `--auto-check` no-op exits without touching either.
+- Never clear the pause marker on resume without also cancelling the auto-wake re-scan (Step 3) — except `--auto-check` no-op exits without touching either.
 - `--auto-check` must **not** run full per-PR gate reads — only `gh pr list` + comparison.
 - Re-running `/pr-monitor-and-manage-wake` on a non-paused session is always a clean no-op (Step 2).

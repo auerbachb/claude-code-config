@@ -11,7 +11,7 @@ The 5-minute heartbeat rule catches silence during turns; this file covers betwe
 | User request / context | Primitive | Why |
 |------------------------|-----------|-----|
 | Recurring: "poll/check/watch every N", "keep running /skill" | **`/loop`** | Runtime owns cadence |
-| ≥3 concurrent polls or wall-clock-cadence fleet ticks | **`CronCreate`** | Scheduled fleet job — **session-only** (see contract note below) |
+| Wall-clock cadence, ≥3 concurrent polls | **`CronCreate`** | **Session-only** (contract below); no skill here uses one |
 | One-shot "wake me in N minutes" | `ScheduleWakeup` | Single tick only |
 | Background work in flight (subagent, background process, watcher) | **ceiling watch** — `bgwork-ceiling.sh --arm-command` → `Monitor` | Backstop, not a poll — still `/loop` if status is due |
 
@@ -22,9 +22,9 @@ The 5-minute heartbeat rule catches silence during turns; this file covers betwe
 Division of responsibility (see `.claude/reference/pm-monitoring-decision.md`):
 
 - `/pm` never creates polls — on-demand orchestration only.
-- `/pr-monitor-and-manage` owns PR-fleet between-message polling (`/loop` + optional `CronCreate` auto-wake).
+- `/pr-monitor-and-manage` owns PR-fleet between-message polling (`/loop`, including `--auto-wake`).
 - `/loop` remains valid for explicit user-invoked "poll every N" that is not PR-fleet-specific.
-- `CronCreate` for wall-clock-cadence fleet ticks or scheduled jobs owned by dedicated skills — **not** for cross-session durability (see contract note below).
+- `CronCreate` — **never** for cross-session durability (contract below).
 
 Skill-owned polling turns update `session-state.json` per that skill's contract; stale orchestration state → `monitor-mode.md` PM Monitoring Recovery + this file's dropped-tick handling.
 
@@ -32,7 +32,7 @@ Skill-owned polling turns update `session-state.json` per that skill's contract;
 
 `CronCreate` is **session-only and in-memory**: the job lives in the harness process and is gone when Claude exits. The `durable` parameter has **no effect** — it is recorded in state for bookkeeping only. Recurring jobs auto-expire after **7 days** if not explicitly deleted first with `CronDelete`. Nothing about a `CronCreate` job persists across session boundaries. For the rejected alternatives see `.claude/reference/bgwork-ceiling.md`.
 
-> **Behavioral follow-up:** `--durable` in `/babysit-pr`, `--auto-wake` in `/pr-monitor-and-manage`, and `/harness-audit`'s daily registration cadence all relied on the false durability promise. Correcting those features' scheduling design is tracked as a separate ticket.
+**Durable work belongs in on-disk state, not a job** (#827): `session-scheduling-reconcile.sh` purges dead job records at session start and surfaces what survived. A genuinely durable scheduler exists (`mcp__scheduled-tasks__*`) — why no skill here uses it: `.claude/reference/cross-session-durability.md`.
 
 ## Mandatory Pre-Exit Checklist for Polling Turns
 
@@ -48,7 +48,7 @@ Before any polling turn ends (`/loop`, `CronCreate`, legacy one-shot, or a turn 
 
 ## Stable-State Backoff
 
-Each tick hash `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)` into `prs.{N}.digest_streak` (free-text `blocker` excluded). Widen at streak ≥3 to `max(15m, 3×base)`; `CronDelete` at ≥9 or `blocker_kind == "user_input"`. Resume at base cadence after user message or changed digest. `polling-backoff-warn.sh` enforces this (reads `babysit.cadence_base_minutes`, defaults to 5). Backoff cannot reach the ceiling watch: it widens and deletes cron jobs; the watch is a `Monitor`.
+Each tick hash `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)` into `prs.{N}.digest_streak` (free-text `blocker` excluded). Widen at streak ≥3 to `max(15m, 3×base)`; stop the poll at ≥9 or `blocker_kind == "user_input"`. Resume at base cadence after user message or changed digest. `polling-backoff-warn.sh` enforces this (reads `babysit.cadence_base_minutes`, defaults to 5). Backoff cannot reach the ceiling watch: it widens or stops the poll; the watch is a `Monitor`.
 
 ## Failure Recovery
 
