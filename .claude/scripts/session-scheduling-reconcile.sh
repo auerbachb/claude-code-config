@@ -10,7 +10,10 @@
 #
 # Rationale and the per-feature decisions: .claude/reference/cross-session-durability.md
 #
-# Invoked by the SessionStart hook (.claude/hooks/session-start-sync.sh).
+# Invoked by the SessionStart hook (.claude/hooks/session-start-sync.sh), which
+# passes --check on every source except `startup` — compact/resume/clear fire
+# inside a live session, where a recorded job may still be running and a watcher
+# may be about to refresh its own last_tick_at.
 # Fail-soft by contract: a missing, unreadable, or corrupt state file must
 # never block a session from starting, so every failure path still exits 0.
 

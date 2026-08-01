@@ -64,9 +64,21 @@ start.** `.claude/scripts/session-scheduling-reconcile.sh`, invoked by the
 
 1. Purges bookkeeping that cannot have survived — `polling_jobs[]`,
    `.pmm.auto_wake_cron_id`, every `babysit.cron_job_id`.
-2. Deactivates `babysit` watchers whose last tick predates this process (a live
-   watcher rewrites `last_tick_at` every tick, so this cannot reap a live one).
+2. Deactivates `babysit` watchers left behind by the previous session.
 3. Surfaces what is still meaningful: an audit month come due, a paused fleet.
+
+**Steps 1–2 run only when `SessionStart` fires with `source == "startup"`.**
+That event also fires on `compact`, `resume`, and `clear`, which happen *inside*
+a live session — and there, both mutations are unsafe: clearing a record whose
+job is still running orphans it, and judging a watcher dead races the tick about
+to refresh `last_tick_at`. On a true startup neither is possible, because
+nothing from the previous session survived, so the purge needs no heuristic to
+be correct. Every other source runs the reconciler in `--check` mode: notices
+only, no writes. An absent `source` is treated as not-startup — a stale record
+lingering one more session is strictly cheaper than clearing a live one.
+
+A watcher's freshness window (`max(3x cadence, 30m)`, matching `/babysit-pr`'s
+A2 check) is kept as a second line of defence, not the primary guard.
 
 Per feature: `--durable` was **dropped** from `/babysit-pr` (accepted and
 ignored, so an old chip payload does not hard-error); `--auto-wake` was

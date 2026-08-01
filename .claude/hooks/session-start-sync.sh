@@ -4,8 +4,11 @@
 # CLAUDE.md are up to date with origin/main. Runs on every session start
 # (fresh session, resume, clear, compact, fork).
 
-# Consume stdin (required by hook protocol)
-cat > /dev/null
+# Consume stdin (required by hook protocol) and keep it: SessionStart carries
+# a `source` telling us WHY it fired — startup | resume | clear | compact.
+# Only `startup` is a genuinely new session; the rest fire inside a live one.
+hook_stdin=$(cat)
+session_source=$(jq -r '.source // empty' <<<"$hook_stdin" 2>/dev/null)
 
 # --- Sync skills worktree ---
 skills_wt="$HOME/.claude/skills-worktree"
@@ -92,10 +95,22 @@ fi
 # Resolved from this hook's own location, not from the skills worktree: the
 # reconciler reads session-state, so a broken or missing worktree — exactly
 # when stale bookkeeping is most likely — must not also suppress the cleanup.
+#
+# Purge ONLY on `startup`. compact/resume/clear fire inside a live session,
+# where a job or watcher recorded in state may still be running: clearing its
+# bookkeeping there orphans a live job, and deciding a watcher is dead races
+# the tick that is about to refresh it. On a true startup neither is possible —
+# nothing from the previous session survived — so the purge is unambiguous.
+# An absent `source` (older harness) is treated as NOT startup: a stale record
+# lingering one more session is strictly cheaper than clearing a live one.
 notices=""
 reconcile_script="$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" 2>/dev/null && pwd)/session-scheduling-reconcile.sh"
 if [[ -f "$reconcile_script" ]]; then
-  notices=$(bash "$reconcile_script" 2>/dev/null)
+  if [[ "$session_source" == "startup" ]]; then
+    notices=$(bash "$reconcile_script" 2>/dev/null)
+  else
+    notices=$(bash "$reconcile_script" --check 2>/dev/null)
+  fi
 fi
 
 # Strip control characters before they reach jq. `$errors` carries raw git

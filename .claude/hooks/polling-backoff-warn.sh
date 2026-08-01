@@ -102,7 +102,7 @@ fi
 
 if (( user_blocker == 1 || streak >= 9 )); then
   [[ "$last_cron_type" == "delete" ]] && exit 0
-  emit_context "STOP - PR #${pr_number} is stable-blocked (digest_streak=${streak}, blocker_kind=${blocker_kind:-null}). Stop the poll before exiting this turn - cancel the /loop, or CronDelete if this poll is a cron job - and cancel any sibling ScheduleWakeup. Do not heartbeat again until the user nudges or the digest changes."
+  emit_context "STOP - PR #${pr_number} is stable-blocked (digest_streak=${streak}, blocker_kind=${blocker_kind:-null}). Stop the poll before exiting this turn - cancel the /loop, or CronDelete if this poll is a cron job - and cancel any ScheduleWakeup you armed for THIS poll - leave unrelated one-shot wakeups alone, this hook cannot tell them apart. Do not heartbeat again until the user nudges or the digest changes."
   exit 0
 fi
 
