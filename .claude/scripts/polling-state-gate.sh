@@ -11,8 +11,8 @@
 #   3) Each poll cycle evaluates exit via .claude/scripts/merge-gate.sh (not inline
 #      paraphrase of cr-merge-gate.md).
 #
-# Repo scoping (issues #647 + #638). Two mechanisms, deliberately kept — they
-# answer different questions and neither subsumes the other (audited in #651):
+# Repo scoping (issues #647 + #638 + #854). Two mechanisms, deliberately kept —
+# they answer different questions and neither subsumes the other (audited in #651):
 #   #638 decides WHICH SCOPE to read: `.repos["<owner>/<name>"]`, so two repos at
 #        the same PR number never share an entry.
 #   #647 decides WHETHER THIS CHECKOUT MAY POLL that entry, by comparing per-PR
@@ -23,6 +23,17 @@
 # still never a refusal signal — a stale path from a removed worktree carries no
 # authority over the checkout the caller is actually standing in.
 #
+# PR numbers are PER-REPO, so collisions across scopes are normal, not suspicious
+# (issue #854). The scope this script reads is therefore one of exactly three
+# things — the active repo's own scope, the reserved "_unknown" scope, or nothing
+# at all. It never falls through to some other named repo's entry just because the
+# number matches: that fallback both produced false refusals (a fresh
+# --ensure-session for OUR PR #137 was rejected because ANOTHER repo tracked a
+# #137) and, when it did not refuse, read the other repo's owner_repo and resolved
+# the other repo's handoff path. A PR absent from our scope is simply not
+# registered here; --ensure-session is the remedy, and other repos' entries are
+# named in that message as diagnostics only.
+#
 # Scoping is validated per PR, by repo *identity* (normalized `origin` remote,
 # falling back to the shared git common dir so sibling worktrees of one repo
 # agree) rather than by checkout path:
@@ -30,18 +41,21 @@
 #   b) else .prs["N"].root_repo present -> its identity must equal the active one
 #   c) scoping recorded but not comparable (no `origin`, stale path) -> refuse
 #   d) else (state from an older version) -> notice on stderr, then pass
-# A genuine cross-repo mismatch is still refused, naming the PR and both repos.
+# A genuine cross-repo mismatch — one recorded INSIDE our own scope — is still
+# refused, naming the PR and both repos.
 #
 # Usage:
-#   polling-state-gate.sh <pr_number> --ensure-session [--root-repo <path>] [--allow-nonauthor]
-#   polling-state-gate.sh <pr_number> [--root-repo <path>]
-#   polling-state-gate.sh <pr_number> --verify-state [--root-repo <path>]
+#   polling-state-gate.sh <pr_number> --ensure-session [--root-repo <path>] [--repo <owner>/<name>] [--allow-nonauthor]
+#   polling-state-gate.sh <pr_number> [--root-repo <path>] [--repo <owner>/<name>]
+#   polling-state-gate.sh <pr_number> --verify-state [--root-repo <path>] [--repo <owner>/<name>]
 #
 # Modes:
 #   --ensure-session  Run once before the first poll tick: write/update session-state,
 #                      create handoff if missing, record per-PR repo scoping
 #                      (owner_repo + root_repo). Exits 0 on success.
 #                      Does not require the merge gate to be met.
+#                      Registering a PR number another repo already tracks is
+#                      normal and succeeds; the other repo's entry is untouched.
 #                      Authorship guard (issue #733): refuses to enrol a PR the
 #                      authenticated user did not author (delegated to
 #                      pr-authorship.sh; fail-closed). Enrolling a PR in polling is
@@ -52,9 +66,34 @@
 #   (default)         Validate handoff + session-state, cd to resolved root_repo, run
 #                      merge-gate.sh. Exit 0 iff merge gate is met (same as merge-gate).
 #
+# Flags:
+#   --root-repo <path>       Which CHECKOUT to operate in (where gh/merge-gate run).
+#   --repo <owner>/<name>    Which REPO KEY scopes session-state reads and writes,
+#                            and the identity the active checkout is compared
+#                            against. Exported as $CLAUDE_SESSION_REPO so every
+#                            child helper (session-state.sh, poll-watermarks.sh,
+#                            …) agrees. Precedence, resolved by
+#                            `session-state.sh --repo-key`:
+#                              --repo -> $CLAUDE_SESSION_REPO -> cwd `origin`.
+#                            Needed only when the checkout cannot speak for itself
+#                            (no `origin` remote, or not a git checkout at all) —
+#                            with a normal checkout the origin remote already
+#                            gives the right answer.
+#                            A declared key may SUPPLY an identity the checkout
+#                            lacks; it may never OVERRIDE one the checkout
+#                            states. `--repo` and `--root-repo` answer different
+#                            questions, so when both resolve to a real owner/repo
+#                            and disagree the invocation is refused rather than
+#                            validating against one repo while acting on another.
+#                            Value must match session-state.sh's key charset
+#                            ([A-Za-z0-9._/-]); anything else is a usage error,
+#                            never a silent fall-through to "_unknown".
+#   --allow-nonauthor        See --ensure-session above.
+#
 # Exit codes (default mode): same as merge-gate.sh (0 met, 1 not met, 2 usage, 3 PR, 4 error)
 # --ensure-session: 0 success, 2 usage, 4 state/gh failure
 # --verify-state: 0 valid, 2 usage, 4 invalid/missing
+# Every refusal exits non-zero; only a *notice* (case (d) below) prints and passes.
 #
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
@@ -85,13 +124,17 @@ HANDOFF_DIR="${HOME}/.claude/handoffs"
 PR_NUMBER=""
 MODE="cycle"
 ROOT_REPO_ARG=""
+REPO_ARG=""
 # Authorship guard (issue #733): enrolling a PR in polling is a "touch", so
 # --ensure-session refuses PRs the authenticated user did not author. A skill
 # passes --allow-nonauthor only under an explicit per-PR user override.
 ALLOW_NONAUTHOR=0
 
+# Print the whole header comment block rather than a hard-coded line range: the
+# old `sed -n '2,40p'` truncated mid-Modes the moment the header grew, so a newly
+# documented flag could be invisible to --help (issue #854).
 usage() {
-  sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -122,6 +165,25 @@ while [[ $# -gt 0 ]]; do
       [[ -d "$ROOT_REPO_ARG" ]] && STATE_READ_DIR="$ROOT_REPO_ARG"
       shift 2
       ;;
+    --repo)
+      REPO_ARG="${2:-}"
+      if [[ -z "$REPO_ARG" ]]; then
+        echo "polling-state-gate.sh: --repo requires an <owner>/<name> value" >&2
+        exit 2
+      fi
+      # Same shape check session-state.sh applies, made here so a typo is a usage
+      # error rather than a silent fall-through to the "_unknown" bucket.
+      # The character class must match session-state.sh's is_valid_repo_key()
+      # exactly ([A-Za-z0-9._/-]): checking slash placement alone let values like
+      # "org/repo name" through, which then got exported and silently rewritten
+      # to "_unknown" by the helper — the exact silent-wrong-scope outcome this
+      # validation exists to prevent (CodeAnt, PR #856).
+      if [[ ! "$REPO_ARG" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+        echo "polling-state-gate.sh: --repo value is not a plausible repo key: $REPO_ARG" >&2
+        exit 2
+      fi
+      shift 2
+      ;;
     -*)
       echo "polling-state-gate.sh: unknown flag: $1" >&2
       exit 2
@@ -146,19 +208,42 @@ fi
 # #638). Defaults to the active checkout; --root-repo overrides it.
 STATE_READ_DIR="${STATE_READ_DIR:-$PWD}"
 
+# --repo is implemented by exporting $CLAUDE_SESSION_REPO rather than by threading
+# a flag through every helper invocation (issue #854). session-state.sh already
+# resolves `--repo -> $CLAUDE_SESSION_REPO -> cwd origin`, so one export makes the
+# gate, poll-watermarks.sh, and every other child agree on a single scope key —
+# and it is what makes a pre-set $CLAUDE_SESSION_REPO work here too, since we
+# simply leave it in place when --repo is absent.
+# Was the repo key DECLARED by the caller, or merely derived from the checkout?
+# Only a declared key can contradict the checkout, so only a declared key is
+# subject to the contradiction guard in validate_root_match(). Captured before
+# the export below, which would otherwise make every --repo run look like it
+# also had the environment variable set.
+REPO_KEY_DECLARED=0
+if [[ -n "$REPO_ARG" || -n "${CLAUDE_SESSION_REPO:-}" ]]; then
+  REPO_KEY_DECLARED=1
+fi
+if [[ -n "$REPO_ARG" ]]; then
+  export CLAUDE_SESSION_REPO="$REPO_ARG"
+fi
+
 # Which repo scope holds this PR (issue #638). Resolved once, then reused by
 # state_pr_field() so every read below comes from one consistent entry.
 #
-# Preference order, and why:
+# Preference order, and why (issue #854):
 #   1. this repo's own scope — the normal case
 #   2. the reserved "_unknown" scope — legacy state that predates scoping and
 #      could not be attributed. Reading it here is what preserves #647's
 #      "state from an older version -> notice, then pass" behavior: those
 #      entries still reach validate_root_match() and are judged on their own
 #      recorded owner_repo/root_repo exactly as before.
-#   3. some other named repo's scope — a genuine cross-repo poll, refused by
-#      the caller (never read, so another repo's PR #84 can't answer for ours)
-# Empty output means the PR is registered nowhere.
+#   3. nothing. There is deliberately no third choice: another named repo's
+#      scope is NEVER selected. PR numbers are per-repo, so another repo
+#      holding a #84 says nothing about ours, and reading its entry was the
+#      collision bug — it answered with the wrong owner_repo, resolved the
+#      wrong handoff path, and made a fresh --ensure-session refuse outright.
+# Empty output means the PR is registered nowhere *for this repo*, which
+# --ensure-session exists to fix.
 # Identity of the checkout the caller is ACTUALLY standing in, captured before
 # resolve_root_repo() can redirect to a recorded path. Without this anchor the
 # cross-repo check compares the redirected root against itself and always
@@ -167,6 +252,25 @@ STATE_READ_DIR="${STATE_READ_DIR:-$PWD}"
 ACTIVE_REPO_KEY=""
 PR_SCOPE=""
 PR_SCOPE_RESOLVED=0
+
+# Every named scope holding this PR number, newline-separated, as a jq array
+# expression's output. Resolved once and reused by both readers below.
+_pr_holders() {
+  # `--raw-path` addresses the document root, so this sees every scope at once
+  # (the helper still migrates a legacy flat file in memory first).
+  ( cd "$STATE_READ_DIR" 2>/dev/null && "$STATE_HELPER" --raw-path --get \
+    "[(.repos // {}) | to_entries[] | select(.value.prs[\"$PR_NUMBER\"] != null) | .key] | join(\"\n\")" \
+    2>/dev/null || true )
+}
+
+active_scope_key() {
+  local active="$ACTIVE_REPO_KEY"
+  if [[ -z "$active" ]]; then
+    active="$(cd "$STATE_READ_DIR" 2>/dev/null && "$STATE_HELPER" --repo-key 2>/dev/null || true)"
+  fi
+  printf '%s' "$active"
+}
+
 resolve_pr_scope() {
   if [[ "$PR_SCOPE_RESOLVED" -eq 1 ]]; then
     printf '%s' "$PR_SCOPE"
@@ -175,19 +279,34 @@ resolve_pr_scope() {
   PR_SCOPE_RESOLVED=1
   PR_SCOPE=""
   [[ -f "$STATE_FILE" ]] || { printf '%s' ""; return 0; }
-  local active="$ACTIVE_REPO_KEY"
-  if [[ -z "$active" ]]; then
-    active="$(cd "$STATE_READ_DIR" 2>/dev/null && "$STATE_HELPER" --repo-key 2>/dev/null || true)"
-  fi
-  # `--raw-path` addresses the document root, so this sees every scope at once
-  # (the helper still migrates a legacy flat file in memory first).
-  PR_SCOPE="$(cd "$STATE_READ_DIR" 2>/dev/null && "$STATE_HELPER" --raw-path --get \
-    "[(.repos // {}) | to_entries[] | select(.value.prs[\"$PR_NUMBER\"] != null) | .key] as \$holders
-     | ((\$holders | map(select(. == \"$active\")) | first)
-        // (\$holders | map(select(. == \"_unknown\")) | first)
-        // (\$holders | first) // \"\")" 2>/dev/null || true)"
-  [[ "$PR_SCOPE" == "null" ]] && PR_SCOPE=""
+  local active holder
+  active="$(active_scope_key)"
+  while IFS= read -r holder; do
+    [[ -n "$holder" && "$holder" != "null" ]] || continue
+    if [[ -n "$active" && "$holder" == "$active" ]]; then
+      PR_SCOPE="$holder"
+      break
+    fi
+    # Remember "_unknown" but keep looking: the active scope always wins.
+    [[ "$holder" == "_unknown" && -z "$PR_SCOPE" ]] && PR_SCOPE="_unknown"
+  done < <(_pr_holders)
   printf '%s' "$PR_SCOPE"
+}
+
+# Named scopes OTHER than the active one (and other than "_unknown") that also
+# hold this PR number. Diagnostics only — this is never a read scope. It exists
+# so a "not registered here" error can explain the collision instead of leaving
+# the caller staring at a PR they can see in the state file.
+foreign_pr_scopes() {
+  [[ -f "$STATE_FILE" ]] || return 0
+  local active holder
+  active="$(active_scope_key)"
+  while IFS= read -r holder; do
+    [[ -n "$holder" && "$holder" != "null" ]] || continue
+    [[ "$holder" == "_unknown" ]] && continue
+    [[ -n "$active" && "$holder" == "$active" ]] && continue
+    printf '%s\n' "$holder"
+  done < <(_pr_holders)
 }
 
 # Read a per-PR field from the scope resolved above, so a same-numbered PR in
@@ -286,29 +405,14 @@ resolve_root_repo() {
 # never consulted here (issue #647) — only the per-PR fields carry authority.
 validate_root_match() {
   local resolved="$1"
-  # Cross-repo short-circuit (issue #638): the PR is registered, but under
-  # ANOTHER named repo's scope. That is the collision this scoping exists to
-  # catch, and it is decided before any per-PR field is read — reading the
-  # other repo's entry is exactly the bug. "_unknown" is not a named repo:
-  # those entries are unattributed legacy state and fall through to the
-  # recorded-scoping rules below, preserving #647's behavior for them.
-  local pr_scope active_id_pre
-  pr_scope="$(resolve_pr_scope)"
-  active_id_pre="$ACTIVE_REPO_KEY"
-  # "_unknown" is NOT an identity — session-state.sh returns it whenever repo
-  # context cannot be resolved (no origin remote, not a git dir). Comparing it
-  # like a repo name would refuse a valid session outright, re-introducing the
-  # false refusal this change exists to remove. When either side is unresolved,
-  # skip this check and fall through to #647's rules below, whose repo_identity()
-  # has a git-common-dir fallback that can still compare such checkouts (and
-  # which fails closed on its own terms when they genuinely cannot be compared).
-  if [[ -n "$pr_scope" && "$pr_scope" != "_unknown" \
-        && -n "$active_id_pre" && "$active_id_pre" != "_unknown" \
-        && "$active_id_pre" != gitdir:* && "$active_id_pre" != path:* \
-        && "$pr_scope" != "$active_id_pre" ]]; then
-    echo "polling-state-gate.sh: PR #$PR_NUMBER is scoped to repo '$pr_scope' but the active checkout is '$active_id_pre' — refuse to poll from the wrong repo" >&2
-    return 1
-  fi
+  # There is deliberately no cross-scope short-circuit here any more (issue
+  # #854). resolve_pr_scope() can only return the active scope, "_unknown", or
+  # empty, so "the PR lives under a different named repo" is no longer a state
+  # this function can observe — and it was never a reason to refuse in the first
+  # place, since PR numbers are per-repo. What remains below is the guard that
+  # does carry authority: per-PR scoping recorded INSIDE the scope we read, which
+  # still refuses a genuine mismatch. A PR simply absent from our scope is
+  # handled by require_handoff_and_state()'s not-registered check, not here.
   local stored_owner=""
   local stored_root=""
   if [[ -f "$STATE_FILE" ]]; then
@@ -320,7 +424,50 @@ validate_root_match() {
 
   local canon active_id
   canon=$(cd "$resolved" && git rev-parse --show-toplevel 2>/dev/null || echo "$resolved")
-  active_id="$(repo_identity "$canon")"
+  # Identity of the checkout the caller is standing in.
+  #
+  # A DECLARED key (--repo / $CLAUDE_SESSION_REPO, surfacing here as
+  # ACTIVE_REPO_KEY) may SUPPLY an identity the checkout lacks; it may never
+  # OVERRIDE one the checkout states. Without that rule
+  # `--repo org/a --root-repo /repo-b` validated every per-PR field against
+  # org/a while gh, merge-gate.sh, and the session-state writes all ran against
+  # repo B — a poll evaluating the wrong repo's PR, and --ensure-session
+  # recording B's head_sha in A's lane (CodeAnt + BugBot, PR #856). The two
+  # flags answer different questions (--root-repo = which checkout, --repo =
+  # which scope key), so when both resolve to a real owner/repo and disagree,
+  # that is a contradiction in the invocation, not something to silently pick a
+  # winner for. Refuse, and say which is which. Not suppressed by "quiet": a
+  # contradictory invocation is never something --ensure-session should paper
+  # over by (re)recording scoping.
+  local checkout_id
+  checkout_id="$(repo_identity "$canon")"
+  # Only a key the caller DECLARED counts here. An ACTIVE_REPO_KEY merely derived
+  # from the checkout cannot "contradict" that same checkout, and treating it as
+  # declared would mislabel a corrupt same-scope root_repo (caught by (a)/(b)
+  # below) as an override the caller never passed.
+  local declared=""
+  if [[ "$REPO_KEY_DECLARED" -eq 1 && -n "$ACTIVE_REPO_KEY" && "$ACTIVE_REPO_KEY" == */* \
+        && "$ACTIVE_REPO_KEY" != "_unknown" \
+        && "$ACTIVE_REPO_KEY" != gitdir:* && "$ACTIVE_REPO_KEY" != path:* ]]; then
+    declared="$(normalize_repo_key "$ACTIVE_REPO_KEY")"
+  fi
+  if [[ -n "$declared" && "$checkout_id" == */* \
+        && "$checkout_id" != gitdir:* && "$checkout_id" != path:* \
+        && "$declared" != "$checkout_id" ]]; then
+    echo "polling-state-gate.sh: repo key '$declared' (from --repo or \$CLAUDE_SESSION_REPO) contradicts the checkout being operated on, which is '$checkout_id' ($canon) — refuse to validate against one repo while acting on another. Drop the override, or point --root-repo at a '$declared' checkout." >&2
+    return 1
+  fi
+  # "_unknown" is NOT an identity: session-state.sh returns it whenever repo
+  # context cannot be resolved, so treating it as a repo name would refuse valid
+  # sessions. When the checkout cannot name itself, the declared key is what
+  # makes it comparable at all; otherwise fall back to repo_identity(), whose
+  # git-common-dir fallback can still compare such checkouts and which fails
+  # closed on its own terms in (c) when they genuinely cannot be compared.
+  if [[ -n "$declared" ]]; then
+    active_id="$declared"
+  else
+    active_id="$checkout_id"
+  fi
 
   # (a) owner/repo scoping — usable only when the active checkout also resolves to
   #     an owner/repo identity (i.e. it has an `origin` remote to compare against).
@@ -373,6 +520,12 @@ write_checkpoint_handoff() {
   # write is protected by the shared state-lock.sh advisory lock (issue #682).
   # Include owner_repo in the JSON body so migrate and read-time assertions can use it.
   local json_body
+  # Every "${arr[@]}" below is written as "${arr[@]+...}" (issue #854): macOS
+  # system bash is 3.2, where an EMPTY array expanded under `set -u` aborts with
+  # "unbound variable" rather than expanding to nothing. That is not theoretical
+  # here — it crashed --ensure-session (exit 1, after the state write) on the
+  # ordinary path where a repo has no resolvable owner_repo, or where an existing
+  # flat handoff is refreshed and set_or_flag is deliberately left empty.
   local owner_repo_jq_arg=()
   local owner_repo_jq_field=""
   if [[ -n "$owner_repo" ]]; then
@@ -384,7 +537,7 @@ write_checkpoint_handoff() {
     --arg sha "$head_sha" \
     --arg rev "$reviewer" \
     --arg now "$now" \
-    "${owner_repo_jq_arg[@]}" \
+    ${owner_repo_jq_arg[@]+"${owner_repo_jq_arg[@]}"} \
     "{
       schema_version: \"1.0\",
       pr_number: \$pr,
@@ -410,7 +563,7 @@ write_checkpoint_handoff() {
   # (issue #655: ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json).
   local or_flag=()
   [[ -n "$owner_repo" ]] && or_flag=(--owner-repo "$owner_repo")
-  if ! "$HANDOFF_HELPER" "${or_flag[@]}" --init "$PR_NUMBER" "$json_body"; then
+  if ! "$HANDOFF_HELPER" ${or_flag[@]+"${or_flag[@]}"} --init "$PR_NUMBER" "$json_body"; then
     echo "polling-state-gate.sh: handoff-state.sh --init failed for PR #$PR_NUMBER" >&2
     exit 4
   fi
@@ -515,7 +668,7 @@ ensure_session() {
   local or_flag=()
   [[ -n "$owner_repo" ]] && or_flag=(--owner-repo "$owner_repo")
   local handoff_path
-  handoff_path="$("$HANDOFF_HELPER" "${or_flag[@]}" --path "$PR_NUMBER")"
+  handoff_path="$("$HANDOFF_HELPER" ${or_flag[@]+"${or_flag[@]}"} --path "$PR_NUMBER")"
   # Backward-compat: also check the flat path so a polling session started before
   # this change can refresh an already-existing flat handoff without moving it.
   local flat_path="${HANDOFF_DIR}/pr-${PR_NUMBER}-handoff.json"
@@ -532,7 +685,7 @@ ensure_session() {
     # Pass --owner-repo when path is the scoped one so we hold the right lock.
     local set_or_flag=()
     [[ "$handoff_path" != "$flat_path" ]] && [[ -n "$owner_repo" ]] && set_or_flag=(--owner-repo "$owner_repo")
-    if ! "$HANDOFF_HELPER" "${set_or_flag[@]}" --set "$PR_NUMBER" ".head_sha=$head_sha"; then
+    if ! "$HANDOFF_HELPER" ${set_or_flag[@]+"${set_or_flag[@]}"} --set "$PR_NUMBER" ".head_sha=$head_sha"; then
       echo "polling-state-gate.sh: handoff-state.sh --set .head_sha failed for PR #$PR_NUMBER" >&2
       exit 4
     fi
@@ -554,6 +707,28 @@ require_handoff_and_state() {
   local gate_mode="${2:-live}"
   # Pin every scoped read below to the repo we actually resolved to (#638).
   [[ -d "$resolved" ]] && STATE_READ_DIR="$resolved"
+
+  # Not registered for THIS repo — checked first, before the handoff path is
+  # resolved (issue #854). The handoff path is derived from the per-PR
+  # owner_repo, so running this check later meant a PR that only another repo
+  # tracks produced an error naming the OTHER repo's handoff directory. Every
+  # exit from here is 4; the foreign-scope note is diagnostics, never a scope
+  # this run reads from.
+  if [[ -f "$STATE_FILE" && -z "$(resolve_pr_scope)" ]]; then
+    local active_for_msg foreign foreign_list=""
+    active_for_msg="$(active_scope_key)"
+    [[ -n "$active_for_msg" ]] || active_for_msg="this repo"
+    while IFS= read -r foreign; do
+      [[ -n "$foreign" ]] || continue
+      foreign_list="${foreign_list:+$foreign_list, }'$foreign'"
+    done < <(foreign_pr_scopes)
+    local msg="polling-state-gate.sh: PR #$PR_NUMBER is not registered in session-state for '$active_for_msg' — run: polling-state-gate.sh $PR_NUMBER --ensure-session"
+    if [[ -n "$foreign_list" ]]; then
+      msg="$msg (note: PR #$PR_NUMBER is also registered under $foreign_list; PR numbers are per-repo, so that entry is not used here)"
+    fi
+    echo "$msg" >&2
+    exit 4
+  fi
 
   # Resolve the handoff path — prefer the scoped layout introduced by issue #655.
   # Backward-compat: fall back to the legacy flat path when the scoped file is absent
