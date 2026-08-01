@@ -31,8 +31,9 @@
 #   that lookup if you need to post from outside a checkout.
 #
 # Exit codes:
-#   0  Inline reply posted (posted comment URL printed to stdout)
-#   1  Fallback PR-level reply posted (still a successful reply; URL on stdout)
+#   0  Reply posted — by either the inline endpoint or the PR-level fallback;
+#      URL printed to stdout. Fallback path also emits a note to stderr.
+#   1  (unused — reserved; was the fallback-success code before issue #884)
 #   2  Usage error
 #   3  Inline returned 404 and no --pr provided OR both endpoints returned 404
 #   4  Inline returned 404 and fallback failed with a non-404 error
@@ -295,7 +296,7 @@ FALLBACK_RESP=$(gh pr comment "$PR_NUMBER" --body "$BODY" 2>"$FALLBACK_ERR") || 
 if [[ $FALLBACK_RC -eq 0 ]]; then
   # Current `gh pr comment` (2.x) prints the posted URL to stdout. A few older
   # gh versions printed it to stderr; check the captured stderr file as a
-  # belt-and-suspenders fallback so the exit-1 URL contract holds across
+  # belt-and-suspenders fallback so the exit-0 URL contract holds across
   # versions. Extract the first http(s) URL from whichever stream has one.
   FALLBACK_URL=$(printf '%s' "$FALLBACK_RESP" | grep -oE 'https?://[^[:space:]]+' | head -1)
   if [[ -z "$FALLBACK_URL" ]]; then
@@ -305,8 +306,11 @@ if [[ $FALLBACK_RC -eq 0 ]]; then
     echo "ERROR: fallback reply posted but gh pr comment emitted no URL on stdout or stderr" >&2
     exit 5
   fi
+  # Emit a note on stderr so callers that want to detect the fallback path can;
+  # the URL on stdout and exit 0 signal success to &&-chains and scripts alike.
+  echo "[reply-thread] note: inline endpoint returned 404; reply posted via PR-level comment fallback" >&2
   printf '%s\n' "$FALLBACK_URL"
-  exit 1
+  exit 0
 fi
 
 # Fallback failed — classify via stderr.

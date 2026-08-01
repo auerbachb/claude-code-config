@@ -323,7 +323,7 @@ jq '.new_since_baseline.conversation | map(select(.classification.class == "find
        --body "Fixed in \`$SHA\`: <what changed>" --pr N
      ```
 
-     Exit codes: `0` inline reply posted; `1` fallback PR-level reply posted (still success). Both outcomes are successful replies. See `.claude/scripts/reply-thread.sh --help` for the full contract, including 404-without-`--pr` or both-endpoints-404 (exit 3) and inline-404-then-fallback-non-404 (exit 4).
+     Exit code `0` means the reply posted (by either the inline endpoint or the PR-level fallback); the fallback path also emits a note to stderr. Non-zero means a genuine failure to post. See `.claude/scripts/reply-thread.sh --help` for the full contract, including 404-without-`--pr` or both-endpoints-404 (exit 3) and inline-404-then-fallback-non-404 (exit 4).
 
   6. Resolve all bot threads with the shared helper (paginated, filtered to `coderabbitai`/`cursor`/`greptile-apps`, falls back to `minimizeComment` on failure):
 
