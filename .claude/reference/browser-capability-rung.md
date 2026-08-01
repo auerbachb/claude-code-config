@@ -4,7 +4,7 @@ Expanded detail for rung 4 of the capability ladder in `.claude/rules/safety.md`
 
 ## Why the rung exists
 
-The ladder used to end at the command line. When a task had no CLI path — a dashboard-only setting, a console toggle, a provider with no API for the thing you need — the agent fell straight through to rung 4 and wrote a runbook. That is a whole class of work handed back that the agent could have done, clicking the same UI the user would have.
+The ladder used to end at the command line. When a task had no CLI path — a dashboard-only setting, a console toggle, a provider with no API for the thing you need — the agent fell straight through to the runbook hand-off (rung 4 then, rung 5 now). That is a whole class of work handed back that the agent could have done, clicking the same UI the user would have.
 
 A browser is available in every interactive session. Reaching for a runbook without having tried it is the same premature deferral that "I can't" already was.
 
