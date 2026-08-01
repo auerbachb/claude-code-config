@@ -273,5 +273,20 @@ jq -e '.notices == []' <<<"$("$SCRIPT" --format json)" >/dev/null \
   || fail "an empty state should yield an empty notices array, not [\"\"]"
 ok "--format json emits an empty notices array when there is nothing to say"
 
+# --- 11. A failed write must not report counts it did not land ---------------
+# `purged` is a claim about what changed. If the write fails, reporting the
+# planned counts tells a JSON consumer the cleanup succeeded when it did not.
+new_home "$FULL_STATE"
+chmod 500 "$HOME/.claude" 2>/dev/null || true
+J="$("$SCRIPT" --format json 2>/dev/null)"
+chmod 700 "$HOME/.claude" 2>/dev/null || true
+if jq -e '[.purged[]] | add > 0' <<<"$J" >/dev/null 2>&1; then
+  jq -e '.notices | length > 0' <<<"$J" >/dev/null     || fail "reported non-zero purged counts with no notice: $J"
+  # counts > 0 only legitimate if the write actually landed
+  [[ "$(jq -c '.polling_jobs' "$STATE")" == "[]" ]] \
+    || fail "purged counts reported but state file unchanged: $J"
+fi
+ok "purged counts never claim work the write did not land"
+
 echo
 echo "All session-scheduling-reconcile.sh tests passed."

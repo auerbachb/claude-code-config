@@ -193,11 +193,13 @@ if [[ -f "$STATE_FILE" ]]; then
             # clean purge, and let the next session start retry.
             NOTICES+=("scheduling-reconcile: could not clear $TOTAL dead scheduling record(s) — session-state.json left unmodified; will retry next session.")
             TOTAL=0
+            PURGED_JSON='{}'   # nothing landed; `purged` must not claim otherwise
           fi
         fi
       else
         NOTICES+=("scheduling-reconcile: session-state.sh not found — left $TOTAL dead scheduling record(s) in place.")
         TOTAL=0
+        PURGED_JSON='{}'
       fi
     fi
 
