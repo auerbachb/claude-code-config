@@ -48,6 +48,14 @@
 #   `/home/u/repo/.claude/scripts/merge-gate.sh` also still fails — `worktrees`
 #   is the only exempt component.
 #
+#   SPACES: tolerated only in the `Working directory:` field, whose entire value
+#   is one path by definition. In free prose a path is a whitespace-delimited
+#   token, because "See /tmp/build then repo/.claude/worktrees/x" is genuinely
+#   ambiguous — nothing distinguishes a path continuing across a space from
+#   separate words, and any space-tolerant rule there lets an unrelated earlier
+#   path vouch for a later relative one. A spaced working directory belongs in
+#   the field that exists to carry it.
+#
 # WHY NOT THE LITERAL `/[a-z-]+` FROM THE TICKET
 #   That pattern matches /tmp, /usr, /home, and every lowercase leading path
 #   segment, so it fails any document that names a real location — which every
@@ -222,21 +230,23 @@ fi
 # opening bracket or quote in between). Spaces inside the path are then
 # irrelevant, while `repo/…` and `./…` still have no such start and stay
 # visible to harness-path.
-# The marker is part of an absolute path only when the run of text immediately
-# before it starts at a `/` that follows line-start or whitespace AND contains
-# no prose punctuation on the way. Searching the whole prefix for *any*
-# absolute start was too loose: in
-#   "See /tmp/build, then repo/.claude/worktrees/x"
-# the unrelated /tmp earlier in the sentence would vouch for the relative path
-# that follows. Spaces stay legal inside the run — that is the whole reason this
-# is not a whitespace-token test — but a comma, semicolon, or colon ends it.
-ABS_PATH_START_RE='(^|[[:space:]])[([<"'"'"'`]*/[^,;:!?"`]*$'
-
+# Two different jobs, so two different rules — because "is this an absolute
+# path?" is only answerable where the grammar says the text IS a path.
+#
+# In free prose a path is a whitespace-delimited token, full stop. Trying to
+# tolerate spaces there is unresolvable: in
+#   "See /tmp/build then repo/.claude/worktrees/x"
+# nothing distinguishes "then repo/..." continuing the /tmp path from it being
+# separate words, so any space-tolerant rule lets the unrelated /tmp vouch for
+# the relative harness path that follows.
+#
+# The `Working directory:` line is different: its entire value is one path by
+# definition, so a space in it is unambiguous and must be honoured — that is the
+# real case (`/Users/n/My Work/repo/...`) this exemption exists for.
 # A URL is an address any reader can open, so a repository link that happens to
 # point at a harness file is a portable reference — unlike a local path, which
-# only resolves inside this checkout. URLs cannot contain unescaped spaces, so
-# whitespace tokenizing IS sound here (it is not, for filesystem paths — see
-# mask_worktree_paths below).
+# only resolves inside this checkout. Whitespace tokenizing IS sound here
+# specifically because URLs cannot contain unescaped spaces.
 mask_urls() {
   local in="$1" out="" tok bare
   local -a parts
@@ -251,18 +261,31 @@ mask_urls() {
   printf '%s' "$out"
 }
 
-mask_worktree_paths() {
-  local in="$1" out="" rest="$1" pre
-  while [[ "$rest" == *"$WORKTREE_PATH_PREFIX"* ]]; do
-    pre="${rest%%"$WORKTREE_PATH_PREFIX"*}"
-    if [[ "$pre" =~ $ABS_PATH_START_RE ]]; then
-      out+="$pre/<worktree>/"
-    else
-      out+="$pre$WORKTREE_PATH_PREFIX"
+mask_worktree_paths() { # $1 = line, $2 = 1 when this is the Working directory line
+  local in="$1" is_field="${2:-0}" out="" tok bare value
+  local -a parts
+
+  if (( is_field )); then
+    value="${in#*"$WORKDIR_ANCHOR"}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    # The whole value is the path, spaces included — exempt only if it is absolute.
+    if [[ "$value" == /* ]]; then
+      printf '%s' "${in//"$WORKTREE_PATH_PREFIX"//<worktree>/}"
+      return
     fi
-    rest="${rest#*"$WORKTREE_PATH_PREFIX"}"
+    printf '%s' "$in"
+    return
+  fi
+
+  read -ra parts <<<"$in"
+  for tok in ${parts+"${parts[@]}"}; do
+    bare="${tok#[\`\(\[\<\"\']}"
+    if [[ "$bare" == /*"$WORKTREE_PATH_PREFIX"* ]]; then
+      tok="${tok//"$WORKTREE_PATH_PREFIX"//<worktree>/}"
+    fi
+    out+="$tok "
   done
-  printf '%s%s' "$out" "$rest"
+  printf '%s' "$out"
 }
 
 VIOLATIONS=0
@@ -332,7 +355,11 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   fi
 
   # The working-directory field: present, and an absolute path.
+  IS_WORKDIR_LINE=0
   if (( ! IS_HEADING )) && [[ "$section" == "$WORKDIR_SECTION" && "$line" == "$WORKDIR_ANCHOR"* ]]; then
+    IS_WORKDIR_LINE=1
+  fi
+  if (( IS_WORKDIR_LINE )); then
     WORKDIR_SEEN=1
     workdir="${line#"$WORKDIR_ANCHOR"}"
     workdir="${workdir#"${workdir%%[![:space:]]*}"}"   # strip leading blanks
@@ -343,7 +370,14 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   fi
 
   # Mask the one permitted .claude/ form before any rule sees the line.
-  scan=$(mask_worktree_paths "$(mask_urls "$line")")
+  scan=$(mask_worktree_paths "$(mask_urls "$line")" "$IS_WORKDIR_LINE")
+  # Fail CLOSED on an internal fault. If masking ever breaks, `scan` goes empty
+  # and every rule below silently matches nothing — the lint would report a
+  # clean document while checking none of it. Refuse instead.
+  if [[ -n "${line//[[:space:]]/}" && -z "${scan//[[:space:]]/}" ]]; then
+    echo "portable-handoff-lint.sh: internal error — line $lineno produced an empty scan buffer; refusing to report a result" >&2
+    exit 4
+  fi
 
   [[ "$scan" =~ $RE_HARNESS_PATH ]] && report "harness-path" "$lineno" "$section" "$line"
   [[ "$scan" =~ $RE_PHASE_VOCAB ]] && report "phase-vocabulary" "$lineno" "$section" "$line"

@@ -136,15 +136,24 @@ ALLOWED="$TMP_DIR/allowed.md"
 cp "$GOLDEN" "$ALLOWED"
 printf '%s\n' "Also check /Users/b/repo/.claude/worktrees/issue-42-other for a second branch." >>"$ALLOWED"
 printf '%s\n' "Quoted: \`/Users/b/repo/.claude/worktrees/issue-43-x\` is fine too." >>"$ALLOWED"
-# Directory names contain spaces. A whitespace-tokenizing exemption test broke
-# the path into pieces, the piece holding .claude/ did not start with /, and a
-# valid working directory was reported as a harness path.
-printf '%s\n' "And /Users/b/My Work/repo/.claude/worktrees/issue-44-spaced is valid." >>"$ALLOWED"
 # A URL is an address any reader can open, so a repository link that happens to
 # point at a harness file is a portable reference, unlike a local path.
 printf '%s\n' "Background: https://github.com/auerbachb/claude-code-config/blob/main/.claude/rules/safety.md" >>"$ALLOWED"
 run_lint "$ALLOWED" >/dev/null 2>&1 \
   || fail "an absolute /.claude/worktrees/ path must be allowed — it is the reader's own uncommitted work"
+
+# Directory names contain spaces, and the Working directory field is where a
+# spaced path legitimately appears — its whole value is one path by definition,
+# so the space is unambiguous there. In free prose it is NOT: nothing
+# distinguishes a path continuing across a space from separate words, which is
+# what let an unrelated earlier path vouch for a later relative one.
+SPACED="$TMP_DIR/spaced.md"
+sed 's|^Working directory: .*|Working directory: /Users/b/My Work/repo/.claude/worktrees/issue-44|' "$GOLDEN" >"$SPACED"
+run_lint "$SPACED" >/dev/null 2>&1 \
+  || fail "a spaced absolute path in the Working directory field must be allowed"
+
+# The same spaced form in free prose is not exempt — deliberately.
+assert_catches harness-path "See /tmp/build then repo/.claude/worktrees/issue-42-other."
 
 # --- 4. No false positives on what a real handoff contains ---------------
 # If any of these fire, the checker is unusable and will simply be bypassed.
