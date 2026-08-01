@@ -184,28 +184,39 @@ expect() {
 
   # The window the old suite left open is precisely here — a --update-cap run
   # has just completed. Check the real file mid-run, not only at exit.
+  # A hermeticity breach is its own failure, independent of the ratchet
+  # assertions: the case must NOT print "ok" just because the ratchet still
+  # behaved. assert_real_cap_untouched already printed its own FAIL line and
+  # counted itself, so the delta below only suppresses the "ok".
+  local pre_assert_failures=$failures
   assert_real_cap_untouched "during ${name}"
+  local hermetic_ok=1
+  if (( failures != pre_assert_failures )); then
+    hermetic_ok=0
+  fi
 
-  local verdict="ok"
+  local ratchet_ok=1
   if (( got != want_exit )); then
     echo "FAIL — ${name}: expected exit ${want_exit}, got ${got}"
-    verdict="fail"
+    ratchet_ok=0
   elif ! grep -qE "$want_re" <<< "$out"; then
     echo "FAIL — ${name}: exit ${got} as expected, but output did not match /${want_re}/"
-    verdict="fail"
+    ratchet_ok=0
   elif [[ "$post_cap" != "any" ]]; then
     local actual_cap
     actual_cap=$(read_cap)
     if [[ "$actual_cap" != "$post_cap" ]]; then
       echo "FAIL — ${name}: cap expected ${post_cap}, got ${actual_cap}"
-      verdict="fail"
+      ratchet_ok=0
     fi
   fi
 
-  if [[ "$verdict" == "fail" ]]; then
+  if (( ratchet_ok == 0 )); then
     printf '%s\n' "$out" | sed 's/^/       /'
     failures=$(( failures + 1 ))
-  else
+  fi
+
+  if (( ratchet_ok == 1 && hermetic_ok == 1 )); then
     echo "ok   — ${name}"
   fi
 
