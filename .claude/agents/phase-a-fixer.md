@@ -42,7 +42,7 @@ The parent agent provides these values in your prompt:
 - NEVER run destructive commands (`rm -rf`, `rm`, `git checkout .`, `git stash`, `git reset --hard`) in the root repo directory.
 - Stay in your worktree directory at all times.
 - NEVER add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `noqa`, or any linter suppression comment. Fix the actual code.
-- Before leaving any work undone — whether you'd frame it as impossible, out of scope, a deployment step, or a runbook for someone else — walk the capability ladder for any provider CLI (`gh`, `git`, `curl`, or a service CLI like `railway`/`vercel`): check locally by absolute path, check whether the provider ships one, install it when safe. Handing off is rung 4, reachable only after rungs 1–3 actually failed: name the rung that stopped you and why, and give the exact commands, including the interactive auth step when that is the wall — per the capability-discovery mindset in `safety.md`.
+- Before leaving any work undone — whether you'd frame it as impossible, out of scope, a deployment step, or a runbook for someone else — walk the capability ladder for any provider CLI (`gh`, `git`, `curl`, or a service CLI like `railway`/`vercel`): check locally by absolute path, check whether the provider ships one, install it when safe, and drive the browser (`mcp__Claude_Browser__*`, or `mcp__claude-in-chrome__*` when the user's logged-in session is required) when the only path is a web UI — you inherit those tools. Handing off is rung 5, reachable only after rungs 1–4 actually failed: name the rung that stopped you and why, and give the exact commands, including the interactive auth step when that is the wall — per the capability-discovery mindset in `safety.md`.
 
 ## Workflow
 

@@ -17,7 +17,8 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `cr-polling-commands.md` — full multi-line `gh api` commands for CR review polling and CI verification
 - `cr-rate-limits.md` — full CR rate-limit caps, hourly-state mechanics, and `cr-review-hourly.sh` flags
 - `codeowner-bot-approvals.md` — CODEOWNERS handling for review bots and stale-approval re-trigger commands
-- `capability-discovery-examples.md` — false-walls vs real-walls catalog for try-CLI-before-handoff (`safety.md` Capability Discovery)
+- `capability-discovery-examples.md` — false-walls vs real-walls catalog for try-every-path-before-handoff (`safety.md` Capability Discovery)
+- `browser-capability-rung.md` — rung 4 (browser) detail: in-app vs Chrome surface selection, the single login/authorization ask, bounded attempt, untrusted-page posture, subagent reachability matrix, and the `phase-c-merger` stay-restricted decision (#852)
 - `merge-gate-reviewer-paths.md` — per-reviewer merge-gate path details (CR/CodeAnt, BugBot, Greptile)
 - `codeant-graphite-supplemental.md` — CodeAnt and Graphite supplemental polling on the CR path
 - `local-review-cli-failure-modes.md` — how CodeAnt/CodeRabbit fake a clean pass on failure, 403 triage, 15-file cap, and binary-absent detection (#642, #819)

@@ -1,6 +1,6 @@
 # Capability Discovery — False Walls vs Real Walls
 
-Extracted from `.claude/rules/safety.md` "Capability Discovery — Try the CLI Before Deferring". The rule file keeps the operative ladder and the verbatim `MINDSET:` block; this file holds the worked catalog. **Extend the false-walls list as new ones are observed.**
+Extracted from `.claude/rules/safety.md` "Capability Discovery — Try Every Path Before Deferring". The rule file keeps the operative ladder and the verbatim `MINDSET:` block; this file holds the worked catalog. **Extend the false-walls list as new ones are observed.** Rung 4 (browser) has its own file: `.claude/reference/browser-capability-rung.md`.
 
 ## Common false walls — GitHub (usually doable)
 
@@ -38,16 +38,16 @@ The ladder's other entry point, and the one that slipped past issue #759. These 
 |--------------|---------------------|
 | "that's not a session task" | rung 1 never walked |
 | "that's a deployment step" | rung 1 never walked |
-| "the runbook is in `docs/…`" | rung 4 claimed without rungs 1–3 |
-| "I'll leave that to you in case you want to review it first" | rung 4 dressed up as courtesy |
+| "the runbook is in `docs/…`" | rung 5 claimed without rungs 1–4 |
+| "I'll leave that to you in case you want to review it first" | rung 5 dressed up as courtesy |
 
-Courtesy is the hardest of these to catch, because deferring to the user's judgment is sometimes right. Two things have to hold before you act instead of asking: the work is **reversible and inspectable**, and the target is **already established** by the task. Setting an env var on the service this session is already working against — one you can read back and change — is a step you can take and report, not a decision needing pre-approval. Standing up a new environment, or writing to one the task never named, is not: that is a real rung-4 handoff, and it should say so.
+Courtesy is the hardest of these to catch, because deferring to the user's judgment is sometimes right. Two things have to hold before you act instead of asking: the work is **reversible and inspectable**, and the target is **already established** by the task. Setting an env var on the service this session is already working against — one you can read back and change — is a step you can take and report, not a decision needing pre-approval. Standing up a new environment, or writing to one the task never named, is not: that is a real rung-5 handoff, and it should say so.
 
 ### Worked example — the motivating case
 
 A security fix merged, CI green, session reported complete. The change altered no production behavior, because three env vars were still unset. The agent detected exactly that, named all three, wrote a correct runbook into `docs/security/S2S-IDENTITY.md`, and handed the session back. It never said "I can't" — it treated provisioning as somebody else's job, so the ladder sat loaded in context and never triggered.
 
-Rung 1 would have ended it: `railway` was on disk and linked. Rungs 2 and 3 were unnecessary, and rung 4 was never reachable.
+Rung 1 would have ended it: `railway` was on disk and linked. Rungs 2–4 were unnecessary, and rung 5 was never reachable.
 
 ```bash
 railway variables            # rung 1: which of the three are already set?
@@ -63,7 +63,7 @@ That is one of the three. Repeat it for the second key, and set the third — `S
 
 The interfaces differ — `vercel env add` reads the value from stdin, `railway variables --set` takes it as an argument — but the boundary does not: the value never reaches your output, a commit, or a PR body. Where a CLI offers a stdin path, prefer it.
 
-## Rungs 1–3 in practice — the not-installed case
+## Rungs 1–3 in practice — the not-installed case (rung 4 is the browser, below)
 
 **Rung 1 — look at what you already have.** MCP tools and custom skills count here too: a connected MCP server or an existing skill may already cover the task, in which case no CLI is needed at all. For the CLI itself, check by absolute path — the Bash tool runs with a minimal PATH, so a bare `which railway` can report nothing for a tool that is in fact installed:
 
@@ -71,7 +71,7 @@ The interfaces differ — `vercel env add` reads the value from stdin, `railway 
 ls -l /opt/homebrew/bin/railway || command -v railway
 ```
 
-**Rung 2 — absent? Check whether the provider ships a CLI at all.** Nearly every major service does. Cap this at **one** lookup — a documentation detour mid-task costs more than the handoff it would save. No published CLI, or an inconclusive lookup → rung 4.
+**Rung 2 — absent? Check whether the provider ships a CLI at all.** Nearly every major service does. Cap this at **one** lookup — a documentation detour mid-task costs more than the handoff it would save. No published CLI, or an inconclusive lookup → rung 4 (browser), then rung 5.
 
 **Rung 3 — install it yourself** when the path is non-interactive and every rail in `safety.md` holds: package name confirmed against official docs, no `curl … | sh` of an unvetted URL, no TLS bypass, no `sudo`.
 
@@ -81,14 +81,30 @@ brew install railway   # name confirmed against the official Railway docs
 
 Mention the new install in your response. Do **not** edit `cli-tool-defaults.md` as a side effect of unrelated work.
 
+## Common false walls — web-only (rung 4)
+
+Rung 4 exists because "no CLI" stopped being the same thing as "not doable". These are the shapes that used to become runbooks:
+
+| "You'll have to do this in the dashboard…" | What the browser rung does |
+|--------------------------------------------|----------------------------|
+| a setting the provider never exposed in its CLI or API | open the console, change it, read it back |
+| a plan/limit toggle behind a web-only account page | same, after the user signs in once |
+| a status page, build log, or metric only rendered in a web UI | read it and report, no user step at all |
+| a first-party console whose CLI covers *most* of the surface but not this one field | the CLI for the rest, the browser for the field |
+
+The user's single step is signing in and approving. Listing the clicks for them instead is a runbook wearing a browser costume — surface selection, the bounded attempt, and the injection posture are in `.claude/reference/browser-capability-rung.md`.
+
 ## Real walls (handoff is correct, but structured)
 
-A token-scope 403 with no workaround, a branch-protection change, a `.env` edit, an install requiring `sudo`, or anything in `safety.md`'s "Never" lists. **Interactive auth is the wall you will actually hit most often** — `brew install railway` is trivial; `railway login` opens a browser, and no agent can complete that.
+A token-scope 403 with no workaround, a branch-protection change, a `.env` edit, an install requiring `sudo`, or anything in `safety.md`'s "Never" lists.
+
+**Interactive auth is the wall you will actually hit most often, but it is now two different walls.** A *CLI-initiated* login is still a real wall: `railway login` opens the system browser out of the agent's reach, and no MCP browser surface can drive it — hand off `railway login` and the rest of the commands. A *dashboard* login is not a wall any more: open the page in the browser pane, ask once for sign-in plus any OAuth approval, and finish the task yourself. And in a headless or cron run, interactively-authenticated MCP servers may be missing entirely — that is a real wall again, so hand off, naming the browser rung as unavailable.
 
 Use the `/admin-merge` (#451) pattern: exact copy-paste command, a one-line reason, and — when you just installed something — the auth step too. Name the rung you stopped on:
 
 ```text
-Stopped at rung 4 (interactive auth): `railway login` opens a browser I can't drive.
+Stopped at rung 5 (interactive auth): `railway login` opens the system browser,
+which no MCP browser surface can drive.
 Run these two and I'll set the variables:
 
   railway login
@@ -99,4 +115,4 @@ Never substitute a prose description of what needs doing for the commands themse
 
 ## Anti-pattern
 
-Typing "agents can't do X" where X sounds like something a CLI handles — stop and walk the ladder; the default answer is you probably CAN. The scope-shaped version of the same anti-pattern is quieter and just as wrong: calling X a deployment step, a follow-up, or somebody else's task, without ever having checked. Both are deferrals, and a handoff that fails to name the rung it stopped on, with a concrete reason, is not a finished answer. This doesn't loosen any prohibition: check `safety.md`'s "Never" lists before assuming a capability is off-limits.
+Typing "agents can't do X" where X sounds like something a CLI — or a web console — handles — stop and walk the ladder; the default answer is you probably CAN. The scope-shaped version of the same anti-pattern is quieter and just as wrong: calling X a deployment step, a follow-up, or somebody else's task, without ever having checked. Both are deferrals, and a handoff that fails to name the rung it stopped on, with a concrete reason, is not a finished answer. This doesn't loosen any prohibition: check `safety.md`'s "Never" lists before assuming a capability is off-limits.
