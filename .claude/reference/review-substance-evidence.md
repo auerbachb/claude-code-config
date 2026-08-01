@@ -66,10 +66,25 @@ Implemented in `.claude/scripts/review-substance.sh` (pure evaluator; no network
    shape, and it stays disqualified.
 2. **Capability failure.** The reviewer said on this SHA that it could not review
    ("does not have a PR Review subscription", rate limit, "couldn't run"), and
-   produced no substantive evidence *after* saying so. The trailing condition
-   matters: CodeRabbit's rate-limit notice is temporary and is routinely followed
-   by a real review an hour later (memory `coderabbit-rate-limit-is-temporary`),
-   and that later work must win.
+   left no evidence outside the approval object that it read the commit anyway.
+   The clearing term is `external_evidence_on_head` — the same one signal 1 uses,
+   for the same two reasons (BugBot, PR #883):
+   - The approval's **own body** must not clear the failure. It used to: the
+     body's timestamp counted as post-failure evidence, so a long generic
+     `APPROVED` posted right after a "cannot review" notice cleared
+     `capability_failure` and took `counts_as_coverage` with it. That is the
+     mia#172 `476798e` trace with a non-empty body.
+   - Genuine external work redeems the approval whenever it lands, **before or
+     after** the notice. CodeRabbit's rate-limit notice is temporary and is
+     routinely followed by a real review an hour later (memory
+     `coderabbit-rate-limit-is-temporary`) — and it is just as often a limit hit
+     on a *later* re-review request, which must not retroactively void a
+     walkthrough that already named this SHA.
+
+   Signals 1 and 2 therefore share one rule, worth stating plainly because both
+   halves were found the hard way: **an approval's own body never vouches for
+   itself, and external evidence that the reviewer read this SHA redeems it
+   whenever it arrives.**
 3. **Self-report SHA mismatch.** Among the reviewer's comments that mention any
    commit id, the most recent names none matching HEAD. This fired on every
    hollow approval in the mia traces and on none of the genuine ones.

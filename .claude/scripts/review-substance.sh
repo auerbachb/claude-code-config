@@ -22,8 +22,8 @@
 #                              finished. Pure ordering violation.
 #   2. capability_failure    — that reviewer said on this SHA that it could not
 #                              review (no subscription / rate limited / couldn't
-#                              run) and produced no substantive evidence after
-#                              saying so.
+#                              run) and left no evidence outside the approval
+#                              object that it read the commit anyway.
 #   3. self_report_mismatch  — the reviewer's own latest SHA-naming comment names
 #                              a commit other than the one it approved.
 #   4. substantive           — review body OR inline comments on HEAD OR a
@@ -302,20 +302,24 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
                    | sort_by(.created) | first )
             end )                                                          as $marker
 
-        # Timestamps at which this reviewer produced substantive evidence.
-        | ( [ (if $body_len >= $min_chars then $ap_ts else empty end),
-              ( $inl[] | .ts ),
-              ( $status_ev[] | .ts ) ]
-            | map(select(. != "")) | sort )                                as $ev
-
-        # Capability failure: a post-push failure notice with NO substantive
-        # evidence from this reviewer after it. CodeRabbit"s rate-limit notice is
-        # temporary and is routinely followed by a real review — that later work
-        # must win (repo memory coderabbit-rate-limit-is-temporary).
-        | ( if $push == "" then null
-            else ( [ $mine[]
-                     | select(.created > $push and .failure)
-                     | select(.created > (($ev | last) // "")) ]
+        # Capability failure: a post-push notice that this reviewer could not
+        # review, and no evidence outside the approval object that it read the
+        # commit anyway. $ext_substantive is the same term $inversion uses, for
+        # the same two reasons:
+        #
+        #  - The approval"s own body must not clear the failure. It used to: the
+        #    body"s timestamp counted as post-failure evidence, so a long generic
+        #    APPROVED posted right after a "cannot review" notice cleared
+        #    capability_failure and took counts_as_coverage with it — the
+        #    mia#172 476798e trace with a non-empty body.
+        #  - Genuine external work redeems the approval whenever it lands, before
+        #    OR after the notice. CodeRabbit"s rate limit is temporary and is
+        #    routinely followed by a real review (repo memory
+        #    coderabbit-rate-limit-is-temporary); it is equally often a limit hit
+        #    on a LATER re-review request, which must not retroactively void the
+        #    walkthrough that already named this SHA.
+        | ( if $push == "" or $ext_substantive then null
+            else ( [ $mine[] | select(.created > $push and .failure) ]
                    | sort_by(.created) | last )
             end )                                                          as $fail
 

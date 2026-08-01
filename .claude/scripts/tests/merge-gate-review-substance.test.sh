@@ -311,6 +311,27 @@ FAKE_ISSUE_COMMENTS="$(convo "codeant-ai[bot]" "CodeAnt AI is running the review
 OUT="$(run_gate)"
 check_eq "codeant-ai[bot]" "$(echo "$OUT" | jq -r '.review_evidence.inverted[0]')" "(s) inversion detected across mixed timestamp spellings"
 
+echo "=== (t) a long approval after a capability failure does not clear it (BugBot, PR #883) ==="
+# The mia#172 476798e trace with a non-empty body. The approval's own timestamp
+# used to count as post-failure evidence, so the bot could say "I cannot review
+# this", post a generic paragraph, and clear its own capability_failure.
+FAKE_REVIEWS="$(approval "coderabbitai[bot]" "Actionable comments posted: 0. The changes look correct and consistent with the surrounding code." "2026-07-31T10:01:30Z")"
+FAKE_ISSUE_COMMENTS="$(convo "coderabbitai[bot]" "Review rate limit exceeded. Please wait 37 minutes before requesting another review." "2026-07-31T10:00:30Z")"
+OUT="$(run_gate)"
+check_eq "false" "$(echo "$OUT" | jq -r '.met')" "(t) a paragraph cannot vouch for a review that never ran"
+check_eq "coderabbitai[bot]" "$(echo "$OUT" | jq -r '.review_evidence.capability_failed[0]')" "(t) capability failure survives the approval body"
+
+echo "=== (u) a failure notice AFTER genuine work does not void it (BugBot, PR #883) ==="
+# Converse guard: a rate limit hit on a LATER re-review request must not
+# retroactively void the walkthrough that already named this SHA.
+FAKE_REVIEWS="$(approval "coderabbitai[bot]" "" "2026-07-31T10:03:50Z")"
+FAKE_ISSUE_COMMENTS="$(convo \
+  "coderabbitai[bot]" "$WALKTHROUGH" "2026-07-31T10:03:40Z" \
+  "coderabbitai[bot]" "Review rate limit exceeded. Please wait 37 minutes before requesting another review." "2026-07-31T10:20:00Z")"
+OUT="$(run_gate)"
+check_eq "true" "$(echo "$OUT" | jq -r '.met')" "(u) a later rate limit does not erase completed work"
+check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["coderabbitai[bot]"].capability_failure')" "(u) capability_failure cleared by external evidence"
+
 echo "=== (m) evaluator rejects malformed stdin ==="
 echo "not json" | "$EVAL_SUT" >/dev/null 2>&1
 check_eq "4" "$?" "(m) non-JSON stdin exits 4"
