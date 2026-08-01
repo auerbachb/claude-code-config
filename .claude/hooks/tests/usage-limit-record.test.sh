@@ -421,4 +421,22 @@ RACE_TAIL_SID=$(tail -1 "$RACE_LOG" | jq -r '.session_id')
 [[ "$RACE_LAST_SID" == "$RACE_TAIL_SID" ]] \
   || fail "usage-limit-last.json ($RACE_LAST_SID) disagrees with the newest event ($RACE_TAIL_SID) — an older invocation's phase 2 clobbered a newer record"
 
+# 15k. Newest-by-mtime holds beyond any window: the newest file is given the
+# lexically SMALLEST name among many, so a name-ordered scan that truncated
+# would miss it. This is the case the removed scan cap got wrong.
+MANY_DIR="$TMP_DIR/many"
+mkdir -p "$MANY_DIR/handoffs"
+# 10# forces base 10: seq -w zero-pads, and bash reads a leading zero as octal,
+# so "008" would abort the arithmetic mid-loop.
+for i in $(seq -w 1 120); do
+  printf 'x\n' >"$MANY_DIR/handoffs/portable-handoff-2026080$(( 10#$i % 9 + 1 ))T120000Z-s$i.md"
+done
+MANY_NEWEST="$MANY_DIR/handoffs/portable-handoff-00000000T000000Z-aaa.md"
+printf 'newest\n' >"$MANY_NEWEST"
+touch_ago "$MANY_NEWEST" 60          # newest mtime, lexically smallest name
+printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":"many"}' \
+  | CLAUDE_USAGE_LIMIT_DIR="$MANY_DIR" CLAUDE_HANDOFF_DIR="$MANY_DIR/handoffs" bash "$HOOK"
+jq -e --arg p "$MANY_NEWEST" '.portable_handoff == $p' "$MANY_DIR/usage-limit-last.json" >/dev/null \
+  || fail "newest-by-mtime lost among many handoffs (got $(jq -r '.portable_handoff' "$MANY_DIR/usage-limit-last.json"))"
+
 echo "PASS: usage-limit-record.sh"

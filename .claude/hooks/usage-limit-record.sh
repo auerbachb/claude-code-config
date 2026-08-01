@@ -119,21 +119,16 @@ HANDOFF_MAX_AGE_DAYS="${CLAUDE_HANDOFF_MAX_AGE_DAYS:-7}"
 [[ "$HANDOFF_MAX_AGE_DAYS" =~ ^[0-9]+$ ]] && (( HANDOFF_MAX_AGE_DAYS > 0 )) \
   || HANDOFF_MAX_AGE_DAYS=7
 
-# Bound the work this optional enrichment can do. The hook runs under a 5s
-# timeout and the durable append is the part that must not be lost, so the
-# pointer lookup never gets to be open-ended: one non-recursive directory read,
-# newest names first, capped.
+# NO scan cap. There was one, and it was wrong in a way worth recording: taking
+# the lexically greatest N names and then comparing mtimes within that window
+# means the newest-by-mtime file can sit outside it, so the lookup could
+# advertise an older handoff than the one it promises.
 #
-# Taking the newest NAMES is only sound because the filename leads with a UTC
-# timestamp (portable-handoff-{TIMESTAMP}-{SESSION_ID}.md), so lexical order IS
-# chronological order and the newest by mtime is inside the window. If that
-# convention ever changes so the session id leads, this cap silently starts
-# dropping the newest document — see .claude/reference/portable-handoff.md.
-#
-# In scale terms this adds one readdir to a filesystem the hook already writes
-# to several times (mkdir, chmod, append, atomic rename) — a home slow enough to
-# blow the budget here was already blowing it on those.
-HANDOFF_SCAN_CAP=50
+# The cap existed to stop a slow lookup consuming the hook's 5s budget before
+# the durable append ran. The phase split removed that risk at the root — the
+# record is on disk before this runs at all (see ORDERING above) — so the cap
+# was defending against something that could no longer happen, at the cost of
+# correctness. Deleting it makes newest-by-mtime exactly true.
 
 # Newest portable handoff by modification time. Modification time is the only
 # ordering signal used; when two files share one, the lexically greater name
@@ -158,8 +153,7 @@ newest_portable_handoff() {
       newest="$f"
     fi
   done < <(find "$dir" -maxdepth 1 -type f -name 'portable-handoff-*.md' \
-             -mtime "-${HANDOFF_MAX_AGE_DAYS}" 2>/dev/null \
-             | sort -r | head -n "$HANDOFF_SCAN_CAP")
+             -mtime "-${HANDOFF_MAX_AGE_DAYS}" 2>/dev/null)
   printf '%s' "$newest"
 }
 
