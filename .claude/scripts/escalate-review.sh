@@ -167,7 +167,15 @@ if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
     VALID_APPROVERS=""
     echo "escalate-review.sh: cannot verify approval freshness — HEAD commit timestamp unavailable; not reporting gate_met (issues #836, #875)" >&2
   else
-    VALID_APPROVERS="$(jq -rn --arg sha "$HEAD_SHA" --arg push "$HEAD_COMMIT_TS" \
+    # Evaluated into a temporary first so a jq FAILURE is distinguishable from a
+    # successful "every approval is stale" (BugBot review, PR #883). Both clear
+    # VALID_APPROVERS, but only one is a degraded run, and silently reporting it
+    # as "no valid approvers" would escalate to a PAID Greptile review on what is
+    # really a tooling fault. The two sibling guards in this block both announce
+    # themselves on stderr; this one used to be the exception.
+    FRESH_APPROVERS=""
+    FRESHNESS_OK=true
+    FRESH_APPROVERS="$(jq -rn --arg sha "$HEAD_SHA" --arg push "$HEAD_COMMIT_TS" \
       --arg logins "$VALID_APPROVERS" --slurpfile doc "$STATE_PATH" '
       # Canonicalise before comparing (BugBot review, PR #883): this is a
       # lexicographic string compare, and "…T10:00:22+00:00" sorts BEFORE
@@ -190,7 +198,13 @@ if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
                           and .state == "APPROVED")
                  | (.submitted_at | canon_ts) ] | sort | last // "") as $approved_at
               | ($approved_at != "") and ($approved_at >= $push_c)) ]
-      | join(",")')" || VALID_APPROVERS=""
+      | join(",")')" || FRESHNESS_OK=false
+    if [[ "$FRESHNESS_OK" == "true" ]]; then
+      VALID_APPROVERS="$FRESH_APPROVERS"
+    else
+      VALID_APPROVERS=""
+      echo "escalate-review.sh: approval-freshness filter failed to evaluate (malformed state payload or jq error) — treating every approval as unverifiable; not reporting gate_met (issues #836, #875)" >&2
+    fi
     PRIMARY_REVIEW_MET=false
     [[ -n "$VALID_APPROVERS" ]] && PRIMARY_REVIEW_MET=true
   fi
