@@ -340,6 +340,38 @@ check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
 
 ############################################################################
+echo "== Scenario (h6): approval RETARGETED onto HEAD but predating the commit -> trigger_greptile (issue #836 freshness) =="
+reset_state
+write_commits "$(ts_seconds_ago 300)"
+FAILURE_COMMENT_H6="$(failure_comment "$(ts_seconds_ago 60)")"
+# GitHub retargets commit_id onto HEAD after a force-push without touching
+# submitted_at. This approval is substantive AND on HEAD, but it was submitted
+# an hour before the commit existed, so merge-gate.sh rejects it — escalation
+# must not short-circuit on it either.
+CODEANT_STALE_H6='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed every changed file; no blocking issues found.", "submitted_at": "'"$(ts_seconds_ago 3600)"'"}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_STALE_H6]" "[]" "[$FAILURE_COMMENT_H6]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== Scenario (h7): HEAD commit timestamp unavailable -> fail closed, no gate_met =="
+reset_state
+write_commits "$(ts_seconds_ago 300)"
+# Blank out ONLY the git/commits fixture: freshness becomes unverifiable, which
+# merge-gate.sh treats as blocking (CR_APPROVAL_FRESHNESS_UNKNOWN). Escalation
+# must match rather than reporting gate_met on an approval it cannot vouch for.
+echo '{}' > "$TMP/git-commit-empty.json"
+FIXTURE_GIT_COMMIT_JSON="$TMP/git-commit-empty.json"
+export FIXTURE_GIT_COMMIT_JSON
+FAILURE_COMMENT_H7="$(failure_comment "$(ts_seconds_ago 60)")"
+CODEANT_APPROVED_H7='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed every changed file; no blocking issues found.", "submitted_at": "'"$(ts_seconds_ago 90)"'"}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H7]" "[]" "[$FAILURE_COMMENT_H7]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
 echo "== Scenario (i): CodeAnt APPROVED on an OLDER SHA (not HEAD) -> still trigger_greptile (stale approval doesn't satisfy the gate) =="
 reset_state
 write_commits "$(ts_seconds_ago 120)"

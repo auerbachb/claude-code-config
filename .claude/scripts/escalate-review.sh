@@ -149,6 +149,42 @@ VALID_APPROVERS="$(jq -r --arg sha "$HEAD_SHA" '
 PRIMARY_REVIEW_MET=false
 [[ -n "$VALID_APPROVERS" ]] && PRIMARY_REVIEW_MET=true
 
+# Approval FRESHNESS (issue #836), applied here too (BugBot review, PR #883).
+# The check above only asks "exists and not retracted". merge-gate.sh also
+# requires submitted_at not to predate the HEAD commit, because GitHub retargets
+# commit_id onto HEAD after a force-push without touching submitted_at — so a
+# stale approval plus fresh evidence would emit gate_met here while the gate
+# itself stayed blocked, which is the same escalation stall this file exists to
+# prevent. Fetched once, only when an approval actually exists.
+HEAD_COMMIT_TS=""
+if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
+  HEAD_COMMIT_TS="$(gh api "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null | jq -r '.committer.date // ""' 2>/dev/null || echo "")"
+  if [[ -z "$HEAD_COMMIT_TS" ]]; then
+    # Fail closed, matching merge-gate.sh's CR_APPROVAL_FRESHNESS_UNKNOWN: an
+    # unverifiable approval must not short-circuit escalation. Callers re-poll
+    # every ~60 s, so a transient API failure self-heals rather than sticking.
+    PRIMARY_REVIEW_MET=false
+    VALID_APPROVERS=""
+    echo "escalate-review.sh: cannot verify approval freshness — HEAD commit timestamp unavailable; not reporting gate_met (issues #836, #875)" >&2
+  else
+    VALID_APPROVERS="$(jq -rn --arg sha "$HEAD_SHA" --arg push "$HEAD_COMMIT_TS" \
+      --arg logins "$VALID_APPROVERS" --slurpfile doc "$STATE_PATH" '
+      ($logins | split(",") | map(select(length > 0))) as $candidates
+      | ($doc[0] // {}) as $d
+      | [ $candidates[]
+          | . as $l
+          | select(
+              ([ $d.comments.reviews[]?
+                 | select(.user.login == $l and (.commit_id // "") == $sha
+                          and .state == "APPROVED")
+                 | .submitted_at ] | sort | last // "") as $approved_at
+              | ($approved_at != "") and ($approved_at >= $push)) ]
+      | join(",")')" || VALID_APPROVERS=""
+    PRIMARY_REVIEW_MET=false
+    [[ -n "$VALID_APPROVERS" ]] && PRIMARY_REVIEW_MET=true
+  fi
+fi
+
 # Review-substance guard (issue #875): the check above only asks whether an
 # APPROVED exists on HEAD, not whether anything reviewed it. merge-gate.sh now
 # discounts hollow approvals, so without the same test here a rubber stamp would
@@ -162,11 +198,10 @@ if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
     PRIMARY_REVIEW_MET=false
     echo "escalate-review.sh: review-substance.sh not found or not executable at $REVIEW_SUBSTANCE_SH — cannot verify that the APPROVED on HEAD represents a real review; not reporting gate_met (issue #875)" >&2
   else
-    # pr-state.sh does not carry the HEAD committer date, and the temporal
-    # inversion / capability-failure signals need it to scope "post-push". One
-    # cheap call, made only when an APPROVED actually exists; an empty result
-    # simply narrows the check to substance + SHA-mismatch.
-    HEAD_COMMIT_TS="$(gh api "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null | jq -r '.committer.date // ""' 2>/dev/null || echo "")"
+    # HEAD_COMMIT_TS was fetched by the freshness guard above and is guaranteed
+    # non-empty here (that guard clears PRIMARY_REVIEW_MET otherwise), so the
+    # evaluator always gets the push_ts its temporal-inversion and
+    # capability-failure signals need.
     SUBSTANCE_JSON="$(jq -c --arg sha "$HEAD_SHA" --arg push "$HEAD_COMMIT_TS" '{
         head_sha: $sha,
         push_ts: $push,
