@@ -248,6 +248,15 @@ After blockers clear (Phase 1 + Step 2.1 recovery + Step 2.2), run `gh pr merge 
 gh pr merge "$PR_NUM" --squash
 ```
 
+**Release the issue claim** once the merge succeeds — a merged PR is the terminal state that makes the issue startable again (issue #873). Step 3.1 resolves the linked issue for follow-ups, but that runs later, so resolve it here too:
+
+```bash
+MERGED_ISSUE=$(.claude/scripts/pr-issue-ref.sh "$PR_NUM" 2>/dev/null || true)
+[ -n "$MERGED_ISSUE" ] && .claude/scripts/issue-claim.sh "$MERGED_ISSUE" --release || true
+```
+
+Best-effort by design: the merge has already landed, so a failed release is a warning, never a non-zero exit from `/wrap`. An unreleased claim ages out on its own within `CLAIM_STALE_HOURS`; failing an already-completed merge would be far worse. This is the only release call on the merge path — Phase C (`phase-c-merger.md`) runs `/wrap` and inherits it, so do not add a second one there.
+
 Do NOT use `--delete-branch`. The current worktree is still checked out on the feature branch — git refuses to delete a branch held by a worktree. The branch is cleaned up out-of-band by `/pm-update` via `.claude/scripts/stale-cleanup.sh`.
 
 ### Step 2.5: Sync root repo main (aggressive reset)

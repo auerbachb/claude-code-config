@@ -104,6 +104,25 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >>
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# release_issue_claim — drop the pick-time claim on the PR's linked issue once
+# the merge is confirmed (issue #873). A merged PR is a terminal state, so the
+# issue becomes startable again.
+#
+# BEST-EFFORT BY DESIGN: this only ever runs AFTER a merge has already landed,
+# so it must never change the exit status. An unreleased claim ages out on its
+# own within CLAIM_STALE_HOURS; failing an already-completed merge would be the
+# far worse outcome. Every failure path here is a warning.
+release_issue_claim() {
+  local issue
+  [[ -x "$SCRIPT_DIR/pr-issue-ref.sh" && -x "$SCRIPT_DIR/issue-claim.sh" ]] || return 0
+  issue="$("$SCRIPT_DIR/pr-issue-ref.sh" "$PR_NUMBER" 2>/dev/null || true)"
+  [[ -n "$issue" ]] || return 0
+  if ! "$SCRIPT_DIR/issue-claim.sh" "$issue" --release >/dev/null 2>&1; then
+    echo "WARNING: could not release the claim on issue #$issue — it will expire on its own. Clear it early with: $SCRIPT_DIR/issue-claim.sh $issue --release" >&2
+  fi
+  return 0
+}
+
 print_usage() {
   awk 'NR == 1 { next } /^$/ { exit } { print }' "$0" | sed 's/^# \{0,1\}//'
 }
@@ -665,6 +684,7 @@ if [[ "$MODE" == "auto-plain" ]]; then
     echo "WARNING: PR does not report state=MERGED after retrying — the merge may not have completed (e.g. a queued/deferred merge). Verify manually: gh pr view $PR_NUMBER --json state,mergedAt" >&2
     exit 7
   fi
+  release_issue_claim
 
   # After-the-fact report (issue #754): which PR, which shape, and the
   # clean-BEHIND evidence that authorized the bypass. Relay this to the user.
@@ -726,6 +746,7 @@ if [[ "$MODE" == "execute" ]]; then
       echo "WARNING: PR does not report state=MERGED after retrying — verify manually: gh pr view $PR_NUMBER --json state,mergedAt" >&2
       exit 7
     fi
+    release_issue_claim
     exit 0
   fi
 
@@ -792,6 +813,7 @@ if [[ "$MODE" == "execute" ]]; then
     echo "WARNING: enforce_admins did not report enabled=true — verify manually." >&2
     exit 7
   fi
+  release_issue_claim
   exit 0
 fi
 

@@ -56,6 +56,33 @@ gh issue view "$ISSUE_NUMBER" --json number,title,body,state,createdAt --comment
 - Capture `TITLE`, `BODY`, and `CREATED_AT` (from the `createdAt` JSON field) for downstream steps.
 - Compute issue age in seconds from `CREATED_AT`. Use a portable approach (Python or `gdate` on macOS if available; otherwise derive from the recorded `ISSUE_CREATED_AT` when the issue was just created by this skill).
 
+## Step 2b: Claim the issue (GATE — before planning, before the worktree)
+
+An open-PR check cannot see a thread that picked this issue twenty minutes ago and has not pushed yet. Stake the claim here, at pick time — **before** CR-plan polling (Step 3) and **before** the worktree (Step 6) — so a sibling thread checking a minute from now sees it (issue #873).
+
+```bash
+CLAIM=$(.claude/scripts/issue-claim.sh "$ISSUE_NUMBER" --check); CLAIM_RC=$?
+```
+
+| Verdict | Exit | Do |
+|---|---|---|
+| `unclaimed` / `mine` | 0 | proceed to `--claim` below |
+| `stale` | 0 | surface the stale warning to the user, then proceed — a dead thread must not park the issue forever |
+| `claimed` | 1 | **STOP.** Report it in the same shape as the existing worktree skip: "Issue #N is already being worked — claimed by `{claimant}` at {time} — skipping." Do not plan, do not create a worktree. |
+| `unknown` | 4 | **STOP**, same as `claimed`. An `unknown` verdict never reads as permission. |
+
+When the check clears, take the claim before doing anything else:
+
+```bash
+.claude/scripts/issue-claim.sh "$ISSUE_NUMBER" --claim
+```
+
+**Override.** If the user explicitly says to start it anyway — naming this issue, in chat — re-run with `--allow-claimed` and state in the reply that you are overriding a live claim. The override is per-issue and per-session: never inferred from context, never a default, never carried to the next issue.
+
+**Release.** The claim is dropped by `/wrap` when the PR merges, by `admin-merge.sh`, on issue close, or by running `--release` yourself if the user abandons the work.
+
+The Step 6 `git worktree list` guard stays as a same-machine backstop — it covers only this one entry path, on one machine, and only after the worktree stage. Contract and rationale: `.claude/reference/issue-claim.md`.
+
 ## Step 3: Handle CR implementation plan
 
 CR's plan is identified by a comment from `coderabbitai` (no `[bot]` suffix — issue comments use the bare name). Use `.claude/scripts/cr-plan.sh` for detection — it encapsulates the canonical substantive-plan filter (`cr-plan-filter.py`: reject the issue-enrichment/Issue-Planner boilerplate and "actions performed" ack lines, then require >200 chars of stripped content plus a heading or numbered step — issue #541) and the 60s polling loop.

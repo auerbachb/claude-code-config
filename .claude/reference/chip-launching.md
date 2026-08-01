@@ -102,6 +102,23 @@ active model, so the check relies on the model naming itself accurately.
 
 **Placement rule:** for every emitter, the `**Model:**` line is the first line of the `prompt` payload, the `**Effort:**` line is next, and this preamble is the content that immediately follows them — see each skill's Step for how its own template maps onto this shape.
 
+## Claim the issue on click (not on offer)
+
+A chip launches an independent thread that cannot see any sibling, so the launched thread claims the issue itself. Every issue-bearing `prompt` payload instructs the thread to run, as its **first actions after the MODEL GUARD preamble and before any repo read, file edit, or planning**:
+
+```bash
+.claude/scripts/issue-claim.sh <N> --check      # then, if it clears:
+.claude/scripts/issue-claim.sh <N> --claim
+```
+
+- `claimed` (exit 1) or `unknown` (exit 4) → the thread **stops** and reports the claim instead of proceeding. `unknown` never reads as permission.
+- `stale` (exit 0) → surface the warning and proceed; `--claim` takes the claim over.
+- `mine` (exit 0) → no-op; a resumed or post-compaction thread re-runs this safely.
+
+**Click time, never offer time.** Offering a chip is not launching one (`/start-issue` "Execution boundary"), and a chip may sit unclicked for days — claiming at offer time would park the issue for a thread that never starts. This claims at exactly the moment work begins. It also means two chips for the same issue are harmless: whichever is clicked first holds the claim, and the second stops.
+
+This does not touch the placement rule above — the claim instruction is *content following* the preamble, so the `**Model:**`-first / `**Effort:**`-next / no-blank-line ordering that `chip-model-guard-lint.sh` enforces is unchanged. Contract: `.claude/reference/issue-claim.md` (issue #873).
+
 ### Literal vs resolved model names (emitter classes)
 
 Most emitters write the recommended model straight into the `**Model:**` line, because the recommendation is a judgment about *that issue* — a small mechanical fix and a subtle concurrency bug want different tiers, and neither answer comes from a lookup table.
@@ -197,6 +214,8 @@ Withdraw a tracked chip via `mcp__ccd_session__dismiss_task` (pass the recorded 
 2. **Superseded** — a later batch replaced the suggestion.
 3. **Re-planned** — the issue's plan or scope changed, so the chip's prompt is stale. Spawn the replacement chip *first*, then dismiss the old one.
 4. **Issue closed** — the underlying issue is closed (merged, resolved, declined, or duplicate). The chip's work no longer exists to launch; dismiss with no replacement. Distinct from trigger 1: a closed issue may never have had an *open* PR (e.g. "won't fix" or duplicate closures), so trigger 1 alone doesn't reliably catch it. Added by the [#838](https://github.com/auerbachb/claude-code-config/issues/838) sweep, where it was 28/28 of the stale chips found.
+
+   **Also release the claim here** — `.claude/scripts/issue-claim.sh <N> --release` alongside the `dismiss_task`. A close *without* a merged PR is precisely the terminal state `/wrap` never sees, so nothing else would drop the claim and it would sit until it aged out (issue #873). Harmless when no claim is held: `--release` is idempotent, and it never touches a collaborator's claim.
 
 **Fail-closed:** only clear tracked chip state once the dismiss outcome is known. Distinguish the two non-error outcomes from a real failure:
 

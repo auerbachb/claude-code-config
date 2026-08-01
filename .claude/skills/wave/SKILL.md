@@ -58,7 +58,18 @@ Start from the ranked order and remove, in this sequence:
 
    Leave jq's stderr unredirected — a malformed log file should surface as a visible error, not look identical to "no live chip found" (`chip-launching.md` "Cross-skill chip visibility"). Drop any candidate whose number appears in the command's output, silently — same treatment as (1). An issue-maker thread already offering a chip for #N is the same "already offered" state as a `Chip offered` row, just recorded in a different store.
 3. **Already in flight on GitHub (dedup — any author).** Drop any issue referenced by a closing keyword (`close`/`closes`/`closed`, `fix`/`fixes`/`fixed`, `resolve`/`resolves`/`resolved`, case-insensitive) in an open PR body — local (`#N`) and cross-repo (`owner/repo#N`) forms both, **regardless of who authored the PR**: you don't want to start work a collaborator is already doing. Reuse the open-PR data `/pm` already fetched (it carries the `author` field); do not re-query. As you drop each one, note whether the covering PR is **yours** (`author.login` equals your authenticated login — `$GH_USER`, else `gh api user --jq .login`) or a **collaborator's** — only your own feed the ceiling count below.
-4. **Explicitly blocked labels.** Drop `blocked`, `on-hold`, `wontfix`, `duplicate` (`/pm` 1B.4 already excludes these — this is a cheap re-check, not a re-ranking).
+4. **Already claimed by another thread (no PR yet).** Item 3 only sees issues that have reached a PR; a thread that picked an issue twenty minutes ago and is still planning is invisible to it. Consult the claim instead (issue #873). **Batch the lookup** — one call for the whole backlog, then the helper only for the intersection, because a candidate without the label cannot hold a claim:
+
+   ```bash
+   CLAIMED=$(gh issue list --label in-progress --state open --limit 100 --json number --jq '.[].number')
+   # then, only for candidates whose number appears in $CLAIMED:
+   .claude/scripts/issue-claim.sh <N> --check
+   ```
+
+   Drop a candidate whose verdict is `claimed` (exit 1) or `unknown` (exit 4), naming the claim as the reason. `unknown` is treated exactly as `claimed` — it never reads as permission. `stale` is **not** an exclusion: keep the candidate and surface the stale warning alongside it.
+
+   Respect issue #732 the same way item 3 does: a **collaborator's** fresh claim drops the issue as context, but it never counts toward *your* `IN_FLIGHT` ceiling and is never overwritten.
+5. **Explicitly blocked labels.** Drop `blocked`, `on-hold`, `wontfix`, `duplicate` (`/pm` 1B.4 already excludes these — this is a cheap re-check, not a re-ranking).
 
 Every issue removed here is **silent** — it is not a wave exclusion and does not appear in the excluded list (Step 9). The excluded list is for issues that were genuine candidates and lost on independence or cap.
 
