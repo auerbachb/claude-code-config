@@ -17,6 +17,14 @@
 # Both are false POSITIVES of a check whose real question is "does this state
 # belong to the repo I am in?" — now answered by repo identity, not by path.
 #
+# Issue #854 closed the last hole in that answer: scope resolution still SEARCHED
+# every repo and fell back to an arbitrary other one, so a PR number another repo
+# happened to use made the gate refuse (even under --ensure-session, which is
+# supposed to create the missing registration) and, when it did not refuse, read
+# the other repo's owner_repo and handoff path. The later sections here pin the
+# collision case, --repo / $CLAUDE_SESSION_REPO scope selection, and the
+# invariant that no refusal ever exits 0.
+#
 # Uses --verify-state, the offline mode (no gh, no merge-gate), so the test is
 # hermetic. Temporary HOME; never touches the real ~/.claude/. Requires git+jq.
 set -uo pipefail
@@ -98,18 +106,111 @@ check_eq "polling from a worktree of repo A is allowed" "0" "$RC"
 check_eq "worktree poll emits no wrong-checkout refusal" "0" "$(grep -c 'wrong checkout' <<<"$OUT")"
 
 echo
-echo "== A genuinely wrong repo is still refused =="
+echo "== A repo that never registered this PR is refused, not answered for =="
 # Repo C has no registration for PR 84: the gate must refuse rather than fall
 # through to another repo's entry just because the number matches. It must also
 # not silently REDIRECT to the owning repo's recorded checkout — the per-PR
 # root_repo outranks the live checkout when resolving a root (issue #647), so
 # the cross-repo decision is anchored to the checkout the caller is standing in.
+#
+# Issue #854 changed what this refusal SAYS, not whether it happens. PR numbers
+# are per-repo, so "repo A also has an 84" is not a reason to accuse repo C of
+# polling the wrong repo — 84 is simply not registered for C, and
+# --ensure-session is the remedy. A/B's entries are named as diagnostics only.
 REPO_C="$WORK/c"; make_repo "$REPO_C" "org/c"
 RC=0; OUT="$( cd "$REPO_C" && bash "$GATE" 84 --verify-state 2>&1 )" || RC=$?
-check_eq "poll from an unrelated repo is refused (exit 4)" "4" "$RC"
-check_eq "refusal names the owning repo" "1" "$(grep -c "scoped to repo 'org/a'" <<<"$OUT")"
-check_eq "refusal names the active repo" "1" "$(grep -c "active checkout is 'org/c'" <<<"$OUT")"
+check_eq "poll from an unregistered repo is refused (exit 4)" "4" "$RC"
+check_eq "refusal names the active repo" "1" "$(grep -c "not registered in session-state for 'org/c'" <<<"$OUT")"
+check_eq "refusal points at --ensure-session" "1" "$(grep -c -- '--ensure-session' <<<"$OUT")"
+check_eq "refusal names the colliding repo as a diagnostic" "1" "$(grep -c "also registered under 'org/a'" <<<"$OUT")"
 check_eq "and it did not operate on the other repo" "0" "$(grep -c 'gate met' <<<"$OUT")"
+
+echo
+echo "== A colliding PR number does not block registering our own (issue #854) =="
+# The reported bug: --ensure-session for repo C's PR 84 refused outright because
+# repos A and B already tracked an 84. Registration must succeed and must leave
+# every other repo's entry byte-identical.
+A_BEFORE="$(jq -Sc '.repos["org/a"].prs["84"]' "$HOME/.claude/session-state.json")"
+B_BEFORE="$(jq -Sc '.repos["org/b"].prs["84"]' "$HOME/.claude/session-state.json")"
+STUB_BIN="$WORK/bin"; mkdir -p "$STUB_BIN"
+cat > "$STUB_BIN/gh" <<'STUB'
+#!/usr/bin/env bash
+set -uo pipefail
+case "${1:-}" in
+  pr)   echo '{"headRefOid":"ccc3333","state":"OPEN","number":84,"headRefName":"feature","url":"https://github.com/org/c/pull/84","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}' ;;
+  repo) echo 'org/c' ;;
+  api)
+    shift
+    [[ "${1:-}" == "--paginate" ]] && shift
+    case "${1:-}" in
+      user) echo 'testuser' ;;
+      graphql) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
+      repos/*/pulls/*)
+        if [[ "$*" == *"/reviews"* || "$*" == *"/comments"* ]]; then echo '[]'
+        else echo '{"user":{"login":"testuser","type":"User"}}'; fi ;;
+      repos/*/commits/*/check-runs*) echo '{"check_runs":[]}' ;;
+      *) echo '[]' ;;
+    esac ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$STUB_BIN/gh"
+RC=0; OUT="$( cd "$REPO_C" && PATH="$STUB_BIN:$PATH" bash "$GATE" 84 --ensure-session 2>&1 )" || RC=$?
+check_eq "--ensure-session succeeds despite a colliding PR number" "0" "$RC"
+check_eq "…and registers under our own scope" "ccc3333" \
+  "$(jq -r '.repos["org/c"].prs["84"].head_sha // ""' "$HOME/.claude/session-state.json")"
+check_eq "…and records our own owner_repo" "org/c" \
+  "$(jq -r '.repos["org/c"].prs["84"].owner_repo // ""' "$HOME/.claude/session-state.json")"
+check_eq "repo A's entry is untouched" "$A_BEFORE" \
+  "$(jq -Sc '.repos["org/a"].prs["84"]' "$HOME/.claude/session-state.json")"
+check_eq "repo B's entry is untouched" "$B_BEFORE" \
+  "$(jq -Sc '.repos["org/b"].prs["84"]' "$HOME/.claude/session-state.json")"
+
+# And a subsequent poll from C reads C's own head_sha, not A's or B's.
+write_handoff 84 ccc3333
+RC=0; OUT="$( cd "$REPO_C" && bash "$GATE" 84 --verify-state 2>&1 )" || RC=$?
+check_eq "a later tick from repo C validates against C's own state" "0" "$RC"
+
+echo
+echo "== --repo / \$CLAUDE_SESSION_REPO select the scope (issue #854) =="
+# A checkout with no `origin` remote cannot name itself, so before #854 there was
+# no way to tell the gate which repo it was standing in. Both mechanisms must
+# now reach the same scope.
+NOREMOTE="$WORK/noremote"
+mkdir -p "$NOREMOTE"
+git -C "$NOREMOTE" init --quiet
+git -C "$NOREMOTE" -c user.email=t@e -c user.name=T commit --quiet --allow-empty -m init
+write_handoff 84 aaa1111
+RC=0; OUT="$( cd "$NOREMOTE" && bash "$GATE" 84 --verify-state --repo org/a 2>&1 )" || RC=$?
+check_eq "--repo selects the named scope from an origin-less checkout" "0" "$RC"
+RC=0; OUT="$( cd "$NOREMOTE" && CLAUDE_SESSION_REPO=org/a bash "$GATE" 84 --verify-state 2>&1 )" || RC=$?
+check_eq "\$CLAUDE_SESSION_REPO selects the named scope too" "0" "$RC"
+# --repo outranks the environment variable.
+RC=0; OUT="$( cd "$NOREMOTE" && CLAUDE_SESSION_REPO=org/b bash "$GATE" 84 --verify-state --repo org/a 2>&1 )" || RC=$?
+check_eq "--repo outranks \$CLAUDE_SESSION_REPO" "0" "$RC"
+# A malformed value is a usage error (exit 2), not a silent "_unknown" fallback.
+RC=0; OUT="$( cd "$REPO_A" && bash "$GATE" 84 --verify-state --repo not-a-repo-key 2>&1 )" || RC=$?
+check_eq "malformed --repo is a usage error (exit 2)" "2" "$RC"
+RC=0; OUT="$( cd "$REPO_A" && bash "$GATE" 84 --verify-state --repo 2>&1 )" || RC=$?
+check_eq "--repo with no value is a usage error (exit 2)" "2" "$RC"
+
+echo
+echo "== every refusal exits non-zero (issue #854) =="
+# The reported worry: a refusal message printed while the shell saw exit 0 would
+# let a caller treat "refused" as "gate met". Assert message-and-code agree.
+assert_refusal_nonzero() { # $1 = desc, rest = gate args (run from repo C)
+  local desc="$1"; shift
+  local rc=0 out
+  out="$( cd "$REPO_C" && bash "$GATE" "$@" 2>&1 )" || rc=$?
+  if [[ "$out" == *"polling-state-gate.sh:"* && "$rc" -eq 0 ]]; then
+    FAIL=$((FAIL + 1)); echo "FAIL — $desc (printed a message but exited 0: $out)"
+  else
+    PASS=$((PASS + 1)); echo "ok   — $desc"
+  fi
+}
+assert_refusal_nonzero "unregistered PR does not exit 0" 999884 --verify-state
+assert_refusal_nonzero "unknown flag does not exit 0" 84 --nope
+assert_refusal_nonzero "missing PR number does not exit 0" --verify-state
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
