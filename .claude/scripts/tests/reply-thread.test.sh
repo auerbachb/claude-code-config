@@ -50,9 +50,11 @@ check_not_contains() {
 
 # ---- stub gh on PATH --------------------------------------------------------
 # Driven by env vars the test scenarios set:
-#   FAKE_INLINE_MODE  success (default) | 404 | error
-# On success: writes the POSTed body to "$TMP/posted_body" (parsed from -f body=...)
-# and prints a fake JSON response with html_url.
+#   FAKE_INLINE_MODE    success (default) | 404 | error
+#   FAKE_FALLBACK_MODE  success (default) | 404 | error
+# On inline success: writes the POSTed body to "$TMP/posted_body" and prints
+# a fake JSON response with html_url.
+# On fallback success: prints a fake PR comment URL to stdout.
 STUB_BIN="$TMP/bin"
 mkdir -p "$STUB_BIN"
 cat > "$STUB_BIN/gh" <<'STUB'
@@ -97,6 +99,32 @@ case "$sub" in
         ;;
     esac
     ;;
+  pr)
+    pr_action="${1:-}"
+    shift || true
+    case "$pr_action" in
+      comment)
+        # gh pr comment N --body "text" — N and flags follow; we only care about mode
+        case "${FAKE_FALLBACK_MODE:-success}" in
+          success)
+            printf 'https://github.com/test-owner/test-repo/pull/1#issuecomment-123456\n'
+            ;;
+          404)
+            echo "Not Found (HTTP 404)" >&2
+            exit 1
+            ;;
+          error)
+            echo "HTTP 500: Internal Server Error" >&2
+            exit 1
+            ;;
+        esac
+        ;;
+      *)
+        echo "unexpected gh pr action: $pr_action $*" >&2
+        exit 99
+        ;;
+    esac
+    ;;
   *)
     echo "unexpected gh sub: $sub $*" >&2
     exit 99
@@ -119,6 +147,14 @@ run_and_capture() {
   if [[ -f "$TMP/posted_body" ]]; then
     POSTED_BODY="$(cat "$TMP/posted_body")"
   fi
+}
+# Helper: run capturing stdout and stderr into separate vars
+# STDOUT_OUT, STDERR_OUT, RC; also sets OUT = merged (for check_contains compat)
+run_split() {
+  local stderr_file="$TMP/run_split_stderr"
+  STDOUT_OUT="$(bash "$SCRIPT" "$@" 2>"$stderr_file")"; RC=$?
+  STDERR_OUT="$(cat "$stderr_file")"
+  OUT="${STDOUT_OUT}${STDERR_OUT}"
 }
 
 ############################################################################
@@ -229,6 +265,57 @@ run_and_capture 1234567 --reviewer codeant \
 check_eq "exit 0" 0 "$RC"
 # The 'x' immediately before '@' is alnum, so the left boundary fails — not stripped.
 check_contains "x@codeant-ai not stripped (no left boundary)" "x@codeant-ai" "$POSTED_BODY"
+
+############################################################################
+echo "== (14) REGRESSION: fallback success exits 0 (inline 404, pr-level comment succeeds) =="
+# This is the exact scenario from issue #884: inline 404s, fallback posts OK.
+# Before the fix, exit 1 (non-zero) was returned even though the reply posted.
+export FAKE_INLINE_MODE="404"
+export FAKE_FALLBACK_MODE="success"
+run 1234567 --reviewer bugbot --body "Fixed." --pr 1
+check_eq "fallback success exits 0" 0 "$RC"
+check_contains "URL on stdout or stderr" "https://github.com/" "$OUT"
+
+############################################################################
+echo "== (15) fallback path emits a distinguishing stderr note =="
+export FAKE_INLINE_MODE="404"
+export FAKE_FALLBACK_MODE="success"
+run_split 1234567 --reviewer bugbot --body "Fixed." --pr 1
+check_eq "exit 0" 0 "$RC"
+check_contains "URL on stdout" "https://github.com/" "$STDOUT_OUT"
+check_contains "stderr note mentions fallback" "fallback" "$STDERR_OUT"
+
+############################################################################
+echo "== (16) cmd && echo ok prints ok on fallback path (incident pattern from #884) =="
+export FAKE_INLINE_MODE="404"
+export FAKE_FALLBACK_MODE="success"
+CHAIN_OK=0
+bash "$SCRIPT" 1234567 --reviewer bugbot --body "Fixed." --pr 1 >/dev/null 2>/dev/null \
+  && CHAIN_OK=1
+check_eq "cmd && echo ok works on fallback (CHAIN_OK=1)" 1 "$CHAIN_OK"
+
+############################################################################
+echo "== (17) inline 404, no --pr provided → exit 3 =="
+export FAKE_INLINE_MODE="404"
+unset FAKE_FALLBACK_MODE
+run 1234567 --reviewer bugbot --body "Fixed."
+check_eq "no --pr: exit 3" 3 "$RC"
+check_contains "error: inline 404 and --pr not provided" "cannot fall back" "$OUT"
+
+############################################################################
+echo "== (18) both inline and fallback return 404 → exit 3 =="
+export FAKE_INLINE_MODE="404"
+export FAKE_FALLBACK_MODE="404"
+run 1234567 --reviewer bugbot --body "Fixed." --pr 1
+check_eq "both 404: exit 3" 3 "$RC"
+check_contains "error: both endpoints 404" "404" "$OUT"
+
+############################################################################
+echo "== (19) fallback non-404 error → exit 4 =="
+export FAKE_INLINE_MODE="404"
+export FAKE_FALLBACK_MODE="error"
+run 1234567 --reviewer bugbot --body "Fixed." --pr 1
+check_eq "fallback non-404 error: exit 4" 4 "$RC"
 
 ############################################################################
 echo ""
