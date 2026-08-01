@@ -36,11 +36,11 @@ CodeAnt and Graphite are parallel supplements; the primary chain stays CR → Bu
 
 **Binary:** `npm install -g codeant-cli` was run successfully 2026-07-30. `codeant --version` = 0.5.1 at `/opt/homebrew/bin/codeant`.
 
-**Auth:** blocked at capability-ladder rung 3. `codeant login` is a browser OAuth flow (`app.codeant.ai`) — no non-interactive path exists. The CLI also accepts `codeant set-codeant-api-key <key>` (no browser), but no API key is stored in shell config, env vars, or `~/.codeant/config.json` (which does not yet exist).
+**Auth:** a rung-5 wall. `codeant login` is a CLI-initiated browser OAuth flow (`app.codeant.ai`) that opens the system browser — no non-interactive path exists, and no MCP browser surface can drive it, so rung 4 does not apply. The CLI also accepts `codeant set-codeant-api-key <key>` (no browser), but no API key is stored in shell config, env vars, or `~/.codeant/config.json` (which does not yet exist).
 
 **Current baseline:** `cr-only` — every local review runs CodeRabbit only until auth completes. The CodeAnt **GitHub App** is independent and unaffected; it continues to satisfy the CR-path merge gate on its own.
 
-**Rung-4 restore runbook (user must run interactively):**
+**Rung-5 restore runbook (user must run interactively):**
 
 ```bash
 # Option A — browser OAuth (standard):

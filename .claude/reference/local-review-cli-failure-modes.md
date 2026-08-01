@@ -43,11 +43,11 @@ npm list -g codeant-cli 2>/dev/null
 
 **Coverage-enum mapping:** CodeAnt `command not found` / not installed → CodeAnt **not covered** → `cr-only` coverage (see table below).
 
-**Restore path (capability-ladder rung 3 → 4).** The package name `codeant-cli` is confirmed in this doc and in `.claude/reference/codeant-graphite-supplemental.md`. Install is non-interactive and satisfies all rails (no `curl|sh`, no TLS bypass, no `sudo` required at the Homebrew npm prefix):
+**Restore path (capability-ladder rung 3 → 5).** The package name `codeant-cli` is confirmed in this doc and in `.claude/reference/codeant-graphite-supplemental.md`. Install is non-interactive and satisfies all rails (no `curl|sh`, no TLS bypass, no `sudo` required at the Homebrew npm prefix):
 
 ```bash
 npm install -g codeant-cli   # rung 3 — installs the binary
-codeant login                 # rung 4 — browser OAuth; cannot be run non-interactively
+codeant login                 # rung 5 — CLI-initiated browser OAuth; no MCP browser surface can drive it
 ```
 
 Auth (`codeant login`) opens a browser flow against `app.codeant.ai` and is the only blocker for a non-interactive agent. Full runbook with Option B (API key) and the proof-run stderr check: `.claude/reference/codeant-graphite-supplemental.md` §Install state. Ladder definition: `.claude/rules/safety.md` §Capability Discovery.

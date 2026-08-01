@@ -12,7 +12,7 @@ Use `.claude/agents/` definitions; they embed phase rules. Every Agent call must
 3. Explicit `model` (see "Model Selection").
 4. Runtime context: PR/issue/branch, repo, handoff path, HEAD SHA, reviewer, optional pre-fetched findings.
 5. The verbatim `SAFETY:` block from `safety.md`.
-6. The verbatim `MINDSET:` block from `safety.md` (try CLI before handoff — see "Capability Discovery").
+6. The verbatim `MINDSET:` block from `safety.md` (try CLI/browser before handoff — see "Capability Discovery").
 7. The verbatim `SKILLS:` block from `skill-first.md` — **skip for `phase-c-merger`** (no `Skill` tool).
 8. Same step, but not part of the call: arm the silence ceiling — `bgwork-ceiling.sh --arm-command` → `Monitor` (`persistent: true`). The Stop hook blocks the turn otherwise.
 

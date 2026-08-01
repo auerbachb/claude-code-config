@@ -114,4 +114,4 @@ If a CLI looks missing, **verify by absolute path before believing it** — the 
 ls -l /opt/homebrew/bin/{tool} || command -v {tool}
 ```
 
-Genuinely absent is rung 1 of the ladder, not a dead end: continue to rung 2 (does the provider ship a CLI?) and rung 3 (install it, if non-interactive and within the safety rails) before handing anything off. When you do install a CLI, note it in your response — don't append it to this file as a side effect of unrelated work.
+Genuinely absent is rung 1 of the ladder, not a dead end: continue to rung 2 (does the provider ship a CLI?), rung 3 (install it, if non-interactive and within the safety rails), and rung 4 (drive the browser when the operation itself lives in a web dashboard) before handing anything off. Rung 4 does not rescue CLI-initiated auth: `railway login`, `codeant login`, and friends open the system browser out of reach of any MCP browser surface, so they stay a rung-5 handoff. When you do install a CLI, note it in your response — don't append it to this file as a side effect of unrelated work.
