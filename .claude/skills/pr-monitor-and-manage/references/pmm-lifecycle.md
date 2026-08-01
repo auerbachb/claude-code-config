@@ -55,6 +55,8 @@ if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
 fi
 ```
 
+> **The digest reset has two owners, one per resume path.** The branch above is guarded on a non-null `.pmm.paused_at`, so it covers only **direct re-invocation** of this skill. On the **`-wake`** path, Step 4b clears the marker before re-arming the loop — this branch is already skipped by the time the loop's first tick runs — so `-wake` Step 4b nulls `.pmm_digest` and `.pmm_row_digest` in its own atomic `--set` batch (issue #872). The guarantee "both digests are null after **any** resume" holds only while both sides do it; neither is redundant.
+
 Resume logic is shared with `/pr-monitor-and-manage-wake` — see `.claude/skills/pr-monitor-and-manage-wake/SKILL.md` Step 2 (re-scan teardown) and Step 3 (marker clear + loop re-arm). When resuming via re-invoking this skill (not `-wake`), apply the precedence rule in Step 1 after parsing `$ARGUMENTS`: any flag explicitly supplied on this invocation wins; omitted flags inherit from `.pmm.config_at_pause`. After resume, continue with Step 1 using the merged config and run a full discovery tick at **base** cadence (not the widened backoff cadence).
 
 A stale marker left by a killed session is safely reconciled here: the next `/pr-monitor-and-manage` invocation reads it, resumes (or the user runs `/pmm-stop`), and re-runs discovery from scratch.

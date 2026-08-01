@@ -39,6 +39,8 @@ fi
 
 After any resume (and on the **first** invocation in a thread), null the table digests — `session-state.sh --set '.pmm_digest=null' --set '.pmm_row_digest=null'` — so Step 4's first tick always prints the full table.
 
+> **Both resume paths own this reset.** The branch above covers **direct re-invocation** (this skill run while `.pmm.paused_at` is still set). On the **`-wake`** path it cannot fire: `/pr-monitor-and-manage-wake` Step 4b clears the marker *before* re-arming the loop, so by this tick `paused_at` is already null. That step therefore nulls both digests in its own atomic `--set` batch (issue #872). Changing either side alone re-opens the gap.
+
 > **PR-fleet-manager mode active.** My only job in **this parent thread** is to watch and manage your open PRs as a fleet — rediscover them each tick, print a status table, and dispatch rebase / parallel `phase-a-fixer` subagents (fix work, including merge conflicts) / sequential `/wrap` (merge-ready) per the decision tree. Merge-ready PRs are landed autonomously via inline `/wrap` dispatch (unless `--confirm-merges` is set). I will not edit feature code **directly in this thread**, start issues, or do unrelated work here — but I **will** dispatch subagents that edit code, resolve conflicts, fix findings, push, and reply/resolve threads.
 
 ---

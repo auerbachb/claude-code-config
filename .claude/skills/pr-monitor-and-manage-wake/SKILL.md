@@ -62,22 +62,66 @@ Cancel the `/loop` armed at pause time (runtime loop-stop), then proceed to mark
 Read saved config and fleet snapshot:
 
 ```bash
-CONFIG=$("$SESSION_STATE_SH" --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
-FLEET_AT_PAUSE=$("$SESSION_STATE_SH" --get '.pmm.fleet_at_pause' 2>/dev/null || echo '[]')
-AUTHOR=$(jq -r '.author // empty' <<<"$CONFIG")
-REPO=$(jq -r '.repo // empty' <<<"$CONFIG")
+CONFIG=$("$SESSION_STATE_SH" --get '.pmm.config_at_pause' 2>/dev/null || echo 'null')
+# Fall back to `null`, NOT `[]`: an empty array is a *valid* snapshot (a fleet
+# that drained to zero), so defaulting to it would turn a failed state read into
+# a silent "fleet changed" and resume. `null` fails the guard below instead.
+FLEET_AT_PAUSE=$("$SESSION_STATE_SH" --get '.pmm.fleet_at_pause' 2>/dev/null || echo 'null')
+AUTHOR=$(jq -r '.author // empty' <<<"$CONFIG" 2>/dev/null || echo '')
+REPO=$(jq -r '.repo // empty' <<<"$CONFIG" 2>/dev/null || echo '')
 REPO_FLAG=()
 [[ -n "$REPO" ]] && REPO_FLAG=(--repo "$REPO")
 
-# Lightweight scan — gh pr list only, no full per-PR gate reads
+# Fail closed: a scan that cannot *prove* the fleet changed must keep the pause.
+# An unchecked failure here reads as a fleet change and starts a full monitor
+# run the user never asked for (issue #871).
+scan_failed() {
+  echo "ERROR: [auto-check] fleet scan failed — $1. Pause marker and re-scan kept; retrying on the next re-scan tick." >&2
+  exit 1
+}
+
+# An empty $AUTHOR would silently rescope the scan (or error), so the result
+# could never be compared against a snapshot taken for a specific author.
+[[ -n "$AUTHOR" ]] || scan_failed "no author in .pmm.config_at_pause — cannot scope the scan"
+
+# Lightweight scan — gh pr list only, no full per-PR gate reads.
+# Capture the exit status rather than trusting it (the run_gh() idiom in
+# .claude/scripts/pr-state.sh): `|| RC=$?` keeps set -e from swallowing it.
+# Keep stderr OUT of $CURRENT — gh writes upgrade notices there even on success,
+# and folding them in would corrupt otherwise-valid JSON.
+SCAN_RC=0
 CURRENT=$(gh pr list --state open --author "$AUTHOR" "${REPO_FLAG[@]}" \
-  --json number,headRefOid,mergeStateStatus --limit 500)
-CURRENT_FLEET=$(jq -c '[.[] | {pr: .number, head_sha: .headRefOid, state: .mergeStateStatus}] | sort_by(.pr)' <<<"$CURRENT")
-SAVED_FLEET=$(jq -c 'sort_by(.pr)' <<<"$FLEET_AT_PAUSE")
+  --json number,headRefOid,mergeStateStatus --limit 500 2>/dev/null) || SCAN_RC=$?
+
+[[ $SCAN_RC -eq 0 ]] || scan_failed "gh pr list exited $SCAN_RC"
+[[ -n "$CURRENT" ]]  || scan_failed "gh pr list returned empty output"
+# `[]` is a VALID empty fleet (every PR landed) — a real change, never a failure.
+jq -e 'type == "array"' <<<"$CURRENT" >/dev/null 2>&1 \
+  || scan_failed "gh pr list output is not a JSON array"
+
+# The saved snapshot is the other half of the comparison: a null or malformed
+# .pmm.fleet_at_pause makes SAVED_FLEET empty, so a perfectly good CURRENT_FLEET
+# compares as "changed" and resumes just as wrongly.
+jq -e 'type == "array"' <<<"$FLEET_AT_PAUSE" >/dev/null 2>&1 \
+  || scan_failed "saved snapshot .pmm.fleet_at_pause is missing or not a JSON array"
+
+CURRENT_FLEET=$(jq -c '[.[] | {pr: .number, head_sha: .headRefOid, state: .mergeStateStatus}] | sort_by(.pr)' <<<"$CURRENT") \
+  || scan_failed "could not normalise the scan result"
+SAVED_FLEET=$(jq -c 'sort_by(.pr)' <<<"$FLEET_AT_PAUSE") \
+  || scan_failed "could not normalise the saved snapshot"
 ```
 
-- If `$CURRENT_FLEET` equals `$SAVED_FLEET` (count + per-PR state) → **no-op**. Print one line: `[auto-check] Fleet unchanged — re-scan continues.` Exit 0. Do **not** cancel the re-scan or clear the pause marker.
-- If changed → cancel the re-scan (Step 3), then proceed to Step 4b (full resume + re-launch main skill).
+Only once every guard above has passed may the two snapshots be compared:
+
+```bash
+if [[ "$CURRENT_FLEET" == "$SAVED_FLEET" ]]; then
+  # No-op: do NOT cancel the re-scan, do NOT clear the pause marker.
+  echo "[auto-check] Fleet unchanged — re-scan continues."
+  exit 0
+fi
+# Changed (count or per-PR state): cancel the re-scan (Step 3), then Step 4b
+# (full resume + re-launch main skill).
+```
 
 ## Step 4b: Resume (user wake or auto-check detected change)
 
@@ -102,12 +146,20 @@ jq -e '.auto_wake == true' <<<"$CONFIG" >/dev/null 2>&1 && PMM_FLAGS="$PMM_FLAGS
 PMM_FLAGS="$PMM_FLAGS --auto-wake-cadence $(jq -r '.auto_wake_cadence // "60m"' <<<"$CONFIG")"
 jq -e '.confirm_merges == true' <<<"$CONFIG" >/dev/null 2>&1 && PMM_FLAGS="$PMM_FLAGS --confirm-merges"
 
+# One atomic, locked read-modify-write. The two digest nulls MUST ride in this
+# same call: this step clears .pmm.paused_at before the main skill runs, so its
+# Step 0a reset branch (guarded on a non-null marker) never fires on this path —
+# without them the stale digests survive and the first post-resume tick can
+# render as a quiet heartbeat instead of the full table (issue #872).
+# Mirror Step 0a exactly: .pmm_digest_streak is deliberately preserved.
 "$SESSION_STATE_SH" \
   --set '.pmm.paused_at=null' \
   --set '.pmm.fleet_at_pause=null' \
   --set '.pmm.config_at_pause=null' \
   --set '.pmm_idle_streak=0' \
   --set '.pmm_active=true' \
+  --set '.pmm_digest=null' \
+  --set '.pmm_row_digest=null' \
   --set '.pmm_next_expected_tick_at=null'
 ```
 
@@ -128,5 +180,7 @@ For `--auto-check` with detected change, add: `[auto-check] Fleet changed — re
 ## Safety
 
 - Never clear the pause marker on resume without also cancelling the auto-wake re-scan (Step 3) — except `--auto-check` no-op exits without touching either.
+- **A failed or unverifiable scan is never a fleet change.** If `gh pr list` errors, returns empty, or either snapshot fails to parse as a JSON array, Step 4a keeps the pause marker and the re-scan and exits non-zero — it never falls through to the comparison. Only a scan that *proves* a difference may resume.
+- **Step 4b must null `.pmm_digest` and `.pmm_row_digest` in the same `--set` batch that clears the marker.** It clears `.pmm.paused_at` before the main skill runs, so the main skill's Step 0a reset cannot fire on this path; the digests are what make its Step 4 print the full table on the first post-resume tick.
 - `--auto-check` must **not** run full per-PR gate reads — only `gh pr list` + comparison.
 - Re-running `/pr-monitor-and-manage-wake` on a non-paused session is always a clean no-op (Step 2).
