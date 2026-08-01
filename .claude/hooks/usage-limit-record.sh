@@ -23,6 +23,14 @@
 #   accounting, no quota arithmetic of any kind. With no such file present the
 #   hint is byte-identical to what it has always been.
 #
+#   ORDERING: the durable record is written FIRST (phase 1), and the pointer
+#   refines usage-limit-last.json afterwards (phase 2). Finding the newest of N
+#   files is inherently O(N) — no cap makes it constant-time on a pathological
+#   directory — and this hook is killed at 5s. Putting anything unbounded ahead
+#   of the append would let a slow filesystem cost the user the record itself,
+#   which is the one thing this hook exists to produce. Killed during phase 2,
+#   the user still has exactly what they had before this feature existed.
+#
 #   WHY IT IS NOT SCOPED TO THIS SESSION OR REPO
 #   Session-matching cannot work by construction: running /pause is how a
 #   session ends, so the session that later dies on a limit is never the one
@@ -161,7 +169,6 @@ newest_portable_handoff() {
 # isolate this hook's records) would silently point the lookup at a directory no
 # handoff is ever written to. Separate concept, separate override.
 HANDOFF_DIR="${CLAUDE_HANDOFF_DIR:-$HOME/.claude/handoffs}"
-PORTABLE_HANDOFF=$(newest_portable_handoff "$HANDOFF_DIR")
 
 # Kept as a variable so the no-handoff case stays byte-identical to the hint
 # this hook has always written.
@@ -169,32 +176,44 @@ RESUME_HINT_BASE="Turn ended on an Anthropic usage limit. Reconstruct in-flight 
 
 # Build the record with jq so every field is escaped correctly. The last
 # assistant message is truncated — it is a resume hint, not a transcript.
-RECORD=$(printf '%s' "$STDIN_JSON" | jq -c \
-  --arg recorded_at "$RECORDED_AT" \
-  --arg hint_base "$RESUME_HINT_BASE" \
-  --arg handoff "$PORTABLE_HANDOFF" \
-  '{
-     recorded_at: $recorded_at,
-     reason: "rate_limit",
-     session_id: (.session_id // null),
-     cwd: (.cwd // null),
-     transcript_path: (.transcript_path // null),
-     error_details: ((.error_details // null)
-       | if . == null then null
-         elif type == "string" then .[0:500]
-         else (tojson | .[0:500]) end),
-     last_assistant_message: ((.last_assistant_message // null)
-       | if . == null then null
-         elif type == "string" then .[0:1000]
-         else (tojson | .[0:1000]) end),
-     resume_hint: (if $handoff == "" then $hint_base
-                   else $hint_base
-                        + " The most recent portable handoff is at "
-                        + $handoff
-                        + " — read it first. It is the newest one on this machine, not necessarily one about this repository, so check that its stated objective matches before acting on it."
-                   end),
-     portable_handoff: (if $handoff == "" then null else $handoff end)
-   }' 2>/dev/null)
+build_record() { # $1 = portable handoff path, or "" for none
+    printf '%s' "$STDIN_JSON" | jq -c \
+    --arg recorded_at "$RECORDED_AT" \
+    --arg hint_base "$RESUME_HINT_BASE" \
+    --arg handoff "$1" \
+    '{
+       recorded_at: $recorded_at,
+       reason: "rate_limit",
+       session_id: (.session_id // null),
+       cwd: (.cwd // null),
+       transcript_path: (.transcript_path // null),
+       error_details: ((.error_details // null)
+         | if . == null then null
+           elif type == "string" then .[0:500]
+           else (tojson | .[0:500]) end),
+       last_assistant_message: ((.last_assistant_message // null)
+         | if . == null then null
+           elif type == "string" then .[0:1000]
+           else (tojson | .[0:1000]) end),
+       resume_hint: (if $handoff == "" then $hint_base
+                     else $hint_base
+                          + " The most recent portable handoff is at "
+                          + $handoff
+                          + " — read it first. It is the newest one on this machine, not necessarily one about this repository, so check that its stated objective matches before acting on it."
+                     end),
+       portable_handoff: (if $handoff == "" then null else $handoff end)
+     }' 2>/dev/null
+}
+
+# PHASE 1 — the durable record, with NO handoff pointer.
+#
+# The pointer lookup is deliberately NOT in front of this. Finding the newest of
+# N files is inherently O(N), so no cap makes it constant-time on a pathological
+# directory — and this hook has a 5s budget after which it is killed. Anything
+# expensive placed before the append can therefore cost the user the record
+# itself, which is the one thing this hook exists to produce. So the record goes
+# to disk first and the pointer refines it afterwards (phase 2).
+RECORD=$(build_record "")
 
 # A malformed or unparseable payload must not append a broken line.
 [[ -n "$RECORD" ]] || exit 0
@@ -248,13 +267,47 @@ fi
 
 # Publish `last` only if the durable append succeeded — otherwise the pointer
 # would advertise an event the log does not contain.
+PUBLISHED=0
 if printf '%s\n' "$RECORD" >>"$EVENTS_LOG" 2>/dev/null; then
   # `last` is what a resuming session should read first; write it atomically so
   # a reader never observes a partial file.
   TMP_LAST="${LAST_FILE}.tmp.$$"
   if printf '%s\n' "$RECORD" >"$TMP_LAST" 2>/dev/null; then
-    mv -f "$TMP_LAST" "$LAST_FILE" 2>/dev/null || rm -f "$TMP_LAST" 2>/dev/null
+    mv -f "$TMP_LAST" "$LAST_FILE" 2>/dev/null && PUBLISHED=1 || rm -f "$TMP_LAST" 2>/dev/null
   fi
+fi
+
+# Release the lock before phase 2. The enrichment must not hold up the other
+# sessions that hit the same limit at the same instant, and it needs no
+# serialization of its own: every one of them would resolve the same newest
+# handoff, so a last-writer-wins atomic rename is correct.
+if (( LOCKED )); then
+  rmdir "$LOCK_DIR" 2>/dev/null
+  trap - EXIT
+  LOCKED=0
+fi
+
+# PHASE 2 — refine the published pointer with the handoff, if one exists.
+#
+# Everything durable is already on disk, so this step can be as slow as the
+# filesystem makes it without costing the record. If the hook is killed here,
+# the user still has exactly what they had before this feature existed.
+#
+# Only `usage-limit-last.json` is refined. The events log is a history of what
+# happened; `last` is the pointer a resuming session reads first, and the
+# pointer is the thing worth improving. Rewriting history to add a field the
+# reader will get from `last` anyway is not worth a second append.
+(( PUBLISHED )) || exit 0
+
+PORTABLE_HANDOFF=$(newest_portable_handoff "$HANDOFF_DIR")
+[[ -n "$PORTABLE_HANDOFF" ]] || exit 0
+
+ENRICHED=$(build_record "$PORTABLE_HANDOFF")
+[[ -n "$ENRICHED" ]] || exit 0
+
+TMP_LAST="${LAST_FILE}.tmp.$$"
+if printf '%s\n' "$ENRICHED" >"$TMP_LAST" 2>/dev/null; then
+  mv -f "$TMP_LAST" "$LAST_FILE" 2>/dev/null || rm -f "$TMP_LAST" 2>/dev/null
 fi
 
 exit 0

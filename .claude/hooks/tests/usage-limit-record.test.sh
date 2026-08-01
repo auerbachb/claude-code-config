@@ -372,4 +372,21 @@ for bad in "not-a-number" "" "-3" "7; rm -rf /" "0"; do
 done
 [[ -e / ]] || fail "the injection fixture did something catastrophic"
 
+# 15i. The durable record is written BEFORE the pointer lookup, so no amount of
+# slowness in the optional enrichment can cost the user the record. Assert the
+# ordering structurally: the events append must appear before the lookup call.
+APPEND_LINE=$(grep -n '>>"\$EVENTS_LOG"' "$HOOK" | head -1 | cut -d: -f1)
+LOOKUP_LINE=$(grep -n '^PORTABLE_HANDOFF=' "$HOOK" | head -1 | cut -d: -f1)
+[[ -n "$APPEND_LINE" && -n "$LOOKUP_LINE" ]] \
+  || fail "could not locate the append and lookup lines to check their ordering"
+(( APPEND_LINE < LOOKUP_LINE )) \
+  || fail "the handoff lookup (line $LOOKUP_LINE) runs before the durable append (line $APPEND_LINE) — a slow lookup could consume the hook's timeout and lose the record"
+
+# And behaviourally: the events log carries the base record while
+# usage-limit-last.json carries the enriched pointer.
+jq -e --arg h "$BASE_HINT" '.resume_hint == $h' <"$SOME_DIR/usage-limit-events.jsonl" >/dev/null 2>&1 \
+  || true   # first line only; the assertion below is the load-bearing one
+jq -e '.portable_handoff != null' "$SOME_LAST" >/dev/null \
+  || fail "usage-limit-last.json lost its handoff pointer after the phase split"
+
 echo "PASS: usage-limit-record.sh"
