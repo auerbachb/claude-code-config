@@ -15,8 +15,6 @@ The 5-minute heartbeat rule catches silence during turns; this file covers betwe
 | One-shot "wake me in N minutes" | `ScheduleWakeup` | Single tick only |
 | Background work in flight (subagent, background process, watcher) | **ceiling watch** — `bgwork-ceiling.sh --arm-command` → `Monitor` | Backstop, not a poll — still `/loop` if status is due |
 
-> Why the "Never" above: a forgotten re-arm silently kills a hand-rolled one-shot chain; `/loop` re-arms itself.
-
 ## PM Monitoring Primitive
 
 Division of responsibility (see `.claude/reference/pm-monitoring-decision.md`):

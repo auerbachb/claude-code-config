@@ -14,10 +14,6 @@
 
 "Clear" means the skill's description names the requested task (e.g. "summarize what this PR changed" → `/recap`; "what should I work on next?" → `/pm` or `/prioritize`).
 
-## Why
-
-Hand-rolling skips `~/.claude/skill-usage.log`, breaking prune audits and telemetry. Subagents get this reflex via "Reaching Subagents" below.
-
 ## Reaching Subagents
 
 Subagents inherit the parent's instruction **snapshot** at spawn and never re-read this file from disk. Two paths deliver the reflex anyway:

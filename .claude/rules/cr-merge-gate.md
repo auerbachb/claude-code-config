@@ -17,7 +17,7 @@ Stop polling ONLY when one current-HEAD review path below is satisfied:
 
 ## Step 1 — Confirm reviews are clean (merge gate)
 
-The merge gate depends on which reviewer owns the PR. Compact per-path gates below (every binding condition retained); expanded per-path prose: `.claude/reference/merge-gate-reviewer-paths.md`.
+The merge gate depends on which reviewer owns the PR. Per-path gates below; expanded prose: `.claude/reference/merge-gate-reviewer-paths.md`.
 
 **CR path** (neither BugBot nor Greptile triggered — `merge-gate.sh` reviewer `cr`): **CodeRabbit** (`coderabbitai[bot]`) or **CodeAnt** (`codeant-ai[bot]`) with `state: "APPROVED"` and `commit_id == current HEAD SHA` — either bot alone suffices. Routing: CodeAnt/CodeRabbit in PR history → CR path; cursor-only → BugBot (`reviewer-of.sh`). Stale-SHA approvals never count — re-trigger the bot that must refresh (rate cap applies) and keep polling. A newer same-SHA `CHANGES_REQUESTED` from the same bot retracts its earlier `APPROVED` until fixed, pushed, re-approved. Bot `CHANGES_REQUESTED` on an old SHA is obsolete after a fix push — `/fixpr` dismisses via `dismiss-stale-bot-changes.sh` (bots only, never humans); dismiss leftovers rather than reading their `reviewDecision: CHANGES_REQUESTED` as a human block. Human `CHANGES_REQUESTED` on current HEAD blocks until addressed/withdrawn. **Not approvals:** the "Full review triggered" ack; "0 unresolved threads" without an APPROVED on current SHA; early absence of findings; a completed CR check-run without an APPROVED review object. **Re-trigger policy:** 12 min → `@coderabbitai full review`, max 2/PR/hour; after 2 failures on one SHA, escalate BugBot → Greptile → self-review.
 
@@ -43,7 +43,7 @@ Before running `gh pr merge` on ANY PR, verify ALL CI check-runs are complete an
 
 **If any check-run has a blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`): DO NOT MERGE.** Read the failure output, fix, push, and merge only after ALL checks complete with non-blocking conclusions.
 
-Check-runs are deduped per `(app, check name)` to the newest check suite — a re-run supersedes its earlier result, so a stale failure never blocks (`check-runs-dedup.sh`).
+Check-runs dedupe per `(app, check name)` to the newest suite, so a stale failure never blocks (`check-runs-dedup.sh`).
 
 Applies to ALL merge paths: `gh pr merge`, `/merge`, `/wrap`, Phase C verify-and-wrap.
 
