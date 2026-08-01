@@ -144,7 +144,7 @@ SESSION_ID="${CLAUDE_SESSION_ID:-default}"
 SESSION_ID="${SESSION_ID//[^[:alnum:]_.-]/_}"
 SESSION_ID="${SESSION_ID:-default}"
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-OUT="$OUT_DIR/portable-handoff-${SESSION_ID}-${STAMP}.md"
+OUT="$OUT_DIR/portable-handoff-${STAMP}-${SESSION_ID}.md"
 mv -f "$TMP_DOC" "$OUT" && chmod 644 "$OUT"
 echo "$OUT"
 ```

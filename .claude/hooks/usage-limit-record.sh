@@ -98,16 +98,6 @@ file_size() {
 RECORDED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)
 [[ -n "$RECORDED_AT" ]] || RECORDED_AT="unknown"
 
-# Newest portable handoff by modification time. Modification time is the only
-# ordering signal used; when two files share one, the lexically greater name
-# wins purely so the result is DETERMINISTIC rather than dependent on directory
-# iteration order. That fallback is not a chronology claim — same-second
-# handoffs carry the same embedded timestamp, so their name order says nothing
-# about which was written last.
-#
-# `-nt` is a bash builtin comparison, which keeps this free of the BSD/GNU
-# `stat` split the file_size() helper above has to switch on. The file is never
-# opened; only its name and mtime are consulted.
 # Only handoffs modified within HANDOFF_MAX_AGE_DAYS are eligible. Without a
 # bound, a document from a different project weeks ago stays advertised forever
 # and grows steadily more misleading the longer it sits there — a stale pointer
@@ -124,14 +114,29 @@ HANDOFF_MAX_AGE_DAYS="${CLAUDE_HANDOFF_MAX_AGE_DAYS:-7}"
 # Bound the work this optional enrichment can do. The hook runs under a 5s
 # timeout and the durable append is the part that must not be lost, so the
 # pointer lookup never gets to be open-ended: one non-recursive directory read,
-# newest names first, capped. Filenames sort chronologically, so the newest by
-# mtime is inside this window in any realistic directory.
+# newest names first, capped.
+#
+# Taking the newest NAMES is only sound because the filename leads with a UTC
+# timestamp (portable-handoff-{TIMESTAMP}-{SESSION_ID}.md), so lexical order IS
+# chronological order and the newest by mtime is inside the window. If that
+# convention ever changes so the session id leads, this cap silently starts
+# dropping the newest document — see .claude/reference/portable-handoff.md.
 #
 # In scale terms this adds one readdir to a filesystem the hook already writes
 # to several times (mkdir, chmod, append, atomic rename) — a home slow enough to
 # blow the budget here was already blowing it on those.
 HANDOFF_SCAN_CAP=50
 
+# Newest portable handoff by modification time. Modification time is the only
+# ordering signal used; when two files share one, the lexically greater name
+# wins purely so the result is DETERMINISTIC rather than dependent on directory
+# iteration order. That fallback is not a chronology claim — same-second
+# handoffs carry the same embedded timestamp, so their name order says nothing
+# about which was written last.
+#
+# `-nt` is a bash builtin comparison, which keeps this free of the BSD/GNU
+# `stat` split the file_size() helper above has to switch on. The file is never
+# opened; only its name and mtime are consulted.
 newest_portable_handoff() {
   local dir="$1" newest="" f
   [[ -d "$dir" ]] || return 0

@@ -7,11 +7,11 @@ Not auto-loaded.
 ## Naming and location
 
 ```
-~/.claude/handoffs/portable-handoff-{SESSION_ID}-{TIMESTAMP}.md
+~/.claude/handoffs/portable-handoff-{TIMESTAMP}-{SESSION_ID}.md
 ```
 
+- `{TIMESTAMP}` — UTC, `%Y%m%dT%H%M%SZ`, and it comes **first**. That ordering is load-bearing: it makes lexicographic order match chronological order, so "the most recent one" is cheap to find and a directory listing reads in the order the sessions happened. With the session id leading instead, names would sort by session — and any consumer that bounded its scan by name order would silently skip the newest document.
 - `{SESSION_ID}` — `$CLAUDE_SESSION_ID`, or `default` when unset, with every character outside `[[:alnum:]_.-]` replaced by `_`. Same sanitizing as `bgwork-ceiling.sh`, for the same reason: the value becomes part of a filename.
-- `{TIMESTAMP}` — UTC, `%Y%m%dT%H%M%SZ`. Lexicographic order matches chronological order, which is what makes "the most recent one" cheap to find.
 
 It sits directly in `~/.claude/handoffs/`, alongside `issue-maker-{SESSION_ID}-log.json` and the `{owner}/{repo}/` subtrees — a flat sibling of the PR-scoped handoffs, not a member of them.
 
