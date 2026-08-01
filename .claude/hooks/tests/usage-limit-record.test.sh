@@ -429,11 +429,13 @@ mkdir -p "$MANY_DIR/handoffs"
 # 10# forces base 10: seq -w zero-pads, and bash reads a leading zero as octal,
 # so "008" would abort the arithmetic mid-loop.
 for i in $(seq -w 1 120); do
-  printf 'x\n' >"$MANY_DIR/handoffs/portable-handoff-2026080$(( 10#$i % 9 + 1 ))T120000Z-s$i.md"
+  f="$MANY_DIR/handoffs/portable-handoff-2026080$(( 10#$i % 9 + 1 ))T120000Z-s$i.md"
+  printf 'x\n' >"$f"
+  touch_ago "$f" 7200                # all the decoys are two hours old
 done
 MANY_NEWEST="$MANY_DIR/handoffs/portable-handoff-00000000T000000Z-aaa.md"
 printf 'newest\n' >"$MANY_NEWEST"
-touch_ago "$MANY_NEWEST" 60          # newest mtime, lexically smallest name
+touch_ago "$MANY_NEWEST" 60          # newest mtime, lexically SMALLEST name
 printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":"many"}' \
   | CLAUDE_USAGE_LIMIT_DIR="$MANY_DIR" CLAUDE_HANDOFF_DIR="$MANY_DIR/handoffs" bash "$HOOK"
 jq -e --arg p "$MANY_NEWEST" '.portable_handoff == $p' "$MANY_DIR/usage-limit-last.json" >/dev/null \
