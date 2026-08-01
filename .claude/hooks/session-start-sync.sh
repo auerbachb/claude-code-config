@@ -82,12 +82,45 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
   fi
 fi
 
+# --- Reconcile durable scheduling state (issue #827) ---
+# CronCreate jobs are in-memory and die with the session that armed them, so
+# every job this file recorded before now is already gone. Purge that dead
+# bookkeeping and surface the durable on-disk records that DID survive (an
+# overdue harness-audit, a paused PR fleet). Fail-soft by contract — the
+# script always exits 0, and any failure here must not block the session.
+
+# Resolved from this hook's own location, not from the skills worktree: the
+# reconciler reads session-state, so a broken or missing worktree — exactly
+# when stale bookkeeping is most likely — must not also suppress the cleanup.
+notices=""
+reconcile_script="$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" 2>/dev/null && pwd)/session-scheduling-reconcile.sh"
+if [[ -f "$reconcile_script" ]]; then
+  notices=$(bash "$reconcile_script" 2>/dev/null)
+fi
+
+# Strip control characters before they reach jq. `$errors` carries raw git
+# stderr, and a clone/fetch progress meter emits carriage returns and escape
+# sequences — noise that lands verbatim in the context block, on exactly the
+# first run in a fresh HOME when the sync warning matters most.
+# CR (\015) is inside the deleted set: it is the character progress meters
+# actually emit, so leaving it out would have made this scrub miss its target.
+# Tab (\011) and newline (\012) are preserved — they carry real formatting.
+errors=$(printf '%s' "$errors" | LC_ALL=C tr -d '\000-\010\013-\015\016-\037')
+notices=$(printf '%s' "$notices" | LC_ALL=C tr -d '\000-\010\013-\015\016-\037')
+
 # Report result
 if [[ -n "$errors" ]]; then
-  jq -n --arg errors "$errors" '{
+  jq -n --arg errors "$errors" --arg notices "$notices" '{
     hookSpecificOutput: {
       hookEventName: "SessionStart",
-      additionalContext: ("SESSION SYNC WARNING: Config sync encountered errors: " + $errors + ". Skills, rules, or CLAUDE.md may be stale. Run manually: git -C ~/.claude/skills-worktree fetch origin main && git -C ~/.claude/skills-worktree reset --hard origin/main")
+      additionalContext: ("SESSION SYNC WARNING: Config sync encountered errors: " + $errors + ". Skills, rules, or CLAUDE.md may be stale. Run manually: git -C ~/.claude/skills-worktree fetch origin main && git -C ~/.claude/skills-worktree reset --hard origin/main" + (if $notices == "" then "" else "\n\n" + $notices end))
+    }
+  }'
+elif [[ -n "$notices" ]]; then
+  jq -n --arg notices "$notices" '{
+    hookSpecificOutput: {
+      hookEventName: "SessionStart",
+      additionalContext: $notices
     }
   }'
 else

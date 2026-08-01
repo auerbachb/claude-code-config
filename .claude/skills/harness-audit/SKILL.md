@@ -30,7 +30,7 @@ This skill is that missing question, run on a schedule.
 
 The split exists because of a real constraint. `subagent-orchestration.md` reserves
 the top tier for **interactive step-ups where a human watches the spend** — it is
-never a spawn default. A monthly cron that quietly burns top-tier tokens
+never a spawn default. A monthly tick that quietly burns top-tier tokens
 unattended contradicts that rule's stated harm model, not merely its wording. So
 the recurring tick runs only the cheap pass and then *offers* the judgment pass
 as a click-to-launch chip. Nobody's budget moves without a human clicking.
@@ -43,18 +43,18 @@ Rationale, alternatives considered, and the watermark scheme: `.claude/reference
 
 | Invocation | Meaning |
 |------------|---------|
-| `/harness-audit` | On-demand full run. Neither creates nor disturbs the recurring job. |
-| `/harness-audit --tick` | The cron body. Cheap pass + chip offer, gated on the monthly watermark. |
+| `/harness-audit` | On-demand full run. Neither enables nor disturbs the recurring nudge. |
+| `/harness-audit --tick` | The tick body. Cheap pass + chip offer, gated on the monthly watermark. |
 | `/harness-audit --report-only` | Dry run: verdicts and report, **files nothing**. |
 | `/harness-audit --report-to-repo` | Write the report into `.claude/reference/` instead of `~/.claude/`. Refuses outside a non-`main` worktree (Step 8). |
 | `/harness-audit --force-here` | Run the judgment pass on the current model even when it is not the resolved top tier; stamps a caveat into the report. |
-| `/harness-audit --arm` | Register the recurring job. |
-| `/harness-audit --stop` | Cancel the recurring job (fail-closed). |
+| `/harness-audit --arm` | Enable the session-start nudge. |
+| `/harness-audit --stop` | Disable the session-start nudge. |
 
 The first two rows and the last two are **modes** and are mutually exclusive.
 `--report-only`, `--report-to-repo`, and `--force-here` are **modifiers** that
 combine with a plain on-demand run (and with each other). A `--tick` ignores
-`--force-here` — a cron never runs the judgment pass, whatever it is passed.
+`--force-here` — a tick never runs the judgment pass, whatever it is passed.
 
 Resolve once, up front:
 
@@ -75,118 +75,66 @@ entirely.
 - **`--stop`** is strictly lifecycle-only: run Step 1 and exit, never auditing.
 - **`--arm`** runs Step 1, then performs **one inventory-only tick** (Steps 2–3
   and Step 5's offer) so the first month is evaluated immediately instead of
-  waiting a day, then exits. It never runs the judgment pass itself — an armed
-  cron and a hand-armed first tick behave identically.
+  waiting for the next session, then exits. It never runs the judgment pass
+  itself — a nudge-driven tick and a hand-armed first tick behave identically.
 
 ---
 
 ## Step 1 — `--arm` / `--stop` (recurrence lifecycle)
 
-**Cadence is monthly, but the job is registered daily.** `CronCreate` jobs can be
-removed by a 7-day expiry (`scheduling-reliability.md`), so a literal monthly
-cron can expire before it ever fires — it would silently never run, which is the
-worst possible failure for a skill whose whole job is noticing silent staleness.
-A daily tick gated on a monthly watermark costs almost nothing (29 of 30 ticks
-are a file read and an exit) and gives seven chances to notice an expired job
-inside the expiry window.
+**The recurrence is a session-start check, not a scheduled job** (issue #827).
+No scheduler in this harness outlives the session that armed it, so a monthly
+audit cannot be driven by one: the job would die at session exit and the audit
+would silently never run — the worst possible failure for a skill whose whole
+job is noticing silent staleness.
 
-> **Warning:** `CronCreate` is **session-only** — the job is held in memory and dies when Claude exits, regardless of `durable: true`. The daily registration design assumes the job survives long enough within a session to re-register itself; it does **not** persist across session boundaries. The current scheduling design therefore relies on a guarantee the harness does not provide. Redesign of the audit's scheduling cadence is tracked as a follow-up ticket.
+What *is* durable is the watermark file, and it already records everything the
+cadence needs. So the tick moved to the one event that recurs reliably: **the
+start of a session**. `session-scheduling-reconcile.sh` reads the watermark on
+every session start and surfaces a one-line nudge when the month is due.
+Sessions start far more often than monthly, so a month cannot be missed — and
+this needs no job id, no expiry window, and no `CronList` reconciliation.
+
+`--arm` and `--stop` therefore toggle that nudge, in the watermark file:
 
 ### `--arm`
 
 ```bash
-MINUTE="$(.claude/scripts/off-peak-minute.sh --repo "$(gh repo view --json nameWithOwner --jq .nameWithOwner)")"
-```
-
-Create the job with `CronCreate`: schedule `"$MINUTE 9 * * *"` (daily, off-peak
-minute, 9am local), `recurring: true`, `durable: true`, prompt
-`/harness-audit --tick`. Persist the returned id:
-
-```bash
-JOBS="$("$SESSION_STATE_SH" --get '.polling_jobs')"
-[[ "$JOBS" == "null" || -z "$JOBS" ]] && JOBS='[]'
-NEW_JOBS="$(jq -c --arg id "$CRON_ID" \
-  '. + [{"id":$id,"owner":"harness-audit","kind":"monthly-audit"}]' <<<"$JOBS")"
-"$SESSION_STATE_SH" --set ".polling_jobs=$NEW_JOBS"
+python3 - "$WATERMARK" <<'PY'
+import json, os, sys
+p = sys.argv[1]
+d = json.load(open(p)) if os.path.exists(p) else {}
+d["nudge_enabled"] = True
+json.dump(d, open(p, "w"), indent=2)
+PY
 ```
 
 Then run the single inventory-only tick described in Step 0 so the user sees the
-skill work immediately, and satisfy the `scheduling-reliability.md` **pre-exit
-checklist**: (1) next tick scheduled, (2) timestamped heartbeat sent, (3) state
-recorded.
+skill work immediately, and report that the nudge is on.
 
-**Arming is idempotent.** If `polling_jobs[]` already holds a live
-`owner: "harness-audit"` entry (confirm with `CronList`), report the existing id
-and create nothing. Two jobs would double every offer.
+**Arming is idempotent** — it sets a boolean. There is no way to arm twice, and
+so no way to double an offer.
 
-### `--stop` (fail-closed)
+### `--stop`
 
-`CronDelete` first; clear state **only** after it succeeds. A cleared record with
-a live cron is a job firing against state that claims it is gone.
+Set `nudge_enabled` to `false` the same way. Nothing else to tear down: there is
+no job, so there is nothing that can keep firing against state that says it is
+gone. Report that the nudge is off and **STOP** — `--stop` never runs an audit.
 
-**Cancel every audit-owned job, not just the first.** Arming is idempotent, but a
-crash between `CronCreate` and the state write — or an older job left by a
-previous version — can leave more than one. Stopping only the first would report
-success while a second cron kept firing, which is precisely the failure `--stop`
-exists to prevent:
-
-```bash
-JOBS="$("$SESSION_STATE_SH" --get '.polling_jobs')"
-# An absent/null polling_jobs is the normal "nothing armed" case, not an
-# error — guard before jq so it does not spew a parse error on `.[]`.
-[[ "$JOBS" == "null" || -z "$JOBS" ]] && JOBS='[]'
-mapfile -t CRON_IDS < <(jq -r '.[] | select(.owner == "harness-audit") | .id' <<<"$JOBS")
-
-FAILED=()
-DELETED=()
-for id in "${CRON_IDS[@]:-}"; do
-  [[ -n "$id" ]] || continue
-  if CronDelete "$id"; then DELETED+=("$id"); else FAILED+=("$id"); fi
-done
-
-if (( ${#FAILED[@]} > 0 )); then
-  # Fail closed: prune only what actually died, keep the rest recorded so a
-  # re-run can finish the job.
-  NEW_JOBS="$(jq -c --argjson gone "$(printf '%s\n' "${DELETED[@]:-}" | jq -R . | jq -s 'map(select(. != ""))')" \
-    'map(select(.id as $i | ($gone | index($i)) | not))' <<<"$JOBS")"
-  "$SESSION_STATE_SH" --set ".polling_jobs=$NEW_JOBS"
-  echo "ERROR: CronDelete failed for: ${FAILED[*]} — still recorded; re-run /harness-audit --stop." >&2
-  exit 1
-fi
-
-NEW_JOBS="$(jq -c 'map(select(.owner != "harness-audit"))' <<<"$JOBS")"
-"$SESSION_STATE_SH" --set ".polling_jobs=$NEW_JOBS"
-```
-
-Also reconcile against `CronList`: an audit-owned job **live in `CronList` but
-absent from `polling_jobs[]`** is an orphan from a lost state write — delete it
-too, and say so. State is the record, not the authority.
-
-Report what was cancelled (or that nothing was armed) and **STOP** — `--stop`
-never runs an audit.
+Both modes leave `last_completed_month` / `last_offered_month` untouched, so
+disabling and re-enabling the nudge never re-audits a month that is already done.
 
 ---
 
-## Step 2 — `--tick` gating (cron body only)
+## Step 2 — `--tick` gating (tick body only)
 
 Skip this step entirely for every non-`--tick` mode.
 
-**Confirm the job survives.** Call `CronList` and look for the recorded id.
+There is no job to confirm the survival of — the session-start nudge is the
+recurrence (Step 1), and it re-reads the watermark from disk every time. A tick
+is therefore pure watermark arithmetic.
 
-- **Missing** → the job expired or was deleted. Re-arm it (Step 1) before doing
-  anything else, and say so in the heartbeat.
-- **`CronList` unavailable** (headless, tool absent) → do **not** assume the job
-  survived. Record the failure and carry on with the tick's real work:
-
-  ```bash
-  FAILS="$("$SESSION_STATE_SH" --get '.polling_failures')"
-  [[ "$FAILS" == "null" || -z "$FAILS" ]] && FAILS='[]'
-  NEW="$(jq -c --arg at "$(date -u +%FT%TZ)" \
-    '. + [{"at":$at,"owner":"harness-audit","failure":"cronlist_unavailable"}]' <<<"$FAILS")"
-  "$SESSION_STATE_SH" --set ".polling_failures=$NEW"
-  ```
-
-**Then read the watermark** (`$WATERMARK`, absent on first run = never audited):
+**Read the watermark** (`$WATERMARK`, absent on first run = never audited):
 
 ```json
 {"last_completed_month": "2026-06", "last_completed_at": "...", "last_offered_month": "2026-07"}
@@ -199,8 +147,8 @@ Skip this step entirely for every non-`--tick` mode.
 | Neither matches | Proceed: Step 3 (inventory), then Step 5's chip offer. **A tick never runs the judgment pass itself.** |
 
 The two separate watermarks are load-bearing. One alone forces a choice between
-two bad behaviors: re-offering a chip every single day until it is clicked, or
-marking the month done when nothing was actually audited.
+two bad behaviors: re-offering a chip on every session start until it is
+clicked, or marking the month done when nothing was actually audited.
 
 ---
 
@@ -315,14 +263,14 @@ TOP_DISPLAY="$("$FLEET" --top-tier-display)"
 proceeding on an assumed tier. A fleet change is a one-file edit to
 `.claude/model-fleet.json`; nothing in this skill needs touching when it happens.
 
-### Cron path (`--tick`)
+### Tick path (`--tick`)
 
 Never run the judgment pass. **Claim the month, then offer it.**
 
 Claim *before* offering, not after. A tick that offers first and records second
-has a window in which a second tick — an overlapping cron, or a manual run
-alongside one — reads `last_offered_month` as unset and offers the same month
-again.
+has a window in which a second tick — a session start racing a manual run, or
+two sessions starting at once — reads `last_offered_month` as unset and offers
+the same month again.
 
 **Ordering alone is not enough: read-then-write is still a TOCTOU race.** Two
 ticks can both read an unset watermark, both conclude they won, and both offer.

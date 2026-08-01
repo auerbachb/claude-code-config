@@ -25,13 +25,13 @@ Parent/subagent scope, prohibited actions, refusal template, and common misreads
 
 ### Step 0a: Resume from pause (when `.pmm.paused_at` is set)
 
-On **every** invocation, before Step 1, check for a pause marker. If present, this invocation is a **resume** — tear down any auto-wake cron, clear the marker, merge config, and continue. Full resume logic (cron teardown bash, flag-merge precedence rule): `references/pmm-lifecycle.md` "Step 0a: Resume from pause".
+On **every** invocation, before Step 1, check for a pause marker. If present, this invocation is a **resume** — cancel any auto-wake re-scan, clear the marker, merge config, and continue. Full resume logic (flag-merge precedence rule): `references/pmm-lifecycle.md` "Step 0a: Resume from pause".
 
 ```bash
 PAUSED_AT=$(.claude/scripts/session-state.sh --get '.pmm.paused_at' 2>/dev/null || echo null)
 if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
   SAVED=$(.claude/scripts/session-state.sh --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
-  # tear down auto-wake cron, clear pause marker, reset pmm_idle_streak=0 + pmm_active=true
+  # cancel auto-wake re-scan, clear pause marker, reset pmm_idle_streak=0 + pmm_active=true
   # (full bash in references/pmm-lifecycle.md)
   echo "[PMM] Resuming from pause (paused_at=$PAUSED_AT) — flags on this invocation override saved config."
 fi
@@ -52,8 +52,8 @@ Parse `$ARGUMENTS` (re-parse every tick — a `/loop` re-invocation passes the s
 - `--cadence Nm` — base poll interval. **Default:** `5m`.
 - `--max-parallel N` — max concurrent `phase-a-fixer` subagents. **Default:** `3`.
 - `--idle-pause-after N` — consecutive idle ticks before auto-pause. **Default:** `3`.
-- `--auto-wake` — register an hourly `CronCreate` job at pause time. **Default:** off.
-- `--auto-wake-cadence Nm` — cadence for the auto-wake cron. **Default:** `60m`.
+- `--auto-wake` — keep a low-frequency re-scan running after an idle pause, instead of going fully quiet. **Default:** off.
+- `--auto-wake-cadence Nm` — cadence for that re-scan. **Default:** `60m`.
 - `--confirm-merges` — require an explicit user confirmation before each `/wrap` merge dispatch. **Default:** off (invocation is authorization). This flag only adds a prompt before the `/wrap` dispatch — it never overrides hard stops (`BLOCKED:*` verdicts, gate failures, AC failures). Safety checks in `/wrap` still apply.
 
 ```bash
@@ -366,7 +366,7 @@ NOW=$(date -u +%FT%TZ)
 
 Reached from Step 7 when the fleet is empty or idle. Preserves a resume marker so `/pr-monitor-and-manage-wake` or re-invoking this skill can pick up where it left off.
 
-Full pause procedure (final heartbeat, loop cancel, fleet snapshot + config build, pause marker write, auto-wake cron registration, summary line): `references/pmm-lifecycle.md`.
+Full pause procedure (final heartbeat, loop cancel, fleet snapshot + config build, pause marker write, auto-wake re-scan, summary line): `references/pmm-lifecycle.md`.
 
 ```bash
 .claude/scripts/session-state.sh \
@@ -377,7 +377,7 @@ Full pause procedure (final heartbeat, loop cancel, fleet snapshot + config buil
   --set '.pmm_next_expected_tick_at=null'
 ```
 
-> **Session-only CronCreate warning (when `--auto-wake` is set):** `CronCreate` is **session-only** — this job fires only while Claude is running in the current session. `durable: true` has no effect. `--auto-wake` does **not** survive session turnover. (Behavioral redesign tracked as a separate ticket.)
+> **Scope of `--auto-wake` (issue #827):** it arms a `/loop` re-scan, so it is session-scoped like every other poll here. That is not a shortfall: a paused fleet resumes across sessions from the on-disk `.pmm.paused_at` marker (Step 0a), which is durable in a way no scheduler job was. The next session start also surfaces the paused fleet unprompted — `session-scheduling-reconcile.sh`.
 
 ---
 

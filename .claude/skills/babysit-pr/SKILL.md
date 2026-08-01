@@ -1,12 +1,12 @@
 ---
 name: babysit-pr
-description: Watch a single PR on a recurring /loop and auto-dispatch /fixpr (recoverable blockers) or /wrap (merge-ready). Reads PR state via pr-state.sh + merge-gate.sh each tick, classifies into {merged, merge-ready, conflicting, has-recoverable-blockers, waiting-on-bots, hard-blocked}, tracks in-flight dispatches in session-state for idempotency, applies stable-state backoff, emits a timestamped heartbeat per tick, and hard-terminates on merge/hard-blocked/N blocker ticks/user stop. Stop with /babysit-pr-stop. Invoke as `/babysit-pr <PR> [--cadence Nm] [--max-iter N] [--silent] [--durable] [--auto-resolve-conflicts] [--max-conflict-rounds N]`.
+description: Watch a single PR on a recurring /loop and auto-dispatch /fixpr (recoverable blockers) or /wrap (merge-ready). Reads PR state via pr-state.sh + merge-gate.sh each tick, classifies into {merged, merge-ready, conflicting, has-recoverable-blockers, waiting-on-bots, hard-blocked}, tracks in-flight dispatches in session-state for idempotency, applies stable-state backoff, emits a timestamped heartbeat per tick, and hard-terminates on merge/hard-blocked/N blocker ticks/user stop. Stop with /babysit-pr-stop. Invoke as `/babysit-pr <PR> [--cadence Nm] [--max-iter N] [--silent] [--auto-resolve-conflicts] [--max-conflict-rounds N]`.
 triggers:
   - babysit pr
   - babysit this pr
   - watch this pr
   - keep an eye on pr
-argument-hint: "<PR> [--cadence Nm] [--max-iter N] [--silent] [--durable] [--auto-resolve-conflicts] [--max-conflict-rounds N]"
+argument-hint: "<PR> [--cadence Nm] [--max-iter N] [--silent] [--auto-resolve-conflicts] [--max-conflict-rounds N]"
 ---
 
 Watch one PR and drive it toward merge **without looping forever**. Each tick reads the PR's state through the shared scripts, classifies it, and dispatches the right skill — `/fixpr` to fix recoverable blockers, `/wrap` to merge when the gate is met — then re-arms the poll until a terminal condition fires.
@@ -38,11 +38,17 @@ A human `CHANGES_REQUESTED` on HEAD is `hard-blocked` → record and exit. Never
 | `--cadence Nm` | `5m` | Base poll cadence. Floor `1m` (60s) — clamp anything lower. |
 | `--max-iter N` | `6` | Hard termination after N **consecutive blocker-state ticks** (≈90 min once backoff widens to 15m). |
 | `--silent` | off | Suppress the per-tick heartbeat **except** on state change, dispatch, or termination (those always print). |
-| `--durable` | off | Use `CronCreate` instead of `/loop` for wall-clock-cadence ticking. **Does not provide cross-session durability** — `CronCreate` is session-only; `durable: true` has no effect. The job dies when Claude exits. Default is `/loop` (session-scoped). (Behavioral redesign tracked as a follow-up ticket.) |
 | `--auto-resolve-conflicts` | off | Opt-in: on `CONFLICTING`, dispatch `/fixpr` in safe-only mode (`BABYSIT_SAFE_CONFLICT_MODE=1`) to rebase and auto-resolve mechanically-simple hunks. Any complex hunk aborts the rebase and terminates with a per-hunk report. Off by default — performs unattended rebases and force-pushes. |
+| ~~`--durable`~~ | removed | Accepted and ignored (issue #827). It swapped `/loop` for a `CronCreate` job to buy cross-session continuity that never existed — `CronCreate` is in-memory and dies with the session, so the flag only ever changed cadence alignment. The watcher is always `/loop`. Why this is not re-implemented on the durable scheduler the harness *does* provide: `.claude/reference/cross-session-durability.md`. |
 | `--max-conflict-rounds N` | `3` | Hard termination after N consecutive conflict rounds. Each round that enters the auto-resolve path increments `conflict_streak`, which does not reset on SHA change — only on a non-`conflicting` tick. |
 
 Parse from `$ARGUMENTS`. The first bare integer is `<PR>`. Validate `--cadence` matches `^[0-9]+m$`; clamp `< 1m` to `1m`. Validate `--max-iter` is a positive integer. `--auto-resolve-conflicts` is a boolean flag (present = true, absent = false; stored as `AUTO_RESOLVE_CONFLICTS=true|false`). `--max-conflict-rounds N` must be a positive integer; default `3` (stored as `MAX_CONFLICT_ROUNDS`).
+
+`--durable` is still **accepted** so a saved chip payload or muscle memory does not hard-error; print one line and carry on with `/loop`:
+
+```text
+[babysit] --durable was removed (issue #827) — it never provided cross-session continuity. Watching on /loop.
+```
 
 ## Two modes: arm vs tick
 
@@ -127,12 +133,10 @@ bump_parse_failure_counter() {
   "blocker_streak": 0,          // consecutive blocker-state ticks (drives --max-iter)
   "max_blocker_ticks": 6,
   "silent": false,
-  "durable": false,
   "stop_requested": false,      // set true by /babysit-pr-stop
   "dispatch_in_flight": null,   // {"skill":"fixpr"|"wrap","started_at":"…"} while a dispatch runs
   "dispatch_parse_failures": 0, // consecutive T0 to_epoch() failures on dispatch_in_flight.started_at; force-reclaimed at BABYSIT_PARSE_FAIL_LIMIT (default 3)
   "last_dispatch": null,        // {"skill":"…","started_at":"…","completed_at":"…","status":"…"}
-  "cron_job_id": null,           // set when --durable arms a CronCreate job
   "auto_resolve_conflicts": false, // from --auto-resolve-conflicts; enables unattended rebase+force-push on simple conflicts
   "max_conflict_rounds": 3,        // from --max-conflict-rounds; hard cap on consecutive conflict rounds
   "conflict_streak": 0             // consecutive conflict rounds entered this watcher run; does not reset on SHA change — only on a non-conflicting tick
@@ -201,18 +205,13 @@ Write the babysit object (one atomic `--set` batch), seeding backoff fields to a
 ```bash
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 "$SESSION_STATE_SH" \
-  --set ".prs[\"$PR\"].babysit={\"active\":true,\"started_at\":\"$NOW\",\"last_tick_at\":\"$NOW\",\"last_tick_parse_failures\":0,\"cadence_base_minutes\":$BASE_MIN,\"cadence_effective_minutes\":$BASE_MIN,\"tick_count\":0,\"blocker_streak\":0,\"max_blocker_ticks\":$MAX_ITER,\"silent\":$SILENT,\"durable\":$DURABLE,\"stop_requested\":false,\"dispatch_in_flight\":null,\"dispatch_parse_failures\":0,\"last_dispatch\":null,\"cron_job_id\":null,\"auto_resolve_conflicts\":$AUTO_RESOLVE_CONFLICTS,\"max_conflict_rounds\":$MAX_CONFLICT_ROUNDS,\"conflict_streak\":0}" \
+  --set ".prs[\"$PR\"].babysit={\"active\":true,\"started_at\":\"$NOW\",\"last_tick_at\":\"$NOW\",\"last_tick_parse_failures\":0,\"cadence_base_minutes\":$BASE_MIN,\"cadence_effective_minutes\":$BASE_MIN,\"tick_count\":0,\"blocker_streak\":0,\"max_blocker_ticks\":$MAX_ITER,\"silent\":$SILENT,\"stop_requested\":false,\"dispatch_in_flight\":null,\"dispatch_parse_failures\":0,\"last_dispatch\":null,\"auto_resolve_conflicts\":$AUTO_RESOLVE_CONFLICTS,\"max_conflict_rounds\":$MAX_CONFLICT_ROUNDS,\"conflict_streak\":0}" \
   --set ".prs[\"$PR\"].digest_streak=0"
 ```
 
-Arm the recurring poll. **`/loop` is the default primitive** (`scheduling-reliability.md` decision tree); `CronCreate` only when `--durable` is set.
+Arm the recurring poll: `/loop <cadence> /babysit-pr <PR> --tick`. The runtime owns the cadence and re-arms each cycle. `/loop` is the only primitive this watcher uses (`scheduling-reliability.md` decision tree) — the watcher is session-scoped by design, and a watcher that outlived its session would be auto-dispatching `/wrap` merges into an empty room.
 
-**Warning:** `CronCreate` is **session-only** — the job is held in memory and dies when Claude exits. The `durable: true` field has **no effect**. `--durable` does not provide cross-session continuity for this watcher. (Behavioral redesign of `--durable` is tracked as a follow-up ticket.)
-
-- **`/loop` (default):** arm `/loop <cadence> /babysit-pr <PR> --tick`. The runtime owns the cadence and re-arms each cycle.
-- **`--durable` (CronCreate):** pick an off-peak minute via `.claude/scripts/off-peak-minute.sh`, create a recurring (`recurring: true`, `durable: true`) job whose prompt is `/babysit-pr <PR> --tick`, and persist the returned job id to `.prs["<N>"].babysit.cron_job_id` and to top-level `polling_jobs[]` (so `/babysit-pr-stop` and recovery can find it).
-
-Then **run one tick immediately** (fall through to TICK MODE below) so the user gets instant feedback, and emit the initial heartbeat. Per the `scheduling-reliability.md` **pre-exit checklist**, before ending the arm turn confirm: (1) the next tick is scheduled (loop active / cron created), (2) a timestamped heartbeat was sent, (3) state was recorded.
+Then **run one tick immediately** (fall through to TICK MODE below) so the user gets instant feedback, and emit the initial heartbeat. Per the `scheduling-reliability.md` **pre-exit checklist**, before ending the arm turn confirm: (1) the loop is active, (2) a timestamped heartbeat was sent, (3) state was recorded.
 
 ---
 
@@ -518,7 +517,7 @@ WIDE_MIN=$(( BASE_MIN * 3 )); (( WIDE_MIN < 15 )) && WIDE_MIN=15
 |-----------------|-------------------|
 | `< 3` | base (`--cadence`, default 5m) |
 | `>= 3` | `WIDE_MIN` = `max(15m, 3 × base)` — for the default 5m base this is **15m** (satisfies the AC) |
-| `>= 9` | **terminate** (truly frozen — cancel `/loop`; `CronDelete` in durable mode) |
+| `>= 9` | **terminate** (truly frozen — cancel the `/loop`) |
 
 **Revert to base cadence on any state change** (digest differs → `STREAK` reset to 1 → `cadence_effective_minutes` returns to `BASE_MIN`).
 
@@ -555,7 +554,7 @@ NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   --set ".prs[\"$PR\"].babysit.last_tick_at=$NOW"
 ```
 
-**Re-arm cadence only when it crosses a tier boundary.** `/loop` owns the cadence, so to change it: stop the current loop and re-arm `/loop <new-cadence> /babysit-pr <PR> --tick` (durable mode: `CronUpdate`/recreate the job at the new minute-range, persisting the new id). If the effective cadence is unchanged, do nothing — never re-arm an unchanged loop (forbidden hand-rolled re-arm churn).
+**Re-arm cadence only when it crosses a tier boundary.** `/loop` owns the cadence, so to change it: stop the current loop and re-arm `/loop <new-cadence> /babysit-pr <PR> --tick`. If the effective cadence is unchanged, do nothing — never re-arm an unchanged loop (forbidden hand-rolled re-arm churn).
 
 ### T6. Termination check
 
@@ -599,24 +598,7 @@ Append context: blocker reason on `hard-blocked`/`waiting-on-bots`; dispatch tar
   --set ".prs[\"$PR\"].babysit.dispatch_in_flight=null"
 ```
 
-**Cancelling the poll is a required terminal action — the loop does NOT lapse on its own** (`/loop` re-arms every cycle; `CronCreate` fires until deleted). Tear it down explicitly:
-
-- **`/loop` mode (default):** cancel the active loop now (runtime loop-stop / "stop polling"). Do not re-arm it.
-- **Durable mode:** **fail closed** — `CronDelete` the `cron_job_id` and only prune `polling_jobs[]` / clear the id **after** it succeeds, so a failed delete never leaves a cron firing against state that claims it's gone. `session-state.sh --set` cannot splice an array, so read → filter with `jq` (a read/transform) → write the new array back via `--set` (same supported delete path as `/babysit-pr-stop`):
-
-  ```bash
-  CRON_ID=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.cron_job_id") || CRON_ID=""
-  if [[ -n "$CRON_ID" && "$CRON_ID" != "null" ]]; then
-    CronDelete "$CRON_ID" || { echo "ERROR: CronDelete failed for $CRON_ID — leaving job recorded; re-run /babysit-pr-stop $PR." >&2; exit 1; }
-    JOBS=$("$SESSION_STATE_SH" --get '.polling_jobs')
-    if [[ "$JOBS" != "null" && -n "$JOBS" ]]; then
-      NEW_JOBS=$(jq -c --arg id "$CRON_ID" 'map(select(.id != $id))' <<<"$JOBS")
-    else
-      NEW_JOBS='[]'
-    fi
-    "$SESSION_STATE_SH" --set ".polling_jobs=$NEW_JOBS" --set ".prs[\"$PR\"].babysit.cron_job_id=null"
-  fi
-  ```
+**Cancelling the poll is a required terminal action — the loop does NOT lapse on its own** (`/loop` re-arms every cycle). Cancel the active loop now (runtime loop-stop / "stop polling") and do not re-arm it.
 
 Belt-and-suspenders: even if cancellation is delayed, the T0 short-circuit (`active != true`) makes every subsequent tick an immediate no-op terminate — but cancellation is still mandatory so the runtime stops invoking the watcher.
 
@@ -663,7 +645,8 @@ Conflict rounds: <conflict_streak> of <max_conflict_rounds> (omit when conflict_
 
 ## Notes
 
-- **Stop anytime:** `/babysit-pr-stop <PR>` sets `stop_requested=true` (and `CronDelete`s in durable mode); the next tick's T0 terminates cleanly. See `.claude/skills/babysit-pr-stop/SKILL.md`.
+- **Stop anytime:** `/babysit-pr-stop <PR>` sets `stop_requested=true`; the next tick's T0 terminates cleanly. See `.claude/skills/babysit-pr-stop/SKILL.md`.
 - **One watcher per PR** — arm mode refuses a duplicate (A2).
+- **Session-scoped by design.** The watcher dies with the session. A watcher left `active` by a session that ended is cleared at the next session start by `session-scheduling-reconcile.sh`, so `/status` never reports a watcher that is not running.
 - **Monitor mode:** while a dispatch subagent is in flight, the parent follows `monitor-mode.md` (orchestration only, ≤5-min heartbeat). The per-tick heartbeat satisfies the heartbeat requirement.
 - **Post-merge install:** after this skill lands on `main`, symlink it globally via the skills worktree per `skill-symlinks.md`.
