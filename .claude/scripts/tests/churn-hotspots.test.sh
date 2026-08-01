@@ -101,6 +101,12 @@ new_repo_on() {  # $1 dir name, $2 branch -> echoes path
 add_origin() {  # $1 repo, $2 bare dir name, $3 branch to publish
   local bare="$TMP/$2"
   git init -q --bare "$bare"
+  # A bare repo's HEAD follows the host's ambient init.defaultBranch, which is
+  # not necessarily the branch being published. Leaving it stale makes a later
+  # `git clone` of this bare repo check out a branch that does not exist — the
+  # clone lands with no working tree and no local branch, and the next push
+  # fails. Point HEAD at the published branch, which is what a real remote does.
+  git -C "$bare" symbolic-ref HEAD "refs/heads/$3"
   git -C "$1" remote add origin "$bare"
   git -C "$1" push -q origin "$3"
   git -C "$1" fetch -q origin
@@ -565,6 +571,15 @@ run_in "$R18" --since "$WINDOW_START" --json
 check_jq "18e: auto falls through to gh when no trailing marker survives" "$OUT" '.source == "gh"'
 check_eq "18c: the issue number never appears anywhere in the output" "" \
   "$(printf '%s' "$OUT" | grep -o '838' | head -1)"
+
+# ...but an explicit --ref cannot ride that fallback: the gh path measures the
+# whole repo, so honouring the ref is impossible and quietly scanning something
+# else is the exact failure #861 exists to prevent. --source git remains the
+# escape hatch that scans the ref as-is.
+(cd "$R18" && bash "$SCRIPT" --since "$WINDOW_START" --ref wip-local --json >/dev/null 2>&1)
+check_eq "18h: an explicit --ref refuses the gh fallback rather than scanning repo-wide" "3" "$?"
+run_in "$R18" --since "$WINDOW_START" --ref wip-local --source git --json
+check_eq "18i: --source git still scans the pinned ref as-is (clean, not an error)" "1" "$RC"
 
 # The fallback still WORKS for a properly squashed history.
 commit_touch "$R18" "2026-02-04T00:00:00" "one (#940)" src/Ok.ts

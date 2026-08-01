@@ -34,6 +34,10 @@
 #                        auto-resolved default branch. Exits 3 when it does not
 #                        resolve — an explicit ref is never silently ignored.
 #                        git path only (rejected with --source gh / --repo).
+#                        Also exits 3 when the ref resolves but carries no
+#                        PR-marked commits under --source auto: the gh fallback
+#                        scans repo-wide and cannot honour a ref, so the run
+#                        refuses rather than measuring something else.
 #   --fetch              Best-effort `git fetch origin` before resolving the
 #                        scan ref, so a stale remote-tracking ref cannot narrow
 #                        the window. OFF by default: this script is otherwise
@@ -143,7 +147,7 @@
 #   1  Clean — no file crossed the threshold
 #   2  Usage error (unknown flag, missing or invalid value)
 #   3  Environment error (missing dependency, not a git repo, no window,
-#      unresolvable --ref)
+#      unresolvable --ref, or a --ref the chosen enumeration path cannot honour)
 #   4  gh/API error during enumeration
 #
 # EXAMPLES:
@@ -565,13 +569,24 @@ fi
 # than an empty result matters: a run whose every touched path was excluded is a
 # legitimate empty answer, not a reason to re-enumerate over the API.
 if [ "$SOURCE_MODE" = "gh" ] || { [ "$SOURCE_MODE" = "auto" ] && [ "$GIT_MARKED_COMMITS" -eq 0 ]; }; then
+  # An explicit --ref is a promise about WHAT gets measured, and the gh path
+  # cannot keep it: it enumerates merged PRs repo-wide, so it would answer a
+  # different question than the one asked. `--source gh --ref` is already
+  # rejected up front (exit 2); reaching the same destination via the auto
+  # fallback must not be softer just because it is discovered later. A stderr
+  # warning is not enough — /wrap's documented call site is
+  # `"$CHURN_SH" --json 2>/dev/null`, which discards it, leaving a repo-wide
+  # scan wearing a caller-supplied ref's authority. That is exactly the
+  # measuring-the-wrong-thing failure issue #861 exists to prevent.
+  if [ -n "$REF" ]; then
+    err "--ref '$REF' resolved, but carries no PR-marked commits, and --source auto's fallback (the gh path) enumerates merged PRs repo-wide and cannot honour a ref. Re-run with --source git to scan the ref as-is, or drop --ref to accept a repo-wide gh scan."
+    exit 3
+  fi
   : > "$TOUCH_TSV"
   : > "$SEEN_PRS"
   EXCLUDED_COUNT=0
   # The gh path enumerates merged PRs over the API — no ref is involved, and
   # reporting a leftover one would misdescribe what was scanned.
-  [ -n "$REF" ] && [ "$SOURCE_MODE" = "auto" ] \
-    && err "--ref '$REF' carried no PR-marked commits — falling back to the gh path, which ignores the ref"
   SCAN_REF=""
   SCAN_REF_SOURCE="n/a"
   enumerate_gh
