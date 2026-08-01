@@ -88,6 +88,25 @@ run_in() {  # $1 repo, rest: script args -> sets OUT / RC
   RC=$?
 }
 
+new_repo_on() {  # $1 dir name, $2 branch -> echoes path
+  # `git init -b` is too new for every runner, and the ambient init.defaultBranch
+  # differs per machine — point HEAD at the branch explicitly so the fixtures
+  # exercise a KNOWN branch name rather than whatever the host defaults to.
+  local dir
+  dir=$(new_repo "$1")
+  git -C "$dir" symbolic-ref HEAD "refs/heads/$2"
+  printf '%s' "$dir"
+}
+
+add_origin() {  # $1 repo, $2 bare dir name, $3 branch to publish
+  local bare="$TMP/$2"
+  git init -q --bare "$bare"
+  git -C "$1" remote add origin "$bare"
+  git -C "$1" push -q origin "$3"
+  git -C "$1" fetch -q origin
+  git -C "$1" symbolic-ref "refs/remotes/origin/HEAD" "refs/remotes/origin/$3"
+}
+
 # =============================================================================
 # Scenario 1 — 3 distinct PRs touch one file inside the window
 # =============================================================================
@@ -139,7 +158,7 @@ commit_touch "$R3" "2026-02-02T00:00:00" "fix(#749): repair more (#751)" src/A.t
 commit_touch "$R3" "2026-02-03T00:00:00" "chore(#700): tidy (#752)" src/A.ts
 
 run_in "$R3" --since "$WINDOW_START" --json
-check_jq "3a: the LAST (#N) marker is taken as the PR number" "$OUT" \
+check_jq "3a: the TRAILING (#N) marker is taken as the PR number" "$OUT" \
   '.hotspots[] | select(.file=="src/A.ts") | .pr_numbers == [750,751,752]'
 check_jq "3b: the leading issue reference is not counted as a PR" "$OUT" \
   '.hotspots[] | select(.file=="src/A.ts") | (.pr_numbers | index(749)) == null'
@@ -396,6 +415,172 @@ check_eq "13g: --since accepts a git ref/SHA" "0" "$RC"
 
 run_in "$R1" --since "not-a-ref-or-date" --json
 check_eq "13h: an unresolvable --since exits 3" "3" "$RC"
+
+# =============================================================================
+# Scenario 14 — the scan is scoped to the default branch, not the invoking
+# worktree's HEAD (issue #861)
+# =============================================================================
+# Shape of every /wrap invocation: main carries the squash commits, while the
+# feature branch that invokes the script forked earlier and carries an
+# unsquashed commit whose subject has only a LEADING (#N) issue reference.
+R14=$(new_repo_on r14 main)
+commit_touch "$R14" "2026-02-01T00:00:00" "feat(#100): seed (#900)" src/Churn.ts
+git -C "$R14" checkout -q -b feature
+commit_touch "$R14" "2026-02-02T00:00:00" "docs(#838): stale unsquashed work" src/Churn.ts src/Branch.ts
+git -C "$R14" checkout -q main
+commit_touch "$R14" "2026-02-03T00:00:00" "fix(#101): more (#901)" src/Churn.ts
+commit_touch "$R14" "2026-02-04T00:00:00" "chore(#102): more (#902)" src/Churn.ts
+git -C "$R14" checkout -q feature
+
+run_in "$R14" --since "$WINDOW_START" --json
+check_eq "14a: a hotspot on main is found while HEAD is a feature branch" "0" "$RC"
+check_jq "14b: PR evidence comes from main, including commits the branch never saw" "$OUT" \
+  '.hotspots[] | select(.file=="src/Churn.ts") | .pr_numbers == [900,901,902]'
+check_jq "14c: the branch's leading (#838) issue ref is never read as a PR" "$OUT" \
+  '.hotspots[] | select(.file=="src/Churn.ts") | (.pr_numbers | index(838)) == null'
+check_jq "14d: a file touched only on the feature branch is not counted" "$OUT" \
+  '.hotspots | map(.file) | index("src/Branch.ts") == null'
+check_jq "14e: the scanned ref is reported" "$OUT" \
+  '.scan_ref == "main" and .scan_ref_source == "candidate"'
+check_eq "14f: no issue number from the branch leaks into the output" "" \
+  "$(printf '%s' "$OUT" | grep -o '838' | head -1)"
+
+# A detached HEAD resolves the same ref — resolution never reads HEAD.
+git -C "$R14" checkout -q --detach
+run_in "$R14" --since "$WINDOW_START" --json
+check_jq "14g: a detached HEAD still scans the default branch" "$OUT" \
+  '.hotspots[] | select(.file=="src/Churn.ts") | .pr_numbers == [900,901,902]'
+git -C "$R14" checkout -q feature
+
+# =============================================================================
+# Scenario 15 — origin/main wins over a local branch that has drifted
+# =============================================================================
+R15=$(new_repo_on r15 main)
+commit_touch "$R15" "2026-02-01T00:00:00" "a (#910)" src/Api.ts
+commit_touch "$R15" "2026-02-02T00:00:00" "b (#911)" src/Api.ts
+commit_touch "$R15" "2026-02-03T00:00:00" "c (#912)" src/Api.ts
+add_origin "$R15" origin15.git main
+# Local-only work sitting on top of the published branch.
+commit_touch "$R15" "2026-02-04T00:00:00" "docs(#838): unpushed local work" src/Api.ts src/Local.ts
+
+run_in "$R15" --since "$WINDOW_START" --json
+check_jq "15a: origin/HEAD resolves the scan ref" "$OUT" \
+  '.scan_ref == "origin/main" and .scan_ref_source == "origin-head"'
+check_jq "15b: unpushed local commits are not counted" "$OUT" \
+  '.hotspots[] | select(.file=="src/Api.ts") | .pr_numbers == [910,911,912]'
+check_jq "15c: a file touched only by unpushed work is absent" "$OUT" \
+  '.hotspots | map(.file) | index("src/Local.ts") == null'
+
+run_in "$R15" --since "$WINDOW_START" --fetch --json
+check_eq "15d: --fetch against a reachable origin still succeeds" "0" "$RC"
+check_jq "15e: --fetch is a no-op when the remote-tracking ref is current" "$OUT" \
+  '.hotspots[] | select(.file=="src/Api.ts") | .pr_numbers == [910,911,912]'
+
+# Someone else lands a PR: origin moves, this checkout's origin/main does not.
+R15B="$TMP/r15b"
+git clone -q "$TMP/origin15.git" "$R15B"
+git -C "$R15B" config user.email "test@example.com"
+git -C "$R15B" config user.name "Test"
+commit_touch "$R15B" "2026-02-05T00:00:00" "d (#913)" src/Api.ts
+git -C "$R15B" push -q origin main
+
+run_in "$R15" --since "$WINDOW_START" --json
+check_jq "15g: without --fetch the stale remote-tracking ref is scanned as-is" "$OUT" \
+  '.hotspots[] | select(.file=="src/Api.ts") | (.pr_numbers | index(913)) == null'
+
+run_in "$R15" --since "$WINDOW_START" --fetch --json
+check_jq "15h: --fetch picks up a PR merged since the last fetch" "$OUT" \
+  '.hotspots[] | select(.file=="src/Api.ts") | .pr_numbers == [910,911,912,913]'
+
+# --fetch runs BEFORE --ref is validated, so an explicit ref sees fresh objects.
+run_in "$R15" --since "$WINDOW_START" --ref origin/main --fetch --json
+check_jq "15i: --fetch refreshes before an explicit --ref is resolved" "$OUT" \
+  '.scan_ref_source == "explicit" and (.hotspots[] | select(.file=="src/Api.ts") | .pr_numbers == [910,911,912,913])'
+
+# No origin at all: --fetch degrades to a warning, never a failure.
+run_in "$R1" --since "$WINDOW_START" --fetch --json
+check_eq "15j: --fetch with no origin remote is non-fatal" "0" "$RC"
+
+# =============================================================================
+# Scenario 16 — a default branch that is not named `main`
+# =============================================================================
+R16=$(new_repo_on r16 trunk)
+commit_touch "$R16" "2026-02-01T00:00:00" "a (#920)" src/Trunk.ts
+commit_touch "$R16" "2026-02-02T00:00:00" "b (#921)" src/Trunk.ts
+commit_touch "$R16" "2026-02-03T00:00:00" "c (#922)" src/Trunk.ts
+add_origin "$R16" origin16.git trunk
+# A stray local `main` must NOT outrank the remote's real default branch.
+git -C "$R16" checkout -q -b main
+commit_touch "$R16" "2026-02-04T00:00:00" "x (#930)" src/Stray.ts
+commit_touch "$R16" "2026-02-05T00:00:00" "y (#931)" src/Stray.ts
+commit_touch "$R16" "2026-02-06T00:00:00" "z (#932)" src/Stray.ts
+git -C "$R16" checkout -q trunk
+
+run_in "$R16" --since "$WINDOW_START" --json
+check_jq '16a: origin/HEAD names the real default branch, not main' "$OUT" \
+  '.scan_ref == "origin/trunk" and .scan_ref_source == "origin-head"'
+check_jq "16b: the default branch's churn is reported" "$OUT" \
+  '.hotspots | map(.file) | index("src/Trunk.ts") != null'
+check_jq '16c: a stray local main contributes nothing' "$OUT" \
+  '.hotspots | map(.file) | index("src/Stray.ts") == null'
+
+# =============================================================================
+# Scenario 17 — --ref overrides resolution and never degrades silently
+# =============================================================================
+run_in "$R14" --since "$WINDOW_START" --ref main --json
+check_jq "17a: an explicit --ref is reported as such" "$OUT" \
+  '.scan_ref == "main" and .scan_ref_source == "explicit"'
+
+run_in "$R14" --since "$WINDOW_START" --ref feature --json
+check_eq "17b: --ref feature scans the branch, which is below threshold" "1" "$RC"
+
+(cd "$R14" && bash "$SCRIPT" --since "$WINDOW_START" --ref no-such-ref --json >/dev/null 2>&1)
+check_eq "17c: an unresolvable --ref exits 3 instead of scanning something else" "3" "$?"
+
+(cd "$R14" && bash "$SCRIPT" --since "$WINDOW_START" --ref main --source gh --json >/dev/null 2>&1)
+check_eq "17d: --ref on the gh path is a usage error" "2" "$?"
+
+# =============================================================================
+# Scenario 18 — HEAD fallback: loud, reported, and extraction still guarded
+# =============================================================================
+# No origin and no main/master branch, so nothing resolves and the scan degrades
+# to HEAD. Every commit carries ONLY a leading (#N) issue prefix, which must
+# never be read as a PR number.
+R18=$(new_repo_on r18 wip-local)
+commit_touch "$R18" "2026-02-01T00:00:00" "docs(#838): summary" src/Guard.ts
+commit_touch "$R18" "2026-02-02T00:00:00" "docs(#838): more summary" src/Guard.ts
+commit_touch "$R18" "2026-02-03T00:00:00" "fix(#839): another" src/Guard.ts
+
+# --source git pins the path: with no PR-marked commit left, `auto` would
+# (correctly) fall through to the gh API instead — see 18e.
+run_in "$R18" --since "$WINDOW_START" --source git --json
+check_eq "18a: leading-only (#N) markers produce no hotspot" "1" "$RC"
+check_jq "18b: the HEAD fallback is reported, never silent" "$OUT" \
+  '.scan_ref == "HEAD" and .scan_ref_source == "head-fallback"'
+
+# A history the stricter extraction empties out is indistinguishable from a
+# merge-commit repo, so `auto` reaches for real merged data over the API rather
+# than reporting a confidently wrong empty answer.
+run_in "$R18" --since "$WINDOW_START" --json
+check_jq "18e: auto falls through to gh when no trailing marker survives" "$OUT" '.source == "gh"'
+check_eq "18c: the issue number never appears anywhere in the output" "" \
+  "$(printf '%s' "$OUT" | grep -o '838' | head -1)"
+
+# The fallback still WORKS for a properly squashed history.
+commit_touch "$R18" "2026-02-04T00:00:00" "one (#940)" src/Ok.ts
+commit_touch "$R18" "2026-02-05T00:00:00" "two (#941)" src/Ok.ts
+commit_touch "$R18" "2026-02-06T00:00:00" "three (#942)" src/Ok.ts
+run_in "$R18" --since "$WINDOW_START" --source git --json
+check_jq "18d: the HEAD fallback still detects real squash-merged churn" "$OUT" \
+  '.hotspots[] | select(.file=="src/Ok.ts") | .pr_numbers == [940,941,942]'
+
+# Mixed history — trailing-marker commits alongside issue-only ones. One valid
+# marker is enough to keep `auto` on the git path; the issue-only commits are
+# simply ignored rather than dragging the whole run over to the API.
+run_in "$R18" --since "$WINDOW_START" --json
+check_jq "18f: auto stays on the git path once any trailing marker exists" "$OUT" '.source == "git"'
+check_jq "18g: issue-only commits in a mixed history contribute nothing" "$OUT" \
+  '.hotspots | map(.file) | index("src/Guard.ts") == null'
 
 # =============================================================================
 echo
