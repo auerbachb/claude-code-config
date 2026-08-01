@@ -1,6 +1,6 @@
 ---
 name: pr-monitor-and-manage
-description: Thread-level PR fleet manager. Rediscovers your open PRs every tick, prints a delta-aware status table (one-line heartbeat when nothing changed), and auto-dispatches the per-PR decision tree (rebase / parallel phase-a-fixer / sequential /wrap) until the fleet is clean, hard-blocked, or idle. Auto-pauses when idle; resume with /pr-monitor-and-manage-wake. Triggers on "/pr-monitor-and-manage", "/pmm", "manage PRs", "PR fleet", "watch PRs".
+description: Thread-level PR fleet manager. Rediscovers your open PRs every tick, prints a status table on the first tick, after a resume, at pause/stop, and whenever a decision is needed or you ask (one-line heartbeat otherwise), and auto-dispatches the per-PR decision tree (rebase / parallel phase-a-fixer / sequential /wrap) until the fleet is clean, hard-blocked, or idle. Auto-pauses when idle; resume with /pr-monitor-and-manage-wake. Triggers on "/pr-monitor-and-manage", "/pmm", "manage PRs", "PR fleet", "watch PRs".
 triggers:
   - pr-monitor-and-manage
   - pmm
@@ -225,7 +225,7 @@ TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
 echo "[$TS] PMM tick — $PR_COUNT PR(s) in fleet (author:$PMM_AUTHOR)"
 ```
 
-Print the **full table** when any of: (a) first tick / post-resume (digests are null); (b) `DIGEST != PREV` or `ROW_DIGEST != ROW_PREV`; (c) any PR's verdict is actionable (`rebase`, `fixpr`, `wrap`, `batch(#A)`); (d) Step 2.5 processed subagent outcomes or `HARD_BLOCK[]` gained an entry; (e) Step 3.6 held or batched anything.
+Print the **full table** when any of: (a) first tick / post-resume (digests are null), or the user asks for it; (b) a digest change — `DIGEST != PREV` **or** `ROW_DIGEST != ROW_PREV` — **that is also** decision-relevant: a new hard block, a gate failure, a termination, or a PR entering/leaving the fleet. Both halves must hold; a digest change on its own does not fire (b). A purely informational delta (a new bot comment, a CI count, a display-only change) takes the quiet line instead (issue #851); the digests still drive backoff and Step 6 persistence either way. (c) any PR's verdict is actionable (`rebase`, `fixpr`, `wrap`, `batch(#A)`); (d) Step 2.5 processed subagent outcomes or `HARD_BLOCK[]` gained an entry; (e) Step 3.6 held or batched anything.
 
 **Quiet tick** (none of a–e): one line: `[$TS] PMM tick — N PR(s) (author:x) — no change (#N1 #N2; hard-blocked: #N3 human-CR; queued (cap): #N4)`.
 

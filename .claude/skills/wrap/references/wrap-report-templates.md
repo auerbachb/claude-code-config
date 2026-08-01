@@ -1,8 +1,8 @@
 # `/wrap` Step 4.3 — Verbose Report Template
 
-Referenced from `wrap/SKILL.md` Step 4.3. The SKILL.md keeps the terse block, the blocker path strings, and the selector logic; this file holds the full verbose template and its rendering rules.
+Referenced from `wrap/SKILL.md` Step 4.3. The SKILL.md keeps the silent-default rules, the `## Wrapped up` block, the blocker path strings, and the selector logic; this file holds the full verbose template and its rendering rules. Nothing here prints on the silent default (issue #851) — it renders only under `--verbose` or on an explicit request.
 
-## Verbose report (`--verbose`)
+## Verbose report (`--verbose`, or on explicit request)
 
 ```
 ## Wrap-Up Complete

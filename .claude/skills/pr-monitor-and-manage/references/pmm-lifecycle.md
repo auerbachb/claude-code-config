@@ -53,7 +53,7 @@ if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
   fi
   # 3. Clear pause marker + reset pmm_idle_streak=0 + set pmm_active=true
   #    + null .pmm_digest and .pmm_row_digest (atomic batch) — the digest reset
-  #    forces Step 4's full table on the first post-resume tick (condition a/b)
+  #    forces Step 4's full table on the first post-resume tick (condition a)
   .claude/scripts/session-state.sh \
     --set '.pmm.paused_at=null' \
     --set '.pmm.fleet_at_pause=null' \

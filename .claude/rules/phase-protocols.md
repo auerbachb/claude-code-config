@@ -15,13 +15,12 @@ Every subagent MUST print an `EXIT_REPORT` block as its **final output** — one
 1. **Parse the exit report.** Extract `PR_NUMBER`, `HEAD_SHA`, `OUTCOME`, `REVIEWER`, `NEXT_PHASE`. No exit report = silent failure — report to user, check GitHub.
 2. **Branch on OUTCOME:**
    - `pushed_fixes` or `no_findings` → proceed to step 3
-   - `exhaustion` → **run step 4 (worktree cleanup) now**, then launch replacement Phase A within 60s. Report to user. **STOP — do not execute steps 3, 5-8** (skipping cleanup makes the replacement hit "branch already checked out").
+   - `exhaustion` → **run step 4 (worktree cleanup) now**, then launch replacement Phase A within 60s. Report to user. **STOP — do not execute steps 3, 5-7** (skipping cleanup makes the replacement hit "branch already checked out").
 3. **Verify the push.** `gh pr view N --json commits --jq '.commits[-1].oid'` — confirm SHA matches. Mismatch = silent failure.
 4. **Clean up the Phase A worktree:** `git worktree remove <path> --force` (or `git worktree prune` on failure). Releases the branch lock for Phase B.
 5. **Verify handoff file.** Resolve path with `handoff-state.sh [--owner-repo owner/repo] --path N` and confirm the file exists with `phase_completed: "A"`. If missing, reconstruct and write it yourself.
 6. **Launch Phase B within 60 seconds.** Check all 3 comment endpoints; include findings and handoff path.
 7. **Update `session-state.json`.** Record phase transition and HEAD SHA.
-8. **Report to user.** "Phase A complete for PR #N — fixes pushed (SHA `abc1234`). Phase B launched."
 
 ## Phase B Completion Protocol (MANDATORY)
 
@@ -30,11 +29,10 @@ Every subagent MUST print an `EXIT_REPORT` block as its **final output** — one
 1. **Parse the exit report.** No exit report = silent failure.
 2. **Branch on OUTCOME:**
    - `merge_ready` → proceed to step 3 (launch Phase C). This is the single Phase-C-advancing terminal.
-   - `clean`, `fixes_pushed`, or `exhaustion` → launch replacement Phase B within 60s, update `session-state.json` (keep phase B; record new SHA/remaining work as applicable), report with timestamp, and **STOP**.
+   - `clean`, `fixes_pushed`, or `exhaustion` → launch replacement Phase B within 60s, update `session-state.json` (keep phase B; record new SHA/remaining work as applicable), and **STOP**. Report `exhaustion` (a failure); `clean`/`fixes_pushed` are silent (`CLAUDE.md` #3).
 3. **Verify review state via GitHub API.** Confirm the merge gate per `cr-merge-gate.md` Step 1. If verification fails, launch replacement Phase B instead of Phase C — STOP.
 4. **Launch Phase C within 60 seconds.** No merge-approval pause — Phase C runs `/wrap` silently once gate + AC pass. Include the handoff path.
 5. **Update `session-state.json`.** Record phase transition and HEAD SHA.
-6. **Report to user (with timestamp).**
 
 ## Phase C Completion Protocol (MANDATORY)
 
@@ -45,8 +43,7 @@ Every subagent MUST print an `EXIT_REPORT` block as its **final output** — one
    - `merged` → verify GitHub confirms the PR is merged (`merged == true`), then proceed to cleanup.
    - `blocked` → report blocker details to user. Do NOT merge.
 3. **Update `session-state.json`.** Mark Phase C complete, remove from `active_agents`.
-4. **Handoff cleanup (after successful merge only).** Delete the handoff file (`handoff-state.sh [--owner-repo owner/repo] --delete N`) after `OUTCOME: merged` confirmed by GitHub. If merge fails or is aborted, do NOT delete.
-5. **Report to user (with timestamp).**
+4. **Handoff cleanup (after successful merge only).** Delete the handoff file (`handoff-state.sh [--owner-repo owner/repo] --delete N`) after `OUTCOME: merged` confirmed by GitHub. If merge fails or is aborted, do NOT delete. A clean merge is silent.
 
 ## `/wrap` → `/fixpr` Delegation Contract
 
