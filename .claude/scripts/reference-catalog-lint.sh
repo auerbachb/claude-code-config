@@ -66,12 +66,15 @@ if [[ ! -d "$REFERENCE_DIR" ]]; then
 fi
 
 # --- 1. Build actual set ---------------------------------------------------
-# Root-level *.md and *.json only; exclude README.md itself and subdirectories.
-# `|| true` keeps a zero-match find (exit 1 on some systems) from aborting.
-actual=$(find "$REFERENCE_DIR" -maxdepth 1 \( -name '*.md' -o -name '*.json' \) \
+# Root-level *.md and *.json regular files only; exclude README.md itself and
+# subdirectories. -type f prevents directories or symlinks named *.md from
+# being counted. find errors (permission/I/O) propagate as non-zero exit so
+# the script fails closed rather than silently under-reporting.
+actual=$(find "$REFERENCE_DIR" -maxdepth 1 -type f \
+  \( -name '*.md' -o -name '*.json' \) \
   ! -name 'README.md' \
   -exec basename {} \; \
-  | sort -u || true)
+  | sort -u)
 
 # --- 2. Build documented set from ## Contents section ----------------------
 # Scope extraction to ## Contents only (stops at the next ## header) so that
