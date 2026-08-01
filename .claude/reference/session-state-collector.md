@@ -13,7 +13,7 @@ Not auto-loaded. Read on demand from either skill.
 
 ## Resolving the helper scripts
 
-Every snippet below writes `session-state.sh` and `handoff-state.sh` as `.claude/scripts/<name>`, which resolves only when the working directory is this repo. **A consumer that resolved those paths already — `/pause` Step 0 does — must substitute its resolved paths here.** Otherwise a command invoked from another checkout silently fails and the handoff reports an empty category as though it were genuinely empty, which is the one failure mode a handoff must never have.
+The snippets below invoke `session-state.sh` as `.claude/scripts/<name>`, which resolves only when the working directory is this repo. (Per-PR handoff payloads are read directly as files in §2, so `handoff-state.sh` is not invoked here — but a consumer that reaches for it should resolve it the same way.) **A consumer that resolved those paths already — `/pause` Step 0 does — must substitute its resolved paths here.** Otherwise a command invoked from another checkout silently fails and the handoff reports an empty category as though it were genuinely empty, which is the one failure mode a handoff must never have.
 
 A consumer with no resolver of its own should use the same three-candidate lookup: `$HOME/.claude/skills-worktree/.claude/scripts/<name>`, then `$HOME/.claude/scripts/<name>`, then `.claude/scripts/<name>`.
 

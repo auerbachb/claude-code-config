@@ -290,7 +290,12 @@ done
 run_lint -- "$GOLDEN" >/dev/null 2>&1 || fail "'-- <doc>' should lint the document, not error"
 "$LINT" -- "$GOLDEN" "$GOLDEN" >/dev/null 2>&1; [[ $? -eq 2 ]] || fail "'-- <doc> <doc>' should exit 2"
 
-"$LINT" --help >/dev/null 2>&1 || fail "--help should exit 0"
+HELP_OUT=$("$LINT" --help 2>&1) || fail "--help should exit 0"
+# Assert content, not just status: a truncated or broken --help is a silent
+# regression if the test only looks at the exit code.
+printf '%s' "$HELP_OUT" | grep -q 'EXIT STATUS' || fail "--help omits the EXIT STATUS section"
+printf '%s' "$HELP_OUT" | grep -q -- '--repo-root'  || fail "--help omits the --repo-root flag"
+printf '%s' "$HELP_OUT" | grep -q '4' || fail "--help does not mention exit code 4"
 
 "$LINT" >/dev/null 2>&1; [[ $? -eq 2 ]] || fail "no document should exit 2"
 "$LINT" --nope "$GOLDEN" >/dev/null 2>&1; [[ $? -eq 2 ]] || fail "unknown option should exit 2"

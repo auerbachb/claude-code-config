@@ -79,6 +79,9 @@
 #   1  violations found (reported on stdout unless --quiet)
 #   2  usage error
 #   3  the document could not be read
+#   4  internal fault — a line produced an empty scan buffer, so the rules could
+#      not have run against it. Reported rather than passed: a checker that can
+#      say "clean" while checking nothing is the failure this script prevents.
 #
 # SAFETY (.claude/rules/safety.md §"Anthropic Quota & Spend Authority")
 #   This script reads one Markdown file and the skill directory listing. It
@@ -95,7 +98,7 @@ Usage: portable-handoff-lint.sh [--repo-root DIR] [--quiet] <document.md>
        portable-handoff-lint.sh --list-rules
        portable-handoff-lint.sh --help
 
-Exit: 0 clean | 1 violations | 2 usage error | 3 unreadable document
+Exit: 0 clean | 1 violations | 2 usage error | 3 unreadable document | 4 internal fault
 EOF
 }
 

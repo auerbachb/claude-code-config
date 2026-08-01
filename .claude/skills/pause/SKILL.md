@@ -157,8 +157,12 @@ SESSION_ID="${SESSION_ID//[^[:alnum:]_.-]/_}"
 SESSION_ID="${SESSION_ID:-default}"
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 OUT="$OUT_DIR/portable-handoff-${STAMP}-${SESSION_ID}.md"
-mv -f "$TMP_DOC" "$OUT" && chmod 644 "$OUT"
-echo "$OUT"
+if mv -f "$TMP_DOC" "$OUT" 2>/dev/null; then
+  chmod 644 "$OUT"
+  echo "$OUT"
+else
+  echo "could not publish the handoff; the verified draft is at $TMP_DOC" >&2
+fi
 ```
 
 Same-directory `mktemp` + `mv` is an atomic single-writer publish — a reader sees a complete document or none. Naming and format: `.claude/reference/portable-handoff.md`.

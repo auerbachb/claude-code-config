@@ -382,10 +382,15 @@ LOOKUP_LINE=$(grep -n '^PORTABLE_HANDOFF=' "$HOOK" | head -1 | cut -d: -f1)
 (( APPEND_LINE < LOOKUP_LINE )) \
   || fail "the handoff lookup (line $LOOKUP_LINE) runs before the durable append (line $APPEND_LINE) — a slow lookup could consume the hook's timeout and lose the record"
 
-# And behaviourally: the events log carries the base record while
-# usage-limit-last.json carries the enriched pointer.
-jq -e --arg h "$BASE_HINT" '.resume_hint == $h' <"$SOME_DIR/usage-limit-events.jsonl" >/dev/null 2>&1 \
-  || true   # first line only; the assertion below is the load-bearing one
+# And behaviourally: every events-log line carries the BASE record (phase 1),
+# while usage-limit-last.json carries the enriched pointer (phase 2).
+while IFS= read -r ev_line; do
+  [[ -n "$ev_line" ]] || continue
+  printf '%s' "$ev_line" | jq -e --arg h "$BASE_HINT" '.resume_hint == $h' >/dev/null \
+    || fail "an events-log record carries an enriched hint; phase 1 must write the base record"
+  printf '%s' "$ev_line" | jq -e '.portable_handoff == null' >/dev/null \
+    || fail "an events-log record carries a handoff pointer; only usage-limit-last.json is refined"
+done <"$SOME_DIR/usage-limit-events.jsonl"
 jq -e '.portable_handoff != null' "$SOME_LAST" >/dev/null \
   || fail "usage-limit-last.json lost its handoff pointer after the phase split"
 
