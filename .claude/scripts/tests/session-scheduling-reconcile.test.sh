@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for session-scheduling-reconcile.sh — session-start reconciliation of
-# durable scheduling state (issue #827).
+# durable scheduling state (issues #827, #874).
 #
 # HOME is redirected into a temp dir for every case, so the suite never reads
 # or writes the real ~/.claude/session-state.json or audit watermark.
@@ -38,7 +38,39 @@ stamp_minutes_ago() {
     || date -u -d "$1 minutes ago" +"%Y-%m-%dT%H:%M:%SZ"
 }
 
+# Get a provably dead PID and the current hostname for ownership-stamp tests
+# (issue #874). A subshell that exits immediately guarantees the PID is dead
+# by the time we read it, with no race on macOS or Linux.
+( : ) &
+_DEAD_PID=$!
+wait $_DEAD_PID 2>/dev/null || true
+CURRENT_HOST="$(hostname 2>/dev/null || echo "localhost")"
+
+# FULL_STATE: polling_jobs and auto_wake_cron_id carry owner_session stamps
+# pointing at the dead PID above. Tests that expect purging require stamped
+# records; unstamped-record behaviour is tested separately in test 1a.
 FULL_STATE=$(cat <<JSON
+{
+  "polling_jobs": [
+    {"id":"cron_a","owner":"harness-audit","owner_session":{"pid":${_DEAD_PID},"host":"${CURRENT_HOST}"}},
+    {"id":"cron_b","owner":"pmm","owner_session":{"pid":${_DEAD_PID},"host":"${CURRENT_HOST}"}}
+  ],
+  "pmm": {
+    "auto_wake_cron_id": "cron_b",
+    "auto_wake_owner_session": {"pid":${_DEAD_PID},"host":"${CURRENT_HOST}"}
+  },
+  "repos": {"o/r": {"prs": {
+    "10": {"babysit": {"active": true, "cron_job_id": "cron_c", "last_tick_at": "$PAST"}},
+    "11": {"babysit": {"active": true, "cron_job_id": null, "last_tick_at": "$FUTURE"}}
+  }}},
+  "root_repo": "/keep/me"
+}
+JSON
+)
+
+# UNSTAMPED_STATE: same structure but polling_jobs/auto_wake carry NO
+# owner_session stamp. The fail-closed rule (issue #874) must NOT purge these.
+UNSTAMPED_STATE=$(cat <<JSON
 {
   "polling_jobs": [{"id":"cron_a","owner":"harness-audit"},{"id":"cron_b","owner":"pmm"}],
   "pmm": {"auto_wake_cron_id": "cron_b"},
@@ -61,21 +93,77 @@ awk 'NR>1 && /^  . "\$STATE_FILE"/{inblock=0} inblock && /'"'"'/{print NR; found
   || fail "apostrophe inside the single-quoted jq program — it will break quoting"
 ok "the embedded jq program contains no quote-breaking apostrophes"
 
-# --- 1. Dead scheduler bookkeeping is purged ---------------------------------
+# --- 1. Dead-owner stamped records are purged (issue #874) -------------------
+# polling_jobs and auto_wake_cron_id with owner_session stamps pointing at a
+# verifiably dead PID must be reaped, just like they were before the fix.
 new_home "$FULL_STATE"
 "$SCRIPT" >/dev/null
 [[ "$(jq -c '.polling_jobs' "$STATE")" == "[]" ]] \
-  || fail "polling_jobs should be emptied, got $(jq -c '.polling_jobs' "$STATE")"
+  || fail "polling_jobs with dead-owner stamp should be emptied, got $(jq -c '.polling_jobs' "$STATE")"
 [[ "$(jq -r '.pmm.auto_wake_cron_id' "$STATE")" == "null" ]] \
-  || fail "pmm.auto_wake_cron_id should be null"
+  || fail "pmm.auto_wake_cron_id with dead-owner stamp should be null"
 [[ "$(jq -r '.repos["o/r"].prs["10"].babysit.cron_job_id' "$STATE")" == "null" ]] \
   || fail "babysit.cron_job_id should be null"
-ok "purges polling_jobs, auto_wake_cron_id, and babysit.cron_job_id"
+ok "purges dead-stamped polling_jobs, auto_wake_cron_id, and babysit.cron_job_id"
+
+# --- 1a. Unstamped records are NOT purged — fail-closed (issue #874) ---------
+# If an entry in polling_jobs or auto_wake_cron_id has no owner_session stamp
+# we cannot verify liveness. Fail-closed: skip the purge and surface a notice.
+# This is the core regression test for the concurrent-session bug.
+new_home "$UNSTAMPED_STATE"
+BEFORE_PJ="$(jq -c '.polling_jobs' "$STATE")"
+"$SCRIPT" >/dev/null
+[[ "$(jq -c '.polling_jobs' "$STATE")" == "$BEFORE_PJ" ]] \
+  || fail "unstamped polling_jobs must NOT be purged (fail-closed), got $(jq -c '.polling_jobs' "$STATE")"
+[[ "$(jq -r '.pmm.auto_wake_cron_id' "$STATE")" != "null" ]] \
+  || fail "unstamped auto_wake_cron_id must NOT be cleared (fail-closed)"
+ok "unstamped polling_jobs and auto_wake_cron_id are preserved (fail-closed)"
+
+# Babysit bookkeeping (freshness-window path) is still reconciled normally even
+# when polling_jobs is unstamped.
+[[ "$(jq -r '.repos["o/r"].prs["10"].babysit.cron_job_id' "$STATE")" == "null" ]] \
+  || fail "babysit.cron_job_id should still be cleared for stale watcher"
+[[ "$(jq -r '.repos["o/r"].prs["10"].babysit.active' "$STATE")" == "false" ]] \
+  || fail "stale babysit watcher should still be deactivated"
+ok "babysit freshness-window path is unaffected when polling_jobs are unstamped"
+
+# A skip notice must be surfaced so the operator knows the record was seen.
+SKIP_OUT="$("$SCRIPT")"
+echo "$SKIP_OUT" | grep -q "scheduling-reconcile:" \
+  || fail "skipped unstamped records should emit a notice, got: $SKIP_OUT"
+ok "a skip notice is surfaced when polling_jobs have no owner stamp"
+
+# --- 1b. Live-session records are NOT purged ---------------------------------
+# A polling_job stamped with the CURRENT session PID (kill -0 succeeds)
+# must not be reaped — that record belongs to this running session.
+LIVE_PID=$$
+LIVE_STATE=$(cat <<JSON
+{
+  "polling_jobs": [
+    {"id":"live_cron","owner":"pmm","owner_session":{"pid":${LIVE_PID},"host":"${CURRENT_HOST}"}}
+  ],
+  "pmm": {
+    "auto_wake_cron_id": "live_cron",
+    "auto_wake_owner_session": {"pid":${LIVE_PID},"host":"${CURRENT_HOST}"}
+  }
+}
+JSON
+)
+new_home "$LIVE_STATE"
+"$SCRIPT" >/dev/null
+PJ_AFTER="$(jq -c '.polling_jobs' "$STATE")"
+[[ "$PJ_AFTER" != "[]" ]] \
+  || fail "polling_job owned by a live PID must not be reaped, got: $PJ_AFTER"
+[[ "$(jq -r '.pmm.auto_wake_cron_id' "$STATE")" != "null" ]] \
+  || fail "auto_wake_cron_id owned by a live PID must not be cleared"
+ok "polling_jobs and auto_wake_cron_id owned by a live PID are preserved"
 
 # --- 2. Only watchers that cannot be alive are deactivated -------------------
 # The freshness test is what keeps this from reaping a watcher armed seconds
 # ago in the current session — the exact failure that would make a re-arm
 # reconciler worse than no reconciler at all.
+new_home "$FULL_STATE"
+"$SCRIPT" >/dev/null
 [[ "$(jq -r '.repos["o/r"].prs["10"].babysit.active' "$STATE")" == "false" ]] \
   || fail "stale watcher (last tick in the past) should be deactivated"
 [[ "$(jq -r '.repos["o/r"].prs["11"].babysit.active' "$STATE")" == "true" ]] \
@@ -272,6 +360,13 @@ new_home '{}'
 jq -e '.notices == []' <<<"$("$SCRIPT" --format json)" >/dev/null \
   || fail "an empty state should yield an empty notices array, not [\"\"]"
 ok "--format json emits an empty notices array when there is nothing to say"
+
+# Unstamped records produce a non-zero skip count in the purged object.
+new_home "$UNSTAMPED_STATE"
+J_SKIP="$("$SCRIPT" --format json)"
+jq -e '(.purged.polling_jobs_skip // 0) >= 1' <<<"$J_SKIP" >/dev/null \
+  || fail "unstamped polling_jobs should appear as polling_jobs_skip, got: $J_SKIP"
+ok "--format json reports skipped unstamped records in polling_jobs_skip"
 
 # --- 11. A failed write must not report counts it did not land ---------------
 # `purged` is a claim about what changed. If the write fails, reporting the

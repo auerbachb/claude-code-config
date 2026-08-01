@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # session-scheduling-reconcile.sh — reconcile durable scheduling state at
-# session start (issue #827).
+# session start (issues #827, #874).
 #
 # CronCreate jobs are in-memory and session-scoped: every job recorded by a
 # previous session is already gone by the time this runs. Rather than trying to
@@ -8,12 +8,27 @@
 # bookkeeping and surfaces the durable on-disk records that DO survive — a
 # harness-audit month that came due, a paused PR fleet waiting to resume.
 #
-# Rationale and the per-feature decisions: .claude/reference/cross-session-durability.md
+# Issue #874 FIX — multi-session safety:
+#   SessionStart fires across concurrent sessions sharing the same HOME.
+#   A newly-started session must NOT purge bookkeeping that belongs to a live
+#   sibling session.
 #
-# Invoked by the SessionStart hook (.claude/hooks/session-start-sync.sh), which
-# passes --check on every source except `startup` — compact/resume/clear fire
-# inside a live session, where a recorded job may still be running and a watcher
-# may be about to refresh its own last_tick_at.
+#   For .polling_jobs[] and .pmm.auto_wake_cron_id each record now carries an
+#   optional owner_session stamp ({pid, host}). This script checks that stamp
+#   with kill -0 — the same dead-holder test state-lock.sh uses — and reaps
+#   ONLY records whose owning process is provably dead on this host.
+#
+#   Fail-closed: a record with no stamp, a cross-host stamp, or a stamp whose
+#   liveness cannot be determined is SKIPPED, not purged. A notice is surfaced
+#   so the operator can see it.
+#
+#   .repos[*].prs[*].babysit.active is already protected by the freshness
+#   window (max(3 x cadence, BABYSIT_DISPATCH_TTL_MIN)): a live watcher in a
+#   sibling session ticks recently enough that its last_tick_at is inside the
+#   window and it is never reaped. No change to that path.
+#
+# Rationale: .claude/reference/cross-session-durability.md
+#
 # Fail-soft by contract: a missing, unreadable, or corrupt state file must
 # never block a session from starting, so every failure path still exits 0.
 
@@ -26,8 +41,8 @@ usage() {
   cat <<'EOF'
 PURPOSE
   Reconcile durable scheduling state at session start: purge scheduler
-  bookkeeping that cannot have survived the previous session, and report the
-  on-disk records that did.
+  bookkeeping whose owning session is provably dead, and report the on-disk
+  records that did survive.
 
 USAGE
   session-scheduling-reconcile.sh [--check] [--format text|json]
@@ -37,13 +52,18 @@ USAGE
   --format json    {"purged":{...},"notices":[...]} for the hook to embed.
 
 WHAT IT PURGES (writes go through session-state.sh, the locked single writer)
-  .polling_jobs                        -> []
-  .pmm.auto_wake_cron_id               -> null
-  .repos[*].prs[*].babysit.cron_job_id -> null
+  .polling_jobs[]                      -> entry removed when owner_session.pid
+                                          is dead on this host (kill -0 fails).
+                                          Entries with no stamp or cross-host
+                                          stamp are SKIPPED (fail-closed).
+  .pmm.auto_wake_cron_id               -> null when auto_wake_owner_session.pid
+                                          is dead on this host. Skipped without
+                                          a verifiable dead-owner stamp.
+  .repos[*].prs[*].babysit.cron_job_id -> null (always dead: CronCreate jobs
+                                          are in-memory and session-scoped)
   .repos[*].prs[*].babysit.active      -> false, but ONLY past /babysit-pr's
                                           own freshness window (its A2 check;
-                                          canonical definition and the reason
-                                          both copies must agree:
+                                          canonical definition:
                                           .claude/reference/cross-session-durability.md
                                           "Freshness window"). SessionStart also
                                           fires on compact, when a live watcher's
@@ -52,6 +72,7 @@ WHAT IT PURGES (writes go through session-state.sh, the locked single writer)
 WHAT IT SURFACES (durable, still meaningful)
   harness-audit due this month  (~/.claude/harness-audit/last-run.json)
   a paused PR fleet             (.pmm.paused_at)
+  unverifiable scheduling records (skipped due to unknown ownership)
 
 EXIT STATUS
   0  Always. This runs on the session-start path; it never blocks a session.
@@ -87,6 +108,23 @@ NOTICES=()   # human-facing lines the hook forwards into session context
 PURGED_JSON='{}'
 
 # ---------------------------------------------------------------------------
+# Session liveness helper — mirrors the dead-holder test in state-lock.sh.
+# Fail-closed: anything we cannot verify is NOT treated as dead.
+# ---------------------------------------------------------------------------
+CURRENT_HOST="$(hostname 2>/dev/null || echo "")"
+
+# session_is_dead <pid> <host>
+# Exit 0 (true) only when the owning session is provably dead on THIS host.
+# Exit 1 (false) for alive, unknown, cross-host, or malformed input.
+session_is_dead() {
+  local pid="$1" host="$2"
+  [[ -z "$pid" || -z "$host" || -z "$CURRENT_HOST" ]] && return 1   # unknown
+  [[ "$host" != "$CURRENT_HOST" ]]                      && return 1   # cross-host
+  [[ "$pid" =~ ^[0-9]+$ ]]                              || return 1   # malformed
+  ! kill -0 "$pid" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
 # 1. Purge dead scheduler bookkeeping
 # ---------------------------------------------------------------------------
 # Counting and rewriting happen in one jq pass over the whole document so the
@@ -104,6 +142,68 @@ SESSION_STATE_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/sess
 # looked successful and changed nothing that matters.
 if [[ -f "$STATE_FILE" && -x "$SESSION_STATE_SH" && "$CHECK_ONLY" -eq 0 ]]; then
   "$SESSION_STATE_SH" --migrate >/dev/null 2>&1 || true
+fi
+
+# ---------------------------------------------------------------------------
+# Pre-compute per-record liveness verdicts for .polling_jobs[] and
+# .pmm.auto_wake_cron_id before the main jq plan.
+#
+# These two fields lack the freshness-window protection that babysit watchers
+# have, so we need explicit owner liveness checks. We do this in bash (kill -0
+# is not available in jq) and pass the results in as JSON for the plan to use.
+#
+# Verdict values: "dead" | "alive" | "unknown"
+# Fail-closed: unknown ownership => verdict "unknown" => skip (do not purge).
+# ---------------------------------------------------------------------------
+PJ_VERDICTS_JSON="[]"    # per-index verdict array for .polling_jobs[]
+AW_VERDICT="unknown"     # verdict for .pmm.auto_wake_cron_id
+
+if [[ -f "$STATE_FILE" ]]; then
+  # --- .polling_jobs[] -------------------------------------------------------
+  # Read (index, pid, host) tuples from every polling_job entry; build a
+  # verdict for each aligned to the array so the jq plan can filter by index.
+  if jq -e '(.polling_jobs // []) | length > 0' "$STATE_FILE" >/dev/null 2>&1; then
+    VERDICTS=()
+    while IFS=$'\t' read -r _idx pid host; do
+      if session_is_dead "$pid" "$host"; then
+        VERDICTS+=("\"dead\"")
+      elif [[ -n "$pid" && -n "$host" && "$host" == "$CURRENT_HOST" ]]; then
+        VERDICTS+=("\"alive\"")
+      else
+        VERDICTS+=("\"unknown\"")
+      fi
+    done < <(jq -r '
+      .polling_jobs | to_entries[] |
+      [ (.key | tostring),
+        (.value.owner_session.pid  // "" | tostring),
+        (.value.owner_session.host // "")
+      ] | @tsv
+    ' "$STATE_FILE" 2>/dev/null)
+    if (( ${#VERDICTS[@]} > 0 )); then
+      # IFS=, in a subshell to join without a trailing newline (printf avoids
+      # the echo newline that would corrupt the JSON literal).
+      PJ_VERDICTS_JSON="[$(IFS=,; printf '%s' "${VERDICTS[*]}")]"
+    fi
+  fi
+
+  # --- .pmm.auto_wake_cron_id -----------------------------------------------
+  # Check the sibling auto_wake_owner_session stamp; fail-closed if absent.
+  if jq -e '(.pmm.auto_wake_cron_id? // null) != null' "$STATE_FILE" >/dev/null 2>&1; then
+    RC_AW=0
+    AW_OWNER="$(jq -rc '.pmm.auto_wake_owner_session // empty' "$STATE_FILE" 2>/dev/null)" \
+      || RC_AW=$?
+    if [[ -n "${AW_OWNER:-}" && "$RC_AW" -eq 0 ]]; then
+      AW_PID="$(jq -r  '.pid  // ""' <<<"$AW_OWNER" 2>/dev/null || echo "")"
+      AW_HOST="$(jq -r '.host // ""' <<<"$AW_OWNER" 2>/dev/null || echo "")"
+      if session_is_dead "$AW_PID" "$AW_HOST"; then
+        AW_VERDICT="dead"
+      elif [[ -n "$AW_PID" && -n "$AW_HOST" && "$AW_HOST" == "$CURRENT_HOST" ]]; then
+        AW_VERDICT="alive"
+      fi
+      # else: cross-host or malformed → stays "unknown"
+    fi
+    # No stamp at all → stays "unknown"
+  fi
 fi
 
 if [[ -f "$STATE_FILE" ]]; then
@@ -126,6 +226,8 @@ if [[ -f "$STATE_FILE" ]]; then
   # and a raw jq+mv here would clobber a concurrent --set that held the lock).
   PLAN="$(jq -c \
       --argjson now "$NOW_EPOCH" \
+      --argjson pj_verdicts "$PJ_VERDICTS_JSON" \
+      --arg aw_verdict "$AW_VERDICT" \
       --argjson ttl "${BABYSIT_DISPATCH_TTL_MIN:-30}" '
     def prs_paths:
       [paths(type == "object" and has("babysit"))]
@@ -161,16 +263,40 @@ if [[ -f "$STATE_FILE" ]]; then
         | ($p + ["babysit","cron_job_id"] | as_path) ] as $cron_ids
     | [ $pp[] as $p | ($doc | getpath($p)).babysit as $b
         | select($b.active == true and watcher_dead($b))
-        | ($p + ["babysit","active"] | as_path) ] as $dead
-    | (if ((.polling_jobs? // []) | type == "array") then (.polling_jobs | length) else 0 end) as $pj
-    | (if (.pmm.auto_wake_cron_id? // null) != null then 1 else 0 end) as $aw
+        | ($p + ["babysit","active"] | as_path) ] as $dead_watchers
+
+    # polling_jobs: per-record verdict from the bash precompute above.
+    # Index into $pj_verdicts by array position; treat out-of-range as "unknown"
+    # (fail-closed: a concurrent write could have shifted the array).
+    | ( if ((.polling_jobs? // []) | type == "array") then
+          ( (.polling_jobs // []) | to_entries
+            | { dead:    map(select(($pj_verdicts[.key] // "unknown") == "dead"))    | length,
+                unknown: map(select(($pj_verdicts[.key] // "unknown") == "unknown")) | length,
+                kept:    map(select(($pj_verdicts[.key] // "unknown") != "dead"))
+                         | map(.value) }
+          )
+        else {dead: 0, unknown: 0, kept: []} end ) as $pj
+
+    # auto_wake_cron_id: only clear when the bash precompute determined "dead".
+    | ( (.pmm.auto_wake_cron_id? // null) != null ) as $aw_exists
+    | ( if $aw_exists then
+          { clear:   ($aw_verdict == "dead"),
+            unknown: (if $aw_verdict == "unknown" then 1 else 0 end) }
+        else {clear: false, unknown: 0} end ) as $aw
+
     | {
-        counts: {polling_jobs: $pj, auto_wake_cron_id: $aw,
-                 babysit_cron_ids: ($cron_ids | length), babysit_watchers: ($dead | length)},
-        sets: (( if $pj > 0 then [".polling_jobs=[]"] else [] end)
-             + ( if $aw > 0 then [".pmm.auto_wake_cron_id=null"] else [] end)
-             + ( $cron_ids | map(. + "=null"))
-             + ( $dead     | map(. + "=false")))
+        counts: { polling_jobs:       $pj.dead,
+                  polling_jobs_skip:  $pj.unknown,
+                  auto_wake_cron_id:  (if $aw.clear then 1 else 0 end),
+                  auto_wake_skip:     $aw.unknown,
+                  babysit_cron_ids:   ($cron_ids | length),
+                  babysit_watchers:   ($dead_watchers | length) },
+        sets: ( ( if $pj.dead > 0 then
+                    [".polling_jobs=" + ($pj.kept | tojson)]
+                  else [] end )
+              + ( if $aw.clear then [".pmm.auto_wake_cron_id=null"] else [] end )
+              + ( $cron_ids    | map(. + "=null") )
+              + ( $dead_watchers | map(. + "=false") ) )
       }
   ' "$STATE_FILE" 2>/dev/null)" || PLAN=""
 
@@ -181,7 +307,7 @@ if [[ -f "$STATE_FILE" ]]; then
 
     if (( CHECK_ONLY == 0 && TOTAL > 0 )); then
       if [[ -x "$SESSION_STATE_SH" ]]; then
-        # One atomic multi---set call under the helper's lock, not N writes.
+        # One atomic multi-set call under the helper's lock, not N writes.
         SET_ARGS=()
         while IFS= read -r assignment; do
           [[ -n "$assignment" ]] && SET_ARGS+=(--set "$assignment")
@@ -210,6 +336,17 @@ if [[ -f "$STATE_FILE" ]]; then
         NOTICES+=("Cleared $TOTAL dead scheduling record(s) left by a previous session (CronCreate jobs do not survive session exit).")
       fi
     fi
+
+    # Surface skipped records so the operator can see them and knows they were
+    # not silently discarded. Skipping is the fail-closed safe action; records
+    # with provably dead owners are cleared on the next session start once the
+    # owning session stamps them correctly.
+    SKIP_PJ="$(jq -r '(.counts.polling_jobs_skip // 0)' <<<"$PLAN" 2>/dev/null || echo 0)"
+    SKIP_AW="$(jq -r '(.counts.auto_wake_skip   // 0)' <<<"$PLAN" 2>/dev/null || echo 0)"
+    [[ "$SKIP_PJ" =~ ^[0-9]+$ ]] || SKIP_PJ=0
+    [[ "$SKIP_AW" =~ ^[0-9]+$ ]] || SKIP_AW=0
+    (( SKIP_PJ > 0 )) && NOTICES+=("scheduling-reconcile: $SKIP_PJ polling_job record(s) have no verified dead owner — skipped to protect a possible live sibling session (fail-closed).")
+    (( SKIP_AW > 0 )) && NOTICES+=("scheduling-reconcile: auto_wake_cron_id has no verified dead owner — skipped to protect a possible live sibling session (fail-closed).")
   fi
 fi
 
