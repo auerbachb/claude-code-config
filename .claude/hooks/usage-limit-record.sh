@@ -114,6 +114,12 @@ RECORDED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)
 # presented as current is worse than no pointer, because it reads as an answer.
 # `find -mtime` keeps this a pure filesystem test: still no reading of the file.
 HANDOFF_MAX_AGE_DAYS="${CLAUDE_HANDOFF_MAX_AGE_DAYS:-7}"
+# Validate before it reaches `find`. An inherited non-numeric value would make
+# find fail, and its stderr is discarded — so a perfectly good handoff would be
+# silently omitted and the breadcrumb would quietly degrade to transcript-only.
+# A bad setting should not cost the user the pointer.
+[[ "$HANDOFF_MAX_AGE_DAYS" =~ ^[0-9]+$ ]] && (( HANDOFF_MAX_AGE_DAYS > 0 )) \
+  || HANDOFF_MAX_AGE_DAYS=7
 
 newest_portable_handoff() {
   local dir="$1" newest="" f

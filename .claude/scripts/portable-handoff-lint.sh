@@ -224,6 +224,25 @@ fi
 # visible to harness-path.
 ABS_PATH_START_RE='(^|[[:space:]])[([<"'"'"'`]*/'
 
+# A URL is an address any reader can open, so a repository link that happens to
+# point at a harness file is a portable reference — unlike a local path, which
+# only resolves inside this checkout. URLs cannot contain unescaped spaces, so
+# whitespace tokenizing IS sound here (it is not, for filesystem paths — see
+# mask_worktree_paths below).
+mask_urls() {
+  local in="$1" out="" tok bare
+  local -a parts
+  read -ra parts <<<"$in"
+  for tok in ${parts+"${parts[@]}"}; do
+    bare="${tok#[\`\(\[\<\"\']}"
+    if [[ "$bare" == http://* || "$bare" == https://* ]]; then
+      tok="${tok//.claude\//<url>/}"
+    fi
+    out+="$tok "
+  done
+  printf '%s' "$out"
+}
+
 mask_worktree_paths() {
   local in="$1" out="" rest="$1" pre
   while [[ "$rest" == *"$WORKTREE_PATH_PREFIX"* ]]; do
@@ -316,7 +335,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   fi
 
   # Mask the one permitted .claude/ form before any rule sees the line.
-  scan=$(mask_worktree_paths "$line")
+  scan=$(mask_worktree_paths "$(mask_urls "$line")")
 
   [[ "$scan" =~ $RE_HARNESS_PATH ]] && report "harness-path" "$lineno" "$section" "$line"
   [[ "$scan" =~ $RE_PHASE_VOCAB ]] && report "phase-vocabulary" "$lineno" "$section" "$line"

@@ -44,6 +44,7 @@ Stop launching new work. Do **not** kill what is already running: a subagent int
 Persist the stop so it survives context turnover and is visible to every other skill that launches work:
 
 ```bash
+WINDDOWN_PERSISTED=1     # assume success, then prove otherwise below
 if [[ -n "$SESSION_STATE_SH" ]]; then
   REPO_KEY=$("$SESSION_STATE_SH" --repo-key)
   NOW=$(date -u +%FT%TZ)
@@ -54,6 +55,8 @@ else
   WINDDOWN_PERSISTED=0   # Step 0 could not resolve the helper
 fi
 ```
+
+The initialiser is not decoration: without it the variable is simply unset on the success path, and Step 2 — which tests for `1` — would report every successful pause as unrecorded.
 
 **When `WINDDOWN_PERSISTED` is 0, the stop was not written down.** Say that in Step 2's report in plain words — "I could not record the pause, so another thread may still start new work" — rather than printing a `Stopped:` line that claims something untrue. Then carry on to the document, which is the part that survives this session either way.
 

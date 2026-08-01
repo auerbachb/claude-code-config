@@ -355,4 +355,21 @@ printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":
 jq -e --arg p "$FRESH_HANDOFF" '.portable_handoff == $p' "$AGED_LAST" >/dev/null \
   || fail "the age bound suppressed a fresh handoff too"
 
+# 15h. A bad age setting must not cost the user the pointer. Passed straight to
+# `find`, a non-numeric value makes it fail — and its stderr is discarded, so a
+# perfectly good handoff would vanish from the breadcrumb with no trace.
+BADAGE_DIR="$TMP_DIR/bad-age"
+mkdir -p "$BADAGE_DIR/handoffs"
+BADAGE_HANDOFF="$BADAGE_DIR/handoffs/portable-handoff-present.md"
+printf 'present\n' >"$BADAGE_HANDOFF"
+touch_ago "$BADAGE_HANDOFF" 300
+for bad in "not-a-number" "" "-3" "7; rm -rf /" "0"; do
+  printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":"badage"}' \
+    | CLAUDE_USAGE_LIMIT_DIR="$BADAGE_DIR" CLAUDE_HANDOFF_DIR="$BADAGE_DIR/handoffs" \
+      CLAUDE_HANDOFF_MAX_AGE_DAYS="$bad" bash "$HOOK"
+  jq -e --arg p "$BADAGE_HANDOFF" '.portable_handoff == $p' "$BADAGE_DIR/usage-limit-last.json" >/dev/null \
+    || fail "a fresh handoff was lost with CLAUDE_HANDOFF_MAX_AGE_DAYS='$bad'"
+done
+[[ -e / ]] || fail "the injection fixture did something catastrophic"
+
 echo "PASS: usage-limit-record.sh"
