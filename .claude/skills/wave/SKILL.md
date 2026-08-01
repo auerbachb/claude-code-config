@@ -66,6 +66,8 @@ Start from the ranked order and remove, in this sequence:
    .claude/scripts/issue-claim.sh <N> --check
    ```
 
+   The label is a safe pre-filter because `issue-claim.sh` maintains it as a **superset** of the claim: `--claim` writes the label before the claim comment and rolls the label back if the comment fails, and `--release` deletes the comment before removing the label. So a claim that exists at all carries the label at every intermediate point — there is no "comment but no label" state for this filter to miss.
+
    Drop a candidate whose verdict is `claimed` (exit 1) or `unknown` (exit 4), naming the claim as the reason. `unknown` is treated exactly as `claimed` — it never reads as permission. `stale` is **not** an exclusion: keep the candidate and surface the stale warning alongside it.
 
    Respect issue #732 the same way item 3 does: a **collaborator's** fresh claim drops the issue as context, but it never counts toward *your* `IN_FLIGHT` ceiling and is never overwritten.

@@ -67,6 +67,7 @@ reset_issue() {
   export FAKE_ISSUE_MODE="json"
   export FAKE_COMMENTS_MODE="json"
   unset CLAIM_STALE_HOURS
+  unset FAKE_COMMENT_POST_MODE FAKE_COMMENT_DELETE_MODE
 }
 
 # ---- stub gh on PATH ----------------------------------------------------------
@@ -102,6 +103,9 @@ case "${1:-}" in
         ;;
       */issues/comments/*)
         [[ "$METHOD" == "DELETE" ]] || { echo "unexpected method $METHOD on $ENDPOINT" >&2; exit 99; }
+        if [[ "${FAKE_COMMENT_DELETE_MODE:-ok}" == "error" ]]; then
+          echo "gh: HTTP 500: could not delete comment" >&2; exit 1
+        fi
         CID="${ENDPOINT##*/}"
         jq --argjson id "$CID" '[ .[] | select(.id != $id) ]' "$S/comments.json" > "$S/c.tmp" \
           && mv "$S/c.tmp" "$S/comments.json"
@@ -163,6 +167,9 @@ case "${1:-}" in
             *) shift ;;
           esac
         done
+        if [[ "${FAKE_COMMENT_POST_MODE:-ok}" == "error" ]]; then
+          echo "gh: HTTP 422: could not create comment" >&2; exit 1
+        fi
         ID=$(( $(cat "$S/next_id") + 1 )); echo "$ID" > "$S/next_id"
         CREATED="${FAKE_COMMENT_CREATED_AT:-$(date -u +%FT%TZ)}"
         jq --argjson id "$ID" --arg body "$BODY" --arg login "${FAKE_VIEWER:-}" --arg at "$CREATED" \
@@ -370,6 +377,53 @@ check_eq "ages out via the labeled timeline event" "stale" "$OUT"
 check_eq "exit 0" 0 "$RC"
 
 ############################################################################
+echo "== (12) a failed claim comment ROLLS BACK the label + assignee =="
+# A half-written claim is worse than none: `mine` needs a parsed claim comment,
+# so the thread that wrote the label would read its own claim back as foreign.
+reset_issue
+FAKE_COMMENT_POST_MODE=error run 873 --claim --holder threadA
+check_eq "verdict unknown (fail-closed)" "unknown" "$OUT"
+check_eq "exit 4" 4 "$RC"
+check_eq "label rolled back" "" "$(cat "$STATE/labels")"
+check_eq "assignee rolled back" "" "$(cat "$STATE/assignees")"
+check_contains "says it rolled back" "rolled back" "$ERR"
+run 873 --check --holder threadA
+check_eq "issue is startable again" "unclaimed" "$OUT"
+check_eq "exit 0" 0 "$RC"
+# ...and the SAME holder can now claim for real (the orphan-label trap is gone).
+run 873 --claim --holder threadA
+check_eq "same holder can claim after rollback" "mine" "$OUT"
+check_eq "exit 0" 0 "$RC"
+
+echo "== (12b) rollback preserves a label this run did NOT add =="
+# Stale takeover on a hand-labelled issue: rollback must not strip a pre-existing marker.
+reset_issue
+echo "in-progress" > "$STATE/labels"
+jq -n --arg at "$(iso_ago 6)" '[{event:"labeled",label:{name:"in-progress"},created_at:$at}]' > "$STATE/timeline.json"
+FAKE_COMMENT_POST_MODE=error run 873 --claim --holder threadA
+check_eq "exit 4" 4 "$RC"
+check_eq "pre-existing label left intact" "in-progress" "$(cat "$STATE/labels")"
+
+echo "== (13) release removes the comment BEFORE the label =="
+# Ordering matters: /wave pre-filters a backlog on the label, so a partial release
+# must never leave a claim comment with no label (invisible => reads as unclaimed).
+# It may leave a label with no comment (still blocks, and expires on its own).
+reset_issue
+run 873 --claim --holder threadA
+check_eq "claim held" 0 "$RC"
+FAKE_COMMENT_DELETE_MODE=error run 873 --release --holder threadA
+check_eq "partial release fails closed" 4 "$RC"
+check_eq "label still present (comment delete failed first)" "in-progress" "$(cat "$STATE/labels")"
+check_eq "claim comment still present" 1 "$(claim_comment_count)"
+run 873 --check --holder threadB
+check_eq "still blocks another thread" "claimed" "$OUT"
+check_eq "exit 1" 1 "$RC"
+# A retry with the delete working completes the release.
+run 873 --release --holder threadA
+check_eq "retry succeeds" 0 "$RC"
+check_eq "label gone" "" "$(cat "$STATE/labels")"
+check_eq "comment gone" 0 "$(claim_comment_count)"
+
 echo "== (11) usage errors =="
 reset_issue
 run 873 --check --allow-claimed --holder threadA

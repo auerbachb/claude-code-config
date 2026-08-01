@@ -71,11 +71,19 @@ CLAIM=$(.claude/scripts/issue-claim.sh "$ISSUE_NUMBER" --check); CLAIM_RC=$?
 | `claimed` | 1 | **STOP.** Report it in the same shape as the existing worktree skip: "Issue #N is already being worked — claimed by `{claimant}` at {time} — skipping." Do not plan, do not create a worktree. |
 | `unknown` | 4 | **STOP**, same as `claimed`. An `unknown` verdict never reads as permission. |
 
-When the check clears, take the claim before doing anything else:
+When the check clears, take the claim before doing anything else — and **gate on the result**. `--check` passing is not the same as `--claim` succeeding: another thread can win the race between the two calls, and a write can fail outright. Proceeding on an unheld claim is exactly the duplicate-work window this step exists to close:
 
 ```bash
-.claude/scripts/issue-claim.sh "$ISSUE_NUMBER" --claim
+CLAIM_HOLDER="${CLAUDE_CLAIM_HOLDER:-issue-$ISSUE_NUMBER-$(hostname -s)-$$}"
+if ! .claude/scripts/issue-claim.sh "$ISSUE_NUMBER" --claim --holder "$CLAIM_HOLDER"; then
+  # exit 1 = another thread claimed it in the race; exit 4 = write failed / undetermined.
+  # Either way the claim is NOT held — STOP, same as a `claimed` verdict above.
+  echo "Issue #$ISSUE_NUMBER — could not take the claim; not starting." >&2
+  exit 1
+fi
 ```
+
+`CLAIM_HOLDER` is captured explicitly because it must be **handed to the thread that continues this work** — see Step 7.
 
 **Override.** If the user explicitly says to start it anyway — naming this issue, in chat — re-run with `--allow-claimed` and state in the reply that you are overriding a live claim. The override is per-issue and per-session: never inferred from context, never a default, never carried to the next issue.
 
@@ -258,6 +266,7 @@ Print a compact summary to the user. Per `chip-launching.md`, the content **insi
 {unchecked checkbox items from the issue body}
 
 ### Constraints
+- This issue is already claimed for you (holder `{CLAIM_HOLDER}`). Re-affirm it before anything else — `.claude/scripts/issue-claim.sh <N> --claim --holder "{CLAIM_HOLDER}"` — after the model-guard check and before any repo read, edit, or planning. It is a no-op that confirms the claim is still yours; a non-zero exit means you do NOT hold it, so stop and report rather than proceeding.
 - Do NOT work on main — use the worktree above
 - Do NOT modify .env files
 - Merging is automatic and yours to do: once the merge gate passes and every Test Plan / AC checkbox verifies, run the full `/wrap` yourself to squash-merge — no approval pause, no pre-merge message (`CLAUDE.md` "PR MERGE AUTHORIZATION")
@@ -282,6 +291,12 @@ Ready to code. Start with step 1 of the plan above. Run the dual-CLI local revie
 **The `**Model:**` line, the `**Effort:**` line, and the guard live in the base block, not as a chip-only addition** — chips preset neither picker control, so both a fallback-mode reader and a chip-mode spawned session need the recommendations and the guard in the text itself. The visible short summary in chip mode still repeats both lines (not the guard) so the user can set the picker before clicking. When the parent thread is on Fable and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
 
 **Record the returned `task_id` immediately,** before any dependent step — an unrecorded chip cannot be withdrawn. `/start-issue` has no Active Work table, so track it **session-locally**, keyed by issue number, and say so in the summary; the chip stays dismissable for this session only. If the issue already has a live chip recorded in this session, skip the spawn rather than offering it twice. `dismiss_task` hygiene and print-on-demand replay ("print the full prompt for #N" re-emits that chip's `prompt` verbatim — Model line, guard preamble, and block — in the fenced form fallback would have printed; the chip stays offered) follow the reference — do not restate its rules here.
+
+### Claim inheritance in the Constraints block
+
+`/start-issue` is the one emitter that **already holds the claim** by the time it offers a chip (Step 2b), so its Constraints block carries **Form B** of `chip-launching.md`'s "Claim line" — the inheriting form. Substitute `{CLAIM_HOLDER}` with the exact value passed to `--claim` in Step 2b, in both the chip `prompt` and the fallback block.
+
+Getting this wrong is not cosmetic: with Form A (or an unsubstituted placeholder) the launched thread would take the claim it is meant to inherit as a *foreign* one, exit 1, and refuse to start the very work the chip exists to do. A `/start-issue` run and the thread it hands off to are one pickup of the issue, handed over — not two threads racing.
 
 ### Merge authority in the Constraints block
 

@@ -427,21 +427,35 @@ if [[ "$ACTION" == "release" ]]; then
   fi
 
   RELEASE_ERRORS=0
-  EDIT_ARGS=()
-  [[ "$HAS_LABEL" == "true" ]] && EDIT_ARGS+=(--remove-label "$CLAIM_LABEL")
-  [[ " $ASSIGNEES " == *" $VIEWER "* ]] && EDIT_ARGS+=(--remove-assignee "$VIEWER")
-  if (( ${#EDIT_ARGS[@]} > 0 )); then
-    gh issue edit "$ISSUE_NUMBER" "${EDIT_ARGS[@]}" >/dev/null 2>"$ERR_FILE" || RELEASE_ERRORS=1
-  fi
 
-  # Delete every claim comment written by this account — not just the newest —
-  # so a re-stamped claim never leaves an older marker behind to be read as a
-  # live claim by the next thread.
+  # ORDER MATTERS: comments first, label last.
+  #
+  # A release can fail part-way, and the two possible half-states are not
+  # equally safe. The `in-progress` label is the cheap index every batch reader
+  # uses to narrow a backlog before calling --check at all (`/wave` Step 2), so
+  # a claim comment left WITHOUT the label is invisible to those readers and
+  # reads as unclaimed. The reverse — label without comment — still shows up in
+  # every batch scan and still blocks. Removing the label last makes the label a
+  # superset of the claim at every intermediate point, so a partial failure
+  # degrades toward over-blocking (which expires on its own) rather than toward
+  # a missed claim (which does not).
   while IFS= read -r cid; do
     [[ -z "$cid" ]] && continue
     gh api -X DELETE "$REPO_PREFIX/issues/comments/$cid" >/dev/null 2>"$ERR_FILE" || RELEASE_ERRORS=1
   done < <(printf '%s' "$CLAIM_COMMENTS" | jq -r --arg v "$VIEWER" \
     '.[] | select((.user.login // "") == $v) | .id' 2>/dev/null || true)
+
+  # Ordering alone is not enough — the label must also be WITHHELD when a comment
+  # delete failed. Dropping it anyway would produce exactly the comment-without-
+  # label state the ordering exists to prevent, just one step later.
+  if (( ! RELEASE_ERRORS )); then
+    EDIT_ARGS=()
+    [[ "$HAS_LABEL" == "true" ]] && EDIT_ARGS+=(--remove-label "$CLAIM_LABEL")
+    [[ " $ASSIGNEES " == *" $VIEWER "* ]] && EDIT_ARGS+=(--remove-assignee "$VIEWER")
+    if (( ${#EDIT_ARGS[@]} > 0 )); then
+      gh issue edit "$ISSUE_NUMBER" "${EDIT_ARGS[@]}" >/dev/null 2>"$ERR_FILE" || RELEASE_ERRORS=1
+    fi
+  fi
 
   if (( RELEASE_ERRORS )); then
     fail_closed "release of issue #$ISSUE_NUMBER partially failed ($(tr '\n' ' ' < "$ERR_FILE"))"
@@ -507,7 +521,22 @@ CLAIM_BODY="$(printf '%s\n\n%s\n' \
   "<!-- $CLAIM_MARKER: $(jq -cn --arg h "$HOLDER" --arg l "$VIEWER" '{holder: $h, login: $l}') -->")"
 
 if ! gh issue comment "$ISSUE_NUMBER" --body "$CLAIM_BODY" >/dev/null 2>"$ERR_FILE"; then
-  fail_closed "claim markers were written on issue #$ISSUE_NUMBER but the claim comment failed ($(tr '\n' ' ' < "$ERR_FILE")); the claim carries no holder or timestamp"
+  # ROLL BACK the label + assignee this run added. A half-written claim (marker
+  # present, holder absent) is worse than no claim: `mine` requires a parsed
+  # claim comment, so the very thread that wrote the label reads its own claim
+  # back as a foreign `claimed` and cannot re-claim without --allow-claimed —
+  # while every other thread stays blocked too. Leave the issue as we found it.
+  COMMENT_ERR="$(tr '\n' ' ' < "$ERR_FILE")"
+  ROLLBACK_ARGS=()
+  [[ "$HAS_LABEL" != "true" ]] && ROLLBACK_ARGS+=(--remove-label "$CLAIM_LABEL")
+  [[ " $ASSIGNEES " != *" $VIEWER "* ]] && ROLLBACK_ARGS+=(--remove-assignee "$VIEWER")
+  if (( ${#ROLLBACK_ARGS[@]} == 0 )); then
+    fail_closed "could not post the claim comment on issue #$ISSUE_NUMBER ($COMMENT_ERR); this run added no marker of its own, so nothing was left behind"
+  fi
+  if gh issue edit "$ISSUE_NUMBER" "${ROLLBACK_ARGS[@]}" >/dev/null 2>&1; then
+    fail_closed "could not post the claim comment on issue #$ISSUE_NUMBER ($COMMENT_ERR); the label/assignee this run added were rolled back, so the issue is unclaimed — retry"
+  fi
+  fail_closed "could not post the claim comment on issue #$ISSUE_NUMBER ($COMMENT_ERR) AND could not roll the label/assignee back; the issue carries a holderless marker that expires in ${STALE_HOURS}h — clear it with: issue-claim.sh $ISSUE_NUMBER --release"
 fi
 
 CLAIMANT="$VIEWER"
