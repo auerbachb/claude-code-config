@@ -169,16 +169,27 @@ if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
   else
     VALID_APPROVERS="$(jq -rn --arg sha "$HEAD_SHA" --arg push "$HEAD_COMMIT_TS" \
       --arg logins "$VALID_APPROVERS" --slurpfile doc "$STATE_PATH" '
+      # Canonicalise before comparing (BugBot review, PR #883): this is a
+      # lexicographic string compare, and "…T10:00:22+00:00" sorts BEFORE
+      # "…T10:00:16Z", so a mixed spelling would mark a fresh approval stale and
+      # withhold gate_met on a PR merge-gate.sh considers fine. Same rule as
+      # review-substance.sh canon_ts and merge-gate.sh norm_ts.
+      def canon_ts:
+        (. // "")
+        | if . == "" then ""
+          else sub("\\.[0-9]+"; "") | sub("(\\+00:00|\\+0000)$"; "Z")
+          end;
       ($logins | split(",") | map(select(length > 0))) as $candidates
       | ($doc[0] // {}) as $d
+      | ($push | canon_ts) as $push_c
       | [ $candidates[]
           | . as $l
           | select(
               ([ $d.comments.reviews[]?
                  | select(.user.login == $l and (.commit_id // "") == $sha
                           and .state == "APPROVED")
-                 | .submitted_at ] | sort | last // "") as $approved_at
-              | ($approved_at != "") and ($approved_at >= $push)) ]
+                 | (.submitted_at | canon_ts) ] | sort | last // "") as $approved_at
+              | ($approved_at != "") and ($approved_at >= $push_c)) ]
       | join(",")')" || VALID_APPROVERS=""
     PRIMARY_REVIEW_MET=false
     [[ -n "$VALID_APPROVERS" ]] && PRIMARY_REVIEW_MET=true

@@ -355,6 +355,24 @@ check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
 
 ############################################################################
+echo "== Scenario (h6b): fresh approval spelled +00:00 against a Z commit date -> gate_met (no false stale) =="
+reset_state
+# Commit date carries an explicit +00:00 offset while the approval uses Z. As
+# raw strings "...+00:00" sorts BEFORE "...Z", so without canonicalisation the
+# freshness filter would call this fresh approval stale and withhold gate_met.
+PUSH_H6B="$(python3 -c "
+from datetime import datetime, timedelta, timezone
+print((datetime.now(timezone.utc) - timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%S+00:00'))
+")"
+write_commits "$PUSH_H6B"
+FAILURE_COMMENT_H6B="$(failure_comment "$(ts_seconds_ago 60)")"
+CODEANT_APPROVED_H6B='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed every changed file; no blocking issues found.", "submitted_at": "'"$(ts_seconds_ago 90)"'"}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H6B]" "[]" "[$FAILURE_COMMENT_H6B]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=gate_met" "STATUS=gate_met" "$OUT"
+
+############################################################################
 echo "== Scenario (h7): HEAD commit timestamp unavailable -> fail closed, no gate_met =="
 reset_state
 write_commits "$(ts_seconds_ago 300)"
