@@ -561,6 +561,52 @@ R1="$(ee_eval "Re-analysis complete. The reviewed commit for this run was \`abc1
 check_eq "true"  "$(echo "$R1" | jq -r '.self_report_mismatch')"       "(ee) rule 1: an older hex SHA still mismatches"
 check_eq "false" "$(echo "$R1" | jq -r '.external_evidence_on_head')"  "(ee) rule 1: and still cannot redeem"
 
+# --- Issue #897: extend fence strip to tilde fences, indented blocks, unclosed openers ---
+# Rules 1 and 2 keep reading $btxt (raw) by design — "HEAD is HEAD wherever it
+# appears" — so only rule 3 (code-span) reads fence-stripped text. The cases
+# below pin the three new shapes. All three must FAIL before the fix in
+# review-substance.sh is applied (pre-fix-fail evidence) and pass after.
+
+echo "=== (ee-897) tilde fence: decimal run inside is not a self-report ==="
+RF_TILDE="$(ee_eval "$(printf "Walkthrough of the changed files, covering both call sites in detail.\n\n~~~js\nconst id = \`1234599\`;\n~~~\n")")"
+check_eq "false" "$(echo "$RF_TILDE" | jq -r '.self_report_mismatch')"      "(ee-897) tilde fence: a template literal is not a self-report"
+check_eq "[]"    "$(echo "$RF_TILDE" | jq -c '.status_comment_shas')"       "(ee-897) tilde fence: and yields no tokens"
+check_eq "false" "$(echo "$RF_TILDE" | jq -r '.status_comment_names_head')" "(ee-897) tilde fence: one-directional invariant: cannot name HEAD"
+check_eq "false" "$(echo "$RF_TILDE" | jq -r '.external_evidence_on_head')" "(ee-897) tilde fence: one-directional invariant: cannot redeem"
+RF_TILDE2="$(ee_eval "$(printf "Reviewed for \`9998887\`, which changed both call sites.\n\n~~~js\nconst id = \`1234599\`;\n~~~\n")")"
+check_eq "true"  "$(echo "$RF_TILDE2" | jq -r '.self_report_mismatch')"     "(ee-897) tilde fence: a real self-report outside the fence still counts"
+check_eq "9998887" "$(echo "$RF_TILDE2" | jq -r '.status_comment_shas[0] // "NONE"')" "(ee-897) tilde fence: and only the out-of-fence token is admitted"
+RF_TILDE3="$(ee_eval "$(printf "Walkthrough of the changed files, covering both call sites in detail.\n\n~~~\nreviewed 1234567 across both call sites\n~~~\n")")"
+check_eq "true"  "$(echo "$RF_TILDE3" | jq -r '.status_comment_names_head')" "(ee-897) rule 2 not tilde-stripped: HEAD is HEAD wherever it appears"
+
+echo "=== (ee-897) four-space-indented block: decimal run inside is not a self-report ==="
+RF_INDENT="$(ee_eval "$(printf "Walkthrough of the changed files, covering both call sites in detail.\n\n    const id = \`1234599\`;\n")")"
+check_eq "false" "$(echo "$RF_INDENT" | jq -r '.self_report_mismatch')"      "(ee-897) indented block: a template literal is not a self-report"
+check_eq "[]"    "$(echo "$RF_INDENT" | jq -c '.status_comment_shas')"       "(ee-897) indented block: and yields no tokens"
+check_eq "false" "$(echo "$RF_INDENT" | jq -r '.status_comment_names_head')" "(ee-897) indented block: one-directional invariant: cannot name HEAD"
+check_eq "false" "$(echo "$RF_INDENT" | jq -r '.external_evidence_on_head')" "(ee-897) indented block: one-directional invariant: cannot redeem"
+RF_INDENT3="$(ee_eval "$(printf "Walkthrough of the changed files, covering both call sites in detail.\n\n    reviewed 1234567 across both call sites\n")")"
+check_eq "true"  "$(echo "$RF_INDENT3" | jq -r '.status_comment_names_head')" "(ee-897) rule 2 not indented-stripped: HEAD is HEAD wherever it appears"
+
+echo "=== (ee-897) unclosed triple-backtick opener: decimal run inside is not a self-report ==="
+RF_UNCLOSED="$(ee_eval "$(printf "Walkthrough of the changed files, covering both call sites in detail.\n\n\`\`\`js\nconst id = \`1234599\`;\n")")"
+check_eq "false" "$(echo "$RF_UNCLOSED" | jq -r '.self_report_mismatch')"      "(ee-897) unclosed fence: a template literal is not a self-report"
+check_eq "[]"    "$(echo "$RF_UNCLOSED" | jq -c '.status_comment_shas')"       "(ee-897) unclosed fence: and yields no tokens"
+check_eq "false" "$(echo "$RF_UNCLOSED" | jq -r '.status_comment_names_head')" "(ee-897) unclosed fence: one-directional invariant: cannot name HEAD"
+check_eq "false" "$(echo "$RF_UNCLOSED" | jq -r '.external_evidence_on_head')" "(ee-897) unclosed fence: one-directional invariant: cannot redeem"
+
+echo "=== (ee-897) inline triple-backtick in prose: code span AFTER it is still scanned ==="
+# A ``` that appears mid-sentence (not at start of line) must not strip the rest of
+# the body. Without the line-start anchor fix, gsub("```.*";"m") swallows everything
+# from the inline ``` forward, hiding the mismatch-inducing code span `1234599`.
+RF_INLINE_TICK="$(ee_eval "$(printf "Review uses \`\`\` syntax for fences. Old commit \`1234599\` was not HEAD.\n")")"
+check_eq "true"  "$(echo "$RF_INLINE_TICK" | jq -r '.self_report_mismatch')"   "(ee-897) inline-tick: code span after inline fence marker is not suppressed"
+check_eq "1234599" "$(echo "$RF_INLINE_TICK" | jq -r '.status_comment_shas[0] // "NONE"')" "(ee-897) inline-tick: token is collected correctly"
+# Same assertion for start-of-body ``` (the sub() path) — must still strip the fence
+RF_BODY_START_FENCE="$(ee_eval "$(printf "\`\`\`js\nconst id = \`1234599\`;\n")")"
+check_eq "false" "$(echo "$RF_BODY_START_FENCE" | jq -r '.self_report_mismatch')"   "(ee-897) body-start fence: template literal inside fence is not a self-report"
+check_eq "[]"    "$(echo "$RF_BODY_START_FENCE" | jq -c '.status_comment_shas')"    "(ee-897) body-start fence: yields no tokens"
+
 echo "=== (m) evaluator rejects malformed stdin ==="
 echo "not json" | "$EVAL_SUT" >/dev/null 2>&1
 check_eq "4" "$?" "(m) non-JSON stdin exits 4"
