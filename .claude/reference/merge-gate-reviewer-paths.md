@@ -54,7 +54,8 @@ CR failed, BugBot responded, Greptile never triggered — sticky; see `bugbot.md
 - **Silent-pass failure-phrase filter (issue #844):** `merge-gate.sh` only counts failure-phrase cursor[bot] comments whose `created_at` is after `LAST_COMMIT_TS`. Comments predating the HEAD commit are stale and cannot block a fresh success check-run. When `LAST_COMMIT_TS` is unknown, all failure-phrase comments are conservatively counted; when a comment has no `created_at`, it is also conservatively counted (fail-closed).
 - **Silent-pass timestamp fail-closed:** when `LAST_COMMIT_TS` is known but the check-run has no `completed_at` or `started_at`, `merge-gate.sh` treats it as unverifiable and blocks (mirrors the CodeAnt supplemental gate).
 - After fixing BugBot findings, CI already posted `@cursor review` on that push; `/fixpr` also posts it after agent pushes. If BugBot still hasn't completed after polling, post `@cursor review` again — duplicates are acceptable (see `bugbot.md`).
-- Stay on BugBot — do not switch back to CR. Ignore late CR reviews.
+- Stay on BugBot — do not switch back to CR. The sticky pointer in `session-state.json` remains `bugbot` for the life of the PR.
+- **Exception (issue #865):** a fresh CodeRabbit or CodeAnt `APPROVED` on the current HEAD SHA satisfies the gate even when `reviewer == bugbot`. `merge-gate.sh` sets `CR_PATH_APPROVED_ON_HEAD=true` (in the shared pre-case block) when `CR_APPROVAL_VALID || CA_APPROVAL_VALID`, and the `bugbot)` branch checks this flag before running any BugBot-specific checks. All freshness (#836), retraction (#893), and substance (#875/#876) guards that apply to the CR path also apply here — the same code paths are reused, not a weaker copy. Rationale: the sticky rule prevents gaming (switching to a friendlier reviewer), but a genuine APPROVED on the exact HEAD SHA is an independent verifiable signal that stands on its own regardless of which reviewer the PR is currently assigned to.
 
 ## Greptile path
 
