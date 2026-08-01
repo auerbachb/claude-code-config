@@ -5,36 +5,124 @@
 #   (a) small cut  → formula exceeds current cap  → cap unchanged (ratchet holds)
 #   (b) large cut  → formula below current cap    → cap lowered to formula
 #   (c) --allow-raise                             → cap raised, old/new/delta printed
-# Plus three bonus cases:
+# Plus four bonus cases:
 #   (d) bootstrap  → corrupt/missing prior cap    → formula result written
 #   (e) real repo conformance (default run, no --update-cap)
 #   (f) equal case → formula == current cap       → unchanged, no "would raise" message
+#   (g) hermeticity — the real cap file was never written during the run
+#
+# HERMETICITY (issue #906)
+# ------------------------
+# Every --update-cap fixture runs against a disposable sandbox copy of the
+# working tree, never the real checkout. This suite used to point CAP_FILE at
+# the real .claude/rules/.budget-soft-cap, mutate it per fixture, and restore
+# it from an EXIT trap. That left a multi-second window per fixture in which
+# the real file held an inflated value (count + 750):
+#
+#   * a killed run (runner/agent timeout, SIGKILL) skips the trap and strands
+#     the inflated cap in the working tree, where `git add -A` commits it
+#     silently — and the one-way ratchet can never lower it again; and
+#   * two concurrent runs each captured their own ORIG_CAP, so the second
+#     run's trap could restore a value the first had only written temporarily.
+#
+# rule-lint.sh addresses everything through cwd-relative paths, so relocating
+# cwd into the sandbox is a complete override — no production-script change is
+# needed. Case (e) still reads the real repo because it is a default run with
+# no --update-cap, i.e. strictly read-only.
 
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-LINT="${REPO_ROOT}/.github/scripts/rule-lint.sh"
-CAP_FILE="${REPO_ROOT}/.claude/rules/.budget-soft-cap"
+# Case (e) alone runs the real script against the real checkout (read-only).
+# Kept as its own variable so that read-only run stays explicit rather than a
+# temporary reassignment of the sandbox LINT that every other case depends on.
+REAL_LINT="${REPO_ROOT}/.github/scripts/rule-lint.sh"
+REAL_CAP_FILE="${REPO_ROOT}/.claude/rules/.budget-soft-cap"
 
 failures=0
 case_num=0
 
 # ---------------------------------------------------------------------------
-# Save the cap and restore it on EXIT so every test starts from a known state
-# and a test failure cannot corrupt the cap file permanently.
+# Sandbox: a disposable copy of the working tree that the mutating fixtures
+# own outright.
 # ---------------------------------------------------------------------------
-ORIG_CAP=""
-ORIG_CAP="$(python3 - "$CAP_FILE" <<'PY'
-import re, sys
-data = open(sys.argv[1], "rb").read()
-if not re.fullmatch(rb"[0-9]+(\r?\n)?", data):
-    sys.stderr.write("INVALID CAP FILE\n")
-    sys.exit(1)
-sys.stdout.write(str(int(data.strip().decode("ascii"))))
-PY
-)" || { echo "BAIL: could not read initial cap value from ${CAP_FILE}"; exit 1; }
+SANDBOX="$(mktemp -d -t rule-lint-sandbox.XXXXXX)"
+trap 'rm -rf "$SANDBOX"' EXIT
 
-trap 'printf "%s" "$ORIG_CAP" > "$CAP_FILE"' EXIT
+# Copy the non-ignored WORKING TREE — not HEAD — so uncommitted edits to the
+# script under test are what gets exercised. `--cached --others
+# --exclude-standard` is tracked plus untracked-but-not-ignored: it skips
+# ignored junk, and it keeps the sandbox self-consistent while a rule file is
+# added but not yet committed (a tracked-only copy would pair a modified
+# CLAUDE.md indexing that file with an absent file, and every fixture would
+# then fail on rule-index misalignment).
+while IFS= read -r -d '' f; do
+  mkdir -p "${SANDBOX}/$(dirname "$f")"
+  cp "${REPO_ROOT}/${f}" "${SANDBOX}/${f}"
+done < <(git -C "$REPO_ROOT" ls-files -z --cached --others --exclude-standard)
+
+# Required, not cosmetic: rule-lint.sh's step 4 shells chip-model-guard-lint.test.sh,
+# which resolves REPO_ROOT via `git rev-parse --show-toplevel` under `set -e`.
+# Without a repo at the sandbox root that call walks out of the temp dir and
+# fails, taking the whole lint to exit 1.
+git -C "$SANDBOX" init -q
+
+LINT="${SANDBOX}/.github/scripts/rule-lint.sh"
+CAP_FILE="${SANDBOX}/.claude/rules/.budget-soft-cap"
+
+# Fail closed on an incomplete sandbox. A guard that silently skips reports
+# success; without this, a broken copy would either fail every fixture with a
+# confusing error or — worse — pass vacuously.
+for required in "${SANDBOX}/CLAUDE.md" "$CAP_FILE" "$LINT"; do
+  if [[ ! -f "$required" ]]; then
+    echo "BAIL: sandbox is incomplete — missing ${required#"${SANDBOX}"/}"
+    exit 1
+  fi
+done
+if [[ "$CAP_FILE" == "$REAL_CAP_FILE" ]]; then
+  echo "BAIL: sandbox cap file resolves to the real one (${REAL_CAP_FILE})"
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Hermeticity fingerprint of the REAL cap file: content hash, mtime, size.
+#
+# Checking mtime as well as bytes is what makes this rigorous. A byte
+# comparison alone cannot tell "never written" from "written and restored",
+# and written-then-restored is exactly the state a SIGKILL freezes into a
+# dirty tree. Bytes AND mtime unchanged across the whole run proves no write
+# ever happened, so no kill signal at any instant can strand an inflated cap —
+# a stronger guarantee than a one-shot kill test, which samples one moment.
+# ---------------------------------------------------------------------------
+real_cap_fingerprint() {
+  python3 - "$REAL_CAP_FILE" <<'PY'
+import hashlib
+import os
+import sys
+
+path = sys.argv[1]
+st = os.stat(path)
+digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+sys.stdout.write("sha256=%s mtime_ns=%d size=%d" % (digest, st.st_mtime_ns, st.st_size))
+PY
+}
+
+REAL_CAP_FINGERPRINT=""
+REAL_CAP_FINGERPRINT="$(real_cap_fingerprint)" \
+  || { echo "BAIL: could not fingerprint ${REAL_CAP_FILE}"; exit 1; }
+
+# Records a failure rather than returning non-zero: callers run under `set -e`
+# and must not abort the suite on a mismatch.
+assert_real_cap_untouched() {
+  local where="$1" now=""
+  now="$(real_cap_fingerprint)" || now="<unreadable>"
+  if [[ "$now" != "$REAL_CAP_FINGERPRINT" ]]; then
+    echo "FAIL — ${where}: the real ${REAL_CAP_FILE} was modified during the run"
+    echo "       before: ${REAL_CAP_FINGERPRINT}"
+    echo "       after:  ${now}"
+    failures=$(( failures + 1 ))
+  fi
+}
 
 set_cap() {
   printf '%s' "$1" > "$CAP_FILE"
@@ -44,11 +132,34 @@ read_cap() {
   cat "$CAP_FILE"
 }
 
-# Run rule-lint.sh --update-cap [extra flags] from REPO_ROOT.
+# Read and validate an integer cap value from a file.
+read_cap_value() {
+  python3 - "$1" <<'PY'
+import re
+import sys
+
+data = open(sys.argv[1], "rb").read()
+if not re.fullmatch(rb"[0-9]+(\r?\n)?", data):
+    sys.stderr.write("INVALID CAP FILE\n")
+    sys.exit(1)
+sys.stdout.write(str(int(data.strip().decode("ascii"))))
+PY
+}
+
+# The sandbox's starting cap value. Each fixture resets to it on the way out so
+# a future `pre_cap="keep"` case still means "the baseline value", exactly as
+# the old per-case restore-to-ORIG_CAP did.
+BASELINE_CAP=""
+BASELINE_CAP="$(read_cap_value "$CAP_FILE")" \
+  || { echo "BAIL: could not read initial cap value from sandbox ${CAP_FILE}"; exit 1; }
+
+# Run rule-lint.sh --update-cap [extra flags] from the SANDBOX root.
 # Returns combined stdout+stderr; exits with the script's exit code.
 # "$@" expansion of an empty "$@" is safe under set -u (unlike "${arr[@]}").
+# The sandbox's own copy of the script is used so its step-4 children, which
+# resolve through SCRIPT_DIR, stay inside the sandbox too.
 run_update_cap() {
-  ( cd "$REPO_ROOT" && bash "$LINT" --update-cap "$@" 2>&1 )
+  ( cd "$SANDBOX" && bash "$LINT" --update-cap "$@" 2>&1 )
 }
 
 # expect NAME WANT_EXIT WANT_RE PRE_CAP POST_CAP [extra_flags...]
@@ -71,52 +182,50 @@ expect() {
   local got=0
   out=$(run_update_cap "$@") || got=$?
 
+  # The window the old suite left open is precisely here — a --update-cap run
+  # has just completed. Check the real file mid-run, not only at exit.
+  assert_real_cap_untouched "during ${name}"
+
+  local verdict="ok"
   if (( got != want_exit )); then
     echo "FAIL — ${name}: expected exit ${want_exit}, got ${got}"
-    echo "$out" | sed 's/^/       /'
-    failures=$(( failures + 1 ))
-    printf '%s' "$ORIG_CAP" > "$CAP_FILE"
-    return
-  fi
-
-  if ! grep -qE "$want_re" <<< "$out"; then
+    verdict="fail"
+  elif ! grep -qE "$want_re" <<< "$out"; then
     echo "FAIL — ${name}: exit ${got} as expected, but output did not match /${want_re}/"
-    echo "$out" | sed 's/^/       /'
-    failures=$(( failures + 1 ))
-    printf '%s' "$ORIG_CAP" > "$CAP_FILE"
-    return
-  fi
-
-  if [[ "$post_cap" != "any" ]]; then
+    verdict="fail"
+  elif [[ "$post_cap" != "any" ]]; then
     local actual_cap
     actual_cap=$(read_cap)
     if [[ "$actual_cap" != "$post_cap" ]]; then
       echo "FAIL — ${name}: cap expected ${post_cap}, got ${actual_cap}"
-      echo "$out" | sed 's/^/       /'
-      failures=$(( failures + 1 ))
-      printf '%s' "$ORIG_CAP" > "$CAP_FILE"
-      return
+      verdict="fail"
     fi
   fi
 
-  echo "ok   — ${name}"
-  printf '%s' "$ORIG_CAP" > "$CAP_FILE"
+  if [[ "$verdict" == "fail" ]]; then
+    printf '%s\n' "$out" | sed 's/^/       /'
+    failures=$(( failures + 1 ))
+  else
+    echo "ok   — ${name}"
+  fi
+
+  set_cap "$BASELINE_CAP"
 }
 
 # ---------------------------------------------------------------------------
-# Derive the formula value for the current corpus so tests self-calibrate
-# even when the word count changes.
+# Derive the formula value from the SANDBOX corpus so the expectations always
+# match what the sandboxed lint computes.
 # ---------------------------------------------------------------------------
 RATCHET_HEADROOM=750
 RATCHET_FLOOR=8500
 # Count words using wc -l via pipe (avoid grep -c exit-1 on empty output).
 CURRENT_COUNT=""
-CURRENT_COUNT="$(cd "$REPO_ROOT" && cat CLAUDE.md .claude/rules/*.md | wc -w | tr -d ' ')"
+CURRENT_COUNT="$(cd "$SANDBOX" && cat CLAUDE.md .claude/rules/*.md | wc -w | tr -d ' ')"
 FORMULA=$(( CURRENT_COUNT + RATCHET_HEADROOM ))
 if (( FORMULA < RATCHET_FLOOR )); then
   FORMULA=$RATCHET_FLOOR
 fi
-echo "# corpus=${CURRENT_COUNT} words, formula cap=${FORMULA}"
+echo "# sandbox corpus=${CURRENT_COUNT} words, formula cap=${FORMULA}"
 
 # ---------------------------------------------------------------------------
 # (a) Small cut — formula exceeds current cap — ratchet holds
@@ -176,14 +285,23 @@ expect \
   "$F_CAP"
 
 # ---------------------------------------------------------------------------
-# (e) Real repo conformance — default run (no --update-cap)
+# (e) Real repo conformance — default run (no --update-cap), read-only
 # ---------------------------------------------------------------------------
-if ( cd "$REPO_ROOT" && bash "$LINT" >/dev/null 2>&1 ); then
+if ( cd "$REPO_ROOT" && bash "$REAL_LINT" >/dev/null 2>&1 ); then
   echo "ok   — (e) real repo conformance is intact"
 else
   echo "FAIL — rule-lint.sh does not pass against the real repo"
-  ( cd "$REPO_ROOT" && bash "$LINT" 2>&1 | sed 's/^/       /' ) || true
+  ( cd "$REPO_ROOT" && bash "$REAL_LINT" 2>&1 | sed 's/^/       /' ) || true
   failures=$(( failures + 1 ))
+fi
+
+# ---------------------------------------------------------------------------
+# (g) Hermeticity — the real cap file survived the whole run untouched
+# ---------------------------------------------------------------------------
+before_g=$failures
+assert_real_cap_untouched "(g) full run"
+if (( failures == before_g )); then
+  echo "ok   — (g) real .budget-soft-cap untouched (bytes + mtime) across the run"
 fi
 
 # ---------------------------------------------------------------------------
