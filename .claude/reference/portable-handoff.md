@@ -33,7 +33,9 @@ Verification happens on the temp file, before the `mv` — see below.
 
 ## Portability is enforced, not asserted
 
-`.claude/scripts/portable-handoff-lint.sh` is the gate. It rejects harness paths, phase vocabulary, state-file names, skill invocations, unfilled template placeholders, and missing-or-empty required sections.
+`.claude/scripts/portable-handoff-lint.sh` is the gate. It rejects harness paths, phase vocabulary, state-file names, skill invocations, unfilled template placeholders, and missing-or-empty required sections. Since the cold read in issue #912 it also rejects an in-flight item that does not say who owns it, a pull request that does not say whether it is approved, and a document with work in flight and no command for checking any of it.
+
+Those last three check that a field is present and has a value; they cannot check that the value is any good. That limit is the finding, not a shortcoming — the checker proves an absence of jargon, and only a real reader can find out whether the document says enough, which is why #912 was a manual test.
 
 This is a script rather than a paragraph in the skill because the failure is silent: a document saying "resume at Phase B" still looks like a handoff, still writes successfully, and only fails much later, for a reader who by then has no context to repair it with. Prose that a renderer may or may not follow cannot catch that; an exit code can.
 

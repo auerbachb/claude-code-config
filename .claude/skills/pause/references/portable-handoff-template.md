@@ -4,6 +4,8 @@ Referenced from `pause/SKILL.md` Step 4. The SKILL.md keeps the wind-down, the c
 
 Everything below is written for one reader: **someone who has the repository and this document, and nothing else.** No rules loaded, no state files, no idea what any of our commands do — possibly not even Claude. Write for a competent engineer joining mid-task who will not ask a follow-up question, because they cannot. When a sentence would only make sense to someone inside this harness, it has failed, and `portable-handoff-lint.sh` will say so.
 
+The per-item fields and the last group of rendering rules exist because of a real cold read (issue #912). A document rendered from live state went to an agent holding the repository and nothing else. It could say what to do first, which pull requests were open, and what each was waiting on — and could not say who owned the half-finished work, whether anything was approved, or how to check that a change worked. Every field added below is one question that reader could not answer.
+
 ## The template
 
 ```
@@ -31,11 +33,18 @@ serves the goal.}
 
 - **Pull request {N} — {TITLE}**
   {URL}
+  Owner: {"mine" | "another session, still active — do not touch" | "unowned"}
   Waiting on: {PLAIN_ENGLISH_BLOCKER}
+  Approval: {who has approved it and on which commit, or "nobody yet" — and what
+  this repository requires before it can merge}
+  Files: {the files this change touches}
   What is left: {REMAINING_WORK}
+  Verify with: {a command that shows whether it works}
 
 - **Issue {N} — {TITLE}**
   {URL}
+  Owner: {as above — and when work has already been started, where the
+  uncommitted files are and whether to continue them or leave them alone}
   Status: {PLAIN_ENGLISH_STATUS}
 
 ## Decisions made this session
@@ -50,8 +59,11 @@ its "why" is the thing a later reader is most likely to undo by accident. Write
 
 Branch: {BRANCH_NAME}
 Working directory: {ABSOLUTE_PATH}
-Uncommitted changes: {FILE_LIST or "none"}
+Uncommitted changes: {FILE_LIST or "none" — and when the directory above is
+clean because the work sits in other checkouts, say so on this line}
 Unpushed commits: {COUNT_AND_SUMMARY or "none"}
+Other checkouts with uncommitted work: {one per line: the absolute path, what
+is in it, who owns it} or "none"
 
 {Anything else a reader would be surprised by — a stashed change, a half-applied
 rebase, a running process, a file deliberately left broken.}
@@ -78,3 +90,19 @@ rebase, a running process, a file deliberately left broken.}
 - **Commands are allowed when they are universal.** `git status`, `gh pr view 903`, a test runner — anything a fresh checkout can run. Commands that only exist inside this harness are not; describe the intent instead.
 - **The in-thread block and the file on disk are byte-identical.** Render once into a single buffer, verify that buffer, then write it and print that same buffer. Never re-render for display — a second render is a second document, and the reader has no way to know which one they got.
 - **Verify before emitting.** `portable-handoff-lint.sh` is the gate, not a suggestion. If it reports a violation, rewrite the offending line and re-run it; do not emit a document that fails it, and do not narrow the check to make a line pass.
+
+## Rules the cold read added
+
+Each of these answers a question a real reader asked of a document that had already passed the checker (issue #912). Three are mechanically enforced — ownership by `open-work-ownership`, approval by `pull-request-review-state`, a runnable check by `verification-command` — and even those prove only that the field is present with something in it, never that the answer is any good. The rest are judgement, and no grep can hold them.
+
+- **Every in-flight item says who owns it.** "Mine", "another session, still active — do not touch", or "unowned". This is the highest-cost thing to get wrong: a pull request belonging to someone else looks most inviting exactly when it is approved, green, and one rebase from merging, and two sessions editing one branch lose somebody's work. Silence reads as "unowned", so an unmarked item is an invitation you did not mean to send.
+- **Work already started but not committed carries its disposition.** Where the files are (absolute path), and whether the reader should finish them, leave them, or start over. "Being written right now" tells a reader who arrives after you stopped nothing at all.
+- **Every pull request says whether it is approved, and what this repository requires before it can merge.** "Waiting on" answers what is blocking; it does not answer whether the thing is allowed to merge once unblocked. Name who approved it and on which commit — an approval attached to an older commit is not an approval of what is there now.
+- **Give a command that shows whether the work is done.** Test suite, linter, build — anything the reader can run from a fresh checkout. "The tests named in the pull request body" is a pointer to a pointer. At least one such command must appear in the document.
+- **Name the files, and name them in a form the reader can resolve.** Repo-relative is fine. When the path starts with one of this repository's dot-directories, the portability rule forbids writing it, so give the file name plus a command that finds it — `git ls-files '*skill-bash.sh'` — rather than dropping the location entirely.
+- **Point at a live list; do not copy it.** Checklists and acceptance criteria live in the pull request or issue and will change after you stop writing. Say where they are and that the copy there is the authoritative one. A transcription is a second version that is wrong the moment either side moves.
+- **Say what happens after the first action succeeds.** The next thing to pick up, or "stop and reassess". A document that ends at the first merge leaves the reader guessing at precisely the moment they have earned the right to keep going.
+- **If the remaining work changes code, say the review starts over.** A new commit means the checks re-run and any approval attaches to the old one. Writing "then merge" after "make this edit" describes a path that does not exist.
+- **A fact with an expiry carries its timestamp and how to re-check it.** "The reviewer is rate-limited for another 13 minutes" is true when written and unknowable when read. Give the wall-clock time it was true and the command that answers it now.
+- **Tie a decision to the item it governs.** When a decision in the decisions section bears on an open item — the same argument already settled — say so on that item. Otherwise the reader re-litigates a question this session already answered.
+- **Be specific where a reader would otherwise guess.** Name the file rather than gesturing at "a reference index". Name the items behind a count — "five earlier changes merged tonight" is not information until they are listed. And when a name disagrees with its subject — a branch named for one issue, a title closing another — explain it in one line, because an unexplained mismatch reads as a mistake worth investigating.

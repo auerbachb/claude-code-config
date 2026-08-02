@@ -24,16 +24,42 @@
 #                            catalog, not guessed from a regex
 #     unrendered-placeholder {LIKE_THIS} — a template that never got filled in
 #
-#   Plus two structural rules:
+#   Plus five structural rules:
 #     required-sections      every required heading present AND non-empty
 #     working-directory-absolute
 #                            the "Working directory:" line exists and names an
 #                            absolute path. It is the one address the reader
 #                            needs to find uncommitted work, and a relative one
 #                            resolves against a checkout they are not in.
+#     open-work-ownership    every entry under "Open work" says who owns it
+#     pull-request-review-state
+#                            every pull-request entry says what it is waiting on
+#                            AND whether it is approved
+#     verification-command   at least one "Verify with:" command, whenever there
+#                            is any in-flight work to verify
 #
 #   The section list is the contract with the template; keep the two in step.
 #     .claude/skills/pause/references/portable-handoff-template.md
+#
+# WHAT THE LAST THREE RULES CAN AND CANNOT PROVE (issue #912)
+#   They came out of a cold read: a document that passed every rule above was
+#   handed to an agent holding the repository and nothing else. It answered what
+#   to do first, which pull requests were open, and what each was waiting on —
+#   and could not say who owned the half-finished work, whether anything was
+#   approved, or how to check that a change worked.
+#
+#   So these three check that the field is PRESENT and has a value. They cannot
+#   check that the value is any good: "Owner: yes" passes. That limit is the
+#   point of the exercise rather than a shortcoming of it — no grep decides
+#   whether a document says enough, which is why the cold read was a manual test
+#   and why the template carries judgement rules these rules do not mirror.
+#
+#   Entries are recognized by the template's own shape: a top-level list item
+#   (`- `, `* `, `+ ` at column zero) inside "Open work". An indented sub-bullet
+#   continues the entry it sits under rather than starting a new one, so an
+#   entry may be as long as it needs to be. A renderer that abandons the bullet
+#   form altogether is off-template in a way this rule cannot see; the template
+#   is the contract, and these rules enforce it, not replace it.
 #
 # THE ONE EXEMPTION
 #   An ABSOLUTE path containing `/.claude/worktrees/` is allowed anywhere in the
@@ -79,9 +105,10 @@
 #   1  violations found (reported on stdout unless --quiet)
 #   2  usage error
 #   3  the document could not be read
-#   4  internal fault — a line produced an empty scan buffer, so the rules could
-#      not have run against it. Reported rather than passed: a checker that can
-#      say "clean" while checking nothing is the failure this script prevents.
+#   4  internal fault — either a line produced an empty scan buffer, or the
+#      scan stopped before the end of the document, so the rules did not run
+#      against everything. Reported rather than passed: a checker that can say
+#      "clean" while checking nothing is the failure this script prevents.
 #
 # SAFETY (.claude/rules/safety.md §"Anthropic Quota & Spend Authority")
 #   This script reads one Markdown file and the skill directory listing. It
@@ -89,7 +116,7 @@
 
 set -uo pipefail
 
-RULES="harness-path phase-vocabulary state-file skill-invocation unrendered-placeholder required-sections working-directory-absolute"
+RULES="harness-path phase-vocabulary state-file skill-invocation unrendered-placeholder required-sections working-directory-absolute open-work-ownership pull-request-review-state verification-command"
 
 usage() {
   sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
@@ -121,6 +148,14 @@ WORKTREE_PATH_PREFIX="/.claude/worktrees/"
 # here, which is why a MISSING anchor is a violation rather than a silent skip.
 WORKDIR_SECTION="Local state on this machine"
 WORKDIR_ANCHOR="Working directory:"
+
+# Per-entry field anchors, same contract: reword one in the template and the
+# matching rule must be reworded here, or it stops firing without saying so.
+OPEN_WORK_SECTION="Open work"
+OWNER_ANCHOR="Owner:"
+WAITING_ANCHOR="Waiting on:"
+APPROVAL_ANCHOR="Approval:"
+VERIFY_ANCHOR="Verify with:"
 
 DOC=""
 REPO_ROOT=""
@@ -208,6 +243,12 @@ RE_HARNESS_PATH='\.claude/'
 RE_PHASE_VOCAB='(^|[^[:alnum:]_-])([Pp]hase[[:space:]]+[ABCabc]|[Mm]erge_[Rr]eady|[Pp]hase-[abcABC]-[a-zA-Z]+)([^[:alnum:]_-]|$)'
 RE_STATE_FILE='(session-state|session_state|handoff-state|handoff_state|pr-[0-9]+-handoff)'
 RE_PLACEHOLDER='\{[A-Z][A-Z0-9_]*\}'
+# A top-level list item at column zero starts an entry; an indented one
+# continues the entry above it, so an entry can carry sub-bullets.
+RE_ENTRY_BULLET='^[-*+][[:space:]]+[^[:space:]]'
+# Leading non-alphanumerics are skipped so `**Pull request 903 — …**` is
+# recognized without depending on how the title was emphasized.
+RE_PR_ENTRY='^[^[:alnum:]]*([Pp]ull[[:space:]]+[Rr]equest|[Pp][Rr])[[:space:]]+#?[0-9]+'
 if (( CATALOG_RESOLVED )) && [[ -n "$COMMAND_ALTERNATION" ]]; then
   RE_SKILL_INVOCATION="(^|[^[:alnum:]_/-])/(${COMMAND_ALTERNATION})([^[:alnum:]_-]|\$)"
 else
@@ -263,6 +304,41 @@ strip_open_delims() {
   case "$v" in *']('*) v="${v##*](}" ;; esac
   while [[ -n "$v" && "$v" == [\`\(\[\<\"\'*_~]* ]]; do v="${v:1}"; done
   printf '%s' "$v"
+}
+
+# Leading emphasis (and a blockquote marker) at the START OF A LINE. Not
+# strip_open_delims: that one jumps past a Markdown link destination, which is
+# right for a single token and wrong for a whole line — a field line reading
+# `Owner: mine, see [the note](https://x)` would lose its own label and the
+# field would read as absent.
+strip_leading_emphasis() {
+  local v="$1"
+  while :; do
+    case "$v" in
+      [\`*_~\>]*)   v="${v:1}" ;;
+      [[:space:]]*) v="${v#"${v%%[![:space:]]*}"}" ;;
+      *) break ;;
+    esac
+  done
+  printf '%s' "$v"
+}
+
+# A field whose value is only markup is the empty-shell failure at field scale:
+# `Owner:` with nothing after it, or `Owner: **`, answers the reader's question
+# with the shape of an answer. Emphasis and backticks are stripped before the
+# emptiness test so that `Owner: **mine**` — a perfectly good answer — counts.
+field_value_nonempty() {
+  local v="$1" backtick
+  # Via a variable, NOT inline: `${v//$'\x60'/}` expands the escape first and
+  # leaves a bare backtick inside the braces, which reads as an unterminated
+  # command substitution and aborts the caller mid-loop. Quoting the expansion
+  # of a variable keeps the character as data.
+  backtick=$'\140'
+  v="${v//[[:space:]]/}"
+  v="${v//\*/}"
+  v="${v//_/}"
+  v="${v//"$backtick"/}"
+  [[ -n "$v" ]]
 }
 
 # A URL is an address any reader can open, so a repository link that happens to
@@ -340,6 +416,38 @@ report() { # rule, lineno, section, line
   REPORT+=$'\n'
 }
 
+# --- Open-work entry state ------------------------------------------------
+# An entry runs from its top-level bullet to the next one, or to the next
+# heading, or to end of file. Judged at that boundary rather than inline,
+# because "the field is missing" is only knowable once the entry is over.
+ENTRY_ACTIVE=0
+ENTRY_LINENO=0
+ENTRY_LABEL=""
+ENTRY_IS_PR=0
+ENTRY_HAS_OWNER=0
+ENTRY_HAS_WAITING=0
+ENTRY_HAS_APPROVAL=0
+OPEN_WORK_ENTRIES=0
+VERIFY_SEEN=0
+
+flush_entry() {
+  (( ENTRY_ACTIVE )) || return 0
+  ENTRY_ACTIVE=0
+  if (( ! ENTRY_HAS_OWNER )); then
+    report "open-work-ownership" "$ENTRY_LINENO" "$OPEN_WORK_SECTION" \
+      "no \"$OWNER_ANCHOR\" line on \"$ENTRY_LABEL\" — an unmarked item reads as free to take"
+  fi
+  (( ENTRY_IS_PR )) || return 0
+  if (( ! ENTRY_HAS_WAITING )); then
+    report "pull-request-review-state" "$ENTRY_LINENO" "$OPEN_WORK_SECTION" \
+      "no \"$WAITING_ANCHOR\" line on \"$ENTRY_LABEL\" — the reader cannot tell what is blocking it"
+  fi
+  if (( ! ENTRY_HAS_APPROVAL )); then
+    report "pull-request-review-state" "$ENTRY_LINENO" "$OPEN_WORK_SECTION" \
+      "no \"$APPROVAL_ANCHOR\" line on \"$ENTRY_LABEL\" — unblocked is not the same as allowed to merge"
+  fi
+}
+
 # --- Scan -----------------------------------------------------------------
 declare -a SEEN_SECTIONS=()
 declare -a NONEMPTY_SECTIONS=()
@@ -370,6 +478,12 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     '```'*|'~~~'*) IN_FENCE=$(( IN_FENCE ? 0 : 1 )) ;;
   esac
 
+  # A heading closes any open entry — before `section` changes under it, or the
+  # entry would be judged against the section it does not belong to.
+  if (( ! IN_FENCE )) && [[ "$line" =~ ^#{1,6}([[:space:]]|$) ]]; then
+    flush_entry
+  fi
+
   IS_HEADING=0
   if (( ! IN_FENCE )) && [[ "$line" == '## '* ]]; then
     section="${line#'## '}"
@@ -392,6 +506,51 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   if (( ! IS_HEADING )) && (( ! IS_STRUCTURAL_ONLY )) && [[ -n "$section" ]]; then
     NONEMPTY_SECTIONS+=("$section")
   fi
+
+  # --- Open-work entries ---------------------------------------------------
+  # Ownership, review state, and a way to verify. Tracked here, judged at the
+  # entry boundary in flush_entry.
+  trimmed="${line#"${line%%[![:space:]]*}"}"
+  field=$(strip_leading_emphasis "$trimmed")
+
+  # The content test excludes a thematic break written as `* * *`, which is a
+  # horizontal rule the reader sees as a divider, not an item to own.
+  if (( ! IN_FENCE )) && [[ "$section" == "$OPEN_WORK_SECTION" ]] \
+     && [[ "$line" =~ $RE_ENTRY_BULLET ]] \
+     && [[ -n "${line//[-*+_[:space:]]/}" ]]; then
+    flush_entry
+    ENTRY_ACTIVE=1
+    ENTRY_LINENO=$lineno
+    ENTRY_HAS_OWNER=0
+    ENTRY_HAS_WAITING=0
+    ENTRY_HAS_APPROVAL=0
+    OPEN_WORK_ENTRIES=$((OPEN_WORK_ENTRIES + 1))
+    ENTRY_LABEL="${line#[-*+]}"
+    ENTRY_LABEL="${ENTRY_LABEL#"${ENTRY_LABEL%%[![:space:]]*}"}"
+    ENTRY_LABEL="${ENTRY_LABEL//\*/}"
+    ENTRY_LABEL="${ENTRY_LABEL:0:60}"
+    ENTRY_IS_PR=0
+    [[ "$ENTRY_LABEL" =~ $RE_PR_ENTRY ]] && ENTRY_IS_PR=1
+  fi
+
+  if (( ENTRY_ACTIVE )); then
+    case "$field" in
+      "$OWNER_ANCHOR"*)
+        field_value_nonempty "${field#"$OWNER_ANCHOR"}" && ENTRY_HAS_OWNER=1 ;;
+      "$WAITING_ANCHOR"*)
+        field_value_nonempty "${field#"$WAITING_ANCHOR"}" && ENTRY_HAS_WAITING=1 ;;
+      "$APPROVAL_ANCHOR"*)
+        field_value_nonempty "${field#"$APPROVAL_ANCHOR"}" && ENTRY_HAS_APPROVAL=1 ;;
+    esac
+  fi
+
+  # Document-scoped: one runnable check somewhere is the bar, not one per entry.
+  # A queued issue nobody has started has nothing to verify, and demanding a
+  # command there would buy filler instead of an answer.
+  case "$field" in
+    "$VERIFY_ANCHOR"*)
+      field_value_nonempty "${field#"$VERIFY_ANCHOR"}" && VERIFY_SEEN=$((VERIFY_SEEN + 1)) ;;
+  esac
 
   # The working-directory field: present, and an absolute path.
   IS_WORKDIR_LINE=0
@@ -424,6 +583,30 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   [[ "$scan" =~ $RE_SKILL_INVOCATION ]] && report "skill-invocation" "$lineno" "$section" "$line"
   [[ "$scan" =~ $RE_PLACEHOLDER ]] && report "unrendered-placeholder" "$lineno" "$section" "$line"
 done < "$DOC"
+
+# Did the scan actually reach the end? A fatal expansion inside the loop body
+# terminates the loop where it stands, and everything after that line goes
+# unchecked while the script carries on to print a verdict. That was not
+# hypothetical: an inline `$'\x60'` in a substitution pattern did exactly this
+# during development, and the run still ended in a confident report. Counting
+# what was read against what exists turns silent truncation into exit 4.
+# `awk END{NR}` matches the loop's semantics, final unterminated line included.
+DOC_LINES=$(LC_ALL=C awk 'END { print NR }' "$DOC" 2>/dev/null)
+if [[ ! "$DOC_LINES" =~ ^[0-9]+$ ]] || (( lineno != DOC_LINES )); then
+  echo "portable-handoff-lint.sh: internal error — scanned ${lineno} of ${DOC_LINES:-?} lines of $DOC; refusing to report a result" >&2
+  exit 4
+fi
+
+# The last entry ends at end of file, not at a boundary the loop can see.
+flush_entry
+
+# In-flight work the reader cannot check is work they cannot finish. Scoped to
+# documents that HAVE in-flight work: "Nothing is in flight." is a complete
+# answer, and a command demanded there would be invented to satisfy the rule.
+if (( OPEN_WORK_ENTRIES > 0 && VERIFY_SEEN == 0 )); then
+  report "verification-command" "0" "$OPEN_WORK_SECTION" \
+    "no \"$VERIFY_ANCHOR\" line anywhere — $OPEN_WORK_ENTRIES item(s) in flight and no way given to check any of them"
+fi
 
 # --- Structural rule ------------------------------------------------------
 # An "empty shell" — correct headings, nothing under them — is the failure mode

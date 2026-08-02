@@ -55,8 +55,14 @@ session ending on a usage limit does not lose where the work stood.
 
 - **Pull request 903 — add the pause command**
   https://github.com/auerbachb/claude-code-config/pull/903
+  Owner: mine — nobody else is on this branch.
   Waiting on: the automated reviewer to re-run after the last push.
+  Approval: nobody yet; this repository needs one approving review and green
+  checks before it can merge.
+  Files: portable-handoff-lint.sh and the skill that calls it — find them with
+  `git ls-files '*portable-handoff*'`.
   What is left: answer whatever it raises, then merge once checks are green.
+  Verify with: bash .github/scripts/run-hook-tests.sh
 
 ## Decisions made this session
 
@@ -251,6 +257,230 @@ out=$(run_lint "$DUPE" 2>&1); rc=$?
 printf '%s' "$out" | grep -q 'appears 2 times' \
   || fail "duplicate heading was not reported as a duplicate"$'\n'"got: $out"
 
+# --- 5b. Open-work entries: ownership, review state, verification --------
+# These three rules came out of the cold read in issue #912: a document that
+# passed every rule above went to an agent with the repository and nothing
+# else, and it could not say who owned the half-finished work, whether anything
+# was approved, or how to check that a change worked.
+#
+# Each fixture is a whole document rather than the golden plus a line, because
+# what is under test is an ABSENCE inside one entry — and you cannot append an
+# absence.
+make_doc() { # $1 = path, $2 = body of the "Open work" section
+  local f="$1" body="$2"
+  cat >"$f" <<EOF
+# Session handoff — auerbachb/claude-code-config — 2026-08-01 11:50 ET
+
+## Start here
+
+Read the two unresolved review comments on pull request 903 and answer them.
+
+## What we're working on
+
+Adding a command that produces a handoff document any agent can act on.
+
+## Open work
+
+$body
+
+## Decisions made this session
+
+- Reused the existing stop flag rather than adding a second one — two flags
+  would need handling in every later reader forever.
+
+## Local state on this machine
+
+Branch: issue-901-clean-pause
+Working directory: /Users/b/Develop/claude-code-config
+Uncommitted changes: none
+Unpushed commits: none
+EOF
+}
+
+PR_OWNER='  Owner: mine — nobody else is on this branch.'
+PR_WAITING='  Waiting on: the automated reviewer to re-run after the last push.'
+PR_APPROVAL='  Approval: nobody yet; one approving review and green checks are required.'
+PR_VERIFY='  Verify with: bash .github/scripts/run-hook-tests.sh'
+PR_HEAD='- **Pull request 903 — add the pause command**
+  https://github.com/auerbachb/claude-code-config/pull/903'
+PR_TAIL='  What is left: answer whatever it raises, then merge.'
+
+assert_doc() { # description, expected-rc, body, [expected substring...]
+  local desc="$1" want_rc="$2" body="$3"; shift 3
+  local f="$TMP_DIR/entry.md" out rc needle
+  make_doc "$f" "$body"
+  out=$(run_lint "$f" 2>&1); rc=$?
+  [[ "$rc" -eq "$want_rc" ]] \
+    || fail "$desc: expected exit $want_rc, got $rc"$'\n'"got: $out"
+  for needle in "$@"; do
+    printf '%s' "$out" | grep -q -- "$needle" \
+      || fail "$desc: expected output to mention '$needle'"$'\n'"got: $out"
+  done
+}
+
+# A complete entry passes — the baseline these rules are measured against.
+assert_doc "a fully described pull request" 0 \
+  "$PR_HEAD"$'\n'"$PR_OWNER"$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_TAIL"$'\n'"$PR_VERIFY"
+
+# Ownership. The highest-cost miss in the cold read: an approved, green pull
+# request belonging to another session looks maximally inviting.
+assert_doc "a pull request with no owner" 1 \
+  "$PR_HEAD"$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_VERIFY" \
+  'open-work-ownership' 'Pull request 903'
+
+# An issue entry is an in-flight item too — ownership is not a pull-request rule.
+assert_doc "an issue entry with no owner" 1 \
+  '- **Issue 782 — compact output contracts**
+  https://github.com/auerbachb/claude-code-config/issues/782
+  Status: queued behind the statusline work.
+  Verify with: bash .github/scripts/run-hook-tests.sh' \
+  'open-work-ownership' 'Issue 782'
+
+# A label with no value is the empty-shell failure at field scale.
+assert_doc "an owner field with no value" 1 \
+  "$PR_HEAD"$'\n''  Owner:'$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_VERIFY" \
+  'open-work-ownership'
+assert_doc "an owner field holding only markup" 1 \
+  "$PR_HEAD"$'\n''  Owner: **'$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_VERIFY" \
+  'open-work-ownership'
+
+# ...but a bolded LABEL is an ordinary way to write the same answer, and
+# rejecting it would train renderers to fight the checker.
+assert_doc "a bolded owner label" 0 \
+  "$PR_HEAD"$'\n''  **Owner:** mine'$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_VERIFY"
+
+# A field line that also contains a Markdown link must still be recognized —
+# the destination-jump used for single tokens would eat the label here.
+assert_doc "an owner line containing a Markdown link" 0 \
+  "$PR_HEAD"$'\n''  Owner: mine, see [the note](https://example.com/n)'$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_VERIFY"
+
+# Review state: what is blocking it, and whether it may merge once unblocked.
+assert_doc "a pull request with no approval line" 1 \
+  "$PR_HEAD"$'\n'"$PR_OWNER"$'\n'"$PR_WAITING"$'\n'"$PR_VERIFY" \
+  'pull-request-review-state' 'Approval:'
+assert_doc "a pull request with no waiting-on line" 1 \
+  "$PR_HEAD"$'\n'"$PR_OWNER"$'\n'"$PR_APPROVAL"$'\n'"$PR_VERIFY" \
+  'pull-request-review-state' 'Waiting on:'
+
+# Those two are pull-request rules. An issue has neither a reviewer nor a merge
+# button, and demanding the fields there would buy filler.
+assert_doc "an owned issue needs no approval line" 0 \
+  '- **Issue 782 — compact output contracts**
+  https://github.com/auerbachb/claude-code-config/issues/782
+  Owner: unowned — nobody has started it.
+  Status: queued behind the statusline work.
+  Verify with: bash .github/scripts/run-hook-tests.sh'
+
+# Verification: in-flight work the reader cannot check is work they cannot finish.
+assert_doc "in-flight work with no way to verify it" 1 \
+  "$PR_HEAD"$'\n'"$PR_OWNER"$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_TAIL" \
+  'verification-command'
+
+# ...and the rule is scoped to documents that HAVE in-flight work. "Nothing is
+# in flight." is a complete answer; a command demanded there is invented.
+assert_doc "nothing in flight needs no verify command" 0 "Nothing is in flight."
+
+# An indented sub-bullet continues its entry rather than starting a new one, so
+# a long entry does not have to repeat its own ownership line.
+assert_doc "a sub-bullet does not start a new entry" 0 \
+  "$PR_HEAD"$'\n'"$PR_OWNER"$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n''  - it also touches the installer'$'\n'"$PR_VERIFY"
+
+# A thematic break written with asterisks is a divider the reader sees, not an
+# item anybody owns. Demanding an owner for a horizontal rule is the kind of
+# false positive that gets a checker bypassed.
+assert_doc "a thematic break is not an entry" 0 \
+  "$PR_HEAD"$'\n'"$PR_OWNER"$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_VERIFY"$'\n\n''* * *'
+
+# Entries are judged one at a time: a complete first entry must not vouch for
+# an incomplete second one.
+TWO_ENTRIES="$PR_HEAD"$'\n'"$PR_OWNER"$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_VERIFY"$'\n\n''- **Issue 782 — compact output contracts**
+  https://github.com/auerbachb/claude-code-config/issues/782
+  Status: queued.'
+assert_doc "a second entry is judged on its own" 1 "$TWO_ENTRIES" 'open-work-ownership' 'Issue 782'
+make_doc "$TMP_DIR/entry.md" "$TWO_ENTRIES"
+OWNERSHIP_HITS=$(run_lint "$TMP_DIR/entry.md" 2>&1 | grep -c 'open-work-ownership')
+[[ "$OWNERSHIP_HITS" -eq 1 ]] \
+  || fail "expected exactly 1 ownership violation across two entries, got $OWNERSHIP_HITS"
+
+# The last entry ends at end of file, where there is no boundary to notice.
+# Section order is not enforced, so "Open work" can genuinely come last.
+EOF_ENTRY="$TMP_DIR/eof-entry.md"
+cat >"$EOF_ENTRY" <<'EOF'
+# Session handoff — auerbachb/claude-code-config — 2026-08-01 11:50 ET
+
+## Start here
+
+Read the review comments on pull request 903.
+
+## What we're working on
+
+Adding a command that produces a handoff document any agent can act on.
+
+## Decisions made this session
+
+- Reused the existing stop flag rather than adding a second one.
+
+## Local state on this machine
+
+Branch: issue-901-clean-pause
+Working directory: /Users/b/Develop/claude-code-config
+Uncommitted changes: none
+Unpushed commits: none
+
+## Open work
+
+- **Pull request 903 — add the pause command**
+  https://github.com/auerbachb/claude-code-config/pull/903
+  Waiting on: the automated reviewer.
+  Approval: nobody yet.
+  Verify with: bash .github/scripts/run-hook-tests.sh
+EOF
+out=$(run_lint "$EOF_ENTRY" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "an entry ending at EOF must still be judged (got $rc)"
+printf '%s' "$out" | grep -q 'open-work-ownership' \
+  || fail "the final entry in the file was never flushed"$'\n'"got: $out"
+
+# --- 5c. The cold read, as a regression -----------------------------------
+# The exact shape of the document issue #912 handed to a naive reader: every
+# pull request says what it is waiting on, no entry says who owns it, no entry
+# says whether it is approved, and nothing anywhere says how to check the work.
+# The document this shape is taken from passed the seven rules that existed
+# then, and was still short three answers. It must not pass these ten.
+COLD_READ_SHAPE='- **Pull request 929 — align a header with what the code does**
+  https://github.com/auerbachb/claude-code-config/pull/929
+  Waiting on: one unresolved reviewer comment and nine unticked boxes.
+  What is left: answer the comment, tick the boxes, merge.
+
+- **Issue 779 — a status line for the terminal**
+  https://github.com/auerbachb/claude-code-config/issues/779
+  Status: being written right now, nothing committed yet.'
+assert_doc "the pre-#912 document shape" 1 "$COLD_READ_SHAPE" \
+  'open-work-ownership' 'pull-request-review-state' 'verification-command'
+
+# --- 5d. The scan must reach the end of the document ----------------------
+# A fatal expansion inside the read loop ends the loop where it stands and the
+# script goes on to print a verdict about lines it never saw. The line count is
+# the backstop; these two cases are where an off-by-one in it would surface as
+# exit 4 on a perfectly good document.
+#
+# Only that direction is testable from here, and the asymmetry is worth stating
+# rather than leaving a later reader to assume otherwise: the fault the guard
+# exists for cannot be induced without editing the script, so deleting the
+# guard leaves this suite green. What these fixtures pin is that it does not
+# misfire — which is the half that would otherwise break real documents.
+NO_EOL="$TMP_DIR/no-trailing-newline.md"
+printf '%s' "$(cat "$GOLDEN")" >"$NO_EOL"      # command substitution strips the final newline
+[[ -s "$NO_EOL" ]] || fail "the no-trailing-newline fixture is empty"
+[[ "$(tail -c1 "$NO_EOL" | od -An -c | tr -d ' ')" != '\n' ]] \
+  || fail "the no-trailing-newline fixture still ends in a newline"
+run_lint "$NO_EOL" >/dev/null 2>&1 \
+  || { run_lint "$NO_EOL" >&2; fail "a document with no trailing newline must still pass"; }
+
+EMPTY_FILE="$TMP_DIR/zero-bytes.md"
+: >"$EMPTY_FILE"
+run_lint "$EMPTY_FILE" >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 1 ]] || fail "an empty document should report missing sections (1), not a fault (got $rc)"
+
 # --- 6. The template's section list and the checker's agree --------------
 # These are two files that must describe the same document. When they drift,
 # every rendered handoff fails a rule nobody changed on purpose.
@@ -299,6 +529,17 @@ printf '%s' "$out" | grep -q 'working-directory-absolute' \
 grep -q 'Working directory:' "$TEMPLATE" \
   || fail "template lacks the 'Working directory:' anchor the checker requires"
 
+# The per-entry fields are the same kind of contract, and the same kind of
+# silent failure: reword one on either side and the rule stops firing on a
+# document nobody changed. Both directions are asserted, because a rename in
+# the checker alone is just as invisible as a rename in the template alone.
+for anchor in 'Owner:' 'Waiting on:' 'Approval:' 'Verify with:'; do
+  grep -qF "$anchor" "$TEMPLATE" \
+    || fail "template lacks the '$anchor' anchor the checker requires"
+  grep -qF "\"$anchor\"" "$LINT" \
+    || fail "checker no longer names the '$anchor' anchor the template emits"
+done
+
 # --- 7. CLI contract ------------------------------------------------------
 run_lint --list-rules >/dev/null 2>&1 || fail "--list-rules should exit 0"
 # Capture ONCE rather than re-running the pipeline per rule. Under `pipefail`,
@@ -307,9 +548,10 @@ run_lint --list-rules >/dev/null 2>&1 || fail "--list-rules should exit 0"
 # found — intermittently, depending on whether the write completed first.
 RULES_OUT=$(run_lint --list-rules)
 RULE_COUNT=$(printf '%s\n' "$RULES_OUT" | grep -c .)
-[[ "$RULE_COUNT" -eq 7 ]] || fail "expected 7 rules, got $RULE_COUNT"
+[[ "$RULE_COUNT" -eq 10 ]] || fail "expected 10 rules, got $RULE_COUNT"
 for r in harness-path phase-vocabulary state-file skill-invocation \
-         unrendered-placeholder required-sections working-directory-absolute; do
+         unrendered-placeholder required-sections working-directory-absolute \
+         open-work-ownership pull-request-review-state verification-command; do
   printf '%s\n' "$RULES_OUT" | grep -qx "$r" || fail "--list-rules omits '$r'"
 done
 
