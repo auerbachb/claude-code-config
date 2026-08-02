@@ -53,9 +53,10 @@ codeant set-codeant-api-key <your-api-key>
 # Verify auth (safe — reads org membership, no write):
 codeant scans orgs
 
-# Run a proof review (check stderr for errors before trusting "no findings"):
-codeant review --all --headless >ca.json 2>ca.err
-grep -qE 'API Error|\[error\]|40[13]' ca.err && echo "FAILED RUN" || echo "clean"
+# Run a proof review. Use the wrapper — it applies every false-clean check
+# (stderr error, 403, noFiles, 15-file cap, 2-min hang) and prints one line:
+.claude/scripts/local-review.sh --tool codeant
+# exit 0 clean · 1 findings · 3 failed run · 4 timeout · 5 not installed
 ```
 
 Failure modes once installed: false-clean on API failure and 403 daily-cap — see `local-review-cli-failure-modes.md`.

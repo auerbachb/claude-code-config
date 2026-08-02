@@ -334,7 +334,7 @@ These are mandatory verification points. The executing agent MUST follow these:
 {Include relevant checkpoints based on the task type:}
 
 **If the task involves pushing code and creating a PR:**
-- [ ] After coding: Run `coderabbit review --agent` and `codeant review --all --headless` — one clean pass on each available CLI required before pushing (fallbacks per `cr-local-review.md`)
+- [ ] After coding: Run `.claude/scripts/local-review.sh --tool coderabbit` and `--tool codeant` — one clean pass (`ok:true` + `verified_run:true`) on each available CLI required before pushing (fallbacks per `cr-local-review.md`)
 - [ ] After pushing: Enter GitHub review polling loop immediately — do NOT ask permission
 - [ ] After CR/Greptile posts findings: Fix all valid findings in ONE commit, push once, reply to every thread
 

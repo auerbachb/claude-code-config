@@ -98,6 +98,20 @@ bash .github/scripts/run-hook-tests.sh        # all bash suites
 bash .github/scripts/run-python-tests.sh      # all Python suites
 ```
 
+**Compact mode (`--json`)** — both runners also emit the one-line result contract from
+[`compact-result-contract.md`](.claude/reference/compact-result-contract.md) instead of every
+suite's raw output, which is what CI uses and what an agent should read:
+
+```bash
+bash .github/scripts/run-hook-tests.sh --json
+# {"ok":true,"failed_tests":[],"relevant_error":null,"log_path":"/tmp/run-hook-tests-...log","total":94,"failed":0}
+```
+
+A green run drops from thousands of lines to one; the full capture is always at `log_path`, and
+**failing** suites still print in full (on stderr) in both modes. In CI both runners go through
+[`summarize-test-run.sh`](.github/scripts/summarize-test-run.sh), which mirrors the contract into
+the job's step summary and raises an `::error::` annotation on a red run.
+
 ## Git Pre-commit Hook (Worktree Enforcement)
 
 `setup.sh` installs `.claude/git-hooks/pre-commit` into the shared git hooks directory on first run (and reuses it on later runs when unchanged). When this hook is installed and not bypassed, it rejects commits made on `main` in the root checkout, enforcing the "never work on main" rule at the git level for any committer — human, Claude, Cursor, Codex, or a random terminal session.
