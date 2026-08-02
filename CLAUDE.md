@@ -1,6 +1,6 @@
 # PR MERGE AUTHORIZATION
 
-When the merge gate passes (`cr-merge-gate.md` Steps 1–1d, 1b) and every Test Plan box verifies (Step 2), **auto-run full `/wrap`** (squash-merge, sync main, follow-ups, session sweep, lessons) — **no approval pause, no pre-merge message**. A clean merge is silent (item #3).
+When the merge gate passes (`cr-merge-gate.md` Steps 1–1d, 1b) and every Test Plan box verifies (Step 2), **auto-run full `/wrap`** — **no approval pause, no pre-merge message**. A clean merge is silent (item #3).
 
 **Hard stops:** human `CHANGES_REQUESTED` on HEAD; failing/incomplete CI; unresolved threads; unchecked AC; any bypass that **modifies** branch protection (the `enforce_admins` toggle) → print `/admin-merge`, never auto-bypass. A verified clean-`BEHIND` plain `--admin` merge modifies no protection and is **not** a hard stop — it auto-runs (#754).
 
@@ -41,7 +41,7 @@ The workflow is fully autonomous. At every phase transition — local review, pu
 **The ONLY action that requires user permission:**
 - Respawning a failed subagent
 
-**Monitoring is never a permission-gated action — babysitting an in-flight PR is the default, never a question.** Arm the watch when a PR is open; never present a "watch it or not?" menu, and never wait for the user to say so first. CR timeout routes autonomously through the escalation chain (`cr-github-review.md`). Use `/loop` — never a continuous poll (`scheduling-reliability.md`). Use existing skills (`/babysit-pr`, `/pr-monitor-and-manage`). When gate + AC pass, auto-dispatch `/wrap` (see "PR MERGE AUTHORIZATION" above).
+**Monitoring is never a permission-gated action — babysitting an in-flight PR is the default, never a question.** Arm the watch when a PR is open; never present a "watch it or not?" menu. CR timeout routes autonomously through the escalation chain (`cr-github-review.md`). Use existing skills (`/babysit-pr`, `/pr-monitor-and-manage`). When gate + AC pass, auto-dispatch `/wrap` (see "PR MERGE AUTHORIZATION" above).
 
 If you catch yourself composing a "should I...?" question about any workflow step, stop — the answer is always yes. Just do it.
 
@@ -124,10 +124,10 @@ These files auto-load for the parent agent session. **Subagents do NOT auto-load
 
 ### Rule File Size Guidelines
 
-Rules load every turn — redundant or contradictory rules misfire. Limits apply to CLAUDE.md + `.claude/rules/*.md`:
+Rules load every turn — redundant or contradictory rules misfire. Limits cover CLAUDE.md + `.claude/rules/*.md`:
 
-- **Soft warning:** 12,000 words. **Hard fail:** 13,000. **Per-file warning:** >2,000 words.
-- **Ratchet cap:** `.claude/rules/.budget-soft-cap` = `max(count + 750, 8500)`. `rule-lint.sh` fails if exceeded; `--update-cap` only after intentional cuts.
+- **The gate:** 12,000-word soft warning, 13,000 hard fail. **Per-file warning:** >2,000 words.
+- **Ratchet cap** (visibility, not the gate): `.claude/rules/.budget-soft-cap` = `max(count + 750, 8500)`; `rule-lint.sh` fails if exceeded. Raise it only with a PR-body line naming the addition and why it belongs here rather than in `.claude/reference/` — `budget-cap-raise-decision.md`.
 - **Verify on any PR touching these files:** `{ cat CLAUDE.md; find .claude/rules -name '*.md' -exec cat {} +; } | wc -w`
 
 **Keep growth out of the corpus.** Mechanism, rationale, and backward-compat notes go in `.claude/reference/` — not auto-loaded, so free.

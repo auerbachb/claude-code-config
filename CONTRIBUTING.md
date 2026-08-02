@@ -52,16 +52,21 @@ Rules live in `.claude/rules/<name>.md` and auto-load in every parent-agent sess
 2. **File size limits** (see CLAUDE.md "Rule File Size Guidelines"):
    - **Soft cap:** ~150 lines / ~1,500 words per file — consider splitting if exceeded.
    - **Hard cap:** 200 lines / 2,000 words per file — must split.
-3. **Total budget:** CLAUDE.md + all rule files ≤ **12,000 words** soft / **13,000** hard (matches `.coderabbit.yaml` and `rule-lint.sh`).
-4. **Verification command:**
+3. **Total budget — the gate:** CLAUDE.md + all rule files ≤ **12,000 words** soft warning / **13,000** hard fail (matches `.coderabbit.yaml` and `rule-lint.sh`). These two numbers are absolute: nothing waives them.
+4. **Ratchet cap — visibility, not the gate:** `.claude/rules/.budget-soft-cap` holds `max(count + 750, 8500)` and `rule-lint.sh` fails when the corpus exceeds it. Its job is to make every increment show up as a deliberate line in a diff, not to freeze the corpus. Two ways to stay green:
+   - **Pay for the addition with cuts** so the total stays under the committed cap — always available, and the right default when the growth is restatement you can compress away.
+   - **Raise the cap**, which is legitimate *when accompanied by a PR-body line naming what was added and why it belongs in the auto-loaded corpus rather than in `.claude/reference/`*. Raise it with `bash .github/scripts/rule-lint.sh --update-cap --allow-raise` (writes `count + 750` and prints old → new → delta); a raise to a specific number is an owner edit, because `config-protection.py` blocks agent writes to the cap file. `--update-cap` alone only lowers or holds.
+
+   Full policy and rationale: [`.claude/reference/budget-cap-raise-decision.md`](.claude/reference/budget-cap-raise-decision.md) (Issue #879).
+5. **Verification command:**
 
    ```bash
    { cat CLAUDE.md; find .claude/rules -name '*.md' -exec cat {} +; } | wc -w
    ```
 
-   Run this on any PR that touches CLAUDE.md or `.claude/rules/`. If the total exceeds 12,000, condense before merging.
-5. **Update the CLAUDE.md rule index table** with a new row for the file (file name + one-line contents summary).
-6. **CI will verify** index alignment and the word-count budget via the `rule-lint` check.
+   Run this on any PR that touches CLAUDE.md or `.claude/rules/`. Compare it against both the committed cap (`cat .claude/rules/.budget-soft-cap`) and the 12,000/13,000 limits before merging. CI lints the merge ref, so leave a margin of ~30 words rather than landing on the number exactly.
+6. **Update the CLAUDE.md rule index table** with a new row for the file (file name + one-line contents summary).
+7. **CI will verify** index alignment, the ratchet cap, and the word-count budget via the `rule-lint` check. A ratchet-cap breach fails the check — that is by design, and the fix is a cut or a justified raise, never a suppression.
 
 ## Adding a New Hook
 

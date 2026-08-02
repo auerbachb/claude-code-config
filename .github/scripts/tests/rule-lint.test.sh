@@ -10,6 +10,7 @@
 #   (e) real repo conformance (default run, no --update-cap)
 #   (f) equal case → formula == current cap       → unchanged, no "would raise" message
 #   (g) hermeticity — the real cap file was never written during the run
+#   (h) ratchet breach (no --update-cap)          → hard fail: exit 1 + ::error (#879)
 #
 # HERMETICITY (issue #906)
 # ------------------------
@@ -294,6 +295,54 @@ expect \
   "unchanged.*formula matches cap" \
   "$F_CAP" \
   "$F_CAP"
+
+# ---------------------------------------------------------------------------
+# (h) Ratchet breach is a HARD FAIL, not a warning (issue #879)
+# ---------------------------------------------------------------------------
+# #879 decided that the ratchet cap is a visibility mechanism raisable with a
+# PR-body justification line — and that it stays an ERROR while doing so. The
+# alternative on the table (CodeRabbit's plan for that issue) was to downgrade
+# this branch to ::warning, which would have made a cap breach invisible in the
+# diff and actionable by nobody. This case pins the decided behaviour so a
+# future edit cannot silently soften it back; see
+# .claude/reference/budget-cap-raise-decision.md.
+#
+# Runs WITHOUT --update-cap, so it needs its own runner rather than expect().
+H_CAP=$(( CURRENT_COUNT - 1 ))   # corpus overruns the committed cap by 1 word
+set_cap "$H_CAP"
+h_out=""
+h_got=0
+h_out=$( ( cd "$SANDBOX" && bash "$LINT" 2>&1 ) ) || h_got=$?
+
+# Fingerprint the real cap file before any cleanup runs, matching expect()'s
+# ordering: the check belongs immediately after the lint invocation so nothing
+# in between can mask a transient mutation.
+h_pre_assert_failures=$failures
+assert_real_cap_untouched "during (h) ratchet breach"
+set_cap "$BASELINE_CAP"
+h_ok=1
+if (( failures != h_pre_assert_failures )); then
+  h_ok=0
+fi
+# Assert the guard RAN and failed for the ratchet reason — an exit 1 alone
+# could come from any other check in the script.
+if (( h_got != 1 )); then
+  echo "FAIL — (h) ratchet breach: expected exit 1, got ${h_got}"
+  h_ok=0
+elif ! grep -qE "^::error file=[^:]*\.budget-soft-cap::Auto-loaded word count ${CURRENT_COUNT} exceeds ratchet cap ${H_CAP}" <<< "$h_out"; then
+  echo "FAIL — (h) ratchet breach: no ::error annotation naming the ratchet cap"
+  h_ok=0
+elif grep -qE "^::warning file=[^:]*\.budget-soft-cap::" <<< "$h_out"; then
+  echo "FAIL — (h) ratchet breach: cap breach was emitted as a ::warning"
+  h_ok=0
+fi
+case_num=$(( case_num + 1 ))
+if (( h_ok == 1 )); then
+  echo "ok   — (h) ratchet breach without --update-cap is a hard fail (exit 1 + ::error)"
+else
+  printf '%s\n' "$h_out" | sed 's/^/       /'
+  failures=$(( failures + 1 ))
+fi
 
 # ---------------------------------------------------------------------------
 # (e) Real repo conformance — default run (no --update-cap), read-only
