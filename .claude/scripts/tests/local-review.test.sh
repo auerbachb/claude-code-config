@@ -124,6 +124,25 @@ if printf '%s' "$OUT" | jq -e '.relevant_error | test("403")' >/dev/null; then
   ok "CodeAnt 403 relevant_error carries the decisive line"
 else bad "CodeAnt 403 relevant_error missing the 403 text"; fi
 
+# 4a-bis. The status matcher is digit-bounded: `401`/`403` inside a LONGER number is not
+# an auth failure. A bare `40[13]` matched those, discarding a clean run and burning one
+# of CodeAnt's ~10 daily agent reviews (issue #643) for nothing. Both directions pinned —
+# the benign case must stay clean, and every real 403 shape from
+# local-review-cli-failure-modes.md must still be caught, so tightening cannot have
+# opened a false-clean hole (the one direction this script must never fail in).
+BIN="$(make_stub codeant-bignum "$CA_CLEAN" 'progress: scanned 1403 files in 4031 ms' 0)"
+run --tool codeant --bin "$BIN"
+check_eq 0 "$RC" "digits inside a longer number are not a 401/403 failure"
+check_eq "true" "$(field .ok)" "benign numeric stderr stays a clean pass"
+
+BIN="$(make_stub codeant-403-bare "$CA_CLEAN" 'Access denied (403).' 0)"
+run --tool codeant --bin "$BIN"
+check_eq 3 "$RC" "a real bracketed 403 with no API Error prefix is still caught"
+
+BIN="$(make_stub codeant-401-spaced "$CA_CLEAN" 'request failed with status 401 while reviewing' 0)"
+run --tool codeant --bin "$BIN"
+check_eq 3 "$RC" "a real space-delimited 401 is still caught"
+
 # 4b. noFiles — reviewed nothing. Usually a wrong-directory tell.
 BIN="$(make_stub codeant-nofiles '{"issues": [], "meta": null, "error": null, "noFiles": true}' '' 0)"
 run --tool codeant --bin "$BIN"

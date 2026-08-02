@@ -234,8 +234,23 @@ FINDINGS=0
 
 if [[ "$TOOL" == "codeant" ]]; then
   # 1. stderr is CodeAnt's ONLY reliable failure signal (issue #642).
-  if grep -qE 'API Error|\[error\]|40[13]' "$ERR" 2>/dev/null; then
-    ERR_TEXT="$(grep -E 'API Error|\[error\]|40[13]' "$ERR" | cap_error)"
+  #
+  # The status alternative is digit-bounded rather than a bare `40[13]`, which matched
+  # the substring inside any longer number (1403, 4031, an epoch, a byte count) and
+  # would discard an otherwise clean run as a failed one. That direction is safe but
+  # not free: CodeAnt is daily-capped (~10 agent reviews, issue #643), so a spurious
+  # failure burns a review the caller cannot get back.
+  #
+  # Bounded with explicit non-digit context, NOT `\b` — deliberately, per the same
+  # portability rule as the awk patterns in run-python-tests.sh. Tightened only this
+  # far on purpose: requiring a full HTTP status/error record was considered and
+  # declined, because a shape we failed to anticipate would then read as CLEAN, and a
+  # missed failure is the one direction this script must never fail in. Every real
+  # 403 shape still matches — "(403)", "403:", " 401 ", and the "API Error" prefix
+  # CodeAnt's own daily-cap line carries.
+  CA_ERR_RE='API Error|\[error\]|(^|[^0-9])(401|403)([^0-9]|$)'
+  if grep -qE "$CA_ERR_RE" "$ERR" 2>/dev/null; then
+    ERR_TEXT="$(grep -E "$CA_ERR_RE" "$ERR" | cap_error)"
     emit false false stderr_error 0 "$ERR_TEXT" "$DURATION" 3
   fi
   # 2. The headless object also carries its own `error` field.
