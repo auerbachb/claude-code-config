@@ -30,7 +30,7 @@ Best-effort: lead the first user message with `[#N]` (or `[#339, #341]`) so tab 
 
 Whenever referencing a GitHub number in human-facing prose, you **must** prefix it with its type: `PR #1234` or `Issue #1234` — never a bare `#1234`. Markdown link text needs it too: `[PR #1234](url)`.
 
-**Exceptions** (bare `#N` is correct): GitHub closing keywords (`Closes #123`), commit messages/code, bulk shorthand for 5+ same-type items (`PRs #1234, #1235, #1236`), and the thread-title prefix above.
+**Exceptions** (bare `#N` is correct): GitHub closing keywords (`Closes #123`), commit messages/code, bulk shorthand for 5+ same-type items (`PRs #1234, #1235, #1236, #1237, #1238`), and the thread-title prefix above.
 
 ---
 
