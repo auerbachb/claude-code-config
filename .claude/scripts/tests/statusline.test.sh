@@ -194,6 +194,36 @@ check_eq "other/elsewhere" "${CLAUDE_SESSION_REPO:-}" \
 unset CLAUDE_SESSION_REPO
 
 # --------------------------------------------------------------------------
+# 5c. A render must not touch script-usage.log — through ANY script
+# --------------------------------------------------------------------------
+# The renderer staying silent is only half the story: it shells out to
+# session-state.sh, which logs a line per call. Left alone that moves the flood
+# one script to the left, inflating session-state.sh's count in
+# script-usage-report.sh's denominator with thousands of automatic reads a day.
+USAGE_LOG="$HOME/.claude/script-usage.log"
+write_state "$(state_doc "[$(agent 21)]" '{"21":{"babysit":{"active":true}}}' '[]' false)"
+rm -f "$USAGE_LOG"
+run_sl "$(session_json "$REPO")"
+check_contains "· 1 agent · 1 watcher" "$OUT" "usage-log case: the render still produced its counts"
+if [[ ! -s "$USAGE_LOG" ]]; then
+  ok "a render appends nothing to script-usage.log (renderer or session-state.sh)"
+else
+  bad "a render appends nothing to script-usage.log (got: $(tr '\n' '; ' < "$USAGE_LOG"))"
+fi
+
+# The opt-out must be exactly that — an opt-out. An ordinary call still logs, or
+# the suppression above would be silently disabling telemetry for everyone.
+SS="$REPO_ROOT/.claude/scripts/session-state.sh"
+rm -f "$USAGE_LOG"
+(cd "$REPO" && "$SS" --session-view >/dev/null 2>&1) || true
+if [[ -s "$USAGE_LOG" ]]; then
+  ok "session-state.sh still logs on an ordinary call (opt-out is not the default)"
+else
+  bad "session-state.sh still logs on an ordinary call (opt-out is not the default)"
+fi
+rm -f "$USAGE_LOG"
+
+# --------------------------------------------------------------------------
 # 6. Repo scoping — another repo's agents and babysitters must not leak in.
 # --------------------------------------------------------------------------
 OTHER_STATE=$(jq -cn --argjson mine "[$(agent 11)]" --argjson theirs "[$(agent 99)]" \

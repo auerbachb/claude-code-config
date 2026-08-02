@@ -75,6 +75,12 @@
 # day and drown the real adherence signal `script-usage-report.sh` computes from
 # that file. Telemetry value here is nil — the invocation is automatic, never a
 # choice an agent made.
+#
+# Staying silent here is only half of it: the `session-state.sh --session-view`
+# call below logs a line of its own on every invocation, which would move the
+# flood one script to the left rather than avoid it. That child call therefore
+# runs with CLAUDE_SCRIPT_USAGE_LOG=0 — an opt-out session-state.sh honors for
+# render-loop callers only, never by default.
 
 set -uo pipefail
 
@@ -168,10 +174,14 @@ if [[ -x "$SESSION_STATE_SH" ]]; then
   # repo while sourcing its two halves from two, with nothing on screen to say
   # so. Unsetting inside the command substitution keeps the caller's
   # environment untouched.
+  # CLAUDE_SCRIPT_USAGE_LOG=0 for the same reason this script does not log
+  # either (see the NOTE in the header): session-state.sh appends one
+  # script-usage.log line per call, and a render-loop caller would otherwise
+  # move the flood one script to the left rather than avoid it.
   STATE_VIEW=$(
     cd "$WORK_DIR" 2>/dev/null &&
       unset CLAUDE_SESSION_REPO &&
-      "$SESSION_STATE_SH" --session-view 2>/dev/null
+      CLAUDE_SCRIPT_USAGE_LOG=0 "$SESSION_STATE_SH" --session-view 2>/dev/null
   ) || STATE_VIEW=""
   if [[ -n "$STATE_VIEW" ]]; then
     COUNTS=$(printf '%s' "$STATE_VIEW" | jq -r '

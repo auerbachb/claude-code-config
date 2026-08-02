@@ -314,7 +314,15 @@
 #   # -> exit 4: field '.prs["287"].last_cron_action' would become type 'string' but must be 'object'
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
+# Usage telemetry. `script-usage-report.sh` derives adherence ratios from this
+# log, which assumes one line per DELIBERATE invocation — a choice some agent or
+# human made. Render-loop callers break that assumption: statusline.sh invokes
+# this script on a refresh timer, so it sets CLAUDE_SCRIPT_USAGE_LOG=0 to keep
+# thousands of automatic reads a day out of the denominator (issue #779).
+# Opt-out only, and never the default: every ordinary call still logs.
+if [[ "${CLAUDE_SCRIPT_USAGE_LOG:-1}" != "0" ]]; then
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
+fi
 
 STATE_FILE="${HOME}/.claude/session-state.json"
 
