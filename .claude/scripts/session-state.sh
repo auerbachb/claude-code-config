@@ -326,6 +326,10 @@ fi
 
 STATE_FILE="${HOME}/.claude/session-state.json"
 
+# Saved before any parsing consumes them, so a read-modify-write whose lock was
+# stolen mid-flight can be retried from scratch (see _rmw_retry_or_fail).
+ORIG_ARGS=("$@")
+
 # Sibling reference file that is the single source of truth for the
 # FIELD-TYPE CONTRACT (issues #625, #640) — resolved relative to this
 # script's own location (not $STATE_FILE's directory) so it works from every
@@ -1364,6 +1368,28 @@ if [[ -n "$BAD_SCOPE" ]]; then
   bad_actual="${BAD_SCOPE##*$'\x1f'}"
   echo "session-state.sh: refusing to write — field '$bad_path' would become type '$bad_actual' but must be 'object' (see issue #638); $STATE_FILE left unmodified" >&2
   exit 4
+fi
+
+# Fail closed if the lock was broken and re-taken while we were reading and
+# transforming: $OUT_TMP was computed from a snapshot another writer has since
+# replaced, so committing it would silently discard their update (issue #930).
+# Placed immediately before the commit — everything after this check is
+# unprotected. Rather than fail outright, redo the whole read-modify-write
+# against the current file; re-exec is the cheapest correct reset, and the
+# retry budget keeps a persistently-stolen lock from spinning forever.
+if ! state_lock_assert_held; then
+  _n="${CLAUDE_STATE_RMW_RETRY:-0}"; _max="${CLAUDE_STATE_RMW_MAX_RETRY:-8}"
+  if (( _n < _max )); then
+    export CLAUDE_STATE_RMW_RETRY=$(( _n + 1 ))
+    state_lock_release
+    rm -f "$OUT_TMP" "$JQ_ERR" ${SEEDED_TMP:+"$SEEDED_TMP"} 2>/dev/null || true
+    trap - EXIT
+    # Stagger the retries so contending writers do not re-collide in lockstep.
+    sleep "0.0$(( (RANDOM % 8) + 1 ))"
+    exec bash "$0" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
+  fi
+  echo "session-state.sh: lock was broken by another writer $_max times running; giving up with $STATE_FILE unchanged (retry)" >&2
+  exit "$STATE_LOCK_EXIT_TIMEOUT"
 fi
 
 if ! mv "$OUT_TMP" "$STATE_FILE" 2>/dev/null; then

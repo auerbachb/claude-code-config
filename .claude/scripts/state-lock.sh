@@ -27,18 +27,29 @@
 #
 # LOCK LAYOUT
 #   Lock directory:  <state-file>.lock/            (e.g. session-state.json.lock)
-#   Owner metadata:  <state-file>.lock/owner       (written immediately after
-#                    the mkdir wins) containing:
+#   Owner metadata:  <state-file>.lock/owner       (published atomically right
+#                    after the mkdir wins) containing:
 #       pid=<holder pid>
 #       host=<hostname>
 #       epoch=<unix seconds when the lock was taken>
 #       started=<ISO 8601 UTC>
 #       cmd=<basename of the holding script>
+#       token=<unique per-acquisition id>
+#
+#   The owner file is written to a temp path INSIDE the lock directory and
+#   renamed onto `owner`, so it is never observable half-written. That matters
+#   because "owner unreadable" used to be indistinguishable from "holder is
+#   gone" — see STALENESS POLICY (issue #930).
+#
+#   `token` identifies one ACQUISITION, not one process. A bare pid cannot
+#   distinguish this acquisition from a later one by the same pid, so every
+#   ownership decision (release, and the state_lock_assert_held check below)
+#   compares tokens.
 #
 # STALENESS POLICY
 #   A lock is considered stale — and may be broken — when EITHER holds:
-#     1. The owner metadata names THIS host and `kill -0 <pid>` says that
-#        process no longer exists (holder died mid-write).
+#     1. The owner metadata is PRESENT, names THIS host, and `kill -0 <pid>`
+#        says that process no longer exists (holder died mid-write).
 #     2. The lock is older than STALE_AGE seconds (default 120, override with
 #        CLAUDE_STATE_LOCK_STALE_AGE). This is the cross-host / unparseable-
 #        metadata fallback: a foreign hostname makes the local pid check
@@ -46,6 +57,16 @@
 #        `epoch=` line, falling back to the lock directory's own mtime.
 #   A real write holds the lock for single-digit milliseconds, so a 120s age
 #   ceiling carries roughly four orders of magnitude of headroom.
+#
+#   AN INDETERMINATE AGE IS NOT STALE. Both conditions above require positive
+#   evidence; when neither the `epoch=` line nor the directory mtime can be
+#   read, the lock is left ALONE and the caller's timeout bounds the wait.
+#   The inverse — "cannot tell, therefore stale" — is what broke live holders
+#   on Linux (issue #930): `stat -f %m` is BSD spelling, and GNU coreutils
+#   parses `-f` as --file-system and `%m` as a FILE operand, so the age lookup
+#   returned a non-numeric blob and every unreadable owner aged out instantly.
+#   Missing owner metadata is a routine, sub-millisecond state (a lock being
+#   acquired or released), NOT a death certificate.
 #
 #   Breaking is guarded against the classic double-steal (two waiters both
 #   declare the same lock stale, both break it, and one then destroys the
@@ -61,11 +82,14 @@
 #     the lock within one poll interval. The state file itself is untouched,
 #     because the killed writer's partial output only ever existed in its
 #     temp file — the `mv` is all-or-nothing.
-#   • Holder alive but wedged >STALE_AGE: the lock IS broken and the wedged
-#     process could, in principle, still complete its `mv` afterwards and lose
-#     one interleaved write. Chosen deliberately: the alternative (never break
-#     a live holder's lock) wedges every future session in the fleet forever,
-#     which is the exact failure this issue exists to prevent.
+#   • Holder alive but wedged >STALE_AGE: the lock IS broken. Chosen
+#     deliberately: the alternative (never break a live holder's lock) wedges
+#     every future session in the fleet forever, which is the exact failure
+#     this issue exists to prevent. The wedged victim can no longer lose an
+#     interleaved write silently, though — breaking a lock rotates the token,
+#     so the victim's state_lock_assert_held fails and it MUST abandon its
+#     read-modify-write instead of committing (issue #930). Callers surface
+#     that as exit 6, "unchanged, retry".
 #   • Shared/network HOME: pid liveness is not meaningful across hosts, so
 #     cross-host locks fall back to the age rule alone.
 #   • Lock directory not writable: acquisition fails fast rather than writing
@@ -83,12 +107,22 @@
 #                                acquire of the SAME lock a no-op so a holder
 #                                that shells out to another state-writing
 #                                script cannot deadlock against itself.
+#   CLAUDE_STATE_LOCK_TOKEN      set alongside it, so a nested writer can still
+#                                verify the inherited lock with
+#                                state_lock_assert_held.
 #
 # EXIT / RETURN CODE
 #   state_lock_acquire returns 0 on success and STATE_LOCK_EXIT_TIMEOUT (6)
 #   when the lock could not be acquired within the timeout. Callers propagate
 #   6 so a writer that cannot serialize exits non-zero with a distinct code
 #   INSTEAD of writing anyway.
+#
+#   state_lock_assert_held returns 0 while this process still holds the lock it
+#   acquired (or the one it inherited) and non-zero once the lock has been
+#   broken and re-acquired by somebody else. EVERY caller must check it
+#   immediately before committing its read-modify-write — that is the whole
+#   defence against a stolen lock turning into a silently dropped update, and
+#   the check must sit as close to the commit `mv` as possible.
 #
 # DEPENDENCIES
 #   mkdir, mv, rm, date, sleep, hostname (all POSIX / base macOS).
@@ -98,7 +132,16 @@
 STATE_LOCK_EXIT_TIMEOUT=6
 
 # Path of the lock directory currently held by THIS process ("" when none).
+# Release authority: set ONLY when this process won the mkdir itself, so a
+# nested (re-entrant) writer can never release its ancestor's lock.
 STATE_LOCK_DIR=""
+
+# Path this process is covered by — its own lock OR one inherited through
+# CLAUDE_STATE_LOCK_HELD. state_lock_assert_held checks against this.
+STATE_LOCK_HELD_DIR=""
+
+# Token of the acquisition covering this process ("" when none).
+STATE_LOCK_TOKEN=""
 
 # Current unix time. Uses bash's printf time format when available (a builtin,
 # no fork) and falls back to date(1) on bash 3.2 — macOS system bash. Forks are
@@ -144,17 +187,46 @@ _state_lock_meta() {
   # The redirect is guarded too: the lock can be released (and the owner file
   # unlinked) between the test above and the open below — a benign race that
   # would otherwise print "No such file or directory" to stderr.
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    case "$line" in
-      "$key="*) printf '%s' "${line#*=}"; return 0 ;;
-    esac
-  done < "$file" 2>/dev/null
+  #
+  # The suppression has to wrap the WHOLE group rather than trail the `done`.
+  # Redirections are applied left to right, so `done < "$file" 2>/dev/null`
+  # opens the (missing) input file while stderr is still the real one and the
+  # message escapes anyway — observed leaking during the issue #930 repro.
+  { while IFS= read -r line || [[ -n "$line" ]]; do
+      case "$line" in
+        "$key="*) printf '%s' "${line#*=}"; return 0 ;;
+      esac
+    done < "$file"; } 2>/dev/null
   return 0
 }
 
-# Age in seconds of the lock at $1. Prefers the recorded epoch; falls back to
-# the lock directory's mtime; prints a very large number when neither can be
-# determined so an inscrutable lock still ages out rather than wedging forever.
+# Modification time of $1 in unix seconds, printed on stdout; returns non-zero
+# when it cannot be determined.
+#
+# `stat` is not portable between GNU and BSD, and — critically — the wrong
+# spelling does NOT fail cleanly on either. GNU treats `-f` as --file-system
+# and `%m` as a FILE operand: it prints a multi-line filesystem dump on stdout
+# and exits non-zero, so a naive `stat -f %m … || stat -c %Y …` chain CONCATENATES
+# the dump with the real mtime and yields a non-numeric string. Only a numeric
+# result may be trusted, so each spelling is validated rather than chained on
+# exit status alone (issue #930).
+_state_lock_file_mtime() {
+  local path="$1" m
+  m="$(stat -c %Y "$path" 2>/dev/null)"      # GNU coreutils
+  if [[ "$m" =~ ^[0-9]+$ ]]; then printf '%s' "$m"; return 0; fi
+  m="$(stat -f %m "$path" 2>/dev/null)"      # BSD / macOS
+  if [[ "$m" =~ ^[0-9]+$ ]]; then printf '%s' "$m"; return 0; fi
+  return 1
+}
+
+# Age in seconds of the lock at $1, printed on stdout. Prefers the recorded
+# epoch and falls back to the lock directory's mtime. Returns non-zero (and
+# prints nothing) when NEITHER can be determined.
+#
+# There is deliberately no "very large number" sentinel any more. Reporting an
+# unknowable age as ancient makes every unreadable owner file look like a dead
+# holder, which is precisely how live holders got their locks broken (#930).
+# An unknown age is now the caller's problem to treat conservatively.
 _state_lock_age() {
   local lock_dir="$1" epoch mtime now
   now="$(_state_lock_now)"
@@ -163,31 +235,49 @@ _state_lock_age() {
     printf '%s' "$(( now - epoch ))"
     return 0
   fi
-  # `stat` is not portable between GNU and BSD; try both spellings.
-  mtime="$(stat -f %m "$lock_dir" 2>/dev/null || stat -c %Y "$lock_dir" 2>/dev/null || true)"
-  if [[ "$mtime" =~ ^[0-9]+$ ]]; then
+  if mtime="$(_state_lock_file_mtime "$lock_dir")"; then
     printf '%s' "$(( now - mtime ))"
     return 0
   fi
-  printf '%s' 999999
+  return 1
 }
 
 # 0 when the lock at $1 qualifies as stale under STALENESS POLICY above.
+# Both rules require POSITIVE evidence; absent evidence means "not stale".
 _state_lock_is_stale() {
   local lock_dir="$1" stale_age="$2" pid host age
-  age="$(_state_lock_age "$lock_dir")"
-  if [[ "$age" -ge "$stale_age" ]]; then
+  if age="$(_state_lock_age "$lock_dir")" && [[ "$age" -ge "$stale_age" ]]; then
     return 0
   fi
   pid="$(_state_lock_meta "$lock_dir/owner" pid)"
   host="$(_state_lock_meta "$lock_dir/owner" host)"
-  # A pid check only means something on the host that recorded it.
-  if [[ "$host" == "$(_state_lock_hostname)" && "$pid" =~ ^[0-9]+$ ]]; then
+  # A pid check only means something on the host that recorded it — and only
+  # when a pid was actually recorded. An ABSENT owner file means the lock is
+  # mid-acquire or mid-release (both sub-millisecond, both routine), never
+  # that the holder died; reading it as a dead holder is the #930 bug.
+  if [[ -n "$pid" && "$host" == "$(_state_lock_hostname)" && "$pid" =~ ^[0-9]+$ ]]; then
     if ! kill -0 "$pid" 2>/dev/null; then
       return 0
     fi
   fi
   return 1
+}
+
+# Remove a lock directory we are entitled to remove, atomically from the point
+# of view of everyone else: rename it out of the way first, THEN delete it.
+#
+# A plain `rm -rf "$lock_dir"` unlinks `owner` before it removes the directory,
+# so the lock spends the whole teardown visible-but-ownerless — one of the two
+# windows that made #930 fire. `rename` collapses that to a single atomic step:
+# other processes see the lock as fully present or entirely gone, never as an
+# orphan worth breaking.
+_state_lock_destroy() {
+  local lock_dir="$1" aside="${1}.rel.$$-${RANDOM}"
+  if mv "$lock_dir" "$aside" 2>/dev/null; then
+    rm -rf "$aside" 2>/dev/null || true
+  else
+    rm -rf "$lock_dir" 2>/dev/null || true
+  fi
 }
 
 # Break a stale lock, guarded against the double-steal described above.
@@ -200,10 +290,20 @@ _state_lock_break() {
   [[ -d "$lock_dir" ]] || return 0
   after="$(cat "$lock_dir/owner" 2>/dev/null || printf '__no_owner__')"
   # Different bytes ⇒ a live holder rewrote it or the lock was re-acquired by
-  # someone else in the interim. Never break in that case.
+  # someone else in the interim. Never break in that case. Each acquisition
+  # stamps a fresh `token=`, so a lock that changed hands never compares equal
+  # even if the same pid re-took it.
   [[ "$before" == "$after" ]] || return 1
+  # Re-sampling identical "__no_owner__" bytes proves nothing on its own — an
+  # acquire and a release both pass through that state, and under CPU
+  # contention a holder can sit in it longer than the resample window. The
+  # decision is left to _state_lock_is_stale, which for an owner-less lock
+  # falls back to the DIRECTORY's mtime: fresh ⇒ leave it alone (a live holder
+  # mid-acquire), older than STALE_AGE ⇒ genuinely orphaned and breakable, so
+  # a holder that died between mkdir and publishing `owner` still recovers
+  # rather than wedging the fleet forever (#930).
   _state_lock_is_stale "$lock_dir" "$stale_age" || return 1
-  aside="${lock_dir}.stale.$$"
+  aside="${lock_dir}.stale.$$-${RANDOM}"
   # Rename-aside is atomic: at most one racer can move this exact directory.
   if mv "$lock_dir" "$aside" 2>/dev/null; then
     local dead_pid
@@ -230,6 +330,11 @@ state_lock_acquire() {
   # passes CLAUDE_STATE_LOCK_HELD down through the environment. Re-acquiring
   # the same lock in that subtree is a no-op instead of a self-deadlock.
   if [[ "${CLAUDE_STATE_LOCK_HELD:-}" == "$lock_dir" ]]; then
+    # Adopt the ancestor's token so this process can still verify the lock via
+    # state_lock_assert_held. STATE_LOCK_DIR stays EMPTY on purpose: only the
+    # process that won the mkdir may release it.
+    STATE_LOCK_HELD_DIR="$lock_dir"
+    STATE_LOCK_TOKEN="${CLAUDE_STATE_LOCK_TOKEN:-}"
     return 0
   fi
 
@@ -248,24 +353,38 @@ state_lock_acquire() {
       # One stamp call for both fields, and $HOSTNAME instead of hostname(1):
       # acquisition sits in the hot path of every state write, so each avoided
       # fork is measurable.
-      local stamp
+      local stamp token owner_tmp
       stamp="$(_state_lock_stamp)"
-      {
-        printf 'pid=%s\n' "$$"
+      # Unique per ACQUISITION: pid alone repeats (same process re-acquiring,
+      # and pid reuse across processes), and every ownership decision downstream
+      # depends on telling two acquisitions apart. $RANDOM is a bash builtin —
+      # no fork on the hot path.
+      token="$$-${stamp%% *}-${RANDOM}${RANDOM}"
+      owner_tmp="$lock_dir/.owner.$$"
+      # Publish atomically: build the file under a temp name, then rename it
+      # into place. A direct `> owner` is a sequence of separate writes, so
+      # readers can catch it existing-but-incomplete — and an owner file
+      # missing its `epoch=` line used to read as "ancient, break it" (#930).
+      { printf 'pid=%s\n' "$$"
         printf 'host=%s\n' "$(_state_lock_hostname)"
         printf 'epoch=%s\n' "${stamp%% *}"
         printf 'started=%s\n' "${stamp#* }"
         printf 'cmd=%s\n' "${0##*/}"
-      } > "$lock_dir/owner" 2>/dev/null || {
+        printf 'token=%s\n' "$token"
+      } > "$owner_tmp" 2>/dev/null && mv "$owner_tmp" "$lock_dir/owner" 2>/dev/null || {
         # Ownership is proven by this file at release time, so a lock we
         # cannot stamp is a lock we could never safely release. Give it back
         # immediately rather than holding something unreleasable.
-        rm -rf "$lock_dir" 2>/dev/null || true
+        rm -f "$owner_tmp" 2>/dev/null || true
+        _state_lock_destroy "$lock_dir"
         echo "state-lock: could not write owner metadata to $lock_dir/owner — releasing" >&2
         return "$STATE_LOCK_EXIT_TIMEOUT"
       }
       STATE_LOCK_DIR="$lock_dir"
+      STATE_LOCK_HELD_DIR="$lock_dir"
+      STATE_LOCK_TOKEN="$token"
       export CLAUDE_STATE_LOCK_HELD="$lock_dir"
+      export CLAUDE_STATE_LOCK_TOKEN="$token"
       # Chain onto whatever EXIT trap the caller already installed for its own
       # temp files, so releasing the lock never silently drops their cleanup.
       _state_lock_install_trap
@@ -297,24 +416,53 @@ state_lock_acquire() {
 # and safe to call when the lock was already broken by someone else — the
 # owner pid is re-checked so we never delete a lock that is no longer ours.
 state_lock_release() {
-  local lock_dir="$STATE_LOCK_DIR" owner_pid
+  local lock_dir="$STATE_LOCK_DIR" token="$STATE_LOCK_TOKEN" owner_token
+  # STATE_LOCK_DIR is empty for a re-entrant caller, so an inner writer can
+  # never release the lock its ancestor owns.
   [[ -n "$lock_dir" ]] || return 0
   STATE_LOCK_DIR=""
+  STATE_LOCK_HELD_DIR=""
+  STATE_LOCK_TOKEN=""
   unset CLAUDE_STATE_LOCK_HELD
+  unset CLAUDE_STATE_LOCK_TOKEN
   [[ -d "$lock_dir" ]] || return 0
-  owner_pid="$(_state_lock_meta "$lock_dir/owner" pid)"
-  # Delete ONLY on a positive ownership match. An empty/unreadable owner pid
-  # is NOT ours by default: it also occurs in the window between another
-  # process winning `mkdir` and writing its owner file, so treating empty as
-  # "probably still mine" would delete a lock that just changed hands
-  # (CodeAnt, PR #662). Declining to delete is the safe error — a lock we
-  # fail to release ages out via the staleness rules; one we wrongly delete
-  # lets two writers into the critical section at once.
-  if [[ "$owner_pid" != "$$" ]]; then
+  owner_token="$(_state_lock_meta "$lock_dir/owner" token)"
+  # Delete ONLY on a positive ownership match, and match on the TOKEN rather
+  # than the pid: a pid match cannot distinguish our acquisition from a later
+  # one, and a lock broken as stale then re-taken by a recycled pid would be
+  # deleted out from under its new owner. An empty/unreadable token is NOT
+  # ours by default either — that is also the window between another process
+  # winning `mkdir` and publishing its owner file (CodeAnt, PR #662).
+  # Declining to delete is the safe error: a lock we fail to release ages out
+  # via the staleness rules; one we wrongly delete lets two writers into the
+  # critical section at once.
+  if [[ -z "$token" || "$owner_token" != "$token" ]]; then
     return 0
   fi
-  rm -rf "$lock_dir" 2>/dev/null || true
+  _state_lock_destroy "$lock_dir"
   return 0
+}
+
+# 0 while this process still holds the lock covering it, non-zero once that
+# lock has been broken and re-acquired by somebody else.
+#
+# Breaking a stale lock can never be perfectly safe — a wedged-but-alive holder
+# may wake up and finish its write. The defence is that the victim can find
+# out: a break rotates the token, so the check below fails and the caller must
+# ABANDON its read-modify-write rather than commit a value computed from a
+# snapshot someone else has since replaced. Call it immediately before the
+# commit `mv`, not earlier: everything between the check and the commit is
+# still unprotected (#930).
+state_lock_assert_held() {
+  local lock_dir="$STATE_LOCK_HELD_DIR" owner_token
+  [[ -n "$lock_dir" ]] || return 1
+  # An inherited lock with no token predates this library version (a parent
+  # still running the old code). Unverifiable, but it is not ours to police,
+  # and failing closed there would break re-entrant writers for no gain.
+  [[ -n "$STATE_LOCK_TOKEN" ]] || return 0
+  [[ -d "$lock_dir" ]] || return 1
+  owner_token="$(_state_lock_meta "$lock_dir/owner" token)"
+  [[ "$owner_token" == "$STATE_LOCK_TOKEN" ]]
 }
 
 # Install an EXIT trap that releases the lock, preserving any trap the caller

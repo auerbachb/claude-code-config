@@ -226,6 +226,111 @@ check_eq "no lock directory left behind (scoped path)" "0" "$([[ -e "$LOCK_DIR" 
 unset CLAUDE_SESSION_REPO
 
 echo
+echo "== issue #930: age lookup is portable and never invents an ancient lock =="
+# The GNU/BSD `stat` split, directly. `-f` means --file-system on GNU coreutils
+# and `%m` is then read as a FILE operand, so the old
+# `stat -f %m … || stat -c %Y …` chain printed a filesystem dump AND the mtime
+# and matched neither as a number — every unreadable owner file aged out to the
+# 999999 sentinel, i.e. "instantly stale", on Linux only.
+reset_state
+mkdir -p "$LOCK_DIR"          # a lock directory with NO owner file yet
+AGE="$(bash -c 'source "$1"; _state_lock_age "$2"' _ "$LOCK_LIB" "$LOCK_DIR")"
+check_eq "age of a fresh owner-less lock is numeric" "1" \
+  "$([[ "$AGE" =~ ^[0-9]+$ ]] && echo 1 || echo 0)"
+check_eq "age of a fresh owner-less lock is small, not the old 999999 sentinel" "1" \
+  "$([[ "$AGE" =~ ^[0-9]+$ && "$AGE" -lt 60 ]] && echo 1 || echo 0)"
+# Same directory, evaluated through the staleness rule that acts on it.
+bash -c 'source "$1"; _state_lock_is_stale "$2" 120' _ "$LOCK_LIB" "$LOCK_DIR"; RC=$?
+check_eq "a fresh owner-less lock is NOT stale (mid-acquire, not dead)" "1" "$RC"
+# ...but a genuinely orphaned one still ages out, so a holder that died between
+# mkdir and publishing `owner` can never wedge the fleet forever.
+bash -c 'source "$1"; _state_lock_is_stale "$2" 0' _ "$LOCK_LIB" "$LOCK_DIR"; RC=$?
+check_eq "an owner-less lock past STALE_AGE IS still breakable" "0" "$RC"
+rm -rf "$LOCK_DIR"
+
+echo
+echo "== issue #930: a live holder's lock survives a contending acquirer =="
+# The end-to-end shape of the bug: while one process holds the lock, another
+# must never conclude "stale" and steal it. Deterministic — the holder is real
+# and alive, no timing window is being raced.
+reset_state
+run --set '.notes=held'
+bash -c 'source "$1"; state_lock_acquire "$2" || exit 6; printf "held\n" > "$3"; sleep 30' \
+  _ "$LOCK_LIB" "$STATE_FILE" "$TMP_HOME/held930" &
+HOLDER930=$!
+for _ in $(seq 1 100); do [[ -f "$TMP_HOME/held930" ]] && break; sleep 0.05; done
+HELD_TOKEN="$(sed -n 's/^token=//p' "$LOCK_DIR/owner" 2>/dev/null)"
+OUT="$(CLAUDE_STATE_LOCK_TIMEOUT=2 run --set '.notes=stolen' 2>&1)"; RC=$?
+check_eq "contending writer times out (exit 6) instead of stealing" "6" "$RC"
+check_eq "no stale-break was reported against the live holder" "0" \
+  "$(grep -c 'broke stale lock' <<<"$OUT")"
+check_eq "the live holder still owns the lock (token unchanged)" "$HELD_TOKEN" \
+  "$(sed -n 's/^token=//p' "$LOCK_DIR/owner" 2>/dev/null)"
+check_eq "the contending write did NOT land" "held" "$(jq -r '.notes' "$STATE_FILE")"
+kill -9 "$HOLDER930" 2>/dev/null; wait "$HOLDER930" 2>/dev/null
+rm -rf "$LOCK_DIR"
+
+echo
+echo "== issue #930: owner metadata carries a per-acquisition token =="
+reset_state
+T1="$(bash -c 'source "$1"; state_lock_acquire "$2" || exit 6; sed -n "s/^token=//p" "$2.lock/owner"' _ "$LOCK_LIB" "$STATE_FILE")"
+T2="$(bash -c 'source "$1"; state_lock_acquire "$2" || exit 6; sed -n "s/^token=//p" "$2.lock/owner"' _ "$LOCK_LIB" "$STATE_FILE")"
+check_eq "a token is published" "1" "$([[ -n "$T1" ]] && echo 1 || echo 0)"
+check_eq "two acquisitions get different tokens" "1" "$([[ "$T1" != "$T2" ]] && echo 1 || echo 0)"
+rm -rf "$LOCK_DIR"
+
+echo
+echo "== issue #930: a robbed holder fails closed instead of committing =="
+# Simulate the theft deterministically: acquire, then let a DIFFERENT process
+# take the path over (exactly what breaking a stale lock does), and confirm the
+# original holder notices. Without this the victim would commit a value it
+# computed from a snapshot the thief has already replaced — a silent lost
+# update, which is the whole failure in issue #930.
+reset_state
+OUT="$(bash -c '
+  source "$1"
+  # Positive control first: without this, every "theft detected" assertion below
+  # would also pass against a library that simply lacks the function (the call
+  # fails, the `||` branch fires) — a guard that passes by not running.
+  declare -F state_lock_assert_held >/dev/null && echo "assert-fn-exists=yes"
+  state_lock_acquire "$2" || exit 6
+  state_lock_assert_held && echo "held-before=yes"
+  # Someone else breaks our lock and takes it: the directory is replaced and a
+  # new token published.
+  mv "$2.lock" "$2.lock.stolen"
+  mkdir "$2.lock"
+  printf "pid=1\nhost=%s\nepoch=%s\ntoken=someone-else\n" "$(hostname)" "$(date +%s)" > "$2.lock/owner"
+  state_lock_assert_held || echo "detected-theft=yes"
+  # ...and our release must not delete the thief lock we no longer own.
+  state_lock_release
+  [[ -d "$2.lock" ]] && echo "thief-lock-intact=yes"
+' _ "$LOCK_LIB" "$STATE_FILE" 2>&1)"
+check_eq "state_lock_assert_held exists (positive control)" "1" "$(grep -c 'assert-fn-exists=yes' <<<"$OUT")"
+check_eq "assert_held is true while genuinely held" "1" "$(grep -c 'held-before=yes' <<<"$OUT")"
+check_eq "assert_held detects the theft" "1" "$(grep -c 'detected-theft=yes' <<<"$OUT")"
+check_eq "release leaves the thief's lock alone" "1" "$(grep -c 'thief-lock-intact=yes' <<<"$OUT")"
+rm -rf "$STATE_FILE.lock" "$STATE_FILE.lock.stolen"
+
+echo
+echo "== issue #930: a stolen read-modify-write is retried, never committed blind =="
+# Same theft, but through the real write path. The pre-existing value must
+# survive: the writer either redoes its transform against current content or
+# exits 6 — it must never overwrite with the stale snapshot.
+reset_state
+run --set '.keep="original"'
+BEFORE="$(jq -r '.keep' "$STATE_FILE")"
+OUT="$(CLAUDE_STATE_RMW_MAX_RETRY=1 CLAUDE_STATE_LOCK_TIMEOUT=2 bash -c '
+  source "$1"
+  # Hold a foreign lock so the retry cannot re-acquire, forcing the give-up path.
+  mkdir -p "$2.lock"
+  printf "pid=%s\nhost=%s\nepoch=%s\ntoken=foreign\n" "$$" "$(hostname)" "$(date +%s)" > "$2.lock/owner"
+  bash "$3" --set ".keep=clobbered"; echo "rc=$?"
+' _ "$LOCK_LIB" "$STATE_FILE" "$SCRIPT" 2>&1)"
+check_eq "writer that cannot serialize exits 6" "1" "$(grep -c 'rc=6' <<<"$OUT")"
+check_eq "the original value was not clobbered" "$BEFORE" "$(jq -r '.keep' "$STATE_FILE")"
+rm -rf "$LOCK_DIR"
+
+echo
 echo "== summary: $PASS passed, $FAIL failed =="
 if [[ "$FAIL" -gt 0 ]]; then
   echo "FAILED: state-lock tests" >&2

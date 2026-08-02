@@ -77,6 +77,30 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOCK_LIB="${SCRIPT_DIR}/state-lock.sh"
 HANDOFF_DIR="${HOME}/.claude/handoffs"
 
+# Saved before any parsing shifts them, so a read-modify-write whose lock was
+# stolen mid-flight can be retried from scratch (see _rmw_retry_or_fail).
+ORIG_ARGS=("$@")
+
+# Re-run this whole invocation after the lock was broken underneath us.
+#
+# The transform has to start over from a fresh read: the value we computed came
+# from a snapshot another writer has replaced, so re-committing it would drop
+# their update. Re-exec is the cheapest correct reset — it re-acquires the lock
+# and redoes read → transform → commit with no leftover state. Bounded, because
+# a lock that keeps being stolen is a real problem and must eventually surface
+# rather than spin (issue #930).
+_rmw_retry_or_fail() {
+  local n="${CLAUDE_STATE_RMW_RETRY:-0}" max="${CLAUDE_STATE_RMW_MAX_RETRY:-8}"
+  if (( n < max )); then
+    export CLAUDE_STATE_RMW_RETRY=$(( n + 1 ))
+    # Stagger the retries so contending writers do not re-collide in lockstep.
+    sleep "0.0$(( (RANDOM % 8) + 1 ))"
+    exec bash "$0" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
+  fi
+  echo "handoff-state.sh: lock was broken by another writer $max times running; giving up with $HANDOFF_FILE unchanged (retry)" >&2
+  exit "$STATE_LOCK_EXIT_TIMEOUT"
+}
+
 # ---------------------------------------------------------------------------
 # Load the lock library (required for all write paths).
 # ---------------------------------------------------------------------------
@@ -291,6 +315,17 @@ _atomic_write() {
     state_lock_release
     exit 5
   }
+  # Fail closed if the lock was broken and re-taken while we were reading and
+  # transforming. $content was computed from a snapshot another writer has
+  # since replaced, so committing it would silently discard their update —
+  # the exact lost-append failure in issue #930. Exit 6 ("unchanged, retry")
+  # instead: a loud, retryable error beats a silent overwrite. This sits as
+  # late as possible, immediately before the commit.
+  if ! state_lock_assert_held; then
+    rm -f "$tmp" 2>/dev/null || true
+    state_lock_release
+    _rmw_retry_or_fail
+  fi
   if ! mv "$tmp" "$HANDOFF_FILE"; then
     rm -f "$tmp" 2>/dev/null || true
     echo "handoff-state.sh: mv to $HANDOFF_FILE failed" >&2
