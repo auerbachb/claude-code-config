@@ -565,9 +565,9 @@ Exit `1` (nothing crossed threshold) or missing script → end category immediat
 
 Score formula, threshold calibration, and the capping rationale: **`.claude/reference/churn-hotspots.md`**.
 
-**Two independent branches operate on different sets** (do NOT select once and then branch):
+**Three independent branches operate on different sets** (do NOT select once and then branch):
 
-- **Comment set** — **every** hotspot that already has an `existing_hotspot_issue` **and** whose `pr_numbers` include the PR this wrap just merged. Uncapped. For each member:
+- **Comment set** — **every** hotspot whose `existing_hotspot_issue` is non-null, whose `existing_hotspot_issue_state` is `"open"`, **and** whose `pr_numbers` include the PR this wrap just merged. Uncapped. A closed issue cannot take a new evidence comment, so a closed match never belongs here — the two branches below own it (issue #915). For each member:
 
   ```bash
   gh issue comment "$EXISTING" --body "Still churning: ${PR_COUNT} distinct merged PRs have touched \`${FILE}\` since ${SINCE}${CONFLICT_CLAUSE}: ${PR_LIST}.
@@ -577,12 +577,22 @@ Score formula, threshold calibration, and the capping rationale: **`.claude/refe
 
   Record `Appended evidence to #{EXISTING} — churn hotspot \`{file}\`` for Step 4.3.
 
-- **File set** — **at most one**: the highest-scoring hotspot whose `existing_hotspot_issue` is null. Title: `Refactor hotspot: {file}`. Body must include the `<!-- churn-hotspot: {file} -->` marker verbatim (re-find fallback):
+- **File set** — **at most one new issue per run**, still. Eligible hotspots are now of two kinds; take the highest-scoring one across both:
+  1. `existing_hotspot_issue == null` — never ticketed. Files clean, exactly as before.
+  2. `existing_hotspot_issue_state == "closed"` **and** `conflict_rounds > 0` — a **closed-match re-file** (issue #915). Adds the caveat line below and is reported under `SWEEP_NEEDS_DECISION`, not `SWEEP_AUTO_HANDLED`.
+
+  A closed match with `conflict_rounds == 0` is **not eligible** — it falls to the third branch. Title: `Refactor hotspot: {file}`. Body must include the `<!-- churn-hotspot: {file} -->` marker verbatim (re-find fallback):
 
   ```bash
+  # Set only for kind 2 — a closed exact match is a WEAK match in the
+  # `autofile-dedup.md` sense, so it re-files with a caveat, never cleanly.
+  CLOSED_DUP=""
+  if [ -n "${CLOSED_DUP_NUM:-}" ]; then
+    CLOSED_DUP=$'\n\n'"Possibly duplicates #${CLOSED_DUP_NUM} — same file, closed after review; re-filed because the churn has since cost ${CONFLICT_ROUNDS} conflict re-resolution(s)."
+  fi
   if NEW_URL=$(gh issue create \
       --title "Refactor hotspot: ${FILE}" \
-      --body "Filed by /wrap churn detection after PR #${PR_NUMBER} merged.
+      --body "Filed by /wrap churn detection after PR #${PR_NUMBER} merged.${CLOSED_DUP}
 
   \`${FILE}\` was touched by ${PR_COUNT} distinct merged PRs since ${SINCE}${CONFLICT_CLAUSE}: ${PR_LIST}.
 
@@ -597,6 +607,14 @@ Score formula, threshold calibration, and the capping rationale: **`.claude/refe
       SWEEP_FILED="${SWEEP_FILED} ${NEW_NUM}"
       # Append {number, title, keywords, rationale: "churn hotspot: {file}"} to WRAP_FILED_ISSUES.
       # Append $NEW_NUM to DEDUP_EXCLUDE.
+      # Kind 2 only: a re-file over a closed issue is a decision, not an
+      # auto-handled filing, so it must reach SWEEP_NEEDS_DECISION (Step 3.13
+      # renders from that list — appending to SWEEP_FILED alone would ship the
+      # re-file with no owner-visible flag).
+      if [ -n "${CLOSED_DUP_NUM:-}" ]; then
+        SWEEP_NEEDS_DECISION="${SWEEP_NEEDS_DECISION}
+- Re-filed #${NEW_NUM} for churn hotspot \`${FILE}\` over closed #${CLOSED_DUP_NUM} — the churn has now cost ${CONFLICT_ROUNDS} conflict re-resolution(s). Confirm the re-file or close it as still-by-design."
+      fi
     else
       echo "WARNING: created issue but could not parse number from: $NEW_URL"
     fi
@@ -605,7 +623,11 @@ Score formula, threshold calibration, and the capping rationale: **`.claude/refe
   fi
   ```
 
-  `CONFLICT_CLAUSE` is empty when `conflict_rounds` is 0; otherwise ` and re-resolved conflicts {conflict_rounds} time(s)`.
+  `CONFLICT_CLAUSE` is empty when `conflict_rounds` is 0; otherwise ` and re-resolved conflicts {conflict_rounds} time(s)`. `CONFLICT_ROUNDS` is that hotspot's `conflict_rounds`, and `CLOSED_DUP_NUM` its `existing_hotspot_issue` — both set only on a kind-2 re-file, left unset for kind 1.
+
+- **Closed match, no conflict cost** (`existing_hotspot_issue_state == "closed"` and `conflict_rounds == 0`) — **file nothing.** For each such hotspot add one `SWEEP_NEEDS_DECISION` bullet: ``Churn hotspot `{file}` still churning ({pr_count} PRs since {since}) but #{N} was closed after review and it records no conflict cost — re-open, re-file, or leave it: your call.`` Closing an observational churn report is a recorded decision, and the detector cannot re-evaluate the condition the owner closed it under; filing again on PR count alone would silently overturn it (issue #915).
+
+**Unknown state** (`existing_hotspot_issue` non-null with `existing_hotspot_issue_state == "unknown"`) — a match exists but its state could not be read. **Neither comment nor file**, and add one `SWEEP_NEEDS_DECISION` bullet naming `#{N}` and the file. It is already excluded by all three branches above; the bullet is what stops it from vanishing silently. Treat `existing_hotspot_issue_state == null` as "no match" **only** when `existing_hotspot_issue` is also null — the state field is the authority on which of the two a null means.
 
 When the file cap held candidates back, record in `SWEEP_AUTO_HANDLED`: ``Churn: filed the top hotspot; {N} further candidate(s) above threshold — run `churn-hotspots.sh` to see them.``
 
