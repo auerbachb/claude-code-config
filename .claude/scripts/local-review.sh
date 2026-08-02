@@ -61,7 +61,9 @@
 #
 # Notes:
 #   - Raw stdout and stderr are ALWAYS persisted, on every path including timeout, so the
-#     full output survives even though only the verdict reaches an agent's context.
+#     full output survives even though only the verdict reaches an agent's context. That
+#     is enforced, not assumed: an uncreatable or unwritable --log-dir exits 2 before the
+#     CLI is launched, so no verdict ever names a log file that does not exist.
 #   - Never runs `codeant logout`/`login` on a 403 — the cause is an undocumented daily cap,
 #     not auth (issue #643). Retry policy stays with the caller: one retry, then drop.
 set -uo pipefail
@@ -138,12 +140,19 @@ else
 fi
 
 LOG_DIR="${LOG_DIR%/}"   # $TMPDIR usually ends in / — keep log_path free of a doubled slash
-mkdir -p "$LOG_DIR" 2>/dev/null || true
 STAMP="$(date -u +%s)-$$"
 OUT="$LOG_DIR/local-review-$TOOL-$STAMP.out"
 ERR="$LOG_DIR/local-review-$TOOL-$STAMP.err"
-: > "$OUT"
-: > "$ERR"
+
+# The raw capture is a contract, not a convenience: every verdict prints log_path and
+# stderr_path as persisted logs. An unwritable --log-dir would leave both nonexistent
+# while the run continued, so the verdict would still advertise files nobody can read.
+# Verify up front and fail before launching the CLI rather than promise a file that was
+# never created. Both shapes are covered: mkdir -p reports an uncreatable directory, and
+# the truncations catch a directory that exists but is not writable.
+mkdir -p "$LOG_DIR" 2>/dev/null || die "--log-dir cannot be created: $LOG_DIR"
+{ : > "$OUT"; } 2>/dev/null || die "--log-dir is not writable: $LOG_DIR"
+{ : > "$ERR"; } 2>/dev/null || die "--log-dir is not writable: $LOG_DIR"
 
 # ----------------------------------------------------------------------
 # Emitter — every exit path goes through here so the contract shape is

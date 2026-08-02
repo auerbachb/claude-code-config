@@ -58,6 +58,35 @@ field() { printf '%s' "$OUT" | jq -r "$1"; }
 "$SUT" --tool coderabbit --format yaml >/dev/null 2>&1; check_eq 2 "$?" "unknown format exits 2"
 "$SUT" --tool coderabbit --timeout abc >/dev/null 2>&1; check_eq 2 "$?" "non-integer timeout exits 2"
 
+# An unusable --log-dir is a usage error, not a run: the contract promises log_path and
+# stderr_path are real persisted files, so the script must refuse before launching the
+# CLI rather than emit a verdict naming files that were never created. A WORKING stub is
+# used so the only possible cause of a non-zero exit is the log directory itself — with a
+# missing binary the not-installed path (exit 5) could mask the check being absent, and
+# the negative control below proves this same stub exits 0 when the dir is fine.
+LOGDIR_STUB="$(make_stub codeant-logdir '{"issues":[]}' '' 0)"
+run --tool codeant --bin "$LOGDIR_STUB"
+check_eq 0 "$RC" "negative control: this stub + a writable --log-dir is a clean pass"
+
+# Shape 1 — uncreatable: the parent is a regular file, so mkdir -p fails for ANY uid
+# (root included). This case is uid-independent by construction, never a vacuous pass.
+touch "$TMP/not-a-dir"
+"$SUT" --tool codeant --bin "$LOGDIR_STUB" --log-dir "$TMP/not-a-dir/sub" >/dev/null 2>&1
+check_eq 2 "$?" "uncreatable --log-dir exits 2 before running the CLI"
+
+# Shape 2 — exists but read-only. chmod is a no-op for root, so probe real unwritability
+# first and SKIP loudly rather than assert something the environment cannot produce
+# (a guard that passes by not running is not a passing guard).
+RO="$TMP/readonly"; mkdir -p "$RO"; chmod 500 "$RO"
+if { : > "$RO/.probe"; } 2>/dev/null; then
+  rm -f "$RO/.probe"
+  echo "SKIP: read-only --log-dir case (this uid can write to a 0500 dir; likely root)"
+else
+  "$SUT" --tool codeant --bin "$LOGDIR_STUB" --log-dir "$RO" >/dev/null 2>&1
+  check_eq 2 "$?" "unwritable --log-dir exits 2 before running the CLI"
+fi
+chmod 700 "$RO"   # let the EXIT trap clean the sandbox up
+
 # --------------------------------------------------------------------------
 # 2. Command construction — the scope flags differ per CLI.
 # --------------------------------------------------------------------------
