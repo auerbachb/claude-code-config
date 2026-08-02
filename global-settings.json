@@ -30,6 +30,12 @@
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
     "CLAUDE_CODE_SUBAGENT_MODEL": "opus"
   },
+  "statusLine": {
+    "type": "command",
+    "command": "/path/to/claude-code-config/.claude/scripts/statusline.sh",
+    "padding": 0,
+    "refreshInterval": 10
+  },
   "hooks": {
     "Stop": [
       {

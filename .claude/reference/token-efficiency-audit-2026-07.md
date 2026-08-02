@@ -51,7 +51,7 @@ Evidence tiers: **A** = Anthropic primary/measured · **B** = community, reprodu
 | Delta-only fleet reporting (no unchanged-table reprints) | B | **ADOPT — shipped** | PMM Step 4 reuses the Step 6 fleet digest; table prints only on change/action/first tick |
 | Unchanged tick ⇒ no model-visible prose *at all* (event-driven wake) | B | **ADAPT — partial** | Full version needs a script-side poller that skips the model call entirely; v1 keeps the 5-min non-silence guarantee (one line). Poller-pattern rewrite = FU-2 |
 | Kill per-tool-call hook injections that repeat static/near-static values | A (Anthropic warns hook-injected timestamps go stale) | **ADOPT — shipped** | `silence-detector.sh` steady-state time injection now ≥60s apart (`SILENCE_TIME_INJECT_S`), warning path untouched |
-| Move time/monitor state to statusline (renders outside context, zero tokens) | A/B | **ADAPT — FU-3** | Statusline shows ET time · branch · agents; the user-facing timestamp *prefix* rule stays (user preference), but injection reliance shrinks |
+| Move time/monitor state to statusline (renders outside context, zero tokens) | A/B | **ADAPT — FU-3 shipped (#779), terminal-only** | `.claude/scripts/statusline.sh` renders ET time · branch · agents · watchers. The timestamp *prefix* rule and `timestamp-injector.sh` stay (the model still needs the time in context to write the prefix) — what shrinks is the human's reliance on reading it back out of the transcript. **Caveat found while implementing:** the status line only renders in the interactive terminal TUI; a headless desktop-app session never invokes it (`usage-limit-signal-audit-2026-07.md` §1), so the saving lands only in terminal sessions |
 | Heartbeat exists to prove liveness ⇒ delete it | C | **SKIP** | The 5-min heartbeat is a deliberate UX contract here; we shorten it, never drop it |
 
 ### Fixed context (rules, CLAUDE.md, MCP, skills)
@@ -101,7 +101,7 @@ Evidence tiers: **A** = Anthropic primary/measured · **B** = community, reprodu
 | 2 | Delta-aware PMM table + one-line heartbeats | High in monitor-heavy sessions (the #773 complaint) | **Low** — table still prints before any action; critical states always full | **Shipped (#773)** |
 | 3 | Subagent inheritance verify + de-dup embedded rules | Very high if confirmed (every spawn pays the corpus twice) | Medium — changes agent definitions; needs verification first | **FU-1** (ties #770) |
 | 4 | PMM dispatcher/references/scripts split | High (invocation + selection + compaction-survival) | Medium — big refactor of a load-bearing skill | **FU-2** |
-| 5 | Statusline for time/branch/agents | Medium — removes injection reliance, zero-context display | Low | **FU-3** |
+| 5 | Statusline for time/branch/agents | Medium in terminal sessions, **zero in headless ones** — see the caveat above | Low | **Shipped (#779)** |
 | 6 | Haiku routing for pure poll/classify ticks | Medium ($ more than tokens) | Medium — needs eval; escalation path must stay | **FU-4** |
 | 7 | Rule-corpus kernel shrink + path-scoping audit | High per-turn | Medium-high — literal-following models misfire on botched cuts; #768/#770 own it | **FU-5** |
 | 8 | MCP pruning + `/context`/`ccusage` measurement baseline | High in MCP-heavy sessions | Low | **FU-6** (ties #710) |
@@ -156,7 +156,7 @@ Headline "60–91% savings" figures across the ecosystem come from deliberately 
 
 - **FU-1:** Verify subagent instruction inheritance on the current harness version; if the hierarchy loads into custom agents, strip duplicated rule blocks from `.claude/agents/*` (keep role-specific prompts + safety blocks). Ties #770.
 - **FU-2:** Split `pr-monitor-and-manage` into dispatcher (≤150 lines) + `references/` + existing scripts; add script-side no-change short-circuit so an unchanged tick costs ~no model tokens.
-- **FU-3:** Statusline (ET time · branch · active agents · watchers) to replace injection reliance for time display.
+- ~~**FU-3:** Statusline (ET time · branch · active agents · watchers) to replace injection reliance for time display.~~ **Shipped in #779** — `.claude/scripts/statusline.sh` + a `statusLine` entry in `global-settings.json`, deployed through the same placeholder-resolution path as hooks. The timestamp-prefix rule and its injector hook are untouched by design. Renders in terminal TUI sessions only (see the caveat in the monitoring table above), so it is additive rather than a replacement for the injection.
 - **FU-4:** Poller model-routing eval (Haiku for classify-only ticks) + "set model/effort at spawn, never mid-session" note in `subagent-orchestration.md`.
 - **FU-5:** Rule-corpus kernel/path-scoping audit (with #768/#770).
 - **FU-6:** Measurement baseline: `/context` + `ccusage` per repo, MCP prune list, `permissions.deny` junk-dir blocks (ties #710).

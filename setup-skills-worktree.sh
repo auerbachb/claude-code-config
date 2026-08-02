@@ -509,6 +509,31 @@ for name in pruned:
     print(f"  {name} — pruned stale registration (script no longer exists)")
 PYTHON_SCRIPT
 
+# --- Step 6b: Resolve the statusLine command path in ~/.claude/settings.json ---
+#
+# `statusLine` is a top-level settings key, not a hook event, so the manifest
+# above does not cover it — but its `command` carries the same
+# /path/to/claude-code-config/... placeholder and needs the same resolution to
+# the skills worktree (issue #779).
+#
+# Delegated to register-hooks.py rather than reimplemented inline so install-time
+# and session-start behavior come from ONE implementation. `--statusline-only`
+# keeps it out of hook registration, which Step 6 above already owns through its
+# own manifest — running both against hooks could double-register.
+#
+# Non-fatal: a status line that failed to resolve is cosmetic, and must never
+# fail an install that otherwise succeeded.
+REGISTER_HOOKS_PY="$HOOKS_DIR/register-hooks.py"
+if [[ -f "$REGISTER_HOOKS_PY" ]]; then
+  echo ""
+  echo "Resolving statusLine command in $SETTINGS_FILE..."
+  if python3 "$REGISTER_HOOKS_PY" --statusline-only "$SKILLS_WORKTREE"; then
+    echo "  statusLine — resolved"
+  else
+    echo "  WARNING: statusLine sync failed (status line may show a placeholder path)"
+  fi
+fi
+
 echo ""
 echo "Done. Skills worktree: $SKILLS_WORKTREE"
 echo "Symlinks in:           $SKILLS_DIR"
