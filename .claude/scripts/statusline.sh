@@ -160,7 +160,19 @@ if [[ -x "$SESSION_STATE_SH" ]]; then
   # Run from the session's directory so --session-view resolves the repo scope
   # from that repo's origin remote rather than from wherever the TUI happened to
   # spawn this process.
-  STATE_VIEW=$(cd "$WORK_DIR" 2>/dev/null && "$SESSION_STATE_SH" --session-view 2>/dev/null) || STATE_VIEW=""
+  #
+  # CLAUDE_SESSION_REPO has to be cleared for this one call. session-state.sh
+  # resolves scope as --repo > $CLAUDE_SESSION_REPO > cwd origin, so a value
+  # inherited from another checkout outranks the `cd` above and pairs THIS
+  # repo's branch with ANOTHER repo's counts — one line claiming to describe one
+  # repo while sourcing its two halves from two, with nothing on screen to say
+  # so. Unsetting inside the command substitution keeps the caller's
+  # environment untouched.
+  STATE_VIEW=$(
+    cd "$WORK_DIR" 2>/dev/null &&
+      unset CLAUDE_SESSION_REPO &&
+      "$SESSION_STATE_SH" --session-view 2>/dev/null
+  ) || STATE_VIEW=""
   if [[ -n "$STATE_VIEW" ]]; then
     COUNTS=$(printf '%s' "$STATE_VIEW" | jq -r '
       def arrlen($v): if ($v | type) == "array" then ($v | length) else 0 end;

@@ -183,6 +183,17 @@ if not isinstance(settings, dict):
 # — the registration path skips those, whereas a blind merge would leave the
 # placeholder behind permanently. hooks: setup-skills-worktree.sh Step 6.
 # statusLine: Step 6b -> register-hooks.py --statusline-only (issue #779).
+#
+# Skipping cannot strand the feature. Two independent paths seed it, and both
+# seed rather than repair when the key is simply absent (register-hooks.py
+# sync_statusline: `live is None` -> seed):
+#   1. install time  — setup-skills-worktree.sh Step 6b (non-fatal by design:
+#                      an unresolved status line is cosmetic, never a failed
+#                      install), and
+#   2. every session — session-start-sync.sh runs register-hooks.py, so a miss
+#                      at step 1 self-heals on the next session.
+# Seeding here instead would write the placeholder verbatim and fail
+# tests/test-setup.sh's "No placeholder paths" assertion.
 SKIP_KEYS = {"hooks", "statusLine"}
 added = []
 for key, value in template.items():

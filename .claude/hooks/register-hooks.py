@@ -216,13 +216,24 @@ def main(argv):
             file=sys.stderr,
         )
         return 1
+    # A malformed live `hooks` section is a hook-registration failure, not a
+    # whole-run failure: statusLine is an independent top-level surface, and the
+    # sync below is the only thing that ever repairs its placeholder path.
+    # Bailing here used to strand the status line permanently —
+    # session-start-sync.sh runs this script every session, so one bad hooks
+    # value silently disabled the single recurring repair path statusLine has.
+    # Hook work is skipped and the malformed value is left exactly as the user
+    # wrote it; the exit code still reports the failure, and only the
+    # independent surface proceeds.
+    hooks_broken = False
     if "hooks" not in settings:
         settings["hooks"] = {}
     elif not isinstance(settings["hooks"], dict):
         print("settings.json hooks section is not an object", file=sys.stderr)
-        return 1
+        hooks_broken = True
+        manifest = []
 
-    live = settings["hooks"]
+    live = {} if hooks_broken else settings["hooks"]
 
     added = 0
     for item in manifest:
@@ -300,7 +311,7 @@ def main(argv):
     statusline_changed = sync_statusline(settings, template, scripts_dir)
 
     if added == 0 and removed_stale == 0 and statusline_changed == 0:
-        return 0
+        return 1 if hooks_broken else 0
 
     # Atomic write
     d = os.path.dirname(settings_file) or "."
@@ -329,7 +340,7 @@ def main(argv):
     if statusline_changed:
         parts.append("synced statusLine command")
     print(f"hook-sync: {', '.join(parts)}", file=sys.stderr)
-    return 0
+    return 1 if hooks_broken else 0
 
 
 if __name__ == "__main__":

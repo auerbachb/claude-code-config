@@ -168,6 +168,32 @@ run_sl "$(session_json "$REPO")"
 check_contains "· 1 agent · 3 watchers" "$OUT" "agents and all three watcher sources combine"
 
 # --------------------------------------------------------------------------
+# 5b. An inherited CLAUDE_SESSION_REPO must not skew the counts
+# --------------------------------------------------------------------------
+# session-state.sh resolves repo scope as --repo > $CLAUDE_SESSION_REPO > cwd
+# origin, so a key inherited from another checkout outranks the renderer's cd
+# into WORK_DIR. Left alone it would pair this repo's branch with another
+# repo's counts. The renderer clears the variable for that lookup; the export
+# below is what proves it, since "other/elsewhere" holds no state of its own
+# and every count would collapse to zero if the variable still won.
+write_state "$(state_doc "[$(agent 21)]" '{"21":{"babysit":{"active":true}}}' '[]' false)"
+export CLAUDE_SESSION_REPO=other/elsewhere
+run_sl "$(session_json "$REPO")"
+unset CLAUDE_SESSION_REPO
+check_contains "· 1 agent · 1 watcher" "$OUT" \
+  "inherited CLAUDE_SESSION_REPO does not skew agent/watcher counts"
+check_contains "issue-779-statusline" "$OUT" \
+  "inherited CLAUDE_SESSION_REPO: branch still resolves from WORK_DIR"
+
+# The parent environment must survive the renderer untouched — the unset lives
+# inside a command substitution precisely so it cannot leak back out.
+export CLAUDE_SESSION_REPO=other/elsewhere
+run_sl "$(session_json "$REPO")"
+check_eq "other/elsewhere" "${CLAUDE_SESSION_REPO:-}" \
+  "renderer does not clobber the caller's CLAUDE_SESSION_REPO"
+unset CLAUDE_SESSION_REPO
+
+# --------------------------------------------------------------------------
 # 6. Repo scoping — another repo's agents and babysitters must not leak in.
 # --------------------------------------------------------------------------
 OTHER_STATE=$(jq -cn --argjson mine "[$(agent 11)]" --argjson theirs "[$(agent 99)]" \

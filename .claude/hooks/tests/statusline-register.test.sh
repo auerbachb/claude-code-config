@@ -145,6 +145,36 @@ check_eq "null" "$(sl '.statusLine')" "template without statusLine: nothing inve
 write_template
 
 # --------------------------------------------------------------------------
+# 7b. A malformed live `hooks` section must not strand the statusLine surface.
+# --------------------------------------------------------------------------
+# session-start-sync.sh runs this script every session, and that run is the only
+# recurring thing that ever repairs a statusLine path. Aborting on a bad `hooks`
+# value would disable it for good, so hook work is skipped while the independent
+# surface still syncs. The exit code must keep reporting the hooks failure, and
+# the user's malformed value must survive byte-for-byte — it is not ours to
+# "fix" by guessing.
+write_settings '{"hooks":"not-an-object"}'
+run_sut "$WT"; RC=$?
+check_eq 1 "$RC" "malformed hooks: exit 1 still reports the hook failure"
+check_eq "$RESOLVED" "$(sl '.statusLine.command')" "malformed hooks: statusLine still synced"
+check_eq "not-an-object" "$(sl '.hooks')" "malformed hooks: user's value left untouched"
+
+# Same isolation under --statusline-only, where hooks are out of scope entirely.
+write_settings '{"hooks":[1,2,3]}'
+run_sut --statusline-only "$WT"
+check_eq "$RESOLVED" "$(sl '.statusLine.command')" \
+  "malformed hooks + --statusline-only: statusLine still synced"
+check_eq "[1,2,3]" "$(jq -c '.hooks' "$SETTINGS")" \
+  "malformed hooks + --statusline-only: user's value left untouched"
+
+# An unparseable settings.json is a different case and must still hard-stop:
+# there is no safe write when the prior contents cannot be read back.
+write_settings '{"hooks":'
+run_sut --statusline-only "$WT"; RC=$?
+check_eq 1 "$RC" "unparseable settings.json: exit 1, no write attempted"
+check_eq '{"hooks":' "$(cat "$SETTINGS")" "unparseable settings.json: file left byte-identical"
+
+# --------------------------------------------------------------------------
 # 8. Wiring — the real repo must actually declare and resolve this surface.
 # --------------------------------------------------------------------------
 REAL_TEMPLATE="$REPO_ROOT/global-settings.json"
