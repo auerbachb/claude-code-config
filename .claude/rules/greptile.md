@@ -25,15 +25,9 @@ Applies to 2nd/3rd triggers only; initial trigger requires only the budget check
 3. **If P0 present:** budget check → trigger `@greptileai`.
 4. **Log severity counts in handoff `notes`.**
 
-## When to Trigger Greptile
+## Sticky Assignment
 
-**Last-resort only:** trigger only after the escalation gate in `cr-github-review.md` returns `STATUS=trigger_greptile`. Always rely on `.claude/scripts/escalate-review.sh <PR_NUMBER>` for the per-cycle verdict.
-
-"BugBot also fails" includes a classified BugBot failure (`bugbot.md`); `escalate-review.sh` routes directly to `trigger_greptile`.
-
-### Sticky Assignment
-
-Sticky per `cr-github-review.md`: once triggered, Greptile owns the PR permanently. Re-trigger `@greptileai` only for P0 findings. Merge gate is severity-dependent — see **Merge Gate** below.
+Once triggered, Greptile owns the PR permanently (`cr-github-review.md`). Re-trigger `@greptileai` only for P0 findings; the merge gate is severity-dependent — canonical definition in `cr-merge-gate.md` Step 1, Greptile path expanded in `.claude/reference/merge-gate-reviewer-paths.md`. A classified BugBot failure (`bugbot.md`) routes `escalate-review.sh` straight to `trigger_greptile`.
 
 ## Polling for Greptile Response
 
@@ -46,7 +40,3 @@ Classify by severity (P0/P1/P2 — use Greptile badges only), verify against cod
 > **CRITICAL: plain text only in replies** — every `@greptileai` mention triggers a new paid review.
 
 Reply commands and CR-vs-Greptile comparison: `.claude/reference/greptile-reply-format.md`.
-
-## Merge Gate
-
-**Canonical definition:** See `cr-merge-gate.md` (Step 1) and `.claude/reference/merge-gate-reviewer-paths.md` (Greptile path).

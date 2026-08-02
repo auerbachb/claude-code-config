@@ -40,8 +40,6 @@ If **ANY** condition below holds, invoke `/fixpr` and do NOT request a new revie
 
 If this cycle requires no `/fixpr` and the audit was clean for current SHA, run `maybe-trigger-ai-review.sh <PR>` (dedupe `session-state.json` `.prs[N].ai_review_trigger_*`).
 
-**SHA freshness:** CR approval `.commit_id` must match current HEAD SHA; otherwise re-trigger (respecting 2/hour cap) and keep polling.
-
 **Exit polling ONLY when the merge gate (`cr-merge-gate.md`) is met.** After any `/fixpr` push, reset all three watermarks (`poll-watermarks.sh <PR> --reset`) and keep polling for the reviewer's response to the new SHA.
 
 ### Reviewer escalation gate (MANDATORY per cycle)

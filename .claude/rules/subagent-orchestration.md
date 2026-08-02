@@ -34,11 +34,9 @@ If `.claude/agents/` is unavailable: paste project-local `CLAUDE.md` + every `fi
 | `pm-worker` | `sonnet` |
 | Read-only review agents (e.g., `/pr-review-help`) | `sonnet` |
 
-Fleet: **Fable, Opus, Sonnet, Haiku** (family names; Agent `model` accepts `fable`, `opus`, `sonnet`, `haiku`). Fable is **never a spawn default** — reserve for interactive step-ups. Alias resolution + rationale: `.claude/agents/README.md`.
+Fleet: **Fable, Opus, Sonnet, Haiku** (Agent `model` takes the lowercase family name). Fable is **never a spawn default** — reserve for interactive step-ups. Alias resolution + rationale: `.claude/agents/README.md`. An explicit `model` overrides frontmatter; escalate to `opus` if a Sonnet-tier agent underperforms.
 
 **Effort is not settable on a spawn** — subagents inherit the parent session's effort level; never write an effort instruction into a subagent prompt.
-
-Set `model` explicitly on every spawn (overrides frontmatter). Escalate to `opus` if a Sonnet-tier agent underperforms.
 
 ## Phase Transition Autonomy (Quick Reference)
 
@@ -69,7 +67,7 @@ Give each subagent one phase with explicit exit criteria. **A/B/C decomposition:
 
 ## Subagent Review Protocol
 
-Review protocol lives in the canonical sources — `cr-github-review.md` (polling, CI, threads), `cr-merge-gate.md` (gate, AC), `bugbot.md`, `greptile.md`, `cr-local-review.md` (local loop) — do NOT duplicate them.
+Review protocol lives in its canonical sources — `cr-local-review.md`, `cr-github-review.md`, `cr-merge-gate.md`, `bugbot.md`, `greptile.md`. Do NOT duplicate them.
 
 **Three reminders for subagents:**
 1. **AUTONOMY:** every phase transition is automatic — do NOT ask "should I?" (table above).

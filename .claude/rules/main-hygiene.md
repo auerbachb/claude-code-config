@@ -13,17 +13,12 @@ Enforces the main-hygiene rule from `CLAUDE.md`, catching pre-existing drift at 
 .claude/scripts/dirty-main-guard.sh --quarantine  # preserve + reset
 ```
 
-**Dirty** on the root repo's main branch — either condition triggers `dirty:` from `--check` and quarantine from `--quarantine`:
+**Dirty** = uncommitted tracked changes **or** unpushed commits on the root repo's main branch; either triggers `dirty:` from `--check` and quarantine from `--quarantine`. Untracked files never block. Feature branches and worktrees are out of scope — the guard no-ops there.
 
-1. **Uncommitted tracked changes** — `git diff --quiet` + `git diff --cached --quiet` (tracked-only; untracked files never block — memory `feedback_porcelain_untracked.md`).
-2. **Unpushed commits** — `git rev-list --count origin/main..HEAD > 0`, origin fetched first; fetch errors degrade to the existing remote-tracking ref.
-
-Feature branches and worktrees are out of scope; the guard no-ops there.
-
-`--quarantine` creates a `recovery/dirty-main-YYYYMMDD-HHMMSS` branch preserving every tracked change and unpushed commit, then resets main to origin/main. Untracked files stay put — the guard never invokes `git clean`. Full contract (exit codes, output format): `dirty-main-guard.sh --help`.
+`--quarantine` creates a `recovery/dirty-main-YYYYMMDD-HHMMSS` branch preserving every tracked change and unpushed commit, then resets main to origin/main. Untracked files stay put — the guard never invokes `git clean`. Detection detail: `.claude/reference/dirty-main-guard.md`; exit codes and output format: `dirty-main-guard.sh --help`.
 
 `CLAUDE.md` §Worktree owns the session-start sequence (check → quarantine → pull) and requires surfacing `quarantined: recovery/dirty-main-*` branch names. The `dirty-main-warn.sh` Stop hook re-runs `--check` after every response and warns loudly; it never quarantines on its own.
 
 ## Recovery workflow
 
-`recovery/dirty-main-*` is a glob — `git branch -D` needs the literal name, so list it first with `git branch --list 'recovery/dirty-main-*'` from the root repo. Inspect (`git log`, `git diff main..<branch> --stat`), then land the work through the normal flow — issue → feature branch → PR → `gh pr merge --squash`, using cherry-pick/rebase only to move the commits onto that branch. Never land recovery work directly on main. Delete only after it merges; recovery branches are the user's audit trail — never auto-delete, ask first.
+Inspect the recovery branch, then land the work through the normal flow — issue → feature branch → PR → `gh pr merge --squash`, using cherry-pick/rebase only to move the commits across. **Never land recovery work directly on main.** Delete only after it merges; recovery branches are the user's audit trail — never auto-delete, ask first. Listing and inspection commands: `.claude/reference/dirty-main-guard.md`.

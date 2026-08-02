@@ -50,6 +50,4 @@ Each tick hash `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_c
 
 On a dropped tick: re-establish with `/loop`; record in `polling_failures[]`; if new, append to `.claude/reference/scheduling-failure-modes.md`.
 
-## Related
-
-`monitor-mode.md` (in-turn heartbeat/monitor loop) · `.claude/reference/scheduling-failure-modes.md` (observed failure modes) · `.claude/reference/bgwork-ceiling.md` (ceiling mechanism + rationale) · `handoff-files.md` (`session-state.json` schema).
+In-turn heartbeat and monitor loop: `monitor-mode.md`; ceiling mechanism and rationale: `.claude/reference/bgwork-ceiling.md`.

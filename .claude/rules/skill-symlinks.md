@@ -14,7 +14,7 @@ This repo is the single source of truth for skills, global rules, and CLAUDE.md.
 
 `~/.claude/skills-worktree/` stays permanently on `main`, so symlink targets survive the root repo being on a feature branch.
 
-> **Double-loading note:** these symlinks make the global `CLAUDE.md` + rules resolve into the worktree, so sessions opened *in this repo* would load the corpus twice. Suppressed via project-local `claudeMdExcludes` in `.claude/settings.json` — rationale: `.claude/reference/double-loading-fix.md`.
+> **Double-loading note:** sessions opened *in this repo* would load the corpus twice; suppressed via project-local `claudeMdExcludes` in `.claude/settings.json` — rationale: `.claude/reference/double-loading-fix.md`.
 
 ## Session Start: Verify Skills Worktree
 
@@ -30,6 +30,4 @@ Verify `$HOME/.claude/skills-worktree/.claude/skills` exists; if missing, run `s
 
 ## Verifying Existing Symlinks
 
-`ls -la ~/.claude/skills/ ~/.claude/CLAUDE.md ~/.claude/rules` — every entry should resolve to `~/.claude/skills-worktree/...`. Regular files trigger a setup-script warning but aren't overwritten; root-repo-targeted symlinks need migrating.
-
-Exact commands for steps 3, the session-start guard, and migration: `.claude/reference/skill-symlink-setup.md`.
+`ls -la ~/.claude/skills/ ~/.claude/CLAUDE.md ~/.claude/rules` — every entry must resolve to `~/.claude/skills-worktree/...`. Regular files warn but are never overwritten; root-repo-targeted symlinks need migrating. Exact commands for step 3, the session-start guard, and migration: `.claude/reference/skill-symlink-setup.md`.

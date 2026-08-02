@@ -21,7 +21,7 @@ BugBot (Cursor, per-seat) is the **second-tier** reviewer in the escalation chai
 
 Poll alongside CR per the shared cadence/endpoints (`cr-github-review.md` §Polling); filter `.user.login == "cursor[bot]"`.
 
-**Fallback timing:** Do not maintain a separate CR-owned BugBot timeout here — the escalation gate owns that decision (`cr-github-review.md`). Once BugBot owns the PR, keep 60 s cadence and use the `Cursor Bugbot` completion signal below.
+**Fallback timing:** the escalation gate owns it — never a separate BugBot timeout here. Once BugBot owns the PR, keep 60 s cadence and use the `Cursor Bugbot` completion signal below.
 
 **Completion signal:** BugBot creates a CI check-run named `Cursor Bugbot` that transitions to `status: "completed"` when the review finishes. `conclusion: "success"` = no findings, no review object (silent pass — gate conditions at §Merge Gate). `conclusion: "neutral"` = findings posted; review object required. Completion also detected via review comments on any endpoint.
 
@@ -29,9 +29,7 @@ Poll alongside CR per the shared cadence/endpoints (`cr-github-review.md` §Poll
 
 ## When BugBot Becomes the Active Reviewer
 
-BugBot becomes the active reviewer when:
-1. The escalation gate returns `STATUS=switch_bugbot`, and
-2. The caller persists sticky ownership with `.claude/scripts/reviewer-of.sh <PR_NUMBER> --sticky bugbot`.
+On `STATUS=switch_bugbot`, **and** once the caller persists sticky ownership with `.claude/scripts/reviewer-of.sh <PR_NUMBER> --sticky bugbot`.
 
 ## Processing BugBot Findings
 
