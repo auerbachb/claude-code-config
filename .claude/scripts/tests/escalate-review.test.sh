@@ -177,6 +177,13 @@ failure_comment_alt() {
 genuine_comment() {
   printf '{"user": {"login": "cursor[bot]"}, "created_at": "%s", "body": "Found 1 bug in this PR: possible null dereference on line 42."}' "$1"
 }
+# The `@cursor review` invitation (issue #935) — posted by CI via
+# CURSOR_REVIEW_PAT, or by hand. Author is deliberately NOT cursor[bot]: the
+# script ignores the phrase in BugBot's own comments, since quoting it back is
+# not an invitation.
+trigger_comment() {
+  printf '{"user": {"login": "test-user"}, "created_at": "%s", "body": "@cursor review"}' "$1"
+}
 
 ############################################################################
 echo "== Scenario (a): usage-limit failure comment + completed check-run -> trigger_greptile =="
@@ -536,6 +543,82 @@ write_state "[$BUGBOT_CHECK_RUN_SUCCESS]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+
+############################################################################
+# "BugBot never invited" vs "BugBot failed" (issue #935)
+#
+# Every scenario above hands the script a `Cursor Bugbot` check-run, so the
+# never-invited state — no check-run AND no cursor[bot] comment, the signature
+# an unprovisioned CURSOR_REVIEW_PAT produces (issue #905) — was never
+# exercised, and the script escalated straight to a PAID Greptile review on a
+# tier nobody had asked. Seen live on PRs #929 and #932; both Phase B agents
+# declined the verdict, posted `@cursor review` by hand, and BugBot answered in
+# seconds.
+#
+# n1/n2/n3 are Scenarios A/B/C of the implementation plan. n4 and n5 are the
+# negative controls that keep the two new terms from being deletable in silence:
+# without n4 the freshness filter is dead weight, without n5 the new branch
+# could preempt the grace window and nothing would notice.
+############################################################################
+echo
+echo "== Scenario (n1): never invited — no check-run, no cursor[bot] comment, past the grace window -> switch_bugbot (issue #935) =="
+reset_state
+write_commits "$(ts_seconds_ago 7200)"
+write_state "[]" "[]" "[]" "[]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+
+############################################################################
+echo "== Scenario (n2): genuine BugBot failure in the SAME no-check-run shape -> trigger_greptile (parity with pre-#935) =="
+# Differs from (n1) by exactly one thing: a cursor[bot] usage-limit comment. A
+# classified failure means BugBot WAS asked and could not run, so escalation is
+# still correct — the fix must not swallow it. Scenario (a) covers this with a
+# check-run present; this pins it in the shape (n1) now diverts.
+reset_state
+write_commits "$(ts_seconds_ago 7200)"
+FAILURE_COMMENT_N2="$(failure_comment "$(ts_seconds_ago 3000)")"
+write_state "[]" "[]" "[]" "[$FAILURE_COMMENT_N2]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== Scenario (n3): invited but silent — fresh @cursor review, no BugBot response, past the grace window -> trigger_greptile =="
+# Loop avoidance (the issue #552 hazard in reverse): once the invite exists on
+# this HEAD and BugBot still says nothing, re-emitting switch_bugbot would just
+# post another invite forever. Escalation is the right answer here.
+reset_state
+write_commits "$(ts_seconds_ago 7200)"
+TRIGGER_COMMENT_N3="$(trigger_comment "$(ts_seconds_ago 3000)")"
+write_state "[]" "[]" "[]" "[$TRIGGER_COMMENT_N3]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== Scenario (n4): trigger comment PREDATES the HEAD commit -> switch_bugbot (a stale invite must not mask an unprovisioned one) =="
+# Same fixture as (n3) with the timestamps swapped: the invite is older than the
+# push, so it belongs to an earlier SHA. Without the freshness filter this reads
+# as "already invited" and every subsequent push escalates to paid Greptile.
+reset_state
+write_commits "$(ts_seconds_ago 7200)"
+TRIGGER_COMMENT_N4="$(trigger_comment "$(ts_seconds_ago 9000)")"
+write_state "[]" "[]" "[]" "[$TRIGGER_COMMENT_N4]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+
+############################################################################
+echo "== Scenario (n5): never invited but still INSIDE the 600s grace window -> polling_cr (the new branch must not preempt the wait) =="
+# (n1) with a recent push. BugBot may simply not have reported yet, so the
+# grace window still owns this cycle; switch_bugbot here would cut it short.
+reset_state
+write_commits "$(ts_seconds_ago 120)"
+write_state "[]" "[]" "[]" "[]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
