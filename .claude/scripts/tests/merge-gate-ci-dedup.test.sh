@@ -106,6 +106,8 @@ has_codeant_no_clean_entry() { echo "$OUT" | jq -e '[.missing[]? | select(contai
 has_bugbot_no_review_entry() { echo "$OUT" | jq -e '[.missing[]? | select(startswith("no BugBot review on HEAD"))] | length > 0' >/dev/null && echo yes || echo no; }
 has_bugbot_findings_entry() { echo "$OUT" | jq -e '[.missing[]? | select(startswith("latest BugBot review on HEAD has findings"))] | length > 0' >/dev/null && echo yes || echo no; }
 has_bugbot_ts_unavail_entry() { echo "$OUT" | jq -e '[.missing[]? | select(contains("completed_at/started_at unavailable"))] | length > 0' >/dev/null && echo yes || echo no; }
+# Publisher-scoping block on the silent-pass check-run (issue #962).
+has_bugbot_app_mismatch_entry() { echo "$OUT" | jq -e '[.missing[]? | select(contains("was not published by the Cursor app"))] | length > 0' >/dev/null && echo yes || echo no; }
 
 # `completed_at` matters here in a way it does not for ci-status.sh: the CodeAnt
 # supplemental gate reads it to find CodeAnt's latest clean signal, and a run
@@ -178,16 +180,20 @@ check_eq "yes" "$(has_ci_incomplete_entry)" "empty check-run list: still reporte
 check_eq "false" "$(echo "$OUT" | jq -r '.met')" "empty check-run list: gate not met"
 
 # --------------------------------------------------------------------------
-# 7. BugBot silent-pass (issue #844): completed/success check-run, no review
-#    object, no cursor[bot] comments → gate met (met:true).
+# 7. BugBot silent-pass (issue #844): completed/success check-run published by
+#    the Cursor app, no review object, no cursor[bot] comments → gate met
+#    (met:true).
 #    NOTE: this test FAILS against pre-fix code because the old bugbot) case
 #    only accepted review objects, so "no BugBot review on HEAD" was always
 #    added when no review object existed, leaving the gate permanently blocked.
+#    The explicit `cursor` slug (issue #962) is what a genuine BugBot run
+#    carries; it is the parity pin for the publisher scoping — this scenario must
+#    keep reading met:true exactly as it did before that change.
 # --------------------------------------------------------------------------
 FAKE_REVIEWS='[]'
 FAKE_PR_COMMENTS='[]'
 FAKE_ISSUE_COMMENTS='[]'
-run_gate_bugbot "$(bundle "$(cr 1 "Cursor Bugbot" success 100)")"
+run_gate_bugbot "$(bundle "$(cr 1 "Cursor Bugbot" success 100 cursor)")"
 check_eq "true" "$(echo "$OUT" | jq -r '.met')"  "BugBot silent-pass: gate met with success check-run (issue #844)"
 check_eq "no"   "$(has_bugbot_no_review_entry)"  "BugBot silent-pass: no 'no BugBot review' in missing"
 
@@ -199,7 +205,7 @@ check_eq "no"   "$(has_bugbot_no_review_entry)"  "BugBot silent-pass: no 'no Bug
 FAKE_REVIEWS='[]'
 FAKE_PR_COMMENTS='[]'
 FAKE_ISSUE_COMMENTS="$(jq -cn '[{user:{login:"cursor[bot]"},body:"I could not run this review — usage limit reached"}]')"
-run_gate_bugbot "$(bundle "$(cr 1 "Cursor Bugbot" success 100)")"
+run_gate_bugbot "$(bundle "$(cr 1 "Cursor Bugbot" success 100 cursor)")"
 check_eq "false" "$(echo "$OUT" | jq -r '.met')" "BugBot failure comment: gate blocked despite success check-run"
 check_eq "yes"   "$(has_bugbot_no_review_entry)" "BugBot failure comment: 'no BugBot review' entry in missing"
 
@@ -240,7 +246,7 @@ check_eq "yes"   "$(has_bugbot_findings_entry)"  "BugBot CHANGES_REQUESTED: find
 FAKE_REVIEWS='[]'
 FAKE_PR_COMMENTS='[]'
 FAKE_ISSUE_COMMENTS="$(jq -cn '[{user:{login:"cursor[bot]"},body:"I could not run this review — usage limit reached",created_at:"2026-07-21T09:00:00Z"}]')"
-run_gate_bugbot "$(bundle "$(cr 1 "Cursor Bugbot" success 100)")"
+run_gate_bugbot "$(bundle "$(cr 1 "Cursor Bugbot" success 100 cursor)")"
 check_eq "true" "$(echo "$OUT" | jq -r '.met')"           "BugBot stale failure comment: gate met (comment predates HEAD commit)"
 check_eq "no"   "$(has_bugbot_no_review_entry)"            "BugBot stale failure comment: no 'no BugBot review' entry"
 
@@ -258,6 +264,58 @@ FAKE_ISSUE_COMMENTS='[]'
 run_gate_bugbot "$(bundle "$BB_NO_TS_RUN")"
 check_eq "false" "$(echo "$OUT" | jq -r '.met')"          "BugBot empty check timestamp: gate blocked (cannot verify freshness)"
 check_eq "yes"   "$(has_bugbot_ts_unavail_entry)"          "BugBot empty check timestamp: 'completed_at/started_at unavailable' in missing"
+
+# --------------------------------------------------------------------------
+# (o) Foreign-app same-name success run must NOT satisfy the silent pass
+#     (issue #962). Any GitHub App may publish a check-run under any name, so
+#     `Cursor Bugbot` names a check, not a publisher. Everything else here is
+#     byte-identical to scenario 7 — the ONLY difference is the app slug — so
+#     this pair isolates the publisher requirement from every other condition.
+#     Fails closed: unlike escalate-review.sh's routing fallback (issue #956),
+#     an unverifiable publisher here would satisfy the merge gate outright.
+# --------------------------------------------------------------------------
+FAKE_REVIEWS='[]'
+FAKE_PR_COMMENTS='[]'
+FAKE_ISSUE_COMMENTS='[]'
+run_gate_bugbot "$(bundle "$(cr 1 "Cursor Bugbot" success 100 not-cursor)")"
+check_eq "false" "$(echo "$OUT" | jq -r '.met')"            "BugBot foreign-app check-run: gate blocked (publisher is not the Cursor app)"
+check_eq "yes"   "$(has_bugbot_app_mismatch_entry)"         "BugBot foreign-app check-run: publisher entry in missing"
+check_eq "no"    "$(has_bugbot_no_review_entry)"            "BugBot foreign-app check-run: publisher reason replaces the generic 'no BugBot review' entry"
+
+# --------------------------------------------------------------------------
+# (p) Same-name success run with NO app identity at all must also fail closed
+#     (issue #962). An absent/empty `app` block is unattributable, which is not
+#     the same as trusted — the slug compare treats missing exactly like foreign.
+#     Timestamps are valid here so freshness cannot be what blocks it; the
+#     publisher check is deliberately evaluated ahead of the freshness checks.
+# --------------------------------------------------------------------------
+BB_NO_APP_RUN="$(jq -cn '{id:1, name:"Cursor Bugbot", status:"completed",
+  conclusion:"success", completed_at:"2026-07-21T10:00:01Z",
+  started_at:"2026-07-21T10:00:01Z", check_suite:{id:100}}')"
+FAKE_REVIEWS='[]'
+FAKE_PR_COMMENTS='[]'
+FAKE_ISSUE_COMMENTS='[]'
+run_gate_bugbot "$(bundle "$BB_NO_APP_RUN")"
+check_eq "false" "$(echo "$OUT" | jq -r '.met')"            "BugBot missing-app check-run: gate blocked (publisher unverifiable)"
+check_eq "yes"   "$(has_bugbot_app_mismatch_entry)"         "BugBot missing-app check-run: publisher entry in missing"
+check_eq "no"    "$(has_bugbot_ts_unavail_entry)"           "BugBot missing-app check-run: blocked on publisher, not freshness"
+
+# --------------------------------------------------------------------------
+# (q) The review-object path (bugbot.md shape 1) is untouched by issue #962.
+#     A clean cursor[bot] review object on HEAD satisfies the gate even with a
+#     foreign-app same-name check-run sitting beside it — shape 1 keys on
+#     `.user.login == "cursor[bot]"`, which is already an identity match, and
+#     the check-run block is not evaluated at all once a review object exists.
+#     Same payload, same verdict as before the publisher scoping.
+# --------------------------------------------------------------------------
+FAKE_REVIEWS="$(jq -cn --arg sha "$HEAD_SHA" \
+  '[{user:{login:"cursor[bot]"},state:"APPROVED",commit_id:$sha,submitted_at:"2026-07-21T10:01:00Z"}]')"
+FAKE_PR_COMMENTS='[]'
+FAKE_ISSUE_COMMENTS='[]'
+run_gate_bugbot "$(bundle "$(cr 1 "Cursor Bugbot" success 100 not-cursor)")"
+check_eq "true" "$(echo "$OUT" | jq -r '.met')"             "BugBot review object: gate met via shape 1 despite a foreign-app check-run"
+check_eq "no"   "$(has_bugbot_app_mismatch_entry)"          "BugBot review object: publisher entry not added (check-run path not evaluated)"
+check_eq "no"   "$(has_bugbot_findings_entry)"              "BugBot review object: clean APPROVED adds no findings entry"
 
 # Reset BugBot-specific env vars so they don't bleed into a re-run.
 unset FAKE_REVIEWS FAKE_PR_COMMENTS FAKE_ISSUE_COMMENTS
