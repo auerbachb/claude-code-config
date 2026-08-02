@@ -377,7 +377,28 @@ fi
 # conclusion is ambiguous (completed/neutral, non-blocking, non-failure title)
 # the LATEST cursor[bot] comment (by timestamp, not "any historical match")
 # disambiguates a usage-limit failure from a genuine clean pass/findings.
+#
+# Both check-run selectors in this file — the $run classifier below and
+# BUGBOT_CHECK_PRESENT after it — match the PUBLISHING APP as well as the name
+# (issue #956). GitHub lets any app publish a check-run under any name, so a
+# name-only match let a foreign app's `Cursor Bugbot` run stand in for BugBot's
+# footprint on this commit. That is not a harmless misread: it shuts the
+# never-invited branch below, suppressing the FREE `@cursor review` this script
+# would otherwise route to, and spends a PAID Greptile review instead. The
+# identity comes from pr-state.sh's bundle, which carries `app: {slug, id}` on
+# every check-run entry; check-runs-dedup.sh one step earlier has grouped by
+# [.app.slug, .app.id, .name] since issue #675 for the same reason.
+#
+# Slug `cursor` is the publisher confirmed live on this repo (app id 1210556, app
+# name "Cursor"). pr-preflight.sh keeps a wider defensive slug set per reviewer;
+# that is deliberately NOT mirrored here because the cost asymmetry runs the
+# other way. There an unmatched slug costs one extra trigger; here an over-broad
+# match costs paid budget. A missing or foreign slug therefore fails toward "not
+# a BugBot footprint": classification falls back to cursor[bot]'s own comments,
+# and the worst case is one duplicate `@cursor review`, which bugbot.md calls
+# harmless.
 read -r BUGBOT_FAILED BUGBOT_GENUINE < <(jq -r '
+  def is_cursor_bugbot_check: (.name // "") == "Cursor Bugbot" and (.app.slug // "") == "cursor";
   def is_failure_text: test("couldn.t run|could not run|usage limit|usage or spend limit"; "i");
   def is_blocking_conclusion: . == "failure" or . == "timed_out" or . == "action_required" or . == "startup_failure" or . == "stale";
   def cursor_comments: [.comments.reviews[], .comments.inline[], .comments.conversation[]
@@ -385,7 +406,7 @@ read -r BUGBOT_FAILED BUGBOT_GENUINE < <(jq -r '
   def comment_ts: (.submitted_at // .created_at // "");
 
   (cursor_comments | sort_by(comment_ts) | last) as $latest_comment
-  | ([.check_runs.all[] | select((.name // "") == "Cursor Bugbot")] | last) as $run
+  | ([.check_runs.all[] | select(is_cursor_bugbot_check)] | last) as $run
   | ($latest_comment != null and (($latest_comment.body // "") | is_failure_text)) as $latest_comment_failed
   | ($run != null and ((($run.conclusion // "") | is_blocking_conclusion) or (($run.title // "") | is_failure_text))) as $run_definitive_failure
   | ($run != null and ($run.status // "") == "completed" and ($run_definitive_failure | not)) as $run_completed_ambiguous
@@ -404,8 +425,11 @@ read -r BUGBOT_FAILED BUGBOT_GENUINE < <(jq -r '
   exit 4
 }
 
+# Same app-scoped predicate as the classifier above (issue #956) — a same-named
+# check-run from any other app is not a BugBot footprint on this commit.
 BUGBOT_CHECK_PRESENT="$(jq -r '
-  [.check_runs.all[] | select((.name // "") == "Cursor Bugbot")] | length > 0
+  def is_cursor_bugbot_check: (.name // "") == "Cursor Bugbot" and (.app.slug // "") == "cursor";
+  [.check_runs.all[] | select(is_cursor_bugbot_check)] | length > 0
 ' "$STATE_PATH")"
 
 # Was BugBot ever INVITED on this HEAD? (issue #935.) BugBot does not auto-review
@@ -521,7 +545,9 @@ fi
 # carries the availability signal for the grace window above; it just no longer
 # answers a per-SHA question. Swapping in the live term rather than dropping one
 # also keeps the branch faithful to the first paragraph: an in-flight
-# `Cursor Bugbot` run on this commit is a footprint, so it still falls through.
+# `Cursor Bugbot` run on this commit is a footprint, so it still falls through —
+# provided Cursor published it (issue #956); a same-named run from another app
+# leaves this branch open and routes to the free `@cursor review` instead.
 if [[ "$BUGBOT_FAILED" != "true" && "$BUGBOT_GENUINE" != "true" \
       && "$BUGBOT_CHECK_PRESENT" != "true" && "$BUGBOT_TRIGGER_PRESENT" != "true" ]]; then
   emit "switch_bugbot"
