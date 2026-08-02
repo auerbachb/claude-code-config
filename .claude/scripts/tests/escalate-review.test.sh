@@ -115,6 +115,23 @@ reset_state() {
   rm -f "$HOME/.claude/session-state.json"
 }
 
+# Pre-seed `.prs[<PR>].bugbot_installed` the way an EARLIER cycle of the same PR
+# would have (issue #948). Uses the same real session-state.sh from $STUB_DIR
+# that escalate-review.sh calls, run from the same cwd ($REPO_ROOT), so the
+# per-repo scoping resolves to the identical key the script will read back.
+#
+# Reads the value back and asserts it: a silent seed failure would leave (n6) in
+# the same state as (n1), which expects the same verdict — so (n6) would keep
+# passing while testing nothing. Assert the setup RAN, not just its outcome.
+seed_bugbot_installed() {
+  local want="$1" got
+  ( cd "$REPO_ROOT" && "$STUB_DIR/session-state.sh" \
+      --set ".prs[\"$PR_NUM\"].bugbot_installed=$want" >/dev/null )
+  got="$( cd "$REPO_ROOT" && "$STUB_DIR/session-state.sh" \
+      --get ".prs[\"$PR_NUM\"].bugbot_installed" 2>/dev/null )"
+  check_eq "bugbot_installed pre-seeded to $want" "$want" "$got"
+}
+
 write_commits() {
   local push_ts="$1"
   cat > "$TMP/commits.json" <<EOF
@@ -164,6 +181,11 @@ BUGBOT_CHECK_RUN_TIMED_OUT='{"id": 2, "name": "Cursor Bugbot", "status": "comple
 # merge-gate.sh now accepts this as a clean BugBot pass, but escalate-review.sh
 # still emits switch_bugbot so the caller persists sticky ownership before polling.
 BUGBOT_CHECK_RUN_SUCCESS='{"id": 2, "name": "Cursor Bugbot", "status": "completed", "conclusion": "success", "title": ""}'
+# A run that exists on this HEAD but has NOT finished (issue #948). Both
+# content-aware flags are false for it — BUGBOT_FAILED needs a definitive
+# failure, BUGBOT_GENUINE needs status=completed — so it is the one shape where
+# the never-invited branch's footprint term is the only thing that sees it.
+BUGBOT_CHECK_RUN_IN_PROGRESS='{"id": 2, "name": "Cursor Bugbot", "status": "in_progress", "conclusion": null, "title": ""}'
 
 # Comments carry explicit created_at timestamps so "latest event wins" ordering
 # (issue #552 CodeRabbit finding) is genuinely exercised, not an accident of
@@ -619,6 +641,65 @@ write_state "[]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
+
+############################################################################
+# Stale `bugbot_installed` cache vs. the never-invited branch (issue #948)
+#
+# PR #945 shipped (n1)-(n5) with the branch gated on BUGBOT_INSTALLED, which is
+# read from a per-PR cache that is written once and never reset. n6-n8 pin the
+# swap to BUGBOT_CHECK_PRESENT — the same question asked of THIS commit's
+# check-run bundle instead of the PR's history.
+#
+# Against the pre-fix script only n6 fails (trigger_greptile), which is the whole
+# behavioural delta: the two terms can only disagree when the cache reads true
+# while this commit has no BugBot footprint. n7 and n8 pass before and after, and
+# are here so the term cannot be DELETED rather than swapped — a bare deletion
+# flips both to switch_bugbot and re-invites a BugBot already running on HEAD.
+############################################################################
+echo
+echo "== Scenario (n6): bugbot_installed cached true from an EARLIER SHA, zero footprint on HEAD, past the grace window -> switch_bugbot (issue #948) =="
+# (n1) with the cache pre-seeded, i.e. BugBot answered earlier in this PR's life
+# and then a later push went uninvited (issue #905). The cache made the branch
+# read "already invited here" forever, so this fell through to a PAID Greptile
+# review instead of the free `@cursor review` that resolves it in seconds.
+reset_state
+seed_bugbot_installed true
+write_commits "$(ts_seconds_ago 7200)"
+write_state "[]" "[]" "[]" "[]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+
+############################################################################
+echo "== Scenario (n7): cache true AND an in-flight Cursor Bugbot run on HEAD -> trigger_greptile (a live footprint still shuts the branch) =="
+# The negative control for (n6): dropping the term outright — rather than
+# swapping the cached proxy for the live one — would emit switch_bugbot here and
+# re-invite a BugBot that is already running on this very commit. Escalation is
+# unchanged from pre-fix behaviour.
+reset_state
+seed_bugbot_installed true
+write_commits "$(ts_seconds_ago 7200)"
+write_state "[$BUGBOT_CHECK_RUN_IN_PROGRESS]" "[]" "[]" "[]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== Scenario (n8): same in-flight run on HEAD, cache NOT readable-true -> trigger_greptile (the derived path shuts the branch too) =="
+# (n7)'s mirror over the other cache state, so the live-footprint guard is pinned
+# on both paths into BUGBOT_INSTALLED rather than only the cached one.
+# Note the seeded `false` is deliberately never read back: escalate-review.sh
+# reads the cache as `bugbot_installed // ""`, and jq's `//` treats false exactly
+# like null, so a cached false falls through to the derivation below it. That is
+# what makes this the DERIVED-true path (BUGBOT_CHECK_PRESENT sets it) rather
+# than a second cached-value case.
+reset_state
+seed_bugbot_installed false
+write_commits "$(ts_seconds_ago 7200)"
+write_state "[$BUGBOT_CHECK_RUN_IN_PROGRESS]" "[]" "[]" "[]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
