@@ -607,6 +607,69 @@ RF_BODY_START_FENCE="$(ee_eval "$(printf "\`\`\`js\nconst id = \`1234599\`;\n")"
 check_eq "false" "$(echo "$RF_BODY_START_FENCE" | jq -r '.self_report_mismatch')"   "(ee-897) body-start fence: template literal inside fence is not a self-report"
 check_eq "[]"    "$(echo "$RF_BODY_START_FENCE" | jq -c '.status_comment_shas')"    "(ee-897) body-start fence: yields no tokens"
 
+echo "=== (ee-917) UUID-embedded hex fragments are not admitted as SHA candidates (issue #917) ==="
+# CodeRabbit embeds an invocation UUID (8-4-4-4-12 hyphenated hex, e.g.
+# "9f69125b-29d9-47d4-bf8f-8b5df9dcb5a6") in run-tracking HTML comments. \b
+# treats a hyphen as a non-word boundary, so the UUID splits into 5 segments
+# at scan time — its first (8 hex chars) and last (12 hex chars) groups
+# independently satisfy rule 1's shape (7-40 chars, >= one a-f letter) and
+# were admitted as SHA-like tokens the bot never actually claimed.
+UUID_BODY="A comment carrying only CodeRabbit's own run-tracking metadata. <!-- request id 9f69125b-29d9-47d4-bf8f-8b5df9dcb5a6 -->"
+RU0="$(ee_eval "$UUID_BODY")"
+check_eq "[]"    "$(echo "$RU0" | jq -c '.status_comment_shas')" "(ee-917) a bare invocation UUID yields no tokens at all"
+check_eq "false" "$(echo "$RU0" | jq -r '.self_report_mismatch')" "(ee-917) and manufactures no mismatch on its own"
+
+# Identifier-glued UUID (CodeAnt review, PR #923): \b treats "_" as a word
+# character equal to a hex digit, so a UUID glued directly to a preceding
+# identifier with no separator ("request_id_9f69125b-…") has NO \b boundary
+# before its first hex digit. The first fix used \b and never stripped this
+# shape at all — rule 1's own scan still admitted the trailing 12-char group
+# as a bare hex token, reproducing the original bug for this one adjacency.
+UUID_GLUED_BODY="Comment ref request_id_9f69125b-29d9-47d4-bf8f-8b5df9dcb5a6 posted."
+RU_GLUED="$(ee_eval "$UUID_GLUED_BODY")"
+check_eq "[]"    "$(echo "$RU_GLUED" | jq -c '.status_comment_shas')" "(ee-917) an identifier-glued UUID yields no tokens either"
+check_eq "false" "$(echo "$RU_GLUED" | jq -r '.self_report_mismatch')" "(ee-917) and manufactures no mismatch"
+
+# Real-world shape (auerbachb/longlove PR #161, 2026-08-01): a single comment
+# mixing the UUID with a genuine HEAD-naming token does NOT reproduce the
+# reported failure — tokens_name_head is an any(...) over one comment's own
+# token list, so the genuine token alone makes that comment's names_head true
+# regardless of UUID noise sitting beside it. The actual production shape
+# needs TWO comments from the same bot: an earlier, substantive comment that
+# names HEAD (setting the bot-level status_comment_names_head), followed by a
+# LATER, separate status comment carrying only the invocation UUID and no SHA
+# mention. self_report_mismatch is computed from $selfrep — the bot's most
+# recently CREATED comment that has ANY tokens — so pre-fix, that later
+# UUID-only comment became $selfrep, and since none of ITS tokens named HEAD,
+# self_report_mismatch flipped true even though status_comment_names_head was
+# already true from the earlier comment. That contradictory pair — both true
+# at once — is exactly what was observed on PR #161.
+UUID_HEAD="a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+uuid_eval() { # <earlier-body> <later-body>  -> the coderabbitai reviewer object
+  jq -cn --arg sha "$UUID_HEAD" --arg b1 "$1" --arg b2 "$2" \
+    '{head_sha:$sha, push_ts:"2026-07-31T10:00:00Z",
+      reviews:[{user:{login:"coderabbitai[bot]"},commit_id:$sha,state:"APPROVED",
+                submitted_at:"2026-07-31T10:06:00Z",body:""}],
+      pr_comments:[],
+      issue_comments:[
+        {user:{login:"coderabbitai[bot]"},
+         created_at:"2026-07-31T10:03:00Z",
+         updated_at:"2026-07-31T10:03:00Z", body:$b1},
+        {user:{login:"coderabbitai[bot]"},
+         created_at:"2026-07-31T10:05:00Z",
+         updated_at:"2026-07-31T10:05:00Z", body:$b2}
+      ]}' \
+  | "$EVAL_SUT" 2>/dev/null | jq -c '.reviewers["coderabbitai[bot]"]'
+}
+WALKTHROUGH_BODY="$(printf "## Walkthrough\n\nReviewed the modal root change and the two updated call sites for commit \`a1b2c3d\`. No blocking issues found.")"
+UUID_STATUS_BODY="<!-- This is an auto-generated comment by CodeRabbit with request id 9f69125b-29d9-47d4-bf8f-8b5df9dcb5a6 -->"
+
+RU="$(uuid_eval "$WALKTHROUGH_BODY" "$UUID_STATUS_BODY")"
+check_eq "true"     "$(echo "$RU" | jq -r '.status_comment_names_head')" "(ee-917) an earlier comment naming HEAD still sets status_comment_names_head"
+check_eq '["a1b2c3d"]' "$(echo "$RU" | jq -c '.status_comment_shas')"    "(ee-917) only the genuine token is admitted — no UUID fragments"
+check_eq "false"    "$(echo "$RU" | jq -r '.self_report_mismatch')"     "(ee-917) a later UUID-only status comment no longer manufactures a mismatch"
+check_eq "[]"       "$(echo "$RU" | jq -c '.disqualified_by')"          "(ee-917) and the reviewer is not disqualified"
+
 echo "=== (m) evaluator rejects malformed stdin ==="
 echo "not json" | "$EVAL_SUT" >/dev/null 2>&1
 check_eq "4" "$?" "(m) non-JSON stdin exits 4"
