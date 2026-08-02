@@ -99,8 +99,8 @@ Each file's own header block states its scope.
 |------|-------|
 | Issues & planning | `issue-planning.md` |
 | Review & merge | `cr-local-review.md` `cr-github-review.md` `cr-merge-gate.md` `bugbot.md` `greptile.md` |
-| Orchestration | `subagent-orchestration.md` `phase-protocols.md` `monitor-mode.md` `scheduling-reliability.md` `handoff-files.md` `chip-spawn.md` |
-| Safety & hygiene | `safety.md` `main-hygiene.md` `repo-bootstrap.md` `trust-dialog-fix.md` `skill-symlinks.md` `skill-first.md` |
+| Orchestration | `subagent-orchestration.md` `phase-protocols.md` `monitor-mode.md` `scheduling-reliability.md` `handoff-files.md` `chip-spawn.md` `skill-first.md` |
+| Safety & hygiene | `safety.md` `main-hygiene.md` `repo-bootstrap.md` `trust-dialog-fix.md` `skill-symlinks.md` |
 
 These files auto-load for the parent agent session. **Subagents do NOT auto-load these files.** See `subagent-orchestration.md` for how to pass rules to subagents.
 
