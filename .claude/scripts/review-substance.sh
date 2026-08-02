@@ -284,9 +284,12 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
   # bot"s line verbatim would retroactively strip the bot"s original.
   #
   # WHICH DIRECTIONS THIS CAN MOVE (the load-bearing argument, stated in full
-  # because one of the two is a grant). Removing whole lines can only ever
-  # REMOVE tokens, never add them: split("\n") | join("\n") is the identity when
-  # nothing is dropped, and surviving lines are emitted byte-for-byte, so the
+  # because one of the two is a grant). Dropping a line, or truncating an echoed
+  # fence line to its delimiter, can only ever REMOVE tokens, never add them:
+  # split("\n") | join("\n") is the identity when nothing is dropped, an
+  # untouched line is emitted byte-for-byte, and a truncated fence line keeps a
+  # prefix of itself on its own line — no text is joined across a boundary, and
+  # a run of ` or ~ carries no hex or decimal digit of its own. So the
   # indentation- and fence-sensitive rules below (issue #897) see exactly what
   # they always saw. From "tokens can only shrink":
   #
@@ -348,14 +351,33 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
   # keeping it costs nothing the echo rule was meant to buy. Pinned by
   # (ff-933)(j); only PAIRED syntax needs this, which is why four-space-indented
   # lines get no exception — dropping one removes its content too.
+  #
+  # THE DELIMITER, NOT THE LINE (CodeAnt PR #951 review). An exemption written
+  # as "keep any line that STARTS with a fence marker" is wider than the
+  # argument above, and the gap is on the grant side: "```5acd1e2" is a fence
+  # opener whose info string is a SHA, so exempting the whole line readmits the
+  # very token the echo rule just refused, and an empty-body approval scores
+  # counts_as_coverage true on the author"s words again (reproduced on a live
+  # payload before the fix). An echoed fence line is therefore truncated to its
+  # own delimiter run — leading whitespace and quote markers preserved, info
+  # string and any trailing text dropped. Paired matching sees an identical
+  # delimiter either way (the masking regexes never read the info string), so
+  # the structural reason for the exemption is untouched while its content
+  # cannot smuggle evidence. Non-echoed fence lines are not rewritten at all.
+  # Pinned by (ff-933)(k) and (ff-933)(l).
   | def strip_echoed($ts):
       [ ((. // "") | split("\n")[])
         | . as $ln
         | ($ln | norm_line) as $key
         | (($key | startswith("```")) or ($key | startswith("~~~"))) as $is_fence
         | ($echo_first[$key] // null) as $seen_at
-        | select($is_fence or $seen_at == null or ($seen_at > $ts))
-        | $ln ]
+        | (($seen_at != null) and ($seen_at <= $ts)) as $echoed
+        | if ($echoed | not) then $ln
+          elif $is_fence
+          then ($ln | sub("^(?<w>[ \t]*)(?<q>(?:>[ \t]*)*)(?<f>`{3,}|~{3,}).*$";
+                          "\(.w)\(.q)\(.f)"))
+          else empty
+          end ]
       | join("\n");
 
   # SHA-like tokens. THREE admission rules, deliberately asymmetric: each of the

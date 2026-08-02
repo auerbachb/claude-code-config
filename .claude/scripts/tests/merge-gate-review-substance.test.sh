@@ -30,7 +30,9 @@
 #        withhold coverage, never grant it
 #   (ff-933) a bot echoing the AUTHOR's SHA-bearing text  -> does not name HEAD
 #        (issue #933, trace on PR #929), with the parity, ordering and
-#        self-quotation controls that keep the rule from over-stripping
+#        self-quotation controls that keep the rule from over-stripping, and
+#        (k)/(l): the fence exemption covers the DELIMITER, not the whole line,
+#        so an echoed "```<sha>" smuggles nothing yet still masks its block
 #
 # Only `gh` is stubbed; merge-gate.sh, review-substance.sh, ci-status.sh,
 # check-runs-dedup.sh and session-state.sh are the real scripts.
@@ -788,6 +790,36 @@ FF_J_BOT="$(printf "Walkthrough of the changed files, covering both call sites i
 FF_J="$(ff_eval "$(ff_pair "$FF_J_AUTHOR" "$FF_J_BOT")")"
 check_eq "[]"    "$(echo "$FF_J" | jq -c '.status_comment_shas')"  "(ff-933) an echoed fence delimiter still masks its block"
 check_eq "false" "$(echo "$FF_J" | jq -r '.self_report_mismatch')" "(ff-933) so quoted source code is still not a self-report"
+
+# (k) THE EXEMPTION IS THE DELIMITER, NOT THE LINE (CodeAnt PR #951 review).
+# Markdown info strings are free-form, so a fence opener can carry arbitrary
+# text — including HEAD's SHA. Exempting the whole line because it STARTS with
+# a fence marker readmits exactly the token the echo rule just refused, which
+# is the grant direction: before the fix these bodies scored
+# status_comment_names_head=true and counts_as_coverage=true off the AUTHOR's
+# words. Both spellings are the same class: fence marker + SHA-bearing info
+# string.
+for FF_K_LINE in '```5acd1e2' '``` reviewed at 5acd1e2'; do
+  FF_K_AUTHOR="$(printf 'Please re-review:\n\n%s\nsome quoted source\n```\n' "$FF_K_LINE")"
+  FF_K_BOT="$(printf 'Question:\n\n%s\nsome quoted source\n```\n\nAnswer: no blocking findings.\n' "$FF_K_LINE")"
+  FF_K="$(ff_eval "$(ff_pair "$FF_K_AUTHOR" "$FF_K_BOT")")"
+  check_eq "false" "$(echo "$FF_K" | jq -r '.status_comment_names_head')" \
+    "(ff-933)(k) an echoed fence line does not smuggle its info-string SHA [$FF_K_LINE]"
+  check_eq "false" "$(echo "$FF_K" | jq -r '.counts_as_coverage')" \
+    "(ff-933)(k) so the empty approval still gets no coverage [$FF_K_LINE]"
+done
+
+# (l) …and truncating it does not cost the masking the exemption exists for.
+# The echoed opener keeps its delimiter (only the info string goes), so the
+# #897 paired matching still finds an opener and a closer, the block is masked,
+# and the numeric literal inside quoted source is still not a rule-3 token.
+# If the truncation ever stops being delimiter-preserving, this pair regresses
+# to the failure mode (j) exists to prevent.
+FF_L_AUTHOR="$(printf "Repro for the failing case:\n\n\`\`\`js\nconst a = 1;\n\`\`\`\n\nShould be green after the rebase.\n")"
+FF_L_BOT="$(printf "Walkthrough of the changed files, covering both call sites.\n\n\`\`\`js\nconst id = \`1234599\`;\n\`\`\`\n")"
+FF_L="$(ff_eval "$(ff_pair "$FF_L_AUTHOR" "$FF_L_BOT")")"
+check_eq "[]"    "$(echo "$FF_L" | jq -c '.status_comment_shas')"  "(ff-933)(l) a truncated echoed opener still pairs and masks its block"
+check_eq "false" "$(echo "$FF_L" | jq -r '.self_report_mismatch')" "(ff-933)(l) so quoted source is still not a self-report"
 
 echo "=== (m) evaluator rejects malformed stdin ==="
 echo "not json" | "$EVAL_SUT" >/dev/null 2>&1

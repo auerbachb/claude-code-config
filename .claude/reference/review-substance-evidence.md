@@ -272,10 +272,26 @@ admitted. Only paired syntax needs the exception, which is why four-space
 indented lines get none — dropping such a line removes its content with it.
 Pinned by `(ff-933)(j)`.
 
-**Directions.** Dropping whole lines can only ever *remove* tokens —
-`split("\n") | join("\n")` is the identity when nothing is dropped and survivors
-are emitted byte-for-byte, so the indentation- and fence-sensitive rules above
-still see what they always saw. `status_comment_names_head`,
+**The exception is the delimiter, not the line** (CodeAnt review of PR #951).
+Markdown info strings are free-form, so a fence opener can carry arbitrary text —
+including HEAD's SHA. Written as "keep any line that *starts with* a fence
+marker", the exemption is wider than the argument for it, and the gap falls on
+the grant side: an echoed ` ```5acd1e2 ` readmits precisely the token the echo
+filter just refused, and on a live-shaped payload an empty-body approval scored
+`counts_as_coverage: true` off the author's words again. An echoed fence line is
+therefore **truncated to its own delimiter run** — leading whitespace and quote
+markers kept, info string and trailing text dropped. The masking regexes never
+read the info string, so paired matching sees an identical delimiter either way.
+Non-echoed fence lines are not rewritten at all. Pinned by `(ff-933)(k)` (the
+smuggling attempt fails) and `(ff-933)(l)` (the truncated opener still pairs).
+
+**Directions.** Dropping a line — or truncating an echoed fence line to its
+delimiter — can only ever *remove* tokens. `split("\n") | join("\n")` is the
+identity when nothing is dropped, an untouched line is emitted byte-for-byte,
+and a truncated fence line keeps a prefix of itself on its own line, so no text
+is joined across a boundary and a run of `` ` `` or `~` contributes no hex or
+decimal digit. The indentation- and fence-sensitive rules above therefore still
+see what they always saw. `status_comment_names_head`,
 `external_evidence_on_head` and `substantive` are monotone in the token set and
 so can only move **true → false**: the grant path #933 closes.
 
