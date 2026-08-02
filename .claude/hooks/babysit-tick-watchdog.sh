@@ -16,9 +16,12 @@
 # Advisory only — emits additionalContext, never blocks a turn.
 #
 # Fails SILENT, not loud, on every ambiguity (missing state, absent watcher,
-# unparseable timestamp, clock skew). A watchdog that cannot read the clock has
-# no evidence a poll is dead, and a false alarm replayed on every tool call
-# would train the reader to ignore the one that is real.
+# unparseable timestamp, clock skew, unwritable dedupe marker). A watchdog that
+# cannot read the clock has no evidence a poll is dead, and a false alarm
+# replayed on every tool call would train the reader to ignore the one that is
+# real. The marker case is the sharpest: without a marker there is nothing to
+# suppress the repeat, so emitting anyway is not "one extra warning" — it is a
+# warning on every subsequent tool call until the poll recovers.
 
 input=$(cat)
 
@@ -115,7 +118,17 @@ while IFS=$'\x1f' read -r pr last_tick cadence; do
   if [[ -f "$marker" ]] && [[ "$(cat "$marker" 2>/dev/null)" == "$last_tick" ]]; then
     continue
   fi
-  printf '%s' "$last_tick" > "$marker" 2>/dev/null || true
+
+  # No marker, no warning. If the write fails there is nothing to suppress the
+  # repeat, so emitting anyway would replay this advisory on EVERY tool call for
+  # as long as the poll stays dead — the nag loop this hook exists to avoid.
+  # Deliberately the opposite of silence-detector.sh's fail-open dedupe: that one
+  # degrades to a duplicated timestamp, this one would degrade to a wall of
+  # identical warnings. Surface on stderr (hook logs) rather than failing silently.
+  if ! printf '%s' "$last_tick" > "$marker" 2>/dev/null; then
+    echo "babysit-tick-watchdog: cannot write $marker — suppressing the PR #${pr} advisory rather than repeating it every tool call" >&2
+    continue
+  fi
 
   stalled+=( "PR #${pr}: last tick ${age_min}m ago (cadence ${cadence}m, warn at ${warn_min}m)" )
 done <<< "$records"

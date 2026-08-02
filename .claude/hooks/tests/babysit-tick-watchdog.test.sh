@@ -233,4 +233,25 @@ grep -q 'NO leading interval' <<<"$ctx" \
   || fail "recovery must warn off the fixed-interval /loop (CronCreate) path, got: $ctx"
 ok "recovery advice is actionable inside the 2x..3x window (stop, then re-arm)"
 
+# ── 13. Unwritable marker dir must not spam (BugBot, PR #922) ───────────────
+# With no marker to suppress the repeat, emitting anyway replays the advisory on
+# every PostToolUse call for as long as the poll stays dead. Suppress instead,
+# and say so on stderr so the condition is visible rather than silent.
+reset_markers
+write_state "$PR" "$(jq -n --arg t "$(ago 40)" \
+  '{babysit:{active:true,last_tick_at:$t,cadence_effective_minutes:5}}')"
+RO_DIR="$TMP_DIR/readonly-markers"; mkdir -p "$RO_DIR"; chmod 500 "$RO_DIR"
+run_ro() {
+  jq -cn --arg sid "test-session" '{session_id: $sid, tool_name: "Read"}' \
+    | CLAUDE_BABYSIT_WATCHDOG_MARKER_DIR="$RO_DIR" bash "$HOOK" 2>"$TMP_DIR/ro.err"
+}
+for attempt in 1 2 3; do
+  [[ -z "$(run_ro | context_of)" ]] \
+    || fail "unwritable marker dir must suppress the advisory (attempt $attempt), not repeat it"
+done
+grep -q 'cannot write' "$TMP_DIR/ro.err" \
+  || fail "suppression must be surfaced on stderr, got: $(cat "$TMP_DIR/ro.err")"
+chmod 700 "$RO_DIR"
+ok "unwritable marker dir suppresses (3 calls, 0 advisories) and reports on stderr"
+
 echo "All babysit-tick-watchdog tests passed."
