@@ -239,6 +239,13 @@ check_eq "age of a fresh owner-less lock is numeric" "1" \
   "$([[ "$AGE" =~ ^[0-9]+$ ]] && echo 1 || echo 0)"
 check_eq "age of a fresh owner-less lock is small, not the old 999999 sentinel" "1" \
   "$([[ "$AGE" =~ ^[0-9]+$ && "$AGE" -lt 60 ]] && echo 1 || echo 0)"
+# The other half of the contract: with NEITHER a recorded epoch nor a readable
+# directory mtime, _state_lock_age must return non-zero and print nothing —
+# never a fabricated age. That "unknown" is what makes the caller fail safe, so
+# it needs its own assertion (CodeRabbit, PR #937).
+UNKNOWN_OUT="$(bash -c 'source "$1"; _state_lock_age "/nonexistent/lock/path/for/930"' _ "$LOCK_LIB" 2>/dev/null)"; RC=$?
+check_eq "unknowable age returns non-zero" "1" "$([[ "$RC" -ne 0 ]] && echo 1 || echo 0)"
+check_eq "unknowable age prints nothing (no fabricated number)" "" "$UNKNOWN_OUT"
 # Same directory, evaluated through the staleness rule that acts on it.
 bash -c 'source "$1"; _state_lock_is_stale "$2" 120' _ "$LOCK_LIB" "$LOCK_DIR"; RC=$?
 check_eq "a fresh owner-less lock is NOT stale (mid-acquire, not dead)" "1" "$RC"
@@ -276,7 +283,13 @@ reset_state
 T1="$(bash -c 'source "$1"; state_lock_acquire "$2" || exit 6; sed -n "s/^token=//p" "$2.lock/owner"' _ "$LOCK_LIB" "$STATE_FILE")"
 T2="$(bash -c 'source "$1"; state_lock_acquire "$2" || exit 6; sed -n "s/^token=//p" "$2.lock/owner"' _ "$LOCK_LIB" "$STATE_FILE")"
 check_eq "a token is published" "1" "$([[ -n "$T1" ]] && echo 1 || echo 0)"
-check_eq "two acquisitions get different tokens" "1" "$([[ "$T1" != "$T2" ]] && echo 1 || echo 0)"
+# Both must be nonempty before comparing them. An empty T2 — the second acquire
+# failing, e.g. a release regression that made it block to timeout — compares
+# unequal to T1, so the uniqueness check below would pass having tested nothing
+# (CodeRabbit, PR #937).
+check_eq "the second acquisition also published a token" "1" "$([[ -n "$T2" ]] && echo 1 || echo 0)"
+check_eq "two acquisitions get different tokens" "1" \
+  "$([[ -n "$T1" && -n "$T2" && "$T1" != "$T2" ]] && echo 1 || echo 0)"
 rm -rf "$LOCK_DIR"
 
 echo

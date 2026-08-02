@@ -327,7 +327,8 @@ fi
 STATE_FILE="${HOME}/.claude/session-state.json"
 
 # Saved before any parsing consumes them, so a read-modify-write whose lock was
-# stolen mid-flight can be retried from scratch (see _rmw_retry_or_fail).
+# stolen mid-flight can be retried from scratch by re-exec'ing this script (see
+# the state_lock_assert_held branch just before the commit, near the end).
 ORIG_ARGS=("$@")
 
 # Sibling reference file that is the single source of truth for the

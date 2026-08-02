@@ -465,16 +465,35 @@ state_lock_release() {
 # standing between a broken lock and a silently dropped update, and a check
 # that each writer has to remember independently is one that some writer will
 # eventually skip — as three of them already had (CodeAnt, PR #937).
+#
+# RESIDUAL WINDOW (deliberate, documented rather than papered over)
+#   The assertion and the `mv` are two operations, so in principle a breaker
+#   could steal the lock between them and this function would still commit.
+#   POSIX shell has no compare-and-swap that would close that gap, so the
+#   window is narrowed instead of eliminated, on two fronts:
+#     • Nothing forks between the check and the `mv` — the gap is microseconds,
+#       against the entire read-modify-write it used to span.
+#     • Breaking a live lock now requires POSITIVE evidence: a dead holder pid,
+#       or an age past STALE_AGE (120s default). A holder that reaches this
+#       function within its first two minutes is not breakable at all, so the
+#       residual applies only to a holder already wedged past that ceiling —
+#       the case the header's FAILURE MODES section accepts on purpose.
+#   Do not read this as "the race is fixed". It is bounded and evidence-gated;
+#   a caller that needs more must not share one state file across writers.
 state_lock_commit() {
-  local tmp="$1" dest="$2"
+  local tmp="$1" dest="$2" mv_err
   if ! state_lock_assert_held; then
     rm -f "$tmp" 2>/dev/null || true
     echo "state-lock: lock was broken by another writer mid-update; refusing to commit $dest (unchanged, retry)" >&2
     return "$STATE_LOCK_EXIT_TIMEOUT"
   fi
-  if ! mv "$tmp" "$dest" 2>/dev/null; then
+  # Capture mv's own diagnostic. A commit fails for distinct reasons — a
+  # read-only filesystem, ENOSPC, a permission change, a cross-device temp —
+  # and each needs a different response, so swallowing stderr leaves the
+  # operator with one indistinguishable message (CodeRabbit, PR #937).
+  if ! mv_err="$(mv "$tmp" "$dest" 2>&1)"; then
     rm -f "$tmp" 2>/dev/null || true
-    echo "state-lock: could not write $dest" >&2
+    echo "state-lock: could not write $dest${mv_err:+ — $mv_err}" >&2
     return 5
   fi
   return 0
