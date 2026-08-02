@@ -1,6 +1,6 @@
 # Scheduling Reliability
 
-> **Always:** Use `/loop` for user-facing "poll/check/watch every N" requests — including the default in-flight-PR watch (`CLAUDE.md`). Run the pre-exit checklist. Record polling state in `session-state.json`.
+> **Always:** Use `/loop` (no interval) for user-facing "poll every N" requests — including the default in-flight-PR watch (`CLAUDE.md`). Run the pre-exit checklist. Record polling state in `session-state.json`.
 > **Ask first:** Never — scheduling reliability is autonomous.
 > **Never:** Hand-roll a chain of one-shot `ScheduleWakeup` (or equivalent) calls for a recurring user-facing poll. Promise to "check back in N minutes" without backing it with an active `/loop`. Exit a wake-up turn without confirming the next tick is scheduled and the last one fired. Leave background work running with no ceiling armed.
 
@@ -10,10 +10,10 @@ The 5-minute heartbeat rule catches silence during turns; this file covers betwe
 
 | User request / context | Primitive | Why |
 |------------------------|-----------|-----|
-| Recurring: "poll/check/watch every N", "keep running /skill" | **`/loop`** | Runtime owns cadence |
-| Wall-clock cadence, ≥3 concurrent polls | **`/loop`** | `CronCreate` fired **zero** in-session ticks (#914) — contract below |
+| Recurring: "poll/check/watch every N", "keep running /skill" | **`/loop` with NO interval** (dynamic) | A fixed interval delegates to `CronCreate`, which does not fire (#914) |
+| Wall-clock cadence, ≥3 concurrent polls | **`Monitor`** | The only primitive observed firing while idle (#914) |
 | One-shot "wake me in N minutes" | `ScheduleWakeup` | Single tick only |
-| Background work in flight (subagent, background process, watcher) | **ceiling watch** — `bgwork-ceiling.sh --arm-command` → `Monitor` | Backstop, not a poll — still `/loop` if status is due |
+| Background work in flight (subagent, background process, watcher) | **ceiling watch** — `bgwork-ceiling.sh --arm-command` → `Monitor` | Backstop, not a poll |
 
 ## PM Monitoring Primitive
 
@@ -21,16 +21,15 @@ Division of responsibility (`.claude/reference/pm-monitoring-decision.md`):
 
 - `/pm` never creates polls — on-demand orchestration only.
 - `/pr-monitor-and-manage` owns PR-fleet between-message polling (`/loop`, including `--auto-wake`).
-- `/loop` remains valid for user-invoked "poll every N" that is not PR-fleet-specific.
 - `CronCreate` — **never**: see contract below.
 
 Skill-owned polling turns update `session-state.json` per that skill's contract; stale orchestration state → `monitor-mode.md` PM Monitoring Recovery + this file's dropped-tick handling.
 
 ### CronCreate contract (authoritative)
 
-**It does not reliably fire.** Reproduced 2026-08-01 (#914): armed jobs, still listed by `CronList`, produced **zero** ticks across an 11-minute idle window at two cadences. Never back a poll with one. Repro and limits: `.claude/reference/scheduling-failure-modes.md` Pattern 7.
+**It does not reliably fire.** Reproduced 2026-08-01 (#914): armed jobs, still listed by `CronList`, produced **zero** ticks across an 11-minute idle window at two cadences. **`/loop <interval>` delegates to it**, so a fixed-interval loop inherits this and is dead by construction — use `/loop` with no interval, or a `Monitor`. Detail: `.claude/reference/scheduling-failure-modes.md` Pattern 7.
 
-It is also **session-only and in-memory**: `durable` has **no effect** and nothing survives a session boundary. **Durable work belongs in on-disk state, not a job** (#827): `session-scheduling-reconcile.sh` purges dead job records at session start. A genuinely durable scheduler exists (`mcp__scheduled-tasks__*`) — why no skill here uses it: `.claude/reference/cross-session-durability.md`.
+It is also **session-only and in-memory**: `durable` has **no effect** and nothing survives a session boundary. **Durable work belongs in on-disk state, not a job** (#827): `session-scheduling-reconcile.sh` purges dead job records at session start. A durable scheduler exists (`mcp__scheduled-tasks__*`); why we decline it: `.claude/reference/cross-session-durability.md`.
 
 ## Mandatory Pre-Exit Checklist for Polling Turns
 
@@ -49,7 +48,7 @@ Each tick hash `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_c
 
 ## Failure Recovery
 
-If the user reports a dropped tick: re-establish with `/loop` (never a one-shot chain); record in `polling_failures[]`; if new, append to `.claude/reference/scheduling-failure-modes.md`.
+On a dropped tick: re-establish with `/loop`; record in `polling_failures[]`; if new, append to `.claude/reference/scheduling-failure-modes.md`.
 
 ## Related
 

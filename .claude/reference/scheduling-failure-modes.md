@@ -128,9 +128,25 @@ agent wakes up again *is* a background process. Removing the variable means risk
 that never wakes. A future session with a human present can run it — arm one cron job, no
 `Monitor`, no backgrounded probe, and have the human observe.
 
-Whether the miss is in `CronCreate`'s scheduler, the idle-detection gate, or `/loop`'s
-delegation to it cannot be narrowed further from outside the harness: all three are runtime
-internals with no repo-authored implementation.
+**The `/loop` delegation is confirmed, and it is the propagation path.** Invoking
+`/loop 5m <command>` returns the skill's own instructions, whose fixed-interval mode reads:
+"Call CronCreate with: `cron` (the expression above), `prompt` (the parsed prompt verbatim),
+`recurring: true`." So `/loop <interval>` **is** `CronCreate` underneath. Combined with the zero-tick
+result, that means:
+
+> A fixed-interval `/loop` watcher is dead by construction. `/babysit-pr` specifying "the watcher
+> is always `/loop`" was not the safeguard it read as — at `--cadence 5m` it produced exactly the
+> job that does not fire. The skill text and the runtime never disagreed; both led to `CronCreate`.
+
+`/loop`'s **dynamic mode** (invoked with no interval) is a different path: it self-paces with
+`ScheduleWakeup` and arms a `Monitor` as the primary wake signal for event-gated work. Whether the
+remaining miss is in `CronCreate`'s scheduler or the idle-detection gate cannot be narrowed further
+from outside the harness — both are runtime internals with no repo-authored implementation.
+
+**What was observed firing, this session, under the same conditions:** the `Monitor`-backed silence
+ceiling tripped on schedule and forced a turn. `ScheduleWakeup` was not exercised. So of the three
+primitives, exactly one has positive evidence, one has negative evidence, and one is untested —
+which is why the guidance below prefers `Monitor` and treats presence as no evidence of liveness.
 
 **Fix.** Treat `CronCreate` as a non-firing primitive and back every user-facing poll with
 `/loop` (`scheduling-reliability.md` decision tree). Verify **liveness, not presence**, before

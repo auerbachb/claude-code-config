@@ -57,7 +57,7 @@ This skill runs in one of two modes, disambiguated by the internal `--tick` flag
 - **Arm mode** (`/babysit-pr <PR> …`, no `--tick`): validate, initialize `session-state.json`, arm the recurring poll, run **one** tick immediately, then end the turn.
 - **Tick mode** (`/babysit-pr <PR> --tick`): the body the poll re-invokes each cycle. Runs exactly one tick of classification + dispatch + bookkeeping. **Never re-arms the loop** (the runtime owns cadence) except to change cadence on a backoff threshold crossing.
 
-The loop command armed in arm mode is `/babysit-pr <PR> --tick` (plus the resolved cadence flags), so every subsequent cycle enters tick mode.
+The loop command armed in arm mode is `/babysit-pr <PR> --tick` (plus the resolved cadence flags), so every subsequent cycle enters tick mode. It is armed through `/loop` with **no leading interval** — see A3.
 
 ---
 
@@ -209,7 +209,20 @@ NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   --set ".prs[\"$PR\"].digest_streak=0"
 ```
 
-Arm the recurring poll: `/loop <cadence> /babysit-pr <PR> --tick`. The runtime owns the cadence and re-arms each cycle. `/loop` is the only primitive this watcher uses (`scheduling-reliability.md` decision tree) — the watcher is session-scoped by design, and a watcher that outlived its session would be auto-dispatching `/wrap` merges into an empty room.
+Arm the recurring poll: **`/loop /babysit-pr <PR> --tick --cadence <N>m`** — note the cadence is
+passed *inside the prompt*, and `/loop` is invoked with **no leading interval**. That difference is
+load-bearing, not cosmetic (issue #914):
+
+- `/loop <interval> …` (the old form) is specified to call **`CronCreate`**, and armed `CronCreate`
+  jobs were measured producing **zero** in-session ticks. The old form armed a watcher that could
+  never tick.
+- `/loop …` with no interval runs **dynamic mode**: it self-paces with `ScheduleWakeup` and can arm
+  a `Monitor` as the wake signal. Each tick reads `--cadence` from its own prompt and picks the
+  matching delay.
+
+`/loop` is still the only primitive this watcher uses (`scheduling-reliability.md` decision tree),
+and the watcher stays session-scoped by design — one that outlived its session would be
+auto-dispatching `/wrap` merges into an empty room.
 
 **Never substitute a `CronCreate` job for the `/loop`** — not for a fixed interval, not for "wall-clock alignment", not as a fallback if arming looks flaky. Issue #914 measured armed cron jobs, still listed by `CronList`, producing **zero** ticks across an 11-minute idle window. If `/loop` cannot be armed, roll back per the block above and report; do not reach for the other primitive.
 
@@ -572,7 +585,7 @@ NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   --set ".prs[\"$PR\"].babysit.last_tick_at=$NOW"
 ```
 
-**Re-arm cadence only when it crosses a tier boundary.** `/loop` owns the cadence, so to change it: stop the current loop and re-arm `/loop <new-cadence> /babysit-pr <PR> --tick`. If the effective cadence is unchanged, do nothing — never re-arm an unchanged loop (forbidden hand-rolled re-arm churn).
+**Re-arm cadence only when it crosses a tier boundary.** To change it: stop the current loop and re-arm `/loop /babysit-pr <PR> --tick --cadence <new>m` — again with **no leading interval** (a leading interval routes to `CronCreate`, which does not fire — #914). If the effective cadence is unchanged, do nothing — never re-arm an unchanged loop (forbidden hand-rolled re-arm churn).
 
 On an actual widen, record it so `polling-backoff-warn.sh` stops re-emitting its widen advisory (it dedupes on `type == "update"` at the new interval):
 
