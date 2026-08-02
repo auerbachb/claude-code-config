@@ -80,6 +80,7 @@ Scripts that manage the background-silence ceiling, launchd watchdog, and time h
 | Script | Purpose |
 |--------|---------|
 | `bgwork-ceiling.sh` | Hard ceiling on chat silence while background work (subagents, watchers) runs |
+| `statusline.sh` | Render the Claude Code status line — one stdout line of `ET time · branch · N agents · M watchers`; reads the session JSON on stdin, always exits 0 |
 | `install-silence-watchdog.sh` | Install the macOS launchd watchdog that monitors Claude heartbeat files |
 | `uninstall-silence-watchdog.sh` | Uninstall the macOS launchd silence watchdog |
 | `silence-watchdog.sh` | External launchd watchdog that checks heartbeat files when Claude is stalled (macOS only) |
@@ -201,3 +202,4 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | `skill-usage-merge.test.sh` | Tests for `skill-usage-merge.sh` |
 | `stale-cleanup.test.sh` | Tests for `stale-cleanup.sh` |
 | `state-lock.test.sh` | Tests for `state-lock.sh` |
+| `statusline.test.sh` | Tests for `statusline.sh` |

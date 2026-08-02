@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Register hooks from global-settings.json into ~/.claude/settings.json.
+"""Register hooks and the statusLine command from global-settings.json into
+~/.claude/settings.json.
 
 Purpose:
     Reads the hook manifest from the skills worktree's global-settings.json
@@ -9,9 +10,21 @@ Purpose:
     are preserved. Placeholder paths (e.g. "/path/to/...") are repaired in
     place to point at the real skills-worktree hooks directory.
 
+    The same treatment is applied to the top-level `statusLine` key (issue
+    #779). It is not a hook event — it is a separate settings surface whose
+    `command` needs the identical placeholder-to-worktree resolution, and
+    which must auto-propagate at session start so the feature lands without
+    a setup.sh re-run.
+
 Inputs:
-    argv[1]  Path to the skills worktree root (e.g. ~/.claude/skills-worktree).
-             Used to locate global-settings.json and .claude/hooks/*.
+    argv      Path to the skills worktree root (e.g. ~/.claude/skills-worktree).
+              Used to locate global-settings.json, .claude/hooks/*, and
+              .claude/scripts/*.
+    --statusline-only
+              Sync only the statusLine key; skip hook registration entirely.
+              Used by setup-skills-worktree.sh, whose Step 6 already owns hook
+              registration through its own manifest — running both would risk
+              two registrations of the same hook.
 
 Outputs:
     ~/.claude/settings.json is mutated atomically (tempfile + os.replace).
@@ -25,7 +38,10 @@ Behavior:
       functionally equivalent — Claude Code reads all groups).
     - Hooks whose script file is missing from the hooks dir are skipped with
       a warning.
-    - If no hooks needed to be added, exits 0 without writing.
+    - A statusLine already pointing at a DIFFERENT script is the user's own
+      and is never touched; only our own script's path is repaired, and
+      sibling keys (padding, refreshInterval, …) are always preserved.
+    - If nothing needed to change, exits 0 without writing.
 """
 
 import json
@@ -93,30 +109,96 @@ def build_manifest(template_hooks, hooks_dir):
     return manifest
 
 
-def main(argv):
-    if len(argv) < 2:
-        print("usage: register-hooks.py <skills-worktree-path>", file=sys.stderr)
+def sync_statusline(settings, template, scripts_dir):
+    """Seed or path-repair settings["statusLine"] from the template.
+
+    Returns 1 when settings was modified, 0 otherwise. Never raises: a
+    statusLine problem must not stop hook registration.
+
+    The user's own statusLine (a command whose basename is not the template's
+    script) is left completely alone — this only owns the entry it installed.
+    When it does own the entry, only `command` is rewritten, so `padding`,
+    `refreshInterval`, and any other key the user tuned survive.
+    """
+    tpl = template.get("statusLine")
+    if not isinstance(tpl, dict):
+        return 0
+
+    tpl_command = tpl.get("command", "")
+    if not isinstance(tpl_command, str) or not tpl_command:
+        return 0
+
+    script = os.path.basename(tpl_command)
+    resolved = os.path.join(scripts_dir, script)
+    if not os.path.isfile(resolved):
+        print(
+            f"statusline-sync: skipping {script} (not found in {scripts_dir})",
+            file=sys.stderr,
+        )
+        return 0
+
+    live = settings.get("statusLine")
+
+    if live is None:
+        settings["statusLine"] = dict(tpl, command=resolved)
         return 1
 
-    skills_wt = argv[1]
+    if not isinstance(live, dict):
+        print(
+            "statusline-sync: settings.json statusLine is not an object; leaving it alone",
+            file=sys.stderr,
+        )
+        return 0
+
+    existing = live.get("command", "")
+    if not isinstance(existing, str) or os.path.basename(existing) != script:
+        # Someone else's status line (or a malformed entry) — not ours to touch.
+        return 0
+
+    if existing == resolved:
+        return 0
+
+    live["command"] = resolved
+    return 1
+
+
+def main(argv):
+    args = [a for a in argv[1:] if a != "--statusline-only"]
+    statusline_only = "--statusline-only" in argv[1:]
+
+    if not args:
+        print(
+            "usage: register-hooks.py [--statusline-only] <skills-worktree-path>",
+            file=sys.stderr,
+        )
+        return 1
+
+    skills_wt = args[0]
     settings_file = os.path.expanduser("~/.claude/settings.json")
     template_file = os.path.join(skills_wt, "global-settings.json")
     hooks_dir = os.path.join(skills_wt, ".claude", "hooks")
+    scripts_dir = os.path.join(skills_wt, ".claude", "scripts")
 
-    # Read template (source of truth for hook definitions)
+    # Read template (source of truth for hook and statusLine definitions)
     try:
         with open(template_file, encoding="utf-8") as f:
             template = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return 0
-
-    template_hooks = template.get("hooks", {})
-    if not isinstance(template_hooks, dict):
+    if not isinstance(template, dict):
         return 0
 
-    manifest = build_manifest(template_hooks, hooks_dir)
-    if not manifest:
-        return 0
+    if statusline_only:
+        manifest = []
+    else:
+        template_hooks = template.get("hooks", {})
+        # A malformed hooks section must not suppress the statusLine sync — it is
+        # an independent settings surface.
+        manifest = (
+            build_manifest(template_hooks, hooks_dir)
+            if isinstance(template_hooks, dict)
+            else []
+        )
 
     # Read live settings
     try:
@@ -175,9 +257,13 @@ def main(argv):
     # on both the old and new events. Removing the sentinel guard on session-
     # start-sync.sh (issue #792) makes this critical — a stale PostToolUse entry
     # would run the full sync on every tool call.
+    #
+    # Skipped entirely with an empty manifest (--statusline-only): with nothing
+    # to compare against, this pass can only rewrite hook groups it has no
+    # opinion about.
     script_to_canonical_event = {item["script"]: item["event"] for item in manifest}
     removed_stale = 0
-    for event in list(live.keys()):
+    for event in list(live.keys()) if manifest else []:
         if not isinstance(live[event], list):
             continue
         surviving_groups = []
@@ -207,7 +293,13 @@ def main(argv):
         else:
             del live[event]
 
-    if added == 0 and removed_stale == 0:
+    # statusLine is a top-level settings surface, not a hook event, but it needs
+    # the identical placeholder-to-worktree resolution and the same auto-propagate
+    # behavior (issue #779). Folded into the same atomic write rather than a
+    # second one, so settings.json is never left half-synced.
+    statusline_changed = sync_statusline(settings, template, scripts_dir)
+
+    if added == 0 and removed_stale == 0 and statusline_changed == 0:
         return 0
 
     # Atomic write
@@ -234,6 +326,8 @@ def main(argv):
         parts.append(f"registered {added} new hook(s)")
     if removed_stale:
         parts.append(f"removed {removed_stale} stale event registration(s)")
+    if statusline_changed:
+        parts.append("synced statusLine command")
     print(f"hook-sync: {', '.join(parts)}", file=sys.stderr)
     return 0
 

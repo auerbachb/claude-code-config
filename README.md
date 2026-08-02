@@ -208,7 +208,7 @@ Thirteen hook scripts and hook utilities support Claude Code sessions:
 | `trust-flag-repair.sh` | Stop | Repairs trust flags in `~/.claude.json` for all projects |
 | `dirty-main-warn.sh` | Stop | Warns when root `main` has uncommitted drift and points to quarantine recovery |
 | `skill-usage-tracker.sh` | PostToolUse (Skill) | Appends each Skill invocation to `~/.claude/skill-usage.log` and updates `~/.claude/skill-usage.csv` for PM and maintenance audits |
-| `register-hooks.py` | Utility | Merges hook definitions from `global-settings.json` into user settings |
+| `register-hooks.py` | Utility | Merges hook definitions — and the top-level `statusLine` command — from `global-settings.json` into user settings |
 | `.claude/git-hooks/pre-commit` | Git pre-commit | Blocks commits made on `main` in the root checkout |
 
 All hooks are idempotent and fail-safe.
@@ -263,7 +263,7 @@ See `.claude/scripts/README.md` for detailed contracts, arguments, and exit code
 | File | Location | Purpose |
 |------|----------|---------|
 | `CLAUDE.md` | Repo root (symlinked to `~/.claude/`) | Core instructions: worktree policy, PR workflow, branch naming, acceptance criteria, CI merge gate |
-| `global-settings.json` | Merged into `~/.claude/settings.json` | Hooks, permissions (`allow` rules for autonomous operation), model preference, experimental flags, and optional **`extraKnownMarketplaces` / `enabledPlugins`** (Graphite CLI plugins when seeded) |
+| `global-settings.json` | Merged into `~/.claude/settings.json` | Hooks, the **`statusLine`** command (ET time · branch · agents · watchers — see [ARCHITECTURE.md](ARCHITECTURE.md#status-line)), permissions (`allow` rules for autonomous operation), model preference, experimental flags, and optional **`extraKnownMarketplaces` / `enabledPlugins`** (Graphite CLI plugins when seeded) |
 | `.coderabbit.yaml` | Repo root | CodeRabbit review config: assertive profile, token-efficiency checks, knowledge base integration |
 | `.claude/pm-config.md` | Per-repo (bootstrapped by `/pm`) | PM config: role, OKRs, team roster, infrastructure/architecture detection |
 | `~/.claude/session-state.json` | Runtime (auto-created) | Session orchestration state: PR phases, **CR hourly consumption** (`cr_hourly.events`), per-PR `cr_explicit_triggers`, active subagents, Greptile daily budget |

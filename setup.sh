@@ -137,6 +137,7 @@ chmod +x "$SCRIPT_DIR/.claude/hooks"/*.sh "$SCRIPT_DIR/.claude/hooks"/*.py 2>/de
 # Merge non-hook keys from template into existing settings.json.
 # Existing keys are NEVER overwritten — only missing keys are seeded.
 # Hooks are NOT touched here — setup-skills-worktree.sh Step 6 handles them.
+# `statusLine` is skipped for the same reason (issue #779): see SKIP_KEYS below.
 if ! python3 - "$SETTINGS_SRC" "$SETTINGS_DST" <<'PYTHON_MERGE'
 import json
 import os
@@ -174,7 +175,15 @@ if not isinstance(settings, dict):
 
 # Seed missing non-hook keys from template
 # Never overwrite existing keys — user customizations take precedence
-SKIP_KEYS = {"hooks"}  # hooks are managed by setup-skills-worktree.sh
+#
+# Both skipped keys carry /path/to/claude-code-config/... placeholders that only
+# the skills-worktree registration path can resolve, so seeding them verbatim
+# here would write a broken path into settings.json. The skills worktree is
+# pinned to origin/main, so a script still on a feature branch is absent from it
+# — the registration path skips those, whereas a blind merge would leave the
+# placeholder behind permanently. hooks: setup-skills-worktree.sh Step 6.
+# statusLine: Step 6b -> register-hooks.py --statusline-only (issue #779).
+SKIP_KEYS = {"hooks", "statusLine"}
 added = []
 for key, value in template.items():
     if key in SKIP_KEYS:

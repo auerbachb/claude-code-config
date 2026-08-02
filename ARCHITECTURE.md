@@ -8,6 +8,7 @@ Deep-dive reference for the claude-code-config system. For setup instructions an
 - [Skills Worktree](#skills-worktree)
 - [Hook Lifecycle](#hook-lifecycle)
 - [Hook Auto-Registration](#hook-auto-registration)
+- [Status Line](#status-line)
 - [Session Lifecycle](#session-lifecycle)
 - [Multi-Agent Orchestration](#multi-agent-orchestration)
 - [Review Loop](#review-loop)
@@ -84,6 +85,26 @@ This means new hooks added to the repo are automatically picked up after merging
 1. Create the script in `.claude/hooks/`
 2. Add the hook entry to `global-settings.json`
 3. Merge to `main` — the next session start auto-registers it
+
+---
+
+## Status Line
+
+`statusLine` is a settings surface, not a hook event — a command Claude Code runs on a timer whose stdout is rendered in the footer. Its output goes to the **terminal, never the model's context window**, so what it displays costs zero tokens. That is the point: it shows the facts the agent would otherwise repeat in prose, without paying for them on every subsequent turn (issue #779, FU-3 of [`token-efficiency-audit-2026-07.md`](.claude/reference/token-efficiency-audit-2026-07.md)).
+
+`.claude/scripts/statusline.sh` renders one line:
+
+```text
+Sat Aug 1 09:37 PM ET · issue-779-statusline · 2 agents · 1 watcher
+```
+
+Counts come from `~/.claude/session-state.json` through `session-state.sh --session-view`, so they are scoped to the invoking repo. There is no network call and no `gh` — it renders on a timer, so it only reads local state, and it always exits 0 so a transient read failure shortens the line instead of breaking the render.
+
+**Deployment mirrors hooks.** The entry lives in `global-settings.json` with the same `/path/to/claude-code-config/...` placeholder, and `register-hooks.py` resolves it to the skills worktree — at install time via `setup-skills-worktree.sh` Step 6b (`--statusline-only`), and at session start via `session-start-sync.sh`, so it lands without a `setup.sh` re-run. A `statusLine` pointing at your own script is never touched, and `padding` / `refreshInterval` survive path repairs. `refreshInterval` is in **seconds** (the harness clamps it to ≥ 1).
+
+**It only renders in a terminal TUI.** The status-line executor lives in Claude Code's interactive render path; a headless session — which is how the Claude desktop app runs the agent — has no footer to draw and never invokes the command. Registering it is still correct (it costs nothing where it is unused), but the token saving only lands in terminal sessions. Evidence: [`usage-limit-signal-audit-2026-07.md`](.claude/reference/usage-limit-signal-audit-2026-07.md) §1.
+
+The status line **supplements** CLAUDE.md's timestamp-prefix rule rather than replacing it — the model still needs the time injected into context to write that prefix, so `timestamp-injector.sh` stays.
 
 ---
 
