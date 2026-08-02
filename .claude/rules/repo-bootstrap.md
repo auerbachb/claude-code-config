@@ -10,30 +10,15 @@ Run at session start — after worktree creation, before code work. Idempotent; 
 
 ### Run the bootstrap check
 
-```bash
-.claude/scripts/repo-bootstrap.sh --check
-```
+`.claude/scripts/repo-bootstrap.sh --check` reports workflow + branch-protection state without mutating. Exit `0` clean, `1` gaps. Full contract: `repo-bootstrap.sh --help`.
 
-Reports workflow + branch-protection state without mutating. Exit `0` clean, `1` gaps. Full contract: `repo-bootstrap.sh --help`.
-
-If the report shows `[MISSING] .github/workflows/cr-plan-on-issue.yml`, install it as part of the first feature PR — do not open a bootstrap-only PR:
-
-```bash
-.claude/scripts/repo-bootstrap.sh --apply
-```
-
-`--apply` only installs the missing workflow — never overwrites existing files and never modifies branch protection.
+If it reports `[MISSING] .github/workflows/cr-plan-on-issue.yml`, install it with `.claude/scripts/repo-bootstrap.sh --apply` as part of the first feature PR — do not open a bootstrap-only PR. `--apply` only installs the missing workflow: it never overwrites existing files and never modifies branch protection.
 
 ### Branch protection — required status checks
 
 The script reports state as `[OK]` / `[MISSING]` / `[SKIP]` (token lacks read perm) / `[UNKNOWN]` (investigate stderr). Without required status checks on `main`, PRs can merge with red CI. The script never changes branch protection — user confirmation required.
 
-**Remediation (requires user confirmation):**
-
-1. **Discover CI check names** from latest `main` commit's check-runs; fall back to parsing `.github/workflows/*.yml` job names.
-2. **Ask the user:** "No required status checks on `main` — PRs can merge with failing CI. Found checks: `lint`, `test`, `build`. Want me to enable protection?"
-3. **If approved:** read existing protection first (`gh api repos/{owner}/{repo}/branches/main/protection`; ignore 404), then PUT back the full read payload changing only `required_status_checks.contexts` (merged) and `strict: true`; full sensible-default payload (`enforce_admins: false`) if 404.
-4. **If declined:** move on. Do not ask again in the same session.
+**Remediation:** discover the CI check names, then **ask the user** before touching protection, naming the checks found. If approved, read the existing protection and PUT it back changing only `required_status_checks` — never a blind PUT. If declined, move on and do not ask again in the same session. Discovery sources and the exact payload: `.claude/reference/repo-bootstrap-protection.md`.
 
 ### Rules
 

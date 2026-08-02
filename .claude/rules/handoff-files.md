@@ -23,7 +23,7 @@ Mechanism + migration: `.claude/reference/state-file-contracts.md`. Canonical co
 ## Handoff File Storage
 
 - **Naming:** `{owner}/{repo}/pr-{N}-handoff.json`. Create via `handoff-state.sh --owner-repo <owner>/<repo> --create`; resolve path with `handoff-state.sh --path <N>`.
-- **One file per PR per repo at any time.** Two repos at the same PR number occupy different paths.
+- **One file per PR per repo at any time** — two repos at the same PR number occupy different paths.
 - **Lifecycle:** Created by Phase A → read/updated by Phase B → read by Phase C → deleted by **parent** after `OUTCOME: merged` confirmed by GitHub (see `phase-protocols.md`).
 
 ### Phase Operations

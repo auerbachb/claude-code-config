@@ -27,6 +27,8 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `merge-sequencing.md` — mechanism and state machine for `merge-sequence.sh`; overlap-aware merge sequencing for PRs touching the same file (#756)
 - `codeant-graphite-supplemental.md` — CodeAnt and Graphite supplemental polling on the CR path
 - `local-review-cli-failure-modes.md` — how CodeAnt/CodeRabbit fake a clean pass on failure, 403 triage, 15-file cap, and binary-absent detection (#642, #819)
+- `repo-bootstrap-protection.md` — branch-protection remediation mechanism: CI check-name discovery, the confirmation prompt, and the read-then-PUT payload that never downgrades existing protection (`repo-bootstrap.md`; #918)
+- `dirty-main-guard.md` — how `--check` computes "dirty", what `--quarantine` preserves, and the recovery-branch listing/inspection/deletion commands (`main-hygiene.md`; #918)
 - `review-substance-evidence.md` — why a bot APPROVED requires a substantive review footprint; hollow APPROVED failure mode and evidence checks in `merge-gate.sh` (#875)
 - `wrap-fixpr-delegation.md` — `/wrap` Step 2.1 → full `/fixpr` recovery handoff contract
 - `state-file-contracts.md` — expanded scoping, write-lock, migration, and field-type mechanics for `session-state.json` + handoffs (`handoff-files.md`; #625, #638, #639, #651, #655, #682, #687, #704)
@@ -57,6 +59,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `skill-sync-hooks.md` — skills worktree sync and hook registration narrative
 - `skill-symlink-setup.md` — why a dedicated worktree, session-start bootstrap, symlink install, and migration commands (`skill-symlinks.md`)
 - `skill-usage-durability.md` — how skill-usage telemetry records survive machine moves, OS reinstalls, and `~/.claude` cleanups (#572)
+- `skill-first-subagent-delivery.md` — the two delivery paths that carry the skill-first reflex into subagents, the `Skill`-tool precondition matrix, and the borderline-rung adaptation for autonomous agents (`skill-first.md`; #918)
 - `trust-dialog-repair.md` — why `~/.claude.json` re-prompts per worktree, the three flags, and repair-script behavior (`trust-dialog-fix.md`)
 - `double-loading-fix.md` — decision record for suppressing the duplicate global CLAUDE.md + rules copy via project-local `claudeMdExcludes` (#461)
 - `budget-cap-raise-decision.md` — decision record: the `.budget-soft-cap` ratchet is a visibility mechanism raisable with a PR-body justification line; the 12,000/13,000 word limits are the actual gate (#879)

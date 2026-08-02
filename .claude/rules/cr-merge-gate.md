@@ -7,11 +7,7 @@
 
 ## Polling exit criterion
 
-Stop polling ONLY when one current-HEAD review path below is satisfied:
-
-1. **CR path:** explicit clean `APPROVED` from CodeRabbit or CodeAnt on current HEAD (freshness/retraction rules in Step 1); when CodeAnt participated on that SHA, CodeAnt must also be clean.
-2. **BugBot:** clean BugBot pass on current HEAD.
-3. **Greptile:** severity gate passed.
+Stop polling ONLY when the current-HEAD gate for the owning reviewer path is satisfied (freshness and retraction rules in Step 1): **CR path** — an explicit clean `APPROVED` from CodeRabbit or CodeAnt on current HEAD, plus a clean CodeAnt where CodeAnt participated on that SHA; **BugBot** — a clean pass on current HEAD; **Greptile** — severity gate passed.
 
 "0 unresolved threads right now" is transient, not an exit condition. After any fix push, HEAD changes and reviewers re-run; keep polling for a current-HEAD gate.
 

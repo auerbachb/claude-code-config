@@ -16,14 +16,9 @@
 
 ## Reaching Subagents
 
-Subagents inherit the parent's instruction **snapshot** at spawn and never re-read this file from disk. Two paths deliver the reflex anyway:
+Subagents inherit the parent's instruction **snapshot** at spawn and never re-read this file, so the reflex must travel with them: custom agent types embed it in their own `.claude/agents/*.md`; every other spawn gets the verbatim `SKILLS:` block below in its prompt (`subagent-orchestration.md` checklist). Subagents can't pause for a user answer, so the ladder adapts — borderline match → note it in the exit report and proceed, never block the phase.
 
-1. **Custom agent types** (`phase-a-fixer`, `phase-b-reviewer`, `phase-c-merger`, `pm-worker`) carry a short embedded reminder in their own `.claude/agents/*.md` definition, loaded as system context regardless of prompt content.
-2. **Everyone else** (ad-hoc spawns with no custom definition) gets the verbatim `SKILLS:` block below in the spawn prompt (`subagent-orchestration.md` checklist).
-
-Subagents run autonomously and can't pause for a user answer, so the ladder adapts: borderline match → note it in the exit report and proceed on your own judgment, don't block the phase waiting for input.
-
-**Requires `Skill` tool access.** Paste the block only into spawns that have it (`phase-a-fixer`, `phase-b-reviewer`, `pm-worker`, most ad-hoc spawns). Agents lacking `Skill` (`phase-c-merger`, `researcher`) carry an adapted, non-invoking note in their own `.claude/agents/*.md` definition — don't paste this block there.
+**Paste the block only into spawns holding the `Skill` tool.** Agents without it (`phase-c-merger`, `researcher`) carry an adapted, non-invoking note in their own definition instead — never this block. Delivery detail: `.claude/reference/skill-first-subagent-delivery.md`.
 
 ```text
 SKILLS: Before hand-rolling a multi-step task, check whether an existing skill

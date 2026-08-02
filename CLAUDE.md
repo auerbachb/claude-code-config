@@ -28,9 +28,9 @@ Best-effort: lead the first user message with `[#N]` (or `[#339, #341]`) so tab 
 
 ## GitHub reference prefix
 
-Whenever referencing a GitHub number in human-facing prose, you **must** prefix it with its type: `PR #1234` or `Issue #1234`. Example: "Blocked on PR #1930: Issue #1931, Issue #1934" — not "Blocked on #1930: #1931, #1934".
+Whenever referencing a GitHub number in human-facing prose, you **must** prefix it with its type: `PR #1234` or `Issue #1234` — never a bare `#1234`. Markdown link text needs it too: `[PR #1234](url)`.
 
-**Exceptions** (bare `#N` is correct): GitHub closing keywords (`Closes #123`), commit messages/code, bulk shorthand for 5+ same-type items (`PRs #1234, #1235, #1236, #1237, #1238`), and the thread-title prefix above. Markdown link text still needs the type: `[PR #1234](url)`, not `[#1234](url)`.
+**Exceptions** (bare `#N` is correct): GitHub closing keywords (`Closes #123`), commit messages/code, bulk shorthand for 5+ same-type items (`PRs #1234, #1235, #1236, #1237, #1238`), and the thread-title prefix above.
 
 ---
 
@@ -61,13 +61,7 @@ Detail: `.claude/reference/continuous-work-posture.md`.
 
 **At the start of every session, before doing anything else, sync local `main` and enter the correct worktree. The `stale-worktree-warn.sh` hook warns when the branch doesn't match the task issue.**
 
-1. **Pull remote main into local main** (quarantine dirty state first):
-
-   ```bash
-   ROOT_REPO=$(.claude/scripts/repo-root.sh) && [[ -d "$ROOT_REPO" ]] || { echo "ERROR: cannot resolve root repo" >&2; exit 1; }
-   .claude/scripts/dirty-main-guard.sh --check >/dev/null || .claude/scripts/dirty-main-guard.sh --quarantine
-   git -C "$ROOT_REPO" pull origin main --ff-only
-   ```
+1. **Pull remote main into local main, quarantining dirty state first** — resolve the root repo with `.claude/scripts/repo-root.sh` (abort if it does not resolve), run `.claude/scripts/dirty-main-guard.sh --check` and `--quarantine` on a dirty report, then `git -C "$ROOT_REPO" pull origin main --ff-only`.
 
    If the guard reports `quarantined: recovery/dirty-main-*`, name the recovery branch to the user so they know where their prior work lives. If the pull itself fails (e.g. diverged history after quarantine), tell the user — do not force-pull or reset. Full guard contract: `main-hygiene.md`.
 2. **Create a worktree** via the `EnterWorktree` tool for isolated work. The branch must include the issue number (`issue-N-*`).
@@ -99,26 +93,14 @@ Detail: `.claude/reference/continuous-work-posture.md`.
 
 ## Rule Files (`.claude/rules/`)
 
-| File | Contents |
-|------|----------|
-| `issue-planning.md` | Issue + planning flow |
-| `cr-local-review.md` | Local CR review |
-| `cr-github-review.md` | GitHub review polling |
-| `cr-merge-gate.md` | Merge gate |
-| `bugbot.md` | BugBot fallback |
-| `greptile.md` | Greptile fallback |
-| `subagent-orchestration.md` | Subagent spawning |
-| `monitor-mode.md` | Monitoring + recovery |
-| `scheduling-reliability.md` | Recurring poll safety |
-| `handoff-files.md` | Handoff state |
-| `phase-protocols.md` | Phase exit protocols |
-| `safety.md` | Safety prohibitions |
-| `main-hygiene.md` | Dirty-main guard |
-| `repo-bootstrap.md` | Repo bootstrap |
-| `trust-dialog-fix.md` | Trust flags |
-| `skill-symlinks.md` | Skill symlinks |
-| `skill-first.md` | Proactive skill matching |
-| `chip-spawn.md` | Chip / spawn_task model + guard contract |
+Each file's own header block states its scope.
+
+| Area | Files |
+|------|-------|
+| Issues & planning | `issue-planning.md` |
+| Review & merge | `cr-local-review.md` `cr-github-review.md` `cr-merge-gate.md` `bugbot.md` `greptile.md` |
+| Orchestration | `subagent-orchestration.md` `phase-protocols.md` `monitor-mode.md` `scheduling-reliability.md` `handoff-files.md` `chip-spawn.md` `skill-first.md` |
+| Safety & hygiene | `safety.md` `main-hygiene.md` `repo-bootstrap.md` `trust-dialog-fix.md` `skill-symlinks.md` |
 
 These files auto-load for the parent agent session. **Subagents do NOT auto-load these files.** See `subagent-orchestration.md` for how to pass rules to subagents.
 
