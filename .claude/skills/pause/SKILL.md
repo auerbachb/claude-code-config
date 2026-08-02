@@ -181,6 +181,14 @@ Close with the file path on its own line, so the next session (and the usage-lim
 | `/pm-handoff` | a thread | a prompt for the next thread in this harness |
 | `/pause` | a working session | a document for a reader **outside** this harness |
 
+### The automatic checkpoint is a different producer, not this command on a timer
+
+`.claude/hooks/checkpoint-handoff.sh` writes the same *kind* of document automatically while work is in progress (issue #941), because a usage limit that arrives without warning is exactly the case where nobody got to run `/pause` — and the recorder that looks for a handoff then finds none.
+
+It ends nothing. It stops no work, takes no wind-down step, and makes no decision; it only describes repository state. So the "does not fire on a schedule, a threshold, or an inference" clause below still holds for **this** command, which is the one that stops things.
+
+The two are distinguishable on disk: a checkpoint's filename ends `-checkpoint.md`. What you write here is richer — it carries the reasoning a script cannot know — so a checkpoint names the most recent `/pause` document in its own body rather than burying it, and retention never deletes one.
+
 They overlap in what they read — hence the shared collector — and not at all in what they produce. `/pause` does not merge anything, does not close anything, and does not decide that work is finished. It records where the work actually is and stops.
 
 ## Not this command's job

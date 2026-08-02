@@ -204,6 +204,17 @@
           }
         ]
       }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/checkpoint-handoff.sh",
+            "timeout": 15
+          }
+        ]
+      }
     ]
   }
 }
