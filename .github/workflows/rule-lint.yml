@@ -27,3 +27,7 @@ jobs:
 
       - name: Run verbatim-block-lint
         run: bash .github/scripts/verbatim-block-lint.sh
+
+      # Unlike its siblings above, this lint lives under .claude/scripts/.
+      - name: Run reference-catalog-lint
+        run: bash .claude/scripts/reference-catalog-lint.sh
