@@ -453,6 +453,33 @@ state_lock_release() {
 # snapshot someone else has since replaced. Call it immediately before the
 # commit `mv`, not earlier: everything between the check and the commit is
 # still unprotected (#930).
+# state_lock_commit <tmp-file> <destination>
+#
+# The guarded commit every read-modify-write writer should use: assert we still
+# hold the lock, then move the temp file into place. Returns
+# STATE_LOCK_EXIT_TIMEOUT (6) without committing when the lock was broken
+# underneath us, and 5 when the move itself fails; the temp file is removed on
+# either failure.
+#
+# This exists so the assertion cannot be forgotten. It is the ONLY thing
+# standing between a broken lock and a silently dropped update, and a check
+# that each writer has to remember independently is one that some writer will
+# eventually skip — as three of them already had (CodeAnt, PR #937).
+state_lock_commit() {
+  local tmp="$1" dest="$2"
+  if ! state_lock_assert_held; then
+    rm -f "$tmp" 2>/dev/null || true
+    echo "state-lock: lock was broken by another writer mid-update; refusing to commit $dest (unchanged, retry)" >&2
+    return "$STATE_LOCK_EXIT_TIMEOUT"
+  fi
+  if ! mv "$tmp" "$dest" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    echo "state-lock: could not write $dest" >&2
+    return 5
+  fi
+  return 0
+}
+
 state_lock_assert_held() {
   local lock_dir="$STATE_LOCK_HELD_DIR" owner_token
   [[ -n "$lock_dir" ]] || return 1

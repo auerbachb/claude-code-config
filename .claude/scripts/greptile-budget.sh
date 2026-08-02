@@ -282,10 +282,10 @@ write_state() {
   fi
   rm -f "$jq_err" 2>/dev/null || true
 
-  if ! mv "$tmp" "$STATE_FILE" 2>/dev/null; then
-    echo "greptile-budget.sh: could not write $STATE_FILE" >&2
-    exit 5
-  fi
+  # Guarded commit: refuses to write if this process's lock was broken and
+  # re-taken while it was reading and transforming, which would drop the other
+  # writer's update (issue #930).
+  state_lock_commit "$tmp" "$STATE_FILE" || exit $?
 }
 
 print_state() {

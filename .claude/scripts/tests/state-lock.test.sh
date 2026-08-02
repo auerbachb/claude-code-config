@@ -313,22 +313,56 @@ rm -rf "$STATE_FILE.lock" "$STATE_FILE.lock.stolen"
 
 echo
 echo "== issue #930: a stolen read-modify-write is retried, never committed blind =="
-# Same theft, but through the real write path. The pre-existing value must
-# survive: the writer either redoes its transform against current content or
-# exits 6 — it must never overwrite with the stale snapshot.
+# The theft has to land MID-FLIGHT — after the writer has acquired the lock and
+# read its snapshot, but before it commits. Stealing the lock beforehand only
+# proves that acquire times out; the writer never reaches assert_held, the
+# commit, or the retry, so a regression in any of them would still pass
+# (CodeAnt, PR #937).
+#
+# A `jq` shim earlier on PATH makes the timing deterministic instead of raced:
+# the writer's first post-acquire jq call parks on a FIFO-style sentinel, the
+# test steals the lock while it is parked, then releases it to continue into
+# its commit.
 reset_state
 run --set '.keep="original"'
-BEFORE="$(jq -r '.keep' "$STATE_FILE")"
-OUT="$(CLAUDE_STATE_RMW_MAX_RETRY=1 CLAUDE_STATE_LOCK_TIMEOUT=2 bash -c '
-  source "$1"
-  # Hold a foreign lock so the retry cannot re-acquire, forcing the give-up path.
-  mkdir -p "$2.lock"
-  printf "pid=%s\nhost=%s\nepoch=%s\ntoken=foreign\n" "$$" "$(hostname)" "$(date +%s)" > "$2.lock/owner"
-  bash "$3" --set ".keep=clobbered"; echo "rc=$?"
-' _ "$LOCK_LIB" "$STATE_FILE" "$SCRIPT" 2>&1)"
-check_eq "writer that cannot serialize exits 6" "1" "$(grep -c 'rc=6' <<<"$OUT")"
-check_eq "the original value was not clobbered" "$BEFORE" "$(jq -r '.keep' "$STATE_FILE")"
-rm -rf "$LOCK_DIR"
+BEFORE="$(cat "$STATE_FILE")"
+SHIM_BIN="$TMP_HOME/shimbin"; mkdir -p "$SHIM_BIN"
+REAL_JQ="$(command -v jq)"
+cat > "$SHIM_BIN/jq" <<SHIM
+#!/usr/bin/env bash
+# Park exactly once — on the first call made while the arm file exists — so we
+# interpose after state_lock_acquire and before the commit.
+if [[ -e "$TMP_HOME/arm" ]]; then
+  rm -f "$TMP_HOME/arm"
+  : > "$TMP_HOME/parked"
+  for _ in \$(seq 1 200); do [[ -e "$TMP_HOME/go" ]] && break; sleep 0.05; done
+fi
+exec "$REAL_JQ" "\$@"
+SHIM
+chmod +x "$SHIM_BIN/jq"
+rm -f "$TMP_HOME/arm" "$TMP_HOME/parked" "$TMP_HOME/go"
+: > "$TMP_HOME/arm"
+# max-retry 0 forces the give-up path, so the assertion below proves the writer
+# REFUSED to commit rather than merely having been lucky on a retry.
+( PATH="$SHIM_BIN:$PATH" CLAUDE_STATE_RMW_MAX_RETRY=0 CLAUDE_STATE_LOCK_TIMEOUT=5 \
+    bash "$SCRIPT" --set '.keep="clobbered"' >"$TMP_HOME/w.out" 2>&1; echo "$?" > "$TMP_HOME/w.rc" ) &
+WRITER=$!
+for _ in $(seq 1 200); do [[ -e "$TMP_HOME/parked" ]] && break; sleep 0.05; done
+check_eq "writer parked mid-transform while holding the lock" "1" \
+  "$([[ -e "$TMP_HOME/parked" && -d "$LOCK_DIR" ]] && echo 1 || echo 0)"
+# Steal it: replace the lock directory and publish a different token, exactly
+# as breaking a stale lock and re-acquiring would.
+rm -rf "$LOCK_DIR.thief"; mv "$LOCK_DIR" "$LOCK_DIR.thief" 2>/dev/null
+mkdir -p "$LOCK_DIR"
+printf 'pid=1\nhost=%s\nepoch=%s\ntoken=thief-token\n' "$(hostname)" "$(date +%s)" > "$LOCK_DIR/owner"
+: > "$TMP_HOME/go"
+wait "$WRITER" 2>/dev/null
+WRC="$(cat "$TMP_HOME/w.rc" 2>/dev/null)"
+check_eq "robbed writer exits 6 (unchanged, retry) instead of committing" "6" "$WRC"
+check_eq "it reported the broken lock rather than failing silently" "1" \
+  "$(grep -c 'lock was broken' "$TMP_HOME/w.out")"
+check_eq "the file it would have clobbered is byte-identical" "$BEFORE" "$(cat "$STATE_FILE")"
+rm -rf "$LOCK_DIR" "$LOCK_DIR.thief" "$SHIM_BIN" "$TMP_HOME/arm" "$TMP_HOME/parked" "$TMP_HOME/go"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

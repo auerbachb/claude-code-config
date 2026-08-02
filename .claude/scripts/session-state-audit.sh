@@ -689,7 +689,11 @@ if (( POST_VIOLATION_COUNT > PRE_VIOLATION_COUNT )); then
   die_error "repair introduced new type-contract violations ($NEW_VIOLATIONS) — $STATE_FILE left unmodified (backup: $BACKUP)"
 fi
 
-mv "$OUT_TMP" "$STATE_FILE" || die_error "could not write $STATE_FILE (backup: $BACKUP)"
+# Guarded commit: refuses to write if this process's lock was broken and
+# re-taken while it was reading and repairing, which would drop the other
+# writer's update (issue #930).
+state_lock_commit "$OUT_TMP" "$STATE_FILE" \
+  || die_error "could not write $STATE_FILE (backup: $BACKUP)"
 
 RESULT="$(jq -c -n \
   --argjson moves "$MOVE_SET" --argjson prunes "$PRUNE_SET" --argjson heals "$HEAL_SET" \
