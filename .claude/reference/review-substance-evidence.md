@@ -220,6 +220,83 @@ punctuation to be trustworthy.
 > its `s` only rebinds `^` and `$`. Written with `s` the gsubs match nothing at
 > all and every fenced block is silently scanned as prose.
 
+### Quoted and echoed text is excluded first (issue #933)
+
+All three rules read a body with **borrowed lines removed**. A line is borrowed
+when the identical line was already posted on the thread by someone who is *not*
+one of the reviewers under evaluation; quote markers (`>`) are normalised out of
+the comparison key, so GitHub's "Quote reply" shape (a `>` marker followed by the
+original line) matches its source. Nothing else is removed.
+
+The trace (PR #929, 2026-08-02). CodeAnt answers a re-review request by
+reproducing the requester's comment verbatim under a `Question:` heading and
+putting its own verdict under `Answer:`. The author's trigger prose named HEAD's
+short SHA `5acd1e2`, so the bot's body contained HEAD's SHA that the bot never
+wrote — and `status_comment_names_head`, the flag asserting *this reviewer
+demonstrably read HEAD*, went true on the strength of the **author's** words.
+Replayed on the live payload, `main` scored that empty CodeAnt approval
+`counts_as_coverage: true`; with the exclusion it is `false`, and the reviewer's
+`status_comment_shas` correctly reports `c441771` — the SHA its own status
+comment actually names — instead of the echoed `5acd1e2`.
+
+**Why not "strip every blockquote line"**, the obvious first cut: the live
+payload refutes it twice. The PR #929 echo carries no `>` at all, so a blockquote
+rule closes *none* of the reported trace; and the only `>` lines on that thread
+are CodeRabbit quoting **itself** — its status notice renders its own reviewed
+range as `> Reviewing files that changed … between <base> and <head>`. Blanket
+quote-stripping would have deleted a reviewer's own self-report on every
+CodeRabbit status comment in this repo while fixing nothing. The issue asks to
+discount quoted/echoed *author* text; a bot's own callout is not author text.
+Case `(ff-933)(e)` is the negative control that pins this distinction.
+
+Two further properties, both deliberate:
+
+- **Ordered.** The index stores the earliest time each line was seen, and a line
+  is dropped only from comments created at or after it. Echo means the source
+  came first; without ordering a human quoting a bot verbatim would retroactively
+  strip the bot's original.
+- **Reviewers never seed the index**, so a reviewer can never strip *itself* —
+  including a bot that repeats its own status line. One reviewer quoting another
+  is therefore out of scope, pinned by `(ff-933)(i)` so that widening the index to
+  bot-authored text stays a conscious decision.
+
+One exception keeps the filter from breaking the masking above: **fence
+delimiter lines (` ``` `, `~~~`) are never dropped as echoes.** A bare fence line
+is among the most reproducible lines on a thread — every comment carrying a code
+block has one — so it enters the index almost immediately, and dropping it would
+delete the delimiters of a *reviewer's own* fenced block. Rule 3's masking is
+paired-delimiter matching: lose the pair and quoted diff hunks are scanned as
+prose again. Losing only the closer is the worse half, since the unclosed-opener
+rule then runs to end-of-body and deletes rule-3 tokens that should have been
+admitted. Only paired syntax needs the exception, which is why four-space
+indented lines get none — dropping such a line removes its content with it.
+Pinned by `(ff-933)(j)`.
+
+**Directions.** Dropping whole lines can only ever *remove* tokens —
+`split("\n") | join("\n")` is the identity when nothing is dropped and survivors
+are emitted byte-for-byte, so the indentation- and fence-sensitive rules above
+still see what they always saw. `status_comment_names_head`,
+`external_evidence_on_head` and `substantive` are monotone in the token set and
+so can only move **true → false**: the grant path #933 closes.
+
+`self_report_mismatch` moves both ways. It goes false → true when a comment keeps
+a non-HEAD token but loses its HEAD one, and **true → false** when a comment's
+only tokens were quoted, so it stops being a self-report candidate at all. That
+second direction is a grant, and it is the same correction rather than a side
+effect: a SHA the reviewer never wrote was never the reviewer's report about
+itself, and reading it as one yields a blocker no re-review can clear while the
+trigger prose stays quoted. Issue #917 accepted the identical direction for the
+identical reason (UUID fragments manufacturing mismatches out of CodeRabbit's own
+request ids). It stays bounded — a comment carrying any SHA in the reviewer's own
+prose keeps its tokens and its verdict.
+
+`counts_as_coverage` therefore moves both ways as well, and **only through that
+one channel**. Every other input pushes it down: `substantive` can only fall,
+`no_substantive_footprint` can only appear, and `temporal_inversion` and
+`capability_failure` are both suppressed by `external_evidence_on_head`, which
+can only fall — so each can only newly fire. The single upward path is a cleared
+`self_report_mismatch` on a reviewer that is substantive on its own footprint.
+
 ### Why rule 3 cannot weaken the gate
 
 Any token admitted by rule 3 and **not** by rules 1-2 is, by construction, an

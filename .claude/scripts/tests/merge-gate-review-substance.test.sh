@@ -28,6 +28,9 @@
 #   (ee) sha_tokens admission rules on a decimal HEAD -> issue #894, both
 #        directions plus the invariant that the code-span rule can only ever
 #        withhold coverage, never grant it
+#   (ff-933) a bot echoing the AUTHOR's SHA-bearing text  -> does not name HEAD
+#        (issue #933, trace on PR #929), with the parity, ordering and
+#        self-quotation controls that keep the rule from over-stripping
 #
 # Only `gh` is stubbed; merge-gate.sh, review-substance.sh, ci-status.sh,
 # check-runs-dedup.sh and session-state.sh are the real scripts.
@@ -669,6 +672,122 @@ check_eq "true"     "$(echo "$RU" | jq -r '.status_comment_names_head')" "(ee-91
 check_eq '["a1b2c3d"]' "$(echo "$RU" | jq -c '.status_comment_shas')"    "(ee-917) only the genuine token is admitted — no UUID fragments"
 check_eq "false"    "$(echo "$RU" | jq -r '.self_report_mismatch')"     "(ee-917) a later UUID-only status comment no longer manufactures a mismatch"
 check_eq "[]"       "$(echo "$RU" | jq -c '.disqualified_by')"          "(ee-917) and the reviewer is not disqualified"
+
+echo "=== (ff-933) a reviewer echoing the author's SHA-bearing text does not name HEAD ==="
+# Issue #933, trace on PR #929 (2026-08-02). CodeAnt answers a re-review request
+# by reproducing the requester's comment verbatim (lowercased) under a
+# "Question:" heading and putting its own verdict under "Answer:". The author's
+# trigger prose named HEAD's short SHA, so the bot's body contained `5acd1e2`
+# without the bot ever having written it — and status_comment_names_head, the
+# flag that asserts "this reviewer demonstrably read HEAD", went true on the
+# strength of the AUTHOR's words. Replayed on the live payload, main scored that
+# CodeAnt approval counts_as_coverage=true; the fix scores it false.
+#
+# The rule is "a line someone else already posted", NOT "a blockquote line".
+# Case (e) is the negative control for that distinction and must not be deleted:
+# the only ">" lines on the real PR #929 thread were CodeRabbit quoting ITSELF.
+FF_HEAD="5acd1e20ef431444c38695923f73e1f30f6f1d39"
+ff_eval() { # <issue-comments-json> -> the codeant reviewer object
+  jq -cn --arg sha "$FF_HEAD" --argjson cs "$1" \
+    '{head_sha:$sha, push_ts:"2026-07-31T10:00:00Z",
+      reviews:[{user:{login:"codeant-ai[bot]"},commit_id:$sha,state:"APPROVED",
+                submitted_at:"2026-07-31T10:10:00Z",body:""}],
+      pr_comments:[],
+      issue_comments:($cs | map({user:{login:.login}, created_at:.created,
+                                 updated_at:.created, body:.body}))}' \
+  | "$EVAL_SUT" 2>/dev/null | jq -c '.reviewers["codeant-ai[bot]"]'
+}
+ff_pair() { # <author-body> <bot-body> [author_ts] [bot_ts]
+  jq -cn --arg ab "$1" --arg bb "$2" \
+         --arg at "${3:-2026-07-31T10:02:00Z}" --arg bt "${4:-2026-07-31T10:05:00Z}" \
+    '[{login:"auerbachb",         created:$at, body:$ab},
+      {login:"codeant-ai[bot]",   created:$bt, body:$bb}]'
+}
+# The author's line, and the bot's lowercased copy of it. Identical after the
+# evaluator's ascii_downcase — which is what makes it an echo and not authorship.
+FF_TRIGGER_LINE="Re-review requested on \`5acd1e2\`. The approval posted 43s after that push has an empty body and no inline comments, so it cannot be counted as review coverage on this SHA."
+FF_ECHO_LINE="re-review requested on \`5acd1e2\`. the approval posted 43s after that push has an empty body and no inline comments, so it cannot be counted as review coverage on this sha."
+FF_AUTHOR="$(printf '@codeant-ai: review\n\n%s\n' "$FF_TRIGGER_LINE")"
+FF_OWN_VERDICT='## Review
+
+No blocking findings. The documentation now matches the unchanged behavior of the extractor.'
+FF_UNRELATED='Please take another look when you get a chance — the CI run is green now and the branch is rebased.'
+
+# (a) THE TRACE. HEAD's SHA reaches the bot's body only through the echo.
+FF_A="$(ff_eval "$(ff_pair "$FF_AUTHOR" "$(printf 'Question: review\n\n%s\n\nAnswer:\n%s\n' "$FF_ECHO_LINE" "$FF_OWN_VERDICT")")")"
+check_eq "false" "$(echo "$FF_A" | jq -r '.status_comment_names_head')" "(ff-933) echoed author text does not name HEAD"
+check_eq "false" "$(echo "$FF_A" | jq -r '.external_evidence_on_head')" "(ff-933) and so supplies no evidence outside the approval"
+check_eq "false" "$(echo "$FF_A" | jq -r '.counts_as_coverage')"        "(ff-933) so the empty approval no longer counts as coverage"
+check_not_contains "5acd1e2" "$(echo "$FF_A" | jq -c '.status_comment_shas')" "(ff-933) and no HEAD token is admitted from the echo"
+
+# (b) PARITY. A genuine status comment naming HEAD in the bot's own prose is
+# untouched — the whole point is to separate quoting from reviewing.
+FF_B="$(ff_eval "$(ff_pair "$FF_AUTHOR" "$(printf "## Review summary for \`5acd1e2\`\n\nReviewed the modal root change and both call sites. No blocking issues found.\n")")")"
+check_eq "true" "$(echo "$FF_B" | jq -r '.status_comment_names_head')" "(ff-933) parity: the bot's own prose naming HEAD still counts"
+check_eq "true" "$(echo "$FF_B" | jq -r '.counts_as_coverage')"        "(ff-933) parity: and still redeems the empty approval"
+
+# (c) PAIRED. Echo AND own prose in one body: only the echoed line is removed.
+FF_C="$(ff_eval "$(ff_pair "$FF_AUTHOR" "$(printf "Question: review\n\n%s\n\nAnswer:\nReviewed commit \`5acd1e2\` end to end; no blocking issues found.\n" "$FF_ECHO_LINE")")")"
+check_eq "true" "$(echo "$FF_C" | jq -r '.status_comment_names_head')" "(ff-933) the strip removes the quoted line, not the whole body"
+
+# (d) GitHub "Quote reply" shape: "> " + the original line. Quote markers are
+# normalised out of the lookup key, so this is the same echo as (a).
+FF_D="$(ff_eval "$(ff_pair "$FF_AUTHOR" "$(printf '> %s\n\nAcknowledged. No blocking findings after a full pass over the diff.\n' "$FF_ECHO_LINE")")")"
+check_eq "false" "$(echo "$FF_D" | jq -r '.status_comment_names_head')" "(ff-933) a blockquoted echo of the author is caught too"
+
+# (e) NEGATIVE CONTROL — self-quotation is NOT an echo. CodeRabbit renders its
+# own reviewed range as "> Reviewing files that changed ... between X and Y";
+# on the real PR #929 thread those were the ONLY ">" lines present. A rule that
+# dropped every blockquote line would delete a reviewer's own self-report here
+# while closing none of case (a). If this flips to false, the rule has drifted
+# back to "strip all quotes".
+FF_E="$(ff_eval "$(ff_pair "$FF_UNRELATED" "$(printf '> Reviewing files that changed from the base of the PR and between c441771 and 5acd1e2\n\nStatus: review complete, no blocking findings on this commit.\n')")")"
+check_eq "true" "$(echo "$FF_E" | jq -r '.status_comment_names_head')" "(ff-933) a bot's own blockquoted callout is not an echo"
+
+# (f) ORDER MATTERS. The same line posted by the author AFTER the bot is not
+# something the bot could have echoed; the bot's own line survives.
+FF_F="$(ff_eval "$(ff_pair "$(printf 'Confirming for the record.\n\n%s\n' "$FF_TRIGGER_LINE")" "$(printf 'Reviewed. %s\n' "$FF_ECHO_LINE")" "2026-07-31T10:08:00Z" "2026-07-31T10:05:00Z")")"
+check_eq "true" "$(echo "$FF_F" | jq -r '.status_comment_names_head')" "(ff-933) a later author comment cannot retroactively strip the bot"
+
+# (g) A quoted OLDER SHA is not the reviewer's self-report (issue #933; same
+# direction #917 accepted for UUID fragments). The bot never claimed to have
+# read c441771 — the author did — so no mismatch is manufactured from it.
+FF_OLD_LINE="Please re-check \`c441771\`; that is the commit the earlier approval actually covered."
+FF_G="$(ff_eval "$(ff_pair "$(printf '@codeant-ai: review\n\n%s\n' "$FF_OLD_LINE")" "$(printf 'Question: review\n\n%s\n\nAnswer:\n%s\n' "$(echo "$FF_OLD_LINE" | tr '[:upper:]' '[:lower:]')" "$FF_OWN_VERDICT")")")"
+check_eq "[]"    "$(echo "$FF_G" | jq -c '.status_comment_shas')"   "(ff-933) a quoted older SHA yields no tokens"
+check_eq "false" "$(echo "$FF_G" | jq -r '.self_report_mismatch')"  "(ff-933) and manufactures no self-report mismatch"
+
+# (h) A reviewer can never strip ITSELF. Only non-reviewer comments seed the
+# index, so a bot repeating its own status line keeps its evidence both times.
+FF_SELF_LINE="Reviewed commit \`5acd1e2\` end to end; no blocking issues found."
+FF_H="$(ff_eval "$(jq -cn --arg l "$FF_SELF_LINE" --arg u "$FF_UNRELATED" \
+  '[{login:"auerbachb",       created:"2026-07-31T10:02:00Z", body:$u},
+    {login:"codeant-ai[bot]", created:"2026-07-31T10:05:00Z", body:$l},
+    {login:"codeant-ai[bot]", created:"2026-07-31T10:07:00Z", body:$l}]')")"
+check_eq "true" "$(echo "$FF_H" | jq -r '.status_comment_names_head')" "(ff-933) a reviewer repeating its own line does not erase itself"
+
+# (i) SCOPE BOUNDARY, pinned deliberately: corroborator bots are reviewers too,
+# so one reviewer quoting another is out of scope and changes nothing. Widening
+# the index to bot-authored text must be a conscious decision, not a drift.
+FF_I="$(ff_eval "$(jq -cn --arg l "$FF_SELF_LINE" --arg u "$FF_UNRELATED" \
+  '[{login:"auerbachb",       created:"2026-07-31T10:02:00Z", body:$u},
+    {login:"cursor[bot]",     created:"2026-07-31T10:03:00Z", body:$l},
+    {login:"codeant-ai[bot]", created:"2026-07-31T10:05:00Z", body:$l}]')")"
+check_eq "true" "$(echo "$FF_I" | jq -r '.status_comment_names_head')" "(ff-933) reviewer-quotes-reviewer stays out of scope"
+
+# (j) Fence delimiters are STRUCTURE, not content, and are never dropped as
+# echoes (CodeRabbit CLI review of this PR). A bare "```" line is one of the
+# most reproducible lines a human can post — any comment containing a code block
+# has one — so without an exception the delimiters of a reviewer's own fenced
+# block get stripped, the #897 masking silently stops matching, and numeric
+# literals in quoted diff hunks become self-report candidates again. Stripping
+# only the CLOSER is worse: the opener then runs to end-of-body and deletes
+# rule-3 tokens that should have been admitted, which is the grant direction.
+FF_J_AUTHOR="$(printf "Repro for the failing case:\n\n\`\`\`\nbash .claude/scripts/tests/merge-gate-review-substance.test.sh\n\`\`\`\n\nShould be green after the rebase.\n")"
+FF_J_BOT="$(printf "Walkthrough of the changed files, covering both call sites in detail.\n\n\`\`\`\nconst id = \`1234599\`;\n\`\`\`\n")"
+FF_J="$(ff_eval "$(ff_pair "$FF_J_AUTHOR" "$FF_J_BOT")")"
+check_eq "[]"    "$(echo "$FF_J" | jq -c '.status_comment_shas')"  "(ff-933) an echoed fence delimiter still masks its block"
+check_eq "false" "$(echo "$FF_J" | jq -r '.self_report_mismatch')" "(ff-933) so quoted source code is still not a self-report"
 
 echo "=== (m) evaluator rejects malformed stdin ==="
 echo "not json" | "$EVAL_SUT" >/dev/null 2>&1

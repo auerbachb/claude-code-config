@@ -81,6 +81,12 @@
 #                             #894) and >= min_chars long. No
 #                             freshness filter is applied or needed: naming
 #                             HEAD's SHA is itself proof the comment postdates it.
+#                             Text the reviewer QUOTED rather than wrote is
+#                             excluded before tokens are extracted — blockquote
+#                             (">") lines, and lines reproduced verbatim from a
+#                             non-reviewer comment on the same thread (issue
+#                             #933). A bot that merely echoes the author's
+#                             SHA-bearing re-review trigger no longer names HEAD.
 #   self_report_mismatch      among that bot's conversation comments containing any
 #                             SHA-like token, the MOST RECENT one names no SHA
 #                             matching HEAD. SHA-like = \b[0-9a-f]{7,40}\b with at
@@ -92,8 +98,12 @@
 #                             four-space-indented block, or an unclosed backtick
 #                             opener is not mistaken for a self-report. Bare digit
 #                             runs in prose (dates, counts, IDs) still cannot
-#                             manufacture a mismatch. See sha_tokens for why the
-#                             code-span rule can only ever withhold coverage.
+#                             manufacture a mismatch. Quoted/echoed text is
+#                             excluded here too (issue #933): a SHA the reviewer
+#                             only quoted is not the reviewer's self-report.
+#                             See sha_tokens for why the code-span rule can only
+#                             ever withhold coverage, and strip_echoed for the
+#                             two directions the echo exclusion can move.
 #   temporal_inversion        approval submitted_at < the EARLIEST post-push
 #                             run-start marker from that reviewer. The earliest
 #                             marker (not the latest) is deliberate: a re-review
@@ -238,6 +248,116 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
   | ($reviewers | split(",") | map(select(length > 0)))     as $approvers
   | ($corroborators | split(",") | map(select(length > 0))) as $others
 
+  # ---- Echoed text: what a reviewer QUOTED is not what it SAID (issue #933) --
+  #
+  # Observed on PR #929: CodeAnt answers a re-review request by reproducing the
+  # requester"s comment verbatim under a "Question:" heading and its own verdict
+  # under "Answer:". The author"s trigger prose named HEAD"s short SHA, so the
+  # bot"s body contained that SHA without the bot ever having written it, and
+  # status_comment_names_head — the flag that says "this reviewer demonstrably
+  # read HEAD" — went true on the strength of the AUTHOR"s words. Any ack or
+  # summary reply that quotes the thread can do the same.
+  #
+  # THE RULE: drop a line of a reviewer"s comment when that exact line was
+  # already posted on this thread by someone who is NOT one of the reviewers
+  # under evaluation. Nothing else is dropped.
+  #
+  # Deliberately NOT "drop every blockquote line". That was the first cut, and
+  # the live payload refuted it twice over. The PR #929 echo carries no ">" at
+  # all, so a blockquote rule closes none of the reported trace; meanwhile the
+  # ONLY ">" lines in that thread are CodeRabbit quoting ITSELF — its status
+  # notice renders its own reviewed range as "> Reviewing files that changed …
+  # between <base> and <head>". Blanket-stripping quotes would have silently
+  # deleted a reviewer"s own self-report on every CodeRabbit status comment in
+  # this repo. The issue asks to discount quoted/echoed AUTHOR text; a bot"s own
+  # ">" callout is not author text. So quote markers are normalised away in the
+  # lookup KEY instead (norm_line), which catches GitHub"s "Quote reply" shape —
+  # "> " + the original line — while leaving self-quotation untouched.
+  #
+  # Only NON-reviewer comments seed the index, so a reviewer"s own lines are
+  # never in it and a reviewer comment can never strip ITSELF to nothing. (A
+  # non-reviewer"s comment does erase itself; its tokens are never read.)
+  #
+  # Ordered, not just matched: the index stores the EARLIEST time each line was
+  # seen, and a line is only dropped from a comment created at or after that.
+  # Echo means the source came first. Without the ordering, a human quoting a
+  # bot"s line verbatim would retroactively strip the bot"s original.
+  #
+  # WHICH DIRECTIONS THIS CAN MOVE (the load-bearing argument, stated in full
+  # because one of the two is a grant). Removing whole lines can only ever
+  # REMOVE tokens, never add them: split("\n") | join("\n") is the identity when
+  # nothing is dropped, and surviving lines are emitted byte-for-byte, so the
+  # indentation- and fence-sensitive rules below (issue #897) see exactly what
+  # they always saw. From "tokens can only shrink":
+  #
+  #  - status_comment_names_head, external_evidence_on_head and substantive are
+  #    monotone in the token set, so they can only move true -> false.
+  #    Withholding a merge is recoverable (re-review and push). This is the
+  #    grant path #933 closes.
+  #  - self_report_mismatch can move BOTH ways. false -> true when a comment
+  #    keeps a non-HEAD token but loses its HEAD one; true -> false when a
+  #    comment"s ONLY tokens were quoted, so it stops being a self-report
+  #    candidate at all. The second is a grant, and it is the SAME correction,
+  #    not a side effect: a SHA the reviewer never wrote was never the
+  #    reviewer"s report about itself, and reading it as one produces a blocker
+  #    that no re-review can clear while the trigger prose stays quoted. Issue
+  #    #917 accepted this identical direction for the identical reason (UUID
+  #    fragments were manufacturing mismatches out of CodeRabbit"s own request
+  #    ids). It is bounded: a comment carrying ANY SHA in the reviewer"s own
+  #    prose keeps its tokens and its verdict.
+  #  - counts_as_coverage therefore moves both ways too, and ONLY through that
+  #    one channel (CodeRabbit CLI review of this PR — an earlier draft of this
+  #    comment wrongly listed it as withhold-only). Every other input pushes it
+  #    down: substantive can only fall, no_substantive_footprint can only
+  #    appear, and temporal_inversion and capability_failure are both suppressed
+  #    by $ext_substantive, which can only fall — so each can only newly fire.
+  #    The single upward path is a cleared self_report_mismatch on a reviewer
+  #    that is substantive on its own footprint, which is the corrected verdict,
+  #    not a loosened one.
+  | def norm_line:
+      sub("^[ \t]*(>[ \t]*)+"; "") | sub("^[ \t]+"; "") | sub("[ \t\r]+$"; "");
+
+    ( reduce ( $convo[]?
+               | ((.user.login // "")) as $l
+               | select((($approvers + $others) | index($l)) == null)
+               | ((((.created_at // .updated_at) // "") | canon_ts)) as $t
+               | ((.body // "") | ascii_downcase | split("\n")[] | norm_line)
+               | select(length > 0)
+               | { k: ., t: $t } ) as $e
+             ({}; if (.[$e.k] // null) == null or $e.t < .[$e.k]
+                  then .[$e.k] = $e.t
+                  else . end) ) as $echo_first
+
+  # $ts is the created time of the comment being scanned. Input must already be
+  # downcased — sha_tokens applies ascii_downcase first, and the index above is
+  # downcased too, so matching is case-insensitive exactly like every other rule
+  # here (CodeAnt"s PR #929 echo is a lowercased copy of the author"s line).
+  # A source with no usable timestamp sorts first and so still strips: the
+  # conservative direction, and GitHub always supplies one.
+  #
+  # FENCE DELIMITERS ARE NEVER DROPPED (CodeRabbit CLI review of this PR). A
+  # bare "```" line is one of the most reproducible lines on a thread — every
+  # comment carrying a code block has one — so it lands in the echo index almost
+  # immediately, and dropping it would delete the delimiters of a REVIEWER"s own
+  # fenced block. The #897 masking below is paired-delimiter matching: lose the
+  # delimiters and quoted diff hunks are scanned as prose again, so numeric
+  # literals in someone else"s source become self-report candidates. Losing only
+  # the CLOSER is the worse half — the unclosed-opener rule then runs to
+  # end-of-body and deletes rule-3 tokens that should have been admitted, which
+  # is the grant direction. A delimiter carries no commit id of its own, so
+  # keeping it costs nothing the echo rule was meant to buy. Pinned by
+  # (ff-933)(j); only PAIRED syntax needs this, which is why four-space-indented
+  # lines get no exception — dropping one removes its content too.
+  | def strip_echoed($ts):
+      [ ((. // "") | split("\n")[])
+        | . as $ln
+        | ($ln | norm_line) as $key
+        | (($key | startswith("```")) or ($key | startswith("~~~"))) as $is_fence
+        | ($echo_first[$key] // null) as $seen_at
+        | select($is_fence or $seen_at == null or ($seen_at > $ts))
+        | $ln ]
+      | join("\n");
+
   # SHA-like tokens. THREE admission rules, deliberately asymmetric: each of the
   # two additions can move the verdict in exactly ONE direction, and which
   # direction is a structural property of the rule, not of the fixture that
@@ -291,8 +411,8 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
   #
   # Bare decimal runs in prose ("reviewed 20260731 files across 1234567 lines")
   # remain unadmitted under all three rules — pinned by case (k).
-  | def sha_tokens:
-      ((. // "") | ascii_downcase) as $btxt
+  def sha_tokens($ts):
+      ((. // "") | ascii_downcase | strip_echoed($ts)) as $btxt
       # Fence-stripped text for rule 3 only. Rules 1-2 keep reading $btxt (raw)
       # by design — "HEAD is HEAD wherever it appears", and rule 1 must stay
       # byte-identical to its pre-#894 behaviour. The flag is "m", NOT "s": jq
@@ -360,7 +480,8 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
     # ---- Conversation index: one pass, all regex work done here -------------
     ( [ $convo[]?
         | (.body // "") as $b
-        | (($b | sha_tokens)) as $tok
+        | (((.created_at // .updated_at) // "") | canon_ts) as $cts
+        | (($b | sha_tokens($cts))) as $tok
         | { login:   (.user.login // ""),
             body:    $b,
             len:     ($b | length),
