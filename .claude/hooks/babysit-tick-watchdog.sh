@@ -123,6 +123,6 @@ done <<< "$records"
 (( ${#stalled[@]} > 0 )) || exit 0
 
 printf -v body '%s; ' "${stalled[@]}"
-emit_context "BABYSIT WATCHER NOT TICKING — ${body%; }. An armed poll that is still listed can produce zero ticks (issue #914, scheduling-failure-modes.md Pattern 7), so treat this as a dead poll, not a quiet one. Verify with CronList, then re-arm the watcher with /loop — never a CronCreate job or a hand-rolled wake chain. If the watch is finished, run /babysit-pr-stop <PR> so it stops being reported. The silence ceiling is a backstop, not this poll's cadence."
+emit_context "BABYSIT WATCHER NOT TICKING — ${body%; }. An armed poll that is still listed can produce zero ticks (issue #914, scheduling-failure-modes.md Pattern 7), so treat this as a dead poll, not a quiet one. TO RECOVER, run /babysit-pr-stop <PR> FIRST, then /babysit-pr <PR>: re-arming on its own is refused as a duplicate until the watcher ages past max(3 x cadence, 30m), which is deliberately wider than this warning's 2 x cadence window — so a bare re-arm here silently no-ops. When you re-arm, /babysit-pr uses /loop with NO leading interval; a leading interval routes to CronCreate, the primitive that does not fire. If the watch is simply finished, /babysit-pr-stop alone is enough. The silence ceiling is a backstop, not this poll's cadence."
 
 exit 0

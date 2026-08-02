@@ -116,6 +116,23 @@ waits. Widening `WARN_MIN` to match the reap window would delay the signal past
 the silence ceiling reported the problem first, roughly 18 minutes late. Do not
 "unify" these two windows; the gap between them is the design.
 
+**The gap has a consequence the warning must carry (CodeAnt, PR #922).** Between
+`WARN_MIN` and the reap window — 10m to 30m at the default cadence — the watcher
+is *warned-about but not yet reclaimable*. `/babysit-pr`'s A2 still sees
+`active == true` inside its freshness window and refuses to arm a second watcher,
+so an operator who follows a bare "re-arm it" instruction gets
+`Already babysitting PR #N` and **nothing happens**. The advisory therefore names
+the two-step recovery explicitly:
+
+```
+/babysit-pr-stop <PR>     # clears active; A2 will no longer refuse
+/babysit-pr <PR>          # re-arms (dynamic /loop, no leading interval)
+```
+
+Pinned by test 12 in `babysit-tick-watchdog.test.sh`, which asserts the stop step
+is named *before* the re-arm step. If either window is ever retuned, re-check that
+the advisory's recovery sequence is still reachable at the new numbers.
+
 Per feature: `--durable` was **dropped** from `/babysit-pr` (accepted and
 ignored, so an old chip payload does not hard-error); `--auto-wake` was
 **reframed** to a `/loop` re-scan in `/pr-monitor-and-manage`, keeping its

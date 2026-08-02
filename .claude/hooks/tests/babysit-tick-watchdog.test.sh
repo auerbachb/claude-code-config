@@ -213,4 +213,24 @@ stray="$(find "$TMP_DIR" -name 'claude-babysit-tickwarn-*' \
 [[ -z "$stray" ]] || fail "marker written outside the marker dir: $stray"
 ok "odd PR key is sanitized — marker stays in-dir and dedupe still holds"
 
+# ── 12. Recovery advice must be actionable in this window (CodeAnt, PR #922) ─
+# The warning fires at 2 x cadence, but /babysit-pr A2 refuses a duplicate until
+# max(3 x cadence, 30m). Between those two windows a bare "re-arm it" silently
+# no-ops, so the message MUST name /babysit-pr-stop first. Regression pin.
+reset_markers
+write_state "$PR" "$(jq -n --arg t "$(ago 12)" \
+  '{babysit:{active:true,last_tick_at:$t,cadence_effective_minutes:5}}')"
+ctx="$(run_hook | context_of)"
+[[ -n "$ctx" ]] || fail "expected a warning at 12m / 5m cadence"
+grep -q '/babysit-pr-stop' <<<"$ctx" || fail "recovery must name /babysit-pr-stop, got: $ctx"
+# Ordering matters: stop BEFORE re-arm, or the advice is the no-op CodeAnt found.
+stop_pos=$(awk '{print index($0, "/babysit-pr-stop")}' <<<"$ctx")
+rearm_pos=$(awk '{print index($0, "then /babysit-pr <PR>")}' <<<"$ctx")
+[[ "$rearm_pos" -gt 0 ]] || fail "recovery must name the re-arm step, got: $ctx"
+[[ "$stop_pos" -lt "$rearm_pos" ]] \
+  || fail "stop must be instructed BEFORE re-arm (stop@$stop_pos, rearm@$rearm_pos)"
+grep -q 'NO leading interval' <<<"$ctx" \
+  || fail "recovery must warn off the fixed-interval /loop (CronCreate) path, got: $ctx"
+ok "recovery advice is actionable inside the 2x..3x window (stop, then re-arm)"
+
 echo "All babysit-tick-watchdog tests passed."
