@@ -378,6 +378,11 @@ assert_doc "an owner field written entirely as a Markdown link" 0 \
   "$PR_HEAD"$'\n''  Owner: [mine](https://example.com/n)'$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_VERIFY"
 assert_doc "an owner field with a real answer beside a comment" 0 \
   "$PR_HEAD"$'\n''  Owner: mine <!-- confirmed at 11:50 -->'$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_VERIFY"
+# Reduction needs the whole `[text](dest)` shape. Brackets on their own are
+# ordinary visible characters, and a checker that deleted them outright would
+# reject a bracketed answer nobody would think twice about writing.
+assert_doc "an owner field written in brackets" 0 \
+  "$PR_HEAD"$'\n''  Owner: [unowned]'$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_VERIFY"
 
 # Review state: what is blocking it, and whether it may merge once unblocked.
 assert_doc "a pull request with no approval line" 1 \
