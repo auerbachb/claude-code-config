@@ -120,18 +120,37 @@
 #   --follow` is single-path-only, so rename tracking is out of scope.
 #
 # EXISTING-ISSUE LOOKUP:
-#   For each hotspot, open issues are searched for `Refactor hotspot in:title`
-#   and matched CLIENT-SIDE on an exact title (`Refactor hotspot: <path>`) or an
-#   exact body marker (`<!-- churn-hotspot: <path> -->`). GitHub tokenizes paths
-#   in `in:title` search, so a server-side path query can match a sibling file;
-#   searching broadly and comparing exactly avoids that. When the lookup itself
-#   fails, `existing_lookup_failed` is true in the output and callers must NOT
-#   file (filing blind risks a duplicate).
+#   For each hotspot, issues in BOTH states (`--state all`) are searched for
+#   `Refactor hotspot in:title` and matched CLIENT-SIDE on an exact title
+#   (`Refactor hotspot: <path>`) or an exact body marker
+#   (`<!-- churn-hotspot: <path> -->`). GitHub tokenizes paths in `in:title`
+#   search, so a server-side path query can match a sibling file; searching
+#   broadly and comparing exactly avoids that. When the lookup itself fails,
+#   `existing_lookup_failed` is true in the output and callers must NOT file
+#   (filing blind risks a duplicate).
+#
+#   CLOSED MATCHES ARE REPORTED, NOT DROPPED (issue #915). An open-only lookup
+#   made an already-adjudicated hotspot invisible, so `/wrap` read it as
+#   never-ticketed and re-filed it on every wrap, forever. Both states are now
+#   returned, and `existing_hotspot_issue_state` says which one was matched, so
+#   the caller can treat a closed match as a weak match instead of a blank slate.
+#   When a path has BOTH an open and a closed issue, the OPEN one wins: that is
+#   what keeps a re-file from looping, since the issue `/wrap` files becomes the
+#   chosen match on the next run. This detector still decides nothing — it only
+#   stops hiding the closed hit.
+#
+#   `--state all` enlarges the candidate set, so the ISSUE_LOOKUP_CAP guard below
+#   matters MORE, not less. It is unchanged: a capped lookup still sets
+#   `existing_lookup_failed` and blocks filing.
 #
 # OUTPUT:
 #   Default: one TSV row per hotspot, no header —
 #     path <TAB> pr_count <TAB> conflict_rounds <TAB> score <TAB> pr_numbers <TAB> existing_issue
-#   (pr_numbers comma-separated; existing_issue is the issue number or "-")
+#   (pr_numbers comma-separated; existing_issue is the issue number for an open
+#   match, `<number> (closed)` for a closed one, `<number> (unknown)` when the
+#   state could not be read, or "-" when there is no match. The suffix is there
+#   so a person scanning the TSV cannot read a closed-issue hotspot as already
+#   handled.)
 #   --json: a single object with `repo`, `since`, `threshold`, `conflict_weight`,
 #   `min_prs`, `source`, `scan_ref`, `scan_ref_source` (one of `explicit`,
 #   `origin-head`, `candidate`, `head-fallback`, or `n/a` on the gh path),
@@ -139,7 +158,11 @@
 #   `existing_lookup_failed`, `total_hotspot_count` (before any --top bound),
 #   and `hotspots[]` (each: `file`, `pr_count`,
 #   `pr_numbers`, `conflict_rounds`, `conflict_prs`, `score`, `first_merged_at`,
-#   `last_merged_at`, `existing_hotspot_issue`).
+#   `last_merged_at`, `existing_hotspot_issue`, `existing_hotspot_issue_state`
+#   — `"open"`, `"closed"`, `"unknown"` when a match was found but its state
+#   could not be read, or null ONLY when there is no match at all. Null never
+#   means "matched but unclassifiable": a caller may read `state == null` as
+#   never-ticketed, which is precisely the bug issue #915 fixed).
 #   Valid (possibly empty) output is emitted on every exit path.
 #
 # EXIT CODES:
@@ -287,7 +310,11 @@ emit_and_exit() {  # $1 hotspots JSON array, $2 exit code
     printf '%s' "$hotspots" | jq -r '.[] | [
       .file, (.pr_count|tostring), (.conflict_rounds|tostring), (.score|tostring),
       (.pr_numbers|map(tostring)|join(",")),
-      (if .existing_hotspot_issue == null then "-" else (.existing_hotspot_issue|tostring) end)
+      (if .existing_hotspot_issue == null then "-"
+       elif .existing_hotspot_issue_state == "open"
+         then (.existing_hotspot_issue|tostring)
+       else ((.existing_hotspot_issue|tostring)
+             + " (" + (.existing_hotspot_issue_state // "unknown") + ")") end)
     ] | @tsv'
   fi
   exit "$rc"
@@ -680,15 +707,21 @@ fi
 # Search broadly on the title convention, then match EXACTLY client-side:
 # GitHub tokenizes paths in `in:title`, so a server-side path query can match a
 # sibling file. When the lookup fails, callers must not file (duplicate risk).
-OPEN_ISSUES='[]'
+#
+# `--state all`, NOT `--state open` (issue #915). An open-only search hid every
+# hotspot issue the owner had already reviewed and closed, so the caller read the
+# path as never-ticketed and re-filed it on every run. Closed hits now come back
+# labelled (see the merge below) and the caller decides. `--state all` enlarges
+# the candidate set, which is exactly why the cap guard below stays.
+CANDIDATE_ISSUES='[]'
 if command -v gh >/dev/null 2>&1; then
-  ISSUES_RAW=$(gh issue list --state open --search "Refactor hotspot in:title" \
-                 --limit "$ISSUE_LOOKUP_CAP" --json number,title,body $REPO_ARGS 2>/dev/null) || ISSUES_RAW=""
+  ISSUES_RAW=$(gh issue list --state all --search "Refactor hotspot in:title" \
+                 --limit "$ISSUE_LOOKUP_CAP" --json number,title,body,state $REPO_ARGS 2>/dev/null) || ISSUES_RAW=""
   if [ -z "$ISSUES_RAW" ]; then
     LOOKUP_FAILED=true
   else
-    OPEN_ISSUES=$(printf '%s' "$ISSUES_RAW" | jq -c '.' 2>/dev/null) || { OPEN_ISSUES='[]'; LOOKUP_FAILED=true; }
-    ISSUE_HITS=$(printf '%s' "$OPEN_ISSUES" | jq 'length' 2>/dev/null || echo 0)
+    CANDIDATE_ISSUES=$(printf '%s' "$ISSUES_RAW" | jq -c '.' 2>/dev/null) || { CANDIDATE_ISSUES='[]'; LOOKUP_FAILED=true; }
+    ISSUE_HITS=$(printf '%s' "$CANDIDATE_ISSUES" | jq 'length' 2>/dev/null || echo 0)
     if [ "$ISSUE_HITS" -ge "$ISSUE_LOOKUP_CAP" ]; then
       # A capped lookup is an INCOMPLETE lookup: an existing hotspot issue may
       # sit beyond the cap, so absence of a match no longer proves absence of an
@@ -704,16 +737,39 @@ else
   LOOKUP_FAILED=true
 fi
 
-HOTSPOTS=$(printf '%s' "$HOTSPOTS" | jq -c --argjson issues "$OPEN_ISSUES" '
+# Collect EVERY title/marker match for the path, then prefer an open one. A path
+# can carry both (a closed adjudication plus a later re-file), and picking the
+# first hit in whatever order the search returned would report either at random.
+# An unrecognized state reports the number with state `"unknown"` — never a
+# dropped match, and never null. Null is reserved for "no match at all", so
+# overloading it here would recreate this ticket's own bug in miniature: a
+# consumer branching on `state == null` would read a matched-but-unclassifiable
+# hotspot as a blank slate. `unknown` keeps "did we match?" answerable from the
+# state field alone. `state` is always requested above, so this only fires on a
+# malformed payload; it still must not read as never-ticketed.
+#
+# norm_state type-checks instead of calling ascii_downcase blind: on a
+# non-string the whole program would abort, and this jq's failure mode is an
+# EMPTY hotspot list emitted under exit 0 — every hotspot lost, not just one.
+HOTSPOTS=$(printf '%s' "$HOTSPOTS" | jq -c --argjson issues "$CANDIDATE_ISSUES" '
+  def norm_state: (if type == "string" then ascii_downcase else "" end);
   map(
     . as $h
-    | .existing_hotspot_issue = (
-        [ $issues[]
-          | select(
-              (.title == ("Refactor hotspot: " + $h.file))
-              or ((.body // "") | contains("<!-- churn-hotspot: " + $h.file + " -->"))
-            )
-          | .number ] | first // null
+    | [ $issues[]
+        | select(
+            (.title == ("Refactor hotspot: " + $h.file))
+            or ((.body // "") | contains("<!-- churn-hotspot: " + $h.file + " -->"))
+          )
+      ] as $matches
+    | ( ([ $matches[] | select((.state | norm_state) == "open") ] | first)
+        // ($matches | first) ) as $chosen
+    | .existing_hotspot_issue = ($chosen.number // null)
+    | .existing_hotspot_issue_state = (
+        if $chosen == null then null
+        else
+          ($chosen.state | norm_state) as $s
+          | if $s == "open" or $s == "closed" then $s else "unknown" end
+        end
       )
   )
 ' 2>/dev/null) || HOTSPOTS='[]'

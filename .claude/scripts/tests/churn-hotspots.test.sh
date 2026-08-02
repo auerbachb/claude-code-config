@@ -34,6 +34,12 @@ check_jq() {  # desc, json, jq boolean expr
 # ---- gh stub ----------------------------------------------------------------
 # Matches on a single stable token per case — never on --json field order, which
 # changes as callers add fields. Unhandled invocations exit 1 loudly.
+#
+# `issue list` is the one exception: it honours `--state` (issue #915). The bug
+# being guarded against is a SERVER-SIDE state filter, so a stub that returned
+# every fixture row regardless of the flag would let an open-only lookup pass
+# the closed-match tests — a guard that passes by not running. Filtering here
+# means those tests fail on `--state open` and pass on `--state all`.
 STUB_BIN="$TMP/bin"
 mkdir -p "$STUB_BIN"
 cat > "$STUB_BIN/gh" <<STUB
@@ -42,7 +48,16 @@ set -uo pipefail
 args="\$*"
 case "\$args" in
   *"repo view"*)      cat "$TMP/repo_view.txt" ;;
-  *"issue list"*)     cat "$TMP/issue_list.json" ;;
+  *"issue list"*)
+    case "\$args" in
+      # A fixture row with no "state" field stands in for an open issue. The
+      # type guard keeps a deliberately malformed fixture (non-string state)
+      # from aborting the stub itself rather than the code under test.
+      *"--state open"*)   jq -c 'def s: (if type == "string" then ascii_upcase else "OPEN" end); [.[] | select((.state | s) != "CLOSED")]' "$TMP/issue_list.json" ;;
+      *"--state closed"*) jq -c 'def s: (if type == "string" then ascii_upcase else "OPEN" end); [.[] | select((.state | s) == "CLOSED")]' "$TMP/issue_list.json" ;;
+      *)                  cat "$TMP/issue_list.json" ;;
+    esac
+    ;;
   *"pr list"*)        cat "$TMP/pr_list.json" ;;
   *"/files"*)
     pr=\$(printf '%s' "\$args" | sed -n 's|.*/pulls/\([0-9][0-9]*\)/files.*|\1|p')
@@ -249,45 +264,121 @@ check_jq "6c: PR evidence is unaffected by the missing state" "$OUT" \
 
 # =============================================================================
 # Scenario 7/8/9 — existing hotspot issue lookup (drives file-vs-comment)
+#
+# A CLOSED match is simulated by a `"state":"CLOSED"` field on the fixture row —
+# exactly the shape `--state all` returns (issue #915). The stub applies the
+# same state filter GitHub would, so these fixtures only reach the script when
+# the lookup actually asks for both states; an open-only lookup never sees the
+# closed rows and fails the assertions below, which is the point.
 # =============================================================================
 printf '[]\n' > "$TMP/issue_list.json"
 run_in "$R1" --since "$WINDOW_START" --json
 check_jq "7a: no matching issue leaves existing_hotspot_issue null (file path)" "$OUT" \
   '.hotspots[] | select(.file=="src/Form.tsx") | .existing_hotspot_issue == null'
 check_jq "7b: a successful empty lookup is not a failure" "$OUT" '.existing_lookup_failed == false'
+check_jq "7c: the state field is always emitted, null when there is no match" "$OUT" \
+  '.hotspots[] | select(.file=="src/Form.tsx")
+   | has("existing_hotspot_issue_state") and .existing_hotspot_issue_state == null'
 
 cat > "$TMP/issue_list.json" <<'EOF'
-[{"number":900,"title":"Refactor hotspot: src/Form.tsx","body":"evidence"}]
+[{"number":900,"title":"Refactor hotspot: src/Form.tsx","body":"evidence","state":"OPEN"}]
 EOF
 run_in "$R1" --since "$WINDOW_START" --json
 check_jq "8a: an exact title match populates existing_hotspot_issue (comment path)" "$OUT" \
   '.hotspots[] | select(.file=="src/Form.tsx") | .existing_hotspot_issue == 900'
+check_jq "8b: an open match reports state open" "$OUT" \
+  '.hotspots[] | select(.file=="src/Form.tsx") | .existing_hotspot_issue_state == "open"'
 
 # Body marker alone is enough, even when the title was edited by a human
 cat > "$TMP/issue_list.json" <<'EOF'
-[{"number":901,"title":"Split the giant form component","body":"context\n<!-- churn-hotspot: src/Form.tsx -->\n"}]
+[{"number":901,"title":"Split the giant form component","body":"context\n<!-- churn-hotspot: src/Form.tsx -->\n","state":"OPEN"}]
 EOF
 run_in "$R1" --since "$WINDOW_START" --json
-check_jq "8b: the body marker matches even after a title edit" "$OUT" \
-  '.hotspots[] | select(.file=="src/Form.tsx") | .existing_hotspot_issue == 901'
+check_jq "8c: the body marker matches even after a title edit" "$OUT" \
+  '.hotspots[] | select(.file=="src/Form.tsx") | .existing_hotspot_issue == 901 and .existing_hotspot_issue_state == "open"'
+
+# A CLOSED match is REPORTED, not dropped (issue #915). Under the old open-only
+# lookup this read as `null` — a blank slate — so /wrap re-filed the hotspot on
+# every wrap, silently overturning the owner's decision to close it.
+cat > "$TMP/issue_list.json" <<'EOF'
+[{"number":904,"title":"Refactor hotspot: src/Form.tsx","body":"adjudicated","state":"CLOSED"}]
+EOF
+run_in "$R1" --since "$WINDOW_START" --json
+check_jq "8d: a closed match is reported rather than read as no-issue" "$OUT" \
+  '.hotspots[] | select(.file=="src/Form.tsx") | .existing_hotspot_issue == 904'
+check_jq "8e: a closed match reports state closed" "$OUT" \
+  '.hotspots[] | select(.file=="src/Form.tsx") | .existing_hotspot_issue_state == "closed"'
+
+# TSV must not let a closed-issue hotspot read as already handled
+run_in "$R1" --since "$WINDOW_START"
+check_eq "8f: TSV suffixes a closed match with (closed)" \
+  "src/Form.tsx	3	0	3	201,202,203	904 (closed)" "$(printf '%s' "$OUT" | head -1)"
+
+# Both states present for one path: the OPEN one wins. That preference is what
+# stops the re-file loop — once /wrap re-files a closed hotspot, the new open
+# issue becomes the chosen match on the next run instead of the closed one.
+cat > "$TMP/issue_list.json" <<'EOF'
+[{"number":905,"title":"Refactor hotspot: src/Form.tsx","body":"older, adjudicated","state":"CLOSED"},
+ {"number":906,"title":"Refactor hotspot: src/Form.tsx","body":"the live one","state":"OPEN"}]
+EOF
+run_in "$R1" --since "$WINDOW_START" --json
+check_jq "8g: an open match wins over a closed one for the same path" "$OUT" \
+  '.hotspots[] | select(.file=="src/Form.tsx") | .existing_hotspot_issue == 906 and .existing_hotspot_issue_state == "open"'
+
+# ...and the preference holds regardless of which one the search returned first
+cat > "$TMP/issue_list.json" <<'EOF'
+[{"number":907,"title":"Refactor hotspot: src/Form.tsx","body":"the live one","state":"OPEN"},
+ {"number":908,"title":"Refactor hotspot: src/Form.tsx","body":"older, adjudicated","state":"CLOSED"}]
+EOF
+run_in "$R1" --since "$WINDOW_START" --json
+check_jq "8h: open still wins when it is listed first" "$OUT" \
+  '.hotspots[] | select(.file=="src/Form.tsx") | .existing_hotspot_issue == 907 and .existing_hotspot_issue_state == "open"'
+
+# An unrecognized state reports `"unknown"`, never null and never a dropped
+# match. Null is reserved for "no match at all" — overloading it here would let
+# a consumer branching on `state == null` read a matched hotspot as a blank
+# slate, which is this ticket's own bug in miniature.
+cat > "$TMP/issue_list.json" <<'EOF'
+[{"number":909,"title":"Refactor hotspot: src/Form.tsx","body":"unreadable state","state":"ARCHIVED"}]
+EOF
+run_in "$R1" --since "$WINDOW_START" --json
+check_jq "8i: an unreadable state reports the number with state unknown, not null" "$OUT" \
+  '.hotspots[] | select(.file=="src/Form.tsx") | .existing_hotspot_issue == 909 and .existing_hotspot_issue_state == "unknown"'
+run_in "$R1" --since "$WINDOW_START"
+check_eq "8j: TSV suffixes an unknown-state match with (unknown)" \
+  "src/Form.tsx	3	0	3	201,202,203	909 (unknown)" "$(printf '%s' "$OUT" | head -1)"
+
+# A non-string state must not abort the whole jq program: its failure mode is an
+# EMPTY hotspot list under exit 0, so one malformed row would lose every hotspot.
+cat > "$TMP/issue_list.json" <<'EOF'
+[{"number":910,"title":"Refactor hotspot: src/Form.tsx","body":"numeric state","state":404}]
+EOF
+run_in "$R1" --since "$WINDOW_START" --json
+check_jq "8k: a non-string state degrades that row without emptying the report" "$OUT" \
+  '(.hotspots | length) > 0
+   and (.hotspots[] | select(.file=="src/Form.tsx")
+        | .existing_hotspot_issue == 910 and .existing_hotspot_issue_state == "unknown")'
 
 # Near-miss titles must NOT match — GitHub tokenizes paths, exact match is the guard
 cat > "$TMP/issue_list.json" <<'EOF'
-[{"number":902,"title":"Refactor hotspot: src/OtherForm.tsx","body":"different file"},
- {"number":903,"title":"Refactor hotspot: src/Form.tsx.bak","body":"different file"}]
+[{"number":902,"title":"Refactor hotspot: src/OtherForm.tsx","body":"different file","state":"OPEN"},
+ {"number":903,"title":"Refactor hotspot: src/Form.tsx.bak","body":"different file","state":"CLOSED"}]
 EOF
 run_in "$R1" --since "$WINDOW_START" --json
 check_jq "9a: a sibling-file hotspot issue does not match" "$OUT" \
-  '.hotspots[] | select(.file=="src/Form.tsx") | .existing_hotspot_issue == null'
+  '.hotspots[] | select(.file=="src/Form.tsx") | .existing_hotspot_issue == null and .existing_hotspot_issue_state == null'
 
 # A capped issue lookup is an INCOMPLETE lookup: a matching issue may sit beyond
 # the cap, so absence of a match no longer proves absence of an issue. Callers
 # gate filing on existing_lookup_failed, so the cap must set it — reporting only
-# `truncated` would let a caller file a duplicate.
+# `truncated` would let a caller file a duplicate. `--state all` enlarges the
+# candidate set, so the fixture mixes both states: closed issues alone can now
+# fill the cap, which is why this guard matters more after #915, not less.
 python3 - "$TMP/issue_list.json" <<'PY'
 import json, sys
 # 200 non-matching issues == ISSUE_LOOKUP_CAP, so the lookup is capped out.
-json.dump([{"number": 1000 + i, "title": "Refactor hotspot: src/Unrelated%d.ts" % i, "body": ""}
+json.dump([{"number": 1000 + i, "title": "Refactor hotspot: src/Unrelated%d.ts" % i, "body": "",
+            "state": "OPEN" if i % 2 else "CLOSED"}
            for i in range(200)], open(sys.argv[1], "w"))
 PY
 run_in "$R1" --since "$WINDOW_START" --json

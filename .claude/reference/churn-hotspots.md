@@ -49,11 +49,15 @@ Two consequences:
 
 ## Why `/wrap` files at most one per run
 
-Step 3.10a takes the single highest-scoring hotspot with no existing issue. Because each filed issue is then found by the lookup on subsequent runs, successive wraps work down the list one at a time, highest-signal first. Held-back candidates are always reported in one line — the repo's "no silent caps" norm — so a bounded run never reads as a complete one.
+Step 3.10a takes the single highest-scoring **eligible** hotspot. Because each filed issue is then found by the lookup on subsequent runs, successive wraps work down the list one at a time, highest-signal first. Held-back candidates are always reported in one line — the repo's "no silent caps" norm — so a bounded run never reads as a complete one.
 
 This is a deliberate exception to Phase 3's general "no cap on how many issues one run may file". That rule is right for transcript-derived loose ends, which are few and session-scoped. Churn candidates are neither.
 
-**Comment idempotency.** When a hotspot already has an open issue, `/wrap` appends evidence **only when the PR it just merged is one of that hotspot's PRs**. Without that guard, every later wrap would append another comment restating the same history. A merging PR appears in the list exactly once, so the comment fires exactly once per contributing merge.
+**Eligible means one of two things** (issue #915). Either the hotspot has no existing issue at all — the original case, which files clean — or it has a **closed** match *and* `conflict_rounds > 0`, which re-files with the `Possibly duplicates #{N}` caveat and lands under "needs your decision" rather than "auto-handled". The one-issue-per-run cap spans both kinds, so widening eligibility does not widen volume.
+
+**Why the conflict gate, specifically.** The closing note on the issue that exposed this asked for exactly this condition. That hotspot was closed because the churn was by design — a repo convention requiring every flow-changing PR to touch one canonical file — and the note said `/wrap` would re-file automatically once the churn started costing something measurable. `conflict_rounds` is the only measurable cost this detector records. Rising PR count is not — that is precisely what the closed issue already accounted for. So a closed hotspot with `conflict_rounds == 0` files nothing and surfaces one decision bullet naming the closed issue; re-filing it on PR count alone would silently overturn a recorded owner decision, which is the failure mode #915 exists to stop.
+
+**Comment idempotency.** When a hotspot already has an open issue, `/wrap` appends evidence **only when the PR it just merged is one of that hotspot's PRs**. Without that guard, every later wrap would append another comment restating the same history. A merging PR appears in the list exactly once, so the comment fires exactly once per contributing merge. The comment set is **open-only** — a closed issue cannot take a new evidence comment, so a closed match routes to the branches above instead.
 
 ## Enumeration: git first, gh as fallback
 
@@ -89,7 +93,11 @@ The list is deliberately **universal**. Repo-specific by-design churn belongs in
 
 Hotspots are keyed by **file path**, which has an exact answer, so the fuzzy `issue-dedup.sh` ladder is the wrong instrument. Full rationale and the contract live in `autofile-dedup.md` under "Exact-artifact dedup". In short: title `Refactor hotspot: <path>` or body marker `<!-- churn-hotspot: <path> -->`, compared **client-side with string equality** because GitHub tokenizes paths in `in:title` search and would match sibling files. A failed lookup (`existing_lookup_failed`) blocks filing rather than risking a duplicate.
 
-**A capped lookup counts as a failed one.** When the search hits `ISSUE_LOOKUP_CAP` (200), a matching issue may sit beyond the cap, so "no match" no longer proves "no issue". Setting only `truncated` would leave callers — which gate filing on `existing_lookup_failed` — free to file a duplicate for a hotspot that already has a ticket. Both flags are set.
+**The lookup is `--state all`, and it reports which state matched** (issue #915). It was `--state open` at first, which quietly made the detector unable to see its own past output: once a hotspot issue was reviewed and closed, the path read as `existing_hotspot_issue: null` — a blank slate — so `/wrap` re-filed it, and re-filed it again on the next wrap, forever. It had already produced one duplicate in this repo — issue #815 closed and issue #881 open for the same file — and had two more queued in a sibling repo before the pattern was noticed. Each hotspot now carries `existing_hotspot_issue_state` beside the number: `open`, `closed`, `unknown` (matched, but the state could not be read), or `null` — and `null` means **no match at all**, never "matched but unclassifiable". That distinction is the same bug in miniature: a consumer branching on `state == null` would read a matched hotspot as a blank slate, so the unreadable case gets its own value rather than sharing null's.
+
+**An open match beats a closed one for the same path.** That preference is not cosmetic — it is what terminates the loop. When `/wrap` re-files a closed hotspot, the new open issue becomes the chosen match on the following run, so the next wrap comments instead of filing again. Picking whichever the search returned first would leave the closed one winning at random and the loop half-alive.
+
+**A capped lookup counts as a failed one.** When the search hits `ISSUE_LOOKUP_CAP` (200), a matching issue may sit beyond the cap, so "no match" no longer proves "no issue". Setting only `truncated` would leave callers — which gate filing on `existing_lookup_failed` — free to file a duplicate for a hotspot that already has a ticket. Both flags are set. **`--state all` enlarges the candidate set**, so this guard matters more than it did, not less — closed issues alone can now fill the cap. The cap stays at 200 rather than being raised: the count-based guard already fails safe, and raising it trades a known-safe bound for tuning nobody has evidence for.
 
 ## Implementation notes worth keeping
 
