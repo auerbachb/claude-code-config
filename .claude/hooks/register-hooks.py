@@ -115,10 +115,16 @@ def sync_statusline(settings, template, scripts_dir):
     Returns 1 when settings was modified, 0 otherwise. Never raises: a
     statusLine problem must not stop hook registration.
 
-    The user's own statusLine (a command whose basename is not the template's
-    script) is left completely alone — this only owns the entry it installed.
-    When it does own the entry, only `command` is rewritten, so `padding`,
-    `refreshInterval`, and any other key the user tuned survive.
+    The user's own statusLine is left completely alone — this only owns the
+    entry it installed. When it does own the entry, only `command` is rewritten,
+    so `padding`, `refreshInterval`, and any other key the user tuned survive.
+
+    Ownership is decided by the installed LAYOUT (a path ending in
+    .claude/scripts/<script>), not by basename alone. Basename alone would claim
+    a user's own ~/bin/statusline.sh purely because the filename collides, while
+    matching only the exact resolved or placeholder path would fail to repair a
+    path left behind by an earlier worktree location — which is a case this has
+    to handle. The layout suffix is what separates the two.
     """
     tpl = template.get("statusLine")
     if not isinstance(tpl, dict):
@@ -137,12 +143,15 @@ def sync_statusline(settings, template, scripts_dir):
         )
         return 0
 
-    live = settings.get("statusLine")
-
-    if live is None:
+    # Seed only when the key is genuinely ABSENT. An explicit "statusLine": null
+    # is a user statement — most plausibly "disabled" — and gets the same
+    # hands-off treatment as any other non-object value below. `.get()` cannot
+    # tell those two apart, which is why this tests membership instead.
+    if "statusLine" not in settings:
         settings["statusLine"] = dict(tpl, command=resolved)
         return 1
 
+    live = settings["statusLine"]
     if not isinstance(live, dict):
         print(
             "statusline-sync: settings.json statusLine is not an object; leaving it alone",
@@ -150,8 +159,14 @@ def sync_statusline(settings, template, scripts_dir):
         )
         return 0
 
+    # See the docstring: layout, not basename. `/Users/me/bin/statusline.sh` is
+    # the user's own script that merely shares our filename; a stale
+    # `/old/worktree/.claude/scripts/statusline.sh` is ours to repair.
+    owned_suffix = os.sep + os.path.join(".claude", "scripts", script)
     existing = live.get("command", "")
-    if not isinstance(existing, str) or os.path.basename(existing) != script:
+    if not isinstance(existing, str) or not (
+        existing == resolved or existing.endswith(owned_suffix)
+    ):
         # Someone else's status line (or a malformed entry) — not ours to touch.
         return 0
 
@@ -232,7 +247,11 @@ def main(argv):
     # path that was in fact written correctly.
     hooks_broken = False
     if "hooks" not in settings:
-        settings["hooks"] = {}
+        # Not in --statusline-only: seeding an empty hooks object there would
+        # ride along in the atomic write below and persist a hooks change the
+        # mode promised not to make.
+        if not statusline_only:
+            settings["hooks"] = {}
     elif not isinstance(settings["hooks"], dict):
         if not statusline_only:
             print("settings.json hooks section is not an object", file=sys.stderr)

@@ -106,6 +106,21 @@ run_sut --statusline-only "$WT"
 check_eq 0 "$?" "non-object statusLine: exit 0"
 check_eq "not-an-object" "$(sl '.statusLine')" "non-object statusLine: left untouched"
 
+# An explicit null is a user statement, not an absent key. `.get()` cannot tell
+# those apart; seeding over it would overwrite what reads as "disabled".
+write_settings '{"hooks":{},"statusLine":null}'
+run_sut --statusline-only "$WT"
+check_eq 0 "$?" "explicit null statusLine: exit 0"
+check_eq "null" "$(sl '.statusLine')" "explicit null statusLine: left untouched, not seeded"
+
+# Ownership is decided by layout, not basename: a user's own script that merely
+# shares the filename must survive, while a stale path in our layout is repaired.
+SAME_NAME='/Users/me/bin/statusline.sh'
+write_settings "$(jq -n --arg c "$SAME_NAME" '{hooks:{}, statusLine:{type:"command", command:$c}}')"
+run_sut --statusline-only "$WT"
+check_eq "$SAME_NAME" "$(sl '.statusLine.command')" \
+  "same-basename user script outside our layout: left untouched"
+
 # --------------------------------------------------------------------------
 # 5. Missing script — skip with a warning rather than register a broken path.
 # --------------------------------------------------------------------------
@@ -124,6 +139,13 @@ write_settings '{"hooks":{}}'
 run_sut --statusline-only "$WT"
 check_eq "0" "$(jq '[.hooks[]?] | length' "$SETTINGS")" "--statusline-only: no hook events registered"
 check_eq "$RESOLVED" "$(sl '.statusLine.command')" "--statusline-only: statusLine still synced"
+
+# Isolation is about the whole hooks surface, not just its contents: seeding an
+# empty hooks object would ride along in the same atomic write.
+write_settings '{}'
+run_sut --statusline-only "$WT"
+check_eq "$RESOLVED" "$(sl '.statusLine.command')" "--statusline-only on a hookless file: statusLine seeded"
+check_eq "null" "$(sl '.hooks')" "--statusline-only on a hookless file: no hooks key invented"
 
 # --------------------------------------------------------------------------
 # 7. Full mode does both.
