@@ -526,10 +526,36 @@ echo not-mine
 MD
 
 out="$(extract_skill_bash "$FIXDIR/adrift.md" gamma 2>&1)"; rc=$?
-if [ "$rc" -ne 0 ] && contains "not immediately followed" "$out"; then
+# The needle pins the diagnostic's wording, not just its exit code: it must name
+# the *first non-blank line* as the thing that has to be a fence, so it can never
+# drift back into implying that a blank line is what got rejected (issue #926).
+if [ "$rc" -ne 0 ] && contains "first non-blank line after the anchor" "$out"; then
   pass "extractor: anchor separated from its fence exits non-zero (rc=$rc) rather than grabbing the next block"
 else
   fail "extractor: drifted anchor — expected non-zero + diagnostic, got rc=$rc: $out"
+fi
+
+# The flip side of adrift.md: blank lines alone are tolerated, however many.
+# Only a non-blank line between anchor and fence is an error, so an editorial
+# double newline never turns into a red build (issue #926).
+cat > "$FIXDIR/tolerant.md" <<'MD'
+<!-- test-anchor: eta -->
+
+
+
+```bash
+echo tolerated one
+echo tolerated two
+```
+MD
+
+out="$(extract_skill_bash "$FIXDIR/tolerant.md" eta 2>&1)"; rc=$?
+expected='echo tolerated one
+echo tolerated two'
+if [ "$rc" -eq 0 ] && [ "$out" = "$expected" ]; then
+  pass "extractor: multiple blank lines between anchor and fence are tolerated (rc 0)"
+else
+  fail "extractor: multi-blank tolerance — expected rc 0 and the block body, got rc=$rc, body=<$out>"
 fi
 
 cat > "$FIXDIR/unclosed.md" <<'MD'
