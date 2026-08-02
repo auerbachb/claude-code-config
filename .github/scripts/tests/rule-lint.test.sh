@@ -5,7 +5,7 @@
 #   (a) small cut  → formula exceeds current cap  → cap unchanged (ratchet holds)
 #   (b) large cut  → formula below current cap    → cap lowered to formula
 #   (c) --allow-raise                             → cap raised, old/new/delta printed
-# Plus four bonus cases:
+# Plus five bonus cases:
 #   (d) bootstrap  → corrupt/missing prior cap    → formula result written
 #   (e) real repo conformance (default run, no --update-cap)
 #   (f) equal case → formula == current cap       → unchanged, no "would raise" message
