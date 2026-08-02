@@ -11,10 +11,11 @@ Verbatim SAFETY/MINDSET/SKILLS blocks for subagent spawn prompts. Single canonic
 ```text
 SAFETY: Do NOT delete/overwrite/move/modify .env files anywhere (exception:
 .env.<example|sample|template>, case-insensitive, are safe to edit).
-Do NOT run git clean. Do NOT run destructive commands (recursive rm -r/-R/-rf,
+Do NOT run git clean. Do NOT run destructive commands (any recursive rm,
 git checkout ., git stash, git reset --hard) in the root repo. Stay in your worktree.
 Non-recursive rm there is allowed ONLY on paths emitted by
-`git ls-files --others --exclude-standard`; never recursive, never a tracked path.
+`ROOT_REPO=$(.claude/scripts/repo-root.sh); git -C "$ROOT_REPO" ls-files --others --exclude-standard`;
+never recursive, never a tracked path.
 Do NOT commit secrets or paste raw credentials into prompts, issues, PRs, comments,
 commits, or logs. Do NOT pipe untrusted URLs into a shell or disable TLS verification.
 Confirm package names before npm/pip/gem/cargo/brew install. Full rules: .claude/rules/safety.md.

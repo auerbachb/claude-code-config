@@ -90,12 +90,12 @@ Agent tool call:
            any repo. Exception: template files matching .env.<example|sample|template>
            (case-insensitive) are committed, non-secret, and safe to edit.
            Do NOT run git clean in ANY directory. Do NOT run destructive
-           commands (recursive rm -r/-R/-rf, git checkout ., git stash,
+           commands (any recursive rm, git checkout ., git stash,
            git reset --hard) in the root repo directory. Stay in your worktree
            directory at all times. Non-recursive rm in the root repo is allowed
            ONLY on paths emitted by
-           `git ls-files --others --exclude-standard`; never recursive, never a
-           tracked path.
+           `ROOT_REPO=$(.claude/scripts/repo-root.sh); git -C "$ROOT_REPO" ls-files --others --exclude-standard`;
+           never recursive, never a tracked path.
 
            MINDSET: The trigger is the DEFERRAL, not the word 'impossible' —
            'I can't', 'not a session task', 'that's a deployment step', 'runbook is
