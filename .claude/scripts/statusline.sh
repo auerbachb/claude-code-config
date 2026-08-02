@@ -51,7 +51,7 @@
 #     singularized at one ("1 agent", "1 watcher")
 #
 # Counts come from ~/.claude/session-state.json via `session-state.sh
-# --session-view`, so they are scoped to the invoking repo:
+# --session-view`:
 #     agents   = .active_agents | length
 #     watchers = (.polling_jobs | length)
 #              + (.prs[] | select(.babysit.active == true) | count)
@@ -59,6 +59,19 @@
 #   `.pmm_active` is counted because /pr-monitor-and-manage is a real watcher and
 #   records itself there rather than in `polling_jobs`, which has been empty by
 #   design since issue #827.
+#
+#   SCOPE, precisely — the two kinds of source differ, and saying only
+#   "scoped to the invoking repo" would over-promise:
+#     • Per-PR sources (agents, babysitters) ARE repo-scoped. `--session-view`
+#       drops entries belonging to another repo, so another checkout's work
+#       never appears here.
+#     • Session-global sources (`polling_jobs`, `pmm_active`) are NOT, because
+#       they are session facts rather than repo facts and pass through
+#       `--session-view` unfiltered by design. /pr-monitor-and-manage watches a
+#       fleet and records no repo of its own, so there is nothing to filter on;
+#       when it is running, it is genuinely running for this session whatever
+#       directory the TUI sits in. Counting it is the true reading, and the line
+#       is a session status line.
 #
 #   No network call, no `gh`, no CronList — this renders on a timer, so it reads
 #   only the local state file. `--session-view` is a lock-free read.
