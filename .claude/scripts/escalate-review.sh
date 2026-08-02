@@ -509,11 +509,21 @@ fi
 # escalation below exactly as before.
 #
 # BUGBOT_GENUINE is already false here (it emits above); restated so the branch
-# reads as a complete statement of the state it claims. BUGBOT_INSTALLED cached
-# true from an earlier SHA also keeps this branch shut — that PR stays on today's
-# path, adjacent to issue #552 and deliberately out of scope here.
+# reads as a complete statement of the state it claims. Every term is scoped to
+# the CURRENT HEAD, which is the only question this branch asks. The footprint
+# term is BUGBOT_CHECK_PRESENT — read from this commit's check-run bundle — and
+# NOT the sticky `bugbot_installed` cache it used to be (issue #948, follow-up to
+# PR #945). That cache is per-PR and never reset, so once BugBot answered on any
+# earlier SHA it read as "invited here" forever: on a later push where the
+# CI auto-trigger posts nothing (issue #905) the PR had no BugBot footprint at
+# all, yet this branch stayed shut and escalation spent paid Greptile budget
+# instead of posting the free `@cursor review` that resolves it. The cache still
+# carries the availability signal for the grace window above; it just no longer
+# answers a per-SHA question. Swapping in the live term rather than dropping one
+# also keeps the branch faithful to the first paragraph: an in-flight
+# `Cursor Bugbot` run on this commit is a footprint, so it still falls through.
 if [[ "$BUGBOT_FAILED" != "true" && "$BUGBOT_GENUINE" != "true" \
-      && "$BUGBOT_INSTALLED" != "true" && "$BUGBOT_TRIGGER_PRESENT" != "true" ]]; then
+      && "$BUGBOT_CHECK_PRESENT" != "true" && "$BUGBOT_TRIGGER_PRESENT" != "true" ]]; then
   emit "switch_bugbot"
 fi
 
