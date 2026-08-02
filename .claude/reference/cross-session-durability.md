@@ -84,12 +84,54 @@ primary guard.
 
 **`max(3 x cadence_effective_minutes, BABYSIT_DISPATCH_TTL_MIN)`**, default TTL
 `30` minutes. Two places implement it: `/babysit-pr`'s A2 duplicate-watcher
-check and `session-scheduling-reconcile.sh`. They must stay identical — a
-*narrower* window in the reconciler reaps a watcher A2 still considers fresh; a
+check and `session-scheduling-reconcile.sh`. **Those two** must stay identical —
+a *narrower* window in the reconciler reaps a watcher A2 still considers fresh; a
 *wider* one lets a dead watcher linger. Change one, change the other, and update
 this definition. Note that A2 tests with a bash numeric regex and so accepts a
 numeric string, which is why the reconciler coerces with `tonumber` instead of
 type-checking for a JSON number.
+
+The identical-window requirement covers the two **reap** consumers only. It does
+*not* extend to the early-warning window below, which is a third consumer with a
+deliberately different job.
+
+### Early-warning window (distinct from the reap window)
+
+**`WARN_MIN = 2 x cadence_effective_minutes`** (floor `2` minutes). One place
+implements it: the `babysit-tick-watchdog.sh` PostToolUse hook (issue #914).
+
+It is deliberately **tighter** than the reap window above, because the two answer
+different questions:
+
+| | Early-warning | Reap |
+|---|---|---|
+| Window | `2 x cadence` | `max(3 x cadence, TTL)` — floor 30m |
+| Question | "has this poll stopped ticking?" | "is this watcher dead enough to take over?" |
+| Action | advisory message | mutate state / re-arm |
+| Wrong-way cost | one noisy line | a live watcher reclaimed, or a dead one wedging re-arm |
+
+Warning is cheap and reversible, so it fires early; reaping mutates state, so it
+waits. Widening `WARN_MIN` to match the reap window would delay the signal past
+30 minutes at the default cadence — long enough for the exact #914 outcome, where
+the silence ceiling reported the problem first, roughly 18 minutes late. Do not
+"unify" these two windows; the gap between them is the design.
+
+**The gap has a consequence the warning must carry (CodeAnt, PR #922).** Between
+`WARN_MIN` and the reap window — 10m to 30m at the default cadence — the watcher
+is *warned-about but not yet reclaimable*. `/babysit-pr`'s A2 still sees
+`active == true` inside its freshness window and refuses to arm a second watcher,
+so an operator who follows a bare "re-arm it" instruction gets
+`Already babysitting PR #N` and **nothing happens**. The advisory therefore names
+the two-step recovery explicitly:
+
+```
+/babysit-pr-stop <PR>     # clears active; A2 will no longer refuse
+/babysit-pr <PR>          # re-arms (dynamic /loop, no leading interval)
+```
+
+Pinned by test 12 in `babysit-tick-watchdog.test.sh`, which asserts the stop step
+is named *before* the re-arm step. If either window is ever retuned, re-check that
+the advisory's recovery sequence is still reachable at the new numbers.
 
 Per feature: `--durable` was **dropped** from `/babysit-pr` (accepted and
 ignored, so an old chip payload does not hard-error); `--auto-wake` was
