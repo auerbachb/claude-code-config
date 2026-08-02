@@ -325,10 +325,43 @@ strip_leading_emphasis() {
 
 # A field whose value is only markup is the empty-shell failure at field scale:
 # `Owner:` with nothing after it, or `Owner: **`, answers the reader's question
-# with the shape of an answer. Emphasis and backticks are stripped before the
-# emptiness test so that `Owner: **mine**` — a perfectly good answer — counts.
+# with the shape of an answer. The test is what the reader SEES, so every
+# construct that renders to nothing has to come out before the emptiness check
+# — `Owner: **mine**` is a perfectly good answer and must survive it.
+#
+# Deleting characters one class at a time is not enough on its own: an HTML
+# comment and an empty Markdown link both leave non-whitespace behind while
+# rendering to nothing at all, so `Owner: <!-- -->` and `Owner: [](/note)` would
+# each answer the question with a blank. Two constructs are therefore REDUCED
+# rather than deleted, because one of them can carry visible text: a comment
+# renders nothing and comes out whole, a link renders as its TEXT, so
+# `Owner: [mine](url)` keeps "mine" and `Owner: [](/note)` keeps nothing.
 field_value_nonempty() {
-  local v="$1" backtick
+  local v="$1" backtick head rest text after
+
+  # `<!-- ... -->`: cut from the FIRST opener to the first closer AFTER it.
+  # Taking the first closer in the whole string can land left of the opener and
+  # reassemble into something longer, which would never terminate. Each pass
+  # here removes at least the seven delimiter characters and adds none.
+  while [[ "$v" == *'<!--'*'-->'* ]]; do
+    head="${v%%'<!--'*}"
+    rest="${v#*'<!--'}"
+    [[ "$rest" == *'-->'* ]] || break
+    v="$head${rest#*'-->'}"
+  done
+
+  # `[text](dest)` -> `text`. The destination is an address, not something that
+  # appears on the page; the text is the part the reader can actually read.
+  while [[ "$v" == *'['*']('*')'* ]]; do
+    head="${v%%'['*}"
+    rest="${v#*'['}"
+    [[ "$rest" == *']('* ]] || break
+    text="${rest%%']('*}"
+    after="${rest#*']('}"
+    [[ "$after" == *')'* ]] || break
+    v="$head$text${after#*')'}"
+  done
+
   # Via a variable, NOT inline: `${v//$'\x60'/}` expands the escape first and
   # leaves a bare backtick inside the braces, which reads as an unterminated
   # command substitution and aborts the caller mid-loop. Quoting the expansion
@@ -337,6 +370,7 @@ field_value_nonempty() {
   v="${v//[[:space:]]/}"
   v="${v//\*/}"
   v="${v//_/}"
+  v="${v//\~/}"
   v="${v//"$backtick"/}"
   [[ -n "$v" ]]
 }
@@ -533,7 +567,13 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$ENTRY_LABEL" =~ $RE_PR_ENTRY ]] && ENTRY_IS_PR=1
   fi
 
-  if (( ENTRY_ACTIVE )); then
+  # Fenced text is a sample, not an answer — the entry bullet, the headings and
+  # the working-directory field all already refuse to read it, and a field that
+  # still did would let an example vouch for the entry containing it. The
+  # sharpest case is the one the fence tracking exists for: Step 6 prints the
+  # finished document inside a fence, so a render that captured its own fence
+  # would supply every field from its own sample copy.
+  if (( ENTRY_ACTIVE )) && (( ! IN_FENCE )); then
     case "$field" in
       "$OWNER_ANCHOR"*)
         field_value_nonempty "${field#"$OWNER_ANCHOR"}" && ENTRY_HAS_OWNER=1 ;;
@@ -546,11 +586,15 @@ while IFS= read -r line || [[ -n "$line" ]]; do
 
   # Document-scoped: one runnable check somewhere is the bar, not one per entry.
   # A queued issue nobody has started has nothing to verify, and demanding a
-  # command there would buy filler instead of an answer.
-  case "$field" in
-    "$VERIFY_ANCHOR"*)
-      field_value_nonempty "${field#"$VERIFY_ANCHOR"}" && VERIFY_SEEN=$((VERIFY_SEEN + 1)) ;;
-  esac
+  # command there would buy filler instead of an answer. Document-scoped makes
+  # the fence gate matter MORE, not less: one fenced sample anywhere would
+  # otherwise answer for the whole document.
+  if (( ! IN_FENCE )); then
+    case "$field" in
+      "$VERIFY_ANCHOR"*)
+        field_value_nonempty "${field#"$VERIFY_ANCHOR"}" && VERIFY_SEEN=$((VERIFY_SEEN + 1)) ;;
+    esac
+  fi
 
   # The working-directory field: present, and an absolute path.
   IS_WORKDIR_LINE=0

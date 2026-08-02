@@ -354,6 +354,31 @@ assert_doc "a bolded owner label" 0 \
 assert_doc "an owner line containing a Markdown link" 0 \
   "$PR_HEAD"$'\n''  Owner: mine, see [the note](https://example.com/n)'$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_VERIFY"
 
+# Markup that renders to NOTHING is the same empty shell as `Owner: **`, and
+# leaves more behind than a character-class strip removes: both of these carry
+# non-whitespace and both show the reader a blank where the answer goes.
+assert_doc "an owner field holding only an empty Markdown link" 1 \
+  "$PR_HEAD"$'\n''  Owner: [](/note)'$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_VERIFY" \
+  'open-work-ownership'
+assert_doc "an owner field holding only an HTML comment" 1 \
+  "$PR_HEAD"$'\n''  Owner: <!-- fill this in -->'$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_VERIFY" \
+  'open-work-ownership'
+# The same treatment reaches the other three fields, which share the check.
+assert_doc "an approval field holding only an HTML comment" 1 \
+  "$PR_HEAD"$'\n'"$PR_OWNER"$'\n'"$PR_WAITING"$'\n''  Approval: <!-- TODO -->'$'\n'"$PR_VERIFY" \
+  'pull-request-review-state'
+assert_doc "a verify field holding only an empty Markdown link" 1 \
+  "$PR_HEAD"$'\n'"$PR_OWNER"$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n''  Verify with: []()' \
+  'verification-command'
+
+# The negative control for all four: a link is reduced to its TEXT, not deleted,
+# so a value written entirely as a link still answers the question. Without this
+# the fix above would be indistinguishable from banning links in field values.
+assert_doc "an owner field written entirely as a Markdown link" 0 \
+  "$PR_HEAD"$'\n''  Owner: [mine](https://example.com/n)'$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_VERIFY"
+assert_doc "an owner field with a real answer beside a comment" 0 \
+  "$PR_HEAD"$'\n''  Owner: mine <!-- confirmed at 11:50 -->'$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_VERIFY"
+
 # Review state: what is blocking it, and whether it may merge once unblocked.
 assert_doc "a pull request with no approval line" 1 \
   "$PR_HEAD"$'\n'"$PR_OWNER"$'\n'"$PR_WAITING"$'\n'"$PR_VERIFY" \
@@ -390,6 +415,29 @@ assert_doc "a sub-bullet does not start a new entry" 0 \
 # false positive that gets a checker bypassed.
 assert_doc "a thematic break is not an entry" 0 \
   "$PR_HEAD"$'\n'"$PR_OWNER"$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_VERIFY"$'\n\n''* * *'
+
+# Fenced text is a sample, not an answer. The entry bullet, the headings and the
+# working-directory field already refuse to read it; a field that still did
+# would let an example vouch for the entry that contains it. The document-scoped
+# verify rule is the worst of the three, because ONE fenced sample anywhere
+# would answer for the whole document — including a render that captured the
+# fence Step 6 prints the finished document inside.
+FENCE='  ```'
+assert_doc "a fenced sample cannot supply the owner" 1 \
+  "$PR_HEAD"$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_VERIFY"$'\n''  Other entries look like this:'$'\n'"$FENCE"$'\n''  Owner: mine'$'\n'"$FENCE" \
+  'open-work-ownership'
+assert_doc "a fenced sample cannot supply the approval" 1 \
+  "$PR_HEAD"$'\n'"$PR_OWNER"$'\n'"$PR_WAITING"$'\n'"$PR_VERIFY"$'\n'"$FENCE"$'\n''  Approval: nobody yet'$'\n'"$FENCE" \
+  'pull-request-review-state'
+assert_doc "a fenced command cannot satisfy the verify rule" 1 \
+  "$PR_HEAD"$'\n'"$PR_OWNER"$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$FENCE"$'\n'"$PR_VERIFY"$'\n'"$FENCE" \
+  'verification-command'
+
+# The negative control: gating on the fence must not make an ordinary fenced
+# snippet break the entry around it. Fields OUTSIDE the fence still count, and
+# the portability rules still read the fenced lines themselves.
+assert_doc "a fenced snippet beside real fields is fine" 0 \
+  "$PR_HEAD"$'\n'"$PR_OWNER"$'\n'"$PR_WAITING"$'\n'"$PR_APPROVAL"$'\n'"$PR_VERIFY"$'\n'"$FENCE"$'\n''  git status'$'\n'"$FENCE"
 
 # Entries are judged one at a time: a complete first entry must not vouch for
 # an incomplete second one.
