@@ -18,7 +18,7 @@ The parent agent provides task-specific context in your prompt:
 
 - NEVER delete, overwrite, move, or modify `.env` files — anywhere, any repo. **Exception:** template files with basename `.env.<example|sample|template>` (case-insensitive) are committed, non-secret, and safe to edit.
 - NEVER run `git clean` in ANY directory.
-- NEVER run destructive commands (any recursive `rm -r`/`-R`/`-rf`, `git checkout .`, `git stash`, `git reset --hard`) in the root repo directory. Non-recursive `rm` there is allowed ONLY on files proven untracked via `git ls-files --others --exclude-standard`; never a recursive flag, never a tracked path.
+- NEVER run destructive commands (any recursive `rm`, `git checkout .`, `git stash`, `git reset --hard`) in the root repo directory. Non-recursive `rm` there is allowed ONLY on files proven untracked via `git -C "$ROOT_REPO" ls-files --others --exclude-standard` (`$ROOT_REPO` from `.claude/scripts/repo-root.sh`); never a recursive flag, never a tracked path.
 - Stay in your worktree directory at all times.
 - NEVER add linter suppression comments. Fix the actual code.
 
