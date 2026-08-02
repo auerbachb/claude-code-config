@@ -500,9 +500,26 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
       and any(.[]; . as $t | ($sha | startswith($t)) or ($t | startswith($sha)));
 
     # ---- Conversation index: one pass, all regex work done here -------------
+    #
+    # The echo scan is handed updated_at, NOT created_at (BugBot review of this
+    # PR). GitHub freezes created_at when a comment is edited in place, and
+    # editing in place is the norm here, not an edge case: CodeAnt PATCHes its
+    # review body on re-review (#876) and CodeRabbit rewrites its walkthrough
+    # comment. A bot that edits an echo of the author"s prose INTO a comment it
+    # opened BEFORE the author wrote it would sort ahead of the index entry and
+    # keep the line, manufacturing HEAD evidence — the grant direction, reached
+    # without the bot ever writing the SHA.
+    #
+    # Both sides of the comparison are now biased the same way, toward
+    # stripping: the index (above) keeps the EARLIEST time a source line can
+    # have existed, and the scan takes the LATEST time the scanned body can have
+    # been written. An in-place edit can therefore only ever withhold coverage,
+    # never manufacture it. Unedited comments are unaffected — GitHub reports
+    # updated_at == created_at — so the ordering guard pinned by (ff-933)(f) is
+    # unchanged. Pinned by (ff-933)(n).
     ( [ $convo[]?
         | (.body // "") as $b
-        | (((.created_at // .updated_at) // "") | canon_ts) as $cts
+        | (((.updated_at // .created_at) // "") | canon_ts) as $cts
         | (($b | sha_tokens($cts))) as $tok
         | { login:   (.user.login // ""),
             body:    $b,

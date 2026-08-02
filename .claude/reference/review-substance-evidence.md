@@ -252,9 +252,20 @@ Case `(ff-933)(e)` is the negative control that pins this distinction.
 Two further properties, both deliberate:
 
 - **Ordered.** The index stores the earliest time each line was seen, and a line
-  is dropped only from comments created at or after it. Echo means the source
+  is dropped only from comments written at or after it. Echo means the source
   came first; without ordering a human quoting a bot verbatim would retroactively
   strip the bot's original.
+- **Edit-aware** (BugBot review of PR #951). The two sides of that comparison use
+  deliberately different timestamps, both biased toward stripping: the index
+  keeps `created_at` (the earliest time a source line can have existed) and the
+  scan uses `updated_at` (the latest time the scanned body can have been
+  written). GitHub freezes `created_at` on an in-place edit, and editing in place
+  is routine here — CodeAnt PATCHes its review body on re-review (#876),
+  CodeRabbit rewrites its walkthrough — so scanning on `created_at` let a bot
+  edit an echo into a comment it had opened *before* the author wrote the line,
+  sort ahead of the index entry, and manufacture HEAD evidence without ever
+  writing the SHA. Unedited comments report `updated_at == created_at`, so the
+  ordering guard is unchanged. Pinned by `(ff-933)(n)` and its unedited control.
 - **Reviewers never seed the index**, so a reviewer can never strip *itself* —
   including a bot that repeats its own status line. One reviewer quoting another
   is therefore out of scope, pinned by `(ff-933)(i)` so that widening the index to

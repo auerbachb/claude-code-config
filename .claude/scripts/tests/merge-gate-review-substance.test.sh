@@ -30,9 +30,11 @@
 #        withhold coverage, never grant it
 #   (ff-933) a bot echoing the AUTHOR's SHA-bearing text  -> does not name HEAD
 #        (issue #933, trace on PR #929), with the parity, ordering and
-#        self-quotation controls that keep the rule from over-stripping, and
+#        self-quotation controls that keep the rule from over-stripping;
 #        (k)/(l): the fence exemption covers the DELIMITER, not the whole line,
-#        so an echoed "```<sha>" smuggles nothing yet still masks its block
+#        so an echoed "```<sha>" smuggles nothing yet still masks its block;
+#        (n): an echo edited in place into an older bot comment is stripped on
+#        updated_at, with the unedited case as the ordering control
 #
 # Only `gh` is stubbed; merge-gate.sh, review-substance.sh, ci-status.sh,
 # check-runs-dedup.sh and session-state.sh are the real scripts.
@@ -696,7 +698,7 @@ ff_eval() { # <issue-comments-json> -> the codeant reviewer object
                 submitted_at:"2026-07-31T10:10:00Z",body:""}],
       pr_comments:[],
       issue_comments:($cs | map({user:{login:.login}, created_at:.created,
-                                 updated_at:.created, body:.body}))}' \
+                                 updated_at:(.updated // .created), body:.body}))}' \
   | "$EVAL_SUT" 2>/dev/null | jq -c '.reviewers["codeant-ai[bot]"]'
 }
 ff_pair() { # <author-body> <bot-body> [author_ts] [bot_ts]
@@ -820,6 +822,33 @@ FF_L_BOT="$(printf "Walkthrough of the changed files, covering both call sites.\
 FF_L="$(ff_eval "$(ff_pair "$FF_L_AUTHOR" "$FF_L_BOT")")"
 check_eq "[]"    "$(echo "$FF_L" | jq -c '.status_comment_shas')"  "(ff-933)(l) a truncated echoed opener still pairs and masks its block"
 check_eq "false" "$(echo "$FF_L" | jq -r '.self_report_mismatch')" "(ff-933)(l) so quoted source is still not a self-report"
+
+# (n) IN-PLACE EDITS (BugBot review of PR #951). GitHub freezes created_at when
+# a comment is edited, and editing in place is the norm for these bots — CodeAnt
+# PATCHes its review body on re-review (#876), CodeRabbit rewrites its
+# walkthrough. Scanning on created_at let a bot EDIT an echo of the author's
+# prose into a comment it had opened BEFORE the author wrote it: the bot's
+# comment sorted ahead of the index entry, the line survived, and HEAD evidence
+# was manufactured without the bot ever writing the SHA. The scan now takes
+# updated_at, so the echo is stripped on the edited body's real timing.
+FF_N="$(ff_eval "$(jq -cn --arg t "$FF_TRIGGER_LINE" --arg e "$FF_ECHO_LINE" '
+  [ {login:"codeant-ai[bot]", created:"2026-07-31T10:01:00Z", updated:"2026-07-31T10:09:00Z",
+     body:("Status: reviewing this PR.\n\n" + $e + "\n\nNo blocking findings.\n")},
+    {login:"auerbachb", created:"2026-07-31T10:05:00Z",
+     body:("@codeant-ai: review\n\n" + $t + "\n")} ]')")"
+check_eq "false" "$(echo "$FF_N" | jq -r '.status_comment_names_head')" "(ff-933)(n) an echo edited into an older bot comment is still stripped"
+check_eq "false" "$(echo "$FF_N" | jq -r '.counts_as_coverage')"        "(ff-933)(n) so an in-place edit cannot manufacture coverage"
+
+# (n) control: the same two comments with the bot's body NEVER edited. This is
+# the (f) ordering guard — the author's line came later, so it cannot have been
+# echoed — and it must stay true, or the change has turned an ordering rule into
+# "strip whenever the text matches".
+FF_N2="$(ff_eval "$(jq -cn --arg t "$FF_TRIGGER_LINE" --arg e "$FF_ECHO_LINE" '
+  [ {login:"codeant-ai[bot]", created:"2026-07-31T10:01:00Z",
+     body:("Status: reviewing this PR.\n\n" + $e + "\n\nNo blocking findings.\n")},
+    {login:"auerbachb", created:"2026-07-31T10:05:00Z",
+     body:("@codeant-ai: review\n\n" + $t + "\n")} ]')")"
+check_eq "true" "$(echo "$FF_N2" | jq -r '.status_comment_names_head')" "(ff-933)(n) control: an unedited earlier bot comment keeps its line"
 
 echo "=== (m) evaluator rejects malformed stdin ==="
 echo "not json" | "$EVAL_SUT" >/dev/null 2>&1
