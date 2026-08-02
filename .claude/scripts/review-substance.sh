@@ -322,18 +322,28 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         ) as $unfenced
       # UUID-stripped text for rule 1 only (issue #917). CodeRabbit embeds an
       # invocation UUID in its HTML comments (8-4-4-4-12 hyphenated hex, e.g.
-      # "9f69125b-29d9-47d4-bf8f-8b5df9dcb5a6"). \b treats a hyphen as a
-      # non-word boundary, so the UUID splits into 5 segments at scan time —
-      # and its first (8 hex chars) and last (12 hex chars) groups
-      # independently satisfy rule 1"s shape (7-40 chars, at least one a-f
-      # letter), getting misread as SHAs the bot claims to have reviewed. Each
-      # match is replaced with a space, not stripped to empty, so a UUID
-      # sitting between two genuine tokens cannot merge them into a new false
-      # one. Rules 2-3 are untouched: rule 2 is safe regardless because it
-      # additionally requires a prefix match against the real $sha, and rule 3
-      # only admits complete backtick-wrapped ALL-DECIMAL runs, which a
-      # hyphenated hex UUID never satisfies.
-      | ($btxt | gsub("\\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b"; " ")) as $unuuid
+      # "9f69125b-29d9-47d4-bf8f-8b5df9dcb5a6"). A hyphen is a non-word
+      # character, so the UUID"s hex groups independently satisfy rule 1"s
+      # shape (7-40 chars, at least one a-f letter) and get misread as SHAs
+      # the bot claims to have reviewed. Each match is replaced with a space,
+      # not stripped to empty, so a UUID sitting between two genuine tokens
+      # cannot merge them into a new false one. Rules 2-3 are untouched: rule
+      # 2 is safe regardless because it additionally requires a prefix match
+      # against the real $sha, and rule 3 only admits complete
+      # backtick-wrapped ALL-DECIMAL runs, which a hyphenated hex UUID never
+      # satisfies.
+      #
+      # The boundary is a hex-lookaround, NOT \b (issue #917 follow-up,
+      # CodeAnt PR #923 review): \b treats "_" as a word character equal to a
+      # hex digit, so an identifier-glued UUID ("request_id_9f69125b-…") has
+      # NO boundary before its first hex digit — the whole pattern fails to
+      # match, the UUID is never stripped, and rule 1"s own scan still picks
+      # up its trailing group ("8b5df9dcb5a6") as a bare hex token, exactly
+      # reproducing the bug this fix exists to close. (?<![0-9a-f]) / (?![0-9a-f])
+      # only refuse to START or END the match mid-hex-digit-run — they treat
+      # "_" (or any other non-hex character) as a valid edge, so an
+      # identifier-glued UUID is still recognized and stripped.
+      | ($btxt | gsub("(?<![0-9a-f])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![0-9a-f])"; " ")) as $unuuid
       | [ ( $unuuid | scan("\\b[0-9a-f]{7,40}\\b") | select(test("[a-f]")) ),
           ( $btxt | scan("\\b[0-9]{7,40}\\b") | . as $t
                   | select(($sha | length) > 0

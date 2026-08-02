@@ -619,6 +619,17 @@ RU0="$(ee_eval "$UUID_BODY")"
 check_eq "[]"    "$(echo "$RU0" | jq -c '.status_comment_shas')" "(ee-917) a bare invocation UUID yields no tokens at all"
 check_eq "false" "$(echo "$RU0" | jq -r '.self_report_mismatch')" "(ee-917) and manufactures no mismatch on its own"
 
+# Identifier-glued UUID (CodeAnt review, PR #923): \b treats "_" as a word
+# character equal to a hex digit, so a UUID glued directly to a preceding
+# identifier with no separator ("request_id_9f69125b-…") has NO \b boundary
+# before its first hex digit. The first fix used \b and never stripped this
+# shape at all — rule 1's own scan still admitted the trailing 12-char group
+# as a bare hex token, reproducing the original bug for this one adjacency.
+UUID_GLUED_BODY="Comment ref request_id_9f69125b-29d9-47d4-bf8f-8b5df9dcb5a6 posted."
+RU_GLUED="$(ee_eval "$UUID_GLUED_BODY")"
+check_eq "[]"    "$(echo "$RU_GLUED" | jq -c '.status_comment_shas')" "(ee-917) an identifier-glued UUID yields no tokens either"
+check_eq "false" "$(echo "$RU_GLUED" | jq -r '.self_report_mismatch')" "(ee-917) and manufactures no mismatch"
+
 # Real-world shape (auerbachb/longlove PR #161, 2026-08-01): a single comment
 # mixing the UUID with a genuine HEAD-naming token does NOT reproduce the
 # reported failure — tokens_name_head is an any(...) over one comment's own
