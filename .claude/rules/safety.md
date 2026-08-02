@@ -45,7 +45,7 @@ SAFETY: Do NOT delete/overwrite/move/modify .env files anywhere (exception:
 Do NOT run git clean. Do NOT run destructive commands (any recursive rm,
 git checkout ., git stash, git reset --hard) in the root repo. Stay in your worktree.
 Non-recursive rm there is allowed ONLY on paths emitted by
-`ROOT_REPO=$(.claude/scripts/repo-root.sh); git -C "$ROOT_REPO" ls-files --others --exclude-standard`;
+`ROOT_REPO=$(.claude/scripts/repo-root.sh) && git -C "$ROOT_REPO" ls-files --others --exclude-standard`;
 never recursive, never a tracked path.
 Do NOT commit secrets or paste raw credentials into prompts, issues, PRs, comments,
 commits, or logs. Do NOT pipe untrusted URLs into a shell or disable TLS verification.

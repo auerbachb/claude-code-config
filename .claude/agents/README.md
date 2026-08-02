@@ -94,7 +94,7 @@ Agent tool call:
            git reset --hard) in the root repo directory. Stay in your worktree
            directory at all times. Non-recursive rm in the root repo is allowed
            ONLY on paths emitted by
-           `ROOT_REPO=$(.claude/scripts/repo-root.sh); git -C "$ROOT_REPO" ls-files --others --exclude-standard`;
+           `ROOT_REPO=$(.claude/scripts/repo-root.sh) && git -C "$ROOT_REPO" ls-files --others --exclude-standard`;
            never recursive, never a tracked path.
 
            MINDSET: The trigger is the DEFERRAL, not the word 'impossible' —
