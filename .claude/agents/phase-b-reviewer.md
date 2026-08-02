@@ -153,7 +153,7 @@ If CR remains silent or cannot produce a current-HEAD approval, keep using the R
 
 ## BugBot Review Path (when `reviewer` = `bugbot`)
 
-BugBot auto-reviews every push — no manual trigger needed. Poll for `cursor[bot]` reviews on all 3 endpoints every 60 seconds.
+**Invite BugBot before polling it.** BugBot does NOT auto-review pushes — something has to post `@cursor review`, normally the `cursor-review-pr-comment.yml` CI job, which posts nothing when `CURSOR_REVIEW_PAT` is unprovisioned (issue #905). So `switch_bugbot` now also arrives for a PR BugBot was never invited to (issue #935): if `cursor[bot]` has no review/comment and there is no `Cursor Bugbot` check-run on HEAD, post `gh pr comment {{PR_NUMBER}} --body "@cursor review"` first — duplicates are OK. Then poll for `cursor[bot]` reviews on all 3 endpoints every 60 seconds.
 
 ### Polling
 

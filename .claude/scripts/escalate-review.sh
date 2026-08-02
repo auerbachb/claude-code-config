@@ -17,8 +17,15 @@
 #                             CodeAnt has a valid APPROVED review on current HEAD) —
 #                             do not escalate; the merge gate will pick this up
 #     STATUS=polling_cr       keep polling CodeRabbit/BugBot grace window
-#     STATUS=switch_bugbot    BugBot has responded; make BugBot sticky reviewer
-#     STATUS=trigger_greptile CR failed and BugBot is absent/timed out; trigger Greptile
+#     STATUS=switch_bugbot    BugBot has responded — OR BugBot was never invited
+#                             (no footprint on HEAD and no fresh `@cursor review`
+#                             trigger comment). Make BugBot the sticky reviewer;
+#                             when it has no footprint yet, post the manual
+#                             `@cursor review` trigger before polling
+#     STATUS=trigger_greptile CR failed AND BugBot either failed outright or was
+#                             invited and then timed out; trigger Greptile. NOT
+#                             emitted for a BugBot that was never invited — that
+#                             case is switch_bugbot above
 #     STATUS=budget_exhausted Greptile budget is exhausted; do not trigger Greptile
 #     STATUS=self_review      PR is already marked for self-review fallback
 #
@@ -301,7 +308,17 @@ if [[ -z "$PUSH_TIMESTAMP" ]]; then
   exit 4
 fi
 
-AGE_SECONDS="$(python3 - "$PUSH_TIMESTAMP" <<'PY'
+# Age in seconds of an ISO-8601 timestamp, clamped at 0. Two callers share it —
+# the push-age grace window below and the BugBot trigger-comment freshness test
+# further down — so both timestamps are parsed by ONE rule and then compared as
+# integers. That deliberately avoids a second lexicographic timestamp compare in
+# this file: the jq `canon_ts` mirror is pinned byte-for-byte against
+# merge-gate.sh's norm_ts (issue #885, tests/ts-normalizer-parity.test.sh
+# requires exactly one `def canon_ts:` here), and a near-copy under another name
+# would reintroduce exactly the drift that guard exists to prevent.
+# An unparseable value yields 0 — see each call site for what that means there.
+iso_age_seconds() {
+  python3 - "$1" <<'PY'
 from datetime import datetime, timezone
 import sys
 
@@ -318,7 +335,9 @@ if ts.tzinfo is None:
     ts = ts.replace(tzinfo=timezone.utc)
 print(max(0, int((datetime.now(timezone.utc) - ts).total_seconds())))
 PY
-)"
+}
+
+AGE_SECONDS="$(iso_age_seconds "$PUSH_TIMESTAMP")"
 
 CR_RATE_LIMITED="$(jq -r '
   def text: [(.title // ""), (.description // ""), (.state // ""), (.conclusion // "")] | join(" ");
@@ -389,6 +408,46 @@ BUGBOT_CHECK_PRESENT="$(jq -r '
   [.check_runs.all[] | select((.name // "") == "Cursor Bugbot")] | length > 0
 ' "$STATE_PATH")"
 
+# Was BugBot ever INVITED on this HEAD? (issue #935.) BugBot does not auto-review
+# pushes — something has to post `@cursor review`, normally the
+# cursor-review-pr-comment.yml CI job. Without CURSOR_REVIEW_PAT that job
+# concludes success while posting NOTHING (issue #905), so "no BugBot footprint"
+# means "never asked", not "asked and failed". This separates the two.
+#
+# Newest matching comment only; the freshness compare happens in bash below.
+# Scoped to `.comments.conversation` (the PR conversation) because that is where
+# a trigger is posted, and to non-`cursor[bot]` authors because BugBot quoting
+# the phrase back is not an invitation. Narrow on purpose: a missed invite costs
+# one duplicate `@cursor review` (harmless per bugbot.md), while a false one
+# costs a paid Greptile review. No new gh api call — the bundle is already here
+# (meta-guard scenario L).
+BUGBOT_TRIGGER_TS="$(jq -r '
+  [.comments.conversation[]?
+   | select((.user.login // "") != "cursor[bot]")
+   | select((.body // "") | test("@cursor\\s+review"; "i"))
+   | (.created_at // .submitted_at // "")
+   | select(. != "")]
+  | sort | last // ""
+' "$STATE_PATH")" || {
+  echo "escalate-review.sh: failed to scan for a BugBot trigger comment" >&2
+  exit 4
+}
+
+# Only a trigger that POSTDATES the HEAD commit counts. A trigger left over from
+# an earlier SHA must not mask a still-unprovisioned auto-trigger on the new one.
+# Both sides go through iso_age_seconds, so this is an integer compare: the
+# trigger is fresh when it is no older than the push.
+# An unparseable comment timestamp yields age 0, i.e. "fresh" — that keeps the
+# pre-#935 escalation behaviour on data we cannot read rather than newly
+# granting switch_bugbot on it.
+BUGBOT_TRIGGER_PRESENT=false
+if [[ -n "$BUGBOT_TRIGGER_TS" ]]; then
+  BUGBOT_TRIGGER_AGE="$(iso_age_seconds "$BUGBOT_TRIGGER_TS")"
+  if [[ "$BUGBOT_TRIGGER_AGE" -le "$AGE_SECONDS" ]]; then
+    BUGBOT_TRIGGER_PRESENT=true
+  fi
+fi
+
 CACHED_BUGBOT_INSTALLED="$("$SESSION_STATE" --get ".prs[\"$PR_NUMBER\"].bugbot_installed // \"\"" 2>/dev/null || true)"
 case "$CACHED_BUGBOT_INSTALLED" in
   true|false)
@@ -432,6 +491,30 @@ fi
 # budget check below (mirrors the CodeRabbit "rate limit" fast-path).
 if [[ "$BUGBOT_FAILED" != "true" && "$BUGBOT_INSTALLED" == "true" && "$AGE_SECONDS" -lt 600 ]]; then
   emit "polling_cr"
+fi
+
+# BugBot was NEVER INVITED (issue #935; observed on PRs #929 and #932). With
+# CURSOR_REVIEW_PAT unprovisioned the post-cursor-review CI job greens without
+# posting anything (issue #905), so cursor[bot] has zero footprint and no
+# `Cursor Bugbot` check-run ever appears — the same signature as "BugBot is not
+# installed here". Escalating on that jumps the chain past a tier that was never
+# asked, which greptile.md forbids ("never before both CR AND BugBot have
+# failed") and which spends paid Greptile budget for nothing. The remedy is the
+# manual `@cursor review` trigger the switch_bugbot arm posts; both times this
+# was hit live, BugBot answered within seconds of being asked.
+#
+# BUGBOT_TRIGGER_PRESENT is what keeps this from looping (the #552 hazard in
+# reverse): once an invite postdating HEAD exists and BugBot is still silent past
+# the grace window, that is invited-but-silent and falls through to the Greptile
+# escalation below exactly as before.
+#
+# BUGBOT_GENUINE is already false here (it emits above); restated so the branch
+# reads as a complete statement of the state it claims. BUGBOT_INSTALLED cached
+# true from an earlier SHA also keeps this branch shut — that PR stays on today's
+# path, adjacent to issue #552 and deliberately out of scope here.
+if [[ "$BUGBOT_FAILED" != "true" && "$BUGBOT_GENUINE" != "true" \
+      && "$BUGBOT_INSTALLED" != "true" && "$BUGBOT_TRIGGER_PRESENT" != "true" ]]; then
+  emit "switch_bugbot"
 fi
 
 BUDGET_CHECK_RC=0
