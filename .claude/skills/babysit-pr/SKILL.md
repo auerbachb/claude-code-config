@@ -39,7 +39,7 @@ A human `CHANGES_REQUESTED` on HEAD is `hard-blocked` → record and exit. Never
 | `--max-iter N` | `6` | Hard termination after N **consecutive blocker-state ticks** (≈90 min once backoff widens to 15m). |
 | `--silent` | off | Suppress the per-tick heartbeat **except** on state change, dispatch, or termination (those always print). |
 | `--auto-resolve-conflicts` | off | Opt-in: on `CONFLICTING`, dispatch `/fixpr` in safe-only mode (`BABYSIT_SAFE_CONFLICT_MODE=1`) to rebase and auto-resolve mechanically-simple hunks. Any complex hunk aborts the rebase and terminates with a per-hunk report. Off by default — performs unattended rebases and force-pushes. |
-| ~~`--durable`~~ | removed | Accepted and ignored (issue #827). It swapped `/loop` for a `CronCreate` job to buy cross-session continuity that never existed — `CronCreate` is in-memory and dies with the session, so the flag only ever changed cadence alignment. The watcher is always `/loop`. Why this is not re-implemented on the durable scheduler the harness *does* provide: `.claude/reference/cross-session-durability.md`. |
+| ~~`--durable`~~ | removed | Accepted and ignored (issue #827). It swapped `/loop` for a `CronCreate` job to buy cross-session continuity that never existed — `CronCreate` is in-memory and dies with the session, so the flag only ever changed cadence alignment. Issue #914 then measured that job firing **zero** in-session ticks, so the swap cost the poll entirely. The watcher is always `/loop`. Why this is not re-implemented on the durable scheduler the harness *does* provide: `.claude/reference/cross-session-durability.md`. |
 | `--max-conflict-rounds N` | `3` | Hard termination after N consecutive conflict rounds. Each round that enters the auto-resolve path increments `conflict_streak`, which does not reset on SHA change — only on a non-`conflicting` tick. |
 
 Parse from `$ARGUMENTS`. The first bare integer is `<PR>`. Validate `--cadence` matches `^[0-9]+m$`; clamp `< 1m` to `1m`. Validate `--max-iter` is a positive integer. `--auto-resolve-conflicts` is a boolean flag (present = true, absent = false; stored as `AUTO_RESOLVE_CONFLICTS=true|false`). `--max-conflict-rounds N` must be a positive integer; default `3` (stored as `MAX_CONFLICT_ROUNDS`).
@@ -210,6 +210,12 @@ NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 ```
 
 Arm the recurring poll: `/loop <cadence> /babysit-pr <PR> --tick`. The runtime owns the cadence and re-arms each cycle. `/loop` is the only primitive this watcher uses (`scheduling-reliability.md` decision tree) — the watcher is session-scoped by design, and a watcher that outlived its session would be auto-dispatching `/wrap` merges into an empty room.
+
+**Never substitute a `CronCreate` job for the `/loop`** — not for a fixed interval, not for "wall-clock alignment", not as a fallback if arming looks flaky. Issue #914 measured armed cron jobs, still listed by `CronList`, producing **zero** ticks across an 11-minute idle window. If `/loop` cannot be armed, roll back per the block above and report; do not reach for the other primitive.
+
+**Arming is not ticking.** A watcher can be `active` in state, listed by the runtime, and silent — that is Pattern 7 in `.claude/reference/scheduling-failure-modes.md`, first observed on this very skill (PR #908, where all six ticks were driven by hand). Two things now catch it: `babysit-tick-watchdog.sh` warns once `last_tick_at` exceeds 2 × the effective cadence, and the pre-exit checklist asks for liveness rather than presence.
+
+**The silence ceiling is a backstop, not this watcher's cadence.** `bgwork-ceiling.sh` trips on a silence budget far wider than any poll interval, so a run where the ceiling is producing the only ticks is a **broken poll**, not a working watch — in #908 it surfaced each stall roughly 18 minutes late, after the branch had gone `BEHIND` twice. If ticks are only appearing alongside ceiling breaches, stop and re-arm rather than riding the backstop.
 
 **Roll back if arming fails.** The `--set` above already published `active=true` with a fresh `last_tick_at`, so a failed arm leaves a watcher that A2 reads as *live* for the whole freshness window (30m by default) while nothing is ticking — re-arm is blocked precisely when it is needed. Treat init+arm as one transaction:
 

@@ -21,9 +21,16 @@ The common thread: **between-turn scheduling has no in-turn observer.** Once the
 - Partial completion if the model is under pressure on the cold turn
 - Subtle drift in what "the last watermark" meant
 
-**Fix.** For genuinely long intervals, use `CronCreate` — it fires a fresh invocation with a self-contained prompt, so there is no in-memory state to lose. For short intervals (≤5 min), `/loop` stays warm and avoids the problem entirely. Don't optimize cadence inside a flaky chain — fix the chain by switching primitive.
+**Fix.** Use `/loop`, at any interval. For short intervals (≤5 min) it stays warm and avoids the
+problem entirely. Don't optimize cadence inside a flaky chain — fix the chain by switching primitive.
 
-**Note:** `CronCreate` solves the cold-cache fragility because each tick is a fresh invocation. It does **not** provide cross-session continuity — the job itself is session-scoped and dies when Claude exits (`scheduling-reliability.md` contract note).
+> **Superseded (#914).** This entry used to recommend `CronCreate` for long intervals, on the
+> reasoning that each tick is a fresh self-contained invocation with no in-memory state to lose.
+> That reasoning is sound and the conclusion is still wrong: Pattern 7 measured armed cron jobs
+> firing **zero** ticks in-session. A primitive that does not fire cannot fix cold-cache
+> fragility. Left visible rather than deleted, because the argument is persuasive enough to be
+> reinvented — and the cross-session caveat it carried is also still true (`CronCreate` is
+> session-scoped and dies when Claude exits).
 
 ## Pattern 3 — Silent Re-Schedule Failures
 
@@ -66,6 +73,76 @@ The common thread: **between-turn scheduling has no in-turn observer.** Once the
 
 **Note the shape difference from Patterns 1–4.** Those are *dropped* ticks — a schedule existed and stopped. This one is a schedule that was never armed at all, because nobody recognised the situation as scheduling. Detection heuristics keyed on "a polling context with no live job" therefore missed it entirely: there was no polling context recorded to check against.
 
+## Pattern 7 — Armed Poll With Zero Ticks
+
+**Symptom.** A poll is armed successfully, `CronList` still shows it, the REPL is idle for
+many multiples of the interval — and **not one tick fires**. Unlike every pattern above, there
+is nothing to find wrong with the schedule: it exists, it is listed, and it is silent.
+
+**Shape difference from the other patterns.** Patterns 1/3 *fired once, then dropped* — a
+schedule that existed and stopped. Pattern 6 was *never armed at all*. This one is armed,
+still listed, and dead. That combination defeats every detection heuristic written before it,
+all of which look for a **missing** job. A present job read as proof of a working poll.
+
+**Observed — PR #908, 2026-08-01.** `/babysit-pr 908` armed a `CronCreate` watcher
+(`*/5 * * * *`, job `a106ce94`) at ~12:15 PM ET. Across the PR's lifetime not one tick fired
+on its own; all six ticks were driven by hand after a `bgwork-ceiling.sh` breach notification.
+Two windows with the REPL idle throughout — 12:17→12:34 and 12:42→12:59 — expected three
+fires each and produced zero. Both ended with a ceiling breach, not a tick. The branch went
+`BEHIND` twice and a bot verdict landed, all discovered ~18 minutes late.
+
+### Reproduction (issue #914, run 2026-08-01 21:03–21:14 ET)
+
+Confirmed under controlled conditions. The procedure, so it can be re-run:
+
+1. Arm two `CronCreate` jobs at different cadences (`*/2` and `*/5`), each appending a
+   timestamped line to a log file on disk. Two cadences rule out a cadence-specific quirk.
+2. **Capture `CronList` immediately after arming** — this is the evidence the original
+   incident lacked, and it is what separates "listed but silent" from "silently dropped".
+3. Start an out-of-turn probe (backgrounded `bash`, not a tool call) that samples the log
+   every 20s. **The evidence must not depend on the agent being awake to observe it** —
+   otherwise "no ticks" is indistinguishable from "the agent never looked".
+4. End the turn and stay idle past 3+ intervals. Ending the turn is the whole experiment:
+   `CronCreate` fires only while the REPL is idle, so any in-turn observer destroys the
+   condition under test.
+5. On wake, re-capture `CronList` and count log lines.
+
+**Result: zero ticks in 11 minutes.** Expected ~7 fires (five from the 2-minute job, two from
+the 5-minute job). The probe sampled 33 times and recorded `tick_lines=0` on every sample;
+`0` was the only value ever observed. `CronList` listed **both jobs as still scheduled** after
+the window. The jobs were not dropped and the REPL was genuinely idle — the probe ran
+detached, and no agent turn occurred between arming and wake.
+
+### What this does and does not establish
+
+**Established.** An armed, listed `CronCreate` job can produce zero in-session ticks while the
+REPL is idle, at more than one cadence, reproducibly. It is not a dropped job, not expiry, not
+the documented ≤10%-of-period jitter (which would delay a 2-minute job by ≤12s, not 11 minutes),
+and not the "only fires while the REPL is idle" caveat — the REPL *was* idle.
+
+**Not isolated.** A `persistent: true` `Monitor` (the ceiling watch) was armed throughout, as it
+was in the original incident, so "a concurrent `Monitor` suppresses cron firing" remains
+consistent with the data but unproven. **The control experiment was deliberately not run**: it
+requires a window with no background process at all, and every mechanism that guarantees the
+agent wakes up again *is* a background process. Removing the variable means risking a session
+that never wakes. A future session with a human present can run it — arm one cron job, no
+`Monitor`, no backgrounded probe, and have the human observe.
+
+Whether the miss is in `CronCreate`'s scheduler, the idle-detection gate, or `/loop`'s
+delegation to it cannot be narrowed further from outside the harness: all three are runtime
+internals with no repo-authored implementation.
+
+**Fix.** Treat `CronCreate` as a non-firing primitive and back every user-facing poll with
+`/loop` (`scheduling-reliability.md` decision tree). Verify **liveness, not presence**, before
+ending a polling turn. `.claude/hooks/babysit-tick-watchdog.sh` surfaces a stalled watcher at
+2 × cadence, so a dead poll is now reported rather than mistaken for a quiet one.
+
+**The backstop is not the poll.** In the observed incident the ceiling watch did all the work
+and the poll contributed nothing. That is a *degraded* state, not the design:
+`bgwork-ceiling.md` deliberately separates the two, and the ceiling trips on a silence budget
+far wider than any poll cadence. A run where the ceiling is the only thing producing ticks
+should be read as a broken poll, not a working watch.
+
 ## Detection Heuristics
 
 Treat any of these as a scheduling failure until proven otherwise:
@@ -73,6 +150,9 @@ Treat any of these as a scheduling failure until proven otherwise:
 - User says "your polling didn't fire" / "what happened to the check?" / "you said you'd come back"
 - User prompts for status after the promised tick time with no intervening agent message
 - `session-state.json` records a polling context but `CronList` has no matching job and no `/loop` is visible
+- **A job *is* listed (or a watcher is `active`) yet `babysit.last_tick_at` is older than
+  2 × `cadence_effective_minutes`, with no manual driver in between** (Pattern 7). Every other
+  heuristic here checks for a *missing* job; this is the only one that catches a present-but-dead one.
 - Post-compaction recovery finds a `polling_failures` entry or a `monitoring_active: true` flag with no live schedule
 - Repeated poll ticks show unchanged `digest`/`digest_streak`, unchanged blocker, and no matching `last_cron_action` backoff
 
