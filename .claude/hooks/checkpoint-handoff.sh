@@ -275,8 +275,10 @@ PR_SEP=$'\x1f'
 PR_ROWS=""
 if (( ! NO_REMOTE )) && command -v gh >/dev/null 2>&1 && [[ -n "$REPO_SLUG" ]]; then
   PR_ROWS=$(gh pr list --author "@me" --state open --limit 10 \
-              --json number,title,url \
-              --jq '.[] | [(.number|tostring), .title, .url] | join("\u001f")' 2>/dev/null)
+              --json number,title,url,author,reviewDecision,mergeStateStatus \
+              --jq '.[] | [(.number|tostring), .title, .url,
+                           (.author.login // ""), (.reviewDecision // ""),
+                           (.mergeStateStatus // "")] | join("\u001f")' 2>/dev/null)
 fi
 
 # Background units still recorded as running. Read through the state helper when
@@ -350,7 +352,7 @@ render() {
     printf 'No open pull requests were recorded for this account when this was written.\n'
     printf 'Run `gh pr list --author "@me" --state open` to check the current position.\n\n'
   else
-    while IFS="$PR_SEP" read -r n title url; do
+    while IFS="$PR_SEP" read -r n title url owner decision mergestate; do
       [[ -n "$n" ]] || continue
       if (( with_titles )) && [[ -n "$title" ]]; then
         printf -- '- **Pull request %s — %s**\n' "$n" "$title"
@@ -358,6 +360,37 @@ render() {
         printf -- '- **Pull request %s**\n' "$n"
       fi
       printf '  %s\n' "$url"
+
+      # Owner, blocker, and approval are REQUIRED fields since issue #912.
+      # Each is derived from what the forge actually reports; where it reports
+      # nothing, the line says that rather than guessing — "not recorded" is a
+      # true statement a reader can act on, and an invented one is not.
+      if [[ -n "$owner" ]]; then
+        printf '  Owner: %s\n' "$owner"
+      else
+        printf '  Owner: not recorded — check the author shown on the page above\n'
+      fi
+
+      case "$mergestate" in
+        BEHIND) waiting="the branch needs updating against the main branch first" ;;
+        DIRTY)  waiting="it conflicts with the main branch and needs those conflicts resolved" ;;
+        *)
+          case "$decision" in
+            APPROVED)          waiting="nothing from review; confirm its automated checks have finished" ;;
+            CHANGES_REQUESTED) waiting="changes that a reviewer asked for" ;;
+            REVIEW_REQUIRED)   waiting="a review — nobody has recorded a decision yet" ;;
+            *)                 waiting="a review — no decision was recorded when this was written" ;;
+          esac ;;
+      esac
+      printf '  Waiting on: %s\n' "$waiting"
+
+      case "$decision" in
+        APPROVED)          printf '  Approval: approved\n' ;;
+        CHANGES_REQUESTED) printf '  Approval: not approved — a reviewer asked for changes\n' ;;
+        *)                 printf '  Approval: not approved yet\n' ;;
+      esac
+
+      printf '  Verify with: gh pr checks %s\n' "$n"
       printf '  Status: open when this was written. Run `gh pr view %s` for its current\n' "$n"
       printf '  review state, checks, and unanswered comments.\n'
     done <<<"$PR_ROWS"

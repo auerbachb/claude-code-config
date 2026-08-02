@@ -254,8 +254,8 @@ STUB_BIN="$TMP/stubbin"
 mkdir -p "$STUB_BIN"
 cat > "$STUB_BIN/gh" <<'STUB'
 #!/usr/bin/env bash
-printf '42\037\037https://example.com/42\n'
-printf '43\037A real title\037https://example.com/43\n'
+printf '42\037\037https://example.com/42\037auerbachb\037REVIEW_REQUIRED\037CLEAN\n'
+printf '43\037A real title\037https://example.com/43\037someone-else\037APPROVED\037BEHIND\n'
 STUB
 chmod +x "$STUB_BIN/gh"
 DOC_PR=$(cd "$PLAIN" && PATH="$STUB_BIN:$PATH" "$CP" --stdout --out-dir "$TMP/out-pr" 2>/dev/null)
@@ -263,6 +263,22 @@ check_contains "T9 titleless pull request renders without a title" "- **Pull req
 check_contains "T9 titleless pull request keeps its URL" "https://example.com/42" "$DOC_PR"
 check_not_contains "T9 the URL never lands in the title position" "Pull request 42 — https" "$DOC_PR"
 check_contains "T9 a titled pull request still shows its title" "- **Pull request 43 — A real title**" "$DOC_PR"
+
+# The three fields issue #912 made mandatory, asserted on VALUE and not merely
+# on the anchor. The rules themselves can only see presence — "Owner: yes"
+# passes them — so presence is exactly the part already covered by the lint
+# call below, and the part worth pinning here is that each line carries what
+# the forge actually reported.
+check_contains "T9 owner comes from the reported author" "Owner: auerbachb" "$DOC_PR"
+check_contains "T9 owner is per-entry, not copied between entries" "Owner: someone-else" "$DOC_PR"
+check_contains "T9 an undecided pull request says a review is outstanding" "Waiting on: a review — nobody has recorded a decision yet" "$DOC_PR"
+check_contains "T9 approval reflects the reported decision" "Approval: not approved yet" "$DOC_PR"
+check_contains "T9 an approved pull request says so" "Approval: approved" "$DOC_PR"
+# An approved pull request that is BEHIND is waiting on the rebase, not on
+# review — merge state has to outrank review decision or the document tells the
+# reader to wait for something that already happened.
+check_contains "T9 a BEHIND branch outranks its approval in what it waits on" "Waiting on: the branch needs updating against the main branch first" "$DOC_PR"
+check_contains "T9 a verification command is offered" "Verify with: gh pr checks 42" "$DOC_PR"
 printf '%s\n' "$DOC_PR" > "$TMP/t9.md"
 "$LINT" --repo-root "$FAKE" --quiet "$TMP/t9.md" >/dev/null 2>&1
 check_eq "T9 pull request rendering passes the portability check" "0" "$?"
