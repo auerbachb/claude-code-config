@@ -234,10 +234,10 @@ write_merged_state() {
     exit 5
   fi
 
-  if ! mv "$tmp" "$STATE_FILE" 2>/dev/null; then
-    echo "cr-review-hourly.sh: could not write $STATE_FILE" >&2
-    exit 5
-  fi
+  # Guarded commit: refuses to write if this process's lock was broken and
+  # re-taken while it was reading and transforming, which would drop the other
+  # writer's update (issue #930).
+  state_lock_commit "$tmp" "$STATE_FILE" || exit $?
   cleanup_tmp
   trap 'state_lock_release' EXIT
 }

@@ -689,7 +689,19 @@ if (( POST_VIOLATION_COUNT > PRE_VIOLATION_COUNT )); then
   die_error "repair introduced new type-contract violations ($NEW_VIOLATIONS) — $STATE_FILE left unmodified (backup: $BACKUP)"
 fi
 
-mv "$OUT_TMP" "$STATE_FILE" || die_error "could not write $STATE_FILE (backup: $BACKUP)"
+# Guarded commit: refuses to write if this process's lock was broken and
+# re-taken while it was reading and repairing, which would drop the other
+# writer's update (issue #930).
+state_lock_commit "$OUT_TMP" "$STATE_FILE" || {
+  COMMIT_RC=$?
+  # Propagate the commit's own status rather than flattening it into
+  # EXIT_ERROR. Exit 6 means "lock broken mid-update, file unchanged, retry" —
+  # a transient serialization failure. Reporting it as a permanent environment
+  # error would tell callers to investigate the filesystem instead of simply
+  # re-running (CodeAnt, PR #937).
+  echo "session-state-audit.sh: could not write $STATE_FILE (backup: $BACKUP)" >&2
+  exit "$COMMIT_RC"
+}
 
 RESULT="$(jq -c -n \
   --argjson moves "$MOVE_SET" --argjson prunes "$PRUNE_SET" --argjson heals "$HEAL_SET" \
