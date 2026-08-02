@@ -268,7 +268,7 @@ Body:
 1. You are already in a worktree — verify with `git branch --show-current`.
 2. Read the issue body above — this is your implementation plan.
 3. Implement the changes.
-4. Run the local dual-CLI review per `cr-local-review.md`: `coderabbit review --agent` AND `codeant review --all --headless`
+4. Run the local dual-CLI review per `cr-local-review.md`: `.claude/scripts/local-review.sh --tool coderabbit` AND `.claude/scripts/local-review.sh --tool codeant` (each emits `{"ok":…,"findings":N,"verified_run":…,"failure_mode":…,"log_path":…}`; raw output stays at `log_path`)
    - Union the findings; fix all valid findings.
    - Run all available CLIs again. Repeat until each remaining CLI has one clean pass.
    - If a CLI hangs >2 minutes or errors twice, drop it for the session, resolve or explicitly waive its pre-drop findings in the PR body, gate on the remaining one, and note the drop.

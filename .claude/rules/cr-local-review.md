@@ -13,12 +13,11 @@ Primary review workflow — catches issues before PR noise/quota; does not repla
 
 ### When/how to run
 
-After implementation, before push. Optional mid-development. Run from repo root:
+After implementation, before push. Run from repo root via `.claude/scripts/local-review.sh` — it invokes the CLI, applies every false-clean check below, and returns one line:
 
-- `coderabbit review --agent` — all changes (`--agent` emits structured NDJSON findings, optimized for agent parsing)
-- `codeant review --all --headless` — all changes, committed + uncommitted (`--headless` emits clean JSON for agents)
-- Scoping: CR `--type uncommitted` / `--type committed`; CodeAnt `--uncommitted` / `--committed`
-- If base-branch detection fails (fresh clone, no remote), pass `--base <branch>` — both CLIs support it
+- `.claude/scripts/local-review.sh --tool coderabbit` → `coderabbit review --agent`
+- `.claude/scripts/local-review.sh --tool codeant` → `codeant review --all --headless`
+- Scoping: `--scope uncommitted|committed`. Base branch: `--base <branch>`. Hang bound: `--timeout` (default 120s).
 
 ### Fix loop
 
@@ -30,16 +29,11 @@ After implementation, before push. Optional mid-development. Run from repo root:
 
 ### A "clean" result may be a failed run (NON-NEGOTIABLE)
 
-**Both CLIs exit `0` on total failure**, each hiding the error on a different stream — CodeAnt on **stderr**, CodeRabbit as a stdout NDJSON `type: "error"` record. Capture both streams and check before trusting any "no findings":
+**Both CLIs exit `0` on total failure**, each hiding the error on a different stream — CodeAnt on **stderr**, CodeRabbit as a stdout NDJSON `type: "error"` record. Do not hand-roll the capture-and-grep: `local-review.sh` applies every documented check (stderr error, error record, missing terminal record, nothing-reviewed, 15-file cap, 2-min hang) and emits
 
-```bash
-codeant review --all --headless >ca.json 2>ca.err
-grep -qE 'API Error|\[error\]|40[13]' ca.err && echo "FAILED RUN"
-coderabbit review --agent >cr.out 2>cr.err
-jq -e 'select(.type=="error")' cr.out >/dev/null && echo "FAILED RUN"
-```
+`{"ok":…,"findings":N,"verified_run":…,"failure_mode":…,"relevant_error":…,"log_path":…}`
 
-A hit is a **failed run** (Timeout & fallback below), never a clean pass. An empty result is clean **only** when its error check is clean and, for CodeAnt, `meta.capped` is `false`. Failure shapes, 403 triage, 15-file cap: `.claude/reference/local-review-cli-failure-modes.md`.
+with the raw capture at `log_path`. Exit `0` clean · `1` findings · `3` failed run · `4` timeout · `5` not installed. A CLI counts as covered **only** on `verified_run == true && ok == true`; every other result is a **failed run** (Timeout & fallback below), never a clean pass. Failure shapes, 403 triage, 15-file cap: `.claude/reference/local-review-cli-failure-modes.md`.
 
 > **Never run `codeant logout`/`login` to clear a 403** — the cause is an undocumented daily cap (~10 agent reviews), not auth. On a CodeAnt 403: one retry, then drop for the session and note it in the PR body. The CodeAnt GitHub App is unaffected and satisfies the merge gate alone.
 

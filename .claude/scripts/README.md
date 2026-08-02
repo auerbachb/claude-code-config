@@ -29,6 +29,7 @@ Scripts that manage the CR→BugBot→Greptile reviewer chain, budgets, and roun
 | Script | Purpose |
 |--------|---------|
 | `escalate-review.sh` | Run the CR→BugBot→Greptile escalation gate; emits a single deterministic `STATUS=` verdict — see `--help` |
+| `local-review.sh` | Run a local review CLI (CodeRabbit/CodeAnt) with every false-clean check applied; emits the compact result contract |
 | `cr-review-hourly.sh` | Track CodeRabbit's rolling hourly review cap and per-PR explicit trigger count |
 | `cr-plan.sh` | Detect a substantive CodeRabbit implementation-plan comment on a GitHub issue |
 | `greptile-budget.sh` | Guard the daily Greptile review budget counter in session-state |

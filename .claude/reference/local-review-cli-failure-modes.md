@@ -172,8 +172,21 @@ with a **clean stderr** and signals the failure as a record in the stdout stream
 ```
 
 A run that produced only `review_context` and `status` records — with no `review`/finding
-records — reviewed nothing, regardless of exit code. Check for a terminal `type: "error"`
-record before treating absence of findings as a clean pass:
+records — reviewed nothing, regardless of exit code. The authoritative verdict is the
+**terminal `type: "complete"` record**, which carries both the outcome and the count:
+
+```json
+{"type":"complete","status":"review_completed","findings":3,"reviewedFiles":["a.sh"]}
+{"type":"complete","status":"review_skipped","findings":0,"message":"No changes detected"}
+```
+
+Its **absence** means the run died mid-flight — never read that as "no findings". And
+`review_skipped` is not a clean pass: it means the CLI saw no changes at all, which is
+usually a wrong-working-directory tell (memory `bash-cwd-resets-between-calls.md`).
+
+`.claude/scripts/local-review.sh --tool coderabbit` checks all three (error record,
+missing terminal record, `review_skipped`) plus the CodeAnt side, and returns the compact
+contract. Hand-rolled equivalent, error record only:
 
 ```bash
 coderabbit review --agent >cr.out 2>cr.err

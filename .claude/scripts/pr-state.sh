@@ -18,6 +18,19 @@
 # Output: writes JSON to /tmp/pr-state-<PR>-<epoch>.json and prints the path on stdout.
 #         (--infer-candidates prints a JSON array to stdout instead — see below.)
 #
+# Field projection (issue #782): the three REST comment arrays are projected before
+#   they enter the bundle — raw GitHub objects carry ~30 fields each and consumers read
+#   nine. Kept: id, node_id, body (FULL — never truncated), state, commit_id,
+#   original_commit_id, created_at, updated_at, submitted_at, url, html_url,
+#   author_association, in_reply_to_id, pull_request_review_id, the inline location
+#   fields (path, line, original_line, start_line, original_start_line, side,
+#   start_side, position, original_position, subject_type), and user reduced to
+#   {login, type, id}. Dropped: diff_hunk, _links, reactions, pull_request_url,
+#   issue_url, performed_via_github_app, body_html, body_text, and the rest of the
+#   user object. Measured 66% smaller on a live payload (294KB -> 99KB). Interface is
+#   unchanged: still "write the bundle to a tempfile, print only the path".
+#   Rationale and the full measurement: .claude/reference/compact-result-contract.md
+#
 # --infer-candidates (shared by /fixpr issue #447 and /wrap issue #448):
 #   Reads ~/.claude/session-state.json and prints a JSON array of the PRs this
 #   session is actively tracking (those with a non-null .phase), newest activity
@@ -479,11 +492,46 @@ BOT_STATUSES=$(echo "$STATUSES" | jq '
 ')
 
 # ----------------------------------------------------------------------
-# 5. REST comment endpoints (paginated)
+# 5. REST comment endpoints (paginated), field-projected
+#
+# Field projection (issue #782, FU-7 of token-efficiency-audit-2026-07.md).
+# These three arrays were the bundle's bulk: raw GitHub objects carry ~30 fields
+# each, of which consumers read nine — .id, .body, .state, .user.login,
+# .commit_id, .original_commit_id, .created_at, .updated_at, .submitted_at.
+# Projecting away the rest, measured on PR #931's live payload:
+#   inline   215,723 B -> 67,014 B (69%)   reviews 61,443 B -> 25,700 B (58%)
+#   convo     17,009 B ->  6,164 B (64%)   total  294,175 B -> 98,878 B (66%)
+# `diff_hunk` + `reactions` + `_links` alone were 121,893 B of the inline array.
+#
+# BODIES ARE KEPT IN FULL — never truncated. Every downstream classifier
+# (pr-state's own classify below, review-substance.sh's substance check,
+# merge-gate.sh's evidence scan) reads body text, and a truncated body is a
+# silent false verdict. This is a payload reduction, not a lossy summary.
+#
+# Dropped, all verified unreferenced across .claude/{scripts,skills,agents}:
+#   reviews: _links, pull_request_url, body_html, body_text
+#   inline:  diff_hunk, _links, reactions, pull_request_url, body_html, body_text
+#   convo:   reactions, performed_via_github_app, issue_url, body_html, body_text
+#   all:     the 18-field `user` object, reduced to {login, type, id}
+# `path` + `line` still locate every inline finding, which is what `diff_hunk`
+# was being carried for. Add a field back here if a consumer ever needs one.
+#
+# The GraphQL thread comments in section 2 are already projected at the query.
 # ----------------------------------------------------------------------
-REVIEWS=$(run_gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" | jq -s 'add // []')
-INLINE=$(run_gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" | jq -s 'add // []')
-CONVO=$(run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" | jq -s 'add // []')
+PROJECT_USER='(if .user == null then null else {login: .user.login, type: .user.type, id: .user.id} end)'
+
+REVIEWS=$(run_gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
+  | jq -s "add // [] | [.[] | {id, node_id, user: $PROJECT_USER, body, state, commit_id,
+                               submitted_at, html_url, author_association}]")
+INLINE=$(run_gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" \
+  | jq -s "add // [] | [.[] | {id, node_id, pull_request_review_id, user: $PROJECT_USER, body,
+                               path, line, original_line, start_line, original_start_line,
+                               side, start_side, position, original_position, subject_type,
+                               commit_id, original_commit_id, in_reply_to_id,
+                               created_at, updated_at, url, html_url, author_association}]")
+CONVO=$(run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
+  | jq -s "add // [] | [.[] | {id, node_id, user: $PROJECT_USER, body,
+                               created_at, updated_at, url, html_url, author_association}]")
 
 # ----------------------------------------------------------------------
 # 6. New-since-baseline classification (only when --since given)

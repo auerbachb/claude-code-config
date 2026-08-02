@@ -14,6 +14,12 @@ permissions:
 # Bash discovery: .github/scripts/run-hook-tests.sh
 # Python discovery: .github/scripts/run-python-tests.sh (issue #771)
 # See CONTRIBUTING.md "Adding a Test".
+#
+# Both runners are invoked with --json (issue #782) so the job log carries the compact
+# result contract instead of every passing suite's raw fold — `gh run view` consumers
+# read a verdict, not thousands of lines. Failing suites still print in full on stderr,
+# and the complete capture lives at the contract's `log_path` on the runner.
+# Contract: .claude/reference/compact-result-contract.md
 jobs:
   hook-tests:
     runs-on: ubuntu-latest
@@ -29,10 +35,10 @@ jobs:
           git config --global user.name "CI"
 
       - name: Run bash hook + script test suites (auto-discovered)
-        run: bash .github/scripts/run-hook-tests.sh
+        run: bash .github/scripts/summarize-test-run.sh "Bash test suites" .github/scripts/run-hook-tests.sh
 
       - name: Run Python hook unit tests (auto-discovered)
-        run: bash .github/scripts/run-python-tests.sh
+        run: bash .github/scripts/summarize-test-run.sh "Python unit tests" .github/scripts/run-python-tests.sh
 
   # macOS system python3 is 3.9.6 (Xcode CLT) while ubuntu-latest ships 3.10+,
   # so a hook that crashes on 3.9 (e.g. eagerly-evaluated PEP 604 unions,
@@ -53,7 +59,7 @@ jobs:
           python-version: '3.9'
 
       - name: Python hook unit tests (3.9, auto-discovered)
-        run: bash .github/scripts/run-python-tests.sh
+        run: bash .github/scripts/summarize-test-run.sh "Python unit tests (3.9)" .github/scripts/run-python-tests.sh
 
       - name: Hooks import smoke (3.9)
         run: |

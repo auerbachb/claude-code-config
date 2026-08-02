@@ -83,7 +83,7 @@ Evidence tiers: **A** = Anthropic primary/measured · **B** = community, reprodu
 
 | Pattern | Tier | Call | This-harness note |
 |---|---|---|---|
-| Filter at source (grep/head/jq projections; counts not dumps) | A/B (tool I/O >60% of context; reads 76% of tokens on SWE-bench mini) | **ADOPT (mostly house style)** | Scripts already emit compact summaries; FU-7 audits the noisiest remaining pipelines |
+| Filter at source (grep/head/jq projections; counts not dumps) | A/B (tool I/O >60% of context; reads 76% of tokens on SWE-bench mini) | **ADOPT (mostly house style)** | Scripts already emit compact summaries; FU-7 wrapped the noisiest remainder (#782) |
 | Offload bulky output to disk; pass path + summary | A | **ADOPT (house style)** | Also built-in now: >50K-char tool results auto-spill to disk |
 | Universal lossy tool-output interception (RTK/Headroom-style) | B/C | **SKIP** | Fragile: subagent hook bypass, over-minified errors, blind spots; selective wrappers only |
 | External state as primary memory (session-state.json, handoffs, issues/PR bodies) | A | **ADOPT (already built)** | This harness's strongest asset; keep building on it |
@@ -105,7 +105,7 @@ Evidence tiers: **A** = Anthropic primary/measured · **B** = community, reprodu
 | 6 | Haiku routing for pure poll/classify ticks | Medium ($ more than tokens) | Medium — needs eval; escalation path must stay | **FU-4** |
 | 7 | Rule-corpus kernel shrink + path-scoping audit | High per-turn | Medium-high — literal-following models misfire on botched cuts; #768/#770 own it | **FU-5** |
 | 8 | MCP pruning + `/context`/`ccusage` measurement baseline | High in MCP-heavy sessions | Low | **FU-6** (ties #710) |
-| 9 | Tool-result JSON contracts for remaining noisy pipelines | Medium on long sessions | Low | **FU-7** |
+| 9 | Tool-result JSON contracts for remaining noisy pipelines | Medium on long sessions | Low | **Shipped (#782)** |
 | — | Concise-output styling beyond the shipped contract | Low (4–12% measured) | Medium (retry inflation) | **Rejected** |
 | — | `disable-model-invocation` on operator skills | Medium | High (autocomplete gotcha) | **Blocked** — revisit on harness fix |
 | — | Universal output interception layer | Medium | High | **Rejected** |
@@ -160,7 +160,7 @@ Headline "60–91% savings" figures across the ecosystem come from deliberately 
 - **FU-4:** Poller model-routing eval (Haiku for classify-only ticks) + "set model/effort at spawn, never mid-session" note in `subagent-orchestration.md`.
 - **FU-5:** Rule-corpus kernel/path-scoping audit (with #768/#770).
 - **FU-6:** Measurement baseline: `/context` + `ccusage` per repo, MCP prune list, `permissions.deny` junk-dir blocks (ties #710).
-- **FU-7:** Compact-JSON output contracts for the remaining noisy `gh`/log pipelines.
+- ~~**FU-7:** Compact-JSON output contracts for the remaining noisy `gh`/log pipelines.~~ **Shipped in #782** — the `ok`/`failed_tests`/`relevant_error`/`log_path` contract is defined once in `compact-result-contract.md` and adopted by three selective wrappers: `--json` on both test runners (`run-hook-tests.sh`, `run-python-tests.sh`, surfaced in CI via `summarize-test-run.sh` → step summary + `::error::`) and the new `local-review.sh` around the CodeRabbit/CodeAnt CLIs, which also replaces the capture-and-grep that was copy-pasted across `cr-local-review.md` and four skills. Measured: the Python runner's green output 13,489 B → 165 B (99%); `pr-state.sh`'s comment arrays field-projected 294 KB → 99 KB (66%, bodies kept in full). Deliberately **not** universal — the interception layer stays rejected, and the already-compact `--json` scripts were left alone.
 
 ## AC coverage (#773)
 
