@@ -8,7 +8,10 @@
 #                     require CodeAnt APPROVED or a successful CodeAnt check-run;
 #                     CodeAnt CHANGES_REQUESTED blocks only if newer than the latest
 #                     clean signal (APPROVED or successful check completion).
-#   - BugBot path   : 1 clean BugBot review on current HEAD + zero unresolved BugBot threads
+#   - BugBot path   : 1 clean BugBot review on current HEAD + zero unresolved BugBot
+#                     threads; the review-less "silent pass" shape (issue #844)
+#                     additionally requires the success check-run to be published by
+#                     the Cursor app, never merely named `Cursor Bugbot` (issue #962).
 #   - Greptile path : severity-gated — clean OR only P1/P2 (fixed) OR P0 fixed + re-review clean
 #
 # Stale-approval guard (issue #836): GitHub retargets review commit_id to the new
@@ -1179,13 +1182,42 @@ case "$REVIEWER" in
           | length > 0')
 
       # Check-run-based clean pass (issue #844): Cursor Bugbot check-run with
-      # conclusion:success on HEAD, no failure-phrase cursor[bot] comment, and
-      # freshness (completed_at/started_at >= LAST_COMMIT_TS). Read from the
-      # already-deduped HEAD-scoped CHECK_RUNS_JSON — no new gh api fetch.
+      # conclusion:success on HEAD, published by the Cursor app, no failure-phrase
+      # cursor[bot] comment, and freshness (completed_at/started_at >=
+      # LAST_COMMIT_TS). Read from the already-deduped HEAD-scoped
+      # CHECK_RUNS_JSON — no new gh api fetch.
       # Only evaluated when no review object exists; if a review object is present,
       # the review-object path below applies (and may add its own MISSING entries).
+      #
+      # Publisher scoping (issue #962): GitHub lets ANY app publish a check-run
+      # under ANY name, so the name `Cursor Bugbot` identifies a check, never a
+      # publisher — check-runs-dedup.sh has grouped by [.app.slug, .app.id, .name]
+      # since issue #675 for exactly this reason. escalate-review.sh scoped its two
+      # name-only selectors to the app in issue #956; this is the same defect on the
+      # gate-SATISFYING half, where the cost is strictly higher: there an
+      # unattributable run misroutes an escalation, here it would merge the PR.
+      #
+      # The failure DIRECTION is therefore the opposite of escalate-review.sh's.
+      # There, unverifiable identity fails toward "not a BugBot footprint" and the
+      # worst case is one duplicate `@cursor review` (harmless per bugbot.md). Here
+      # it fails CLOSED: a foreign, absent, or empty app slug never satisfies the
+      # gate, and the worst case is the gate waiting for a genuine review object.
+      #
+      # The candidate is still selected by NAME ALONE — deliberately the same
+      # selector as before this change. Two reasons: (1) a same-named run from
+      # another publisher stays visible as a candidate, so the block gets its own
+      # legible MISSING[] reason instead of collapsing into the generic "no BugBot
+      # review on HEAD"; (2) selecting identically to the pre-change code makes this
+      # a pure subtraction — every shape that satisfied the path before either still
+      # does (slug `cursor`) or now blocks. Preferring a cursor-published run over an
+      # equally-named foreign one would be a widening, and could newly satisfy the
+      # gate on a payload where the old `last` picked the non-success foreign run.
+      #
+      # Slug `cursor` is the publisher confirmed live on this repo (app id 1210556,
+      # app name "Cursor") — same identity escalate-review.sh matches.
       BB_CHECK_CLEAN=false
       BB_CHECK_FRESHNESS_ERR=false
+      BB_CHECK_APP_MISMATCH=false
       if [[ "$BB_REVIEWS_ON_HEAD" -lt 1 && "$BB_HAS_FAILURE_COMMENT" != "true" ]]; then
         BB_CHECK_RUN=$(echo "$CHECK_RUNS_JSON" | jq -c '
           [.check_runs[]? | select((.name // "") == "Cursor Bugbot")] | last // empty')
@@ -1193,8 +1225,17 @@ case "$REVIEWER" in
           BB_CHECK_CONCLUSION=$(echo "$BB_CHECK_RUN" | jq -r '.conclusion // ""')
           BB_CHECK_STATUS=$(echo "$BB_CHECK_RUN" | jq -r '.status // ""')
           BB_CHECK_TS=$(echo "$BB_CHECK_RUN" | jq -r '(.completed_at // .started_at // "")')
+          BB_CHECK_APP_SLUG=$(echo "$BB_CHECK_RUN" | jq -r '.app.slug // ""')
           if [[ "$BB_CHECK_STATUS" == "completed" && "$BB_CHECK_CONCLUSION" == "success" ]]; then
-            if [[ -z "$LAST_COMMIT_TS" ]]; then
+            if [[ "$BB_CHECK_APP_SLUG" != "cursor" ]]; then
+              # Fail-closed (issue #962): the run cannot be attributed to the Cursor
+              # app, so it is not BugBot's silent pass no matter what it is named.
+              # Checked ahead of freshness because an unattributable run's timestamp
+              # is not worth dating. Distinct reason so the block is legible rather
+              # than reading as "BugBot never ran".
+              MISSING+=("BugBot check-run on HEAD ${HEAD_SHA:0:7} was not published by the Cursor app (app slug \"${BB_CHECK_APP_SLUG:-<none>}\", expected \"cursor\") — cannot verify publisher; wait for a Cursor-published run or post @cursor review")
+              BB_CHECK_APP_MISMATCH=true
+            elif [[ -z "$LAST_COMMIT_TS" ]]; then
               # Fail-closed: cannot verify freshness without HEAD committer date.
               # Callers poll every ~60 s, so a transient API failure self-heals.
               MISSING+=("cannot verify BugBot check-run freshness — HEAD commit timestamp unavailable; retrying next cycle")
@@ -1220,12 +1261,15 @@ case "$REVIEWER" in
       fi
 
       if [[ "$BB_REVIEWS_ON_HEAD" -lt 1 ]]; then
-        if [[ "$BB_CHECK_CLEAN" != true && "$BB_CHECK_FRESHNESS_ERR" != true ]]; then
-          # No review object, no clean check-run, no freshness error already reported.
+        if [[ "$BB_CHECK_CLEAN" != true && "$BB_CHECK_FRESHNESS_ERR" != true \
+              && "$BB_CHECK_APP_MISMATCH" != true ]]; then
+          # No review object, no clean check-run, no freshness or publisher error
+          # already reported.
           MISSING+=("no BugBot review on HEAD ${HEAD_SHA:0:7}")
         fi
         # BB_CHECK_CLEAN=true  → silent-pass check-run satisfies the gate (issue #844)
         # BB_CHECK_FRESHNESS_ERR=true → freshness error already added to MISSING above
+        # BB_CHECK_APP_MISMATCH=true  → publisher error already added to MISSING above (issue #962)
       else
         LATEST_BB=$(echo "$REVIEWS_JSON" | jq -c --arg sha "$HEAD_SHA" '
           [.[]? | select(.user.login == "cursor[bot]" and .commit_id == $sha)]
