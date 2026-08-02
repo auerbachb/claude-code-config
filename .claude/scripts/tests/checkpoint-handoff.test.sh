@@ -284,6 +284,59 @@ printf '%s\n' "$DOC_PR" > "$TMP/t9.md"
 check_eq "T9 pull request rendering passes the portability check" "0" "$?"
 
 # ---------------------------------------------------------------------------
+# T10 — review findings from PR #944, each pinned against its own regression
+# ---------------------------------------------------------------------------
+
+# (a) A failed pull-request lookup must not render as "none open". The stub
+#     exits non-zero with no output, which is byte-identical to a genuinely
+#     empty result — the exit code is the only thing separating them.
+FAILBIN="$TMP/failbin"; mkdir -p "$FAILBIN"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$FAILBIN/gh"; chmod +x "$FAILBIN/gh"
+DOC_FAIL=$(cd "$PLAIN" && PATH="$FAILBIN:$PATH" "$CP" --stdout --out-dir "$TMP/out-ghfail" 2>/dev/null)
+check_contains "T10a a failed lookup says it could not be read" "COULD NOT BE READ" "$DOC_FAIL"
+check_not_contains "T10a a failed lookup never claims none are open" "No open pull requests were recorded" "$DOC_FAIL"
+printf '%s\n' "$DOC_FAIL" > "$TMP/t10a.md"
+"$LINT" --repo-root "$FAKE" --quiet "$TMP/t10a.md" >/dev/null 2>&1
+check_eq "T10a the could-not-read rendering still passes the portability check" "0" "$?"
+
+# A skipped lookup is a third state and must not borrow either other wording.
+DOC_SKIP=$(cd "$PLAIN" && "$CP" --stdout --no-remote --out-dir "$TMP/out-ghskip" 2>/dev/null)
+check_contains "T10a a skipped lookup says it was not looked up" "were not looked up" "$DOC_SKIP"
+
+# (b) Branch-name issue detection must not match an embedded number.
+git -C "$PLAIN" checkout -q -b reissue-941
+DOC_RE=$(cd "$PLAIN" && "$CP" --stdout --no-remote --out-dir "$TMP/out-reissue" 2>/dev/null)
+check_not_contains "T10b reissue-941 does not publish an issue 941 link" "/issues/941" "$DOC_RE"
+git -C "$PLAIN" checkout -q -b issue-941-real
+DOC_REAL=$(cd "$PLAIN" && "$CP" --stdout --no-remote --out-dir "$TMP/out-realissue" 2>/dev/null)
+check_contains "T10b issue-941-real still detects issue 941" "issue 941" "$DOC_REAL"
+git -C "$PLAIN" checkout -q main
+
+# (c) Staging a change must move the fingerprint. Pre-fix the status columns
+#     were stripped before hashing, so `git add` was invisible and the throttle
+#     suppressed the checkpoint for the rest of the interval.
+echo staged-content > "$PLAIN/stage-me.txt"
+FP_UNSTAGED=$(current_fingerprint "$PLAIN")
+git -C "$PLAIN" add stage-me.txt
+FP_STAGED=$(current_fingerprint "$PLAIN")
+check_eq "T10c staging a file changes the fingerprint" "0" \
+  "$([[ -n "$FP_UNSTAGED" && "$FP_UNSTAGED" != "$FP_STAGED" ]] && echo 0 || echo 1)"
+git -C "$PLAIN" reset -q
+
+# (d) Two writers in the same second must not overwrite each other. Same stamp,
+#     same (unset) session id — pre-fix both resolved to one filename and `mv -f`
+#     destroyed the first. An account-wide limit fails every session at once, so
+#     this is the expected case, not a rare interleave.
+OUT_RACE="$TMP/out-race"
+A=$(cd "$PLAIN" && "$CP" --no-remote --out-dir "$OUT_RACE" --force 2>/dev/null)
+B=$(cd "$PLAIN" && "$CP" --no-remote --out-dir "$OUT_RACE" --force 2>/dev/null)
+check_eq "T10d two same-second writes produce two distinct files" "0" \
+  "$([[ -n "$A" && -n "$B" && "$A" != "$B" ]] && echo 0 || echo 1)"
+check_eq "T10d both survive on disk" "2" \
+  "$(find "$OUT_RACE" -maxdepth 1 -type f -name '*-checkpoint.md' | wc -l | tr -d ' ')"
+check_contains "T10d the unique name still matches the recorder's glob" "-checkpoint.md" "$B"
+
+# ---------------------------------------------------------------------------
 # T8 — degraded environments must never fail the turn
 # ---------------------------------------------------------------------------
 NOTREPO="$TMP/notrepo"

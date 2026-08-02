@@ -235,8 +235,15 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 [[ -n "$REPO_SLUG" ]] || REPO_SLUG=$(basename "${TOPLEVEL:-$WORKDIR}")
 
+# Fingerprint over the RAW porcelain, not the stripped path list: the two status
+# columns are what distinguish staged from unstaged and modified from added, so
+# stripping them first made `git add` invisible to the throttle (CodeAnt, PR
+# #944). Content edits within an already-modified file still do not move it —
+# catching those would mean hashing the diff on every SubagentStop — and they do
+# not need to, because time is the primary trigger: the next interval writes
+# regardless. The fingerprint's only job is to write MORE often than that.
 FINGERPRINT=$(printf '%s\n%s\n%s\n%s\n%s\n' \
-  "$BRANCH" "$HEAD_SHA" "$CHANGED_COUNT" "${UNPUSHED:-na}" "$CHANGED_LIST" | digest)
+  "$BRANCH" "$HEAD_SHA" "$CHANGED_COUNT" "${UNPUSHED:-na}" "${PORCELAIN:-}" | digest)
 FINGERPRINT_MARK="<!-- checkpoint-fingerprint: ${FINGERPRINT} -->"
 
 # --- Throttle -------------------------------------------------------------
@@ -262,7 +269,11 @@ fi
 # --- Remote state (only past the throttle, so the common path is free) -----
 
 ISSUE_NUM=""
-[[ "$BRANCH" =~ (^|[^0-9])issue-([0-9]+) ]] && ISSUE_NUM="${BASH_REMATCH[2]}"
+# The boundary is non-ALPHANUMERIC, not merely non-digit: `[^0-9]` let
+# `reissue-941` match on its `e`, so an unrelated branch published a link to
+# issue 941 (Cursor, PR #944). A leading `re`/`de`/`un` prefix is the realistic
+# way this happens; a separator or start-of-string is the only honest boundary.
+[[ "$BRANCH" =~ (^|[^[:alnum:]])issue-([0-9]+) ]] && ISSUE_NUM="${BASH_REMATCH[2]}"
 
 # One record per line, fields joined by US (0x1f) — NOT by a tab.
 #
@@ -271,14 +282,30 @@ ISSUE_NUM=""
 # number=42, title=url, url=empty, and the document then shows a URL where a
 # title belongs with no error anywhere. US is not IFS whitespace, so empty
 # fields hold their position.
+#
+# PR_LOOKUP distinguishes the three outcomes the reader must not see conflated:
+#   ok        the forge answered — an empty result really does mean none open
+#   failed    the call errored; "none open" would be a false statement
+#   skipped   never attempted (--no-remote, no gh, no remote to ask about)
+# Discarding the exit status made a failed lookup render as "no open pull
+# requests were recorded" (Cursor, PR #944). Reporting "nothing in flight" when
+# the truth is "could not look" is the one mistake a handoff cannot afford,
+# because the reader has no way to detect it.
 PR_SEP=$'\x1f'
 PR_ROWS=""
+PR_LOOKUP="skipped"
 if (( ! NO_REMOTE )) && command -v gh >/dev/null 2>&1 && [[ -n "$REPO_SLUG" ]]; then
   PR_ROWS=$(gh pr list --author "@me" --state open --limit 10 \
               --json number,title,url,author,reviewDecision,mergeStateStatus \
               --jq '.[] | [(.number|tostring), .title, .url,
                            (.author.login // ""), (.reviewDecision // ""),
                            (.mergeStateStatus // "")] | join("\u001f")' 2>/dev/null)
+  GH_RC=$?
+  # Read the status of `gh` itself into a variable on the very next line. An
+  # empty result and a failed call are the same empty string, so the exit code
+  # is the only thing that tells them apart — and `$?` stops meaning that the
+  # moment anything is inserted above it.
+  if (( GH_RC == 0 )); then PR_LOOKUP="ok"; else PR_LOOKUP="failed"; PR_ROWS=""; fi
 fi
 
 # Background units still recorded as running. Read through the state helper when
@@ -349,7 +376,17 @@ render() {
 
   printf '## Open work\n\n'
   if [[ -z "$PR_ROWS" ]]; then
-    printf 'No open pull requests were recorded for this account when this was written.\n'
+    case "$PR_LOOKUP" in
+      failed)
+        printf 'The list of open pull requests COULD NOT BE READ when this was written —\n'
+        printf 'the query failed. This is not the same as there being none: assume there\n'
+        printf 'may be work in flight and check for yourself.\n' ;;
+      skipped)
+        printf 'Open pull requests were not looked up when this was written, so this says\n'
+        printf 'nothing about whether any exist.\n' ;;
+      *)
+        printf 'No open pull requests were recorded for this account when this was written.\n' ;;
+    esac
     printf 'Run `gh pr list --author "@me" --state open` to check the current position.\n\n'
   else
     while IFS="$PR_SEP" read -r n title url owner decision mergestate; do
@@ -516,7 +553,16 @@ SESSION_ID="${SESSION_ID//[^[:alnum:]_.-]/_}"
 SESSION_ID="${SESSION_ID:-default}"
 STAMP=$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null)
 [[ -n "$STAMP" ]] || STAMP="unknown"
-OUT="$OUT_DIR/portable-handoff-${STAMP}-${SESSION_ID}-checkpoint.md"
+# The timestamp is whole-second and the session id can be absent (both writers
+# then land on "default"), so two hooks firing in the same second produced the
+# same name and `mv -f` silently destroyed one of them (CodeAnt, PR #944). That
+# is not a rare interleaving here: one account limit fails every active session
+# at once, which is exactly when concurrent writes happen and exactly when
+# losing one costs the most. Reuse the mktemp suffix already guaranteed unique
+# in this directory rather than inventing a second source of uniqueness.
+UNIQ="${TMP_DOC##*.}"
+[[ -n "$UNIQ" && "$UNIQ" != "$TMP_DOC" ]] || UNIQ="$$"
+OUT="$OUT_DIR/portable-handoff-${STAMP}-${SESSION_ID}-${UNIQ}-checkpoint.md"
 
 # Same-directory mktemp + mv is an atomic single-writer publish: a reader sees a
 # complete document or none, never a half-written one.
