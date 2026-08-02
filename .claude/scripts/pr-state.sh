@@ -31,6 +31,13 @@
 #   unchanged: still "write the bundle to a tempfile, print only the path".
 #   Rationale and the full measurement: .claude/reference/compact-result-contract.md
 #
+# Check-run projection (issue #956): entries in check_runs.all, .failing_runs and
+#   .in_progress_runs each carry `app: {slug, id}` — the GitHub App that published
+#   the run. A check NAME identifies nothing on its own (any app may publish a
+#   check-run under any name), so a consumer asking "did THIS reviewer run here?"
+#   has to match the publisher too. Additive: every field these three arrays
+#   already carried is unchanged. Absent app data projects as {slug: null, id: null}.
+#
 # --infer-candidates (shared by /fixpr issue #447 and /wrap issue #448):
 #   Reads ~/.claude/session-state.json and prints a JSON array of the PRs this
 #   session is actively tracking (those with a non-null .phase), newest activity
@@ -465,14 +472,23 @@ CHECK_RUNS=$(run_gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-r
 CR_SPLIT=$(echo "$CHECK_RUNS" | jq '
   def is_blocking: . == "failure" or . == "timed_out" or . == "action_required" or . == "startup_failure" or . == "stale";
   def is_passing: . == "success" or . == "neutral" or . == "skipped" or . == "cancelled";
+  # Publishing GitHub App, retained on every projected entry (issue #956). The
+  # dedup step above already groups by [.app.slug, .app.id, .name] precisely
+  # because a name is not a publisher — any app may publish a check-run under any
+  # name — and the projection used to drop that identity one line later, leaving
+  # downstream reviewer routing to match `Cursor Bugbot` on the name alone.
+  # Carried on all three arrays so an entry has the same shape whichever view a
+  # consumer reads it from; absent app data projects as {slug: null, id: null}
+  # and the consumer decides whether that fails open or closed.
+  def app_identity: {slug: (.app.slug // null), id: (.app.id // null)};
   {
     total: length,
     passing: ([.[] | select(.conclusion | is_passing)] | length),
     failing: ([.[] | select(.conclusion | is_blocking)] | length),
     in_progress: ([.[] | select(.status != "completed")] | length),
-    failing_runs: [.[] | select(.conclusion | is_blocking) | {id, name, conclusion, title: .output.title, details_url, html_url}],
-    in_progress_runs: [.[] | select(.status != "completed") | {id, name, status}],
-    all: [.[] | {id, name, status, conclusion, title: .output.title}]
+    failing_runs: [.[] | select(.conclusion | is_blocking) | {id, name, conclusion, title: .output.title, details_url, html_url, app: app_identity}],
+    in_progress_runs: [.[] | select(.status != "completed") | {id, name, status, app: app_identity}],
+    all: [.[] | {id, name, status, conclusion, title: .output.title, app: app_identity}]
   }
 ')
 
