@@ -59,8 +59,16 @@ Cancel the `/loop` armed at pause time (runtime loop-stop), then proceed to mark
 
 ## Step 4a: `--auto-check` branch (lightweight scan)
 
+> **Do not remove the `<!-- test-anchor: … -->` comments below.** They are how
+> `.claude/scripts/tests/pmm-wake-step-4a.test.sh` extracts and runs *these*
+> blocks rather than a copy, so the #871 fail-open cannot be re-opened by a
+> prose cleanup (issue #888). Reword and reorder freely — just keep each anchor
+> immediately above its fence. Changing the guards means re-running the
+> discrimination control documented in that test.
+
 Read saved config and fleet snapshot:
 
+<!-- test-anchor: pmm-wake-step-4a-scan -->
 ```bash
 CONFIG=$("$SESSION_STATE_SH" --get '.pmm.config_at_pause' 2>/dev/null || echo 'null')
 # Fall back to `null`, NOT `[]`: an empty array is a *valid* snapshot (a fleet
@@ -113,6 +121,7 @@ SAVED_FLEET=$(jq -c 'sort_by(.pr)' <<<"$FLEET_AT_PAUSE") \
 
 Only once every guard above has passed may the two snapshots be compared:
 
+<!-- test-anchor: pmm-wake-step-4a-compare -->
 ```bash
 if [[ "$CURRENT_FLEET" == "$SAVED_FLEET" ]]; then
   # No-op: do NOT cancel the re-scan, do NOT clear the pause marker.

@@ -84,6 +84,8 @@ Tests are **auto-discovered** by the [`hook-scripts.yml`](.github/workflows/hook
 
 **Discovery contract** (a test must satisfy these to be picked up correctly): exit `0` on pass / non-zero on fail; be invoked via `bash` (the executable bit is **not** required — some suites are intentionally non-exec); and require **no** positional arguments.
 
+**Shared test helpers** live in `.claude/scripts/tests/lib/` — outside the flat `*.test.sh` glob, so they are never run as suites. Notably [`lib/skill-bash.sh`](.claude/scripts/tests/lib/skill-bash.sh) extracts a fenced `bash` block out of a `SKILL.md` by an `<!-- test-anchor: <name> -->` comment, so a test can exercise the **real** skill-embedded bash instead of a copy that drifts (issue #888). Use it to bring any other skill block under regression coverage; `pmm-wake-step-4a.test.sh` is the worked example.
+
 Run the whole suite locally from the repo root before pushing:
 
 ```bash
