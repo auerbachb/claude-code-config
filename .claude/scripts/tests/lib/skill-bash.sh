@@ -30,9 +30,9 @@
 #   either turns every editorial reshuffle into a red build — a maintenance tax
 #   that gets the test deleted rather than the skill fixed.
 #
-#   So the anchor is an explicit HTML comment on its own line, immediately
-#   before the opening fence, reusing the `<!-- key: value -->` idiom already in
-#   this repo (`<!-- churn-hotspot: … -->`, `<!-- harness-audit: … -->`):
+#   So the anchor is an explicit HTML comment on its own line above the opening
+#   fence, reusing the `<!-- key: value -->` idiom already in this repo
+#   (`<!-- churn-hotspot: … -->`, `<!-- harness-audit: … -->`):
 #
 #       <!-- test-anchor: pmm-wake-step-4a-scan -->
 #       ```bash
@@ -55,7 +55,7 @@
 #   2  Usage error (wrong argument count, unreadable Markdown file).
 #   3  Anchor not found.
 #   4  Anchor is ambiguous (matched more than once in the file).
-#   5  Anchor is not immediately followed by an opening ```bash fence.
+#   5  First non-blank line after the anchor is not an opening ```bash fence.
 #   6  Opening fence is never closed.
 #   7  Extracted block body is empty.
 #
@@ -118,7 +118,7 @@ extract_skill_bash() {
 
   if [ "$anchor_count" -eq 0 ]; then
     echo "extract_skill_bash: anchor not found in $md_path: $marker" >&2
-    echo "extract_skill_bash: add the anchor on its own line immediately before the target bash fence" >&2
+    echo "extract_skill_bash: add the anchor on its own line above the target bash fence (blank lines between the two are fine)" >&2
     return 3
   fi
   if [ "$anchor_count" -gt 1 ]; then
@@ -160,7 +160,7 @@ extract_skill_bash() {
   awk_rc=$?
 
   if [ "$awk_rc" -eq 5 ]; then
-    echo "extract_skill_bash: anchor at line $anchor_line of $md_path is not immediately followed by an opening bash fence" >&2
+    echo "extract_skill_bash: first non-blank line after the anchor at line $anchor_line of $md_path is not an opening bash fence" >&2
     return 5
   fi
   if [ "$awk_rc" -eq 6 ]; then
