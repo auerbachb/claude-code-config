@@ -41,8 +41,8 @@
 #
 #   It is invisible in rendered prose, survives reordering and rewording, is
 #   greppable from the call site, and announces to the next editor that
-#   something depends on this block. A single blank line between the anchor and
-#   the fence is tolerated; anything else between them is an error, because a
+#   something depends on this block. Blank lines between the anchor and the
+#   fence are tolerated; anything else between them is an error, because a
 #   drifted anchor must not quietly extract a neighbouring block.
 #
 # FAIL LOUD, NEVER EMPTY

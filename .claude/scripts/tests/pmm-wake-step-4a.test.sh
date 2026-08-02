@@ -532,6 +532,29 @@ else
   fail "extractor: drifted anchor — expected non-zero + diagnostic, got rc=$rc: $out"
 fi
 
+# The flip side of adrift.md: blank lines alone are tolerated, however many.
+# Only a non-blank line between anchor and fence is an error, so an editorial
+# double newline never turns into a red build (issue #926).
+cat > "$FIXDIR/tolerant.md" <<'MD'
+<!-- test-anchor: eta -->
+
+
+
+```bash
+echo tolerated one
+echo tolerated two
+```
+MD
+
+out="$(extract_skill_bash "$FIXDIR/tolerant.md" eta 2>&1)"; rc=$?
+expected='echo tolerated one
+echo tolerated two'
+if [ "$rc" -eq 0 ] && [ "$out" = "$expected" ]; then
+  pass "extractor: multiple blank lines between anchor and fence are tolerated (rc 0)"
+else
+  fail "extractor: multi-blank tolerance — expected rc 0 and the block body, got rc=$rc, body=<$out>"
+fi
+
 cat > "$FIXDIR/unclosed.md" <<'MD'
 <!-- test-anchor: delta -->
 ```bash
