@@ -225,15 +225,21 @@ def main(argv):
     # Hook work is skipped and the malformed value is left exactly as the user
     # wrote it; the exit code still reports the failure, and only the
     # independent surface proceeds.
+    #
+    # --statusline-only never touches hooks, so their shape is none of its
+    # business: it must neither warn nor fail on it. Step 6b reads any non-zero
+    # exit as "statusLine sync failed" and warns the user about a placeholder
+    # path that was in fact written correctly.
     hooks_broken = False
     if "hooks" not in settings:
         settings["hooks"] = {}
     elif not isinstance(settings["hooks"], dict):
-        print("settings.json hooks section is not an object", file=sys.stderr)
-        hooks_broken = True
+        if not statusline_only:
+            print("settings.json hooks section is not an object", file=sys.stderr)
+            hooks_broken = True
         manifest = []
 
-    live = {} if hooks_broken else settings["hooks"]
+    live = settings["hooks"] if isinstance(settings.get("hooks"), dict) else {}
 
     added = 0
     for item in manifest:
@@ -241,8 +247,13 @@ def main(argv):
         if event not in live:
             live[event] = []
         elif not isinstance(live[event], list):
+            # Same reasoning as the section-level check above, one level down: a
+            # single malformed event must not abort the run and strand the
+            # independent statusLine surface. Skip just this event, leave its
+            # value as the user wrote it, and keep registering the rest.
             print(f"settings.json hooks[{event!r}] is not a list", file=sys.stderr)
-            return 1
+            hooks_broken = True
+            continue
         match = find_existing(live[event], item["script"], item["matcher"])
         if match is True:
             continue

@@ -159,9 +159,22 @@ check_eq 1 "$RC" "malformed hooks: exit 1 still reports the hook failure"
 check_eq "$RESOLVED" "$(sl '.statusLine.command')" "malformed hooks: statusLine still synced"
 check_eq "not-an-object" "$(sl '.hooks')" "malformed hooks: user's value left untouched"
 
+# A single malformed EVENT must not abort the run either — the same reasoning
+# one level down. The other events still register and statusLine still syncs.
+write_settings '{"hooks":{"Stop":"not-a-list"}}'
+run_sut "$WT"; RC=$?
+check_eq 1 "$RC" "malformed hooks event: exit 1 still reports the hook failure"
+check_eq "$RESOLVED" "$(sl '.statusLine.command')" "malformed hooks event: statusLine still synced"
+check_eq '"not-a-list"' "$(jq -c '.hooks.Stop' "$SETTINGS")" \
+  "malformed hooks event: user's value left untouched"
+
 # Same isolation under --statusline-only, where hooks are out of scope entirely.
+# Their shape must not even colour the exit code: setup-skills-worktree.sh
+# Step 6b reads any non-zero exit as "statusLine sync failed" and warns about a
+# placeholder path that was in fact written correctly.
 write_settings '{"hooks":[1,2,3]}'
-run_sut --statusline-only "$WT"
+run_sut --statusline-only "$WT"; RC=$?
+check_eq 0 "$RC" "malformed hooks + --statusline-only: exit 0, hooks are out of scope"
 check_eq "$RESOLVED" "$(sl '.statusLine.command')" \
   "malformed hooks + --statusline-only: statusLine still synced"
 check_eq "[1,2,3]" "$(jq -c '.hooks' "$SETTINGS")" \
