@@ -34,6 +34,13 @@
 #   changed     → exit 0 with no "Fleet unchanged" line (falls through to
 #                 Step 4b: cancel the re-scan and resume)
 #
+#   Every case additionally asserts that the saved state survived the block
+#   byte-for-byte. "Pause marker and re-scan kept" is something the fail-closed
+#   path *prints*; without reading the state file back, a Step 4a that cleared
+#   `.pmm.paused_at` would print it just as convincingly. Clearing the marker is
+#   Step 4b's job and Step 4b is outside these anchors, so the invariant holds
+#   on the changed path too.
+#
 # DISCRIMINATION CONTROL (Bug6a/Bug6b convention, but executed rather than
 # asserted in a comment)
 #   A regression suite that passes against both the buggy and the fixed code is
@@ -178,15 +185,38 @@ set_gh() {
 RUN_OUT=""
 RUN_ERR=""
 RUN_RC=0
+STATE_BEFORE=""
+STATE_AFTER=""
+
+STATE_FILE="$HOME/.claude/session-state.json"
+ABSENT_SENTINEL="<no session-state.json>"
+
+# read_state — current state file contents, or a sentinel when it is absent.
+#   Case 7 deliberately runs with no state file at all, and "still absent" is
+#   just as much a preserved state as "unchanged bytes".
+read_state() {
+  if [ -f "$STATE_FILE" ]; then
+    cat "$STATE_FILE"
+  else
+    printf '%s' "$ABSENT_SENTINEL"
+  fi
+}
 
 # run_block <block-source>
 #   A fresh `bash -c`, not a subshell: skill blocks are run by the agent in a
 #   plain shell, and this one is written for that (it uses `|| RC=$?` guards and
 #   an unquoted-safe empty array expansion that `set -eu` would break).
+#
+#   The state file is snapshotted around the run so `verdict` can assert Step 4a
+#   left it alone (see the preservation check there). `session-state.sh --get`
+#   migrates in memory only — "a read never rewrites the file" (its header) — so
+#   a byte comparison is exact, not approximate.
 run_block() {
+  STATE_BEFORE="$(read_state)"
   RUN_OUT="$(bash -c "$1" 2>"$STDERR_FILE")"
   RUN_RC=$?
   RUN_ERR="$(cat "$STDERR_FILE")"
+  STATE_AFTER="$(read_state)"
 }
 
 contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
@@ -237,6 +267,22 @@ verdict() {
       die "verdict: unknown expectation '$want'"
       ;;
   esac
+
+  # Step 4a is a READ-ONLY block: it consumes `.pmm.*` through `--get` and never
+  # writes. Exit codes and diagnostics cannot prove that on their own — the
+  # fail-closed path *prints* "Pause marker and re-scan kept", and a Step 4a
+  # that cleared `.pmm.paused_at` or `.pmm.fleet_at_pause` would still print
+  # that line, still exit 1, and still pass every check above while dropping the
+  # pause it just promised to keep. Same hole on the unchanged path, whose whole
+  # contract is "no-op". So compare the state file itself rather than trusting
+  # the block's own account of what it did.
+  #
+  # This holds for `changed` too: cancelling the re-scan and clearing the marker
+  # is Step 3 / Step 4b's job, and neither is inside the extracted anchors.
+  if [ "$ok" -eq 1 ] && [ "$STATE_AFTER" != "$STATE_BEFORE" ]; then
+    ok=0
+    why="Step 4a mutated the saved state — the pause marker and fleet snapshot must survive it (before: $STATE_BEFORE | after: $STATE_AFTER)"
+  fi
 
   if [ "$MODE" = "assert" ]; then
     if [ "$ok" -eq 1 ]; then
