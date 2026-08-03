@@ -129,7 +129,7 @@ case "$ESCALATION_STATUS" in
 esac
 ```
 
-The script caches `.prs["{{PR_NUMBER}}"].bugbot_installed` in `~/.claude/session-state.json` on first BugBot detection so repositories without BugBot skip the 5-minute grace wait on later cycles. Do not duplicate the timing logic inline; `cr-github-review.md` owns the numbered gate and STOP conditions.
+The script caches `.prs["{{PR_NUMBER}}"].bugbot_installed` in `~/.claude/session-state.json` on first BugBot detection so repositories without BugBot skip the 10-minute (600 s) grace wait on later cycles. Do not duplicate the timing logic inline; `cr-github-review.md` owns the numbered gate and STOP conditions.
 
 ### Completion Detection
 
