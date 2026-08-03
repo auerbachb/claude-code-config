@@ -588,7 +588,13 @@ NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   --set ".prs[\"$PR\"].babysit.last_tick_at=$NOW"
 ```
 
-**Re-arm cadence only when it crosses a tier boundary.** To change it: stop the current Monitor task with `TaskStop`, arm a replacement whose sleep and emitted `--cadence` use `<new>m`, then atomically replace `babysit.monitor_task_id`. If replacement arming fails, restore the prior cadence in state, report the stopped monitor, and terminate rather than claiming the watcher is live. If the effective cadence is unchanged, do nothing.
+**Re-arm cadence only when it crosses a tier boundary.** To change it: stop the exact current Monitor
+task with `TaskStop` and proceed only after success, arm a replacement whose sleep and emitted
+`--cadence` use `<new>m`, then atomically replace `babysit.monitor_task_id`. A failed old-task stop
+retains its ID and aborts the re-arm. If replacement arming fails, restore the prior cadence in
+state, clear the successfully stopped old task's ID, and terminate rather than claiming the watcher
+is live. If the state write fails after replacement arming, stop the replacement; if rollback
+`TaskStop` fails, report its exact task ID. If the effective cadence is unchanged, do nothing.
 
 On an actual widen, record it so `polling-backoff-warn.sh` stops re-emitting its widen advisory (it dedupes on `type == "update"` at the new interval):
 
@@ -632,25 +638,39 @@ Append context: blocker reason on `hard-blocked`/`waiting-on-bots`; dispatch tar
 
 ### T-END. Terminate cleanly
 
+Set the stop flag first so any already-emitted tick's T0 short-circuit exits cleanly. Do **not**
+clear `active` until the recorded Monitor task has stopped; otherwise A2 can admit a duplicate
+watcher while the old task is still emitting:
+
 ```bash
-"$SESSION_STATE_SH" \
-  --set ".prs[\"$PR\"].babysit.active=false" \
-  --set ".prs[\"$PR\"].babysit.dispatch_in_flight=null"
+"$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.stop_requested=true"
 ```
 
-**Cancelling the poll is a required terminal action — a persistent Monitor does not lapse on its own.** Read `babysit.monitor_task_id`, stop that exact task with `TaskStop`, and do not re-arm it. If the ID is missing or `TaskStop` fails, keep the ID for diagnosis and report degraded teardown; `active=false` still makes an already-emitted tick exit at T0.
+**Cancelling the poll is a required terminal action — a persistent Monitor does not lapse on its own.** Read `babysit.monitor_task_id`, stop that exact task with `TaskStop`, and do not re-arm it. If the ID is missing or `TaskStop` fails, keep both `active=true` and the ID for diagnosis, report degraded teardown, and do not claim completion; `stop_requested=true` still makes an already-emitted tick exit at T0 and `active=true` keeps A2 from arming a duplicate.
+
+One idempotent exception: when T0 observed `active != true` **and** the task ID is already null,
+another teardown path (normally `/babysit-pr-stop`) completed the exact stop before this queued tick
+ran. Treat that pair as already stopped, not degraded, and do not call `TaskStop` without an ID.
 
 **Record the stop.** `polling-backoff-warn.sh` suppresses a repeated STOP advisory by reading `.prs["<N>"].last_cron_action.type == "delete"`. The field name is historical — it records the poll-lifecycle action, whatever primitive backs the poll:
 
 ```bash
 "$SESSION_STATE_SH" \
+  --set ".prs[\"$PR\"].babysit.active=false" \
   --set ".prs[\"$PR\"].babysit.monitor_task_id=null" \
   --set ".prs[\"$PR\"].last_cron_action={\"type\":\"delete\",\"interval\":\"paused\",\"at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
 ```
 
-Run that atomic cleanup only after `TaskStop` succeeds.
+Run that atomic cleanup only after `TaskStop` succeeds. Clear `dispatch_in_flight` in the same
+call only when it is null; if a user stop raced an existing `/fixpr` or `/wrap`, retain the marker
+until that dispatch completes or T0's TTL reclaim owns it.
 
-Belt-and-suspenders: even if cancellation is delayed, the T0 short-circuit (`active != true`) makes every subsequent tick an immediate no-op terminate — but cancellation is still mandatory so the runtime stops invoking the watcher.
+Belt-and-suspenders: even if cancellation is delayed, the T0 short-circuit (`stop_requested` /
+`active != true`) makes every subsequent tick an immediate no-op terminate — but cancellation is
+still mandatory so the runtime stops invoking the watcher.
+
+If exact teardown failed, emit a `babysit-pr teardown incomplete` report with the retained task ID
+instead of the successful `babysit-pr complete` summary below.
 
 Emit the final summary:
 

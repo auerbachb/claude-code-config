@@ -25,7 +25,9 @@ Pause marker fields live under nested `.pmm.*`. Existing runtime fields
 
 ## Step 0a: Resume from pause
 
-On **every** invocation, before Step 1, check for a pause marker. If present, this invocation is a **resume** — stop any auto-wake re-scan, clear the marker, merge config, and continue into normal ticking:
+On **every** invocation, before Step 1, check for a pause marker. If present, this invocation is a
+**resume** — capture config, stop any auto-wake re-scan, merge config, and defer marker removal until
+the replacement main Monitor is both armed and publishable:
 
 ```bash
 PAUSED_AT=$(.claude/scripts/session-state.sh --get '.pmm.paused_at' 2>/dev/null || echo null)
@@ -35,26 +37,35 @@ if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
   #    already-captured $SAVED variable, never re-read .pmm.config_at_pause from
   #    session-state after step 3 has run (it will be null by then).
   SAVED=$(.claude/scripts/session-state.sh --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
-  # 2. Stop the auto-wake Monitor, if one is running, using the task ID in
-  #    .pmm.auto_wake_monitor_task_id; clear that ID only after TaskStop.
-  # 3. Clear pause marker + reset pmm_idle_streak=0 + set pmm_active=true
-  #    + null .pmm_digest and .pmm_row_digest (atomic batch) — the digest reset
-  #    forces Step 4's full table on the first post-resume tick (condition a)
-  .claude/scripts/session-state.sh \
-    --set '.pmm.paused_at=null' \
-    --set '.pmm.fleet_at_pause=null' \
-    --set '.pmm.config_at_pause=null' \
-    --set '.pmm_idle_streak=0' \
-    --set '.pmm_active=true' \
-    --set '.pmm_digest=null' \
-    --set '.pmm_row_digest=null'
-  # 4. Merge flags: explicit $ARGUMENTS override $SAVED (the step-1 variable, not
-  #    session-state — that field is already cleared by step 3 at this point)
+  # 2. Read both .pmm_monitor_task_id and .pmm.auto_wake_monitor_task_id. When
+  #    present, stop each exact task; any failed TaskStop aborts resume and
+  #    preserves both IDs and the pause marker. This covers degraded pauses that
+  #    retained a main-task ID after its stop failed.
+  # 3. Set a shell-only RESUMING_FROM_PAUSE=true marker. Do not publish active
+  #    state or clear any on-disk pause fields yet.
+  RESUMING_FROM_PAUSE=true
+  # 4. Merge flags: explicit $ARGUMENTS override the captured $SAVED value.
   echo "[PMM] Resuming from pause (paused_at=$PAUSED_AT) — flags on this invocation override saved config."
 fi
 ```
 
-> **The digest reset has two owners, one per resume path.** The branch above is guarded on a non-null `.pmm.paused_at`, so it covers only **direct re-invocation** of this skill. On the **`-wake`** path, Step 4b clears the marker before re-arming the Monitor — this branch is already skipped by the time the first Monitor tick runs — so `-wake` Step 4b nulls `.pmm_digest` and `.pmm_row_digest` in its own atomic `--set` batch (issue #872). The guarantee "both digests are null after **any** resume" holds only while both sides do it; neither is redundant.
+Step 7 treats the persisted old main-task ID as absent (it was stopped above) and arms the main
+Monitor at base cadence. Only after it returns a task ID does one atomic
+`session-state.sh` write publish that ID and `pmm_active=true`, clear all three pause-marker fields
+and `.pmm.auto_wake_monitor_task_id`, reset `pmm_idle_streak`, and null both table digests. If the
+arm or state write fails, stop the new task and leave the pause marker intact. If the rollback stop
+fails too, report the exact new task ID rather than claiming rollback. This ordering makes direct
+re-invocation transactional in the same way as the `-wake` path.
+
+Before that publication write, Step 4 treats the prior table digests as null **in shell** so the
+current direct-resume tick renders the full table. It must not persist those nulls early: rendering
+state can be provisional, but destroying the durable pause marker cannot.
+
+> **The digest reset has two owners, one per resume path.** Step 7's publication transaction covers
+> **direct re-invocation** when `RESUMING_FROM_PAUSE=true`. On the **`-wake`** path, Step 4b clears the
+> marker before the next main-skill tick, so `-wake` Step 4b nulls `.pmm_digest` and `.pmm_row_digest`
+> in its own atomic `--set` batch (Issue #872). The guarantee "both digests are null after **any**
+> resume" holds only while both sides do it; neither is redundant.
 
 Resume logic is shared with `/pr-monitor-and-manage-wake` — see `.claude/skills/pr-monitor-and-manage-wake/SKILL.md` Step 3 (re-scan teardown) and Step 4b (marker clear + Monitor re-arm). When resuming via re-invoking this skill (not `-wake`), apply the precedence rule in Step 1 after parsing `$ARGUMENTS`: any flag explicitly supplied on this invocation wins; omitted flags inherit from `.pmm.config_at_pause`. After resume, continue with Step 1 using the merged config and run a full discovery tick at **base** cadence (not the widened backoff cadence).
 
@@ -81,6 +92,10 @@ Print the **full** Step 4 status table one last time — terminal snapshots (Pau
 Read `.pmm_monitor_task_id`, stop that exact task with `TaskStop`, then clear the ID. A missing or
 unstoppable task is a degraded state that must be reported; set `pmm_active=false` so no later tick
 claims the fleet remains watched.
+
+If the ID is present and `TaskStop` fails, retain it and do not arm the optional auto-wake Monitor:
+two pollers must never be created from an unverified handoff. The pause marker may still be written
+so a later explicit resume can retry exact teardown.
 
 ### 3. Build fleet snapshot + config for the pause marker
 

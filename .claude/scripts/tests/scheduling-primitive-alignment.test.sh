@@ -34,7 +34,7 @@ require_text .claude/reference/scheduling-failure-modes.md \
 
 require_text .claude/skills/babysit-pr/SKILL.md 'babysit.monitor_task_id' \
   'babysit-pr must persist its Monitor task ID'
-require_text .claude/skills/babysit-pr/SKILL.md 'stop the current Monitor task with `TaskStop`' \
+require_text .claude/skills/babysit-pr/SKILL.md 'stop the exact current Monitor' \
   'babysit-pr cadence changes must stop the prior Monitor'
 require_text .claude/skills/babysit-pr/SKILL.md 'Run that atomic cleanup only after `TaskStop` succeeds.' \
   'babysit-pr terminal cleanup must retain a failed Monitor task ID'
@@ -45,8 +45,22 @@ require_text .claude/skills/babysit-pr-stop/SKILL.md 'call `TaskStop` for that e
 
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md '.pmm_monitor_task_id' \
   'fleet monitoring must persist its main Monitor task ID'
+reject_text .claude/skills/pr-monitor-and-manage/SKILL.md '$SESSION_STATE_SH" --get' \
+  'fleet monitoring must not use an undefined state-helper variable'
 require_text .claude/skills/pr-monitor-and-manage/references/pmm-lifecycle.md \
   '.pmm.auto_wake_monitor_task_id' \
   'fleet auto-wake must persist its Monitor task ID'
+require_text .claude/skills/pr-monitor-and-manage-wake/SKILL.md \
+  'If either present ID cannot be stopped, abort the resume' \
+  'fleet resume must abort when the recorded auto-wake task cannot be stopped'
+require_text .claude/skills/pr-monitor-and-manage/references/pmm-lifecycle.md \
+  'leave the pause marker intact' \
+  'direct PMM resume must publish state transactionally'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
+  'treat the prior digest values as null in shell' \
+  'direct PMM resume must render its first table without clearing durable state early'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
+  'A failed stop retains the old ID and aborts the re-arm.' \
+  'fleet cadence re-arm must fail closed on exact TaskStop'
 
 ok 'recurring scheduling guidance and watcher lifecycles agree on Monitor'

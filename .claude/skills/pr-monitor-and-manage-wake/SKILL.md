@@ -55,7 +55,12 @@ PAUSED_AT=$("$SESSION_STATE_SH" --get '.pmm.paused_at' 2>/dev/null || echo null)
 
 When `$MODE` is `--auto-check`, skip to Step 4a first; only cancel the re-scan from Step 4b after a fleet change is confirmed, or when `$MODE` is user-initiated resume (default).
 
-Read `.pmm.auto_wake_monitor_task_id`, stop that exact task with `TaskStop`, and clear the ID only after success. Nothing is removed from `polling_jobs[]`; issue #924 replaces the unreliable `/loop` re-scan with this recorded Monitor task.
+Read both `.pmm.auto_wake_monitor_task_id` and `.pmm_monitor_task_id` and stop each recorded task
+with exact `TaskStop`. The main-task ID is normally null while paused, but a degraded pause retains
+it when teardown failed. If either present ID cannot be stopped, abort the resume: retain both IDs
+and the complete pause marker, and do not arm the replacement main Monitor. Clear the old IDs only
+in Step 4b's successful resume transaction. Nothing is removed from `polling_jobs[]`; Issue #924
+replaces the unreliable `/loop` re-scan with this recorded Monitor task.
 
 ## Step 4a: `--auto-check` branch (lightweight scan)
 
@@ -185,7 +190,9 @@ After a successful arm, clear the marker and publish the new task ID in one atom
   --set '.pmm_next_expected_tick_at=null'
 ```
 
-If that write fails, stop the newly armed task with `TaskStop`; the atomic failure leaves the pause marker intact, so never claim resume.
+If that write fails, stop the newly armed task with `TaskStop`; the atomic failure leaves the pause
+marker intact, so never claim resume. If the rollback stop also fails, report the exact new task ID
+and retain the paused state; an unrecorded live task must never be described as cleaned up.
 
 The next tick runs full discovery + per-PR state read. Print:
 
@@ -198,6 +205,8 @@ For `--auto-check` with detected change, add: `[auto-check] Fleet changed — re
 ## Safety
 
 - Never clear the pause marker on resume without also cancelling the auto-wake re-scan (Step 3) — except `--auto-check` no-op exits without touching either.
+- A present main or auto-wake task ID whose `TaskStop` fails is a hard resume abort. Never arm the
+  replacement Monitor or discard an ID while an old task can still emit.
 - **A failed or unverifiable scan is never a fleet change.** If `gh pr list` errors, returns empty, or either snapshot fails to parse as a JSON array, Step 4a keeps the pause marker and the re-scan and exits non-zero — it never falls through to the comparison. Only a scan that *proves* a difference may resume.
 - **Step 4b must null `.pmm_digest` and `.pmm_row_digest` in the same `--set` batch that clears the marker.** It clears `.pmm.paused_at` before the main skill runs, so the main skill's Step 0a reset cannot fire on this path; the digests are what make its Step 4 print the full table on the first post-resume tick.
 - `--auto-check` must **not** run full per-PR gate reads — only `gh pr list` + comparison.
