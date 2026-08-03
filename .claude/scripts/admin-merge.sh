@@ -681,8 +681,9 @@ if [[ "$MODE" == "auto-plain" ]]; then
   # delta now overlaps this PR's lines. Capture the JSON this time: the evidence
   # report must describe the state that actually authorized the merge, not the
   # stale pre-flight snapshot. Reaching `plain` at all requires CLEAN_BEHIND_OK,
-  # which requires CBC to have been found and to have exited 0 — so this check
-  # can never be skipped by a missing helper, but verify rather than assume.
+  # which requires CBC to have been found and to have supplied accepted evidence
+  # (exit 0, or the narrowly recovered exit-1 reviewDecision asymmetry) — so this
+  # check can never be skipped by a missing helper, but verify rather than assume.
   if [[ -z "${CBC:-}" ]]; then
     echo "REFUSED: clean-behind-check.sh unavailable — cannot re-validate the clean-BEHIND state before an auto merge." >&2
     exit 1
