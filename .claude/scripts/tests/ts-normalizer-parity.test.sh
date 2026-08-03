@@ -167,7 +167,8 @@ check_ne "output does not re-append Z" "2026-08-01T10:00:16Z"       "$(norm_ts "
 echo "== parity: norm_ts (merge-gate) vs canon_ts (escalate-review) =="
 ############################################################################
 # The spelling matrix from issue #885 and scenarios (h6b)-(h6e) of
-# escalate-review.test.sh. Every entry must normalise IDENTICALLY on both sides.
+# escalate-review-gate-met.test.sh. Every entry must normalise IDENTICALLY on
+# both sides.
 MATRIX=(
   "2026-08-01T10:00:16"
   "2026-08-01T10:00:16Z"

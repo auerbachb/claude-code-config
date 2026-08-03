@@ -176,7 +176,10 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | `cr-plan.test.sh` | Tests for `cr-plan.sh` |
 | `diff-survival-check.test.sh` | Tests for `diff-survival-check.sh` |
 | `dirty-main-guard.test.sh` | Tests for `dirty-main-guard.sh` |
-| `escalate-review.test.sh` | Tests for `escalate-review.sh` |
+| `escalate-review-app-identity.test.sh` | Publishing-app identity and spoof-guard tests for `escalate-review.sh` |
+| `escalate-review-bugbot-classification.test.sh` | BugBot failure and response-classification tests for `escalate-review.sh` |
+| `escalate-review-gate-met.test.sh` | Approval freshness and gate short-circuit tests for `escalate-review.sh` |
+| `escalate-review-never-invited.test.sh` | Invitation, grace-window, and cache-state tests for `escalate-review.sh` |
 | `forgotten-pr-triage.test.sh` | Tests for `forgotten-pr-triage.sh` |
 | `handoff-scoping.test.sh` | Tests per-repo handoff path scoping in `handoff-state.sh` |
 | `handoff-state.test.sh` | Tests for `handoff-state.sh` |
