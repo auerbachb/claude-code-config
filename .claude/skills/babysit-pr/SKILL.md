@@ -49,6 +49,37 @@ accept it as user configuration or copy it across a re-arm. Every Monitor arm ge
 token and embeds it in its emitted command so an event already queued by a stopped Monitor cannot
 act as the replacement generation.
 
+Parse the internal fields explicitly before the ordinary argument parser consumes the remaining
+flags. A direct invocation carrying `--monitor-generation` is invalid; only a Monitor-emitted tick
+may present it:
+
+```bash
+BABYSIT_INTERNAL_TICK=false
+[[ " $ARGUMENTS " == *" --tick "* ]] && BABYSIT_INTERNAL_TICK=true
+TICK_GENERATION=""
+_BABYSIT_EXPECT_GENERATION=false
+for _BABYSIT_ARG in $ARGUMENTS; do
+  if [[ "$_BABYSIT_EXPECT_GENERATION" == true ]]; then
+    TICK_GENERATION="$_BABYSIT_ARG"
+    _BABYSIT_EXPECT_GENERATION=false
+    continue
+  fi
+  [[ "$_BABYSIT_ARG" == "--monitor-generation" ]] && _BABYSIT_EXPECT_GENERATION=true
+done
+if [[ "$_BABYSIT_EXPECT_GENERATION" == true ]]; then
+  echo "ERROR: --monitor-generation requires a token." >&2
+  exit 2
+fi
+if [[ "$BABYSIT_INTERNAL_TICK" != true && -n "$TICK_GENERATION" ]]; then
+  echo "ERROR: --monitor-generation is runtime-only and requires --tick." >&2
+  exit 2
+fi
+```
+
+The ordinary parser must ignore `--tick`, `--monitor-generation`, and the generation token already
+captured above. It must never reinterpret the token as the PR number or persist it as watcher
+configuration.
+
 `--durable` is still **accepted** so a saved chip payload or muscle memory does not hard-error; print one line and carry on with `Monitor`:
 
 ```text
@@ -224,6 +255,25 @@ report incomplete teardown and abort. Only after exact `TaskStop` succeeds may A
 babysit object and arm one new Monitor. Never infer that a silent Monitor died, and never arm beside
 it.
 
+Execute that teardown before the A3 initialization block. Call `TaskStop` with
+`task_id="$RETAINED_TASK_ID"`, then bind its tool result to `TASK_STOP_SUCCEEDED`; do not simulate a
+successful stop from silence or age:
+
+```bash
+if [[ "$ALREADY" == "true" ]]; then
+  # TaskStop tool call: task_id="$RETAINED_TASK_ID"
+  # Set TASK_STOP_SUCCEEDED=true only when that exact tool call succeeds.
+  if [[ "${TASK_STOP_SUCCEEDED:-false}" != "true" ]]; then
+    echo "ERROR: stale babysit watcher teardown failed for PR #$PR (Monitor task $RETAINED_TASK_ID, generation $RETAINED_GENERATION) â€” retaining the complete identity and stop_requested=true; not re-arming." >&2
+    exit 1
+  fi
+fi
+```
+
+After success, leave `stop_requested=true` and the old identity pair recorded until A3 replaces the
+whole babysit object atomically. That keeps any already-queued old-generation event inert during
+the stop-to-publication gap.
+
 ### A3. Initialize state and arm the poll
 
 Write the babysit object (one atomic `--set` batch), seeding backoff fields to a neutral start:
@@ -303,8 +353,7 @@ Run on every poll cycle (and once at the end of arm mode). One tick = classify â
 ### T0. Stop / terminal short-circuit (check FIRST)
 
 ```bash
-TICK_GENERATION="${TICK_GENERATION:-}"  # set by the argument parser from --monitor-generation
-if [[ " $ARGUMENTS " == *" --tick "* ]]; then
+if [[ "$BABYSIT_INTERNAL_TICK" == true ]]; then
   RECORDED_GENERATION=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.monitor_generation" 2>/dev/null || echo "null")
   if [[ -z "$TICK_GENERATION" || "$TICK_GENERATION" == "null" ||
         "$TICK_GENERATION" != "$RECORDED_GENERATION" ]]; then
@@ -651,28 +700,31 @@ current `babysit.monitor_task_id` on every tick. A missing ID while active is de
 `stop_requested=true`, report it, and terminate without retaining or arming a task. Then compare the
 computed `$EFFECTIVE_MIN` to the captured `$PREV_EFFECTIVE_MIN`; this comparison is mandatory on
 every tick. When they are equal, retain the identified Monitor and cadence. When they differ, stop
-the exact current Monitor. In other words, cadence changes must **stop the exact current Monitor**
-and complete this transaction:
+the exact current Monitor. Before that stop, atomically set `stop_requested=true`; this makes every
+already-emitted old-generation event exit at T0 throughout the stop-to-publication gap. In other
+words, cadence changes must **guard, then stop the exact current Monitor** and complete this transaction:
 
-1. Stop the exact current Monitor task with `TaskStop`. A failed old-task stop retains both its ID and
-   `$PREV_EFFECTIVE_MIN` in state and aborts the re-arm.
+1. Publish `stop_requested=true`, then stop the exact current Monitor task with `TaskStop`. A failed
+   old-task stop retains its complete ID+generation pair, `$PREV_EFFECTIVE_MIN`, and the stop guard
+   in state and aborts the re-arm as incomplete teardown.
 2. Generate a fresh `$NEW_MONITOR_GENERATION`, then arm a replacement whose sleep and emitted
    `--cadence` use `$EFFECTIVE_MIN` and whose event includes
    `--monitor-generation $NEW_MONITOR_GENERATION`.
-3. Publish the replacement ID, generation, and cadence in one atomic state write:
+3. Publish the replacement ID, generation, cadence, and cleared stop guard in one atomic state write:
 
    ```bash
    "$SESSION_STATE_SH" \
      --set ".prs[\"$PR\"].babysit.monitor_task_id=$NEW_MONITOR_TASK_ID" \
      --set ".prs[\"$PR\"].babysit.monitor_generation=\"$NEW_MONITOR_GENERATION\"" \
-     --set ".prs[\"$PR\"].babysit.cadence_effective_minutes=$EFFECTIVE_MIN"
+     --set ".prs[\"$PR\"].babysit.cadence_effective_minutes=$EFFECTIVE_MIN" \
+     --set ".prs[\"$PR\"].babysit.stop_requested=false"
    ```
 
 If replacement arming fails, the old task is already stopped: atomically set `active=false`,
-`monitor_task_id=null`, `monitor_generation=null`, and restore
+`stop_requested=false`, `monitor_task_id=null`, `monitor_generation=null`, and restore
 `cadence_effective_minutes=$PREV_EFFECTIVE_MIN`, then report that the watcher terminated. If the
 publication write fails, stop the exact replacement task. After a successful rollback stop, clear
-the known-stopped old identity and set `active=false`; after a failed rollback stop, best-effort
+the known-stopped old identity and set `active=false`, `stop_requested=false`; after a failed rollback stop, best-effort
 publish `stop_requested=true`, `active=true`, and the exact `$NEW_MONITOR_TASK_ID` plus
 `$NEW_MONITOR_GENERATION` so a later `/babysit-pr-stop` can retry the potentially-live task. Never
 retain the already-stopped old identity as if it were the replacement, and never claim the cadence

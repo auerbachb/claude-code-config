@@ -33,9 +33,21 @@ PMM_INTERNAL_TICK=false
 PMM_TICK_GENERATION=""
 _PMM_EXPECT_GENERATION=false
 for _PMM_ARG in $ARGUMENTS; do
-  if [[ "$_PMM_EXPECT_GENERATION" == true ]]; then PMM_TICK_GENERATION="$_PMM_ARG"; break; fi
+  if [[ "$_PMM_EXPECT_GENERATION" == true ]]; then
+    PMM_TICK_GENERATION="$_PMM_ARG"
+    _PMM_EXPECT_GENERATION=false
+    continue
+  fi
   [[ "$_PMM_ARG" == "--monitor-generation" ]] && _PMM_EXPECT_GENERATION=true
 done
+if [[ "$_PMM_EXPECT_GENERATION" == true ]]; then
+  echo "ERROR: --monitor-generation requires a token." >&2
+  exit 2
+fi
+if [[ "$PMM_INTERNAL_TICK" != true && -n "$PMM_TICK_GENERATION" ]]; then
+  echo "ERROR: --monitor-generation is runtime-only and requires --tick." >&2
+  exit 2
+fi
 PMM_ACTIVE=$(.claude/scripts/session-state.sh --get '.pmm_active' 2>/dev/null || echo false)
 PMM_STOP_PENDING=$(.claude/scripts/session-state.sh --get '.pmm.stop_requested' 2>/dev/null || echo false)
 if [[ "$PMM_INTERNAL_TICK" == true ]]; then
@@ -443,8 +455,12 @@ equals `$EFFECTIVE_CADENCE`. If no task ID is recorded on a new direct start or 
 `RESUMING_FROM_PAUSE` completed exact teardown, arm the first Monitor. A missing ID or generation
 while `$PMM_ACTIVE == true` on an ordinary tick is degraded state: set
 `.pmm.stop_requested=true`, report the missing identity, and abort rather than risking a duplicate.
-If an ID exists and the cadences differ, stop that exact old task with `TaskStop`, require success,
-then arm the replacement.
+If an ID exists and the cadences differ, first set `.pmm.stop_requested=true`, then stop that exact
+old task with `TaskStop`, require success, and arm the replacement. Publishing the guard before the
+stop makes an already-emitted old-generation event exit at the tick gate during the
+stop-to-publication gap. If the stop fails, retain the complete old identity and cadence with the
+guard still true, report incomplete teardown, and abort; do not let the old task continue as if the
+cadence transition succeeded.
 
 Immediately after a new Monitor arm succeeds, bind the identity that its command actually carries:
 
@@ -455,16 +471,16 @@ MONITOR_GENERATION="$NEW_MONITOR_GENERATION"
 Do this before the publication batch below; never publish the old or null generation beside the
 new task ID.
 
-A failed stop retains the old ID and aborts the re-arm.
-It also retains the old cadence. Do not write `$EFFECTIVE_CADENCE` before this comparison or exact
-stop succeeds.
+A failed stop retains the old ID and aborts the re-arm. It also retains the old generation, old
+cadence, and `.pmm.stop_requested=true`. Do not write `$EFFECTIVE_CADENCE` or clear that guard before
+this comparison and exact stop succeed.
 
-After a new Monitor is armed, publish its ID, generation, and `$EFFECTIVE_CADENCE` in the same
-atomic state write below. If replacement arming fails, set `pmm_active=false`, clear the
-known-stopped task ID and generation together, retain the prior cadence as audit state, and report
+After a new Monitor is armed, publish its ID, generation, `$EFFECTIVE_CADENCE`, and
+`.pmm.stop_requested=false` in the same atomic state write below. If replacement arming fails, set `pmm_active=false`, clear the
+known-stopped task ID and generation together, set `.pmm.stop_requested=false`, retain the prior cadence as audit state, and report
 the stopped monitor — never claim the fleet is watched.
 If the publication write fails, `TaskStop` the exact new task. When rollback succeeds, clear the
-known-stopped old identity and set `pmm_active=false`. When rollback fails, best-effort persist
+known-stopped old identity and set `pmm_active=false`, `.pmm.stop_requested=false`. When rollback fails, best-effort persist
 `.pmm.stop_requested=true`, `pmm_active=false`, and the exact new task ID plus generation so
 `/pmm-stop` can retry it; never leave the already-stopped old identity as the only recorded one. On the first tick, say:
 `To stop: /pmm-stop (or "stop monitoring PRs").`

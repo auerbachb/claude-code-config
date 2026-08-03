@@ -44,6 +44,43 @@ unidentified re-scan: print `[auto-check] Ignoring a stale Monitor generation.` 
 reading GitHub or mutating state. This gate is first so an event queued before exact `TaskStop`
 cannot see a later pause marker and cancel or resume the replacement generation.
 
+Execute that parser and generation gate explicitly before Step 2:
+
+```bash
+MODE="user-resume"
+AUTO_CHECK_GENERATION=""
+_AUTO_CHECK_EXPECT_GENERATION=false
+for _WAKE_ARG in $ARGUMENTS; do
+  if [[ "$_AUTO_CHECK_EXPECT_GENERATION" == true ]]; then
+    AUTO_CHECK_GENERATION="$_WAKE_ARG"
+    _AUTO_CHECK_EXPECT_GENERATION=false
+    continue
+  fi
+  case "$_WAKE_ARG" in
+    --auto-check) MODE="auto-check" ;;
+    --monitor-generation) _AUTO_CHECK_EXPECT_GENERATION=true ;;
+  esac
+done
+if [[ "$_AUTO_CHECK_EXPECT_GENERATION" == true ]]; then
+  echo "ERROR: --monitor-generation requires a token." >&2
+  exit 2
+fi
+if [[ "$MODE" == "auto-check" ]]; then
+  RECORDED_AUTO_CHECK_GENERATION=$("$SESSION_STATE_SH" --get '.pmm.auto_wake_monitor_generation' 2>/dev/null || echo null)
+  if [[ -z "$AUTO_CHECK_GENERATION" || "$AUTO_CHECK_GENERATION" == "null" ||
+        "$AUTO_CHECK_GENERATION" != "$RECORDED_AUTO_CHECK_GENERATION" ]]; then
+    echo "[auto-check] Ignoring a stale Monitor generation."
+    exit 0
+  fi
+elif [[ -n "$AUTO_CHECK_GENERATION" ]]; then
+  echo "ERROR: --monitor-generation is runtime-only and requires --auto-check." >&2
+  exit 2
+fi
+```
+
+Ignore `--monitor-generation` and its captured token in any later mode/config parsing. Never copy a
+generation into the replacement main Monitor; Step 4b generates a fresh one for that arm.
+
 ## Step 2: Check pause marker
 
 ```bash

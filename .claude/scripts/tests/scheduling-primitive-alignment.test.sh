@@ -67,8 +67,23 @@ require_text .claude/skills/babysit-pr/SKILL.md \
   '"$TICK_GENERATION" != "$RECORDED_GENERATION"' \
   'babysit-pr must reject queued events from an older Monitor generation'
 require_text .claude/skills/babysit-pr/SKILL.md \
+  'TICK_GENERATION="$_BABYSIT_ARG"' \
+  'babysit-pr must parse the generation carried by Monitor-emitted ticks'
+require_text .claude/skills/babysit-pr/SKILL.md \
+  'if [[ "$BABYSIT_INTERNAL_TICK" == true ]]; then' \
+  'babysit-pr must apply generation validation to the parsed internal tick mode'
+require_text .claude/skills/babysit-pr/SKILL.md \
   'babysit.monitor_generation=\"$NEW_MONITOR_GENERATION\"' \
   'babysit-pr must publish replacement task ID and generation together'
+require_text .claude/skills/babysit-pr/SKILL.md \
+  'Before that stop, atomically set `stop_requested=true`' \
+  'babysit-pr cadence re-arm must guard against queued old-generation events before TaskStop'
+require_text .claude/skills/babysit-pr/SKILL.md \
+  'known-stopped old identity and set `active=false`, `stop_requested=false`' \
+  'babysit-pr must clear its cadence guard after verified rollback teardown'
+require_text .claude/skills/babysit-pr/SKILL.md \
+  'TASK_STOP_SUCCEEDED=true only when that exact tool call succeeds' \
+  'babysit-pr stale reclaim must execute exact TaskStop before A3 overwrites identity'
 require_text .claude/hooks/polling-backoff-warn.sh \
   'atomically clear its monitor_task_id + monitor_generation only after success' \
   'backoff stop guidance must clear the Monitor identity pair atomically'
@@ -101,6 +116,9 @@ require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   '"$PMM_TICK_GENERATION" != "$RECORDED_MONITOR_GENERATION"' \
   'fleet ticks must reject queued events from an older Monitor generation'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
+  'PMM_TICK_GENERATION="$_PMM_ARG"' \
+  'fleet ticks must parse the generation carried by Monitor-emitted events'
 require_text .claude/skills/pr-monitor-and-manage-stop/SKILL.md \
   'marker until exact teardown is complete.' \
   'fleet stop must block start/resume until every required task is stopped'
@@ -122,6 +140,12 @@ require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   'A failed stop retains the old ID and aborts the re-arm.' \
   'fleet cadence re-arm must fail closed on exact TaskStop'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
+  'first set `.pmm.stop_requested=true`' \
+  'fleet cadence re-arm must guard against queued old-generation events before TaskStop'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
+  'known-stopped old identity and set `pmm_active=false`, `.pmm.stop_requested=false`' \
+  'fleet cadence re-arm must clear its guard after verified rollback teardown'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   "CURRENT_MONITOR_CADENCE=\$(.claude/scripts/session-state.sh --get '.pmm_cadence'" \
   'fleet monitoring must compare the recorded Monitor cadence before deciding to keep it'
@@ -149,9 +173,18 @@ require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
 require_text .claude/skills/pr-monitor-and-manage-wake/SKILL.md \
   'with `.pmm.auto_wake_monitor_generation`' \
   'auto-wake must reject queued events from an older re-scan generation'
+require_text .claude/skills/pr-monitor-and-manage-wake/SKILL.md \
+  'AUTO_CHECK_GENERATION="$_WAKE_ARG"' \
+  'auto-wake must parse the generation carried by Monitor-emitted scans'
+require_text .claude/skills/pr-monitor-and-manage-wake/SKILL.md \
+  '"$AUTO_CHECK_GENERATION" != "$RECORDED_AUTO_CHECK_GENERATION"' \
+  'auto-wake must execute its stale-generation comparison before scanning the fleet'
 require_text .claude/skills/pr-monitor-and-manage/references/pmm-lifecycle.md \
   '/pr-monitor-and-manage-wake --auto-check --monitor-generation $AUTO_WAKE_MONITOR_GENERATION' \
   'auto-wake Monitor events must carry their arm generation'
+require_text .claude/skills/wrap/SKILL.md \
+  'monitor_task_id=null`, and `monitor_generation=null`' \
+  'wrap must clear the complete babysit Monitor identity after exact teardown'
 
 require_text .claude/reference/session-state-schema.json '"monitoring_mode": "monitor"' \
   'session-state examples must identify Monitor as the recurring polling primitive'
@@ -165,5 +198,8 @@ require_text .claude/reference/session-state-schema.json '"pmm_monitor_generatio
   'session-state examples must document main fleet Monitor generations'
 require_text .claude/reference/session-state-schema.json '"auto_wake_monitor_generation": null' \
   'session-state examples must document auto-wake Monitor generations'
+require_text .claude/reference/session-state-schema.json \
+  'auto_wake_monitor_task_id and auto_wake_monitor_generation are one runtime identity pair' \
+  'session-state docs must define auto-wake task ID and generation as one identity'
 
 ok 'recurring scheduling guidance and watcher lifecycles agree on Monitor'

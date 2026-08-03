@@ -245,7 +245,7 @@
       "auto_wake": false,
       "auto_wake_cadence": "60m"
     },
-    "_auto_wake_comment": "auto_wake arms a persistent Monitor re-scan at pause time (issue #924) and records its task ID for exact TaskStop teardown. Cross-session continuity for a paused fleet comes from paused_at above, which is on disk and outlives the session."
+    "_auto_wake_comment": "auto_wake arms a persistent Monitor re-scan at pause time (issue #924). auto_wake_monitor_task_id and auto_wake_monitor_generation are one runtime identity pair: exact TaskStop teardown clears both only after success, and queued scans must match the recorded generation before reading GitHub or mutating state. Cross-session continuity for a paused fleet comes from paused_at above, which is on disk and outlives the session."
   },
   "_token_exhaustion_example": {
     "phase": "B",
