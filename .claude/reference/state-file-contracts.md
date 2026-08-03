@@ -16,6 +16,35 @@ Session state lives at `.repos["<owner>/<name>"].prs["<N>"]` rather than a flat 
 
 Entries that predate scoping and cannot be attributed land under `_unknown`. Account-level fields (Greptile daily budget, CodeRabbit hourly consumption) stay global — they are per-account quotas, not per-repo state.
 
+### Polling-gate protection against inherited scope leakage (issue #967)
+
+`polling-state-gate.sh` resolves the invoking checkout before applying that
+general helper precedence. Without an explicit `--repo`, a checkout whose
+`origin` yields a real `owner/repo` replaces any inherited
+`$CLAUDE_SESSION_REPO`, then re-exports the resolved identity so
+`session-state.sh`, `poll-watermarks.sh`, and later child helpers all agree. An
+inherited value is retained only as a supply-only fallback for an origin-less
+checkout (or another checkout that cannot identify itself). An explicit
+`--repo` remains a declaration and is refused when it contradicts the invoking
+checkout. `statusline.sh` established the earlier instance of defending reads
+from stale inherited repo scope; the gate keeps the fallback because it also
+supports origin-less checkout operation.
+
+This prevents new writes from landing in the wrong scope; it does not migrate
+old entries. `session-state-audit.sh --apply --reattribute` remains the
+downstream housekeeping command for entries that can be identified under
+`_unknown`; `--apply --prune` handles old closed entries once they meet its
+retention and notes safeguards. Neither operation moves an active entry out of
+an already named but incorrect scope, so that case still requires targeted
+correction rather than being part of this gate fix.
+
+Issue #655 addressed a distinct, earlier occurrence of the "resolve by PR
+number before scoping" anti-pattern by moving handoffs into per-repo
+directories. No handoff change is required for issue #967. This repository,
+`auerbachb/claude-code-config`, is the source of the gate scripts, so the fix
+belongs here even though the faulty behavior was first observed from another
+repository.
+
 ## Scope-key case normalization (issue #704)
 
 The `.repos["<owner>/<name>"]` key is **always lowercase**, and handoff directories `~/.claude/handoffs/{owner}/{repo}/` follow the same contract.
