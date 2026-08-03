@@ -567,6 +567,9 @@ if [[ "$DIGEST" == "$PREV_DIGEST" ]]; then STREAK=$((PREV_STREAK + 1)); else STR
 # base 5m → 15m (satisfies the AC); base 1m → 15m; base 20m → 60m (still slower).
 WIDE_MIN=$(( BASE_MIN * 3 )); (( WIDE_MIN < 15 )) && WIDE_MIN=15
 (( WIDE_MIN < BASE_MIN )) && WIDE_MIN=$BASE_MIN     # guard: never faster than base
+PREV_EFFECTIVE_MIN=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.cadence_effective_minutes" 2>/dev/null || echo "$BASE_MIN")
+[[ "$PREV_EFFECTIVE_MIN" =~ ^[0-9]+$ ]] || PREV_EFFECTIVE_MIN=$BASE_MIN
+if (( STREAK >= 3 )); then EFFECTIVE_MIN=$WIDE_MIN; else EFFECTIVE_MIN=$BASE_MIN; fi
 ```
 
 | `digest_streak` | Effective cadence |
@@ -596,7 +599,7 @@ else
 fi
 ```
 
-Persist all counters atomically, then increment the tick count. `$DIGEST` (the `sha256:…` string computed above) is not valid JSON, so `session-state.sh --set` stores it as a string literal:
+Persist all non-cadence counters atomically, then increment the tick count. `$DIGEST` (the `sha256:…` string computed above) is not valid JSON, so `session-state.sh --set` stores it as a string literal. Cadence and task identity are committed together below; publishing the desired cadence here would make a failed `TaskStop` look like a successful tier crossing:
 
 ```bash
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -606,17 +609,35 @@ NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   --set ".prs[\"$PR\"].babysit.blocker_streak=$BLOCKER_STREAK" \
   --set ".prs[\"$PR\"].babysit.conflict_streak=$CONFLICT_STREAK_NEW" \
   --set ".prs[\"$PR\"].babysit.tick_count=$NEW_TICK_COUNT" \
-  --set ".prs[\"$PR\"].babysit.cadence_effective_minutes=$EFFECTIVE_MIN" \
   --set ".prs[\"$PR\"].babysit.last_tick_at=$NOW"
 ```
 
-**Re-arm cadence only when it crosses a tier boundary.** To change it: stop the exact current Monitor
-task with `TaskStop` and proceed only after success, arm a replacement whose sleep and emitted
-`--cadence` use `<new>m`, then atomically replace `babysit.monitor_task_id`. A failed old-task stop
-retains its ID and aborts the re-arm. If replacement arming fails, restore the prior cadence in
-state, clear the successfully stopped old task's ID, and terminate rather than claiming the watcher
-is live. If the state write fails after replacement arming, stop the replacement; if rollback
-`TaskStop` fails, report its exact task ID. If the effective cadence is unchanged, do nothing.
+**Re-arm cadence only when it crosses a tier boundary.** Compare the computed `$EFFECTIVE_MIN` to
+the captured `$PREV_EFFECTIVE_MIN`; this comparison is mandatory on every tick. When they are
+equal, retain the existing Monitor and cadence. When they differ, stop the exact current Monitor
+and complete this transaction:
+
+1. Read the exact current `babysit.monitor_task_id`; a missing ID while active is degraded teardown,
+   so set `stop_requested=true`, report it, and terminate without arming.
+2. Stop the exact current Monitor task with `TaskStop`. A failed old-task stop retains both its ID and
+   `$PREV_EFFECTIVE_MIN` in state and aborts the re-arm.
+3. Arm a replacement whose sleep and emitted `--cadence` use `$EFFECTIVE_MIN`.
+4. Publish the replacement ID and cadence in one atomic state write:
+
+   ```bash
+   "$SESSION_STATE_SH" \
+     --set ".prs[\"$PR\"].babysit.monitor_task_id=$NEW_MONITOR_TASK_ID" \
+     --set ".prs[\"$PR\"].babysit.cadence_effective_minutes=$EFFECTIVE_MIN"
+   ```
+
+If replacement arming fails, the old task is already stopped: atomically set `active=false`,
+`monitor_task_id=null`, and restore `cadence_effective_minutes=$PREV_EFFECTIVE_MIN`, then report that
+the watcher terminated. If the publication write fails, stop the exact replacement task. After a
+successful rollback stop, clear the known-stopped old ID and set `active=false`; after a failed
+rollback stop, best-effort publish `stop_requested=true`, `active=true`, and the exact
+`NEW_MONITOR_TASK_ID` so a later `/babysit-pr-stop` can retry the potentially-live task. Never retain
+the already-stopped old ID as if it were the replacement, and never claim the cadence changed until
+the ID+cadence publication succeeds.
 
 On an actual widen, record it so `polling-backoff-warn.sh` stops re-emitting its widen advisory (it dedupes on `type == "update"` at the new interval):
 

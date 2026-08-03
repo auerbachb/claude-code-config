@@ -48,6 +48,12 @@ require_text .claude/skills/babysit-pr/SKILL.md 'refuses re-arm regardless of ti
   'babysit-pr stale reclaim must not reopen an incomplete teardown'
 require_text .claude/skills/babysit-pr/SKILL.md 'If that task-ID publication fails' \
   'babysit-pr initial Monitor arm must handle task-ID publication failure'
+require_text .claude/skills/babysit-pr/SKILL.md \
+  'if (( STREAK >= 3 )); then EFFECTIVE_MIN=$WIDE_MIN; else EFFECTIVE_MIN=$BASE_MIN; fi' \
+  'babysit-pr must derive the effective cadence before persisting or re-arming it'
+require_text .claude/skills/babysit-pr/SKILL.md \
+  'monitor_task_id=$NEW_MONITOR_TASK_ID' \
+  'babysit-pr must publish replacement identity with its effective cadence'
 
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md '.pmm_monitor_task_id' \
   'fleet monitoring must persist its main Monitor task ID'
@@ -89,5 +95,14 @@ require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   'A failed stop retains the old ID and aborts the re-arm.' \
   'fleet cadence re-arm must fail closed on exact TaskStop'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
+  "CURRENT_MONITOR_CADENCE=\$(.claude/scripts/session-state.sh --get '.pmm_cadence'" \
+  'fleet monitoring must compare the recorded Monitor cadence before deciding to keep it'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
+  'Keep the existing task only when its recorded cadence equals `$EFFECTIVE_CADENCE`.' \
+  'fleet monitoring must replace an existing Monitor on a tier crossing'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
+  'A missing ID while `$PMM_ACTIVE == true` on an ordinary tick is degraded state' \
+  'fleet monitoring must not arm beside an active task whose identity was lost'
 
 ok 'recurring scheduling guidance and watcher lifecycles agree on Monitor'

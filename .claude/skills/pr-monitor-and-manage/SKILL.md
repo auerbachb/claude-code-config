@@ -386,20 +386,37 @@ done
 ```
 
 Call `Monitor` with `persistent: true` and description `PR fleet monitor`. Capture its task ID in
-`.pmm_monitor_task_id`. At the start of this step, read the existing ID from state:
+`.pmm_monitor_task_id`. At the start of this step, read the existing ID and its actual cadence from
+state:
 
 ```bash
 MONITOR_TASK_ID=$(.claude/scripts/session-state.sh --get '.pmm_monitor_task_id' 2>/dev/null || echo null)
-[[ "${RESUMING_FROM_PAUSE:-false}" == true ]] && MONITOR_TASK_ID=null
+CURRENT_MONITOR_CADENCE=$(.claude/scripts/session-state.sh --get '.pmm_cadence' 2>/dev/null || echo null)
+if [[ "${RESUMING_FROM_PAUSE:-false}" == true ]]; then
+  MONITOR_TASK_ID=null
+  CURRENT_MONITOR_CADENCE=null
+fi
 ```
 
-Keep the existing task when the cadence is unchanged; on a tier crossing,
-stop the old task with `TaskStop`, require that exact stop to succeed, then arm the replacement and
-replace the ID. A failed stop retains the old ID and aborts the re-arm. If replacement arming fails,
-set `pmm_active=false`, clear the stopped task's ID, and report the stopped monitor — never claim
-the fleet is watched. If the state write fails after a replacement was armed, `TaskStop` that new
-task; if rollback fails, report its exact ID. On the first tick, say: `To stop: /pmm-stop (or "stop
-monitoring PRs").`
+Keep the existing task only when its recorded cadence equals `$EFFECTIVE_CADENCE`. If no task ID is
+recorded on a new direct start or after `RESUMING_FROM_PAUSE` completed exact teardown, arm the first
+Monitor. A missing ID while `$PMM_ACTIVE == true` on an ordinary tick is degraded state: set
+`.pmm.stop_requested=true`, report the missing identity, and abort rather than risking a duplicate.
+If an ID exists and the cadences differ, stop that exact old task with `TaskStop`, require success,
+then arm the replacement.
+
+A failed stop retains the old ID and aborts the re-arm.
+It also retains the old cadence. Do not write `$EFFECTIVE_CADENCE` before this comparison or exact
+stop succeeds.
+
+After a new Monitor is armed, publish its ID and `$EFFECTIVE_CADENCE` in the same atomic state write
+below. If replacement arming fails, set `pmm_active=false`, clear the known-stopped task ID, retain
+the prior cadence as audit state, and report the stopped monitor — never claim the fleet is watched.
+If the publication write fails, `TaskStop` the exact new task. When rollback succeeds, clear the
+known-stopped old ID and set `pmm_active=false`. When rollback fails, best-effort persist
+`.pmm.stop_requested=true`, `pmm_active=false`, and the exact new task ID so `/pmm-stop` can retry
+it; never leave the already-stopped old ID as the only recorded identity. On the first tick, say:
+`To stop: /pmm-stop (or "stop monitoring PRs").`
 
 Record monitoring state every tick:
 
