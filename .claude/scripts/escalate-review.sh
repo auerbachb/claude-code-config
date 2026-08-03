@@ -472,7 +472,7 @@ if [[ -n "$BUGBOT_TRIGGER_TS" ]]; then
   fi
 fi
 
-CACHED_BUGBOT_INSTALLED="$("$SESSION_STATE" --get ".prs[\"$PR_NUMBER\"].bugbot_installed // \"\"" 2>/dev/null || true)"
+CACHED_BUGBOT_INSTALLED="$("$SESSION_STATE" --get ".prs[\"$PR_NUMBER\"] | if has(\"bugbot_installed\") then .bugbot_installed else \"\" end" 2>/dev/null || true)"
 case "$CACHED_BUGBOT_INSTALLED" in
   true|false)
     BUGBOT_INSTALLED="$CACHED_BUGBOT_INSTALLED"
