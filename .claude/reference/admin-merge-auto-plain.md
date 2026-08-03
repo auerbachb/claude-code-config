@@ -30,7 +30,7 @@ A degraded-context agent, or one following an injected instruction, cannot reach
 Everything before the shape gate is the existing `--print` pre-flight, unchanged:
 
 1. Authorship guard (#733) — `pr-authorship.sh`, fail-closed. `--auto-plain` never passes `--allow-nonauthor`.
-2. `merge-gate.sh` hard-blocker filter — steps over exactly two protection-mechanical blockers (the branch-protection `reviewDecision` note, and a `BEHIND` that `clean-behind-check.sh` confirms is clean).
+2. `merge-gate.sh` hard-blocker filter — steps over exactly two protection-mechanical blockers (the branch-protection `reviewDecision` note, and a `BEHIND` whose mechanical safety `clean-behind-check.sh` confirms). A normal helper exit 0 is accepted directly. If the helper exits 1 only because its bundled gate still includes the branch-protection `reviewDecision` note, `admin-merge.sh` accepts the JSON evidence only when the PR is `BEHIND`, mergeable, zero-overlap, all AC boxes are checked, and every residual blocker is that reviewDecision note. Every other helper error or blocker remains a refusal.
 3. Solo-owner heuristic.
 4. Branch-protection read → `BYPASS_MODE`.
 
@@ -39,16 +39,18 @@ Then, `--auto-plain` only:
 5. **Hard shape gate** → exit `8` on anything but `plain`.
 6. **Repeat guard** → exit `8` if a marker already exists.
 7. `cd` into the resolved `REPO_PATH` so `gh pr merge` targets the intended repo from any cwd.
-8. **Mandatory re-validation** — re-run `clean-behind-check.sh`, capturing its JSON. Non-zero → exit `1` ("rebase and re-run instead of bypassing").
+8. **Mandatory re-validation** — re-run `clean-behind-check.sh`, capturing its JSON and applying the same clean-BEHIND evidence test used at pre-flight. Unsafe mechanics, any non-reviewDecision residual, or a helper error → exit `1` ("rebase and re-run instead of bypassing").
 9. Write the repeat-guard marker.
 10. `gh pr merge <N> --squash --admin`, then the 3-attempt `state == MERGED` read-after-write retry.
 11. Evidence report on stdout.
 
 ### Why step 8 cannot be skipped
 
-`CLEAN_BEHIND_OK == true` is a precondition of `BYPASS_MODE == plain`, and it can only be true if `clean-behind-check.sh` was found and exited `0`. So a missing helper can never reach the auto path — but the branch still checks `-z "$CBC"` and refuses rather than assuming.
+`CLEAN_BEHIND_OK == true` is a precondition of `BYPASS_MODE == plain`, and it can only be true if `clean-behind-check.sh` was found and either exited `0` or supplied the narrowly accepted safe-mechanics JSON described above. So a missing helper can never reach the auto path — but the branch still checks `-z "$CBC"` and refuses rather than assuming.
 
 The re-validation exists for TOCTOU: `main` can advance between the pre-flight snapshot and the merge, turning a clean `BEHIND` into one whose base delta now overlaps this PR's lines. Test 22 drives a stub that returns safe on call 1 and unsafe on call 2, and asserts both that the merge is refused and that the helper genuinely ran twice.
+
+Refusals distinguish the routing decision. Any non-BEHIND blocker keeps the general "not merge-ready apart from branch protection" message. When the only blocker is a BEHIND whose mechanical evidence is unsafe, the script says it is "not safe to skip a rebase" and prints the helper's `reasons_not_safe` entries. A verified clean-BEHIND proceeds without listing BEHIND as outstanding.
 
 ## Exit-code contract
 

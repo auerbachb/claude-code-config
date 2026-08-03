@@ -40,6 +40,9 @@ chmod +x "$SCRIPTS/merge-gate.sh"
 # FAKE_CBC_EXIT_SEQ — space-separated per-call exit codes ("0 1" = safe on the
 #                     pre-flight call, unsafe on the pre-merge re-validation).
 #                     Requires FAKE_CBC_COUNT_FILE to count calls.
+# FAKE_CBC_OVERLAP_COUNT / FAKE_CBC_AC_ALL_CHECKED / FAKE_CBC_RESIDUAL /
+# FAKE_CBC_REASONS / FAKE_CBC_MERGE_STATE / FAKE_CBC_MERGEABLE control the
+# mechanical evidence emitted for each call.
 cat > "$SCRIPTS/clean-behind-check.sh" <<'EOF'
 #!/usr/bin/env bash
 N=1
@@ -56,10 +59,29 @@ if [ -n "${FAKE_CBC_EXIT_SEQ:-}" ]; then
     if [ "$I" -eq "$N" ]; then RC="$code"; fi
   done
 fi
-jq -cn --argjson rc "$RC" '{
+OVERLAP="${FAKE_CBC_OVERLAP_COUNT:-}"
+if [ -z "$OVERLAP" ]; then
+  if [ "$RC" -eq 0 ]; then OVERLAP=0; else OVERLAP=1; fi
+fi
+REASONS="${FAKE_CBC_REASONS:-}"
+if [ -z "$REASONS" ]; then
+  if [ "$RC" -eq 0 ]; then REASONS='[]'; else REASONS='["base delta overlaps PR files (dirty.txt)"]'; fi
+fi
+jq -cn \
+  --argjson rc "$RC" \
+  --arg merge_state "${FAKE_CBC_MERGE_STATE:-BEHIND}" \
+  --arg mergeable "${FAKE_CBC_MERGEABLE:-MERGEABLE}" \
+  --argjson overlap "$OVERLAP" \
+  --argjson ac_all_checked "${FAKE_CBC_AC_ALL_CHECKED:-true}" \
+  --argjson residual "${FAKE_CBC_RESIDUAL:-[]}" \
+  --argjson reasons "$REASONS" '{
   safe_to_offer: ($rc == 0), head_sha: "abc1234def",
-  ac: {checked: 6, total: 6},
-  file_overlap: {count: 0, granularity: "hunk"},
+  reasons_not_safe: $reasons,
+  merge_state: $merge_state,
+  mergeable: $mergeable,
+  residual_blockers: $residual,
+  ac: {checked: (if $ac_all_checked then 6 else 5 end), total: 6, all_checked: $ac_all_checked},
+  file_overlap: {count: $overlap, granularity: "hunk"},
   churn: {base_ahead_by: 2}
 }'
 exit "$RC"
@@ -165,7 +187,7 @@ expect_rc 1 "refuses on hard blocker (exit 1)"
 grep_absent "X DELETE" "no bypass printed on hard blocker"
 
 # 3. Only a code-owner reviewDecision blocker → bypassable, still prints.
-FAKE_GATE_EXIT=1 FAKE_GATE_MISSING='["branch protection reviewDecision is REVIEW_REQUIRED, not APPROVED, with CodeRabbit in CODEOWNERS — trigger @coderabbitai full review"]' \
+FAKE_GATE_EXIT=1 FAKE_GATE_MISSING='["branch protection reviewDecision is REVIEW_REQUIRED, not APPROVED, with CodeRabbit in CODEOWNERS — if the prior CR approval was dismissed as stale, trigger @coderabbitai full review"]' \
   run 1 --print --repo-path "$CLONE" --branch main
 expect_rc 0 "reviewDecision-only blocker is bypassable (exit 0)"
 
@@ -329,9 +351,45 @@ new_log
 FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=1 FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
   run 3 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
 expect_rc 1 "--auto-plain refuses a non-clean BEHIND (exit 1)"
-grep_ok "rebase" "non-clean BEHIND refusal routes to the rebase path"
+grep_ok "not safe to skip a rebase" "non-clean BEHIND gets the distinct unsafe-to-skip refusal"
+grep_ok "base delta overlaps PR files" "non-clean BEHIND refusal surfaces clean-behind reasons"
 log_absent "^pr merge" "non-clean BEHIND: no merge call issued"
 log_absent "protection/enforce_admins" "non-clean BEHIND: no protection API call issued"
+
+# 21b. CBC can exit 1 solely because its bundled gate keeps the branch-protection
+#      reviewDecision residual. Safe mechanical evidence still reaches the merge.
+new_log
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=1 FAKE_CBC_OVERLAP_COUNT=0 \
+  FAKE_CBC_RESIDUAL='["branch protection reviewDecision is REVIEW_REQUIRED, not APPROVED, with CodeRabbit in CODEOWNERS — if the prior CR approval was dismissed as stale, trigger @coderabbitai full review"]' \
+  FAKE_CBC_REASONS='["merge gate blocker: branch protection reviewDecision is REVIEW_REQUIRED, not APPROVED, with CodeRabbit in CODEOWNERS"]' \
+  FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 9 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
+expect_rc 0 "--auto-plain accepts safe mechanics when CBC only retains reviewDecision (exit 0)"
+log_present "^pr merge 9 --squash --admin" "reviewDecision-only CBC asymmetry reaches the merge call"
+log_absent "protection/enforce_admins" "reviewDecision-only CBC asymmetry issues no protection call"
+
+# 21c. A real non-BEHIND blocker wins over the special dirty-BEHIND refusal.
+new_log
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=1 \
+  FAKE_GATE_MISSING='["branch is BEHIND base — rebase + force-push before merging","CI incomplete: rule-lint"]' \
+  FAKE_PROTECTION="$PLAIN_PROT" \
+  run 10 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
+expect_rc 1 "--auto-plain refuses dirty BEHIND plus CI blocker (exit 1)"
+grep_ok "not merge-ready apart from branch protection" "non-BEHIND blockers retain the generic refusal"
+grep_ok "CI incomplete" "generic refusal surfaces the non-BEHIND blocker"
+log_absent "^pr merge" "dirty BEHIND plus CI blocker issues no merge call"
+
+# 21d. A residual that merely contains the magic words is not the canonical
+#      branch-protection blocker and must not be bypassed.
+new_log
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=1 FAKE_CBC_OVERLAP_COUNT=0 \
+  FAKE_CBC_RESIDUAL='["CI failed while reporting branch protection reviewDecision"]' \
+  FAKE_CBC_REASONS='["merge gate blocker: CI failed"]' \
+  FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 11 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
+expect_rc 1 "--auto-plain refuses a non-canonical reviewDecision residual (exit 1)"
+grep_ok "not safe to skip a rebase" "non-canonical reviewDecision residual uses the safe refusal"
+log_absent "^pr merge" "non-canonical reviewDecision residual issues no merge call"
 
 # 22. TOCTOU: clean-behind-check safe at pre-flight, UNSAFE at merge time (main
 #     advanced in between) → refuse, no merge. Proves the re-validation is real.
