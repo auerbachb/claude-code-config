@@ -126,7 +126,7 @@ the two-step recovery explicitly:
 
 ```
 /babysit-pr-stop <PR>     # clears active; A2 will no longer refuse
-/babysit-pr <PR>          # re-arms (dynamic /loop, no leading interval)
+/babysit-pr <PR>          # re-arms a persistent Monitor task
 ```
 
 Pinned by test 12 in `babysit-tick-watchdog.test.sh`, which asserts the stop step
@@ -135,7 +135,7 @@ the advisory's recovery sequence is still reachable at the new numbers.
 
 Per feature: `--durable` was **dropped** from `/babysit-pr` (accepted and
 ignored, so an old chip payload does not hard-error); `--auto-wake` was
-**reframed** to a `/loop` re-scan in `/pr-monitor-and-manage`, keeping its
+**reframed** to a persistent Monitor re-scan in `/pr-monitor-and-manage`, keeping its
 user-visible promise while deleting a fail-closed cron teardown that had been
 duplicated across three files; `/harness-audit`'s daily-registration cadence
 became the **session-start watermark check** above.

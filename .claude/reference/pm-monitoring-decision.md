@@ -4,24 +4,24 @@
 
 Division of responsibility between orchestration and fleet monitoring:
 
-- **`/pm` never creates polls.** It is a strictly on-demand orchestrator: cold-start scan, inline execution of selected issues via the `/subagent` A→B→C flow (in-turn Dedicated Monitor Mode, not a recurring poll), thread prompts for the few issues too big for a subagent, on-demand status when the user asks, and handoff generation. At ≥3 active threads it redirects to `/pr-monitor-and-manage`; it does not offer `CronCreate` or `/loop`.
-- **`/pr-monitor-and-manage` owns PR-fleet between-message polling.** It establishes `/loop` at the configured cadence, optionally keeps a low-frequency `/loop` re-scan running after an idle pause (`--auto-wake`), and dispatches per-PR fixes/merges.
-- **`/loop` remains valid for explicit user-invoked "poll every N"** that is not PR-fleet-specific (e.g., "poll every 5m /status" on a single thread). Hand-rolled one-shot `ScheduleWakeup` chains are forbidden for recurring polls.
-- **`CronCreate` is for wall-clock-cadence fleet ticks** — not `/pm`. It is **session-only** and does not survive Claude exiting (`scheduling-reliability.md` contract note). Since issue #827 no skill in this repo registers one; durable work uses on-disk state reconciled at session start (`.claude/reference/cross-session-durability.md`).
+- **`/pm` never creates polls.** It is a strictly on-demand orchestrator: cold-start scan, inline execution of selected issues via the `/subagent` A→B→C flow (in-turn Dedicated Monitor Mode, not a recurring poll), thread prompts for the few issues too big for a subagent, on-demand status when the user asks, and handoff generation. At ≥3 active threads it redirects to `/pr-monitor-and-manage`; it does not arm a scheduler.
+- **`/pr-monitor-and-manage` owns PR-fleet between-message polling.** It establishes a persistent `Monitor` at the configured cadence, optionally keeps a low-frequency Monitor re-scan running after an idle pause (`--auto-wake`), and dispatches per-PR fixes/merges.
+- **Persistent `Monitor` owns explicit user-invoked "poll every N"** that is not PR-fleet-specific. `CronCreate`, both `/loop` modes, and hand-rolled one-shot `ScheduleWakeup` chains are forbidden for recurring polls (#914, #924).
+- **`CronCreate` is never a polling fallback.** It is session-only and produced zero ticks in a controlled idle probe (#914); durable work uses on-disk state reconciled at session start (`.claude/reference/cross-session-durability.md`).
 
 ## Rationale
 
 The canonical PM manager use case is **tracking worker output across GitHub-visible artifacts**: issues, feature branches, PRs, review findings, CI state, handoff files, and Phase A/B/C state. The PM may be coordinating multiple coding threads or `/subagent`-launched Phase agents, but `/pm` itself should not arm a recurring poll — that overlaps with `/pr-monitor-and-manage`, which adds per-PR state classification, auto-dispatch to `/fixpr` and `/wrap`, and idle auto-pause.
 
-`/pr-monitor-and-manage` is the built, canonical fleet monitor. Before it existed, `/pm` offered its own `CronCreate`/`/loop` poll; that offer is retired (#522).
+`/pr-monitor-and-manage` is the built, canonical fleet monitor. Before it existed, `/pm` offered its own scheduler; that offer is retired (#522).
 
-`/loop` is still best when the user explicitly requests a session-scoped recurring command:
+`Monitor` is the only recurring primitive with positive out-of-turn liveness evidence:
 
-- lower setup cost,
-- easy cancellation,
-- already mandated for explicit "poll/check/watch every N" user requests per `scheduling-reliability.md`.
+- it runs independently of agent turns,
+- its stdout lines create the tick events,
+- its recorded task ID gives exact `TaskStop` cancellation.
 
-`CronCreate` remains the right primitive for a skill-owned wall-clock-cadence fleet tick, should one be needed. It is **session-scoped** — jobs do not survive session turnover regardless of the `durable` flag. See `scheduling-reliability.md` for the authoritative contract.
+Issue #924 adds negative evidence for dynamic `/loop`: PR #937 and PR #944 both stopped while idle until a manual turn. See `scheduling-reliability.md` for the authoritative contract.
 
 ## State contract: `session-state.json`
 
@@ -35,7 +35,7 @@ PM orchestration reads and writes `~/.claude/session-state.json`. Unknown fields
 - `prs`: tracked PR map. Each entry may include `issue`, `phase`, `head_sha`, `reviewer`, `needs`, `status`, `worker`, and `updated_at`.
 - `active_agents`: subagent records. Each entry should include `id`, `task`, `issue`, `pr`, `phase`, `launched`, and optional `last_seen_at`.
 - `polling_jobs`: active scheduled jobs **owned by other skills**. Empty in normal operation since issue #827 — no skill registers a cron, and `session-scheduling-reconcile.sh` clears leftovers at session start. `/pm` does not create or clear this array.
-- `polling_failures`: prior dropped-loop recoveries.
+- `polling_failures`: prior dropped-poll recoveries.
 - `cr_quota` and `greptile_daily`: review-budget state used by Phase B decisions.
 - `pmm_*` fields: owned by `/pr-monitor-and-manage`.
 
@@ -48,7 +48,7 @@ PM orchestration reads and writes `~/.claude/session-state.json`. Unknown fields
 - `monitoring_mode` (`passive`)
 - tracked `prs` and `active_agents` when work changes
 
-Skill-owned polling (`/pr-monitor-and-manage`, `/babysit-pr`) updates timing watermarks, `polling_jobs[]`, and `polling_failures[]` per their own contracts.
+Skill-owned polling (`/pr-monitor-and-manage`, `/babysit-pr`) updates timing watermarks, recorded Monitor task IDs, and `polling_failures[]` per their own contracts. `polling_jobs[]` remains the legacy cron-job compatibility array described above.
 
 ## Recovery protocol
 
@@ -62,7 +62,7 @@ When a PM session resumes after context turnover:
    - open PRs and recent merged PRs,
    - open/closed issues referenced by the tracked PRs.
 3. If no active workers/PRs remain, set `monitoring_active=false` and stop.
-4. `/pm` does **not** restart a `/loop` or `CronCreate` on its own behalf. For between-message PR monitoring, point the user at `/pr-monitor-and-manage`. Jobs in `polling_jobs[]` owned by other skills recover per that skill's contract.
+4. `/pm` does **not** restart a Monitor or scheduler on its own behalf. For between-message PR monitoring, point the user at `/pr-monitor-and-manage`. Polls owned by other skills recover per that skill's contract.
 5. Send a concise heartbeat identifying the recovered PRs/workers.
 
 This extends existing recovery; it does not create a second PM-specific recovery path.
@@ -77,8 +77,8 @@ This extends existing recovery; it does not create a second PM-specific recovery
 ## Skill integration decision
 
 - `/pm`: runs selected inline-eligible issues via the `/subagent` A→B→C flow (in-turn monitoring) and hands issues too big for a subagent to threads; detects active worker threads after cold start/resume. At ≥3 threads, redirects to `/pr-monitor-and-manage`. Never creates polls. Records passive tracking in `session-state.json`.
-- `/pr-monitor-and-manage`: owns PR-fleet between-message polling with `/loop`, optional `CronCreate` auto-wake, per-PR dispatch, and idle auto-pause.
-- `/subagent`: when it spawns Phase A/B/C agents, it immediately enters Dedicated Monitor Mode for in-turn orchestration and records state. For between-turn PR fleet monitoring, point the user at `/pr-monitor-and-manage`; for explicit user "poll every N" on non-PR work, use `/loop` per `scheduling-reliability.md`.
+- `/pr-monitor-and-manage`: owns PR-fleet between-message polling with persistent Monitor tasks, per-PR dispatch, and idle auto-pause.
+- `/subagent`: when it spawns Phase A/B/C agents, it immediately enters Dedicated Monitor Mode for in-turn orchestration and records state. For between-turn PR fleet monitoring, point the user at `/pr-monitor-and-manage`; for explicit user "poll every N" on non-PR work, use `Monitor` per `scheduling-reliability.md`.
 - `/status`: remains the default on-demand scan command because it already reconciles PRs, review state, checks, session state, and active agents.
 - `/pm-handoff`: captures orchestration state for resume; snapshots any live `polling_jobs[]` owned by other skills for informational continuity but does not instruct the new thread to recreate `/pm` polls.
 - `/start-issue`: does not auto-arm monitoring. It creates/starts one coding workflow; monitoring becomes relevant only after a PR, worker thread, or `/subagent` campaign exists.

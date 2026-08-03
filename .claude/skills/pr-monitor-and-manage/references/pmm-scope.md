@@ -48,4 +48,4 @@ The parent is orchestration-only with respect to source edits: the only direct w
 
 ## Scope vs `/pm` (issue #657)
 
-`/pm` runs a **one-shot** startup triage of *forgotten* PRs, recommends close/merge, and hands merges off to `/wrap` subagents — then it stops. `/pr-monitor-and-manage` is the opposite: **continuous** fleet monitoring on a recurring `/loop`, driving *every* open PR to merge-ready or a named hard block tick after tick.
+`/pm` runs a **one-shot** startup triage of *forgotten* PRs, recommends close/merge, and hands merges off to `/wrap` subagents — then it stops. `/pr-monitor-and-manage` is the opposite: **continuous** fleet monitoring on a persistent `Monitor`, driving *every* open PR to merge-ready or a named hard block tick after tick.

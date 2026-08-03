@@ -1,6 +1,6 @@
 ---
 name: babysit-pr
-description: Watch a single PR on a recurring /loop and auto-dispatch /fixpr (recoverable blockers) or /wrap (merge-ready). Reads PR state via pr-state.sh + merge-gate.sh each tick, classifies into {merged, merge-ready, conflicting, has-recoverable-blockers, waiting-on-bots, hard-blocked}, tracks in-flight dispatches in session-state for idempotency, applies stable-state backoff, emits a timestamped heartbeat per tick, and hard-terminates on merge/hard-blocked/N blocker ticks/user stop. Stop with /babysit-pr-stop. Invoke as `/babysit-pr <PR> [--cadence Nm] [--max-iter N] [--silent] [--auto-resolve-conflicts] [--max-conflict-rounds N]`.
+description: Watch a single PR on a persistent Monitor and auto-dispatch /fixpr (recoverable blockers) or /wrap (merge-ready). Reads PR state via pr-state.sh + merge-gate.sh each tick, classifies into {merged, merge-ready, conflicting, has-recoverable-blockers, waiting-on-bots, hard-blocked}, tracks in-flight dispatches in session-state for idempotency, applies stable-state backoff, emits a timestamped heartbeat per tick, and hard-terminates on merge/hard-blocked/N blocker ticks/user stop. Stop with /babysit-pr-stop. Invoke as `/babysit-pr <PR> [--cadence Nm] [--max-iter N] [--silent] [--auto-resolve-conflicts] [--max-conflict-rounds N]`.
 triggers:
   - babysit pr
   - babysit this pr
@@ -39,15 +39,51 @@ A human `CHANGES_REQUESTED` on HEAD is `hard-blocked` → record and exit. Never
 | `--max-iter N` | `6` | Hard termination after N **consecutive blocker-state ticks** (≈90 min once backoff widens to 15m). |
 | `--silent` | off | Suppress the per-tick heartbeat **except** on state change, dispatch, or termination (those always print). |
 | `--auto-resolve-conflicts` | off | Opt-in: on `CONFLICTING`, dispatch `/fixpr` in safe-only mode (`BABYSIT_SAFE_CONFLICT_MODE=1`) to rebase and auto-resolve mechanically-simple hunks. Any complex hunk aborts the rebase and terminates with a per-hunk report. Off by default — performs unattended rebases and force-pushes. |
-| ~~`--durable`~~ | removed | Accepted and ignored (issue #827). It swapped `/loop` for a `CronCreate` job to buy cross-session continuity that never existed — `CronCreate` is in-memory and dies with the session, so the flag only ever changed cadence alignment. Issue #914 then measured that job firing **zero** in-session ticks, so the swap cost the poll entirely. The watcher is always `/loop`. Why this is not re-implemented on the durable scheduler the harness *does* provide: `.claude/reference/cross-session-durability.md`. |
+| ~~`--durable`~~ | removed | Accepted and ignored (issue #827). It swapped the session watcher for a `CronCreate` job to buy cross-session continuity that never existed. Issue #914 measured cron producing zero ticks; issue #924 found dynamic `/loop` unreliable too. The watcher is always a persistent `Monitor`. Why this is not re-implemented on the durable scheduler the harness *does* provide: `.claude/reference/cross-session-durability.md`. |
 | `--max-conflict-rounds N` | `3` | Hard termination after N consecutive conflict rounds. Each round that enters the auto-resolve path increments `conflict_streak`, which does not reset on SHA change — only on a non-`conflicting` tick. |
 
 Parse from `$ARGUMENTS`. The first bare integer is `<PR>`. Validate `--cadence` matches `^[0-9]+m$`; clamp `< 1m` to `1m`. Validate `--max-iter` is a positive integer. `--auto-resolve-conflicts` is a boolean flag (present = true, absent = false; stored as `AUTO_RESOLVE_CONFLICTS=true|false`). `--max-conflict-rounds N` must be a positive integer; default `3` (stored as `MAX_CONFLICT_ROUNDS`).
 
-`--durable` is still **accepted** so a saved chip payload or muscle memory does not hard-error; print one line and carry on with `/loop`:
+`--monitor-generation <token>` is runtime-only. Parse it only for an internal `--tick`; never
+accept it as user configuration or copy it across a re-arm. Every Monitor arm generates a fresh
+token and embeds it in its emitted command so an event already queued by a stopped Monitor cannot
+act as the replacement generation.
+
+Parse the internal fields explicitly before the ordinary argument parser consumes the remaining
+flags. A direct invocation carrying `--monitor-generation` is invalid; only a Monitor-emitted tick
+may present it:
+
+```bash
+BABYSIT_INTERNAL_TICK=false
+[[ " $ARGUMENTS " == *" --tick "* ]] && BABYSIT_INTERNAL_TICK=true
+TICK_GENERATION=""
+_BABYSIT_EXPECT_GENERATION=false
+for _BABYSIT_ARG in $ARGUMENTS; do
+  if [[ "$_BABYSIT_EXPECT_GENERATION" == true ]]; then
+    TICK_GENERATION="$_BABYSIT_ARG"
+    _BABYSIT_EXPECT_GENERATION=false
+    continue
+  fi
+  [[ "$_BABYSIT_ARG" == "--monitor-generation" ]] && _BABYSIT_EXPECT_GENERATION=true
+done
+if [[ "$_BABYSIT_EXPECT_GENERATION" == true ]]; then
+  echo "ERROR: --monitor-generation requires a token." >&2
+  exit 2
+fi
+if [[ "$BABYSIT_INTERNAL_TICK" != true && -n "$TICK_GENERATION" ]]; then
+  echo "ERROR: --monitor-generation is runtime-only and requires --tick." >&2
+  exit 2
+fi
+```
+
+The ordinary parser must ignore `--tick`, `--monitor-generation`, and the generation token already
+captured above. It must never reinterpret the token as the PR number or persist it as watcher
+configuration.
+
+`--durable` is still **accepted** so a saved chip payload or muscle memory does not hard-error; print one line and carry on with `Monitor`:
 
 ```text
-[babysit] --durable was removed (issue #827) — it never provided cross-session continuity. Watching on /loop.
+[babysit] --durable was removed (issue #827) — it never provided cross-session continuity. Watching on Monitor.
 ```
 
 ## Two modes: arm vs tick
@@ -55,9 +91,9 @@ Parse from `$ARGUMENTS`. The first bare integer is `<PR>`. Validate `--cadence` 
 This skill runs in one of two modes, disambiguated by the internal `--tick` flag:
 
 - **Arm mode** (`/babysit-pr <PR> …`, no `--tick`): validate, initialize `session-state.json`, arm the recurring poll, run **one** tick immediately, then end the turn.
-- **Tick mode** (`/babysit-pr <PR> --tick`): the body the poll re-invokes each cycle. Runs exactly one tick of classification + dispatch + bookkeeping. **Never re-arms the loop** (the runtime owns cadence) except to change cadence on a backoff threshold crossing.
+- **Tick mode** (`/babysit-pr <PR> --tick`): the body the poll re-invokes each cycle. Runs exactly one tick of classification + dispatch + bookkeeping. **Never re-arms the monitor** except to change cadence on a backoff threshold crossing.
 
-The loop command armed in arm mode is `/babysit-pr <PR> --tick` (plus the resolved cadence flags), so every subsequent cycle enters tick mode. It is armed through `/loop` with **no leading interval** — see A3.
+The persistent `Monitor` command armed in arm mode emits `/babysit-pr <PR> --tick` (plus the resolved cadence flags) once per cadence, so every emitted event enters tick mode — see A3.
 
 ---
 
@@ -170,6 +206,19 @@ if [[ "$RC" -eq 3 ]]; then ALREADY="null"; elif [[ "$RC" -ne 0 ]]; then
   echo "ERROR: session-state.sh --get failed (exit $RC) — aborting arm to avoid double-watch." >&2; exit "$RC"
 fi
 if [[ "$ALREADY" == "true" ]]; then
+  RETAINED_TASK_ID=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.monitor_task_id" 2>/dev/null || echo "null")
+  RETAINED_GENERATION=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.monitor_generation" 2>/dev/null || echo "null")
+  STOP_PENDING=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.stop_requested" 2>/dev/null || echo "false")
+  if [[ "$STOP_PENDING" == "true" ]]; then
+    echo "ERROR: babysit-pr teardown incomplete for PR #$PR (retained Monitor task ID: $RETAINED_TASK_ID) — retry /babysit-pr-stop $PR or repair the runtime task before re-arming." >&2
+    exit 1
+  fi
+  if [[ -z "$RETAINED_TASK_ID" || "$RETAINED_TASK_ID" == "null" ||
+        -z "$RETAINED_GENERATION" || "$RETAINED_GENERATION" == "null" ]]; then
+    "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.stop_requested=true" >/dev/null 2>&1 || true
+    echo "ERROR: active babysit-pr watcher for PR #$PR lacks a complete Monitor identity (task ID + generation) — refusing blind stale reclaim; inspect the runtime task and repair teardown before re-arming." >&2
+    exit 1
+  fi
   LAST_TICK=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.last_tick_at" 2>/dev/null || echo "")
   EFF_MIN=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.cadence_effective_minutes" 2>/dev/null || echo 5)
   [[ "$EFF_MIN" =~ ^[0-9]+$ ]] || EFF_MIN=5
@@ -195,8 +244,35 @@ if [[ "$ALREADY" == "true" ]]; then
     exit 0
   fi
   echo "[babysit] stale watcher for PR #$PR (last tick ${AGE_MIN}m ago ≥ ${FRESH_MIN}m) — reclaiming and re-arming."
+  "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.stop_requested=true" || {
+    echo "ERROR: could not publish the stale-watch teardown guard — leaving the recorded Monitor untouched." >&2; exit 1; }
 fi
 ```
+
+Before A3, a stale reclaim **must stop the exact `$RETAINED_TASK_ID` with `TaskStop`**. If that
+stop fails, retain `active=true`, the exact task ID+generation pair, and `stop_requested=true`;
+report incomplete teardown and abort. Only after exact `TaskStop` succeeds may A3 replace the
+babysit object and arm one new Monitor. Never infer that a silent Monitor died, and never arm beside
+it.
+
+Execute that teardown before the A3 initialization block. Call `TaskStop` with
+`task_id="$RETAINED_TASK_ID"`, then bind its tool result to `TASK_STOP_SUCCEEDED`; do not simulate a
+successful stop from silence or age:
+
+```bash
+if [[ "$ALREADY" == "true" ]]; then
+  # TaskStop tool call: task_id="$RETAINED_TASK_ID"
+  # Set TASK_STOP_SUCCEEDED=true only when that exact tool call succeeds.
+  if [[ "${TASK_STOP_SUCCEEDED:-false}" != "true" ]]; then
+    echo "ERROR: stale babysit watcher teardown failed for PR #$PR (Monitor task $RETAINED_TASK_ID, generation $RETAINED_GENERATION) — retaining the complete identity and stop_requested=true; not re-arming." >&2
+    exit 1
+  fi
+fi
+```
+
+After success, leave `stop_requested=true` and the old identity pair recorded until A3 replaces the
+whole babysit object atomically. That keeps any already-queued old-generation event inert during
+the stop-to-publication gap.
 
 ### A3. Initialize state and arm the poll
 
@@ -205,44 +281,68 @@ Write the babysit object (one atomic `--set` batch), seeding backoff fields to a
 ```bash
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 "$SESSION_STATE_SH" \
-  --set ".prs[\"$PR\"].babysit={\"active\":true,\"started_at\":\"$NOW\",\"last_tick_at\":\"$NOW\",\"last_tick_parse_failures\":0,\"cadence_base_minutes\":$BASE_MIN,\"cadence_effective_minutes\":$BASE_MIN,\"tick_count\":0,\"blocker_streak\":0,\"max_blocker_ticks\":$MAX_ITER,\"silent\":$SILENT,\"stop_requested\":false,\"dispatch_in_flight\":null,\"dispatch_parse_failures\":0,\"last_dispatch\":null,\"auto_resolve_conflicts\":$AUTO_RESOLVE_CONFLICTS,\"max_conflict_rounds\":$MAX_CONFLICT_ROUNDS,\"conflict_streak\":0}" \
+  --set ".prs[\"$PR\"].babysit={\"active\":true,\"started_at\":\"$NOW\",\"last_tick_at\":\"$NOW\",\"last_tick_parse_failures\":0,\"cadence_base_minutes\":$BASE_MIN,\"cadence_effective_minutes\":$BASE_MIN,\"tick_count\":0,\"blocker_streak\":0,\"max_blocker_ticks\":$MAX_ITER,\"silent\":$SILENT,\"stop_requested\":false,\"monitor_task_id\":null,\"monitor_generation\":null,\"dispatch_in_flight\":null,\"dispatch_parse_failures\":0,\"last_dispatch\":null,\"auto_resolve_conflicts\":$AUTO_RESOLVE_CONFLICTS,\"max_conflict_rounds\":$MAX_CONFLICT_ROUNDS,\"conflict_streak\":0}" \
   --set ".prs[\"$PR\"].digest_streak=0"
 ```
 
-Arm the recurring poll: **`/loop /babysit-pr <PR> --tick --cadence <N>m`** — note the cadence is
-passed *inside the prompt*, and `/loop` is invoked with **no leading interval**. That difference is
-load-bearing, not cosmetic (issue #914):
+Generate a fresh non-secret generation token, then arm a persistent `Monitor` with description
+`babysit PR #<PR>` and this command:
 
-- `/loop <interval> …` (the old form) is specified to call **`CronCreate`**, and armed `CronCreate`
-  jobs were measured producing **zero** in-session ticks. The old form armed a watcher that could
-  never tick.
-- `/loop …` with no interval runs **dynamic mode**: it self-paces with `ScheduleWakeup` and can arm
-  a `Monitor` as the wake signal. Each tick reads `--cadence` from its own prompt and picks the
-  matching delay.
+```bash
+MONITOR_GENERATION="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
+while sleep "$(( BASE_MIN * 60 ))"; do
+  printf '%s\n' "/babysit-pr $PR --tick --monitor-generation $MONITOR_GENERATION --cadence ${BASE_MIN}m"
+done
+```
 
-`/loop` is still the only primitive this watcher uses (`scheduling-reliability.md` decision tree),
-and the watcher stays session-scoped by design — one that outlived its session would be
-auto-dispatching `/wrap` merges into an empty room.
+Each stdout line becomes an out-of-turn chat event. `sleep` comes first because arm mode runs one
+tick immediately. Pass `persistent: true`, capture the returned task ID, and persist it as
+`.prs["$PR"].babysit.monitor_task_id`. The watcher stays session-scoped by design — one that
+outlived its session would be auto-dispatching `/wrap` merges into an empty room.
 
-**Never substitute a `CronCreate` job for the `/loop`** — not for a fixed interval, not for "wall-clock alignment", not as a fallback if arming looks flaky. Issue #914 measured armed cron jobs, still listed by `CronList`, producing **zero** ticks across an 11-minute idle window. If `/loop` cannot be armed, roll back per the block above and report; do not reach for the other primitive.
+**Never substitute either `/loop` mode or `CronCreate`.** Issue #914 measured listed cron jobs
+producing zero ticks across an 11-minute idle window; issue #924 recorded two dynamic `/loop`
+watchers stopping until a manual turn. `Monitor` is the only recurring primitive with positive
+out-of-turn liveness evidence.
 
 **Arming is not ticking.** A watcher can be `active` in state, listed by the runtime, and silent — that is Pattern 7 in `.claude/reference/scheduling-failure-modes.md`, first observed on this very skill (PR #908, where all six ticks were driven by hand). Two things now catch it: `babysit-tick-watchdog.sh` warns once `last_tick_at` exceeds 2 × the effective cadence, and the pre-exit checklist asks for liveness rather than presence.
 
 **The silence ceiling is a backstop, not this watcher's cadence.** `bgwork-ceiling.sh` trips on a silence budget far wider than any poll interval, so a run where the ceiling is producing the only ticks is a **broken poll**, not a working watch — in #908 it surfaced each stall roughly 18 minutes late, after the branch had gone `BEHIND` twice. If ticks are only appearing alongside ceiling breaches, stop and re-arm rather than riding the backstop.
 
-**Roll back if arming fails.** The `--set` above already published `active=true` with a fresh `last_tick_at`, so a failed arm leaves a watcher that A2 reads as *live* for the whole freshness window (30m by default) while nothing is ticking — re-arm is blocked precisely when it is needed. Treat init+arm as one transaction:
+**Roll back if arming fails.** The `--set` above already published `active=true` with a fresh `last_tick_at`, so a failed arm leaves a watcher that A2 reads as *live* for the whole freshness window (30m by default) while nothing is ticking — re-arm is blocked precisely when it is needed. A Monitor call that errors or returns no task ID is a failed arm. Treat init+arm as one transaction:
 
 ```bash
-if ! arm_loop "$BASE_MIN" "$PR"; then
+if [[ -z "${MONITOR_TASK_ID:-}" || "$MONITOR_TASK_ID" == "null" ]]; then
   "$SESSION_STATE_SH" \
     --set ".prs[\"$PR\"].babysit.active=false" \
-    --set ".prs[\"$PR\"].babysit.last_tick_at=null"
-  echo "ERROR: could not arm the /loop for PR #$PR — watcher state rolled back, re-run /babysit-pr $PR." >&2
+    --set ".prs[\"$PR\"].babysit.last_tick_at=null" \
+    --set ".prs[\"$PR\"].babysit.monitor_task_id=null" \
+    --set ".prs[\"$PR\"].babysit.monitor_generation=null"
+  echo "ERROR: could not arm the Monitor for PR #$PR — watcher state rolled back, re-run /babysit-pr $PR." >&2
   exit 1
 fi
+"$SESSION_STATE_SH" \
+  --set ".prs[\"$PR\"].babysit.monitor_task_id=$MONITOR_TASK_ID" \
+  --set ".prs[\"$PR\"].babysit.monitor_generation=\"$MONITOR_GENERATION\""
 ```
 
-Then **run one tick immediately** (fall through to TICK MODE below) so the user gets instant feedback, and emit the initial heartbeat. Per the `scheduling-reliability.md` **pre-exit checklist**, before ending the arm turn confirm: (1) the loop is active, (2) a timestamped heartbeat was sent, (3) state was recorded.
+If that task-ID publication fails, do not continue to the immediate tick: the Monitor is live but
+not discoverable from durable state. Call `TaskStop` for the exact returned `$MONITOR_TASK_ID`. If
+that rollback stop succeeds, reopen A2 with this atomic rollback:
+
+```bash
+"$SESSION_STATE_SH" \
+  --set ".prs[\"$PR\"].babysit.active=false" \
+  --set ".prs[\"$PR\"].babysit.last_tick_at=null" \
+  --set ".prs[\"$PR\"].babysit.monitor_task_id=null" \
+  --set ".prs[\"$PR\"].babysit.monitor_generation=null"
+```
+
+If rollback `TaskStop` fails, retain `active=true`, best-effort set `stop_requested=true` and publish
+the exact task ID plus generation so A2 refuses a later re-arm independent of tick age. Report both
+identifiers and exit non-zero. Do not claim that the watcher was cleaned up.
+
+Then **run one tick immediately** (fall through to TICK MODE below) so the user gets instant feedback, and emit the initial heartbeat. Per the `scheduling-reliability.md` **pre-exit checklist**, before ending the arm turn confirm: (1) the Monitor task is active, (2) a timestamped heartbeat was sent, (3) state was recorded.
 
 ---
 
@@ -253,6 +353,14 @@ Run on every poll cycle (and once at the end of arm mode). One tick = classify �
 ### T0. Stop / terminal short-circuit (check FIRST)
 
 ```bash
+if [[ "$BABYSIT_INTERNAL_TICK" == true ]]; then
+  RECORDED_GENERATION=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.monitor_generation" 2>/dev/null || echo "null")
+  if [[ -z "$TICK_GENERATION" || "$TICK_GENERATION" == "null" ||
+        "$TICK_GENERATION" != "$RECORDED_GENERATION" ]]; then
+    echo "[babysit] Ignoring a stale or unidentified Monitor tick for PR #$PR."
+    exit 0
+  fi
+fi
 STOP=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.stop_requested" 2>/dev/null || echo "false")
 ACTIVE=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.active" 2>/dev/null || echo "false")
 if [[ "$STOP" == "true" || "$ACTIVE" != "true" ]]; then
@@ -542,13 +650,16 @@ if [[ "$DIGEST" == "$PREV_DIGEST" ]]; then STREAK=$((PREV_STREAK + 1)); else STR
 # base 5m → 15m (satisfies the AC); base 1m → 15m; base 20m → 60m (still slower).
 WIDE_MIN=$(( BASE_MIN * 3 )); (( WIDE_MIN < 15 )) && WIDE_MIN=15
 (( WIDE_MIN < BASE_MIN )) && WIDE_MIN=$BASE_MIN     # guard: never faster than base
+PREV_EFFECTIVE_MIN=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.cadence_effective_minutes" 2>/dev/null || echo "$BASE_MIN")
+[[ "$PREV_EFFECTIVE_MIN" =~ ^[0-9]+$ ]] || PREV_EFFECTIVE_MIN=$BASE_MIN
+if (( STREAK >= 3 )); then EFFECTIVE_MIN=$WIDE_MIN; else EFFECTIVE_MIN=$BASE_MIN; fi
 ```
 
 | `digest_streak` | Effective cadence |
 |-----------------|-------------------|
 | `< 3` | base (`--cadence`, default 5m) |
 | `>= 3` | `WIDE_MIN` = `max(15m, 3 × base)` — for the default 5m base this is **15m** (satisfies the AC) |
-| `>= 9` | **terminate** (truly frozen — cancel the `/loop`) |
+| `>= 9` | **terminate** (truly frozen — stop the `Monitor`) |
 
 **Revert to base cadence on any state change** (digest differs → `STREAK` reset to 1 → `cadence_effective_minutes` returns to `BASE_MIN`).
 
@@ -571,7 +682,7 @@ else
 fi
 ```
 
-Persist all counters atomically, then increment the tick count. `$DIGEST` (the `sha256:…` string computed above) is not valid JSON, so `session-state.sh --set` stores it as a string literal:
+Persist all non-cadence counters atomically, then increment the tick count. `$DIGEST` (the `sha256:…` string computed above) is not valid JSON, so `session-state.sh --set` stores it as a string literal. Cadence and task identity are committed together below; publishing the desired cadence here would make a failed `TaskStop` look like a successful tier crossing:
 
 ```bash
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -581,11 +692,44 @@ NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   --set ".prs[\"$PR\"].babysit.blocker_streak=$BLOCKER_STREAK" \
   --set ".prs[\"$PR\"].babysit.conflict_streak=$CONFLICT_STREAK_NEW" \
   --set ".prs[\"$PR\"].babysit.tick_count=$NEW_TICK_COUNT" \
-  --set ".prs[\"$PR\"].babysit.cadence_effective_minutes=$EFFECTIVE_MIN" \
   --set ".prs[\"$PR\"].babysit.last_tick_at=$NOW"
 ```
 
-**Re-arm cadence only when it crosses a tier boundary.** To change it: stop the current loop and re-arm `/loop /babysit-pr <PR> --tick --cadence <new>m` — again with **no leading interval** (a leading interval routes to `CronCreate`, which does not fire — #914). If the effective cadence is unchanged, do nothing — never re-arm an unchanged loop (forbidden hand-rolled re-arm churn).
+**Re-arm cadence only when it crosses a tier boundary.** Before comparing cadences, read the exact
+current `babysit.monitor_task_id` on every tick. A missing ID while active is degraded teardown: set
+`stop_requested=true`, report it, and terminate without retaining or arming a task. Then compare the
+computed `$EFFECTIVE_MIN` to the captured `$PREV_EFFECTIVE_MIN`; this comparison is mandatory on
+every tick. When they are equal, retain the identified Monitor and cadence. When they differ, stop
+the exact current Monitor. Before that stop, atomically set `stop_requested=true`; this makes every
+already-emitted old-generation event exit at T0 throughout the stop-to-publication gap. In other
+words, cadence changes must **guard, then stop the exact current Monitor** and complete this transaction:
+
+1. Publish `stop_requested=true`, then stop the exact current Monitor task with `TaskStop`. A failed
+   old-task stop retains its complete ID+generation pair, `$PREV_EFFECTIVE_MIN`, and the stop guard
+   in state and aborts the re-arm as incomplete teardown.
+2. Generate a fresh `$NEW_MONITOR_GENERATION`, then arm a replacement whose sleep and emitted
+   `--cadence` use `$EFFECTIVE_MIN` and whose event includes
+   `--monitor-generation $NEW_MONITOR_GENERATION`.
+3. Publish the replacement ID, generation, cadence, and cleared stop guard in one atomic state write:
+
+   ```bash
+   "$SESSION_STATE_SH" \
+     --set ".prs[\"$PR\"].babysit.monitor_task_id=$NEW_MONITOR_TASK_ID" \
+     --set ".prs[\"$PR\"].babysit.monitor_generation=\"$NEW_MONITOR_GENERATION\"" \
+     --set ".prs[\"$PR\"].babysit.cadence_effective_minutes=$EFFECTIVE_MIN" \
+     --set ".prs[\"$PR\"].babysit.stop_requested=false"
+   ```
+
+If replacement arming fails, the old task is already stopped: atomically set `active=false`,
+`stop_requested=false`, `monitor_task_id=null`, `monitor_generation=null`, and restore
+`cadence_effective_minutes=$PREV_EFFECTIVE_MIN`, then report that the watcher terminated. If the
+publication write fails, stop the exact replacement task. After a successful rollback stop, clear
+the known-stopped old identity and set `active=false`, `stop_requested=false`; after a failed rollback stop, best-effort
+publish `stop_requested=true`, `active=true`, and the exact `$NEW_MONITOR_TASK_ID` plus
+`$NEW_MONITOR_GENERATION` so a later `/babysit-pr-stop` can retry the potentially-live task. Never
+retain the already-stopped old identity as if it were the replacement, and never claim the cadence
+changed until the ID+generation+cadence publication succeeds. A queued event from the stopped old
+generation is rejected at T0 before it can classify, dispatch, terminate, or re-arm the replacement.
 
 On an actual widen, record it so `polling-backoff-warn.sh` stops re-emitting its widen advisory (it dedupes on `type == "update"` at the new interval):
 
@@ -607,7 +751,7 @@ Terminate (→ T-END) when **any** hold:
 - `digest_streak >= 9` → reason `stable-frozen` (`scheduling-reliability.md` ≥9 stop).
 - `stop_requested == true` / `active != true` → reason `user-stop`.
 
-Otherwise the loop continues — the next cycle re-enters tick mode.
+Otherwise the Monitor continues — its next stdout event re-enters tick mode.
 
 ### T7. Heartbeat (per tick — never silent by default)
 
@@ -629,21 +773,40 @@ Append context: blocker reason on `hard-blocked`/`waiting-on-bots`; dispatch tar
 
 ### T-END. Terminate cleanly
 
+Set the stop flag first so any already-emitted tick's T0 short-circuit exits cleanly. Do **not**
+clear `active` until the recorded Monitor task has stopped; otherwise A2 can admit a duplicate
+watcher while the old task is still emitting:
+
+```bash
+"$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.stop_requested=true"
+```
+
+**Cancelling the poll is a required terminal action — a persistent Monitor does not lapse on its own.** Read `babysit.monitor_task_id`, stop that exact task with `TaskStop`, and do not re-arm it. If the ID is missing or `TaskStop` fails, keep both `active=true` and the ID for diagnosis, report degraded teardown, and do not claim completion; `stop_requested=true` still makes an already-emitted tick exit at T0. A2 treats that stop-requested active state as an incomplete teardown and refuses re-arm regardless of tick age, so the ordinary stale-watcher reclaim can never revive an old Monitor alongside a replacement.
+
+One idempotent exception: when T0 observed `active != true` **and** the task ID is already null,
+another teardown path (normally `/babysit-pr-stop`) completed the exact stop before this queued tick
+ran. Treat that pair as already stopped, not degraded, and do not call `TaskStop` without an ID.
+
+**Record the stop.** `polling-backoff-warn.sh` suppresses a repeated STOP advisory by reading `.prs["<N>"].last_cron_action.type == "delete"`. The field name is historical — it records the poll-lifecycle action, whatever primitive backs the poll:
+
 ```bash
 "$SESSION_STATE_SH" \
   --set ".prs[\"$PR\"].babysit.active=false" \
-  --set ".prs[\"$PR\"].babysit.dispatch_in_flight=null"
+  --set ".prs[\"$PR\"].babysit.monitor_task_id=null" \
+  --set ".prs[\"$PR\"].babysit.monitor_generation=null" \
+  --set ".prs[\"$PR\"].last_cron_action={\"type\":\"delete\",\"interval\":\"paused\",\"at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
 ```
 
-**Cancelling the poll is a required terminal action — the loop does NOT lapse on its own** (`/loop` re-arms every cycle). Cancel the active loop now (runtime loop-stop / "stop polling") and do not re-arm it.
+Run that atomic cleanup only after `TaskStop` succeeds. Clear `dispatch_in_flight` in the same
+call only when it is null; if a user stop raced an existing `/fixpr` or `/wrap`, retain the marker
+until that dispatch completes or T0's TTL reclaim owns it.
 
-**Record the stop.** `polling-backoff-warn.sh` suppresses a repeated STOP advisory by reading `.prs["<N>"].last_cron_action.type == "delete"`. Nothing else writes that field on the `/loop` path, so without this the hook re-emits its STOP context on every subsequent tick. The field name is historical — it records the poll-lifecycle action, whatever primitive backs the poll:
+Belt-and-suspenders: even if cancellation is delayed, the T0 short-circuit (`stop_requested` /
+`active != true`) makes every subsequent tick an immediate no-op terminate — but cancellation is
+still mandatory so the runtime stops invoking the watcher.
 
-```bash
-"$SESSION_STATE_SH" --set ".prs[\"$PR\"].last_cron_action={\"type\":\"delete\",\"interval\":\"paused\",\"at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
-```
-
-Belt-and-suspenders: even if cancellation is delayed, the T0 short-circuit (`active != true`) makes every subsequent tick an immediate no-op terminate — but cancellation is still mandatory so the runtime stops invoking the watcher.
+If exact teardown failed, emit a `babysit-pr teardown incomplete` report with the retained task ID
+and generation instead of the successful `babysit-pr complete` summary below.
 
 Emit the final summary:
 
@@ -691,5 +854,6 @@ Conflict rounds: <conflict_streak> of <max_conflict_rounds> (omit when conflict_
 - **Stop anytime:** `/babysit-pr-stop <PR>` sets `stop_requested=true`; the next tick's T0 terminates cleanly. See `.claude/skills/babysit-pr-stop/SKILL.md`.
 - **One watcher per PR** — arm mode refuses a duplicate (A2).
 - **Session-scoped by design.** The watcher dies with the session. A watcher left `active` by a session that ended is cleared at the next session start by `session-scheduling-reconcile.sh`, so `/status` never reports a watcher that is not running.
+- **One persistent Monitor per PR** — arm mode refuses a duplicate and stores the task ID for stop/re-arm.
 - **Monitor mode:** while a dispatch subagent is in flight, the parent follows `monitor-mode.md` (orchestration only, ≤5-min heartbeat). The per-tick heartbeat satisfies the heartbeat requirement.
 - **Post-merge install:** after this skill lands on `main`, symlink it globally via the skills worktree per `skill-symlinks.md`.
