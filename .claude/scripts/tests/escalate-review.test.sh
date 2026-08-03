@@ -132,6 +132,20 @@ seed_bugbot_installed() {
   check_eq "bugbot_installed pre-seeded to $want" "$want" "$got"
 }
 
+seed_bugbot_absent() {
+  local has_key
+  ( cd "$REPO_ROOT" && "$STUB_DIR/session-state.sh" \
+      --set ".prs[\"$PR_NUM\"].reviewer=cr" >/dev/null )
+  has_key="$( cd "$REPO_ROOT" && "$STUB_DIR/session-state.sh" \
+      --get ".prs[\"$PR_NUM\"] | has(\"bugbot_installed\")" 2>/dev/null )"
+  check_eq "bugbot_installed key absent on existing PR state" "false" "$has_key"
+}
+
+read_bugbot_installed() {
+  ( cd "$REPO_ROOT" && "$STUB_DIR/session-state.sh" \
+      --get ".prs[\"$PR_NUM\"].bugbot_installed" 2>/dev/null )
+}
+
 write_commits() {
   local push_ts="$1"
   cat > "$TMP/commits.json" <<EOF
@@ -659,14 +673,30 @@ check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
 
 ############################################################################
 echo "== Scenario (n5): never invited but still INSIDE the 600s grace window -> polling_cr (the new branch must not preempt the wait) =="
-# (n1) with a recent push. BugBot may simply not have reported yet, so the
-# grace window still owns this cycle; switch_bugbot here would cut it short.
+# (n1) with a recent push and the cache key explicitly absent. BugBot may simply
+# not have reported yet, so the grace window still owns this cycle;
+# switch_bugbot here would cut it short.
 reset_state
+seed_bugbot_absent
 write_commits "$(ts_seconds_ago 120)"
 write_state "[]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
+
+############################################################################
+echo "== Scenario (n5b): cached false inside the grace window -> switch_bugbot (issue #955) =="
+# Differs from (n5) only by a cached false. That value means an earlier cycle
+# already verified BugBot as not installed, so waiting through the same grace
+# window again is wasted time. jq's `//` used to collapse false into absent and
+# made this return polling_cr exactly like (n5).
+reset_state
+seed_bugbot_installed false
+write_commits "$(ts_seconds_ago 120)"
+write_state "[]" "[]" "[]" "[]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
 
 ############################################################################
 # Stale `bugbot_installed` cache vs. the never-invited branch (issue #948)
@@ -695,6 +725,8 @@ write_state "[]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+CACHED_AFTER_N6="$(read_bugbot_installed)"
+check_eq "cached true bypasses fresh classification" "true" "$CACHED_AFTER_N6"
 
 ############################################################################
 echo "== Scenario (n7): cache true AND an in-flight Cursor Bugbot run on HEAD -> trigger_greptile (a live footprint still shuts the branch) =="
@@ -711,14 +743,10 @@ check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
 
 ############################################################################
-echo "== Scenario (n8): same in-flight run on HEAD, cache NOT readable-true -> trigger_greptile (the derived path shuts the branch too) =="
-# (n7)'s mirror over the other cache state, so the live-footprint guard is pinned
-# on both paths into BUGBOT_INSTALLED rather than only the cached one.
-# Note the seeded `false` is deliberately never read back: escalate-review.sh
-# reads the cache as `bugbot_installed // ""`, and jq's `//` treats false exactly
-# like null, so a cached false falls through to the derivation below it. That is
-# what makes this the DERIVED-true path (BUGBOT_CHECK_PRESENT sets it) rather
-# than a second cached-value case.
+echo "== Scenario (n8): same in-flight run on HEAD, cached false -> trigger_greptile (the live footprint still shuts the branch) =="
+# (n7)'s mirror over the other cache state. Cached false now round-trips as a
+# real value, while the live-footprint guard independently keeps an in-flight
+# Cursor run from being re-invited.
 reset_state
 seed_bugbot_installed false
 write_commits "$(ts_seconds_ago 7200)"
@@ -726,6 +754,19 @@ write_state "[$BUGBOT_CHECK_RUN_IN_PROGRESS]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== Scenario (n8b): fresh in-flight run on HEAD overrides cached false for the grace wait =="
+# A cached false may describe an earlier HEAD. A live Cursor check on this HEAD
+# is stronger evidence that BugBot is available, so the sub-600s grace window
+# must wait for that run instead of escalating to paid Greptile.
+reset_state
+seed_bugbot_installed false
+write_commits "$(ts_seconds_ago 120)"
+write_state "[$BUGBOT_CHECK_RUN_IN_PROGRESS]" "[]" "[]" "[]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
 
 ############################################################################
 # Same check NAME, different publishing app (issue #956)
