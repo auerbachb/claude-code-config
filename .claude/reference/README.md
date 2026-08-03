@@ -78,6 +78,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `ai-review-tool-audit-2026-04.md` — AI review tool chain audit (#368 / #377)
 - `ai-review-tool-audit-2026-06.md` — 30-day AI review tool value audit + keep/cut verdicts (#376)
 - `fixpr-hotspot-decision.md` — diagnosis and extract-not-split decision for `fixpr/SKILL.md` churn (17 PRs in the run-up to #788); verdict: KEEP single file + extract large command forms
+- `escalate-review-test-hotspot-decision.md` — diagnosis and split decision for `escalate-review.test.sh` churn (11 merged PRs in the #966 hotspot window, re-measured after #969); verdict: SPLIT into four concern suites plus one shared fixture helper
 - `repo-audit-2026-05.md` — bundled org + efficiency + best-practices audit (#413–#415)
 - `harness-model-audit-2026-06.md` — harness components vs current model fleet (#49)
 - `script-extraction-audit.md` — deterministic script extraction inventory (#271)
