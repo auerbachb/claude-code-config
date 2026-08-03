@@ -3,7 +3,7 @@
 #
 # Validates:
 #   1. The rule index table in CLAUDE.md matches the actual set of
-#      .claude/rules/*.md files (no drift in either direction).
+#      .claude/rules/**/*.md files (no drift in either direction).
 #   2. Total auto-loaded word count (CLAUDE.md + all rule files) stays
 #      within the warning soft limit, committed ratchet cap, and hard limit.
 #   3. Per-file size: any rule file > 2000 words emits a warning.
@@ -124,11 +124,23 @@ indexed_files=$(grep -E '^\|' "$CLAUDE_MD" \
   | tr -d '`' \
   | sort -u || true)
 
-actual_files=$(find "$RULES_DIR" -maxdepth 1 -type f -name '*.md' -exec basename {} \; \
+actual_files=$(find "$RULES_DIR" -type f -name '*.md' -exec basename {} \; \
   | sort -u)
+duplicate_basenames=$(find "$RULES_DIR" -type f -name '*.md' -exec basename {} \; \
+  | sort \
+  | uniq -d)
 
 missing_from_index=$(comm -23 <(printf '%s\n' "$actual_files") <(printf '%s\n' "$indexed_files") || true)
 missing_from_disk=$(comm -13 <(printf '%s\n' "$actual_files") <(printf '%s\n' "$indexed_files") || true)
+
+if [[ -n "$duplicate_basenames" ]]; then
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    duplicate_paths=$(find "$RULES_DIR" -type f -name "$f" | LC_ALL=C sort | paste -sd ',' -)
+    echo "::error file=${CLAUDE_MD}::Rule basename '${f}' is ambiguous across the recursive corpus (${duplicate_paths}). The CLAUDE.md rule index is basename-only; rename these files to unique basenames."
+    errors=$((errors + 1))
+  done <<< "$duplicate_basenames"
+fi
 
 if [[ -n "$missing_from_index" ]]; then
   while IFS= read -r f; do
@@ -146,13 +158,16 @@ if [[ -n "$missing_from_disk" ]]; then
   done <<< "$missing_from_disk"
 fi
 
-if [[ -z "$missing_from_index" && -z "$missing_from_disk" ]]; then
+if [[ -z "$missing_from_index" && -z "$missing_from_disk" && -z "$duplicate_basenames" ]]; then
   file_count=$(printf '%s\n' "$actual_files" | grep -c . || true)
   echo "Rule index alignment: OK (${file_count} files)"
 fi
 
 # --- 2. Total word count budget ------------------------------------------
-rule_files=("$RULES_DIR"/*.md)
+rule_files=()
+while IFS= read -r -d '' f; do
+  rule_files+=("$f")
+done < <(find "$RULES_DIR" -type f -name '*.md' -print0 | LC_ALL=C sort -z)
 if (( ${#rule_files[@]} == 0 )); then
   echo "::warning::No rule files found in ${RULES_DIR}/"
   total=$(wc -w < "$CLAUDE_MD" | tr -d ' ')
@@ -229,7 +244,7 @@ elif (( total > SOFT_LIMIT )); then
 fi
 
 if (( total > 10#$budget_cap )); then
-  echo "::error file=${BUDGET_CAP_FILE}::Auto-loaded word count ${total} exceeds ratchet cap ${budget_cap}. Run rule-lint.sh --update-cap only after intentional corpus reduction."
+  echo "::error file=${BUDGET_CAP_FILE}::Auto-loaded word count ${total} exceeds ratchet cap ${budget_cap}. See .claude/reference/budget-cap-raise-decision.md to raise the cap."
   errors=$((errors + 1))
 fi
 
