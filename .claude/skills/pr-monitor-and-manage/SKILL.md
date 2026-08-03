@@ -459,9 +459,10 @@ A failed stop retains the old ID and aborts the re-arm.
 It also retains the old cadence. Do not write `$EFFECTIVE_CADENCE` before this comparison or exact
 stop succeeds.
 
-After a new Monitor is armed, publish its ID, generation, and `$EFFECTIVE_CADENCE` in the same atomic state write
-below. If replacement arming fails, set `pmm_active=false`, clear the known-stopped task ID, retain
-the prior cadence as audit state, and report the stopped monitor — never claim the fleet is watched.
+After a new Monitor is armed, publish its ID, generation, and `$EFFECTIVE_CADENCE` in the same
+atomic state write below. If replacement arming fails, set `pmm_active=false`, clear the
+known-stopped task ID and generation together, retain the prior cadence as audit state, and report
+the stopped monitor — never claim the fleet is watched.
 If the publication write fails, `TaskStop` the exact new task. When rollback succeeds, clear the
 known-stopped old identity and set `pmm_active=false`. When rollback fails, best-effort persist
 `.pmm.stop_requested=true`, `pmm_active=false`, and the exact new task ID plus generation so
@@ -531,8 +532,8 @@ Reached from Step 7 when the **user** invokes `/pmm-stop`. Tear down and report 
   --set '.pmm_next_expected_tick_at=null'
 ```
 
-The lifecycle reference owns exact teardown and conditional task-ID cleanup. Clear
-`.pmm.stop_requested` and each task ID only after every required `TaskStop` succeeds.
+The lifecycle reference owns exact teardown and conditional task-identity cleanup. Clear
+`.pmm.stop_requested` and each task ID+generation pair only after every required `TaskStop` succeeds.
 
 ---
 

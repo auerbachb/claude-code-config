@@ -102,7 +102,7 @@ fi
 
 if (( user_blocker == 1 || streak >= 9 )); then
   [[ "$last_cron_type" == "delete" ]] && exit 0
-  emit_context "STOP - PR #${pr_number} is stable-blocked (digest_streak=${streak}, blocker_kind=${blocker_kind:-null}). Stop the poll before exiting this turn - stop this poll's recorded Monitor task with TaskStop, clear its monitor_task_id only after success, and leave unrelated Monitor tasks alone. Do not heartbeat again until the user nudges or the digest changes."
+  emit_context "STOP - PR #${pr_number} is stable-blocked (digest_streak=${streak}, blocker_kind=${blocker_kind:-null}). Stop the poll before exiting this turn - stop this poll's recorded Monitor task with TaskStop, atomically clear its monitor_task_id + monitor_generation only after success, and leave unrelated Monitor tasks alone. Do not heartbeat again until the user nudges or the digest changes."
   exit 0
 fi
 
@@ -111,7 +111,7 @@ if (( streak >= 3 )); then
   if [[ "$last_cron_type" == "update" && "$last_cron_interval" == "${WIDE_MIN}m" ]]; then
     exit 0
   fi
-  emit_context "WIDEN (do NOT stop the poll) - PR #${pr_number} has ${streak} identical polling ticks. The poll must KEEP RUNNING at a slower cadence: stop its recorded Monitor task with TaskStop, arm the replacement at ${WIDE_MIN}m, persist the new monitor_task_id, then update prs.${pr_number}.last_cron_action and suppress duplicate heartbeat noise. Stopping without replacement is only for the streak>=9 / user-blocked branch."
+  emit_context "WIDEN (do NOT stop the poll) - PR #${pr_number} has ${streak} identical polling ticks. The poll must KEEP RUNNING at a slower cadence: stop its recorded Monitor task with TaskStop, generate a fresh monitor_generation, arm the replacement at ${WIDE_MIN}m with that generation in every emitted tick, atomically persist the new monitor_task_id + monitor_generation + effective cadence, then update prs.${pr_number}.last_cron_action and suppress duplicate heartbeat noise. Stopping without replacement is only for the streak>=9 / user-blocked branch."
 fi
 
 exit 0

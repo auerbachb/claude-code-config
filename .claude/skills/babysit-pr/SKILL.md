@@ -219,9 +219,10 @@ fi
 ```
 
 Before A3, a stale reclaim **must stop the exact `$RETAINED_TASK_ID` with `TaskStop`**. If that
-stop fails, retain `active=true`, the exact task ID, and `stop_requested=true`; report incomplete
-teardown and abort. Only after exact `TaskStop` succeeds may A3 replace the babysit object and arm
-one new Monitor. Never infer that a silent Monitor died, and never arm beside it.
+stop fails, retain `active=true`, the exact task ID+generation pair, and `stop_requested=true`;
+report incomplete teardown and abort. Only after exact `TaskStop` succeeds may A3 replace the
+babysit object and arm one new Monitor. Never infer that a silent Monitor died, and never arm beside
+it.
 
 ### A3. Initialize state and arm the poll
 
@@ -753,7 +754,7 @@ Belt-and-suspenders: even if cancellation is delayed, the T0 short-circuit (`sto
 still mandatory so the runtime stops invoking the watcher.
 
 If exact teardown failed, emit a `babysit-pr teardown incomplete` report with the retained task ID
-instead of the successful `babysit-pr complete` summary below.
+and generation instead of the successful `babysit-pr complete` summary below.
 
 Emit the final summary:
 

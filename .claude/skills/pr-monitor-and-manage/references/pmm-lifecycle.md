@@ -190,10 +190,10 @@ If `--auto-wake` is set, add: `Auto-wake re-scan armed — will scan every <cade
 Reached from Step 7 when the **user** invokes `/pmm-stop`. First atomically set
 `.pmm.stop_requested=true`, `pmm_active=false`, and `pmm_next_expected_tick_at=null`; internal
 `--tick` events then exit before resume/discovery. Stop every recorded main/auto-wake task by exact
-ID. Clear each successfully stopped ID immediately while preserving pause state. A missing main ID
-while active or any failed stop is incomplete teardown: retain the stop marker and failed ID, do not
-clear the pause marker, and do not print success. Only after every required stop succeeds perform
-the terminal cleanup (this is not resumable):
+ID. Clear each successfully stopped ID+generation pair immediately while preserving pause state. A
+missing main ID while active or any failed stop is incomplete teardown: retain the stop marker and
+failed identity pair, do not clear the pause marker, and do not print success. Only after every
+required stop succeeds perform the terminal cleanup (this is not resumable):
 
 ```bash
 .claude/scripts/session-state.sh \

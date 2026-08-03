@@ -127,6 +127,8 @@ ctx="$(run_hook "$PR" | context_of)"
 [[ -n "$ctx" ]] || fail "expected STOP on a Monitor poll with no last_cron_action"
 echo "$ctx" | grep -q "TaskStop" || fail "stop advisory must name TaskStop, got: $ctx"
 echo "$ctx" | grep -q "monitor_task_id" || fail "stop advisory must name the recorded Monitor ID, got: $ctx"
+echo "$ctx" | grep -q "monitor_generation" || fail "stop advisory must clear the matching Monitor generation, got: $ctx"
+echo "$ctx" | grep -q "atomically clear" || fail "stop advisory must clear the Monitor identity atomically, got: $ctx"
 ok "Monitor poll (no lifecycle record) → STOP emitted with exact teardown"
 
 write_state "$PR" '{"digest_streak":9,"babysit":{"cadence_base_minutes":5},"last_cron_action":{"type":"delete","interval":"paused"}}'
@@ -146,6 +148,9 @@ echo "$ctx" | grep -q "KEEP RUNNING" || fail "widen advisory must say the poll k
 echo "$ctx" | grep -q "Stop the poll" && fail "widen advisory must not carry a stop-the-poll instruction, got: $ctx"
 echo "$ctx" | grep -q "TaskStop" || fail "widen advisory must stop the prior Monitor task, got: $ctx"
 echo "$ctx" | grep -q "replacement at 15m" || fail "widen advisory must arm the replacement cadence, got: $ctx"
+echo "$ctx" | grep -q "fresh monitor_generation" || fail "widen advisory must generate a new Monitor generation, got: $ctx"
+echo "$ctx" | grep -q "atomically persist the new monitor_task_id + monitor_generation + effective cadence" \
+  || fail "widen advisory must atomically publish replacement identity and cadence, got: $ctx"
 ok "widen advisory (streak 3..8) says keep running, never stop"
 
 # ── 11. Streak >= 9 → stop the poll ──────────────────────────────────────────

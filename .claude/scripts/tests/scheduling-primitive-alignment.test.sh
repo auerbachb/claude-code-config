@@ -69,6 +69,12 @@ require_text .claude/skills/babysit-pr/SKILL.md \
 require_text .claude/skills/babysit-pr/SKILL.md \
   'babysit.monitor_generation=\"$NEW_MONITOR_GENERATION\"' \
   'babysit-pr must publish replacement task ID and generation together'
+require_text .claude/hooks/polling-backoff-warn.sh \
+  'atomically clear its monitor_task_id + monitor_generation only after success' \
+  'backoff stop guidance must clear the Monitor identity pair atomically'
+require_text .claude/hooks/polling-backoff-warn.sh \
+  'atomically persist the new monitor_task_id + monitor_generation + effective cadence' \
+  'backoff widen guidance must publish replacement identity and cadence atomically'
 
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md '.pmm_monitor_task_id' \
   'fleet monitoring must persist its main Monitor task ID'
