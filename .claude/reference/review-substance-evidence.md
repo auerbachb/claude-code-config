@@ -22,6 +22,7 @@ in its prompt not to trust the gate's verdict.
 | mia#172 | `396ced5` | CodeRabbit `APPROVED`, `bodylen=0` — **but genuine**: its comment named the exact `95febff…396ced5` range, listed all 3 changed files, carried an accurate walkthrough |
 | ccc#867 | `f54effb7` | CodeAnt `APPROVED` at 06:24:44Z; its own "CodeAnt AI is running the review" marker at 06:24:50Z — **six seconds later**; and "User … does not have a PR Review subscription" 11 s *before* the approval. Same inversion on the prior SHA `5a4a9d8d` (approved 06:18:05Z, marker 06:18:22Z) |
 | ccc#883 | 5 SHAs | **This PR, during its own review.** CodeAnt `APPROVED` every SHA with `bodylen=0` — once **four identical approvals in the same second** (`8ef311a`, 07:50:35Z), never once updating the status comment past `a1c03ed`. On `e1cccbb` it approved 6 s after the push at 08:20:54Z and posted "CodeAnt AI is running the review" at 08:22:17Z — **83 s later** — then completed a real review that named no SHA at all. Caught live by this file's own evaluator: `temporal_inversion`, `self_report_mismatch`, `no_substantive_footprint`. Meanwhile GitHub's `reviewDecision` read `APPROVED` throughout |
+| ccc#923 | `d04389e` | CodeAnt posted a substantive Sequence Diagram summary after its current-round run-start marker, accurately describing the UUID-fragment guard, but its simultaneous empty `APPROVED` stayed hollow because the summary did not repeat HEAD's SHA |
 
 ## Why body length alone was rejected
 
@@ -49,8 +50,10 @@ Implemented in `.claude/scripts/review-substance.sh` (pure evaluator; no network
    would read that as an inversion. Requires the HEAD committer date; when that
    is unavailable the check is skipped rather than guessed, so a transient API
    failure cannot invent a blocker.
-   The suppressing term is `external_evidence_on_head` — inline comments on HEAD
-   or a status comment naming HEAD — and it is deliberately **not** time-bounded.
+   The suppressing term is `external_evidence_on_head` — inline comments on HEAD,
+   a status comment naming HEAD, a descriptive current-round comment, or a
+   substantive non-`APPROVED` review — and it is deliberately **not** bounded
+   relative to the approval timestamp.
    Both halves were review findings on PR #883 itself, pulling in opposite
    directions, and both are right:
    - Keying off the approval's *own body* is circular (CodeAnt): the body is the
@@ -100,7 +103,8 @@ Implemented in `.claude/scripts/review-substance.sh` (pure evaluator; no network
    triggered") from masking the walkthrough that carries the self-report.
 4. **Substance across the whole footprint.** Review body ≥ `min_chars` **or**
    inline diff comments anchored to HEAD **or** a same-SHA status comment naming
-   HEAD. Never body length on its own — and never a comment whose content is the
+   HEAD **or** a long descriptive comment tied to the current review round.
+   Never body length on its own — and never a comment whose content is the
    reviewer *declining* to review.
    That last clause closes a loop this file's own live payload demonstrated
    (CodeAnt, PR #883). Capability-failure notices routinely name HEAD and run
@@ -115,6 +119,40 @@ Implemented in `.claude/scripts/review-substance.sh` (pure evaluator; no network
    corroborating only. An 8-second approval is suspicious, not disqualifying.
 
 `counts_as_coverage = approved ∧ substantive ∧ ¬inversion ∧ ¬capability_failure ∧ ¬mismatch`.
+
+### Descriptive evidence without a SHA (issue #927)
+
+The ccc#923 trace showed a genuine review footprint that the original evidence
+model could not admit: after CodeAnt announced that it was running the review,
+it posted a long, accurate Sequence Diagram summary of the UUID-fragment change,
+but did not repeat HEAD's SHA. `status_comment_names_head` was therefore false,
+and the empty approval had no other coverage source.
+
+`descriptive_evidence_on_head` admits that shape when a reviewer's conversation
+comment satisfies every condition below:
+
+- its reviewer-authored body is at least `min_chars` long after the existing
+  echoed-author-line filter removes borrowed prose;
+- it is not a capability-failure notice;
+- it is not itself a run-start marker (which proves only that work began);
+- it is at or after `push_ts`; and
+- the reviewer has an earliest post-push run-start marker, with the comment at
+  or after that marker.
+
+The push and marker bounds tie the prose to the current review round without a
+new network input. This is why the alternative changed-file-path rule was not
+chosen: it would require fetching the PR file list, introduce path-spelling
+false negatives, and add evaluator input solely to prove context that the
+existing round markers already establish.
+
+The safety property is one-directional and explicit in the evaluator dataflow.
+`$descriptive_ev` is ORed only into `$ext_substantive`; it never enters
+`$selfrep` or `$mismatch`. Turning the channel on can remove
+`no_substantive_footprint`, but `self_report_mismatch` is byte-identical with or
+without it. A reviewer whose latest SHA-naming comment identifies an older
+commit therefore remains disqualified even when descriptive evidence is true.
+The channel grants evidence of work; it cannot manufacture a false mismatch or
+launder a wrong-commit self-report.
 
 ### What counts as a run-start marker
 

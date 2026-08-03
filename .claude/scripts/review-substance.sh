@@ -27,9 +27,10 @@
 #   3. self_report_mismatch  — the reviewer's own latest SHA-naming comment names
 #                              a commit other than the one it approved.
 #   4. substantive           — review body OR inline comments on HEAD OR a
-#                              same-SHA status comment naming HEAD. Never body
-#                              length on its own, and never a comment whose
-#                              content is the reviewer declining to review.
+#                              same-SHA status comment naming HEAD OR a long
+#                              descriptive comment in the current review round.
+#                              Never body length on its own, and never a comment
+#                              whose content is the reviewer declining to review.
 #   5. seconds_after_push    — reported only. Timing corroborates, never decides.
 #
 # This is a pure evaluator: no network, no gh calls. Callers pass the review and
@@ -54,7 +55,8 @@
 #     "reviewers": { "<login>": {
 #        "approved_on_head": true, "approval_submitted_at": "…",
 #        "body_len": 0, "inline_comments_on_head": 0,
-#        "status_comment_names_head": true, "status_comment_shas": ["…"],
+#        "status_comment_names_head": true,
+#        "descriptive_evidence_on_head": true, "status_comment_shas": ["…"],
 #        "self_report_mismatch": false,
 #        "temporal_inversion": false, "run_start_marker_at": "…",
 #        "capability_failure": false, "capability_failure_text": "",
@@ -87,6 +89,16 @@
 #                             non-reviewer comment on the same thread (issue
 #                             #933). A bot that merely echoes the author's
 #                             SHA-bearing re-review trigger no longer names HEAD.
+#   descriptive_evidence_on_head
+#                             a non-failure, non-marker conversation comment at
+#                             least min_chars long, posted in the current HEAD
+#                             round at or after that reviewer's earliest
+#                             post-push run-start marker. It need not name HEAD:
+#                             the marker and push bounds tie it to this round.
+#                             This signal enters only $ext_substantive. It never
+#                             enters $selfrep or $mismatch, so it can only grant
+#                             coverage; it cannot manufacture a false mismatch
+#                             or bypass an existing wrong-commit hard block.
 #   self_report_mismatch      among that bot's conversation comments containing any
 #                             SHA-like token, the MOST RECENT one names no SHA
 #                             matching HEAD. SHA-like = \b[0-9a-f]{7,40}\b with at
@@ -119,10 +131,13 @@
 #                             (repo memory coderabbit-rate-limit-is-temporary), and
 #                             that later evidence must win.
 #   substantive               body_len >= min_chars OR inline_comments_on_head > 0
-#                             OR status_comment_names_head
+#                             OR status_comment_names_head OR
+#                             descriptive_evidence_on_head
 #   external_evidence_on_head substantive footprint OTHER than the approval body
-#                             (inline comments, or a status comment naming HEAD);
-#                             what suppresses a temporal_inversion verdict
+#                             (inline comments, a status comment naming HEAD, a
+#                             descriptive current-round comment, or a substantive
+#                             non-APPROVED review); what suppresses a
+#                             temporal_inversion verdict
 #   counts_as_coverage        approved AND substantive AND none of the three
 #                             disqualifiers above
 #
@@ -520,10 +535,12 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
     ( [ $convo[]?
         | (.body // "") as $b
         | (((.updated_at // .created_at) // "") | canon_ts) as $cts
+        | (($b | ascii_downcase | strip_echoed($cts)) | length) as $authored_len
         | (($b | sha_tokens($cts))) as $tok
         | { login:   (.user.login // ""),
             body:    $b,
             len:     ($b | length),
+            authored_len: $authored_len,
             ts:      (((.updated_at // .created_at) // "") | canon_ts),
             created: (((.created_at // .updated_at) // "") | canon_ts),
             tokens:  $tok,
@@ -572,6 +589,25 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
     ( [ $approvers[]
         | . as $login
         | ( [ $cidx[] | select(.login == $login) ] )                       as $mine
+
+        # EARLIEST post-push run-start marker. Earliest, not latest: a re-review
+        # kicked off AFTER a genuine approval would otherwise look inverted.
+        #
+        # ">=", not ">" — the push second is INCLUSIVE, matching fresh_review
+        # below (BugBot review on c90b32a, PR #883). canon_ts has already
+        # stripped fractional seconds, so a marker posted a fraction of a second
+        # after the commit carries the SAME string as $push; under a strict ">"
+        # it was discarded and temporal_inversion could not fire at all — which
+        # is precisely when these bots post, seconds either side of the push.
+        # One evaluator cannot read the push second as inclusive for reviews and
+        # exclusive for markers. Including it is also the conservative direction:
+        # inversion additionally requires the approval to be at or before the
+        # marker, and $ext_substantive still clears any bot that really worked.
+        | ( if $push == "" then null
+            else ( [ $mine[] | select(.created >= $push and .marker) ]
+                   | sort_by(.created) | first )
+            end )                                                          as $marker
+
         | ( [ $ridx[] | select(.login == $login and .state == "APPROVED") ] )
                                                                            as $aps
         | ( $aps | sort_by(.submitted_at) | last )                         as $ap
@@ -611,11 +647,32 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         | ( [ $mine[]
               | select(.len >= $min_chars and .names_head and (.failure | not)) ] ) as $status_ev
         | (($status_ev | length) > 0)                                      as $names_head
+
+        # A run-start marker cannot serve as its own evidence, even when verbose:
+        # it says work began, not that any diff was read. The length threshold
+        # also uses authored_len, after the existing echoed-author-line filter;
+        # borrowed prose cannot become the bot"s evidence merely by being quoted.
+        # A separate long descriptive comment posted at or after the marker is
+        # evidence that the bot read the current diff even when it does not repeat
+        # HEAD"s SHA. This admission channel is intentionally one-directional: it
+        # feeds only external substance and never $selfrep or $mismatch. An
+        # existing wrong-SHA self-report therefore remains a hard disqualifier
+        # even when this value is true.
+        | ( $marker != null and
+            ([ $mine[]
+               | select(.authored_len >= $min_chars
+                        and (.failure | not)
+                        and (.marker | not)
+                        and .created >= $push
+                        and .created >= $marker.created) ]
+             | length) > 0 )                                               as $descriptive_ev
         # Substance that exists INDEPENDENTLY of the approval object itself:
-        # inline comments anchored to HEAD, a status comment naming HEAD, or a
-        # substantive non-APPROVED review on HEAD. The approval"s own body is
-        # excluded on purpose — see $inversion below.
+        # inline comments anchored to HEAD, a status comment naming HEAD, a
+        # descriptive current-round comment, or a substantive non-APPROVED
+        # review on HEAD. The approval"s own body is excluded on purpose — see
+        # $inversion below.
         | ( (($inl | length) > 0) or $names_head
+            or $descriptive_ev
             or ($other_review_len >= $min_chars) )                         as $ext_substantive
 
         | ( ($body_len >= $min_chars) or $ext_substantive )                as $substantive
@@ -633,24 +690,6 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         | ( [ $mine[] | select((.tokens | length) > 0) ]
             | sort_by(.created) | last )                                   as $selfrep
         | ( $selfrep != null and ($selfrep.names_head | not) )             as $mismatch
-
-        # EARLIEST post-push run-start marker. Earliest, not latest: a re-review
-        # kicked off AFTER a genuine approval would otherwise look inverted.
-        #
-        # ">=", not ">" — the push second is INCLUSIVE, matching fresh_review
-        # above (BugBot review on c90b32a, PR #883). canon_ts has already
-        # stripped fractional seconds, so a marker posted a fraction of a second
-        # after the commit carries the SAME string as $push; under a strict ">"
-        # it was discarded and temporal_inversion could not fire at all — which
-        # is precisely when these bots post, seconds either side of the push.
-        # One evaluator cannot read the push second as inclusive for reviews and
-        # exclusive for markers. Including it is also the conservative direction:
-        # inversion additionally requires the approval to be at or before the
-        # marker, and $ext_substantive still clears any bot that really worked.
-        | ( if $push == "" then null
-            else ( [ $mine[] | select(.created >= $push and .marker) ]
-                   | sort_by(.created) | first )
-            end )                                                          as $marker
 
         # Capability failure: a post-push notice that this reviewer could not
         # review, and no evidence outside the approval object that it read the
@@ -739,6 +778,7 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
               body_len:                  $body_len,
               inline_comments_on_head:   ($inl | length),
               status_comment_names_head: $names_head,
+              descriptive_evidence_on_head: $descriptive_ev,
               other_review_body_len:     $other_review_len,
               external_evidence_on_head: $ext_substantive,
               status_comment_shas:       (($selfrep.tokens // []) | unique),

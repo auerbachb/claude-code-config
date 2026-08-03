@@ -35,6 +35,9 @@
 #        so an echoed "```<sha>" smuggles nothing yet still masks its block;
 #        (n): an echo edited in place into an older bot comment is stripped on
 #        updated_at, with the unedited case as the ordering control
+#   (gg-927) a long post-run-start descriptive comment without a SHA grants
+#        external evidence; timing/failure negatives stay hollow, and an
+#        existing wrong-SHA self-report remains disqualifying
 #
 # Only `gh` is stubbed; merge-gate.sh, review-substance.sh, ci-status.sh,
 # check-runs-dedup.sh and session-state.sh are the real scripts.
@@ -849,6 +852,85 @@ FF_N2="$(ff_eval "$(jq -cn --arg t "$FF_TRIGGER_LINE" --arg e "$FF_ECHO_LINE" '
     {login:"auerbachb", created:"2026-07-31T10:05:00Z",
      body:("@codeant-ai: review\n\n" + $t + "\n")} ]')")"
 check_eq "true" "$(echo "$FF_N2" | jq -r '.status_comment_names_head')" "(ff-933)(n) control: an unedited earlier bot comment keeps its line"
+
+echo "=== (gg-927) descriptive current-round comments are external evidence ==="
+RUN_START="CodeAnt AI is running the review."
+DESCRIPTIVE_SUMMARY="## Sequence Diagram
+This change preserves the merge gate while recognizing a detailed reviewer summary tied to the current review round without requiring the summary to repeat a commit SHA."
+
+FAKE_REVIEWS="$(approval "codeant-ai[bot]" "")"
+FAKE_ISSUE_COMMENTS="$(convo \
+  "codeant-ai[bot]" "$RUN_START" "2026-07-31T10:01:00Z" \
+  "codeant-ai[bot]" "$DESCRIPTIVE_SUMMARY" "2026-07-31T10:03:00Z")"
+OUT="$(run_gate)"
+GG_REVIEWER="$(echo "$OUT" | jq -c '.review_evidence.reviewers["codeant-ai[bot]"]')"
+check_eq "true"  "$(echo "$OUT" | jq -r '.met')" "(gg-927) long post-marker description satisfies the gate"
+check_eq "false" "$(echo "$GG_REVIEWER" | jq -r '.status_comment_names_head')" "(gg-927) description does not need to name HEAD"
+check_eq "true"  "$(echo "$GG_REVIEWER" | jq -r '.descriptive_evidence_on_head')" "(gg-927) descriptive evidence is inspectable"
+check_eq "true"  "$(echo "$GG_REVIEWER" | jq -r '.external_evidence_on_head')" "(gg-927) description contributes external evidence"
+check_eq "true"  "$(echo "$GG_REVIEWER" | jq -r '.counts_as_coverage')" "(gg-927) description grants substantive coverage"
+check_not_contains "no_substantive_footprint" "$(echo "$GG_REVIEWER" | jq -r '.disqualified_by | join(" | ")')" "(gg-927) hollow reason is removed"
+
+echo "=== (gg-927) short description remains hollow ==="
+FAKE_ISSUE_COMMENTS="$(convo \
+  "codeant-ai[bot]" "$RUN_START" "2026-07-31T10:01:00Z" \
+  "codeant-ai[bot]" "Reviewed the change." "2026-07-31T10:03:00Z")"
+OUT="$(run_gate)"
+check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].descriptive_evidence_on_head')" "(gg-927) short description is rejected"
+check_contains "no_substantive_footprint" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].disqualified_by | join(" | ")')" "(gg-927) short description stays hollow"
+
+LONG_RUN_START="CodeAnt AI is running the review and will post a separate analysis when the review work has completed."
+FAKE_ISSUE_COMMENTS="$(convo "codeant-ai[bot]" "$LONG_RUN_START" "2026-07-31T10:01:00Z")"
+OUT="$(run_gate)"
+check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].descriptive_evidence_on_head')" "(gg-927) a long run-start marker is not its own descriptive evidence"
+check_contains "no_substantive_footprint" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].disqualified_by | join(" | ")')" "(gg-927) a content-free run marker stays hollow"
+
+FAKE_ISSUE_COMMENTS="$(convo \
+  "codeant-ai[bot]" "$RUN_START" "2026-07-31T10:01:00Z" \
+  "auerbachb" "$DESCRIPTIVE_SUMMARY" "2026-07-31T10:02:00Z" \
+  "codeant-ai[bot]" "$DESCRIPTIVE_SUMMARY" "2026-07-31T10:03:00Z")"
+OUT="$(run_gate)"
+check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].descriptive_evidence_on_head')" "(gg-927) echoed author prose is not reviewer-authored descriptive evidence"
+check_contains "no_substantive_footprint" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].disqualified_by | join(" | ")')" "(gg-927) an echo-only description stays hollow"
+
+echo "=== (gg-927) pre-marker and pre-push descriptions remain hollow ==="
+FAKE_ISSUE_COMMENTS="$(convo \
+  "codeant-ai[bot]" "$DESCRIPTIVE_SUMMARY" "2026-07-31T10:00:30Z" \
+  "codeant-ai[bot]" "$RUN_START" "2026-07-31T10:01:00Z")"
+OUT="$(run_gate)"
+check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].descriptive_evidence_on_head')" "(gg-927) pre-marker description is rejected"
+
+FAKE_ISSUE_COMMENTS="$(convo \
+  "codeant-ai[bot]" "$DESCRIPTIVE_SUMMARY" "2026-07-31T09:59:00Z" \
+  "codeant-ai[bot]" "$RUN_START" "2026-07-31T10:01:00Z")"
+OUT="$(run_gate)"
+check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].descriptive_evidence_on_head')" "(gg-927) pre-push description is rejected"
+
+echo "=== (gg-927) failure notice and missing marker remain hollow ==="
+FAILURE_SUMMARY="CodeAnt could not run the requested review because its usage limit was reached, so no analysis of the current diff was performed."
+FAKE_ISSUE_COMMENTS="$(convo \
+  "codeant-ai[bot]" "$RUN_START" "2026-07-31T10:01:00Z" \
+  "codeant-ai[bot]" "$FAILURE_SUMMARY" "2026-07-31T10:03:00Z")"
+OUT="$(run_gate)"
+check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].descriptive_evidence_on_head')" "(gg-927) capability-failure notice is rejected"
+
+FAKE_ISSUE_COMMENTS="$(convo "codeant-ai[bot]" "$DESCRIPTIVE_SUMMARY" "2026-07-31T10:03:00Z")"
+OUT="$(run_gate)"
+check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].descriptive_evidence_on_head')" "(gg-927) description without a run-start marker is rejected"
+check_contains "no_substantive_footprint" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].disqualified_by | join(" | ")')" "(gg-927) no-marker description stays hollow"
+
+echo "=== (gg-927) descriptive evidence cannot launder a wrong-SHA self-report ==="
+FAKE_ISSUE_COMMENTS="$(convo \
+  "codeant-ai[bot]" "$RUN_START" "2026-07-31T10:01:00Z" \
+  "codeant-ai[bot]" "CodeAnt AI finished reviewing commit 98f0bd0 and found no blocking issues in the changes." "2026-07-31T10:02:00Z" \
+  "codeant-ai[bot]" "$DESCRIPTIVE_SUMMARY" "2026-07-31T10:03:00Z")"
+OUT="$(run_gate)"
+GG_REVIEWER="$(echo "$OUT" | jq -c '.review_evidence.reviewers["codeant-ai[bot]"]')"
+check_eq "true"  "$(echo "$GG_REVIEWER" | jq -r '.descriptive_evidence_on_head')" "(gg-927) descriptive channel is active beside mismatch"
+check_eq "true"  "$(echo "$GG_REVIEWER" | jq -r '.self_report_mismatch')" "(gg-927) wrong-SHA self-report remains a mismatch"
+check_eq "false" "$(echo "$GG_REVIEWER" | jq -r '.counts_as_coverage')" "(gg-927) mismatch still disqualifies the approval"
+check_contains "self_report_mismatch" "$(echo "$GG_REVIEWER" | jq -r '.disqualified_by | join(" | ")')" "(gg-927) mismatch reason remains explicit"
+check_not_contains "no_substantive_footprint" "$(echo "$GG_REVIEWER" | jq -r '.disqualified_by | join(" | ")')" "(gg-927) only the hollow reason is cleared"
 
 echo "=== (m) evaluator rejects malformed stdin ==="
 echo "not json" | "$EVAL_SUT" >/dev/null 2>&1
