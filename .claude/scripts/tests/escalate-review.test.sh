@@ -132,6 +132,15 @@ seed_bugbot_installed() {
   check_eq "bugbot_installed pre-seeded to $want" "$want" "$got"
 }
 
+seed_bugbot_absent() {
+  local has_key
+  ( cd "$REPO_ROOT" && "$STUB_DIR/session-state.sh" \
+      --set ".prs[\"$PR_NUM\"].reviewer=cr" >/dev/null )
+  has_key="$( cd "$REPO_ROOT" && "$STUB_DIR/session-state.sh" \
+      --get ".prs[\"$PR_NUM\"] | has(\"bugbot_installed\")" 2>/dev/null )"
+  check_eq "bugbot_installed key absent on existing PR state" "false" "$has_key"
+}
+
 read_bugbot_installed() {
   ( cd "$REPO_ROOT" && "$STUB_DIR/session-state.sh" \
       --get ".prs[\"$PR_NUM\"].bugbot_installed" 2>/dev/null )
@@ -668,6 +677,7 @@ echo "== Scenario (n5): never invited but still INSIDE the 600s grace window -> 
 # not have reported yet, so the grace window still owns this cycle;
 # switch_bugbot here would cut it short.
 reset_state
+seed_bugbot_absent
 write_commits "$(ts_seconds_ago 120)"
 write_state "[]" "[]" "[]" "[]"
 OUT=$(run_script); RC=$?
