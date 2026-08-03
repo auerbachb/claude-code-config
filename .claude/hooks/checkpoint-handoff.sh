@@ -294,7 +294,11 @@ ISSUE_NUM=""
 PR_SEP=$'\x1f'
 PR_ROWS=""
 PR_LOOKUP="skipped"
-if (( ! NO_REMOTE )) && command -v gh >/dev/null 2>&1 && [[ -n "$REPO_SLUG" ]]; then
+# Require a real checkout, not merely a non-empty repository label. The
+# basename fallback below also fills REPO_SLUG outside a checkout; running `gh`
+# there can use unrelated ambient/default repository context and report open
+# work that has nothing to do with this handoff (Cursor, PR #944).
+if (( ! NO_REMOTE )) && command -v gh >/dev/null 2>&1 && (( IN_REPO )); then
   PR_ROWS=$(gh pr list --author "@me" --state open --limit 10 \
               --json number,title,url,author,reviewDecision,mergeStateStatus \
               --jq '.[] | [(.number|tostring), .title, .url,
@@ -366,7 +370,9 @@ render() {
     printf 'Repository `%s`' "$REPO_SLUG"
     if [[ -n "$ISSUE_NUM" ]]; then
       printf ', working on issue %s' "$ISSUE_NUM"
-      [[ -n "$REPO_SLUG" ]] && printf ' (https://github.com/%s/issues/%s)' "$REPO_SLUG" "$ISSUE_NUM"
+      # A basename fallback is a display label, not a GitHub owner/repository
+      # slug. Only a two-part slug can form an honest issue URL.
+      [[ "$REPO_SLUG" == */* ]] && printf ' (https://github.com/%s/issues/%s)' "$REPO_SLUG" "$ISSUE_NUM"
     fi
     printf '.\n\n'
     printf 'This checkpoint was written automatically rather than by a person, so what\n'

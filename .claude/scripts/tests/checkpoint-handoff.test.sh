@@ -336,6 +336,22 @@ check_eq "T10d both survive on disk" "2" \
   "$(find "$OUT_RACE" -maxdepth 1 -type f -name '*-checkpoint.md' | wc -l | tr -d ' ')"
 check_contains "T10d the unique name still matches the recorder's glob" "-checkpoint.md" "$B"
 
+# (e) A directory basename is only a display label. Outside a checkout it must
+#     neither become a malformed GitHub issue URL nor give `gh` permission to
+#     use unrelated ambient/default repository context.
+NOTREPO_REVIEW="$TMP/notrepo-review"
+mkdir -p "$NOTREPO_REVIEW"
+DOC_NOTREPO_REMOTE=$(cd "$NOTREPO_REVIEW" && PATH="$STUB_BIN:$PATH" "$CP" --stdout --out-dir "$TMP/out-notrepo-review" 2>/dev/null)
+check_not_contains "T10e outside a checkout no unrelated pull requests are reported" "Pull request 42" "$DOC_NOTREPO_REMOTE"
+check_contains "T10e outside a checkout the pull-request lookup is skipped" "were not looked up" "$DOC_NOTREPO_REMOTE"
+
+NO_ORIGIN="$TMP/issue-941-no-origin"
+new_repo "$NO_ORIGIN"
+git -C "$NO_ORIGIN" checkout -q -b issue-941-real
+DOC_NO_ORIGIN=$(cd "$NO_ORIGIN" && "$CP" --stdout --no-remote --out-dir "$TMP/out-no-origin" 2>/dev/null)
+check_contains "T10e a no-origin branch can still name its issue number" "issue 941" "$DOC_NO_ORIGIN"
+check_not_contains "T10e a basename never becomes a malformed GitHub issue URL" "https://github.com/issue-941-no-origin/issues/941" "$DOC_NO_ORIGIN"
+
 # ---------------------------------------------------------------------------
 # T8 — degraded environments must never fail the turn
 # ---------------------------------------------------------------------------
