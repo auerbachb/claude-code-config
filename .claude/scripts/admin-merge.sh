@@ -320,10 +320,39 @@ fi
 # hard blocker (rebase first). But when the base delta does NOT touch the PR's
 # files, rebasing is pure churn and an admin squash-merge is safe — `gh pr merge
 # --admin` merges a BEHIND branch regardless of the "require up to date" rule.
-# Step over BEHIND ONLY when clean-behind-check.sh confirms it is safe (gate green
-# except BEHIND, not CONFLICTING, AC verified, no base-delta↔PR-file overlap).
-# Any non-clean BEHIND (overlap, conflicts, other blockers) stays a hard blocker.
+# Step over BEHIND ONLY when clean-behind-check.sh confirms its mechanical axes
+# are safe (not CONFLICTING, AC checked, no base-delta↔PR-file overlap). The
+# helper may still exit 1 when its bundled merge-gate run reports only the branch-
+# protection reviewDecision note that admin-merge is independently allowed to
+# bypass. Keep that note separate from the mechanical clean-BEHIND verdict so the
+# two gate filters cannot make --auto-plain unreachable (issue #947).
+REVIEW_DECISION_BLOCKER_RE='^branch protection reviewDecision is [A-Z_]+, not APPROVED, with (CodeRabbit in CODEOWNERS — if the prior CR approval was dismissed as stale, trigger @coderabbitai full review|Greptile in CODEOWNERS — if the prior Greptile approval was dismissed as stale, trigger @greptileai|CodeAnt in CODEOWNERS — if the prior CodeAnt approval was dismissed as stale, trigger @codeant-ai review)$'
+
+clean_behind_evidence_allows_admin() {
+  local json="$1" rc="$2"
+
+  # Preserve clean-behind-check.sh's primary contract: exit 0 is authoritative.
+  [[ "$rc" -eq 0 ]] && return 0
+  # Exit 1 means "not safe to offer" and carries inspectable JSON. Recover only
+  # the known gate-filter asymmetry; helper errors remain fail-closed.
+  [[ "$rc" -eq 1 ]] || return 1
+
+  printf '%s' "$json" | jq -e --arg review_blocker_re "$REVIEW_DECISION_BLOCKER_RE" '
+    type == "object"
+    and .merge_state == "BEHIND"
+    and .mergeable == "MERGEABLE"
+    and ((.file_overlap.count | type) == "number")
+    and .file_overlap.count == 0
+    and .ac.all_checked == true
+    and ((.residual_blockers | type) == "array")
+    and all(.residual_blockers[];
+      type == "string" and test($review_blocker_re))
+  ' >/dev/null 2>&1
+}
+
 CLEAN_BEHIND_OK=false
+CBC_JSON=""
+CBC_RC=4
 BEHIND_PRESENT=$(echo "$GATE_JSON" | jq -r '[.missing[]? | select(test("BEHIND base"; "i"))] | length')
 if [[ "${BEHIND_PRESENT:-0}" -gt 0 ]]; then
   CBC=""
@@ -336,18 +365,29 @@ if [[ "${BEHIND_PRESENT:-0}" -gt 0 ]]; then
   if [[ -n "$CBC" ]]; then
     CBC_ARGS=("$PR_NUMBER")
     [[ -n "$REVIEWER_OVERRIDE" ]] && CBC_ARGS+=(--reviewer "$REVIEWER_OVERRIDE")
-    # Exit 0 == safe_to_offer; suppress output (we only need the verdict).
-    if "$CBC" "${CBC_ARGS[@]}" >/dev/null 2>&1; then CLEAN_BEHIND_OK=true; fi
+    CBC_JSON="$("$CBC" "${CBC_ARGS[@]}" 2>/dev/null)"
+    CBC_RC=$?
+    if clean_behind_evidence_allows_admin "$CBC_JSON" "$CBC_RC"; then
+      CLEAN_BEHIND_OK=true
+    fi
   fi
 fi
 
 # Hard blockers = every missing reason that is NOT one of the two protection-
 # mechanical blockers the admin bypass is allowed to step over: (1) the branch-
 # protection reviewDecision note, and (2) a *clean* BEHIND (only when CLEAN_BEHIND_OK).
-HARD_BLOCKERS=$(echo "$GATE_JSON" | jq -r --argjson cbo "$CLEAN_BEHIND_OK" '
+HARD_BLOCKERS=$(echo "$GATE_JSON" | jq -r \
+  --argjson cbo "$CLEAN_BEHIND_OK" \
+  --arg review_blocker_re "$REVIEW_DECISION_BLOCKER_RE" '
   [.missing[]?
-    | select(test("branch protection reviewDecision") | not)
+    | select(test($review_blocker_re) | not)
     | select(($cbo | not) or (test("BEHIND base"; "i") | not))]
+  | .[]')
+NON_BEHIND_HARD_BLOCKERS=$(echo "$GATE_JSON" | jq -r \
+  --arg review_blocker_re "$REVIEW_DECISION_BLOCKER_RE" '
+  [.missing[]?
+    | select(test($review_blocker_re) | not)
+    | select(test("BEHIND base"; "i") | not)]
   | .[]')
 HUMAN_CHANGES=$(echo "$GATE_JSON" | jq -r '[.human_changes_requested[]?] | join(", ")')
 
@@ -357,9 +397,22 @@ if [[ -n "$HUMAN_CHANGES" ]]; then
   exit 1
 fi
 if [[ -n "$HARD_BLOCKERS" ]]; then
-  echo "REFUSED: PR #$PR_NUMBER is not merge-ready apart from branch protection. Outstanding blockers:" >&2
-  while IFS= read -r line; do [[ -n "$line" ]] && echo "  - $line" >&2; done <<< "$HARD_BLOCKERS"
-  echo "Fix these (CI / approval / threads / rebase) before using /admin-merge." >&2
+  if [[ -z "$NON_BEHIND_HARD_BLOCKERS" && "${BEHIND_PRESENT:-0}" -gt 0 && "$CLEAN_BEHIND_OK" != true ]]; then
+    echo "REFUSED: PR #$PR_NUMBER is BEHIND and is not safe to skip a rebase." >&2
+    if printf '%s' "$CBC_JSON" | jq -e '.reasons_not_safe | type == "array" and length > 0' >/dev/null 2>&1; then
+      while IFS= read -r line; do [[ -n "$line" ]] && echo "  - $line" >&2; done \
+        < <(printf '%s' "$CBC_JSON" | jq -r '.reasons_not_safe[]')
+    elif [[ -z "${CBC:-}" ]]; then
+      echo "  - clean-behind-check.sh is unavailable; mechanical safety could not be verified" >&2
+    else
+      echo "  - clean-behind-check.sh did not provide usable clean-BEHIND evidence (exit $CBC_RC)" >&2
+    fi
+    echo "Rebase and re-run the normal review flow before using /admin-merge." >&2
+  else
+    echo "REFUSED: PR #$PR_NUMBER is not merge-ready apart from branch protection. Outstanding blockers:" >&2
+    while IFS= read -r line; do [[ -n "$line" ]] && echo "  - $line" >&2; done <<< "$HARD_BLOCKERS"
+    echo "Fix these (CI / approval / threads / rebase) before using /admin-merge." >&2
+  fi
   exit 1
 fi
 
@@ -636,7 +689,7 @@ if [[ "$MODE" == "auto-plain" ]]; then
   fi
   CBC_JSON="$("$CBC" "${CBC_ARGS[@]}" 2>/dev/null)"
   CBC_RC=$?
-  if [[ "$CBC_RC" -ne 0 ]]; then
+  if ! clean_behind_evidence_allows_admin "$CBC_JSON" "$CBC_RC"; then
     echo "REFUSED: the clean-BEHIND state no longer holds (main advanced, or a new blocker appeared) — rebase and re-run instead of bypassing." >&2
     exit 1
   fi
@@ -721,7 +774,9 @@ if [[ "$MODE" == "execute" ]]; then
   # base delta now overlaps the PR's files. Refuse if it no longer holds. (This
   # runs before enforce_admins is disabled, so a refusal leaves protection intact.)
   if [[ "$CLEAN_BEHIND_OK" == true && -n "${CBC:-}" ]]; then
-    if ! "$CBC" "${CBC_ARGS[@]}" >/dev/null 2>&1; then
+    CBC_JSON="$("$CBC" "${CBC_ARGS[@]}" 2>/dev/null)"
+    CBC_RC=$?
+    if ! clean_behind_evidence_allows_admin "$CBC_JSON" "$CBC_RC"; then
       echo "REFUSED: the clean-BEHIND state no longer holds (main advanced, or a new blocker appeared) — rebase and re-run instead of bypassing." >&2
       exit 1
     fi

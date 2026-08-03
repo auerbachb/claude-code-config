@@ -52,7 +52,10 @@ Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses
 **Do not infer “behind base” from `mergeStateStatus: "BLOCKED"` alone.** Read **`mergeStateStatus` and `mergeable`** explicitly (`gh pr view <N> --json mergeStateStatus,mergeable,reviewDecision` — same as `merge-gate.sh`).
 
 - **`CLEAN`** — OK for merge once Steps 1–1c and 1b pass.
-- **`BEHIND`** — Run `.claude/scripts/clean-behind-check.sh <N>`. Exit 0 → do **Step 2 first**, then **auto-merge via `admin-merge.sh <N> --auto-plain --ac-verified`** (no user turn; report evidence block after). Exit 8 (protection change or repeat) → **offer `/admin-merge`**, never auto-run. `churn.advisory` is context only. Otherwise rebase via `/fixpr` (`fixpr/SKILL.md`), **force-push only** after `dirty-main-guard.sh --check`.
+- **`BEHIND`** — Run `.claude/scripts/clean-behind-check.sh <N>`:
+  - Exit 0 → do **Step 2 first**, then **auto-merge via `admin-merge.sh <N> --auto-plain --ac-verified`** (no user turn; report evidence after). The `BEHIND` entry remains in `merge-gate.sh`'s `missing[]`; verified evidence satisfies only that blocker inside `admin-merge.sh`.
+  - Exit 8 from `admin-merge.sh` (protection change or repeat) → **offer `/admin-merge`**, never auto-run.
+  - Any other failure → rebase via `/fixpr` (`fixpr/SKILL.md`), **force-push only** after `dirty-main-guard.sh --check`. `churn.advisory` is context only.
 - **`BLOCKED`** — Use `reviewDecision`, CI, threads — not a substitute for **`BEHIND`**.
 - **`UNSTABLE` / `DIRTY` / `UNKNOWN`** — Not merge-ready; wait, rebase, or resolve per `fixpr` / Step 1b.
 
