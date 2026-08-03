@@ -513,7 +513,9 @@ fi
 # A usage-limit/couldn't-run failure is not a reason to keep waiting out the
 # grace window — BugBot has already failed, so fall through to the Greptile
 # budget check below (mirrors the CodeRabbit "rate limit" fast-path).
-if [[ "$BUGBOT_FAILED" != "true" && "$BUGBOT_INSTALLED" == "true" && "$AGE_SECONDS" -lt 600 ]]; then
+if [[ "$BUGBOT_FAILED" != "true" \
+      && ( "$BUGBOT_INSTALLED" == "true" || "$BUGBOT_CHECK_PRESENT" == "true" ) \
+      && "$AGE_SECONDS" -lt 600 ]]; then
   emit "polling_cr"
 fi
 

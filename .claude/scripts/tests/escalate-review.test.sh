@@ -756,6 +756,19 @@ check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
 
 ############################################################################
+echo "== Scenario (n8b): fresh in-flight run on HEAD overrides cached false for the grace wait =="
+# A cached false may describe an earlier HEAD. A live Cursor check on this HEAD
+# is stronger evidence that BugBot is available, so the sub-600s grace window
+# must wait for that run instead of escalating to paid Greptile.
+reset_state
+seed_bugbot_installed false
+write_commits "$(ts_seconds_ago 120)"
+write_state "[$BUGBOT_CHECK_RUN_IN_PROGRESS]" "[]" "[]" "[]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
+
+############################################################################
 # Same check NAME, different publishing app (issue #956)
 #
 # `Cursor Bugbot` used to be matched on the name alone, in both places this
