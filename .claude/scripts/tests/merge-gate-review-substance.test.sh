@@ -36,8 +36,9 @@
 #        (n): an echo edited in place into an older bot comment is stripped on
 #        updated_at, with the unedited case as the ordering control
 #   (gg-927) a long post-run-start descriptive comment without a SHA grants
-#        external evidence; timing/failure negatives stay hollow, and an
-#        existing wrong-SHA self-report remains disqualifying
+#        external evidence; timing/failure/start-marker/completion-marker
+#        negatives stay hollow, and an existing wrong-SHA self-report remains
+#        disqualifying
 #
 # Only `gh` is stubbed; merge-gate.sh, review-substance.sh, ci-status.sh,
 # check-runs-dedup.sh and session-state.sh are the real scripts.
@@ -884,6 +885,18 @@ FAKE_ISSUE_COMMENTS="$(convo "codeant-ai[bot]" "$LONG_RUN_START" "2026-07-31T10:
 OUT="$(run_gate)"
 check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].descriptive_evidence_on_head')" "(gg-927) a long run-start marker is not its own descriptive evidence"
 check_contains "no_substantive_footprint" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].disqualified_by | join(" | ")')" "(gg-927) a content-free run marker stays hollow"
+
+# The production completion notice is 39 characters, just below the default
+# threshold. Lower the supported threshold to prove the exclusion is semantic,
+# not an accidental consequence of that current spelling's length.
+FAKE_ISSUE_COMMENTS="$(convo \
+  "codeant-ai[bot]" "$RUN_START" "2026-07-31T10:01:00Z" \
+  "codeant-ai[bot]" "CodeAnt AI finished running the review." "2026-07-31T10:03:00Z")"
+export MERGE_GATE_SUBSTANCE_MIN_CHARS=20
+OUT="$(run_gate)"
+unset MERGE_GATE_SUBSTANCE_MIN_CHARS
+check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].descriptive_evidence_on_head')" "(gg-927) a fixed completion marker is not descriptive evidence"
+check_contains "no_substantive_footprint" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].disqualified_by | join(" | ")')" "(gg-927) a content-free completion marker stays hollow"
 
 FAKE_ISSUE_COMMENTS="$(convo \
   "codeant-ai[bot]" "$RUN_START" "2026-07-31T10:01:00Z" \

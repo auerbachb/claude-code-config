@@ -30,7 +30,8 @@
 #                              same-SHA status comment naming HEAD OR a long
 #                              descriptive comment in the current review round.
 #                              Never body length on its own, and never a comment
-#                              whose content is the reviewer declining to review.
+#                              whose content is the reviewer declining to review
+#                              or a fixed run-start/completion marker.
 #   5. seconds_after_push    — reported only. Timing corroborates, never decides.
 #
 # This is a pure evaluator: no network, no gh calls. Callers pass the review and
@@ -556,6 +557,11 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
             # marker, and an approval after it stops looking inverted against
             # the bot"s genuine "is running the review" notice later on.
             marker:  ($b | test("is running the review|is reviewing|review in progress|currently processing|started reviewing|started the review|is analyzing"; "i")),
+            # Fixed completion notices prove only that a run ended. Match the
+            # whole authored body so a real summary that happens to say
+            # "review complete" in its prose remains eligible.
+            completion_marker:
+              ($b | test("^[[:space:][:punct:]]*((codeant ai|coderabbit|cursor bugbot|greptile)[[:space:]]+)?(finished running the review|(the )?review (is )?(now )?complete(d)?)[[:space:][:punct:]]*$"; "i")),
             # explicit "I cannot review this" notices
             failure: ($b | test("does not have a pr review subscription|no active subscription|not have an active subscription|rate limit|rate-limit|usage limit|usage or spend limit|quota exceeded|could not run|couldn'"'"'t run|unable to run|unable to review|unable to complete|failed to run|failed to review"; "i")) } ]
       | sort_by(.ts) ) as $cidx
@@ -648,10 +654,12 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
               | select(.len >= $min_chars and .names_head and (.failure | not)) ] ) as $status_ev
         | (($status_ev | length) > 0)                                      as $names_head
 
-        # A run-start marker cannot serve as its own evidence, even when verbose:
-        # it says work began, not that any diff was read. The length threshold
-        # also uses authored_len, after the existing echoed-author-line filter;
-        # borrowed prose cannot become the bot"s evidence merely by being quoted.
+        # A run-start or fixed completion marker cannot serve as its own
+        # evidence, even when it clears a configured length threshold: it says
+        # only that work began or ended, not that any diff was read. The length
+        # threshold also uses authored_len, after the existing
+        # echoed-author-line filter; borrowed prose cannot become the bot"s
+        # evidence merely by being quoted.
         # A separate long descriptive comment posted at or after the marker is
         # evidence that the bot read the current diff even when it does not repeat
         # HEAD"s SHA. This admission channel is intentionally one-directional: it
@@ -663,6 +671,7 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
                | select(.authored_len >= $min_chars
                         and (.failure | not)
                         and (.marker | not)
+                        and (.completion_marker | not)
                         and .created >= $push
                         and .created >= $marker.created) ]
              | length) > 0 )                                               as $descriptive_ev

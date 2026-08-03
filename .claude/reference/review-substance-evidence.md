@@ -134,7 +134,8 @@ comment satisfies every condition below:
 - its reviewer-authored body is at least `min_chars` long after the existing
   echoed-author-line filter removes borrowed prose;
 - it is not a capability-failure notice;
-- it is not itself a run-start marker (which proves only that work began);
+- it is not itself a run-start marker or fixed completion marker (which prove
+  only that work began or ended);
 - it is at or after `push_ts`; and
 - the reviewer has an earliest post-push run-start marker, with the comment at
   or after that marker.
@@ -144,6 +145,12 @@ new network input. This is why the alternative changed-file-path rule was not
 chosen: it would require fetching the PR file list, introduce path-spelling
 false negatives, and add evaluator input solely to prove context that the
 existing round markers already establish.
+
+The completion-marker exclusion is semantic, not an accident of the default
+length threshold: the known `CodeAnt AI finished running the review.` notice is
+currently 39 characters, but it remains ineligible even when `min_chars` is
+configured below that. A fixed terminal status cannot certify that the reviewer
+read the diff.
 
 The safety property is one-directional and explicit in the evaluator dataflow.
 `$descriptive_ev` is ORed only into `$ext_substantive`; it never enters

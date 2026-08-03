@@ -60,6 +60,9 @@ whose timestamp is in doubt** —
 - inline diff comments with `commit_id` **and** `original_commit_id` == HEAD, or
 - a `>= min_chars` conversation comment naming HEAD's SHA that is not a
   capability-failure notice, or
+- a `>= min_chars` descriptive conversation comment tied to a post-push
+  run-start marker that is neither a capability-failure nor a fixed
+  run-start/completion marker, or
 - a substantive non-`APPROVED` review on HEAD with `submitted_at >= push_ts`.
 
 Redemption is announced on stderr and is visible in the emitted
