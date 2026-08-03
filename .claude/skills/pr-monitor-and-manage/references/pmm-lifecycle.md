@@ -43,10 +43,12 @@ if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
   #    already-captured $SAVED variable, never re-read .pmm.config_at_pause from
   #    session-state after step 3 has run (it will be null by then).
   SAVED=$(.claude/scripts/session-state.sh --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
-  # 2. Read both .pmm_monitor_task_id and .pmm.auto_wake_monitor_task_id. When
-  #    present, stop each exact task. Clear every successfully stopped ID in one
-  #    atomic state write while leaving the pause marker/config/fleet intact.
-  #    Any failed TaskStop aborts resume and retains only the failed ID. This
+  # 2. Read both task identities: .pmm_monitor_task_id paired with
+  #    .pmm_monitor_generation, and .pmm.auto_wake_monitor_task_id paired with
+  #    .pmm.auto_wake_monitor_generation. When present, stop each exact task.
+  #    Clear every successfully stopped ID+generation pair in one atomic state
+  #    write while leaving the pause marker/config/fleet intact. Any failed
+  #    TaskStop aborts resume and retains only the failed identity pair. This
   #    covers degraded pauses without making the next retry stop a dead task.
   # 3. Set a shell-only RESUMING_FROM_PAUSE=true marker. Do not publish active
   #    state or clear any on-disk pause fields yet.
@@ -58,8 +60,10 @@ fi
 
 Step 7 treats the old main-task ID as absent (it was stopped and cleared above) and arms the main
 Monitor at base cadence. Only after it returns a task ID does one atomic
-`session-state.sh` write publish that ID, `pmm_active=true`, and `.pmm.stop_requested=false`, clear all three pause-marker fields
-and `.pmm.auto_wake_monitor_task_id`, reset `pmm_idle_streak`, and null both table digests. If the
+`session-state.sh` write publish that ID and its fresh `.pmm_monitor_generation`, `pmm_active=true`,
+and `.pmm.stop_requested=false`, clear all three pause-marker fields and the
+`.pmm.auto_wake_monitor_task_id` + `.pmm.auto_wake_monitor_generation` pair, reset
+`pmm_idle_streak`, and null both table digests. If the
 arm or state write fails, stop the new task and leave the pause marker intact. If the rollback stop
 fails too, report the exact new task ID rather than claiming rollback. This ordering makes direct
 re-invocation transactional in the same way as the `-wake` path.
@@ -97,12 +101,13 @@ Print the **full** Step 4 status table one last time — terminal snapshots (Pau
 ### 2. Stop the main Monitor
 
 First set `pmm_active=false` and `pmm_next_expected_tick_at=null` atomically, then read
-`.pmm_monitor_task_id`, stop that exact task with `TaskStop`, and clear the ID. Publishing inactive
+`.pmm_monitor_task_id` and `.pmm_monitor_generation`, stop that exact task with `TaskStop`, and
+clear the identity pair. Publishing inactive
 before teardown makes any already-emitted internal `--tick` event exit at the tick gate instead of
 resuming the fleet before the pause marker is written. A missing or unstoppable task is a degraded
 state that must be reported.
 
-If the ID is present and `TaskStop` fails, retain it and do not arm the optional auto-wake Monitor:
+If the ID is present and `TaskStop` fails, retain it with its generation and do not arm the optional auto-wake Monitor:
 two pollers must never be created from an unverified handoff. The pause marker may still be written
 so a later explicit resume can retry exact teardown. If other recorded IDs were stopped
 successfully, clear those IDs while preserving the marker so the retry targets only tasks that may
@@ -134,8 +139,9 @@ CONFIG_AT_PAUSE=$(jq -nc \
   --set '.pmm_next_expected_tick_at=null'
 ```
 
-After Step 2's `TaskStop` succeeds, add `--set '.pmm_monitor_task_id=null'` to this same batch.
-If the stop failed, omit that write and retain the ID for diagnosis.
+After Step 2's `TaskStop` succeeds, add `--set '.pmm_monitor_task_id=null'` and
+`--set '.pmm_monitor_generation=null'` to this same batch. If the stop failed, omit both writes
+and retain the identity pair for diagnosis.
 
 Preserve `pmm_digest`, `pmm_digest_streak`, and `pmm_idle_streak` as audit trail.
 
@@ -144,21 +150,25 @@ Preserve `pmm_digest`, `pmm_digest_streak`, and `pmm_idle_streak` as audit trail
 When `$PMM_AUTO_WAKE` is true, keep a low-frequency re-scan running instead of going fully quiet at pause:
 
 ```bash
+AUTO_WAKE_MONITOR_GENERATION="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
 while sleep "<$PMM_AUTO_WAKE_CADENCE in seconds>"; do
-  printf '%s\n' '/pr-monitor-and-manage-wake --auto-check'
+  printf '%s\n' "/pr-monitor-and-manage-wake --auto-check --monitor-generation $AUTO_WAKE_MONITOR_GENERATION"
 done
 ```
 
 Arm that command through `Monitor` with `persistent: true`; store the returned task ID in
-`.pmm.auto_wake_monitor_task_id` so resume and stop can terminate the exact process. Nothing is
-recorded in `polling_jobs[]`. This replaces both the `CronCreate` job removed by issue #827 and the
+`.pmm.auto_wake_monitor_task_id` and the fresh generation in
+`.pmm.auto_wake_monitor_generation` in one atomic write. Resume and stop use the ID to terminate
+the exact process; the wake skill uses the generation to reject events already queued by an older,
+stopped process. Nothing is recorded in `polling_jobs[]`. This replaces both the `CronCreate` job removed by issue #827 and the
 unreliable `/loop` re-scan retired by issue #924.
 
-If Monitor arming fails or returns no task ID, leave `.pmm.auto_wake_monitor_task_id=null` and
+If Monitor arming fails or returns no task ID, leave both auto-wake identity fields null and
 report that the fleet is paused without auto-wake. Never claim a re-scan is armed from intent alone.
 
 If publishing the returned task ID fails, stop that exact new task with `TaskStop`. If rollback
-stop also fails, best-effort set `.pmm.stop_requested=true`, report the exact unrecorded ID, and
+stop also fails, best-effort set `.pmm.stop_requested=true`, report the exact unrecorded ID and
+generation, and
 leave the pause marker intact; `-wake` must refuse until runtime teardown is repaired.
 
 Cross-session continuity is the pause marker's job, not this Monitor's — see the note under Step 0a.
@@ -191,7 +201,9 @@ the terminal cleanup (this is not resumable):
   --set '.pmm_active=false' \
   --set '.pmm_next_expected_tick_at=null' \
   --set '.pmm_monitor_task_id=null' \
+  --set '.pmm_monitor_generation=null' \
   --set '.pmm.auto_wake_monitor_task_id=null' \
+  --set '.pmm.auto_wake_monitor_generation=null' \
   --set '.pmm.paused_at=null' \
   --set '.pmm.fleet_at_pause=null' \
   --set '.pmm.config_at_pause=null'

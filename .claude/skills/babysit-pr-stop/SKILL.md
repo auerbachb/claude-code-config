@@ -68,7 +68,7 @@ Do **not** clear `active` until the Monitor stop result is known.
 
 ### 4. Stop the recurring Monitor
 
-The watcher always runs on a persistent `Monitor` (issues #914 and #924 retired both `/loop` modes). Read `.prs["$PR"].babysit.monitor_task_id` and call `TaskStop` for that exact task. A missing ID is a degraded stale watcher, not permission to assume a live poll was cancelled. If the ID is missing or `TaskStop` fails, keep `active=true`, retain any recorded task ID, and report incomplete teardown; never report a successful stop. `stop_requested=true` makes already-emitted ticks no-ops, while A2 now refuses every re-arm of this incomplete state regardless of tick age. Clearing `active` here would let stale-watcher reclaim reset the stop flag and turn the old Monitor's later events back into live ticks beside a replacement.
+The watcher always runs on a persistent `Monitor` (issues #914 and #924 retired both `/loop` modes). Read `.prs["$PR"].babysit.monitor_task_id` and call `TaskStop` for that exact task. A missing ID is a degraded stale watcher, not permission to assume a live poll was cancelled. If the ID is missing or `TaskStop` fails, keep `active=true`, retain the recorded task ID and `monitor_generation`, and report incomplete teardown; never report a successful stop. `stop_requested=true` makes already-emitted ticks no-ops, while A2 now refuses every re-arm of this incomplete state regardless of tick age. Clearing `active` here would let stale-watcher reclaim reset the stop flag and turn the old Monitor's later events back into live ticks beside a replacement.
 
 After `TaskStop` succeeds, perform terminal cleanup here. **Clear `dispatch_in_flight` only when nothing is actually in flight:** a `/fixpr` or `/wrap` started by an earlier tick keeps running after the Monitor stops, and clearing its marker lets a later `/babysit-pr` arm dispatch a second one on the same PR — while the original, on completion, overwrites whatever state that new dispatch had written.
 
@@ -78,12 +78,14 @@ if [[ "$IN_FLIGHT" == "null" || -z "$IN_FLIGHT" ]]; then
   "$SESSION_STATE_SH" \
     --set ".prs[\"$PR\"].babysit.active=false" \
     --set ".prs[\"$PR\"].babysit.monitor_task_id=null" \
+    --set ".prs[\"$PR\"].babysit.monitor_generation=null" \
     --set ".prs[\"$PR\"].babysit.dispatch_in_flight=null"
 else
   # Leave the marker: T0's TTL reclaim owns it, so it can never wedge forever.
   "$SESSION_STATE_SH" \
     --set ".prs[\"$PR\"].babysit.active=false" \
-    --set ".prs[\"$PR\"].babysit.monitor_task_id=null"
+    --set ".prs[\"$PR\"].babysit.monitor_task_id=null" \
+    --set ".prs[\"$PR\"].babysit.monitor_generation=null"
 fi
 ```
 

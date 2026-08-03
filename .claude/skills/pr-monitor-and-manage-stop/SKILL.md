@@ -38,7 +38,9 @@ ACTIVE=$("$SESSION_STATE_SH" --get '.pmm_active' 2>/dev/null || echo null)
 PAUSED_AT=$("$SESSION_STATE_SH" --get '.pmm.paused_at' 2>/dev/null || echo null)
 STOP_PENDING=$("$SESSION_STATE_SH" --get '.pmm.stop_requested' 2>/dev/null || echo false)
 MAIN_TASK_ID=$("$SESSION_STATE_SH" --get '.pmm_monitor_task_id' 2>/dev/null || echo null)
+MAIN_GENERATION=$("$SESSION_STATE_SH" --get '.pmm_monitor_generation' 2>/dev/null || echo null)
 AUTO_WAKE_TASK_ID=$("$SESSION_STATE_SH" --get '.pmm.auto_wake_monitor_task_id' 2>/dev/null || echo null)
+AUTO_WAKE_GENERATION=$("$SESSION_STATE_SH" --get '.pmm.auto_wake_monitor_generation' 2>/dev/null || echo null)
 ```
 
 - If `$ACTIVE` is `true` → proceed to teardown.
@@ -77,9 +79,9 @@ Set `AUTO_WAKE_MONITOR_STOPPED=true` only after success; otherwise set it to `fa
 
 ## Step 4: Clear monitoring state (preserve everything else)
 
-Immediately clear each ID whose exact `TaskStop` succeeded while preserving the stop marker and any
+Immediately clear each ID **and its matching generation** whose exact `TaskStop` succeeded while preserving the stop marker and any
 pause marker/config/fleet. If either required stop failed or an active main task had no ID, retain
-the failed ID and `.pmm.stop_requested=true`, report `PMM teardown incomplete`, and stop here. A
+the failed identity and `.pmm.stop_requested=true`, report `PMM teardown incomplete`, and stop here. A
 later `/pmm-stop` retries only the tasks that may still be live.
 
 Only after every required stop succeeds, use one atomic terminal cleanup that preserves unrelated
@@ -94,7 +96,9 @@ SET_ARGS=(
   --set '.pmm.fleet_at_pause=null'
   --set '.pmm.config_at_pause=null'
   --set '.pmm_monitor_task_id=null'
+  --set '.pmm_monitor_generation=null'
   --set '.pmm.auto_wake_monitor_task_id=null'
+  --set '.pmm.auto_wake_monitor_generation=null'
 )
 "$SESSION_STATE_SH" "${SET_ARGS[@]}"
 ```

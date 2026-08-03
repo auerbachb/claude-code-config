@@ -30,8 +30,22 @@ resume or restart the fleet after pause/stop:
 ```bash
 PMM_INTERNAL_TICK=false
 [[ " $ARGUMENTS " == *" --tick "* ]] && PMM_INTERNAL_TICK=true
+PMM_TICK_GENERATION=""
+_PMM_EXPECT_GENERATION=false
+for _PMM_ARG in $ARGUMENTS; do
+  if [[ "$_PMM_EXPECT_GENERATION" == true ]]; then PMM_TICK_GENERATION="$_PMM_ARG"; break; fi
+  [[ "$_PMM_ARG" == "--monitor-generation" ]] && _PMM_EXPECT_GENERATION=true
+done
 PMM_ACTIVE=$(.claude/scripts/session-state.sh --get '.pmm_active' 2>/dev/null || echo false)
 PMM_STOP_PENDING=$(.claude/scripts/session-state.sh --get '.pmm.stop_requested' 2>/dev/null || echo false)
+if [[ "$PMM_INTERNAL_TICK" == true ]]; then
+  RECORDED_MONITOR_GENERATION=$(.claude/scripts/session-state.sh --get '.pmm_monitor_generation' 2>/dev/null || echo null)
+  if [[ -z "$PMM_TICK_GENERATION" || "$PMM_TICK_GENERATION" == "null" ||
+        "$PMM_TICK_GENERATION" != "$RECORDED_MONITOR_GENERATION" ]]; then
+    echo "[PMM] Ignoring a stale or unidentified Monitor tick."
+    exit 0
+  fi
+fi
 if [[ "$PMM_INTERNAL_TICK" == true && ( "$PMM_ACTIVE" != true || "$PMM_STOP_PENDING" == true ) ]]; then
   echo "[PMM] Ignoring a queued Monitor tick after pause/stop."
   exit 0
@@ -42,8 +56,10 @@ if [[ "$PMM_INTERNAL_TICK" != true && "$PMM_STOP_PENDING" == true ]]; then
 fi
 ```
 
-`--tick` is runtime-only: ignore it during ordinary flag parsing, never persist it in
-`config_at_pause`, and never include it twice in a Monitor command.
+`--tick` and `--monitor-generation <token>` are runtime-only: ignore them during ordinary flag
+parsing, never persist them in `config_at_pause`, and never copy the generation across a re-arm.
+The generation check must precede pause/resume/discovery so a queued event from a stopped task
+cannot operate on a newer Monitor that reused the same skill arguments.
 
 ---
 
@@ -62,7 +78,8 @@ if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
   SAVED=$(.claude/scripts/session-state.sh --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
   RESUMING_FROM_PAUSE=true
   # Stop the exact recorded main and auto-wake tasks; clear each successfully
-  # stopped ID while preserving the marker, and abort with any failed ID retained.
+  # stopped ID+generation pair while preserving the marker, and abort with any
+  # failed identity pair retained.
   # Marker clear + active publication are deferred until Step 7 records the main Monitor.
   # (full contract in references/pmm-lifecycle.md)
   echo "[PMM] Resuming from pause (paused_at=$PAUSED_AT) — flags on this invocation override saved config."
@@ -86,7 +103,7 @@ full table without prematurely mutating the pause marker.
 
 ## Step 1: Parse arguments + identify the fleet (every tick)
 
-Parse `$ARGUMENTS` (re-parse every tick — a Monitor event passes the same args, treat them as the source of truth, never a cached value). Ignore the internal `--tick` flag:
+Parse `$ARGUMENTS` (re-parse every tick — a Monitor event passes the same args, treat them as the source of truth, never a cached value). Ignore the internal `--tick` and `--monitor-generation <token>` fields:
 
 - `--author <login>` — whose PRs to manage. **Default:** current authenticated user via `gh api user --jq .login`.
 - `--repo <owner/repo>` — which repo. **Default:** current repo. `--repo` scopes discovery and reads; per-PR helpers and git actions operate on the **current checkout**. If `--repo` names a different repo than the current checkout, **stop and reconcile**. Full constraint: `references/pmm-scope.md`.
@@ -384,9 +401,10 @@ fi
 **Check stop/pause conditions and identity in this order:**
 
 1. **User command** — `/pmm-stop` (or "stop monitoring PRs"). See companion `/pr-monitor-and-manage-stop` skill → **Stop & Clean Exit**.
-2. **Main-task identity preflight** — before either Pause route, read `.pmm_monitor_task_id`. On an
+2. **Main-task identity preflight** — before either Pause route, read `.pmm_monitor_task_id` and
+   `.pmm_monitor_generation`. On an
    ordinary active tick (`PMM_ACTIVE == true`, not a direct start or transactional pause resume), a
-   missing/null ID is degraded state: set `.pmm.stop_requested=true`, report that exact teardown is
+   missing/null ID or generation is degraded state: set `.pmm.stop_requested=true`, report that exact teardown is
    impossible, and abort. Do not publish a pause marker or arm another task. This guard runs even
    when the fleet is empty or the idle threshold was reached.
 3. **Empty fleet** — `PR_COUNT == 0` from Step 2 → **immediate Pause** with reason `empty fleet` (no 3-tick wait).
@@ -398,42 +416,56 @@ Hard-blocked PRs do **not** trigger Stop or Pause — they are reported and drop
 **Verify or re-arm the Monitor.** A persistent `Monitor` is the canonical primitive (`scheduling-reliability.md`). Its command sleeps first, then emits the skill invocation as an out-of-turn chat event:
 
 ```bash
+NEW_MONITOR_GENERATION="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
 while sleep "<EFFECTIVE_CADENCE in seconds>"; do
-  printf '%s\n' '/pr-monitor-and-manage --tick <original user args>'
+  printf '%s\n' "/pr-monitor-and-manage --tick --monitor-generation $NEW_MONITOR_GENERATION <original user args>"
 done
 ```
 
 Call `Monitor` with `persistent: true` and description `PR fleet monitor`. Capture its task ID in
-`.pmm_monitor_task_id`. Reuse the ID read by the identity preflight (or read it here for a new direct
-start / transactional resume) and read its actual cadence from state:
+`.pmm_monitor_task_id`. Generate a fresh non-secret `$NEW_MONITOR_GENERATION` before each arm and
+embed it in that task's command. Reuse the ID and generation read by the identity preflight (or read
+them here for a new direct start / transactional resume) and read the actual cadence from state:
 
 ```bash
 MONITOR_TASK_ID=$(.claude/scripts/session-state.sh --get '.pmm_monitor_task_id' 2>/dev/null || echo null)
+MONITOR_GENERATION=$(.claude/scripts/session-state.sh --get '.pmm_monitor_generation' 2>/dev/null || echo null)
 CURRENT_MONITOR_CADENCE=$(.claude/scripts/session-state.sh --get '.pmm_cadence' 2>/dev/null || echo null)
 if [[ "${RESUMING_FROM_PAUSE:-false}" == true ]]; then
   MONITOR_TASK_ID=null
+  MONITOR_GENERATION=null
   CURRENT_MONITOR_CADENCE=null
 fi
 ```
 
-Keep the existing task only when its recorded cadence equals `$EFFECTIVE_CADENCE`. If no task ID is
-recorded on a new direct start or after `RESUMING_FROM_PAUSE` completed exact teardown, arm the first
-Monitor. A missing ID while `$PMM_ACTIVE == true` on an ordinary tick is degraded state: set
+Keep the existing task only when both pieces of its recorded identity are present and its cadence
+equals `$EFFECTIVE_CADENCE`. If no task ID is recorded on a new direct start or after
+`RESUMING_FROM_PAUSE` completed exact teardown, arm the first Monitor. A missing ID or generation
+while `$PMM_ACTIVE == true` on an ordinary tick is degraded state: set
 `.pmm.stop_requested=true`, report the missing identity, and abort rather than risking a duplicate.
 If an ID exists and the cadences differ, stop that exact old task with `TaskStop`, require success,
 then arm the replacement.
+
+Immediately after a new Monitor arm succeeds, bind the identity that its command actually carries:
+
+```bash
+MONITOR_GENERATION="$NEW_MONITOR_GENERATION"
+```
+
+Do this before the publication batch below; never publish the old or null generation beside the
+new task ID.
 
 A failed stop retains the old ID and aborts the re-arm.
 It also retains the old cadence. Do not write `$EFFECTIVE_CADENCE` before this comparison or exact
 stop succeeds.
 
-After a new Monitor is armed, publish its ID and `$EFFECTIVE_CADENCE` in the same atomic state write
+After a new Monitor is armed, publish its ID, generation, and `$EFFECTIVE_CADENCE` in the same atomic state write
 below. If replacement arming fails, set `pmm_active=false`, clear the known-stopped task ID, retain
 the prior cadence as audit state, and report the stopped monitor — never claim the fleet is watched.
 If the publication write fails, `TaskStop` the exact new task. When rollback succeeds, clear the
-known-stopped old ID and set `pmm_active=false`. When rollback fails, best-effort persist
-`.pmm.stop_requested=true`, `pmm_active=false`, and the exact new task ID so `/pmm-stop` can retry
-it; never leave the already-stopped old ID as the only recorded identity. On the first tick, say:
+known-stopped old identity and set `pmm_active=false`. When rollback fails, best-effort persist
+`.pmm.stop_requested=true`, `pmm_active=false`, and the exact new task ID plus generation so
+`/pmm-stop` can retry it; never leave the already-stopped old identity as the only recorded one. On the first tick, say:
 `To stop: /pmm-stop (or "stop monitoring PRs").`
 
 Record monitoring state every tick:
@@ -444,6 +476,7 @@ NOW=$(date -u +%FT%TZ)
   --set '.pmm.stop_requested=false' \
   --set '.pmm_active=true' \
   --set ".pmm_monitor_task_id=$MONITOR_TASK_ID" \
+  --set ".pmm_monitor_generation=\"$MONITOR_GENERATION\"" \
   --set ".pmm_cadence=\"$EFFECTIVE_CADENCE\"" \
   --set ".pmm_author=\"$PMM_AUTHOR\"" \
   --set ".pmm_last_tick_at=\"$NOW\"" \
@@ -452,11 +485,12 @@ NOW=$(date -u +%FT%TZ)
 
 When `RESUMING_FROM_PAUSE=true`, extend this **same atomic write** with
 `.pmm.paused_at=null`, `.pmm.fleet_at_pause=null`, `.pmm.config_at_pause=null`,
-`.pmm.auto_wake_monitor_task_id=null`, `.pmm_digest=null`, and `.pmm_row_digest=null`.
+`.pmm.auto_wake_monitor_task_id=null`, `.pmm.auto_wake_monitor_generation=null`,
+`.pmm_digest=null`, and `.pmm_row_digest=null`.
 Do not publish any of those clears before the main Monitor returns a task ID. If arming or the
 write fails, stop the newly armed task and leave the pause marker/config intact; if that rollback
 `TaskStop` fails, best-effort set `.pmm.stop_requested=true` and `.pmm_active=false`, then report the
-exact new task ID for diagnosis. The tick gate must block the unrecorded task from starting work or
+exact new task ID and generation for diagnosis. The tick gate must block the unrecorded task from starting work or
 admitting another Monitor while runtime repair is pending.
 
 **Pre-exit checklist (run before ending every polling turn — `scheduling-reliability.md`):**

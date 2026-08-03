@@ -22,7 +22,7 @@
       "_last_cron_action_inner_keys": "Historical field name for poll lifecycle actions, read by polling-backoff-warn.sh (issue #794): type (string: create/update/delete), interval (string: e.g. 1m/5m/15m/paused), at (ISO-8601 UTC). Write via session-state.sh after every Monitor arm/re-arm/stop. The hook skips re-emitting a widen when type==update && interval==${WIDE_MIN}m; skips re-emitting stop when type==delete. Using other field names (e.g. action/to_minutes) causes the guard to miss and the hook to fire repeatedly.",
       "preflight_triggered": "object",
       "babysit": "object",
-      "_babysit_backoff_fields": "Cadence fields inside .babysit read by polling-backoff-warn.sh (issue #794): cadence_base_minutes (number, set at arm-time from --cadence, default 5) drives WIDE_MIN=max(15,3*base); cadence_effective_minutes (number) is the currently-active cadence updated at tier crossings. Both are written by /babysit-pr; the hook defaults cadence_base_minutes to 5 when absent.",
+      "_babysit_backoff_fields": "Cadence fields inside .babysit read by polling-backoff-warn.sh (issue #794): cadence_base_minutes (number, set at arm-time from --cadence, default 5) drives WIDE_MIN=max(15,3*base); cadence_effective_minutes (number) is the currently-active cadence updated at tier crossings. Both are written by /babysit-pr; the hook defaults cadence_base_minutes to 5 when absent. monitor_task_id and monitor_generation form the runtime identity pair; ticks whose generation does not match are stale and must exit before polling or re-arming.",
       "wrap_sweep": "object",
       "cr_explicit_triggers": "array",
       "digest_streak": "number",
@@ -30,7 +30,7 @@
       "poll_watermarks": "object"
     }
   },
-  "last_updated": "2026-08-03T21:00:00Z",
+  "last_updated": "2026-08-03T21:22:34Z",
   "monitoring_active": true,
   "monitoring_mode": "monitor",
   "monitoring_command": "/status",
@@ -92,6 +92,7 @@
           "babysit": {
             "active": true,
             "monitor_task_id": "monitor-task-619",
+            "monitor_generation": "babysit-generation-619",
             "cadence_base_minutes": 5,
             "cadence_effective_minutes": 15,
             "tick_count": 4,
@@ -196,6 +197,7 @@
   ],
   "pmm_active": false,
   "pmm_monitor_task_id": null,
+  "pmm_monitor_generation": null,
   "pmm_cadence": "5m",
   "pmm_author": "octocat",
   "pmm_started_at": "2026-04-29T12:00:00Z",
@@ -222,6 +224,7 @@
     "stop_requested": false,
     "paused_at": "2026-04-29T14:00:00Z",
     "auto_wake_monitor_task_id": null,
+    "auto_wake_monitor_generation": null,
     "fleet_at_pause": [
       {
         "pr": 618,

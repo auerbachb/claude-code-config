@@ -60,6 +60,15 @@ require_text .claude/skills/babysit-pr/SKILL.md \
 require_text .claude/skills/babysit-pr/SKILL.md \
   'monitor_task_id=$NEW_MONITOR_TASK_ID' \
   'babysit-pr must publish replacement identity with its effective cadence'
+require_text .claude/skills/babysit-pr/SKILL.md \
+  '--monitor-generation $MONITOR_GENERATION' \
+  'babysit-pr Monitor events must carry their arm generation'
+require_text .claude/skills/babysit-pr/SKILL.md \
+  '"$TICK_GENERATION" != "$RECORDED_GENERATION"' \
+  'babysit-pr must reject queued events from an older Monitor generation'
+require_text .claude/skills/babysit-pr/SKILL.md \
+  'babysit.monitor_generation=\"$NEW_MONITOR_GENERATION\"' \
+  'babysit-pr must publish replacement task ID and generation together'
 
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md '.pmm_monitor_task_id' \
   'fleet monitoring must persist its main Monitor task ID'
@@ -69,17 +78,23 @@ require_text .claude/skills/pr-monitor-and-manage/references/pmm-lifecycle.md \
   '.pmm.auto_wake_monitor_task_id' \
   'fleet auto-wake must persist its Monitor task ID'
 require_text .claude/skills/pr-monitor-and-manage-wake/SKILL.md \
-  'Clear each successfully stopped ID immediately' \
+  'successfully stopped ID and generation immediately' \
   'fleet resume retries must not retain IDs for already-stopped tasks'
 require_text .claude/skills/pr-monitor-and-manage-wake/SKILL.md \
-  'retain that failed ID' \
+  'retain that failed identity pair' \
   'fleet resume must abort with a potentially-live failed task ID retained'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   'Ignoring a queued Monitor tick after pause/stop' \
   'fleet Monitor ticks must not restart after pause or stop'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
-  '/pr-monitor-and-manage --tick <original user args>' \
+  '/pr-monitor-and-manage --tick --monitor-generation $NEW_MONITOR_GENERATION <original user args>' \
   'fleet Monitor events must be distinguishable from direct user starts'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
+  "RECORDED_MONITOR_GENERATION=\$(.claude/scripts/session-state.sh --get '.pmm_monitor_generation'" \
+  'fleet ticks must read the currently published Monitor generation'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
+  '"$PMM_TICK_GENERATION" != "$RECORDED_MONITOR_GENERATION"' \
+  'fleet ticks must reject queued events from an older Monitor generation'
 require_text .claude/skills/pr-monitor-and-manage-stop/SKILL.md \
   'marker until exact teardown is complete.' \
   'fleet stop must block start/resume until every required task is stopped'
@@ -105,10 +120,10 @@ require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   "CURRENT_MONITOR_CADENCE=\$(.claude/scripts/session-state.sh --get '.pmm_cadence'" \
   'fleet monitoring must compare the recorded Monitor cadence before deciding to keep it'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
-  'Keep the existing task only when its recorded cadence equals `$EFFECTIVE_CADENCE`.' \
+  'Keep the existing task only when both pieces of its recorded identity are present and its cadence' \
   'fleet monitoring must replace an existing Monitor on a tier crossing'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
-  'A missing ID while `$PMM_ACTIVE == true` on an ordinary tick is degraded state' \
+  'A missing ID or generation' \
   'fleet monitoring must not arm beside an active task whose identity was lost'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   'This guard runs even' \
@@ -119,6 +134,18 @@ require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
 reject_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   'then EFFECTIVE_CADENCE="15m"' \
   'fleet monitoring must not hard-code a widened cadence that can be faster than the base'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
+  'pmm_monitor_generation=\"$MONITOR_GENERATION\"' \
+  'fleet monitoring must publish its task ID and generation together'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
+  'MONITOR_GENERATION="$NEW_MONITOR_GENERATION"' \
+  'fleet monitoring must publish the generation embedded in the newly armed task'
+require_text .claude/skills/pr-monitor-and-manage-wake/SKILL.md \
+  'with `.pmm.auto_wake_monitor_generation`' \
+  'auto-wake must reject queued events from an older re-scan generation'
+require_text .claude/skills/pr-monitor-and-manage/references/pmm-lifecycle.md \
+  '/pr-monitor-and-manage-wake --auto-check --monitor-generation $AUTO_WAKE_MONITOR_GENERATION' \
+  'auto-wake Monitor events must carry their arm generation'
 
 require_text .claude/reference/session-state-schema.json '"monitoring_mode": "monitor"' \
   'session-state examples must identify Monitor as the recurring polling primitive'
@@ -126,5 +153,11 @@ require_text .claude/reference/session-state-schema.json '"action": "MonitorRear
   'session-state backoff examples must not describe removed CronUpdate actions'
 require_text .claude/reference/session-state-schema.json '"action": "TaskStop"' \
   'session-state stop examples must use exact Monitor teardown'
+require_text .claude/reference/session-state-schema.json '"monitor_generation": "babysit-generation-619"' \
+  'session-state examples must document babysit Monitor generations'
+require_text .claude/reference/session-state-schema.json '"pmm_monitor_generation": null' \
+  'session-state examples must document main fleet Monitor generations'
+require_text .claude/reference/session-state-schema.json '"auto_wake_monitor_generation": null' \
+  'session-state examples must document auto-wake Monitor generations'
 
 ok 'recurring scheduling guidance and watcher lifecycles agree on Monitor'
