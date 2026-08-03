@@ -34,6 +34,13 @@
 # registered here; --ensure-session is the remedy, and other repos' entries are
 # named in that message as diagnostics only.
 #
+# An inherited $CLAUDE_SESSION_REPO is supply-only (issue #967). When --repo is
+# absent, a self-identifying invoking checkout (from --root-repo or the live cwd)
+# overrides that ambient value before any state helper runs. The inherited value
+# is retained only when the checkout cannot identify itself, such as an
+# origin-less checkout. An explicit --repo remains authoritative as a declaration
+# and still refuses when it contradicts the checkout being operated on.
+#
 # Scoping is validated per PR, by repo *identity* (normalized `origin` remote,
 # falling back to the shared git common dir so sibling worktrees of one repo
 # agree) rather than by checkout path:
@@ -75,13 +82,13 @@
 #                            …) agrees. Precedence, resolved by
 #                            `session-state.sh --repo-key`:
 #                              --repo -> $CLAUDE_SESSION_REPO -> cwd `origin`.
-#                            Needed only when the checkout cannot speak for itself
-#                            (no `origin` remote, or not a git checkout at all) —
-#                            with a normal checkout the origin remote already
-#                            gives the right answer.
-#                            A declared key may SUPPLY an identity the checkout
-#                            lacks; it may never OVERRIDE one the checkout
-#                            states. `--repo` and `--root-repo` answer different
+#                            For this gate, a self-identifying invoking checkout
+#                            replaces an inherited environment value before that
+#                            precedence is evaluated. The environment is only a
+#                            supply fallback when the checkout has no `origin`.
+#                            An explicit --repo may SUPPLY an identity the checkout
+#                            lacks; it may never OVERRIDE one the checkout states.
+#                            `--repo` and `--root-repo` answer different
 #                            questions, so when both resolve to a real owner/repo
 #                            and disagree the invocation is refused rather than
 #                            validating against one repo while acting on another.
@@ -125,6 +132,7 @@ PR_NUMBER=""
 MODE="cycle"
 ROOT_REPO_ARG=""
 REPO_ARG=""
+REPO_ARG_PASSED=0
 # Authorship guard (issue #733): enrolling a PR in polling is a "touch", so
 # --ensure-session refuses PRs the authenticated user did not author. A skill
 # passes --allow-nonauthor only under an explicit per-PR user override.
@@ -166,6 +174,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --repo)
+      REPO_ARG_PASSED=1
       REPO_ARG="${2:-}"
       if [[ -z "$REPO_ARG" ]]; then
         echo "polling-state-gate.sh: --repo requires an <owner>/<name> value" >&2
@@ -207,25 +216,6 @@ fi
 # Directory whose repo identity scopes every session-state read below (issue
 # #638). Defaults to the active checkout; --root-repo overrides it.
 STATE_READ_DIR="${STATE_READ_DIR:-$PWD}"
-
-# --repo is implemented by exporting $CLAUDE_SESSION_REPO rather than by threading
-# a flag through every helper invocation (issue #854). session-state.sh already
-# resolves `--repo -> $CLAUDE_SESSION_REPO -> cwd origin`, so one export makes the
-# gate, poll-watermarks.sh, and every other child agree on a single scope key —
-# and it is what makes a pre-set $CLAUDE_SESSION_REPO work here too, since we
-# simply leave it in place when --repo is absent.
-# Was the repo key DECLARED by the caller, or merely derived from the checkout?
-# Only a declared key can contradict the checkout, so only a declared key is
-# subject to the contradiction guard in validate_root_match(). Captured before
-# the export below, which would otherwise make every --repo run look like it
-# also had the environment variable set.
-REPO_KEY_DECLARED=0
-if [[ -n "$REPO_ARG" || -n "${CLAUDE_SESSION_REPO:-}" ]]; then
-  REPO_KEY_DECLARED=1
-fi
-if [[ -n "$REPO_ARG" ]]; then
-  export CLAUDE_SESSION_REPO="$REPO_ARG"
-fi
 
 # Which repo scope holds this PR (issue #638). Resolved once, then reused by
 # state_pr_field() so every read below comes from one consistent entry.
@@ -362,6 +352,55 @@ repo_identity() {
     printf 'path:%s\n' "$path"
   fi
 }
+
+# --repo is implemented by exporting $CLAUDE_SESSION_REPO rather than by
+# threading a flag through every helper invocation (issue #854). Resolve the
+# invoking checkout first (issue #967), so a stale value inherited from a
+# persistent parent shell cannot outrank a checkout that names itself.
+#
+# REPO_KEY_DECLARED retains the contradiction-guard meaning for an explicit
+# --repo. An inherited value counts as declared only on the supply-only path,
+# where the invoking checkout cannot provide an owner/repo identity itself.
+REPO_KEY_DECLARED=0
+INVOKING_CHECKOUT_PATH=""
+INVOKING_CHECKOUT_ID=""
+if [[ -n "$ROOT_REPO_ARG" ]]; then
+  INVOKING_CHECKOUT_PATH="$ROOT_REPO_ARG"
+else
+  INVOKING_CHECKOUT_PATH="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+fi
+if [[ -n "$INVOKING_CHECKOUT_PATH" ]]; then
+  INVOKING_CHECKOUT_ID="$(repo_identity "$INVOKING_CHECKOUT_PATH")"
+fi
+
+is_owner_repo_identity() {
+  case "$1" in
+    ""|_unknown|gitdir:*|path:*) return 1 ;;
+    */*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if [[ "$REPO_ARG_PASSED" -eq 1 ]]; then
+  REPO_KEY_DECLARED=1
+  export CLAUDE_SESSION_REPO="$REPO_ARG"
+
+  # Preserve the explicit mismatch refusal even when no --root-repo was passed:
+  # the live cwd is the invoking checkout and must not be silently redirected by
+  # a stored root from the declared scope.
+  if is_owner_repo_identity "$INVOKING_CHECKOUT_ID"; then
+    declared_arg="$(normalize_repo_key "$REPO_ARG")"
+    if [[ "$declared_arg" != "$INVOKING_CHECKOUT_ID" ]]; then
+      echo "polling-state-gate.sh: repo key '$declared_arg' (from --repo) contradicts the checkout being operated on, which is '$INVOKING_CHECKOUT_ID' ($INVOKING_CHECKOUT_PATH) — refuse to validate against one repo while acting on another. Drop the override, or point --root-repo at a '$declared_arg' checkout." >&2
+      exit 4
+    fi
+    unset declared_arg
+  fi
+elif is_owner_repo_identity "$INVOKING_CHECKOUT_ID"; then
+  export CLAUDE_SESSION_REPO="$INVOKING_CHECKOUT_ID"
+elif [[ -n "${CLAUDE_SESSION_REPO:-}" ]]; then
+  REPO_KEY_DECLARED=1
+fi
 
 ACTIVE_REPO_KEY="$(cd "$STATE_READ_DIR" 2>/dev/null && "$STATE_HELPER" --repo-key 2>/dev/null || true)"
 

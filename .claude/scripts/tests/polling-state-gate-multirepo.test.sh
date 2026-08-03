@@ -25,6 +25,11 @@
 # collision case, --repo / $CLAUDE_SESSION_REPO scope selection, and the
 # invariant that no refusal ever exits 0.
 #
+# Issue #967 covers the residual ambient-scope leak: a stale inherited
+# $CLAUDE_SESSION_REPO used to outrank the live checkout origin. The invoking
+# checkout now wins when it can identify itself; the environment remains a
+# supply-only fallback for origin-less checkouts.
+#
 # Uses --verify-state, the offline mode (no gh, no merge-gate), so the test is
 # hermetic. Temporary HOME; never touches the real ~/.claude/. Requires git+jq.
 set -uo pipefail
@@ -137,8 +142,8 @@ cat > "$STUB_BIN/gh" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
 case "${1:-}" in
-  pr)   echo '{"headRefOid":"ccc3333","state":"OPEN","number":84,"headRefName":"feature","url":"https://github.com/org/c/pull/84","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}' ;;
-  repo) echo 'org/c' ;;
+  pr)   printf '{"headRefOid":"%s","state":"OPEN","number":84,"headRefName":"feature","url":"https://github.com/%s/pull/84","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}\n' "${STUB_HEAD_SHA:-ccc3333}" "${STUB_OWNER_REPO:-org/c}" ;;
+  repo) printf '%s\n' "${STUB_OWNER_REPO:-org/c}" ;;
   api)
     shift
     [[ "${1:-}" == "--paginate" ]] && shift
@@ -172,6 +177,25 @@ RC=0; OUT="$( cd "$REPO_C" && bash "$GATE" 84 --verify-state 2>&1 )" || RC=$?
 check_eq "a later tick from repo C validates against C's own state" "0" "$RC"
 
 echo
+echo "== A self-identifying checkout overrides a stale inherited scope (issue #967) =="
+# Reproduce the reported persistent-shell leak with the same PR number present
+# in both repos. The gate is invoked from repo A without --repo while the
+# environment still names repo B. Both registration and verification must use A,
+# and B's existing entry must remain byte-identical.
+B_BEFORE_STALE_ENV="$(jq -Sc '.repos["org/b"].prs["84"]' "$HOME/.claude/session-state.json")"
+write_handoff 84 aaa1111
+RC=0; OUT="$( cd "$REPO_A" && CLAUDE_SESSION_REPO=org/b STUB_HEAD_SHA=aaa1111 STUB_OWNER_REPO=org/a PATH="$STUB_BIN:$PATH" bash "$GATE" 84 --ensure-session 2>&1 )" || RC=$?
+check_eq "stale inherited scope does not block --ensure-session" "0" "$RC"
+check_eq "--ensure-session remains scoped to the invoking repo" "org/a" \
+  "$(jq -r '.repos["org/a"].prs["84"].owner_repo // ""' "$HOME/.claude/session-state.json")"
+check_eq "stale inherited scope does not mutate repo B" "$B_BEFORE_STALE_ENV" \
+  "$(jq -Sc '.repos["org/b"].prs["84"]' "$HOME/.claude/session-state.json")"
+RC=0; OUT="$( cd "$REPO_A" && CLAUDE_SESSION_REPO=org/b bash "$GATE" 84 --verify-state 2>&1 )" || RC=$?
+check_eq "stale inherited scope does not block --verify-state" "0" "$RC"
+check_eq "stale inherited scope emits no contradiction refusal" "0" \
+  "$(grep -c 'contradicts the checkout being operated on' <<<"$OUT")"
+
+echo
 echo "== --repo / \$CLAUDE_SESSION_REPO select the scope (issue #854) =="
 # A checkout with no `origin` remote cannot name itself, so before #854 there was
 # no way to tell the gate which repo it was standing in. Both mechanisms must
@@ -185,6 +209,12 @@ RC=0; OUT="$( cd "$NOREMOTE" && bash "$GATE" 84 --verify-state --repo org/a 2>&1
 check_eq "--repo selects the named scope from an origin-less checkout" "0" "$RC"
 RC=0; OUT="$( cd "$NOREMOTE" && CLAUDE_SESSION_REPO=org/a bash "$GATE" 84 --verify-state 2>&1 )" || RC=$?
 check_eq "\$CLAUDE_SESSION_REPO selects the named scope too" "0" "$RC"
+# Pin the origin-less checkout itself: the inherited value must remain available
+# as identity supply rather than being discarded or replaced with gitdir:/path:.
+RC=0; OUT="$( cd "$NOREMOTE" && CLAUDE_SESSION_REPO=org/a bash "$GATE" 84 --verify-state --root-repo "$NOREMOTE" 2>&1 )" || RC=$?
+check_eq "inherited scope supplies identity for a pinned origin-less checkout" "0" "$RC"
+check_eq "origin-less supply emits no contradiction refusal" "0" \
+  "$(grep -c 'contradicts the checkout being operated on' <<<"$OUT")"
 # --repo outranks the environment variable.
 RC=0; OUT="$( cd "$NOREMOTE" && CLAUDE_SESSION_REPO=org/b bash "$GATE" 84 --verify-state --repo org/a 2>&1 )" || RC=$?
 check_eq "--repo outranks \$CLAUDE_SESSION_REPO" "0" "$RC"
@@ -213,18 +243,24 @@ RC=0; OUT="$( cd "$REPO_B" && bash "$GATE" 84 --verify-state --repo org/a --root
 check_eq "--repo contradicting --root-repo is refused" "4" "$RC"
 check_eq "…and the refusal names both sides" "1" "$(grep -c "contradicts the checkout being operated on" <<<"$OUT")"
 check_eq "…and it did not operate on the declared repo" "0" "$(grep -c 'gate met' <<<"$OUT")"
-# Same hazard via the environment variable, which has identical mechanics.
+# An inherited environment value is ambient rather than explicit. A
+# self-identifying checkout replaces it before scope resolution, whether or not
+# --root-repo pins that checkout.
+write_handoff 84 bbb2222
 RC=0; OUT="$( cd "$REPO_B" && CLAUDE_SESSION_REPO=org/a bash "$GATE" 84 --verify-state --root-repo "$REPO_B" 2>&1 )" || RC=$?
-check_eq "\$CLAUDE_SESSION_REPO contradicting the checkout is refused" "4" "$RC"
-check_eq "…env-var refusal names both sides too" "1" "$(grep -c "contradicts the checkout being operated on" <<<"$OUT")"
-# Declaring org/a from inside repo B with NO --root-repo is NOT the hazard: the
-# per-PR root_repo redirects the checkout to repo A as well, so the scope read
-# and the checkout acted on are both org/a — coherent, and allowed. The bug was
-# state and actions DIVERGING, which the pinned-checkout cases above cover.
+check_eq "stale environment value yields to explicit checkout identity" "0" "$RC"
 RC=0; OUT="$( cd "$REPO_B" && CLAUDE_SESSION_REPO=org/a bash "$GATE" 84 --verify-state 2>&1 )" || RC=$?
-check_eq "declared key redirecting to its own checkout stays coherent" "0" "$RC"
+check_eq "stale environment value yields to live cwd identity" "0" "$RC"
+# Explicit --repo remains a per-invocation declaration even without
+# --root-repo; a stored root must not silently redirect away from the invoking
+# checkout and hide the mismatch.
+RC=0; OUT="$( cd "$REPO_A" && bash "$GATE" 84 --verify-state --repo org/b 2>&1 )" || RC=$?
+check_eq "explicit --repo contradicting live cwd is refused" "4" "$RC"
+check_eq "…and the explicit mismatch keeps the contradiction message" "1" \
+  "$(grep -c "contradicts the checkout being operated on" <<<"$OUT")"
 # A key merely DERIVED from the checkout can never contradict it, so the ordinary
 # no-override path must stay clean — this is the regression guard for the fix.
+write_handoff 84 aaa1111
 RC=0; OUT="$( cd "$REPO_A" && bash "$GATE" 84 --verify-state 2>&1 )" || RC=$?
 check_eq "no declared key: ordinary poll is unaffected" "0" "$RC"
 check_eq "…and emits no contradiction message" "0" "$(grep -c 'contradicts the checkout' <<<"$OUT")"
