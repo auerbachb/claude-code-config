@@ -1,6 +1,6 @@
 ---
 name: pr-monitor-and-manage-wake
-description: Resume companion to /pr-monitor-and-manage. Wakes a paused PR-fleet-manager loop from its saved pause marker, cancels any auto-wake re-scan, and re-arms the main loop. Also serves as the lightweight --auto-check target for that re-scan. Triggers on "/pr-monitor-and-manage-wake", "/pmm-wake", "wake PR monitor".
+description: Resume companion to /pr-monitor-and-manage. Wakes a paused PR-fleet manager from its saved pause marker, stops any auto-wake Monitor, and re-arms the main Monitor. Also serves as the lightweight --auto-check target for that re-scan. Triggers on "/pr-monitor-and-manage-wake", "/pmm-wake", "wake PR monitor".
 triggers:
   - pr-monitor-and-manage-wake
   - pmm-wake
@@ -9,7 +9,7 @@ triggers:
 argument-hint: "[--auto-check] (default: user-initiated resume; --auto-check = lightweight fleet scan from the auto-wake re-scan)"
 ---
 
-Resume companion to `/pr-monitor-and-manage`. Wakes a **paused** PR-fleet-manager loop: reads the pause marker, cancels any auto-wake re-scan, clears the marker, and re-arms the main loop at base cadence.
+Resume companion to `/pr-monitor-and-manage`. Wakes a **paused** PR-fleet manager: reads the pause marker, stops any auto-wake Monitor, clears the marker, and re-arms the main Monitor at base cadence.
 
 Idempotent: running on a non-paused session is a clean no-op.
 
@@ -35,8 +35,8 @@ SESSION_STATE_SH=$(resolve_script session-state.sh) || { echo "ERROR: session-st
 
 ## Step 1: Parse mode
 
-- **`--auto-check`** — lightweight fleet scan (invoked by the auto-wake re-scan `/loop`). Compare `gh pr list` against `.pmm.fleet_at_pause`; re-launch main skill only if changed.
-- **No flags (default)** — user-initiated resume: clear marker, cancel the re-scan, re-arm loop.
+- **`--auto-check`** — lightweight fleet scan (invoked by the auto-wake Monitor). Compare `gh pr list` against `.pmm.fleet_at_pause`; re-launch main skill only if changed.
+- **No flags (default)** — user-initiated resume: clear marker, stop the re-scan, re-arm the main Monitor.
 
 ## Step 2: Check pause marker
 
@@ -55,7 +55,7 @@ PAUSED_AT=$("$SESSION_STATE_SH" --get '.pmm.paused_at' 2>/dev/null || echo null)
 
 When `$MODE` is `--auto-check`, skip to Step 4a first; only cancel the re-scan from Step 4b after a fleet change is confirmed, or when `$MODE` is user-initiated resume (default).
 
-Cancel the `/loop` armed at pause time (runtime loop-stop), then proceed to marker clear / re-arm. Since issue #827 the re-scan is a plain `/loop` rather than a `CronCreate` job, so there is no id to delete, no `polling_jobs[]` entry to prune, and no fail-closed teardown to get wrong — a loop cannot outlive the turn that armed it.
+Read `.pmm.auto_wake_monitor_task_id`, stop that exact task with `TaskStop`, and clear the ID only after success. Nothing is removed from `polling_jobs[]`; issue #924 replaces the unreliable `/loop` re-scan with this recorded Monitor task.
 
 ## Step 4a: `--auto-check` branch (lightweight scan)
 
@@ -136,7 +136,7 @@ fi
 
 Cancel the re-scan (Step 3) if not already done (user-initiated resume does it before this step; auto-check does it only after detecting a change).
 
-Read config, reconstruct invocation flags, clear marker, reset idle streak, re-arm loop:
+Read config and reconstruct invocation flags:
 
 ```bash
 CONFIG=$("$SESSION_STATE_SH" --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
@@ -154,12 +154,23 @@ PMM_FLAGS="$PMM_FLAGS --idle-pause-after $(jq -r '.idle_pause_after // 3' <<<"$C
 jq -e '.auto_wake == true' <<<"$CONFIG" >/dev/null 2>&1 && PMM_FLAGS="$PMM_FLAGS --auto-wake"
 PMM_FLAGS="$PMM_FLAGS --auto-wake-cadence $(jq -r '.auto_wake_cadence // "60m"' <<<"$CONFIG")"
 jq -e '.confirm_merges == true' <<<"$CONFIG" >/dev/null 2>&1 && PMM_FLAGS="$PMM_FLAGS --confirm-merges"
+```
 
-# One atomic, locked read-modify-write. The two digest nulls MUST ride in this
-# same call: this step clears .pmm.paused_at before the main skill runs, so its
-# Step 0a reset branch (guarded on a non-null marker) never fires on this path —
-# without them the stale digests survive and the first post-resume tick can
-# render as a quiet heartbeat instead of the full table (issue #872).
+Arm the replacement at **base** cadence (not widened backoff) through a persistent `Monitor`:
+
+```bash
+while sleep "<CADENCE in seconds>"; do
+  printf '%s\n' '/pr-monitor-and-manage <PMM_FLAGS>'
+done
+```
+
+Call `Monitor` with `persistent: true` and description `PR fleet monitor`, then require a returned task ID. If arming fails or returns no ID, leave the pause marker/config/fleet intact, keep `pmm_active=false`, and report that resume failed (the auto-wake re-scan was already stopped in Step 3).
+
+After a successful arm, clear the marker and publish the new task ID in one atomic write:
+
+```bash
+# The two digest nulls MUST ride in this call: clearing .pmm.paused_at makes
+# the main skill's Step 0a reset branch ineligible on its first Monitor tick.
 # Mirror Step 0a exactly: .pmm_digest_streak is deliberately preserved.
 "$SESSION_STATE_SH" \
   --set '.pmm.paused_at=null' \
@@ -167,24 +178,22 @@ jq -e '.confirm_merges == true' <<<"$CONFIG" >/dev/null 2>&1 && PMM_FLAGS="$PMM_
   --set '.pmm.config_at_pause=null' \
   --set '.pmm_idle_streak=0' \
   --set '.pmm_active=true' \
+  --set ".pmm_monitor_task_id=$MONITOR_TASK_ID" \
+  --set '.pmm.auto_wake_monitor_task_id=null' \
   --set '.pmm_digest=null' \
   --set '.pmm_row_digest=null' \
   --set '.pmm_next_expected_tick_at=null'
 ```
 
-Re-arm at **base** cadence (not widened backoff):
-
-```text
-/loop <CADENCE> /pr-monitor-and-manage <PMM_FLAGS>
-```
+If that write fails, stop the newly armed task with `TaskStop`; the atomic failure leaves the pause marker intact, so never claim resume.
 
 The next tick runs full discovery + per-PR state read. Print:
 
 ```text
-PMM resumed — re-armed at <CADENCE>. Fleet will be rediscovered on the next tick.
+PMM resumed — Monitor re-armed at <CADENCE>. Fleet will be rediscovered on the next tick.
 ```
 
-For `--auto-check` with detected change, add: `[auto-check] Fleet changed — re-scan cancelled, main loop re-launched.`
+For `--auto-check` with detected change, add: `[auto-check] Fleet changed — re-scan stopped, main Monitor re-launched.`
 
 ## Safety
 

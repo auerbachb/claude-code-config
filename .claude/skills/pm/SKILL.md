@@ -419,11 +419,11 @@ Runs on **every** `/pm` invocation, no flag required — both 1A.4 (resume) and 
 
 ## Step 2: Active Monitoring Setup
 
-After Step 1 presents assignments/suggestions, detect whether any **active cloud threads** exist and configure on-demand tracking. `/pm` is a strictly on-demand orchestrator — it does **not** propose or arm any recurring poll (`CronCreate`, `/loop`, or hand-rolled wake chains). PR fleet monitoring between messages is owned by `/pr-monitor-and-manage`.
+After Step 1 presents assignments/suggestions, detect whether any **active cloud threads** exist and configure on-demand tracking. `/pm` is a strictly on-demand orchestrator — it does **not** propose or arm any recurring poll (`Monitor`, `CronCreate`, `/loop`, or hand-rolled wake chains). PR fleet monitoring between messages is owned by `/pr-monitor-and-manage`.
 
 Resume mode passes through this step too — restore passive tracking state; do **not** re-arm a poll.
 
-For explicit user-initiated "poll every N" requests that are not PR-fleet-specific, `/loop` remains the canonical primitive per `.claude/rules/scheduling-reliability.md`. `/pm` itself never sets one up.
+For explicit user-initiated "poll every N" requests that are not PR-fleet-specific, persistent `Monitor` is the canonical primitive per `.claude/rules/scheduling-reliability.md`. `/pm` itself never sets one up.
 
 ### 2.1: Detect active threads
 
@@ -436,7 +436,7 @@ Cross-reference the open-issue list (already fetched in Step 1) against open PRs
 
 ### 2.2: Fleet monitoring redirect (≥3 active threads)
 
-When `ACTIVE_COUNT ≥ 3`, surface a one-line redirect (do NOT offer `CronCreate` or `/loop`):
+When `ACTIVE_COUNT ≥ 3`, surface a one-line redirect (do not offer a scheduler from `/pm`):
 
 > "You have {N} active cloud threads. Run `/pr-monitor-and-manage` to auto-dispatch fixes and merges across the fleet with per-PR state tracking."
 

@@ -461,7 +461,7 @@ Part A does **not** print its own "Created" list — every issue it filed is in 
 
 Part B sweeps the **whole session** for loose ends the per-PR detection in Part A cannot see. It produces two buckets — **Auto-handled** and **Needs your decision** — and a one-line **verdict**.
 
-**Safety boundaries (non-negotiable — issue #471):** never auto-file without recording the full body (rendered under `--verbose` or on request — issue #851); never auto-act on anything affecting shared state (live crons, active subagents, human-owned issues/PRs, recovery branches); auto-handling limited to: stopping a **dead** session `/loop` job and deleting a **stale** handoff file.
+**Safety boundaries (non-negotiable — issue #471):** never auto-file without recording the full body (rendered under `--verbose` or on request — issue #851); never auto-act on anything affecting shared state (live monitors, active subagents, human-owned issues/PRs, recovery branches); auto-handling limited to: stopping a **dead** session Monitor task and deleting a **stale** handoff file.
 
 #### Step 3.5: Sweep setup & idempotency guard
 
@@ -533,7 +533,7 @@ fi
 [ -n "$SESSION_STATE_SH" ] && ACTIVE_AGENTS=$("$SESSION_STATE_SH" --get '.active_agents' 2>/dev/null || echo "null")
 ```
 
-- **Dead `/loop` jobs (auto-stop).** For each watcher whose target PR is merged/closed: set `.prs["$N"].babysit.stop_requested=true` via `session-state.sh --set`; record `Stopped stale /loop job (PR #N watcher — PR already merged)` in `SWEEP_AUTO_HANDLED`.
+- **Dead Monitor tasks (auto-stop).** For each watcher whose target PR is merged/closed: read `.prs["$N"].babysit.monitor_task_id`, stop that exact task with `TaskStop` when present, then atomically set `stop_requested=true`, `active=false`, and `monitor_task_id=null` via `session-state.sh --set`. Record `Stopped stale Monitor task (PR #N watcher — PR already merged)` in `SWEEP_AUTO_HANDLED`. A missing/failed task ID is a decision item, never a claimed successful stop.
 - **Stale handoffs (auto-delete).** Scan both layout patterns (`~/.claude/handoffs/pr-*.json` and `~/.claude/handoffs/*/*/pr-*.json`). For each merged PR: resolve path with `handoff-state.sh [--owner-repo ...] --path N` and delete via `handoff-state.sh [--owner-repo ...] --delete N`. Never `rm -f` directly — that bypasses the state-lock advisory lock (issue #682).
 - **Surface (never auto-act).** Add to `SWEEP_NEEDS_DECISION`: live `CronCreate` jobs, any `active_agents` entries, `monitoring_active=true`, and any `recovery/dirty-main-*` branches.
 

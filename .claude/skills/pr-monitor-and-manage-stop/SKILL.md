@@ -1,15 +1,15 @@
 ---
 name: pr-monitor-and-manage-stop
-description: Clean-cancel companion to /pr-monitor-and-manage. Stops the PR-fleet-manager loop, tears down its /loop, clears monitoring state in session-state.json, and prints a final summary. Triggers on "/pr-monitor-and-manage-stop", "/pmm-stop", "stop monitoring PRs".
+description: Clean-cancel companion to /pr-monitor-and-manage. Stops the PR-fleet Monitor tasks, clears monitoring state in session-state.json, and prints a final summary. Triggers on "/pr-monitor-and-manage-stop", "/pmm-stop", "stop monitoring PRs".
 triggers:
   - pr-monitor-and-manage-stop
   - pmm-stop
   - stop monitoring PRs
   - stop PR fleet
-argument-hint: "(no arguments — stops the active PR-fleet-manager loop in this thread)"
+argument-hint: "(no arguments — stops the active PR-fleet Monitor in this thread)"
 ---
 
-Clean-cancel companion to `/pr-monitor-and-manage`. Use this to stop the PR-fleet-manager loop without leaving a dangling `/loop`, stale monitoring state, or auto-wake re-scan behind.
+Clean-cancel companion to `/pr-monitor-and-manage`. Use this to stop the PR-fleet manager without leaving a dangling main/auto-wake Monitor, stale monitoring state, or re-scan behind.
 
 A stale pause marker left by a killed session is safely reconciled: the next `/pr-monitor-and-manage` invocation reads it and resumes (or the user runs `/pmm-stop` here to fully tear down), then re-runs discovery from scratch.
 
@@ -39,31 +39,36 @@ PAUSED_AT=$("$SESSION_STATE_SH" --get '.pmm.paused_at' 2>/dev/null || echo null)
 ```
 
 - If `$ACTIVE` is `true` → proceed to teardown.
-- If `$PAUSED_AT` is set (paused but not active) → proceed to teardown (clear pause marker + any re-scan loop).
-- If both `false`/`null` → report "No active PR-fleet-manager loop found." and stop. (Still run Step 2's loop cancel best-effort in case a loop is armed without state.)
+- If `$PAUSED_AT` is set (paused but not active) → proceed to teardown (clear pause marker + any re-scan Monitor).
+- If both `false`/`null` → report "No active PR-fleet Monitor found." and stop. (Still inspect the recorded Monitor task IDs.)
 
-## Step 2: Tear down the loop
+## Step 2: Stop the main Monitor
 
-Cancel the recurring `/loop` that `/pr-monitor-and-manage` established:
-
-- If the runtime exposes a loop id / cancel handle, cancel it explicitly.
-- Otherwise interrupt the active loop (Ctrl+C in CLI, stop in web). Invoking `/pmm-stop` is itself the signal — the next tick must not re-arm.
+Read `.pmm_monitor_task_id` and stop that exact task with `TaskStop`. Report a missing/failed task
+instead of claiming cancellation; set `pmm_active=false` in either case so an already-emitted tick
+cannot re-arm without a fresh user invocation. Set `MAIN_MONITOR_STOPPED=true` only after a
+successful `TaskStop`; otherwise set it to `false`.
 
 ## Step 3: Cancel the auto-wake re-scan
 
-If `--auto-wake` armed a re-scan at pause time, cancel that `/loop` the same way as Step 2. Since issue #827 it is a plain `/loop` with no recorded job id, so there is nothing to reconcile in state and nothing that can outlive this turn.
+If `--auto-wake` armed a re-scan at pause time, stop `.pmm.auto_wake_monitor_task_id` with `TaskStop`.
+Set `AUTO_WAKE_MONITOR_STOPPED=true` only after success; otherwise set it to `false`.
 
 ## Step 4: Clear monitoring state (preserve everything else)
 
-Use `session-state.sh` so unrelated fields (other skills' state, PR tracking, budgets) are preserved:
+Use `session-state.sh` so unrelated fields (other skills' state, PR tracking, budgets) are preserved. Build one atomic call, clearing a task ID only when its `TaskStop` succeeded (a failed stop keeps the ID for diagnosis):
 
 ```bash
-"$SESSION_STATE_SH" \
-  --set '.pmm_active=false' \
-  --set '.pmm_next_expected_tick_at=null' \
-  --set '.pmm.paused_at=null' \
-  --set '.pmm.fleet_at_pause=null' \
+SET_ARGS=(
+  --set '.pmm_active=false'
+  --set '.pmm_next_expected_tick_at=null'
+  --set '.pmm.paused_at=null'
+  --set '.pmm.fleet_at_pause=null'
   --set '.pmm.config_at_pause=null'
+)
+[[ "$MAIN_MONITOR_STOPPED" == true ]] && SET_ARGS+=(--set '.pmm_monitor_task_id=null')
+[[ "$AUTO_WAKE_MONITOR_STOPPED" == true ]] && SET_ARGS+=(--set '.pmm.auto_wake_monitor_task_id=null')
+"$SESSION_STATE_SH" "${SET_ARGS[@]}"
 ```
 
 Leave `pmm_in_flight`, `pmm_digest`, `pmm_digest_streak`, and `pmm_idle_streak` in place as an audit trail — they are harmless once `pmm_active=false`, and a later `/pr-monitor-and-manage` re-invocation re-evaluates them against live PR state on its first tick. Do **not** touch `cr_hourly`, `greptile_daily`, `prs`, `active_agents`, or any non-`pmm_*` field. Note any PMM-owned entries still in `active_agents` (phase-a-fixer fix subagents) in the final summary — they may continue running until they exit on their own.
@@ -73,7 +78,7 @@ Leave `pmm_in_flight`, `pmm_digest`, `pmm_digest_streak`, and `pmm_idle_streak` 
 ```text
 === PR fleet monitoring stopped ===
 Reason:   user /pmm-stop
-Loop:     cancelled (no further ticks)
+Monitor:  stopped (no further ticks)
 State:    pmm_active=false, pause marker cleared
 Auto-wake re-scan: <cancelled | none>
 In-flight at stop: <list any pmm_in_flight PR # + skill, or "none">

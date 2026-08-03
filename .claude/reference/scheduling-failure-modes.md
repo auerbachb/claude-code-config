@@ -2,7 +2,7 @@
 
 > Reference material for `.claude/rules/scheduling-reliability.md`. Each pattern is recorded as a case study so that future sessions (and future rule edits) have concrete symptoms to match against.
 
-The common thread: **between-turn scheduling has no in-turn observer.** Once the next tick fails to fire, there is no agent turn in which the 5-minute heartbeat hook can warn. The user is the first detector. These patterns exist to shorten the detection loop — recognize the symptom, re-establish with `/loop`, and stop re-committing the same class of error.
+The common thread: **between-turn scheduling has no in-turn observer.** Once the next tick fails to fire, there is no agent turn in which the 5-minute heartbeat hook can warn. The user is the first detector. These patterns exist to shorten the detection loop — recognize the symptom, re-establish with `Monitor`, and stop re-committing the same class of error.
 
 ## Pattern 1 — First-Tick-Fires-Then-Drops
 
@@ -10,7 +10,7 @@ The common thread: **between-turn scheduling has no in-turn observer.** Once the
 
 **Root cause.** Hand-rolled one-shot chains require the agent to call `ScheduleWakeup` (or equivalent) at the end of *every* turn. Any turn where the agent forgets the re-arm, or where the re-arm call silently errors, ends the chain. The first tick often works because the setup is fresh in-context; subsequent ticks are cold and the re-arm is easy to drop.
 
-**Fix.** Replace with `/loop N <command>`. The runtime owns the cadence; the agent never has to remember.
+**Fix.** Replace with a persistent `Monitor` whose out-of-turn command emits each tick. The agent never has to remember a re-arm.
 
 ## Pattern 2 — Cold-Cache Fragility on Long Intervals
 
@@ -21,7 +21,7 @@ The common thread: **between-turn scheduling has no in-turn observer.** Once the
 - Partial completion if the model is under pressure on the cold turn
 - Subtle drift in what "the last watermark" meant
 
-**Fix.** Use `/loop`, at any interval. For short intervals (≤5 min) it stays warm and avoids the
+**Fix.** Use a persistent `Monitor`, at any interval. Its process stays alive out of turn and avoids the
 problem entirely. Don't optimize cadence inside a flaky chain — fix the chain by switching primitive.
 
 > **Superseded (#914).** This entry used to recommend `CronCreate` for long intervals, on the
@@ -41,7 +41,7 @@ problem entirely. Don't optimize cadence inside a flaky chain — fix the chain 
 - **`delaySeconds` outside the clamp** — `ScheduleWakeup` clamps `[60, 3600]`. A call with `30` or `7200` is silently clamped; a call with a non-numeric value errors.
 - **Runtime rejection not surfaced to user** — the tool-call error is visible to the agent but not to the user, so if the agent exits without a heartbeat, the user never learns.
 
-**Fix.** `/loop` eliminates the failure surface — there is no re-schedule call to fail. If a one-shot primitive is still in use (rare), the agent MUST verify the scheduling call returned cleanly before exiting the turn, and must surface any error in a user-visible heartbeat.
+**Fix.** `Monitor` eliminates the re-schedule surface — one persistent process emits every tick. If a one-shot primitive is still in use (rare), the agent MUST verify the scheduling call returned cleanly before exiting the turn, and must surface any error in a user-visible heartbeat.
 
 ## Pattern 4 — Scheduler Promise With No Scheduler
 
@@ -49,7 +49,7 @@ problem entirely. Don't optimize cadence inside a flaky chain — fix the chain 
 
 **Root cause.** The agent described the intent but omitted the tool call — a pure output-vs-action mismatch. Often triggered when the agent is summarizing and conflates "I will" with "I did."
 
-**Fix.** Before any message that commits to a future check-back, the same turn must contain an active `/loop` (or `CronCreate`) call. If no scheduler is armed, do not promise one — say "ping me when you want the status" instead.
+**Fix.** Before any message that commits to a future check-back, the same turn must contain an active `Monitor`. If no monitor is armed, do not promise one — say "ping me when you want the status" instead.
 
 ## Pattern 5 — Stable-State Flooding
 
@@ -57,7 +57,7 @@ problem entirely. Don't optimize cadence inside a flaky chain — fix the chain 
 
 **Root cause.** The scheduler had no stable-state digest or backoff gate, so "nothing changed" was treated like actionable progress forever. In PR #359 on 2026-04-25, cron `e7230e2f` kept a 1-minute cadence while orphan one-shot `4e56074f` also remained alive; ticks #45-#93 repeated the same state for roughly 50 minutes until the user manually stopped it.
 
-**Fix.** Apply `scheduling-reliability.md` "Stable-State Backoff": compute the digest, increment `digest_streak`, widen to `max(15m, 3×base)` at streak 3 (for the default 5m base this is 15m — always strictly greater than the base), and pause at streak 9. If `blocker_kind == "user_input"` or the blocker text says the agent is awaiting the user's direction, pause after the first visible message. When deleting or promoting the cron, also cancel sibling `ScheduleWakeup` jobs.
+**Fix.** Apply `scheduling-reliability.md` "Stable-State Backoff": compute the digest, increment `digest_streak`, widen to `max(15m, 3×base)` at streak 3 (for the default 5m base this is 15m — always strictly greater than the base), and pause at streak 9. If `blocker_kind == "user_input"` or the blocker text says the agent is awaiting the user's direction, pause after the first visible message. On a tier change, stop the prior Monitor task before arming its replacement.
 
 > **Authoritative source decision (issue #794):** the base-relative formula `max(15m, 3×base)` from `babysit-pr/SKILL.md` T5 was made authoritative over the earlier absolute `5m`/`15m` ladder in `scheduling-reliability.md`, because absolute minutes silently no-op at the documented 5m default (widening to 5m from 5m is no change). The base-relative form is correct at every `--cadence` value and was validated live on PR #775.
 
@@ -138,18 +138,38 @@ result, that means:
 > is always `/loop`" was not the safeguard it read as — at `--cadence 5m` it produced exactly the
 > job that does not fire. The skill text and the runtime never disagreed; both led to `CronCreate`.
 
-`/loop`'s **dynamic mode** (invoked with no interval) is a different path: it self-paces with
-`ScheduleWakeup` and arms a `Monitor` as the primary wake signal for event-gated work. Whether the
-remaining miss is in `CronCreate`'s scheduler or the idle-detection gate cannot be narrowed further
-from outside the harness — both are runtime internals with no repo-authored implementation.
+### Experiment 1 — dynamic `/loop` liveness (issue #924, observed 2026-08-02)
 
-**What was observed firing, this session, under the same conditions:** the `Monitor`-backed silence
-ceiling tripped on schedule and forced a turn. `ScheduleWakeup` was not exercised. So of the three
-primitives, exactly one has positive evidence, one has negative evidence, and one is untested —
-which is why the guidance below prefers `Monitor` and treats presence as no evidence of liveness.
+The owner recorded two operational runs after the controlled cron probe. A dynamic `/loop`
+watching PR #937 (no leading interval; `ScheduleWakeup`-backed) last ticked at 12:15 AM ET,
+then produced **zero autonomous ticks for roughly one hour**. It resumed only when `/go-on`
+manually created a turn. The independent `babysit-tick-watchdog.sh` reported the stale tick at
+15 minutes, proving the observation path was alive while the loop was not. A second dynamic
+watcher on PR #944 died the same way in the same session.
 
-**Fix.** Treat `CronCreate` as a non-firing primitive and back every user-facing poll with
-`/loop` (`scheduling-reliability.md` decision tree). Verify **liveness, not presence**, before
+This is operational rather than a new synthetic file-append probe: the surviving record does
+not preserve a detached-probe sample count or final runtime listing, so none is invented here.
+It still stayed idle past far more than the required three wake-ups and directly answers the
+liveness question: dynamic `/loop` is not a reliable recurring primitive.
+
+### Experiment 2 — `CronCreate` without `Monitor`
+
+**Deferred.** No human observer was available, and this control deliberately forbids both a
+`Monitor` and a detached probe. Those are the only mechanisms that guarantee another turn if
+cron stays silent, so running the control unattended could strand the session. The hypothesis
+that a concurrent `Monitor` suppresses cron firing therefore remains unproven.
+
+### Evidence classification
+
+| Primitive | Evidence | Classification |
+|-----------|----------|----------------|
+| persistent `Monitor` | The silence ceiling fired out of turn during the #914 controlled probe | **positive** |
+| `CronCreate` / fixed `/loop` | Controlled 11-minute idle probe: expected ~7, observed 0 | **negative** |
+| dynamic `/loop` / recurring `ScheduleWakeup` | PR #937 and PR #944 stopped until a manual turn | **negative** |
+| one-shot `ScheduleWakeup` | Not tested by these recurring-poll experiments | **untested here** |
+
+**Fix.** Treat both `/loop` modes as unreliable recurring primitives and back every user-facing
+poll with a persistent `Monitor` (`scheduling-reliability.md` decision tree). Verify **liveness, not presence**, before
 ending a polling turn. `.claude/hooks/babysit-tick-watchdog.sh` surfaces a stalled watcher at
 2 × cadence, so a dead poll is now reported rather than mistaken for a quiet one.
 
@@ -165,14 +185,14 @@ Treat any of these as a scheduling failure until proven otherwise:
 
 - User says "your polling didn't fire" / "what happened to the check?" / "you said you'd come back"
 - User prompts for status after the promised tick time with no intervening agent message
-- `session-state.json` records a polling context but `CronList` has no matching job and no `/loop` is visible
+- `session-state.json` records a polling context but no matching `Monitor` task is visible
 - **A job *is* listed (or a watcher is `active`) yet `babysit.last_tick_at` is older than
   2 × `cadence_effective_minutes`, with no manual driver in between** (Pattern 7). Every other
   heuristic here checks for a *missing* job; this is the only one that catches a present-but-dead one.
 - Post-compaction recovery finds a `polling_failures` entry or a `monitoring_active: true` flag with no live schedule
 - Repeated poll ticks show unchanged `digest`/`digest_streak`, unchanged blocker, and no matching `last_cron_action` backoff
 
-Recovery is always the same: apologize briefly, issue `/loop`, record the incident, continue.
+Recovery is always the same: apologize briefly, arm a persistent `Monitor`, record the incident, continue.
 
 ## Canonical Incident — 2026-04-20 Dropped PM Tick
 
@@ -180,6 +200,7 @@ Recovery is always the same: apologize briefly, issue `/loop`, record the incide
 
 **Root cause (diagnosed post-hoc).** The 11:57 turn ran substantive work and exited without re-arming `ScheduleWakeup`. No error was surfaced because no re-schedule call was made. The 5-minute heartbeat hook could not fire because there was no subsequent turn.
 
-**Fix applied.** Re-established via `/loop 5m /status`. No further drops in that session.
+**Historical fix applied.** Re-established via `/loop 5m /status`; issue #924 later showed that
+both `/loop` modes are unreliable for recurrence, so current recovery uses `Monitor`.
 
 **Lesson.** Documented in memory (`feedback_schedulewakeup_silent_drop.md`) so future sessions recognize the pattern on the first instance rather than the Nth.

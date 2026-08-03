@@ -1,6 +1,6 @@
 ---
 name: babysit-pr-stop
-description: Cleanly stop an active /babysit-pr watcher for a PR. Sets the watcher's stop flag in session-state so its next tick terminates, cancels the recurring /loop, and confirms. Invoke as `/babysit-pr-stop <PR>`.
+description: Cleanly stop an active /babysit-pr watcher for a PR. Sets the watcher's stop flag in session-state, stops its persistent Monitor task, and confirms. Invoke as `/babysit-pr-stop <PR>`.
 triggers:
   - babysit-pr-stop
   - unwatch pr
@@ -9,9 +9,9 @@ triggers:
 argument-hint: "<PR>"
 ---
 
-Stop the `/babysit-pr` watcher for one PR. This is the clean-cancel companion to `/babysit-pr` — it does not merge, fix, or touch the PR itself; it only tears down the watcher loop and its state.
+Stop the `/babysit-pr` watcher for one PR. This is the clean-cancel companion to `/babysit-pr` — it does not merge, fix, or touch the PR itself; it only tears down the watcher Monitor and its state.
 
-Stopping is **cooperative and idempotent**: it flags the watcher to terminate on its next tick (the watcher's `T0` short-circuit handles the actual clean exit). Running it on a PR with no active watcher is a safe no-op.
+Stopping is **exact and idempotent**: it records the stop request, stops the recorded Monitor task with `TaskStop`, and leaves the watcher's `T0` short-circuit armed for any tick that was already emitted. Running it on a PR with no active watcher is a safe no-op.
 
 ## Resolve the state helper
 
@@ -56,31 +56,34 @@ fi
 
 Exit `3` (state file absent) is the legitimate "nothing to watch" case. Any other non-zero exit is a real helper/parse failure — surface it and stop rather than masking it as inactive.
 
-### 3. Request the stop (cooperative shutdown)
+### 3. Request the stop (race-safe shutdown)
 
-Set the stop flag so the next `/babysit-pr … --tick` cycle's `T0` short-circuit terminates the watcher cleanly (clearing `active`, `dispatch_in_flight`, and emitting the final summary). Write atomically via the helper — never raw `jq` (`handoff-files.md`):
+Set the stop flag so any already-emitted `/babysit-pr … --tick` event's `T0` short-circuit terminates the watcher cleanly. Write atomically via the helper — never raw `jq` (`handoff-files.md`):
 
 ```bash
 "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.stop_requested=true"
 ```
 
-Do **not** clear `active` here — let the watcher's terminate path own that so its final summary fires exactly once. (If no further tick will run — e.g. the loop was already torn down — set `active=false` here too so state stays consistent.)
+Do **not** clear `active` until the Monitor stop result is known.
 
-### 4. Cancel the recurring poll
+### 4. Stop the recurring Monitor
 
-The watcher always runs on `/loop` (issue #827 removed `--durable`, the only other mode). The session loop stops re-arming once the watcher terminates; if you can cancel the active `/loop` immediately (runtime stop / "stop polling"), do so — otherwise the `stop_requested` flag set in Step 3 guarantees the next tick is the last.
+The watcher always runs on a persistent `Monitor` (issues #914 and #924 retired both `/loop` modes). Read `.prs["$PR"].babysit.monitor_task_id` and call `TaskStop` for that exact task. A missing ID is a degraded stale watcher, not permission to assume a live poll was cancelled: report it, clear `active`, and rely on `stop_requested` to make any already-emitted tick a no-op. If `TaskStop` fails, also keep the task ID for diagnosis; never report a successful stop.
 
-If you cancelled the loop outright rather than letting it tick once more, the watcher's T-END cleanup never runs — so perform the terminal cleanup here. **Clear `dispatch_in_flight` only when nothing is actually in flight:** a `/fixpr` or `/wrap` started by an earlier tick keeps running after the loop is cancelled, and clearing its marker lets a later `/babysit-pr` arm dispatch a second one on the same PR — while the original, on completion, overwrites whatever state that new dispatch had written.
+After `TaskStop` succeeds, perform terminal cleanup here. **Clear `dispatch_in_flight` only when nothing is actually in flight:** a `/fixpr` or `/wrap` started by an earlier tick keeps running after the Monitor stops, and clearing its marker lets a later `/babysit-pr` arm dispatch a second one on the same PR — while the original, on completion, overwrites whatever state that new dispatch had written.
 
 ```bash
 IN_FLIGHT=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.dispatch_in_flight" 2>/dev/null || echo "null")
 if [[ "$IN_FLIGHT" == "null" || -z "$IN_FLIGHT" ]]; then
   "$SESSION_STATE_SH" \
     --set ".prs[\"$PR\"].babysit.active=false" \
+    --set ".prs[\"$PR\"].babysit.monitor_task_id=null" \
     --set ".prs[\"$PR\"].babysit.dispatch_in_flight=null"
 else
   # Leave the marker: T0's TTL reclaim owns it, so it can never wedge forever.
-  "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.active=false"
+  "$SESSION_STATE_SH" \
+    --set ".prs[\"$PR\"].babysit.active=false" \
+    --set ".prs[\"$PR\"].babysit.monitor_task_id=null"
 fi
 ```
 
@@ -90,22 +93,22 @@ Say which happened — a stop that leaves a dispatch running is not the same pro
 
 Word the confirmation to match what actually happened:
 
-- **Loop cancelled outright, nothing in flight:**
+- **Monitor stopped, nothing in flight:**
 
   ```
-  Stopped babysitting PR #<PR>. Poll cancelled and watcher state cleared — no next tick will run. No further /fixpr or /wrap dispatches will be made.
+  Stopped babysitting PR #<PR>. Monitor stopped and watcher state cleared — no next tick will run. No further /fixpr or /wrap dispatches will be made.
   ```
 
-- **Loop cancelled with a dispatch still running:**
+- **Monitor stopped with a dispatch still running:**
 
   ```
-  Stopped babysitting PR #<PR>. Poll cancelled — no new dispatch will start, but the in-flight <skill> may still complete and finish its own work.
+  Stopped babysitting PR #<PR>. Monitor stopped — no new dispatch will start, but the in-flight <skill> may still complete and finish its own work.
   ```
 
-- **Cooperative stop (flag set, one tick remaining):**
+- **Monitor task missing or TaskStop unavailable (cooperative guard only):**
 
   ```
-  Stopped babysitting PR #<PR>. The watcher will exit on its next tick (stop_requested set). No further /fixpr or /wrap dispatches will be made.
+  Babysit stop requested for PR #<PR>, but no Monitor task was stopped. Watcher state is inactive and any already-emitted tick will terminate at T0; verify the runtime task list before re-arming.
   ```
 
 If there was no active watcher, the Step 2 message already reported the no-op.

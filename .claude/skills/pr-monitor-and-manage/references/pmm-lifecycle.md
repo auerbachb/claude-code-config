@@ -19,7 +19,7 @@ Pause marker fields live under nested `.pmm.*`. Existing runtime fields
 
 `config_at_pause` fields: `author`, `repo`, `cadence`, `max_parallel`, `idle_pause_after`, `auto_wake`, `auto_wake_cadence`, `confirm_merges`.
 
-> **Wake coupling:** `/pr-monitor-and-manage-wake` Step 4b rebuilds `PMM_FLAGS` from the `config_at_pause` blob — including `--confirm-merges` when `confirm_merges` is true — before re-arming the loop. The main skill's Step 0a uses the same blob for flag merging on direct re-invocation. `-wake` Step 4a reads it too, but only for `author` / `repo`, to scope its lightweight fleet scan (issue #871) — which is why a missing blob fails that scan closed rather than resuming.
+> **Wake coupling:** `/pr-monitor-and-manage-wake` Step 4b rebuilds `PMM_FLAGS` from the `config_at_pause` blob — including `--confirm-merges` when `confirm_merges` is true — before re-arming the Monitor. The main skill's Step 0a uses the same blob for flag merging on direct re-invocation. `-wake` Step 4a reads it too, but only for `author` / `repo`, to scope its lightweight fleet scan (issue #871) — which is why a missing blob fails that scan closed rather than resuming.
 
 ---
 
@@ -35,9 +35,8 @@ if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
   #    already-captured $SAVED variable, never re-read .pmm.config_at_pause from
   #    session-state after step 3 has run (it will be null by then).
   SAVED=$(.claude/scripts/session-state.sh --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
-  # 2. Cancel the auto-wake re-scan loop, if one is running (runtime loop-stop).
-  #    Nothing to reconcile in state: since #827 the re-scan is a /loop, not a
-  #    recorded cron job, so there is no id that can outlive this turn.
+  # 2. Stop the auto-wake Monitor, if one is running, using the task ID in
+  #    .pmm.auto_wake_monitor_task_id; clear that ID only after TaskStop.
   # 3. Clear pause marker + reset pmm_idle_streak=0 + set pmm_active=true
   #    + null .pmm_digest and .pmm_row_digest (atomic batch) — the digest reset
   #    forces Step 4's full table on the first post-resume tick (condition a)
@@ -55,9 +54,9 @@ if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
 fi
 ```
 
-> **The digest reset has two owners, one per resume path.** The branch above is guarded on a non-null `.pmm.paused_at`, so it covers only **direct re-invocation** of this skill. On the **`-wake`** path, Step 4b clears the marker before re-arming the loop — this branch is already skipped by the time the loop's first tick runs — so `-wake` Step 4b nulls `.pmm_digest` and `.pmm_row_digest` in its own atomic `--set` batch (issue #872). The guarantee "both digests are null after **any** resume" holds only while both sides do it; neither is redundant.
+> **The digest reset has two owners, one per resume path.** The branch above is guarded on a non-null `.pmm.paused_at`, so it covers only **direct re-invocation** of this skill. On the **`-wake`** path, Step 4b clears the marker before re-arming the Monitor — this branch is already skipped by the time the first Monitor tick runs — so `-wake` Step 4b nulls `.pmm_digest` and `.pmm_row_digest` in its own atomic `--set` batch (issue #872). The guarantee "both digests are null after **any** resume" holds only while both sides do it; neither is redundant.
 
-Resume logic is shared with `/pr-monitor-and-manage-wake` — see `.claude/skills/pr-monitor-and-manage-wake/SKILL.md` Step 3 (re-scan teardown) and Step 4b (marker clear + loop re-arm). When resuming via re-invoking this skill (not `-wake`), apply the precedence rule in Step 1 after parsing `$ARGUMENTS`: any flag explicitly supplied on this invocation wins; omitted flags inherit from `.pmm.config_at_pause`. After resume, continue with Step 1 using the merged config and run a full discovery tick at **base** cadence (not the widened backoff cadence).
+Resume logic is shared with `/pr-monitor-and-manage-wake` — see `.claude/skills/pr-monitor-and-manage-wake/SKILL.md` Step 3 (re-scan teardown) and Step 4b (marker clear + Monitor re-arm). When resuming via re-invoking this skill (not `-wake`), apply the precedence rule in Step 1 after parsing `$ARGUMENTS`: any flag explicitly supplied on this invocation wins; omitted flags inherit from `.pmm.config_at_pause`. After resume, continue with Step 1 using the merged config and run a full discovery tick at **base** cadence (not the widened backoff cadence).
 
 A stale marker left by a killed session is safely reconciled here: the next `/pr-monitor-and-manage` invocation reads it, resumes (or the user runs `/pmm-stop`), and re-runs discovery from scratch.
 
@@ -77,11 +76,11 @@ Print the **full** Step 4 status table one last time — terminal snapshots (Pau
 [$TS] PMM pausing — reason: <empty fleet | N idle ticks>
 ```
 
-### 2. Cancel the loop
+### 2. Stop the main Monitor
 
-Cancel the recurring `/loop`:
-- If the runtime exposes a loop id / cancel handle, cancel it explicitly.
-- Otherwise interrupt the active loop. The next tick must not re-arm.
+Read `.pmm_monitor_task_id`, stop that exact task with `TaskStop`, then clear the ID. A missing or
+unstoppable task is a degraded state that must be reported; set `pmm_active=false` so no later tick
+claims the fleet remains watched.
 
 ### 3. Build fleet snapshot + config for the pause marker
 
@@ -109,19 +108,30 @@ CONFIG_AT_PAUSE=$(jq -nc \
   --set '.pmm_next_expected_tick_at=null'
 ```
 
+After Step 2's `TaskStop` succeeds, add `--set '.pmm_monitor_task_id=null'` to this same batch.
+If the stop failed, omit that write and retain the ID for diagnosis.
+
 Preserve `pmm_digest`, `pmm_digest_streak`, and `pmm_idle_streak` as audit trail.
 
 ### 5. Optional auto-wake re-scan (`--auto-wake`)
 
 When `$PMM_AUTO_WAKE` is true, keep a low-frequency re-scan running instead of going fully quiet at pause:
 
-```text
-/loop $PMM_AUTO_WAKE_CADENCE /pr-monitor-and-manage-wake --auto-check
+```bash
+while sleep "<$PMM_AUTO_WAKE_CADENCE in seconds>"; do
+  printf '%s\n' '/pr-monitor-and-manage-wake --auto-check'
+done
 ```
 
-Nothing is recorded in `polling_jobs[]` and there is no job id to track — a `/loop` cannot outlive the turn that armed it, so there is no orphan to fail closed against. This replaces the `CronCreate` job that issue #827 removed: that job was session-scoped too, but was documented as surviving session turnover, and the fail-closed teardown it needed was duplicated across three files.
+Arm that command through `Monitor` with `persistent: true`; store the returned task ID in
+`.pmm.auto_wake_monitor_task_id` so resume and stop can terminate the exact process. Nothing is
+recorded in `polling_jobs[]`. This replaces both the `CronCreate` job removed by issue #827 and the
+unreliable `/loop` re-scan retired by issue #924.
 
-Cross-session continuity is the pause marker's job, not this loop's — see the note under Step 0a.
+If Monitor arming fails or returns no task ID, leave `.pmm.auto_wake_monitor_task_id=null` and
+report that the fleet is paused without auto-wake. Never claim a re-scan is armed from intent alone.
+
+Cross-session continuity is the pause marker's job, not this Monitor's — see the note under Step 0a.
 
 ### 6. Summary line
 
@@ -141,8 +151,8 @@ Reached from Step 7 when the **user** invokes `/pmm-stop`. Tear down and report 
 
 ```bash
 .claude/scripts/session-state.sh --set '.pmm_active=false' --set '.pmm_next_expected_tick_at=null'
-# Best-effort: cancel the loop if a loop-id mechanism is available; otherwise the
-# user's /pmm-stop / interrupt drops it.
+# Stop the recorded main/auto-wake Monitor task IDs with TaskStop. Clear each ID
+# only after that exact stop succeeds; retain a failed task ID for diagnosis.
 ```
 
 Print a final summary:

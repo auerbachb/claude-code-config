@@ -45,7 +45,7 @@ The failure mode this section guards against: an autonomy grant read as a genera
 
 ## Why the monitor tick, and not a new scheduling primitive
 
-`/pm` owns no polls (`pm-monitoring-decision.md`): no `/loop`, no `CronCreate`. That prohibition exists so PR-fleet polling has exactly one owner (`/pr-monitor-and-manage`).
+`/pm` owns no polls (`pm-monitoring-decision.md`): no `Monitor`, `/loop`, or `CronCreate`. That prohibition exists so PR-fleet polling has exactly one owner (`/pr-monitor-and-manage`).
 
 Refill needs no new primitive. Dedicated Monitor Mode already runs an in-turn ~60s cycle whenever any pipeline is active, and that cycle already re-reads state. Capacity refill is one more step in that existing checklist (`monitor-mode.md`), which satisfies "fires on its own tick with no completion event and no user message" without arming anything.
 

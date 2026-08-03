@@ -144,11 +144,11 @@ All 30 commands are invoked as `/command` in a Claude Code session. They are def
 | `/issue-maker` | Planning | Capture-only thread mode — drafts and opens well-structured issues, reflects before writing, no implementation |
 | `/fixpr` | Review | Single-pass PR cleanup — fixes review findings and CI failures, replies to findings, resolves threads |
 | `/monitor` | Review | Audit all open PRs for engagement from the 4 AI reviewers (CodeRabbit/CodeAnt/BugBot/Graphite); render a gap matrix and post missing triggers after confirmation |
-| `/babysit-pr` | Review | Watch one PR on a recurring loop and auto-dispatch `/fixpr` or `/wrap` until it merges or hard-blocks |
+| `/babysit-pr` | Review | Watch one PR on a persistent Monitor and auto-dispatch `/fixpr` or `/wrap` until it merges or hard-blocks |
 | `/babysit-pr-stop` | Review | Clean-cancel companion to `/babysit-pr` — stops the watcher for one PR |
 | `/pr-monitor-and-manage` | Review | PR fleet manager — rediscover open PRs each tick and drive the per-PR decision tree until the fleet is clean |
-| `/pr-monitor-and-manage-stop` | Review | Clean-cancel companion to `/pr-monitor-and-manage` — tears down the fleet loop and its state |
-| `/pr-monitor-and-manage-wake` | Review | Resume companion to `/pr-monitor-and-manage` — wakes a paused fleet loop and re-arms it |
+| `/pr-monitor-and-manage-stop` | Review | Clean-cancel companion to `/pr-monitor-and-manage` — tears down the fleet Monitor and its state |
+| `/pr-monitor-and-manage-wake` | Review | Resume companion to `/pr-monitor-and-manage` — wakes a paused fleet monitor and re-arms it |
 | `/pr-review-help` | Review | Executive PR review — multi-PR parallel strategic analysis |
 | `/recap` | Workflow | Functional summary of a single PR or issue — nested bullets or table |
 | `/standup` | Workflow | Daily standup summary (single contributor) |
@@ -178,7 +178,7 @@ Rule files in `.claude/rules/` auto-load alongside `CLAUDE.md` and define the de
 | `cr-merge-gate.md` | Single authoritative merge gate — CR approval or clean BugBot/Greptile path, CI, resolved threads, AC verification |
 | `bugbot.md` | BugBot second-tier reviewer — polling, timeout, sticky assignment, merge gate contribution |
 | `greptile.md` | Greptile last-resort reviewer — severity-gated re-reviews, daily budget, self-review fallback |
-| `scheduling-reliability.md` | Reliable recurring polls — `/loop` requirement, cron escalation, no hand-rolled wakeup chains |
+| `scheduling-reliability.md` | Reliable recurring polls — persistent `Monitor`, no cron/dynamic-loop fallback or hand-rolled wakeup chains |
 | `subagent-orchestration.md` | Subagent spawning, phase transition autonomy, token exhaustion, phase A/B/C decomposition |
 | `monitor-mode.md` | Dedicated monitor mode, monitor loop, heartbeats during batch writes, health monitoring, post-compaction recovery |
 | `handoff-files.md` | Handoff file schema, session-state.json format, lifecycle (create/update/delete) |

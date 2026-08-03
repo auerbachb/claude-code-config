@@ -241,6 +241,6 @@ yet for a reader to act on.
 - `.claude/reference/chip-launching.md` — chip mechanics; the literal-vs-resolver emitter classes
 - `.claude/reference/chip-model-guard-decision.md` — the #770 resolver amendment
 - `.claude/reference/autofile-dedup.md` — the exact-artifact dedup contract
-- `.claude/rules/scheduling-reliability.md` — cron/loop selection and the pre-exit checklist
+- `.claude/rules/scheduling-reliability.md` — scheduling primitive selection and the pre-exit checklist
 - `.claude/rules/subagent-orchestration.md` — the top-tier spawn invariant this design preserves
 - `.claude/reference/harness-model-audit-2026-06.md` — the closest prior precedent (harness components vs model fleet, #49)

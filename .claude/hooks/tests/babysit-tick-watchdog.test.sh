@@ -229,8 +229,10 @@ rearm_pos=$(awk '{print index($0, "then /babysit-pr <PR>")}' <<<"$ctx")
 [[ "$rearm_pos" -gt 0 ]] || fail "recovery must name the re-arm step, got: $ctx"
 [[ "$stop_pos" -lt "$rearm_pos" ]] \
   || fail "stop must be instructed BEFORE re-arm (stop@$stop_pos, rearm@$rearm_pos)"
-grep -q 'NO leading interval' <<<"$ctx" \
-  || fail "recovery must warn off the fixed-interval /loop (CronCreate) path, got: $ctx"
+grep -q 'persistent Monitor task ID' <<<"$ctx" \
+  || fail "recovery must name the replacement persistent Monitor task ID, got: $ctx"
+grep -q 'never substitute CronCreate, either /loop mode' <<<"$ctx" \
+  || fail "recovery must reject every unreliable recurring primitive, got: $ctx"
 ok "recovery advice is actionable inside the 2x..3x window (stop, then re-arm)"
 
 # ── 13. Unwritable marker dir must not spam (BugBot, PR #922) ───────────────

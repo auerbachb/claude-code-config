@@ -120,19 +120,19 @@ ctx="$(run_hook "$PR" | context_of)"
 [[ -z "$ctx" ]] || fail "expected no re-emit when delete already applied, got: $ctx"
 ok "delete already applied → no re-emit from widen branch"
 
-# ── 10b. /loop path: no cron record at all → STOP fires, and the marker
-#         /babysit-pr T-END writes suppresses the second one. Since #827 the
-#         watcher is /loop-only, so this is now the DEFAULT path — case 10
-#         above only ever exercised a cron-backed poll.
+# ── 10b. Monitor path: no lifecycle record yet → STOP fires, and the marker
+#         /babysit-pr T-END writes suppresses the second one.
 write_state "$PR" '{"digest_streak":9,"babysit":{"cadence_base_minutes":5}}'
 ctx="$(run_hook "$PR" | context_of)"
-[[ -n "$ctx" ]] || fail "expected STOP on a /loop poll with no last_cron_action"
-ok "/loop poll (no cron record) → STOP emitted"
+[[ -n "$ctx" ]] || fail "expected STOP on a Monitor poll with no last_cron_action"
+echo "$ctx" | grep -q "TaskStop" || fail "stop advisory must name TaskStop, got: $ctx"
+echo "$ctx" | grep -q "monitor_task_id" || fail "stop advisory must name the recorded Monitor ID, got: $ctx"
+ok "Monitor poll (no lifecycle record) → STOP emitted with exact teardown"
 
 write_state "$PR" '{"digest_streak":9,"babysit":{"cadence_base_minutes":5},"last_cron_action":{"type":"delete","interval":"paused"}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -z "$ctx" ]] || fail "the stop marker /babysit-pr T-END writes must suppress a second STOP, got: $ctx"
-ok "/loop stop marker suppresses the repeat STOP"
+ok "Monitor stop marker suppresses the repeat STOP"
 
 # ── 10c. The widen advisory must never read as "stop the poll" ───────────────
 # streak 3..8 means keep polling, slower. The stop instruction belongs only to
@@ -144,6 +144,8 @@ ctx="$(run_hook "$PR" | context_of)"
 echo "$ctx" | grep -q "WIDEN" || fail "widen advisory should be labelled WIDEN, got: $ctx"
 echo "$ctx" | grep -q "KEEP RUNNING" || fail "widen advisory must say the poll keeps running, got: $ctx"
 echo "$ctx" | grep -q "Stop the poll" && fail "widen advisory must not carry a stop-the-poll instruction, got: $ctx"
+echo "$ctx" | grep -q "TaskStop" || fail "widen advisory must stop the prior Monitor task, got: $ctx"
+echo "$ctx" | grep -q "replacement at 15m" || fail "widen advisory must arm the replacement cadence, got: $ctx"
 ok "widen advisory (streak 3..8) says keep running, never stop"
 
 # ── 11. Streak >= 9 → stop the poll ──────────────────────────────────────────
@@ -151,8 +153,8 @@ write_state "$PR" '{"digest_streak":9,"babysit":{"cadence_base_minutes":5}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -n "$ctx" ]] || fail "expected STOP message at streak=9"
 echo "$ctx" | grep -q "Stop the poll" || fail "expected a stop-the-poll instruction, got: $ctx"
-echo "$ctx" | grep -q "CronDelete" || fail "stop message should still name CronDelete for cron-backed polls, got: $ctx"
-ok "streak>=9 → STOP the poll (naming both /loop and cron)"
+echo "$ctx" | grep -q "TaskStop" || fail "stop message should name TaskStop for Monitor-backed polls, got: $ctx"
+ok "streak>=9 → STOP the recorded Monitor task"
 
 # ── 12. blocker_kind=user_input → stop immediately (any streak) ──────────────
 write_state "$PR" '{"digest_streak":1,"blocker_kind":"user_input","babysit":{"cadence_base_minutes":5}}'

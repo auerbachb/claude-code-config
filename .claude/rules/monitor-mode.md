@@ -57,7 +57,7 @@ If a summary block references prior work you do not remember, recover before all
 If `monitoring_active=true` or passive mode with non-empty `prs`/`active_agents`, rebuild from `prs`, `active_agents`, handoffs, and GitHub before continuing.
 
 - No workers left → `monitoring_active=false`.
-- `/pm`-owned monitoring is always passive — never restart a `/loop`/`CronCreate` on `/pm`'s behalf; point fleet monitoring at `/pr-monitor-and-manage`.
+- `/pm`-owned monitoring is always passive — never restart a Monitor or scheduler on `/pm`'s behalf; point fleet monitoring at `/pr-monitor-and-manage`.
 - Jobs in `polling_jobs[]` → recover per that skill's contract (`pm-monitoring-decision.md`); log drops in `polling_failures[]`.
 
 ### Pre-Compaction Checkpointing (Preventive)

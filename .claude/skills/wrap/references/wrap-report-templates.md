@@ -29,7 +29,7 @@ Referenced from `wrap/SKILL.md` Step 4.3. The SKILL.md keeps the silent-default 
 ## Session sweep
 
 ### Auto-handled
-- {one bullet per SWEEP_AUTO_HANDLED entry — stopped /loop jobs, deleted handoffs, auto-filed tickets; omit the section if empty}
+- {one bullet per SWEEP_AUTO_HANDLED entry — stopped Monitor tasks, deleted handoffs, auto-filed tickets; omit the section if empty}
 
 ### Needs your decision
 - {one bullet per SWEEP_NEEDS_DECISION entry — proposed tickets, surfaced crons/subagents, PM-hygiene drift, time-sensitive reminders, future-self handoff; omit the section if empty}
