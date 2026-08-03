@@ -126,9 +126,21 @@ indexed_files=$(grep -E '^\|' "$CLAUDE_MD" \
 
 actual_files=$(find "$RULES_DIR" -type f -name '*.md' -exec basename {} \; \
   | sort -u)
+duplicate_basenames=$(find "$RULES_DIR" -type f -name '*.md' -exec basename {} \; \
+  | sort \
+  | uniq -d)
 
 missing_from_index=$(comm -23 <(printf '%s\n' "$actual_files") <(printf '%s\n' "$indexed_files") || true)
 missing_from_disk=$(comm -13 <(printf '%s\n' "$actual_files") <(printf '%s\n' "$indexed_files") || true)
+
+if [[ -n "$duplicate_basenames" ]]; then
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    duplicate_paths=$(find "$RULES_DIR" -type f -name "$f" | LC_ALL=C sort | paste -sd ',' -)
+    echo "::error file=${CLAUDE_MD}::Rule basename '${f}' is ambiguous across the recursive corpus (${duplicate_paths}). The CLAUDE.md rule index is basename-only; rename these files to unique basenames."
+    errors=$((errors + 1))
+  done <<< "$duplicate_basenames"
+fi
 
 if [[ -n "$missing_from_index" ]]; then
   while IFS= read -r f; do
@@ -146,7 +158,7 @@ if [[ -n "$missing_from_disk" ]]; then
   done <<< "$missing_from_disk"
 fi
 
-if [[ -z "$missing_from_index" && -z "$missing_from_disk" ]]; then
+if [[ -z "$missing_from_index" && -z "$missing_from_disk" && -z "$duplicate_basenames" ]]; then
   file_count=$(printf '%s\n' "$actual_files" | grep -c . || true)
   echo "Rule index alignment: OK (${file_count} files)"
 fi

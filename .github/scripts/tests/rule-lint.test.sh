@@ -231,9 +231,13 @@ expect() {
 # ---------------------------------------------------------------------------
 RATCHET_HEADROOM=750
 RATCHET_FLOOR=8500
-# Count words using wc -l via pipe (avoid grep -c exit-1 on empty output).
+# Count the same recursive corpus as the production lint.
 CURRENT_COUNT=""
-CURRENT_COUNT="$(cd "$SANDBOX" && cat CLAUDE.md .claude/rules/*.md | wc -w | tr -d ' ')"
+CURRENT_COUNT="$(
+  cd "$SANDBOX"
+  { cat CLAUDE.md; find .claude/rules -type f -name '*.md' -exec cat {} +; } \
+    | wc -w | tr -d ' '
+)"
 FORMULA=$(( CURRENT_COUNT + RATCHET_HEADROOM ))
 if (( FORMULA < RATCHET_FLOOR )); then
   FORMULA=$RATCHET_FLOOR
@@ -354,6 +358,8 @@ fi
 NESTED_DIR="${SANDBOX}/.claude/rules/subdir"
 NESTED_RULE="${NESTED_DIR}/foo.md"
 NESTED_LARGE_RULE="${NESTED_DIR}/large.md"
+NESTED_DUP_DIR="${SANDBOX}/.claude/rules/another-subdir"
+NESTED_DUP_RULE="${NESTED_DUP_DIR}/foo.md"
 CLAUDE_MD_BACKUP="${SANDBOX}/CLAUDE.md.before-nested-fixture"
 BASE_RULE_FILE_COUNT="$(find "${SANDBOX}/.claude/rules" -type f -name '*.md' | wc -l | tr -d ' ')"
 
@@ -394,6 +400,27 @@ elif ! grep -qF "Total auto-loaded word count: ${i_expected_total}" <<< "$i_inde
   echo "FAIL — (i) indexed nested rule was not included in the corpus word count"
   i_ok=0
 fi
+
+mkdir -p "$NESTED_DUP_DIR"
+printf '%s\n' 'duplicate basename fixture words' > "$NESTED_DUP_RULE"
+i_duplicate_out=""
+i_duplicate_got=0
+i_duplicate_out=$( ( cd "$SANDBOX" && bash "$LINT" 2>&1 ) ) || i_duplicate_got=$?
+if (( i_duplicate_got == 0 )); then
+  echo "FAIL — (i) duplicate nested-rule basename unexpectedly passed index alignment"
+  i_ok=0
+elif ! grep -qF "Rule basename 'foo.md' is ambiguous across the recursive corpus" <<< "$i_duplicate_out"; then
+  echo "FAIL — (i) duplicate nested-rule basename did not emit the ambiguity error"
+  i_ok=0
+elif ! grep -qF ".claude/rules/subdir/foo.md" <<< "$i_duplicate_out" \
+  || ! grep -qF ".claude/rules/another-subdir/foo.md" <<< "$i_duplicate_out"; then
+  echo "FAIL — (i) duplicate-basename error did not name both colliding rule paths"
+  i_ok=0
+elif grep -qF "Rule index alignment: OK" <<< "$i_duplicate_out"; then
+  echo "FAIL — (i) duplicate nested-rule basename also emitted a false-clean alignment result"
+  i_ok=0
+fi
+unlink "$NESTED_DUP_RULE"
 
 python3 - "$NESTED_LARGE_RULE" <<'PY'
 import sys
