@@ -95,7 +95,7 @@ Reached from Step 7 when the fleet is empty or idle. Unlike Stop & Clean Exit, P
 Print the **full** Step 4 status table one last time — terminal snapshots (Pause here, Stop & Clean Exit) are an explicit exception to Step 4's quiet-tick suppression, so the user always gets a final fleet snapshot even when the pause tick itself was quiet — then a one-line reason:
 
 ```text
-[$TS] PMM pausing — reason: <empty fleet | N idle ticks>
+[$TS] PMM pausing — reason: <empty fleet | N idle ticks | stable-frozen (N unchanged ticks)>
 ```
 
 ### 2. Stop the main Monitor

@@ -44,6 +44,9 @@ require_text .claude/skills/babysit-pr-stop/SKILL.md 'call `TaskStop` for that e
   'babysit-pr-stop must stop the recorded Monitor task'
 require_text .claude/skills/babysit-pr-stop/SKILL.md 'keep `active=true`' \
   'babysit-pr-stop must block duplicate arming until exact teardown succeeds'
+require_text .claude/skills/babysit-pr-stop/SKILL.md \
+  'last_cron_action={\"type\":\"delete\",\"interval\":\"paused\"' \
+  'babysit-pr-stop must suppress stale polling-backoff guidance after exact teardown'
 require_text .claude/skills/babysit-pr/SKILL.md 'refuses re-arm regardless of tick age' \
   'babysit-pr stale reclaim must not reopen an incomplete teardown'
 require_text .claude/skills/babysit-pr/SKILL.md \
@@ -161,6 +164,9 @@ require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   'WIDE_CADENCE_MIN=$(( BASE_CADENCE_MIN * 3 ))' \
   'fleet monitoring backoff must derive its widened cadence from the configured base'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
+  'Stable-state freeze** — `STREAK >= 9` → **Pause**' \
+  'fleet monitoring must stop its Monitor at the shared stable-state ceiling'
 reject_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   'then EFFECTIVE_CADENCE="15m"' \
   'fleet monitoring must not hard-code a widened cadence that can be faster than the base'

@@ -79,15 +79,21 @@ if [[ "$IN_FLIGHT" == "null" || -z "$IN_FLIGHT" ]]; then
     --set ".prs[\"$PR\"].babysit.active=false" \
     --set ".prs[\"$PR\"].babysit.monitor_task_id=null" \
     --set ".prs[\"$PR\"].babysit.monitor_generation=null" \
-    --set ".prs[\"$PR\"].babysit.dispatch_in_flight=null"
+    --set ".prs[\"$PR\"].babysit.dispatch_in_flight=null" \
+    --set ".prs[\"$PR\"].last_cron_action={\"type\":\"delete\",\"interval\":\"paused\",\"at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
 else
   # Leave the marker: T0's TTL reclaim owns it, so it can never wedge forever.
   "$SESSION_STATE_SH" \
     --set ".prs[\"$PR\"].babysit.active=false" \
     --set ".prs[\"$PR\"].babysit.monitor_task_id=null" \
-    --set ".prs[\"$PR\"].babysit.monitor_generation=null"
+    --set ".prs[\"$PR\"].babysit.monitor_generation=null" \
+    --set ".prs[\"$PR\"].last_cron_action={\"type\":\"delete\",\"interval\":\"paused\",\"at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
 fi
 ```
+
+The `last_cron_action` write is part of the same post-`TaskStop` transaction. Its historical name
+records that this poll was deleted, so `polling-backoff-warn.sh` cannot emit stale STOP/WIDEN
+instructions after a successful manual stop.
 
 Say which happened — a stop that leaves a dispatch running is not the same promise as a stop that does not.
 

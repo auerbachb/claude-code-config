@@ -386,8 +386,8 @@ fi
 
 Backoff: **streak ≥ 3** → widen to `max(15m, 3 × base)` and re-arm the persistent
 Monitor at that derived cadence; digest change or user message → reset to 0; **streak ≥ 9** →
-suggest `/pmm-stop`. The derived cadence is always slower than a valid base cadence, including a
-custom base longer than 15m.
+route to Pause in Step 7 and stop the exact Monitor. The derived cadence is always slower than a
+valid base cadence, including a custom base longer than 15m.
 
 **Idle streak (`pmm_idle_streak`)** — an **idle tick** requires ALL of: (1) `TICK_HAD_ACTION=false`; (2) digest unchanged; (3) no blocking Phase A agents; (4) nothing held by merge sequencing. Orthogonal to cadence widening — widening must **not** reset the idle counter.
 
@@ -419,9 +419,10 @@ fi
    missing/null ID or generation is degraded state: set `.pmm.stop_requested=true`, report that exact teardown is
    impossible, and abort. Do not publish a pause marker or arm another task. This guard runs even
    when the fleet is empty or the idle threshold was reached.
-3. **Empty fleet** — `PR_COUNT == 0` from Step 2 → **immediate Pause** with reason `empty fleet` (no 3-tick wait).
-4. **Idle streak** — `pmm_idle_streak >= PMM_IDLE_PAUSE_AFTER` → **Pause** with reason `"$PMM_IDLE_PAUSE_AFTER idle ticks"`.
-5. Otherwise → **verify or re-arm the Monitor** (below).
+3. **Stable-state freeze** — `STREAK >= 9` → **Pause** with reason `"stable-frozen ($STREAK unchanged ticks)"`. This route is independent of `--idle-pause-after`; the shared scheduling contract requires the poll to stop at nine identical state digests, even when a custom idle threshold is higher.
+4. **Empty fleet** — `PR_COUNT == 0` from Step 2 → **immediate Pause** with reason `empty fleet` (no 3-tick wait).
+5. **Idle streak** — `pmm_idle_streak >= PMM_IDLE_PAUSE_AFTER` → **Pause** with reason `"$PMM_IDLE_PAUSE_AFTER idle ticks"`.
+6. Otherwise → **verify or re-arm the Monitor** (below).
 
 Hard-blocked PRs do **not** trigger Stop or Pause — they are reported and dropped from the actionable fleet; the idle counter handles convergence when nothing actionable remains.
 
