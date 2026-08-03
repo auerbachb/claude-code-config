@@ -132,7 +132,8 @@ and the empty approval had no other coverage source.
 comment satisfies every condition below:
 
 - its reviewer-authored body is at least `min_chars` long after the existing
-  echoed-author-line filter removes borrowed prose;
+  echoed-author-line filter removes borrowed prose and blank or syntax-only
+  remnants are excluded from the length calculation;
 - it is not a capability-failure notice;
 - it is not itself a run-start marker or fixed completion marker (which prove
   only that work began or ended);

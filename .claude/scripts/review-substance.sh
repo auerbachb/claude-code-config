@@ -536,7 +536,16 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
     ( [ $convo[]?
         | (.body // "") as $b
         | (((.updated_at // .created_at) // "") | canon_ts) as $cts
-        | (($b | ascii_downcase | strip_echoed($cts)) | length) as $authored_len
+        # Measure only content-bearing reviewer-authored lines. strip_echoed
+        # deliberately preserves blank separators and fence delimiters so SHA
+        # masking keeps its structure; those remnants are not prose and must
+        # not add up to the descriptive-evidence threshold on their own.
+        | (($b | ascii_downcase | strip_echoed($cts))
+           | [ split("\n")[]
+               | norm_line
+               | select(test("[^[:space:][:punct:]]")) ]
+           | join("\n")
+           | length) as $authored_len
         | (($b | sha_tokens($cts))) as $tok
         | { login:   (.user.login // ""),
             body:    $b,

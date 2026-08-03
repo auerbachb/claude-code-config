@@ -906,6 +906,16 @@ OUT="$(run_gate)"
 check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].descriptive_evidence_on_head')" "(gg-927) echoed author prose is not reviewer-authored descriptive evidence"
 check_contains "no_substantive_footprint" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].disqualified_by | join(" | ")')" "(gg-927) an echo-only description stays hollow"
 
+ECHO_SOURCE="$(jq -nr '[range(1; 51) | "Author evidence line \(.)."] | join("\n")')"
+ECHO_WITH_BLANKS="$(printf '%s\n' "$ECHO_SOURCE" | sed 'G')"
+FAKE_ISSUE_COMMENTS="$(convo \
+  "codeant-ai[bot]" "$RUN_START" "2026-07-31T10:01:00Z" \
+  "auerbachb" "$ECHO_SOURCE" "2026-07-31T10:02:00Z" \
+  "codeant-ai[bot]" "$ECHO_WITH_BLANKS" "2026-07-31T10:03:00Z")"
+OUT="$(run_gate)"
+check_eq "false" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].descriptive_evidence_on_head')" "(gg-927) blank separators left after echo stripping are not authored evidence"
+check_contains "no_substantive_footprint" "$(echo "$OUT" | jq -r '.review_evidence.reviewers["codeant-ai[bot]"].disqualified_by | join(" | ")')" "(gg-927) echo-only whitespace remnants stay hollow"
+
 echo "=== (gg-927) pre-marker and pre-push descriptions remain hollow ==="
 FAKE_ISSUE_COMMENTS="$(convo \
   "codeant-ai[bot]" "$DESCRIPTIVE_SUMMARY" "2026-07-31T10:00:30Z" \
