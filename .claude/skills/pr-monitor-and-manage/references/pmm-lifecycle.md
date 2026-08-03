@@ -13,6 +13,7 @@ Pause marker fields live under nested `.pmm.*`. Existing runtime fields
 
 | Field | Type | Written by | Read by |
 |-------|------|-----------|---------|
+| `.pmm.stop_requested` | boolean | `-stop`, failed arm rollback | main tick gate, `-wake` |
 | `.pmm.paused_at` | ISO-8601 string | Main skill Pause step 4 | Step 0a, `-wake` Step 2 |
 | `.pmm.fleet_at_pause` | `[{pr, head_sha, state}]` | Main skill Pause step 4 (built in step 3) | `-wake` Step 4a |
 | `.pmm.config_at_pause` | object | Main skill Pause step 4 (built in step 3) | Step 0a, `-wake` Step 4a, `-wake` Step 4b |
@@ -29,6 +30,11 @@ On **every** invocation, before Step 1, check for a pause marker. If present, th
 **resume** — capture config, stop any auto-wake re-scan, merge config, and defer marker removal until
 the replacement main Monitor is both armed and publishable:
 
+Before this resume branch, the main skill's tick gate must reject Monitor-emitted `--tick` events
+when `pmm_active != true` or `.pmm.stop_requested == true`. Direct user invocations must also refuse
+while the stop marker is true. This prevents a queued pre-pause/pre-stop event from entering resume
+and makes incomplete exact teardown a hard re-arm block.
+
 ```bash
 PAUSED_AT=$(.claude/scripts/session-state.sh --get '.pmm.paused_at' 2>/dev/null || echo null)
 if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
@@ -38,9 +44,10 @@ if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
   #    session-state after step 3 has run (it will be null by then).
   SAVED=$(.claude/scripts/session-state.sh --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
   # 2. Read both .pmm_monitor_task_id and .pmm.auto_wake_monitor_task_id. When
-  #    present, stop each exact task; any failed TaskStop aborts resume and
-  #    preserves both IDs and the pause marker. This covers degraded pauses that
-  #    retained a main-task ID after its stop failed.
+  #    present, stop each exact task. Clear every successfully stopped ID in one
+  #    atomic state write while leaving the pause marker/config/fleet intact.
+  #    Any failed TaskStop aborts resume and retains only the failed ID. This
+  #    covers degraded pauses without making the next retry stop a dead task.
   # 3. Set a shell-only RESUMING_FROM_PAUSE=true marker. Do not publish active
   #    state or clear any on-disk pause fields yet.
   RESUMING_FROM_PAUSE=true
@@ -49,9 +56,9 @@ if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
 fi
 ```
 
-Step 7 treats the persisted old main-task ID as absent (it was stopped above) and arms the main
+Step 7 treats the old main-task ID as absent (it was stopped and cleared above) and arms the main
 Monitor at base cadence. Only after it returns a task ID does one atomic
-`session-state.sh` write publish that ID and `pmm_active=true`, clear all three pause-marker fields
+`session-state.sh` write publish that ID, `pmm_active=true`, and `.pmm.stop_requested=false`, clear all three pause-marker fields
 and `.pmm.auto_wake_monitor_task_id`, reset `pmm_idle_streak`, and null both table digests. If the
 arm or state write fails, stop the new task and leave the pause marker intact. If the rollback stop
 fails too, report the exact new task ID rather than claiming rollback. This ordering makes direct
@@ -89,13 +96,17 @@ Print the **full** Step 4 status table one last time — terminal snapshots (Pau
 
 ### 2. Stop the main Monitor
 
-Read `.pmm_monitor_task_id`, stop that exact task with `TaskStop`, then clear the ID. A missing or
-unstoppable task is a degraded state that must be reported; set `pmm_active=false` so no later tick
-claims the fleet remains watched.
+First set `pmm_active=false` and `pmm_next_expected_tick_at=null` atomically, then read
+`.pmm_monitor_task_id`, stop that exact task with `TaskStop`, and clear the ID. Publishing inactive
+before teardown makes any already-emitted internal `--tick` event exit at the tick gate instead of
+resuming the fleet before the pause marker is written. A missing or unstoppable task is a degraded
+state that must be reported.
 
 If the ID is present and `TaskStop` fails, retain it and do not arm the optional auto-wake Monitor:
 two pollers must never be created from an unverified handoff. The pause marker may still be written
-so a later explicit resume can retry exact teardown.
+so a later explicit resume can retry exact teardown. If other recorded IDs were stopped
+successfully, clear those IDs while preserving the marker so the retry targets only tasks that may
+still be live.
 
 ### 3. Build fleet snapshot + config for the pause marker
 
@@ -146,6 +157,10 @@ unreliable `/loop` re-scan retired by issue #924.
 If Monitor arming fails or returns no task ID, leave `.pmm.auto_wake_monitor_task_id=null` and
 report that the fleet is paused without auto-wake. Never claim a re-scan is armed from intent alone.
 
+If publishing the returned task ID fails, stop that exact new task with `TaskStop`. If rollback
+stop also fails, best-effort set `.pmm.stop_requested=true`, report the exact unrecorded ID, and
+leave the pause marker intact; `-wake` must refuse until runtime teardown is repaired.
+
 Cross-session continuity is the pause marker's job, not this Monitor's — see the note under Step 0a.
 
 ### 6. Summary line
@@ -162,12 +177,24 @@ If `--auto-wake` is set, add: `Auto-wake re-scan armed — will scan every <cade
 
 ## Stop & Clean Exit
 
-Reached from Step 7 when the **user** invokes `/pmm-stop`. Tear down and report (this is a terminal stop — no resume marker):
+Reached from Step 7 when the **user** invokes `/pmm-stop`. First atomically set
+`.pmm.stop_requested=true`, `pmm_active=false`, and `pmm_next_expected_tick_at=null`; internal
+`--tick` events then exit before resume/discovery. Stop every recorded main/auto-wake task by exact
+ID. Clear each successfully stopped ID immediately while preserving pause state. A missing main ID
+while active or any failed stop is incomplete teardown: retain the stop marker and failed ID, do not
+clear the pause marker, and do not print success. Only after every required stop succeeds perform
+the terminal cleanup (this is not resumable):
 
 ```bash
-.claude/scripts/session-state.sh --set '.pmm_active=false' --set '.pmm_next_expected_tick_at=null'
-# Stop the recorded main/auto-wake Monitor task IDs with TaskStop. Clear each ID
-# only after that exact stop succeeds; retain a failed task ID for diagnosis.
+.claude/scripts/session-state.sh \
+  --set '.pmm.stop_requested=false' \
+  --set '.pmm_active=false' \
+  --set '.pmm_next_expected_tick_at=null' \
+  --set '.pmm_monitor_task_id=null' \
+  --set '.pmm.auto_wake_monitor_task_id=null' \
+  --set '.pmm.paused_at=null' \
+  --set '.pmm.fleet_at_pause=null' \
+  --set '.pmm.config_at_pause=null'
 ```
 
 Print a final summary:

@@ -68,7 +68,7 @@ Do **not** clear `active` until the Monitor stop result is known.
 
 ### 4. Stop the recurring Monitor
 
-The watcher always runs on a persistent `Monitor` (issues #914 and #924 retired both `/loop` modes). Read `.prs["$PR"].babysit.monitor_task_id` and call `TaskStop` for that exact task. A missing ID is a degraded stale watcher, not permission to assume a live poll was cancelled: report it, clear `active`, and rely on `stop_requested` to make any already-emitted tick a no-op. If `TaskStop` fails, also keep the task ID for diagnosis; never report a successful stop.
+The watcher always runs on a persistent `Monitor` (issues #914 and #924 retired both `/loop` modes). Read `.prs["$PR"].babysit.monitor_task_id` and call `TaskStop` for that exact task. A missing ID is a degraded stale watcher, not permission to assume a live poll was cancelled. If the ID is missing or `TaskStop` fails, keep `active=true`, retain any recorded task ID, and report incomplete teardown; never report a successful stop. `stop_requested=true` makes already-emitted ticks no-ops, while A2 now refuses every re-arm of this incomplete state regardless of tick age. Clearing `active` here would let stale-watcher reclaim reset the stop flag and turn the old Monitor's later events back into live ticks beside a replacement.
 
 After `TaskStop` succeeds, perform terminal cleanup here. **Clear `dispatch_in_flight` only when nothing is actually in flight:** a `/fixpr` or `/wrap` started by an earlier tick keeps running after the Monitor stops, and clearing its marker lets a later `/babysit-pr` arm dispatch a second one on the same PR — while the original, on completion, overwrites whatever state that new dispatch had written.
 
@@ -105,10 +105,10 @@ Word the confirmation to match what actually happened:
   Stopped babysitting PR #<PR>. Monitor stopped — no new dispatch will start, but the in-flight <skill> may still complete and finish its own work.
   ```
 
-- **Monitor task missing or TaskStop unavailable (cooperative guard only):**
+- **Monitor task missing or TaskStop failed (cooperative guard only):**
 
   ```
-  Babysit stop requested for PR #<PR>, but no Monitor task was stopped. Watcher state is inactive and any already-emitted tick will terminate at T0; verify the runtime task list before re-arming.
+  Babysit stop requested for PR #<PR>, but no Monitor task was stopped. Watcher state remains active with stop_requested=true so duplicate arming is blocked and already-emitted ticks terminate at T0. Retry exact teardown or repair the runtime task before re-arming.
   ```
 
 If there was no active watcher, the Step 2 message already reported the no-op.

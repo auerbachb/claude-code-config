@@ -170,6 +170,12 @@ if [[ "$RC" -eq 3 ]]; then ALREADY="null"; elif [[ "$RC" -ne 0 ]]; then
   echo "ERROR: session-state.sh --get failed (exit $RC) — aborting arm to avoid double-watch." >&2; exit "$RC"
 fi
 if [[ "$ALREADY" == "true" ]]; then
+  STOP_PENDING=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.stop_requested" 2>/dev/null || echo "false")
+  if [[ "$STOP_PENDING" == "true" ]]; then
+    RETAINED_TASK_ID=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.monitor_task_id" 2>/dev/null || echo "null")
+    echo "ERROR: babysit-pr teardown incomplete for PR #$PR (retained Monitor task ID: $RETAINED_TASK_ID) — retry /babysit-pr-stop $PR or repair the runtime task before re-arming." >&2
+    exit 1
+  fi
   LAST_TICK=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.last_tick_at" 2>/dev/null || echo "")
   EFF_MIN=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.cadence_effective_minutes" 2>/dev/null || echo 5)
   [[ "$EFF_MIN" =~ ^[0-9]+$ ]] || EFF_MIN=5
@@ -244,6 +250,22 @@ if [[ -z "${MONITOR_TASK_ID:-}" || "$MONITOR_TASK_ID" == "null" ]]; then
 fi
 "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.monitor_task_id=$MONITOR_TASK_ID"
 ```
+
+If that task-ID publication fails, do not continue to the immediate tick: the Monitor is live but
+not discoverable from durable state. Call `TaskStop` for the exact returned `$MONITOR_TASK_ID`. If
+that rollback stop succeeds, reopen A2 with this atomic rollback:
+
+```bash
+"$SESSION_STATE_SH" \
+  --set ".prs[\"$PR\"].babysit.active=false" \
+  --set ".prs[\"$PR\"].babysit.last_tick_at=null" \
+  --set ".prs[\"$PR\"].babysit.monitor_task_id=null"
+```
+
+If rollback `TaskStop` fails, retain `active=true`, best-effort set `stop_requested=true` so A2
+refuses a later re-arm independent of tick age, report the exact task ID, and exit non-zero. Do not
+claim that the watcher was cleaned up. The task ID in the error is required for runtime repair even
+when the state failure prevents persisting it.
 
 Then **run one tick immediately** (fall through to TICK MODE below) so the user gets instant feedback, and emit the initial heartbeat. Per the `scheduling-reliability.md` **pre-exit checklist**, before ending the arm turn confirm: (1) the Monitor task is active, (2) a timestamped heartbeat was sent, (3) state was recorded.
 
@@ -646,7 +668,7 @@ watcher while the old task is still emitting:
 "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.stop_requested=true"
 ```
 
-**Cancelling the poll is a required terminal action — a persistent Monitor does not lapse on its own.** Read `babysit.monitor_task_id`, stop that exact task with `TaskStop`, and do not re-arm it. If the ID is missing or `TaskStop` fails, keep both `active=true` and the ID for diagnosis, report degraded teardown, and do not claim completion; `stop_requested=true` still makes an already-emitted tick exit at T0 and `active=true` keeps A2 from arming a duplicate.
+**Cancelling the poll is a required terminal action — a persistent Monitor does not lapse on its own.** Read `babysit.monitor_task_id`, stop that exact task with `TaskStop`, and do not re-arm it. If the ID is missing or `TaskStop` fails, keep both `active=true` and the ID for diagnosis, report degraded teardown, and do not claim completion; `stop_requested=true` still makes an already-emitted tick exit at T0. A2 treats that stop-requested active state as an incomplete teardown and refuses re-arm regardless of tick age, so the ordinary stale-watcher reclaim can never revive an old Monitor alongside a replacement.
 
 One idempotent exception: when T0 observed `active != true` **and** the task ID is already null,
 another teardown path (normally `/babysit-pr-stop`) completed the exact stop before this queued tick

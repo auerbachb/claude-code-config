@@ -48,7 +48,7 @@ PM orchestration reads and writes `~/.claude/session-state.json`. Unknown fields
 - `monitoring_mode` (`passive`)
 - tracked `prs` and `active_agents` when work changes
 
-Skill-owned polling (`/pr-monitor-and-manage`, `/babysit-pr`) updates timing watermarks, `polling_jobs[]`, and `polling_failures[]` per their own contracts.
+Skill-owned polling (`/pr-monitor-and-manage`, `/babysit-pr`) updates timing watermarks, recorded Monitor task IDs, and `polling_failures[]` per their own contracts. `polling_jobs[]` remains the legacy cron-job compatibility array described above.
 
 ## Recovery protocol
 

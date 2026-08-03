@@ -36,18 +36,39 @@ SESSION_STATE_SH=$(resolve_script session-state.sh) || { echo "ERROR: session-st
 ```bash
 ACTIVE=$("$SESSION_STATE_SH" --get '.pmm_active' 2>/dev/null || echo null)
 PAUSED_AT=$("$SESSION_STATE_SH" --get '.pmm.paused_at' 2>/dev/null || echo null)
+STOP_PENDING=$("$SESSION_STATE_SH" --get '.pmm.stop_requested' 2>/dev/null || echo false)
+MAIN_TASK_ID=$("$SESSION_STATE_SH" --get '.pmm_monitor_task_id' 2>/dev/null || echo null)
+AUTO_WAKE_TASK_ID=$("$SESSION_STATE_SH" --get '.pmm.auto_wake_monitor_task_id' 2>/dev/null || echo null)
 ```
 
 - If `$ACTIVE` is `true` → proceed to teardown.
 - If `$PAUSED_AT` is set (paused but not active) → proceed to teardown (clear pause marker + any re-scan Monitor).
-- If both `false`/`null` → report "No active PR-fleet Monitor found." and stop. (Still inspect the recorded Monitor task IDs.)
+- If both `false`/`null`, both IDs are null, and `$STOP_PENDING != true` → report "No active PR-fleet Monitor found." and stop.
+- If `$STOP_PENDING` is `true` → continue the incomplete teardown even when the ordinary active/pause fields are absent.
+- Any recorded ID → proceed to exact teardown even if the active/pause flags are stale.
+
+Before calling `TaskStop`, atomically publish the cooperative stop guard:
+
+```bash
+"$SESSION_STATE_SH" \
+  --set '.pmm.stop_requested=true' \
+  --set '.pmm_active=false' \
+  --set '.pmm_next_expected_tick_at=null'
+```
+
+The main skill's tick gate makes any already-emitted `--tick` event a no-op. Do not clear the stop
+marker until exact teardown is complete.
 
 ## Step 2: Stop the main Monitor
 
-Read `.pmm_monitor_task_id` and stop that exact task with `TaskStop`. Report a missing/failed task
-instead of claiming cancellation; set `pmm_active=false` in either case so an already-emitted tick
-cannot re-arm without a fresh user invocation. Set `MAIN_MONITOR_STOPPED=true` only after a
-successful `TaskStop`; otherwise set it to `false`.
+Stop `$MAIN_TASK_ID` with exact `TaskStop` when present. When the captured `$ACTIVE` was `true`, a
+missing ID is degraded teardown, not success. Set `MAIN_MONITOR_STOPPED=true` only after successful
+`TaskStop` (or when the main task was not expected); otherwise set it to `false`.
+
+When `$STOP_PENDING` was already true and an expected ID is missing (for example, an arm-publication
+failure), inspect the runtime task list. Clear the degraded state only after proving no matching PR
+fleet Monitor remains, or after stopping the exact task ID found there. Never treat a second
+invocation's now-false `$ACTIVE` value as proof that the previously unrecorded task disappeared.
 
 ## Step 3: Cancel the auto-wake re-scan
 
@@ -56,18 +77,25 @@ Set `AUTO_WAKE_MONITOR_STOPPED=true` only after success; otherwise set it to `fa
 
 ## Step 4: Clear monitoring state (preserve everything else)
 
-Use `session-state.sh` so unrelated fields (other skills' state, PR tracking, budgets) are preserved. Build one atomic call, clearing a task ID only when its `TaskStop` succeeded (a failed stop keeps the ID for diagnosis):
+Immediately clear each ID whose exact `TaskStop` succeeded while preserving the stop marker and any
+pause marker/config/fleet. If either required stop failed or an active main task had no ID, retain
+the failed ID and `.pmm.stop_requested=true`, report `PMM teardown incomplete`, and stop here. A
+later `/pmm-stop` retries only the tasks that may still be live.
+
+Only after every required stop succeeds, use one atomic terminal cleanup that preserves unrelated
+fields (other skills' state, PR tracking, budgets):
 
 ```bash
 SET_ARGS=(
+  --set '.pmm.stop_requested=false'
   --set '.pmm_active=false'
   --set '.pmm_next_expected_tick_at=null'
   --set '.pmm.paused_at=null'
   --set '.pmm.fleet_at_pause=null'
   --set '.pmm.config_at_pause=null'
+  --set '.pmm_monitor_task_id=null'
+  --set '.pmm.auto_wake_monitor_task_id=null'
 )
-[[ "$MAIN_MONITOR_STOPPED" == true ]] && SET_ARGS+=(--set '.pmm_monitor_task_id=null')
-[[ "$AUTO_WAKE_MONITOR_STOPPED" == true ]] && SET_ARGS+=(--set '.pmm.auto_wake_monitor_task_id=null')
 "$SESSION_STATE_SH" "${SET_ARGS[@]}"
 ```
 
@@ -79,10 +107,13 @@ Leave `pmm_in_flight`, `pmm_digest`, `pmm_digest_streak`, and `pmm_idle_streak` 
 === PR fleet monitoring stopped ===
 Reason:   user /pmm-stop
 Monitor:  stopped (no further ticks)
-State:    pmm_active=false, pause marker cleared
+State:    pmm_active=false, stop/pause markers cleared
 Auto-wake re-scan: <cancelled | none>
 In-flight at stop: <list any pmm_in_flight PR # + skill, or "none">
 Active subagents: <list any PMM-owned active_agents entries (match by pr + phase A, or task containing "PMM"), or "none">
 ```
 
 If any PR had an in-flight `phase-a-fixer` subagent or `/wrap` dispatch when stopped, name it so the user knows that work was mid-flight. Re-run `/pr-monitor-and-manage` anytime to resume — it rediscovers the fleet from scratch and Step 2.5 aggregates any subagents that completed while monitoring was stopped.
+
+Never print the successful summary when a required task was missing or failed to stop. In that
+case, name each retained task ID and say `/pmm-stop` must be retried before start/resume.

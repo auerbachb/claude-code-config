@@ -219,6 +219,7 @@
     }
   },
   "pmm": {
+    "stop_requested": false,
     "paused_at": "2026-04-29T14:00:00Z",
     "auto_wake_monitor_task_id": null,
     "fleet_at_pause": [

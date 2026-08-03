@@ -42,6 +42,12 @@ reject_text .claude/skills/babysit-pr/SKILL.md 'arm_loop ' \
   'babysit-pr must not retain the dynamic-loop arm path'
 require_text .claude/skills/babysit-pr-stop/SKILL.md 'call `TaskStop` for that exact task' \
   'babysit-pr-stop must stop the recorded Monitor task'
+require_text .claude/skills/babysit-pr-stop/SKILL.md 'keep `active=true`' \
+  'babysit-pr-stop must block duplicate arming until exact teardown succeeds'
+require_text .claude/skills/babysit-pr/SKILL.md 'refuses re-arm regardless of tick age' \
+  'babysit-pr stale reclaim must not reopen an incomplete teardown'
+require_text .claude/skills/babysit-pr/SKILL.md 'If that task-ID publication fails' \
+  'babysit-pr initial Monitor arm must handle task-ID publication failure'
 
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md '.pmm_monitor_task_id' \
   'fleet monitoring must persist its main Monitor task ID'
@@ -51,8 +57,29 @@ require_text .claude/skills/pr-monitor-and-manage/references/pmm-lifecycle.md \
   '.pmm.auto_wake_monitor_task_id' \
   'fleet auto-wake must persist its Monitor task ID'
 require_text .claude/skills/pr-monitor-and-manage-wake/SKILL.md \
-  'If either present ID cannot be stopped, abort the resume' \
-  'fleet resume must abort when the recorded auto-wake task cannot be stopped'
+  'Clear each successfully stopped ID immediately' \
+  'fleet resume retries must not retain IDs for already-stopped tasks'
+require_text .claude/skills/pr-monitor-and-manage-wake/SKILL.md \
+  'retain that failed ID' \
+  'fleet resume must abort with a potentially-live failed task ID retained'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
+  'Ignoring a queued Monitor tick after pause/stop' \
+  'fleet Monitor ticks must not restart after pause or stop'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
+  '/pr-monitor-and-manage --tick <original user args>' \
+  'fleet Monitor events must be distinguishable from direct user starts'
+require_text .claude/skills/pr-monitor-and-manage-stop/SKILL.md \
+  'marker until exact teardown is complete.' \
+  'fleet stop must block start/resume until every required task is stopped'
+require_text .claude/skills/pr-monitor-and-manage-stop/SKILL.md \
+  'Never treat a second' \
+  'fleet stop retry must not forget an unrecorded task after publishing inactive'
+require_text .claude/skills/pr-monitor-and-manage-wake/SKILL.md \
+  'If `$STOP_PENDING` is `true`' \
+  'fleet wake must refuse an incomplete stop transaction'
+require_text .claude/skills/pr-monitor-and-manage/references/pmm-lifecycle.md \
+  'Publishing inactive' \
+  'fleet pause must make queued ticks inert before exact teardown'
 require_text .claude/skills/pr-monitor-and-manage/references/pmm-lifecycle.md \
   'leave the pause marker intact' \
   'direct PMM resume must publish state transactionally'
