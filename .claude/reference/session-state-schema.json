@@ -30,9 +30,9 @@
       "poll_watermarks": "object"
     }
   },
-  "last_updated": "2026-04-29T14:00:00Z",
+  "last_updated": "2026-08-03T21:00:00Z",
   "monitoring_active": true,
-  "monitoring_mode": "cron",
+  "monitoring_mode": "monitor",
   "monitoring_command": "/status",
   "monitoring_interval_minutes": 60,
   "monitoring_started_at": "2026-03-16T15:00:00Z",
@@ -183,14 +183,14 @@
       "pr": 619,
       "detected_at": "2026-04-29T13:58:00Z",
       "digest_streak": 4,
-      "action": "CronUpdate",
-      "interval": "5m"
+      "action": "MonitorRearm",
+      "interval": "15m"
     },
     {
       "pr": 620,
       "detected_at": "2026-04-29T14:00:00Z",
       "digest_streak": 2,
-      "action": "CronDelete",
+      "action": "TaskStop",
       "reason": "user_input"
     }
   ],

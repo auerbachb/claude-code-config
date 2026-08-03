@@ -115,6 +115,9 @@ if [ -n "${SAVED:-}" ] && [ "$SAVED" != "{}" ]; then
   [[ "$ARGUMENTS" != *"--confirm-merges"* ]]    && PMM_CONFIRM_MERGES=$(jq -r '.confirm_merges // false' <<<"$SAVED")
 fi
 
+[[ "$PMM_CADENCE" =~ ^[1-9][0-9]*m$ ]] || {
+  echo "ERROR: --cadence must be a positive whole-minute value such as 5m." >&2; exit 2; }
+
 if [ -z "$PMM_AUTHOR" ]; then
   PMM_AUTHOR=$(gh api user --jq .login 2>/dev/null || true)
   [ -z "$PMM_AUTHOR" ] && { echo "WARNING: gh api user failed — pass --author <login> explicitly"; exit 1; }
@@ -342,10 +345,20 @@ if [ "$DIGEST" = "$PREV" ]; then STREAK=$((STREAK+1)); else STREAK=0; fi
 .claude/scripts/session-state.sh --set ".pmm_digest=\"$DIGEST\"" --set ".pmm_digest_streak=$STREAK" \
   --set ".pmm_row_digest=\"$ROW_DIGEST\""
 
-if [ "$STREAK" -ge 3 ]; then EFFECTIVE_CADENCE="15m"; else EFFECTIVE_CADENCE="$PMM_CADENCE"; fi
+BASE_CADENCE_MIN=${PMM_CADENCE%m}
+WIDE_CADENCE_MIN=$(( BASE_CADENCE_MIN * 3 ))
+[ "$WIDE_CADENCE_MIN" -lt 15 ] && WIDE_CADENCE_MIN=15
+if [ "$STREAK" -ge 3 ]; then
+  EFFECTIVE_CADENCE="${WIDE_CADENCE_MIN}m"
+else
+  EFFECTIVE_CADENCE="$PMM_CADENCE"
+fi
 ```
 
-Backoff: **streak ≥ 3** → `EFFECTIVE_CADENCE=15m`, stop and re-arm the persistent Monitor at 15m; digest change or user message → reset to 0; **streak ≥ 9** → suggest `/pmm-stop`.
+Backoff: **streak ≥ 3** → widen to `max(15m, 3 × base)` and re-arm the persistent
+Monitor at that derived cadence; digest change or user message → reset to 0; **streak ≥ 9** →
+suggest `/pmm-stop`. The derived cadence is always slower than a valid base cadence, including a
+custom base longer than 15m.
 
 **Idle streak (`pmm_idle_streak`)** — an **idle tick** requires ALL of: (1) `TICK_HAD_ACTION=false`; (2) digest unchanged; (3) no blocking Phase A agents; (4) nothing held by merge sequencing. Orthogonal to cadence widening — widening must **not** reset the idle counter.
 
@@ -368,12 +381,17 @@ fi
 
 ## Step 7: Stop routing, Pause routing, then establish / re-arm the polling Monitor
 
-**Check stop/pause conditions first:**
+**Check stop/pause conditions and identity in this order:**
 
 1. **User command** — `/pmm-stop` (or "stop monitoring PRs"). See companion `/pr-monitor-and-manage-stop` skill → **Stop & Clean Exit**.
-2. **Empty fleet** — `PR_COUNT == 0` from Step 2 → **immediate Pause** with reason `empty fleet` (no 3-tick wait).
-3. **Idle streak** — `pmm_idle_streak >= PMM_IDLE_PAUSE_AFTER` → **Pause** with reason `"$PMM_IDLE_PAUSE_AFTER idle ticks"`.
-4. Otherwise → **verify or re-arm the Monitor** (below).
+2. **Main-task identity preflight** — before either Pause route, read `.pmm_monitor_task_id`. On an
+   ordinary active tick (`PMM_ACTIVE == true`, not a direct start or transactional pause resume), a
+   missing/null ID is degraded state: set `.pmm.stop_requested=true`, report that exact teardown is
+   impossible, and abort. Do not publish a pause marker or arm another task. This guard runs even
+   when the fleet is empty or the idle threshold was reached.
+3. **Empty fleet** — `PR_COUNT == 0` from Step 2 → **immediate Pause** with reason `empty fleet` (no 3-tick wait).
+4. **Idle streak** — `pmm_idle_streak >= PMM_IDLE_PAUSE_AFTER` → **Pause** with reason `"$PMM_IDLE_PAUSE_AFTER idle ticks"`.
+5. Otherwise → **verify or re-arm the Monitor** (below).
 
 Hard-blocked PRs do **not** trigger Stop or Pause — they are reported and dropped from the actionable fleet; the idle counter handles convergence when nothing actionable remains.
 
@@ -386,8 +404,8 @@ done
 ```
 
 Call `Monitor` with `persistent: true` and description `PR fleet monitor`. Capture its task ID in
-`.pmm_monitor_task_id`. At the start of this step, read the existing ID and its actual cadence from
-state:
+`.pmm_monitor_task_id`. Reuse the ID read by the identity preflight (or read it here for a new direct
+start / transactional resume) and read its actual cadence from state:
 
 ```bash
 MONITOR_TASK_ID=$(.claude/scripts/session-state.sh --get '.pmm_monitor_task_id' 2>/dev/null || echo null)

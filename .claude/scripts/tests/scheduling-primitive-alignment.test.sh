@@ -46,6 +46,12 @@ require_text .claude/skills/babysit-pr-stop/SKILL.md 'keep `active=true`' \
   'babysit-pr-stop must block duplicate arming until exact teardown succeeds'
 require_text .claude/skills/babysit-pr/SKILL.md 'refuses re-arm regardless of tick age' \
   'babysit-pr stale reclaim must not reopen an incomplete teardown'
+require_text .claude/skills/babysit-pr/SKILL.md \
+  'a stale reclaim **must stop the exact `$RETAINED_TASK_ID` with `TaskStop`**' \
+  'babysit-pr stale reclaim must stop the identified silent Monitor before re-arming'
+require_text .claude/skills/babysit-pr/SKILL.md \
+  'Before comparing cadences, read the exact' \
+  'babysit-pr must validate Monitor identity even when the cadence is unchanged'
 require_text .claude/skills/babysit-pr/SKILL.md 'If that task-ID publication fails' \
   'babysit-pr initial Monitor arm must handle task-ID publication failure'
 require_text .claude/skills/babysit-pr/SKILL.md \
@@ -104,5 +110,21 @@ require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   'A missing ID while `$PMM_ACTIVE == true` on an ordinary tick is degraded state' \
   'fleet monitoring must not arm beside an active task whose identity was lost'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
+  'This guard runs even' \
+  'fleet monitoring must validate task identity before empty/idle pause routing'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
+  'WIDE_CADENCE_MIN=$(( BASE_CADENCE_MIN * 3 ))' \
+  'fleet monitoring backoff must derive its widened cadence from the configured base'
+reject_text .claude/skills/pr-monitor-and-manage/SKILL.md \
+  'then EFFECTIVE_CADENCE="15m"' \
+  'fleet monitoring must not hard-code a widened cadence that can be faster than the base'
+
+require_text .claude/reference/session-state-schema.json '"monitoring_mode": "monitor"' \
+  'session-state examples must identify Monitor as the recurring polling primitive'
+require_text .claude/reference/session-state-schema.json '"action": "MonitorRearm"' \
+  'session-state backoff examples must not describe removed CronUpdate actions'
+require_text .claude/reference/session-state-schema.json '"action": "TaskStop"' \
+  'session-state stop examples must use exact Monitor teardown'
 
 ok 'recurring scheduling guidance and watcher lifecycles agree on Monitor'

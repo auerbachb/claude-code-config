@@ -170,10 +170,15 @@ if [[ "$RC" -eq 3 ]]; then ALREADY="null"; elif [[ "$RC" -ne 0 ]]; then
   echo "ERROR: session-state.sh --get failed (exit $RC) — aborting arm to avoid double-watch." >&2; exit "$RC"
 fi
 if [[ "$ALREADY" == "true" ]]; then
+  RETAINED_TASK_ID=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.monitor_task_id" 2>/dev/null || echo "null")
   STOP_PENDING=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.stop_requested" 2>/dev/null || echo "false")
   if [[ "$STOP_PENDING" == "true" ]]; then
-    RETAINED_TASK_ID=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.monitor_task_id" 2>/dev/null || echo "null")
     echo "ERROR: babysit-pr teardown incomplete for PR #$PR (retained Monitor task ID: $RETAINED_TASK_ID) — retry /babysit-pr-stop $PR or repair the runtime task before re-arming." >&2
+    exit 1
+  fi
+  if [[ -z "$RETAINED_TASK_ID" || "$RETAINED_TASK_ID" == "null" ]]; then
+    "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.stop_requested=true" >/dev/null 2>&1 || true
+    echo "ERROR: active babysit-pr watcher for PR #$PR has no recorded Monitor task ID — refusing blind stale reclaim; inspect the runtime task and repair teardown before re-arming." >&2
     exit 1
   fi
   LAST_TICK=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.last_tick_at" 2>/dev/null || echo "")
@@ -201,8 +206,15 @@ if [[ "$ALREADY" == "true" ]]; then
     exit 0
   fi
   echo "[babysit] stale watcher for PR #$PR (last tick ${AGE_MIN}m ago ≥ ${FRESH_MIN}m) — reclaiming and re-arming."
+  "$SESSION_STATE_SH" --set ".prs[\"$PR\"].babysit.stop_requested=true" || {
+    echo "ERROR: could not publish the stale-watch teardown guard — leaving the recorded Monitor untouched." >&2; exit 1; }
 fi
 ```
+
+Before A3, a stale reclaim **must stop the exact `$RETAINED_TASK_ID` with `TaskStop`**. If that
+stop fails, retain `active=true`, the exact task ID, and `stop_requested=true`; report incomplete
+teardown and abort. Only after exact `TaskStop` succeeds may A3 replace the babysit object and arm
+one new Monitor. Never infer that a silent Monitor died, and never arm beside it.
 
 ### A3. Initialize state and arm the poll
 
@@ -612,17 +624,18 @@ NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   --set ".prs[\"$PR\"].babysit.last_tick_at=$NOW"
 ```
 
-**Re-arm cadence only when it crosses a tier boundary.** Compare the computed `$EFFECTIVE_MIN` to
-the captured `$PREV_EFFECTIVE_MIN`; this comparison is mandatory on every tick. When they are
-equal, retain the existing Monitor and cadence. When they differ, stop the exact current Monitor
+**Re-arm cadence only when it crosses a tier boundary.** Before comparing cadences, read the exact
+current `babysit.monitor_task_id` on every tick. A missing ID while active is degraded teardown: set
+`stop_requested=true`, report it, and terminate without retaining or arming a task. Then compare the
+computed `$EFFECTIVE_MIN` to the captured `$PREV_EFFECTIVE_MIN`; this comparison is mandatory on
+every tick. When they are equal, retain the identified Monitor and cadence. When they differ, stop
+the exact current Monitor. In other words, cadence changes must **stop the exact current Monitor**
 and complete this transaction:
 
-1. Read the exact current `babysit.monitor_task_id`; a missing ID while active is degraded teardown,
-   so set `stop_requested=true`, report it, and terminate without arming.
-2. Stop the exact current Monitor task with `TaskStop`. A failed old-task stop retains both its ID and
+1. Stop the exact current Monitor task with `TaskStop`. A failed old-task stop retains both its ID and
    `$PREV_EFFECTIVE_MIN` in state and aborts the re-arm.
-3. Arm a replacement whose sleep and emitted `--cadence` use `$EFFECTIVE_MIN`.
-4. Publish the replacement ID and cadence in one atomic state write:
+2. Arm a replacement whose sleep and emitted `--cadence` use `$EFFECTIVE_MIN`.
+3. Publish the replacement ID and cadence in one atomic state write:
 
    ```bash
    "$SESSION_STATE_SH" \
