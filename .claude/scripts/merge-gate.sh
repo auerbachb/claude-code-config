@@ -29,8 +29,9 @@
 #   #836-stale forever. A stale approval is therefore REDEEMED when that same
 #   reviewer left substantive evidence on the current SHA outside the review
 #   object (review-substance.sh `external_evidence_on_head`: HEAD-anchored inline
-#   comments, a status comment naming HEAD, or a substantive non-APPROVED review
-#   on HEAD). Redemption is by EVIDENCE, never by reviewer identity — CodeRabbit
+#   comments, a status comment naming HEAD, a descriptive current-round comment,
+#   or a substantive non-APPROVED review on HEAD). Redemption is by EVIDENCE,
+#   never by reviewer identity — CodeRabbit
 #   is treated identically, and an approval's own body can never redeem its own
 #   timestamp. `<P>_APPROVAL_STALE` keeps the unchanged norm_ts meaning;
 #   `<P>_APPROVAL_STALE_BLOCKING` (stale AND NOT redeemed) is what the path
@@ -735,7 +736,8 @@ override_eligible() { # <login>
 # object whose timestamp is in doubt (review-substance.sh):
 #   - inline diff comments with commit_id AND original_commit_id == HEAD, or
 #   - a >= min_chars conversation comment naming HEAD's SHA that is not a
-#     capability-failure notice, or
+#     capability-failure notice, or a descriptive comment tied to a post-push
+#     run-start marker, or
 #   - a substantive non-APPROVED review on HEAD with submitted_at >= push.
 # Each is anchored to the post-push commit, and the approval's own body is
 # excluded by construction — an approval can never redeem its own timestamp.
