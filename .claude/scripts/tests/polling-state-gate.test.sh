@@ -62,16 +62,26 @@ SCOPE_FUNCTIONS=(
   _pr_holders active_scope_key resolve_pr_scope foreign_pr_scopes state_pr_field
   repo_identity is_owner_repo_identity resolve_root_repo validate_root_match
 )
+SCOPE_FUNCTION_DECL_RE='^[[:space:]]*(__NAME__[[:space:]]*\(\)|function[[:space:]]+__NAME__([[:space:]]*\(\))?)[[:space:]]*\{'
 for scope_function in "${SCOPE_FUNCTIONS[@]}"; do
   check_eq "scope resolver exports $scope_function" "function" \
     "$(type -t "$scope_function" 2>/dev/null || true)"
+  scope_function_re="${SCOPE_FUNCTION_DECL_RE//__NAME__/$scope_function}"
   check_eq "polling gate does not re-inline $scope_function" "0" \
-    "$(grep -Ec "^[[:space:]]*(function[[:space:]]+)?${scope_function}[[:space:]]*\\(\\)" "$SCRIPT" || true)"
+    "$(grep -Ec "$scope_function_re" "$SCRIPT" || true)"
 done
+SCOPE_SOURCE_OP_RE='(source|\.)[[:space:]]+("?\$\{?_SCOPE_RESOLVER_LIB\}?"?|"?[^"[:space:]]*pr-scope-resolver\.sh"?)'
 check_eq "polling gate sources the resolver exactly once" "1" \
-  "$(grep -Ec '^[[:space:]]*(if[[:space:]]+!)?[[:space:]]*(source|\.)[[:space:]]+(\"?\$\{?_SCOPE_RESOLVER_LIB\}?\"?|\"?[^[:space:]]*pr-scope-resolver\.sh\"?)' "$SCRIPT" || true)"
+  "$(grep -Ev '^[[:space:]]*#' "$SCRIPT" | grep -Eo "$SCOPE_SOURCE_OP_RE" | wc -l | tr -d '[:space:]')"
 check_eq "polling gate hard-fails when the resolver is missing" "1" \
   "$(grep -Ec 'required scope resolver not found' "$SCRIPT" || true)"
+
+# Keep the structural matchers honest for both Bash function syntaxes and for
+# multiple source operations sharing one line.
+check_eq "anti-reinline matcher catches function declarations without parentheses" "1" \
+  "$(printf '%s\n' '  function resolve_pr_scope {' | grep -Ec "${SCOPE_FUNCTION_DECL_RE//__NAME__/resolve_pr_scope}" || true)"
+check_eq "source-site matcher counts two operations on one line" "2" \
+  "$(printf 'source "%s"; . "%s"\n' '$_SCOPE_RESOLVER_LIB' '$_SCOPE_RESOLVER_LIB' | grep -Eo "$SCOPE_SOURCE_OP_RE" | wc -l | tr -d '[:space:]')"
 
 # Shared gh stub for --ensure-session tests. poll-watermarks.sh (issue #741) calls
 # pr-state.sh during --ensure-session, so the stub must satisfy pr-state's gh
@@ -147,6 +157,11 @@ PR_NUMBER="99647"
 out="$(validate_root_match "$REPO_A" quiet 2>&1)"; rc=$?
 check_eq "declared repo-key normalization failure refuses validation" "1" "$rc"
 check_contains "normalization refusal explains the unusable identity" \
+  "could not normalize repo key 'org/a'" "$out"
+normalize_repo_key() { printf ''; return 0; }
+out="$(validate_root_match "$REPO_A" quiet 2>&1)"; rc=$?
+check_eq "empty normalized declared repo key refuses validation" "1" "$rc"
+check_contains "empty normalization refusal explains the unusable identity" \
   "could not normalize repo key 'org/a'" "$out"
 eval "$NORMALIZER_DEF"
 
