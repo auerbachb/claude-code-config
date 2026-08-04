@@ -72,7 +72,11 @@ for scope_function in "${SCOPE_FUNCTIONS[@]}"; do
   check_eq "polling gate does not re-inline $scope_function" "0" \
     "$(grep -Ec "$scope_function_re" "$SCRIPT" || true)"
 done
-SCOPE_SOURCE_OP_RE='(source|\.)[[:space:]]+("?\$\{?_SCOPE_RESOLVER_LIB\}?"?|"?[^"[:space:]]*pr-scope-resolver\.sh"?)'
+# Match source operations only at a command boundary. A bare `(source|\.)`
+# search also matches non-operations such as `resource "$var"` or
+# `echo source "$var"`; one such occurrence could mask a removed real source
+# while leaving the expected count at one.
+SCOPE_SOURCE_OP_RE='(^|[;&|()][[:space:]]*|(^|[[:space:]])(if|elif|then|else|do)[[:space:]]+)!?[[:space:]]*(source|\.)[[:space:]]+("?\$\{?_SCOPE_RESOLVER_LIB\}?"?|"?[^"[:space:]]*pr-scope-resolver\.sh"?)'
 check_eq "polling gate sources the resolver exactly once" "1" \
   "$(grep -Ev '^[[:space:]]*#' "$SCRIPT" | grep -Eo "$SCOPE_SOURCE_OP_RE" | wc -l | tr -d '[:space:]')"
 check_eq "polling gate hard-fails when the resolver is missing" "1" \
@@ -86,6 +90,10 @@ check_eq "anti-reinline matcher catches declarations with a next-line brace" "1"
   "$(printf '%s\n' '  resolve_pr_scope ()' '{' | grep -Ec "${SCOPE_FUNCTION_DECL_RE//__NAME__/resolve_pr_scope}" || true)"
 check_eq "source-site matcher counts two operations on one line" "2" \
   "$(printf 'source "%s"; . "%s"\n' '$_SCOPE_RESOLVER_LIB' '$_SCOPE_RESOLVER_LIB' | grep -Eo "$SCOPE_SOURCE_OP_RE" | wc -l | tr -d '[:space:]')"
+check_eq "source-site matcher ignores command names ending in source" "0" \
+  "$(printf '%s\n' 'resource "$_SCOPE_RESOLVER_LIB"' | grep -Ec "$SCOPE_SOURCE_OP_RE" || true)"
+check_eq "source-site matcher ignores source mentioned as an argument" "0" \
+  "$(printf '%s\n' 'echo source "$_SCOPE_RESOLVER_LIB"' | grep -Ec "$SCOPE_SOURCE_OP_RE" || true)"
 
 # Shared gh stub for --ensure-session tests. poll-watermarks.sh (issue #741) calls
 # pr-state.sh during --ensure-session, so the stub must satisfy pr-state's gh
