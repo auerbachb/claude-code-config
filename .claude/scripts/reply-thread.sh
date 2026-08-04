@@ -291,7 +291,12 @@ FALLBACK_ERR=$(mktemp -t reply-thread-fallback-err.XXXXXX)
 trap "rm -f '$REPO_ERR' '$INLINE_ERR' '$FALLBACK_ERR'" EXIT
 
 FALLBACK_RC=0
-FALLBACK_RESP=$(gh pr comment "$PR_NUMBER" --body "$BODY" 2>"$FALLBACK_ERR") || FALLBACK_RC=$?
+# Preserve the review-comment identity when GitHub cannot accept an inline
+# reply. The hidden marker lets downstream audit/gate tooling prove which
+# finding a PR-level fallback addressed without cluttering the visible prose.
+FALLBACK_BODY="<!-- review-comment-id:$COMMENT_ID -->
+$BODY"
+FALLBACK_RESP=$(gh pr comment "$PR_NUMBER" --body "$FALLBACK_BODY" 2>"$FALLBACK_ERR") || FALLBACK_RC=$?
 
 if [[ $FALLBACK_RC -eq 0 ]]; then
   # Current `gh pr comment` (2.x) prints the posted URL to stdout. A few older

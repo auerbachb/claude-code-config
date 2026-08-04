@@ -104,7 +104,16 @@ case "$sub" in
     shift || true
     case "$pr_action" in
       comment)
-        # gh pr comment N --body "text" — N and flags follow; we only care about mode
+        # gh pr comment N --body "text" — capture the fallback body too.
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --body)
+              printf '%s' "${2:-}" > "${TMP_DIR}/posted_body"
+              shift 2 || shift
+              ;;
+            *) shift ;;
+          esac
+        done
         case "${FAKE_FALLBACK_MODE:-success}" in
           success)
             printf 'https://github.com/test-owner/test-repo/pull/1#issuecomment-123456\n'
@@ -316,6 +325,16 @@ export FAKE_INLINE_MODE="404"
 export FAKE_FALLBACK_MODE="error"
 run 1234567 --reviewer bugbot --body "Fixed." --pr 1
 check_eq "fallback non-404 error: exit 4" 4 "$RC"
+
+############################################################################
+echo "== (20) fallback preserves review-comment identity in a hidden marker =="
+export FAKE_INLINE_MODE="404"
+export FAKE_FALLBACK_MODE="success"
+run_and_capture 1234567 --reviewer greptile --body "Fixed in abc1234." --pr 1
+check_eq "fallback marker: exit 0" 0 "$RC"
+check_contains "fallback marker names source comment" \
+  "<!-- review-comment-id:1234567 -->" "$POSTED_BODY"
+check_contains "fallback marker retains reply body" "Fixed in abc1234." "$POSTED_BODY"
 
 ############################################################################
 echo ""

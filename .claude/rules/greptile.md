@@ -21,13 +21,13 @@ Default budget: 40 reviews/day (tracked in `session-state.json`). Every `@grepti
 Applies to 2nd/3rd triggers only; initial trigger requires only the budget check.
 
 1. **Classify all findings from the previous review** (P0/P1/P2).
-2. **If NO P0:** STOP — do NOT trigger `@greptileai`. Proceed to Phase B completion (merge gate check).
+2. **If NO P0:** STOP — do NOT trigger `@greptileai`. Reply to every finding with the current HEAD, resolve the threads, then proceed to the merge gate; that provenance permits zero-P0 round reuse (issue #1000; boundary rules in `.claude/reference/merge-gate-reviewer-paths.md`).
 3. **If P0 present:** budget check → trigger `@greptileai`.
 4. **Log severity counts in handoff `notes`.**
 
 ## Sticky Assignment
 
-Once triggered, Greptile owns the PR permanently (`cr-github-review.md`). Re-trigger `@greptileai` only for P0 findings; the merge gate is severity-dependent — canonical definition in `cr-merge-gate.md` Step 1, Greptile path expanded in `.claude/reference/merge-gate-reviewer-paths.md`. A classified BugBot failure (`bugbot.md`) routes `escalate-review.sh` straight to `trigger_greptile`.
+Once triggered, Greptile owns the PR permanently (`cr-github-review.md`). Re-trigger `@greptileai` only for P0 findings; a latest round containing P0 requires a later triggered clean round, while a completed zero-P0 round remains reusable after fix-only pushes. The merge gate is severity-dependent — canonical definition in `cr-merge-gate.md` Step 1, Greptile path expanded in `.claude/reference/merge-gate-reviewer-paths.md`. A classified BugBot failure (`bugbot.md`) routes `escalate-review.sh` straight to `trigger_greptile`.
 
 ## Polling for Greptile Response
 
@@ -35,7 +35,7 @@ Poll per the shared cadence/endpoints (`cr-github-review.md` §Polling); filter 
 
 ## Processing Greptile Findings
 
-Classify by severity (P0/P1/P2 — use Greptile badges only), verify against code, fix all valid findings in one commit, push once, reply to every thread, resolve via `.claude/scripts/resolve-review-threads.sh` (never inline GraphQL). Use 👍/👎 reactions for feedback (Greptile's only learning mechanism).
+Classify by severity (P0/P1/P2 — use Greptile badges only), verify against code, fix all valid findings in one commit, push once, reply to every thread naming the current HEAD, resolve via `.claude/scripts/resolve-review-threads.sh` (never inline GraphQL). Use 👍/👎 reactions for feedback (Greptile's only learning mechanism).
 
 > **CRITICAL: plain text only in replies** — every `@greptileai` mention triggers a new paid review.
 

@@ -1321,15 +1321,57 @@ case "$REVIEWER" in
     #     push-timestamp lesson — repo memory feedback_bugbot_commit_id_stale).
     #   Formal review objects (pulls/{N}/reviews) are kept as supplemental signal.
 
-    # Fresh Greptile inline diff comments (post-push only — mirrors the BugBot
-    # push-timestamp lesson, feedback_bugbot_commit_id_stale). Stale inline comments
+    # Only an exact trigger command from the PR author establishes a trusted
+    # paid-review round boundary. If GitHub cannot resolve the author, degrade
+    # conservatively: the latest exact command from any account is a boundary,
+    # but is not treated as authenticated. Otherwise an unanswered author
+    # trigger could disappear with PR_AUTHOR and stale clean evidence could pass.
+    if [[ -n "$PR_AUTHOR" ]]; then
+      G_LATEST_TRIGGER_TS=$(echo "$ISSUE_COMMENTS_JSON" | jq -r --arg author "$PR_AUTHOR" '
+        def canon_ts: sub("(Z|\\+00:00|\\+0000)$"; "");
+        [.[]?
+          | select(.user.login == $author)
+          | select(((.body // "")
+              | gsub("^[[:space:]]+|[[:space:]]+$"; "")
+              | ascii_downcase) == "@greptileai")
+          | {raw:(((.updated_at // .created_at) // "")),
+             canon:((((.updated_at // .created_at) // "") | canon_ts))}]
+        | sort_by(.canon) | last.raw // ""')
+    else
+      G_LATEST_TRIGGER_TS=$(echo "$ISSUE_COMMENTS_JSON" | jq -r '
+        def canon_ts: sub("(Z|\\+00:00|\\+0000)$"; "");
+        [.[]?
+          | select(((.body // "")
+              | gsub("^[[:space:]]+|[[:space:]]+$"; "")
+              | ascii_downcase) == "@greptileai")
+          | {raw:(((.updated_at // .created_at) // "")),
+             canon:((((.updated_at // .created_at) // "") | canon_ts))}]
+        | sort_by(.canon) | last.raw // ""')
+    fi
+    G_LATEST_TRIGGER_NORM=$(norm_ts "$G_LATEST_TRIGGER_TS")
+
+    # A post-push trigger starts a newer round than the push itself. Anchor all
+    # fresh-path evidence after the newer boundary so evidence from an earlier
+    # round cannot satisfy (or poison) a still-unanswered latest trigger.
+    G_FRESH_AFTER="${LAST_COMMIT_TS:-}"
+    if [[ -n "$G_LATEST_TRIGGER_TS" ]] \
+        && [[ -z "$G_FRESH_AFTER" || "$G_LATEST_TRIGGER_NORM" > "$(norm_ts "$G_FRESH_AFTER")" ]]; then
+      G_FRESH_AFTER="$G_LATEST_TRIGGER_TS"
+    fi
+    G_FRESH_AFTER_NORM=$(norm_ts "$G_FRESH_AFTER")
+
+    # Fresh Greptile inline diff comments (post-push/current-round only —
+    # mirrors the BugBot push-timestamp lesson,
+    # feedback_bugbot_commit_id_stale). Stale inline comments
     # from a prior push must NOT count: without this freshness gate, the "no review
     # yet" guard would skip when stale inline comments exist, and Path B would then
     # pass cleanly on an empty review body (no fresh Greptile signal on the new HEAD).
-    # G_INLINE_BODIES in Path B is anchored separately to G_ANCHOR_TS.
-    G_INLINE_COUNT=$(echo "$PR_COMMENTS_JSON" | jq --arg after "${LAST_COMMIT_TS:-}" \
-      '[.[]? | select(.user.login == "greptile-apps[bot]")
-              | select(if $after == "" then true else .created_at > $after end)] | length')
+    # G_INLINE_BODIES in Path B uses the same push-or-latest-trigger boundary.
+    G_INLINE_COUNT=$(echo "$PR_COMMENTS_JSON" | jq --arg after "$G_FRESH_AFTER_NORM" '
+      def canon_ts: sub("(Z|\\+00:00|\\+0000)$"; "");
+      [.[]? | select(.user.login == "greptile-apps[bot]")
+              | select(if $after == "" then true
+                  else ((.created_at // "") | canon_ts) > $after end)] | length')
 
     # Latest FRESH Greptile issue comment (created OR updated after the last push).
     # Greptile edits its summary comment in-place on re-review rather than posting a
@@ -1337,71 +1379,187 @@ case "$REVIEWER" in
     # existing summary comment at updated_at 03:05:28Z after the 02:50:10Z push while
     # created_at stayed at the original post time). Accept the comment as fresh when
     # either timestamp is post-push (issue #748).
-    LATEST_G_COMMENT=$(echo "$ISSUE_COMMENTS_JSON" | jq -c --arg after "${LAST_COMMIT_TS:-}" '
+    LATEST_G_COMMENT=$(echo "$ISSUE_COMMENTS_JSON" | jq -c --arg after "$G_FRESH_AFTER_NORM" '
+      def canon_ts: sub("(Z|\\+00:00|\\+0000)$"; "");
       [.[]?
         | select(.user.login == "greptile-apps[bot]")
-        | select(if $after == "" then true else (.created_at > $after or .updated_at > $after) end)]
-      | sort_by(.created_at) | last // empty')
+        | . as $comment
+        | ([($comment.created_at // ""), ($comment.updated_at // "")]
+            | map(canon_ts) | max) as $signal_at
+        | select(if $after == "" then true else $signal_at > $after end)
+        | {comment:$comment, signal_at:$signal_at}]
+      | sort_by(.signal_at) | last.comment // empty')
 
-    # Latest Greptile formal review (belt-and-suspenders supplemental signal).
-    LATEST_G=$(echo "$REVIEWS_JSON" | jq -c '
-      [.[]? | select(.user.login == "greptile-apps[bot]")]
-      | sort_by(.submitted_at) | last // empty')
+    # Latest FRESH Greptile formal review (belt-and-suspenders supplemental
+    # signal). Formal reviews need the same post-push boundary as comments;
+    # otherwise a stale formal review can bypass the durable-round fallback.
+    LATEST_G=$(echo "$REVIEWS_JSON" | jq -c --arg after "$G_FRESH_AFTER_NORM" '
+      def canon_ts: sub("(Z|\\+00:00|\\+0000)$"; "");
+      [.[]?
+        | select(.user.login == "greptile-apps[bot]")
+        | select(if $after == "" then true
+            else ((.submitted_at // "") | canon_ts) > $after end)
+        | {review:., signal_at:((.submitted_at // "") | canon_ts)}]
+      | sort_by(.signal_at) | last.review // empty')
 
     if [[ -z "$LATEST_G" && -z "$LATEST_G_COMMENT" && "$G_INLINE_COUNT" -eq 0 ]]; then
-      # No formal review, no fresh issue comment, no inline findings — nothing to evaluate.
-      # A stale issue comment (created before the last push) does NOT count here;
-      # LATEST_G_COMMENT is already empty when the only comments are pre-push.
-      MISSING+=("no Greptile review yet")
+      # No current-HEAD signal. Reuse the latest completed Greptile review
+      # round only when that round contains zero formal P0 badges (issue #1000).
+      # The durable round boundary is the latest @greptileai trigger recorded in
+      # GitHub issue-comment history. This prevents an older clean review from
+      # satisfying the gate while a newer paid re-review is still unanswered,
+      # and lets a later clean re-review supersede an older P0 round.
+      # Greptile may edit its summary in place, so updated_at is its effective
+      # signal time. Inline comments and formal reviews retain creation/submission
+      # timestamps. The latest timestamp across all three channels proves that
+      # Greptile produced evidence after the latest trigger.
+      G_LATEST_HISTORY_COMMENT_TS=$(echo "$ISSUE_COMMENTS_JSON" | jq -r '
+        def canon_ts: sub("(Z|\\+00:00|\\+0000)$"; "");
+        [.[]? | select(.user.login == "greptile-apps[bot]")
+          | ((.updated_at // .created_at) // "") | canon_ts]
+        | sort | last // ""')
+      G_LATEST_HISTORY_REVIEW_TS=$(echo "$REVIEWS_JSON" | jq -r '
+        def canon_ts: sub("(Z|\\+00:00|\\+0000)$"; "");
+        [.[]? | select(.user.login == "greptile-apps[bot]")
+          | (.submitted_at // "") | canon_ts]
+        | sort | last // ""')
+      G_LATEST_HISTORY_INLINE_TS=$(echo "$PR_COMMENTS_JSON" | jq -r '
+        def canon_ts: sub("(Z|\\+00:00|\\+0000)$"; "");
+        [.[]? | select(.user.login == "greptile-apps[bot]")
+          | (.created_at // "") | canon_ts]
+        | sort | last // ""')
+      G_LATEST_EVIDENCE_TS=$(printf '%s\n%s\n%s\n' \
+        "$G_LATEST_HISTORY_COMMENT_TS" "$G_LATEST_HISTORY_REVIEW_TS" \
+        "$G_LATEST_HISTORY_INLINE_TS" | awk 'NF' | sort | tail -1)
+
+      G_ROUND_COMPLETE=false
+      if [[ -n "$G_LATEST_EVIDENCE_TS" ]]; then
+        if [[ -z "$G_LATEST_TRIGGER_NORM" || "$G_LATEST_EVIDENCE_TS" > "$G_LATEST_TRIGGER_NORM" ]]; then
+          G_ROUND_COMPLETE=true
+        fi
+      fi
+
+      if [[ "$G_ROUND_COMPLETE" != true ]]; then
+        # Complete absence of history and an unanswered newest trigger both fail
+        # closed. Callers already know whether to poll or trigger from sticky
+        # reviewer state, so keep the stable public missing reason.
+        MISSING+=("no Greptile review yet")
+      else
+        # Scope severity evidence to the latest trigger-delimited review round.
+        # If legacy history has no trigger marker, conservatively scan all
+        # Greptile evidence so an old P0 cannot be silently ignored.
+        G_ROUND_BODIES=$(printf '%s\n%s\n%s\n' \
+          "$ISSUE_COMMENTS_JSON" "$REVIEWS_JSON" "$PR_COMMENTS_JSON" \
+          | jq -rs --arg trigger "$G_LATEST_TRIGGER_NORM" '
+              def canon_ts: sub("(Z|\\+00:00|\\+0000)$"; "");
+              [.[0][]?
+                | select(.user.login == "greptile-apps[bot]")
+                | select($trigger == "" or (((.updated_at // .created_at) // "") | canon_ts) > $trigger)
+                | .body // ""]
+              + [.[1][]?
+                | select(.user.login == "greptile-apps[bot]")
+                | select($trigger == "" or ((.submitted_at // "") | canon_ts) > $trigger)
+                | .body // ""]
+              + [.[2][]?
+                | select(.user.login == "greptile-apps[bot]")
+                | select($trigger == "" or ((.created_at // "") | canon_ts) > $trigger)
+                | .body // ""]
+              | join("\n---\n")')
+        G_ROUND_P0_COUNT=$(echo "$G_ROUND_BODIES" | grep -oF 'alt="P0"' | wc -l | tr -d ' ')
+
+        if [[ "$G_ROUND_P0_COUNT" -gt 0 ]]; then
+          MISSING+=("prior Greptile review had P0 findings — need clean re-review after fix (trigger @greptileai)")
+        else
+          # A stale zero-P0 verdict is reusable only for a demonstrable fix-only
+          # push. Every Greptile inline finding in the retained round must have a
+          # PR-author reply that names the current HEAD. This creates auditable
+          # provenance between reviewed findings and the otherwise-unreviewed
+          # post-round commit while the universal thread gate proves resolution.
+          G_FIX_PROVENANCE=$(printf '%s\n%s\n' "$PR_COMMENTS_JSON" "$ISSUE_COMMENTS_JSON" | jq -cs \
+            --arg trigger "$G_LATEST_TRIGGER_NORM" \
+            --arg author "$PR_AUTHOR" \
+            --arg sha "$HEAD_SHA" \
+            --arg short "${HEAD_SHA:0:7}" '
+              def canon_ts: sub("(Z|\\+00:00|\\+0000)$"; "");
+              .[0] as $inline_comments
+              | .[1] as $issue_comments
+              | [$inline_comments[]?
+                  | select(.user.login == "greptile-apps[bot]")
+                  | select((.in_reply_to_id // null) == null)
+                  | select($trigger == "" or ((.created_at // "") | canon_ts) > $trigger)
+                  | .id] as $finding_ids
+              | [$finding_ids[] as $finding_id
+                  | select(
+                      any($inline_comments[]?;
+                        (.in_reply_to_id // null) == $finding_id
+                        and .user.login == $author
+                        and (((.body // "") | ascii_downcase) as $body
+                          | ($body | contains($sha)) or ($body | contains($short))))
+                      or any($issue_comments[]?;
+                        .user.login == $author
+                        and (((.body // "") | ascii_downcase) as $body
+                          | (($body | contains($sha)) or ($body | contains($short)))
+                          and ($body | test(
+                            "(^|\\n)<!--[[:space:]]*review-comment-id:"
+                            + ($finding_id | tostring)
+                            + "[[:space:]]*-->($|\\r?\\n)")))))]
+                as $proven
+              | {ok:($author != ""
+                    and ($proven | length) == ($finding_ids | length)),
+                 finding_count:($finding_ids | length),
+                 proven_count:($proven | length)}')
+          if [[ "$(echo "$G_FIX_PROVENANCE" | jq -r '.ok')" != true ]]; then
+            G_FINDING_COUNT=$(echo "$G_FIX_PROVENANCE" | jq -r '.finding_count')
+            G_PROVEN_COUNT=$(echo "$G_FIX_PROVENANCE" | jq -r '.proven_count')
+            MISSING+=("cannot verify fix-only Greptile reuse on HEAD ${HEAD_SHA:0:7} — $G_PROVEN_COUNT/$G_FINDING_COUNT latest-round finding(s) have a PR-author fix reply naming this HEAD")
+          else
+            echo "merge-gate: reusing latest completed zero-P0 Greptile review round with current-HEAD fix provenance (issue #1000)" >&2
+          fi
+        fi
+      fi
     else
+      # Count formal P0 badges across every signal in the current
+      # trigger-delimited round. A 👍 issue comment proves completion, but it
+      # must not hide a P0 that Greptile reported in that comment, a formal
+      # review, or an earlier inline from the same round. Only a later trusted
+      # trigger starts a round that can supersede those findings.
+      P0_COUNT=$(printf '%s\n%s\n%s\n' \
+        "$ISSUE_COMMENTS_JSON" "$REVIEWS_JSON" "$PR_COMMENTS_JSON" \
+        | jq -rs --arg after "$G_FRESH_AFTER_NORM" '
+            def canon_ts: sub("(Z|\\+00:00|\\+0000)$"; "");
+            ([.[0][]?
+              | select(.user.login == "greptile-apps[bot]")
+              | select(if $after == "" then true
+                  else ((.created_at // "") | canon_ts) > $after
+                    or ((.updated_at // "") | canon_ts) > $after
+                end)
+              | .body // ""]
+            + [.[1][]?
+              | select(.user.login == "greptile-apps[bot]")
+              | select(if $after == "" then true
+                  else ((.submitted_at // "") | canon_ts) > $after end)
+              | .body // ""]
+            + [.[2][]?
+              | select(.user.login == "greptile-apps[bot]")
+              | select(if $after == "" then true
+                  else ((.created_at // "") | canon_ts) > $after end)
+              | .body // ""])
+            | map([scan("alt=\\\"P0\\\"")] | length)
+            | add // 0')
+
       # --- Path A: comment-based clean pass (primary Greptile channel) ---
       G_COMMENT_CLEAN=false
       if [[ -n "$LATEST_G_COMMENT" ]]; then
         G_THUMBSUP=$(echo "$LATEST_G_COMMENT" | jq -r '.reactions["+1"] // 0')
-        # Clean = 👍 present AND no inline findings posted at all.
-        if [[ "$G_THUMBSUP" -gt 0 && "$G_INLINE_COUNT" -eq 0 ]]; then
+        # Clean = 👍 present, no inline findings, and no formal P0 badge in
+        # any channel of the current review round.
+        if [[ "$G_THUMBSUP" -gt 0 && "$G_INLINE_COUNT" -eq 0 && "$P0_COUNT" -eq 0 ]]; then
           G_COMMENT_CLEAN=true
         fi
       fi
 
       if [[ "$G_COMMENT_CLEAN" != true ]]; then
         # --- Path B: severity gate ---
-        # Build a review body from the most-recent Greptile signal (issue comment
-        # or formal review), then check inline bodies anchored at that timestamp.
-        G_ANCHOR_TS=""
-        G_BODY=""
-        if [[ -n "$LATEST_G" ]]; then
-          G_BODY=$(echo "$LATEST_G" | jq -r '.body // ""')
-          G_ANCHOR_TS=$(echo "$LATEST_G" | jq -r '.submitted_at // ""')
-        fi
-        if [[ -n "$LATEST_G_COMMENT" ]]; then
-          # Prefer updated_at over created_at: Greptile edits its summary in-place
-          # (issue #748), so updated_at is the effective review timestamp after a
-          # re-review. Falls back to created_at for comments without updated_at.
-          G_COMMENT_TS=$(echo "$LATEST_G_COMMENT" | jq -r '(.updated_at // .created_at) // ""')
-          # Issue comment supersedes formal review when it is more recent.
-          if [[ -z "$G_ANCHOR_TS" || "$G_COMMENT_TS" > "$G_ANCHOR_TS" ]]; then
-            G_BODY=$(echo "$LATEST_G_COMMENT" | jq -r '.body // ""')
-            G_ANCHOR_TS="$G_COMMENT_TS"
-          fi
-        fi
-
-        # Inline bodies associated with the latest Greptile review (fresh post-push).
-        # Use LAST_COMMIT_TS (push time) rather than G_ANCHOR_TS (summary updated_at):
-        # when Greptile posts inlines before editing its summary in-place (issue #748),
-        # G_ANCHOR_TS > inline.created_at and those inlines would be excluded from P0
-        # scanning — identical asymmetry to the BugBot commit_id lesson. Using the push
-        # timestamp keeps G_INLINE_BODIES consistent with G_INLINE_COUNT (same filter).
-        G_INLINE_BODIES=$(echo "$PR_COMMENTS_JSON" | jq -r --arg ts "${LAST_COMMIT_TS:-}" '
-          [.[]? | select(.user.login == "greptile-apps[bot]")
-                | select(if $ts == "" then true else .created_at > $ts end) | .body]
-          | join("\n---\n")')
-
-        # Count P0 severity badges across the review body and inline comments.
-        # Match only formal Greptile badges (<img alt="P0">) — not bare-word prose
-        # mentions like "no P0" which inflate the count (issue #729).
-        P0_COUNT=$( { echo "$G_BODY"; echo "$G_INLINE_BODIES"; } | grep -oF 'alt="P0"' | wc -l | tr -d ' ')
-
         # Are there unresolved Greptile-authored threads? If so, P0 vs P1/P2 changes
         # whether a re-review is required after fixing.
         UNRESOLVED_G=$(echo "$THREADS_JSON" | jq -r '

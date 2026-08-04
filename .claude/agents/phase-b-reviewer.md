@@ -208,7 +208,7 @@ Same shared `$STATE` bundle, filter by `.user.login == "greptile-apps[bot]"` acr
 
 Use Greptile's severity badges. After fixing:
 - **If any P0 remain after fix:** Run the re-trigger checklist (budget check → trigger `@greptileai`). Max 3 reviews per PR.
-- **If only P1/P2 (no P0):** STOP — merge-ready. Do NOT trigger `@greptileai`.
+- **If only P1/P2 (no P0):** STOP — do NOT trigger `@greptileai`. Push once, reply to every finding naming the current HEAD, and resolve every thread. That provenance lets the gate reuse the latest completed trigger-delimited zero-P0 round (issue #1000); do not wait for new Greptile evidence.
 
 ### Greptile Reply Format (CRITICAL)
 
@@ -223,7 +223,7 @@ Use 👍/👎 reactions on findings for feedback (Greptile's only learning mecha
 
 ### Greptile Merge Gate
 
-Merge-ready when: no findings (clean), all P1/P2 after fix (no re-review needed), or P0 fixed + re-review clean.
+Merge-ready when: no findings (clean), all P1/P2 fixed with every thread resolved and a PR-author reply naming the current HEAD (no re-review needed), or P0 fixed + a later triggered re-review is clean. An unanswered latest trigger, unproven fix-only push, latest completed round containing P0, or complete absence of Greptile review history is not merge-ready. Current-head universal gates still apply.
 
 ## CI Health Check (MANDATORY — every poll cycle)
 
