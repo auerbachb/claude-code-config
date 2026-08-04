@@ -569,6 +569,23 @@ check_eq "yes" "$(missing_has "cannot verify fix-only Greptile reuse")" \
   "unknown-author provenance: unauthenticated reply cannot prove HEAD"
 check_eq "1" "$RC" "unknown-author provenance: exit code 1"
 
+# --------------------------------------------------------------------------
+# Test 25: When GitHub rejects an inline reply, reply-thread.sh falls back to a
+# PR-level comment carrying a hidden source-comment marker. That audited shape
+# proves the same finding-to-HEAD link.
+# --------------------------------------------------------------------------
+echo "--- Test 25: PR-level fallback reply proves fix provenance ---"
+P1_25="$(greptile_p1_inline 25001 "2026-07-23T12:56:00Z")"
+FALLBACK25="$(jq -cn --arg author "$PR_AUTHOR_LOGIN" --arg sha "$HEAD_SHA" \
+  '{id:25002, user:{login:$author},
+    body:("<!-- review-comment-id:25001 -->\nFixed in `" + $sha + "`: addressed."),
+    created_at:"2026-07-23T13:02:00Z", updated_at:"2026-07-23T13:02:00Z"}')"
+run_gate "$PUSH_TS" "[$TRIGGER3,$COMMENT3,$FALLBACK25]" "[$P1_25]"
+
+check_eq "true" "$(met)" "fallback provenance: met == true"
+check_eq "0" "$(missing_count)" "fallback provenance: missing array empty"
+check_eq "0" "$RC" "fallback provenance: exit code 0"
+
 echo "----------------------------------------"
 echo "merge-gate-greptile-comment.test.sh: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

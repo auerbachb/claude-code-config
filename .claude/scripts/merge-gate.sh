@@ -1473,24 +1473,32 @@ case "$REVIEWER" in
           # PR-author reply that names the current HEAD. This creates auditable
           # provenance between reviewed findings and the otherwise-unreviewed
           # post-round commit while the universal thread gate proves resolution.
-          G_FIX_PROVENANCE=$(echo "$PR_COMMENTS_JSON" | jq -c \
+          G_FIX_PROVENANCE=$(printf '%s\n%s\n' "$PR_COMMENTS_JSON" "$ISSUE_COMMENTS_JSON" | jq -cs \
             --arg trigger "$G_LATEST_TRIGGER_NORM" \
             --arg author "$PR_AUTHOR" \
             --arg sha "$HEAD_SHA" \
             --arg short "${HEAD_SHA:0:7}" '
               def canon_ts: sub("(Z|\\+00:00|\\+0000)$"; "");
-              . as $comments
-              | [$comments[]?
+              .[0] as $inline_comments
+              | .[1] as $issue_comments
+              | [$inline_comments[]?
                   | select(.user.login == "greptile-apps[bot]")
                   | select((.in_reply_to_id // null) == null)
                   | select($trigger == "" or ((.created_at // "") | canon_ts) > $trigger)
                   | .id] as $finding_ids
               | [$finding_ids[] as $finding_id
-                  | select(any($comments[]?;
-                      (.in_reply_to_id // null) == $finding_id
-                      and .user.login == $author
-                      and (((.body // "") | ascii_downcase) as $body
-                        | ($body | contains($sha)) or ($body | contains($short)))))] as $proven
+                  | select(
+                      any($inline_comments[]?;
+                        (.in_reply_to_id // null) == $finding_id
+                        and .user.login == $author
+                        and (((.body // "") | ascii_downcase) as $body
+                          | ($body | contains($sha)) or ($body | contains($short))))
+                      or any($issue_comments[]?;
+                        .user.login == $author
+                        and (((.body // "") | ascii_downcase) as $body
+                          | (($body | contains($sha)) or ($body | contains($short)))
+                          and ($body | contains("review-comment-id:" + ($finding_id | tostring))))))]
+                as $proven
               | {ok:($author != "" and ($finding_ids | length) > 0
                     and ($proven | length) == ($finding_ids | length)),
                  finding_count:($finding_ids | length),
