@@ -17,6 +17,7 @@ set -uo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT="$REPO_ROOT/.claude/scripts/polling-state-gate.sh"
 HANDOFF_HELPER="$REPO_ROOT/.claude/scripts/handoff-state.sh"
+SCOPE_LIB="$REPO_ROOT/.claude/scripts/lib/pr-scope-resolver.sh"
 
 TMP="$(mktemp -d)"
 TMP_HOME="$(mktemp -d)"
@@ -43,6 +44,34 @@ check_contains() {
     FAIL=$((FAIL + 1)); echo "FAIL — $desc (missing '$needle' in: $haystack)"
   fi
 }
+
+# ---- 0. extracted scope-resolver boundary (issue #971) ---------------------
+LIB_OUT=""
+LIB_RC=0
+LIB_OUT="$(bash "$SCOPE_LIB" 2>&1)" || LIB_RC=$?
+check_eq "scope resolver refuses direct execution" "2" "$LIB_RC"
+check_contains "direct-execution refusal explains the source-only contract" \
+  "source this file, do not execute it directly" "$LIB_OUT"
+
+SOURCE_RC=0
+# shellcheck source=../lib/pr-scope-resolver.sh
+source "$SCOPE_LIB" || SOURCE_RC=$?
+check_eq "scope resolver can be sourced" "0" "$SOURCE_RC"
+
+SCOPE_FUNCTIONS=(
+  _pr_holders active_scope_key resolve_pr_scope foreign_pr_scopes state_pr_field
+  repo_identity is_owner_repo_identity resolve_root_repo validate_root_match
+)
+for scope_function in "${SCOPE_FUNCTIONS[@]}"; do
+  check_eq "scope resolver exports $scope_function" "function" \
+    "$(type -t "$scope_function" 2>/dev/null || true)"
+  check_eq "polling gate does not re-inline $scope_function" "0" \
+    "$(grep -Ec "^${scope_function}\\(\\)" "$SCRIPT" || true)"
+done
+check_eq "polling gate sources the resolver exactly once" "1" \
+  "$(grep -Ec '^[[:space:]]*if ! source \"\$_SCOPE_RESOLVER_LIB\"; then$' "$SCRIPT" || true)"
+check_eq "polling gate hard-fails when the resolver is missing" "1" \
+  "$(grep -Ec 'required scope resolver not found' "$SCRIPT" || true)"
 
 # Shared gh stub for --ensure-session tests. poll-watermarks.sh (issue #741) calls
 # pr-state.sh during --ensure-session, so the stub must satisfy pr-state's gh

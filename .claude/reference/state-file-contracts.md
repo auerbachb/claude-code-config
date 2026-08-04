@@ -16,6 +16,30 @@ Session state lives at `.repos["<owner>/<name>"].prs["<N>"]` rather than a flat 
 
 Entries that predate scoping and cannot be attributed land under `_unknown`. Account-level fields (Greptile daily budget, CodeRabbit hourly consumption) stay global — they are per-account quotas, not per-repo state.
 
+### Polling-gate scope resolver boundary (issue #971)
+
+`.claude/scripts/lib/pr-scope-resolver.sh` is the single home for the repo-identity
+and per-PR scope-resolution seam used by `polling-state-gate.sh`. The entry point
+still owns argument parsing, mode dispatch, and the `--repo` / `--root-repo` /
+inherited `$CLAUDE_SESSION_REPO` precedence override; it hard-fails if the library
+cannot be sourced so the correctness-sensitive logic cannot drift into a fallback
+copy.
+
+The library preserves two mechanisms because they answer different questions:
+
+- `resolve_pr_scope()` decides **which state lane to read**: the active repo's
+  `.repos["<owner>/<name>"]` lane, then legacy `_unknown`, never another named
+  repo that happens to hold the same PR number (issue #638).
+- `repo_identity()` and `validate_root_match()` decide **whether the invoking
+  checkout may act on that lane** by comparing normalized repo identity and the
+  per-PR `owner_repo` / `root_repo` fields (issue #647).
+
+All state reads in this library go through `session-state.sh`; it never opens or
+writes `session-state.json` or handoff JSON directly. State mutation remains with
+`session-state.sh`, handoff mutation with `handoff-state.sh`, and polling watermark
+mutation with `poll-watermarks.sh`, preserving each helper's lock and path
+contract.
+
 ### Polling-gate protection against inherited scope leakage (issue #967)
 
 `polling-state-gate.sh` resolves the invoking checkout before applying that
@@ -52,7 +76,7 @@ The `.repos["<owner>/<name>"]` key is **always lowercase**, and handoff director
 Three independent code paths derive this key:
 
 - `session-state.sh` — `repo_key_from_remote_url()` and `resolve_repo_key()`
-- `polling-state-gate.sh` — `repo_identity()`
+- `polling-state-gate.sh` via `lib/pr-scope-resolver.sh` — `repo_identity()`
 - `handoff-state.sh` — the path resolver
 
 Before #704 each normalized differently, so a mixed-case remote URL (`AuerbachB/Skingod`) and its lowercase form (`auerbachb/skingod`) mapped to two different scopes — the same PR appeared to be two PRs depending on which script wrote last. All three now share one normalizer, `lib/repo-normalizer.sh`.
