@@ -15,19 +15,19 @@
 #     the override into the tier-1 group, which flips both to acknowledgment — the exact
 #     false-clean the placement prevents. Re-run that control if you touch the ordering.
 #
-# Strategy: extract the classify function definition via sed from pr-state.sh and
-# exercise it in isolation with jq -n. This tests the actual production code rather
-# than a copied duplicate, so the two can never drift apart.
+# Strategy: run the canonical jq file used by pr-state.sh with a one-comment
+# review fixture. This tests the actual production code rather than a copied
+# duplicate, so the two can never drift apart.
 #
 # Requires: jq, bash 3.2+ (macOS-compatible — no mapfile/readarray, no head -n -N).
 # Offline: no gh, no git, no network calls needed.
 set -euo pipefail
 
-# Resolve pr-state.sh relative to this test file — no git required, so the test
+# Resolve the production filter relative to this test file — no git required, so the test
 # runs from a source archive without .git metadata (matches the "no git" note above).
-# This test lives in .claude/scripts/tests/; the script under test is one dir up.
+# This test lives in .claude/scripts/tests/; the filter is in the sibling lib/.
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT="$TEST_DIR/../pr-state.sh"
+FILTER="$TEST_DIR/../lib/pr-state-classify.jq"
 
 PASS=0
 FAIL=0
@@ -35,23 +35,29 @@ FAIL=0
 fail() { echo "FAIL: $1" >&2; FAIL=$((FAIL + 1)); }
 pass() { echo "PASS: $1"; PASS=$((PASS + 1)); }
 
-# Extract the classify function from the production script.
-# Pattern: from "def classify:" through the first "end;" that sits at 6-space indent.
-# On macOS (BSD) sed -n with ranges works the same as GNU sed here.
-CLASSIFY_DEF=$(sed -n '/def classify:/,/^      end;/p' "$SCRIPT")
-
-if [[ -z "$CLASSIFY_DEF" ]]; then
-  echo "ERROR: could not extract classify function from $SCRIPT" >&2
+if [[ ! -r "$FILTER" ]] || ! jq -n \
+    --argjson reviews '[]' \
+    --argjson inline '[]' \
+    --argjson conversation '[]' \
+    --arg since '2026-01-01T00:00:00Z' \
+    -f "$FILTER" >/dev/null 2>&1; then
+  echo "ERROR: canonical classifier is missing or invalid: $FILTER" >&2
   exit 1
 fi
 
 # Run classify on a single body string and return "class|reason".
 classify_body() {
   local body="$1"
-  jq -rn \
-    --arg body "$body" \
-    "${CLASSIFY_DEF}
-    \$body | classify | .class + \"|\" + .reason"
+  local reviews
+  reviews=$(jq -nc --arg body "$body" \
+    '[{id: 1, user: {login: "coderabbitai[bot]"}, submitted_at: "2026-01-02T00:00:00Z", html_url: null, url: null, body: $body}]')
+  jq -n \
+    --argjson reviews "$reviews" \
+    --argjson inline '[]' \
+    --argjson conversation '[]' \
+    --arg since '2026-01-01T00:00:00Z' \
+    -f "$FILTER" \
+    | jq -r '.reviews[0].classification | .class + "|" + .reason'
 }
 
 # ---------------------------------------------------------------------------
