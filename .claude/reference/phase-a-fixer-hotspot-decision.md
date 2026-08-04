@@ -35,8 +35,9 @@ Measured at `main` `dec7dcf86bc929f19089bb92008a2231a822bfe6`, the definition is
 consecutive touches established one new handoff contract. The remaining touch delivered required
 skill-first behavior. A physical split would not eliminate any of those coordinated updates.
 
-No touch in the reported window changed the merge-conflict workflow, structured exit-report block,
-or `handoff-state.sh` location loop. The hotspot report contains no conflict-round or failed-delivery
+No touch in the reported window changed the merge-conflict workflow or the structure and semantics
+of the exit-report block. The handoff work introduced the `handoff-state.sh` location loop and updated
+the report's handoff path, but the hotspot report contains no conflict-round or failed-delivery
 evidence, so the current signal is edit frequency rather than proven structural friction.
 
 ## 2. CodeRabbit plan adjudication
