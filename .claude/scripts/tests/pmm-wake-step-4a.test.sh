@@ -9,8 +9,8 @@
 #   executed against a stubbed `gh` and a real `session-state.sh` copy driven by
 #   a temp `$HOME`. Nothing here is a transcription of the skill: edit the skill
 #   and this suite runs the edit. Same idea as
-#   `pr-state-classify.test.sh`, which sed-extracts the live `classify` jq
-#   function so "the two can never drift apart".
+#   `pr-state-classify.test.sh`, which executes the canonical
+#   `lib/pr-state-classify.jq` file directly so "the two can never drift apart".
 #
 #   Step 4a is two adjacent fenced blocks (scan+guards, then compare). The suite
 #   concatenates them in document order — that pair is the runnable unit.
