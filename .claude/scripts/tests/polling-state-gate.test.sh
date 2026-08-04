@@ -62,7 +62,9 @@ SCOPE_FUNCTIONS=(
   _pr_holders active_scope_key resolve_pr_scope foreign_pr_scopes state_pr_field
   repo_identity is_owner_repo_identity resolve_root_repo validate_root_match
 )
-SCOPE_FUNCTION_DECL_RE='^[[:space:]]*(__NAME__[[:space:]]*\(\)|function[[:space:]]+__NAME__([[:space:]]*\(\))?)[[:space:]]*\{'
+# Match the declaration itself rather than requiring its opening brace on the
+# same line; both `name() {` and `name()\n{` are legal Bash definitions.
+SCOPE_FUNCTION_DECL_RE='^[[:space:]]*(__NAME__[[:space:]]*\(\)|function[[:space:]]+__NAME__([[:space:]]*\(\))?)([[:space:]]*\{)?[[:space:]]*(#.*)?$'
 for scope_function in "${SCOPE_FUNCTIONS[@]}"; do
   check_eq "scope resolver exports $scope_function" "function" \
     "$(type -t "$scope_function" 2>/dev/null || true)"
@@ -80,6 +82,8 @@ check_eq "polling gate hard-fails when the resolver is missing" "1" \
 # multiple source operations sharing one line.
 check_eq "anti-reinline matcher catches function declarations without parentheses" "1" \
   "$(printf '%s\n' '  function resolve_pr_scope {' | grep -Ec "${SCOPE_FUNCTION_DECL_RE//__NAME__/resolve_pr_scope}" || true)"
+check_eq "anti-reinline matcher catches declarations with a next-line brace" "1" \
+  "$(printf '%s\n' '  resolve_pr_scope ()' '{' | grep -Ec "${SCOPE_FUNCTION_DECL_RE//__NAME__/resolve_pr_scope}" || true)"
 check_eq "source-site matcher counts two operations on one line" "2" \
   "$(printf 'source "%s"; . "%s"\n' '$_SCOPE_RESOLVER_LIB' '$_SCOPE_RESOLVER_LIB' | grep -Eo "$SCOPE_SOURCE_OP_RE" | wc -l | tr -d '[:space:]')"
 
