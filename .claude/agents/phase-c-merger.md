@@ -53,11 +53,18 @@ gh pr view {{PR_NUMBER}} --json state,title,mergeStateStatus,commits
 
 > **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read the cached JSON bundle. This agent delegates to `merge-gate.sh`, which calls `pr-state.sh` internally — do not add inline `gh api` calls to these three endpoints.
 
-Run the shared merge-gate verifier. It implements the three-path gate from `.claude/rules/cr-merge-gate.md` (CR 1-clean-approval on current HEAD, BugBot 1-clean, Greptile severity-gated), plus these explicit pre-merge gates — each is a hard STOP if not satisfied:
+Run the shared merge-gate verifier. Do not restate the gate from memory:
+`.claude/rules/cr-merge-gate.md` Steps 1 and 1b–1d own the exact-current-HEAD
+review, terminal CI, unresolved-thread, and merge-metadata requirements, and
+`merge-gate.sh` is their executable source of truth.
 
-- **Gate 1a — CI terminal state.** All check-runs `status: "completed"` with no blocking conclusion (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`). In-progress checks BLOCK — do NOT present the merge prompt; wait and re-poll.
-- **Gate 1b — All review threads resolved.** Every thread `isResolved: true` via GraphQL `reviewThreads(first: 100)` (REST misses cursor/copilot bot threads). Any unresolved thread BLOCKS regardless of author.
-- **Gate 1c — BEHIND / merge metadata.** `merge-gate.sh` enforces merge metadata (see `cr-merge-gate.md` Step 1d). The script JSON field **`merge_state`** mirrors GitHub **`mergeStateStatus`**. If **`GATE_EXIT == 1`** and **`echo "$GATE_JSON" | jq -e '.merge_state == "BEHIND"'`** succeeds, **do not merge** — report `OUTCOME: blocked` and instruct the parent to run **`/fixpr`** (rebase + force-push from a guard-clean worktree) until **`merge_state`** is no longer **`BEHIND`**, then re-run Phase C. For other gate failures, still parse **`missing`** as below — do not infer BEHIND from **`missing`** substring matching.
+Keep one Phase-C-specific branch inline: if **`GATE_EXIT == 1`** and
+**`echo "$GATE_JSON" | jq -e '.merge_state == "BEHIND"'`** succeeds, **do not
+merge**. Report `OUTCOME: blocked` and instruct the parent to run **`/fixpr`**
+(rebase + force-push from a guard-clean worktree) until **`merge_state`** is no
+longer **`BEHIND`**, then re-run Phase C. For other gate failures, parse
+**`missing`** as below — never infer BEHIND from **`missing`** substring
+matching.
 
 ```bash
 # Prefer the handoff's reviewer field; fall back to reviewer-of.sh (session-state
@@ -75,13 +82,8 @@ if [[ -f "$HANDOFF_FILE" ]]; then
   esac
 fi
 if [[ -z "$REVIEWER" ]]; then
-  # Capture stdout + exit code separately. Do NOT swallow stderr or mask the
-  # exit code — exit 5 from reviewer-of.sh means session-state is malformed
-  # (not a JSON object), which is an explicit fail-fast signal per the
-  # script's contract. Falling through to merge-gate.sh on corrupt state
-  # would silently swap the sticky assignment for whatever live-history
-  # inference merge-gate.sh picks, defeating the purpose of storing the
-  # sticky decision in session-state.
+  # Capture stdout + exit code separately; reviewer-of.sh documents exit 5 as
+  # the fail-fast signal for malformed session state.
   RESOLVED=$(.claude/scripts/reviewer-of.sh {{PR_NUMBER}})
   RESOLVED_EXIT=$?
   if [[ "$RESOLVED_EXIT" -eq 5 ]]; then
@@ -108,7 +110,7 @@ If `REVIEWER_ERROR` is set, set `OUTCOME: blocked`, include the error in the out
 
 Only when `REVIEWER_ERROR` is unset, branch on `GATE_EXIT`:
 - Exit `0` → merge gate met (all three paths + CI + merge metadata satisfied). Proceed to Step 2 (AC verification).
-- Exit `1` with **`merge_state == "BEHIND"`** (see Gate 1c) → **`OUTCOME: blocked`** per the BEHIND branch above; do not treat **`missing`** text as the source of truth for this case.
+- Exit `1` with **`merge_state == "BEHIND"`** → **`OUTCOME: blocked`** per the explicit BEHIND branch above; do not treat **`missing`** text as the source of truth for this case.
 - Exit `1` otherwise → gate not met for another reason. Parse the **`missing`** array from the JSON output and include it verbatim in your exit report; set **`OUTCOME: blocked`**.
 - Exit `2`/`3`/`4` → script/usage/gh error. Set `OUTCOME: blocked` and report the stderr/JSON message.
 
@@ -121,17 +123,15 @@ Only when `REVIEWER_ERROR` is unset, branch on `GATE_EXIT`:
    AC_EXIT=$?
    ```
 
-   Exit codes:
-   - `0` → `$ITEMS` is a JSON array of `{index, checked, text}`. Proceed to step 2.
-   - `1` → **either** no Test Plan section **or** the section exists but contains no checkbox items. Both mean "no acceptance criteria to verify" and both are blocking per CLAUDE.md. `OUTCOME: blocked`. Report the specific subcase — `gh pr view {{PR_NUMBER}} --json body --jq '.body'` can tell you which:
-     - No `## Test plan` / `## Test Plan` / `## Acceptance Criteria` heading → "PR body is missing a Test Plan section".
-     - Heading present but zero `- [ ]`/`- [x]` lines → "Test Plan section has no checkbox items".
-   - `3` → PR not found; `OUTCOME: blocked`.
-   - `2`/`4` → script/gh error; `OUTCOME: blocked`.
+   Interpret the helper's output and exit codes exactly as documented by
+   `.claude/scripts/ac-checkboxes.sh --help`. Any nonzero exit blocks Phase C.
+   For exit `1`, inspect the PR body and report whether the Test Plan heading is
+   missing or its section has no checkbox items; both mean there are no
+   acceptance criteria to verify and are blocking per CLAUDE.md.
 
 2. For each item with `checked == false`, read the relevant source file(s) and verify the criterion is met.
 
-3. Tick passing items by zero-based index, or use `--all-pass` if every unchecked item passed. Capture the helper exit code — a failed `gh pr edit --body-file` leaves the PR body unchanged, so Phase C must NOT mark AC as verified on tick failure:
+3. Tick passing items by zero-based index, or use `--all-pass` if every unchecked item passed. Follow `.claude/scripts/ac-checkboxes.sh --help` and capture the helper exit code — any nonzero result leaves AC unverified and blocks Phase C:
 
    ```bash
    # Example: indexes 0, 2, 3 passed
@@ -141,11 +141,6 @@ Only when `REVIEWER_ERROR` is unset, branch on `GATE_EXIT`:
    .claude/scripts/ac-checkboxes.sh {{PR_NUMBER}} --all-pass
    TICK_EXIT=$?
    ```
-
-   Exit codes:
-   - `0` → body updated (or noop — nothing to tick). Proceed.
-   - `4` → `gh pr edit --body-file` failed. `OUTCOME: blocked` — report the stderr with a `[gh-error]` tag.
-   - `2` / other non-zero → internal script error. `OUTCOME: blocked` — report the stderr with a `[script-error]` tag.
 
 4. If any item fails verification: `OUTCOME: blocked` — report which items failed and why. Do NOT tick failing items.
 
@@ -179,11 +174,12 @@ NEXT_PHASE: none
 HANDOFF_FILE: ~/.claude/handoffs/{{OWNER}}/{{REPO}}/pr-{{PR_NUMBER}}-handoff.json
 ```
 
-**Valid OUTCOME values for Phase C:**
-- `merged` — all acceptance criteria verified and checked off, `/wrap` completed the squash merge and follow-up flow.
-- `blocked` — merge blocked. Include details in your output before the exit report: what's blocking (CI failure, unmet AC, merge gate not satisfied, unresolved findings, or `/wrap` stop condition).
+Use `.claude/reference/exit-report-format.md` as the canonical field and
+Phase C `OUTCOME` contract. Include blocker details before the report when the
+outcome is `blocked`.
 
-**Note:** Do NOT delete the handoff file. The parent deletes it only after `OUTCOME: merged` and GitHub confirms the PR is merged.
+**Note:** Do NOT delete the handoff file. Parent-owned deletion timing is
+defined by `.claude/rules/phase-protocols.md` "Phase C Completion Protocol."
 
 ## Skill-First Reflex
 
