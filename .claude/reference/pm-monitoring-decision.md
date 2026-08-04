@@ -55,10 +55,12 @@ Skill-owned polling (`/pr-monitor-and-manage`, `/babysit-pr`) updates timing wat
 This extends existing recovery; it does not create a second PM-specific recovery path.
 
 When a PM session resumes after context turnover, follow `.claude/rules/monitor-mode.md`
-`## PM Monitoring Recovery` for the operational rebuild, terminal-state, scheduler-ownership, and
-heartbeat behavior. Apply the state contract above while doing so: repository-scoped GitHub and
-handoff data are authoritative when cached session fields disagree, and polling state remains owned
-by the skill that created it.
+`## Post-Compaction Recovery` for session-start reconciliation and the recovery heartbeat, then
+`## PM Monitoring Recovery` for the PM-specific rebuild, terminal-state, scheduler-ownership, and
+per-skill polling recovery. Apply the state contract above while doing so: repository-scoped GitHub
+and handoff data are authoritative when cached session fields disagree, and polling state remains
+owned by the skill that created it. The heartbeat's user-visible contract remains owned by
+`CLAUDE.md`.
 
 ## Rule placement
 
