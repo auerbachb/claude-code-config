@@ -14,7 +14,7 @@ Use `.claude/agents/` definitions; they embed phase rules. Every Agent call must
 5. The verbatim `SAFETY:` block from `safety.md`.
 6. The verbatim `MINDSET:` block from `safety.md` (try CLI/browser before handoff — see "Capability Discovery").
 7. The verbatim `SKILLS:` block from `skill-first.md` — **skip for `phase-c-merger`** (no `Skill` tool).
-8. Same step, but not part of the call: arm the silence ceiling — `bgwork-ceiling.sh --arm-command` → `Monitor` (`persistent: true`). The Stop hook blocks the turn otherwise.
+8. Same step, but not part of the call: arm the silence ceiling — `bgwork-ceiling.sh --arm-command` → `Monitor` (`persistent: true`).
 
 See `.claude/agents/README.md` for the full placeholder reference and spawning examples.
 
