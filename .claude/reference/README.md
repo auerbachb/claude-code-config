@@ -79,6 +79,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `ai-review-tool-audit-2026-04.md` — AI review tool chain audit (#368 / #377)
 - `ai-review-tool-audit-2026-06.md` — 30-day AI review tool value audit + keep/cut verdicts (#376)
 - `fixpr-hotspot-decision.md` — diagnosis and extract-not-split decision for `fixpr/SKILL.md` churn (17 PRs in the run-up to #788); verdict: KEEP single file + extract large command forms
+- `claude-md-hotspot-decision.md` — diagnosis and no-content-change decision for `CLAUDE.md` churn (17 merged PRs in the Issue #928 window); verdict: KEEP the single executive contract after recent compression and policy updates
 - `escalate-review-test-hotspot-decision.md` — diagnosis and split decision for `escalate-review.test.sh` churn (11 merged PRs in the #966 hotspot window, re-measured after #969); verdict: SPLIT into four concern suites plus one shared fixture helper
 - `monitor-mode-hotspot-decision.md` — diagnosis and dedup decision for `monitor-mode.md` churn (9 merged PRs in the #984 hotspot window); verdict: KEEP single rule file + point PM recovery prose to its canonical owners
 - `scheduling-reliability-hotspot-decision.md` — diagnosis and dedup decision for `scheduling-reliability.md` churn (12 merged PRs in the #959 hotspot window, re-measured after #982); verdict: KEEP single rule file + remove downstream formula/enforcement restatements
