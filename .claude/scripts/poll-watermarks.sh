@@ -36,6 +36,7 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >>
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PR_STATE="${SCRIPT_DIR}/pr-state.sh"
 STATE_HELPER="${SCRIPT_DIR}/session-state.sh"
+PR_STATE_CLASSIFY_JQ="${SCRIPT_DIR}/lib/pr-state-classify.jq"
 
 PR_NUMBER=""
 MODE=""
@@ -105,6 +106,10 @@ if [[ ! -x "$STATE_HELPER" ]]; then
   echo "poll-watermarks.sh: session-state.sh not found at $STATE_HELPER" >&2
   exit 4
 fi
+if [[ ! -r "$PR_STATE_CLASSIFY_JQ" ]]; then
+  echo "poll-watermarks.sh: classifier not readable at $PR_STATE_CLASSIFY_JQ" >&2
+  exit 4
+fi
 
 run_pr_state() {
   local state_file rc=0
@@ -142,36 +147,29 @@ write_watermarks() {
   fi
 }
 
-# classify() must stay in sync with pr-state.sh --since enrichment (fixpr Step 5b).
+# This ID-watermark helper executes the canonical classification rules in
+# lib/pr-state-classify.jq (fixpr Step 5b). It watches CodeAnt and Graphite in
+# addition to pr-state.sh --since's three-bot scope, then applies ID watermarks.
 eval_watermarks() {
   local state_file="$1" stored_wm="$2"
+  local classified
+  classified="$(
+    jq -c '[
+      (.comments.reviews[]? | . + {__endpoint: "review"}),
+      (.comments.inline[]? | . + {__endpoint: "inline"}),
+      (.comments.conversation[]? | . + {__endpoint: "conversation"})
+    ]' "$state_file" | jq -c \
+      --argjson reviews '[]' \
+      --argjson inline '[]' \
+      --argjson conversation '[]' \
+      --arg since '' \
+      -f "$PR_STATE_CLASSIFY_JQ"
+  )" || return 1
   jq -n \
     --argjson state "$(<"$state_file")" \
+    --argjson classified "$classified" \
     --argjson stored "$stored_wm" \
     '
-    def classify:
-      if . == null or . == "" then {class: "acknowledgment", reason: "empty body"}
-      elif test("<!--\\s*<review_comment_addressed>\\s*-->"; "") then {class: "acknowledgment", reason: "addressed marker"}
-      elif test("<!--\\s*<review_comment_withdrawn>\\s*-->"; "") then {class: "acknowledgment", reason: "withdrawn marker"}
-      elif test("actionable comments posted:\\s*0\\b"; "i") then {class: "acknowledgment", reason: "CR reports zero actionable"}
-      elif test("no actionable comments were generated"; "i") then {class: "acknowledgment", reason: "CR no actionable comments generated"}
-      elif test("rate limit exceeded|rate.limited by coderabbit|currently rate limited|review limit reached|next review (will be )?available in"; "i") then {class: "acknowledgment", reason: "rate limit notice"}
-      elif test("couldn[\u0027\u2019]t run\\s*[-–—]\\s*usage limit reached|this run hit a usage or spend limit"; "i") then {class: "acknowledgment", reason: "BugBot usage limit notice"}
-      elif test("full review triggered"; "i") then {class: "acknowledgment", reason: "review-started ack"}
-      elif test("found no new issues"; "i") then {class: "acknowledgment", reason: "BugBot clean pass"}
-      elif (test("<!--\\s*BUGBOT_REVIEW\\s*-->"; "") and (test("found [1-9][0-9]* potential issue"; "i") | not)) then {class: "acknowledgment", reason: "BugBot zero-issue summary"}
-      elif test("Oops, something went wrong"; "i") then {class: "acknowledgment", reason: "CR error stub / transient noise"}
-      elif test("<!--\\s*This is an auto-generated reply by CodeRabbit\\s*-->"; "i") then {class: "acknowledgment", reason: "CR auto-reply ack"}
-      elif test("\\b(critical|major|minor|nitpick|p[0-2])\\b"; "i") then {class: "finding", reason: "severity keyword"}
-      elif test("🔴|🟠|🟡"; "") then {class: "finding", reason: "severity badge"}
-      elif test("actionable comments posted"; "i") then {class: "finding", reason: "actionable phrase"}
-      elif test("potential[_ ]issue|issues? found|findings?:"; "i") then {class: "finding", reason: "finding phrase"}
-      elif test("Prompt for AI Agent"; "i") then {class: "finding", reason: "CR fix prompt"}
-      elif test("```suggestion"; "m") then {class: "finding", reason: "suggestion block"}
-      elif test("\\b(lgtm|looks good|approved|confirmed|resolved)\\b"; "i") then {class: "acknowledgment", reason: "lgtm variant"}
-      elif test("<!--\\s*This is an auto-generated comment:\\s*summarize by coderabbit\\.ai\\s*-->"; "i") then {class: "acknowledgment", reason: "CR walkthrough summary"}
-      else {class: "finding", reason: "default — no pattern matched"}
-      end;
     def is_bot:
       .user.login == "coderabbitai[bot]"
       or .user.login == "cursor[bot]"
@@ -180,11 +178,12 @@ eval_watermarks() {
       or .user.login == "graphite-app[bot]";
     def max_id($items):
       ([$items[]? | .id // empty] | max // 0);
-    def new_finding_count($items; $wm):
+    def new_finding_count($items; $endpoint; $wm):
       [$items[]
+       | select(.__endpoint == $endpoint)
        | select(is_bot)
        | select((.id // 0) > ($wm // 0))
-       | select((.body | classify).class == "finding")
+       | select(.classification.class == "finding")
       ] | length;
     ($state.comments.reviews // []) as $reviews
     | ($state.comments.inline // []) as $inline
@@ -198,9 +197,9 @@ eval_watermarks() {
           last_inline_comment_id: max_id($inline),
           last_issue_comment_id: max_id($conversation)
         },
-        new_review_findings: new_finding_count($reviews; $wm_review),
-        new_inline_findings: new_finding_count($inline; $wm_inline),
-        new_issue_comment_findings: new_finding_count($conversation; $wm_issue)
+        new_review_findings: new_finding_count($classified; "review"; $wm_review),
+        new_inline_findings: new_finding_count($classified; "inline"; $wm_inline),
+        new_issue_comment_findings: new_finding_count($classified; "conversation"; $wm_issue)
       }
     | . + {
         new_findings: (

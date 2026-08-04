@@ -20,11 +20,11 @@
 #   committed test because the verification harness was scratch-only.
 #
 #   The sibling precedent is `.claude/scripts/tests/pr-state-classify.test.sh`,
-#   which `sed`-extracts the real `classify` jq function from `pr-state.sh` so
-#   "the two can never drift apart". This library is the same idea for Markdown.
+#   which runs the canonical production jq file directly so "the two can never
+#   drift apart". This library applies the same principle to Markdown.
 #
 # THE ANCHORING RULE (the one design decision this library exists to make)
-#   A jq function has a stable named symbol (`def classify:`) to anchor on. A
+#   A jq program can live in a canonical file and be invoked directly. A
 #   fenced block in Markdown has nothing: heading text ("## Step 4a") and fence
 #   ordinal ("the 3rd ```bash block") are both prose-mutable, so anchoring on
 #   either turns every editorial reshuffle into a red build — a maintenance tax

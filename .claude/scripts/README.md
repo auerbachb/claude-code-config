@@ -196,7 +196,8 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | `polling-state-gate.test.sh` | Tests for `polling-state-gate.sh` |
 | `pr-authorship.test.sh` | Tests for `pr-authorship.sh` |
 | `pr-preflight.test.sh` | Tests for `pr-preflight.sh` |
-| `pr-state-classify.test.sh` | Tests the `classify` jq function inside `pr-state.sh --since` |
+| `pr-state-check-runs.test.sh` | Tests the canonical `pr-state-cr-split.jq` program invoked by `pr-state.sh` |
+| `pr-state-classify.test.sh` | Tests the canonical `pr-state-classify.jq` program invoked by `pr-state.sh --since` |
 | `pr-state-infer-candidates.test.sh` | Tests `pr-state.sh --infer-candidates` |
 | `reply-thread.test.sh` | Tests for `reply-thread.sh` |
 | `session-state-audit.test.sh` | Tests for `session-state-audit.sh` |

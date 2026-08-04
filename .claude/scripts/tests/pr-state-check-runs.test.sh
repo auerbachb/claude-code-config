@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Unit test for the `CR_SPLIT` check-run projection inside `pr-state.sh`
+# Unit test for the canonical `pr-state-cr-split.jq` projection invoked by
+# `pr-state.sh`
 # (issue #956).
 #
 # What it pins:
@@ -18,15 +19,15 @@
 #      per-field values, so a dropped or renamed field fails here rather than in
 #      a downstream consumer.
 #
-# Strategy (same as pr-state-classify.test.sh): extract the real jq block from
-# pr-state.sh with sed and exercise it in isolation, so the test cannot drift
-# from the production code it claims to cover.
+# Strategy (same as pr-state-classify.test.sh): execute the canonical jq file
+# used by pr-state.sh, so the test cannot drift from production behavior.
 #
 # Requires: jq, bash 3.2+ (macOS-compatible). Offline: no gh, git, or network.
 set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$TEST_DIR/../pr-state.sh"
+FILTER="$TEST_DIR/../lib/pr-state-cr-split.jq"
 
 TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }
@@ -43,40 +44,23 @@ check_eq() {
   fi
 }
 
-# ---- extract the production projection ------------------------------------
-# From the `CR_SPLIT=$(echo ... | jq '` opener through the closing `')`, then
-# strip those two wrapper lines to leave the jq program itself.
-CR_SPLIT_JQ="$(sed -n "/^CR_SPLIT=/,/^')\$/p" "$SCRIPT" | sed '1d;$d')"
-
-# Assert the EXTRACTION ran before trusting anything it produced: a sed pattern
-# that silently stops matching (renamed variable, reflowed quoting) would hand
-# every assertion below an empty program, and jq would happily evaluate the bare
-# filter that remains. Check for all three projected arrays by name.
-EXTRACT_OK="yes"
-[[ -n "$CR_SPLIT_JQ" ]] || EXTRACT_OK="empty"
-for needle in 'failing_runs:' 'in_progress_runs:' 'all:'; do
-  case "$CR_SPLIT_JQ" in
-    *"$needle"*) ;;
-    *) EXTRACT_OK="missing $needle" ;;
-  esac
-done
-check_eq "CR_SPLIT projection extracted from pr-state.sh" "yes" "$EXTRACT_OK"
-if [[ "$EXTRACT_OK" != "yes" ]]; then
+# ---- canonical production projection --------------------------------------
+FILTER_OK="yes"
+[[ -r "$FILTER" ]] || FILTER_OK="not readable"
+if [[ "$FILTER_OK" == "yes" ]] && ! jq -e -f "$FILTER" <<<'[]' >/dev/null 2>&1; then
+  FILTER_OK="invalid jq"
+fi
+check_eq "canonical CR_SPLIT projection is readable jq" "yes" "$FILTER_OK"
+if [[ "$FILTER_OK" != "yes" ]]; then
   echo "== summary: $PASS passed, $FAIL failed ==" >&2
   exit 1
 fi
 
-# Run the real projection over a raw check-run array, then apply a filter to the
-# result. The program goes through a file rather than an inline argument so its
-# comments, backticks and quoting reach jq untouched.
+# Run the real projection over a raw check-run array, then apply the assertion
+# filter to its output.
 project() {
   # $1 = raw check-runs JSON array, $2 = jq filter over the projection output
-  local prog="$TMP/prog.jq"
-  {
-    printf '%s\n' "$CR_SPLIT_JQ"
-    printf '| (%s)\n' "$2"
-  } > "$prog"
-  jq -c -f "$prog" <<<"$1"
+  jq -c -f "$FILTER" <<<"$1" | jq -c "$2"
 }
 
 # ---- fixtures ---------------------------------------------------------------
@@ -178,6 +162,32 @@ check_eq "counts unchanged (total/passing/failing/in_progress)" \
 check_eq "top-level bundle key set unchanged" \
   '["all","failing","failing_runs","in_progress","in_progress_runs","passing","total"]' \
   "$(project "$RUNS" 'keys')"
+
+############################################################################
+echo
+echo "== missing canonical filters fail on the existing operational-error code =="
+mkdir -p "$TMP/partial-deploy"
+cp "$SCRIPT" "$TMP/partial-deploy/pr-state.sh"
+chmod +x "$TMP/partial-deploy/pr-state.sh"
+"$TMP/partial-deploy/pr-state.sh" --pr 1 >"$TMP/missing.out" 2>"$TMP/missing.err"
+missing_rc=$?
+check_eq "partial deployment exits with existing runtime code 5" "5" "$missing_rc"
+missing_message="no"
+grep -q 'required pr-state jq filter not readable:' "$TMP/missing.err" && missing_message="yes"
+check_eq "partial deployment reports the missing jq filter" "yes" "$missing_message"
+
+mkdir -p "$TMP/empty-home/.claude"
+HOME="$TMP/empty-home" "$TMP/partial-deploy/pr-state.sh" --help >/dev/null 2>&1
+check_eq "--help does not require full-snapshot filters" "0" "$?"
+HOME="$TMP/empty-home" "$TMP/partial-deploy/pr-state.sh" --infer-candidates >"$TMP/infer.out" 2>"$TMP/infer.err"
+check_eq "--infer-candidates does not require full-snapshot filters" "0" "$?"
+check_eq "--infer-candidates keeps its missing-state output" "[]" "$(cat "$TMP/infer.out")"
+printf '%s\n' '{"pr":{"head_sha":"abc"},"comments":{"reviews":[],"inline":[],"conversation":[]},"check_runs":{"all":[]},"bot_statuses":{},"new_since_baseline":{"finding_count":0}}' >"$TMP/wait-bundle.json"
+HOME="$TMP/empty-home" "$TMP/partial-deploy/pr-state.sh" --wait-state-eval abc "$TMP/wait-bundle.json" >"$TMP/wait.out" 2>"$TMP/wait.err"
+check_eq "--wait-state-eval does not require full-snapshot filters" "0" "$?"
+check_eq "--wait-state-eval output remains unchanged" \
+  '{"head_moved":false,"bots_pending":[],"ci_pending":[],"ci_failing":[],"new_findings":0}' \
+  "$(cat "$TMP/wait.out")"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

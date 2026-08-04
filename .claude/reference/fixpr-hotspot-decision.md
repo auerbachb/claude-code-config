@@ -30,9 +30,9 @@ This follows the same remedy as:
 
 Three targeted extractions, zero behavior change:
 
-### 1. Classification contract → `pr-state.sh` is the single source of truth
+### 1. Classification rules → `pr-state-classify.jq` is the source of truth; `pr-state.sh` owns the public contract
 
-The classification rules lived in `pr-state.sh`'s `classify` jq function (with an extensive block comment above it) AND were duplicated verbatim as prose in `fixpr/SKILL.md` Step 5b. `pr-state.sh` is now authoritative; Step 5b carries a pointer and a summary of the ordering invariants. Rule changes only require editing `pr-state.sh`.
+The classification rules originally lived inline in `pr-state.sh` (with an extensive block comment above them) AND were duplicated verbatim as prose in `fixpr/SKILL.md` Step 5b. Step 5b was reduced to a pointer and a summary of the ordering invariants. Issue #980 later moved the same jq program, including its rationale, to the canonical `.claude/scripts/lib/pr-state-classify.jq`; `pr-state.sh --since` still owns the public bundle contract and invokes that filter. Rule changes now require editing only the canonical jq file.
 
 ### 2. Reviewer-activity detection → `.claude/scripts/reviewer-activity.sh`
 
