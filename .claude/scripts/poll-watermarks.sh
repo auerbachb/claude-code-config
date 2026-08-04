@@ -142,7 +142,9 @@ write_watermarks() {
   fi
 }
 
-# classify() must stay in sync with pr-state.sh --since enrichment (fixpr Step 5b).
+# This ID-watermark classifier must stay behaviorally aligned with the canonical
+# rules in lib/pr-state-classify.jq (fixpr Step 5b). It additionally watches
+# CodeAnt and Graphite, which are outside pr-state.sh --since's three-bot scope.
 eval_watermarks() {
   local state_file="$1" stored_wm="$2"
   jq -n \

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Unit test for the `classify` jq function inside `pr-state.sh --since`
+# Unit test for the canonical `pr-state-classify.jq` program invoked by
+# `pr-state.sh --since`
 # (issues #535, #557, #575, #669, #743).
 #
 # Verifies that comment bodies observed misclassified in the wild are now correctly

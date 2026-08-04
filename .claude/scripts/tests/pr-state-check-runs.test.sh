@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Unit test for the `CR_SPLIT` check-run projection inside `pr-state.sh`
+# Unit test for the canonical `pr-state-cr-split.jq` projection invoked by
+# `pr-state.sh`
 # (issue #956).
 #
 # What it pins:
