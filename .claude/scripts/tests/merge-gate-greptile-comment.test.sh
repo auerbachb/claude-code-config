@@ -37,6 +37,7 @@ check_eq() { # expected actual label
 }
 
 HEAD_SHA="aabbccddeeff0011223344556677889900aabbcc"
+PR_AUTHOR_LOGIN="solouser"
 # Last push: commit committer date. Tests set FAKE_COMMIT_TS relative to this.
 PUSH_TS="2026-07-23T13:00:00Z"
 # A timestamp clearly AFTER the push (comment is fresh).
@@ -57,13 +58,14 @@ case "$ARGS" in
   "api user --jq .login")
     # Authorship guard (issue #733): viewer login; matches the PR author below
     # so authorship == "mine" and the merge is not blocked.
-    echo "solouser"; exit 0 ;;
+    echo "$PR_AUTHOR_LOGIN"; exit 0 ;;
   *"pr view "*headRefOid*)
     jq -cn \
-      --arg sha  "$HEAD_SHA" \
+      --arg sha "$HEAD_SHA" \
+      --arg author "$PR_AUTHOR_LOGIN" \
       '{number:1, state:"OPEN", headRefOid:$sha, baseRefName:"main",
         mergeStateStatus:"CLEAN", mergeable:"MERGEABLE", reviewDecision:"APPROVED",
-        author:{login:"solouser", type:"User"}}'
+        author:{login:$author, type:"User"}}'
     exit 0 ;;
   *"git/commits/"*)
     # Return FAKE_COMMIT_TS as the committer date — used for Greptile freshness.
@@ -103,6 +105,7 @@ chmod +x "$BIN/gh"
 # Export HEAD_SHA so the heredoc-embedded gh stub can see it.
 export HEAD_SHA
 export PUSH_TS
+export PR_AUTHOR_LOGIN
 
 # Helper: build a Greptile issue comment JSON object.
 # Third arg (updated_at) is optional — defaults to created_at.
@@ -119,8 +122,8 @@ greptile_comment() { # created_at thumbsup_count [updated_at]
 }
 
 greptile_trigger() { # created_at
-  jq -cn --arg ts "$1" \
-    '{id:9001, user:{login:"solouser"}, body:"@greptileai",
+  jq -cn --arg ts "$1" --arg author "$PR_AUTHOR_LOGIN" \
+    '{id:9001, user:{login:$author}, body:"@greptileai",
       created_at:$ts, updated_at:$ts}'
 }
 
@@ -141,13 +144,6 @@ run_gate() {
   # $4 = review threads, $5 = check-runs payload (last three optional).
   local commit_ts="$1" issue_comments="$2" pr_comments="${3:-[]}"
   local threads="${4:-}" checks="${5:-}"
-  if [[ -z "$threads" ]]; then
-    threads=$(jq -cn '{data:{repository:{pullRequest:{reviewThreads:{nodes:[]}}}}}')
-  fi
-  if [[ -z "$checks" ]]; then
-    checks=$(jq -cn '{check_runs:[{id:1,name:"ci",status:"completed",conclusion:"success",
-      completed_at:"2026-07-23T13:01:00Z",check_suite:{id:1},app:{slug:"gha",id:1}}]}')
-  fi
   OUT=$(PATH="$BIN:$PATH" \
         FAKE_COMMIT_TS="$commit_ts" \
         FAKE_ISSUE_COMMENTS="$issue_comments" \
@@ -332,7 +328,8 @@ echo "--- Test 11: latest trigger unanswered ---"
 OLD_TRIGGER11="$(greptile_trigger "2026-07-23T12:45:00Z")"
 OLD_COMMENT11="$(greptile_comment "2026-07-23T12:50:00Z" 1)"
 NEW_TRIGGER11="$(jq -cn \
-  '{id:9002, user:{login:"solouser"}, body:"@greptileai",
+  --arg author "$PR_AUTHOR_LOGIN" \
+  '{id:9002, user:{login:$author}, body:"@greptileai",
     created_at:"2026-07-23T12:58:00Z", updated_at:"2026-07-23T12:58:00Z"}')"
 run_gate "$PUSH_TS" "[$OLD_TRIGGER11,$OLD_COMMENT11,$NEW_TRIGGER11]" "[]"
 
@@ -351,7 +348,8 @@ OLD_P0_12="$(jq -cn --arg sha "$HEAD_SHA" \
     body:"<img alt=\"P0\" src=\"badge.svg\" /> Old fixed finding.",
     created_at:"2026-07-23T12:35:00Z", commit_id:$sha, original_commit_id:$sha}')"
 NEW_TRIGGER12="$(jq -cn \
-  '{id:9003, user:{login:"solouser"}, body:"@greptileai",
+  --arg author "$PR_AUTHOR_LOGIN" \
+  '{id:9003, user:{login:$author}, body:"@greptileai",
     created_at:"2026-07-23T12:45:00Z", updated_at:"2026-07-23T12:45:00Z"}')"
 NEW_COMMENT12="$(greptile_comment "$STALE_TS" 1)"
 run_gate "$PUSH_TS" "[$OLD_TRIGGER12,$NEW_TRIGGER12,$NEW_COMMENT12]" "[$OLD_P0_12]"
@@ -412,7 +410,8 @@ COLLAB_TRIGGER16="$(jq -cn \
   '{id:16001, user:{login:"collaborator"}, body:"@greptileai",
     created_at:"2026-07-23T12:58:00Z", updated_at:"2026-07-23T12:58:00Z"}')"
 PROSE16="$(jq -cn \
-  '{id:16002, user:{login:"solouser"}, body:"Do not post @greptileai again",
+  --arg author "$PR_AUTHOR_LOGIN" \
+  '{id:16002, user:{login:$author}, body:"Do not post @greptileai again",
     created_at:"2026-07-23T12:59:00Z", updated_at:"2026-07-23T12:59:00Z"}')"
 run_gate "$PUSH_TS" "[$TRIGGER3,$COMMENT3,$COLLAB_TRIGGER16,$PROSE16]" "[]"
 
