@@ -34,7 +34,7 @@ PM orchestration reads and writes `~/.claude/session-state.json`. Unknown fields
 - `root_repo`: absolute path to the **git root** of the repo where PR helpers run (must match `git rev-parse --show-toplevel` for that checkout). This top-level field is a *default only*: the session file is shared across concurrent sessions, so whichever session wrote last owns it, and it must never gate polling (issue #647). Repo scoping is per PR — `.prs["N"].owner_repo` plus `.prs["N"].root_repo`, written by `polling-state-gate.sh --ensure-session` and validated by **repo identity** (normalized `origin` remote, falling back to the shared git common dir) rather than path equality, so sibling worktrees of one repo agree while a genuine cross-repo mismatch is still refused. "Genuine" means scoping recorded *inside the scope being read*: PR numbers are per-repo, so another repo also tracking an `N` is an expected collision, never a refusal (issue #854) — the gate reads only this repo's scope (or the legacy `_unknown` one), and a PR absent from it is simply unregistered here, which `--ensure-session` fixes.
 - `prs`: tracked PR map. Each entry may include `issue`, `phase`, `head_sha`, `reviewer`, `needs`, `status`, `worker`, and `updated_at`.
 - `active_agents`: subagent records. Each entry should include `id`, `task`, `issue`, `pr`, `phase`, `launched`, and optional `last_seen_at`.
-- `polling_jobs`: active scheduled jobs **owned by other skills**. Empty in normal operation since issue #827 — no skill registers a cron, and `session-scheduling-reconcile.sh` clears leftovers at session start. `/pm` does not create or clear this array.
+- `polling_jobs`: legacy `CronCreate` compatibility records from pre-issue #827 sessions. Empty in normal operation — no current skill registers one, and `session-scheduling-reconcile.sh` reconciles leftovers at session start. `/pm` does not create or clear this array.
 - `polling_failures`: prior dropped-poll recoveries.
 - `cr_quota` and `greptile_daily`: review-budget state used by Phase B decisions.
 - `pmm_*` fields: owned by `/pr-monitor-and-manage`.
@@ -56,11 +56,15 @@ This extends existing recovery; it does not create a second PM-specific recovery
 
 When a PM session resumes after context turnover, follow `.claude/rules/monitor-mode.md`
 `## Post-Compaction Recovery` for session-start reconciliation and the recovery heartbeat, then
-`## PM Monitoring Recovery` for the PM-specific rebuild, terminal-state, scheduler-ownership, and
-per-skill polling recovery. Apply the state contract above while doing so: repository-scoped GitHub
-and handoff data are authoritative when cached session fields disagree, and polling state remains
-owned by the skill that created it. The heartbeat's user-visible contract remains owned by
-`CLAUDE.md`.
+`## PM Monitoring Recovery` for the PM orchestration rebuild, terminal-state, and scheduler-
+ownership boundaries. Apply the state contract above while doing so: repository-scoped GitHub and
+handoff data are authoritative when cached session fields disagree. The heartbeat's user-visible
+contract remains owned by `CLAUDE.md`.
+
+`polling_jobs[]` is legacy `CronCreate` state, not a recovery registry for current persistent
+`Monitor` tasks; `session-scheduling-reconcile.sh` owns its session-start reconciliation. Recover a
+current Monitor or a dropped tick through `.claude/rules/scheduling-reliability.md` and the lifecycle
+contract of the skill that armed it (`/pr-monitor-and-manage` or `/babysit-pr`).
 
 ## Rule placement
 
