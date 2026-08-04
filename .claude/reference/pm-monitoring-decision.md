@@ -52,20 +52,13 @@ Skill-owned polling (`/pr-monitor-and-manage`, `/babysit-pr`) updates timing wat
 
 ## Recovery protocol
 
-When a PM session resumes after context turnover:
-
-1. Run the post-compaction/session-start recovery from `monitor-mode.md`: timestamp the first message, read `session-state.json`, read handoff files, then reconcile with live GitHub.
-2. Rebuild the active work table from:
-   - `prs`,
-   - `active_agents`,
-   - `~/.claude/handoffs/pr-*-handoff.json`,
-   - open PRs and recent merged PRs,
-   - open/closed issues referenced by the tracked PRs.
-3. If no active workers/PRs remain, set `monitoring_active=false` and stop.
-4. `/pm` does **not** restart a Monitor or scheduler on its own behalf. For between-message PR monitoring, point the user at `/pr-monitor-and-manage`. Polls owned by other skills recover per that skill's contract.
-5. Send a concise heartbeat identifying the recovered PRs/workers.
-
 This extends existing recovery; it does not create a second PM-specific recovery path.
+
+When a PM session resumes after context turnover, follow `.claude/rules/monitor-mode.md`
+`## PM Monitoring Recovery` for the operational rebuild, terminal-state, scheduler-ownership, and
+heartbeat behavior. Apply the state contract above while doing so: repository-scoped GitHub and
+handoff data are authoritative when cached session fields disagree, and polling state remains owned
+by the skill that created it.
 
 ## Rule placement
 
