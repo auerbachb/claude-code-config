@@ -82,6 +82,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `claude-md-hotspot-decision.md` — diagnosis and no-content-change decision for `CLAUDE.md` churn (17 merged PRs in the Issue #928 window); verdict: KEEP the single executive contract after recent compression and policy updates
 - `escalate-review-test-hotspot-decision.md` — diagnosis and split decision for `escalate-review.test.sh` churn (11 merged PRs in the #966 hotspot window, re-measured after #969); verdict: SPLIT into four concern suites plus one shared fixture helper
 - `monitor-mode-hotspot-decision.md` — diagnosis and dedup decision for `monitor-mode.md` churn (9 merged PRs in the #984 hotspot window); verdict: KEEP single rule file + point PM recovery prose to its canonical owners
+- `phase-a-fixer-hotspot-decision.md` — diagnosis and no-runtime-change decision for `phase-a-fixer.md` churn (9 merged PRs in the Issue #975 window); verdict: KEEP the self-contained Phase A agent contract
 - `phase-b-reviewer-hotspot-decision.md` — diagnosis and no-runtime-change decision for `phase-b-reviewer.md` churn (14 merged PRs in the Issue #942 window); verdict: KEEP the self-contained Phase B state machine
 - `scheduling-reliability-hotspot-decision.md` — diagnosis and dedup decision for `scheduling-reliability.md` churn (12 merged PRs in the #959 hotspot window, re-measured after #982); verdict: KEEP single rule file + remove downstream formula/enforcement restatements
 - `repo-audit-2026-05.md` — bundled org + efficiency + best-practices audit (#413–#415)
