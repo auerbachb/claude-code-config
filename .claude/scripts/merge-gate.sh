@@ -1321,17 +1321,29 @@ case "$REVIEWER" in
     #     push-timestamp lesson — repo memory feedback_bugbot_commit_id_stale).
     #   Formal review objects (pulls/{N}/reviews) are kept as supplemental signal.
 
-    # Only an exact trigger command from the PR author establishes a paid-review
-    # round boundary. Requiring both properties prevents a collaborator, bot, or
-    # prose mention of @greptileai from hiding evidence in the real latest round.
-    G_LATEST_TRIGGER_TS=$(echo "$ISSUE_COMMENTS_JSON" | jq -r --arg author "$PR_AUTHOR" '
-      [.[]?
-        | select(.user.login == $author)
-        | select(((.body // "")
-            | gsub("^[[:space:]]+|[[:space:]]+$"; "")
-            | ascii_downcase) == "@greptileai")
-        | (.created_at // "")]
-      | sort | last // ""')
+    # Only an exact trigger command from the PR author establishes a trusted
+    # paid-review round boundary. If GitHub cannot resolve the author, degrade
+    # conservatively: the latest exact command from any account is a boundary,
+    # but is not treated as authenticated. Otherwise an unanswered author
+    # trigger could disappear with PR_AUTHOR and stale clean evidence could pass.
+    if [[ -n "$PR_AUTHOR" ]]; then
+      G_LATEST_TRIGGER_TS=$(echo "$ISSUE_COMMENTS_JSON" | jq -r --arg author "$PR_AUTHOR" '
+        [.[]?
+          | select(.user.login == $author)
+          | select(((.body // "")
+              | gsub("^[[:space:]]+|[[:space:]]+$"; "")
+              | ascii_downcase) == "@greptileai")
+          | (.created_at // "")]
+        | sort | last // ""')
+    else
+      G_LATEST_TRIGGER_TS=$(echo "$ISSUE_COMMENTS_JSON" | jq -r '
+        [.[]?
+          | select(((.body // "")
+              | gsub("^[[:space:]]+|[[:space:]]+$"; "")
+              | ascii_downcase) == "@greptileai")
+          | (.created_at // "")]
+        | sort | last // ""')
+    fi
 
     # A post-push trigger starts a newer round than the push itself. Anchor all
     # fresh-path evidence after the newer boundary so evidence from an earlier

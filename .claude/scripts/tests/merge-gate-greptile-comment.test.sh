@@ -469,6 +469,26 @@ check_eq "yes" "$(missing_has "P0")" \
   "same-round formal P0: missing contains P0 message"
 check_eq "1" "$RC" "same-round formal P0: exit code 1"
 
+# --------------------------------------------------------------------------
+# Test 20: If the PR author login is unavailable, an exact unanswered trigger
+# must still form a conservative boundary. Falling back to triggerless legacy
+# history here would reuse the older clean round and fail open.
+# --------------------------------------------------------------------------
+echo "--- Test 20: unknown PR author preserves unanswered trigger boundary ---"
+OLD_COMMENT20="$(greptile_comment "2026-07-23T12:50:00Z" 1)"
+UNKNOWN_AUTHOR_TRIGGER20="$(jq -cn \
+  '{id:20001, user:{login:"solouser"}, body:"@greptileai",
+    created_at:"2026-07-23T12:58:00Z", updated_at:"2026-07-23T12:58:00Z"}')"
+SAVED_PR_AUTHOR_LOGIN="$PR_AUTHOR_LOGIN"
+PR_AUTHOR_LOGIN=""
+run_gate "$PUSH_TS" "[$OLD_COMMENT20,$UNKNOWN_AUTHOR_TRIGGER20]" "[]"
+PR_AUTHOR_LOGIN="$SAVED_PR_AUTHOR_LOGIN"
+
+check_eq "false" "$(met)" "unknown author: met == false"
+check_eq "yes" "$(missing_has "no Greptile review")" \
+  "unknown author: unanswered exact trigger blocks stale reuse"
+check_eq "1" "$RC" "unknown author: exit code 1"
+
 echo "----------------------------------------"
 echo "merge-gate-greptile-comment.test.sh: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
