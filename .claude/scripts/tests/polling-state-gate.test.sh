@@ -17,6 +17,7 @@ set -uo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT="$REPO_ROOT/.claude/scripts/polling-state-gate.sh"
 HANDOFF_HELPER="$REPO_ROOT/.claude/scripts/handoff-state.sh"
+SCOPE_LIB="$REPO_ROOT/.claude/scripts/lib/pr-scope-resolver.sh"
 
 TMP="$(mktemp -d)"
 TMP_HOME="$(mktemp -d)"
@@ -43,6 +44,90 @@ check_contains() {
     FAIL=$((FAIL + 1)); echo "FAIL — $desc (missing '$needle' in: $haystack)"
   fi
 }
+
+# ---- 0. extracted scope-resolver boundary (issue #971) ---------------------
+LIB_OUT=""
+LIB_RC=0
+LIB_OUT="$(bash "$SCOPE_LIB" 2>&1)" || LIB_RC=$?
+check_eq "scope resolver refuses direct execution" "2" "$LIB_RC"
+check_contains "direct-execution refusal explains the source-only contract" \
+  "source this file, do not execute it directly" "$LIB_OUT"
+
+SOURCE_RC=0
+# shellcheck source=../lib/pr-scope-resolver.sh
+source "$SCOPE_LIB" || SOURCE_RC=$?
+check_eq "scope resolver can be sourced" "0" "$SOURCE_RC"
+
+SCOPE_FUNCTIONS=(
+  _pr_holders active_scope_key resolve_pr_scope foreign_pr_scopes state_pr_field
+  repo_identity is_owner_repo_identity resolve_root_repo validate_root_match
+)
+# Match the declaration prefix rather than requiring a particular body layout;
+# `name() {`, `name()\n{`, and `name() { :; }` are all legal Bash definitions.
+SCOPE_FUNCTION_DECL_RE='^[[:space:]]*(__NAME__[[:space:]]*\(\)|function[[:space:]]+__NAME__([[:space:]]*\(\))?)[[:space:]]*(\{|(#.*)?$)'
+for scope_function in "${SCOPE_FUNCTIONS[@]}"; do
+  check_eq "scope resolver exports $scope_function" "function" \
+    "$(type -t "$scope_function" 2>/dev/null || true)"
+  scope_function_re="${SCOPE_FUNCTION_DECL_RE//__NAME__/$scope_function}"
+  check_eq "polling gate does not re-inline $scope_function" "0" \
+    "$(grep -Ec "$scope_function_re" "$SCRIPT" || true)"
+done
+# Match source operations only at a command boundary. Include legal grouped,
+# conditional, assignment-prefixed, and builtin/command-prefixed forms. A bare
+# `(source|\.)` search also matches non-operations such as `resource "$var"` or
+# `echo source "$var"`; one such occurrence could mask a removed real source
+# while leaving the expected count at one.
+SCOPE_SOURCE_BOUNDARY_RE='(^|[;&|(){}])[[:space:]]*((if|elif|then|else|do|while|until|time|coproc)[[:space:]]+)?'
+SCOPE_SOURCE_PREFIX_RE="!?[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=([^[:space:];&|(){}\"']+|\"[^\"]*\"|'[^']*')+[[:space:]]+)*(command[[:space:]]+|builtin[[:space:]]+)?"
+SCOPE_SOURCE_TARGET_RE='(source|\.)[[:space:]]+("?\$\{?_SCOPE_RESOLVER_LIB\}?"?|"?[^"[:space:]]*pr-scope-resolver\.sh"?)'
+SCOPE_SOURCE_OP_RE="${SCOPE_SOURCE_BOUNDARY_RE}${SCOPE_SOURCE_PREFIX_RE}${SCOPE_SOURCE_TARGET_RE}"
+check_eq "polling gate sources the resolver exactly once" "1" \
+  "$(grep -Ev '^[[:space:]]*#' "$SCRIPT" | grep -Eo "$SCOPE_SOURCE_OP_RE" | wc -l | tr -d '[:space:]')"
+
+# Exercise both load-failure branches instead of merely grepping for their
+# diagnostics. These copies stop at the resolver boundary, before any other
+# helper from SCRIPT_DIR is needed.
+MISSING_LIB_DIR="$TMP/missing-resolver"
+mkdir -p "$MISSING_LIB_DIR"
+cp "$SCRIPT" "$MISSING_LIB_DIR/polling-state-gate.sh"
+missing_out="$(HOME="$TMP_HOME" bash "$MISSING_LIB_DIR/polling-state-gate.sh" 1 2>&1)"; missing_rc=$?
+check_eq "polling gate exits 4 when the resolver is missing" "4" "$missing_rc"
+check_contains "missing-resolver failure names the required dependency" \
+  "required scope resolver not found" "$missing_out"
+
+BROKEN_LIB_DIR="$TMP/broken-resolver"
+mkdir -p "$BROKEN_LIB_DIR/lib"
+cp "$SCRIPT" "$BROKEN_LIB_DIR/polling-state-gate.sh"
+printf '%s\n' 'return 7' > "$BROKEN_LIB_DIR/lib/pr-scope-resolver.sh"
+broken_out="$(HOME="$TMP_HOME" bash "$BROKEN_LIB_DIR/polling-state-gate.sh" 1 2>&1)"; broken_rc=$?
+check_eq "polling gate exits 4 when resolver sourcing fails" "4" "$broken_rc"
+check_contains "source-failure diagnostic names the resolver" \
+  "failed to source required scope resolver" "$broken_out"
+
+# Keep the structural matchers honest for both Bash function syntaxes and for
+# multiple source operations sharing one line.
+check_eq "anti-reinline matcher catches function declarations without parentheses" "1" \
+  "$(printf '%s\n' '  function resolve_pr_scope {' | grep -Ec "${SCOPE_FUNCTION_DECL_RE//__NAME__/resolve_pr_scope}" || true)"
+check_eq "anti-reinline matcher catches declarations with a next-line brace" "1" \
+  "$(printf '%s\n' '  resolve_pr_scope ()' '{' | grep -Ec "${SCOPE_FUNCTION_DECL_RE//__NAME__/resolve_pr_scope}" || true)"
+check_eq "anti-reinline matcher catches declarations with an inline body" "1" \
+  "$(printf '%s\n' 'resolve_pr_scope() { :; }' | grep -Ec "${SCOPE_FUNCTION_DECL_RE//__NAME__/resolve_pr_scope}" || true)"
+check_eq "source-site matcher counts two operations on one line" "2" \
+  "$(printf 'source "%s"; . "%s"\n' '$_SCOPE_RESOLVER_LIB' '$_SCOPE_RESOLVER_LIB' | grep -Eo "$SCOPE_SOURCE_OP_RE" | wc -l | tr -d '[:space:]')"
+check_eq "source-site matcher catches grouped source operations" "1" \
+  "$(printf '%s\n' '{ source "$_SCOPE_RESOLVER_LIB"; }' | grep -Eoc "$SCOPE_SOURCE_OP_RE" || true)"
+check_eq "source-site matcher catches assignment-prefixed source operations" "1" \
+  "$(printf '%s\n' 'TRACE=1 source "$_SCOPE_RESOLVER_LIB"' | grep -Eoc "$SCOPE_SOURCE_OP_RE" || true)"
+check_eq "source-site matcher catches quoted assignment-prefixed source operations" "1" \
+  "$(printf '%s\n' 'TRACE="two words" source "$_SCOPE_RESOLVER_LIB"' | grep -Eoc "$SCOPE_SOURCE_OP_RE" || true)"
+check_eq "source-site matcher catches conditional source operations" "1" \
+  "$(printf '%s\n' 'while command source "$_SCOPE_RESOLVER_LIB"; do :; done' | grep -Eoc "$SCOPE_SOURCE_OP_RE" || true)"
+check_eq "source-site matcher ignores command names ending in source" "0" \
+  "$(printf '%s\n' 'resource "$_SCOPE_RESOLVER_LIB"' | grep -Ec "$SCOPE_SOURCE_OP_RE" || true)"
+check_eq "source-site matcher ignores source mentioned as an argument" "0" \
+  "$(printf '%s\n' 'echo source "$_SCOPE_RESOLVER_LIB"' | grep -Ec "$SCOPE_SOURCE_OP_RE" || true)"
+check_eq "source-site matcher ignores source text inside an argument" "0" \
+  "$(printf '%s\n' 'echo '\''x then source "$_SCOPE_RESOLVER_LIB"'\''' | grep -Ec "$SCOPE_SOURCE_OP_RE" || true)"
 
 # Shared gh stub for --ensure-session tests. poll-watermarks.sh (issue #741) calls
 # pr-state.sh during --ensure-session, so the stub must satisfy pr-state's gh
@@ -105,6 +190,26 @@ REPO_A="$TMP/repo-a"
 REPO_B="$TMP/repo-b"
 mk_repo "$REPO_A" "git@github.com:org/a.git"
 mk_repo "$REPO_B" "https://github.com/org/b.git"
+
+# A declared identity is a safety boundary. If its normalizer fails, validation
+# must refuse rather than silently replacing the declaration with checkout_id.
+NORMALIZER_DEF="$(declare -f normalize_repo_key)"
+normalize_repo_key() { return 1; }
+STATE_FILE="$TMP/no-state"
+STATE_READ_DIR="$REPO_A"
+REPO_KEY_DECLARED=1
+ACTIVE_REPO_KEY="org/a"
+PR_NUMBER="99647"
+out="$(validate_root_match "$REPO_A" quiet 2>&1)"; rc=$?
+check_eq "declared repo-key normalization failure refuses validation" "1" "$rc"
+check_contains "normalization refusal explains the unusable identity" \
+  "could not normalize repo key 'org/a'" "$out"
+normalize_repo_key() { printf ''; return 0; }
+out="$(validate_root_match "$REPO_A" quiet 2>&1)"; rc=$?
+check_eq "empty normalized declared repo key refuses validation" "1" "$rc"
+check_contains "empty normalization refusal explains the unusable identity" \
+  "could not normalize repo key 'org/a'" "$out"
+eval "$NORMALIZER_DEF"
 
 # Sibling worktree of repo A — same repo, different path.
 WT_A="$TMP/wt-a"
