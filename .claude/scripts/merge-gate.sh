@@ -1442,55 +1442,44 @@ case "$REVIEWER" in
         fi
       fi
     else
+      # Count formal P0 badges across every signal in the current
+      # trigger-delimited round. A 👍 issue comment proves completion, but it
+      # must not hide a P0 that Greptile reported in that comment, a formal
+      # review, or an earlier inline from the same round. Only a later trusted
+      # trigger starts a round that can supersede those findings.
+      P0_COUNT=$(printf '%s\n%s\n%s\n' \
+        "$ISSUE_COMMENTS_JSON" "$REVIEWS_JSON" "$PR_COMMENTS_JSON" \
+        | jq -rs --arg after "$G_FRESH_AFTER" '
+            ([.[0][]?
+              | select(.user.login == "greptile-apps[bot]")
+              | select(if $after == "" then true
+                  else (.created_at // "") > $after or (.updated_at // "") > $after
+                end)
+              | .body // ""]
+            + [.[1][]?
+              | select(.user.login == "greptile-apps[bot]")
+              | select(if $after == "" then true else (.submitted_at // "") > $after end)
+              | .body // ""]
+            + [.[2][]?
+              | select(.user.login == "greptile-apps[bot]")
+              | select(if $after == "" then true else (.created_at // "") > $after end)
+              | .body // ""])
+            | map([scan("alt=\\\"P0\\\"")] | length)
+            | add // 0')
+
       # --- Path A: comment-based clean pass (primary Greptile channel) ---
       G_COMMENT_CLEAN=false
       if [[ -n "$LATEST_G_COMMENT" ]]; then
         G_THUMBSUP=$(echo "$LATEST_G_COMMENT" | jq -r '.reactions["+1"] // 0')
-        # Clean = 👍 present AND no inline findings posted at all.
-        if [[ "$G_THUMBSUP" -gt 0 && "$G_INLINE_COUNT" -eq 0 ]]; then
+        # Clean = 👍 present, no inline findings, and no formal P0 badge in
+        # any channel of the current review round.
+        if [[ "$G_THUMBSUP" -gt 0 && "$G_INLINE_COUNT" -eq 0 && "$P0_COUNT" -eq 0 ]]; then
           G_COMMENT_CLEAN=true
         fi
       fi
 
       if [[ "$G_COMMENT_CLEAN" != true ]]; then
         # --- Path B: severity gate ---
-        # Build a review body from the most-recent Greptile signal (issue comment
-        # or formal review), then check inline bodies anchored at that timestamp.
-        G_ANCHOR_TS=""
-        G_BODY=""
-        if [[ -n "$LATEST_G" ]]; then
-          G_BODY=$(echo "$LATEST_G" | jq -r '.body // ""')
-          G_ANCHOR_TS=$(echo "$LATEST_G" | jq -r '.submitted_at // ""')
-        fi
-        if [[ -n "$LATEST_G_COMMENT" ]]; then
-          # Prefer updated_at over created_at: Greptile edits its summary in-place
-          # (issue #748), so updated_at is the effective review timestamp after a
-          # re-review. Falls back to created_at for comments without updated_at.
-          G_COMMENT_TS=$(echo "$LATEST_G_COMMENT" | jq -r '(.updated_at // .created_at) // ""')
-          # Issue comment supersedes formal review when it is more recent.
-          if [[ -z "$G_ANCHOR_TS" || "$G_COMMENT_TS" > "$G_ANCHOR_TS" ]]; then
-            G_BODY=$(echo "$LATEST_G_COMMENT" | jq -r '.body // ""')
-            G_ANCHOR_TS="$G_COMMENT_TS"
-          fi
-        fi
-
-        # Inline bodies associated with the latest Greptile review (fresh post-push).
-        # Use LAST_COMMIT_TS (push time) rather than G_ANCHOR_TS (summary updated_at):
-        # when Greptile posts inlines before editing its summary in-place (issue #748),
-        # G_ANCHOR_TS > inline.created_at and those inlines would be excluded from P0
-        # scanning — identical asymmetry to the BugBot commit_id lesson. Using the
-        # push-or-latest-trigger boundary keeps G_INLINE_BODIES consistent with
-        # G_INLINE_COUNT (same filter).
-        G_INLINE_BODIES=$(echo "$PR_COMMENTS_JSON" | jq -r --arg ts "$G_FRESH_AFTER" '
-          [.[]? | select(.user.login == "greptile-apps[bot]")
-                | select(if $ts == "" then true else .created_at > $ts end) | .body]
-          | join("\n---\n")')
-
-        # Count P0 severity badges across the review body and inline comments.
-        # Match only formal Greptile badges (<img alt="P0">) — not bare-word prose
-        # mentions like "no P0" which inflate the count (issue #729).
-        P0_COUNT=$( { echo "$G_BODY"; echo "$G_INLINE_BODIES"; } | grep -oF 'alt="P0"' | wc -l | tr -d ' ')
-
         # Are there unresolved Greptile-authored threads? If so, P0 vs P1/P2 changes
         # whether a re-review is required after fixing.
         UNRESOLVED_G=$(echo "$THREADS_JSON" | jq -r '

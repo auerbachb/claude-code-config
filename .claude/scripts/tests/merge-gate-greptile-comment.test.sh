@@ -141,14 +141,15 @@ OUT=""
 RC=0
 run_gate() {
   # $1 = commit timestamp, $2 = issue comments, $3 = inline comments,
-  # $4 = review threads, $5 = check-runs payload (last three optional).
+  # $4 = review threads, $5 = check-runs payload, $6 = formal reviews
+  # (last four optional).
   local commit_ts="$1" issue_comments="$2" pr_comments="${3:-[]}"
-  local threads="${4:-}" checks="${5:-}"
+  local threads="${4:-}" checks="${5:-}" reviews="${6:-[]}"
   OUT=$(PATH="$BIN:$PATH" \
         FAKE_COMMIT_TS="$commit_ts" \
         FAKE_ISSUE_COMMENTS="$issue_comments" \
         FAKE_PR_COMMENTS="$pr_comments" \
-        FAKE_REVIEWS="[]" \
+        FAKE_REVIEWS="$reviews" \
         FAKE_THREADS="$threads" \
         FAKE_CHECK_RUNS="$checks" \
         "$SUT" 1 --reviewer greptile 2>/dev/null)
@@ -433,6 +434,40 @@ run_gate "$PUSH_TS" "[$TRIGGER17,$COMMENT17]" "[$P0_BEFORE_TRIGGER17]"
 
 check_eq "true" "$(met)" "latest fresh round: older P0 does not poison clean result"
 check_eq "0" "$RC" "latest fresh round: exit code 0"
+
+# --------------------------------------------------------------------------
+# Test 18: A completed summary can itself contain a formal P0 badge. The 👍
+# marks the review complete, not clean, so the current round must remain blocked.
+# --------------------------------------------------------------------------
+echo "--- Test 18: completed summary with P0 badge is not clean ---"
+COMMENT18="$(jq -cn \
+  '{id:18001, user:{login:"greptile-apps[bot]"},
+    body:"<img alt=\"P0\" src=\"badge.svg\" /> Critical summary finding.",
+    created_at:"'"$FRESH_TS"'", updated_at:"'"$FRESH_TS"'",
+    reactions:{url:"",total_count:1,"+1":1,"-1":0}}')"
+run_gate "$PUSH_TS" "[$COMMENT18]" "[]"
+
+check_eq "false" "$(met)" "P0 summary: met == false"
+check_eq "yes" "$(missing_has "P0")" "P0 summary: missing contains P0 message"
+check_eq "1" "$RC" "P0 summary: exit code 1"
+
+# --------------------------------------------------------------------------
+# Test 19: A later clean-looking issue summary must not hide a P0 formal review
+# from the same trusted trigger-delimited round.
+# --------------------------------------------------------------------------
+echo "--- Test 19: same-round formal P0 survives clean summary ---"
+TRIGGER19="$(greptile_trigger "2026-07-23T13:01:00Z")"
+FORMAL_P0_19="$(jq -cn --arg sha "$HEAD_SHA" \
+  '{id:19001, user:{login:"greptile-apps[bot]"}, state:"COMMENTED",
+    body:"<img alt=\"P0\" src=\"badge.svg\" /> Critical formal finding.",
+    submitted_at:"2026-07-23T13:04:00Z", commit_id:$sha}')"
+COMMENT19="$(greptile_comment "$FRESH_TS" 1)"
+run_gate "$PUSH_TS" "[$TRIGGER19,$COMMENT19]" "[]" "" "" "[$FORMAL_P0_19]"
+
+check_eq "false" "$(met)" "same-round formal P0: met == false"
+check_eq "yes" "$(missing_has "P0")" \
+  "same-round formal P0: missing contains P0 message"
+check_eq "1" "$RC" "same-round formal P0: exit code 1"
 
 echo "----------------------------------------"
 echo "merge-gate-greptile-comment.test.sh: $PASS passed, $FAIL failed"
