@@ -1321,13 +1321,35 @@ case "$REVIEWER" in
     #     push-timestamp lesson — repo memory feedback_bugbot_commit_id_stale).
     #   Formal review objects (pulls/{N}/reviews) are kept as supplemental signal.
 
-    # Fresh Greptile inline diff comments (post-push only — mirrors the BugBot
-    # push-timestamp lesson, feedback_bugbot_commit_id_stale). Stale inline comments
+    # Only an exact trigger command from the PR author establishes a paid-review
+    # round boundary. Requiring both properties prevents a collaborator, bot, or
+    # prose mention of @greptileai from hiding evidence in the real latest round.
+    G_LATEST_TRIGGER_TS=$(echo "$ISSUE_COMMENTS_JSON" | jq -r --arg author "$PR_AUTHOR" '
+      [.[]?
+        | select(.user.login == $author)
+        | select(((.body // "")
+            | gsub("^[[:space:]]+|[[:space:]]+$"; "")
+            | ascii_downcase) == "@greptileai")
+        | (.created_at // "")]
+      | sort | last // ""')
+
+    # A post-push trigger starts a newer round than the push itself. Anchor all
+    # fresh-path evidence after the newer boundary so evidence from an earlier
+    # round cannot satisfy (or poison) a still-unanswered latest trigger.
+    G_FRESH_AFTER="${LAST_COMMIT_TS:-}"
+    if [[ -n "$G_LATEST_TRIGGER_TS" ]] \
+        && [[ -z "$G_FRESH_AFTER" || "$G_LATEST_TRIGGER_TS" > "$G_FRESH_AFTER" ]]; then
+      G_FRESH_AFTER="$G_LATEST_TRIGGER_TS"
+    fi
+
+    # Fresh Greptile inline diff comments (post-push/current-round only —
+    # mirrors the BugBot push-timestamp lesson,
+    # feedback_bugbot_commit_id_stale). Stale inline comments
     # from a prior push must NOT count: without this freshness gate, the "no review
     # yet" guard would skip when stale inline comments exist, and Path B would then
     # pass cleanly on an empty review body (no fresh Greptile signal on the new HEAD).
-    # G_INLINE_BODIES in Path B is anchored separately to G_ANCHOR_TS.
-    G_INLINE_COUNT=$(echo "$PR_COMMENTS_JSON" | jq --arg after "${LAST_COMMIT_TS:-}" \
+    # G_INLINE_BODIES in Path B uses the same push-or-latest-trigger boundary.
+    G_INLINE_COUNT=$(echo "$PR_COMMENTS_JSON" | jq --arg after "$G_FRESH_AFTER" \
       '[.[]? | select(.user.login == "greptile-apps[bot]")
               | select(if $after == "" then true else .created_at > $after end)] | length')
 
@@ -1337,7 +1359,7 @@ case "$REVIEWER" in
     # existing summary comment at updated_at 03:05:28Z after the 02:50:10Z push while
     # created_at stayed at the original post time). Accept the comment as fresh when
     # either timestamp is post-push (issue #748).
-    LATEST_G_COMMENT=$(echo "$ISSUE_COMMENTS_JSON" | jq -c --arg after "${LAST_COMMIT_TS:-}" '
+    LATEST_G_COMMENT=$(echo "$ISSUE_COMMENTS_JSON" | jq -c --arg after "$G_FRESH_AFTER" '
       [.[]?
         | select(.user.login == "greptile-apps[bot]")
         | select(if $after == "" then true else (.created_at > $after or .updated_at > $after) end)]
@@ -1346,7 +1368,7 @@ case "$REVIEWER" in
     # Latest FRESH Greptile formal review (belt-and-suspenders supplemental
     # signal). Formal reviews need the same post-push boundary as comments;
     # otherwise a stale formal review can bypass the durable-round fallback.
-    LATEST_G=$(echo "$REVIEWS_JSON" | jq -c --arg after "${LAST_COMMIT_TS:-}" '
+    LATEST_G=$(echo "$REVIEWS_JSON" | jq -c --arg after "$G_FRESH_AFTER" '
       [.[]?
         | select(.user.login == "greptile-apps[bot]")
         | select(if $after == "" then true else .submitted_at > $after end)]
@@ -1359,13 +1381,6 @@ case "$REVIEWER" in
       # GitHub issue-comment history. This prevents an older clean review from
       # satisfying the gate while a newer paid re-review is still unanswered,
       # and lets a later clean re-review supersede an older P0 round.
-      G_LATEST_TRIGGER_TS=$(echo "$ISSUE_COMMENTS_JSON" | jq -r '
-        [.[]?
-          | select(.user.login != "greptile-apps[bot]")
-          | select((.body // "") | test("(^|[^[:alnum:]_-])@greptileai([^[:alnum:]_-]|$)"; "i"))
-          | (.created_at // "")]
-        | sort | last // ""')
-
       # Greptile may edit its summary in place, so updated_at is its effective
       # signal time. Inline comments and formal reviews retain creation/submission
       # timestamps. The latest timestamp across all three channels proves that
@@ -1463,9 +1478,10 @@ case "$REVIEWER" in
         # Use LAST_COMMIT_TS (push time) rather than G_ANCHOR_TS (summary updated_at):
         # when Greptile posts inlines before editing its summary in-place (issue #748),
         # G_ANCHOR_TS > inline.created_at and those inlines would be excluded from P0
-        # scanning — identical asymmetry to the BugBot commit_id lesson. Using the push
-        # timestamp keeps G_INLINE_BODIES consistent with G_INLINE_COUNT (same filter).
-        G_INLINE_BODIES=$(echo "$PR_COMMENTS_JSON" | jq -r --arg ts "${LAST_COMMIT_TS:-}" '
+        # scanning — identical asymmetry to the BugBot commit_id lesson. Using the
+        # push-or-latest-trigger boundary keeps G_INLINE_BODIES consistent with
+        # G_INLINE_COUNT (same filter).
+        G_INLINE_BODIES=$(echo "$PR_COMMENTS_JSON" | jq -r --arg ts "$G_FRESH_AFTER" '
           [.[]? | select(.user.login == "greptile-apps[bot]")
                 | select(if $ts == "" then true else .created_at > $ts end) | .body]
           | join("\n---\n")')

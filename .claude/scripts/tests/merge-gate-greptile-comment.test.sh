@@ -389,6 +389,52 @@ check_eq "yes" "$(missing_has "CI has 1 failing")" \
   "failing CI: universal gate remains mandatory"
 check_eq "1" "$RC" "failing CI: exit code 1"
 
+# --------------------------------------------------------------------------
+# Test 15: A post-push clean signal cannot satisfy a newer unanswered trigger.
+# This exercises the fresh path, not only the stale fallback from Test 11.
+# --------------------------------------------------------------------------
+echo "--- Test 15: newer unanswered trigger supersedes fresh older evidence ---"
+COMMENT15="$(greptile_comment "$FRESH_TS" 1)"
+TRIGGER15="$(greptile_trigger "$LATE_FRESH_TS")"
+run_gate "$PUSH_TS" "[$COMMENT15,$TRIGGER15]" "[]"
+
+check_eq "false" "$(met)" "fresh-before-trigger: met == false"
+check_eq "yes" "$(missing_has "no Greptile review")" \
+  "fresh-before-trigger: unanswered latest round blocks"
+check_eq "1" "$RC" "fresh-before-trigger: exit code 1"
+
+# --------------------------------------------------------------------------
+# Test 16: Only an exact trigger command from the PR author creates a boundary.
+# A collaborator's exact command and the author's prose mention are untrusted.
+# --------------------------------------------------------------------------
+echo "--- Test 16: trigger-like comments cannot spoof a round boundary ---"
+COLLAB_TRIGGER16="$(jq -cn \
+  '{id:16001, user:{login:"collaborator"}, body:"@greptileai",
+    created_at:"2026-07-23T12:58:00Z", updated_at:"2026-07-23T12:58:00Z"}')"
+PROSE16="$(jq -cn \
+  '{id:16002, user:{login:"solouser"}, body:"Do not post @greptileai again",
+    created_at:"2026-07-23T12:59:00Z", updated_at:"2026-07-23T12:59:00Z"}')"
+run_gate "$PUSH_TS" "[$TRIGGER3,$COMMENT3,$COLLAB_TRIGGER16,$PROSE16]" "[]"
+
+check_eq "true" "$(met)" "spoofed boundary: trusted clean round remains reusable"
+check_eq "0" "$RC" "spoofed boundary: exit code 0"
+
+# --------------------------------------------------------------------------
+# Test 17: Findings from an older post-push round do not poison a newer clean
+# trigger-delimited round.
+# --------------------------------------------------------------------------
+echo "--- Test 17: fresh path is delimited by latest trusted trigger ---"
+P0_BEFORE_TRIGGER17="$(jq -cn --arg sha "$HEAD_SHA" \
+  '{id:17001, user:{login:"greptile-apps[bot]"},
+    body:"<img alt=\"P0\" src=\"badge.svg\" /> Old-round finding.",
+    created_at:"2026-07-23T13:05:00Z", commit_id:$sha, original_commit_id:$sha}')"
+TRIGGER17="$(greptile_trigger "2026-07-23T13:06:00Z")"
+COMMENT17="$(greptile_comment "$STALE_TS" 1 "$LATE_FRESH_TS")"
+run_gate "$PUSH_TS" "[$TRIGGER17,$COMMENT17]" "[$P0_BEFORE_TRIGGER17]"
+
+check_eq "true" "$(met)" "latest fresh round: older P0 does not poison clean result"
+check_eq "0" "$RC" "latest fresh round: exit code 0"
+
 echo "----------------------------------------"
 echo "merge-gate-greptile-comment.test.sh: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

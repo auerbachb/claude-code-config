@@ -21,7 +21,7 @@ Default budget: 40 reviews/day (tracked in `session-state.json`). Every `@grepti
 Applies to 2nd/3rd triggers only; initial trigger requires only the budget check.
 
 1. **Classify all findings from the previous review** (P0/P1/P2).
-2. **If NO P0:** STOP — do NOT trigger `@greptileai`. Proceed to Phase B completion (merge gate check). After a fix-only push, `merge-gate.sh` reuses the latest completed trigger-delimited zero-P0 round (issue #1000); this is the durable evidence that makes STOP reachable without another paid review.
+2. **If NO P0:** STOP — do NOT trigger `@greptileai`. Proceed to Phase B completion (merge gate check). After a fix-only push, `merge-gate.sh` reuses the latest completed trigger-delimited zero-P0 round (issue #1000); only an exact trigger command from the PR author creates that boundary. This is the durable evidence that makes STOP reachable without another paid review.
 3. **If P0 present:** budget check → trigger `@greptileai`.
 4. **Log severity counts in handoff `notes`.**
 
