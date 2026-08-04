@@ -145,11 +145,12 @@ greptile_p1_inline() { # id created_at
       in_reply_to_id:null}'
 }
 
-author_fix_reply() { # id parent_id [named_sha]
+author_fix_reply() { # id parent_id [named_sha] [commit_sha]
   jq -cn --argjson id "$1" --argjson parent "$2" \
-    --arg author "$PR_AUTHOR_LOGIN" --arg sha "${3:-$HEAD_SHA}" \
-    '{id:$id, user:{login:$author}, body:("Fixed in " + $sha + ": addressed."),
-      created_at:"2026-07-23T13:02:00Z", commit_id:$sha,
+    --arg author "$PR_AUTHOR_LOGIN" \
+    --arg named_sha "${3:-$HEAD_SHA}" --arg commit_sha "${4:-$HEAD_SHA}" \
+    '{id:$id, user:{login:$author}, body:("Fixed in " + $named_sha + ": addressed."),
+      created_at:"2026-07-23T13:02:00Z", commit_id:$commit_sha,
       in_reply_to_id:$parent}'
 }
 
@@ -613,6 +614,22 @@ check_eq "false" "$(met)" "malformed fallback: met == false"
 check_eq "yes" "$(missing_has "cannot verify fix-only Greptile reuse")" \
   "malformed fallback: source ID must use canonical marker"
 check_eq "1" "$RC" "malformed fallback: exit code 1"
+
+# --------------------------------------------------------------------------
+# Test 28: Editing an older PR-author comment into the exact trigger command
+# starts the round at updated_at, not created_at. Earlier clean evidence cannot
+# answer a command that did not exist until after that evidence was posted.
+# --------------------------------------------------------------------------
+echo "--- Test 28: edited trigger uses edit timestamp ---"
+EDITED_TRIGGER28="$(jq -cn --arg author "$PR_AUTHOR_LOGIN" \
+  '{id:28001, user:{login:$author}, body:"@greptileai",
+    created_at:"2026-07-23T12:40:00Z", updated_at:"2026-07-23T12:58:00Z"}')"
+run_gate "$PUSH_TS" "[$TRIGGER3,$COMMENT3,$EDITED_TRIGGER28]" "[]"
+
+check_eq "false" "$(met)" "edited trigger: met == false"
+check_eq "yes" "$(missing_has "no Greptile review")" \
+  "edited trigger: earlier clean evidence cannot answer edited command"
+check_eq "1" "$RC" "edited trigger: exit code 1"
 
 echo "----------------------------------------"
 echo "merge-gate-greptile-comment.test.sh: $PASS passed, $FAIL failed"

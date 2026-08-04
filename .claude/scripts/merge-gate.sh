@@ -1334,7 +1334,8 @@ case "$REVIEWER" in
           | select(((.body // "")
               | gsub("^[[:space:]]+|[[:space:]]+$"; "")
               | ascii_downcase) == "@greptileai")
-          | {raw:(.created_at // ""), canon:((.created_at // "") | canon_ts)}]
+          | {raw:(((.updated_at // .created_at) // "")),
+             canon:((((.updated_at // .created_at) // "") | canon_ts))}]
         | sort_by(.canon) | last.raw // ""')
     else
       G_LATEST_TRIGGER_TS=$(echo "$ISSUE_COMMENTS_JSON" | jq -r '
@@ -1343,7 +1344,8 @@ case "$REVIEWER" in
           | select(((.body // "")
               | gsub("^[[:space:]]+|[[:space:]]+$"; "")
               | ascii_downcase) == "@greptileai")
-          | {raw:(.created_at // ""), canon:((.created_at // "") | canon_ts)}]
+          | {raw:(((.updated_at // .created_at) // "")),
+             canon:((((.updated_at // .created_at) // "") | canon_ts))}]
         | sort_by(.canon) | last.raw // ""')
     fi
     G_LATEST_TRIGGER_NORM=$(norm_ts "$G_LATEST_TRIGGER_TS")
