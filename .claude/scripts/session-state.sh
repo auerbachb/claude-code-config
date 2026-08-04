@@ -177,19 +177,13 @@
 #   `.claude/rules/handoff-files.md`.
 #
 # FIELD-TYPE CONTRACT (issues #625, #640)
-#   A known set of fields always hold a specific JSON type — top-level
-#   fields (arrays: active_agents, polling_jobs, polling_failures,
-#   polling_backoffs; objects: prs, cr_quota, cr_hourly, greptile_daily,
-#   pmm_in_flight, pmm) and per-PR nested fields under `.prs["<N>"]`
-#   (objects: last_cron_action, preflight_triggered, babysit, wrap_sweep;
-#   array: cr_explicit_triggers; number: digest_streak). Fields outside
-#   these lists are unvalidated, preserving forward-compatibility with the
-#   "preserve unknown fields" convention.
+#   Known fields and their required JSON types are loaded at runtime from
+#   .claude/reference/session-state-schema.json's `_field_types.top_level`
+#   and `_field_types.pr_nested` maps. That file is the single source of
+#   truth; fields absent from both maps are unvalidated, preserving the
+#   "preserve unknown fields" forward-compatibility convention.
 #
-#   The contract is loaded at runtime from
-#   .claude/reference/session-state-schema.json's `_field_types` object —
-#   that file is the single source of truth, not a hardcoded list in this
-#   script, so the two can never drift apart. If the schema file can't be
+#   If the schema file can't be
 #   found or parsed (unusual invocation context, e.g. this script copied
 #   somewhere without its .claude/reference/ sibling), the contract is
 #   disabled for this run with a warning on stderr — --get/--set still work,
