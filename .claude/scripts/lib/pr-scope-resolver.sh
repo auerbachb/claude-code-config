@@ -31,7 +31,8 @@
 #
 #   source "$SCRIPT_DIR/lib/pr-scope-resolver.sh"
 #   scope="$(resolve_pr_scope)"
-#   validate_root_match "$resolved_root"
+#   validate_root_match "$resolved_root"          # ordinary validation
+#   validate_root_match "$resolved_root" quiet    # --ensure-session only
 
 # Guard against direct execution. Running a definition-only library would
 # otherwise report success while doing nothing.
@@ -181,9 +182,11 @@ resolve_root_repo() {
   echo "$canon"
 }
 
-# validate_root_match <resolved_root> — refuse only genuine cross-repo
+# validate_root_match <resolved_root> [quiet] — refuse only genuine cross-repo
 # mismatches. The scope-level `.root_repo` is never authoritative; only per-PR
-# owner_repo/root_repo fields participate in the decision.
+# owner_repo/root_repo fields participate in the decision. The optional `quiet`
+# mode suppresses legacy notices and the scoped-but-incomparable refusal only
+# for --ensure-session, which is about to refresh the recorded scoping.
 validate_root_match() {
   local resolved="$1"
   local stored_owner=""
@@ -206,7 +209,10 @@ validate_root_match() {
   if [[ "$REPO_KEY_DECLARED" -eq 1 && -n "$ACTIVE_REPO_KEY" && "$ACTIVE_REPO_KEY" == */* \
         && "$ACTIVE_REPO_KEY" != "_unknown" \
         && "$ACTIVE_REPO_KEY" != gitdir:* && "$ACTIVE_REPO_KEY" != path:* ]]; then
-    declared="$(normalize_repo_key "$ACTIVE_REPO_KEY")"
+    if ! declared="$(normalize_repo_key "$ACTIVE_REPO_KEY")" || [[ -z "$declared" ]]; then
+      echo "polling-state-gate.sh: could not normalize repo key '$ACTIVE_REPO_KEY' (from --repo or \$CLAUDE_SESSION_REPO) — refuse to validate against an unusable repo identity" >&2
+      return 1
+    fi
   fi
   if [[ -n "$declared" && "$checkout_id" == */* \
         && "$checkout_id" != gitdir:* && "$checkout_id" != path:* \

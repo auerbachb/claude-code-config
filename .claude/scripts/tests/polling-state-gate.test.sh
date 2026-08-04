@@ -66,10 +66,10 @@ for scope_function in "${SCOPE_FUNCTIONS[@]}"; do
   check_eq "scope resolver exports $scope_function" "function" \
     "$(type -t "$scope_function" 2>/dev/null || true)"
   check_eq "polling gate does not re-inline $scope_function" "0" \
-    "$(grep -Ec "^${scope_function}\\(\\)" "$SCRIPT" || true)"
+    "$(grep -Ec "^[[:space:]]*(function[[:space:]]+)?${scope_function}[[:space:]]*\\(\\)" "$SCRIPT" || true)"
 done
 check_eq "polling gate sources the resolver exactly once" "1" \
-  "$(grep -Ec '^[[:space:]]*if ! source \"\$_SCOPE_RESOLVER_LIB\"; then$' "$SCRIPT" || true)"
+  "$(grep -Ec '^[[:space:]]*(if[[:space:]]+!)?[[:space:]]*(source|\.)[[:space:]]+(\"?\$\{?_SCOPE_RESOLVER_LIB\}?\"?|\"?[^[:space:]]*pr-scope-resolver\.sh\"?)' "$SCRIPT" || true)"
 check_eq "polling gate hard-fails when the resolver is missing" "1" \
   "$(grep -Ec 'required scope resolver not found' "$SCRIPT" || true)"
 
@@ -134,6 +134,21 @@ REPO_A="$TMP/repo-a"
 REPO_B="$TMP/repo-b"
 mk_repo "$REPO_A" "git@github.com:org/a.git"
 mk_repo "$REPO_B" "https://github.com/org/b.git"
+
+# A declared identity is a safety boundary. If its normalizer fails, validation
+# must refuse rather than silently replacing the declaration with checkout_id.
+NORMALIZER_DEF="$(declare -f normalize_repo_key)"
+normalize_repo_key() { return 1; }
+STATE_FILE="$TMP/no-state"
+STATE_READ_DIR="$REPO_A"
+REPO_KEY_DECLARED=1
+ACTIVE_REPO_KEY="org/a"
+PR_NUMBER="99647"
+out="$(validate_root_match "$REPO_A" quiet 2>&1)"; rc=$?
+check_eq "declared repo-key normalization failure refuses validation" "1" "$rc"
+check_contains "normalization refusal explains the unusable identity" \
+  "could not normalize repo key 'org/a'" "$out"
+eval "$NORMALIZER_DEF"
 
 # Sibling worktree of repo A — same repo, different path.
 WT_A="$TMP/wt-a"
