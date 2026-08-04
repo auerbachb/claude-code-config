@@ -1497,9 +1497,12 @@ case "$REVIEWER" in
                         .user.login == $author
                         and (((.body // "") | ascii_downcase) as $body
                           | (($body | contains($sha)) or ($body | contains($short)))
-                          and ($body | contains("review-comment-id:" + ($finding_id | tostring))))))]
+                          and ($body | test(
+                            "(^|\\n)<!--[[:space:]]*review-comment-id:"
+                            + ($finding_id | tostring)
+                            + "[[:space:]]*-->($|\\r?\\n)")))))]
                 as $proven
-              | {ok:($author != "" and ($finding_ids | length) > 0
+              | {ok:($author != ""
                     and ($proven | length) == ($finding_ids | length)),
                  finding_count:($finding_ids | length),
                  proven_count:($proven | length)}')

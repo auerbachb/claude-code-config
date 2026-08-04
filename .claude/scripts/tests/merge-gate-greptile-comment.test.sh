@@ -586,6 +586,34 @@ check_eq "true" "$(met)" "fallback provenance: met == true"
 check_eq "0" "$(missing_count)" "fallback provenance: missing array empty"
 check_eq "0" "$RC" "fallback provenance: exit code 0"
 
+# --------------------------------------------------------------------------
+# Test 26: A completed zero-P0 round with no inline findings has no per-finding
+# provenance to supply. This is the live PR #999 shape that exposed issue #1000:
+# a clean Greptile summary followed by fix-only pushes must not deadlock at 0/0.
+# --------------------------------------------------------------------------
+echo "--- Test 26: zero-finding stale round is reusable ---"
+run_gate "$PUSH_TS" "[$TRIGGER3,$COMMENT3]" "[]"
+
+check_eq "true" "$(met)" "zero-finding reuse: met == true"
+check_eq "0" "$(missing_count)" "zero-finding reuse: missing array empty"
+check_eq "0" "$RC" "zero-finding reuse: exit code 0"
+
+# --------------------------------------------------------------------------
+# Test 27: PR-level fallback provenance accepts only reply-thread.sh's canonical
+# marker. A source ID embedded in a larger token must not prove a finding.
+# --------------------------------------------------------------------------
+echo "--- Test 27: malformed fallback marker is rejected ---"
+MALFORMED_FALLBACK27="$(jq -cn --arg author "$PR_AUTHOR_LOGIN" --arg sha "$HEAD_SHA" \
+  '{id:27002, user:{login:$author},
+    body:("<!-- review-comment-id:25001-extra -->\nFixed in `" + $sha + "`: addressed."),
+    created_at:"2026-07-23T13:02:00Z", updated_at:"2026-07-23T13:02:00Z"}')"
+run_gate "$PUSH_TS" "[$TRIGGER3,$COMMENT3,$MALFORMED_FALLBACK27]" "[$P1_25]"
+
+check_eq "false" "$(met)" "malformed fallback: met == false"
+check_eq "yes" "$(missing_has "cannot verify fix-only Greptile reuse")" \
+  "malformed fallback: source ID must use canonical marker"
+check_eq "1" "$RC" "malformed fallback: exit code 1"
+
 echo "----------------------------------------"
 echo "merge-gate-greptile-comment.test.sh: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
