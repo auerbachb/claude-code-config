@@ -93,7 +93,30 @@ Repair with `session-state-audit.sh --apply --reattribute`, which moves entries 
 
 The most common way to corrupt a field is passing a raw jq filter as a `--set` value — the string is stored literally instead of being evaluated. Evaluate first, then pass the resulting scalar.
 
-The `session-state.sh` header is the single source of truth for which fields are typed and what each type is.
+The `_field_types.top_level` and `_field_types.pr_nested` maps in
+`session-state-schema.json` are the single source of truth for which fields are typed and what
+each type is. `session-state.sh` and `session-state-audit.sh` load those maps at runtime; their
+headers describe the mechanism without carrying a second field inventory.
+
+The remainder of `session-state-schema.json` is the canonical representative state document. It
+keeps field shapes, compatibility examples, and lifecycle vocabulary next to the type contract.
+Focused tests may assert important values in that representative document—for example, Monitor
+identity and teardown semantics in `scheduling-primitive-alignment.test.sh`. It is intentionally
+not a disposable sample.
+
+### Adding or changing a session-state field
+
+1. Add the field to `_field_types` only when `session-state.sh` must enforce a specific JSON type.
+   Untyped fields need no schema-map edit and remain forward-compatible.
+2. Update the representative document when the field's shape is part of the cross-agent contract.
+3. Add or update a focused alignment test when a lifecycle term, identity pair, or related group
+   of fields must change together.
+4. Document rationale and migration detail here. Do not copy the complete typed-field list into a
+   script header, rule, skill, or another reference file.
+
+Sub-shape documents may explain their own state machines without becoming schema owners.
+`merge-sequencing.md` owns merge-hold behavior, and `/babysit-pr` owns its Monitor lifecycle; the
+JSON field names and enforced types remain authoritative in `session-state-schema.json`.
 
 ## Handoff file migration
 
