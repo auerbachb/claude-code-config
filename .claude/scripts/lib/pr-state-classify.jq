@@ -1,4 +1,8 @@
-# Comment classification used by pr-state.sh --since.
+# Comment classification used by pr-state.sh --since and poll-watermarks.sh.
+# The normal null-input mode builds pr-state's timestamp-filtered bundle from
+# the four jq bindings below. Array input is the internal helper mode: classify
+# each supplied item without filtering its author or timestamp, so watermark
+# polling can apply its own five-bot/ID scope without copying these rules.
 #
 # Classification rules are documented in fixpr/SKILL.md Step 5b and must stay
 # in sync with the regex branches below.
@@ -97,12 +101,16 @@ def enrich($since; $tsfield):
        classification: (.body | classify)
      }];
 
-{
-  reviews: ($reviews | enrich($since; "submitted_at")),
-  inline: ($inline | enrich($since; "created_at")),
-  conversation: ($conversation | enrich($since; "created_at"))
-}
-| . + {
-    finding_count: ([.reviews[], .inline[], .conversation[]] | map(select(.classification.class == "finding")) | length),
-    acknowledgment_count: ([.reviews[], .inline[], .conversation[]] | map(select(.classification.class == "acknowledgment")) | length)
+if type == "array" then
+  [.[] | . + {classification: ((.body // null) | classify)}]
+else
+  {
+    reviews: ($reviews | enrich($since; "submitted_at")),
+    inline: ($inline | enrich($since; "created_at")),
+    conversation: ($conversation | enrich($since; "created_at"))
   }
+  | . + {
+      finding_count: ([.reviews[], .inline[], .conversation[]] | map(select(.classification.class == "finding")) | length),
+      acknowledgment_count: ([.reviews[], .inline[], .conversation[]] | map(select(.classification.class == "acknowledgment")) | length)
+    }
+end

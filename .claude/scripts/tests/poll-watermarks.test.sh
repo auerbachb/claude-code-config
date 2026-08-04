@@ -32,6 +32,7 @@ cp "$REPO_ROOT/.claude/scripts/poll-watermarks.sh" "$STUB_DIR/poll-watermarks.sh
 cp "$REPO_ROOT/.claude/scripts/session-state.sh" "$STUB_DIR/session-state.sh"
 cp "$REPO_ROOT/.claude/scripts/state-lock.sh" "$STUB_DIR/state-lock.sh"
 cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$STUB_DIR/lib/repo-normalizer.sh"
+cp "$REPO_ROOT/.claude/scripts/lib/pr-state-classify.jq" "$STUB_DIR/lib/pr-state-classify.jq"
 chmod +x "$STUB_DIR/poll-watermarks.sh" "$STUB_DIR/session-state.sh"
 
 PR=741
@@ -141,6 +142,20 @@ seed_state '{"last_review_id":0,"last_inline_comment_id":0,"last_issue_comment_i
 OUT="$(cd "$REPO_ROOT" && "$POLL_WM" "$PR" --check)"
 check_eq "inline-only finding detected" "NEW_FINDINGS=1" "$(sed -n '1p' <<<"$OUT")"
 check_eq "inline-only inline flag" "NEW_INLINE_FINDINGS=1" "$(sed -n '3p' <<<"$OUT")"
+
+echo "== Scenario 4b: canonical Greptile clean summary is not a finding =="
+write_fixture "$(jq -n '{
+  comments: {
+    reviews: [],
+    inline: [],
+    conversation: [{id: 401, user: {login: "greptile-apps[bot]"}, body: "<h3>Greptile Summary</h3> No issues found."}]
+  }
+}')"
+seed_state '{"last_review_id":0,"last_inline_comment_id":0,"last_issue_comment_id":0}'
+OUT="$(cd "$REPO_ROOT" && "$POLL_WM" "$PR" --check)"
+check_eq "Greptile clean summary is acknowledgment" "NEW_FINDINGS=0" "$(sed -n '1p' <<<"$OUT")"
+STORED_AFTER="$(cd "$REPO_ROOT" && "$SESSION" --get ".prs[\"$PR\"].poll_watermarks")"
+check_eq "acknowledgment advances issue watermark" "401" "$(jq -r '.last_issue_comment_id' <<<"$STORED_AFTER")"
 
 echo "== Scenario 5: --reset re-baselines after fixpr push =="
 write_fixture "$(jq -n '{

@@ -10,7 +10,7 @@ The churn report found nine merged PRs touching `pr-state.sh` between 2026-07-20
 - the check-run projection used to build `check_runs.{total,passing,failing,in_progress,failing_runs,in_progress_runs,all}`;
 - the bot-comment `classify`/`enrich` program used to build `new_since_baseline`.
 
-Every consumer invokes `pr-state.sh` as a black-box subprocess. Skills and agents consume its printed tempfile path and JSON bundle; `merge-gate.sh`, `escalate-review.sh`, and `poll-watermarks.sh` do the same directly or transitively. No consumer sources the script. The two focused tests were the coupling smell: they used `sed` to extract jq source from shell quoting, so harmless shell edits could break test discovery and single quotes inside the jq program required escaping.
+Every public consumer invokes `pr-state.sh` as a black-box subprocess. Skills and agents consume its printed tempfile path and JSON bundle; `merge-gate.sh`, `escalate-review.sh`, and `poll-watermarks.sh` do the same directly or transitively. No consumer sources the script. The two focused tests were the coupling smell: they used `sed` to extract jq source from shell quoting, so harmless shell edits could break test discovery and single quotes inside the jq program required escaping.
 
 ## Ownership after extraction
 
@@ -18,9 +18,13 @@ Every consumer invokes `pr-state.sh` as a black-box subprocess. Skills and agent
 |---|---|
 | `pr-state.sh` | CLI parsing; repo/PR scoping; current HEAD; GraphQL threads; paginated checks, statuses, and comments; special modes; final schema assembly; documented exit behavior |
 | `lib/pr-state-cr-split.jq` | Pure check-run projection after deduplication |
-| `lib/pr-state-classify.jq` | Pure timestamp-filtered bot-comment classification and count rollup |
+| `lib/pr-state-classify.jq` | Pure bot-comment classification, timestamp-filtered PR-state count rollup, and internal batch classification for watermark polling |
 
-The split is internal only. Callers still resolve and invoke `pr-state.sh`; they do not call either jq file.
+The split preserves `pr-state.sh` as the only public PR-state CLI. Public callers
+still resolve and invoke that script rather than either jq file. The sibling
+`poll-watermarks.sh` helper also executes the classifier's internal array mode so
+its five-bot, ID-watermark scan shares the exact classification rules instead of
+maintaining a drifting copy.
 
 ## Preserved contract
 
