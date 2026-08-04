@@ -1343,16 +1343,89 @@ case "$REVIEWER" in
         | select(if $after == "" then true else (.created_at > $after or .updated_at > $after) end)]
       | sort_by(.created_at) | last // empty')
 
-    # Latest Greptile formal review (belt-and-suspenders supplemental signal).
-    LATEST_G=$(echo "$REVIEWS_JSON" | jq -c '
-      [.[]? | select(.user.login == "greptile-apps[bot]")]
+    # Latest FRESH Greptile formal review (belt-and-suspenders supplemental
+    # signal). Formal reviews need the same post-push boundary as comments;
+    # otherwise a stale formal review can bypass the durable-round fallback.
+    LATEST_G=$(echo "$REVIEWS_JSON" | jq -c --arg after "${LAST_COMMIT_TS:-}" '
+      [.[]?
+        | select(.user.login == "greptile-apps[bot]")
+        | select(if $after == "" then true else .submitted_at > $after end)]
       | sort_by(.submitted_at) | last // empty')
 
     if [[ -z "$LATEST_G" && -z "$LATEST_G_COMMENT" && "$G_INLINE_COUNT" -eq 0 ]]; then
-      # No formal review, no fresh issue comment, no inline findings — nothing to evaluate.
-      # A stale issue comment (created before the last push) does NOT count here;
-      # LATEST_G_COMMENT is already empty when the only comments are pre-push.
-      MISSING+=("no Greptile review yet")
+      # No current-HEAD signal. Reuse the latest completed Greptile review
+      # round only when that round contains zero formal P0 badges (issue #1000).
+      # The durable round boundary is the latest @greptileai trigger recorded in
+      # GitHub issue-comment history. This prevents an older clean review from
+      # satisfying the gate while a newer paid re-review is still unanswered,
+      # and lets a later clean re-review supersede an older P0 round.
+      G_LATEST_TRIGGER_TS=$(echo "$ISSUE_COMMENTS_JSON" | jq -r '
+        [.[]?
+          | select(.user.login != "greptile-apps[bot]")
+          | select((.body // "") | test("(^|[^[:alnum:]_-])@greptileai([^[:alnum:]_-]|$)"; "i"))
+          | (.created_at // "")]
+        | sort | last // ""')
+
+      # Greptile may edit its summary in place, so updated_at is its effective
+      # signal time. Inline comments and formal reviews retain creation/submission
+      # timestamps. The latest timestamp across all three channels proves that
+      # Greptile produced evidence after the latest trigger.
+      G_LATEST_HISTORY_COMMENT_TS=$(echo "$ISSUE_COMMENTS_JSON" | jq -r '
+        [.[]? | select(.user.login == "greptile-apps[bot]")
+          | ((.updated_at // .created_at) // "")]
+        | sort | last // ""')
+      G_LATEST_HISTORY_REVIEW_TS=$(echo "$REVIEWS_JSON" | jq -r '
+        [.[]? | select(.user.login == "greptile-apps[bot]")
+          | (.submitted_at // "")]
+        | sort | last // ""')
+      G_LATEST_HISTORY_INLINE_TS=$(echo "$PR_COMMENTS_JSON" | jq -r '
+        [.[]? | select(.user.login == "greptile-apps[bot]")
+          | (.created_at // "")]
+        | sort | last // ""')
+      G_LATEST_EVIDENCE_TS=$(printf '%s\n%s\n%s\n' \
+        "$G_LATEST_HISTORY_COMMENT_TS" "$G_LATEST_HISTORY_REVIEW_TS" \
+        "$G_LATEST_HISTORY_INLINE_TS" | awk 'NF' | sort | tail -1)
+
+      G_ROUND_COMPLETE=false
+      if [[ -n "$G_LATEST_EVIDENCE_TS" ]]; then
+        if [[ -z "$G_LATEST_TRIGGER_TS" || "$G_LATEST_EVIDENCE_TS" > "$G_LATEST_TRIGGER_TS" ]]; then
+          G_ROUND_COMPLETE=true
+        fi
+      fi
+
+      if [[ "$G_ROUND_COMPLETE" != true ]]; then
+        # Complete absence of history and an unanswered newest trigger both fail
+        # closed. Callers already know whether to poll or trigger from sticky
+        # reviewer state, so keep the stable public missing reason.
+        MISSING+=("no Greptile review yet")
+      else
+        # Scope severity evidence to the latest trigger-delimited review round.
+        # If legacy history has no trigger marker, conservatively scan all
+        # Greptile evidence so an old P0 cannot be silently ignored.
+        G_ROUND_BODIES=$(printf '%s\n%s\n%s\n' \
+          "$ISSUE_COMMENTS_JSON" "$REVIEWS_JSON" "$PR_COMMENTS_JSON" \
+          | jq -rs --arg trigger "$G_LATEST_TRIGGER_TS" '
+              [.[0][]?
+                | select(.user.login == "greptile-apps[bot]")
+                | select($trigger == "" or ((.updated_at // .created_at) // "") > $trigger)
+                | .body // ""]
+              + [.[1][]?
+                | select(.user.login == "greptile-apps[bot]")
+                | select($trigger == "" or (.submitted_at // "") > $trigger)
+                | .body // ""]
+              + [.[2][]?
+                | select(.user.login == "greptile-apps[bot]")
+                | select($trigger == "" or (.created_at // "") > $trigger)
+                | .body // ""]
+              | join("\n---\n")')
+        G_ROUND_P0_COUNT=$(echo "$G_ROUND_BODIES" | grep -oF 'alt="P0"' | wc -l | tr -d ' ')
+
+        if [[ "$G_ROUND_P0_COUNT" -gt 0 ]]; then
+          MISSING+=("prior Greptile review had P0 findings — need clean re-review after fix (trigger @greptileai)")
+        else
+          echo "merge-gate: reusing latest completed zero-P0 Greptile review round after a later fix-only push (issue #1000)" >&2
+        fi
+      fi
     else
       # --- Path A: comment-based clean pass (primary Greptile channel) ---
       G_COMMENT_CLEAN=false

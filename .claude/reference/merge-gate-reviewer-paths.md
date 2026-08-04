@@ -63,11 +63,12 @@ CR failed, BugBot responded, Greptile never triggered — sticky; see `bugbot.md
 Greptile was triggered at any point — both CR and BugBot failed — sticky assignment, see `greptile.md`.
 
 - **Detection channel:** Greptile posts via **issue comments** (`issues/{N}/comments`), not formal PR review objects (`pulls/{N}/reviews`). `merge-gate.sh` detects a clean pass from the latest fresh `greptile-apps[bot]` issue comment with a 👍 reaction (`+1 >= 1`) and zero `greptile-apps[bot]` inline diff comments on the PR. Formal review objects are kept as a supplemental fallback signal. (Issue #723 — observed live on PR #721 where the script missed a clean pass because it only checked the formal-review endpoint.)
-- **Freshness:** the issue comment's `created_at` must be after the last commit's committer date (mirrors the BugBot push-timestamp lesson). A 👍 comment from a previous push does not count.
+- **Freshness and fix-only reuse (issue #1000):** fresh signals still use the post-HEAD-push comment/review/inline path. When a later fix-only push has no fresh Greptile signal, the gate may reuse the latest completed review round's zero-P0 verdict. The durable round boundary is the latest `@greptileai` trigger in issue-comment history; Greptile evidence must follow it. An unanswered latest trigger fails closed. Legacy history without a retained trigger is scanned conservatively in full.
 - Severity-gated: merge-ready when ANY of these hold:
   1. **Clean review:** fresh `greptile-apps[bot]` issue comment with 👍 AND zero inline diff comments.
-  2. **No P0 findings:** only P1/P2 findings present — fix all of them, push, reply to threads; no re-review required.
+  2. **No P0 findings:** only P1/P2 findings present — fix all of them, push, reply to and resolve threads; no re-review required. After the fix-only push, the latest completed trigger-delimited zero-P0 round satisfies reviewer evidence even though it predates HEAD.
   3. **P0 fixed + re-review clean:** P0 findings were present, fixed, and a re-triggered `@greptileai` review came back clean.
+- A latest completed round containing any formal P0 badge is never reusable after a push; it requires a later triggered clean review. Complete absence of Greptile review history never satisfies the gate. Current-head authorship, CI, unresolved-thread, merge-state, and mergeability gates remain universal.
 - Stay on Greptile — do not switch back to CR or BugBot. Ignore any late CR/BugBot reviews.
 - Max 3 Greptile reviews per PR (initial + up to 2 P0 re-reviews). At 3 with persistent P0, self-review and report blocker.
 
