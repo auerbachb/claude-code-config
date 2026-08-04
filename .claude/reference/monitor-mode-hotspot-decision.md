@@ -10,7 +10,9 @@ Keep `.claude/rules/monitor-mode.md` intact as the canonical behavioral hub for 
 monitoring, recovery, and orchestration-only posture. It applies the user-visible heartbeat
 contract owned solely by `CLAUDE.md`; it does not define a competing variant. Remove the concrete
 PM recovery restatement from `.claude/reference/pm-monitoring-decision.md` and replace it with a
-pointer to the canonical `## PM Monitoring Recovery` section.
+pointer to `## Post-Compaction Recovery` for session-start reconciliation and the recovery
+heartbeat, then `## PM Monitoring Recovery` for PM-specific recovery behavior. `CLAUDE.md`
+remains the sole owner of the user-visible heartbeat contract that the rule applies.
 
 This is a documentation-ownership remedy, not a behavior change. Splitting the rule would make its
 many callers migrate together, while script extraction does not fit agent-judgment policy.
@@ -71,7 +73,8 @@ preserve a known drift risk.
 |---------|-----------------|------------------|
 | Dedicated in-turn monitoring posture and per-cycle orchestration | `.claude/rules/monitor-mode.md` | Point to the named sections; do not restate the checklist |
 | User-visible heartbeat output and silence discipline | `CLAUDE.md` | `monitor-mode.md` applies that contract in orchestration context; skills do not define variants |
-| Post-compaction and PM monitoring recovery behavior | `.claude/rules/monitor-mode.md` | `pm-monitoring-decision.md` retains rationale/state framing and points to the rule |
+| Post-compaction session reconciliation and recovery heartbeat application | `.claude/rules/monitor-mode.md` `## Post-Compaction Recovery` | `pm-monitoring-decision.md` points to the named section; `CLAUDE.md` continues to own the heartbeat contract |
+| PM-specific rebuild, terminal-state, scheduler, and polling recovery | `.claude/rules/monitor-mode.md` `## PM Monitoring Recovery` | `pm-monitoring-decision.md` retains rationale/state framing and points to the named section |
 | Between-turn primitive selection and liveness | `.claude/rules/scheduling-reliability.md` | `monitor-mode.md` references it; it does not redefine scheduler semantics |
 | Phase transitions and completion protocols | `.claude/rules/phase-protocols.md` | The Monitor Loop invokes that owner rather than duplicating phase procedures |
 | Subagent spawn policy, model selection, and pipeline ceiling | `.claude/rules/subagent-orchestration.md` | `monitor-mode.md` owns only monitoring while those agents are active |
@@ -80,8 +83,9 @@ preserve a known drift risk.
 
 - Kept `.claude/rules/monitor-mode.md` byte-for-byte unchanged.
 - Replaced the numbered PM recovery procedure in
-  `.claude/reference/pm-monitoring-decision.md` with a direct pointer to
-  `monitor-mode.md` `## PM Monitoring Recovery`.
+  `.claude/reference/pm-monitoring-decision.md` with direct pointers to `monitor-mode.md`
+  `## Post-Compaction Recovery` and `## PM Monitoring Recovery`, while preserving `CLAUDE.md` as
+  the sole owner of the user-visible heartbeat contract.
 - Retained the PM reference's unique rationale, state-field contract, and ownership framing.
 - Registered this decision in `.claude/reference/README.md` so the reference catalog remains
   complete.
