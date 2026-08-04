@@ -137,6 +137,22 @@ greptile_p0_inline() {
       commit_id:$sha, original_commit_id:$sha}'
 }
 
+greptile_p1_inline() { # id created_at
+  jq -cn --argjson id "$1" --arg ts "$2" --arg sha "$HEAD_SHA" \
+    '{id:$id, user:{login:"greptile-apps[bot]"},
+      body:"<img alt=\"P1\" src=\"badge.svg\" /> Reviewed fix requested.",
+      created_at:$ts, commit_id:$sha, original_commit_id:$sha,
+      in_reply_to_id:null}'
+}
+
+author_fix_reply() { # id parent_id [named_sha]
+  jq -cn --argjson id "$1" --argjson parent "$2" \
+    --arg author "$PR_AUTHOR_LOGIN" --arg sha "${3:-$HEAD_SHA}" \
+    '{id:$id, user:{login:$author}, body:("Fixed in " + $sha + ": addressed."),
+      created_at:"2026-07-23T13:02:00Z", commit_id:$sha,
+      in_reply_to_id:$parent}'
+}
+
 OUT=""
 RC=0
 run_gate() {
@@ -194,7 +210,9 @@ check_eq "1"     "$RC"      "P0 findings: exit code 1"
 echo "--- Test 3: stale zero-P0 review round is reusable ---"
 COMMENT3="$(greptile_comment "$STALE_TS" 1)"
 TRIGGER3="$(greptile_trigger "2026-07-23T12:50:00Z")"
-run_gate "$PUSH_TS" "[$TRIGGER3,$COMMENT3]" "[]"
+P1_3="$(greptile_p1_inline 3001 "2026-07-23T12:56:00Z")"
+REPLY3="$(author_fix_reply 3002 3001)"
+run_gate "$PUSH_TS" "[$TRIGGER3,$COMMENT3]" "[$P1_3,$REPLY3]"
 
 check_eq "true"  "$(met)"           "stale zero-P0: met == true"
 check_eq "0"     "$(missing_count)" "stale zero-P0: missing array empty"
@@ -271,7 +289,9 @@ check_eq "0"     "$RC"              "in-place re-review: exit code 0"
 # --------------------------------------------------------------------------
 echo "--- Test 8: legacy stale zero-P0 history without trigger ---"
 COMMENT8="$(greptile_comment "$STALE_TS" 1 "$STALE_TS")"
-run_gate "$PUSH_TS" "[$COMMENT8]" "[]"
+P1_8="$(greptile_p1_inline 8001 "2026-07-23T12:56:00Z")"
+REPLY8="$(author_fix_reply 8002 8001)"
+run_gate "$PUSH_TS" "[$COMMENT8]" "[$P1_8,$REPLY8]"
 
 check_eq "true" "$(met)" "legacy stale zero-P0: met == true"
 check_eq "0" "$RC" "legacy stale zero-P0: exit code 0"
@@ -353,7 +373,10 @@ NEW_TRIGGER12="$(jq -cn \
   '{id:9003, user:{login:$author}, body:"@greptileai",
     created_at:"2026-07-23T12:45:00Z", updated_at:"2026-07-23T12:45:00Z"}')"
 NEW_COMMENT12="$(greptile_comment "$STALE_TS" 1)"
-run_gate "$PUSH_TS" "[$OLD_TRIGGER12,$NEW_TRIGGER12,$NEW_COMMENT12]" "[$OLD_P0_12]"
+NEW_P1_12="$(greptile_p1_inline 12002 "2026-07-23T12:56:00Z")"
+NEW_REPLY12="$(author_fix_reply 12003 12002)"
+run_gate "$PUSH_TS" "[$OLD_TRIGGER12,$NEW_TRIGGER12,$NEW_COMMENT12]" \
+  "[$OLD_P0_12,$NEW_P1_12,$NEW_REPLY12]"
 
 check_eq "true" "$(met)" "later clean round: met == true"
 check_eq "0" "$RC" "later clean round: exit code 0"
@@ -366,7 +389,7 @@ THREADS13="$(jq -cn \
   '{data:{repository:{pullRequest:{reviewThreads:{nodes:[
     {isResolved:false, comments:{nodes:[{author:{login:"greptile-apps[bot]"}}]}}
   ]}}}}}')"
-run_gate "$PUSH_TS" "[$TRIGGER3,$COMMENT3]" "[]" "$THREADS13"
+run_gate "$PUSH_TS" "[$TRIGGER3,$COMMENT3]" "[$P1_3,$REPLY3]" "$THREADS13"
 
 check_eq "false" "$(met)" "unresolved thread: met == false"
 check_eq "yes" "$(missing_has "unresolved review thread")" \
@@ -380,7 +403,7 @@ echo "--- Test 14: stale reuse does not bypass failing CI ---"
 CHECKS14="$(jq -cn \
   '{check_runs:[{id:14,name:"ci",status:"completed",conclusion:"failure",
     completed_at:"2026-07-23T13:01:00Z",check_suite:{id:14},app:{slug:"gha",id:1}}]}')"
-run_gate "$PUSH_TS" "[$TRIGGER3,$COMMENT3]" "[]" \
+run_gate "$PUSH_TS" "[$TRIGGER3,$COMMENT3]" "[$P1_3,$REPLY3]" \
   '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' "$CHECKS14"
 
 check_eq "false" "$(met)" "failing CI: met == false"
@@ -414,7 +437,8 @@ PROSE16="$(jq -cn \
   --arg author "$PR_AUTHOR_LOGIN" \
   '{id:16002, user:{login:$author}, body:"Do not post @greptileai again",
     created_at:"2026-07-23T12:59:00Z", updated_at:"2026-07-23T12:59:00Z"}')"
-run_gate "$PUSH_TS" "[$TRIGGER3,$COMMENT3,$COLLAB_TRIGGER16,$PROSE16]" "[]"
+run_gate "$PUSH_TS" "[$TRIGGER3,$COMMENT3,$COLLAB_TRIGGER16,$PROSE16]" \
+  "[$P1_3,$REPLY3]"
 
 check_eq "true" "$(met)" "spoofed boundary: trusted clean round remains reusable"
 check_eq "0" "$RC" "spoofed boundary: exit code 0"
@@ -488,6 +512,62 @@ check_eq "false" "$(met)" "unknown author: met == false"
 check_eq "yes" "$(missing_has "no Greptile review")" \
   "unknown author: unanswered exact trigger blocks stale reuse"
 check_eq "1" "$RC" "unknown author: exit code 1"
+
+# --------------------------------------------------------------------------
+# Test 21: A stale zero-P0 round without current-HEAD fix provenance cannot
+# authorize an arbitrary later push.
+# --------------------------------------------------------------------------
+echo "--- Test 21: stale reuse requires current-HEAD fix provenance ---"
+P1_21="$(greptile_p1_inline 21001 "2026-07-23T12:56:00Z")"
+run_gate "$PUSH_TS" "[$TRIGGER3,$COMMENT3]" "[$P1_21]"
+
+check_eq "false" "$(met)" "missing provenance: met == false"
+check_eq "yes" "$(missing_has "cannot verify fix-only Greptile reuse")" \
+  "missing provenance: gate names fix-only proof"
+check_eq "1" "$RC" "missing provenance: exit code 1"
+
+# --------------------------------------------------------------------------
+# Test 22: A reply naming an older SHA does not prove the current HEAD.
+# --------------------------------------------------------------------------
+echo "--- Test 22: fix reply must name current HEAD ---"
+OLD_REPLY22="$(author_fix_reply 22002 21001 deadbeefdeadbeefdeadbeefdeadbeefdeadbeef)"
+run_gate "$PUSH_TS" "[$TRIGGER3,$COMMENT3]" "[$P1_21,$OLD_REPLY22]"
+
+check_eq "false" "$(met)" "old-SHA provenance: met == false"
+check_eq "yes" "$(missing_has "0/1 latest-round finding")" \
+  "old-SHA provenance: current HEAD remains unproven"
+check_eq "1" "$RC" "old-SHA provenance: exit code 1"
+
+# --------------------------------------------------------------------------
+# Test 23: Equivalent UTC suffixes compare as the same instant. Evidence at the
+# exact trigger instant does not complete the round merely because Z sorts after
+# +00:00 lexically.
+# --------------------------------------------------------------------------
+echo "--- Test 23: UTC suffix normalization preserves unanswered boundary ---"
+TRIGGER23="$(greptile_trigger "2026-07-23T12:58:00+00:00")"
+COMMENT23="$(greptile_comment "2026-07-23T12:58:00Z" 1)"
+run_gate "$PUSH_TS" "[$TRIGGER23,$COMMENT23]" "[]"
+
+check_eq "false" "$(met)" "UTC-equivalent boundary: met == false"
+check_eq "yes" "$(missing_has "no Greptile review")" \
+  "UTC-equivalent boundary: equal-time evidence does not answer trigger"
+check_eq "1" "$RC" "UTC-equivalent boundary: exit code 1"
+
+# --------------------------------------------------------------------------
+# Test 24: The unknown-author trigger fallback preserves an unanswered boundary,
+# but it cannot authenticate a fix reply for stale-round reuse.
+# --------------------------------------------------------------------------
+echo "--- Test 24: unknown author cannot authenticate fix provenance ---"
+SAVED_PR_AUTHOR_LOGIN="$PR_AUTHOR_LOGIN"
+PR_AUTHOR_LOGIN=""
+UNKNOWN_REPLY24="$(author_fix_reply 24002 3001)"
+run_gate "$PUSH_TS" "[$TRIGGER3,$COMMENT3]" "[$P1_3,$UNKNOWN_REPLY24]"
+PR_AUTHOR_LOGIN="$SAVED_PR_AUTHOR_LOGIN"
+
+check_eq "false" "$(met)" "unknown-author provenance: met == false"
+check_eq "yes" "$(missing_has "cannot verify fix-only Greptile reuse")" \
+  "unknown-author provenance: unauthenticated reply cannot prove HEAD"
+check_eq "1" "$RC" "unknown-author provenance: exit code 1"
 
 echo "----------------------------------------"
 echo "merge-gate-greptile-comment.test.sh: $PASS passed, $FAIL failed"
