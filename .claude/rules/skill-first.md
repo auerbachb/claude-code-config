@@ -16,9 +16,9 @@
 
 ## Reaching Subagents
 
-Subagents inherit the parent's instruction **snapshot** at spawn and never re-read this file, so the reflex must travel with them: custom agent types embed it in their own `.claude/agents/*.md`; every other spawn gets the verbatim `SKILLS:` block below in its prompt (`subagent-orchestration.md` checklist). Subagents can't pause for a user answer, so the ladder adapts — borderline match → note it in the exit report and proceed, never block the phase.
+Custom `subagent_type` agents inherit this file automatically — `skill-first.md` is part of the project rules the harness injects into every custom agent spawn. The reflex is present without any extra work. Subagents can't pause for a user answer, so the ladder adapts — borderline match → note it in the exit report and proceed, never block the phase.
 
-**Paste the block only into spawns holding the `Skill` tool.** Agents without it (`phase-c-merger`, `researcher`) carry an adapted, non-invoking note in their own definition instead — never this block. Delivery detail: `.claude/reference/skill-first-subagent-delivery.md`.
+**For Explore/Plan built-ins and any general-purpose spawn where injection is uncertain:** paste the verbatim `SKILLS:` block below into the spawn prompt (only for spawns holding the `Skill` tool — `phase-c-merger` and `researcher` use adapted role-specific notes in their own definitions). Delivery detail: `.claude/reference/skill-first-subagent-delivery.md`; verification: `.claude/reference/token-efficiency-audit-2026-07.md` §FU-1.
 
 ```text
 SKILLS: Before hand-rolling a multi-step task, check whether an existing skill

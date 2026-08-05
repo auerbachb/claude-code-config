@@ -201,23 +201,9 @@ Read or create `~/.claude/session-state.json`. Add each qualifying issue to the 
 
 If session-state already exists, merge — do not overwrite existing PR entries or quota counters.
 
-### 6.3: Read full rule files for subagent prompts
+### 6.3: Rule injection — inherited automatically
 
-Read ALL rule files and CLAUDE.md to include in subagent prompts:
-
-```bash
-cat ./CLAUDE.md
-cat ./.claude/rules/*.md
-```
-
-If no project-level files exist, fall back to global:
-
-```bash
-cat ~/.claude/CLAUDE.md
-cat ~/.claude/rules/*.md
-```
-
-Store the complete output — do NOT summarize or excerpt.
+Custom `subagent_type` agents (phase-a-fixer, phase-b-reviewer, phase-c-merger, pm-worker) inherit the project CLAUDE.md + `.claude/rules/*.md` hierarchy automatically via the harness — no `cat` step needed. See `.claude/reference/token-efficiency-audit-2026-07.md` §FU-1 for verification. The Phase A spawn below uses the general-purpose agent path (no `subagent_type`) per Step 7's Note; that path also receives the injection. Do NOT manually cat and embed the rule corpus into spawn prompts — it creates double-pay.
 
 ## Step 7: Spawn Phase A Subagents
 
@@ -254,11 +240,6 @@ Body:
 
 ## CR Implementation Plan
 {CR plan if available, or "No CR plan available — explore the codebase to identify affected files."}
-
-## RULES (MANDATORY — read all of these)
-{COMPLETE contents of CLAUDE.md}
-
-{COMPLETE contents of all .claude/rules/*.md files}
 
 ## Guardrails (MANDATORY)
 **Read `.claude/reference/subagent-phase-guardrails.md` and insert its full contents verbatim at this point** — SAFETY, MINDSET/capability-discovery, and SKILLS-first reflex. That file is the single canonical home for these blocks; `verbatim-block-lint.sh` CI-guards them there.
@@ -330,7 +311,7 @@ Body:
 - `isolation: "worktree"`
 - `run_in_background: true` (so you can monitor multiple agents)
 
-> **Note on `subagent_type`:** Do NOT set `subagent_type: "phase-a-fixer"` here. The `/subagent` skill's "Phase A" does **initial implementation** of a new issue (no PR exists yet), but `.claude/agents/phase-a-fixer.md` is designed for **fixing existing review findings** on an already-open PR — its workflow references findings, review threads, and push replies that don't apply to green-field implementation. Let this Agent call fall back to the default general-purpose agent; the long custom prompt below carries all the rules the subagent needs.
+> **Note on `subagent_type`:** Do NOT set `subagent_type: "phase-a-fixer"` here. The `/subagent` skill's "Phase A" does **initial implementation** of a new issue (no PR exists yet), but `.claude/agents/phase-a-fixer.md` is designed for **fixing existing review findings** on an already-open PR — its workflow references findings, review threads, and push replies that don't apply to green-field implementation. Let this Agent call fall back to the default general-purpose agent; the harness injects the project CLAUDE.md + `.claude/rules/*.md` into general-purpose spawns (verified — see `.claude/reference/token-efficiency-audit-2026-07.md` §FU-1). If rules are absent from your context at session start, read `CLAUDE.md` and `.claude/rules/*.md` before proceeding.
 
 Record each spawned agent in `session-state.json` under `active_agents` and set `monitoring_active=true`. Also record the monitoring primitive state from `.claude/reference/pm-monitoring-decision.md`: use in-turn Dedicated Monitor Mode immediately. For between-turn PR fleet monitoring, point the user at `/pr-monitor-and-manage`; for explicit user "poll every N" on non-PR work, use `Monitor` per `scheduling-reliability.md`.
 
@@ -388,9 +369,6 @@ You are a Phase B review-loop agent for PR #{PR_NUMBER} (Issue #{ISSUE_NUMBER}).
 ## Handoff File
 Read the handoff file first (resolve path: `handoff-state.sh [--owner-repo owner/repo] --path {PR_NUMBER}`). Use it to avoid duplicate work.
 If missing, reconstruct state from GitHub API.
-
-## RULES (MANDATORY)
-{COMPLETE contents of CLAUDE.md and all .claude/rules/*.md}
 
 ## Guardrails (MANDATORY)
 **Read `.claude/reference/subagent-phase-guardrails.md` and insert its full contents verbatim at this point** (same as Phase A).
@@ -463,11 +441,8 @@ Execute the canonical `/wrap` flow after verification — no pre-merge prompt.
 ## Handoff File
 Resolve the path with `handoff-state.sh [--owner-repo owner/repo] --path {PR_NUMBER}` and read that file first.
 
-## RULES (MANDATORY)
-{COMPLETE contents of CLAUDE.md and all .claude/rules/*.md}
-
 ## Guardrails (MANDATORY)
-**Read `.claude/reference/subagent-phase-guardrails.md` and insert the SAFETY block verbatim at this point** (Phase C / `phase-c-merger` carries only SAFETY — no MINDSET or SKILLS per `subagent-orchestration.md`).
+**Read `.claude/reference/subagent-phase-guardrails.md` and insert the SAFETY block verbatim at this point** (Phase C / `phase-c-merger` carries only SAFETY — no MINDSET or SKILLS).
 
 ## Phase C Instructions
 

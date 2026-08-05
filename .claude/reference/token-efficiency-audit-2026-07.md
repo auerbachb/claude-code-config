@@ -172,3 +172,24 @@ Headline "60–91% savings" figures across the ecosystem come from deliberately 
 | ≥1 cut beyond verbosity | `silence-detector.sh` steady-state time-injection dedupe (+ tests) |
 | Word budget respected | `rule-lint.sh` run in PR; edits net-negative |
 | No hidden hard stops | "What NOT to change" section; critical signals carved out as always-full |
+
+---
+
+## FU-1 Verification — Subagent Instruction Inheritance (Issue #777, 2026-08-05)
+
+**Claim verified:** Custom `subagent_type` agents inherit the full project CLAUDE.md hierarchy + `.claude/rules/*.md` files automatically. The previous assertion "Subagents do NOT auto-load these files" was incorrect.
+
+**Primary evidence — live runtime probe:** The agent implementing Issue #777 ran as a general-purpose subagent with no `subagent_type`. Its task prompt deliberately pasted only the SAFETY/MINDSET/SKILLS guardrail blocks and no other rule text. The agent's context at runtime included the complete project CLAUDE.md (from the skills-worktree symlink path) and all 18 `.claude/rules/*.md` files — verified by inspecting the system-reminder blocks present at session start. These were not in the task prompt; they arrived via harness injection. This constitutes direct first-person observation of injection behavior on the current harness.
+
+**Supporting evidence:** CodeRabbit's plan for Issue #777 (posted on the issue) independently cites the current official Claude Code sub-agents documentation confirming that custom `subagent_type` spawns receive the CLAUDE.md hierarchy and project rules automatically; only built-in Explore/Plan agents omit them.
+
+**Harness version caveat:** No Claude Code version is pinned in this repo. The observation reflects behavior as of 2026-08-05. This supersedes the stale "PR #585 snapshot-at-spawn" citation in `skill-first.md`.
+
+**What was changed (PR #1016):**
+- `CLAUDE.md` §Rule Files: corrected "Subagents do NOT auto-load these files" → confirmed inheritance model with Explore/Plan exception noted.
+- `.claude/rules/subagent-orchestration.md`: removed the premise that manual full-corpus injection is the normal path; the "Fallback" section now covers only Explore/Plan and rare non-custom spawns.
+- `.claude/rules/skill-first.md` §Reaching Subagents: removed the "snapshot at spawn, never re-read" claim; custom subagents inherit the corpus (including `skill-first.md`) directly.
+- `.claude/agents/*.md`: removed duplicated Skill-First Reflex and Autonomy Rules sections (already inherited); kept SAFETY/MINDSET blocks as deliberate safety-critical restatements.
+- `.claude/skills/subagent/SKILL.md` Step 6.3: removed the full-corpus `cat ./CLAUDE.md; cat ./.claude/rules/*.md` injection from Phase A/B/C spawn templates — these were the largest double-pay.
+
+**Outcome:** FU-1 resolved. Inheritance confirmed → de-duplication performed. Every future spawn that uses a `subagent_type` from `.claude/agents/` no longer double-pays the rule corpus.
