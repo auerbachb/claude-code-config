@@ -45,11 +45,13 @@ ensure a fix does not block a legitimate shape) are present for every new rule
 added since PR #896.
 
 **3. Splitting would cost context.**
-The cases share `HEAD_SHA`, `COMMIT_TS`, `APPROVE_TS`, and the `gh` stub. Later
-cases (e.g., (ff-933) and (gg-927)) layer on prior cases as negative controls:
-case (e) is the explicit negative control for case (ff-933)(i). Splitting into
-per-issue files would destroy this sequential context and require cross-file
-import machinery that the current self-contained structure avoids.
+The cases share `HEAD_SHA`, `COMMIT_TS`, `APPROVE_TS`, and the `gh` stub. Each
+group adds independent negative controls guarding against distinct rule-widening
+failures: within the (ff-933) group, case (e) guards against "strip all
+blockquotes" and case (i) independently guards against "include bot text in the
+echo index". Splitting into per-issue files would destroy this sequential context
+and require cross-file import machinery that the current self-contained structure
+avoids.
 
 ### Comparison with the polling-state-gate precedent (PR #1024)
 
@@ -61,13 +63,13 @@ different: external contract evolution, not internal duplication.
 
 ### The ok/bad/check_eq pattern (cross-family duplication)
 
-The `ok()`, `bad()`, and `check_eq()` helpers appear in the other six
-merge-gate-*.test.sh files as well. This is real but intentional: each suite is
-self-contained, the helpers are three trivial one-liners, and no divergence has
-appeared between copies. A shared `tests/lib/merge-gate-helpers.sh` was
-considered and declined: the correctness benefit is zero (no diverged
-implementations, no coverage gap), and sourcing six files from a seventh adds
-maintenance surface without buying anything.
+The `ok()`, `bad()`, and `check_eq()` helpers appear in five of the other six
+merge-gate-*.test.sh files; the authorship suite defines only `check_eq()`. This
+is real but intentional: each suite is self-contained, the helpers are trivial
+one-liners, and no divergence has appeared between copies. A shared
+`tests/lib/merge-gate-helpers.sh` was considered and declined: the correctness
+benefit is zero (no diverged implementations, no coverage gap), and sourcing six
+files from a seventh adds maintenance surface without buying anything.
 
 ## Decision
 
