@@ -4,6 +4,8 @@ Full path-specific rules extracted from `.claude/rules/cr-merge-gate.md` Step 1 
 
 ## Check-run dedup — all paths (#675)
 
+**Authoritative source:** `.claude/scripts/check-runs-dedup.sh` — all grouping and ordering logic lives there; this section is prose explanation only.
+
 Every check-run read goes through `.claude/scripts/check-runs-dedup.sh` before anything classifies it: `ci-status.sh`, `merge-gate.sh`, `pr-state.sh` (and so `escalate-review.sh`), and `pr-preflight.sh`.
 
 GitHub keeps a record for **every** run of a check on a commit, and each re-trigger opens a new check suite — so the `commits/{sha}/check-runs` endpoint returns an old failed run right next to the new passing one. The endpoint's `filter=latest` does not help; it is latest-per-*suite*. GitHub's own PR page resolves each check name to its newest run, and the dedup does the same:
@@ -17,6 +19,8 @@ GitHub keeps a record for **every** run of a check on a commit, and each re-trig
 **Consequence for polling:** a check that failed and was re-run stops blocking the moment the newer run lands — no rebase or new push required. If tooling still reports a failure GitHub's merge box shows as green, suspect the fetch bypassed the helper, not the dedup rule.
 
 ## Stale-approval guard — all review paths (issue #836)
+
+**Authoritative source:** `.claude/scripts/merge-gate.sh` (`LAST_COMMIT_TS` comparison logic) — this section is prose explanation of the mechanism and its scope.
 
 GitHub retargets a review's `commit_id` to the new HEAD SHA after a force-push (when diff context persists), but `submitted_at` is never changed. An approval submitted _before_ the force-push therefore shows `commit_id == HEAD` with a `submitted_at` that predates the HEAD commit's `committer.date`. `merge-gate.sh` rejects such approvals even when `commit_id` matches, using `LAST_COMMIT_TS` (HEAD committer date, already fetched for the Greptile freshness gate). Applies to: CR/CodeAnt `APPROVED` reviews, CodeAnt clean check-run `completed_at`, and BugBot reviews. Guard is disabled when `LAST_COMMIT_TS` is empty (API failure). Distinct `missing[]` reason: "predates the HEAD commit (force-push retargeting) — re-review required".
 
