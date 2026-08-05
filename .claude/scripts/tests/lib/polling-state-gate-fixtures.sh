@@ -44,7 +44,8 @@ if [ "${BASH_SOURCE[0]:-}" = "${0:-}" ]; then
   exit 2
 fi
 
-_PSG_REPO_ROOT="$(git rev-parse --show-toplevel)"
+_PSG_FIXTURE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_PSG_REPO_ROOT="$(git -C "$_PSG_FIXTURE_DIR" rev-parse --show-toplevel)"
 _PSG_HANDOFF_HELPER="$_PSG_REPO_ROOT/.claude/scripts/handoff-state.sh"
 
 # mk_repo <dir> <origin-url>

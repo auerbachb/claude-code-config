@@ -297,10 +297,10 @@ STUB_BIN2="$TMP/bin2"
 write_polling_gh_stub "$STUB_BIN2"
 
 rm -f "$STATE"
-out2="$(cd "$REPO_MIXED" && PATH="$STUB_BIN2:$PATH" \
+( cd "$REPO_MIXED" && PATH="$STUB_BIN2:$PATH" \
   STUB_PR_JSON='{"headRefOid":"c0ffee","state":"OPEN","number":99647,"headRefName":"feature","url":"https://github.com/AuerbachB/Skingod/pull/99647","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}' \
   STUB_OWNER_REPO="AuerbachB/Skingod" \
-  "$SCRIPT" "$PR_NUM" --ensure-session 2>&1)"; rc2=$?
+  "$SCRIPT" "$PR_NUM" --ensure-session > /dev/null 2>&1 ); rc2=$?
 check_eq "--ensure-session with mixed-case remote exits 0" "0" "$rc2"
 
 # The key stored in session-state.json must be lowercase.
