@@ -35,7 +35,7 @@ Built-in Explore/Plan agents omit the project hierarchy. For any spawn that does
 
 Fleet: **Fable, Opus, Sonnet, Haiku** (Agent `model` takes the lowercase family name). Fable is **never a spawn default** — reserve for interactive step-ups. Alias resolution + rationale: `.claude/agents/README.md`. An explicit `model` overrides frontmatter; escalate to `opus` if a Sonnet-tier agent underperforms.
 
-**Effort is not settable on a spawn** — subagents inherit the parent session's effort level; never write an effort instruction into a subagent prompt.
+**Effort is not settable on a spawn** — subagents inherit the parent session's effort level; never write an effort instruction into a subagent prompt. **Set model at spawn and never change it mid-session** — per-model caches are session-scoped; a mid-session tier switch cold-restarts the new cache and typically costs more than the downgrade saves (FU-4: `token-efficiency-audit-2026-07.md`).
 
 ## Phase Transition Autonomy (Quick Reference)
 

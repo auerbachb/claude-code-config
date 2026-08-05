@@ -193,3 +193,42 @@ Headline "60–91% savings" figures across the ecosystem come from deliberately 
 - `.claude/skills/subagent/SKILL.md` Step 6.3: removed the full-corpus `cat ./CLAUDE.md; cat ./.claude/rules/*.md` injection from Phase A/B/C spawn templates — these were the largest double-pay.
 
 **Outcome:** FU-1 resolved. Inheritance confirmed → de-duplication performed. Every future spawn that uses a `subagent_type` from `.claude/agents/` no longer double-pays the rule corpus.
+
+---
+
+## FU-4 Evaluation — Poller Model-Routing (Issue #780, 2026-08-05)
+
+**Origin:** [#780](https://github.com/auerbachb/claude-code-config/issues/780). Evaluates the FU-4 entry in the recommendations table above: routing pure poll/classify ticks to a cheaper tier (Haiku-class) while keeping fix/review/merge phases on current defaults. Companion note shipped to `subagent-orchestration.md` §Model Selection (PR closing #780).
+
+**Scope vs. #776:** Issue #776 targets PM thread economics broadly — biasing work toward inline subagents to reduce chip-spawn overhead. This eval is narrower: per-tick model tier for polling/monitoring surfaces only. The two are complementary, not duplicates.
+
+### Surfaces evaluated
+
+| Surface | How it runs today | Model today |
+|---|---|---|
+| `/babysit-pr` quiet ticks (T0–T7; classification at T3) | Inline in Monitor parent session — Monitor emits `/babysit-pr <PR> --tick`; skill executes in the same session | Parent session model (not configurable per tick) |
+| PMM quiet ticks (Steps 1–3: fleet rediscovery + per-PR classify) | Same — Monitor emits `/pr-monitor-and-manage --tick`; runs inline in parent session | Parent session model |
+| `escalate-review.sh` classify calls | Pure bash — `STATUS=` verdicts computed via `gh` JSON + `jq`; zero model tokens | **None** |
+| `pm-worker` data gathering | Agent spawn via `model: sonnet` frontmatter | `sonnet` |
+
+**Core mechanism constraint:** The Monitor primitive (the only reliable recurring-poll primitive per `scheduling-reliability.md`) has no `model` or `effort` parameter — parallel to the `spawn_task` gap tracked in Issue #735. Quiet babysit/PMM ticks are inline skill invocations inside the parent session; the parent session's tier is fixed at session start, not adjustable per tick. Per-model caches are session-scoped: switching tiers mid-session cold-starts the new tier's cache.
+
+### Option evaluation
+
+| Option | Decision | Reason |
+|---|---|---|
+| Add `model` param to Monitor/scheduling primitives | **Blocked** | The scheduling primitive has no such field; a fix requires upstream harness changes |
+| Spawn a dedicated Haiku subagent per classify tick | **Reject** | Per-tick Agent spawn overhead + cold per-model cache each tick likely negates savings; routing `merge-ready` / `conflicting` dispatch judgment to Haiku carries misclassification risk |
+| Run the entire monitor session on a cheaper tier | **Reject** | Subjects T3/Step 3 dispatch judgment — `hard-blocked`, `merge-ready`, escalation routing — to a weak model; one misrouted hard-blocked PR is false economy |
+| Treat `escalate-review.sh` as a routing target | **N/A** | Pure bash — already zero model tokens |
+| Route `pm-worker` to Haiku | **Defer** | `pm-worker` does planning work (issue creation, bootstrap checks) beyond pure classify; Haiku's planning quality on multi-step repo tasks is unverified for this harness |
+
+**Verdict: Defer/Advisory.** No surface today supports a clearly safe Haiku-tier downgrade. The per-tick routing mechanism does not exist; the options that do exist carry correctness risk on dispatch judgment or add overhead that negates savings.
+
+**Guardrails (non-negotiable, unchanged):** Phase defaults stay — A/B = `opus`, C/`pm-worker` = `sonnet`. The escalation path (CR → BugBot → Greptile → self-review) must remain intact. Misrouting a hard bug or a `merge-ready` dispatch to Haiku is false economy even if a mechanism becomes available.
+
+**Re-check triggers:**
+1. Monitor/scheduling primitives gain a `model` or `effort` parameter (Issue #735 or a harness update)
+2. `ccusage` measurement (FU-6) shows poll-tick model cost exceeds ~15% of total session cost on a representative session
+
+**Lower-risk adjacent lever:** FU-2 (script-side no-change short-circuit in PMM) reduces model involvement on unchanged quiet ticks without any tier-routing risk and without waiting on a harness change. Prioritize FU-2 over FU-4 for near-term classify-cost reduction.
