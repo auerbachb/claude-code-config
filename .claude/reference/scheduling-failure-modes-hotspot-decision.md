@@ -32,7 +32,7 @@ Issue #1007 was filed by `/wrap` churn detection after PR #1006 merged. The issu
 PR #1009 (merged 2026-08-05), updated Pattern 6 with the gap-2 watchdog closure; it was
 already in main at diagnosis time.
 
-At diagnosis time the file is 209 lines, organized into 7 named Patterns, a Detection
+At diagnosis time the file is 208 lines, organized into 7 named Patterns, a Detection
 Heuristics section, and a Canonical Incident appendix. The touches map to three causal classes:
 
 | Churn class | PRs | What changed |
