@@ -28,6 +28,12 @@ NOTIFY_LOG="$TMP_DIR/notify.log"
 
 mkdir -p "$MARKER_DIR" "$LOG_DIR" "$FAKE_BIN"
 
+# Sandbox HOME so that silence-watchdog.sh's unconditional script-usage.log
+# write ($HOME/.claude/script-usage.log, line ~29) stays inside TMP_DIR and
+# never touches the real ~/.claude tree.
+export HOME="$TMP_DIR"
+mkdir -p "$TMP_DIR/.claude"
+
 # PATH-shadowed fake osascript: records each argv to NOTIFY_LOG.
 cat > "$FAKE_BIN/osascript" <<'EOF'
 #!/bin/sh
@@ -152,5 +158,24 @@ CLAUDE_BGWORK_MARKER_DIR="$MARKER_DIR" CLAUDE_BGWORK_LOG_DIR="$LOG_DIR" \
 run_watchdog
 [[ "$(notify_count)" -eq 0 ]] || fail "(f) fresh heartbeat with bgwork should NOT notify"
 ok "(f) active marker absent + bgwork + fresh heartbeat -> silent (not stale enough)"
+
+# ── (g) Armed ceiling + bgwork present, stale heartbeat -> no notification ───
+# Covers the P1 fix: when the ceiling was previously armed, the Monitor watch
+# is (or was) responsible for enforcement.  Persisted bgwork markers from
+# sessions that already completed their background work must not cause spurious
+# notifications after the session becomes idle.
+reset_all
+SID=$(new_sid armed)
+touch -t "$(past_stamp 12)" "${MARKER_DIR}/claude-heartbeat-${SID}"
+# No active marker (session ended its turn).
+# Create bgwork marker AND armed marker (simulating a session that armed its
+# ceiling Monitor before ending its turn).
+CLAUDE_BGWORK_MARKER_DIR="$MARKER_DIR" CLAUDE_BGWORK_LOG_DIR="$LOG_DIR" \
+  "$BGWORK_CEILING" --note-started "Agent" --session "$SID"
+CLAUDE_BGWORK_MARKER_DIR="$MARKER_DIR" CLAUDE_BGWORK_LOG_DIR="$LOG_DIR" \
+  "$BGWORK_CEILING" --record-armed --session "$SID"
+run_watchdog
+[[ "$(notify_count)" -eq 0 ]] || fail "(g) armed session with stale bgwork marker should NOT notify — armed guard must suppress historical-work false positives"
+ok "(g) armed ceiling + bgwork marker present, stale heartbeat -> silent (Monitor was responsible; armed guard suppresses false positive)"
 
 echo "PASS: silence-watchdog tests"

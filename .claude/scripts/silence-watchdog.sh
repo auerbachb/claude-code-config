@@ -75,13 +75,27 @@ file_mtime() {
 # existence check when bgwork-ceiling.sh is missing or non-executable,
 # honouring BGWORK_MARKER_DIR (via CLAUDE_BGWORK_MARKER_DIR) so the watchdog
 # stays consistent with the ceiling machinery's marker location.
+#
+# Armed-marker guard: when the ceiling was previously armed (armed==true in
+# --status, or the claude-bgceiling-armed-<id> file is present), the Monitor
+# watch is (or was) responsible for ceiling enforcement. We skip the notification
+# in that case to avoid false positives from sessions where background work
+# already completed and the bgwork marker was never cleaned up. The bgwork
+# marker is append-only by design — it has no production cleanup path — so
+# has_bgwork() would otherwise return true for any session that ever had
+# background work, even long-idle or dead sessions. Sessions that were never
+# armed (the gap-2 scenario) still fall through to notify() as intended.
 has_bgwork() {
   local sid="$1"
   if [[ -x "$BGWORK_CEILING_SH" ]]; then
-    local status_json bg_count RC
+    local status_json bg_count armed RC
     RC=0
     status_json="$("$BGWORK_CEILING_SH" --status --session "$sid" 2>/dev/null)" || RC=$?
     if [[ $RC -eq 0 && -n "$status_json" ]]; then
+      # If the ceiling was armed, the Monitor watch handles detection; skip to
+      # avoid false positives from historical bgwork markers.
+      armed="$(printf '%s' "$status_json" | jq -r '.armed // false' 2>/dev/null)"
+      [[ "$armed" == "true" ]] && return 1
       # Use -e (error on null/false) and type-check so a schema failure or
       # malformed JSON falls through to the marker check rather than returning
       # "no background work" — failing open on a probe failure is safer here.
@@ -94,7 +108,10 @@ has_bgwork() {
       fi
     fi
   fi
-  # Fallback: direct read-only existence check of the bgwork marker file.
+  # Fallback: direct read-only existence check. Skip sessions where the ceiling
+  # was previously armed (same guard as the primary path above).
+  local armed_file="${BGWORK_MARKER_DIR}/claude-bgceiling-armed-${sid}"
+  [[ -f "$armed_file" ]] && return 1
   [[ -f "${BGWORK_MARKER_DIR}/claude-bgwork-${sid}" ]]
 }
 
