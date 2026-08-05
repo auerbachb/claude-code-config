@@ -65,7 +65,7 @@ corpus. Future compressions will continue to touch it when it drifts above budge
 
 ## 3. Concrete remedy
 
-Two targeted deduplication changes and one authority clarification. Zero behavior change.
+Two targeted deduplication changes and one authority clarification. Zero behavior change from this PR's structural remedy — the zero-P0 Greptile round reuse described in §3.2 is pre-existing policy established by PR #1001 (see §5); this PR removes its duplicate inline statement and points to the reference that already holds the full conditions.
 
 ### 3.1 BugBot §Merge Gate in `bugbot.md`
 
