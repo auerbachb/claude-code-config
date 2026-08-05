@@ -1,6 +1,6 @@
 # Merge Gate — Reviewer Path Details
 
-Full path-specific rules extracted from `.claude/rules/cr-merge-gate.md` Step 1. The rule file keeps the polling exit criterion and step headers; this file holds per-path semantics. **`merge-gate.sh` is authoritative** — re-read its JSON when in doubt.
+Full path-specific rules extracted from `.claude/rules/cr-merge-gate.md` Step 1 (authoritative for gate policy and intent). The rule file keeps the polling exit criterion and step headers; this file holds expanded per-path semantics. **`merge-gate.sh` is authoritative for runtime behavior and enforced JSON output** — re-read its output when implementation details are in doubt.
 
 ## Check-run dedup — all paths (#675)
 

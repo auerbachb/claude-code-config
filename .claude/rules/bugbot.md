@@ -41,7 +41,7 @@ Verify all findings against actual code. Fix all valid findings in one commit, p
 
 ## Merge Gate
 
-**A clean BugBot pass on current HEAD satisfies the merge gate alone** (`cr-merge-gate.md` Step 1). Two accepted shapes: (1) a `cursor[bot]` review object on HEAD with no `CHANGES_REQUESTED` and no inline findings; (2) a `Cursor Bugbot` check-run with `conclusion: "success"`, no post-HEAD failure-phrase comment, and a fresh timestamp (issue #844). Full conditions: `.claude/reference/merge-gate-reviewer-paths.md` §BugBot path.
+**A clean BugBot pass on current HEAD satisfies the merge gate alone** (`cr-merge-gate.md` Step 1). Full conditions and accepted shapes: `.claude/reference/merge-gate-reviewer-paths.md` §BugBot path.
 
 ## Re-Reviews
 
