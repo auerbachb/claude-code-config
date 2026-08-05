@@ -92,6 +92,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `merge-gate-reviewer-paths-hotspot-decision.md` — diagnosis and keep + targeted-dedup decision for `merge-gate-reviewer-paths.md` churn (8 PRs in the Issue #1002 window); verdict: KEEP as designated expansion home for gate prose + add canonical-source markers to shared-mechanism sections
 - `scheduling-reliability-hotspot-decision.md` — diagnosis and dedup decision for `scheduling-reliability.md` churn (12 merged PRs in the #959 hotspot window, re-measured after #982); verdict: KEEP single rule file + remove downstream formula/enforcement restatements
 - `local-review-cli-failure-modes-hotspot-decision.md` — diagnosis and no-runtime-change decision for `local-review-cli-failure-modes.md` churn (6 merged PRs in the Issue #1005 window); verdict: KEEP the single multi-incident diagnostic reference
+- `scheduling-failure-modes-hotspot-decision.md` — diagnosis and no-runtime-change decision for `scheduling-failure-modes.md` churn (7 PRs in the Issue #1007 window, including PR #1009 merged same day); verdict: KEEP as intentional append-only incident log; Pattern 5 dedup already applied by PR #987
 - `repo-audit-2026-05.md` — bundled org + efficiency + best-practices audit (#413–#415)
 - `harness-model-audit-2026-06.md` — harness components vs current model fleet (#49)
 - `script-extraction-audit.md` — deterministic script extraction inventory (#271)
