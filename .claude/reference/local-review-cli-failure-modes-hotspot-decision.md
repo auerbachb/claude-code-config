@@ -44,7 +44,7 @@ added new sections (#806, #821); three PRs refined existing section content as d
 independent authors — consistent with an incident log whose scope is "collect and refine every
 new failure signature."
 
-Today's session (PRs #1008–#1016) independently corroborates the file's documented failure modes:
+The 2026-08-05 session (PRs #1008–#1016) independently corroborates the file's documented failure modes:
 the CodeRabbit CLI rate-limit and the CodeAnt 403 daily cap both fired, matching sections 5 and
 3 respectively. The file's value as a pre-diagnosis lookup is confirmed.
 
@@ -102,7 +102,7 @@ next incident from being appended.
 
 ## 4. Preserved invariants
 
-- `.claude/reference/local-review-cli-failure-modes.md` stays byte-for-byte unchanged.
+- For this PR: `.claude/reference/local-review-cli-failure-modes.md` stays byte-for-byte unchanged.
 - The three-way alignment (this doc → `local-review.sh` exit codes → `local-review.test.sh`
   failure fixtures) stays synchronized; new failure modes must update all three if they affect
   the `verified_run` classification.
