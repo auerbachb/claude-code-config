@@ -172,6 +172,18 @@ The harness should add optional **`model`** (and optionally **`effort`**) parame
 
 After #735 ships, chips should pass the recommended model and effort at the tool layer **and** keep the guard as a safety net for paste/fallback flows.
 
+## Upstream requirement — cross-session `dismiss_task` reach
+
+**Tracking issue:** [#859](https://github.com/auerbachb/claude-code-config/issues/859)
+
+`mcp__ccd_session__dismiss_task` only reaches chips spawned in its own calling session. `task_id`s are not persisted across app restarts, per the tool's own message: "Task ids are not persisted across app restarts, so a chip from before a restart can no longer be withdrawn." Any chip offered in session A can only be dismissed from session A — never from a later sweep, a different thread, or even the same session after an app restart.
+
+**Evidence from the #838 sweep:** 28/28 stale chips tested returned the "no pending task" response, spanning three source-session variants: a dedicated `/issue-maker` capture thread, the default session log, and a repo-scoped variant. Every chip was correctly identified via `~/.claude/handoffs/issue-maker-*-log.json` records but none could be acted on programmatically.
+
+**Interim behavior:** a sweep that encounters chips from other sessions MUST skip `dismiss_task` for those chips entirely and record them for the user to dismiss manually from the task list UI. Do not attempt the call — it cannot succeed, and retrying wastes a tool call while producing a confusing "no pending task" response. See "Stale-chip hygiene — `dismiss_task`" for the fail-closed sweep rule.
+
+After #859 ships a stable cross-session chip identifier or a session-agnostic dismiss surface, sweeps can call the dismiss path directly and this interim rule can be retired.
+
 ## Merge-authority line
 
 A launched thread reads its own prompt up close and the global rules only if it goes looking. So the prompt has to **assert the merge default out loud** — silence is what lets any approval-flavored wording in a generated block win over the standing rule (#753; the default itself is #674). Every emitter's Constraints block therefore carries this bullet, reproduced **verbatim** — same copy-it-never-reword-it discipline as the model-guard preamble above:
@@ -242,6 +254,8 @@ Withdraw a tracked chip via `mcp__ccd_session__dismiss_task` (pass the recorded 
 - **Dismissed** — the chip is withdrawn. Clear the tracked state.
 - **Already clicked or already dismissed** — the tool says so and nothing changes. The offer is gone either way, so the goal is met: treat it as a successful no-op, clear the state, and do not retry.
 - **Genuine failure** — the chip is still live. Keep the `task_id` tracked; the chip is still withdrawable, and dropping the handle would strand it. A `task_id` recorded by a *different* session hits this same "no pending task" response, but retrying from here can never succeed: `dismiss_task` only reaches chips spawned in the calling session. Treat that case separately — record the chip for the user to dismiss manually from the task list UI rather than retrying or treating it as resolved.
+
+**Known cross-session chips — skip the call:** when a sweep enumerates chips it knows were spawned in earlier sessions (for example, `task_id`s read from `~/.claude/handoffs/issue-maker-*-log.json` from prior sessions), do not attempt `dismiss_task` at all. Record each chip directly for manual dismissal from the task list UI. This reaches the same outcome as the "Genuine failure" branch without burning a tool call on a call that cannot succeed — see §Upstream requirement — cross-session `dismiss_task` reach for the full gap description.
 
 ## Print-on-demand replay
 
