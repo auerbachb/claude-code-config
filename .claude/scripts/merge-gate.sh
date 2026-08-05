@@ -749,6 +749,107 @@ external_evidence_ok() { # <login>
     '.reviewers[$l].external_evidence_on_head // false' >/dev/null 2>&1 && echo true || echo false
 }
 
+# Fetch and compute per-bot approval state. Called once per bot for the shared
+# CR/CodeAnt approval block (issue #865 / Issue #936 hotspot extraction).
+#
+# Sets the following global variables (examples shown for P="CR"):
+#   LATEST_<P>_APPROVED_AT            - newest APPROVED submitted_at on HEAD, or ""
+#   LATEST_<P>_CHANGES_REQUESTED_AT   - newest CHANGES_REQUESTED submitted_at on HEAD, or ""
+#   APPROVED_<P>_ON_HEAD              - count of APPROVED reviews on HEAD SHA
+#   TOTAL_<P>_ON_HEAD                 - count of all reviews on HEAD SHA
+#   <P>_RETRACTED                     - true when fresh CHANGES_REQUESTED beats APPROVED
+#   <P>_APPROVAL_STALE                - true when approval predates HEAD commit (issue #836)
+#   <P>_APPROVAL_FRESHNESS_UNKNOWN    - true when LAST_COMMIT_TS is unavailable
+#   <P>_APPROVAL_SUBMITTED_AT_MISSING - true when APPROVED has no submitted_at
+#   <P>_SUBSTANTIVE                   - true when bot left substantive evidence (issue #875)
+#
+# The following derivations are kept in the calling scope so their exact formulas
+# remain grep-findable for structural tests (ts-normalizer-parity.test.sh):
+#   <P>_STALE_REDEEMED, <P>_APPROVAL_STALE_BLOCKING, <P>_APPROVAL_VALID, <P>_HOLLOW
+#
+# Reads globals: REVIEWS_JSON, HEAD_SHA, LAST_COMMIT_TS, REVIEW_EVIDENCE.
+# Compatible with bash 3.2: uses eval for dynamic variable names, no namerefs.
+_fetch_bot_approvals() { # <PREFIX> <login>
+  local _p="$1" _login="$2"
+  local _approved_at _changes_at _approved_count _total_count
+
+  # Fetch review timestamps and counts on HEAD SHA.
+  _approved_at=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" --arg login "$_login" '
+    [.[]?
+      | select(.user.login == $login and .commit_id == $sha and .state == "APPROVED")
+      | .submitted_at]
+    | sort | last // ""')
+  _changes_at=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" --arg login "$_login" '
+    [.[]?
+      | select(.user.login == $login and .commit_id == $sha and .state == "CHANGES_REQUESTED")
+      | .submitted_at]
+    | sort | last // ""')
+  _approved_count=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" --arg login "$_login" '
+    [.[]? | select(.user.login == $login and .commit_id == $sha and .state == "APPROVED")]
+    | length')
+  _total_count=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" --arg login "$_login" '
+    [.[]? | select(.user.login == $login and .commit_id == $sha)]
+    | length')
+
+  eval "LATEST_${_p}_APPROVED_AT=\$_approved_at"
+  eval "LATEST_${_p}_CHANGES_REQUESTED_AT=\$_changes_at"
+  eval "APPROVED_${_p}_ON_HEAD=\$_approved_count"
+  eval "TOTAL_${_p}_ON_HEAD=\$_total_count"
+
+  # Retraction: later CHANGES_REQUESTED on same SHA invalidates APPROVED (ISO timestamps).
+  # Freshness guard (issue #836): GitHub retargets commit_id on force-push, so a
+  # pre-push CHANGES_REQUESTED can appear on HEAD while predating the commit.
+  # Only treat as retraction if the CHANGES_REQUESTED is itself fresh
+  # (submitted_at >= LAST_COMMIT_TS). When LAST_COMMIT_TS is unknown, skip
+  # retraction — the approval's own freshness check will block via
+  # <P>_APPROVAL_FRESHNESS_UNKNOWN.
+  eval "${_p}_RETRACTED=false"
+  if [[ "$_approved_count" -ge 1 && -n "$_changes_at" && -n "$_approved_at" ]]; then
+    if [[ "$(norm_ts "$_changes_at")" > "$(norm_ts "$_approved_at")" ]]; then
+      if [[ -n "$LAST_COMMIT_TS" && ! "$(norm_ts "$_changes_at")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
+        eval "${_p}_RETRACTED=true"
+      fi
+    fi
+  fi
+
+  # Stale-approval guard (issue #836): GitHub retargets commit_id on force-push
+  # but does NOT update submitted_at. An approval whose submitted_at predates
+  # the HEAD commit's committer date was submitted before the current commit
+  # and must not count even when commit_id matches. Equal timestamps are
+  # accepted (submitted_at >= LAST_COMMIT_TS). Use norm_ts for comparisons
+  # to handle mixed Z/+00:00 UTC suffixes (issue #836, BugBot round 5).
+  #
+  # Fail-closed (issue #836): when LAST_COMMIT_TS is empty (HEAD timestamp API
+  # failure) we CANNOT verify freshness, so qualifying approvals do NOT satisfy
+  # the gate. Callers poll every ~60 s, so a transient API failure self-heals
+  # on the next cycle without wedging a merge indefinitely.
+  eval "${_p}_APPROVAL_STALE=false"
+  eval "${_p}_APPROVAL_FRESHNESS_UNKNOWN=false"
+  # Separate flag for missing submitted_at (distinct from LAST_COMMIT_TS missing):
+  # the approval's timestamp is absent — different cause, different user message.
+  eval "${_p}_APPROVAL_SUBMITTED_AT_MISSING=false"
+  local _p_retracted_var="${_p}_RETRACTED"
+  if [[ "$_approved_count" -ge 1 && "${!_p_retracted_var}" == false ]]; then
+    if [[ -z "$LAST_COMMIT_TS" ]]; then
+      eval "${_p}_APPROVAL_FRESHNESS_UNKNOWN=true"
+    elif [[ -z "$_approved_at" ]]; then
+      # submitted_at is missing from the approval itself (not a transient API
+      # failure) — cannot verify freshness (fail-closed, issue #836).
+      eval "${_p}_APPROVAL_SUBMITTED_AT_MISSING=true"
+    elif [[ "$(norm_ts "$_approved_at")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
+      eval "${_p}_APPROVAL_STALE=true"
+    fi
+  fi
+
+  # Review-substance verdict (issue #875). `counts_as_coverage` folds temporal
+  # inversion, capability failure, self-report SHA mismatch and footprint
+  # substance into one boolean; `disqualified_by` carries the reasons so the
+  # missing[] entry can say WHY rather than "need 1 approval".
+  local _substantive
+  _substantive=$(substance_ok "$_login")
+  eval "${_p}_SUBSTANTIVE=\$_substantive"
+}
+
 # CR-path approval detection — shared by the cr) and bugbot) cases (issue #865).
 # On the cr) path these variables are also consumed by the MISSING-entry section
 # and the supplemental CodeAnt gate below. On the bugbot) path only
@@ -775,119 +876,20 @@ CA_APPROVAL_SUBMITTED_AT_MISSING=false
 CR_APPROVAL_STALE_BLOCKING=false
 CA_APPROVAL_STALE_BLOCKING=false
 if [[ "$REVIEWER" == "cr" || "$REVIEWER" == "bugbot" ]]; then
-  # Require 1 explicit CodeRabbit APPROVED on HEAD (SHA freshness in the jq filter).
-  # Retraction: CHANGES_REQUESTED newer than APPROVED on same SHA invalidates approval.
-  LATEST_CR_APPROVED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
-    [.[]?
-      | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha and .state == "APPROVED")
-      | .submitted_at]
-    | sort | last // ""')
-  LATEST_CR_CHANGES_REQUESTED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
-    [.[]?
-      | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha and .state == "CHANGES_REQUESTED")
-      | .submitted_at]
-    | sort | last // ""')
-  APPROVED_CR_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
-    [.[]? | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha and .state == "APPROVED")]
-    | length')
-  TOTAL_CR_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
-    [.[]? | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha)]
-    | length')
+  # Fetch review stats, retraction, stale-approval, and substance checks for each
+  # bot (issue #936 extraction). Redemption (<P>_STALE_REDEEMED), blocking
+  # (<P>_APPROVAL_STALE_BLOCKING), and validity (<P>_APPROVAL_VALID/<P>_HOLLOW)
+  # are derived in the main scope so their formulas remain grep-findable for
+  # structural tests (ts-normalizer-parity.test.sh).
+  _fetch_bot_approvals CR "coderabbitai[bot]"
+  _fetch_bot_approvals CA "codeant-ai[bot]"
 
-  LATEST_CA_APPROVED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
-    [.[]?
-      | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha and .state == "APPROVED")
-      | .submitted_at]
-    | sort | last // ""')
-  LATEST_CA_CHANGES_REQUESTED_AT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
-    [.[]?
-      | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha and .state == "CHANGES_REQUESTED")
-      | .submitted_at]
-    | sort | last // ""')
-  APPROVED_CA_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
-    [.[]? | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha and .state == "APPROVED")]
-    | length')
-  TOTAL_CA_ON_HEAD=$(echo "$REVIEWS_JSON" | jq --arg sha "$HEAD_SHA" '
-    [.[]? | select(.user.login == "codeant-ai[bot]" and .commit_id == $sha)]
-    | length')
-
-  # Retraction: later CHANGES_REQUESTED on same SHA invalidates APPROVED (ISO timestamps).
-  # Freshness guard (issue #836): GitHub retargets commit_id on force-push, so a
-  # pre-push CHANGES_REQUESTED can appear on HEAD while predating the commit.
-  # Only treat as retraction if the CHANGES_REQUESTED is itself fresh
-  # (submitted_at >= LAST_COMMIT_TS). When LAST_COMMIT_TS is unknown, skip
-  # retraction — the approval's own freshness check will block via
-  # CR/CA_APPROVAL_FRESHNESS_UNKNOWN.
-  CR_RETRACTED=false
-  if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && -n "$LATEST_CR_CHANGES_REQUESTED_AT" && -n "$LATEST_CR_APPROVED_AT" ]]; then
-    if [[ "$(norm_ts "$LATEST_CR_CHANGES_REQUESTED_AT")" > "$(norm_ts "$LATEST_CR_APPROVED_AT")" ]]; then
-      if [[ -n "$LAST_COMMIT_TS" && ! "$(norm_ts "$LATEST_CR_CHANGES_REQUESTED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
-        CR_RETRACTED=true
-      fi
-    fi
-  fi
-  CA_RETRACTED=false
-  if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && -n "$LATEST_CA_CHANGES_REQUESTED_AT" && -n "$LATEST_CA_APPROVED_AT" ]]; then
-    if [[ "$(norm_ts "$LATEST_CA_CHANGES_REQUESTED_AT")" > "$(norm_ts "$LATEST_CA_APPROVED_AT")" ]]; then
-      if [[ -n "$LAST_COMMIT_TS" && ! "$(norm_ts "$LATEST_CA_CHANGES_REQUESTED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
-        CA_RETRACTED=true
-      fi
-    fi
-  fi
-
-  # Stale-approval guard (issue #836): GitHub retargets commit_id on force-push
-  # but does NOT update submitted_at. An approval whose submitted_at predates
-  # the HEAD commit's committer date was submitted before the current commit
-  # and must not count even when commit_id matches. Equal timestamps are
-  # accepted (submitted_at >= LAST_COMMIT_TS). Use norm_ts for comparisons
-  # to handle mixed Z/+00:00 UTC suffixes (issue #836, BugBot round 5).
-  #
-  # Fail-closed (issue #836): when LAST_COMMIT_TS is empty (HEAD timestamp API
-  # failure) we CANNOT verify freshness, so qualifying approvals do NOT satisfy
-  # the gate. Callers poll every ~60 s, so a transient API failure self-heals
-  # on the next cycle without wedging a merge indefinitely.
-  CR_APPROVAL_STALE=false
-  CR_APPROVAL_FRESHNESS_UNKNOWN=false
-  # Separate flag for missing submitted_at (distinct from LAST_COMMIT_TS missing):
-  # the approval's timestamp is absent — different cause, different user message.
-  CR_APPROVAL_SUBMITTED_AT_MISSING=false
-  if [[ "$APPROVED_CR_ON_HEAD" -ge 1 && "$CR_RETRACTED" == false ]]; then
-    if [[ -z "$LAST_COMMIT_TS" ]]; then
-      CR_APPROVAL_FRESHNESS_UNKNOWN=true
-    elif [[ -z "$LATEST_CR_APPROVED_AT" ]]; then
-      # submitted_at is missing from the approval itself (not a transient API
-      # failure) — cannot verify freshness (fail-closed, issue #836).
-      CR_APPROVAL_SUBMITTED_AT_MISSING=true
-    elif [[ "$(norm_ts "$LATEST_CR_APPROVED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
-      CR_APPROVAL_STALE=true
-    fi
-  fi
-  CA_APPROVAL_STALE=false
-  CA_APPROVAL_FRESHNESS_UNKNOWN=false
-  CA_APPROVAL_SUBMITTED_AT_MISSING=false
-  if [[ "$APPROVED_CA_ON_HEAD" -ge 1 && "$CA_RETRACTED" == false ]]; then
-    if [[ -z "$LAST_COMMIT_TS" ]]; then
-      CA_APPROVAL_FRESHNESS_UNKNOWN=true
-    elif [[ -z "$LATEST_CA_APPROVED_AT" ]]; then
-      CA_APPROVAL_SUBMITTED_AT_MISSING=true
-    elif [[ "$(norm_ts "$LATEST_CA_APPROVED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
-      CA_APPROVAL_STALE=true
-    fi
-  fi
-
-  # Review-substance verdict per bot (issue #875). `counts_as_coverage` folds
-  # temporal inversion, capability failure, self-report SHA mismatch and
-  # footprint substance into one boolean; `disqualified_by` carries the reasons
-  # so the missing[] entry can say WHY rather than "need 1 approval".
-  CR_SUBSTANTIVE=$(substance_ok "coderabbitai[bot]")
-  CA_SUBSTANTIVE=$(substance_ok "codeant-ai[bot]")
-
-  # <P>_APPROVAL_STALE above is the unchanged #836 norm_ts verdict and stays
-  # that way — redemption is a SEPARATE, separately-named term rather than a
-  # loosening of the ordering rule, so the timestamp comparison keeps exactly
-  # one meaning. <P>_APPROVAL_STALE_BLOCKING is what the rest of the path
-  # consumes. Redemption cannot fire unless the approval is stale in the first
-  # place, so the fresh path is byte-for-byte unaffected.
+  # <P>_APPROVAL_STALE (set by _fetch_bot_approvals) is the unchanged #836
+  # norm_ts verdict — redemption is a SEPARATE, separately-named term rather
+  # than a loosening of the ordering rule, so the timestamp comparison keeps
+  # exactly one meaning. <P>_APPROVAL_STALE_BLOCKING is what the rest of the
+  # path consumes. Redemption cannot fire unless the approval is stale in the
+  # first place, so the fresh path is byte-for-byte unaffected.
   CR_STALE_REDEEMED=false
   CA_STALE_REDEEMED=false
   if [[ "$CR_APPROVAL_STALE" == true && "$(external_evidence_ok "coderabbitai[bot]")" == true ]]; then
