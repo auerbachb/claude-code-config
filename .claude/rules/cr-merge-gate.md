@@ -21,7 +21,7 @@ The merge gate depends on which reviewer owns the PR. Per-path gates below; expa
 
 **BugBot path** (CR failed, BugBot responded — sticky; `bugbot.md`): 1 clean BugBot pass on current HEAD satisfies the gate (review object or silent-pass success check-run — issue #844; see `bugbot.md` §Merge Gate for accepted shapes). Re-review after fixes: `bugbot.md` §Re-Reviews. Never switch back to CR; ignore late CR reviews.
 
-**Greptile path** (sticky; `greptile.md`): merge-ready on **clean review** (👍); **no P0** (fix P1/P2, push, reply with current HEAD, resolve, no re-review — the proven fix-only push may reuse its trigger-delimited zero-P0 round); or **P0 fixed + re-review clean**. A P0 round is never reusable, and no review history never passes. Max 3 reviews per PR; at 3 with persistent P0, self-review and report. Never switch back to CR/BugBot; ignore their late reviews.
+**Greptile path** (sticky; `greptile.md`): severity-gated — merge-ready when clean (👍), no-P0 (reply + resolve, no re-review), or P0-fixed + re-review clean. Full conditions, 3-review cap, zero-P0 round reuse: `.claude/reference/merge-gate-reviewer-paths.md` §Greptile path. Never switch back to CR/BugBot; ignore their late reviews.
 
 **All three down:** self-review for risk reduction only — it never satisfies the gate; report the blocker.
 

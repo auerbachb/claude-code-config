@@ -88,6 +88,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `phase-c-merger-hotspot-decision.md` — evidence-based diagnosis of `phase-c-merger.md` churn (9 merged PRs in the Issue #976 window); verdict: KEEP single file + dedup non-decision detail toward canonical owners
 - `start-issue-hotspot-decision.md` — diagnosis of `start-issue/SKILL.md` churn (9 merged PRs in the Issue #981 window); verdict: KEEP the seven-step skill + no operative change
 - `merge-gate-hotspot-decision.md` — diagnosis and extract-not-split decision for `merge-gate.sh` churn (16 PRs in the Issue #936 window); verdict: KEEP single file + extract CR/CodeAnt approval state machine into `_fetch_bot_approvals` local function
+- `cr-merge-gate-rule-hotspot-decision.md` — diagnosis and keep + targeted-dedup decision for `cr-merge-gate.md` rule churn (15 PRs in the Issue #940 window); verdict: KEEP single canonical policy file + compress two downstream restatements + clarify policy-vs-runtime authority split
 - `scheduling-reliability-hotspot-decision.md` — diagnosis and dedup decision for `scheduling-reliability.md` churn (12 merged PRs in the #959 hotspot window, re-measured after #982); verdict: KEEP single rule file + remove downstream formula/enforcement restatements
 - `repo-audit-2026-05.md` — bundled org + efficiency + best-practices audit (#413–#415)
 - `harness-model-audit-2026-06.md` — harness components vs current model fleet (#49)
