@@ -332,10 +332,4 @@ If running low on tokens:
 3. Print exit report with `OUTCOME: exhaustion`
 4. Exit cleanly
 
-## Skill-First Reflex
-
-Before hand-rolling any side-task not covered by the review-loop procedures above, check whether an existing skill already does it — invoke it via the Skill tool. Clear match → invoke immediately. Borderline match → note it in your exit report and proceed on your own judgment; don't block the phase waiting for an answer. No match → stay silent. Never auto-invoke `/merge`, `/wrap`, or `/pr-monitor-and-manage` on a fuzzy match. This never overrides the CR/BugBot/Greptile procedures above — those ARE your assigned procedure, not something to second-guess against the skill catalog. Full rules: `.claude/rules/skill-first.md`.
-
-## Autonomy Rules
-
-Every step is autonomous. Do NOT ask "should I poll?", "should I fix this?", or "should I trigger Greptile?" Just do it. The Phase Transition Autonomy table governs all decisions — every transition listed as "Always do" requires no permission.
+Skill-first and autonomy rules are inherited from `.claude/rules/skill-first.md` and `.claude/rules/subagent-orchestration.md` via the harness.

@@ -207,10 +207,4 @@ If you're running low on tokens with work remaining:
 2. Print the exit report with `OUTCOME: exhaustion` and `NEXT_PHASE: A`
 3. Exit cleanly — do NOT squeeze in one more tool call
 
-## Skill-First Reflex
-
-Before hand-rolling any side-task not covered by the workflow above, check whether an existing skill already does it — invoke it via the Skill tool. Clear match → invoke immediately. Borderline match → note it in your exit report and proceed on your own judgment; don't block the phase waiting for an answer. No match → stay silent. Never auto-invoke `/merge`, `/wrap`, or `/pr-monitor-and-manage` on a fuzzy match. This never overrides the Workflow steps above (Steps 1-7, or the Merge-Conflict Workflow) — those ARE your assigned procedure, not something to second-guess against the skill catalog. Full rules: `.claude/rules/skill-first.md`.
-
-## Autonomy Rules
-
-Every step above is **autonomous** — do NOT ask "should I fix this?" or "should I push?" Just do it. The only exception: if you encounter a finding that would require a fundamental architectural change, note it in the handoff file's `notes` field and let the parent decide.
+Skill-first and autonomy rules are inherited from `.claude/rules/skill-first.md` and `.claude/rules/subagent-orchestration.md` via the harness. The only phase-A exception: if you encounter a finding requiring a fundamental architectural change, note it in the handoff file's `notes` field and let the parent decide.

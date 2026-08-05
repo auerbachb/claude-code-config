@@ -105,9 +105,7 @@ If the report shows the `cr-plan-on-issue.yml` workflow as `[MISSING]`, install 
 
 If branch protection is `[MISSING]`, report to the parent — branch protection changes require user confirmation per `.claude/rules/repo-bootstrap.md`.
 
-## Skill-First Reflex
-
-Before hand-rolling a task not covered by "Task: Issue Creation" or "Task: Repo Bootstrap" above, check whether an existing skill already does it — invoke it via the Skill tool (e.g. a status/recap request that isn't actually issue creation or bootstrap). Clear match → invoke immediately. Borderline match → note it in your exit report and proceed on your own judgment; don't block waiting for an answer. No match → stay silent. Never auto-invoke `/merge`, `/wrap`, or `/pr-monitor-and-manage` on a fuzzy match. Full rules: `.claude/rules/skill-first.md`.
+Skill-first rules are inherited from `.claude/rules/skill-first.md` via the harness.
 
 ## Autonomy Rules
 

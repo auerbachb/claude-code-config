@@ -1,6 +1,6 @@
 # Custom Agent Definitions
 
-This directory contains custom agent definitions for the Phase A/B/C subagent workflow and PM task execution. Each agent is a self-contained `.md` file with frontmatter metadata and embedded rules — no external rule-file injection needed at spawn time.
+This directory contains custom agent definitions for the Phase A/B/C subagent workflow and PM task execution. Each agent is a `.md` file with frontmatter metadata and role-specific rules. The harness automatically injects the project CLAUDE.md hierarchy and `.claude/rules/*.md` into every custom `subagent_type` agent at spawn — no manual rule-file injection needed. Each definition embeds only role-specific workflow rules plus the SAFETY/MINDSET blocks as deliberate safety-critical restatements. Verification: `.claude/reference/token-efficiency-audit-2026-07.md` §FU-1.
 
 ## How It Works
 
@@ -130,14 +130,15 @@ Agent tool call:
            <paste findings here>"
 ```
 
-The SAFETY, MINDSET, and SKILLS blocks are mandatory in every subagent prompt (see `.claude/rules/safety.md` and `.claude/rules/skill-first.md`). The example above shows where to place them — between the task context and any findings payload.
+The SAFETY and MINDSET blocks are mandatory in every subagent prompt (see `.claude/rules/safety.md`) as deliberate safety-critical restatements even though they are inherited. The SKILLS block is only needed for Explore/Plan and non-custom spawns that do not inherit automatically (see `.claude/rules/skill-first.md`). The example above shows where to place them — between the task context and any findings payload.
 
-The agent definition provides the workflow rules. The prompt provides the runtime context. The parent no longer needs to read and embed all rule files manually.
+The agent definition provides role-specific workflow rules. The harness injects the full project rule corpus. The prompt provides runtime context (PR number, branch, handoff path, etc.).
 
 ## Adding New Agents
 
 1. Create `<agent-name>.md` in this directory
 2. Include frontmatter with `description` and optionally `allowed-tools`
-3. Embed only the rules relevant to the agent's responsibilities
-4. Document any new placeholders in this README
-5. Update the Agent Inventory table above
+3. Embed only role-specific rules — global rules (skill-first, autonomy, etc.) are inherited automatically
+4. Always include the SAFETY and MINDSET blocks as safety-critical restatements
+5. Document any new placeholders in this README
+6. Update the Agent Inventory table above

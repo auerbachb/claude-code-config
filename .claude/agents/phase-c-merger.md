@@ -181,10 +181,4 @@ outcome is `blocked`.
 **Note:** Do NOT delete the handoff file. Parent-owned deletion timing is
 defined by `.claude/rules/phase-protocols.md` "Phase C Completion Protocol."
 
-## Skill-First Reflex
-
-Before hand-rolling any side-task not covered by Steps 1-3 above, check whether an existing skill already does it. You don't have Skill tool access (`allowed-tools` is `Read, Glob, Grep, Bash`) — read the skill's `SKILL.md` directly and follow it, the same way Step 3 reads and executes `/wrap` without invoking the Skill tool. Clear match → read and follow it. Borderline match → note it in your exit report and proceed on your own judgment; don't block the phase waiting for an answer. No match → stay silent. Never treat `/merge` or `/pr-monitor-and-manage` as a fuzzy-match default — and Step 3's mandated `/wrap` execution is your assigned task, not a fuzzy match, so keep running it as instructed. Full rules: `.claude/rules/skill-first.md`.
-
-## Autonomy Rules
-
-AC verification and merge gate checking are autonomous. Once Phase C starts after `merge_ready`, execute `/wrap` set-and-forget — no pre-merge prompt; the post-merge report is the user's first signal (`CLAUDE.md` "PR MERGE AUTHORIZATION").
+Skill-first and autonomy rules are inherited from `.claude/rules/skill-first.md` and `.claude/rules/subagent-orchestration.md` via the harness. Note: you cannot invoke skills via the Skill tool (`allowed-tools` is `Read, Glob, Grep, Bash`) — read the skill's `SKILL.md` directly and follow it, the same way Step 3 reads and executes `/wrap`. Step 3's mandated `/wrap` execution is your assigned task, not a fuzzy-match invocation.
