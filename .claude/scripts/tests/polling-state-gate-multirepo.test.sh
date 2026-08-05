@@ -35,6 +35,9 @@
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
+TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/polling-state-gate-fixtures.sh
+source "$TEST_DIR/lib/polling-state-gate-fixtures.sh"
 GATE="$REPO_ROOT/.claude/scripts/polling-state-gate.sh"
 STATE_SH="$REPO_ROOT/.claude/scripts/session-state.sh"
 
@@ -56,24 +59,11 @@ check_eq() {
   fi
 }
 
-make_repo() { # $1 = dir, $2 = owner/name
-  mkdir -p "$1"
-  git -C "$1" init --quiet
-  git -C "$1" remote add origin "https://github.com/$2.git"
-  git -C "$1" -c user.email=t@e -c user.name=T commit --quiet --allow-empty -m init
-}
+# mk_repo and write_handoff are provided by lib/polling-state-gate-fixtures.sh.
+# write_handoff signature: write_handoff <owner_repo_or_empty> <pr_number> <head_sha>
 
-write_handoff() { # $1 = pr, $2 = sha
-  cat > "$HOME/.claude/handoffs/pr-$1-handoff.json" <<JSON
-{"schema_version":"1.0","pr_number":$1,"head_sha":"$2","reviewer":"cr",
- "phase_completed":"B","created_at":"2026-07-21T00:00:00Z","findings_fixed":[],
- "threads_replied":[],"threads_resolved":[],"files_changed":[],
- "push_timestamp":"2026-07-21T00:00:00Z"}
-JSON
-}
-
-REPO_A="$WORK/a"; make_repo "$REPO_A" "org/a"
-REPO_B="$WORK/b"; make_repo "$REPO_B" "org/b"
+REPO_A="$WORK/a"; mk_repo "$REPO_A" "https://github.com/org/a.git"
+REPO_B="$WORK/b"; mk_repo "$REPO_B" "https://github.com/org/b.git"
 
 # Both repos track a PR #84 — the collision case from the issue.
 ( cd "$REPO_A" && "$STATE_SH" --set '.prs["84"].root_repo='"$REPO_A" \
@@ -91,13 +81,17 @@ check_eq "repo B keeps its own head_sha" "bbb2222" "$( cd "$REPO_B" && "$STATE_S
 
 echo
 echo "== No false 'wrong checkout' refusal when another repo wrote last =="
-write_handoff 84 aaa1111
+write_handoff "org/a" 84 aaa1111
+check_eq "scoped handoff for org/a written to correct path" "1" \
+  "$(test -f "$HOME/.claude/handoffs/org/a/pr-84-handoff.json" && echo 1 || echo 0)"
 OUT="$( cd "$REPO_A" && bash "$GATE" 84 --verify-state 2>&1 )"; RC=$?
 check_eq "polling from repo A is allowed (exit 0)" "0" "$RC"
 check_eq "no 'refuse to poll from wrong checkout' message" "0" "$(grep -c 'wrong checkout' <<<"$OUT")"
 
 # And repo B still validates on its own terms, against ITS head_sha.
-write_handoff 84 bbb2222
+write_handoff "org/b" 84 bbb2222
+check_eq "scoped handoff for org/b written to correct path" "1" \
+  "$(test -f "$HOME/.claude/handoffs/org/b/pr-84-handoff.json" && echo 1 || echo 0)"
 RC=0; ( cd "$REPO_B" && bash "$GATE" 84 --verify-state >/dev/null 2>&1 ) || RC=$?
 check_eq "polling from repo B is allowed too" "0" "$RC"
 
@@ -105,7 +99,7 @@ echo
 echo "== A sibling worktree of the same repo is not a wrong checkout =="
 WT_A="$WORK/a-worktree"
 git -C "$REPO_A" worktree add --quiet -b feature "$WT_A" >/dev/null 2>&1
-write_handoff 84 aaa1111
+write_handoff "org/a" 84 aaa1111
 OUT="$( cd "$WT_A" && bash "$GATE" 84 --verify-state 2>&1 )"; RC=$?
 check_eq "polling from a worktree of repo A is allowed" "0" "$RC"
 check_eq "worktree poll emits no wrong-checkout refusal" "0" "$(grep -c 'wrong checkout' <<<"$OUT")"
@@ -122,7 +116,7 @@ echo "== A repo that never registered this PR is refused, not answered for =="
 # are per-repo, so "repo A also has an 84" is not a reason to accuse repo C of
 # polling the wrong repo — 84 is simply not registered for C, and
 # --ensure-session is the remedy. A/B's entries are named as diagnostics only.
-REPO_C="$WORK/c"; make_repo "$REPO_C" "org/c"
+REPO_C="$WORK/c"; mk_repo "$REPO_C" "https://github.com/org/c.git"
 RC=0; OUT="$( cd "$REPO_C" && bash "$GATE" 84 --verify-state 2>&1 )" || RC=$?
 check_eq "poll from an unregistered repo is refused (exit 4)" "4" "$RC"
 check_eq "refusal names the active repo" "1" "$(grep -c "not registered in session-state for 'org/c'" <<<"$OUT")"
@@ -137,29 +131,8 @@ echo "== A colliding PR number does not block registering our own (issue #854) =
 # every other repo's entry byte-identical.
 A_BEFORE="$(jq -Sc '.repos["org/a"].prs["84"]' "$HOME/.claude/session-state.json")"
 B_BEFORE="$(jq -Sc '.repos["org/b"].prs["84"]' "$HOME/.claude/session-state.json")"
-STUB_BIN="$WORK/bin"; mkdir -p "$STUB_BIN"
-cat > "$STUB_BIN/gh" <<'STUB'
-#!/usr/bin/env bash
-set -uo pipefail
-case "${1:-}" in
-  pr)   printf '{"headRefOid":"%s","state":"OPEN","number":84,"headRefName":"feature","url":"https://github.com/%s/pull/84","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}\n' "${STUB_HEAD_SHA:-ccc3333}" "${STUB_OWNER_REPO:-org/c}" ;;
-  repo) printf '%s\n' "${STUB_OWNER_REPO:-org/c}" ;;
-  api)
-    shift
-    [[ "${1:-}" == "--paginate" ]] && shift
-    case "${1:-}" in
-      user) echo 'testuser' ;;
-      graphql) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
-      repos/*/pulls/*)
-        if [[ "$*" == *"/reviews"* || "$*" == *"/comments"* ]]; then echo '[]'
-        else echo '{"user":{"login":"testuser","type":"User"}}'; fi ;;
-      repos/*/commits/*/check-runs*) echo '{"check_runs":[]}' ;;
-      *) echo '[]' ;;
-    esac ;;
-  *) exit 1 ;;
-esac
-STUB
-chmod +x "$STUB_BIN/gh"
+STUB_BIN="$WORK/bin"
+write_polling_gh_stub "$STUB_BIN"
 RC=0; OUT="$( cd "$REPO_C" && PATH="$STUB_BIN:$PATH" bash "$GATE" 84 --ensure-session 2>&1 )" || RC=$?
 check_eq "--ensure-session succeeds despite a colliding PR number" "0" "$RC"
 check_eq "…and registers under our own scope" "ccc3333" \
@@ -172,7 +145,7 @@ check_eq "repo B's entry is untouched" "$B_BEFORE" \
   "$(jq -Sc '.repos["org/b"].prs["84"]' "$HOME/.claude/session-state.json")"
 
 # And a subsequent poll from C reads C's own head_sha, not A's or B's.
-write_handoff 84 ccc3333
+write_handoff "org/c" 84 ccc3333
 RC=0; OUT="$( cd "$REPO_C" && bash "$GATE" 84 --verify-state 2>&1 )" || RC=$?
 check_eq "a later tick from repo C validates against C's own state" "0" "$RC"
 
@@ -183,7 +156,7 @@ echo "== A self-identifying checkout overrides a stale inherited scope (issue #9
 # environment still names repo B. Both registration and verification must use A,
 # and B's existing entry must remain byte-identical.
 B_BEFORE_STALE_ENV="$(jq -Sc '.repos["org/b"].prs["84"]' "$HOME/.claude/session-state.json")"
-write_handoff 84 aaa1111
+write_handoff "org/a" 84 aaa1111
 RC=0; OUT="$( cd "$REPO_A" && CLAUDE_SESSION_REPO=org/b STUB_HEAD_SHA=aaa1111 STUB_OWNER_REPO=org/a PATH="$STUB_BIN:$PATH" bash "$GATE" 84 --ensure-session 2>&1 )" || RC=$?
 check_eq "stale inherited scope does not block --ensure-session" "0" "$RC"
 check_eq "--ensure-session remains scoped to the invoking repo" "org/a" \
@@ -204,7 +177,7 @@ NOREMOTE="$WORK/noremote"
 mkdir -p "$NOREMOTE"
 git -C "$NOREMOTE" init --quiet
 git -C "$NOREMOTE" -c user.email=t@e -c user.name=T commit --quiet --allow-empty -m init
-write_handoff 84 aaa1111
+write_handoff "org/a" 84 aaa1111
 RC=0; OUT="$( cd "$NOREMOTE" && bash "$GATE" 84 --verify-state --repo org/a 2>&1 )" || RC=$?
 check_eq "--repo selects the named scope from an origin-less checkout" "0" "$RC"
 RC=0; OUT="$( cd "$NOREMOTE" && CLAUDE_SESSION_REPO=org/a bash "$GATE" 84 --verify-state 2>&1 )" || RC=$?
@@ -238,7 +211,7 @@ echo "== a declared repo key may supply an identity, never override one (issue #
 # code validated every per-PR field against the DECLARED repo while gh,
 # merge-gate.sh and the session-state writes all ran against the checkout —
 # polling one repo's PR while acting on another (CodeAnt Major + BugBot, PR #856).
-write_handoff 84 aaa1111
+write_handoff "org/a" 84 aaa1111
 RC=0; OUT="$( cd "$REPO_B" && bash "$GATE" 84 --verify-state --repo org/a --root-repo "$REPO_B" 2>&1 )" || RC=$?
 check_eq "--repo contradicting --root-repo is refused" "4" "$RC"
 check_eq "…and the refusal names both sides" "1" "$(grep -c "contradicts the checkout being operated on" <<<"$OUT")"
@@ -246,7 +219,7 @@ check_eq "…and it did not operate on the declared repo" "0" "$(grep -c 'gate m
 # An inherited environment value is ambient rather than explicit. A
 # self-identifying checkout replaces it before scope resolution, whether or not
 # --root-repo pins that checkout.
-write_handoff 84 bbb2222
+write_handoff "org/b" 84 bbb2222
 RC=0; OUT="$( cd "$REPO_B" && CLAUDE_SESSION_REPO=org/a bash "$GATE" 84 --verify-state --root-repo "$REPO_B" 2>&1 )" || RC=$?
 check_eq "stale environment value yields to explicit checkout identity" "0" "$RC"
 RC=0; OUT="$( cd "$REPO_B" && CLAUDE_SESSION_REPO=org/a bash "$GATE" 84 --verify-state 2>&1 )" || RC=$?
@@ -260,7 +233,7 @@ check_eq "…and the explicit mismatch keeps the contradiction message" "1" \
   "$(grep -c "contradicts the checkout being operated on" <<<"$OUT")"
 # A key merely DERIVED from the checkout can never contradict it, so the ordinary
 # no-override path must stay clean — this is the regression guard for the fix.
-write_handoff 84 aaa1111
+write_handoff "org/a" 84 aaa1111
 RC=0; OUT="$( cd "$REPO_A" && bash "$GATE" 84 --verify-state 2>&1 )" || RC=$?
 check_eq "no declared key: ordinary poll is unaffected" "0" "$RC"
 check_eq "…and emits no contradiction message" "0" "$(grep -c 'contradicts the checkout' <<<"$OUT")"
