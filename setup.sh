@@ -528,7 +528,7 @@ elif [[ -n "$drift_output" ]]; then
     matcher_display="${matcher:-(none)}"
     echo "    - $event / matcher=$matcher_display / $script" >&2
   done <<<"$drift_output"
-  echo "  Fix: add the entries to HOOKS_MANIFEST in setup-skills-worktree.sh and re-run setup.sh." >&2
+  echo "  Fix: re-run setup-skills-worktree.sh — it reads global-settings.json directly and will register the missing hooks." >&2
   step_fail "Hook drift check" "global-settings.json has hooks not registered in $SETTINGS_DST"
 else
   step_pass "Hook drift check"

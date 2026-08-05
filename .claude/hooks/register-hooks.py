@@ -22,9 +22,8 @@ Inputs:
               .claude/scripts/*.
     --statusline-only
               Sync only the statusLine key; skip hook registration entirely.
-              Used by setup-skills-worktree.sh, whose Step 6 already owns hook
-              registration through its own manifest — running both would risk
-              two registrations of the same hook.
+              Kept for callers that need only path-repair on statusLine without
+              touching the hooks section.
 
 Outputs:
     ~/.claude/settings.json is mutated atomically (tempfile + os.replace).
@@ -46,6 +45,7 @@ Behavior:
 
 import json
 import os
+import shlex
 import sys
 import tempfile
 
@@ -55,6 +55,22 @@ PLACEHOLDER_PREFIX = "/path/to/claude-code-config/"
 
 def is_placeholder(path):
     return path.startswith(PLACEHOLDER_PREFIX)
+
+
+def command_argv0(cmd):
+    """Extract the executable path (argv0) from a hook command, ignoring arguments.
+
+    Lets a hook registered as 'foo.sh --check' match its manifest entry by
+    basename — os.path.basename on the raw command string would return
+    'foo.sh --check', which never matches 'foo.sh'.
+    """
+    if not isinstance(cmd, str):
+        return ""
+    try:
+        parts = shlex.split(cmd)
+    except ValueError:
+        parts = cmd.split()
+    return parts[0] if parts else ""
 
 
 def find_existing(entries, basename, matcher):
@@ -67,9 +83,9 @@ def find_existing(entries, basename, matcher):
         for h in (g.get("hooks") or []):
             if not isinstance(h, dict):
                 continue
-            existing = h.get("command", "")
-            if os.path.basename(existing) == basename:
-                return h if is_placeholder(existing) else True
+            existing_argv0 = command_argv0(h.get("command", ""))
+            if os.path.basename(existing_argv0) == basename:
+                return h if is_placeholder(existing_argv0) else True
     return None
 
 
@@ -292,17 +308,24 @@ def main(argv):
         live[event].append(group)
         added += 1
 
-    # Remove stale event registrations: when a hook script has been moved from
-    # one event type to another in the template (e.g. PostToolUse -> SessionStart),
-    # the live settings still have the old entry. Without cleanup the script fires
-    # on both the old and new events. Removing the sentinel guard on session-
-    # start-sync.sh (issue #792) makes this critical — a stale PostToolUse entry
-    # would run the full sync on every tool call.
-    #
-    # Skipped entirely with an empty manifest (--statusline-only): with nothing
-    # to compare against, this pass can only rewrite hook groups it has no
-    # opinion about.
+    # Prune stale hook registrations (two cases, one pass; skipped when manifest
+    # is empty, e.g. --statusline-only): (1) event-migration — script moved to a
+    # different event type; (2) decommissioned — script absent from manifest,
+    # inside a managed hooks root, and the file no longer exists. Pruning is
+    # restricted to managed hook roots so third-party registrations are untouched.
     script_to_canonical_event = {item["script"]: item["event"] for item in manifest}
+    manifest_scripts = {item["script"] for item in manifest}
+
+    _legacy_env = os.environ.get("MANAGED_LEGACY_HOOKS_DIR", "")
+    managed_hook_roots = {
+        os.path.normpath(p)
+        for p in [hooks_dir, _legacy_env]
+        if p
+    }
+
+    def is_managed_path(cmd_path):
+        return os.path.normpath(os.path.dirname(cmd_path)) in managed_hook_roots
+
     removed_stale = 0
     for event in list(live.keys()) if manifest else []:
         if not isinstance(live[event], list):
@@ -317,13 +340,28 @@ def main(argv):
                 if not isinstance(h, dict):
                     surviving_hooks.append(h)
                     continue
-                basename = os.path.basename(h.get("command", ""))
+                exe = command_argv0(h.get("command", ""))
+                basename = os.path.basename(exe)
                 canonical = script_to_canonical_event.get(basename)
+
+                # (1) Script moved to a different event — drop the stale entry.
                 if canonical is not None and canonical != event:
-                    # Script has moved events; drop the stale registration.
                     removed_stale += 1
-                else:
-                    surviving_hooks.append(h)
+                    continue
+
+                # (2) Decommissioned hook: not in manifest, inside a managed
+                # hooks directory, and the script file no longer exists.
+                # Placeholder paths are never pruned — they need migration, not
+                # removal.
+                if (exe
+                        and basename not in manifest_scripts
+                        and is_managed_path(exe)
+                        and not is_placeholder(exe)
+                        and not os.path.isfile(exe)):
+                    removed_stale += 1
+                    continue
+
+                surviving_hooks.append(h)
             if surviving_hooks:
                 new_group = dict(group)
                 new_group["hooks"] = surviving_hooks
