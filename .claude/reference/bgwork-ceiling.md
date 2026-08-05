@@ -76,7 +76,7 @@ All under `/tmp` (per `feedback_hook_storage_location.md`: ephemeral per-session
 | Marker | Meaning | Written by |
 |--------|---------|-----------|
 | `claude-heartbeat-<id>` | Last user-visible message | `silence-detector-ack.sh` (read-only here) |
-| `claude-bgwork-<id>` | Background work has started; one line per kind | `--note-started` |
+| `claude-bgwork-<id>` | Background work has started; one line per kind | `--note-started` (read-only by `silence-watchdog.sh`) |
 | `claude-bgceiling-armed-<id>` | The ceiling watch is armed | `--record-armed` |
 | `claude-bgceiling-emitted-<id>` | Heartbeat mtime of the last reported breach | `--tick` |
 | `claude-bgceiling-advised-<id>` | Last time the arm advisory was injected | arm hook |
@@ -93,4 +93,5 @@ Neither half lives in context: the watch is a process, the state is `/tmp` marke
 
 - **Session-scoped.** The watch dies with the session. That is the right scope — a dead session has no chat to go silent in — but it means the ceiling is not a cross-session guarantee.
 - **The arm hook advises; only the Stop hook enforces.** A harness that ignored `decision: block` on Stop hooks would reduce this to the advisory layer. The bounded-block behavior is written so that outcome is loud rather than silent.
-- **`silence-watchdog.sh` is unchanged.** Upgrading the launchd watchdog to inject into a session — covering the case where the ceiling was never armed at all — needs harness support that does not exist today. Left as the issue filed it: a possible follow-up, not part of this change.
+- **`silence-watchdog.sh` gap 2 closed (issue #809).** The watchdog now fires an OS notification for the marker-absent-with-background-work case: when `claude-active-<id>` is absent but `claude-bgwork-<id>` is present and the heartbeat is genuinely stale, the watchdog falls through to its normal staleness evaluation and notifies. It consults `bgwork-ceiling.sh --status` (read-only) as the primary check, with a direct `claude-bgwork-<id>` existence check as a fallback when `bgwork-ceiling.sh` is unavailable. This closes the gap where an unarmed or pre-hook session would produce no desktop notification.
+- **Gap 1 remains deferred.** Injecting *into* a stalled session from the launchd watchdog — forcing a chat turn without user action — is still unsupported. No harness API exists for this today: the SDK `send`/`stream` methods were removed; Channels is a research-preview MCP bridge not usable from a launchd script; IPC/tmux are community-only. The watchdog's action stays an OS notification only.
