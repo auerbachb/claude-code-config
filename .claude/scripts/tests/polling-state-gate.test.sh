@@ -15,8 +15,10 @@
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
+TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/polling-state-gate-fixtures.sh
+source "$TEST_DIR/lib/polling-state-gate-fixtures.sh"
 SCRIPT="$REPO_ROOT/.claude/scripts/polling-state-gate.sh"
-HANDOFF_HELPER="$REPO_ROOT/.claude/scripts/handoff-state.sh"
 SCOPE_LIB="$REPO_ROOT/.claude/scripts/lib/pr-scope-resolver.sh"
 
 TMP="$(mktemp -d)"
@@ -129,59 +131,7 @@ check_eq "source-site matcher ignores source mentioned as an argument" "0" \
 check_eq "source-site matcher ignores source text inside an argument" "0" \
   "$(printf '%s\n' 'echo '\''x then source "$_SCOPE_RESOLVER_LIB"'\''' | grep -Ec "$SCOPE_SOURCE_OP_RE" || true)"
 
-# Shared gh stub for --ensure-session tests. poll-watermarks.sh (issue #741) calls
-# pr-state.sh during --ensure-session, so the stub must satisfy pr-state's gh
-# surface in addition to polling-state-gate / pr-authorship.
-write_ensure_session_gh_stub() {
-  local bin_dir="$1" pr_json="$2" repo_slug="$3" author_login="${4:-testuser}"
-  mkdir -p "$bin_dir"
-  cat > "$bin_dir/gh" <<STUB
-#!/usr/bin/env bash
-set -uo pipefail
-case "\${1:-}" in
-  pr)   echo '$pr_json' ;;
-  repo) echo '$repo_slug' ;;
-  api)
-    shift
-    [[ "\${1:-}" == "--paginate" ]] && shift
-    endpoint="\${1:-}"
-    case "\$endpoint" in
-      user) echo 'testuser' ;;
-      graphql)
-        echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'
-        ;;
-      repos/*/pulls/*)
-        if [[ "\$*" == *"/reviews"* || "\$*" == *"/comments"* ]]; then
-          echo '[]'
-        else
-          echo '{"user":{"login":"$author_login","type":"User"}}'
-        fi
-        ;;
-      repos/*/issues/*/comments*) echo '[]' ;;
-      repos/*/commits/*/check-runs*) echo '{"check_runs":[]}' ;;
-      repos/*/commits/*/statuses*) echo '[]' ;;
-      *) echo '[]' ;;
-    esac
-    ;;
-  *) exit 1 ;;
-esac
-STUB
-  chmod +x "$bin_dir/gh"
-}
-
-# ---- throwaway repos --------------------------------------------------------
-# mk_repo <dir> <origin-url>
-mk_repo() {
-  local dir="$1" origin="$2"
-  mkdir -p "$dir"
-  git -C "$dir" init --quiet
-  git -C "$dir" remote add origin "$origin"
-  git -C "$dir" config user.email test@example.com
-  git -C "$dir" config user.name Test
-  : > "$dir/README.md"
-  git -C "$dir" add README.md
-  git -C "$dir" commit --quiet -m init
-}
+# ---- throwaway repos (mk_repo from lib) -------------------------------------
 
 # Resolve symlinks up front (macOS /var -> /private/var) so recorded paths compare
 # equal to what the script canonicalizes.
@@ -219,30 +169,8 @@ PR_NUM="99647"
 HANDOFF="$HOME/.claude/handoffs/pr-${PR_NUM}-handoff.json"
 STATE="$HOME/.claude/session-state.json"
 
-write_handoff() {
-  # Optional first arg: owner/repo slug (e.g. "org/a"). When supplied the
-  # handoff is written to the scoped path via handoff-state.sh so it lands
-  # in ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json (issue #655).
-  # Using --create (not --init) ensures any stale handoff at that path is
-  # replaced, providing test-to-test isolation: --ensure-session (test 6)
-  # creates a scoped handoff for "org/a" that would otherwise shadow a
-  # fresh flat write in tests 8/9 (root cause of CI head_sha mismatch).
-  # Use if/else rather than "${arr[@]}" expansion to stay compatible with
-  # bash 3.2 (macOS system bash), which raises "unbound variable" for empty
-  # arrays under set -u.
-  local owner_repo="${1:-}"
-  local json_body
-  json_body="$(jq -n --argjson pr "$PR_NUM" --arg sha "deadbeef" \
-    '{schema_version:"1.0", pr_number:$pr, head_sha:$sha, reviewer:"cr",
-      phase_completed:"B", created_at:"2026-07-21T00:00:00Z",
-      findings_fixed:[], threads_replied:[], threads_resolved:[],
-      files_changed:[], push_timestamp:"2026-07-21T00:00:00Z"}')"
-  if [[ -n "$owner_repo" ]]; then
-    "$HANDOFF_HELPER" --owner-repo "$owner_repo" --create "$PR_NUM" "$json_body"
-  else
-    "$HANDOFF_HELPER" --create "$PR_NUM" "$json_body"
-  fi
-}
+# write_handoff is provided by lib/polling-state-gate-fixtures.sh.
+# Signature: write_handoff <owner_repo_or_empty> <pr_number> <head_sha>
 # write_state <global_root_repo> <per-pr fields as jq object or 'null'>
 write_state() {
   local global_root="$1" per_pr="$2"
@@ -253,7 +181,7 @@ write_state() {
 # ---- 1. false positive: foreign session owns the global .root_repo ----------
 # This is the exact PR #637 failure — repo B's session wrote .root_repo last while
 # we legitimately poll a repo A PR from repo A.
-write_handoff
+write_handoff "" "$PR_NUM" "deadbeef"
 write_state "$REPO_B" "$(jq -n --arg r "$REPO_A" '{root_repo:$r, owner_repo:"org/a", head_sha:"deadbeef", reviewer:"cr"}')"
 out="$(cd "$REPO_A" && "$SCRIPT" "$PR_NUM" --verify-state 2>&1)"; rc=$?
 check_eq "correct checkout passes while a foreign repo owns global .root_repo" "0" "$rc"
@@ -287,12 +215,13 @@ check_contains "unscoped state emits a notice recommending --ensure-session" "--
 
 # ---- 6. --ensure-session records per-PR scoping ----------------------------
 STUB_BIN="$TMP/bin"
-write_ensure_session_gh_stub "$STUB_BIN" \
-  '{"headRefOid":"cafebabe","state":"OPEN","number":99647,"headRefName":"feature","url":"https://github.com/org/a/pull/99647","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}' \
-  "org/a"
+write_polling_gh_stub "$STUB_BIN"
 
 rm -f "$STATE" "$HANDOFF"
-out="$(cd "$REPO_A" && PATH="$STUB_BIN:$PATH" "$SCRIPT" "$PR_NUM" --ensure-session 2>&1)"; rc=$?
+out="$(cd "$REPO_A" && PATH="$STUB_BIN:$PATH" \
+  STUB_PR_JSON='{"headRefOid":"cafebabe","state":"OPEN","number":99647,"headRefName":"feature","url":"https://github.com/org/a/pull/99647","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}' \
+  STUB_OWNER_REPO="org/a" \
+  "$SCRIPT" "$PR_NUM" --ensure-session 2>&1)"; rc=$?
 check_eq "--ensure-session succeeds on a fresh PR" "0" "$rc"
 # Per-PR state is stored under the repo's own scope since issue #638
 # (`.repos["<owner>/<name>"].prs["<N>"]`), so these read the scoped path. The
@@ -321,7 +250,7 @@ check_eq "owner_repo comparison ignores case" "0" "$rc"
 # ---- 8. owner and repo sharing a name is still a valid identity ------------
 REPO_SAME="$TMP/repo-same"
 mk_repo "$REPO_SAME" "git@github.com:foo/foo.git"
-write_handoff "foo/foo"
+write_handoff "foo/foo" "$PR_NUM" "deadbeef"
 write_state "$REPO_B" "$(jq -n --arg r "$REPO_SAME" '{root_repo:$r, owner_repo:"foo/foo", head_sha:"deadbeef", reviewer:"cr"}')"
 out="$(cd "$REPO_SAME" && "$SCRIPT" "$PR_NUM" --verify-state 2>&1)"; rc=$?
 check_eq "owner/repo with identical names resolves and passes" "0" "$rc"
@@ -338,7 +267,7 @@ git -C "$REPO_NOREMOTE" config user.name Test
 : > "$REPO_NOREMOTE/README.md"
 git -C "$REPO_NOREMOTE" add README.md
 git -C "$REPO_NOREMOTE" commit --quiet -m init
-write_handoff "org/a"
+write_handoff "org/a" "$PR_NUM" "deadbeef"
 write_state "$REPO_B" "$(jq -n '{root_repo:"/nonexistent/gone", owner_repo:"org/a", head_sha:"deadbeef", reviewer:"cr"}')"
 out="$(cd "$REPO_NOREMOTE" && "$SCRIPT" "$PR_NUM" --verify-state 2>&1)"; rc=$?
 check_eq "uncomparable identity with recorded scoping fails closed" "4" "$rc"
@@ -365,12 +294,13 @@ check_eq "session-state.sh --repo-key lowercases mixed-case remote" \
 # produced (already lowercase from test above), then --verify-state from the
 # same checkout should pass (not refuse as a cross-repo mismatch).
 STUB_BIN2="$TMP/bin2"
-write_ensure_session_gh_stub "$STUB_BIN2" \
-  '{"headRefOid":"c0ffee","state":"OPEN","number":99647,"headRefName":"feature","url":"https://github.com/AuerbachB/Skingod/pull/99647","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}' \
-  "AuerbachB/Skingod"
+write_polling_gh_stub "$STUB_BIN2"
 
 rm -f "$STATE"
-out2="$(cd "$REPO_MIXED" && PATH="$STUB_BIN2:$PATH" "$SCRIPT" "$PR_NUM" --ensure-session 2>&1)"; rc2=$?
+( cd "$REPO_MIXED" && PATH="$STUB_BIN2:$PATH" \
+  STUB_PR_JSON='{"headRefOid":"c0ffee","state":"OPEN","number":99647,"headRefName":"feature","url":"https://github.com/AuerbachB/Skingod/pull/99647","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}' \
+  STUB_OWNER_REPO="AuerbachB/Skingod" \
+  "$SCRIPT" "$PR_NUM" --ensure-session > /dev/null 2>&1 ); rc2=$?
 check_eq "--ensure-session with mixed-case remote exits 0" "0" "$rc2"
 
 # The key stored in session-state.json must be lowercase.
@@ -386,20 +316,23 @@ check_eq "--verify-state passes for mixed-case-remote checkout (no false cross-r
 # gh api user (viewer) and the PR author disagree, so pr-authorship.sh returns
 # not_mine and enrolment is refused. Enrolling a PR in polling is a "touch".
 STUB_BIN3="$TMP/bin3"
-write_ensure_session_gh_stub "$STUB_BIN3" \
-  '{"headRefOid":"feed1234","state":"OPEN","number":99647,"headRefName":"feature","url":"https://github.com/org/a/pull/99647","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}' \
-  "org/a" \
-  "collab"
+write_polling_gh_stub "$STUB_BIN3"
+# Tests 11 and 12 use the same stub with collab as the PR author.
+_STUB3_PR_JSON='{"headRefOid":"feed1234","state":"OPEN","number":99647,"headRefName":"feature","url":"https://github.com/org/a/pull/99647","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}'
 
 rm -f "$STATE" "$HANDOFF"
-out="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" "$SCRIPT" "$PR_NUM" --ensure-session 2>&1)"; rc=$?
+out="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" \
+  STUB_PR_JSON="$_STUB3_PR_JSON" STUB_OWNER_REPO="org/a" STUB_PR_AUTHOR="collab" \
+  "$SCRIPT" "$PR_NUM" --ensure-session 2>&1)"; rc=$?
 check_eq "--ensure-session refuses a collaborator-authored PR" "4" "$rc"
 check_contains "refusal names the authorship guard" "authorship guard" "$out"
 check_eq "no session-state written for the refused PR" "" \
   "$(jq -r --arg pr "$PR_NUM" '.repos["org/a"].prs[$pr] // ""' "$STATE" 2>/dev/null || echo "")"
 
 # ---- 12. --allow-nonauthor bypasses the guard (explicit user override) ------
-out="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" "$SCRIPT" "$PR_NUM" --ensure-session --allow-nonauthor 2>&1)"; rc=$?
+out="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" \
+  STUB_PR_JSON="$_STUB3_PR_JSON" STUB_OWNER_REPO="org/a" STUB_PR_AUTHOR="collab" \
+  "$SCRIPT" "$PR_NUM" --ensure-session --allow-nonauthor 2>&1)"; rc=$?
 check_eq "--allow-nonauthor lets --ensure-session enrol a non-author PR" "0" "$rc"
 check_eq "override records per-PR owner_repo" "org/a" \
   "$(jq -r --arg pr "$PR_NUM" '.repos["org/a"].prs[$pr].owner_repo // ""' "$STATE")"
