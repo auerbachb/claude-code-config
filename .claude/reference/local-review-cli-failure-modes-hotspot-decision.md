@@ -10,9 +10,11 @@ Keep `.claude/reference/local-review-cli-failure-modes.md` as the single diagnos
 all observed local CLI failure signatures. Do not split it by CLI, extract sections into scripts,
 or deduplicate against other files.
 
-The six contributing PRs each added a distinct new incident section to a file whose explicit scope
-is to collect every discovered failure mode. No single section was edited more than once; growth
-is coordinated and additive, not colliding. This matches the `scheduling-failure-modes.md`
+The six contributing PRs built the file iteratively: PR #650 created the initial file with five
+incident sections; two later PRs added new sections (PRs #806, #821); three PRs refined existing
+section content as diagnosis deepened (PRs #666, #858, #946). Growth is sequential and
+non-colliding — refinements were downstream improvements to the original incident diagnosis, not
+competing independent edits. This matches the `scheduling-failure-modes.md`
 append-only-evidence-log precedent: the file exists precisely because failure modes accumulate
 unpredictably, and centralising them in one place prevents agents from re-diagnosing the same
 failure on a second encounter.
@@ -30,15 +32,17 @@ discovered incident:
 |---|---|---|
 | CodeAnt CLI not installed | Issue #819 (binary absent, `command not found` before any API call) | PR #821 |
 | The false-clean | Issue #642 (stderr error, stdout `{"issues":[]}` clean lie) | PR #650 |
-| Classifying a 403: the daily cap, not credentials | Issue #643 (undocumented daily agent-review quota) | PR #666 |
+| Classifying a 403: the daily cap, not credentials | Issue #643 (undocumented daily agent-review quota) | PR #650 (created as "entitlement vs credentials"), PR #666 (rewrote with daily-cap diagnosis) |
 | The 15-file cap | 15-file `meta.capped` limit (no single issue anchor, companion to #642) | PR #650 |
-| CodeRabbit: failure on stdout, exit 0 | stdout NDJSON `type:"error"` pattern | PR #806 |
-| Coverage enum — mapping failure states | Coverage enum consolidation (#769) | PR #806, #858 |
-| CodeAnt auth storage | `~/.codeant/config.json` shape and `logout` semantics | PR #946 |
+| CodeRabbit: failure on stdout, exit 0 | stdout NDJSON `type:"error"` pattern | PR #650 (created), PR #946 (updated "complete" record contract) |
+| Coverage enum — mapping failure states | Coverage enum consolidation (#769) | PR #806 (created), PR #858 (added coverage-enum reference in §CodeAnt CLI) |
+| CodeAnt auth storage | `~/.codeant/config.json` shape and `logout` semantics | PR #650 |
 
-**Churn class:** each PR added a distinct new incident section. No section shows repeated
-colliding re-edits. Growth is coordinated and additive — consistent with an incident log whose
-scope is "collect every new failure signature."
+**Churn class:** the file was created in a single PR (#650) with five sections; two later PRs
+added new sections (#806, #821); three PRs refined existing section content as diagnosis deepened
+(#666, #858, #946). Refinements were sequential downstream improvements, not competing
+independent authors — consistent with an incident log whose scope is "collect and refine every
+new failure signature."
 
 Today's session (PRs #1008–#1016) independently corroborates the file's documented failure modes:
 the CodeRabbit CLI rate-limit and the CodeAnt 403 daily cap both fired, matching sections 5 and
