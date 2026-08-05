@@ -185,7 +185,7 @@ Headline "60–91% savings" figures across the ecosystem come from deliberately 
 
 **Harness version caveat:** No Claude Code version is pinned in this repo. The observation reflects behavior as of 2026-08-05. This supersedes the stale "PR #585 snapshot-at-spawn" citation in `skill-first.md`.
 
-**What was changed (PR #777):**
+**What was changed (PR #1016):**
 - `CLAUDE.md` §Rule Files: corrected "Subagents do NOT auto-load these files" → confirmed inheritance model with Explore/Plan exception noted.
 - `.claude/rules/subagent-orchestration.md`: removed the premise that manual full-corpus injection is the normal path; the "Fallback" section now covers only Explore/Plan and rare non-custom spawns.
 - `.claude/rules/skill-first.md` §Reaching Subagents: removed the "snapshot at spawn, never re-read" claim; custom subagents inherit the corpus (including `skill-first.md`) directly.
