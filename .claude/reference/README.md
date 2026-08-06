@@ -112,6 +112,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `skill-prune-audit-2026-07.md` — skill-usage telemetry audit; keep/prune verdicts based on 62-day usage data (#431)
 - `subagent-orchestration-churn-audit-2026-07.md` — churn hotspot analysis for `subagent-orchestration.md` (13 PRs in 14 days); verdict: KEEP single file + dedup Phase A/B/C bullet descriptions toward canonical owners; ownership decisions recorded (#814)
 - `usage-limit-signal-audit-2026-07.md` — audit finding: no trustworthy approaching-limit signal exists for hooks/skills/sessions; the status-line signal has no path into model context (#824)
+- `hook-events-evaluation-2026-08.md` — evaluation of newer Claude Code hook events (WorktreeCreate/Remove, CwdChanged, SubagentStart/Stop, PreCompact/PostCompact, InstructionsLoaded) against indirect-detection mechanisms; PostCompact adopted, rest deferred with rationale (#813)
 
 ### Diagrams (mermaid stubs and indexes)
 

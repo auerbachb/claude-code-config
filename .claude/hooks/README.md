@@ -172,6 +172,32 @@ Each record carries `recorded_at`, `session_id`, `cwd`, `transcript_path`, a tru
 
 ---
 
+## post-compact-reconcile.sh
+
+Emits a deterministic post-compaction reconciliation prompt after every context compaction (issue #813, follow-up from PR #811).
+
+Registered on **`PostCompact`** with a 10 s timeout.
+
+**Why it exists.** `monitor-mode.md` §"Post-Compaction Recovery" requires the agent to reconcile session state after compaction, but today that trigger depends on model judgment: the agent must notice an unfamiliar summary block and decide to run the recovery sequence. A missed or delayed judgment means stale state goes undetected. `PostCompact` fires deterministically after every compaction; this hook guarantees the reconciliation prompt reaches the agent regardless of how clearly the compact summary signals the prior state.
+
+**What it does.** Drains stdin (the `PostCompact` payload, including `compact_summary`), and emits `hookSpecificOutput.additionalContext` with the full Post-Compaction Recovery sequence from `monitor-mode.md`:
+
+1. Timestamp and rerun session-start checks.
+2. Read `session-state.json` + handoffs; reconcile each open PR on GitHub.
+3. Per polled PR: `polling-state-gate.sh <N> --verify-state`, then `polling-state-gate.sh <N>`.
+4. Reconcile state; verify stale agents and stalled transitions; launch as needed.
+5. Resume monitoring — one heartbeat line, no report.
+
+When `compact_summary` is present in the payload and `jq` is available, it is appended to the context so the agent has immediate visibility into what the compaction covered.
+
+**It does not replace existing backstops.** On-disk `session-state.json`, per-PR handoff files in `~/.claude/handoffs/`, and `checkpoint-handoff.sh` on `SubagentStop` remain intact. This hook makes the model-judgment trigger in `monitor-mode.md` redundant rather than necessary.
+
+**Evaluation:** `.claude/reference/hook-events-evaluation-2026-08.md` — full analysis of all candidate newer events and their adopt/defer verdicts.
+
+**Tests:** `.claude/hooks/tests/post-compact-reconcile.test.sh`
+
+---
+
 ## checkpoint-handoff.sh
 
 Writes a portable handoff document automatically while work is in progress, so `usage-limit-record.sh` has something real to point at when a turn dies without warning (issue #941).

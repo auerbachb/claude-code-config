@@ -215,6 +215,17 @@
           }
         ]
       }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/post-compact-reconcile.sh",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
