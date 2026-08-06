@@ -108,9 +108,10 @@ research record; their cross-references are the point.
 - Future FU closures (FU-2, FU-5, FU-6) should append a new section and update the inline
   status entry in the Follow-ups list — exactly the pattern PRs #931, #946, #1016, and #1020
   established. No structural change to the parent file is needed.
-- The `§FU-1` and `§FU-4` section anchors (implied by the level-2 headings at the bottom of
-  the file) are referenced by the ranked recommendations table's Status column. Any future rename
-  of those sections must update the table row's Status cell in the same commit.
+- The `§FU-1` and `§FU-4` level-2 headings at the bottom of the file have implied anchors.
+  The ranked recommendations table's Status column contains matching plain-text references
+  (`**FU-1**` and `**FU-4**`, not anchor links). Any future rename of those section headings
+  must update the table row's Status cell in the same commit.
 - The cargo-cult list, key numbers table, and sources section are point-in-time audit content.
   They must not be updated to reflect later harness changes — those belong in a new FU section
   or a separate follow-up audit.
@@ -135,7 +136,7 @@ Reconsider if:
   pending to shipped), indicating competing ownership rather than sequential closure.
 - Two PRs conflict on the same section of this file, signaling that it has become a live
   policy document rather than a point-in-time audit record.
-- The file word count grows beyond ~6,000 words (roughly double the current 3,800), at which
+- The file word count grows beyond ~7,600 words (roughly double the current 3,800), at which
   point extracting individual FU evaluation sections into per-FU reference files should be
   reconsidered — though only if their cross-references to the parent can be replaced with
   stable anchor links.
