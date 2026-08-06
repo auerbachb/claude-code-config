@@ -116,7 +116,7 @@ The following constraints must survive any future edit to `.claude/agents/README
   by-design churn — they propagate when the model fleet changes.
 - **`.env.<example|sample|template>` token** — The exact string `.env.<example|sample|template>`
   must remain in the file. `.github/scripts/env-template-allowlist-lint.sh` checks it explicitly
-  (see the file's `SURFACES` array).
+  (see the file's `PROMPT_SURFACES` array).
 - **"Model naming" heading** — `.github/scripts/chip-model-guard-lint.sh` error message and
   `.claude/reference/chip-launching.md` reference this heading by name. The heading must remain
   present at its current location.
