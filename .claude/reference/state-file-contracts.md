@@ -6,9 +6,7 @@ Canonical contracts are the script headers themselves — `session-state.sh --he
 
 ## Repo scoping (issue #638)
 
-Session state lives at `.repos["<owner>/<name>"].prs["<N>"]` rather than a flat `prs` map, because two repos routinely have PRs at the same number and a flat map silently merged them.
-
-`session-state.sh` resolves the scope key in priority order:
+Session state lives at `.repos["<owner>/<name>"].prs["<N>"]` rather than a flat `prs` map. For the full resolution-priority narrative and migration behavior, see the `session-state.sh --help` header (REPO SCOPING section). The short form:
 
 1. an explicit `--repo owner/name`
 2. `$CLAUDE_SESSION_REPO`
@@ -93,7 +91,7 @@ This is the repo-dimension analog of the authorship guard (`.claude/reference/au
 
 ## Write locks (issues #639, #682)
 
-macOS ships no `flock(1)`, so `state-lock.sh` implements mutual exclusion with an atomic `mkdir` lockdir.
+`state-lock.sh` implements mutual exclusion with a portable `mkdir`-based lockdir. For the full rationale, see the `state-lock.sh` header (WHY mkdir AND NOT flock(1) section).
 
 - **#639** — `session-state.sh` serializes all reads and writes through it. `greptile-budget.sh` and `cr-review-hourly.sh` share the same library, so budget accounting cannot race an orchestration write.
 - **#682** — handoff writes go through `handoff-state.sh`, using the same lock library.
