@@ -173,3 +173,87 @@ Until then, the honest user-facing answer is: watch the in-app usage UI, and inv
 - Issue #499 — the `/quota` rollback that produced that rule.
 - Issue #710 — spend/thread-type telemetry: measurement, not a limit signal; does not satisfy the upstream-signal requirement.
 - `.claude/reference/bgwork-ceiling.md` — the "external observer with no path back into the thread" precedent.
+
+---
+
+## Re-audit — 2026-08 (issue #835)
+
+**Verdict: unchanged.** No trustworthy pre-emptive usage-limit signal reaches a hook, skill, or session on Claude Code 2.1.221. All three binary checks confirm the same finding as 2.1.219. The post-hoc recorder (`.claude/hooks/usage-limit-record.sh`) remains correct and complete.
+
+### Re-audit record
+
+| | |
+|---|---|
+| Runtime | **Claude Code 2.1.221** |
+| Binary | `~/Library/Application Support/Claude/claude-code/2.1.221/claude.app/Contents/MacOS/claude` |
+| Size / SHA-256 | 270,518,240 B · `b3ce994579aa07c0344869f9520735907a1e9229186d79efc12c6163cb380711` |
+| Build time | 2026-08-03T03:19:26Z (Git SHA `6efaf12e8b43dc7dbe50e0955c76dc4174a15876`) |
+| Audited | 2026-08-05 |
+| Method | Binary strings extraction + three-check methodology from §"Reproducing it" above |
+
+### Check 1 — statusLine contract
+
+Usage-limit data still appears only in the statusLine stdin contract (same schema as 2.1.219: `rate_limits.five_hour.used_percentage`, `rate_limits.seven_day.used_percentage`, `resets_at`). No new hook payload or event payload carries this field. **Unchanged.**
+
+```shell
+$ grep -c 'rate_limits' /tmp/claude-strings-2.1.221.txt
+11
+```
+
+The 11 occurrences of the `rate_limits` token break down as:
+
+- **statusLine contract documentation** (lines 353316, 353356, 353358) — the subscription usage-limit schema with `five_hour` / `seven_day` windows. This is the authoritative usage-limit signal.
+- **Internal UI state** (`rateLimits`, `rateLimitGraceActive`) — React app state fields that track usage-limit status for TUI display. Usage-limit related, but confined to the UI render path; no hook reads them.
+- **OpenTelemetry error-reporting schema blob** — a `Quota-429` error shape (`{resets_at, rate_limit_type}`); a post-error reporting field, not a usage signal.
+- **Gateway config schema** (`rate_limits.device_authorization`, `rate_limits.device_verify`) — request-throttling config for the claude-gateway product, unrelated to subscription usage limits.
+
+None of these occurrences is a hook payload. Because this grep covers the full string table of the binary, it catches event-specific payload fields (e.g. any `MessageDisplay`- or `Notification`-specific additions) just as it does the shared base — no `rate_limits` token is injected by any event's own payload schema.
+
+### Check 2 — Shared hook payload base
+
+The minified identifier changed from `Kf` (2.1.219) to `Hm` (2.1.221), confirming the instability note in §"Reproducing it." Located via `hook_event_name` grep. The returned object is **identical**:
+
+```js
+// Hm() in 2.1.221 — same fields as Kf() in 2.1.219
+return {
+  session_id: n,
+  transcript_path: UH(n),
+  cwd: Lt(),
+  prompt_id: cPt() ?? void 0,
+  permission_mode: e,
+  agent_id: r?.agentId,
+  agent_type: o,
+  effort: a
+}
+```
+
+No `rate_limits`, no usage, no quota. **Unchanged.**
+
+### Check 3 — Hook event catalog
+
+Still exactly **32 events**, identical set to 2.1.219:
+
+`ConfigChange`, `CwdChanged`, `DirectoryAdded`, `Elicitation`, `ElicitationResult`, `FileChanged`, `InstructionsLoaded`, `MessageDisplay`, `Notification`, `PermissionDenied`, `PermissionRequest`, `PostCompact`, `PostToolBatch`, `PostToolUse`, `PostToolUseFailure`, `PreCompact`, `PreToolUse`, `SessionEnd`, `SessionStart`, `Setup`, `Stop`, `StopFailure`, `SubagentStart`, `SubagentStop`, `TaskCompleted`, `TaskCreated`, `TeammateIdle`, `UserPromptExpansion`, `UserPromptSubmit`, `WorktreeCreate`, `WorktreeRemove`, `terminal`.
+
+No `ApproachingLimit`, no `UsageLimit`, no new `Notification` variant carrying `rate_limits`. **Unchanged.**
+
+### Notable new item in 2.1.221 (does not satisfy a re-check trigger)
+
+The binary now exports four text-classification constants via the `@anthropic-ai/claude-agent-sdk` public API:
+
+```text
+USAGE_WARNING_PREFIXES:    ["You've used", "You're close to"]
+USAGE_TRANSITION_PREFIXES: ["You're now using usage credits", "You're now using your usage allocation", …]
+USAGE_LIMIT_ERROR_PREFIXES: (SDK-consumer constant, not a hook payload)
+ORG_POLICY_LIMIT_PREFIXES: ["This service is disabled for your org"]
+```
+
+These are string-matching patterns for classifying user-facing chat messages. They are SDK utilities for downstream consumers, not hook events, not hook payloads, and not a machine-readable upstream signal reachable from a hook or session. They do not satisfy re-check trigger #3 (a proactive warning *event*) or trigger #4 (a machine-readable *export*).
+
+### Safety.md status
+
+`.claude/rules/safety.md` §"Anthropic Quota & Spend Authority" is **unchanged**. Nothing built or changed here acts on a locally-derived estimate.
+
+### What remains blocked
+
+The pre-emptive wind-down (issue #824) is still not buildable: no re-check trigger has fired. The four triggers from the original audit still apply; this re-audit closes issue #835 on the "still no signal" branch.
