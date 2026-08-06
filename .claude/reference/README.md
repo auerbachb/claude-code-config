@@ -104,6 +104,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `token-efficiency-audit-hotspot-decision.md` — diagnosis and no-runtime-change decision for `token-efficiency-audit-2026-07.md` churn (5 merged PRs, Issue #1021); verdict: KEEP as intentional append-per-FU-resolution audit record; all 5 PRs were non-conflicting initial authoring, inline FU closure notes, or appended FU evaluation sections
 - `pm-worker-hotspot-decision.md` — diagnosis and KEEP + safety-block fix decision for `pm-worker.md` churn (5 merged PRs, Issue #1023); verdict: KEEP + add capability-ladder MINDSET bullet (#1023)
 - `subagent-phase-guardrails-hotspot-decision.md` — diagnosis and no-operative-change decision for `subagent-phase-guardrails.md` churn (5 merged PRs, Issue #1033); verdict: KEEP as canonical verbatim-block home; all churn is required propagation from canonical rule files, byte-guarded by `verbatim-block-lint.sh`
+- `bugbot-rule-hotspot-decision.md` — diagnosis and no-operative-change decision for `bugbot.md` churn (5 merged PRs, Issue #1036); verdict: KEEP single canonical BugBot rule file; churn is mixed-cause (two corpus-compression sweeps, two by-design policy adds, one already-completed dedup); only identified duplication removed by PR #1013
 - `repo-audit-2026-05.md` — bundled org + efficiency + best-practices audit (#413–#415)
 - `harness-model-audit-2026-06.md` — harness components vs current model fleet (#49)
 - `script-extraction-audit.md` — deterministic script extraction inventory (#271)
