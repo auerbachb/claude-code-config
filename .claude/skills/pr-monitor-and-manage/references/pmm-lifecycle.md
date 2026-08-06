@@ -130,6 +130,9 @@ CONFIG_AT_PAUSE=$(jq -nc \
 
 ### 4. Write pause marker (atomic batch)
 
+> **Canonical source:** `SKILL.md` `## Pause` (`pmm-canonical: pause-marker-write`). The base
+> batch below mirrors that block — update both together.
+
 ```bash
 .claude/scripts/session-state.sh \
   --set ".pmm.paused_at=\"$NOW\"" \
@@ -232,5 +235,6 @@ The following were intentionally left out of this PR (scope: bounded dedup + ref
 
 - **`resolve_script()` dedup across `-stop`/`-wake` family** — the same three-candidate lookup appears verbatim in `-stop/SKILL.md` and `-wake/SKILL.md`. A shared canonical location would prevent drift, but touching companion skills is out of scope here. Tracked for a future PR.
 - ~~**`pmm_delete_auto_wake_cron` helper**~~ — **resolved by issue #827**, which removed the auto-wake cron entirely. The teardown block it would have factored no longer exists in any of the three files.
+- ~~**`SKILL.md`↔`pmm-lifecycle.md` pause-marker-write duplication**~~ — **resolved by issue #1017**. The five-field `--set` batch in `### 4. Write pause marker` now carries a canonical-source note pointing to `SKILL.md` `## Pause` (`pmm-canonical: pause-marker-write`). Future edits update SKILL.md first, then mirror here.
 - **Full FU-2 ≤150-line dispatcher collapse** — this bounded refactor brings SKILL.md to ~400 lines. The full collapse to ≤150 lines (with a script-side no-change short-circuit) remains deferred until the `/babysit-pr` delegation contract (#456/#460) is settled, per `token-efficiency-audit-2026-07.md` FU-2.
 - **Per-PR `/babysit-pr` delegation** (#456/#460) — replacing Step 3's inline per-PR decision tree with one `/babysit-pr <PR>` dispatch per PR. The table, discovery, idempotency, and backoff scaffolding in SKILL.md stay unchanged until this lands.

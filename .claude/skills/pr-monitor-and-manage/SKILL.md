@@ -525,6 +525,7 @@ Reached from Step 7 when the fleet is empty or idle. Preserves a resume marker s
 Full pause procedure (final heartbeat, publish inactive before exact Monitor stop, fleet snapshot +
 config build, pause marker write, auto-wake re-scan, summary line): `references/pmm-lifecycle.md`.
 
+<!-- pmm-canonical: pause-marker-write:start -->
 ```bash
 .claude/scripts/session-state.sh \
   --set ".pmm.paused_at=\"$NOW\"" \
@@ -533,6 +534,7 @@ config build, pause marker write, auto-wake re-scan, summary line): `references/
   --set '.pmm_active=false' \
   --set '.pmm_next_expected_tick_at=null'
 ```
+<!-- pmm-canonical: pause-marker-write:end -->
 
 > **Scope of `--auto-wake` (issues #827, #924):** it arms a persistent Monitor re-scan, so it is session-scoped like every other poll here. That is not a shortfall: a paused fleet resumes across sessions from the on-disk `.pmm.paused_at` marker (Step 0a), which is durable in a way no scheduler job was. The next session start also surfaces the paused fleet unprompted — `session-scheduling-reconcile.sh`.
 
