@@ -195,7 +195,7 @@ Until then, the honest user-facing answer is: watch the in-app usage UI, and inv
 
 Usage-limit data still appears only in the statusLine stdin contract (same schema as 2.1.219: `rate_limits.five_hour.used_percentage`, `rate_limits.seven_day.used_percentage`, `resets_at`). No new hook payload or event payload carries this field. **Unchanged.**
 
-```
+```shell
 $ grep -c 'rate_limits' /tmp/claude-strings-2.1.221.txt
 11
 ```
@@ -241,7 +241,7 @@ No `ApproachingLimit`, no `UsageLimit`, no new `Notification` variant carrying `
 
 The binary now exports four text-classification constants via the `@anthropic-ai/claude-agent-sdk` public API:
 
-```
+```text
 USAGE_WARNING_PREFIXES:    ["You've used", "You're close to"]
 USAGE_TRANSITION_PREFIXES: ["You're now using usage credits", "You're now using your usage allocation", …]
 USAGE_LIMIT_ERROR_PREFIXES: (SDK-consumer constant, not a hook payload)
