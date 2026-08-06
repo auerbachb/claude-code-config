@@ -318,13 +318,15 @@ def main(argv):
 
     _legacy_env = os.environ.get("MANAGED_LEGACY_HOOKS_DIR", "")
     managed_hook_roots = {
-        os.path.normpath(p)
+        os.path.abspath(os.path.expanduser(p))
         for p in [hooks_dir, _legacy_env]
         if p
     }
 
     def is_managed_path(cmd_path):
-        return os.path.normpath(os.path.dirname(cmd_path)) in managed_hook_roots
+        return os.path.abspath(
+            os.path.expanduser(os.path.dirname(cmd_path))
+        ) in managed_hook_roots
 
     removed_stale = 0
     for event in list(live.keys()) if manifest else []:
@@ -345,7 +347,11 @@ def main(argv):
                 canonical = script_to_canonical_event.get(basename)
 
                 # (1) Script moved to a different event — drop the stale entry.
-                if canonical is not None and canonical != event:
+                # Restricted to managed roots (or placeholders awaiting
+                # migration) so third-party registrations are untouched.
+                if (canonical is not None
+                        and canonical != event
+                        and (is_managed_path(exe) or is_placeholder(exe))):
                     removed_stale += 1
                     continue
 

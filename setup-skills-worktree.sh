@@ -217,6 +217,8 @@ echo "Registering hooks in $SETTINGS_FILE..."
 
 if [[ ! -f "$REGISTER_HOOKS_PY" ]]; then
   echo "  WARNING: register-hooks.py not found at $REGISTER_HOOKS_PY; skipping hook registration" >&2
+elif ! command -v python3 >/dev/null 2>&1; then
+  echo "  WARNING: python3 not found; skipping hook and statusLine registration" >&2
 else
   # Full-mode invocation: registers all hooks from global-settings.json, prunes
   # stale/decommissioned registrations, and syncs statusLine — one atomic write.

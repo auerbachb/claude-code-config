@@ -67,10 +67,11 @@ fi
 # --- 5. setup-skills-worktree.sh must delegate to register-hooks.py in full mode ---
 # Full-mode invocation (no --statusline-only) registers all hooks from
 # global-settings.json, including the SessionStart entry for session-start-sync.sh.
-grep -q "register-hooks.py" "$SETUP_SCRIPT" \
+# Match the actual invocation, not comments or the REGISTER_HOOKS_PY assignment.
+grep -qE 'python3[[:space:]]+"?\$(\{)?REGISTER_HOOKS_PY' "$SETUP_SCRIPT" \
   || fail "setup-skills-worktree.sh does not invoke register-hooks.py — hook registration may be broken"
 # Full-mode must not pass --statusline-only: that flag skips hook registration entirely.
-if grep "register-hooks.py" "$SETUP_SCRIPT" | grep -q "\-\-statusline-only"; then
+if grep -E 'python3[[:space:]]+"?\$(\{)?REGISTER_HOOKS_PY' "$SETUP_SCRIPT" | grep -q -- "--statusline-only"; then
   fail "setup-skills-worktree.sh invokes register-hooks.py with --statusline-only — this skips hook registration"
 fi
 

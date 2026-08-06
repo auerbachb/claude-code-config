@@ -118,7 +118,7 @@ install-time and session-start registration through the same implementation.
    longer exists.
 4. **Register this decision** in the reference catalog.
 
-After this remediation, a new hook requires exactly one edit:
+After this remediation, adding a hook requires one registration edit plus one script addition:
 1. Add the hook script to `.claude/hooks/`.
 2. Add the entry to `global-settings.json`.
 3. `register-hooks.py` (at session start or install) picks it up automatically
