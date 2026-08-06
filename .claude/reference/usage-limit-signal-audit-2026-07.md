@@ -207,7 +207,7 @@ The 11 occurrences of the `rate_limits` token break down as:
 - **OpenTelemetry error-reporting schema blob** — a `Quota-429` error shape (`{resets_at, rate_limit_type}`); a post-error reporting field, not a usage signal.
 - **Gateway config schema** (`rate_limits.device_authorization`, `rate_limits.device_verify`) — request-throttling config for the claude-gateway product, unrelated to subscription usage limits.
 
-None of these occurrences is a hook payload.
+None of these occurrences is a hook payload. Because this grep covers the full string table of the binary, it catches event-specific payload fields (e.g. any `MessageDisplay`- or `Notification`-specific additions) just as it does the shared base — no `rate_limits` token is injected by any event's own payload schema.
 
 ### Check 2 — Shared hook payload base
 
