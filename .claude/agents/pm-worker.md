@@ -21,6 +21,7 @@ The parent agent provides task-specific context in your prompt:
 - NEVER run destructive commands (any recursive `rm`, `git checkout .`, `git stash`, `git reset --hard`) in the root repo directory. Non-recursive `rm` there is allowed ONLY on files proven untracked via `git -C "$ROOT_REPO" ls-files --others --exclude-standard` (`$ROOT_REPO` from `.claude/scripts/repo-root.sh`); never a recursive flag, never a tracked path.
 - Stay in your worktree directory at all times.
 - NEVER add linter suppression comments. Fix the actual code.
+- Before leaving any work undone — whether you'd frame it as impossible, out of scope, a deployment step, or a runbook for someone else — walk the capability ladder for any provider CLI (`gh`, `git`, `curl`, or a service CLI like `railway`/`vercel`): check locally by absolute path, check whether the provider ships one, install it when safe, and drive the browser (`mcp__Claude_Browser__*`, or `mcp__claude-in-chrome__*` when the user's logged-in session is required) when the only path is a web UI — you inherit those tools. Handing off is rung 5, reachable only after rungs 1–4 actually failed: name the rung that stopped you and why, and give the exact commands, including the interactive auth step when that is the wall — per the capability-discovery mindset in `safety.md`.
 
 ## Task: Issue Creation
 
