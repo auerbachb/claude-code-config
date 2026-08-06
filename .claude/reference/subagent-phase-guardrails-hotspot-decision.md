@@ -7,7 +7,7 @@ Reference for Issue #1033 (`.claude/reference/subagent-phase-guardrails.md` chur
 ### Verdict: **KEEP** the file as the canonical verbatim-block home; make **no operative content change**
 
 `.claude/reference/subagent-phase-guardrails.md` is the single byte-verified home for the
-SAFETY, MINDSET, and SKILLS verbatim blocks inserted into Phase A/B/C subagent spawn prompts.
+SAFETY, MINDSET, and SKILLS verbatim blocks inserted into Phase A/B prompts; Phase C receives SAFETY only.
 Its churn across 5 PRs is structurally required: every edit originated in the canonical rule
 files (`.claude/rules/safety.md`, `.claude/rules/skill-first.md`) and propagated here to keep the
 byte-guarded copies current. A structural split or pointer replacement would not remove the churn
