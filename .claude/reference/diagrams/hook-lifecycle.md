@@ -1,7 +1,5 @@
 # Diagram: Hook lifecycle (this repo)
 
-<!-- STUB: map UserPromptSubmit / PreToolUse / PostToolUse / Stop to our scripts; compare to upstream event list -->
-
 ```mermaid
 sequenceDiagram
   participant U as User
@@ -16,8 +14,14 @@ sequenceDiagram
   Note over H: worktree-guard.sh, env-guard.py, script-bypass-detector.sh
   CC->>H: PostToolUse
   Note over H: post-merge-pull.sh, polling-backoff-warn.sh, skill-usage-tracker.sh, silence-detector.sh, bgwork-ceiling-arm.sh
+  CC->>H: SubagentStop
+  Note over H: checkpoint-handoff.sh
+  CC->>H: PostCompact
+  Note over H: post-compact-reconcile.sh
   CC->>H: Stop
-  Note over H: silence-detector-ack.sh, bgwork-ceiling-guard.sh, trust-flag-repair.sh, dirty-main-warn.sh
+  Note over H: silence-detector-ack.sh, bgwork-ceiling-guard.sh, trust-flag-repair.sh, dirty-main-warn.sh, skill-usage-snapshot-hook.sh
+  CC->>H: StopFailure (matcher: rate_limit)
+  Note over H: usage-limit-record.sh
 ```
 
 **`statusLine` is deliberately absent from this diagram.** It is a settings surface, not a hook event — Claude Code runs it from the interactive render loop on a timer, not from the event dispatcher — so it has no place in an event sequence. It is nonetheless *deployed* like a hook (same placeholder path, same `register-hooks.py` resolution). Give it its own box if this stub ever grows a config-surface diagram; do not add it as an event here. See ARCHITECTURE.md "Status Line" (#779).
