@@ -63,8 +63,8 @@ Context compaction just completed. Run the Post-Compaction Recovery sequence fro
 1. Timestamp and rerun session-start checks.
 2. Read session-state.json + handoffs; reconcile each open PR on GitHub (all 3
    endpoints per cr-github-review.md).
-3. Per polled PR: polling-state-gate.sh <N> --verify-state, then
-   polling-state-gate.sh <N> (shells merge-gate.sh).
+3. Per polled PR: polling-state-gate.sh <N> --verify-state (optional --root-repo <path>),
+   then polling-state-gate.sh <N> (shells merge-gate.sh).
 4. Reconcile state (PR, HEAD, reviewer, pending); verify stale agents and stalled
    transitions; launch as needed.
 5. Resume monitoring — one heartbeat line, no report.
@@ -80,8 +80,8 @@ Context compaction just completed. Run the Post-Compaction Recovery sequence fro
 1. Timestamp and rerun session-start checks.
 2. Read session-state.json + handoffs; reconcile each open PR on GitHub (all 3
    endpoints per cr-github-review.md).
-3. Per polled PR: polling-state-gate.sh <N> --verify-state, then
-   polling-state-gate.sh <N> (shells merge-gate.sh).
+3. Per polled PR: polling-state-gate.sh <N> --verify-state (optional --root-repo <path>),
+   then polling-state-gate.sh <N> (shells merge-gate.sh).
 4. Reconcile state (PR, HEAD, reviewer, pending); verify stale agents and stalled
    transitions; launch as needed.
 5. Resume monitoring — one heartbeat line, no report."
