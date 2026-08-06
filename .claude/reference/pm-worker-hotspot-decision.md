@@ -22,8 +22,8 @@ since the PR #1016 inheritance extraction. This is fixed by a single bullet addi
 Issue #1023 was filed by `/wrap` churn detection after PR #1022 merged. It recorded 5 distinct
 merged PRs touching `.claude/agents/pm-worker.md` since 2026-07-23.
 
-At diagnosis time the file is 140 lines (138 content + 2 frontmatter delimiters), well below the
-2,000-word per-file warning.
+At diagnosis time the file is 139 lines (135 content + 4 frontmatter lines — 2 delimiters plus 2
+key-value entries), well below the 2,000-word per-file warning.
 
 ### Churn-class table
 
@@ -58,9 +58,10 @@ the repository's self-contained-agent contract (`.claude/agents/README.md`).
 ### Option 3: Extract the tri-path resolver idiom into a shared helper
 
 **Deferred.** The tri-path pattern (checking three standard install paths for a script) appears
-in both the Issue Creation dedup block and the Repo Bootstrap section. It has changed once
-(PR #725 added it) and shows no recurring duplicate-maintenance pattern across those two sites.
-Extract if a second independent change to the pattern appears.
+in the Issue Creation dedup block only — the Repo Bootstrap section directly invokes
+`.claude/scripts/repo-bootstrap.sh` without path-probing. The pattern has changed once
+(PR #725 added it) and shows no recurring duplicate-maintenance need at its single site.
+Extract if the same pattern is introduced elsewhere and then requires a coordinated change.
 
 ### Option 4: KEEP + add omitted capability-ladder MINDSET bullet
 
