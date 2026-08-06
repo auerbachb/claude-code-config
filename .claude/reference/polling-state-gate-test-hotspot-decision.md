@@ -46,7 +46,8 @@ Contributing factors:
 offline check in the polling workflow; splitting it across more files buys
 nothing and multiplies the import surface.
 
-**EXTRACT** shared helpers into `tests/lib/polling-state-gate-fixtures.sh`:
+**EXTRACTED** shared helpers into `tests/lib/polling-state-gate-fixtures.sh`
+(completed by PR #1024):
 - `mk_repo <dir> <origin-url>` — throwaway git repo builder
 - `write_handoff <owner_repo_or_empty> <pr_number> <head_sha>` — scoped handoff
   writer via `handoff-state.sh`; unified 3-arg signature replaces the two
@@ -55,10 +56,16 @@ nothing and multiplies the import surface.
   the baked-at-write `write_ensure_session_gh_stub` in the primary suite and the
   inline heredoc in the multirepo suite
 
-**CLOSE COVERAGE GAP**: multirepo suite previously wrote flat handoffs relying on
-the fallback. Switch to scoped `write_handoff` and add path-existence assertions
-for `~/.claude/handoffs/org/a/pr-84-handoff.json` and
-`~/.claude/handoffs/org/b/pr-84-handoff.json`.
+**COVERAGE GAP CLOSED** (completed by PR #1024): multirepo suite previously
+wrote flat handoffs relying on the fallback. Switched to scoped `write_handoff`
+and added path-existence assertions for `~/.claude/handoffs/org/a/pr-84-handoff.json`
+and `~/.claude/handoffs/org/b/pr-84-handoff.json`.
+
+The multirepo suite hotspot (Issue #1025) was filed immediately after PR #1024
+merged and was adjudicated with a KEEP verdict — the 3-PR churn was driven by
+the same repo-scoping contract evolution, and PR #1024's restructuring already
+addressed the mechanical duplication. See
+`polling-state-gate-multirepo-test-hotspot-decision.md` for the companion record.
 
 ## Why not split the test file?
 
