@@ -347,11 +347,14 @@ def main(argv):
                 canonical = script_to_canonical_event.get(basename)
 
                 # (1) Script moved to a different event — drop the stale entry.
-                # Restricted to managed roots (or placeholders awaiting
-                # migration) so third-party registrations are untouched.
+                # Restricted to managed roots only, and never placeholder paths
+                # (placeholder migration, not removal, is the repair for those).
+                # This mirrors the guard on case (2) so third-party registrations
+                # and placeholder entries are both preserved.
                 if (canonical is not None
                         and canonical != event
-                        and (is_managed_path(exe) or is_placeholder(exe))):
+                        and is_managed_path(exe)
+                        and not is_placeholder(exe)):
                     removed_stale += 1
                     continue
 
