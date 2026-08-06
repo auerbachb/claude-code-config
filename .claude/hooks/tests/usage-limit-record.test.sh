@@ -113,11 +113,14 @@ ok = any(
 sys.exit(0 if ok else 1)
 PY
 
-# --- 7. Registration: HOOKS_MANIFEST entry, timeout must match global-settings.json ---
-# Two sources of truth for the same timeout; they drift silently otherwise.
-grep -qF "StopFailure"$'\t'"rate_limit"$'\t'"usage-limit-record.sh"$'\t'"5" "$SETUP_SCRIPT" \
-  || grep -qF "StopFailure\\trate_limit\\tusage-limit-record.sh\\t5" "$SETUP_SCRIPT" \
-  || fail "HOOKS_MANIFEST missing StopFailure/rate_limit entry for usage-limit-record.sh with timeout 5"
+# --- 7. HOOKS_MANIFEST must NOT be defined in setup-skills-worktree.sh ---
+# HOOKS_MANIFEST was retired by issue #1019 — global-settings.json is now the
+# single source of truth (verified above in test 6), so there is no second
+# timeout source to drift.  This check guards against re-introduction of the
+# duplicated manifest array.
+if grep -q "HOOKS_MANIFEST=" "$SETUP_SCRIPT" 2>/dev/null; then
+  fail "HOOKS_MANIFEST array is still defined in setup-skills-worktree.sh — it should have been retired (issue #1019)"
+fi
 
 # --- 8. No local spend/quota estimation in any executable line ---
 # The whole point of the issue: the trigger must be the upstream signal only.

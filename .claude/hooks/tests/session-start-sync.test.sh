@@ -56,19 +56,23 @@ for group in session_start:
 sys.exit(1)
 PY
 
-# --- 4. HOOKS_MANIFEST entry uses SessionStart in setup-skills-worktree.sh ---
-# The HOOKS_MANIFEST uses $'...' quoting; in the raw file the separator is literal \t (two chars)
-grep -qF "SessionStart"$'\t\t'"session-start-sync.sh"$'\t'"30" "$SETUP_SCRIPT" \
-  || grep -qF "SessionStart\\t\\tsession-start-sync.sh\\t30" "$SETUP_SCRIPT" \
-  || fail "HOOKS_MANIFEST in setup-skills-worktree.sh does not have SessionStart entry for session-start-sync.sh with timeout 30"
-
-# --- 5. HOOKS_MANIFEST must NOT have a PostToolUse entry for session-start-sync.sh ---
-# Check both possible forms: real tabs and literal \t escape sequences in source
-if grep -qF "PostToolUse"$'\t\t'"session-start-sync.sh" "$SETUP_SCRIPT" 2>/dev/null; then
-  fail "HOOKS_MANIFEST in setup-skills-worktree.sh still has PostToolUse entry (real-tab form) for session-start-sync.sh"
+# --- 4. HOOKS_MANIFEST must NOT be defined in setup-skills-worktree.sh ---
+# HOOKS_MANIFEST was retired by issue #1019 — global-settings.json is now the
+# single source of truth and register-hooks.py reads it directly.  This check
+# guards against accidental re-introduction of the duplicated manifest array.
+if grep -q "HOOKS_MANIFEST=" "$SETUP_SCRIPT" 2>/dev/null; then
+  fail "HOOKS_MANIFEST array is still defined in setup-skills-worktree.sh — it should have been retired (issue #1019)"
 fi
-if grep -qF "PostToolUse\\t\\tsession-start-sync.sh" "$SETUP_SCRIPT" 2>/dev/null; then
-  fail "HOOKS_MANIFEST in setup-skills-worktree.sh still has PostToolUse entry (literal-\\t form) for session-start-sync.sh"
+
+# --- 5. setup-skills-worktree.sh must delegate to register-hooks.py in full mode ---
+# Full-mode invocation (no --statusline-only) registers all hooks from
+# global-settings.json, including the SessionStart entry for session-start-sync.sh.
+# Match the actual invocation, not comments or the REGISTER_HOOKS_PY assignment.
+grep -qE 'python3[[:space:]]+"?\$(\{)?REGISTER_HOOKS_PY' "$SETUP_SCRIPT" \
+  || fail "setup-skills-worktree.sh does not invoke register-hooks.py — hook registration may be broken"
+# Full-mode must not pass --statusline-only: that flag skips hook registration entirely.
+if grep -E 'python3[[:space:]]+"?\$(\{)?REGISTER_HOOKS_PY' "$SETUP_SCRIPT" | grep -q -- "--statusline-only"; then
+  fail "setup-skills-worktree.sh invokes register-hooks.py with --statusline-only — this skips hook registration"
 fi
 
 # --- 6. Hook script must not reference /tmp/claude-config-synced- sentinel ---

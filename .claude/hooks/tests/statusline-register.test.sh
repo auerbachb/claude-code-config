@@ -210,7 +210,49 @@ check_eq 1 "$RC" "unparseable settings.json: exit 1, no write attempted"
 check_eq '{"hooks":' "$(cat "$SETTINGS")" "unparseable settings.json: file left byte-identical"
 
 # --------------------------------------------------------------------------
-# 8. Wiring — the real repo must actually declare and resolve this surface.
+# 8. Legacy-path migration (issue #1019 regression guard).
+#
+# When an existing installation has hooks registered under the OLD root-repo
+# hooks directory (pre-skills-worktree), register-hooks.py must migrate those
+# paths to the canonical skills-worktree location, not leave them behind.
+# find_existing previously returned True (skip) for any real-path match,
+# silently retaining the stale root-repo path in settings.json.
+# --------------------------------------------------------------------------
+LEGACY_HOOKS_DIR="$TMP/legacy-hooks"
+mkdir -p "$LEGACY_HOOKS_DIR"
+# The hook script must exist at both old and new locations for the test to be
+# meaningful — build_manifest skips non-existent scripts, so if the canonical
+# script is absent no registration happens and the migration case is never hit.
+printf '#!/bin/sh\nexit 0\n' > "$LEGACY_HOOKS_DIR/demo-hook.sh"
+chmod +x "$LEGACY_HOOKS_DIR/demo-hook.sh"
+
+# Pre-populate settings with the hook registered under the legacy path.
+LEGACY_CMD="$LEGACY_HOOKS_DIR/demo-hook.sh"
+write_settings "{\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$LEGACY_CMD\",\"timeout\":5}]}]}}"
+MANAGED_LEGACY_HOOKS_DIR="$LEGACY_HOOKS_DIR" python3 "$SUT" "$WT" >/dev/null 2>&1
+MIGRATED_CMD="$(jq -r '.hooks.Stop[0].hooks[0].command' "$SETTINGS")"
+CANONICAL_CMD="$WT/.claude/hooks/demo-hook.sh"
+check_eq "$CANONICAL_CMD" "$MIGRATED_CMD" \
+  "legacy-path migration: managed legacy hook path repaired to canonical worktree path"
+
+# A second run must be a no-op (idempotent after migration).
+MANAGED_LEGACY_HOOKS_DIR="$LEGACY_HOOKS_DIR" python3 "$SUT" "$WT" >/dev/null 2>&1
+AFTER_SECOND_RUN="$(jq -r '.hooks.Stop[0].hooks[0].command' "$SETTINGS")"
+check_eq "$CANONICAL_CMD" "$AFTER_SECOND_RUN" \
+  "legacy-path migration: second run is a no-op (already at canonical path)"
+
+# An UNMANAGED hook sharing the same basename must NOT be migrated.
+UNMANAGED_HOOK="$TMP/unmanaged/demo-hook.sh"
+mkdir -p "$(dirname "$UNMANAGED_HOOK")"
+printf '#!/bin/sh\nexit 0\n' > "$UNMANAGED_HOOK"; chmod +x "$UNMANAGED_HOOK"
+write_settings "{\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$UNMANAGED_HOOK\",\"timeout\":5}]}]}}"
+python3 "$SUT" "$WT" >/dev/null 2>&1  # no MANAGED_LEGACY_HOOKS_DIR
+UNMANAGED_AFTER="$(jq -r '.hooks.Stop[0].hooks[0].command' "$SETTINGS")"
+check_eq "$UNMANAGED_HOOK" "$UNMANAGED_AFTER" \
+  "legacy-path migration: unmanaged hook sharing basename is left alone"
+
+# --------------------------------------------------------------------------
+# 9. Wiring — the real repo must actually declare and resolve this surface.
 # --------------------------------------------------------------------------
 REAL_TEMPLATE="$REPO_ROOT/global-settings.json"
 check_eq "$PLACEHOLDER" "$(jq -r '.statusLine.command' "$REAL_TEMPLATE")" \

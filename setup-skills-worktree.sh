@@ -197,340 +197,38 @@ else
   fi
 fi
 
-# --- Step 6: Register hooks in ~/.claude/settings.json ---
+# --- Step 6: Register hooks and statusLine in ~/.claude/settings.json ---
 #
-# Hooks manifest — declarative list of hooks this repo expects to be registered.
-# Fields are TAB-separated so matchers can use "|" alternation (e.g. Write|Edit).
-# Layout: event<TAB>matcher<TAB>script_name<TAB>timeout
-# matcher is an empty field for hooks with no matcher.
-#
-# Must stay in sync with global-settings.json; setup.sh verifies this and fails
-# if any template hook is missing from ~/.claude/settings.json after this runs.
+# Delegates entirely to register-hooks.py which reads global-settings.json as
+# the single source of truth — no separate manifest to maintain. Full-mode
+# (no --statusline-only) registers hooks, prunes stale/decommissioned
+# registrations, and syncs statusLine in one atomic write.
 #
 # To add a new hook:
 #   1. Add the hook script to .claude/hooks/
-#   2. Add the same entry to global-settings.json AND to this manifest
-#   3. Run this script — it will register the hook in settings.json
+#   2. Add the entry to global-settings.json (one place, no manifest to sync)
+#   3. Run this script — register-hooks.py picks it up automatically
 #
-HOOKS_MANIFEST=(
-  $'PreToolUse\tBash\tscript-bypass-detector.sh\t5'
-  $'PreToolUse\tWrite|Edit|NotebookEdit\tworktree-guard.sh\t5'
-  $'PreToolUse\tWrite|Edit|MultiEdit|NotebookEdit|Bash\tenv-guard.py\t5'
-  $'PreToolUse\tWrite|Edit|MultiEdit|NotebookEdit|Bash\tconfig-protection.py\t5'
-  $'Stop\t\tsilence-detector-ack.sh\t5'
-  $'Stop\t\ttrust-flag-repair.sh\t10'
-  $'Stop\t\tdirty-main-warn.sh\t10'
-  $'Stop\t\tskill-usage-snapshot-hook.sh\t10'
-  $'SessionStart\t\tsession-start-sync.sh\t30'
-  $'StopFailure\trate_limit\tusage-limit-record.sh\t5'
-  $'PostToolUse\tBash\tpost-merge-pull.sh\t15'
-  $'PostToolUse\tBash\tpolling-backoff-warn.sh\t5'
-  $'PostToolUse\tSkill\tskill-usage-tracker.sh\t5'
-  $'PostToolUse\t\tsilence-detector.sh\t5'
-  $'UserPromptSubmit\t\ttimestamp-injector.sh\t5'
-  $'UserPromptSubmit\t\tstale-worktree-warn.sh\t30'
-  $'UserPromptSubmit\t\tissue-prefix-nudge.sh\t5'
-  $'UserPromptSubmit\t\tskill-command-tracker.sh\t5'
-)
-
 SETTINGS_FILE="$HOME/.claude/settings.json"
-HOOKS_DIR="$SKILLS_WORKTREE/.claude/hooks"
+REGISTER_HOOKS_PY="$SKILLS_WORKTREE/.claude/hooks/register-hooks.py"
 
 echo ""
 echo "Registering hooks in $SETTINGS_FILE..."
 
-MANAGED_LEGACY_HOOKS_DIR="$REPO_ROOT/.claude/hooks" \
-python3 - "$SETTINGS_FILE" "$HOOKS_DIR" "${HOOKS_MANIFEST[@]}" <<'PYTHON_SCRIPT'
-import json
-import os
-import shlex
-import sys
-
-settings_file = sys.argv[1]
-hooks_dir = sys.argv[2]
-manifest_entries = sys.argv[3:]
-
-# Parse manifest: TAB-separated "event\tmatcher\tscript_name\ttimeout".
-# Tab is used (not "|") so matchers can contain "|" alternation (e.g. Write|Edit).
-manifest = []
-for entry in manifest_entries:
-    parts = entry.split("\t")
-    if len(parts) != 4:
-        print(f"  WARNING: skipping malformed manifest entry: {entry!r}")
-        continue
-    try:
-        timeout_val = int(parts[3])
-    except ValueError:
-        print(f"  WARNING: skipping entry with non-integer timeout: {entry!r}")
-        continue
-    manifest.append({
-        "event": parts[0],
-        "matcher": parts[1] if parts[1] else None,
-        "script": parts[2],
-        "timeout": timeout_val,
-    })
-
-# Read existing settings.json or start fresh
-if os.path.isfile(settings_file):
-    try:
-        with open(settings_file) as f:
-            settings = json.load(f)
-    except json.JSONDecodeError as e:
-        import shutil
-        backup = settings_file + ".bak"
-        shutil.copy2(settings_file, backup)
-        print(f"  WARNING: {settings_file} contains invalid JSON: {e}")
-        print(f"  Backed up to {backup}, starting fresh (all settings will be re-created)")
-        settings = {}
-else:
-    settings = {}
-
-if not isinstance(settings, dict):
-    print(f"  WARNING: {settings_file} top-level value is not an object; resetting")
-    settings = {}
-
-if "hooks" not in settings or not isinstance(settings["hooks"], dict):
-    if "hooks" in settings:
-        print(f"  WARNING: {settings_file} has non-object 'hooks'; resetting hooks section")
-    settings["hooks"] = {}
-
-hooks = settings["hooks"]
-
-def command_path(script_name):
-    return os.path.join(hooks_dir, script_name)
-
-def command_parts(cmd):
-    """Tokenize a hook command into argv, ignoring nothing. Returns [] for a
-    non-string command (malformed settings.json) and falls back to a whitespace
-    split when the command is not valid shell syntax."""
-    if not isinstance(cmd, str):
-        return []
-    try:
-        return shlex.split(cmd)
-    except ValueError:
-        return cmd.split()
-
-def command_argv0(cmd):
-    """Return the executable path from a hook command, ignoring any arguments
-    (e.g. 'foo.sh --check' -> 'foo.sh')."""
-    parts = command_parts(cmd)
-    return parts[0] if parts else ""
-
-def command_args_tail(cmd):
-    """Return the argument portion of a hook command (everything after argv0),
-    reconstructed as a shell-safe string, or '' when there are no arguments.
-    Lets path migration fix the executable path without dropping the args."""
-    parts = command_parts(cmd)
-    return " ".join(shlex.quote(p) for p in parts[1:])
-
-def is_placeholder_path(path):
-    """Detect placeholder paths from global-settings.json templates."""
-    return "/path/to/" in path or not os.path.isabs(path)
-
-def find_existing_hook(event_entries, cmd_path, matcher):
-    """Find an existing hook entry by basename match within groups that share the same matcher.
-
-    Returns:
-      ("exact", None)    — already registered with correct path
-      ("migrate", hook)  — registered but path needs updating (e.g., root-repo -> worktree)
-      ("placeholder", hook) — registered with a placeholder path
-      (None, None)       — not registered
-    """
-    basename = os.path.basename(cmd_path)
-    for group in event_entries:
-        if not isinstance(group, dict):
-            continue
-        group_matcher = group.get("matcher")
-        if group_matcher != matcher:
-            continue
-        hook_list = group.get("hooks", [])
-        if not isinstance(hook_list, list):
-            continue
-        for h in hook_list:
-            if not isinstance(h, dict):
-                continue
-            # Compare by argv0 so an args-bearing registration (e.g.
-            # "foo.sh --check") still matches its manifest entry — the raw
-            # command string would basename to "--check" and never match,
-            # duplicating the hook or stripping its args on migration.
-            existing_argv0 = command_argv0(h.get("command", ""))
-            if os.path.basename(existing_argv0) != basename:
-                continue
-            if is_placeholder_path(existing_argv0):
-                return ("placeholder", h)
-            if existing_argv0 == cmd_path:
-                return ("exact", None)
-            # Same script name, different valid path — needs migration
-            return ("migrate", h)
-    return (None, None)
-
-added = []
-migrated = []
-already_present = []
-
-for item in manifest:
-    event = item["event"]
-    matcher = item["matcher"]
-    script = item["script"]
-    timeout = item["timeout"]
-    cmd = command_path(script)
-
-    if not os.path.isfile(cmd):
-        print(f"  {script} — WARNING: not found at {cmd}; skipping")
-        continue
-
-    if event not in hooks or not isinstance(hooks[event], list):
-        hooks[event] = []
-
-    status, hook_ref = find_existing_hook(hooks[event], cmd, matcher)
-
-    if status == "exact":
-        already_present.append(script)
-        continue
-    elif status in ("migrate", "placeholder"):
-        # Fix the executable path in-place (root-repo -> skills-worktree, or
-        # placeholder -> real path) while preserving any args the registration
-        # carried, so migration never silently drops "foo.sh --check" -> "foo.sh".
-        args_tail = command_args_tail(hook_ref.get("command", ""))
-        hook_ref["command"] = f"{cmd} {args_tail}" if args_tail else cmd
-        hook_ref["timeout"] = timeout
-        migrated.append(script)
-        continue
-
-    # Not registered at all — add new entry
-    hook_obj = {"type": "command", "command": cmd, "timeout": timeout}
-    group = {"hooks": [hook_obj]}
-    if matcher:
-        group["matcher"] = matcher
-
-    hooks[event].append(group)
-    added.append(script)
-
-# Prune stale registrations for decommissioned hooks.
-# When a hook is removed from the repo (e.g. the /quota rollback dropped
-# quota-stop-notify.sh and quota-usage-hook.sh), its entry can linger in an
-# existing ~/.claude/settings.json pointing at a now-deleted script. setup.sh
-# Step 7 then fails ("Hook not found") and Claude Code would try to invoke a
-# missing Stop/PostToolUse command each session. Remove any registered command
-# hook that is (1) NOT in the current manifest (decommissioned, not merely
-# un-migrated), (2) inside a managed .claude/hooks directory, and (3) pointing
-# at a file that no longer exists. Active hooks — and any hook whose target file
-# is present — are never touched, so re-runs are no-ops (idempotent; see
-# tests/test-setup.sh).
-manifest_scripts = {item["script"] for item in manifest}
-# Map script basename -> canonical event for migration pruning (see below).
-script_to_canonical_event = {item["script"]: item["event"] for item in manifest}
-pruned = []
-
-# Managed hook roots — restrict pruning to directories THIS installer owns so we
-# never touch a different tool's or repo's ~/.../.claude/hooks registrations:
-#   * hooks_dir            — the current skills-worktree hooks directory
-#   * MANAGED_LEGACY_HOOKS_DIR — the root-repo hooks directory (pre-worktree
-#                            installs registered hooks here before migration)
-managed_hook_roots = {
-    os.path.normpath(root)
-    for root in (hooks_dir, os.environ.get("MANAGED_LEGACY_HOOKS_DIR", ""))
-    if root
-}
-
-def is_managed_hooks_path(path):
-    return os.path.normpath(os.path.dirname(path)) in managed_hook_roots
-
-for event in list(hooks.keys()):
-    event_entries = hooks[event]
-    if not isinstance(event_entries, list):
-        continue
-    surviving_groups = []
-    for group in event_entries:
-        if not isinstance(group, dict):
-            surviving_groups.append(group)
-            continue
-        hook_list = group.get("hooks")
-        if not isinstance(hook_list, list):
-            surviving_groups.append(group)
-            continue
-        surviving_hooks = []
-        for h in hook_list:
-            if isinstance(h, dict) and h.get("type") == "command":
-                exe = command_argv0(h.get("command", ""))
-                script_name = os.path.basename(exe)
-                if (exe
-                        and script_name not in manifest_scripts
-                        and is_managed_hooks_path(exe)
-                        and not is_placeholder_path(exe)
-                        and not os.path.isfile(exe)):
-                    pruned.append(script_name)
-                    continue  # drop this stale hook entry
-                # Also prune hooks that have moved to a different event in the
-                # manifest (e.g. PostToolUse -> SessionStart for issue #792).
-                # Without this, the old event entry survives and the script fires
-                # on both the old and new event — critical after the sentinel guard
-                # was removed from session-start-sync.sh.
-                canonical_event = script_to_canonical_event.get(script_name)
-                if (exe
-                        and canonical_event is not None
-                        and canonical_event != event
-                        and is_managed_hooks_path(exe)
-                        and not is_placeholder_path(exe)):
-                    pruned.append(f"{script_name} (moved to {canonical_event})")
-                    continue  # drop stale event registration
-            surviving_hooks.append(h)
-        if surviving_hooks:
-            group["hooks"] = surviving_hooks
-            surviving_groups.append(group)
-        # else: group held only stale hooks — drop the group entirely
-    if surviving_groups:
-        hooks[event] = surviving_groups
-    else:
-        del hooks[event]  # no hooks left for this event
-
-# Write back atomically to prevent corruption on interrupt
-import tempfile
-
-settings_dir = os.path.dirname(settings_file) or "."
-fd, tmp_path = tempfile.mkstemp(dir=settings_dir, suffix=".tmp")
-try:
-    with os.fdopen(fd, "w") as f:
-        json.dump(settings, f, indent=2)
-        f.write("\n")
-    os.replace(tmp_path, settings_file)
-except BaseException:
-    os.unlink(tmp_path)
-    raise
-
-# Report
-for name in added:
-    print(f"  {name} — added")
-for name in migrated:
-    print(f"  {name} — migrated path to skills worktree")
-for name in already_present:
-    print(f"  {name} — already registered")
-for name in pruned:
-    print(f"  {name} — pruned stale registration (script no longer exists)")
-PYTHON_SCRIPT
-
-# --- Step 6b: Resolve the statusLine command path in ~/.claude/settings.json ---
-#
-# `statusLine` is a top-level settings key, not a hook event, so the manifest
-# above does not cover it — but its `command` carries the same
-# /path/to/claude-code-config/... placeholder and needs the same resolution to
-# the skills worktree (issue #779).
-#
-# Delegated to register-hooks.py rather than reimplemented inline so install-time
-# and session-start behavior come from ONE implementation. `--statusline-only`
-# keeps it out of hook registration, which Step 6 above already owns through its
-# own manifest — running both against hooks could double-register.
-#
-# Non-fatal: a status line that failed to resolve is cosmetic, and must never
-# fail an install that otherwise succeeded.
-REGISTER_HOOKS_PY="$HOOKS_DIR/register-hooks.py"
-if [[ -f "$REGISTER_HOOKS_PY" ]]; then
-  echo ""
-  echo "Resolving statusLine command in $SETTINGS_FILE..."
-  if python3 "$REGISTER_HOOKS_PY" --statusline-only "$SKILLS_WORKTREE"; then
-    echo "  statusLine — resolved"
+if [[ ! -f "$REGISTER_HOOKS_PY" ]]; then
+  echo "  WARNING: register-hooks.py not found at $REGISTER_HOOKS_PY; skipping hook registration" >&2
+elif ! command -v python3 >/dev/null 2>&1; then
+  echo "  WARNING: python3 not found; skipping hook and statusLine registration" >&2
+else
+  # Full-mode invocation: registers all hooks from global-settings.json, prunes
+  # stale/decommissioned registrations, and syncs statusLine — one atomic write.
+  # MANAGED_LEGACY_HOOKS_DIR tells the pruner to also clean up root-repo hook
+  # paths left behind by pre-worktree installs.
+  if MANAGED_LEGACY_HOOKS_DIR="$REPO_ROOT/.claude/hooks" \
+     python3 "$REGISTER_HOOKS_PY" "$SKILLS_WORKTREE"; then
+    echo "  Hooks and statusLine registered (read from global-settings.json)"
   else
-    echo "  WARNING: statusLine sync failed (status line may show a placeholder path)"
+    echo "  WARNING: register-hooks.py reported errors (some hooks may not be registered)" >&2
   fi
 fi
 
