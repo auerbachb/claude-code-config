@@ -17,7 +17,7 @@ Issue #992 was filed by `/wrap` churn detection after PR #991 merged. The 7 trig
 #650, #660, #666, #742, #804, #806, #946 — all merged since 2026-07-21.
 
 At diagnosis time (`main` `7e386a7`), the file is **684 words, 55 lines** — below the 2,000-word
-per-file lint warning. Corpus total: ~11,459 words (CLAUDE.md 1,374 + rules 10,085), under both
+per-file lint warning. Corpus total: ~11,443 words (CLAUDE.md 1,358 + rules 10,085), under both
 the 11,749 ratchet cap and the 12,000-word soft gate.
 
 ## 2. Per-section churn attribution
