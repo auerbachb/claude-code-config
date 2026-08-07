@@ -205,8 +205,9 @@ Searched for downstream restatements of:
 The churn is legitimate: every PR was reactive to a new feature requirement,
 a correctness gap, or an upstream behavior that the script's sole-boundary role
 demanded it handle. The script has no independent, separately-evolving concerns
-to split, no duplicated logic to extract (the solo-owner heuristic and the
-clean-BEHIND check both delegate to sibling scripts already), and no downstream
+to split, no duplicated logic to extract (the solo-owner heuristic is implemented
+inline in admin-merge.sh; the clean-BEHIND check delegates to `clean-behind-check.sh`),
+and no downstream
 restatements to replace with pointers.
 
 The `admin-merge-auto-plain.md` reference file serves its intended purpose as
