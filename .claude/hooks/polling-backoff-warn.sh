@@ -5,6 +5,7 @@
 # for compaction drift. It only inspects Bash calls that look like polling work
 # or poll-lifecycle writes, then injects additionalContext when the PR state has
 # stayed stable long enough to require backoff or pause.
+# Backoff thresholds and formula: .claude/rules/scheduling-reliability.md §Stable-State Backoff
 
 input=$(cat)
 
