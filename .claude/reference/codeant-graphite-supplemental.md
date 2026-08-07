@@ -22,6 +22,8 @@ CodeAnt and Graphite are parallel supplements; the primary chain stays CR → Bu
 
 **Diagnostic method for future re-checks:** don't rely on comment/review absence alone — a silent-but-installed app and a fully-uninstalled app both show zero comments. Check for the `Graphite / AI Reviews` check-run on the PR's HEAD commit (`gh api repos/{owner}/{repo}/commits/{sha}/check-runs --jq '.check_runs[] | select(.app.slug=="graphite-app")'`); its presence (even with a "nothing to report" conclusion) means the app is alive, and its total absence across several consecutive triggered PRs is the reliable signal of an outage.
 
+**Status update (2026-08-07):** Issue #614 was closed and Graphite is active again. PR #1104 (merged 2026-08-07) shows `graphite-app[bot]` posting a `COMMENTED` review and a completed `Graphite / AI Reviews` check-run (`conclusion: success`) — the diagnostic method above is satisfied. The "confirmed non-functional" description above is now historical. The retained-trigger rationale (single uncapped comment, self-healing) remains valid and the trigger is still in place.
+
 ## CodeAnt Local CLI
 
 `codeant-cli` (npm) is a separate local/pre-push capability, distinct from the PR-side `codeant-ai[bot]` role above — it does **not** itself satisfy the GitHub merge gate (`cr-merge-gate.md`, `merge-gate-reviewer-paths.md`); treat it as advisory, same as the rest of CodeAnt's supplemental status in this repo.
