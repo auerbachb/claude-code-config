@@ -18,4 +18,4 @@ During PR #763, both local review CLIs were unavailable simultaneously: CodeRabb
 
 **Provenance:** Issue #769, PR #763 incident; related issues #642 (CodeAnt false-clean on API failure), #643 (403 entitlement), #663 (CodeAnt 403 re-auth advice).
 
-**Standing state update (2026-07-30, Issue #819):** CodeAnt CLI binary is now installed (`npm install -g codeant-cli` ran during PR #819, v0.5.1 at `/opt/homebrew/bin/codeant`). Auth (`codeant login`) is a rung-5 wall — CLI-initiated browser OAuth only, no non-interactive path, and no MCP browser surface can drive it. Coverage remains `cr-only` until a human runs `codeant login` or `codeant set-codeant-api-key <key>`. Merge gate is unaffected — CodeAnt GitHub App still approves independently. Restore runbook: `.claude/reference/codeant-graphite-supplemental.md` §Install state.
+**Standing state update (2026-07-30, Issue #819):** CodeAnt CLI installed; auth is a rung-5 wall; coverage is `cr-only`. Full detail and restore runbook: `.claude/reference/codeant-graphite-supplemental.md` §Install state.
