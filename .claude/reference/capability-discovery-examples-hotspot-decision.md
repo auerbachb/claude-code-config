@@ -64,7 +64,7 @@ The only changes in this PR are:
 1. This decision record (`.claude/reference/capability-discovery-examples-hotspot-decision.md`).
 2. One catalog bullet in `.claude/reference/README.md`.
 
-No rule, script, reference doc, or agent file is modified. `reference-catalog-lint.sh` must pass with exactly one registered bullet for the new decision doc and no phantom entries.
+No existing rule, script, or agent file is modified. The only reference-doc changes are this new decision record and a single catalog entry in README.md. `reference-catalog-lint.sh` must pass with exactly one registered bullet for the new decision doc and no phantom entries.
 
 ## 5. Future edits and reconsideration
 
