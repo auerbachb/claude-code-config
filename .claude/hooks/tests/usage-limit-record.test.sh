@@ -4,14 +4,17 @@
 # Covers the behavior the issue's Test Plan requires: the recorder fires only
 # on the upstream rate-limit signal, a healthy session is completely
 # unaffected, and no code path computes a local spend estimate.
+#
+# Repo-invariant checks (registration, HOOKS_MANIFEST absence, no-spend
+# estimation, safety.md wording, audit-doc existence) live in
+# usage-limit-record-registration.test.sh (split by Issue #1071).
+#
+# Portable-handoff-pointer tests live in
+# usage-limit-record-handoff-pointer.test.sh (split by Issue #1071).
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 HOOK="$REPO_ROOT/.claude/hooks/usage-limit-record.sh"
-SETTINGS="$REPO_ROOT/global-settings.json"
-SETUP_SCRIPT="$REPO_ROOT/setup-skills-worktree.sh"
-AUDIT_DOC="$REPO_ROOT/.claude/reference/usage-limit-signal-audit-2026-07.md"
-SAFETY_RULE="$REPO_ROOT/.claude/rules/safety.md"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -94,53 +97,7 @@ jq -e '.last_assistant_message | test("^x+$")' "$LAST" >/dev/null \
 LEN=$(jq -r '.last_assistant_message | length' "$LAST")
 [[ "$LEN" -le 1000 ]] || fail "last_assistant_message not truncated (len=$LEN)"
 
-# --- 6. Registration: one entry carrying matcher + command + timeout together ---
-# Checked as a single conjunction on purpose. Split assertions would accept a
-# matcher on one group and the timeout on another — a registration that looks
-# valid to the tests but is not the one the runtime fires.
-python3 - "$SETTINGS" <<'PY' || fail "no single StopFailure entry has matcher rate_limit + usage-limit-record.sh + timeout 5"
-import json, sys
-with open(sys.argv[1]) as f:
-    data = json.load(f)
-ok = any(
-    g.get("matcher") == "rate_limit"
-    and any(
-        h.get("command", "").endswith("usage-limit-record.sh") and h.get("timeout") == 5
-        for h in g.get("hooks", [])
-    )
-    for g in data.get("hooks", {}).get("StopFailure", [])
-)
-sys.exit(0 if ok else 1)
-PY
-
-# --- 7. HOOKS_MANIFEST must NOT be defined in setup-skills-worktree.sh ---
-# HOOKS_MANIFEST was retired by issue #1019 — global-settings.json is now the
-# single source of truth (verified above in test 6), so there is no second
-# timeout source to drift.  This check guards against re-introduction of the
-# duplicated manifest array.
-if grep -q "HOOKS_MANIFEST=" "$SETUP_SCRIPT" 2>/dev/null; then
-  fail "HOOKS_MANIFEST array is still defined in setup-skills-worktree.sh — it should have been retired (issue #1019)"
-fi
-
-# --- 8. No local spend/quota estimation in any executable line ---
-# The whole point of the issue: the trigger must be the upstream signal only.
-# Comments are stripped first — the hook's own header *describes* the ban, and
-# matching that prose would fail the test for saying the right thing.
-CODE_ONLY="$TMP_DIR/hook-code-only.sh"
-sed -e 's/[[:space:]]*#.*$//' "$HOOK" | grep -v '^[[:space:]]*$' >"$CODE_ONLY"
-if grep -nEi 'input_tokens|output_tokens|cache_read|used_percentage|spend|budget_remaining|estimate' "$CODE_ONLY"; then
-  fail "hook computes/reads token or spend accounting — the trigger must be the upstream error signal only"
-fi
-
-# --- 9. safety.md's quota prohibition is intact and unamended ---
-grep -q 'MUST NOT gate agent decisions' "$SAFETY_RULE" \
-  || fail "safety.md quota prohibition text is missing or was altered"
-
-# --- 10. The gating finding doc exists and states the verdict ---
-[[ -f "$AUDIT_DOC" ]] || fail "signal-investigation finding doc is missing"
-grep -q 'Verdict' "$AUDIT_DOC" || fail "finding doc does not state a verdict"
-
-# --- 11. State files are owner-only ---
+# --- 6. State files are owner-only ---
 # The record embeds conversation content and absolute paths.
 # Switch on uname, matching the hook's own file_size() helper: GNU `stat -f`
 # means "filesystem status" and SUCCEEDS with unrelated output, so a
@@ -157,7 +114,7 @@ for f in "$EVENTS" "$LAST"; do
   [[ "$MODE" == "600" ]] || fail "$(basename "$f") is mode '$MODE', expected 600 (owner-only)"
 done
 
-# --- 12. Concurrent invocations lose no records ---
+# --- 7. Concurrent invocations lose no records ---
 # This is the expected case, not an edge case: one account hitting its limit
 # fails every active session at once.
 CONC_DIR="$TMP_DIR/concurrent"
@@ -183,7 +140,7 @@ UNIQ=$(jq -r '.session_id' "$CONC_LOG" | sort -u | wc -l | tr -d ' ')
 [[ -d "$CONC_DIR/.usage-limit-record.lock" ]] && fail "lock directory was left behind"
 true
 
-# --- 13. Non-string fields are truncated too ---
+# --- 8. Non-string fields are truncated too ---
 # A structured error_details object must not bypass the breadcrumb limit.
 STRUCT_DIR="$TMP_DIR/struct"
 mkdir -p "$STRUCT_DIR"
@@ -199,7 +156,7 @@ LAM_LEN=$(jq -r '.last_assistant_message | length' "$STRUCT_LAST")
 [[ "$ED_LEN" -le 500 ]] || fail "object error_details not truncated (len=$ED_LEN)"
 [[ "$LAM_LEN" -le 1000 ]] || fail "object last_assistant_message not truncated (len=$LAM_LEN)"
 
-# --- 14. Rotation fires at the cap and preserves the archive ---
+# --- 9. Rotation fires at the cap and preserves the archive ---
 ROT_DIR="$TMP_DIR/rotate"
 mkdir -p "$ROT_DIR"
 ROT_LOG="$ROT_DIR/usage-limit-events.jsonl"
@@ -212,236 +169,5 @@ printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":
 [[ -f "$ROT_LOG.1" ]] || fail "rotation did not create the .1 archive"
 [[ "$(wc -l <"$ROT_LOG" | tr -d ' ')" == "1" ]] || fail "post-rotation log should hold exactly the new record"
 jq -e '.session_id == "rot"' <"$ROT_LOG" >/dev/null || fail "post-rotation log lost the new record"
-
-# --- 15. Portable handoff pointer (issue #901) ---------------------------
-# The breadcrumb should name the document /pause already wrote, when there is
-# one. This is a filesystem lookup only — see the code-body grep in case 8,
-# which also covers the lines added for this.
-BASE_HINT="Turn ended on an Anthropic usage limit. Reconstruct in-flight state from the transcript above, then resume; see .claude/reference/usage-limit-signal-audit-2026-07.md."
-
-# Fixture mtimes MUST be derived from the current clock. The hook filters with
-# `find -mtime -N`, which is relative to now, so a hard-coded calendar date is a
-# time bomb: fine on the day it is written, then silently future-dated before it
-# and aged out after it. `date -r` is BSD, `date -d @` is GNU.
-stamp_ago() { # $1 = seconds before now -> YYYYMMDDhhmm for `touch -t`
-  local epoch=$(( $(date -u +%s) - $1 ))
-  date -u -r "$epoch" +%Y%m%d%H%M 2>/dev/null && return 0
-  date -u -d "@$epoch" +%Y%m%d%H%M 2>/dev/null && return 0
-  return 1
-}
-touch_ago() { local when; when=$(stamp_ago "$2") || fail "cannot compute a relative timestamp on this platform"; touch -t "$when" "$1"; }
-
-# 15a. No handoff on disk: byte-identical to the hint this hook always wrote.
-# Asserted as full equality, not a substring — an appended sentence in the
-# no-handoff case is exactly the regression this pins down.
-NONE_DIR="$TMP_DIR/handoff-none"
-mkdir -p "$NONE_DIR"
-printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":"none"}' \
-  | CLAUDE_USAGE_LIMIT_DIR="$NONE_DIR" CLAUDE_HANDOFF_DIR="$NONE_DIR/handoffs" bash "$HOOK"
-NONE_LAST="$NONE_DIR/usage-limit-last.json"
-[[ -f "$NONE_LAST" ]] || fail "no-handoff case produced no record"
-GOT_HINT=$(jq -r '.resume_hint' "$NONE_LAST")
-[[ "$GOT_HINT" == "$BASE_HINT" ]] \
-  || fail "resume_hint changed when no portable handoff exists:"$'\n'"got:  $GOT_HINT"$'\n'"want: $BASE_HINT"
-jq -e '.portable_handoff == null' "$NONE_LAST" >/dev/null \
-  || fail "portable_handoff should be null when none is on disk"
-
-# 15b. An empty handoffs directory is the same as no directory at all.
-EMPTY_DIR="$TMP_DIR/handoff-empty"
-mkdir -p "$EMPTY_DIR/handoffs"
-printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":"empty"}' \
-  | CLAUDE_USAGE_LIMIT_DIR="$EMPTY_DIR" CLAUDE_HANDOFF_DIR="$EMPTY_DIR/handoffs" bash "$HOOK"
-[[ "$(jq -r '.resume_hint' "$EMPTY_DIR/usage-limit-last.json")" == "$BASE_HINT" ]] \
-  || fail "an empty handoffs/ directory must not alter resume_hint"
-
-# 15c. With handoffs present, the NEWEST by mtime is named. The newer file is
-# given the LEXICALLY SMALLER name on purpose: with the name-based tie-break in
-# play, naming the newer file `zzz` would let this pass even if mtime ordering
-# were broken entirely.
-SOME_DIR="$TMP_DIR/handoff-some"
-mkdir -p "$SOME_DIR/handoffs"
-OLDER="$SOME_DIR/handoffs/portable-handoff-zzz-older.md"
-NEWER="$SOME_DIR/handoffs/portable-handoff-aaa-newer.md"
-DECOY="$SOME_DIR/handoffs/issue-maker-zzz-log.json"
-printf 'older\n' >"$OLDER"
-printf 'newer\n' >"$NEWER"
-printf '{}\n' >"$DECOY"
-touch_ago "$OLDER" 7200    # 2h ago
-touch_ago "$NEWER" 3600    # 1h ago — newer mtime, smaller name
-touch_ago "$DECOY" 60      # newest file in the dir, but not a handoff
-
-printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":"some"}' \
-  | CLAUDE_USAGE_LIMIT_DIR="$SOME_DIR" CLAUDE_HANDOFF_DIR="$SOME_DIR/handoffs" bash "$HOOK"
-SOME_LAST="$SOME_DIR/usage-limit-last.json"
-
-jq -e --arg p "$NEWER" '.portable_handoff == $p' "$SOME_LAST" >/dev/null \
-  || fail "portable_handoff is not the newest handoff by mtime (got $(jq -r '.portable_handoff' "$SOME_LAST"))"
-jq -e --arg p "$NEWER" '.resume_hint | contains($p)' "$SOME_LAST" >/dev/null \
-  || fail "resume_hint does not name the portable handoff"
-jq -e --arg p "$OLDER" '.resume_hint | contains($p) | not' "$SOME_LAST" >/dev/null \
-  || fail "resume_hint names the older handoff"
-jq -e --arg h "$BASE_HINT" '.resume_hint | startswith($h)' "$SOME_LAST" >/dev/null \
-  || fail "the handoff pointer replaced the base hint instead of extending it"
-
-# 15d. Only portable-handoff-*.md is eligible — a newer unrelated file in the
-# same directory must not be advertised as a handoff. The in-progress temp file
-# /pause stages before its atomic rename is deliberately dot-prefixed and
-# suffix-less for exactly this reason: an unverified draft must never be
-# advertised as a finished handoff.
-DRAFT="$SOME_DIR/handoffs/.portable-handoff.aBcDeF"
-printf 'half-written\n' >"$DRAFT"
-touch_ago "$DRAFT" 30
-printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":"draft"}' \
-  | CLAUDE_USAGE_LIMIT_DIR="$SOME_DIR" CLAUDE_HANDOFF_DIR="$SOME_DIR/handoffs" bash "$HOOK"
-jq -e '.portable_handoff | test("issue-maker") | not' "$SOME_LAST" >/dev/null \
-  || fail "a non-handoff file in handoffs/ was picked up as the pointer"
-jq -e --arg p "$NEWER" '.portable_handoff == $p' "$SOME_LAST" >/dev/null \
-  || fail "an in-progress temp draft was advertised as the handoff"
-
-# 15e. Equal mtimes resolve deterministically to the lexically greater name.
-# This pins DETERMINISM, not chronology: two handoffs written in the same second
-# carry the same embedded timestamp, so nothing about their names identifies the
-# later one. Without the tie-break the winner would vary with directory
-# iteration order, which is the actual defect being guarded against.
-TIE_EARLIER="$SOME_DIR/handoffs/portable-handoff-ccc-tie.md"
-TIE_LATER="$SOME_DIR/handoffs/portable-handoff-ddd-tie.md"
-printf 'earlier\n' >"$TIE_EARLIER"
-printf 'later\n' >"$TIE_LATER"
-TIE_STAMP=$(stamp_ago 600) || fail "cannot compute a relative timestamp"
-touch -t "$TIE_STAMP" "$TIE_EARLIER" "$TIE_LATER"
-printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":"tie"}' \
-  | CLAUDE_USAGE_LIMIT_DIR="$SOME_DIR" CLAUDE_HANDOFF_DIR="$SOME_DIR/handoffs" bash "$HOOK"
-jq -e --arg p "$TIE_LATER" '.portable_handoff == $p' "$SOME_LAST" >/dev/null \
-  || fail "equal-mtime handoffs did not use the lexical tie-breaker (got $(jq -r '.portable_handoff' "$SOME_LAST"))"
-jq -e --arg p "$TIE_LATER" '.resume_hint | contains($p)' "$SOME_LAST" >/dev/null \
-  || fail "resume_hint does not name the tie-break winner"
-
-# 15f. The handoff directory is its OWN concept, not a subdirectory of this
-# hook's output dir. /pause writes to ~/.claude/handoffs regardless of where the
-# recorder keeps its records, so deriving one from the other would point the
-# lookup at a directory no handoff is ever written to.
-SPLIT_REC="$TMP_DIR/split-records"     # where the recorder writes
-SPLIT_HAND="$TMP_DIR/split-handoffs"   # where handoffs actually live
-mkdir -p "$SPLIT_REC/handoffs" "$SPLIT_HAND"
-DECOY_UNDER_RECORDS="$SPLIT_REC/handoffs/portable-handoff-decoy-20260801T235959Z.md"
-REAL_HANDOFF="$SPLIT_HAND/portable-handoff-real-20260801T090000Z.md"
-printf 'decoy\n' >"$DECOY_UNDER_RECORDS"   # newer name, wrong directory
-printf 'real\n'  >"$REAL_HANDOFF"
-printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":"split"}' \
-  | CLAUDE_USAGE_LIMIT_DIR="$SPLIT_REC" CLAUDE_HANDOFF_DIR="$SPLIT_HAND" bash "$HOOK"
-jq -e --arg p "$REAL_HANDOFF" '.portable_handoff == $p' "$SPLIT_REC/usage-limit-last.json" >/dev/null \
-  || fail "handoff lookup did not use the handoff dir (got $(jq -r '.portable_handoff' "$SPLIT_REC/usage-limit-last.json"))"
-
-# 15g. Handoffs age out. A document from a different project weeks ago must not
-# stay advertised as the resume pointer — a stale pointer presented as current
-# reads as an answer and is worse than no pointer at all.
-AGED_DIR="$TMP_DIR/aged"
-mkdir -p "$AGED_DIR/handoffs"
-STALE_HANDOFF="$AGED_DIR/handoffs/portable-handoff-ancient.md"
-printf 'ancient\n' >"$STALE_HANDOFF"
-touch_ago "$STALE_HANDOFF" 2592000   # 30 days ago — well outside the 7-day window
-printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":"aged"}' \
-  | CLAUDE_USAGE_LIMIT_DIR="$AGED_DIR" CLAUDE_HANDOFF_DIR="$AGED_DIR/handoffs" bash "$HOOK"
-AGED_LAST="$AGED_DIR/usage-limit-last.json"
-jq -e '.portable_handoff == null' "$AGED_LAST" >/dev/null \
-  || fail "a handoff far past the age bound was still advertised"
-[[ "$(jq -r '.resume_hint' "$AGED_LAST")" == "$BASE_HINT" ]] \
-  || fail "an aged-out handoff must leave resume_hint at its unchanged base value"
-
-# A fresh handoff in that same directory is still found — the bound filters by
-# age, it does not disable the lookup.
-FRESH_HANDOFF="$AGED_DIR/handoffs/portable-handoff-fresh.md"
-printf 'fresh\n' >"$FRESH_HANDOFF"
-touch_ago "$FRESH_HANDOFF" 300       # 5 minutes ago
-printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":"aged2"}' \
-  | CLAUDE_USAGE_LIMIT_DIR="$AGED_DIR" CLAUDE_HANDOFF_DIR="$AGED_DIR/handoffs" bash "$HOOK"
-jq -e --arg p "$FRESH_HANDOFF" '.portable_handoff == $p' "$AGED_LAST" >/dev/null \
-  || fail "the age bound suppressed a fresh handoff too"
-
-# 15h. A bad age setting must not cost the user the pointer. Passed straight to
-# `find`, a non-numeric value makes it fail — and its stderr is discarded, so a
-# perfectly good handoff would vanish from the breadcrumb with no trace.
-BADAGE_DIR="$TMP_DIR/bad-age"
-mkdir -p "$BADAGE_DIR/handoffs"
-BADAGE_HANDOFF="$BADAGE_DIR/handoffs/portable-handoff-present.md"
-printf 'present\n' >"$BADAGE_HANDOFF"
-touch_ago "$BADAGE_HANDOFF" 300
-for bad in "not-a-number" "" "-3" "7; rm -rf /" "0"; do
-  printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":"badage"}' \
-    | CLAUDE_USAGE_LIMIT_DIR="$BADAGE_DIR" CLAUDE_HANDOFF_DIR="$BADAGE_DIR/handoffs" \
-      CLAUDE_HANDOFF_MAX_AGE_DAYS="$bad" bash "$HOOK"
-  jq -e --arg p "$BADAGE_HANDOFF" '.portable_handoff == $p' "$BADAGE_DIR/usage-limit-last.json" >/dev/null \
-    || fail "a fresh handoff was lost with CLAUDE_HANDOFF_MAX_AGE_DAYS='$bad'"
-done
-[[ -e / ]] || fail "the injection fixture did something catastrophic"
-
-# 15i. The durable record is written BEFORE the pointer lookup, so no amount of
-# slowness in the optional enrichment can cost the user the record. Assert the
-# ordering structurally: the events append must appear before the lookup call.
-APPEND_LINE=$(grep -n '>>"\$EVENTS_LOG"' "$HOOK" | head -1 | cut -d: -f1)
-LOOKUP_LINE=$(grep -n '^PORTABLE_HANDOFF=' "$HOOK" | head -1 | cut -d: -f1)
-[[ -n "$APPEND_LINE" && -n "$LOOKUP_LINE" ]] \
-  || fail "could not locate the append and lookup lines to check their ordering"
-(( APPEND_LINE < LOOKUP_LINE )) \
-  || fail "the handoff lookup (line $LOOKUP_LINE) runs before the durable append (line $APPEND_LINE) — a slow lookup could consume the hook's timeout and lose the record"
-
-# And behaviourally: every events-log line carries the BASE record (phase 1),
-# while usage-limit-last.json carries the enriched pointer (phase 2).
-while IFS= read -r ev_line; do
-  [[ -n "$ev_line" ]] || continue
-  printf '%s' "$ev_line" | jq -e --arg h "$BASE_HINT" '.resume_hint == $h' >/dev/null \
-    || fail "an events-log record carries an enriched hint; phase 1 must write the base record"
-  printf '%s' "$ev_line" | jq -e '.portable_handoff == null' >/dev/null \
-    || fail "an events-log record carries a handoff pointer; only usage-limit-last.json is refined"
-done <"$SOME_DIR/usage-limit-events.jsonl"
-jq -e '.portable_handoff != null' "$SOME_LAST" >/dev/null \
-  || fail "usage-limit-last.json lost its handoff pointer after the phase split"
-
-# 15j. Concurrency with a handoff present: `last` must still agree with the
-# newest event. Splitting the write into two phases opened the door for a slow
-# invocation to finish its enrichment after a newer one published and roll
-# `last` back to an older session — breaking the one thing that file promises.
-# Concurrency is the EXPECTED case here: one account limit fails every active
-# session at once.
-RACE_DIR="$TMP_DIR/race"
-mkdir -p "$RACE_DIR/handoffs"
-RACE_HANDOFF="$RACE_DIR/handoffs/portable-handoff-20260801T120000Z-sess.md"
-printf 'handoff\n' >"$RACE_HANDOFF"
-touch_ago "$RACE_HANDOFF" 300
-RACE_N=8
-for i in $(seq 1 "$RACE_N"); do
-  printf '%s' "{\"hook_event_name\":\"StopFailure\",\"error\":\"rate_limit\",\"session_id\":\"race$i\"}" \
-    | CLAUDE_USAGE_LIMIT_DIR="$RACE_DIR" CLAUDE_HANDOFF_DIR="$RACE_DIR/handoffs" bash "$HOOK" &
-done
-wait
-
-RACE_LOG="$RACE_DIR/usage-limit-events.jsonl"
-RACE_COUNT=$(wc -l <"$RACE_LOG" | tr -d ' ')
-[[ "$RACE_COUNT" == "$RACE_N" ]] || fail "concurrent writes with a handoff lost records: got $RACE_COUNT, expected $RACE_N"
-
-RACE_LAST_SID=$(jq -r '.session_id' "$RACE_DIR/usage-limit-last.json")
-RACE_TAIL_SID=$(tail -1 "$RACE_LOG" | jq -r '.session_id')
-[[ "$RACE_LAST_SID" == "$RACE_TAIL_SID" ]] \
-  || fail "usage-limit-last.json ($RACE_LAST_SID) disagrees with the newest event ($RACE_TAIL_SID) — an older invocation's phase 2 clobbered a newer record"
-
-# 15k. Newest-by-mtime holds beyond any window: the newest file is given the
-# lexically SMALLEST name among many, so a name-ordered scan that truncated
-# would miss it. This is the case the removed scan cap got wrong.
-MANY_DIR="$TMP_DIR/many"
-mkdir -p "$MANY_DIR/handoffs"
-# 10# forces base 10: seq -w zero-pads, and bash reads a leading zero as octal,
-# so "008" would abort the arithmetic mid-loop.
-for i in $(seq -w 1 120); do
-  f="$MANY_DIR/handoffs/portable-handoff-2026080$(( 10#$i % 9 + 1 ))T120000Z-s$i.md"
-  printf 'x\n' >"$f"
-  touch_ago "$f" 7200                # all the decoys are two hours old
-done
-MANY_NEWEST="$MANY_DIR/handoffs/portable-handoff-00000000T000000Z-aaa.md"
-printf 'newest\n' >"$MANY_NEWEST"
-touch_ago "$MANY_NEWEST" 60          # newest mtime, lexically SMALLEST name
-printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":"many"}' \
-  | CLAUDE_USAGE_LIMIT_DIR="$MANY_DIR" CLAUDE_HANDOFF_DIR="$MANY_DIR/handoffs" bash "$HOOK"
-jq -e --arg p "$MANY_NEWEST" '.portable_handoff == $p' "$MANY_DIR/usage-limit-last.json" >/dev/null \
-  || fail "newest-by-mtime lost among many handoffs (got $(jq -r '.portable_handoff' "$MANY_DIR/usage-limit-last.json"))"
 
 echo "PASS: usage-limit-record.sh"
