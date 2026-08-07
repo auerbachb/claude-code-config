@@ -47,10 +47,11 @@ and 15 sections. The changes divide by section, then by how many distinct PRs hi
 | Upstream requirement — `spawn_task` model parameter | #736 | Tracking note added |
 | Upstream requirement — cross-session `dismiss_task` | #1008 | New gap section added post-#859 |
 
-Nine of the 15 sections were **never touched** in the measured window: Availability detection,
+Six of the 15 sections were **never touched** in the measured window: Availability detection,
 `spawn_task` invocation shape, Short-summary transcript format, Chip state tracking, Print-on-demand
-replay, Fallback mode, and the execution-boundary box. A file where 9 of 15 sections are stable
-across 14 PRs is not a file that has grown incoherent.
+replay, and Fallback mode. (The NON-NEGOTIABLE execution-boundary callout in the preamble is
+not one of the 15 `##` sections and is excluded from this count.) A file where 6 of 15 sections
+are stable across 14 PRs is not a file that has grown incoherent.
 
 ## 2. Why the CR plan's extraction is not applied
 
