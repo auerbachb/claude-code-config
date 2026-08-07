@@ -122,13 +122,11 @@ REPL is idle, at more than one cadence, reproducibly. It is not a dropped job, n
 the documented ≤10%-of-period jitter (which would delay a 2-minute job by ≤12s, not 11 minutes),
 and not the "only fires while the REPL is idle" caveat — the REPL *was* idle.
 
-**Not isolated.** A `persistent: true` `Monitor` (the ceiling watch) was armed throughout, as it
-was in the original incident, so "a concurrent `Monitor` suppresses cron firing" remains
-consistent with the data but unproven. **The control experiment was deliberately not run**: it
-requires a window with no background process at all, and every mechanism that guarantees the
-agent wakes up again *is* a background process. Removing the variable means risking a session
-that never wakes. A future session with a human present can run it — arm one cron job, no
-`Monitor`, no backgrounded probe, and have the human observe.
+**Not isolated in this reproduction.** A `persistent: true` `Monitor` (the ceiling watch) was
+armed throughout, as it was in the original incident, so this run alone could not distinguish
+"`CronCreate` is unreliable" from "a concurrent `Monitor` suppresses cron firing." A follow-up
+control removed both the `Monitor` and the detached probe, with a human observer present — see
+Experiment 2 below for the result.
 
 **The `/loop` delegation is confirmed, and it is the propagation path.** Invoking
 `/loop 5m <command>` returns the skill's own instructions, whose fixed-interval mode reads:
@@ -154,19 +152,56 @@ not preserve a detached-probe sample count or final runtime listing, so none is 
 It still stayed idle past far more than the required three wake-ups and directly answers the
 liveness question: dynamic `/loop` is not a reliable recurring primitive.
 
-### Experiment 2 — `CronCreate` without `Monitor`
+### Experiment 2 — `CronCreate` without `Monitor` (issue #983, run 2026-08-07 17:40–18:12 ET)
 
-**Deferred.** No human observer was available, and this control deliberately forbids both a
-`Monitor` and a detached probe. Those are the only mechanisms that guarantee another turn if
-cron stays silent, so running the control unattended could strand the session. The hypothesis
-that a concurrent `Monitor` suppresses cron firing therefore remains unproven.
+Run with a human observer present throughout, per the deferred design above.
+
+1. Verified clean before arming: `TaskList` showed no live agents/monitors in-session; `CronList`
+   showed no existing jobs.
+2. Armed exactly one `CronCreate` job (`09b54ec0`, `*/2 * * * *`) at `2026-08-07T17:40:29Z`. No
+   `Monitor`, no detached probe, no other background wake mechanism. Immediately captured
+   `CronList`: the one job, listed alone.
+3. Ended the turn. Every turn during the window was either a fired tick (running its one
+   instructed command — append a UTC timestamp to a log file — and nothing else: no re-arm, no
+   log read, no other tool call) or, at the end, the human's manual wake message. No in-session
+   observation, `Monitor`, or probe ran at any point in between.
+4. On wake (`2026-08-07T18:11:50Z`, elapsed 31m21s), re-captured `CronList`: the same single job,
+   still listed, unchanged. Deleted it (`CronDelete`) and confirmed removal with a final,
+   empty `CronList`.
+
+**Result: 15/15 expected ticks fired.** At `*/2 * * * *` over 31m21s idle, the boundaries
+`17:42:00Z`…`18:10:00Z` give 15 expected fires; the log recorded exactly 15 timestamped lines,
+one per boundary, each landing within a few seconds to ~17s of its boundary — ordinary scheduler
+jitter (the documented ≤10%-of-period allowance is ~12s for a 2-minute job), not the Pattern 7
+failure mode. Zero drops.
+
+**Established.** A lone, unaccompanied `CronCreate` job — no concurrent `Monitor`, no detached
+probe — fires reliably and completely over a 31-minute idle window with a human observer present.
+This is the mirror image of the #914 reproduction (0/7 expected ticks over 11 minutes with a
+concurrent `Monitor` + detached probe armed): removing the concurrent `Monitor`/probe is the only
+substantive protocol change between the two runs, and the fire rate went from 0% to 100%. The
+`Monitor`-suppression hypothesis is now plausible, not merely unproven.
+
+**Not established.** One run does not prove causation or isolate which of the two removed
+variables — concurrent `Monitor`, detached probe, or their combination — is responsible; this
+control removed both simultaneously, matching the derivation from #914 "by subtraction." It does
+not generalize beyond this one session/environment/date, and it tested only the `*/2` cadence
+(the #914 reproduction also ran `*/5`). Mechanistically, *why* a concurrent `Monitor` would
+suppress cron firing remains unexplained — only the correlation is now stronger, from one paired
+observation.
+
+**Methodological note.** Each tick's prompt instructed it to send no chat message; the harness
+enforced at least one visible output line per turn regardless, so every tick emitted a one-line
+"automated tick" notice. This is a forced deviation from the instructed silence, not from the
+substantive protocol — the log file's timestamps, not the chat transcript, are the evidence.
 
 ### Evidence classification
 
 | Primitive | Evidence | Classification |
 |-----------|----------|----------------|
 | persistent `Monitor` | The silence ceiling fired out of turn during the #914 controlled probe | **positive** |
-| `CronCreate` / fixed `/loop` | Controlled 11-minute idle probe: expected ~7, observed 0 | **negative** |
+| `CronCreate` / fixed `/loop` (concurrent `Monitor` + probe armed) | Controlled 11-minute idle probe: expected ~7, observed 0 | **negative** |
+| `CronCreate`, no `Monitor` (issue #983) | Controlled 31m21s idle probe, human observer, no concurrent `Monitor`/probe: expected 15, observed 15 | **positive** |
 | dynamic `/loop` / recurring `ScheduleWakeup` | PR #937 and PR #944 stopped until a manual turn | **negative** |
 | one-shot `ScheduleWakeup` | Not tested by these recurring-poll experiments | **untested here** |
 
