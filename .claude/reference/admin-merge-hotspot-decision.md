@@ -17,10 +17,9 @@ that boundary, not maintainability problems.
 
 ## Functional sections
 
-The 877-line script divides into seven functional sections:
-
-Ranges below are approximate hotspot anchors; the sections share boundary lines
-(helper functions and declarations between blocks) and may overlap slightly.
+The 877-line script is organized around seven approximate functional anchors;
+sections share boundary lines (helper functions, declarations between blocks)
+and some ranges overlap slightly.
 
 | Section | Lines (approx) | Purpose |
 |---------|----------------|---------|
@@ -69,9 +68,11 @@ Added `BYPASS_MODE` variable (toggle vs plain), `STRICT` reading from the
 branch-protection API, conditional bypass-command builder (plain omits protection
 toggle calls), conditional `print_warning_block()` output (plain vs toggle), and
 a new execute-mode branch for the plain shape that runs `gh pr merge --squash
---admin` without touching protection settings. Updated exit code 6 documentation
-to name the new condition (`enforce_admins==false` and the strict+clean-BEHIND
-plain bypass does not apply).
+--admin` without touching protection settings. Updated exit code 6 to fire
+precisely when `enforce_admins==false` AND NOT (`strict==true` AND
+`CLEAN_BEHIND_OK==true`) — i.e., `enforce_admins` is off but neither the plain
+bypass conditions (`strict` up-to-date + clean-BEHIND) nor the toggle conditions
+apply, so no bypass path can be identified.
 
 **Driver:** Issue #720 — when `enforce_admins` is already off but
 `required_status_checks.strict` blocks a clean-BEHIND branch, a bare `--admin`
