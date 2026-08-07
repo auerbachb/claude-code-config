@@ -2,7 +2,7 @@
 
 Reference for Issue #1042 (`.github/scripts/chip-model-guard-lint.sh` churn hotspot). Not auto-loaded.
 
-## The problem being read
+## The problem being addressed
 
 `.github/scripts/chip-model-guard-lint.sh` was touched by 5 distinct merged PRs since 2026-07-23:
 PR #736, PR #775, PR #799, PR #812, PR #842.
@@ -62,10 +62,10 @@ four lint scripts. Zero behavior change.
 **What was extracted:**
 
 - `require_file()` — checks for a required file and records an error; standardized to return `0`
-  explicitly on the success path (two of the four scripts previously omitted this and relied on
-  bash fall-through, which returns the last-command exit code — `[[ ! -f "$f" ]]` when the file
-  exists returns 1 — making the function always return 1 regardless of outcome; callers using
-  `|| true` were unaffected, but `|| continue` callers required `return 0` explicitly).
+  explicitly on the success path (two of the four scripts previously omitted this; bash's `if`
+  command returns `0` when its condition is false and no `else` branch runs, so the function
+  already behaved correctly without it — the explicit `return 0` is retained as a clear success
+  contract, not because it changes behavior).
 - `require_pattern()` — checks a required pattern in a file and records an error.
 
 **What was NOT extracted:**

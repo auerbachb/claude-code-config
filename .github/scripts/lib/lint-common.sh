@@ -12,10 +12,10 @@
 #     does not exist. Returns 1 on failure, 0 on success.
 #     Callers use either `|| true` (ignore return value) or `|| continue` (skip
 #     the rest of the loop body when the file is missing). The explicit `return 0`
-#     is required so that `|| continue` callers do not always continue: in bash,
-#     the last command executed when the if-body is skipped is the `[[ ! -f "$f" ]]`
-#     test, which returns 1 (false) when the file exists, making the function
-#     return 1 without the explicit `return 0`.
+#     makes the success contract clear; bash's `if` command returns 0 when its
+#     condition is false and no `else` branch runs, so the function already
+#     returned 0 on the success path without it — `return 0` is retained for
+#     explicitness, not because it changes behavior.
 #
 #   require_pattern FILE PATTERN LABEL
 #     Emits a GitHub Actions ::error:: annotation and increments $errors if
