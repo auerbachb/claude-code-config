@@ -33,30 +33,7 @@ If all strategies fail, a visible warning is printed to stderr instead of exitin
 
 > **Note:** This hook is a safety net, not the primary mechanism. The primary mechanism is the session-start `git pull origin main --ff-only` rule in `CLAUDE.md`, which catches all missed pulls regardless of how a merge happened (web UI, other sessions, hook failures).
 
-### Setup
-
-Add the following to your **global** `~/.claude/settings.json` (create the file if it doesn't exist):
-
-```json
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/absolute/path/to/claude-code-config/.claude/hooks/post-merge-pull.sh",
-            "timeout": 15
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Replace `/absolute/path/to/claude-code-config` with the actual path to your clone of this repo.
+This hook is registered automatically — see [Hook Auto-Registration](#hook-auto-registration) above.
 
 ### Prerequisites
 
@@ -74,40 +51,7 @@ Enforces the 5-minute heartbeat rule. If the agent goes >5 minutes without sendi
 
 The heartbeat file is session-scoped (`/tmp/claude-heartbeat-$CLAUDE_SESSION_ID`) and cleaned up automatically by the OS.
 
-### Setup
-
-**Merge** the following entries into your **global** `~/.claude/settings.json` (don't replace existing hooks like `post-merge-pull.sh` — add these alongside them):
-
-```json
-{
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/absolute/path/to/claude-code-config/.claude/hooks/silence-detector-ack.sh",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/absolute/path/to/claude-code-config/.claude/hooks/silence-detector.sh",
-            "timeout": 5
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Replace `/absolute/path/to/claude-code-config` with the actual path to your clone of this repo.
+These hooks are registered automatically — see [Hook Auto-Registration](#hook-auto-registration) above.
 
 ### Prerequisites
 
