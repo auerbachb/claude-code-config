@@ -168,52 +168,19 @@ Run `/pm` first to bootstrap the PM config, then use the other PM skills as need
 
 ## Rule Files
 
-Rule files in `.claude/rules/` auto-load alongside `CLAUDE.md` and define the detailed workflows:
+Rule files in `.claude/rules/` auto-load alongside `CLAUDE.md` and define the detailed workflows. Each file's own header block states its scope.
 
-| File | Purpose |
-|------|---------|
-| `issue-planning.md` | Issue creation flow, `@coderabbitai plan` integration, plan merging |
-| `cr-local-review.md` | Primary review loop — runs CodeRabbit CLI locally before pushing |
-| `cr-github-review.md` | GitHub review polling — three endpoints, rate limits, BugBot fallback, CI checks, thread resolution |
-| `cr-merge-gate.md` | Single authoritative merge gate — CR approval or clean BugBot/Greptile path, CI, resolved threads, AC verification |
-| `bugbot.md` | BugBot second-tier reviewer — polling, timeout, sticky assignment, merge gate contribution |
-| `greptile.md` | Greptile last-resort reviewer — severity-gated re-reviews, daily budget, self-review fallback |
-| `scheduling-reliability.md` | Reliable recurring polls — persistent `Monitor`, no cron/dynamic-loop fallback or hand-rolled wakeup chains |
-| `subagent-orchestration.md` | Subagent spawning, phase transition autonomy, token exhaustion, phase A/B/C decomposition |
-| `monitor-mode.md` | Dedicated monitor mode, monitor loop, heartbeats during batch writes, health monitoring, post-compaction recovery |
-| `handoff-files.md` | Handoff file schema, session-state.json format, lifecycle (create/update/delete) |
-| `phase-protocols.md` | Structured exit report format, Phase A/B/C completion protocol checklists |
-| `safety.md` | Destructive command prohibitions, expanded `.env` protection, subagent safety warnings |
-| `main-hygiene.md` | Dirty-main guard, quarantine recovery branches, session-start sync contract |
-| `repo-bootstrap.md` | Auto-provision required GitHub Actions workflows on first touch; check `main` branch protection and prompt to enable required status checks if missing |
-| `trust-dialog-fix.md` | Fix trust dialog re-prompting when bypass permissions are enabled |
-| `skill-symlinks.md` | Symlink new skills globally via the skills worktree after creation |
+The canonical rule index — grouped by area (Issues & planning, Review & merge, Orchestration, Safety & hygiene) — lives in **[CLAUDE.md §Rule Files](CLAUDE.md#rule-files-clauderules)** and is kept in sync by `rule-lint.sh`.
 
 ---
 
 ## Hook Scripts
 
-Thirteen hook scripts and hook utilities support Claude Code sessions:
+Hook scripts in `.claude/hooks/` automate Claude Code session lifecycle events. All hooks are idempotent and fail-safe.
 
-| Script | Event | Purpose |
-|--------|-------|---------|
-| `session-start-sync.sh` | PostToolUse (first call) | Syncs skills worktree to `origin/main`, auto-registers new hooks from `global-settings.json` |
-| `post-merge-pull.sh` | PostToolUse (Bash) | Pulls `main` after `gh pr merge`, syncs skills worktree |
-| `worktree-guard.sh` | PreToolUse (Write/Edit/NotebookEdit) | Blocks file edits in `claude-code-config` repo when root is on `main` |
-| `env-guard.py` | PreToolUse (Write/Edit/MultiEdit/NotebookEdit/Bash) | Blocks edits and shell writes to `.env` files that may contain secrets |
-| `timestamp-injector.sh` | UserPromptSubmit | Injects real system-clock Eastern timestamp context to prevent hallucinated dates |
-| `issue-prefix-nudge.sh` | UserPromptSubmit | On the first user message of a session only, nudges when the prompt lacks a leading `[#N]` issue prefix (see CLAUDE.md) |
-| `silence-detector.sh` | PostToolUse (all) | Warns if agent has been silent >5 minutes |
-| `silence-detector-ack.sh` | Stop | Resets the silence timer after each response |
-| `trust-flag-repair.sh` | Stop | Repairs trust flags in `~/.claude.json` for all projects |
-| `dirty-main-warn.sh` | Stop | Warns when root `main` has uncommitted drift and points to quarantine recovery |
-| `skill-usage-tracker.sh` | PostToolUse (Skill) | Appends each Skill invocation to `~/.claude/skill-usage.log` and updates `~/.claude/skill-usage.csv` for PM and maintenance audits |
-| `register-hooks.py` | Utility | Merges hook definitions — and the top-level `statusLine` command — from `global-settings.json` into user settings |
-| `.claude/git-hooks/pre-commit` | Git pre-commit | Blocks commits made on `main` in the root checkout |
+**Auto-registration:** Hooks are defined in `global-settings.json` with placeholder paths. At install time, `setup-skills-worktree.sh` resolves these to the skills worktree and registers them in `~/.claude/settings.json`. At each session start, `session-start-sync.sh` auto-registers any newly added hooks — no manual setup needed after the initial install.
 
-All hooks are idempotent and fail-safe.
-
-**Auto-registration:** Hooks are defined in `global-settings.json` with placeholder paths (e.g., `/path/to/claude-code-config/.claude/hooks/session-start-sync.sh`). At install time, `setup-skills-worktree.sh` resolves these to the skills worktree and registers them in `~/.claude/settings.json`. At each session start, `session-start-sync.sh` checks for new hooks added to the repo and registers them automatically — no manual setup needed after the initial install. See [ARCHITECTURE.md](ARCHITECTURE.md#hook-auto-registration) for details.
+For the full per-hook manifest (script name, event, purpose) see **[.claude/hooks/README.md](.claude/hooks/README.md)**. For the hook event sequence and auto-registration mechanics see **[ARCHITECTURE.md §Hook Lifecycle](ARCHITECTURE.md#hook-lifecycle)** and **[ARCHITECTURE.md §Hook Auto-Registration](ARCHITECTURE.md#hook-auto-registration)**.
 
 ---
 
@@ -221,40 +188,7 @@ All hooks are idempotent and fail-safe.
 
 Shared helpers in `.claude/scripts/` are used by skills, hooks, and review subagents for repeatable GitHub, git, and PM workflow operations.
 
-| Script | Purpose |
-|--------|---------|
-| `repo-root.sh` | Resolve the root repo path from a worktree or nested directory |
-| `merge-gate.sh` | Verify reviewer ownership, review gate, CI, merge state, and unresolved thread blockers |
-| `admin-merge.sh` | Bypass branch protection to merge a solo-owner PR after verifying the merge gate. Claude may run `--auto-plain` (the plain shape — a bare `gh pr merge --squash --admin`, no protection call) or print via `--print`/`--launch-terminal`; the `enforce_admins` toggle dance runs only on the user's own `--execute` |
-| `pr-state.sh` | Gather PR state: review threads, comments, CI, commit statuses, merge metadata |
-| `ci-status.sh` | Summarize check-runs/statuses for a PR or SHA |
-| `ac-checkboxes.sh` | Extract and update PR Test Plan checkboxes |
-| `greptile-budget.sh` | Track and guard Greptile daily review budget |
-| `pm-config-get.sh` | Parse named sections from `.claude/pm-config.md` |
-| `resolve-review-threads.sh` | Resolve review threads via GraphQL, with minimize fallback |
-| `gh-window.sh` | Build GitHub search date windows |
-| `cr-plan.sh` | Find or poll for CodeRabbit implementation-plan comments on issues |
-| `cycle-count.sh` | Reconstruct review/fix cycle counts for PR metrics (`--cr-only` = CodeRabbit rounds for issue #362) |
-| `complexity-score.sh` | PR complexity score for issue #362 triggers |
-| `maybe-trigger-ai-review.sh` | issue #362: round-gated AI reviewer triggers (three separate comments) |
-| `reply-thread.sh` | Reply to CodeRabbit, BugBot, or Greptile review comments with the right fallback path |
-| `reviewer-of.sh` | Detect which reviewer currently owns a PR |
-| `hhg-state.sh` | Detect HHG state codes for domain-specific workflows |
-| `session-state.sh` | Surgically read/update `~/.claude/session-state.json` |
-| `repo-bootstrap.sh` | Check or install required repo bootstrap assets |
-| `off-peak-minute.sh` | Choose deterministic off-peak cron minutes |
-| `workday.sh` | Calculate workday/holiday windows for PM reports |
-| `pr-issue-ref.sh` | Extract the linked issue reference from a PR |
-| `main-sync.sh` | Sync root `main`, with guarded aggressive reset support for `/wrap` |
-| `stale-cleanup.sh` | Sweep stale worktrees and local/remote branches, owned by `/pm-update` |
-| `dirty-main-guard.sh` | Detect dirty root `main` state and quarantine it to a recovery branch |
-| `repair-worktrees.sh` | Diagnose and optionally remove stale git worktrees |
-| `repair-trust-single.sh` | Repair Claude trust flags for one project path |
-| `repair-trust-all.sh` | Repair Claude trust flags for all known projects |
-| `audit-skill-usage.sh` | Legacy monthly audit against `.claude/data/skill-usage.json` |
-| `skill-usage-report.sh` | Markdown rollup from `~/.claude/skill-usage.log` (dead-skill candidates; issue #416) |
-
-See `.claude/scripts/README.md` for detailed contracts, arguments, and exit codes for the most commonly shared helpers.
+See **[.claude/scripts/README.md](.claude/scripts/README.md)** for the full script catalog with contracts, arguments, and exit codes.
 
 ---
 
@@ -330,7 +264,7 @@ Claude Code loads project-level `CLAUDE.md` first, then falls back to `~/.claude
 ## FAQ
 
 **Why does the config require worktrees?**
-Without worktrees, all Claude Code sessions share a single working directory. If two agents work on the same repo, they overwrite each other's edits. Worktrees give each agent its own isolated directory and branch.
+Without worktrees, all Claude Code sessions share a single working directory. If two agents work on the same repo, they overwrite each other's edits. Worktrees give each agent its own isolated directory and branch. See [ARCHITECTURE.md §Skills Worktree](ARCHITECTURE.md#skills-worktree) for the full rationale.
 
 **What's the difference between local and GitHub reviews?**
 Local reviews run the CodeRabbit CLI in your terminal — instant, no PR noise, no quota cost. GitHub reviews happen after PR creation. CodeRabbit is the primary merge-gate reviewer, BugBot and Greptile are fallbacks, and CodeAnt plus Graphite AI Reviews add supplemental PR review signals.
