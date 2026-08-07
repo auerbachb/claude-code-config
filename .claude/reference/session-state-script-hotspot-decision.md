@@ -8,8 +8,8 @@ Reference for Issue #952 (`.claude/scripts/session-state.sh` churn hotspot). Not
 
 The 11-PR churn (PRs #630, #654, #659, #662, #694, #721, #728, #855, #931, #937, #989) is a
 **completed foundational build-out**, not ongoing independent evolution of co-located concerns.
-Three distinct churn classes are present: foundational mechanism additions (6 PRs), incremental
-corner-case refinements (3 PRs), and peripheral touches (2 PRs). The mechanism is now stable.
+Three distinct churn classes are present: foundational mechanism additions (5 PRs), incremental
+corner-case refinements (3 PRs), and peripheral touches (3 PRs). The mechanism is now stable.
 
 The concerns most likely to evolve independently are **already extracted**:
 - Lock lifecycle → `state-lock.sh` (PRs #662, #937 integrated that extraction)
