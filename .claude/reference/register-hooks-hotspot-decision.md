@@ -58,7 +58,7 @@ Untouched by all three PRs. Predates the hotspot window.
   identical placeholder-to-worktree resolution as the hook entries; `register-hooks.py`
   is the one implementation that does this resolution at session start.
 
-### `main()` (lines 228–469) — extended by PRs #811 and #1027
+### `main()` (lines 228–466) — extended by PRs #811 and #1027
 
 **PR #811** (`fix(#792): move session-start-sync.sh to the SessionStart hook event`)
 - Added a ~38-line stale-event-registration pruning loop inside `main()`.
