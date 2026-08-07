@@ -78,7 +78,8 @@ every ratchet change risks touching index/size test setup and vice versa.
 - The index-alignment, per-file-size, and chip-model-guard checks keep their
   current behavior and exit codes in `rule-lint.sh`.
 - The ratchet CLI flags `--update-cap` and `--allow-raise` keep their semantics;
-  `rule-lint.sh` forwards them to `rule-lint-ratchet.sh`.
+  while delegation is deferred, `rule-lint.sh` retains its own inline handling of
+  these flags. Delegation to `rule-lint-ratchet.sh` is tracked in Issue #1087.
 - The `.claude/rules/.budget-soft-cap` ratchet formula (`max(count + 750, 8500)`)
   is unchanged.
 - All case labels (a–i) remain represented across the two test files so issue and

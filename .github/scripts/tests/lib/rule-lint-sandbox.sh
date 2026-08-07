@@ -47,8 +47,12 @@ trap 'rm -rf "$SANDBOX"' EXIT
 # CLAUDE.md indexing that file with an absent file, and every fixture would
 # then fail on rule-index misalignment).
 while IFS= read -r -d '' f; do
+  source_path="${REPO_ROOT}/${f}"
+  if [[ ! -e "$source_path" && ! -L "$source_path" ]]; then
+    continue
+  fi
   mkdir -p "${SANDBOX}/$(dirname "$f")"
-  cp "${REPO_ROOT}/${f}" "${SANDBOX}/${f}"
+  cp "$source_path" "${SANDBOX}/${f}"
 done < <(git -C "$REPO_ROOT" ls-files -z --cached --others --exclude-standard)
 
 # Required, not cosmetic: rule-lint.sh's step 4 shells chip-model-guard-lint.test.sh,

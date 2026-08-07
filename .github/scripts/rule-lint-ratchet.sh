@@ -74,6 +74,12 @@ while (( $# > 0 )); do
   shift
 done
 
+if (( allow_raise && ! update_cap )); then
+  echo "::error::--allow-raise requires --update-cap"
+  usage >&2
+  exit 2
+fi
+
 if [[ ! -f "$CLAUDE_MD" ]]; then
   echo "::error file=${CLAUDE_MD}::CLAUDE.md not found at repo root"
   exit 1

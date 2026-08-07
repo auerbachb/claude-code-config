@@ -39,6 +39,7 @@ else
   ( cd "$REPO_ROOT" && bash "$REAL_LINT" 2>&1 | sed 's/^/       /' ) || true
   failures=$(( failures + 1 ))
 fi
+assert_real_cap_untouched "during (e) real repo conformance"
 
 # ---------------------------------------------------------------------------
 # (i) Nested rule files are recursively indexed, counted, and size-checked
