@@ -21,10 +21,10 @@ since 2026-07-28: PRs #811, #829, #931, and #1027.
 
 | PR | Section | What changed | Classification |
 |----|---------|-------------|----------------|
-| #811 | Step 6 — `HOOKS_MANIFEST` | Hook relocation: migrated `session-start-sync.sh` from PostToolUse to SessionStart in the inline manifest array | already-remediated (#1019) |
-| #829 | Step 6 — `HOOKS_MANIFEST` | Hook registration: added `usage-limit-record.sh` (StopFailure/rate_limit) to the inline manifest array | already-remediated (#1019) |
-| #931 | Step 6 / Step 6b — hook + statusLine | statusLine concern: added Step 6b block calling `register-hooks.py --statusline-only`; updated comment in hooks README | already-remediated (#1019) |
-| #1027 | Step 6 — `HOOKS_MANIFEST` retirement | IS the #1019 remediation: retired the inline `HOOKS_MANIFEST` array (~300 lines of inline Python), replaced with a single `register-hooks.py` full-mode call | is the remediation |
+| #811 | Step 6 — `HOOKS_MANIFEST` | Hook relocation: migrated `session-start-sync.sh` from PostToolUse to SessionStart in the inline manifest array | already-remediated (Issue #1019) |
+| #829 | Step 6 — `HOOKS_MANIFEST` | Hook registration: added `usage-limit-record.sh` (StopFailure/rate_limit) to the inline manifest array | already-remediated (Issue #1019) |
+| #931 | Step 6 / Step 6b — hook + statusLine | statusLine concern: added Step 6b block calling `register-hooks.py --statusline-only`; updated comment in hooks README | already-remediated (Issue #1019) |
+| #1027 | Step 6 — `HOOKS_MANIFEST` retirement | IS the Issue #1019 remediation: retired the inline `HOOKS_MANIFEST` array (~300 lines of inline Python), replaced with a single `register-hooks.py` full-mode call | is the remediation |
 
 **All 4 PRs map exclusively to the hook/statusLine registration concern (Step 6).**
 None touched Steps 1–5 (worktree lifecycle, skill symlinking, or symlink migration).
@@ -54,7 +54,7 @@ action:
 | Step 5 CLAUDE.md block | lines 155–175 | Migrate CLAUDE.md symlink to the skills worktree |
 | Step 5 rules block | lines 178–198 | Migrate rules symlink to the skills worktree |
 
-The Step 5 CLAUDE.md and rules blocks were byte-for-byte copies of the same
+The Step 5 CLAUDE.md and rules blocks were near-identical copies of the same
 20-line state machine, differing only in variable names and labels. Step 4's inner
 `if/else` was a two-branch subset of the same logic (legacy-migrate and
 legacy-warn). All three blocks would need to be updated if the migration semantics
