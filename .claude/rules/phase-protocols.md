@@ -43,7 +43,7 @@ Every subagent MUST print an `EXIT_REPORT` block as its **final output** — one
    - `merged` → verify GitHub confirms the PR is merged (`merged == true`), then proceed to cleanup.
    - `blocked` → report blocker details to user. Do NOT merge.
 3. **Update `session-state.json`.** Mark Phase C complete, remove from `active_agents`.
-4. **Handoff cleanup (after successful merge only).** Delete the handoff file (`handoff-state.sh [--owner-repo owner/repo] --delete N`) after `OUTCOME: merged` confirmed by GitHub. If merge fails or is aborted, do NOT delete. A clean merge is silent.
+4. **Handoff cleanup (after successful merge only).** Delete the handoff file (`handoff-state.sh [--owner-repo owner/repo] --delete N`) after `OUTCOME: merged` confirmed by GitHub. If merge fails or is aborted, do NOT delete. Emit one line — `merged PR #N` — after a clean merge.
 
 ## `/wrap` → `/fixpr` Delegation Contract
 
