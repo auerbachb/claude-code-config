@@ -110,7 +110,8 @@ extract the emit messages — the diagnosis above explains why both are the wron
 direction.
 
 The backoff thresholds (streak boundaries, WIDE_MIN formula) are owned by
-`.claude/rules/scheduling-reliability.md` §Stable-State Backoff. If those values
-change, update the canonical rule and then verify this hook's computed values still
-match; the hook does not need to be edited for a pure threshold change (it reads
-the values dynamically from session state).
+`.claude/rules/scheduling-reliability.md` §Stable-State Backoff. The hook reads
+`babysit.cadence_base_minutes` dynamically from session state, but the streak
+boundaries (≥3 widen, ≥9 stop), the multiplier (3×), and the floor (15m) are
+hardcoded. If any of those values change in the canonical rule, update the rule
+first and then edit the corresponding lines in this hook to match.
