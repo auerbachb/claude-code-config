@@ -4,8 +4,7 @@ Reference for Issue #943 (`.claude/rules/handoff-files.md` churn hotspot). Not a
 
 Companion to `state-file-contracts-hotspot-decision.md` (Issue #1012, PR #1012), which covers the
 expanded mechanism doc for the same state machinery that `handoff-files.md` governs. The churn
-drivers overlap: both files were touched by the eight state-machinery evolution PRs (#625/#630,
-#638/#659, #639/#662, #687/#694, #651/#698, #682/#718, #655/#724, #704/#728).
+drivers overlap: both files were touched by the eight state-machinery evolution PRs (#625/#630, #638/#659, #639/#662, #687/#694, #651/#698, #682/#718, #655/#724, #704/#728).
 
 ## Executive summary
 
