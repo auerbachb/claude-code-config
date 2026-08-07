@@ -178,9 +178,9 @@ The canonical rule index — grouped by area (Issues & planning, Review & merge,
 
 Hook scripts in `.claude/hooks/` automate Claude Code session lifecycle events. All hooks are idempotent and fail-safe.
 
-**Auto-registration:** Hooks are defined in `global-settings.json` with placeholder paths. At install time, `setup-skills-worktree.sh` resolves these to the skills worktree and registers them in `~/.claude/settings.json`. At each session start, `session-start-sync.sh` auto-registers any newly added hooks — no manual setup needed after the initial install.
+Hooks auto-register on every session start — no manual setup needed after the initial install.
 
-For the full per-hook manifest (script name, event, purpose) see **[.claude/hooks/README.md](.claude/hooks/README.md)**. For the hook event sequence and auto-registration mechanics see **[ARCHITECTURE.md §Hook Lifecycle](ARCHITECTURE.md#hook-lifecycle)** and **[ARCHITECTURE.md §Hook Auto-Registration](ARCHITECTURE.md#hook-auto-registration)**.
+For the full per-hook manifest (script name, event, purpose) and auto-registration mechanics see **[.claude/hooks/README.md](.claude/hooks/README.md)**. For the hook event sequence see **[ARCHITECTURE.md §Hook Lifecycle](ARCHITECTURE.md#hook-lifecycle)** and **[ARCHITECTURE.md §Hook Auto-Registration](ARCHITECTURE.md#hook-auto-registration)**.
 
 ---
 
@@ -188,7 +188,7 @@ For the full per-hook manifest (script name, event, purpose) see **[.claude/hook
 
 Shared helpers in `.claude/scripts/` are used by skills, hooks, and review subagents for repeatable GitHub, git, and PM workflow operations.
 
-See **[.claude/scripts/README.md](.claude/scripts/README.md)** for the full script catalog with contracts, arguments, and exit codes.
+See **[.claude/scripts/README.md](.claude/scripts/README.md)** for the script catalog (one-sentence purpose per script). For full contracts, arguments, and exit codes run the script with `--help` or read the script header.
 
 ---
 

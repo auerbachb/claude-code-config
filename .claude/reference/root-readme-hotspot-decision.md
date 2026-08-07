@@ -80,7 +80,7 @@ a targeted remediation.
 | Slash Commands catalog (one row per skill, count anchors) | `README.md` — `skill-catalog-lint.sh` enforces it | Skills must add a row here; the lint CI blocks omissions |
 | Rule file index (area-grouped, loading semantics) | `CLAUDE.md` §Rule Files — `rule-lint.sh` enforces the index | `README.md` points to `CLAUDE.md` §Rule Files |
 | Hook script manifest (per-hook event, purpose, auto-registration) | `.claude/hooks/README.md` — maintained alongside the hooks | `README.md` points to `.claude/hooks/README.md` + `ARCHITECTURE.md#hook-lifecycle` |
-| Script contracts (arguments, exit codes, contracts) | `.claude/scripts/README.md` — maintained alongside the scripts | `README.md` points to `.claude/scripts/README.md` |
+| Script catalog/index (one-sentence purposes; full contracts in script headers and `--help`) | `.claude/scripts/README.md` — maintained alongside the scripts | `README.md` points to `.claude/scripts/README.md` for the catalog; full contracts via `--help` |
 | Worktree architecture rationale (skills worktree, config availability) | `ARCHITECTURE.md` §Skills Worktree | `README.md` FAQ links into `ARCHITECTURE.md` |
 | User-facing worktree isolation summary | `README.md` FAQ — short user-friendly answer | Points to `ARCHITECTURE.md` for full rationale |
 
@@ -97,11 +97,13 @@ The following changes were made to `README.md`:
 
 3. **Hook Scripts section** — replaced the 13-row table restating each hook's event and purpose
    with a pointer to `.claude/hooks/README.md` (per-hook detail) and `ARCHITECTURE.md#hook-lifecycle`
-   (sequence context). Kept the auto-registration note in brief (it is not duplicated elsewhere).
+   (sequence context). Kept a short user-facing auto-registration summary as an intentional
+   exception; full mechanics are in `.claude/hooks/README.md` §Hook Auto-Registration.
 
 4. **Scripts Library section** — replaced the multi-row table restating each script's purpose
-   with a pointer to `.claude/scripts/README.md` (the canonical contract list). This section
-   already carried a pointer in its closing line; the table itself was the duplication.
+   with a pointer to `.claude/scripts/README.md` (the canonical catalog/index of script purposes).
+   Full contracts (flags, exit codes) live in each script's header and `--help` output. This
+   section already carried a pointer in its closing line; the table itself was the duplication.
 
 5. **Slash Commands table** — unchanged. `skill-catalog-lint.sh` enforces the one-row-per-skill
    contract and the two count-anchor prose strings ("X slash commands" / "All X commands are invoked").
