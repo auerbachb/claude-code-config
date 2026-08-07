@@ -134,7 +134,7 @@ The CR plan suggested verifying two candidate dedup targets:
 2. **`.claude/reference/autofile-dedup.md`** — `churn-hotspots.md`'s "The dedup key"
    section explicitly delegates to `autofile-dedup.md` as canonical: "Full rationale and
    the contract live in `autofile-dedup.md` under 'Exact-artifact dedup'. In short: ..."
-   followed by a one-paragraph orientation summary. The `autofile-dedup.md` records
+   followed by a one-paragraph orientation summary. The `autofile-dedup.md` record
    (`autofile-dedup-hotspot-decision.md`, Issue #1076) confirms this: "The 'The dedup key'
    section in `churn-hotspots.md` says: 'Full rationale and the contract live in
    `autofile-dedup.md`...' The summary is a pointer + one-sentence restatement for reader
