@@ -8,18 +8,18 @@ Reference for Issue #977 (`.claude/scripts/escalate-review.sh` churn hotspot). N
 2026-07-20: #626, #709, #849, #883, #891, #945, #954, #963, #969.
 
 The file is the authoritative CR→BugBot→Greptile escalation gate whose `STATUS=`
-contract is consumed verbatim by six callers: `phase-b-reviewer.md`,
-`phase-a-fixer.md`, `cr-github-review.md` (rule prose and example), the
-`escalate-review.sh` script-catalog entry in `scripts-reference.md`, and the
-`escalate-review.sh` entry in `.claude/reference/scripts-reference.md`. Splitting
-it would force matching updates to every consumer; the contract-junction nature
-explains some churn. Three additional concerns within the file also iterate
-independently.
+contract is consumed verbatim by four runtime callers: `phase-b-reviewer.md`,
+`phase-a-fixer.md`, `cr-github-review.md` (rule prose and example), and
+`monitor-mode.md` (monitor loop step 3 — runs `escalate-review.sh` each cycle and
+acts on the `STATUS=` verdict). Non-runtime reference: the `escalate-review.sh`
+entry in `.claude/reference/scripts-reference.md`. Splitting it would force
+matching updates to every consumer; the contract-junction nature explains some
+churn. Three additional concerns within the file also iterate independently.
 
 ## Churn attribution — per-section evidence
 
-The 570-line file divides into four functional sections. Diff traces for each PR
-are below; every `+` / `-` count reflects only the production script (not the
+The 570-line file divides into four functional sections. Per-PR changes are
+summarized below; all entries apply to the production script only (not the
 companion test file, which was separately adjudicated in Issue #966 and split
 into four concern suites in that PR).
 
@@ -58,7 +58,7 @@ Classifies the `Cursor Bugbot` check-run and `cursor[bot]` comments into
 
 | PR | Change | Driver |
 |----|--------|--------|
-| #849 | Added design note; `BUGBOT_GENUINE` path added to cover check-run success shape (comment only — actual jq classifier predated this PR) | `merge-gate.sh` was updated to accept silent-pass check-run; escalate-review.sh got a cross-reference comment |
+| #849 | Added design note documenting the existing `BUGBOT_GENUINE` check-run success path (comment-only; the actual jq classifier predated this PR) | `merge-gate.sh` received the new check-run path; `escalate-review.sh` received only a cross-reference comment |
 | #963 | Added `is_cursor_bugbot_check` predicate (name + `app.slug == "cursor"`); applied to both `$run` selector and `BUGBOT_CHECK_PRESENT` | GitHub allows any app to publish under any check-run name; publisher spoofing suppressed paid BugBot invite (issue #956) |
 
 **Overlap with `merge-gate.sh`:** The `is_failure_text` regex and the concept of
@@ -73,8 +73,7 @@ The two implementations share the same constants but diverge structurally:
   and sets `BB_CHECK_CLEAN`, `BB_CHECK_FRESHNESS_ERR`, `BB_CHECK_APP_MISMATCH`
   with side effects on `MISSING[]`.
 
-Only PRs #963/#962 (treated as one change event) required sync edits to both
-files for this section. PR #849 was structurally different: `merge-gate.sh`
+Only PR #963 required sync edits to both files for this section. PR #849 was structurally different: `merge-gate.sh`
 received the new check-run path while `escalate-review.sh` received only a
 cross-reference comment.
 
@@ -128,7 +127,7 @@ and `merge-gate.sh`.
 - Section B (1 PR): CR grace window is unique to this script.
 - Section D (3 PRs): BugBot invitation detection is unique to this script.
 
-Only Sections C changes (PRs #963/#962 as one event, #849 as a partial comment)
+Only Section C changes (PR #963 and #849 as a partial comment)
 involved code present in both scripts.
 
 **2. The overlapping logic is small and structurally incompatible.**
