@@ -150,14 +150,16 @@ reset_state
 # fraction) rules the approval stale and blocks. The old canon_ts here dropped
 # the fraction, collapsing the two to the same instant and reporting gate_met on
 # a PR the gate refuses — escalation must never be the more permissive of the two.
-PUSH_H6C="$(python3 -c "
+# Use a single Python call to get the base second so both timestamps always
+# fall within the same clock second — two separate calls can straddle a second
+# boundary and make the approval appear LATER than the commit (gate_met instead
+# of trigger_greptile).
+BASE_H6C="$(python3 -c "
 from datetime import datetime, timedelta, timezone
-print((datetime.now(timezone.utc) - timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%S.900000Z'))
+print((datetime.now(timezone.utc) - timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%S'))
 ")"
-APPROVED_H6C="$(python3 -c "
-from datetime import datetime, timedelta, timezone
-print((datetime.now(timezone.utc) - timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%SZ'))
-")"
+PUSH_H6C="${BASE_H6C}.900000Z"   # commit at 0.9 s into the base second (later)
+APPROVED_H6C="${BASE_H6C}Z"       # approval at 0.0 s (start of same second — earlier)
 write_commits "$PUSH_H6C"
 FAILURE_COMMENT_H6C="$(failure_comment "$(ts_seconds_ago 60)")"
 CODEANT_APPROVED_H6C='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed every changed file; no blocking issues found.", "submitted_at": "'"$APPROVED_H6C"'"}'
@@ -174,14 +176,14 @@ reset_state
 # so the LATER instant "…49.900Z" would compare BELOW "…49Z" and a genuinely
 # fresh approval would be withheld. With the suffix stripped, plain lexicographic
 # order is correct for whole and fractional seconds alike.
-PUSH_H6D="$(python3 -c "
+# Single Python call for the base second so the two timestamps always stay
+# within the same clock second (mirrors the h6c fix — same racy pattern).
+BASE_H6D="$(python3 -c "
 from datetime import datetime, timedelta, timezone
-print((datetime.now(timezone.utc) - timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%SZ'))
+print((datetime.now(timezone.utc) - timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%S'))
 ")"
-APPROVED_H6D="$(python3 -c "
-from datetime import datetime, timedelta, timezone
-print((datetime.now(timezone.utc) - timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%S.900000Z'))
-")"
+PUSH_H6D="${BASE_H6D}Z"            # commit at 0.0 s (start of base second — earlier)
+APPROVED_H6D="${BASE_H6D}.900000Z"  # approval at 0.9 s into same second (later)
 write_commits "$PUSH_H6D"
 FAILURE_COMMENT_H6D="$(failure_comment "$(ts_seconds_ago 60)")"
 CODEANT_APPROVED_H6D='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "Actionable comments posted: 0. Reviewed every changed file; no blocking issues found.", "submitted_at": "'"$APPROVED_H6D"'"}'
