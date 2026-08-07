@@ -33,6 +33,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/lint-common.sh
+source "$SCRIPT_DIR/lib/lint-common.sh"
+
 errors=0
 
 usage() {
@@ -95,16 +99,6 @@ VERBATIM_COPIES=(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-require_file() {
-  local f="$1"
-  if [[ ! -f "$f" ]]; then
-    echo "::error file=${f}::Required file not found"
-    errors=$(( errors + 1 ))
-    return 1
-  fi
-  return 0
-}
 
 # Extract a verbatim block from a file.
 # Arguments: BLOCK_MARKER  FILE

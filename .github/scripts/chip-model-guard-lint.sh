@@ -31,6 +31,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/lint-common.sh
+source "$SCRIPT_DIR/lib/lint-common.sh"
+
 CHIP_LAUNCHING=".claude/reference/chip-launching.md"
 CHIP_DECISION=".claude/reference/chip-model-guard-decision.md"
 CHIP_RULE=".claude/rules/chip-spawn.md"
@@ -86,23 +90,6 @@ while (( $# > 0 )); do
   esac
   shift
 done
-
-require_file() {
-  local f="$1"
-  if [[ ! -f "$f" ]]; then
-    echo "::error file=${f}::Required file not found"
-    errors=$((errors + 1))
-    return 1
-  fi
-}
-
-require_pattern() {
-  local file="$1" pattern="$2" label="$3"
-  if ! grep -qE "$pattern" "$file"; then
-    echo "::error file=${file}::Missing required ${label} (expected /${pattern}/)"
-    errors=$((errors + 1))
-  fi
-}
 
 require_file "$CHIP_LAUNCHING" || true
 require_file "$CHIP_DECISION" || true

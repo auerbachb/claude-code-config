@@ -45,6 +45,10 @@ PROMPT_SURFACES=(
 # Canonical rule file (uses brace form, not angle-bracket form).
 SAFETY_MD='.claude/rules/safety.md'
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/lint-common.sh
+source "$SCRIPT_DIR/lib/lint-common.sh"
+
 errors=0
 
 usage() {
@@ -72,16 +76,6 @@ while (( $# > 0 )); do
   esac
   shift
 done
-
-require_file() {
-  local f="$1"
-  if [[ ! -f "$f" ]]; then
-    echo "::error file=${f}::Required file not found"
-    errors=$((errors + 1))
-    return 1
-  fi
-  return 0
-}
 
 # Assert the correct suffix token is present in the file (fixed-string).
 require_token() {
