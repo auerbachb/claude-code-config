@@ -37,6 +37,54 @@ fi
 
 echo "Root repo: $REPO_ROOT"
 
+# --- Shared helper: migrate_symlink ---
+# Manages one symlink, handling all five states in one place so Steps 4 and 5
+# do not each carry a hand-rolled copy of the same state machine.
+#
+# Usage: migrate_symlink LINK NEW_TARGET LEGACY_TARGET LABEL EXISTENCE_TEST
+#   LINK            Path of the symlink to manage (e.g. ~/.claude/CLAUDE.md)
+#   NEW_TARGET      Where the symlink should point after this call
+#   LEGACY_TARGET   Old root-repo target that triggers a "migrating" message
+#   LABEL           Human-readable name used in echo output
+#   EXISTENCE_TEST  test(1) flag for the target: -f for files, -d for dirs
+#
+# States handled:
+#   already-correct target   → no-op
+#   legacy LEGACY_TARGET     → migrate if NEW_TARGET exists; warn if not
+#   any other symlink target → repoint to NEW_TARGET
+#   non-symlink regular file → warn, never overwrite
+#   missing                  → create if NEW_TARGET passes EXISTENCE_TEST
+migrate_symlink() {
+  local link="$1" new_target="$2" legacy_target="$3" label="$4" existence_test="$5"
+
+  if [[ -L "$link" ]]; then
+    local current_target
+    current_target="$(readlink "$link")"
+    if [[ "$current_target" == "$new_target" ]]; then
+      echo "  $label — already correct"
+    elif [[ "$current_target" == "$legacy_target" ]]; then
+      if test "$existence_test" "$new_target"; then
+        echo "  $label — migrating from root repo to worktree"
+        rm "$link"
+        ln -s "$new_target" "$link"
+      else
+        echo "  $label — WARNING: exists in root repo but not in worktree (skill may not be on main yet)"
+      fi
+    else
+      echo "  $label — symlink points elsewhere ($current_target), updating to worktree"
+      rm "$link"
+      ln -s "$new_target" "$link"
+    fi
+  elif [[ -e "$link" ]]; then
+    echo "  WARNING: $link is not a symlink — skipping (will not overwrite)"
+  else
+    if test "$existence_test" "$new_target"; then
+      echo "  $label — creating symlink to worktree"
+      ln -s "$new_target" "$link"
+    fi
+  fi
+}
+
 # --- Step 1: Create the skills worktree ---
 
 if [[ -d "$SKILLS_WORKTREE" ]]; then
@@ -129,16 +177,11 @@ for link in "$SKILLS_DIR"/*; do
   skill_name="$(basename "$link")"
   current_target="$(readlink "$link")"
 
-  # If it points to the root repo's .claude/skills/ (old approach), migrate it
+  # If it points to the root repo's .claude/skills/ (old approach), migrate it.
+  # migrate_symlink handles the migrate-if-target-exists / warn-if-not branches.
   if [[ "$current_target" == "$REPO_ROOT/.claude/skills/$skill_name" ]]; then
-    new_target="$WORKTREE_SKILLS/$skill_name"
-    if [[ -d "$new_target" ]]; then
-      echo "  $skill_name — migrating from root repo to worktree"
-      rm "$link"
-      ln -s "$new_target" "$link"
-    else
-      echo "  $skill_name — WARNING: exists in root repo but not in worktree (skill may not be on main yet)"
-    fi
+    migrate_symlink "$link" "$WORKTREE_SKILLS/$skill_name" \
+      "$REPO_ROOT/.claude/skills/$skill_name" "$skill_name" -d
   fi
 done
 
@@ -151,51 +194,8 @@ CLAUDE_MD_TARGET="$SKILLS_WORKTREE/CLAUDE.md"
 RULES_LINK="$HOME/.claude/rules"
 RULES_TARGET="$SKILLS_WORKTREE/.claude/rules"
 
-# Migrate CLAUDE.md
-if [[ -L "$CLAUDE_MD_LINK" ]]; then
-  current_target="$(readlink "$CLAUDE_MD_LINK")"
-  if [[ "$current_target" == "$CLAUDE_MD_TARGET" ]]; then
-    echo "  CLAUDE.md — already correct"
-  elif [[ "$current_target" == "$REPO_ROOT/CLAUDE.md" ]]; then
-    echo "  CLAUDE.md — migrating from root repo to worktree"
-    rm "$CLAUDE_MD_LINK"
-    ln -s "$CLAUDE_MD_TARGET" "$CLAUDE_MD_LINK"
-  else
-    echo "  CLAUDE.md — symlink points elsewhere ($current_target), updating to worktree"
-    rm "$CLAUDE_MD_LINK"
-    ln -s "$CLAUDE_MD_TARGET" "$CLAUDE_MD_LINK"
-  fi
-elif [[ -e "$CLAUDE_MD_LINK" ]]; then
-  echo "  WARNING: $CLAUDE_MD_LINK is not a symlink — skipping (will not overwrite)"
-else
-  if [[ -f "$CLAUDE_MD_TARGET" ]]; then
-    echo "  CLAUDE.md — creating symlink to worktree"
-    ln -s "$CLAUDE_MD_TARGET" "$CLAUDE_MD_LINK"
-  fi
-fi
-
-# Migrate rules
-if [[ -L "$RULES_LINK" ]]; then
-  current_target="$(readlink "$RULES_LINK")"
-  if [[ "$current_target" == "$RULES_TARGET" ]]; then
-    echo "  rules — already correct"
-  elif [[ "$current_target" == "$REPO_ROOT/.claude/rules" ]]; then
-    echo "  rules — migrating from root repo to worktree"
-    rm "$RULES_LINK"
-    ln -s "$RULES_TARGET" "$RULES_LINK"
-  else
-    echo "  rules — symlink points elsewhere ($current_target), updating to worktree"
-    rm "$RULES_LINK"
-    ln -s "$RULES_TARGET" "$RULES_LINK"
-  fi
-elif [[ -e "$RULES_LINK" ]]; then
-  echo "  WARNING: $RULES_LINK is not a symlink — skipping (will not overwrite)"
-else
-  if [[ -d "$RULES_TARGET" ]]; then
-    echo "  rules — creating symlink to worktree"
-    ln -s "$RULES_TARGET" "$RULES_LINK"
-  fi
-fi
+migrate_symlink "$CLAUDE_MD_LINK" "$CLAUDE_MD_TARGET" "$REPO_ROOT/CLAUDE.md" "CLAUDE.md" -f
+migrate_symlink "$RULES_LINK" "$RULES_TARGET" "$REPO_ROOT/.claude/rules" "rules" -d
 
 # --- Step 6: Register hooks and statusLine in ~/.claude/settings.json ---
 #
