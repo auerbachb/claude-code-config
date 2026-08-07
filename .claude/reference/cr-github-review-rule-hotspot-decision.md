@@ -42,10 +42,12 @@ The touch history falls into four groups:
 ## 2. Decision: keep, no operative change
 
 **Splitting is rejected.** Named anchors in `cr-github-review.md` — §Polling, §Reviewer
-escalation gate, §Three-Tier, §Processing CR Feedback — are cited verbatim by at least five
-callers: `bugbot.md`, `greptile.md`, `cr-merge-gate.md`, `cr-local-review.md`, and
-`subagent-orchestration.md`. Splitting into topic-scoped files would scatter those callers
-across multiple read paths without isolating genuinely independent behavior.
+escalation gate, §Three-Tier, §Processing CR Feedback — are cited verbatim by two direct
+anchor callers (`bugbot.md`, `greptile.md`). Three additional files (`cr-merge-gate.md`,
+`cr-local-review.md`, `subagent-orchestration.md`) reference the file or its workflow
+more generally without §-prefix anchor citations. Splitting into topic-scoped files would
+scatter those callers across multiple read paths without isolating genuinely independent
+behavior.
 
 **Script extraction does not apply.** The `fixpr` hotspot used extraction for repeatable
 `jq` / review-state operations. Every section of `cr-github-review.md` is agent policy and
@@ -98,12 +100,14 @@ No boundary changes are required.
 ## 4. Deferred candidate
 
 The blocking-conclusion enum (`failure`, `timed_out`, `action_required`, `startup_failure`,
-`stale`) appears in both `cr-github-review.md` §Per-cycle check and `cr-merge-gate.md`
-Step 1b. It is already centralized as an `is_blocking` jq function in the scripts that
-enforce it; the prose instances are inline reminders rather than executable definitions.
-The enum is stable and a five-token constant, so a shared reference snippet would add
-cross-file edit coordination for minimal gain. **Record as a low-priority deferred
-candidate; do not change now.**
+`stale`) appears in `cr-github-review.md` §Per-cycle check, `cr-merge-gate.md` Step 1b,
+and `cr-polling-commands.md` as prose/inline usage; it is also defined independently as
+a jq function in `ci-status.sh` (`is_blocking`) and `escalate-review.sh`
+(`is_blocking_conclusion`). The scripts are independent definitions rather than callers of
+a shared function. The prose instances in the rule files are inline reminders rather than
+executable definitions. The enum is stable and a five-token constant, so a shared reference
+snippet or unified script function would add cross-file edit coordination for minimal gain.
+**Record as a low-priority deferred candidate; do not change now.**
 
 ## 5. Re-open trigger
 
