@@ -42,7 +42,7 @@ the new scheduling-primitive terminology. Both PRs touched `harness-audit.md` as
 many in a coordinated cross-file propagation — the changes visible here are accurate updates to
 the design record, not new design decisions.
 
-**The three scheduler-lineage PRs (#825, #867, #982) all touch the same scheduler section.**
+**The three scheduler-lineage PRs (#825, #867, #982) all concern the same scheduling redesign.**
 None of them introduced an independent concern into the file. The progression is: factual
 correction (#825) → terminology redesign (#867) → label alignment (#982). This is the exact
 pattern `churn-hotspots.md` classifies as "churn by design" for a living reference document that
@@ -60,9 +60,9 @@ not auto-loaded into the rule corpus, so its length does not consume the corpus 
 skill. Make no operative change.
 
 The 4 reported touches are: 1 foundational creation + 1 doc-only correction + 2 coordinated
-scheduler-redesign propagations. All three of the non-creation PRs (#825, #867, #982) updated the
-same scheduler section in direct response to design decisions recorded in Issues #808, #827, and
-#924 respectively. There is no collision of independent concerns and no identified duplication that
+scheduler-redesign propagations. All three of the non-creation PRs (#825, #867, #982) updated the scheduling design record in
+direct response to design decisions recorded in Issues #808, #827, and #924 respectively — #825
+and #867 in the scheduler section, #982 in the References section. There is no collision of independent concerns and no identified duplication that
 warrants action now.
 
 Per `.claude/reference/churn-hotspots.md`, re-file this hotspot only when `conflict_rounds > 0` —
