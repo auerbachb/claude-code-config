@@ -54,9 +54,10 @@ conditions for the gate). This class matches what `churn-hotspots.md` calls "chu
 design" for canonical junction files.
 
 **No split is warranted.** The file has one clear responsibility: define Greptile-specific
-agent behavior after `escalate-review.sh` returns `trigger_greptile`. Its six sections map
-to six distinct concerns (policy header, basics, daily budget, pre-re-trigger checklist,
-sticky assignment, polling, findings processing). No section has grown beyond its purpose.
+agent behavior after `escalate-review.sh` returns `trigger_greptile`. Its six `##` sections,
+plus a top-level policy callout, map to seven distinct concerns (policy header, basics, daily
+budget, pre-re-trigger checklist, sticky assignment, polling, findings processing). No section
+has grown beyond its purpose.
 
 **No deduplication opportunity found.** Two apparent restatements were inspected:
 1. The `@greptileai` reply prohibition appears in the top `Never:` callout and in the
