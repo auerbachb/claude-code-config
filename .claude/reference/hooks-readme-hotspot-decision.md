@@ -28,8 +28,8 @@ Issue #998 was filed by `/wrap` churn detection after PR #997 merged, recording 
 PRs touching `.claude/hooks/README.md` since 2026-07-28: PRs #774, #807, #811, #829, #931, and
 #944. A seventh PR (#1032) landed after filing.
 
-Current state: 244 lines, ~2,257 words (far below the 2,000-word per-file warning; this file is
-not in the auto-loaded rule corpus, so the word gate does not apply).
+Pre-dedup baseline: 244 lines and ~2,257 words. This file is not in the auto-loaded rule corpus,
+so the word gate does not apply. Post-dedup result: 188 lines (this PR).
 
 ### Per-section churn attribution
 
