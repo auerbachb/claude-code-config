@@ -19,15 +19,18 @@ that boundary, not maintainability problems.
 
 The 877-line script divides into seven functional sections:
 
+Ranges below are approximate hotspot anchors; the sections share boundary lines
+(helper functions and declarations between blocks) and may overlap slightly.
+
 | Section | Lines (approx) | Purpose |
 |---------|----------------|---------|
 | A — Header / docs | 1–101 | Modes, options, exit codes |
-| B — Bootstrap / arg parsing | 102–230 | `set_mode`, arg parsing, PR state check |
+| B — Bootstrap / arg parsing | 102–256 | `set_mode`, arg parsing, PR state check, authorship guard |
 | C — Authorship guard | 231–256 | `pr-authorship.sh` delegation (issue #733) |
 | D — Merge-gate pre-flight | 290–420 | `merge-gate.sh` check, clean-BEHIND allowance, hard-blocker filter |
 | E — Solo-owner heuristic | 420–480 | CODEOWNERS parsing, admin count check |
-| F — Shape detection | 480–570 | `enforce_admins`, `STRICT`, `BYPASS_MODE`, bypass command builder |
-| G — Mode implementations | 563–877 | `print`, `launch-terminal`, `auto-plain`, `execute` |
+| F — Shape detection | 482–570 | `enforce_admins`, `STRICT`, `BYPASS_MODE`, bypass command builder |
+| G — Mode implementations | 564–877 | `print`, `launch-terminal`, `auto-plain`, `execute` |
 
 ## Churn attribution — per-section evidence
 
@@ -47,18 +50,18 @@ independent of any other change.
 ### PR #658 — Sections D, G
 
 Added `CLEAN_BEHIND_OK`, `BEHIND_PRESENT`, `CBC` (clean-behind-check.sh path
-discovery), and `CBC_ARGS` variables. Updated the hard-blocker filter to allow a
-clean `BEHIND` past the guard. Added `clean-behind-check.sh` invocation (exit 0
-= safe). Added re-validation of the clean-BEHIND state in `--execute` mode before
-touching branch protection. Updated the bypass-mode detection to set
-`BYPASS_MODE=plain` when `enforce_admins==false && strict==true &&
-CLEAN_BEHIND_OK==true`.
+discovery), and `CBC_ARGS` variables. Updated the hard-blocker filter to pass a
+clean `BEHIND` (using `--argjson cbo` and a BEHIND-aware jq filter). Added
+`clean-behind-check.sh` invocation (exit 0 = safe). Added re-validation of the
+clean-BEHIND state in `--execute` mode before touching branch protection.
 
 **Driver:** Issue #631 — the "clean BEHIND, safe to bypass" allowance. A PR
 BEHIND base with no file overlap between main's new commits and the PR's changed
 files does not need a rebase; an admin merge is safe. This required programmatic
 detection of the "safe" subset of BEHIND states so the guard could distinguish
-mechanical staleness from content conflict.
+mechanical staleness from content conflict. The `BYPASS_MODE` variable and the
+plain-shape execution branch were introduced in the subsequent PR #726; PR #658
+only established the `CLEAN_BEHIND_OK` verdict that #726 would act on.
 
 ### PR #726 — Sections A, F, G
 
