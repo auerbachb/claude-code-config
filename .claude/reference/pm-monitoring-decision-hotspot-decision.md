@@ -33,8 +33,8 @@ is not at risk of a budget failure.
 | #825 | `fix(#808)`: correct CronCreate durability claims | `## Decision`, `## Rationale` | Scheduling durability correction — CronCreate described as session-only; `durable:true` no-op noted |
 | #856 | `fix(#854)`: scope polling-state-gate PR lookups to active repo | `## State contract` → `root_repo` field | Repo-scoping precision — "Genuine" cross-repo mismatch definition extended with PR-number collision semantics |
 | #867 | `feat(#827)`: replace CronCreate with session-start reconciliation | `## Decision`, `## Rationale` | Scheduling primitive migration — CronCreate removed as a recurring primitive; `/loop` and then persistent `Monitor` adopted |
-| #982 | `fix(#924)`: move recurring polls to Monitor | `## Decision`, `## State contract` | Scheduling primitive finalization — full migration to persistent `Monitor`; Decision section rewritten with #914/#924 evidence |
-| #985 | `docs(#984)`: record monitor-mode hotspot decision | `## Recovery protocol` | Deduplication remediation — numbered PM recovery procedure replaced with pointer to `monitor-mode.md` named sections |
+| #982 | `fix(#924)`: move recurring polls to Monitor | `## Decision`, `## Rationale`, `## State contract`, `## Recovery protocol`, `## Skill integration decision` | Scheduling primitive finalization — full migration to persistent `Monitor`; Decision section rewritten with #914/#924 evidence; Rationale updated from `/loop` to `Monitor` as the only primitive with positive liveness evidence; Recovery protocol updated to remove Monitor/scheduler language; Skill integration section updated for `/pr-monitor-and-manage` and `/subagent` |
+| #985 | `docs(#984)`: record monitor-mode hotspot decision | `## State contract`, `## Recovery protocol`, `## Skill integration decision` | Deduplication remediation — numbered PM recovery procedure replaced with pointer to `monitor-mode.md` named sections; `polling_jobs` description clarified as legacy; `/pm-handoff` Skill integration entry updated |
 
 ### Churn classification
 
@@ -105,7 +105,7 @@ Its churn reflects substrate evolution, not content bloat.
 | Post-compaction session reconciliation and recovery heartbeat | `.claude/rules/monitor-mode.md` `## Post-Compaction Recovery` | `pm-monitoring-decision.md` `## Recovery protocol` points to this named section |
 | PM orchestration rebuild and scheduler-ownership boundaries | `.claude/rules/monitor-mode.md` `## PM Monitoring Recovery` | `pm-monitoring-decision.md` `## Recovery protocol` points to this named section |
 | `session-state.json` field schemas and write-lock contract | `.claude/reference/state-file-contracts.md` and `session-state.sh --help` | `pm-monitoring-decision.md` describes only the fields `/pm` reads and writes, not the full schema |
-| Recurring scheduler liveness and pre-exit checklist | `.claude/rules/scheduling-reliability.md` | `pm-monitoring-decision.md` cites it by name; does not restate selection logic |
+| Recurring scheduler liveness and pre-exit checklist | `.claude/rules/scheduling-reliability.md` | `pm-monitoring-decision.md` cites it by name; does not restate selection logic. Note: `scheduling-reliability.md § PM Monitoring Primitive` opens with `Division of responsibility (.../pm-monitoring-decision.md):` — this is a see-also citation, not an authority attribution; the operative rule bullets follow in `scheduling-reliability.md` itself |
 | Cross-session durability rationale | `.claude/reference/cross-session-durability.md` | `pm-monitoring-decision.md` links to it; does not duplicate rationale |
 | Per-PR polling state and repo-identity validation | `.claude/scripts/polling-state-gate.sh` + `session-state.sh` | `pm-monitoring-decision.md` describes the `root_repo` field semantics as context; implementation lives in scripts |
 
