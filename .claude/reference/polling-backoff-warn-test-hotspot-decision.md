@@ -37,12 +37,18 @@ file's own structure.
 
 Two structural observations confirm the KEEP verdict:
 
-**1. No mechanical duplication within or across files.**
-The helpers (`write_state`, `run_hook`, `context_of`, `fail`, `ok`) live only in
-this one file. There is no companion hook-test file in `.claude/hooks/tests/` and
-no `lib/` subdirectory. Nothing to deduplicate.
+**1. No extractable duplication within or across files.**
+A companion file `babysit-tick-watchdog.test.sh` exists in `.claude/hooks/tests/`
+and carries a `context_of` one-liner with an identical body, plus `write_state`
+and `run_hook` functions. However, the multi-line implementations are diverged:
+the companion's `write_state` omits local variable declarations and uses inline
+`--argjson` passing; its `run_hook` takes no PR argument and emits a different
+JSON schema (`session_id`/`tool_name` vs `tool_input.command`). No `lib/`
+subdirectory exists. The only identical function is the trivial `context_of`
+one-liner; sharing it would add a sourced-lib dependency in exchange for saving
+one line.
 
-**2. The 14 cases are homogeneous boundary coverage of one algorithm.**
+**2. The 16 labeled sections are homogeneous boundary coverage of one algorithm.**
 The hook (`polling-backoff-warn.sh`) is a single linear decision procedure with two
 branches: WIDEN (streak 3–8) and STOP (streak>=9 or `blocker_kind==user_input`).
 Every test case exercises a distinct boundary or guard of this two-branch ladder:
@@ -76,7 +82,7 @@ the hook emits, and that contract evolves with the scheduling substrate.
 ## Why not split / Why not extract
 
 **Why not split into per-concern files:**
-The 14 cases share a single `write_state`/`run_hook` harness and a single PR
+The 16 labeled sections share a single `write_state`/`run_hook` harness and a single PR
 number fixture. The two branches (WIDEN and STOP) are tested in sequence, with
 the already-applied guards exercised for both. Splitting into per-branch files
 would multiply per-change edit sites: a future substrate change would require
@@ -84,9 +90,13 @@ updating N files instead of one. The driving factor is the hook's external
 contracts, not the test file's internal structure.
 
 **Why not extract helpers into `tests/lib/`:**
-There is no companion file with a diverged copy of `write_state` or `run_hook`.
-An extraction would move five one-liner helpers into a sourced file with zero
-correctness benefit. The `merge-gate-review-substance-test-hotspot-decision.md`
+`babysit-tick-watchdog.test.sh` carries `write_state` and `run_hook` with diverged
+implementations (different signatures and JSON schemas — see structural observation 1
+above). A shared `tests/lib/` extraction would need to unify or adapt incompatible
+interfaces to buy one saved line (`context_of`).
+An extraction would move five helper functions (`fail` and `ok` are single-line;
+`context_of` is a 3-line function; `write_state` spans 9 lines; `run_hook` spans
+5 lines) into a sourced file with zero correctness benefit. The `merge-gate-review-substance-test-hotspot-decision.md`
 record (Issue #1014, "declined extraction" finding) documents the same reasoning:
 no companion, no diverged copy, no coverage gap — extraction adds maintenance
 surface without buying anything.
