@@ -97,9 +97,12 @@ checks. The checked strings fall entirely within the sections the extraction wou
 
 These tests were added by PR #982 precisely because these sections encode correctness-critical
 safety properties (generation mismatch detection, atomic task-ID publication, rollback teardown).
-Moving the text to reference files would require re-pointing all 18 tests to the new paths, and
-reference files are not governed by the same enforcement mechanism. The net effect would be
-reduced safety coverage with no behavioral improvement.
+Moving the text to reference files would require re-pointing all 18 tests to the new paths —
+those guards exist on `babysit-pr/SKILL.md` specifically and would not transfer automatically
+(the test suite does apply `require_text` to other reference files such as
+`scheduling-failure-modes.md` and `session-state-schema.json`, but not to the babysit-pr
+sections being considered). Without updating the tests, safety coverage would be reduced; updating
+them to point at new reference paths adds coordination cost with no behavioral improvement.
 
 The `pr-monitor-and-manage` extraction precedent does not apply here because `pmm-lifecycle.md`
 does not contain verbatim-guarded text. The CI gate that makes this file different from PMM was
