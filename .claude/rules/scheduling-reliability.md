@@ -27,7 +27,7 @@ Skill-owned polling turns update `session-state.json` per that skill's contract;
 
 ### Recurring scheduler contract (authoritative)
 
-**It does not reliably fire.** Reproduced 2026-08-01 (#914): armed jobs, still listed by `CronList`, produced **zero** ticks across an 11-minute idle window at two cadences. Fixed-interval `/loop` delegates to it. Dynamic `/loop` uses `ScheduleWakeup`, but two live watchers also stopped until manual wake-up (#924). Use `Monitor`. Detail: `.claude/reference/scheduling-failure-modes.md` Pattern 7.
+**It does not reliably fire.** Reproduced 2026-08-01 (#914): armed jobs, still listed by `CronList`, produced **zero** ticks across an 11-minute idle window at two cadences. Fixed-interval `/loop` delegates to it. Dynamic `/loop` uses `ScheduleWakeup`, but two live watchers also stopped until manual wake-up (#924). A follow-up control (#983) found the failure tracks a *concurrently-armed* `Monitor`: a lone `CronCreate` job with no `Monitor` and no probe fired 15/15 ticks over 31 minutes — but this system pairs recurring work with `Monitor`-based ceiling watches by default, so the guidance is unchanged. Use `Monitor`. Detail: `.claude/reference/scheduling-failure-modes.md` Pattern 7.
 
 It is also **session-only and in-memory**: `durable` has **no effect** and nothing survives a session boundary. **Durable work belongs in on-disk state, not a job** (#827): `session-scheduling-reconcile.sh` purges dead job records at session start. A durable scheduler exists (`mcp__scheduled-tasks__*`); why we decline it: `.claude/reference/cross-session-durability.md`.
 
