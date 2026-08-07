@@ -120,8 +120,12 @@ The Install state section is the canonical owner of these facts, as confirmed by
    `.claude/reference/codeant-graphite-supplemental.md` §Install state"). It does not restate
    the runbook content; it delegates.
 
-3. No other file carries the binary path, version, auth wall classification, or restore runbook
-   commands. The intro section's polling protocol (CodeAnt as CR-path supplement, `merge-gate.sh`
+3. The auth wall classification and restore runbook commands are unique to this file.
+   `local-review-cli-failure-modes.md` does carry the binary path (`/opt/homebrew/bin/codeant`)
+   and version (`v0.5.1`) as install-state context in its §Standing state section, but those
+   entries anchor its coverage-enum table and delegate back to this file's §Install state for the
+   canonical runbook — they are not a duplicate of the runbook content or auth-wall analysis.
+   The intro section's polling protocol (CodeAnt as CR-path supplement, `merge-gate.sh`
    clean-signal requirement) is unique to this file.
 
 **Conclusion: no dedup warranted.** The file is the designated canonical home for CodeAnt CLI
