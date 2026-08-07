@@ -42,7 +42,7 @@ Sections organized by the `# Scenario N` block boundaries plus the shared infras
 
 ### PR #766 — Test suite creation (Issue #755)
 
-PR #766 introduced `churn-hotspots.sh` as a new script and authored the test suite in the same PR. The file did not exist before PR #766. It was created as 403 lines with 62 assertions.
+PR #766 introduced `churn-hotspots.sh` as a new script and authored the test suite in the same PR. The file did not exist before PR #766. It was created as 403 lines with 64 assertions.
 
 **Shared infrastructure established by PR #766:**
 
@@ -73,7 +73,7 @@ Conflict rounds: 0.
 
 PR #882 fixed the bug where `git log` ran against the invoking worktree's `HEAD` rather than the default branch. From a feature-branch worktree, `HEAD` was wrong in both directions: it missed squash commits merged to main since the branch forked, and it included unsquashed local commits with only leading `type(#N):` issue references that were incorrectly parsed as PR numbers. Measured impact on two live worktrees: one invented a phantom PR inflating 13 files by one PR each and manufacturing 2 hotspots outright; the other missed 7 merged PRs and 5 hotspots.
 
-The test file grew from 403 → 598 lines, 62 → 94 assertions.
+The test file grew from 403 → 603 lines, 64 → 96 assertions.
 
 **Shared infrastructure changes by PR #882:**
 
@@ -98,7 +98,7 @@ Conflict rounds: 0.
 
 PR #925 fixed the bug where `churn-hotspots.sh` used `--state open` for the hotspot issue lookup, making already-reviewed-and-closed hotspot issues invisible. `/wrap` read `existing_hotspot_issue: null`, treated the path as never-ticketed, and re-filed it on every subsequent wrap.
 
-The test file grew from 598 → 694 lines, 94 → ~106 assertions.
+The test file grew from 603 → 694 lines, 96 → 106 assertions.
 
 **Shared infrastructure changes by PR #925:**
 
@@ -173,7 +173,7 @@ The five helper functions (`pass`, `fail`, `check_eq`, `check_jq`, and the `run_
 
 ### No coverage gap to close
 
-All 18 scenarios have direct test assertions tied to their driving script feature or bug fix. The file passes 104+ assertions on current HEAD. Every PR that extended the script's behavior also extended the test suite in the same PR — there are no shipped-and-untested changes.
+All 18 scenarios have direct test assertions tied to their driving script feature or bug fix. The file passes 106 assertions on current HEAD. Every PR that extended the script's behavior also extended the test suite in the same PR — there are no shipped-and-untested changes.
 
 ### Comparison with relevant KEEP precedents
 
@@ -217,9 +217,9 @@ Re-file this hotspot only when `conflict_rounds > 0`. A rising PR count on a liv
 
 | PR | This record (test suite) | Issue #1095 record (script) | Issue #1081 record (doc) |
 |----|-------------------------|----------------------------|--------------------------|
-| PR #766 | Created test file (403 lines, 62 assertions, scenarios 1–13) | Created `churn-hotspots.sh` entirely | Created `churn-hotspots.md` entirely |
-| PR #882 | Added `new_repo_on`/`add_origin` helpers + scenarios 14–18 | Fixed `resolve_scan_ref` + ref-scoping plumbing | Extended "Enumeration" section with `--ref`/HEAD-scoping narrative |
-| PR #925 | Rewrote gh stub `issue list` handler + extended scenarios 7/8/9 | Extended existing-issue lookup jq with `norm_state` and state-aware matching | Updated "Why `/wrap` files at most one per run" + "The dedup key" sections |
+| PR #766 | Created test file (403 lines, 64 assertions, scenarios 1–13) | Created `churn-hotspots.sh` entirely | Created `churn-hotspots.md` entirely |
+| PR #882 | Added `new_repo_on`/`add_origin` helpers + scenarios 14–18 (603 lines, 96 assertions) | Fixed `resolve_scan_ref` + ref-scoping plumbing | Extended "Enumeration" section with `--ref`/HEAD-scoping narrative |
+| PR #925 | Rewrote gh stub `issue list` handler + extended scenarios 7/8/9 (694 lines, 106 assertions) | Extended existing-issue lookup jq with `norm_state` and state-aware matching | Updated "Why `/wrap` files at most one per run" + "The dedup key" sections |
 
 ### Issue #1076 — autofile-dedup.md
 
