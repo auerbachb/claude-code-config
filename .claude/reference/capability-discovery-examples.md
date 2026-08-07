@@ -63,6 +63,10 @@ That is one of the three. Repeat it for the second key, and set the third — `S
 
 The interfaces differ — `vercel env add` reads the value from stdin, `railway variables --set` takes it as an argument — but the boundary does not: the value never reaches your output, a commit, or a PR body. Where a CLI offers a stdin path, prefer it.
 
+### Decision: secrets on stdin vs argument (Issue #863)
+
+**Decided 2026-08-07.** Blended policy: prefer stdin where the CLI offers it; pass a generated secret as an argument only when the CLI has no stdin path. `railway variables --set` is the canonical example — it has no stdin path; the residual `ps`/shell-history exposure is deliberately accepted in exchange for the capability. A stdin-only rule would make the Issue #759 Railway signing-key case a rung-5 handoff, defeating the ladder's purpose. When using the argument form, reference a shell variable rather than the literal value; never echo, commit, paste, or log it. CodeRabbit's stdin-only proposal from PR #858 was considered and declined per user decision on Issue #863.
+
 ## Rungs 1–3 in practice — the not-installed case (rung 4 is the browser, below)
 
 **Rung 1 — look at what you already have.** MCP tools and custom skills count here too: a connected MCP server or an existing skill may already cover the task, in which case no CLI is needed at all. For the CLI itself, check by absolute path — the Bash tool runs with a minimal PATH, so a bare `which railway` can report nothing for a tool that is in fact installed:

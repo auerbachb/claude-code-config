@@ -82,7 +82,7 @@ railway logs
 
 ```bash
 railway variables              # list for linked service
-railway variables --set "{KEY}={value}"   # use shell vars, not literal secrets
+railway variables --set "{KEY}={value}"   # takes value as argument (no stdin path) — use a shell var, never inline the literal secret
 railway link                   # link cwd to project/environment/service
 railway run {command}          # run a local command with service env injected
 ```
