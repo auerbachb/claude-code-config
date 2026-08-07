@@ -164,14 +164,25 @@ touching lint-governed content, the zero-edit path is preferred for a 2-sentence
 - "Never silent" obligation — in `autofile-dedup.md` "Never silent (shared obligation)"
 - General "same-run batch self-check" concept — in `autofile-dedup.md`
 
-**What does NOT overlap (harness-audit-specific):**
-- Title convention: `Harness redundancy: <artifact path>` — unique to harness-audit
-- Body marker: `<!-- harness-audit: <artifact path> -->` — unique to harness-audit
-- Specific bash: `gh issue list --search "Harness redundancy in:title"` — unique
-- `DEDUP_LIMIT=200` constant and saturation-check bash — unique to SKILL.md
-- Template text in issue #770 caveat (the `<!-- harness-audit: <artifact path> -->` in a template) — unique
-- Body shape (6-section `/issue-maker` body) — unique to harness-audit
-- Open/closed match implementation actions — unique to harness-audit
+**Harness-audit-specific implementation layer (on top of autofile-dedup.md contract):**
+
+Note: `autofile-dedup.md` names items 1–3 and 7 below as harness-audit's instantiation of
+the exact-artifact pattern (lines 37–41 of that file). Items 4–6 are not present there.
+The point below is that these items are harness-audit-specific implementation — not generic
+principles that could be factored out — so the "What overlaps" list above is the complete
+set of generic principles worth deduplicating.
+
+- Title convention: `Harness redundancy: <artifact path>` — harness-audit-specific value
+  (named in autofile-dedup.md as harness-audit's instantiation; not a generic principle)
+- Body marker: `<!-- harness-audit: <artifact path> -->` — harness-audit-specific value
+  (named in autofile-dedup.md as harness-audit's instantiation)
+- Specific bash: `gh issue list --search "Harness redundancy in:title"` — harness-audit-specific
+  (named in autofile-dedup.md as harness-audit's instantiation)
+- `DEDUP_LIMIT=200` constant and saturation-check bash — unique to SKILL.md, not in autofile-dedup.md
+- Template text in issue #770 caveat (the `<!-- harness-audit: <artifact path> -->` in a template) — unique to SKILL.md
+- Body shape (6-section `/issue-maker` body) — unique to harness-audit, not in autofile-dedup.md
+- Open/closed match implementation actions — harness-audit-specific (autofile-dedup.md documents
+  that harness-audit has branched on open-vs-closed since #770, as harness-audit's own behavior)
 
 **Critically:** Step 7 ALREADY points to `autofile-dedup.md` as the canonical source:
 "Every finding names one unambiguous artifact path, so this uses the **exact-artifact**
