@@ -13,7 +13,8 @@ Keep `.claude/skills/pr-monitor-and-manage-wake/SKILL.md` as the sole runtime de
 pause-to-active state machine. Do not split, extract, or deduplicate any section in this
 remediation.
 
-The four reported touches are required propagation of scheduling-substrate correctness fixes — not
+The four reported touches represent scheduling-substrate correctness propagation (#867, #982), a
+core business-logic fix (#887, closing Issue #871), and test infrastructure (#921) — not
 independent growth or avoidable duplication unique to this file. The unique Step 4a/4b logic is
 self-contained and test-pinned by `.claude/scripts/tests/pmm-wake-step-4a.test.sh` through
 `<!-- test-anchor: … -->` anchors; any extraction risks re-opening the Issue #871 fail-open bug.
