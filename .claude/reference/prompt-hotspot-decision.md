@@ -40,11 +40,11 @@ prompt block skeleton, Edge Cases, and Usage Examples).
 
 | Churn class | PRs | What changed |
 |-------------|-----|--------------|
-| Chip-contract propagation — shared with chip-launching.md | #615, #736, #750, #760, #799, #812 | MODEL GUARD preamble added; guard propagated to all six emitters; model-family vocabulary enforced; merge-authority bullet added; effort picker labels and versionless names; lint-placement statement fix |
-| Skill-specific feature authoring | #621, #738, #786, #878, #946 | PM inline subagent partitioning (Step 5.5 + Step 6 delivery mode); author-scoping for ceiling counts; too-big fit bar recalibrated from size to resumability; claim-at-pick added to Constraints; compact result contracts |
+| Chip-contract propagation — shared with chip-launching.md | #615, #736, #738, #760, #786, #799, #878 | MODEL GUARD preamble added; guard propagated to all six emitters; merge-authority bullet added; effort picker labels and versionless names; author-scoping for ceiling counts; too-big fit bar recalibrated from size to resumability; claim-at-pick added to Constraints |
+| Skill-specific feature authoring | #621, #750, #812, #946 | PM inline subagent partitioning (Step 5.5 + Step 6 delivery mode); model-family vocabulary enforced; lint-placement statement fix; compact result contracts |
 | Classification rule update | #734 | Heavy effort default changed from Max to Extra with a documented Max step-up |
 
-The chip-contract class (6 PRs) is required by `/prompt`'s role as one of the six canonical chip
+The chip-contract class (7 PRs) is required by `/prompt`'s role as one of the six canonical chip
 emitters. Two CI lint scripts anchor directly to the inline literals they establish:
 
 - `.github/scripts/chip-model-guard-lint.sh` — requires `spawn_task`, `**Model:**`, `**Effort:**`,
