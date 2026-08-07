@@ -27,7 +27,7 @@ and every file it depends on remain byte-for-byte unchanged.
 
 The hotspot detector recorded 4 merged PRs touching
 `.claude/skills/pr-monitor-and-manage-wake/SKILL.md` since 2026-08-01: PRs #867, #887, #921, #982.
-At diagnosis time the file is 273 lines, well below the 2,000-word per-file warning.
+At diagnosis time the file is 272 lines / 1,980 words, just below the 2,000-word per-file warning.
 
 ### Per-PR diff analysis (all four PRs verified via `gh pr diff --name-only` and `gh pr view`)
 
@@ -140,7 +140,7 @@ churn-hotspot adjudication rather than pre-emptively splitting the file.
 
 Reconsider the KEEP verdict and open a dedicated repo-wide ticket if:
 
-- The file crosses the 2,000-word per-file warning threshold (currently well below it).
+- The file crosses the 2,000-word per-file warning threshold (currently at 1,980 words, just below it).
 - Conflict-round evidence appears — two independent contributors editing the same section in the
   same window, causing merge conflicts (touch count alone is insufficient).
 - An independent caller of the Step 4a or Step 4b logic emerges that is not the existing
