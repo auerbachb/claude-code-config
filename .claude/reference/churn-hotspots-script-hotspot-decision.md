@@ -137,7 +137,7 @@ The same PR touching all three files is expected: a bug fix to the lookup behavi
 
 ## Expected impact
 
-None. No files were modified. The corpus word count is unchanged (this record is not auto-loaded).
+None. No operative files were modified. The corpus word count is unchanged (this record is not auto-loaded).
 
 ## Related
 
