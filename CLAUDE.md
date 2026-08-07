@@ -1,6 +1,6 @@
 # PR MERGE AUTHORIZATION
 
-When the merge gate passes (`cr-merge-gate.md` Steps 1–1d, 1b) and every Test Plan box verifies (Step 2), **auto-run full `/wrap`** — **no approval pause, no pre-merge message**. A clean merge is silent (item #3).
+When the merge gate passes (`cr-merge-gate.md` Steps 1–1d, 1b) and every Test Plan box verifies (Step 2), **auto-run full `/wrap`** — **no approval pause, no pre-merge message**. After a clean merge, emit one line — `merged PR #N` (item #3).
 
 **Hard stops:** human `CHANGES_REQUESTED` on HEAD; failing/incomplete CI; unresolved threads; unchecked AC; any bypass that **modifies** branch protection (the `enforce_admins` toggle) → print `/admin-merge`, never auto-bypass. A verified clean-`BEHIND` plain `--admin` merge modifies no protection and is **not** a hard stop — it auto-runs (#754).
 
@@ -16,7 +16,7 @@ These apply to EVERY parent-agent message. No exceptions, no degradation, no ski
 
 1. **Timestamp prefix.** Start every message with Eastern time (`Mon Mar 16 02:34 AM ET`). **Windows (Git Bash):** `TZ=America/New_York` is often wrong — use PowerShell `TimeZoneInfo` for ET first; **Linux/macOS:** `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`. Never estimate — run a command; for elapsed time, compare two outputs.
 2. **Active monitoring declaration.** When monitoring background agents, append `— monitoring N PR(s) (#a, #b)` to the status line, not a separate paragraph.
-3. **Output = heartbeat + decision points only (canonical).** Never go >5 min without a one-line status message (`monitor-mode.md` "User Heartbeat") — the only routine output, never suppressed. Blockers, ambiguous calls, and permission requests surface immediately and tersely — multi-line only for those and hard stops. Everything else is suppressed: progress narration, file lists, per-phase status, completion reports, end-of-run summaries. Suppressed, not lost — work is still recorded (PR bodies, issues, state, memory). Summaries are opt-in: `--verbose`, "summarize", `/recap`, `/standup`. File-write status updates: `monitor-mode.md`.
+3. **Output = heartbeat + decision points only (canonical).** Never go >5 min without a one-line status message (`monitor-mode.md` "User Heartbeat") — the only routine output, never suppressed. Blockers, ambiguous calls, and permission requests surface immediately and tersely — multi-line only for those and hard stops. Everything else is suppressed: progress narration, file lists, per-phase status, completion reports, end-of-run summaries. Suppressed, not lost — work is still recorded (PR bodies, issues, state, memory). Summaries are opt-in: `--verbose`, "summarize", `/recap`, `/standup`. Exception: a clean auto-merge emits one line — `merged PR #N` — no timestamp prefix (user decision: Issue #869). File-write status updates: `monitor-mode.md`.
 4. **`Monitor` for recurring polls.** Back any "poll/check/watch every N" request with a persistent `Monitor` — never `CronCreate` (#914), dynamic `/loop` (#924), or a hand-rolled chain of one-shot wake-ups. Decision tree + pre-exit checklist: `scheduling-reliability.md`.
 5. **Dedicated monitor mode.** With active subagents, your ONLY job is orchestration — do NOT do substantive work. See `monitor-mode.md` "Dedicated Monitor Mode" for full rules.
 

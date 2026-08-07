@@ -1,6 +1,6 @@
 ---
 name: wrap
-description: End-of-session command — verify no unresolved findings, squash merge, sync main, detect per-PR follow-ups, run a full-session loose-ends sweep, and extract lessons. Silent by default — a clean merge prints nothing but items needing your decision; pass `--verbose` (or just ask) for the merged + follow-ups summary and the full per-phase report. Accepts an optional PR reference (`/wrap <URL>`, `/wrap #N`, `/wrap N`); with no argument it infers the PR from the current branch, then thread context, then session-state.
+description: End-of-session command — verify no unresolved findings, squash merge, sync main, detect per-PR follow-ups, run a full-session loose-ends sweep, and extract lessons. Nearly silent by default — a clean merge emits one line (`merged PR #N`) plus any items needing your decision; pass `--verbose` (or just ask) for the merged + follow-ups summary and the full per-phase report. Accepts an optional PR reference (`/wrap <URL>`, `/wrap #N`, `/wrap N`); with no argument it infers the PR from the current branch, then thread context, then session-state.
 argument-hint: "[URL | #N | N] [--verbose]"
 ---
 
@@ -55,11 +55,11 @@ Autonomy does not mean filing blind: every candidate goes through the body-aware
 
 ## Output modes
 
-`/wrap` is **silent by default** (issue #851): it runs all four phases in full and says nothing about a clean merge — only items that need an explicit decision from you. Pass `--verbose`, or simply ask ("what did you just do?", "summarize"), for the merged + follow-ups summary, the per-phase narration, and the detailed final report. This implements `CLAUDE.md` #3 for this skill.
+`/wrap` is **nearly silent by default** (issue #851, #869): it runs all four phases in full, emits exactly `merged PR #N` on a clean merge, and otherwise says nothing — only items that need an explicit decision from you. Pass `--verbose`, or simply ask ("what did you just do?", "summarize"), for the merged + follow-ups summary, the per-phase narration, and the detailed final report. This implements `CLAUDE.md` #3 for this skill.
 
 | Mode | Flag | Effect |
 |------|------|--------|
-| **Silent** | *(default)* | Nothing on a clean run — no merge line, no follow-up list, no lessons ack, no sweep summary. Only decision-requiring items print, one terse line each (Step 4.3 **Silent default**). |
+| **Silent** | *(default)* | One line on a clean run: `merged PR #N` — no follow-up list, no lessons ack, no sweep summary. Only decision-requiring items print, one terse line each (Step 4.3 **Silent default**). |
 | **Verbose** | `--verbose` *(or an explicit request)* | The full report: the `## Wrapped up` merged + follow-ups block, per-cycle recovery heartbeats, the Session Lessons block, and the multi-section "Wrap-Up Complete" report (Issues filed, Filings suppressed as duplicates, Session sweep, Verdict, Lessons). Full template: `references/wrap-report-templates.md`. |
 
 **Verbosity is additive and human-facing only.** Every phase executes **identically** in both modes; only narration differs. Suppression is never deletion — the merge, the filings, the sweep, and the lessons are all recorded (GitHub, `WRAP_FILED_ISSUES`, `session-state.json` `wrap_sweep`, memory), so an explicit request re-renders the verbose report in full from that state. Four things always print regardless of mode:
@@ -189,7 +189,7 @@ if [ "$WRAP_VERBOSE" = "1" ]; then
 fi
 ```
 
-**The silent default keeps two non-negotiable signals:** (a) the CLAUDE.md 5-minute heartbeat during `/fixpr` waits, and (b) dispatch/blocker transitions always print.
+**The silent default keeps three non-negotiable signals:** (a) the CLAUDE.md 5-minute heartbeat during `/fixpr` waits, (b) dispatch/blocker transitions always print, and (c) a clean merge emits `merged PR #N`.
 
 After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker summary, action taken, result. Always built; rendered to the user only under `--verbose`.
 
@@ -712,7 +712,7 @@ Memory writes happen in both modes. Record `WRAP_LESSONS_COUNT`. Verbose mode pr
 
 #### Silent default
 
-On a clean run, print **nothing** — no merge line, no follow-up list, no lessons ack, no sweep summary. All of it is already recorded (GitHub, `WRAP_FILED_ISSUES`, `session-state.json` `wrap_sweep`, memory) and re-renders in full under `--verbose` or on request.
+On a clean run, print exactly one line — `merged PR #N` — then nothing else: no follow-up list, no lessons ack, no sweep summary. All of it is already recorded (GitHub, `WRAP_FILED_ISSUES`, `session-state.json` `wrap_sweep`, memory) and re-renders in full under `--verbose` or on request.
 
 Print **only** items that need an explicit decision from the user, one terse line each:
 
@@ -721,7 +721,7 @@ Print **only** items that need an explicit decision from the user, one terse lin
 - **Sweep verdict, only when items are pending** → `{N} item(s) pending your decision — run /wrap --verbose for detail.` Omit entirely on `Clear to archive`.
 - **`[COVERAGE]` degraded** and the **`[INFERRED]` checkpoint** — per the always-print list in **Output modes**.
 
-When none of those apply, `/wrap` produces no output at all. A clean merge is silent (`CLAUDE.md` #3).
+When none of those apply, `/wrap` emits exactly one line: `merged PR #N`. (`CLAUDE.md` #3)
 
 #### Verbose report (`--verbose`, or on explicit request)
 
