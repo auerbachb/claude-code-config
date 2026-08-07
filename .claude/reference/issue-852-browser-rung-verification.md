@@ -28,7 +28,7 @@
 **Source:** `.claude/reference/browser-capability-rung.md` §Bounded attempt, §Runbook shape when the browser rung fails.
 
 **Method (live):** Two data points.
-- *(a)* The item-1 subagent's second part: checked billing/plan settings for the `github` GitHub org, which the account has no access to. Hit the wall via both the browser (page not found) and `gh api /orgs/github` (`plan` field `null` for a non-member). Real dead end, but reported in plain prose — not in the formal runbook shape.
+- *(a)* The item-1 subagent's second part: checked billing/plan settings for the GitHub organization `github`, which the account has no access to. Hit the wall via both the browser (page not found) and `gh api /orgs/github` (`plan` field `null` for a non-member). Real dead end, but reported in plain prose — not in the formal runbook shape.
 - *(b)* A dedicated subagent was given a task needing login to an account for which "nobody has credentials and none will be provided" was stated up front, with no live human to ask.
 
 **Verification:** **PASS** (via scenario b). The subagent walked rung 1 (checked for a CLI — none), rung 2 (checked for an API — none), rung 4 (opened the browser, hit the real sign-in gate), labeled each rung explicitly in its own account ("Checked for CLI tools (rung 1)" … "Drove the browser (rung 4)"), and produced a clean copy-paste runbook: exact URLs plus the steps a human with real credentials would run — closely matching the doc's own Fly.io example shape. It also independently caught that the test address used the DNS-reserved `.invalid` TLD (RFC 2606) as corroborating evidence the account could not be real. Scenario (a) is weaker secondary evidence (real wall, informal shape) and isn't the basis for this PASS.
@@ -81,8 +81,13 @@ for f in .claude/agents/*.md; do
   awk '/^---$/{c++; next} c==1 && /^allowed-tools:/{print; found=1} c==2{exit} END{if(!found) print "(none — inherits all tools)"}' "$f"
 done
 
-# Item 4 — confirm Phase C spawn composition carries only SAFETY
-grep -n "SAFETY\|MINDSET\|SKILLS" .claude/skills/subagent/SKILL.md
+# Item 4 — confirm Phase C spawn composition carries only SAFETY, scoped to the
+# actual template block (a naive whole-file grep for "MINDSET"/"SKILLS" false-positives
+# on this file's own explanatory "no MINDSET or SKILLS" parenthetical)
+BLOCK=$(awk '/^### Phase C Subagent Prompt Template$/,/^\*\*Phase C Agent tool call parameters:\*\*$/' .claude/skills/subagent/SKILL.md)
+grep -qi "insert the SAFETY block verbatim" <<<"$BLOCK" && echo "PASS: SAFETY insertion instruction present" || echo "FAIL: SAFETY insertion instruction missing"
+grep -qi "insert.*MINDSET.*verbatim\|insert the MINDSET" <<<"$BLOCK" && echo "FAIL: MINDSET insertion instruction present" || echo "PASS: no MINDSET insertion instruction"
+grep -qi "insert.*SKILLS.*verbatim\|insert the SKILLS" <<<"$BLOCK" && echo "FAIL: SKILLS insertion instruction present" || echo "PASS: no SKILLS insertion instruction"
 ```
 
 Items 1, 2, 3, and 5 are live-run checks — not deterministically reproducible by a single command. Re-run by spawning a subagent (`general-purpose` in this environment; a registered custom type once follow-up #1 below is resolved) with a real no-CLI-path web task and observing tool selection and ask behavior directly.
