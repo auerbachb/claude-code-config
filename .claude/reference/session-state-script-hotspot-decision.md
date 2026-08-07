@@ -13,7 +13,7 @@ corner-case refinements (3 PRs), and peripheral touches (3 PRs). The mechanism i
 
 The concerns most likely to evolve independently are **already extracted**:
 - Lock lifecycle → `state-lock.sh` (PRs #662, #937 integrated that extraction)
-- Case normalization → `lib/repo-normalizer.sh` (PR #728 extracted it; 4 callers share it)
+- Case normalization → `lib/repo-normalizer.sh` (PR #728 extracted it; 5 callers share it)
 
 The remaining inline concerns — field-type contract and legacy migration engine — have exactly
 **one caller**: `session-state.sh` itself. Extracting them into `lib/` modules would add sourcing
@@ -61,7 +61,7 @@ sections of the file. No merge conflict or churn-collision was recorded in the P
 | Field-type contract | ~130 lines (395–762) | session-state.sh | **None** — single caller |
 | Repo scoping + migration | ~135 lines (579–915) | session-state.sh | **None** — single caller |
 | Lock lifecycle | ~5 lines (integration) | `state-lock.sh` | polling-state-gate.sh, handoff-state.sh |
-| Case normalization | ~3 lines (integration) | `lib/repo-normalizer.sh` | session-state.sh, handoff-state.sh, handoff-migrate.sh, polling-state-gate.sh |
+| Case normalization | ~3 lines (integration) | `lib/repo-normalizer.sh` | session-state.sh, handoff-state.sh, handoff-migrate.sh, polling-state-gate.sh, lib/pr-scope-resolver.sh |
 | --set write path | ~180 lines (1118–1395) | session-state.sh | **None** — single caller |
 | --get / --session-view read path | ~155 lines (920–1076) | session-state.sh | **None** — single caller |
 
@@ -94,8 +94,9 @@ The functions (`load_field_types`, `known_field_type`, `known_nested_field_type`
 are the internal implementation of the field-type guard. They call no external resources and
 have no callers outside session-state.sh. Extracting them would:
 - Add a lib/ sourcing block (3–5 lines) with a new not-found/load-fail exit path
-- Require any future script that copies session-state.sh in a stub directory to also copy
-  lib/session-state-schema.sh (today no test does this, but it becomes a maintenance trap)
+- Require every test that already copies session-state.sh into a stub directory
+  (poll-watermarks.test.sh, pmm-wake-step-4a.test.sh, escalate-review-fixtures.sh) to also
+  copy lib/session-state-schema.sh, adding a new failure mode to three existing test harnesses
 - Not prevent any class of churn — a new schema field still requires editing both the jq schema
   file and the callers in session-state.sh's --set and --get blocks
 
