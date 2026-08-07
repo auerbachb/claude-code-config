@@ -11,9 +11,9 @@ sequenceDiagram
   CC->>H: UserPromptSubmit
   Note over H: timestamp-injector.sh, stale-worktree-warn.sh, issue-prefix-nudge.sh, skill-command-tracker.sh
   CC->>H: PreToolUse
-  Note over H: worktree-guard.sh, env-guard.py, script-bypass-detector.sh
+  Note over H: worktree-guard.sh, env-guard.py, config-protection.py, script-bypass-detector.sh
   CC->>H: PostToolUse
-  Note over H: post-merge-pull.sh, polling-backoff-warn.sh, skill-usage-tracker.sh, silence-detector.sh, bgwork-ceiling-arm.sh
+  Note over H: post-merge-pull.sh, polling-backoff-warn.sh, skill-usage-tracker.sh, silence-detector.sh, bgwork-ceiling-arm.sh, babysit-tick-watchdog.sh
   CC->>H: SubagentStop
   Note over H: checkpoint-handoff.sh
   CC->>H: PostCompact

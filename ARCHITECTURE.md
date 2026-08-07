@@ -58,17 +58,9 @@ Skills, rules, and `CLAUDE.md` are served from `~/.claude/skills-worktree/`, a g
 
 ## Hook Lifecycle
 
-Five hook scripts in `.claude/hooks/` run automatically during Claude Code sessions:
+Multiple hook scripts in `.claude/hooks/` run automatically during Claude Code sessions, covering events from `SessionStart` through `StopFailure`. All hooks are idempotent and fail-safe — they handle errors gracefully without interrupting the session.
 
-| Script | Event | When it fires | Purpose |
-|--------|-------|--------------|---------|
-| `session-start-sync.sh` | PostToolUse | First tool call of session | Syncs skills worktree to `origin/main`, auto-registers new hooks |
-| `post-merge-pull.sh` | PostToolUse (Bash) | After `gh pr merge` succeeds | Pulls `main` in root repo, syncs skills worktree |
-| `silence-detector.sh` | PostToolUse | Every tool call | Checks if agent has been silent >5 min, injects warning |
-| `silence-detector-ack.sh` | Stop | After each response | Touches heartbeat file to reset silence timer |
-| `trust-flag-repair.sh` | Stop | After each response | Repairs trust flags in `~/.claude.json` for all projects |
-
-All hooks are idempotent and fail-safe — they handle errors gracefully without interrupting the session.
+For the full per-event roster (canonical, kept in sync with `global-settings.json`), see [`.claude/reference/diagrams/hook-lifecycle.md`](.claude/reference/diagrams/hook-lifecycle.md).
 
 ---
 

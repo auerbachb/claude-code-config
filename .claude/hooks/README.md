@@ -2,6 +2,8 @@
 
 This directory contains Claude Code [hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) that automate workflow tasks.
 
+For the full per-event hook roster (canonical source of truth), see [`.claude/reference/diagrams/hook-lifecycle.md`](../reference/diagrams/hook-lifecycle.md).
+
 ## Hook Auto-Registration
 
 Hooks are **automatically registered** in `~/.claude/settings.json` on every session start. The `session-start-sync.sh` hook (registered under `SessionStart`) reads `global-settings.json` (the hook manifest) and registers any missing hooks on each session start and resume. Existing hooks and user-customized timeouts are preserved.
