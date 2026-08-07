@@ -41,8 +41,8 @@ Churn mapped by diff trace across each of the 10 PRs:
 
 | Class | PRs | Count |
 |-------|-----|-------|
-| Chip-contract propagation shared with `chip-launching.md` | #713, #736, #750, #760, #786, #799 | 6 |
-| Step 2 feature additions (unique to wave's candidate-pool logic) | #702, #738, #878 | 3 |
+| Chip-contract propagation shared with `chip-launching.md` | #713, #736, #738, #760, #786, #799 | 6 |
+| Wave-specific additions (candidate pool, output vocabulary) | #702, #750, #878 | 3 |
 | Initial creation | #644 | 1 |
 
 **Chip-contract propagation (6 PRs):** PRs #713, #736, #738, #760, #786, and #799 updated
@@ -66,14 +66,19 @@ Comparing the wave PR list against `chip-launching.md` hotspot window (#916, 14 
 | #799 | Yes | Yes | Chip contract — effort lines |
 | #878 | Yes | Yes | Chip contract + skill — claim-at-pick |
 
-Six of nine post-creation PRs are shared with `chip-launching.md`. The pattern matches
+Seven of nine post-creation PRs appear in `chip-launching.md`'s hotspot window (the cross-reference
+table above); six are classified as primarily chip-contract propagation and one (#878) is
+dual-classified as chip-contract + wave-specific candidate-pool addition. The pattern matches
 `prompt/SKILL.md` (#949 → KEEP: "7 of 12 PRs are shared chip-contract propagation"),
 `start-issue/SKILL.md` (#981 → KEEP), and `chip-launching.md` itself (#916 → KEEP).
 
-**Step 2 feature additions (3 PRs):** #702 (cross-thread `/issue-maker` chip state), #738
-(collaborator-PR authorship scope), and #878 (issue-claim batch lookup) each added a new filter
-to the candidate pool. These are genuine independent additions, not repeated edits to the same
-prose. They cannot be extracted because they define wave's core pool-building logic.
+**Wave-specific additions (3 PRs):** #702 (cross-thread `/issue-maker` chip state), #750
+(model-fleet vocabulary: Opus 4.8 → Opus 5, Step 9 output template only — not in
+`chip-launching.md`'s window), and #878 (issue-claim batch lookup) are wave-specific changes.
+#702 and #878 each added a new filter to the candidate pool — genuine independent additions that
+define wave's core pool-building logic and cannot be extracted. Note: #878 also appears in
+`chip-launching.md`'s hotspot window (see cross-reference table above) but its primary change
+is a candidate-pool filter (Step 2), so it is classified here rather than as chip-contract.
 
 ## Decision: KEEP
 
