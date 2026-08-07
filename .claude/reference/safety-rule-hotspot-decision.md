@@ -7,8 +7,8 @@ Reference for Issue #957 (`.claude/rules/safety.md` churn hotspot). Not auto-loa
 ### Verdict: **KEEP** the file as the canonical safety contract; make **no operative content change**
 
 `.claude/rules/safety.md` is the canonical source of the SAFETY and MINDSET verbatim
-blocks that `verbatim-block-lint.sh` byte-enforces across `subagent-phase-guardrails.md`
-and every agent definition. Its 11-PR churn since 2026-07-19 falls into two dominant
+blocks that `verbatim-block-lint.sh` byte-enforces in `subagent-phase-guardrails.md`;
+agent definitions carry paraphrased versions and are explicitly excluded from byte comparison. Its 11-PR churn since 2026-07-19 falls into two dominant
 classes — capability-ladder evolution (4 PRs, primary driver) and corpus compression
 (4 PRs, cross-file) — neither of which a structural split or extraction reduces. No
 merge conflicts were recorded across the full 11-PR window.
