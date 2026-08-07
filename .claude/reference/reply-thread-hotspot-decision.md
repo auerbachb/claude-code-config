@@ -68,8 +68,11 @@ $BODY
 addition (CodeAnt reviewer support). PR #904 was a correctness fix for a
 concrete duplication bug traceable to a specific incident. PR #1001 was a
 targeted enhancement to the fallback path that enabled a separate feature
-(Greptile round reuse). No section changed more than once across the 3 PRs; no
-two PRs touched the same logic.
+(Greptile round reuse). Sections A and F each appear in two PRs, but the
+changes within each section were non-overlapping: Section A gained new-reviewer
+docs (PR #798) then an exit-code annotation correction (PR #904); Section F
+gained the exit-code fix (PR #904) then the provenance marker (PR #1001).
+No two PRs modified the same lines of logic within any section.
 
 ## Duplication verification — owner/repo resolution block
 
@@ -143,7 +146,7 @@ detail of the transformation section.
 ## Related
 
 - Issue #772 — CodeAnt reviewer mode (PR #798)
-- Issue #884 — fallback exit-code fix (PR #904); the known quirk that fallback posts successfully but prior code exited 1 — callers relied on the old behavior (see memory `feedback_reply_thread_fallback_exit.md`)
+- Issue #884 — fallback exit-code fix (PR #904); the known bug where the fallback posted successfully but the old code exited 1, causing `&&`-chained callers (e.g., `/fixpr`) to treat a successful post as failure and post duplicate comments — the fix changed the exit code to 0 (see memory `feedback_reply_thread_fallback_exit.md`)
 - Issue #1000 — Greptile zero-P0 round reuse; fallback provenance marker (PR #1001)
 - `script-extraction-audit.md` entry C-09 — origin record for `reply-thread.sh` (Issue #282)
 - `.claude/scripts/reply-thread.sh` — the subject file; exit-code contract authoritative in `--help`
