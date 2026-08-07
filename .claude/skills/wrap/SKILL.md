@@ -557,7 +557,9 @@ Run **after** Step 2.5's root-main sync:
 CHURN_SH=$(resolve_script churn-hotspots.sh || true)
 CHURN_JSON=""; CHURN_RC=0
 if [ -n "$CHURN_SH" ]; then
-  CHURN_JSON=$("$CHURN_SH" --json 2>/dev/null) || CHURN_RC=$?
+  CHURN_JSON=$("$CHURN_SH" --json \
+      --exclude ".claude/reference/script-extraction-audit.md" \
+      2>/dev/null) || CHURN_RC=$?
 fi
 ```
 
