@@ -20,7 +20,7 @@ This decision is intentionally reference-only. The subject file, `subagent-phase
 
 Issue #957 was filed by `/wrap` churn detection after PR #951 merged. It recorded 11 distinct
 merged PRs touching the file since 2026-07-19: PRs #660, #739, #742, #762, #787, #804, #817,
-#858, #870, #919, #920.
+`#858`, #870, #919, #920.
 
 Measured at `main` at the 5dd7ddc commit, the file is 1,354 words — below the 2,000-word
 per-file warning. The corpus total is 11,459 words against the 11,749 ratchet cap, with 290-word
@@ -97,7 +97,7 @@ concerns.
 The §Authorship and §Capability Discovery sections already delegate mechanism to reference
 docs — the pattern the CR plan proposes for the remaining three sections. Those two delegations
 exist because the authorship guard is a single self-contained concern (PR #733) and the
-capability-discovery examples are a long worked catalog. The remaining three sections
+capability-discovery examples are a long worked-example catalog. The remaining three sections
 (Destructive Commands, Secrets & Credentials, Untrusted Code & Network) are short prohibitions
 with inline exceptions; their mechanism fits the auto-loaded rule file.
 

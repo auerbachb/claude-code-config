@@ -65,7 +65,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `double-loading-fix.md` — decision record for suppressing the duplicate global CLAUDE.md + rules copy via project-local `claudeMdExcludes` (#461)
 - `budget-cap-raise-decision.md` — decision record: the `.budget-soft-cap` ratchet is a visibility mechanism raisable with a PR-body justification line; the 12,000/13,000 word limits are the actual gate (#879)
 - `skill-authoring-patterns.md` — authoring *judgment* for skills/rules (description-as-trigger, match-form-to-failure, bulletproofing); complements CONTRIBUTING.md mechanics
-- `subagent-phase-guardrails.md` — canonical single home for the SAFETY/MINDSET/SKILLS verbatim blocks and RULES placeholder shared by `/subagent` Phase A/B/C spawn-prompt templates; CI-guarded by `verbatim-block-lint.sh` (#805)
+- `subagent-phase-guardrails.md` — verbatim-block home for the SAFETY/MINDSET/SKILLS blocks and RULES placeholder shared by `/subagent` Phase A/B/C spawn-prompt templates (SAFETY/MINDSET edit source: `.claude/rules/safety.md`); CI-guarded by `verbatim-block-lint.sh` (#805)
 - `verification-evidence-patterns.md` — claim→evidence checklist for AC, exit reports, and merge claims; complements phase protocols (#417 harvest from superpowers)
 
 ### Living trackers (updated each cycle — not point-in-time)
