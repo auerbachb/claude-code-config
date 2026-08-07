@@ -52,8 +52,8 @@ Untouched by all three PRs. Predates the hotspot window.
   `settings["statusLine"]` from the template.
 - Ownership model: matches only by `.claude/scripts/<script>` layout suffix, not basename
   alone, so a user's own `~/bin/statusline.sh` is never claimed.
-- Added `--statusline-only` flag to `main()` so `setup-skills-worktree.sh` can run the
-  statusLine sync without re-running hook registration.
+- Added `--statusline-only` flag to `main()` and `scripts_dir` argument derivation in
+  `main()` for the `sync_statusline()` call.
 - Driver: statusLine is a separate top-level settings surface whose `command` needs the
   identical placeholder-to-worktree resolution as the hook entries; `register-hooks.py`
   is the one implementation that does this resolution at session start.
@@ -77,7 +77,7 @@ Untouched by all three PRs. Predates the hotspot window.
   directory, and whose script file no longer exists are removed from `settings.json`.
 - Restricted both forms of pruning to managed roots so third-party hook registrations are
   never touched.
-- Added `shlex` import and `scripts_dir` argument derivation for `sync_statusline()`.
+- Added `shlex` import (used for argv0-aware command parsing in `command_argv0()` and the pruning loop).
 - Driver: full install-time parity with the retired `HOOKS_MANIFEST` inline Python required
   legacy-path migration and decommissioned-hook pruning, which the inline Python performed.
 
@@ -132,8 +132,8 @@ after extraction.
 
 - Runtime behavior, exit codes, and stderr summary text stay unchanged.
 - `register-hooks.py` remains the sole install-time and session-start registrar.
-- The `--statusline-only` flag interface is preserved for `setup-skills-worktree.sh`'s
-  statusLine-only invocation path.
+- The `--statusline-only` flag interface is preserved for any caller needing statusLine
+  sync without full hook registration.
 - Third-party hook registrations (unmanaged paths) are never touched by the pruning logic.
 
 ---
