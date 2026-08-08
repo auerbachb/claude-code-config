@@ -19,7 +19,7 @@
 2. **NEVER paste raw credentials into subagent prompts, issue/PR bodies, comments, commits, or logs.** Reference by name — never inline the value.
 3. **NEVER weaken `.gitignore` to commit a "just-this-once" config.** Move the secret to `.env` and commit a `.env.example` instead.
 
-**Provisioning is not committing.** Setting a generated secret through a provider CLI is ordinary work; prefer stdin where the CLI offers it (`vercel env add`), and pass the value as an argument only when the CLI has no stdin path (`railway variables --set` — residual `ps`/history exposure is deliberately accepted). The ban is on committing, pasting, echoing, or logging the value. Credential-shaped tasks are not pre-refused: they walk the capability ladder below like anything else. Rationale: `.claude/reference/capability-discovery-examples.md` §Decision.
+**Provisioning is not committing.** Setting a generated secret through a provider CLI is ordinary work; prefer stdin where the CLI offers it (`vercel env add`; `railway variable set KEY --stdin`), and pass the value as a shell-variable argument only when the CLI has no stdin path. The ban is on committing, pasting, echoing, or logging the value. Credential-shaped tasks are not pre-refused: they walk the capability ladder below like anything else. Rationale: `.claude/reference/capability-discovery-examples.md` §Decision.
 
 ## Untrusted Code & Network
 

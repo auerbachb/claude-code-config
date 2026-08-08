@@ -20,7 +20,7 @@ The ladder is not a GitHub rule. Every provider below is a one-liner, not a dash
 
 | "I can't…" | Actual command |
 |------------|----------------|
-| set a Railway env var (**the motivating case, issue #759**) | `railway variables --set "{KEY}={value}"` on the linked service |
+| set a Railway env var (**the motivating case, issue #759**) | `echo "$VALUE" \| railway variable set {KEY} --stdin` on the linked service |
 | read which Railway env vars already exist | `railway variables` |
 | redeploy or read logs on Railway | `railway redeploy` · `railway logs` |
 | add a Vercel env var | `vercel env add {NAME} {environment}` (value on stdin — never inline it) |
@@ -54,18 +54,18 @@ railway variables            # rung 1: which of the three are already set?
 
 NEW_KEY=$(openssl rand -base64 32)                   # generated, never printed
 [ -n "$NEW_KEY" ] || { echo "key generation failed" >&2; exit 1; }
-railway variables --set "S2S_SIGNING_KEY=$NEW_KEY"   # provisioned, value stays out of output
+echo "$NEW_KEY" | railway variable set S2S_SIGNING_KEY --stdin  # provisioned via stdin, value stays out of output
 ```
 
 That is one of the three. Repeat it for the second key, and set the third — `S2S_ISSUER`, not a secret — directly. Validating before provisioning matters: an unchecked `openssl` failure would quietly install an empty signing key, which is worse than the unset variable you started with.
 
 **Secrets are not pre-refused.** The deferred work was generating and provisioning signing keys, and `safety.md`'s credential prohibitions read at a glance like "don't touch keys at all." They are narrower than that: generating a key and setting it through a provider CLI is the allowed path. What's prohibited is letting the *value* land anywhere durable — a commit, an issue or PR body, a subagent prompt, a review comment, or a log. Reference credentials by name in all of those. A credential-shaped task earns the same ladder walk as any other.
 
-The interfaces differ — `vercel env add` reads the value from stdin, `railway variables --set` takes it as an argument — but the boundary does not: the value never reaches your output, a commit, or a PR body. Where a CLI offers a stdin path, prefer it.
+Both `vercel env add` and `railway variable set KEY --stdin` read the generated value from stdin — the boundary holds in both cases: the value never reaches your output, a commit, or a PR body.
 
 ### Decision: secrets on stdin vs argument (Issue #863)
 
-**Decided 2026-08-07.** Blended policy: prefer stdin where the CLI offers it; pass a generated secret as an argument only when the CLI has no stdin path. `railway variables --set` is the canonical example — it has no stdin path; the residual `ps`/shell-history exposure is deliberately accepted in exchange for the capability. A stdin-only rule would make the Issue #759 Railway signing-key case a rung-5 handoff, defeating the ladder's purpose. When using the argument form, reference a shell variable rather than the literal value; never echo, commit, paste, or log it. CodeRabbit's stdin-only proposal from PR #858 was considered and declined per user decision on Issue #863.
+**Decided 2026-08-07; corrected 2026-08-07.** Blended policy: prefer stdin where the CLI offers it; pass a generated secret as an argument only when the CLI has no stdin path. Railway CLI v4.30.5 and later ship `railway variable set KEY --stdin` — the modern form reads the value from stdin, so it is preferred (see updated example above). The `railway variables --set KEY=VALUE` flag form is legacy and passes the value as a process argument, which is visible in `ps` and shell history; avoid it. A stdin-only rule would still be wrong — it would incorrectly label every provider without a stdin path as a rung-5 handoff; the policy is blended, not absolute. When using any argument form (as a deliberate fallback for no-stdin CLIs), reference a shell variable rather than the literal value; never echo, commit, paste, or log it. CodeRabbit's stdin-only proposal from PR #858 was considered and declined per user decision on Issue #863 — this correction is distinct: it fixes a factual error in the Railway command, not the policy.
 
 ## Rungs 1–3 in practice — the not-installed case (rung 4 is the browser, below)
 
