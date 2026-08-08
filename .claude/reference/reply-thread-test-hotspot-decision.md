@@ -110,10 +110,11 @@ extraction for a single caller creates indirection without value.
 - **Inline section stable since creation:** Cases (1)–(13) have not changed across two
   subsequent PRs. The strip rules and reviewer accept-list are stable; a fifth reviewer mode
   would be the only driver for a future inline-section edit.
-- **Fallback section fully exercised:** Cases (14)–(20) cover the complete exit-code matrix
+- **Fallback section coverage:** Cases (14)–(20) cover the tested fallback exit outcomes
   (exit 0 on both paths, exit 3 on no-fallback-target or both-404, exit 4 on fallback error)
-  and the two body-format invariants (stderr note, provenance marker). Further extensions
-  to the fallback section are unlikely without a new fallback output field.
+  and the two body-format invariants (stderr note, provenance marker). The documented exit-5
+  path has no dedicated test case. Further extensions to the fallback section are unlikely
+  without a new fallback output field.
 - **Regression test pins the Issue #884 scenario exactly:** Case (14) is annotated with the
   original incident — inline 404, fallback posts OK, exit code must be 0. The comment
   traces the before-state (`exit 1 even though the reply posted`). This makes silent
