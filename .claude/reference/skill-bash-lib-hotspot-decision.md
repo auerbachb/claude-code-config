@@ -108,7 +108,7 @@ record-only adjudication closes the observational ticket without touching the so
 - **Scenario-free convention:** The repo forbids scenario/assertion logic inside `tests/lib/`.
   The file only exports a utility function; test scenarios must live in `tests/*.test.sh`.
 - **Single consumer:** Only `pmm-wake-step-4a.test.sh` sources this library. Changes to the
-  function signature require changing exactly one call site.
+  function signature require updating every invocation in this one consumer file.
 - **Anchor stability:** The `<!-- test-anchor: … -->` pattern embedded in `SKILL.md` files
   this library supports is stable — the contract is designed around Markdown-mutable prose.
 
