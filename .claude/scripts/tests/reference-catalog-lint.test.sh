@@ -188,16 +188,22 @@ else
   fail "unknown arg: expected exit 2, got ${got}"
 fi
 
-# --- CI wiring (issue #950) -----------------------------------------------
-# Prints the run command of the step named 'Run reference-catalog-lint' inside
-# the rule-lint job — the job id that is the required status check on main.
-# Prints nothing when the step is absent, sits in another job, or carries no
-# run command; each of those is exercised as a negative control below.
+# --- CI wiring (updated for auto-discovery runner — issue #1138) -----------
+# reference-catalog-lint.sh is now wired via the auto-discovery runner
+# (.github/scripts/run-doc-lints.sh, included via its EXTRA path).  The
+# per-lint step 'Run reference-catalog-lint' was removed in PR #1147; the
+# wiring check now verifies the runner step exists in the rule-lint job.
+# run-doc-lints.test.sh verifies the script is reachable through the runner.
+WIRED_RUNNER_CMD='bash .github/scripts/summarize-test-run.sh "Doc lints" .github/scripts/run-doc-lints.sh'
+RUNNER_STEP_NAME="Run doc lints (auto-discovered)"
+
+# Prints the run command of the auto-discovery runner step inside the
+# rule-lint job. Prints nothing when absent, in another job, or no run: key.
 wired_step_command() {
   awk '
     /^  [A-Za-z0-9_-]+:/ { in_job = ($0 ~ /^  rule-lint:/) }
     !in_job { next }
-    /^[[:space:]]*- name:[[:space:]]*Run reference-catalog-lint[[:space:]]*$/ { want = 1; next }
+    /^[[:space:]]*- name:[[:space:]]*Run doc lints \(auto-discovered\)[[:space:]]*$/ { want = 1; next }
     want && /^[[:space:]]*- / { want = 0; next }
     want && /^[[:space:]]*run:[[:space:]]*/ {
       sub(/^[[:space:]]*run:[[:space:]]*/, "")
@@ -208,10 +214,10 @@ wired_step_command() {
 }
 
 wired="$(wired_step_command "$WORKFLOW")"
-if [[ "$wired" == "$WIRED_COMMAND" ]]; then
-  pass "rule-lint job runs the lint as a named step"
+if [[ "$wired" == "$WIRED_RUNNER_CMD" ]]; then
+  pass "rule-lint job runs the auto-discovery runner"
 else
-  fail "rule-lint job does not run '${WIRED_COMMAND}' under a 'Run reference-catalog-lint' step (found: '${wired}')"
+  fail "rule-lint job does not run '${WIRED_RUNNER_CMD}' under a '${RUNNER_STEP_NAME}' step (found: '${wired}')"
 fi
 
 # Negative controls for the wiring check itself.
@@ -259,13 +265,14 @@ for control in absent other-job no-run; do
   fi
 done
 
-# The step names the script by path, so the two must not drift apart.
-target="${WIRED_COMMAND#bash }"
-if [[ -f "${REPO_ROOT}/${target}" ]]; then
-  pass "wired path ${target} exists"
-else
-  fail "wired path ${target} does not exist — the CI step would exit non-zero"
-fi
+# Both scripts referenced by the runner step must exist on disk.
+for runner_script in ".github/scripts/summarize-test-run.sh" ".github/scripts/run-doc-lints.sh"; do
+  if [[ -f "${REPO_ROOT}/${runner_script}" ]]; then
+    pass "runner script ${runner_script} exists"
+  else
+    fail "runner script ${runner_script} does not exist — CI step would exit non-zero"
+  fi
+done
 
 # A lint that cannot run must read as failure, never as a silent pass.
 got=0
