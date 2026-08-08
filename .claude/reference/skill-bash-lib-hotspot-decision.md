@@ -106,8 +106,11 @@ A record-only adjudication closes the observational ticket without touching the 
 - **Convention exclusion:** The file lives in `tests/lib/` and lacks a `.test.sh` suffix.
   The CI harness (`run-hook-tests.sh`) uses a `*.test.sh` glob on `tests/` — this file is
   never accidentally run as a suite.
-- **Scenario-free convention:** The repo forbids scenario/assertion logic inside `tests/lib/`.
-  The file only exports a utility function; test scenarios must live in `tests/*.test.sh`.
+- **Scenario-free convention:** `skill-bash.sh` itself contains only an exported utility
+  function — no assertion counters, no test scenarios. Other `tests/lib/` helpers (e.g.
+  `escalate-review-fixtures.sh`) do include assertion harnesses, so the constraint is specific
+  to this file's design rather than a repo-wide prohibition; test scenarios must live in
+  `tests/*.test.sh`.
 - **Single consumer:** Only `pmm-wake-step-4a.test.sh` sources this library. Changes to the
   function signature require updating every invocation in this one consumer file.
 - **Anchor stability:** The `<!-- test-anchor: … -->` pattern embedded in `SKILL.md` files
