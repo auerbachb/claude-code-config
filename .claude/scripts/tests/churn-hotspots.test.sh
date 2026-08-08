@@ -424,6 +424,12 @@ printf 'src/Api.ts\n'             > "$TMP/files_804.txt"
 
 R11=$(new_repo r11)
 commit_touch "$R11" "2026-02-01T00:00:00" "unmarked local commit" src/Ignored.ts
+# The gh stub reports src/Api.ts, README.md, and src/Edge.ts. The file_present
+# check uses a working-tree test on the gh path (SCAN_REF=""), so these files
+# must exist on disk. They are created here via an unmarked commit (no trailing
+# (#N) PR marker), which keeps the git-path PR-attribution tests unaffected.
+commit_touch "$R11" "2026-02-02T00:00:00" "add stub fixture files" \
+  src/Api.ts README.md src/Edge.ts
 
 run_in "$R11" --since "$WINDOW_START" --source gh --json
 check_eq "11a: gh-only enumeration finds the hotspot" "0" "$RC"
@@ -464,7 +470,9 @@ check_jq "11h: exactly the three in-window PRs are counted" "$OUT" \
 # the offset from the comparison entirely.
 R11B=$(new_repo r11b)
 commit_touch "$R11B" "2026-03-01T18:00:00" "boundary marker commit" src/Anchor.ts
-REF_SHA=$(git -C "$R11B" rev-parse HEAD)
+# The gh stub reports src/Ref.ts; the working-tree existence check requires it.
+commit_touch "$R11B" "2026-03-01T18:01:00" "add stub fixture file" src/Ref.ts
+REF_SHA=$(git -C "$R11B" rev-parse HEAD~1)
 cat > "$TMP/pr_list.json" <<'EOF'
 [{"number":821,"mergedAt":"2026-03-01T12:00:00Z"},
  {"number":822,"mergedAt":"2026-03-01T20:00:00Z"},
@@ -687,6 +695,44 @@ run_in "$R18" --since "$WINDOW_START" --json
 check_jq "18f: auto stays on the git path once any trailing marker exists" "$OUT" '.source == "git"'
 check_jq "18g: issue-only commits in a mixed history contribute nothing" "$OUT" \
   '.hotspots | map(.file) | index("src/Guard.ts") == null'
+
+# =============================================================================
+# Scenario 19 — deleted files are dropped (issue #1118 regression)
+#
+# A path that no longer exists at the scanned ref must not appear as a hotspot
+# even when its git history carries enough PR-marked commits to cross the
+# threshold. The detector's false-positive gap: `git log --name-only` returns
+# paths from deletion commits too, so a file deleted after 3 PR touches would
+# score 3 and get reported — but it is not a refactor candidate.
+#
+# Revert-verified: this scenario FAILS against the unfixed script (which has no
+# existence check) and PASSES after the fix.
+# =============================================================================
+R19=$(new_repo_on r19 main)
+
+# Touch src/Gone.ts across 3 squash-style commits (distinct PR numbers), then
+# delete it. The git path will see 3 PR touches, but the file will be absent
+# from the scanned ref at the time the detector runs.
+commit_touch "$R19" "2026-02-01T00:00:00" "feat(#100): add gone (#951)" src/Gone.ts src/Present.ts
+commit_touch "$R19" "2026-02-02T00:00:00" "fix(#101): update gone (#952)" src/Gone.ts src/Present.ts
+commit_touch "$R19" "2026-02-03T00:00:00" "chore(#102): tweak gone (#953)" src/Gone.ts src/Present.ts
+# Delete the file — this commit is also PR-attributed and also "touches" the path
+git -C "$R19" rm -q src/Gone.ts
+GIT_AUTHOR_DATE="2026-02-04T00:00:00" GIT_COMMITTER_DATE="2026-02-04T00:00:00" \
+  git -C "$R19" commit -q -m "feat(#103): cut /open-code-review skill (#954)"
+# src/Present.ts remains across enough commits to be a valid hotspot
+
+printf '[]\n' > "$TMP/issue_list.json"
+run_in "$R19" --since "$WINDOW_START" --json
+check_eq "19a: exit 0 (surviving file is still a hotspot)" "0" "$RC"
+check_jq "19b: deleted file is absent from hotspots" "$OUT" \
+  '.hotspots | map(.file) | index("src/Gone.ts") == null'
+check_jq "19c: still-present file is reported normally" "$OUT" \
+  '.hotspots | map(.file) | index("src/Present.ts") != null'
+check_jq "19d: missing_count is incremented for the dropped file" "$OUT" \
+  '.missing_count > 0'
+check_jq "19e: missing_count is a top-level field on all exit paths" "$OUT" \
+  'has("missing_count")'
 
 # =============================================================================
 echo
