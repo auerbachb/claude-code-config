@@ -254,7 +254,7 @@ Format as:
 |--------|----------|--------|-----------|
 | abc123 | 17 * * * * | /some-skill --tick | true |
 
-**On resume:** All `CronCreate` jobs are **session-scoped** and do not survive session turnover — `durable: true` has no effect. Any job listed here died with the previous session; do not use `CronList` to check for survivors, there will be none. Re-arm via the owning skill if needed. For PR fleet monitoring, run `/pr-monitor-and-manage` — a paused fleet resumes from its on-disk marker, not from a job.
+**On resume:** `CronCreate` jobs are **session-scoped** — `durable: true` has no effect (canonical statement: `session-state-collector.md` §3). Do not use `CronList` to check for survivors, there will be none. Re-arm via the owning skill if needed. For PR fleet monitoring, run `/pr-monitor-and-manage` — a paused fleet resumes from its on-disk marker, not from a job.
 ```
 
 If `CronList` returns no jobs (the expected case), output: "No active polling jobs from other skills. For PR fleet monitoring, run `/pr-monitor-and-manage`."
