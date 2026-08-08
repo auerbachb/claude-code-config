@@ -129,8 +129,9 @@ None. `.claude/scripts/tests/reply-thread.test.sh` is unchanged.
   by the script; the test suite asserts each one. An unknown reviewer still exits 2.
 - The `strip_standalone_token()` word-boundary rule for `@codeant-ai` must remain
   case-insensitive (cases 3–4) and boundary-aware (case 13: `x@codeant-ai` not stripped).
-- Exit-code contract: inline success → 0; body-empty-after-strip → 2; inline 404 + no `--pr`
-  → 3; both endpoints 404 → 3; fallback non-404 error → 4. Cases (14)–(19) pin this matrix.
+- Exit-code contract: inline success → 0; body-empty-after-strip → 2. Cases (14)–(19) pin
+  the fallback outcomes: success → 0, no `--pr` or both endpoints 404 → 3, and fallback
+  non-404 error → 4. The script's documented exit-5 path does not have a dedicated case.
 - Fallback body must contain `<!-- review-comment-id:$COMMENT_ID -->` when the inline path
   returns 404 (case 20, Issue #1000 provenance requirement).
 - 32 passing assertions total across 20 cases. Any PR that removes or rewrites an assertion
