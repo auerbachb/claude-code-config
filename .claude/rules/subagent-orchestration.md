@@ -8,7 +8,7 @@
 
 Use `.claude/agents/` definitions. Custom `subagent_type` agents automatically inherit the project CLAUDE.md hierarchy + `.claude/rules/*.md` — no manual rule injection needed. Every Agent call must include:
 1. `mode: "bypassPermissions"`.
-2. `subagent_type`: `phase-a-fixer`, `phase-b-reviewer`, `phase-c-merger`, or `pm-worker`.
+2. `subagent_type`: `phase-a-fixer`, `phase-b-reviewer`, `phase-c-merger`, `pm-worker`, or `researcher`. **Precondition:** resolution requires the `name:` frontmatter field and a session started (or restarted) after the file exists — see `.claude/agents/README.md`.
 3. Explicit `model` (see "Model Selection").
 4. Runtime context: PR/issue/branch, repo, handoff path, HEAD SHA, reviewer, optional pre-fetched findings.
 5. The verbatim `SAFETY:` block from `safety.md` — kept as a deliberate safety-critical restatement even though it is inherited.
@@ -20,6 +20,8 @@ See `.claude/agents/README.md` for the full placeholder reference and spawning e
 ### Fallback: Explore/Plan and Non-Custom Spawns
 
 Built-in Explore/Plan agents omit the project hierarchy. For any spawn that does NOT use a `.claude/agents/` definition (e.g. a bare general-purpose Agent call), paste the verbatim SAFETY/MINDSET/SKILLS blocks manually. Do NOT paste the full CLAUDE.md + rules corpus — that double-pays the corpus for custom-agent spawns that already inherit it. Verification: `.claude/reference/token-efficiency-audit-2026-07.md` §FU-1.
+
+**Failed custom spawn fallback:** if a spawn returns `Agent type '<name>' not found`, the session has not yet registered the agent (pre-restart or `name:` missing). Spawn `general-purpose` instead and paste the verbatim SAFETY/MINDSET/SKILLS blocks plus the role-specific procedure from `.claude/reference/phase-decomposition.md`. Do NOT paste the full CLAUDE.md + rules corpus.
 
 ## Model Selection
 

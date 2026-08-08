@@ -1,6 +1,7 @@
 ---
+name: phase-c-merger
 description: "Phase C subagent: verify merge gate and AC, then run the canonical /wrap merge flow when authorized."
-allowed-tools: Read, Glob, Grep, Bash
+tools: Read, Glob, Grep, Bash
 model: sonnet
 ---
 

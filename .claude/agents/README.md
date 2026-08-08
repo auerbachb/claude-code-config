@@ -4,7 +4,9 @@ This directory contains custom agent definitions for the Phase A/B/C subagent wo
 
 ## How It Works
 
-Claude Code's Agent tool supports a `subagent_type` parameter that references agent definition files in `.claude/agents/`. When spawning a subagent with `subagent_type: "phase-a-fixer"`, Claude Code loads `.claude/agents/phase-a-fixer.md` as the agent's system context — including its `allowed-tools` restrictions and embedded instructions.
+Claude Code's Agent tool supports a `subagent_type` parameter that references agent definition files in `.claude/agents/`. When spawning a subagent with `subagent_type: "phase-a-fixer"`, Claude Code loads the agent whose frontmatter `name:` field matches that string — identity comes from `name:`, not the filename. The `name:` field is **required**; without it the agent file is not resolvable by `subagent_type`.
+
+Claude Code scans `.claude/agents/` at session start. A session restart is required for a newly added or edited agent file to be registered. The `tools:` key in frontmatter restricts which tools the agent may use; the deprecated `allowed-tools:` key is not recognized by the current schema.
 
 ## Placeholder Syntax
 
@@ -36,7 +38,7 @@ Agent definitions use `{{PLACEHOLDER}}` markers for runtime context that the par
 | `pm-worker` | — | Issue management, repo bootstrap | Full access | Yes | `sonnet` |
 | `researcher` | — | Read-only exploration, audit, investigation — produces a findings report | Read, Glob, Grep, Bash (read-only `gh`/`git`/`cat`/`find`/etc.) | No — read-only by design | `sonnet` |
 
-**Browser MCP** (`mcp__Claude_Browser__*` / `mcp__claude-in-chrome__*`) is rung 4 of the capability ladder. An agent that declares no `allowed-tools` inherits the full tool set and can reach it; one that declares `allowed-tools` gets only what it lists, and no browser tool is on any current list. Evidence, the `phase-c-merger` decision, and the surface-selection rules: `.claude/reference/browser-capability-rung.md`.
+**Browser MCP** (`mcp__Claude_Browser__*` / `mcp__claude-in-chrome__*`) is rung 4 of the capability ladder. An agent that declares no `tools:` frontmatter inherits the full tool set and can reach it; one that declares `tools:` gets only what it lists, and no browser tool is on any current list. Evidence, the `phase-c-merger` decision, and the surface-selection rules: `.claude/reference/browser-capability-rung.md`.
 
 ### Model Selection
 
@@ -67,7 +69,7 @@ This reverses the version-pinning call made in #749. That change wanted the docs
 | `phase-b-reviewer` | `opus` | Evaluates review findings (many are false positives), decides when to dismiss vs. fix, handles multi-reviewer edge cases, judges severity. Needs strong judgment. |
 | `phase-c-merger` | `sonnet` | Lightweight verification plus canonical `/wrap` execution: reads PR body, checks boxes against code, runs `gh`/git commands, and reports blockers. Read-only tool restrictions (no Write/Edit) — the mechanical work does not need Opus-level reasoning. |
 | `pm-worker` | `sonnet` | Data gathering and formatting: issue creation, repo bootstrap checks. Each task follows a well-defined template. |
-| `researcher` | `sonnet` | Read-only exploration and summarization: reads files, runs `gh`/`git` queries, synthesizes findings. No code edits, no fixes — `sonnet` is sufficient for read-and-report work, and the restricted `allowed-tools` frontmatter prevents any write operations regardless of model. |
+| `researcher` | `sonnet` | Read-only exploration and summarization: reads files, runs `gh`/`git` queries, synthesizes findings. No code edits, no fixes — `sonnet` is sufficient for read-and-report work, and the `tools:` frontmatter restriction prevents any write operations regardless of model. |
 
 **Why Fable is not any agent's default:** Fable is the strongest model in the fleet, but no agent defaults to it — the same cost logic that puts `sonnet` on `phase-c-merger` applies in the other direction. Phase spawns run unattended, often several in parallel, and Opus already clears the reasoning bar for the heaviest phase (A/B) work; paying roughly double per spawn buys headroom these phases do not need. Fable is reserved for interactive hardest-work step-ups, where a human is watching the spend and can judge the trade. `/prompt`'s tier ladder is where it is actively recommended (see `.claude/skills/prompt/SKILL.md` "Model Lineup & Effort Levels"). Escalating a specific spawn to `fable` is a deliberate exception — document why, and do not make it a default.
 
@@ -128,8 +130,10 @@ The agent definition provides role-specific workflow rules. The harness injects 
 ## Adding New Agents
 
 1. Create `<agent-name>.md` in this directory
-2. Include frontmatter with `description` and optionally `allowed-tools`
+2. Include frontmatter with **`name:`** (required — must match the intended `subagent_type` string and the filename stem exactly), `description:` (required), and optionally `tools:` for tool restrictions (use `tools:`, not `allowed-tools:`)
 3. Embed only role-specific rules — global rules (skill-first, autonomy, etc.) are inherited automatically
 4. Always include the SAFETY and MINDSET blocks as safety-critical restatements
 5. Document any new placeholders in this README
 6. Update the Agent Inventory table above
+7. Restart Claude Code so the new file is scanned and registered
+8. Verify the agent spawns successfully with a smoke-test spawn before any workflow relies on it

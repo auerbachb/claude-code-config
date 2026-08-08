@@ -1,4 +1,5 @@
 ---
+name: phase-b-reviewer
 description: "Phase B subagent: poll for CR/BugBot/Greptile reviews, process findings, fix code, update handoff file, print exit report. Runs after Phase A pushes fixes."
 model: opus
 ---
