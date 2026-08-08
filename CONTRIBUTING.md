@@ -112,6 +112,38 @@ A green run drops from thousands of lines to one; the full capture is always at 
 [`summarize-test-run.sh`](.github/scripts/summarize-test-run.sh), which mirrors the contract into
 the job's step summary and raises an `::error::` annotation on a red run.
 
+## Adding a Doc Lint
+
+Doc lints are **auto-discovered** by the [`rule-lint.yml`](.github/workflows/rule-lint.yml) CI workflow — you do **not** edit the workflow to register one (issue #1138, which retired the per-lint step list that made that file a merge-conflict hotspot; same pattern as issue #681 for tests).
+
+**To add a standalone doc lint:**
+
+1. Drop a `<name>-lint.sh` file into `.github/scripts/`. Name it to describe what it checks — `agents-frontmatter-lint.sh`, `skill-catalog-lint.sh`, etc.
+2. It is **automatically** discovered and run by [`.github/scripts/run-doc-lints.sh`](.github/scripts/run-doc-lints.sh) next time the `rule-lint` CI job runs. No workflow edit needed.
+3. Add a `<name>-lint.test.sh` in `.github/scripts/tests/` — the test suite is auto-discovered by `hook-scripts.yml` (see "Adding a Test" above). The test should cover both a clean pass and a representative failure.
+
+**Discovery contract** (a lint must satisfy these): exit `0` on pass / non-zero on fail; be invoked via `bash` with no positional arguments; emit `::error::` GitHub Actions annotations on failures.
+
+**Excluded from auto-discovery** (lints that have their own CI path):
+
+| Script | Why excluded |
+|---|---|
+| `chip-model-guard-lint.sh` | Already invoked inside `rule-lint.sh` section 4; running it standalone would double-enforce the check. |
+| `env-template-allowlist-lint.sh` | CI wiring is via `hook-scripts.yml` test auto-discovery — its test suite runs the lint. |
+| `merge-authority-lint.sh` | Same — CI wiring via `hook-scripts.yml` tests. |
+
+If your new lint should follow one of these patterns instead (e.g. it is best exercised from a test suite rather than as a direct CI step), add it to the exclusion list in `run-doc-lints.sh` `EXCLUDED_BASENAMES` with a comment naming the alternative CI path.
+
+**Exception — `.claude/scripts/`:** `reference-catalog-lint.sh` lives in `.claude/scripts/` by history. It is included via an explicit extra path in the runner, not the glob. New lints should go in `.github/scripts/` unless there is a strong reason to place them elsewhere.
+
+Run the full doc-lint suite locally:
+
+```bash
+bash .github/scripts/run-doc-lints.sh        # all doc lints (human mode)
+bash .github/scripts/run-doc-lints.sh --json # compact contract
+# {"ok":true,"failed_tests":[],"relevant_error":null,"log_path":"…","total":5,"failed":0}
+```
+
 ## Git Pre-commit Hook (Worktree Enforcement)
 
 `setup.sh` installs `.claude/git-hooks/pre-commit` into the shared git hooks directory on first run (and reuses it on later runs when unchanged). When this hook is installed and not bypassed, it rejects commits made on `main` in the root checkout, enforcing the "never work on main" rule at the git level for any committer — human, Claude, Cursor, Codex, or a random terminal session.
