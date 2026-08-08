@@ -18,8 +18,9 @@ skill-embedded bash extraction. Do not split, extract, or modify the file.
 All three PRs asserted by the detector are substantiated by the full repository history —
 the CR implementation plan's hypothesis that PRs #929 and #1004 were detector artifacts
 (shallow-clone / squash history collapse) is **refuted**. However, the verdict remains KEEP:
-PR #921 is the sole creation event, and PRs #929 and #1004 are documentation-only corrections
-to the library's own header comments. The behavioral contract has not changed since creation.
+PR #921 is the sole creation event, and PRs #929 and #1004 are documentation or diagnostic-text
+corrections to the library's own header comments. The extraction behavior has not changed since
+creation.
 
 The file is 183 lines / 1,115 words, single-purpose, single-consumer, and convention-protected
 from suite discovery. There is nothing to split.
@@ -37,8 +38,8 @@ warning. No conflict rounds recorded.
 | PR | Title | Touch class | Driver |
 |----|-------|-------------|--------|
 | #921 | test(#888): anchored skill-bash extractor + pmm-wake Step 4a regression suite | File creation | Created the 183-line library: `extract_skill_bash` function, anchored extraction contract, exit-code specification (7 codes), FAIL-LOUD / never-empty policy, sourcing guard, and full header doc |
-| #929 | docs(#926): align skill-bash.sh anchoring-rule header with its actual blank-line tolerance | Doc/comment correction | Updated header to reflect multi-blank-line tolerance already implemented: "immediately before" → "above"; "A single blank line" → "Blank lines"; exit-status 5 description and error message updated to match; **zero behavior change** |
-| #1004 | refactor: extract pr-state jq filters | Incidental doc update | Updated "sibling precedent" paragraph to reflect the `pr-state-classify.jq` extraction (sed-extract prose → canonical-file-invocation prose); **zero behavior change in `skill-bash.sh`** — the update is to a historical analogy in the header comment |
+| #929 | docs(#926): align skill-bash.sh anchoring-rule header with its actual blank-line tolerance | Doc/comment correction | Updated header to reflect multi-blank-line tolerance already implemented: "immediately before" → "above"; "A single blank line" → "Blank lines"; exit-status 5 description and error message updated to match; **zero extraction-logic change** |
+| #1004 | refactor: extract pr-state jq filters | Incidental doc update | Updated "sibling precedent" paragraph to reflect the `pr-state-classify.jq` extraction (sed-extract prose → canonical-file-invocation prose); **zero extraction-logic change in `skill-bash.sh`** — the update is to a historical analogy in the header comment |
 
 **PR #921 — creation attribution confirmed.** `gh pr diff 921` shows `new file mode 100644`; all
 183 lines added in one commit. The file did not exist before this PR.
@@ -96,9 +97,9 @@ pattern yet. Preemptive extraction for a single caller creates indirection witho
 
 ### Option 3: Keep the file; no content change (Chosen)
 
-**Chosen.** Three PRs, one creation event, two documentation-only corrections. The file is
-cohesive, sub-threshold in size, convention-protected, and has zero merge conflicts. A
-record-only adjudication closes the observational ticket without touching the source file.
+**Chosen.** Three PRs, one creation event, two documentation or diagnostic-text corrections.
+The file is cohesive, sub-threshold in size, convention-protected, and has zero merge conflicts.
+A record-only adjudication closes the observational ticket without touching the source file.
 
 ## 3. Structural protections that predict low future churn
 
@@ -122,6 +123,9 @@ None. `.claude/scripts/tests/lib/skill-bash.sh` is unchanged.
   stable — changing it requires a coordinated edit to `pmm-wake-step-4a.test.sh`.
 - Exit codes 0/2/3/4/5/6/7 must stay consistent with the header doc and the test suite's
   direct assertions on non-zero returns.
+- The exit-5 diagnostic text is a cross-file contract: `pmm-wake-step-4a.test.sh` pins the
+  exact wording `"first non-blank line after the anchor"` (not just the exit code). This
+  phrase must remain stable in the emitted error message.
 - The sourcing guard (non-zero exit when executed directly) must remain — the library is
   `source`d, never run.
 
