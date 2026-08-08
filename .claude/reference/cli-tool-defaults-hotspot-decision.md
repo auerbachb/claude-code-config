@@ -41,7 +41,7 @@ Git history is strictly linear — no merge commits and no conflict markers acro
 
 Record a by-design KEEP decision and leave `cli-tool-defaults.md` byte-for-byte unchanged.
 
-**Chosen.** The file's scope is "CLI command surface for installed providers." Each of the three PRs made a targeted, additive correction to a distinct part of the file (intro policy paragraph, fallback section rung renumbering, Railway preferred command form). The edits are sequentially authored and non-conflicting — the churn is the natural completion path for a file that grows when the capability ladder itself grows or when provider-CLI behavior is corrected. A structural change would relocate churn without benefit, consistent with the #1078 decision that reached the same conclusion for the cross-linked sibling file.
+**Chosen.** The file's scope is "CLI command surface for installed providers." The three PRs made targeted, additive corrections: PR #762 added the intro policy paragraph and expanded the fallback section, PR #858 subsequently renumbered a rung in that same fallback section, and PR #1127 updated the Railway preferred command form. The edits are sequentially authored and non-conflicting — the churn is the natural completion path for a file that grows when the capability ladder itself grows or when provider-CLI behavior is corrected. A structural change would relocate churn without benefit, consistent with the #1078 decision that reached the same conclusion for the cross-linked sibling file.
 
 ### Option 2: SPLIT by provider
 
