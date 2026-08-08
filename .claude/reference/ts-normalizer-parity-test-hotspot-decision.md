@@ -43,21 +43,23 @@ test content (#891, #893) are coordinated single-root-cause hardening.
 
 ## Diagnosis
 
-This is **coordinated, single-root-cause bug-fix-then-CI-hardening churn**, not
-feature creep or instability.
+This is **coordinated, two-related-issues bug-fix-then-CI-hardening churn** from
+the same 2026-08-01 coding session, not feature creep or instability.
 
-Both content PRs originate from the same 2026-08-01 coding session and address
-a single root bug (issue #885: timestamp drift between bash and jq normalizers
-caused gate/escalation disagreement on PR #883):
+Both content PRs originate from the same session but address separate issues:
+PR #891 fixed issue #885 (timestamp drift between bash and jq normalizers causing
+gate/escalation disagreement on PR #883); PR #893 fixed the related issue #876
+(stale-approval redemption: CodeAnt's frozen `submitted_at` caused false-stale
+verdicts for legitimate post-push reviews):
 
 - **PR #891** is the primary fix: extract the bash normalizer into
   `lib/ts-normalizer.sh` and create this test to pin byte-for-byte parity
-  between the bash and jq implementations.
-- **PR #893** is the immediate consequence: the retraction-guard changes to
+  between the bash and jq implementations. (Closes #885.)
+- **PR #893** is a related same-session fix: the retraction-guard changes to
   `merge-gate.sh` introduced new derived boolean variables (`_STALE_BLOCKING`,
   `_STALE_REDEEMED`) whose derivation from `external_evidence_ok` and their
   guard nesting order are security invariants. The same PR added the structural
-  section to this file to pin those invariants.
+  section to this file to pin those invariants. (Closes #876.)
 - **PR #979** made a one-line comment update (no test logic) as an incidental
   follow-on to splitting `escalate-review.test.sh`.
 
