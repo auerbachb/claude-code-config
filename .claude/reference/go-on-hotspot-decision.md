@@ -19,7 +19,7 @@ workflow. It is the canonical entry point for resuming an interrupted review or 
 | PR | Step changed | Change class | What changed |
 |----|-------------|-------------|-------------|
 | PR #763 | Step 1 | Feature addition | Added diff-survival guard section (Issue #757); detects silent conflict resolutions that drop the PR's own changes. Renamed the former "Step 1: Check for uncommitted changes" to "Step 1b" to accommodate the new Step 1 prefix guard. |
-| PR #806 | Step 2 | Coverage classification addition | Added trailing bullet at end of Step 2 (local CR review loop) requiring the agent to classify and print coverage (`both | cr-only | codeant-only | none`) after the review loop completes (Issue #769). Also updated Step 4 PR-body label behavior. |
+| PR #806 | Step 2 | Coverage classification addition | Added trailing bullet at end of Step 2 (local CR review loop) requiring the agent to classify and print coverage (`both \| cr-only \| codeant-only \| none`) after the review loop completes (Issue #769). Also updated Step 4 PR-body label behavior. |
 | PR #904 | Step 7 | Correctness fix | Corrected the exit-code description for `reply-thread.sh` to accurately reflect that exit code `0` means "reply posted (by either inline or fallback path)" and non-zero means genuine failure — fixing an incorrect description that had `1` as "fallback PR-level reply posted (still success)" which caused callers to treat a successful fallback as failure (Issue #884). |
 
 **Measured score:** 3 PRs (at the detection threshold of 3).
@@ -101,8 +101,9 @@ distinct steps. The score (3 PRs) is at the detection threshold. The churn does 
 a structural problem, ownership ambiguity, or any pattern that a split or extraction would
 reduce.
 
-Per `.claude/reference/churn-hotspots.md`, re-file this hotspot only when `conflict_rounds > 0`
-— rising PR count alone on a canonical skill is not a re-filing trigger.
+Per `.claude/reference/churn-hotspots.md`, the automated re-file gate triggers only on
+`conflict_rounds > 0` — rising PR count alone does not automatically re-file this hotspot.
+See Reconsideration guidance below for additional human-judgment conditions.
 
 ## Preserved invariants
 
