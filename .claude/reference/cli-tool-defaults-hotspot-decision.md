@@ -26,12 +26,12 @@ Evidence method: `gh pr diff <N> --name-only` to confirm the file appears in eac
 |----|--------|--------------|----------------------------------------|
 | PR #762 (`fix(#759): generalize capability discovery into an explicit CLI ladder`) | 2026-07-28 | Issue #759 | Added "These four are examples, not the allowed set" intro paragraph after the header policy line; expanded "When a CLI is unavailable" with absolute-path verification example (`ls -l /opt/homebrew/bin/{tool}`), rung-2 and rung-3 guidance, and install-annotation note |
 | PR #858 (`feat(#852): add the browser as rung 4 of the capability ladder`) | 2026-08-01 | Issue #852 | Single-line correction to "When a CLI is unavailable": updated rung-4 reference to rung-5 for CLI-initiated auth flows (coordinated propagation matching the five-rung renumbering across the capability ladder cohort) |
-| PR #1127 (`docs(#863): codify blended provider-CLI secrets policy`) | 2026-08-08 | Issue #863 | Railway section: added `printf '%s\n' "$VALUE" | railway variable set {KEY} --stdin` as the preferred stdin form (Railway CLI v4.30.5+); retained legacy `--set` form with deprecation note |
+| PR #1127 (`docs(#863): codify blended provider-CLI secrets policy`) | 2026-08-08 | Issue #863 | Railway section: added `printf '%s\n' "$VALUE" \| railway variable set {KEY} --stdin` as the preferred stdin form (Railway CLI v4.30.5+); retained legacy `--set` form with deprecation note |
 
 ### Conflict analysis
 
 Git history is strictly linear — no merge commits and no conflict markers across any of the three PRs. Specifically:
-- PR #762 and PR #858 touched non-overlapping sections (PR #762 added content; PR #858 made a one-line rung renumbering propagation in the fallback section added by PR #762).
+- PR #762 added the fallback section; PR #858 made a one-line rung renumbering propagation to that same section. The edits are sequential — no concurrent modification conflict.
 - PR #1127 touched only the Railway section, which no other PR in the window modified.
 - No `conflict_rounds` pain on this file.
 
