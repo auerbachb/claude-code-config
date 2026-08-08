@@ -20,7 +20,7 @@ The ladder is not a GitHub rule. Every provider below is a one-liner, not a dash
 
 | "I can't…" | Actual command |
 |------------|----------------|
-| set a Railway env var (**the motivating case, issue #759**) | `echo "$VALUE" \| railway variable set {KEY} --stdin` on the linked service |
+| set a Railway env var (**the motivating case, issue #759**) | `printf '%s\n' "$VALUE" \| railway variable set {KEY} --stdin` on the linked service |
 | read which Railway env vars already exist | `railway variables` |
 | redeploy or read logs on Railway | `railway redeploy` · `railway logs` |
 | add a Vercel env var | `vercel env add {NAME} {environment}` (value on stdin — never inline it) |
@@ -54,14 +54,14 @@ railway variables            # rung 1: which of the three are already set?
 
 NEW_KEY=$(openssl rand -base64 32)                   # generated, never printed
 [ -n "$NEW_KEY" ] || { echo "key generation failed" >&2; exit 1; }
-echo "$NEW_KEY" | railway variable set S2S_SIGNING_KEY --stdin  # provisioned via stdin, value stays out of output
+printf '%s\n' "$NEW_KEY" | railway variable set S2S_SIGNING_KEY --stdin  # provisioned via stdin; printf is verbatim, value stays out of output
 ```
 
 That is one of the three. Repeat it for the second key, and set the third — `S2S_ISSUER`, not a secret — directly. Validating before provisioning matters: an unchecked `openssl` failure would quietly install an empty signing key, which is worse than the unset variable you started with.
 
 **Secrets are not pre-refused.** The deferred work was generating and provisioning signing keys, and `safety.md`'s credential prohibitions read at a glance like "don't touch keys at all." They are narrower than that: generating a key and setting it through a provider CLI is the allowed path. What's prohibited is letting the *value* land anywhere durable — a commit, an issue or PR body, a subagent prompt, a review comment, or a log. Reference credentials by name in all of those. A credential-shaped task earns the same ladder walk as any other.
 
-Both `vercel env add` and `railway variable set KEY --stdin` read the generated value from stdin — the boundary holds in both cases: the value never reaches your output, a commit, or a PR body.
+Both `vercel env add` and `railway variable set KEY --stdin` read the generated value from stdin — the boundary holds in both cases: the value never reaches your output, a commit, or a PR body. Use `printf '%s\n'` to pipe the value; `echo` may interpret option-like values (e.g. `-n`) non-verbatim.
 
 ### Decision: secrets on stdin vs argument (Issue #863)
 

@@ -82,7 +82,7 @@ railway logs
 
 ```bash
 railway variables              # list for linked service
-echo "$VALUE" | railway variable set {KEY} --stdin   # preferred: reads value from stdin (Railway CLI v4.30.5+)
+printf '%s\n' "$VALUE" | railway variable set {KEY} --stdin  # preferred: verbatim stdin (Railway CLI v4.30.5+; printf avoids echo flag-interpretation)
 railway variables --set "{KEY}={value}"              # legacy arg form — avoided; exposes value in ps/history
 railway link                   # link cwd to project/environment/service
 railway run {command}          # run a local command with service env injected
