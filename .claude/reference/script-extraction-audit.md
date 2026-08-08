@@ -148,3 +148,13 @@ P1/P2 issues can be filed as they reach top-of-sprint; keeping them as entries i
 - "Deterministic" here means same inputs produce the same outputs *in the absence of GitHub-side state change*. A script that calls `gh api` is still classified deterministic if the response shape is the only variable — the script's logic over that response must be pure.
 - "Low risk of extraction" means the script can be tested in isolation with a stable input fixture (saved `gh api` JSON) and its behavior verified without mutating a live PR. C-01, C-02, C-06, C-08, C-13, C-14, C-15, C-17, C-18, C-19, C-22 all fit this test-first extraction shape.
 - The audit deliberately excludes (a) LLM-judgment actions (classifying findings as actionable-vs-outdated, writing memory-worthy lessons, ranking issues by business impact), and (b) procedures that are already more than half-extracted (hooks directory — they don't consume agent tokens even though they duplicate logic).
+
+---
+
+## Future extraction candidates (post-audit additions)
+
+Identified after the original audit scope. Each is a bypass call site in a skill or rule that duplicates logic already centralized in `.claude/scripts/`. Recorded here rather than as P0/P1/P2 candidates because they were identified during hotspot adjudication, not the original codebase walk.
+
+| Call site | Duplicates | What it reimplements | Source | Action |
+|-----------|-----------|----------------------|--------|--------|
+| `go-on/SKILL.md` Step 6 | `.claude/scripts/escalate-review.sh` | Full CR→BugBot→Greptile escalation decision tree: rate-limit detection, BugBot grace-window check, BugBot-installed detection, Greptile budget check, sticky reviewer assignment. The shared script was extracted and hardened after `go-on` Step 6 was written; Step 6 never migrated to use it. | `go-on-hotspot-decision.md` (Issue #1116) | Future extraction: migrate Step 6 to call `escalate-review.sh` and `reviewer-of.sh --sticky`; verify behavior parity. Not done now because no churn PR touched Step 6 and the current Step 6 is correct. File a dedicated issue when ready. |
