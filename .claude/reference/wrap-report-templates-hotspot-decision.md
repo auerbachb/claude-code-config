@@ -26,7 +26,7 @@ The file was created by PR #848 as an extraction from `wrap/SKILL.md`. The other
 
 ### Consumer verification
 
-`grep -rn "wrap-report-templates" --exclude-dir=.git .` returns exactly two results, both in `.claude/skills/wrap/SKILL.md` (lines 63 and 743). No other file references this template.
+`grep -rn "wrap-report-templates" .claude/skills/` returns exactly two results, both in `.claude/skills/wrap/SKILL.md` (lines 63 and 743). No other skill file references this template.
 
 ### Conflict analysis
 
