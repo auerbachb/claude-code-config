@@ -10,7 +10,12 @@ permissions:
 jobs:
   # The job id is the required status-check name on main. Do not rename it or
   # add a `name:` — either would silently drop the check from branch protection.
-  # New doc lints belong here as steps so they inherit that gate (issue #591).
+  # Doc lints are AUTO-DISCOVERED, not listed by name (issue #1138). Adding a
+  # lint used to mean appending a step here, so every in-flight PR collided on
+  # this file (PRs #801/#960/#1131; same pattern fixed for hook-scripts.yml in
+  # issue #681). Now: drop a `*-lint.sh` file into .github/scripts/ and CI
+  # runs it with NO edit to this file. See CONTRIBUTING.md "Adding a Doc Lint".
+  # Discovery runner: .github/scripts/run-doc-lints.sh
   rule-lint:
     runs-on: ubuntu-latest
     steps:
@@ -19,18 +24,5 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run rule-lint
-        run: bash .github/scripts/rule-lint.sh
-
-      - name: Run skill-catalog-lint
-        run: bash .github/scripts/skill-catalog-lint.sh
-
-      - name: Run verbatim-block-lint
-        run: bash .github/scripts/verbatim-block-lint.sh
-
-      # Unlike its siblings above, this lint lives under .claude/scripts/.
-      - name: Run reference-catalog-lint
-        run: bash .claude/scripts/reference-catalog-lint.sh
-
-      - name: Run agents-frontmatter-lint
-        run: bash .github/scripts/agents-frontmatter-lint.sh
+      - name: Run doc lints (auto-discovered)
+        run: bash .github/scripts/summarize-test-run.sh "Doc lints" .github/scripts/run-doc-lints.sh
