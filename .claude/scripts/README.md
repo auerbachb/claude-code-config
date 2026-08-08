@@ -186,7 +186,8 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | `infer-pr.test.sh` | Tests for `infer-pr.sh` |
 | `issue-dedup.test.sh` | Tests for `issue-dedup.sh` |
 | `merge-gate-authorship.test.sh` | Tests the authorship guard in `merge-gate.sh` |
-| `merge-gate-ci-dedup.test.sh` | Tests CI check-run deduplication in `merge-gate.sh` |
+| `merge-gate-bugbot.test.sh` | Tests the BugBot reviewer path in `merge-gate.sh` (issues #844, #962) |
+| `merge-gate-ci-dedup.test.sh` | Tests CI check-run deduplication and CodeAnt supplemental gate in `merge-gate.sh` |
 | `merge-gate-greptile-comment.test.sh` | Tests Greptile comment handling in `merge-gate.sh` |
 | `merge-gate-stale-approval.test.sh` | Tests stale-approval rejection in `merge-gate.sh` |
 | `merge-sequence.test.sh` | Tests for `merge-sequence.sh` |
