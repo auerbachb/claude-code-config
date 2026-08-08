@@ -1,6 +1,7 @@
 ---
+name: researcher
 description: "Read-only research subagent: explore, audit, or investigate the codebase and GitHub state without any risk of file modification. Use when you need findings, not fixes."
-allowed-tools: Read, Glob, Grep, Bash(gh api:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh pr diff:*), Bash(gh pr checks:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh run list:*), Bash(gh run view:*), Bash(gh repo view:*), Bash(gh search:*), Bash(git log:*), Bash(git diff:*), Bash(git status:*), Bash(git show:*), Bash(git blame:*), Bash(git branch:*), Bash(git worktree list:*), Bash(cat:*), Bash(head:*), Bash(tail:*), Bash(wc:*), Bash(find:*), Bash(ls:*), Bash(pwd:*), Bash(echo:*), Bash(grep:*)
+tools: Read, Glob, Grep, Bash(gh api:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh pr diff:*), Bash(gh pr checks:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh run list:*), Bash(gh run view:*), Bash(gh repo view:*), Bash(gh search:*), Bash(git log:*), Bash(git diff:*), Bash(git status:*), Bash(git show:*), Bash(git blame:*), Bash(git branch:*), Bash(git worktree list:*), Bash(cat:*), Bash(head:*), Bash(tail:*), Bash(wc:*), Bash(find:*), Bash(ls:*), Bash(pwd:*), Bash(echo:*), Bash(grep:*)
 model: sonnet
 ---
 

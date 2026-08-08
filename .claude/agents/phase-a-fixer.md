@@ -1,4 +1,5 @@
 ---
+name: phase-a-fixer
 description: "Phase A subagent: fix review findings, push code, write handoff file, print exit report. Used after a PR receives CR/BugBot/Greptile review findings."
 model: opus
 ---

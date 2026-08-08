@@ -1,4 +1,5 @@
 ---
+name: pm-worker
 description: "PM task execution agent: issue management and repo bootstrap checks. Used for lightweight PM tasks that don't require the full Phase A/B/C pipeline."
 model: sonnet
 ---
