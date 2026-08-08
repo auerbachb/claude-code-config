@@ -62,7 +62,7 @@ sandbox clone where those commits were not visible.
 Running `git log --follow --oneline -- .claude/scripts/tests/lib/skill-bash.sh` against the
 full repository history returns:
 
-```
+```text
 835c60f refactor: extract pr-state jq filters (#1004)
 e8da8d6 docs(#926): align skill-bash.sh anchoring-rule header with its actual blank-line tolerance (#929)
 527c10d test(#888): anchored skill-bash extractor + pmm-wake Step 4a regression suite (#921)
