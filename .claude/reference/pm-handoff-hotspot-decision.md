@@ -25,7 +25,7 @@ Reference for Issue #1122 (`.claude/skills/pm-handoff/SKILL.md` churn hotspot). 
 
 **PR #910** introduced the `/pause` skill and extracted the shared state-collection logic into `session-state-collector.md` (Issue #901). The primary goal was eliminating code drift between `/pm-handoff` and the new `/pause` skill — one collector, two renderers. Steps 4, 5b, 5b2, and 5c each lost their inline code blocks and gained delegation pointers to the collector sections. This was a net reduction in pm-handoff's footprint.
 
-**Classification:** Single-lineage churn. The three PRs belong to two coordinated wave operations, not to independently-iterating concerns. None of the cited PRs changed Step 5's template structure, the config-bootstrap detection (Steps 1–3), or the prompt-assembly logic.
+**Classification:** Coordinated two-lineage churn. The three PRs belong to two coordinated wave operations, not to independently-iterating concerns. None of the cited PRs changed Step 5's template structure, the config-bootstrap detection (Steps 1–3), or the prompt-assembly logic.
 
 ## 3. Concern inventory and dedup check
 
@@ -42,12 +42,12 @@ The file mixes five separable concerns:
 
 Data-gathering for Steps 4, 5b, 5b2, and 5c is already centralized in `session-state-collector.md`. The skill owns only **rendering** for those steps — and that rendering is this skill's core deliverable.
 
-**One real duplication identified:** Step 5b2's on-resume block restates the canonical CronCreate durability sentence from `session-state-collector.md` §3 near-verbatim:
+**One real duplication identified (before this change):** Step 5b2's on-resume block restated the canonical CronCreate durability sentence from `session-state-collector.md` §3 near-verbatim. This duplication was confirmed before this PR:
 
-- Step 5b2 (current): *"All `CronCreate` jobs are **session-scoped** and do not survive session turnover — `durable: true` has no effect. Any job listed here died with the previous session; do not use `CronList` to check for survivors, there will be none."*
+- Step 5b2 (before this change): *"All `CronCreate` jobs are **session-scoped** and do not survive session turnover — `durable: true` has no effect. Any job listed here died with the previous session; do not use `CronList` to check for survivors, there will be none."*
 - `session-state-collector.md` §3 (canonical): *"Every `CronCreate` job is session-scoped and dies with its session (`durable: true` has no effect — `scheduling-reliability.md`). Anything listed here is therefore already dead from the next session's point of view. Consumers must not tell a reader to check for survivors."*
 
-`session-state-collector.md` §3 exists and carries the canonical statement. The duplication is confirmed.
+`session-state-collector.md` §3 exists and carries the canonical statement. This PR replaces the duplicated prose with a pointer; the final skill now uses the deduplicated form.
 
 **Important:** No verbatim-block lint (`.github/scripts/verbatim-block-lint.sh` or similar) pins this prose. The dedup is safe to apply.
 
