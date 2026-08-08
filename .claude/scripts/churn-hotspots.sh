@@ -599,7 +599,13 @@ enumerate_gh() {
         EXCLUDED_COUNT=$((EXCLUDED_COUNT + 1))
         continue
       fi
-      if ! file_present "$file"; then
+      # file_present checks the local working tree ([ -e "$file" ]).  That is
+      # reliable when scanning the current checkout (IN_CHECKOUT=1), but not
+      # when --repo names a different repository: the gh API returns paths from
+      # the remote repo, and those paths are unrelated to the caller's tree.
+      # Skip the existence filter for cross-repo scans so valid remote paths
+      # are not silently dropped.
+      if [ "$IN_CHECKOUT" -eq 1 ] && ! file_present "$file"; then
         MISSING_COUNT=$((MISSING_COUNT + 1))
         continue
       fi

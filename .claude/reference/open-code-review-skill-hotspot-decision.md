@@ -47,7 +47,7 @@ This is a detector false positive: a deleted file is not a refactor candidate re
 
 `churn-hotspots.sh` now calls `file_present` before writing any row to the touch TSV:
 - **git path** (when `SCAN_REF` is non-empty): `git cat-file -e "$SCAN_REF:$file"` — checks the blob exists at the scanned ref
-- **gh path** (when `SCAN_REF` is empty): `[ -e "$file" ]` — working-tree check (reliable since the script runs from inside a checkout)
+- **gh path** (when `SCAN_REF` is empty and `IN_CHECKOUT=1`): `[ -e "$file" ]` — working-tree check, reliable for same-repo scans; cross-repo gh scans (`IN_CHECKOUT=0`) skip the existence filter because the caller's working tree is unrelated to the target repository
 
 Dropped paths increment `missing_count`, emitted as a top-level JSON field alongside `excluded_count`. The `/wrap` branching logic is unchanged — the fix is detection-layer only, per Design Choice 1 in the CR plan.
 
