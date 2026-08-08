@@ -118,6 +118,11 @@
 #     names a different repo. This is the "works from gh data alone" path.
 #   Renames are NOT followed: a renamed file appears as two paths. `git log
 #   --follow` is single-path-only, so rename tracking is out of scope.
+#   Files absent from the scanned tree are now dropped: a path from history that
+#   no longer exists at the scanned ref (git path: `git cat-file -e`) or in the
+#   working tree (gh path: `[ -e ]`) is silently skipped before it enters the
+#   TSV stream. The count is reported as `missing_count` (a false-positive
+#   guard — a deleted file is not a refactor candidate regardless of its score).
 #
 # EXISTING-ISSUE LOOKUP:
 #   For each hotspot, issues in BOTH states (`--state all`) are searched for
@@ -154,7 +159,8 @@
 #   --json: a single object with `repo`, `since`, `threshold`, `conflict_weight`,
 #   `min_prs`, `source`, `scan_ref`, `scan_ref_source` (one of `explicit`,
 #   `origin-head`, `candidate`, `head-fallback`, or `n/a` on the gh path),
-#   `scanned_pr_count`, `excluded_count`, `truncated`,
+#   `scanned_pr_count`, `excluded_count`, `missing_count` (paths dropped because
+#   the file does not exist at the scanned ref or in the working tree), `truncated`,
 #   `existing_lookup_failed`, `total_hotspot_count` (before any --top bound),
 #   and `hotspots[]` (each: `file`, `pr_count`,
 #   `pr_numbers`, `conflict_rounds`, `conflict_prs`, `score`, `first_merged_at`,
@@ -264,6 +270,7 @@ SCAN_REF=""
 SCAN_REF_SOURCE="n/a"
 SCANNED_PR_COUNT=0
 EXCLUDED_COUNT=0
+MISSING_COUNT=0
 TRUNCATED=false
 LOOKUP_FAILED=false
 TOTAL_HOTSPOT_COUNT=0
@@ -282,6 +289,7 @@ emit_and_exit() {  # $1 hotspots JSON array, $2 exit code
   local hotspots="$1" rc="$2"
   as_number SCANNED_PR_COUNT
   as_number EXCLUDED_COUNT
+  as_number MISSING_COUNT
   as_number TOTAL_HOTSPOT_COUNT
   case "$hotspots" in ''|null) hotspots='[]' ;; esac
   if [ "$AS_JSON" -eq 1 ]; then
@@ -296,6 +304,7 @@ emit_and_exit() {  # $1 hotspots JSON array, $2 exit code
       --argjson min_prs "$MIN_PRS" \
       --argjson scanned "$SCANNED_PR_COUNT" \
       --argjson excluded "$EXCLUDED_COUNT" \
+      --argjson missing "$MISSING_COUNT" \
       --argjson truncated "$TRUNCATED" \
       --argjson lookup_failed "$LOOKUP_FAILED" \
       --argjson total "$TOTAL_HOTSPOT_COUNT" \
@@ -303,7 +312,7 @@ emit_and_exit() {  # $1 hotspots JSON array, $2 exit code
       '{repo:$repo, since:$since, source:$source,
         scan_ref:$scan_ref, scan_ref_source:$scan_ref_source, threshold:$threshold,
         conflict_weight:$conflict_weight, min_prs:$min_prs,
-        scanned_pr_count:$scanned, excluded_count:$excluded,
+        scanned_pr_count:$scanned, excluded_count:$excluded, missing_count:$missing,
         truncated:$truncated, existing_lookup_failed:$lookup_failed,
         total_hotspot_count:$total, hotspots:$hotspots}'
   else
@@ -484,6 +493,15 @@ is_excluded() {  # $1 path -> 0 when excluded
   return 1
 }
 
+file_present() {  # $1 path -> 0 when the file exists at the scan target
+  local file="$1"
+  if [ -n "$SCAN_REF" ]; then
+    git cat-file -e "${SCAN_REF}:${file}" 2>/dev/null
+  else
+    [ -e "$file" ]
+  fi
+}
+
 # ---- enumeration ------------------------------------------------------------
 # Both paths produce the same TSV stream on stdout: pr <TAB> merged_at <TAB> file
 TOUCH_TSV=$(mktemp) || { err "could not create a temp file"; exit 3; }
@@ -519,6 +537,10 @@ enumerate_git() {
         [ -n "${pr:-}" ] || continue
         if is_excluded "$file"; then
           EXCLUDED_COUNT=$((EXCLUDED_COUNT + 1))
+          continue
+        fi
+        if ! file_present "$file"; then
+          MISSING_COUNT=$((MISSING_COUNT + 1))
           continue
         fi
         printf '%s\t%s\t%s\n' "$pr" "$commit_date" "$file" >> "$TOUCH_TSV"
@@ -575,6 +597,10 @@ enumerate_gh() {
       [ -n "$file" ] || continue
       if is_excluded "$file"; then
         EXCLUDED_COUNT=$((EXCLUDED_COUNT + 1))
+        continue
+      fi
+      if ! file_present "$file"; then
+        MISSING_COUNT=$((MISSING_COUNT + 1))
         continue
       fi
       printf '%s\t%s\t%s\n' "$pr" "$merged_at" "$file" >> "$TOUCH_TSV"

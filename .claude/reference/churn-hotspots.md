@@ -83,6 +83,8 @@ The fallback is gated on *marker count*, not on an empty result. A run whose eve
 
 **Renames are not followed.** A renamed file reads as two paths. `git log --follow` is single-path-only, so rename tracking is out of scope; a rename resets a file's apparent history.
 
+**Files absent from the scanned tree are dropped** (issue #1118). A path that appears in git history but no longer exists is not a refactor candidate — it cannot be split, extracted, or refactored. Before writing any row to the touch TSV, the detector checks that the file is present: `git cat-file -e "$SCAN_REF:$file"` on the git path (where `SCAN_REF` is the resolved default-branch ref), or `[ -e "$file" ]` on the gh fallback path (where `SCAN_REF` is empty and a working-tree check is reliable). Dropped paths increment `missing_count`, reported as a top-level JSON field alongside `excluded_count`. This prevents deleted files from being re-surfaced as hotspots on every subsequent `/wrap` run — a false-positive gap first noticed via the `open-code-review/SKILL.md` hotspot filed by PR #1117 (Issue #1118), where the file had been deleted by PR #822 but its three-PR git history still crossed the threshold.
+
 ## Exclusions
 
 Default: `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `poetry.lock`, `go.sum`, `CHANGELOG.md` — generated or append-only files that churn by design and are never refactor candidates.
@@ -107,6 +109,31 @@ Hotspots are keyed by **file path**, which has an exact answer, so the fuzzy `is
 
 ## Related
 
+## Output fields (JSON envelope)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `repo` | string | Owner/repo the scan targeted |
+| `since` | string | Window start (YYYY-MM-DD or ISO timestamp) |
+| `source` | string | `git` or `gh` — which enumeration path was used |
+| `scan_ref` | string | Git ref scanned (empty on the gh path) |
+| `scan_ref_source` | string | `explicit`, `origin-head`, `candidate`, `head-fallback`, or `n/a` |
+| `threshold` | number | Score threshold (default 3) |
+| `conflict_weight` | number | Weight per conflict round (default 2) |
+| `min_prs` | number | Minimum distinct PRs floor (default 2) |
+| `scanned_pr_count` | number | Distinct merged PRs seen in the window |
+| `excluded_count` | number | Paths dropped by the exclusion list |
+| `missing_count` | number | Paths dropped because the file does not exist at the scanned ref or in the working tree (issue #1118) |
+| `truncated` | boolean | True when `--top` or the issue-lookup cap clipped output |
+| `existing_lookup_failed` | boolean | True when the issue lookup was incomplete or errored |
+| `total_hotspot_count` | number | Full pre-truncation hotspot count |
+| `hotspots` | array | Scored hotspot entries (see fields below) |
+
+Each `hotspots[]` entry: `file`, `pr_count`, `pr_numbers`, `conflict_rounds`, `conflict_prs`, `score`, `first_merged_at`, `last_merged_at`, `existing_hotspot_issue`, `existing_hotspot_issue_state`.
+
+## Related
+
 - Issue #754 — clean-BEHIND churn (removes the cost once churn happens; this reduces why it recurs).
 - Issue #671 — the prior rebase-treadmill incident, hand-noticed.
 - Issue #681 — `hook-scripts.yml` de-hotspotting, the change this detector would have flagged.
+- Issue #1118 — false-positive for deleted file; added existence filter and `missing_count`.
