@@ -22,8 +22,8 @@ at the tail of the shared `rule-lint` job. Each addition was a direct consequenc
 of `# New doc lints belong here as steps` comment (issue #591 convention), which
 directed every new lint author to modify this file.
 
-This is structurally identical to the `hook-scripts.yml` hotspot fixed by issue
-#681: a hand-maintained per-item step list that every new item collides on.
+This is structurally identical to the `hook-scripts.yml` hotspot fixed by
+Issue #681 — a hand-maintained per-item step list that every new item collides on.
 
 ## Decision: EXTRACT (auto-discovery)
 
@@ -86,6 +86,22 @@ never matches it; explicit exclusion is unnecessary.
 - **Annotations** — each lint's `::error::` annotations pass through to CI via
   the runner's stderr path (failing lints print in full on stderr; passing lints
   are silenced in `--json` mode).
+
+## Criteria for reopening
+
+Reopen the EXTRACT decision if any of the following arise:
+
+- A new lint-specific CI requirement cannot be served by the auto-discovery
+  runner (e.g. a lint needs a separate job, a different runner environment,
+  or extra setup steps that cannot be encoded in the lint script itself).
+- The runner contract changes in a breaking way (glob pattern, exclusion-list
+  interface, exit-code semantics, or `--json` output shape) that would require
+  per-lint workflow steps to diverge from the unified runner call.
+- A security or reproducibility finding shows that glob-based auto-discovery
+  introduces a risk that explicit step registration eliminates.
+
+In all other cases — including adding, removing, or renaming lint scripts —
+the current EXTRACT design handles the change with no workflow edit.
 
 ## Future ownership
 

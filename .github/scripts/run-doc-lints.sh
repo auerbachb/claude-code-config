@@ -126,10 +126,15 @@ if [[ -f "$EXTRA" ]]; then
 fi
 
 # Stable lexicographic order so the CI log is reproducible.
-# Use ${lints[@]+"${lints[@]}"} to handle empty array under set -u.
+# Use while+read instead of unquoted $() to avoid word-splitting paths that
+# contain whitespace (SC2207; bash 3.2 portable — no mapfile needed).
 if [ "${#lints[@]}" -gt 0 ]; then
-  IFS=$'\n' lints=($(printf '%s\n' "${lints[@]}" | LC_ALL=C sort -u))
-  unset IFS
+  _sorted=()
+  while IFS= read -r _line; do
+    _sorted+=("$_line")
+  done < <(printf '%s\n' "${lints[@]}" | LC_ALL=C sort -u)
+  lints=("${_sorted[@]}")
+  unset _sorted _line
 fi
 
 failed=0

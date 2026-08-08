@@ -141,6 +141,7 @@ Run the full doc-lint suite locally:
 ```bash
 bash .github/scripts/run-doc-lints.sh        # all doc lints (human mode)
 bash .github/scripts/run-doc-lints.sh --json # compact contract
+# Example (total reflects the current discovered lint set — grows as lints are added):
 # {"ok":true,"failed_tests":[],"relevant_error":null,"log_path":"…","total":5,"failed":0}
 ```
 
