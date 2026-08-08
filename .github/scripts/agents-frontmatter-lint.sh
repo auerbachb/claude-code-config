@@ -49,11 +49,14 @@ fi
 
 # Extract the frontmatter block (between first --- and second ---) from a file.
 # Prints only the frontmatter lines (not the delimiters).
+# Exits 1 if the opening --- is present but the closing --- is never found
+# (unterminated frontmatter), so callers can detect malformed files.
 extract_frontmatter() {
   local file="$1"
   awk 'NR==1 && /^---/ { in_fm=1; next }
-       in_fm && /^---/ { exit }
-       in_fm { print }' "$file"
+       in_fm && /^---/ { terminated=1; exit }
+       in_fm { print }
+       END { if (in_fm && !terminated) exit 1 }' "$file"
 }
 
 checked=0
@@ -66,7 +69,11 @@ for file in "${AGENTS_DIR}"/*.md; do
     continue
   fi
 
-  fm=$(extract_frontmatter "$file")
+  if ! fm=$(extract_frontmatter "$file"); then
+    echo "::error file=${file}::${file} has unterminated frontmatter (missing closing '---')"
+    errors=$((errors + 1))
+    continue
+  fi
   checked=$((checked + 1))
 
   # 1. name: present

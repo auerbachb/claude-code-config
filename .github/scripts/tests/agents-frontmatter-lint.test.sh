@@ -91,6 +91,12 @@ expect "allowed-tools: key fails" 1 \
   "deprecated 'allowed-tools:'" \
   sed -i.bak 's/^model: sonnet/allowed-tools: Read, Bash\nmodel: sonnet/' .claude/agents/my-agent.md
 
+# --- unterminated frontmatter (missing closing ---) -------------------------
+# Replace the well-formed fixture with a file that opens --- but never closes it.
+expect "unterminated frontmatter fails" 1 \
+  "unterminated frontmatter" \
+  bash -c 'printf -- "---\nname: my-agent\ndescription: Test agent.\nmodel: sonnet\n" > .claude/agents/my-agent.md'
+
 # --- README.md is skipped (no agent fields) --------------------------------
 # Add a README.md that has none of the required fields; lint must still pass.
 expect "README.md is skipped" 0 \
