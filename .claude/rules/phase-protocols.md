@@ -15,7 +15,7 @@ Every subagent MUST print an `EXIT_REPORT` block as its **final output** — one
 1. **Parse the exit report.** Extract `PR_NUMBER`, `HEAD_SHA`, `OUTCOME`, `REVIEWER`, `NEXT_PHASE`. No exit report = silent failure — report to user, check GitHub.
 2. **Branch on OUTCOME:**
    - `pushed_fixes` or `no_findings` → proceed to step 3
-   - `exhaustion` → **run step 4 (worktree cleanup) now**, then launch replacement Phase A within 60s. Report to user. **STOP — do not execute steps 3, 5-7** (skipping cleanup makes the replacement hit "branch already checked out").
+   - `exhaustion` → **run step 4 (worktree cleanup) now**, then launch replacement Phase A within 60s. Report to user. **STOP — do not execute steps 3, 5-7**.
 3. **Verify the push.** `gh pr view N --json commits --jq '.commits[-1].oid'` — confirm SHA matches. Mismatch = silent failure.
 4. **Clean up the Phase A worktree:** `git worktree remove <path> --force` (or `git worktree prune` on failure). Releases the branch lock for Phase B.
 5. **Verify handoff file.** Resolve path with `handoff-state.sh [--owner-repo owner/repo] --path N` and confirm the file exists with `phase_completed: "A"`. If missing, reconstruct and write it yourself.

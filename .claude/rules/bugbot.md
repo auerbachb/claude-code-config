@@ -35,7 +35,7 @@ On `STATUS=switch_bugbot`, **and** once the caller persists sticky ownership wit
 
 Verify all findings against actual code. Fix all valid findings in one commit, push once, reply to every thread, resolve via GraphQL.
 
-**Reply format:** Use plain text only in replies — do NOT include `@cursor` in reply comments (may trigger a re-review). This matches Greptile's reply behavior.
+**Reply format:** Use plain text only in replies — do NOT include `@cursor` in reply comments (may trigger a re-review).
 
 **Thread resolution:** `resolve-review-threads.sh <PR> --thread-ids <id1,id2>`.
 

@@ -23,13 +23,13 @@ Division of responsibility (`.claude/reference/pm-monitoring-decision.md`):
 - `/pr-monitor-and-manage` owns PR-fleet between-message polling (persistent `Monitor`, including `--auto-wake`).
 - `CronCreate` — **never**: see contract below.
 
-Skill-owned polling turns update `session-state.json` per that skill's contract; stale orchestration state → `monitor-mode.md` PM Monitoring Recovery + this file's dropped-tick handling.
+Skill-owned polling updates `session-state.json` per skill's contract; stale state → `monitor-mode.md` PM Monitoring Recovery.
 
 ### Recurring scheduler contract (authoritative)
 
 **It does not reliably fire.** Reproduced 2026-08-01 (#914): armed jobs, still listed by `CronList`, produced **zero** ticks across an 11-minute idle window at two cadences. Fixed-interval `/loop` delegates to it. Dynamic `/loop` uses `ScheduleWakeup`, but two live watchers also stopped until manual wake-up (#924). A follow-up control (#983) found the failure tracks the presence of a *concurrently-armed* `Monitor`, a detached probe, or their combination: a lone `CronCreate` job with neither mechanism fired 15/15 ticks over 31 minutes — but this system pairs recurring work with `Monitor`-based ceiling watches by default, so the guidance is unchanged. Use `Monitor`. Detail: `.claude/reference/scheduling-failure-modes.md` Pattern 7.
 
-It is also **session-only and in-memory**: `durable` has **no effect** and nothing survives a session boundary. **Durable work belongs in on-disk state, not a job** (#827): `session-scheduling-reconcile.sh` purges dead job records at session start. A durable scheduler exists (`mcp__scheduled-tasks__*`); why we decline it: `.claude/reference/cross-session-durability.md`.
+It is also **session-only and in-memory**: `durable` has **no effect** and nothing survives a session boundary. **Durable work belongs in on-disk state, not a job** (#827). A durable scheduler exists (`mcp__scheduled-tasks__*`); why we decline it: `.claude/reference/cross-session-durability.md`.
 
 ## Mandatory Pre-Exit Checklist for Polling Turns
 
