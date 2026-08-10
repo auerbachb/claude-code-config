@@ -23,6 +23,27 @@
       "WebFetch(*)",
       "WebSearch(*)",
       "mcp__*"
+    ],
+    "deny": [
+      "Read(**/node_modules/**)",
+      "Glob(**/node_modules/**)",
+      "Grep(**/node_modules/**)",
+      "Read(**/.git/objects/**)",
+      "Glob(**/.git/objects/**)",
+      "Read(**/dist/**)",
+      "Glob(**/dist/**)",
+      "Read(**/build/**)",
+      "Glob(**/build/**)",
+      "Read(**/.venv/**)",
+      "Glob(**/.venv/**)",
+      "Read(**/__pycache__/**)",
+      "Glob(**/__pycache__/**)",
+      "Read(**/.tox/**)",
+      "Read(**/.mypy_cache/**)",
+      "Read(**/.pytest_cache/**)",
+      "Read(**/.ruff_cache/**)",
+      "Read(**/.next/**)",
+      "Glob(**/.next/**)"
     ]
   },
   "model": "opus",

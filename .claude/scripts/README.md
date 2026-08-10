@@ -102,6 +102,14 @@ Scripts that surface stale issues, duplicate candidates, forgotten PRs, and back
 | `forgotten-pr-triage.sh` | Detect and classify open PRs that have gone quiet past a staleness threshold |
 | `pm-config-get.sh` | Extract a named section from `.claude/pm-config.md` |
 
+## Token Measurement
+
+Scripts that capture per-repo token spend and usage baselines.
+
+| Script | Purpose |
+|--------|---------|
+| `ccusage-baseline.sh` | Read-only per-session spend baseline via `ccusage`; exits 0 OK / 1 no data / 2 usage error / 3 ccusage missing / 4 invocation error; `--json` for machine output, `--recent` for last 3 days (#781) |
+
 ## Skills & Telemetry
 
 Scripts that audit, report, and sync skill and script usage telemetry.
@@ -164,6 +172,7 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 
 | Test | What it covers |
 |------|----------------|
+| `ccusage-baseline.test.sh` | JSON shape, human-readable output, ccusage-absent exit 3, empty-blocks exit 1, usage errors, and --help for `ccusage-baseline.sh` (#781) |
 | `admin-merge.test.sh` | Tests for `admin-merge.sh` |
 | `backlog-health.test.sh` | Tests for `backlog-health.sh` |
 | `backlog-staleness.test.sh` | Tests for `backlog-staleness.sh` |
