@@ -4,8 +4,9 @@
 # Validates:
 #   1. The rule index table in CLAUDE.md matches the actual set of
 #      .claude/rules/**/*.md files (no drift in either direction).
-#   2. Total auto-loaded word count (CLAUDE.md + all rule files) stays
-#      within the warning soft limit, committed ratchet cap, and hard limit.
+#   2. Total auto-loaded word count budget + one-way ratchet cap — delegated
+#      to rule-lint-ratchet.sh (same directory). --update-cap/--allow-raise
+#      are forwarded; a missing or failing ratchet script fails the lint.
 #   3. Per-file size: any rule file > 2000 words emits a warning.
 #
 # Output uses GitHub Actions annotations (::error::, ::warning::) so
@@ -27,15 +28,10 @@
 set -euo pipefail
 shopt -s nullglob
 
-SOFT_LIMIT=12000
-HARD_LIMIT=13000
 PER_FILE_WARN=2000
-RATCHET_FLOOR=8500
-RATCHET_HEADROOM=750
 
 CLAUDE_MD="CLAUDE.md"
 RULES_DIR=".claude/rules"
-BUDGET_CAP_FILE="${RULES_DIR}/.budget-soft-cap"
 
 errors=0
 update_cap=0
@@ -86,28 +82,6 @@ if [[ ! -d "$RULES_DIR" ]]; then
   echo "::error::${RULES_DIR} directory not found"
   exit 1
 fi
-
-read_budget_cap() {
-  local cap
-  if [[ ! -f "$BUDGET_CAP_FILE" ]]; then
-    echo "::error file=${BUDGET_CAP_FILE}::Budget soft cap file is missing" >&2
-    return 1
-  fi
-  if ! cap=$(python3 - "$BUDGET_CAP_FILE" <<'PY'
-import re
-import sys
-
-data = open(sys.argv[1], "rb").read()
-if not re.fullmatch(rb"[0-9]+(\r?\n)?", data):
-    sys.exit(1)
-sys.stdout.write(str(int(data.strip().decode("ascii"))))
-PY
-  ); then
-    echo "::error file=${BUDGET_CAP_FILE}::Budget soft cap must contain a single integer, with at most a trailing newline"
-    return 1
-  fi
-  printf '%s\n' "$cap"
-}
 
 # --- 1. Rule index alignment check ---------------------------------------
 # Extract basenames from the CLAUDE.md rule index table. Table rows look
@@ -163,93 +137,33 @@ if [[ -z "$missing_from_index" && -z "$missing_from_disk" && -z "$duplicate_base
   echo "Rule index alignment: OK (${file_count} files)"
 fi
 
-# --- 2. Total word count budget ------------------------------------------
-rule_files=()
-while IFS= read -r -d '' f; do
-  rule_files+=("$f")
-done < <(find "$RULES_DIR" -type f -name '*.md' -print0 | LC_ALL=C sort -z)
-if (( ${#rule_files[@]} == 0 )); then
-  echo "::warning::No rule files found in ${RULES_DIR}/"
-  total=$(wc -w < "$CLAUDE_MD" | tr -d ' ')
-else
-  total=$(cat "$CLAUDE_MD" "${rule_files[@]}" | wc -w | tr -d ' ')
-fi
-echo "Total auto-loaded word count: ${total} (soft=${SOFT_LIMIT}, hard=${HARD_LIMIT})"
-
+# --- 2. Word-count budget + ratchet (delegated — issue #1087) -------------
+# The budget/ratchet subsystem lives in rule-lint-ratchet.sh (extracted in
+# PR #1086); this call completes the delegation. Fail closed: a missing or
+# failing ratchet script is an error, never a silent skip. --allow-raise is
+# forwarded only alongside --update-cap, preserving this script's documented
+# "only takes effect when combined" semantics.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ratchet_args=()
 if (( update_cap )); then
-  # One-way ratchet: the cap may only decrease or hold; it never auto-raises.
-  # Formula is still max(count + RATCHET_HEADROOM, RATCHET_FLOOR) — unchanged.
-  formula_cap=$(( total + RATCHET_HEADROOM ))
-  if (( formula_cap < RATCHET_FLOOR )); then
-    formula_cap=$RATCHET_FLOOR
+  ratchet_args+=(--update-cap)
+  if (( allow_raise )); then
+    ratchet_args+=(--allow-raise)
   fi
-
-  # Read the current cap for the ratchet comparison.  A separate RC variable is
-  # required because set -e aborts the script when a command-substitution exits
-  # non-zero, even when the failure is expected (bootstrap / invalid file case).
-  prev_cap_rc=0
-  prev_cap="$(python3 - "$BUDGET_CAP_FILE" <<'PY'
-import re, sys
-try:
-    data = open(sys.argv[1], "rb").read()
-    if not re.fullmatch(rb"[0-9]+(\r?\n)?", data):
-        sys.exit(1)
-    sys.stdout.write(str(int(data.strip().decode("ascii"))))
-except Exception:
-    sys.exit(1)
-PY
-  )" || prev_cap_rc=$?
-
-  if (( prev_cap_rc != 0 )); then
-    # Bootstrap: no valid prior cap to clamp toward; write the raw formula result.
-    echo "Budget soft cap: no valid prior value — bootstrapping to formula result (${formula_cap})"
-    updated_cap=$formula_cap
-  elif (( allow_raise )); then
-    # Explicit escape hatch: allow the cap to increase.
-    updated_cap=$formula_cap
-    delta=$(( formula_cap - prev_cap ))
-    echo "Budget soft cap: ${prev_cap} → ${formula_cap} (+${delta}) [--allow-raise]"
-  elif (( formula_cap < prev_cap )); then
-    # Corpus shrank enough that the formula dips below the current cap: tighten.
-    updated_cap=$formula_cap
-    delta=$(( prev_cap - formula_cap ))
-    echo "Budget soft cap: ${prev_cap} → ${formula_cap} (-${delta}) [lowered]"
-  elif (( formula_cap == prev_cap )); then
-    # Formula matches the current cap exactly: no change needed.
-    updated_cap=$prev_cap
-    echo "Budget soft cap: ${prev_cap} unchanged (formula matches cap)"
-  else
-    # Formula would raise the cap; ratchet holds.
-    updated_cap=$prev_cap
-    echo "Budget soft cap: ${prev_cap} unchanged (formula ${formula_cap} would raise — use --allow-raise to override)"
-  fi
-
-  tmp_cap=$(mktemp "${BUDGET_CAP_FILE}.tmp.XXXXXX")
-  printf '%s' "$updated_cap" > "$tmp_cap"
-  mv "$tmp_cap" "$BUDGET_CAP_FILE"
-  echo "Updated budget soft cap: ${updated_cap}"
 fi
-
-if ! budget_cap=$(read_budget_cap); then
+if [[ ! -f "${SCRIPT_DIR}/rule-lint-ratchet.sh" ]]; then
+  echo "::error::rule-lint-ratchet.sh not found next to rule-lint.sh — budget/ratchet checks did not run"
   errors=$((errors + 1))
-  budget_cap=$HARD_LIMIT
-fi
-echo "Ratchet budget cap: ${budget_cap} (formula=max(current_count + ${RATCHET_HEADROOM}, ${RATCHET_FLOOR}))"
-
-if (( total > HARD_LIMIT )); then
-  echo "::error file=${CLAUDE_MD}::Auto-loaded word count ${total} exceeds HARD limit ${HARD_LIMIT}. Rules must be condensed before merge."
-  errors=$((errors + 1))
-elif (( total > SOFT_LIMIT )); then
-  echo "::warning file=${CLAUDE_MD}::Auto-loaded word count ${total} exceeds soft budget ${SOFT_LIMIT} (hard=${HARD_LIMIT}). Consider condensing rules."
-fi
-
-if (( total > 10#$budget_cap )); then
-  echo "::error file=${BUDGET_CAP_FILE}::Auto-loaded word count ${total} exceeds ratchet cap ${budget_cap}. See .claude/reference/budget-cap-raise-decision.md to raise the cap."
+elif ! bash "${SCRIPT_DIR}/rule-lint-ratchet.sh" ${ratchet_args[@]+"${ratchet_args[@]}"}; then
   errors=$((errors + 1))
 fi
 
 # --- 3. Per-file size check ----------------------------------------------
-for f in "${rule_files[@]}"; do
+rule_files=()
+while IFS= read -r -d '' f; do
+  rule_files+=("$f")
+done < <(find "$RULES_DIR" -type f -name '*.md' -print0 | LC_ALL=C sort -z)
+for f in ${rule_files[@]+"${rule_files[@]}"}; do
   wc_words=$(wc -w < "$f" | tr -d ' ')
   if (( wc_words > PER_FILE_WARN )); then
     echo "::warning file=${f}::Rule file ${f} is ${wc_words} words (>${PER_FILE_WARN}). Consider splitting into a sub-topic."
@@ -257,7 +171,6 @@ for f in "${rule_files[@]}"; do
 done
 
 # --- 4. Chip model-guard conformance (issue #731) -------------------------
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! bash "${SCRIPT_DIR}/chip-model-guard-lint.sh"; then
   errors=$((errors + 1))
 fi
