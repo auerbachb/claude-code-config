@@ -193,12 +193,12 @@ echo ""
 echo "--- revert-verify: lint must fail on planted drift in real repo ---"
 
 REAL_PLANTED=$(mktemp "${TMPDIR:-/tmp}/model-drift-revert-verify-XXXXXX.md")
-trap 'rm -f "$REAL_PLANTED"; rm -rf "$TMP_ROOT"' EXIT
-
 # Write a planted-drift file into a live-surface directory of the real repo.
 # We use a temp file in .claude/rules/ so the lint scans it, then clean up.
+# Declare PLANTED_FILE before the trap so the trap covers it on interruption.
 REAL_RULES_DIR="${REPO_ROOT}/.claude/rules"
 PLANTED_FILE="${REAL_RULES_DIR}/_model-drift-lint-revert-verify-$$.md"
+trap 'rm -f "$REAL_PLANTED" "$PLANTED_FILE"; rm -rf "$TMP_ROOT"' EXIT
 printf 'Legacy tier: Opus 4.8 was used for Phase A.\n' > "$PLANTED_FILE"
 
 revert_verify_ok=0
