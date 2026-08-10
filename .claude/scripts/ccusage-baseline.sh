@@ -12,8 +12,11 @@
 #   MANUAL CAPTURE section in the living-tracker doc for the `/context`
 #   procedure.
 #
-#   READ-ONLY: this script never writes files, creates issues, posts comments,
-#   or mutates any state. It is safe to run anywhere, including inside /wrap.
+#   READ-ONLY: this script never writes project files, creates issues, posts PR
+#   comments, or mutates repository state. The only side-effect is a best-effort
+#   append to ~/.claude/script-usage.log — the standard audit trail shared by
+#   all scripts in this library (|| true, non-blocking). Safe to run anywhere,
+#   including inside /wrap.
 #
 # USAGE:
 #   ccusage-baseline.sh [--json] [--recent] [--since YYYYMMDD] [--help]
