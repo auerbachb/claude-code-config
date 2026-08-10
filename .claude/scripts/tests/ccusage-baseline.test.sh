@@ -212,6 +212,10 @@ check_eq "6a: unknown flag exits 2" "2" "$RC_ERR"
 OUT_CONFLICT=$(bash "$SCRIPT" --recent --since 20260801 2>&1); RC_CONFLICT=$?
 check_eq "6b: --recent + --since exits 2 (mutually exclusive)" "2" "$RC_CONFLICT"
 
+OUT_INJECT=$(bash "$SCRIPT" --since '20260801; rm -rf /' 2>&1); RC_INJECT=$?
+check_eq "6c: --since with shell metacharacters exits 2 (injection guard)" "2" "$RC_INJECT"
+check_contains "6d: injection guard error mentions YYYYMMDD format" "$OUT_INJECT" "YYYYMMDD"
+
 # =============================================================================
 # Scenario 7 — --help exits 0
 # =============================================================================

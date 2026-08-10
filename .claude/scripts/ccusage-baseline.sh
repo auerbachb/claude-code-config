@@ -98,6 +98,12 @@ if [ "$RECENT" -eq 1 ] && [ -n "$SINCE" ]; then
   exit 2
 fi
 
+# Validate --since is a date (digits and hyphens only; prevents injection via eval)
+if [ -n "$SINCE" ] && ! [[ "$SINCE" =~ ^[0-9-]+$ ]]; then
+  err "--since must be a date in YYYYMMDD or YYYY-MM-DD format"
+  exit 2
+fi
+
 # ---- locate ccusage ----------------------------------------------------------
 # CCUSAGE_BIN env var: if explicitly set (even to ""), overrides detection.
 # Set to "" in tests to simulate ccusage-absent environments.
@@ -147,7 +153,7 @@ if [ "$RECENT" -eq 1 ]; then
 elif [ -n "$SINCE" ]; then
   # Normalise YYYY-MM-DD to YYYYMMDD (ccusage blocks uses YYYYMMDD format)
   SINCE_NORM="${SINCE//-/}"
-  BLOCKS_ARGS="$BLOCKS_ARGS --since $SINCE_NORM"
+  BLOCKS_ARGS="$BLOCKS_ARGS --since $(printf '%q' "$SINCE_NORM")"
 fi
 
 # ---- invoke ccusage ----------------------------------------------------------
