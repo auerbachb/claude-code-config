@@ -21,4 +21,4 @@ Enforces the main-hygiene rule from `CLAUDE.md`, catching pre-existing drift at 
 
 ## Recovery workflow
 
-Inspect the recovery branch, then land the work through the normal flow — issue → feature branch → PR → `gh pr merge --squash`, using cherry-pick/rebase only to move the commits across. **Never land recovery work directly on main.** Delete only after it merges; recovery branches are the user's audit trail — never auto-delete, ask first. Listing and inspection commands: `.claude/reference/dirty-main-guard.md`.
+Inspect the recovery branch, then land the work through the normal flow — issue → feature branch → PR → `gh pr merge --squash`. **Never land recovery work directly on main.** Delete only after it merges; never auto-delete, ask first. Listing and inspection commands: `.claude/reference/dirty-main-guard.md`.

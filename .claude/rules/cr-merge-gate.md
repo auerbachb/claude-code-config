@@ -9,7 +9,7 @@
 
 Stop polling ONLY when the current-HEAD gate for the owning reviewer path is satisfied (freshness and retraction rules in Step 1): **CR path** — an explicit clean `APPROVED` from CodeRabbit or CodeAnt on current HEAD, plus a clean CodeAnt where CodeAnt participated on that SHA; **BugBot** — a clean pass on current HEAD; **Greptile** — severity gate passed.
 
-"0 unresolved threads right now" is transient, not an exit condition. After any fix push, HEAD changes and reviewers re-run; keep polling for a current-HEAD gate.
+"0 unresolved threads right now" is transient, not an exit condition — keep polling for a current-HEAD gate.
 
 ## Step 1 — Confirm reviews are clean (merge gate)
 

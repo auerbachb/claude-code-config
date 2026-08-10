@@ -15,8 +15,8 @@ Primary review workflow — catches issues before PR noise/quota; does not repla
 
 After implementation, before push. Run from repo root via `.claude/scripts/local-review.sh` — it invokes the CLI, applies every false-clean check below, and returns one line:
 
-- `.claude/scripts/local-review.sh --tool coderabbit` → `coderabbit review --agent`
-- `.claude/scripts/local-review.sh --tool codeant` → `codeant review --all --headless`
+- `.claude/scripts/local-review.sh --tool coderabbit`
+- `.claude/scripts/local-review.sh --tool codeant`
 - Scoping: `--scope uncommitted|committed`. Base branch: `--base <branch>`. Hang bound: `--timeout` (default 120s).
 
 ### Fix loop
@@ -33,7 +33,7 @@ After implementation, before push. Run from repo root via `.claude/scripts/local
 
 `{"ok":…,"findings":N,"verified_run":…,"failure_mode":…,"relevant_error":…,"log_path":…}`
 
-with the raw capture at `log_path`. Exit `0` clean · `1` findings · `3` failed run · `4` timeout · `5` not installed. A CLI counts as covered **only** on `verified_run == true && ok == true`; every other result is a **failed run** (Timeout & fallback below), never a clean pass. Failure shapes, 403 triage, 15-file cap: `.claude/reference/local-review-cli-failure-modes.md`.
+with the raw capture at `log_path`. A CLI counts as covered **only** on `verified_run == true && ok == true`; every other result is a **failed run** (Timeout & fallback below), never a clean pass. Exit codes, failure shapes, 403 triage, 15-file cap: `.claude/reference/local-review-cli-failure-modes.md`.
 
 > **Never run `codeant logout`/`login` to clear a 403** — the cause is an undocumented daily cap (~10 agent reviews), not auth. On a CodeAnt 403: one retry, then drop for the session and note it in the PR body. The CodeAnt GitHub App is unaffected and satisfies the merge gate alone.
 
@@ -46,7 +46,7 @@ Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `noqa`, or equival
 - Per CLI: hangs for more than **2 minutes** or errors out twice → drop that CLI for the session and note it in the PR body. Preserve any findings it already emitted — the remaining CLI gates only after those are resolved or explicitly waived in the PR body. Do not retry a failed CLI more than once.
 - If both CLIs are down, run a **self-review** instead (see self-review fallback rules).
 
-**Coverage classification (determine before every push):** Based on which CLIs produced a verified-successful clean pass (not merely exit 0, applying the false-clean checks above), classify as one of: `both` (both passed) | `cr-only` | `codeant-only` | `none` (both unavailable — self-review only). A rate-limited, stderr-erroring, binary-absent, or no-review-records CLI counts as **not covered** for that CLI. Coverage is visibility-only and never feeds the merge gate (`cr-merge-gate.md`). Failure-state-to-enum mapping: `.claude/reference/local-review-cli-failure-modes.md`.
+**Coverage classification (determine before every push):** Based on which CLIs produced a verified-successful clean pass (not merely exit 0, applying the false-clean checks above), classify as one of: `both` | `cr-only` | `codeant-only` | `none` (both unavailable — self-review only). A rate-limited, stderr-erroring, binary-absent, or no-review-records CLI counts as **not covered** for that CLI. Coverage is visibility-only and never feeds the merge gate (`cr-merge-gate.md`).
 
 ### Exit criteria
 

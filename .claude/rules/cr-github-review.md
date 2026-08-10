@@ -12,7 +12,7 @@
 
 Before the first poll tick:
 
-1. `.claude/scripts/polling-state-gate.sh <PR_NUMBER> --ensure-session` (`--root-repo <path>` if cwd is not the PR repo). Registers the PR, creates the handoff file, and initializes poll watermarks.
+1. `.claude/scripts/polling-state-gate.sh <PR_NUMBER> --ensure-session` (`--root-repo <path>` if cwd is not the PR repo).
 2. Refusal = genuine cross-repo mismatch; stop and reconcile.
 
 **Each cycle:** `.claude/scripts/polling-state-gate.sh <PR_NUMBER>` — validates state then runs `merge-gate.sh`. Exit `0` = gate met; `1` = keep polling (plus `/fixpr` triggers below).
