@@ -60,7 +60,7 @@ New budget/ratchet logic (new thresholds, new ratchet semantics, new CLI flags) 
 
 New chip-model-guard logic belongs in `chip-model-guard-lint.sh`.
 
-**Reopening the KEEP verdict** is warranted if section 1 (index alignment) and section 3 (per-file-size) independently accumulate 3+ PRs on different release tracks — indicating they have diverged into separable concerns. The convergence note above predicts this will not occur: both sections have been stable since PR #974.
+**Reopening the KEEP verdict** is warranted if section 1 (index alignment) and section 3 (per-file-size) independently accumulate 3+ PRs on different release tracks — indicating they have diverged into separable concerns. The convergence note above predicts this will not occur: both sections' warning semantics have been stable since PR #974, though section 3's iteration implementation was rewritten in PR #1149 (it gained its own `rule_files` loop when the shared budget loop was delegated) — semantic stability, not byte-level stability, is the signal this condition tracks.
 
 ## Related
 
