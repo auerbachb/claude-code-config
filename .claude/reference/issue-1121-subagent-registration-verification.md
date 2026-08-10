@@ -49,6 +49,22 @@ Additionally, two files (`phase-c-merger.md`, `researcher.md`) used an `allowed-
 
 Claude Code scans `.claude/agents/` at session start. The fix applies when the updated files exist AND a new session has been started. An existing session that predates the merge will still see "Agent type not found" for custom types. After session restart the agents register normally.
 
+## Live Verification — Issue #1130 (2026-08-10)
+
+Confirmed in a fresh session started after PR #1131 merged (2026-08-08, squash `9a4ab06`). All five custom `subagent_type` values were spawned live via the Agent tool:
+
+| Type | Spawn result | Tool-restriction check |
+|------|--------------|-------------------------|
+| `phase-a-fixer` | PASS — resolved, replied `OK` | n/a (all tools) |
+| `phase-b-reviewer` | PASS — resolved, replied `OK` | n/a (all tools) |
+| `phase-c-merger` | PASS — resolved, replied `OK` | PASS — self-reported no Write/Edit tool available (`tools: Read, Glob, Grep, Bash`) |
+| `pm-worker` | PASS — resolved, replied `OK` | n/a (all tools) |
+| `researcher` | PASS — resolved, replied `OK` | PASS — self-reported no Write/Edit tool available |
+
+Zero "Agent type not found" errors across all five. The `allowed-tools:` → `tools:` rename in `phase-c-merger.md` / `researcher.md` is confirmed enforced at runtime (the spawned agent itself reports the tool absent), not just parsed. Static corroboration: this session's own Agent-tool system listing (visible before any spawn) already showed all five custom types with descriptions and tool sets matching each file's current frontmatter.
+
+Issue #1130 closed with this evidence; no `.claude/agents/*.md` changes were needed.
+
 ## Fallback (Pre-Restart or Edge Cases)
 
 If a spawn returns `Agent type '<name>' not found`, use `general-purpose` and paste the verbatim SAFETY/MINDSET/SKILLS blocks plus the role-specific procedure. See `.claude/rules/subagent-orchestration.md` §Fallback for the full contract.
@@ -66,3 +82,4 @@ This implied identity came from the filename. The authoritative mechanism is `na
 - Observed error and session context: `.claude/reference/issue-852-browser-rung-verification.md` §Doc drift item 1
 - Schema source: `https://docs.anthropic.com/en/docs/claude-code/sub-agents` §Supported frontmatter fields (fetched 2026-08-08)
 - Lint regression guard: `.github/scripts/agents-frontmatter-lint.sh`
+- Live spawn verification (all 5 types, both tool-restricted types confirmed): Issue #1130, session 2026-08-10
