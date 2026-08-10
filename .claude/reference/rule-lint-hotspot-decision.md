@@ -25,7 +25,7 @@ Per-PR attribution with evidence (real diffs traced via `git show <sha> -- .gith
 
 ### Rationale
 
-**The churn is now structurally resolved.** PR #1149 completed the extraction of the budget/ratchet subsystem into `rule-lint-ratchet.sh` (the extraction begun in PR #1086). The inline ratchet logic that drove PR #841's addition and PR #974's corpus-measurement update is now fully delegated. Future ratchet changes will touch `rule-lint-ratchet.sh`, not this file.
+**The churn is now structurally resolved.** PR #1149 completed the extraction of the budget/ratchet subsystem into `rule-lint-ratchet.sh` (the extraction begun in PR #1086). The inline ratchet logic that drove PR #841's addition and PR #974's corpus-measurement update is now fully delegated. Future ratchet *logic* changes will touch `rule-lint-ratchet.sh`, not this file — with one boundary caveat: `rule-lint.sh` still owns public flag handling and forwards `--update-cap`/`--allow-raise`, so introducing a *new public ratchet flag* requires a coordinated edit to both scripts (and an owner-applied edit on the protected `rule-lint.sh` side).
 
 **The remaining inline logic is one cohesive linting concern.** After delegation, `rule-lint.sh` (186 lines) owns four responsibilities:
 
@@ -54,7 +54,7 @@ The filing PR (#1149) is itself the resolution to the churn driver. The detector
 
 ## Future ownership
 
-New rule-index alignment logic (new corpus structures, new glob patterns, new error categories) belongs in `rule-lint.sh` sections 1 or 3 directly — these are the script's own concerns.
+New rule-index alignment logic (new corpus structures, new glob patterns, new error categories) belongs in `rule-lint.sh` section 1 directly; new per-file-size logic belongs in section 3 — these are the script's own concerns.
 
 New budget/ratchet logic (new thresholds, new ratchet semantics, new CLI flags) belongs in `rule-lint-ratchet.sh`.
 
