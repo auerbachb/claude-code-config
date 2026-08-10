@@ -57,11 +57,13 @@ Confirmed in a fresh session started after PR #1131 merged (2026-08-08, squash `
 |------|--------------|-------------------------|
 | `phase-a-fixer` | PASS — resolved, replied `OK` | n/a (all tools) |
 | `phase-b-reviewer` | PASS — resolved, replied `OK` | n/a (all tools) |
-| `phase-c-merger` | PASS — resolved, replied `OK` | PASS — self-reported no Write/Edit tool available (`tools: Read, Glob, Grep, Bash`) |
+| `phase-c-merger` | PASS — resolved, replied `OK` | PASS — self-reported Write/Edit absent from its toolset (`tools: Read, Glob, Grep, Bash`) |
 | `pm-worker` | PASS — resolved, replied `OK` | n/a (all tools) |
-| `researcher` | PASS — resolved, replied `OK` | PASS — self-reported no Write/Edit tool available |
+| `researcher` | PASS — resolved, replied `OK` | PASS — self-reported Write/Edit absent from its toolset |
 
-Zero "Agent type not found" errors across all five. The `allowed-tools:` → `tools:` rename in `phase-c-merger.md` / `researcher.md` is confirmed enforced at runtime (the spawned agent itself reports the tool absent), not just parsed. Static corroboration: this session's own Agent-tool system listing (visible before any spawn) already showed all five custom types with descriptions and tool sets matching each file's current frontmatter.
+Zero "Agent type not found" errors across all five.
+
+**Method and its limit (tool-restriction check):** each probe asked the agent to state whether Write/Edit appear in its own available toolset, without attempting to call either — this is a self-report of what the harness handed the model, not an observed blocked call. It is still meaningful evidence for the `allowed-tools:` → `tools:` rename specifically: under the pre-fix key, the restriction was silently ignored and the agent would have had the full default toolset (Write/Edit included) to self-report. Getting "absent" back is therefore consistent with the `tools:` key now taking effect, not merely with it parsing — but it does not by itself rule out every failure mode (e.g. a tool present in the manifest but rejected only on invocation). Static corroboration: this session's own Agent-tool system listing (visible before any spawn) independently showed all five custom types with descriptions and tool sets matching each file's current frontmatter.
 
 Issue #1130 closed with this evidence; no `.claude/agents/*.md` changes were needed.
 
