@@ -66,6 +66,18 @@
 #   Cannot be combined with --pr, --since, or --infer-candidates.
 #   Exit code 0 on success; 2 on usage error.
 #
+# Platform notes:
+#   Windows Git Bash quirk (issue #1161): process substitution (`< <(...)`) reads
+#   through a FIFO/temp path that appears to append a trailing `\r` to each line
+#   of jq output, so a plain `read` populates variables with the CR still attached
+#   (e.g. `PR_STATE="OPEN\r"` instead of `"OPEN"`). String comparisons like
+#   `[[ "$PR_STATE" != "OPEN" ]]` then fail spuriously, and any variable spliced
+#   into a URL or API path carries a stray CR. Every variable populated by the
+#   post-`gh pr view` read block below is stripped with `"${var%$'\r'}"` — a
+#   no-op on macOS/Linux, safe cross-platform. A blanket `tr -d '\r'` at the
+#   pipeline source was rejected because it would strip legitimate CRs from
+#   comment bodies flowing through the REST endpoints downstream.
+#
 # Exit codes:
 #   0  OK
 #   2  usage error (unknown flag, --since missing value, incompatible flag combo)
@@ -402,6 +414,18 @@ fi
   (.mergeStateStatus // ""),
   (.mergeable // ""),
   (.reviewDecision // "")')
+
+# Strip trailing CR that Windows Git Bash process substitution injects on each
+# line of jq output. Without this, comparisons like `[[ "$PR_STATE" != "OPEN" ]]`
+# fire spuriously and API path fragments (HEAD_SHA, etc.) carry a stray \r.
+# No-op on macOS/Linux. See "Platform notes" in the file header.
+PR_NUMBER="${PR_NUMBER%$'\r'}"
+PR_STATE="${PR_STATE%$'\r'}"
+HEAD_SHA="${HEAD_SHA%$'\r'}"
+PR_URL="${PR_URL%$'\r'}"
+MERGE_STATE="${MERGE_STATE%$'\r'}"
+MERGEABLE="${MERGEABLE%$'\r'}"
+REVIEW_DECISION="${REVIEW_DECISION%$'\r'}"
 
 if [[ "$PR_STATE" != "OPEN" ]]; then
   echo "ERROR: PR #$PR_NUMBER is $PR_STATE — nothing to audit" >&2
