@@ -22,7 +22,7 @@ Issue #1172 recorded three merged PRs touching `researcher.md` since 2026-07-30:
 | Agent registration fix | PR #1131 (`9a4ab06`, Aug 8 2026) | Added `name: researcher` frontmatter field (required for `subagent_type` resolution); renamed `allowed-tools:` → `tools:` in frontmatter (silently-ignored key corrected). Shared class — all five agent files received `name:`; researcher and phase-c-merger received `tools:`. |
 | Prose consistency fix | PR #1167 (`2368c4c`, Aug 12 2026) | Updated three body-text references from the old `allowed-tools` key name to `tools`, matching the frontmatter rename in #1131. Researcher-specific follow-on. |
 
-Measured at current `main`, the definition is 106 lines, well below the 2,000-word per-file warning. Zero conflict rounds across all three PRs. No touch changed the tool allow-list, the exit-report vocabulary, the read-only mandate, or the "When to Spawn" guidance. The dominant driver is coordinated registration-fix propagation, not accumulation of independent concerns.
+Measured at current `main`, the definition is 105 lines, well below the 2,000-word per-file warning. Zero conflict rounds across all three PRs. No touch changed the tool allow-list, the exit-report vocabulary, the read-only mandate, or the "When to Spawn" guidance. The dominant driver is coordinated registration-fix propagation, not accumulation of independent concerns.
 
 ## 2. CodeRabbit plan adjudication
 
@@ -46,7 +46,7 @@ CodeRabbit's three design alternatives — KEEP + targeted dedup, KEEP + content
 
 ### Option 4: SPLIT
 
-**Rejected.** `researcher.md` is 106 lines and has one concern: providing the complete read-only research agent contract at spawn time. Its sections (tool restrictions, safety rules, runtime context, workflow, exit format, when-to-spawn, skill-first note) are short, mandated compliance restatements or stable guidance. A split would create multiple files each of which is too small to be coherent, without eliminating any source of churn.
+**Rejected.** `researcher.md` is 105 lines and has one concern: providing the complete read-only research agent contract at spawn time. Its sections (tool restrictions, safety rules, runtime context, workflow, exit format, when-to-spawn, skill-first note) are short, mandated compliance restatements or stable guidance. A split would create multiple files each of which is too small to be coherent, without eliminating any source of churn.
 
 ## 4. Canonical ownership boundaries
 
