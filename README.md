@@ -31,7 +31,7 @@ After setup, Claude Code will automatically:
 - **Review locally, then on GitHub** — Runs CodeRabbit CLI reviews before pushing (instant feedback, no PR noise). After PR creation, the reviewer chain is CodeRabbit primary, BugBot (Cursor) second tier, Greptile last resort, then self-review only if every reviewer is unavailable; CodeAnt and Graphite AI Reviews provide supplemental AI review signals.
 - **Verify and merge** — Checks every acceptance criteria checkbox against the code, confirms CI is green, then squash-merges with branch cleanup.
 - **Orchestrate multi-agent work** — Decomposes large tasks into phases (fix, review, merge) with health monitoring, handoff files, and heartbeat enforcement.
-- **Manage your project** — 31 slash commands for backlog prioritization, OKR tracking, daily standups, PR-fleet monitoring, and cross-thread orchestration.
+- **Manage your project** — 32 slash commands for backlog prioritization, OKR tracking, daily standups, PR-fleet monitoring, and cross-thread orchestration.
 
 Review ownership is sticky once a fallback tier takes over:
 
@@ -127,7 +127,7 @@ ls -la ~/.claude/skills/       # each skill -> ~/.claude/skills-worktree/.claude
 
 ## Slash Commands
 
-All 31 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
+All 32 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
 
 | Command | Category | Description |
 |---------|----------|-------------|
@@ -151,6 +151,7 @@ All 31 commands are invoked as `/command` in a Claude Code session. They are def
 | `/pr-monitor-and-manage-stop` | Review | Clean-cancel companion to `/pr-monitor-and-manage` — tears down the fleet Monitor and its state |
 | `/pr-monitor-and-manage-wake` | Review | Resume companion to `/pr-monitor-and-manage` — wakes a paused fleet monitor and re-arms it |
 | `/pr-review-help` | Review | Executive PR review — multi-PR parallel strategic analysis |
+| `/receiving-code-review` | Review | Judgment layer for evaluating bot review findings before implementing — six-step READ→UNDERSTAND→VERIFY→EVALUATE→RESPOND→IMPLEMENT pattern with rationalization table and decline discipline |
 | `/recap` | Workflow | Functional summary of a single PR or issue — nested bullets or table |
 | `/standup` | Workflow | Daily standup summary (single contributor) |
 | `/status` | Workflow | Dashboard of open PRs with review state |
