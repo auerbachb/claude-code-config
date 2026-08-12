@@ -34,6 +34,10 @@
 # LOG FORMAT (~/.claude/spend-telemetry.log, tab-separated):
 #   ISO8601Z  event_type  exec_type  model_tier  agent_type  session_id  agent_id  tokens
 #
+# EXIT STATUS:
+#   0  Success (including empty log — prints a "No telemetry log" message).
+#   2  Argument error (unknown flag, invalid --days value).
+#
 # RELATED:
 #   .claude/reference/spend-telemetry-pipeline.md — schema, caveats, audit methodology
 #   .claude/hooks/spend-session-tracker.sh         — SessionStart capture
@@ -43,7 +47,7 @@ set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
 
 usage() {
-  sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 DAYS=""
@@ -144,9 +148,15 @@ with open(log_path, encoding="utf-8", errors="replace") as f:
 now = datetime.now(timezone.utc)
 
 def summarize(recs):
-    """Return (counts, token_sums) dicts keyed by (exec_type, model_tier)."""
+    """Return (counts, token_sums, token_counts) dicts keyed by (exec_type, model_tier).
+
+    token_sums:   sum of tokens for records that have token data (None = no data at all)
+    token_counts: number of records in the group that had token data
+    counts:       total records in the group (including those with no token data)
+    """
     counts = defaultdict(int)
     token_sums = defaultdict(lambda: None)  # None = no data
+    token_counts = defaultdict(int)         # records with token data
     for r in recs:
         et = r.exec_type if r.exec_type in EXEC_TYPES else "unknown"
         mt = r.model_tier if r.model_tier else "unknown"
@@ -154,7 +164,8 @@ def summarize(recs):
         if r.tokens is not None:
             cur = token_sums[(et, mt)]
             token_sums[(et, mt)] = (cur or 0) + r.tokens
-    return counts, token_sums
+            token_counts[(et, mt)] += 1
+    return counts, token_sums, token_counts
 
 def all_model_tiers(counts):
     seen = {mt for (_, mt) in counts}
@@ -162,17 +173,26 @@ def all_model_tiers(counts):
     extras = sorted(seen - set(MODEL_TIERS_ORDER))
     return ordered + extras
 
-def format_tokens(val):
+def format_tokens(val, bearing=None, total=None):
+    """Format a token value.
+
+    If bearing and total are provided and bearing < total, appends a partial
+    indicator so the user knows the sum is incomplete (e.g. '1.5K (partial: 1/3)').
+    """
     if val is None:
         return "n/a"
     if val >= 1_000_000:
-        return f"{val/1_000_000:.2f}M"
-    if val >= 1_000:
-        return f"{val/1_000:.1f}K"
-    return str(val)
+        s = f"{val/1_000_000:.2f}M"
+    elif val >= 1_000:
+        s = f"{val/1_000:.1f}K"
+    else:
+        s = str(val)
+    if bearing is not None and total is not None and bearing < total:
+        s += f" (partial: {bearing}/{total})"
+    return s
 
 def render_table(recs, heading):
-    counts, token_sums = summarize(recs)
+    counts, token_sums, token_counts = summarize(recs)
     tiers = all_model_tiers(counts)
 
     if not tiers:
@@ -182,7 +202,7 @@ def render_table(recs, heading):
 
     total_thread = sum(counts[(et, mt)] for (et, mt) in counts if et == "thread")
     total_inline = sum(counts[(et, mt)] for (et, mt) in counts if et == "inline")
-    grand_total = total_thread + total_inline
+    grand_total = sum(counts.values())
 
     print(f"\n{heading}\n")
     print(f"**Total events:** {grand_total} "
@@ -205,13 +225,15 @@ def render_table(recs, heading):
             continue
         # Aggregate token sum for this exec_type across all tiers
         tok_total = None
+        tok_bearing = 0
         for mt in tiers:
             v = token_sums.get((exec_type, mt))
             if v is not None:
                 tok_total = (tok_total or 0) + v
+                tok_bearing += token_counts.get((exec_type, mt), 0)
         print(f"| {exec_type:<12} | " +
               " | ".join(f"{row_counts[mt]:>{col_widths[mt]}}" for mt in tiers) +
-              f" | {format_tokens(tok_total):>6} |")
+              f" | {format_tokens(tok_total, tok_bearing if tok_total is not None else None, row_total)} |")
 
     print()
 
@@ -222,12 +244,15 @@ def render_table(recs, heading):
     for mt in tiers:
         t = counts.get(("thread", mt), 0)
         i = counts.get(("inline", mt), 0)
+        mt_total = sum(counts.get((et, mt), 0) for et in ("thread", "inline", "unknown"))
         tok = None
+        tok_bear = 0
         for et in ("thread", "inline", "unknown"):
             v = token_sums.get((et, mt))
             if v is not None:
                 tok = (tok or 0) + v
-        print(f"| {mt:<10} | {t:>6} | {i:>6} | {t+i:>5} | {format_tokens(tok):>6} |")
+                tok_bear += token_counts.get((et, mt), 0)
+        print(f"| {mt:<10} | {t:>6} | {i:>6} | {mt_total:>5} | {format_tokens(tok, tok_bear if tok is not None else None, mt_total)} |")
     print()
 
 # --- All-time table ---

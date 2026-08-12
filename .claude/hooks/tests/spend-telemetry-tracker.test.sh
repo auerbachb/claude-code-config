@@ -208,9 +208,10 @@ EVIL_PAYLOAD=$(python3 -c "import json; print(json.dumps({'source': 'startup', '
 run_session "$EVIL_PAYLOAD" > /dev/null
 expect_lines 1 "tab injection produces one line"
 line="$(cat "$LOG")"
-# The session_id field (column 6) should not contain a tab
+tab_count="$(tr -cd $'\t' < "$LOG" | wc -c | tr -d ' ')"
+[[ "$tab_count" == "7" ]] || fail "TSV field count changed (expected 7 tabs, got $tab_count): $line"
 session_field="$(echo "$line" | cut -f6)"
-[[ "$session_field" != *$'\t'* ]] || fail "tab leaked into session_id field"
+[[ "$session_field" == "evilextra" ]] || fail "tab was not stripped from session_id: $line"
 echo "PASS: tab in session_id is stripped"
 
 echo ""

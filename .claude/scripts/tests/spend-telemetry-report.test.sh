@@ -38,6 +38,9 @@ echo "PASS: missing log exits 0 with message"
 out="$(run_report --help)"
 [[ $? -eq 0 ]] || fail "--help exits non-zero"
 echo "$out" | grep -qi "spend-telemetry-report" || fail "--help output missing script name"
+echo "$out" | grep -q -- "--days" || fail "--help output missing --days option"
+echo "$out" | grep -q -- "--help" || fail "--help output missing --help option"
+echo "$out" | grep -q "EXIT STATUS" || fail "--help output missing EXIT STATUS section"
 echo "PASS: --help works"
 
 # Test 3: unknown argument exits 2
@@ -93,6 +96,9 @@ out="$(run_report --days 7)"
 echo "$out" | grep -q "Last 7 day" || fail "--days 7 section missing: $out"
 # All-time section should have 2 records
 echo "$out" | grep -q "Total events.*2" || fail "all-time total wrong: $out"
+# Windowed section should have exactly 1 event (sess-old excluded)
+windowed_total="$(echo "$out" | awk '/Last 7 day/{found=1} found && /Total events/{print; exit}')"
+echo "$windowed_total" | grep -q "Total events.*1" || fail "windowed total should be 1 (old record excluded): $windowed_total"
 echo "PASS: --days windowing present"
 
 # Test 10: malformed lines are tolerated (no crash)

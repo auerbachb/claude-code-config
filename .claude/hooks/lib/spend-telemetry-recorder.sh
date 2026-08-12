@@ -139,7 +139,7 @@ try:
                     found = True
 except Exception:
     pass
-if found and total > 0:
+if found:
     print(total)
 PY
   return 0

@@ -213,7 +213,7 @@ Registered on **`SessionStart`** with a 5 s timeout.
 
 ## spend-subagent-tracker.sh
 
-Records a **thread-type telemetry** event each time an inline `Agent`-tool subagent finishes. Part of the spend/thread-type telemetry pipeline introduced by Issue #710; pair with `spend-session-tracker.sh`.
+Records an **inline-type telemetry** event each time an inline `Agent`-tool subagent finishes. Part of the spend/thread-type telemetry pipeline introduced by Issue #710; pair with `spend-session-tracker.sh`.
 
 Registered on **`SubagentStop`** with a 5 s timeout.
 

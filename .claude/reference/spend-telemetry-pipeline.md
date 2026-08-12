@@ -98,13 +98,13 @@ The report emits:
 - Optional windowed table (`--days N`)
 - Inline agent-type inventory
 
-## Re-running AC1 from pm-routing-audit-2026-07.md against real spend
+## Re-running AC1 from pm-routing-audit-2026-07.md — execution-type attribution
 
-*This section fulfils FU-1 AC: "pm-routing-audit-2026-07.md AC1 is re-runnable against real spend rather than the invocation-count proxy."*
+*This section partially fulfils FU-1 AC: it provides execution-type attribution and model-tier distribution, replacing the invocation-count proxy. Full comparative token spend (thread vs inline) requires a thread token source; see the caveat below.*
 
 **Old method (proxy):** Count sessions with coding-lifecycle skill calls (`start-issue`, `fixpr`, `wrap`, …) in `skill-usage.log` and compare to sessions with `/subagent` calls. Tells you *invocation counts*, not model tier or token spend.
 
-**New method (real attribution):**
+**New method (execution-type attribution):**
 
 ```bash
 # 1. Collect telemetry (automatic — no action needed)
@@ -115,9 +115,11 @@ bash .claude/scripts/spend-telemetry-report.sh --days 30
 #    - thread row = standalone coding sessions
 #    - inline row = Agent-tool subagent executions (pm-worker, phase-a/b/c)
 #    - model_tier columns show distribution across opus/sonnet/haiku
-#    - tokens column shows aggregate spend where available
+#    - tokens column shows inline spend where the runtime exposed token data
 ```
 
 **What to compare:** In a healthy inline-first routing regime (post-#613), the `inline` row should grow relative to the `thread` row over time, and the `pm-worker`/`phase-*` agent types should dominate the inline inventory. A `thread`-heavy split in the report flags that work is still entering the standalone-thread path rather than flowing through PM's inline pipeline.
+
+**Token spend caveat:** `SessionStart` does not expose token data to hooks (the runtime provides no usage in that event). Only `SubagentStop` attempts transcript token extraction. The `tokens` column therefore shows inline subagent spend (where available) but is always empty for thread events. Comparative thread-vs-inline token spend requires a thread token source (e.g. a SessionStop hook with transcript access) before AC1's spend comparison can be answered with real numbers rather than event counts.
 
 **Limitation:** Because thread classification cannot distinguish a `/subagent`-launched Phase A session from the main interactive session, combine the report with `skill-usage-report.sh` (which shows `/pm`, `/subagent`, `/start-issue` counts) for the same window to cross-validate the split.

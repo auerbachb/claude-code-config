@@ -77,7 +77,7 @@ for tier in ("opus", "sonnet", "haiku", "fable"):
     if tier in raw:
         print(tier)
         raise SystemExit(0)
-print(raw if raw else "unknown")
+print("unknown")
 ' 2>/dev/null) || MODEL_TIER="unknown"
 
 record_spend_telemetry "session_start" "thread" "$MODEL_TIER" "session" \
