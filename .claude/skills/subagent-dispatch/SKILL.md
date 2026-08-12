@@ -127,7 +127,7 @@ Agent("Fix abort-handling.test.ts failures")
 
 Include model, mode (`bypassPermissions`), and the verbatim SAFETY/MINDSET/SKILLS blocks in each call per `.claude/rules/subagent-orchestration.md`.
 
-**Do not exceed the pipeline ceiling.** If you have 3 agents queued and the ceiling is already at 4 PRs, hold the 3rd and queue it inline.
+**Do not exceed the pipeline ceiling.** If you have 3 agents queued and you already have 2 open PRs (with a ceiling of 4), dispatch only 2 agents in parallel and hold the 3rd to queue inline as PRs complete.
 
 ---
 
