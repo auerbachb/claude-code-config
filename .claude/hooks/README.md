@@ -188,3 +188,49 @@ Checkpoints older than 7 days are pruned. A handoff written by the pause command
 - Run it by hand with `--stdout` to see what it would write without publishing
 
 **Tests:** `.claude/scripts/tests/checkpoint-handoff.test.sh`
+
+## spend-session-tracker.sh
+
+Records a **thread-type telemetry** event each time a genuinely new Claude Code session starts. Part of the spend/thread-type telemetry pipeline introduced by Issue #710; pair with `spend-subagent-tracker.sh`.
+
+Registered on **`SessionStart`** with a 5 s timeout.
+
+**What it does:**
+
+- Reads the `source` field from the `SessionStart` payload (`startup`, `resume`, `compact`, `clear`).
+- **Only records on `startup` (or absent `source`)** — compact, resume, and clear fire inside an already-live session and must not inflate the thread count. An absent source is treated conservatively as startup for backward compatibility.
+- Extracts `session_id` and `model` from the payload; normalises `model` to a family tier (`opus`, `sonnet`, `haiku`, `fable`, `unknown`) via a substring match.
+- Appends one TSV line to `~/.claude/spend-telemetry.log` (schema: `ISO8601Z event_type exec_type model_tier agent_type session_id agent_id tokens`). The `agent_type` is always `session`; `agent_id` and `tokens` are always empty for this event.
+- Always exits `0` and emits `{}` — never blocks the session.
+
+**Observational-only.** Data produced here MUST NOT gate any agent decision or quota check (`safety.md` §"Anthropic Quota & Spend Authority").
+
+**Shared library:** sources `.claude/hooks/lib/spend-telemetry-recorder.sh` for sanitization, session resolution, and the append write.
+
+**Tests:** `.claude/hooks/tests/spend-telemetry-tracker.test.sh`
+
+---
+
+## spend-subagent-tracker.sh
+
+Records an **inline-type telemetry** event each time an inline `Agent`-tool subagent finishes. Part of the spend/thread-type telemetry pipeline introduced by Issue #710; pair with `spend-session-tracker.sh`.
+
+Registered on **`SubagentStop`** with a 5 s timeout.
+
+**What it does:**
+
+- Reads `session_id`, `agent_id`, `agent_type`, and `agent_transcript_path` from the `SubagentStop` payload.
+- Derives model tier from the agent definition frontmatter (`model:` field in `.claude/agents/<agent_type>.md`). Falls back to `unknown` if the file is absent or has no `model:` line. This is a **derived** value, not a runtime measurement — see reliability caveats in `.claude/reference/spend-telemetry-pipeline.md`.
+- Best-effort token extraction: if `agent_transcript_path` is set and the file exists, sums `input_tokens + output_tokens + cache_creation_input_tokens + cache_read_input_tokens` across all JSONL records with a `usage` key. The `tokens` field is left empty on any parse error or missing file. **Empty ≠ zero spend.**
+- Appends one TSV line to `~/.claude/spend-telemetry.log` (same schema as `spend-session-tracker.sh`; `exec_type` is always `inline`).
+- Always exits `0` and emits `{}` — never blocks the session.
+
+**Observational-only.** Data produced here MUST NOT gate any agent decision or quota check (`safety.md` §"Anthropic Quota & Spend Authority").
+
+**Shared library:** sources `.claude/hooks/lib/spend-telemetry-recorder.sh`.
+
+**Reporting:** `bash .claude/scripts/spend-telemetry-report.sh [--days N]`
+
+**Schema and caveats:** `.claude/reference/spend-telemetry-pipeline.md`
+
+**Tests:** `.claude/hooks/tests/spend-telemetry-tracker.test.sh`

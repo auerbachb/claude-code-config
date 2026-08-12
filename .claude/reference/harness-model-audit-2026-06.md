@@ -123,6 +123,7 @@ No inline-fixable model-calibration drift in scripts/skills beyond Findings A an
 
 - **Problem:** No pipeline captures CR response times, false-clean rates, subagent token usage, or Phase completion rates, so capability audits stay static (Scope note above).
 - **AC:** Lightweight capture of those metrics (extend `session-state`/usage logs); a `*-report.sh` that summarizes them; this audit re-runnable against real data.
+- **Status (2026-08-12):** **Partially addressed** by Issue #710 (spend/thread-type telemetry pipeline). The #710 implementation covers *subagent token usage* and *thread-vs-inline routing attribution*: two hooks (`spend-session-tracker.sh` + `spend-subagent-tracker.sh`) append to `~/.claude/spend-telemetry.log`, and `spend-telemetry-report.sh` summarizes the split. CR response times, false-clean rates, and Phase completion rates remain untracked — those require heavier instrumentation and are left for a future FU. The scope of FU-5 is narrowed accordingly.
 
 ---
 

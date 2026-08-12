@@ -123,6 +123,17 @@ When all three hold → **prefer inline**: recommend `/subagent #N` in the PM th
 
 - **Problem:** No pipeline attributes token/Sonnet spend to threads vs inline subagents. `skill-usage.log` records invocation counts only, so every attribution here is a *thread-count proxy*, not a spend measurement (AC1 could only be answered "even roughly").
 - **AC:** Lightweight capture of per-session model tier and (where available) token spend, tagged thread vs inline; a `*-report.sh` that summarizes the thread-vs-inline split; this audit's AC1 re-runnable against real spend rather than a proxy.
+- **Status (2026-08-12):** **PARTIAL** — infrastructure closed by PR implementing Issue #710. Two hooks installed: `spend-session-tracker.sh` (SessionStart — tags new standalone threads) and `spend-subagent-tracker.sh` (SubagentStop — tags each inline Agent-tool subagent). Append-only TSV log at `~/.claude/spend-telemetry.log`; report via `bash .claude/scripts/spend-telemetry-report.sh`. Provides execution-type attribution and model-tier distribution; comparative thread-vs-inline token spend requires a thread token source (SessionStart does not expose usage data). Full schema, reliability caveats, and AC1 re-run methodology: `.claude/reference/spend-telemetry-pipeline.md`.
+
+#### Re-running AC1 against real spend (post-FU-1)
+
+To replace the proxy-based AC1 table with real execution-type attribution:
+
+```bash
+bash .claude/scripts/spend-telemetry-report.sh --days 30
+```
+
+Read the `inline`/`thread` row split in the "All-time thread-vs-inline breakdown" table. In a healthy post-#613 regime the inline row should grow over time and `pm-worker`/`phase-*` agent types should dominate the inline inventory. Cross-validate with `skill-usage-report.sh` for the same window (which shows `/pm`, `/subagent`, `/start-issue` invocation counts). Full methodology: `.claude/reference/spend-telemetry-pipeline.md` §"Re-running AC1 from pm-routing-audit-2026-07.md against real spend".
 
 ### FU-2 — `/wave` missing its global skill symlink — [#711](https://github.com/auerbachb/claude-code-config/issues/711) *(local deploy hygiene)*
 
