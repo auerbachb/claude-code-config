@@ -55,7 +55,7 @@ Multiple tasks?
 >
 > **Silence/bgwork ceiling** (`bgwork-ceiling.sh`) — a separate backstop that fires when background work goes quiet. Do not confuse the two.
 
-Count your currently open PRs (`gh pr list --author "@me" --state open`). Dispatch only enough agents to stay at or below the pipeline ceiling (3–4). Agents that would exceed the ceiling queue inline — they do not get their own chips.
+Count your currently open PRs (`gh pr list --author "@me" --state open`) as a conservative proxy for pipeline load. Dispatch only enough agents to stay at or below the pipeline ceiling (3–4). Agents that would exceed the ceiling queue inline — they do not get their own chips. (The canonical ceiling definition — actively CR-polled PRs authored by `@me` — lives in `.claude/rules/subagent-orchestration.md`; dormant open PRs are counted here for safety.)
 
 Spawn mechanics, model tiers (Opus for Phase A/B, Sonnet for Phase C/PM), and mode settings live in `.claude/rules/subagent-orchestration.md`. Read that file; do not restate it here.
 
@@ -109,7 +109,7 @@ You are a Phase A fixer. Repo: auerbachb/claude-code-config.
   - Do NOT change /absolute/path/to/repo/src/foo/baz.ts
 
 **Return:** Structured exit report per .claude/rules/phase-protocols.md.
-**Handoff:** Write via `handoff-state.sh` to ~/.claude/handoffs/auerbachb/claude-code-config/pr-<N>-handoff.json (atomic; exit 6 = lock timeout, retry; exit 4 = wrong field type, fix the call).
+**Handoff:** Write via `<ABSOLUTE_REPO_ROOT>/.claude/scripts/handoff-state.sh` to ~/.claude/handoffs/auerbachb/claude-code-config/pr-<N>-handoff.json (atomic; exit 6 = lock timeout, retry; exit 4 = wrong field type, fix the call).
 ```
 
 ---
@@ -125,7 +125,7 @@ Agent("Fix batch-completion.test.ts failures")
 Agent("Fix abort-handling.test.ts failures")
 ```
 
-Include model, mode (`bypassPermissions`), and the verbatim SAFETY/MINDSET/SKILLS blocks in each call per `.claude/rules/subagent-orchestration.md`.
+Include model, mode (`bypassPermissions`), and the verbatim SAFETY/MINDSET blocks in each call. Add the SKILLS block for general-purpose or built-in spawns without a `subagent_type` — custom `subagent_type` agents inherit it automatically. Full contract: `.claude/rules/subagent-orchestration.md`.
 
 **Do not exceed the pipeline ceiling.** If you have 3 agents queued and you already have 2 open PRs (with a ceiling of 4), dispatch only 2 agents in parallel and hold the 3rd to queue inline as PRs complete.
 
