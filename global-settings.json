@@ -178,6 +178,15 @@
             "timeout": 30
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/spend-session-tracker.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -233,6 +242,15 @@
             "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/checkpoint-handoff.sh",
             "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/spend-subagent-tracker.sh",
+            "timeout": 5
           }
         ]
       }
