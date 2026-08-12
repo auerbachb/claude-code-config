@@ -82,7 +82,7 @@ this cycle.
 
 | Pattern (source) | We have? | Delta | Fit | Priority |
 |---|---|---|---|---|
-| `silent-failure-hunter` agent — read-only agent specialized in finding silent failures: empty catch blocks, inadequate logging, swallowed errors, missing error propagation (ECC `agents/silent-failure-hunter.md`) | No — Phase B reviewer is general; no dedicated silent-failure specialist | Our Bash scripts have silent-failure risks (mapfile exit-code, `||true` on guards — memory feedback file confirms these patterns recur) | `DF` `P1` — **direct fit**; Bash + Markdown stack; can use as-is with our frontmatter | **New this cycle** |
+| `silent-failure-hunter` agent — read-only agent specialized in finding silent failures: empty catch blocks, inadequate logging, swallowed errors, missing error propagation (ECC `agents/silent-failure-hunter.md`) | No — Phase B reviewer is general; no dedicated silent-failure specialist | Our Bash scripts have silent-failure risks (mapfile exit-code, `\|\| true` on guards — memory feedback file confirms these patterns recur) | `DF` `P1` — **direct fit**; Bash + Markdown stack; can use as-is with our frontmatter | **New this cycle** |
 | `skill-health` command — check if skills are outdated, have broken references, or lack tests (ECC `commands/skill-health.md`) | Partial — `skill-conventions-audit.sh` (from prior cycle) checks formatting conventions | No broken-reference or outdatedness check | `NA` `P2` | **New this cycle** |
 
 ## Prioritized Import Backlog (August 2026 additions)
