@@ -1,7 +1,7 @@
 ---
 name: silent-failure-hunter
 description: "Read-only review agent that hunts silent failures in Bash scripts and shell tooling — swallowed exit codes, fabricated sentinels, guarded no-ops, and missing error propagation. Adapted from affaan-m/everything-claude-code @ 569b1d5b."
-tools: Read, Grep, Glob, Bash
+tools: Read, Grep, Glob, Bash(grep:*), Bash(wc:*), Bash(find:*), Bash(cat:*), Bash(head:*), Bash(tail:*), Bash(ls:*), Bash(echo:*), Bash(git diff:*), Bash(git show:*), Bash(git log:*), Bash(git blame:*)
 model: sonnet
 ---
 
@@ -21,11 +21,11 @@ These patterns are documented recurring failures in this codebase:
 
 - **`|| true` on guard-arming writes** — `guard-arming-write || true` converts a bounded guard into an always-succeeding no-op, making the guard silently inactive. Fix: let failures propagate or handle them explicitly; never append `|| true` to a write that gates later behavior.
 
-- **`VAR="$(cmd)"` masking failures under `set -e`** — under `set -e`, assigning a command substitution in a `VAR=` statement absorbs the non-zero exit; the script continues silently. Fix: `RC=0; VAR="$(cmd)" || RC=$?` then check `$RC`.
+- **`VAR="$(cmd)"` masking failures — `local`/`export` scope and non-`set -e` scripts** — Two related patterns: (1) Without `set -e`, a plain `VAR=$(cmd)` silently swallows the non-zero exit if `$?` is never checked. (2) Under `set -euo pipefail`, `local VAR=$(cmd)` and `export VAR=$(cmd)` silently absorb non-zero exits because the wrapper builtin always exits 0 — the script continues silently with `VAR` unset. Fix: `RC=0; VAR="$(cmd)" || RC=$?` then check `$RC`.
 
 - **Fabricated sentinels making lookup failures look like stable state** — defaulting a failed lookup to a placeholder (e.g., `${VAR:-UNKNOWN}` or `|| echo "none"`) makes "failed to look up" read as "nothing changed" in downstream comparisons. Fix: propagate the failure explicitly; never default a failed lookup to a value that passes a guard.
 
-- **`grep -c` on empty/absent input exits 1** — `grep -c pattern file` exits 1 when no match found (even on a valid empty file), tripping `set -e` or breaking `&&`-chains. The `|| echo 0` workaround emits `"0\n0"` and corrupts downstream `jq --argjson`. Fix: count with `wc -l` after a filter, or use `grep -c ... || true` only after confirming no downstream consumer reads the exit code.
+- **`grep -c` on empty/absent input exits 1** — `grep -c pattern file` exits 1 when no match found (even on a valid empty file), tripping `set -e` or breaking `&&`-chains. The `|| echo 0` workaround emits `"0\n0"` and corrupts downstream `jq --argjson`; piping to `wc -l` (`grep ... | wc -l`) triggers the same pipefail failure under `set -euo pipefail`. Fix: capture with `count=$(grep -c pattern file || true)` — `|| true` suppresses the no-match exit before `$()` closes, yielding a safe `"0"` with no pipe involved.
 
 ### 2. Empty Catch Blocks
 
