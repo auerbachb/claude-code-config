@@ -80,7 +80,7 @@ Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget
 
 ### Processing CR Feedback
 
-1. Fetch latest CR comments via `gh api`, verify each finding against the actual file
+1. Fetch latest CR comments via `gh api`, verify each finding against the actual file (for the judgment layer — when to accept, decline, or push back — invoke `/receiving-code-review`)
 2. Fix **all valid findings**, commit and push **once**
 3. **Reply to every thread** ("Fixed in `abc1234`: <what changed>"). Try inline reply; on 404, PR-level comment with `@coderabbitai Fixed in ...`
 4. **Resolve via `.claude/scripts/resolve-review-threads.sh <PR> --thread-ids <id1,id2>`** — **NEVER call `resolveReviewThread` inline** (mutations: `.claude/reference/graphql-thread-resolution.md`)
