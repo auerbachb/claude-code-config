@@ -54,9 +54,9 @@ fi
 
 Classify the top candidate per `.claude/reference/autofile-dedup.md`:
 
-- **Strong match** (open issue, same primary artifact, a quotable covering criterion, `coverage ≥ 0.6`) → **do not file**. Post the finding as a comment on the existing issue using the template in `autofile-dedup.md`. Record in your exit report: `"<title>" — appended to #<N> instead of filing`. Proceed to the exit report (Steps 3 and 4 are skipped).
+- **Strong match** (open issue, same primary artifact, a quotable covering criterion, `coverage ≥ 0.6`) → **do not file**. Post the finding as a comment on the existing issue using the template in `autofile-dedup.md`. In the prose body **above** the exit report, record: `"<title>" — appended to #<N> instead of filing`. Proceed to the exit report (Steps 3 and 4 are skipped).
 - **Weak / ambiguous match** → file as normal (Step 3), and include `Possibly duplicates #<N> — <one line on the overlap>` in the issue body.
-- **No match** or helper not found → file as normal (Step 3). If the helper was missing, note the degraded check once in your exit report.
+- **No match** or helper not found → file as normal (Step 3). If the helper was missing, note the degraded check once in the prose body above the exit report.
 
 ### 3. Create the issue
 
@@ -117,15 +117,17 @@ Skill-first rules are inherited from `.claude/rules/skill-first.md` via the harn
 
 ## Exit Report (MANDATORY — print as final output)
 
-Every pm-worker invocation MUST print a structured exit report as its final output, for consistency with the Phase A/B/C orchestration model. This lets the parent agent parse pm-worker results mechanically.
+Every pm-worker invocation MUST print a structured exit report as its final output, for consistency with the Phase A/B/C orchestration model. This lets the parent agent parse pm-worker results mechanically. Canonical field and OUTCOME contract: `.claude/reference/exit-report-format.md`.
+
+Include the task-specific result (issue number created or deferred, bootstrap outcome, blocker description) in the prose body **above** the EXIT_REPORT block — not in the OUTCOME value.
 
 ```text
 EXIT_REPORT
-PHASE_COMPLETE: pm
+PHASE_COMPLETE: pm-worker
 PR_NUMBER: <PR number if a PR was created or referenced, else "none">
 HEAD_SHA: <current HEAD SHA if applicable, else "none">
 REVIEWER: <cr, bugbot, greptile, or none>
-OUTCOME: <issue_created|issue_deferred|repo_bootstrapped|blocked|exhaustion>
+OUTCOME: <completed|blocked|exhaustion>
 FILES_CHANGED: <comma-separated paths, or empty>
 NEXT_PHASE: none
 HANDOFF_FILE: none
@@ -133,8 +135,6 @@ HANDOFF_FILE: none
 
 **Valid OUTCOME values for pm-worker:**
 
-- `issue_created` — a GitHub issue was created (include issue number in your output before the exit report)
-- `issue_deferred` — dedup check found a strong match; finding was commented on the existing issue instead of filing (include the target issue number and a one-line summary in your output before the exit report)
-- `repo_bootstrapped` — a required workflow file was added or branch-protection gap reported
-- `blocked` — a task requires user confirmation (e.g., branch protection changes) or cannot proceed autonomously
-- `exhaustion` — token budget low, partial work applied
+- `completed` — task finished; specific result (issue number, deferral target, bootstrap outcome) is in the prose body above
+- `blocked` — could not complete autonomously — reason above (e.g. branch protection change requires user confirmation)
+- `exhaustion` — token budget low, partial work applied, replacement needed

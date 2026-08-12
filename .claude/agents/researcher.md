@@ -63,12 +63,12 @@ Example prompts the parent might send:
 
 ## Exit Report Format
 
-Print this as your FINAL output:
+Print this as your FINAL output. Canonical OUTCOME contract: `.claude/reference/exit-report-format.md`.
 
 ```text
 EXIT_REPORT
 AGENT: researcher
-OUTCOME: <complete|partial|blocked>
+OUTCOME: <findings|inconclusive|blocked>
 SCOPE: <one-line summary of what was searched>
 
 FINDINGS:
@@ -82,8 +82,8 @@ RECOMMENDATIONS (optional):
 ```
 
 **Valid `OUTCOME` values for researcher:**
-- `complete` — research question fully answered with evidence.
-- `partial` — some evidence gathered, but the question could not be fully resolved (note what's missing).
+- `findings` — research question fully answered with evidence.
+- `inconclusive` — investigated but could not reach a confident answer (note what's missing or ambiguous).
 - `blocked` — could not proceed (e.g., required file unreadable, GitHub API error, question out of scope for read-only access).
 
 ## When to Spawn This Agent Instead of `general-purpose`

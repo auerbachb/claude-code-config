@@ -76,8 +76,8 @@ Extract if the same pattern is introduced elsewhere and then requires a coordina
 | Repo bootstrap flow | `.claude/agents/pm-worker.md` | `.claude/rules/repo-bootstrap.md` owns the policy; `repo-bootstrap.sh` implements checks |
 | Safety and capability posture | Embedded in the agent definition for spawn-time availability | `.claude/rules/safety.md` is canonical; `subagent-phase-guardrails.md` holds verbatim spawn-prompt blocks |
 | Skill-first reflex | Embedded prose in the agent definition | `.claude/rules/skill-first.md` is canonical |
-| EXIT_REPORT block format | Inline in the agent definition (OUTCOME vocabulary is pm-worker-specific) | `.claude/reference/exit-report-format.md` owns the cross-phase field schema |
-| OUTCOME vocabulary (`issue_created`, `issue_deferred`, `repo_bootstrapped`, `blocked`, `exhaustion`) | Inline in `pm-worker.md`, matching `researcher.md` precedent for non-phase agents | Not delegated to a separate reference file |
+| EXIT_REPORT block format | Inline in the agent definition | `.claude/reference/exit-report-format.md` owns the cross-phase field schema |
+| OUTCOME vocabulary (`completed`, `blocked`, `exhaustion`) | `pm-worker.md` references the canonical set | `.claude/reference/exit-report-format.md` now owns the non-phase OUTCOME vocabulary (amended: Issue #1171) |
 | Model pin (`sonnet`) and frontmatter | `pm-worker.md` YAML frontmatter | `.claude/rules/subagent-orchestration.md` sets the fleet default |
 
 ## 4. Preserved invariants
@@ -137,3 +137,12 @@ both tasks in a future PR.
   is an unstable substrate propagated through one owner, not accumulation of independent concerns.
 - `.claude/reference/churn-hotspots.md` — hotspot reports are observational and require
   adjudication.
+
+## Amendment — Issue #1171
+
+The §3 ownership row for "OUTCOME vocabulary" was updated to reflect that the canonical values
+(`completed`, `blocked`, `exhaustion` for pm-worker; `findings`, `inconclusive`, `blocked` for
+researcher) now live in `.claude/reference/exit-report-format.md`. `pm-worker.md` and
+`researcher.md` reference that set rather than defining a private vocabulary. This change was
+required by Issue #1171, which identified that non-phase agents were inventing undefined OUTCOME
+values because no canonical enumeration existed.
