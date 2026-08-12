@@ -98,7 +98,7 @@ A subagent that inherits implicit context from your session will fail when that 
 
 You are a Phase A fixer. Repo: auerbachb/claude-code-config.
 
-**Scope:** src/foo/bar.ts — the `validateInput` function only.
+**Scope:** /absolute/path/to/repo/src/foo/bar.ts — the `validateInput` function only.
 **Goal:** Fix the 2 failing tests listed below without touching other files.
 **Failing tests:**
   - "should reject null input" — TypeError: Cannot read property 'length' of null
@@ -106,10 +106,10 @@ You are a Phase A fixer. Repo: auerbachb/claude-code-config.
 
 **Constraints:**
   - Do NOT change test files
-  - Do NOT change src/foo/baz.ts
+  - Do NOT change /absolute/path/to/repo/src/foo/baz.ts
 
 **Return:** Structured exit report per .claude/rules/phase-protocols.md.
-**Handoff:** Write to ~/.claude/handoffs/auerbachb/claude-code-config/pr-<N>-handoff.json
+**Handoff:** Write via `handoff-state.sh` to ~/.claude/handoffs/auerbachb/claude-code-config/pr-<N>-handoff.json (atomic; exit 6 = lock timeout, retry; exit 4 = wrong field type, fix the call).
 ```
 
 ---
@@ -139,7 +139,7 @@ STOP and verify before declaring the work done.
 2. **Check for conflicts.** Did two agents edit the same file? Merge manually if so.
 3. **Run the full test suite.** Individual-agent passes do not guarantee combined correctness.
 4. **Integrate handoff state.** Each agent writes to `~/.claude/handoffs/<owner>/<repo>/pr-<N>-handoff.json`. Read each file; check `phase_completed` and `head_sha` before proceeding. Writes go through `handoff-state.sh` (atomic); exit code 6 = lock timeout (retry); exit code 4 = wrong field type (fix the call). Field names: `.claude/reference/handoff-file-schema.json`.
-5. **Launch Phase B within 60 s of Phase A completion.** The parent session owns this transition — do not ask. See `.claude/rules/phase-protocols.md` Phase A Completion Protocol.
+5. **Verify Phase A handoff and trigger Phase B.** See `.claude/rules/phase-protocols.md` Phase A Completion Protocol — the parent session owns this transition automatically.
 
 ---
 
@@ -157,7 +157,7 @@ STOP and verify before declaring the work done.
 
 **STOP if you catch yourself:**
 - Restating Phase A/B/C protocol steps
-- Copying the SAFETY/MINDSET/SKILLS blocks (link to `subagent-phase-guardrails.md` instead)
+- Inlining the SAFETY/MINDSET/SKILLS blocks into this file (link to `subagent-phase-guardrails.md` instead — the verbatim blocks belong in your spawn prompts, not here)
 - Picking issues or ranking work (that is `/wave` and `/pm`)
 - Merging or wrapping (that is `/wrap`)
 
