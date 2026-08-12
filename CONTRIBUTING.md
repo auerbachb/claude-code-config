@@ -24,7 +24,7 @@ Skills live in `.claude/skills/<name>/SKILL.md`.
    - `description` (required — used by the model for discovery; be specific about when to trigger)
    - `model` (optional: `sonnet` or `opus` override)
    - `triggers` (optional: natural-language invocation phrases)
-   - `allowed-tools` (optional: restrict the skill to specific tools)
+   - `allowed-tools` (optional: restrict the skill to specific tools — **correct for skills only**; agent definitions under `.claude/agents/` use `tools:` instead)
    - `disable-model-invocation` (optional: prevents auto-trigger AND hides from slash-command autocomplete — avoid unless you really mean both)
 2. **Skill body:** step-by-step instructions, exact bash commands with absolute paths, and clear exit criteria. Subagents skip prose rules — prefer numbered checklists with explicit STOP conditions.
 
