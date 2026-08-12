@@ -47,7 +47,7 @@ this cycle.
 | `receiving-code-review` skill — verify before implementing, technical pushback discipline, rationalization-avoidance table (superpowers `skills/receiving-code-review/SKILL.md`) | No — `cr-github-review.md` covers bot-feedback processing loops but not how to evaluate reviewer feedback technically before acting | We have the mechanical loop but no guidance on verification-before-implementation for review feedback | `NA` `P1` | **New this cycle** |
 | `skill-create` command — analyze git history to auto-generate SKILL.md files from recurring patterns (ECC `commands/skill-create.md`) | No — `/harness-audit` is the closest (audits existing skills); we have no git-history-to-skill generator | Auto-generating skills from commit patterns could reduce manual skill authoring | `NA` `P2` | **New this cycle** |
 | `finishing-a-development-branch` skill — when and how to declare a branch done, checklist for cleanups (superpowers `skills/finishing-a-development-branch/SKILL.md`) | Partial — `/wrap` covers the mechanical merge, but from the tool operator's view, not the developer's discipline | Framing differs: superpowers targets the human developer's judgment; ours targets Claude as the operator | `NF` — `/wrap` already covers our use-case | — |
-| Prior-cycle backlog items (brainstorming HARD-GATE, full skill-comply LLM harness) | Still deferred | No change | `P2` | No change |
+| Prior-cycle backlog items (brainstorming HARD-GATE, full skill-comply LLM harness) | Still deferred | No change | — | `P2` |
 
 ### 2. Hook patterns
 
@@ -55,7 +55,7 @@ this cycle.
 |---|---|---|---|---|
 | Cross-platform hook output format — single session-start script handles Cursor vs Claude Code vs Copilot via env-var detection (superpowers `hooks/session-start`) | Our hooks hardcode Claude Code's `hookSpecificOutput.additionalContext` shape | A portable output-format pattern would make our hooks work if we ever support Cursor or Copilot CLI | `NA` `P2` | **New this cycle** — low urgency; we target Claude Code only |
 | `stop:evaluate-session` / session activity tracker — records per-session tool use and file-touch metrics (ECC `hooks/memory-persistence`) | No structured session metrics | We have skill usage tracking but no per-session tool-use telemetry | `NA` `P2` — monitoring overhead vs value unclear | **New this cycle** |
-| Prior-cycle deferred hooks (`post:quality-gate`, consolidated dispatcher) | Still deferred | No change | `P2` | No change |
+| Prior-cycle deferred hooks (`post:quality-gate`, consolidated dispatcher) | Still deferred | No change | — | `P2` |
 
 ### 3. CLAUDE.md conventions
 
@@ -76,7 +76,7 @@ this cycle.
 | Pattern (source) | We have? | Delta | Fit | Priority |
 |---|---|---|---|---|
 | `longhand` MCP — indexes raw tool calls from `.claude/projects/*.jsonl` into local SQLite + ChromaDB for verbatim session recall (ECC `mcp-configs/mcp-servers.json`) | No — our memory system uses `~/.claude/projects/*/memory/` (human-readable notes) | Verbatim session recall complements our synthesized memory; useful for debugging session-compaction loss | `NA` `P2` — local infra dependency; niche value | **New this cycle** |
-| Prior-cycle deferred items (playwright, sequential-thinking) | Still deferred | No change | `P2` | No change |
+| Prior-cycle deferred items (playwright, sequential-thinking) | Still deferred | No change | — | `P2` |
 
 ### 6. Utility scripts / tooling
 
