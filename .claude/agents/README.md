@@ -6,7 +6,7 @@ This directory contains custom agent definitions for the Phase A/B/C subagent wo
 
 Claude Code's Agent tool supports a `subagent_type` parameter that references agent definition files in `.claude/agents/`. When spawning a subagent with `subagent_type: "phase-a-fixer"`, Claude Code loads the agent whose frontmatter `name:` field matches that string — identity comes from `name:`, not the filename. The `name:` field is **required**; without it the agent file is not resolvable by `subagent_type`.
 
-Claude Code scans `.claude/agents/` at session start. A session restart is required for a newly added or edited agent file to be registered. The `tools:` key in frontmatter restricts which tools the agent may use; the deprecated `allowed-tools:` key is not recognized by the current schema.
+Claude Code scans `.claude/agents/` at session start. A session restart is required for a newly added or edited agent file to be registered. The `tools:` key in frontmatter restricts which tools the agent may use; the deprecated `allowed-tools:` key is not recognized by the current schema. <!-- deprecated-key-ok: allowed-tools -->
 
 ## Placeholder Syntax
 
@@ -132,7 +132,7 @@ The agent definition provides role-specific workflow rules. The harness injects 
 ## Adding New Agents
 
 1. Create `<agent-name>.md` in this directory
-2. Include frontmatter with **`name:`** (required — must match the intended `subagent_type` string and the filename stem exactly), `description:` (required), and optionally `tools:` for tool restrictions (use `tools:`, not `allowed-tools:`)
+2. Include frontmatter with **`name:`** (required — must match the intended `subagent_type` string and the filename stem exactly), `description:` (required), and optionally `tools:` for tool restrictions (use `tools:`, not `allowed-tools:`) <!-- deprecated-key-ok: allowed-tools -->
 3. Embed only role-specific rules — global rules (skill-first, autonomy, etc.) are inherited automatically
 4. Always include the SAFETY and MINDSET blocks as safety-critical restatements
 5. Document any new placeholders in this README

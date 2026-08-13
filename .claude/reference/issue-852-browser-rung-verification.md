@@ -98,6 +98,7 @@ Read the two passes together: where they disagree, the 2026-08-12 result superse
 
 ```bash
 # Item 4 — tools audit (static, deterministic)
+# <!-- deprecated-key-ok: allowed-tools --> (deliberate migration note below)
 # NOTE: the key is `tools:` on agents. `allowed-tools:` is the SKILL key and is
 # silently ignored on an agent — grepping for it reports every agent unrestricted.
 for f in .claude/agents/*.md; do
