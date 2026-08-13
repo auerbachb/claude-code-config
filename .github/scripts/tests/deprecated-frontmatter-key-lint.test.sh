@@ -250,6 +250,34 @@ else
   failures=$((failures + 1))
 fi
 
+# 14. INVERSION — Fenced block inside an agent file (no .claude/agents/ path
+#     inside the fence) with allowed-tools: and no marker FAILS.
+#     Regression test for the fence_agents-only check that Greptile P2 caught.
+expect "fenced block in agent file without path reference fails" 1 \
+  "Deprecated frontmatter key 'allowed-tools:'" \
+  bash -c 'cat >> .claude/agents/phase-a-fixer.md <<'"'"'MDEOF'"'"'
+
+```yaml
+allowed-tools:
+  - Read
+  - Bash
+```
+MDEOF
+git add .'
+
+# 15. Fenced block inside an agent file with an opt-out marker PASSES.
+expect "fenced block in agent file with opt-out marker passes" 0 \
+  'deprecated-frontmatter-key-lint: OK' \
+  bash -c 'cat >> .claude/agents/phase-a-fixer.md <<'"'"'MDEOF'"'"'
+
+```yaml
+# <!-- deprecated-key-ok: allowed-tools -->
+allowed-tools:
+  - Read
+```
+MDEOF
+git add .'
+
 # ---------------------------------------------------------------------------
 # Revert-verify: plant a live-surface violation in the real repo and confirm
 # the lint catches it.  This proves the test is not trivially passing against

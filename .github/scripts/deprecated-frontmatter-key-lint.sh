@@ -164,7 +164,7 @@ for file in "${md_files[@]}"; do
            for (k in fl) delete fl[k]
            for (k in fn) delete fn[k]
          } else {
-           if (fence_agents) {
+           if (agent || fence_agents) {
              blk_m=0
              for (i=1; i<=fence_n; i++) {
                if (index(fl[i], MARKER) > 0) { blk_m=1; break }
