@@ -396,6 +396,26 @@ if [[ -f "$STATE_FILE" ]]; then
   [[ -n "$PAUSED_AT" ]] && NOTICES+=("A paused PR fleet is recorded (paused at $PAUSED_AT) — resume with /pr-monitor-and-manage-wake, or /pmm-stop to discard it.")
 fi
 
+# 2c. Agent-initiated TestFlight releases (issue #1169). A merge inside a repo's
+#     build window leaves a durable "release pending" marker instead of building;
+#     this is one of three surfaces that turn that marker into an actual build
+#     later, from whatever session happens to be running. It also resolves builds
+#     already triggered to a terminal state, so a failed or silently-skipped
+#     release surfaces here rather than disappearing with the thread that cut it.
+#
+#     Skipped under --check: the sweep writes state and can trigger a build, and
+#     --check promises neither. Fail-soft like everything else here — exit 1 just
+#     means "something needs attention", which is a notice, not an error.
+RELEASE_SWEEP="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/release-sweep.sh"
+if [[ "$CHECK_ONLY" -eq 0 && -x "$RELEASE_SWEEP" ]]; then
+  SWEEP_JSON="$("$RELEASE_SWEEP" --json 2>/dev/null)" || true
+  if [[ -n "${SWEEP_JSON:-}" ]]; then
+    while IFS= read -r sweep_line; do
+      [[ -n "$sweep_line" ]] && NOTICES+=("$sweep_line")
+    done < <(jq -r '.[]? | .line // empty' <<<"$SWEEP_JSON" 2>/dev/null)
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # 3. Report
 # ---------------------------------------------------------------------------

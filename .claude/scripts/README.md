@@ -52,6 +52,16 @@ Scripts that verify merge readiness and sequence a PR fleet to avoid conflict ro
 | `ac-checkboxes.sh` | Parse and update the PR body's Test plan checkboxes |
 | `dismiss-stale-bot-changes.sh` | Dismiss stale bot CHANGES_REQUESTED reviews on old SHAs after a push |
 
+## Release Cadence
+
+Scripts that decide when a merge is worth a TestFlight build and follow the build to a terminal state. TestFlight only — the App Store path is never triggered. Mechanism: `.claude/reference/release-cadence.md`.
+
+| Script | Purpose |
+|--------|---------|
+| `release-policy.sh` | Resolve a repo's release policy (default off) and derive the `auto` build interval from its own run history |
+| `release-decide.sh` | Decide whether a merge warrants a build, and optionally pull the trigger that repo already uses |
+| `release-sweep.sh` | Cut pending builds once their window opens and surface failed, skipped, or never-started releases |
+
 ## Review Threads & Diffs
 
 Scripts that resolve review threads and guard the branch diff through a rebase.

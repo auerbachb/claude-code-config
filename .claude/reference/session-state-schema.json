@@ -48,6 +48,32 @@
         "scope": null,
         "at": "2026-07-30T18:40:00Z"
       },
+      "_release_comment": "Agent-initiated TestFlight release cadence for this repo (issue #1169), written by release-decide.sh and release-sweep.sh through session-state.sh --raw-path --set. --raw-path is REQUIRED: auto-scoping only rewrites .prs/.root_repo, and reads must use --get --raw-path rather than --session-view, which projects only those two keys and would report this whole block as absent. `pending` is the durable marker a merge inside the build window leaves behind so a later sweep — in any session — can cut the build; `count` is how many merges have coalesced into it, and `notified_at` is set once a blocker has been reported so it is not repeated every tick. `in_flight` is a build this automation triggered and is following to a terminal state; `awaiting_run` means the run has not appeared yet. `last_seen_build` is bookkeeping only — the window is always measured from GitHub run history, never from this file, so builds cut outside the automation are respected and the state self-heals. Absent block = this repo has never been evaluated; that is not the same as opted out, which is the absence of .claude/release-policy.json in the repo itself. Mechanism: .claude/reference/release-cadence.md.",
+      "release": {
+        "pending": {
+          "since": "2026-08-18T14:30:00Z",
+          "pr": 412,
+          "count": 3,
+          "reason": "inside the build window",
+          "notified_at": null
+        },
+        "in_flight": {
+          "pr": 410,
+          "mechanism": "workflow_dispatch:mobile-testflight.yml",
+          "triggered_at": "2026-08-18T14:05:00Z",
+          "detail": "dispatched mobile-testflight.yml",
+          "run_id": 18234567890,
+          "awaiting_run": false
+        },
+        "last_seen_build": {
+          "run_id": 18234567890,
+          "conclusion": "success",
+          "completed_at": "2026-08-18T14:18:00Z"
+        },
+        "interval_minutes": 180,
+        "interval_source": "auto",
+        "derived_at": "2026-08-18T14:05:00Z"
+      },
       "prs": {
         "618": {
           "root_repo": "/Users/user/repos/my-project",

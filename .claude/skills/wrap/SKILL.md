@@ -240,6 +240,22 @@ After the recovery loop, Step 2.1 must have returned gate exit `0` immediately b
 
 **Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, or any suppression comment to work around CI.** Fix the actual code.
 
+### Step 2.3a: Pre-merge TestFlight label (iOS repos — issue #1169)
+
+Repos that ship an iOS app cut TestFlight builds from a `release:ios` label on the merged PR. GitHub does **not** re-fire `pull_request: [closed]` for a label added to an already-closed PR, so this is the one release step that must run *before* the merge; everything else happens in Step 3.14. A repo with no `.claude/release-policy.json` — or with it disabled, which is the default — is inert here.
+
+```bash
+RELEASE_DECIDE=".claude/scripts/release-decide.sh"
+RELEASE_PREMERGE_RC=2; RELEASE_PREMERGE_OUT=""
+if [ -x "$RELEASE_DECIDE" ]; then
+  RELEASE_PREMERGE_RC=0
+  RELEASE_PREMERGE_OUT=$("$RELEASE_DECIDE" --pr "$PR_NUM" --phase pre-merge --apply 2>&1) \
+    || RELEASE_PREMERGE_RC=$?
+fi
+```
+
+**Every failure path here is non-fatal and nothing is printed yet.** A missing script, a malformed policy, a `gh` error, or any non-zero exit leaves the merge untouched — release logic must never gate or delay a merge (AC4). The result is carried to Step 3.14 and reported only once the merge has actually landed, so a merge that fails after the label was applied never claims a build that did not happen. (A label left on an unmerged PR is ignored by the workflow until that PR merges — recoverable and harmless.)
+
 ### Step 2.4: Squash merge
 
 After blockers clear (Phase 1 + Step 2.1 recovery + Step 2.2), run `gh pr merge --squash` with the resolved PR number — per `CLAUDE.md` "PR MERGE AUTHORIZATION" and `cr-merge-gate.md` Step 3. Always pass the explicit identifier so `/wrap #N` invocations merge the correct PR, not the current-branch PR.
@@ -680,6 +696,55 @@ Compute **verdict** (one of exactly two canonical strings — no improvised word
 
 - `0` pending → **`Clear to archive`**
 - `N > 0` pending → **`N items pending your decision before archive`**
+
+Proceed immediately to Step 3.14 — do not ask.
+
+#### Step 3.14: Post-merge TestFlight release (iOS repos — issue #1169)
+
+The merge has landed, so the release decision can be reported and the deferred half executed. Three things happen, in order; all are non-fatal.
+
+```bash
+RELEASE_DECIDE=".claude/scripts/release-decide.sh"
+RELEASE_SWEEP=".claude/scripts/release-sweep.sh"
+
+# 1. Mechanisms that must fire AFTER the merge (workflow_dispatch, none).
+#    Dispatching before the merge would have built the pre-merge default branch.
+REL_RC=0; REL_OUT=""
+if [ -x "$RELEASE_DECIDE" ]; then
+  REL_OUT=$("$RELEASE_DECIDE" --pr "$PR_NUM" --phase post-merge --apply 2>&1) || REL_RC=$?
+fi
+
+# 2. Report a cut build as ONE line (AC11), from whichever phase actually applied
+#    it. `pending`, `suppressed`, and inert repos print nothing at all.
+#
+#    A blocker is reported for EVERY exit 3, including one that produced no
+#    parseable output — a release that failed is exactly what must not vanish.
+#    `.reason // "unknown"` alone would not cover that: jq's default fills a
+#    MISSING KEY, but on non-JSON input (a crash message, a partial write) jq
+#    exits non-zero and prints nothing, leaving an empty reason. So each field
+#    falls back explicitly, ending at the raw output and then at the exit code.
+for pair in "$RELEASE_PREMERGE_RC:$RELEASE_PREMERGE_OUT" "$REL_RC:$REL_OUT"; do
+  rc="${pair%%:*}"; out="${pair#*:}"
+  applied=$(printf '%s' "$out" | jq -r '.applied // false' 2>/dev/null)
+  repo=$(printf '%s' "$out" | jq -r '.repo // empty' 2>/dev/null)
+  reason=$(printf '%s' "$out" | jq -r '.reason // empty' 2>/dev/null)
+  [ -n "$repo" ] || repo="this repo"
+  [ -n "$reason" ] || reason="${out:-no output from release-decide.sh (exit $rc)}"
+  if [ "$rc" = "0" ] && [ "$applied" = "true" ]; then
+    echo "cut TestFlight build — $repo (PR #$PR_NUM)"
+  elif [ "$rc" = "3" ]; then
+    echo "TestFlight release blocked — $repo: $reason" >&2
+  fi
+done
+
+# 3. Follow in-flight builds to a terminal state and cut any pending build whose
+#    window has opened — including markers left by threads that have since ended.
+[ -x "$RELEASE_SWEEP" ] && "$RELEASE_SWEEP" || true
+```
+
+Exit `3` from either phase is a blocker worth one line (a trigger that failed, or a build cut whose state could not be saved and so will not be followed). Exit `1` (pending or suppressed), `2` (inert), and `4` (environment) are all silent and all non-fatal — `/wrap` never fails a completed merge over release automation.
+
+Mechanism, policy schema, and the per-repo trigger table: `.claude/reference/release-cadence.md`.
 
 Proceed immediately to Phase 4 — do not ask.
 
