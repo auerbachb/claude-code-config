@@ -172,13 +172,15 @@ while IFS= read -r REPO; do
     # the build it started does not disappear with it, and reporting "did not
     # start" for a run that is still going is exactly the silent-drop this whole
     # change exists to end.
-    if [ "$(printf '%s' "$WORKFLOWS_JSON" | jq 'length')" -eq 0 ]; then
-      IF_MECH=$(printf '%s' "$IN_FLIGHT" | jq -r '.mechanism // ""')
-      case "$IF_MECH" in
-        workflow_dispatch:*)
-          WORKFLOWS_JSON=$(jq -cn --arg w "${IF_MECH#workflow_dispatch:}" '[$w]') ;;
-      esac
-    fi
+    # Appended whenever it is absent, not only when the list is empty: a policy
+    # edited from one workflow to a DIFFERENT one would otherwise strand the run
+    # we already dispatched just as surely as deleting the policy would.
+    IF_MECH=$(printf '%s' "$IN_FLIGHT" | jq -r '.mechanism // ""')
+    case "$IF_MECH" in
+      workflow_dispatch:*)
+        WORKFLOWS_JSON=$(printf '%s' "$WORKFLOWS_JSON" \
+          | jq -c --arg w "${IF_MECH#workflow_dispatch:}" 'if index($w) then . else . + [$w] end') ;;
+    esac
 
     # A known run_id is resolved by id, never by scanning: `gh run list --limit 20`
     # is per workflow, so on a busy repo an adopted run falls off the window and

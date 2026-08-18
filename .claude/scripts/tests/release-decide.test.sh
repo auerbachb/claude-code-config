@@ -28,6 +28,20 @@ chmod +x "$SCRIPTS/session-state.sh"
 SUT="$SCRIPTS/release-decide.sh"
 STATE="$HOME/.claude/session-state.json"
 export GH_LOG="$TMP/gh.log"
+# AUDIT_LOG interleaves state writes with gh calls so ordering is assertable.
+# The real session-state.sh is wrapped rather than replaced, so writes still go
+# through the genuine implementation.
+export AUDIT_LOG="$TMP/audit.log"
+mv "$SCRIPTS/session-state.sh" "$SCRIPTS/session-state.impl.sh"
+cat > "$SCRIPTS/session-state.sh" <<'WRAP'
+#!/usr/bin/env bash
+case " $* " in
+  *" --set "*) for a in "$@"; do case "$a" in *in_flight*) echo "STATE_SET in_flight" >> "$AUDIT_LOG";; esac; done ;;
+esac
+exec "$(dirname "$0")/session-state.impl.sh" "$@"
+WRAP
+chmod +x "$SCRIPTS/session-state.sh"
+cp "$SCRIPTS/session-state.impl.sh" "$TMP/session-state.real"
 
 # --- Fake release-policy.sh ---------------------------------------------------
 # FAKE_POLICY_RC    exit code (0 enabled, 1 off, 3 no pipeline, 4 malformed)
@@ -60,6 +74,7 @@ cat > "$BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 ARGS="$*"
 echo "$ARGS" >> "$GH_LOG"
+case "$ARGS" in *"--add-label"*) echo "GH add-label" >> "$AUDIT_LOG" ;; *"workflow run"*) echo "GH workflow-run" >> "$AUDIT_LOG" ;; esac
 case "$ARGS" in
   "repo view --json nameWithOwner --jq .nameWithOwner") echo "solo/app"; exit 0 ;;
   # Paginated changed-file list. Without this case the call fell through to the
@@ -88,7 +103,7 @@ export PATH="$BIN:$PATH"
 PASS=0; FAIL=0
 ok()  { echo "ok   - $1"; PASS=$((PASS+1)); }
 bad() { echo "FAIL - $1"; FAIL=$((FAIL+1)); }
-reset_state() { rm -f "$STATE"; : > "$GH_LOG"; }
+reset_state() { rm -f "$STATE"; : > "$GH_LOG"; : > "$AUDIT_LOG"; }
 run() { OUT="$("$SUT" "$@" 2>&1)"; RC=$?; }
 expect_rc()    { if [[ "$RC" -eq "$1" ]]; then ok "$2"; else bad "$2 (got rc=$RC: $OUT)"; fi; }
 expect_field() { local got; got="$(jq -r "$1" <<<"$OUT" 2>/dev/null)"
@@ -326,16 +341,15 @@ expect_field '.last_build_completed_at' 'null' "no prior build is reported as nu
 # would promote the stub to "the backup" the first time a case forgets its
 # fix_state, and every later case would then pass against a broken script —
 # precisely the pass-for-the-wrong-reason failure this suite exists to catch.
-cp "$SCRIPTS/session-state.sh" "$TMP/session-state.real"
 break_state() {
-  cat > "$SCRIPTS/session-state.sh" <<'STUB'
+  cat > "$SCRIPTS/session-state.impl.sh" <<'STUB'
 #!/usr/bin/env bash
 echo "session-state.sh: missing sibling library: lib/repo-normalizer.sh" >&2
 exit 5
 STUB
-  chmod +x "$SCRIPTS/session-state.sh"
+  chmod +x "$SCRIPTS/session-state.impl.sh"
 }
-fix_state() { cp "$TMP/session-state.real" "$SCRIPTS/session-state.sh"; }
+fix_state() { cp "$TMP/session-state.real" "$SCRIPTS/session-state.impl.sh"; }
 
 reset_state; break_state
 FAKE_RUNS_JSON="$RECENT_BUILD" FAKE_INTERVAL=60 run --repo solo/app --pr 5 --apply --phase pre-merge
@@ -445,6 +459,34 @@ FAKE_RUNS_JSON="$OLD_BUILD" FAKE_INTERVAL=60 FAKE_FILES_API_RC=1 FAKE_PR_FILES="
   run --repo solo/app --pr 5 --apply --phase pre-merge
 expect_rc 3 "a possibly-truncated file list blocks rather than suppressing (exit 3)"
 expect_field '.decision' 'blocked' "the truncated-list case reports blocked"
+
+# 23. ORDER, not just presence. Asserting "a claim exists" and "the label was
+# applied" is satisfied by either ordering — including the broken one this fix
+# exists to prevent, where the trigger fires first and the claim lands after.
+# The audit log interleaves both, so the property is actually tested.
+reset_state
+FAKE_RUNS_JSON="$OLD_BUILD" FAKE_INTERVAL=60 run --repo solo/app --pr 5 --apply --phase pre-merge
+expect_rc 0 "the ordered claim-then-trigger path succeeds (exit 0)"
+CLAIM_LINE=$(grep -n "STATE_SET in_flight" "$AUDIT_LOG" | head -1 | cut -d: -f1)
+TRIG_LINE=$(grep -n "GH add-label" "$AUDIT_LOG" | head -1 | cut -d: -f1)
+if [ -n "$CLAIM_LINE" ] && [ -n "$TRIG_LINE" ] && [ "$CLAIM_LINE" -lt "$TRIG_LINE" ]; then
+  ok "the in-flight claim is written BEFORE the trigger fires"
+else
+  bad "the in-flight claim is written BEFORE the trigger fires (claim=$CLAIM_LINE trigger=$TRIG_LINE; audit: $(tr '\n' '|' < "$AUDIT_LOG"))"
+fi
+
+# 24. Same ordering for the dispatch mechanism, not just the label one.
+reset_state
+FAKE_RUNS_JSON="$OLD_BUILD" FAKE_INTERVAL=60 FAKE_TRIGGER="workflow_dispatch:mobile-testflight.yml" \
+  run --repo solo/app --pr 5 --apply --phase post-merge
+expect_rc 0 "the dispatch path succeeds (exit 0)"
+CLAIM_LINE=$(grep -n "STATE_SET in_flight" "$AUDIT_LOG" | head -1 | cut -d: -f1)
+TRIG_LINE=$(grep -n "GH workflow-run" "$AUDIT_LOG" | head -1 | cut -d: -f1)
+if [ -n "$CLAIM_LINE" ] && [ -n "$TRIG_LINE" ] && [ "$CLAIM_LINE" -lt "$TRIG_LINE" ]; then
+  ok "the claim precedes a workflow_dispatch trigger too"
+else
+  bad "the claim precedes a workflow_dispatch trigger too (claim=$CLAIM_LINE trigger=$TRIG_LINE; audit: $(tr '\n' '|' < "$AUDIT_LOG"))"
+fi
 
 echo "----------------------------------------"
 echo "release-decide.test.sh: $PASS passed, $FAIL failed"

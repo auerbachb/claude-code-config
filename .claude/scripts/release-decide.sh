@@ -451,10 +451,25 @@ fi
 # it up. `none` repos are skipped — their build is not ours to claim.
 CLAIM_WRITTEN=0
 if [ "$MECHANISM_USED" != "none" ]; then
+  # A unique token per attempt. session-state.sh offers no compare-and-set, so
+  # the claim cannot be made conditional in a single atomic step; writing a token
+  # and reading it back at least lets a LOSER detect that it lost instead of
+  # proceeding to dispatch. Residual window and the CAS follow-up: see
+  # .claude/reference/release-cadence.md.
+  CLAIM_TOKEN="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
   CLAIM_RECORD=$(jq -cn --argjson pr "${PR:-null}" --arg mech "$MECHANISM_USED" --arg now "$(now_iso)" \
-    '{pr:$pr, mechanism:$mech, triggered_at:$now, detail:"claim staked before trigger", run_id:null, awaiting_run:true}')
+    --arg tok "$CLAIM_TOKEN" \
+    '{pr:$pr, mechanism:$mech, triggered_at:$now, detail:"claim staked before trigger", run_id:null, awaiting_run:true, claim_token:$tok}')
   if state_set "in_flight" "$CLAIM_RECORD"; then
     CLAIM_WRITTEN=1
+    # Read back: if another evaluation claimed between our check and our write,
+    # the token on record is theirs and this attempt must stand down rather than
+    # start a second concurrent build.
+    CLAIM_READBACK=$(state_get "in_flight" | jq -r '.claim_token // ""' 2>/dev/null)
+    if [ -n "$CLAIM_READBACK" ] && [ "$CLAIM_READBACK" != "$CLAIM_TOKEN" ]; then
+      CLAIM_WRITTEN=0
+      emit 1 "in_flight" "another evaluation claimed the build for $REPO first (token $CLAIM_READBACK) — standing down rather than starting a second one"
+    fi
   else
     emit 3 "blocked" "could not stake the in-flight claim for $REPO before triggering — refusing to dispatch, since an unclaimed trigger can be duplicated by a concurrent evaluation: $STATE_WRITE_ERR"
   fi

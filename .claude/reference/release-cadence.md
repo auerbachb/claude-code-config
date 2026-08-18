@@ -256,6 +256,17 @@ lock timeout) and keep its stderr:
   to the next repo — one repo's unwritable state is not a reason to stop
   following every other repo's builds.
 
+### The claim is narrowed, not atomic (issue #1195)
+
+The in-flight claim is staked before any trigger and carries a unique token that
+is read back, so an evaluation that lost a race detects it and stands down. That
+is a narrowing, not a guarantee: `session-state.sh` offers no compare-and-set and
+holds its lock only per invocation, so a claim is a read and then a separate
+write. On one host the gap is small and the read-back catches the common
+interleaving; across hosts sharing a `$HOME` both can still pass. The
+GitHub run-history check backs it up in that case. A conditional write is
+tracked in issue #1195.
+
 ## The sweep
 
 `release-sweep.sh` is the half that outlives the thread that started it. Per repo

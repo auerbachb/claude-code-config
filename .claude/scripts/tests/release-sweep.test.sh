@@ -367,6 +367,16 @@ expect_rc 0 "a policy that lost its workflows does not orphan the build (exit 0)
 says_not "did not start" "a running build is not reported as never started"
 expect_state '.repos["solo/app"].release.in_flight.run_id' '105' "the run is still adopted from the recorded mechanism"
 
+# 24. A policy edited to a DIFFERENT workflow strands the dispatched run just as
+# surely as deleting the policy does — the recorded workflow must be kept in the
+# scan whenever it is absent, not only when the list is empty.
+reset_state
+seed "solo/app" "in_flight" "$(inflight null 30)"
+FAKE_WORKFLOWS='["some-other-workflow.yml"]' FAKE_RUNS_JSON="$R_RUNNING" run
+expect_rc 0 "a repointed policy does not orphan the in-flight build (exit 0)"
+says_not "did not start" "the running build is not reported as never started"
+expect_state '.repos["solo/app"].release.in_flight.run_id' '105' "the recorded workflow still adopts the run"
+
 echo "----------------------------------------"
 echo "release-sweep.test.sh: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
