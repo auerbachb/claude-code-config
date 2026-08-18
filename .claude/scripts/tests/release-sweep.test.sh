@@ -93,8 +93,8 @@ seed() {  # $1 repo, $2 subpath, $3 json value
 }
 
 expect_rc()     { if [[ "$RC" -eq "$1" ]]; then ok "$2"; else bad "$2 (got rc=$RC; out: $OUT)"; fi; }
-says()          { if grep -qF "$1" <<<"$OUT"; then ok "$2"; else bad "$2 (out: $OUT)"; fi; }
-says_not()      { if grep -qF "$1" <<<"$OUT"; then bad "$2 (unexpected: $1; out: $OUT)"; else ok "$2"; fi; }
+says()          { if grep -qF -- "$1" <<<"$OUT"; then ok "$2"; else bad "$2 (out: $OUT)"; fi; }
+says_not()      { if grep -qF -- "$1" <<<"$OUT"; then bad "$2 (unexpected: $1; out: $OUT)"; else ok "$2"; fi; }
 expect_state()  { local got
                   if [ -f "$STATE" ]; then got="$(jq -r "$1" < "$STATE" 2>/dev/null)"; else got="null"; fi
                   if [[ "$got" == "$2" ]]; then ok "$3"; else bad "$3 (state $1 = '$got', want '$2')"; fi; }
@@ -345,9 +345,16 @@ expect_rc 1 "a decide environment error needs attention (exit 1)"
 says "could not be evaluated" "the environment error is surfaced"
 
 # 22. --help exits cleanly and documents the usage.
+# usage() prints a sed range over this file's own header, so a regression there
+# yields truncated-but-nonempty help. Assert the documented surface, not just
+# that something was printed.
 run --help
 expect_rc 0 "--help exits 0"
 says "release-sweep.sh" "--help names the script"
+says "--repo" "--help documents --repo"
+says "--json" "--help documents --json"
+says "--quiet" "--help documents --quiet"
+says "Exit codes:" "--help documents the exit codes"
 
 echo "----------------------------------------"
 echo "release-sweep.test.sh: $PASS passed, $FAIL failed"
