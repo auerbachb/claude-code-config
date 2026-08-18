@@ -31,6 +31,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `dirty-main-guard.md` — how `--check` computes "dirty", what `--quarantine` preserves, and the recovery-branch listing/inspection/deletion commands (`main-hygiene.md`; #918)
 - `review-substance-evidence.md` — why a bot APPROVED requires a substantive review footprint; hollow APPROVED failure mode and evidence checks in `merge-gate.sh` (#875)
 - `wrap-fixpr-delegation.md` — `/wrap` Step 2.1 → full `/fixpr` recovery handoff contract
+- `release-cadence.md` — agent-initiated TestFlight cadence: policy schema, `auto` interval derivation, the per-repo trigger table, why the `release:ios` label must be applied pre-merge, and the structural exclusion of the App Store path (#1169)
 - `state-file-contracts.md` — expanded scoping, write-lock, migration, and field-type mechanics for `session-state.json` + handoffs (`handoff-files.md`; #625, #638, #639, #651, #655, #682, #687, #704, #757, #794, #967, #971)
 - `session-state-schema-hotspot-decision.md` — KEEP + targeted-dedup adjudication for the `session-state-schema.json` churn hotspot; canonical ownership, preserved compatibility, and field-change checklist (#964)
 - `session-state-collector.md` — the single definition of what a handoff *reads*, shared by `/pm-handoff` (Claude-native rendering) and `/pause` (portable rendering); one collector, two renderers (#901)
