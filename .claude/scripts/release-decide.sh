@@ -450,6 +450,13 @@ fi
 # than the whole dispatch round-trip, and the GitHub-history check still backs
 # it up. `none` repos are skipped — their build is not ours to claim.
 CLAIM_WRITTEN=0
+# Release the claim if the trigger never actually fired, so a failed attempt does
+# not wedge the repo as permanently "building".
+release_claim() {
+  [ "$CLAIM_WRITTEN" = "1" ] || return 0
+  state_set "in_flight" "null" || true
+}
+
 if [ "$MECHANISM_USED" != "none" ]; then
   # A unique token per attempt. session-state.sh offers no compare-and-set, so
   # the claim cannot be made conditional in a single atomic step; writing a token
@@ -465,8 +472,23 @@ if [ "$MECHANISM_USED" != "none" ]; then
     # Read back: if another evaluation claimed between our check and our write,
     # the token on record is theirs and this attempt must stand down rather than
     # start a second concurrent build.
-    CLAIM_READBACK=$(state_get "in_flight" | jq -r '.claim_token // ""' 2>/dev/null)
-    if [ -n "$CLAIM_READBACK" ] && [ "$CLAIM_READBACK" != "$CLAIM_TOKEN" ]; then
+    # CHECKED read. state_get folds a session-state.sh failure into "null", which
+    # would yield an empty token and skip the comparison below — the guard would
+    # fail OPEN and dispatch anyway, which is the exact behaviour it exists to
+    # prevent. A read we cannot trust blocks instead.
+    CLAIM_RB_RC=0
+    CLAIM_RB_RAW=$("$STATE_SH" --raw-path --get ".repos[\"$REPO\"].release.in_flight" 2>&1) || CLAIM_RB_RC=$?
+    if [ "$CLAIM_RB_RC" -ne 0 ]; then
+      release_claim
+      emit 3 "blocked" "could not read back the in-flight claim for $REPO (exit $CLAIM_RB_RC) — refusing to dispatch on an unverified claim: $CLAIM_RB_RAW"
+    fi
+    CLAIM_READBACK=$(printf '%s' "$CLAIM_RB_RAW" | jq -r '.claim_token // empty' 2>/dev/null) || CLAIM_READBACK="__unreadable__"
+    if [ "$CLAIM_READBACK" = "__unreadable__" ] || [ -z "$CLAIM_READBACK" ]; then
+      release_claim
+      emit 3 "blocked" "the in-flight claim for $REPO read back without a token — refusing to dispatch on an unverified claim"
+    fi
+    if [ "$CLAIM_READBACK" != "$CLAIM_TOKEN" ]; then
+      # Someone else owns it; leave THEIR claim intact.
       CLAIM_WRITTEN=0
       emit 1 "in_flight" "another evaluation claimed the build for $REPO first (token $CLAIM_READBACK) — standing down rather than starting a second one"
     fi
@@ -477,11 +499,6 @@ fi
 
 # Release the claim if the trigger never actually fired, so a failed attempt does
 # not wedge the repo as permanently "building".
-release_claim() {
-  [ "$CLAIM_WRITTEN" = "1" ] || return 0
-  state_set "in_flight" "null" || true
-}
-
 TRIGGER_RC=0
 case "$MECHANISM_USED" in
   none)

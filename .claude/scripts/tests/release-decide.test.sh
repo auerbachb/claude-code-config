@@ -488,6 +488,27 @@ else
   bad "the claim precedes a workflow_dispatch trigger too (claim=$CLAIM_LINE trigger=$TRIG_LINE; audit: $(tr '\n' '|' < "$AUDIT_LOG"))"
 fi
 
+# 25. A claim read-back that cannot be trusted must BLOCK, not dispatch. The
+# guard exists to stop a second concurrent build; folding a failed read into
+# "no token" would let it fail open, which is the outcome it prevents.
+reset_state
+cp "$SCRIPTS/session-state.impl.sh" "$TMP/ss.beforeread"
+cat > "$SCRIPTS/session-state.impl.sh" <<'RSTUB'
+#!/usr/bin/env bash
+# Writes succeed; the claim read-back fails. Isolates the read path only.
+case " $* " in
+  *" --get "*) echo "session-state.sh: read timed out" >&2; exit 6 ;;
+esac
+exec "$0.orig" "$@"
+RSTUB
+cp "$TMP/ss.beforeread" "$SCRIPTS/session-state.impl.sh.orig"
+chmod +x "$SCRIPTS/session-state.impl.sh" "$SCRIPTS/session-state.impl.sh.orig"
+FAKE_RUNS_JSON="$OLD_BUILD" FAKE_INTERVAL=60 run --repo solo/app --pr 5 --apply --phase pre-merge
+expect_rc 3 "an unverifiable claim read-back blocks (exit 3)"
+expect_field '.decision' 'blocked' "an unverifiable read-back reports blocked"
+gh_absent "add-label" "no build is dispatched on an unverified claim"
+cp "$TMP/ss.beforeread" "$SCRIPTS/session-state.impl.sh"; rm -f "$SCRIPTS/session-state.impl.sh.orig"
+
 echo "----------------------------------------"
 echo "release-decide.test.sh: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
