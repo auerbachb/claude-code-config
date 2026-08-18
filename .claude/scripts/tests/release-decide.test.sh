@@ -62,6 +62,13 @@ ARGS="$*"
 echo "$ARGS" >> "$GH_LOG"
 case "$ARGS" in
   "repo view --json nameWithOwner --jq .nameWithOwner") echo "solo/app"; exit 0 ;;
+  # Paginated changed-file list. Without this case the call fell through to the
+  # exit-90 default, the SUT silently used the capped `pr view` list, and the
+  # pagination path shipped untested.
+  *"api"*"/files"*)
+    F="${FAKE_PR_FILES:-}"; if [ -z "$F" ]; then F='["app/mobile/App.tsx"]'; fi
+    if [ "${FAKE_FILES_API_RC:-0}" != "0" ]; then exit "${FAKE_FILES_API_RC}"; fi
+    printf '%s\n' "$F" | jq -r '.[]'; exit 0 ;;
   *"pr view"*)
     F="${FAKE_PR_FILES:-}"; if [ -z "$F" ]; then F='["app/mobile/App.tsx"]'; fi
     L="${FAKE_PR_LABELS:-}"; if [ -z "$L" ]; then L='[]'; fi
@@ -397,6 +404,27 @@ FAKE_RUNS_JSON="$RECENT_BUILD" FAKE_INTERVAL=5 FAKE_INTERVAL_SOURCE=auto \
   run --repo solo/app --pr 7 --apply --phase pre-merge
 expect_field '.interval_minutes' '90' "an auto policy still reads the cached derived interval"
 expect_rc 1 "the cached 90m window is still closed 10m after the last build (exit 1)"
+
+# 21. The changed-file list must come from the PAGINATED api call, not the capped
+# `pr view` list. Asserted explicitly because the fake previously had no `api`
+# case: the call fell through to exit 90 and the SUT silently used the old path,
+# so the pagination fix shipped green while never running.
+reset_state
+FAKE_RUNS_JSON="$OLD_BUILD" FAKE_INTERVAL=60 FAKE_PR_FILES='["docs/x.md"]' \
+  FAKE_SUPPRESS='{"paths":["docs/**"],"labels":[]}' \
+  run --repo solo/app --pr 5 --apply --phase pre-merge
+gh_called "api" "the changed-file list is read through the paginated api call"
+expect_field '.class' 'suppress' "a docs-only PR read through that path is suppressed"
+
+# 22. A capped `pr view` fallback must never drive a suppression: truncation can
+# only make a PR look MORE ignorable than it is.
+reset_state
+BIG=$(python3 -c "import json;print(json.dumps(['docs/f%d.md'%i for i in range(100)]))")
+FAKE_RUNS_JSON="$OLD_BUILD" FAKE_INTERVAL=60 FAKE_FILES_API_RC=1 FAKE_PR_FILES="$BIG" \
+  FAKE_SUPPRESS='{"paths":["docs/**"],"labels":[]}' \
+  run --repo solo/app --pr 5 --apply --phase pre-merge
+expect_rc 3 "a possibly-truncated file list blocks rather than suppressing (exit 3)"
+expect_field '.decision' 'blocked' "the truncated-list case reports blocked"
 
 echo "----------------------------------------"
 echo "release-decide.test.sh: $PASS passed, $FAIL failed"

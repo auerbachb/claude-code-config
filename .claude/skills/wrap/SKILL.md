@@ -714,8 +714,10 @@ if [ -x "$RELEASE_DECIDE" ]; then
   REL_OUT=$("$RELEASE_DECIDE" --pr "$PR_NUM" --phase post-merge --apply 2>&1) || REL_RC=$?
 fi
 
-# 2. Report a cut build as ONE line (AC11), from whichever phase actually applied
-#    it. `pending`, `suppressed`, and inert repos print nothing at all.
+# 2. ONE success line for the whole step, no matter how many phases applied or
+#    how many repos the sweep touched. `/wrap`'s silent path allows exactly one
+#    `merged PR #N` line, so a successful release must not add several more.
+#    Failures and blockers still print one terse line each.
 #
 #    A blocker is reported for EVERY exit 3, including one that produced no
 #    parseable output — a release that failed is exactly what must not vanish.
@@ -723,6 +725,12 @@ fi
 #    MISSING KEY, but on non-JSON input (a crash message, a partial write) jq
 #    exits non-zero and prints nothing, leaving an empty reason. So each field
 #    falls back explicitly, ending at the raw output and then at the exit code.
+#    Diagnostics are collapsed to one line before printing — release-decide.sh
+#    stderr can be multi-line, and a blocker that spans six lines is not "one
+#    terse line".
+RELEASE_CUT=""
+one_line() { printf '%s' "$1" | tr '\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//' | cut -c1-300; }
+
 for pair in "$RELEASE_PREMERGE_RC:$RELEASE_PREMERGE_OUT" "$REL_RC:$REL_OUT"; do
   rc="${pair%%:*}"; out="${pair#*:}"
   applied=$(printf '%s' "$out" | jq -r '.applied // false' 2>/dev/null)
@@ -731,22 +739,32 @@ for pair in "$RELEASE_PREMERGE_RC:$RELEASE_PREMERGE_OUT" "$REL_RC:$REL_OUT"; do
   [ -n "$repo" ] || repo="this repo"
   [ -n "$reason" ] || reason="${out:-no output from release-decide.sh (exit $rc)}"
   if [ "$rc" = "0" ] && [ "$applied" = "true" ]; then
-    echo "cut TestFlight build — $repo (PR #$PR_NUM)"
+    RELEASE_CUT="$repo"
   elif [ "$rc" = "3" ]; then
-    echo "TestFlight release blocked — $repo: $reason" >&2
+    echo "TestFlight release blocked — $repo: $(one_line "$reason")" >&2
   fi
 done
 
 # 3. Follow in-flight builds to a terminal state and cut any pending build whose
 #    window has opened — including markers left by threads that have since ended.
-# Scoped to the repo that was just merged: an unscoped sweep would also act on
-# every other repo carrying release state, which is the periodic surfaces' job
-# (session start, each PMM tick), not this one's.
+#    Scoped to the repo just merged: sweeping every other repo carrying release
+#    state is the periodic surfaces' job (session start, each PMM tick).
+#    --quiet keeps its human lines out of the silent path; attention events are
+#    re-emitted below, one line each.
 MERGED_REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)
 if [ -x "$RELEASE_SWEEP" ]; then
-  if [ -n "$MERGED_REPO" ]; then "$RELEASE_SWEEP" --repo "$MERGED_REPO" || true
-  else "$RELEASE_SWEEP" || true; fi
+  SWEEP_OUT=$("$RELEASE_SWEEP" ${MERGED_REPO:+--repo "$MERGED_REPO"} --json 2>/dev/null) || true
+  if [ -n "${SWEEP_OUT:-}" ]; then
+    # A build the sweep cut folds into the single success line rather than adding
+    # one of its own.
+    SWEEP_CUT=$(printf '%s' "$SWEEP_OUT" | jq -r '[.[]? | select(.kind == "build_cut")] | first | .repo // empty' 2>/dev/null)
+    [ -n "$SWEEP_CUT" ] && [ -z "$RELEASE_CUT" ] && RELEASE_CUT="$SWEEP_CUT"
+    printf '%s' "$SWEEP_OUT" | jq -r '.[]? | select(.needs_attention == true) | .line' 2>/dev/null >&2
+  fi
 fi
+
+# 4. The single success line, emitted once, only when something actually shipped.
+[ -n "$RELEASE_CUT" ] && echo "cut TestFlight build — $RELEASE_CUT (PR #$PR_NUM)"
 ```
 
 Exit `3` from either phase is a blocker worth one line (a trigger that failed, or a build cut whose state could not be saved and so will not be followed). Exit `1` (pending or suppressed), `2` (inert), and `4` (environment) are all silent and all non-fatal — `/wrap` never fails a completed merge over release automation.

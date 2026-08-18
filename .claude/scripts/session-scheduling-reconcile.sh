@@ -413,6 +413,9 @@ if [[ "$CHECK_ONLY" -eq 0 && -x "$RELEASE_SWEEP" ]]; then
   # one, run unbounded rather than silently skipping the sweep (a missing
   # timeout(1) is not a reason to stop following builds).
   RELEASE_SWEEP_TIMEOUT="${RELEASE_SWEEP_TIMEOUT_SECS:-45}"
+  # A non-numeric override would make timeout(1) fail outright and skip the sweep.
+  case "$RELEASE_SWEEP_TIMEOUT" in ''|*[!0-9]*) RELEASE_SWEEP_TIMEOUT=45 ;; esac
+  [ "$RELEASE_SWEEP_TIMEOUT" -gt 0 ] 2>/dev/null || RELEASE_SWEEP_TIMEOUT=45
   if command -v timeout >/dev/null 2>&1; then
     SWEEP_JSON="$(timeout "$RELEASE_SWEEP_TIMEOUT" "$RELEASE_SWEEP" --json 2>/dev/null)" || true
   elif command -v gtimeout >/dev/null 2>&1; then

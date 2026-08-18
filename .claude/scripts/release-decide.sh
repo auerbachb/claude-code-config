@@ -59,7 +59,10 @@
 # Output: single-line JSON on stdout for every exit code except usage errors.
 #   {repo, pr, phase, decision, reason, class, interval_minutes, interval_source,
 #    last_build_completed_at, window_opens_at, in_flight_run_id, trigger,
-#    mechanism_used, applied, applied_detail, pending}
+#    mechanism_used, applied, applied_detail, pending, state_write_error}
+#
+# state_write_error is empty on a healthy run and carries session-state.sh's own
+# stderr when a durable write did not land.
 #
 # decision ∈ build_now | pending | suppressed | in_flight | disabled |
 #            no_pipeline | deferred | blocked
@@ -228,6 +231,10 @@ if [ "$USE_CACHE" = "1" ] && [ "$INTERVAL_SOURCE" = "policy" ]; then
   # written. The owner's override wins immediately — never after a cache TTL.
   USE_CACHE=0
 fi
+
+# A cached value is read back from JSON and feeds `$(( ))`; anything non-integer
+# (a hand-edited 22.5) would abort the arithmetic rather than degrade.
+case "$CACHED_INTERVAL" in ''|*[!0-9]*) USE_CACHE=0 ;; esac
 
 if [ "$USE_CACHE" = "1" ]; then
   INTERVAL="$CACHED_INTERVAL"

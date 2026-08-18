@@ -239,6 +239,15 @@ fi
 # A declared workflow that names the App Store path is a configuration error, not
 # something to quietly drop — the whole point of AC3 is that this path is never
 # reachable, so say so loudly rather than releasing with a half-honored policy.
+# A declared entry has to be a workflow filename — `gh workflow run` and the run
+# history both address workflows that way. An empty string, a path, or a non-yml
+# value silently matches nothing, which reads downstream as "this repo has no
+# builds" rather than as the configuration error it is.
+if printf '%s' "$WORKFLOWS_JSON" | jq -e 'any(.[]; (type != "string") or (length == 0) or (test("/")) or (test("\\.ya?ml$") | not))' >/dev/null 2>&1; then
+  emit 4 "release_workflows entries must be bare workflow filenames ending in .yml/.yaml (failing closed)" \
+    '{"policy_source":"api"}'
+fi
+
 if printf '%s' "$WORKFLOWS_JSON" | jq -e 'map(ascii_downcase) | any(test("app-store"))' >/dev/null 2>&1; then
   emit 4 "release_workflows names an App Store release workflow — TestFlight only (failing closed)" \
     '{"policy_source":"api"}'
@@ -364,7 +373,14 @@ else
   DURATION_WINDOWED=true
   if [ "$(printf '%s' "$DURATIONS" | jq 'length')" -lt "$MIN_SAMPLE" ]; then
     WIDER=$(durations_for "success" 0)
-    if [ "$(printf '%s' "$WIDER" | jq 'length')" -ge "$MIN_SAMPLE" ]; then
+    WIDER_N=$(printf '%s' "$WIDER" | jq 'length')
+    WINDOW_N=$(printf '%s' "$DURATIONS" | jq 'length')
+    # Prefer the wider success set when it clears MIN_SAMPLE; otherwise still take
+    # it if it holds ANY success the window missed. A thin success sample is a
+    # weaker measurement, but it is still a measurement of a real build — falling
+    # through to failure durations because 1-2 successes are "not enough" would
+    # contradict the documented success-first rule.
+    if [ "$WIDER_N" -ge "$MIN_SAMPLE" ] || { [ "$WIDER_N" -gt 0 ] && [ "$WINDOW_N" -eq 0 ]; }; then
       DURATIONS="$WIDER"; DURATION_WINDOWED=false
     fi
   fi
@@ -426,7 +442,10 @@ else
     | (if $per_day > $budget then (1440 / $budget) else 0 end) as $budget_term
     | (if $compute == null then $fallback
        else ([$compute, $budget_term, $floor] | max
-             | if . < $lo then $lo elif . > $hi then $hi else . end)
+             # The upper clamp bounds the COMPUTE term, never the budget term: a
+             # tester-notification budget the clamp can override is not a budget.
+             | (if $budget_term > $hi then $budget_term else $hi end) as $ceiling
+             | if . < $lo then $lo elif . > $ceiling then $ceiling else . end)
        end) as $raw
     | {
         median_build_minutes: (if $median == null then null else ($median * 10 | round / 10) end),

@@ -204,7 +204,14 @@ while IFS= read -r REPO; do
         | sort_by(.createdAt) | first // empty')
     fi
 
-    if [ -z "$RUN" ]; then
+    if [ -z "$RUN" ] && [ -n "$RUN_ID" ]; then
+      # We already adopted this run, so it exists. Neither lookup answering is a
+      # transient failure, NOT evidence the build never started — reporting
+      # "did not start" and clearing here would abandon a build that may already
+      # have shipped or failed. Keep the record so a later sweep resolves it.
+      record "run_unresolved" "$REPO" \
+        "TestFlight build $RUN_ID in $REPO could not be resolved this sweep — keeping it in flight and retrying rather than assuming it never started" 1
+    elif [ -z "$RUN" ]; then
       TRIG_EPOCH=$(to_epoch "$TRIGGERED_AT") || TRIG_EPOCH=""
       if [ -n "$TRIG_EPOCH" ] && [ $(( (NOW_EPOCH - TRIG_EPOCH) / 60 )) -ge "$GRACE_MIN" ]; then
         record "trigger_no_run" "$REPO" \

@@ -313,6 +313,31 @@ FAKE_POLICY_B64="$(b64 '{"enabled":true,"min_interval":"auto","trigger":"none","
 expect_rc 0 "an explicit null max_builds_per_day means unset, not invalid"
 expect_field '.max_builds_per_day' '8' "unset max_builds_per_day takes the documented default"
 
+# One OLD success plus recent failures must still derive from the success:
+# failures are a fallback for when no successful run exists at all, not for when
+# the successes are merely too few to clear MIN_SAMPLE.
+OLD_SUCCESS=$(mkrun 200 22 completed success)
+RECENT_FAILS=""; for i in 1 2 3; do RECENT_FAILS="$RECENT_FAILS$(mkrun "$i" 9 completed failure)"$'\n'; done
+THIN=$(printf '%s\n%s' "$OLD_SUCCESS" "$RECENT_FAILS" | grep -v '^$' | jq -sc .)
+FAKE_POLICY_B64="$(b64 '{"enabled":true,"min_interval":"auto","trigger":"none","release_workflows":["w.yml"]}')" \
+  FAKE_RUNS_JSON="$THIN" FAKE_SEARCH_COUNT=0 run --repo solo/app
+expect_field '.derivation.sample_basis' 'success' "a lone old success still outranks recent failures"
+expect_field '.derivation.median_build_minutes' '22' "the median comes from that success, not the failures"
+
+# A tester-notification budget the 240-minute clamp can override is not a budget:
+# max_builds_per_day=1 must not resolve to an interval that permits six a day.
+FAKE_POLICY_B64="$(b64 '{"enabled":true,"min_interval":"auto","trigger":"none","release_workflows":["w.yml"],"max_builds_per_day":1}')" \
+  FAKE_RUNS_JSON="$(printf '%s' "$(mkrun 1 8 completed success)" | jq -sc .)" FAKE_SEARCH_COUNT=140 run --repo solo/app
+expect_field '.min_interval_minutes' '1440' "a budget of 1/day derives a 24-hour interval, not the 240m clamp"
+
+# A declared workflow must be a bare filename — a path or an extensionless value
+# matches nothing downstream and would read as "this repo never builds".
+for BADWF in '["a/b.yml"]' '[""]' '["mobile-testflight"]'; do
+  FAKE_POLICY_B64="$(b64 "{\"enabled\":true,\"min_interval\":\"auto\",\"trigger\":\"none\",\"release_workflows\":$BADWF}")" \
+    FAKE_RUNS_JSON='[]' FAKE_SEARCH_COUNT=0 run --repo solo/app
+  expect_rc 4 "release_workflows=$BADWF fails closed (exit 4)"
+done
+
 echo "----------------------------------------"
 echo "release-policy.test.sh: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

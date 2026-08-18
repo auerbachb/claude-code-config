@@ -57,6 +57,18 @@ cat > "$BIN/gh" <<'EOF'
 ARGS="$*"
 echo "$ARGS" >> "$GH_LOG"
 case "$ARGS" in
+  # Resolve a run by id. Without this case the id lookup fell through to exit 90
+  # and every test silently exercised the old list-scan path instead.
+  *"api repos/"*"/actions/runs/"*)
+    if [ "${FAKE_RUN_BY_ID_RC:-0}" != "0" ]; then exit "${FAKE_RUN_BY_ID_RC}"; fi
+    R="${FAKE_RUN_BY_ID:-}"
+    if [ -z "$R" ]; then
+      # Default: mirror whatever FAKE_RUNS_JSON holds, matched on the trailing id.
+      RID="${ARGS##*/actions/runs/}"; RID="${RID%% *}"
+      R=$(printf '%s' "${FAKE_RUNS_JSON:-[]}" | jq -c --argjson id "${RID:-0}" 'map(select(.databaseId == $id)) | first // empty')
+    fi
+    [ -n "$R" ] || exit 1
+    printf '%s\n' "$R"; exit 0 ;;
   "run list"*)
     R="${FAKE_RUNS_JSON:-}"; if [ -z "$R" ]; then R='[]'; fi
     printf '%s\n' "$R"; exit 0 ;;
@@ -311,6 +323,31 @@ if [ -z "$OUT" ]; then ok "a healthy sweep prints nothing"; else bad "a healthy 
 # 19. An unknown argument is a usage error, not a silent no-op sweep.
 run --nonsense
 expect_rc 4 "an unknown argument exits 4"
+
+# 20. A known run_id is resolved by id, not by scanning the list. The list scan is
+# capped per workflow, so on a busy repo an adopted run falls off it and a shipped
+# build would read as "never started".
+reset_state
+seed "solo/app" "in_flight" "$(inflight 101 5)"
+FAKE_RUNS_JSON='[]' FAKE_RUN_BY_ID="$(printf '%s' "$R_SUCCESS" | jq -c '.[0]')" run
+expect_rc 0 "a run absent from the list scan still resolves by id (exit 0)"
+expect_state '.repos["solo/app"].release.last_seen_build.conclusion' 'success' "the id-resolved run is followed to its terminal state"
+if grep -qF "api repos/solo/app/actions/runs/101" "$GH_LOG"; then
+  ok "the run is fetched by id"
+else bad "the run is fetched by id (log: $(tr '\n' '|' < "$GH_LOG"))"; fi
+
+# 21. release-decide.sh exit 4 is an environment error, not an ordinary
+# "nothing to do" — it must surface rather than being swallowed by the default.
+reset_state
+seed "solo/app" "pending" '{"since":"2026-08-01T00:00:00Z","pr":7,"count":1,"reason":"inside the build window"}'
+FAKE_RUNS_JSON='[]' FAKE_DECIDE_RC=4 run
+expect_rc 1 "a decide environment error needs attention (exit 1)"
+says "could not be evaluated" "the environment error is surfaced"
+
+# 22. --help exits cleanly and documents the usage.
+run --help
+expect_rc 0 "--help exits 0"
+says "release-sweep.sh" "--help names the script"
 
 echo "----------------------------------------"
 echo "release-sweep.test.sh: $PASS passed, $FAIL failed"
