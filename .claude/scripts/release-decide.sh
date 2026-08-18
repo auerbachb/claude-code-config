@@ -444,6 +444,29 @@ if [ -z "$MECHANISM_USED" ]; then
   emit 3 "blocked" "window is open but $REPO has no deferred trigger (label mechanisms cannot fire on an already-merged PR) — it will ship on the next merge"
 fi
 
+# The claim is staked before any trigger runs. session-state.sh serializes
+# read-modify-write under its own lock, so two evaluations on this host cannot
+# both claim; across hosts this narrows the window to the state write rather
+# than the whole dispatch round-trip, and the GitHub-history check still backs
+# it up. `none` repos are skipped — their build is not ours to claim.
+CLAIM_WRITTEN=0
+if [ "$MECHANISM_USED" != "none" ]; then
+  CLAIM_RECORD=$(jq -cn --argjson pr "${PR:-null}" --arg mech "$MECHANISM_USED" --arg now "$(now_iso)" \
+    '{pr:$pr, mechanism:$mech, triggered_at:$now, detail:"claim staked before trigger", run_id:null, awaiting_run:true}')
+  if state_set "in_flight" "$CLAIM_RECORD"; then
+    CLAIM_WRITTEN=1
+  else
+    emit 3 "blocked" "could not stake the in-flight claim for $REPO before triggering — refusing to dispatch, since an unclaimed trigger can be duplicated by a concurrent evaluation: $STATE_WRITE_ERR"
+  fi
+fi
+
+# Release the claim if the trigger never actually fired, so a failed attempt does
+# not wedge the repo as permanently "building".
+release_claim() {
+  [ "$CLAIM_WRITTEN" = "1" ] || return 0
+  state_set "in_flight" "null" || true
+}
+
 TRIGGER_RC=0
 case "$MECHANISM_USED" in
   none)
@@ -452,9 +475,10 @@ case "$MECHANISM_USED" in
     ;;
   label:*)
     LABEL="${MECHANISM_USED#label:}"
-    [ -n "$PR" ] || emit 3 "blocked" "label mechanism needs a PR number (--pr)"
+    [ -n "$PR" ] || { release_claim; emit 3 "blocked" "label mechanism needs a PR number (--pr)"; }
     OUT=$(gh pr edit "$PR" -R "$REPO" --add-label "$LABEL" 2>&1) || TRIGGER_RC=$?
     if [ "$TRIGGER_RC" -ne 0 ]; then
+      release_claim
       emit 3 "blocked" "could not apply label '$LABEL' to PR #$PR in $REPO: $OUT"
     fi
     APPLIED=1
@@ -474,12 +498,14 @@ case "$MECHANISM_USED" in
       OUT=$(gh workflow run "$WF" -R "$REPO" 2>&1) || TRIGGER_RC=$?
     fi
     if [ "$TRIGGER_RC" -ne 0 ]; then
+      release_claim
       emit 3 "blocked" "could not dispatch $WF in $REPO: $OUT"
     fi
     APPLIED=1
     APPLIED_DETAIL="dispatched $WF"
     ;;
   *)
+    release_claim
     emit 3 "blocked" "unrecognized mechanism '$MECHANISM_USED' (failing closed)"
     ;;
 esac
@@ -491,9 +517,10 @@ STATE_OK=1
 if [ "$MECHANISM_USED" = "none" ]; then
   state_set "pending" "null" || STATE_OK=0
 else
-  IN_FLIGHT_RECORD=$(jq -cn --argjson pr "${PR:-null}" --arg mech "$MECHANISM_USED" \
-    --arg now "$(now_iso)" --arg detail "$APPLIED_DETAIL" \
-    '{pr:$pr, mechanism:$mech, triggered_at:$now, detail:$detail, run_id:null, awaiting_run:true}')
+  # Updates the claim staked above rather than creating the record: triggered_at
+  # keeps the claim's timestamp so the sweep's grace window measures from when we
+  # committed to building, not from when the API call happened to return.
+  IN_FLIGHT_RECORD=$(printf '%s' "$CLAIM_RECORD" | jq -c --arg detail "$APPLIED_DETAIL" '.detail = $detail')
   state_set "pending" "null" "in_flight" "$IN_FLIGHT_RECORD" || STATE_OK=0
 fi
 PENDING_JSON="null"

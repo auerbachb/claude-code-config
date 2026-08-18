@@ -356,6 +356,17 @@ says "--json" "--help documents --json"
 says "--quiet" "--help documents --quiet"
 says "Exit codes:" "--help documents the exit codes"
 
+# 23. A policy edited, disabled, or deleted while a build is in flight must not
+# make that build unfindable. The in-flight record names the workflow we
+# dispatched; without that fallback the sweep declares a running build "never
+# started" and drops it.
+reset_state
+seed "solo/app" "in_flight" "$(inflight null 30)"
+FAKE_WORKFLOWS='[]' FAKE_RUNS_JSON="$R_RUNNING" run
+expect_rc 0 "a policy that lost its workflows does not orphan the build (exit 0)"
+says_not "did not start" "a running build is not reported as never started"
+expect_state '.repos["solo/app"].release.in_flight.run_id' '105' "the run is still adopted from the recorded mechanism"
+
 echo "----------------------------------------"
 echo "release-sweep.test.sh: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

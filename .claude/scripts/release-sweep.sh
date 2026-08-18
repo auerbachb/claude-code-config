@@ -167,6 +167,19 @@ while IFS= read -r REPO; do
     WORKFLOWS_JSON=$(printf '%s' "$POLICY_JSON" | jq -c '.release_workflows // []' 2>/dev/null)
     [ -n "$WORKFLOWS_JSON" ] || WORKFLOWS_JSON='[]'
 
+    # Fall back to the workflow named in the record we wrote when we triggered.
+    # The policy can be edited, disabled, or deleted while a build is in flight;
+    # the build it started does not disappear with it, and reporting "did not
+    # start" for a run that is still going is exactly the silent-drop this whole
+    # change exists to end.
+    if [ "$(printf '%s' "$WORKFLOWS_JSON" | jq 'length')" -eq 0 ]; then
+      IF_MECH=$(printf '%s' "$IN_FLIGHT" | jq -r '.mechanism // ""')
+      case "$IF_MECH" in
+        workflow_dispatch:*)
+          WORKFLOWS_JSON=$(jq -cn --arg w "${IF_MECH#workflow_dispatch:}" '[$w]') ;;
+      esac
+    fi
+
     # A known run_id is resolved by id, never by scanning: `gh run list --limit 20`
     # is per workflow, so on a busy repo an adopted run falls off the window and
     # would be reported as "did not start" though it exists and may have shipped.

@@ -356,19 +356,39 @@ expect_rc 3 "an unsaved in-flight pending marker blocks (exit 3)"
 expect_field '.decision' 'blocked' "an unsaved in-flight marker reports blocked"
 fix_state
 
-# 16. A trigger that fired, with bookkeeping that did not: BOTH facts get said.
-# Reporting only the failure would hide a real build; reporting only the success
-# would hide that nothing will follow it to a terminal state (AC10).
+# 16. State that cannot be written means the build is NEVER STARTED, rather than
+# started and then lost. The in-flight claim is staked before the trigger
+# precisely so an unfollowable build is never cut: if the claim cannot be
+# persisted, nothing fires and a human is told.
 reset_state; break_state
 FAKE_RUNS_JSON="$OLD_BUILD" FAKE_INTERVAL=60 run --repo solo/app --pr 5 --apply --phase pre-merge
-expect_rc 3 "a triggered build with unsaved state needs a human (exit 3)"
-expect_field '.decision' 'build_now' "the build that really fired is still reported as build_now"
-expect_field '.applied' 'true' "the trigger that fired is not disowned"
-gh_called "add-label" "the label really was applied"
-if jq -e '.reason | test("will not be followed automatically")' >/dev/null <<<"$OUT"; then
-  ok "the report says the outcome will not be followed"
-else bad "the report says the outcome will not be followed (reason: $(jq -r .reason <<<"$OUT"))"; fi
+expect_rc 3 "an unstakeable claim blocks the dispatch (exit 3)"
+expect_field '.decision' 'blocked' "an unstakeable claim reports blocked"
+expect_field '.applied' 'false' "nothing is reported as applied"
+gh_absent "add-label" "no label is applied when the claim cannot be staked"
+if jq -e '.reason | test("can be duplicated by a concurrent evaluation")' >/dev/null <<<"$OUT"; then
+  ok "the blocker explains why an unclaimed trigger is refused"
+else bad "the blocker explains why an unclaimed trigger is refused (reason: $(jq -r .reason <<<"$OUT"))"; fi
 fix_state
+
+# 16b. The claim is staked BEFORE the trigger, not after — this is what closes the
+# window in which two overlapping evaluations both see "no build running" and
+# both fire. Asserted on ordering, since a claim written afterwards would still
+# leave the record looking correct at rest.
+reset_state
+FAKE_RUNS_JSON="$OLD_BUILD" FAKE_INTERVAL=60 run --repo solo/app --pr 5 --apply --phase pre-merge
+expect_rc 0 "a healthy claim-then-trigger succeeds (exit 0)"
+expect_state '.repos["solo/app"].release.in_flight.awaiting_run' 'true' "the claim survives as the in-flight record"
+expect_state '.repos["solo/app"].release.in_flight.pr' '5' "the claim names the PR"
+gh_called "add-label" "the trigger still fires on the healthy path"
+
+# 16c. A trigger that FAILS releases the claim, so a failed attempt cannot wedge
+# the repo as permanently "building" and block every later merge.
+reset_state
+FAKE_RUNS_JSON="$OLD_BUILD" FAKE_INTERVAL=60 FAKE_LABEL_RC=1 \
+  run --repo solo/app --pr 5 --apply --phase pre-merge
+expect_rc 3 "a failed trigger blocks (exit 3)"
+expect_state '.repos["solo/app"].release.in_flight' 'null' "a failed trigger releases its claim"
 
 # 17. With state healthy again, the same call is a clean exit 0 — proving the
 # three cases above fail for the reason claimed and not from a broken fixture.
