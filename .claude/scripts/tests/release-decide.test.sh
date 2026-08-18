@@ -508,6 +508,25 @@ expect_rc 3 "an unverifiable claim read-back blocks (exit 3)"
 expect_field '.decision' 'blocked' "an unverifiable read-back reports blocked"
 gh_absent "add-label" "no build is dispatched on an unverified claim"
 cp "$TMP/ss.beforeread" "$SCRIPTS/session-state.impl.sh"; rm -f "$SCRIPTS/session-state.impl.sh.orig"
+# When the read path is DOWN, ownership cannot be confirmed, so the claim is
+# deliberately left rather than deleted — clearing blind could drop tracking for
+# a competitor's genuinely-running build, which does not self-heal, while a
+# parked claim of ours is reclaimed by the sweep's grace window. The blocker says
+# so out loud instead of leaving it silent.
+if jq -e '.reason | test("may remain parked")' >/dev/null <<<"$OUT"; then
+  ok "an unverifiable release discloses that a claim may remain parked"
+else bad "an unverifiable release discloses that a claim may remain parked (reason: $(jq -r .reason <<<"$OUT"))"; fi
+
+# 26. A claim taken over by a competing evaluation is NOT deleted when our own
+# trigger fails — clearing it would drop in-flight tracking for a build that is
+# genuinely running, which a later sweep could duplicate.
+reset_state
+seed_other() { "$SCRIPTS/session-state.impl.sh" --raw-path --set '.repos["solo/app"].release.in_flight={"pr":9,"mechanism":"label:release:ios","claim_token":"someone-else","awaiting_run":true}' >/dev/null 2>&1; }
+FAKE_RUNS_JSON="$OLD_BUILD" FAKE_INTERVAL=60 FAKE_LABEL_RC=1 \
+  run --repo solo/app --pr 5 --apply --phase pre-merge
+expect_rc 3 "a failed trigger still blocks (exit 3)"
+seed_other
+expect_state '.repos["solo/app"].release.in_flight.claim_token' 'someone-else' "a competing claim survives our failure path"
 
 echo "----------------------------------------"
 echo "release-decide.test.sh: $PASS passed, $FAIL failed"

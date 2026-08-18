@@ -450,10 +450,35 @@ fi
 # than the whole dispatch round-trip, and the GitHub-history check still backs
 # it up. `none` repos are skipped — their build is not ours to claim.
 CLAIM_WRITTEN=0
+RELEASE_CLAIM_UNVERIFIED=0
 # Release the claim if the trigger never actually fired, so a failed attempt does
 # not wedge the repo as permanently "building".
+# Clears ONLY a claim this evaluation still owns. An unconditional clear would
+# delete a competing evaluator's claim if it replaced ours between our read-back
+# and our trigger failing — removing in-flight tracking for a build that really
+# is running, which a later sweep could then duplicate. Token-checked rather
+# than atomic: a conditional clear needs the same compare-and-set primitive as
+# the claim itself (issue #1195). Strictly better than deleting blindly.
 release_claim() {
   [ "$CLAIM_WRITTEN" = "1" ] || return 0
+  local raw owner rc=0
+  raw=$("$STATE_SH" --raw-path --get ".repos[\"$REPO\"].release.in_flight" 2>/dev/null) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # One retry — a single failed read is usually transient (lock contention).
+    rc=0
+    raw=$("$STATE_SH" --raw-path --get ".repos[\"$REPO\"].release.in_flight" 2>/dev/null) || rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
+    # Still cannot confirm ownership. Leave the record: a claim of ours parked
+    # here is reclaimed by the sweep's grace window (bounded, self-healing),
+    # whereas deleting a competitor's claim drops tracking for a build that is
+    # genuinely running and does not self-heal. The caller surfaces this so the
+    # parked claim is visible rather than silent.
+    RELEASE_CLAIM_UNVERIFIED=1
+    return 0
+  fi
+  owner=$(printf '%s' "$raw" | jq -r '.claim_token // empty' 2>/dev/null)
+  [ "$owner" = "$CLAIM_TOKEN" ] || return 0
   state_set "in_flight" "null" || true
 }
 
@@ -480,7 +505,7 @@ if [ "$MECHANISM_USED" != "none" ]; then
     CLAIM_RB_RAW=$("$STATE_SH" --raw-path --get ".repos[\"$REPO\"].release.in_flight" 2>&1) || CLAIM_RB_RC=$?
     if [ "$CLAIM_RB_RC" -ne 0 ]; then
       release_claim
-      emit 3 "blocked" "could not read back the in-flight claim for $REPO (exit $CLAIM_RB_RC) — refusing to dispatch on an unverified claim: $CLAIM_RB_RAW"
+      emit 3 "blocked" "could not read back the in-flight claim for $REPO (exit $CLAIM_RB_RC) — refusing to dispatch on an unverified claim: $CLAIM_RB_RAW${RELEASE_CLAIM_UNVERIFIED:+ (a claim may remain parked; the sweep reclaims it within its grace window)}"
     fi
     CLAIM_READBACK=$(printf '%s' "$CLAIM_RB_RAW" | jq -r '.claim_token // empty' 2>/dev/null) || CLAIM_READBACK="__unreadable__"
     if [ "$CLAIM_READBACK" = "__unreadable__" ] || [ -z "$CLAIM_READBACK" ]; then
