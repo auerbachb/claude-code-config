@@ -104,18 +104,26 @@ chmod +x "$STUB_BIN/gh"
 export PATH="$STUB_BIN:$PATH"
 mkdir -p "$TMP/comments"
 
-# Fixed calendar dates below (NOW_ISO/OLD_ISO) are safe as hardcoded literals:
-# OLD_ISO stays "more than 30 days old" indefinitely into the future, and
-# NOW_ISO is never compared against a real-time threshold. A "recent comment"
-# date is different — it must stay within the 30-day window at whatever time
-# the test actually runs, so it is computed relative to execution time.
-NOW_ISO="2026-07-16T00:00:00Z"
-OLD_ISO="2026-04-01T00:00:00Z"   # >30 days before "now" per fixture design
-
 days_ago_iso() {
   local n="$1"
   date -v-"${n}"d -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "${n} days ago" +%Y-%m-%dT%H:%M:%SZ
 }
+
+# EVERY fixture date is relative to execution time (issue #1187).
+#
+# These were once hardcoded as 2026-07-16 / 2026-04-01, on the reasoning that
+# "NOW_ISO is never compared against a real-time threshold". It is: fixtures set
+# `updatedAt: $NOW_ISO`, and backlog-staleness.sh ages that against the REAL
+# clock. So a literal that meant "today" when it was written silently came to
+# mean "33 days ago", and on 2026-08-15 it crossed the 30-day inactivity
+# threshold — at which point issues the negative tests create as fresh started
+# being flagged `inactive`, failing assertions about duplicate suppression that
+# were never broken. A fixture must build its own premise rather than inherit
+# one from the calendar.
+#
+# Keep the 106-day separation the original literals encoded.
+NOW_ISO="$(days_ago_iso 0)"
+OLD_ISO="$(days_ago_iso 106)"   # >30 days before "now" per fixture design
 
 # ---------------------------------------------------------------------------
 # Test 1: empty backlog → empty result, exit 0
