@@ -83,6 +83,16 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 POLICY_SH="$SCRIPT_DIR/release-policy.sh"
 STATE_SH="$SCRIPT_DIR/session-state.sh"
+# .repos["<owner>/<name>"] keys are ALWAYS lowercase (session-state-schema.json
+# _scope_key_contract). Share the one normalizer every other derivation point
+# uses, so a mixed-case remote can never open a second scope for the same repo.
+NORMALIZER_LIB="$SCRIPT_DIR/lib/repo-normalizer.sh"
+if [ -f "$NORMALIZER_LIB" ]; then
+  # shellcheck source=./lib/repo-normalizer.sh
+  . "$NORMALIZER_LIB"
+else
+  normalize_repo_key() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+fi
 INTERVAL_CACHE_MIN="${RELEASE_INTERVAL_CACHE_MIN:-60}"
 
 usage() { sed -n '2,/^set -uo pipefail$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//; $d'; }
@@ -96,9 +106,14 @@ while [ $# -gt 0 ]; do
     --repo)   REPO="${2:-}"; [ -n "$REPO" ] || die_usage "--repo requires <owner/name>"; shift 2 ;;
     --pr)     PR="${2:-}";   [ -n "$PR" ]   || die_usage "--pr requires a number"; shift 2 ;;
     --apply)  APPLY=1; shift ;;
-    --phase)  PHASE="${2:-}"; shift 2
+    --phase)  [ $# -ge 2 ] || die_usage "--phase must be pre-merge, post-merge, or now"
+              PHASE="$2"; shift 2
               case "$PHASE" in pre-merge|post-merge|now) ;; *) die_usage "--phase must be pre-merge, post-merge, or now" ;; esac ;;
-    --reason) REASON_TEXT="${2:-}"; shift 2 ;;
+    # Arity, not emptiness: `--reason ""` is a legitimate caller choice, but a
+    # trailing bare `--reason` must not spin. (`shift 2` on one remaining
+    # positional is a no-op that returns non-zero, and set -e is off.)
+    --reason) [ $# -ge 2 ] || die_usage "--reason requires <text>"
+              REASON_TEXT="$2"; shift 2 ;;
     *) die_usage "unknown argument: $1" ;;
   esac
 done
@@ -111,6 +126,7 @@ if [ -z "$REPO" ]; then
   REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)
   [ -n "$REPO" ] || { echo "release-decide.sh: could not resolve repo (pass --repo owner/name)" >&2; exit 4; }
 fi
+REPO="$(normalize_repo_key "$REPO")"
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 NOW_EPOCH=$(date -u +%s)
@@ -207,6 +223,12 @@ EXPEDITE_JSON=$(printf '%s' "$POLICY_JSON" | jq -c '.expedite')
 INTERVAL_SOURCE=$(printf '%s' "$POLICY_JSON" | jq -r '.interval_source')
 INTERVAL=$(printf '%s' "$POLICY_JSON" | jq '.min_interval_minutes')
 
+if [ "$USE_CACHE" = "1" ] && [ "$INTERVAL_SOURCE" = "policy" ]; then
+  # The repo switched from "auto" to an explicit min_interval since the cache was
+  # written. The owner's override wins immediately — never after a cache TTL.
+  USE_CACHE=0
+fi
+
 if [ "$USE_CACHE" = "1" ]; then
   INTERVAL="$CACHED_INTERVAL"
   INTERVAL_SOURCE=$(state_get "interval_source" | tr -d '"')
@@ -251,8 +273,23 @@ if [ -n "$PR" ]; then
   if [ -z "$PR_JSON" ]; then
     emit 3 "blocked" "could not read PR #$PR in $REPO to classify its changes"
   fi
-  FILES_JSON=$(printf '%s' "$PR_JSON" | jq -c '[.files[].path]')
   LABELS_JSON=$(printf '%s' "$PR_JSON" | jq -c '[.labels[].name]')
+
+  # `gh pr view --json files` returns at most 100 entries with no truncation
+  # signal. Suppression asks whether EVERY changed path is ignorable, so a
+  # truncated list can only ever make a PR look MORE suppressible than it is —
+  # the one direction that silently skips a build for real app changes. Page the
+  # REST endpoint instead, and fail closed if the full list cannot be read.
+  FILES_JSON=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].path' 2>/dev/null \
+                 | jq -Rsc 'split("\n") | map(select(length > 0))') || FILES_JSON=""
+  if [ -z "$FILES_JSON" ] || [ "$FILES_JSON" = "null" ]; then
+    # Fall back to the capped list rather than blocking, but never let a capped
+    # list drive a suppression: 100 entries means "possibly truncated".
+    FILES_JSON=$(printf '%s' "$PR_JSON" | jq -c '[.files[].path]')
+    if [ "$(printf '%s' "$FILES_JSON" | jq 'length')" -ge 100 ]; then
+      emit 3 "blocked" "could not read the complete changed-file list for PR #$PR in $REPO (capped at 100) — refusing to classify, since a truncated list can only make a PR look more suppressible than it is"
+    fi
+  fi
 
   LABEL_CLASS=$(jq -rn \
     --argjson labels "$LABELS_JSON" --argjson sup "$SUPPRESS_JSON" --argjson exp "$EXPEDITE_JSON" '
@@ -291,7 +328,13 @@ elif files and sup and all(any(r.match(f) for r in sup) for f in files):
     print("suppress")
 else:
     print("")
-' 2>/dev/null)
+')
+  PATH_CLASS_RC=$?
+  if [ "$PATH_CLASS_RC" -ne 0 ]; then
+    # Never let a failed classification masquerade as "nothing matched": that
+    # silently builds suppress-only PRs and delays expedite ones.
+    emit 3 "blocked" "path classification failed (python3 exited $PATH_CLASS_RC) — refusing to classify $REPO PR #$PR rather than treating every path as unmatched"
+  fi
 
   if [ "$LABEL_CLASS" = "expedite" ] || [ "$PATH_CLASS" = "expedite" ]; then
     CLASS="expedite"
@@ -320,11 +363,15 @@ done < <(printf '%s' "$WORKFLOWS_JSON" | jq -r '.[]')
 IN_FLIGHT_RUN=$(printf '%s' "$RUNS" | jq '
   [ .[] | select(.status != "completed") ] | sort_by(.createdAt) | last | .databaseId // null')
 
-LAST_BUILD=$(printf '%s' "$RUNS" | jq -c '
+# Same floor as release-policy.sh's median derivation: GitHub concludes a run
+# successful when its only real job was skipped, so duration is what separates a
+# build from a no-op.
+BUILD_MIN_SEC=$(( ${RELEASE_BUILD_MIN_MINUTES:-5} * 60 ))
+LAST_BUILD=$(printf '%s' "$RUNS" | jq -c --argjson minsec "$BUILD_MIN_SEC" '
   [ .[]
     | select(.status == "completed")
     | select(.conclusion == "success" or .conclusion == "failure" or .conclusion == "timed_out")
-    | select(((.updatedAt | fromdateiso8601) - (.createdAt | fromdateiso8601)) >= 60)
+    | select(((.updatedAt | fromdateiso8601) - (.createdAt | fromdateiso8601)) >= $minsec)
     | .updatedAt
   ] | sort | last // null')
 
@@ -413,7 +460,9 @@ case "$MECHANISM_USED" in
     # input (required on longlove and inventory, optional on skingod). Try with
     # it, then once without, so a workflow that declares none still dispatches.
     OUT=$(gh workflow run "$WF" -R "$REPO" -f reason="$DISPATCH_REASON" 2>&1) || TRIGGER_RC=$?
-    if [ "$TRIGGER_RC" -ne 0 ]; then
+    if [ "$TRIGGER_RC" -ne 0 ] && printf '%s' "$OUT" | grep -qiE 'unexpected inputs?|invalid input|input.*reason|reason.*not.*(defined|expected|accepted)'; then
+      # Only this failure shape proves the dispatch was REJECTED rather than
+      # possibly-accepted-then-lost, so only this one is safe to retry.
       TRIGGER_RC=0
       OUT=$(gh workflow run "$WF" -R "$REPO" 2>&1) || TRIGGER_RC=$?
     fi

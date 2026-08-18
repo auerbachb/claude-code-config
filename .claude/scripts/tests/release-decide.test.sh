@@ -43,8 +43,9 @@ jq -cn \
   --argjson interval "${FAKE_INTERVAL:-60}" \
   --argjson sup "$SUP" --argjson exp "$EXP" \
   --arg reason "${FAKE_POLICY_REASON:-}" \
+  --arg isource "${FAKE_INTERVAL_SOURCE:-policy}" \
   '{enabled:true, reason:$reason, policy_source:"api", min_interval_minutes:$interval,
-    interval_source:"policy", trigger:$trigger, deferred_trigger:$deferred,
+    interval_source:$isource, trigger:$trigger, deferred_trigger:$deferred,
     release_workflows:["mobile-testflight.yml"], suppress:$sup, expedite:$exp,
     max_builds_per_day:8, derivation:{}}'
 exit "$RC"
@@ -314,8 +315,12 @@ expect_field '.last_build_completed_at' 'null' "no prior build is reported as nu
 # 14. A durable write that does not land is never reported as a quiet success.
 # The whole point of `pending` is that a later sweep reads the marker; if the
 # marker did not land, reporting `pending` promises a build that will never come.
+# Backed up ONCE, before anything can break it. Re-copying inside break_state
+# would promote the stub to "the backup" the first time a case forgets its
+# fix_state, and every later case would then pass against a broken script —
+# precisely the pass-for-the-wrong-reason failure this suite exists to catch.
+cp "$SCRIPTS/session-state.sh" "$TMP/session-state.real"
 break_state() {
-  cp "$SCRIPTS/session-state.sh" "$TMP/session-state.real"
   cat > "$SCRIPTS/session-state.sh" <<'STUB'
 #!/usr/bin/env bash
 echo "session-state.sh: missing sibling library: lib/repo-normalizer.sh" >&2
@@ -364,6 +369,34 @@ reset_state
 FAKE_RUNS_JSON="$OLD_BUILD" FAKE_INTERVAL=60 run --repo solo/app --pr 5 --apply --phase pre-merge
 expect_rc 0 "the identical call succeeds once state writes work again"
 expect_field '.state_write_error' '' "a healthy run carries no write error"
+
+# 18. The derived-interval cache seam. With interval_source "policy" (an explicit
+# owner override) none of this code runs, which is why the stub now varies it.
+reset_state
+FAKE_RUNS_JSON="$OLD_BUILD" FAKE_INTERVAL=90 FAKE_INTERVAL_SOURCE=auto \
+  run --repo solo/app --pr 5 --apply --phase pre-merge
+expect_rc 0 "a derived interval decides normally (exit 0)"
+expect_state '.repos["solo/app"].release.interval_minutes' '90' "a derived interval is cached"
+expect_state '.repos["solo/app"].release.interval_source' 'auto' "the cache records the derived source"
+if [ -f "$STATE" ] && [ "$(jq -r '.repos["solo/app"].release.derived_at // "null"' < "$STATE")" != "null" ]; then
+  ok "the cache is stamped with derived_at"
+else bad "the cache is stamped with derived_at"; fi
+
+# 19. An explicit min_interval must beat a FRESH cached derived interval. Without
+# this, switching a repo from "auto" to an explicit value would keep using the
+# stale derived number for a whole cache TTL.
+FAKE_RUNS_JSON="$RECENT_BUILD" FAKE_INTERVAL=5 FAKE_INTERVAL_SOURCE=policy \
+  run --repo solo/app --pr 6 --apply --phase pre-merge
+expect_field '.interval_minutes' '5' "an explicit min_interval overrides a fresh cached one"
+expect_field '.interval_source' 'policy' "the explicit source is reported, not the cached one"
+expect_rc 0 "the explicit 5m window is open 10m after the last build (exit 0)"
+
+# 20. ...and the cached derived value is still used when the policy says auto,
+# so 19 proves precedence rather than that caching is simply broken.
+FAKE_RUNS_JSON="$RECENT_BUILD" FAKE_INTERVAL=5 FAKE_INTERVAL_SOURCE=auto \
+  run --repo solo/app --pr 7 --apply --phase pre-merge
+expect_field '.interval_minutes' '90' "an auto policy still reads the cached derived interval"
+expect_rc 1 "the cached 90m window is still closed 10m after the last build (exit 1)"
 
 echo "----------------------------------------"
 echo "release-decide.test.sh: $PASS passed, $FAIL failed"

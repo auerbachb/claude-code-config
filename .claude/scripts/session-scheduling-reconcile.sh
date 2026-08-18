@@ -408,7 +408,18 @@ fi
 #     means "something needs attention", which is a notice, not an error.
 RELEASE_SWEEP="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/release-sweep.sh"
 if [[ "$CHECK_ONLY" -eq 0 && -x "$RELEASE_SWEEP" ]]; then
-  SWEEP_JSON="$("$RELEASE_SWEEP" --json 2>/dev/null)" || true
+  # Bounded: this runs on the session-start path, where a hung `gh` would delay
+  # every session with no visible cause. Prefer a real timeout binary; without
+  # one, run unbounded rather than silently skipping the sweep (a missing
+  # timeout(1) is not a reason to stop following builds).
+  RELEASE_SWEEP_TIMEOUT="${RELEASE_SWEEP_TIMEOUT_SECS:-45}"
+  if command -v timeout >/dev/null 2>&1; then
+    SWEEP_JSON="$(timeout "$RELEASE_SWEEP_TIMEOUT" "$RELEASE_SWEEP" --json 2>/dev/null)" || true
+  elif command -v gtimeout >/dev/null 2>&1; then
+    SWEEP_JSON="$(gtimeout "$RELEASE_SWEEP_TIMEOUT" "$RELEASE_SWEEP" --json 2>/dev/null)" || true
+  else
+    SWEEP_JSON="$("$RELEASE_SWEEP" --json 2>/dev/null)" || true
+  fi
   if [[ -n "${SWEEP_JSON:-}" ]]; then
     while IFS= read -r sweep_line; do
       [[ -n "$sweep_line" ]] && NOTICES+=("$sweep_line")

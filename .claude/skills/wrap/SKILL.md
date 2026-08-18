@@ -739,7 +739,14 @@ done
 
 # 3. Follow in-flight builds to a terminal state and cut any pending build whose
 #    window has opened — including markers left by threads that have since ended.
-[ -x "$RELEASE_SWEEP" ] && "$RELEASE_SWEEP" || true
+# Scoped to the repo that was just merged: an unscoped sweep would also act on
+# every other repo carrying release state, which is the periodic surfaces' job
+# (session start, each PMM tick), not this one's.
+MERGED_REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)
+if [ -x "$RELEASE_SWEEP" ]; then
+  if [ -n "$MERGED_REPO" ]; then "$RELEASE_SWEEP" --repo "$MERGED_REPO" || true
+  else "$RELEASE_SWEEP" || true; fi
+fi
 ```
 
 Exit `3` from either phase is a blocker worth one line (a trigger that failed, or a build cut whose state could not be saved and so will not be followed). Exit `1` (pending or suppressed), `2` (inert), and `4` (environment) are all silent and all non-fatal — `/wrap` never fails a completed merge over release automation.

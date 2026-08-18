@@ -124,7 +124,7 @@ From the repo's own history, over its `release_workflows`:
   the search API's exact `total_count`. A `gh pr list --limit` would silently cap
   the observed rate below the budget and make the budget term unreachable.
 
-```
+```text
 compute_term = RELEASE_BUILD_FACTOR × median_build_min   # 3× — never build back-to-back
 budget_term  = merges_per_day > max_builds_per_day ? 1440 / max_builds_per_day : 0
 interval     = clamp(max(compute_term, budget_term, notify_floor), 15, 240)   # minutes
@@ -219,7 +219,7 @@ silent wrong-time trigger.
 
 `~/.claude/session-state.json` at `.repos["<owner>/<name>"].release`:
 
-```
+```text
 {
   pending:         { since, pr, count, reason, notified_at? } | null,
   in_flight:       { pr, mechanism, triggered_at, detail, run_id, awaiting_run } | null,
@@ -293,7 +293,7 @@ None of these depends on the thread that created the marker:
 
 Per `CLAUDE.md` output rules, a cut build is a single line:
 
-```
+```text
 cut TestFlight build — auerbachb/skingod (PR #412)
 ```
 

@@ -137,6 +137,15 @@ expect_field '.derivation.sample_size' '6' "only the six building runs are sampl
 expect_field '.min_interval_minutes' '39' "13-minute builds derive a 39-minute window (3x)"
 expect_field '.interval_source' 'auto' "derived interval reports source=auto"
 
+# 6b. Distinct values, odd count. Every median case above uses uniform durations,
+#     which pass for any selected index — including a wrong one. [6, 13, 30] only
+#     yields 13 if the true middle element is chosen.
+DISTINCT=$(printf '%s\n%s\n%s' "$(mkrun 1 6 completed success)" "$(mkrun 2 30 completed success)" "$(mkrun 3 13 completed success)" | grep -v '^$' | jq -sc .)
+FAKE_POLICY_B64="$(b64 '{"enabled":true,"min_interval":"auto","trigger":"none","release_workflows":["w.yml"]}')" \
+  FAKE_RUNS_JSON="$DISTINCT" FAKE_SEARCH_COUNT=0 run --repo solo/app
+expect_field '.derivation.sample_size' '3' "three distinct builds are all sampled"
+expect_field '.derivation.median_build_minutes' '13' "the median is the middle value, not the first or last"
+
 # 7. Outlier cap — one run that sat queued for three days must not move the median.
 OUTLIER=$(mkrun 7 4320 completed success)
 WITH_OUTLIER=$(printf '%s\n%s' "$BUILDS" "$OUTLIER" | grep -v '^$' | jq -sc .)
@@ -288,6 +297,21 @@ FAKE_POLICY_B64="$(b64 '{"enabled":true,"min_interval":"auto","trigger":"none","
 expect_rc 0 "--no-derive resolves the policy"
 expect_field '.min_interval_minutes' 'null' "--no-derive leaves the interval undetermined"
 expect_field '.interval_source' 'auto-undetermined' "--no-derive reports auto-undetermined"
+
+# max_builds_per_day feeds the budget term, so a bad value must fail closed
+# rather than silently divide by zero or coerce to a default.
+for BAD in '0' '-3' '"eight"'; do
+  FAKE_POLICY_B64="$(b64 "{\"enabled\":true,\"min_interval\":\"auto\",\"trigger\":\"none\",\"release_workflows\":[\"w.yml\"],\"max_builds_per_day\":$BAD}")" \
+    FAKE_RUNS_JSON='[]' FAKE_SEARCH_COUNT=0 run --repo solo/app
+  expect_rc 4 "max_builds_per_day=$BAD fails closed (exit 4)"
+done
+
+# JSON null is "unset", not "invalid" — jq's `//` default is the intended
+# behavior here, so pin it rather than leaving it as an accident.
+FAKE_POLICY_B64="$(b64 '{"enabled":true,"min_interval":"auto","trigger":"none","release_workflows":["w.yml"],"max_builds_per_day":null}')" \
+  FAKE_RUNS_JSON='[]' FAKE_SEARCH_COUNT=0 run --repo solo/app
+expect_rc 0 "an explicit null max_builds_per_day means unset, not invalid"
+expect_field '.max_builds_per_day' '8' "unset max_builds_per_day takes the documented default"
 
 echo "----------------------------------------"
 echo "release-policy.test.sh: $PASS passed, $FAIL failed"

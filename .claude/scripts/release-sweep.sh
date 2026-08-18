@@ -52,6 +52,16 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_SH="$SCRIPT_DIR/session-state.sh"
+# .repos["<owner>/<name>"] keys are ALWAYS lowercase (session-state-schema.json
+# _scope_key_contract). Share the one normalizer every other derivation point
+# uses, so a mixed-case remote can never open a second scope for the same repo.
+NORMALIZER_LIB="$SCRIPT_DIR/lib/repo-normalizer.sh"
+if [ -f "$NORMALIZER_LIB" ]; then
+  # shellcheck source=./lib/repo-normalizer.sh
+  . "$NORMALIZER_LIB"
+else
+  normalize_repo_key() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+fi
 DECIDE_SH="$SCRIPT_DIR/release-decide.sh"
 POLICY_SH="$SCRIPT_DIR/release-policy.sh"
 GRACE_MIN="${RELEASE_RUN_APPEAR_GRACE_MIN:-15}"
@@ -73,6 +83,12 @@ done
 command -v gh >/dev/null 2>&1 || { echo "release-sweep.sh: gh not found" >&2; exit 4; }
 command -v jq >/dev/null 2>&1 || { echo "release-sweep.sh: jq not found" >&2; exit 4; }
 [ -f "$STATE_SH" ] || { echo "release-sweep.sh: session-state.sh not found next to this script" >&2; exit 4; }
+# Without these the sweep still "works": release_workflows resolves to [], RUNS
+# stays [], and every in-flight build past the grace window gets reported as
+# "did not start" and cleared — declaring healthy builds failed and abandoning
+# them. A missing dependency is an environment error, not a sweep result.
+[ -f "$POLICY_SH" ] || { echo "release-sweep.sh: release-policy.sh not found next to this script" >&2; exit 4; }
+[ -f "$DECIDE_SH" ] || { echo "release-sweep.sh: release-decide.sh not found next to this script" >&2; exit 4; }
 
 EVENTS='[]'
 ATTENTION=0
@@ -126,7 +142,7 @@ state_set() {
 
 # --- Which repos to sweep -----------------------------------------------------
 if [ -n "$ONLY_REPO" ]; then
-  REPOS="$ONLY_REPO"
+  REPOS="$(normalize_repo_key "$ONLY_REPO")"
 else
   REPOS=$("$STATE_SH" --raw-path --get '[(.repos // {}) | to_entries[] | select(.value.release != null) | .key] | .[]' 2>/dev/null)
 fi
@@ -151,8 +167,22 @@ while IFS= read -r REPO; do
     WORKFLOWS_JSON=$(printf '%s' "$POLICY_JSON" | jq -c '.release_workflows // []' 2>/dev/null)
     [ -n "$WORKFLOWS_JSON" ] || WORKFLOWS_JSON='[]'
 
+    # A known run_id is resolved by id, never by scanning: `gh run list --limit 20`
+    # is per workflow, so on a busy repo an adopted run falls off the window and
+    # would be reported as "did not start" though it exists and may have shipped.
+    RUN=''
     RUNS='[]'
+    if [ -n "$RUN_ID" ]; then
+      ONE=$(gh api "repos/$REPO/actions/runs/$RUN_ID" \
+              --jq '{databaseId:.id, status:.status, conclusion:.conclusion, createdAt:.created_at, updatedAt:.updated_at, url:.html_url}' 2>/dev/null) || ONE=""
+      if [ -n "$ONE" ] && printf '%s' "$ONE" | jq -e 'type == "object"' >/dev/null 2>&1; then
+        RUN="$ONE"
+      fi
+    fi
+
     while IFS= read -r wf; do
+      # Skip the list scan entirely when the id lookup already answered.
+      [ -z "$RUN" ] || break
       [ -n "$wf" ] || continue
       ONE=$(gh run list -R "$REPO" --workflow="$wf" --limit 20 \
               --json databaseId,status,conclusion,createdAt,updatedAt,url 2>/dev/null) || ONE=""
@@ -161,8 +191,10 @@ while IFS= read -r REPO; do
       RUNS=$(jq -cn --argjson a "$RUNS" --argjson b "$ONE" '$a + $b')
     done < <(printf '%s' "$WORKFLOWS_JSON" | jq -r '.[]')
 
-    RUN=''
-    if [ -n "$RUN_ID" ]; then
+    if [ -n "$RUN" ]; then
+      :                                  # resolved by id above
+    elif [ -n "$RUN_ID" ]; then
+      # id lookup failed (transient API error): fall back to the list scan.
       RUN=$(printf '%s' "$RUNS" | jq -c --argjson id "$RUN_ID" 'map(select(.databaseId == $id)) | first // empty')
     elif [ -n "$TRIGGERED_AT" ]; then
       # The oldest run created at or after the trigger — the one we caused.
@@ -225,7 +257,7 @@ while IFS= read -r REPO; do
 
   P_PR=$(printf '%s' "$PENDING" | jq -r '.pr // empty')
   DEC_RC=0
-  DEC=$(bash "$DECIDE_SH" --repo "$REPO" --phase now --apply 2>/dev/null) || DEC_RC=$?
+  DEC=$(bash "$DECIDE_SH" --repo "$REPO" --phase now --apply </dev/null 2>/dev/null) || DEC_RC=$?
   case "$DEC_RC" in
     0)
       record "build_cut" "$REPO" "cut TestFlight build — $REPO${P_PR:+ (PR #$P_PR)}" 0
@@ -240,6 +272,10 @@ while IFS= read -r REPO; do
           "TestFlight release pending but not cuttable — $REPO: $(printf '%s' "$DEC" | jq -r '.reason // "unknown reason"')" 1
         state_set "$REPO" "pending" "$(printf '%s' "$PENDING" | jq -c --arg at "$(now_iso)" '.notified_at = $at')"
       fi
+      ;;
+    4)
+      record "decide_env_error" "$REPO" \
+        "TestFlight release could not be evaluated — $REPO: release-decide.sh reported an environment or usage error (exit 4)" 1
       ;;
     *)
       # 1 = still inside the window or nothing to do; 2 = policy now off. Both

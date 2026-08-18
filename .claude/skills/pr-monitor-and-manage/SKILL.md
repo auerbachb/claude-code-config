@@ -366,8 +366,21 @@ Enter orchestration-only posture (`monitor-mode.md` Dedicated Monitor Mode). PMM
 PMM's persistent `Monitor` is the one genuinely periodic surface in this system, which makes it the natural home for the release sweep: it follows already-triggered TestFlight builds to a terminal state and cuts any pending build whose window has opened, including markers left by threads that have since ended.
 
 ```bash
-RELEASE_SWEEP=".claude/scripts/release-sweep.sh"
-[ -x "$RELEASE_SWEEP" ] && "$RELEASE_SWEEP" || true
+# Same three-candidate resolution Step 5.0 uses for pr-preflight.sh. A
+# repo-relative path would resolve only when the tick happens to run inside the
+# config repo; everywhere else the -x gate would silently skip the sweep, which
+# is indistinguishable from "nothing to release".
+RELEASE_SWEEP=""
+for c in "$HOME/.claude/skills-worktree/.claude/scripts/release-sweep.sh" \
+         "$HOME/.claude/scripts/release-sweep.sh" \
+         ".claude/scripts/release-sweep.sh"; do
+  [ -x "$c" ] && { RELEASE_SWEEP="$c"; break; }
+done
+if [ -n "$RELEASE_SWEEP" ]; then
+  "$RELEASE_SWEEP" || true
+else
+  echo "[PMM] release-sweep.sh not found — skipping the release sweep this tick"
+fi
 ```
 
 Cheap when nothing is pending — one state read and it returns. Its output obeys `CLAUDE.md` #3: a cut build is a single line, failures and blockers one line each, and a tick with nothing to report prints nothing, so this never competes with the heartbeat. Exit `1` means "something needs attention" and is already carried by that printed line; it never fails the tick. Mechanism: `.claude/reference/release-cadence.md`.

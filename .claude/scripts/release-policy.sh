@@ -193,9 +193,20 @@ fi
 # --- Read the policy file from the default branch ------------------------------
 RAW=""
 API_RC=0
-RAW=$(gh api "repos/$REPO/contents/$POLICY_PATH" --jq '.content' 2>/dev/null) || API_RC=$?
+POLICY_ERR_FILE=$(mktemp -t release-policy-err.XXXXXX)
+trap 'rm -f "$POLICY_ERR_FILE"' EXIT
+API_ERR=""
+RAW=$(gh api "repos/$REPO/contents/$POLICY_PATH" --jq '.content' 2>"$POLICY_ERR_FILE") || API_RC=$?
+[ -s "$POLICY_ERR_FILE" ] && API_ERR=$(tr '\n' ' ' < "$POLICY_ERR_FILE")
 
 if [ "$API_RC" -ne 0 ] || [ -z "$RAW" ]; then
+  # A 404 means the repo never opted in. Anything else (rate limit, auth,
+  # network) means the policy was never READ — the same inert outcome, but a
+  # different fact, and reporting it as "off by default" hides an outage.
+  if [ "$API_RC" -ne 0 ] && [ -n "$API_ERR" ] && ! printf '%s' "$API_ERR" | grep -qiE '404|not found'; then
+    emit 1 "could not read $POLICY_PATH in $REPO — treating as off, but this is a lookup failure, not an opt-out: $API_ERR" \
+      '{"policy_source":"unreadable"}'
+  fi
   emit 1 "no $POLICY_PATH in $REPO — agent-initiated releases are off by default" \
     '{"policy_source":"absent"}'
 fi

@@ -42,7 +42,11 @@ chmod +x "$SCRIPTS/release-policy.sh"
 cat > "$SCRIPTS/release-decide.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "decide $*" >> "$GH_LOG"
-printf '%s\n' "${FAKE_DECIDE_JSON:-{\"decision\":\"build_now\",\"reason\":\"window open\"}}"
+# NOT a ${VAR:-{...}} brace default: that expansion terminates at the first
+# literal `}` and emits mangled JSON (see feedback on brace-default truncation).
+DEC_JSON="${FAKE_DECIDE_JSON:-}"
+if [ -z "$DEC_JSON" ]; then DEC_JSON='{"decision":"build_now","reason":"window open"}'; fi
+printf '%s\n' "$DEC_JSON"
 exit "${FAKE_DECIDE_RC:-0}"
 EOF
 chmod +x "$SCRIPTS/release-decide.sh"
