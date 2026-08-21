@@ -101,7 +101,32 @@ that same tag. One of those is wrong. If the operator is right, Cursor is mislab
 re-review on every push), and Autofix **On** — **299 autofix runs, 0 ever merged**. Those five
 settings are the cheapest levers in this entire audit and none of them requires a purchase.
 
-### Item 3 — Greptile: the wrong account was read; the question is re-scoped, not answered
+### Item 3 — Greptile: RESOLVED in round 2. It is paid, uncapped, and this repo is its top consumer
+
+**A second follow-up session found the right account.** `Greptile Apps` is installed on the
+**`auerbachb` personal account** with access to all repositories, and that account has its **own
+Greptile org, on Pro, Active** — separate from `localmovers-com`.
+
+- Invoice 6 Aug – 6 Sep 2026: 1 seat $30 (**$15** discounted), **Flex Usage 42 credits $42 ($21
+  discounted)**, total **$72 → $36**.
+- **Flex Usage Limit: "No cap on flex usage."** Overage runs at $1/credit, **unbounded by default**.
+- 15 days into the cycle: **92 reviews / 92 credits** — 50 included, **42 already on flex**.
+  Run-rate ~6/day → ~180 credits/month ≈ $30 seat + **~$130/month of flex** at list.
+- Lifetime reviews by repo: **`claude-code-config` 212 — the single largest consumer** of that org.
+
+**So the operator-stated premise this audit was built on was wrong, and in the expensive direction.**
+Greptile is not an unpaid tool mysteriously working for free; it is a **paid, uncapped** tool whose
+largest consumer is the repo whose escalation chain routes 53% of PRs to it. The 130 reviews the
+GitHub census measured were billed — roughly 80 of them as flex overage.
+
+**This has a direct consequence for our own tooling.** `greptile-budget.sh` defaults to 40/day,
+which this audit previously called "a deliberate runaway bound." Against an uncapped vendor account
+that permits **1,200 reviews/month ≈ $1,150 of flex** — it bounds *triggers*, not *dollars*, and
+must not be described as a cost control. The only real spend control is the vendor-side **Flex Usage
+Limit**, currently unset. Setting it is the highest-value single action available, because it fails
+at the vendor rather than mid-workflow, where a stranded PR is the failure mode.
+
+### Item 3 (round 1, superseded) — the wrong account was read
 
 The session inspected the **`localmovers-com`** Greptile org and found it **canceled — Free tier,
 $0, last invoice $0, 8 reviews this month**, with auto-review **off** and reviews gated to PRs
@@ -114,15 +139,9 @@ labelled `greptile`.
 3. Our 130 reviews came from **132 explicit `@greptileai` commands**, which bypass auto-review and
    label gating entirely.
 
-So the 130-vs-8 gap is not a measurement error in either source — they are **different accounts**.
-The GitHub-side evidence stands: 130 reviews really happened on this repo. What remains unknown is
-**which Greptile installation served them and what it bills**, which is the same question this audit
-opened, now narrowed to a findable target: the installation covering `auerbachb/*`.
-
-Worth noting for whoever closes it: Greptile Free is **50 credits/month for one author**. This repo
-alone consumed ~130 reviews in 30 days. If those ran on a free tier, the tier was exceeded ~2.6×;
-if on Pro, ~130 reviews is about **$110/mo** ($30/seat + 80 overage credits at $1). Neither
-possibility is "free and fine," so this stays the highest-value open question.
+So the 130-vs-8 gap was never a measurement error in either source — they are **different
+accounts**, and round 2 confirmed it: the `auerbachb` org, on paid Pro, is the one that served them.
+The estimate offered here at the time (~$110/mo on Pro) proved close to the billed reality.
 
 ### CodeRabbit: the cap model in this audit was wrong
 

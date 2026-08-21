@@ -14,7 +14,7 @@ script may gate on, escalate to, or trigger a tool absent from this table.
 | CodeRabbit | `coderabbitai[bot]` | **Primary finder** | No — it never issues `APPROVED` | Pro, 3/3 seats, $90/mo (#1204), and *underused*: 22% of PRs reviewed, 68% of reviews blocked by a **5/hr per-developer** burst limit, 87.4h average wait. Two priced fixes exist; collecting what we already pay for is the cheapest lever. |
 | CodeAnt | `codeant-ai[bot]` | **Primary approver** (co-primary on the CR path) | **Yes** — sole source of `APPROVED` | Premium, 2/2 seats, ~$48/mo (#1204). Load-bearing: 360 approvals on 184 PRs, and the gate has no other approver, so a lapse here is a full stop. The commit-author identity holds no seat — a **$0** fix. |
 | BugBot (Cursor) | `cursor[bot]` | **First fallback** | Yes, on the BugBot path | **The stack's largest cost line** (#1204): ~$1.58/review on-demand, $815.58 in one cycle against a $1,000 cap it has exhausted — which is why it refused 64% of PRs. Strong yield (29 sole-source PRs), but the spend is a scope problem before it is a cap problem. |
-| Greptile | `greptile-apps[bot]` | **Second fallback — retained, budget-bounded (40/day)** | Yes, on the Greptile path | **Still unreconciled after #1204** — the dashboard session read an org that does not serve this repo. It carried 53% of PRs and 41 sole-source findings with zero refusals. Retained because dropping it strands those PRs; the 40/day ceiling is reaffirmed as a runaway bound, having been overrun once (46 triggers on 2026-08-07). |
+| Greptile | `greptile-apps[bot]` | **Second fallback — retained, spend-capped at the vendor** | Yes, on the Greptile path | **Paid Pro on the `auerbachb` org, with flex overage UNCAPPED** (#1204 round 2): ~$36–72/mo billed, 42 of 92 credits already on flex 15 days in, and this repo is the org's largest lifetime consumer (212 reviews). Earns its keep on yield — 41 sole-source PRs, more than any other tool — but the spend is real and currently unbounded. |
 | Graphite | `graphite-app[bot]` | **Supplemental — paid, under re-measurement** | **No** | Newly paid, and measured almost entirely *before* the payment: 1 sole-source PR in 244. Promotion is deferred to evidence, not price. |
 
 **Authoritative chain order** — unchanged in shape, corrected in its assumptions:
@@ -42,12 +42,17 @@ GitHub:  CodeRabbit  ─┐
 2. **A BugBot spend refusal is terminal for that HEAD.** Once `cursor[bot]` has posted a usage-limit
    refusal postdating the HEAD commit, further `@cursor review` nudges cannot succeed and are
    suppressed until the next push. Enforced in `maybe-trigger-ai-review.sh`.
-3. **Greptile's daily budget is a cost circuit-breaker whose trip is a dead end.** It stays at
-   **40/day** — deliberately reaffirmed, not lowered. Demand is spiky (134 triggers on 13 active
-   days; **46 on 2026-08-07**, which overran the ceiling), and exhaustion drops the PR to
-   self-review, which never satisfies the gate. Lowering the number would strand PRs rather than
-   bound cost; raising it would remove the only bound on a runaway escalation loop. Hitting it is a
-   **signal to the operator**, not a routine fallback. `greptile-budget.sh` is unchanged.
+3. **`greptile-budget.sh` bounds triggers, not dollars — the cost control belongs at the vendor.**
+   This was previously called a "cost circuit-breaker." It is not one. Its 40/day default permits
+   **1,200 reviews/month against an uncapped flex account ≈ $1,150** at $1/credit, so it can only
+   ever stop a runaway *loop*, never bound *spend*. It stays at 40/day for exactly that job:
+   demand is spiky (134 triggers on 13 active days, **46 on 2026-08-07**), and lowering it would
+   strand PRs on self-review — which never satisfies the gate — rather than save money.
+
+   **The real control is the vendor-side Flex Usage Limit, currently unset.** A cap there fails at
+   the vendor, where the consequence is a refused review; a cap here fails mid-workflow, where the
+   consequence is a PR that can never merge. Set the vendor cap; keep this one as a loop bound and
+   stop describing it as a budget.
 
 ### Repo variance
 
@@ -137,11 +142,23 @@ in the audit's §Dashboard reconciliation. Three things it changed here:
    a cost one — **36% of blocked PRs merged unreviewed**, meaning something satisfied the gate in
    CodeRabbit's absence on a third of them. On the CR path the only other approver is CodeAnt, whose
    approvals frequently carry no substantive footprint at all.
-3. **Greptile is still unreconciled.** The session read the `localmovers-com` org, which does not
-   serve this repo — absent from its repo list, no `greptile` label on our PRs, and our reviews came
-   from explicit commands that bypass both gates. Its role stays "retained, budget-bounded" because
-   the question that would change it remains open, now narrowed to the installation covering
-   `auerbachb/*`.
+3. **Greptile is resolved, and the founding premise of this audit was wrong.** Round 2 found a
+   second Greptile org on the `auerbachb` account: **paid Pro, flex overage uncapped**, with
+   `claude-code-config` as its largest lifetime consumer (212 reviews). "Deliberately unpaid" was
+   never true for the account that serves this repo. The role is unchanged — it still earns its keep
+   on 41 sole-source PRs — but its rationale is now *cost-aware* rather than *cost-unknown*, and the
+   uncapped flex is the exposure to close.
+
+4. **CodeAnt's hollow approvals have a cause: `Auto Approve PR` is ON at the org level.** That is why
+   PR #1203 collected `APPROVED` on four consecutive SHAs with no substantive footprint, each one
+   correctly discarded by the #875 guard. Turning it off removes the noise at the source rather than
+   filtering it at the gate.
+
+5. **Graphite's re-measure trigger is already met.** The paid Team plan started 7 Aug 2026 and 112
+   PRs were reviewed in the following four weeks, so the "≥30 PRs under the paid plan" condition is
+   satisfied and its role can be re-decided on paid evidence. Note its billing shape: AI review
+   volume is unmetered, but **committers who receive only AI reviews are billed as seats**, so the
+   "All committers in selected repositories" setting is the cost lever, not the review count.
 
 ## Operator actions this decision depends on
 

@@ -4,9 +4,9 @@
 > **Ask first:** Never — fix findings autonomously.
 > **Never:** Trigger Greptile before both CR AND BugBot have failed. Ignore Greptile findings. Switch a PR back to CR/BugBot after Greptile has been triggered. Include `@greptileai` in reply comments (triggers a re-review with no learning benefit). Treat `budget_exhausted` as a routine fallback — self-review never satisfies the gate, so surface it.
 
-Greptile is the second fallback — only after both CR and BugBot fail (chain + supplemental CodeAnt/Graphite: `cr-github-review.md` §Three-Tier). **Not a rare emergency:** it carried 53% of PRs and the most sole-source findings (#1199), on unreconciled billing. Role + cost: `.claude/reference/ai-review-chain-roles-decision.md`.
+Greptile is the second fallback — only after both CR and BugBot fail (chain + supplemental CodeAnt/Graphite: `cr-github-review.md` §Three-Tier). **Not a rare emergency, and not free:** it carried 53% of PRs and the most sole-source findings (#1199) on a paid Pro org whose overage is uncapped (#1204). Role + cost: `.claude/reference/ai-review-chain-roles-decision.md`.
 
-**Escalation gate:** `cr-github-review.md` owns triggers/STOP conditions; this file defines Greptile behavior after `escalate-review.sh` returns `STATUS=trigger_greptile`.
+**Escalation gate:** `cr-github-review.md` owns triggers/STOP conditions; this file covers behavior after `escalate-review.sh` returns `STATUS=trigger_greptile`.
 
 ## Greptile Basics
 
@@ -14,7 +14,7 @@ Bot: `greptile-apps[bot]`. Trigger: `@greptileai` PR comment. Auto-trigger OFF. 
 
 ## Daily Budget
 
-Default: **40/day** (`session-state.json`) — a deliberate runaway bound, overrun once (46 triggers, 2026-08-07). Every `@greptileai` trigger MUST run `greptile-budget.sh --consume` first (exit 0 = consumed, exit 1 = exhausted). If exhausted: self-review, which never satisfies the gate.
+Default: **40/day** (`session-state.json`) — a runaway-*loop* bound, **not** a spend cap; the real cap is vendor-side. Every `@greptileai` trigger MUST run `greptile-budget.sh --consume` first (exit 0 = consumed, exit 1 = exhausted). If exhausted: self-review, which never satisfies the gate.
 
 ## Before EVERY `@greptileai` Re-Trigger (MANDATORY — after initial trigger)
 
@@ -27,7 +27,7 @@ Default: **40/day** (`session-state.json`) — a deliberate runaway bound, overr
 
 ## Sticky Assignment
 
-Once triggered, Greptile owns the PR permanently (`cr-github-review.md`) — sticky on *history*, so any PR it has ever posted on stays here. Re-trigger only for P0. Severity-gate conditions and zero-P0 round reuse: `.claude/reference/merge-gate-reviewer-paths.md` (canonical: `cr-merge-gate.md` Step 1). A classified BugBot failure (`bugbot.md`) routes `escalate-review.sh` straight here.
+Once triggered, Greptile owns the PR permanently (`cr-github-review.md`) — sticky on *history*. Re-trigger only for P0. Severity-gate conditions and zero-P0 round reuse: `.claude/reference/merge-gate-reviewer-paths.md` (canonical: `cr-merge-gate.md` Step 1). A classified BugBot failure (`bugbot.md`) routes `escalate-review.sh` straight here.
 
 ## Polling for Greptile Response
 

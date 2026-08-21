@@ -102,9 +102,121 @@ Deliberately out of scope per issue #1204 — newly paid, and the audit measured
 | CodeAnt | Premium, 2/2 seats active | Yes (~$48/mo) | Commit-author email holds no seat | Fix global git `user.email` (Path B, $0) |
 | CodeRabbit | Pro, 3/3 seats, $90/mo, renews 27 Aug | Yes ($90/mo) | Per-developer hourly limit (5/hr); 196 of 290 blocked | $0.25/file overflow, or Pro Plus (+~$54–72/mo) |
 
-## Still open after this session
+## Round 2 — the five follow-ups, answered (2026-08-21 afternoon)
 
-1. **Which Greptile installation serves `auerbachb/*`, and what does it bill?** The org read here does not cover this repo. Highest-value remaining unknown.
-2. **BugBot attribution** — `github_bugbot` line vs. operator's IDE-usage account. Support ticket.
-3. **CodeAnt org-defaults page** — hung twice, never read.
-4. **CodeRabbit overflow-vs-Pro-Plus decision**, and whether `paulkathat-lmc` should hold a seat.
+Same session posture: read-only, nothing changed on any dashboard. **All five open items resolved.**
+The Greptile answer overturns Round 1 rather than extending it.
+
+### 1. Greptile — the installation serving `auerbachb/*` is a SECOND org, and it is PAID
+
+Sources: `github.com/settings/installations/117638123`; `app.greptile.com/auerbachb/-/settings/{billing,usage,review,manage-repos}`.
+
+- "Greptile Apps" is installed on the **`auerbachb` personal account** with access to **All
+  repositories**. LocalMovers has a separate installation. Round 1 read the wrong org.
+- The `auerbachb` Greptile org is **Pro, Active**. Invoice 6 Aug – 6 Sep 2026: 1 seat $30 (**$15**
+  after discount), **Flex Usage 42 credits $42 (**$21** after discount)**, total **$72 → $36**.
+- **Flex Usage Limit: "No cap on flex usage."** Overage is $1/credit and **unbounded by default**.
+- Usage 15 days into the cycle: **92 reviews / 92 credits**, all by `auerbachb` — **50 included +
+  42 flex**. Run-rate ~6/day → ~180 credits/month ≈ $30 seat + ~$130 flex at list.
+- Lifetime reviews by repo (64 repos enabled): **claude-code-config 212** — the top consumer —
+  then skingod 172, inventory 30, longlove 6, still-point 5, cursor-code-config 2.
+- Settings: auto-review on new commits **OFF**, drafts OFF, file limit 100, label filter includes
+  `greptile`, **Use Status Checks ON** (differs from localmovers), status comments OFF, auto-approve
+  OFF. Consistent with the audit's "0 auto-triggers": every review came from an explicit
+  `@greptileai` mention, which bypasses the label gate and costs 1 credit.
+
+**Bottom line: the 130 reviews/month are real and are being billed**, on an org with no spend cap.
+`$0/canceled/Free` described localmovers-com only.
+
+### 2. CodeAnt `Auto Approve PR` — **ON** at the org level
+
+Source: `app.codeant.ai/auerbachb/settings/prconfsettings` → organization defaults (loaded on the third attempt).
+
+Org defaults every repo inherits: Process PR Review On · PR Size Labels On · Ticket Compliance On ·
+Live Secret Validation On · Incremental PR Review Threshold Default · PR Description "Update
+Description" · PR Feedback "As a Comment" · **Draft PR Analysis Off** · Sequence Diagram On · Fix in
+IDE Off · **Auto Approve PR ON** · Auto Resolve Suggestions Off · **Suggestion Threshold Minor**
+(the chattiest setting) · AI Code Suggestions Committable · Exclude Bot Comments from DORA Off.
+
+**This confirms the hypothesis exactly.** CodeAnt approves org-wide by default, which is why PR
+#1203 collected `APPROVED` on four consecutive SHAs with no substantive findings. Turning **Auto
+Approve PR → Off** stops the manufactured approvals, and the #875 guard then has nothing to discard.
+
+The "AI credits $0.00" block is a prepaid balance for metered features; reviews are unlimited on
+Premium, so there is no overage exposure.
+
+### 3. Graphite — Team annual, started **7 Aug 2026**
+
+Sources: `app.graphite.com/settings/billing?org=auerbachb`, usage-history modal, `/ai-reviews?org=auerbachb`.
+
+- **Team plan, Active, annual.** "Annual subscription renews: August 7, 2027" → the paid plan
+  **started 7 Aug 2026**. List price **$40/user/month billed annually** ($480/yr). **1 billable
+  user** this cycle; seat true-up 7 Sep 2026.
+- Billing shape: AI review volume is **not metered** (Team = unlimited AI reviews), but
+  "**committers with only AI reviews are billed separately**" — anyone whose PRs get reviewed
+  becomes a billable seat. With PR authors set to **All committers in selected repositories** across
+  **13 repos** and no PR filter, each additional committer is a potential $40/mo seat. Draft PRs ON.
+- Last 4 weeks: **112 PRs reviewed, 18 issues found, 9 accepted (50% acceptance), 0% downvote.**
+- **The re-measure trigger is already met.** ≥30 PRs have merged under the paid plan (7–21 Aug alone
+  clears it at this rate), so Graphite's role can be re-decided on paid-plan evidence now.
+- Other orgs: LocalMovers-dot-com — "subscription has expired"; faculoyarte; rakibulislam.
+
+### 4. BugBot attribution — **it really is BugBot**; no support ticket needed
+
+Sources: `cursor.com/automations/from-cursor/bugbot/analytics` (23 Jul – 21 Aug); `/dashboard/usage` 30-day event log.
+
+- Analytics: **763 runs across 324 PRs**, 1 user, 488 issues evaluated, 89.8% resolved, **299 autofix
+  runs / 0 merged**. The table lists repo + PR per run — e.g. `claude-code-config #883` (16/18),
+  `inventory #271` (30/36), `skingod #2529` — 152 rows over 31 pages.
+- On-demand event log for model `github_bugbot`: discrete events 1–3 minutes apart (e.g. 3 Aug
+  21:55–22:26 UTC: $0.48, $3.68, $1.94, $0.53, $0.62, $0.60, $0.90, $0.54, $0.79, $0.59, $1.47,
+  $0.68) — the cadence of a bot re-reviewing every push. IDE usage appears under different models
+  (`cursor-grok-4.5-high-fast`, `composer-2.5-fast`, and `claude-sonnet-5-thinking-high` at $184.29).
+- Reconciliation: 516 billed on-demand events ≤ 763 total runs; the remainder were absorbed by the
+  $400 included Other-Models bucket before it hit 100%. ~$1.58/run, range $0.48–$3.68.
+- **The $815.58 is BugBot.** Drivers: Every Push × Effort High × Draft PRs On × Incremental Off ×
+  Autofix On (0 of 299 merged).
+
+### 5. CodeRabbit — per-developer limits, plus a weekly fair-use cliff
+
+Sources: `app.coderabbit.ai/organization/settings/review/auto-review` (All Settings view), `/general`; `docs.coderabbit.ai/management/plans`.
+
+Auto review at org level: **Automatic review ON** · **Incremental review ON** ("re-run the review on
+each push") · Auto pause after 5 reviewed commits · **Drafts OFF** · no title-keyword ignore, no
+label gate, no extra base branches, no description keyword · **Profile Assertive** · free tier ON ·
+early access OFF.
+
+- **Scope: enforced per developer** — the PR author — on rolling windows. Not per repo, not per org.
+  Pro 5 reviews/hour, Pro+ 10, Enterprise 12. Files per review: 150 (Pro), 300 (Pro+).
+- **Fair Usage cliff:** at the 95th percentile of recent usage, reviews are "gradually spaced out";
+  **Pro drops to 1 review/hour after 60+ reviews in a week** (Pro+ after 90+). faculoyarte (~40/wk)
+  and auerbachb (~28/wk) sit under it on average, but a stacked-PR week crosses 60 and throttles
+  that author to 1/hr — which is what the 87.4h average wait and 68% blocked rate look like.
+- **Adding seats does nothing unless PRs are authored by different GitHub users.** Every PR in this
+  repo is authored by one identity, so all demand funnels through one developer's 5/hr limit.
+- Levers, cheapest first: Incremental review **OFF** (one review per PR instead of per push) ·
+  Profile → `chill` · enable the $0.25/file overflow · Pro+ (+$24/seat/mo; doubles the hourly cap and
+  raises the weekly threshold to 90).
+
+### What round 2 changed
+
+| Item | Round 1 | Round 2 |
+|---|---|---|
+| Greptile cost | $0, canceled (wrong org) | **Pro, Active, ~$36–72/mo, uncapped $1/credit flex; this repo is its top consumer (212 lifetime)** |
+| CodeAnt approvals | cause unknown | **Org default `Auto Approve PR` = ON** |
+| Graphite | out of scope | **Team annual from 7 Aug 2026, $40/user/mo, 1 billable user; re-measure threshold already met** |
+| BugBot $815.58 | attribution disputed | **Confirmed BugBot** — 763 runs, 324 PRs, per-PR rows |
+| CodeRabbit limits | partially read | **Per-developer; Incremental ON; fair-use cliff 60/wk → 1/hr** |
+
+## Still open after both rounds
+
+All five factual questions are answered. What remains are **decisions**, not readings:
+
+1. **Set Greptile's Flex Usage Limit.** It is currently "no cap," and this is the only true spend
+   control on that account — the agent-side `greptile-budget.sh` bounds triggers, not dollars.
+2. **Turn CodeAnt's org `Auto Approve PR` off**, ending the manufactured approvals.
+3. **Cut BugBot's scope** — Every Push → per PR, Incremental → On, Drafts → Off, Effort → Medium,
+   Autofix → Off (0 of 299 merged). No purchase required.
+4. **Choose a CodeRabbit lever** — Incremental review Off is free and the largest single reducer;
+   $0.25/file overflow and Pro+ both cost money.
+5. **Re-decide Graphite's role** on paid-plan evidence, now that the ≥30-PR threshold is met.
