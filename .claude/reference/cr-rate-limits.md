@@ -2,8 +2,12 @@
 
 Full detail extracted from `.claude/rules/cr-github-review.md` (the rule file keeps a summary + pointer to here). Loaded on demand, not every turn.
 
-**Cap:** ~**8** GitHub PR reviews/hour + **50** chats/hour (tier variance — plan on **8**). One commit per fix batch before push. Max **2** explicit `@coderabbitai full review`/PR/hour (rolling 3600s); surface user at **2nd** recorded trigger.
+**Real cap (measured, issue #1199):** a **rolling 7-day included-review allowance**, not an hourly one. When it is reached CodeRabbit posts a `Review limit reached` banner citing its Fair Usage Limits Policy and **names its own retry window** ("Next review available in: N minutes"). Observed on **223 of 244 PRs** in the 2026-07-22 → 2026-08-21 window; on **183** of those the banner was CodeRabbit's only output, because nothing waited out the stated window. Evidence: `ai-review-tool-audit-2026-08.md`.
 
-**State:** `cr_hourly.events` (push consumption), `.prs[N].cr_explicit_triggers` (manual). Script `.claude/scripts/cr-review-hourly.sh`: `--check`, `--consume`, `--record-explicit N` (stderr SURFACE if ≥2); prune rolling hour; default budget **8** (`CR_HOURLY_BUDGET` = tests only).
+**Honour the stated window.** A banner naming a retry window is a bounded, self-healing wait — `escalate-review.sh` keeps emitting `polling_cr` until it elapses instead of escalating past the paid primary. Once elapsed with no review, escalation proceeds unchanged. A banner with no readable window escalates immediately, as before.
 
-**Cooldown / exhausted:** `cr-local-review.md` first; wait for window expiry (~≤60m) or escalation gate → BugBot → Greptile → self-review (`bugbot.md`, `greptile.md`). Parallel PRs: stagger (~3–4 CR-triggering pushes/hour).
+**Local pacing proxy — not CodeRabbit's meter.** `cr_hourly` tracks ~**8** reviews/hour with a rolling 3600s window (`.claude/scripts/cr-review-hourly.sh`: `--check`, `--consume`, `--record-explicit N`; default budget **8**, `CR_HOURLY_BUDGET` = tests only; state in `cr_hourly.events` and `.prs[N].cr_explicit_triggers`). Treat it as **our** self-pacing budget, deliberately kept because an hourly counter cannot model a 7-day allowance and a smaller wrong-shaped number would not predict a lockout either (`ai-review-chain-roles-decision.md` §Explicitly rejected). It never predicts a CodeRabbit lockout — only the banner does. Max **2** explicit `@coderabbitai full review`/PR/hour; surface user at the **2nd** recorded trigger. One commit per fix batch before push. Also ~**50** chats/hour.
+
+**Cooldown / exhausted:** `cr-local-review.md` first; wait out the banner's window, then the escalation gate → BugBot → Greptile → self-review (`bugbot.md`, `greptile.md`). Parallel PRs: stagger (~3–4 CR-triggering pushes/hour).
+
+**CLI layer is separate.** The CodeRabbit CLI has its own quota — on a public repo, roughly 3 free-OSS reviews before a ~40-minute lockout — independent of the GitHub App's allowance (`feedback_cr_cli_free_oss_tier_cap.md`, `local-review-cli-failure-modes.md`). Neither exhausting the other.

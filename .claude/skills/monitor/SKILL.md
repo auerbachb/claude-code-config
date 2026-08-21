@@ -288,7 +288,7 @@ When a PR already has bot findings (unresolved review threads: `jq '.threads.unr
 ```
 Fix every bot finding on PR #<N>:
 1. Verify each finding against the actual code (CR labels duplicates — a "duplicate" is NOT resolved).
-2. Fix all valid findings in ONE commit; push once (batch — don't push per finding; CR caps ~8 reviews/hour).
+2. Fix all valid findings in ONE commit; push once (batch — don't push per finding; every push spends CodeRabbit's included-review allowance, `.claude/reference/cr-rate-limits.md`).
 3. Reply to every thread with what changed ("Fixed in <sha>: …"). Plain text — do NOT include @cursor in replies.
 4. Resolve each thread via GraphQL (resolveReviewThread); replies alone don't resolve.
 5. Manually mark Resolved any thread GitHub didn't auto-resolve when the line changed.

@@ -12,6 +12,10 @@
 # issue, kept anyway (cheap, self-healing). See
 # .claude/reference/codeant-graphite-supplemental.md.
 #
+# BugBot spend-refusal suppression (issue #1199): the `@cursor review` nudge is
+# SKIPPED when cursor[bot] has already refused THIS HEAD for a Cursor usage/spend
+# limit. Fails open — see bugbot_refused_head() below.
+#
 # Config: `.claude/pm-config.md` section **Complexity triggers** (see template in repo).
 # Env vars COMPLEXITY_THRESHOLD_SCORE, COMPLEXITY_FIRST_CR_ROUND, COMPLEXITY_CADENCE_ROUNDS
 # override file values when set.
@@ -29,6 +33,21 @@ STATE_HELPER="${SCRIPT_DIR}/session-state.sh"
 CYCLE_SCRIPT="${SCRIPT_DIR}/cycle-count.sh"
 COMPLEXITY_SCRIPT="${SCRIPT_DIR}/complexity-score.sh"
 STATE_FILE="${HOME}/.claude/session-state.json"
+
+# Shared timestamp normaliser (issue #885) — the one canonical bash form of the
+# #836 ordering rule, used by bugbot_refused_head() below. Loaded DEFENSIVELY,
+# not as a hard dependency: this script's job is posting three review nudges, and
+# a missing library must not stop the other two. A failure disables only the
+# BugBot suppression, restoring the pre-#1199 always-nudge behaviour, and says so
+# on stderr rather than degrading silently.
+TS_NORMALIZER_LIB="${SCRIPT_DIR}/lib/ts-normalizer.sh"
+TS_NORMALIZER_LOADED=""
+# shellcheck source=./lib/ts-normalizer.sh
+if [[ -r "$TS_NORMALIZER_LIB" ]] && source "$TS_NORMALIZER_LIB"; then
+  TS_NORMALIZER_LOADED=1
+else
+  echo "maybe-trigger-ai-review.sh: could not load $TS_NORMALIZER_LIB — BugBot spend-refusal suppression disabled; @cursor review nudges post as before" >&2
+fi
 
 help() {
   sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
@@ -331,8 +350,56 @@ post_one() {
   fi
 }
 
+# BugBot spend-refusal suppression (issue #1199). BugBot is metered against a
+# Cursor usage/spend limit, and it refused 64% of PRs in the 2026-08 audit window
+# while this script kept nudging: 469 `@cursor review` comments across 244 PRs.
+# A nudge cannot clear a usage limit. Once cursor[bot] has refused on THIS HEAD,
+# every later nudge on the same HEAD is PR noise, so skip it — the next push is a
+# new HEAD and starts clean, so this suppresses repetition, never the tool.
+#
+# FAILS OPEN in every uncertain case (unreadable comments, missing HEAD
+# timestamp, malformed JSON): post the nudge. bugbot.md calls a duplicate
+# `@cursor review` harmless, whereas a wrongly-suppressed nudge costs a whole
+# review — the same cost asymmetry escalate-review.sh applies to this tool
+# (issue #956). Returns 0 ONLY on a positively-identified refusal.
+#
+# Timestamps are ordered with norm_ts() from lib/ts-normalizer.sh — the one
+# canonical bash form of the #836/#885 rule — rather than a new jq mirror, so
+# this file adds no second definition to keep in step.
+bugbot_refused_head() {
+  local head_ts comments refusal_ts
+  [[ -n "${TS_NORMALIZER_LOADED:-}" ]] || return 1
+  head_ts="$(gh api "repos/{owner}/{repo}/commits/$HEAD_SHA" --jq '.commit.committer.date // empty' 2>/dev/null)" || return 1
+  [[ -n "$head_ts" ]] || return 1
+  comments="$(gh api --paginate "repos/{owner}/{repo}/issues/$PR_NUM/comments?per_page=100" 2>/dev/null | jq -s 'add // []' 2>/dev/null)" || return 1
+  [[ -n "$comments" ]] || return 1
+  # Newest cursor[bot] refusal, raw. Phrase set matches escalate-review.sh's
+  # is_failure_text so the two agree on what a refusal looks like.
+  refusal_ts="$(jq -r '
+    [ .[]?
+      | select((.user.login // "") == "cursor[bot]")
+      | select((.body // "") | test("couldn.t run|could not run|usage limit|usage or spend limit"; "i"))
+      | (.created_at // "")
+      | select(. != "") ]
+    | sort | last // ""
+  ' <<<"$comments" 2>/dev/null)" || return 1
+  [[ -n "$refusal_ts" ]] || return 1
+  # Only a refusal at or after the HEAD commit describes this push.
+  [[ ! "$(norm_ts "$refusal_ts")" < "$(norm_ts "$head_ts")" ]]
+}
+
 if ! post_one codeant "@codeant-ai review"; then echo "maybe-trigger-ai-review.sh: failed posting @codeant-ai review" >&2; exit 5; fi
-if ! post_one cursor "@cursor review"; then echo "maybe-trigger-ai-review.sh: failed posting @cursor review" >&2; exit 5; fi
+if bugbot_refused_head; then
+  # Mark the step handled rather than leaving it false. A run that completes
+  # clears the whole record (`ai_review_trigger_steps=null` below), but a run
+  # that fails at a LATER step leaves it in place — and steps_incomplete() reads
+  # a false `cursor` as "resume this trigger", so the retry would post the very
+  # nudge we just decided cannot succeed. Suppressed IS complete for this HEAD.
+  echo "maybe-trigger-ai-review.sh: skipping @cursor review — BugBot already refused this HEAD for a Cursor usage/spend limit (#1199)" >&2
+  if ! "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps[\"cursor\"]=true"; then
+    echo "maybe-trigger-ai-review.sh: failed to record the suppressed cursor step — may re-check on retry" >&2
+  fi
+elif ! post_one cursor "@cursor review"; then echo "maybe-trigger-ai-review.sh: failed posting @cursor review" >&2; exit 5; fi
 if ! post_one graphite "@graphite-app re-review"; then echo "maybe-trigger-ai-review.sh: failed posting @graphite-app re-review" >&2; exit 5; fi
 if (( ENABLE_PR_REVIEW_HELP )); then
   if ! post_one pr_help "/pr-review-help #$PR_NUM"; then echo "maybe-trigger-ai-review.sh: failed posting /pr-review-help" >&2; exit 5; fi

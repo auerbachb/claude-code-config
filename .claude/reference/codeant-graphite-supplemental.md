@@ -4,11 +4,11 @@ Full detail extracted from `.claude/rules/cr-github-review.md`. Parallel supplem
 
 > **Always:** When CodeAnt or Graphite is enabled, poll `codeant-ai[bot]` and `graphite-app[bot]` on the same three PR endpoints as CodeRabbit; clear threads and blocking CI like other bots.
 > **Ask first:** Merging — always ask the user.
-> **Never:** Treat Graphite as a merge-gate tier until it posts reliably; avoid spamming `@codeant-ai` / `@graphite-app`.
+> **Never:** Treat Graphite as a merge-gate tier until it clears the promotion bar in `ai-review-chain-roles-decision.md`; avoid spamming `@codeant-ai` / `@graphite-app`.
 
 **CodeAnt (CR path):** If CodeAnt participated on current HEAD (comments or CodeAnt check-run), `merge-gate.sh` needs a clean signal per `cr-merge-gate.md`. Use `@codeant-ai review` to nudge.
 
-**Graphite:** Poll like other bots; not a merge-gate tier until reliable. If silent: check [Graphite app](https://github.com/apps/graphite-app) access, AI review toggle, workspace link, limits; try `@graphite-app re-review` on a test PR.
+**Graphite:** Poll like other bots; supplemental, never gating — the blocker is **yield, not reliability** (see §Paid status below). If silent: check [Graphite app](https://github.com/apps/graphite-app) access, AI review toggle, workspace link, limits; try `@graphite-app re-review` on a test PR.
 
 CodeAnt and Graphite are parallel supplements; the primary chain stays CR → BugBot → Greptile.
 
@@ -23,6 +23,31 @@ CodeAnt and Graphite are parallel supplements; the primary chain stays CR → Bu
 **Diagnostic method for future re-checks:** don't rely on comment/review absence alone — a silent-but-installed app and a fully-uninstalled app both show zero comments. Check for the `Graphite / AI Reviews` check-run on the PR's HEAD commit (`gh api repos/{owner}/{repo}/commits/{sha}/check-runs --jq '.check_runs[] | select(.app.slug=="graphite-app")'`); its presence (even with a "nothing to report" conclusion) means the app is alive, and its total absence across several consecutive triggered PRs is the reliable signal of an outage.
 
 **Status update (2026-08-07):** Issue #614 was closed and Graphite is active again. PR #1104 (merged 2026-08-07) shows `graphite-app[bot]` posting a `COMMENTED` review and a completed `Graphite / AI Reviews` check-run (`conclusion: success`) — the diagnostic method above is satisfied. The "confirmed non-functional" description above is now historical. The retained-trigger rationale (single uncapped comment, self-healing) remains valid and the trigger is still in place.
+
+## Graphite — Paid status and promotion bar (2026-08-21, issue #1199)
+
+**Graphite is now a paid plan, and it stays supplemental.** The 244-PR audit
+(`ai-review-tool-audit-2026-08.md`) measured it posting a `Graphite / AI Reviews` check-run that
+reaches `conclusion: success` on every PR spot-checked, while producing inline findings on **9 of
+244 PRs** and being the sole finding-provider on **1**. Reliability is no longer the question — the
+outage record above is closed and stays closed. Yield is.
+
+A check-run that concludes `success` almost independently of the code under review cannot gate a
+merge: accepting it would manufacture approvals, the hollow-approval shape issue #875 added the
+substance guard to reject. BugBot's silent pass (#844) is accepted because BugBot demonstrably
+reviews, so an absence of findings from it carries information; Graphite has not yet earned that
+inference.
+
+**Promotion bar (both required), re-checked at the next audit or once ≥30 PRs have merged under the
+paid plan, whichever comes first:** a sole-source contribution comparable to BugBot's, **and** a
+`conclusion` that demonstrably varies with the code. Nearly every PR in the measured window predates
+the paid plan, so this window says nothing about paid Graphite either way — which is why the role is
+deferred to evidence rather than decided on price. Rationale and the rejected promote-now option:
+`ai-review-chain-roles-decision.md`.
+
+**Not this Graphite:** the stacked-PR CLI (`gt`, `graphite-repo-init.sh`,
+`graphite-stacked-prs-research-2026-05.md`) is a different product from `graphite-app[bot]` the
+reviewer. Nothing in this section applies to it.
 
 ## CodeAnt Local CLI
 

@@ -4,7 +4,7 @@
 > **Ask first:** Never — review, fix, push, PR creation are automatic.
 > **Never:** Push before local review; treat local review as the merge gate; skip a healthy CLI because the other came back clean.
 
-Primary review workflow — catches issues before PR noise/quota; does not replace the GitHub merge gate.
+Primary review workflow — catches issues before PR noise/quota; does not replace the GitHub merge gate. CLI quotas are independent of the Apps' (`ai-review-chain-roles-decision.md` §Repo variance).
 
 ### Prerequisites
 

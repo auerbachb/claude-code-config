@@ -54,7 +54,7 @@ Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget
 
 ### Rate Limits & Behavior (Pro Tier)
 
-**Cap:** ~8 CR reviews/hour; max 2 explicit `@coderabbitai full review`/PR/hour (surface user at 2nd). On cooldown: local review first, then escalate. Tracking: `cr-review-hourly.sh`; details: `.claude/reference/cr-rate-limits.md`.
+**Cap:** a rolling **7-day** included-review allowance, not hourly — CodeRabbit's `Review limit reached` banner names its own retry window, and `escalate-review.sh` waits that window out before escalating. `cr_hourly` (~8/hr) is our local pacing proxy, never CodeRabbit's meter. Max 2 explicit `@coderabbitai full review`/PR/hour (surface user at 2nd). On cooldown: local review first, then escalate. Tracking: `cr-review-hourly.sh`; details: `.claude/reference/cr-rate-limits.md`.
 
 ### Polling
 
@@ -76,7 +76,7 @@ Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget
 
 ### Timeout & Fallback — Three-Tier Review Chain
 
-**Chain:** CR → BugBot → Greptile → self-review. **Supplemental (CR path):** CodeAnt + Graphite — `.claude/reference/codeant-graphite-supplemental.md`. **Sticky:** once a PR falls to BugBot or Greptile, it never moves back up the chain. **If all three fail:** self-review (does NOT satisfy gate); tell the user which fallback ran and why.
+**Chain:** CR → BugBot → Greptile → self-review. **Supplemental (CR path):** CodeAnt + Graphite — `.claude/reference/codeant-graphite-supplemental.md`. **Sticky:** once a PR falls to BugBot or Greptile, it never moves back up the chain. **If all three fail:** self-review (does NOT satisfy gate); tell the user which fallback ran and why. **Every tier is cap-degraded** — fall-through is the normal case, not an exception; roles and cost rationale: `.claude/reference/ai-review-chain-roles-decision.md`.
 
 ### Processing CR Feedback
 
