@@ -2,19 +2,19 @@
 
 > **Always:** Poll for BugBot reviews alongside CR after every push. Process findings same as CR/Greptile. Use BugBot as the first fallback when CR fails — before Greptile.
 > **Ask first:** Never — fix findings autonomously.
-> **Never:** Trigger Greptile before checking if BugBot already posted a review. Include `@cursor` in reply comments (may trigger a re-review). Ignore BugBot findings.
+> **Never:** Trigger Greptile before checking if BugBot already posted a review. Include `@cursor` in reply comments (may trigger a re-review). Ignore BugBot findings. Re-nudge `@cursor review` after a usage-limit refusal postdating HEAD.
 
 BugBot (Cursor, per-seat) is the **second-tier** reviewer in the escalation chain (`cr-github-review.md` §Three-Tier).
 
-**Always-trigger:** CI posts `@cursor review` via `CURSOR_REVIEW_PAT` PAT (`cursor-review-pr-comment.yml`); BugBot ignores bot-authored triggers; absent secret → no post, warns — see `feedback_bugbot_auto_trigger_unreliable.md`.
+**Trigger on push:** CI posts `@cursor review` via `CURSOR_REVIEW_PAT` PAT (`cursor-review-pr-comment.yml`); BugBot ignores bot-authored triggers; absent secret → no post, warns — see `feedback_bugbot_auto_trigger_unreliable.md`.
 
 **Escalation authority:** The numbered gate + STOP conditions live in `cr-github-review.md` ("Reviewer escalation gate"). Use `.claude/scripts/escalate-review.sh <PR_NUMBER>` for the per-cycle `STATUS=` verdict; this file only defines BugBot behavior after `STATUS=switch_bugbot`.
 
 ## BugBot Basics
 
 - **Bot username:** `cursor[bot]`
-- **Trigger:** `@cursor review` comment (`/fixpr` or CI when `CURSOR_REVIEW_PAT` set — duplicates OK).
-- **Cost:** Per-seat — safe to always-trigger.
+- **Trigger:** `@cursor review` comment (`/fixpr` or CI when `CURSOR_REVIEW_PAT` set — duplicates OK, but see §Re-Reviews).
+- **Cost:** **The stack's largest line** — ~$1.58/review on-demand, cap-exhausted, refusing 64% of PRs (#1204). One nudge per HEAD; after a usage-limit refusal there, `maybe-trigger-ai-review.sh` suppresses further nudges until the next push.
 - **Review time:** ~1–3 min. **No CLI** (GitHub-only).
 
 ## Polling for BugBot Reviews
@@ -45,4 +45,4 @@ Verify all findings against actual code. Fix all valid findings in one commit, p
 
 ## Re-Reviews
 
-After a fix push, CI posts `@cursor review` when `CURSOR_REVIEW_PAT` is set (BugBot doesn't auto-review pushes); if absent or stale, post it manually (duplicates OK).
+After a fix push, CI posts `@cursor review` when `CURSOR_REVIEW_PAT` is set (BugBot doesn't auto-review pushes); if absent, post it manually — but never on a HEAD BugBot already refused for usage, which no nudge can fix.

@@ -16,7 +16,9 @@
 #     STATUS=gate_met         CR-path primary review already satisfied (CodeRabbit or
 #                             CodeAnt has a valid APPROVED review on current HEAD) —
 #                             do not escalate; the merge gate will pick this up
-#     STATUS=polling_cr       keep polling CodeRabbit/BugBot grace window
+#     STATUS=polling_cr       keep polling CodeRabbit/BugBot grace window — including
+#                             while a CodeRabbit `Review limit reached` banner's own
+#                             stated retry window is still open (issue #1199)
 #     STATUS=switch_bugbot    BugBot has responded — OR BugBot was never invited
 #                             (no footprint on HEAD and no fresh `@cursor review`
 #                             trigger comment). Make BugBot the sticky reviewer;
@@ -553,6 +555,91 @@ fi
 if [[ "$BUGBOT_FAILED" != "true" && "$BUGBOT_GENUINE" != "true" \
       && "$BUGBOT_CHECK_PRESENT" != "true" && "$BUGBOT_TRIGGER_PRESENT" != "true" ]]; then
   emit "switch_bugbot"
+fi
+
+# CodeRabbit retry-window grace (issue #1199). CodeRabbit's `Review limit reached`
+# banner is a BOUNDED, self-healing wait, not a tier failure: it names its own
+# retry window ("**Next review available in:** **12 minutes**"). Escalating past
+# it spends a LOWER tier while the allowance we already paid for is still coming
+# back — measured on 183 of 244 PRs in the 2026-08 audit, where that banner was
+# CodeRabbit's ONLY output for the PR because nothing ever waited it out.
+# Evidence and role rationale: .claude/reference/ai-review-tool-audit-2026-08.md,
+# ai-review-chain-roles-decision.md.
+#
+# PLACEMENT: immediately before the Greptile budget check, and deliberately NOT
+# up beside the other CodeRabbit logic. Everything that can still emit above this
+# point is a BETTER answer than waiting — `switch_bugbot` for a BugBot that has
+# genuinely responded, and the free `@cursor review` route for one that was never
+# invited. Sitting higher would delay both by up to a full retry window for no
+# gain. By here the only remaining verdicts are `trigger_greptile` and
+# `budget_exhausted`, which is exactly what the wait is meant to displace.
+#
+# This block can only ADD `polling_cr`; it never causes an escalation that would
+# not otherwise happen. Every uncertain case therefore falls through to the
+# pre-#1199 conditional below unchanged: no banner, an unparseable banner
+# timestamp, no readable window, a banner predating the HEAD commit, or a CR
+# review already on HEAD. A wording change by CodeRabbit degrades this to
+# today's behaviour rather than stalling a PR.
+#
+# The honoured wait is CAPPED so a malformed or absurd window ("in 900 hours")
+# cannot park a PR: past the cap the PR escalates on the normal schedule.
+CR_RETRY_WINDOW_CAP_SECONDS=3600
+
+# Newest banner that BOTH matches the rate-limit text AND carries a readable
+# window. `window_seconds` emits `empty` when no window can be read, which drops
+# that comment from the array entirely — a banner we cannot time is the same as
+# no banner here. Asterisks are stripped first because the window is wrapped in
+# markdown emphasis in the live text.
+# WINDOW FIRST, ts second. `read` strips leading IFS whitespace — and a tab is
+# IFS whitespace even when IFS is set to just a tab — so a LEADING empty field
+# collapses and the next value slides into the first variable. The window always
+# has a value (0 when absent) while the ts may be empty, so putting the window
+# first makes the only possible empty field a TRAILING one, which `read` does
+# preserve.
+read -r CR_BANNER_WINDOW_S CR_BANNER_TS < <(jq -r --argjson cap "$CR_RETRY_WINDOW_CAP_SECONDS" '
+  def window_seconds:
+    # `capture` emits an EMPTY GENERATOR on no-match, not null — so binding it
+    # directly with `as` yields zero outputs and silently deletes the whole
+    # enclosing object, making any null-branch below unreachable. Collecting into
+    # an array first turns "no match" into a real null this code can act on.
+    ([ ascii_downcase | gsub("\\*"; "")
+       | capture("next review available in:?\\s*(?<n>[0-9]+)\\s*(?<unit>second|minute|hour)") ]
+     | first) as $m
+    | if $m == null then 0
+      else ($m.n | tonumber)
+           * (if $m.unit == "hour" then 3600 elif $m.unit == "minute" then 60 else 1 end)
+      end;
+  # NEWEST banner first, THEN read its window — never the reverse (CodeRabbit
+  # review, PR #1203). An unreadable window yields 0 rather than dropping the
+  # banner from the list, because dropping it would let an OLDER readable banner
+  # win the sort: a CodeRabbit wording change would then hand the PR a grace
+  # period computed from a stale window it had already served. With 0, the
+  # newest-banner-has-no-window case grants no grace at all, which is the
+  # fail-toward-escalation direction this block is built on.
+  [ .comments.conversation[]?
+    | select((.user.login // "") == "coderabbitai[bot]")
+    | select((.body // "") | test("review limit reached"; "i"))
+    | { ts: (.created_at // ""), w: ((.body // "") | window_seconds) }
+    | select(.ts != "") ]
+  | sort_by(.ts) | last // {ts: "", w: 0}
+  | [ (if .w > $cap then $cap else .w end), .ts ] | @tsv
+' "$STATE_PATH") || { CR_BANNER_WINDOW_S=0; CR_BANNER_TS=""; }
+
+# The ISO shape is checked before trusting the value: iso_age_seconds returns 0
+# for anything unparseable, and 0 would read here as "posted just now", i.e.
+# inside every window — turning a timestamp we cannot read into an indefinite
+# wait. Failing toward the existing escalation is the safe direction.
+if [[ -n "$CR_BANNER_TS" && "$CR_REVIEW_ON_HEAD" != "true" \
+      && "$CR_BANNER_WINDOW_S" =~ ^[0-9]+$ && "$CR_BANNER_WINDOW_S" -gt 0 \
+      && "$CR_BANNER_TS" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
+  CR_BANNER_AGE="$(iso_age_seconds "$CR_BANNER_TS")"
+  # Only a banner POSTDATING the HEAD commit describes this push; a leftover from
+  # an earlier SHA must not buy the current one a grace period. Both ages are
+  # measured from now by the same function, so "no older than the push" is
+  # age <= AGE_SECONDS.
+  if [[ "$CR_BANNER_AGE" -le "$AGE_SECONDS" && "$CR_BANNER_AGE" -lt "$CR_BANNER_WINDOW_S" ]]; then
+    emit "polling_cr"
+  fi
 fi
 
 BUDGET_CHECK_RC=0

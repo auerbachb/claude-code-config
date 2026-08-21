@@ -251,6 +251,27 @@ trigger_comment() {
   printf '{"user": {"login": "test-user"}, "created_at": "%s", "body": "@cursor review"}' "$1"
 }
 
+# CodeRabbit `Review limit reached` banner (issue #1199). Reproduces the live
+# shape: a blockquoted WARNING admonition whose retry window is wrapped in
+# markdown emphasis (`**Next review available in:** **12 minutes**`), which is
+# why the parser strips asterisks before matching. $1 = created_at, $2 = the
+# window text ("12 minutes"), or "" for a banner carrying no readable window.
+cr_limit_banner() {
+  local ts="$1" window="${2-}" tail=""
+  [[ -n "$window" ]] && tail=" **Next review available in:** **${window}**"
+  printf '{"user": {"login": "coderabbitai[bot]"}, "created_at": "%s", "body": "> [!WARNING]\\n> ## Review limit reached\\n> You have reached a temporary PR review limit under our Fair Usage Limits Policy.%s"}' "$ts" "$tail"
+}
+# Same banner text from a NON-CodeRabbit author — a quote or a human paraphrase
+# must not buy the PR a grace period.
+cr_limit_banner_foreign_author() {
+  printf '{"user": {"login": "test-user"}, "created_at": "%s", "body": "## Review limit reached **Next review available in:** **%s**"}' "$1" "$2"
+}
+# A CodeRabbit review object on the current HEAD — proves CR has already
+# answered, so there is nothing left to wait for.
+cr_review_on_head() {
+  printf '{"user": {"login": "coderabbitai[bot]"}, "commit_id": "%s", "state": "COMMENTED", "submitted_at": "%s"}' "$HEAD_SHA" "$1"
+}
+
 ESCALATE_SRC="$REPO_ROOT/.claude/scripts/escalate-review.sh"
 : "$ESCALATE_SRC"
 

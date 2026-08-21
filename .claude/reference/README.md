@@ -56,6 +56,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `pm-monitoring-decision.md` — `/pm` vs `/pr-monitor-and-manage` division of responsibility
 - `pm-output-templates.md` — presentation format templates for `/pm` Step 1B.5; extracted from `pm/SKILL.md` to reduce churn surface on formatting-only blocks
 - `continuous-work-posture.md` — why free capacity (not a finish) triggers refill, fill-vs-ramp, queue vs backlog refill, the human-in-chat stop, and the idle-reason taxonomy (`CLAUDE.md` "KEEP THE PIPELINE FULL"; #823)
+- `ai-review-chain-roles-decision.md` — decision record: primary/fallback/supplemental role per AI reviewer with cost rationale, the corrected cap assumptions, repo variance, and the Graphite-promotion and Greptile-at-zero options rejected on measured evidence (#1199)
 - `pm-handoff-chips-decision.md` — decision record: `/pm-handoff` intentionally does not offer task chips; its portable prompt text is the deliverable (#562)
 - `chip-model-guard-decision.md` — decision record: the chip model-guard preamble rides in both the chip `prompt` and the fallback block, redefining the fallback baseline (#601)
 - `model-fleet-drift-guard-decision.md` — decision record: build a generational deny-list lint (`model-drift-lint.sh`) that flags enumerated legacy model versions in live surfaces; fails open; auto-discovered by `run-doc-lints.sh` (#752)
@@ -85,6 +86,8 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `skill-repo-diff-2026-08.md` — August 2026 point-in-time survey of obra/superpowers @ `b36e0829` and affaan-m/everything-claude-code @ `569b1d5b` vs our repo; six-dimension gap analysis, prioritized backlog, and import log stub for second harvest cycle (#417)
 - `ai-review-tool-audit-2026-04.md` — AI review tool chain audit (#368 / #377)
 - `ai-review-tool-audit-2026-06.md` — 30-day AI review tool value audit + keep/cut verdicts (#376)
+- `ai-review-tool-audit-2026-08.md` — 244-PR/30-day subscription + cap reconciliation audit; billed-vs-observed state, refusal rates, and sole-source yield for all five reviewers (#1199)
+- `ai-review-billing-dashboard-2026-08.md` — primary-source dashboard readings for CodeRabbit, CodeAnt, Cursor/BugBot, and Greptile: plans, spend, caps, seat holders, and the volume-driving settings; nothing was changed while reading (#1204)
 - `pricing-matrix.md` — priced upgrade levers for all five review tools × CLI/App surfaces: public prices vs dashboard-billed state, marginal cost per review, which pool each price buys, and buy/don't-buy verdicts with break-even math (#1202)
 - `fixpr-hotspot-decision.md` — diagnosis and extract-not-split decision for `fixpr/SKILL.md` churn (17 PRs in the run-up to #788); verdict: KEEP single file + extract large command forms
 - `pr-state-hotspot-decision.md` — diagnosis and extract-not-split decision for `pr-state.sh` churn (Issue #980); verdict: KEEP the public CLI + extract two pure jq programs

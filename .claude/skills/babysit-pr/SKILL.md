@@ -523,7 +523,7 @@ if [[ -n "$GREPTILE_SH" ]]; then "$GREPTILE_SH" --check >/dev/null 2>&1 || GREP_
 
 - **CodeRabbit:** `cr-review-hourly.sh --check` exit `1` ⇒ `CR_BUDGET_OK=0` (hourly budget exhausted). `/babysit-pr` only consults `--check`, never consumes — `/fixpr`'s own `--record-explicit` enforces the ≤2/PR/hour cap atomically when it actually posts `@coderabbitai full review`.
 - **Greptile:** `greptile-budget.sh --check` exit `1` ⇒ `GREP_BUDGET_OK=0` (daily budget exhausted).
-- **BugBot (`@cursor review`):** per-seat, no per-call charge — always safe (`bugbot.md`). Never gate on it.
+- **BugBot (`@cursor review`):** per-seat and **spend-metered** (#1199), but with no budget helper to consult — so never gate the classifier on it. Its own refusal comment is the signal: do not re-nudge a HEAD BugBot already refused (`bugbot.md`).
 
 The classifier (T3) consumes `CR_BUDGET_OK` / `GREP_BUDGET_OK`: a PR whose only gap is a fresh review becomes `hard-blocked` (budget exhaustion) **only** when CR **and** Greptile are both exhausted and there is no other recoverable work; otherwise it stays `waiting-on-bots` (a trigger path still exists). Re-running `/babysit-pr` after the window resets resumes cleanly.
 

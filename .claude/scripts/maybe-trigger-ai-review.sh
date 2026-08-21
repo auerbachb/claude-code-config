@@ -12,6 +12,10 @@
 # issue, kept anyway (cheap, self-healing). See
 # .claude/reference/codeant-graphite-supplemental.md.
 #
+# BugBot spend-refusal suppression (issue #1199): the `@cursor review` nudge is
+# SKIPPED when cursor[bot] has already refused THIS HEAD for a Cursor usage/spend
+# limit. Fails open — see bugbot_refused_head() below.
+#
 # Config: `.claude/pm-config.md` section **Complexity triggers** (see template in repo).
 # Env vars COMPLEXITY_THRESHOLD_SCORE, COMPLEXITY_FIRST_CR_ROUND, COMPLEXITY_CADENCE_ROUNDS
 # override file values when set.
@@ -331,8 +335,43 @@ post_one() {
   fi
 }
 
+# BugBot spend-refusal suppression (issue #1199). BugBot is metered against a
+# Cursor usage/spend limit, and it refused 64% of PRs in the 2026-08 audit window
+# while this script kept nudging: 469 `@cursor review` comments across 244 PRs.
+# A nudge cannot clear a usage limit. Once cursor[bot] has refused on THIS HEAD,
+# every later nudge on the same HEAD is PR noise, so skip it — the next push is a
+# new HEAD and starts clean, so this suppresses repetition, never the tool.
+#
+# FAILS OPEN in every uncertain case (unreadable comments, missing HEAD
+# timestamp, malformed JSON): post the nudge. bugbot.md calls a duplicate
+# `@cursor review` harmless, whereas a wrongly-suppressed nudge costs a whole
+# review — the same cost asymmetry escalate-review.sh applies to this tool
+# (issue #956). Returns 0 ONLY on a positively-identified refusal.
+#
+# Timestamps are ordered with norm_ts() from lib/ts-normalizer.sh — the one
+# canonical bash form of the #836/#885 rule — rather than a new jq mirror, so
+# this file adds no second definition to keep in step.
+bugbot_refused_head() {
+  # Delegates to the shared implementation so this file and /fixpr Step 3b ask
+  # one question with one answer (CodeRabbit review, PR #1203). A missing helper
+  # declines to suppress — the same fail-open direction the helper itself takes.
+  local helper="${SCRIPT_DIR}/bugbot-refused-head.sh"
+  [[ -x "$helper" ]] || return 1
+  "$helper" "$PR_NUM" "$HEAD_SHA" >/dev/null 2>&1
+}
+
 if ! post_one codeant "@codeant-ai review"; then echo "maybe-trigger-ai-review.sh: failed posting @codeant-ai review" >&2; exit 5; fi
-if ! post_one cursor "@cursor review"; then echo "maybe-trigger-ai-review.sh: failed posting @cursor review" >&2; exit 5; fi
+if bugbot_refused_head; then
+  # Mark the step handled rather than leaving it false. A run that completes
+  # clears the whole record (`ai_review_trigger_steps=null` below), but a run
+  # that fails at a LATER step leaves it in place — and steps_incomplete() reads
+  # a false `cursor` as "resume this trigger", so the retry would post the very
+  # nudge we just decided cannot succeed. Suppressed IS complete for this HEAD.
+  echo "maybe-trigger-ai-review.sh: skipping @cursor review — BugBot already refused this HEAD for a Cursor usage/spend limit (#1199)" >&2
+  if ! "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps[\"cursor\"]=true"; then
+    echo "maybe-trigger-ai-review.sh: failed to record the suppressed cursor step — may re-check on retry" >&2
+  fi
+elif ! post_one cursor "@cursor review"; then echo "maybe-trigger-ai-review.sh: failed posting @cursor review" >&2; exit 5; fi
 if ! post_one graphite "@graphite-app re-review"; then echo "maybe-trigger-ai-review.sh: failed posting @graphite-app re-review" >&2; exit 5; fi
 if (( ENABLE_PR_REVIEW_HELP )); then
   if ! post_one pr_help "/pr-review-help #$PR_NUM"; then echo "maybe-trigger-ai-review.sh: failed posting /pr-review-help" >&2; exit 5; fi
