@@ -2,10 +2,10 @@
   "schema": "review-stack-baseline/v1",
   "source": {
     "issue": 1199,
-    "record": ".claude/reference/ai-review-tool-audit-2026-06.md",
-    "as_of": "2026-06-27",
-    "provenance": "seeded",
-    "note": "Seeded by #1201 from the 2026-06 hand audit's verdicts so /review-stack-audit has a real baseline before #1199 lands. When #1199 produces its decision record, it replaces this file's `tools` array and sets provenance to \"decision-record\" with `record` pointing at the new document. Values here record what the 2026-06 audit CONCLUDED, deliberately not what is true today \u2014 a baseline pre-loaded with today's reality would suppress the very drift the audit exists to find."
+    "record": ".claude/reference/ai-review-chain-roles-decision.md",
+    "as_of": "2026-08-21",
+    "provenance": "decision-record",
+    "note": "#1199's decision record (`ai-review-chain-roles-decision.md`, merged as PR #1203) supplies these roles, superseding the 2026-06 seeded values below. The current degraded-stack caps (CodeRabbit's burst limit, BugBot's spend exhaustion, Greptile's flex overage) are intentionally left out of `expected_caps` so the first post-swap audit run reports them as genuine drift rather than suppressing it."
   },
   "tools": [
     {
@@ -15,19 +15,18 @@
       "gates_merge": false,
       "approves_via": "none",
       "expected_caps": [],
-      "notes": "Primary findings engine: 198 inline findings, sole provider on 8 PRs. gates_merge is false on purpose \u2014 the 2026-06 audit found 0 APPROVED reviews in 63 PRs and concluded it is a finder, not an approver. Marking it as gating would fire a permanent, false D4 every run. Plan observed as Pro. No rate-limit caps were recorded in the 2026-06 window, so any that appear now are genuine D3 drift."
+      "notes": "Primary finder per the #1199 decision record: Pro, 3/3 seats, $90/mo. gates_merge stays false — it never issues APPROVED, so marking it as gating would fire a permanent, false D4 every run. 22% of PRs reviewed and 68% of reviews rate-limited at a 5/hr per-developer burst (87.4h average wait) are measured facts, not baseline drift; expected_caps is deliberately empty so the first post-swap run reports the burst limit as genuine D3."
     },
     {
       "key": "codeant",
       "role": "approver",
-      "billed": "trial",
+      "billed": "paid",
       "gates_merge": true,
       "approves_via": "review",
       "expected_caps": [
-        "not_subscribed",
-        "trial_exhausted"
+        "not_subscribed"
       ],
-      "notes": "The de-facto approver \u2014 179 APPROVED across all 63 PRs \u2014 and the tool the CR merge-gate path leans on. Its 100-PR free trial was already exhausted at the 2026-06 audit, which observed trial-limit / no-subscription warnings on 19 PRs; both cap kinds are therefore expected, not news. The pending plan decision ($10 Basic vs $24 Premium) is why `billed` is still \"trial\" rather than \"paid\"."
+      "notes": "Primary approver (co-primary on the CR path) per the #1199 decision record: Premium, 2/2 seats, ~$48/mo — now paid, not trial. Sole source of APPROVED (360 approvals on 184 PRs), so gates_merge is true and approves_via is \"review\". The subscription-identity warning is confirmed non-blocking (org `Auto Approve PR` is ON), so not_subscribed stays an expected cap rather than news."
     },
     {
       "key": "bugbot",
@@ -36,25 +35,25 @@
       "gates_merge": true,
       "approves_via": "check_run",
       "expected_caps": [],
-      "notes": "Highest-precision tool: 99 inline findings, sole provider on 2 PRs, reliable completion signal. $40/mo. gates_merge is true \u2014 a clean BugBot pass on current HEAD satisfies the merge gate alone on its path \u2014 but approves_via is \"check_run\", because it signals that pass through the `Cursor Bugbot` check-run and posts no APPROVED review object. Driving D4 off gates_merge would flag that as a missing approval every single run. No spend or usage cap was recorded in the 2026-06 window, so a spend_limit appearing now is genuine D3 drift on a paid tool that can gate the merge."
+      "notes": "First fallback per the #1199 decision record: the stack's largest cost line — ~$1.58/review on-demand, $815.58 in one cycle against a $1,000 cap it has exhausted, refusing 64% of PRs. gates_merge is true — a clean BugBot pass on current HEAD satisfies the merge gate alone on its path — but approves_via stays \"check_run\", because it signals that pass through the `Cursor Bugbot` check-run and posts no APPROVED review object. Driving D4 off gates_merge would flag that as a missing approval every single run. expected_caps is empty so the current spend exhaustion surfaces as genuine D3 drift."
     },
     {
       "key": "greptile",
-      "role": "dormant",
+      "role": "fallback",
       "billed": "paid",
-      "gates_merge": false,
+      "gates_merge": true,
       "approves_via": "none",
       "expected_caps": [],
-      "notes": "Demoted to dormant emergency-only: 4 PRs in the first 2 days, then 0 in ~8 weeks, never a sole finding-provider. The 2026-06 audit RECOMMENDED cancelling the $30/seat/mo subscription, but cancellation is a billing action outside the repo and was never confirmed here. `billed` stays \"paid\" deliberately: if the seat is still live, D2 fires and asks the question; if it was cancelled, the answer is one comment plus a baseline edit to \"cancelled\". Failing toward surfacing is the correct direction for a recurring charge."
+      "notes": "Second fallback — retained, spend-capped at the vendor, per the #1199 decision record: paid Pro on the `auerbachb` org with flex overage UNCAPPED (roughly $36-72/mo, 42 of 92 credits already on flex 15 days in). Promoted out of dormant: highest unique yield in the chain (41 sole-source PRs), and the Greptile path is sticky on history once triggered. gates_merge is true on its path; approves_via is none because it signals through issue-comment reactions and severity classification, never a formal APPROVED review object. expected_caps is empty so the current flex-overage exposure surfaces as genuine D3 drift rather than being pre-suppressed."
     },
     {
       "key": "graphite",
       "role": "advisory",
-      "billed": "free",
+      "billed": "paid",
       "gates_merge": false,
       "approves_via": "none",
       "expected_caps": [],
-      "notes": "Free parallel advisory on Hobby: 15 precise inline findings across 9 PRs at $0. Never a sole finding-provider, so it is confirmation rather than coverage \u2014 explicitly kept out of the merge gate."
+      "notes": "Supplemental — paid, under re-measurement, per the #1199 decision record: newly paid Team plan (started 2026-08-07), measured almost entirely before the payment (1 sole-source PR in 244). Not promoted to a gating tier: it concludes success on nearly every PR and comments on only 4% of them, which would manufacture approvals (#875) if gated on. The re-measure trigger (at least 30 PRs merged under the paid plan) is already met at 88 PRs (7-21 Aug 2026), so the next audit should re-decide its role on paid evidence."
     },
     {
       "key": "vercel",
@@ -63,7 +62,7 @@
       "gates_merge": false,
       "approves_via": "none",
       "expected_caps": [],
-      "notes": "Zero activity under any login in the 2026-06 window. This repo is agent configuration, not a Vercel app. Kept disabled / Vercel-only."
+      "notes": "Zero activity under any login in the 2026-06 window. This repo is agent configuration, not a Vercel app. Kept disabled / Vercel-only. The #1199 decision record does not cover Vercel, so this entry is unchanged by the swap."
     }
   ]
 }
