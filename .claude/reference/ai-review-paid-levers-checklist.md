@@ -45,7 +45,7 @@ Measured 2026-08-21, when this file was written. Re-check before working any gat
 |---|---|---|---|
 | Free settings applied + re-measured | [#1209](https://github.com/auerbachb/claude-code-config/issues/1209) | **Open** | Item 4 (metered add-on) |
 | `LICENSE` file exists | [#1210](https://github.com/auerbachb/claude-code-config/issues/1210) | **Open** — no `LICENSE` in the repo | Item 1 (Greptile OSS) |
-| CodeRabbit OSS-tier verdict | [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) | **Open** | Item 3 (billing cadence) |
+| CodeRabbit OSS-tier verdict | [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) | **Cleared 2026-08-21 — OSS declined, stay paid** ([`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md)) | Item 3 (billing cadence) — **unblocked** |
 
 ## The levers
 
@@ -86,13 +86,22 @@ the subscription itself at risk.
 
 ### 3. CodeRabbit — decide the billing cadence
 
-- **Depends on:** [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) — the OSS-tier verdict. Deciding cadence first would commit 12 months to a plan #1212 might replace.
+- **Depends on:** [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) — the OSS-tier verdict. **Cleared 2026-08-21: OSS was evaluated and declined, so "stay paid" is settled and this item is unblocked.** Take the annual switch.
 - **Submitted:**
 - **Approved:**
 
 Annual is $24/seat vs $30/seat monthly: on 3 seats, $72/mo vs $90/mo — **$216/yr**, no capability
-change. The catch is only that it is worth doing **if we stay paid at all**. Answer #1212 first; a
-successful OSS-tier move makes the saving moot, and an annual commitment taken early would strand it.
+change. The catch was only that it is worth doing **if we stay paid at all** — and that question is
+now answered. [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) declined the OSS
+tier on two documented constraints — under 10 stars (this repo has 3) reviews stop being automatic and
+must be triggered by comment, and the metered add-on in item 4 is Pro/Pro+ only, so it becomes
+permanently unavailable — with the star-scaled 1–10/hr rate band, whose value here the vendor does not
+publish, as a third reason for caution rather than a number to rely on. The $90/mo would be displaced
+onto Greptile's uncapped flex rather than saved
+([`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md)). Nothing now strands the commitment —
+the remaining move on this tool is Pro+, which sits second-line behind item 4's metered lever, and
+that is an *upgrade* rather than an escape. **Renewal is 2026-08-27**; past that the saving waits a
+cycle.
 
 ### 4. CodeRabbit — decide the usage-based add-on
 
@@ -159,9 +168,10 @@ are trying to win.
 
 Cost of leaving it: **visibility, not merge throughput.** The CLIs are advisory and never gate a
 merge; the GitHub Apps hold quotas entirely independent of them
-(`feedback_review_clis_down_app_independent.md`). Whether CodeRabbit's OSS tier changes any of this
-is [#1212](https://github.com/auerbachb/claude-code-config/issues/1212)'s question, and that is where
-the thread continues.
+(`feedback_review_clis_down_app_independent.md`). [#1212](https://github.com/auerbachb/claude-code-config/issues/1212)
+answered whether the OSS tier changes any of this: **it does not.** The CLI pool is selected by
+repository visibility, not by plan, so a public repo draws free-OSS CLI limits on Pro **and** on OSS —
+the surface cancels out of that comparison entirely ([`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md)).
 
 ## Don't buy
 
