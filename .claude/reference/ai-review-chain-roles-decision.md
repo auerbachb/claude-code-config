@@ -144,6 +144,8 @@ preference.
 | **Lower the modelled CodeRabbit cap to the observed rate (~5/hr)** | The observed cap is not a smaller hourly number, it is a **7-day rolling allowance** with a per-response retry window. Substituting a smaller wrong-shaped number would still not predict a lockout, and would tighten our own pacing against a limit that is not hourly. The hourly counter is retained as an explicitly-labelled *local pacing proxy*. |
 | **Treat the CodeAnt subscription warning as a gate failure** | It warns on 84% of PRs while approving 360 times. Treating it as a block would disable the chain's only approver over a misconfigured email. Confirmed non-blocking (`feedback_codeant_subscription_message_not_blocking.md`). |
 | **Stop triggering BugBot entirely while it is spend-capped** | It is sole-source on 29 PRs when it runs, and the cap is per-usage, not permanent — the first nudge after each push may well succeed. Only *repeat* nudges after a refusal on the same HEAD are suppressed. |
+| **Move CodeRabbit to the free OSS tier** (#1212) | Lowers the ceiling on the one thing already failing: a known 5/hr per-developer rate becomes a 1–10/hr band scaled by star count, and 3 stars sits under the vendor's own 10-star cutoff. Also removes auto-review (measured starting 8–20s after PR open) and permanently forecloses the metered add-on, which is Pro/Pro+ only. The $90/mo is displaced onto Greptile's uncapped $1/credit flex rather than saved. Full math: [`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md). |
+| **Stay paid on monthly billing** (#1212) | Identical capability to annual at $18/mo more — $216/year purchasing flexibility whose only use would be an exit to OSS (rejected above) or to Pro+ (an upgrade, not an exit). |
 
 ## Dashboard reconciliation (#1204, 2026-08-21)
 
@@ -191,6 +193,45 @@ in the audit's §Dashboard reconciliation. Three things it changed here:
    the CodeRabbit CLI is already seated (§Repo variance), so "attach the CLI to a paid seat" was
    never available to do.
 
+## CodeRabbit OSS tier vs paid Pro (#1212, 2026-08-21)
+
+Full side-by-side, break-even, and sourcing: [`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md).
+
+**Verdict: stay paid, and switch to annual billing** — $90/mo → $72/mo, **$216/year, no capability
+change.** This unblocks the billing-cadence item in [#1213](https://github.com/auerbachb/claude-code-config/issues/1213),
+which was deliberately gated on this comparison; renewal is **2026-08-27**.
+
+**The break-even reasoning.** CodeRabbit's measured failure here is throughput, not capability — 68% of
+reviews rate-limited, 87.4h average wait, 36% of blocked PRs merged unreviewed, all **at Pro's 5/hr per
+developer**. The OSS tier does not fix that; it lowers the ceiling. Its rate is a popularity-scaled
+**1–10/hr band keyed to repository star count** ([CodeRabbit plans docs](https://docs.coderabbit.ai/management/plans),
+retrieved 2026-08-21), and this repo has **3 stars** — under the vendor's own 10-star cutoff. Parity
+would require the band to be nearly flat across its bottom, which would make the scaling pointless. OSS
+also **cannot buy the metered add-on** — *"available on the Pro and Pro+ plans"*
+([usage-based add-on docs](https://docs.coderabbit.ai/management/usage-based-addon), retrieved
+2026-08-21) — permanently foreclosing the one lever `pricing-matrix.md` rates as removing rate-limit
+blocking rather than widening it.
+
+**And the $90 would be displaced, not saved.** Refused CodeRabbit reviews escalate down this same chain
+to Greptile — paid Pro with **flex overage uncapped** at $1/credit (§Dashboard reconciliation item 3).
+Paid CodeRabbit already costs **$0.96 per delivered review** ($0.77 annual) against Greptile's
+uncapped $1.00. Trading a fixed line for more of an unbounded one is the wrong direction at any sticker
+price.
+
+**Operationally, staying paid changes nothing** — no workflow, script, or rule edits; the cadence switch
+is a dashboard action. Had OSS been adopted, it would have required a new `pull_request`-triggered
+workflow posting `@coderabbitai review` (the under-10-star manual-trigger rule), re-reading
+`cr-review-hourly.sh`'s 2/PR/hour cap now that explicit triggers become routine rather than escalation,
+and absorbing more escalation into BugBot and Greptile.
+
+**One finding worth keeping even though OSS was declined:** *CodeRabbit honours bot-authored triggers.*
+`github-actions[bot]` posted `@coderabbitai plan` on issues #1209/#1210/#1211 and CodeRabbit answered
+each (2026-08-21). That is the **opposite** of BugBot, which ignores bot-authored triggers
+([#892](https://github.com/auerbachb/claude-code-config/issues/892)) — the sole reason
+`cursor-review-pr-comment.yml` carries a PAT. Any future CodeRabbit trigger workflow can use
+`GITHUB_TOKEN`. Measured on the issue surface only; the PR surface is untested, and the PAT pattern is
+the ready mitigation.
+
 ## Operator actions this decision depends on
 
 None of these are agent-executable — each requires entering or changing billing/subscription state
@@ -219,10 +260,16 @@ application never moves a budget line.
    consumption (one review per PR instead of one per push). The paid levers ($0.25/file overflow,
    Pro Plus) only matter after that lands, and extra seats cannot help while one identity authors
    every PR.
+5. **Switch CodeRabbit from monthly to annual billing** — 3 seats, **$90 → $72/month, $216/year**, no
+   capability change. Unblocked by the #1212 verdict above: the OSS tier was evaluated and declined, so
+   there is no longer a reason to hold the commitment open. **Renewal is 2026-08-27**; past that date the
+   saving simply waits another cycle. The trade is 12 months of commitment for 20% off, and both exits it
+   could block are remote — OSS is rejected on throughput, and Pro+ is an upgrade rather than an escape.
 
 ## References
 
 - [`ai-review-tool-audit-2026-08.md`](./ai-review-tool-audit-2026-08.md) — the measurements every row above rests on
+- [`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md) — CodeRabbit OSS tier vs paid Pro: side-by-side across every surface, the census mapping, the file-verified trigger-compatibility finding, and the break-even that selects annual billing (#1212)
 - [`merge-gate-reviewer-paths.md`](./merge-gate-reviewer-paths.md) — per-path gate semantics (authoritative for gate detail)
 - [`codeant-graphite-supplemental.md`](./codeant-graphite-supplemental.md) — CodeAnt + Graphite supplemental protocol and CLI install state
 - [`cr-rate-limits.md`](./cr-rate-limits.md) — CodeRabbit cap model and the pacing-proxy caveat
