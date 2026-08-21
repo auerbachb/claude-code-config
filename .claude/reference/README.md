@@ -85,6 +85,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `skill-repo-diff-2026-08.md` — August 2026 point-in-time survey of obra/superpowers @ `b36e0829` and affaan-m/everything-claude-code @ `569b1d5b` vs our repo; six-dimension gap analysis, prioritized backlog, and import log stub for second harvest cycle (#417)
 - `ai-review-tool-audit-2026-04.md` — AI review tool chain audit (#368 / #377)
 - `ai-review-tool-audit-2026-06.md` — 30-day AI review tool value audit + keep/cut verdicts (#376)
+- `pricing-matrix.md` — priced upgrade levers for all five review tools × CLI/App surfaces: public prices vs dashboard-billed state, marginal cost per review, which pool each price buys, and buy/don't-buy verdicts with break-even math (#1202)
 - `fixpr-hotspot-decision.md` — diagnosis and extract-not-split decision for `fixpr/SKILL.md` churn (17 PRs in the run-up to #788); verdict: KEEP single file + extract large command forms
 - `pr-state-hotspot-decision.md` — diagnosis and extract-not-split decision for `pr-state.sh` churn (Issue #980); verdict: KEEP the public CLI + extract two pure jq programs
 - `claude-md-hotspot-decision.md` — diagnosis and no-content-change decision for `CLAUDE.md` churn (17 merged PRs in the Issue #928 window); verdict: KEEP the single executive contract after recent compression and policy updates
