@@ -1,0 +1,69 @@
+{
+  "schema": "review-stack-baseline/v1",
+  "source": {
+    "issue": 1199,
+    "record": ".claude/reference/ai-review-tool-audit-2026-06.md",
+    "as_of": "2026-06-27",
+    "provenance": "seeded",
+    "note": "Seeded by #1201 from the 2026-06 hand audit's verdicts so /review-stack-audit has a real baseline before #1199 lands. When #1199 produces its decision record, it replaces this file's `tools` array and sets provenance to \"decision-record\" with `record` pointing at the new document. Values here record what the 2026-06 audit CONCLUDED, deliberately not what is true today \u2014 a baseline pre-loaded with today's reality would suppress the very drift the audit exists to find."
+  },
+  "tools": [
+    {
+      "key": "coderabbit",
+      "role": "primary",
+      "billed": "paid",
+      "gates_merge": false,
+      "approves_via": "none",
+      "expected_caps": [],
+      "notes": "Primary findings engine: 198 inline findings, sole provider on 8 PRs. gates_merge is false on purpose \u2014 the 2026-06 audit found 0 APPROVED reviews in 63 PRs and concluded it is a finder, not an approver. Marking it as gating would fire a permanent, false D4 every run. Plan observed as Pro. No rate-limit caps were recorded in the 2026-06 window, so any that appear now are genuine D3 drift."
+    },
+    {
+      "key": "codeant",
+      "role": "approver",
+      "billed": "trial",
+      "gates_merge": true,
+      "approves_via": "review",
+      "expected_caps": [
+        "not_subscribed",
+        "trial_exhausted"
+      ],
+      "notes": "The de-facto approver \u2014 179 APPROVED across all 63 PRs \u2014 and the tool the CR merge-gate path leans on. Its 100-PR free trial was already exhausted at the 2026-06 audit, which observed trial-limit / no-subscription warnings on 19 PRs; both cap kinds are therefore expected, not news. The pending plan decision ($10 Basic vs $24 Premium) is why `billed` is still \"trial\" rather than \"paid\"."
+    },
+    {
+      "key": "bugbot",
+      "role": "fallback",
+      "billed": "paid",
+      "gates_merge": true,
+      "approves_via": "check_run",
+      "expected_caps": [],
+      "notes": "Highest-precision tool: 99 inline findings, sole provider on 2 PRs, reliable completion signal. $40/mo. gates_merge is true \u2014 a clean BugBot pass on current HEAD satisfies the merge gate alone on its path \u2014 but approves_via is \"check_run\", because it signals that pass through the `Cursor Bugbot` check-run and posts no APPROVED review object. Driving D4 off gates_merge would flag that as a missing approval every single run. No spend or usage cap was recorded in the 2026-06 window, so a spend_limit appearing now is genuine D3 drift on a paid tool that can gate the merge."
+    },
+    {
+      "key": "greptile",
+      "role": "dormant",
+      "billed": "paid",
+      "gates_merge": false,
+      "approves_via": "none",
+      "expected_caps": [],
+      "notes": "Demoted to dormant emergency-only: 4 PRs in the first 2 days, then 0 in ~8 weeks, never a sole finding-provider. The 2026-06 audit RECOMMENDED cancelling the $30/seat/mo subscription, but cancellation is a billing action outside the repo and was never confirmed here. `billed` stays \"paid\" deliberately: if the seat is still live, D2 fires and asks the question; if it was cancelled, the answer is one comment plus a baseline edit to \"cancelled\". Failing toward surfacing is the correct direction for a recurring charge."
+    },
+    {
+      "key": "graphite",
+      "role": "advisory",
+      "billed": "free",
+      "gates_merge": false,
+      "approves_via": "none",
+      "expected_caps": [],
+      "notes": "Free parallel advisory on Hobby: 15 precise inline findings across 9 PRs at $0. Never a sole finding-provider, so it is confirmation rather than coverage \u2014 explicitly kept out of the merge gate."
+    },
+    {
+      "key": "vercel",
+      "role": "off",
+      "billed": "free",
+      "gates_merge": false,
+      "approves_via": "none",
+      "expected_caps": [],
+      "notes": "Zero activity under any login in the 2026-06 window. This repo is agent configuration, not a Vercel app. Kept disabled / Vercel-only."
+    }
+  ]
+}

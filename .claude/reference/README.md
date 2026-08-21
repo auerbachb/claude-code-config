@@ -10,6 +10,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 
 - `handoff-file-schema.json` — full JSON schema for `~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json`
 - `session-state-schema.json` — full JSON schema for `~/.claude/session-state.json`
+- `review-stack-baseline.json` — the review stack's recorded roles, billed state, and expected caps, schema `review-stack-baseline/v1`; the baseline `/review-stack-audit` compares each run against. Seeded from the 2026-06 audit; Issue #1199's decision record replaces its `tools` array (#1201)
 
 ### Runbooks and long command forms
 
@@ -40,6 +41,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `issue-claim.md` — `issue-claim.sh` mechanism: the three GitHub claim artifacts, why the holder token is finer-grained than the login, block-at-holder / release-at-account, staleness, the `--allow-claimed` override, and every call site (`issue-planning.md` step 0; #873)
 - `autofile-dedup.md` — duplicate-check thresholds for autonomous issue filing (`/wrap` Phase 3, `/harness-audit` Step 7); strong/weak/none classification, exact-artifact dedup, and the comment-vs-file rule
 - `harness-audit.md` — `/harness-audit` design record: two-pass split, the step-up chip that preserves the top-tier spawn invariant, the model-fleet resolver, dual watermarks, and the out-of-repo report default (#770)
+- `review-stack-audit.md` — `/review-stack-audit` design record: why it is a sibling to `/harness-audit` rather than a section of it, why its judgment is one pass, why billed state is a declared proxy, the `gates_merge` vs `approves_via` split, the seeded-baseline departure from the #1199 dependency, and the two-layer dedup (#1201)
 - `graphql-thread-resolution.md` — full GraphQL queries/mutations for resolving PR review threads
 - `exit-report-format.md` — full structured exit report block specification
 - `greptile-setup.md` — Greptile dashboard setup notes
