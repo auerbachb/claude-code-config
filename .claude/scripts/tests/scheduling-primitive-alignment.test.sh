@@ -100,9 +100,26 @@ require_text .claude/skills/pr-monitor-and-manage/SKILL.md '.pmm_monitor_task_id
 # Issue #1189 made the skill resolve its helpers for cross-repo use, and Step 00
 # now binds the variable before any state read. The invariant is unchanged —
 # never read state through a helper variable nothing defined — so the check
-# follows it: the variable may be used, but only if the skill defines it first.
-require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
-  'SESSION_STATE_SH=$(resolve_script session-state.sh' \
+# follows it: the variable may be used, but only if the skill binds it first.
+#
+# Checked by line number, not by presence. A `grep -q` for the binding passes
+# even when the binding sits *below* the first read, which is precisely the bug
+# the invariant forbids (CodeAnt, PR #1196).
+require_ordered_binding() {
+  local file=$1 bind_re=$2 use_re=$3 message=$4
+  local bind_line use_line
+  bind_line=$(grep -nE -- "$bind_re" "$ROOT/$file" | head -1 | cut -d: -f1)
+  use_line=$(grep -nF -- '"$SESSION_STATE_SH"' "$ROOT/$file" | head -1 | cut -d: -f1)
+  [[ -n "$bind_line" ]] || fail "$message (no binding found at all)"
+  # No use is vacuously fine: the invariant constrains reads, not the binding.
+  [[ -n "$use_line" ]] || return 0
+  (( bind_line < use_line )) || \
+    fail "$message (binding at line $bind_line, first read at line $use_line)"
+  ok "$message"
+}
+require_ordered_binding .claude/skills/pr-monitor-and-manage/SKILL.md \
+  'SESSION_STATE_SH=\$\(resolve_script session-state\.sh' \
+  '"\$SESSION_STATE_SH"' \
   'fleet monitoring must bind its state helper before any state read'
 require_text .claude/skills/pr-monitor-and-manage/references/pmm-lifecycle.md \
   '.pmm.auto_wake_monitor_task_id' \
