@@ -36,7 +36,7 @@ Audit the open PR backlog and confirm that **all four AI code reviewers** have a
 - **Never auto-flip a draft to ready-for-review.** Surface it and ask; only the user runs `gh pr ready <N>`.
 - **Never post `@coderabbitai full review` when CodeRabbit is rate-limited**, or when the per-PR 2-explicit-triggers/hour cap is reached, or when the account hourly budget is exhausted (`cr-review-hourly.sh`).
 - **Never auto-merge, dismiss reviews, or resolve threads** — that is `/fixpr` / `/wrap` territory.
-- The other three triggers (`@codeant-ai review`, `@cursor review`, `@graphite-app re-review`) are not hourly-capped — BugBot is per-seat, CodeAnt/Graphite are cheap — but do not spam them: only post for a *missing* reviewer.
+- The other three triggers (`@codeant-ai review`, `@cursor review`, `@graphite-app re-review`) are not hourly-capped, but none is free of consequence — BugBot is per-seat **and spend-metered** (#1199) — so only post for a *missing* reviewer, and never re-nudge a BugBot that already refused this HEAD.
 
 ## Arguments
 

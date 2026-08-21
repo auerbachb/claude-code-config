@@ -89,7 +89,7 @@ When `missing` indicates stale/dismissed bot approval or missing CR/BugBot/CodeA
 - **CodeRabbit:** run `.claude/scripts/cr-review-hourly.sh --check` first. Exit `1` → **stop** with JSON snapshot and `cr-github-review.md` rate-limit guidance — do not loop until cap resets.
 - **Greptile:** `@greptileai` only when Greptile is the owning path / code owner (per `greptile.md`).
 - **CodeAnt:** `@codeant-ai review` when CodeAnt owns the gap.
-- **BugBot:** post `@cursor review` when `reviewer == "bugbot"` per `reviewer-of.sh` or `session-state.json` — duplicates OK.
+- **BugBot:** post `@cursor review` when `reviewer == "bugbot"` per `reviewer-of.sh` or `session-state.json` — duplicates OK, except on a HEAD BugBot already refused for spend, where no nudge can help (`bugbot.md`).
 
 Then **delegate the wait to `/fixpr`** (issue #454 — no wrap-side sleeps): run the `/fixpr` workflow; its idempotent path makes no push when nothing needs fixing, and its Step 4d loop waits on the current SHA until the triggered bot completes or the 20-min cap fires. Parse `FIXPR_WAIT_SUMMARY`, append to audit, re-run `merge-gate.sh` immediately.
 

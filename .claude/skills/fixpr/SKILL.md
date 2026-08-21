@@ -32,7 +32,7 @@ All mechanical GitHub API work — pagination, GraphQL queries, comment classifi
 | 2. Classify CI failures | Judgment | AI reads `check-runs/<id>.output.summary` |
 | 3. Fix & push | Judgment | AI edits files, commits, pushes |
 | 3a. Dismiss stale bot `CHANGES_REQUESTED` | Mechanical | `dismiss-stale-bot-changes.sh` after push when `DID_PUSH=1`; optional `--handoff-file` append |
-| 3b. Trigger missing AI reviewers | Mechanical | wait 2 minutes, detect CR/Graphite/CodeAnt activity on the new SHA, post triggers for missing bots, always post `@cursor review` |
+| 3b. Trigger missing AI reviewers | Mechanical | wait 2 minutes, detect CR/Graphite/CodeAnt activity on the new SHA, post triggers for missing bots, post `@cursor review` once per push |
 | 4. Reply & resolve | Mechanical | `gh api` calls against IDs from the JSON |
 | 4c. Post-push thread verify (if Step 3 pushed) | Mechanical | Re-fetch threads on new HEAD; explicitly resolve any touched thread still `isResolved: false` (fixes unchanged-line orphans), then `--verify-only` |
 | 4d. Review-wait loop (issue #454) | Mechanical | Poll `pr-state.sh` on the pushed SHA every 30–60s, capped at 20 min; early-exit on full bot+CI verdict; new findings → next sweep |
@@ -409,7 +409,7 @@ for candidate in \
 done
 ```
 
-Use the `$PUSHED_AT` captured immediately before `git push` in Step 3. Capturing it before the push avoids a race where a fast bot starts between push completion and the timestamp capture. After the push completes, wait exactly 2 minutes before checking reviewer status so CodeRabbit / Graphite / CodeAnt auto-triggers have time to post activity (BugBot is covered separately — always trigger `@cursor review` unconditionally; see `bugbot.md` and memory `feedback_bugbot_auto_trigger_unreliable.md`):
+Use the `$PUSHED_AT` captured immediately before `git push` in Step 3. Capturing it before the push avoids a race where a fast bot starts between push completion and the timestamp capture. After the push completes, wait exactly 2 minutes before checking reviewer status so CodeRabbit / Graphite / CodeAnt auto-triggers have time to post activity (BugBot is covered separately — post `@cursor review` once per push, but not again on a HEAD it has already refused for spend; see `bugbot.md` and memory `feedback_bugbot_auto_trigger_unreliable.md`):
 
 ```bash
 PUSHED_SHA=$(git rev-parse HEAD)
@@ -480,7 +480,7 @@ fi
 gh pr comment "$PR_NUMBER" --body "@cursor review"
 ```
 
-Cost/rate-limit note: `@codeant-ai review` may consume CodeAnt’s review budget, so skip it when auto-trigger activity is already present on the new SHA. **`@cursor review` is always posted** after a `/fixpr` push (composes with CI and issue #370’s four-reviewer triggers); BugBot is per-seat with no per-call charges — duplicates are acceptable. Greptile is intentionally NOT part of this proactive trigger set; it remains last-resort only per `greptile.md`.
+Cost/rate-limit note: `@codeant-ai review` may consume CodeAnt’s review budget, so skip it when auto-trigger activity is already present on the new SHA. **`@cursor review` is posted once per push** (composes with CI and issue #370’s four-reviewer triggers) — a fresh HEAD carries no prior refusal, so that first post is warranted. BugBot is per-seat but **spend-metered**: it refused 64% of PRs in the #1199 window, and no nudge clears a usage limit, so never re-post on a HEAD where `cursor[bot]` has already refused (`bugbot.md`). Greptile is intentionally NOT part of this proactive trigger set; it remains last-resort only per `greptile.md`.
 
 **Composition with issue #362:** `cr-github-review.md` runs `.claude/scripts/maybe-trigger-ai-review.sh` on each poll tick when there is **no** `/fixpr` trigger (no new findings, CI green, not `BEHIND`/`CONFLICTING`). That path fires three single-mention comments — `@codeant-ai review`, `@cursor review`, `@graphite-app re-review` — for **complexity + CR round count**, not because of a push. This differs from Step 3b, which additionally posts `@coderabbitai full review` (subject to the 2/hour cap) when CodeRabbit has not yet auto-triggered on the new SHA. State for the #362 path is tracked in `session-state.json` so it does not batch with Step 3b on the same cause.
 

@@ -13,7 +13,7 @@ BugBot (Cursor, per-seat) is the **second-tier** reviewer in the escalation chai
 ## BugBot Basics
 
 - **Bot username:** `cursor[bot]`
-- **Trigger:** `@cursor review` comment (`/fixpr` or CI when `CURSOR_REVIEW_PAT` set — duplicates OK).
+- **Trigger:** `@cursor review` comment (`/fixpr` or CI when `CURSOR_REVIEW_PAT` set — duplicates OK, but see §Re-Reviews).
 - **Cost:** Per-seat but **spend-metered** — refused 64% of PRs (#1199). One nudge per HEAD; after a usage-limit refusal on that HEAD, `maybe-trigger-ai-review.sh` suppresses further nudges until the next push.
 - **Review time:** ~1–3 min. **No CLI** (GitHub-only).
 
@@ -45,4 +45,4 @@ Verify all findings against actual code. Fix all valid findings in one commit, p
 
 ## Re-Reviews
 
-After a fix push, CI posts `@cursor review` when `CURSOR_REVIEW_PAT` is set (BugBot doesn't auto-review pushes); if absent or stale, post it manually (duplicates OK) — unless BugBot already refused this HEAD for usage, which no nudge can fix.
+After a fix push, CI posts `@cursor review` when `CURSOR_REVIEW_PAT` is set (BugBot doesn't auto-review pushes); if absent, post it manually — but never on a HEAD BugBot already refused for usage, which no nudge can fix.

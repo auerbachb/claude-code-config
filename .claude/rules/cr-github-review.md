@@ -76,7 +76,7 @@ Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget
 
 ### Timeout & Fallback — Three-Tier Review Chain
 
-**Chain:** CR → BugBot → Greptile → self-review. **Supplemental (CR path):** CodeAnt + Graphite — `.claude/reference/codeant-graphite-supplemental.md`. **Sticky:** once a PR falls to BugBot or Greptile, it never moves back up the chain. **If all three fail:** self-review (does NOT satisfy gate); tell the user which fallback ran and why. **Every tier is cap-degraded** — fall-through is the normal case, not an exception; roles and cost rationale: `.claude/reference/ai-review-chain-roles-decision.md`.
+**Chain:** CR → BugBot → Greptile → self-review. **Supplemental (CR path):** CodeAnt + Graphite — `.claude/reference/codeant-graphite-supplemental.md`. **Sticky:** once a PR falls to BugBot or Greptile, it never moves back up the chain. **If all three fail:** self-review (does NOT satisfy gate); tell the user which fallback ran and why. **Every tier is cap-degraded** — fall-through is normal, not exceptional; roles + cost rationale: `.claude/reference/ai-review-chain-roles-decision.md`.
 
 ### Processing CR Feedback
 
