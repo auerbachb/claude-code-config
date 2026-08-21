@@ -160,8 +160,10 @@ Sources: `app.graphite.com/settings/billing?org=auerbachb`, usage-history modal,
   becomes a billable seat. With PR authors set to **All committers in selected repositories** across
   **13 repos** and no PR filter, each additional committer is a potential $40/mo seat. Draft PRs ON.
 - Last 4 weeks: **112 PRs reviewed, 18 issues found, 9 accepted (50% acceptance), 0% downvote.**
-- **The re-measure trigger is already met.** ≥30 PRs have merged under the paid plan (7–21 Aug alone
-  clears it at this rate), so Graphite's role can be re-decided on paid-plan evidence now.
+- **The re-measure trigger is met on merged-PR count, not inferred from review volume:**
+  `gh pr list --state merged --search "merged:2026-08-07..2026-08-21"` returns **88 merged PRs** in
+  the paid period (measured 2026-08-21) against a threshold of 30. Graphite's role can be re-decided
+  on paid-plan evidence now.
 - Other orgs: LocalMovers-dot-com — "subscription has expired"; faculoyarte; rakibulislam.
 
 ### 4. BugBot attribution — **it really is BugBot**; no support ticket needed

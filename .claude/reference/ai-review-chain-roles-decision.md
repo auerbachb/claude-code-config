@@ -87,13 +87,14 @@ CodeAnt, and BugBot each answer far less often than the rules assume, and the ch
 correctly by falling through. Reordering tiers cannot fix a cap; only collecting more of what we
 already pay for, or raising a cap, can.
 
-### Why Greptile is retained despite being unpaid
+### Why Greptile is retained — and what it actually costs
 
 Three facts had to be held together:
 
-- The operator deliberately chose not to pay for Greptile.
-- Greptile nonetheless produced the **highest unique yield in the chain** (41 sole-source PRs) and
-  never refused a single one of 130 requests.
+- The operator believed Greptile was unpaid. **It is not** (#1204 round 2): the org serving this
+  repo is on paid Pro with **uncapped flex overage**, and this repo is its largest consumer.
+- Greptile produced the **highest unique yield in the chain** (41 sole-source PRs) and never refused
+  a single one of 130 requests — and those 130 were billed, roughly 80 as $1 flex credits.
 - `reviewer-of.sh` and `merge-gate.sh` both make the Greptile path **sticky on history**: any PR
   where `greptile-apps[bot]` has ever posted resolves to the Greptile path for life.
 
@@ -117,7 +118,8 @@ not to promote on price. Price is not evidence of yield.
 ### Re-measure trigger (Graphite)
 
 Revisit Graphite's role at the next audit, or as soon as **≥30 PRs have merged under the paid plan**
-— whichever comes first. Promotion to a gating tier requires **both**: a sole-source contribution
+— whichever comes first. **Both conditions are now satisfied** (88 merged PRs, 7–21 Aug 2026), so
+this is due rather than pending. Promotion to a gating tier requires **both**: a sole-source contribution
 comparable to BugBot's, and a demonstrated ability to distinguish a clean PR from an unreviewed one
 (i.e. its `conclusion` must vary with the code). Until then it stays supplemental, polled and
 nudged like any other bot, never gating.
@@ -165,9 +167,10 @@ in the audit's §Dashboard reconciliation. Three things it changed here:
    correctly discarded by the #875 guard. Turning it off removes the noise at the source rather than
    filtering it at the gate.
 
-5. **Graphite's re-measure trigger is already met.** The paid Team plan started 7 Aug 2026 and 112
-   PRs were reviewed in the following four weeks, so the "≥30 PRs under the paid plan" condition is
-   satisfied and its role can be re-decided on paid evidence. Note its billing shape: AI review
+5. **Graphite's re-measure trigger is met — by merged-PR count, not by review volume.** The paid
+   Team plan started 7 Aug 2026, and `gh pr list --state merged --search
+   "merged:2026-08-07..2026-08-21"` returns **88 merged PRs** in the paid period (measured
+   2026-08-21) against a threshold of 30. Its role can be re-decided on paid evidence. Note its billing shape: AI review
    volume is unmetered, but **committers who receive only AI reviews are billed as seats**, so the
    "All committers in selected repositories" setting is the cost lever, not the review count.
 
@@ -176,14 +179,21 @@ in the audit's §Dashboard reconciliation. Three things it changed here:
 None of these are agent-executable — each requires entering or changing billing/subscription state
 in a vendor dashboard. Listed in descending value:
 
-1. **Read the Greptile dashboard.** Determines whether 130 reviews/month is free or an accruing
-   balance, and therefore whether Greptile's role next audit is "keep" or "remove first".
-2. **Raise the Cursor usage/spend limit**, or accept BugBot covering ~⅓ of PRs.
+1. **Set Greptile's Flex Usage Limit — it is still unset.** Round 2 answered "is it billed" (yes,
+   uncapped at $1/credit past 50/month), so what remains is closing the exposure. This is the only
+   true spend control on that account: a cap there fails as a refused review, whereas the
+   agent-side budget fails as a PR that can never merge.
+2. **Turn CodeAnt's org `Auto Approve PR` off** — free, and it stops the manufactured approvals the
+   #875 gate has to discard.
+3. **Cut BugBot's scope** — Every Push → per PR, Incremental → On, Drafts → Off, Effort → Medium,
+   Autofix → Off (0 of 299 merged) — before considering a Cursor cap raise. Scope costs nothing.
 3. **Fix the CodeAnt subscription identity** — either license a dedicated CI identity on a seat, or
    set the committer email to the operator's own seat-holding address. Never point it at a
    collaborator's address.
-4. **Review the CodeRabbit plan tier.** Assumption 1 recovers unused allowance, but a 7-day allowance
-   that 244 PRs/month exhausts is a plan-size question, not a scheduling one.
+4. **Turn CodeRabbit's Incremental review off** — free, and the largest single reducer of slot
+   consumption (one review per PR instead of one per push). The paid levers ($0.25/file overflow,
+   Pro Plus) only matter after that lands, and extra seats cannot help while one identity authors
+   every PR.
 
 ## References
 
