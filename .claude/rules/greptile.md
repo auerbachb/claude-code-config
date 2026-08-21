@@ -2,21 +2,21 @@
 
 > **Always:** Poll for response after triggering. Reply to every thread. Fix all valid findings. Classify by severity (P0/P1/P2). Only re-review for P0. Stay on G once triggered for a PR.
 > **Ask first:** Never — fix findings autonomously.
-> **Never:** Trigger Greptile before both CR AND BugBot have failed. Ignore Greptile findings. Switch a PR back to CR/BugBot after Greptile has been triggered. Include `@greptileai` in reply comments (triggers a re-review with no learning benefit). Treat `budget_exhausted` as a routine fallback — self-review never satisfies the gate, so surface it.
+> **Never:** Trigger Greptile before both CR AND BugBot have failed. Ignore Greptile findings. Switch a PR back to CR/BugBot after Greptile has been triggered. Include `@greptileai` in reply comments (triggers a re-review with no learning benefit). Treat `budget_exhausted`, 😕, or a 10-min timeout as a routine fallback — each drops the PR to self-review, which never satisfies the gate, so surface the blocker.
 
-Greptile is the second fallback — only after both CR and BugBot fail (chain + supplemental CodeAnt/Graphite: `cr-github-review.md` §Three-Tier). **Not a rare emergency, and not free:** it carried 53% of PRs and the most sole-source findings (#1199) on a paid Pro org whose overage is uncapped (#1204). Role + cost: `.claude/reference/ai-review-chain-roles-decision.md`.
+Greptile is the second fallback — only after both CR and BugBot fail (chain + supplemental CodeAnt/Graphite: `cr-github-review.md` §Three-Tier). **Neither rare nor free:** 53% of PRs, top sole-source yield, on a paid org with uncapped overage (#1199, #1204). Role + cost: `.claude/reference/ai-review-chain-roles-decision.md`.
 
 **Escalation gate:** `cr-github-review.md` owns triggers/STOP conditions; this file covers behavior after `escalate-review.sh` returns `STATUS=trigger_greptile`.
 
 ## Greptile Basics
 
-Bot: `greptile-apps[bot]`. Trigger: `@greptileai` PR comment. Auto-trigger OFF. Signals: 👀 analyzing, 👍 complete, 😕 failed. Setup: `.claude/reference/greptile-setup.md`.
+Bot: `greptile-apps[bot]`. Trigger: `@greptileai` PR comment. Auto-trigger OFF. Signals: 👀 analyzing, 👍 complete, 😕 failed. Setup: `greptile-setup.md`.
 
 ## Daily Budget
 
 Default: **40/day** (`session-state.json`) — a runaway-*loop* bound, **not** a spend cap; the real cap is vendor-side. Every `@greptileai` trigger MUST run `greptile-budget.sh --consume` first (exit 0 = consumed, exit 1 = exhausted). If exhausted: self-review, which never satisfies the gate.
 
-## Before EVERY `@greptileai` Re-Trigger (MANDATORY — after initial trigger)
+## Before EVERY Re-Trigger (MANDATORY)
 
 2nd/3rd triggers only; the initial trigger needs just the budget check.
 
@@ -35,8 +35,8 @@ Poll per the shared cadence/endpoints (`cr-github-review.md` §Polling); filter 
 
 ## Processing Greptile Findings
 
-Classify by severity (Greptile badges only), verify against code, fix all valid findings in one commit, push once, reply to every thread naming the current HEAD, resolve via `.claude/scripts/resolve-review-threads.sh` (never inline GraphQL). 👍/👎 reactions are Greptile's only learning channel.
+Classify by severity (Greptile badges only), verify against code, fix all valid findings in one commit, push once, reply to every thread naming the current HEAD, resolve via `resolve-review-threads.sh` (never inline GraphQL). 👍/👎 reactions are Greptile's only learning channel.
 
 > **CRITICAL: plain text only in replies** — every `@greptileai` mention triggers a new review.
 
-Reply commands and CR-vs-Greptile comparison: `.claude/reference/greptile-reply-format.md`.
+Reply commands and CR-vs-Greptile comparison: `greptile-reply-format.md`.

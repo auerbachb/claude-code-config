@@ -35,10 +35,14 @@ GitHub:  CodeRabbit  ─┐
 
 ### The three assumptions this decision corrects
 
-1. **A CodeRabbit rate-limit signal is a bounded wait, not a tier failure.** Its banner names a
-   retry window ("Next review available in: 12 minutes"). While that window is open the PR keeps
-   polling CodeRabbit rather than escalating; once it has elapsed with no review, escalation
-   proceeds exactly as before. Enforced in `escalate-review.sh`.
+1. **A CodeRabbit rate-limit signal that *names a retry window* is a bounded wait, not a tier
+   failure.** The qualifier is load-bearing: CodeRabbit emits two shapes, and only the
+   issue-comment banner carries a window ("Next review available in: 12 minutes"). The bare commit
+   status `CodeRabbit / success / "Review rate limited"` names none and escalates immediately, as
+   does a banner whose wording changes such that no window can be read. While a window is open the
+   PR keeps polling CodeRabbit; once elapsed with no review, escalation proceeds exactly as before.
+   Enforced in `escalate-review.sh`, which selects the **newest** banner before reading its window
+   so a stale readable one cannot outrank an unreadable fresh one.
 2. **A BugBot spend refusal is terminal for that HEAD.** Once `cursor[bot]` has posted a usage-limit
    refusal postdating the HEAD commit, further `@cursor review` nudges cannot succeed and are
    suppressed until the next push. Enforced in `maybe-trigger-ai-review.sh`.
@@ -48,6 +52,13 @@ GitHub:  CodeRabbit  ─┐
    ever stop a runaway *loop*, never bound *spend*. It stays at 40/day for exactly that job:
    demand is spiky (134 triggers on 13 active days, **46 on 2026-08-07**), and lowering it would
    strand PRs on self-review — which never satisfies the gate — rather than save money.
+
+   Two mechanics worth stating once, since neither is obvious from the rule file:
+   the budget's day boundary is **`America/New_York`**, not UTC (`greptile-budget.sh`
+   `TODAY`), and `--budget N` **persists** into the stored state rather than applying
+   for one call. Also note the 46-trigger spike is a count of `@greptileai` comments
+   observed on GitHub, not of `--consume` calls — the two are different measurements
+   and only the latter moves this budget.
 
    **The real control is the vendor-side Flex Usage Limit, currently unset.** A cap there fails at
    the vendor, where the consequence is a refused review; a cap here fails mid-workflow, where the
@@ -168,8 +179,9 @@ in a vendor dashboard. Listed in descending value:
 1. **Read the Greptile dashboard.** Determines whether 130 reviews/month is free or an accruing
    balance, and therefore whether Greptile's role next audit is "keep" or "remove first".
 2. **Raise the Cursor usage/spend limit**, or accept BugBot covering ~⅓ of PRs.
-3. **Fix the CodeAnt subscription identity** — add `ci@example.com` to the PR Review subscription, or
-   set a real committer email so the existing seat is recognised.
+3. **Fix the CodeAnt subscription identity** — either license a dedicated CI identity on a seat, or
+   set the committer email to the operator's own seat-holding address. Never point it at a
+   collaborator's address.
 4. **Review the CodeRabbit plan tier.** Assumption 1 recovers unused allowance, but a 7-day allowance
    that 244 PRs/month exhausts is a plan-size question, not a scheduling one.
 

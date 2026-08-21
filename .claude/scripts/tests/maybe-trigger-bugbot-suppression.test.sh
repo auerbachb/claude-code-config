@@ -49,10 +49,15 @@ cp "$REPO_ROOT/.claude/scripts/maybe-trigger-ai-review.sh" "$STUB_DIR/"
 cp "$REPO_ROOT/.claude/scripts/session-state.sh" "$STUB_DIR/"
 cp "$REPO_ROOT/.claude/scripts/state-lock.sh" "$STUB_DIR/"
 cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$STUB_DIR/lib/"
-# The real normaliser, not a stub: the script disables suppression outright when
+# The real normaliser, not a stub: the shared helper declines to suppress when
 # this library will not load, so a missing copy would make every scenario post
 # and the suppression cases would fail for a reason unrelated to their subject.
 cp "$REPO_ROOT/.claude/scripts/lib/ts-normalizer.sh" "$STUB_DIR/lib/"
+# The shared refusal check the script now delegates to (CodeRabbit review, PR
+# #1203). Real, not stubbed: it IS the logic under test — a stub would assert the
+# delegation and nothing about the answer.
+cp "$REPO_ROOT/.claude/scripts/bugbot-refused-head.sh" "$STUB_DIR/"
+chmod +x "$STUB_DIR/bugbot-refused-head.sh"
 chmod +x "$STUB_DIR/maybe-trigger-ai-review.sh" "$STUB_DIR/session-state.sh"
 
 # Gates are not under test here — these two stubs put every scenario past them
@@ -97,8 +102,9 @@ case "$sub" in
     if [[ "${FIXTURE_API_FAIL:-0}" == "1" ]]; then exit 1; fi
     for arg in "$@"; do
       case "$arg" in
-        repos/*/commits/*)          printf '%s\n' "$FIXTURE_HEAD_TS"; exit 0 ;;
-        repos/*/issues/*/comments*) cat "$FIXTURE_COMMENTS_JSON";     exit 0 ;;
+        repos/*/commits/*/check-runs*) cat "$FIXTURE_CHECK_RUNS_JSON"; exit 0 ;;
+        repos/*/commits/*)             printf '%s\n' "$FIXTURE_HEAD_TS"; exit 0 ;;
+        repos/*/issues/*/comments*)    cat "$FIXTURE_COMMENTS_JSON";  exit 0 ;;
       esac
     done
     echo "[]"
@@ -126,6 +132,10 @@ setup() {
   export FIXTURE_COMMENTS_JSON="$TMP/comments.json"
   export FIXTURE_API_FAIL=0
   export FIXTURE_POST_FAIL=""
+  # Default: BugBot has a check-run on HEAD, so a post-HEAD refusal is
+  # attributable. Scenarios that need the un-attributable case override this.
+  printf '%s\n' '{"check_runs":[{"name":"Cursor Bugbot","app":{"slug":"cursor"},"status":"completed","conclusion":"neutral"}]}' > "$TMP/check-runs.json"
+  export FIXTURE_CHECK_RUNS_JSON="$TMP/check-runs.json"
   export POSTED="$TMP/posted.txt"
   : > "$POSTED"
 }
@@ -185,6 +195,29 @@ export FIXTURE_API_FAIL=1
 run_script
 check_eq "@cursor review posted despite the unreadable API" "1" "$(posted_cursor)"
 check_eq "all three nudges posted" "3" "$(posted_count)"
+
+############################################################################
+echo "== (g): refusal with NO BugBot check-run on HEAD -> not attributable, nudge posts =="
+# A timestamp alone does not prove the refusal is about this commit: an issue
+# comment carries no SHA, and "created after the HEAD commit" also matches a run
+# that started before the push landed. Without BugBot's own footprint on this
+# commit the guard cannot attribute the refusal, and fails open. (CodeRabbit
+# review, PR #1203.)
+setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
+printf '%s\n' '{"check_runs":[]}' > "$TMP/check-runs-empty.json"
+export FIXTURE_CHECK_RUNS_JSON="$TMP/check-runs-empty.json"
+run_script
+check_eq "@cursor review posted (refusal not attributable to this commit)" "1" "$(posted_cursor)"
+
+############################################################################
+echo "== (g2): a FOREIGN app's same-named check-run is not BugBot's footprint =="
+# Any app may publish a check named `Cursor Bugbot` (issue #956), so the slug is
+# part of the identity. A foreign run must not license suppression.
+setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
+printf '%s\n' '{"check_runs":[{"name":"Cursor Bugbot","app":{"slug":"github-actions"},"status":"completed","conclusion":"neutral"}]}' > "$TMP/check-runs-foreign.json"
+export FIXTURE_CHECK_RUNS_JSON="$TMP/check-runs-foreign.json"
+run_script
+check_eq "@cursor review posted (foreign publisher is not BugBot)" "1" "$(posted_cursor)"
 
 ############################################################################
 echo "== (f): suppression records the cursor step, so a resume cannot re-post it =="

@@ -16,8 +16,11 @@ the answer changed: **three of the five paid tools now refuse most of the work w
 chain quietly routes past all three to the one tool we deliberately do not pay for.
 
 - **CodeRabbit reviewed 53 of 244 PRs (22%).** On **183 PRs it posted its rate-limit banner and
-  nothing else.** The cap is a **7-day rolling Fair Usage allowance**, not the `~8 reviews/hour`
-  our rules model.
+  nothing else.** Two signals disagree about the cap and this audit does **not** collapse them into
+  one model: the banner cites a **7-day** attempt history, while the dashboard reports a
+  **per-developer limit of 5 reviews/hour** on Pro plus a fair-use cliff to 1/hour after 60+ in a
+  week (§Dashboard reconciliation). Both contradict the `~8 reviews/hour` account-wide figure our
+  rules modelled; only the hourly number is actionable.
 - **BugBot refused 156 of 244 PRs (64%)** with `Bugbot couldn't run — usage limit reached`, a
   Cursor spend limit.
 - **CodeAnt warned `User ci@example.com does not have a PR Review subscription` on 206 PRs (84%)**
@@ -74,11 +77,12 @@ measurements disagree, both are recorded — the disagreement is itself a findin
 
 ### Item 1 — CodeAnt: confirmed exactly as inferred
 
-Premium, **2 of 2 seats used**, active, ~$48/mo. The seats are held by `bretton.auerbach@gmail.com`
-(Admin) and `faculoyarte@gmail.com`. The commit-author identity our PRs carry is **not** among them,
+Premium, **2 of 2 seats used**, active, ~$48/mo. The seats are held by the account owner (Admin)
+and one collaborator. The commit-author identity our PRs carry is **not** among them,
 which is precisely why the warning fires on 84% of PRs while CodeAnt reviews anyway. **Path B is
-free:** point the machine's global `user.email` at a seat-holding address. Path A (buy a third seat
-for the placeholder) costs ~$24/mo to license a fake identity and should not be chosen.
+free:** point the machine's global `user.email` at the **operator's own** seat-holding address —
+never a collaborator's, which would misattribute authorship. Path A (buy a seat for a dedicated CI
+identity) costs ~$24/mo and is the right choice if a distinct CI identity is wanted.
 
 ### Item 2 — BugBot: the inference was directionally right and badly understated
 

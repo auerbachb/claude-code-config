@@ -252,7 +252,7 @@ Use Greptile's severity badges. After fixing:
 
 ### Greptile Reply Format (CRITICAL)
 
-**Never include `@greptileai` in reply text** — every @mention triggers a fresh review round and spends its daily budget (billing state unreconciled: `.claude/reference/ai-review-chain-roles-decision.md`). Use the shared helper, which strips any `@greptileai` tokens from the body as an extra safeguard and falls back to a PR-level comment on 404:
+**Never include `@greptileai` in reply text** — the prohibition and its cost rationale are canonical in `.claude/rules/greptile.md`. Use the shared helper, which strips any `@greptileai` tokens from the body as an extra safeguard and falls back to a PR-level comment on 404:
 
 ```bash
 run_script reply-thread.sh <comment_id> --reviewer greptile \

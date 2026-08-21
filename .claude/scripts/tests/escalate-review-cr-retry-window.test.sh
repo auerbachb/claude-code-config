@@ -177,4 +177,35 @@ OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
 
+############################################################################
+echo "== (h2): NEWEST banner has no readable window -> no grace, even if an older one does =="
+# The gap in (h): every banner there carried a window, so the suite could not tell
+# "newest wins" apart from "newest READABLE wins". If CodeRabbit changes its
+# wording, the newest banner becomes unparseable — and selecting by readability
+# first would hand the PR a grace period computed from a stale window it had
+# already served. Newest-first means an unreadable newest banner grants nothing.
+# (CodeRabbit review, PR #1203.)
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_H2_OLD="$(cr_limit_banner "$(ts_seconds_ago 3000)" "2 hours")"   # readable, still open at its own age
+BANNER_H2_NEW="$(cr_limit_banner "$(ts_seconds_ago 60)" "")"            # newest, no window
+FAIL_H2="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_H2, $BANNER_H2_OLD, $BANNER_H2_NEW]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== (h3): control — that same older banner DOES grant grace when it is newest =="
+# Without this, (h2) would also pass if the older banner's window were simply
+# never readable, proving nothing about ordering.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_H3="$(cr_limit_banner "$(ts_seconds_ago 3000)" "2 hours")"
+FAIL_H3="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_H3, $BANNER_H3]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
+
 finish_escalate_review_tests "CodeRabbit retry-window"

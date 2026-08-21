@@ -34,21 +34,6 @@ CYCLE_SCRIPT="${SCRIPT_DIR}/cycle-count.sh"
 COMPLEXITY_SCRIPT="${SCRIPT_DIR}/complexity-score.sh"
 STATE_FILE="${HOME}/.claude/session-state.json"
 
-# Shared timestamp normaliser (issue #885) — the one canonical bash form of the
-# #836 ordering rule, used by bugbot_refused_head() below. Loaded DEFENSIVELY,
-# not as a hard dependency: this script's job is posting three review nudges, and
-# a missing library must not stop the other two. A failure disables only the
-# BugBot suppression, restoring the pre-#1199 always-nudge behaviour, and says so
-# on stderr rather than degrading silently.
-TS_NORMALIZER_LIB="${SCRIPT_DIR}/lib/ts-normalizer.sh"
-TS_NORMALIZER_LOADED=""
-# shellcheck source=./lib/ts-normalizer.sh
-if [[ -r "$TS_NORMALIZER_LIB" ]] && source "$TS_NORMALIZER_LIB"; then
-  TS_NORMALIZER_LOADED=1
-else
-  echo "maybe-trigger-ai-review.sh: could not load $TS_NORMALIZER_LIB — BugBot spend-refusal suppression disabled; @cursor review nudges post as before" >&2
-fi
-
 help() {
   sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
 }
@@ -367,25 +352,12 @@ post_one() {
 # canonical bash form of the #836/#885 rule — rather than a new jq mirror, so
 # this file adds no second definition to keep in step.
 bugbot_refused_head() {
-  local head_ts comments refusal_ts
-  [[ -n "${TS_NORMALIZER_LOADED:-}" ]] || return 1
-  head_ts="$(gh api "repos/{owner}/{repo}/commits/$HEAD_SHA" --jq '.commit.committer.date // empty' 2>/dev/null)" || return 1
-  [[ -n "$head_ts" ]] || return 1
-  comments="$(gh api --paginate "repos/{owner}/{repo}/issues/$PR_NUM/comments?per_page=100" 2>/dev/null | jq -s 'add // []' 2>/dev/null)" || return 1
-  [[ -n "$comments" ]] || return 1
-  # Newest cursor[bot] refusal, raw. Phrase set matches escalate-review.sh's
-  # is_failure_text so the two agree on what a refusal looks like.
-  refusal_ts="$(jq -r '
-    [ .[]?
-      | select((.user.login // "") == "cursor[bot]")
-      | select((.body // "") | test("couldn.t run|could not run|usage limit|usage or spend limit"; "i"))
-      | (.created_at // "")
-      | select(. != "") ]
-    | sort | last // ""
-  ' <<<"$comments" 2>/dev/null)" || return 1
-  [[ -n "$refusal_ts" ]] || return 1
-  # Only a refusal at or after the HEAD commit describes this push.
-  [[ ! "$(norm_ts "$refusal_ts")" < "$(norm_ts "$head_ts")" ]]
+  # Delegates to the shared implementation so this file and /fixpr Step 3b ask
+  # one question with one answer (CodeRabbit review, PR #1203). A missing helper
+  # declines to suppress — the same fail-open direction the helper itself takes.
+  local helper="${SCRIPT_DIR}/bugbot-refused-head.sh"
+  [[ -x "$helper" ]] || return 1
+  "$helper" "$PR_NUM" "$HEAD_SHA" >/dev/null 2>&1
 }
 
 if ! post_one codeant "@codeant-ai review"; then echo "maybe-trigger-ai-review.sh: failed posting @codeant-ai review" >&2; exit 5; fi

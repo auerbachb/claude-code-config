@@ -13,9 +13,12 @@ that interprets it so the raw readings survive independently of any conclusion d
 [`README.md`](./README.md) §"Audits and research", this file is **exempt from corpus-wide rewrites**
 — do not update it to match later reality; write a new dated sibling instead.
 
-**Redactions.** Payment-instrument identifiers present in the source have been removed; they carry
-no operational value here. Seat-holder emails are retained because which identity holds a seat is
-the actionable fact behind the CodeAnt finding.
+**Redactions.** This repository is **public**. Payment-instrument identifiers and personal email
+addresses from the source have been removed. An earlier revision retained seat-holder emails on the
+grounds that they were the actionable fact — that was wrong for a public record, and the finding
+survives without them: what matters is *that* the commit-author identity holds no seat, not which
+addresses do. Where a seat holder must be referred to, they are named by role ("the account owner")
+or by GitHub handle.
 
 **Known scope error, preserved deliberately.** The Greptile section reads the **`localmovers-com`**
 org, which does **not** serve `auerbachb/claude-code-config` — that repo is absent from its 24-repo
@@ -59,9 +62,9 @@ Source pages: `cursor.com/dashboard/spending`, `/dashboard/billing`, `/dashboard
 Source pages: `/subscription`, `/settings/team-management`, `/settings/prconfsettings`.
 
 - Plan: **Premium, 2 seats, ACTIVE.** Public price $24/user/mo billed annually ("Unlimited AI reviews"). AI credits balance $0.00.
-- Seats (**2 of 2 used, 0 left**): `bretton.auerbach@gmail.com` (Admin) and `faculoyarte@gmail.com` (Member), both with AI Code Review access. An Auto Enroll Team Members toggle exists (state not verified).
-- **Which email holds the seat:** `bretton.auerbach@gmail.com`. The CI/commit email our PRs are authored under is **not** in the seat list — consistent with the 84% warning rate. CodeAnt reviews anyway but flags the author as unlicensed.
-- Fix options (not executed): **Path A** — buy a seat, then invite the CI email (~$24/mo to license a placeholder identity). **Path B** — set the machine's global git `user.email` to a seat-holding address (**$0**). Path B is the cheaper fix if the CI identity is a convenience alias.
+- Seats (**2 of 2 used, 0 left**): the account owner (Admin) and one collaborator (Member), both with AI Code Review access. An Auto Enroll Team Members toggle exists (state not verified).
+- **Which identity holds the seat:** the account owner's. The CI/commit identity our PRs are authored under is **not** in the seat list — consistent with the 84% warning rate. CodeAnt reviews anyway but flags the author as unlicensed.
+- Fix options (not executed): **Path A** — buy a seat and license a dedicated CI identity (~$24/mo). **Path B** — set the machine's global git `user.email` to **the operator's own** seat-holding address (**$0**). Path B is cheaper where the CI identity is just a convenience alias for the operator; it must **never** point at a collaborator's address, which would misattribute authorship.
 - Org scope note: the CodeAnt org is `auerbachb` (personal GitHub), listing repos such as skingod, still-point, longlove, inventory, meeting_insights_and_actions.
 - Review settings (repo view for consulting-websites): Process PR Review, PR Size Labels, Ticket Compliance, Draft PR Analysis, Sequence Diagram, Auto Approve PR, Auto Resolve Suggestions all = **Inherit** from org; Live Secret Validation and Fix in IDE **overridden** at repo level; Incremental PR Review Threshold = inherit; Suggestion Threshold inherited. **The org-defaults page hung on load twice and could not be read** — the org-level values (especially Draft PR Analysis, Incremental threshold, Suggestion Threshold, which drive volume) remain unread. CodeAnt is unlimited on Premium, so these affect noise, not cost.
 

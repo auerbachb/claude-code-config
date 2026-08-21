@@ -598,12 +598,24 @@ CR_RETRY_WINDOW_CAP_SECONDS=3600
 # preserve.
 read -r CR_BANNER_WINDOW_S CR_BANNER_TS < <(jq -r --argjson cap "$CR_RETRY_WINDOW_CAP_SECONDS" '
   def window_seconds:
-    (ascii_downcase | gsub("\\*"; "")
-     | capture("next review available in:?\\s*(?<n>[0-9]+)\\s*(?<unit>second|minute|hour)")) as $m
-    | if $m == null then empty
+    # `capture` emits an EMPTY GENERATOR on no-match, not null — so binding it
+    # directly with `as` yields zero outputs and silently deletes the whole
+    # enclosing object, making any null-branch below unreachable. Collecting into
+    # an array first turns "no match" into a real null this code can act on.
+    ([ ascii_downcase | gsub("\\*"; "")
+       | capture("next review available in:?\\s*(?<n>[0-9]+)\\s*(?<unit>second|minute|hour)") ]
+     | first) as $m
+    | if $m == null then 0
       else ($m.n | tonumber)
            * (if $m.unit == "hour" then 3600 elif $m.unit == "minute" then 60 else 1 end)
       end;
+  # NEWEST banner first, THEN read its window — never the reverse (CodeRabbit
+  # review, PR #1203). An unreadable window yields 0 rather than dropping the
+  # banner from the list, because dropping it would let an OLDER readable banner
+  # win the sort: a CodeRabbit wording change would then hand the PR a grace
+  # period computed from a stale window it had already served. With 0, the
+  # newest-banner-has-no-window case grants no grace at all, which is the
+  # fail-toward-escalation direction this block is built on.
   [ .comments.conversation[]?
     | select((.user.login // "") == "coderabbitai[bot]")
     | select((.body // "") | test("review limit reached"; "i"))
