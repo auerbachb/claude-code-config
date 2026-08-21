@@ -1,8 +1,11 @@
 # AI Review Stack — Paid Levers Checklist
 
 Issue: [#1213](https://github.com/auerbachb/claude-code-config/issues/1213)
+
 Dashboard readings every figure rests on: [`ai-review-billing-dashboard-2026-08.md`](./ai-review-billing-dashboard-2026-08.md) (#1204)
+
 Roles the spend buys: [`ai-review-chain-roles-decision.md`](./ai-review-chain-roles-decision.md) (#1199)
+
 Price derivations and break-even math: [`pricing-matrix.md`](./pricing-matrix.md) (#1202)
 
 **Every item here is an owner decision made in a vendor dashboard. None of them are code**, and none
