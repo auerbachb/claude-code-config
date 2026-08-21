@@ -30,11 +30,25 @@ There is no third reason. A busy pipeline is not one (below), and neither is siz
 
 1. **PM context** → the issue **queues inline** behind the running pipelines. Report it as queued.
 2. **No PM context, but the surface can count in-flight work** (e.g. `/wave` Step 2 derives `IN_FLIGHT` from your own open PRs) → report the issues as **deferred**, naming the count and scope, and offer **no** chip. Deferred still means *reported*, never silently dropped.
-3. **No PM context and no in-flight figure to gate on** (`/start-issue` or `/issue-maker` in a standalone thread) → the **chip is the correct hand-off**. There is nothing to count and no queue to join, so withholding it would strand the work.
+3. **No PM context** (`/start-issue` or `/issue-maker` in a standalone thread) → the **chip is the correct hand-off** for a *single* issue: there is no queue to join, so withholding it would strand the work. **This case no longer means "nothing to count."** Since [#1191](https://github.com/auerbachb/claude-code-config/issues/1191) every surface can obtain a repo-wide in-flight figure from `active-work-cap.sh` without any PM context at all, so a **batch** here is capped and its remainder deferred exactly as in case 2 — see "Repo-wide active-work cap" below. Offering one chip per issue with nothing counted against it was the 2026-08-18 twenty-thread failure, and it is no longer correct.
 
 **Every separate-thread offer states why**, and the too-big case must name its criterion — on **every** such offer, not only those made while a slot happened to be free (the pre-#776 rule). "Slots were full" is never an acceptable reason for a thread: that path queues or defers.
 
 This gate chooses only which *recommendation* to surface — it **never launches anything** (the execution boundary above is absolute). Reuse the existing `## Active Work` / `IN_FLIGHT` state; do not invent a parallel ledger.
+
+## Repo-wide active-work cap
+
+The gate above bounds work **per thread**. Once work fans out across separate coding threads nothing counted the total — that is what produced roughly twenty simultaneously active threads on one repo on 2026-08-18. `active_work_cap` is the cross-thread bound, and it is the figure case 3 above now gates on. Issue [#1191](https://github.com/auerbachb/claude-code-config/issues/1191); derivation of the default: `active-work-cap.md`.
+
+**Resolver.** `.claude/scripts/active-work-cap.sh` owns the number and the counting rules; never restate the default here or in a SKILL.md. `--free` prints how many new offers are permitted right now, `--json` adds the per-source breakdown, `--cap` resolves the knob alone without a network call.
+
+**The count** is author-scoped and repo-scoped: your open PRs (`@me`, per #732/#733) + live offered issue-maker chips **for this repo whose issue is still open** + `active_agents` entries not yet at a PR. Offered-but-unclicked chips count — twenty offered chips invite twenty clicks. Note this is a *narrowing* of the raw "Cross-skill chip visibility" query below: that query answers per-issue dedup ("was this already offered?") and is deliberately repo-agnostic and retract-only, which makes its raw count a monotonic high-water mark rather than a measure of live work. The script applies both narrowings; a skill must not hand-roll the count from the dedup query.
+
+**The batch rule.** A batch emitter offers **at most `FREE` new chips in one turn**. The remainder is reported as **deferred**, naming the count and the scope — never silently dropped, and never quietly truncated to a "top N". Deferred issues are re-offered as active work drains; refill replenishes against the same cap. A single-issue offer in case 3 is unaffected while `FREE > 0`.
+
+**Subordination — `min()`, never `max()`.** The effective limit is `min(pipeline_ceiling, active_work_cap)`. The cap **never raises** the per-thread 3–4 ceiling: a repo configured to 10 still runs 3–4 pipelines per thread. Raising the per-thread ceiling means editing `subagent-orchestration.md`, a reviewed rule change — the same asymmetry `/wave` applies to `MAX_WAVE` (may lower, may never raise).
+
+**Portability (#1189).** The cap and the count resolve from the **target** repo — `repo-root.sh` for the root, `pm-config-get.sh --file` for the knob — not from the orchestrator's checkout. A thread running in one repo therefore reads the cap of the repo it is offering work in, and a repo that never set the knob gets the derived default silently.
 
 ## Availability detection
 

@@ -91,6 +91,7 @@ Scripts that manage the background-silence ceiling, launchd watchdog, and time h
 | Script | Purpose |
 |--------|---------|
 | `bgwork-ceiling.sh` | Hard ceiling on chat silence while background work (subagents, watchers) runs |
+| `active-work-cap.sh` | Repo-wide budget for simultaneously active coding work — resolves `ACTIVE_WORK_CAP`, counts open PRs + live chips + pre-PR pipelines, emits `FREE` for batch chip emitters |
 | `statusline.sh` | Render the Claude Code status line — one stdout line of `ET time · branch · N agents · M watchers`; reads the session JSON on stdin, always exits 0 |
 | `install-silence-watchdog.sh` | Install the macOS launchd watchdog that monitors Claude heartbeat files |
 | `uninstall-silence-watchdog.sh` | Uninstall the macOS launchd silence watchdog |
@@ -187,6 +188,7 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | `backlog-health.test.sh` | Tests for `backlog-health.sh` |
 | `backlog-staleness.test.sh` | Tests for `backlog-staleness.sh` |
 | `bgwork-ceiling.test.sh` | Tests for `bgwork-ceiling.sh` |
+| `active-work-cap.test.sh` | Tests for `active-work-cap.sh` — cap resolution, the three count sources, and fail-loud read errors |
 | `check-runs-dedup.test.sh` | Tests for `check-runs-dedup.sh` |
 | `churn-hotspots.test.sh` | Tests for `churn-hotspots.sh` |
 | `ci-status.test.sh` | Tests for `ci-status.sh` |

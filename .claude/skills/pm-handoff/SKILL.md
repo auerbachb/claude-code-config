@@ -113,6 +113,16 @@ You manage the backlog, track progress, write GitHub issues, and generate prompt
 5. Create new GitHub issues when gaps are identified
 6. **Do NOT spawn subagents or use the Agent tool to execute work.** Your job is to write prompts and present them to the user. The user will paste them into new Claude Code threads (web or CLI). Only use subagents if the user explicitly asks (e.g., "go ahead and run those", "spin up agents for those").
 
+## Active work
+
+```ini
+ACTIVE_WORK_CAP=6
+```
+
+- **ACTIVE_WORK_CAP** — repo-wide cap on simultaneously active coding work: your open PRs + live offered chips + running inline pipelines not yet at PR. Positive integer in **[1, 10]**; absent, unparseable, or out-of-range warns and falls back to the default. **`CLAUDE_ACTIVE_WORK_CAP` env overrides** when set. Read via `active-work-cap.sh`.
+- **Default 6** — CodeRabbit allows 5 reviews/hour/developer, so past 5 concurrent PRs a PR cannot get one review round per hour and rebase re-review overtakes productive review. Derivation: `.claude/reference/active-work-cap.md`.
+- Governing limit is `min(3–4 pipeline ceiling, ACTIVE_WORK_CAP)` — this never raises a thread's own pipeline band.
+
 ## Infrastructure
 {Auto-detected infrastructure from 2b}
 

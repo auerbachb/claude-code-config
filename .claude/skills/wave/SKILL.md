@@ -35,6 +35,7 @@ resolve_script() {
 }
 ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
 PM_CONFIG_GET=$(resolve_script pm-config-get.sh || true)
+ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh || true)
 ```
 
 Read `chip-launching.md` the same way — `$HOME/.claude/skills-worktree/.claude/reference/chip-launching.md` first, then `$HOME/.claude/reference/`, then `.claude/reference/` — and `cr-rate-limits.md` likewise.
@@ -44,6 +45,7 @@ Read `chip-launching.md` the same way — `$HOME/.claude/skills-worktree/.claude
 - `chip-launching.md` unreadable → **required**. Print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable`, and stop before offering any chip. A `/wave` that cannot read its own routing gate is exactly the run that fans out one thread per issue (#1189); refusing is the safe failure.
 - `ISSUE_CLAIM` empty → **optional**. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim filter skipped, in-flight detection is PR-only` and continue with Step 2's other filters.
 - `PM_CONFIG_GET` empty → **optional**. Print `DEGRADED: pm-config-get.sh not found (checked all three paths) — repo Wave override unavailable` and use `CEILING` as computed. An *absent* `.claude/pm-config.md` in a repo that has the script is a normal state, not a degradation — say nothing.
+- `ACTIVE_WORK_CAP_SH` empty → **optional, but say so**. Print `DEGRADED: active-work-cap.sh not found (checked all three paths) — repo-wide cap unenforced, sizing on the per-thread ceiling only` and drop `FREE` from the `SLOTS` formula. `/wave` still has `EFFECTIVE - IN_FLIGHT`, so the wave stays bounded; what is lost is only the cross-thread term, and a run that silently dropped it would look identical to one where the repo genuinely had headroom. A **non-zero exit** from the script is different from a missing script: it means a count source could not be read, so treat it as `FREE = 0` and defer, rather than sizing as if nothing were in flight (`active-work-cap.md` "Resolution order and failure behavior").
 
 The pipeline ceiling itself needs no fallback: `.claude/rules/subagent-orchestration.md` auto-loads at user scope in every project, so the number is already in context wherever `/wave` runs.
 
@@ -178,12 +180,14 @@ Record the exclusion reason for every candidate that fails a check — Step 9 pr
 CEILING    = 4                        # top of the 3–4 concurrent-pipeline band
 CONFIG     = MAX_WAVE from pm-config  # optional; clamped to [1, CEILING]
 EFFECTIVE  = min(CEILING, CONFIG?)    # total concurrent work allowed
-SLOTS      = min(REQUESTED?, EFFECTIVE - IN_FLIGHT)
+FREE       = "$ACTIVE_WORK_CAP_SH" --free  # repo-wide headroom, all threads
+SLOTS      = min(REQUESTED?, EFFECTIVE - IN_FLIGHT, FREE)
 ```
 
 `REQUESTED` caps *new* chips; `EFFECTIVE - IN_FLIGHT` caps *total* concurrent work. Applying them separately means `/wave 2` with one issue already in flight still offers 2 (total 3, under the ceiling) rather than being penalized twice.
 
-- **`CEILING = 4`** comes from `.claude/rules/subagent-orchestration.md` ("Keep 3-4 active CR-polled PRs max"). It binds chip-launched threads too: the scarce resource is **reviewer throughput** — roughly 8 CodeRabbit reviews/hour shared across every open PR (`.claude/reference/cr-rate-limits.md`) — not subagent slots. Four threads started at once become four PRs competing for that same hourly budget.
+- **`CEILING = 4`** comes from `.claude/rules/subagent-orchestration.md` ("Keep 3-4 active CR-polled PRs max"). It binds chip-launched threads too: the scarce resource is **reviewer throughput** — CodeRabbit serves 5 PR reviews per developer per hour, shared across every open PR you own (`.claude/reference/cr-rate-limits.md`) — not subagent slots. Four threads started at once become four PRs competing for that same hourly budget.
+- **`FREE`** is the repo-wide headroom from `"$ACTIVE_WORK_CAP_SH" --free` (Step 0; `chip-launching.md` "Repo-wide active-work cap"). `CEILING` bounds *this thread*; `FREE` bounds **every thread on the repo at once**, counting your open PRs, live chips offered from any capture thread, and pipelines not yet at a PR. It is the term that stops a fresh `/wave` in a new tab from re-filling a board that other tabs already filled. Never read the cap's number into this file — the script owns it, and its derivation is `active-work-cap.md`.
 - **`CONFIG`** is an optional `MAX_WAVE=N` line in a `## Wave` section of `.claude/pm-config.md`:
 
   ```bash
@@ -195,7 +199,9 @@ SLOTS      = min(REQUESTED?, EFFECTIVE - IN_FLIGHT)
 
 If `SLOTS <= 0`, print one line naming what is already in flight and **whose** — the count is your own PRs only ("your 4 open pipelines fill the 4-slot ceiling — merge or park one before starting more."). Never phrase it as a bare "N open PRs": a collaborator's PRs are not in this count, and naming the scope is what makes a wrong count visible at a glance (issue #732, AC4). Then branch on PM context. **Inside a PM thread** (a `## Active Work` table is present): name the subagent-fit issues as **queued inline** behind the running pipelines, and list any **too-big** ones as *deferred* — they need a thread, and opening one now would spend the same reviewer budget the ceiling exists to protect, so they wait for a slot too. **Outside PM context:** report every issue as **deferred**, naming the in-flight count and scope, and offer no chip — `/wave` derives `IN_FLIGHT` from your own open PRs (Step 2), so it *can* see the ceiling and must respect it (`chip-launching.md` "Precedence when the ceiling is full", case 2). "Stop" means no new work starts, not that issues go unnamed. Either way a full ceiling **never** produces a chip — slot state schedules, it never routes work to a thread (#776 AC4) — and **nothing is silently dropped**: every excluded issue is named with its reason.
 
-Take the first `SLOTS` issues from the independent set. Anything past that is excluded with reason "cap reached ({SLOTS} slot(s); {IN_FLIGHT} already in flight)".
+**Name the term that actually bound.** `SLOTS` has three inputs and they fail for different reasons, so a block message must say which one is tight — "the ceiling is full" when the repo-wide cap is what stopped you sends the user to merge a PR in *this* thread when the work is in another tab. When `FREE` is the binding term, say so and name the repo-wide figure: "the repo is at its active-work cap ({ACTIVE} of {CAP} in motion — your open PRs, offered chips, and running pipelines across all threads)". `active-work-cap.sh --json` gives the per-source breakdown when the split is worth showing.
+
+Take the first `SLOTS` issues from the independent set. Anything past that is excluded with reason "cap reached ({SLOTS} slot(s); {IN_FLIGHT} already in flight)" — or, when `FREE` bound, "deferred — repo-wide active-work cap ({ACTIVE}/{CAP})". Deferred issues are re-offered as work drains; they are never dropped.
 
 ---
 

@@ -44,6 +44,7 @@ SESSION_STATE_SH=$(resolve_script session-state.sh || true)
 PM_CONFIG_GET=$(resolve_script pm-config-get.sh || true)
 ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
 BACKLOG_HEALTH=$(resolve_script backlog-health.sh || true)
+ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh || true)
 ```
 
 Read reference docs through the same order — `$HOME/.claude/skills-worktree/.claude/reference/<name>` first, then `$HOME/.claude/reference/`, then `.claude/reference/`. That covers `chip-launching.md`, `pm-output-templates.md`, and `session-state-schema.json`.
@@ -54,6 +55,7 @@ Read reference docs through the same order — `$HOME/.claude/skills-worktree/.c
 - `SESSION_STATE_SH` empty → **required for orchestration state**. Print `ERROR: session-state.sh not found (checked all three paths) — refill pause, slot tracking, and monitoring state unavailable`. Rank and report, but do not start or refill pipelines: without persisted state a "stop" the user set earlier is invisible, and silently resuming refill against it is the worst available failure.
 - `ISSUE_CLAIM` empty → **optional**. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim checks skipped; issues may already be held by another thread` and continue.
 - `BACKLOG_HEALTH` empty → **optional**. Print `DEGRADED: backlog-health.sh not found (checked all three paths) — staleness block omitted` and skip that block.
+- `ACTIVE_WORK_CAP_SH` empty → **optional, but say so**. Print `DEGRADED: active-work-cap.sh not found (checked all three paths) — repo-wide cap unenforced, bounding chips on the per-thread ceiling only` and cap the 3.1 chip batch at the 3–4 ceiling instead. A **non-zero exit** from a script that *did* resolve is not the same thing: it means a count source could not be read, so treat it as `FREE = 0` and defer rather than offering as if the repo were idle (`active-work-cap.md` "Resolution order and failure behavior").
 - `PM_CONFIG_GET` empty → **optional**. Print `DEGRADED: pm-config-get.sh not found (checked all three paths) — repo PM config unavailable, using defaults`. An *absent* `.claude/pm-config.md` where the script resolved is a normal state that `/pm` bootstraps — say nothing there.
 
 The pipeline ceiling, the autonomy grants, and the monitor-mode rules need no fallback: `.claude/rules/*.md` auto-loads at user scope in every project (`portable-skill-resolution.md`), so they are already in context wherever `/pm` runs.
@@ -539,6 +541,8 @@ This is the core PM behavior. Enter the orchestration loop as soon as Step 1 has
 
 **Before offering anything, consult the shared issue-maker record** (`chip-launching.md` "Cross-skill chip visibility") — `/issue-maker` runs in its own capture-only thread and can't write to this thread's Active Work table, so a chip it already offered is invisible to the table alone. Glob `~/.claude/handoffs/issue-maker-*-log.json` the same way this step's session-view read already globs both `~/.claude/handoffs/pr-*-handoff.json` (legacy flat) and `~/.claude/handoffs/*/*/pr-*-handoff.json` (scoped, issue #655), and for any thread-prompt issue with a live issue-maker chip (`status: "open"` and non-null `chip_task_id`): skip spawning or printing a new chip for it, and instead add (or refresh) its Active Work row directly — Thread `Chip offered`, Task ID the issue-maker `chip_task_id`, Status `Awaiting thread start`. This is the one case where an Active Work row's Task ID didn't come from a `spawn_task` call this thread made itself. Run the remaining thread-prompt issues (the ones with no live issue-maker chip) through the normal flow below.
 
+**Then bound the batch against the repo-wide cap.** Before the `spawn_task` loop below, read `FREE` from `"$ACTIVE_WORK_CAP_SH" --free` (resolved in Step 0; `chip-launching.md` "Repo-wide active-work cap"). Offer **at most `FREE`** new chips this turn. Report the remainder as **deferred**, naming the count and the scope — "3 deferred — repo-wide active-work cap ({ACTIVE}/{CAP} in motion across all threads)" — and give each deferred issue an Active Work row with Thread `—` and Status `Deferred (cap)` so it is visible and re-offerable rather than forgotten. Never silently shorten the list. This is separate from the 3–4 pipeline ceiling: that one governs *inline* work in this thread, while `FREE` counts every thread on the repo, so a PM thread can be under its own ceiling and still have nothing to offer. Deferred issues are re-offered as active work drains (3.4).
+
 **First, check chip availability** per `.claude/reference/chip-launching.md`, then branch:
 
 - **Chip mode** (`mcp__ccd_session__spawn_task` present): call `spawn_task` once per thread-prompt issue with `title` / `prompt` / `tldr` / `cwd`, where `prompt` is the full self-contained prompt below, unchanged. Print **only** the short summary per issue (issue, title, `**Model:**` line, `**Effort:**` line, one-line reason) — see the reference for the exact format. Record each returned `task_id` in the Active Work table (3.2) and set that issue's status to `Chip offered`.
@@ -721,6 +725,8 @@ Refill from two sources, in this order:
 **Overlap chains still serialize.** A free slot is permission to launch *some* issue, never one whose file is contested — `/subagent` Step 6.0b picks the chain head. A candidate chained behind a running pipeline is not eligible on this tick; take the next unchained one.
 
 **Too-big picks are never auto-launched.** Backlog refill launches inline-eligible issues only. A too-big candidate goes down 3.1's thread-prompt path — chip or printed block — and waits for the user's click, exactly as before.
+
+**Refill replenishes only up to the repo-wide cap.** The too-big picks reaching 3.1's chip path are bounded by `FREE` there, so a refill tick offers at most `FREE` new chips and defers the rest with the count and scope named. This is the term that makes refill *replenishment* rather than accumulation: as PRs merge and chips clear, `FREE` grows and previously deferred issues become offerable again on a later tick. A tick where `FREE == 0` is a legitimate resting state for the chip path — report `nothing eligible (repo-wide active-work cap)` rather than offering past it. Inline refill is unaffected while under both limits; `min(ceiling, cap)` governs, per `chip-launching.md`.
 
 **Report the picks; never ask for them.** Every auto-refill prints one prose line per issue started, each with a one-line rationale — the existing prose-line style used alongside the Active Work table, not a new column:
 

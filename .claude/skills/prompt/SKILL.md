@@ -55,6 +55,7 @@ resolve_script() {
   return 1
 }
 ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
+ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh || true)
 ```
 
 Read `chip-launching.md` through the same order — `$HOME/.claude/skills-worktree/.claude/reference/chip-launching.md` first, then `$HOME/.claude/reference/`, then `.claude/reference/`.
@@ -63,6 +64,7 @@ Read `chip-launching.md` through the same order — `$HOME/.claude/skills-worktr
 
 - `chip-launching.md` unreadable → **required**. Print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable` and stop before offering any chip; Step 5.5's inline/too-big partition depends on it, and without the gate every issue routes to its own thread (#1189).
 - `ISSUE_CLAIM` empty → **optional**. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim checks skipped` and continue.
+- `ACTIVE_WORK_CAP_SH` empty → **optional, but say so**. Print `DEGRADED: active-work-cap.sh not found (checked all three paths) — repo-wide cap unenforced` and fall back to the pre-cap behavior in Step 6 (delegated gating only). A **non-zero exit** from a script that did resolve means a count source could not be read — treat it as `FREE = 0` and defer, never as an idle repo.
 
 `/prompt` also *emits* script paths into the prompts it generates. Those go to a thread running in some other repo, so the generated text carries the candidate order itself rather than a bare path — see the Constraints and Workflow blocks below.
 
@@ -255,6 +257,8 @@ Check chip availability per `.claude/reference/chip-launching.md`, then branch. 
 **Skip issues already offered.** Before spawning, check the recorded state (Path B's Active Work scan already excludes `Chip offered` — see Step 0a) and skip any issue that already has a live chip. Re-running `/prompt` must not offer the same issue twice. Issues that were never spawned, or whose spawn failed, are still eligible.
 
 Subagent candidates from Step 5.5 never get chips — they run inline via `/subagent`, so that section is unchanged in both modes.
+
+**Bound the batch against the repo-wide cap.** Before the `spawn_task` loop, read `FREE` from `"$ACTIVE_WORK_CAP_SH" --free` (resolved in Step 0; `chip-launching.md` "Repo-wide active-work cap") and offer **at most `FREE`** new chips this turn. Report the remainder as **deferred**, naming the count and the scope — "4 deferred — repo-wide active-work cap ({ACTIVE}/{CAP} in motion across all threads)". Print no block for a deferred issue: a deferred issue is not offered, and printing its block would hand the user the same launch the cap just withheld. Deferred issues are re-offered as active work drains. This does not change the rule below that every *offered* issue ends with either a chip or a block.
 
 `/prompt` introduces **no all-open-PR ceiling count of its own**: Path B's issue set comes from the PM thread's own `## Suggested Next Issues` / `## Active Work` (your work), and any slot/ceiling gating is delegated — chip offers follow `chip-launching.md`'s PM-context inline gate and inline runs follow `/subagent`'s concurrency ceiling, both author-scoped per `subagent-orchestration.md` (the canonical ceiling). The `Fixes #N` / `Closes #N` signal read during classification (Step 2) is a per-issue in-flight/dedup hint, not a `/prompt`-owned slot count, and never gates a launch on a collaborator's PR. (`/wave` is different: an issue covered by a PR *you* authored **does** count toward its `IN_FLIGHT` and reduces available slots — that is `/wave`'s slot accounting, not `/prompt`'s.)
 

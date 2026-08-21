@@ -26,6 +26,16 @@ ENABLE_PR_REVIEW_HELP=0
 - **FILE_WEIGHT** — multiplier on `changedFiles` inside the score; must be a **positive integer** (0 and non-positive values are rejected). **`COMPLEXITY_FILE_WEIGHT` env overrides** when set.
 - **ENABLE_PR_REVIEW_HELP** — `1` / `true` / `yes` / `on` posts a fourth comment `/pr-review-help #<PR_NUMBER>` after the three single-mention triggers.
 
+## Active work
+
+```ini
+ACTIVE_WORK_CAP=6
+```
+
+- **ACTIVE_WORK_CAP** — repo-wide cap on simultaneously active coding work: your open PRs + live offered chips + running inline pipelines not yet at PR. Must be a **positive integer in [1, 10]**; absent, unparseable, or out-of-range warns and falls back to the default. **`CLAUDE_ACTIVE_WORK_CAP` env overrides** when set. Read via `.claude/scripts/active-work-cap.sh`.
+- **Default 6, upper bound 10.** Derived from CodeRabbit's measured **5 reviews/hour per developer** (not the retracted ~8): at 5 concurrent PRs each gets one review round per hour and rebase re-review reaches parity with productive review, so 6 is that limit plus one slot of headroom. Full derivation: [`active-work-cap.md`](reference/active-work-cap.md).
+- **Subordinate, never superior, to the per-thread ceiling** — the governing limit is `min(3–4 pipeline ceiling, ACTIVE_WORK_CAP)`. Raising this never widens a thread's own pipeline band.
+
 ## Infrastructure
 
 No hosting/deployment infrastructure detected (no Railway, Vercel, Fly.io, Render, Supabase, Neon, Netlify, or Node/Python package manifests at repo root). This repo is a Claude Code configuration/skills distribution — it ships shell scripts, Markdown skill/rule definitions, and GitHub Actions workflows, not a deployed service.
