@@ -301,6 +301,15 @@ None of these are agent-executable. Ordered by value per unit of effort. Items 1
 10. **Assign CodeRabbit seats** to unassigned human authors (`paulkathat-lmc`, `davidpetersen`, `mirkosalvato1-ctrl`) or accept that their PRs go unreviewed.
 11. **Do not buy** Graphite Starter, a Greptile Pro seat, or a third CodeAnt seat on current evidence. Treat CodeRabbit Pro+ as a second-line option behind the metered lever.
 
-## Deferred: rule-file pointers
+## Rule-file pointers
 
-This document is deliberately **not** wired into `.claude/rules/`. PR [#1203](https://github.com/auerbachb/claude-code-config/pull/1203) (Issue #1199) is concurrently rewriting the exact sections in `bugbot.md`, `greptile.md`, `cr-github-review.md`, and `cr-local-review.md` where those pointers belong, and its plan consumes the remaining ratchet headroom. Adding them here would guarantee a four-file rebase collision and risk breaching the word cap after rebase. The pointers are a follow-up once #1203 lands; this PR is word-neutral on the rule corpus.
+Four rule files cite this document from the section that governs the matching cap, so an agent that hits a cap mid-workflow finds the priced way past it without knowing this file exists:
+
+| Rule file | Citing section | Cited here |
+|---|---|---|
+| `bugbot.md` | BugBot failure detection (spend-limit) | [§Cursor BugBot](#cursor-bugbot) |
+| `greptile.md` | Daily Budget — "the real cap is vendor-side" | [§Greptile](#greptile) |
+| `cr-github-review.md` | Rate Limits & Behavior (Pro Tier) | [§CodeRabbit](#coderabbit) |
+| `cr-local-review.md` | CodeAnt 403 / daily-cap note | [§CodeAnt](#codeant) |
+
+Wired by Issue #1211, deferred out of the original PR [#1208](https://github.com/auerbachb/claude-code-config/pull/1208) only because PR [#1203](https://github.com/auerbachb/claude-code-config/pull/1203) was concurrently rewriting all four of those sections and consuming the ratchet headroom. **Renaming any `###` heading above breaks a live rule-file citation** — update the four pointers in the same PR.

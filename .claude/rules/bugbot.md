@@ -4,7 +4,7 @@
 > **Ask first:** Never — fix findings autonomously.
 > **Never:** Trigger Greptile before checking if BugBot already posted a review. Include `@cursor` in reply comments (may trigger a re-review). Ignore BugBot findings. Re-nudge `@cursor review` after a usage-limit refusal postdating HEAD.
 
-BugBot (Cursor, per-seat) is the **second-tier** reviewer in the escalation chain (`cr-github-review.md` §Three-Tier).
+BugBot (Cursor) is the **second-tier** reviewer in the escalation chain (`cr-github-review.md` §Three-Tier).
 
 **Trigger on push:** CI posts `@cursor review` via `CURSOR_REVIEW_PAT` PAT (`cursor-review-pr-comment.yml`); BugBot ignores bot-authored triggers; absent secret → no post, warns — see `feedback_bugbot_auto_trigger_unreliable.md`.
 
@@ -25,7 +25,7 @@ Poll alongside CR per the shared cadence/endpoints (`cr-github-review.md` §Poll
 
 **Completion signal:** BugBot creates a CI check-run named `Cursor Bugbot` that transitions to `status: "completed"` when the review finishes. `conclusion: "success"` = no findings, no review object (silent pass — gate conditions at §Merge Gate). `conclusion: "neutral"` = findings posted; review object required. Completion also detected via review comments on any endpoint.
 
-**BugBot failure detection:** a spend-limit failure produces a `conclusion: "success"` check-run alongside a failure-phrase cursor[bot] comment (`couldn't run`, `usage limit`, …); `merge-gate.sh` blocks the silent-pass path when any such comment postdates the HEAD commit.
+**BugBot failure detection:** a spend-limit failure produces a `conclusion: "success"` check-run alongside a failure-phrase cursor[bot] comment (`couldn't run`, `usage limit`, …); `merge-gate.sh` blocks the silent-pass path when any such comment postdates the HEAD commit. Cap and levers: `.claude/reference/pricing-matrix.md` §Cursor BugBot.
 
 ## When BugBot Becomes the Active Reviewer
 
@@ -45,4 +45,4 @@ Verify all findings against actual code. Fix all valid findings in one commit, p
 
 ## Re-Reviews
 
-After a fix push, CI posts `@cursor review` when `CURSOR_REVIEW_PAT` is set (BugBot doesn't auto-review pushes); if absent, post it manually — but never on a HEAD BugBot already refused for usage, which no nudge can fix.
+After a fix push, CI posts `@cursor review` when `CURSOR_REVIEW_PAT` is set (BugBot doesn't auto-review pushes); if absent, post it manually — subject to the one-nudge-per-HEAD rule above.

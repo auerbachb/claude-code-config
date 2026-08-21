@@ -14,7 +14,7 @@ Bot: `greptile-apps[bot]`. Trigger: `@greptileai` PR comment. Auto-trigger OFF. 
 
 ## Daily Budget
 
-Default: **40/day** (`session-state.json`) — a runaway-*loop* bound, **not** a spend cap; the real cap is vendor-side. Every `@greptileai` trigger MUST run `greptile-budget.sh --consume` first (exit 0 = consumed, exit 1 = exhausted). If exhausted: self-review, which never satisfies the gate.
+Default: **40/day** (`session-state.json`) — a runaway-*loop* bound, **not** a spend cap; the real cap is vendor-side (`.claude/reference/pricing-matrix.md` §Greptile). Every `@greptileai` trigger MUST run `greptile-budget.sh --consume` first (exit 0 = consumed, exit 1 = exhausted). If exhausted: self-review, which never satisfies the gate.
 
 ## Before EVERY Re-Trigger (MANDATORY)
 

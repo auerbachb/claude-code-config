@@ -35,7 +35,7 @@ After implementation, before push. Run from repo root via `.claude/scripts/local
 
 with the raw capture at `log_path`. A CLI counts as covered **only** on `verified_run == true && ok == true`; every other result is a **failed run** (Timeout & fallback below), never a clean pass. Exit codes, failure shapes, 403 triage, 15-file cap: `.claude/reference/local-review-cli-failure-modes.md`.
 
-> **Never run `codeant logout`/`login` to clear a 403** — the cause is an undocumented daily cap (~10 agent reviews), not auth. On a CodeAnt 403: one retry, then drop for the session and note it in the PR body. The CodeAnt GitHub App is unaffected and satisfies the merge gate alone.
+> **Never run `codeant logout`/`login` to clear a 403** — the cause is an undocumented daily cap (~10 agent reviews; no paid lever — `.claude/reference/pricing-matrix.md` §CodeAnt), not auth. On a CodeAnt 403: one retry, then drop for the session and note it in the PR body. The CodeAnt GitHub App is unaffected and satisfies the merge gate alone.
 
 ### Never Suppress Linter Errors (NON-NEGOTIABLE)
 
@@ -46,7 +46,7 @@ Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `noqa`, or equival
 - Per CLI: hangs for more than **2 minutes** or errors out twice → drop that CLI for the session and note it in the PR body. Preserve any findings it already emitted — the remaining CLI gates only after those are resolved or explicitly waived in the PR body. Do not retry a failed CLI more than once.
 - If both CLIs are down, run a **self-review** instead (see self-review fallback rules).
 
-**Coverage classification (determine before every push):** Based on which CLIs produced a verified-successful clean pass (not merely exit 0, applying the false-clean checks above), classify as one of: `both` | `cr-only` | `codeant-only` | `none` (both unavailable — self-review only). A rate-limited, stderr-erroring, binary-absent, or no-review-records CLI counts as **not covered** for that CLI. Coverage is visibility-only and never feeds the merge gate (`cr-merge-gate.md`).
+**Coverage classification (determine before every push):** Based on which CLIs produced a verified-successful clean pass (not merely exit 0, applying the false-clean checks above), classify as one of: `both` | `cr-only` | `codeant-only` | `none` (both unavailable — self-review only). Coverage is visibility-only and never feeds the merge gate (`cr-merge-gate.md`).
 
 ### Exit criteria
 
