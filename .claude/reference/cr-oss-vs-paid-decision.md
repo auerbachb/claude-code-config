@@ -12,13 +12,14 @@ Repo under evaluation: `auerbachb/claude-code-config` — **public, 3 stars, no 
 
 **Stay paid, and switch to annual billing.** $90/mo → $72/mo, **$216/year, no capability change.**
 
-The OSS tier is not a cheaper version of what we have. It is a *lower-throughput* version, and throughput
-is the only thing currently failing. Moving to it would cut the per-developer review rate from a known
-5/hr into a popularity-scaled 1–10/hr band whose **bottom** is where a 3-star repo sits, remove the
-unprompted auto-review that starts within seconds of PR open today, and permanently foreclose the metered
-add-on that [`pricing-matrix.md`](./pricing-matrix.md) rates the only lever that removes rate-limit
-blocking at all. It saves $90/month on a tool whose measured problem is that it already answers too
-rarely.
+The OSS tier is not a cheaper version of what we have — it is a *differently-constrained* version, and
+every constraint it adds lands on throughput, which is the only thing currently failing. Two of those
+constraints are documented outright: under 10 stars **reviews stop being automatic** and must be
+triggered by a comment, and OSS **cannot buy the metered add-on** that
+[`pricing-matrix.md`](./pricing-matrix.md) rates the only lever that removes rate-limit blocking at all.
+A third is documented only as a range: the per-developer rate becomes a **1–10/hr band that varies by
+star count**, replacing a known 5/hr with an unknown one. It saves $90/month on a tool whose measured
+problem is that it already answers too rarely.
 
 **And the $90 would not actually be saved — it would be displaced onto the one uncapped line in the
 stack.** Every CodeRabbit review that does not happen falls down the escalation chain, and the chain's
@@ -49,7 +50,7 @@ the **number**, which the vendor scales per repository.
 |---|---|---|---|
 | Cost, 3 seats | **$90/mo** ($30/dev) | **$72/mo** ($24/dev) | **$0** |
 | PR reviews / dev / hr | **5**, degraded by Fair Usage | 5, same | **1–10, scaled by repository star count** |
-| Effective rate here | 3/hr heavy author, 5/hr light (band placement, #1202) | same | **unknown within 1–10; 3 stars is the bottom of the scale** |
+| Effective rate here | 3/hr heavy author, 5/hr light (Fair Usage band placement, #1202) | same | **unknown — the docs publish no star→rate mapping; 3 stars establishes only that we are under the 10-star threshold** |
 | Auto-review on open/push | **Yes** — measured at 8–20s (below) | Yes | **No** — manual trigger required under 10 stars |
 | Metered overflow | **Available** ($0.25/file), currently OFF | Available | **Not available — Pro/Pro+ only** |
 | Files / review | 150 | 150 | 100–300, scaled by "community and popularity" |
@@ -62,12 +63,19 @@ Three rows carry the decision — the **PR rate**, **auto-review**, and **metere
 treated in its own section below, since it is the row our own machinery has to answer for. The remaining
 rows are noise at our volume, and two of them are worth a line to say why.
 
-**PR rate.** The docs give the OSS band and its driver — *"OSS PR review limits vary by repository star
-count"* — but publish **no star→rate mapping** ([plans], retrieved 2026-08-21). So the honest statement
-is not "3 stars means 1/hr"; it is that the rate is unknown within 1–10, and that the vendor's own
-lowest-popularity marker — the under-10-stars cutoff that triggers the manual-review requirement — is
-exactly where this repo sits. A 10× band that scales with popularity does not plausibly place a 3-star
-repo at or above the 5/hr Pro rate; if it did, the scaling would not exist.
+**PR rate — documented as a range, and it stays a range here.** The docs give the OSS band and its
+driver — *"OSS PR review limits vary by repository star count"* — but publish **no star→rate mapping**
+([plans], retrieved 2026-08-21). Three stars establishes exactly one thing: that this repo is **below the
+10-star manual-trigger threshold**. It does **not** establish a position within the 1–10 band, and this
+document deliberately draws no such placement — an earlier draft asserted "the bottom of the scale" and
+that inference is not supported by anything the vendor publishes.
+
+What the range *does* establish is the shape of the trade: OSS replaces a **known** 5/hr with an
+**unknown** rate spanning a 10× spread, on the one axis that is already the binding failure (68% of
+reviews rate-limited). Substituting an unknown for a known is a bad trade when the known is the thing
+under strain — and unlike the two constraints below, it cannot be checked without actually switching.
+The decision therefore rests on the documented constraints, with the unknown rate as a reason for
+caution rather than a load-bearing number.
 
 **Metered overflow.** *"The add-on is available on the Pro and Pro+ plans and is not visible during a
 trial"* ([usage-based add-on], retrieved 2026-08-21). Free and OSS are not eligible. This answers the
@@ -190,11 +198,16 @@ is **not documented**, so #1209's banding relief is a *known* gain on Pro and an
 ## Break-even
 
 **On throughput.** OSS reaches parity only if its popularity-scaled rate lands at **≥5/hr** — the Pro
-number — or at ≥3/hr to match the heavy author's Fair-Usage-degraded rate. The band is 1–10 keyed to star
-count; this repo has 3 stars and sits under the vendor's own 10-star popularity cutoff. Reaching parity
-therefore requires the scaling to be nearly flat across the bottom of its range, which would make the
-scaling pointless. **The break-even is not met, and the star count is the variable that would have to
-change — not the price.**
+number — or at ≥3/hr to match the heavy author's Fair-Usage-degraded rate. **Whether it does is not
+knowable from the published docs**, which give the band (1–10) and its driver (star count) but no
+mapping between them. So this break-even cannot be evaluated in advance, and the only way to resolve it
+would be to switch and observe.
+
+**That unresolvability is the finding, not a gap in the research.** A lever whose central number can only
+be discovered by pulling it is a bad lever to pull when the two things it *definitely* changes both cut
+against us — auto-review stops, and the metered overflow that exists to absorb rate-limit blocking
+becomes unbuyable. **The break-even is therefore decided on the documented constraints; the rate is
+simply not a reason to move.**
 
 **On money.** The saving is $90/month gross. Against it:
 
@@ -227,9 +240,14 @@ a dashboard action by the owner; the agent side is untouched.
 1. Add a `pull_request: [opened, synchronize, reopened]` workflow posting `@coderabbitai review`, cloned
    from `cursor-review-pr-comment.yml` and carrying its three guards (drafts excluded, owner-authored
    only, never bot-authored). It can use `GITHUB_TOKEN`/`github-actions[bot]` per the measurement above.
-2. Re-read the trigger rate cap. `cr-review-hourly.sh` surfaces at **2 explicit `@coderabbitai full
-   review` triggers per PR per hour** on the assumption that explicit triggers are escalation. Under OSS
-   they become the routine path, so that threshold measures something different and would mis-warn.
+2. Fix the trigger rate-cap accounting, which would otherwise go blind. `cr-review-hourly.sh` and
+   `/fixpr` Step 3b both count the **literal string `@coderabbitai full review`** — `/fixpr` greps for
+   exactly that body — and surface at 2 per PR per hour on the assumption that an explicit trigger means
+   escalation. The vendor meters `@coderabbitai review` as a PR review run just the same, so a workflow
+   posting the shorter form would consume the allowance while our counter recorded nothing. Either post
+   `full review` from the workflow so the existing accounting covers it, or extend the counter to match
+   both commands. Beyond the string, the threshold itself changes meaning: under OSS an explicit trigger
+   is the routine path rather than an escalation signal, so 2/PR/hour would mis-warn on normal traffic.
 3. Accept that #1202's action item 9 (metered reviews, On demand, ~$50 cap) is off the table for good.
 4. Expect more escalation to BugBot (spend-capped, refusing 64%) and Greptile (uncapped flex), and budget
    accordingly — see the break-even above.
@@ -241,7 +259,7 @@ a dashboard action by the owner; the agent side is untouched.
 
 | Rejected verdict | Why |
 |---|---|
-| **Move to the OSS tier** | Cuts a known 5/hr per-developer rate into a 1–10/hr band scaled by a star count that puts us at its bottom; removes auto-review measured at 8–20s; permanently forecloses the metered add-on (Pro/Pro+ only), which is the only lever that removes rate-limit blocking. Saves $90/mo nominally while displacing demand onto Greptile's uncapped $1/credit flex. |
+| **Move to the OSS tier** | Two documented certainties decide it: under 10 stars auto-review stops (measured today at 8–20s after PR open), and the metered add-on is Pro/Pro+ only, so the one lever that *removes* rate-limit blocking becomes unbuyable. A third consideration is that it swaps a known 5/hr per-developer rate for a star-scaled 1–10/hr band whose value here is undocumented — an unknown substituted for a known on the axis already failing. Saves $90/mo nominally while displacing demand onto Greptile's uncapped $1/credit flex. |
 | **Stay paid on monthly billing** | Identical capability to annual at $18/mo more — $216/year for flexibility whose only use would be an exit to OSS (rejected) or to Pro+ (an upgrade, not an exit). |
 | **Jump to Pro+ instead of deciding cadence** | Out of scope here and already second-line behind the metered lever in #1202. Doubling the hourly rate shortens the queue; only the metered path removes it. Revisit after #1209 is re-measured. |
 | **Defer the cadence decision again** | Renewal is 2026-08-27. Deferring past it costs another month at the monthly rate for no new information — this document is the information the deferral was waiting on. |

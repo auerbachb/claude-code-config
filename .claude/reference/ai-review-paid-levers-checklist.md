@@ -93,9 +93,11 @@ the subscription itself at risk.
 Annual is $24/seat vs $30/seat monthly: on 3 seats, $72/mo vs $90/mo — **$216/yr**, no capability
 change. The catch was only that it is worth doing **if we stay paid at all** — and that question is
 now answered. [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) declined the OSS
-tier on throughput: under 10 stars the rate becomes a popularity-scaled 1–10/hr band (this repo has
-3), auto-review stops, and the metered add-on in item 4 becomes permanently unavailable, so the
-$90/mo would be displaced onto Greptile's uncapped flex rather than saved
+tier on two documented constraints — under 10 stars (this repo has 3) reviews stop being automatic and
+must be triggered by comment, and the metered add-on in item 4 is Pro/Pro+ only, so it becomes
+permanently unavailable — with the star-scaled 1–10/hr rate band, whose value here the vendor does not
+publish, as a third reason for caution rather than a number to rely on. The $90/mo would be displaced
+onto Greptile's uncapped flex rather than saved
 ([`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md)). Nothing now strands the commitment —
 the remaining move on this tool is Pro+, which sits second-line behind item 4's metered lever, and
 that is an *upgrade* rather than an escape. **Renewal is 2026-08-27**; past that the saving waits a

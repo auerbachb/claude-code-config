@@ -201,16 +201,25 @@ Full side-by-side, break-even, and sourcing: [`cr-oss-vs-paid-decision.md`](./cr
 change.** This unblocks the billing-cadence item in [#1213](https://github.com/auerbachb/claude-code-config/issues/1213),
 which was deliberately gated on this comparison; renewal is **2026-08-27**.
 
-**The break-even reasoning.** CodeRabbit's measured failure here is throughput, not capability — 68% of
-reviews rate-limited, 87.4h average wait, 36% of blocked PRs merged unreviewed, all **at Pro's 5/hr per
-developer**. The OSS tier does not fix that; it lowers the ceiling. Its rate is a popularity-scaled
-**1–10/hr band keyed to repository star count** ([CodeRabbit plans docs](https://docs.coderabbit.ai/management/plans),
-retrieved 2026-08-21), and this repo has **3 stars** — under the vendor's own 10-star cutoff. Parity
-would require the band to be nearly flat across its bottom, which would make the scaling pointless. OSS
-also **cannot buy the metered add-on** — *"available on the Pro and Pro+ plans"*
-([usage-based add-on docs](https://docs.coderabbit.ai/management/usage-based-addon), retrieved
-2026-08-21) — permanently foreclosing the one lever `pricing-matrix.md` rates as removing rate-limit
-blocking rather than widening it.
+**The break-even reasoning rests on two documented certainties, not on an estimated rate.**
+CodeRabbit's measured failure here is throughput, not capability — 68% of reviews rate-limited, 87.4h
+average wait, 36% of blocked PRs merged unreviewed, all **at Pro's 5/hr per developer**. Against that:
+
+- **Under 10 stars, reviews must be triggered manually** — *"For public repositories with less than 10
+  stars, CodeRabbit requires reviews to be triggered manually"*
+  ([plans docs](https://docs.coderabbit.ai/management/plans), retrieved 2026-08-21). This repo has 3
+  stars, so the unprompted auto-review measured starting 8–20s after PR open would stop.
+- **OSS cannot buy the metered add-on** — *"available on the Pro and Pro+ plans"*
+  ([usage-based add-on docs](https://docs.coderabbit.ai/management/usage-based-addon), retrieved
+  2026-08-21) — permanently foreclosing the one lever `pricing-matrix.md` rates as *removing*
+  rate-limit blocking rather than widening it.
+
+**The rate itself is unknown, and that is the third reason rather than a fourth certainty.** OSS is
+documented as a **1–10/hr band that varies by repository star count**, with **no published star→rate
+mapping**. Three stars establishes only that we are below the 10-star threshold; it does not establish a
+position in the band. So the move would swap a **known 5/hr** for an **unknown 1–10/hr** on precisely
+the dimension that is already failing — and it would do so while giving up the metered escape hatch that
+exists to absorb exactly that failure.
 
 **And the $90 would be displaced, not saved.** Refused CodeRabbit reviews escalate down this same chain
 to Greptile — paid Pro with **flex overage uncapped** at $1/credit (§Dashboard reconciliation item 3).
@@ -260,11 +269,11 @@ application never moves a budget line.
    consumption (one review per PR instead of one per push). The paid levers ($0.25/file overflow,
    Pro Plus) only matter after that lands, and extra seats cannot help while one identity authors
    every PR.
-5. **Switch CodeRabbit from monthly to annual billing** — 3 seats, **$90 → $72/month, $216/year**, no
+6. **Switch CodeRabbit from monthly to annual billing** — 3 seats, **$90 → $72/month, $216/year**, no
    capability change. Unblocked by the #1212 verdict above: the OSS tier was evaluated and declined, so
    there is no longer a reason to hold the commitment open. **Renewal is 2026-08-27**; past that date the
    saving simply waits another cycle. The trade is 12 months of commitment for 20% off, and both exits it
-   could block are remote — OSS is rejected on throughput, and Pro+ is an upgrade rather than an escape.
+   could block are remote — OSS is rejected above, and Pro+ is an upgrade rather than an escape.
 
 ## References
 
