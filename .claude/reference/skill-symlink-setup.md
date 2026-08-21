@@ -41,10 +41,32 @@ Chained deliberately. If the fetch or reset fails, or the skill is not present i
 
 Create `~/.claude/skills/` first with `mkdir -p` if it does not exist.
 
+## Installing the phase-agent symlinks
+
+`setup-skills-worktree.sh` Step 5b publishes `.claude/agents/*.md` into
+`~/.claude/agents/` so `subagent_type: "phase-a-fixer"` resolves from any repo,
+not just this one. Claude Code discovers agent definitions at both user scope
+(`~/.claude/agents/`) and project scope (`<repo>/.claude/agents/`), with project
+winning on a `name:` collision — so working in this repo still uses the branch's
+own copies, and every other repo gets the `main`-pinned ones.
+
+The leg mirrors **skills**, not **rules**: a real `~/.claude/agents/` directory
+holding one symlink per file, rather than one directory symlink. The docs are
+explicit that `.claude/rules/` resolves symlinks and silent about `agents/`, and
+the per-entry skills topology is already proven on this machine. Reasoning:
+`portable-skill-resolution.md` (issue #1189).
+
+**Restart caveat.** A brand-new `~/.claude/agents/` directory is the one case the
+file watcher cannot pick up mid-session — it does not cover a directory that did
+not exist at session start. The setup script says so when it creates the
+directory. Until the restart, spawn `general-purpose` and paste the verbatim
+SAFETY/MINDSET/SKILLS blocks plus the role procedure, per
+`.claude/rules/subagent-orchestration.md` "Failed custom spawn fallback".
+
 ## Verifying and migrating existing links
 
 ```bash
-ls -la ~/.claude/skills/ ~/.claude/CLAUDE.md ~/.claude/rules
+ls -la ~/.claude/skills/ ~/.claude/agents/ ~/.claude/CLAUDE.md ~/.claude/rules
 ```
 
 Every entry should resolve to `~/.claude/skills-worktree/...`.

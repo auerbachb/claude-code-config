@@ -12,7 +12,7 @@ implementation, and the Step 4 heartbeat/quiet-tick definition.
 **Refresh `HARD_BLOCK_JSON` immediately before the per-PR loop** so Step 2.5 `blocked`/`crashed` persists from earlier in this same tick are visible to the decision tree (the Step 2.5 tick-start load is stale once Step 2.5 writes new entries):
 
 ```bash
-HARD_BLOCK_JSON=$(.claude/scripts/session-state.sh --get '.pmm_hard_block // {}' 2>/dev/null || echo '{}')
+HARD_BLOCK_JSON=$("$SESSION_STATE_SH" --get '.pmm_hard_block // {}' 2>/dev/null || echo '{}')
 ```
 
 This step performs no PR mutations or dispatches: it gathers state, computes verdicts, and may persist orchestration bookkeeping (e.g. Step 3.6's `.pmm_merge_holds`). PR mutations and dispatches happen in **Step 5**, after the heartbeat/table prints (Step 4). This ordering is required so the classification is always visible *before* any long-running dispatch.
@@ -24,14 +24,14 @@ For a single PR `$N` (with `$HEADREF` = its `headRefName` from the Step 2 `$PR_L
 ```bash
 # Gate verdict — single source of truth for merge readiness, CI, merge_state,
 # review_decision, human_changes_requested, stale_bot_changes_requested_count.
-GATE=$(.claude/scripts/merge-gate.sh "$N"); GATE_EXIT=$?
+GATE=$("$MERGE_GATE_SH" "$N"); GATE_EXIT=$?
 GATE_BY_PR[$N]="$GATE"   # retain per-PR — Step 5c/5d look up THIS PR's gate by
                           # number rather than relying on a loop-scoped $GATE,
                           # which is only valid for whichever PR Step 3 last
                           # iterated and goes stale/wrong once other steps
                           # iterate their own PR lists.
 # Linked issue for the Issue column (exit 1 = no link, expected).
-ISSUE=$(.claude/scripts/pr-issue-ref.sh "$N" 2>/dev/null || true)
+ISSUE=$("$PR_ISSUE_REF_SH" "$N" 2>/dev/null || true)
 # Unresolved review threads (GraphQL — covers every bot/human author).
 UNRESOLVED=$(gh api graphql -f query='
   query($owner:String!,$repo:String!,$n:Int!){
@@ -72,7 +72,7 @@ Read `merge_state` / `mergeable` **literally** from the gate JSON. **Do NOT infe
 | `MET == true` | `wrap` | Dispatch `/wrap` sequentially (Step 5d) |
 | Otherwise | `waiting` | CI in-progress, reviewer pending, `REVIEW_REQUIRED` with no bot signal yet, `UNKNOWN` — no-op |
 
-`merge-gate.sh` exit `3` (PR gone — merged/closed between Step 2 and now) → `VERDICT=gone`, clear persisted block (`.claude/scripts/session-state.sh --set ".pmm_hard_block.\"$N\"=null"`), drop from fleet. When the user explicitly approves respawn of a `crashed(needs-approval)` or `conflicts(needs-human)` PR, clear the same `pmm_hard_block` key before dispatch. Exit `2`/`4` (tooling/network) → `VERDICT=error` (do not act; retry next tick).
+`merge-gate.sh` exit `3` (PR gone — merged/closed between Step 2 and now) → `VERDICT=gone`, clear persisted block (`"$SESSION_STATE_SH" --set ".pmm_hard_block.\"$N\"=null"`), drop from fleet. When the user explicitly approves respawn of a `crashed(needs-approval)` or `conflicts(needs-human)` PR, clear the same `pmm_hard_block` key before dispatch. Exit `2`/`4` (tooling/network) → `VERDICT=error` (do not act; retry next tick).
 
 ### VERDICTS_JSON accumulation
 
@@ -123,7 +123,7 @@ For every PR whose base verdict is `fixpr`:
    ```bash
    ACTIVE_COUNT=$(jq '[.[] | select(.phase == "A" and (.status != "complete" and .status != "failed")
      and ((.id // "") | startswith("pmm-fix-")))] | length' \
-     <<<"$(.claude/scripts/session-state.sh --get '.active_agents' 2>/dev/null || echo '[]')")
+     <<<"$("$SESSION_STATE_SH" --get '.active_agents' 2>/dev/null || echo '[]')")
    SLOTS=$(( PMM_MAX_PARALLEL - ACTIVE_COUNT ))
    (( SLOTS < 0 )) && SLOTS=0
    ```
@@ -142,7 +142,7 @@ This step is **side-effect-free** — `merge-sequence.sh` reads `pulls/{N}/files
 
 ```bash
 # Prior tick's hold state — this is what makes stall detection work across ticks.
-PRIOR_HOLDS=$(.claude/scripts/session-state.sh --get '.pmm_merge_holds // {}' 2>/dev/null || echo '{}')
+PRIOR_HOLDS=$("$SESSION_STATE_SH" --get '.pmm_merge_holds // {}' 2>/dev/null || echo '{}')
 
 # Flatten Step 3's VERDICTS_JSON ({"<n>":{verdict,tag}}) to {"<n>":"<verdict>"},
 # then overwrite each entry with the REFINED verdict where Step 3's refinement
@@ -171,7 +171,7 @@ done | tr '\n' ',' | sed 's/,$//')
 
 SEQ=""; SEQ_RC=1
 if [[ -n "$SEQ_PRS" ]]; then
-  SEQ=$(.claude/scripts/merge-sequence.sh --prs "$SEQ_PRS" --skip-missing \
+  SEQ=$("$MERGE_SEQUENCE_SH" --prs "$SEQ_PRS" --skip-missing \
     --verdicts "$VERDICTS_MAP" --heads "$HEADS_MAP" --holds "$PRIOR_HOLDS")
   SEQ_RC=$?
 fi
@@ -195,7 +195,7 @@ fi
 ```bash
 if [[ "$SEQ_RC" -eq 0 || "$SEQ_RC" -eq 1 ]]; then
   NEW_HOLDS=$(jq -c '.holds // {}' <<<"$SEQ")
-  .claude/scripts/session-state.sh --set ".pmm_merge_holds=$NEW_HOLDS"
+  "$SESSION_STATE_SH" --set ".pmm_merge_holds=$NEW_HOLDS"
 else
   echo "[PMM] merge-sequence.sh failed (exit $SEQ_RC) — sequencing disabled this tick; prior holds left intact"
   SEQ=""   # every PR falls through to `merge`; Step 4 prints no annotation

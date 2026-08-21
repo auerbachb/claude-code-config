@@ -96,8 +96,14 @@ require_text .claude/hooks/polling-backoff-warn.sh \
 
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md '.pmm_monitor_task_id' \
   'fleet monitoring must persist its main Monitor task ID'
-reject_text .claude/skills/pr-monitor-and-manage/SKILL.md '$SESSION_STATE_SH" --get' \
-  'fleet monitoring must not use an undefined state-helper variable'
+# `$SESSION_STATE_SH` used to be undefined here, so this asserted its absence.
+# Issue #1189 made the skill resolve its helpers for cross-repo use, and Step 00
+# now binds the variable before any state read. The invariant is unchanged —
+# never read state through a helper variable nothing defined — so the check
+# follows it: the variable may be used, but only if the skill defines it first.
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
+  'SESSION_STATE_SH=$(resolve_script session-state.sh' \
+  'fleet monitoring must bind its state helper before any state read'
 require_text .claude/skills/pr-monitor-and-manage/references/pmm-lifecycle.md \
   '.pmm.auto_wake_monitor_task_id' \
   'fleet auto-wake must persist its Monitor task ID'
@@ -114,7 +120,7 @@ require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   '/pr-monitor-and-manage --tick --monitor-generation $NEW_MONITOR_GENERATION <original user args>' \
   'fleet Monitor events must be distinguishable from direct user starts'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
-  "RECORDED_MONITOR_GENERATION=\$(.claude/scripts/session-state.sh --get '.pmm_monitor_generation'" \
+  "RECORDED_MONITOR_GENERATION=\$(\"\$SESSION_STATE_SH\" --get '.pmm_monitor_generation'" \
   'fleet ticks must read the currently published Monitor generation'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   '"$PMM_TICK_GENERATION" != "$RECORDED_MONITOR_GENERATION"' \
@@ -150,7 +156,7 @@ require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   'known-stopped old identity and set `pmm_active=false`, `.pmm.stop_requested=false`' \
   'fleet cadence re-arm must clear its guard after verified rollback teardown'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
-  "CURRENT_MONITOR_CADENCE=\$(.claude/scripts/session-state.sh --get '.pmm_cadence'" \
+  "CURRENT_MONITOR_CADENCE=\$(\"\$SESSION_STATE_SH\" --get '.pmm_cadence'" \
   'fleet monitoring must compare the recorded Monitor cadence before deciding to keep it'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   'Keep the existing task only when both pieces of its recorded identity are present and its cadence' \

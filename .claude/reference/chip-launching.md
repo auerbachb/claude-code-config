@@ -107,9 +107,16 @@ active model, so the check relies on the model naming itself accurately.
 A chip launches an independent thread that cannot see any sibling, so the launched thread claims the issue itself. Every issue-bearing `prompt` payload instructs the thread to run, as its **first actions after the MODEL GUARD preamble and before any repo read, file edit, or planning**:
 
 ```bash
-.claude/scripts/issue-claim.sh <N> --check      # then, if it clears:
-.claude/scripts/issue-claim.sh <N> --claim
+CLAIM=$(for c in "$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh" \
+                 "$HOME/.claude/scripts/issue-claim.sh" \
+                 ".claude/scripts/issue-claim.sh"; do
+          [ -x "$c" ] && { echo "$c"; break; }
+        done)
+"$CLAIM" <N> --check      # then, if it clears:
+"$CLAIM" <N> --claim
 ```
+
+**The path is resolved, never assumed.** A chip lands in whatever repo the issue lives in, and most repos carry no `.claude/` directory — a bare `.claude/scripts/issue-claim.sh` simply fails there, and a failure the thread does not mention is a claim silently skipped (issue #1189). The order is the standard one from `portable-skill-resolution.md`: skills-worktree, then `$HOME/.claude/scripts/`, then repo-relative.
 
 - `claimed` (exit 1) or `unknown` (exit 4) → the thread **stops** and reports the claim instead of proceeding. `unknown` never reads as permission.
 - `stale` (exit 0) → surface the warning and proceed; `--claim` takes the claim over.
@@ -126,13 +133,13 @@ Two forms — pick by whether the emitter already holds the claim:
 **Form A — emitter holds no claim** (`/pm`, `/prompt`, `/wave`, `/issue-maker`): the launched thread takes it.
 
 ```text
-- Claim the issue before anything else: run `.claude/scripts/issue-claim.sh <N> --check`, and if it clears, `.claude/scripts/issue-claim.sh <N> --claim`. Do this after the model-guard check and before any repo read, edit, or planning. Exit 1 (`claimed`) or 4 (`unknown`) → stop and report the claim rather than proceeding; `stale` → say so and continue. If `--claim` itself fails, stop — a passing check is not a held claim.
+- Claim the issue before anything else. Resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh` — this repo may carry no `.claude/` directory. Run `<N> --check` on it, and if it clears, `<N> --claim`. Do this after the model-guard check and before any repo read, edit, or planning. Exit 1 (`claimed`) or 4 (`unknown`) → stop and report the claim rather than proceeding; `stale` → say so and continue. If `--claim` itself fails, stop — a passing check is not a held claim. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — proceeding unclaimed` and continue; never skip the claim silently.
 ```
 
 **Form B — emitter already holds the claim** (`/start-issue`, which claims at its Step 2b): the launched thread **inherits** that holder instead of competing with it.
 
 ```text
-- This issue is already claimed for you (holder `{CLAIM_HOLDER}`). Re-affirm it before anything else — `.claude/scripts/issue-claim.sh <N> --claim --holder "{CLAIM_HOLDER}"` — after the model-guard check and before any repo read, edit, or planning. It is a no-op that confirms the claim is still yours; a non-zero exit means you do NOT hold it, so stop and report rather than proceeding.
+- This issue is already claimed for you (holder `{CLAIM_HOLDER}`). Re-affirm it before anything else: resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh` — this repo may carry no `.claude/` directory — then run `<N> --claim --holder "{CLAIM_HOLDER}"` on it, after the model-guard check and before any repo read, edit, or planning. It is a no-op that confirms the claim is still yours; a non-zero exit means you do NOT hold it, so stop and report rather than proceeding. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim not re-affirmed` and continue; never skip it silently.
 ```
 
 **Why Form B exists.** A `/start-issue` run and the thread it hands off to are **one pickup of the issue, handed over** — not two independent threads racing. Without the inherited holder the launched thread would read its own predecessor's claim as a foreign one, exit 1, and refuse to start the work the chip exists to do. Passing the holder makes the re-claim a no-op (`mine`) while a genuinely different thread still sees `claimed`. `{CLAIM_HOLDER}` is the value the emitter passed to its own `--claim`.
@@ -247,7 +254,7 @@ Withdraw a tracked chip via `mcp__ccd_session__dismiss_task` (pass the recorded 
 3. **Re-planned** — the issue's plan or scope changed, so the chip's prompt is stale. Spawn the replacement chip *first*, then dismiss the old one.
 4. **Issue closed** — the underlying issue is closed (merged, resolved, declined, or duplicate). The chip's work no longer exists to launch; dismiss with no replacement. Distinct from trigger 1: a closed issue may never have had an *open* PR (e.g. "won't fix" or duplicate closures), so trigger 1 alone doesn't reliably catch it. Added by the [#838](https://github.com/auerbachb/claude-code-config/issues/838) sweep, where it was 28/28 of the stale chips found.
 
-   **Also release the claim here** — `.claude/scripts/issue-claim.sh <N> --release` alongside the `dismiss_task`. A close *without* a merged PR is precisely the terminal state `/wrap` never sees, so nothing else would drop the claim and it would sit until it aged out (issue #873). Harmless when no claim is held: `--release` is idempotent, and it never touches a collaborator's claim.
+   **Also release the claim here** — resolve `issue-claim.sh` per the candidate order above and run `<N> --release` alongside the `dismiss_task`. A close *without* a merged PR is precisely the terminal state `/wrap` never sees, so nothing else would drop the claim and it would sit until it aged out (issue #873). Harmless when no claim is held: `--release` is idempotent, and it never touches a collaborator's claim.
 
 **Fail-closed:** only clear tracked chip state once the dismiss outcome is known. Distinguish the two non-error outcomes from a real failure:
 

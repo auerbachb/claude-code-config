@@ -21,6 +21,40 @@ Parent/subagent scope, prohibited actions, refusal template, and common misreads
 
 ---
 
+## Step 00: Resolve shared tooling (MANDATORY, before the tick gate)
+
+`/pr-monitor-and-manage` is symlinked into every repo, but its helper scripts and reference docs are not — most repos carry no `.claude/` directory. Resolve them once per tick, before anything reads state; never invoke a bare `.claude/scripts/…` path. Full contract and the classified dependency inventory: `.claude/reference/portable-skill-resolution.md` (issue #1189).
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+SESSION_STATE_SH=$(resolve_script session-state.sh || true)
+MERGE_GATE_SH=$(resolve_script merge-gate.sh || true)
+MERGE_SEQUENCE_SH=$(resolve_script merge-sequence.sh || true)
+PR_ISSUE_REF_SH=$(resolve_script pr-issue-ref.sh || true)
+REVIEWER_OF_SH=$(resolve_script reviewer-of.sh || true)
+CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh || true)
+REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
+```
+
+These bindings are in scope for every step of the tick, including the `references/pmm-*.md` procedures. Read reference docs (`merge-sequencing.md`, `release-cadence.md`) through the matching `.claude/reference/` candidate order.
+
+**When something does not resolve, say so in one line; never skip the contract silently.**
+
+- `SESSION_STATE_SH` or `MERGE_GATE_SH` empty → **required, and fatal for the tick**. Print `ERROR: <name> not found (checked all three paths) — PR fleet management unavailable` and exit without acting. Every verdict this skill reaches is a merge decision; a fleet manager that cannot read the gate or persist a hard block must not guess, and must not act on a guess.
+- `MERGE_SEQUENCE_SH` empty → **optional**. Print `DEGRADED: merge-sequence.sh not found (checked all three paths) — overlap-aware sequencing unavailable, merging one PR per tick` and serialize merges rather than sequencing them.
+- `REVIEWER_OF_SH`, `PR_ISSUE_REF_SH`, `CR_HOURLY_SH`, `REPO_ROOT_SH` empty → **optional**. Print one `DEGRADED:` line naming the script and what is lost (reviewer re-trigger routing, issue back-reference, CR budget accounting, root-repo resolution), then continue with that one capability off.
+
+---
+
 ## Tick gate (MANDATORY, before Step 0a)
 
 Monitor-emitted invocations carry the internal `--tick` flag; direct user invocations do not. Check
@@ -48,10 +82,10 @@ if [[ "$PMM_INTERNAL_TICK" != true && -n "$PMM_TICK_GENERATION" ]]; then
   echo "ERROR: --monitor-generation is runtime-only and requires --tick." >&2
   exit 2
 fi
-PMM_ACTIVE=$(.claude/scripts/session-state.sh --get '.pmm_active' 2>/dev/null || echo false)
-PMM_STOP_PENDING=$(.claude/scripts/session-state.sh --get '.pmm.stop_requested' 2>/dev/null || echo false)
+PMM_ACTIVE=$("$SESSION_STATE_SH" --get '.pmm_active' 2>/dev/null || echo false)
+PMM_STOP_PENDING=$("$SESSION_STATE_SH" --get '.pmm.stop_requested' 2>/dev/null || echo false)
 if [[ "$PMM_INTERNAL_TICK" == true ]]; then
-  RECORDED_MONITOR_GENERATION=$(.claude/scripts/session-state.sh --get '.pmm_monitor_generation' 2>/dev/null || echo null)
+  RECORDED_MONITOR_GENERATION=$("$SESSION_STATE_SH" --get '.pmm_monitor_generation' 2>/dev/null || echo null)
   if [[ -z "$PMM_TICK_GENERATION" || "$PMM_TICK_GENERATION" == "null" ||
         "$PMM_TICK_GENERATION" != "$RECORDED_MONITOR_GENERATION" ]]; then
     echo "[PMM] Ignoring a stale or unidentified Monitor tick."
@@ -85,9 +119,9 @@ marker until Step 7 has armed and recorded the main Monitor. Full transactional 
 `references/pmm-lifecycle.md` "Step 0a: Resume from pause".
 
 ```bash
-PAUSED_AT=$(.claude/scripts/session-state.sh --get '.pmm.paused_at' 2>/dev/null || echo null)
+PAUSED_AT=$("$SESSION_STATE_SH" --get '.pmm.paused_at' 2>/dev/null || echo null)
 if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
-  SAVED=$(.claude/scripts/session-state.sh --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
+  SAVED=$("$SESSION_STATE_SH" --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
   RESUMING_FROM_PAUSE=true
   # Stop the exact recorded main and auto-wake tasks; clear each successfully
   # stopped ID+generation pair while preserving the marker, and abort with any
@@ -196,7 +230,7 @@ Before Step 3 re-classifies the fleet, process any **PMM-owned** `phase-a-fixer`
 **Initialize `EXHAUSTION_RESPAWN_PRS='[]'` at the start of this step, every tick — never carry it over. Load persisted hard blocks:**
 
 ```bash
-HARD_BLOCK_JSON=$(.claude/scripts/session-state.sh --get '.pmm_hard_block // {}' 2>/dev/null || echo '{}')
+HARD_BLOCK_JSON=$("$SESSION_STATE_SH" --get '.pmm_hard_block // {}' 2>/dev/null || echo '{}')
 ```
 
 For each completed PMM-owned subagent, run steps 1-3 **unconditionally first** (cleanup before any respawn decision):
@@ -220,13 +254,13 @@ Full protocol detail (handoff file isolation, tick-start refresh pattern): `refe
 ## Step 3: Gather per-PR state + classify (compute verdicts — NO actions)
 
 ```bash
-HARD_BLOCK_JSON=$(.claude/scripts/session-state.sh --get '.pmm_hard_block // {}' 2>/dev/null || echo '{}')
+HARD_BLOCK_JSON=$("$SESSION_STATE_SH" --get '.pmm_hard_block // {}' 2>/dev/null || echo '{}')
 ```
 
 For each PR `$N`, fetch gate + unresolved threads in parallel, then pull fields:
 
 ```bash
-GATE=$(.claude/scripts/merge-gate.sh "$N"); GATE_EXIT=$?
+GATE=$("$MERGE_GATE_SH" "$N"); GATE_EXIT=$?
 GATE_BY_PR[$N]="$GATE"   # Step 5c/5d look up per-PR gate by number — never rely on loop-scoped $GATE
 MET=$(jq -r '.met' <<<"$GATE")
 MERGE_STATE=$(jq -r '.merge_state' <<<"$GATE")
@@ -268,8 +302,8 @@ Full per-row rationale, VERDICTS_JSON accumulation, findings pre-fetch, refineme
 Side-effect-free: `merge-sequence.sh` reads file-overlap and prints a plan; it never merges, rebases, or comments. Full implementation (bash blocks, SEQ_RC handling, hold-persistence contract): `references/pmm-classify.md`.
 
 ```bash
-PRIOR_HOLDS=$(.claude/scripts/session-state.sh --get '.pmm_merge_holds // {}' 2>/dev/null || echo '{}')
-SEQ=$(.claude/scripts/merge-sequence.sh --prs "$SEQ_PRS" --skip-missing \
+PRIOR_HOLDS=$("$SESSION_STATE_SH" --get '.pmm_merge_holds // {}' 2>/dev/null || echo '{}')
+SEQ=$("$MERGE_SEQUENCE_SH" --prs "$SEQ_PRS" --skip-missing \
   --verdicts "$VERDICTS_MAP" --heads "$HEADS_MAP" --holds "$PRIOR_HOLDS")
 SEQ_RC=$?
 ```
@@ -292,8 +326,8 @@ A heartbeat prints **every tick**, **before** Step 5. Compute two digests (Step 
 ```bash
 DIGEST=$(printf '%s' "$FLEET_TUPLE_SORTED" | sha256sum | awk '{print $1}')
 ROW_DIGEST=$(printf '%s' "$ROW_TUPLE_SORTED" | sha256sum | awk '{print $1}')
-PREV=$(.claude/scripts/session-state.sh --get '.pmm_digest' 2>/dev/null || echo null)
-ROW_PREV=$(.claude/scripts/session-state.sh --get '.pmm_row_digest' 2>/dev/null || echo null)
+PREV=$("$SESSION_STATE_SH" --get '.pmm_digest' 2>/dev/null || echo null)
+ROW_PREV=$("$SESSION_STATE_SH" --get '.pmm_row_digest' 2>/dev/null || echo null)
 TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
 echo "[$TS] PMM tick — $PR_COUNT PR(s) in fleet (author:$PMM_AUTHOR)"
 ```
@@ -392,10 +426,10 @@ Cheap when nothing is pending — one state read and it returns. Its output obey
 `DIGEST`/`PREV` and `ROW_DIGEST`/`ROW_PREV` come from Step 4 — do not recompute. Only the state digest feeds the streak; `ROW_DIGEST` exists solely for Step 4's table decision.
 
 ```bash
-STREAK=$(.claude/scripts/session-state.sh --get '.pmm_digest_streak' 2>/dev/null || echo 0)
+STREAK=$("$SESSION_STATE_SH" --get '.pmm_digest_streak' 2>/dev/null || echo 0)
 [ "$STREAK" = null ] && STREAK=0
 if [ "$DIGEST" = "$PREV" ]; then STREAK=$((STREAK+1)); else STREAK=0; fi
-.claude/scripts/session-state.sh --set ".pmm_digest=\"$DIGEST\"" --set ".pmm_digest_streak=$STREAK" \
+"$SESSION_STATE_SH" --set ".pmm_digest=\"$DIGEST\"" --set ".pmm_digest_streak=$STREAK" \
   --set ".pmm_row_digest=\"$ROW_DIGEST\""
 
 BASE_CADENCE_MIN=${PMM_CADENCE%m}
@@ -416,10 +450,10 @@ valid base cadence, including a custom base longer than 15m.
 **Idle streak (`pmm_idle_streak`)** — an **idle tick** requires ALL of: (1) `TICK_HAD_ACTION=false`; (2) digest unchanged; (3) no blocking Phase A agents; (4) nothing held by merge sequencing. Orthogonal to cadence widening — widening must **not** reset the idle counter.
 
 ```bash
-IDLE_PREV=$(.claude/scripts/session-state.sh --get '.pmm_idle_streak' 2>/dev/null || echo 0)
+IDLE_PREV=$("$SESSION_STATE_SH" --get '.pmm_idle_streak' 2>/dev/null || echo 0)
 [ "$IDLE_PREV" = null ] && IDLE_PREV=0
 ACTIVE_FIXERS=$(jq '[.[] | select(.phase == "A" and (.status != "complete" and .status != "failed"))] | length' \
-  <<<"$(.claude/scripts/session-state.sh --get '.active_agents' 2>/dev/null || echo '[]')")
+  <<<"$("$SESSION_STATE_SH" --get '.active_agents' 2>/dev/null || echo '[]')")
 HELD_COUNT=0
 [ -n "${SEQ:-}" ] && HELD_COUNT=$(jq '[.plan[]? | select(.action == "hold")] | length' <<<"$SEQ" 2>/dev/null || echo 0)
 if [ "$TICK_HAD_ACTION" = false ] && [ "$DIGEST" = "$PREV" ] && [ "$ACTIVE_FIXERS" -eq 0 ] && [ "$HELD_COUNT" -eq 0 ]; then
@@ -427,7 +461,7 @@ if [ "$TICK_HAD_ACTION" = false ] && [ "$DIGEST" = "$PREV" ] && [ "$ACTIVE_FIXER
 else
   IDLE_STREAK=0
 fi
-.claude/scripts/session-state.sh --set ".pmm_idle_streak=$IDLE_STREAK"
+"$SESSION_STATE_SH" --set ".pmm_idle_streak=$IDLE_STREAK"
 ```
 
 ---
@@ -465,9 +499,9 @@ embed it in that task's command. Reuse the ID and generation read by the identit
 them here for a new direct start / transactional resume) and read the actual cadence from state:
 
 ```bash
-MONITOR_TASK_ID=$(.claude/scripts/session-state.sh --get '.pmm_monitor_task_id' 2>/dev/null || echo null)
-MONITOR_GENERATION=$(.claude/scripts/session-state.sh --get '.pmm_monitor_generation' 2>/dev/null || echo null)
-CURRENT_MONITOR_CADENCE=$(.claude/scripts/session-state.sh --get '.pmm_cadence' 2>/dev/null || echo null)
+MONITOR_TASK_ID=$("$SESSION_STATE_SH" --get '.pmm_monitor_task_id' 2>/dev/null || echo null)
+MONITOR_GENERATION=$("$SESSION_STATE_SH" --get '.pmm_monitor_generation' 2>/dev/null || echo null)
+CURRENT_MONITOR_CADENCE=$("$SESSION_STATE_SH" --get '.pmm_cadence' 2>/dev/null || echo null)
 if [[ "${RESUMING_FROM_PAUSE:-false}" == true ]]; then
   MONITOR_TASK_ID=null
   MONITOR_GENERATION=null
@@ -514,7 +548,7 @@ Record monitoring state every tick:
 
 ```bash
 NOW=$(date -u +%FT%TZ)
-.claude/scripts/session-state.sh \
+"$SESSION_STATE_SH" \
   --set '.pmm.stop_requested=false' \
   --set '.pmm_active=true' \
   --set ".pmm_monitor_task_id=$MONITOR_TASK_ID" \
@@ -551,7 +585,7 @@ config build, pause marker write, auto-wake re-scan, summary line): `references/
 
 <!-- pmm-canonical: pause-marker-write:start -->
 ```bash
-.claude/scripts/session-state.sh \
+"$SESSION_STATE_SH" \
   --set ".pmm.paused_at=\"$NOW\"" \
   --set ".pmm.fleet_at_pause=$FLEET_AT_PAUSE" \
   --set ".pmm.config_at_pause=$CONFIG_AT_PAUSE" \
@@ -569,7 +603,7 @@ config build, pause marker write, auto-wake re-scan, summary line): `references/
 Reached from Step 7 when the **user** invokes `/pmm-stop`. Tear down and report (terminal — no resume marker). Full summary format: `references/pmm-lifecycle.md`.
 
 ```bash
-.claude/scripts/session-state.sh \
+"$SESSION_STATE_SH" \
   --set '.pmm.stop_requested=true' \
   --set '.pmm_active=false' \
   --set '.pmm_next_expected_tick_at=null'
@@ -590,7 +624,7 @@ This skill is a **parent orchestrator**. The parent rebases/force-pushes (Step 5
 - **Never resolve a review thread without code-verification** — thread resolution happens only inside `phase-a-fixer` Step 5 after verifying the fix. This skill only *counts* unresolved threads.
 - **Never bypass AI-reviewer rate caps** — `cr-review-hourly.sh` gates every CR re-trigger; Greptile/CodeAnt caps are respected by subagents and `/wrap`. The Step 5.0 pre-flight (`pr-preflight.sh`, issue #493) is the sanctioned per-PR trigger path: it gates `@coderabbitai full review` on `cr-review-hourly.sh`, never triggers Greptile, never flips another user's draft, and is strictly per-PR (no shared accumulator).
 - **Never use GitHub's update-branch API** for `BEHIND` — only `git rebase origin/main` + `--force-with-lease`.
-- **Stay in the worktree; never run destructive commands in the root repo** — no `git clean`, `git reset --hard`, recursive `rm`, or `.env` edits anywhere. The one exception is `safety.md`'s: non-recursive `rm` of paths `git -C "$ROOT_REPO" ls-files --others --exclude-standard` emits (`$ROOT_REPO` from `.claude/scripts/repo-root.sh`).
+- **Stay in the worktree; never run destructive commands in the root repo** — no `git clean`, `git reset --hard`, recursive `rm`, or `.env` edits anywhere. The one exception is `safety.md`'s: non-recursive `rm` of paths `git -C "$ROOT_REPO" ls-files --others --exclude-standard` emits (`$ROOT_REPO` from `"$REPO_ROOT_SH"`).
 - **Never merge directly** — PMM never runs `gh pr merge` itself. It lands PRs only by dispatching the full `/wrap` workflow inline after gate + AC pass. No bypass path exists.
 
 ---

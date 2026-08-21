@@ -25,7 +25,42 @@ Parse `$ARGUMENTS` — the cleanup flag and the mode are independent; resolve th
 
 ---
 
-## Step 0: Identify the current gh user
+## Step 0: Resolve shared tooling
+
+`/pm` is symlinked into every repo, but its helper scripts and reference docs are not — most repos carry no `.claude/` directory. Resolve them; never invoke a bare `.claude/scripts/…` path. Full contract and the classified dependency inventory: `.claude/reference/portable-skill-resolution.md` (issue #1189).
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+SESSION_STATE_SH=$(resolve_script session-state.sh || true)
+PM_CONFIG_GET=$(resolve_script pm-config-get.sh || true)
+ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
+BACKLOG_HEALTH=$(resolve_script backlog-health.sh || true)
+```
+
+Read reference docs through the same order — `$HOME/.claude/skills-worktree/.claude/reference/<name>` first, then `$HOME/.claude/reference/`, then `.claude/reference/`. That covers `chip-launching.md`, `pm-output-templates.md`, and `session-state-schema.json`.
+
+**When something does not resolve, say so in one line; never skip the contract silently.**
+
+- `chip-launching.md` unreadable → **required**. Print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable` and stop before offering any chip. The gate is what keeps inline-first work inline; a `/pm` that cannot read it is precisely the run that spawns one thread per ready issue (#1189), so refusing to offer is the safe failure.
+- `SESSION_STATE_SH` empty → **required for orchestration state**. Print `ERROR: session-state.sh not found (checked all three paths) — refill pause, slot tracking, and monitoring state unavailable`. Rank and report, but do not start or refill pipelines: without persisted state a "stop" the user set earlier is invisible, and silently resuming refill against it is the worst available failure.
+- `ISSUE_CLAIM` empty → **optional**. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim checks skipped; issues may already be held by another thread` and continue.
+- `BACKLOG_HEALTH` empty → **optional**. Print `DEGRADED: backlog-health.sh not found (checked all three paths) — staleness block omitted` and skip that block.
+- `PM_CONFIG_GET` empty → **optional**. Print `DEGRADED: pm-config-get.sh not found (checked all three paths) — repo PM config unavailable, using defaults`. An *absent* `.claude/pm-config.md` where the script resolved is a normal state that `/pm` bootstraps — say nothing there.
+
+The pipeline ceiling, the autonomy grants, and the monitor-mode rules need no fallback: `.claude/rules/*.md` auto-loads at user scope in every project (`portable-skill-resolution.md`), so they are already in context wherever `/pm` runs.
+
+---
+
+## Step 0a: Identify the current gh user
 
 Before any mode-specific logic, detect the active GitHub user so downstream filtering can target "your work" vs. "all work".
 
@@ -67,7 +102,7 @@ Read existing orchestration state to continue where a previous PM thread left of
 # mapfile's exit code (always 0 on success) — NOT the script's — so a probe
 # like `mapfile ...; LIST_RC=$?` would silently never see the rc=2
 # (config-missing) signal.
-.claude/scripts/pm-config-get.sh --list >/dev/null 2>&1
+"$PM_CONFIG_GET" --list >/dev/null 2>&1
 LIST_RC=$?
 ```
 
@@ -75,9 +110,9 @@ LIST_RC=$?
 - Otherwise: enumerate sections and iterate for bodies:
 
   ```bash
-  mapfile -t SECTIONS < <(.claude/scripts/pm-config-get.sh --list 2>/dev/null)
+  mapfile -t SECTIONS < <("$PM_CONFIG_GET" --list 2>/dev/null)
   for name in "${SECTIONS[@]}"; do
-    body="$(.claude/scripts/pm-config-get.sh --section "$name" 2>/dev/null)"
+    body="$("$PM_CONFIG_GET" --section "$name" 2>/dev/null)"
     # store (name, body) — same loop as `/pm-handoff` Step 3
   done
   ```
@@ -91,16 +126,16 @@ LIST_RC=$?
 # appear in the default view. Repo resolution reuses session-state.sh's
 # precedence (--repo / $CLAUDE_SESSION_REPO / cwd origin, per #638). NEVER use
 # `--get .` here — it dumps every repo's state and is the leak this scoping fixes.
-SESSION_VIEW=$(.claude/scripts/session-state.sh --session-view 2>/dev/null || echo "NO_SESSION_STATE")
+SESSION_VIEW=$("$SESSION_STATE_SH" --session-view 2>/dev/null || echo "NO_SESSION_STATE")
 echo "$SESSION_VIEW"
 
 # Refill pause (issue #823) — read it EXPLICITLY. --session-view lifts only
 # `.prs` and `.root_repo` out of the repo block and then deletes `.repos`, so a
 # repo-scoped `refill` never appears in the projection above. Skipping this read
 # is how a resumed thread silently resumes refilling after the user said stop.
-REPO_KEY=$(.claude/scripts/session-state.sh --repo-key 2>/dev/null)
+REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null)
 REFILL_RC=0
-REFILL_PAUSED=$(.claude/scripts/session-state.sh --get ".repos[\"$REPO_KEY\"].refill.paused" 2>/dev/null) || REFILL_RC=$?
+REFILL_PAUSED=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].refill.paused" 2>/dev/null) || REFILL_RC=$?
 echo "REFILL_PAUSED=${REFILL_PAUSED:-null} REFILL_RC=$REFILL_RC"
 
 # Per-PR handoff files — read ONLY the ones for PRs in this repo's scope. The
@@ -163,7 +198,7 @@ Parse any found state into an assignments table:
 
 ### 1A.3: Verify against live GitHub
 
-State files may be stale. Cross-reference with live data. When `$GH_USER` is set (Step 0), also fetch the user-scoped views so resumed state can be annotated with "yours" vs. "others":
+State files may be stale. Cross-reference with live data. When `$GH_USER` is set (Step 0a), also fetch the user-scoped views so resumed state can be annotated with "yours" vs. "others":
 
 ```bash
 gh pr list --state open --json number,title,headRefName,author,updatedAt
@@ -210,14 +245,14 @@ No prior state — scan GitHub and suggest what to work on.
 
 ```bash
 # Probe for the config file via the shared parser. rc=2 means the file is missing.
-.claude/scripts/pm-config-get.sh --list >/dev/null 2>&1
+"$PM_CONFIG_GET" --list >/dev/null 2>&1
 LIST_RC=$?
 ```
 
 - If `LIST_RC == 2` (**BOOTSTRAP**): run the same bootstrap logic as `/pm-handoff` Step 2 (detect infrastructure, map architecture, generate pm-config.md). Then continue.
 - Otherwise (**CONFIG_EXISTS**): parse sections via `--list` + per-section `--section <name>` as in 1A.1.
 
-Extract the `## OKRs` section via `.claude/scripts/pm-config-get.sh --section OKRs`. If `rc=0` **and** the body does not start with "No OKRs set", set `OKR_MODE=true`.
+Extract the `## OKRs` section via `"$PM_CONFIG_GET" --section OKRs`. If `rc=0` **and** the body does not start with "No OKRs set", set `OKR_MODE=true`.
 
 ### 1B.2: Fetch GitHub state
 
@@ -235,7 +270,7 @@ gh issue list --state open --json number,title,labels,assignees,createdAt,update
 # set. A collaborator's backlog is at most FYI context, never a gate (issue #732).
 gh pr list --state open --json number,title,headRefName,author,updatedAt,additions,deletions,body
 
-# User-scoped views (only if $GH_USER is set from Step 0)
+# User-scoped views (only if $GH_USER is set from Step 0a)
 if [ -n "$GH_USER" ]; then
   # Your own open PRs — highest priority when asking "what's next"
   gh pr list --state open --search "author:$GH_USER" --json number,title,updatedAt,headRefName
@@ -385,10 +420,10 @@ Once the cleanup is done (gates acted on or declined, or the clean-status line p
 When `NO_CLEAN=true`, **skip the inline `/pm-clean` flow entirely** — none of its cleanup scans or confirm gates run, so there is no friction. For a lightweight, non-interactive health signal, still print the count-only Backlog-health line from the shared aggregator (`backlog-health.sh`, which wraps the same detector without any interactive gate), then proceed directly to ranking:
 
 ```bash
-.claude/scripts/backlog-health.sh --json
+"$BACKLOG_HEALTH" --json
 ```
 
-This wraps the same `backlog-staleness.sh` detection (issue #598); see `.claude/scripts/backlog-health.sh --help` for the full field reference. Render a compact bullet block — a heading plus short one-line stats, not a table:
+This wraps the same `backlog-staleness.sh` detection (issue #598); see `"$BACKLOG_HEALTH" --help` for the full field reference. Render a compact bullet block — a heading plus short one-line stats, not a table:
 
 ```
 ## Backlog health (ranking-only run — cleanup skipped)
@@ -517,14 +552,14 @@ Fix/implement issue #{N}: {title}
 2. Read the issue body — this is the canonical implementation plan (includes merged CodeRabbit recommendations when available)
 3. Check issue comments only to detect any plan content not yet merged into the body — if found, merge it first
 4. Implement the changes
-5. Run the local dual-CLI review per `cr-local-review.md` (`.claude/scripts/local-review.sh --tool coderabbit` + `--tool codeant`) — fix all findings; read the compact verdict, not the raw log
+5. Run the local dual-CLI review per `cr-local-review.md` — resolve `local-review.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/local-review.sh`, `$HOME/.claude/scripts/local-review.sh`, `.claude/scripts/local-review.sh`, then run it `--tool coderabbit` + `--tool codeant` — fix all findings; read the compact verdict, not the raw log
 6. One clean pass on each available CLI (dropped-CLI and outage fallbacks per `cr-local-review.md`), then commit and push
 7. Create a PR with `Closes #{N}` in the body
 8. Include a Test Plan section with checkboxes for acceptance criteria
 9. Enter the review polling loop and fix any findings
 
 ## Constraints
-- Claim the issue before anything else: run `.claude/scripts/issue-claim.sh <N> --check`, and if it clears, `.claude/scripts/issue-claim.sh <N> --claim`. Do this after the model-guard check and before any repo read, edit, or planning. Exit 1 (`claimed`) or 4 (`unknown`) → stop and report the claim rather than proceeding; `stale` → say so and continue. If `--claim` itself fails, stop — a passing check is not a held claim.
+- Claim the issue before anything else. Resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh` — this repo may carry no `.claude/` directory. Run `<N> --check` on it, and if it clears, `<N> --claim`. Do this after the model-guard check and before any repo read, edit, or planning. Exit 1 (`claimed`) or 4 (`unknown`) → stop and report the claim rather than proceeding; `stale` → say so and continue. If `--claim` itself fails, stop — a passing check is not a held claim. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — proceeding unclaimed` and continue; never skip the claim silently.
 - Do NOT work on main — use a worktree or feature branch
 - Do NOT modify .env files
 - Merging is automatic and yours to do: once the merge gate passes and every Test Plan / AC checkbox verifies, run the full `/wrap` yourself to squash-merge — no approval pause, no pre-merge message (`CLAUDE.md` "PR MERGE AUTHORIZATION")
@@ -574,7 +609,7 @@ gh pr list --state merged --limit 10 --json number,title,mergedAt,body
 # Check for closed issues
 gh issue list --state closed --limit 20 --json number,title,closedAt
 
-# User-scoped re-check (only if $GH_USER is set from Step 0)
+# User-scoped re-check (only if $GH_USER is set from Step 0a)
 if [ -n "$GH_USER" ]; then
   gh pr list --state open --search "author:$GH_USER" --json number,title,updatedAt
   gh pr list --state open --search "review-requested:$GH_USER" --json number,title,author,updatedAt
@@ -600,10 +635,10 @@ Also accept user input: "thread for #42 is done", "PR #88 merged", "#55 is block
 **Check the persisted pause first — before either source.** A stop is not a fact about this turn, it is a fact about the thread, so it lives in `session-state.json` and outlives context turnover:
 
 ```bash
-REPO_KEY=$(.claude/scripts/session-state.sh --repo-key)
+REPO_KEY=$("$SESSION_STATE_SH" --repo-key)
 RC=0
-PAUSED=$(.claude/scripts/session-state.sh --get ".repos[\"$REPO_KEY\"].refill.paused") || RC=$?
-SCOPE=$(.claude/scripts/session-state.sh --get ".repos[\"$REPO_KEY\"].refill.scope" 2>/dev/null)
+PAUSED=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].refill.paused") || RC=$?
+SCOPE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].refill.scope" 2>/dev/null)
 ```
 
 Read the exit code, not just the value — **an unreadable pause is a pause**:
@@ -623,7 +658,7 @@ Write it **only** when a human says stop in chat, and clear it **only** on an ex
 NOW=$(date -u +%FT%TZ)
 # Full stop. `reason` is a bounded enum (full_stop | scope_narrowed) — never the
 # user's raw words: nothing the user typed is interpolated into this command.
-.claude/scripts/session-state.sh \
+"$SESSION_STATE_SH" \
   --set ".repos[\"$REPO_KEY\"].refill={\"paused\":true,\"reason\":\"full_stop\",\"scope\":null,\"at\":\"$NOW\"}"
 
 # Narrowed scope ("only the auth issues") — NOT a stop: refill stays on and draws
@@ -631,7 +666,7 @@ NOW=$(date -u +%FT%TZ)
 # encode it with `jq --arg`; never interpolate it into the --set string.
 SCOPE_JSON=$(jq -cn --arg s "<label>" --arg at "$NOW" \
   '{paused:false, reason:"scope_narrowed", scope:$s, at:$at}')
-.claude/scripts/session-state.sh --set ".repos[\"$REPO_KEY\"].refill=$SCOPE_JSON"
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].refill=$SCOPE_JSON"
 ```
 
 `paused: true` is a full stop and nothing else; a narrowed scope is `paused: false` with a non-null `scope`, which still refills — inside that scope only. Schema: `.claude/reference/session-state-schema.json`.

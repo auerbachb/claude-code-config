@@ -10,6 +10,40 @@ Parse `$ARGUMENTS` as space-separated issue references. Strip `#` prefixes to ge
 
 ---
 
+## Step 0: Resolve shared tooling
+
+`/subagent` is symlinked into every repo, but its helper scripts and reference docs are not — most repos carry no `.claude/` directory. Resolve them; never invoke a bare `.claude/scripts/…` path. Full contract and the classified dependency inventory: `.claude/reference/portable-skill-resolution.md` (issue #1189).
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
+CR_PLAN=$(resolve_script cr-plan.sh || true)
+SESSION_STATE_SH=$(resolve_script session-state.sh || true)
+```
+
+`handoff-state.sh` (Step 8), `ac-checkboxes.sh`, `escalate-review.sh`, and `local-review.sh` are resolved by the phase agents themselves, inside the spawn prompts — the RESOLVE block inserted with SAFETY/MINDSET/SKILLS carries the same candidate order to them. Read reference docs (`chip-launching.md`, `subagent-phase-guardrails.md`, `issue-claim.md`, `merge-sequencing.md`) through the matching `.claude/reference/` order.
+
+**When something does not resolve, say so in one line; never skip the contract silently.**
+
+- `subagent-phase-guardrails.md` unreadable → **required**. Print `ERROR: subagent-phase-guardrails.md not found (checked all three paths) — SAFETY/MINDSET/SKILLS/RESOLVE blocks unavailable` and **spawn nothing**. Those blocks are the safety restatement every spawn carries; a phase agent launched without them is not a degraded spawn, it is an unsafe one.
+- `chip-launching.md` unreadable → **required** for Step 5's route-to-thread branch only. Print `ERROR: chip-launching.md not found (checked all three paths) — too-big routing gate unavailable`, and queue the issue inline rather than routing it out: inline is the default the gate exists to protect (#1189), so failing toward it is correct.
+- `SESSION_STATE_SH` empty → **required**. Print `ERROR: session-state.sh not found (checked all three paths) — agent tracking and refill state unavailable` and do not spawn; an untracked agent is one nothing will ever reap.
+- `ISSUE_CLAIM` empty → **optional**. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — Step 6 claim gate skipped` and continue.
+- `CR_PLAN` empty → **optional**. Print `DEGRADED: cr-plan.sh not found (checked all three paths) — CR plan detection skipped` and continue with Claude's own plan.
+
+The Step 4 too-big criteria need no fallback — they are written inline in this file, so that contract already travels. Only their per-criterion rationale doc (`too-big-recalibration-2026-07.md`) is a fallback read.
+
+---
+
 ## Step 1: Gather Issue Data
 
 For each issue number, fetch the full issue:
@@ -33,7 +67,7 @@ For each issue, first try the shared CR plan detector — it encapsulates the ca
 
 ```bash
 PLAN=""
-if PLAN=$(.claude/scripts/cr-plan.sh "$NUMBER"); then
+if PLAN=$("$CR_PLAN" "$NUMBER"); then   # $CR_PLAN from Step 0
   : # exit 0 — CR plan captured in $PLAN
 else
   rc=$?
@@ -55,7 +89,7 @@ else
 fi
 ```
 
-Exit codes: `0` plan found on stdout, `1` no plan, `3` issue not found/closed, `4` gh/env error (network, missing `python3`, or filter failure). Run `.claude/scripts/cr-plan.sh --help` for full usage.
+Exit codes: `0` plan found on stdout, `1` no plan, `3` issue not found/closed, `4` gh/env error (network, missing `python3`, or filter failure). Run `"$CR_PLAN" --help` for full usage.
 
 **If `$PLAN` is empty (no CR plan), fall back to scanning comments for a human-authored plan** — a tech lead or teammate may have written one directly on the issue. The script intentionally only matches `coderabbitai`, so the human-only fallback scan is the agent's job. Explicitly filter out bot accounts so automated comments can't become `$PLAN`:
 
@@ -136,7 +170,7 @@ For each qualifying issue, verify no PR is already open **and** that no other th
 
 ```bash
 gh pr list --search "head:issue-{NUMBER}" --json number,title,state
-.claude/scripts/issue-claim.sh {NUMBER} --check
+"$ISSUE_CLAIM" {NUMBER} --check   # $ISSUE_CLAIM from Step 0
 ```
 
 Either signal skips the issue, and the skip line names **which** one fired:
@@ -148,7 +182,7 @@ Either signal skips the issue, and the skip line names **which** one fired:
 When both checks pass, **take the claim before spawning Phase A** so it is held for the whole pipeline, not just this step — and **gate the spawn on it succeeding**. A passing `--check` is not a held claim: another thread can win the race between the two calls, and the write itself can fail. Spawning on an unheld claim reopens the exact window this guards:
 
 ```bash
-.claude/scripts/issue-claim.sh {NUMBER} --claim || {
+"$ISSUE_CLAIM" {NUMBER} --claim || {
   echo "Issue #{NUMBER} — could not take the claim; skipping (not spawning Phase A)."; }
 ```
 
@@ -220,10 +254,10 @@ For each qualifying issue, spawn a Phase A subagent using the Agent tool.
 - **Check the refill pause before every one of those launches — standalone runs included.** The stop the user said in a `/pm` thread is persisted, not remembered, so it binds here too:
 
   ```bash
-  REPO_KEY=$(.claude/scripts/session-state.sh --repo-key)
+  REPO_KEY=$("$SESSION_STATE_SH" --repo-key)
   RC=0
-  PAUSED=$(.claude/scripts/session-state.sh --get ".repos[\"$REPO_KEY\"].refill.paused") || RC=$?
-  SCOPE=$(.claude/scripts/session-state.sh --get ".repos[\"$REPO_KEY\"].refill.scope" 2>/dev/null)
+  PAUSED=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].refill.paused") || RC=$?
+  SCOPE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].refill.scope" 2>/dev/null)
   ```
 
   Same fail-closed reading as `/pm` Step 3.4's table: `RC=0` + `true` → launch nothing, report `paused`; `RC=0` + `false`/`null`, or `RC=3` (no state file) → proceed; any other `RC` → treat as paused and say the state was unreadable. A non-null `$SCOPE` skips queued issues outside it. This is the only pause gate a standalone `/subagent` run has — without it, a queued pipeline launches straight through an explicit stop.
@@ -242,14 +276,14 @@ Body:
 {CR plan if available, or "No CR plan available — explore the codebase to identify affected files."}
 
 ## Guardrails (MANDATORY)
-**Read `.claude/reference/subagent-phase-guardrails.md` and insert its full contents verbatim at this point** — SAFETY, MINDSET/capability-discovery, and SKILLS-first reflex. That file is the single canonical home for these blocks; `verbatim-block-lint.sh` CI-guards them there.
+**Read `subagent-phase-guardrails.md` (Step 0 candidate order) and insert its full contents verbatim at this point** — RESOLVE, SAFETY, MINDSET/capability-discovery, and SKILLS-first reflex. That file is the single canonical home for these blocks; `verbatim-block-lint.sh` CI-guards them there.
 
 ## Phase A Instructions
 
 1. You are already in a worktree — verify with `git branch --show-current`.
 2. Read the issue body above — this is your implementation plan.
 3. Implement the changes.
-4. Run the local dual-CLI review per `cr-local-review.md`: `.claude/scripts/local-review.sh --tool coderabbit` AND `.claude/scripts/local-review.sh --tool codeant` (each emits `{"ok":…,"findings":N,"verified_run":…,"failure_mode":…,"log_path":…}`; raw output stays at `log_path`)
+4. Run the local dual-CLI review per `cr-local-review.md`: resolve `local-review.sh` per RESOLVE, then run it `--tool coderabbit` AND `--tool codeant` (each emits `{"ok":…,"findings":N,"verified_run":…,"failure_mode":…,"log_path":…}`; raw output stays at `log_path`)
    - Union the findings; fix all valid findings.
    - Run all available CLIs again. Repeat until each remaining CLI has one clean pass.
    - If a CLI hangs >2 minutes or errors twice, drop it for the session, resolve or explicitly waive its pre-drop findings in the PR body, gate on the remaining one, and note the drop.
@@ -371,7 +405,7 @@ Read the handoff file first (resolve path: `handoff-state.sh [--owner-repo owner
 If missing, reconstruct state from GitHub API.
 
 ## Guardrails (MANDATORY)
-**Read `.claude/reference/subagent-phase-guardrails.md` and insert its full contents verbatim at this point** (same as Phase A).
+**Read `subagent-phase-guardrails.md` (Step 0 candidate order) and insert its full contents verbatim at this point** (same as Phase A).
 
 ## Phase B Instructions
 
@@ -381,7 +415,7 @@ If missing, reconstruct state from GitHub API.
    - If unresolved findings from coderabbitai[bot] or greptile-apps[bot] exist, fix them first.
 3. Check ALL CI check-runs. Fix any failures before continuing.
 4. Poll for CR review every 60s on all 3 endpoints. Filter by coderabbitai[bot].
-5. Run `.claude/scripts/escalate-review.sh {PR_NUMBER}` every CR-owned poll cycle and branch on its single `STATUS=` verdict:
+5. Resolve `escalate-review.sh` per RESOLVE and run it on `{PR_NUMBER}` every CR-owned poll cycle and branch on its single `STATUS=` verdict:
    - `gate_met`: CodeRabbit or CodeAnt already has a valid APPROVED review on current HEAD — do not escalate; continue to the merge gate check.
    - `polling_cr`: continue polling CR.
    - `switch_bugbot`: persist `reviewer: bugbot` and follow the BugBot path.
@@ -442,7 +476,7 @@ Execute the canonical `/wrap` flow after verification — no pre-merge prompt.
 Resolve the path with `handoff-state.sh [--owner-repo owner/repo] --path {PR_NUMBER}` and read that file first.
 
 ## Guardrails (MANDATORY)
-**Read `.claude/reference/subagent-phase-guardrails.md` and insert the SAFETY block verbatim at this point** (Phase C / `phase-c-merger` carries only SAFETY — no MINDSET or SKILLS).
+**Read `subagent-phase-guardrails.md` (Step 0 candidate order) and insert the RESOLVE and SAFETY blocks verbatim at this point** (Phase C / `phase-c-merger` carries only those two — no MINDSET or SKILLS).
 
 ## Phase C Instructions
 
@@ -453,7 +487,17 @@ Resolve the path with `handoff-state.sh [--owner-repo owner/repo] --path {PR_NUM
    - Greptile: severity gate satisfied.
 3. Extract Test Plan checkboxes via the shared helper, branching on the exit code. Exit `1` ("no Test Plan") is a **blocking** outcome — every PR must include a Test Plan section (per CLAUDE.md):
    ```bash
-   if ITEMS=$(.claude/scripts/ac-checkboxes.sh {PR_NUMBER} --extract); then
+   # Resolve ac-checkboxes.sh per RESOLVE — this repo may carry no .claude/ directory.
+   AC_CHECKBOXES=""
+   for c in "$HOME/.claude/skills-worktree/.claude/scripts/ac-checkboxes.sh" \
+            "$HOME/.claude/scripts/ac-checkboxes.sh" \
+            ".claude/scripts/ac-checkboxes.sh"; do
+     [[ -x "$c" ]] && { AC_CHECKBOXES="$c"; break; }
+   done
+   if [[ -z "$AC_CHECKBOXES" ]]; then
+     echo "ERROR: ac-checkboxes.sh not found (checked all three paths) — AC verification unavailable" >&2
+     OUTCOME=blocked; MSG="ac-checkboxes.sh not found — cannot verify Test Plan"
+   elif ITEMS=$("$AC_CHECKBOXES" {PR_NUMBER} --extract); then
      : # $ITEMS is a JSON array of {index, checked, text}
    else
      rc=$?
@@ -464,13 +508,15 @@ Resolve the path with `handoff-state.sh [--owner-repo owner/repo] --path {PR_NUM
      esac
    fi
    ```
+
+   An unresolvable helper is a **block**, never a pass: Step 2 of the merge gate exists to prove every box against the code, and a verification that could not run must never read as one that succeeded.
 4. If `OUTCOME=blocked` was set in step 3, skip steps 5–9 and go straight to step 10 (exit report) with `OUTCOME: blocked` and the captured `$MSG`.
 5. For each item in `$ITEMS` with `checked == false`, read the relevant source file(s) and verify the criterion is met.
 6. Tick passing items by index (or `--all-pass` if every unchecked item passed):
    ```bash
-   .claude/scripts/ac-checkboxes.sh {PR_NUMBER} --tick "0,2,3"
+   "$AC_CHECKBOXES" {PR_NUMBER} --tick "0,2,3"
    # or
-   .claude/scripts/ac-checkboxes.sh {PR_NUMBER} --all-pass
+   "$AC_CHECKBOXES" {PR_NUMBER} --all-pass
    ```
 7. If any item fails verification, do NOT tick it — set `OUTCOME: blocked` and list the failing items in the exit report.
 8. Check ALL CI check-runs pass. If any fail, set `OUTCOME: blocked`.

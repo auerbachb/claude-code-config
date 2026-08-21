@@ -197,6 +197,72 @@ RULES_TARGET="$SKILLS_WORKTREE/.claude/rules"
 migrate_symlink "$CLAUDE_MD_LINK" "$CLAUDE_MD_TARGET" "$REPO_ROOT/CLAUDE.md" "CLAUDE.md" -f
 migrate_symlink "$RULES_LINK" "$RULES_TARGET" "$REPO_ROOT/.claude/rules" "rules" -d
 
+# --- Step 5b: Publish phase-agent definitions to user scope (issue #1189) ---
+#
+# Claude Code discovers custom subagent definitions at BOTH ~/.claude/agents/
+# (user scope) and <repo>/.claude/agents/ (project scope), project winning on a
+# name: collision. Without this leg the phase agents exist only in this repo, so
+# `subagent_type: "phase-a-fixer"` fails everywhere else and the PM skills lose
+# their inline pipelines with no visible error.
+#
+# Topology note: this mirrors Step 3 (skills) — a REAL directory holding one
+# symlink per file — and deliberately NOT Step 5 (rules), which points a single
+# directory symlink at the worktree. The Claude Code docs state that
+# .claude/rules/ resolves symlinks; they are silent on symlink-following for
+# agents/. A real directory needs no such guarantee, and per-file symlinks keep
+# the worktree as the single source either way.
+
+AGENTS_DIR="$HOME/.claude/agents"
+WORKTREE_AGENTS="$SKILLS_WORKTREE/.claude/agents"
+
+if [[ ! -d "$WORKTREE_AGENTS" ]]; then
+  echo ""
+  echo "WARNING: No .claude/agents/ directory in the worktree. Skipping agent symlinks." >&2
+else
+  echo ""
+  echo "Symlinking agent definitions from worktree..."
+
+  # A brand-new agents/ directory is the one case Claude Code cannot pick up
+  # without a restart (the file watcher does not cover a directory that did not
+  # exist at session start). Say so rather than leaving a silent no-op.
+  agents_dir_created=false
+  [[ -d "$AGENTS_DIR" ]] || agents_dir_created=true
+  mkdir -p "$AGENTS_DIR"
+
+  for agent_file in "$WORKTREE_AGENTS"/*.md; do
+    [[ -f "$agent_file" ]] || continue
+
+    agent_name="$(basename "$agent_file")"
+    link="$AGENTS_DIR/$agent_name"
+
+    # README.md documents the directory; it is not an agent definition.
+    [[ "$agent_name" == "README.md" ]] && continue
+
+    migrate_symlink "$link" "$agent_file" "$REPO_ROOT/.claude/agents/$agent_name" "$agent_name" -f
+  done
+
+  # Prune stale links (agent renamed or removed on main). Glob without the
+  # trailing */ so dangling symlinks are included — a broken link is not a file,
+  # so -f-style globs skip it.
+  for link in "$AGENTS_DIR"/*; do
+    [[ -e "$link" || -L "$link" ]] || continue
+    [[ -L "$link" ]] || continue
+    agent_name="$(basename "$link")"
+    if [[ ! -f "$WORKTREE_AGENTS/$agent_name" ]]; then
+      echo "  $agent_name — removing stale symlink (no matching agent in worktree)"
+      # Without -e, a failed rm would leave the stale link in place under a
+      # message that reads like success, and the retired agent would stay
+      # visible at user scope.
+      rm "$link" || echo "  WARNING: could not remove $link — remove it manually" >&2
+    fi
+  done
+
+  if [[ "$agents_dir_created" == true ]]; then
+    echo "  NOTE: ~/.claude/agents/ was just created. Restart your Claude Code session"
+    echo "        for the agent types to register (see .claude/agents/README.md)."
+  fi
+fi
+
 # --- Step 6: Register hooks and statusLine in ~/.claude/settings.json ---
 #
 # Delegates entirely to register-hooks.py which reads global-settings.json as

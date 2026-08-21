@@ -1,8 +1,30 @@
 # Subagent Phase Guardrails
 
-Verbatim SAFETY/MINDSET/SKILLS blocks for subagent spawn prompts. Single canonical home; `verbatim-block-lint.sh` byte-compares these blocks against `.claude/rules/safety.md` and `.claude/rules/skill-first.md`.
+Verbatim SAFETY/MINDSET/SKILLS/RESOLVE blocks for subagent spawn prompts. Single canonical home; `verbatim-block-lint.sh` byte-compares SAFETY/MINDSET/SKILLS against `.claude/rules/safety.md` and `.claude/rules/skill-first.md`, and `skill-portability-lint.sh` byte-compares RESOLVE against `.claude/reference/portable-skill-resolution.md`.
 
-**Phase C (`phase-c-merger`)** carries only the SAFETY block — no MINDSET or SKILLS per `subagent-orchestration.md`.
+**Phase C (`phase-c-merger`)** carries only the SAFETY block — no MINDSET or SKILLS per `subagent-orchestration.md`. **RESOLVE ships with all three phases**: every phase shells out to helper scripts, and a phase agent spawned against a repo with no `.claude/` directory fails the same way its parent would (issue #1189).
+
+---
+
+## RESOLVE (Portable Script Resolution)
+
+```text
+RESOLVE: Never invoke a bare `.claude/scripts/<name>` path — the repo you are
+working in may carry no `.claude/` directory. Resolve every helper script to the
+first executable of, in order:
+  "$HOME/.claude/skills-worktree/.claude/scripts/<name>"
+  "$HOME/.claude/scripts/<name>"
+  ".claude/scripts/<name>"
+Read reference docs the same way under `.claude/reference/`. If no candidate
+resolves, say so in ONE visible line naming the file and the paths checked —
+`ERROR: <name> not found (checked all three paths) — <capability> unavailable`
+when the step cannot proceed without it, or `DEGRADED: <name> not found (checked
+all three paths) — <capability> unavailable, continuing without it` when there is
+a real reduced mode. Never skip a contract silently: an unreachable gate that
+nobody mentions is the failure this rule exists to stop. Rules under
+`.claude/rules/*.md` need no fallback — they auto-load at user scope in every
+project. Full contract: .claude/reference/portable-skill-resolution.md.
+```
 
 ---
 
