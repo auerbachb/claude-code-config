@@ -225,3 +225,53 @@ All five factual questions are answered. What remains are **decisions**, not rea
 4. **Choose a CodeRabbit lever** — Incremental review Off is free and the largest single reducer;
    $0.25/file overflow and Pro+ both cost money.
 5. **Re-decide Graphite's role** on paid-plan evidence, now that the ≥30-PR threshold is met.
+
+## Round 3 — CodeRabbit CLI seat state, measured locally (2026-08-21 evening)
+
+Issue: [#1213](https://github.com/auerbachb/claude-code-config/issues/1213). **No dashboard was
+opened and nothing was changed anywhere** — this round is a local CLI measurement, recorded here
+because it corrects a billing-state claim the earlier rounds fed into `pricing-matrix.md`.
+
+### The CLI is already on a paid seat; the throttle is repo visibility
+
+Rounds 1–2 and `pricing-matrix.md` owner-action item 5 recorded the CodeRabbit CLI as unattached to a
+seat — `isProUser: false`, limited to the free tier's 3 reviews/hour "despite $90/month in seats" —
+and prescribed re-auth as one of the three seat holders. **That reading was wrong.** Measured with
+CLI 0.7.5:
+
+- `coderabbit auth status` → `Account: auerbachb`, `Provider: GitHub`, **`Plan: Pro`**,
+  **`Seat: assigned`**. The CLI holds a paid seat right now.
+- The CLI announces the routing itself on this repo: *"This looks like a public open-source
+  repository. CodeRabbit will review it for free, and no organization will be billed. Free OSS limits
+  apply."*
+- The observed ceiling — ~3 `coderabbit review --agent` runs, then
+  `{"errorType":"rate_limit","metadata":{"isProUser":false,"waitTime":"40 minutes"}}` — matches the
+  free-OSS tier already documented in `ai-review-chain-roles-decision.md` §Repo variance and
+  `feedback_cr_cli_free_oss_tier_cap.md`.
+
+So `isProUser: false` is a statement about **which pool this review was billed against** — free-OSS,
+no organization billed — not about the account's tier. The route is selected by the **repository's
+visibility**, so no re-auth as any seat holder can change it. The only lever that would is making the
+repo private, which would forfeit the CodeAnt and Greptile OSS discounts that are the two
+highest-value items on the paid-lever list.
+
+**Nothing is owed and nothing is lost in dollars**: the seat is already paid for and already
+assigned, and the CLI is advisory — the GitHub Apps hold independent quotas and are what gate the
+merge (`feedback_review_clis_down_app_independent.md`). The cost is local pre-push visibility only.
+
+`pricing-matrix.md` keeps its item 5 as written, per its point-in-time exemption. The correction is
+recorded in
+[`ai-review-paid-levers-checklist.md`](./ai-review-paid-levers-checklist.md) item 6, which supersedes
+it. Whether CodeRabbit's OSS tier changes the picture is
+[#1212](https://github.com/auerbachb/claude-code-config/issues/1212)'s question.
+
+### Where the remaining decisions now live
+
+The five items under "Still open after both rounds" are settings and spend-cap changes, tracked in
+[#1209](https://github.com/auerbachb/claude-code-config/issues/1209). The **paid** decisions —
+seats, OSS applications, billing cadence, metered caps — are now tracked in
+[`ai-review-paid-levers-checklist.md`](./ai-review-paid-levers-checklist.md), each with its ordering
+gate and separate submitted/approved dates. Gate state as measured 2026-08-21: **#1209, #1210, and
+#1212 are all open**, and the repo has **no `LICENSE` file**, so the Greptile OSS application, the
+CodeRabbit billing cadence, and the metered add-on are all blocked. Budget lines in this file stay as
+Rounds 1–2 recorded them until an approval actually lands.

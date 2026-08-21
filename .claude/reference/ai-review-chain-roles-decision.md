@@ -72,6 +72,12 @@ Roles are **identical across repos**; only the *local CLI* layer varies by visib
 - **Public repos** (this one): the CodeRabbit CLI free-OSS tier allows roughly 3 reviews before a
   ~40-minute lockout (`feedback_cr_cli_free_oss_tier_cap.md`), and CodeAnt's OSS pricing differs
   from its private-repo pricing.
+  **This is not a seat problem, and re-auth cannot fix it** (#1213, measured 2026-08-21):
+  `coderabbit auth status` reports `Plan: Pro` / `Seat: assigned`, and the CLI states the routing
+  itself — *"This looks like a public open-source repository… no organization will be billed. Free
+  OSS limits apply."* The `isProUser: false` in the rate-limit payload names **the pool the review
+  was billed against**, not the account's tier, and the pool is selected by repository visibility.
+  Recorded here because the opposite reading reached `pricing-matrix.md` as an owner action.
 - **Private repos**: CLI caps follow the paid plan instead.
 - **Neither affects the merge gate.** The CLIs are advisory and the GitHub Apps hold quotas that are
   entirely independent of them (`feedback_review_clis_down_app_independent.md`). A dead CLI never
@@ -174,10 +180,29 @@ in the audit's §Dashboard reconciliation. Three things it changed here:
    volume is unmetered, but **committers who receive only AI reviews are billed as seats**, so the
    "All committers in selected repositories" setting is the cost lever, not the review count.
 
+6. **The paid levers are now tracked, and one of them was a misdiagnosis (#1213, 2026-08-21).**
+   The owner-only paid decisions behind this table's cost rationale — the Greptile OSS application,
+   the CodeAnt open-source discount, CodeRabbit's billing cadence, its metered add-on, and seat
+   coverage for the three unassigned human authors — live in
+   [`ai-review-paid-levers-checklist.md`](./ai-review-paid-levers-checklist.md), each carrying its
+   ordering gate and separate `Submitted:`/`Approved:` dates. **No cost rationale above changes
+   yet**: as of 2026-08-21 nothing has been submitted, #1209/#1210/#1212 are all open, and a budget
+   line moves only on a landed approval. The sixth item closed on measurement rather than action —
+   the CodeRabbit CLI is already seated (§Repo variance), so "attach the CLI to a paid seat" was
+   never available to do.
+
 ## Operator actions this decision depends on
 
 None of these are agent-executable — each requires entering or changing billing/subscription state
-in a vendor dashboard. Listed in descending value:
+in a vendor dashboard. Listed in descending value.
+
+**Scope of this list: the free settings and cap changes**, tracked in
+[#1209](https://github.com/auerbachb/claude-code-config/issues/1209). The **paid** decisions this
+role table's cost rationale depends on — OSS applications, billing cadence, metered caps, seat
+coverage — are tracked separately in
+[`ai-review-paid-levers-checklist.md`](./ai-review-paid-levers-checklist.md) (#1213), which encodes
+each item's ordering gate and keeps `Submitted:` and `Approved:` as separate dates so an in-flight
+application never moves a budget line.
 
 1. **Set Greptile's Flex Usage Limit — it is still unset.** Round 2 answered "is it billed" (yes,
    uncapped at $1/credit past 50/month), so what remains is closing the exposure. This is the only
@@ -187,10 +212,10 @@ in a vendor dashboard. Listed in descending value:
    #875 gate has to discard.
 3. **Cut BugBot's scope** — Every Push → per PR, Incremental → On, Drafts → Off, Effort → Medium,
    Autofix → Off (0 of 299 merged) — before considering a Cursor cap raise. Scope costs nothing.
-3. **Fix the CodeAnt subscription identity** — either license a dedicated CI identity on a seat, or
+4. **Fix the CodeAnt subscription identity** — either license a dedicated CI identity on a seat, or
    set the committer email to the operator's own seat-holding address. Never point it at a
    collaborator's address.
-4. **Turn CodeRabbit's Incremental review off** — free, and the largest single reducer of slot
+5. **Turn CodeRabbit's Incremental review off** — free, and the largest single reducer of slot
    consumption (one review per PR instead of one per push). The paid levers ($0.25/file overflow,
    Pro Plus) only matter after that lands, and extra seats cannot help while one identity authors
    every PR.
