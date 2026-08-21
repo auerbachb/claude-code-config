@@ -28,13 +28,33 @@ Run this reflection pass on **every** issue, before and after drafting:
 1. **Scope check (narrow):** "Is this tighter than it sounds — is the real ask just X?"
 2. **Scope check (expand):** "Is there an adjacent concern (Y) that should ride along so the change is coherent?"
 3. **Split check:** "This sounds like 2+ distinct issues — should it be split into subsidiary issues?"
-4. **Ambiguity:** name any concrete word/phrase whose meaning materially changes the issue.
+4. **Sizing check (subagent fit):** "This is one coherent concern — but can one Phase A/B/C pipeline land it as one reviewable PR?"
+5. **Ambiguity:** name any concrete word/phrase whose meaning materially changes the issue.
 
 Also **surface assumptions explicitly**: when the description leaves something implicit, name the assumption you encoded rather than burying it silently.
 
-**Where the reflection goes.** In default mode you make these calls yourself and **report them as decision points after filing** (Step 9a) — the user reads what you decided and can `/update #N` or `close #N` in one step if a call was wrong (issues are cheap to change). Ask up front **only** when a call is genuinely blocking: the ask spans two clearly separate issues and filing one combined issue would be actively wrong, or a word is so ambiguous the body cannot be written without it. Bias hard toward filing and reporting — a blocking question is the rare exception, not the rhythm.
+### The sizing check — what it catches that the split check doesn't
 
-**Rapid-fire override (leaner escape hatch).** Rapid-fire — per thread (`/issue-maker rapid-fire`, `"switch to rapid-fire mode"`) or per issue (`"just file it"`, `"skip the commentary"`) — is now the *leaner* of two auto-opening modes, not "the one without the gate" (default has no gate either). It never asks up front even on an ambiguous call, blocks dedup only on an exact title match (default pauses on a strong-or-exact match — Step 4), and emits a terser report: the closing URL, optionally a one-line summary, without the decision-points elaboration. It still auto-applies labels, still emits the 6-section body, still prints the closing URL. Switch back with `"switch to default mode"`.
+The split check asks whether the ask is **two things**. The sizing check asks whether it is **too much of one thing**. They are different failures: "build the landing page and all its sections" is a single coherent concern *and* four PRs' worth of work. A coherence-only split check waves it through, the issue lands as a feature-sized monolith, and every downstream venue decision inherits the bad sizing (#1192).
+
+The bar is **`/subagent` Step 4 criterion 3 — the subagent-fit sizing bar**: one Phase A/B/C pipeline, one reviewable PR, one review cycle, a bounded slice. That criterion is the single definition — **cite it, never re-derive it here.** It travels inline inside `/subagent`, so it needs no fallback read; only its rationale (`too-big-recalibration-2026-07.md`, read through the standard candidate order — `portable-skill-resolution.md`) does, and being rationale-only its absence is a one-line `DEGRADED:` note, never a reason to skip the check.
+
+**It counts deliverables, not bulk.** The bar fires when an ask names *several independently shippable deliverables*, never on sheer volume — a big-sounding ask that produces one deliverable ("rename this across the whole repo") clears it comfortably. `/subagent` Step 4's not-a-disqualifier list governs here too: file count, "feels large", and touching many files are not sizing signals, and splitting on them just fragments one PR into four.
+
+**Judge from the body, not the labels.** What the ask itself describes decides sizing — how many independently shippable deliverables it names, how many surfaces it spans. A `size:*` or `complexity:*` label, where one exists, is a **tie-break only**: it can settle a genuinely balanced call, never overrule what the description plainly says.
+
+**Fails the bar → file a chain, not a monolith** — an ordered set of increment issues, each independently mergeable and each saying where its slice ends (Step 5 for the body, Step 8 for the links and the 5-increment cap, Step 9a for the report, Step 9c for the chip). **Clears the bar → nothing changes.** Small asks are untouched: no chain, no commentary, no mention of sizing at all.
+
+**Where the reflection goes.** In default mode you make these calls yourself and **report them as decision points after filing** (Step 9a) — the user reads what you decided and can `/update #N` or `close #N` in one step if a call was wrong (issues are cheap to change). Ask up front **only** when a call is genuinely blocking: the ask spans two clearly separate issues and filing one combined issue would be actively wrong, a word is so ambiguous the body cannot be written without it, or the sizing check would need **more than 5 increments** (Step 8's cap — the one case where the count itself is the question). Bias hard toward filing and reporting — a blocking question is the rare exception, not the rhythm. A sizing split *within* the cap is not one of these: file the chain and report it (Step 9a).
+
+**Rapid-fire override (leaner escape hatch).** Rapid-fire — per thread (`/issue-maker rapid-fire`, `"switch to rapid-fire mode"`) or per issue (`"just file it"`, `"skip the commentary"`) — is now the *leaner* of two auto-opening modes, not "the one without the gate" (default has no gate either). It never asks about **scope or ambiguity** — not even on a genuinely ambiguous call — and emits a terser report: the closing URL, optionally a one-line summary, without the decision-points elaboration. It still auto-applies labels, still emits the 6-section body, still prints the closing URL. **It also still runs the full reflection pass, sizing check included** — rapid-fire trades away *report verbosity*, never a judgment, so an oversized ask still becomes an increment chain.
+
+Rapid-fire keeps exactly **two hard bars**, and neither is a scope question — both are "this would create a mess that's tedious to undo," which is why the leaner mode keeps them:
+
+1. **Exact title match** on dedup (default pauses on strong *or* exact — Step 4).
+2. **More than 5 increments** in a chain (Step 8's cap).
+
+At either bar rapid-fire stops and asks, in one terse line rather than default's fuller framing. Switch back with `"switch to default mode"`.
 
 ## Issue body tone & audience (default — NON-NEGOTIABLE)
 
@@ -134,7 +154,7 @@ Never create worktrees/branches, never edit code, and **never poll for a CodeRab
 
 For each issue the user describes (see Step 6 for batches):
 
-1. **Reflect** — run the reflection pass from the top-level rule (narrow / expand / split / ambiguity / assumptions). You make these calls yourself; they resurface as decision points in the report (Step 9a). Ask up front only on a genuinely blocking call (top-level rule); otherwise proceed.
+1. **Reflect** — run the reflection pass from the top-level rule (narrow / expand / split / **sizing** / ambiguity / assumptions). You make these calls yourself; they resurface as decision points in the report (Step 9a). Ask up front only on a genuinely blocking call (top-level rule); otherwise proceed. **If the sizing check fails**, this one ask becomes an ordered increment chain: run each increment through sub-steps 2–7 below in order, head first, so each one can link to the increment before it (Step 8).
 2. **Dedup search** (Step 4) — surface likely duplicates; pause before filing only on a strong or exact match.
 3. **Draft the body** using the canonical 6-section template (Step 5), honoring the tone defaults. Detect any explicit-ask override and flip to technical-first for that issue only.
 4. **Title** — concise, **≤70 characters**. If it would exceed 70, auto-trim and note the trim in the decision points.
@@ -173,6 +193,7 @@ fi
 - **Interpreting matches:** `/issue-maker` always has a human in the loop, so it only ever *surfaces* candidates — it never auto-comments in place of filing. Use the strong/weak/none thresholds in `autofile-dedup.md` — read through the standard candidate order, `$HOME/.claude/skills-worktree/.claude/reference/` first, then `$HOME/.claude/reference/`, then `.claude/reference/` (`portable-skill-resolution.md`) — to classify the **top** candidate: a **strong match** or an **exact title match** is a genuine pause point; weak/ambiguous matches are not.
 - **Default mode — pause only on a strong or exact match:** if the top candidate clears that bar, surface it and ask *"Looks like a duplicate of #N — file anyway? (y/N)"* before creating. On a weak/ambiguous match, **do not block** — file, and name the near-duplicate as a decision point (Step 9a: "possibly overlaps #N"). No match → file normally.
 - **Rapid-fire:** show any matches but proceed unless there is an **exact title match** (then block and ask).
+- **Siblings in the same increment chain are never duplicates of each other.** Increments share a theme prefix and most of their keywords by design, so filing `Landing page 2/4` right after `Landing page 1/4` will surface increment 1 as a strong match. That is the chain working, not a duplicate: when the top candidate is an increment this run just filed, note it and file anyway — never pause on it, in either mode. Duplicates *outside* the chain still pause normally.
 
 ---
 
@@ -207,6 +228,26 @@ Optional sections, appended when relevant:
 - `## Implementation notes` — only for deep hand-offs, or when the explicit-ask override is in effect (then the walkthrough leads).
 
 **Complexity hint (optional):** if the user states or the description clearly implies a tier, tag the issue with `complexity:quick|light|medium|heavy` (only if that label exists in the repo — see Step 7) so `/prompt` and `/pm` can pick it up later.
+
+### Increment issues — the variant shape for a chain (sizing check failed)
+
+When the top-level rule's sizing check fails, each increment is a normal 6-section issue with two additions. An increment is not a sub-task: it is a **complete, independently mergeable issue** that happens to be one slice of a larger theme.
+
+**Title — carry the parent theme and the position.** `{Parent theme} {i}/{n}: {what this slice delivers}` — e.g. `Landing page 1/4: hero + layout shell`, `Landing page 2/4: services page`. The theme prefix is what keeps a backlog of increments scannable instead of looking like four unrelated tickets. The existing **≤70-character** title rule still applies; trim the slice description, never the `{i}/{n}` marker, and note any trim in the decision points.
+
+**Acceptance Criteria — one boundary line, always.** Every increment's `## Acceptance Criteria` opens with a line stating where the slice stops. Non-final increments hand the remainder forward; the **final** increment has nothing to hand forward and says so instead:
+
+```markdown
+- [ ] This increment ends at <the boundary>; <what's explicitly out of scope> lands in the next increment.
+```
+
+```markdown
+- [ ] Final increment — this completes <the parent theme>; it ends at <the boundary>, with nothing deferred past it.
+```
+
+The boundary line is what keeps a pipeline from scope-creeping across the whole theme — without it, an agent picking up increment 1 has nothing telling it to stop at the hero. Write the boundary in concrete terms ("ends at a static hero and layout shell — no services content, no form"), never as a vague "part 1 of the work." Never point the last increment at a successor that will not exist.
+
+Everything else is unchanged: the same functional-first tone, the same six sections, the same labels, the same capture-mode footer.
 
 **Capture-mode footer:** append a trailing line to every created body so capture-mode issues are identifiable:
 
@@ -260,6 +301,22 @@ Detect `#N` mentions in the user's description and verify each exists (`gh issue
 - "depends on #N" / "blocked by #N" → `- Depends on #N`
 - "blocks #N" → `- Blocks #N`
 
+### Linking an increment chain (sizing check failed)
+
+File the increments **in order**, head first, so each one can reference the number of the increment before it. Every increment after the head gets a `## Related Issues` entry pointing at its **immediate predecessor** — not at the head, and not at all of them:
+
+```markdown
+## Related Issues
+
+- Depends on #<previous increment>
+```
+
+This is the existing `- Depends on #N` phrasing above, reused deliberately rather than invented: `/pm` Step 1B.3 collects `depends on #N` as a blocked-direction marker, and `/wave` 5.1 consumes that same set and **excludes any candidate blocked by an open, unmerged issue.** A predecessor link is therefore what makes `/wave` admit only the chain head and serialize the rest — inventing a new marker would leave the chain looking parallelizable.
+
+**Cap: at most 5 increments per ask without pausing.** Five is a chain; twenty is a confetti backlog nobody will triage. If an ask genuinely needs more than 5, **stop before filing anything** and say so — name the count you'd need and what the increments would be, and ask whether to file them all or re-cut the theme into fewer, larger slices. This mirrors the Step 4 dedup pause bar: clear the bar and proceed silently, exceed it and ask first.
+
+**Both modes stop at this bar.** It is one of rapid-fire's two hard bars, enumerated in the "Rapid-fire override" paragraph of the top-level rule — rapid-fire asks in one terse line instead of default's fuller framing, but it never files a 6+ chain unasked and never silently re-cuts one down to 5 on its own. Re-cutting changes what gets built; that call is the user's.
+
 ---
 
 ## Step 9: Record + offer a coding chip + print the URL (the closing-line rule)
@@ -284,7 +341,9 @@ set_log '.issues += [{number:($n|tonumber), title:$t, url:$u, labels:$labels,
 The report is what replaces the old draft-reprint-and-approve gate, and it is the safety valve that makes auto-filing low-risk. Emit it **immediately after logging the issue** — before the chip (Step 9c) and before the closing URL. Two short parts:
 
 1. **Summary (1–3 sentences).** What issue you just opened, in plain functional terms — the same voice as the body's lead sections, not a section-by-section readout.
-2. **Decision points (1–3 sentences).** The actual calls you made that the user might want to revisit — scope you narrowed or expanded, a split you considered but did *not* make, assumptions you encoded, the labels you auto-applied, a weak-duplicate pointer (Step 4). **Name the concrete call** (e.g. *"scoped to the create flow only; assumed rapid-fire keeps its narrower dedup bar; applied `skill`, `enhancement`"*), never boilerplate like "made some scope decisions." If you genuinely made no non-obvious call, say so in one line rather than padding.
+2. **Decision points (1–3 sentences).** The actual calls you made that the user might want to revisit — scope you narrowed or expanded, a split you considered but did *not* make, **a sizing split you did make**, assumptions you encoded, the labels you auto-applied, a weak-duplicate pointer (Step 4). **Name the concrete call** (e.g. *"scoped to the create flow only; assumed rapid-fire keeps its narrower dedup bar; applied `skill`, `enhancement`"*), never boilerplate like "made some scope decisions." If you genuinely made no non-obvious call, say so in one line rather than padding.
+
+   **A sizing split is a decision point like any other** — report it once, on the chain head, naming the count and *why* the ask exceeded one pipeline: *"sized as a 4-increment chain because one pipeline can't land hero, services page, contact form, and SEO metadata as one reviewable PR."* Say what the increments are and that they're linked; the user re-cuts the chain with `/update` or `close` if the boundaries are wrong. Successor increments do not each repeat the split rationale.
 
 Close by reminding the user the issue is cheap to change — a wrong call is one `/update #N …` or `close #N` away. This report is emitted **in addition to**, never in place of, the closing URL line (Step 9). **Rapid-fire** emits a terser version instead: the closing URL, optionally a one-line summary, and no decision-points elaboration.
 
@@ -349,7 +408,15 @@ The merge-authority bullet is the shared contract from `chip-launching.md` "Merg
   Print only the short summary per issue (per `chip-launching.md` "Short-summary transcript format") — never the full block in chip mode.
 - **Fallback mode** (tool absent, or this issue's `spawn_task` call failed): print the full fenced block above and leave `chip_task_id` as `null`. A failed spawn degrades **only that issue** — note the fallback once per batch; the rest keep their chips.
 
-Every created issue ends with exactly one of: a chip, a printed block, or — when the PM-context inline gate above routed it — an inline `/subagent` recommendation; never neither, and never two of them. (Batches: this repeats once per issue in the loop — see Step 6.)
+**Increment chains: only the head gets a chip.** When the issues came from a sizing split (top-level rule), the chain **head** goes through everything above unchanged — inline gate, chip, or fallback block. Every **successor** takes a fourth outcome instead: a one-line note that it queues behind its predecessor and gets picked up once that one reaches a **genuinely terminal state — `merged` or `blocked`**. `/subagent` Step 6.0b is the canonical chain-release rule (note in particular that `merge_ready` is *not* terminal — the PR hasn't landed); cite it rather than re-deriving the queue mechanics here.
+
+```text
+#102 queues behind #101 — starts once #101 merges (or is blocked). No chip; chain-release per `/subagent` 6.0b.
+```
+
+Four chips for a four-increment chain would race each other into the same files, which is exactly the collision 6.0b exists to prevent. Successors leave `chip_task_id` as `null`. This routing holds in **both** modes — rapid-fire shortens the note, it does not restore the chips.
+
+Every created issue ends with exactly one of: a chip, a printed block, an inline `/subagent` recommendation (when the PM-context inline gate above routed it), or a queued-successor note (increment chains, just above); never neither, and never two of them. (Batches: this repeats once per issue in the loop — see Step 6.)
 
 If the user asks to "print the full prompt for #N" while in chip mode, re-emit that issue's complete block verbatim (Model line + guard preamble included) — the chip stays offered (`chip-launching.md` "Print-on-demand replay").
 
@@ -453,18 +520,20 @@ Then print: *"Issue #N closed."* — append *"(chip withdrawal failed — it may
 
 When invoked with `--export-prompt`, **do not create anything** — instead emit a standalone, paste-in prompt that codifies the same capture-mode behavior (reflection surfaced as a post-create decision-points report + LLM pass-through rationale, auto-open with no approval gate, functional-first tone, 6-section body, dedup, refusal of workflow-advancing actions, closing-line URL rule). This lets the user carry the same discipline into a repo or thread where this skill isn't installed. Output the prompt in a fenced block and stop.
 
+**The sizing check ships in the export with its bar written out, not cited.** Everywhere else in this skill the bar is a citation to `/subagent` Step 4 criterion 3, because that criterion travels with the installed skill. The export is for a thread that has *no* `/subagent` to read, so a citation there would dangle — state the bar in the prompt itself (one Phase A/B/C pipeline, one reviewable PR, one review cycle, a bounded slice), along with the increment-chain shape it triggers: ordered increments, a boundary line on each ("this increment ends at…", and the final one's terminal variant naming nothing deferred past it), `- Depends on #prev` links, a 5-increment cap that stops before filing, and a hand-off on the chain head only. This is the same reason the chip block is reproduced verbatim below rather than referenced.
+
 **The exported prompt reproduces Step 9c's coding-chip block verbatim** — `**Model:**` line, `**Effort:**` line, model-guard preamble, and the Constraints block including its merge-authority bullet (`chip-launching.md` "Merge-authority line"). A portable prompt that drops the merge-authority line recreates exactly the gap this exists to close: a thread that reaches merge-readiness in a repo without these rules installed, finds nothing asserting the default, and stops to ask. Never paraphrase the bullet and never soften it into an approval request.
 
 ---
 
 ## Modes summary
 
-Both modes **auto-open** the issue — no draft reprint, no approval gate — and both auto-apply validated labels. What distinguishes them is the **report** and the **dedup bar**:
+Both modes **auto-open** the issue — no draft reprint, no approval gate — and both auto-apply validated labels. **Both also run the full reflection pass — narrow, expand, split, sizing, ambiguity** — so an oversized ask becomes an increment chain in either mode, under the same 5-increment cap and the same head-only chip routing (Steps 8, 9c). What distinguishes them is the **report** and the **dedup bar**:
 
-| Mode | Upfront questions | Create | Post-create report | Labels | Dedup pause |
-|------|-------------------|--------|--------------------|--------|-------------|
-| **default** | none (blocking ask only on a genuinely undecidable call) | auto-open | summary + decision points (Step 9a) | auto-apply validated | strong **or** exact match |
-| **rapid-fire** | none, ever | auto-open | terser — closing URL, optional one-liner | auto-apply validated | exact title match only |
+| Mode | Upfront questions | Create | Post-create report | Labels | Dedup pause | Chain cap (Step 8) |
+|------|-------------------|--------|--------------------|--------|-------------|--------------------|
+| **default** | none (blocking ask only on a genuinely undecidable call) | auto-open | summary + decision points (Step 9a) | auto-apply validated | strong **or** exact match | asks above 5 |
+| **rapid-fire** | none on scope or ambiguity — only its two hard bars (dedup, chain cap) | auto-open | terser — closing URL, optional one-liner | auto-apply validated | exact title match only | asks above 5, tersely |
 
 Mode is stored in `.mode` in the session log and persists across compaction — both on first invocation (seeded from `/issue-maker rapid-fire`, Step 1) and on an explicit switch. A switch is a log write, not just an in-memory note, so compaction recovery reads the right mode:
 
