@@ -101,6 +101,11 @@ in the June window: it is a finder, never an approver. Every other tool is likew
   have paid for expires unused while the chain spends a different tool.
 - **Value when it runs:** 281 inline findings across 53 PRs (5.3/PR — the densest of any tool),
   sole-source on 22.
+- **The limit arrives in two shapes, and only one is waitable.** Either an issue-comment banner
+  naming a retry window (the 223-PR shape quoted above), or a bare commit status
+  `CodeRabbit / success / "Review rate limited"` with no window stated. Observed live on PR #1203,
+  which got the banner on one SHA and the bare status on the next. Anything built on the retry
+  window covers the first shape only; the second has nothing to wait on.
 - **Local CLI layer:** a public repo caps the free-OSS CLI tier at roughly 3 reviews before a ~40
   minute lockout (`feedback_cr_cli_free_oss_tier_cap.md`). The CLI's quota is **independent** of the
   GitHub App's; neither substitutes for the other.
