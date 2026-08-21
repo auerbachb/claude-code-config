@@ -54,7 +54,7 @@ Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `trigger_greptile`, `budget
 
 ### Rate Limits & Behavior (Pro Tier)
 
-**Cap:** a rolling **7-day** included-review allowance, not hourly — CodeRabbit's `Review limit reached` banner names its own retry window, and `escalate-review.sh` waits that window out before escalating. `cr_hourly` (~8/hr) is our local pacing proxy, never CodeRabbit's meter. Max 2 explicit `@coderabbitai full review`/PR/hour (surface user at 2nd). On cooldown: local review first, then escalate. Tracking: `cr-review-hourly.sh`; details: `.claude/reference/cr-rate-limits.md`.
+**Cap:** **5 reviews/hour per developer** on Pro (#1204), not the ~8/hr account-wide we modelled — bursts block, not monthly volume. The `Review limit reached` banner names a retry window; `escalate-review.sh` waits it out before escalating. `cr_hourly` is our pacing proxy, never CodeRabbit's meter. Max 2 explicit `@coderabbitai full review`/PR/hour (surface user at 2nd). On cooldown: local review first, then escalate. Tracking: `cr-review-hourly.sh`; details: `.claude/reference/cr-rate-limits.md`.
 
 ### Polling
 

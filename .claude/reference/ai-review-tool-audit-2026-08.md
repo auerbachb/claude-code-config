@@ -65,6 +65,92 @@ Items 1 and 2 are **dashboard actions for the operator**; the agent cannot enter
 subscription details. Item 3 is a dashboard *reading*, and it determines whether Greptile's role in
 the next audit is "best value in the chain" or "the thing to remove first".
 
+## Dashboard reconciliation (2026-08-21, issue #1204)
+
+A browser session read all four vendor dashboards while logged in and changed nothing. It
+**answers two of the three reconciliation items, overturns one of this audit's inferences, and
+re-scopes the third question rather than closing it.** Where the dashboard and the GitHub-derived
+measurements disagree, both are recorded — the disagreement is itself a finding.
+
+### Item 1 — CodeAnt: confirmed exactly as inferred
+
+Premium, **2 of 2 seats used**, active, ~$48/mo. The seats are held by `bretton.auerbach@gmail.com`
+(Admin) and `faculoyarte@gmail.com`. The commit-author identity our PRs carry is **not** among them,
+which is precisely why the warning fires on 84% of PRs while CodeAnt reviews anyway. **Path B is
+free:** point the machine's global `user.email` at a seat-holding address. Path A (buy a third seat
+for the placeholder) costs ~$24/mo to license a fake identity and should not be chosen.
+
+### Item 2 — BugBot: the inference was directionally right and badly understated
+
+This audit called BugBot "per-seat but spend-metered." The dashboard shows it is **the single
+largest cost line in the review stack**:
+
+- Cursor **Ultra, $200/mo**. On-demand spend **$999.87 against a $1,000 fixed cap** — which is
+  exactly why every trigger returns `usage limit reached`.
+- The cycle itemizes `github_bugbot` at **1.3B tokens, 516 reviews, $815.58 (~$1.58/review)**.
+- At ~250 PRs/month that is roughly **$395/mo of on-demand**, on top of the included bucket.
+
+**Attribution is disputed and must be settled before any cap decision.** The operator attributes the
+on-demand spend to pay-per-use model usage while coding in the Cursor IDE, not to BugBot; the
+Billing page itemizes it under `github_bugbot`, and 848.3M of 874.5M "Other Models" tokens carry
+that same tag. One of those is wrong. If the operator is right, Cursor is mislabelling IDE usage as
+`github_bugbot` — a support ticket, not a config change.
+
+**Independent of that dispute, BugBot is configured for maximum spend:** Trigger Mode **Every Push**
+(not once per PR), Effort **High**, Review Draft PRs **On**, Incremental Review **Off** (a full
+re-review on every push), and Autofix **On** — **299 autofix runs, 0 ever merged**. Those five
+settings are the cheapest levers in this entire audit and none of them requires a purchase.
+
+### Item 3 — Greptile: the wrong account was read; the question is re-scoped, not answered
+
+The session inspected the **`localmovers-com`** Greptile org and found it **canceled — Free tier,
+$0, last invoice $0, 8 reviews this month**, with auto-review **off** and reviews gated to PRs
+labelled `greptile`.
+
+**That org does not serve this repo.** Three checks establish it:
+
+1. `auerbachb/claude-code-config` is **absent** from that org's 24-repo list.
+2. Our PRs carry **no `greptile` label**, so the label gate found there cannot explain our volume.
+3. Our 130 reviews came from **132 explicit `@greptileai` commands**, which bypass auto-review and
+   label gating entirely.
+
+So the 130-vs-8 gap is not a measurement error in either source — they are **different accounts**.
+The GitHub-side evidence stands: 130 reviews really happened on this repo. What remains unknown is
+**which Greptile installation served them and what it bills**, which is the same question this audit
+opened, now narrowed to a findable target: the installation covering `auerbachb/*`.
+
+Worth noting for whoever closes it: Greptile Free is **50 credits/month for one author**. This repo
+alone consumed ~130 reviews in 30 days. If those ran on a free tier, the tier was exceeded ~2.6×;
+if on Pro, ~130 reviews is about **$110/mo** ($30/seat + 80 overage credits at $1). Neither
+possibility is "free and fine," so this stays the highest-value open question.
+
+### CodeRabbit: the cap model in this audit was wrong
+
+This audit read the banner's "past 7 days" phrasing as the cap being a rolling 7-day allowance.
+The dashboard is more specific and partly contradicts it: **limits are per developer per hour —
+Pro allows 5/hr** (Pro Plus 10, Enterprise 12). Our 290 reviews per month across two authors sit
+far below any monthly ceiling; what blocks us is **burst concurrency**, several PRs opened by one
+author within one hour, after which the queue backs up for days.
+
+The plan is **Pro, 3 of 3 seats, $90/mo**, renewing 27 Aug 2026. Its own usage tab reports, for the
+current period:
+
+- **196 of 290 reviews rate-limited (68%)**
+- average review wait **87.4 hours**
+- **36% of blocked PRs merged unreviewed**
+
+That last figure is the most serious number in this audit. It is not a throughput statistic — it
+says a third of the PRs CodeRabbit was blocked on **merged anyway**, which means something else
+satisfied the gate in its absence. On the CR path the only other approver is CodeAnt, whose
+approvals frequently carry no substantive footprint at all. Two priced fixes exist: enable
+usage-based overflow at **$0.25/file** (currently off; roughly $50–150/mo on the blocked volume,
+nothing blocked), or move to **Pro Plus** (+~$54–72/mo for 3 seats, doubling the hourly rate).
+Separately, `paulkathat-lmc` holds **no seat**, so their PRs receive no CodeRabbit review at all.
+
+Corpus note: the rule files keep the short form — the cap is a **per-developer hourly limit** whose
+banner also cites a 7-day attempt history. Do not restate a single clean model; the two signals
+disagree and only the dashboard number is actionable.
+
 ## Findings volume — all five tools
 
 | Tool | GraphQL login | PRs touched | Review objects | APPROVED | Inline findings | PRs w/ findings | **Sole-source PRs** |

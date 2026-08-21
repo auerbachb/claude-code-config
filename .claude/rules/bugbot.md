@@ -14,7 +14,7 @@ BugBot (Cursor, per-seat) is the **second-tier** reviewer in the escalation chai
 
 - **Bot username:** `cursor[bot]`
 - **Trigger:** `@cursor review` comment (`/fixpr` or CI when `CURSOR_REVIEW_PAT` set — duplicates OK, but see §Re-Reviews).
-- **Cost:** Per-seat but **spend-metered** — refused 64% of PRs (#1199). One nudge per HEAD; after a usage-limit refusal on that HEAD, `maybe-trigger-ai-review.sh` suppresses further nudges until the next push.
+- **Cost:** **The stack's largest line** — ~$1.58/review on-demand, cap-exhausted, refusing 64% of PRs (#1204). One nudge per HEAD; after a usage-limit refusal there, `maybe-trigger-ai-review.sh` suppresses further nudges until the next push.
 - **Review time:** ~1–3 min. **No CLI** (GitHub-only).
 
 ## Polling for BugBot Reviews

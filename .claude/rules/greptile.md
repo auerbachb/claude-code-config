@@ -4,7 +4,7 @@
 > **Ask first:** Never — fix findings autonomously.
 > **Never:** Trigger Greptile before both CR AND BugBot have failed. Ignore Greptile findings. Switch a PR back to CR/BugBot after Greptile has been triggered. Include `@greptileai` in reply comments (triggers a re-review with no learning benefit). Treat `budget_exhausted` as a routine fallback — self-review never satisfies the gate, so surface it.
 
-Greptile is the second fallback — only after both CR and BugBot fail (chain + supplemental CodeAnt/Graphite: `cr-github-review.md` §Three-Tier). **Not a rare emergency:** it carried 53% of PRs and the most sole-source findings in the #1199 window, on unreconciled billing. Role + cost: `.claude/reference/ai-review-chain-roles-decision.md`.
+Greptile is the second fallback — only after both CR and BugBot fail (chain + supplemental CodeAnt/Graphite: `cr-github-review.md` §Three-Tier). **Not a rare emergency:** it carried 53% of PRs and the most sole-source findings (#1199), on unreconciled billing. Role + cost: `.claude/reference/ai-review-chain-roles-decision.md`.
 
 **Escalation gate:** `cr-github-review.md` owns triggers/STOP conditions; this file defines Greptile behavior after `escalate-review.sh` returns `STATUS=trigger_greptile`.
 

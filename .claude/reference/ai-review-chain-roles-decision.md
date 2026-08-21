@@ -11,10 +11,10 @@ script may gate on, escalate to, or trigger a tool absent from this table.
 
 | Tool | Bot login (REST) | **Role** | Gates the merge? | Cost rationale |
 |------|------------------|----------|------------------|----------------|
-| CodeRabbit | `coderabbitai[bot]` | **Primary finder** | No — it never issues `APPROVED` | Paid, and *underused*: it reviewed 22% of PRs while its allowance sat behind a retry window nothing waited for. Collecting what we already pay for is cheaper than any other throughput change available. |
-| CodeAnt | `codeant-ai[bot]` | **Primary approver** (co-primary on the CR path) | **Yes** — sole source of `APPROVED` | Paid, and load-bearing: 360 approvals on 184 PRs. The gate has no other approver, so a lapse here is a full stop, not a degradation. |
-| BugBot (Cursor) | `cursor[bot]` | **First fallback** | Yes, on the BugBot path | Paid per-seat but **spend-metered**: refused 64% of PRs. Worth its seat on yield (29 sole-source PRs); not worth re-nudging once it has refused a given HEAD. |
-| Greptile | `greptile-apps[bot]` | **Second fallback — retained, budget-bounded (40/day)** | Yes, on the Greptile path | **Operator-stated as unpaid, yet it carried 53% of PRs and 41 sole-source findings with zero refusals.** Retained because dropping it strands those PRs; the existing 40/day ceiling is reaffirmed as a runaway bound, having been overrun once (46 triggers on 2026-08-07). |
+| CodeRabbit | `coderabbitai[bot]` | **Primary finder** | No — it never issues `APPROVED` | Pro, 3/3 seats, $90/mo (#1204), and *underused*: 22% of PRs reviewed, 68% of reviews blocked by a **5/hr per-developer** burst limit, 87.4h average wait. Two priced fixes exist; collecting what we already pay for is the cheapest lever. |
+| CodeAnt | `codeant-ai[bot]` | **Primary approver** (co-primary on the CR path) | **Yes** — sole source of `APPROVED` | Premium, 2/2 seats, ~$48/mo (#1204). Load-bearing: 360 approvals on 184 PRs, and the gate has no other approver, so a lapse here is a full stop. The commit-author identity holds no seat — a **$0** fix. |
+| BugBot (Cursor) | `cursor[bot]` | **First fallback** | Yes, on the BugBot path | **The stack's largest cost line** (#1204): ~$1.58/review on-demand, $815.58 in one cycle against a $1,000 cap it has exhausted — which is why it refused 64% of PRs. Strong yield (29 sole-source PRs), but the spend is a scope problem before it is a cap problem. |
+| Greptile | `greptile-apps[bot]` | **Second fallback — retained, budget-bounded (40/day)** | Yes, on the Greptile path | **Still unreconciled after #1204** — the dashboard session read an org that does not serve this repo. It carried 53% of PRs and 41 sole-source findings with zero refusals. Retained because dropping it strands those PRs; the 40/day ceiling is reaffirmed as a runaway bound, having been overrun once (46 triggers on 2026-08-07). |
 | Graphite | `graphite-app[bot]` | **Supplemental — paid, under re-measurement** | **No** | Newly paid, and measured almost entirely *before* the payment: 1 sole-source PR in 244. Promotion is deferred to evidence, not price. |
 
 **Authoritative chain order** — unchanged in shape, corrected in its assumptions:
@@ -120,6 +120,28 @@ preference.
 | **Lower the modelled CodeRabbit cap to the observed rate (~5/hr)** | The observed cap is not a smaller hourly number, it is a **7-day rolling allowance** with a per-response retry window. Substituting a smaller wrong-shaped number would still not predict a lockout, and would tighten our own pacing against a limit that is not hourly. The hourly counter is retained as an explicitly-labelled *local pacing proxy*. |
 | **Treat the CodeAnt subscription warning as a gate failure** | It warns on 84% of PRs while approving 360 times. Treating it as a block would disable the chain's only approver over a misconfigured email. Confirmed non-blocking (`feedback_codeant_subscription_message_not_blocking.md`). |
 | **Stop triggering BugBot entirely while it is spend-capped** | It is sole-source on 29 PRs when it runs, and the cap is per-usage, not permanent — the first nudge after each push may well succeed. Only *repeat* nudges after a refusal on the same HEAD are suppressed. |
+
+## Dashboard reconciliation (#1204, 2026-08-21)
+
+A logged-in browser session read all four dashboards and changed nothing. Readings:
+[`ai-review-billing-dashboard-2026-08.md`](./ai-review-billing-dashboard-2026-08.md); interpretation
+in the audit's §Dashboard reconciliation. Three things it changed here:
+
+1. **BugBot's cost rationale is rewritten.** "Per-seat but spend-metered" understated it — it is the
+   largest line in the stack, and it is configured for maximum spend (Every Push, Effort High, drafts
+   on, incremental off, autofix on with **299 runs and 0 merged**). Scope tuning precedes any cap
+   raise, and the attribution dispute between the `github_bugbot` billing line and the operator's
+   IDE-usage account must be settled first.
+2. **CodeRabbit's cap model is corrected.** Not a rolling 7-day allowance: **5 reviews/hour per
+   developer** on Pro. Monthly volume was never the constraint. The figure that matters most is not
+   a cost one — **36% of blocked PRs merged unreviewed**, meaning something satisfied the gate in
+   CodeRabbit's absence on a third of them. On the CR path the only other approver is CodeAnt, whose
+   approvals frequently carry no substantive footprint at all.
+3. **Greptile is still unreconciled.** The session read the `localmovers-com` org, which does not
+   serve this repo — absent from its repo list, no `greptile` label on our PRs, and our reviews came
+   from explicit commands that bypass both gates. Its role stays "retained, budget-bounded" because
+   the question that would change it remains open, now narrowed to the installation covering
+   `auerbachb/*`.
 
 ## Operator actions this decision depends on
 

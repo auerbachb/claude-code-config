@@ -87,6 +87,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `ai-review-tool-audit-2026-04.md` — AI review tool chain audit (#368 / #377)
 - `ai-review-tool-audit-2026-06.md` — 30-day AI review tool value audit + keep/cut verdicts (#376)
 - `ai-review-tool-audit-2026-08.md` — 244-PR/30-day subscription + cap reconciliation audit; billed-vs-observed state, refusal rates, and sole-source yield for all five reviewers (#1199)
+- `ai-review-billing-dashboard-2026-08.md` — primary-source dashboard readings for CodeRabbit, CodeAnt, Cursor/BugBot, and Greptile: plans, spend, caps, seat holders, and the volume-driving settings; nothing was changed while reading (#1204)
 - `pricing-matrix.md` — priced upgrade levers for all five review tools × CLI/App surfaces: public prices vs dashboard-billed state, marginal cost per review, which pool each price buys, and buy/don't-buy verdicts with break-even math (#1202)
 - `fixpr-hotspot-decision.md` — diagnosis and extract-not-split decision for `fixpr/SKILL.md` churn (17 PRs in the run-up to #788); verdict: KEEP single file + extract large command forms
 - `pr-state-hotspot-decision.md` — diagnosis and extract-not-split decision for `pr-state.sh` churn (Issue #980); verdict: KEEP the public CLI + extract two pure jq programs
