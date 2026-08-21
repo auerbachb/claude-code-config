@@ -24,6 +24,9 @@ Most user-facing config in `~/.claude/` is symlinked into a dedicated skills wor
 ~/.claude/
   CLAUDE.md          ->  ~/.claude/skills-worktree/CLAUDE.md
   rules/             ->  ~/.claude/skills-worktree/.claude/rules/
+  agents/
+    phase-a-fixer.md ->  ~/.claude/skills-worktree/.claude/agents/phase-a-fixer.md
+    ...              ->  ~/.claude/skills-worktree/.claude/agents/....md
   settings.json         (merged from <repo>/global-settings.json)
   skills/
     pm/              ->  ~/.claude/skills-worktree/.claude/skills/pm/
@@ -38,7 +41,9 @@ Most user-facing config in `~/.claude/` is symlinked into a dedicated skills wor
 
 ## Skills Worktree
 
-Skills, rules, and `CLAUDE.md` are served from `~/.claude/skills-worktree/`, a git worktree permanently checked out to `main`. This decouples config availability from the root repo's branch state.
+Skills, agents, rules, and `CLAUDE.md` are served from `~/.claude/skills-worktree/`, a git worktree permanently checked out to `main`. This decouples config availability from the root repo's branch state.
+
+Note the two shapes. `rules` is a single **directory** symlink; `skills` and `agents` are **real directories holding per-entry symlinks**. That is deliberate: the Claude Code docs state that `.claude/rules/` resolves symlinks but say nothing about symlink-following for `agents/`, so the agents leg mirrors the empirically-proven skills topology rather than betting on undocumented parity (issue #1189, `.claude/reference/portable-skill-resolution.md`).
 
 **Why this matters:** Without the worktree, switching the root repo to a feature branch would make skills added after that branch invisible — their symlink targets wouldn't exist on that branch. The worktree always tracks `origin/main`, so all skills are always available regardless of what branch the root repo is on.
 
@@ -49,10 +54,11 @@ Skills, rules, and `CLAUDE.md` are served from `~/.claude/skills-worktree/`, a g
 | `~/.claude/CLAUDE.md` | `~/.claude/skills-worktree/CLAUDE.md` |
 | `~/.claude/rules` | `~/.claude/skills-worktree/.claude/rules` |
 | `~/.claude/skills/<name>` | `~/.claude/skills-worktree/.claude/skills/<name>` |
+| `~/.claude/agents/<name>.md` | `~/.claude/skills-worktree/.claude/agents/<name>.md` |
 
 **Keeping it fresh:** The `session-start-sync.sh` hook runs once per session (on the first tool call) and syncs the skills worktree to `origin/main`. The `post-merge-pull.sh` hook syncs after merges. Both ensure skills, rules, and `CLAUDE.md` stay current across all repos.
 
-**Initial setup:** `setup-skills-worktree.sh` creates the worktree, symlinks all skills, and registers hooks in `~/.claude/settings.json`. `setup.sh` calls it during installation, then separately merges non-hook settings from `global-settings.json` and verifies the final result. Re-run either script to fix broken symlinks or stale hook paths.
+**Initial setup:** `setup-skills-worktree.sh` creates the worktree, symlinks all skills and agent definitions, and registers hooks in `~/.claude/settings.json`. `setup.sh` calls it during installation, then separately merges non-hook settings from `global-settings.json` and verifies the final result. Re-run either script to fix broken symlinks or stale hook paths.
 
 ---
 

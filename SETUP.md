@@ -63,6 +63,7 @@ Default locations (may vary with your setup):
    - Resolves the `statusLine` command the same way (your own status line, if you have one, is left untouched)
 6. Symlinks `~/.claude/CLAUDE.md` → skills worktree (`~/.claude/skills-worktree/CLAUDE.md`)
 7. Symlinks `~/.claude/rules` → skills worktree (`~/.claude/skills-worktree/.claude/rules`)
+8. Symlinks each `~/.claude/agents/<name>.md` → skills worktree, so the phase agents (`phase-a-fixer`, `phase-b-reviewer`, `phase-c-merger`, `pm-worker`, `researcher`) are spawnable from any repo. **A brand-new `~/.claude/agents/` directory needs a session restart before the types register** — until then, spawn `general-purpose` with the verbatim SAFETY/MINDSET/SKILLS blocks instead (`.claude/rules/subagent-orchestration.md`)
 8. Verifies all hook paths in `settings.json` resolve to existing, executable scripts
 
 ## Prerequisites

@@ -18,7 +18,38 @@ Answer one question: **what is the largest set of backlog issues I can start rig
 
 ---
 
-## Step 0: Parse arguments
+## Step 0: Resolve shared tooling
+
+`/wave` is symlinked into every repo, but its helper scripts and reference docs are not — most repos carry no `.claude/` directory. Resolve them; never invoke a bare `.claude/scripts/…` path. Full contract and the classified dependency inventory: `.claude/reference/portable-skill-resolution.md` (issue #1189).
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
+PM_CONFIG_GET=$(resolve_script pm-config-get.sh || true)
+```
+
+Read `chip-launching.md` the same way — `$HOME/.claude/skills-worktree/.claude/reference/chip-launching.md` first, then `$HOME/.claude/reference/`, then `.claude/reference/` — and `cr-rate-limits.md` likewise.
+
+**When something does not resolve, say so in one line; never skip the contract silently.**
+
+- `chip-launching.md` unreadable → **required**. Print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable`, and stop before offering any chip. A `/wave` that cannot read its own routing gate is exactly the run that fans out one thread per issue (#1189); refusing is the safe failure.
+- `ISSUE_CLAIM` empty → **optional**. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim filter skipped, in-flight detection is PR-only` and continue with Step 2's other filters.
+- `PM_CONFIG_GET` empty → **optional**. Print `DEGRADED: pm-config-get.sh not found (checked all three paths) — repo Wave override unavailable` and use `CEILING` as computed. An *absent* `.claude/pm-config.md` in a repo that has the script is a normal state, not a degradation — say nothing.
+
+The pipeline ceiling itself needs no fallback: `.claude/rules/subagent-orchestration.md` auto-loads at user scope in every project, so the number is already in context wherever `/wave` runs.
+
+---
+
+## Step 0a: Parse arguments
 
 `$ARGUMENTS` is either empty or a single count.
 
@@ -63,7 +94,7 @@ Start from the ranked order and remove, in this sequence:
    ```bash
    CLAIMED=$(gh issue list --label in-progress --state open --limit 100 --json number --jq '.[].number')
    # then, only for candidates whose number appears in $CLAIMED:
-   .claude/scripts/issue-claim.sh <N> --check
+   "$ISSUE_CLAIM" <N> --check   # $ISSUE_CLAIM from Step 0; empty → the DEGRADED line there, then skip this filter
    ```
 
    The label is a safe pre-filter because `issue-claim.sh` maintains it as a **superset** of the claim: `--claim` writes the label before the claim comment and rolls the label back if the comment fails, and `--release` deletes the comment before removing the label. So a claim that exists at all carries the label at every intermediate point — there is no "comment but no label" state for this filter to miss.
@@ -106,7 +137,7 @@ Two issues collide when they touch the same **surface**, which is usually the sa
 
 **Why the rule corpus is one surface:** `rule-lint.sh` fails when the corpus exceeds the committed ratchet cap in `.claude/rules/.budget-soft-cap`, so two branches that each add words to *different* rule files still collide — the second to merge inherits a cap the first already consumed. Same mechanical collision for shared settings files, where two branches append different keys to one JSON object.
 
-**Repo-declared surfaces.** If `.claude/pm-config.md` has a `## Dependency Rules` section, read it (`.claude/scripts/pm-config-get.sh --section "Dependency Rules"`) and honor any coupling it declares — e.g. "changes to X require regenerating Y" makes X and Y one surface. A repo that knows its own coupling outranks this table.
+**Repo-declared surfaces.** If `.claude/pm-config.md` has a `## Dependency Rules` section, read it (`"$PM_CONFIG_GET" --section "Dependency Rules"` — Step 0) and honor any coupling it declares — e.g. "changes to X require regenerating Y" makes X and Y one surface. A repo that knows its own coupling outranks this table.
 
 **What is NOT a surface:** a shared *directory*. Two different skills under `.claude/skills/`, two different scripts under `.claude/scripts/`, two different hooks — these are independent. Directory-level matching would exclude nearly every pair in a config repo and collapse every wave to one issue. Match on files and the named coarse surfaces above; nothing wider.
 
@@ -156,7 +187,7 @@ SLOTS      = min(REQUESTED?, EFFECTIVE - IN_FLIGHT)
 - **`CONFIG`** is an optional `MAX_WAVE=N` line in a `## Wave` section of `.claude/pm-config.md`:
 
   ```bash
-  .claude/scripts/pm-config-get.sh --section Wave 2>/dev/null | sed -n 's/^ *MAX_WAVE *= *\([0-9][0-9]*\).*/\1/p' | head -1
+  "$PM_CONFIG_GET" --section Wave 2>/dev/null | sed -n 's/^ *MAX_WAVE *= *\([0-9][0-9]*\).*/\1/p' | head -1
   ```
 
   Absent, unparseable, or out of range → ignore it and use `CEILING`. A config value **may lower the cap and may never raise it** past the auto-loaded rule; clamp rather than error. Changing the ceiling itself means editing `subagent-orchestration.md`, which is a reviewed rule change. (`## Wave` is a non-canonical section, so `/pm-update` preserves it verbatim.)
@@ -170,9 +201,9 @@ Take the first `SLOTS` issues from the independent set. Anything past that is ex
 
 ## Step 7: Offer the wave — inline when PM context is live, else chips
 
-**7.0 — PM-context inline gate (before offering any chip).** Apply the gate from `.claude/reference/chip-launching.md` "PM-context inline gate". When this thread already has a `## Active Work` table (PM context), the subagent-fit wave issues should be **recommended for inline parallel execution** — lead with a single `/subagent #{a} #{b} …` line for them rather than spawning chips. Inline runs them in parallel up to the ceiling, which is exactly what a wave is for, and it keeps them in the one PM thread instead of scattering tabs (#613). Slot availability decides only **how many start now versus queue behind the ceiling** (Step 6) — it never sends a subagent-fit issue to a separate thread (#776, AC4). Fall through to the chip offer below only for issues that are **too big** for a subagent (each naming which of `/subagent` Step 4's criteria fired) or when there is **no PM context** — a separate thread is the right hand-off there. `/wave` still launches nothing: recommending `/subagent` is not running it (Execution boundary); the user's `/subagent` or click is the only launch path.
+**7.0 — PM-context inline gate (before offering any chip).** Apply the gate from `chip-launching.md` "PM-context inline gate", read through the Step 0 candidate order. When this thread already has a `## Active Work` table (PM context), the subagent-fit wave issues should be **recommended for inline parallel execution** — lead with a single `/subagent #{a} #{b} …` line for them rather than spawning chips. Inline runs them in parallel up to the ceiling, which is exactly what a wave is for, and it keeps them in the one PM thread instead of scattering tabs (#613). Slot availability decides only **how many start now versus queue behind the ceiling** (Step 6) — it never sends a subagent-fit issue to a separate thread (#776, AC4). Fall through to the chip offer below only for issues that are **too big** for a subagent (each naming which of `/subagent` Step 4's criteria fired) or when there is **no PM context** — a separate thread is the right hand-off there. `/wave` still launches nothing: recommending `/subagent` is not running it (Execution boundary); the user's `/subagent` or click is the only launch path.
 
-**7.1 — Offer the (remaining) wave as chips.** Follow `.claude/reference/chip-launching.md` **verbatim** — availability detection, `spawn_task` shape, model-guard preamble, short-summary format, per-issue fallback on spawn failure. Nothing in this section overrides it.
+**7.1 — Offer the (remaining) wave as chips.** Follow `chip-launching.md` (Step 0 candidate order) **verbatim** — availability detection, `spawn_task` shape, model-guard preamble, short-summary format, per-issue fallback on spawn failure. Nothing in this section overrides it.
 
 **Chip model + effort contract (non-negotiable):** For each chip, the `prompt` MUST open with `**Model:** {MODEL} — {REASON}`, then `**Effort:** {LEVEL} — {REASON}`, then the model-guard preamble — no blank line between the three. The visible short summary MUST repeat both lines. `{MODEL}` is a bare family name and `{LEVEL}` a picker label (`chip-launching.md` "Model and effort lines"). When the parent thread is on Fable and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
 

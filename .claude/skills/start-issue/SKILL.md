@@ -11,6 +11,39 @@ argument-hint: "<issue-number | 'description of new issue'>"
 
 Automate the full issue-to-coding flow: create issue (if needed) → wait for CR plan → merge plans → create worktree + branch → output ready-to-code summary. Replaces 5-10 minutes of manual setup per issue.
 
+## Step 0: Resolve shared tooling
+
+`/start-issue` is symlinked into every repo, but its helper scripts and reference docs are not — most repos carry no `.claude/` directory. Resolve them; never invoke a bare `.claude/scripts/…` path. Full contract and the classified dependency inventory: `.claude/reference/portable-skill-resolution.md` (issue #1189).
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
+CR_PLAN=$(resolve_script cr-plan.sh || true)
+ISSUE_DEDUP=$(resolve_script issue-dedup.sh || true)
+REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
+```
+
+Read reference docs through the same order — `$HOME/.claude/skills-worktree/.claude/reference/<name>` first, then `$HOME/.claude/reference/`, then `.claude/reference/`. That covers `chip-launching.md`, `autofile-dedup.md`, and `issue-claim.md`.
+
+**When something does not resolve, say so in one line; never skip the contract silently.**
+
+- `chip-launching.md` unreadable → **required**. Print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable` and stop before offering a chip; without the gate a subagent-fit issue routes to its own thread instead of the inline pipeline (#1189).
+- `ISSUE_CLAIM` empty → **optional**, but loud. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — Step 2b gate cannot run, proceeding unclaimed` and continue. Say it once, in the visible output — an unclaimed start that nobody was told about is how two threads end up on one issue.
+- `CR_PLAN` empty → **optional**. Print `DEGRADED: cr-plan.sh not found (checked all three paths) — CR plan detection skipped` and go straight to Step 4; Claude's own plan and the issue-body merge are still mandatory.
+- `ISSUE_DEDUP` empty → **optional**. Print `DEGRADED: issue-dedup.sh not found (checked all three paths) — duplicate search skipped` and continue.
+- `REPO_ROOT_SH` empty → **optional**. Fall back to `git worktree list --porcelain | awk '/^worktree /{sub(/^worktree /, ""); print; exit}'`; no warning needed, the inline form is equivalent.
+
+---
+
 ## Step 1: Parse arguments
 
 Parse `$ARGUMENTS`:
@@ -27,7 +60,7 @@ Only when a description was provided.
    - Title: concise version of the description (≤70 chars)
    - Body: one paragraph of context plus an `## Acceptance Criteria` section with placeholder checkbox items derived from the description
 2. **Dedup surface check** (human-in-the-loop — surface only, never auto-suppress):
-   Run `.claude/scripts/issue-dedup.sh` with a 2–6 keyword phrase from the draft title. Try the three standard paths:
+   Run `issue-dedup.sh` with a 2–6 keyword phrase from the draft title (`$ISSUE_DEDUP` from Step 0; the inline form below is the same candidate order):
    ```bash
    for DEDUP in \
      "$HOME/.claude/skills-worktree/.claude/scripts/issue-dedup.sh" \
@@ -61,7 +94,7 @@ gh issue view "$ISSUE_NUMBER" --json number,title,body,state,createdAt --comment
 An open-PR check cannot see a thread that picked this issue twenty minutes ago and has not pushed yet. Stake the claim here, at pick time — **before** CR-plan polling (Step 3) and **before** the worktree (Step 6) — so a sibling thread checking a minute from now sees it (issue #873).
 
 ```bash
-CLAIM=$(.claude/scripts/issue-claim.sh "$ISSUE_NUMBER" --check); CLAIM_RC=$?
+CLAIM=$("$ISSUE_CLAIM" "$ISSUE_NUMBER" --check); CLAIM_RC=$?   # $ISSUE_CLAIM from Step 0
 ```
 
 | Verdict | Exit | Do |
@@ -75,7 +108,7 @@ When the check clears, take the claim before doing anything else — and **gate 
 
 ```bash
 CLAIM_HOLDER="${CLAUDE_CLAIM_HOLDER:-issue-$ISSUE_NUMBER-$(hostname -s)-$$}"
-if ! .claude/scripts/issue-claim.sh "$ISSUE_NUMBER" --claim --holder "$CLAIM_HOLDER"; then
+if ! "$ISSUE_CLAIM" "$ISSUE_NUMBER" --claim --holder "$CLAIM_HOLDER"; then
   # exit 1 = another thread claimed it in the race; exit 4 = write failed / undetermined.
   # Either way the claim is NOT held — STOP, same as a `claimed` verdict above.
   echo "Issue #$ISSUE_NUMBER — could not take the claim; not starting." >&2
@@ -93,16 +126,16 @@ The Step 6 `git worktree list` guard stays as a same-machine backstop — it cov
 
 ## Step 3: Handle CR implementation plan
 
-CR's plan is identified by a comment from `coderabbitai` (no `[bot]` suffix — issue comments use the bare name). Use `.claude/scripts/cr-plan.sh` for detection — it encapsulates the canonical substantive-plan filter (`cr-plan-filter.py`: reject the issue-enrichment/Issue-Planner boilerplate and "actions performed" ack lines, then require >200 chars of stripped content plus a heading or numbered step — issue #541) and the 60s polling loop.
+CR's plan is identified by a comment from `coderabbitai` (no `[bot]` suffix — issue comments use the bare name). Use `cr-plan.sh` (`$CR_PLAN` from Step 0) for detection — it encapsulates the canonical substantive-plan filter (`cr-plan-filter.py`: reject the issue-enrichment/Issue-Planner boilerplate and "actions performed" ack lines, then require >200 chars of stripped content plus a heading or numbered step — issue #541) and the 60s polling loop.
 
-Exit codes: `0` plan found (printed to stdout), `1` no plan, `3` issue not found/closed, `4` gh/env error (network, missing `python3`, or filter failure). Run `.claude/scripts/cr-plan.sh --help` for full usage.
+Exit codes: `0` plan found (printed to stdout), `1` no plan, `3` issue not found/closed, `4` gh/env error (network, missing `python3`, or filter failure). Run `"$CR_PLAN" --help` for full usage.
 
 ### Path A: Fresh issue (age < 10 minutes)
 
 CR may still be generating the plan. Poll for up to 10 minutes, stopping early once the issue ages past 10 minutes from `createdAt`:
 
 ```bash
-if PLAN=$(.claude/scripts/cr-plan.sh "$ISSUE_NUMBER" --poll 10 --max-age-minutes 10); then
+if PLAN=$("$CR_PLAN" "$ISSUE_NUMBER" --poll 10 --max-age-minutes 10); then
   : # plan captured
 else
   case $? in
@@ -120,7 +153,7 @@ fi
 Do a single check for an existing CR plan comment:
 
 ```bash
-PLAN=$(.claude/scripts/cr-plan.sh "$ISSUE_NUMBER" || true)
+PLAN=$("$CR_PLAN" "$ISSUE_NUMBER" || true)
 ```
 
 - **If plan exists:** capture and proceed to Step 4.
@@ -138,7 +171,7 @@ PLAN=$(.claude/scripts/cr-plan.sh "$ISSUE_NUMBER" || true)
   - **If the workflow run for this issue hit a blocking conclusion, is missing entirely, or stalled past the 5-minute wait**: post `@coderabbitai plan` and poll every 60s for up to 5 minutes:
     ```bash
     gh issue comment "$ISSUE_NUMBER" --body "@coderabbitai plan"
-    PLAN=$(.claude/scripts/cr-plan.sh "$ISSUE_NUMBER" --poll 5 || true)
+    PLAN=$("$CR_PLAN" "$ISSUE_NUMBER" --poll 5 || true)
     ```
 - If still no plan after 5 minutes, proceed to Step 4 without it. Note it in the final summary.
 
@@ -213,7 +246,7 @@ This creates **one canonical planning document** the coding agent can work from.
    ```
 4. **Pull main and create worktree:**
    ```bash
-   ROOT_REPO=$(.claude/scripts/repo-root.sh 2>/dev/null || true)
+   ROOT_REPO=$("$REPO_ROOT_SH" 2>/dev/null || true)   # $REPO_ROOT_SH from Step 0
    if [ -z "$ROOT_REPO" ] || [ ! -d "$ROOT_REPO" ]; then
      echo "ERROR: could not resolve root repo path" >&2
      exit 1
@@ -266,7 +299,7 @@ Print a compact summary to the user. Per `chip-launching.md`, the content **insi
 {unchecked checkbox items from the issue body}
 
 ### Constraints
-- This issue is already claimed for you (holder `{CLAIM_HOLDER}`). Re-affirm it before anything else — `.claude/scripts/issue-claim.sh <N> --claim --holder "{CLAIM_HOLDER}"` — after the model-guard check and before any repo read, edit, or planning. It is a no-op that confirms the claim is still yours; a non-zero exit means you do NOT hold it, so stop and report rather than proceeding.
+- This issue is already claimed for you (holder `{CLAIM_HOLDER}`). Re-affirm it before anything else: resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh` — this repo may carry no `.claude/` directory — then run `<N> --claim --holder "{CLAIM_HOLDER}"` on it, after the model-guard check and before any repo read, edit, or planning. It is a no-op that confirms the claim is still yours; a non-zero exit means you do NOT hold it, so stop and report rather than proceeding. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim not re-affirmed` and continue; never skip it silently.
 - Do NOT work on main — use the worktree above
 - Do NOT modify .env files
 - Merging is automatic and yours to do: once the merge gate passes and every Test Plan / AC checkbox verifies, run the full `/wrap` yourself to squash-merge — no approval pause, no pre-merge message (`CLAUDE.md` "PR MERGE AUTHORIZATION")

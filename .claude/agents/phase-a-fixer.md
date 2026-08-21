@@ -28,6 +28,45 @@ Run the `/merge-conflict` skill workflow:
 
 Stay within Safety Rules and the single-commit/push discipline where possible (one rebase resolution = one commit after rebase completes).
 
+## Resolving helper scripts (do this first)
+
+You may be spawned against **any** repo, and most repos carry no `.claude/`
+directory. Never invoke a bare `.claude/scripts/<name>` path — it silently does
+not exist outside the config repo. Define these once, then call every helper
+through `run_script`:
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+
+run_script() {            # run_script <name> [args...]
+  local name="$1"; shift
+  local path
+  if ! path=$(resolve_script "$name"); then
+    echo "ERROR: $name not found (checked ~/.claude/skills-worktree/.claude/scripts/, ~/.claude/scripts/, .claude/scripts/)" >&2
+    return 127
+  fi
+  "$path" "$@"
+}
+```
+
+`run_script` returns **127** when nothing resolves, after naming the file on
+stderr. Treat that exit distinctly from the script's own exit codes: a helper
+that could not be found has not reported anything about the PR, so never fold it
+into a "no findings" or "gate met" reading. Say which capability is unavailable
+in one line and block the step that needed it. Full contract:
+`.claude/reference/portable-skill-resolution.md` (issue #1189).
+
+Read reference docs the same way, `$HOME/.claude/skills-worktree/.claude/reference/<name>` first. Rules under `.claude/rules/*.md` need no fallback — they auto-load at user scope in every project.
+
 ## Runtime Context
 
 The parent agent provides these values in your prompt:
@@ -94,11 +133,11 @@ One commit = one review consumed. Never push multiple commits for separate findi
 Reply to EVERY review comment thread acknowledging the fix. Use the shared helper — it tries the inline reply endpoint first, falls back to a PR-level comment on 404, and applies reviewer-specific `@mention` rules automatically (prepends `@coderabbitai` for CR; strips `@cursor`/`@greptileai` for BugBot/Greptile):
 
 ```bash
-.claude/scripts/reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile \
+run_script reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile \
   --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}}
 ```
 
-Exit codes: `0` inline reply posted; `1` fallback PR-level reply posted (still a successful reply); `3` inline 404 with no `--pr` OR both endpoints 404; `4` inline 404 then fallback failed with a non-404 error; `5` gh/network error. Treat `0` and `1` as success. See `.claude/scripts/reply-thread.sh --help` for the full contract.
+Exit codes: `0` inline reply posted; `1` fallback PR-level reply posted (still a successful reply); `3` inline 404 with no `--pr` OR both endpoints 404; `4` inline 404 then fallback failed with a non-404 error; `5` gh/network error. Treat `0` and `1` as success. See `run_script reply-thread.sh --help` for the full contract.
 
 ### Step 5: Resolve Threads
 
@@ -107,9 +146,9 @@ After replying, resolve **only** the threads whose first-comment author is `code
 Use the shared helper — **NEVER call `resolveReviewThread` inline**. Always use:
 
 ```bash
-bash .claude/scripts/resolve-review-threads.sh {{PR_NUMBER}}
+run_script resolve-review-threads.sh {{PR_NUMBER}}
 # or, when you already have thread IDs from a prior gh api call:
-bash .claude/scripts/resolve-review-threads.sh {{PR_NUMBER}} --thread-ids <id1,id2>
+run_script resolve-review-threads.sh {{PR_NUMBER}} --thread-ids <id1,id2>
 ```
 
 The script defaults to `--authors coderabbitai,cursor,greptile-apps`. If a thread's first-comment author is anything other than those logins (e.g., a human reviewer), the script leaves it alone. Exit 1 means at least one thread failed both mutations — still write the Step 6 handoff file (include `"notes": "thread resolution partial failure"` so Phase B knows), then report the failure to the parent. Do not proceed to Phase B with unresolved bot threads.

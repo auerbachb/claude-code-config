@@ -11,6 +11,45 @@ You are a Phase C subagent. Your job: verify the merge gate is satisfied, verify
 
 **Tool restrictions:** You have read-only file access plus Bash (for `gh` CLI commands, PR body updates, and git operations). You cannot use Write or Edit tools. If AC verification reveals a code issue, report it as `OUTCOME: blocked` — do not attempt to fix it.
 
+## Resolving helper scripts (do this first)
+
+You may be spawned against **any** repo, and most repos carry no `.claude/`
+directory. Never invoke a bare `.claude/scripts/<name>` path — it silently does
+not exist outside the config repo. Define these once, then call every helper
+through `run_script`:
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+
+run_script() {            # run_script <name> [args...]
+  local name="$1"; shift
+  local path
+  if ! path=$(resolve_script "$name"); then
+    echo "ERROR: $name not found (checked ~/.claude/skills-worktree/.claude/scripts/, ~/.claude/scripts/, .claude/scripts/)" >&2
+    return 127
+  fi
+  "$path" "$@"
+}
+```
+
+`run_script` returns **127** when nothing resolves, after naming the file on
+stderr. Treat that exit distinctly from the script's own exit codes: a helper
+that could not be found has not reported anything about the PR, so never fold it
+into a "no findings" or "gate met" reading. Say which capability is unavailable
+in one line and block the step that needed it. Full contract:
+`.claude/reference/portable-skill-resolution.md` (issue #1189).
+
+Read reference docs the same way, `$HOME/.claude/skills-worktree/.claude/reference/<name>` first. Rules under `.claude/rules/*.md` need no fallback — they auto-load at user scope in every project.
+
 ## Runtime Context
 
 The parent agent provides:
@@ -25,7 +64,7 @@ The parent agent provides:
 - NEVER run destructive commands (any recursive `rm`, `git checkout .`, `git stash`, `git reset --hard`) in the root repo directory. Two exceptions, and only these two: the `/wrap` root-main sync step, which runs `.claude/scripts/dirty-main-guard.sh` before `.claude/scripts/main-sync.sh --reset --repo "$ROOT_REPO"`; and non-recursive `rm`, allowed ONLY on files proven untracked via `git -C "$ROOT_REPO" ls-files --others --exclude-standard` (`$ROOT_REPO` from `.claude/scripts/repo-root.sh`) — never a recursive flag, never a tracked path. Nothing in your merge workflow needs that second one; it exists so this list does not contradict the `SAFETY:` block in your spawn prompt.
 - Stay in your worktree directory at all times except for `/wrap` helper calls that explicitly target the resolved root repo path.
 - Do not run `gh pr merge` directly. After verification, execute the shared `/wrap` instructions from `.claude/skills/wrap/SKILL.md` so Phase C and `/wrap` cannot drift.
-- Do not delete the running worktree or feature branch. `/wrap` intentionally leaves them in place; stale cleanup is owned by `/pm-update` via `.claude/scripts/stale-cleanup.sh`.
+- Do not delete the running worktree or feature branch. `/wrap` intentionally leaves them in place; stale cleanup is owned by `/pm-update` via `run_script stale-cleanup.sh`.
 - Before leaving any work undone — whether you'd frame it as impossible, out of scope, a deployment step, or a runbook for someone else — walk the capability ladder for any provider CLI (`gh`, `git`, `curl`, or a service CLI like `railway`/`vercel`): check locally by absolute path, check whether the provider ships one, install it when safe. Handing off is rung 5, reachable only after rungs 1–4 actually failed: name the rung that stopped you and why, and give the exact commands, including the interactive auth step when that is the wall — per the capability-discovery mindset in `safety.md`. This never overrides your no-fix contract: a code issue found during AC verification is still `OUTCOME: blocked`, not yours to fix.
 - **Rung 4 (browser) is not available to you.** Your `tools` are `Read, Glob, Grep, Bash` — no `mcp__Claude_Browser__*`, no `mcp__claude-in-chrome__*`. This is a deliberate decision, not an oversight (`.claude/reference/browser-capability-rung.md` §Decision): a merger that could drive the GitHub web UI could click merge or change branch protection, routing around the `/wrap`-only contract. If a blocker genuinely needs a web UI, **say so plainly** — "the browser rung isn't available to me (`tools`: Read, Glob, Grep, Bash)" — inside `OUTCOME: blocked`. Never substitute click-by-click navigation instructions for the work.
 
@@ -35,7 +74,7 @@ Read the handoff file if it exists:
 
 ```bash
 # Resolve the canonical handoff path (issue #655: scoped per repo).
-HANDOFF_FILE="$(.claude/scripts/handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --path {{PR_NUMBER}} 2>/dev/null \
+HANDOFF_FILE="$(run_script handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --path {{PR_NUMBER}} 2>/dev/null \
   || echo "$HOME/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json")"
 # Fall back to flat path when scoped file doesn't exist yet (migration window).
 [[ ! -f "$HANDOFF_FILE" && -f "$HOME/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json" ]] && \
@@ -46,7 +85,7 @@ cat "$HANDOFF_FILE" 2>/dev/null
 Use `reviewer` and `phase_completed` to confirm merge gate expectations. If the handoff is missing or lacks a `reviewer` field, resolve reviewer ownership via the shared helper (checks `~/.claude/session-state.json` first, falls back to a paginated live-history scan):
 
 ```bash
-REVIEWER=$(.claude/scripts/reviewer-of.sh {{PR_NUMBER}})   # prints cr / bugbot / greptile / unknown
+REVIEWER=$(run_script reviewer-of.sh {{PR_NUMBER}})   # prints cr / bugbot / greptile / unknown
 gh pr view {{PR_NUMBER}} --json state,title,mergeStateStatus,commits
 ```
 
@@ -85,7 +124,7 @@ fi
 if [[ -z "$REVIEWER" ]]; then
   # Capture stdout + exit code separately; reviewer-of.sh documents exit 5 as
   # the fail-fast signal for malformed session state.
-  RESOLVED=$(.claude/scripts/reviewer-of.sh {{PR_NUMBER}})
+  RESOLVED=$(run_script reviewer-of.sh {{PR_NUMBER}})
   RESOLVED_EXIT=$?
   if [[ "$RESOLVED_EXIT" -eq 5 ]]; then
     echo "reviewer-of.sh exit 5: session-state malformed — blocking merge prep. Repair or remove ~/.claude/session-state.json and retry." >&2
@@ -99,9 +138,9 @@ fi
 
 if [[ -z "$REVIEWER_ERROR" ]]; then
   if [[ -n "$REVIEWER" ]]; then
-    GATE_JSON=$(.claude/scripts/merge-gate.sh {{PR_NUMBER}} --reviewer "$REVIEWER")
+    GATE_JSON=$(run_script merge-gate.sh {{PR_NUMBER}} --reviewer "$REVIEWER")
   else
-    GATE_JSON=$(.claude/scripts/merge-gate.sh {{PR_NUMBER}})
+    GATE_JSON=$(run_script merge-gate.sh {{PR_NUMBER}})
   fi
   GATE_EXIT=$?
 fi
@@ -120,26 +159,26 @@ Only when `REVIEWER_ERROR` is unset, branch on `GATE_EXIT`:
 1. Extract Test Plan checkboxes via the shared helper:
 
    ```bash
-   ITEMS=$(.claude/scripts/ac-checkboxes.sh {{PR_NUMBER}} --extract)
+   ITEMS=$(run_script ac-checkboxes.sh {{PR_NUMBER}} --extract)
    AC_EXIT=$?
    ```
 
    Interpret the helper's output and exit codes exactly as documented by
-   `.claude/scripts/ac-checkboxes.sh --help`. Any nonzero exit blocks Phase C.
+   `run_script ac-checkboxes.sh --help`. Any nonzero exit blocks Phase C.
    For exit `1`, inspect the PR body and report whether the Test Plan heading is
    missing or its section has no checkbox items; both mean there are no
    acceptance criteria to verify and are blocking per CLAUDE.md.
 
 2. For each item with `checked == false`, read the relevant source file(s) and verify the criterion is met.
 
-3. Tick passing items by zero-based index, or use `--all-pass` if every unchecked item passed. Follow `.claude/scripts/ac-checkboxes.sh --help` and capture the helper exit code — any nonzero result leaves AC unverified and blocks Phase C:
+3. Tick passing items by zero-based index, or use `--all-pass` if every unchecked item passed. Follow `run_script ac-checkboxes.sh --help` and capture the helper exit code — any nonzero result leaves AC unverified and blocks Phase C:
 
    ```bash
    # Example: indexes 0, 2, 3 passed
-   .claude/scripts/ac-checkboxes.sh {{PR_NUMBER}} --tick "0,2,3"
+   run_script ac-checkboxes.sh {{PR_NUMBER}} --tick "0,2,3"
    TICK_EXIT=$?
    # Or: every unchecked item passed
-   .claude/scripts/ac-checkboxes.sh {{PR_NUMBER}} --all-pass
+   run_script ac-checkboxes.sh {{PR_NUMBER}} --all-pass
    TICK_EXIT=$?
    ```
 

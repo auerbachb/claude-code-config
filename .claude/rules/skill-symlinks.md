@@ -9,10 +9,13 @@
 This repo is the single source of truth for skills, global rules, and CLAUDE.md. `~/.claude/` must contain **symlinks** through a dedicated skills worktree — never copies, never direct root-repo symlinks:
 
 - `~/.claude/skills/<name>` -> `~/.claude/skills-worktree/.claude/skills/<name>`
+- `~/.claude/agents/<name>.md` -> `~/.claude/skills-worktree/.claude/agents/<name>.md`
 - `~/.claude/CLAUDE.md` -> `~/.claude/skills-worktree/CLAUDE.md`
 - `~/.claude/rules` -> `~/.claude/skills-worktree/.claude/rules`
 
 `~/.claude/skills-worktree/` stays permanently on `main`, so symlink targets survive the root repo being on a feature branch.
+
+**Agents are per-file symlinks in a real directory**, like skills — not a directory symlink like `rules`. A brand-new `~/.claude/agents/` needs a session restart before the types register. Why that shape, and what a skill does when a dependency will not resolve: `.claude/reference/portable-skill-resolution.md`.
 
 > **Double-loading note:** sessions opened *in this repo* would load the corpus twice; suppressed via project-local `claudeMdExcludes` in `.claude/settings.json` — rationale: `.claude/reference/double-loading-fix.md`.
 

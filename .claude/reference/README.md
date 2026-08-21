@@ -61,6 +61,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `bgwork-ceiling.md` — why background work arms a turn-independent silence ceiling, why `Monitor` over `ScheduleWakeup`/`CronCreate`, and why the number stays unpublished (#803)
 - `skill-sync-hooks.md` — skills worktree sync and hook registration narrative
 - `skill-symlink-setup.md` — why a dedicated worktree, session-start bootstrap, symlink install, and migration commands (`skill-symlinks.md`)
+- `portable-skill-resolution.md` — how a shared skill reaches its scripts, reference docs, and phase agents from a repo with no `.claude/`: the `resolve_script()`/`resolve_doc()` shapes, the required-vs-optional degraded-mode warning format, and the classified dependency inventory for the seven PM/orchestration skills (#1189)
 - `skill-usage-durability.md` — how skill-usage telemetry records survive machine moves, OS reinstalls, and `~/.claude` cleanups (#572)
 - `skill-first-subagent-delivery.md` — the two delivery paths that carry the skill-first reflex into subagents, the `Skill`-tool precondition matrix, and the borderline-rung adaptation for autonomous agents (`skill-first.md`; #918)
 - `trust-dialog-repair.md` — why `~/.claude.json` re-prompts per worktree, the three flags, and repair-script behavior (`trust-dialog-fix.md`)

@@ -39,7 +39,38 @@ Separately from Fast mode: for Light-tier work, **Haiku** is a valid cheaper alt
 
 **Model-guard preamble (mandatory):** Immediately after the `**Effort:**` line — no blank line between the three — insert the model-guard preamble defined in `.claude/reference/chip-launching.md` "Model-guard preamble," verbatim, never reworded. It applies in both delivery modes: the launched thread's first action is to compare its actual running model against the `**Model:**` line and stop on any mismatch. The guard covers the model only — effort is a pre-click recommendation, not a guarded self-report (`chip-model-guard-decision.md`, which also explains why the guard rides in both the chip `prompt` and the fallback block). In chip mode both lines MUST also appear in the visible short summary; when the parent thread is on Fable and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
 
-## Step 0: Parse Arguments and Detect Context
+## Step 0: Resolve shared tooling
+
+`/prompt` is symlinked into every repo, but its helper scripts and reference docs are not — most repos carry no `.claude/` directory. Resolve them; never invoke a bare `.claude/scripts/…` path. Full contract and the classified dependency inventory: `.claude/reference/portable-skill-resolution.md` (issue #1189).
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
+```
+
+Read `chip-launching.md` through the same order — `$HOME/.claude/skills-worktree/.claude/reference/chip-launching.md` first, then `$HOME/.claude/reference/`, then `.claude/reference/`.
+
+**When something does not resolve, say so in one line; never skip the contract silently.**
+
+- `chip-launching.md` unreadable → **required**. Print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable` and stop before offering any chip; Step 5.5's inline/too-big partition depends on it, and without the gate every issue routes to its own thread (#1189).
+- `ISSUE_CLAIM` empty → **optional**. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim checks skipped` and continue.
+
+`/prompt` also *emits* script paths into the prompts it generates. Those go to a thread running in some other repo, so the generated text carries the candidate order itself rather than a bare path — see the Constraints and Workflow blocks below.
+
+The tier ladder's rule citations (`subagent-orchestration.md`, `cr-*.md`, `issue-planning.md`) need no fallback: `.claude/rules/*.md` auto-loads at user scope in every project.
+
+---
+
+## Step 0a: Parse Arguments and Detect Context
 
 Parse `$ARGUMENTS` as space-separated issue references. Strip `#` prefixes to get bare issue numbers.
 
@@ -221,7 +252,7 @@ Check chip availability per `.claude/reference/chip-launching.md`, then branch. 
 
 **Record every chip's `task_id`.** After each successful spawn, record the returned `task_id` against its issue and mark that issue `Chip offered` — an unrecorded chip can never be withdrawn, which would break stale-chip hygiene. In a PM thread, write it to `/pm`'s Active Work table (its `Task ID` column is the canonical home). Outside a PM thread, keep it in this thread's state so it stays dismissable within the session, and say so in the summary.
 
-**Skip issues already offered.** Before spawning, check the recorded state (Path B's Active Work scan already excludes `Chip offered` — see Step 0) and skip any issue that already has a live chip. Re-running `/prompt` must not offer the same issue twice. Issues that were never spawned, or whose spawn failed, are still eligible.
+**Skip issues already offered.** Before spawning, check the recorded state (Path B's Active Work scan already excludes `Chip offered` — see Step 0a) and skip any issue that already has a live chip. Re-running `/prompt` must not offer the same issue twice. Issues that were never spawned, or whose spawn failed, are still eligible.
 
 Subagent candidates from Step 5.5 never get chips — they run inline via `/subagent`, so that section is unchanged in both modes.
 
@@ -334,7 +365,7 @@ These are mandatory verification points. The executing agent MUST follow these:
 {Include relevant checkpoints based on the task type:}
 
 **If the task involves pushing code and creating a PR:**
-- [ ] After coding: Run `.claude/scripts/local-review.sh --tool coderabbit` and `--tool codeant` — one clean pass (`ok:true` + `verified_run:true`) on each available CLI required before pushing (fallbacks per `cr-local-review.md`)
+- [ ] After coding: resolve `local-review.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/local-review.sh`, `$HOME/.claude/scripts/local-review.sh`, `.claude/scripts/local-review.sh`, then run it `--tool coderabbit` and `--tool codeant` — one clean pass (`ok:true` + `verified_run:true`) on each available CLI required before pushing (fallbacks per `cr-local-review.md`)
 - [ ] After pushing: Enter GitHub review polling loop immediately — do NOT ask permission
 - [ ] After CR/Greptile posts findings: Fix all valid findings in ONE commit, push once, reply to every thread
 
@@ -352,7 +383,7 @@ These are mandatory verification points. The executing agent MUST follow these:
 
 {ALWAYS include this section, at every tier:}
 ## Constraints
-- Claim the issue before anything else: run `.claude/scripts/issue-claim.sh <N> --check`, and if it clears, `.claude/scripts/issue-claim.sh <N> --claim`. Do this after the model-guard check and before any repo read, edit, or planning. Exit 1 (`claimed`) or 4 (`unknown`) → stop and report the claim rather than proceeding; `stale` → say so and continue. If `--claim` itself fails, stop — a passing check is not a held claim.
+- Claim the issue before anything else. Resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh` — this repo may carry no `.claude/` directory. Run `<N> --check` on it, and if it clears, `<N> --claim`. Do this after the model-guard check and before any repo read, edit, or planning. Exit 1 (`claimed`) or 4 (`unknown`) → stop and report the claim rather than proceeding; `stale` → say so and continue. If `--claim` itself fails, stop — a passing check is not a held claim. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — proceeding unclaimed` and continue; never skip the claim silently.
 - Do NOT work on main — use a worktree or feature branch
 - Do NOT modify .env files
 - Merging is automatic and yours to do: once the merge gate passes and every Test Plan / AC checkbox verifies, run the full `/wrap` yourself to squash-merge — no approval pause, no pre-merge message (`CLAUDE.md` "PR MERGE AUTHORIZATION")

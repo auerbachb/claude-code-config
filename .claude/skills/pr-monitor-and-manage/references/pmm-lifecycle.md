@@ -36,13 +36,13 @@ while the stop marker is true. This prevents a queued pre-pause/pre-stop event f
 and makes incomplete exact teardown a hard re-arm block.
 
 ```bash
-PAUSED_AT=$(.claude/scripts/session-state.sh --get '.pmm.paused_at' 2>/dev/null || echo null)
+PAUSED_AT=$("$SESSION_STATE_SH" --get '.pmm.paused_at' 2>/dev/null || echo null)
 if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
   # 1. Read saved config into the $SAVED shell variable (fallback defaults if missing) —
   #    step 3 below clears .pmm.config_at_pause in session-state, so step 4 MUST use this
   #    already-captured $SAVED variable, never re-read .pmm.config_at_pause from
   #    session-state after step 3 has run (it will be null by then).
-  SAVED=$(.claude/scripts/session-state.sh --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
+  SAVED=$("$SESSION_STATE_SH" --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
   # 2. Read both task identities: .pmm_monitor_task_id paired with
   #    .pmm_monitor_generation, and .pmm.auto_wake_monitor_task_id paired with
   #    .pmm.auto_wake_monitor_generation. When present, stop each exact task.
@@ -134,7 +134,7 @@ CONFIG_AT_PAUSE=$(jq -nc \
 > batch below mirrors that block — update both together.
 
 ```bash
-.claude/scripts/session-state.sh \
+"$SESSION_STATE_SH" \
   --set ".pmm.paused_at=\"$NOW\"" \
   --set ".pmm.fleet_at_pause=$FLEET_AT_PAUSE" \
   --set ".pmm.config_at_pause=$CONFIG_AT_PAUSE" \
@@ -199,7 +199,7 @@ failed identity pair, do not clear the pause marker, and do not print success. O
 required stop succeeds perform the terminal cleanup (this is not resumable):
 
 ```bash
-.claude/scripts/session-state.sh \
+"$SESSION_STATE_SH" \
   --set '.pmm.stop_requested=false' \
   --set '.pmm_active=false' \
   --set '.pmm_next_expected_tick_at=null' \

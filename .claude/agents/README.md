@@ -8,6 +8,16 @@ Claude Code's Agent tool supports a `subagent_type` parameter that references ag
 
 Claude Code scans `.claude/agents/` at session start. A session restart is required for a newly added or edited agent file to be registered. The `tools:` key in frontmatter restricts which tools the agent may use; the deprecated `allowed-tools:` key is not recognized by the current schema. <!-- deprecated-key-ok: allowed-tools -->
 
+### Reaching these agents from other repos (issue #1189)
+
+Definitions are discovered at **two** scopes: project (`<repo>/.claude/agents/`) and user (`~/.claude/agents/`), with project winning on a `name:` collision. Without the user-scope copy the phase agents exist only here, so `/pm` and `/subagent` lose their inline pipelines everywhere else — and lose them *silently*, which is the failure this leg closes.
+
+`setup-skills-worktree.sh` Step 5b publishes each file as `~/.claude/agents/<name>.md` → skills-worktree, mirroring the per-entry **skills** symlinks rather than the single directory symlink used for `rules` (the docs guarantee symlink-following for `.claude/rules/` but say nothing about `agents/`; details in `.claude/reference/portable-skill-resolution.md`).
+
+**Restart caveat.** The file watcher picks up new and edited agent files within seconds *in a directory that already existed at session start*. A brand-new `~/.claude/agents/` is the exception and needs a restart before the types register. Until then, use the documented fallback: spawn `general-purpose` and paste the verbatim SAFETY/MINDSET/SKILLS blocks plus the role procedure (`.claude/rules/subagent-orchestration.md` "Failed custom spawn fallback"). This is the same registration behavior recorded in #1131.
+
+**Scripts inside these definitions resolve, never assume.** Every phase agent defines `run_script` before its procedure and calls helpers through it; a helper that resolves nowhere returns 127 after naming itself on stderr, and the step that needed it blocks rather than reading the absence as a clean result.
+
 ## Placeholder Syntax
 
 Agent definitions use `{{PLACEHOLDER}}` markers for runtime context that the parent must inject into the agent's `prompt` parameter at spawn time. Placeholders are **not** auto-resolved — the parent agent must string-replace them before spawning.

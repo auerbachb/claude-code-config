@@ -103,12 +103,12 @@ Run **before Step 5c** for every PR whose Step 3 verdict is `fixpr` (or refined 
 
 **Dismiss** — run the shared dismiss helper with `DISMISS_MSG="Superseded — review was on a stale commit"`. Idempotent (already-`DISMISSED` counts as success). The helper only dismisses reviews whose `commit_id` ≠ current HEAD; never touches fresh bot CR on HEAD.
 
-**Re-trigger the owning bot** — post an **explicit** trigger for the owning reviewer on the current HEAD. Resolve via `.claude/scripts/reviewer-of.sh "$N"` (same mapping as `pr-preflight.sh`'s `reviewer_trigger()`).
+**Re-trigger the owning bot** — post an **explicit** trigger for the owning reviewer on the current HEAD. Resolve via `"$REVIEWER_OF_SH" "$N"` (same mapping as `pr-preflight.sh`'s `reviewer_trigger()`).
 
 > **Since #576, Step 5.0's pre-flight already re-triggers a bot whose only activity is on a superseded commit** — which is exactly this step's situation (the review just dismissed was on a stale SHA). This step therefore **skips** any reviewer pre-flight already triggered on this tick; without that guard both would post for the same PR in the same tick, and for CodeRabbit that burns two of the ≤2/PR/hour explicit-trigger slots at once. It still runs when pre-flight was unavailable, skipped the PR, or reported the reviewer `already-present` / `skipped-rate-cap` — the case this step was written for.
 
 ```bash
-REVIEWER=$(.claude/scripts/reviewer-of.sh "$N" 2>/dev/null || echo unknown)
+REVIEWER=$("$REVIEWER_OF_SH" "$N" 2>/dev/null || echo unknown)
 
 # Skip when Step 5.0's pre-flight already triggered this reviewer this tick
 # (issue #576) — it re-triggers stale-SHA bots itself now, so a second post here
@@ -127,7 +127,7 @@ fi
 CR_HOURLY=""
 for c in "$HOME/.claude/skills-worktree/.claude/scripts/cr-review-hourly.sh" \
          "$HOME/.claude/scripts/cr-review-hourly.sh" \
-         ".claude/scripts/cr-review-hourly.sh"; do
+         ""$CR_HOURLY_SH""; do
   [ -x "$c" ] && { CR_HOURLY="$c"; break; }
 done
 
@@ -165,7 +165,7 @@ esac
 
 Never batch mention strings; never auto-trigger Greptile. Set `TICK_HAD_ACTION=true` when dismissal or re-trigger posts.
 
-**Re-gate and gate Step 5c** — re-run `.claude/scripts/merge-gate.sh "$N"`, stash in `GATE_BY_PR[$N]`, re-read `MET`, `CI_FAILING`, `STALE_BOT_CR`, `UNRESOLVED` (re-fetch unresolved thread count if needed). Then:
+**Re-gate and gate Step 5c** — re-run `"$MERGE_GATE_SH" "$N"`, stash in `GATE_BY_PR[$N]`, re-read `MET`, `CI_FAILING`, `STALE_BOT_CR`, `UNRESOLVED` (re-fetch unresolved thread count if needed). Then:
    - **`MET == true`** → treat as `wrap` for Step 5d this tick (skip Step 5c spawn for this PR).
    - **`CI_FAILING > 0` or `UNRESOLVED > 0`** → proceed to Step 5c spawn (real fix work remains).
    - **Otherwise** (reviewer pending on fresh trigger, no CI/thread fix work) → skip Step 5c; verdict becomes `waiting` on the next tick when the bot lands.
@@ -189,7 +189,7 @@ Conflict dispatches participate in the same parallel cap, batched `session-state
 
 ```bash
 CR_BUDGET_OK=1
-.claude/scripts/cr-review-hourly.sh --check >/dev/null 2>&1 || CR_BUDGET_OK=0
+"$CR_HOURLY_SH" --check >/dev/null 2>&1 || CR_BUDGET_OK=0
 ```
 
 If `$CR_BUDGET_OK == 0`, still spawn subagents but include `SKIP_CR_TRIGGER=1` in each prompt. Do **not** block spawn entirely when the cap is exhausted.
@@ -230,7 +230,7 @@ IN_FLIGHT_SETS=()
 # would silently overwrite every earlier PR's lock.
 for N in $SPAWNED_PR_NUMS; do
   N_HEAD_SHA=$(jq -r '.head_sha' <<<"${GATE_BY_PR[$N]}")   # that PR's own tick-scoped $GATE
-  ISSUE_N=$(.claude/scripts/pr-issue-ref.sh "$N" 2>/dev/null || echo null)
+  ISSUE_N=$("$PR_ISSUE_REF_SH" "$N" 2>/dev/null || echo null)
   AGENT_ID="pmm-fix-$N"
   ENTRY=$(jq -n --arg id "$AGENT_ID" --arg task "PMM fix PR #$N" --argjson issue "$ISSUE_N" \
     --argjson pr "$N" --arg launched "$NOW" --arg head_sha "$N_HEAD_SHA" \
@@ -240,10 +240,10 @@ for N in $SPAWNED_PR_NUMS; do
 done
 
 # After the loop — ONE read of the current array, ONE append of the whole batch, ONE write:
-CURRENT_AGENTS=$(.claude/scripts/session-state.sh --get '.active_agents' 2>/dev/null || echo null)
+CURRENT_AGENTS=$("$SESSION_STATE_SH" --get '.active_agents' 2>/dev/null || echo null)
 [ "$CURRENT_AGENTS" = "null" ] && CURRENT_AGENTS='[]'
 UPDATED_AGENTS=$(jq --argjson entries "$NEW_ENTRIES" '. + $entries' <<<"$CURRENT_AGENTS")
-.claude/scripts/session-state.sh --set ".active_agents=$UPDATED_AGENTS" "${IN_FLIGHT_SETS[@]}"
+"$SESSION_STATE_SH" --set ".active_agents=$UPDATED_AGENTS" "${IN_FLIGHT_SETS[@]}"
 ```
 
 Set Subagent column to `spawned` immediately for every PR in this batch; transition to `working` once each subagent reports activity (first tool call or ~30s elapsed).
@@ -285,7 +285,7 @@ done
 **Idempotency-gated via `pmm_in_flight`** (only reached once the deferral gate above is open):
 
 ```bash
-INFLIGHT=$(.claude/scripts/session-state.sh --get ".pmm_in_flight.\"$N\"" 2>/dev/null || echo null)
+INFLIGHT=$("$SESSION_STATE_SH" --get ".pmm_in_flight.\"$N\"" 2>/dev/null || echo null)
 ```
 
 - `$INFLIGHT` has `status == "active"` → skip (verdict `awaiting prior /wrap`) unless stale per `PMM_LOCK_STALE_SECS` (default **3600s**) with no live progress evidence.
@@ -299,7 +299,7 @@ INFLIGHT=$(.claude/scripts/session-state.sh --get ".pmm_in_flight.\"$N\"" 2>/dev
 ```bash
 NOW=$(date -u +%FT%TZ)
 HEAD_SHA=$(jq -r '.head_sha' <<<"${GATE_BY_PR[$N]}")
-.claude/scripts/session-state.sh --set \
+"$SESSION_STATE_SH" --set \
   ".pmm_in_flight.\"$N\"={\"skill\":\"wrap\",\"status\":\"active\",\"dispatched_at\":\"$NOW\",\"head_sha\":\"$HEAD_SHA\"}"
 ```
 
@@ -337,7 +337,7 @@ If any **blocking** fix subagents are active this tick (per the shared gate idio
 3. Branch on outcome for **PMM-owned** entries only (per Step 2.5's step 4, cleanup from item 2 above already done):
    - **Crash / no exit report / stale >15 min:** mark `failed` in the table and add `#N` to `HARD_BLOCK[]` with reason `crashed(needs-approval)` — never re-dispatch silently. Reported once and dropped from the actionable fleet this tick; the user can explicitly approve a respawn.
    - **`blocked` (unresolvable merge conflict or other fix blocker):** add `#N` to `HARD_BLOCK[]` with reason from the exit report (e.g. `conflicts(needs-human)`). Report once and drop from the actionable fleet.
-   - **Token/turn exhaustion with a valid handoff file:** respawn immediately **using Step 5c's spawn pattern**, but with **freshly re-fetched** gate and findings data for this PR — do NOT reuse tick-start `GATE_BY_PR[$N]`/`FINDINGS_JSON[$N]` verbatim. Real time has passed since Step 3 computed them, and the exhausted subagent may have pushed partial progress before running out of tokens, moving the PR's actual HEAD SHA and review state past that tick-start snapshot; a respawn using the stale SHA/findings would hand the replacement outdated context. Re-run `.claude/scripts/merge-gate.sh "$N"` (and re-fetch findings from the three endpoints, same as Step 3's pre-fetch) immediately before building the replacement's spawn record.
+   - **Token/turn exhaustion with a valid handoff file:** respawn immediately **using Step 5c's spawn pattern**, but with **freshly re-fetched** gate and findings data for this PR — do NOT reuse tick-start `GATE_BY_PR[$N]`/`FINDINGS_JSON[$N]` verbatim. Real time has passed since Step 3 computed them, and the exhausted subagent may have pushed partial progress before running out of tokens, moving the PR's actual HEAD SHA and review state past that tick-start snapshot; a respawn using the stale SHA/findings would hand the replacement outdated context. Re-run `"$MERGE_GATE_SH" "$N"` (and re-fetch findings from the three endpoints, same as Step 3's pre-fetch) immediately before building the replacement's spawn record.
 4. Send heartbeat if >5 min since last user message (timestamp prefix required).
 5. Investigate stale **PMM-owned** agents (>15 min Phase A without progress). Foreign staleness is handled by item 1's `PMM_LOCK_STALE_SECS` fallback.
 
