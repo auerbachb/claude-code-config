@@ -17,13 +17,17 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   — $*"; }
 
 CASE_N=0
-# new_home [state-json] [watermark-json] — fresh isolated HOME per case.
+# new_home [state-json] [watermark-json] [review-stack-watermark-json]
+# — fresh isolated HOME per case. The third argument is the /review-stack-audit
+# watermark (issue #1201); absent, no such file exists and that nudge stays
+# silent, which is itself the behavior several cases below assert.
 new_home() {
   CASE_N=$((CASE_N + 1))
   export HOME="$TMP_DIR/home$CASE_N"
-  mkdir -p "$HOME/.claude/harness-audit"
+  mkdir -p "$HOME/.claude/harness-audit" "$HOME/.claude/review-stack-audit"
   [[ -n "${1:-}" ]] && printf '%s' "$1" > "$HOME/.claude/session-state.json"
   [[ -n "${2:-}" ]] && printf '%s' "$2" > "$HOME/.claude/harness-audit/last-run.json"
+  [[ -n "${3:-}" ]] && printf '%s' "$3" > "$HOME/.claude/review-stack-audit/last-run.json"
   STATE="$HOME/.claude/session-state.json"
 }
 
@@ -320,6 +324,46 @@ ok "names the pending chip instead of re-offering"
 new_home '{}' "{\"nudge_enabled\":false,\"last_completed_month\":\"2000-01\"}"
 "$SCRIPT" | grep -q "harness-audit" && fail "--stop (nudge_enabled:false) must silence the nudge"
 ok "nudge_enabled:false silences the audit nudge"
+
+# --- 7b. review-stack-audit watermark drives its own nudge (issue #1201) -----
+# The sibling audit rides the same session-start mechanism but has no "offered"
+# state: its tick runs the real comparison rather than offering a step-up chip.
+
+new_home '{}' '' "{\"nudge_enabled\":true,\"last_completed_month\":\"2000-01\"}"
+"$SCRIPT" | grep -q "review-stack-audit is due" || fail "a due review-stack month should nudge"
+ok "nudges when the review-stack audit month is due"
+
+new_home '{}' '' "{\"nudge_enabled\":true,\"last_completed_month\":\"$MONTH\"}"
+"$SCRIPT" | grep -q "review-stack-audit" && fail "an audited review-stack month must not nudge"
+ok "silent when this month's review-stack audit is done"
+
+new_home '{}' '' "{\"nudge_enabled\":false,\"last_completed_month\":\"2000-01\"}"
+"$SCRIPT" | grep -q "review-stack-audit" && fail "--stop must silence the review-stack nudge"
+ok "nudge_enabled:false silences the review-stack nudge"
+
+# No watermark at all = never armed. It must stay silent rather than nagging
+# every session start of a user who never asked for this audit.
+new_home '{}'
+"$SCRIPT" | grep -q "review-stack-audit" && fail "an unarmed review-stack audit must not nudge"
+ok "silent when the review-stack audit was never armed"
+
+# A corrupt watermark must not take the session-start path down with it, and
+# must not be read as "due" — fail-soft means silent here, not noisy.
+new_home '{}' '' 'not json at all'
+OUT_RS="$("$SCRIPT" 2>/dev/null)"; RS_RC=$?
+[[ $RS_RC -eq 0 ]] || fail "a corrupt review-stack watermark must not break session start (rc=$RS_RC)"
+grep -q "review-stack-audit" <<<"$OUT_RS" && fail "a corrupt watermark must not be read as due"
+ok "corrupt review-stack watermark fails soft and silent"
+
+# The two audits are independent: one being done must not silence the other.
+new_home '{}' "{\"nudge_enabled\":true,\"last_completed_month\":\"$MONTH\"}" \
+              "{\"nudge_enabled\":true,\"last_completed_month\":\"2000-01\"}"
+OUT_BOTH="$("$SCRIPT")"
+grep -q "review-stack-audit is due" <<<"$OUT_BOTH" \
+  || fail "review-stack nudge suppressed by a completed harness-audit month"
+grep -q "harness-audit is due" <<<"$OUT_BOTH" \
+  && fail "harness-audit nudged despite being done this month"
+ok "the two audit nudges are independent"
 
 # --- 8. A paused fleet is surfaced (the real cross-session continuity) -------
 new_home '{"pmm":{"paused_at":"2026-07-30T10:00:00Z"}}'
