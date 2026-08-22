@@ -223,17 +223,21 @@ If classification is unclear, default to **Standard**. It is better to slightly 
 
 **Skip this step entirely if `PM_AUTO_DETECT` is not `true`** (i.e., when explicit arguments were provided via Path A, or if Path C was taken). When skipped, all issues proceed to Step 6 as thread-prompt issues.
 
-When `PM_AUTO_DETECT=true`, partition the classified issues into two groups. **The default is subagent-eligible (inline execution); an issue falls into the thread-prompt group only if it is "too big for any subagent."** Evaluate the too-big test **per issue**, using the same three criteria as `/subagent` Step 4 — a judgment call about resumability and interactivity, **not** tier and **not** file/AC/dependency arithmetic:
+When `PM_AUTO_DETECT=true`, partition the classified issues into two groups. **The default is subagent-eligible (inline execution); an issue falls into the thread-prompt group only if it is too big in a way a split cannot fix** — criteria 1 or 2 below. Evaluate the too-big test **per issue**, using the same three criteria as `/subagent` Step 4 — a judgment call about resumability and interactivity, **not** tier and **not** file/AC/dependency arithmetic:
 
 1. **The implementation can't be carried across sequential subagent turns** — work that resists being cut into resumable pieces, where a replacement agent couldn't pick up from a handoff and continue. **Size is not the test:** a sweeping many-file change is highly resumable and stays inline, because the token-exhaustion protocol already carries it across agents.
 2. **Needs interactive human judgment mid-build** — genuinely unresolved product/design decisions that must be settled *during* implementation. An "Open questions" section the issue already answers does not count.
 3. **Should be split into multiple PRs** — the issue asks to be split, or its scope spans several independent deliverables.
 
-If **none** hold, the issue is **subagent-eligible** (runs inline). If **any** holds, it is a **thread-prompt issue** (too big) — and the group assignment **must name which criterion fired**; an unnamed "too big" is not a valid verdict. Touching `.claude/rules`, `CLAUDE.md`, or `.claude/skills`, a high `ac_count`, dependencies, orchestration keywords, a Heavy/Standard `issue_tier`, "looks large", or a full inline pipeline never force the thread-prompt group — none of them is a gate here. Rationale: `.claude/reference/too-big-recalibration-2026-07.md` (#776).
+If **none** hold, the issue is **subagent-eligible** (runs inline). If **criterion 1 or 2** holds, it is a **thread-prompt issue** (too big) — and the group assignment **must name which criterion fired**; an unnamed "too big" is not a valid verdict. Touching `.claude/rules`, `CLAUDE.md`, or `.claude/skills`, a high `ac_count`, dependencies, orchestration keywords, a Heavy/Standard `issue_tier`, "looks large", or a full inline pipeline never force the thread-prompt group — none of them is a gate here. Rationale: `.claude/reference/too-big-recalibration-2026-07.md` (#776, #1193).
+
+**If only criterion 3 holds, the issue is NOT a thread-prompt issue (#1193).** It goes to the subagent-eligible group flagged **`needs decomposition`**, because `/subagent` Step 5.1 splits it into an inline increment chain rather than routing it out. `/prompt` files nothing and decomposes nothing — it just stops sending these issues down the thread path. When a thread criterion *and* criterion 3 both hold, the thread criterion wins and the issue is a thread-prompt issue naming that criterion.
 
 **Result of partitioning:**
-- **Subagent-eligible issues (the default, usually the majority)** — reported in a separate section with a `/subagent` command suggestion (see Step 6).
-- **Thread-prompt issues (too big)** — everything the too-big test flagged. These get full prompt blocks as normal, each naming the criterion that forced the thread.
+- **Subagent-eligible issues (the default, usually the majority)** — reported in a separate section with a `/subagent` command suggestion (see Step 6). A `needs decomposition` issue is listed here with that flag and a one-line note on why one pipeline can't land it, so the `/subagent` run knows to expect a chain.
+- **Thread-prompt issues (too big)** — those criterion 1 or 2 flagged. These get full prompt blocks as normal, each naming the criterion that forced the thread.
+
+This partition governs **Path B (PM auto-detect) only.** An explicit `/prompt #N` (Path A) skips Step 5.5 and still produces a full thread-prompt block for any issue, criterion 3 included — the user naming an issue *is* the explicit ask that authorizes a thread (`/pm` 3.1 trigger 2), and it is how a decomposition the user disagrees with gets overridden.
 
 If all issues are subagent-eligible, the thread-prompt group is empty — only the Subagent Candidates section is output. If no issues are subagent-eligible (every detected issue is too big), the Subagent Candidates section is omitted entirely.
 

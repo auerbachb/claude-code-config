@@ -8,6 +8,8 @@
 
 **Current fleet (for model-line context):** Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5.
 
+> **Point-in-time record — one behavior below has since changed.** This audit describes each surface as it stood on 2026-07-22, and is kept as the verification record for #701. Since [#1193](https://github.com/auerbachb/claude-code-config/issues/1193) (2026-08-22), **criterion 3 ("should be split into multiple PRs") no longer routes an issue to a thread** — it is decomposed into an inline increment chain by `/subagent` Step 5.1. Read every "too-big → thread chip" row below as covering criteria 1 and 2 only. Current behavior: `too-big-recalibration-2026-07.md` "Amendment — criterion 3 decomposes".
+
 ---
 
 ## Why this audit, and why now

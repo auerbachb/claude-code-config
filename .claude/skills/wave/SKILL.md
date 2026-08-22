@@ -79,7 +79,9 @@ Ranking is `/pm`'s job. `/wave` consumes a ranking; it does not produce one.
 
 Start from the ranked order and remove, in this sequence:
 
-1. **Already offered or already running.** Drop any issue whose row in `/pm`'s `## Active Work` table has Thread status `Chip offered`, `Inline`, `Active`, or `Prompt generated`. The first three are the acceptance criterion; `Prompt generated` joins them because `/pm` 3.2 defines it and `Chip offered` as the same state — offered, not yet started — and `chip-launching.md` treats an issue with a live offer as already offered. Re-running `/wave` immediately must therefore produce **no** duplicate chips.
+1. **Already offered, already running, or already decomposed.** Drop any issue whose row in `/pm`'s `## Active Work` table has Thread status `Chip offered`, `Inline`, `Active`, `Prompt generated`, or `Tracking`. The first three are the acceptance criterion; `Prompt generated` joins them because `/pm` 3.2 defines it and `Chip offered` as the same state — offered, not yet started — and `chip-launching.md` treats an issue with a live offer as already offered. Re-running `/wave` immediately must therefore produce **no** duplicate chips.
+
+   **`Tracking` is the decomposed-parent case (#1193), and it is the one that bites hardest if missed.** A criterion-3 parent whose children are already building inline stays *open*, is deliberately never claimed, carries no `Depends on` marker, and is subagent-fit by `chip-launching.md`'s check — so every other filter here waves it through. Offering it would hand the user a chip to start a second thread implementing exactly what the running chain is already building. Drop it: its children are the real work and are counted individually.
 2. **Already offered by `/issue-maker` in another thread.** The Active Work table check above only sees chips offered inside this PM thread — `/issue-maker` runs in its own capture-only thread and never writes to it (`chip-launching.md` "Cross-skill chip visibility"). Consult the shared cross-thread record instead:
 
    ```bash
