@@ -17,7 +17,7 @@ This document derives that number and records why it is what it is, so the next 
 Every prior statement of the ceiling — this repo's rules, `/wave` Step 6's comment, and the original #1191 issue body — rests on **~8 CodeRabbit reviews/hour**. The 2026-08-21 review-stack realignment retracted it. Per `pricing-matrix.md` §CodeRabbit and `cr-rate-limits.md`, dashboard-confirmed in #1204:
 
 - CodeRabbit Pro is **5 PR reviews per developer per hour** — not ~8, and not account-wide.
-- That allowance is degraded further by a **Fair Usage table keyed to trailing-7-day volume, per developer identity**: 0–29 → 5/hr, 30–39 → 4/hr, 40–49 → 3/hr, 50–59 → 2/hr, 60–69 → 1/hr one-at-a-time, 90+ → 1/hr one-at-a-time.
+- That allowance is degraded further by a **Fair Usage table keyed to trailing-7-day volume, per developer identity**: 0–29 → 5/hr, 30–39 → 4/hr, 40–49 → 3/hr, 50–59 → 2/hr, 60–69 → 1/hr one-at-a-time, 70–79 → 1/hr, 80–89 → 1/hr, 90+ → 1/hr one-at-a-time.
 - The `~8` that survives in `cr-review-hourly.sh` is **our local pacing proxy and nothing else** — deliberately kept, explicitly not CodeRabbit's meter.
 
 Measured over 2026-07-22 → 2026-08-21 (244 PRs): **196 of 290 reviews rate-limited (68%)**, average wait **87.4 hours**, **36% of blocked PRs merged unreviewed**, and CodeRabbit substantively reviewed **53 of 244 PRs (22%)**.
@@ -121,7 +121,14 @@ Three author-scoped, durable sources, summed by `active-work-cap.sh`:
 
 **Offered-but-unclicked chips count.** Twenty offered chips invite twenty clicks — that was the observed 2026-08-18 failure mode, so an offer is treated as committed work. Deferred issues are re-offered as active work drains; nothing is dropped.
 
-The three sources are disjoint by construction. An `active_agents` entry acquires a `.pr` the moment its pipeline opens a PR, at which point the first source counts it and the third stops — so no reconciliation between them is needed, and none is attempted.
+**Sources 1 and 3 are disjoint by construction**, and need no reconciliation: an `active_agents` entry acquires a `.pr` the moment its pipeline opens a PR, at which point the first source counts it and the third stops.
+
+**Sources 1 and 2 are not**, and the script performs two explicit narrowings to keep them from double-counting or over-reaching. Do not remove either on the assumption that the sources are independent:
+
+1. **Subtract chips an open PR already covers.** A chip's log entry survives the click, and its issue stays open until the PR merges, so a clicked chip would be counted once as a chip and again as a PR — halving the effective cap. Chips whose issue appears in an open PR's `closingIssuesReferences` are excluded.
+2. **Keep only chips whose issue is still open.** `chip_task_id` is cleared solely on an explicit retract, so without this the count is a monotonic high-water mark that would pin `FREE` at 0 within days.
+
+Both narrowings apply **only to chips attributed to this repo**. A chip whose log entry carries no usable URL is counted unconditionally and skips both: its number is meaningless outside a repo, so matching it against this repo's PR-closed or open issues would drop it on a coincidence and turn a deliberate over-count into an under-count.
 
 ## Portability
 

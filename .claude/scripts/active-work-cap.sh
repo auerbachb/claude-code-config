@@ -124,6 +124,15 @@
 #   silent; a PRESENT but unparseable or out-of-range value warns and falls
 #   back, per the MAX_WAVE / CLAUDE_BGWORK_CEILING_S precedent.
 #
+#   CLAUDE_ACTIVE_WORK_AGENT_TTL_S  How long an `active_agents` entry may go
+#                           unseen before it stops consuming a slot, in
+#                           seconds (default 7200). These records say what was
+#                           LAUNCHED, not what is alive, so a crashed session
+#                           leaves one behind and an orphan would otherwise pin
+#                           capacity forever. A non-integer warns and falls
+#                           back. An entry carrying no timestamp at all is
+#                           always kept — unknown age must not read as expired.
+#
 #   CLAUDE_ACTIVE_WORK_HANDOFF_DIR  Override the issue-maker chip-log
 #                           directory so tests never read live state.
 #

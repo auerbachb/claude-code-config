@@ -187,14 +187,14 @@ Record the exclusion reason for every candidate that fails a check — Step 9 pr
 CEILING    = 4                        # top of the 3–4 concurrent-pipeline band
 CONFIG     = MAX_WAVE from pm-config  # optional; clamped to [1, CEILING]
 EFFECTIVE  = min(CEILING, CONFIG?)    # total concurrent work allowed
-FREE       = "$ACTIVE_WORK_CAP_SH" --free  # repo-wide headroom, all threads
+FREE       = "$ACTIVE_WORK_CAP_SH"         # default line: CAP=n ACTIVE=n FREE=n
 SLOTS      = min(REQUESTED?, EFFECTIVE - IN_FLIGHT, FREE)
 ```
 
 `REQUESTED` caps *new* chips; `EFFECTIVE - IN_FLIGHT` caps *total* concurrent work. Applying them separately means `/wave 2` with one issue already in flight still offers 2 (total 3, under the ceiling) rather than being penalized twice.
 
 - **`CEILING = 4`** comes from `.claude/rules/subagent-orchestration.md` ("Keep 3-4 active CR-polled PRs max"). It binds chip-launched threads too: the scarce resource is **reviewer throughput** — CodeRabbit serves 5 PR reviews per developer per hour, shared across every open PR you own (`.claude/reference/cr-rate-limits.md`) — not subagent slots. Four threads started at once become four PRs competing for that same hourly budget.
-- **`FREE`** is the repo-wide headroom from `"$ACTIVE_WORK_CAP_SH" --free` (Step 0; `chip-launching.md` "Repo-wide active-work cap"). `CEILING` bounds *this thread*; `FREE` bounds **every thread on the repo at once**, counting your open PRs, live chips offered from any capture thread, and pipelines not yet at a PR. It is the term that stops a fresh `/wave` in a new tab from re-filling a board that other tabs already filled. Never read the cap's number into this file — the script owns it, and its derivation is `active-work-cap.md`.
+- **`FREE`** is the repo-wide headroom from `"$ACTIVE_WORK_CAP_SH"` (Step 0). Read its **default output**, not `--free`: the one line carries `CAP`, `ACTIVE`, and `FREE`, and the cap-bound message below quotes `{ACTIVE}/{CAP}`, which `--free` cannot supply (`chip-launching.md` "Repo-wide active-work cap"). `CEILING` bounds *this thread*; `FREE` bounds **every thread on the repo at once**, counting your open PRs, live chips offered from any capture thread, and pipelines not yet at a PR. It is the term that stops a fresh `/wave` in a new tab from re-filling a board that other tabs already filled. Never read the cap's number into this file — the script owns it, and its derivation is `active-work-cap.md`.
 - **`CONFIG`** is an optional `MAX_WAVE=N` line in a `## Wave` section of `.claude/pm-config.md`:
 
   ```bash

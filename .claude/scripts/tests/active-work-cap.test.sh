@@ -265,6 +265,10 @@ CHIPS=$(run --json | jq -r '.live_chips') || fail "--json failed"
 ok "a chip survives in the log after its issue closes, but stops counting"
 
 # --- 10. A retracted chip (null task id) never counts -------------------------
+# States its own premise rather than inheriting section 9's open-issue set: the
+# retracted-chip filter must be the ONLY reason this reads 0
+# (feedback_test_fixture_must_build_its_own_premise.md).
+set_open_issues "11"
 write_chip_log "alpha" "[$(chip_entry 11 "$SLUG" open null)]"
 CHIPS=$(run --json | jq -r '.live_chips') || fail "--json failed"
 [[ "$CHIPS" == "0" ]] || fail "a null chip_task_id must not count, got '$CHIPS'"
@@ -272,7 +276,8 @@ ok "a retracted chip (chip_task_id: null) is not live"
 
 # --- 11. Chips are de-duplicated across logs ---------------------------------
 # Two capture threads can both hold an entry for the same issue; that is one
-# offer, not two.
+# offer, not two. Premise set explicitly so dedupe is the only thing under test.
+set_open_issues "11"
 write_chip_log "alpha" "[$(chip_entry 11 "$SLUG" open t1)]"
 write_chip_log "beta"  "[$(chip_entry 11 "$SLUG" open t9)]"
 CHIPS=$(run --json | jq -r '.live_chips') || fail "--json failed"
@@ -283,6 +288,7 @@ rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR/issue-maker-beta-log.json"
 # --- 12. An unattributable chip is counted, and says so ----------------------
 # Over-counting narrows offers (safe); under-counting widens them (the failure
 # this script exists to prevent), so an entry with no usable url counts.
+set_open_issues "11"
 write_chip_log "alpha" "[$(chip_entry 11 "" open t1)]"
 ERR=$(run --json 2>&1 >/dev/null)
 CHIPS=$(run --json 2>/dev/null | jq -r '.live_chips')
@@ -529,10 +535,18 @@ set_open_prs 0
 
 # --- 17. --cap makes no network call -----------------------------------------
 # Emitters that only need the knob must not pay for (or fail on) the count.
-CAP=$(PATH="$TMP_DIR/empty-bin:$PATH" GH_FAKE_PR_FAIL=1 run --cap) || \
-  fail "--cap should not depend on the count sources"
+# `gh` is genuinely removed, not just shadowed: the directory is created (bash
+# silently SKIPS a PATH entry that does not exist) and $BIN is dropped from PATH
+# entirely rather than prefixed, so the fake is unreachable. Prefixing a
+# non-existent dir proved nothing and read as if it had.
+mkdir -p "$TMP_DIR/empty-bin"
+command -v gh >/dev/null 2>&1 || fail "precondition: fake gh should be on PATH here"
+( PATH="$TMP_DIR/empty-bin:/usr/bin:/bin"; command -v gh >/dev/null 2>&1 ) \
+  && fail "the isolated PATH still reaches a gh — the isolation proves nothing"
+CAP=$(PATH="$TMP_DIR/empty-bin:/usr/bin:/bin" run --cap) || \
+  fail "--cap should resolve with no gh on PATH at all"
 [[ "$CAP" == "6" ]] || fail "--cap should still resolve 6, got '$CAP'"
-ok "--cap resolves the knob without touching gh or session-state"
+ok "--cap resolves the knob with gh absent from PATH entirely"
 
 # --- 18. Usage errors ---------------------------------------------------------
 run --json --free >/dev/null 2>&1; RC=$?
@@ -545,7 +559,19 @@ run --repo >/dev/null 2>&1; RC=$?
 [[ $RC -eq 2 ]] || fail "--repo with no value should exit 2, got $RC"
 ok "conflicting modes, unknown flags, and malformed/missing --repo all exit 2"
 
-run --help >/dev/null 2>&1 || fail "--help should exit 0"
-ok "--help exits 0"
+# Exit code alone would pass for a --help that prints nothing. Assert the
+# sections and every flag, so a header that stops short of the usage block (or
+# a flag added without documenting it) fails here.
+HELP=$(run --help 2>/dev/null) || fail "--help should exit 0"
+for SECTION in USAGE MODES FLAGS TUNING OUTPUT "EXIT STATUS"; do
+  [[ "$HELP" == *"$SECTION"* ]] || fail "--help omits the $SECTION section"
+done
+for FLAG in -- --json --free --cap --repo --path \
+            CLAUDE_ACTIVE_WORK_CAP CLAUDE_ACTIVE_WORK_AGENT_TTL_S \
+            CLAUDE_ACTIVE_WORK_HANDOFF_DIR; do
+  [[ "$FLAG" == "--" ]] && continue
+  [[ "$HELP" == *"$FLAG"* ]] || fail "--help does not document $FLAG"
+done
+ok "--help prints every documented section, flag, and tunable"
 
 echo "OK: active-work-cap.sh tests passed"
