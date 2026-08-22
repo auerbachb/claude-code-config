@@ -17,7 +17,7 @@ After implementation, before push. Run from repo root via `.claude/scripts/local
 
 - `.claude/scripts/local-review.sh --tool coderabbit`
 - `.claude/scripts/local-review.sh --tool codeant`
-- Scoping: `--scope uncommitted|committed`. Base branch: `--base <branch>`. Hang bound: `--timeout` (default 120s).
+- Scoping: `--scope uncommitted|committed`. Base branch: `--base <branch>`. Idle-hang bound: `--timeout` (no-output seconds; script-owned default).
 
 ### Fix loop
 
@@ -29,7 +29,7 @@ After implementation, before push. Run from repo root via `.claude/scripts/local
 
 ### A "clean" result may be a failed run (NON-NEGOTIABLE)
 
-**Both CLIs exit `0` on total failure**, each hiding the error on a different stream — CodeAnt on **stderr**, CodeRabbit as a stdout NDJSON `type: "error"` record. Do not hand-roll the capture-and-grep: `local-review.sh` applies every documented check (stderr error, error record, missing terminal record, nothing-reviewed, 15-file cap, 2-min hang) and emits
+**Both CLIs exit `0` on total failure**, each hiding the error on a different stream — CodeAnt on **stderr**, CodeRabbit as a stdout NDJSON `type: "error"` record. Do not hand-roll the capture-and-grep: `local-review.sh` applies every documented check (stderr error, error record, missing terminal record, nothing-reviewed, 15-file cap, idle hang) and emits
 
 `{"ok":…,"findings":N,"verified_run":…,"failure_mode":…,"relevant_error":…,"log_path":…}`
 
@@ -43,7 +43,7 @@ Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `noqa`, or equival
 
 ### Timeout & fallback
 
-- Per CLI: hangs for more than **2 minutes** or errors out twice → drop that CLI for the session and note it in the PR body. Preserve any findings it already emitted — the remaining CLI gates only after those are resolved or explicitly waived in the PR body. Do not retry a failed CLI more than once.
+- Per CLI: trips a `local-review.sh` bound (`failure_mode: timeout`) or errors out twice → drop that CLI for the session and note it in the PR body. Preserve any findings it already emitted — the remaining CLI gates only after those are resolved or explicitly waived in the PR body. Do not retry a failed CLI more than once.
 - If both CLIs are down, run a **self-review** instead (see self-review fallback rules).
 
 **Coverage classification (determine before every push):** Based on which CLIs produced a verified-successful clean pass (not merely exit 0, applying the false-clean checks above), classify as one of: `both` | `cr-only` | `codeant-only` | `none` (both unavailable — self-review only). Coverage is visibility-only and never feeds the merge gate (`cr-merge-gate.md`).
@@ -51,5 +51,5 @@ Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `noqa`, or equival
 ### Exit criteria
 
 - **One verified-successful clean pass on both CLIs** (or on the surviving CLI + PR-body note; one clean self-review if both are unavailable). "No findings" alone is not a clean pass.
-- **Determine and record coverage** (see Timeout & fallback above) before committing/pushing. Surface any degraded state (`none`, `cr-only`, or `codeant-only`) in-thread and in the PR body.
+- **Record coverage** before committing/pushing: surface any degraded state (`none`, `cr-only`, or `codeant-only`) in-thread and in the PR body.
 - Once clean, **immediately** commit, push, create/update the PR (`Closes #N` + Test Plan checkboxes), and enter `cr-github-review.md`. Local review never satisfies `cr-merge-gate.md`.

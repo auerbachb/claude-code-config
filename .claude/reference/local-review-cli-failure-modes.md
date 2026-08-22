@@ -199,6 +199,52 @@ dropped CLI for the session — note it in the PR body; do not retry more than o
 Related: a CodeRabbit *GitHub* check-run can report `success` while its description says
 "Review rate limited" — read the description, not the state.
 
+## The hang bound: idle, not elapsed (issue #1220)
+
+`local-review.sh --timeout` bounds **silence**, not duration. Seconds with no byte written to
+either capture; any write — a CodeRabbit `heartbeat` record included — resets it. The number
+lives in the script and nowhere else, the way `bgwork-ceiling.sh` owns `CEILING_S_DEFAULT`;
+`cr-local-review.md` says "the wrapper's idle bound" and names no value.
+
+Wall-clock was the wrong instrument, and the measurements say so plainly — same repo, same
+change set, back-to-back runs of the CodeRabbit CLI:
+
+| Change set | Bound | Outcome |
+|---|---|---|
+| PR #1218, 5 files | `--timeout 120` (the old default) | killed at 123s, `failure_mode: "timeout"` |
+| PR #1218, 5 files | `--timeout 300` | `ok: true`, 0 findings, **221s** |
+| PR #1222, 2 large prose files | `--timeout 300` | killed at **304s**, still emitting heartbeats |
+| PR #1222, 2 large prose files | `--timeout 900` | `ok: true`, 2 findings, **271s** |
+
+The third row is the whole argument: at the moment it was killed that run was writing
+heartbeat records, and the identical change set completed in 271s on the retry. Elapsed time
+cannot separate a slow review from a wedged one. Output can.
+
+**Why the default is 900.** It is ≥3× the longest observed successful review (271s), and the
+margin is not arbitrary. Heartbeats are **sparse** — captured CR logs carry 2–8 per run, so
+the bound has to clear a heartbeat *gap*, not a tick. Sampling this change set's own review
+once a second (146 samples) showed the capture growing throughout, with a longest silent
+stretch of **46s** — liveness is observable in real time, not only in hindsight. That run took
+**150s**, so the old 120s wall-clock default would have killed the very review that proved the
+fix works. It also has to stay safe for a CLI that
+goes quiet mid-review: CodeAnt writes `[files]`/`[progress]` lines to stderr but its inter-line
+cadence is unmeasured, and where a CLI is silent an idle bound degrades to a wall-clock one.
+Erring high is cheap — the bound only caps a hang and costs nothing when the review finishes.
+Erring low is not: it burns a review against the ~3-per-40-minutes free-OSS CLI cap
+(`cr-cli-free-oss-tier-cap`) and drops a healthy CLI to degraded coverage.
+
+**Why a second bound.** An idle bound cannot stop a CLI that emits output forever without
+finishing, so `--max-duration` is the backstop — default `2 × --timeout`, derived rather than
+published as a second literal so retuning one moves the other. Both bounds exit `4` with
+`failure_mode: "timeout"`; `relevant_error` names which tripped. An explicit `--max-duration`
+below `--timeout` is allowed and makes the ceiling dominate, leaving the idle bound unreachable.
+
+**Reading a `timeout` verdict.** Check `log_path` for `heartbeat` records and a terminal
+`complete`. Both present means the run was working and the bound was too tight for the change
+set — retry with a larger bound rather than counting the CLI as dropped. `relevant_error` says
+which one tripped: raise `--timeout` when it names the idle bound, `--max-duration` when it
+names the ceiling. Raising the wrong knob leaves the run killed at exactly the same second.
+
 ## Coverage enum — mapping failure states
 
 `cr-local-review.md` defines coverage as `both | cr-only | codeant-only | none`. A CLI contributes to coverage **only** when it produced a verified-successful clean pass. Failures map as:
@@ -212,7 +258,7 @@ Related: a CodeRabbit *GitHub* check-run can report `success` while its descript
 | CodeAnt `meta.capped == true` (15-file cap) | CodeAnt **not covered** (partial coverage is not full coverage) |
 | CodeAnt `command not found` / not installed | CodeAnt **not covered** |
 | CodeAnt false-clean (stderr error, stdout `{"issues":[]}`) | CodeAnt **not covered** |
-| Either CLI hangs >2 min or errors twice (dropped) | That CLI **not covered** |
+| Either CLI trips a wrapper bound (`failure_mode: timeout`) or errors twice (dropped) | That CLI **not covered** |
 
 Enforcement ownership stays in `cr-local-review.md`. This table only maps failure appearances to the enum.
 
