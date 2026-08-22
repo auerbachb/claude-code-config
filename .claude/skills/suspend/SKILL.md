@@ -200,7 +200,11 @@ mkdir -p "$OUT_DIR"
 SESSION_ID="${CLAUDE_SESSION_ID:-default}"
 SESSION_ID="${SESSION_ID//[^[:alnum:]_.-]/_}"
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-# REPO_KEY already set in Step 1; sanitize for use in a filename
+# REPO_KEY was set in Step 1 when SESSION_STATE_SH was resolved.
+# Guard against the unresolved case: a missing key produces a double-dash filename
+# that breaks the resume companion's repo-key validation. Fall back to "unknown"
+# so the marker filename is always well-formed and glob-discoverable.
+REPO_KEY="${REPO_KEY:-unknown}"
 REPO_KEY_SAFE="${REPO_KEY//\//-}"
 # Compute the final path before writing (the JSON in 7b embeds it)
 MARKER_PATH="$OUT_DIR/suspend-${STAMP}-${REPO_KEY_SAFE}-${SESSION_ID}.md"

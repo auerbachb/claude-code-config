@@ -63,6 +63,12 @@ fi
 # Fall back to the newest marker file if state was not readable.
 # Validate the repo key embedded in the filename before using a candidate.
 if [[ -z "$SUSPEND_STATE" || "$SUSPEND_STATE" == "null" ]]; then
+  if [[ -z "${REPO_KEY:-}" ]]; then
+    # Without a repo key we cannot safely distinguish our own markers from
+    # another repo's — the pattern *--* would match anything. Fail closed.
+    echo "No parked session found — nothing to resume."
+    exit 0
+  fi
   REPO_KEY_SAFE="${REPO_KEY//\//-}"
   # Search only for markers that contain this repo's key, newest first
   while IFS= read -r candidate; do
