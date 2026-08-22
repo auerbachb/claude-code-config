@@ -38,9 +38,10 @@ $1/credit, already 42 credits into flex 15 days into a cycle (#1204 round 2). Co
 $90; Greptile is an unbounded $1 per additional review. Trading the first for more of the second is the
 wrong direction regardless of the sticker prices.
 
-*(Greptile's billing state became **contested** after this was written — the owner reports free/unpaid,
-against the same-day paid reading above; #1228 settles it from the billing page. The displacement
-argument does not depend on the resolution: what it turns on is that overflow escalates to a
+*(Greptile's billing state was briefly **contested** after this was written — the owner reported
+free/unpaid against the same-day paid reading above. **#1228 settled it from the billing page on
+2026-08-22: the `auerbachb` org is paid**, so the paid reading used here was correct. The displacement
+argument never depended on that resolution: what it turns on is that overflow escalates to a
 per-review-priced tier rather than a fixed one, which holds wherever the current invoice sits.)*
 
 ## Sources

@@ -14,7 +14,7 @@ script may gate on, escalate to, or trigger a tool absent from this table.
 | CodeRabbit | `coderabbitai[bot]` | **Primary finder** | No — it never issues `APPROVED` | Pro, 3/3 seats, $90/mo as measured (#1204) — **decided down to 2 seats, and to annual: $90/mo → $48/mo** (#1213; the seat authored 0 in-scope PRs). *Underused*: 22% of PRs reviewed, 68% of reviews blocked by a **5/hr per-developer** burst limit, 87.4h average wait. Two priced fixes exist; collecting what we already pay for is the cheapest lever. |
 | CodeAnt | `codeant-ai[bot]` | **Primary approver** (co-primary on the CR path) | **Yes** — sole source of `APPROVED` | Premium, 2/2 seats, ~$48/mo (#1204). Load-bearing: 360 approvals on 184 PRs, and the gate has no other approver, so a lapse here is a full stop. The commit-author identity holds no seat — a **$0** fix. |
 | BugBot (Cursor) | `cursor[bot]` | **First fallback** | Yes, on the BugBot path | **The stack's largest cost line** (#1204): ~$1.58/review on-demand, $815.58 in one cycle against a $1,000 cap it has exhausted — which is why it refused 64% of PRs. Strong yield (29 sole-source PRs), but the spend is a scope problem before it is a cap problem. |
-| Greptile | `greptile-apps[bot]` | **Second fallback — retained; billing state CONTESTED** | Yes, on the Greptile path | **Measured as paid Pro on the `auerbachb` org with flex overage UNCAPPED** (#1204 round 2): ~$36–72/mo billed, 42 of 92 credits already on flex 15 days in, this repo the org's largest lifetime consumer (212 reviews). **The owner reports it is now free and unpaid (#1213) — unresolved; settle it from the billing page (#1228) before relying on either figure.** Earns its keep on yield — 41 sole-source PRs, more than any other tool — though it has served none since PR #1203. |
+| Greptile | `greptile-apps[bot]` | **Second fallback — retained; PAID, confirmed 2026-08-22** | Yes, on the Greptile path | **Paid Pro on the `auerbachb` org with flex overage UNCAPPED**, re-read from the billing page 2026-08-22 (#1228): Active, 6 Aug–6 Sep invoice $72 → **$36** after discount, **"No cap on flex usage"**, 42 of 92 credits on flex. The owner's free-and-unpaid report (#1213) described `localmovers-com` and is **resolved**. Earns its keep on yield — **top sole-source finder in the stack, 40 PRs in the 2026-08 audit's 240-PR window**, with no cap hit and no `D2` paid-but-unused finding; the idle stretch since PR #1203 is a day, not disuse. Its OSS program is **self-serve**, so this repo can go to $0 without cancelling. |
 | Graphite | `graphite-app[bot]` | **Supplemental — paid, under re-measurement** | **No** | Newly paid, and measured almost entirely *before* the payment: 1 sole-source PR in 244. Promotion is deferred to evidence, not price. |
 
 **Authoritative chain order** — unchanged in shape, corrected in its assumptions:
@@ -208,8 +208,9 @@ in the audit's §Dashboard reconciliation. Three things it changed here:
      authored 0 PRs, so the decision is to **remove** a seat, 3 → 2. The earlier framing pooled both
      orgs. It is a saving, not a purchase.
    - The gates have since closed: #1210's `LICENSE` landed (PR #1215), #1212 returned its verdict, and
-     #1209 closed with three of its five items **declined** (§Explicitly rejected). What still blocks
-     the Greptile item is a **contested billing reading**, not a gate.
+     #1209 closed with three of its five items **declined** (§Explicitly rejected). The contested
+     billing reading that briefly replaced them was **settled 2026-08-22 (#1228): the `auerbachb` org
+     is paid.** Nothing blocks the Greptile item now.
 
 ## CodeRabbit OSS tier vs paid Pro (#1212, 2026-08-21)
 
@@ -279,16 +280,20 @@ corrected arithmetic. Declined entries are kept — struck, with the reason — 
 recommendation is not re-derived from the same evidence next audit. Every live action is tracked in
 [#1228](https://github.com/auerbachb/claude-code-config/issues/1228).
 
-1. **~~Set Greptile's Flex Usage Limit~~ → first, settle whether Greptile is billed at all.**
-   **CONTESTED.** Round 2 read the `auerbachb` org as Pro/Active with flex uncapped at $1/credit past
-   50/month and 92 reviews logged mid-cycle; the owner's account, the same day, is that Greptile is on
-   the **free tier and not being paid for**. Both cannot be true of one org, and the two-org confusion
-   (`localmovers-com` canceled, `auerbachb` paid and serving the in-scope repos) is exactly how the
-   first pass concluded $0. Read `app.greptile.com/auerbachb/-/settings/billing` before capping or
-   ignoring it. If paid, the cap reasoning below still holds and the choice is cancel vs.
-   keep-deliberately: **a cap at the vendor fails as a refused review, whereas the agent-side budget
-   fails as a PR that can never merge.** Note also **zero Greptile reviews since PR #1203** — evidence
-   of disuse, not of price.
+1. **Set Greptile's Flex Usage Limit — and enrol the repo in the OSS program. SETTLED 2026-08-22
+   (#1228): the `auerbachb` org is PAID.** The billing page reads Active, 6 Aug–6 Sep invoice $72 →
+   $36 after discount, **"No cap on flex usage"**, usage 92/92 credits. The owner's free-tier account
+   described `localmovers-com`, which is canceled — the same two-org confusion that made the first
+   pass conclude $0. The cap reasoning below holds: **a cap at the vendor fails as a refused review,
+   whereas the agent-side budget fails as a PR that can never merge.**
+
+   **The cancel-vs-keep choice resolved to keep.** The 2026-08 audit's non-truncated 240-PR window
+   found **no D2 (paid-but-unused)** against Greptile: it was the **top sole-source finder in the
+   stack at 40 PRs** and hit no cap. The zero-reviews-since-PR-#1203 observation is one idle day, not
+   disuse. And the OSS program turned out to be **self-serve** — a repository picker on that same
+   billing page, with `claude-code-config` selectable — so this repo's coverage goes to **$0** without
+   cancelling a subscription that also serves five private repos. Enrol **and** cap: the cap still
+   matters, because the private repos keep drawing uncapped $1/credit flex.
 2. **~~Turn CodeAnt's org `Auto Approve PR` off~~ — DECLINED 2026-08-21, leave it ON.** It is the
    chain's only source of `APPROVED`; turning it off strands the merge gate. See §Explicitly rejected.
 3. **Cut BugBot's scope — partially accepted; the aggressive core stays.** **Autofix → Off**
