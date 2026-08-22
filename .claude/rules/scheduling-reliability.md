@@ -4,7 +4,7 @@
 > **Ask first:** Never — scheduling reliability is autonomous.
 > **Never:** Use `CronCreate`, dynamic `/loop`, or chained one-shot `ScheduleWakeup` calls for a recurring user-facing poll. Promise to "check back in N minutes" without an active `Monitor`. Exit a wake-up turn without confirming the monitor is live and the last tick fired. Leave background work running with no ceiling armed.
 
-The 5-minute heartbeat rule catches silence during turns; this file covers between-turn polling. **Background work in flight is a polling context** — that wait is between turns too.
+This file covers between-turn polling. **Background work in flight is a polling context** — that wait is between turns too. In-turn silence is default (CLAUDE.md #3); the bgwork-ceiling backstop is the liveness signal.
 
 ## Tool Selection Decision Tree
 
@@ -37,7 +37,7 @@ Before any polling turn ends (`Monitor`, legacy one-shot, or a turn ending with 
    - `Monitor`: verify its task is active and its command emitted the latest expected tick.
    - Legacy `ScheduleWakeup`: confirm this turn made the next-tick call and it returned cleanly. Never chain it for recurrence; switch to `Monitor`.
    - Background work: `bgwork-ceiling.sh --check` passes; if not, arm it (`--arm-command` → `Monitor`). The Stop hook blocks the turn otherwise.
-2. **User heartbeat sent this turn?** Timestamped one-liner: what happened, what's next.
+2. **Any blocker or decision requiring user input?** If yes, surface it immediately (≤2 lines, action first); otherwise stay silent.
 3. **Monitoring state recorded?** Update `~/.claude/session-state.json` with tick time, next expected tick, and watermarks (last review ID, last HEAD SHA, etc.). See `handoff-files.md`.
 
 ## Stable-State Backoff
@@ -48,4 +48,4 @@ Each tick hash `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_c
 
 On a dropped tick: re-establish with `Monitor`; record in `polling_failures[]`; if new, append to `.claude/reference/scheduling-failure-modes.md`.
 
-In-turn heartbeat and monitor loop: `monitor-mode.md`; ceiling mechanism and rationale: `.claude/reference/bgwork-ceiling.md`.
+Monitor mode and liveness: `monitor-mode.md`; ceiling mechanism and rationale: `.claude/reference/bgwork-ceiling.md`.
