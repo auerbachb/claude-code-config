@@ -473,7 +473,7 @@ PREFLIGHT_REVIEW_EVIDENCE="{}"
 if [[ -n "${REVIEW_SUBSTANCE_SH:-}" && -n "$HEAD_SHA" ]]; then
   PREFLIGHT_REVIEW_EVIDENCE="$(
     printf '%s\n%s\n%s\n' "$RAW_REVIEWS_JSON" "$RAW_INLINE_JSON" "$RAW_ISSUE_JSON" \
-      | jq -cs --arg sha "$HEAD_SHA" --arg push "${HEAD_PUSH_DATE:-}" \
+      | jq -cs --arg sha "$HEAD_SHA" --arg push "${HEAD_DATE:-}" \
           '{head_sha: $sha, push_ts: $push, reviews: .[0], pr_comments: .[1], issue_comments: .[2]}' \
       | "$REVIEW_SUBSTANCE_SH" 2>/dev/null
   )" || PREFLIGHT_REVIEW_EVIDENCE="{}"
@@ -526,11 +526,18 @@ review_object_engaged() {
   # Degrade to "engaged" (fail toward silence) when the evaluator was
   # unavailable or returned empty/invalid output.
   [[ -z "${PREFLIGHT_REVIEW_EVIDENCE:-}" || "$PREFLIGHT_REVIEW_EVIDENCE" == "{}" ]] && return 0
-  # .substantive = body_len >= min_chars OR ext_substantive (inline comments,
-  # status comment naming HEAD, substantive COMMENTED review body). Shared with
-  # merge-gate.sh's #875 substance check via review-substance.sh.
+  # For APPROVED reviews: require .counts_as_coverage (substantive + no
+  # disqualifiers — same gate as merge-gate.sh). A disqualified approval
+  # (temporal inversion, capability failure, self-report SHA mismatch) must not
+  # suppress a re-trigger even when the body is long enough.
+  # For non-APPROVED reviews (CHANGES_REQUESTED, COMMENTED): .substantive alone
+  # suffices — the bot already reviewed and posted meaningful findings.
   printf '%s' "$PREFLIGHT_REVIEW_EVIDENCE" \
-    | jq -e --arg l "$login" '.reviewers[$l].substantive // false' >/dev/null 2>&1
+    | jq -e --arg l "$login" '
+        .reviewers[$l] |
+        ((.counts_as_coverage // false)
+         or ((.approved_on_head // false | not) and (.substantive // false)))
+      ' >/dev/null 2>&1
 }
 
 login_fresh_on_head() {
