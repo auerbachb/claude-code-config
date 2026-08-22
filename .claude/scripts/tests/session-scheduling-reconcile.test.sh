@@ -416,23 +416,27 @@ ok "--format json reports skipped unstamped records in polling_jobs_skip"
 # Issue #1205: --format=json fell through to the unknown-flag branch and
 # produced no output with a silent exit 0.
 
-# --format=json must produce the same stdout as --format json.
+# --format=json must produce the same stdout as --format json, and both must exit 0.
 new_home "$FULL_STATE"
-J_EQUALS="$("$SCRIPT" --format=json)"
+EQ_RC=0; J_EQUALS="$("$SCRIPT" --format=json)" || EQ_RC=$?
+[[ $EQ_RC -eq 0 ]] || fail "--format=json must exit 0 (fail-soft), got rc=$EQ_RC"
 new_home "$FULL_STATE"
-J_SPACE="$("$SCRIPT" --format json)"
+SP_RC=0; J_SPACE="$("$SCRIPT" --format json)" || SP_RC=$?
+[[ $SP_RC -eq 0 ]] || fail "--format json must exit 0 (fail-soft), got rc=$SP_RC"
 [[ "$J_EQUALS" == "$J_SPACE" ]] \
   || fail "--format=json differs from --format json (equals got: $J_EQUALS; space got: $J_SPACE)"
-ok "--format=json produces the same output as --format json"
+ok "--format=json produces the same output as --format json (both exit 0)"
 
-# --format=text must produce the same stdout as --format text.
+# --format=text must produce the same stdout as --format text, and both must exit 0.
 new_home '{"pmm":{"paused_at":"2026-07-30T10:00:00Z"}}'
-TEXT_EQUALS="$("$SCRIPT" --format=text)"
+TEQ_RC=0; TEXT_EQUALS="$("$SCRIPT" --format=text)" || TEQ_RC=$?
+[[ $TEQ_RC -eq 0 ]] || fail "--format=text must exit 0 (fail-soft), got rc=$TEQ_RC"
 new_home '{"pmm":{"paused_at":"2026-07-30T10:00:00Z"}}'
-TEXT_SPACE="$("$SCRIPT" --format text)"
+TSP_RC=0; TEXT_SPACE="$("$SCRIPT" --format text)" || TSP_RC=$?
+[[ $TSP_RC -eq 0 ]] || fail "--format text must exit 0 (fail-soft), got rc=$TSP_RC"
 [[ "$TEXT_EQUALS" == "$TEXT_SPACE" ]] \
   || fail "--format=text differs from --format text"
-ok "--format=text produces the same output as --format text"
+ok "--format=text produces the same output as --format text (both exit 0)"
 
 # --format= (empty value) must be rejected but still exit 0 (fail-soft contract).
 new_home '{}'
