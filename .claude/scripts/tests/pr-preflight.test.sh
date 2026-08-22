@@ -92,7 +92,11 @@ case "$sub" in
       *"/issues/"*"/comments"*) fixture="$FIX_ISSUE_COMMENTS" ;;
     esac
     if [[ -z "$fixture" || ! -f "$fixture" ]]; then echo "[]"; exit 0; fi
-    jq -r "$filter" "$fixture"
+    if [[ -n "$filter" ]]; then
+      jq -r "$filter" "$fixture"
+    else
+      cat "$fixture"
+    fi
     exit 0
     ;;
 esac
@@ -178,6 +182,11 @@ iso_from_now() {  # $1 = signed second offset from now
 HEAD_DATE="$(iso_from_now -3600)"     # HEAD committed 1h ago
 BEFORE_HEAD="$(iso_from_now -7200)"   # stale — 2h ago, pre-dates HEAD
 AFTER_HEAD="$(iso_from_now -1800)"    # fresh — 30m ago, post-dates HEAD
+# Minimum-length review body for the substance check (issue #1226). Must be >=
+# 40 chars (the review-substance.sh default) AND must not contain failure
+# phrases. codeant/coderabbit review fixtures that are expected to count as
+# "already-present" must use this body.
+SUBSTANCE_BODY="CodeAnt AI reviewed this commit and found no issues in the diff."
 
 # ---- fixture writers --------------------------------------------------------
 write_view() { printf '%s' "$1" > "$TMP/view.json"; export GH_PR_VIEW_JSON="$TMP/view.json"; }
@@ -245,7 +254,10 @@ check_eq "no greptile trigger" "0" "$(actions | grep -ciF 'greptile')"
 ############################################################################
 echo "== Scenario 2: ready + all 4 engaged ON HEAD → clean no-op =="
 view_ready
-write_reviews "[{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"review\"},{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"x\"}]"
+# coderabbit/codeant bodies must be >= 40 chars so the substance check counts
+# them as engaged (#1226). cursor uses an inline pull comment (type "c" →
+# always engaged). graphite uses an issue comment (timestamp-based → engaged).
+write_reviews "[{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"$SUBSTANCE_BODY\"},{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"$SUBSTANCE_BODY\"}]"
 write_pull_comments "[{\"user\":{\"login\":\"cursor[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"created_at\":\"$HEAD_DATE\",\"body\":\"y\"}]"
 write_issue_comments "[{\"user\":{\"login\":\"graphite-app[bot]\"},\"created_at\":\"$AFTER_HEAD\",\"body\":\"z\"}]"
 OUT=$(run_json 493); RC=$?
@@ -305,7 +317,7 @@ check_eq "no real comments in dry-run" "0" "$(actions | grep -c '^COMMENT')"
 ############################################################################
 echo "== Scenario 5: 3 engaged on HEAD, 1 missing → trigger only the missing one =="
 view_ready
-write_reviews "[{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"r\"},{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"r\"}]"
+write_reviews "[{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"$SUBSTANCE_BODY\"},{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"$SUBSTANCE_BODY\"}]"
 write_pull_comments "[{\"user\":{\"login\":\"cursor[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"created_at\":\"$HEAD_DATE\",\"body\":\"c\"}]"
 write_issue_comments "$EMPTY"
 OUT=$(run_json 493); RC=$?
@@ -331,7 +343,7 @@ check_eq "no comments posted" "0" "$(actions | grep -c '^COMMENT')"
 ############################################################################
 echo "== Scenario 7: Greptile present → ignored, not triggered, not flagged =="
 view_ready
-write_reviews "[{\"user\":{\"login\":\"greptile-apps[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"g\"},{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"r\"},{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"r\"},{\"user\":{\"login\":\"cursor[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"c\"},{\"user\":{\"login\":\"graphite-app[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"gp\"}]"
+write_reviews "[{\"user\":{\"login\":\"greptile-apps[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"g\"},{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"$SUBSTANCE_BODY\"},{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"$SUBSTANCE_BODY\"},{\"user\":{\"login\":\"cursor[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"c\"},{\"user\":{\"login\":\"graphite-app[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"gp\"}]"
 write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
 OUT=$(run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
@@ -362,7 +374,7 @@ write_view "{\"isDraft\":false,\"author\":{\"login\":\"me\"},\"state\":\"CLOSED\
 echo "== Scenario 10: default mode surfaces a clean line + PREFLIGHT_SUMMARY =="
 export GH_ACTIONS_LOG="$TMP/actions.log"; : > "$GH_ACTIONS_LOG"
 view_ready
-write_reviews "[{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"r\"},{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"r\"},{\"user\":{\"login\":\"cursor[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"c\"},{\"user\":{\"login\":\"graphite-app[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"g\"}]"
+write_reviews "[{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"$SUBSTANCE_BODY\"},{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"$SUBSTANCE_BODY\"},{\"user\":{\"login\":\"cursor[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"c\"},{\"user\":{\"login\":\"graphite-app[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"g\"}]"
 write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
 DEF_OUT=$( cd "$REPO_ROOT" && bash "$SCRIPT" 493 )
 check_eq "clean line surfaced" "1" "$(grep -c 'Pre-flight clean — proceeding' <<<"$DEF_OUT")"
@@ -438,7 +450,7 @@ check_eq "codeant not re-triggered" "0" "$(actions | grep -cF '@codeant-ai revie
 
 echo "== Scenario 13: idempotent — reviewers fresh on HEAD stay a clean no-op =="
 view_ready; commit_ok; no_checks
-write_reviews "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$AFTER_HEAD\",\"body\":\"r\"},{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$AFTER_HEAD\",\"body\":\"r\"}]"
+write_reviews "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$AFTER_HEAD\",\"body\":\"$SUBSTANCE_BODY\"},{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$AFTER_HEAD\",\"body\":\"$SUBSTANCE_BODY\"}]"
 write_pull_comments "[{\"user\":{\"login\":\"cursor[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"created_at\":\"$AFTER_HEAD\",\"body\":\"c\"}]"
 write_issue_comments "[{\"user\":{\"login\":\"graphite-app[bot]\"},\"created_at\":\"$AFTER_HEAD\",\"body\":\"g\"}]"
 OUT=$(run_json 493); RC=$?
@@ -640,7 +652,7 @@ echo "== Scenario 19c: HEAD moves again; only the ONE stale reviewer is triggere
 # the map must end up with graphite ONLY, and only graphite may be posted.
 NEWER_SHA="newersha000000000000000000000000000004"
 write_view "{\"isDraft\":false,\"author\":{\"login\":\"me\"},\"state\":\"OPEN\",\"headRefOid\":\"$NEWER_SHA\"}"
-write_reviews "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$NEWER_SHA\",\"submitted_at\":\"$AFTER_HEAD\",\"body\":\"r\"},{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$NEWER_SHA\",\"submitted_at\":\"$AFTER_HEAD\",\"body\":\"r\"}]"
+write_reviews "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$NEWER_SHA\",\"submitted_at\":\"$AFTER_HEAD\",\"body\":\"$SUBSTANCE_BODY\"},{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$NEWER_SHA\",\"submitted_at\":\"$AFTER_HEAD\",\"body\":\"$SUBSTANCE_BODY\"}]"
 write_pull_comments "[{\"user\":{\"login\":\"cursor[bot]\"},\"commit_id\":\"$NEWER_SHA\",\"created_at\":\"$AFTER_HEAD\",\"body\":\"c\"}]"
 write_issue_comments "$EMPTY"
 OUT=$(run_json 493)
@@ -668,7 +680,7 @@ view_ready
 write_commit "{\"commit\":{\"committer\":{\"date\":\"$REBASE_TIME\"}}}"
 write_timeline "[{\"event\":\"head_ref_force_pushed\",\"created_at\":\"$PUSH_TIME_A\",\"commit_id\":\"$HEAD_SHA\"}]"
 no_checks
-write_reviews "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$PUSH_TIME_A\",\"body\":\"r\"},{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$PUSH_TIME_A\",\"body\":\"r\"}]"
+write_reviews "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$PUSH_TIME_A\",\"body\":\"$SUBSTANCE_BODY\"},{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$PUSH_TIME_A\",\"body\":\"$SUBSTANCE_BODY\"}]"
 write_pull_comments "[{\"user\":{\"login\":\"cursor[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"created_at\":\"$PUSH_TIME_A\",\"body\":\"c\"}]"
 write_issue_comments "[{\"user\":{\"login\":\"graphite-app[bot]\"},\"created_at\":\"$COMMENT_ON_OLD_SHA\",\"body\":\"finding on the pre-rebase commit\"}]"
 OUT=$(run_json 493); RC=$?
@@ -697,7 +709,7 @@ view_ready
 write_commit "{\"commit\":{\"committer\":{\"date\":\"$COMMITTER_DATE_SKEWED\"}}}"
 write_timeline "[{\"event\":\"head_ref_force_pushed\",\"created_at\":\"$PUSH_TIME_B\",\"commit_id\":\"$HEAD_SHA\"}]"
 no_checks
-write_reviews "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$PUSH_TIME_B\",\"body\":\"r\"},{\"user\":{\"login\":\"cursor[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$PUSH_TIME_B\",\"body\":\"c\"},{\"user\":{\"login\":\"graphite-app[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$PUSH_TIME_B\",\"body\":\"g\"}]"
+write_reviews "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$PUSH_TIME_B\",\"body\":\"$SUBSTANCE_BODY\"},{\"user\":{\"login\":\"cursor[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$PUSH_TIME_B\",\"body\":\"c\"},{\"user\":{\"login\":\"graphite-app[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$PUSH_TIME_B\",\"body\":\"g\"}]"
 write_pull_comments "$EMPTY"
 write_issue_comments "[{\"user\":{\"login\":\"coderabbitai[bot]\"},\"created_at\":\"$COMMENT_AFTER_PUSH\",\"body\":\"fresh finding, GitHub clock slightly behind the committer's\"}]"
 OUT=$(run_json 493); RC=$?
@@ -720,6 +732,52 @@ check_eq "exit 0 (timeline fetch failure is not an error)" 0 "$RC"
 check_eq "falls back to committer date — no trigger storm" "0" "$(actions | grep -c '^COMMENT')"
 check_eq "clean=true" "true" "$(jq -r '.clean' <<<"$OUT")"
 no_timeline
+
+############################################################################
+# Issue #1226 — hollow APPROVED review must not count as engagement
+############################################################################
+
+echo "== Scenario 23: hollow CodeAnt APPROVED on HEAD → re-trigger (issue #1226) =="
+# CodeAnt posts a zero-body APPROVED review on HEAD. merge-gate.sh rejects it
+# as substantively hollow. Preflight must do the same and post @codeant-ai review.
+view_ready; commit_ok; no_checks
+write_reviews "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$AFTER_HEAD\",\"state\":\"APPROVED\",\"body\":\"\"}]"
+write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
+OUT=$(run_json 493); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "hollow codeant APPROVED → triggered" "triggered" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
+check_eq "@codeant-ai review posted" "1" "$(actions | grep -cF '@codeant-ai review')"
+
+echo "== Scenario 23b: substantive CodeAnt APPROVED on HEAD → already-present =="
+# A genuine review (body >= 40 chars) must still be treated as engaged.
+view_ready; commit_ok; no_checks
+write_reviews "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$AFTER_HEAD\",\"state\":\"APPROVED\",\"body\":\"$SUBSTANCE_BODY\"}]"
+write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
+OUT=$(run_json 493); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "substantive codeant APPROVED → already-present" "already-present" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
+check_eq "no @codeant-ai trigger posted" "0" "$(actions | grep -cF '@codeant-ai review')"
+
+echo "== Scenario 23c: hollow CodeRabbit APPROVED on HEAD → re-trigger (issue #1226) =="
+view_ready; commit_ok; no_checks
+write_reviews "[{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$AFTER_HEAD\",\"state\":\"APPROVED\",\"body\":\"\"}]"
+write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
+OUT=$(run_json 493); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "hollow coderabbit APPROVED → triggered" "triggered" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
+check_eq "@coderabbitai full review posted" "1" "$(actions | grep -cF '@coderabbitai full review')"
+
+echo "== Scenario 23d: review-substance.sh unavailable → degrade to already-present (issue #1226) =="
+# When PREFLIGHT_REVIEW_SUBSTANCE_SH points to a non-existent path, the script
+# cannot evaluate substance. It must fail toward silence (already-present), so
+# a hollow review does NOT cause a spurious trigger.
+view_ready; commit_ok; no_checks
+write_reviews "[{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$AFTER_HEAD\",\"state\":\"APPROVED\",\"body\":\"\"}]"
+write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
+OUT=$(PREFLIGHT_REVIEW_SUBSTANCE_SH="$TMP/no-such-review-substance.sh" run_json 493); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "unavailable evaluator → degrade to already-present" "already-present" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
+check_eq "no trigger posted during degradation" "0" "$(actions | grep -cF '@codeant-ai review')"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
