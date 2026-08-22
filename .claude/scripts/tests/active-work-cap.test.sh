@@ -326,6 +326,39 @@ CHIPS=$(run --json | jq -r '.live_chips') || fail "--json failed"
 [[ "$CHIPS" == "0" ]] || fail "an ATTRIBUTED chip closed by an open PR must still subtract, got '$CHIPS'"
 ok "the same chip, attributed, is still subtracted — the exemption is attribution-scoped"
 
+# The case the section above CANNOT catch: there, the guessed chip's number was
+# also an open issue here, so it survived the intersection for the wrong reason.
+# A guessed number is meaningless outside its repo, so it will usually NOT be an
+# open issue in this one — and an intersection applied to it drops every such
+# chip. That is the under-count this whole exemption exists to prevent.
+write_chip_log "alpha" "[$(chip_entry 777 "" open t1)]"   # unattributed
+set_open_issues ""                                         # #777 is NOT open here
+set_open_prs 0
+set_pipelines '[]'
+CHIPS=$(run --json 2>/dev/null | jq -r '.live_chips') || fail "--json failed"
+[[ "$CHIPS" == "1" ]] || \
+  fail "a guessed chip whose number is not an open issue here must still count, got '$CHIPS'"
+ok "a guessed chip survives the open-issue intersection too, not just the PR subtraction"
+
+# ...and the attributed equivalent is still dropped when its issue is not open,
+# so the exemption did not disable the liveness check for real chips.
+write_chip_log "alpha" "[$(chip_entry 777 "$SLUG" open t1)]"
+CHIPS=$(run --json | jq -r '.live_chips') || fail "--json failed"
+[[ "$CHIPS" == "0" ]] || \
+  fail "an ATTRIBUTED chip on a non-open issue must not count, got '$CHIPS'"
+ok "an attributed chip on a closed/absent issue is still dropped"
+
+# A guessed chip ALONGSIDE a surviving attributed one. The two cases above both
+# leave `sure` empty and exit through an early return, so neither reaches the
+# final total — only a mixed set proves the guessed count is actually added to
+# the intersection result rather than replacing it.
+write_chip_log "alpha" "[$(chip_entry 55 "$SLUG" open t1),$(chip_entry 777 "" open t2)]"
+set_open_issues "55"        # 55 is open here; 777 is a foreign number
+CHIPS=$(run --json 2>/dev/null | jq -r '.live_chips') || fail "--json failed"
+[[ "$CHIPS" == "2" ]] || \
+  fail "1 attributed-and-open + 1 guessed should be 2 chips, got '$CHIPS'"
+ok "guessed chips are added to the intersection result, not replaced by it"
+
 # --- 13. Inline pipelines: only those not yet at a PR ------------------------
 # An entry gains .pr when its pipeline opens one, at which point the open-PR
 # source counts it; counting both would double-count the same work.

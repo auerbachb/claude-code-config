@@ -364,6 +364,15 @@ resolve_repo_slug() {
   if [[ $rc -ne 0 || -z "$out" ]]; then
     die_read "could not resolve the target repo${FROM_PATH:+ from --path $FROM_PATH} (pass --repo owner/name): $out"
   fi
+  # Same shape check the --repo flag gets. The capture above merges stderr, so
+  # a gh notice printed alongside the slug would otherwise ride along into
+  # `gh pr list --repo` and into the GraphQL query, where owner/name are
+  # interpolated into the query string. That currently fails late and
+  # confusingly rather than unsafely; validating here makes it fail at the
+  # point the value goes wrong, and removes the asymmetry with --repo.
+  if [[ ! "$out" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+    die_read "resolved repo is not a plausible owner/name slug: '$out' (pass --repo owner/name)"
+  fi
   printf '%s' "$out"
 }
 
@@ -516,31 +525,50 @@ count_live_chips() {
     return
   fi
 
-  # Split on the attribution marker written by chip_issue_numbers. `sure` chips
-  # are known to belong to this repo; `guessed` ones had no usable url and are
-  # counted here conservatively, so they must not be matched against this
-  # repo's PR-closed issues — a number collision would silently convert that
-  # deliberate over-count into an under-count.
-  local sure guessed chip_nums=() rc2=0
+  # Split on the attribution marker written by chip_issue_numbers.
+  #
+  # `sure` chips are known to belong to this repo, so both narrowings apply to
+  # them: subtract the ones an open PR already covers, then keep only the ones
+  # whose issue is still open.
+  #
+  # `guessed` chips had no usable url. Their NUMBER is all we have, and it is
+  # meaningless outside a repo — so neither narrowing can be applied to them
+  # without inverting the intent. The PR subtraction would drop one on a bare
+  # number collision, and the open-issue intersection would drop EVERY guessed
+  # chip whose number is not coincidentally an open issue here. Both turn a
+  # deliberate over-count into an under-count, which is the direction this
+  # script exists to prevent. So guessed chips bypass both filters and are
+  # added to the total at the end, unconditionally.
+  local sure guessed rc2=0
   sure="$(printf '%s\n' "$chips" | awk '$2=="." {print $1}' | sort -u)"
   guessed="$(printf '%s\n' "$chips" | awk '$2=="?" {print $1}' | sort -u)"
-  while read -r _num; do [[ -n "$_num" ]] && chip_nums+=("$_num"); done \
-    <<<"$(printf '%s\n%s\n' "$sure" "$guessed" | awk 'NF' | sort -u)"
+
+  local guessed_n=0
+  [[ -n "$guessed" ]] && guessed_n="$(printf '%s\n' "$guessed" | awk 'NF' | wc -l | tr -d ' ')"
+
+  if [[ -z "$sure" ]]; then
+    printf '%s' "$guessed_n"
+    return
+  fi
+
+  # Only `sure` numbers are worth asking about: a guessed number would be
+  # answered against the wrong repo.
+  local chip_nums=()
+  while read -r _num; do [[ -n "$_num" ]] && chip_nums+=("$_num"); done <<<"$sure"
 
   local open_issues
   open_issues="$(open_among "$slug" ${chip_nums[@]+"${chip_nums[@]}"})" || rc2=$?
   (( rc2 == 0 )) || return "$rc2"
   if [[ -z "$open_issues" ]]; then
-    printf '0'
+    printf '%s' "$guessed_n"
     return
   fi
 
   # Drop chips whose issue is already represented by an open PR — that work is
-  # counted once, by the PR source. Applied to attributed chips only.
+  # counted once, by the PR source. Attributed chips only.
   local covered rc3=0
   covered="$(chips_covered_by_prs)" || rc3=$?
   (( rc3 == 0 )) || return "$rc3"
-  chips="$sure"
   # Every `comm` below captures its own status. An uncaptured one is the same
   # fabricated zero as everywhere else in this file: `set -e` is off, so a
   # failed command substitution just yields an empty string, the emptiness
@@ -549,16 +577,13 @@ count_live_chips() {
   if [[ -n "$covered" ]]; then
     local remaining rc4=0
     remaining="$(comm -23 \
-                  <(printf '%s\n' "$chips" | sort -u) \
+                  <(printf '%s\n' "$sure" | sort -u) \
                   <(printf '%s\n' "$covered" | sort -u))" || rc4=$?
     (( rc4 == 0 )) || die_read "comm -23 failed subtracting PR-covered chips (exit $rc4)"
-    chips="$remaining"
+    sure="$remaining"
   fi
-
-  # Guessed chips rejoin only now, after the subtraction they are exempt from.
-  chips="$(printf '%s\n%s\n' "$chips" "$guessed" | awk 'NF' | sort -u)"
-  if [[ -z "$chips" ]]; then
-    printf '0'
+  if [[ -z "$sure" ]]; then
+    printf '%s' "$guessed_n"
     return
   fi
 
@@ -567,7 +592,7 @@ count_live_chips() {
   # numeric ordering, so lexical "10" before "9" on both sides is fine.
   local matched rc5=0
   matched="$(comm -12 \
-              <(printf '%s\n' "$chips" | sort -u) \
+              <(printf '%s\n' "$sure" | sort -u) \
               <(printf '%s\n' "$open_issues" | sort -u))" || rc5=$?
   (( rc5 == 0 )) || die_read "comm -12 failed intersecting chips with open issues (exit $rc5)"
 
@@ -580,7 +605,7 @@ count_live_chips() {
   # grep -c prints 0 and exits 1 on no match, so read the printed value and
   # never substitute a fallback (feedback_grep_c_empty_file_exit1.md).
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
-  printf '%s' "$n"
+  printf '%s' "$(( n + guessed_n ))"
 }
 
 # Inline pipelines not yet at PR: active_agents entries with no `.pr`.
