@@ -54,62 +54,71 @@ Field contract, per entry:
 
 ## Gate state
 
-Re-checked 2026-08-22. **All three original gates are now closed.** Nothing from the original set
-blocks anything — but item 1 acquired a **new, separate blocker** in their place: the contested
-Greptile billing reading, listed as the fourth row below and distinguished from the three by its date
-and origin. It gates item 1 exactly as a gate would; it simply is not one of the gates this file was
-written around.
+Re-checked 2026-08-22. **All three original gates are closed, and so is the fourth.** Item 1 briefly
+acquired a separate blocker — the contested Greptile billing reading, kept as the fourth row below
+because it gated item 1 exactly as a gate would — and **that was settled the same day** by reading the
+billing page (#1228). **Nothing on this list is blocked.**
 
 | Gate | Issue | State on 2026-08-22 | Blocks |
 |---|---|---|---|
 | Free settings applied + re-measured | [#1209](https://github.com/auerbachb/claude-code-config/issues/1209) | **Closed** — 3 of its 5 items were **declined** by the owner (see §Declined below), so the re-measurement baseline is *not* the one this gate assumed | Item 4 (metered add-on) — **unblocked, but re-scope it first** |
 | `LICENSE` file exists | [#1210](https://github.com/auerbachb/claude-code-config/issues/1210) | **Cleared** — MIT `LICENSE` landed (PR [#1215](https://github.com/auerbachb/claude-code-config/pull/1215)) | Item 1 (Greptile OSS) — **no longer gated by this** |
 | CodeRabbit OSS-tier verdict | [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) | **Cleared 2026-08-21 — OSS declined, stay paid** ([`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md)) | Item 3 (billing cadence) — **unblocked** |
-| **New blocker, raised 2026-08-21** — Greptile free-vs-paid, from the billing page | [#1228](https://github.com/auerbachb/claude-code-config/issues/1228) | **Open — contested** (see item 1) | Item 1 (Greptile OSS) — **this is what actually blocks it now**, having replaced the cleared `LICENSE` gate |
+| ~~**New blocker, raised 2026-08-21** — Greptile free-vs-paid, from the billing page~~ | [#1228](https://github.com/auerbachb/claude-code-config/issues/1228) | **RESOLVED 2026-08-22 — the org is PAID.** Billing page read live: Active, 6 Aug – 6 Sep invoice $72 → **$36**, **"No cap on flex usage"**. The owner's free-tier account described `localmovers-com`. | Item 1 — **unblocked**; see item 1 for what the answer changed |
+
+**No gate remains.** Every item on this list is workable today.
 
 ## The levers
 
 Numbered as originally written; **the numbering is stable, the priority is not.** Work order after the
 2026-08-21 decisions: **item 2 (CodeAnt discount) first** — the best ungated move — then **item 5
 (cut the seat) before item 3 (annual switch)**, since the cadence applies to the post-cut seat count.
-Item 1 is parked until the Greptile billing page is read. The `Depends on:` field, not the number, is
-what decides when an item may be worked.
+**Item 1 is no longer parked** — the Greptile billing page was read 2026-08-22 and it turned out to be
+a self-serve enrolment rather than an application, which makes it a same-day $0 win and arguably the
+first thing to click. The `Depends on:` field, not the number, is what decides when an item may be
+worked; as of 2026-08-22 no item has an open dependency.
 
-### 1. Greptile — apply to the OSS program *(CONTESTED — settle the billing state first)*
+### 1. Greptile — enrol the repo in the OSS program *(SETTLED 2026-08-22: paid, and self-serve)*
 
-- **Depends on:** an owner check of `app.greptile.com/auerbachb/-/settings/billing` ([#1228](https://github.com/auerbachb/claude-code-config/issues/1228)). The `LICENSE` gate is **cleared** (MIT landed in PR [#1215](https://github.com/auerbachb/claude-code-config/pull/1215)) and no longer blocks this.
+- **Depends on:** — **nothing.** Both gates cleared: `LICENSE` landed (PR [#1215](https://github.com/auerbachb/claude-code-config/pull/1215)), and the contested billing reading was settled 2026-08-22 ([#1228](https://github.com/auerbachb/claude-code-config/issues/1228)). One owner click away.
 - **Submitted:**
 - **Approved:**
 
-**Do not apply for anything until the billing page is read.** Two accounts of the same org, on the
-same day, disagree:
+**SETTLED 2026-08-22 (#1228): the org is PAID.** The billing page was read live at
+`app.greptile.com/auerbachb/-/settings/billing`. The contest above is closed, and the entry that
+follows records what the answer changed. Kept rather than deleted so the next reader sees which
+account was right and why.
 
-| Source | Reading |
-|---|---|
-| The owner (2026-08-21, #1213) | Greptile is **on the free tier and not being paid for** |
-| The #1204 round-2 dashboard reading (2026-08-21) | The **`auerbachb`** org is **Pro, Active**, invoice 6 Aug – 6 Sep at $72 ($36 after discount), **flex uncapped**, **92 reviews / 92 credits** logged 15 days into the cycle |
+| Source | Reading | Verdict |
+|---|---|---|
+| The owner (2026-08-21, #1213) | Greptile is on the free tier and not being paid for | **wrong org** — true of `localmovers-com`, which is canceled |
+| The #1204 round-2 dashboard reading (2026-08-21) | `auerbachb` is Pro, Active, $72 → $36, flex uncapped, 92/92 credits | **confirmed** — re-read unchanged a day later |
 
-Both cannot be true for one org, and this is **the same shape as the original error**: there are two
-Greptile orgs and only one is canceled — `localmovers-com` is canceled/Free, **`auerbachb` is the paid
-one, and `auerbachb` is the org that serves the in-scope repos.** A first pass that read the wrong org
-is exactly how "$0" was concluded before.
+Measured 2026-08-22: subscription **Active**; invoice 6 Aug – 6 Sep — seat $30 → **$15**, flex 42
+credits $42 → **$21**, total **$72 → $36**; **"No cap on flex usage."** Usage **92 reviews / 92
+credits**, *identical* to the previous day — a full day of zero consumption. **Disuse is real, and it
+is not a price:** the org bills $36 this cycle either way. That is the third time a Greptile figure
+has been quoted against the wrong org; check the org in the URL before quoting one.
 
-**Either answer kills a branch of work, which is why it is worth ten seconds:**
+**The route was also wrong, and this is the part that changes the decision. The OSS program is
+self-serve, not an application.** That same billing page carries a **"Greptile for Open Source — Free
+code reviews for public open-source repositories on github.com and gitlab.com"** section with a
+**repository picker**, and `auerbachb/claude-code-config` is present and selectable in it. So there is
+no vendor acceptance to wait on and no refusal to plan a fallback around — `Submitted:` and
+`Approved:` collapse to one date when the owner clicks. (The picker was opened to read and closed
+without selecting.)
 
-- **If free/canceled** — the OSS application is **moot**, the LICENSE stops mattering for this item,
-  and this entry closes with the reading recorded.
-- **If paid** — the exposure is real: roughly $30 seat + ~$130 flex ≈ **$160/mo** at the observed
-  ~180 credits/month, uncapped. Then decide cancel vs. keep-deliberately, and cap the flex only if
-  keeping.
+**Do not cancel.** The audit's first measured pass (2026-08-22, non-truncated 240-PR window) makes
+this the clearest call on the list: Greptile is the **top sole-source finder in the whole stack — 40
+PRs**, ahead of BugBot (29), CodeRabbit (25), CodeAnt (13), Graphite (2) — and it **hit no cap at
+all**. No `D2` (paid-but-unused) finding fired against it or anything else. The zero-consumption day
+is one day old, not a pattern. Cancelling would remove the chain's most unique finder to save $36/mo
+when enrolment gets the same coverage to **$0**.
 
-The case for keeping it, if paid: Greptile measured as the **top sole-source finder in the chain**
-(41 sole-source PRs in 244) and refused none of 130 requests. So $0 via the OSS program is the goal
-and **Pro at ~$51/mo** is a defensible fallback rather than merely a tolerated one. Weigh that against
-disuse — **zero Greptile reviews since PR [#1203](https://github.com/auerbachb/claude-code-config/pull/1203)**,
-which proves the tool is idle but says nothing about its price.
-
-Acceptance is the vendor's call. Record the submission date here and leave the budget line alone
-until an approval actually lands.
+**Enrolment does not settle the flex cap — these are two decisions, not one.** The OSS program covers
+*this public repo*; the subscription also serves five private repos (`skingod`, `inventory`,
+`still-point`, `meeting_insights_and_actions`, `longlove`), whose usage still draws uncapped
+$1/credit flex. Enrol, **and** set a cap.
 
 ### 2. CodeAnt — apply for the 100% open-source discount *(BEST UNGATED MOVE — do this first)*
 
@@ -117,9 +126,12 @@ until an approval actually lands.
 - **Submitted:**
 - **Approved:**
 
-$48/mo (Premium, 2/2 seats) → $0 if granted. **$576/yr, and nothing gates it.** With item 1 now
-parked behind a contested billing reading, this is **the highest-value action available today** —
-reconfirmed by the owner 2026-08-21 (#1213) and carried into
+$48/mo (Premium, 2/2 seats) → $0 if granted. **$576/yr, and nothing gates it** — confirmed still
+Premium/2 seats/ACTIVE on 2026-08-22, with **no self-serve open-source control anywhere on the
+subscription page**, which is why this stays a contact-required request rather than a toggle. It is
+the largest annual saving on the list — though **item 1 is now unparked and is the faster $0**, since
+its enrolment is self-serve and lands immediately while this one waits on a vendor reply. Work both;
+expect item 1 to close first. Reconfirmed by the owner 2026-08-21 (#1213) and carried into
 [#1228](https://github.com/auerbachb/claude-code-config/issues/1228). Public repo, qualifies on its
 face, but the route is **contact-required** rather than self-serve, so it is a request with a waiting
 period, not a toggle. Its position at the top of the working order is why the list below is a
@@ -142,6 +154,12 @@ cut first, then switch:
 |---|---|---|---|
 | Today | 3 | $90/mo | $72/mo |
 | **After the item-5 cut** | **2** | **$60/mo** | **$48/mo** |
+
+**Confirmed still unapplied 2026-08-22** (#1228), read from the `auerbachb` billing page: Pro, Active,
+**"3 of 3 assigned"**, **$90**, **Billing cycle Monthly**, **Next renewal 27 Aug 2026** — corroborated
+by the app's own plan record, `CRB_PRO_MONTHLY_SUBSCRIPTION_PER_SEAT-USD-Monthly`. **Five days.** Past
+27 Aug the annual saving waits a full cycle, which makes items 5-then-3 the only time-boxed pair on
+this list.
 
 So the sequence **$90/mo → $48/mo** is the two levers together, and annual alone is worth **$144/yr**
 at 2 seats (not the $216/yr it was worth at 3). No capability change either way. The catch was only
@@ -192,13 +210,21 @@ owner's answer is the opposite: remove a seat.** The original framing pooled two
 |---|---|---|
 | `auerbachb` | 427 | **keep seat** |
 | `faculoyarte` | 195 | **keep seat** |
-| **`zilbermang`** | **0 across every repo swept, both orgs** | **REMOVE — paying for a seat that authors nothing** |
+| **`zilbermang`** | **0 in scope; last CodeRabbit-reviewed PR 2 months ago** (see correction below) | **REMOVE — the seat buys nothing in scope** |
 | `davidpetersen`, `mirkosalvato1-ctrl` | 0 authored | no seat |
 | `farwabraza`, `paulkathat-lmc`, `memibar` | out of scope | no seat on this account — separate org, separate CodeRabbit account |
 
 **Result: 3 seats → 2.** $90/mo → **$60/mo** monthly, or **$48/mo** once item 3's annual switch is
 applied on top. Take this one **before** item 3, so the annual commitment is not prepaid on a dead
-seat.
+seat. **Confirmed still unapplied 2026-08-22** — the billing page reads "3 of 3 assigned", $90.
+
+**Correction to the justification, which does not change the decision (#1228, 2026-08-22).** The
+"0 across every repo swept, both orgs" claim is **false as written**. CodeRabbit's own team-management
+page for `auerbachb` reports `zilbermang`'s latest CodeRabbit-reviewed PR as **2 months ago** — stale,
+but not never. The cut still stands on the comparison that actually matters: against `auerbachb`
+(minutes) and `faculoyarte` (hours), and nothing in scope since. **Do not repeat the "authored
+literally nothing" line** — a decision defended with a checkable falsehood invites being reopened on
+the falsehood rather than the merits.
 
 The no-review gap for the out-of-scope authors is **not** "accepted and recorded" here — it is not
 this account's concern at all, and belongs to the other CodeRabbit account. Nothing about that is an
@@ -243,6 +269,27 @@ merge; the GitHub Apps hold quotas entirely independent of them
 answered whether the OSS tier changes any of this: **it does not.** The CLI pool is selected by
 repository visibility, not by plan, so a public repo draws free-OSS CLI limits on Pro **and** on OSS —
 the surface cancels out of that comparison entirely ([`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md)).
+
+## Free levers still outstanding
+
+Not paid levers, tracked here because [#1209](https://github.com/auerbachb/claude-code-config/issues/1209)
+closed with these un-applied and nothing else now holds them. Both are BugBot settings, sized from the
+per-repo run split read 2026-08-22 (#1228, recorded in
+[`ai-review-billing-dashboard-2026-08.md`](./ai-review-billing-dashboard-2026-08.md) §Round 4).
+
+**Autofix → Off — the only BugBot lever with money behind it.** 299 autofix runs, **0 ever merged**,
+at the ~$1.58/run rate ≈ **$470 of runs nobody used**, roughly 27% of lifetime run volume. It touches
+none of the aggressive settings the owner deliberately kept (Every Push, Effort High, Drafts On,
+Incremental Off), so it is separable from that decision rather than a re-litigation of it.
+
+**Dropping the 23 `LocalMovers-dot-com` repos — worth $0 today, and must not be budgeted as a saving.**
+Six repositories out of 87 enabled (64 + 0 + 23 across the three connected orgs) account for **100%**
+of BugBot's lifetime runs — 1,097 runs / 382 PRs — and **all six are in `auerbachb`**: skingod 502,
+inventory 247, claude-code-config 179, still-point 83, meeting_insights_and_actions 55, longlove 31.
+Not one run has come from any LocalMovers repo or from `faculoyarte`. The trim is a **blast-radius
+cap** — it forecloses spend if that team starts opening PRs against an account the owner does not want
+billed for them — and is worth doing on that basis alone. Recording it as a cost reduction would
+overstate the session's savings and poison the next audit's baseline.
 
 ## Don't buy
 

@@ -275,3 +275,239 @@ gate and separate submitted/approved dates. Gate state as measured 2026-08-21: *
 #1212 are all open**, and the repo has **no `LICENSE` file**, so the Greptile OSS application, the
 CodeRabbit billing cadence, and the metered add-on are all blocked. Budget lines in this file stay as
 Rounds 1–2 recorded them until an approval actually lands.
+
+## Round 4 — owner-session readings (2026-08-22)
+
+Issue: [#1228](https://github.com/auerbachb/claude-code-config/issues/1228). Same posture as Rounds
+1–2: **read-only, nothing was changed on any dashboard** — no purchases, no plan changes, no seat
+changes, no toggles, no application submissions. Every action that would alter an account is listed
+under §Pending an owner click and is recorded as **pending**, never as done.
+
+**Screenshots were unavailable** on this session's browser connection (CDP capture failed on every
+attempt), so each figure below is recorded as an exact quoted string with the URL it came from. #1228's
+test plan accepts "screenshot-**or**-quote"; this is the quote half.
+
+**Two of the issue's premises did not survive measurement.** Greptile is paid, not free — and its OSS
+route is self-serve rather than an application. BugBot's 23-repo trim saves nothing today. Both are
+detailed below, because both change what the remaining decisions are worth.
+
+### Gate state has moved since Round 3
+
+Round 3 recorded #1209, #1210, and #1212 as open with no `LICENSE` in the repo. As of 2026-08-22 all
+four tracked issues are **closed** (#1209, #1210, #1212, #1213) and **`LICENSE` is present** (MIT, PR
+#1215). Nothing on the paid-levers list is gate-blocked any more.
+
+### 1. Greptile — settled: the `auerbachb` org is PAID, and the owner's free-tier recollection is wrong for it
+
+Source: `app.greptile.com/auerbachb/-/settings/billing` and `/-/settings/usage`, read 2026-08-22.
+
+- Subscription **Active**. Billing page: *"Your subscription is active. Manage your plan, update
+  payment methods, or view billing history."*
+- Invoice **6th Aug – 6th Sep, 2026**: Code Review Seats *"1 active developer"* $30 → **$15**; Flex
+  Usage *"42 credits"* $42 → **$21**; **Total $72 → $36**.
+- **Flex Usage Limit: "No cap on flex usage."** *"$21 in flex charges this period."* Unchanged from
+  Round 2 — the only true spend control on the account is still unset.
+- Usage page, same cycle: Code Review **92 reviews / 92 credits**; TREX 0; CLI 0. Developer usage:
+  the account owner, 92 credits, **+42 flex**.
+- **The 92/92 figure is byte-identical to the 2026-08-21 reading.** A full day passed with **zero
+  additional Greptile consumption**, which corroborates the disuse #1228 inferred from "no Greptile
+  reviews since PR #1203" — but disuse is not a price. The org is still billing $36 this cycle.
+- The free/canceled reading remains true of **`localmovers-com` only** (Round 1). This is the third
+  time a Greptile figure has been quoted against the wrong org; verify the org in the URL before
+  quoting any number from this vendor.
+
+**New, and not costed anywhere before: Greptile's OSS program is self-serve, not an application.**
+The billing page carries a **"Greptile for Open Source — Free code reviews for public open-source
+repositories on github.com and gitlab.com"** section with a repository picker, and
+**`auerbachb/claude-code-config` is present and selectable in it.** `LICENSE` landed in PR #1215, so
+the #1210 gate is clear. The picker was opened to read its contents and **closed without selecting**.
+
+This gives the cancel-vs-keep question in #1228 a third answer neither closed issue considered: enrol
+the repo in the OSS program and keep Greptile at **$0** for this repo, without cancelling the
+subscription that also serves five private repos.
+
+### 2. CodeAnt commit identity — the fix landed; this item is closed on evidence
+
+Sources: GitHub PR comment history and `git config --global`.
+
+Global identity is now `Bretton Auerbach <the owner's seat-holding address>` — no longer the
+`CI <ci@example.com>` placeholder. The before/after is clean and carries its own control:
+
+| PR | Commit author | CodeAnt "no subscription" comment |
+|---|---|---|
+| #1215 | `ci@example.com` | **yes** — *"User ci@example.com does not have a PR Review subscription."* |
+| #1217 | `ci@example.com` | **yes** |
+| #1221 | `ci@example.com` | **yes** (2026-08-21 23:02) |
+| **#1222** | **the owner's address** (all 3 commits) | **none** — only *"✅ Reviewed your PR"* |
+
+The fix was applied 2026-08-21 ~23:11; #1222 is the first PR authored after it and is clean. The
+84%-of-PRs warning rate recorded in Round 1 is closed.
+
+### 3. CodeRabbit — still 3 seats, still monthly, renewal in 5 days
+
+Source: `app.coderabbit.ai` → org **`auerbachb`** → `/settings/billing` and `/settings/team-management`,
+read 2026-08-22.
+
+- Plan **Pro, Active**. **Seats "3 of 3 assigned"**. **Billing amount $90.** Invoice credits $0.
+  **Billing cycle Monthly. Next renewal 27 Aug 2026.**
+- Still flagged: *"Account information incomplete: name, phone number, billing address missing"* —
+  the same prerequisite that blocks the metered add-on (levers item 4).
+- Seat holders and their last CodeRabbit-reviewed PR: **auerbachb** (4 minutes ago) · **faculoyarte**
+  (20 hours ago) · **zilbermang** (2 months ago). Unassigned: davidpetersen (4 months),
+  mirkosalvato1-ctrl (a month), paulkathat-lmc (11 days), dependabot (never), cursor (16 days).
+- The org's plan record, read from the app's own org list, is
+  `CRB_PRO_MONTHLY_SUBSCRIPTION_PER_SEAT-USD-Monthly` — confirming monthly cadence independently of
+  the billing page.
+
+**One correction to #1213's seat finding.** #1213 justified cutting `zilbermang` on "**0** across
+every repo swept, both orgs." CodeRabbit's own team-management page reports zilbermang's latest
+CodeRabbit-reviewed PR as **2 months ago**, not never. The *decision* still holds on the numbers that
+matter — 2 months stale against 4 minutes and 20 hours for the other two seats, and nothing in scope
+since — but the "authored literally nothing" justification is overstated and should not be repeated.
+
+**Scope trap, again.** `app.coderabbit.ai` opens on **LocalMovers-dot-com** by default, and its
+team-management page lists a different seven-person roster. The account holds three orgs —
+`auerbachb` (66 repos), `rankgeniuscorp` (0 repos), `LocalMovers-dot-com` (23 repos). Every figure
+above is from `auerbachb`. Reaching it needs `/organizations` → row menu → "Switch organization"; the
+sidebar org dropdown does not commit a selection.
+
+### 4. BugBot — settings unchanged, and the per-repo split kills half of #1228's trim
+
+Sources: `cursor.com/automations/from-cursor/bugbot` and `/bugbot/analytics`, read 2026-08-22.
+
+Settings, all identical to Round 1 — the aggressive core the owner chose to keep:
+
+| Setting | Value |
+|---|---|
+| Trigger Mode | **Every Push** |
+| Effort Level | **High** |
+| Review Draft PRs | **On** |
+| Incremental Review | **Off** |
+| Autofix Mode | **Create New Branch**, severity Low/Medium/High |
+| PR Summaries / risk score | Off / Off |
+
+Analytics (Jul 24 – Aug 22): **PRs Reviewed 324 (763 runs)** · Issues Resolved 89.8% of 488 evaluated
+· Users **1** · **Autofixes Merged 0 of 299 runs.**
+
+Org coverage: **`auerbachb` 64/64 enabled (100%)** · `faculoyarte` 0/1 (0%) · **`LocalMovers-dot-com`
+23/23 enabled (100%)**.
+
+**The per-repo run split — every repo that has ever produced a BugBot run.** Aggregated over the full
+(undated) analytics record, 382 PRs / 1,097 runs:
+
+| Repository | Runs | PRs | Bugs found |
+|---|---|---|---|
+| `auerbachb/skingod` | 502 | 173 | 475 |
+| `auerbachb/inventory` | 247 | 60 | 271 |
+| `auerbachb/claude-code-config` | 179 | 70 | 247 |
+| `auerbachb/still-point` | 83 | 45 | 83 |
+| `auerbachb/meeting_insights_and_actions` | 55 | 15 | 57 |
+| `auerbachb/longlove` | 31 | 19 | 34 |
+| **Total** | **1,097** | **382** | **1,167** |
+
+**Six repositories out of 87 enabled — 64 + 0 + 23 across the three connected orgs — account for
+100% of BugBot's lifetime runs, and all six are in the `auerbachb` org.** Not one run has come from
+any of the 23 `LocalMovers-dot-com` repos, or from `faculoyarte`.
+
+Two consequences for #1228's BugBot item:
+
+1. **Dropping the 23 out-of-scope repos saves $0 today.** They are enabled but have never fired. The
+   trim is worth doing as a **blast-radius cap** — it forecloses spend if that team starts opening
+   PRs on an account the owner does not want billed for them — but it must not be recorded or
+   budgeted as a cost reduction. #1228 asked for the split *"to size the repo trim before the click"*;
+   this is that sizing, and it sizes to zero.
+2. **Autofix → Off is the only BugBot lever with money behind it.** 299 runs, **0 ever merged**, at
+   the ~$1.58/run rate Round 1 derived — roughly **$470 of runs that produced nothing anyone used.**
+   It is 27% of lifetime run volume and touches none of the aggressive settings the owner kept.
+
+### 5. CodeAnt — Premium, 2 seats, active; the OSS discount is still contact-only
+
+Source: `app.codeant.ai/auerbachb/subscription`, read 2026-08-22.
+
+- **Premium Plan, 2 seats, ACTIVE.** $24 / user / mo billed annually; the page offers a
+  Monthly/Annually toggle marked −20% for annual. AI credits available balance **$0.00**.
+- **No self-serve open-source control exists on the subscription page.** The only discounts surfaced
+  are a Gartner-review offer (20% off) and "Book a call" for Enterprise. This **confirms** the paid-levers
+  checklist's read that the 100% OSS discount is contact-required, and it is why that item cannot be
+  closed by an agent: it is an outbound request, not a toggle.
+
+### Pending an owner click — nothing below has been done
+
+Every item here is an account or billing change. Each needs a live confirmation in chat before the
+click, and the owner performs anything involving payment.
+
+| # | Action | Page / control | Worth |
+|---|---|---|---|
+| 1 | Greptile: enrol `claude-code-config` in **Greptile for Open Source** | Greptile billing → OSS repo picker | this repo's reviews → **$0**; keeps the tool |
+| 2 | Greptile: set a **Flex Usage Limit** (or cancel outright) | Greptile billing → "Toggle flex usage cap" / "Cancel subscription" | caps an uncapped $1/credit exposure |
+| 3 | CodeRabbit: seats **3 → 2** (drop `zilbermang`) | `auerbachb` → Team Management → seat manage | −$30/mo |
+| 4 | CodeRabbit: **monthly → annual** at 2 seats | `auerbachb` → Billing → "View all plans" | $60 → **$48**/mo; **must land before 27 Aug** |
+| 5 | BugBot: **Autofix → Off** | Bugbot settings → Autofix Mode | ~$470/cycle of never-merged runs |
+| 6 | BugBot: drop the 23 `LocalMovers-dot-com` repos | Bugbot → Organizations → Manage | **$0 today** — blast-radius cap only |
+| 7 | CodeAnt: submit the **100% open-source discount** request | contact route; no self-serve control | $48/mo → $0 if granted |
+| 8 | CodeRabbit: metered add-on — **still blocked** | billing profile incomplete | decide after 1–6 settle |
+
+Items 3 and 4 are the only time-boxed ones: CodeRabbit renews **27 Aug 2026**, and past that the
+annual saving waits a full cycle.
+
+### 6. The audit's first measured pass — run 2026-08-22
+
+`/review-stack-audit --report-only` ran against a **non-truncated** 30-day window (2026-07-23 →
+2026-08-22, **240 PRs**). Report at `~/.claude/review-stack-audit/review-stack-audit-2026-08.md`;
+snapshot and drift JSON alongside it. Advisory only — it changed no rule, script, or subscription.
+
+**Run it twice or do not trust it.** The first pass truncated at 60 PRs, and `drift.sh` **skips the
+D2 (paid-but-unused) check entirely on a truncated window** — on a partial sample a tool active only
+in the unsampled PRs is indistinguishable from one that did nothing. D2 is exactly the check this
+issue needed for Greptile, so the pass was repeated at `--limit 400`. The truncated pass also
+reported BugBot with **0 review objects** where the full window shows **153** — a sampling artifact
+of the most recent PRs, where BugBot is spend-capped. Treat any truncated run's absence-findings as
+unusable.
+
+| Tool | State | PRs | Reviews | Approved | Inline | Sole-source | Caps |
+|---|---|---|---|---|---|---|---|
+| CodeRabbit | capped | 240 | 185 | 0 | 369 | 25 | `rate_limit` |
+| CodeAnt | capped | 240 | 444 | **376** | 119 | 13 | `not_subscribed` |
+| BugBot | capped | 220 | 153 | 0 | 150 | 29 | `spend_limit` |
+| Greptile | **active** | 130 | 72 | 0 | 92 | **40** | none |
+| Graphite | active | 10 | 10 | 0 | 10 | 2 | none |
+| Vercel | silent | 0 | 0 | 0 | 0 | 0 | none |
+
+**Three drift findings, and no D2 against anything.** That last part is the decisive answer to this
+issue's Greptile question: the org is paid, but over 30 days Greptile is **not** unused — it is the
+**top sole-source finder in the stack at 40 PRs**, ahead of BugBot (29), CodeRabbit (25), CodeAnt
+(13) and Graphite (2), and it hit no cap at all. The zero-consumption day observed in §1 is one day
+old, not a pattern. **Cancelling would remove the chain's most unique finder to save $36/mo, when
+self-serve OSS enrolment gets the same coverage to $0.**
+
+| Code | Tool | Severity | Divergence | Disposition |
+|---|---|---|---|---|
+| D3 | BugBot | **high** | `spend_limit` on 148 PRs, baseline expects none | deferred to this issue (dedup coverage 1.0) |
+| D3 | CodeRabbit | medium | `rate_limit` on 217 PRs, baseline expects none | deferred to this issue (dedup coverage 1.0) |
+| D1 | Graphite | medium | advisory role, yet sole finder on 2 PRs | **filed as #1232** — no open issue covered it |
+
+Both D3s fired **by design**: the baseline's own note records that the degraded-stack caps were
+"intentionally left out of `expected_caps` so the first post-swap audit run reports them as genuine
+drift rather than suppressing it."
+
+**No compared field in `review-stack-baseline.json` was changed** — `role`, `billed`, `gates_merge`,
+`approves_via`, and `expected_caps` are byte-identical, so this run's drift result is reproducible.
+Folding those two caps into `expected_caps` would stop them firing — and would pre-suppress the exact
+signal that shows whether the pending owner changes (BugBot Autofix → Off, the CodeRabbit seat cut and
+cadence switch) worked. Apply the changes, re-measure, *then* decide whether a surviving cap belongs
+in the baseline.
+
+The one edit made there is to Greptile's **`notes`** prose, which `drift.sh` does not read: PR #1230
+had recorded that entry as `CONTESTED … Settle it from app.greptile.com/... before treating either
+state as fact`, and this session settled it. Leaving that instruction standing would send the next
+reader to re-run a check already answered here. Re-running `drift.sh` against the edited baseline
+returns the same three findings.
+
+**Throughput: 8.0 PRs/day, 28.8 review objects/day** across the window — the full-window figure
+Issue #1191's concurrent-work cap derives from, not a floor.
+
+**Caveats.** No truncation on the reported pass. Seven unclassified limit-shaped comments were
+checked individually and **all seven are false positives** — bot comments discussing billing, quota,
+or rate-limit wording inside this investigation's own PRs (#1216, #1208, #1203, #1186, #910, #883),
+not cap notices. No unmatched baseline tools. `billed` remains a human-declared field; no vendor here
+exposes a billing API these scripts can read.
