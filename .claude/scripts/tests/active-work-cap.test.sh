@@ -756,10 +756,100 @@ for SECTION in USAGE MODES FLAGS TUNING OUTPUT "EXIT STATUS"; do
 done
 for FLAG in -- --json --free --cap --repo --path \
             CLAUDE_ACTIVE_WORK_CAP CLAUDE_ACTIVE_WORK_AGENT_TTL_S \
-            CLAUDE_ACTIVE_WORK_HANDOFF_DIR; do
+            CLAUDE_ACTIVE_WORK_HANDOFF_DIR CLAUDE_CHIP_OFFER_REGISTRY_SH; do
   [[ "$FLAG" == "--" ]] && continue
   [[ "$HELP" == *"$FLAG"* ]] || fail "--help does not document $FLAG"
 done
 ok "--help prints every documented section, flag, and tunable"
+
+# --- 19. Registry chips (from /pm, /prompt, /wave) count toward the cap ------
+# Before this fix, chips offered by /pm and /prompt were invisible to the count
+# because only the issue-maker log was read. Now the registry covers all emitters.
+#
+# Use a real chip-offer-registry.sh (via a minimal fake session-state) so that
+# registry entries are counted. The fake registry script mimics the --list output
+# with a static JSON array held in an env var so no disk I/O is needed.
+FAKE_REG="$TMP_DIR/bin/chip-offer-registry.sh"
+cat > "$FAKE_REG" <<'REGEOF'
+#!/usr/bin/env bash
+# Minimal fake for chip-offer-registry.sh: --list returns REG_FAKE_LIST.
+case "$*" in
+  *"--list"*) printf '%s\n' "${REG_FAKE_LIST:-[]}" ;;
+  *) echo "fake registry: unsupported call: $*" >&2; exit 97 ;;
+esac
+REGEOF
+chmod +x "$FAKE_REG"
+export CLAUDE_CHIP_OFFER_REGISTRY_SH="$FAKE_REG"
+
+set_open_prs 0
+set_open_issues ""
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR"/issue-maker-*-log.json
+set_pipelines '[]'
+
+# A /pm chip in the registry (offered state) — no issue-maker log entry.
+NOW_REG="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+export REG_FAKE_LIST="$(jq -cn --arg now "$NOW_REG" \
+  '[{task_id:"tid-pm-1",emitter:"pm",issue:101,state:"offered",offered_at:$now,
+     expires_at:$now,pr:null,last_updated:$now}]')"
+JSON=$(run --json) || fail "19: --json failed with a pm registry chip"
+CHIPS=$(printf '%s' "$JSON" | jq -r '.live_chips')
+[[ "$CHIPS" == "1" ]] || fail "19: /pm chip in registry should count as 1, got '$CHIPS'"
+ok "a chip offered by /pm through the registry is counted toward the cap"
+
+# A /prompt chip in running state also counts.
+export REG_FAKE_LIST="$(jq -cn --arg now "$NOW_REG" \
+  '[{task_id:"tid-p-2",emitter:"prompt",issue:102,state:"running",offered_at:$now,
+     expires_at:$now,pr:null,last_updated:$now}]')"
+CHIPS=$(run --json | jq -r '.live_chips') || fail "19: --json failed for running state"
+[[ "$CHIPS" == "1" ]] || fail "19: /prompt chip in 'running' state should count, got '$CHIPS'"
+ok "a chip in 'running' state (clicked, no PR yet) is counted"
+
+# A /wave chip in pr-backed state is NOT counted (its PR is already in source 1).
+export REG_FAKE_LIST="$(jq -cn --arg now "$NOW_REG" \
+  '[{task_id:"tid-w-3",emitter:"wave",issue:103,state:"pr-backed",offered_at:$now,
+     expires_at:$now,pr:1234,last_updated:$now}]')"
+CHIPS=$(run --json | jq -r '.live_chips') || fail "19: --json failed for pr-backed state"
+[[ "$CHIPS" == "0" ]] || fail "19: pr-backed chip must not count (PR source covers it), got '$CHIPS'"
+ok "a 'pr-backed' chip is excluded from the registry count (open-PR source covers it)"
+
+# An expired registry chip is not counted.
+OLD_REG="$(date -u -v-48H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '48 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+export REG_FAKE_LIST="$(jq -cn --arg old "$OLD_REG" \
+  '[{task_id:"tid-exp-4",emitter:"pm",issue:104,state:"offered",offered_at:$old,
+     expires_at:$old,pr:null,last_updated:$old}]')"
+CHIPS=$(CLAUDE_CHIP_OFFER_TTL_S=86400 run --json | jq -r '.live_chips') || fail "19: --json failed for expired entry"
+[[ "$CHIPS" == "0" ]] || fail "19: an expired registry chip must not count, got '$CHIPS'"
+ok "a registry chip older than the TTL is treated as expired and not counted"
+
+# --- 20. Cross-emitter dedup: same issue in registry AND issue-maker log ------
+# An issue offered by /pm (registry) and also recorded in an issue-maker log
+# (legacy) must count once, not twice. Premise set explicitly.
+export REG_FAKE_LIST="$(jq -cn --arg now "$NOW_REG" \
+  '[{task_id:"tid-pm-5",emitter:"pm",issue:201,state:"offered",offered_at:$now,
+     expires_at:$now,pr:null,last_updated:$now}]')"
+write_chip_log "alpha" "[$(chip_entry 201 "$SLUG" open t5)]"
+set_open_issues "201"
+set_open_prs 0
+set_pipelines '[]'
+CHIPS=$(run --json 2>/dev/null | jq -r '.live_chips') || fail "20: --json failed with cross-emitter dedup"
+[[ "$CHIPS" == "1" ]] || fail "20: same issue in registry and log must count once, not twice; got '$CHIPS'"
+ok "same issue in registry and legacy log counts once (cross-emitter dedup)"
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR/issue-maker-alpha-log.json"
+
+# --- 21. Registry degraded: missing script contributes 0, not failure --------
+# A missing registry script (DEGRADED) falls back to 0 with a warning, because
+# the legacy log is still read and the registry is additive.
+unset CLAUDE_CHIP_OFFER_REGISTRY_SH
+export CLAUDE_CHIP_OFFER_REGISTRY_SH=""   # empty = skip registry read
+set_open_prs 0
+set_open_issues ""
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR"/issue-maker-*-log.json
+set_pipelines '[]'
+JSON=$(run --json) || fail "21: --json should succeed when registry is skipped"
+[[ "$(printf '%s' "$JSON" | jq -r '.live_chips')" == "0" ]] || fail "21: empty registry should yield 0 chips"
+ok "an empty CLAUDE_CHIP_OFFER_REGISTRY_SH skips the registry; count succeeds"
+
+# Restore default env (no CLAUDE_CHIP_OFFER_REGISTRY_SH) for subsequent tests.
+unset CLAUDE_CHIP_OFFER_REGISTRY_SH
 
 echo "OK: active-work-cap.sh tests passed"

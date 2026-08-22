@@ -46,11 +46,21 @@
 #   ACTIVE is the sum of three author-scoped, durable sources:
 #     1. Open PRs you authored — `gh pr list --state open --author @me`.
 #        Author-scoped per #732/#733; a collaborator's PR is never counted.
-#     2. Live offered issue-maker chips — DISTINCT `chip_task_id`s among the
-#        entries in ~/.claude/handoffs/issue-maker-*-log.json with
-#        `status: "open"` and a non-null `chip_task_id` (chip-launching.md
-#        "Cross-skill chip visibility"), TWICE narrowed (see CHIP LIVENESS
-#        below). One chip is one offer however many issues it covers.
+#     2. Live offered chips — the UNION of:
+#          a. The chip offer registry (chip-offer-registry.sh --count), which
+#             covers all emitters (/pm, /prompt, /wave, /issue-maker,
+#             /start-issue). Entries in `offered` or `running` state are counted;
+#             `pr-backed`, `done`, `retracted`, and `expired` are not.
+#             chip-offer-registry.sh "Offer Registry" (chip-launching.md) is the
+#             contract emitters follow to write here.
+#          b. Legacy issue-maker chip logs — DISTINCT `chip_task_id`s among
+#             the entries in ~/.claude/handoffs/issue-maker-*-log.json with
+#             `status: "open"` and a non-null `chip_task_id` (chip-launching.md
+#             "Cross-skill chip visibility"), TWICE narrowed (see CHIP LIVENESS
+#             below). One chip is one offer however many issues it covers.
+#             This legacy source is kept for backward compatibility while emitters
+#             migrate to the registry. It is deduplicated against (a) by issue
+#             number so the same offer is never counted twice.
 #        Offered-but-unclicked chips COUNT: twenty offered chips invite twenty
 #        clicks, which was the observed failure mode.
 #     3. Running inline pipelines not yet at PR — `active_agents` entries with
@@ -61,7 +71,11 @@
 #   a `.pr` the moment its pipeline opens a PR, at which point source 1 counts
 #   it and source 3 stops.
 #
-#   Sources 1 and 2 need an explicit subtraction, because a chip's log entry is
+#   Sources 1 and 2a: registry entries in `pr-backed` state are not counted here
+#   because the same work is counted by source 1. The pr-backed lifecycle
+#   transition replaces the explicit PR-subtraction used for legacy logs (2b).
+#
+#   Sources 1 and 2b need an explicit subtraction, because a chip's log entry is
 #   NOT cleared when the chip is clicked. A clicked chip becomes a thread, then
 #   a PR, while its issue stays open until that PR merges — so the same unit of
 #   work would be counted twice and the effective cap halved. Entries whose
@@ -69,26 +83,8 @@
 #   excluded. A multi-issue chip loses only the absorbed entries; it stops
 #   counting once it loses all of them (CHIP LIVENESS, PARTIAL ABSORPTION).
 #
-# KNOWN GAP — this reports a count, it does not reserve a slot
-#   FREE is a snapshot with no lock tying it to the work created afterwards, so
-#   two surfaces reading concurrently can both see the same free slots and both
-#   fill them. Closing that needs an atomic reservation at the creation
-#   boundary — a lease in a shared store — which is the same missing registry as
-#   the gap below, and is tracked with it. It is not mitigated here because a
-#   partial lock (say, a flag file) would look like a guarantee while still
-#   racing, which is worse than a documented limit. In practice the callers are
-#   agents in chat threads seconds apart rather than a tight concurrent loop, so
-#   the exposure is small but real.
-#
-# KNOWN GAP — chips from /pm and /prompt are not counted
-#   Only /issue-maker writes a durable, cross-thread chip record. /pm and
-#   /prompt record a chip's task_id in their in-transcript Active Work table,
-#   which no other thread can read, so their offers are invisible here. That is
-#   a pre-existing hole in the chip contract (chip-launching.md "Cross-skill
-#   chip visibility" says as much) rather than one introduced here, and closing
-#   it needs a shared offer registry with a real lifecycle — tracked separately.
-#   The practical effect is an UNDER-count on those two surfaces, which is the
-#   unsafe direction, so it is stated here rather than left to be discovered.
+#   Sources 2a and 2b need deduplication by issue number: an emitter that writes
+#   to the registry AND the legacy log for the same offer must not count twice.
 #
 # CHIP LIVENESS — why the raw log query is not the count
 #   chip-launching.md's discovery query answers "has this issue already been
@@ -167,6 +163,13 @@
 #
 #   CLAUDE_ACTIVE_WORK_HANDOFF_DIR  Override the issue-maker chip-log
 #                           directory so tests never read live state.
+#
+#   CLAUDE_CHIP_OFFER_REGISTRY_SH  Override the path to chip-offer-registry.sh.
+#                           When set, that script is used to count registry chips.
+#                           When absent the sibling chip-offer-registry.sh is used
+#                           when it exists; if neither is found the registry source
+#                           contributes 0 and a DEGRADED warning is printed.
+#                           Set to empty string in tests that want no registry read.
 #
 # EMPTY IS NOT THE SAME AS FAILED
 #   A source that legitimately has nothing contributes 0. A source that could
@@ -589,8 +592,15 @@ open_among() {
 # filed, so an N-issue session writes N entries carrying one `chip_task_id`.
 # The narrowings below run per ENTRY, and the distinct-chip count is taken over
 # what survives them. See CHIP LIVENESS.
+#
+# $1  repo slug
+# $2  (optional) newline-separated list of issue numbers already counted by
+#     the registry (source 2a). Any legacy chip whose surviving issues are ALL
+#     in this excluded set is not counted here — the registry already holds a
+#     slot for that work.  An absent or empty $2 applies no exclusion.
 count_live_chips() {
   local slug="$1"
+  local excluded_reg="${2:-}"
 
   # Both helpers can die_read, and a die_read inside `$(...)` ends only that
   # subshell — so each status is captured and re-raised here rather than
@@ -689,6 +699,22 @@ count_live_chips() {
   # also present in `sure` removed above, so the two lists are disjoint.
   local surviving
   surviving="$(printf '%s\n%s\n' "$matched" "$guessed" | awk 'NF' | sort -u)"
+  if [[ -z "$surviving" ]]; then
+    printf '0'
+    return
+  fi
+
+  # Source 2a/2b dedup: remove issues the registry already holds.  A chip whose
+  # EVERY surviving issue is in the excluded set has zero remaining issues and
+  # is not counted here — the registry slot covers it.  A chip with even one
+  # non-registry issue is still a distinct live legacy chip and IS counted.
+  if [[ -n "$excluded_reg" ]]; then
+    local rc_excl=0
+    surviving="$(comm -23 \
+                  <(printf '%s\n' "$surviving" | sort -u) \
+                  <(printf '%s\n' "$excluded_reg" | awk 'NF' | sort -u))" || rc_excl=$?
+    (( rc_excl == 0 )) || die_read "comm -23 failed excluding registry issues from legacy chip count (exit $rc_excl)"
+  fi
   if [[ -z "$surviving" ]]; then
     printf '0'
     return
@@ -803,6 +829,62 @@ count_inline_pipelines() {
   printf '%s' "$n"
 }
 
+# Issue numbers from the chip offer registry (source 2a) — entries in
+# offered or running state that have not expired.
+# Returns a newline-separated list of issue numbers, one per entry.
+# A missing or inaccessible registry contributes 0 with a DEGRADED warning
+# rather than failing hard, because the legacy log (source 2b) is still read.
+registry_chip_issue_numbers() {
+  # Allow tests to skip the registry read entirely by setting the variable to
+  # an empty string. Use the ${VAR+x} test to distinguish "explicitly set to
+  # empty" from "unset": :-__unset__ would convert both to __unset__ and the
+  # == "" check would never fire (feedback_codeant_empty_value_test.md).
+  if [[ "${CLAUDE_CHIP_OFFER_REGISTRY_SH+x}" == "x" && -z "${CLAUDE_CHIP_OFFER_REGISTRY_SH}" ]]; then
+    return 0
+  fi
+
+  local reg_script="${CLAUDE_CHIP_OFFER_REGISTRY_SH:-}"
+  if [[ -z "$reg_script" ]]; then
+    reg_script="$SCRIPT_DIR/chip-offer-registry.sh"
+  fi
+  if [[ ! -x "$reg_script" ]]; then
+    warn "DEGRADED: chip-offer-registry.sh not found at $reg_script — registry source contributes 0"
+    return 0
+  fi
+
+  local out rc=0
+  out="$("$reg_script" ${REPO:+--repo "$REPO"} --list 2>&1)" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    die_read "chip-offer-registry.sh --list failed (exit $rc): $out"
+  fi
+
+  # The registry handles repo scoping internally, so no further filtering needed.
+  # Count entries in offered or running state (TTL handled by --count, but here
+  # we need issue numbers for dedup — filter the same states).
+  local ttl_s="${CLAUDE_CHIP_OFFER_TTL_S:-86400}"
+  [[ "$ttl_s" =~ ^[0-9]+$ ]] || ttl_s=86400
+  local now
+  now="$(date -u +%s)"
+  local nums rc2=0
+  nums="$(printf '%s' "$out" | jq -r \
+    --argjson now "$now" --argjson ttl "$ttl_s" '
+    .[]
+    | select(.state == "offered" or .state == "running")
+    | select(
+        (.offered_at // "") as $t
+        | if $t == "" then true
+          else ($t | fromdateiso8601? // null) as $e
+               | if $e == null then true else ($now - $e) < $ttl end
+          end
+      )
+    | .issue' 2>&1)" || rc2=$?
+  if [[ $rc2 -ne 0 ]]; then
+    die_read "could not extract issue numbers from registry: $nums"
+  fi
+  [[ -n "$nums" ]] && printf '%s\n' "$nums"
+  return 0
+}
+
 command -v gh >/dev/null 2>&1 || die_read "gh not found on PATH — cannot count active work"
 command -v jq >/dev/null 2>&1 || die_read "jq not found on PATH — cannot count active work"
 
@@ -851,8 +933,111 @@ fetch_open_prs || FETCH_RC=$?
 (( FETCH_RC == 0 )) || exit "$FETCH_RC"
 
 count_into OPEN_PRS   count_open_prs
-count_into CHIPS      count_live_chips "$SLUG"
 count_into PIPELINES  count_inline_pipelines
+
+# Chip count: union of registry (2a) and legacy log (2b), deduped by issue number.
+#
+# Strategy: collect the live issue numbers from each source independently, then
+# take the union. Each source applies its own liveness filter; the union ensures
+# the same issue number from both sources counts as one chip, not two.
+#
+# Registry (2a): issue numbers of entries in offered/running state (TTL-filtered).
+# Legacy log (2b): issue numbers from count_live_chips (open-issue + PR-filtered).
+#   count_live_chips returns a count, not a list, so we re-derive the list from
+#   the same filtering pipeline here for dedup purposes, then count the union.
+#
+# For the legacy side, we get the live numbers from count_live_chips_numbers()
+# which mirrors count_live_chips but emits numbers instead of a count.
+count_live_chips_numbers() {
+  local slug="$1"
+  local chips rc=0
+  chips="$(chip_issue_numbers "$slug" | sort -u)" || rc=$?
+  (( rc == 0 )) || return "$rc"
+  [[ -n "$chips" ]] || return 0
+
+  local sure guessed rc2=0
+  sure="$(printf '%s\n' "$chips" | awk '$2=="." {print $1}' | sort -u)"
+  guessed="$(printf '%s\n' "$chips" | awk '$2=="?" {print $1}' | sort -u)"
+
+  # Dedup across attribution classes: a number attributed in one log and
+  # unattributed in another is known-repo, so drop the guessed duplicate.
+  if [[ -n "$sure" && -n "$guessed" ]]; then
+    local only_guessed rcd=0
+    only_guessed="$(comm -23 \
+                     <(printf '%s\n' "$guessed" | sort -u) \
+                     <(printf '%s\n' "$sure" | sort -u))" || rcd=$?
+    (( rcd == 0 )) || die_read "comm -23 failed deduping guessed against attributed chips for numbers"
+    guessed="$only_guessed"
+  fi
+
+  local chip_nums=()
+  [[ -n "$sure" ]] && \
+    while read -r _num; do [[ -n "$_num" ]] && chip_nums+=("$_num"); done <<<"$sure"
+
+  local covered rc3=0
+  covered="$(chips_covered_by_prs)" || rc3=$?
+  (( rc3 == 0 )) || return "$rc3"
+  if [[ -n "$covered" && -n "$sure" ]]; then
+    local remaining rc4=0
+    remaining="$(comm -23 \
+                  <(printf '%s\n' "$sure" | sort -u) \
+                  <(printf '%s\n' "$covered" | sort -u))" || rc4=$?
+    (( rc4 == 0 )) || die_read "comm -23 failed subtracting PR-covered chips for numbers"
+    sure="$remaining"
+    chip_nums=()
+    [[ -n "$sure" ]] && \
+      while read -r _num; do [[ -n "$_num" ]] && chip_nums+=("$_num"); done <<<"$sure"
+  fi
+
+  local open_issues=""
+  if (( ${#chip_nums[@]} )); then
+    local rc5=0
+    open_issues="$(open_among "$slug" "${chip_nums[@]}")" || rc5=$?
+    (( rc5 == 0 )) || return "$rc5"
+  fi
+
+  local matched=""
+  if [[ -n "$sure" && -n "$open_issues" ]]; then
+    local rc6=0
+    matched="$(comm -12 \
+                <(printf '%s\n' "$sure" | sort -u) \
+                <(printf '%s\n' "$open_issues" | sort -u))" || rc6=$?
+    (( rc6 == 0 )) || die_read "comm -12 failed intersecting log chips with open issues"
+  fi
+
+  # Emit matched (attributed, live) and guessed numbers.
+  [[ -n "$matched" ]] && printf '%s\n' "$matched"
+  [[ -n "$guessed" ]] && printf '%s\n' "$guessed"
+  return 0
+}
+
+# Count chips from source 2a (registry) and source 2b (legacy log) separately,
+# then combine.  The registry (2a) uses 1 entry = 1 chip = 1 issue, so the
+# issue count and chip count are the same there.  The legacy log (2b) can have
+# N entries per chip, so count_live_chips counts DISTINCT chip_task_ids rather
+# than issues.  Cross-source dedup: pass the registry issues to count_live_chips
+# so any legacy chip whose surviving issues are ALL already in the registry is
+# excluded from source 2b's count (the registry slot covers it).
+
+# Source 2a: registry.
+REG_NUMS=""; REG_RC=0
+REG_NUMS="$(registry_chip_issue_numbers)" || REG_RC=$?
+(( REG_RC == 0 )) || exit "$REG_RC"
+
+REG_CHIP_COUNT=0
+if [[ -n "$REG_NUMS" ]]; then
+  REG_RAW="$(printf '%s\n' "$REG_NUMS" | grep -c '^[0-9]')" || true
+  [[ "$REG_RAW" =~ ^[0-9]+$ ]] || REG_RAW=0
+  REG_CHIP_COUNT="$REG_RAW"
+fi
+
+# Source 2b: legacy log (distinct chips, excluding issues the registry holds).
+LOG_CHIP_COUNT=0; LOG_RC=0
+LOG_CHIP_COUNT="$(count_live_chips "$SLUG" "$REG_NUMS")" || LOG_RC=$?
+(( LOG_RC == 0 )) || exit "$LOG_RC"
+[[ "$LOG_CHIP_COUNT" =~ ^[0-9]+$ ]] || LOG_CHIP_COUNT=0
+
+CHIPS=$(( REG_CHIP_COUNT + LOG_CHIP_COUNT ))
 
 ACTIVE=$(( OPEN_PRS + CHIPS + PIPELINES ))
 FREE=$(( CAP - ACTIVE ))
