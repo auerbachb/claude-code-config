@@ -14,6 +14,7 @@ session_source=$(jq -r '.source // empty' <<<"$hook_stdin" 2>/dev/null)
 skills_wt="$HOME/.claude/skills-worktree"
 setup_script="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)/setup-skills-worktree.sh"
 errors=""
+_agents_notices=""
 
 # Bootstrap missing skills worktree if setup script is available
 if [[ ! -d "$skills_wt/.claude/skills" || ! -f "$skills_wt/.git" ]]; then
@@ -32,6 +33,23 @@ if [[ -z "$errors" && -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
   fi
 elif [[ -z "$errors" ]]; then
   errors="skills worktree not found at $skills_wt"
+fi
+
+# --- Publish agent symlinks on the steady-state path (issue #1197) ---
+# git reset --hard above updates worktree contents (including .claude/agents/)
+# but never creates ~/.claude/agents/ or its per-file symlinks. Run the publish
+# every session so new, renamed, and removed agent definitions propagate without
+# requiring a manual setup-skills-worktree.sh run on existing installs.
+if [[ -z "$errors" && -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
+  _agents_publish_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/../scripts/publish-agent-symlinks.sh"
+  if [[ -f "$_agents_publish_script" ]]; then
+    _root_repo=$(git -C "$skills_wt" worktree list 2>/dev/null | head -1 | awk '{print $1}') || _root_repo=""
+    if ! _agents_out=$(bash "$_agents_publish_script" "$skills_wt" "${_root_repo}" 2>&1); then
+      errors="${errors:+$errors; }agent symlink publish failed: $_agents_out"
+    elif [[ -n "$_agents_out" ]]; then
+      _agents_notices="$_agents_out"
+    fi
+  fi
 fi
 
 # --- Sync root repo (derives path from skills worktree) ---
@@ -110,6 +128,17 @@ if [[ -f "$reconcile_script" ]]; then
     notices=$(bash "$reconcile_script" 2>/dev/null)
   else
     notices=$(bash "$reconcile_script" --check 2>/dev/null)
+  fi
+fi
+
+# Fold agent-publish notices into the notices variable before sanitization so
+# they reach the user when no other notices are present.
+if [[ -n "$_agents_notices" ]]; then
+  if [[ -n "$notices" ]]; then
+    notices="${notices}
+${_agents_notices}"
+  else
+    notices="$_agents_notices"
   fi
 fi
 
