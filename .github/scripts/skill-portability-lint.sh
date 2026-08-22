@@ -66,7 +66,7 @@ while (( $# > 0 )); do
   esac
 done
 
-SKILLS=(pm subagent prompt wave issue-maker start-issue pr-monitor-and-manage)
+SKILLS=(pm subagent prompt wave issue-maker start-issue pr-monitor-and-manage suspend suspend-resume)
 
 WORKTREE_PREFIX='$HOME/.claude/skills-worktree/.claude/scripts/'
 CHIP_LAUNCHING=".claude/reference/chip-launching.md"
