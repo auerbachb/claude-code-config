@@ -2,15 +2,25 @@
 
 Issue: [#1212](https://github.com/auerbachb/claude-code-config/issues/1212)
 Evidence base: [`ai-review-tool-audit-2026-08.md`](./ai-review-tool-audit-2026-08.md) — 244 merged PRs, 2026-07-22 → 2026-08-21
-Companion records: [#1202](https://github.com/auerbachb/claude-code-config/issues/1202) prices every purchasable lever ([`pricing-matrix.md`](./pricing-matrix.md)); [#1204](https://github.com/auerbachb/claude-code-config/issues/1204) read the billed state ([`ai-review-billing-dashboard-2026-08.md`](./ai-review-billing-dashboard-2026-08.md)); [#1209](https://github.com/auerbachb/claude-code-config/issues/1209) turns incremental review off; [#1213](https://github.com/auerbachb/claude-code-config/issues/1213) holds the billing-cadence lever this verdict gates.
+Companion records: [#1202](https://github.com/auerbachb/claude-code-config/issues/1202) prices every purchasable lever ([`pricing-matrix.md`](./pricing-matrix.md)); [#1204](https://github.com/auerbachb/claude-code-config/issues/1204) read the billed state ([`ai-review-billing-dashboard-2026-08.md`](./ai-review-billing-dashboard-2026-08.md)); [#1209](https://github.com/auerbachb/claude-code-config/issues/1209) proposed turning incremental review off — **declined by the owner 2026-08-21; it stays ON**; [#1213](https://github.com/auerbachb/claude-code-config/issues/1213) held the billing-cadence lever this verdict gates, and its live actions are now [#1228](https://github.com/auerbachb/claude-code-config/issues/1228).
 Verdict recorded in: [`ai-review-chain-roles-decision.md`](./ai-review-chain-roles-decision.md) §CodeRabbit OSS tier vs paid Pro.
 
 Date reviewed: **2026-08-21**
-Repo under evaluation: `auerbachb/claude-code-config` — **public, 3 stars, no LICENSE** (`gh repo view`, 2026-08-21)
+Repo under evaluation: `auerbachb/claude-code-config` — **public, 3 stars, no LICENSE** (`gh repo view`, 2026-08-21). *An MIT `LICENSE` has since landed (PR [#1215](https://github.com/auerbachb/claude-code-config/pull/1215)); it does not disturb this verdict, which turns on the star count and on the metered add-on being Pro/Pro+ only — neither is licence-dependent.*
 
 ## Verdict
 
-**Stay paid, and switch to annual billing.** $90/mo → $72/mo, **$216/year, no capability change.**
+**Stay paid, and switch to annual billing.** No capability change either way.
+
+> **Seat-count update (#1213, 2026-08-21).** The verdict stands; its arithmetic moved. This document
+> was written against **3 seats**, where annual was $90/mo → $72/mo, **$216/year**. The owner has since
+> decided to cut the unused third seat, so the switch now applies at **2 seats**: $60/mo → **$48/mo**,
+> **$144/year** — and $90/mo → $48/mo counting both levers together. **Cut the seat first**, or a year
+> is prepaid on a seat that authors nothing. Every 3-seat figure below is left intact as the
+> as-written comparison, and neither conclusion moves with the seat count: annual-vs-monthly is a
+> per-developer rate difference, so both sides scale together; and the OSS comparison's gross saving
+> merely shrinks from $90/mo to $60/mo — which *strengthens* "stay paid", since that verdict rests on
+> throughput rather than on the sticker price.
 
 The OSS tier is not a cheaper version of what we have — it is a *differently-constrained* version, and
 every constraint it adds lands on throughput, which is the only thing currently failing. Two of those
@@ -27,6 +37,11 @@ terminus is Greptile: paid Pro on the `auerbachb` org with **flex overage explic
 $1/credit, already 42 credits into flex 15 days into a cycle (#1204 round 2). CodeRabbit is a fixed
 $90; Greptile is an unbounded $1 per additional review. Trading the first for more of the second is the
 wrong direction regardless of the sticker prices.
+
+*(Greptile's billing state became **contested** after this was written — the owner reports free/unpaid,
+against the same-day paid reading above; #1228 settles it from the billing page. The displacement
+argument does not depend on the resolution: what it turns on is that overflow escalates to a
+per-review-priced tier rather than a fixed one, which holds wherever the current invoice sits.)*
 
 ## Sources
 
@@ -209,7 +224,8 @@ against us — auto-review stops, and the metered overflow that exists to absorb
 becomes unbuyable. **The break-even is therefore decided on the documented constraints; the rate is
 simply not a reason to move.**
 
-**On money.** The saving is $90/month gross. Against it:
+**On money.** The saving is $90/month gross as written at 3 seats — **$60/month at the decided 2**,
+which only makes the ledger below less favourable to OSS. Against it:
 
 - The metered add-on becomes permanently unavailable, removing #1202's **BUY**-rated lever (a ~$50/mo
   capped budget covering ≈40–67 PRs of overflow).
@@ -221,7 +237,9 @@ simply not a reason to move.**
 
 **Annual vs monthly.** Independent of OSS, and the actual money on the table: **$24/dev/mo annual vs
 $30 monthly** ([pricing], retrieved 2026-08-21) — $72 vs $90 for 3 seats, **$216/year at identical
-capability**. The trade is 12 months of commitment for 20% off. The commitment is safe here because the
+capability**; **at the decided 2 seats it is $48 vs $60, $144/year** (see the seat-count update under
+§Verdict — the per-developer rates are what the comparison rests on, so only the total moves). The
+trade is 12 months of commitment for 20% off. The commitment is safe here because the
 two exits it could block are both remote: OSS is rejected above on throughput, and Pro+ is an *upgrade*
 rather than an escape. **Renewal is 2026-08-27** — six days out — so the cadence decision is live, not
 hypothetical.

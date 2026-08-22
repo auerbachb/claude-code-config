@@ -12,6 +12,8 @@ Demand window: **2026-07-22 → 2026-08-21**, 245 merged PRs
 > **Prices drift.** Every figure carries a source and a retrieval date. Vendor pricing pages are JS-rendered and several default to the annual price without labelling it, so each row states which billing toggle produced the number.
 >
 > **No agent executes a purchase.** Everything here is a recommendation. Raising a spend cap, buying credits, changing a plan, adding a seat, or claiming a discount stays with the account owner. Nothing was changed on any dashboard to produce this document.
+>
+> **Redactions.** This repository is **public**. Personal email addresses read from the dashboards have been removed (#1227), matching the practice [`ai-review-billing-dashboard-2026-08.md`](./ai-review-billing-dashboard-2026-08.md) §Redactions set in PR [#1203](https://github.com/auerbachb/claude-code-config/pull/1203): seat holders are named by role ("the account owner") or by GitHub handle. Redaction is not a rewrite — every figure, reading, and verdict below stands exactly as recorded on 2026-08-21, and the point-in-time exemption still forbids updating them. The findings survive the removal: what matters is *that* the commit-author identity holds no seat, not which addresses do.
 
 ## Executive summary
 
@@ -139,7 +141,7 @@ Public plans (annual toggle is the page default):
 
 **Drift since the 2026-06 audit:** that audit recorded a **$10/user/mo Basic tier with 100 reviews/month**. It is **gone** from the page as of 2026-08-21. Any reasoning that assumed a cheap metered CodeAnt tier is stale — the only **self-serve** paid AI-Code-Review tier is Premium, and it is unlimited (Enterprise exists but is contact-only, and adds controls rather than review volume).
 
-**Seats are full (2 of 2, 0 left):** `bretton.auerbach@gmail.com` (Admin) and `faculoyarte@gmail.com` (Member). AI credits balance $0.00.
+**Seats are full (2 of 2, 0 left):** the account owner (Admin) and one collaborator (Member). AI credits balance $0.00.
 
 ### Cursor BugBot
 
@@ -221,7 +223,7 @@ These look like one problem and are two, with different pools and opposite verdi
 | | App surface | CLI surface |
 |---|---|---|
 | **Documented** | Premium is "Unlimited PR Reviews" | Nothing — the daily agent-review cap is undocumented |
-| **Observed** | "User ci@example.com does not have a PR Review subscription" on 206 of 244 PRs — **alongside 360 `APPROVED` reviews across 184 PRs**. Non-blocking. Dashboard confirms Premium ACTIVE with 2/2 seats held by `bretton.auerbach@gmail.com` and `faculoyarte@gmail.com`; the CI commit email is not among them. | `403` with `"Either the API key is invalid or the daily limit of 10 for agent review has been reached"`. `codeant scans orgs` succeeds while `review` 403s — the token is fine. |
+| **Observed** | "User ci@example.com does not have a PR Review subscription" on 206 of 244 PRs — **alongside 360 `APPROVED` reviews across 184 PRs**. Non-blocking. Dashboard confirms Premium ACTIVE with 2/2 seats held by the account owner and one collaborator; the CI commit email is not among them. | `403` with `"Either the API key is invalid or the daily limit of 10 for agent review has been reached"`. `codeant scans orgs` succeeds while `review` 403s — the token is fine. |
 | **Reconciliation** | Not a billing failure. The plan is Premium and unlimited; the warning is seat attribution against an unrecognized commit-author email, and CodeAnt reviews anyway. | A real, unpublished quota on a pool the dashboard does not surface. "AI Code Reviews: Unlimited" describes the **App**, which kept serving 234 reviews the same day the CLI was locked out. |
 | **Verdict** | **No purchase needed.** Set the git `user.email` to a seat holder — **$0**. Buying a third seat for the CI identity (+$24/user/mo) achieves the same result and is strictly worse. | **No paid lever exists.** No published upgrade raises the CLI agent cap. Mitigation is operational: budget a few CLI reviews/day and never re-authenticate to clear a 403 — it cannot fix a quota and nulls the token. The App satisfies the CR-path merge gate alone, so a capped CLI is never blocking. |
 
