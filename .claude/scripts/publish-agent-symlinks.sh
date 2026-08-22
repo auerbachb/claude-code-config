@@ -83,40 +83,42 @@ owned_by_setup() {
   return 1
 }
 
-if [[ ! -d "$WORKTREE_AGENTS" ]]; then
-  # Not an error — the worktree simply has no agent definitions yet.
-  exit 0
-fi
-
 # Detect brand-new agents/ directory creation. Claude Code cannot pick up a
 # directory that did not exist at session start without a restart.
 agents_dir_created=false
 [[ -d "$AGENTS_DIR" ]] || agents_dir_created=true
 mkdir -p "$AGENTS_DIR"
 
-# --- Publish loop: create / update symlinks for each agent definition ---
-for agent_file in "$WORKTREE_AGENTS"/*.md; do
-  [[ -f "$agent_file" ]] || continue
+if [[ -d "$WORKTREE_AGENTS" ]]; then
+  # --- Publish loop: create / update symlinks for each agent definition ---
+  for agent_file in "$WORKTREE_AGENTS"/*.md; do
+    [[ -f "$agent_file" ]] || continue
 
-  agent_name="$(basename "$agent_file")"
-  link="$AGENTS_DIR/$agent_name"
+    agent_name="$(basename "$agent_file")"
+    link="$AGENTS_DIR/$agent_name"
 
-  # README.md documents the directory; it is not an agent definition.
-  [[ "$agent_name" == "README.md" ]] && continue
+    # README.md documents the directory; it is not an agent definition.
+    [[ "$agent_name" == "README.md" ]] && continue
 
-  # A symlink pointing somewhere we do not manage is the user's — leave it and
-  # say so rather than silently clobbering custom user definitions.
-  if [[ -L "$link" ]] && ! owned_by_setup "$(readlink "$link")"; then
-    echo "  $agent_name — leaving user-owned symlink alone (-> $(readlink "$link"))"
-    continue
-  fi
+    # A symlink pointing somewhere we do not manage is the user's — leave it and
+    # say so rather than silently clobbering custom user definitions.
+    if [[ -L "$link" ]] && ! owned_by_setup "$(readlink "$link")"; then
+      echo "  $agent_name — leaving user-owned symlink alone (-> $(readlink "$link"))"
+      continue
+    fi
 
-  legacy_target=""
-  [[ -n "$REPO_ROOT" ]] && legacy_target="$REPO_ROOT/.claude/agents/$agent_name"
-  migrate_symlink "$link" "$agent_file" "$legacy_target" "$agent_name" -f
-done
+    legacy_target=""
+    [[ -n "$REPO_ROOT" ]] && legacy_target="$REPO_ROOT/.claude/agents/$agent_name"
+    migrate_symlink "$link" "$agent_file" "$legacy_target" "$agent_name" -f
+  done
+# else: worktree has no agent definitions (or directory was removed) — skip
+# publish but fall through to the prune loop so stale setup-owned symlinks
+# for deleted agents are removed rather than remaining exposed in user scope.
+fi
 
 # --- Prune loop: remove stale symlinks for agents renamed or removed on main ---
+# Runs even when WORKTREE_AGENTS is absent so that a complete removal of the
+# agents directory propagates to user scope.
 # Glob without trailing slash so dangling symlinks (broken links are not
 # directories) are included.
 for link in "$AGENTS_DIR"/*; do
