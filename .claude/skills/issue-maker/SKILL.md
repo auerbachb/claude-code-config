@@ -39,7 +39,7 @@ The split check asks whether the ask is **two things**. The sizing check asks wh
 
 The bar is **`/subagent` Step 4 criterion 3 — the subagent-fit sizing bar**: one Phase A/B/C pipeline, one reviewable PR, one review cycle, a bounded slice. That criterion is the single definition — **cite it, never re-derive it here.** It travels inline inside `/subagent`, so it needs no fallback read; only its rationale (`too-big-recalibration-2026-07.md`, read through the standard candidate order — `portable-skill-resolution.md`) does, and being rationale-only its absence is a one-line `DEGRADED:` note, never a reason to skip the check.
 
-**It counts deliverables, not bulk.** The bar fires when an ask names *several independently shippable deliverables*, never on sheer volume — a big-sounding ask that produces one deliverable ("rename this across the whole repo") clears it comfortably. `/subagent` Step 4's not-a-disqualifier list governs here too: file count, "feels large", and touching many files are not sizing signals, and splitting on them just fragments one PR into four.
+**It counts deliverables, not bulk** — and `/subagent` Step 4's not-a-disqualifier list governs here unchanged, so a big-sounding ask that yields one deliverable ("rename this across the whole repo") clears the bar comfortably. The capture-time consequence worth naming: splitting on bulk just fragments one PR into four.
 
 **Judge from the body, not the labels.** What the ask itself describes decides sizing — how many independently shippable deliverables it names, how many surfaces it spans. A `size:*` or `complexity:*` label, where one exists, is a **tie-break only**: it can settle a genuinely balanced call, never overrule what the description plainly says.
 
@@ -190,10 +190,11 @@ fi
 
 - **Guard:** if no significant keywords remain, skip the dedup search.
 - **Helper missing, or `DEDUP_RC` ≥ 2:** fall back to the title-only `gh issue list --search "$KEYWORDS in:title"` over open and recently-closed issues, and say so in one line when surfacing results — `DEGRADED: issue-dedup.sh not found (checked all three paths) — title-only duplicate search` for the missing-helper case, naming the exit code instead when the helper ran and failed. Never present an unrun or downgraded check as a clean result.
-- **Interpreting matches:** `/issue-maker` always has a human in the loop, so it only ever *surfaces* candidates — it never auto-comments in place of filing. Use the strong/weak/none thresholds in `autofile-dedup.md` — read through the standard candidate order, `$HOME/.claude/skills-worktree/.claude/reference/` first, then `$HOME/.claude/reference/`, then `.claude/reference/` (`portable-skill-resolution.md`) — to classify the **top** candidate: a **strong match** or an **exact title match** is a genuine pause point; weak/ambiguous matches are not.
+- **Filter same-run increment siblings out of the candidate list first** — before anything below reads a "top" candidate. See the sibling bullet at the end of this list for why; the ordering matters because every rule below acts on whichever candidate ranks first.
+- **Interpreting matches:** `/issue-maker` always has a human in the loop, so it only ever *surfaces* candidates — it never auto-comments in place of filing. Use the strong/weak/none thresholds in `autofile-dedup.md` — read through the standard candidate order, `$HOME/.claude/skills-worktree/.claude/reference/` first, then `$HOME/.claude/reference/`, then `.claude/reference/` (`portable-skill-resolution.md`) — to classify the **top surviving** candidate: a **strong match** or an **exact title match** is a genuine pause point; weak/ambiguous matches are not.
 - **Default mode — pause only on a strong or exact match:** if the top candidate clears that bar, surface it and ask *"Looks like a duplicate of #N — file anyway? (y/N)"* before creating. On a weak/ambiguous match, **do not block** — file, and name the near-duplicate as a decision point (Step 9a: "possibly overlaps #N"). No match → file normally.
 - **Rapid-fire:** show any matches but proceed unless there is an **exact title match** (then block and ask).
-- **Siblings in the same increment chain are never duplicates of each other.** Increments share a theme prefix and most of their keywords by design, so filing `Landing page 2/4` right after `Landing page 1/4` will surface increment 1 as a strong match. That is the chain working, not a duplicate: when the top candidate is an increment this run just filed, note it and file anyway — never pause on it, in either mode. Duplicates *outside* the chain still pause normally.
+- **Siblings in the same increment chain are never duplicates of each other.** Increments share a theme prefix and most of their keywords by design, so filing `Landing page 2/4` right after `Landing page 1/4` will surface increment 1 as a strong match. That is the chain working, not a duplicate. **Drop every increment this run already filed from the candidate list, then classify what remains** — an exclusion, not an override. Excluding them only after the top candidate is chosen would let a sibling outrank a genuine duplicate and carry the "file anyway" verdict with it, so a real duplicate ranked second would never be evaluated at all. Note the skipped siblings in one line; duplicates *outside* the chain still pause normally, in both modes. If nothing survives the filter, that is a clean "no match" — file normally.
 
 ---
 
@@ -233,7 +234,15 @@ Optional sections, appended when relevant:
 
 When the top-level rule's sizing check fails, each increment is a normal 6-section issue with two additions. An increment is not a sub-task: it is a **complete, independently mergeable issue** that happens to be one slice of a larger theme.
 
-**Title — carry the parent theme and the position.** `{Parent theme} {i}/{n}: {what this slice delivers}` — e.g. `Landing page 1/4: hero + layout shell`, `Landing page 2/4: services page`. The theme prefix is what keeps a backlog of increments scannable instead of looking like four unrelated tickets. The existing **≤70-character** title rule still applies; trim the slice description, never the `{i}/{n}` marker, and note any trim in the decision points.
+**Title — carry the parent theme and the position.** `{Parent theme} {i}/{n}: {what this slice delivers}` — e.g. `Landing page 1/4: hero + layout shell`, `Landing page 2/4: services page`. The theme prefix is what keeps a backlog of increments scannable instead of looking like four unrelated tickets.
+
+The existing **≤70-character** title rule still applies to the composed whole, so budget for all three parts rather than trimming only the tail:
+
+1. **Reserve the `{i}/{n}` marker** — never trimmed, never abbreviated; it is what makes the chain readable.
+2. **Bound the parent theme** to roughly the first 25 characters, and keep it identical across every increment in the chain — a theme that shifts wording between increments defeats the point of having one.
+3. **Trim the slice description** to fit what's left.
+
+If the title still exceeds 70 after all three, the theme itself is too long — shorten it once, apply that shortened form to the whole chain, and note the trim in the decision points.
 
 **Acceptance Criteria — one boundary line, always.** Every increment's `## Acceptance Criteria` opens with a line stating where the slice stops. Non-final increments hand the remainder forward; the **final** increment has nothing to hand forward and says so instead:
 
@@ -528,7 +537,7 @@ When invoked with `--export-prompt`, **do not create anything** — instead emit
 
 ## Modes summary
 
-Both modes **auto-open** the issue — no draft reprint, no approval gate — and both auto-apply validated labels. **Both also run the full reflection pass — narrow, expand, split, sizing, ambiguity** — so an oversized ask becomes an increment chain in either mode, under the same 5-increment cap and the same head-only chip routing (Steps 8, 9c). What distinguishes them is the **report** and the **dedup bar**:
+Both modes **auto-open** the issue — no draft reprint, no approval gate — and both auto-apply validated labels. **Both also run the full reflection pass — narrow, expand, split, sizing, ambiguity.** In either mode an oversized ask becomes an increment chain automatically **when it fits in 5 increments or fewer**; above that both modes stop and ask before filing anything (Step 8's cap), and both route the chip to the head only (Step 9c). What distinguishes them is the **report** and the **two bars**:
 
 | Mode | Upfront questions | Create | Post-create report | Labels | Dedup pause | Chain cap (Step 8) |
 |------|-------------------|--------|--------------------|--------|-------------|--------------------|
