@@ -4,7 +4,7 @@ description: Run issues inline as subagents directly from a PM thread — any ti
 argument-hint: "#42 [#55 #61 ...] (one or more issue numbers)"
 ---
 
-Execute one or more issues as subagents within the current thread. Each issue goes through the full Phase A/B/C orchestration protocol (fix, review, merge prep) while this skill monitors progress and manages transitions. Inline execution is the default for issues of any tier; the only issues routed out to a separate thread are those too big for a subagent (Step 4).
+Execute one or more issues as subagents within the current thread. Each issue goes through the full Phase A/B/C orchestration protocol (fix, review, merge prep) while this skill monitors progress and manages transitions. Inline execution is the default for issues of any tier. Only two of Step 4's three too-big criteria route an issue out to a separate thread; the third — "should be split into multiple PRs" — is decomposed into an inline increment chain instead (Step 5.1).
 
 Parse `$ARGUMENTS` as space-separated issue references. Strip `#` prefixes to get bare issue numbers. If no arguments provided, ask the user which issue(s) to execute.
 
@@ -28,6 +28,7 @@ resolve_script() {
 ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
 CR_PLAN=$(resolve_script cr-plan.sh || true)
 SESSION_STATE_SH=$(resolve_script session-state.sh || true)
+ISSUE_DEDUP=$(resolve_script issue-dedup.sh || true)
 ```
 
 `handoff-state.sh` (Step 8), `ac-checkboxes.sh`, `escalate-review.sh`, and `local-review.sh` are resolved by the phase agents themselves, inside the spawn prompts — the RESOLVE block inserted with SAFETY/MINDSET/SKILLS carries the same candidate order to them. Read reference docs (`chip-launching.md`, `subagent-phase-guardrails.md`, `issue-claim.md`, `merge-sequencing.md`) through the matching `.claude/reference/` order.
@@ -41,6 +42,11 @@ SESSION_STATE_SH=$(resolve_script session-state.sh || true)
 - `CR_PLAN` empty → **optional**. Print `DEGRADED: cr-plan.sh not found (checked all three paths) — CR plan detection skipped` and continue with Claude's own plan.
 
 The Step 4 too-big criteria need no fallback — they are written inline in this file, so that contract already travels. Only their per-criterion rationale doc (`too-big-recalibration-2026-07.md`) is a fallback read.
+
+Step 5.1's decomposition has two reads of its own, and they fail in opposite directions:
+
+- `/issue-maker` SKILL.md (Steps 5/8/9a — the increment shape) unreadable → **required for Step 5.1 only**. Print `DEGRADED: /issue-maker not found — pick-time decomposition unavailable, routing criterion-3 issues to threads` and fall back to the pre-#1193 behavior: emit the thread prompt. That is the safe failure here — filing a chain whose shape you cannot check risks a malformed chain that strands work, while routing out is merely the older, worse-but-correct outcome. It is the opposite of the `chip-launching.md` rule above because the risk is opposite: there, failing toward inline costs nothing.
+- `ISSUE_DEDUP` empty → **required for Step 5.1 only**, same fallback. Print `DEGRADED: issue-dedup.sh not found (checked all three paths) — pick-time decomposition unavailable, routing criterion-3 issues to threads`. An autonomous filer that cannot check for duplicates must not file (`autofile-dedup.md`).
 
 ---
 
@@ -125,38 +131,41 @@ What is deliberately **absent** here: touching `.claude/rules`, `CLAUDE.md`, or 
 
 ## Step 4: Assess "Too Big for Any Subagent"
 
-Tier does **not** decide this — most issues, of any tier, run inline. An issue is **too big** (→ route to a separate thread in Step 5) only if **ANY** of these three criteria hold. This is a judgment call, not arithmetic:
+Tier does **not** decide this — most issues, of any tier, run inline. An issue is **too big** only if **ANY** of these three criteria hold. This is a judgment call, not arithmetic. Which criterion fires decides what Step 5 does with it: **1 or 2 route it to a separate thread; 3 decomposes it and keeps it inline.**
 
 1. **The implementation can't be carried across sequential subagent turns.** Route out only when the work resists being cut into resumable pieces — a single indivisible artifact that must be emitted in one pass, where a replacement agent could not pick up from a handoff and continue. **Size is not the test.** A sweeping many-file migration is the *most* resumable shape there is and stays inline: a subagent emits across many turns, and if one genuinely runs out, the token-exhaustion protocol (`subagent-orchestration.md`) writes a handoff and the parent auto-launches a replacement that resumes — still inline, still in this thread.
 2. **Needs interactive human judgment mid-build.** The issue carries genuinely unresolved product/design decisions that must be settled *while* implementing and can't be pinned down up front (`interactive_markers`). An "Open questions" section the issue already answers does **not** count — only open calls that would block a subagent mid-build.
 3. **Should be split into multiple PRs.** The issue explicitly asks to be split, or its scope spans several independent deliverables that each deserve their own PR and review cycle (`split_markers`).
 
-   **The subagent-fit sizing bar (canonical — cite this, never restate it).** What "deserves their own PR and review cycle" measures is a single question: **can one Phase A/B/C pipeline land this as one reviewable PR — one PR, one review cycle, a bounded slice?** Clearing it is the ordinary case. Failing it reads two ways depending on *when* the question is asked, and both readings are this one bar:
+   **The subagent-fit sizing bar (canonical — cite this, never restate it).** What "deserves their own PR and review cycle" measures is a single question: **can one Phase A/B/C pipeline land this as one reviewable PR — one PR, one review cycle, a bounded slice?** Clearing it is the ordinary case. **Failing it is a split trigger at both times the question can be asked** — one bar, one remedy; only the starting material differs:
 
-   - **Pick time** — the issue already exists, so failing the bar is a disqualifier: route it to a thread (Step 5).
-   - **Capture time** — the ask has not been filed yet, so failing the bar is a *split trigger*: `/issue-maker` files it as an ordered chain of single-PR increments rather than one oversized issue (`/issue-maker` top-level rule, issue #1192).
+   - **Capture time** — the ask has not been filed yet, so `/issue-maker` files it as an ordered chain of single-PR increments rather than one oversized issue (`/issue-maker` top-level rule, issue #1192).
+   - **Pick time** — the issue already exists, so Step 5.1 **decomposes it**: the same increment chain is filed as *children* of that issue, which stays open as their tracking parent, and the chain runs inline (issue #1193).
+
+   **Criterion 3 is therefore the one criterion that never routes an issue to a thread.** Criteria 1 and 2 still do.
 
    An ask can fail this bar while being perfectly coherent — one concern, more of it than one pipeline can land in a reviewable PR. Whether the ask holds together is a different question.
 
    **"Bounded slice" counts deliverables, not bulk.** The bar fires on *several independently shippable deliverables*, exactly as `split_markers` says — never on sheer volume. A sweeping many-file migration is one deliverable and clears the bar comfortably; criterion 1 already settles that case, and the not-a-disqualifier list below governs here too.
 
-If **none** hold, the issue is **inline-eligible** — proceed to Step 5 and run it. If **any** holds, mark it **too big** and record which criterion fired for the Step 5 hand-off message.
+If **none** hold, the issue is **inline-eligible** — proceed to Step 5 and run it. If **any** holds, mark it **too big** and record **which** criterion fired: Step 5 branches on it — criterion 1 or 2 routes to a thread, criterion 3 decomposes. Record the criterion even when several would fire; when both a thread criterion and criterion 3 hold, **the thread criterion wins** — splitting work a subagent cannot carry just produces pieces with the same defect.
 
-**A route-to-thread verdict MUST name its disqualifier** — which of the three criteria fired, and why, in one line. A verdict you cannot pin to a named criterion is not valid: queue the issue inline instead. Per-criterion rationale: `.claude/reference/too-big-recalibration-2026-07.md` (#776).
+**A too-big verdict MUST name its disqualifier** — which of the three criteria fired, and why, in one line. A verdict you cannot pin to a named criterion is not valid: queue the issue inline instead. This binds both branches: a route-to-thread verdict names criterion 1 or 2, a decomposition verdict names criterion 3. Per-criterion rationale: `.claude/reference/too-big-recalibration-2026-07.md` (#776, #1193).
 
 **When it's a close call, run it inline.** If you can't articulate why a handoff would fail to carry the work, that isn't a close call — it's inline. Inline's failure mode is a respawn inside this thread; a thread's failure mode is a tab the user now has to babysit.
 
 **Never a disqualifier on its own** — none of these routes an issue to a thread, and none substitutes for a named criterion: file count, AC count, dependency count, "feels complex"/"looks large", touching `.claude/rules` / `CLAUDE.md` / `.claude/skills`, orchestration keywords, or tier (Quick/Light/Standard/Heavy). **A full pipeline is not a disqualifier either** — past-ceiling subagent-fit work queues inline (Step 7); it never becomes a separate thread.
 
-## Step 5: Gate Outcome — Run Inline, or Route Too-Big to a Thread
+## Step 5: Gate Outcome — Run Inline, Decompose, or Route to a Thread
 
-Apply Step 4's verdict per issue. **Being too big is not a failure — it routes the issue to a thread so nothing is dropped.**
+Apply Step 4's verdict per issue. **Being too big is not a failure.** Every issue reaches exactly one of three outcomes, and none of them drops work:
 
 - **Inline-eligible** issues → proceed to Step 6 and run them.
-- **Too-big** issues → do NOT execute them here. Emit a thread prompt so the work isn't lost:
+- **Criterion 3** (should be split into multiple PRs) → **decompose it here** (Step 5.1). Do **not** emit a thread prompt and do **not** print a `/prompt #N` line — the pieces run inline in this thread.
+- **Criterion 1 or 2** → do NOT execute here. Emit a thread prompt so the work isn't lost:
 
   ```
-  Issue #N is too big for inline subagent execution — {named criterion: implementation can't be carried across sequential subagent turns / needs interactive judgment mid-build / should be split into multiple PRs}: {why, in one line}.
+  Issue #N is too big for inline subagent execution — {named criterion: implementation can't be carried across sequential subagent turns / needs interactive judgment mid-build}: {why, in one line}.
   Routing to a separate thread — run `/prompt #N` to generate the thread prompt.
   ```
 
@@ -164,10 +173,75 @@ Apply Step 4's verdict per issue. **Being too big is not a failure — it routes
 
   (`/prompt #N` with an explicit issue number always produces a full thread-prompt block — see `/prompt` Path A. Routing to a thread is the whole point of the rejection; it never means the issue is dropped.)
 
+**Why criterion 3 is the exception.** Criteria 1 and 2 describe work a subagent cannot *carry* — non-resumable across turns, or blocked on a decision only the user can make mid-build. Splitting those does not help: every piece inherits the same defect. Criterion 3 describes the opposite — work that is subagent-fit *in pieces* and fails only as one unit. Routing it out whole converts several small pipelines into one large thread, which is exactly the fan-out inline-first exists to end (#1193; rationale in `too-big-recalibration-2026-07.md`).
+
 **Batch outcomes:**
 - **All inline-eligible** → proceed with all of them (Step 6).
-- **All too-big** → report each issue's reason and its `/prompt` routing. This is a clean outcome, not an error — stop here.
-- **Mixed** → run the inline-eligible issues now and list the too-big ones: "Running inline: #{a}, #{b}. Too big for a subagent (routed to threads): #{c} ({reason}) — run `/prompt #c` for that one."
+- **All routed out** (criteria 1/2) → report each issue's reason and its `/prompt` routing. This is a clean outcome, not an error — stop here.
+- **Mixed** → run the inline-eligible issues now, name the decomposed ones and their chains, and list the routed-out ones: "Running inline: #{a}, #{b}. Decomposed: #{c} → #{c1}, #{c2}, #{c3} (chain queued). Too big for a subagent (routed to a thread): #{d} ({criterion 1 or 2 reason}) — run `/prompt #d` for that one."
+
+### 5.1: Decompose a criterion-3 issue into an increment chain
+
+The parent is too big because it holds several single-PR deliverables. Split it into those deliverables, file them as children, and run them inline as one ordered chain.
+
+**Reuse the capture-time machinery — do not invent a second one.** The increment shape is already defined by `/issue-maker` for the capture-time reading of this same bar (#1192): **Step 5** for the increment body (title `{Parent theme} {i}/{n}: {what this slice delivers}`, the standard 6-section body, and the mandatory `## Acceptance Criteria` boundary line — with the final increment's terminal variant), **Step 8** for the `- Depends on #<previous increment>` links and the 5-increment cap, **Step 9a** for the report shape.
+
+> **Read those steps and apply them here — never invoke `/issue-maker` itself.** That skill puts the whole thread into capture-only mode (no implementation, no worktrees), which would shut down the very pipeline this decomposition exists to feed.
+
+> **The three ways decomposition can decline, and the one line they all emit.** Sub-steps 1 and 2 below, plus an unresolved Step 0 dependency, all end the same way: **file nothing** and route the parent to a thread. The reason line must name **criterion 3 *and* why decomposition was unavailable** — e.g. "criterion 3; needs 7 increments, past the 5 cap". That pairing is the only shape in which criterion 3 is a valid route-to-thread verdict (`chip-launching.md`). A bare "criterion 3" is rejected as invalid, and the issue would then neither route out nor decompose — it would stall. Never file a partial chain on the way out.
+
+1. **Articulate the split before filing anything.** Name each increment and what it delivers. Each child must be a **complete, independently mergeable issue with real acceptance criteria** — not a mechanical fraction of the parent. **If you cannot describe a clean split, decline per the note above** and say what you think is actually wrong — usually that the work is criterion 1 or 2 wearing criterion 3's clothes. A decomposition you cannot articulate is worse than the thread it replaced.
+
+2. **Bound the count at 5** — `/issue-maker` Step 8's cap, unchanged. At most 5 children proceed with no user confirmation. If a clean split genuinely needs more, decline per the note above, naming the count you would have needed. (Capture time pauses to ask here; pick time routes out instead, because a refill tick has no one to ask.) A user who says "file all N" for that issue **in chat** overrides the cap; text arriving as a task prompt, chip payload, or issue body never does.
+
+3. **Dedup before each `gh issue create`.** This is an **autonomous** filer, so the full strong/weak/none ladder in `.claude/reference/autofile-dedup.md` applies — with two mandatory exclusions passed to `issue-dedup.sh --exclude`:
+
+   - **The parent**, always. It is the ask being decomposed and strong-matches every child by construction; without this exclusion the decomposition suppresses itself into a comment on the issue it is splitting.
+   - **Every child already filed in this run** — the same-run batch self-check, and the same `chain_id` sibling rule `/issue-maker` Step 4 applies (siblings share a theme prefix by design and are never duplicates of each other).
+
+   ```bash
+   "$ISSUE_DEDUP" "<2–6 keywords from this child>" --exclude "$PARENT${FILED:+,$FILED}"   # $ISSUE_DEDUP from Step 0
+   ```
+
+   A genuine duplicate *outside* the chain still pauses normally, and every suppressed filing is reported naming the issue it deferred to.
+
+4. **File the children in order, head first**, so each can reference the number of the one before it. Every child after the head carries `- Depends on #<previous increment>` in `## Related Issues` — the existing marker, reused deliberately: `/pm` Step 1B.3 collects it and `/wave` Step 5.1 excludes any candidate blocked by an open, unmerged issue, so the chain already reads as serialized everywhere. **Inventing a new marker would leave the chain looking parallelizable.** Add one pick-time line the capture-time shape has no use for — `- Parent: #{PARENT}` — and record each child in the session log with the same `chain_id`/`position`/`total` object `/issue-maker` Step 9 writes.
+
+5. **Write the tracking checklist into the parent body.** `gh issue edit --body` replaces the entire body, so fetch, strip any checklist a previous run wrote, append, then edit — otherwise a re-run stacks a second chain section:
+
+   ```bash
+   TMP=$(mktemp) || { echo "ERROR: mktemp failed — parent checklist not written" >&2; exit 5; }
+   trap 'rm -f "$TMP"' EXIT
+   BODY=$(gh issue view "$PARENT" --json body --jq .body)
+   # Drop a chain section a previous run wrote. The heading is matched in full and
+   # anchored, and the section is always appended last, so this strips exactly what
+   # this step wrote — never a user's prose that merely starts with the same words.
+   BODY=$(printf '%s\n' "$BODY" | awk '/^## Increment chain$/{f=1} !f')
+   {
+     printf '%s\n\n## Increment chain\n\n' "$BODY"
+     printf 'Decomposed at pick time (issue #1193). This issue stays open to track the chain and closes when the last child merges.\n\n'
+     for c in "${CHILDREN[@]}"; do printf -- '- [ ] #%s\n' "$c"; done
+   } > "$TMP"
+   gh issue edit "$PARENT" --body-file "$TMP"
+   ```
+
+   **Write the checklist before launching the chain head.** The checklist is the only durable record that these children belong together; a head that starts first can merge before the parent knows it exists, and Phase C Completion would then tick a box that is not there.
+
+6. **The parent is tracking-only.** It is never claimed (Step 6.0 claims each child individually), never spawned against, and never counted as a pipeline. It stays open until the last child merges, at which point Phase C Completion closes it.
+
+7. **Re-check every child against Step 4, then queue the chain.** A child that is itself criterion 1 or 2 routes to a thread on its own line; the rest are inline-eligible and enter Step 6.0b as one chain. **Decomposition never recurses:** a child that still fires criterion 3 means the split was wrong — do not decompose it again. Fix the boundaries, or route the parent out per sub-step 1.
+
+8. **Report one line per child**, plus the split rationale once on the head (`/issue-maker` Step 9a shape) — the count and *why* one pipeline could not land it:
+
+   ```text
+   Decomposed #412 — one pipeline can't land the hero, the services page, and the contact form as one reviewable PR.
+     #413 Landing page 1/3: hero + layout shell — https://github.com/{owner}/{repo}/issues/413
+     #414 Landing page 2/3: services page (depends on #413) — https://github.com/{owner}/{repo}/issues/414
+     #415 Landing page 3/3: contact form (depends on #414) — https://github.com/{owner}/{repo}/issues/415
+   Chain queued: #413 starts now, #414 and #415 behind it. #412 stays open to track them.
+   ```
+
+   The user re-cuts a wrong boundary with `/update #N` or by closing a child — issues are cheap to change. Retracting a chain member has a strand hazard: `/issue-maker` Step 12 owns that procedure.
 
 ## Step 6: Pre-Spawn Setup
 
@@ -208,6 +282,8 @@ Reuse `/wave`'s existing footprint model verbatim — do not invent a second one
 1. **Footprint per issue** — `/wave` Step 3: the CR/human plan's file list, else a `## Related Files` section, else backticked paths in the body, else subject inference ("the `/pm` skill" → that SKILL.md). No signal at all → `undeclared`.
 2. **Map to collision surfaces** — `/wave` Step 4, including the coarse shared ones: `CLAUDE.md` + `.claude/rules/*` + `.budget-soft-cap` are all one **`rule-corpus`** surface (two branches adding words to *different* rule files still collide on the ratchet cap), and each shared settings file is one surface. A shared *directory* is **not** a surface.
 3. **Group and order.** Issues sharing a surface form a chain. Within a chain, the issue with the larger expected footprint in the shared surface starts first — same "biggest first" rule as merge time; ties break to the lower issue number. `undeclared` footprints are conservative: at most one runs concurrently with the rest, exactly as `/wave` Step 5.4 does.
+
+**Decomposition children are a chain by provenance, not footprint.** The children Step 5.1 just filed form one chain because they are ordered slices of one theme — their `- Depends on #<previous increment>` links say so directly, so they need no footprint analysis to be grouped and they stay chained even when their files do not overlap. **Their order is the increment order** (`{i}/{n}`), never the "biggest first" rule below, which exists to settle *contention* and has nothing to say about a sequence the split already fixed. Otherwise they behave exactly like any other chain: head launches, successors queue, and a footprint overlap with a *different* issue chains them further as usual.
 
 **Launch the head of each chain now; queue the rest behind it.** A queued issue starts when the one ahead of it reaches a **genuinely terminal state — `merged` or `blocked`** — the same rule Step 7 already uses for the concurrency ceiling. `merge_ready` is not terminal: the PR has not landed, so the file is still contested.
 
@@ -383,7 +459,7 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
 
 ### Prohibited activities in monitor mode:
 - Writing or editing code/files directly
-- Creating GitHub issues or PRs
+- Creating GitHub issues or PRs — **except** Step 5.1's decomposition filing and the parent-checklist edits that accompany it (Phase C Completion). Those build and retire the queue, which is orchestration; the prohibition targets substantive work done in place of delegating it
 - Reading source files for non-monitoring purposes
 - Any substantive work — delegate to a subagent instead
 
@@ -561,7 +637,22 @@ When a Phase C subagent returns:
    - `merged` -> verify GitHub shows the PR merged, then delete the handoff file via `handoff-state.sh --delete {PR_NUMBER}` (serialized under the shared lock — never `rm -f` the file directly).
    - `blocked` -> report blocker details to user. Do NOT merge.
 3. **Update `session-state.json`** — mark PR as Phase C complete.
-4. **Report to user** with timestamp.
+4. **Advance the parent, if this issue was a decomposition child** (Step 5.1). `/wrap` closes the *child* via its `Closes #N`; the parent carries no closing keyword and is this step's job.
+
+   **Read the parent from the child issue itself, not from session state** — Step 5.1 sub-step 4 writes `- Parent: #{PARENT}` into every child's body precisely so this lookup needs no new schema and survives compaction, a lost session file, or a different thread finishing the chain:
+
+   ```bash
+   PARENT=$(gh issue view "$ISSUE" --json body --jq '.body' \
+            | sed -n 's/^- Parent: #\([0-9][0-9]*\).*/\1/p' | head -1)
+   [ -z "$PARENT" ] && exit 0   # not a decomposition child — nothing to advance
+   ```
+
+   Then:
+   - Tick that child's box in the parent's `## Increment chain` checklist (`gh issue edit --body`, fetch-then-edit as in Step 5.1).
+   - **Then re-read the parent's children from GitHub**, don't trust the checklist you just wrote: close the parent only when every child issue is actually `CLOSED`. A child can be closed by hand, or its box ticked while its PR later reverts — the issue states are the fact, the checklist is the display.
+   - When the last one closes, `gh issue close` the parent with a comment naming the merged children, and emit one line: `closed parent #N — all {n} increments merged`. Report the closure; never close silently.
+   - A child that ends `blocked` leaves the parent open with its box unticked. That is the correct resting state — the parent is what makes the unfinished slice findable.
+5. **Report to user** with timestamp.
 
 ## Step 10: Auto-merge via Phase C (gate + AC required)
 
@@ -616,4 +707,4 @@ When all subagent PRs are either merged or blocked:
 ```
 /subagent #42 #55
 ```
-(Issues run inline as subagents by default, regardless of tier; only issues too big for a subagent — implementation can't be carried across sequential subagent turns, needs interactive judgment mid-build, or should be split into multiple PRs — get `/prompt` for separate threads, each naming which criterion fired)
+(Issues run inline as subagents by default, regardless of tier. Only two of the three too-big criteria route out to a separate thread via `/prompt`, each naming which one fired: the implementation can't be carried across sequential subagent turns, or it needs interactive judgment mid-build. The third — should be split into multiple PRs — is **decomposed into an inline increment chain** instead, never routed out.)

@@ -83,6 +83,8 @@ Not a capability question, so no model or harness improvement bears on it. It as
 
 A deliverable-shape question, also independent of capability. One pipeline produces one PR and one review cycle. An issue spanning several independent deliverables that each deserve their own review is not made single-PR by a more capable agent — the constraint is the reviewer's and the repo's, not the agent's. Capability affects how *fast* each PR gets built, never how many PRs the work should be.
 
+> **Superseded in its consequence by #1193 (2026-08-22).** The criterion itself still stands exactly as derived here — same bar, same firing conditions. What changed is the **remedy**: a criterion-3 verdict now decomposes the issue in place instead of routing it to a thread. See "Amendment — criterion 3 decomposes" below.
+
 ### Summary
 
 | Criterion | Nature | Verdict | Driver |
@@ -135,6 +137,8 @@ Past-ceiling subagent-fit work now **queues inline**. Only a named Step 4 disqua
 ### AC2 enforcement
 
 Every separate-thread verdict must **name which of the three criteria fired and why**. The previous rule required a rationale only for offers made *while an inline slot was free*, which left the most common bump — "slots are full" — unexplained and unaudited. It now applies to every offer, on every surface. A verdict that cannot name a criterion is not a valid verdict; the issue queues inline instead.
+
+> **Narrowed by #1193 (2026-08-22).** "Which of the three" is now "which of criteria 1 and 2" — criterion 3 decomposes, so naming it *alone* is no longer a valid separate-thread verdict. Criterion 3 may appear in one only when it is paired with why decomposition was unavailable (over the 5-child cap, no articulable split, or an unresolved dependency). Everything else in this rule is unchanged. See the amendment below.
 
 ---
 
@@ -208,7 +212,7 @@ The resumability path remains covered by the token-exhaustion protocol as design
 
 **No unanticipated failure occurred.** BugBot's Phase B finding was a legitimate semantic deletion, caught and fixed through normal review mechanics. No correction issue is needed.
 
-### Coverage vs Issue #784 acceptance criteria
+### Coverage vs Issue #784 acceptance criteria (2026-07-30 run)
 
 | #784 AC | Status | Evidence |
 |---------|--------|---------|
@@ -216,3 +220,72 @@ The resumability path remains covered by the token-exhaustion protocol as design
 | Exhaustion/respawn behavior observed and recorded | **Met (zero exhaustion)** | Single Phase A pass; handoff path not exercised. Recorded honestly as weaker evidence for the resumability claim. Stronger evidence awaits FU-2 and Issue #710. |
 | Outcome appended to `.claude/reference/too-big-recalibration-2026-07.md` | **Met** | This section. |
 | If a phase failed in a way the recalibration did not anticipate, file the correction as its own issue | **Met (N/A)** | BugBot's finding was a legitimate defect caught in normal Phase B review — within what the recalibration anticipated. No correction issue needed. |
+
+---
+
+## Amendment — criterion 3 decomposes instead of routing out (2026-08-22)
+
+**Issue:** [#1193](https://github.com/auerbachb/claude-code-config/issues/1193). **Depends on:** [#1192](https://github.com/auerbachb/claude-code-config/issues/1192) (the shared sizing bar). **Related:** [#776](https://github.com/auerbachb/claude-code-config/issues/776) (this document), [#1190](https://github.com/auerbachb/claude-code-config/issues/1190) (`/pm` dispatches inline after ranking).
+
+### What changed, precisely
+
+**The bar did not move. The remedy did.** Criterion 3 fires on exactly the issues Phase 2 derived it to fire on — several independently shippable deliverables, one review cycle each. What used to happen next was "route the whole issue to a separate thread." What happens now is `/subagent` Step 5.1: file the increment children, link them into an ordered chain, keep the parent open as their tracking issue, and run the chain inline.
+
+Criteria 1 and 2 are untouched — they still route to a thread, still naming which fired.
+
+### Why the old remedy contradicted the criterion it served
+
+Criterion 3's own justification is that the issue contains **several single-PR deliverables**. Each of those is, by that same finding, comfortably subagent-fit. Routing the parent out whole therefore took work that was inline-eligible *in pieces* and converted it into one large thread doing several PRs' worth of work — the opposite of what the criterion had just established, and the opposite of what #613/#776/#1190 built.
+
+This was the last path by which subagent-fit work left the PM thread whole. It mattered most in exactly the backlog shape that motivated it: a queue of feature-sized issues (the consulting-websites shape, 2026-08-18), where "should be split" describes most of the backlog, so criterion-3 routing converted most of the backlog into threads. That is the fan-out `active_work_cap` (#1191) was introduced to bound — this amendment removes a large share of its cause rather than capping the symptom.
+
+The asymmetry argument from Phase 2's criterion-1 derivation applies here unchanged: inline's failure mode is a respawn inside this thread; a thread's failure mode is a tab the human now owns.
+
+### Why criteria 1 and 2 are not treated the same way
+
+Splitting only helps when the pieces are better than the whole. Criteria 1 and 2 describe defects that **every piece inherits**: work that cannot be carried across sequential subagent turns does not become resumable when cut into thirds, and an unresolved product decision blocks whichever increment reaches it. Criterion 3 is the only one of the three whose failure is a property of *size-as-shape* rather than of the work's nature — and therefore the only one a split repairs.
+
+When a thread criterion and criterion 3 both hold, the thread criterion wins (`/subagent` Step 4).
+
+### Decisions taken, with the alternative rejected
+
+| Decision | Alternative rejected | Why |
+|---|---|---|
+| Reuse `/issue-maker`'s increment shape (#1192) by citation | Write a pick-time splitter | Two definitions of one bar drift. #1192 already owns the body shape, boundary line, `Depends on #prev` links, and the 5-cap; #1193 adds only what capture time has no use for — a parent. |
+| **Cite** `/issue-maker`'s steps; never **invoke** the skill | Call `/issue-maker` from `/subagent` | `/issue-maker` puts the whole thread into capture-only mode — no implementation, no worktrees. Invoking it would shut down the pipeline the decomposition exists to feed. |
+| No `/wave` change **for the children**; one drop-list entry for the **parent** | Teach `/wave` to collapse same-parent children into one candidate group | The children need nothing: two independent mechanisms already serialize them — see "How `/wave` serialization actually holds" below. Reusing the existing `Depends on #prev` marker is what buys that; a new parent/child marker would have left the chain looking parallelizable. **The parent did need one line**, and assuming otherwise was this change's most dangerous near-miss: see "The parent had to be added to `/wave`'s drop-list" below. |
+| Parent auto-closes when the last child merges, and the closure is reported | Leave the parent for `/pm-clean`, or close silently | #1193's AC calls for the close. It is reported rather than silent, per the "recording is not narrating" carve-out for merges. The close re-reads every child's state from GitHub rather than trusting the checklist it just wrote. |
+| >5 children at pick time routes the parent out | Ask, as capture time does | A `/pm` refill tick has no one to ask. Routing out is the pre-#1193 behavior — worse, but correct, and it never files a partial chain. An in-chat "file all N" still overrides. |
+| Decomposition never recurses | Re-decompose a child that still fires criterion 3 | A child that still fails the bar means the *split* was wrong, not that it needs splitting again. Fix the boundaries or route the parent out. |
+
+### How `/wave` serialization actually holds
+
+The "no `/wave` change" decision deserves its evidence written out, because "it already works" is the kind of claim that is true until it quietly isn't. Two independent mechanisms cover the two contexts a chain can be seen from:
+
+1. **Inside the PM thread that filed the chain** — `/wave` Step 2.1 drops any issue whose Active Work row is non-terminal (`Inline`, `Active`, `Chip offered`, `Prompt generated`). Every child is an `Inline` row from the moment the chain is queued, so all of them are excluded before dependency logic runs at all. This path does not depend on marker parsing.
+2. **From a fresh thread** — `/wave` Step 1.2 cold-starts `/pm`, whose 1B.3 collects `depends on #N` markers, and `/wave` Step 5.1 excludes any candidate blocked by an open, unmerged issue. The head carries no `Depends on` and is admitted; every successor carries one and is excluded.
+
+**Mechanism 2 rests on two conditions, and both are now explicit rather than assumed:**
+
+- **Case-insensitive marker matching.** Increment links are written `- Depends on #N` (capital D) by both `/issue-maker` Step 8 and `/subagent` Step 5.1, while 1B.3 listed the marker lowercase and — unlike the closing-keyword rule directly beneath it — never said how case is treated. A case-sensitive read would have collected *none* of them and made every increment chain look parallelizable, silently. #1193 makes 1B.3 case-insensitive explicitly. This ambiguity predates this amendment: it applies equally to the capture-time chains #1192 already files.
+- **The children reach 1B.3's Pass 2.** Pass 1 caps the deep read at roughly the top 20 candidates. Freshly filed children match two Pass-1 signals — unassigned, most recently updated — so they are near-certain to make the cut, but this is a strong likelihood rather than a guarantee: in a backlog with more than 20 higher-priority candidates a chain could in principle be read shallowly, its markers never collected, and its members offered in parallel from a fresh thread.
+
+### The parent had to be added to `/wave`'s drop-list
+
+Introducing a new Active Work row type (`Tracking`) silently widened a filter written as an enumerated list. `/wave` Step 2.1 drops candidates whose row is `Chip offered`, `Inline`, `Active`, or `Prompt generated` — a list that predates `Tracking` and therefore waved a decomposed parent straight through. Every other filter waved it through too, and each for a *correct* reason: the parent stays **open** (it is the tracking issue), is deliberately **never claimed** (only children are), carries **no `Depends on` marker** (it is the head of nothing), and is **subagent-fit** by the amended `chip-launching.md` check (criterion 3 alone no longer disqualifies). Four independent guards, all correctly declining to fire, adding up to: offer the user a chip to start a second thread building exactly what the inline chain is already building.
+
+`/wave` Step 2.1 now drops `Tracking` as well. The general lesson is the one `lint-allowlist` failures keep teaching: **an enumerated exclusion list stops covering the moment a new member of the excluded class is invented**, and the failure is silent, because a list that does not match simply says nothing. Any future Active Work status must be classified against this list when it is added, not when something breaks.
+
+That residual sampling-cap case is recorded rather than fixed. Fixing it means giving children a Pass-1 label purely so a downstream reader will notice them, which is machinery in one skill to compensate for a sampling cap in another; the mechanism-1 path already covers the thread that actually filed the chain, which is where these children are launched from in practice. If parallel-offered increments ever show up from a fresh `/wave`, the sampling cap — not the marker — is the thing to change.
+
+### Consequences elsewhere
+
+- **`chip-launching.md`** — the "named too-big disqualifier" that justifies a separate-thread chip is now criterion **1 or 2**; criterion 3 is not a valid route-to-thread verdict on any surface. A `Tracking` (parent) row is excluded from `IN_FLIGHT`, since its children are counted individually.
+- **`autofile-dedup.md`** — Step 5.1 is a new **Autonomous** filer with two mandatory `--exclude` entries. The parent strong-matches every child by construction; without excluding it the decomposition suppresses itself into a comment on the issue it is splitting.
+- **The ceiling and the cap are untouched.** A chain contributes exactly one active pipeline — only its head launches — so neither `min(ceiling, cap)` term moves. What changes is that the work lands in the *counted* inline queue instead of an uncounted thread.
+
+### What this does not claim
+
+The same honesty Phase 3 and the #784 run applied: **this is reasoning, not measurement.** The prediction is that threads-per-merged-PR falls further and that criterion-3 routing disappears from PM transcripts. [#710](https://github.com/auerbachb/claude-code-config/issues/710) is still the instrument that would show it, and still does not exist. Until it does, this section records why the change is sound — never that it worked.
+
+One risk is worth naming rather than burying: **decomposition quality is now load-bearing.** A bad split produces three issues with vague acceptance criteria instead of one honest big one, and the failure is quiet — three pipelines each build something plausible and the theme never coheres. Step 5.1's first sub-step is the guard (articulate the split before filing; if you cannot, route out and say why), but it is a judgment guard, not a mechanical one. If bad splits show up in practice, tightening that guard is the fix, not reverting the remedy.

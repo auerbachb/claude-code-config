@@ -12,6 +12,7 @@ Run `grep -rn "gh issue create" .claude/` to reproduce this list. Every site mus
 | `.claude/skills/wrap/SKILL.md` (Phase 3, Step 3.10a — churn hotspots) | **Autonomous** | **Exact-match** on a path key, not strong/weak/none — see "Exact-artifact dedup" below (issue #755) |
 | `.claude/agents/pm-worker.md` (Task: Issue Creation) | **Autonomous** | Strong/weak/none — suppress + report (wired since PR #680) |
 | `.claude/skills/harness-audit/SKILL.md` (Step 7) | **Autonomous** | **Exact-artifact** on the audited path — see "Exact-artifact dedup" below (issue #770) |
+| `.claude/skills/subagent/SKILL.md` (Step 5.1 — pick-time decomposition) | **Autonomous** | Strong/weak/none — suppress + report, with two mandatory `--exclude` entries: see "Decomposition children" below (issue #1193) |
 | `.claude/skills/issue-maker/SKILL.md` (Step 4) | **Human-in-the-loop** | Surface-only — never auto-suppress (wired since PR #661) |
 | `.claude/skills/start-issue/SKILL.md` (Step 1a) | **Human-in-the-loop** | Surface strong matches, pause for confirmation (wired since PR #680) |
 | `.claude/agents/researcher.md` | **Non-filer** | `gh issue create` appears in the agent's forbidden-command list |
@@ -92,6 +93,17 @@ Flag it in the run report too, so the ambiguity is visible in two places rather 
 ### No match → file normally
 
 Behavior is unchanged from before this check existed.
+
+## Decomposition children — the parent is never a suppression target (issue #1193)
+
+`/subagent` Step 5.1 splits a criterion-3 issue into increment children and files them autonomously, so the full ladder above applies. Two exclusions are **mandatory**, not tuning, because without them the mechanism suppresses the work it was invoked to create:
+
+1. **The parent issue.** It is the ask being decomposed. Every child restates a slice of it, so the parent strong-matches all of them by construction — same primary artifact, a body criterion that plainly covers the finding, high coverage. Left in the candidate set, the first child is "deferred" into a comment on its own parent and the decomposition collapses to nothing.
+2. **Every sibling already filed in this run.** Increments share a theme prefix and most of their keywords deliberately, so increment 1 outranks everything when increment 2 is filed. This is the same-run self-check below plus `/issue-maker` Step 4's `chain_id` sibling rule; both resolve membership by `chain_id`, never by theme text.
+
+Pass both to `issue-dedup.sh --exclude`. A genuine duplicate **outside** the chain still classifies normally — the exclusions narrow the candidate set, they never lower the strong-match bar.
+
+This is the mirror image of the exact-artifact case above. There, fuzzy scoring was too *loose* for a finding keyed to one path. Here it is correctly fuzzy but pointed at candidates that are related **by design**, so relatedness carries no evidence of duplication.
 
 ## Same-run batch self-check
 
