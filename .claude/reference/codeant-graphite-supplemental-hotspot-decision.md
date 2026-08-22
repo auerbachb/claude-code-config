@@ -78,7 +78,7 @@ This was replaced with a call to the `local-review.sh` wrapper:
 # exit 0 clean · 1 findings · 3 failed run · 4 timeout · 5 not installed
 ```
 
-The wrapper applies every false-clean check (stderr error, 403, noFiles, 15-file cap, 2-min
+The wrapper applies every false-clean check (stderr error, 403, noFiles, 15-file cap, idle
 hang) and returns a single well-typed exit code. Using the raw approach meant the runbook
 could silently miss the noFiles, 15-file-cap, and hang failure modes that the wrapper catches.
 This is a correctness fix for the runbook command, not a structural change.

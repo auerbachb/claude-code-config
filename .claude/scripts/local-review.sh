@@ -21,8 +21,18 @@
 #   --scope <scope>     all (default) | uncommitted | committed
 #                       Mapped per CLI: CR `--type <scope>`; CodeAnt `--all`/`--uncommitted`/`--committed`.
 #   --base <branch>     Pass a base branch through (both CLIs support --base).
-#   --timeout <sec>     Hang bound, default 120 (the 2-minute rule in cr-local-review.md).
-#                       CodeAnt v0.5.1 can hang with ZERO output, so silence is never progress.
+#   --timeout <sec>     Idle bound: seconds with NO output on either stream. Any byte
+#                       written resets it, so a CodeRabbit `heartbeat` record counts as
+#                       liveness and a long-but-live review is never killed. Elapsed time
+#                       is NOT the instrument — a 300s wall-clock bound killed a review at
+#                       304s that finished in 271s on retry (issue #1220). CodeAnt v0.5.1
+#                       can hang with ZERO output, so silence is never progress.
+#   --max-duration <sec>  Absolute ceiling, so a CLI that emits forever without finishing
+#                       is still bounded. Defaults to 2x --timeout (derived, so the
+#                       relationship survives retuning). Set below --timeout and the
+#                       ceiling dominates — the idle bound then never fires. Both bounds
+#                       are measured off the clock, not a tick count; the <=2s
+#                       termination grace is not counted against either.
 #   --log-dir <dir>     Where to persist raw output. Default: $TMPDIR or /tmp.
 #   --format json|summary   Output shape. Default json (the contract).
 #   --print-cmd         Print the exact CLI command to stdout and exit 0. Runs nothing.
@@ -41,6 +51,7 @@
 #                 A run with findings is still a verified run — ok is false, verified_run true.
 #   failure_mode  null | stderr_error | error_record | no_review_records | no_changes_reviewed
 #                 | capped | timeout | not_installed   (maps 1:1 onto the failure-modes reference)
+#                 `timeout` covers both bounds — relevant_error says which one tripped.
 #   failed_tests  always [] — this is not a test pipeline; present for contract uniformity.
 #   relevant_error  the CLI's own decisive error text, capped. Never the whole log.
 #
@@ -56,7 +67,7 @@
 #   2  usage error
 #   3  failed run — false-clean detected (stderr error, error record, no review records,
 #      nothing reviewed, or a capped partial run). NOT a clean pass, NOT coverage.
-#   4  timed out (exceeded --timeout)
+#   4  bounded and killed (no output for --timeout, or past --max-duration)
 #   5  CLI binary not installed
 #
 # Notes:
@@ -66,6 +77,7 @@
 #     CLI is launched, so no verdict ever names a log file that does not exist.
 #   - Never runs `codeant logout`/`login` on a 403 — the cause is an undocumented daily cap,
 #     not auth (issue #643). Retry policy stays with the caller: one retry, then drop.
+
 set -uo pipefail
 
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
@@ -74,7 +86,13 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
 TOOL=""
 SCOPE="all"
 BASE=""
-TIMEOUT=120
+# Idle bound, NOT wall-clock. 900s is >=3x the longest observed successful review
+# (271s, PR #1222) and clears a heartbeat *gap* — captured CodeRabbit logs carry only
+# 2-8 heartbeats per run, so the spacing is tens of seconds, not a tick. It also has to
+# stay safe for a CLI that goes quiet mid-review, where an idle bound degrades to a
+# wall-clock one. Measurements: local-review-cli-failure-modes.md "The hang bound".
+TIMEOUT=900
+MAX_DURATION=""          # empty = derive as 2 x TIMEOUT after parsing
 LOG_DIR="${TMPDIR:-/tmp}"
 FORMAT="json"
 PRINT_CMD=0
@@ -90,6 +108,7 @@ while [[ $# -gt 0 ]]; do
     --scope)   SCOPE="${2:-}"; [[ -z "$SCOPE" || "$SCOPE" == -* ]] && die "--scope requires a value"; shift 2 ;;
     --base)    BASE="${2:-}"; [[ -z "$BASE" || "$BASE" == -* ]] && die "--base requires a branch"; shift 2 ;;
     --timeout) TIMEOUT="${2:-}"; [[ "$TIMEOUT" =~ ^[0-9]+$ ]] || die "--timeout requires an integer (seconds)"; shift 2 ;;
+    --max-duration) MAX_DURATION="${2:-}"; [[ "$MAX_DURATION" =~ ^[0-9]+$ ]] || die "--max-duration requires an integer (seconds)"; shift 2 ;;
     --log-dir) LOG_DIR="${2:-}"; [[ -z "$LOG_DIR" || "$LOG_DIR" == -* ]] && die "--log-dir requires a directory"; shift 2 ;;
     --format)  FORMAT="${2:-}"; [[ "$FORMAT" == "json" || "$FORMAT" == "summary" ]] || die "--format must be json or summary"; shift 2 ;;
     --bin)     BIN_OVERRIDE="${2:-}"; [[ -z "$BIN_OVERRIDE" || "$BIN_OVERRIDE" == -* ]] && die "--bin requires a path"; shift 2 ;;
@@ -98,6 +117,16 @@ while [[ $# -gt 0 ]]; do
     *) die "unknown argument: $1" ;;
   esac
 done
+
+# Force base 10 before any arithmetic. `^[0-9]+$` accepts `08`, which bash reads as an
+# invalid octal literal — every later (( )) on it then errors out and the bound silently
+# stops being enforced. Normalise once, here, rather than at each use site.
+TIMEOUT=$(( 10#$TIMEOUT ))
+[[ -n "$MAX_DURATION" ]] && MAX_DURATION=$(( 10#$MAX_DURATION ))
+
+# Derived, not a second literal: retuning --timeout moves the ceiling with it, the way
+# bgwork-ceiling.sh derives TRIP_S from the ceiling rather than publishing two numbers.
+[[ -n "$MAX_DURATION" ]] || MAX_DURATION=$(( TIMEOUT * 2 ))
 
 [[ -n "$TOOL" ]] || die "--tool is required (coderabbit or codeant)"
 case "$TOOL" in coderabbit|codeant) ;; *) die "--tool must be coderabbit or codeant (got: $TOOL)" ;; esac
@@ -198,31 +227,88 @@ fi
 
 # ----------------------------------------------------------------------
 # Run with a hang bound. No `timeout(1)` on stock macOS, so poll the child.
+#
+# The bound is IDLE time, not elapsed time. A review that takes ten minutes while
+# streaming `heartbeat` records is working; one that has written nothing for the whole
+# idle bound is not. Wall-clock cannot tell those apart, and reading a slow review as a
+# hang is expensive: it burns a CLI review against a small daily/hourly cap and drops a
+# healthy CLI to degraded coverage while reporting a hang that never happened (#1220).
+#
+# MAX_DURATION is the backstop for the one shape an idle bound cannot catch: a CLI that
+# emits forever without finishing. Both bounds are `timeout` — relevant_error says which.
 # ----------------------------------------------------------------------
-START="$(date -u +%s)"
-"$BIN" "${ARGS[@]}" >"$OUT" 2>"$ERR" &
-CLI_PID=$!
+stream_bytes() { # total bytes written across both captures; 0 for an unreadable file
+  local f n total=0
+  for f in "$OUT" "$ERR"; do
+    n="$(wc -c < "$f" 2>/dev/null || echo 0)"
+    n="${n//[^0-9]/}"          # macOS wc pads with leading spaces
+    total=$(( total + ${n:-0} ))
+  done
+  printf '%s' "$total"
+}
 
+# Job control puts the child in its OWN process group, so the kill below reaches a CLI
+# that spawned workers. Without it only the direct PID dies and descendants keep running
+# — still calling the API, still holding the captures open, while the verdict claims the
+# run was stopped. stdin is /dev/null because a job-controlled background job that reads
+# the terminal takes SIGTTIN and stops, which would look exactly like a hang.
+set -m 2>/dev/null || true
+"$BIN" "${ARGS[@]}" >"$OUT" 2>"$ERR" </dev/null &
+CLI_PID=$!
+set +m 2>/dev/null || true
+
+# Kill the process group when the shell gave us one, else fall back to the bare PID.
+kill_cli() { # signal
+  kill -"$1" -"$CLI_PID" 2>/dev/null || kill -"$1" "$CLI_PID" 2>/dev/null || true
+}
+
+# Both bounds read the clock, never a tick count. A tick is `sleep 1` plus two size
+# probes, so counting iterations drifts past the requested bound under load — on the
+# ceiling, the backstop against a runaway CLI, that drift is unbounded.
+START="$(date -u +%s)"
 TIMED_OUT=0
-ELAPSED=0
+TIMEOUT_KIND=""
+LAST_CHANGE_TS="$START"
+LAST_SIZE="$(stream_bytes)"
 while kill -0 "$CLI_PID" 2>/dev/null; do
-  if (( ELAPSED >= TIMEOUT )); then
-    TIMED_OUT=1
-    kill -TERM "$CLI_PID" 2>/dev/null || true
-    # Give it a moment to flush, then make sure it is gone.
-    sleep 2
-    kill -KILL "$CLI_PID" 2>/dev/null || true
+  NOW="$(date -u +%s)"
+  if (( NOW - LAST_CHANGE_TS >= TIMEOUT )); then
+    TIMED_OUT=1; TIMEOUT_KIND="idle"
+  elif (( NOW - START >= MAX_DURATION )); then
+    TIMED_OUT=1; TIMEOUT_KIND="max_duration"
+  fi
+  if [[ "$TIMED_OUT" -eq 1 ]]; then
+    IDLE_S=$(( NOW - LAST_CHANGE_TS ))
+    OUTPUT_S=$(( LAST_CHANGE_TS - START ))
+    kill_cli TERM
+    # Grace to flush, polled rather than a flat sleep so a CLI that dies at once does not
+    # push the wrapper past the bound it was just held to.
+    for _ in 1 2; do kill -0 "$CLI_PID" 2>/dev/null || break; sleep 1; done
+    kill_cli KILL
     break
   fi
   sleep 1
-  ELAPSED=$((ELAPSED + 1))
+  SIZE="$(stream_bytes)"
+  # Any change counts as liveness, not just growth: a shrink would otherwise strand the
+  # comparison above the current size and read as silence for the rest of the run.
+  if [[ "$SIZE" != "$LAST_SIZE" ]]; then
+    LAST_SIZE="$SIZE"
+    LAST_CHANGE_TS="$(date -u +%s)"
+  fi
 done
 CLI_RC=0
 wait "$CLI_PID" 2>/dev/null || CLI_RC=$?
 DURATION=$(( $(date -u +%s) - START ))
 
 if [[ "$TIMED_OUT" -eq 1 ]]; then
-  emit false false timeout 0 "$TOOL exceeded --timeout ${TIMEOUT}s and was killed (partial output preserved)" "$DURATION" 4
+  # Say what was actually observed. "Wrote nothing" would be false for the common case:
+  # a CLI that reviewed for minutes, emitted plenty, then wedged. Whether a partial
+  # review is sitting in log_path is exactly what decides the caller's next move.
+  if [[ "$TIMEOUT_KIND" == "idle" ]]; then
+    emit false false timeout 0 "$TOOL went idle for ${IDLE_S}s (--timeout ${TIMEOUT}s) after ${OUTPUT_S}s and ${LAST_SIZE} byte(s) of output, and was killed (partial output preserved at log_path)" "$DURATION" 4
+  else
+    emit false false timeout 0 "$TOOL passed --max-duration ${MAX_DURATION}s still producing output (${LAST_SIZE} byte(s)) and was killed (partial output preserved at log_path)" "$DURATION" 4
+  fi
 fi
 
 # ----------------------------------------------------------------------

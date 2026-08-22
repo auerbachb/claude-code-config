@@ -57,6 +57,7 @@ field() { printf '%s' "$OUT" | jq -r "$1"; }
 "$SUT" --tool coderabbit --scope sideways >/dev/null 2>&1; check_eq 2 "$?" "unknown scope exits 2"
 "$SUT" --tool coderabbit --format yaml >/dev/null 2>&1; check_eq 2 "$?" "unknown format exits 2"
 "$SUT" --tool coderabbit --timeout abc >/dev/null 2>&1; check_eq 2 "$?" "non-integer timeout exits 2"
+"$SUT" --tool coderabbit --max-duration abc >/dev/null 2>&1; check_eq 2 "$?" "non-integer max-duration exits 2"
 
 # An unusable --log-dir is a usage error, not a run: the contract promises log_path and
 # stderr_path are real persisted files, so the script must refuse before launching the
@@ -268,8 +269,12 @@ else bad "--format summary shape wrong: $SUMMARY"; fi
 check_eq 1 "$(printf '%s\n' "$SUMMARY" | wc -l | tr -d ' ')" "--format summary is a single line"
 
 # --------------------------------------------------------------------------
-# 8. Timeout — a hung CLI is bounded, never waited on forever (CodeAnt v0.5.1
-#    can hang with ZERO output, so silence is not progress).
+# 8. The bound is IDLE time, not elapsed time (issue #1220).
+#
+#    A silent CLI is still killed (CodeAnt v0.5.1 can hang with ZERO output, so
+#    silence is not progress), but a CLI that keeps writing — CodeRabbit streams
+#    `heartbeat` records — must survive a total runtime well past the bound.
+#    These stubs are raw heredocs, not make_stub: make_stub cannot interleave sleeps.
 # --------------------------------------------------------------------------
 HANG="$STUBS/codeant-hang"
 { echo '#!/usr/bin/env bash'; echo 'sleep 60'; } > "$HANG"
@@ -280,6 +285,92 @@ ELAPSED=$(( $(date -u +%s) - START ))
 check_eq 4 "$RC" "hung CLI exits 4"
 check_eq "timeout" "$(field .failure_mode)" "hung CLI reports timeout"
 if (( ELAPSED < 20 )); then ok "hung CLI is killed promptly (${ELAPSED}s)"; else bad "timeout took ${ELAPSED}s"; fi
+
+# A live CodeRabbit run: heartbeats every 1s for ~6s. Total runtime is double the 3s
+# idle bound, but no single gap reaches it — the pre-#1220 wall-clock loop killed this
+# at 3s and reported a hang that never happened.
+BEAT="$STUBS/coderabbit-heartbeat"
+cat > "$BEAT" <<'STUB_EOF'
+#!/usr/bin/env bash
+echo '{"type":"review_context","files":["a.md"]}'
+for _ in 1 2 3 4 5 6; do
+  sleep 1
+  echo '{"type":"heartbeat","status":"reviewing"}'
+done
+echo '{"type":"complete","status":"review_completed","findings":0}'
+exit 0
+STUB_EOF
+chmod +x "$BEAT"
+START="$(date -u +%s)"
+run --tool coderabbit --bin "$BEAT" --timeout 3 --max-duration 60
+ELAPSED=$(( $(date -u +%s) - START ))
+check_eq 0 "$RC" "heartbeating CLI past the idle bound still exits 0"
+check_eq "null" "$(field .failure_mode)" "heartbeating CLI is not classified as a hang"
+check_eq "true" "$(field .verified_run)" "heartbeating CLI counts as a verified run"
+if (( ELAPSED >= 5 )); then ok "heartbeating CLI ran past the idle bound (${ELAPSED}s vs 3s)"
+else bad "stub finished too fast (${ELAPSED}s) — it never outlived the bound, so the test proves nothing"; fi
+
+# The shape an idle bound cannot catch: output forever, never finishing. --max-duration
+# is the backstop, and it reports the same failure_mode with its own relevant_error.
+CHATTY="$STUBS/coderabbit-chatty-forever"
+cat > "$CHATTY" <<'STUB_EOF'
+#!/usr/bin/env bash
+while :; do
+  echo '{"type":"heartbeat","status":"reviewing"}'
+  sleep 1
+done
+STUB_EOF
+chmod +x "$CHATTY"
+START="$(date -u +%s)"
+run --tool coderabbit --bin "$CHATTY" --timeout 30 --max-duration 3
+ELAPSED=$(( $(date -u +%s) - START ))
+check_eq 4 "$RC" "never-finishing chatty CLI exits 4"
+check_eq "timeout" "$(field .failure_mode)" "ceiling reports failure_mode timeout"
+if field .relevant_error | grep -q -- '--max-duration'; then
+  ok "ceiling names --max-duration in relevant_error"
+else bad "ceiling error text does not name --max-duration: $(field .relevant_error)"; fi
+if (( ELAPSED < 20 )); then ok "ceiling kills promptly (${ELAPSED}s)"; else bad "ceiling took ${ELAPSED}s"; fi
+
+# The ceiling is derived from --timeout, not a second literal, so retuning one moves the
+# other. Asserted through behaviour (killed at ~2x the idle bound) rather than by pinning
+# the default value, which must stay owned solely by the script.
+START="$(date -u +%s)"
+run --tool coderabbit --bin "$CHATTY" --timeout 2
+ELAPSED=$(( $(date -u +%s) - START ))
+check_eq 4 "$RC" "derived ceiling bounds a chatty CLI with no --max-duration"
+if (( ELAPSED < 20 )); then ok "derived ceiling kills promptly (${ELAPSED}s)"; else bad "derived ceiling took ${ELAPSED}s"; fi
+
+# A leading-zero bound must mean what it says. `^[0-9]+$` accepts `08`, which bash
+# arithmetic reads as an invalid octal literal — every (( )) on it then errors and the
+# bound stops being enforced, which is the one failure this wrapper must never have.
+START="$(date -u +%s)"
+STDERR_CAP="$TMP/leading-zero.err"
+OUT="$("$SUT" --tool codeant --bin "$HANG" --timeout 08 --max-duration 09 --log-dir "$LOGS" 2>"$STDERR_CAP")"; RC=$?
+ELAPSED=$(( $(date -u +%s) - START ))
+check_eq 4 "$RC" "leading-zero bounds still enforce the timeout (exit 4)"
+check_eq "timeout" "$(field .failure_mode)" "leading-zero bounds report timeout"
+if grep -q 'value too great for base' "$STDERR_CAP" 2>/dev/null; then
+  bad "leading-zero bound produced a bash octal arithmetic error"
+else ok "leading-zero bound produces no octal arithmetic error"; fi
+if (( ELAPSED < 20 )); then ok "leading-zero bound is treated as base 10 (killed in ${ELAPSED}s, not 0 or never)"
+else bad "leading-zero bound took ${ELAPSED}s"; fi
+
+# A CLI that spawns workers must not outlive its own timeout. Only the direct PID gets
+# the signal unless the child is in its own process group, and an orphan keeps calling
+# the API and keeps writing to the capture this script is about to parse.
+SPAWNER="$STUBS/coderabbit-spawner"
+MARKER="$TMP/descendant-alive"
+cat > "$SPAWNER" <<STUB_EOF
+#!/usr/bin/env bash
+( while :; do touch "$MARKER"; sleep 1; done ) &
+sleep 60
+STUB_EOF
+chmod +x "$SPAWNER"
+run --tool coderabbit --bin "$SPAWNER" --timeout 2
+check_eq 4 "$RC" "spawning CLI hits the idle bound"
+rm -f "$MARKER"; sleep 3
+if [[ -e "$MARKER" ]]; then bad "descendant survived the timeout kill and is still running"
+else ok "descendant process is killed with the CLI (process-group kill)"; fi
 
 # --------------------------------------------------------------------------
 # 9. stdout carries ONLY the contract — the whole point of the compact shape is

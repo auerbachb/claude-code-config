@@ -81,7 +81,7 @@ codeant set-codeant-api-key <your-api-key>
 codeant scans orgs
 
 # Run a proof review. Use the wrapper — it applies every false-clean check
-# (stderr error, 403, noFiles, 15-file cap, 2-min hang) and prints one line:
+# (stderr error, 403, noFiles, 15-file cap, idle hang) and prints one line:
 .claude/scripts/local-review.sh --tool codeant
 # exit 0 clean · 1 findings · 3 failed run · 4 timeout · 5 not installed
 ```
