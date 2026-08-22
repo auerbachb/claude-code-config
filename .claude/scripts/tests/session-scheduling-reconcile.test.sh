@@ -412,6 +412,44 @@ jq -e '(.purged.polling_jobs_skip // 0) >= 1' <<<"$J_SKIP" >/dev/null \
   || fail "unstamped polling_jobs should appear as polling_jobs_skip, got: $J_SKIP"
 ok "--format json reports skipped unstamped records in polling_jobs_skip"
 
+# --- 10b. --format=value (equals form) is equivalent to --format value -------
+# Issue #1205: --format=json fell through to the unknown-flag branch and
+# produced no output with a silent exit 0.
+
+# --format=json must produce the same stdout as --format json.
+new_home "$FULL_STATE"
+J_EQUALS="$("$SCRIPT" --format=json)"
+new_home "$FULL_STATE"
+J_SPACE="$("$SCRIPT" --format json)"
+[[ "$J_EQUALS" == "$J_SPACE" ]] \
+  || fail "--format=json differs from --format json (equals got: $J_EQUALS; space got: $J_SPACE)"
+ok "--format=json produces the same output as --format json"
+
+# --format=text must produce the same stdout as --format text.
+new_home '{"pmm":{"paused_at":"2026-07-30T10:00:00Z"}}'
+TEXT_EQUALS="$("$SCRIPT" --format=text)"
+new_home '{"pmm":{"paused_at":"2026-07-30T10:00:00Z"}}'
+TEXT_SPACE="$("$SCRIPT" --format text)"
+[[ "$TEXT_EQUALS" == "$TEXT_SPACE" ]] \
+  || fail "--format=text differs from --format text"
+ok "--format=text produces the same output as --format text"
+
+# --format= (empty value) must be rejected but still exit 0 (fail-soft contract).
+new_home '{}'
+EMPTY_RC=0
+"$SCRIPT" --format= >/dev/null 2>&1 || EMPTY_RC=$?
+[[ $EMPTY_RC -eq 0 ]] || fail "--format= (empty) must still exit 0, got rc=$EMPTY_RC"
+ok "--format= (empty value) is rejected and still exits 0"
+
+# --format=xml must be rejected the same way --format xml is.
+new_home '{}'
+XML_OUT_EQUALS="$("$SCRIPT" --format=xml 2>/dev/null)"
+[[ -z "$XML_OUT_EQUALS" ]] || fail "--format=xml should produce no stdout, got: $XML_OUT_EQUALS"
+XML_RC=0
+"$SCRIPT" --format=xml >/dev/null 2>&1 || XML_RC=$?
+[[ $XML_RC -eq 0 ]] || fail "--format=xml must still exit 0 (fail-soft), got rc=$XML_RC"
+ok "--format=xml is rejected with no stdout and exit 0, matching space-form behaviour"
+
 # --- 11. A failed write must not report counts it did not land ---------------
 # `purged` is a claim about what changed. If the write fails, reporting the
 # planned counts tells a JSON consumer the cleanup succeeded when it did not.

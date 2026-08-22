@@ -91,6 +91,10 @@ while [[ $# -gt 0 ]]; do
     --format)
       [[ $# -ge 2 ]] || { echo "session-scheduling-reconcile.sh: --format needs a value" >&2; exit 0; }
       FORMAT="$2"; shift 2 ;;
+    --format=*)
+      FORMAT="${1#--format=}"
+      [[ -n "$FORMAT" ]] || { echo "session-scheduling-reconcile.sh: --format value cannot be empty" >&2; exit 0; }
+      shift ;;
     --help|-h) usage; exit 0 ;;
     *) echo "session-scheduling-reconcile.sh: unknown flag '$1'" >&2; exit 0 ;;
   esac
