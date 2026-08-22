@@ -53,7 +53,8 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `cross-session-durability.md` — why `CronCreate` is not cross-session durable and why the durable `mcp__scheduled-tasks__*` primitive is not used here (#827)
 - `phase-decomposition.md` — phase split reference material
 - `pm-data-patterns.md` — PM skills data patterns and bot filters
-- `pm-monitoring-decision.md` — `/pm` vs `/pr-monitor-and-manage` division of responsibility
+- `pm-day-mode.md` — mechanism and rationale for `/pm day` continuous mode (Issue #1194): tick structure, digest tuple, the exit/pause/halt taxonomy, why the failure halt is a field of its own, and the one-chip-per-tick bound
+- `pm-monitoring-decision.md` — `/pm` vs `/pr-monitor-and-manage` division of responsibility, including the `/pm day` carve-out and its mutual-exclusion argument
 - `pm-output-templates.md` — presentation format templates for `/pm` Step 1B.5; extracted from `pm/SKILL.md` to reduce churn surface on formatting-only blocks
 - `continuous-work-posture.md` — why free capacity (not a finish) triggers refill, fill-vs-ramp, queue vs backlog refill, the human-in-chat stop, and the idle-reason taxonomy (`CLAUDE.md` "KEEP THE PIPELINE FULL"; #823)
 - `active-work-cap.md` — derivation of the repo-wide cap on simultaneously active coding work: why the retracted ~8 CR reviews/hour became a measured 5/hr per developer, the k² rebase-churn and Fair Usage feedback terms, why the default is 6 rather than 8, and why the cap governs by `min()` and never raises the per-thread ceiling (#1191)
