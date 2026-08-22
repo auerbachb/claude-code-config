@@ -55,6 +55,7 @@ resolve_script() {
   return 1
 }
 ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
+ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh || true)
 ```
 
 Read `chip-launching.md` through the same order — `$HOME/.claude/skills-worktree/.claude/reference/chip-launching.md` first, then `$HOME/.claude/reference/`, then `.claude/reference/`.
@@ -63,6 +64,7 @@ Read `chip-launching.md` through the same order — `$HOME/.claude/skills-worktr
 
 - `chip-launching.md` unreadable → **required**. Print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable` and stop before offering any chip; Step 5.5's inline/too-big partition depends on it, and without the gate every issue routes to its own thread (#1189).
 - `ISSUE_CLAIM` empty → **optional**. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim checks skipped` and continue.
+- `ACTIVE_WORK_CAP_SH` empty → **optional, but say so**. Print `DEGRADED: active-work-cap.sh not found (checked all three paths) — repo-wide cap unenforced` and fall back to the pre-cap behavior in Step 6 (delegated gating only). A **non-zero exit** from a script that did resolve means a count source could not be read — treat it as `FREE = 0` and defer, never as an idle repo.
 
 `/prompt` also *emits* script paths into the prompts it generates. Those go to a thread running in some other repo, so the generated text carries the candidate order itself rather than a bare path — see the Constraints and Workflow blocks below.
 
@@ -248,13 +250,15 @@ Check chip availability per `.claude/reference/chip-launching.md`, then branch. 
 - **Chip mode** (`mcp__ccd_session__spawn_task` present): for each thread-prompt issue (after Step 5.5 partitioning), call `spawn_task` with `title` / `prompt` / `tldr` / `cwd`, where `prompt` is exactly the content that would sit **inside** that issue's `~~~` fences in fallback mode — the fence delimiters themselves are not part of the prompt. Everything between them, starting with the `**Model:**` line, is. Print only the short summary per issue — issue, title, `**Model:**` line, one-line rationale. The user clicks to launch; never launch for them.
 - **Fallback mode** (tool absent): print today's `~~~`-fenced blocks for every thread-prompt issue — **copy-paste-ready**, each independently pasteable into a new thread. Byte-identical to the chip `prompt` (model-guard preamble included) — see `chip-model-guard-decision.md` for why this is no longer byte-for-byte identical to pre-chip output.
 
-**Spawn outcomes are tracked per issue.** A failed `spawn_task` falls back for **that issue alone** — print its full block and note the fallback once for the batch (per `chip-launching.md`); the rest of the batch keeps its chips. Do not print a block for an issue whose chip spawned successfully. Every thread-prompt issue ends with exactly one of: a chip, or a printed block.
+**Spawn outcomes are tracked per issue.** A failed `spawn_task` falls back for **that issue alone** — print its full block and note the fallback once for the batch (per `chip-launching.md`); the rest of the batch keeps its chips. Do not print a block for an issue whose chip spawned successfully. Every thread-prompt issue ends with exactly one of: a chip, a printed block, or a **deferred** entry — deferral is a third terminal outcome, not a missing one. An issue held back by the repo-wide cap gets neither a chip nor a block, since printing its block would hand over the launch the cap just withheld; it is named in the deferred list instead.
 
 **Record every chip's `task_id`.** After each successful spawn, record the returned `task_id` against its issue and mark that issue `Chip offered` — an unrecorded chip can never be withdrawn, which would break stale-chip hygiene. In a PM thread, write it to `/pm`'s Active Work table (its `Task ID` column is the canonical home). Outside a PM thread, keep it in this thread's state so it stays dismissable within the session, and say so in the summary.
 
 **Skip issues already offered.** Before spawning, check the recorded state (Path B's Active Work scan already excludes `Chip offered` — see Step 0a) and skip any issue that already has a live chip. Re-running `/prompt` must not offer the same issue twice. Issues that were never spawned, or whose spawn failed, are still eligible.
 
 Subagent candidates from Step 5.5 never get chips — they run inline via `/subagent`, so that section is unchanged in both modes.
+
+**Bound the batch against the repo-wide cap.** Before the `spawn_task` loop, read the census from `"$ACTIVE_WORK_CAP_SH"` (resolved in Step 0) — the default output line carries `CAP`, `ACTIVE`, and `FREE`, and the deferral message below quotes `{ACTIVE}/{CAP}`, so `--free` alone cannot render it (`chip-launching.md` "Repo-wide active-work cap") and offer **at most `FREE`** new chips this turn. Report the remainder as **deferred**, naming the count and the scope — "4 deferred — repo-wide active-work cap ({ACTIVE}/{CAP} in motion across all threads)". Print no block for a deferred issue: a deferred issue is not offered, and printing its block would hand the user the same launch the cap just withheld. Deferred issues are re-offered as active work drains. This does not change the rule below that every *offered* issue ends with either a chip or a block.
 
 `/prompt` introduces **no all-open-PR ceiling count of its own**: Path B's issue set comes from the PM thread's own `## Suggested Next Issues` / `## Active Work` (your work), and any slot/ceiling gating is delegated — chip offers follow `chip-launching.md`'s PM-context inline gate and inline runs follow `/subagent`'s concurrency ceiling, both author-scoped per `subagent-orchestration.md` (the canonical ceiling). The `Fixes #N` / `Closes #N` signal read during classification (Step 2) is a per-issue in-flight/dedup hint, not a `/prompt`-owned slot count, and never gates a launch on a collaborator's PR. (`/wave` is different: an issue covered by a PR *you* authored **does** count toward its `IN_FLIGHT` and reduces available slots — that is `/wave`'s slot accounting, not `/prompt`'s.)
 
