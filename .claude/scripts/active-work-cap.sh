@@ -46,10 +46,11 @@
 #   ACTIVE is the sum of three author-scoped, durable sources:
 #     1. Open PRs you authored — `gh pr list --state open --author @me`.
 #        Author-scoped per #732/#733; a collaborator's PR is never counted.
-#     2. Live offered issue-maker chips — entries in
-#        ~/.claude/handoffs/issue-maker-*-log.json with `status: "open"` and a
-#        non-null `chip_task_id` (chip-launching.md "Cross-skill chip
-#        visibility"), TWICE narrowed (see CHIP LIVENESS below).
+#     2. Live offered issue-maker chips — DISTINCT `chip_task_id`s among the
+#        entries in ~/.claude/handoffs/issue-maker-*-log.json with
+#        `status: "open"` and a non-null `chip_task_id` (chip-launching.md
+#        "Cross-skill chip visibility"), TWICE narrowed (see CHIP LIVENESS
+#        below). One chip is one offer however many issues it covers.
 #        Offered-but-unclicked chips COUNT: twenty offered chips invite twenty
 #        clicks, which was the observed failure mode.
 #     3. Running inline pipelines not yet at PR — `active_agents` entries with
@@ -63,8 +64,10 @@
 #   Sources 1 and 2 need an explicit subtraction, because a chip's log entry is
 #   NOT cleared when the chip is clicked. A clicked chip becomes a thread, then
 #   a PR, while its issue stays open until that PR merges — so the same unit of
-#   work would be counted twice and the effective cap halved. Chips whose issue
-#   appears in an open PR's `closingIssuesReferences` are therefore excluded.
+#   work would be counted twice and the effective cap halved. Entries whose
+#   issue appears in an open PR's `closingIssuesReferences` are therefore
+#   excluded. A multi-issue chip loses only the absorbed entries; it stops
+#   counting once it loses all of them (CHIP LIVENESS, PARTIAL ABSORPTION).
 #
 # KNOWN GAP — this reports a count, it does not reserve a slot
 #   FREE is a snapshot with no lock tying it to the work created afterwards, so
@@ -90,8 +93,9 @@
 # CHIP LIVENESS — why the raw log query is not the count
 #   chip-launching.md's discovery query answers "has this issue already been
 #   offered a chip", which is a per-issue dedup question. It is NOT a count of
-#   live work, for two reasons measured on real logs (2026-08-21: 59 raw hits
-#   across 6 logs):
+#   live work, for three reasons measured on real logs — the first two on
+#   2026-08-21 (59 raw hits across 6 logs), the third on auerbachb/inventory
+#   2026-08-22 (24 entries, one chip, ACTIVE reported as 24):
 #
 #     1. The logs are CROSS-REPO. One `issue-maker-*-log.json` per capture
 #        thread, and those threads span every repo worked in — 34 entries for
@@ -107,12 +111,40 @@
 #        within days it would pin FREE at 0 and the gate would refuse
 #        everything forever.
 #
-#   So a chip counts only when its issue is STILL OPEN on GitHub — one
+#     3. ENTRIES ARE NOT CHIPS. One chip can cover MANY issues: /issue-maker
+#        offers one click-to-launch hand-off per capture session covering every
+#        issue it filed (issue-maker/SKILL.md Step 9c), so an N-issue session
+#        writes N entries all carrying ONE `chip_task_id`. Counting entries let
+#        a single 24-issue offer fill a CAP=6 board four times over and pin FREE
+#        at 0 on a repo with no open PRs and no running pipelines (#1247).
+#
+#   So an ENTRY counts only when its issue is STILL OPEN on GitHub — one
 #   `gh issue list --state open` call for the target repo, intersected with the
-#   log-derived numbers. A closed issue's chip is finished work, not pending
+#   log-derived numbers. A closed issue's entry is finished work, not pending
 #   work. An entry whose `url` cannot be attributed to any repo is counted
 #   anyway and warned about: over-counting narrows offers (safe), while
 #   under-counting widens them (the failure this script exists to prevent).
+#
+#   And the ANSWER is a count of DISTINCT `chip_task_id`s among the entries that
+#   survive that. The de-duplication happens AFTER both narrowings, never
+#   before: an entry that is another repo's, whose issue has closed, or whose
+#   issue an open PR already covers is dropped first, and only the survivors
+#   name their chips. Applying it earlier would let one absorbed issue speak for
+#   its whole chip and weaken both filters.
+#
+#   PARTIAL ABSORPTION — a chip whose issues are SOME absorbed and some not is
+#   still one live offer, and counts 1. It drops to 0 only when EVERY issue it
+#   covers has been absorbed (closed, or covered by an open PR). Clicking it
+#   opens one thread, and while any of its issues is still open that thread has
+#   real work to do; counting it 0 sooner would hand back a slot that is still
+#   in use.
+#
+#   The older issue-level rule still binds alongside this one: an issue offered
+#   by two capture sessions is one slot, not two, because the unit of work is
+#   the issue. So each surviving issue names a single representative chip before
+#   the distinct count, and the two rules compose to "one unit of work, one
+#   slot" from either direction — N issues under one chip count 1, and one issue
+#   under N chips also counts 1.
 #
 # TUNING
 #   CLAUDE_ACTIVE_WORK_CAP  Override the cap. Must be an integer in
@@ -413,43 +445,69 @@ chip_issue_numbers() {
     # but not the expected shape is a hard failure, exactly like unparseable
     # JSON. `{"issues":[]}` — a real, empty log — still passes.
     #
-    # Emit "<number> <repo-or-empty>" per live entry; attribution happens in
-    # bash so an unparseable url is warned about rather than silently dropped.
-    out="$(jq -r '
+    # Emit "<number> <repo-or-dash> <chip-token>" per live entry; attribution
+    # happens in bash so an unparseable url is warned about rather than silently
+    # dropped.
+    #
+    # The repo field is "-" rather than empty when there is no usable url: with
+    # a third field on the line, `read -r num repo chip` under the default IFS
+    # collapses the resulting double space, so an empty middle field would slide
+    # the chip token into `repo` and leave `chip` unset. "-" cannot collide with
+    # a real slug, which always contains a slash.
+    #
+    # The chip token is base64 so it is guaranteed one line and free of spaces
+    # — it is only ever compared for equality, and base64 is injective, so
+    # encoding cannot merge two distinct chips. A `chip_task_id` that
+    # stringifies to empty gets a per-entry synthetic id instead of an empty
+    # bucket that would silently merge every such entry into one chip
+    # (feedback_fabricated_sentinel_stable_signature.md) — `to_entries` supplies
+    # the index that makes it unique.
+    out="$(jq -r --arg log "$f" '
       if type != "object" or (.issues | type) != "array" then
         error("not an issue-maker log: root must be an object with an issues array")
       else . end
-      | .issues[]
+      | .issues
+      | to_entries[]
+      | (.key | tostring) as $i
+      | .value
       | select(.status == "open" and .chip_task_id != null)
+      | (.chip_task_id | tostring) as $cid
+      | (if ($cid | length) == 0 then "synthetic:\($log)#\($i)" else $cid end
+         | @base64) as $tok
       # `capture` on a non-matching string yields `empty`, and `empty // {r:""}`
       # yields the fallback — so the alternative alone is sufficient here. The
       # `try` is belt-and-braces against jq versions that raise instead: without
       # it, one malformed url in a log would abort the whole count with exit 5
       # rather than taking the documented warn-and-over-count path.
-      | "\(.number) \((.url // "") | (try capture("^https?://[^/]+/(?<r>[^/]+/[^/]+)/issues/") catch {r:""}) // {r:""} | .r)"
+      | ((.url // "") | (try capture("^https?://[^/]+/(?<r>[^/]+/[^/]+)/issues/") catch {r:""}) // {r:""} | .r) as $r
+      | "\(.number) \(if ($r | length) == 0 then "-" else $r end) \($tok)"
     ' "$f")" || rc=$?
     if [[ $rc -ne 0 ]]; then
       die_read "unreadable or malformed issue-maker chip log: $f (treat its contents as UNKNOWN, not as zero chips)"
     fi
     [[ -n "$out" ]] || continue
 
-    local num repo
-    while read -r num repo; do
+    local num repo chip
+    while read -r num repo chip; do
       [[ -n "$num" ]] || continue
+      # A missing chip token means the line did not survive the emitter intact.
+      # Counting it with an empty id would merge every such entry into one chip
+      # — an under-count — so treat it as an unreadable log rather than guess.
+      [[ -n "$chip" ]] || die_read "chip log $f: entry #$num produced no chip token (treat its contents as UNKNOWN, not as zero chips)"
       # GitHub repo identities are case-insensitive, so `Owner/Repo` and
       # `owner/repo` are the same repo. A literal compare would call the first
       # unattributable, which sends it down the guessed path and exempts it
       # from BOTH filters — a stale chip would then keep consuming capacity
       # after its issue closed. Fold both sides before comparing.
       repo="$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')"
-      if [[ -z "$repo" ]]; then
+      if [[ "$repo" == "-" ]]; then
         warn "chip log $f: entry #$num has no attributable repo url — counting it against $slug (over-counting is the safe direction)"
         # Marked so the PR subtraction can leave it alone: the number is a
         # guess, and matching it against THIS repo's closed issues would turn a
         # deliberate over-count into an under-count on a number collision.
-        printf '%s ?\n' "$num"
+        printf '%s ? %s\n' "$num" "$chip"
       elif [[ "$repo" == "$slug_lc" ]]; then
-        printf '%s .\n' "$num"
+        printf '%s . %s\n' "$num" "$chip"
       fi
     done <<<"$out"
   done
@@ -526,7 +584,11 @@ open_among() {
   return 0
 }
 
-# A chip counts only while its issue is still open — see CHIP LIVENESS.
+# How many distinct CHIPS are live — not how many log entries are. One
+# /issue-maker capture session offers ONE hand-off covering every issue it
+# filed, so an N-issue session writes N entries carrying one `chip_task_id`.
+# The narrowings below run per ENTRY, and the distinct-chip count is taken over
+# what survives them. See CHIP LIVENESS.
 count_live_chips() {
   local slug="$1"
 
@@ -534,6 +596,9 @@ count_live_chips() {
   # subshell — so each status is captured and re-raised here rather than
   # collapsing into an empty string that reads as "no chips". `pipefail` is on,
   # so the `| sort` below still surfaces chip_issue_numbers' own failure.
+  #
+  # Lines are "<number> <marker> <chip-token>"; `sort -u` dedupes whole entries,
+  # which is exactly right — the same entry recorded twice is one entry.
   local chips rc=0
   chips="$(chip_issue_numbers "$slug" | sort -u)" || rc=$?
   (( rc == 0 )) || return "$rc"
@@ -573,69 +638,103 @@ count_live_chips() {
     guessed="$only_guessed"
   fi
 
-  local guessed_n=0
-  [[ -n "$guessed" ]] && guessed_n="$(printf '%s\n' "$guessed" | awk 'NF' | wc -l | tr -d ' ')"
+  # `matched` collects the attributed numbers that survive BOTH narrowings.
+  # Every branch that used to return early now leaves it empty and falls
+  # through to the single distinct-chip count below, so the terminal accounting
+  # exists in exactly one place and the branches cannot drift apart.
+  local matched=""
+  if [[ -n "$sure" ]]; then
+    # Only `sure` numbers are worth asking about: a guessed number would be
+    # answered against the wrong repo.
+    local chip_nums=()
+    while read -r _num; do [[ -n "$_num" ]] && chip_nums+=("$_num"); done <<<"$sure"
 
-  if [[ -z "$sure" ]]; then
-    printf '%s' "$guessed_n"
-    return
-  fi
+    local open_issues
+    open_issues="$(open_among "$slug" ${chip_nums[@]+"${chip_nums[@]}"})" || rc2=$?
+    (( rc2 == 0 )) || return "$rc2"
 
-  # Only `sure` numbers are worth asking about: a guessed number would be
-  # answered against the wrong repo.
-  local chip_nums=()
-  while read -r _num; do [[ -n "$_num" ]] && chip_nums+=("$_num"); done <<<"$sure"
+    # Drop chips whose issue is already represented by an open PR — that work is
+    # counted once, by the PR source. Attributed chips only.
+    local covered rc3=0
+    covered="$(chips_covered_by_prs)" || rc3=$?
+    (( rc3 == 0 )) || return "$rc3"
+    # Every `comm` below captures its own status. An uncaptured one is the same
+    # fabricated zero as everywhere else in this file: `set -e` is off, so a
+    # failed command substitution just yields an empty string, the emptiness
+    # guard fires, and the function returns a clean 0 that means "no chips"
+    # rather than "the subtraction failed".
+    if [[ -n "$covered" && -n "$sure" ]]; then
+      local remaining rc4=0
+      remaining="$(comm -23 \
+                    <(printf '%s\n' "$sure" | sort -u) \
+                    <(printf '%s\n' "$covered" | sort -u))" || rc4=$?
+      (( rc4 == 0 )) || die_read "comm -23 failed subtracting PR-covered chips (exit $rc4)"
+      sure="$remaining"
+    fi
 
-  local open_issues
-  open_issues="$(open_among "$slug" ${chip_nums[@]+"${chip_nums[@]}"})" || rc2=$?
-  (( rc2 == 0 )) || return "$rc2"
-  if [[ -z "$open_issues" ]]; then
-    printf '%s' "$guessed_n"
-    return
-  fi
-
-  # Drop chips whose issue is already represented by an open PR — that work is
-  # counted once, by the PR source. Attributed chips only.
-  local covered rc3=0
-  covered="$(chips_covered_by_prs)" || rc3=$?
-  (( rc3 == 0 )) || return "$rc3"
-  # Every `comm` below captures its own status. An uncaptured one is the same
-  # fabricated zero as everywhere else in this file: `set -e` is off, so a
-  # failed command substitution just yields an empty string, the emptiness
-  # guard fires, and the function returns a clean 0 that means "no chips"
-  # rather than "the subtraction failed".
-  if [[ -n "$covered" ]]; then
-    local remaining rc4=0
-    remaining="$(comm -23 \
+    # Intersect with the open issues. Both sides go through an identical
+    # `sort -u`, which is all `comm` requires — it needs consistent ordering, not
+    # numeric ordering, so lexical "10" before "9" on both sides is fine.
+    if [[ -n "$sure" && -n "$open_issues" ]]; then
+      local rc5=0
+      matched="$(comm -12 \
                   <(printf '%s\n' "$sure" | sort -u) \
-                  <(printf '%s\n' "$covered" | sort -u))" || rc4=$?
-    (( rc4 == 0 )) || die_read "comm -23 failed subtracting PR-covered chips (exit $rc4)"
-    sure="$remaining"
+                  <(printf '%s\n' "$open_issues" | sort -u))" || rc5=$?
+      (( rc5 == 0 )) || die_read "comm -12 failed intersecting chips with open issues (exit $rc5)"
+    fi
   fi
-  if [[ -z "$sure" ]]; then
-    printf '%s' "$guessed_n"
+
+  # The surviving ISSUES: attributed ones that cleared both narrowings, plus the
+  # guessed ones that deliberately bypass both. `guessed` already had anything
+  # also present in `sure` removed above, so the two lists are disjoint.
+  local surviving
+  surviving="$(printf '%s\n%s\n' "$matched" "$guessed" | awk 'NF' | sort -u)"
+  if [[ -z "$surviving" ]]; then
+    printf '0'
     return
   fi
 
-  # Intersect with the open issues. Both sides go through an identical
-  # `sort -u`, which is all `comm` requires — it needs consistent ordering, not
-  # numeric ordering, so lexical "10" before "9" on both sides is fine.
-  local matched rc5=0
-  matched="$(comm -12 \
-              <(printf '%s\n' "$sure" | sort -u) \
-              <(printf '%s\n' "$open_issues" | sort -u))" || rc5=$?
-  (( rc5 == 0 )) || die_read "comm -12 failed intersecting chips with open issues (exit $rc5)"
+  # Now collapse issues to CHIPS. Two rules have to hold at once, and they pull
+  # in opposite directions:
+  #
+  #   * One chip covering N issues is one offer (this function's whole point) —
+  #     so the count is over distinct chip tokens, not surviving issues.
+  #   * One issue offered by two capture sessions is one slot, not two — the
+  #     older invariant, since the unit of work is the issue.
+  #
+  # Taking distinct chips alone would break the second rule; taking distinct
+  # issues alone is the bug this replaces. So each surviving issue first names a
+  # single representative chip — the lowest-sorting token it carries, chosen
+  # deterministically so the count never depends on log order — and the answer
+  # is how many distinct representatives remain. Both rules then hold from
+  # either direction, and a chip's representatives collapse to one entry per
+  # chip regardless of how many of its issues survived.
+  local reps rc6=0
+  reps="$(awk 'NR==FNR { live[$1]=1; next } ($1 in live) { print $1, $3 }' \
+            <(printf '%s\n' "$surviving") <(printf '%s\n' "$chips") \
+          | sort -k1,1 -k2,2 \
+          | awk '!seen[$1]++ { print $2 }' \
+          | sort -u)" || rc6=$?
+  (( rc6 == 0 )) || die_read "failed mapping surviving chip issues back to chip ids (exit $rc6)"
 
-  # Counted separately from the `comm` so the two failure modes stay distinct:
+  # Every surviving number came from an entry line, and every entry line carries
+  # a chip token — so an empty mapping here is a broken pipeline, not an empty
+  # set. Returning 0 for it would read as "nothing active" and uncap the gate
+  # (feedback_guard_must_fail_closed.md).
+  if [[ -z "$reps" ]]; then
+    die_read "surviving chip issues mapped to no chip ids at all — the chip log read is inconsistent"
+  fi
+
+  # Counted separately from the mapping so the two failure modes stay distinct:
   # folding them into one pipeline lets `|| true` (needed for grep's exit 1 on
-  # no match) swallow a comm failure as well, and grep's printed "0" then reads
-  # as a legitimate empty intersection.
+  # no match) swallow a real failure as well, and grep's printed "0" then reads
+  # as a legitimate empty result.
   local n
-  n="$(printf '%s\n' "$matched" | grep -c '^[0-9]')" || true
+  n="$(printf '%s\n' "$reps" | grep -c '^[A-Za-z0-9+/=]')" || true
   # grep -c prints 0 and exits 1 on no match, so read the printed value and
   # never substitute a fallback (feedback_grep_c_empty_file_exit1.md).
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
-  printf '%s' "$(( n + guessed_n ))"
+  printf '%s' "$n"
 }
 
 # Inline pipelines not yet at PR: active_agents entries with no `.pr`.

@@ -394,6 +394,153 @@ CHIPS=$(run --json 2>/dev/null | jq -r '.live_chips') || fail "--json failed"
 ok "an issue attributed in one log and not another counts once, not twice"
 rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR/issue-maker-beta-log.json"
 
+# --- 12f. One chip covering many issues is ONE offer, not N ------------------
+# /issue-maker writes one log entry per issue it filed, all carrying the SAME
+# chip_task_id, because it offers one hand-off per capture session covering
+# every issue (issue-maker/SKILL.md Step 9c). Counting entries let one 24-issue
+# capture session report ACTIVE=24 against a CAP=6 board on a repo with no open
+# PRs and no pipelines, pinning FREE at 0 and silently stalling every chip
+# emitter. Shape taken from the real auerbachb/inventory log that surfaced it:
+# issues 555-578, one chip, task_a85e2e4d (#1247).
+BIG_ENTRIES=""
+BIG_OPEN=""
+N=555
+while [[ $N -le 578 ]]; do
+  [[ -z "$BIG_ENTRIES" ]] || BIG_ENTRIES="$BIG_ENTRIES,"
+  BIG_ENTRIES="$BIG_ENTRIES$(chip_entry "$N" "$SLUG" open task_a85e2e4d)"
+  BIG_OPEN="$BIG_OPEN$N
+"
+  N=$(( N + 1 ))
+done
+# The fixture must actually be the reported shape, or this passes for the wrong
+# reason — 24 entries, exactly one distinct chip id.
+ENTRY_COUNT=$(printf '[%s]' "$BIG_ENTRIES" | jq 'length')
+ID_COUNT=$(printf '[%s]' "$BIG_ENTRIES" | jq '[.[].chip_task_id] | unique | length')
+[[ "$ENTRY_COUNT" == "24" && "$ID_COUNT" == "1" ]] || \
+  fail "fixture is not 24 entries under 1 chip id (got $ENTRY_COUNT entries, $ID_COUNT ids)"
+write_chip_log "alpha" "[$BIG_ENTRIES]"
+set_open_issues "$BIG_OPEN"
+set_open_prs 0
+set_pipelines '[]'
+JSON=$(run --json) || fail "--json failed on a 24-issue chip log"
+CHIPS=$(printf '%s' "$JSON" | jq -r '.live_chips')
+ACTIVE=$(printf '%s' "$JSON" | jq -r '.active')
+FREE=$(printf '%s' "$JSON" | jq -r '.free')
+[[ "$CHIPS" == "1" ]] || fail "24 entries under one chip_task_id is 1 chip, got '$CHIPS'"
+[[ "$ACTIVE" == "1" ]] || fail "one chip on an otherwise idle repo is 1 active, got '$ACTIVE'"
+[[ "$FREE" == "5" ]] || fail "an idle CAP=6 repo holding one chip has 5 free, got '$FREE'"
+ok "a 24-issue capture session counts as one chip, not 24 (#1247)"
+
+# --- 12g. Distinct chips still count distinctly ------------------------------
+# The common case must not regress: one issue per capture session is still one
+# chip each. A fix that collapsed every entry into a single count would pass
+# 12f while quietly uncapping the board.
+write_chip_log "alpha" \
+  "[$(chip_entry 71 "$SLUG" open t1),$(chip_entry 72 "$SLUG" open t2),$(chip_entry 73 "$SLUG" open t3)]"
+set_open_issues "71
+72
+73"
+CHIPS=$(run --json | jq -r '.live_chips') || fail "--json failed"
+[[ "$CHIPS" == "3" ]] || fail "three single-issue chips are 3, got '$CHIPS'"
+ok "single-issue-per-chip logs still count 1 each"
+
+# Two MULTI-issue chips are 2 — the de-duplication is per chip id, not a global
+# collapse to 1.
+write_chip_log "alpha" \
+  "[$(chip_entry 71 "$SLUG" open tA),$(chip_entry 72 "$SLUG" open tA),$(chip_entry 73 "$SLUG" open tB),$(chip_entry 74 "$SLUG" open tB)]"
+set_open_issues "71
+72
+73
+74"
+CHIPS=$(run --json | jq -r '.live_chips') || fail "--json failed"
+[[ "$CHIPS" == "2" ]] || fail "two chips of two issues each are 2, got '$CHIPS'"
+ok "two multi-issue chips count 2 — de-duplication is per chip, not global"
+
+# The same chip id split across two capture logs is still one chip.
+write_chip_log "alpha" "[$(chip_entry 91 "$SLUG" open tZ)]"
+write_chip_log "beta"  "[$(chip_entry 92 "$SLUG" open tZ)]"
+set_open_issues "91
+92"
+CHIPS=$(run --json | jq -r '.live_chips') || fail "--json failed"
+[[ "$CHIPS" == "1" ]] || fail "one chip id across two logs is 1 chip, got '$CHIPS'"
+ok "one chip id recorded in two capture logs counts once"
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR/issue-maker-beta-log.json"
+
+# One chip spanning BOTH attribution classes is still one chip. Attributed and
+# unattributable entries take different paths through the narrowings and are
+# only reunited at the distinct-chip step, so a build that counted each class
+# separately and summed them would report 2 here.
+write_chip_log "alpha" "[$(chip_entry 95 "$SLUG" open tY),$(chip_entry 96 "" open tY)]"
+set_open_issues "95"           # 96 has no url, so it never reaches this list
+set_open_prs 0
+CHIPS=$(run --json 2>/dev/null | jq -r '.live_chips') || fail "--json failed"
+[[ "$CHIPS" == "1" ]] || \
+  fail "one chip with an attributed and an unattributable entry is 1, got '$CHIPS'"
+ok "a chip spanning both attribution classes counts once"
+
+# --- 12h. Partial absorption: a chip counts 1 until ALL its issues are gone ---
+# Clicking a half-absorbed chip still opens one thread with real work left, so
+# it keeps its slot. Absorption by an open PR first.
+#
+# THREE issues, not two: with two, "one surviving issue" and "one surviving
+# chip" are the same number, so the old entry-counting build would pass this for
+# the wrong reason (feedback_exemption_test_must_use_a_discriminating_value.md).
+# With three and one absorbed, entry-counting says 2 and chip-counting says 1.
+write_chip_log "alpha" \
+  "[$(chip_entry 81 "$SLUG" open tA),$(chip_entry 82 "$SLUG" open tA),$(chip_entry 87 "$SLUG" open tA)]"
+set_open_issues "81
+82
+87"
+set_open_prs 1 '[81]'          # PR #1000 covers 81; 82 and 87 are still unclaimed
+JSON=$(run --json) || fail "--json failed on a partially absorbed chip"
+CHIPS=$(printf '%s' "$JSON" | jq -r '.live_chips')
+ACTIVE=$(printf '%s' "$JSON" | jq -r '.active')
+[[ "$CHIPS" == "1" ]] || fail "a chip with issues left unabsorbed still counts 1, got '$CHIPS'"
+[[ "$ACTIVE" == "2" ]] || fail "1 open PR + 1 half-absorbed chip is 2 active, got '$ACTIVE'"
+ok "a chip with a mix of absorbed and unabsorbed issues counts 1"
+
+# Every issue absorbed -> the chip is finished work and counts 0. Without this
+# the assertion above would also pass on a build that de-duplicated BEFORE the
+# narrowings, where one absorbed issue could still speak for its whole chip.
+set_open_prs 1 '[81,82,87]'
+JSON=$(run --json) || fail "--json failed on a fully absorbed chip"
+CHIPS=$(printf '%s' "$JSON" | jq -r '.live_chips')
+ACTIVE=$(printf '%s' "$JSON" | jq -r '.active')
+[[ "$CHIPS" == "0" ]] || fail "a chip whose every issue an open PR covers is 0, got '$CHIPS'"
+[[ "$ACTIVE" == "1" ]] || fail "the PR alone should remain, got '$ACTIVE'"
+ok "a chip whose issues are all absorbed by open PRs counts 0"
+
+# The same boundary via the OTHER narrowing — closed issues rather than PRs —
+# so neither filter is doing the work alone.
+set_open_prs 0
+set_open_issues "82
+87"                              # 81 has closed; 82 and 87 are still open
+CHIPS=$(run --json | jq -r '.live_chips') || fail "--json failed"
+[[ "$CHIPS" == "1" ]] || fail "a chip with issues still open counts 1, got '$CHIPS'"
+set_open_issues ""             # all three closed
+CHIPS=$(run --json | jq -r '.live_chips') || fail "--json failed"
+[[ "$CHIPS" == "0" ]] || fail "a chip whose every issue has closed is 0, got '$CHIPS'"
+ok "partial and full absorption behave the same way through the closed-issue filter"
+
+# --- 12i. De-duplication runs AFTER the narrowings, not before ---------------
+# If chips collapsed first, one surviving issue would carry its whole chip past
+# the filters — or one absorbed issue would drop issues that are still live.
+# Two three-issue chips, each thinned by a DIFFERENT filter, must still total 2:
+# entry-counting reports 4 here, so the assertion discriminates.
+write_chip_log "alpha" \
+  "[$(chip_entry 83 "$SLUG" open tA),$(chip_entry 84 "$SLUG" open tA),$(chip_entry 87 "$SLUG" open tA),$(chip_entry 85 "$SLUG" open tB),$(chip_entry 86 "$SLUG" open tB),$(chip_entry 88 "$SLUG" open tB)]"
+set_open_issues "84
+85
+86
+87
+88"                              # 83 closed
+set_open_prs 1 '[85]'          # 85 covered by a PR; 84/87 and 86/88 remain
+JSON=$(run --json) || fail "--json failed"
+CHIPS=$(printf '%s' "$JSON" | jq -r '.live_chips')
+[[ "$CHIPS" == "2" ]] || \
+  fail "two chips each keeping live issues are 2, got '$CHIPS'"
+ok "de-duplication is applied after both narrowings, not before"
+
 # --- 13. Inline pipelines: only those not yet at a PR ------------------------
 # An entry gains .pr when its pipeline opens one, at which point the open-PR
 # source counts it; counting both would double-count the same work.

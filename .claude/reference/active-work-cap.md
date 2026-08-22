@@ -116,7 +116,7 @@ Three author-scoped, durable sources, summed by `active-work-cap.sh`:
 | Source | Read | Why |
 |--------|------|-----|
 | Open PRs you authored | `gh pr list --state open --author @me` | Work already consuming reviewer budget. Author-scoped per #732/#733 — a collaborator's PR is context, never a gate. |
-| Live offered issue-maker chips | `~/.claude/handoffs/issue-maker-*-log.json`, entries with `status: "open"` and non-null `chip_task_id` | The only cross-thread-visible chip record (`chip-launching.md` "Cross-skill chip visibility"). |
+| Live offered issue-maker chips | `~/.claude/handoffs/issue-maker-*-log.json`, **distinct** `chip_task_id`s among entries with `status: "open"` and non-null `chip_task_id` | The only cross-thread-visible chip record (`chip-launching.md` "Cross-skill chip visibility"). |
 | Running inline pipelines not yet at PR | `session-state.sh --session-view`, `active_agents` entries with no `.pr` | Work in motion that has not yet become a PR, so it is invisible to the first source. |
 
 **Offered-but-unclicked chips count.** Twenty offered chips invite twenty clicks — that was the observed 2026-08-18 failure mode, so an offer is treated as committed work. Deferred issues are re-offered as active work drains; nothing is dropped.
@@ -125,10 +125,22 @@ Three author-scoped, durable sources, summed by `active-work-cap.sh`:
 
 **Sources 1 and 2 are not**, and the script performs two explicit narrowings to keep them from double-counting or over-reaching. Do not remove either on the assumption that the sources are independent:
 
-1. **Subtract chips an open PR already covers.** A chip's log entry survives the click, and its issue stays open until the PR merges, so a clicked chip would be counted once as a chip and again as a PR — halving the effective cap. Chips whose issue appears in an open PR's `closingIssuesReferences` are excluded.
-2. **Keep only chips whose issue is still open.** `chip_task_id` is cleared solely on an explicit retract, so without this the count is a monotonic high-water mark that would pin `FREE` at 0 within days.
+1. **Subtract entries an open PR already covers.** A chip's log entry survives the click, and its issue stays open until the PR merges, so a clicked chip would be counted once as a chip and again as a PR — halving the effective cap. Entries whose issue appears in an open PR's `closingIssuesReferences` are excluded.
+2. **Keep only entries whose issue is still open.** `chip_task_id` is cleared solely on an explicit retract, so without this the count is a monotonic high-water mark that would pin `FREE` at 0 within days.
 
-Both narrowings apply **only to chips attributed to this repo**. A chip whose log entry carries no usable URL is counted unconditionally and skips both: its number is meaningless outside a repo, so matching it against this repo's PR-closed or open issues would drop it on a coincidence and turn a deliberate over-count into an under-count.
+Both narrowings apply **only to entries attributed to this repo**. An entry carrying no usable URL is counted unconditionally and skips both: its number is meaningless outside a repo, so matching it against this repo's PR-closed or open issues would drop it on a coincidence and turn a deliberate over-count into an under-count.
+
+### Entries are not chips (#1247)
+
+`/issue-maker` offers **one** hand-off per capture session covering every issue it filed (`issue-maker/SKILL.md` Step 9c), so an N-issue session writes N log entries carrying a single `chip_task_id`. Counting entries let one 24-issue capture session report `ACTIVE=24` against a `CAP=6` board on `auerbachb/inventory` with no open PRs and no running pipelines — a false `FREE=0` that silently stalled every chip emitter on an idle repo.
+
+The count is therefore over **distinct `chip_task_id`s**, and the de-duplication runs **after** both narrowings above, never before. Applying it earlier would let one absorbed issue speak for its whole chip and weaken both filters.
+
+**Partial absorption.** A chip whose issues are some absorbed and some not is still one live offer and counts 1; it reaches 0 only when *every* issue it covers is absorbed. Clicking it opens one thread, and while any of its issues is still open that thread has real work to do — releasing the slot sooner hands back capacity that is still in use.
+
+**The issue-level rule still binds alongside it.** One issue offered by two capture sessions is one slot, not two, because the unit of work is the issue. Each surviving issue therefore names a single representative chip before the distinct count, so the two rules compose to "one unit of work, one slot" from either direction: N issues under one chip count 1, and one issue under N chips also counts 1.
+
+This is a narrowing *within* the one source the script already reads, and is independent of the two known gaps below — chips from `/pm` and `/prompt` staying invisible, and the count not being a reservation. It stays correct if the shared offer registry those need ever lands.
 
 ## Portability
 
