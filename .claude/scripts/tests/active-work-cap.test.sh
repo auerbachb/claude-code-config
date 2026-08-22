@@ -67,6 +67,12 @@ case "$1 $2" in
       *"closingIssuesReferences"*) ;;
       *) echo "fake gh: pr list must request closingIssuesReferences: $*" >&2; exit 96 ;;
     esac
+    # When set, the PR listing MUST be scoped to this repo. Without this the
+    # suite cannot tell a correctly-scoped fetch from one that silently ran
+    # against the caller's checkout.
+    if [[ -n "${GH_FAKE_REQUIRE_REPO:-}" ]]; then
+      need "--repo"; need "$GH_FAKE_REQUIRE_REPO"
+    fi
     printf '%s\n' "${GH_FAKE_PRS:-[]}" ;;
   "api graphql")
     if [[ "${GH_FAKE_ISSUE_FAIL:-0}" == "1" ]]; then
@@ -450,6 +456,38 @@ JSON=$(run --json) || fail "--json should succeed with no state files at all"
 [[ "$(printf '%s' "$JSON" | jq -r '.active')" == "0" ]] || fail "a clean slate should be 0 active"
 [[ "$(printf '%s' "$JSON" | jq -r '.free')" == "6" ]] || fail "a clean slate should leave the full cap free"
 ok "no session-state and no chip logs is 0 active, not a failure"
+
+# --- 16b. --path from a DIFFERENT caller directory scopes every source -------
+# Every other section runs from inside the fixture repo, so a PR fetch that
+# silently used the caller's checkout would look identical to a correct one.
+# This runs from an unrelated directory and makes the fake refuse any `pr list`
+# that is not scoped to the resolved target, so cap, PRs, chips, and pipelines
+# are proven to come from one repo rather than two.
+OUTSIDE="$TMP_DIR/elsewhere"
+mkdir -p "$OUTSIDE"
+git -C "$OUTSIDE" init -q 2>/dev/null || fail "could not init the outside dir"
+set_cap_config '```ini
+ACTIVE_WORK_CAP=4
+```'
+set_open_prs 1
+set_open_issues ""
+set_pipelines '[]'
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR"/issue-maker-*-log.json
+
+JSON=$( cd "$OUTSIDE" && GH_FAKE_REQUIRE_REPO="$SLUG" "$SCRIPT" --path "$FIXTURE_REPO" --json ) \
+  || fail "--path from an outside directory failed (pr list was not scoped to $SLUG)"
+[[ "$(printf '%s' "$JSON" | jq -r '.cap')" == "4" ]] || \
+  fail "--path should read the TARGET repo's cap (4), got '$(printf '%s' "$JSON" | jq -r '.cap')'"
+[[ "$(printf '%s' "$JSON" | jq -r '.open_prs')" == "1" ]] || \
+  fail "--path should count the target repo's PRs, got '$(printf '%s' "$JSON" | jq -r '.open_prs')'"
+ok "--path from an unrelated cwd scopes the cap AND the PR count to the same repo"
+
+# Restore the baseline this section borrowed — a later assertion reads the cap
+# and would otherwise inherit the 4 set above.
+set_cap_config '```ini
+ACTIVE_WORK_CAP=6
+```'
+set_open_prs 0
 
 # --- 17. --cap makes no network call -----------------------------------------
 # Emitters that only need the knob must not pay for (or fail on) the count.
