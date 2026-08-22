@@ -111,6 +111,30 @@ cannot operate on a newer Monitor that reused the same skill arguments.
 
 ## Step 0: Enter PR-fleet-manager mode (MANDATORY, first tick only)
 
+### Step 0-pre: Refuse to run alongside a live `/pm day` loop (arm time only — issue #1194)
+
+Skip this on `--tick` invocations; it gates **arming**, and an already-armed fleet re-checking it every tick would be noise.
+
+`/pm day` runs `/subagent` A→B→C pipelines whose Phase B and Phase C dispatch `/fixpr` and `/wrap` against their own PRs. This skill dispatches `/fixpr` and `/wrap` against **every** PR it discovers, including those. Both running means two owners on one PR: duplicate fix pushes onto a branch mid-rebase, and two racing merges. The two modes are mutually exclusive, and **both sides check** — a guard only one side runs is a guard that whichever starts second walks straight past.
+
+Capture an exit code for **each** of the three reads. Never `|| echo` a default over a failure: a substituted value reads exactly like a real one, so the guard would report a confident answer it never actually obtained.
+
+```bash
+REPO_KEY=$("$SESSION_STATE_SH" --repo-key)
+ACTIVE_RC=0; TICK_RC=0; EFF_RC=0
+DAY_ACTIVE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.active") || ACTIVE_RC=$?
+DAY_LAST_TICK=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.last_tick_at") || TICK_RC=$?
+DAY_EFF_MIN=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.cadence_effective_minutes") || EFF_RC=$?
+```
+
+Each exit code takes the same reading: `0` is the value; `3` means no state file has ever been written, so there is genuinely no day loop; **anything else is unreadable state and refuses the arm** — say the read failed rather than proceeding. Defaulting `DAY_EFF_MIN` to `5` on a failed read is the specific trap: for a loop widened to a 30-minute cadence it shrinks the freshness window from `max(3 × 30, 15) = 90m` to `15m`, so a live loop that ticked 20 minutes ago is declared dead and this skill arms straight into a second owner.
+
+With all three readable: `DAY_ACTIVE == true` **and** `DAY_LAST_TICK` inside `max(3 × DAY_EFF_MIN, 15m)` → a day loop is live: refuse to arm and stop, in one line — `A /pm day loop is running for this repo — say "stop" to it first, then /pr-monitor-and-manage.` `false`/`null`, or an `active: true` whose `last_tick_at` is outside the window (its session died — the freshness rule from `/pm` Step 2D.1(b)), mean no live loop: proceed.
+
+**Then settle the race the same way `/pm day` does** — the two reads above and this skill's own `pmm_active` write are separate `session-state.sh` calls, so simultaneous starts could each read the other as clear. Mirror `/pm` Step 2D.1(c): publish `.pmm_active=true` **first**, then re-read `.repos[<key>].day.active`; if it is now live, the day loop won — roll `pmm_active` back to `false`, arm nothing, and stand down with the message above. Whoever writes second sees the other's claim, so two owners is unreachable; both standing down is possible, safe, and re-runnable.
+
+Decision and rationale: `.claude/reference/pm-monitoring-decision.md` "The day-mode carve-out".
+
 ### Step 0a: Resume from pause (when `.pmm.paused_at` is set)
 
 On **every** invocation, before Step 1, check for a pause marker. If present, this invocation is a

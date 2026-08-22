@@ -19,7 +19,7 @@ The 5-minute heartbeat rule catches silence during turns; this file covers betwe
 
 Division of responsibility (`.claude/reference/pm-monitoring-decision.md`):
 
-- `/pm` never creates polls — on-demand orchestration only.
+- `/pm` creates no polls; `/pm day` owns one repo `Monitor`, excluding `/pr-monitor-and-manage`.
 - `/pr-monitor-and-manage` owns PR-fleet between-message polling (persistent `Monitor`, including `--auto-wake`).
 - `CronCreate` — **never**: see contract below.
 
@@ -42,7 +42,7 @@ Before any polling turn ends (`Monitor`, legacy one-shot, or a turn ending with 
 
 ## Stable-State Backoff
 
-Each tick hash `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)` into `prs.{N}.digest_streak` (free-text `blocker` excluded). Widen at streak ≥3 to `max(15m, 3×base)`; stop the poll at ≥9 or `blocker_kind == "user_input"`. Resume at base cadence after user message or changed digest. `polling-backoff-warn.sh` enforces this (reads `babysit.cadence_base_minutes`, defaults to 5). Backoff cannot reach the ceiling watch: it widens or stops the poll; the watch is a `Monitor`.
+Each tick hash `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)` into `prs.{N}.digest_streak` (free-text `blocker` excluded). Widen at streak ≥3 to `max(15m, 3×base)`; stop the poll at ≥9 (`/pm day` pauses resumably instead) or `blocker_kind == "user_input"`. Resume at base cadence after user message or changed digest. `polling-backoff-warn.sh` enforces this (reads `babysit.cadence_base_minutes`, defaults to 5). Backoff cannot reach the ceiling watch: it widens or stops the poll; the watch is a `Monitor`.
 
 ## Failure Recovery
 

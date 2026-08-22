@@ -48,6 +48,26 @@
         "scope": null,
         "at": "2026-07-30T18:40:00Z"
       },
+      "_day_comment": "Continuous PM day-mode loop state for this repo (issue #1194), written ONLY by `/pm day` (its Step 2D). One loop per repo, which is why it sits beside `refill` here rather than at top level. Like `refill` it is INVISIBLE to session-state.sh --session-view, which lifts only .prs and .root_repo out of the repo block before deleting .repos — read it explicitly with --get or an armed loop reports as absent (`/pm` Step 1A.2). `active` is trusted only while `last_tick_at` falls inside max(3 x cadence_effective_minutes, 15m); an `active: true` outside that window is a loop whose session died and is reclaimed, never a reason to refuse a re-arm. `monitor_task_id` + `monitor_generation` are the runtime identity pair: a tick whose --day-generation does not match the recorded one is stale and must exit silently before doing any work. `digest`/`digest_streak` implement scheduling-reliability.md stable-state backoff over the tuple (pipelines_sorted | queue_len | backlog_head | idle_reason), resetting the streak to 0 on change (the /pr-monitor-and-manage convention, not /babysit-pr's 1 — day mode writes nothing polling-backoff-warn.sh reads). `refill_halted` is day mode's OWN automatic halt after `max_pipeline_failures` consecutive blocked pipeline outcomes; it is deliberately NOT `refill.paused`, which is contractually human-written-only, and `/pm` 3.4 requires BOTH clear before refilling. `goal` is the only field carrying user text — encode it with jq --arg, never interpolate. `paused_at` is the resumable stable-frozen marker. Mechanism: .claude/reference/pm-day-mode.md; ownership decision: .claude/reference/pm-monitoring-decision.md.",
+      "day": {
+        "active": true,
+        "started_at": "2026-08-22T20:30:00Z",
+        "last_tick_at": "2026-08-22T21:05:00Z",
+        "cadence_base_minutes": 5,
+        "cadence_effective_minutes": 5,
+        "tick_count": 7,
+        "digest": "sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "digest_streak": 0,
+        "failure_streak": 0,
+        "max_pipeline_failures": 3,
+        "refill_halted": false,
+        "halt_reason": null,
+        "stop_requested": false,
+        "monitor_task_id": "b5lo0mwqr",
+        "monitor_generation": "20260822T203000Z-41977-18234",
+        "paused_at": null,
+        "goal": null
+      },
       "_release_comment": "Agent-initiated TestFlight release cadence for this repo (issue #1169), written by release-decide.sh and release-sweep.sh through session-state.sh --raw-path --set. --raw-path is REQUIRED: auto-scoping only rewrites .prs/.root_repo, and reads must use --get --raw-path rather than --session-view, which projects only those two keys and would report this whole block as absent. `pending` is the durable marker a merge inside the build window leaves behind so a later sweep — in any session — can cut the build; `count` is how many merges have coalesced into it, and `notified_at` is set once a blocker has been reported so it is not repeated every tick. `in_flight` is a build this automation triggered and is following to a terminal state; `awaiting_run` means the run has not appeared yet. `last_seen_build` is bookkeeping only — the window is always measured from GitHub run history, never from this file, so builds cut outside the automation are respected and the state self-heals. Absent block = this repo has never been evaluated; that is not the same as opted out, which is the absence of .claude/release-policy.json in the repo itself. Mechanism: .claude/reference/release-cadence.md.",
       "release": {
         "pending": {

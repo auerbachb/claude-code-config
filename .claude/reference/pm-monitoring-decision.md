@@ -4,10 +4,30 @@
 
 Division of responsibility between orchestration and fleet monitoring:
 
-- **`/pm` never creates polls.** It is a strictly on-demand orchestrator: cold-start scan, inline execution of selected issues via the `/subagent` A→B→C flow (in-turn Dedicated Monitor Mode, not a recurring poll), thread prompts for the few issues too big for a subagent, on-demand status when the user asks, and handoff generation. At ≥3 active threads it redirects to `/pr-monitor-and-manage`; it does not arm a scheduler.
+- **On-demand `/pm` never creates polls.** A bare `/pm` is a strictly on-demand orchestrator: cold-start scan, inline execution of selected issues via the `/subagent` A→B→C flow (in-turn Dedicated Monitor Mode, not a recurring poll), thread prompts for the few issues too big for a subagent, on-demand status when the user asks, and handoff generation. At ≥3 active threads it redirects to `/pr-monitor-and-manage`; it does not arm a scheduler.
+- **`/pm day` is the one carve-out, and it is mutually exclusive with `/pr-monitor-and-manage`** (#1194). Continuous mode arms exactly one persistent `Monitor` per repo, re-invoking `/pm day --tick`. See "The day-mode carve-out" below for why this preserves rather than breaks the single-owner invariant.
 - **`/pr-monitor-and-manage` owns PR-fleet between-message polling.** It establishes a persistent `Monitor` at the configured cadence, optionally keeps a low-frequency Monitor re-scan running after an idle pause (`--auto-wake`), and dispatches per-PR fixes/merges.
 - **Persistent `Monitor` owns explicit user-invoked "poll every N"** that is not PR-fleet-specific. `CronCreate`, both `/loop` modes, and hand-rolled one-shot `ScheduleWakeup` chains are forbidden for recurring polls (#914, #924).
 - **`CronCreate` is never a polling fallback.** It is session-only and produced zero ticks in a controlled idle probe (#914); durable work uses on-disk state reconciled at session start (`.claude/reference/cross-session-durability.md`).
+
+## The day-mode carve-out (#1194)
+
+Issue #1194 named this tension deliberately and required it be resolved here rather than left as a side effect. Two options were on the table.
+
+**Rejected — delegate day mode's between-turn ticks to `/pr-monitor-and-manage`.** It looks like the conservative choice, since it leaves the "one poll owner" sentence literally intact. It is in fact the *dangerous* one. Day mode runs `/subagent` A→B→C pipelines, and Phase B and Phase C already dispatch `/fixpr` and `/wrap` against those PRs. `/pr-monitor-and-manage` independently dispatches `/fixpr` and `/wrap` against every PR it discovers — including those same ones. Delegating would put **two owners on one PR**: duplicate fix pushes onto a branch mid-rebase, and two racing merges. Preserving the wording would have broken the property the wording was protecting.
+
+**Chosen — day mode owns its own poll, and cannot run alongside PMM.** The invariant worth keeping was never "`/pr-monitor-and-manage` specifically owns polling." It is **exactly one owner dispatches against a given PR at a time.** Mutual exclusion satisfies that directly:
+
+- `/pm day` refuses to arm while `.pmm_active == true`, telling the user to run `/pmm-stop` first (`/pm` Step 2D.1(a)). An unreadable `.pmm_active` refuses too — failing closed, since "we could not look" is not "nothing is running."
+- `/pr-monitor-and-manage` refuses to arm while a day loop is live, with the mirrored message (its Step 0-pre). Neither side can be the only one checking, or whichever starts second wins by default.
+- A **paused** fleet (`pmm_active: false` with `.pmm.paused_at` set) is not dispatching, so it does not block. Day mode arms and says the fleet stays paused.
+- The day loop's own `active` flag is trusted only inside a freshness window on `last_tick_at`, so a loop whose session died can never permanently block a re-arm from either side.
+
+**The check is publish-then-verify, not read-then-arm.** Each `session-state.sh` call is individually locked, but a read followed by a separate write is not atomic, so two simultaneous starts could each read the other as clear. Both sides therefore write their own claim *first* and then re-read the other's: `/pm day` writes `day.active=true` before re-reading `.pmm_active`; `/pr-monitor-and-manage` writes `pmm_active=true` before re-reading `day.active`. Whoever writes second is guaranteed to observe the other's claim, so **two owners is unreachable**. The residual case is both standing down when they interleave exactly — zero owners, which is safe and costs one re-run. That asymmetry is deliberate: a lease or CAS protocol could also guarantee a winner, but the failure it would buy protection against (a user re-running a command) is trivial, while the failure publish-then-verify already eliminates (two racing merges on one PR) is not.
+
+Day mode is also the strictly better owner for its own PRs: it holds the issue claims, the queue, the ranked backlog, and the phase state for each pipeline. `/pr-monitor-and-manage` re-derives PR state from GitHub every tick by design and knows none of that — it could merge a PR but never start the next issue, which is precisely the half of the loop #1194 exists to automate.
+
+**Scope of the carve-out.** It is one `Monitor` per repo, armed only by an explicit `/pm day` or `/pm --run`, torn down on every exit path, and reclaimed by a freshness window when its session dies. Everything else in this document is unchanged: a bare `/pm` still arms nothing, and `CronCreate` is still never an option.
 
 ## Rationale
 
@@ -35,6 +55,7 @@ PM orchestration reads and writes `~/.claude/session-state.json`. Unknown fields
 - `prs`: tracked PR map. Each entry may include `issue`, `phase`, `head_sha`, `reviewer`, `needs`, `status`, `worker`, and `updated_at`.
 - `active_agents`: subagent records. Each entry should include `id`, `task`, `issue`, `pr`, `phase`, `launched`, and optional `last_seen_at`.
 - `polling_jobs`: legacy `CronCreate` compatibility records from pre-issue #827 sessions. Empty in normal operation — no current skill registers one, and `session-scheduling-reconcile.sh` reconciles leftovers at session start. `/pm` does not create or clear this array.
+- `.repos["<owner>/<name>"].day`: day-mode loop state (#1194) — `active`, the `monitor_task_id`/`monitor_generation` identity pair, cadence, `digest`/`digest_streak`, `failure_streak`, `refill_halted`, `stop_requested`, `paused_at`. Repo-scoped because a day loop is one-per-repo, sitting beside the `refill` posture it honors. **Not projected by `--session-view`**, which lifts only `.prs` and `.root_repo` out of the repo block — read it explicitly or an armed loop reads as absent. Written only by `/pm day`.
 - `polling_failures`: prior dropped-poll recoveries.
 - `cr_quota` and `greptile_daily`: review-budget state used by Phase B decisions.
 - `pmm_*` fields: owned by `/pr-monitor-and-manage`.
@@ -75,8 +96,9 @@ contract of the skill that armed it (`/pr-monitor-and-manage` or `/babysit-pr`).
 
 ## Skill integration decision
 
-- `/pm`: runs selected inline-eligible issues via the `/subagent` A→B→C flow (in-turn monitoring) and hands issues too big for a subagent to threads; detects active worker threads after cold start/resume. At ≥3 threads, redirects to `/pr-monitor-and-manage`. Never creates polls. Records passive tracking in `session-state.json`.
-- `/pr-monitor-and-manage`: owns PR-fleet between-message polling with persistent Monitor tasks, per-PR dispatch, and idle auto-pause.
+- `/pm`: runs selected inline-eligible issues via the `/subagent` A→B→C flow (in-turn monitoring) and hands issues too big for a subagent to threads; detects active worker threads after cold start/resume. At ≥3 threads, redirects to `/pr-monitor-and-manage`. Creates no polls on this path. Records passive tracking in `session-state.json`.
+- `/pm day`: the continuous posture (#1194). Arms one persistent `Monitor` for the repo, refuses to arm alongside a live `/pr-monitor-and-manage`, skips the ≥3 redirect (day mode *is* the answer that redirect points at), and tears the Monitor down on every exit. Full contract: `/pm` Step 2D; mechanism and exit taxonomy: `.claude/reference/pm-day-mode.md`.
+- `/pr-monitor-and-manage`: owns PR-fleet between-message polling with persistent Monitor tasks, per-PR dispatch, and idle auto-pause. Refuses to arm while a day loop is live — the mirror of day mode's own check, since a guard only one side runs is a guard the second starter walks past.
 - `/subagent`: when it spawns Phase A/B/C agents, it immediately enters Dedicated Monitor Mode for in-turn orchestration and records state. For between-turn PR fleet monitoring, point the user at `/pr-monitor-and-manage`; for explicit user "poll every N" on non-PR work, use `Monitor` per `scheduling-reliability.md`.
 - `/status`: remains the default on-demand scan command because it already reconciles PRs, review state, checks, session state, and active agents.
 - `/pm-handoff`: captures orchestration state for resume; snapshots any legacy `polling_jobs[]` only as informational continuity and states that those session-scoped `CronCreate` jobs are dead on resume. It never treats that array as current `Monitor` identity or instructs the new thread to recreate the jobs.
