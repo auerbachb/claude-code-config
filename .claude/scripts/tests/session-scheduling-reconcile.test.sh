@@ -441,17 +441,23 @@ ok "--format=text produces the same output as --format text (both exit 0)"
 # --format= (empty value) must be rejected but still exit 0 (fail-soft contract).
 new_home '{}'
 EMPTY_RC=0
-"$SCRIPT" --format= >/dev/null 2>&1 || EMPTY_RC=$?
+EMPTY_OUT_FILE="$TMP_DIR/format-empty.out"
+EMPTY_ERR_FILE="$TMP_DIR/format-empty.err"
+"$SCRIPT" --format= >"$EMPTY_OUT_FILE" 2>"$EMPTY_ERR_FILE" || EMPTY_RC=$?
 [[ $EMPTY_RC -eq 0 ]] || fail "--format= (empty) must still exit 0, got rc=$EMPTY_RC"
+[[ ! -s "$EMPTY_OUT_FILE" ]] || fail "--format= must produce no stdout"
+[[ -s "$EMPTY_ERR_FILE" ]] || fail "--format= must emit an error diagnostic"
 ok "--format= (empty value) is rejected and still exits 0"
 
 # --format=xml must be rejected the same way --format xml is.
 new_home '{}'
-XML_OUT_EQUALS="$("$SCRIPT" --format=xml 2>/dev/null)"
-[[ -z "$XML_OUT_EQUALS" ]] || fail "--format=xml should produce no stdout, got: $XML_OUT_EQUALS"
+XML_OUT_FILE="$TMP_DIR/format-xml.out"
+XML_ERR_FILE="$TMP_DIR/format-xml.err"
 XML_RC=0
-"$SCRIPT" --format=xml >/dev/null 2>&1 || XML_RC=$?
+"$SCRIPT" --format=xml >"$XML_OUT_FILE" 2>"$XML_ERR_FILE" || XML_RC=$?
 [[ $XML_RC -eq 0 ]] || fail "--format=xml must still exit 0 (fail-soft), got rc=$XML_RC"
+[[ ! -s "$XML_OUT_FILE" ]] || fail "--format=xml must produce no stdout"
+[[ -s "$XML_ERR_FILE" ]] || fail "--format=xml must emit an error diagnostic"
 ok "--format=xml is rejected with no stdout and exit 0, matching space-form behaviour"
 
 # --- 11. A failed write must not report counts it did not land ---------------
