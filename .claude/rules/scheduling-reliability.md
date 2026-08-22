@@ -27,9 +27,7 @@ Skill-owned polling updates `session-state.json` per skill's contract; stale sta
 
 ### Recurring scheduler contract (authoritative)
 
-**It does not reliably fire.** Reproduced 2026-08-01 (#914): armed jobs, still listed by `CronList`, produced **zero** ticks across an 11-minute idle window at two cadences. Fixed-interval `/loop` delegates to it. Dynamic `/loop` uses `ScheduleWakeup`, but two live watchers also stopped until manual wake-up (#924). A follow-up control (#983) found the failure tracks the presence of a *concurrently-armed* `Monitor`, a detached probe, or their combination: a lone `CronCreate` job with neither mechanism fired 15/15 ticks over 31 minutes — but this system pairs recurring work with `Monitor`-based ceiling watches by default, so the guidance is unchanged. Use `Monitor`. Detail: `.claude/reference/scheduling-failure-modes.md` Pattern 7.
-
-It is also **session-only and in-memory**: `durable` has **no effect** and nothing survives a session boundary. **Durable work belongs in on-disk state, not a job** (#827). A durable scheduler exists (`mcp__scheduled-tasks__*`); why we decline it: `.claude/reference/cross-session-durability.md`.
+**CronCreate is unreliable** — reproducibly produces zero ticks under common usage patterns (#914, #924). **Session-only and in-memory**: `durable` has **no effect**; nothing survives a session boundary. **Durable work belongs in on-disk state, not a job.** A durable scheduler exists (`mcp__scheduled-tasks__*`); why we decline it: `.claude/reference/cross-session-durability.md`. Use `Monitor`. Failure-mode detail: `.claude/reference/scheduling-failure-modes.md` Pattern 7.
 
 ## Mandatory Pre-Exit Checklist for Polling Turns
 

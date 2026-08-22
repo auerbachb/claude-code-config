@@ -14,7 +14,7 @@ BugBot (Cursor) is the **second-tier** reviewer in the escalation chain (`cr-git
 
 - **Bot username:** `cursor[bot]`
 - **Trigger:** `@cursor review` comment (`/fixpr` or CI when `CURSOR_REVIEW_PAT` set — duplicates OK, but see §Re-Reviews).
-- **Cost:** **The stack's largest line** — ~$1.58/review on-demand, cap-exhausted, refusing 64% of PRs (#1204). One nudge per HEAD; after a usage-limit refusal there, `maybe-trigger-ai-review.sh` suppresses further nudges until the next push.
+- **Cost:** Highest per review in the stack — see `.claude/reference/pricing-matrix.md` §Cursor BugBot. One nudge per HEAD; after a usage-limit refusal, `maybe-trigger-ai-review.sh` suppresses further nudges until the next push.
 - **Review time:** ~1–3 min. **No CLI** (GitHub-only).
 
 ## Polling for BugBot Reviews
