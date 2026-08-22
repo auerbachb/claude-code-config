@@ -72,6 +72,13 @@ case "$1 $2" in
     if [[ "${GH_FAKE_ISSUE_FAIL:-0}" == "1" ]]; then
       echo "fake gh: simulated API failure" >&2; exit 1
     fi
+    # GitHub can answer 200 with PARTIAL data plus an `errors` array, and gh
+    # does not always exit non-zero for it. Reading the resolved half as the
+    # whole answer would silently drop chips and free capacity.
+    if [[ "${GH_FAKE_GQL_PARTIAL:-0}" == "1" ]]; then
+      printf '{"data":{"repository":null},"errors":[{"message":"Something went wrong"}]}\n'
+      exit 0
+    fi
     # Answer only for the issue numbers actually asked about — a fake that
     # returned every open issue regardless would hide a caller that queried the
     # wrong set.
@@ -373,6 +380,17 @@ OUT=$(GH_FAKE_ISSUE_FAIL=1 run --json 2>"$TMP_DIR/err"); RC=$?
 [[ $RC -eq 5 ]] || fail "a gh issue list failure should exit 5, got $RC"
 [[ -z "$OUT" ]] || fail "a read failure must print nothing on stdout"
 ok "a failed open-issue read exits 5 rather than counting chips as stale-free"
+
+# A GraphQL 200 carrying `errors` is a failed read, not an empty set — counting
+# the resolved half would drop chips and hand back capacity that is in use.
+write_chip_log "alpha" "[$(chip_entry 21 "$SLUG" open t1)]"
+set_open_issues "21"
+OUT=$(GH_FAKE_GQL_PARTIAL=1 run --json 2>"$TMP_DIR/err"); RC=$?
+[[ $RC -eq 5 ]] || fail "a GraphQL errors response should exit 5, got $RC"
+[[ -z "$OUT" ]] || fail "a GraphQL errors response must print no count, got: '$OUT'"
+grep -qi "graphql returned errors" "$TMP_DIR/err" || \
+  fail "the GraphQL errors response should name itself on stderr, got: $(cat "$TMP_DIR/err")"
+ok "a GraphQL 200-with-errors exits 5 instead of counting the partial answer"
 
 printf 'this is not json\n' > "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR/issue-maker-broken-log.json"
 OUT=$(run --json 2>"$TMP_DIR/err"); RC=$?

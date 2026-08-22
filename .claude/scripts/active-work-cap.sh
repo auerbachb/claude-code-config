@@ -395,7 +395,12 @@ chip_issue_numbers() {
       else . end
       | .issues[]
       | select(.status == "open" and .chip_task_id != null)
-      | "\(.number) \((.url // "") | capture("^https?://[^/]+/(?<r>[^/]+/[^/]+)/issues/") // {r:""} | .r)"
+      # `capture` on a non-matching string yields `empty`, and `empty // {r:""}`
+      # yields the fallback — so the alternative alone is sufficient here. The
+      # `try` is belt-and-braces against jq versions that raise instead: without
+      # it, one malformed url in a log would abort the whole count with exit 5
+      # rather than taking the documented warn-and-over-count path.
+      | "\(.number) \((.url // "") | (try capture("^https?://[^/]+/(?<r>[^/]+/[^/]+)/issues/") catch {r:""}) // {r:""} | .r)"
     ' "$f")" || rc=$?
     if [[ $rc -ne 0 ]]; then
       die_read "unreadable or malformed issue-maker chip log: $f (treat its contents as UNKNOWN, not as zero chips)"
@@ -449,10 +454,31 @@ open_among() {
     if [[ $rc -ne 0 ]]; then
       die_read "gh api graphql (issue states, repo=$slug) failed: $out"
     fi
-    # A number that does not exist comes back as null and is simply not open.
+
+    # A GraphQL 200 can carry `errors` alongside PARTIAL data, and gh does not
+    # always exit non-zero for it. Resolved aliases would then be read as the
+    # whole answer while the failed ones silently vanish — each missing alias
+    # drops a chip, which RAISES free slots. Reject any errors outright rather
+    # than counting a partial answer as a complete one.
+    local gqerr rc1=0
+    gqerr="$(printf '%s' "$out" | jq -r 'if (.errors // empty) then
+              ([.errors[].message] | join("; ")) else empty end' 2>&1)" || rc1=$?
+    if [[ $rc1 -ne 0 ]]; then
+      die_read "could not parse the GraphQL response (repo=$slug): $gqerr"
+    fi
+    if [[ -n "$gqerr" ]]; then
+      die_read "GraphQL returned errors for issue states (repo=$slug): $gqerr"
+    fi
+
+    # A number that does not exist comes back as null and is simply not open —
+    # but the CONTAINER must be there. A missing .data.repository means the
+    # query answered nothing, which is a failure, not an empty set.
     local parsed rc2=0
     parsed="$(printf '%s' "$out" \
-      | jq -r '.data.repository | to_entries[] | .value | select(. != null)
+      | jq -r 'if (.data.repository | type) != "object" then
+                 error("no data.repository in response")
+               else .data.repository end
+               | to_entries[] | .value | select(. != null)
                | select(.state == "OPEN") | .number' 2>&1)" || rc2=$?
     if [[ $rc2 -ne 0 ]]; then
       die_read "could not parse issue states from GraphQL: $parsed"
