@@ -19,9 +19,14 @@ trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   — $*"; }
 
-# Isolate from a caller-set override — the default-cap assertions below must
-# not silently inherit a different number from the environment.
+# Isolate from caller-set overrides — assertions that rely on a built-in
+# default must not silently inherit a different number from the environment.
+# This must list EVERY tunable the script reads: the cap (default-cap cases)
+# and the agent TTL (the stale-agent cases stamp an entry four hours old and
+# expect the 7200s default to expire it, which a caller-set TTL would flip in
+# either direction). Keep in step with the script's TUNING block.
 unset CLAUDE_ACTIVE_WORK_CAP
+unset CLAUDE_ACTIVE_WORK_AGENT_TTL_S
 
 export CLAUDE_ACTIVE_WORK_HANDOFF_DIR="$TMP_DIR/handoffs"
 export HOME="$TMP_DIR/home"
