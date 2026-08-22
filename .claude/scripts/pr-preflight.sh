@@ -266,6 +266,32 @@ STATE_SH="$(resolve_state_helper || true)"
 # writes. Every access below goes through "$STATE_SH", which returns empty for a
 # missing file or absent path — the same signal we'd get from an -f test.
 
+# --- resolve review-substance.sh (shared substance evaluator; env override for tests) ---
+# Used by review_object_engaged() to detect hollow APPROVED reviews so preflight
+# does not count them as "engaged" — the same evaluator merge-gate.sh uses for
+# the #875 substance check (issue #1226). Sibling path is preferred so tests and
+# production both find the script beside pr-preflight.sh.
+resolve_review_substance() {
+  if [[ -n "${PREFLIGHT_REVIEW_SUBSTANCE_SH:-}" ]]; then
+    # Explicit override (tests): honor it even if non-executable, so a bogus
+    # path degrades to "evaluator unavailable" rather than silently finding the
+    # sibling — mirrors resolve_state_helper()'s contract exactly.
+    [[ -x "${PREFLIGHT_REVIEW_SUBSTANCE_SH}" ]] && { echo "$PREFLIGHT_REVIEW_SUBSTANCE_SH"; return 0; }
+    return 1
+  fi
+  local dir candidate
+  dir="$(cd "$(dirname "$0")" && pwd)"
+  for candidate in \
+    "$dir/review-substance.sh" \
+    "$HOME/.claude/skills-worktree/.claude/scripts/review-substance.sh" \
+    "$HOME/.claude/scripts/review-substance.sh" \
+    ".claude/scripts/review-substance.sh"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+REVIEW_SUBSTANCE_SH="$(resolve_review_substance || true)"
+
 # --- 1. read PR draft state + author + HEAD sha ---
 PR_VIEW_ERR="$(mktemp)"
 
@@ -298,7 +324,7 @@ CURRENT_USER="$(gh api user --jq .login 2>/dev/null || echo "")"
 # Pre-#576 this collapsed everything into a flat login set and a flat body list,
 # which is exactly why staleness was invisible. Each artifact now keeps the
 # fields needed to decide freshness against HEAD.
-ARTIFACTS_TMP="$(mktemp)"   # login US commit_id US created_at US collapsed_body
+ARTIFACTS_TMP="$(mktemp)"   # login US commit_id US created_at US collapsed_body US type(r/c/i)
 SLUGS_TMP="$(mktemp)"       # app.slug of each check-run on the HEAD commit
 TIMELINE_TMP="$(mktemp)"    # created_at of each head_ref_force_pushed/head_ref_pushed event
 GH_ERR="$(mktemp)"
@@ -327,27 +353,63 @@ trap 'rm -f "$PR_VIEW_ERR" "$ARTIFACTS_TMP" "$SLUGS_TMP" "$TIMELINE_TMP" "$GH_ER
 # SHA-less artifact unparseable. 0x1f is not IFS whitespace, so empty fields
 # survive. It also cannot occur in real GitHub content, unlike tab.
 #
-# `@tsv` would need per-endpoint field lists; a manual join keeps one filter
-# shape across all three endpoints. Body is last, and separators/newlines are
-# stripped from it, so a hostile body cannot forge fields.
+# `@tsv` would need per-endpoint field lists; a manual join keeps a consistent
+# shape across all three endpoints. Body is the 4th field; the 5th is a static
+# endpoint-type tag ("r"/"c"/"i"). Separators/newlines are stripped from the
+# body so a hostile body cannot forge the type tag (issue #1226).
 US=$'\037'
-ARTIFACT_JQ='.[]? | [
+# Per-endpoint jq filters.  Each row has 5 US-separated fields:
+#   login | sha | date | body | type
+# "type" distinguishes the endpoint so login_fresh_on_head() can apply the
+# substance check only to review objects (issue #1226):
+#   "r"  = review object  (pulls/reviews)      - substance-checked for codeant/coderabbit
+#   "c"  = inline comment (pulls/comments)     - always counts as engagement on HEAD
+#   "i"  = issue comment  (issues/PR comments) - SHA-less, freshness checked by date
+ARTIFACT_JQ_REVIEW='.[]? | [
     (.user.login // ""),
     (.original_commit_id // .commit_id // ""),
     (.submitted_at // .created_at // ""),
-    ((.body // "") | gsub("[\r\n\t\u001f]+"; " "))
+    ((.body // "") | gsub("[\r\n\t\u001f]+"; " ")),
+    "r"
+  ] | join("\u001f")'
+ARTIFACT_JQ_INLINE='.[]? | [
+    (.user.login // ""),
+    (.original_commit_id // .commit_id // ""),
+    (.submitted_at // .created_at // ""),
+    ((.body // "") | gsub("[\r\n\t\u001f]+"; " ")),
+    "c"
+  ] | join("\u001f")'
+ARTIFACT_JQ_ISSUE='.[]? | [
+    (.user.login // ""),
+    (.original_commit_id // .commit_id // ""),
+    (.submitted_at // .created_at // ""),
+    ((.body // "") | gsub("[\r\n\t\u001f]+"; " ")),
+    "i"
   ] | join("\u001f")'
 
-for endpoint in \
-  "repos/{owner}/{repo}/pulls/$PR/reviews" \
-  "repos/{owner}/{repo}/pulls/$PR/comments" \
-  "repos/{owner}/{repo}/issues/$PR/comments"; do
-  if ! gh api --paginate "${endpoint}?per_page=100" \
-       --jq "$ARTIFACT_JQ" >>"$ARTIFACTS_TMP" 2>"$GH_ERR"; then
-    echo "pr-preflight.sh: failed to scan $endpoint: $(cat "$GH_ERR")" >&2
-    exit 4
-  fi
-done
+# Fetch all three endpoints as raw JSON so we can both populate ARTIFACTS_TMP
+# and pass the raw payloads to review-substance.sh (issue #1226).
+RAW_REVIEWS_JSON="[]"
+RAW_INLINE_JSON="[]"
+RAW_ISSUE_JSON="[]"
+
+if ! RAW_REVIEWS_JSON="$(gh api --paginate "repos/{owner}/{repo}/pulls/$PR/reviews?per_page=100" 2>"$GH_ERR")"; then
+  echo "pr-preflight.sh: failed to scan pulls reviews: $(cat "$GH_ERR")" >&2
+  exit 4
+fi
+if ! RAW_INLINE_JSON="$(gh api --paginate "repos/{owner}/{repo}/pulls/$PR/comments?per_page=100" 2>"$GH_ERR")"; then
+  echo "pr-preflight.sh: failed to scan pulls comments: $(cat "$GH_ERR")" >&2
+  exit 4
+fi
+if ! RAW_ISSUE_JSON="$(gh api --paginate "repos/{owner}/{repo}/issues/$PR/comments?per_page=100" 2>"$GH_ERR")"; then
+  echo "pr-preflight.sh: failed to scan issue comments: $(cat "$GH_ERR")" >&2
+  exit 4
+fi
+
+printf '%s\n' "$RAW_REVIEWS_JSON" | jq -r "$ARTIFACT_JQ_REVIEW" >>"$ARTIFACTS_TMP"
+printf '%s\n' "$RAW_INLINE_JSON"  | jq -r "$ARTIFACT_JQ_INLINE"  >>"$ARTIFACTS_TMP"
+printf '%s\n' "$RAW_ISSUE_JSON"   | jq -r "$ARTIFACT_JQ_ISSUE"   >>"$ARTIFACTS_TMP"
+
 
 # HEAD freshness anchor for SHA-less issue comments (issue #590). Preferred
 # source: the PR timeline's head_ref_force_pushed/head_ref_pushed event —
@@ -399,6 +461,25 @@ else
   fi
 fi
 
+# --- substance evidence for review objects (issue #1226) ---
+# Evaluate the substantive footprint of codeant-ai[bot] and coderabbitai[bot]
+# reviews using the same evaluator as merge-gate.sh (#875). The result is
+# consumed by review_object_engaged() so that login_fresh_on_head() can skip
+# hollow APPROVED reviews that merge-gate.sh would reject.
+# Degradation: if REVIEW_SUBSTANCE_SH is unavailable or fails, leave
+# PREFLIGHT_REVIEW_EVIDENCE as "{}" — review_object_engaged() degrades to
+# "engaged" (fail toward silence) in that case.
+PREFLIGHT_REVIEW_EVIDENCE="{}"
+if [[ -n "${REVIEW_SUBSTANCE_SH:-}" && -n "$HEAD_SHA" ]]; then
+  PREFLIGHT_REVIEW_EVIDENCE="$(
+    printf '%s\n%s\n%s\n' "$RAW_REVIEWS_JSON" "$RAW_INLINE_JSON" "$RAW_ISSUE_JSON" \
+      | jq -cs --arg sha "$HEAD_SHA" --arg push "${HEAD_PUSH_DATE:-}" \
+          '{head_sha: $sha, push_ts: $push, reviews: .[0], pr_comments: .[1], issue_comments: .[2]}' \
+      | "$REVIEW_SUBSTANCE_SH" 2>/dev/null
+  )" || PREFLIGHT_REVIEW_EVIDENCE="{}"
+  [[ -z "$PREFLIGHT_REVIEW_EVIDENCE" ]] && PREFLIGHT_REVIEW_EVIDENCE="{}"
+fi
+
 # Check-runs on the HEAD commit. Keyed by commit, so a matching app slug is a
 # strong HEAD-freshness signal (verified: Cursor posts `Cursor Bugbot` under
 # slug `cursor`). Non-fatal: one signal among several.
@@ -431,10 +512,31 @@ at_or_after_head() {
   [[ ! "$ts" < "$HEAD_DATE" ]]
 }
 
+review_object_engaged() {
+  # $1 = exact bot login. Returns 0 when the reviewer has a substantive
+  # footprint on HEAD (non-empty body, inline comments, or a status comment
+  # naming HEAD). Only applies to codeant-ai[bot] and coderabbitai[bot];
+  # other reviewers' review objects always count as engaged to preserve
+  # pre-#1226 behavior. (issue #1226)
+  local login="$1"
+  case "$login" in
+    "codeant-ai[bot]"|"coderabbitai[bot]") ;;
+    *) return 0 ;;  # outside scope: unconditionally engaged
+  esac
+  # Degrade to "engaged" (fail toward silence) when the evaluator was
+  # unavailable or returned empty/invalid output.
+  [[ -z "${PREFLIGHT_REVIEW_EVIDENCE:-}" || "$PREFLIGHT_REVIEW_EVIDENCE" == "{}" ]] && return 0
+  # .substantive = body_len >= min_chars OR ext_substantive (inline comments,
+  # status comment naming HEAD, substantive COMMENTED review body). Shared with
+  # merge-gate.sh's #875 substance check via review-substance.sh.
+  printf '%s' "$PREFLIGHT_REVIEW_EVIDENCE" \
+    | jq -e --arg l "$login" '.reviewers[$l].substantive // false' >/dev/null 2>&1
+}
+
 login_fresh_on_head() {
   # $1 = exact bot login (e.g. coderabbitai[bot]); $2 = reviewer key.
   # Engaged on HEAD when ANY signal in the HEAD-SHA FRESHNESS table holds.
-  local login="$1" key="$2" a_login a_sha a_date
+  local login="$1" key="$2" a_login a_sha a_date a_type
 
   # No HEAD SHA (unexpected — headRefOid absent from the PR view): every
   # freshness test would fail and we would trigger all four bots on every tick.
@@ -452,10 +554,20 @@ login_fresh_on_head() {
 
   # (b) review / inline comment on HEAD, or (c) SHA-less issue comment at or
   # after the HEAD commit date.
-  while IFS="$US" read -r a_login a_sha a_date _; do
+  while IFS="$US" read -r a_login a_sha a_date _ a_type; do
     [[ "$a_login" == "$login" ]] || continue
     if [[ -n "$a_sha" ]]; then
-      [[ "$a_sha" == "$HEAD_SHA" ]] && return 0
+      if [[ "$a_sha" == "$HEAD_SHA" ]]; then
+        # Review objects (type "r") from codeant/coderabbit must carry a
+        # substantive footprint to count as engaged — catches hollow APPROVED
+        # reviews that merge-gate.sh would reject (issue #1226). Inline diff
+        # comments (type "c") are always substantive by definition.
+        if [[ "${a_type:-}" == "r" ]]; then
+          review_object_engaged "$login" && return 0
+        else
+          return 0
+        fi
+      fi
     else
       # No SHA to compare (issue comment). With no HEAD date to compare
       # against either, fail toward pre-#576 "present" rather than re-trigger.
@@ -477,7 +589,7 @@ trigger_fresh_for_head() {
   # ("I ran @coderabbitai full review earlier") still do not suppress a real
   # trigger post — a trigger comment we posted is exactly that string.
   local trigger="$1" a_sha a_date a_body
-  while IFS="$US" read -r _ a_sha a_date a_body; do
+  while IFS="$US" read -r _ a_sha a_date a_body _; do
     [[ "$a_body" == "$trigger" ]] || continue
     # Only a SHA-less artifact can be one of OUR triggers: post_trigger posts via
     # `gh pr comment`, which creates an issue comment (no commit_id). A
