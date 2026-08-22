@@ -288,7 +288,7 @@ The block below is also the working spec when this thread adopts the issue — p
 
 - **Drop the model-guard preamble.** The guard exists so a session started from a picker can check itself against a recommendation it did not set. This thread is already running on whatever model the user chose, with nothing to compare against, so the guard has no work to do here.
 - **Keep the model and effort recommendation lines** — the `**Model:**` and `**Effort:**` lines — and say so in one line if they differ from what this thread is running, so the user can restart on the recommended tier if they want it. Never stop and wait on the difference; that is the guard's job in a spawned session, not a gate here.
-- **Keep everything else verbatim** — plan, AC, and the whole `### Constraints` block, including the claim line and the merge-authority bullet. The constraints bind this thread exactly as they would bind a spawned one.
+- **Keep everything else verbatim** — plan, AC, and the whole `### Constraints` block, including the claim line and the merge-authority bullet. The constraints bind this thread exactly as they would bind a spawned one. **One substitution**, forced by the dropped preamble: the claim bullet times re-affirmation "after the model-guard check", and there is no such check on this path — read it as **"immediately before any repo read, edit, or planning"** instead. The ordering it protects is unchanged; only the landmark it names is gone. Do **not** edit the chip or fallback templates for this — a spawned session still runs the guard, so the verbatim wording is correct there.
 
 Then start on step 1 of the plan.
 

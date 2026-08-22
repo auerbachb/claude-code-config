@@ -162,7 +162,9 @@ For each issue the user describes (see Step 6 for batches):
 4. **Title** — concise, **≤70 characters**. If it would exceed 70, auto-trim and note the trim in the decision points.
 5. **Labels** (Step 7, auto-applied) and **cross-references** (Step 8).
 6. **Create automatically** — no full-body reprint, no "Create this issue? (Y/n/edit)" gate. Record in the log (Step 9).
-7. **Report + print the URL** — emit the concise summary + decision points (Step 9a), offer or refresh the session's coding hand-off (Step 9c), and **print the URL as the closing line** (Step 9).
+7. **Report + print the URL** — emit the concise summary + decision points (Step 9a) and **print the URL as the closing line** (Step 9).
+
+**The hand-off is not part of this per-issue loop.** Step 9c fires **once, after the last issue of the batch is filed** (Step 6) — never after the first. Emitting it mid-batch offers a launch the user can click before the remaining issues exist, and a hand-off that has already been clicked cannot absorb them (Step 9c's refresh rule covers only an *unclicked* offer). A single-issue session reaches "after the last issue" immediately, so nothing is delayed there.
 
 ---
 
@@ -408,7 +410,14 @@ A capture session produces **one** hand-off covering every open issue filed in i
 
 **Repo-wide cap (before the hand-off).** Step 6 owns the arithmetic and reads the census once per session: offer while `FREE > 0`; at `FREE == 0` **defer**, naming `{ACTIVE}/{CAP}` and the scope. This is the figure case 2 of `chip-launching.md` "Precedence when the ceiling is full" gates on — a capture thread has no PM context, but it is not without a count.
 
-**When to emit, and how to refresh.** Emit the hand-off once the session's issues are filed: after the last issue of a batch (Step 6), or after the single issue of a one-issue session. When more issues arrive in later turns, **refresh** rather than add — spawn the replacement covering the larger set first, record its `task_id`, then `dismiss_task` the previous one (`chip-launching.md` "Stale-chip hygiene" order: replace, then withdraw). "At most one" holds at every moment, and a dismissal reporting that the old chip was already clicked or already dismissed is a successful no-op, not a failure — clear the stale `task_id` and move on.
+**When to emit.** Emit the hand-off once the session's issues are filed: after the last issue of a batch (Step 6), or after the single issue of a one-issue session — never inside the per-issue loop (Step 3.7).
+
+**How to refresh when more issues arrive in later turns — and why "already clicked" is not a no-op here.** Branch on whether the standing hand-off has been **clicked**:
+
+- **Not yet clicked** (still a live offer) — **replace it**: spawn a replacement covering the larger set, record its `task_id` on every covered issue, then `dismiss_task` the previous one (`chip-launching.md` "Stale-chip hygiene" order: replace, then withdraw). A dismissal reporting `already dismissed` is a successful no-op — clear the stale `task_id` and move on.
+- **Already clicked** — **leave it alone and cover only the new issues.** A clicked hand-off is a *running thread*, not a withdrawn offer: it has already claimed and started its issue set. Spawning a replacement that re-lists those issues launches a second thread over the same work, and because the claim contract stops on an already-claimed issue, that thread can halt on the first name in the list and never reach the newly added ones — the issues the refresh existed to deliver. So: spawn a **second** hand-off listing **only the issues the clicked one does not cover**, stamp its `task_id` on those issues alone, and leave the clicked task's `chip_task_id` values untouched.
+
+  This is the one place "at most one hand-off per session" is scoped to *live offers*, not to lifetime totals — a clicked hand-off has stopped being an offer, and pretending otherwise is what creates the duplicate-thread race. `dismiss_task` reporting `already clicked` is therefore **information, not success**: read it as "that work is in flight", never as "the offer was withdrawn".
 
 Check availability per `chip-launching.md` (same candidate order). The hand-off content is the same in both modes:
 

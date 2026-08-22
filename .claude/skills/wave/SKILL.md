@@ -262,7 +262,7 @@ An unrecorded chip cannot be dismissed later — recording is what makes withdra
 
 ## Step 9: Print the wave
 
-```
+```text
 ## Wave — {K} issue(s) ready to run in parallel
 
 - **#42 — {Title}** — recommended inline
