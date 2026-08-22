@@ -143,8 +143,11 @@ resolve_repo_key() {
     die_usage "could not infer repo from git remote (pass --repo owner/name): $out"
   fi
   # Support both https://github.com/owner/name(.git) and git@github.com:owner/name.git
+  # Strip the .git suffix first so that repository names containing dots (e.g.
+  # owner/repo.v2) are preserved in full rather than being truncated at the first
+  # dot by the [^/.] character class (feedback_codeant_remote_dot_truncation.md).
   local slug
-  slug="$(printf '%s' "$out" | sed 's|.*github\.com[:/]\([^/]*/[^/.]*\).*|\1|')"
+  slug="$(printf '%s' "$out" | sed -e 's|\.git$||' -e 's|.*github\.com[:/]\([^/]*/[^/]*\)$|\1|')"
   if [[ ! "$slug" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
     die_usage "could not extract owner/name from remote URL '$out' (pass --repo owner/name)"
   fi
@@ -397,10 +400,12 @@ if [[ "$MODE" == "reserve" ]]; then
   [[ "$ISSUE_NUM" =~ ^[0-9]+$ ]] || die_usage "--issue must be a positive integer (got: $ISSUE_NUM)"
   [[ "$CAP_FREE" =~ ^[0-9]+$ ]] || die_usage "--cap-free must be a non-negative integer (got: $CAP_FREE)"
 
-  # Validate emitter name.
+  # Validate emitter name — must match one of the six canonical spawn_task emitters
+  # listed in chip-launching.md. harness-audit is included here because chip-launching.md
+  # §"Literal vs resolved model names" names it as the sixth canonical emitter.
   case "$EMITTER" in
-    pm|prompt|wave|issue-maker|start-issue) ;;
-    *) die_usage "--emitter must be one of: pm, prompt, wave, issue-maker, start-issue (got: $EMITTER)" ;;
+    pm|prompt|wave|issue-maker|start-issue|harness-audit) ;;
+    *) die_usage "--emitter must be one of: pm, prompt, wave, issue-maker, start-issue, harness-audit (got: $EMITTER)" ;;
   esac
 
   # Generate task-id if not provided.

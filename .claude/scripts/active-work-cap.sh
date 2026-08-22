@@ -592,8 +592,15 @@ open_among() {
 # filed, so an N-issue session writes N entries carrying one `chip_task_id`.
 # The narrowings below run per ENTRY, and the distinct-chip count is taken over
 # what survives them. See CHIP LIVENESS.
+#
+# $1  repo slug
+# $2  (optional) newline-separated list of issue numbers already counted by
+#     the registry (source 2a). Any legacy chip whose surviving issues are ALL
+#     in this excluded set is not counted here — the registry already holds a
+#     slot for that work.  An absent or empty $2 applies no exclusion.
 count_live_chips() {
   local slug="$1"
+  local excluded_reg="${2:-}"
 
   # Both helpers can die_read, and a die_read inside `$(...)` ends only that
   # subshell — so each status is captured and re-raised here rather than
@@ -692,6 +699,22 @@ count_live_chips() {
   # also present in `sure` removed above, so the two lists are disjoint.
   local surviving
   surviving="$(printf '%s\n%s\n' "$matched" "$guessed" | awk 'NF' | sort -u)"
+  if [[ -z "$surviving" ]]; then
+    printf '0'
+    return
+  fi
+
+  # Source 2a/2b dedup: remove issues the registry already holds.  A chip whose
+  # EVERY surviving issue is in the excluded set has zero remaining issues and
+  # is not counted here — the registry slot covers it.  A chip with even one
+  # non-registry issue is still a distinct live legacy chip and IS counted.
+  if [[ -n "$excluded_reg" ]]; then
+    local rc_excl=0
+    surviving="$(comm -23 \
+                  <(printf '%s\n' "$surviving" | sort -u) \
+                  <(printf '%s\n' "$excluded_reg" | awk 'NF' | sort -u))" || rc_excl=$?
+    (( rc_excl == 0 )) || die_read "comm -23 failed excluding registry issues from legacy chip count (exit $rc_excl)"
+  fi
   if [[ -z "$surviving" ]]; then
     printf '0'
     return
@@ -812,8 +835,11 @@ count_inline_pipelines() {
 # A missing or inaccessible registry contributes 0 with a DEGRADED warning
 # rather than failing hard, because the legacy log (source 2b) is still read.
 registry_chip_issue_numbers() {
-  # Allow tests to skip the registry read entirely.
-  if [[ "${CLAUDE_CHIP_OFFER_REGISTRY_SH:-__unset__}" == "" ]]; then
+  # Allow tests to skip the registry read entirely by setting the variable to
+  # an empty string. Use the ${VAR+x} test to distinguish "explicitly set to
+  # empty" from "unset": :-__unset__ would convert both to __unset__ and the
+  # == "" check would never fire (feedback_codeant_empty_value_test.md).
+  if [[ "${CLAUDE_CHIP_OFFER_REGISTRY_SH+x}" == "x" && -z "${CLAUDE_CHIP_OFFER_REGISTRY_SH}" ]]; then
     return 0
   fi
 
@@ -985,33 +1011,33 @@ count_live_chips_numbers() {
   return 0
 }
 
-# Get issue numbers from each source.
+# Count chips from source 2a (registry) and source 2b (legacy log) separately,
+# then combine.  The registry (2a) uses 1 entry = 1 chip = 1 issue, so the
+# issue count and chip count are the same there.  The legacy log (2b) can have
+# N entries per chip, so count_live_chips counts DISTINCT chip_task_ids rather
+# than issues.  Cross-source dedup: pass the registry issues to count_live_chips
+# so any legacy chip whose surviving issues are ALL already in the registry is
+# excluded from source 2b's count (the registry slot covers it).
+
+# Source 2a: registry.
 REG_NUMS=""; REG_RC=0
 REG_NUMS="$(registry_chip_issue_numbers)" || REG_RC=$?
 (( REG_RC == 0 )) || exit "$REG_RC"
 
-LOG_NUMS=""; LOG_RC=0
-LOG_NUMS="$(count_live_chips_numbers "$SLUG")" || LOG_RC=$?
+REG_CHIP_COUNT=0
+if [[ -n "$REG_NUMS" ]]; then
+  REG_RAW="$(printf '%s\n' "$REG_NUMS" | grep -c '^[0-9]')" || true
+  [[ "$REG_RAW" =~ ^[0-9]+$ ]] || REG_RAW=0
+  REG_CHIP_COUNT="$REG_RAW"
+fi
+
+# Source 2b: legacy log (distinct chips, excluding issues the registry holds).
+LOG_CHIP_COUNT=0; LOG_RC=0
+LOG_CHIP_COUNT="$(count_live_chips "$SLUG" "$REG_NUMS")" || LOG_RC=$?
 (( LOG_RC == 0 )) || exit "$LOG_RC"
+[[ "$LOG_CHIP_COUNT" =~ ^[0-9]+$ ]] || LOG_CHIP_COUNT=0
 
-# Union of both sources, deduplicated by issue number.
-ALL_NUMS=""
-if [[ -n "$REG_NUMS" && -n "$LOG_NUMS" ]]; then
-  ALL_RC=0
-  ALL_NUMS="$(printf '%s\n%s\n' "$REG_NUMS" "$LOG_NUMS" | sort -u | awk 'NF')" || ALL_RC=$?
-  (( ALL_RC == 0 )) || die_read "could not compute union of chip sources (exit $ALL_RC)"
-elif [[ -n "$REG_NUMS" ]]; then
-  ALL_NUMS="$REG_NUMS"
-elif [[ -n "$LOG_NUMS" ]]; then
-  ALL_NUMS="$LOG_NUMS"
-fi
-
-CHIPS=0
-if [[ -n "$ALL_NUMS" ]]; then
-  CHIPS_RAW="$(printf '%s\n' "$ALL_NUMS" | grep -c '^[0-9]')" || true
-  [[ "$CHIPS_RAW" =~ ^[0-9]+$ ]] || CHIPS_RAW=0
-  CHIPS="$CHIPS_RAW"
-fi
+CHIPS=$(( REG_CHIP_COUNT + LOG_CHIP_COUNT ))
 
 ACTIVE=$(( OPEN_PRS + CHIPS + PIPELINES ))
 FREE=$(( CAP - ACTIVE ))

@@ -242,16 +242,22 @@ else
   fail "concurrent count: expected 1, got $n_conc"
 fi
 
-# True concurrent test using parallel subshells
+# True concurrent test using parallel subshells.
+# Capture each background PID and wait on it individually so the exit codes are
+# available: if both subshells fail for the same environmental reason (e.g. a
+# broken lock) the count is 0, which is ≤1 but proves nothing about the locking
+# logic.  At least one subprocess must exit 0 (winner) or 7 (cap full) to
+# confirm the code ran rather than errored out silently.
 H2="$(make_home)"
-( run_registry "$H2" --reserve --emitter pm --issue 200 --cap-free 1 > /dev/null 2>&1 ) &
-( run_registry "$H2" --reserve --emitter prompt --issue 201 --cap-free 1 > /dev/null 2>&1 ) &
-wait
+( run_registry "$H2" --reserve --emitter pm --issue 200 --cap-free 1 > /dev/null 2>&1 ) & pid_r1=$!
+( run_registry "$H2" --reserve --emitter prompt --issue 201 --cap-free 1 > /dev/null 2>&1 ) & pid_r2=$!
+wait "$pid_r1"; rc_r1=$?
+wait "$pid_r2"; rc_r2=$?
 n_race="$(run_registry "$H2" --count)"
-if [[ "$n_race" -le 1 ]]; then
-  ok "true concurrent race against FREE=1: at most 1 winner"
+if [[ "$n_race" -le 1 && ( $rc_r1 -eq 0 || $rc_r1 -eq 7 ) && ( $rc_r2 -eq 0 || $rc_r2 -eq 7 ) ]]; then
+  ok "true concurrent race against FREE=1: at most 1 winner (rc1=$rc_r1 rc2=$rc_r2)"
 else
-  fail "concurrent race: count=$n_race (expected ≤1)"
+  fail "concurrent race: count=$n_race rc1=$rc_r1 rc2=$rc_r2 (expected ≤1 entries; both exits 0 or 7)"
 fi
 
 # ---------------------------------------------------------------------------
