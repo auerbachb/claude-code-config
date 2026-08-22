@@ -412,6 +412,54 @@ jq -e '(.purged.polling_jobs_skip // 0) >= 1' <<<"$J_SKIP" >/dev/null \
   || fail "unstamped polling_jobs should appear as polling_jobs_skip, got: $J_SKIP"
 ok "--format json reports skipped unstamped records in polling_jobs_skip"
 
+# --- 10b. --format=value (equals form) is equivalent to --format value -------
+# Issue #1205: --format=json fell through to the unknown-flag branch and
+# produced no output with a silent exit 0.
+
+# --format=json must produce the same stdout as --format json, and both must exit 0.
+new_home "$FULL_STATE"
+EQ_RC=0; J_EQUALS="$("$SCRIPT" --format=json)" || EQ_RC=$?
+[[ $EQ_RC -eq 0 ]] || fail "--format=json must exit 0 (fail-soft), got rc=$EQ_RC"
+new_home "$FULL_STATE"
+SP_RC=0; J_SPACE="$("$SCRIPT" --format json)" || SP_RC=$?
+[[ $SP_RC -eq 0 ]] || fail "--format json must exit 0 (fail-soft), got rc=$SP_RC"
+[[ "$J_EQUALS" == "$J_SPACE" ]] \
+  || fail "--format=json differs from --format json (equals got: $J_EQUALS; space got: $J_SPACE)"
+ok "--format=json produces the same output as --format json (both exit 0)"
+
+# --format=text must produce the same stdout as --format text, and both must exit 0.
+new_home '{"pmm":{"paused_at":"2026-07-30T10:00:00Z"}}'
+TEQ_RC=0; TEXT_EQUALS="$("$SCRIPT" --format=text)" || TEQ_RC=$?
+[[ $TEQ_RC -eq 0 ]] || fail "--format=text must exit 0 (fail-soft), got rc=$TEQ_RC"
+new_home '{"pmm":{"paused_at":"2026-07-30T10:00:00Z"}}'
+TSP_RC=0; TEXT_SPACE="$("$SCRIPT" --format text)" || TSP_RC=$?
+[[ $TSP_RC -eq 0 ]] || fail "--format text must exit 0 (fail-soft), got rc=$TSP_RC"
+[[ "$TEXT_EQUALS" == "$TEXT_SPACE" ]] \
+  || fail "--format=text differs from --format text"
+ok "--format=text produces the same output as --format text (both exit 0)"
+
+# --format= (empty value) must be rejected but still exit 0 (fail-soft contract).
+new_home '{}'
+EMPTY_RC=0
+EMPTY_OUT_FILE="$TMP_DIR/format-empty.out"
+EMPTY_ERR_FILE="$TMP_DIR/format-empty.err"
+"$SCRIPT" --format= >"$EMPTY_OUT_FILE" 2>"$EMPTY_ERR_FILE" || EMPTY_RC=$?
+[[ $EMPTY_RC -eq 0 ]] || fail "--format= (empty) must still exit 0, got rc=$EMPTY_RC"
+[[ ! -s "$EMPTY_OUT_FILE" ]] || fail "--format= must produce no stdout"
+[[ -s "$EMPTY_ERR_FILE" ]] || fail "--format= must emit an error diagnostic"
+ok "--format= (empty value) is rejected and still exits 0"
+
+# --format=xml must be rejected the same way --format xml is.
+new_home '{}'
+XML_OUT_FILE="$TMP_DIR/format-xml.out"
+XML_ERR_FILE="$TMP_DIR/format-xml.err"
+XML_RC=0
+"$SCRIPT" --format=xml >"$XML_OUT_FILE" 2>"$XML_ERR_FILE" || XML_RC=$?
+[[ $XML_RC -eq 0 ]] || fail "--format=xml must still exit 0 (fail-soft), got rc=$XML_RC"
+[[ ! -s "$XML_OUT_FILE" ]] || fail "--format=xml must produce no stdout"
+[[ -s "$XML_ERR_FILE" ]] || fail "--format=xml must emit an error diagnostic"
+ok "--format=xml is rejected with no stdout and exit 0, matching space-form behaviour"
+
 # --- 11. A failed write must not report counts it did not land ---------------
 # `purged` is a claim about what changed. If the write fails, reporting the
 # planned counts tells a JSON consumer the cleanup succeeded when it did not.
