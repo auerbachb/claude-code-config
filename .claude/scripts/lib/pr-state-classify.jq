@@ -35,6 +35,11 @@
 #      findings. Keyed on the HTML marker, not the prose "Received — CodeRabbit is reviewing",
 #      so a real finding quoting that phrase cannot be falsely reclassified (#557 discipline).
 #      Case-insensitive "i" flag, consistent with CR-authored boilerplate (subject to casing drift).
+#      The CodeAnt review-status marker (#1207) is also safe in tier 1: CodeAnt posts it only on its
+#      status-table comments (e.g. "✅ Reviewed your PR | …") via the machine-readable HTML comment
+#      <!-- codeant-review-status:[…] -->. This marker never appears in a real finding body.
+#      Keyed on the HTML comment prefix only — case-sensitive, no "i" flag, because the marker is
+#      machine-generated JSON and casing is stable.
 #   2. The specific "actionable comments posted: 0" and "no actionable comments were
 #      generated" checks MUST precede the general "actionable comments posted" finding
 #      check — otherwise the general pattern swallows clean CR summaries as findings.
@@ -76,6 +81,7 @@ def classify:
   elif (test("<!--\\s*BUGBOT_REVIEW\\s*-->"; "") and (test("found [1-9][0-9]* potential issue"; "i") | not)) then {class: "acknowledgment", reason: "BugBot zero-issue summary"}
   elif test("Oops, something went wrong"; "i") then {class: "acknowledgment", reason: "CR error stub / transient noise"}
   elif test("<!--\\s*This is an auto-generated reply by CodeRabbit\\s*-->"; "i") then {class: "acknowledgment", reason: "CR auto-reply ack"}
+  elif test("<!--\\s*codeant-review-status:"; "") then {class: "acknowledgment", reason: "CodeAnt review-status table"}
   elif test("\\b(critical|major|minor|nitpick|p[0-2])\\b"; "i") then {class: "finding", reason: "severity keyword"}
   elif test("🔴|🟠|🟡"; "") then {class: "finding", reason: "severity badge"}
   elif test("actionable comments posted"; "i") then {class: "finding", reason: "actionable phrase"}

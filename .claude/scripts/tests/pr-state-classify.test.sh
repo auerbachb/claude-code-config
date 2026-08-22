@@ -651,6 +651,58 @@ class="${result%%|*}"
   || fail "Bug9c: Greptile summary + issue count — expected finding, got $class"
 
 # ---------------------------------------------------------------------------
+# Bug 10: CodeAnt review-status table comment (issue #1207)
+#
+# During /wrap Phase 1 on PR #1200, poll-watermarks.sh reported
+# NEW_ISSUE_COMMENT_FINDINGS=1 for a single CodeAnt status comment of the form:
+#   ✅ Reviewed your PR | <commit> | <time> | <time>
+#   <!-- codeant-review-status:[{"label":"Reviewed your PR","commit":"...","done":true}] -->
+# The merge gate was simultaneously met (0 unresolved threads, no inline findings).
+# The status comment matched no branch and fell through to default → finding,
+# which would have dispatched a spurious /fixpr sweep on an already-clean PR.
+# Was: default → finding; Should be: CodeAnt review-status table → acknowledgment
+#
+# Fixture: faithful reproduction of the issue body's example shape.
+# ---------------------------------------------------------------------------
+BODY='✅ Reviewed your PR | 8646511 | 18:36 | 18:36
+<!-- codeant-review-status:[{"label":"Reviewed your PR","commit":"8646511abc","done":true}] -->'
+result=$(classify_body "$BODY")
+class="${result%%|*}"; reason="${result##*|}"
+if [[ "$class" == "acknowledgment" && "$reason" == "CodeAnt review-status table" ]]; then
+  pass "Bug10: CodeAnt review-status table → acknowledgment"
+else
+  fail "Bug10: CodeAnt review-status table — expected acknowledgment/CodeAnt review-status table, got $class/$reason"
+fi
+
+# Variant: marker-only (no prose before it) — still acknowledgment
+BODY='<!-- codeant-review-status:[{"label":"Reviewed your PR","commit":"abc","done":true}] -->'
+result=$(classify_body "$BODY")
+class="${result%%|*}"; reason="${result##*|}"
+if [[ "$class" == "acknowledgment" && "$reason" == "CodeAnt review-status table" ]]; then
+  pass "Bug10: CodeAnt review-status marker-only → acknowledgment"
+else
+  fail "Bug10: CodeAnt review-status marker-only — expected acknowledgment/CodeAnt review-status table, got $class/$reason"
+fi
+
+# ---------------------------------------------------------------------------
+# Bug10a: REGRESSION — real CodeAnt finding WITHOUT the marker stays a finding.
+#
+# Verifies the fix does not over-classify genuine CodeAnt findings. A real
+# CodeAnt inline finding carries severity language but NOT the codeant-review-status
+# HTML comment. This fixture pins the two-way requirement: status → acknowledgment
+# AND finding → finding.
+# ---------------------------------------------------------------------------
+result=$(classify_body "🔴 Critical: this function doesn't validate the input before calling exec().")
+class="${result%%|*}"
+[[ "$class" == "finding" ]] && pass "Bug10a: real CodeAnt finding (severity badge, no marker) → finding" \
+  || fail "Bug10a: real CodeAnt finding — expected finding, got $class"
+
+result=$(classify_body "minor: the variable name 'x' is not descriptive enough.")
+class="${result%%|*}"
+[[ "$class" == "finding" ]] && pass "Bug10a: real CodeAnt finding (severity keyword, no marker) → finding" \
+  || fail "Bug10a: real CodeAnt finding (severity keyword) — expected finding, got $class"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
@@ -658,4 +710,4 @@ echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then
   exit 1
 fi
-echo "OK: pr-state.sh classify — all fixtures and regressions passed (issues #535, #557, #575, #669, #743)"
+echo "OK: pr-state.sh classify — all fixtures and regressions passed (issues #535, #557, #575, #669, #743, #1207)"
