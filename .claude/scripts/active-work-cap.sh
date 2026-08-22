@@ -299,6 +299,12 @@ fi
 # fetch_open_prs / chips_covered_by_prs below.
 OPEN_PR_JSON=""
 
+# `--limit 100` cannot affect the answer, despite looking like the same
+# truncation bug fixed in open_among. FREE is max(0, CAP - ACTIVE) and CAP_MAX
+# is 10, so any repo with enough open PRs to hit the limit is already an order
+# of magnitude past the cap and FREE is 0 whether the count reads 100 or 400.
+# The closing-issue references share the fetch, and a truncated one there only
+# subtracts fewer chips — the over-counting, safe direction.
 fetch_open_prs() {
   local out rc=0
   out="$(gh pr list --state open --author "@me" --limit 100 \
@@ -412,9 +418,12 @@ chip_issue_numbers() {
       [[ -n "$num" ]] || continue
       if [[ -z "$repo" ]]; then
         warn "chip log $f: entry #$num has no attributable repo url — counting it against $slug (over-counting is the safe direction)"
-        printf '%s\n' "$num"
+        # Marked so the PR subtraction can leave it alone: the number is a
+        # guess, and matching it against THIS repo's closed issues would turn a
+        # deliberate over-count into an under-count on a number collision.
+        printf '%s ?\n' "$num"
       elif [[ "$repo" == "$slug" ]]; then
-        printf '%s\n' "$num"
+        printf '%s .\n' "$num"
       fi
     done <<<"$out"
   done
@@ -507,9 +516,17 @@ count_live_chips() {
     return
   fi
 
-  # Ask only about the chip issues themselves — see open_among.
-  local chip_nums=() rc2=0
-  while read -r _num; do [[ -n "$_num" ]] && chip_nums+=("$_num"); done <<<"$chips"
+  # Split on the attribution marker written by chip_issue_numbers. `sure` chips
+  # are known to belong to this repo; `guessed` ones had no usable url and are
+  # counted here conservatively, so they must not be matched against this
+  # repo's PR-closed issues — a number collision would silently convert that
+  # deliberate over-count into an under-count.
+  local sure guessed chip_nums=() rc2=0
+  sure="$(printf '%s\n' "$chips" | awk '$2=="." {print $1}' | sort -u)"
+  guessed="$(printf '%s\n' "$chips" | awk '$2=="?" {print $1}' | sort -u)"
+  while read -r _num; do [[ -n "$_num" ]] && chip_nums+=("$_num"); done \
+    <<<"$(printf '%s\n%s\n' "$sure" "$guessed" | awk 'NF' | sort -u)"
+
   local open_issues
   open_issues="$(open_among "$slug" ${chip_nums[@]+"${chip_nums[@]}"})" || rc2=$?
   (( rc2 == 0 )) || return "$rc2"
@@ -519,10 +536,11 @@ count_live_chips() {
   fi
 
   # Drop chips whose issue is already represented by an open PR — that work is
-  # counted once, by the PR source.
+  # counted once, by the PR source. Applied to attributed chips only.
   local covered rc3=0
   covered="$(chips_covered_by_prs)" || rc3=$?
   (( rc3 == 0 )) || return "$rc3"
+  chips="$sure"
   # Every `comm` below captures its own status. An uncaptured one is the same
   # fabricated zero as everywhere else in this file: `set -e` is off, so a
   # failed command substitution just yields an empty string, the emptiness
@@ -535,10 +553,13 @@ count_live_chips() {
                   <(printf '%s\n' "$covered" | sort -u))" || rc4=$?
     (( rc4 == 0 )) || die_read "comm -23 failed subtracting PR-covered chips (exit $rc4)"
     chips="$remaining"
-    if [[ -z "$chips" ]]; then
-      printf '0'
-      return
-    fi
+  fi
+
+  # Guessed chips rejoin only now, after the subtraction they are exempt from.
+  chips="$(printf '%s\n%s\n' "$chips" "$guessed" | awk 'NF' | sort -u)"
+  if [[ -z "$chips" ]]; then
+    printf '0'
+    return
   fi
 
   # Intersect with the open issues. Both sides go through an identical
@@ -604,6 +625,14 @@ count_inline_pipelines() {
   n="$(printf '%s' "$view" | jq --argjson ttl "$stale_s" --argjson now "$(date -u +%s)" '
         [ .active_agents[]?
           | select((.pr // "") == "")
+          # No writer sets a lifecycle field on these entries today — the
+          # schema is id/task/issue/pr/phase/launched/last_seen_at, and the
+          # parent REMOVES an entry on completion rather than marking it. This
+          # honours one anyway so that if a drain signal is ever added, a
+          # finished agent frees its slot immediately instead of waiting out
+          # the TTL below.
+          | select(((.status // "") | ascii_downcase)
+                   | . != "complete" and . != "completed" and . != "failed")
           # An entry with no usable timestamp is KEPT: unknown age must not
           # read as "expired", which would silently free a real slot.
           | select(

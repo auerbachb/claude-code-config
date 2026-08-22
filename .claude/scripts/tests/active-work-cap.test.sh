@@ -295,6 +295,26 @@ ACTIVE=$(printf '%s' "$JSON" | jq -r '.active')
 [[ "$ACTIVE" == "2" ]] || fail "1 PR + 1 uncovered chip should be 2 active, not 3, got '$ACTIVE'"
 ok "a clicked chip whose PR is open counts once, not twice"
 
+# --- 12c. An unattributed chip survives the PR subtraction -------------------
+# An unattributed chip's number is a guess, counted conservatively against this
+# repo. Matching that guess against this repo's PR-closed issues would turn the
+# deliberate over-count into an under-count on a bare number collision.
+write_chip_log "alpha" "[$(chip_entry 41 "" open t1)]"   # no url -> unattributed
+set_open_issues "41"
+set_open_prs 1 '[41]'        # an open PR here closes #41 — same number, different thing
+set_pipelines '[]'
+JSON=$(run --json 2>/dev/null) || fail "--json failed with an unattributed chip"
+CHIPS=$(printf '%s' "$JSON" | jq -r '.live_chips')
+[[ "$CHIPS" == "1" ]] || fail "an unattributed chip must survive the PR subtraction, got '$CHIPS'"
+ok "an unattributed chip is exempt from the PR subtraction (a number collision cannot free a slot)"
+
+# The attributed chip in the same position IS subtracted — the exemption is
+# about attribution, not about disabling the double-count fix.
+write_chip_log "alpha" "[$(chip_entry 41 "$SLUG" open t1)]"
+CHIPS=$(run --json | jq -r '.live_chips') || fail "--json failed"
+[[ "$CHIPS" == "0" ]] || fail "an ATTRIBUTED chip closed by an open PR must still subtract, got '$CHIPS'"
+ok "the same chip, attributed, is still subtracted — the exemption is attribution-scoped"
+
 # --- 13. Inline pipelines: only those not yet at a PR ------------------------
 # An entry gains .pr when its pipeline opens one, at which point the open-PR
 # source counts it; counting both would double-count the same work.
