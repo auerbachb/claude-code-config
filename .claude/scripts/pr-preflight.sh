@@ -471,10 +471,18 @@ fi
 # "engaged" (fail toward silence) in that case.
 PREFLIGHT_REVIEW_EVIDENCE="{}"
 if [[ -n "${REVIEW_SUBSTANCE_SH:-}" && -n "$HEAD_SHA" ]]; then
+  # Merge each endpoint's pages explicitly before building the payload (issue #1226).
+  # gh api --paginate can emit multiple JSON arrays when a result spans pages; jq
+  # --argjson with `jq -s 'add // []'` collapses them into one flat array per
+  # endpoint regardless of how many pages the endpoint returned.
   PREFLIGHT_REVIEW_EVIDENCE="$(
-    printf '%s\n%s\n%s\n' "$RAW_REVIEWS_JSON" "$RAW_INLINE_JSON" "$RAW_ISSUE_JSON" \
-      | jq -cs --arg sha "$HEAD_SHA" --arg push "${HEAD_DATE:-}" \
-          '{head_sha: $sha, push_ts: $push, reviews: .[0], pr_comments: .[1], issue_comments: .[2]}' \
+    jq -n \
+      --arg sha "$HEAD_SHA" \
+      --arg push "${HEAD_DATE:-}" \
+      --argjson reviews "$(printf '%s\n' "$RAW_REVIEWS_JSON" | jq -s 'add // []')" \
+      --argjson pr_comments "$(printf '%s\n' "$RAW_INLINE_JSON" | jq -s 'add // []')" \
+      --argjson issue_comments "$(printf '%s\n' "$RAW_ISSUE_JSON" | jq -s 'add // []')" \
+      '{head_sha: $sha, push_ts: $push, reviews: $reviews, pr_comments: $pr_comments, issue_comments: $issue_comments}' \
       | "$REVIEW_SUBSTANCE_SH" 2>/dev/null
   )" || PREFLIGHT_REVIEW_EVIDENCE="{}"
   [[ -z "$PREFLIGHT_REVIEW_EVIDENCE" ]] && PREFLIGHT_REVIEW_EVIDENCE="{}"
