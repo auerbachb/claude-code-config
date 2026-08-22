@@ -340,6 +340,38 @@ ELAPSED=$(( $(date -u +%s) - START ))
 check_eq 4 "$RC" "derived ceiling bounds a chatty CLI with no --max-duration"
 if (( ELAPSED < 20 )); then ok "derived ceiling kills promptly (${ELAPSED}s)"; else bad "derived ceiling took ${ELAPSED}s"; fi
 
+# A leading-zero bound must mean what it says. `^[0-9]+$` accepts `08`, which bash
+# arithmetic reads as an invalid octal literal — every (( )) on it then errors and the
+# bound stops being enforced, which is the one failure this wrapper must never have.
+START="$(date -u +%s)"
+STDERR_CAP="$TMP/leading-zero.err"
+OUT="$("$SUT" --tool codeant --bin "$HANG" --timeout 08 --max-duration 09 --log-dir "$LOGS" 2>"$STDERR_CAP")"; RC=$?
+ELAPSED=$(( $(date -u +%s) - START ))
+check_eq 4 "$RC" "leading-zero bounds still enforce the timeout (exit 4)"
+check_eq "timeout" "$(field .failure_mode)" "leading-zero bounds report timeout"
+if grep -q 'value too great for base' "$STDERR_CAP" 2>/dev/null; then
+  bad "leading-zero bound produced a bash octal arithmetic error"
+else ok "leading-zero bound produces no octal arithmetic error"; fi
+if (( ELAPSED < 20 )); then ok "leading-zero bound is treated as base 10 (killed in ${ELAPSED}s, not 0 or never)"
+else bad "leading-zero bound took ${ELAPSED}s"; fi
+
+# A CLI that spawns workers must not outlive its own timeout. Only the direct PID gets
+# the signal unless the child is in its own process group, and an orphan keeps calling
+# the API and keeps writing to the capture this script is about to parse.
+SPAWNER="$STUBS/coderabbit-spawner"
+MARKER="$TMP/descendant-alive"
+cat > "$SPAWNER" <<STUB_EOF
+#!/usr/bin/env bash
+( while :; do touch "$MARKER"; sleep 1; done ) &
+sleep 60
+STUB_EOF
+chmod +x "$SPAWNER"
+run --tool coderabbit --bin "$SPAWNER" --timeout 2
+check_eq 4 "$RC" "spawning CLI hits the idle bound"
+rm -f "$MARKER"; sleep 3
+if [[ -e "$MARKER" ]]; then bad "descendant survived the timeout kill and is still running"
+else ok "descendant process is killed with the CLI (process-group kill)"; fi
+
 # --------------------------------------------------------------------------
 # 9. stdout carries ONLY the contract — the whole point of the compact shape is
 #    that `$(local-review.sh ...)` is directly parseable.

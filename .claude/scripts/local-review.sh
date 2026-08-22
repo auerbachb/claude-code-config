@@ -30,7 +30,9 @@
 #   --max-duration <sec>  Absolute ceiling, so a CLI that emits forever without finishing
 #                       is still bounded. Defaults to 2x --timeout (derived, so the
 #                       relationship survives retuning). Set below --timeout and the
-#                       ceiling dominates — the idle bound then never fires.
+#                       ceiling dominates — the idle bound then never fires. Both bounds
+#                       are measured off the clock, not a tick count; the <=2s
+#                       termination grace is not counted against either.
 #   --log-dir <dir>     Where to persist raw output. Default: $TMPDIR or /tmp.
 #   --format json|summary   Output shape. Default json (the contract).
 #   --print-cmd         Print the exact CLI command to stdout and exit 0. Runs nothing.
@@ -115,6 +117,12 @@ while [[ $# -gt 0 ]]; do
     *) die "unknown argument: $1" ;;
   esac
 done
+
+# Force base 10 before any arithmetic. `^[0-9]+$` accepts `08`, which bash reads as an
+# invalid octal literal — every later (( )) on it then errors out and the bound silently
+# stops being enforced. Normalise once, here, rather than at each use site.
+TIMEOUT=$(( 10#$TIMEOUT ))
+[[ -n "$MAX_DURATION" ]] && MAX_DURATION=$(( 10#$MAX_DURATION ))
 
 # Derived, not a second literal: retuning --timeout moves the ceiling with it, the way
 # bgwork-ceiling.sh derives TRIP_S from the ceiling rather than publishing two numbers.
@@ -239,38 +247,53 @@ stream_bytes() { # total bytes written across both captures; 0 for an unreadable
   printf '%s' "$total"
 }
 
-START="$(date -u +%s)"
-"$BIN" "${ARGS[@]}" >"$OUT" 2>"$ERR" &
+# Job control puts the child in its OWN process group, so the kill below reaches a CLI
+# that spawned workers. Without it only the direct PID dies and descendants keep running
+# — still calling the API, still holding the captures open, while the verdict claims the
+# run was stopped. stdin is /dev/null because a job-controlled background job that reads
+# the terminal takes SIGTTIN and stops, which would look exactly like a hang.
+set -m 2>/dev/null || true
+"$BIN" "${ARGS[@]}" >"$OUT" 2>"$ERR" </dev/null &
 CLI_PID=$!
+set +m 2>/dev/null || true
 
+# Kill the process group when the shell gave us one, else fall back to the bare PID.
+kill_cli() { # signal
+  kill -"$1" -"$CLI_PID" 2>/dev/null || kill -"$1" "$CLI_PID" 2>/dev/null || true
+}
+
+# Both bounds read the clock, never a tick count. A tick is `sleep 1` plus two size
+# probes, so counting iterations drifts past the requested bound under load — on the
+# ceiling, the backstop against a runaway CLI, that drift is unbounded.
+START="$(date -u +%s)"
 TIMED_OUT=0
 TIMEOUT_KIND=""
-ELAPSED=0
-IDLE=0
+LAST_CHANGE_TS="$START"
 LAST_SIZE="$(stream_bytes)"
 while kill -0 "$CLI_PID" 2>/dev/null; do
-  if (( IDLE >= TIMEOUT )); then
+  NOW="$(date -u +%s)"
+  if (( NOW - LAST_CHANGE_TS >= TIMEOUT )); then
     TIMED_OUT=1; TIMEOUT_KIND="idle"
-  elif (( ELAPSED >= MAX_DURATION )); then
+  elif (( NOW - START >= MAX_DURATION )); then
     TIMED_OUT=1; TIMEOUT_KIND="max_duration"
   fi
   if [[ "$TIMED_OUT" -eq 1 ]]; then
-    kill -TERM "$CLI_PID" 2>/dev/null || true
-    # Give it a moment to flush, then make sure it is gone.
-    sleep 2
-    kill -KILL "$CLI_PID" 2>/dev/null || true
+    IDLE_S=$(( NOW - LAST_CHANGE_TS ))
+    OUTPUT_S=$(( LAST_CHANGE_TS - START ))
+    kill_cli TERM
+    # Grace to flush, polled rather than a flat sleep so a CLI that dies at once does not
+    # push the wrapper past the bound it was just held to.
+    for _ in 1 2; do kill -0 "$CLI_PID" 2>/dev/null || break; sleep 1; done
+    kill_cli KILL
     break
   fi
   sleep 1
-  ELAPSED=$((ELAPSED + 1))
   SIZE="$(stream_bytes)"
   # Any change counts as liveness, not just growth: a shrink would otherwise strand the
   # comparison above the current size and read as silence for the rest of the run.
   if [[ "$SIZE" != "$LAST_SIZE" ]]; then
     LAST_SIZE="$SIZE"
-    IDLE=0
-  else
-    IDLE=$((IDLE + 1))
+    LAST_CHANGE_TS="$(date -u +%s)"
   fi
 done
 CLI_RC=0
@@ -278,10 +301,13 @@ wait "$CLI_PID" 2>/dev/null || CLI_RC=$?
 DURATION=$(( $(date -u +%s) - START ))
 
 if [[ "$TIMED_OUT" -eq 1 ]]; then
+  # Say what was actually observed. "Wrote nothing" would be false for the common case:
+  # a CLI that reviewed for minutes, emitted plenty, then wedged. Whether a partial
+  # review is sitting in log_path is exactly what decides the caller's next move.
   if [[ "$TIMEOUT_KIND" == "idle" ]]; then
-    emit false false timeout 0 "$TOOL wrote nothing for ${TIMEOUT}s (--timeout, idle bound) after ${DURATION}s and was killed (partial output preserved)" "$DURATION" 4
+    emit false false timeout 0 "$TOOL went idle for ${IDLE_S}s (--timeout ${TIMEOUT}s) after ${OUTPUT_S}s and ${LAST_SIZE} byte(s) of output, and was killed (partial output preserved at log_path)" "$DURATION" 4
   else
-    emit false false timeout 0 "$TOOL passed --max-duration ${MAX_DURATION}s still producing output and was killed (partial output preserved)" "$DURATION" 4
+    emit false false timeout 0 "$TOOL passed --max-duration ${MAX_DURATION}s still producing output (${LAST_SIZE} byte(s)) and was killed (partial output preserved at log_path)" "$DURATION" 4
   fi
 fi
 
