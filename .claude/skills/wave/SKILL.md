@@ -216,7 +216,7 @@ SLOTS      = min(REQUESTED?, EFFECTIVE - IN_FLIGHT, FREE)
   Absent, unparseable, or out of range → ignore it and use `CEILING`. A config value **may lower the cap and may never raise it** past the auto-loaded rule; clamp rather than error. Changing the ceiling itself means editing `subagent-orchestration.md`, which is a reviewed rule change. (`## Wave` is a non-canonical section, so `/pm-update` preserves it verbatim.)
 - **`IN_FLIGHT`** is the count from Step 2 — issues already offered or already running consume the same reviewer budget.
 
-If `SLOTS <= 0`, print one line naming what is already in flight and **whose** — the count is your own PRs only ("your 4 open pipelines fill the 4-slot ceiling — merge or park one before starting more."). Never phrase it as a bare "N open PRs": a collaborator's PRs are not in this count, and naming the scope is what makes a wrong count visible at a glance (issue #732, AC4). Then branch on PM context. **Inside a PM thread** (a `## Active Work` table is present): name the subagent-fit issues as **queued inline** behind the running pipelines, and list any **too-big** ones as *deferred* — they need a thread, and opening one now would spend the same reviewer budget the ceiling exists to protect, so they wait for a slot too. **Outside PM context:** report every issue as **deferred**, naming the in-flight count and scope, and offer no chip — `/wave` derives `IN_FLIGHT` from your own open PRs (Step 2), so it *can* see the ceiling and must respect it (`chip-launching.md` "Precedence when the ceiling is full", case 2). "Stop" means no new work starts, not that issues go unnamed. Either way a full ceiling **never** produces a chip — slot state schedules, it never routes work to a thread (#776 AC4) — and **nothing is silently dropped**: every excluded issue is named with its reason. The repo-wide cap binding is the same shape: an issue it holds back is **deferred and named**, never given a chip and never quietly omitted, so every issue in the independent set ends as offered, queued, or deferred.
+If `SLOTS <= 0`, print one line naming what is already in flight and **whose** — the count is your own PRs only ("your 4 open pipelines fill the 4-slot ceiling — merge or park one before starting more."). Never phrase it as a bare "N open PRs": a collaborator's PRs are not in this count, and naming the scope is what makes a wrong count visible at a glance (issue #732, AC4). Then, **in every thread** — `/wave` is always execution-capable, so there is no PM-context branch to take (#1229; `chip-launching.md` "Precedence when the ceiling is full", case 1) — name the subagent-fit issues as **queued inline** behind the running pipelines, bootstrapping the `## Active Work` table if this thread has none, and list any **too-big** ones as *deferred*: they need a thread, and opening one now would spend the same reviewer budget the ceiling exists to protect, so they wait for a slot too. "Stop" means no new work starts, not that issues go unnamed. A full ceiling **never** produces a chip — slot state schedules, it never routes work to a thread (#776 AC4) — and **nothing is silently dropped**: every excluded issue is named with its reason. The repo-wide cap binding is the same shape: an issue it holds back is **deferred and named**, never given a chip and never quietly omitted, so every issue in the independent set ends as running, queued, or deferred.
 
 **Name the term that actually bound.** `SLOTS` has three inputs and they fail for different reasons, so a block message must say which one is tight — "the ceiling is full" when the repo-wide cap is what stopped you sends the user to merge a PR in *this* thread when the work is in another tab. Record the limiting term as you compute `SLOTS`, rather than re-deriving it from the numbers afterwards. **When two bounds tie, name the repo-wide cap**: it is the one the user cannot see from this thread, so it is the one worth saying out loud; `REQUESTED` is named last, since the user chose it and already knows.
 
@@ -228,9 +228,11 @@ Take the first `SLOTS` issues from the independent set. Anything past that is ex
 
 ---
 
-## Step 7: Offer the wave — inline when PM context is live, else chips
+## Step 7: Offer the wave — inline by default, chips only for too-big issues
 
-**7.0 — PM-context inline gate (before offering any chip).** Apply the gate from `chip-launching.md` "PM-context inline gate", read through the Step 0 candidate order. When this thread already has a `## Active Work` table (PM context), the subagent-fit wave issues should be **recommended for inline parallel execution** — lead with a single `/subagent #{a} #{b} …` line for them rather than spawning chips. Inline runs them in parallel up to the ceiling, which is exactly what a wave is for, and it keeps them in the one PM thread instead of scattering tabs (#613). Slot availability decides only **how many start now versus queue behind the ceiling** (Step 6) — it never sends a subagent-fit issue to a separate thread (#776, AC4). Fall through to the chip offer below only for issues that are **too big** for a subagent (each naming which of `/subagent` Step 4's criteria fired) or when there is **no PM context** — a separate thread is the right hand-off there. `/wave` still launches nothing: recommending `/subagent` is not running it (Execution boundary); the user's `/subagent` or click is the only launch path.
+**7.0 — PM-context inline gate (before offering any chip).** Apply the gate from `chip-launching.md` "PM-context inline gate", read through the Step 0 candidate order. **`/wave` is always execution-capable** — the one exception the gate names is a capture thread, which runs no waves — so the subagent-fit wave issues are **recommended for inline parallel execution in this thread**: lead with a single `/subagent #{a} #{b} …` line for them rather than spawning chips. Inline runs them in parallel up to the ceiling, which is exactly what a wave is for, and it keeps them in one thread instead of scattering tabs (#613). **A thread with no `## Active Work` table bootstraps one** (`/pm` 3.2's schema) and proceeds — its absence is a bootstrap instruction, never a reason to chip (#1229). Slot availability decides only **how many start now versus queue behind the ceiling** (Step 6) — it never sends a subagent-fit issue to a separate thread (#776, AC4). Fall through to the chip offer below **only** for issues that are **too big** for a subagent, each naming which criterion fired in one line — normally criterion 1 or 2, since #1193's criterion 3 decomposes into an inline chain rather than routing out (`chip-launching.md` "PM-context inline gate" carries the one case where it still routes). That is now the sole structural reason a `/wave` chip exists, and one with no nameable criterion is a bug. `/wave` still launches nothing: recommending `/subagent` is not running it (Execution boundary); the user's `/subagent` or click is the only launch path.
+
+**Bootstrapping vs. the Step 1.2 cold start — one route each, for different things.** Step 1.2 cold-starts `/pm` when the thread has no *ranking*, and a table falls out of that as a side effect. The bootstrap here is the fallback for the remaining case: a thread that has a ranking (or was given issues directly) but no table. There is exactly one table-bootstrap route — this one — and it never re-runs `/pm`.
 
 **7.1 — Offer the (remaining) wave as chips.** Follow `chip-launching.md` (Step 0 candidate order) **verbatim** — availability detection, `spawn_task` shape, model-guard preamble, short-summary format, per-issue fallback on spawn failure. Nothing in this section overrides it.
 
@@ -250,11 +252,11 @@ Print only the short summary per issue. A failed `spawn_task` falls back to a pr
 
 ## Step 8: Record every `task_id`
 
-Immediately after each successful spawn — before printing anything else — write the returned `task_id` into `/pm`'s `## Active Work` table with Thread `Chip offered`, Status `Awaiting thread start`. That table is the canonical home for chip state (`chip-launching.md`, `/pm` 3.2); `/wave` writes to it rather than keeping a parallel ledger.
-
-Outside a PM thread (Step 1.2 cold-started `/pm`, so the table exists either way), the same rule holds. If for any reason no table is present, create one in `/pm` 3.2's exact format.
+Immediately after each successful spawn — before printing anything else — write the returned `task_id` into `/pm`'s `## Active Work` table with Thread `Chip offered`, Status `Awaiting thread start`. That table is the canonical home for chip state (`chip-launching.md`, `/pm` 3.2); `/wave` writes to it rather than keeping a parallel ledger. If no table is present, create one in `/pm` 3.2's exact format — the bootstrap from Step 7.0, which does not re-run `/pm` (Step 1.2's cold start is a separate, ranking-only route).
 
 An unrecorded chip cannot be dismissed later — recording is what makes withdrawal possible at all, not bookkeeping.
+
+**Inline rows are deliberately *not* recorded here, and that is not the same gap.** `/wave` only *recommends* inline execution; the user's `/subagent` is what starts it, and that is what marks the rows `Inline` (Execution boundary — writing `Inline` for an issue `/wave` merely named would claim work that has not started). The asymmetry is safe because the two re-run hazards are different: re-spawning a chip creates a **second live offer** for one issue, which is why Step 2 case 1 must see it; re-printing an inline recommendation creates nothing, so an unchanged wave on a re-run is correct rather than duplicated. `IN_FLIGHT` is unaffected either way — Step 2 derives it from your own open PRs, and an issue nobody has started is genuinely not in flight.
 
 ---
 
@@ -263,17 +265,18 @@ An unrecorded chip cannot be dismissed later — recording is what makes withdra
 ```
 ## Wave — {K} issue(s) ready to run in parallel
 
-- **#42 — {Title}** — chip offered
-  **Model:** Opus — {reason}
-  **Effort:** Extra — {reason}
+- **#42 — {Title}** — recommended inline
   {one-line rationale, carried from /pm's ranking}
 
-- **#55 — {Title}** — chip offered
-  **Model:** Sonnet — {reason}
-  **Effort:** Low — {reason}
+- **#55 — {Title}** — recommended inline, queued behind #42
   {one-line rationale}
 
-Click a chip to start that thread. To run these inline in this thread instead, say `/subagent #42 #55`.
+- **#67 — {Title}** — chip offered
+  **Model:** Opus — {reason}
+  **Effort:** Extra — {reason}
+  too big for a subagent — {which /subagent Step 4 criterion fired, and why}
+
+Running #42 #55 inline here: `/subagent #42 #55`. Click the chip to start #67 in its own thread.
 
 ### Excluded from this wave
 - **#61** — overlaps #42 on `.claude/skills/pm/SKILL.md`
@@ -284,6 +287,7 @@ Click a chip to start that thread. To run these inline in this thread instead, s
 
 Rules for this block:
 
+- **Inline is the default row shape** (#1229). `recommended inline` rows carry no `**Model:**` / `**Effort:**` lines — an inline pipeline picks its own model at spawn time, so there is no picker for the user to set. Only a `chip offered` row carries them, and every such row **names its `/subagent` Step 4 criterion on its rationale line**; a chip row without one is a bug (`chip-launching.md`). "Recommended" is the honest word: `/wave` names the set, the user's `/subagent` starts it (Execution boundary).
 - **Every candidate that reached Step 5 appears exactly once** — in the wave or in the excluded list. Issues dropped in Step 2 (already offered, already in flight, blocked-labelled) appear in neither; they were never candidates.
 - **One line, one reason** per exclusion. The reason names the *specific* blocker or surface — "overlaps #M" without saying on what is not a reason. Never emit a bare "excluded".
 - Omit the `### Excluded from this wave` heading entirely when nothing was excluded.
@@ -294,11 +298,11 @@ Rules for this block:
 
 ## Step 10: Fallback mode (no `spawn_task`)
 
-When chip mode is unavailable (CLI, headless, older client), the wave is delivered as printed prompt blocks — content byte-identical to what the chips would have carried, model-guard preamble included, per `chip-launching.md` "Fallback mode".
+When chip mode is unavailable (CLI, headless, older client), the **too-big** issues are delivered as printed prompt blocks — content byte-identical to what their chips would have carried, model-guard preamble included, per `chip-launching.md` "Fallback mode". Inline rows are unaffected: `/subagent` needs no `spawn_task`, so the inline recommendation is identical in both modes and never degrades to a printed block (#1229).
 
-- Print the full block for each wave issue instead of the short summary.
+- Print the full block for each **too-big** wave issue instead of the short summary.
 - The Excluded section is unchanged.
-- **Do not mention chips, clicking, or `task_id`s** — none of that exists in this mode. Replace the launch line with: "Paste a block into a new thread to start it."
+- **Do not mention chips, clicking, or `task_id`s** — none of that exists in this mode. Replace the *chip* half of the launch line with "Paste a block into a new thread to start it." The inline half stays as written: `Running #{a} #{b} inline here: /subagent #{a} #{b}`.
 - Track offered issues in this thread's state so a re-run still skips them (Step 2 case 1 reads `Prompt generated` for exactly this).
 
 ---
@@ -310,7 +314,7 @@ When chip mode is unavailable (CLI, headless, older client), the wave is deliver
 | Rationalization | Reality |
 |---|---|
 | "The user asked for a wave, so they clearly want these running." | They asked for the *set*. Which ones actually run is the click. |
-| "These are all small — I'll just run them inline myself like `/pm` does." | *Recommending* inline via `/subagent` (Step 7.0) is the #613 default in a PM thread — but `/wave` *running them itself* is not. Launch stays elective: which issues run, and how, is the user's action (a chip click or their own `/subagent`), never `/wave`'s. |
+| "These are all small — I'll just run them inline myself like `/pm` does." | *Recommending* inline via `/subagent` (Step 7.0) is the default in **any** execution-capable thread since #1229 — but `/wave` *running them itself* is not, and that did not change. Launch stays elective: which issues run, and how, is the user's action (a chip click or their own `/subagent`), never `/wave`'s. |
 | "I'll just start the top one to save a round-trip." | One auto-launch is the whole violation. There is no partial version of this rule. |
 | "Fallback mode has no chips, so I'll spawn subagents instead." | Fallback prints blocks. Absent chips means fewer delivery options, not a different execution boundary. |
 | "The user said 'go' after seeing the wave." | An explicit user instruction to run specific issues is honored by `/subagent` — invoke that, and only for the issues they named. `/wave` still never launches on its own. |
