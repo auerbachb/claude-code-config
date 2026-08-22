@@ -35,7 +35,7 @@ After implementation, before push. Run from repo root via `.claude/scripts/local
 
 with the raw capture at `log_path`. A CLI counts as covered **only** on `verified_run == true && ok == true`; every other result is a **failed run** (Timeout & fallback below), never a clean pass. Exit codes, failure shapes, 403 triage, 15-file cap: `.claude/reference/local-review-cli-failure-modes.md`.
 
-> **Never run `codeant logout`/`login` to clear a 403** — the cause is an undocumented daily cap (~10 agent reviews; no paid lever — `.claude/reference/pricing-matrix.md` §CodeAnt), not auth. On a CodeAnt 403: one retry, then drop for the session and note it in the PR body. The CodeAnt GitHub App is unaffected and satisfies the merge gate alone.
+> **Never run `codeant logout`/`login` to clear a 403** — the cause is an undocumented daily cap (`.claude/reference/pricing-matrix.md` §CodeAnt), not auth. On a CodeAnt 403: one retry, then drop for the session and note it in the PR body. The CodeAnt GitHub App is unaffected and satisfies the merge gate alone.
 
 ### Never Suppress Linter Errors (NON-NEGOTIABLE)
 
