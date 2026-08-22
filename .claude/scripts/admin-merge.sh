@@ -307,6 +307,10 @@ fi
 
 GATE_ARGS=("$PR_NUMBER")
 [[ -n "$REVIEWER_OVERRIDE" ]] && GATE_ARGS+=(--reviewer "$REVIEWER_OVERRIDE")
+# Forward the authorship override (issue #733) so merge-gate.sh's own
+# authorship check — independent of the pre-flight above — doesn't re-add the
+# blocker this script's caller already asked to bypass (issue #1251).
+[[ "$ALLOW_NONAUTHOR" == true ]] && GATE_ARGS+=(--allow-nonauthor)
 # set -e is intentionally off, so a non-zero merge-gate exit (e.g. 1 = gate not
 # met) does not abort here — capture the real exit code, then inspect the JSON.
 GATE_JSON="$("$MERGE_GATE" "${GATE_ARGS[@]}" 2>/dev/null)"

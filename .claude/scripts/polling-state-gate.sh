@@ -53,7 +53,7 @@
 #
 # Usage:
 #   polling-state-gate.sh <pr_number> --ensure-session [--root-repo <path>] [--repo <owner>/<name>] [--allow-nonauthor]
-#   polling-state-gate.sh <pr_number> [--root-repo <path>] [--repo <owner>/<name>]
+#   polling-state-gate.sh <pr_number> [--root-repo <path>] [--repo <owner>/<name>] [--allow-nonauthor]
 #   polling-state-gate.sh <pr_number> --verify-state [--root-repo <path>] [--repo <owner>/<name>]
 #
 # Modes:
@@ -72,6 +72,11 @@
 #                      root_repo consistency (no gh, no merge-gate). Exit 0 if OK.
 #   (default)         Validate handoff + session-state, cd to resolved root_repo, run
 #                      merge-gate.sh. Exit 0 iff merge gate is met (same as merge-gate).
+#                      --allow-nonauthor, if passed on THIS invocation, is forwarded
+#                      to merge-gate.sh so a PR enrolled under the override isn't
+#                      re-blocked by merge-gate.sh's own authorship check every tick
+#                      (issue #1251). It is not read back from enrollment-time state —
+#                      a caller that wants this on every cycle must pass it every cycle.
 #
 # Flags:
 #   --root-repo <path>       Which CHECKOUT to operate in (where gh/merge-gate run).
@@ -95,7 +100,9 @@
 #                            Value must match session-state.sh's key charset
 #                            ([A-Za-z0-9._/-]); anything else is a usage error,
 #                            never a silent fall-through to "_unknown".
-#   --allow-nonauthor        See --ensure-session above.
+#   --allow-nonauthor        See --ensure-session above. Also forwarded to
+#                            merge-gate.sh in default (poll-cycle) mode when
+#                            passed on that invocation — see (default) above.
 #
 # Exit codes (default mode): same as merge-gate.sh (0 met, 1 not met, 2 usage, 3 PR, 4 error)
 # --ensure-session: 0 success, 2 usage, 4 state/gh failure
@@ -631,4 +638,9 @@ if ! resolved="$(resolve_root_repo "$ROOT_REPO_ARG")"; then
 fi
 require_handoff_and_state "$resolved" live
 canon="$(cd "$resolved" && git rev-parse --show-toplevel)"
-(cd "$canon" && exec "$MERGE_GATE" "$PR_NUMBER")
+GATE_ARGS=("$PR_NUMBER")
+# Forward the authorship override (issue #733) so a PR enrolled under
+# --allow-nonauthor isn't re-blocked by merge-gate.sh's own independent
+# authorship check on every poll cycle (issue #1251).
+[[ "$ALLOW_NONAUTHOR" -eq 1 ]] && GATE_ARGS+=(--allow-nonauthor)
+(cd "$canon" && exec "$MERGE_GATE" "${GATE_ARGS[@]}")

@@ -317,8 +317,12 @@ check_eq "--verify-state passes for mixed-case-remote checkout (no false cross-r
 # not_mine and enrolment is refused. Enrolling a PR in polling is a "touch".
 STUB_BIN3="$TMP/bin3"
 write_polling_gh_stub "$STUB_BIN3"
-# Tests 11 and 12 use the same stub with collab as the PR author.
-_STUB3_PR_JSON='{"headRefOid":"feed1234","state":"OPEN","number":99647,"headRefName":"feature","url":"https://github.com/org/a/pull/99647","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}'
+# Tests 11, 12, and 13 use the same stub with collab as the PR author. The
+# `author` field is read only by merge-gate.sh's own inline authorship check
+# (test 13); pr-authorship.sh — used by --ensure-session in tests 11/12 — reads
+# a separate `gh api repos/.../pulls/N` call keyed off STUB_PR_AUTHOR instead,
+# so adding this field does not change tests 11/12's behavior.
+_STUB3_PR_JSON='{"headRefOid":"feed1234","state":"OPEN","number":99647,"headRefName":"feature","url":"https://github.com/org/a/pull/99647","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":"","author":{"login":"collab","type":"User"}}'
 
 rm -f "$STATE" "$HANDOFF"
 out="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" \
@@ -336,6 +340,27 @@ out="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" \
 check_eq "--allow-nonauthor lets --ensure-session enrol a non-author PR" "0" "$rc"
 check_eq "override records per-PR owner_repo" "org/a" \
   "$(jq -r --arg pr "$PR_NUM" '.repos["org/a"].prs[$pr].owner_repo // ""' "$STATE")"
+
+# ---- 13. Regression (issue #1251): --allow-nonauthor must also reach the
+# default poll-cycle mode's merge-gate.sh call, not just --ensure-session's own
+# pr-authorship.sh check. Reuses the PR enrolled by test 12 (org/a #99647,
+# HEAD feed1234, non-author "collab" vs viewer "testuser"). Asserts on the
+# authorship-guard string's presence/absence in merge-gate.sh's own `missing[]`
+# — not on the overall exit code, since unrelated CI/review gate items also
+# stay unmet in this fixture and are irrelevant to what's under test here.
+out="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" \
+  STUB_PR_JSON="$_STUB3_PR_JSON" STUB_OWNER_REPO="org/a" STUB_PR_AUTHOR="collab" \
+  "$SCRIPT" "$PR_NUM" 2>/dev/null)"
+check_eq "poll-cycle mode without --allow-nonauthor: merge-gate.sh's own authorship block fires" "yes" \
+  "$(echo "$out" | jq -e '[.missing[]? | select(contains("authorship guard"))] | length > 0' >/dev/null 2>&1 && echo yes || echo no)"
+
+out="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" \
+  STUB_PR_JSON="$_STUB3_PR_JSON" STUB_OWNER_REPO="org/a" STUB_PR_AUTHOR="collab" \
+  "$SCRIPT" "$PR_NUM" --allow-nonauthor 2>/dev/null)"
+check_eq "poll-cycle mode forwards --allow-nonauthor: authorship block is suppressed" "no" \
+  "$(echo "$out" | jq -e '[.missing[]? | select(contains("authorship guard"))] | length > 0' >/dev/null 2>&1 && echo yes || echo no)"
+check_eq "authorship field still reflects reality (not_mine) even with the override" "not_mine" \
+  "$(echo "$out" | jq -r '.authorship')"
 
 echo ""
 echo "polling-state-gate.test.sh: $PASS passed, $FAIL failed"
