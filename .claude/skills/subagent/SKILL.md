@@ -131,6 +131,15 @@ Tier does **not** decide this — most issues, of any tier, run inline. An issue
 2. **Needs interactive human judgment mid-build.** The issue carries genuinely unresolved product/design decisions that must be settled *while* implementing and can't be pinned down up front (`interactive_markers`). An "Open questions" section the issue already answers does **not** count — only open calls that would block a subagent mid-build.
 3. **Should be split into multiple PRs.** The issue explicitly asks to be split, or its scope spans several independent deliverables that each deserve their own PR and review cycle (`split_markers`).
 
+   **The subagent-fit sizing bar (canonical — cite this, never restate it).** What "deserves their own PR and review cycle" measures is a single question: **can one Phase A/B/C pipeline land this as one reviewable PR — one PR, one review cycle, a bounded slice?** Clearing it is the ordinary case. Failing it reads two ways depending on *when* the question is asked, and both readings are this one bar:
+
+   - **Pick time** — the issue already exists, so failing the bar is a disqualifier: route it to a thread (Step 5).
+   - **Capture time** — the ask has not been filed yet, so failing the bar is a *split trigger*: `/issue-maker` files it as an ordered chain of single-PR increments rather than one oversized issue (`/issue-maker` top-level rule, issue #1192).
+
+   An ask can fail this bar while being perfectly coherent — one concern, more of it than one pipeline can land in a reviewable PR. Whether the ask holds together is a different question.
+
+   **"Bounded slice" counts deliverables, not bulk.** The bar fires on *several independently shippable deliverables*, exactly as `split_markers` says — never on sheer volume. A sweeping many-file migration is one deliverable and clears the bar comfortably; criterion 1 already settles that case, and the not-a-disqualifier list below governs here too.
+
 If **none** hold, the issue is **inline-eligible** — proceed to Step 5 and run it. If **any** holds, mark it **too big** and record which criterion fired for the Step 5 hand-off message.
 
 **A route-to-thread verdict MUST name its disqualifier** — which of the three criteria fired, and why, in one line. A verdict you cannot pin to a named criterion is not valid: queue the issue inline instead. Per-criterion rationale: `.claude/reference/too-big-recalibration-2026-07.md` (#776).
