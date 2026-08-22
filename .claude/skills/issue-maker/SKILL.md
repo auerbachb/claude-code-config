@@ -1,6 +1,6 @@
 ---
 name: issue-maker
-description: Capture-only thread mode for drafting and opening well-structured GitHub issues. Puts the thread into issue-capture mode — the only job is creating, editing, and closing issues (no implementation, no worktrees, no /start-issue). Auto-opens issues (no approval gate) and reports back a concise summary plus the scope calls it made as decision points; creates canonical 6-section bodies with functional-first tone, runs dedup search, auto-applies validated labels, supports batch + cross-references, and prints the issue URL as the closing line of every create/update. Offers a one-click coding chip alongside every created issue's link (dismissed automatically on retract). Supports /update <N> <statement>, natural-language edit-in-place, and retract. Invoke as `/issue-maker [rapid-fire] [--export-prompt]`.
+description: Capture-only thread mode for drafting and opening well-structured GitHub issues. Puts the thread into issue-capture mode — the only job is creating, editing, and closing issues (no implementation, no worktrees, no /start-issue). Auto-opens issues (no approval gate) and reports back a concise summary plus the scope calls it made as decision points; creates canonical 6-section bodies with functional-first tone, runs dedup search, auto-applies validated labels, supports batch + cross-references, and prints the issue URL as the closing line of every create/update. Offers one click-to-launch coding hand-off per capture session, covering every issue it filed (refreshed as the session grows, withdrawn on retract). Supports /update <N> <statement>, natural-language edit-in-place, and retract. Invoke as `/issue-maker [rapid-fire] [--export-prompt]`.
 triggers:
   - open an issue
   - new issue
@@ -43,7 +43,7 @@ The bar is **`/subagent` Step 4 criterion 3 — the subagent-fit sizing bar**: o
 
 **Judge from the body, not the labels.** What the ask itself describes decides sizing — how many independently shippable deliverables it names, how many surfaces it spans. A `size:*` or `complexity:*` label, where one exists, is a **tie-break only**: it can settle a genuinely balanced call, never overrule what the description plainly says.
 
-**Fails the bar → file a chain, not a monolith** — an ordered set of increment issues, each independently mergeable and each saying where its slice ends (Step 5 for the body, Step 8 for the links and the 5-increment cap, Step 9a for the report, Step 9c for the chip). **Clears the bar → nothing changes.** Small asks are untouched: no chain, no commentary, no mention of sizing at all.
+**Fails the bar → file a chain, not a monolith** — an ordered set of increment issues, each independently mergeable and each saying where its slice ends (Step 5 for the body, Step 8 for the links and the 5-increment cap, Step 9a for the report, Step 9c for the hand-off). **Clears the bar → nothing changes.** Small asks are untouched: no chain, no commentary, no mention of sizing at all.
 
 **Where the reflection goes.** In default mode you make these calls yourself and **report them as decision points after filing** (Step 9a) — the user reads what you decided and can `/update #N` or `close #N` in one step if a call was wrong (issues are cheap to change). Ask up front **only** when a call is genuinely blocking: the ask spans two clearly separate issues and filing one combined issue would be actively wrong, a word is so ambiguous the body cannot be written without it, or the sizing check would need **more than 5 increments** (Step 8's cap — the one case where the count itself is the question). Bias hard toward filing and reporting — a blocking question is the rare exception, not the rhythm. A sizing split *within* the cap is not one of these: file the chain and report it (Step 9a).
 
@@ -146,6 +146,8 @@ If the user asks for workflow-advancing work — **"implement"**, **"code this"*
 
 > "This thread is in capture mode — I only create, edit, and close issues here. To implement #N, start a fresh thread with `/start-issue #N`."
 
+**A capture thread is the one thread that is not execution-capable, and it adopts nothing.** Since [#1229](https://github.com/auerbachb/claude-code-config/issues/1229) every *other* thread runs subagent-fit work inline rather than handing it to a new tab (`chip-launching.md` "PM-context inline gate"); this invariant is the single named exception, and it is what keeps that flip from turning a capture session into a build session. Capture mode therefore hands its work off — once per session, as a batch (Step 9c) — rather than adopting any of it.
+
 Never create worktrees/branches, never edit code, and **never poll for a CodeRabbit plan in this thread.** The repo's `.github/workflows/cr-plan-on-issue.yml` auto-comments `@coderabbitai plan` on the issue itself when it's opened (it skips bot-authored issues); the issue's CR plan lands on the *issue*, asynchronously, with no action needed here. Do **not** post `@coderabbitai plan` yourself and do **not** wait on it.
 
 ---
@@ -160,7 +162,9 @@ For each issue the user describes (see Step 6 for batches):
 4. **Title** — concise, **≤70 characters**. If it would exceed 70, auto-trim and note the trim in the decision points.
 5. **Labels** (Step 7, auto-applied) and **cross-references** (Step 8).
 6. **Create automatically** — no full-body reprint, no "Create this issue? (Y/n/edit)" gate. Record in the log (Step 9).
-7. **Report + print the URL** — emit the concise summary + decision points (Step 9a), offer the coding chip (Step 9c), and **print the URL as the closing line** (Step 9).
+7. **Report + print the URL** — emit the concise summary + decision points (Step 9a) and **print the URL as the closing line** (Step 9).
+
+**The hand-off is not part of this per-issue loop.** Step 9c fires **once, after the last issue of the batch is filed** (Step 6) — never after the first. Emitting it mid-batch offers a launch the user can click before the remaining issues exist, and a hand-off that has already been clicked cannot absorb them (Step 9c's refresh rule covers only an *unclicked* offer). A single-issue session reaches "after the last issue" immediately, so nothing is delayed there.
 
 ---
 
@@ -283,15 +287,15 @@ ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
 
 If the user describes multiple issues in one message (a numbered/bulleted list, or a `batch:` prefix), treat each as its own issue: run the full per-issue flow (reflect → dedup → draft → labels → auto-create → report) **sequentially**, one `gh issue create` per issue. After the batch, print a summary table (number, title, labels, URL) — each URL still a clickable link.
 
-**Every issue is still created; the chips are capped.** Step 9's chip offering runs once per issue, but a batch of N issues does **not** yield N chips. Resolve `active-work-cap.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/active-work-cap.sh`, `$HOME/.claude/scripts/active-work-cap.sh`, `.claude/scripts/active-work-cap.sh` — this repo may carry no `.claude/` directory — and read its census once at the start of the batch — the default output line gives `CAP`, `ACTIVE`, and `FREE` together, all of which the deferral message below needs (`chip-launching.md` "Repo-wide active-work cap"). Offer **at most `FREE`** chips across the whole batch, decrementing as each chip spawns.
+**Every issue is still created; the session hands them off once.** Since [#1229](https://github.com/auerbachb/claude-code-config/issues/1229), Step 9c emits **one batch hand-off per capture session** covering every open issue filed in it — not one chip per issue, and not `FREE` chips out of N. A batch of six issues yields six issues and **one** hand-off. Resolve `active-work-cap.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/active-work-cap.sh`, `$HOME/.claude/scripts/active-work-cap.sh`, `.claude/scripts/active-work-cap.sh` — this repo may carry no `.claude/` directory — and read its census **once per session**: the default output line gives `CAP`, `ACTIVE`, and `FREE` together, all of which the deferral message below needs (`chip-launching.md` "Repo-wide active-work cap").
 
-Report the remainder as **deferred**, naming the count and the scope — "6 deferred — repo-wide active-work cap ({ACTIVE}/{CAP} in motion across all threads)". A deferred issue still gets created, logged, and its URL printed; only the chip is withheld, and it becomes offerable again as active work drains. Offering one chip per issue with nothing counted against it is what produced roughly twenty simultaneously active threads on 2026-08-18 (#1191).
+That single read now gates a single offer. **`FREE > 0` → offer the hand-off; `FREE == 0` → defer it**, naming the count and the scope: "hand-off deferred — repo-wide active-work cap ({ACTIVE}/{CAP} in motion across all threads)". Every issue is still created, logged, and its URL printed; only the hand-off is withheld, and it becomes offerable again as active work drains. Offering one chip per issue with nothing counted against it is what produced roughly twenty simultaneously active threads on 2026-08-18 (#1191); one hand-off cannot reproduce that shape, because the thread it opens bounds its own launches by `min(pipeline_ceiling, active_work_cap)`.
 
-**An increment chain is a batch for this purpose.** The sizing check above turns one oversized ask into up to five increment issues, which is exactly the shape that would otherwise emit five chips at once. The chain is ordered and its increments are meant to land in sequence, so offer chips from the front of the chain and defer the tail — a chip for increment 4 is not actionable until 1–3 land, and offering it invites a click that will collide with them.
+**An increment chain is covered by the same one hand-off.** The sizing check above turns one oversized ask into up to five increment issues — exactly the shape that used to emit five chips. The chain is ordered and its increments land in sequence, so the hand-off **names the chain and its order** rather than chipping the head and queuing the tail; the launched thread's `/subagent` Step 6.0b serializes them from there.
 
-**If the script does not resolve, cap at one — do not fall through to N.** Print `DEGRADED: active-work-cap.sh not found (checked all three paths) — offering 1 chip for this batch and deferring the rest` and offer a single chip. A capture thread has no PM context and no `IN_FLIGHT` table, so this script is its *only* bound: falling back to one-chip-per-issue would restore exactly the behavior #1191 exists to remove, whereas one chip is still a usable hand-off. A **non-zero exit** from a script that did resolve means a count source could not be read — treat it as `FREE = 0` and defer every chip, naming the read failure.
+**What the hand-off costs the count, and why that is the right trade.** Step 9c stamps the hand-off's `task_id` on **every** issue it covers, because that is what `active-work-cap.sh` and the cross-skill dedup read per issue (`chip-launching.md` "Cross-skill chip visibility") — without it, `/wave` or `/pm` would offer a second launch for work this hand-off already carries. The census therefore counts a covered issue as one unit of pending work, exactly as it counted a per-issue chip before. The visible consequence: a session filing more issues than `FREE` can push `ACTIVE` past `CAP`, which **defers the next session's hand-off** until work drains. That overshoot is bounded to one session and self-corrects, and it is the right side to err on — the alternative, covering only `FREE` of the issues, strands the rest with no launch path at all, which AC5 of #1229 exists to prevent. Concurrency itself is never overshot: the launched thread still runs at most `min(pipeline_ceiling, active_work_cap)` at a time.
 
-Because this skill's own log feeds the count, each chip spawned here raises `ACTIVE` for every other surface too — so re-reading `FREE` per issue instead of decrementing a single read would work as well, at the cost of N subprocess calls. Prefer the single read.
+**If the script does not resolve, still offer the one hand-off.** Print `DEGRADED: active-work-cap.sh not found (checked all three paths) — offering the batch hand-off without a repo-wide bound` and offer it. The hand-off is a single offer whose thread applies its own ceiling, so it is the safe shape to fall back to; withholding it would strand every issue in the session. A **non-zero exit** from a script that did resolve means a count source could not be read — treat it as `FREE = 0` and defer the hand-off, naming the read failure rather than a fabricated count.
 
 ---
 
@@ -338,7 +342,7 @@ This is the existing `- Depends on #N` phrasing above, reused deliberately rathe
 
 ---
 
-## Step 9: Record + offer a coding chip + print the URL (the closing-line rule)
+## Step 9: Record + offer the session's coding hand-off + print the URL (the closing-line rule)
 
 After **every** create — and after every update/close — append/refresh the session log and **print the GitHub issue URL as a clickable markdown link as the final line of the response.** This rule is absolute: the link is never buried in prose, never mid-paragraph — it is the closing line.
 
@@ -369,7 +373,7 @@ CHAIN_JSON=$(jq -nc --arg id "$CHAIN_ID" --argjson i "$POSITION" --argjson n "$T
 
 ### Step 9a: The post-create report — summary + decision points
 
-The report is what replaces the old draft-reprint-and-approve gate, and it is the safety valve that makes auto-filing low-risk. Emit it **immediately after logging the issue** — before the chip (Step 9c) and before the closing URL. Two short parts:
+The report is what replaces the old draft-reprint-and-approve gate, and it is the safety valve that makes auto-filing low-risk. Emit it **immediately after logging the issue** — before the hand-off (Step 9c) and before the closing URL. Two short parts:
 
 1. **Summary (1–3 sentences).** What issue you just opened, in plain functional terms — the same voice as the body's lead sections, not a section-by-section readout.
 2. **Decision points (1–3 sentences).** The actual calls you made that the user might want to revisit — scope you narrowed or expanded, a split you considered but did *not* make, **a sizing split you did make**, assumptions you encoded, the labels you auto-applied, a weak-duplicate pointer (Step 4). **Name the concrete call** (e.g. *"scoped to the create flow only; assumed rapid-fire keeps its narrower dedup bar; applied `skill`, `enhancement`"*), never boilerplate like "made some scope decisions." If you genuinely made no non-obvious call, say so in one line rather than padding.
@@ -380,9 +384,9 @@ Close by reminding the user the issue is cheap to change — a wrong call is one
 
 Tone precedent: `/wrap`'s terse "here's what I decided — flag anything wrong" framing and `issue-planning.md`'s number/title/rationale/link quartet. Keep the whole report to a few lines; its value is signal density, not length.
 
-### Step 9b: Infer a coding tier (for the chip's Model and Effort lines)
+### Step 9b: Infer a coding tier (for the hand-off's Model and Effort lines)
 
-`/issue-maker` does no tier classification during capture, but the chip requires a `**Model:** {MODEL} — {REASON}` line **and** an `**Effort:** {LEVEL} — {REASON}` line (`chip-launching.md`). Rather than invoking `/prompt` for two lines, infer the tier directly from the body just drafted in Step 5. Full signal definitions, tier table, and evaluation rules: `references/tier-inference.md`. Summary:
+`/issue-maker` does no tier classification during capture, but the hand-off requires a `**Model:** {MODEL} — {REASON}` line **and** an `**Effort:** {LEVEL} — {REASON}` line (`chip-launching.md`). Rather than invoking `/prompt` for two lines, infer the tier directly from the body just drafted in Step 5. Full signal definitions, tier table, and evaluation rules: `references/tier-inference.md`. Summary:
 
 | Tier | Trigger (any is sufficient) | Model / effort |
 |------|-----------------------------|----------------|
@@ -392,78 +396,93 @@ Tone precedent: `/wrap`'s terse "here's what I decided — flag anything wrong" 
 
 Default to **Standard** when signals are sparse. Values are bare family names / picker labels — never version numbers or API tokens (`chip-launching.md` "Model and effort lines").
 
-**Both values from this step reach Step 9c** — the model on the `**Model:**` line and the effort on the `**Effort:**` line, in the chip `prompt` and in the visible short summary. A tier computed here and then dropped is the defect #791 fixed.
+**Both values from this step reach Step 9c** — the model on the `**Model:**` line and the effort on the `**Effort:**` line, in the hand-off `prompt` and in the visible short summary. A tier computed here and then dropped is the defect #791 fixed.
 
-### Step 9c: Offer a coding chip (default-on, alongside the closing link)
+**A session's hand-off covers several issues, so it takes the most demanding tier among them** — the same batch-tier rule `/prompt` Step 4 uses ("a batch of 3 issues where one is Heavy makes the batch tier Heavy"). Infer each issue's tier as it is filed and keep the running maximum; a session that files four Light issues and one Heavy hands off at Heavy. Rounding *down* would set the picker below what the hardest issue needs, and the launched thread has one model setting for all of them.
 
-Immediately after logging the issue, offer a one-click coding chip **in addition to**, never in place of, the closing URL line below. This is default-on — including in rapid-fire mode, with no extra confirmation and no opt-out flag today.
+### Step 9c: Offer the session's batch hand-off (default-on, alongside the closing link)
 
-**PM-context inline gate (before the chip).** Apply the gate from `chip-launching.md` "PM-context inline gate", read through the same candidate order. If no candidate resolves, print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable` and offer no chip until it does: a capture thread that cannot read the gate must not fall through to a chip per issue (#1189). In the rare case this capture thread also carries live PM context (a `## Active Work` table) and the freshly-created issue is subagent-fit, **prefer noting it can be picked up inline via `/subagent #N` in the PM thread** over offering a standalone-thread chip (#613) — **even when every inline slot is busy**, in which case it queues behind them rather than becoming a chip (#776, AC4). This is a recommendation in the report, not an in-thread action — capture mode still performs no worktree/branch/implementation work (Step 2). In the common case — a dedicated capture thread with no PM context — there is no inline pipeline to use, so the chip is the right hand-off and Step 9c proceeds unchanged.
+A capture session produces **one** hand-off covering every open issue filed in it — not one per issue ([#1229](https://github.com/auerbachb/claude-code-config/issues/1229)). It is offered **in addition to**, never in place of, each issue's closing URL line below. Default-on, including in rapid-fire mode, with no extra confirmation and no opt-out flag today.
 
-**Repo-wide cap (before the chip).** A single created issue offers its chip as long as `FREE > 0`, read from the default output of `active-work-cap.sh` (which also carries the `CAP` and `ACTIVE` the deferral message names), resolved through the same candidate order (`$HOME/.claude/skills-worktree/.claude/scripts/`, then `$HOME/.claude/scripts/`, then `.claude/scripts/`); at `FREE == 0` the chip is **deferred**, not offered, with the count and scope named. In a batch, the budget is read once up front and shared across the batch — Step 6 owns that arithmetic. This is the figure that case 3 of `chip-launching.md` "Precedence when the ceiling is full" now gates on: a standalone capture thread has no PM context but is no longer without a count.
+**Why one.** Five chips are five tabs to set a model on, watch, and remember. One hand-off opens one execution-capable thread that bootstraps its own `## Active Work` table and runs all five inline through `/subagent` — one status line, one model setting. That thread also does the per-issue too-big routing itself, through its own `/subagent` Step 4, which is where that judgment belongs: capture does no tier classification and would be guessing.
 
-Check chip availability per `chip-launching.md` (same candidate order). The coding-thread prompt is the same regardless of mode:
+**PM-context inline gate (before the hand-off).** Apply the gate from `chip-launching.md` "PM-context inline gate", read through the same candidate order. If no candidate resolves, print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable` and offer no hand-off until it does (outcome 4 below): a capture thread that cannot read the gate must not guess at its delivery. **A capture thread is the gate's one non-executing exception (Step 2), so a hand-off — not inline adoption — is the correct delivery here, and it carries no `/subagent` Step 4 criterion:** its reason is the capture-mode invariant, and naming that plainly is the whole requirement. If this capture thread happens to also carry a `## Active Work` table from earlier in the session, nothing changes — capture mode adopts nothing, so the work still leaves the thread.
 
-**Chip model + effort contract (non-negotiable):** The chip `prompt` MUST open with the `**Model:**` line from Step 9b, then that step's `**Effort:**` line, then the model-guard preamble from `chip-launching.md` — no blank line between the three. The visible short summary MUST repeat both lines (not the guard) per `chip-launching.md` "Short-summary transcript format". When the parent thread is on Fable and the chip recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
+**Repo-wide cap (before the hand-off).** Step 6 owns the arithmetic and reads the census once per session: offer while `FREE > 0`; at `FREE == 0` **defer**, naming `{ACTIVE}/{CAP}` and the scope. This is the figure case 2 of `chip-launching.md` "Precedence when the ceiling is full" gates on — a capture thread has no PM context, but it is not without a count.
+
+**When to emit.** Emit the hand-off once the session's issues are filed: after the last issue of a batch (Step 6), or after the single issue of a one-issue session — never inside the per-issue loop (Step 3.7).
+
+**How to refresh when more issues arrive in later turns — and why "already clicked" is not a no-op here.** Branch on whether the standing hand-off has been **clicked**:
+
+- **Not yet clicked** (still a live offer) — **replace it**: spawn a replacement covering the larger set, record its `task_id` on every covered issue, then `dismiss_task` the previous one (`chip-launching.md` "Stale-chip hygiene" order: replace, then withdraw). A dismissal reporting `already dismissed` is a successful no-op — clear the stale `task_id` and move on.
+- **Already clicked** — **leave it alone and cover only the new issues.** A clicked hand-off is a *running thread*, not a withdrawn offer: it has already claimed and started its issue set. Spawning a replacement that re-lists those issues launches a second thread over the same work, and because the claim contract stops on an already-claimed issue, that thread can halt on the first name in the list and never reach the newly added ones — the issues the refresh existed to deliver. So: spawn a **second** hand-off listing **only the issues the clicked one does not cover**, stamp its `task_id` on those issues alone, and leave the clicked task's `chip_task_id` values untouched.
+
+  This is the one place "at most one hand-off per session" is scoped to *live offers*, not to lifetime totals — a clicked hand-off has stopped being an offer, and pretending otherwise is what creates the duplicate-thread race. `dismiss_task` reporting `already clicked` is therefore **information, not success**: read it as "that work is in flight", never as "the offer was withdrawn".
+
+Check availability per `chip-launching.md` (same candidate order). The hand-off content is the same in both modes:
+
+**Model + effort contract (non-negotiable):** The hand-off `prompt` MUST open with the `**Model:**` line from Step 9b, then that step's `**Effort:**` line, then the model-guard preamble from `chip-launching.md` — no blank line between the three. Both values are the session's *most demanding* tier (Step 9b). The visible short summary MUST repeat both lines (not the guard) per `chip-launching.md` "Short-summary transcript format". When the parent thread is on Fable and the hand-off recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
 
 ```
-**Model:** {MODEL from Step 9b} — {one-line reason, e.g. "rules + skill wiring" or "single-file addition"}
-**Effort:** {LEVEL from Step 9b} — {one-line reason, e.g. "rules-touching change" or "single-file addition"}
+**Model:** {MODEL from Step 9b} — {one-line reason, e.g. "rules + skill wiring across the batch"}
+**Effort:** {LEVEL from Step 9b} — {one-line reason, e.g. "hardest issue in the batch is rules-touching"}
 {Model-guard preamble — insert verbatim from `chip-launching.md` "Model-guard preamble", immediately after these lines, no blank line between}
 
-You are picking up a freshly captured issue from an `/issue-maker` capture thread — no CR plan, worktree, or codebase exploration has happened yet.
+You are picking up {N} freshly captured issue(s) from an `/issue-maker` capture thread — no CR plans, worktrees, or codebase exploration have happened yet.
 
 ## Task
-Start coding issue #{ISSUE_NUMBER}: {TITLE}
-{ISSUE_URL}
+Work through these issues, in this order:
+
+1. #{a} — {title}
+   {url}
+2. #{b} — {title}
+   {url}
+{…one entry per open issue filed in this session, in filing order}
+
+{Increment chains only: "#{b}–#{d} are increments 2–4 of one chain behind #{a}; they land in that order."}
 
 ## Workflow
-Run `/start-issue {ISSUE_NUMBER}`. It polls for CodeRabbit's implementation plan, merges it into the issue body, creates a worktree and branch, and hands you a ready-to-code summary — continue from there.
+Run `/subagent #{a} #{b} …` in this thread. It claims each issue, serializes any that overlap on a file, and drives each one A→B→C to a merged PR — keeping at most the 3–4 concurrent-pipeline ceiling in flight and queueing the rest. Any issue it judges too big for a subagent it routes to its own thread, naming the criterion; that judgment belongs here, with the code in front of you, not back in the capture thread.
+
+If this thread has no `## Active Work` table, bootstrap one (`/pm` Step 3.2's schema) and track the issues there. Do not open a separate thread per issue.
 
 ## Constraints
 - Claim the issue before anything else. Resolve `issue-claim.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/issue-claim.sh`, `$HOME/.claude/scripts/issue-claim.sh`, `.claude/scripts/issue-claim.sh` — this repo may carry no `.claude/` directory. Run `<N> --check` on it, and if it clears, `<N> --claim`. Do this after the model-guard check and before any repo read, edit, or planning. Exit 1 (`claimed`) or 4 (`unknown`) → stop and report the claim rather than proceeding; `stale` → say so and continue. If `--claim` itself fails, stop — a passing check is not a held claim. If no candidate resolves, print `DEGRADED: issue-claim.sh not found (checked all three paths) — proceeding unclaimed` and continue; never skip the claim silently.
-- Do NOT work on main — use the worktree /start-issue creates
+  - The bullet above applies to **each** issue in the list, one at a time as you pick it up — `/subagent` Step 6.0 performs exactly that per issue, so running the workflow discharges it.
+- Do NOT work on main — each pipeline works in its own worktree
 - Do NOT modify .env files
 - Merging is automatic and yours to do: once the merge gate passes and every Test Plan / AC checkbox verifies, run the full `/wrap` yourself to squash-merge — no approval pause, no pre-merge message (`CLAUDE.md` "PR MERGE AUTHORIZATION")
 ```
 
-The merge-authority bullet is the shared contract from `chip-launching.md` "Merge-authority line" — reproduce it **verbatim**, never softened into an approval request.
+The merge-authority bullet is the shared contract from `chip-launching.md` "Merge-authority line" — reproduce it **verbatim**, never softened into an approval request. The claim bullet is **Form A** of that file's "Claim line" — `/issue-maker` holds no claim, so the launched thread takes each one. Both are written out here as literal text rather than cited, for the same reason that file gives: a generated hand-off may land in a repo where `chip-launching.md` does not resolve, and a rule that lives only in prose never reaches the prompt. The only local addition is the **nested sub-bullet** scoping the claim to each issue in the list — kept off the canonical line on purpose, because `skill-portability-lint.sh` compares that whole line byte-for-byte and an appended clause fails it.
 
-- **Chip mode** (`mcp__ccd_session__spawn_task` present): call `spawn_task` with `title` (verb-first, ≤60 chars, includes the issue number, e.g. `Fix #42 stale worktree warning`), `prompt` (the block above, verbatim), `tldr` (1–2 plain sentences from `TITLE`), `cwd` (repo root — no worktree exists yet at capture time, unlike `/start-issue`'s own chip, which points at the worktree it just created). On success, **record the returned `task_id` immediately** — before printing anything else:
+- **Chip mode** (`mcp__ccd_session__spawn_task` present): call `spawn_task` **once for the session** with `title` (verb-first, ≤60 chars, naming the count and the lead issue — e.g. `Run 5 captured issues (#1230 first)`), `prompt` (the block above, verbatim), `tldr` (1–2 plain sentences covering the set), `cwd` (repo root — no worktree exists at capture time, unlike `/start-issue`'s own chip, which points at the worktree it just created). On success, **record the returned `task_id` immediately** — before printing anything else — against every issue the hand-off covers:
 
   ```bash
-  set_log '(.issues[] | select(.number == ($n|tonumber)) | .chip_task_id) = $tid' \
-    --arg n "$ISSUE_NUMBER" --arg tid "$TASK_ID"
+  set_log '(.issues[] | select(.status == "open") | .chip_task_id) = $tid' --arg tid "$TASK_ID"
   ```
 
-  This write is not just local bookkeeping — `$LOG` is the shared, cross-thread record other chip-offering skills consult (`chip-launching.md` "Cross-skill chip visibility"), so recording `chip_task_id` here is what makes this chip visible to `/wave` and `/pm` before either offers a second one for the same issue.
+  This write is not just local bookkeeping — `$LOG` is the shared, cross-thread record other chip-offering skills consult (`chip-launching.md` "Cross-skill chip visibility"), so stamping every covered issue is what stops `/wave` or `/pm` offering a second launch for work this hand-off already carries. Print only the short summary (per `chip-launching.md` "Short-summary transcript format") — never the full block in chip mode.
+- **Fallback mode** (tool absent, or the `spawn_task` call failed): print the full fenced block above once and leave `chip_task_id` as `null` on every issue. A failed spawn degrades the whole hand-off, not one issue — note the fallback once.
 
-  Print only the short summary per issue (per `chip-launching.md` "Short-summary transcript format") — never the full block in chip mode.
-- **Fallback mode** (tool absent, or this issue's `spawn_task` call failed): print the full fenced block above and leave `chip_task_id` as `null`. A failed spawn degrades **only that issue** — note the fallback once per batch; the rest keep their chips.
+**Increment chains no longer split their outcome.** The chain head used to get a chip and each successor a queued-successor note; the one hand-off now covers the whole chain, in order, and the launched thread's `/subagent` Step 6.0b serializes the overlap (note in particular that `merge_ready` is *not* terminal — the PR hasn't landed). Cite 6.0b rather than re-deriving the queue mechanics here. Four chips for a four-increment chain would race each other into the same files, which is exactly what 6.0b exists to prevent — and what one hand-off structurally cannot do.
 
-**Increment chains: only the head gets a chip.** When the issues came from a sizing split (top-level rule), the chain **head** goes through everything above unchanged — inline gate, chip, or fallback block. Every **successor** takes a fourth outcome instead: a one-line note that it queues behind its predecessor and gets picked up once that one reaches a **genuinely terminal state — `merged` or `blocked`**. `/subagent` Step 6.0b is the canonical chain-release rule (note in particular that `merge_ready` is *not* terminal — the PR hasn't landed); cite it rather than re-deriving the queue mechanics here.
+A capture session ends with exactly one of **four** outcomes for the set of issues it filed; never none, and never two:
 
-```text
-#102 queues behind #101 — starts once #101 merges (or is blocked). No chip; chain-release per `/subagent` 6.0b.
-```
+1. a **batch hand-off chip** covering every open issue in the session;
+2. a **printed batch hand-off block** — same content, fallback mode;
+3. a **deferred batch hand-off** — the repo-wide cap left no headroom (`FREE == 0`, or the count could not be read);
+4. a **deferred hand-off note** — the gate itself was unreadable.
 
-Four chips for a four-increment chain would race each other into the same files, which is exactly the collision 6.0b exists to prevent. Successors leave `chip_task_id` as `null`. This routing holds in **both** modes — rapid-fire shortens the note, it does not restore the chips.
-
-Every created issue ends with exactly one of **five** outcomes; never none, and never two:
-
-1. a chip;
-2. a printed fallback block;
-3. an inline `/subagent` recommendation (when the PM-context inline gate above routed it);
-4. a queued-successor note (increment chains, just above);
-5. a **deferred hand-off note** — the gate itself was unreadable.
-
-Outcome 5 is what the gate-unavailable path above produces: `chip-launching.md` resolved on none of the three paths, so the skill cannot tell whether a chip is even the right hand-off, and it must not guess. The issue is still filed and its URL still printed — only the hand-off is deferred. Say so in one line and give the retry, so the issue is never left with no hand-off at all:
+Outcomes 3 and 4 defer the hand-off, never the issues: every issue is still filed, logged, and its URL still printed. Say so in one line and give the retry, so a session is never left with no hand-off path at all:
 
 ```text
-Chip deferred for #N — chip-launching.md not found (checked all three paths). The issue is filed; re-run `/issue-maker` once the skills worktree resolves to offer the chip.
+Hand-off deferred — repo-wide active-work cap ({ACTIVE}/{CAP} in motion across all threads). All {N} issues are filed; re-run `/issue-maker` once work drains to offer it.
 ```
 
-This applies to a chain **head** exactly as to a standalone issue; successors keep outcome 4 regardless, since their hand-off never depended on the gate. (Batches: this repeats once per issue in the loop — see Step 6.)
+```text
+Hand-off deferred — chip-launching.md not found (checked all three paths). All {N} issues are filed; re-run `/issue-maker` once the skills worktree resolves to offer it.
+```
 
 If the user asks to "print the full prompt for #N" while in chip mode, re-emit that issue's complete block verbatim (Model line + guard preamble included) — the chip stays offered (`chip-launching.md` "Print-on-demand replay").
 
@@ -559,21 +578,24 @@ fi
 
 Name the affected successors and take one of two paths, then proceed with the close below:
 
-- **Retract the whole chain** (the usual call when the head goes, or when the ask itself is cancelled) — close every open member of the chain, each with the same retraction comment, and dismiss each of their chips the same way as any single retract.
+- **Retract the whole chain** (the usual call when the head goes, or when the ask itself is cancelled) — close every open member of the chain, each with the same retraction comment, then run the hand-off logic **once, after the last close**: by then no chain member is open, so `SHARERS` reflects only issues outside the chain and the ordinary retract's two branches decide correctly (withdraw if nothing is left, refresh if the session filed other issues too). Running it per member would refresh the hand-off once per close for no benefit.
 - **Re-cut the remainder** (when only one slice was wrong) — keep the successors, but repoint the one immediately after `#N` at `#N`'s own predecessor (or drop its `Depends on` line entirely if `#N` was the head), and renumber the `{i}/{n}` markers in the surviving titles so the chain still reads as a chain. This is a `/update` on each survivor (Step 10), not a new filing.
 
 **Ask which one** — it is the rare genuinely blocking call: both outcomes are destructive in different directions, and the increments are not interchangeable. State the successor numbers in the question. In rapid-fire, ask this one anyway; it is the same class as the two hard bars.
 
 ### Ordinary retract
 
-**First, dismiss any live chip** (`chip-launching.md` "Stale-chip hygiene" — "gained an open PR" / "superseded" both cover a retracted issue, since the work is now cancelled). Look up the tracked `task_id`:
+**First, deal with the live hand-off** (`chip-launching.md` "Stale-chip hygiene" — "gained an open PR" / "superseded" both cover a retracted issue, since the work is now cancelled). Look up the tracked `task_id` **and how many other open issues still share it** — since #1229 one hand-off covers a whole session, so the same `task_id` is stamped on every issue it carries:
 
 ```bash
 TASK_ID=$(jq -r --arg n "$N" '(.issues[] | select(.number == ($n|tonumber)) | .chip_task_id) // empty' "$LOG")
+SHARERS=$(jq -r --arg n "$N" --arg t "$TASK_ID" \
+  '[.issues[] | select(.status == "open" and .chip_task_id == $t and .number != ($n|tonumber))] | length' "$LOG")
 ```
 
 - **No `TASK_ID`** (never offered, or already cleared) — skip straight to closing the issue.
-- **`TASK_ID` present** — call `mcp__ccd_session__dismiss_task` with that `task_id` and a reason (e.g. `"Issue retracted via /issue-maker"`). Apply the fail-closed outcome rules from `chip-launching.md`:
+- **`TASK_ID` present and `SHARERS > 0`** — **do NOT dismiss it.** The hand-off still covers other open issues, and withdrawing it would strand every one of them. Instead **refresh**: spawn a replacement hand-off covering the remaining open issues, stamp its `task_id` on them, then dismiss the old one (`chip-launching.md` "Stale-chip hygiene" order: replace, then withdraw). Clear this issue's own `chip_task_id` to `null` as part of the close below. If the replacement spawn fails, keep the old hand-off live and say so — an over-broad hand-off that names one cancelled issue is recoverable; no hand-off at all is not.
+- **`TASK_ID` present and `SHARERS == 0`** — this was the last open issue it covered, so withdraw it: call `mcp__ccd_session__dismiss_task` with that `task_id` and a reason (e.g. `"Issue retracted via /issue-maker"`). Apply the fail-closed outcome rules from `chip-launching.md`:
   - **Dismissed**, or **already clicked/already dismissed** — both mean the offer is gone; clear `chip_task_id` to `null`.
   - **Genuine failure** — the chip is still live. Leave `chip_task_id` set (don't strand the handle) and say so when reporting the close, but proceed to close the issue anyway — a live chip on a closed issue is a stale-but-recoverable state, not a reason to block the retract.
 
@@ -599,15 +621,15 @@ Then print: *"Issue #N closed."* — append *"(chip withdrawal failed — it may
 
 When invoked with `--export-prompt`, **do not create anything** — instead emit a standalone, paste-in prompt that codifies the same capture-mode behavior (reflection surfaced as a post-create decision-points report + LLM pass-through rationale, auto-open with no approval gate, functional-first tone, 6-section body, dedup, refusal of workflow-advancing actions, closing-line URL rule). This lets the user carry the same discipline into a repo or thread where this skill isn't installed. Output the prompt in a fenced block and stop.
 
-**The sizing check ships in the export with its bar written out, not cited.** Everywhere else in this skill the bar is a citation to `/subagent` Step 4 criterion 3, because that criterion travels with the installed skill. The export is for a thread that has *no* `/subagent` to read, so a citation there would dangle — state the bar in the prompt itself (one Phase A/B/C pipeline, one reviewable PR, one review cycle, a bounded slice), along with the increment-chain shape it triggers: ordered increments, a boundary line on each ("this increment ends at…", and the final one's terminal variant naming nothing deferred past it), `- Depends on #prev` links, a 5-increment cap that stops before filing, and a hand-off on the chain head only. This is the same reason the chip block is reproduced verbatim below rather than referenced.
+**The sizing check ships in the export with its bar written out, not cited.** Everywhere else in this skill the bar is a citation to `/subagent` Step 4 criterion 3, because that criterion travels with the installed skill. The export is for a thread that has *no* `/subagent` to read, so a citation there would dangle — state the bar in the prompt itself (one Phase A/B/C pipeline, one reviewable PR, one review cycle, a bounded slice), along with the increment-chain shape it triggers: ordered increments, a boundary line on each ("this increment ends at…", and the final one's terminal variant naming nothing deferred past it), `- Depends on #prev` links, a 5-increment cap that stops before filing, and one hand-off covering the whole chain in order. This is the same reason the hand-off block is reproduced verbatim below rather than referenced.
 
-**The exported prompt reproduces Step 9c's coding-chip block verbatim** — `**Model:**` line, `**Effort:**` line, model-guard preamble, and the Constraints block including its merge-authority bullet (`chip-launching.md` "Merge-authority line"). A portable prompt that drops the merge-authority line recreates exactly the gap this exists to close: a thread that reaches merge-readiness in a repo without these rules installed, finds nothing asserting the default, and stops to ask. Never paraphrase the bullet and never soften it into an approval request.
+**The exported prompt reproduces Step 9c's batch hand-off block verbatim** — `**Model:**` line, `**Effort:**` line, model-guard preamble, and the Constraints block including its merge-authority bullet (`chip-launching.md` "Merge-authority line"). Export it in the same one-per-session shape the installed skill uses; a portable prompt that reverts to one block per issue carries the sprawl #1229 removed into exactly the un-instrumented repos that can least afford it. A portable prompt that drops the merge-authority line recreates exactly the gap this exists to close: a thread that reaches merge-readiness in a repo without these rules installed, finds nothing asserting the default, and stops to ask. Never paraphrase the bullet and never soften it into an approval request.
 
 ---
 
 ## Modes summary
 
-Both modes **auto-open** the issue — no draft reprint, no approval gate — and both auto-apply validated labels. **Both also run the full reflection pass — narrow, expand, split, sizing, ambiguity.** In either mode an oversized ask becomes an increment chain automatically **when it fits in 5 increments or fewer**; above that both modes stop and ask before filing anything (Step 8's cap), and both route the chip to the head only (Step 9c). What distinguishes them is the **report** and the **two bars**:
+Both modes **auto-open** the issue — no draft reprint, no approval gate — and both auto-apply validated labels. **Both also run the full reflection pass — narrow, expand, split, sizing, ambiguity.** In either mode an oversized ask becomes an increment chain automatically **when it fits in 5 increments or fewer**; above that both modes stop and ask before filing anything (Step 8's cap), and both cover the whole chain with the session's single hand-off (Step 9c). What distinguishes them is the **report** and the **two bars**:
 
 | Mode | Upfront questions | Create | Post-create report | Labels | Dedup pause | Chain cap (Step 8) |
 |------|-------------------|--------|--------------------|--------|-------------|--------------------|

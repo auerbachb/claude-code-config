@@ -267,14 +267,30 @@ This creates **one canonical planning document** the coding agent can work from.
 
 ## Step 7: Deliver the ready-to-code handoff
 
-**PM-context inline gate (before the chip).** Apply the gate from `.claude/reference/chip-launching.md` "PM-context inline gate". `/start-issue` creates no `## Active Work` table of its own, but when it is invoked *inside* a PM thread that has one and the issue is subagent-fit, **prefer recommending the issue run inline via `/subagent #N` in that PM thread** over spawning a chip that opens yet another thread (#613); the worktree prepared in Step 6 stays ready if the user would rather code it here instead. Busy slots do not change this — the issue queues inline rather than becoming a chip (#776, AC4). In the common case — `/start-issue` as the front door to a fresh coding thread, no PM context — there is no inline pipeline to use, so the chip/handoff below is the right delivery and Step 7 proceeds unchanged. Recommending inline is not launching it (Execution boundary).
+**PM-context inline gate (before the chip).** Apply the gate from `.claude/reference/chip-launching.md` "PM-context inline gate". **`/start-issue` is always execution-capable** — a capture thread refuses it outright (`/issue-maker` Step 2), so every thread that reaches this step can run the work. A subagent-fit issue is therefore **adopted by this thread**, never handed to a new one; the absence of a `## Active Work` table is a bootstrap instruction, not a reason to chip (#1229). Busy slots do not change this — the issue queues inline rather than becoming a chip (#776, AC4). Route on what this thread is already doing:
 
-**First, check chip availability** per `.claude/reference/chip-launching.md`, then branch. The handoff content is the same in both delivery modes — only how it reaches the user differs:
+- **This thread is already orchestrating** — a `## Active Work` table with live rows, or subagents running (monitor mode forbids substantive work in the parent) → run the issue as a pipeline: `/subagent #N`. Recommending inline is not launching it (Execution boundary). Say in one line that the worktree Step 6 prepared goes unused on this branch — the pipeline's phases provision their own — so it can be removed with `git worktree remove` rather than sitting there unexplained.
+- **Any other thread** — the common front-door case → **this thread codes the issue**, in the worktree Step 6 just created. Bootstrap a one-row `## Active Work` table (`/pm` 3.2's schema, Thread `Inline`) so the work is tracked, then continue from the ready-to-code block below. No chip and no second tab: the thread that ran `/start-issue` is the thread that lands the issue.
+
+  Direct coding rather than `/subagent #N` is deliberate *here* and only here: `/subagent`'s phases spawn with `isolation: "worktree"`, so they provision a second worktree and leave the branch Step 6 just checked out orphaned. Both branches are inline; the shape follows what the thread is already doing.
+- **A named `/subagent` Step 4 disqualifier** → the issue is too big for a subagent, so it goes to a separate thread via the chip/fallback path below, **naming which criterion fired in one line**. Normally that is criterion 1 or 2: since #1193 criterion 3 decomposes into an inline increment chain instead, so naming it alone is not a valid verdict — it routes out only when it also names why decomposition was unavailable (`chip-launching.md` "PM-context inline gate"). This is the only structural reason a chip survives, and a chip with no nameable criterion is a bug.
+
+**When the chip path applies, check availability** per `.claude/reference/chip-launching.md`, then branch. The handoff content is the same in both delivery modes — only how it reaches the user differs:
 
 - **Chip mode** (`mcp__ccd_session__spawn_task` present): call `spawn_task` once for this issue with `title` / `prompt` / `tldr` / `cwd` (shape under "Chip construction" below). Print **only** the short summary — issue, title, `**Model:**` line, `**Effort:**` line, one-line rationale — in the reference's exact format. Do **not** also print the fallback block, or the same work is offered twice.
 - **Fallback mode** (tool absent): print the summary block below, unchanged.
 
-**A failed `spawn_task` is treated as unavailable** (per the reference): print the full fallback block instead. Do not retry the spawn. The handoff always ends with exactly one of: a chip, a printed block, or — when the PM-context inline gate above routed it — an inline `/subagent` recommendation; never neither.
+**A failed `spawn_task` is treated as unavailable** (per the reference): print the full fallback block instead. Do not retry the spawn. The handoff always ends with exactly one of: **in-thread adoption** (the default — coded here, or run as `/subagent #N`), a chip, or a printed block; never neither.
+
+### In-thread adoption output (the default)
+
+The block below is also the working spec when this thread adopts the issue — print it, minus the one part that only makes sense for a *spawned* session:
+
+- **Drop the model-guard preamble.** The guard exists so a session started from a picker can check itself against a recommendation it did not set. This thread is already running on whatever model the user chose, with nothing to compare against, so the guard has no work to do here.
+- **Keep the model and effort recommendation lines** — the `**Model:**` and `**Effort:**` lines — and say so in one line if they differ from what this thread is running, so the user can restart on the recommended tier if they want it. Never stop and wait on the difference; that is the guard's job in a spawned session, not a gate here.
+- **Keep everything else verbatim** — plan, AC, and the whole `### Constraints` block, including the claim line and the merge-authority bullet. The constraints bind this thread exactly as they would bind a spawned one. **One substitution**, forced by the dropped preamble: the claim bullet times re-affirmation "after the model-guard check", and there is no such check on this path — read it as **"immediately before any repo read, edit, or planning"** instead. The ordering it protects is unchanged; only the landmark it names is gone. Do **not** edit the chip or fallback templates for this — a spawned session still runs the guard, so the verbatim wording is correct there.
+
+Then start on step 1 of the plan.
 
 ### Fallback mode output
 
@@ -351,7 +367,9 @@ Each `{REASON}` is a short phrase naming the dominant driver (e.g. `rules + skil
 
 ### Execution boundary
 
-Stop after delivering the handoff. Do NOT start coding automatically — the user may want to review the plan first. **Offering a chip is not launching a thread:** `spawn_task` only puts a chip in front of the user, and their click is the only launch path. Never click for them, and never do the coding thread's work yourself — via the Agent tool or otherwise — in place of a chip they haven't clicked.
+**In-thread adoption is the default and needs no confirmation turn** — the plan is already merged into the issue body (Step 5), so "let the user review it first" is satisfied before this step, and the standing autonomy posture (`CLAUDE.md`) covers starting. Start and report; the user saying hold is the correction path, and a live "don't start that" in chat stops it.
+
+The boundary that remains is about **other** threads. **Offering a chip is not launching a thread:** `spawn_task` only puts a chip in front of the user, and their click is the only launch path. Never click for them, and never do the *chipped* work yourself — via the Agent tool or otherwise — in place of a chip they haven't clicked. That prohibition is about work routed away from this thread; it never applies to the issue this thread adopted, which is yours to code.
 
 ## Edge cases
 

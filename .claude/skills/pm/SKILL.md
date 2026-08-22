@@ -620,7 +620,7 @@ Maintain a state table in the conversation. Update it as work progresses:
 
 **Thread column values:**
 
-- `Inline` — PM is running this issue itself via the `/subagent` A→B→C flow (its phase shows in the Status column). Not a separate thread and carries no chip; this is the default for inline-eligible issues.
+- `Inline` — **this thread** is doing the work, not a separate one: usually via the `/subagent` A→B→C flow (its phase shows in the Status column), and equally when a thread codes an adopted issue directly in a prepared worktree (`/start-issue` Step 7's front-door case, #1229). Carries no chip and no Task ID; this is the default for inline-eligible issues. The table is not `/pm`-only — any execution-capable thread bootstraps one in this schema when it adopts work (`chip-launching.md` "PM-context inline gate"), without thereby becoming a `/pm` thread.
 - `Chip offered` — a chip was spawned for this thread-prompt issue (criterion 1/2 too-big, or explicitly requested) and is waiting on a click (chip mode).
 - `Prompt generated` — a full prompt block was printed for the user to paste (thread-prompt issue: fallback mode, a failed spawn, or an explicit prompt request).
 - `Active` — a separate thread is running for this issue.
