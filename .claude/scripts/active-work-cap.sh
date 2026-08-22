@@ -66,6 +66,17 @@
 #   work would be counted twice and the effective cap halved. Chips whose issue
 #   appears in an open PR's `closingIssuesReferences` are therefore excluded.
 #
+# KNOWN GAP — this reports a count, it does not reserve a slot
+#   FREE is a snapshot with no lock tying it to the work created afterwards, so
+#   two surfaces reading concurrently can both see the same free slots and both
+#   fill them. Closing that needs an atomic reservation at the creation
+#   boundary — a lease in a shared store — which is the same missing registry as
+#   the gap below, and is tracked with it. It is not mitigated here because a
+#   partial lock (say, a flag file) would look like a guarantee while still
+#   racing, which is worse than a documented limit. In practice the callers are
+#   agents in chat threads seconds apart rather than a tight concurrent loop, so
+#   the exposure is small but real.
+#
 # KNOWN GAP — chips from /pm and /prompt are not counted
 #   Only /issue-maker writes a durable, cross-thread chip record. /pm and
 #   /prompt record a chip's task_id in their in-transcript Active Work table,
@@ -330,15 +341,22 @@ chips_covered_by_prs() {
 
 # Resolve the target repo slug once — the chip filter and the open-issue
 # intersection both need it.
+# --path must steer the COUNT as well as the cap. Resolving the cap from one
+# checkout while `gh` counted PRs in whatever directory the caller happened to
+# be in would report one repo's budget against another's activity.
 resolve_repo_slug() {
   if [[ -n "$REPO" ]]; then
     printf '%s' "$REPO"
     return
   fi
   local out rc=0
-  out="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>&1)" || rc=$?
+  if [[ -n "$FROM_PATH" ]]; then
+    out="$(cd "$FROM_PATH" 2>/dev/null && gh repo view --json nameWithOwner --jq .nameWithOwner 2>&1)" || rc=$?
+  else
+    out="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>&1)" || rc=$?
+  fi
   if [[ $rc -ne 0 || -z "$out" ]]; then
-    die_read "could not resolve the current repo (pass --repo owner/name): $out"
+    die_read "could not resolve the target repo${FROM_PATH:+ from --path $FROM_PATH} (pass --repo owner/name): $out"
   fi
   printf '%s' "$out"
 }
@@ -397,16 +415,54 @@ chip_issue_numbers() {
   done
 }
 
-# Issue numbers currently OPEN in the target repo.
-open_issue_numbers() {
-  local slug="$1"
-  local out rc=0
-  out="$(gh issue list --repo "$slug" --state open --limit 500 --json number \
-         --jq '.[].number' 2>&1)" || rc=$?
-  if [[ $rc -ne 0 ]]; then
-    die_read "gh issue list (open, repo=$slug) failed: $out"
-  fi
-  printf '%s' "$out"
+# Of the given issue numbers, which are currently OPEN.
+#
+# Deliberately NOT `gh issue list --limit N`: that returns the N newest open
+# issues and is then treated as the complete set, so on a repo with more than N
+# open issues a chip on an older one silently drops out of the count. Dropping a
+# chip RAISES free slots, which is the unsafe direction — the cap would quietly
+# permit more work on exactly the busiest repos. Asking about the specific
+# numbers has no such horizon, and it is cheaper: chips are few, open issues are
+# not. Chunked so a large chip set cannot build an unbounded query.
+open_among() {
+  local slug="$1"; shift
+  local owner="${slug%%/*}" name="${slug##*/}"
+  local nums=("$@")
+  (( ${#nums[@]} )) || return 0
+
+  local i=0 total=${#nums[@]}
+  while (( i < total )); do
+    local q="query { repository(owner: \"$owner\", name: \"$name\") {"
+    local j=0 n
+    while (( j < 100 && i < total )); do
+      n="${nums[$i]}"
+      # Numeric-only guard: these reach a query string, and a non-numeric value
+      # here would be injected rather than rejected.
+      [[ "$n" =~ ^[0-9]+$ ]] || die_read "non-numeric chip issue number in log: '$n'"
+      q+=" n${n}: issue(number: ${n}) { number state }"
+      i=$(( i + 1 )); j=$(( j + 1 ))
+    done
+    q+=" } }"
+
+    local out rc=0
+    out="$(gh api graphql -f query="$q" 2>&1)" || rc=$?
+    if [[ $rc -ne 0 ]]; then
+      die_read "gh api graphql (issue states, repo=$slug) failed: $out"
+    fi
+    # A number that does not exist comes back as null and is simply not open.
+    local parsed rc2=0
+    parsed="$(printf '%s' "$out" \
+      | jq -r '.data.repository | to_entries[] | .value | select(. != null)
+               | select(.state == "OPEN") | .number' 2>&1)" || rc2=$?
+    if [[ $rc2 -ne 0 ]]; then
+      die_read "could not parse issue states from GraphQL: $parsed"
+    fi
+    [[ -n "$parsed" ]] && printf '%s\n' "$parsed"
+  done
+  # Explicit: without it the function's status is the trailing `[[ -n … ]] &&`,
+  # so "no chip issue is open" — a legitimate, common result — would return 1
+  # and the caller would treat an ordinary empty answer as a read failure.
+  return 0
 }
 
 # A chip counts only while its issue is still open — see CHIP LIVENESS.
@@ -425,8 +481,11 @@ count_live_chips() {
     return
   fi
 
-  local open_issues rc2=0
-  open_issues="$(open_issue_numbers "$slug")" || rc2=$?
+  # Ask only about the chip issues themselves — see open_among.
+  local chip_nums=() rc2=0
+  while read -r _num; do [[ -n "$_num" ]] && chip_nums+=("$_num"); done <<<"$chips"
+  local open_issues
+  open_issues="$(open_among "$slug" ${chip_nums[@]+"${chip_nums[@]}"})" || rc2=$?
   (( rc2 == 0 )) || return "$rc2"
   if [[ -z "$open_issues" ]]; then
     printf '0'
@@ -503,8 +562,32 @@ count_inline_pipelines() {
     die_read "session-state.sh --session-view failed (exit $rc) — cannot count inline pipelines${errtext:+: $errtext}"
   fi
 
+  # `active_agents` records what was LAUNCHED, not what is still alive
+  # (monitor-mode.md) — the parent removes an entry on completion, so a session
+  # that crashed mid-phase leaves one behind. There is no lifecycle/status
+  # field on these entries to filter on (the schema is id/task/issue/pr/phase/
+  # launched/last_seen_at), so staleness is judged by the newest timestamp the
+  # entry carries. An orphan pins capacity forever and blocks ALL new work,
+  # which is worse than briefly over-offering.
+  local stale_s="${CLAUDE_ACTIVE_WORK_AGENT_TTL_S:-7200}"
+  [[ "$stale_s" =~ ^[0-9]+$ ]] || {
+    warn "CLAUDE_ACTIVE_WORK_AGENT_TTL_S is not an integer: '$stale_s' — using 7200"
+    stale_s=7200
+  }
   local n rc2=0
-  n="$(printf '%s' "$view" | jq '[.active_agents[]? | select((.pr // "") == "")] | length' 2>&1)" || rc2=$?
+  n="$(printf '%s' "$view" | jq --argjson ttl "$stale_s" --argjson now "$(date -u +%s)" '
+        [ .active_agents[]?
+          | select((.pr // "") == "")
+          # An entry with no usable timestamp is KEPT: unknown age must not
+          # read as "expired", which would silently free a real slot.
+          | select(
+              ((.last_seen_at // .launched // "") as $t
+               | if $t == "" then true
+                 else (($t | fromdateiso8601? // null) as $e
+                       | if $e == null then true else ($now - $e) < $ttl end)
+                 end)
+            )
+        ] | length' 2>&1)" || rc2=$?
   if [[ $rc2 -ne 0 || ! "$n" =~ ^[0-9]+$ ]]; then
     die_read "could not parse active_agents from session-state: $n"
   fi

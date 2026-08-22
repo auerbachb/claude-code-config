@@ -40,20 +40,60 @@ BIN="$TMP_DIR/bin"
 mkdir -p "$BIN"
 cat > "$BIN/gh" <<'GHEOF'
 #!/usr/bin/env bash
+# Dispatch on the subcommand, then ASSERT the flags the correctness of the cap
+# depends on. A fake that ignores everything past $1 $2 keeps passing after the
+# implementation drops `--author @me` or the repo scoping, so the suite would
+# certify author- and repo-scoped counting it never actually checked.
+ARGS=" $* "
+need() {
+  case "$ARGS" in
+    *" $1 "*) ;;
+    *) echo "fake gh: expected '$1' in: $*" >&2; exit 96 ;;
+  esac
+}
 case "$1 $2" in
   "repo view")
     [[ -n "${GH_FAKE_SLUG:-}" ]] || { echo "fake gh: GH_FAKE_SLUG unset" >&2; exit 1; }
+    need "--json"
     printf '%s\n' "$GH_FAKE_SLUG" ;;
   "pr list")
     if [[ "${GH_FAKE_PR_FAIL:-0}" == "1" ]]; then
       echo "fake gh: simulated API failure" >&2; exit 1
     fi
+    # Author scoping (#732/#733) and the closing-issue field (double-count fix)
+    # are both load-bearing; losing either silently corrupts the count.
+    need "--state"; need "open"; need "--author"; need "@me"
+    case "$ARGS" in
+      *"closingIssuesReferences"*) ;;
+      *) echo "fake gh: pr list must request closingIssuesReferences: $*" >&2; exit 96 ;;
+    esac
     printf '%s\n' "${GH_FAKE_PRS:-[]}" ;;
-  "issue list")
+  "api graphql")
     if [[ "${GH_FAKE_ISSUE_FAIL:-0}" == "1" ]]; then
       echo "fake gh: simulated API failure" >&2; exit 1
     fi
-    printf '%s' "${GH_FAKE_OPEN_ISSUES:-}" ;;
+    # Answer only for the issue numbers actually asked about — a fake that
+    # returned every open issue regardless would hide a caller that queried the
+    # wrong set.
+    Q=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in query=*) Q="${1#query=}" ;; esac
+      shift
+    done
+    [[ -n "$Q" ]] || { echo "fake gh: graphql call carried no query" >&2; exit 96; }
+    OPEN_SET=" $(printf '%s' "${GH_FAKE_OPEN_ISSUES:-}" | tr '\n' ' ') "
+    printf '{"data":{"repository":{'
+    FIRST=1
+    for N in $(printf '%s' "$Q" | grep -oE 'issue\(number: [0-9]+\)' | grep -oE '[0-9]+'); do
+      case "$OPEN_SET" in
+        *" $N "*) STATE="OPEN" ;;
+        *)        STATE="CLOSED" ;;
+      esac
+      [[ $FIRST -eq 1 ]] || printf ','
+      FIRST=0
+      printf '"n%s":{"number":%s,"state":"%s"}' "$N" "$N" "$STATE"
+    done
+    printf '}}}\n' ;;
   *)
     echo "fake gh: unstubbed call: $*" >&2; exit 97 ;;
 esac
@@ -259,6 +299,40 @@ JSON=$(run --json) || fail "--json failed with pipelines"
 PIPES=$(printf '%s' "$JSON" | jq -r '.inline_pipelines')
 [[ "$PIPES" == "2" ]] || fail "only the two agents with no PR should count, got '$PIPES'"
 ok "active_agents entries at a PR are excluded; pre-PR ones count"
+
+# --- 13b. An orphaned pre-PR agent stops consuming capacity ------------------
+# active_agents records what was LAUNCHED, not what is alive; a crashed session
+# leaves an entry behind, and an orphan that counts forever pins FREE at 0 and
+# blocks all work. There is no status field to filter on, so age is the guard.
+NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+OLD_ISO=$(date -u -v-4H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '4 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+set_open_prs 0
+set_open_issues ""
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR"/issue-maker-*-log.json
+set_pipelines "[{\"id\":\"fresh\",\"phase\":\"A\",\"last_seen_at\":\"$NOW_ISO\"},
+                {\"id\":\"orphan\",\"phase\":\"A\",\"last_seen_at\":\"$OLD_ISO\"}]"
+PIPES=$(run --json | jq -r '.inline_pipelines') || fail "--json failed with a stale agent"
+[[ "$PIPES" == "1" ]] || fail "a 4h-stale agent must not consume a slot, got '$PIPES' pipelines"
+ok "an orphaned pre-PR agent ages out instead of pinning capacity forever"
+
+# An entry with no timestamp at all is KEPT — unknown age must not read as
+# expired, which would silently hand back a slot that may be in use.
+set_pipelines '[{"id":"no-stamp","phase":"A"}]'
+PIPES=$(run --json | jq -r '.inline_pipelines') || fail "--json failed"
+[[ "$PIPES" == "1" ]] || fail "an agent with no timestamp should still count, got '$PIPES'"
+ok "an agent with no timestamp counts (unknown age is never treated as expired)"
+
+# --- 13c. Chip liveness has no open-issue horizon ----------------------------
+# The previous implementation listed the N newest open issues and treated that
+# as the complete set, so a chip on an older issue vanished from the count and
+# RAISED free slots — the unsafe direction, on exactly the busiest repos. The
+# lookup now asks about the chip numbers themselves, so issue age is irrelevant.
+set_pipelines '[]'
+write_chip_log "alpha" "[$(chip_entry 7 "$SLUG" open t1)]"
+set_open_issues "7"        # #7 is old, and the only thing asked about
+CHIPS=$(run --json | jq -r '.live_chips') || fail "--json failed"
+[[ "$CHIPS" == "1" ]] || fail "a chip on an old issue must still count, got '$CHIPS'"
+ok "chip liveness asks about the chip's own issue, with no newest-N horizon"
 
 # --- 14. The three sources sum, and FREE clamps at zero ----------------------
 # Every source is set explicitly here rather than inherited from section 13:
