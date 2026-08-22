@@ -56,9 +56,25 @@
 #        no `.pr`, read through `session-state.sh --session-view` (which
 #        already drops other repos' entries and keeps unattributable ones).
 #
-#   The three are disjoint by construction: an active_agents entry gains a
-#   `.pr` the moment its pipeline opens a PR, at which point source 1 counts it
-#   and source 3 stops. No reconciliation between them is attempted.
+#   Sources 1 and 3 are disjoint by construction: an active_agents entry gains
+#   a `.pr` the moment its pipeline opens a PR, at which point source 1 counts
+#   it and source 3 stops.
+#
+#   Sources 1 and 2 need an explicit subtraction, because a chip's log entry is
+#   NOT cleared when the chip is clicked. A clicked chip becomes a thread, then
+#   a PR, while its issue stays open until that PR merges — so the same unit of
+#   work would be counted twice and the effective cap halved. Chips whose issue
+#   appears in an open PR's `closingIssuesReferences` are therefore excluded.
+#
+# KNOWN GAP — chips from /pm and /prompt are not counted
+#   Only /issue-maker writes a durable, cross-thread chip record. /pm and
+#   /prompt record a chip's task_id in their in-transcript Active Work table,
+#   which no other thread can read, so their offers are invisible here. That is
+#   a pre-existing hole in the chip contract (chip-launching.md "Cross-skill
+#   chip visibility" says as much) rather than one introduced here, and closing
+#   it needs a shared offer registry with a real lifecycle — tracked separately.
+#   The practical effect is an UNDER-count on those two surfaces, which is the
+#   unsafe direction, so it is stated here rather than left to be discovered.
 #
 # CHIP LIVENESS — why the raw log query is not the count
 #   chip-launching.md's discovery query answers "has this issue already been
@@ -267,22 +283,49 @@ fi
 
 # -------------------------------------------------------------- counts -----
 
-count_open_prs() {
-  command -v gh >/dev/null 2>&1 || die_read "gh not found on PATH — cannot count open PRs"
+# Fetched once and reused: the count of open PRs AND the issues they close.
+# The second is what keeps a clicked chip from being counted twice — see
+# fetch_open_prs / chips_covered_by_prs below.
+OPEN_PR_JSON=""
 
+fetch_open_prs() {
   local out rc=0
-  out="$(gh pr list --state open --author "@me" --limit 100 --json number \
-         ${REPO:+--repo "$REPO"} 2>&1)" || rc=$?
+  out="$(gh pr list --state open --author "@me" --limit 100 \
+         --json number,closingIssuesReferences ${REPO:+--repo "$REPO"} 2>&1)" || rc=$?
   if [[ $rc -ne 0 ]]; then
     die_read "gh pr list (open, author=@me${REPO:+, repo=$REPO}) failed: $out"
   fi
+  local probe rc2=0
+  probe="$(printf '%s' "$out" | jq -e 'type == "array"' 2>&1)" || rc2=$?
+  if [[ $rc2 -ne 0 ]]; then
+    die_read "could not parse gh pr list output as a JSON array: $probe"
+  fi
+  OPEN_PR_JSON="$out"
+}
 
-  local n rc2=0
-  n="$(printf '%s' "$out" | jq 'length' 2>&1)" || rc2=$?
-  if [[ $rc2 -ne 0 || ! "$n" =~ ^[0-9]+$ ]]; then
-    die_read "could not parse gh pr list output as JSON: $n"
+count_open_prs() {
+  local n rc=0
+  n="$(printf '%s' "$OPEN_PR_JSON" | jq 'length' 2>&1)" || rc=$?
+  if [[ $rc -ne 0 || ! "$n" =~ ^[0-9]+$ ]]; then
+    die_read "could not count open PRs: $n"
   fi
   printf '%s' "$n"
+}
+
+# Issue numbers already represented by one of the open PRs counted above. A
+# chip whose issue is here has been CLICKED and has become a PR, so counting
+# the chip as well would count one unit of work twice and halve the effective
+# cap. This is also `chip-launching.md`'s own stale-chip trigger 1 ("gained an
+# open PR — someone is already doing the work"), so the chip is stale by that
+# contract too; the count simply stops waiting for the hygiene sweep to run.
+chips_covered_by_prs() {
+  local out rc=0
+  out="$(printf '%s' "$OPEN_PR_JSON" \
+        | jq -r '.[] | (.closingIssuesReferences // [])[] | .number' 2>&1)" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    die_read "could not read closing-issue references from open PRs: $out"
+  fi
+  printf '%s' "$out"
 }
 
 # Resolve the target repo slug once — the chip filter and the open-issue
@@ -318,15 +361,26 @@ chip_issue_numbers() {
   for f in ${logs[@]+"${logs[@]}"}; do
     [[ -f "$f" ]] || continue
     local out rc=0
+    # The schema is checked BEFORE filtering, because `.issues[]?` swallows a
+    # wrong shape rather than erroring: `{}`, `{"issues":null}`, and
+    # `{"issues":"garbage"}` all yield zero rows at exit 0, which is
+    # indistinguishable from a log that genuinely holds no chips. That is the
+    # fabricated zero this script exists to avoid, so a log that is valid JSON
+    # but not the expected shape is a hard failure, exactly like unparseable
+    # JSON. `{"issues":[]}` — a real, empty log — still passes.
+    #
     # Emit "<number> <repo-or-empty>" per live entry; attribution happens in
     # bash so an unparseable url is warned about rather than silently dropped.
     out="$(jq -r '
-      .issues[]?
+      if type != "object" or (.issues | type) != "array" then
+        error("not an issue-maker log: root must be an object with an issues array")
+      else . end
+      | .issues[]
       | select(.status == "open" and .chip_task_id != null)
       | "\(.number) \((.url // "") | capture("^https?://[^/]+/(?<r>[^/]+/[^/]+)/issues/") // {r:""} | .r)"
     ' "$f")" || rc=$?
     if [[ $rc -ne 0 ]]; then
-      die_read "unparseable issue-maker chip log: $f (treat its contents as UNKNOWN, not as zero chips)"
+      die_read "unreadable or malformed issue-maker chip log: $f (treat its contents as UNKNOWN, not as zero chips)"
     fi
     [[ -n "$out" ]] || continue
 
@@ -377,6 +431,21 @@ count_live_chips() {
   if [[ -z "$open_issues" ]]; then
     printf '0'
     return
+  fi
+
+  # Drop chips whose issue is already represented by an open PR — that work is
+  # counted once, by the PR source.
+  local covered rc3=0
+  covered="$(chips_covered_by_prs)" || rc3=$?
+  (( rc3 == 0 )) || return "$rc3"
+  if [[ -n "$covered" ]]; then
+    chips="$(comm -23 \
+              <(printf '%s\n' "$chips" | sort -u) \
+              <(printf '%s\n' "$covered" | sort -u))"
+    if [[ -z "$chips" ]]; then
+      printf '0'
+      return
+    fi
   fi
 
   # Intersect. `comm` needs both sides sorted the same way; sort as text.
@@ -445,6 +514,12 @@ SLUG=""; SLUG_RC=0
 SLUG="$(resolve_repo_slug)" || SLUG_RC=$?
 (( SLUG_RC == 0 )) || exit "$SLUG_RC"
 REPO="$SLUG"
+
+# Not via count_into: this one populates a global, and a command substitution
+# would set it in a subshell that then exits, leaving the parent's copy empty.
+FETCH_RC=0
+fetch_open_prs || FETCH_RC=$?
+(( FETCH_RC == 0 )) || exit "$FETCH_RC"
 
 count_into OPEN_PRS   count_open_prs
 count_into CHIPS      count_live_chips "$SLUG"

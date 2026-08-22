@@ -33,7 +33,7 @@ ACTIVE_WORK_CAP=6
 ```
 
 - **ACTIVE_WORK_CAP** — repo-wide cap on simultaneously active coding work: your open PRs + live offered chips + running inline pipelines not yet at PR. Must be a **positive integer in [1, 10]**; absent, unparseable, or out-of-range warns and falls back to the default. **`CLAUDE_ACTIVE_WORK_CAP` env overrides** when set. Read via `.claude/scripts/active-work-cap.sh`.
-- **Default 6, upper bound 10.** Derived from CodeRabbit's measured **5 reviews/hour per developer** (not the retracted ~8): at 5 concurrent PRs each gets one review round per hour and rebase re-review reaches parity with productive review, so 6 is that limit plus one slot of headroom. Full derivation: [`active-work-cap.md`](reference/active-work-cap.md).
+- **Default 6, upper bound 10.** Derived from CodeRabbit's measured **5 reviews/hour per developer** (not the retracted ~8): rebase re-review reaches parity with productive review at 5 concurrent PRs, and past 5 a PR no longer gets even one review round per hour. 6 is one step into that degraded band — a ceiling, not a target; the target is the 3–4 working set. Full derivation: [`active-work-cap.md`](reference/active-work-cap.md).
 - **Subordinate, never superior, to the per-thread ceiling** — the governing limit is `min(3–4 pipeline ceiling, ACTIVE_WORK_CAP)`. Raising this never widens a thread's own pipeline band.
 
 ## Infrastructure

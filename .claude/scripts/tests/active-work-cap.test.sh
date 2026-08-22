@@ -78,8 +78,15 @@ set_cap_config() {  # $1 = full section body, or empty to remove the file
     > "$FIXTURE_REPO/.claude/pm-config.md"
 }
 
-# n open PRs, as the JSON array `gh pr list --json number` returns.
-set_open_prs() { GH_FAKE_PRS="$(jq -cn --argjson n "$1" '[range($n) | {number: (.+1000)}]')"; export GH_FAKE_PRS; }
+# n open PRs, as the JSON array `gh pr list --json number,closingIssuesReferences`
+# returns. $2 (optional) is a JSON array of issue numbers the FIRST PR closes.
+set_open_prs() {
+  GH_FAKE_PRS="$(jq -cn --argjson n "$1" --argjson closes "${2:-[]}" \
+    '[range($n) | {number: (.+1000),
+                   closingIssuesReferences:
+                     (if . == 0 then [$closes[] | {number: .}] else [] end)}]')"
+  export GH_FAKE_PRS
+}
 
 # Newline-separated issue numbers, as `gh issue list --jq '.[].number'` returns.
 set_open_issues() { GH_FAKE_OPEN_ISSUES="$1"; export GH_FAKE_OPEN_ISSUES; }
@@ -226,6 +233,21 @@ CHIPS=$(run --json 2>/dev/null | jq -r '.live_chips')
   fail "an unattributable chip must be visible on stderr, got: '$ERR'"
 ok "a chip with no usable url is counted AND warned about"
 
+# --- 12b. A clicked chip is not counted twice --------------------------------
+# The log entry survives the click; the issue stays open until the PR merges.
+# Counting both the PR and its chip would halve the effective cap.
+write_chip_log "alpha" "[$(chip_entry 31 "$SLUG" open t1),$(chip_entry 32 "$SLUG" open t2)]"
+set_open_issues "31
+32"
+set_open_prs 1 '[31]'          # PR #1000 closes issue 31 — chip 31 is that PR
+set_pipelines '[]'
+JSON=$(run --json) || fail "--json failed with a clicked chip"
+CHIPS=$(printf '%s' "$JSON" | jq -r '.live_chips')
+ACTIVE=$(printf '%s' "$JSON" | jq -r '.active')
+[[ "$CHIPS" == "1" ]] || fail "the chip whose issue an open PR closes must not count, got '$CHIPS'"
+[[ "$ACTIVE" == "2" ]] || fail "1 PR + 1 uncovered chip should be 2 active, not 3, got '$ACTIVE'"
+ok "a clicked chip whose PR is open counts once, not twice"
+
 # --- 13. Inline pipelines: only those not yet at a PR ------------------------
 # An entry gains .pr when its pipeline opens one, at which point the open-PR
 # source counts it; counting both would double-count the same work.
@@ -280,6 +302,27 @@ grep -q "UNKNOWN" "$TMP_DIR/err" || \
   fail "a malformed chip log must say its contents are unknown, not zero"
 ok "a malformed chip log exits 5 and is never read as 'no chips'"
 rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR/issue-maker-broken-log.json"
+
+# Valid JSON of the WRONG SHAPE is the dangerous case: `.issues[]?` yields no
+# rows at exit 0 for all of these, which is indistinguishable from a log that
+# genuinely holds no chips — a fabricated zero that would uncap the gate.
+for SHAPE in '{}' '{"issues":null}' '{"issues":"garbage"}' '[]' '"a string"'; do
+  printf '%s\n' "$SHAPE" > "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR/issue-maker-shape-log.json"
+  OUT=$(run --json 2>"$TMP_DIR/err"); RC=$?
+  [[ $RC -eq 5 ]] || fail "wrong-shape chip log '$SHAPE' should exit 5, got $RC"
+  [[ -z "$OUT" ]] || fail "wrong-shape chip log '$SHAPE' must print no count"
+done
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR/issue-maker-shape-log.json"
+ok "valid-JSON-but-wrong-shape chip logs exit 5 instead of counting as zero"
+
+# ...while a real, empty log is a legitimate zero and must still pass.
+write_chip_log "empty" "[]"
+set_open_prs 0
+set_open_issues ""
+OUT=$(run --json) || fail "an empty-but-well-formed chip log must not fail"
+[[ "$(printf '%s' "$OUT" | jq -r '.live_chips')" == "0" ]] || fail "an empty log should be 0 chips"
+ok "a well-formed empty chip log is a legitimate zero"
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR/issue-maker-empty-log.json"
 
 # --- 16. Missing state is empty, not broken ----------------------------------
 rm -f "$HOME/.claude/session-state.json"

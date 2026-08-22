@@ -39,7 +39,7 @@ At `k` concurrent PRs each receives `5/k` reviews per hour.
 | review rounds/hour/PR | 1.67 | 1.25 | **1.00** | 0.83 | 0.63 | 0.50 | 0.25 |
 | interval between rounds | 36m | 48m | **60m** | 72m | 96m | 2h | 4h |
 
-The original test — "beyond ~8 active PRs a PR cannot even get one review round per hour" — is just `k > reviews/hour`. Run against the measured 5/hr it fires at **k = 5**.
+The original test — "beyond ~8 active PRs a PR cannot even get one review round per hour" — is just `k > reviews/hour`. Run against the measured 5/hr it fires at **k = 6**: at k = 5 a PR still gets exactly one round per hour, and k = 6 is the first value where it gets less.
 
 ### Term 2 — rebase churn grows with k²
 
@@ -78,18 +78,20 @@ Not quantified as precisely, and it does not need to be. Every active pipeline e
 
 ## Landing the number
 
-Two independent tests fire at the same place:
+Two independent tests land one step apart, and they bracket the answer:
 
-- **k = 5** is where each PR stops getting one review round per hour (Term 1).
-- **k = 5** is where rebase re-review reaches parity with productive review (Term 2).
+- **k = 5** is where rebase re-review reaches parity with productive review — half the budget spent standing still (Term 2). At k = 5 a PR still gets exactly one review round per hour.
+- **k = 6** is the first value where a PR gets *less* than one round per hour (Term 1) — 0.83, a round every 72 minutes.
 
 The **working set stays 3–4**, unchanged and still CodeRabbit-throughput-bound — that is the target concurrency, not the limit.
 
-A hard cap of exactly 5 would leave a single slot above a 4-pipeline working set, so it would bind during ordinary operation. A backstop that fires constantly is a nuisance rather than a backstop, and one that is routinely in the way gets raised for the wrong reason.
+So the cap belongs at 5 or 6, and the tie is broken by what a cap is *for*. A hard cap of 5 leaves a single slot above a 4-pipeline working set, so ordinary operation would sit against it constantly — and a backstop that fires during normal work is a nuisance rather than a backstop, which is how caps get raised for the wrong reason. 6 leaves two slots of transient headroom while staying within one step of parity.
 
-> **Default `ACTIVE_WORK_CAP=6`** — the k=5 answer plus one slot of transient headroom, at 56% churn and 0.83 review rounds/hour/PR. **Configurable range [1, 10]**, the upper bound being the operator's stated tolerance from the 2026-08-18 session.
+> **Default `ACTIVE_WORK_CAP=6`** — one step past the rebase-parity point, at 56% churn and 0.83 review rounds/hour/PR. **Configurable range [1, 10]**, the upper bound being the operator's stated tolerance from the 2026-08-18 session.
 
-**Why 8 is not carried forward.** The originally proposed 8 had exactly one derivation: `8 reviews/hour ÷ 1 round per PR`. The 8 has been retracted. Re-running that same test on the measured 5/hr yields 5, and 6 is that answer plus operating headroom. Keeping 8 would mean keeping a number whose sole justification no longer exists.
+**6 is a ceiling, not a target.** It deliberately sits one step into the degraded band: at k = 6 a PR waits 72 minutes between review rounds and a majority of the review budget goes to rebases. That is the *worst* acceptable state, not the intended one. The intended state is the 3–4 working set, where a PR gets a round every 36–48 minutes and churn is still a minority of the budget.
+
+**Why 8 is not carried forward.** The originally proposed 8 had exactly one derivation: `8 reviews/hour ÷ 1 round per PR`. The 8 has been retracted. Re-running that same test on the measured 5/hr puts the starvation threshold at 6, not 8 — and at 8 a PR would wait 96 minutes per round with 64% of the budget going to rebases. Keeping 8 would mean keeping a number whose sole justification no longer exists.
 
 ## What the cap protects — coverage, not liveness
 
