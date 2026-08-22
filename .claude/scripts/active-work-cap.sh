@@ -392,6 +392,8 @@ resolve_repo_slug() {
 # a hard failure — jq's stderr stays visible so it never looks like "no chips".
 chip_issue_numbers() {
   local slug="$1" f
+  local slug_lc
+  slug_lc="$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]')"
 
   shopt -s nullglob
   local logs=("$HANDOFF_DIR"/issue-maker-*-log.json)
@@ -434,13 +436,19 @@ chip_issue_numbers() {
     local num repo
     while read -r num repo; do
       [[ -n "$num" ]] || continue
+      # GitHub repo identities are case-insensitive, so `Owner/Repo` and
+      # `owner/repo` are the same repo. A literal compare would call the first
+      # unattributable, which sends it down the guessed path and exempts it
+      # from BOTH filters — a stale chip would then keep consuming capacity
+      # after its issue closed. Fold both sides before comparing.
+      repo="$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')"
       if [[ -z "$repo" ]]; then
         warn "chip log $f: entry #$num has no attributable repo url — counting it against $slug (over-counting is the safe direction)"
         # Marked so the PR subtraction can leave it alone: the number is a
         # guess, and matching it against THIS repo's closed issues would turn a
         # deliberate over-count into an under-count on a number collision.
         printf '%s ?\n' "$num"
-      elif [[ "$repo" == "$slug" ]]; then
+      elif [[ "$repo" == "$slug_lc" ]]; then
         printf '%s .\n' "$num"
       fi
     done <<<"$out"
@@ -551,6 +559,19 @@ count_live_chips() {
   local sure guessed rc2=0
   sure="$(printf '%s\n' "$chips" | awk '$2=="." {print $1}' | sort -u)"
   guessed="$(printf '%s\n' "$chips" | awk '$2=="?" {print $1}' | sort -u)"
+
+  # One issue can appear attributed in one capture log and unattributed in
+  # another — the same offer, recorded twice. Deduping each class on its own
+  # keeps it in both, so it would consume two slots. Attribution wins: an entry
+  # that names this repo is better evidence than one that names nothing.
+  if [[ -n "$sure" && -n "$guessed" ]]; then
+    local only_guessed rcd=0
+    only_guessed="$(comm -23 \
+                     <(printf '%s\n' "$guessed" | sort -u) \
+                     <(printf '%s\n' "$sure" | sort -u))" || rcd=$?
+    (( rcd == 0 )) || die_read "comm -23 failed deduping guessed against attributed chips (exit $rcd)"
+    guessed="$only_guessed"
+  fi
 
   local guessed_n=0
   [[ -n "$guessed" ]] && guessed_n="$(printf '%s\n' "$guessed" | awk 'NF' | wc -l | tr -d ' ')"
@@ -707,6 +728,21 @@ count_into() {  # $1 = variable name to set, $2... = the counting command
 SLUG=""; SLUG_RC=0
 SLUG="$(resolve_repo_slug)" || SLUG_RC=$?
 (( SLUG_RC == 0 )) || exit "$SLUG_RC"
+
+# --repo redirects the COUNT, but the cap can only come from a pm-config.md on
+# disk — and a repo named by --repo alone is not checked out here, so there is
+# nothing to read. Silently pairing repo B's activity with repo A's cap would
+# produce a confident, wrong FREE. Say so once; --path is the way to point both
+# at the same repo.
+if [[ -n "$REPO" && "$CAP_SOURCE" == "config" ]]; then
+  LOCAL_SLUG=""
+  LOCAL_SLUG="$(cd "${FROM_PATH:-.}" 2>/dev/null && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || LOCAL_SLUG=""
+  if [[ -n "$LOCAL_SLUG" ]] &&
+     [[ "$(printf '%s' "$LOCAL_SLUG" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')" ]]; then
+    warn "--repo $REPO counts that repo's work, but the cap ($CAP) was read from $LOCAL_SLUG's pm-config.md — pass --path <checkout of $REPO> to read its own cap, or unset the local one to use the built-in default"
+  fi
+fi
+
 REPO="$SLUG"
 
 # Not via count_into: this one populates a global, and a command substitution

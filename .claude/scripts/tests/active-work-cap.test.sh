@@ -365,6 +365,35 @@ CHIPS=$(run --json 2>/dev/null | jq -r '.live_chips') || fail "--json failed"
   fail "1 attributed-and-open + 1 guessed should be 2 chips, got '$CHIPS'"
 ok "guessed chips are added to the intersection result, not replaced by it"
 
+# --- 12d. Slug comparison is case-insensitive --------------------------------
+# GitHub repo identities are case-insensitive, so a URL recorded as Owner/Repo
+# names the same repo as a slug resolved as owner/repo. A literal compare would
+# call it unattributable, which sends it down the guessed path and exempts it
+# from BOTH filters — a stale chip would keep consuming capacity after its
+# issue closed.
+UPPER_SLUG="TestOwner/TestRepo"
+write_chip_log "alpha" "[$(chip_entry 61 "$UPPER_SLUG" open t1)]"
+set_open_issues ""          # #61 is NOT open, so an attributed chip must drop
+set_open_prs 0
+set_pipelines '[]'
+CHIPS=$(run --json 2>/dev/null | jq -r '.live_chips') || fail "--json failed"
+[[ "$CHIPS" == "0" ]] || \
+  fail "a differently-cased slug must be recognised as this repo (and dropped as closed), got '$CHIPS'"
+ok "chip slugs compare case-insensitively, as GitHub identities do"
+
+# --- 12e. One issue in two logs, attributed once and not the other -----------
+# Deduping `sure` and `guessed` independently kept the same offer in both
+# classes, so it consumed two slots. Attribution wins: an entry naming this
+# repo is better evidence than one naming nothing.
+write_chip_log "alpha" "[$(chip_entry 62 "$SLUG" open t1)]"   # attributed
+write_chip_log "beta"  "[$(chip_entry 62 "" open t2)]"        # same issue, no url
+set_open_issues "62"
+CHIPS=$(run --json 2>/dev/null | jq -r '.live_chips') || fail "--json failed"
+[[ "$CHIPS" == "1" ]] || \
+  fail "one issue recorded in both attribution classes is one chip, got '$CHIPS'"
+ok "an issue attributed in one log and not another counts once, not twice"
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR/issue-maker-beta-log.json"
+
 # --- 13. Inline pipelines: only those not yet at a PR ------------------------
 # An entry gains .pr when its pipeline opens one, at which point the open-PR
 # source counts it; counting both would double-count the same work.
