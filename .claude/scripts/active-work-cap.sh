@@ -438,22 +438,39 @@ count_live_chips() {
   local covered rc3=0
   covered="$(chips_covered_by_prs)" || rc3=$?
   (( rc3 == 0 )) || return "$rc3"
+  # Every `comm` below captures its own status. An uncaptured one is the same
+  # fabricated zero as everywhere else in this file: `set -e` is off, so a
+  # failed command substitution just yields an empty string, the emptiness
+  # guard fires, and the function returns a clean 0 that means "no chips"
+  # rather than "the subtraction failed".
   if [[ -n "$covered" ]]; then
-    chips="$(comm -23 \
-              <(printf '%s\n' "$chips" | sort -u) \
-              <(printf '%s\n' "$covered" | sort -u))"
+    local remaining rc4=0
+    remaining="$(comm -23 \
+                  <(printf '%s\n' "$chips" | sort -u) \
+                  <(printf '%s\n' "$covered" | sort -u))" || rc4=$?
+    (( rc4 == 0 )) || die_read "comm -23 failed subtracting PR-covered chips (exit $rc4)"
+    chips="$remaining"
     if [[ -z "$chips" ]]; then
       printf '0'
       return
     fi
   fi
 
-  # Intersect. `comm` needs both sides sorted the same way; sort as text.
+  # Intersect with the open issues. Both sides go through an identical
+  # `sort -u`, which is all `comm` requires — it needs consistent ordering, not
+  # numeric ordering, so lexical "10" before "9" on both sides is fine.
+  local matched rc5=0
+  matched="$(comm -12 \
+              <(printf '%s\n' "$chips" | sort -u) \
+              <(printf '%s\n' "$open_issues" | sort -u))" || rc5=$?
+  (( rc5 == 0 )) || die_read "comm -12 failed intersecting chips with open issues (exit $rc5)"
+
+  # Counted separately from the `comm` so the two failure modes stay distinct:
+  # folding them into one pipeline lets `|| true` (needed for grep's exit 1 on
+  # no match) swallow a comm failure as well, and grep's printed "0" then reads
+  # as a legitimate empty intersection.
   local n
-  n="$(comm -12 \
-        <(printf '%s\n' "$chips" | sort -u) \
-        <(printf '%s\n' "$open_issues" | sort -u) \
-        | grep -c '^[0-9]' )" || true
+  n="$(printf '%s\n' "$matched" | grep -c '^[0-9]')" || true
   # grep -c prints 0 and exits 1 on no match, so read the printed value and
   # never substitute a fallback (feedback_grep_c_empty_file_exit1.md).
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
@@ -468,8 +485,13 @@ count_inline_pipelines() {
     return
   fi
 
-  local view rc=0
-  view="$("$getter" ${REPO:+--repo "$REPO"} --session-view 2>/dev/null)" || rc=$?
+  local view rc=0 errfile
+  errfile="$(mktemp)" || die_read "could not create a temp file to capture session-state stderr"
+  view="$("$getter" ${REPO:+--repo "$REPO"} --session-view 2>"$errfile")" || rc=$?
+
+  local errtext=""
+  [[ -s "$errfile" ]] && errtext="$(tr '\n' ' ' < "$errfile")"
+  rm -f "$errfile"
 
   # rc 3 = no state file yet; that is a legitimately empty source, not a
   # failure. Any other non-zero is a real read problem.
@@ -478,7 +500,7 @@ count_inline_pipelines() {
     return
   fi
   if [[ $rc -ne 0 ]]; then
-    die_read "session-state.sh --session-view failed (exit $rc) — cannot count inline pipelines"
+    die_read "session-state.sh --session-view failed (exit $rc) — cannot count inline pipelines${errtext:+: $errtext}"
   fi
 
   local n rc2=0

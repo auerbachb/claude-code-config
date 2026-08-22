@@ -261,10 +261,15 @@ PIPES=$(printf '%s' "$JSON" | jq -r '.inline_pipelines')
 ok "active_agents entries at a PR are excluded; pre-PR ones count"
 
 # --- 14. The three sources sum, and FREE clamps at zero ----------------------
+# Every source is set explicitly here rather than inherited from section 13:
+# a fixture that leans on a previous section's leftovers stops testing what it
+# says the moment sections are reordered or removed
+# (feedback_test_fixture_must_build_its_own_premise.md).
 set_open_prs 3
 write_chip_log "alpha" "[$(chip_entry 21 "$SLUG" open t1),$(chip_entry 22 "$SLUG" open t2)]"
 set_open_issues "21
 22"
+set_pipelines '[{"id":"b1","phase":"A"},{"id":"b2","phase":"A","pr":null}]'
 JSON=$(run --json) || fail "--json failed"
 ACTIVE=$(printf '%s' "$JSON" | jq -r '.active')
 FREE=$(printf '%s' "$JSON" | jq -r '.free')
