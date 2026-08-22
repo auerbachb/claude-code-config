@@ -173,7 +173,8 @@ in the audit's §Dashboard reconciliation. Three things it changed here:
    CodeRabbit's absence on a third of them. On the CR path the only other approver is CodeAnt, whose
    approvals frequently carry no substantive footprint at all.
 3. **Greptile is resolved, and the founding premise of this audit was wrong.** Round 2 found a
-   second Greptile org on the `auerbachb` account: **paid Pro, flex overage uncapped**, with
+   second Greptile org on the `auerbachb` account: **paid Pro, flex overage uncapped at the time**
+   (**capped at $100 on 2026-08-22**, #1228), with
    `claude-code-config` as its largest lifetime consumer (212 reviews). "Deliberately unpaid" was
    never true for the account that serves this repo. The role is unchanged — it still earns its keep
    on 41 sole-source PRs — but its rationale is now *cost-aware* rather than *cost-unknown*, and the
@@ -241,9 +242,10 @@ the dimension that is already failing — and it would do so while giving up the
 exists to absorb exactly that failure.
 
 **And the $90 would be displaced, not saved.** Refused CodeRabbit reviews escalate down this same chain
-to Greptile — paid Pro with **flex overage uncapped** at $1/credit (§Dashboard reconciliation item 3).
-Paid CodeRabbit already costs **$0.96 per delivered review** ($0.77 annual) against Greptile's
-uncapped $1.00. Trading a fixed line for more of an unbounded one is the wrong direction at any sticker
+to Greptile — paid Pro at $1/credit, whose flex overage was **uncapped** when this was written and is
+**capped at $100 since 2026-08-22** (#1228; §Dashboard reconciliation item 3).
+Paid CodeRabbit already costs **$0.96 per delivered review** ($0.77 annual) against Greptile's $1.00.
+Trading a fixed line for more of a now-bounded but still usage-priced one is the wrong direction at any sticker
 price.
 
 **Operationally, staying paid changes nothing** — no workflow, script, or rule edits; the cadence switch
@@ -290,10 +292,12 @@ recommendation is not re-derived from the same evidence next audit. Every live a
    **The cancel-vs-keep choice resolved to keep.** The 2026-08 audit's non-truncated 240-PR window
    found **no D2 (paid-but-unused)** against Greptile: it was the **top sole-source finder in the
    stack at 40 PRs** and hit no cap. The zero-reviews-since-PR-#1203 observation is one idle day, not
-   disuse. And the OSS program turned out to be **self-serve** — a repository picker on that same
-   billing page, with `claude-code-config` selectable — so this repo's coverage goes to **$0** without
-   cancelling a subscription that also serves five private repos. Enrol **and** cap: the cap still
-   matters, because the private repos keep drawing uncapped $1/credit flex.
+   disuse. The OSS program looked self-serve — a repository picker on that same billing page, with
+   `claude-code-config` selectable — but **selecting it on 2026-08-22 was refused**: *"The program
+   requires at least 50 stars and this repository has 3."* Listing in that picker is not eligibility;
+   it validates only on selection. **The $0 route does not exist for this repo**, so keep rests on the
+   sole-source evidence alone. **The cap was applied instead:** flex is bounded at **$100** since
+   2026-08-22 (#1228), replacing the uncapped $1/credit exposure across all six repos.
 2. **~~Turn CodeAnt's org `Auto Approve PR` off~~ — DECLINED 2026-08-21, leave it ON.** It is the
    chain's only source of `APPROVED`; turning it off strands the merge gate. See §Explicitly rejected.
 3. **Cut BugBot's scope — partially accepted; the aggressive core stays.** **Autofix → Off**

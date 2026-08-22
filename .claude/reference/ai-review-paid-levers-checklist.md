@@ -66,23 +66,51 @@ billing page (#1228). **Nothing on this list is blocked.**
 | CodeRabbit OSS-tier verdict | [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) | **Cleared 2026-08-21 — OSS declined, stay paid** ([`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md)) | Item 3 (billing cadence) — **unblocked** |
 | ~~**New blocker, raised 2026-08-21** — Greptile free-vs-paid, from the billing page~~ | [#1228](https://github.com/auerbachb/claude-code-config/issues/1228) | **RESOLVED 2026-08-22 — the org is PAID.** Billing page read live: Active, 6 Aug – 6 Sep invoice $72 → **$36**, **"No cap on flex usage"**. The owner's free-tier account described `localmovers-com`. | Item 1 — **unblocked**; see item 1 for what the answer changed |
 
-**No gate remains.** Every item on this list is workable today.
+| **New blocker, found 2026-08-22 evening** — CodeRabbit billing profile incomplete | [#1228](https://github.com/auerbachb/claude-code-config/issues/1228) | **OPEN.** `Billing → Edit → Continue` opens a **Chargebee billing-details form** (name, company, phone, billing email, tax ID, billing address). No *change* to the CodeRabbit plan can be committed until it is completed — it is owner-only data, so no agent can clear it. | Items **3 and 5**; plus any future change to item 4's cap |
+
+**One gate remains, and it is a single form.** The three original gates and the Greptile-billing gate
+are all closed. What replaced them gates every *change* to the CodeRabbit plan — seat count, cadence,
+and add-on settings alike. It does **not** gate item 4's current state, which is already enabled and
+capped; only a future cap adjustment would meet this gate. Items 1 and 2 are unaffected.
 
 ## The levers
 
-Numbered as originally written; **the numbering is stable, the priority is not.** Work order after the
-2026-08-21 decisions: **item 2 (CodeAnt discount) first** — the best ungated move — then **item 5
-(cut the seat) before item 3 (annual switch)**, since the cadence applies to the post-cut seat count.
-**Item 1 is no longer parked** — the Greptile billing page was read 2026-08-22 and it turned out to be
-a self-serve enrolment rather than an application, which makes it a same-day $0 win and arguably the
-first thing to click. The `Depends on:` field, not the number, is what decides when an item may be
-worked; as of 2026-08-22 no item has an open dependency.
+Numbered as originally written; **the numbering is stable, the priority is not.** Work order as of
+2026-08-22 evening: **complete the CodeRabbit billing profile**, then **item 5 (cut the seat) before
+item 3 (annual switch)** — the cadence applies to the post-cut seat count, and both are time-boxed to
+27 Aug. **Item 2 runs in parallel**, re-scoped to a single-repo request with an unknown saving; it is
+no longer "the best ungated move" the 2026-08-21 ordering called it, because the $576/yr that ranked
+it there was an account-wide figure that is now declined.
+**Item 1 is closed, not first** — its self-serve enrolment was exercised on 2026-08-22 and **refused**
+(50-star minimum). It is off the work order entirely until the repo passes 50 stars. **Item 4 is also
+closed** — the add-on was already enabled. What is left is item 2 re-scoped to a single repo, and the
+**item 5 → item 3** pair, which now share one prerequisite: **completing the CodeRabbit billing
+profile.** The `Depends on:` field, not the number, is what decides when an item may be worked.
 
-### 1. Greptile — enrol the repo in the OSS program *(SETTLED 2026-08-22: paid, and self-serve)*
+### 1. Greptile — enrol the repo in the OSS program *(CLOSED 2026-08-22: INELIGIBLE — 50-star minimum)*
 
-- **Depends on:** — **nothing.** Both gates cleared: `LICENSE` landed (PR [#1215](https://github.com/auerbachb/claude-code-config/pull/1215)), and the contested billing reading was settled 2026-08-22 ([#1228](https://github.com/auerbachb/claude-code-config/issues/1228)). One owner click away.
-- **Submitted:**
-- **Approved:**
+- **Depends on:** — nothing gates it; the vendor simply refuses it.
+- **Submitted:** 2026-08-22 — the repo was selected in the picker.
+- **Approved:** **never — REJECTED.** *"This repository doesn't qualify yet. The program requires at least 50 stars and this repository has 3."*
+
+> **CLOSED — do not re-plan this item at the current star count.** Everything below the rejection
+> notice is the 2026-08-22 *morning* reasoning, kept because it explains how a listed-but-ineligible
+> repo was mistaken for an available $0 route. **`Submitted:`/`Approved:` did not collapse to one
+> date**, as that reasoning predicted; selection triggered an eligibility check that failed.
+> Re-open only via the picker's **"Check again"** button if the repo passes 50 stars (it has **3**).
+
+**The correction, in one line: listing is not eligibility.** The picker enumerates every public repo
+on the account and validates only on selection. Round 4 of
+[`ai-review-billing-dashboard-2026-08.md`](./ai-review-billing-dashboard-2026-08.md) recorded
+"present and selectable" after opening the picker and closing it without selecting; Round 5 selected
+it and got the refusal. Any future "free tier / OSS route is available" claim on this list must say
+whether anyone exercised it.
+
+**What was done instead (2026-08-22, owner-confirmed): keep the subscription, and cap the flex line.**
+The `Toggle flex usage cap` switch is now **on** at **$100** — page reads `Stop flex usage after $100
+≈ 200 credits · $0.50 each`, `$22 of $100`, verified across a reload. It defaults to $500, which at
+~$21/cycle observed burn would never bind. This retires the "flex uncapped" finding that Rounds 1–4
+all carried. Keeping was decided on the audit evidence below (top sole-source finder, no cap hit).
 
 **SETTLED 2026-08-22 (#1228): the org is PAID.** The billing page was read live at
 `app.greptile.com/auerbachb/-/settings/billing`. The contest above is closed, and the entry that
@@ -100,37 +128,75 @@ credits**, *identical* to the previous day — a full day of zero consumption. *
 is not a price:** the org bills $36 this cycle either way. That is the third time a Greptile figure
 has been quoted against the wrong org; check the org in the URL before quoting one.
 
-**The route was also wrong, and this is the part that changes the decision. The OSS program is
+~~**The route was also wrong, and this is the part that changes the decision. The OSS program is
 self-serve, not an application.** That same billing page carries a **"Greptile for Open Source — Free
 code reviews for public open-source repositories on github.com and gitlab.com"** section with a
 **repository picker**, and `auerbachb/claude-code-config` is present and selectable in it. So there is
 no vendor acceptance to wait on and no refusal to plan a fallback around — `Submitted:` and
 `Approved:` collapse to one date when the owner clicks. (The picker was opened to read and closed
-without selecting.)
+without selecting.)~~
+
+> **↑ STRUCK — this paragraph is wrong, and it is the error this item exists to warn about.** It was
+> written after *opening* the picker; selecting the repo the same evening returned **"The program
+> requires at least 50 stars and this repository has 3."** There *is* a vendor gate, `Submitted:` and
+> `Approved:` did **not** collapse to one date, and no $0 route exists at 3 stars. Retained struck
+> rather than deleted so the reasoning error stays visible.
 
 **Do not cancel.** The audit's first measured pass (2026-08-22, non-truncated 240-PR window) makes
 this the clearest call on the list: Greptile is the **top sole-source finder in the whole stack — 40
 PRs**, ahead of BugBot (29), CodeRabbit (25), CodeAnt (13), Graphite (2) — and it **hit no cap at
 all**. No `D2` (paid-but-unused) finding fired against it or anything else. The zero-consumption day
-is one day old, not a pattern. Cancelling would remove the chain's most unique finder to save $36/mo
-when enrolment gets the same coverage to **$0**.
+is one day old, not a pattern. Cancelling would remove the chain's most unique finder to save $36/mo.
 
-**Enrolment does not settle the flex cap — these are two decisions, not one.** The OSS program covers
-*this public repo*; the subscription also serves five private repos (`skingod`, `inventory`,
-`still-point`, `meeting_insights_and_actions`, `longlove`), whose usage still draws uncapped
-$1/credit flex. Enrol, **and** set a cap.
+*(As written on 2026-08-22 morning this paragraph ended "…when enrolment gets the same coverage to
+**$0**." That clause is struck: enrolment was refused. The keep verdict stands on the sole-source
+evidence alone, which is what the owner decided on.)*
 
-### 2. CodeAnt — apply for the 100% open-source discount *(BEST UNGATED MOVE — do this first)*
+**The flex cap was the decision that survived.** The subscription serves six repos —
+`claude-code-config` plus `skingod`, `inventory`, `still-point`, `meeting_insights_and_actions`,
+`longlove` — and with OSS closed, *all six* draw billable flex. The cap is now set at **$100**
+(applied 2026-08-22); a second consecutive day of **92/92** zero consumption means it is unlikely to
+bind soon, but the exposure is bounded either way.
+
+### 2. CodeAnt — the 100% open-source discount *(RE-SCOPED 2026-08-22: account-wide DECLINED; per-repo request only)*
 
 - **Depends on:** —
-- **Submitted:**
+- **Submitted:** — *not submitted. Re-scoped first; see below.*
 - **Approved:**
 
-$48/mo (Premium, 2/2 seats) → $0 if granted. **$576/yr, and nothing gates it** — confirmed still
-Premium/2 seats/ACTIVE on 2026-08-22, with **no self-serve open-source control anywhere on the
-subscription page**, which is why this stays a contact-required request rather than a toggle. It is
-the largest annual saving on the list — though **item 1 is now unparked and is the faster $0**, since
-its enrolment is self-serve and lands immediately while this one waits on a vendor reply. Work both;
+> **The account-wide framing is declined on principle (owner, 2026-08-22).** A 100%-off
+> "open source" discount applied to the *account* is a claim about the account, and **five of the six
+> active repos are not open source**. Only `auerbachb/claude-code-config` is public and MIT-licensed
+> (`LICENSE` at `origin/main`; GitHub reports `spdx_id: MIT`). Applying on the broader basis would
+> misrepresent us, so the $576/yr figure below **is not a saving that was ever available on those
+> terms** and must not be budgeted.
+>
+> **What remains live is a per-repo request** for that one repo. Two routes exist, neither documented
+> as equivalent:
+> - **Self-serve app** — `github.com/apps/codeant-ai-for-open-source` ("CodeAnt AI - For open
+>   source") presents a working **Install** button. **Not installed:** nothing published says
+>   installing it makes a repo free, the repo is already covered by the paid Premium installation, and
+>   a second CodeAnt app risks duplicate reviews and unclear billing attribution.
+> - **Documented route** — `codeant.ai/pricing` carries *"100% OFF FOR OPEN SOURCE"* with an email
+>   contact and **publishes no eligibility criteria at all** (no star count, no licence requirement).
+>
+> Item 1 is the cautionary precedent: an OSS gate can be invisible until exercised, and CodeAnt
+> publishes *no* gate to inspect. The defensible next step is the **email, scoped to the one repo,
+> sent by the owner** — not a blind install.
+
+**Budget $48/mo unchanged.** Premium, 2/2 seats, ACTIVE — reconfirmed 2026-08-22 — with **no
+self-serve open-source control anywhere on the subscription page**, which is why this stays a
+contact-required request rather than a toggle.
+
+**The saving is now unknown, not $576/yr.** That figure assumed an account-wide discount, which is
+declined above. A per-repo grant covers **one of six** active repos, and CodeAnt does not publish how
+(or whether) per-repo OSS coverage is priced — it may reduce the bill partially, or not at all if the
+seat count is what is billed. **Keep budgeting the full $48/mo** until a vendor reply says otherwise;
+record any reduction under `Approved:` with the amount the vendor actually confirms.
+
+*(The struck original read: "$48/mo → $0 if granted. **$576/yr, and nothing gates it** … the largest
+annual saving on the list — though **item 1 is now unparked and is the faster $0**." Item 1 was
+refused, and the account-wide framing is declined, so neither half stands.)* Work this;
 expect item 1 to close first. Reconfirmed by the owner 2026-08-21 (#1213) and carried into
 [#1228](https://github.com/auerbachb/claude-code-config/issues/1228). Public repo, qualifies on its
 face, but the route is **contact-required** rather than self-serve, so it is a request with a waiting
@@ -143,7 +209,7 @@ the subscription itself at risk.
 
 ### 3. CodeRabbit — decide the billing cadence
 
-- **Depends on:** [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) — the OSS-tier verdict. **Cleared 2026-08-21: OSS was evaluated and declined, so "stay paid" is settled and this item is unblocked.** Take the annual switch — but **cut the seat in item 5 first**, or you prepay a year for a seat that authors nothing.
+- **Depends on:** two things now. [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) — the OSS-tier verdict — **cleared 2026-08-21**. And, found 2026-08-22 evening, the **incomplete CodeRabbit billing profile**: the cadence control sits inside `Billing → Edit`, whose **Continue** opens the Chargebee billing-details form. **Blocked until the owner completes it.** Then **cut the seat in item 5 first**, or you prepay a year for a seat that authors nothing.
 - **Submitted:**
 - **Approved:**
 
@@ -168,17 +234,35 @@ tier on two documented constraints — under 10 stars (this repo has 3) reviews 
 must be triggered by comment, and the metered add-on in item 4 is Pro/Pro+ only, so it becomes
 permanently unavailable — with the star-scaled 1–10/hr rate band, whose value here the vendor does not
 publish, as a third reason for caution rather than a number to rely on. The $90/mo would be displaced
-onto Greptile's uncapped flex rather than saved
+onto Greptile's flex rather than saved — a line that was uncapped when that verdict was reached and is
+**capped at $100 since 2026-08-22** (item 1), which bounds the displacement without eliminating it
 ([`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md)). Nothing now strands the commitment —
 the remaining move on this tool is Pro+, which sits second-line behind item 4's metered lever, and
 that is an *upgrade* rather than an escape. **Renewal is 2026-08-27**; past that the saving waits a
 cycle.
 
-### 4. CodeRabbit — decide the usage-based add-on
+### 4. CodeRabbit — the usage-based add-on *(RESOLVED 2026-08-22: it is already ON, capped at $10)*
 
-- **Depends on:** a re-measurement — but **not the one this item originally assumed.** #1209 is closed with its CodeRabbit item **declined** (Incremental review stays **ON**), so the volume reduction this gate was waiting for **is not coming**. Re-measure against the settings that actually shipped.
-- **Submitted:**
-- **Approved:**
+- **Depends on:** — nothing, for the *decision*. Changing the cap is gated by the billing profile (see item 3).
+- **Submitted:** n/a — no purchase was needed.
+- **Approved:** **already in effect.** Read from `Billing → Edit` on 2026-08-22: **Usage-based reviews ON**, spend cap **$10**; AI Deep Scan usage **Off**; Agent usage **Off**.
+
+> **This item was recorded as blocked and undecided; it is neither.** Round 4 of the dashboard doc
+> listed the metered add-on as *"still blocked — billing profile incomplete"*. In fact the add-on is
+> enabled with an explicit cap. #1228's AC asked for "On-demand with an explicit cap, never
+> Automatic" — **that is the configuration already in place**, so the acceptance criterion is
+> satisfied by existing state rather than by any change.
+>
+> The dialog is trustworthy on this point: opened fresh after a cancelled edit, its seat field read
+> back the *saved* value (3), and plan/cycle matched the billing overview — so it reflects saved
+> state, not unsaved defaults.
+>
+> **The open question is the cap's size, not its existence.** At 25¢/file, **$10** buys ~40 files of
+> overflow per cycle against a measured problem of 196 of 290 reviews rate-limited and **"3 developers
+> (100%) hit review rate limits in the last 30 days"** (CodeRabbit's own Explore page, 2026-08-22) —
+> corroborated by the audit's `rate_limit` D3 on 217 PRs. The investigated sizing was **~$50** against
+> **$147–247/mo** to cover the whole overflow. Revisit once the seat cut lands and the demand picture
+> settles; raising it is an add-on change and therefore sits behind the same billing form.
 
 This is a **spend** that buys back throughput, not a saving. The problem measured large: 196 of
 290 reviews rate-limited (68%), 87.4h average wait, and **36% of blocked PRs merged unreviewed**.
@@ -191,16 +275,30 @@ not fall the way the plan assumed.** Size it against post-decline reality, and e
 than the "wait for #1209" framing implied. #1228 additionally sequences this **after** the BugBot and
 Greptile changes settle the demand picture.
 
-If enabled: **On-demand mode, never Automatic**, with a deliberate monthly cap — **~$50** was the
-investigated figure, against **$147–247/mo** to cover the whole overflow at $0.25/file.
-**Completing the billing profile is a prerequisite** (name, phone, and billing address are flagged
-missing on the account); the add-on cannot be enabled without it.
+*(The paragraph that stood here read: "If enabled: **On-demand mode, never Automatic**, with a
+deliberate monthly cap… **Completing the billing profile is a prerequisite**; the add-on cannot be
+enabled without it." Both halves are superseded by the 2026-08-22 reading — the add-on **is** enabled,
+capped at $10, despite the profile still being incomplete. The profile blocks *changes* to the plan,
+not this add-on's existing state. Sizing figures are retained in the block above.)*
 
 ### 5. CodeRabbit — cut the third seat *(DECIDED 2026-08-21 — this is a saving, not a purchase)*
 
-- **Depends on:** —
-- **Submitted:**
-- **Approved:** — *decided, not yet clicked. The verdict is settled; the dashboard change is an owner action tracked in [#1228](https://github.com/auerbachb/claude-code-config/issues/1228).*
+- **Depends on:** the **incomplete CodeRabbit billing profile** (see item 3) — for the *billed* half only.
+- **Submitted:** 2026-08-22 — **seat unassigned.** `zilbermang` moved to `Unassigned`; roster now reads **`2 of 3 assigned`**.
+- **Approved:** — *not yet. The bill has not moved: still **`Billing amount $90`**, **Monthly**.*
+
+> **This is two changes, not one — and the checklist previously treated it as one.** Unassigning a
+> seat frees it from a person; it does **not** reduce the purchased seat count or the invoice.
+> Cutting the billed count is a separate edit at `Billing → Edit → Developer seats`, and that path
+> hits the Chargebee billing-details form.
+>
+> The editor was taken to the confirmation step on 2026-08-22 and produced a correct order summary —
+> *Pro, `$30`/Seat/month, **Seats 2**, Monthly, Subtotal `$60`, Total `$60`, Renews August 27, 2026,
+> Secured by Chargebee* — then **cancelled** rather than entering the owner's personal and payment
+> details. State re-verified unchanged afterwards.
+>
+> So the **$30/mo** this item is worth is still outstanding, and it is **time-boxed to 27 Aug 2026**
+> alongside item 3.
 
 **This item used to read "assign seats to the three unassigned authors." That was wrong, and the
 owner's answer is the opposite: remove a seat.** The original framing pooled two GitHub orgs
