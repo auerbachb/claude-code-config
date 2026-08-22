@@ -277,7 +277,7 @@ This creates **one canonical planning document** the coding agent can work from.
 
 **When the chip path applies, check availability** per `.claude/reference/chip-launching.md`, then branch. The handoff content is the same in both delivery modes — only how it reaches the user differs:
 
-- **Chip mode** (`mcp__ccd_session__spawn_task` present): call `spawn_task` once for this issue with `title` / `prompt` / `tldr` / `cwd` (shape under "Chip construction" below). Print **only** the short summary — issue, title, `**Model:**` line, `**Effort:**` line, one-line rationale — in the reference's exact format. Do **not** also print the fallback block, or the same work is offered twice.
+- **Chip mode** (`mcp__ccd_session__spawn_task` present): **before calling `spawn_task`, register via `chip-offer-registry.sh --reserve --emitter start-issue`** (see `chip-launching.md` "Offer Registry" — exit 7 defers the chip offer). Then call `spawn_task` once for this issue with `title` / `prompt` / `tldr` / `cwd` (shape under "Chip construction" below). Print **only** the short summary — issue, title, `**Model:**` line, `**Effort:**` line, one-line rationale — in the reference's exact format. Do **not** also print the fallback block, or the same work is offered twice.
 - **Fallback mode** (tool absent): print the summary block below, unchanged.
 
 **A failed `spawn_task` is treated as unavailable** (per the reference): print the full fallback block instead. Do not retry the spawn. The handoff always ends with exactly one of: **in-thread adoption** (the default — coded here, or run as `/subagent #N`), a chip, or a printed block; never neither.

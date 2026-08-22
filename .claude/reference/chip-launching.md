@@ -243,6 +243,35 @@ In chip mode the transcript shows **only** the short summary per issue — the f
 
 Both lines, every time — the picker has two controls and the summary is the only place the user sees either before clicking. Nothing else, though: no prompt block, no context dump, no acceptance criteria. The whole point of chip mode is that the transcript stays scannable status output rather than a wall of prompt text.
 
+## Offer Registry
+
+**Every emitter that calls `spawn_task` MUST call `chip-offer-registry.sh --reserve` first** (Issue #1225). The registry is the repo-wide, cross-thread, lifecycle-aware store for all chip offers; `active-work-cap.sh` reads it as a counting source so offered chips are visible to the cap even before a PR exists.
+
+**Resolve the script** via the standard path order (`$HOME/.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh`, `$HOME/.claude/scripts/chip-offer-registry.sh`, `.claude/scripts/chip-offer-registry.sh`). Full contract: `chip-offer-registry.sh --help`.
+
+**Before each `spawn_task` call for issue N:**
+
+```bash
+REGISTRY=<resolved path>
+REG_TID="$("$REGISTRY" --emitter <name> --issue N --cap-free "$FREE" --reserve 2>/dev/null)"
+rc=$?
+if [[ $rc -eq 7 ]]; then
+  # cap exhausted atomically — defer this issue, same as the cap-depleted path
+  continue
+fi
+[[ $rc -eq 0 ]] || { warn "registry unavailable (exit $rc) — proceeding uncounted"; REG_TID=""; }
+```
+
+**After `spawn_task` succeeds:** pass `--task-id "$REG_TID"` to the reserve call (or record the registry task_id alongside the `spawn_task` task_id for later `--transition` calls).
+
+**Lifecycle transitions:** call `--transition --task-id <tid> --state running` when the thread is confirmed started; `--transition --state pr-backed` when a PR opens (at that point `active-work-cap.sh`'s open-PR source takes over counting); `--transition --state done` or `retracted` on terminal events.
+
+**Degraded path:** if the registry script cannot be resolved or exits non-zero for a reason other than 7, proceed uncounted and note the degradation in the offer's status or a one-line warn — never refuse to offer a chip solely because the registry is unavailable.
+
+**The atomic reservation closes the snapshot race.** Two concurrent emitters that both observe `FREE=1` and both call `--reserve --cap-free 1` get: the first writer reserves (count 0 < 1 → succeed, exit 0); the second writer finds count 1 ≥ 1 → exits 7. Exactly one offer, not two.
+
+The registry is **supplemental to the legacy issue-maker log** described in "Cross-skill chip visibility" below — both are read by `active-work-cap.sh` and deduplicated by issue number (the script handles the union).
+
 ## Chip state tracking
 
 Record the `task_id` returned by each successful `spawn_task`, keyed by issue number, **immediately** — before any dependent step. Track it wherever the skill already tracks that issue's state (`/pm`'s Active Work table is the canonical home; `/prompt` writes there in a PM thread, and keeps session state otherwise). A chip whose `task_id` was not recorded cannot be dismissed — it is a live offer with no handle, so recording is not bookkeeping, it is the thing that makes withdrawal possible at all.
