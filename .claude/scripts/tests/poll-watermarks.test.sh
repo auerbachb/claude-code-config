@@ -171,6 +171,48 @@ check_eq "reset advances inline watermark" "305" "$(jq -r '.last_inline_comment_
 OUT2="$(cd "$REPO_ROOT" && "$POLL_WM" "$PR" --check)"
 check_eq "clean after reset on ack-only comments" "NEW_FINDINGS=0" "$(sed -n '1p' <<<"$OUT2")"
 
+echo "== Scenario 6: CodeAnt review-status table is NOT a finding (issue #1207) =="
+# Reproduces the exact failure mode: poll-watermarks.sh --check reported
+# NEW_ISSUE_COMMENT_FINDINGS=1 for a CodeAnt status comment (with the
+# codeant-review-status HTML marker) when the merge gate was simultaneously met.
+# Only new comment has the CodeAnt status marker — must NOT trigger /fixpr.
+write_fixture "$(jq -n '{
+  comments: {
+    reviews: [],
+    inline: [],
+    conversation: [{
+      id: 600,
+      user: {login: "codeant-ai[bot]"},
+      body: "✅ Reviewed your PR | 8646511 | 18:36 | 18:36\n<!-- codeant-review-status:[{\"label\":\"Reviewed your PR\",\"commit\":\"8646511abc\",\"done\":true}] -->"
+    }]
+  }
+}')"
+seed_state '{"last_review_id":0,"last_inline_comment_id":0,"last_issue_comment_id":0}'
+OUT="$(cd "$REPO_ROOT" && "$POLL_WM" "$PR" --check)"
+check_eq "CodeAnt review-status table is not a finding" "NEW_FINDINGS=0" "$(sed -n '1p' <<<"$OUT")"
+check_eq "NEW_ISSUE_COMMENT_FINDINGS=0 for CodeAnt status" "NEW_ISSUE_COMMENT_FINDINGS=0" "$(sed -n '4p' <<<"$OUT")"
+STORED_AFTER="$(cd "$REPO_ROOT" && "$SESSION" --get ".prs[\"$PR\"].poll_watermarks")"
+check_eq "watermark advanced past CodeAnt status comment" "600" "$(jq -r '.last_issue_comment_id' <<<"$STORED_AFTER")"
+
+echo "== Scenario 6b: real CodeAnt finding without marker stays a finding =="
+# Verifies the fix did not over-classify: genuine CodeAnt findings (severity badge,
+# no codeant-review-status marker) still produce NEW_FINDINGS=1.
+write_fixture "$(jq -n '{
+  comments: {
+    reviews: [],
+    inline: [],
+    conversation: [{
+      id: 601,
+      user: {login: "codeant-ai[bot]"},
+      body: "🔴 Critical: the input is not validated before calling exec()."
+    }]
+  }
+}')"
+seed_state '{"last_review_id":0,"last_inline_comment_id":0,"last_issue_comment_id":0}'
+OUT="$(cd "$REPO_ROOT" && "$POLL_WM" "$PR" --check)"
+check_eq "real CodeAnt finding (severity badge) still triggers" "NEW_FINDINGS=1" "$(sed -n '1p' <<<"$OUT")"
+check_eq "NEW_ISSUE_COMMENT_FINDINGS=1 for real finding" "NEW_ISSUE_COMMENT_FINDINGS=1" "$(sed -n '4p' <<<"$OUT")"
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] || exit 1
