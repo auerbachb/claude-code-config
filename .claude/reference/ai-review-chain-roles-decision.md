@@ -11,10 +11,10 @@ script may gate on, escalate to, or trigger a tool absent from this table.
 
 | Tool | Bot login (REST) | **Role** | Gates the merge? | Cost rationale |
 |------|------------------|----------|------------------|----------------|
-| CodeRabbit | `coderabbitai[bot]` | **Primary finder** | No — it never issues `APPROVED` | Pro, 3/3 seats, $90/mo (#1204), and *underused*: 22% of PRs reviewed, 68% of reviews blocked by a **5/hr per-developer** burst limit, 87.4h average wait. Two priced fixes exist; collecting what we already pay for is the cheapest lever. |
+| CodeRabbit | `coderabbitai[bot]` | **Primary finder** | No — it never issues `APPROVED` | Pro, 3/3 seats, $90/mo as measured (#1204) — **decided down to 2 seats, and to annual: $90/mo → $48/mo** (#1213; the seat authored 0 in-scope PRs). *Underused*: 22% of PRs reviewed, 68% of reviews blocked by a **5/hr per-developer** burst limit, 87.4h average wait. Two priced fixes exist; collecting what we already pay for is the cheapest lever. |
 | CodeAnt | `codeant-ai[bot]` | **Primary approver** (co-primary on the CR path) | **Yes** — sole source of `APPROVED` | Premium, 2/2 seats, ~$48/mo (#1204). Load-bearing: 360 approvals on 184 PRs, and the gate has no other approver, so a lapse here is a full stop. The commit-author identity holds no seat — a **$0** fix. |
 | BugBot (Cursor) | `cursor[bot]` | **First fallback** | Yes, on the BugBot path | **The stack's largest cost line** (#1204): ~$1.58/review on-demand, $815.58 in one cycle against a $1,000 cap it has exhausted — which is why it refused 64% of PRs. Strong yield (29 sole-source PRs), but the spend is a scope problem before it is a cap problem. |
-| Greptile | `greptile-apps[bot]` | **Second fallback — retained, spend-capped at the vendor** | Yes, on the Greptile path | **Paid Pro on the `auerbachb` org, with flex overage UNCAPPED** (#1204 round 2): ~$36–72/mo billed, 42 of 92 credits already on flex 15 days in, and this repo is the org's largest lifetime consumer (212 reviews). Earns its keep on yield — 41 sole-source PRs, more than any other tool — but the spend is real and currently unbounded. |
+| Greptile | `greptile-apps[bot]` | **Second fallback — retained; billing state CONTESTED** | Yes, on the Greptile path | **Measured as paid Pro on the `auerbachb` org with flex overage UNCAPPED** (#1204 round 2): ~$36–72/mo billed, 42 of 92 credits already on flex 15 days in, this repo the org's largest lifetime consumer (212 reviews). **The owner reports it is now free and unpaid (#1213) — unresolved; settle it from the billing page (#1228) before relying on either figure.** Earns its keep on yield — 41 sole-source PRs, more than any other tool — though it has served none since PR #1203. |
 | Graphite | `graphite-app[bot]` | **Supplemental — paid, under re-measurement** | **No** | Newly paid, and measured almost entirely *before* the payment: 1 sole-source PR in 244. Promotion is deferred to evidence, not price. |
 
 **Authoritative chain order** — unchanged in shape, corrected in its assumptions:
@@ -136,6 +136,12 @@ Recorded so the next audit does not re-litigate them from scratch. The first two
 CodeRabbit plan's recommendations on this issue; both are declined **on measured evidence**, not
 preference.
 
+The final three rows are different in kind and are labelled as such: they are **owner decisions
+recorded 2026-08-21 on [#1209](https://github.com/auerbachb/claude-code-config/issues/1209)**, made
+on operator judgment about what the review stack is *for*, against recommendations this document
+itself had made. They are settled, not deferred — an audit that resurfaces them as open settings
+changes is reading a superseded list.
+
 | Rejected option | Why |
 |-----------------|-----|
 | **Promote Graphite to a gating fallback tier**, filling a slot vacated by Greptile | 0.037 findings/PR vs BugBot's 0.67; sole-source on 1 PR in 244; an unconditional `success` check-run. Gating on it manufactures approvals (#875). Its paid plan postdates the measurement window, so there is no paid-Graphite evidence either way — hence *defer and re-measure*, not *promote*. |
@@ -145,7 +151,10 @@ preference.
 | **Treat the CodeAnt subscription warning as a gate failure** | It warns on 84% of PRs while approving 360 times. Treating it as a block would disable the chain's only approver over a misconfigured email. Confirmed non-blocking (`feedback_codeant_subscription_message_not_blocking.md`). |
 | **Stop triggering BugBot entirely while it is spend-capped** | It is sole-source on 29 PRs when it runs, and the cap is per-usage, not permanent — the first nudge after each push may well succeed. Only *repeat* nudges after a refusal on the same HEAD are suppressed. |
 | **Move CodeRabbit to the free OSS tier** (#1212) | Lowers the ceiling on the one thing already failing: a known 5/hr per-developer rate becomes a 1–10/hr band scaled by star count, and 3 stars sits under the vendor's own 10-star cutoff. Also removes auto-review (measured starting 8–20s after PR open) and permanently forecloses the metered add-on, which is Pro/Pro+ only. The $90/mo is displaced onto Greptile's uncapped $1/credit flex rather than saved. Full math: [`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md). |
-| **Stay paid on monthly billing** (#1212) | Identical capability to annual at $18/mo more — $216/year purchasing flexibility whose only use would be an exit to OSS (rejected above) or to Pro+ (an upgrade, not an exit). |
+| **Stay paid on monthly billing** (#1212) | Identical capability to annual at $18/mo more — $216/year purchasing flexibility whose only use would be an exit to OSS (rejected above) or to Pro+ (an upgrade, not an exit). *(Figures are the 3-seat ones current when written; after the seat cut the same choice is $60 vs $48/mo, $144/year — see §Operator actions item 6.)* |
+| **Turn CodeAnt's org `Auto Approve PR` off** (#1209) — *owner decision, 2026-08-21* | **Leave it ON.** CodeAnt is the chain's only source of `APPROVED`; switching it off strands the merge gate with nothing able to satisfy it. The manufactured-approval problem is already handled downstream — the #875 substance guard discards zero-footprint approvals — so the setting costs filtering, not correctness. Not worth changing on current evidence. |
+| **Turn CodeRabbit's Incremental review off** (#1209) — *owner decision, 2026-08-21* | **Leave it ON.** It catches real errors on nearly every push of an AI-authored PR, and that coverage outweighs the rate-limit saving. Consequence recorded rather than hidden: one review per *push* remains the consumption pattern, so the blocked-review overflow does **not** fall, and the CodeRabbit metered add-on must be sized against post-decline volume ([`ai-review-paid-levers-checklist.md`](./ai-review-paid-levers-checklist.md) item 4). |
+| **Soften BugBot's aggressive core** — Effort High → Medium, Trigger Mode Every Push → once per PR (#1209) — *owner decision, 2026-08-21* | **Both stay.** The owner wants the spend down and the review aggressive, so cost reduction runs through scope rather than effort: Autofix → Off (299 runs, **0 ever merged**), drop the 23 out-of-scope org repos, Incremental Review → On, Draft PRs → Off. Those four are accepted and tracked in [#1228](https://github.com/auerbachb/claude-code-config/issues/1228); the two above are not on the table. |
 
 ## Dashboard reconciliation (#1204, 2026-08-21)
 
@@ -182,16 +191,25 @@ in the audit's §Dashboard reconciliation. Three things it changed here:
    volume is unmetered, but **committers who receive only AI reviews are billed as seats**, so the
    "All committers in selected repositories" setting is the cost lever, not the review count.
 
-6. **The paid levers are now tracked, and one of them was a misdiagnosis (#1213, 2026-08-21).**
-   The owner-only paid decisions behind this table's cost rationale — the Greptile OSS application,
-   the CodeAnt open-source discount, CodeRabbit's billing cadence, its metered add-on, and seat
-   coverage for the three unassigned human authors — live in
+6. **The paid levers are now tracked, and two of them turned out to be misframed (#1213,
+   2026-08-21).** The owner-only paid decisions behind this table's cost rationale — the Greptile OSS
+   application, the CodeAnt open-source discount, CodeRabbit's billing cadence, its metered add-on,
+   and the CodeRabbit seat count — live in
    [`ai-review-paid-levers-checklist.md`](./ai-review-paid-levers-checklist.md), each carrying its
    ordering gate and separate `Submitted:`/`Approved:` dates. **No cost rationale above changes
-   yet**: as of 2026-08-21 nothing has been submitted, #1209/#1210/#1212 are all open, and a budget
-   line moves only on a landed approval. The sixth item closed on measurement rather than action —
-   the CodeRabbit CLI is already seated (§Repo variance), so "attach the CLI to a paid seat" was
-   never available to do.
+   yet**: as of 2026-08-22 nothing has been submitted, and a budget line moves only on a landed
+   approval. One item closed on measurement rather than action, one on scope, and the gates that held
+   the rest have since resolved:
+   - The CodeRabbit CLI is already seated (§Repo variance), so "attach the CLI to a paid seat" was
+     never available to do.
+   - **"Seat coverage for the three unassigned human authors" was the wrong question.** Scoped to the
+     `auerbachb` org — its only active authors being `auerbachb` and `faculoyarte`, with the rest of
+     the team on a separate org and a separate CodeRabbit account — the answer inverts: `zilbermang`
+     authored 0 PRs, so the decision is to **remove** a seat, 3 → 2. The earlier framing pooled both
+     orgs. It is a saving, not a purchase.
+   - The gates have since closed: #1210's `LICENSE` landed (PR #1215), #1212 returned its verdict, and
+     #1209 closed with three of its five items **declined** (§Explicitly rejected). What still blocks
+     the Greptile item is a **contested billing reading**, not a gate.
 
 ## CodeRabbit OSS tier vs paid Pro (#1212, 2026-08-21)
 
@@ -246,34 +264,57 @@ the ready mitigation.
 None of these are agent-executable — each requires entering or changing billing/subscription state
 in a vendor dashboard. Listed in descending value.
 
-**Scope of this list: the free settings and cap changes**, tracked in
+**Scope of this list: the free settings and cap changes**, originally tracked in
 [#1209](https://github.com/auerbachb/claude-code-config/issues/1209). The **paid** decisions this
 role table's cost rationale depends on — OSS applications, billing cadence, metered caps, seat
 coverage — are tracked separately in
-[`ai-review-paid-levers-checklist.md`](./ai-review-paid-levers-checklist.md) (#1213), which encodes
-each item's ordering gate and keeps `Submitted:` and `Approved:` as separate dates so an in-flight
-application never moves a budget line.
+[`ai-review-paid-levers-checklist.md`](./ai-review-paid-levers-checklist.md) (#1213, decisions carried
+to #1228), which encodes each item's ordering gate and keeps `Submitted:` and `Approved:` as separate
+dates so an in-flight application never moves a budget line.
 
-1. **Set Greptile's Flex Usage Limit — it is still unset.** Round 2 answered "is it billed" (yes,
-   uncapped at $1/credit past 50/month), so what remains is closing the exposure. This is the only
-   true spend control on that account: a cap there fails as a refused review, whereas the
-   agent-side budget fails as a PR that can never merge.
-2. **Turn CodeAnt's org `Auto Approve PR` off** — free, and it stops the manufactured approvals the
-   #875 gate has to discard.
-3. **Cut BugBot's scope** — Every Push → per PR, Incremental → On, Drafts → Off, Effort → Medium,
-   Autofix → Off (0 of 299 merged) — before considering a Cursor cap raise. Scope costs nothing.
-4. **Fix the CodeAnt subscription identity** — either license a dedicated CI identity on a seat, or
-   set the committer email to the operator's own seat-holding address. Never point it at a
-   collaborator's address.
-5. **Turn CodeRabbit's Incremental review off** — free, and the largest single reducer of slot
-   consumption (one review per PR instead of one per push). The paid levers ($0.25/file overflow,
-   Pro Plus) only matter after that lands, and extra seats cannot help while one identity authors
-   every PR.
-6. **Switch CodeRabbit from monthly to annual billing** — 3 seats, **$90 → $72/month, $216/year**, no
-   capability change. Unblocked by the #1212 verdict above: the OSS tier was evaluated and declined, so
-   there is no longer a reason to hold the commitment open. **Renewal is 2026-08-27**; past that date the
-   saving simply waits another cycle. The trade is 12 months of commitment for 20% off, and both exits it
-   could block are remote — OSS is rejected above, and Pro+ is an upgrade rather than an escape.
+**Status as of 2026-08-21 (#1209 closed).** Of the six below: **two are declined outright** (2 and 5),
+**one is done** (4), and **three carry live work** — item 1 changed shape into a billing question,
+item 3 was **partially** accepted so its four surviving levers are still to do, and item 6 stands with
+corrected arithmetic. Declined entries are kept — struck, with the reason — rather than deleted, so the
+recommendation is not re-derived from the same evidence next audit. Every live action is tracked in
+[#1228](https://github.com/auerbachb/claude-code-config/issues/1228).
+
+1. **~~Set Greptile's Flex Usage Limit~~ → first, settle whether Greptile is billed at all.**
+   **CONTESTED.** Round 2 read the `auerbachb` org as Pro/Active with flex uncapped at $1/credit past
+   50/month and 92 reviews logged mid-cycle; the owner's account, the same day, is that Greptile is on
+   the **free tier and not being paid for**. Both cannot be true of one org, and the two-org confusion
+   (`localmovers-com` canceled, `auerbachb` paid and serving the in-scope repos) is exactly how the
+   first pass concluded $0. Read `app.greptile.com/auerbachb/-/settings/billing` before capping or
+   ignoring it. If paid, the cap reasoning below still holds and the choice is cancel vs.
+   keep-deliberately: **a cap at the vendor fails as a refused review, whereas the agent-side budget
+   fails as a PR that can never merge.** Note also **zero Greptile reviews since PR #1203** — evidence
+   of disuse, not of price.
+2. **~~Turn CodeAnt's org `Auto Approve PR` off~~ — DECLINED 2026-08-21, leave it ON.** It is the
+   chain's only source of `APPROVED`; turning it off strands the merge gate. See §Explicitly rejected.
+3. **Cut BugBot's scope — partially accepted; the aggressive core stays.** **Autofix → Off**
+   (0 of 299 merged), **Incremental → On**, **Drafts → Off**, and **drop the 23 out-of-scope org
+   repos** are accepted and carried to #1228. **~~Every Push → per PR~~** and **~~Effort → Medium~~**
+   are **DECLINED** — the owner wants the spend down and the review aggressive. Still do all of this
+   before considering a Cursor cap raise; scope costs nothing.
+4. **~~Fix the CodeAnt subscription identity~~ — DONE 2026-08-21.** The global git identity was the
+   placeholder `CI <ci@example.com>` — the actual cause of the warning on 84% of PRs — and is now set
+   to the operator's own seat-holding address. It must never point at a collaborator's address, which
+   would misattribute authorship. #1228 verifies it on a live PR.
+5. **~~Turn CodeRabbit's Incremental review off~~ — DECLINED 2026-08-21, leave it ON.** It catches
+   real errors on nearly every push of an AI-authored PR. The standing consequence: per-push
+   consumption remains, so the $0.25/file overflow lever must be sized against volume that did **not**
+   fall. See §Explicitly rejected.
+6. **Switch CodeRabbit from monthly to annual billing — at 2 seats, not 3.** The seat count changed:
+   `zilbermang` authored 0 in-scope PRs and that seat is being removed, so the ledger is **3 seats →
+   2** and the cadence applies to the smaller number. **Cut the seat first, then switch**, or a year
+   is prepaid on a seat that authors nothing. **The live figures — the only unlabelled ones here — are
+   monthly $60 vs annual $48/month, a $144/year saving at 2 seats.** *(Historical, superseded: at 3
+   seats this read $90 → $72/month, $216/year. Those three amounts appear elsewhere in the corpus and
+   are no longer the recommended pricing.)* No capability change. Unblocked by the #1212 verdict
+   above: the OSS tier was evaluated and declined, so there is no longer a reason to hold the
+   commitment open. **Renewal is 2026-08-27**; past that date the saving simply waits another cycle.
+   The trade is 12 months of commitment for 20% off, and both exits it could block are remote — OSS is
+   rejected above, and Pro+ is an upgrade rather than an escape.
 
 ## References
 

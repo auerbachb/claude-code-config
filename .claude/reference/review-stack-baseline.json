@@ -15,7 +15,7 @@
       "gates_merge": false,
       "approves_via": "none",
       "expected_caps": [],
-      "notes": "Primary finder per the #1199 decision record: Pro, 3/3 seats, $90/mo. gates_merge stays false — it never issues APPROVED, so marking it as gating would fire a permanent, false D4 every run. 22% of PRs reviewed and 68% of reviews rate-limited at a 5/hr per-developer burst (87.4h average wait) are measured facts, not baseline drift; expected_caps is deliberately empty so the first post-swap run reports the burst limit as genuine D3."
+      "notes": "Primary finder per the #1199 decision record: Pro, 3/3 seats, $90/mo as last measured 2026-08-21. The owner has since decided to cut the unused third seat (3 -> 2, then annual: $90/mo -> $48/mo, #1213/#1228) but has not yet made the change, so this stays at the measured value on purpose — an audit that reads 2/2 seats should report it as landed drift, not match a baseline written ahead of the click. gates_merge stays false — it never issues APPROVED, so marking it as gating would fire a permanent, false D4 every run. 22% of PRs reviewed and 68% of reviews rate-limited at a 5/hr per-developer burst (87.4h average wait) are measured facts, not baseline drift; expected_caps is deliberately empty so the first post-swap run reports the burst limit as genuine D3."
     },
     {
       "key": "codeant",
@@ -44,7 +44,7 @@
       "gates_merge": true,
       "approves_via": "none",
       "expected_caps": [],
-      "notes": "Second fallback — retained, spend-capped at the vendor, per the #1199 decision record: paid Pro on the `auerbachb` org with flex overage UNCAPPED (roughly $36-72/mo, 42 of 92 credits already on flex 15 days in). Promoted out of dormant: highest unique yield in the chain (41 sole-source PRs), and the Greptile path is sticky on history once triggered. gates_merge is true on its path; approves_via is none because it signals through issue-comment reactions and severity classification, never a formal APPROVED review object. expected_caps is empty so the current flex-overage exposure surfaces as genuine D3 drift rather than being pre-suppressed."
+      "notes": "Second fallback — retained; a vendor-side spend cap is the intended control but is NOT yet configured, per the #1199 decision record: paid Pro on the `auerbachb` org with flex overage UNCAPPED (roughly $36-72/mo, 42 of 92 credits already on flex 15 days in). CONTESTED (#1213, #1228): the owner reports Greptile is now on the free tier and not being paid for, which the same-day #1204 round-2 reading contradicts; `billed` stays \"paid\" because that is the last actually-measured value, so a free/canceled reading surfaces as drift instead of being pre-agreed here. Settle it from `app.greptile.com/auerbachb/-/settings/billing` before treating either state as fact. Promoted out of dormant: highest unique yield in the chain (41 sole-source PRs), and the Greptile path is sticky on history once triggered. gates_merge is true on its path; approves_via is none because it signals through issue-comment reactions and severity classification, never a formal APPROVED review object. expected_caps is empty so the current flex-overage exposure surfaces as genuine D3 drift rather than being pre-suppressed."
     },
     {
       "key": "graphite",
