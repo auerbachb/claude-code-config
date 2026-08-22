@@ -804,7 +804,12 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
               temporal_inversion:        $inversion,
               run_start_marker_at:       (($marker.created) // ""),
               capability_failure:        $cap_fail,
-              capability_failure_text:   (($fail.body // "") | .[0:160]),
+              # The only field here that carries a bot comment body verbatim.
+              # Control characters are folded to spaces so no consumer ever has
+              # to survive an escape sequence in this payload (issue #1219). The
+              # substitution is 1:1, so truncating first gives the identical
+              # 160-char result while never scanning a large body.
+              capability_failure_text:   (($fail.body // "") | .[0:160] | gsub("[[:cntrl:]]"; " ")),
               substantive:               $substantive,
               counts_as_coverage:        ($ap != null and $substantive and ($disq | length) == 0),
               disqualified_by:           $disq,

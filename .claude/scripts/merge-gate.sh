@@ -103,6 +103,14 @@
 #     "review_evidence": { … }   # review-substance.sh output; {} off the cr path
 #   }
 #
+# Reading this output: pipe it with `printf '%s'`, a herestring, or a file —
+# NEVER `echo "$GATE_JSON" | jq`. zsh's `echo` expands backslash escapes by
+# default, so any escape sequence a free-form field carries is expanded into a
+# raw character before jq parses, and jq then rejects the document. Every string
+# emitted here is scrubbed of control characters (issue #1219), which removes the
+# common trigger, but a body containing a literal backslash still ships as `\\`
+# and `echo` would still corrupt it.
+#
 # `authorship` (issue #733): "mine" when the PR author == the authenticated user,
 # "not_mine" when it is someone else (a confirmed foreign author blocks the merge
 # via a `missing` entry unless --allow-nonauthor is passed), "unknown" when the
@@ -242,6 +250,18 @@ fi
 # --------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------
+# Build a `missing` array with jq so free-form text can never break the JSON.
+# Hand-built literals (`"[\"… $VAR …\"]"`) let an embedded quote or newline make
+# jq reject its own --argjson; jq then emitted NOTHING while the script still
+# exited non-zero, so a caller reading stdout saw an empty string rather than an
+# error (issue #1219). `--` terminates option parsing so a reason starting with
+# `-` is still a positional value, and `select(length > 0)` drops the empty
+# string that `"${MISSING[@]:-}"` produces for an empty array (bash 3.2 + set -u
+# cannot expand a bare `"${MISSING[@]}"`).
+missing_json() { # <reason>...
+  jq -cn --args '$ARGS.positional | map(select(length > 0))' -- "$@"
+}
+
 emit_json() {
   # emit_json <met> <reviewer> <path> <missing_json_array> <head_sha> <ci_status_json> <merge_state> <mergeable> <review_decision> <code_owner_bots_json> <human_changes_json_array> <stale_bot_changes_requested_count_number> [unresolved_thread_count_number] [primary_review_met_bool] [authorship] [review_evidence_json]
   local met="$1" reviewer="$2" path="$3" missing="$4" head_sha="$5" ci_status="$6" merge_state="$7" mergeable="$8" review_decision="$9" code_owner_bots="${10}" human_changes="${11}" stale_bot_count="${12}" unresolved_thread_count="${13:-0}" primary_review_met="${14:-false}" authorship="${15:-unknown}"
@@ -266,7 +286,9 @@ emit_json() {
     --argjson primary_review_met "$primary_review_met" \
     --arg authorship "$authorship" \
     --argjson review_evidence "$review_evidence" \
-    '{met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship, review_evidence: $review_evidence}'
+    'def scrub: walk(if type == "string" then gsub("[[:cntrl:]]"; " ") else . end);
+     {met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship, review_evidence: $review_evidence}
+     | scrub'
 }
 
 emit_empty_ci() {
@@ -282,7 +304,7 @@ emit_empty_code_owner_bots() {
 # --------------------------------------------------------------------------
 OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
 if [[ -z "$OWNER_REPO" ]]; then
-  emit_json false unknown cr '["gh repo view failed — not in a git repo or no remote"]' "" "$(emit_empty_ci)" "" "" "" "$(emit_empty_code_owner_bots)" '[]' 0
+  emit_json false unknown cr "$(missing_json "gh repo view failed — not in a git repo or no remote")" "" "$(emit_empty_ci)" "" "" "" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 4
 fi
 OWNER="${OWNER_REPO%/*}"
@@ -290,7 +312,7 @@ REPO="${OWNER_REPO#*/}"
 
 PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,headRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision,author 2>/dev/null || true)
 if [[ -z "$PR_JSON" ]]; then
-  emit_json false unknown cr "[\"PR #$PR_NUMBER not found\"]" "" "$(emit_empty_ci)" "" "" "" "$(emit_empty_code_owner_bots)" '[]' 0
+  emit_json false unknown cr "$(missing_json "PR #$PR_NUMBER not found")" "" "$(emit_empty_ci)" "" "" "" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 3
 fi
 
@@ -303,12 +325,12 @@ REVIEW_DECISION=$(echo "$PR_JSON" | jq -r '.reviewDecision // ""')
 PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.author.login // ""')
 
 if [[ "$PR_STATE" != "OPEN" ]]; then
-  emit_json false unknown cr "[\"PR #$PR_NUMBER is $PR_STATE — not open\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
+  emit_json false unknown cr "$(missing_json "PR #$PR_NUMBER is $PR_STATE — not open")" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 3
 fi
 
 if [[ -z "$HEAD_SHA" ]]; then
-  emit_json false unknown cr '["could not determine HEAD SHA"]' "" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
+  emit_json false unknown cr "$(missing_json "could not determine HEAD SHA")" "" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 4
 fi
 
@@ -327,7 +349,7 @@ LAST_COMMIT_TS=$(gh api "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null |
 # inside a helper function called via $(), because exit inside $() only kills
 # the subshell and the main script continues with garbage data.
 die_api() {
-  emit_json false "${REVIEWER_OVERRIDE:-unknown}" "unknown" "[\"gh api failed: $1\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
+  emit_json false "${REVIEWER_OVERRIDE:-unknown}" "unknown" "$(missing_json "gh api failed: $1")" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 4
 }
 
@@ -335,7 +357,7 @@ die_api() {
 # GitHub's — blaming "gh api failed" for a missing local helper sends whoever
 # reads `missing` after the wrong problem.
 die_local() {
-  emit_json false "${REVIEWER_OVERRIDE:-unknown}" "unknown" "[\"$1\"]" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
+  emit_json false "${REVIEWER_OVERRIDE:-unknown}" "unknown" "$(missing_json "$1")" "$HEAD_SHA" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 4
 }
 
@@ -1617,7 +1639,10 @@ fi
 
 STALE_JSON=$(jq -n --argjson c "${STALE_BOT_CHANGES_COUNT:-0}" '$c')
 
-MISSING_JSON=$(printf '%s\n' "${MISSING[@]:-}" | jq -R . | jq -cs 'map(select(length > 0))')
+# `jq -R .` read line-by-line, so a reason containing a newline (a check-run name,
+# a reviewer login) silently split into two array elements. Build the array from
+# the shell array instead — one element in, one element out (issue #1219).
+MISSING_JSON=$(missing_json "${MISSING[@]:-}")
 
 # review_evidence is scoped to the cr path in the output (comment at line ~99).
 # The evaluator runs on the bugbot path for bypass computation but must not
