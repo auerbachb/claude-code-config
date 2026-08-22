@@ -49,12 +49,12 @@ The bar is **`/subagent` Step 4 criterion 3 — the subagent-fit sizing bar**: o
 
 **Rapid-fire override (leaner escape hatch).** Rapid-fire — per thread (`/issue-maker rapid-fire`, `"switch to rapid-fire mode"`) or per issue (`"just file it"`, `"skip the commentary"`) — is now the *leaner* of two auto-opening modes, not "the one without the gate" (default has no gate either). It never asks about **scope or ambiguity** — not even on a genuinely ambiguous call — and emits a terser report: the closing URL, optionally a one-line summary, without the decision-points elaboration. It still auto-applies labels, still emits the 6-section body, still prints the closing URL. **It also still runs the full reflection pass, sizing check included** — rapid-fire trades away *report verbosity*, never a judgment, so an oversized ask still becomes an increment chain.
 
-Rapid-fire keeps exactly **two hard bars**, and neither is a scope question — both are "this would create a mess that's tedious to undo," which is why the leaner mode keeps them:
+Rapid-fire keeps exactly **two hard bars in the create flow**, and neither is a scope question — both are "this would create a mess that's tedious to undo," which is why the leaner mode keeps them:
 
 1. **Exact title match** on dedup (default pauses on strong *or* exact — Step 4).
 2. **More than 5 increments** in a chain (Step 8's cap).
 
-At either bar rapid-fire stops and asks, in one terse line rather than default's fuller framing. Switch back with `"switch to default mode"`.
+At either bar rapid-fire stops and asks, in one terse line rather than default's fuller framing. Outside the create flow, **retracting a member of an increment chain** (Step 12) also stops for an answer in both modes — for the same reason, and it is the only such call. Switch back with `"switch to default mode"`.
 
 ## Issue body tone & audience (default — NON-NEGOTIABLE)
 
@@ -194,7 +194,7 @@ fi
 - **Interpreting matches:** `/issue-maker` always has a human in the loop, so it only ever *surfaces* candidates — it never auto-comments in place of filing. Use the strong/weak/none thresholds in `autofile-dedup.md` — read through the standard candidate order, `$HOME/.claude/skills-worktree/.claude/reference/` first, then `$HOME/.claude/reference/`, then `.claude/reference/` (`portable-skill-resolution.md`) — to classify the **top surviving** candidate: a **strong match** or an **exact title match** is a genuine pause point; weak/ambiguous matches are not.
 - **Default mode — pause only on a strong or exact match:** if the top candidate clears that bar, surface it and ask *"Looks like a duplicate of #N — file anyway? (y/N)"* before creating. On a weak/ambiguous match, **do not block** — file, and name the near-duplicate as a decision point (Step 9a: "possibly overlaps #N"). No match → file normally.
 - **Rapid-fire:** show any matches but proceed unless there is an **exact title match** (then block and ask).
-- **Siblings in the same increment chain are never duplicates of each other.** Increments share a theme prefix and most of their keywords by design, so filing `Landing page 2/4` right after `Landing page 1/4` will surface increment 1 as a strong match. That is the chain working, not a duplicate. **Drop every increment this run already filed from the candidate list, then classify what remains** — an exclusion, not an override. Excluding them only after the top candidate is chosen would let a sibling outrank a genuine duplicate and carry the "file anyway" verdict with it, so a real duplicate ranked second would never be evaluated at all. Note the skipped siblings in one line; duplicates *outside* the chain still pause normally, in both modes. If nothing survives the filter, that is a clean "no match" — file normally.
+- **Siblings in the same increment chain are never duplicates of each other.** Increments share a theme prefix and most of their keywords by design, so filing `Landing page 2/4` right after `Landing page 1/4` will surface increment 1 as a strong match. That is the chain working, not a duplicate. **Drop every candidate sharing this issue's `chain_id` (Step 9's log record) from the list, then classify what remains** — an exclusion, not an override. Match on `chain_id`, never on the theme prefix: two unrelated chains can share wording, and a re-worded title would silently stop matching. Excluding them only after the top candidate is chosen would let a sibling outrank a genuine duplicate and carry the "file anyway" verdict with it, so a real duplicate ranked second would never be evaluated at all. Note the skipped siblings in one line; duplicates *outside* the chain still pause normally, in both modes. If nothing survives the filter, that is a clean "no match" — file normally.
 
 ---
 
@@ -340,10 +340,22 @@ Build the labels as a JSON array from the accepted labels (the same set passed v
 LABELS_JSON=$(printf '%s\n' "$ACCEPTED_LABELS" | jq -R . | jq -s 'map(select(length>0))')
 
 set_log '.issues += [{number:($n|tonumber), title:$t, url:$u, labels:$labels,
-                      created_at:$ts, status:"open", chip_task_id:null}]' \
+                      created_at:$ts, status:"open", chip_task_id:null, chain:$chain}]' \
   --arg n "$ISSUE_NUMBER" --arg t "$TITLE" --arg u "$ISSUE_URL" \
-  --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" --argjson labels "$LABELS_JSON"
+  --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" --argjson labels "$LABELS_JSON" \
+  --argjson chain "$CHAIN_JSON"
 ```
+
+**`CHAIN_JSON` — `null` for an ordinary issue, an object for an increment.** A standalone ask sets `CHAIN_JSON=null` and nothing below applies. An increment records which chain it belongs to and where it sits:
+
+```bash
+# Increment issues only. CHAIN_ID is minted once per chain (any stable string —
+# the head's slug is fine) and is IDENTICAL across every increment in it.
+CHAIN_JSON=$(jq -nc --arg id "$CHAIN_ID" --argjson i "$POSITION" --argjson n "$TOTAL" \
+  '{chain_id:$id, position:$i, total:$n}')
+```
+
+**`chain_id` is what makes the chain recoverable.** Sibling detection (Step 4), the queued-successor note (Step 9c), and retraction (Step 12) all resolve membership by matching `chain_id` in `$LOG` — never by theme text or position number, which collide across unrelated chains and cannot survive a re-worded title. It also survives compaction: the log is re-read in Step 1, so a chain interrupted mid-filing is still identifiable afterwards, which in-context memory alone would not give you.
 
 ### Step 9a: The post-create report — summary + decision points
 
@@ -425,7 +437,21 @@ The merge-authority bullet is the shared contract from `chip-launching.md` "Merg
 
 Four chips for a four-increment chain would race each other into the same files, which is exactly the collision 6.0b exists to prevent. Successors leave `chip_task_id` as `null`. This routing holds in **both** modes — rapid-fire shortens the note, it does not restore the chips.
 
-Every created issue ends with exactly one of: a chip, a printed block, an inline `/subagent` recommendation (when the PM-context inline gate above routed it), or a queued-successor note (increment chains, just above); never neither, and never two of them. (Batches: this repeats once per issue in the loop — see Step 6.)
+Every created issue ends with exactly one of **five** outcomes; never none, and never two:
+
+1. a chip;
+2. a printed fallback block;
+3. an inline `/subagent` recommendation (when the PM-context inline gate above routed it);
+4. a queued-successor note (increment chains, just above);
+5. a **deferred hand-off note** — the gate itself was unreadable.
+
+Outcome 5 is what the gate-unavailable path above produces: `chip-launching.md` resolved on none of the three paths, so the skill cannot tell whether a chip is even the right hand-off, and it must not guess. The issue is still filed and its URL still printed — only the hand-off is deferred. Say so in one line and give the retry, so the issue is never left with no hand-off at all:
+
+```text
+Chip deferred for #N — chip-launching.md not found (checked all three paths). The issue is filed; re-run `/issue-maker` once the skills worktree resolves to offer the chip.
+```
+
+This applies to a chain **head** exactly as to a standalone issue; successors keep outcome 4 regardless, since their hand-off never depended on the gate. (Batches: this repeats once per issue in the loop — see Step 6.)
 
 If the user asks to "print the full prompt for #N" while in chip mode, re-emit that issue's complete block verbatim (Model line + guard preamble included) — the chip stays offered (`chip-launching.md` "Print-on-demand replay").
 
@@ -495,6 +521,38 @@ Phrases like **"also add X to issue #N"**, **"edit #N …"**, **"update #N with 
 ## Step 12: Retract
 
 Phrases like **"scratch that, close #N"**, **"retract #N"**, **"never mind on #N"**:
+
+### Retracting a member of an increment chain (check this first)
+
+Look up `#N`'s `chain` field in `$LOG` before closing anything. If it is `null`, this is an ordinary retract — continue below unchanged. If it names a `chain_id`, **the rest of that chain has to be dealt with in the same breath**, because closing an increment silently strands everything behind it:
+
+```bash
+# Read this issue's chain identity first — empty chain_id means an ordinary retract.
+CHAIN_ID=$(jq -r --arg n "$N" \
+  'first(.issues[] | select(.number == ($n|tonumber)) | .chain.chain_id // empty) // empty' "$LOG")
+POSITION=$(jq -r --arg n "$N" \
+  'first(.issues[] | select(.number == ($n|tonumber)) | .chain.position // empty) // empty' "$LOG")
+
+# Successors = same chain_id, higher position, still open. Pass POSITION in as a
+# number so the comparison is numeric, not a string compare (10 < 9 as strings).
+if [ -n "$CHAIN_ID" ]; then
+  SUCCESSORS=$(jq -r --arg c "$CHAIN_ID" --argjson p "${POSITION:-0}" \
+    '[.issues[]
+      | select(.chain.chain_id == $c and .status == "open" and (.chain.position > $p))]
+     | sort_by(.chain.position) | .[].number' "$LOG")
+fi
+```
+
+**Why this cannot be skipped.** A successor's `Depends on #prev` points at the retracted issue, and the chain-release rule (`/subagent` 6.0b) starts queued work only when its predecessor reaches a **genuinely terminal state — `merged` or `blocked`**. A retracted issue is *closed*, which is neither, so every successor waits on a predecessor that will never merge and never blocks: queued forever, with nothing in the system flagging it. Retracting the **head** strands the entire chain; retracting a **middle** increment strands everything after it and leaves the survivors describing slices of a plan that no longer exists.
+
+Name the affected successors and take one of two paths, then proceed with the close below:
+
+- **Retract the whole chain** (the usual call when the head goes, or when the ask itself is cancelled) — close every open member of the chain, each with the same retraction comment, and dismiss each of their chips the same way as any single retract.
+- **Re-cut the remainder** (when only one slice was wrong) — keep the successors, but repoint the one immediately after `#N` at `#N`'s own predecessor (or drop its `Depends on` line entirely if `#N` was the head), and renumber the `{i}/{n}` markers in the surviving titles so the chain still reads as a chain. This is a `/update` on each survivor (Step 10), not a new filing.
+
+**Ask which one** — it is the rare genuinely blocking call: both outcomes are destructive in different directions, and the increments are not interchangeable. State the successor numbers in the question. In rapid-fire, ask this one anyway; it is the same class as the two hard bars.
+
+### Ordinary retract
 
 **First, dismiss any live chip** (`chip-launching.md` "Stale-chip hygiene" — "gained an open PR" / "superseded" both cover a retracted issue, since the work is now cancelled). Look up the tracked `task_id`:
 
