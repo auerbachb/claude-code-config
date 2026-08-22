@@ -89,10 +89,14 @@ Start from the ranked order and remove, in this sequence:
      jq -r --arg slug "$TARGET_SLUG" '
        .issues[]
        | select(.status == "open" and .chip_task_id != null)
-       | select(((.url // "") | test("^https?://[^/]+/" + $slug + "/issues/")))
+       | select(((.url // "")
+                 | capture("^https?://[^/]+/(?<r>[^/]+/[^/]+)/issues/") // {r:""}
+                 | .r) == $slug)
        | .number' "$f"
    done | sort -u
    ```
+
+   **Extract the slug, then compare it literally — never interpolate it into a regex.** A repo name may contain regex metacharacters, and `.` is common in real ones (`api.v2`, `foo.github.io`). Built into a pattern, that `.` matches any character, so a run in `acme/api.v2` would silently accept a chip belonging to `acme/apiXv2`. The `capture` above pulls `owner/name` out of the URL and `==` compares it as a string, which is also what `active-work-cap.sh` does — the two must agree on what "this repo" means or the counts diverge again.
 
    Leave jq's stderr unredirected — a malformed log file should surface as a visible error, not look identical to "no live chip found" (`chip-launching.md` "Cross-skill chip visibility"). Drop any candidate whose number appears in the command's output, silently — same treatment as (1). An issue-maker thread already offering a chip for #N is the same "already offered" state as a `Chip offered` row, just recorded in a different store.
 

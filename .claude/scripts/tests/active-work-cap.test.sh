@@ -535,18 +535,30 @@ set_open_prs 0
 
 # --- 17. --cap makes no network call -----------------------------------------
 # Emitters that only need the knob must not pay for (or fail on) the count.
-# `gh` is genuinely removed, not just shadowed: the directory is created (bash
-# silently SKIPS a PATH entry that does not exist) and $BIN is dropped from PATH
-# entirely rather than prefixed, so the fake is unreachable. Prefixing a
-# non-existent dir proved nothing and read as if it had.
-mkdir -p "$TMP_DIR/empty-bin"
-command -v gh >/dev/null 2>&1 || fail "precondition: fake gh should be on PATH here"
-( PATH="$TMP_DIR/empty-bin:/usr/bin:/bin"; command -v gh >/dev/null 2>&1 ) \
-  && fail "the isolated PATH still reaches a gh — the isolation proves nothing"
-CAP=$(PATH="$TMP_DIR/empty-bin:/usr/bin:/bin" run --cap) || \
-  fail "--cap should resolve with no gh on PATH at all"
+# Assert the property directly instead of trying to engineer `gh` off PATH.
+# Removing it is not portable — CI runners ship a real gh in a system bin, so
+# an "empty" PATH prefix still reaches one and the isolation silently stops
+# isolating (which is exactly what the previous attempt did, and what CI
+# caught). A decoy that FAILS when invoked cannot be fooled by any environment:
+# if `--cap` succeeds with this first on PATH, gh was genuinely never called.
+DECOY="$TMP_DIR/decoy-bin"
+mkdir -p "$DECOY"
+cat > "$DECOY/gh" <<'DECOYEOF'
+#!/usr/bin/env bash
+echo "decoy gh: --cap must not invoke gh, but it did: $*" >&2
+exit 98
+DECOYEOF
+chmod +x "$DECOY/gh"
+CAP=$(PATH="$DECOY:$PATH" run --cap 2>"$TMP_DIR/decoyerr"); RC=$?
+[[ $RC -eq 0 ]] || fail "--cap invoked gh (decoy fired): $(cat "$TMP_DIR/decoyerr")"
 [[ "$CAP" == "6" ]] || fail "--cap should still resolve 6, got '$CAP'"
-ok "--cap resolves the knob with gh absent from PATH entirely"
+ok "--cap resolves the knob without invoking gh at all (decoy never fired)"
+
+# The decoy is only meaningful if it would actually fire — a --json run makes
+# the network calls --cap skips, so it must trip.
+OUT=$(PATH="$DECOY:$PATH" run --json 2>/dev/null); RC=$?
+[[ $RC -ne 0 ]] || fail "the decoy never fires, so the assertion above proves nothing"
+ok "the same decoy does trip on --json, so the --cap result is meaningful"
 
 # --- 18. Usage errors ---------------------------------------------------------
 run --json --free >/dev/null 2>&1; RC=$?
