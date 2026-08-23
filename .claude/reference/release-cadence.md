@@ -228,7 +228,8 @@ silent wrong-time trigger.
 }
 ```
 
-Written only through `session-state.sh --raw-path --set` — the lock-respecting
+Written only through `session-state.sh --raw-path --set` (or `--raw-path --cas`
+for atomic in-flight claim operations, see `release-decide.sh`) — the lock-respecting
 path required by `handoff-files.md`. `--raw-path` is required because auto-scoping
 only rewrites `.prs` / `.root_repo`; reads use `--get --raw-path` and never
 `--session-view`, which projects only those two keys and would silently report the

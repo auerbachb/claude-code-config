@@ -22,7 +22,8 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT="$REPO_ROOT/.claude/scripts/session-state.sh"
 
 TMP_HOME="$(mktemp -d)"
-cleanup() { rm -rf "$TMP_HOME"; }
+RACE_DIR=""
+cleanup() { rm -rf "$TMP_HOME" ${RACE_DIR:+"$RACE_DIR"}; }
 trap cleanup EXIT
 export HOME="$TMP_HOME"
 mkdir -p "$HOME/.claude"
@@ -49,24 +50,28 @@ echo "== Usage errors =="
 # ---------------------------------------------------------------------------
 
 # --cas without --expect must exit 2
-OUT=$(run --raw-path --cas '.foo=bar' 2>&1); RC=$?
+run --raw-path --cas '.foo=bar' >/dev/null 2>&1; RC=$?
 check_eq "--cas without --expect exits 2" "2" "$RC"
 
 # --expect without --cas must exit 2
-OUT=$(run --raw-path --expect null 2>&1); RC=$?
+run --raw-path --expect null >/dev/null 2>&1; RC=$?
 check_eq "--expect without --cas exits 2" "2" "$RC"
 
 # --cas combined with --set must exit 2
-OUT=$(run --raw-path --cas '.foo=bar' --expect null --set '.x=y' 2>&1); RC=$?
+run --raw-path --cas '.foo=bar' --expect null --set '.x=y' >/dev/null 2>&1; RC=$?
 check_eq "--cas combined with --set exits 2" "2" "$RC"
 
 # --cas with empty path must exit 2
-OUT=$(run --raw-path --cas '=bar' --expect null 2>&1); RC=$?
+run --raw-path --cas '=bar' --expect null >/dev/null 2>&1; RC=$?
 check_eq "--cas with empty path exits 2" "2" "$RC"
 
 # --cas with no = in argument must exit 2
-OUT=$(run --raw-path --cas 'noequalssign' --expect null 2>&1); RC=$?
+run --raw-path --cas 'noequalssign' --expect null >/dev/null 2>&1; RC=$?
 check_eq "--cas with no = exits 2" "2" "$RC"
+
+# --dry-run combined with --cas must exit 2
+run --raw-path --dry-run --cas '.foo=bar' --expect null >/dev/null 2>&1; RC=$?
+check_eq "--dry-run combined with --cas exits 2" "2" "$RC"
 
 # ---------------------------------------------------------------------------
 echo
@@ -193,7 +198,6 @@ reset_state
 run --raw-path --set '.race_slot=null'
 
 RACE_DIR="$(mktemp -d)"
-trap "rm -rf '$RACE_DIR' '$TMP_HOME' 2>/dev/null" EXIT
 
 # Writer function: CAS race_slot from null to a writer-specific value.
 # Records exit code in a file for the parent to inspect.

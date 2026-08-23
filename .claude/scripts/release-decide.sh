@@ -468,6 +468,7 @@ release_claim() {
   # other: I/O or lock error — leave the record; the sweep's grace window heals it
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 7 ]; then
     RELEASE_CLAIM_UNVERIFIED=1
+    STATE_WRITE_ERR="release_claim: session-state.sh exited $rc cleaning up in-flight record"
   fi
 }
 
