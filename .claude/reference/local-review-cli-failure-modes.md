@@ -42,8 +42,8 @@ Coverage for this investigation PR: `none` — CodeRabbit rate-limited after fir
 
 | CLI | Binary location | Version | Auth state | Expected result on next run |
 |---|---|---|---|---|
-| CodeRabbit | `~/.local/bin/coderabbit` | 0.7.5 | `Plan: Pro / Seat: assigned` (auerbachb, org: LocalMovers-dot-com) | OSS pool applies on this public repo: 1–10/hr (repository-popularity scaled), NOT the Pro tier's 5/hr. Entitlement ≠ effective rate. See pricing-matrix.md §5. |
-| CodeAnt | `/opt/homebrew/bin/codeant` | 0.5.1 | **No credentials** — `~/.codeant/config.json` absent | `stderr_error` / `verified_run: false` on any non-empty diff |
+| CodeRabbit | `~/.local/bin/coderabbit` | 0.7.5 | `Plan: Pro / Seat: assigned` (auerbachb, org: LocalMovers-dot-com) | OSS pool applies on this public repo. CLI cap: **3 reviews per reset window** (~55 min, per rate-limit payload below). The 1–10/hr range in vendor docs applies to App PR reviews (popularity-scaled); the CLI is independently capped at 3. Entitlement ≠ effective rate. See pricing-matrix.md §5. |
+| CodeAnt | `/opt/homebrew/bin/codeant` | 0.5.1 | **Auth restored 16:11 ET 2026-08-23** (was absent at investigation start; user ran `codeant login`; `~/.codeant/config.json` now exists with `apiKeyV2`, no refresh token, no expiry) | Ready — daily cap (not missing key) will be the operative blocker |
 
 **Key finding — CodeRabbit rate limit payload (captured 2026-08-23, second CLI run):**
 
@@ -79,7 +79,10 @@ this: "If both CLIs are down, run a self-review instead." Self-review exits the 
 never satisfies the merge gate — the merge gate requires a GitHub-App approval (CodeRabbit App,
 CodeAnt App, BugBot, or Greptile). A `none`-coverage local pass with self-review is correctly
 reported in the PR body and does not block merge; the GitHub App side is a separate billing
-surface and was unaffected by both CLI failures on 2026-08-22.
+surface and was unaffected by both CLI failures on 2026-08-22. Specifically: **included
+allowances are independent** (CLI rate-limit does not consume App included quota), though
+**metered pay-as-you-go credits are shared** between App and CLI reviews (one pool). Neither
+CLI failure drew from the App's included allowance or metered pool.
 
 ## CodeAnt CLI not installed (issue #819)
 
@@ -117,9 +120,20 @@ npm install -g codeant-cli   # rung 3 — installs the binary
 codeant login                 # rung 5 — CLI-initiated browser OAuth; no MCP browser surface can drive it
 ```
 
-Auth (`codeant login`) opens a browser flow against `app.codeant.ai` and is the only blocker for a non-interactive agent. Full runbook with Option B (API key) and the proof-run stderr check: `.claude/reference/codeant-graphite-supplemental.md` §Install state. Ladder definition: `.claude/rules/safety.md` §Capability Discovery.
+Auth: `codeant login` (the **documented** path) opens a browser flow against `app.codeant.ai`,
+polls for completion, and on success writes `~/.codeant/config.json`. It is the only blocker
+for a non-interactive agent because it requires a browser. `codeant set-codeant-api-key <key>`
+is non-interactive (no browser needed) but is not documented in CodeAnt's CLI setup docs; it
+also exposes the key in shell history and process listings — prefer `codeant login` where
+possible. Full runbook with Option B (API key) and the proof-run stderr check:
+`.claude/reference/codeant-graphite-supplemental.md` §Install state. Ladder definition:
+`.claude/rules/safety.md` §Capability Discovery.
 
-**Standing state on this machine:** binary installed (v0.5.1 at `/opt/homebrew/bin/codeant`). Auth present through at least 2026-08-22 (PR #1265 hit a 403 daily cap, which requires a live token). As of 2026-08-23, `~/.codeant/config.json` is absent — no credentials stored. Coverage is `cr-only` or `none` until `codeant login` or `codeant set-codeant-api-key` is run interactively. See "CodeAnt: missing API key" section below for the full diagnostic.
+**Standing state on this machine:** binary installed (v0.5.1 at `/opt/homebrew/bin/codeant`).
+Auth present through at least 2026-08-22 (PR #1265 hit a 403 daily cap, which requires a live
+token). At investigation start (2026-08-23), `~/.codeant/config.json` was absent. **Auth was
+restored at 16:11 ET 2026-08-23** by the user running `codeant login`. See "CodeAnt: missing
+API key" section below for the full diagnostic.
 
 ## The false-clean
 
@@ -369,18 +383,41 @@ surfaces on stderr as documented above.
 - stdout: `.error: "Missing API key"` in the NDJSON result → caught by the stdout `.error // empty` check (step 2)
 - Both paths classify as `verified_run: false` — no clean-pass false positive.
 
-**Restore path:** `codeant login` (browser OAuth, opens a URL and polls for completion) or
-`codeant set-codeant-api-key <key>`. Both are interactive steps that cannot run in a
-non-interactive agent session. Blocked until a human performs auth. Once auth is restored,
-the daily cap (not the missing key) becomes the operative blocker again.
+**Restore path:** `codeant login` (the **documented** path — browser OAuth, opens a URL and
+polls for completion) or `codeant set-codeant-api-key <key>` (non-interactive but undocumented
+in CodeAnt's setup docs; key exposed in shell history and process listings). `codeant login`
+is the only option for a non-interactive agent (requires a browser or human interaction);
+`set-codeant-api-key` requires obtaining the key first (dashboard: app.codeant.ai → email
+bottom-left → API Tokens → Create token; `cdt_` prefix; shown once only). Blocked until a
+human performs auth. Once auth is restored, the daily cap (not the missing key) becomes the
+operative blocker again.
 
-**Standing state (2026-08-23):** `~/.codeant/config.json` absent — no credentials confirmed
-by `scans orgs` returning "Missing API key". Auth was present through at least 2026-08-22
-(PR #1265's `cr-only` note confirms a daily cap, which requires a live token; the file must
-have been deleted between that session and this investigation). The review endpoint also
-returned 403 on 2026-08-23, but that 403 is an auth failure, not a cap — `scans orgs`
-discriminates. Restore with `codeant login` or `codeant set-codeant-api-key`. Coverage
-stays `cr-only` or `none` until auth is restored.
+**Important note on the cr-local-review.md 403 rule:** `.claude/rules/cr-local-review.md`
+says "never run `codeant logout/login` to clear a 403." That rule is premised on the 403
+being a **daily cap** (credential present, quota exhausted). When credentials are **absent
+entirely**, `codeant login` IS the correct remediation — the two situations produce
+identical-looking 403s and require **opposite responses**. Always run the `scans orgs`
+discriminator before concluding "daily cap":
+
+```bash
+codeant scans orgs 2>&1  # success → cap; "Missing API key" → no credentials
+```
+
+**Standing state (2026-08-23):** At investigation start, `~/.codeant/config.json` absent —
+confirmed by `scans orgs` returning "Missing API key". Auth was present through at least
+2026-08-22 (PR #1265's `cr-only` note confirms a daily cap, which requires a live token).
+**Auth restored at 16:11 ET 2026-08-23** — user ran `codeant login`. Confirmed: file now
+exists (`-rw-r--r--`, 56 bytes), contains exactly one key `apiKeyV2` (no refresh token,
+no expiry field), and `codeant scans orgs` returns the `auerbachb` GitHub connection.
+Environment-isolation hypothesis ruled out: `HOME` and acting user were identical between the
+user's terminal and the agent shell at investigation time, so the earlier missing-credentials
+state was not a per-terminal or per-shell-environment artifact — the file was simply absent.
+**Open question:** the user reports having had to re-login repeatedly in the past. Since the
+stored config has no refresh token or expiry, the likely cause is server-side key rotation /
+revocation or the file being deleted by a machine clean-up, not a per-terminal auth scope.
+This requires further observation; do not conclude either way from this one data point.
+Coverage status: `cr-only` until auth was restored; now able to run CodeAnt again subject to
+the daily cap.
 
 ## CodeAnt auth storage
 
