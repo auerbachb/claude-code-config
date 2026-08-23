@@ -64,7 +64,7 @@ This is an in-scope decision update on the same decision record: Graphite's re-m
 
 ## Diagnosis
 
-The churn is single-lineage with no merge conflicts across all 4 PRs.
+The churn is single-lineage with `conflict_rounds == 0` across all 4 PRs (no merge conflicts).
 
 **PR #1203 is the foundational file creation.** The decision record did not exist before this PR. It was authored as the canonical role-assignment record following the 244-PR audit, and the dashboard-reconciliation addendum (§Dashboard reconciliation) was merged in the same squash.
 
