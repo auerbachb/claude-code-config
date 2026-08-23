@@ -40,10 +40,13 @@ fi
 # but never creates ~/.claude/agents/ or its per-file symlinks. Run the publish
 # every session so new, renamed, and removed agent definitions propagate without
 # requiring a manual setup-skills-worktree.sh run on existing installs.
-# Run whenever the worktree is present — transient fetch/reset errors leave the
-# existing worktree contents usable for publishing (removed and added symlinks
-# should still propagate from the last successful sync).
-if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
+# Run whenever the worktree is present AND the reset did not fail:
+#   - Fetch failure leaves the worktree in its last-good state — safe to publish.
+#   - Reset failure may leave the worktree in a partially-updated state; the
+#     publish script interprets absent worktree files as authoritative removals,
+#     so publishing from a partial reset could prune valid installed-agent links.
+if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]] && \
+   ! [[ "$errors" == *"reset failed"* ]]; then
   _agents_publish_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/../scripts/publish-agent-symlinks.sh"
   if [[ -f "$_agents_publish_script" ]]; then
     _root_repo=$(git -C "$skills_wt" worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //') || _root_repo=""

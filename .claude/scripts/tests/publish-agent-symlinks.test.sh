@@ -1,5 +1,5 @@
 #!/bin/bash
-# test-publish-agent-symlinks.sh — Tests for .claude/scripts/publish-agent-symlinks.sh
+# publish-agent-symlinks.test.sh — Tests for .claude/scripts/publish-agent-symlinks.sh
 # Issue #1197: agents symlink leg publishes on existing installs from session start
 #
 # Each test creates a temporary HOME with a fake skills-worktree structure,
@@ -9,14 +9,14 @@
 # throwaway HOME= override and never touch the real filesystem. Does NOT require
 # a real git repo since publish-agent-symlinks.sh only reads from the filesystem.
 #
-# Usage: bash tests/test-publish-agent-symlinks.sh
+# Usage: bash .claude/scripts/tests/publish-agent-symlinks.test.sh
 # Exit code: 0 = all pass, 1 = any fail
 
 set -uo pipefail
 
 PASS=0; FAIL=0; TOTAL=0
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/../../.." && pwd)"
 PUBLISH_SCRIPT="$REPO_ROOT/.claude/scripts/publish-agent-symlinks.sh"
 GREEN='\033[0;32m'; RED='\033[0;31m'; BOLD='\033[1m'; NC='\033[0m'
 
