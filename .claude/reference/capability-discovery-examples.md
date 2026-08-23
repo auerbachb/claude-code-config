@@ -117,6 +117,43 @@ Run these two and I'll set the variables:
 
 Never substitute a prose description of what needs doing for the commands themselves.
 
+## Deferral shapes (rung 5)
+
+When rungs 1–4 are genuinely exhausted, arrive in exactly one of two shapes. Prefer shape B for click-heavy web-UI tasks — it costs you one session launch, not a UI walkthrough.
+
+### Shape A — Numbered steps
+
+Name the rung that stopped you, provide exact commands with a one-line reason each, and include the auth step when interactive login is required:
+
+```text
+Stopped at rung 5 (interactive auth): `railway login` opens the system browser,
+which no MCP browser surface can drive.
+Run these two and I'll set the variables:
+
+  railway login
+  railway link
+```
+
+### Shape B — Cowork-executable issue offer (preferred for web-UI tasks)
+
+Offer to file a self-contained issue written so a fresh Claude cowork session (Chrome MCP) can execute the task end-to-end without reading this thread. The issue must:
+
+- Name the site and exact UI flow (e.g. "Vercel dashboard → Project → Settings → Environment Variables")
+- State the desired end state
+- Declare it targets a browser-MCP session
+- Reference credentials by name only — never by value
+
+**Example issue body:**
+
+```text
+## Task for Claude cowork session (browser-MCP)
+Site: Vercel dashboard (vercel.com)
+Flow: Project Settings → Environment Variables → Add
+Desired end state: `DATABASE_URL` variable exists in the Production environment.
+Credential: value is in the `Prod` 1Password vault under `DATABASE_URL` — do not print it.
+Login: sign in with GitHub SSO, then continue the task.
+```
+
 ## Anti-pattern
 
 Typing "agents can't do X" where X sounds like something a CLI — or a web console — handles — stop and walk the ladder; the default answer is you probably CAN. The scope-shaped version of the same anti-pattern is quieter and just as wrong: calling X a deployment step, a follow-up, or somebody else's task, without ever having checked. Both are deferrals, and a handoff that fails to name the rung it stopped on, with a concrete reason, is not a finished answer. This doesn't loosen any prohibition: check `safety.md`'s "Never" lists before assuming a capability is off-limits.
