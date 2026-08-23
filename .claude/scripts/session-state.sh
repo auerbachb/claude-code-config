@@ -1251,10 +1251,13 @@ if [[ "$MODE" == "cas" ]]; then
 
   # Read the current value and compare with the expected value in one jq call
   # (inside the lock), so no concurrent writer can slip in between.
+  # Use RC=0; VAR="$(cmd)" || RC=$? to capture jq's exit code under set -e;
+  # a bare command-substitution assignment terminates the script on failure
+  # before CAS_COMPARE_RC=$? is ever evaluated.
+  CAS_COMPARE_RC=0
   CAS_COMPARE_RESULT="$(jq -r "${CAS_COMPARE_ARGS[@]}" \
     "$MIGRATE_JQ migrate(\$__pathmap; \$__unknown) | $SCOPED_CAS_PATH as \$cur | if \$cur == \$__casexpect then \"match\" else \"mismatch\" end" \
-    "$input_file" 2>"$CAS_ERR")"
-  CAS_COMPARE_RC=$?
+    "$input_file" 2>"$CAS_ERR")" || CAS_COMPARE_RC=$?
 
   if [[ "$CAS_COMPARE_RC" -ne 0 ]]; then
     echo "session-state.sh: jq failed reading $STATE_FILE for CAS compare: $(cat "$CAS_ERR")" >&2
