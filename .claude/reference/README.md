@@ -14,6 +14,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 
 ### Runbooks and long command forms
 
+- `ac-gate.md` — exemption logic, exact heading, three ordered checks, exit codes, and both real regression failures (PR #588 / PR #593) for `ac-gate.sh` CI gate (#1281)
 - `admin-merge-auto-plain.md` — mechanism and contracts for the one `admin-merge.sh --auto-plain` shape Claude may execute itself; plain vs protection-modifying shape distinction (#754)
 - `cli-tool-defaults.md` — installed service CLIs (vercel, neonctl, railway, cloudinary) and common commands; CLI-first over web dashboards
 - `churn-hotspots.md` — mechanism, calibration, and threshold rationale for `churn-hotspots.sh`; exclusion list for by-design catalog files (#755)

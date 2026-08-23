@@ -1,0 +1,24 @@
+on:
+  pull_request: {}
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  # The job id `ac-gate` is the branch-protection status-check name.
+  # Do NOT rename this job and do NOT add a `name:` field — either change
+  # silently drops the check from branch protection, blocking every PR.
+  ac-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run AC gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .claude/scripts/ac-gate.sh ${{ github.event.pull_request.number }}
