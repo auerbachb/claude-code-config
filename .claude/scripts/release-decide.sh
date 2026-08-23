@@ -495,7 +495,7 @@ if [ "$MECHANISM_USED" != "none" ]; then
     emit 1 "in_flight" "another evaluation claimed the build for $REPO first — standing down rather than starting a second one"
   else
     STATE_WRITE_ERR="${CAS_CLAIM_ERR:-session-state.sh exited $CAS_CLAIM_RC}"
-    emit 3 "blocked" "could not stake the in-flight claim for $REPO before triggering ($STATE_WRITE_ERR) — refusing to dispatch, since an unclaimed trigger can be duplicated by a concurrent evaluation"
+    emit 3 "blocked" "could not stake the in-flight claim for $REPO before triggering ($STATE_WRITE_ERR) — refusing to dispatch, since an unclaimed trigger can be duplicated by a concurrent evaluation; any partially-written claim may remain parked in state and will be cleared by the sweep's grace window"
   fi
 fi
 

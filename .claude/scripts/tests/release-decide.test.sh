@@ -36,7 +36,7 @@ mv "$SCRIPTS/session-state.sh" "$SCRIPTS/session-state.impl.sh"
 cat > "$SCRIPTS/session-state.sh" <<'WRAP'
 #!/usr/bin/env bash
 case " $* " in
-  *" --set "*) for a in "$@"; do case "$a" in *in_flight*) echo "STATE_SET in_flight" >> "$AUDIT_LOG";; esac; done ;;
+  *" --set "*|*" --cas "*) for a in "$@"; do case "$a" in *in_flight*) echo "STATE_SET in_flight" >> "$AUDIT_LOG";; esac; done ;;
 esac
 exec "$(dirname "$0")/session-state.impl.sh" "$@"
 WRAP
@@ -426,6 +426,9 @@ else bad "the cache is stamped with derived_at"; fi
 # 19. An explicit min_interval must beat a FRESH cached derived interval. Without
 # this, switching a repo from "auto" to an explicit value would keep using the
 # stale derived number for a whole cache TTL.
+# Clear in_flight from test 18 without wiping the interval cache — test 19 uses
+# CAS (--expect null) so the slot must be free for the new claim to land.
+"$SCRIPTS/session-state.impl.sh" --raw-path --set '.repos["solo/app"].release.in_flight=null' >/dev/null 2>&1 || true
 FAKE_RUNS_JSON="$RECENT_BUILD" FAKE_INTERVAL=5 FAKE_INTERVAL_SOURCE=policy \
   run --repo solo/app --pr 6 --apply --phase pre-merge
 expect_field '.interval_minutes' '5' "an explicit min_interval overrides a fresh cached one"
@@ -495,9 +498,11 @@ reset_state
 cp "$SCRIPTS/session-state.impl.sh" "$TMP/ss.beforeread"
 cat > "$SCRIPTS/session-state.impl.sh" <<'RSTUB'
 #!/usr/bin/env bash
-# Writes succeed; the claim read-back fails. Isolates the read path only.
+# The atomic CAS write itself fails (e.g. lock timeout). This simulates the
+# unverifiable-claim scenario: we cannot confirm the slot was secured, so the
+# build must block rather than dispatch without a clean ownership record.
 case " $* " in
-  *" --get "*) echo "session-state.sh: read timed out" >&2; exit 6 ;;
+  *" --cas "*) echo "session-state.sh: write timed out" >&2; exit 6 ;;
 esac
 exec "$0.orig" "$@"
 RSTUB
