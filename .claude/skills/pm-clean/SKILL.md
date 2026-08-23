@@ -178,7 +178,7 @@ Issue closures and workspace deletions are **separate** confirmations. Declining
 
 ### Step 4.1: Issue closures
 
-Present via **`AskUserQuestion`** when available (prose fallback in headless runs): `multiSelect: true` with one option per closure category found (e.g. `"Solved-by-PR issues"`, `"Inactive issues"`, `"Superseded issues"`, `"Potential duplicates"`) plus `"Skip all"`. When the user wants to select specific issue numbers rather than whole categories, fall back to the prose prompt below. See `ask-menu.md` for the full vehicle convention.
+Present via **`AskUserQuestion`** when available (prose fallback in headless runs): `multiSelect: true` with up to 3 closure categories found (mark highest-count category as `(Recommended)`; if >3 categories found, surface 3 with most candidates) plus `"Skip all"`. When the user wants to select specific issue numbers rather than whole categories, fall back to the prose prompt below. See `ask-menu.md` for the full vehicle convention (`Skip all` is skip-wins).
 
 Prose fallback:
 ```

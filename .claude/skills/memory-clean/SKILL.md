@@ -73,10 +73,10 @@ Low-confidence; never auto-recommended. Each cites the entry it defers to.
 
 After presenting, stop and present the choice via **`AskUserQuestion`** when available (`multiSelect: true`; prose fallback in headless runs). Options map to finding types present in the report:
 
-- `"Drop dangling index pointers — safe (Recommended)"` (only when dangling pointers found)
+- `"Drop dangling index pointers — safe (Recommended)"` (only when dangling pointers found; skip-wins if selected with others)
 - `"Delete orphaned files"` (only when orphans found; user may name specific files via "Other")
 - `"Act on advisory items"` (only when advisory findings found)
-- `"Skip — leave the store untouched"`
+- `"Skip — leave the store untouched"` (mark `(Recommended)` when only advisory items remain; skip-wins)
 
 Present only options for finding types that exist in the current report. See `ask-menu.md` for the full vehicle convention.
 

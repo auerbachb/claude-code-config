@@ -6,7 +6,7 @@
 
 ## Default behavior
 
-When the thread reaches a decision point — pick an option, confirm a destructive action, resolve an ambiguity — present it via **`AskUserQuestion`**, not a `(y/N)` prose line.
+At a decision point — pick an option, confirm a destructive action, resolve an ambiguity — present it via **`AskUserQuestion`**, not a `(y/N)` prose line.
 
 **Exceptions** (fall back to prose):
 - Non-interactive / headless session (tool unavailable)
@@ -17,7 +17,7 @@ When the thread reaches a decision point — pick an option, confirm a destructi
 | Convention | Rule |
 |------------|------|
 | Recommended option | Listed first; label ends with `" (Recommended)"` |
-| `multiSelect` | Set `true` when choices are independent (not mutually exclusive) |
+| `multiSelect` | Set `true` for independent choices; `Skip`/`Skip all` is always skip-wins |
 | >4 options | List the 3 most plausible + rely on the built-in "Other" free-text escape |
 | No filler | Never call AskUserQuestion with placeholder content while waiting on background work |
 
@@ -29,7 +29,7 @@ These sites use AskUserQuestion when available; prose fallback in headless runs:
 - `/issue-maker` Step 8 — chain cap: options `"Re-cut to ≤5 increments (Recommended)"`, `"File all N increments"`
 - `/issue-maker` Step 12 — retract chain: options `"Retract whole chain (Recommended)"`, `"Re-cut remainder"`
 - `repo-bootstrap.md` — branch-protection ask: options `"Add required checks (Recommended)"`, `"Skip for now"`
-- `/pm-clean` Step 4.1 — issue closures: `multiSelect` across closure categories + `"Skip all"`
+- `/pm-clean` Step 4.1 — issue closures: `multiSelect` across closure categories + `"Skip all"` (skip-wins)
 - `/pm-clean` Step 4.2 — workspace cleanup: options `"Apply cleanup (Recommended)"`, `"Skip"`
-- `/memory-clean` Step 3 — prune confirmation: `multiSelect` across finding types + `"Skip"`
+- `/memory-clean` Step 3 — prune confirmation: `multiSelect` across finding types + `"Skip"` (skip-wins)
 - Blocker surface ending in a question — options derived from the blocker's resolution paths
