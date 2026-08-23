@@ -1,6 +1,6 @@
 # Chip / spawn_task Model + Effort Contract
 
-> **Always:** Open every chip `prompt` payload with the `**Model:**` and `**Effort:**` lines, followed immediately by the MODEL GUARD preamble. Repeat both lines in the visible short summary. Add the pre-click Fable warning when the parent thread is on Fable.
+> **Always:** Open every chip `prompt` payload with the `**Model:**` and `**Effort:**` lines, followed immediately by the MODEL GUARD preamble. Repeat both lines in the visible short summary. Add the pre-click Fable warning when the parent thread is on Fable and the chip recommends a different model.
 > **Ask first:** Never — chip emission is autonomous.
 > **Never:** Omit the `**Model:**` or `**Effort:**` line. Use a version number instead of a bare family name. Skip the MODEL GUARD preamble. Emit a chip from the six canonical emitters without following `chip-launching.md`.
 

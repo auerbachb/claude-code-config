@@ -140,7 +140,7 @@ The count is therefore over **distinct `chip_task_id`s**, and the de-duplication
 
 **The issue-level rule still binds alongside it.** One issue offered by two capture sessions is one slot, not two, because the unit of work is the issue. Each surviving issue therefore names a single representative chip before the distinct count, so the two rules compose to "one unit of work, one slot" from either direction: N issues under one chip count 1, and one issue under N chips also counts 1.
 
-This is a narrowing *within* the one source the script already reads, and is independent of the two known gaps below — chips from `/pm` and `/prompt` staying invisible, and the count not being a reservation. It stays correct if the shared offer registry those need ever lands.
+This is a narrowing *within* the sources the script already reads. The one remaining known gap is that the count is not a reservation — two concurrent emitters can both observe the same `FREE` value before either stamps. The chip-offer registry's `--reserve` closes that race for chip-mode emitters; the legacy log path has no lock.
 
 ## Portability
 
