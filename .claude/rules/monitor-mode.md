@@ -8,7 +8,7 @@
 
 **Entry:** any active subagent or non-empty `active_agents` in `session-state.json`. **Exit:** all subagents complete/failed, pending B/C launches executed, state updated.
 
-While active: poll subagents, verify outputs, execute phase transitions, refill free capacity, update state. No code edits, issue/PR creation, or source analysis — delegate fix work to subagents. Message only on blockers, decisions, or failures — never routine status.
+While active: poll subagents, verify outputs, execute phase transitions, refill free capacity, update state. No code edits, issue/PR creation, or source analysis — delegate fix work to subagents. Message only on blockers, decisions, failures, or defined exceptions — never routine status.
 
 If the user explicitly requests substantive work, warn that monitoring N active PR(s) will pause, do the work, then immediately re-enter monitor mode.
 
@@ -25,13 +25,13 @@ Every ~60s, in order:
 
 ## Subagent Health Monitoring (MANDATORY)
 
-Poll every cycle; never fire-and-forget. Report failures and blockers immediately — PR/issue, phase, failure mode, remaining work. Successes are silent. Verify outputs before marking complete (`gh pr view` for pushes, comments/replies for feedback handling).
+Poll every cycle; never fire-and-forget. Report failures and blockers immediately — PR/issue, phase, failure mode, remaining work. Successes are silent unless they match a defined exception. Verify outputs before marking complete (`gh pr view` for pushes, comments/replies for feedback handling).
 
 Respawn permissions: crash asks, exhaustion auto (`phase-protocols.md`).
 
 ## Liveness (Issue #1253)
 
-Routine per-tick heartbeats are removed. Liveness signal during a silent healthy thread comes from the bgwork-ceiling backstop (`scheduling-reliability.md`). When the silence ceiling warns, treat it as a decision point and message immediately (≤2 lines, action first). Do not emit periodic status; only blockers, failures, and required decisions reach the user.
+Routine per-tick heartbeats are removed. Liveness signal during a silent healthy thread comes from the bgwork-ceiling backstop (`scheduling-reliability.md`). When the silence ceiling warns, treat it as a decision point and message immediately (≤2 lines, action first). Do not emit periodic status; only blockers, failures, required decisions, and defined exceptions reach the user.
 
 ## File-Write Status Updates (MANDATORY)
 
@@ -44,7 +44,7 @@ If a summary block references prior work you do not remember, recover before all
 2. Read `session-state.json` + handoffs; reconcile each open PR on GitHub (all 3 endpoints per `cr-github-review.md`).
 3. Per polled PR: `polling-state-gate.sh <N> --verify-state` (optional `--root-repo`), then resume with `polling-state-gate.sh <N>` (shells `merge-gate.sh`).
 4. Reconcile state (PR, HEAD, reviewer, pending); verify stale agents and stalled transitions; launch as needed.
-5. Resume monitoring silently — message only if recovery reveals a blocker or decision needing input.
+5. Resume monitoring silently — message if recovery reveals a blocker or decision needing input, or if a defined exception occurs.
 
 ## PM Monitoring Recovery
 
