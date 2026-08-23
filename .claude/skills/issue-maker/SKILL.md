@@ -625,8 +625,8 @@ SHARERS=$(jq -r --arg n "$N" --arg t "$OFFER_TOKEN" \
   '[.issues[] | select(.status == "open" and .chip_task_id == $t and .number != ($n|tonumber))] | length' "$LOG")
 ```
 
-- **No `OFFER_TOKEN`** (never offered, or already cleared) — skip straight to closing the issue.
 - **Offer already accepted** (`OFFER_ACCEPTED == true`) — the batch is already running via `/subagent`. Close the issue and clear `chip_task_id` to `null`; the running pipeline will skip a claimed issue it can no longer reach. Do not attempt to withdraw the offer — execution is in flight.
+- **No `OFFER_TOKEN`** (never offered, or already cleared) — skip straight to closing the issue.
 - **`OFFER_TOKEN` present (offer pending, not yet accepted) and `SHARERS > 0`** — shed this issue from the pending offer: re-emit the offer text covering only the remaining open issues (refresh in-thread), and clear this issue's `chip_task_id` to `null`. The offer token on remaining issues is unchanged — no new token needed.
 - **`OFFER_TOKEN` present (offer pending) and `SHARERS == 0`** — this was the last issue the offer covered. Withdraw the offer entirely: clear `chip_task_id` to `null` and say so (*"Offer withdrawn — no remaining open issues."*). No `dismiss_task` call is needed (there is no chip to dismiss).
 
