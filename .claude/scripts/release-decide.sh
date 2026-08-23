@@ -444,81 +444,57 @@ if [ -z "$MECHANISM_USED" ]; then
   emit 3 "blocked" "window is open but $REPO has no deferred trigger (label mechanisms cannot fire on an already-merged PR) — it will ship on the next merge"
 fi
 
-# The claim is staked before any trigger runs. session-state.sh serializes
-# read-modify-write under its own lock, so two evaluations on this host cannot
-# both claim; across hosts this narrows the window to the state write rather
-# than the whole dispatch round-trip, and the GitHub-history check still backs
-# it up. `none` repos are skipped — their build is not ours to claim.
+# The claim is staked before any trigger runs. session-state.sh --cas stakes
+# the claim atomically: it reads the current value and writes the claim record
+# only when the path is currently null — all under one lock hold. Exit 7 means
+# another evaluation already owns the slot; the GitHub-history check still backs
+# it up as a second line of defence. `none` repos are skipped — their build is
+# not ours to claim.
 CLAIM_WRITTEN=0
 RELEASE_CLAIM_UNVERIFIED=0
 # Release the claim if the trigger never actually fired, so a failed attempt does
 # not wedge the repo as permanently "building".
-# Clears ONLY a claim this evaluation still owns. An unconditional clear would
-# delete a competing evaluator's claim if it replaced ours between our read-back
-# and our trigger failing — removing in-flight tracking for a build that really
-# is running, which a later sweep could then duplicate. Token-checked rather
-# than atomic: a conditional clear needs the same compare-and-set primitive as
-# the claim itself (issue #1195). Strictly better than deleting blindly.
+# Uses --cas (issue #1195): clears the in_flight record only when it still holds
+# exactly our CLAIM_RECORD — atomically, under one lock hold. Exit 7 means
+# another evaluator already replaced our claim; their record is left intact.
 release_claim() {
   [ "$CLAIM_WRITTEN" = "1" ] || return 0
-  local raw owner rc=0
-  raw=$("$STATE_SH" --raw-path --get ".repos[\"$REPO\"].release.in_flight" 2>/dev/null) || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    # One retry — a single failed read is usually transient (lock contention).
-    rc=0
-    raw=$("$STATE_SH" --raw-path --get ".repos[\"$REPO\"].release.in_flight" 2>/dev/null) || rc=$?
-  fi
-  if [ "$rc" -ne 0 ]; then
-    # Still cannot confirm ownership. Leave the record: a claim of ours parked
-    # here is reclaimed by the sweep's grace window (bounded, self-healing),
-    # whereas deleting a competitor's claim drops tracking for a build that is
-    # genuinely running and does not self-heal. The caller surfaces this so the
-    # parked claim is visible rather than silent.
+  local rc=0
+  "$STATE_SH" --raw-path \
+    --cas ".repos[\"$REPO\"].release.in_flight=null" \
+    --expect "$CLAIM_RECORD" 2>/dev/null || rc=$?
+  # rc=0: cleared successfully (we owned it)
+  # rc=7: someone else replaced our claim — leave their record intact
+  # other: I/O or lock error — leave the record; the sweep's grace window heals it
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 7 ]; then
     RELEASE_CLAIM_UNVERIFIED=1
-    return 0
   fi
-  owner=$(printf '%s' "$raw" | jq -r '.claim_token // empty' 2>/dev/null)
-  [ "$owner" = "$CLAIM_TOKEN" ] || return 0
-  state_set "in_flight" "null" || true
 }
 
 if [ "$MECHANISM_USED" != "none" ]; then
-  # A unique token per attempt. session-state.sh offers no compare-and-set, so
-  # the claim cannot be made conditional in a single atomic step; writing a token
-  # and reading it back at least lets a LOSER detect that it lost instead of
-  # proceeding to dispatch. Residual window and the CAS follow-up: see
-  # .claude/reference/release-cadence.md.
+  # Build the claim record. The token is retained for diagnostic output only;
+  # the atomic guarantee now comes from --cas --expect null (issue #1195).
   CLAIM_TOKEN="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
   CLAIM_RECORD=$(jq -cn --argjson pr "${PR:-null}" --arg mech "$MECHANISM_USED" --arg now "$(now_iso)" \
     --arg tok "$CLAIM_TOKEN" \
     '{pr:$pr, mechanism:$mech, triggered_at:$now, detail:"claim staked before trigger", run_id:null, awaiting_run:true, claim_token:$tok}')
-  if state_set "in_flight" "$CLAIM_RECORD"; then
+  # Atomic claim: write only when the slot is currently null (no concurrent claim).
+  # Exit 0 = won; 7 = lost (someone else's claim is now on record); other = I/O error.
+  # Capture stderr so blocked-path emits can include the error in state_write_error.
+  CAS_CLAIM_RC=0
+  CAS_CLAIM_ERR=""
+  CAS_CLAIM_ERR=$("$STATE_SH" --raw-path \
+    --cas ".repos[\"$REPO\"].release.in_flight=$CLAIM_RECORD" \
+    --expect null 2>&1 >/dev/null) || CAS_CLAIM_RC=$?
+  if [ "$CAS_CLAIM_RC" -eq 0 ]; then
     CLAIM_WRITTEN=1
-    # Read back: if another evaluation claimed between our check and our write,
-    # the token on record is theirs and this attempt must stand down rather than
-    # start a second concurrent build.
-    # CHECKED read. state_get folds a session-state.sh failure into "null", which
-    # would yield an empty token and skip the comparison below — the guard would
-    # fail OPEN and dispatch anyway, which is the exact behaviour it exists to
-    # prevent. A read we cannot trust blocks instead.
-    CLAIM_RB_RC=0
-    CLAIM_RB_RAW=$("$STATE_SH" --raw-path --get ".repos[\"$REPO\"].release.in_flight" 2>&1) || CLAIM_RB_RC=$?
-    if [ "$CLAIM_RB_RC" -ne 0 ]; then
-      release_claim
-      emit 3 "blocked" "could not read back the in-flight claim for $REPO (exit $CLAIM_RB_RC) — refusing to dispatch on an unverified claim: $CLAIM_RB_RAW${RELEASE_CLAIM_UNVERIFIED:+ (a claim may remain parked; the sweep reclaims it within its grace window)}"
-    fi
-    CLAIM_READBACK=$(printf '%s' "$CLAIM_RB_RAW" | jq -r '.claim_token // empty' 2>/dev/null) || CLAIM_READBACK="__unreadable__"
-    if [ "$CLAIM_READBACK" = "__unreadable__" ] || [ -z "$CLAIM_READBACK" ]; then
-      release_claim
-      emit 3 "blocked" "the in-flight claim for $REPO read back without a token — refusing to dispatch on an unverified claim"
-    fi
-    if [ "$CLAIM_READBACK" != "$CLAIM_TOKEN" ]; then
-      # Someone else owns it; leave THEIR claim intact.
-      CLAIM_WRITTEN=0
-      emit 1 "in_flight" "another evaluation claimed the build for $REPO first (token $CLAIM_READBACK) — standing down rather than starting a second one"
-    fi
+  elif [ "$CAS_CLAIM_RC" -eq 7 ]; then
+    # Another evaluation already owns the slot — stand down rather than
+    # starting a second concurrent build.
+    emit 1 "in_flight" "another evaluation claimed the build for $REPO first — standing down rather than starting a second one"
   else
-    emit 3 "blocked" "could not stake the in-flight claim for $REPO before triggering — refusing to dispatch, since an unclaimed trigger can be duplicated by a concurrent evaluation: $STATE_WRITE_ERR"
+    STATE_WRITE_ERR="${CAS_CLAIM_ERR:-session-state.sh exited $CAS_CLAIM_RC}"
+    emit 3 "blocked" "could not stake the in-flight claim for $REPO before triggering ($STATE_WRITE_ERR) — refusing to dispatch, since an unclaimed trigger can be duplicated by a concurrent evaluation"
   fi
 fi
 

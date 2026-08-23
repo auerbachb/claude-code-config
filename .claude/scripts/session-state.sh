@@ -16,6 +16,7 @@
 # USAGE
 #   session-state.sh [--repo <owner/name>] --get <jq-path>
 #   session-state.sh [--repo <owner/name>] --set <jq-path>=<value> [--set ...]
+#   session-state.sh [--repo <owner/name>] --cas <jq-path>=<new-value> --expect <expected-value>
 #   session-state.sh [--repo <owner/name>] --session-view [--all-repos]
 #   session-state.sh --repo-key
 #   session-state.sh --migrate [--dry-run]
@@ -55,6 +56,25 @@
 #   `.schema_version = 2`.
 #
 # MODES
+#   --cas <path>=<new> Compare-and-set: read the current value at <jq-path>,
+#   --expect <val>     compare it with <expected-value>, and write <new-value>
+#                      only when they match — all under one lock hold.
+#                      <expected-value> follows the same JSON-or-string rules as
+#                      --set: valid JSON is treated as a JSON value (so
+#                      `--expect null` compares against JSON null, not the
+#                      string "null"); anything that fails JSON parsing is a
+#                      bare string. Comparison is jq's `==` (deep equality).
+#                      Exits 0 when the write is applied (CAS win). Exits 7
+#                      when the current value does not match (CAS loss — a
+#                      distinct code so callers can tell a loss from an I/O
+#                      error). Other exit codes (2 usage, 4 parse, 5 write,
+#                      6 lock-timeout) are unchanged from --set. On exit 7
+#                      the state file is left unmodified.
+#
+#                      Use this instead of a separate --get + --set pair for
+#                      any claim that must be atomic: the gap between two
+#                      invocations is a race window; --cas eliminates it.
+#
 #   --get <jq-path>    Read the value at <jq-path> from the state file and
 #                      print it on stdout (raw via `jq -r`). Exits 3 if the
 #                      state file does not exist; exits 4 on jq parse errors.
@@ -153,6 +173,10 @@
 #      the acquisition timeout (default 30s, CLAUDE_STATE_LOCK_TIMEOUT). The
 #      write is ABANDONED and the state file is left unmodified; this script
 #      never falls back to writing unserialized.
+#   7  CAS mismatch (--cas only) — the current value at the given path does
+#      not match the --expect value. The state file is left unmodified. This
+#      code is distinct from all I/O or locking failures so callers can
+#      differentiate a lost race from a broken environment.
 #
 # LOCKING (issue #639)
 #   --set takes an exclusive advisory lock around the ENTIRE read-modify-write
@@ -306,6 +330,15 @@
 #   # leaves the state file unmodified:
 #   session-state.sh --set '.prs["287"].last_cron_action=some bare string'
 #   # -> exit 4: field '.prs["287"].last_cron_action' would become type 'string' but must be 'object'
+#
+#   # Atomic claim: write a record only if the slot is currently unoccupied.
+#   # Exits 0 on win, 7 if another caller already owns the slot:
+#   session-state.sh --raw-path --cas '.repos["org/repo"].release.in_flight={"claim":"mine"}' \
+#     --expect null
+#
+#   # Update the claim only if it still matches exactly (safe release pattern):
+#   session-state.sh --raw-path --cas '.repos["org/repo"].release.in_flight=null' \
+#     --expect '{"claim":"mine"}'
 
 set -euo pipefail
 # Usage telemetry. `script-usage-report.sh` derives adherence ratios from this
@@ -773,6 +806,11 @@ ALL_REPOS="0"
 # JSON-or-string at write time so we keep their raw form here.
 SET_PATHS=()
 SET_VALUES=()
+# For --cas: the path=new-value pair (split same as --set) and the expected value.
+CAS_PATH=""
+CAS_VALUE=""
+CAS_EXPECT=""
+CAS_EXPECT_SET=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -861,6 +899,39 @@ while [[ $# -gt 0 ]]; do
       SET_VALUES+=("${local_arg#*=}")
       shift 2
       ;;
+    --cas)
+      if [[ -n "$MODE" && "$MODE" != "cas" ]]; then
+        die_usage "--cas cannot be combined with --$MODE"
+      fi
+      if [[ $# -lt 2 ]]; then
+        die_usage "--cas requires <jq-path>=<new-value>"
+      fi
+      if [[ -n "$CAS_PATH" ]]; then
+        die_usage "--cas may only be given once"
+      fi
+      MODE="cas"
+      cas_arg="$2"
+      if [[ "$cas_arg" != *=* ]]; then
+        die_usage "--cas argument must be <jq-path>=<new-value>, got: $cas_arg"
+      fi
+      if [[ -z "${cas_arg%%=*}" ]]; then
+        die_usage "--cas requires a non-empty jq path, got: $cas_arg"
+      fi
+      CAS_PATH="${cas_arg%%=*}"
+      CAS_VALUE="${cas_arg#*=}"
+      shift 2
+      ;;
+    --expect)
+      if [[ $# -lt 2 ]]; then
+        die_usage "--expect requires a value"
+      fi
+      if [[ "$CAS_EXPECT_SET" -eq 1 ]]; then
+        die_usage "--expect may only be given once"
+      fi
+      CAS_EXPECT="$2"
+      CAS_EXPECT_SET=1
+      shift 2
+      ;;
     --)
       shift
       break
@@ -875,7 +946,18 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$MODE" ]]; then
-  die_usage "one of --get, --set, --session-view, --repo-key or --migrate is required"
+  die_usage "one of --get, --set, --cas, --session-view, --repo-key or --migrate is required"
+fi
+
+# --cas requires --expect; --expect without --cas is a usage error.
+if [[ "$MODE" == "cas" && "$CAS_EXPECT_SET" -eq 0 ]]; then
+  die_usage "--cas requires --expect <expected-value>"
+fi
+if [[ "$MODE" != "cas" && "$CAS_EXPECT_SET" -eq 1 ]]; then
+  die_usage "--expect is only valid with --cas"
+fi
+if [[ "$MODE" == "cas" && "$DRY_RUN" == "1" ]]; then
+  die_usage "--dry-run is not supported with --cas (--dry-run is only valid with --migrate)"
 fi
 
 # --- dependency check ---
@@ -1112,6 +1194,115 @@ if [[ "$MODE" == "migrate" ]]; then
     echo "session-state.sh: could not write $STATE_FILE" >&2
     exit 5
   fi
+  exit 0
+fi
+
+# ============================================================================
+# --cas (compare-and-set, issue #1195)
+# ============================================================================
+# Compare the current value at CAS_PATH with CAS_EXPECT under one lock hold;
+# write CAS_VALUE only when they match. Exits 0 on win, 7 on mismatch, other
+# codes per the exit-status contract (2/4/5/6 unchanged). Does NOT run the
+# field-type contract check — the primary use case (.release.in_flight) is not
+# a known-typed field; a follow-up can add that if needed.
+if [[ "$MODE" == "cas" ]]; then
+  if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
+    echo "session-state.sh: could not create state dir: $STATE_DIR" >&2
+    exit 5
+  fi
+
+  # Acquire the lock — read, compare, and write all run under it.
+  state_lock_acquire "$STATE_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
+  # Install the lock-release trap immediately so every exit path (including
+  # the exit 4 below) releases the lock. Temp-file cleanup is added once the
+  # files are known (CR finding: lock was held past the validation exit).
+  trap "state_lock_release" EXIT
+
+  SEEDED_TMP=""
+  input_file="$STATE_FILE"
+  if [[ ! -f "$STATE_FILE" ]]; then
+    SEEDED_TMP="$(mktemp)"
+    printf '%s\n' '{}' > "$SEEDED_TMP"
+    input_file="$SEEDED_TMP"
+  elif ! is_single_object_state_file "$STATE_FILE"; then
+    echo "session-state.sh: $STATE_FILE must contain exactly one top-level JSON object; refusing to overwrite" >&2
+    exit 4
+  fi
+
+  CAS_ERR="$(mktemp)"
+  CAS_OUT_TMP="$STATE_FILE.tmp.$$"
+  # shellcheck disable=SC2064
+  # Update the trap to also clean up temp files now that they are defined.
+  trap "state_lock_release; rm -f '$CAS_OUT_TMP' '$CAS_ERR' ${SEEDED_TMP:+'$SEEDED_TMP'} 2>/dev/null" EXIT
+
+  warn_if_unmigratable "$input_file"
+  CAS_PATHMAP="$(migrate_jq_args "$input_file")"
+  SCOPED_CAS_PATH="$(scope_path "$CAS_PATH")"
+
+  # Build jq --argjson or --arg for the expected value (same JSON-or-string
+  # probe as --set: `--argjson` probe, not `jq -e .`, to reject null/false
+  # from the argjson branch — issue #853).
+  CAS_COMPARE_ARGS=(--argjson __pathmap "$CAS_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY")
+  if jq -n --argjson __casexpect "$CAS_EXPECT" 'empty' >/dev/null 2>&1; then
+    CAS_COMPARE_ARGS+=(--argjson __casexpect "$CAS_EXPECT")
+  else
+    CAS_COMPARE_ARGS+=(--arg __casexpect "$CAS_EXPECT")
+  fi
+
+  # Read the current value and compare with the expected value in one jq call
+  # (inside the lock), so no concurrent writer can slip in between.
+  CAS_COMPARE_RESULT="$(jq -r "${CAS_COMPARE_ARGS[@]}" \
+    "$MIGRATE_JQ migrate(\$__pathmap; \$__unknown) | $SCOPED_CAS_PATH as \$cur | if \$cur == \$__casexpect then \"match\" else \"mismatch\" end" \
+    "$input_file" 2>"$CAS_ERR")"
+  CAS_COMPARE_RC=$?
+
+  if [[ "$CAS_COMPARE_RC" -ne 0 ]]; then
+    echo "session-state.sh: jq failed reading $STATE_FILE for CAS compare: $(cat "$CAS_ERR")" >&2
+    exit 4
+  fi
+
+  if [[ "$CAS_COMPARE_RESULT" != "match" ]]; then
+    # CAS mismatch — exit 7 so callers can distinguish a lost race from an
+    # I/O or locking failure. State file is left unmodified.
+    exit 7
+  fi
+
+  # Match: apply the write (same pipeline as --set).
+  CAS_LAST_UPDATED="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  CAS_WRITE_ARGS=(--argjson __pathmap "$CAS_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY"
+                  --arg __last_updated "$CAS_LAST_UPDATED")
+  if jq -n --argjson __casnew "$CAS_VALUE" 'empty' >/dev/null 2>&1; then
+    CAS_WRITE_ARGS+=(--argjson __casnew "$CAS_VALUE")
+  else
+    CAS_WRITE_ARGS+=(--arg __casnew "$CAS_VALUE")
+  fi
+
+  CAS_JQ_FILTER="$MIGRATE_JQ migrate(\$__pathmap; \$__unknown) | $SCOPED_CAS_PATH = \$__casnew | .last_updated = \$__last_updated"
+  if ! jq "${CAS_WRITE_ARGS[@]}" "$CAS_JQ_FILTER" "$input_file" > "$CAS_OUT_TMP" 2>"$CAS_ERR"; then
+    echo "session-state.sh: jq failed writing $STATE_FILE: $(cat "$CAS_ERR")" >&2
+    exit 5
+  fi
+
+  # Lock integrity — same stolen-lock guard as --set (issue #930).
+  if ! state_lock_assert_held; then
+    _n="${CLAUDE_STATE_RMW_RETRY:-0}"; _max="${CLAUDE_STATE_RMW_MAX_RETRY:-8}"
+    if (( _n < _max )); then
+      export CLAUDE_STATE_RMW_RETRY=$(( _n + 1 ))
+      state_lock_release
+      rm -f "$CAS_OUT_TMP" "$CAS_ERR" ${SEEDED_TMP:+"$SEEDED_TMP"} 2>/dev/null || true
+      trap - EXIT
+      sleep "0.0$(( (RANDOM % 8) + 1 ))"
+      exec bash "$0" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
+    fi
+    echo "session-state.sh: lock was broken by another writer $_max times running; giving up with $STATE_FILE unchanged (retry)" >&2
+    exit "$STATE_LOCK_EXIT_TIMEOUT"
+  fi
+
+  if ! mv "$CAS_OUT_TMP" "$STATE_FILE" 2>/dev/null; then
+    echo "session-state.sh: could not write $STATE_FILE" >&2
+    exit 5
+  fi
+
   exit 0
 fi
 
