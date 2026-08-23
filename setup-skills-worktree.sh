@@ -125,6 +125,34 @@ mkdir -p "$SKILLS_DIR"
 
 WORKTREE_SKILLS="$SKILLS_WORKTREE/.claude/skills"
 
+# --- Helper: skill_owned_by_setup ---
+# Returns true (exit 0) when the symlink target is one this script manages —
+# i.e., it points into the skills worktree or into the legacy root-repo skills
+# directory that is being migrated away from. Used by both the publish and prune
+# loops to leave user-owned personal skills untouched (mirrors the identical
+# predicate in publish-agent-symlinks.sh for the agents leg).
+#
+# The target is normalized before the prefix check so that traversal sequences
+# (e.g. ~/.claude/skills-worktree/../../../etc) cannot cause a path outside the
+# managed directories to be misidentified as setup-owned.
+skill_owned_by_setup() {
+  local raw_target="$1"
+  local target
+  # Normalize the path — resolve any ../ sequences — without requiring it to exist.
+  if [[ "$raw_target" == /* ]]; then
+    target="$(python3 -c "import os,sys; print(os.path.normpath(sys.argv[1]))" \
+              "$raw_target" 2>/dev/null)" || return 1
+  else
+    # Relative symlinks are rare (all setup-created links are absolute) but resolve
+    # them against SKILLS_DIR — the parent directory of every skill symlink.
+    target="$(python3 -c "import os,sys; print(os.path.normpath(os.path.join(sys.argv[1],sys.argv[2])))" \
+              "$SKILLS_DIR" "$raw_target" 2>/dev/null)" || return 1
+  fi
+  [[ "$target" == "$WORKTREE_SKILLS/"* ]] && return 0
+  [[ "$target" == "$REPO_ROOT/.claude/skills/"* ]] && return 0
+  return 1
+}
+
 if [[ ! -d "$WORKTREE_SKILLS" ]]; then
   echo "WARNING: No .claude/skills/ directory in the worktree. Skipping skill symlinks."
 else
@@ -145,6 +173,12 @@ for skill_dir in "$WORKTREE_SKILLS"/*/; do
       echo "  $skill_name — already correct"
       continue
     fi
+    # If the link points somewhere we do not manage, it is a user-owned personal
+    # skill. Leave it alone rather than silently repointing it.
+    if ! skill_owned_by_setup "$current_target"; then
+      echo "  $skill_name — leaving user-owned symlink alone (-> $current_target)"
+      continue
+    fi
     echo "  $skill_name — updating symlink (was: $current_target)"
     rm "$link"
   elif [[ -d "$link" ]]; then
@@ -159,10 +193,23 @@ done
 # --- Step 3b: Remove orphaned skill symlinks (skill renamed or removed on main) ---
 # Use "$SKILLS_DIR"/* (not */) so dangling symlinks are included — a broken link is
 # not a directory, so */-style globs skip it.
+# Only prune setup-managed links; user-owned personal skills are left in place.
 for link in "$SKILLS_DIR"/*; do
   [[ -e "$link" || -L "$link" ]] || continue
   [[ -L "$link" ]] || continue
   skill_name="$(basename "$link")"
+  current_target="$(readlink "$link")"
+  # Skip user-owned symlinks — they point outside what setup manages.
+  if ! skill_owned_by_setup "$current_target"; then
+    echo "  $skill_name — leaving user-owned symlink alone (-> $current_target)"
+    continue
+  fi
+  # Skip legacy root-repo links: Step 4 handles them via migrate_symlink, which
+  # preserves the link and warns when the worktree target does not yet exist
+  # (skill not on main). Pruning here would remove the link before Step 4 runs.
+  if [[ "$current_target" == "$REPO_ROOT/.claude/skills/$skill_name" ]]; then
+    continue
+  fi
   if [[ ! -d "$WORKTREE_SKILLS/$skill_name" ]]; then
     echo "  $skill_name — removing stale symlink (no matching skill in worktree)"
     rm "$link"

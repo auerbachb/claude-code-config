@@ -302,21 +302,48 @@ if [[ ! -d "$SKILLS_WORKTREE/.claude/skills" ]]; then
   exit 1
 fi
 
-# Verify: all skill entries are symlinks pointing into the skills worktree
+# Verify: all setup-managed skill entries are symlinks pointing into the skills
+# worktree.  User-owned personal skills (target outside setup-managed dirs) are
+# preserved by setup-skills-worktree.sh and skipped here — they don't count
+# against the managed total and are not errors.
+#
+# Use "$CLAUDE_DIR/skills"/* (no trailing slash) to include all entries, not
+# just directories — this catches file-type symlinks and dangling symlinks.
+# Normalize symlink targets before the prefix check (mirrors the predicate in
+# setup-skills-worktree.sh) so traversal paths cannot pass the worktree check.
 skill_count=0
 skill_errors=0
-for entry in "$CLAUDE_DIR/skills"/*/; do
-  [[ -e "$entry" || -L "${entry%/}" ]] || continue
-  entry="${entry%/}"
-  skill_count=$((skill_count + 1))
+for entry in "$CLAUDE_DIR/skills"/*; do
+  [[ -e "$entry" || -L "$entry" ]] || continue
   if [[ ! -L "$entry" ]]; then
+    skill_count=$((skill_count + 1))
     echo "  ERROR: Not a symlink (copy?): $entry" >&2
     skill_errors=$((skill_errors + 1))
   else
-    resolved="$(readlink "$entry")"
-    if [[ "$resolved" != "$SKILLS_WORKTREE/.claude/skills/"* ]]; then
-      echo "  ERROR: Symlink target outside worktree: $entry -> $resolved" >&2
+    raw_resolved="$(readlink "$entry")"
+    # Normalize to remove traversal sequences — prevents a crafted target like
+    # "$SKILLS_WORKTREE/../../../etc" from passing the prefix check raw.
+    if [[ "$raw_resolved" == /* ]]; then
+      resolved="$(python3 -c "import os,sys; print(os.path.normpath(sys.argv[1]))" \
+                 "$raw_resolved" 2>/dev/null)" || resolved=""
+    else
+      resolved="$(python3 -c "import os,sys; print(os.path.normpath(os.path.join(sys.argv[1],sys.argv[2])))" \
+                 "$CLAUDE_DIR/skills" "$raw_resolved" 2>/dev/null)" || resolved=""
+    fi
+    if [[ -z "$resolved" ]]; then
+      # Normalization failed (python3 absent or error) — treat as user-owned; preserve.
+      echo "  INFO: User-owned skill symlink (normalization skipped): $(basename "$entry")"
+    elif [[ "$resolved" == "$SKILLS_WORKTREE/.claude/skills/"* ]]; then
+      skill_count=$((skill_count + 1))  # Correctly managed
+    elif [[ "$resolved" == "$REPO_ROOT/.claude/skills/"* ]]; then
+      # Legacy root-repo path — setup-skills-worktree.sh should have migrated it.
+      skill_count=$((skill_count + 1))
+      echo "  ERROR: Symlink targets legacy root-repo path (rerun setup): $entry -> $resolved" >&2
       skill_errors=$((skill_errors + 1))
+    else
+      # User-owned personal skill pointing outside setup-managed dirs.
+      # setup-skills-worktree.sh preserves these; skip them in the managed count.
+      echo "  INFO: User-owned skill symlink preserved: $(basename "$entry") -> $resolved"
     fi
   fi
 done
