@@ -126,6 +126,7 @@ if [[ "$command" == *"gh pr merge"* ]] && [[ "$exit_code" == "0" ]]; then
               # User-owned symlink (normalized target is outside the skills worktree
               # and the legacy root-repo path) — leave it alone rather than repointing.
               if [[ "$existing_norm" != "$skills_src/"* && "$existing_norm" != "$root_repo/.claude/skills/"* ]]; then
+                echo "  $name — leaving user-owned symlink alone (-> $existing)"
                 continue
               fi
               rm "$link" 2>/dev/null || true

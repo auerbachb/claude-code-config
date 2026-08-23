@@ -468,7 +468,7 @@ test_9_user_owned_skill_symlinks() {
 
   # Determine the first available worktree skill for test (c).
   local same_name_skill
-  same_name_skill="$(ls -1 "$worktree_skills" 2>/dev/null | head -1)"
+  same_name_skill="$(find "$worktree_skills" -maxdepth 1 -mindepth 1 -exec basename {} \; 2>/dev/null | head -1)"
   if [[ -z "$same_name_skill" ]]; then
     echo "  SKIP: no skills in worktree — cannot test same-name preservation"
     return
