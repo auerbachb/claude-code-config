@@ -116,7 +116,7 @@ Three author-scoped, durable sources, summed by `active-work-cap.sh`:
 | Source | Read | Why |
 |--------|------|-----|
 | Open PRs you authored | `gh pr list --state open --author @me` | Work already consuming reviewer budget. Author-scoped per #732/#733 — a collaborator's PR is context, never a gate. |
-| Live offered issue-maker work | `~/.claude/handoffs/issue-maker-*-log.json`, **distinct** `chip_task_id`s among entries with `status: "open"` and non-null `chip_task_id` | `chip_task_id` holds a locally-generated offer token (inline-run offer) or a spawn_task id (on-request chip) — both count equally. The only cross-thread-visible offer record (`chip-launching.md` "Cross-skill chip visibility"). |
+| Live offered issue-maker work | Union of (a) chip-offer registry (`chip-offer-registry.sh --count`, `offered`/`running` states) and (b) `~/.claude/handoffs/issue-maker-*-log.json`, **distinct** `chip_task_id`s among entries with `status: "open"` and non-null `chip_task_id`. Deduplicated by issue number across (a) and (b). | (a) covers all emitters — `/pm`, `/prompt`, `/wave`, `/issue-maker`, `/start-issue`. (b) covers inline-run offer tokens and on-request spawn_task ids. Dedup prevents double-counting the same work. |
 | Running inline pipelines not yet at PR | `session-state.sh --session-view`, `active_agents` entries with no `.pr` | Work in motion that has not yet become a PR, so it is invisible to the first source. |
 
 **Offered-but-not-yet-accepted work counts.** A pending inline-run offer or an unclicked chip both invite an execution start — that was the observed 2026-08-18 failure mode, so an offer is treated as committed work regardless of delivery mode. Deferred issues are re-offered as active work drains; nothing is dropped.

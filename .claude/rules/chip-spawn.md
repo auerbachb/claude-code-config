@@ -1,5 +1,9 @@
 # Chip / spawn_task Model + Effort Contract
 
+> **Always:** Open every chip `prompt` payload with the `**Model:**` and `**Effort:**` lines, followed immediately by the MODEL GUARD preamble. Repeat both lines in the visible short summary. Add the pre-click Fable warning when the parent thread is on Fable.
+> **Ask first:** Never — chip emission is autonomous.
+> **Never:** Omit the `**Model:**` or `**Effort:**` line. Use a version number instead of a bare family name. Skip the MODEL GUARD preamble. Emit a chip from the six canonical emitters without following `chip-launching.md`.
+
 Any offer to start a new coding thread via `mcp__ccd_session__spawn_task` or a click-to-launch **task chip** — including ad-hoc agent suggestions outside the six canonical emitters — MUST follow `.claude/reference/chip-launching.md`:
 
 1. **`**Model:** {MODEL} — {REASON}`** as the **first line** of the chip `prompt` payload (and of any fallback/printed block). `{MODEL}` is a bare family name — `Opus`, `Sonnet`, `Haiku`, `Fable` — never a version number.
