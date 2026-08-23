@@ -451,7 +451,6 @@ fi
 # it up as a second line of defence. `none` repos are skipped — their build is
 # not ours to claim.
 CLAIM_WRITTEN=0
-RELEASE_CLAIM_UNVERIFIED=0
 # Release the claim if the trigger never actually fired, so a failed attempt does
 # not wedge the repo as permanently "building".
 # Uses --cas (issue #1195): clears the in_flight record only when it still holds
@@ -467,7 +466,6 @@ release_claim() {
   # rc=7: someone else replaced our claim — leave their record intact
   # other: I/O or lock error — leave the record; the sweep's grace window heals it
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 7 ]; then
-    RELEASE_CLAIM_UNVERIFIED=1
     STATE_WRITE_ERR="release_claim: session-state.sh exited $rc cleaning up in-flight record"
   fi
 }

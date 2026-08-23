@@ -428,7 +428,7 @@ else bad "the cache is stamped with derived_at"; fi
 # stale derived number for a whole cache TTL.
 # Clear in_flight from test 18 without wiping the interval cache — test 19 uses
 # CAS (--expect null) so the slot must be free for the new claim to land.
-"$SCRIPTS/session-state.impl.sh" --raw-path --set '.repos["solo/app"].release.in_flight=null' >/dev/null 2>&1 || true
+"$SCRIPTS/session-state.impl.sh" --raw-path --set '.repos["solo/app"].release.in_flight=null' >/dev/null 2>&1
 FAKE_RUNS_JSON="$RECENT_BUILD" FAKE_INTERVAL=5 FAKE_INTERVAL_SOURCE=policy \
   run --repo solo/app --pr 6 --apply --phase pre-merge
 expect_field '.interval_minutes' '5' "an explicit min_interval overrides a fresh cached one"
