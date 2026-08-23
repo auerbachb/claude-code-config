@@ -516,17 +516,54 @@ else
   ok "no --allow-nonauthor forwarded when the flag was not passed"
 fi
 
-# 27c. Same forwarding under --auto-plain — the exact mode from the reported repro.
+# ============================================================================
+# Regression (issue #1251 review round — CodeAnt): --auto-plain runs UNATTENDED
+# (no human confirms the merge), so combining it with --allow-nonauthor is a
+# hard usage error, refused before ANY pre-flight work — not merely a gate
+# outcome that happens to fail. Verified by asserting zero gh calls and zero
+# merge-gate.sh calls, not just the exit code.
+# ============================================================================
+
+# 27c. --auto-plain + --allow-nonauthor is refused immediately (exit 2), no
+#      gh calls and no merge-gate.sh call at all — even on an otherwise
+#      merge-ready, clean-BEHIND PR.
 new_log
 GATE_LOG3="$TMP/gatecalls3.log"; : > "$GATE_LOG3"
 FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 FAKE_GATE_AUTHORSHIP_BLOCK=1 FAKE_GATE_LOG="$GATE_LOG3" \
   FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
   run 15 --auto-plain --ac-verified --allow-nonauthor --repo-path "$CLONE" --branch main
-expect_rc 0 "--auto-plain forwards --allow-nonauthor to merge-gate.sh too (exit 0)"
-if grep -q -- "--allow-nonauthor" "$GATE_LOG3"; then
-  ok "--auto-plain forwards --allow-nonauthor to merge-gate.sh"
+expect_rc 2 "--auto-plain + --allow-nonauthor is a hard usage error (exit 2)"
+grep_ok "does not accept --allow-nonauthor" "refusal names the specific disallowed combination"
+grep_ok "UNATTENDED" "refusal explains why (auto-plain runs unattended)"
+grep_ok "Use --print" "refusal points at --print as the alternative"
+log_absent "." "no gh call of any kind before this refusal fires"
+if [[ -s "$GATE_LOG3" ]]; then
+  bad "merge-gate.sh was invoked despite the auto-plain + --allow-nonauthor refusal (logged calls: $(cat "$GATE_LOG3"))"
 else
-  bad "--auto-plain did NOT forward --allow-nonauthor to merge-gate.sh (logged calls: $(cat "$GATE_LOG3"))"
+  ok "merge-gate.sh was never invoked — refusal fires before any pre-flight work"
+fi
+
+# 27d. Sanity companion: --auto-plain WITHOUT --allow-nonauthor is unaffected —
+#      the new hard refusal is scoped to the flag combination, not the mode.
+new_log
+GATE_LOG4="$TMP/gatecalls4.log"; : > "$GATE_LOG4"
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 FAKE_GATE_LOG="$GATE_LOG4" \
+  FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 16 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
+expect_rc 0 "--auto-plain without --allow-nonauthor still merges normally (exit 0)"
+
+# 27e. Sanity companion: --print + --allow-nonauthor is unaffected — the
+#      override still works for the modes that keep a human in the loop.
+new_log
+GATE_LOG5="$TMP/gatecalls5.log"; : > "$GATE_LOG5"
+FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' FAKE_GATE_AUTHORSHIP_BLOCK=1 FAKE_GATE_LOG="$GATE_LOG5" \
+  FAKE_PROTECTION='{"enforce_admins":{"enabled":true}}' \
+  run 17 --print --allow-nonauthor --repo-path "$CLONE" --branch main
+expect_rc 0 "--print + --allow-nonauthor is unaffected by the auto-plain-only refusal (exit 0)"
+if grep -q -- "--allow-nonauthor" "$GATE_LOG5"; then
+  ok "--print still forwards --allow-nonauthor to merge-gate.sh"
+else
+  bad "--print no longer forwards --allow-nonauthor to merge-gate.sh (logged calls: $(cat "$GATE_LOG5"))"
 fi
 
 echo "----------------------------------------"
