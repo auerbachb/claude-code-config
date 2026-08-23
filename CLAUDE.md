@@ -20,7 +20,7 @@ These apply to EVERY parent-agent message. No exceptions, no degradation, no ski
 4. **`Monitor` for recurring polls.** Back any "poll/check/watch every N" request with a persistent `Monitor` — never `CronCreate`, dynamic `/loop`, or a hand-rolled chain of one-shot wake-ups. Decision tree + pre-exit checklist: `scheduling-reliability.md`.
 5. **Dedicated monitor mode.** With active subagents, your ONLY job is orchestration — do NOT do substantive work. See `monitor-mode.md` "Dedicated Monitor Mode" for full rules.
 
-After context compaction, your FIRST action is to reconstruct monitoring state silently (see "Post-Compaction Recovery" in `monitor-mode.md`). Message only if recovery reveals a blocker or decision needing input.
+After context compaction, your FIRST action is to reconstruct monitoring state silently (see "Post-Compaction Recovery" in `monitor-mode.md`). Message if recovery reveals a blocker, failure, or decision needing input.
 
 ## Thread title — `[#issue]` prefix
 

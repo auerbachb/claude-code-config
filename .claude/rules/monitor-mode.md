@@ -19,7 +19,7 @@ Every ~60s, in order:
 2. Execute phase transitions via `phase-protocols.md`; also launch transitions stalled in `session-state.json`.
 3. For every session PR still on `reviewer == cr`, run `.claude/scripts/escalate-review.sh <PR_NUMBER>` and act on its `STATUS=` verdict before sleeping.
 4. Below the pipeline ceiling? Refill: queued chain heads, then `/pm` Step 3.4's backlog pass (under `/pm` only). Chains, re-validation, pause still bind.
-5. Message if a blocker or failure occurs, or a decision requires user input (silence otherwise); defined exceptions — merged PR #N, 4+ file-write status updates, refill picks — always emit.
+5. Follow `scheduling-reliability.md` §Mandatory Pre-Exit Checklist item 2 for what to emit (canonical output rule).
 6. Investigate stale agents: >15 min Phase A, >10 min Phase B, >5 min Phase C.
 7. Before ending the turn, confirm the ceiling is still armed: `bgwork-ceiling.sh --check`.
 
