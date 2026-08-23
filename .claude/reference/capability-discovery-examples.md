@@ -104,18 +104,45 @@ A token-scope 403 with no workaround, a branch-protection change, a `.env` edit,
 
 **Interactive auth is the wall you will actually hit most often, but it is now two different walls.** A *CLI-initiated* login is still a real wall: `railway login` opens the system browser out of the agent's reach, and no MCP browser surface can drive it — hand off `railway login` and the rest of the commands. A *dashboard* login is not a wall any more: open the page in the browser pane, ask once for sign-in plus any OAuth approval, and finish the task yourself. And in a headless or cron run, interactively-authenticated MCP servers may be missing entirely — that is a real wall again, so hand off, naming the browser rung as unavailable.
 
-Use the `/admin-merge` (#451) pattern: exact copy-paste command, a one-line reason, and — when you just installed something — the auth step too. Name the rung you stopped on:
+Use one of the two structured shapes below (§Deferral shapes). Name the rung you stopped on, provide exact copy-paste commands with a one-line reason each, and include the auth step when interactive login is required.
+
+Never substitute a prose description of what needs doing for the commands themselves.
+
+## Deferral shapes (rung 5)
+
+When rungs 1–4 are genuinely exhausted, arrive in exactly one of two shapes. Prefer shape B for click-heavy web-UI tasks — it costs you one session launch, not a UI walkthrough.
+
+### Shape A — Numbered steps
+
+Name the rung that stopped you, provide exact commands with a one-line reason each, and include the auth step when interactive login is required:
 
 ```text
 Stopped at rung 5 (interactive auth): `railway login` opens the system browser,
 which no MCP browser surface can drive.
-Run these two and I'll set the variables:
 
-  railway login
-  railway link
+1. `railway login` — opens the system browser, which no MCP browser surface can drive.
+2. `railway link` — links the authenticated project needed to set the variables.
 ```
 
-Never substitute a prose description of what needs doing for the commands themselves.
+### Shape B — Cowork-executable issue offer (preferred for web-UI tasks)
+
+Offer to file a self-contained issue written so a fresh Claude cowork session (Chrome MCP) can execute the task end-to-end without reading this thread. The issue must:
+
+- Name the site and exact UI flow (e.g. "Vercel dashboard → Project → Settings → Environment Variables")
+- State the desired end state
+- Declare it targets a browser-MCP session
+- Reference credentials by name only — never by value
+
+**Example issue body:**
+
+```text
+## Task for Claude cowork session (browser-MCP)
+Site: Vercel dashboard (vercel.com)
+Flow: Project Settings → Environment Variables → Add
+Desired end state: `DATABASE_URL` variable exists in the Production environment.
+Credential: value is in the `Prod` 1Password vault under `DATABASE_URL` — do not print it.
+Login: sign in with GitHub SSO, then continue the task.
+```
 
 ## Anti-pattern
 
