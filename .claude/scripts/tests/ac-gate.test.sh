@@ -128,10 +128,9 @@ Tracking issue: #60
 - [ ] test on physical hardware
 BODY
 
-# PR 1009 — wrong heading case (not exact "Post-merge verification") → exit 0
-# The wrong-case heading is treated as "other"; boxes there are invisible to the gate.
-# This confirms the exact-case requirement: no exemption checks run, and the gate passes
-# because no unchecked boxes exist in AC/Test Plan sections.
+# PR 1009 — wrong heading case (not exact "Post-merge verification") → exit 1
+# Near-miss headings are NOT exemption regions and NOT invisible: unchecked boxes
+# there count as in-scope failures (exit 1).  Exact-case requirement enforced.
 cat > "$TMP/pr_body/1009.txt" <<'BODY'
 ## Acceptance Criteria
 - [x] feature implemented
@@ -188,6 +187,34 @@ cat > "$TMP/pr_body/593.txt" <<'BODY'
 - [ ] hardware-only criterion 5
 BODY
 
+# PR 1011 — multiple Post-merge verification sections (section 1 no tracking, section 2 has one)
+# Regression for the HAS_UNCHECKED_EXEMPT accumulation bug: section 1 has unchecked boxes and no
+# tracking issue; section 2 supplies a tracking issue. The gate must fail on section 1 (exit 5).
+cat > "$TMP/pr_body/1011.txt" <<'BODY'
+## Acceptance Criteria
+- [x] feature implemented
+
+## Post-merge verification
+- [ ] test on hardware (section 1, no tracking issue)
+
+## Other section
+
+## Post-merge verification
+- [ ] another deferred item (section 2)
+Tracking issue: #60
+BODY
+
+# PR 1012 — pr-issue-ref.sh returns exit 4 (API failure): gate must exit 4.
+# The body has a valid Post-merge verification section with a tracking issue so
+# the self-referential check runs. A special temp directory supplies a failing
+# pr-issue-ref.sh for this test only (see Test15 below).
+cat > "$TMP/pr_body/1012.txt" <<'BODY'
+## Post-merge verification
+- [ ] deferred item
+Tracking issue: #77
+BODY
+echo "OPEN" > "$TMP/issue_state/77.txt"
+
 # ---------------------------------------------------------------------------
 # gh stub — serves PR bodies and issue states.
 # Handles all three call patterns:
@@ -238,6 +265,17 @@ case "\$subcmd" in
         echo "gh stub: unhandled issue action: \$action" >&2; exit 1 ;;
     esac
     ;;
+  repo)
+    action="\$1"; shift
+    case "\$action" in
+      view)
+        # Return a dummy repo nameWithOwner for pr-issue-ref.sh --all cross-repo filtering.
+        echo "auerbachb/claude-code-config"
+        ;;
+      *)
+        echo "gh stub: unhandled repo action: \$action" >&2; exit 1 ;;
+    esac
+    ;;
   *)
     echo "gh stub: unhandled subcmd: \$subcmd" >&2; exit 1 ;;
 esac
@@ -280,6 +318,24 @@ if [[ "$RC" -ne 0 ]]; then
   pass "Regression check: PR 593 (no tracking line) correctly fails the real gate (exit $RC)"
 else
   fail "Regression check: PR 593 should fail but gate returned exit 0"
+fi
+
+# PR 1009 malformed heading: verify the real gate now fails (wrong-case = in-scope failure)
+RC=0
+bash "$SCRIPT" 1009 2>/dev/null || RC=$?
+if [[ "$RC" -ne 0 ]]; then
+  pass "Regression check: PR 1009 (malformed heading) correctly fails the real gate (exit $RC)"
+else
+  fail "Regression check: PR 1009 should fail but gate returned exit 0"
+fi
+
+# PR 1011 multiple postmerge sections: verify the real gate fails on section 1
+RC=0
+bash "$SCRIPT" 1011 2>/dev/null || RC=$?
+if [[ "$RC" -ne 0 ]]; then
+  pass "Regression check: PR 1011 (multiple sections, section 1 no tracking) correctly fails (exit $RC)"
+else
+  fail "Regression check: PR 1011 should fail but gate returned exit 0"
 fi
 
 echo "--- End regression verification ---"
@@ -353,14 +409,15 @@ check_exit "Test8: tracking line outside section → no exemption (exit 5)" 5 "$
 check_msg  "Test8: message names the missing-line condition" "no 'Tracking issue: #N' line" "$MSG"
 
 # ---------------------------------------------------------------------------
-# Test 9: wrong heading case (Post-Merge Verification) → exit 0
-# The wrong-case heading is treated as 'other'; boxes there are not in scope.
-# This verifies the exact-case requirement: the wrong-case heading does not
-# grant exemption AND does not cause in-scope failures.
+# Test 9: wrong heading case (Post-Merge Verification) → exit 1
+# A near-miss heading (case-insensitive match but wrong case) is NOT an exemption
+# region and its unchecked boxes ARE in-scope failures. Boxes there are not
+# invisible — they cause a hard exit 1.
 # ---------------------------------------------------------------------------
 RC=0
-bash "$SCRIPT" 1009 2>/dev/null || RC=$?
-check_exit "Test9: wrong heading case — not an exemption and not in-scope (passes)" 0 "$RC"
+MSG="$(bash "$SCRIPT" 1009 2>&1 >/dev/null)" || RC=$?
+check_exit "Test9: malformed heading — boxes count as in-scope (exit 1)" 1 "$RC"
+check_msg  "Test9: message names the unchecked box condition" "unchecked" "$MSG"
 
 # ---------------------------------------------------------------------------
 # Test 10: Acceptance Criteria section — case-insensitive heading match
@@ -404,6 +461,35 @@ check_exit "Test14a: missing pr_number exits 2" 2 "$RC"
 RC=0
 bash "$SCRIPT" --bogus 2>/dev/null || RC=$?
 check_exit "Test14b: unknown flag exits 2" 2 "$RC"
+
+# ---------------------------------------------------------------------------
+# Test 15: REGRESSION — multiple Post-merge verification sections.
+# Section 1 has an unchecked box and no tracking issue; section 2 supplies a
+# tracking issue. Gate must reject on section 1 (exit 5), not let section 2
+# cover section 1's unchecked boxes.
+# ---------------------------------------------------------------------------
+RC=0
+MSG="$(bash "$SCRIPT" 1011 2>&1 >/dev/null)" || RC=$?
+check_exit "Test15: multiple postmerge sections — section 1 fails without tracking (exit 5)" 5 "$RC"
+check_msg  "Test15: message names the missing-line condition" "no 'Tracking issue: #N' line" "$MSG"
+
+# ---------------------------------------------------------------------------
+# Test 16: pr-issue-ref.sh API failure propagated as gate exit 4.
+# Uses a temporary ac-gate.sh copy alongside a failing pr-issue-ref.sh stub
+# to verify the gate does not silently swallow subprocess errors.
+# ---------------------------------------------------------------------------
+AC_GATE_TMP="$TMP/ac_gate_issue2"
+mkdir -p "$AC_GATE_TMP"
+cp "$SCRIPT" "$AC_GATE_TMP/ac-gate.sh"
+cat > "$AC_GATE_TMP/pr-issue-ref.sh" <<'FAILING_REF'
+#!/usr/bin/env bash
+echo "Error: simulated gh API failure" >&2
+exit 4
+FAILING_REF
+RC=0
+MSG="$(bash "$AC_GATE_TMP/ac-gate.sh" 1012 2>&1 >/dev/null)" || RC=$?
+check_exit "Test16: pr-issue-ref.sh exit 4 → gate exits 4" 4 "$RC"
+check_msg  "Test16: message names the pr-issue-ref failure" "pr-issue-ref.sh" "$MSG"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

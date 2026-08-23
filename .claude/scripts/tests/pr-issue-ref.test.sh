@@ -70,6 +70,14 @@ echo "General update, no linked issue" > "$TMP/pr_body/105.txt"
 # PR 106 — bare #N that should not match embedded in word
 echo "encloses#77 and enclosed #78" > "$TMP/pr_body/106.txt"
 
+# PR 107 — cross-repo ref to a DIFFERENT repo and same issue number in this repo
+# Regression for: Closes other-org/other-repo#99 must NOT collide with local #99.
+# When GITHUB_REPOSITORY=auerbachb/claude-code-config, the cross-repo ref is filtered out.
+printf 'Closes other-org/other-repo#99\nCloses #42\n' > "$TMP/pr_body/107.txt"
+
+# PR 108 — cross-repo ref to the CURRENT repo (should be included like a bare #N)
+printf 'Closes auerbachb/claude-code-config#55\n' > "$TMP/pr_body/108.txt"
+
 # ---------------------------------------------------------------------------
 # gh stub — serves pr body files for `pr view N ...` calls
 # ---------------------------------------------------------------------------
@@ -87,6 +95,11 @@ case "\$args" in
     else
       echo ""
     fi
+    ;;
+  "repo view "*)
+    # Tests 13/14 set GITHUB_REPOSITORY directly; this branch is unreachable for them.
+    # Fail here so tests without GITHUB_REPOSITORY use the unfiltered fallback (original behavior).
+    exit 1
     ;;
   *)
     echo "gh stub: unhandled args: \$args" >&2
@@ -197,6 +210,27 @@ bash "$SCRIPT" --bogus 2>/dev/null || RC=$?
 RC=0
 bash "$SCRIPT" --all 2>/dev/null || RC=$?
 [[ "$RC" -eq 2 ]] && pass "Test12c: --all with no pr_number exits 2" || fail "Test12c: expected 2, got $RC"
+
+# ---------------------------------------------------------------------------
+# Test 13: REGRESSION — cross-repo ref to a DIFFERENT repo is excluded from --all.
+# PR 107 has "Closes other-org/other-repo#99" and "Closes #42".
+# With GITHUB_REPOSITORY set to this repo, only the bare #42 is returned.
+# ---------------------------------------------------------------------------
+OUT="$(GITHUB_REPOSITORY=auerbachb/claude-code-config bash "$SCRIPT" --all 107 2>/dev/null)"
+check_line_present "Test13a: bare #42 included (same PR, different issue)" "42" "$OUT"
+if printf '%s\n' "$OUT" | grep -Fxq -- "99"; then
+  fail "Test13b: other-repo#99 must be excluded (got '99' in output)"
+else
+  pass "Test13b: other-repo#99 correctly excluded from --all output"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 14: REGRESSION — cross-repo ref to the CURRENT repo IS included in --all.
+# PR 108 has "Closes auerbachb/claude-code-config#55".
+# With GITHUB_REPOSITORY matching, issue 55 should be returned.
+# ---------------------------------------------------------------------------
+OUT="$(GITHUB_REPOSITORY=auerbachb/claude-code-config bash "$SCRIPT" --all 108 2>/dev/null)"
+check_eq "Test14: same-repo cross-ref included in --all" "55" "$OUT"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

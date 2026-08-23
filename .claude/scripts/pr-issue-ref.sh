@@ -147,14 +147,48 @@ fi
 
 # --- extract issue number(s) ---
 if [[ "$ALL_MODE" -eq 1 ]]; then
-  # --all mode: collect every closing reference in both bare #N and owner/repo#N forms.
+  # --all mode: collect every closing reference that targets the current repository.
+  #
   # Pass 1: bare `#N` form. The leading `(^|[^[:alnum:]_])` is a left word-boundary.
   BARE="$(printf '%s\n' "$BODY" | grep -oiE '(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]*#[0-9]+' | grep -oE '#[0-9]+' | grep -oE '[0-9]+' || true)"
 
   # Pass 2: cross-repo `owner/repo#N` form. Requires at least one space between
   # the keyword and the owner slug (bare `closes#N` is valid but `closesowner/` is not).
   # The leading left-boundary prevents matching inside larger words.
-  CROSS="$(printf '%s\n' "$BODY" | grep -oiE '(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+#[0-9]+' | grep -oE '[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+#[0-9]+' | grep -oE '[0-9]+$' || true)"
+  # Only include references targeting the CURRENT repository — a `Closes other/repo#99`
+  # closes issue #99 in `other/repo`, not in this repo, and must not false-collide with
+  # a local tracking issue #99. Compare with == (not a regex) to avoid dot-in-slug
+  # injection (`api.v2` would match `apiXv2` in a regex).
+  CURRENT_REPO_LOWER=""
+  if [[ -n "${GITHUB_REPOSITORY:-}" ]]; then
+    # In GitHub Actions CI, GITHUB_REPOSITORY is always set (e.g. "owner/repo").
+    CURRENT_REPO_LOWER="$(printf '%s' "${GITHUB_REPOSITORY}" | tr 'A-Z' 'a-z')"
+  else
+    # Outside CI: try gh repo view; failure is non-fatal (fall back to no filtering).
+    _REPO_RC=0
+    _REPO_OUT="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)" || _REPO_RC=$?
+    if [[ "$_REPO_RC" -eq 0 && -n "$_REPO_OUT" ]]; then
+      CURRENT_REPO_LOWER="$(printf '%s' "$_REPO_OUT" | tr 'A-Z' 'a-z')"
+    fi
+  fi
+
+  if [[ -n "$CURRENT_REPO_LOWER" ]]; then
+    # Filter cross-repo refs: only include those whose owner/repo matches this repo.
+    # Use string equality (==) after lowercasing — never interpolate repo slug into a regex.
+    CROSS="$(printf '%s\n' "$BODY" \
+      | grep -oiE '(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+#[0-9]+' \
+      | grep -oE '[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+#[0-9]+' \
+      | while IFS= read -r _ref; do
+          _repo_part="$(printf '%s' "${_ref%#*}" | tr 'A-Z' 'a-z')"
+          _issue_part="${_ref##*#}"
+          if [[ "$_repo_part" == "$CURRENT_REPO_LOWER" ]]; then
+            printf '%s\n' "$_issue_part"
+          fi
+        done || true)"
+  else
+    # Current repo unknown; fall back to including all cross-repo refs (original behavior).
+    CROSS="$(printf '%s\n' "$BODY" | grep -oiE '(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+#[0-9]+' | grep -oE '[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+#[0-9]+' | grep -oE '[0-9]+$' || true)"
+  fi
 
   # Combine, filter to pure-numeric lines, sort and deduplicate.
   ALL="$(printf '%s\n%s\n' "$BARE" "$CROSS" | grep -E '^[0-9]+$' | sort -u || true)"

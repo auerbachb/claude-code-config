@@ -7,10 +7,14 @@
 #     Scans the `## Acceptance Criteria` and `## Test plan` / `## Test Plan`
 #     sections (case-insensitive, matching the ac-checkboxes.sh convention).
 #     Any unchecked `- [ ]` outside the exemption section is a hard failure.
+#     Near-miss headings (case-insensitive match to "post-merge verification"
+#     but wrong case) are NOT treated as exemption regions — their unchecked
+#     boxes are in-scope failures, not invisible.
 #
 #   Stage 2 — exemption region (`## Post-merge verification`)
 #     The heading must match EXACTLY (spelling and case). A differently-cased
 #     or misspelled heading is not treated as an exemption region.
+#     Each Post-merge verification section is validated independently.
 #     Unchecked boxes inside the exemption section pass only when all three
 #     ordered checks succeed:
 #       1. A `Tracking issue: #N` line exists inside the section.
@@ -151,19 +155,33 @@ if ! BODY="$(gh pr view "$PR_NUM" --json body --jq '.body // ""' 2>"$GH_STDERR")
 fi
 
 # --- parse body sections ---
-# State machine: other | ac | testplan | postmerge
+# State machine: other | ac | testplan | postmerge | malformed_postmerge
+#
 # In-scope sections (AC/Test Plan): case-insensitive heading match.
 # Exemption section (Post-merge verification): EXACT heading match only.
+# Near-miss headings (same text, wrong case): malformed_postmerge state;
+#   unchecked boxes there count as in-scope failures, not exemptions.
 #
 # Variables collected during parsing:
-#   HAS_UNCHECKED_INSCOPE  1 if any unchecked box in ac or testplan
-#   HAS_UNCHECKED_EXEMPT   1 if any unchecked box in postmerge
+#   HAS_UNCHECKED_INSCOPE  1 if any unchecked box in ac, testplan, or malformed_postmerge
+#   HAS_UNCHECKED_EXEMPT   1 if any unchecked box in the current postmerge section
 #   TRACKING_ISSUE         issue number from "Tracking issue: #N" inside postmerge
 
 STATE="other"
 HAS_UNCHECKED_INSCOPE=0
 HAS_UNCHECKED_EXEMPT=0
 TRACKING_ISSUE=""
+
+# Validates a completed postmerge section. Exits 5 immediately if the section
+# had unchecked boxes but no tracking issue. Called before any state transition
+# away from "postmerge" so each section is validated when it ends.
+_commit_postmerge() {
+  if [[ "$STATE" == "postmerge" && "$HAS_UNCHECKED_EXEMPT" -eq 1 && -z "$TRACKING_ISSUE" ]]; then
+    echo "AC gate: FAIL — PR #$PR_NUM has unchecked box(es) under '## Post-merge verification' but no 'Tracking issue: #N' line inside the section." >&2
+    echo "Fix: add a line 'Tracking issue: #N' (where N is an open issue) inside the section, or check off all items." >&2
+    exit 5
+  fi
+}
 
 while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
   # Strip CRLF (defensive: body from gh may carry Windows line endings)
@@ -180,19 +198,30 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
 
     case "$heading_lower" in
       "acceptance criteria")
+        _commit_postmerge
         STATE="ac"
         ;;
       "test plan")
+        _commit_postmerge
         STATE="testplan"
         ;;
-      *)
-        # EXACT case match for exemption section (any other casing does NOT grant exemption)
+      "post-merge verification")
+        # Validate any previously completed postmerge section before entering a new one.
+        _commit_postmerge
+        # EXACT case match for exemption; wrong-case heading is a near-miss → in-scope.
         if [[ "$heading" == "Post-merge verification" ]]; then
           STATE="postmerge"
-          TRACKING_ISSUE=""  # reset: each Post-merge section is independent
+          TRACKING_ISSUE=""       # reset: each section is independent
+          HAS_UNCHECKED_EXEMPT=0  # reset: each section is independent
         else
-          STATE="other"
+          # Near-match (wrong case/spelling) does NOT grant exemption.
+          # Unchecked boxes here count as in-scope failures (exit 1).
+          STATE="malformed_postmerge"
         fi
+        ;;
+      *)
+        _commit_postmerge
+        STATE="other"
         ;;
     esac
     continue
@@ -201,7 +230,7 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
   # --- unchecked box detection (`- [ ]` with optional leading whitespace) ---
   if printf '%s' "$line" | grep -qE '^[[:space:]]*-[[:space:]]\[ \]'; then
     case "$STATE" in
-      ac|testplan)
+      ac|testplan|malformed_postmerge)
         HAS_UNCHECKED_INSCOPE=1
         ;;
       postmerge)
@@ -217,6 +246,9 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
     fi
   fi
 done <<< "$BODY"
+
+# Validate the final postmerge section (if any) after all lines are consumed.
+_commit_postmerge
 
 # --- Stage 1: unchecked boxes in scope ---
 if [[ "$HAS_UNCHECKED_INSCOPE" -eq 1 ]]; then
@@ -238,7 +270,7 @@ if [[ "$HAS_UNCHECKED_EXEMPT" -eq 1 ]]; then
   # Check 2: Tracking issue must NOT be one this PR closes (PR #588 pattern)
   CLOSED_BY_THIS_PR=0
   PR_ISSUE_RC=0
-  CLOSED_REFS="$(bash "$PR_ISSUE_REF_SH" --all "$PR_NUM" 2>/dev/null)" || PR_ISSUE_RC=$?
+  CLOSED_REFS="$(bash "$PR_ISSUE_REF_SH" --all "$PR_NUM")" || PR_ISSUE_RC=$?
   # pr-issue-ref.sh exits 1 when no closing refs found (normal); 2+ is a genuine error
   if [[ "$PR_ISSUE_RC" -gt 1 ]]; then
     echo "AC gate: FAIL — could not look up closing refs via pr-issue-ref.sh (exit $PR_ISSUE_RC)." >&2
