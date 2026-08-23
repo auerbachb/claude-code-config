@@ -46,23 +46,25 @@
 #   ACTIVE is the sum of three author-scoped, durable sources:
 #     1. Open PRs you authored — `gh pr list --state open --author @me`.
 #        Author-scoped per #732/#733; a collaborator's PR is never counted.
-#     2. Live offered chips — the UNION of:
+#     2. Live offered issue-maker work — the UNION of:
 #          a. The chip offer registry (chip-offer-registry.sh --count), which
 #             covers all emitters (/pm, /prompt, /wave, /issue-maker,
 #             /start-issue). Entries in `offered` or `running` state are counted;
 #             `pr-backed`, `done`, `retracted`, and `expired` are not.
 #             chip-offer-registry.sh "Offer Registry" (chip-launching.md) is the
 #             contract emitters follow to write here.
-#          b. Legacy issue-maker chip logs — DISTINCT `chip_task_id`s among
+#          b. Issue-maker session logs — DISTINCT `chip_task_id`s among
 #             the entries in ~/.claude/handoffs/issue-maker-*-log.json with
 #             `status: "open"` and a non-null `chip_task_id` (chip-launching.md
-#             "Cross-skill chip visibility"), TWICE narrowed (see CHIP LIVENESS
-#             below). One chip is one offer however many issues it covers.
-#             This legacy source is kept for backward compatibility while emitters
-#             migrate to the registry. It is deduplicated against (a) by issue
-#             number so the same offer is never counted twice.
-#        Offered-but-unclicked chips COUNT: twenty offered chips invite twenty
-#        clicks, which was the observed failure mode.
+#             "Cross-skill chip visibility"), TWICE narrowed (see OFFER LIVENESS
+#             below). `chip_task_id` holds either a locally-generated offer token
+#             (inline-run offer) or a spawn_task task_id (on-request chip) —
+#             both count equally as pending offered work. One offer token is one
+#             unit of pending work however many issues it covers.
+#             This source is kept alongside the registry for backward compat.
+#             It is deduplicated against (a) by issue number.
+#        Offered-but-not-yet-accepted work COUNTS: twenty offered batches invite
+#        twenty starts, which was the observed failure mode.
 #     3. Running inline pipelines not yet at PR — `active_agents` entries with
 #        no `.pr`, read through `session-state.sh --session-view` (which
 #        already drops other repos' entries and keeps unattributable ones).
@@ -81,17 +83,17 @@
 #   work would be counted twice and the effective cap halved. Entries whose
 #   issue appears in an open PR's `closingIssuesReferences` are therefore
 #   excluded. A multi-issue chip loses only the absorbed entries; it stops
-#   counting once it loses all of them (CHIP LIVENESS, PARTIAL ABSORPTION).
+#   counting once it loses all of them (OFFER LIVENESS, PARTIAL ABSORPTION).
 #
 #   Sources 2a and 2b need deduplication by issue number: an emitter that writes
 #   to the registry AND the legacy log for the same offer must not count twice.
 #
-# CHIP LIVENESS — why the raw log query is not the count
+# OFFER LIVENESS — why the raw log query is not the count
 #   chip-launching.md's discovery query answers "has this issue already been
-#   offered a chip", which is a per-issue dedup question. It is NOT a count of
-#   live work, for three reasons measured on real logs — the first two on
-#   2026-08-21 (59 raw hits across 6 logs), the third on auerbachb/inventory
-#   2026-08-22 (24 entries, one chip, ACTIVE reported as 24):
+#   offered (inline or chip)", which is a per-issue dedup question. It is NOT a
+#   count of live work, for three reasons measured on real logs — the first two
+#   on 2026-08-21 (59 raw hits across 6 logs), the third on auerbachb/inventory
+#   2026-08-22 (24 entries, one offer token, ACTIVE reported as 24):
 #
 #     1. The logs are CROSS-REPO. One `issue-maker-*-log.json` per capture
 #        thread, and those threads span every repo worked in — 34 entries for
@@ -107,12 +109,12 @@
 #        within days it would pin FREE at 0 and the gate would refuse
 #        everything forever.
 #
-#     3. ENTRIES ARE NOT CHIPS. One chip can cover MANY issues: /issue-maker
-#        offers one click-to-launch hand-off per capture session covering every
-#        issue it filed (issue-maker/SKILL.md Step 9c), so an N-issue session
-#        writes N entries all carrying ONE `chip_task_id`. Counting entries let
-#        a single 24-issue offer fill a CAP=6 board four times over and pin FREE
-#        at 0 on a repo with no open PRs and no running pipelines (#1247).
+#     3. ENTRIES ARE NOT OFFERS. One offer token or chip can cover MANY issues:
+#        /issue-maker's inline-run offer (or on-request chip) covers every open
+#        issue it filed in the session (issue-maker/SKILL.md Step 9c), so an
+#        N-issue session writes N entries all carrying ONE `chip_task_id` value.
+#        Counting entries let a single 24-issue offer fill a CAP=6 board four
+#        times over and pin FREE at 0 on a repo with no open PRs (#1247).
 #
 #   So an ENTRY counts only when its issue is STILL OPEN on GitHub — one
 #   `gh issue list --state open` call for the target repo, intersected with the
@@ -421,7 +423,7 @@ resolve_repo_slug() {
 }
 
 # Issue numbers with a live issue-maker chip, per chip-launching.md
-# "Cross-skill chip visibility", narrowed to THIS repo. See CHIP LIVENESS in
+# "Cross-skill chip visibility", narrowed to THIS repo. See OFFER LIVENESS in
 # the header for why the raw query is not the count. A missing directory or no
 # glob match is simply "no chips offered yet". A PRESENT but unparseable log is
 # a hard failure — jq's stderr stays visible so it never looks like "no chips".
@@ -591,7 +593,7 @@ open_among() {
 # /issue-maker capture session offers ONE hand-off covering every issue it
 # filed, so an N-issue session writes N entries carrying one `chip_task_id`.
 # The narrowings below run per ENTRY, and the distinct-chip count is taken over
-# what survives them. See CHIP LIVENESS.
+# what survives them. See OFFER LIVENESS.
 #
 # $1  repo slug
 # $2  (optional) newline-separated list of issue numbers already counted by
