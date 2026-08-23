@@ -299,7 +299,7 @@ next cycle.)*
 
 ### 4. CodeRabbit — the usage-based add-on *(RESOLVED 2026-08-22: it is already ON, capped at $10)*
 
-- **Depends on:** — nothing, for the *decision*. Changing the cap is gated by the billing profile (see item 3).
+- **Depends on:** — **nothing.** Neither the decision nor a future cap change is gated any more: the billing profile that once blocked plan changes was **completed by the owner 2026-08-23** (see §Gate state). *(Historical: this read "Changing the cap is gated by the billing profile (see item 3)" while that form was outstanding.)* Raising or lowering the $10 cap is now simply an owner decision with nothing in front of it.
 - **Submitted:** n/a — no purchase was needed.
 - **Approved:** **already in effect.** Read from `Billing → Edit` on 2026-08-22: **Usage-based reviews ON**, spend cap **$10**; AI Deep Scan usage **Off**; Agent usage **Off**.
 
@@ -317,8 +317,11 @@ next cycle.)*
 > overflow per cycle against a measured problem of 196 of 290 reviews rate-limited and **"3 developers
 > (100%) hit review rate limits in the last 30 days"** (CodeRabbit's own Explore page, 2026-08-22) —
 > corroborated by the audit's `rate_limit` D3 on 217 PRs. The investigated sizing was **~$50** against
-> **$147–247/mo** to cover the whole overflow. Revisit once the seat cut lands and the demand picture
-> settles; raising it is an add-on change and therefore sits behind the same billing form.
+> **$147–247/mo** to cover the whole overflow. **Both preconditions are now met**: the seat cut landed
+> 2026-08-23 and the billing form is complete, so raising the cap is an owner decision with nothing
+> gating it — worth revisiting once a cycle of post-cut demand data exists. *(As written 2026-08-22:
+> "Revisit once the seat cut lands and the demand picture settles; raising it is an add-on change and
+> therefore sits behind the same billing form." The form no longer blocks it.)*
 
 This is a **spend** that buys back throughput, not a saving. The problem measured large: 196 of
 290 reviews rate-limited (68%), 87.4h average wait, and **36% of blocked PRs merged unreviewed**.
@@ -488,11 +491,12 @@ carried to [#1228](https://github.com/auerbachb/claude-code-config/issues/1228),
 reached a terminal state when it closed 2026-08-23**:
 
 1. **Autofix → Off** — **APPLIED 2026-08-22.** 299 runs, **0 ever merged**. Pure waste, and it cost
-   zero review coverage. The largest realised saving in the whole effort. **Size it as ~$470 of
-   *historical* spend, not $470 per cycle** — 299 runs is the **lifetime** autofix volume (27% of
-   lifetime run volume, Round 4), so the recurring saving is whatever that rate works out to per
-   cycle, which nobody has measured. Re-measure after a full cycle with autofix off before quoting a
-   monthly figure.
+   zero review coverage — which makes it the **clearest** lever taken in the whole effort, though not
+   a quantified one. **The ~$470 is historical waste, not money now banked:** 299 runs is the
+   **lifetime** autofix volume (27% of lifetime run volume, Round 4), so that figure measures spend
+   already incurred. Switching autofix off **prevents further spend of the same kind**; how much it
+   avoids per cycle is **unmeasured**. Re-measure after a full cycle with autofix off before quoting
+   any saving figure, monthly or otherwise.
 2. **Drop the 23 out-of-scope org repos** from BugBot coverage — **DECLINED 2026-08-22.** The
    per-repo run split sized it at **$0** (not one run has ever come from those repos), and the only
    route is the org-wide GitHub App installation. Blast radius exceeded the benefit.
