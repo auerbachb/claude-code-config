@@ -111,19 +111,20 @@ effective limit = min(pipeline_ceiling, active_work_cap)
 
 ## What counts as active
 
-Three author-scoped, durable sources, summed by `active-work-cap.sh`:
+Four author-scoped, durable sources, summed by `active-work-cap.sh`:
 
 | Source | Read | Why |
 |--------|------|-----|
 | Open PRs you authored | `gh pr list --state open --author @me` | Work already consuming reviewer budget. Author-scoped per #732/#733 — a collaborator's PR is context, never a gate. |
-| Live offered issue-maker work | Union of (a) chip-offer registry (`chip-offer-registry.sh --count`, `offered`/`running` states) and (b) `~/.claude/handoffs/issue-maker-*-log.json`, **distinct** `chip_task_id`s among entries with `status: "open"` and non-null `chip_task_id`. Deduplicated by issue number across (a) and (b). | (a) covers all emitters — `/pm`, `/prompt`, `/wave`, `/issue-maker`, `/start-issue`. (b) covers inline-run offer tokens and on-request spawn_task ids. Dedup prevents double-counting the same work. |
+| Registry chip offers | `chip-offer-registry.sh --list` (snapshot filtered to `offered`/`running`, non-expired entries; supplies both the entry count and the issue list for dedup) | One registry entry = one chip = one capacity slot. Batch reservations store multiple issues per entry; the entry count is used for capacity, not the issue count. |
+| Live offered issue-maker chips (legacy) | `~/.claude/handoffs/issue-maker-*-log.json`, **distinct** `chip_task_id`s among entries with `status: "open"` and non-null `chip_task_id` | Backward-compatible source for emitters not yet using the registry. Deduplicated against registry by issue number so no chip is counted twice. |
 | Running inline pipelines not yet at PR | `session-state.sh --session-view`, `active_agents` entries with no `.pr` | Work in motion that has not yet become a PR, so it is invisible to the first source. |
 
 **Offered-but-not-yet-accepted work counts.** A pending inline-run offer or an unclicked chip both invite an execution start — that was the observed 2026-08-18 failure mode, so an offer is treated as committed work regardless of delivery mode. Deferred issues are re-offered as active work drains; nothing is dropped.
 
-**Sources 1 and 3 are disjoint by construction**, and need no reconciliation: an `active_agents` entry acquires a `.pr` the moment its pipeline opens a PR, at which point the first source counts it and the third stops.
+**Sources 1 and 4 are disjoint by construction**, and need no reconciliation: an `active_agents` entry acquires a `.pr` the moment its pipeline opens a PR, at which point the first source counts it and the fourth stops.
 
-**Sources 1 and 2 are not**, and the script performs two explicit narrowings to keep them from double-counting or over-reaching. Do not remove either on the assumption that the sources are independent:
+**Sources 1 and 3 are not**, and the script performs two explicit narrowings to keep them from double-counting or over-reaching. Do not remove either on the assumption that the sources are independent:
 
 1. **Subtract entries an open PR already covers.** A chip's log entry survives the click, and its issue stays open until the PR merges, so a clicked chip would be counted once as a chip and again as a PR — halving the effective cap. Entries whose issue appears in an open PR's `closingIssuesReferences` are excluded.
 2. **Keep only entries whose issue is still open.** `chip_task_id` is cleared on acceptance (after `/subagent` starts), on decline, and on explicit retract — so without this filter the count would still be a monotonic high-water mark for any log entries whose issue closed before the offer resolved.
@@ -160,3 +161,5 @@ An absent value is normal and silent. An **unparseable or out-of-range** value w
 - **A count, not a scheduler.** The helper reports `CAP`/`ACTIVE`/`FREE`. It does not queue, prioritize, or re-offer; deferral and re-offer are the emitters' behavior, defined once in `chip-launching.md`.
 - **The per-developer assumption.** Term 1 divides one developer's 5/hr allowance. A repo where several seat-holders open PRs concurrently has a larger aggregate budget, and this default is conservative there. The knob is the escape hatch.
 - **`r = 2` productive rounds is an estimate.** The rebase term `k(k−1)/2` is exact arithmetic; the `2k` it is added to is a modelling assumption. Changing `r` moves the churn-share percentages but not the parity point, which depends only on `k` relative to the allowance.
+- **`/pm` and `/prompt` undercount.** These emitters create chips without writing to the issue-maker legacy log. They use the registry (source 2), so their offers are visible to the cap. Work claimed before a PR opens but after the chip is dismissed may transiently not appear in any source; this window is short and bounded by the pipeline ceiling.
+- **Cross-session task-id stability.** Registry `task_id`s generated automatically use timestamp + PID + random; they are unique with high probability but not guaranteed globally. A caller-supplied `--task-id` should be stable and unique if used for durable cross-session tracking (#1238 §Deferral 3).

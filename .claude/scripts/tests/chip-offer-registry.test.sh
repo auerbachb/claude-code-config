@@ -300,6 +300,138 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 20. Batch reserve: multiple --issue flags create ONE entry (not N)
+# ---------------------------------------------------------------------------
+H="$(make_home)"
+tid_batch="$(run_registry "$H" --reserve --emitter issue-maker \
+  --issue 200 --issue 201 --issue 202 \
+  --cap-free 3 2>/dev/null)"
+rc_batch=$?
+n_batch="$(run_registry "$H" --count)"
+# Exactly 1 entry (one chip) regardless of 3 issue numbers passed.
+if [[ $rc_batch -eq 0 && "$n_batch" == "1" ]]; then
+  ok "batch --reserve with 3 issues creates exactly 1 registry entry"
+else
+  fail "batch reserve: rc=$rc_batch count=$n_batch (expected 0,1)"
+fi
+
+# 21. Batch entry stores all issue numbers in "issues" array
+arr_batch="$(run_registry "$H" --list)"
+issues_json="$(printf '%s' "$arr_batch" | jq -c '.[0].issues')"
+issue_first="$(printf '%s' "$arr_batch" | jq '.[0].issue')"
+if [[ "$issues_json" == "[200,201,202]" && "$issue_first" == "200" ]]; then
+  ok "batch entry stores issues array and issue scalar"
+else
+  fail "batch entry schema: issues=$issues_json issue=$issue_first"
+fi
+
+# 22. A second batch reserve against the same FREE=3 pool sees count=1 already
+tid_batch2="$(run_registry "$H" --reserve --emitter pm \
+  --issue 203 --cap-free 3 2>/dev/null)"
+rc_batch2=$?
+n_batch2="$(run_registry "$H" --count)"
+if [[ $rc_batch2 -eq 0 && "$n_batch2" == "2" ]]; then
+  ok "second reserve after batch sees count=2 (entries, not issues)"
+else
+  fail "second reserve after batch: rc=$rc_batch2 count=$n_batch2 (expected 0,2)"
+fi
+
+# 23. Batch reserve with cap-free=1 only lets 1 entry through even for 3 issues
+H="$(make_home)"
+tid_ok="$(run_registry "$H" --reserve --emitter issue-maker \
+  --issue 300 --issue 301 --cap-free 1 2>/dev/null)"
+rc_ok=$?
+run_registry "$H" --reserve --emitter pm --issue 302 --cap-free 1 >/dev/null 2>&1
+rc_cap=$?
+if [[ $rc_ok -eq 0 && $rc_cap -eq 7 ]]; then
+  ok "batch reserve with FREE=1: first batch wins, second exits 7"
+else
+  fail "batch + cap-free=1: rc_ok=$rc_ok rc_cap=$rc_cap"
+fi
+
+# ---------------------------------------------------------------------------
+# 24. --retract: frees a reservation (deferral 2 — release on failure)
+# ---------------------------------------------------------------------------
+H="$(make_home)"
+tid_r="$(run_registry "$H" --reserve --emitter pm --issue 400 --cap-free 3)"
+n_before="$(run_registry "$H" --count)"
+run_registry "$H" --retract --task-id "$tid_r" >/dev/null
+rc_ret=$?
+n_after="$(run_registry "$H" --count)"
+st_after="$(run_registry "$H" --list | jq -r '.[0].state')"
+if [[ $rc_ret -eq 0 && "$n_before" == "1" && "$n_after" == "0" && "$st_after" == "retracted" ]]; then
+  ok "--retract frees slot: count went from 1 to 0, state=retracted"
+else
+  fail "--retract: rc=$rc_ret n_before=$n_before n_after=$n_after state=$st_after"
+fi
+
+# 25. --retract on unknown task_id is a no-op success (idempotent)
+H="$(make_home)"
+run_registry "$H" --retract --task-id "nonexistent-id-xyz" >/dev/null 2>&1
+rc_noop=$?
+if [[ $rc_noop -eq 0 ]]; then
+  ok "--retract on unknown task_id exits 0 (no-op)"
+else
+  fail "--retract no-op: expected exit 0, got $rc_noop"
+fi
+
+# 26. task_id entropy: generated ids include timestamp, PID, and hex random
+H="$(make_home)"
+tid_e="$(run_registry "$H" --reserve --emitter pm --issue 500 --cap-free 5)"
+# Generated format: offer-<epoch>-<pid>-<8hexdigits>
+if [[ "$tid_e" =~ ^offer-[0-9]+-[0-9]+-[0-9a-f]{8}$ ]]; then
+  ok "generated task_id has offer-<ts>-<pid>-<hex> format (entropy fix)"
+else
+  fail "task_id format: '$tid_e' (expected offer-<ts>-<pid>-<8hex>)"
+fi
+
+# 27. --reserve with no --issue exits 2
+H="$(make_home)"
+HOME="$H" bash "$REGISTRY" --repo test/repo --reserve --emitter pm --cap-free 3 >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "--reserve with no --issue exits 2" || fail "--reserve with no --issue: expected exit 2"
+
+# 28. --retract with no --task-id exits 2
+H="$(make_home)"
+HOME="$H" bash "$REGISTRY" --repo test/repo --retract >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "--retract with no --task-id exits 2" || fail "--retract no --task-id: expected exit 2"
+
+# ---------------------------------------------------------------------------
+# 29. Regression: existing registry entries must not cause false cap exhaustion
+#     when the caller passes the absolute admission limit (baseline + FREE).
+#
+#     Scenario: CAP=6, 3 existing offered entries, FREE=3 → admission limit = 6.
+#     All 3 new reservations must succeed; a 7th would exceed the limit.
+# ---------------------------------------------------------------------------
+H="$(make_home)"
+# Seed 3 baseline entries (cap-free=10 as an unconstrained seed)
+run_registry "$H" --reserve --emitter pm --issue 700 --cap-free 10 >/dev/null
+run_registry "$H" --reserve --emitter prompt --issue 701 --cap-free 10 >/dev/null
+run_registry "$H" --reserve --emitter wave --issue 702 --cap-free 10 >/dev/null
+baseline_count="$(run_registry "$H" --count)"
+
+# admission limit = baseline (3) + FREE (3) = 6
+admission_limit=$(( baseline_count + 3 ))
+
+rc_29a=0; rc_29b=0; rc_29c=0
+run_registry "$H" --reserve --emitter pm --issue 703 --cap-free "$admission_limit" >/dev/null 2>&1 || rc_29a=$?
+run_registry "$H" --reserve --emitter pm --issue 704 --cap-free "$admission_limit" >/dev/null 2>&1 || rc_29b=$?
+run_registry "$H" --reserve --emitter pm --issue 705 --cap-free "$admission_limit" >/dev/null 2>&1 || rc_29c=$?
+if [[ $rc_29a -eq 0 && $rc_29b -eq 0 && $rc_29c -eq 0 ]]; then
+  ok "existing registry entries: 3 reserves against (baseline+FREE=6) all succeed"
+else
+  fail "existing registry entries: false exhaustion (rc_29a=$rc_29a rc_29b=$rc_29b rc_29c=$rc_29c; expected all 0)"
+fi
+
+# 7th reserve must be rejected (count now = 6 = admission limit)
+rc_29d=0
+run_registry "$H" --reserve --emitter pm --issue 706 --cap-free "$admission_limit" >/dev/null 2>&1 || rc_29d=$?
+if [[ $rc_29d -eq 7 ]]; then
+  ok "existing registry entries: 7th reserve exits 7 (admission limit reached)"
+else
+  fail "existing registry entries: 7th reserve should exit 7, got $rc_29d"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""

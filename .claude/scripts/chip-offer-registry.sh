@@ -14,9 +14,11 @@
 #
 # USAGE
 #   chip-offer-registry.sh [--repo owner/name] --reserve --emitter <emitter>
-#                          --issue <N> --cap-free <N> [--task-id <id>]
+#                          --issue <N> [--issue <N> ...] --cap-free <N>
+#                          [--task-id <id>]
 #   chip-offer-registry.sh [--repo owner/name] --transition --task-id <id>
 #                          --state <state>
+#   chip-offer-registry.sh [--repo owner/name] --retract --task-id <id>
 #   chip-offer-registry.sh [--repo owner/name] --count [--state <state>]
 #   chip-offer-registry.sh [--repo owner/name] --list [--state <state>]
 #   chip-offer-registry.sh --help | -h
@@ -45,11 +47,31 @@
 #     (a) creates a new entry and exits 0 — if count < cap-free, or
 #     (b) exits 7 (cap exhausted) — if count >= cap-free.
 #
-#   --cap-free N is the FREE count from active-work-cap.sh observed just
-#   before calling --reserve. The atomic critical section ensures that if two
-#   emitters concurrently see FREE=1 and both call --reserve --cap-free 1,
-#   the first write produces 1 registry entry (count 0 < 1: succeed) and the
-#   second finds count 1 >= 1 and exits 7 — exactly one offer, not two.
+#   --cap-free N is the ABSOLUTE ADMISSION LIMIT for registry entries, not
+#   the raw FREE count from active-work-cap.sh.  Because active-work-cap.sh
+#   already counts existing offered/running registry entries in ACTIVE (and
+#   therefore subtracts them from FREE), passing FREE directly would cause
+#   false cap exhaustion whenever active_count > 0.  Callers must pass
+#   (registry_baseline + FREE), where registry_baseline = chip-offer-registry.sh
+#   --count read just before the --reserve call.  The atomic critical section
+#   ensures that if two emitters both observe the same snapshot and both call
+#   --reserve with the same CAP_ADMISSION, reservations succeed while
+#   active_count < CAP_ADMISSION and exit 7 once active_count reaches
+#   CAP_ADMISSION — for example, with FREE=1, the first write finds
+#   active_count == baseline (< CAP_ADMISSION) and succeeds; the second
+#   finds active_count == baseline+1 == CAP_ADMISSION and exits 7.
+#
+#   ONE ENTRY PER CHIP (not per issue). A batch hand-off covering N issues is
+#   ONE chip (one spawn_task call), so --reserve is called ONCE for the batch.
+#   Pass --issue for each covered issue (e.g. --issue 10 --issue 11 --issue 12);
+#   all are stored in the "issues" array so active-work-cap.sh can exclude them
+#   all from the legacy chip-log count, preventing double-counting.
+#
+# RELEASE ON FAILURE (--retract)
+#   If the spawn_task call following --reserve fails, the caller MUST release
+#   the reservation immediately via --retract --task-id <tid>. TTL self-heals
+#   a crashed turn, but an explicit retract frees the slot in the same turn.
+#   --retract is a convenience alias for --transition --state retracted.
 #
 # TTL
 #   CLAUDE_CHIP_OFFER_TTL_S (default 86400 = 24 h). An entry whose offered_at
@@ -63,12 +85,16 @@
 # FLAGS
 #   --repo <owner/name>   Registry scope. Defaults to the origin remote of cwd.
 #   --emitter <name>      Emitter name. Required for --reserve.
-#   --issue <N>           GitHub issue number. Required for --reserve.
-#   --cap-free <N>        FREE slot count from active-work-cap.sh. Required for
-#                         --reserve. Used for the atomic limit check.
+#   --issue <N>           GitHub issue number. May be repeated for batch offers.
+#                         Required for --reserve (at least once).
+#   --cap-free <N>        Absolute admission limit for registry entries (not
+#                         the raw FREE value from active-work-cap.sh). Callers
+#                         must pass (registry_baseline + FREE) so the locked
+#                         comparison is correct when existing entries are already
+#                         reflected in FREE. Required for --reserve.
 #   --task-id <id>        Caller-supplied task_id. Optional for --reserve
-#                         (generated as "offer-<ts>-<random>" when absent).
-#                         Required for --transition.
+#                         (generated as "offer-<ts>-<pid>-<random>" when absent).
+#                         Required for --transition and --retract.
 #   --state <state>       Target state for --transition. Filter for --count/--list.
 #
 # EXIT CODES
@@ -78,6 +104,14 @@
 #   5  Write failure (mktemp, mv, missing lock library).
 #   6  Lock timeout (STATE_LOCK_EXIT_TIMEOUT from state-lock.sh).
 #   7  Cap exhausted (--reserve only: all FREE slots are claimed).
+#
+# TASK-ID STABILITY
+#   Generated task_ids use timestamp + PID + random to minimise the chance of
+#   aliasing across two sessions that start in the same second. Since
+#   session-state.json is the persistence layer, an id generated before an app
+#   restart can still be transitioned by a later session as long as the entry
+#   exists in the file. Caller-supplied --task-id values must be stable and
+#   unique across restarts if used for durable cross-session tracking.
 #
 # STORE
 #   ~/.claude/session-state.json, under .repos["<owner/name>"].chip_offers.
@@ -275,7 +309,7 @@ count_active_offers() {
 MODE=""
 REPO_OPT=""
 EMITTER=""
-ISSUE_NUM=""
+ISSUE_NUMS=()   # accumulates --issue values; batch offers pass more than one
 CAP_FREE=""
 TASK_ID_OPT=""
 TARGET_STATE=""
@@ -297,6 +331,9 @@ while [[ $# -gt 0 ]]; do
     --transition)
       [[ -z "$MODE" ]] || die_usage "conflicting modes"
       MODE="transition"; shift ;;
+    --retract)
+      [[ -z "$MODE" ]] || die_usage "conflicting modes"
+      MODE="retract"; shift ;;
     --count)
       [[ -z "$MODE" ]] || die_usage "conflicting modes"
       MODE="count"; shift ;;
@@ -312,11 +349,13 @@ while [[ $# -gt 0 ]]; do
       shift ;;
     --issue)
       [[ $# -ge 2 && -n "${2:-}" ]] || die_usage "--issue requires a value"
-      ISSUE_NUM="$2"; shift 2 ;;
+      [[ "${2}" =~ ^[1-9][0-9]*$ ]] || die_usage "--issue must be a positive integer (got: ${2})"
+      ISSUE_NUMS+=("$2"); shift 2 ;;
     --issue=*)
-      ISSUE_NUM="${1#--issue=}"
-      [[ -n "$ISSUE_NUM" ]] || die_usage "--issue requires a value"
-      shift ;;
+      _iv="${1#--issue=}"
+      [[ -n "$_iv" ]] || die_usage "--issue requires a value"
+      [[ "$_iv" =~ ^[1-9][0-9]*$ ]] || die_usage "--issue must be a positive integer (got: $_iv)"
+      ISSUE_NUMS+=("$_iv"); shift ;;
     --cap-free)
       [[ $# -ge 2 && -n "${2:-}" ]] || die_usage "--cap-free requires a value"
       CAP_FREE="$2"; shift 2 ;;
@@ -345,7 +384,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$MODE" ]] || die_usage "no mode specified (--reserve|--transition|--count|--list)"
+[[ -n "$MODE" ]] || die_usage "no mode specified (--reserve|--transition|--retract|--count|--list)"
 
 REPO_KEY="$(resolve_repo_key "$REPO_OPT")"
 
@@ -395,9 +434,8 @@ load_lock_lib
 if [[ "$MODE" == "reserve" ]]; then
   # Validate required args.
   [[ -n "$EMITTER" ]] || die_usage "--reserve requires --emitter"
-  [[ -n "$ISSUE_NUM" ]] || die_usage "--reserve requires --issue"
+  (( ${#ISSUE_NUMS[@]} > 0 )) || die_usage "--reserve requires at least one --issue"
   [[ -n "$CAP_FREE" ]] || die_usage "--reserve requires --cap-free"
-  [[ "$ISSUE_NUM" =~ ^[0-9]+$ ]] || die_usage "--issue must be a positive integer (got: $ISSUE_NUM)"
   [[ "$CAP_FREE" =~ ^[0-9]+$ ]] || die_usage "--cap-free must be a non-negative integer (got: $CAP_FREE)"
 
   # Validate emitter name — must match one of the six canonical spawn_task emitters
@@ -408,10 +446,17 @@ if [[ "$MODE" == "reserve" ]]; then
     *) die_usage "--emitter must be one of: pm, prompt, wave, issue-maker, start-issue, harness-audit (got: $EMITTER)" ;;
   esac
 
+  # Build the JSON array of issue numbers (already validated as integers during parsing).
+  ISSUES_JSON="$(printf '%s\n' "${ISSUE_NUMS[@]}" | jq -Rn '[inputs | tonumber]' 2>&1)" || \
+    die_parse "could not build issues array: $ISSUES_JSON"
+  FIRST_ISSUE="${ISSUE_NUMS[0]}"
+
   # Generate task-id if not provided.
+  # Use timestamp + PID + two RANDOM words for entropy across concurrent sessions
+  # that might start in the same second (deferral 3 fix: ts-only ids could alias).
   local_task_id="$TASK_ID_OPT"
   if [[ -z "$local_task_id" ]]; then
-    local_task_id="offer-$(date -u +%s)-$RANDOM"
+    local_task_id="offer-$(date -u +%s)-$$-$(printf '%04x%04x' "$RANDOM" "$RANDOM")"
   fi
 
   NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -431,18 +476,24 @@ if [[ "$MODE" == "reserve" ]]; then
 
   if (( active_count >= CAP_FREE )); then
     state_lock_release
-    echo "chip-offer-registry.sh: cap exhausted ($active_count >= $CAP_FREE free slots; repo=$REPO_KEY)" >&2
+    echo "chip-offer-registry.sh: cap exhausted ($active_count >= $CAP_FREE admission limit; repo=$REPO_KEY)" >&2
     exit 7
   fi
 
   # Build the new entry.
+  # "issue" (scalar) is the primary/first issue for backward compat.
+  # "issues" (array) is the full set — active-work-cap.sh reads all of them so
+  # that every covered issue is excluded from the legacy chip-log count,
+  # preventing double-counting when the emitter also stamps chip_task_id in the
+  # legacy log (deferral 1 fix).
   new_entry="$(jq -cn \
     --arg tid "$local_task_id" \
     --arg emitter "$EMITTER" \
-    --argjson issue "$ISSUE_NUM" \
+    --argjson issue "$FIRST_ISSUE" \
+    --argjson issues "$ISSUES_JSON" \
     --arg now "$NOW" \
     --arg expires "$EXPIRES_AT" \
-    '{task_id: $tid, emitter: $emitter, issue: $issue, state: "offered",
+    '{task_id: $tid, emitter: $emitter, issue: $issue, issues: $issues, state: "offered",
       offered_at: $now, expires_at: $expires, pr: null, last_updated: $now}' 2>&1)" || {
       state_lock_release
       die_parse "could not build registry entry: $new_entry"
@@ -504,6 +555,48 @@ if [[ "$MODE" == "transition" ]]; then
     ]' 2>&1)" || {
     state_lock_release
     die_parse "could not update entry state: $updated"
+  }
+
+  write_offers "$REPO_KEY" "$updated"
+  state_lock_release
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# --retract: convenience alias — move entry to retracted (release on failure).
+# Call this immediately after a failed spawn_task to free the reserved slot
+# without waiting for TTL expiry (deferral 2 fix).
+# ---------------------------------------------------------------------------
+if [[ "$MODE" == "retract" ]]; then
+  [[ -n "$TASK_ID_OPT" ]] || die_usage "--retract requires --task-id"
+
+  NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  state_lock_acquire "$STATE_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
+
+  existing="$(read_offers "$REPO_KEY")"
+
+  # Treat an unknown task_id as a no-op success — idempotent retract.
+  found="$(printf '%s' "$existing" | jq -r --arg tid "$TASK_ID_OPT" \
+    '[.[] | select(.task_id == $tid)] | length' 2>&1)" || {
+    state_lock_release
+    die_parse "jq failed looking up task_id: $found"
+  }
+  if [[ "$found" == "0" ]]; then
+    state_lock_release
+    exit 0  # no-op: entry already absent or already terminal
+  fi
+
+  updated="$(printf '%s' "$existing" | jq \
+    --arg tid "$TASK_ID_OPT" --arg now "$NOW" '
+    [ .[]
+      | if .task_id == $tid
+        then .state = "retracted" | .last_updated = $now
+        else .
+        end
+    ]' 2>&1)" || {
+    state_lock_release
+    die_parse "could not retract entry: $updated"
   }
 
   write_offers "$REPO_KEY" "$updated"
