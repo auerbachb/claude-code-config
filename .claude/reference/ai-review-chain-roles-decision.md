@@ -330,8 +330,9 @@ the same evidence next audit.
    **~~Every Push → per PR~~** and **~~Effort → Medium~~** were **DECLINED 2026-08-21** — the owner
    wants the spend down and the review aggressive. *(As written 2026-08-21 this item said all four
    "are accepted and carried to #1228" and closed "Still do all of this before considering a Cursor
-   cap raise; scope costs nothing." Two of the four were not done, so treat that instruction as
-   spent — nothing here is outstanding.)*
+   cap raise; scope costs nothing." Only Autofix was applied; the repository drop was declined and
+   Incremental/Drafts were waived, so treat that instruction as spent — nothing here is
+   outstanding.)*
 4. **~~Fix the CodeAnt subscription identity~~ — DONE 2026-08-21.** The global git identity was the
    placeholder `CI <ci@example.com>` — the actual cause of the warning on 84% of PRs — and is now set
    to the operator's own seat-holding address. It must never point at a collaborator's address, which
