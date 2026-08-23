@@ -1,6 +1,6 @@
 # Monitor Mode, Heartbeats & Recovery
 
-> **Always:** Enter monitor mode when subagents are active. Timestamp every message (CLAUDE.md #1). Arm the silence ceiling when background work starts (`scheduling-reliability.md`). Report subagent failures immediately. Recover state after compaction.
+> **Always:** Enter monitor mode when subagents are active. Timestamp every user-visible message (CLAUDE.md #1; exception: the clean auto-merge line `merged PR #N` omits the timestamp per CLAUDE.md #3). Arm the silence ceiling when background work starts (`scheduling-reliability.md`). Report subagent failures immediately. Recover state after compaction.
 > **Ask first:** Breaking monitor mode for explicit user requests — warn about paused monitoring first.
 > **Never:** Do substantive work while subagents are active. Let a stalled PR go unreported. Ask permission to monitor — babysitting an in-flight PR is the default (`CLAUDE.md`).
 
@@ -19,7 +19,7 @@ Every ~60s, in order:
 2. Execute phase transitions via `phase-protocols.md`; also launch transitions stalled in `session-state.json`.
 3. For every session PR still on `reviewer == cr`, run `.claude/scripts/escalate-review.sh <PR_NUMBER>` and act on its `STATUS=` verdict before sleeping.
 4. Below the pipeline ceiling? Refill: queued chain heads, then `/pm` Step 3.4's backlog pass (under `/pm` only). Chains, re-validation, pause still bind.
-5. Message only if a blocker, failure, or decision requires user input (silence otherwise).
+5. Message only if a blocker, failure, or decision requires user input (silence otherwise); defined exceptions — merged PR #N, 4+ file-write status updates, refill picks — always emit.
 6. Investigate stale agents: >15 min Phase A, >10 min Phase B, >5 min Phase C.
 7. Before ending the turn, confirm the ceiling is still armed: `bgwork-ceiling.sh --check`.
 

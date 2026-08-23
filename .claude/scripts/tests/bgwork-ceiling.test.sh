@@ -105,8 +105,10 @@ OUT=$("$SCRIPT" --tick --session "$SID")
 [[ "$OUT" == *"CEILING BREACH"* ]] || fail "--tick past the trip point should breach, got: '$OUT'"
 [[ "$OUT" == *"Liveness"* ]] || \
   fail "breach line must point at the monitor-mode.md Liveness section, got: '$OUT'"
+[[ "$OUT" != *"User Heartbeat"* ]] || \
+  fail "breach line must NOT contain removed User Heartbeat section name, got: '$OUT'"
 [[ "$OUT" == *"nothing new"* ]] || \
-  fail "breach line must authorise a nothing-new heartbeat, got: '$OUT'"
+  fail "breach line must authorise a nothing-new status, got: '$OUT'"
 LINES=$(printf '%s' "$OUT" | wc -l | tr -d ' ')
 [[ "$LINES" -le 1 ]] || fail "breach output should be a single line, got $LINES newlines"
 ok "--tick emits a single one-line status instruction on breach"

@@ -37,7 +37,7 @@ Before any polling turn ends (`Monitor`, legacy one-shot, or a turn ending with 
    - `Monitor`: verify its task is active and its command emitted the latest expected tick.
    - Legacy `ScheduleWakeup`: confirm this turn made the next-tick call and it returned cleanly. Never chain it for recurrence; switch to `Monitor`.
    - Background work: `bgwork-ceiling.sh --check` passes; if not, arm it (`--arm-command` → `Monitor`). The Stop hook blocks the turn otherwise.
-2. **Any blocker or decision requiring user input?** If yes, surface it immediately (≤2 lines, action first); otherwise stay silent.
+2. **Any blocker, failure, or decision requiring output?** If yes, surface it immediately (≤2 lines, action first); otherwise stay silent. Defined exceptions — merged PR #N, 4+ file-write status, refill picks — always emit and are not suppressed by silence-by-default.
 3. **Monitoring state recorded?** Update `~/.claude/session-state.json` with tick time, next expected tick, and watermarks (last review ID, last HEAD SHA, etc.). See `handoff-files.md`.
 
 ## Stable-State Backoff
