@@ -772,9 +772,29 @@ ok "--help prints every documented section, flag, and tunable"
 FAKE_REG="$TMP_DIR/bin/chip-offer-registry.sh"
 cat > "$FAKE_REG" <<'REGEOF'
 #!/usr/bin/env bash
-# Minimal fake for chip-offer-registry.sh: --list returns REG_FAKE_LIST.
+# Minimal fake for chip-offer-registry.sh.
+# --list: return REG_FAKE_LIST as-is.
+# --count: count offered/running entries respecting TTL (mirrors count_active_offers).
 case "$*" in
   *"--list"*) printf '%s\n' "${REG_FAKE_LIST:-[]}" ;;
+  *"--count"*)
+    ttl_s="${CLAUDE_CHIP_OFFER_TTL_S:-86400}"
+    [[ "$ttl_s" =~ ^[0-9]+$ ]] || ttl_s=86400
+    now="$(date -u +%s)"
+    n="$(printf '%s\n' "${REG_FAKE_LIST:-[]}" | jq -r \
+      --argjson now "$now" --argjson ttl "$ttl_s" '
+      [ .[]
+        | select(.state == "offered" or .state == "running")
+        | select(
+            (.offered_at // "") as $t
+            | if $t == "" then true
+              else ($t | fromdateiso8601? // null) as $e
+                   | if $e == null then true else ($now - $e) < $ttl end
+              end
+          )
+      ] | length')"
+    printf '%s\n' "$n"
+    ;;
   *) echo "fake registry: unsupported call: $*" >&2; exit 97 ;;
 esac
 REGEOF
@@ -820,6 +840,26 @@ export REG_FAKE_LIST="$(jq -cn --arg old "$OLD_REG" \
 CHIPS=$(CLAUDE_CHIP_OFFER_TTL_S=86400 run --json | jq -r '.live_chips') || fail "19: --json failed for expired entry"
 [[ "$CHIPS" == "0" ]] || fail "19: an expired registry chip must not count, got '$CHIPS'"
 ok "a registry chip older than the TTL is treated as expired and not counted"
+
+# Batch entry: one registry entry covers multiple issues; load_registry_source
+# must count it as 1, and every issue it covers must be excluded from the
+# legacy log (so a log entry for one of those issues doesn't double-count).
+export REG_FAKE_LIST="$(jq -cn --arg now "$NOW_REG" \
+  '[{task_id:"tid-batch-6",emitter:"wave",issue:500,issues:[500,501,502],
+     state:"offered",offered_at:$now,expires_at:$now,pr:null,last_updated:$now}]')"
+write_chip_log "batch-dedup" "[$(chip_entry 501 "$SLUG" open t-batch)]"
+set_open_issues "500 501 502"
+set_open_prs 0
+set_pipelines '[]'
+JSON=$(run --json) || fail "19-batch: --json failed for batch registry entry"
+CHIPS=$(printf '%s' "$JSON" | jq -r '.live_chips')
+[[ "$CHIPS" == "1" ]] || fail "19-batch: batch entry (3 issues) must count as 1 chip, got '$CHIPS'"
+ok "a batch registry entry covering 3 issues counts as 1 chip slot"
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR/issue-maker-batch-dedup-log.json"
+export REG_FAKE_LIST=""
+
+# Reset to empty registry for subsequent tests.
+export REG_FAKE_LIST="[]"
 
 # --- 20. Cross-emitter dedup: same issue in registry AND issue-maker log ------
 # An issue offered by /pm (registry) and also recorded in an issue-maker log

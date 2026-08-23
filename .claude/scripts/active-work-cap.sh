@@ -833,10 +833,18 @@ count_inline_pipelines() {
 
 # Issue numbers from the chip offer registry (source 2a) — entries in
 # offered or running state that have not expired.
-# Returns a newline-separated list of issue numbers, one per entry.
+# Returns a newline-separated list of issue numbers (ALL issues per entry,
+# since a batch reservation stores multiple issues per entry so that they
+# can all be excluded from the legacy chip-log count; deferral 1 fix).
 # A missing or inaccessible registry contributes 0 with a DEGRADED warning
 # rather than failing hard, because the legacy log (source 2b) is still read.
-registry_chip_issue_numbers() {
+# load_registry_source — single --list call; sets globals _REG_NUMS_OUT and
+# _REG_COUNT_OUT from the same snapshot so issue-number extraction and entry
+# count see a consistent view (no TOCTOU window between --list and --count).
+# _REG_NUMS_OUT : newline-separated issue numbers from active entries (for dedup).
+# _REG_COUNT_OUT: count of active entries (capacity unit; one entry = one chip).
+_REG_NUMS_OUT=""; _REG_COUNT_OUT=0
+load_registry_source() {
   # Allow tests to skip the registry read entirely by setting the variable to
   # an empty string. Use the ${VAR+x} test to distinguish "explicitly set to
   # empty" from "unset": :-__unset__ would convert both to __unset__ and the
@@ -846,44 +854,48 @@ registry_chip_issue_numbers() {
   fi
 
   local reg_script="${CLAUDE_CHIP_OFFER_REGISTRY_SH:-}"
-  if [[ -z "$reg_script" ]]; then
-    reg_script="$SCRIPT_DIR/chip-offer-registry.sh"
-  fi
+  [[ -z "$reg_script" ]] && reg_script="$SCRIPT_DIR/chip-offer-registry.sh"
   if [[ ! -x "$reg_script" ]]; then
     warn "DEGRADED: chip-offer-registry.sh not found at $reg_script — registry source contributes 0"
     return 0
   fi
 
-  local out rc=0
-  out="$("$reg_script" ${REPO:+--repo "$REPO"} --list 2>&1)" || rc=$?
-  if [[ $rc -ne 0 ]]; then
-    die_read "chip-offer-registry.sh --list failed (exit $rc): $out"
-  fi
+  # Single authoritative --list call for this counting pass.
+  local snap rc=0
+  snap="$("$reg_script" ${REPO:+--repo "$REPO"} --list 2>&1)" || rc=$?
+  [[ $rc -ne 0 ]] && die_read "chip-offer-registry.sh --list failed (exit $rc): $snap"
 
-  # The registry handles repo scoping internally, so no further filtering needed.
-  # Count entries in offered or running state (TTL handled by --count, but here
-  # we need issue numbers for dedup — filter the same states).
   local ttl_s="${CLAUDE_CHIP_OFFER_TTL_S:-86400}"
   [[ "$ttl_s" =~ ^[0-9]+$ ]] || ttl_s=86400
-  local now
-  now="$(date -u +%s)"
-  local nums rc2=0
-  nums="$(printf '%s' "$out" | jq -r \
+  local now; now="$(date -u +%s)"
+
+  # Filter to capacity-consuming (offered/running), non-expired entries — once.
+  local active rc2=0
+  active="$(printf '%s' "$snap" | jq -c \
     --argjson now "$now" --argjson ttl "$ttl_s" '
-    .[]
-    | select(.state == "offered" or .state == "running")
-    | select(
-        (.offered_at // "") as $t
-        | if $t == "" then true
-          else ($t | fromdateiso8601? // null) as $e
-               | if $e == null then true else ($now - $e) < $ttl end
-          end
-      )
-    | .issue' 2>&1)" || rc2=$?
-  if [[ $rc2 -ne 0 ]]; then
-    die_read "could not extract issue numbers from registry: $nums"
-  fi
-  [[ -n "$nums" ]] && printf '%s\n' "$nums"
+    [.[] | select(.state == "offered" or .state == "running")
+         | select(
+             (.offered_at // "") as $t
+             | if $t == "" then true
+               else ($t | fromdateiso8601? // null) as $e
+                    | if $e == null then true else ($now - $e) < $ttl end
+               end
+           )]' 2>&1)" || rc2=$?
+  [[ $rc2 -ne 0 ]] && die_read "could not filter registry snapshot: $active"
+
+  # Entry count: one entry = one chip = one capacity slot.
+  local cnt rc3=0
+  cnt="$(printf '%s' "$active" | jq -r 'length' 2>&1)" || rc3=$?
+  [[ $rc3 -ne 0 || ! "$cnt" =~ ^[0-9]+$ ]] && die_read "registry count jq failed: $cnt"
+  _REG_COUNT_OUT="$cnt"
+
+  # Issue numbers for dedup against legacy log: emit all issues per entry.
+  # Entries may carry multiple issues in a "issues" array (batch reservations);
+  # single-issue entries use the scalar "issue" field (deferral 1 fix).
+  local nums rc4=0
+  nums="$(printf '%s' "$active" | jq -r '.[] | (.issues // [.issue]) | .[]' 2>&1)" || rc4=$?
+  [[ $rc4 -ne 0 ]] && die_read "could not extract issue numbers from registry: $nums"
+  [[ -n "$nums" ]] && _REG_NUMS_OUT="$nums"
   return 0
 }
 
@@ -1021,17 +1033,14 @@ count_live_chips_numbers() {
 # so any legacy chip whose surviving issues are ALL already in the registry is
 # excluded from source 2b's count (the registry slot covers it).
 
-# Source 2a: registry.
-REG_NUMS=""; REG_RC=0
-REG_NUMS="$(registry_chip_issue_numbers)" || REG_RC=$?
+# Source 2a: registry — single --list call for atomicity (TOCTOU fix).
+# REG_NUMS: all issue numbers covered by active entries (for dedup against 2b).
+# REG_CHIP_COUNT: count of active ENTRIES (not issues) — one entry = one chip.
+REG_NUMS=""; REG_CHIP_COUNT=0; REG_RC=0
+load_registry_source || REG_RC=$?
 (( REG_RC == 0 )) || exit "$REG_RC"
-
-REG_CHIP_COUNT=0
-if [[ -n "$REG_NUMS" ]]; then
-  REG_RAW="$(printf '%s\n' "$REG_NUMS" | grep -c '^[0-9]')" || true
-  [[ "$REG_RAW" =~ ^[0-9]+$ ]] || REG_RAW=0
-  REG_CHIP_COUNT="$REG_RAW"
-fi
+REG_NUMS="$_REG_NUMS_OUT"
+REG_CHIP_COUNT="$_REG_COUNT_OUT"
 
 # Source 2b: legacy log (distinct chips, excluding issues the registry holds).
 LOG_CHIP_COUNT=0; LOG_RC=0
@@ -1057,9 +1066,11 @@ case "$MODE" in
       --argjson open_prs "$OPEN_PRS" \
       --argjson chips "$CHIPS" \
       --argjson pipelines "$PIPELINES" \
+      --argjson reg_chip_count "$REG_CHIP_COUNT" \
       --arg cap_source "$CAP_SOURCE" \
       '{cap: $cap, active: $active, free: $free,
         open_prs: $open_prs, live_chips: $chips, inline_pipelines: $pipelines,
+        registry_baseline: $reg_chip_count,
         cap_source: $cap_source}'
     ;;
   *)

@@ -249,26 +249,80 @@ Both lines, every time — the picker has two controls and the summary is the on
 
 **Resolve the script** via the standard path order (`$HOME/.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh`, `$HOME/.claude/scripts/chip-offer-registry.sh`, `.claude/scripts/chip-offer-registry.sh`). Full contract: `chip-offer-registry.sh --help`.
 
-**Before each `spawn_task` call for issue N:**
+**ONE ENTRY PER CHIP (not per issue).** A single `spawn_task` call (one chip) maps to one `--reserve` call. Pass `--issue` for every issue the chip covers so the registry can exclude them all from the legacy chip-log dedup count (#1238 §Deferral 1). For single-issue emitters this is `--issue N`; for batch emitters (e.g. `/issue-maker`) pass all issue numbers:
 
 ```bash
 REGISTRY=<resolved path>
-REG_TID="$("$REGISTRY" --emitter <name> --issue N --cap-free "$FREE" --reserve 2>/dev/null)"
-rc=$?
-if [[ $rc -eq 7 ]]; then
-  # cap exhausted atomically — defer this issue, same as the cap-depleted path
-  continue
+CAP_SH=<resolved path to active-work-cap.sh>
+# Get FREE and registry_baseline from the SAME snapshot (atomic — no TOCTOU).
+# active-work-cap.sh --json reads chip-offer-registry.sh --list once and exposes
+# both values; a separate --count call would create a window where a concurrent
+# reservation inflates the baseline without being reflected in FREE.
+CAP_JSON_RC=0
+CAP_JSON="$("$CAP_SH" --json 2>/dev/null)" || CAP_JSON_RC=$?
+if [[ $CAP_JSON_RC -ne 0 || -z "$CAP_JSON" ]]; then
+  warn "active-work-cap failed (exit $CAP_JSON_RC) — proceeding uncounted"
+  REG_TID=""
+else
+  # Guard jq against set -e: capture exit codes before branching.
+  FREE_RC=0; FREE="$(printf '%s' "$CAP_JSON" | jq -r '.free' 2>/dev/null)" || FREE_RC=$?
+  REG_BASELINE_RC=0; REG_BASELINE="$(printf '%s' "$CAP_JSON" | jq -r '.registry_baseline' 2>/dev/null)" || REG_BASELINE_RC=$?
+  if [[ $FREE_RC -ne 0 || $REG_BASELINE_RC -ne 0 || ! "${FREE}" =~ ^[0-9]+$ || ! "${REG_BASELINE}" =~ ^[0-9]+$ ]]; then
+    warn "cap or baseline parse failed — proceeding uncounted"
+    REG_TID=""
+  elif (( FREE == 0 )); then
+    continue  # cap exhausted before reservation — defer this issue
+  else
+    CAP_ADMISSION=$(( REG_BASELINE + FREE ))
+
+    # Single-issue: --issue N once.  Guard --reserve against set -e.
+    REG_TID_RC=0
+    REG_TID="$("$REGISTRY" --emitter <name> --issue N --cap-free "$CAP_ADMISSION" --reserve 2>/dev/null)" || REG_TID_RC=$?
+    if [[ $REG_TID_RC -eq 7 ]]; then
+      # cap exhausted atomically — defer this issue, same as the cap-depleted path
+      continue
+    fi
+    [[ $REG_TID_RC -eq 0 ]] || { warn "registry unavailable (exit $REG_TID_RC) — proceeding uncounted"; REG_TID=""; }
+  fi
 fi
-[[ $rc -eq 0 ]] || { warn "registry unavailable (exit $rc) — proceeding uncounted"; REG_TID=""; }
+
+# Batch callers follow the same --json → reserve pattern:
+#   CAP_JSON_RC=0
+#   CAP_JSON="$("$CAP_SH" --json 2>/dev/null)" || CAP_JSON_RC=$?
+#   if [[ $CAP_JSON_RC -ne 0 || -z "$CAP_JSON" ]]; then
+#     warn "active-work-cap failed — proceeding uncounted"; REG_TID=""
+#   else
+#     FREE_RC=0; FREE="$(printf '%s' "$CAP_JSON" | jq -r '.free' 2>/dev/null)" || FREE_RC=$?
+#     REG_BASELINE_RC=0; REG_BASELINE="$(printf '%s' "$CAP_JSON" | jq -r '.registry_baseline' 2>/dev/null)" || REG_BASELINE_RC=$?
+#     [[ $FREE_RC -ne 0 || $REG_BASELINE_RC -ne 0 ]] && { REG_TID=""; : ; } || {
+#       (( FREE == 0 )) && continue  # cap exhausted
+#       CAP_ADMISSION=$(( REG_BASELINE + FREE ))
+#       REG_TID_RC=0
+#       REG_TID="$("$REGISTRY" --emitter issue-maker \
+#         --issue 100 --issue 101 --issue 102 \
+#         --cap-free "$CAP_ADMISSION" --reserve 2>/dev/null)" || REG_TID_RC=$?
+#       [[ $REG_TID_RC -eq 7 ]] && continue
+#       [[ $REG_TID_RC -eq 0 ]] || { warn "registry unavailable (exit $REG_TID_RC) — proceeding uncounted"; REG_TID=""; }
+#     }
+#   fi
 ```
 
-**After `spawn_task` succeeds:** pass `--task-id "$REG_TID"` to the reserve call (or record the registry task_id alongside the `spawn_task` task_id for later `--transition` calls).
+**After `spawn_task` succeeds:** record `$REG_TID` alongside the `spawn_task` task_id for later `--transition` calls.
+
+**If `spawn_task` fails:** immediately call `--retract --task-id "$REG_TID"` to free the reservation without waiting for TTL expiry (#1238 §Deferral 2). TTL self-heals a crashed turn, but an explicit retract frees the slot in the same turn:
+
+```bash
+# spawn_task failed — release the reservation immediately
+"$REGISTRY" --retract --task-id "$REG_TID" 2>/dev/null || true
+```
 
 **Lifecycle transitions:** call `--transition --task-id <tid> --state running` when the thread is confirmed started; `--transition --state pr-backed` when a PR opens (at that point `active-work-cap.sh`'s open-PR source takes over counting); `--transition --state done` or `retracted` on terminal events.
 
 **Degraded path:** if the registry script cannot be resolved or exits non-zero for a reason other than 7, proceed uncounted and note the degradation in the offer's status or a one-line warn — never refuse to offer a chip solely because the registry is unavailable.
 
-**The atomic reservation closes the snapshot race.** Two concurrent emitters that both observe `FREE=1` and both call `--reserve --cap-free 1` get: the first writer reserves (count 0 < 1 → succeed, exit 0); the second writer finds count 1 ≥ 1 → exits 7. Exactly one offer, not two.
+**The atomic reservation closes the snapshot race.** Using `active-work-cap.sh --json` ensures `FREE` and `registry_baseline` (= `REG_CHIP_COUNT`) come from the same `chip-offer-registry.sh --list` call, eliminating the TOCTOU window that would exist between a prior `active-work-cap.sh` call and a later `chip-offer-registry.sh --count` call. Two concurrent emitters that both observe `FREE=1` compute `CAP_ADMISSION = baseline + 1`. Under the lock the first writer finds `active_count == baseline`, reserves (active_count < CAP_ADMISSION), and increments; the second finds `active_count == baseline + 1 >= CAP_ADMISSION` and exits 7. Exactly one offer, not two. The `baseline + FREE` formulation also avoids false exhaustion when existing registry entries are already reflected in `FREE`: with 3 offered entries and `FREE=3` the limit is 6, not 3.
+
+**Task-id identity across restarts.** Generated task_ids include timestamp + PID + random, making cross-session aliasing extremely unlikely. For durable tracking across app restarts, supply a stable caller-generated `--task-id` value that is unique for the lifetime of the offer (#1238 §Deferral 3).
 
 The registry is **supplemental to the legacy issue-maker log** described in "Cross-skill chip visibility" below — both are read by `active-work-cap.sh` and deduplicated by issue number (the script handles the union).
 
