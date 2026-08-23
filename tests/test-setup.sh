@@ -526,9 +526,15 @@ test_9_user_owned_skill_symlinks() {
     run_same_name_test=true
     mkdir -p "$ext_dir/$same_name_skill"
     ln -sfn "$ext_dir/$same_name_skill" "$same_name_link"
-    assert "(c) Same-name user-owned symlink placed" "[ -L '$same_name_link' ]"
-    assert "(c) Same-name link points to external dir" \
-      "[ \"\$(readlink '$same_name_link')\" = '$ext_dir/$same_name_skill' ]"
+    # Use direct [[ ]] checks: same_name_skill is filesystem-derived and must not
+    # be interpolated into an eval'd string (shell-injection risk via metacharacters).
+    [[ -L "$same_name_link" ]] && assert "(c) Same-name user-owned symlink placed" "true" \
+                                || assert "(c) Same-name user-owned symlink placed" "false"
+    local _c_actual_target
+    _c_actual_target="$(readlink "$same_name_link" 2>/dev/null || true)"
+    [[ "$_c_actual_target" = "$ext_dir/$same_name_skill" ]] \
+      && assert "(c) Same-name link points to external dir" "true" \
+      || assert "(c) Same-name link points to external dir" "false"
   elif [[ -e "$same_name_link" ]]; then
     echo "  SKIP (c): $same_name_skill exists as a non-symlink — skipping same-name preservation test"
   fi
@@ -554,8 +560,13 @@ test_9_user_owned_skill_symlinks() {
 
   # (c) Same-name user-owned link must NOT have been repointed to the worktree.
   if [[ "$run_same_name_test" == true ]]; then
-    assert "(c) Same-name link not repointed" \
-      "[ \"\$(readlink '$same_name_link')\" = '$ext_dir/$same_name_skill' ]"
+    # Direct check — same_name_skill is filesystem-derived; avoid interpolating
+    # it into an eval'd string (shell-injection risk via metacharacters).
+    local _c_after_target
+    _c_after_target="$(readlink "$same_name_link" 2>/dev/null || true)"
+    [[ "$_c_after_target" = "$ext_dir/$same_name_skill" ]] \
+      && assert "(c) Same-name link not repointed" "true" \
+      || assert "(c) Same-name link not repointed" "false"
   fi
 
   # Cleanup happens via the RETURN trap registered above.
