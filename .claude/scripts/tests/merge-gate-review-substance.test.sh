@@ -681,6 +681,136 @@ check_eq '["a1b2c3d"]' "$(echo "$RU" | jq -c '.status_comment_shas')"    "(ee-91
 check_eq "false"    "$(echo "$RU" | jq -r '.self_report_mismatch')"     "(ee-917) a later UUID-only status comment no longer manufactures a mismatch"
 check_eq "[]"       "$(echo "$RU" | jq -c '.disqualified_by')"          "(ee-917) and the reviewer is not disqualified"
 
+echo "=== (xx-408) review command invocation UUID does not wedge a genuine approval (issue #1248) ==="
+# auerbachb/inventory issue #408 / this repo issue #1248. CodeRabbit's "Action
+# performed" reply embeds a GUID in a <!-- CodeRabbit review command invocation:
+# UUID --> HTML comment. A GUID's first segment (8 hex chars) and last segment
+# (12 hex chars) satisfy rule 1's shape (7-40 chars, >= one a-f letter) and
+# were misread as SHAs the bot claimed to have reviewed. The production shape
+# requires two comments: an earlier walkthrough naming HEAD, then a LATER
+# "Action performed" comment whose only SHA-shaped tokens are GUID segments.
+# $selfrep (most-recently-created comment with tokens) becomes the "Action
+# performed" comment pre-fix, and its GUID segments don't match HEAD.
+#
+# This fixture uses the real GUID (df440ae1-9ab9-4b17-bb0a-caae8c17534a) and
+# HEAD SHA (05b928597c90aebd91f9eb644808a25a20a01d82) from inventory PR #403.
+GUID_HEAD="05b928597c90aebd91f9eb644808a25a20a01d82"
+guid_eval() { # <earlier-body> <later-body> -> the coderabbitai reviewer object
+  jq -cn --arg sha "$GUID_HEAD" --arg b1 "$1" --arg b2 "$2" \
+    '{head_sha:$sha, push_ts:"2026-08-01T09:00:00Z",
+      reviews:[{user:{login:"coderabbitai[bot]"},commit_id:$sha,state:"APPROVED",
+                submitted_at:"2026-08-01T11:00:00Z",body:""}],
+      pr_comments:[],
+      issue_comments:[
+        {user:{login:"coderabbitai[bot]"},
+         created_at:"2026-08-01T09:24:55Z",
+         updated_at:"2026-08-01T09:24:55Z", body:$b1},
+        {user:{login:"coderabbitai[bot]"},
+         created_at:"2026-08-01T09:51:15Z",
+         updated_at:"2026-08-01T09:51:15Z", body:$b2}
+      ]}' \
+  | "$EVAL_SUT" 2>/dev/null | jq -c '.reviewers["coderabbitai[bot]"]'
+}
+GUID_WALKTHROUGH_BODY="$(printf "## Walkthrough\n\nReviewed the space-membership ACL changes and the personal-space derivation for commit \`05b9285\`. No blocking issues found.")"
+GUID_INVOCATION_BODY="$(printf '<!-- This is an auto-generated reply by CodeRabbit -->\n<!-- CodeRabbit review command invocation: df440ae1-9ab9-4b17-bb0a-caae8c17534a -->\n<details>\n<summary>Action performed</summary>\n\nFull review finished.\n\n</details>')"
+
+RI="$(guid_eval "$GUID_WALKTHROUGH_BODY" "$GUID_INVOCATION_BODY")"
+check_eq "true"        "$(echo "$RI" | jq -r '.status_comment_names_head')"  "(xx-408) walkthrough naming HEAD still sets status_comment_names_head"
+check_eq '["05b9285"]' "$(echo "$RI" | jq -c '.status_comment_shas')"        "(xx-408) only the genuine short SHA is admitted — no GUID segments"
+check_eq "false"       "$(echo "$RI" | jq -r '.self_report_mismatch')"       "(xx-408) invocation GUID does not manufacture a self_report_mismatch"
+check_eq "[]"          "$(echo "$RI" | jq -c '.disqualified_by')"            "(xx-408) and the approval is not disqualified"
+# Negative control: a genuine non-HEAD SHA in the later comment still trips mismatch,
+# proving the fixture discriminates and is not trivially passing.
+GUID_NONHEAD_BODY="$(printf 'Reviewed changes for commit deadbeef1234567890abcdef1234567890abcdef in this round.')"
+RI_NEG="$(guid_eval "$GUID_WALKTHROUGH_BODY" "$GUID_NONHEAD_BODY")"
+check_eq "true"        "$(echo "$RI_NEG" | jq -r '.self_report_mismatch')"   "(xx-408) negative control: genuine non-HEAD SHA still triggers mismatch"
+
+echo "=== (xx-408b) run-start marker + invocation-only comment does not grant descriptive evidence (CodeAnt PR #1280) ==="
+# CodeAnt finding (PR #1280): a run-start marker followed by a GUID invocation
+# comment whose authored_len >= $min_chars used to satisfy $descriptive_ev,
+# granting counts_as_coverage on a hollow approval without any genuine review
+# substance. The invocation_comment flag (issue #1248 follow-up) must suppress
+# this path. The eval here uses two comments anchored to the same GUID_HEAD:
+#   b1: run-start marker (CodeRabbit is running the review…)
+#   b2: GUID invocation comment (Action performed / Full review finished)
+# with a concurrent empty APPROVED on HEAD.
+#
+# guid_eval puts b1 before b2 (created order), so $marker = b1 and b2 is the
+# only candidate for $descriptive_ev. The fix means b2 is excluded (invocation_comment).
+GUID_MARKER_BODY="CodeRabbit is running the review. Please wait while the analysis completes."
+RI_B="$(guid_eval "$GUID_MARKER_BODY" "$GUID_INVOCATION_BODY")"
+check_eq "false"  "$(echo "$RI_B" | jq -r '.descriptive_evidence_on_head')"  "(xx-408b) invocation-only comment does not satisfy descriptive_evidence_on_head"
+check_eq "false"  "$(echo "$RI_B" | jq -r '.external_evidence_on_head')"     "(xx-408b) no external substance without genuine review content"
+check_eq "false"  "$(echo "$RI_B" | jq -r '.counts_as_coverage')"            "(xx-408b) hollow approval + invocation comment is not coverage"
+# Positive control 1: a genuine descriptive comment (after the marker) still grants evidence.
+GUID_GENUINE_DESC="This change looks reasonable. The GUID handling is correct and the test coverage is thorough."
+RI_C="$(guid_eval "$GUID_MARKER_BODY" "$GUID_GENUINE_DESC")"
+check_eq "true"   "$(echo "$RI_C" | jq -r '.descriptive_evidence_on_head')"  "(xx-408b) positive control: genuine descriptive comment after marker grants evidence"
+# Positive control 2: invocation HTML metadata FOLLOWED by genuine prose is NOT invocation_comment.
+# A comment with both shapes must have its prose part evaluated, not excluded wholesale.
+# (CodeRabbit finding, PR #1280 — pattern must not over-match prose that mentions
+# invocation phrases outside of the HTML-comment wrapper, nor exclude comments that
+# carry both metadata and genuine substance.)
+GUID_HYBRID_BODY="$(printf '%s\n\n%s' "$GUID_INVOCATION_BODY" "The new invocation_comment flag is well-targeted. The implementation correctly identifies invocation-only metadata.")"
+RI_D="$(guid_eval "$GUID_MARKER_BODY" "$GUID_HYBRID_BODY")"
+check_eq "true"   "$(echo "$RI_D" | jq -r '.descriptive_evidence_on_head')"  "(xx-408b) invocation metadata + genuine prose still satisfies descriptive_evidence_on_head"
+
+echo "=== (xx-408c) invocation_comment requires phrase inside complete HTML comment with full UUID ==="
+# CodeRabbit finding (PR #1280): the v2 invocation_comment check must:
+#   1. Bind the phrase only to COMPLETE <!-- --> blocks (scan prevents crossing -->).
+#   2. Require a full 8-4-4-4-12 UUID inside the block (not a prefix or UUID-less phrase).
+# Each case below would have had invocation_comment=true with the v1 pattern
+# (excluding the comment from $descriptive_ev), but must be false with v2.
+#
+# (a) Phrase outside comment: the v1 regex crossed --> into prose on the next
+# line (the "m" flag made . match newlines). Residual = 37 chars < 40, so
+# invocation_comment flipped true — the comment was wrongly excluded even
+# though the phrase appeared in prose, not inside any HTML comment.
+GUID_OUTSIDE_BODY="$(printf '<!-- a longer unrelated HTML comment -->\nreview command invocation: documented')"
+RI_E="$(guid_eval "$GUID_MARKER_BODY" "$GUID_OUTSIDE_BODY")"
+check_eq "true" "$(echo "$RI_E" | jq -r '.descriptive_evidence_on_head')"  "(xx-408c) phrase outside HTML comment is not invocation_comment; comment still eligible for descriptive_ev"
+# (b) UUID-less invocation phrase: the v1 regex matched the bare phrase with no
+# UUID requirement, so the invocation-keyword-only comment was incorrectly excluded.
+GUID_NOUID_BODY="<!-- review command invocation: documented and thoroughly explained -->"
+RI_F="$(guid_eval "$GUID_MARKER_BODY" "$GUID_NOUID_BODY")"
+check_eq "true" "$(echo "$RI_F" | jq -r '.descriptive_evidence_on_head')"  "(xx-408c) UUID-less invocation phrase in HTML comment is not invocation_comment"
+# (c) Incomplete UUID (prefix only, missing 4-4-12 tail): the v1 regex accepted
+# "request id [8hex]-[4hex]-" with no further constraint, so a partial UUID also
+# flipped invocation_comment=true incorrectly.
+GUID_SHORTUID_BODY="<!-- This is a partial request id 9f69125b-29d9-47d4- without full uuid -->"
+RI_G="$(guid_eval "$GUID_MARKER_BODY" "$GUID_SHORTUID_BODY")"
+check_eq "true" "$(echo "$RI_G" | jq -r '.descriptive_evidence_on_head')"  "(xx-408c) incomplete UUID prefix in HTML comment is not invocation_comment"
+
+echo "=== (xx-408d) invocation_comment boundary: overlong UUID and echoed-line residual inflation ==="
+# CodeRabbit findings (PR #1280, PRRT_kwDORbRzR86bdTJq / PRRT_kwDORbRzR86bdTJs):
+#
+# (a) Overlong UUID — PRRT_kwDORbRzR86bdTJq (Minor):
+# The UUID regex had no boundary after {12}. A 37-char last group matched the
+# first 12 hex chars without rejecting the extra digit. Adding (?![0-9a-f])
+# after {12} prevents a hex run longer than 12 from matching.
+# Expected: invocation_comment=false (no valid full-UUID match) and
+# descriptive_evidence_on_head=true (comment is eligible for $descriptive_ev).
+GUID_LONGUID_BODY="<!-- review command invocation: df440ae1-9ab9-4b17-bb0a-caae8c17534a0 -->"
+RI_H="$(guid_eval "$GUID_MARKER_BODY" "$GUID_LONGUID_BODY")"
+check_eq "true" "$(echo "$RI_H" | jq -r '.descriptive_evidence_on_head')"  "(xx-408d) overlong UUID in last segment is not a valid invocation_comment"
+
+# (b) Echoed line inflates residual — PRRT_kwDORbRzR86bdTJs (Major):
+# The residual check for invocation_comment scanned raw $b. If a bot comment
+# contained the invocation metadata HTML comment plus a verbatim copy of the
+# author's (or an earlier bot) text, the echoed line kept the residual >=
+# $min_chars, flipping invocation_comment=false even though no genuine
+# reviewer-authored prose remained. Applying strip_echoed($cts) before the
+# residual check removes echoed lines, so the residual only reflects prose the
+# reviewer actually wrote.
+# Here b2 = GUID_INVOCATION_BODY + GUID_MARKER_BODY (marker echoed from b1).
+# Without strip_echoed: residual includes the marker line (~75 chars) >= 40 ->
+# invocation_comment=false -> descriptive_evidence_on_head=true (WRONG).
+# With strip_echoed: marker line stripped -> residual ~38 chars < 40 ->
+# invocation_comment=true -> descriptive_evidence_on_head=false (CORRECT).
+GUID_ECHOED_BODY="$(printf '%s\n%s' "$GUID_INVOCATION_BODY" "$GUID_MARKER_BODY")"
+RI_I="$(guid_eval "$GUID_MARKER_BODY" "$GUID_ECHOED_BODY")"
+check_eq "false" "$(echo "$RI_I" | jq -r '.descriptive_evidence_on_head')"  "(xx-408d) echoed line does not inflate residual past min_chars in invocation_comment filter"
+
 echo "=== (ff-933) a reviewer echoing the author's SHA-bearing text does not name HEAD ==="
 # Issue #933, trace on PR #929 (2026-08-02). CodeAnt answers a re-review request
 # by reproducing the requester's comment verbatim (lowercased) under a

@@ -718,7 +718,11 @@ substance_reasons() { # <login> — human-readable, comma-joined
           elif . == "capability_failure" then
             "\($l) reported it could not review this commit"
           elif . == "self_report_mismatch" then
-            "\($l)'"'"'s own status comment names \(($r.status_comment_shas // []) | join(", ")) — not this SHA"
+            ( ($r.status_comment_shas // []) as $toks
+            | "\($l)'"'"'s own status comment names \($toks | join(", ")) — not this SHA"
+              + ( if ($toks | map(select(length == 8 or length == 12)) | length) > 0
+                  then " (token lengths 8 or 12 may be GUID segments from an unhandled invocation comment shape)"
+                  else "" end ) )
           else
             "no substantive review footprint (body \($r.body_len // 0) chars, \($r.inline_comments_on_head // 0) inline comment(s), no status comment naming this SHA)"
           end ]

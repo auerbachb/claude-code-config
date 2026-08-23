@@ -478,16 +478,18 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
          | gsub("\n```.*"; " "; "m")
          | gsub("\n    [^\n]*"; " "; "m")
         ) as $unfenced
-      # UUID-stripped text for rule 1 only (issue #917). CodeRabbit embeds an
-      # invocation UUID in its HTML comments (8-4-4-4-12 hyphenated hex, e.g.
-      # "9f69125b-29d9-47d4-bf8f-8b5df9dcb5a6"). A hyphen is a non-word
-      # character, so the UUID"s hex groups independently satisfy rule 1"s
-      # shape (7-40 chars, at least one a-f letter) and get misread as SHAs
-      # the bot claims to have reviewed. Each match is replaced with a space,
-      # not stripped to empty, so a UUID sitting between two genuine tokens
-      # cannot merge them into a new false one. Rules 2-3 are untouched: rule
-      # 2 is safe regardless because it additionally requires a prefix match
-      # against the real $sha, and rule 3 only admits complete
+      # UUID-stripped text for rule 1 only (issues #917, #1248). CodeRabbit
+      # embeds invocation UUIDs in HTML comments in two known shapes:
+      #   "request id 9f69125b-29d9-47d4-bf8f-8b5df9dcb5a6" (issue #917)
+      #   "review command invocation: df440ae1-9ab9-4b17-bb0a-caae8c17534a"
+      #     (issue #1248, auerbachb/inventory issue #408, PR #403)
+      # A hyphen is a non-word character, so the UUID"s hex groups independently
+      # satisfy rule 1"s shape (7-40 chars, at least one a-f letter) and get
+      # misread as SHAs the bot claims to have reviewed. Each match is replaced
+      # with a space, not stripped to empty, so a UUID sitting between two
+      # genuine tokens cannot merge them into a new false one. Rules 2-3 are
+      # untouched: rule 2 is safe regardless because it additionally requires
+      # a prefix match against the real $sha, and rule 3 only admits complete
       # backtick-wrapped ALL-DECIMAL runs, which a hyphenated hex UUID never
       # satisfies.
       #
@@ -571,6 +573,38 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
             # "review complete" in its prose remains eligible.
             completion_marker:
               ($b | test("^[[:space:][:punct:]]*((codeant ai|coderabbit|cursor bugbot|greptile)[[:space:]]+)?(finished running the review|(the )?review (is )?(now )?complete(d)?)[[:space:][:punct:]]*$"; "i")),
+            # Recognized CodeRabbit command-invocation metadata comments. These
+            # are auto-generated when CR processes a review command and contain
+            # only "Action performed" / "Full review finished" boilerplate plus
+            # an HTML-comment UUID tag — no review substance. Two known shapes
+            # (issues #917, #1248):
+            #   "request id [uuid]"                     (issue #917 shape)
+            #   "review command invocation: [uuid]"     (issue #1248 shape)
+            # Excluded from $descriptive_ev so that a run-start marker + an
+            # invocation-only comment cannot grant counts_as_coverage on a
+            # hollow approval (CodeAnt finding, PR #1280).
+            #
+            # Both conditions must hold (CodeRabbit finding, PR #1280):
+            #   1. The invocation phrase appears inside a COMPLETE HTML comment
+            #      (<!-- -->), and that comment contains a full 8-4-4-4-12 UUID
+            #      with no adjacent hex digit on either side. scan extracts only
+            #      complete HTML comment blocks (preventing the pattern from
+            #      crossing --> into prose outside a comment), the full 8-4-4-4-12
+            #      UUID is required (rejecting UUID-less phrases and partial UUID
+            #      prefixes), and the trailing (?![0-9a-f]) lookahead prevents an
+            #      overlong hex run (e.g. 38-char last group) from matching the
+            #      first 12 characters.
+            #   2. After applying strip_echoed($cts) to remove echoed author lines,
+            #      then stripping HTML comments and tags, the residual prose is
+            #      below $min_chars. Using strip_echoed first prevents a >=40-char
+            #      author-echoed line from artificially inflating the residual and
+            #      defeating the filter — a comment is only "invocation-only" when
+            #      the reviewer-authored residual (not the echo noise) is short.
+            invocation_comment: (
+              ([$b | ascii_downcase | scan("<!--[\\s\\S]*?-->")]
+                | any(test("(?:review command invocation: ?|request id )[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![0-9a-f])"; "m")))
+              and
+              (($b | ascii_downcase | strip_echoed($cts) | gsub("<!--.*?-->"; " "; "m") | gsub("<[^>]+>"; " ") | gsub("[[:space:]]+"; " ") | ltrimstr(" ") | rtrimstr(" ") | length) < $min_chars)),
             # explicit "I cannot review this" notices
             failure: ($b | test("does not have a pr review subscription|no active subscription|not have an active subscription|rate limit|rate-limit|usage limit|usage or spend limit|quota exceeded|could not run|couldn'"'"'t run|unable to run|unable to review|unable to complete|failed to run|failed to review"; "i")) } ]
       | sort_by(.ts) ) as $cidx
@@ -681,6 +715,7 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
                         and (.failure | not)
                         and (.marker | not)
                         and (.completion_marker | not)
+                        and (.invocation_comment | not)
                         and .created >= $push
                         and .created >= $marker.created) ]
              | length) > 0 )                                               as $descriptive_ev
