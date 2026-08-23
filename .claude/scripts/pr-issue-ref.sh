@@ -165,9 +165,9 @@ if [[ "$ALL_MODE" -eq 1 ]]; then
     CURRENT_REPO_LOWER="$(printf '%s' "${GITHUB_REPOSITORY}" | tr 'A-Z' 'a-z')"
   else
     # Outside CI: try gh repo view; failure is non-fatal (fall back to no filtering).
-    _REPO_RC=0
-    _REPO_OUT="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)" || _REPO_RC=$?
-    if [[ "$_REPO_RC" -eq 0 && -n "$_REPO_OUT" ]]; then
+    # Single call; if it fails or returns empty, CURRENT_REPO_LOWER stays "".
+    _REPO_OUT=""
+    if _REPO_OUT="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)" && [[ -n "$_REPO_OUT" ]]; then
       CURRENT_REPO_LOWER="$(printf '%s' "$_REPO_OUT" | tr 'A-Z' 'a-z')"
     fi
   fi

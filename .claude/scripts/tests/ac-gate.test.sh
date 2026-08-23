@@ -140,10 +140,21 @@ cat > "$TMP/pr_body/1009.txt" <<'BODY'
 Tracking issue: #60
 BODY
 
-# PR 1010 — Acceptance Criteria section heading (case-insensitive match) → exit 1
+# PR 1010 — Acceptance Criteria section heading (case-insensitive match, all-lowercase) → exit 1
 cat > "$TMP/pr_body/1010.txt" <<'BODY'
 ## acceptance criteria
 - [ ] unchecked item
+BODY
+
+# PR 1013 — Acceptance Criteria section heading (canonical mixed-case) → exit 1
+# Regression for: "## Acceptance Criteria" (the canonical form used by every PR in this repo)
+# must be detected as an in-scope section; an unchecked box there must fail the gate.
+# The parser normalises the heading with tr 'A-Z' 'a-z' before routing, so this must match
+# the "acceptance criteria" case branch.
+cat > "$TMP/pr_body/1013.txt" <<'BODY'
+## Acceptance Criteria
+- [x] Box already checked
+- [ ] Unchecked box — gate must fail (exit 1)
 BODY
 
 # PR 2001 — owner/repo#N closing form detected (cross-repo self-referential) → exit 6
@@ -329,6 +340,15 @@ else
   fail "Regression check: PR 1009 should fail but gate returned exit 0"
 fi
 
+# PR 1013 canonical '## Acceptance Criteria' heading: verify the real gate fails
+RC=0
+bash "$SCRIPT" 1013 2>/dev/null || RC=$?
+if [[ "$RC" -ne 0 ]]; then
+  pass "Regression check: PR 1013 (canonical AC heading, unchecked box) correctly fails the real gate (exit $RC)"
+else
+  fail "Regression check: PR 1013 should fail but gate returned exit 0 (heading not recognised as in-scope)"
+fi
+
 # PR 1011 multiple postmerge sections: verify the real gate fails on section 1
 RC=0
 bash "$SCRIPT" 1011 2>/dev/null || RC=$?
@@ -420,12 +440,23 @@ check_exit "Test9: malformed heading — boxes count as in-scope (exit 1)" 1 "$R
 check_msg  "Test9: message names the unchecked box condition" "unchecked" "$MSG"
 
 # ---------------------------------------------------------------------------
-# Test 10: Acceptance Criteria section — case-insensitive heading match
+# Test 10: Acceptance Criteria section — case-insensitive heading (all-lowercase)
 # ---------------------------------------------------------------------------
 RC=0
 MSG="$(bash "$SCRIPT" 1010 2>&1 >/dev/null)" || RC=$?
-check_exit "Test10: case-insensitive AC heading detected (exit 1)" 1 "$RC"
+check_exit "Test10: all-lowercase AC heading detected (exit 1)" 1 "$RC"
 check_msg  "Test10: message references unchecked box" "unchecked" "$MSG"
+
+# ---------------------------------------------------------------------------
+# Test 10a: REGRESSION — canonical '## Acceptance Criteria' heading (mixed case)
+# Regression guard: the parser normalises headings via tr 'A-Z' 'a-z' before
+# routing, so '## Acceptance Criteria' must match the "acceptance criteria" case
+# branch and mark its unchecked boxes as in-scope failures (exit 1).
+# ---------------------------------------------------------------------------
+RC=0
+MSG="$(bash "$SCRIPT" 1013 2>&1 >/dev/null)" || RC=$?
+check_exit "Test10a: canonical mixed-case AC heading detected (exit 1)" 1 "$RC"
+check_msg  "Test10a: message references unchecked box" "unchecked" "$MSG"
 
 # ---------------------------------------------------------------------------
 # Test 11: owner/repo#N closing form — self-referential check via --all
