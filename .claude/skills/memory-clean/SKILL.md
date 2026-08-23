@@ -71,8 +71,16 @@ Low-confidence; never auto-recommended. Each cites the entry it defers to.
 
 ## Step 3: Confirm — never delete without a yes
 
-After presenting, stop and ask which items to prune:
+After presenting, stop and present the choice via **`AskUserQuestion`** when available (`multiSelect: true`; prose fallback in headless runs). Options map to finding types present in the report:
 
+- `"Drop dangling index pointers — safe (Recommended)"` (only when dangling pointers found)
+- `"Delete orphaned files"` (only when orphans found; user may name specific files via "Other")
+- `"Act on advisory items"` (only when advisory findings found)
+- `"Skip — leave the store untouched"`
+
+Present only options for finding types that exist in the current report. See `ask-menu.md` for the full vehicle convention.
+
+Prose fallback:
 ```
 To prune, tell me which to remove. I can:
 1. Drop all dangling index pointers (safe — they point at nothing)

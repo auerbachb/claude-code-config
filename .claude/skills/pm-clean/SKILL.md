@@ -178,6 +178,9 @@ Issue closures and workspace deletions are **separate** confirmations. Declining
 
 ### Step 4.1: Issue closures
 
+Present via **`AskUserQuestion`** when available (prose fallback in headless runs): `multiSelect: true` with one option per closure category found (e.g. `"Solved-by-PR issues"`, `"Inactive issues"`, `"Superseded issues"`, `"Potential duplicates"`) plus `"Skip all"`. When the user wants to select specific issue numbers rather than whole categories, fall back to the prose prompt below. See `ask-menu.md` for the full vehicle convention.
+
+Prose fallback:
 ```
 ## Next Steps — Issues
 
@@ -198,7 +201,7 @@ gh issue close 42 --comment "Closing: [rationale from the recommendation]. Ident
 
 ### Step 4.2: Workspace deletions
 
-Only if the workspace scan surfaced stale items (`RC == 1`) and the user explicitly confirms. Ask separately, e.g. "Apply the stale workspace cleanup above? (worktrees removed, local + remote branches deleted)". `--apply` removes **every** listed stale item — the script has no per-item selection — so if the user wants to keep any, they decline and handle it manually.
+Only if the workspace scan surfaced stale items (`RC == 1`) and the user explicitly confirms. Present via **`AskUserQuestion`** when available (options: `"Apply cleanup (Recommended)"`, `"Skip"`; prose fallback `"Apply the stale workspace cleanup above? (worktrees removed, local + remote branches deleted)"` in headless runs). `--apply` removes **every** listed stale item — the script has no per-item selection — so if the user wants to keep any, they decline and handle it manually. See `ask-menu.md` for the full vehicle convention.
 
 On explicit confirmation:
 
