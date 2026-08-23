@@ -755,6 +755,32 @@ GUID_HYBRID_BODY="$(printf '%s\n\n%s' "$GUID_INVOCATION_BODY" "The new invocatio
 RI_D="$(guid_eval "$GUID_MARKER_BODY" "$GUID_HYBRID_BODY")"
 check_eq "true"   "$(echo "$RI_D" | jq -r '.descriptive_evidence_on_head')"  "(xx-408b) invocation metadata + genuine prose still satisfies descriptive_evidence_on_head"
 
+echo "=== (xx-408c) invocation_comment requires phrase inside complete HTML comment with full UUID ==="
+# CodeRabbit finding (PR #1280): the v2 invocation_comment check must:
+#   1. Bind the phrase only to COMPLETE <!-- --> blocks (scan prevents crossing -->).
+#   2. Require a full 8-4-4-4-12 UUID inside the block (not a prefix or UUID-less phrase).
+# Each case below would have had invocation_comment=true with the v1 pattern
+# (excluding the comment from $descriptive_ev), but must be false with v2.
+#
+# (a) Phrase outside comment: the v1 regex crossed --> into prose on the next
+# line (the "m" flag made . match newlines). Residual = 37 chars < 40, so
+# invocation_comment flipped true — the comment was wrongly excluded even
+# though the phrase appeared in prose, not inside any HTML comment.
+GUID_OUTSIDE_BODY="$(printf '<!-- a longer unrelated HTML comment -->\nreview command invocation: documented')"
+RI_E="$(guid_eval "$GUID_MARKER_BODY" "$GUID_OUTSIDE_BODY")"
+check_eq "true" "$(echo "$RI_E" | jq -r '.descriptive_evidence_on_head')"  "(xx-408c) phrase outside HTML comment is not invocation_comment; comment still eligible for descriptive_ev"
+# (b) UUID-less invocation phrase: the v1 regex matched the bare phrase with no
+# UUID requirement, so the invocation-keyword-only comment was incorrectly excluded.
+GUID_NOUID_BODY="<!-- review command invocation: documented and thoroughly explained -->"
+RI_F="$(guid_eval "$GUID_MARKER_BODY" "$GUID_NOUID_BODY")"
+check_eq "true" "$(echo "$RI_F" | jq -r '.descriptive_evidence_on_head')"  "(xx-408c) UUID-less invocation phrase in HTML comment is not invocation_comment"
+# (c) Incomplete UUID (prefix only, missing 4-4-12 tail): the v1 regex accepted
+# "request id [8hex]-[4hex]-" with no further constraint, so a partial UUID also
+# flipped invocation_comment=true incorrectly.
+GUID_SHORTUID_BODY="<!-- This is a partial request id 9f69125b-29d9-47d4- without full uuid -->"
+RI_G="$(guid_eval "$GUID_MARKER_BODY" "$GUID_SHORTUID_BODY")"
+check_eq "true" "$(echo "$RI_G" | jq -r '.descriptive_evidence_on_head')"  "(xx-408c) incomplete UUID prefix in HTML comment is not invocation_comment"
+
 echo "=== (ff-933) a reviewer echoing the author's SHA-bearing text does not name HEAD ==="
 # Issue #933, trace on PR #929 (2026-08-02). CodeAnt answers a re-review request
 # by reproducing the requester's comment verbatim (lowercased) under a

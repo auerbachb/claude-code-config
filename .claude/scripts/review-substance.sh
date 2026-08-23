@@ -585,17 +585,23 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
             # hollow approval (CodeAnt finding, PR #1280).
             #
             # Both conditions must hold (CodeRabbit finding, PR #1280):
-            #   1. The invocation phrase appears inside an HTML comment (<!-- -->).
-            #      The "m" flag makes . match newlines for multi-line comments.
-            #      This avoids false positives on genuine prose that happens to
-            #      discuss the invocation mechanism (e.g. "review command
-            #      invocation: is documented here").
+            #   1. The invocation phrase appears inside a COMPLETE HTML comment
+            #      (<!-- -->), and that comment contains a full 8-4-4-4-12 UUID.
+            #      scan("<!--[\\s\\S]*?-->") extracts only complete HTML comment
+            #      blocks, preventing the pattern from crossing --> into prose
+            #      outside a comment (e.g. "<!-- unrelated -->\nreview command
+            #      invocation: documented" is NOT an invocation comment because
+            #      the phrase is not inside any HTML comment). Requiring a full
+            #      UUID rejects UUID-less phrases ("<!-- review command
+            #      invocation: documented -->") and incomplete UUID prefixes
+            #      ("<!-- request id 9f69125b-29d9-47d4- -->").
             #   2. After stripping HTML comments and tags, the residual prose is
             #      below $min_chars. A comment with invocation metadata PLUS
             #      genuine descriptive prose is not treated as invocation-only
             #      (the prose would keep residual length >= $min_chars).
             invocation_comment: (
-              ($b | ascii_downcase | test("<!--.*?(?:review command invocation:|request id [0-9a-f]{8}-[0-9a-f]{4}-)"; "m"))
+              ([$b | ascii_downcase | scan("<!--[\\s\\S]*?-->")]
+                | any(test("(?:review command invocation: ?|request id )[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"; "m")))
               and
               (($b | ascii_downcase | gsub("<!--.*?-->"; " "; "m") | gsub("<[^>]+>"; " ") | gsub("[[:space:]]+"; " ") | ltrimstr(" ") | rtrimstr(" ") | length) < $min_chars)),
             # explicit "I cannot review this" notices
