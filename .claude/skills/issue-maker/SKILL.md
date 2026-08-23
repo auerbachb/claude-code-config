@@ -87,16 +87,18 @@ LOG="$HOME/.claude/handoffs/issue-maker-${SESSION_ID}-log.json"
 ```bash
 if [ -f "$LOG" ]; then
   OFFER_ACCEPTED=$(jq -r '.offer_accepted // false' "$LOG")
-  jq -r --argjson accepted "$OFFER_ACCEPTED" \
+  DELIVERY_MODE=$(jq -r '.delivery_mode // "inline"' "$LOG")
+  jq -r --argjson accepted "$OFFER_ACCEPTED" --arg dmode "$DELIVERY_MODE" \
     '"Resuming \(if $accepted then "execution" else "capture" end) mode for \(.target_repo) — \(.mode) mode. \(([.issues[]|select(.status=="open")]|length)) issue(s) opened so far:",
      (.issues[] | "  #\(.number) — \(.title) [\(.status)]" +
-                  (if .chip_task_id and ($accepted | not) then " — offer pending"
+                  (if .chip_task_id and ($accepted | not) and ($dmode == "chip") then " — chip running"
+                   elif .chip_task_id and ($accepted | not) then " — offer pending"
                    elif .chip_task_id and $accepted then " — offer accepted, running"
                    else "" end))' "$LOG"
 fi
 ```
 
-Offer state survives compaction because it lives in `$LOG` (Step 9c writes `chip_task_id` and `offer_accepted` there, not just in-memory) — the recap line above surfaces it back after a fresh invocation. `chip_task_id` on an issue starts as a locally-generated offer token stamped at offer-emit time; in chip mode, a successful `spawn_task` call replaces it with the returned task ID. `offer_accepted: true` means the user said yes and `/subagent` was invoked.
+Offer state survives compaction because it lives in `$LOG` (Step 9c writes `chip_task_id` and `offer_accepted` there, not just in-memory) — the recap line above surfaces it back after a fresh invocation. `chip_task_id` on an issue starts as a locally-generated offer token stamped at offer-emit time; in chip mode, a successful `spawn_task` call replaces it with the returned task ID. `offer_accepted: true` means the user said yes and `/subagent` was invoked. `delivery_mode` (`"inline"` or `"chip"`) is written to the log at offer-emit time and, for chip mode, updated on spawn success — it is the unambiguous discriminator after compaction between a pending inline offer and a running chip task.
 
 If `OFFER_ACCEPTED` is false, re-affirm: *"Still in capture mode — describe issues to create, or use `/update #N …`, `edit #N …`, or `close #N`."* If `OFFER_ACCEPTED` is true, re-affirm: *"Offer accepted — execution mode active. New issues filed here will be run inline via `/subagent`."* If the log is corrupt/unreadable, warn the user and offer to start a fresh session log.
 
@@ -423,6 +425,7 @@ A capture session ends by **offering to run every open issue it filed, right her
 ```bash
 OFFER_TOKEN="offer-$(date +%s%N)"
 set_log '(.issues[] | select(.status == "open") | .chip_task_id) = $tok' --arg tok "$OFFER_TOKEN"
+set_log '.delivery_mode = "inline"'
 ```
 
 **Offer text.** Include the batch's inferred tier (Step 9b) and the model step-up warning when applicable. In default mode, ask explicitly:
@@ -514,7 +517,7 @@ If this thread has no `## Active Work` table, bootstrap one (`/pm` Step 3.2's sc
 
 The merge-authority bullet is the shared contract from `chip-launching.md` "Merge-authority line" — reproduce it **verbatim**, never softened into an approval request. The claim bullet is **Form A** of that file's "Claim line" — `/issue-maker` holds no claim, so the launched thread takes each one. Both are written out here as literal text rather than cited, for the same reason that file gives: a generated hand-off may land in a repo where `chip-launching.md` does not resolve, and a rule that lives only in prose never reaches the prompt. The only local addition is the **nested sub-bullet** scoping the claim to each issue in the list — kept off the canonical line on purpose, because `skill-portability-lint.sh` compares that whole line byte-for-byte and an appended clause fails it.
 
-- **Chip mode** (`mcp__ccd_session__spawn_task` present): **before calling `spawn_task`, register via the full contract** (see `chip-launching.md` "Offer Registry"): `REG_TID="$(chip-offer-registry.sh --emitter issue-maker --issue <primary-N> --cap-free "$FREE" --reserve 2>/dev/null)"` — exit 7 means defer (same as `FREE=0`); any other non-zero exit means proceed uncounted. **Retain `REG_TID`** separately from `chip_task_id` for later `--transition` calls (`running` on start, `pr-backed` when a PR opens, `done`/`retracted` on terminal events). Call `spawn_task` **once** with `title` (verb-first, ≤60 chars — e.g. `Run 5 captured issues (#1230 first)`), `prompt` (the block above, verbatim), `tldr` (1–2 plain sentences), `cwd` (repo root). On success, update `chip_task_id` on covered issues to the returned `task_id` (replacing the offer token), and write `reg_tid` to `$LOG` at the top level (`set_log '.reg_tid = $v' --arg v "$REG_TID"`) so retraction can transition the registry entry if the offer is later withdrawn. Print only the short summary per `chip-launching.md` "Short-summary transcript format".
+- **Chip mode** (`mcp__ccd_session__spawn_task` present): **before calling `spawn_task`, register via the full contract** (see `chip-launching.md` "Offer Registry"): `REG_TID="$(chip-offer-registry.sh --emitter issue-maker --issue <primary-N> --cap-free "$FREE" --reserve 2>/dev/null)"` — exit 7 means defer (same as `FREE=0`); any other non-zero exit means proceed uncounted. **Retain `REG_TID`** separately from `chip_task_id` for later `--transition` calls (`running` on start, `pr-backed` when a PR opens, `done`/`retracted` on terminal events). Call `spawn_task` **once** with `title` (verb-first, ≤60 chars — e.g. `Run 5 captured issues (#1230 first)`), `prompt` (the block above, verbatim), `tldr` (1–2 plain sentences), `cwd` (repo root). On success, update `chip_task_id` on covered issues to the returned `task_id` (replacing the offer token), write `reg_tid` to `$LOG` at the top level (`set_log '.reg_tid = $v' --arg v "$REG_TID"`) so retraction can transition the registry entry if the offer is later withdrawn, and update `delivery_mode` to `"chip"` (`set_log '.delivery_mode = "chip"'`) — this is the unambiguous post-compaction marker that distinguishes a running chip task from a pending inline offer. Print only the short summary per `chip-launching.md` "Short-summary transcript format".
 - **Fallback mode** (tool absent or spawn failed): print the full fenced block above once. Leave `chip_task_id` holding the offer token (not null). Note the fallback once. If `REG_TID` was reserved before the spawn failure, transition it to `retracted` (`chip-offer-registry.sh --transition --task-id "$REG_TID" --state retracted`) so active-work-cap.sh stops counting it.
 
 If the user asks to "print the full prompt for #N", re-emit that issue's complete block verbatim (Model line + guard preamble included) — same as `chip-launching.md` "Print-on-demand replay".
@@ -630,7 +633,7 @@ SHARERS=$(jq -r --arg n "$N" --arg t "$OFFER_TOKEN" \
 - **Offer already accepted** (`OFFER_ACCEPTED == true`) — the batch is already running via `/subagent`. Close the issue and clear `chip_task_id` to `null`; the running pipeline will skip a claimed issue it can no longer reach. Do not attempt to withdraw the offer — execution is in flight.
 - **No `OFFER_TOKEN`** (never offered, or already cleared) — skip straight to closing the issue.
 - **`OFFER_TOKEN` present (offer pending, not yet accepted) and `SHARERS > 0`** — shed this issue from the pending offer: recompute the batch tier from the remaining open issues (Step 9b rules — take the maximum across what remains), re-emit the offer text covering only those issues (refresh in-thread, including the recomputed tier), and clear this issue's `chip_task_id` to `null`. The offer token on remaining issues is unchanged — no new token needed.
-- **`OFFER_TOKEN` present (offer pending) and `SHARERS == 0`** — this was the last issue the offer covered. Withdraw the offer entirely: clear `chip_task_id` to `null` and say so (*"Offer withdrawn — no remaining open issues."*). In **inline mode** (no spawn_task was called), no chip dismiss is needed. In **chip mode** (spawn_task was used), read `reg_tid` from `$LOG` and transition it: `chip-offer-registry.sh --transition --task-id "$REG_TID" --state retracted` — then clear `reg_tid` to `null` in the log alongside `chip_task_id`.
+- **`OFFER_TOKEN` present (offer pending) and `SHARERS == 0`** — this was the last issue the offer covered. Withdraw the offer entirely: clear `chip_task_id` to `null` and say so (*"Offer withdrawn — no remaining open issues."*). Use `delivery_mode` (read from `$LOG`) to determine cleanup: if `"inline"`, no chip dismiss is needed (the token is locally-generated, not a `spawn_task` ID); if `"chip"`, read `reg_tid` from `$LOG` and transition it: `chip-offer-registry.sh --transition --task-id "$REG_TID" --state retracted` — then clear both `chip_task_id` and `reg_tid` to `null` and `delivery_mode` to `null` in the log.
 
 Clearing `chip_task_id` to `null` in `$LOG` is the shared-record cleanup — `/wave` and `/pm` read this same log, so nulled entries stop counting as offered work for them too. In chip mode, the registry entry (`reg_tid`) is a second store — clear it as described above.
 
