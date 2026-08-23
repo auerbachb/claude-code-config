@@ -246,24 +246,16 @@ chmod +x "$STUB_BIN/gh"
 export PATH="$STUB_BIN:$PATH"
 
 # ---------------------------------------------------------------------------
-# REGRESSION VERIFICATION: confirm each failure fixture fails WITHOUT the gate.
+# REGRESSION VERIFICATION: confirm each failure fixture fails the real gate.
 #
-# Before testing the real gate, stub ac-gate.sh to always pass and confirm
-# the fixtures that should fail actually DO fail under the real gate.
-# This proves the fixtures can't pass for the wrong reason.
+# Run the real gate against each failure fixture to confirm it returns a
+# non-zero exit code. This proves the fixtures are gate-sensitive: they were
+# written to exercise real failure paths, not pass for an accidental reason.
 # ---------------------------------------------------------------------------
-STUB_GATE="$TMP/bin/ac-gate-always-pass.sh"
-cat > "$STUB_GATE" <<'STUBGATE'
-#!/usr/bin/env bash
-echo "AC gate: PASS"
-exit 0
-STUBGATE
-chmod +x "$STUB_GATE"
 
-echo "--- Regression verification: fixtures fail without the gate ---"
+echo "--- Regression verification: fixtures fail with the real gate ---"
 
-# Verify PR 1001 (unchecked AC box): would pass the stubbed gate (that's the point —
-# the REAL gate's job is to catch it). Confirm the REAL gate catches it.
+# Verify PR 1001 (unchecked AC box) fails the real gate.
 RC=0
 bash "$SCRIPT" 1001 2>/dev/null || RC=$?
 if [[ "$RC" -ne 0 ]]; then

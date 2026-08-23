@@ -189,6 +189,7 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
         # EXACT case match for exemption section (any other casing does NOT grant exemption)
         if [[ "$heading" == "Post-merge verification" ]]; then
           STATE="postmerge"
+          TRACKING_ISSUE=""  # reset: each Post-merge section is independent
         else
           STATE="other"
         fi
@@ -236,7 +237,13 @@ if [[ "$HAS_UNCHECKED_EXEMPT" -eq 1 ]]; then
 
   # Check 2: Tracking issue must NOT be one this PR closes (PR #588 pattern)
   CLOSED_BY_THIS_PR=0
-  CLOSED_REFS="$(bash "$PR_ISSUE_REF_SH" --all "$PR_NUM" 2>/dev/null || true)"
+  PR_ISSUE_RC=0
+  CLOSED_REFS="$(bash "$PR_ISSUE_REF_SH" --all "$PR_NUM" 2>/dev/null)" || PR_ISSUE_RC=$?
+  # pr-issue-ref.sh exits 1 when no closing refs found (normal); 2+ is a genuine error
+  if [[ "$PR_ISSUE_RC" -gt 1 ]]; then
+    echo "AC gate: FAIL — could not look up closing refs via pr-issue-ref.sh (exit $PR_ISSUE_RC)." >&2
+    exit 4
+  fi
   if [[ -n "$CLOSED_REFS" ]] && printf '%s\n' "$CLOSED_REFS" | grep -qxF -- "$TRACKING_ISSUE"; then
     CLOSED_BY_THIS_PR=1
   fi
