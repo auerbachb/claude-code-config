@@ -96,13 +96,34 @@ _owner_repo="${STUB_OWNER_REPO:-org/c}"
 _head_sha="${STUB_HEAD_SHA:-ccc3333}"
 _pr_num="${STUB_PR_NUMBER:-84}"
 _pr_author="${STUB_PR_AUTHOR:-testuser}"
+
+# Real `gh` post-processes its own JSON with --jq before printing, independent
+# of --json. Mirror that here for the `pr` subcommand (the only caller that
+# uses it, e.g. `gh pr view N --json headRefOid --jq '.headRefOid'`) so a
+# caller expecting the extracted field doesn't get the raw object instead.
+_gh_jq_filter=""
+for ((_i=1; _i<=$#; _i++)); do
+  if [[ "${!_i}" == "--jq" ]]; then
+    _next=$((_i+1))
+    _gh_jq_filter="${!_next:-}"
+    break
+  fi
+done
+_emit() {
+  if [[ -n "$_gh_jq_filter" ]]; then
+    jq -r "$_gh_jq_filter"
+  else
+    cat
+  fi
+}
+
 case "${1:-}" in
   pr)
     if [[ -n "${STUB_PR_JSON:-}" ]]; then
-      printf '%s\n' "$STUB_PR_JSON"
+      printf '%s\n' "$STUB_PR_JSON" | _emit
     else
       printf '{"headRefOid":"%s","state":"OPEN","number":%s,"headRefName":"feature","url":"https://github.com/%s/pull/%s","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}\n' \
-        "$_head_sha" "$_pr_num" "$_owner_repo" "$_pr_num"
+        "$_head_sha" "$_pr_num" "$_owner_repo" "$_pr_num" | _emit
     fi ;;
   repo) printf '%s\n' "$_owner_repo" ;;
   api)

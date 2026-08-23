@@ -21,10 +21,23 @@ cp "$SRC" "$SCRIPTS/admin-merge.sh"; chmod +x "$SCRIPTS/admin-merge.sh"
 SUT="$SCRIPTS/admin-merge.sh"
 
 # --- Fake merge-gate.sh: emits JSON; behaviour driven by env vars. ----------
+# FAKE_GATE_LOG (issue #1251) — when set, every invocation's raw argv ("$*") is
+# appended as a line, so a test can assert --allow-nonauthor actually reached
+# THIS call rather than only admin-merge.sh's own separate pr-authorship.sh
+# pre-check. FAKE_GATE_AUTHORSHIP_BLOCK=1 simulates merge-gate.sh's OWN
+# independent authorship guard: it appends the authorship-blocker string to
+# missing[] unless --allow-nonauthor is present in argv — modeling the real
+# script's "adds a `missing` entry unless --allow-nonauthor is passed" behavior.
 cat > "$SCRIPTS/merge-gate.sh" <<'EOF'
 #!/usr/bin/env bash
+if [ -n "${FAKE_GATE_LOG:-}" ]; then printf '%s\n' "$*" >> "$FAKE_GATE_LOG"; fi
 MISSING="${FAKE_GATE_MISSING:-[]}"
 HUMAN="${FAKE_GATE_HUMAN:-[]}"
+SAW_ALLOW_NONAUTHOR=0
+for a in "$@"; do [ "$a" = "--allow-nonauthor" ] && SAW_ALLOW_NONAUTHOR=1; done
+if [ -n "${FAKE_GATE_AUTHORSHIP_BLOCK:-}" ] && [ "$SAW_ALLOW_NONAUTHOR" -eq 0 ]; then
+  MISSING="$(printf '%s' "$MISSING" | jq -c '. + ["PR #1 is authored by other (not you, solouser) — automated merge is blocked by the authorship guard (.claude/rules/safety.md); pass --allow-nonauthor only under an explicit per-PR user override"]')"
+fi
 jq -cn --argjson m "$MISSING" --argjson h "$HUMAN" \
   '{met:false, missing:$m, human_changes_requested:$h}'
 exit "${FAKE_GATE_EXIT:-1}"
@@ -462,6 +475,95 @@ if awk '/MODE" == "auto-plain"/{f=1} f && /BYPASS_MODE" != "plain"/{seen=1} f &&
   ok "auto-plain: the hard shape gate precedes the merge call"
 else
   bad "auto-plain: shape gate does not precede the merge call"
+fi
+
+# ============================================================================
+# Regression (issue #1251): --allow-nonauthor was parsed and cleared this
+# script's OWN authorship pre-check, but was never forwarded to merge-gate.sh
+# — which runs its own INDEPENDENT authorship check and re-added the blocker,
+# making the documented override unreachable. FAKE_GATE_AUTHORSHIP_BLOCK
+# simulates that independent check; FAKE_GATE_LOG proves the flag's presence
+# (or absence) in the actual merge-gate.sh invocation, not just in the printed
+# output.
+# ============================================================================
+
+# 27. --allow-nonauthor reaches merge-gate.sh's own authorship check (--print).
+new_log
+GATE_LOG="$TMP/gatecalls.log"; : > "$GATE_LOG"
+FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' FAKE_GATE_AUTHORSHIP_BLOCK=1 FAKE_GATE_LOG="$GATE_LOG" \
+  FAKE_PROTECTION='{"enforce_admins":{"enabled":true}}' \
+  run 12 --print --allow-nonauthor --repo-path "$CLONE" --branch main
+expect_rc 0 "--allow-nonauthor forwarded to merge-gate.sh unblocks its own authorship check (exit 0)"
+grep_ok "gh pr merge 12 --squash --admin" "bypass command still printed with the forwarded override"
+if grep -q -- "--allow-nonauthor" "$GATE_LOG"; then
+  ok "--allow-nonauthor literally appears in the merge-gate.sh invocation (--print)"
+else
+  bad "--allow-nonauthor was NOT forwarded to merge-gate.sh (logged calls: $(cat "$GATE_LOG"))"
+fi
+
+# 27b. Sanity companion: without the flag, the simulated merge-gate.sh authorship
+#      block still fires — proves the fixture models the real bug, not a tautology.
+new_log
+GATE_LOG2="$TMP/gatecalls2.log"; : > "$GATE_LOG2"
+FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' FAKE_GATE_AUTHORSHIP_BLOCK=1 FAKE_GATE_LOG="$GATE_LOG2" \
+  FAKE_PROTECTION='{"enforce_admins":{"enabled":true}}' \
+  run 14 --print --repo-path "$CLONE" --branch main
+expect_rc 1 "without --allow-nonauthor, merge-gate.sh's own authorship block still refuses (exit 1)"
+grep_ok "authored by other" "refusal surfaces merge-gate.sh's own authorship blocker text"
+if grep -q -- "--allow-nonauthor" "$GATE_LOG2"; then
+  bad "--allow-nonauthor unexpectedly present when the flag was not passed (logged calls: $(cat "$GATE_LOG2"))"
+else
+  ok "no --allow-nonauthor forwarded when the flag was not passed"
+fi
+
+# ============================================================================
+# Regression (issue #1251 review round — CodeAnt): --auto-plain runs UNATTENDED
+# (no human confirms the merge), so combining it with --allow-nonauthor is a
+# hard usage error, refused before ANY pre-flight work — not merely a gate
+# outcome that happens to fail. Verified by asserting zero gh calls and zero
+# merge-gate.sh calls, not just the exit code.
+# ============================================================================
+
+# 27c. --auto-plain + --allow-nonauthor is refused immediately (exit 2), no
+#      gh calls and no merge-gate.sh call at all — even on an otherwise
+#      merge-ready, clean-BEHIND PR.
+new_log
+GATE_LOG3="$TMP/gatecalls3.log"; : > "$GATE_LOG3"
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 FAKE_GATE_AUTHORSHIP_BLOCK=1 FAKE_GATE_LOG="$GATE_LOG3" \
+  FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 15 --auto-plain --ac-verified --allow-nonauthor --repo-path "$CLONE" --branch main
+expect_rc 2 "--auto-plain + --allow-nonauthor is a hard usage error (exit 2)"
+grep_ok "does not accept --allow-nonauthor" "refusal names the specific disallowed combination"
+grep_ok "UNATTENDED" "refusal explains why (auto-plain runs unattended)"
+grep_ok "Use --print" "refusal points at --print as the alternative"
+log_absent "." "no gh call of any kind before this refusal fires"
+if [[ -s "$GATE_LOG3" ]]; then
+  bad "merge-gate.sh was invoked despite the auto-plain + --allow-nonauthor refusal (logged calls: $(cat "$GATE_LOG3"))"
+else
+  ok "merge-gate.sh was never invoked — refusal fires before any pre-flight work"
+fi
+
+# 27d. Sanity companion: --auto-plain WITHOUT --allow-nonauthor is unaffected —
+#      the new hard refusal is scoped to the flag combination, not the mode.
+new_log
+GATE_LOG4="$TMP/gatecalls4.log"; : > "$GATE_LOG4"
+FAKE_GATE_EXIT=1 FAKE_CBC_EXIT=0 FAKE_GATE_LOG="$GATE_LOG4" \
+  FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 16 --auto-plain --ac-verified --repo-path "$CLONE" --branch main
+expect_rc 0 "--auto-plain without --allow-nonauthor still merges normally (exit 0)"
+
+# 27e. Sanity companion: --print + --allow-nonauthor is unaffected — the
+#      override still works for the modes that keep a human in the loop.
+new_log
+GATE_LOG5="$TMP/gatecalls5.log"; : > "$GATE_LOG5"
+FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' FAKE_GATE_AUTHORSHIP_BLOCK=1 FAKE_GATE_LOG="$GATE_LOG5" \
+  FAKE_PROTECTION='{"enforce_admins":{"enabled":true}}' \
+  run 17 --print --allow-nonauthor --repo-path "$CLONE" --branch main
+expect_rc 0 "--print + --allow-nonauthor is unaffected by the auto-plain-only refusal (exit 0)"
+if grep -q -- "--allow-nonauthor" "$GATE_LOG5"; then
+  ok "--print still forwards --allow-nonauthor to merge-gate.sh"
+else
+  bad "--print no longer forwards --allow-nonauthor to merge-gate.sh (logged calls: $(cat "$GATE_LOG5"))"
 fi
 
 echo "----------------------------------------"

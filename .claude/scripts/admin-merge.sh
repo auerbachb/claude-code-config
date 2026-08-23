@@ -72,11 +72,20 @@
 #   --allow-nonauthor   Bypass the issue #733 authorship guard (see below). Pass
 #                       ONLY under an explicit per-PR user override — the default
 #                       refuses a bypass merge on a PR you did not author.
+#                       REFUSED (exit 2) when combined with --auto-plain: that
+#                       mode runs unattended, and skipping the authorship guard
+#                       unattended is never allowed. Works normally with
+#                       --print, --launch-terminal, and --execute — a human is
+#                       always in the loop for those.
 #   -h, --help          Print this header.
 #
 # Authorship guard (issue #733): before any pre-flight, this refuses when the
 # authenticated user did not author the PR (delegated to pr-authorship.sh;
 # fail-closed). A bypass merge is a write, so it is restricted to your own PRs.
+# --allow-nonauthor is forwarded to merge-gate.sh's own independent authorship
+# check too (issue #1251) — without that, merge-gate.sh re-added the same
+# blocker this script's own guard had just cleared, making the override
+# unreachable through every mode.
 #
 # Exit codes:
 #   0 — bypass command printed (print/launch) OR dance completed (execute)
@@ -84,7 +93,8 @@
 #   1 — refused: PR not merge-ready (hard blockers / human changes requested),
 #        OR refused by the issue #733 authorship guard (non-author PR, no override),
 #        OR (auto-plain) the clean-BEHIND state no longer holds at merge time
-#   2 — usage error
+#   2 — usage error, INCLUDING --auto-plain combined with --allow-nonauthor
+#        (issue #1251 — that combination is refused before any pre-flight runs)
 #   3 — PR not found / not open
 #   4 — gh / network / jq error
 #   5 — refused: repo is not solo-owned (would skip a real review)
@@ -189,6 +199,25 @@ while [[ $# -gt 0 ]]; do
       PR_NUMBER="$1"; shift ;;
   esac
 done
+
+# --auto-plain + --allow-nonauthor hard refusal (issue #1251 review round).
+# --auto-plain is the one mode Claude may run UNATTENDED — no human confirms
+# the actual merge. Today, no code path lets that combination reach a real
+# merge: clean-behind-check.sh's own internal merge-gate.sh call never
+# receives --allow-nonauthor (tracked separately as issue #1257, deliberately
+# not fixed here), so CLEAN_BEHIND_OK can never become true for a non-author
+# PR and BYPASS_MODE can never reach "plain". But that protection is
+# accidental — it lives entirely in a DIFFERENT script that issue #1257 will
+# eventually fix, at which point this combination would start actually
+# merging foreign-authored PRs unattended. Refuse it here explicitly so the
+# guarantee is structural, not a side effect of an unrelated gap staying open.
+# --print, --launch-terminal, and --execute are unaffected: a human is always
+# in the loop for those (--execute is documented USER-INVOKED ONLY; Claude
+# never runs it), so --allow-nonauthor keeps working for them as intended.
+if [[ "$MODE" == "auto-plain" && "$ALLOW_NONAUTHOR" == true ]]; then
+  echo "ERROR: --auto-plain does not accept --allow-nonauthor. --auto-plain runs UNATTENDED (no human confirms the merge), so skipping the issue #733 authorship guard in this mode is never allowed. Use --print (or --launch-terminal) with --allow-nonauthor instead — it only prints the bypass command for a human to review and run themselves." >&2
+  exit 2
+fi
 
 if [[ -z "$PR_NUMBER" ]]; then
   echo "ERROR: <pr_number> is required" >&2
@@ -307,6 +336,10 @@ fi
 
 GATE_ARGS=("$PR_NUMBER")
 [[ -n "$REVIEWER_OVERRIDE" ]] && GATE_ARGS+=(--reviewer "$REVIEWER_OVERRIDE")
+# Forward the authorship override (issue #733) so merge-gate.sh's own
+# authorship check — independent of the pre-flight above — doesn't re-add the
+# blocker this script's caller already asked to bypass (issue #1251).
+[[ "$ALLOW_NONAUTHOR" == true ]] && GATE_ARGS+=(--allow-nonauthor)
 # set -e is intentionally off, so a non-zero merge-gate exit (e.g. 1 = gate not
 # met) does not abort here — capture the real exit code, then inspect the JSON.
 GATE_JSON="$("$MERGE_GATE" "${GATE_ARGS[@]}" 2>/dev/null)"
