@@ -722,3 +722,104 @@ Recorded because it cost most of this session and will recur.
 - **The org scope trap held**: `app.coderabbit.ai` again opened on **LocalMovers-dot-com**. Switching
   is done by clicking the org's **row** in `/organizations`, not the row menu (which offers only
   "Archive User") and not the sidebar dropdown.
+
+## Round 6 — close-out (2026-08-23)
+
+Issue: [#1228](https://github.com/auerbachb/claude-code-config/issues/1228), **closed 2026-08-23.**
+This round records the terminal state and ends the effort. **Appended, not merged into earlier
+rounds** — this file is point-in-time (see the header) and Rounds 1–5 stay exactly as they were
+written, including the parts later rounds overturned.
+
+Unlike Round 5, no agent touched a dashboard here. The two remaining changes sat behind the Chargebee
+billing-details form — owner-only personal and payment data — so **the owner performed them directly**
+and reported the outcome. What follows is that report, not a read.
+
+### The one form cleared, and the two items behind it went opposite ways
+
+Round 5 ended with a single blocker gating three things: an incomplete CodeRabbit billing profile.
+**The owner completed it.** Then:
+
+| # | Round 5 pending item | Outcome 2026-08-23 |
+|---|---|---|
+| 1 | Complete the billing profile | **DONE** — the Chargebee form (name, phone, billing address) is filled |
+| 2 | Developer seats **3 → 2** | **DONE** — billed count cut; **$90/mo → $60/mo** |
+| 3 | Billing cycle **Monthly → Annual** | **DECLINED by the owner** — CodeRabbit **stays monthly** |
+| 4 | CodeAnt per-repo OSS email | **WAIVED** — not sent; keep budgeting $48/mo |
+
+**§Still pending an owner click is therefore fully resolved** — two done, one declined, one waived.
+Nothing from Rounds 1–5 is left awaiting anyone.
+
+### The declined annual switch — read this before re-proposing it
+
+The cadence decline **overrides a written recommendation**, which is why it is recorded here rather
+than left implicit. [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) concluded
+*"stay paid, and switch to annual billing"*, and
+[`ai-review-paid-levers-checklist.md`](./ai-review-paid-levers-checklist.md) item 3 carried the annual
+step as the last untaken lever. The **stay-paid half stands.** The cadence half does not.
+
+What the owner declined is the **12-month commitment**, not the arithmetic. Annual really is
+$24/dev/mo against $30 monthly — at 2 seats, **$48 vs $60/month, $144/year** — and none of that is in
+dispute. Recomputing the 20% discount is not new information and is not grounds to reopen it. The
+terminal billed state is:
+
+| Field | Value |
+|---|---|
+| Plan | Pro, Active |
+| Seats | **2** |
+| Billing cycle | **Monthly** |
+| Amount | **$60/mo** |
+
+A `/review-stack-audit` run that notices a monthly cadence where annual is cheaper is reading
+**expected state, not drift.**
+
+### What the whole effort landed
+
+Across Rounds 4–6, against the state Rounds 1–3 measured:
+
+| Change | State | Worth |
+|---|---|---|
+| BugBot Autofix → Off | applied 2026-08-22 | ~$470/cycle of never-merged runs |
+| Greptile flex cap → $100 | applied 2026-08-22 | bounds the only previously uncapped line |
+| CodeRabbit seats 3 → 2 | **applied 2026-08-23** | **$30/mo** |
+| CodeRabbit monthly → annual | **declined 2026-08-23** | $144/yr not taken, deliberately |
+| CodeRabbit metered add-on | already on, capped $10 | no change needed |
+| Greptile OSS enrolment | ineligible (50-star gate) | $0 route does not exist at 3 stars |
+| BugBot 23-repo drop | declined 2026-08-22 | $0 — blast radius exceeded the benefit |
+| CodeAnt account-wide OSS discount | declined on principle | not a claim we can honestly make |
+| CodeAnt per-repo OSS email | waived 2026-08-23 | unknown — keep budgeting $48/mo |
+| BugBot Incremental → On, Drafts → Off | **waived 2026-08-23 — never applied** | unquantified; dashboard last read them `Off`/`On` |
+
+**Recorded as waived, not done, on purpose.** The last row was accepted in principle at #1209 and
+carried into #1228, but Round 5 re-read the BugBot settings after the Autofix change and found
+Incremental Review still `Off` and Review Draft PRs still `On`. Nobody clicked them, and the close
+waived the remaining optional items rather than completing them. A lever nobody took must not appear
+in a savings column.
+
+### Deliberately not recorded: Greptile's payment provenance
+
+**Which card the `auerbachb` Greptile org charges is still being verified by the billing admin,
+out-of-band.** It is left blank here on purpose — this file's redaction rule keeps payment-instrument
+identifiers out of a public repo, and beyond that we simply do not yet have a verified answer. **Its
+absence is a decision, not a gap.** Add a line when the answer lands, redacted to the same standard as
+the rest of this file.
+
+Everything else about Greptile is settled and recorded above: **paid** on the `auerbachb` org (not
+free — that was `localmovers-com`), **kept** on the sole-source evidence, **flex capped at $100**, and
+**OSS-ineligible** at 3 stars with a "Check again" button if it ever passes 50.
+
+### Where the standing record lives now
+
+This file stops here. It is a dated snapshot and does not track forward.
+
+- **Standing decision record** — [`ai-review-chain-roles-decision.md`](./ai-review-chain-roles-decision.md):
+  roles, cost rationale, and §Operator actions item 6, which carries the declined cadence.
+- **Standing tracker** — [`ai-review-paid-levers-checklist.md`](./ai-review-paid-levers-checklist.md):
+  every lever at its terminal state, marked done, declined, or waived.
+- **Re-measurement** — [`review-stack-audit.md`](./review-stack-audit.md) runs monthly against
+  `review-stack-baseline.json`. It now runs against a quiet record: no item on the checklist is
+  waiting on anyone, so anything it surfaces is genuinely new.
+
+**Point-in-time siblings that still recommend annual are correct as history and must not be edited:**
+`pricing-matrix.md` owner-action item 4 and
+[`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md)'s headline verdict both predate the
+decline. They are superseded in the checklist's §Superseded, not rewritten in place.
