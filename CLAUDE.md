@@ -99,7 +99,7 @@ Each file's own header block states its scope.
 |------|-------|
 | Issues & planning | `issue-planning.md` |
 | Review & merge | `cr-local-review.md` `cr-github-review.md` `cr-merge-gate.md` `bugbot.md` `greptile.md` |
-| Orchestration | `subagent-orchestration.md` `phase-protocols.md` `monitor-mode.md` `scheduling-reliability.md` `handoff-files.md` `chip-spawn.md` `skill-first.md` |
+| Orchestration | `subagent-orchestration.md` `phase-protocols.md` `monitor-mode.md` `scheduling-reliability.md` `handoff-files.md` `chip-spawn.md` `skill-first.md` `ask-menu.md` |
 | Safety & hygiene | `safety.md` `main-hygiene.md` `repo-bootstrap.md` `trust-dialog-fix.md` `skill-symlinks.md` |
 
 These files auto-load for the parent agent session. **Custom `subagent_type` agents inherit them automatically; only built-in Explore/Plan agents omit the project hierarchy.** Keep SAFETY/MINDSET blocks in every spawn prompt as deliberate safety-critical restatements. See `subagent-orchestration.md`; verified in `.claude/reference/token-efficiency-audit-2026-07.md` §FU-1.
