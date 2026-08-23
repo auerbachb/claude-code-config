@@ -99,17 +99,19 @@ OUT=$("$SCRIPT" --tick --session "$SID")
 [[ -z "$OUT" ]] || fail "--tick below the trip point should print nothing, got: '$OUT'"
 ok "--tick stays silent while the thread is heartbeating normally"
 
-# --- 10. --tick breaches past the trip point, in heartbeat format ------------
+# --- 10. --tick breaches past the trip point, references Liveness section ----
 touch -t "$(stamp_minutes_ago 25)" "$(hb)"
 OUT=$("$SCRIPT" --tick --session "$SID")
 [[ "$OUT" == *"CEILING BREACH"* ]] || fail "--tick past the trip point should breach, got: '$OUT'"
-[[ "$OUT" == *"User Heartbeat"* ]] || \
-  fail "breach line must point at the monitor-mode.md one-line heartbeat format, got: '$OUT'"
+[[ "$OUT" == *"Liveness"* ]] || \
+  fail "breach line must point at the monitor-mode.md Liveness section, got: '$OUT'"
+[[ "$OUT" != *"User Heartbeat"* ]] || \
+  fail "breach line must NOT contain removed User Heartbeat section name, got: '$OUT'"
 [[ "$OUT" == *"nothing new"* ]] || \
-  fail "breach line must authorise a nothing-new heartbeat, got: '$OUT'"
+  fail "breach line must authorise a nothing-new status, got: '$OUT'"
 LINES=$(printf '%s' "$OUT" | wc -l | tr -d ' ')
 [[ "$LINES" -le 1 ]] || fail "breach output should be a single line, got $LINES newlines"
-ok "--tick emits a single one-line heartbeat instruction on breach"
+ok "--tick emits a single one-line status instruction on breach"
 
 # --- 11. Breaches are deduped per stretch of silence ------------------------
 OUT=$("$SCRIPT" --tick --session "$SID")

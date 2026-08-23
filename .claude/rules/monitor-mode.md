@@ -1,14 +1,14 @@
 # Monitor Mode, Heartbeats & Recovery
 
-> **Always:** Enter monitor mode when subagents are active. Timestamp every message and heartbeat ≤5 min (CLAUDE.md #1/#3). Arm the silence ceiling when background work starts (`scheduling-reliability.md`). Report subagent failures immediately. Recover state after compaction.
+> **Always:** Enter monitor mode when subagents are active. Timestamp every user-visible message (CLAUDE.md #1; exception: the clean auto-merge line `merged PR #N` omits the timestamp per CLAUDE.md #3). Arm the silence ceiling when background work starts (`scheduling-reliability.md`). Report subagent failures immediately. Recover state after compaction.
 > **Ask first:** Breaking monitor mode for explicit user requests — warn about paused monitoring first.
-> **Never:** Do substantive work while subagents are active. Go >5 min without a user-visible message. Let a stalled PR go unreported. Ask permission to monitor — babysitting an in-flight PR is the default (`CLAUDE.md`).
+> **Never:** Do substantive work while subagents are active. Let a stalled PR go unreported. Ask permission to monitor — babysitting an in-flight PR is the default (`CLAUDE.md`).
 
 ## Dedicated Monitor Mode (MANDATORY for parent agents)
 
 **Entry:** any active subagent or non-empty `active_agents` in `session-state.json`. **Exit:** all subagents complete/failed, pending B/C launches executed, state updated.
 
-While active: poll subagents, verify outputs, execute phase transitions, refill free capacity, update state, report heartbeats. No code edits, issue/PR creation, or source analysis — delegate fix work to subagents.
+While active: poll subagents, verify outputs, execute phase transitions, refill free capacity, update state. No code edits, issue/PR creation, or source analysis — delegate fix work to subagents. Message only on blockers, decisions, failures, or defined exceptions — never routine status.
 
 If the user explicitly requests substantive work, warn that monitoring N active PR(s) will pause, do the work, then immediately re-enter monitor mode.
 
@@ -19,25 +19,19 @@ Every ~60s, in order:
 2. Execute phase transitions via `phase-protocols.md`; also launch transitions stalled in `session-state.json`.
 3. For every session PR still on `reviewer == cr`, run `.claude/scripts/escalate-review.sh <PR_NUMBER>` and act on its `STATUS=` verdict before sleeping.
 4. Below the pipeline ceiling? Refill: queued chain heads, then `/pm` Step 3.4's backlog pass (under `/pm` only). Chains, re-validation, pause still bind.
-5. Send any due heartbeat (one line — User Heartbeat below).
+5. Follow `scheduling-reliability.md` §Mandatory Pre-Exit Checklist item 2 for what to emit (canonical output rule).
 6. Investigate stale agents: >15 min Phase A, >10 min Phase B, >5 min Phase C.
 7. Before ending the turn, confirm the ceiling is still armed: `bgwork-ceiling.sh --check`.
 
 ## Subagent Health Monitoring (MANDATORY)
 
-Poll every cycle; never fire-and-forget. Report failures and blockers immediately — PR/issue, phase, failure mode, remaining work; successes fold into the heartbeat. Verify outputs before marking complete (`gh pr view` for pushes, comments/replies for feedback handling).
+Poll every cycle; never fire-and-forget. Report failures and blockers immediately — PR/issue, phase, failure mode, remaining work. Successes are silent unless they match a defined exception. Verify outputs before marking complete (`gh pr view` for pushes, comments/replies for feedback handling).
 
 Respawn permissions: crash asks, exhaustion auto (`phase-protocols.md`).
 
-## User Heartbeat (MANDATORY)
+## Liveness (Issue #1253)
 
-CLAUDE.md #3 is canonical. Routine-beat format:
-
-`[<ET timestamp>] <state / what's running> · next: <action or cadence> — monitoring N PR(s) (#a, #b)`
-
-Below the pipeline ceiling, append `· slots {used}/{cap}: {nothing eligible | chained | paused}`.
-
-No tables, plan restating, or rule quoting on routine beats. If the silence hook warns, message immediately. Between-turn polling: `scheduling-reliability.md`.
+Routine per-tick heartbeats are removed. See `scheduling-reliability.md` §Mandatory Pre-Exit Checklist for the canonical liveness and output rules.
 
 ## File-Write Status Updates (MANDATORY)
 
@@ -46,11 +40,11 @@ Operations touching 4+ files: one-line status every 3 writes/edits; batches of 1
 ## Post-Compaction Recovery (MANDATORY)
 
 If a summary block references prior work you do not remember, recover before all other work:
-1. Timestamp; rerun session-start checks.
+1. Rerun session-start checks.
 2. Read `session-state.json` + handoffs; reconcile each open PR on GitHub (all 3 endpoints per `cr-github-review.md`).
 3. Per polled PR: `polling-state-gate.sh <N> --verify-state` (optional `--root-repo`), then resume with `polling-state-gate.sh <N>` (shells `merge-gate.sh`).
 4. Reconcile state (PR, HEAD, reviewer, pending); verify stale agents and stalled transitions; launch as needed.
-5. Resume monitoring — one heartbeat line, no report.
+5. Resume monitoring silently — message if recovery reveals a blocker, failure, or decision needing input, or if a defined exception occurs.
 
 ## PM Monitoring Recovery
 

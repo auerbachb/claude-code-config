@@ -2,11 +2,11 @@
 # bgwork-ceiling.sh — hard ceiling on chat silence while background work runs.
 #
 # PURPOSE
-#   The 5-minute heartbeat rule (CLAUDE.md #3) is enforced in-turn by
-#   silence-detector.sh, a PostToolUse hook. That hook cannot fire when the
-#   thread spawns a subagent (or any background work), ends its turn, and waits
-#   for a completion notification — there are no tool calls to hook. The
-#   launchd watchdog (silence-watchdog.sh) reads the same heartbeat file
+#   The silence-by-default rule (CLAUDE.md #3, Issue #1253) is enforced
+#   in-turn by silence-detector.sh, a PostToolUse hook. That hook cannot fire
+#   when the thread spawns a subagent (or any background work), ends its turn,
+#   and waits for a completion notification — there are no tool calls to hook.
+#   The launchd watchdog (silence-watchdog.sh) reads the same heartbeat file
 #   out-of-turn but can only raise an OS notification, and it deliberately
 #   skips sessions whose /tmp/claude-active-<id> marker is absent — which is
 #   exactly the "ended its turn and is waiting" state. Result: silence with no
@@ -14,8 +14,8 @@
 #
 #   This script is the enforcement layer for that gap and the SOLE OWNER of the
 #   ceiling number. Rule files describe the behavior ("arm the ceiling") and
-#   never state a duration — CLAUDE.md #3's 5-minute cadence stays the only
-#   published number, so a looser backstop can never read as a target.
+#   never state a duration — keeping the ceiling number unpublished prevents
+#   it from being read as a target cadence.
 #
 #   Measurement is NOT re-implemented here: /tmp/claude-heartbeat-<session-id>,
 #   touched by the silence-detector-ack.sh Stop hook on every visible response,
@@ -46,8 +46,8 @@
 #                   exit 1 when background work is in flight and unarmed.
 #   --tick          What the armed watch runs on a loop. Prints ONE breach line
 #                   when the heartbeat file is stale past the trip point, and
-#                   prints nothing otherwise, so a thread emitting healthy
-#                   5-minute heartbeats never produces a ceiling message.
+#                   prints nothing otherwise, so a thread emitting status at
+#                   each turn-end never produces a ceiling message.
 #                   Deduped per heartbeat mtime: one breach line per silence,
 #                   not one per poll. Always exits 0 — a watch that exits stops
 #                   watching.
@@ -260,7 +260,7 @@ case "$MODE" in
       printf 'bgwork-ceiling.sh: cannot write %s — breach line may repeat\n' "$EMITTED_FILE" >&2
 
     log_event "breach" "age_s=${age}"
-    printf 'CEILING BREACH: no user-visible message in %dm (%ds) while background work is in flight. Send the one-line timestamped heartbeat NOW (monitor-mode.md "User Heartbeat"): [<ET timestamp>] <state> · next: <action>. "Still running, nothing new" is a complete and correct heartbeat — say that rather than staying silent.\n' \
+    printf 'CEILING BREACH: no user-visible message in %dm (%ds) while background work is in flight. Send a one-line status NOW (monitor-mode.md "Liveness"): [<ET timestamp>] <state> · next: <action>. "Still running, nothing new" is a complete and correct status line — say that rather than staying silent.\n' \
       "$(( age / 60 ))" "$age"
     ;;
 

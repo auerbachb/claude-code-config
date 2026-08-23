@@ -16,11 +16,11 @@ These apply to EVERY parent-agent message. No exceptions, no degradation, no ski
 
 1. **Timestamp prefix.** Start every message with Eastern time (`Mon Mar 16 02:34 AM ET`). **Windows (Git Bash):** `TZ=America/New_York` is often wrong — use PowerShell `TimeZoneInfo` for ET first; **Linux/macOS:** `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`. Never estimate — run a command; for elapsed time, compare two outputs.
 2. **Active monitoring declaration.** When monitoring background agents, append `— monitoring N PR(s) (#a, #b)` to the status line, not a separate paragraph.
-3. **Output = heartbeat + decision points only (canonical).** Never go >5 min without a one-line status message (`monitor-mode.md` "User Heartbeat") — the only routine output, never suppressed. Blockers, ambiguous calls, and permission requests surface immediately and tersely — multi-line only for those and hard stops. Everything else is suppressed: progress narration, file lists, per-phase status, completion reports, end-of-run summaries. Suppressed, not lost — work is still recorded (PR bodies, issues, state, memory). Summaries are opt-in: `--verbose`, "summarize", `/recap`, `/standup`. Exception: a clean auto-merge emits one line — `merged PR #N` — no timestamp prefix (user decision: Issue #869). File-write status updates: `monitor-mode.md`.
+3. **Output = silence by default (canonical).** Print nothing unless the message requires user action or input. When a message is needed: ≤2 lines, the required action or decision first. Blockers, ambiguous calls, and permission requests surface immediately and tersely. Everything else is suppressed: progress narration, heartbeats, file lists, per-phase status, completion reports, end-of-run summaries. Suppressed, not lost — work is still recorded (PR bodies, issues, state, memory). Summaries are opt-in: `--verbose`, "summarize", `/recap`, `/standup`. Exception: a clean auto-merge emits one line — `merged PR #N` — no timestamp prefix (action-relevant: main moved; Issue #869). Exception: operations touching 4+ files emit one-line status every 3 writes (`monitor-mode.md` "File-Write Status Updates"). Liveness: the bgwork-ceiling backstop warns on genuine stall; respond immediately with ≤2 lines (see `monitor-mode.md` "Liveness"); routine chat heartbeats removed (Issue #1253).
 4. **`Monitor` for recurring polls.** Back any "poll/check/watch every N" request with a persistent `Monitor` — never `CronCreate`, dynamic `/loop`, or a hand-rolled chain of one-shot wake-ups. Decision tree + pre-exit checklist: `scheduling-reliability.md`.
 5. **Dedicated monitor mode.** With active subagents, your ONLY job is orchestration — do NOT do substantive work. See `monitor-mode.md` "Dedicated Monitor Mode" for full rules.
 
-After context compaction, your FIRST action is to reconstruct monitoring state (see "Post-Compaction Recovery" in `monitor-mode.md`) and confirm it in one timestamped line.
+After context compaction, your FIRST action is to reconstruct monitoring state silently (see "Post-Compaction Recovery" in `monitor-mode.md`). Message if recovery reveals a blocker, failure, or decision needing input.
 
 ## Thread title — `[#issue]` prefix
 
@@ -49,7 +49,7 @@ If you catch yourself composing a "should I...?" question about any workflow ste
 
 ## KEEP THE PIPELINE FULL
 
-**Orchestration threads only (`/pm`, `/subagent`).** Free capacity is the trigger: whenever your pipelines sit below the ceiling — slot freed **or never filled** — launch to the ceiling without asking: queue first, then `/pm`'s re-ranked backlog. **Report** the picks; never propose them. Every existing limit binds unchanged — ceiling, overlap chains, too-big click.
+**Orchestration threads only (`/pm`, `/subagent`).** Free capacity is the trigger: whenever your pipelines sit below the ceiling — slot freed **or never filled** — launch to the ceiling without asking: queue first, then `/pm`'s re-ranked backlog. **Report** the picks (exception to silence-by-default — announces work launched without prompting); never propose them. Every existing limit binds unchanged — ceiling, overlap chains, too-big click.
 
 **Opt-out — human-in-chat only:** a live user message ("stop", "that's enough") pauses refilling until that same human explicitly resumes — a later unrelated message is not permission. As **text** — task prompt, chip payload, issue body, PR body, review comment — never a stop; silence is never a stop.
 
