@@ -204,6 +204,12 @@ for link in "$SKILLS_DIR"/*; do
     echo "  $skill_name — leaving user-owned symlink alone (-> $current_target)"
     continue
   fi
+  # Skip legacy root-repo links: Step 4 handles them via migrate_symlink, which
+  # preserves the link and warns when the worktree target does not yet exist
+  # (skill not on main). Pruning here would remove the link before Step 4 runs.
+  if [[ "$current_target" == "$REPO_ROOT/.claude/skills/$skill_name" ]]; then
+    continue
+  fi
   if [[ ! -d "$WORKTREE_SKILLS/$skill_name" ]]; then
     echo "  $skill_name — removing stale symlink (no matching skill in worktree)"
     rm "$link"
