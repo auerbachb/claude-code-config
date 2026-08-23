@@ -725,6 +725,28 @@ GUID_NONHEAD_BODY="$(printf 'Reviewed changes for commit deadbeef1234567890abcde
 RI_NEG="$(guid_eval "$GUID_WALKTHROUGH_BODY" "$GUID_NONHEAD_BODY")"
 check_eq "true"        "$(echo "$RI_NEG" | jq -r '.self_report_mismatch')"   "(xx-408) negative control: genuine non-HEAD SHA still triggers mismatch"
 
+echo "=== (xx-408b) run-start marker + invocation-only comment does not grant descriptive evidence (CodeAnt PR #1280) ==="
+# CodeAnt finding (PR #1280): a run-start marker followed by a GUID invocation
+# comment whose authored_len >= $min_chars used to satisfy $descriptive_ev,
+# granting counts_as_coverage on a hollow approval without any genuine review
+# substance. The invocation_comment flag (issue #1248 follow-up) must suppress
+# this path. The eval here uses two comments anchored to the same GUID_HEAD:
+#   b1: run-start marker (CodeRabbit is running the review…)
+#   b2: GUID invocation comment (Action performed / Full review finished)
+# with a concurrent empty APPROVED on HEAD.
+#
+# guid_eval puts b1 before b2 (created order), so $marker = b1 and b2 is the
+# only candidate for $descriptive_ev. The fix means b2 is excluded (invocation_comment).
+GUID_MARKER_BODY="CodeRabbit is running the review. Please wait while the analysis completes."
+RI_B="$(guid_eval "$GUID_MARKER_BODY" "$GUID_INVOCATION_BODY")"
+check_eq "false"  "$(echo "$RI_B" | jq -r '.descriptive_evidence_on_head')"  "(xx-408b) invocation-only comment does not satisfy descriptive_evidence_on_head"
+check_eq "false"  "$(echo "$RI_B" | jq -r '.external_evidence_on_head')"     "(xx-408b) no external substance without genuine review content"
+check_eq "false"  "$(echo "$RI_B" | jq -r '.counts_as_coverage')"            "(xx-408b) hollow approval + invocation comment is not coverage"
+# Positive control: a genuine descriptive comment (after the marker) still grants evidence.
+GUID_GENUINE_DESC="This change looks reasonable. The GUID handling is correct and the test coverage is thorough."
+RI_C="$(guid_eval "$GUID_MARKER_BODY" "$GUID_GENUINE_DESC")"
+check_eq "true"   "$(echo "$RI_C" | jq -r '.descriptive_evidence_on_head')"  "(xx-408b) positive control: genuine descriptive comment after marker grants evidence"
+
 echo "=== (ff-933) a reviewer echoing the author's SHA-bearing text does not name HEAD ==="
 # Issue #933, trace on PR #929 (2026-08-02). CodeAnt answers a re-review request
 # by reproducing the requester's comment verbatim (lowercased) under a

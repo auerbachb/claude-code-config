@@ -573,6 +573,18 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
             # "review complete" in its prose remains eligible.
             completion_marker:
               ($b | test("^[[:space:][:punct:]]*((codeant ai|coderabbit|cursor bugbot|greptile)[[:space:]]+)?(finished running the review|(the )?review (is )?(now )?complete(d)?)[[:space:][:punct:]]*$"; "i")),
+            # Recognized CodeRabbit command-invocation metadata comments. These
+            # are auto-generated when CR processes a review command and contain
+            # only "Action performed" / "Full review finished" boilerplate plus
+            # an HTML-comment UUID tag — no review substance. Two known shapes
+            # (issues #917, #1248):
+            #   "request id [uuid]"                     (issue #917 shape)
+            #   "review command invocation: [uuid]"     (issue #1248 shape)
+            # Excluded from $descriptive_ev so that a run-start marker + an
+            # invocation-only comment cannot grant counts_as_coverage on a
+            # hollow approval (CodeAnt finding, PR #1280).
+            invocation_comment: ($b | ascii_downcase
+              | test("review command invocation:|(?:^|\\W)request id [0-9a-f]{8}-")),
             # explicit "I cannot review this" notices
             failure: ($b | test("does not have a pr review subscription|no active subscription|not have an active subscription|rate limit|rate-limit|usage limit|usage or spend limit|quota exceeded|could not run|couldn'"'"'t run|unable to run|unable to review|unable to complete|failed to run|failed to review"; "i")) } ]
       | sort_by(.ts) ) as $cidx
@@ -683,6 +695,7 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
                         and (.failure | not)
                         and (.marker | not)
                         and (.completion_marker | not)
+                        and (.invocation_comment | not)
                         and .created >= $push
                         and .created >= $marker.created) ]
              | length) > 0 )                                               as $descriptive_ev
