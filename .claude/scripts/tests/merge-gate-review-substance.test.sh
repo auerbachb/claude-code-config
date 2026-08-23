@@ -781,6 +781,36 @@ GUID_SHORTUID_BODY="<!-- This is a partial request id 9f69125b-29d9-47d4- withou
 RI_G="$(guid_eval "$GUID_MARKER_BODY" "$GUID_SHORTUID_BODY")"
 check_eq "true" "$(echo "$RI_G" | jq -r '.descriptive_evidence_on_head')"  "(xx-408c) incomplete UUID prefix in HTML comment is not invocation_comment"
 
+echo "=== (xx-408d) invocation_comment boundary: overlong UUID and echoed-line residual inflation ==="
+# CodeRabbit findings (PR #1280, PRRT_kwDORbRzR86bdTJq / PRRT_kwDORbRzR86bdTJs):
+#
+# (a) Overlong UUID — PRRT_kwDORbRzR86bdTJq (Minor):
+# The UUID regex had no boundary after {12}. A 37-char last group matched the
+# first 12 hex chars without rejecting the extra digit. Adding (?![0-9a-f])
+# after {12} prevents a hex run longer than 12 from matching.
+# Expected: invocation_comment=false (no valid full-UUID match) and
+# descriptive_evidence_on_head=true (comment is eligible for $descriptive_ev).
+GUID_LONGUID_BODY="<!-- review command invocation: df440ae1-9ab9-4b17-bb0a-caae8c17534a0 -->"
+RI_H="$(guid_eval "$GUID_MARKER_BODY" "$GUID_LONGUID_BODY")"
+check_eq "true" "$(echo "$RI_H" | jq -r '.descriptive_evidence_on_head')"  "(xx-408d) overlong UUID in last segment is not a valid invocation_comment"
+
+# (b) Echoed line inflates residual — PRRT_kwDORbRzR86bdTJs (Major):
+# The residual check for invocation_comment scanned raw $b. If a bot comment
+# contained the invocation metadata HTML comment plus a verbatim copy of the
+# author's (or an earlier bot) text, the echoed line kept the residual >=
+# $min_chars, flipping invocation_comment=false even though no genuine
+# reviewer-authored prose remained. Applying strip_echoed($cts) before the
+# residual check removes echoed lines, so the residual only reflects prose the
+# reviewer actually wrote.
+# Here b2 = GUID_INVOCATION_BODY + GUID_MARKER_BODY (marker echoed from b1).
+# Without strip_echoed: residual includes the marker line (~75 chars) >= 40 ->
+# invocation_comment=false -> descriptive_evidence_on_head=true (WRONG).
+# With strip_echoed: marker line stripped -> residual ~38 chars < 40 ->
+# invocation_comment=true -> descriptive_evidence_on_head=false (CORRECT).
+GUID_ECHOED_BODY="$(printf '%s\n%s' "$GUID_INVOCATION_BODY" "$GUID_MARKER_BODY")"
+RI_I="$(guid_eval "$GUID_MARKER_BODY" "$GUID_ECHOED_BODY")"
+check_eq "false" "$(echo "$RI_I" | jq -r '.descriptive_evidence_on_head')"  "(xx-408d) echoed line does not inflate residual past min_chars in invocation_comment filter"
+
 echo "=== (ff-933) a reviewer echoing the author's SHA-bearing text does not name HEAD ==="
 # Issue #933, trace on PR #929 (2026-08-02). CodeAnt answers a re-review request
 # by reproducing the requester's comment verbatim (lowercased) under a

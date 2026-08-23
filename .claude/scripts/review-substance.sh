@@ -586,24 +586,25 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
             #
             # Both conditions must hold (CodeRabbit finding, PR #1280):
             #   1. The invocation phrase appears inside a COMPLETE HTML comment
-            #      (<!-- -->), and that comment contains a full 8-4-4-4-12 UUID.
-            #      scan("<!--[\\s\\S]*?-->") extracts only complete HTML comment
-            #      blocks, preventing the pattern from crossing --> into prose
-            #      outside a comment (e.g. "<!-- unrelated -->\nreview command
-            #      invocation: documented" is NOT an invocation comment because
-            #      the phrase is not inside any HTML comment). Requiring a full
-            #      UUID rejects UUID-less phrases ("<!-- review command
-            #      invocation: documented -->") and incomplete UUID prefixes
-            #      ("<!-- request id 9f69125b-29d9-47d4- -->").
-            #   2. After stripping HTML comments and tags, the residual prose is
-            #      below $min_chars. A comment with invocation metadata PLUS
-            #      genuine descriptive prose is not treated as invocation-only
-            #      (the prose would keep residual length >= $min_chars).
+            #      (<!-- -->), and that comment contains a full 8-4-4-4-12 UUID
+            #      with no adjacent hex digit on either side. scan extracts only
+            #      complete HTML comment blocks (preventing the pattern from
+            #      crossing --> into prose outside a comment), the full 8-4-4-4-12
+            #      UUID is required (rejecting UUID-less phrases and partial UUID
+            #      prefixes), and the trailing (?![0-9a-f]) lookahead prevents an
+            #      overlong hex run (e.g. 38-char last group) from matching the
+            #      first 12 characters.
+            #   2. After applying strip_echoed($cts) to remove echoed author lines,
+            #      then stripping HTML comments and tags, the residual prose is
+            #      below $min_chars. Using strip_echoed first prevents a >=40-char
+            #      author-echoed line from artificially inflating the residual and
+            #      defeating the filter — a comment is only "invocation-only" when
+            #      the reviewer-authored residual (not the echo noise) is short.
             invocation_comment: (
               ([$b | ascii_downcase | scan("<!--[\\s\\S]*?-->")]
-                | any(test("(?:review command invocation: ?|request id )[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"; "m")))
+                | any(test("(?:review command invocation: ?|request id )[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![0-9a-f])"; "m")))
               and
-              (($b | ascii_downcase | gsub("<!--.*?-->"; " "; "m") | gsub("<[^>]+>"; " ") | gsub("[[:space:]]+"; " ") | ltrimstr(" ") | rtrimstr(" ") | length) < $min_chars)),
+              (($b | ascii_downcase | strip_echoed($cts) | gsub("<!--.*?-->"; " "; "m") | gsub("<[^>]+>"; " ") | gsub("[[:space:]]+"; " ") | ltrimstr(" ") | rtrimstr(" ") | length) < $min_chars)),
             # explicit "I cannot review this" notices
             failure: ($b | test("does not have a pr review subscription|no active subscription|not have an active subscription|rate limit|rate-limit|usage limit|usage or spend limit|quota exceeded|could not run|couldn'"'"'t run|unable to run|unable to review|unable to complete|failed to run|failed to review"; "i")) } ]
       | sort_by(.ts) ) as $cidx
