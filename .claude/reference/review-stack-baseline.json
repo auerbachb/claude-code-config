@@ -3,7 +3,7 @@
   "source": {
     "issue": 1199,
     "record": ".claude/reference/ai-review-chain-roles-decision.md",
-    "as_of": "2026-08-21",
+    "as_of": "2026-08-22",
     "provenance": "decision-record",
     "note": "#1199's decision record (`ai-review-chain-roles-decision.md`, merged as PR #1203) supplies these roles, superseding the 2026-06 seeded values below. The current degraded-stack caps (CodeRabbit's burst limit, BugBot's spend exhaustion, Greptile's flex overage) are intentionally left out of `expected_caps` so the first post-swap audit run reports them as genuine drift rather than suppressing it."
   },
@@ -48,12 +48,12 @@
     },
     {
       "key": "graphite",
-      "role": "advisory",
+      "role": "fallback",
       "billed": "paid",
       "gates_merge": false,
       "approves_via": "none",
       "expected_caps": [],
-      "notes": "Supplemental — paid, under re-measurement, per the #1199 decision record: newly paid Team plan (started 2026-08-07), measured almost entirely before the payment (1 sole-source PR in 244). Not promoted to a gating tier: it concludes success on nearly every PR and comments on only 4% of them, which would manufacture approvals (#875) if gated on. The re-measure trigger (at least 30 PRs merged under the paid plan) is already met at 88 PRs (7-21 Aug 2026), so the next audit should re-decide its role on paid evidence."
+      "notes": "Supplemental non-gating fallback — re-decided on paid-plan evidence (#1232, 2026-08-22). Window 2026-07-23..2026-08-22 (240 PRs): 10 PRs touched, 10 review objects, 10 inline findings, 2 sole-source PRs (#1104 grammar finding, #1216 markdown-formatting finding). Both sole-source findings were prose/formatting quality. Promoted from `advisory` to `fallback` so D1 no longer fires; gates_merge stays false — Graphite concludes success on ~96% of PRs regardless of code quality, so gating would manufacture approvals (#875). Never in the escalation chain; approves_via stays none. Billing shape is seat-based (committers reviewed, not review volume); the cost question is outside this entry's scope."
     },
     {
       "key": "vercel",

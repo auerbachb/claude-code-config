@@ -15,7 +15,7 @@ script may gate on, escalate to, or trigger a tool absent from this table.
 | CodeAnt | `codeant-ai[bot]` | **Primary approver** (co-primary on the CR path) | **Yes** — sole source of `APPROVED` | Premium, 2/2 seats, ~$48/mo (#1204). Load-bearing: 360 approvals on 184 PRs, and the gate has no other approver, so a lapse here is a full stop. The commit-author identity holds no seat — a **$0** fix. |
 | BugBot (Cursor) | `cursor[bot]` | **First fallback** | Yes, on the BugBot path | **The stack's largest cost line** (#1204): ~$1.58/review on-demand, $815.58 in one cycle against a $1,000 cap it has exhausted — which is why it refused 64% of PRs. Strong yield (29 sole-source PRs), but the spend is a scope problem before it is a cap problem. |
 | Greptile | `greptile-apps[bot]` | **Second fallback — retained; PAID, confirmed 2026-08-22** | Yes, on the Greptile path | **Paid Pro on the `auerbachb` org with flex overage UNCAPPED**, re-read from the billing page 2026-08-22 (#1228): Active, 6 Aug–6 Sep invoice $72 → **$36** after discount, **"No cap on flex usage"**, 42 of 92 credits on flex. The owner's free-and-unpaid report (#1213) described `localmovers-com` and is **resolved**. Earns its keep on yield — **top sole-source finder in the stack, 40 PRs in the 2026-08 audit's 240-PR window**, with no cap hit and no `D2` paid-but-unused finding; the idle stretch since PR #1203 is a day, not disuse. Its OSS program is **self-serve**, so this repo can go to $0 without cancelling. |
-| Graphite | `graphite-app[bot]` | **Supplemental — paid, under re-measurement** | **No** | Newly paid, and measured almost entirely *before* the payment: 1 sole-source PR in 244. Promotion is deferred to evidence, not price. |
+| Graphite | `graphite-app[bot]` | **Supplemental — non-gating fallback (re-decided 2026-08-22, #1232)** | **No** | 2 sole-source PRs (PRs #1104, #1216) out of 10 Graphite-touched in 2026-07-23..2026-08-22; findings were prose/formatting quality. Re-decided on paid-plan evidence; see §Graphite role reconciliation (#1232). |
 
 **Authoritative chain order** — unchanged in shape, corrected in its assumptions:
 
@@ -30,7 +30,7 @@ GitHub:  CodeRabbit  ─┐
                       │
          self-review  ── terminal; never satisfies the gate
 
-         Graphite     ── parallel supplemental (never gating)
+         Graphite     ── parallel supplemental (non-gating fallback; never in the escalation chain)
 ```
 
 ### The three assumptions this decision corrects
@@ -335,3 +335,27 @@ recommendation is not re-derived from the same evidence next audit. Every live a
 - [`local-review-cli-failure-modes.md`](./local-review-cli-failure-modes.md) — CLI-layer caps, 403 triage, false-clean shapes
 - Issue [#261](https://github.com/auerbachb/claude-code-config/issues/261) — Greptile dashboard auto-trigger disabled; confirmed still holding (0 auto-triggers in 130 reviews)
 - Issue [#1191](https://github.com/auerbachb/claude-code-config/issues/1191) — active-work ceiling derived from reviewer throughput; consumes the observed numbers in the audit, not the modelled ones
+
+## Graphite role reconciliation (#1232, 2026-08-22)
+
+**Trigger:** D1 drift finding from the first measured post-swap audit run (Issue #1228, 2026-07-23..2026-08-22, 240 PRs). `review-stack-baseline.json` records Graphite as `role: "advisory"` and `drift.sh` fires D1 on any non-zero sole-source count against an advisory role. The re-measure trigger noted in §Re-measure trigger (Graphite) was met at 88 PRs; this is that re-decision, resolved by Issue #1232.
+
+**Evidence — the two sole-source PRs identified:**
+
+- **PR #1104** (`docs(#1081): adjudicate churn-hotspots.md hotspot`): Graphite flagged a grammatical ambiguity — `records` read as a verb conflicting with `confirms`, where it was intended as a noun. A prose/grammar finding; no other bot reviewed this doc PR inline.
+- **PR #1216** (`feat(#1213): track the review stack's paid levers with their ordering gates`): Graphite flagged missing blank lines between metadata-header lines that would cause adjacent lines to render as a single paragraph. A markdown formatting finding; no other bot reviewed this doc PR inline.
+
+Both findings are real and were not caught by any other tool. Both are **prose/formatting quality** — not logic errors, not code bugs. Graphite reviewed 10 PRs in the window and posted findings on all 10 (100% when it touches a PR), but was sole-source on exactly 2.
+
+**Decision: promote from `advisory` to `fallback` (non-gating, non-approving).**
+
+The two findings confirm Graphite provides real coverage on doc-only PRs that other reviewers skip. The sole-source rate (2/10 = 20% of PRs it reviewed) is materially higher than the pre-payment rate (1/244 ≈ 0.4%). Promoting the role label from `advisory` to `fallback` stops D1 from firing while accurately reflecting that Graphite is a genuine-but-supplemental reviewer.
+
+This is **not** a promotion to a gating tier. `gates_merge` stays `false`; the #875 manufactured-approval risk identified in §Why Graphite is not promoted remains: Graphite concludes success on ~96% of PRs it reviews regardless of code quality, so any gating shape would manufacture approvals.
+
+**What this does not change:**
+- Graphite remains parallel and supplemental, never in the escalation chain.
+- No APPROVED reviews; `approves_via: none` unchanged.
+- The billing question (seat-based cost per committer) is outside this PR's scope.
+
+**Baseline updated:** `review-stack-baseline.json` Graphite entry: `role: "advisory"` → `role: "fallback"`, notes updated to reference this re-decision and the measured window.
