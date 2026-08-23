@@ -343,7 +343,7 @@ recommendation is not re-derived from the same evidence next audit. Every live a
 **Evidence — the two sole-source PRs identified:**
 
 - **PR #1104** (`docs(#1081): adjudicate churn-hotspots.md hotspot`): Graphite flagged a grammatical ambiguity — `records` read as a verb conflicting with `confirms`, where it was intended as a noun. A prose/grammar finding; no other bot reviewed this doc PR inline.
-- **PR #1216** (`feat(#1213): track the review stack's paid levers with their ordering gates`): Graphite flagged missing blank lines between metadata-header lines that would cause adjacent lines to render as a single paragraph. A markdown formatting finding; no other bot reviewed this doc PR inline.
+- **PR #1216** (`feat(#1213): track the review stack's paid levers with their ordering gates`): Graphite flagged missing blank lines between metadata-header lines that would cause adjacent lines to render as a single paragraph. A Markdown formatting finding; no other bot reviewed this doc PR inline.
 
 Both findings are real and were not caught by any other tool. Both are **prose/formatting quality** — not logic errors, not code bugs. Graphite reviewed 10 PRs in the window and posted findings on all 10 (100% when it touches a PR), but was sole-source on exactly 2.
 

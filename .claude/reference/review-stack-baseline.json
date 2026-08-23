@@ -5,7 +5,7 @@
     "record": ".claude/reference/ai-review-chain-roles-decision.md",
     "as_of": "2026-08-22",
     "provenance": "decision-record",
-    "note": "#1199's decision record (`ai-review-chain-roles-decision.md`, merged as PR #1203) supplies these roles, superseding the 2026-06 seeded values below. The current degraded-stack caps (CodeRabbit's burst limit, BugBot's spend exhaustion, Greptile's flex overage) are intentionally left out of `expected_caps` so the first post-swap audit run reports them as genuine drift rather than suppressing it."
+    "note": "#1199's decision record (`ai-review-chain-roles-decision.md`, merged as PR #1203) supplies the original roles, superseding the 2026-06 seeded values below; #1232 (2026-08-22, PR #1271) supplies the Graphite override (promoted from advisory to fallback). The current degraded-stack caps (CodeRabbit's burst limit, BugBot's spend exhaustion, Greptile's flex overage) are intentionally left out of `expected_caps` so the first post-swap audit run reports them as genuine drift rather than suppressing it."
   },
   "tools": [
     {
