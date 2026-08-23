@@ -318,11 +318,20 @@ the same evidence next audit.
    2026-08-22 (#1228), replacing the uncapped $1/credit exposure across all six repos.
 2. **~~Turn CodeAnt's org `Auto Approve PR` off~~ — DECLINED 2026-08-21, leave it ON.** It is the
    chain's only source of `APPROVED`; turning it off strands the merge gate. See §Explicitly rejected.
-3. **Cut BugBot's scope — partially accepted; the aggressive core stays.** **Autofix → Off**
-   (0 of 299 merged), **Incremental → On**, **Drafts → Off**, and **drop the 23 out-of-scope org
-   repos** are accepted and carried to #1228. **~~Every Push → per PR~~** and **~~Effort → Medium~~**
-   are **DECLINED** — the owner wants the spend down and the review aggressive. Still do all of this
-   before considering a Cursor cap raise; scope costs nothing.
+3. **Cut BugBot's scope — partially accepted, and now fully resolved (#1228 closed 2026-08-23).**
+   The four accepted levers did **not** all land, and the outcomes differ — terminal states in
+   [`ai-review-paid-levers-checklist.md`](./ai-review-paid-levers-checklist.md) §Declined:
+   - **Autofix → Off** (0 of 299 merged) — **APPLIED 2026-08-22.**
+   - **Drop the 23 out-of-scope org repos** — **DECLINED 2026-08-22.** Sized at **$0** (those repos
+     have never produced a run), and the only route is the org-wide GitHub App installation.
+   - **Incremental → On** and **Drafts → Off** — **WAIVED 2026-08-23.** Never applied; the dashboard
+     last read them `Off` and `On` respectively.
+
+   **~~Every Push → per PR~~** and **~~Effort → Medium~~** were **DECLINED 2026-08-21** — the owner
+   wants the spend down and the review aggressive. *(As written 2026-08-21 this item said all four
+   "are accepted and carried to #1228" and closed "Still do all of this before considering a Cursor
+   cap raise; scope costs nothing." Two of the four were not done, so treat that instruction as
+   spent — nothing here is outstanding.)*
 4. **~~Fix the CodeAnt subscription identity~~ — DONE 2026-08-21.** The global git identity was the
    placeholder `CI <ci@example.com>` — the actual cause of the warning on 84% of PRs — and is now set
    to the operator's own seat-holding address. It must never point at a collaborator's address, which

@@ -210,8 +210,11 @@ bind soon, but the exposure is bounded either way.
 > misrepresent us, so the $576/yr figure below **is not a saving that was ever available on those
 > terms** and must not be budgeted.
 >
-> **What remains live is a per-repo request** for that one repo. Two routes exist, neither documented
-> as equivalent:
+> **Historical route — WAIVED 2026-08-23, not sent.** What follows was, as of 2026-08-22, the one
+> narrower request still considered live: a **per-repo** application for that single repo. The owner
+> waived it at #1228's close, so **no request is outstanding and no reply is expected.** The routes
+> are kept because they are accurate and would be the starting point if this is ever reopened — not
+> because anything here is pending. Two exist, neither documented as equivalent:
 > - **Self-serve app** — `github.com/apps/codeant-ai-for-open-source` ("CodeAnt AI - For open
 >   source") presents a working **Install** button. **Not installed:** nothing published says
 >   installing it makes a repo free, the repo is already covered by the paid Premium installation, and
@@ -220,8 +223,9 @@ bind soon, but the exposure is bounded either way.
 >   contact and **publishes no eligibility criteria at all** (no star count, no licence requirement).
 >
 > Item 1 is the cautionary precedent: an OSS gate can be invisible until exercised, and CodeAnt
-> publishes *no* gate to inspect. The defensible next step is the **email, scoped to the one repo,
-> sent by the owner** — not a blind install.
+> publishes *no* gate to inspect. *(As written 2026-08-22: "The defensible next step is the **email,
+> scoped to the one repo, sent by the owner** — not a blind install." That remains the right shape
+> **if** this is ever reopened, but it is **not a pending action** — the owner waived it 2026-08-23.)*
 
 **Budget $48/mo unchanged.** Premium, 2/2 seats, ACTIVE — reconfirmed 2026-08-22 — with **no
 self-serve open-source control anywhere on the subscription page**, which is why this stays a
