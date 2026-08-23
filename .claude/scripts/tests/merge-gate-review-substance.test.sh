@@ -742,10 +742,18 @@ RI_B="$(guid_eval "$GUID_MARKER_BODY" "$GUID_INVOCATION_BODY")"
 check_eq "false"  "$(echo "$RI_B" | jq -r '.descriptive_evidence_on_head')"  "(xx-408b) invocation-only comment does not satisfy descriptive_evidence_on_head"
 check_eq "false"  "$(echo "$RI_B" | jq -r '.external_evidence_on_head')"     "(xx-408b) no external substance without genuine review content"
 check_eq "false"  "$(echo "$RI_B" | jq -r '.counts_as_coverage')"            "(xx-408b) hollow approval + invocation comment is not coverage"
-# Positive control: a genuine descriptive comment (after the marker) still grants evidence.
+# Positive control 1: a genuine descriptive comment (after the marker) still grants evidence.
 GUID_GENUINE_DESC="This change looks reasonable. The GUID handling is correct and the test coverage is thorough."
 RI_C="$(guid_eval "$GUID_MARKER_BODY" "$GUID_GENUINE_DESC")"
 check_eq "true"   "$(echo "$RI_C" | jq -r '.descriptive_evidence_on_head')"  "(xx-408b) positive control: genuine descriptive comment after marker grants evidence"
+# Positive control 2: invocation HTML metadata FOLLOWED by genuine prose is NOT invocation_comment.
+# A comment with both shapes must have its prose part evaluated, not excluded wholesale.
+# (CodeRabbit finding, PR #1280 — pattern must not over-match prose that mentions
+# invocation phrases outside of the HTML-comment wrapper, nor exclude comments that
+# carry both metadata and genuine substance.)
+GUID_HYBRID_BODY="$(printf '%s\n\n%s' "$GUID_INVOCATION_BODY" "The new invocation_comment flag is well-targeted. The implementation correctly identifies invocation-only metadata.")"
+RI_D="$(guid_eval "$GUID_MARKER_BODY" "$GUID_HYBRID_BODY")"
+check_eq "true"   "$(echo "$RI_D" | jq -r '.descriptive_evidence_on_head')"  "(xx-408b) invocation metadata + genuine prose still satisfies descriptive_evidence_on_head"
 
 echo "=== (ff-933) a reviewer echoing the author's SHA-bearing text does not name HEAD ==="
 # Issue #933, trace on PR #929 (2026-08-02). CodeAnt answers a re-review request

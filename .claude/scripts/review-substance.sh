@@ -583,8 +583,21 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
             # Excluded from $descriptive_ev so that a run-start marker + an
             # invocation-only comment cannot grant counts_as_coverage on a
             # hollow approval (CodeAnt finding, PR #1280).
-            invocation_comment: ($b | ascii_downcase
-              | test("review command invocation:|(?:^|\\W)request id [0-9a-f]{8}-")),
+            #
+            # Both conditions must hold (CodeRabbit finding, PR #1280):
+            #   1. The invocation phrase appears inside an HTML comment (<!-- -->).
+            #      The "m" flag makes . match newlines for multi-line comments.
+            #      This avoids false positives on genuine prose that happens to
+            #      discuss the invocation mechanism (e.g. "review command
+            #      invocation: is documented here").
+            #   2. After stripping HTML comments and tags, the residual prose is
+            #      below $min_chars. A comment with invocation metadata PLUS
+            #      genuine descriptive prose is not treated as invocation-only
+            #      (the prose would keep residual length >= $min_chars).
+            invocation_comment: (
+              ($b | ascii_downcase | test("<!--.*?(?:review command invocation:|request id [0-9a-f]{8}-[0-9a-f]{4}-)"; "m"))
+              and
+              (($b | ascii_downcase | gsub("<!--.*?-->"; " "; "m") | gsub("<[^>]+>"; " ") | gsub("[[:space:]]+"; " ") | ltrimstr(" ") | rtrimstr(" ") | length) < $min_chars)),
             # explicit "I cannot review this" notices
             failure: ($b | test("does not have a pr review subscription|no active subscription|not have an active subscription|rate limit|rate-limit|usage limit|usage or spend limit|quota exceeded|could not run|couldn'"'"'t run|unable to run|unable to review|unable to complete|failed to run|failed to review"; "i")) } ]
       | sort_by(.ts) ) as $cidx
