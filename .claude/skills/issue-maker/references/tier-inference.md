@@ -1,7 +1,8 @@
 # Tier Inference — issue-maker single-issue subset
 
-Consumed by Step 9b to produce the `**Model:**` and `**Effort:**` lines for the
-coding chip. This is a **trimmed single-issue** version of `/prompt`'s
+Consumed by Step 9b to produce the tier statement and model step-up warning in
+the inline-run offer, and the `**Model:**` and `**Effort:**` lines for the
+on-request chip/fallback block. This is a **trimmed single-issue** version of `/prompt`'s
 Heavy/Standard/Light mapping (`prompt/SKILL.md` Steps 4–5): no batch
 aggregation, no dependency counting, no Fable step-up.
 

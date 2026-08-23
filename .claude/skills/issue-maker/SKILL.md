@@ -1,6 +1,6 @@
 ---
 name: issue-maker
-description: Capture-only thread mode for drafting and opening well-structured GitHub issues. Puts the thread into issue-capture mode — the only job is creating, editing, and closing issues (no implementation, no worktrees, no /start-issue). Auto-opens issues (no approval gate) and reports back a concise summary plus the scope calls it made as decision points; creates canonical 6-section bodies with functional-first tone, runs dedup search, auto-applies validated labels, supports batch + cross-references, and prints the issue URL as the closing line of every create/update. Offers one click-to-launch coding hand-off per capture session, covering every issue it filed (refreshed as the session grows, withdrawn on retract). Supports /update <N> <statement>, natural-language edit-in-place, and retract. Invoke as `/issue-maker [rapid-fire] [--export-prompt]`.
+description: Capture-only thread mode for drafting and opening well-structured GitHub issues. Puts the thread into issue-capture mode — the only job is creating, editing, and closing issues (no implementation, no worktrees, no /start-issue). Auto-opens issues (no approval gate) and reports back a concise summary plus the scope calls it made as decision points; creates canonical 6-section bodies with functional-first tone, runs dedup search, auto-applies validated labels, supports batch + cross-references, and prints the issue URL as the closing line of every create/update. After the last issue is filed, offers to run the whole batch inline via /subagent — say yes to execute right here, no to keep issues filed with a chip available on request. Supports /update <N> <statement>, natural-language edit-in-place, and retract. Invoke as `/issue-maker [rapid-fire] [--export-prompt]`.
 triggers:
   - open an issue
   - new issue
@@ -86,13 +86,17 @@ LOG="$HOME/.claude/handoffs/issue-maker-${SESSION_ID}-log.json"
 
 ```bash
 if [ -f "$LOG" ]; then
-  jq -r '"Resuming capture mode for \(.target_repo) — \(.mode) mode. \(([.issues[]|select(.status=="open")]|length)) issue(s) opened so far:",
-         (.issues[] | "  #\(.number) — \(.title) [\(.status)]" +
-                      (if .chip_task_id then " — chip offered" else "" end))' "$LOG"
+  OFFER_ACCEPTED=$(jq -r '.offer_accepted // false' "$LOG")
+  jq -r --argjson accepted "$OFFER_ACCEPTED" \
+    '"Resuming \(if $accepted then "execution" else "capture" end) mode for \(.target_repo) — \(.mode) mode. \(([.issues[]|select(.status=="open")]|length)) issue(s) opened so far:",
+     (.issues[] | "  #\(.number) — \(.title) [\(.status)]" +
+                  (if .chip_task_id and ($accepted | not) then " — offer pending"
+                   elif .chip_task_id and $accepted then " — offer accepted, running"
+                   else "" end))' "$LOG"
 fi
 ```
 
-Chip state survives compaction because it lives in `$LOG` (Step 9c writes `chip_task_id` there, not just in-memory) — the recap line above is what surfaces it back to the user after a fresh invocation.
+Offer state survives compaction because it lives in `$LOG` (Step 9c writes `chip_task_id` and `offer_accepted` there, not just in-memory) — the recap line above surfaces it back after a fresh invocation. `chip_task_id` on an issue means a locally-generated offer token was stamped at offer-emit time (not a `spawn_task` return); `offer_accepted: true` means the user said yes and `/subagent` was invoked.
 
 Then re-affirm: *"Still in capture mode — describe issues to create, or use `/update #N …`, `edit #N …`, or `close #N`."* If the log is corrupt/unreadable, warn the user and offer to start a fresh session log.
 
@@ -140,15 +144,15 @@ Examples used below: `set_log '.target_repo = $v' --arg v "$REPO"`, `set_log '.m
 
 ---
 
-## Step 2: Refusal behavior — capture mode is a session invariant
+## Step 2: Refusal behavior — capture mode holds until acceptance
 
 If the user asks for workflow-advancing work — **"implement"**, **"code this"**, **"fix the code"**, **"create a worktree"**, **"create a branch"**, **"start working on"**, or invokes `/start-issue`, `/fixpr`, `/wrap` — **politely decline in one line and stay in capture mode**:
 
-> "This thread is in capture mode — I only create, edit, and close issues here. To implement #N, start a fresh thread with `/start-issue #N`."
+> "This thread is in capture mode — I only create, edit, and close issues here. Finish filing issues and I'll offer to run them inline, or start a fresh thread with `/start-issue #N`."
 
-**A capture thread is the one thread that is not execution-capable, and it adopts nothing.** Since [#1229](https://github.com/auerbachb/claude-code-config/issues/1229) every *other* thread runs subagent-fit work inline rather than handing it to a new tab (`chip-launching.md` "PM-context inline gate"); this invariant is the single named exception, and it is what keeps that flip from turning a capture session into a build session. Capture mode therefore hands its work off — once per session, as a batch (Step 9c) — rather than adopting any of it.
+**Capture mode holds until the user accepts the end-of-session inline offer (Step 9c).** Since [#1229](https://github.com/auerbachb/claude-code-config/issues/1229) every other thread runs subagent-fit work inline rather than handing it to a new tab (`chip-launching.md` "PM-context inline gate"); this invariant is the exception, scoped to **until acceptance** — not for the thread's lifetime. An accepted offer ends capture mode: the thread becomes execution-capable and runs the filed batch through `/subagent`. Until that acceptance, the thread refuses implement/code/worktree/branch requests and never polls for a CR plan.
 
-Never create worktrees/branches, never edit code, and **never poll for a CodeRabbit plan in this thread.** The repo's `.github/workflows/cr-plan-on-issue.yml` auto-comments `@coderabbitai plan` on the issue itself when it's opened (it skips bot-authored issues); the issue's CR plan lands on the *issue*, asynchronously, with no action needed here. Do **not** post `@coderabbitai plan` yourself and do **not** wait on it.
+Never create worktrees/branches, never edit code, and **never poll for a CodeRabbit plan in this thread** while in capture mode. The repo's `.github/workflows/cr-plan-on-issue.yml` auto-comments `@coderabbitai plan` on the issue itself when it's opened (it skips bot-authored issues); the issue's CR plan lands on the *issue*, asynchronously, with no action needed here. Do **not** post `@coderabbitai plan` yourself and do **not** wait on it.
 
 ---
 
@@ -384,9 +388,9 @@ Close by reminding the user the issue is cheap to change — a wrong call is one
 
 Tone precedent: `/wrap`'s terse "here's what I decided — flag anything wrong" framing and `issue-planning.md`'s number/title/rationale/link quartet. Keep the whole report to a few lines; its value is signal density, not length.
 
-### Step 9b: Infer a coding tier (for the hand-off's Model and Effort lines)
+### Step 9b: Infer a coding tier (for the offer's tier statement and model step-up warning)
 
-`/issue-maker` does no tier classification during capture, but the hand-off requires a `**Model:** {MODEL} — {REASON}` line **and** an `**Effort:** {LEVEL} — {REASON}` line (`chip-launching.md`). Rather than invoking `/prompt` for two lines, infer the tier directly from the body just drafted in Step 5. Full signal definitions, tier table, and evaluation rules: `references/tier-inference.md`. Summary:
+`/issue-maker` does no tier classification during capture, but the inline-run offer (Step 9c) names the batch's inferred tier so the user knows what model/effort the work warrants. Infer the tier directly from the body just drafted in Step 5. Full signal definitions, tier table, and evaluation rules: `references/tier-inference.md`. Summary:
 
 | Tier | Trigger (any is sufficient) | Model / effort |
 |------|-----------------------------|----------------|
@@ -394,34 +398,86 @@ Tone precedent: `/wrap`'s terse "here's what I decided — flag anything wrong" 
 | **Standard** | not Heavy, and (`file_count` 2–5, `ac_count > 3`, or `touches_skill`) | Opus, High |
 | **Light** | not Heavy/Standard, **and** a positive Light signal (`scope_keywords` or `file_count ≤ 1` with clear scope) | Sonnet, Low |
 
-Default to **Standard** when signals are sparse. Values are bare family names / picker labels — never version numbers or API tokens (`chip-launching.md` "Model and effort lines").
+Default to **Standard** when signals are sparse. Values are bare family names / picker labels — never version numbers or API tokens.
 
-**Both values from this step reach Step 9c** — the model on the `**Model:**` line and the effort on the `**Effort:**` line, in the hand-off `prompt` and in the visible short summary. A tier computed here and then dropped is the defect #791 fixed.
+**A session's offer covers several issues, so it takes the most demanding tier among them** — the same batch-tier rule `/prompt` Step 4 uses ("a batch of 3 issues where one is Heavy makes the batch tier Heavy"). Infer each issue's tier as it is filed and keep the running maximum.
 
-**A session's hand-off covers several issues, so it takes the most demanding tier among them** — the same batch-tier rule `/prompt` Step 4 uses ("a batch of 3 issues where one is Heavy makes the batch tier Heavy"). Infer each issue's tier as it is filed and keep the running maximum; a session that files four Light issues and one Heavy hands off at Heavy. Rounding *down* would set the picker below what the hardest issue needs, and the launched thread has one model setting for all of them.
+**Model step-up warning (best-effort).** An inline run inherits the thread's model — there is no picker to set. When the thread's self-reported model sits below the inferred tier, the offer states the gap before asking:
 
-### Step 9c: Offer the session's batch hand-off (default-on, alongside the closing link)
+> "Note: this thread is running on {CURRENT_MODEL} but the batch infers {INFERRED_TIER} ({INFERRED_MODEL}/{INFERRED_EFFORT}). An inline run will use {CURRENT_MODEL}."
 
-A capture session produces **one** hand-off covering every open issue filed in it — not one per issue ([#1229](https://github.com/auerbachb/claude-code-config/issues/1229)). It is offered **in addition to**, never in place of, each issue's closing URL line below. Default-on, including in rapid-fire mode, with no extra confirmation and no opt-out flag today.
+For a **large gap** (e.g. Heavy batch on a Haiku or Sonnet thread), additionally recommend declining: *"For best results, consider declining and either switching this thread's model before accepting, or requesting the on-request hand-off below (which has a model picker)."* The offer never blocks — the user's explicit yes is the only gate. The inline path carries **no MODEL GUARD preamble** (that preamble stays only in the on-request chip/fallback block).
 
-**Why one.** Five chips are five tabs to set a model on, watch, and remember. One hand-off opens one execution-capable thread that bootstraps its own `## Active Work` table and runs all five inline through `/subagent` — one status line, one model setting. That thread also does the per-issue too-big routing itself, through its own `/subagent` Step 4, which is where that judgment belongs: capture does no tier classification and would be guessing.
+**Both the tier name and recommended model/effort reach Step 9c** — named in the offer text before the acceptance question. A tier computed here and then dropped is the defect #791 fixed.
 
-**PM-context inline gate (before the hand-off).** Apply the gate from `chip-launching.md` "PM-context inline gate", read through the same candidate order. If no candidate resolves, print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable` and offer no hand-off until it does (outcome 4 below): a capture thread that cannot read the gate must not guess at its delivery. **A capture thread is the gate's one non-executing exception (Step 2), so a hand-off — not inline adoption — is the correct delivery here, and it carries no `/subagent` Step 4 criterion:** its reason is the capture-mode invariant, and naming that plainly is the whole requirement. If this capture thread happens to also carry a `## Active Work` table from earlier in the session, nothing changes — capture mode adopts nothing, so the work still leaves the thread.
+### Step 9c: Offer the inline run (default ending, alongside the closing link)
 
-**Repo-wide cap (before the hand-off).** Step 6 owns the arithmetic and reads the census once per session: offer while `FREE > 0`; at `FREE == 0` **defer**, naming `{ACTIVE}/{CAP}` and the scope. This is the figure case 2 of `chip-launching.md` "Precedence when the ceiling is full" gates on — a capture thread has no PM context, but it is not without a count.
+A capture session ends by **offering to run every open issue it filed, right here in this thread, via `/subagent`** — not by emitting a separate-thread chip. The offer is made **once per session** after the last issue is filed, **in addition to**, never in place of, each issue's closing URL line. No auto-start: execution begins only on an explicit "yes" in chat.
 
-**When to emit.** Emit the hand-off once the session's issues are filed: after the last issue of a batch (Step 6), or after the single issue of a one-issue session — never inside the per-issue loop (Step 3.7).
+**Repo-wide cap (before the offer).** Step 6 owns the arithmetic and reads the census once per session: offer inline while `FREE > 0`; at `FREE == 0` **defer**, naming `{ACTIVE}/{CAP}` and the scope. If the script does not resolve, print `DEGRADED: active-work-cap.sh not found (checked all three paths) — offering inline without a repo-wide bound` and offer it anyway (a single inline run applies its own ceiling; withholding it strands every issue). A **non-zero exit** from a script that did resolve means the count could not be read — treat it as `FREE = 0` and defer, naming the read failure.
 
-**How to refresh when more issues arrive in later turns — and why "already clicked" is not a no-op here.** Branch on whether the standing hand-off has been **clicked**:
+**Offer stamp.** When the offer is emitted, generate a local offer token (e.g. `offer-$(date +%s%N)`) and write it into `chip_task_id` on every open issue the offer covers — this is what stops `/wave` or `/pm` from launching a second offer for work already covered. The stamp is **not** a `spawn_task` return; it is a locally-generated string.
 
-- **Not yet clicked** (still a live offer) — **replace it**: spawn a replacement covering the larger set, record its `task_id` on every covered issue, then `dismiss_task` the previous one (`chip-launching.md` "Stale-chip hygiene" order: replace, then withdraw). A dismissal reporting `already dismissed` is a successful no-op — clear the stale `task_id` and move on.
-- **Already clicked** — **leave it alone and cover only the new issues.** A clicked hand-off is a *running thread*, not a withdrawn offer: it has already claimed and started its issue set. Spawning a replacement that re-lists those issues launches a second thread over the same work, and because the claim contract stops on an already-claimed issue, that thread can halt on the first name in the list and never reach the newly added ones — the issues the refresh existed to deliver. So: spawn a **second** hand-off listing **only the issues the clicked one does not cover**, stamp its `task_id` on those issues alone, and leave the clicked task's `chip_task_id` values untouched.
+```bash
+OFFER_TOKEN="offer-$(date +%s%N)"
+set_log '(.issues[] | select(.status == "open") | .chip_task_id) = $tok' --arg tok "$OFFER_TOKEN"
+```
 
-  This is the one place "at most one hand-off per session" is scoped to *live offers*, not to lifetime totals — a clicked hand-off has stopped being an offer, and pretending otherwise is what creates the duplicate-thread race. `dismiss_task` reporting `already clicked` is therefore **information, not success**: read it as "that work is in flight", never as "the offer was withdrawn".
+**Offer text.** Include the batch's inferred tier (Step 9b) and the model step-up warning when applicable. In default mode, ask explicitly:
 
-Check availability per `chip-launching.md` (same candidate order). The hand-off content is the same in both modes:
+```
+Ready to run {N} issue(s) inline via /subagent — inferred tier: {TIER} ({MODEL}/{EFFORT}).
+{Model step-up warning if applicable — see Step 9b.}
 
-**Model + effort contract (non-negotiable):** The hand-off `prompt` MUST open with the `**Model:**` line from Step 9b, then that step's `**Effort:**` line, then the model-guard preamble from `chip-launching.md` — no blank line between the three. Both values are the session's *most demanding* tier (Step 9b). The visible short summary MUST repeat both lines (not the guard) per `chip-launching.md` "Short-summary transcript format". When the parent thread is on Fable and the hand-off recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
+Issues to run, in filing order:
+1. #{a} — {title}
+2. #{b} — {title}
+{…one per open issue, in filing order}
+{Increment chains: "#{b}–#{d} are increments 2–4 of one chain behind #{a}; they land in that order."}
+
+Say **yes** to run them now in this thread. Say **no** to leave them filed; you can request the hand-off chip at any time.
+```
+
+In **rapid-fire mode**, use terser framing: *"Run {N} issue(s) inline ({TIER})? [yes/no]"*
+
+**On yes — acceptance.** Invoke `/subagent #{a} #{b} …` first; if it succeeds, end capture mode (`offer_accepted: true`) and clear `chip_task_id` from all covered issues so they are no longer counted as pending offered work in the cap census. If the invocation fails, leave `offer_accepted` unset so the offer can be re-attempted or withdrawn via Step 12. Issue-maker adds no orchestration: claims, the pipeline ceiling, Step 6.0b chain serialization, and too-big routing all belong to `/subagent`.
+
+```bash
+# /subagent #{a} #{b} ...  ← invoke first
+set_log '.offer_accepted = true'
+set_log '(.issues[] | select(.status == "open") | .chip_task_id) = null'
+```
+
+**On no — decline.** Leave all issues filed and launch nothing. Clear `chip_task_id` from all covered issues so they are no longer counted as pending offered work in the cap census. The inline offer is withdrawn; the on-request hand-off block below remains available on explicit request (`"give me the chip"`, `"print the hand-off"`, etc.).
+
+```bash
+set_log '(.issues[] | select(.status == "open") | .chip_task_id) = null'
+```
+
+**Refresh before acceptance.** When more issues arrive in later turns before acceptance, refresh the offer: re-emit the offer text covering all open issues (including the new ones), update `chip_task_id` on the new issues to the same offer token, and append the new issues to the offer.
+
+**After acceptance.** New issues filed in later turns join the running batch (call `/subagent #newN` for each one as it is filed) rather than triggering a fresh offer.
+
+**Increment chains.** The offer names the chain and its order; `/subagent` Step 6.0b serializes the increments behind their predecessor. Never split a chain across two offers.
+
+A capture session ends with exactly one of **four** outcomes for its filed issues; never none, and never two:
+
+1. **inline-run offer** — the user is asked in-thread; yes ends capture mode and starts `/subagent`, no leaves issues filed;
+2. **deferred offer** — the repo-wide cap left no headroom (`FREE == 0`, or the count could not be read);
+3. **deferred offer** — active-work-cap.sh did not resolve (DEGRADED path above still offers);
+4. **on-request hand-off only** — the user explicitly asked for a chip instead of the inline path.
+
+Outcomes 2 and 3 defer the offer, never the issues: every issue is still filed, logged, and its URL still printed. Say so in one line and give the retry:
+
+```text
+Inline-run offer deferred — repo-wide active-work cap ({ACTIVE}/{CAP} in motion across all threads). All {N} issues are filed; re-run `/issue-maker` once work drains to offer inline execution.
+```
+
+---
+
+**On-request hand-off (chip or fallback block).** When the user explicitly requests a chip or printed block — `"give me the chip"`, `"print the hand-off"`, `"I want to run this in a new thread"` — emit the block below. This is no longer the default session ending; it is an on-request fallback. Its content is unchanged and required verbatim for lint compliance.
+
+**Model + effort contract (non-negotiable for the on-request block):** The block `prompt` MUST open with the `**Model:**` line from Step 9b, then that step's `**Effort:**` line, then the model-guard preamble from `chip-launching.md` — no blank line between the three. Both values are the session's *most demanding* tier (Step 9b). The visible short summary MUST repeat both lines per `chip-launching.md` "Short-summary transcript format". When the parent thread is on Fable and the block recommends a different model, add the pre-click warning from `chip-launching.md` "Upstream requirement."
 
 ```
 **Model:** {MODEL from Step 9b} — {one-line reason, e.g. "rules + skill wiring across the batch"}
@@ -456,35 +512,10 @@ If this thread has no `## Active Work` table, bootstrap one (`/pm` Step 3.2's sc
 
 The merge-authority bullet is the shared contract from `chip-launching.md` "Merge-authority line" — reproduce it **verbatim**, never softened into an approval request. The claim bullet is **Form A** of that file's "Claim line" — `/issue-maker` holds no claim, so the launched thread takes each one. Both are written out here as literal text rather than cited, for the same reason that file gives: a generated hand-off may land in a repo where `chip-launching.md` does not resolve, and a rule that lives only in prose never reaches the prompt. The only local addition is the **nested sub-bullet** scoping the claim to each issue in the list — kept off the canonical line on purpose, because `skill-portability-lint.sh` compares that whole line byte-for-byte and an appended clause fails it.
 
-- **Chip mode** (`mcp__ccd_session__spawn_task` present): **before calling `spawn_task`, register via `chip-offer-registry.sh --reserve --emitter issue-maker`** (see `chip-launching.md` "Offer Registry" — exit 7 means defer the whole hand-off, same as `FREE=0`). Then call `spawn_task` **once for the session** with `title` (verb-first, ≤60 chars, naming the count and the lead issue — e.g. `Run 5 captured issues (#1230 first)`), `prompt` (the block above, verbatim), `tldr` (1–2 plain sentences covering the set), `cwd` (repo root — no worktree exists at capture time, unlike `/start-issue`'s own chip, which points at the worktree it just created). On success, **record the returned `task_id` immediately** — before printing anything else — against every issue the hand-off covers:
+- **Chip mode** (`mcp__ccd_session__spawn_task` present): **before calling `spawn_task`, register via `chip-offer-registry.sh --reserve --emitter issue-maker`** (see `chip-launching.md` "Offer Registry" — exit 7 means defer, same as `FREE=0`). Call `spawn_task` **once** with `title` (verb-first, ≤60 chars — e.g. `Run 5 captured issues (#1230 first)`), `prompt` (the block above, verbatim), `tldr` (1–2 plain sentences), `cwd` (repo root). On success, update `chip_task_id` on covered issues to the returned `task_id` (replacing the offer token). Print only the short summary per `chip-launching.md` "Short-summary transcript format".
+- **Fallback mode** (tool absent or spawn failed): print the full fenced block above once. Leave `chip_task_id` holding the offer token (not null). Note the fallback once.
 
-  ```bash
-  set_log '(.issues[] | select(.status == "open") | .chip_task_id) = $tid' --arg tid "$TASK_ID"
-  ```
-
-  This write is not just local bookkeeping — `$LOG` is the shared, cross-thread record other chip-offering skills consult (`chip-launching.md` "Cross-skill chip visibility"), so stamping every covered issue is what stops `/wave` or `/pm` offering a second launch for work this hand-off already carries. Print only the short summary (per `chip-launching.md` "Short-summary transcript format") — never the full block in chip mode.
-- **Fallback mode** (tool absent, or the `spawn_task` call failed): print the full fenced block above once and leave `chip_task_id` as `null` on every issue. A failed spawn degrades the whole hand-off, not one issue — note the fallback once.
-
-**Increment chains no longer split their outcome.** The chain head used to get a chip and each successor a queued-successor note; the one hand-off now covers the whole chain, in order, and the launched thread's `/subagent` Step 6.0b serializes the overlap (note in particular that `merge_ready` is *not* terminal — the PR hasn't landed). Cite 6.0b rather than re-deriving the queue mechanics here. Four chips for a four-increment chain would race each other into the same files, which is exactly what 6.0b exists to prevent — and what one hand-off structurally cannot do.
-
-A capture session ends with exactly one of **four** outcomes for the set of issues it filed; never none, and never two:
-
-1. a **batch hand-off chip** covering every open issue in the session;
-2. a **printed batch hand-off block** — same content, fallback mode;
-3. a **deferred batch hand-off** — the repo-wide cap left no headroom (`FREE == 0`, or the count could not be read);
-4. a **deferred hand-off note** — the gate itself was unreadable.
-
-Outcomes 3 and 4 defer the hand-off, never the issues: every issue is still filed, logged, and its URL still printed. Say so in one line and give the retry, so a session is never left with no hand-off path at all:
-
-```text
-Hand-off deferred — repo-wide active-work cap ({ACTIVE}/{CAP} in motion across all threads). All {N} issues are filed; re-run `/issue-maker` once work drains to offer it.
-```
-
-```text
-Hand-off deferred — chip-launching.md not found (checked all three paths). All {N} issues are filed; re-run `/issue-maker` once the skills worktree resolves to offer it.
-```
-
-If the user asks to "print the full prompt for #N" while in chip mode, re-emit that issue's complete block verbatim (Model line + guard preamble included) — the chip stays offered (`chip-launching.md` "Print-on-demand replay").
+If the user asks to "print the full prompt for #N", re-emit that issue's complete block verbatim (Model line + guard preamble included) — same as `chip-launching.md` "Print-on-demand replay".
 
 **Print the full issue for #N (on demand).** Because default mode no longer reprints the body at create time, the whole body is available on request instead: when the user asks to **"print the full issue for #N"** (or "show me the whole body of #N"), re-emit that issue's complete 6-section canonical body, sourced from GitHub as the source of truth so the reprint always matches what was filed:
 
@@ -585,21 +616,21 @@ Name the affected successors and take one of two paths, then proceed with the cl
 
 ### Ordinary retract
 
-**First, deal with the live hand-off** (`chip-launching.md` "Stale-chip hygiene" — "gained an open PR" / "superseded" both cover a retracted issue, since the work is now cancelled). Look up the tracked `task_id` **and how many other open issues still share it** — since #1229 one hand-off covers a whole session, so the same `task_id` is stamped on every issue it carries:
+**First, deal with the pending inline offer (if any).** Check whether the offer was accepted and how many other open issues still share the same offer token:
 
 ```bash
-TASK_ID=$(jq -r --arg n "$N" '(.issues[] | select(.number == ($n|tonumber)) | .chip_task_id) // empty' "$LOG")
-SHARERS=$(jq -r --arg n "$N" --arg t "$TASK_ID" \
+OFFER_ACCEPTED=$(jq -r '.offer_accepted // false' "$LOG")
+OFFER_TOKEN=$(jq -r --arg n "$N" '(.issues[] | select(.number == ($n|tonumber)) | .chip_task_id) // empty' "$LOG")
+SHARERS=$(jq -r --arg n "$N" --arg t "$OFFER_TOKEN" \
   '[.issues[] | select(.status == "open" and .chip_task_id == $t and .number != ($n|tonumber))] | length' "$LOG")
 ```
 
-- **No `TASK_ID`** (never offered, or already cleared) — skip straight to closing the issue.
-- **`TASK_ID` present and `SHARERS > 0`** — **do NOT dismiss it.** The hand-off still covers other open issues, and withdrawing it would strand every one of them. Instead **refresh**: spawn a replacement hand-off covering the remaining open issues, stamp its `task_id` on them, then dismiss the old one (`chip-launching.md` "Stale-chip hygiene" order: replace, then withdraw). Clear this issue's own `chip_task_id` to `null` as part of the close below. If the replacement spawn fails, keep the old hand-off live and say so — an over-broad hand-off that names one cancelled issue is recoverable; no hand-off at all is not.
-- **`TASK_ID` present and `SHARERS == 0`** — this was the last open issue it covered, so withdraw it: call `mcp__ccd_session__dismiss_task` with that `task_id` and a reason (e.g. `"Issue retracted via /issue-maker"`). Apply the fail-closed outcome rules from `chip-launching.md`:
-  - **Dismissed**, or **already clicked/already dismissed** — both mean the offer is gone; clear `chip_task_id` to `null`.
-  - **Genuine failure** — the chip is still live. Leave `chip_task_id` set (don't strand the handle) and say so when reporting the close, but proceed to close the issue anyway — a live chip on a closed issue is a stale-but-recoverable state, not a reason to block the retract.
+- **No `OFFER_TOKEN`** (never offered, or already cleared) — skip straight to closing the issue.
+- **Offer already accepted** (`OFFER_ACCEPTED == true`) — the batch is already running via `/subagent`. Close the issue and clear `chip_task_id` to `null`; the running pipeline will skip a claimed issue it can no longer reach. Do not attempt to withdraw the offer — execution is in flight.
+- **`OFFER_TOKEN` present (offer pending, not yet accepted) and `SHARERS > 0`** — shed this issue from the pending offer: re-emit the offer text covering only the remaining open issues (refresh in-thread), and clear this issue's `chip_task_id` to `null`. The offer token on remaining issues is unchanged — no new token needed.
+- **`OFFER_TOKEN` present (offer pending) and `SHARERS == 0`** — this was the last issue the offer covered. Withdraw the offer entirely: clear `chip_task_id` to `null` and say so (*"Offer withdrawn — no remaining open issues."*). No `dismiss_task` call is needed (there is no chip to dismiss).
 
-Clearing `chip_task_id` to `null` in `$LOG` below **is** the shared-record cleanup (`chip-launching.md` "Cross-skill chip visibility") — `/wave` and `/pm` read this same log, so the moment the field goes to `null` the issue stops being "already offered" for them too. There is no second store to clear.
+Clearing `chip_task_id` to `null` in `$LOG` is the shared-record cleanup — `/wave` and `/pm` read this same log, so nulled entries stop counting as offered work for them too. There is no second store to clear.
 
 ```bash
 gh issue close "$N" --repo "$REPO" --comment "Retracted via /issue-maker — not needed."
@@ -619,11 +650,13 @@ Then print: *"Issue #N closed."* — append *"(chip withdrawal failed — it may
 
 ## Step 13: Portable-prompt emission (`--export-prompt`)
 
-When invoked with `--export-prompt`, **do not create anything** — instead emit a standalone, paste-in prompt that codifies the same capture-mode behavior (reflection surfaced as a post-create decision-points report + LLM pass-through rationale, auto-open with no approval gate, functional-first tone, 6-section body, dedup, refusal of workflow-advancing actions, closing-line URL rule). This lets the user carry the same discipline into a repo or thread where this skill isn't installed. Output the prompt in a fenced block and stop.
+When invoked with `--export-prompt`, **do not create anything** — instead emit a standalone, paste-in prompt that codifies the same capture-mode behavior (reflection surfaced as a post-create decision-points report + LLM pass-through rationale, auto-open with no approval gate, functional-first tone, 6-section body, dedup, refusal of workflow-advancing actions until acceptance, closing-line URL rule). This lets the user carry the same discipline into a repo or thread where this skill isn't installed. Output the prompt in a fenced block and stop.
 
-**The sizing check ships in the export with its bar written out, not cited.** Everywhere else in this skill the bar is a citation to `/subagent` Step 4 criterion 3, because that criterion travels with the installed skill. The export is for a thread that has *no* `/subagent` to read, so a citation there would dangle — state the bar in the prompt itself (one Phase A/B/C pipeline, one reviewable PR, one review cycle, a bounded slice), along with the increment-chain shape it triggers: ordered increments, a boundary line on each ("this increment ends at…", and the final one's terminal variant naming nothing deferred past it), `- Depends on #prev` links, a 5-increment cap that stops before filing, and one hand-off covering the whole chain in order. This is the same reason the hand-off block is reproduced verbatim below rather than referenced.
+**The sizing check ships in the export with its bar written out, not cited.** Everywhere else in this skill the bar is a citation to `/subagent` Step 4 criterion 3, because that criterion travels with the installed skill. The export is for a thread that has *no* `/subagent` to read, so a citation there would dangle — state the bar in the prompt itself (one Phase A/B/C pipeline, one reviewable PR, one review cycle, a bounded slice), along with the increment-chain shape it triggers: ordered increments, a boundary line on each ("this increment ends at…", and the final one's terminal variant naming nothing deferred past it), `- Depends on #prev` links, a 5-increment cap that stops before filing, and one offer covering the whole chain in order.
 
-**The exported prompt reproduces Step 9c's batch hand-off block verbatim** — `**Model:**` line, `**Effort:**` line, model-guard preamble, and the Constraints block including its merge-authority bullet (`chip-launching.md` "Merge-authority line"). Export it in the same one-per-session shape the installed skill uses; a portable prompt that reverts to one block per issue carries the sprawl #1229 removed into exactly the un-instrumented repos that can least afford it. A portable prompt that drops the merge-authority line recreates exactly the gap this exists to close: a thread that reaches merge-readiness in a repo without these rules installed, finds nothing asserting the default, and stops to ask. Never paraphrase the bullet and never soften it into an approval request.
+**The session's default ending is an inline-run offer.** The exported prompt states: after the last issue is filed, offer to run all open issues inline via `/subagent` on explicit yes; declining leaves issues filed with nothing launched, and a hand-off chip is available on explicit request. The prompt must describe this accurately so a portable capture session does not revert to silent chip-only behavior.
+
+**The exported prompt reproduces the on-request hand-off block verbatim** — one per session — with the `**Model:**` line, `**Effort:**` line, model-guard preamble, and the Constraints block including its merge-authority bullet (`chip-launching.md` "Merge-authority line"). A portable prompt that drops the merge-authority line recreates exactly the gap this exists to close: a thread that reaches merge-readiness in a repo without these rules installed, finds nothing asserting the default, and stops to ask. Never paraphrase the bullet and never soften it into an approval request.
 
 ---
 
