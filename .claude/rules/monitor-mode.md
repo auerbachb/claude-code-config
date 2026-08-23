@@ -19,7 +19,7 @@ Every ~60s, in order:
 2. Execute phase transitions via `phase-protocols.md`; also launch transitions stalled in `session-state.json`.
 3. For every session PR still on `reviewer == cr`, run `.claude/scripts/escalate-review.sh <PR_NUMBER>` and act on its `STATUS=` verdict before sleeping.
 4. Below the pipeline ceiling? Refill: queued chain heads, then `/pm` Step 3.4's backlog pass (under `/pm` only). Chains, re-validation, pause still bind.
-5. Message only if a blocker, failure, or decision requires user input (silence otherwise); defined exceptions — merged PR #N, 4+ file-write status updates, refill picks — always emit.
+5. Message if a blocker or failure occurs, or a decision requires user input (silence otherwise); defined exceptions — merged PR #N, 4+ file-write status updates, refill picks — always emit.
 6. Investigate stale agents: >15 min Phase A, >10 min Phase B, >5 min Phase C.
 7. Before ending the turn, confirm the ceiling is still armed: `bgwork-ceiling.sh --check`.
 
@@ -31,7 +31,7 @@ Respawn permissions: crash asks, exhaustion auto (`phase-protocols.md`).
 
 ## Liveness (Issue #1253)
 
-Routine per-tick heartbeats are removed. Liveness signal during a silent healthy thread comes from the bgwork-ceiling backstop (`scheduling-reliability.md`). When the silence ceiling warns, treat it as a decision point and message immediately (≤2 lines, action first). Do not emit periodic status; only blockers, failures, required decisions, and defined exceptions reach the user.
+Routine per-tick heartbeats are removed. See `scheduling-reliability.md` §Mandatory Pre-Exit Checklist for the canonical liveness and output rules.
 
 ## File-Write Status Updates (MANDATORY)
 
@@ -44,7 +44,7 @@ If a summary block references prior work you do not remember, recover before all
 2. Read `session-state.json` + handoffs; reconcile each open PR on GitHub (all 3 endpoints per `cr-github-review.md`).
 3. Per polled PR: `polling-state-gate.sh <N> --verify-state` (optional `--root-repo`), then resume with `polling-state-gate.sh <N>` (shells `merge-gate.sh`).
 4. Reconcile state (PR, HEAD, reviewer, pending); verify stale agents and stalled transitions; launch as needed.
-5. Resume monitoring silently — message if recovery reveals a blocker or decision needing input, or if a defined exception occurs.
+5. Resume monitoring silently — message if recovery reveals a blocker, failure, or decision needing input, or if a defined exception occurs.
 
 ## PM Monitoring Recovery
 

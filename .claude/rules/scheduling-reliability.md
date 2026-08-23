@@ -48,4 +48,4 @@ Each tick hash `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_c
 
 On a dropped tick: re-establish with `Monitor`; record in `polling_failures[]`; if new, append to `.claude/reference/scheduling-failure-modes.md`.
 
-Monitor mode and liveness: `monitor-mode.md`; ceiling mechanism and rationale: `.claude/reference/bgwork-ceiling.md`.
+Monitor mode: `monitor-mode.md`; ceiling mechanism and rationale: `.claude/reference/bgwork-ceiling.md`.
