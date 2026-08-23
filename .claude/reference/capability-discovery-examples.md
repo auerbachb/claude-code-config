@@ -104,16 +104,7 @@ A token-scope 403 with no workaround, a branch-protection change, a `.env` edit,
 
 **Interactive auth is the wall you will actually hit most often, but it is now two different walls.** A *CLI-initiated* login is still a real wall: `railway login` opens the system browser out of the agent's reach, and no MCP browser surface can drive it — hand off `railway login` and the rest of the commands. A *dashboard* login is not a wall any more: open the page in the browser pane, ask once for sign-in plus any OAuth approval, and finish the task yourself. And in a headless or cron run, interactively-authenticated MCP servers may be missing entirely — that is a real wall again, so hand off, naming the browser rung as unavailable.
 
-Use the `/admin-merge` (#451) pattern: exact copy-paste command, a one-line reason, and — when you just installed something — the auth step too. Name the rung you stopped on:
-
-```text
-Stopped at rung 5 (interactive auth): `railway login` opens the system browser,
-which no MCP browser surface can drive.
-Run these two and I'll set the variables:
-
-  railway login
-  railway link
-```
+Use one of the two structured shapes below (§Deferral shapes). Name the rung you stopped on, provide exact copy-paste commands with a one-line reason each, and include the auth step when interactive login is required.
 
 Never substitute a prose description of what needs doing for the commands themselves.
 
@@ -128,10 +119,9 @@ Name the rung that stopped you, provide exact commands with a one-line reason ea
 ```text
 Stopped at rung 5 (interactive auth): `railway login` opens the system browser,
 which no MCP browser surface can drive.
-Run these two and I'll set the variables:
 
-  railway login
-  railway link
+1. `railway login` — opens the system browser, which no MCP browser surface can drive.
+2. `railway link` — links the authenticated project needed to set the variables.
 ```
 
 ### Shape B — Cowork-executable issue offer (preferred for web-UI tasks)
