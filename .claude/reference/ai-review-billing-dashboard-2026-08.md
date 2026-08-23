@@ -778,7 +778,7 @@ Across Rounds 4–6, against the state Rounds 1–3 measured:
 
 | Change | State | Worth |
 |---|---|---|
-| BugBot Autofix → Off | applied 2026-08-22 | ~$470/cycle of never-merged runs |
+| BugBot Autofix → Off | applied 2026-08-22 | stops ~$470 of never-merged runs — a **lifetime** figure; per-cycle worth unmeasured |
 | Greptile flex cap → $100 | applied 2026-08-22 | bounds the only previously uncapped line |
 | CodeRabbit seats 3 → 2 | **applied 2026-08-23** | **$30/mo** |
 | CodeRabbit monthly → annual | **declined 2026-08-23** | $144/yr not taken, deliberately |
@@ -794,6 +794,15 @@ carried into #1228, but Round 5 re-read the BugBot settings after the Autofix ch
 Incremental Review still `Off` and Review Draft PRs still `On`. Nobody clicked them, and the close
 waived the remaining optional items rather than completing them. A lever nobody took must not appear
 in a savings column.
+
+**One figure is restated more carefully here than in earlier rounds: the Autofix saving.** Rounds 4
+and 5 and §Pending both write it as **"~$470/cycle"**. The underlying measurement is **299 autofix
+runs, 0 ever merged, at ~$1.58/run** — and those 299 are the **lifetime** total (Round 4 calls them
+"27% of lifetime run volume"), not one cycle's. So ~$470 sizes **spend already incurred**, and no
+per-cycle rate for it has been measured. Turning autofix off stops that waste; **what it saves per
+month is an open number** until a full cycle runs without it. Earlier rounds keep their wording —
+they are point-in-time records and are not rewritten — so treat this paragraph as the correction and
+do not carry "$470/cycle" forward into a budget.
 
 ### Deliberately not recorded: Greptile's payment provenance
 

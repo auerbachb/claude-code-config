@@ -14,7 +14,7 @@ script may gate on, escalate to, or trigger a tool absent from this table.
 | CodeRabbit | `coderabbitai[bot]` | **Primary finder** | No — it never issues `APPROVED` | **Pro, 2 seats, $60/mo, billed monthly — the landed terminal state (#1228, 2026-08-23).** The seat cut applied ($90 → $60; the third seat authored 0 in-scope PRs), and **the annual switch was declined by the owner** — monthly is a deliberate choice, not an untaken lever (§Operator actions item 6). *(Historical, superseded: this row read "3/3 seats, $90/mo as measured (#1204) — decided down to 2 seats, and to annual: $90/mo → $48/mo (#1213)". The 2-seat half landed; the annual half did not.)* *Underused*: 22% of PRs reviewed, 68% of reviews blocked by a **5/hr per-developer** burst limit, 87.4h average wait. Two priced fixes exist; collecting what we already pay for is the cheapest lever. |
 | CodeAnt | `codeant-ai[bot]` | **Primary approver** (co-primary on the CR path) | **Yes** — sole source of `APPROVED` | Premium, 2/2 seats, ~$48/mo (#1204). Load-bearing: 360 approvals on 184 PRs, and the gate has no other approver, so a lapse here is a full stop. The commit-author identity holds no seat — a **$0** fix. |
 | BugBot (Cursor) | `cursor[bot]` | **First fallback** | Yes, on the BugBot path | **The stack's largest cost line** (#1204): ~$1.58/review on-demand, $815.58 in one cycle against a $1,000 cap it has exhausted — which is why it refused 64% of PRs. Strong yield (29 sole-source PRs), but the spend is a scope problem before it is a cap problem. |
-| Greptile | `greptile-apps[bot]` | **Second fallback — retained; PAID, confirmed 2026-08-22** | Yes, on the Greptile path | **Paid Pro on the `auerbachb` org, flex overage now CAPPED at $100** (applied 2026-08-22, #1228). Read from the billing page that morning, before the cap: Active, 6 Aug–6 Sep invoice $72 → **$36** after discount, **"No cap on flex usage"**, 42 of 92 credits on flex. The owner's free-and-unpaid report (#1213) described `localmovers-com` and is **resolved**. Earns its keep on yield — **top sole-source finder in the stack, 40 PRs in the 2026-08 audit's 240-PR window**, with no cap hit and no `D2` paid-but-unused finding; the idle stretch since PR #1203 is a day, not disuse. *(Superseded: this cell read "Its OSS program is **self-serve**, so this repo can go to $0 without cancelling." Enrolment was exercised that evening and **refused** — 50-star minimum, this repo has 3. There is no $0 route, which is why the cap above was applied instead; see §Operator actions item 1.)* |
+| Greptile | `greptile-apps[bot]` | **Second fallback — retained; PAID, confirmed 2026-08-22** | Yes, on the Greptile path | **Paid Pro on the `auerbachb` org, flex overage now CAPPED at $100** (applied 2026-08-22, #1228). Read from the billing page that morning, before the cap: Active, 6 Aug–6 Sep invoice $72 → **$36** after discount, **"No cap on flex usage"**, 42 of 92 credits on flex. The owner's free-and-unpaid report (#1213) described `localmovers-com` and is **resolved**. Earns its keep on yield — **top sole-source finder in the stack, 40 PRs in the 2026-08-22 audit run's 240-PR window** (2026-07-23 → 2026-08-22; the earlier #1199 audit counted **41** over its own 244-PR window — quote the window with the count), with no cap hit and no `D2` paid-but-unused finding; the idle stretch since PR #1203 is a day, not disuse. *(Superseded: this cell read "Its OSS program is **self-serve**, so this repo can go to $0 without cancelling." Enrolment was exercised that evening and **refused** — 50-star minimum, this repo has 3. There is no $0 route, which is why the cap above was applied instead; see §Operator actions item 1.)* |
 | Graphite | `graphite-app[bot]` | **Supplemental — non-gating fallback (re-decided 2026-08-22, #1232)** | **No** | 2 sole-source PRs (PRs #1104, #1216) out of 10 Graphite-touched in 2026-07-23..2026-08-22; findings were prose/formatting quality. Re-decided on paid-plan evidence; see §Graphite role reconciliation (#1232). |
 
 **Authoritative chain order** — unchanged in shape, corrected in its assumptions:
@@ -99,8 +99,11 @@ Three facts had to be held together:
 
 - The operator believed Greptile was unpaid. **It is not** (#1204 round 2): the org serving this
   repo is on paid Pro with **uncapped flex overage**, and this repo is its largest consumer.
-- Greptile produced the **highest unique yield in the chain** (41 sole-source PRs) and never refused
-  a single one of 130 requests — and those 130 were billed, roughly 80 as $1 flex credits.
+- Greptile produced the **highest unique yield in the chain** (**41** sole-source PRs in the #1199
+  audit's 244-PR window, 2026-07-22 → 2026-08-21) and never refused a single one of 130 requests —
+  and those 130 were billed, roughly 80 as $1 flex credits. *(The later 2026-08-22 audit run reports
+  **40** over its own 240-PR window, 2026-07-23 → 2026-08-22. Both are correct for their windows;
+  neither is stale. Always quote the window with the count.)*
 - `reviewer-of.sh` and `merge-gate.sh` both make the Greptile path **sticky on history**: any PR
   where `greptile-apps[bot]` has ever posted resolves to the Greptile path for life.
 
@@ -177,7 +180,8 @@ in the audit's §Dashboard reconciliation. Three things it changed here:
    (**capped at $100 on 2026-08-22**, #1228), with
    `claude-code-config` as its largest lifetime consumer (212 reviews). "Deliberately unpaid" was
    never true for the account that serves this repo. The role is unchanged — it still earns its keep
-   on 41 sole-source PRs — but its rationale is now *cost-aware* rather than *cost-unknown*, and the
+   on **41** sole-source PRs (#1199 audit, 244-PR window; **40** in the later 240-PR run — see the
+   role table) — but its rationale is now *cost-aware* rather than *cost-unknown*, and the
    uncapped flex is the exposure to close.
 
 4. **CodeAnt's hollow approvals have a cause: `Auto Approve PR` is ON at the org level.** That is why
@@ -329,10 +333,14 @@ the same evidence next audit.
    fall. See §Explicitly rejected.
 6. **~~Switch CodeRabbit from monthly to annual billing~~ — DECLINED by the owner 2026-08-23
    (#1228). CodeRabbit runs monthly at 2 seats, $60/mo, and that is the standing state — not an
-   untaken lever, not an oversight, and not a deadline anyone missed.** The seat half of this item
-   **landed**: `zilbermang`'s seat was cut, so the ledger went **3 seats → 2** and the bill moved
-   **$90/mo → $60/mo**. The cadence half was put to the owner with the billing profile complete and
-   the renewal still ahead, and the answer was no.
+   untaken lever, not an oversight, and not a deadline anyone missed.** This item is the **cadence
+   decision only.** The third-seat reduction is a **separate lever** —
+   [`ai-review-paid-levers-checklist.md`](./ai-review-paid-levers-checklist.md) **item 5** — and it
+   **landed first**, on 2026-08-23: `zilbermang`'s seat was cut, the ledger went **3 seats → 2**, and
+   the bill moved **$90/mo → $60/mo**. That ordering was deliberate (cut before switching, so no
+   annual term is prepaid on a dead seat) and it is why the "at 2 seats, not 3" qualifier appears in
+   this item's original title. With the reduction already applied and the billing profile complete,
+   the cadence question went to the owner while the renewal was still ahead, and the answer was no.
 
    **Do not re-propose it from the arithmetic below.** The math was never in dispute — annual is
    $24/dev/mo against $30 monthly, so at 2 seats it would have been **$48 vs $60/month, $144/year**,
@@ -347,8 +355,8 @@ the same evidence next audit.
    the OSS tier was evaluated and declined, so there is no longer a reason to hold the commitment
    open. Renewal is 2026-08-27; past that date the saving simply waits another cycle. The trade is 12
    months of commitment for 20% off, and both exits it could block are remote — OSS is rejected
-   above, and Pro+ is an upgrade rather than an escape." The renewal date has since passed into the
-   decision: the owner answered before it, and answered no.)*
+   above, and Pro+ is an upgrade rather than an escape." That renewal was **still four days away**
+   when the decision was made on 2026-08-23 — it was superseded by the decline, not missed.)*
 
 ## References
 

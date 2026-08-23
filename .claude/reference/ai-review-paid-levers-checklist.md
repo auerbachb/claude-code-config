@@ -121,7 +121,8 @@ what was decided rather than a queue:
 5 (cut the seat) before item 3 (annual switch) — the cadence applies to the post-cut seat count, and
 both are time-boxed to 27 Aug. Item 2 runs in parallel… The `Depends on:` field, not the number, is
 what decides when an item may be worked." The profile was completed, the seat cut landed, and the
-cadence was declined, so the sequencing constraint and the 27 Aug time-box are both spent. Retained
+cadence was declined — all on 2026-08-23, **four days ahead of the 27 Aug renewal** — so neither the
+sequencing constraint nor the time-box binds any longer. Retained
 because the ordering logic — never prepay an annual term on a seat you are about to remove — is worth
 keeping if a cadence question ever reopens.)*
 
@@ -276,8 +277,8 @@ recommended sequence was cut first, then switch:
 the billed state is **Pro, Active, 2 seats, $60/mo, Billing cycle Monthly.** *(As read 2026-08-22,
 before either change: "3 of 3 assigned", **$90**, **Monthly**, **Next renewal 27 Aug 2026** —
 corroborated by the app's own plan record, `CRB_PRO_MONTHLY_SUBSCRIPTION_PER_SEAT-USD-Monthly`. The
-27 Aug time-box that made 5-then-3 the only time-boxed pair on this list is spent: the owner answered
-before it.)*
+27 Aug time-box that made 5-then-3 the only time-boxed pair on this list no longer binds — **the
+owner decided on 2026-08-23, four days ahead of it.** The deadline was met, not missed.)*
 
 So of the sequence **$90/mo → $48/mo**, only the first half was taken — **$90 → $60/mo**. Annual alone
 would have been worth **$144/yr** at 2 seats (not the $216/yr it was worth at 3), and that is the
@@ -438,7 +439,9 @@ per-repo run split in §Round 4 (#1228). Both are BugBot settings.
 **Autofix → Off — APPLIED 2026-08-22. The only BugBot lever with money behind it, and it was taken.**
 Confirmed two ways on the dashboard: `Autofix Mode` reads `Off`, and the dependent `Autofix Severity
 Threshold` row disappeared with it. 299 autofix runs, **0 ever merged**, at the ~$1.58/run rate ≈
-**$470 of runs nobody used**, roughly 27% of lifetime run volume — now saved. It touched none of the
+**$470 of runs nobody used** — **a lifetime figure** (roughly 27% of lifetime run volume), so it
+measures spend already incurred, not a per-cycle saving now banked. The waste stops here; **what it
+is worth per month is unmeasured** until a full cycle runs with autofix off. It touched none of the
 aggressive settings the owner deliberately kept (Every Push, Effort High, Drafts On, Incremental Off),
 so it was separable from that decision rather than a re-litigation of it.
 
@@ -485,7 +488,11 @@ carried to [#1228](https://github.com/auerbachb/claude-code-config/issues/1228),
 reached a terminal state when it closed 2026-08-23**:
 
 1. **Autofix → Off** — **APPLIED 2026-08-22.** 299 runs, **0 ever merged**. Pure waste, and it cost
-   zero review coverage. ~$470/cycle, the largest realised saving in the whole effort.
+   zero review coverage. The largest realised saving in the whole effort. **Size it as ~$470 of
+   *historical* spend, not $470 per cycle** — 299 runs is the **lifetime** autofix volume (27% of
+   lifetime run volume, Round 4), so the recurring saving is whatever that rate works out to per
+   cycle, which nobody has measured. Re-measure after a full cycle with autofix off before quoting a
+   monthly figure.
 2. **Drop the 23 out-of-scope org repos** from BugBot coverage — **DECLINED 2026-08-22.** The
    per-repo run split sized it at **$0** (not one run has ever come from those repos), and the only
    route is the org-wide GitHub App installation. Blast radius exceeded the benefit.
