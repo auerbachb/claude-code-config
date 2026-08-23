@@ -107,7 +107,7 @@ if [[ "$command" == *"gh pr merge"* ]] && [[ "$exit_code" == "0" ]]; then
               # Track whether normalization succeeded; fall back to preserving the
               # link when python3 is unavailable or normalization fails — safer
               # than applying an unchecked prefix test on an unnormalized path.
-              local norm_ok=true existing_norm=""
+              norm_ok=true existing_norm=""
               if command -v python3 >/dev/null 2>&1; then
                 if [[ "$existing" == /* ]]; then
                   existing_norm="$(python3 -c "import os,sys; print(os.path.normpath(sys.argv[1]))" \

@@ -517,10 +517,12 @@ test_9_user_owned_skill_symlinks() {
   ln -sfn "$worktree_skills/nonexistent-worktree-skill-test-1198" "$stale_link"
   assert "(b) Stale setup-owned symlink created" "[ -L '$stale_link' ]"
 
-  # (c) Only test same-name preservation when the existing entry is a symlink.
-  # Skip if it is a regular file or directory — we must not overwrite those.
+  # (c) Test same-name preservation when either:
+  #   - The existing entry is already a symlink (we snapshot+restore it), OR
+  #   - There is no existing entry at all (cleanup removes the link we create).
+  # Skip only if it is a regular file or directory — we must not overwrite those.
   local run_same_name_test=false
-  if [[ "$same_name_is_symlink" == true ]]; then
+  if [[ "$same_name_is_symlink" == true || "$same_name_orig_existed" == false ]]; then
     run_same_name_test=true
     mkdir -p "$ext_dir/$same_name_skill"
     ln -sfn "$ext_dir/$same_name_skill" "$same_name_link"

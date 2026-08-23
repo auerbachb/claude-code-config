@@ -302,21 +302,32 @@ if [[ ! -d "$SKILLS_WORKTREE/.claude/skills" ]]; then
   exit 1
 fi
 
-# Verify: all skill entries are symlinks pointing into the skills worktree
+# Verify: all setup-managed skill entries are symlinks pointing into the skills
+# worktree.  User-owned personal skills (target outside setup-managed dirs) are
+# preserved by setup-skills-worktree.sh and skipped here — they don't count
+# against the managed total and are not errors.
 skill_count=0
 skill_errors=0
 for entry in "$CLAUDE_DIR/skills"/*/; do
   [[ -e "$entry" || -L "${entry%/}" ]] || continue
   entry="${entry%/}"
-  skill_count=$((skill_count + 1))
   if [[ ! -L "$entry" ]]; then
+    skill_count=$((skill_count + 1))
     echo "  ERROR: Not a symlink (copy?): $entry" >&2
     skill_errors=$((skill_errors + 1))
   else
     resolved="$(readlink "$entry")"
-    if [[ "$resolved" != "$SKILLS_WORKTREE/.claude/skills/"* ]]; then
-      echo "  ERROR: Symlink target outside worktree: $entry -> $resolved" >&2
+    if [[ "$resolved" == "$SKILLS_WORKTREE/.claude/skills/"* ]]; then
+      skill_count=$((skill_count + 1))  # Correctly managed
+    elif [[ "$resolved" == "$REPO_ROOT/.claude/skills/"* ]]; then
+      # Legacy root-repo path — setup-skills-worktree.sh should have migrated it.
+      skill_count=$((skill_count + 1))
+      echo "  ERROR: Symlink targets legacy root-repo path (rerun setup): $entry -> $resolved" >&2
       skill_errors=$((skill_errors + 1))
+    else
+      # User-owned personal skill pointing outside setup-managed dirs.
+      # setup-skills-worktree.sh preserves these; skip them in the managed count.
+      echo "  INFO: User-owned skill symlink preserved: $(basename "$entry") -> $resolved"
     fi
   fi
 done
