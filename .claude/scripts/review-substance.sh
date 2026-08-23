@@ -478,16 +478,18 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
          | gsub("\n```.*"; " "; "m")
          | gsub("\n    [^\n]*"; " "; "m")
         ) as $unfenced
-      # UUID-stripped text for rule 1 only (issue #917). CodeRabbit embeds an
-      # invocation UUID in its HTML comments (8-4-4-4-12 hyphenated hex, e.g.
-      # "9f69125b-29d9-47d4-bf8f-8b5df9dcb5a6"). A hyphen is a non-word
-      # character, so the UUID"s hex groups independently satisfy rule 1"s
-      # shape (7-40 chars, at least one a-f letter) and get misread as SHAs
-      # the bot claims to have reviewed. Each match is replaced with a space,
-      # not stripped to empty, so a UUID sitting between two genuine tokens
-      # cannot merge them into a new false one. Rules 2-3 are untouched: rule
-      # 2 is safe regardless because it additionally requires a prefix match
-      # against the real $sha, and rule 3 only admits complete
+      # UUID-stripped text for rule 1 only (issues #917, #1248). CodeRabbit
+      # embeds invocation UUIDs in HTML comments in two known shapes:
+      #   "request id 9f69125b-29d9-47d4-bf8f-8b5df9dcb5a6" (issue #917)
+      #   "review command invocation: df440ae1-9ab9-4b17-bb0a-caae8c17534a"
+      #     (issue #1248, auerbachb/inventory issue #408, PR #403)
+      # A hyphen is a non-word character, so the UUID"s hex groups independently
+      # satisfy rule 1"s shape (7-40 chars, at least one a-f letter) and get
+      # misread as SHAs the bot claims to have reviewed. Each match is replaced
+      # with a space, not stripped to empty, so a UUID sitting between two
+      # genuine tokens cannot merge them into a new false one. Rules 2-3 are
+      # untouched: rule 2 is safe regardless because it additionally requires
+      # a prefix match against the real $sha, and rule 3 only admits complete
       # backtick-wrapped ALL-DECIMAL runs, which a hyphenated hex UUID never
       # satisfies.
       #

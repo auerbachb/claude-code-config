@@ -681,6 +681,50 @@ check_eq '["a1b2c3d"]' "$(echo "$RU" | jq -c '.status_comment_shas')"    "(ee-91
 check_eq "false"    "$(echo "$RU" | jq -r '.self_report_mismatch')"     "(ee-917) a later UUID-only status comment no longer manufactures a mismatch"
 check_eq "[]"       "$(echo "$RU" | jq -c '.disqualified_by')"          "(ee-917) and the reviewer is not disqualified"
 
+echo "=== (xx-408) review command invocation UUID does not wedge a genuine approval (issue #1248) ==="
+# auerbachb/inventory issue #408 / this repo issue #1248. CodeRabbit's "Action
+# performed" reply embeds a GUID in a <!-- CodeRabbit review command invocation:
+# UUID --> HTML comment. A GUID's first segment (8 hex chars) and last segment
+# (12 hex chars) satisfy rule 1's shape (7-40 chars, >= one a-f letter) and
+# were misread as SHAs the bot claimed to have reviewed. The production shape
+# requires two comments: an earlier walkthrough naming HEAD, then a LATER
+# "Action performed" comment whose only SHA-shaped tokens are GUID segments.
+# $selfrep (most-recently-created comment with tokens) becomes the "Action
+# performed" comment pre-fix, and its GUID segments don't match HEAD.
+#
+# This fixture uses the real GUID (df440ae1-9ab9-4b17-bb0a-caae8c17534a) and
+# HEAD SHA (05b928597c90aebd91f9eb644808a25a20a01d82) from inventory PR #403.
+GUID_HEAD="05b928597c90aebd91f9eb644808a25a20a01d82"
+guid_eval() { # <earlier-body> <later-body> -> the coderabbitai reviewer object
+  jq -cn --arg sha "$GUID_HEAD" --arg b1 "$1" --arg b2 "$2" \
+    '{head_sha:$sha, push_ts:"2026-08-01T09:00:00Z",
+      reviews:[{user:{login:"coderabbitai[bot]"},commit_id:$sha,state:"APPROVED",
+                submitted_at:"2026-08-01T11:00:00Z",body:""}],
+      pr_comments:[],
+      issue_comments:[
+        {user:{login:"coderabbitai[bot]"},
+         created_at:"2026-08-01T09:24:55Z",
+         updated_at:"2026-08-01T09:24:55Z", body:$b1},
+        {user:{login:"coderabbitai[bot]"},
+         created_at:"2026-08-01T09:51:15Z",
+         updated_at:"2026-08-01T09:51:15Z", body:$b2}
+      ]}' \
+  | "$EVAL_SUT" 2>/dev/null | jq -c '.reviewers["coderabbitai[bot]"]'
+}
+GUID_WALKTHROUGH_BODY="$(printf "## Walkthrough\n\nReviewed the space-membership ACL changes and the personal-space derivation for commit \`05b9285\`. No blocking issues found.")"
+GUID_INVOCATION_BODY="$(printf '<!-- This is an auto-generated reply by CodeRabbit -->\n<!-- CodeRabbit review command invocation: df440ae1-9ab9-4b17-bb0a-caae8c17534a -->\n<details>\n<summary>Action performed</summary>\n\nFull review finished.\n\n</details>')"
+
+RI="$(guid_eval "$GUID_WALKTHROUGH_BODY" "$GUID_INVOCATION_BODY")"
+check_eq "true"        "$(echo "$RI" | jq -r '.status_comment_names_head')"  "(xx-408) walkthrough naming HEAD still sets status_comment_names_head"
+check_eq '["05b9285"]' "$(echo "$RI" | jq -c '.status_comment_shas')"        "(xx-408) only the genuine short SHA is admitted — no GUID segments"
+check_eq "false"       "$(echo "$RI" | jq -r '.self_report_mismatch')"       "(xx-408) invocation GUID does not manufacture a self_report_mismatch"
+check_eq "[]"          "$(echo "$RI" | jq -c '.disqualified_by')"            "(xx-408) and the approval is not disqualified"
+# Negative control: a genuine non-HEAD SHA in the later comment still trips mismatch,
+# proving the fixture discriminates and is not trivially passing.
+GUID_NONHEAD_BODY="$(printf 'Reviewed changes for commit deadbeef1234567890abcdef1234567890abcdef in this round.')"
+RI_NEG="$(guid_eval "$GUID_WALKTHROUGH_BODY" "$GUID_NONHEAD_BODY")"
+check_eq "true"        "$(echo "$RI_NEG" | jq -r '.self_report_mismatch')"   "(xx-408) negative control: genuine non-HEAD SHA still triggers mismatch"
+
 echo "=== (ff-933) a reviewer echoing the author's SHA-bearing text does not name HEAD ==="
 # Issue #933, trace on PR #929 (2026-08-02). CodeAnt answers a re-review request
 # by reproducing the requester's comment verbatim (lowercased) under a
