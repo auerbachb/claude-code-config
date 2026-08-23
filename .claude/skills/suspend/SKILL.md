@@ -107,6 +107,10 @@ Enumerate Monitors in this order and record the result of each stop:
    a. `"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.stop_requested=true"`
    b. `TaskStop` the exact recorded `day.monitor_task_id`. Missing ID, or a failed stop → keep `active=true`, retain the ID, record `stopped: false`.
    c. Only after the stop succeeds: `active=false`, `monitor_task_id=null`, `monitor_generation=null`.
+4. **Usage-limit auto-wake Monitor** (`day.limit_resume_task_id`) — if the day state block contains a non-null `limit_resume_task_id`, stop it to prevent a double resume after manual `/suspend`:
+   a. Read `day.limit_resume_task_id` with its exit code. If unreadable or null, skip.
+   b. `TaskStop` the recorded ID. On success: `"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=null"` and `--set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=null"`. Record `stopped: true` in `monitors_stopped` with `owner: "day_limit_wake"`.
+   c. On failure: keep the ID, record `stopped: false`, and name the task ID in the Step 8 report so the user can stop it manually.
 
 **A failed `TaskStop` is recorded as `stopped: false` and reported in Step 8.** Never claim a Monitor was stopped when the stop itself was not confirmed. Stopped Monitors are recorded in the `monitors_stopped` array of the suspend state block (Step 7).
 

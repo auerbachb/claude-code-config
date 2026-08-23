@@ -166,11 +166,34 @@ The parked units show current GitHub state alongside the parking-point snapshot,
 
 ## Step 5: Re-arm what was stopped
 
+**Before delegating to any re-arm skill, disarm the usage-limit auto-wake Monitor if one is armed.** This prevents a double resume when the user runs `/suspend-resume` manually while a limit-wake Monitor is still ticking (i.e. the rolling-window park from 2D.6 has not yet fired automatically):
+
+```bash
+if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
+  LIMIT_TASK_RC=0
+  LIMIT_TASK_ID=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.limit_resume_task_id" 2>/dev/null) || LIMIT_TASK_RC=$?
+  # Only act when the field is readable and non-null
+  if [[ "$LIMIT_TASK_RC" -eq 0 && -n "$LIMIT_TASK_ID" && "$LIMIT_TASK_ID" != "null" ]]; then
+    # Stop the auto-wake before we re-arm day mode below; a successful stop clears the fields.
+    # On failure: keep the ID visible and continue — a duplicate resume is preferable to a silent orphan.
+    if TaskStop "$LIMIT_TASK_ID" 2>/dev/null; then
+      "$SESSION_STATE_SH" \
+        --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=null" \
+        --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=null" || true
+      echo "(disarmed usage-limit auto-wake $LIMIT_TASK_ID)"
+    else
+      echo "(WARNING: could not stop usage-limit auto-wake $LIMIT_TASK_ID — it may fire again and trigger a duplicate resume)"
+    fi
+  fi
+fi
+```
+
 For each entry in `monitors_stopped` where `stopped: true`, delegate to the appropriate re-arm skill — never reimplement their logic:
 
 - **Babysit watcher for a PR** — invoke `/babysit-pr <PR>` for each entry with `owner: "babysit"`.
 - **PR fleet monitor** — invoke `/pr-monitor-and-manage-wake` for any entry with `owner: "pmm"`. The wake companion reads its own saved config (cadence, author, max-parallel, etc.) and re-arms at base cadence.
-- **Day-mode loop** — invoke `/pm day resume` for any entry with `owner: "day"`. This re-arms the persistent Monitor and picks up from where the loop paused.
+- **Day-mode loop** — invoke `/pm day resume` for any entry with `owner: "day"`. This re-arms the persistent Monitor and picks up from where the loop paused. After `/pm day` re-arms, it reads the current `day.parked_until`; if the value is still in the future (the limit window has not yet reopened), it will re-arm the auto-wake instead of the tick Monitor — the disarm above ensures only one wake Monitor runs at a time.
+- **Usage-limit auto-wake** — entries with `owner: "day_limit_wake"` are informational only: the disarm block above already handled them. Mark `rearmed: true` regardless so Step 7 counts them as resolved and does not block the `active=false` write.
 
 Entries with `stopped: false` are listed as "not confirmed stopped at suspend time — verify manually before re-arming."
 
