@@ -42,7 +42,7 @@ PR #1216 created `ai-review-paid-levers-checklist.md` and added cross-references
 
 - **§Repo variance**: Added the "This is not a seat problem, and re-auth cannot fix it" paragraph — recording the CodeRabbit CLI seat status after measuring it, because the opposite reading had reached `pricing-matrix.md` as a pending action.
 - **§Operator actions item 6**: Added the tracking pointer to `ai-review-paid-levers-checklist.md` with the rationale for separating `Submitted:` and `Approved:` dates, plus the initial version of item 6 (annual billing / seat count).
-- **§Dashboard reconciliation item 6 preamble**: Updated the framing paragraph for item 6 of the operator actions.
+- **§Dashboard reconciliation item 6 preamble**: Updated the framing paragraph that connects dashboard reconciliation item 6 to §Operator actions item 6.
 
 These are addenda that capture new decisions made while building the paid-levers tracker. Merge conflicts: 0.
 
