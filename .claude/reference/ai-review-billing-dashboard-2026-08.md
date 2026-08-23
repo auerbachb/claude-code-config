@@ -722,3 +722,62 @@ Recorded because it cost most of this session and will recur.
 - **The org scope trap held**: `app.coderabbit.ai` again opened on **LocalMovers-dot-com**. Switching
   is done by clicking the org's **row** in `/organizations`, not the row menu (which offers only
   "Archive User") and not the sidebar dropdown.
+
+## Round 6 — the owner closed the CodeRabbit items (2026-08-22, later the same evening)
+
+Round 5 ended with three CodeRabbit actions pending behind one Chargebee form. The owner completed
+that form and settled all three the same evening. **Two of the three did not go the way this
+investigation had recommended**, which is the substance of this round.
+
+### The billing-profile gate is cleared
+
+`app.coderabbit.ai/settings/billing` now reads org **`Bretton Auerbach`** with `Name bretton auerbach`
+populated; the standing *"Account information incomplete: name, phone number, billing address
+missing"* banner is gone. Round 5 recorded that single form as gating the seat count, the cadence, and
+any add-on change — it no longer gates anything.
+
+### Seats 3 → 2 — APPLIED, effective next cycle
+
+The dashboard shows a pending-change banner: *"1 change taking effect with the next billing cycle"* →
+**"Seat downgrade — Reduction from 3 → 2 seats."** Read back the same evening: `Seats 2 of 3
+assigned`, **`Billing amount $90`**, `Billing cycle Monthly`, `Next renewal 27 Aug 2026`.
+
+So the **$90 → $60** saving is committed but **not yet on the invoice** — it lands at the 27 Aug
+renewal. Anyone re-measuring before then will still read $90, and that is correct, not drift.
+
+### Monthly → Annual — **DECLINED, permanently**
+
+Owner decision, verbatim: *"I want to keep it monthly, not annually, because this billing flows
+through company P&L. I don't want to hit with a $1,000 bill all at once in one month."*
+
+**This overturns the annual half of #1212's verdict** — recorded across Rounds 1–5 and in
+[`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md) as "stay paid, switch to annual". The
+*stay paid* half stands; *annual* does not. The reasoning that produced it was **purely unit-price**
+(20% off: $24/seat/mo vs $30) and never priced the constraint that actually binds — this is company
+P&L, so a year's prepay is a **cash-flow event**, not merely a cheaper rate.
+
+The concern is **aggregate, not CodeRabbit**: CodeAnt Premium (2 seats × $24/mo *billed annually*
+≈ $576/yr) and Graphite Team are already on annual, so several annual renewals landing in one month
+is the ~$1,000 being guarded against.
+
+Three consequences for anyone reading this list later:
+
+1. **"Switch to annual" is declined by default across the whole stack**, not just this vendor — and
+   so is any prepay or credit-pack offer (CodeAnt AI credits, Greptile credit bundles).
+2. **Nothing here is time-boxed any more.** The 27 Aug deadline that ran through Rounds 4–5 existed
+   *only* to catch the annual switch before renewal. The seat cut is applied; there is no other clock.
+3. **$144/yr is forgone deliberately** (annual at 2 seats). That is a priced trade for smooth monthly
+   P&L, not an oversight — do not re-surface it as an unrealised saving.
+
+The existing annual subscriptions are **not** urgent to unwind; flag them at their renewal dates
+rather than proposing an early switch.
+
+### What is actually left
+
+One item, and it is an outbound request rather than a click: the **CodeAnt open-source enquiry scoped
+to `claude-code-config` alone**, whose saving is unknown (see Round 5 §7). Every other lever on
+[`ai-review-paid-levers-checklist.md`](./ai-review-paid-levers-checklist.md) is now applied, declined,
+or ineligible.
+
+**Net realised from this issue:** BugBot Autofix off (~$470/cycle), Greptile flex bounded at $100
+(previously uncapped), and CodeRabbit $90 → $60/mo from 27 Aug.

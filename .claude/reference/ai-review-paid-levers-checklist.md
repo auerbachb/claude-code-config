@@ -66,21 +66,23 @@ billing page (#1228). **Nothing on this list is blocked.**
 | CodeRabbit OSS-tier verdict | [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) | **Cleared 2026-08-21 — OSS declined, stay paid** ([`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md)) | Item 3 (billing cadence) — **unblocked** |
 | ~~**New blocker, raised 2026-08-21** — Greptile free-vs-paid, from the billing page~~ | [#1228](https://github.com/auerbachb/claude-code-config/issues/1228) | **RESOLVED 2026-08-22 — the org is PAID.** Billing page read live: Active, 6 Aug – 6 Sep invoice $72 → **$36**, **"No cap on flex usage"**. The owner's free-tier account described `localmovers-com`. | Item 1 — **unblocked**; see item 1 for what the answer changed |
 
-| **New blocker, found 2026-08-22 evening** — CodeRabbit billing profile incomplete | [#1228](https://github.com/auerbachb/claude-code-config/issues/1228) | **OPEN.** `Billing → Edit → Continue` opens a **Chargebee billing-details form** (name, company, phone, billing email, tax ID, billing address). No *change* to the CodeRabbit plan can be committed until it is completed — it is owner-only data, so no agent can clear it. | Items **3 and 5**; plus any future change to item 4's cap |
+| ~~**New blocker, found 2026-08-22 evening** — CodeRabbit billing profile incomplete~~ | [#1228](https://github.com/auerbachb/claude-code-config/issues/1228) | **CLEARED 2026-08-22** — the owner completed the Chargebee billing-details form and applied the seat downgrade. The org now reads `Bretton Auerbach` with the account-incomplete banner gone. | nothing — retained only as the record of what the form gated |
 
-**One gate remains, and it is a single form.** The three original gates and the Greptile-billing gate
-are all closed. What replaced them gates every *change* to the CodeRabbit plan — seat count, cadence,
-and add-on settings alike. It does **not** gate item 4's current state, which is already enabled and
-capped; only a future cap adjustment would meet this gate. Items 1 and 2 are unaffected.
+**No gate remains.** Every original gate, the Greptile-billing gate, and the billing-profile gate are
+all closed. Nothing on this list is waiting on a prerequisite: what is left is either **decided**
+(items 1, 3, 4, 5) or **an outbound request** (item 2).
 
 ## The levers
 
 Numbered as originally written; **the numbering is stable, the priority is not.** Work order as of
-2026-08-22 evening: **complete the CodeRabbit billing profile**, then **item 5 (cut the seat) before
-item 3 (annual switch)** — the cadence applies to the post-cut seat count, and both are time-boxed to
-27 Aug. **Item 2 runs in parallel**, re-scoped to a single-repo request with an unknown saving; it is
-no longer "the best ungated move" the 2026-08-21 ordering called it, because the $576/yr that ranked
-it there was an account-wide figure that is now declined.
+2026-08-22 close of session: **only item 2 remains open**, and it is an outbound request rather than a
+click — a single-repo CodeAnt OSS enquiry with an unknown saving. It is no longer "the best ungated
+move" the 2026-08-21 ordering called it, because the $576/yr that ranked it there was an account-wide
+figure that is now declined.
+**Item 5 is applied** — the owner completed the billing profile and downgraded 3 → 2 seats; the
+change is scheduled for the next cycle, so the bill reads `$90` until 27 Aug and `$60` after.
+**Item 3 is closed by decision, not deferred** — staying monthly, permanently (see item 3). Nothing on
+this list is time-boxed any more: the 27 Aug deadline existed only for the annual switch.
 **Item 1 is closed, not first** — its self-serve enrolment was exercised on 2026-08-22 and **refused**
 (50-star minimum). It is off the work order entirely until the repo passes 50 stars. **Item 4 is also
 closed** — the add-on was already enabled. What is left is item 2 re-scoped to a single repo, and the
@@ -207,29 +209,50 @@ Keep budgeting **$48/mo until approval lands.** CodeAnt is the chain's *sole sou
 the CR path, so this account lapsing is a full stop on merges — never let a discount application put
 the subscription itself at risk.
 
-### 3. CodeRabbit — decide the billing cadence
+### 3. CodeRabbit — billing cadence *(CLOSED 2026-08-22: stay MONTHLY — owner decision)*
 
-- **Depends on:** two things now. [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) — the OSS-tier verdict — **cleared 2026-08-21**. And, found 2026-08-22 evening, the **incomplete CodeRabbit billing profile**: the cadence control sits inside `Billing → Edit`, whose **Continue** opens the Chargebee billing-details form. **Blocked until the owner completes it.** Then **cut the seat in item 5 first**, or you prepay a year for a seat that authors nothing.
-- **Submitted:**
-- **Approved:**
+- **Depends on:** — nothing. Closed by decision, not by a gate.
+- **Submitted:** n/a
+- **Approved:** **n/a — DECLINED.** Staying monthly.
 
-Annual is $24/seat vs $30/seat monthly, and **the seat count it applies to changed** (item 5). Do the
-cut first, then switch:
+> **Stay monthly. Do not re-propose the annual switch.** Owner decision, 2026-08-22
+> ([#1228](https://github.com/auerbachb/claude-code-config/issues/1228)), in chat: *"I want to keep it
+> monthly, not annually, because this billing flows through company P&L. I don't want to hit with a
+> $1,000 bill all at once in one month."*
+>
+> **This supersedes the annual half of #1212's verdict.** That analysis was purely unit-price and never
+> costed the constraint that actually binds: this spend runs through **company P&L**, so a year's
+> prepay is a cash-flow event, not merely a cheaper rate. The **stay paid** half of #1212 stands
+> unchanged; only **stay paid *annual*** is overturned.
+>
+> **The concern is aggregate, not this vendor.** CodeAnt Premium (2 seats × $24/mo billed annually
+> ≈ $576/yr) and Graphite Team are *already* annual, so several annual renewals landing in one month
+> is the ~$1,000 being guarded against. Treat "switch to annual" as **declined by default across the
+> whole review stack**, and treat any prepay/credit-pack offer (CodeAnt AI credits, Greptile credit
+> bundles) the same way.
+>
+> **If the trade-off is ever raised again**, state the per-month delta *and* the upfront charge —
+> never present the discount as a straight saving. The existing annual subscriptions are not urgent
+> to unwind; flag them at their renewal dates rather than proposing an early switch.
+
+The pricing below is retained as reference for that future conversation, **not as a recommendation**.
+Annual is $24/seat vs $30/seat monthly, and the seat count it would apply to changed (item 5):
 
 | Order | Seats | Monthly | Annual |
 |---|---|---|---|
 | Today | 3 | $90/mo | $72/mo |
 | **After the item-5 cut** | **2** | **$60/mo** | **$48/mo** |
 
-**Confirmed still unapplied 2026-08-22** (#1228), read from the `auerbachb` billing page: Pro, Active,
-**"3 of 3 assigned"**, **$90**, **Billing cycle Monthly**, **Next renewal 27 Aug 2026** — corroborated
-by the app's own plan record, `CRB_PRO_MONTHLY_SUBSCRIPTION_PER_SEAT-USD-Monthly`. **Five days.** Past
-27 Aug the annual saving waits a full cycle, which makes items 5-then-3 the only time-boxed pair on
-this list.
+**Cadence unchanged and staying that way.** Read from the `auerbachb` billing page 2026-08-22:
+Pro, Active, **Billing cycle Monthly**, **Next renewal 27 Aug 2026** — corroborated by the app's own
+plan record, `CRB_PRO_MONTHLY_SUBSCRIPTION_PER_SEAT-USD-Monthly`. **There is no longer a deadline on
+this item**: the 27 Aug urgency existed only to catch the annual switch before renewal, and the
+annual switch is declined. Item 5 is now the only item that was time-boxed, and it is applied.
 
-So the sequence **$90/mo → $48/mo** is the two levers together, and annual alone is worth **$144/yr**
-at 2 seats (not the $216/yr it was worth at 3). No capability change either way. The catch was only
-that it is worth doing **if we stay paid at all** — and that question is now answered. [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) declined the OSS
+So the realised sequence is **$90/mo → $60/mo** on the seat cut alone. The further **$60 → $48/mo**
+that annual would have bought is **forgone deliberately** — worth $144/yr at 2 seats, traded for
+smooth monthly P&L. No capability difference either way; the only question was ever price and
+timing, and timing won. [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) declined the OSS
 tier on two documented constraints — under 10 stars (this repo has 3) reviews stop being automatic and
 must be triggered by comment, and the metered add-on in item 4 is Pro/Pro+ only, so it becomes
 permanently unavailable — with the star-scaled 1–10/hr rate band, whose value here the vendor does not
@@ -312,9 +335,15 @@ owner's answer is the opposite: remove a seat.** The original framing pooled two
 | `davidpetersen`, `mirkosalvato1-ctrl` | 0 authored | no seat |
 | `farwabraza`, `paulkathat-lmc`, `memibar` | out of scope | no seat on this account — separate org, separate CodeRabbit account |
 
-**Result: 3 seats → 2.** $90/mo → **$60/mo** monthly, or **$48/mo** once item 3's annual switch is
-applied on top. Take this one **before** item 3, so the annual commitment is not prepaid on a dead
-seat. **Confirmed still unapplied 2026-08-22** — the billing page reads "3 of 3 assigned", $90.
+**Result: 3 seats → 2 — APPLIED 2026-08-22 by the owner.** $90/mo → **$60/mo**, and that is the final
+figure: item 3's annual switch is declined, so the $48/mo it would have stacked on top is forgone by
+choice. The dashboard shows *"1 change taking effect with the next billing cycle — Seat downgrade:
+Reduction from 3 → 2 seats"*, so the invoice reads **$90 until 27 Aug 2026** and **$60 after**.
+
+Two steps were needed, and only the first is an agent action: the agent unassigned `zilbermang`'s seat
+(roster → `2 of 3 assigned`), which frees the seat but **does not** change the bill; reducing the
+*purchased* count runs through `Billing → Edit → Developer seats` and its Chargebee billing-details
+form, which the owner completed.
 
 **Correction to the justification, which does not change the decision (#1228, 2026-08-22).** The
 "0 across every repo swept, both orgs" claim is **false as written**. CodeRabbit's own team-management
