@@ -10,7 +10,7 @@ Reference for Issue #1223 (`.claude/reference/ai-review-chain-roles-decision.md`
 
 ## Churn summary
 
-`churn-hotspots.sh` flagged `.claude/reference/ai-review-chain-roles-decision.md` as touched by 3 distinct merged PRs since 2026-08-07: PRs #1203, #1216, and #1217. PR #1271 (merged 2026-08-22) added a Graphite reconciliation section — counted as further churn evidence, not in the original window.
+`churn-hotspots.sh` flagged `.claude/reference/ai-review-chain-roles-decision.md` as touched by 3 distinct merged PRs in the original report window: PRs #1203, #1216, and #1217. PR #1271 (merged 2026-08-22) added a Graphite reconciliation section — counted as further churn evidence, not in the original window.
 
 | PR | Title | Churn class | Sections affected |
 |----|-------|-------------|-------------------|
