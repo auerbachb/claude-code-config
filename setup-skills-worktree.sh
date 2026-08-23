@@ -211,76 +211,22 @@ migrate_symlink "$RULES_LINK" "$RULES_TARGET" "$REPO_ROOT/.claude/rules" "rules"
 # .claude/rules/ resolves symlinks; they are silent on symlink-following for
 # agents/. A real directory needs no such guarantee, and per-file symlinks keep
 # the worktree as the single source either way.
+#
+# Logic extracted to .claude/scripts/publish-agent-symlinks.sh (issue #1197) so
+# session-start-sync.sh can run the same idempotent publish every session,
+# keeping existing installs in sync without a manual re-run of this script.
 
-AGENTS_DIR="$HOME/.claude/agents"
 WORKTREE_AGENTS="$SKILLS_WORKTREE/.claude/agents"
+AGENTS_PUBLISH_SCRIPT="$REPO_ROOT/.claude/scripts/publish-agent-symlinks.sh"
 
+echo ""
 if [[ ! -d "$WORKTREE_AGENTS" ]]; then
-  echo ""
   echo "WARNING: No .claude/agents/ directory in the worktree. Skipping agent symlinks." >&2
+elif [[ ! -f "$AGENTS_PUBLISH_SCRIPT" ]]; then
+  echo "WARNING: publish-agent-symlinks.sh not found at $AGENTS_PUBLISH_SCRIPT — skipping agent symlinks" >&2
 else
-  echo ""
   echo "Symlinking agent definitions from worktree..."
-
-  # A brand-new agents/ directory is the one case Claude Code cannot pick up
-  # without a restart (the file watcher does not cover a directory that did not
-  # exist at session start). Say so rather than leaving a silent no-op.
-  agents_dir_created=false
-  [[ -d "$AGENTS_DIR" ]] || agents_dir_created=true
-  mkdir -p "$AGENTS_DIR"
-
-  # Ownership rule (both loops below): this setup manages ONLY links that point
-  # into the skills worktree, or into the legacy root-repo agents dir it is
-  # migrating from. Unlike ~/.claude/skills/, which this repo has owned since
-  # install, ~/.claude/agents/ is a shared user-scope namespace — someone may
-  # keep their own definitions there, including one that happens to share a
-  # filename with ours. Repointing or deleting those would destroy user config
-  # and contradict the coexistence this leg documents.
-  owned_by_setup() {
-    local target="$1"
-    [[ "$target" == "$WORKTREE_AGENTS/"* || "$target" == "$REPO_ROOT/.claude/agents/"* ]]
-  }
-
-  for agent_file in "$WORKTREE_AGENTS"/*.md; do
-    [[ -f "$agent_file" ]] || continue
-
-    agent_name="$(basename "$agent_file")"
-    link="$AGENTS_DIR/$agent_name"
-
-    # README.md documents the directory; it is not an agent definition.
-    [[ "$agent_name" == "README.md" ]] && continue
-
-    # A symlink pointing somewhere we do not manage is the user's. Leave it and
-    # say so — migrate_symlink's "points elsewhere" branch would repoint it.
-    if [[ -L "$link" ]] && ! owned_by_setup "$(readlink "$link")"; then
-      echo "  $agent_name — leaving user-owned symlink alone (-> $(readlink "$link"))"
-      continue
-    fi
-
-    migrate_symlink "$link" "$agent_file" "$REPO_ROOT/.claude/agents/$agent_name" "$agent_name" -f
-  done
-
-  # Prune stale links (agent renamed or removed on main) — but only ones we
-  # published. Glob without the trailing */ so dangling symlinks are included:
-  # a broken link is not a file, so -f-style globs skip it.
-  for link in "$AGENTS_DIR"/*; do
-    [[ -e "$link" || -L "$link" ]] || continue
-    [[ -L "$link" ]] || continue
-    agent_name="$(basename "$link")"
-    owned_by_setup "$(readlink "$link")" || continue
-    if [[ ! -f "$WORKTREE_AGENTS/$agent_name" ]]; then
-      echo "  $agent_name — removing stale symlink (no matching agent in worktree)"
-      # Without -e, a failed rm would leave the stale link in place under a
-      # message that reads like success, and the retired agent would stay
-      # visible at user scope.
-      rm "$link" || echo "  WARNING: could not remove $link — remove it manually" >&2
-    fi
-  done
-
-  if [[ "$agents_dir_created" == true ]]; then
-    echo "  NOTE: ~/.claude/agents/ was just created. Restart your Claude Code session"
-    echo "        for the agent types to register (see .claude/agents/README.md)."
-  fi
+  bash "$AGENTS_PUBLISH_SCRIPT" "$SKILLS_WORKTREE" "$REPO_ROOT"
 fi
 
 # --- Step 6: Register hooks and statusLine in ~/.claude/settings.json ---
