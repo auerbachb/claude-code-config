@@ -409,6 +409,9 @@ confirmed by `scans orgs` returning "Missing API key". Auth was present through 
 **Auth restored at 16:11 ET 2026-08-23** — user ran `codeant login`. Confirmed: file now
 exists (`-rw-r--r--`, 56 bytes), contains exactly one key `apiKeyV2` (no refresh token,
 no expiry field), and `codeant scans orgs` returns the `auerbachb` GitHub connection.
+**Security note:** the observed permissions are `0644` — readable by all local users. Run
+`chmod 0600 ~/.codeant/config.json` to restrict to owner-only access; whether `codeant login`
+preserves those permissions on subsequent auth is unverified.
 Environment-isolation hypothesis ruled out: `HOME` and acting user were identical between the
 user's terminal and the agent shell at investigation time, so the earlier missing-credentials
 state was not a per-terminal or per-shell-environment artifact — the file was simply absent.
