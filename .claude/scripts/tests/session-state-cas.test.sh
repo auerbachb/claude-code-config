@@ -18,7 +18,9 @@
 # session-state.json is never touched.
 set -uo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+# Resolve the repo root relative to this script so the test works regardless
+# of the caller's working directory.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && git rev-parse --show-toplevel)"
 SCRIPT="$REPO_ROOT/.claude/scripts/session-state.sh"
 
 TMP_HOME="$(mktemp -d)"
