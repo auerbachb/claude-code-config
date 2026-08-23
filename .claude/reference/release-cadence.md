@@ -222,13 +222,14 @@ silent wrong-time trigger.
 ```text
 {
   pending:         { since, pr, count, reason, notified_at? } | null,
-  in_flight:       { pr, mechanism, triggered_at, detail, run_id, awaiting_run } | null,
+  in_flight:       { pr, mechanism, triggered_at, detail, run_id, awaiting_run, claim_token } | null,
   last_seen_build: { run_id, conclusion, completed_at },
   interval_minutes, interval_source, derived_at
 }
 ```
 
-Written only through `session-state.sh --raw-path --set` — the lock-respecting
+Written only through `session-state.sh --raw-path --set` (or `--raw-path --cas`
+for atomic in-flight claim operations, see `release-decide.sh`) — the lock-respecting
 path required by `handoff-files.md`. `--raw-path` is required because auto-scoping
 only rewrites `.prs` / `.root_repo`; reads use `--get --raw-path` and never
 `--session-view`, which projects only those two keys and would silently report the
@@ -256,16 +257,14 @@ lock timeout) and keep its stderr:
   to the next repo — one repo's unwritable state is not a reason to stop
   following every other repo's builds.
 
-### The claim is narrowed, not atomic (issue #1195)
+### The claim is atomic (issue #1195)
 
-The in-flight claim is staked before any trigger and carries a unique token that
-is read back, so an evaluation that lost a race detects it and stands down. That
-is a narrowing, not a guarantee: `session-state.sh` offers no compare-and-set and
-holds its lock only per invocation, so a claim is a read and then a separate
-write. On one host the gap is small and the read-back catches the common
-interleaving; across hosts sharing a `$HOME` both can still pass. The
-GitHub run-history check backs it up in that case. A conditional write is
-tracked in issue #1195.
+The in-flight claim is staked before any trigger using `session-state.sh --cas
+... --expect null` (issue #1195). The compare and the write run under one lock
+hold: the slot is written only when it is currently `null`, so two concurrent
+evaluations on any host sharing `$HOME` cannot both win. Exit code 7 means the
+slot was already taken; the evaluation stands down without dispatching. The
+GitHub run-history check backs this up as a second line of defence.
 
 ## The sweep
 
