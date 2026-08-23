@@ -407,7 +407,7 @@ Body:
        findings_dismissed:[],threads_replied:[],threads_resolved:[],
        files_changed:$files,push_timestamp:$now,notes:$notes,
        local_review_coverage:$coverage}')"
-   "$HANDOFF_STATE_SH" --create "{PR_NUMBER}" "$HANDOFF_JSON"
+   "$HANDOFF_STATE_SH" --owner-repo {owner}/{repo} --create "{PR_NUMBER}" "$HANDOFF_JSON"
    ```
 9. Print the Structured Exit Report as your FINAL output:
    ```
@@ -634,7 +634,7 @@ When a Phase C subagent returns:
 
 1. **Parse exit report.**
 2. **Branch on OUTCOME:**
-   - `merged` -> verify GitHub shows the PR merged, then delete the handoff file via `handoff-state.sh --delete {PR_NUMBER}` (serialized under the shared lock — never `rm -f` the file directly).
+   - `merged` -> verify GitHub shows the PR merged, then delete the handoff file via `handoff-state.sh --owner-repo {owner}/{repo} --delete {PR_NUMBER}` (serialized under the shared lock — never `rm -f` the file directly).
    - `blocked` -> report blocker details to user. Do NOT merge.
 3. **Update `session-state.json`** — mark PR as Phase C complete.
 4. **Advance the parent, if this issue was a decomposition child** (Step 5.1). `/wrap` closes the *child* via its `Closes #N`; the parent carries no closing keyword and is this step's job.
