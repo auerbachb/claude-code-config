@@ -448,6 +448,117 @@ with open(path, 'w', encoding='utf-8') as f:
 "
 }
 
+# ── Test 9: User-owned skill symlinks are preserved (issue #1198) ────────────
+
+test_9_user_owned_skill_symlinks() {
+  section "Test 9: User-owned skill symlinks preserved (prune and publish)"
+
+  # This test verifies three behaviours from issue #1198:
+  #  (a) A user-owned symlink whose target is outside the skills worktree survives
+  #      a setup run and is named in the output (not silently deleted).
+  #  (b) A genuinely stale setup-owned symlink (target inside the worktree but the
+  #      skill no longer exists there) is still pruned.
+  #  (c) When a skill NAME exists in the worktree AND the user already has a symlink
+  #      for that name pointing elsewhere, setup does NOT silently repoint it to the
+  #      worktree target.
+
+  local skills_wt="$HOME/.claude/skills-worktree"
+  local skills_dir="$HOME/.claude/skills"
+  local worktree_skills="$skills_wt/.claude/skills"
+
+  # Determine the first available worktree skill for test (c).
+  local same_name_skill
+  same_name_skill="$(ls -1 "$worktree_skills" 2>/dev/null | head -1)"
+  if [[ -z "$same_name_skill" ]]; then
+    echo "  SKIP: no skills in worktree — cannot test same-name preservation"
+    return
+  fi
+
+  # External directory acting as the user's personal skill targets.
+  local ext_dir
+  ext_dir="$(mktemp -d)"
+
+  # Snapshot the current state of the same-named link so we can restore it on exit.
+  local same_name_link="$skills_dir/$same_name_skill"
+  local same_name_orig_target=""
+  local same_name_orig_existed=false
+  local same_name_is_symlink=false
+  if [[ -L "$same_name_link" ]]; then
+    same_name_orig_target="$(readlink "$same_name_link")"
+    same_name_orig_existed=true
+    same_name_is_symlink=true
+  elif [[ -e "$same_name_link" ]]; then
+    # Pre-existing regular file or directory — do not overwrite; skip test (c).
+    same_name_orig_existed=true
+  fi
+
+  # Register a cleanup trap that runs even on early return or assertion failure.
+  local user_skill_link="$skills_dir/my-personal-skill-test-1198"
+  local stale_link="$skills_dir/nonexistent-worktree-skill-test-1198"
+  _test9_cleanup() {
+    rm -rf "$ext_dir" 2>/dev/null || true
+    rm -f "$user_skill_link" 2>/dev/null || true
+    rm -f "$stale_link" 2>/dev/null || true
+    if [[ "$same_name_orig_existed" == true && "$same_name_is_symlink" == true && -n "$same_name_orig_target" ]]; then
+      ln -sfn "$same_name_orig_target" "$same_name_link" 2>/dev/null || true
+    elif [[ "$same_name_orig_existed" == false ]]; then
+      rm -f "$same_name_link" 2>/dev/null || true
+    fi
+    # If same_name was a non-symlink file/dir, we never touched it — nothing to restore.
+  }
+  trap _test9_cleanup RETURN
+
+  # (a) Create a user-owned personal skill symlink pointing outside the worktree.
+  mkdir -p "$ext_dir/my-personal-skill-test-1198"
+  ln -sfn "$ext_dir/my-personal-skill-test-1198" "$user_skill_link"
+  assert "(a) User-owned skill symlink created" "[ -L '$user_skill_link' ]"
+
+  # (b) Create a stale setup-owned symlink (points into worktree, skill is gone).
+  ln -sfn "$worktree_skills/nonexistent-worktree-skill-test-1198" "$stale_link"
+  assert "(b) Stale setup-owned symlink created" "[ -L '$stale_link' ]"
+
+  # (c) Only test same-name preservation when the existing entry is a symlink.
+  # Skip if it is a regular file or directory — we must not overwrite those.
+  local run_same_name_test=false
+  if [[ "$same_name_is_symlink" == true ]]; then
+    run_same_name_test=true
+    mkdir -p "$ext_dir/$same_name_skill"
+    ln -sfn "$ext_dir/$same_name_skill" "$same_name_link"
+    assert "(c) Same-name user-owned symlink placed" "[ -L '$same_name_link' ]"
+    assert "(c) Same-name link points to external dir" \
+      "[ \"\$(readlink '$same_name_link')\" = '$ext_dir/$same_name_skill' ]"
+  elif [[ -e "$same_name_link" ]]; then
+    echo "  SKIP (c): $same_name_skill exists as a non-symlink — skipping same-name preservation test"
+  fi
+
+  # Run setup-skills-worktree.sh (the code under test).
+  cd "$REPO_ROOT" || { assert "Can cd to REPO_ROOT" "false"; return; }
+  local setup_output
+  setup_output=$(bash setup-skills-worktree.sh 2>&1)
+  local setup_exit=$?
+  echo "$setup_output" | tail -20
+
+  assert "setup-skills-worktree.sh exits 0" "[ $setup_exit -eq 0 ]"
+
+  # (a) User-owned link must still exist and still point to the external dir.
+  assert "(a) User-owned symlink survived" "[ -L '$user_skill_link' ]"
+  assert "(a) User-owned symlink target unchanged" \
+    "[ \"\$(readlink '$user_skill_link')\" = '$ext_dir/my-personal-skill-test-1198' ]"
+  assert "(a) Output names the user-owned link" \
+    "printf '%s' \"\$setup_output\" | grep -q 'my-personal-skill-test-1198'"
+
+  # (b) Stale setup-owned link must have been removed.
+  assert "(b) Stale setup-owned link pruned" "[ ! -L '$stale_link' ]"
+
+  # (c) Same-name user-owned link must NOT have been repointed to the worktree.
+  if [[ "$run_same_name_test" == true ]]; then
+    assert "(c) Same-name link not repointed" \
+      "[ \"\$(readlink '$same_name_link')\" = '$ext_dir/$same_name_skill' ]"
+  fi
+
+  # Cleanup happens via the RETURN trap registered above.
+}
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -465,6 +576,7 @@ test_5_broken_symlink_recovery
 test_6_hooks_resolve
 test_7_no_settings_json
 test_8_stale_hook_pruned
+test_9_user_owned_skill_symlinks
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 

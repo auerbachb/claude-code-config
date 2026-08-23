@@ -100,8 +100,34 @@ if [[ "$command" == *"gh pr merge"* ]] && [[ "$exit_code" == "0" ]]; then
             link="$skills_dir/$name"
             target="$skills_src/$name"
             if [[ -L "$link" ]]; then
-              # Replace stale symlinks pointing elsewhere
-              [[ "$(readlink "$link")" == "$target" ]] && continue
+              existing="$(readlink "$link")"
+              [[ "$existing" == "$target" ]] && continue
+              # Normalize the existing target (resolve ../ sequences) so traversal
+              # paths cannot cause a link outside managed dirs to be misclassified.
+              # Track whether normalization succeeded; fall back to preserving the
+              # link when python3 is unavailable or normalization fails — safer
+              # than applying an unchecked prefix test on an unnormalized path.
+              local norm_ok=true existing_norm=""
+              if command -v python3 >/dev/null 2>&1; then
+                if [[ "$existing" == /* ]]; then
+                  existing_norm="$(python3 -c "import os,sys; print(os.path.normpath(sys.argv[1]))" \
+                                  "$existing" 2>/dev/null)" || norm_ok=false
+                else
+                  existing_norm="$(python3 -c "import os,sys; print(os.path.normpath(os.path.join(sys.argv[1],sys.argv[2])))" \
+                                  "$skills_dir" "$existing" 2>/dev/null)" || norm_ok=false
+                fi
+              else
+                norm_ok=false
+              fi
+              if [[ "$norm_ok" != true ]]; then
+                # Cannot normalize — cannot safely determine ownership; preserve link.
+                continue
+              fi
+              # User-owned symlink (normalized target is outside the skills worktree
+              # and the legacy root-repo path) — leave it alone rather than repointing.
+              if [[ "$existing_norm" != "$skills_src/"* && "$existing_norm" != "$root_repo/.claude/skills/"* ]]; then
+                continue
+              fi
               rm "$link" 2>/dev/null || true
             elif [[ -e "$link" ]]; then
               # Skip non-symlink entries (directories/copies) — setup script handles these
