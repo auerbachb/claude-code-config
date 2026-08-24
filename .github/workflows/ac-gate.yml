@@ -1,0 +1,34 @@
+on:
+  pull_request: {}
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  # The job id `ac-gate` is the branch-protection status-check name.
+  # Do NOT rename this job and do NOT add a `name:` field — either change
+  # silently drops the check from branch protection, blocking every PR.
+  ac-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Check out the base-branch commit so the gate implementation is trusted
+          # code that the PR cannot modify. The PR body is read via the API below.
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Run AC gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # If ac-gate.sh is not yet on the base branch (bootstrap PR introducing it),
+          # skip gracefully so the gate can merge and become available to future PRs.
+          if [[ ! -f .claude/scripts/ac-gate.sh ]]; then
+            echo "AC gate: PASS (bootstrap — script not yet on base branch)"
+            exit 0
+          fi
+          bash .claude/scripts/ac-gate.sh ${{ github.event.pull_request.number }}

@@ -76,6 +76,8 @@ Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses
 >
 > Skipping this step is a **blocking failure** — the user should never see unchecked AC boxes at merge time.
 
+CI backstop: the `ac-gate` workflow (`ac-gate.sh`) enforces this independently — mechanism and exemption logic in `.claude/reference/ac-gate.md`.
+
 ## Step 3 — Auto-merge via `/wrap`
 
 **Default:** after Steps 1–2 pass, run **full `/wrap`** silently — no pre-merge prompt. `/merge` skips follow-ups/lessons but also proceeds without asking.

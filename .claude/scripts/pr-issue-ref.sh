@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pr-issue-ref.sh — Extract the linked issue number from a PR body.
+# pr-issue-ref.sh — Extract the linked issue number(s) from a PR body.
 #
 # Scans the PR body for any of GitHub's nine supported issue-closing keywords
 # (`close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves`,
@@ -7,15 +7,22 @@
 # and prints the first matching issue number on stdout. Prints nothing when
 # no match is found.
 #
+# With --all, prints every closing reference (one per line, deduplicated) and
+# matches both the bare `#N` and the cross-repo `owner/repo#N` forms.
+#
 # USAGE:
 #   pr-issue-ref.sh <pr_number>
+#   pr-issue-ref.sh --all <pr_number>
 #   pr-issue-ref.sh --help | -h
 #
 # OUTPUT:
-#   Issue number on stdout when found. Empty stdout when no match.
+#   Default: first bare-#N issue number on stdout (byte-identical to prior behavior).
+#   --all:   every issue number, one per line, sorted and deduplicated.
+#            Both the bare `#N` and `owner/repo#N` forms are matched.
+#            Only the numeric portion is printed in both cases.
 #
 # EXIT CODES:
-#   0    issue reference found (number on stdout)
+#   0    issue reference found (number(s) on stdout)
 #   1    no issue reference found (stdout empty)
 #   2    usage error (missing/invalid args, unknown flag)
 #   3    PR not found
@@ -27,22 +34,30 @@
 # EXAMPLES:
 #   pr-issue-ref.sh 290         # → "271" (or empty if no link)
 #   ISSUE=$(pr-issue-ref.sh "$PR" || true)
+#   pr-issue-ref.sh --all 290   # → one issue number per line (e.g. "271\n345")
 
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
 
 print_usage() {
   cat <<'EOF'
-Usage: pr-issue-ref.sh <pr_number>
+Usage: pr-issue-ref.sh [--all] <pr_number>
        pr-issue-ref.sh --help | -h
 
-Extract the first linked issue number from a PR body. Matches any of
-GitHub's nine supported closing keywords — `close`, `closes`, `closed`,
-`fix`, `fixes`, `fixed`, `resolve`, `resolves`, `resolved` (case-
-insensitive, optional whitespace between keyword and `#`).
+Extract linked issue number(s) from a PR body. Matches any of GitHub's nine
+supported closing keywords — `close`, `closes`, `closed`, `fix`, `fixes`,
+`fixed`, `resolve`, `resolves`, `resolved` (case-insensitive, optional
+whitespace between keyword and `#`).
+
+Default: prints the first bare `#N` issue number on stdout.
+--all:   prints every closing reference (one per line, sorted, deduplicated).
+         Matches both the bare `#N` and the `owner/repo#N` cross-repo forms.
+         Only the numeric portion is emitted in both cases.
+         Existing callers (wrap, standup, admin-merge.sh) use the default mode —
+         their output is byte-identical to the behavior before this flag existed.
 
 Exit codes:
-  0  issue reference found (number on stdout)
+  0  issue reference found (number(s) on stdout)
   1  no issue reference found (stdout empty)
   2  usage error
   3  PR not found
@@ -52,12 +67,17 @@ EOF
 
 # --- arg parsing ---
 PR_NUM=""
+ALL_MODE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
       print_usage
       exit 0
+      ;;
+    --all)
+      ALL_MODE=1
+      shift
       ;;
     --)
       # Truly stop option parsing: drain remaining args as positional so
@@ -125,7 +145,70 @@ if ! BODY="$(gh pr view "$PR_NUM" --json body --jq '.body // ""' 2>"$GH_STDERR")
   exit 4
 fi
 
-# --- extract issue number ---
+# --- extract issue number(s) ---
+if [[ "$ALL_MODE" -eq 1 ]]; then
+  # --all mode: collect every closing reference that targets the current repository.
+  #
+  # Pass 1: bare `#N` form. The leading `(^|[^[:alnum:]_])` is a left word-boundary.
+  BARE="$(printf '%s\n' "$BODY" | grep -oiE '(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]*#[0-9]+' | grep -oE '#[0-9]+' | grep -oE '[0-9]+' || true)"
+
+  # Pass 2: cross-repo `owner/repo#N` form. Requires at least one space between
+  # the keyword and the owner slug (bare `closes#N` is valid but `closesowner/` is not).
+  # The leading left-boundary prevents matching inside larger words.
+  # Only include references targeting the CURRENT repository — a `Closes other/repo#99`
+  # closes issue #99 in `other/repo`, not in this repo, and must not false-collide with
+  # a local tracking issue #99. Compare with == (not a regex) to avoid dot-in-slug
+  # injection (`api.v2` would match `apiXv2` in a regex).
+  CURRENT_REPO_LOWER=""
+  if [[ -n "${GITHUB_REPOSITORY:-}" ]]; then
+    # In GitHub Actions CI, GITHUB_REPOSITORY is always set (e.g. "owner/repo").
+    CURRENT_REPO_LOWER="$(printf '%s' "${GITHUB_REPOSITORY}" | tr 'A-Z' 'a-z')"
+  else
+    # Outside CI: try gh repo view; failure is non-fatal (fall back to no filtering).
+    # Single call; if it fails or returns empty, CURRENT_REPO_LOWER stays "".
+    _REPO_OUT=""
+    if _REPO_OUT="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)" && [[ -n "$_REPO_OUT" ]]; then
+      CURRENT_REPO_LOWER="$(printf '%s' "$_REPO_OUT" | tr 'A-Z' 'a-z')"
+    fi
+  fi
+
+  if [[ -n "$CURRENT_REPO_LOWER" ]]; then
+    # Filter cross-repo refs: only include those whose owner/repo matches this repo.
+    # Use string equality (==) after lowercasing — never interpolate repo slug into a regex.
+    CROSS="$(printf '%s\n' "$BODY" \
+      | grep -oiE '(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+#[0-9]+' \
+      | grep -oE '[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+#[0-9]+' \
+      | while IFS= read -r _ref; do
+          _repo_part="$(printf '%s' "${_ref%#*}" | tr 'A-Z' 'a-z')"
+          _issue_part="${_ref##*#}"
+          if [[ "$_repo_part" == "$CURRENT_REPO_LOWER" ]]; then
+            printf '%s\n' "$_issue_part"
+          fi
+        done || true)"
+  elif printf '%s\n' "$BODY" | grep -qiE '(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+#[0-9]+'; then
+    # Current repo unknown AND the body carries qualified refs: refuse rather
+    # than guess. Including them lets `Closes other/repo#99` false-collide with
+    # a local tracking issue #99 (a wrong rejection); excluding them lets a
+    # genuinely self-referential `Closes this/repo#N` slip past (a wrong pass).
+    # Both are wrong answers, so emit neither — the caller must supply context.
+    echo "Error: cannot resolve the current repository, and PR #$PR_NUM has qualified owner/repo#N closing references." >&2
+    echo "Fix: set GITHUB_REPOSITORY=owner/repo, or run where 'gh repo view' can resolve the repository." >&2
+    exit 4
+  else
+    # Current repo unknown, but no qualified refs exist — nothing to filter.
+    CROSS=""
+  fi
+
+  # Combine, filter to pure-numeric lines, sort and deduplicate.
+  ALL="$(printf '%s\n%s\n' "$BARE" "$CROSS" | grep -E '^[0-9]+$' | sort -u || true)"
+  if [[ -z "$ALL" ]]; then
+    exit 1
+  fi
+  printf '%s\n' "$ALL"
+  exit 0
+fi
+
+# --- default mode: first bare #N only (byte-identical to original behavior) ---
 # Match all nine GitHub closing keywords case-insensitively with optional
 # whitespace between keyword and `#`. The leading `(^|[^[:alnum:]_])` is a
 # left word-boundary that prevents matches inside larger words — without
