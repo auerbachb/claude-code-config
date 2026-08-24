@@ -18,6 +18,7 @@ failures=0
 case_num=0
 
 SKILLS=(pm subagent prompt wave issue-maker start-issue pr-monitor-and-manage stop stop-resume pause pause-resume)
+REQUIRED_RENAMED_SKILLS=(stop stop-resume pause pause-resume)
 
 make_fixture() {
   local dir="$1"
@@ -111,6 +112,10 @@ remove_guarded_surface() {
   rm -f ".claude/skills/wave/SKILL.md"
 }
 
+remove_renamed_guarded_surface() {
+  rm -f ".claude/skills/$1/SKILL.md"
+}
+
 # The agents directory had no missing-surface counter in the first draft, so an
 # absent .claude/agents/ produced zero agent files and a confident pass. This is
 # the regression channel that would otherwise be unguarded.
@@ -167,6 +172,15 @@ expect "canonical claim bullet loses its worktree candidate" 1 \
 expect "missing guarded surface is exit 3, never a pass" 3 \
   'Guarded surface missing from disk' \
   remove_guarded_surface
+
+# Keep the rename contract independent from the production linter's SKILLS
+# array. If any renamed command disappears from that array, removing its
+# fixture file will stop producing exit 3 and this test will fail.
+for renamed_skill in "${REQUIRED_RENAMED_SKILLS[@]}"; do
+  expect "renamed ${renamed_skill} surface remains guarded" 3 \
+    "Guarded surface missing from disk: \\.claude/skills/${renamed_skill}/SKILL\\.md" \
+    remove_renamed_guarded_surface "$renamed_skill"
+done
 
 expect "missing agents directory is exit 3, never a pass" 3 \
   'Guarded surface missing from disk: \.claude/agents/' \
