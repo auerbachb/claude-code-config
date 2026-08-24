@@ -69,6 +69,13 @@ mkdir -p "$FAKE/.claude/hooks" "$FAKE/.claude/scripts" \
          "$FAKE/.claude/skills/pause-resume" "$FAKE/.claude/skills/fixpr"
 cp "$SUT" "$FAKE/.claude/hooks/"
 cp "$LINT" "$FAKE/.claude/scripts/"
+cat >"$FAKE/.claude/scripts/portable-handoff-context.sh" <<'STUB'
+#!/usr/bin/env bash
+[[ "${CHECKPOINT_TASK_FIXTURE:-0}" == 1 ]] || exit 4
+cat <<'JSON'
+{"background_tasks":{"items":[{"task_id":"runtime-42","name":"review worker","type":"agent","status":"stopped","work_item":"review pull request 42","output_file":"/tmp/runtime-42-output.txt","checkpoint_path":"/tmp/runtime-42-checkpoint.json","recovery_path":"/tmp/runtime-42-worktree"}],"total":1,"truncated":false}}
+JSON
+STUB
 chmod +x "$FAKE/.claude/hooks/"*.sh "$FAKE/.claude/scripts/"*.sh
 CP="$FAKE/.claude/hooks/checkpoint-handoff.sh"
 
@@ -154,6 +161,17 @@ git -C "$RENAMED" mv README.md renamed.md
 DOC_RENAMED=$(cd "$RENAMED" && "$CP" --stdout --no-remote --out-dir "$TMP/out-renamed" 2>/dev/null)
 check_contains "T2 rename counts as one logical dirty-state entry" \
   "there were 1 uncommitted change(s)" "$DOC_RENAMED"
+
+DOC_TASKS=$(cd "$PLAIN" && CHECKPOINT_TASK_FIXTURE=1 "$CP" --stdout --no-remote \
+  --out-dir "$TMP/out-tasks" 2>/dev/null)
+check_contains "T2 task handoff records the exact runtime ID" "Runtime ID: runtime-42" "$DOC_TASKS"
+check_contains "T2 task handoff records terminal status" "Status: stopped" "$DOC_TASKS"
+check_contains "T2 task handoff records preserved output" "Output file: /tmp/runtime-42-output.txt" "$DOC_TASKS"
+check_contains "T2 task handoff records the checkpoint" "Checkpoint: /tmp/runtime-42-checkpoint.json" "$DOC_TASKS"
+check_contains "T2 task handoff records the recovery path" "Recovery path: /tmp/runtime-42-worktree" "$DOC_TASKS"
+printf '%s\n' "$DOC_TASKS" >"$TMP/t2-tasks.md"
+"$LINT" --repo-root "$FAKE" --quiet "$TMP/t2-tasks.md" >/dev/null 2>&1
+check_eq "T2 exact task takeover details remain portable" "0" "$?"
 
 # Required sections and the absolute working directory, asserted directly rather
 # than trusting the lint's summary exit code.

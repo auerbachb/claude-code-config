@@ -400,6 +400,27 @@ if SESSION_STATE_SH=$(resolve_script session-state.sh); then
   [[ "$AGENTS_COUNT" =~ ^[0-9]+$ ]] || AGENTS_COUNT=""
 fi
 
+# Reuse the bounded, redacted snapshot consumed by /stop rather than reading
+# raw registry state here. Exact runtime/artifact facts are what make the
+# relaunch warning actionable for a different agent.
+TASKS_JSON='[]'
+TASKS_TOTAL=""
+TASKS_TRUNCATED=0
+if command -v jq >/dev/null 2>&1 && HANDOFF_CONTEXT_SH=$(resolve_script portable-handoff-context.sh); then
+  TASK_CONTEXT=$("$HANDOFF_CONTEXT_SH" --cwd "$WORKDIR" \
+    --session "${CLAUDE_SESSION_ID:-default}" --no-remote 2>/dev/null) || TASK_CONTEXT=""
+  if [[ -n "$TASK_CONTEXT" ]] && jq -e '.background_tasks.items | type == "array"' \
+       >/dev/null 2>&1 <<<"$TASK_CONTEXT"; then
+    TASKS_JSON=$(jq -c '.background_tasks.items' <<<"$TASK_CONTEXT" 2>/dev/null) || TASKS_JSON='[]'
+    TASKS_TOTAL=$(jq -r '.background_tasks.total // (.background_tasks.items | length)' \
+      <<<"$TASK_CONTEXT" 2>/dev/null) || TASKS_TOTAL=""
+    TASKS_TRUNCATED=$(jq -r 'if .background_tasks.truncated then 1 else 0 end' \
+      <<<"$TASK_CONTEXT" 2>/dev/null) || TASKS_TRUNCATED=0
+    [[ "$TASKS_TOTAL" =~ ^[0-9]+$ ]] || TASKS_TOTAL=""
+    [[ "$TASKS_TRUNCATED" =~ ^[01]$ ]] || TASKS_TRUNCATED=0
+  fi
+fi
+
 # The most recent hand-written handoff, so a fresh shallow checkpoint never
 # buries an older rich one. Only the BASENAME is ever printed: the absolute path
 # runs through a directory this harness named, which the portability lint
@@ -611,6 +632,32 @@ render() {
     printf '\n%s background unit(s) were still recorded as running when this was written.\n' "$AGENTS_COUNT"
     printf 'They may have been interrupted, so treat any work they owned as unfinished\n'
     printf 'until you have checked it yourself.\n'
+  fi
+
+  if [[ "$TASKS_JSON" != '[]' ]]; then
+    printf '\nBackground task takeover details for this session:\n'
+    jq -r '
+      def shown:
+        if . == null or . == "" then "not recorded"
+        else tostring | gsub("[\\r\\n]"; " ")
+        end;
+      .[] |
+      "- Runtime ID: \(.task_id | shown)\n" +
+      "  Status: \(.status | shown)\n" +
+      "  Type: \(.type | shown)\n" +
+      "  Logical name: \(.name | shown)\n" +
+      "  Work item: \(.work_item | shown)\n" +
+      "  Output file: \(.output_file | shown)\n" +
+      "  Checkpoint: \(.checkpoint_path | shown)\n" +
+      "  Recovery path: \(.recovery_path | shown)"
+    ' <<<"$TASKS_JSON"
+    if (( TASKS_TRUNCATED )); then
+      printf 'Only the first %d of %d task records fit this bounded checkpoint.\n' \
+        "$MAX_PATHS" "$TASKS_TOTAL"
+    fi
+  elif [[ -n "$AGENTS_COUNT" ]] && (( AGENTS_COUNT > 0 )); then
+    printf '\nExact task registry details could not be recovered for this session.\n'
+    printf 'Do not relaunch or replace that work until its runtime status and artifacts are identified.\n'
   fi
 
   printf '\n## Resume safely\n\n'
