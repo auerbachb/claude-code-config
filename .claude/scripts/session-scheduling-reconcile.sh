@@ -421,6 +421,31 @@ if [[ -f "$STATE_FILE" ]]; then
   [[ -n "$PAUSED_AT" ]] && NOTICES+=("A paused PR fleet is recorded (paused at $PAUSED_AT) — resume with /pr-monitor-and-manage-wake, or /pmm-stop to discard it.")
 fi
 
+# 2b2. Credit budget park — check if today's Anthropic credit budget was reached
+#      (issue #1289). credit-budget.sh writes the global top-level `credit_budget`
+#      object in session-state.json (account-wide, not per-repo, because the
+#      Anthropic usage limit is account-wide). This notice fires when that global
+#      record shows status "reached" for today's ET date. Fail-soft: a missing,
+#      absent, or corrupt state file skips this notice and never blocks session start.
+if [[ -f "$STATE_FILE" ]] && jq -e . "$STATE_FILE" >/dev/null 2>&1; then
+  TODAY_ET="$(TZ='America/New_York' date +'%Y-%m-%d')"
+  # Read all three credit_budget fields in one jq invocation to avoid
+  # inconsistent notice values from concurrent writes between separate calls.
+  IFS=$'\t' read -r CB_DATE CB_STATUS CB_BUDGET < <(
+    jq -r '[
+      (.credit_budget.date // ""),
+      (.credit_budget.status // ""),
+      (if .credit_budget.budget_usd == null then "" else (.credit_budget.budget_usd | tostring) end)
+    ] | join("\t")' "$STATE_FILE" 2>/dev/null || printf '\t\t'
+  )
+  if [[ "$CB_DATE" == "$TODAY_ET" && "$CB_STATUS" == "reached" ]]; then
+    # Include the dollar amount only when the stored value is known (populated by
+    # credit-budget.sh --check). Omit it if absent to avoid showing a wrong figure.
+    CB_BUDGET_SUFFIX="${CB_BUDGET:+ (\$${CB_BUDGET}/day)}"
+    NOTICES+=("Daily credit budget reached${CB_BUDGET_SUFFIX} — autonomous dispatch is paused for today. Run 'credit-budget.sh --reset' to override, or wait for tomorrow's ET day reset.")
+  fi
+fi
+
 # 2c. Agent-initiated TestFlight releases (issue #1169). A merge inside a repo's
 #     build window leaves a durable "release pending" marker instead of building;
 #     this is one of three surfaces that turn that marker into an actual build

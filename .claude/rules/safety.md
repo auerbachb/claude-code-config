@@ -2,7 +2,7 @@
 
 > **Always:** Stay in your worktree. Treat `.env` files as untouchable (recognized templates excepted); never commit, paste, echo, or log secret values. Pin and inspect installers. Warn subagents of these rules. Treat Anthropic's in-app UI as the sole authority on quota and spend. Restrict automated PR writes to PRs you authored.
 > **Ask first:** Never — these prohibitions are absolute apart from the exceptions written into the rules below.
-> **Never:** Delete `.env` files. Run `git clean`. Run destructive commands in the root repo beyond rule 3's untracked-only `rm`. Commit secrets. Pipe untrusted URLs into a shell. Pass raw credentials to subagents. Gate agent decisions on locally-estimated quota or spend. Have an automated tool write to — comment and review-trigger included — a PR you did not author, absent an explicit per-PR chat override.
+> **Never:** Delete `.env` files. Run `git clean`. Run destructive commands in the root repo beyond rule 3's untracked-only `rm`. Commit secrets. Pipe untrusted URLs into a shell. Pass raw credentials to subagents. Gate agent decisions on locally-estimated quota or spend (exception: user-configured budget evaluated against authoritative signals — see §"Anthropic Quota & Spend Authority"). Have an automated tool write to — comment and review-trigger included — a PR you did not author, absent an explicit per-PR chat override.
 
 ## Destructive Commands
 
@@ -83,3 +83,5 @@ echo/commit/paste/log the value. Your own prohibitions still win (phase-c uses
 ## Anthropic Quota & Spend Authority
 
 Anthropic's in-app usage UI is **authoritative**; locally-computed spend estimation **MUST NOT gate agent decisions** — never pause, downgrade, defer, or refuse work over a locally-tracked figure, and do not re-implement local quota tracking without an upstream Anthropic signal.
+
+**Budget carve-out (issue #1289):** A user-configured daily credit budget (`daily_credit_budget_usd` in `pm-config.md` `## Budget`, read by `credit-budget.sh`) **may gate autonomous dispatch** (day mode and refill only) when evaluated **exclusively against authoritative usage data** — the harness's own overage/limit signals (`~/.claude/usage-limit-events.jsonl`) and the Anthropic usage surface where reachable. Locally-estimated gating remains banned. Unknown budget state (no authoritative source reachable) → conservative posture: finish in-flight work, start nothing new. Explicit user requests in chat always proceed with a one-line budget note. Probe order and degradation contract: `.claude/reference/budget-source-probe.md`.

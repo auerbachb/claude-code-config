@@ -125,6 +125,17 @@ You manage the backlog, track progress, write GitHub issues, and generate prompt
 - **Default 6** — CodeRabbit allows 5 reviews/hour/developer, so past 5 concurrent PRs a PR cannot get one review round per hour and rebase re-review overtakes productive review. Derivation: `.claude/reference/active-work-cap.md`.
 - Governing limit is `min(3–4 pipeline ceiling, ACTIVE_WORK_CAP)` — this never raises a thread's own pipeline band.
 
+## Budget
+
+```ini
+# daily_credit_budget_usd = 25
+```
+
+> Emit the key **commented out**, exactly as above. `credit-budget.sh` owns the default — a written value wins, so bootstrapping a live value would freeze it for the repo. Commented, the knob stays discoverable while the script keeps ownership until someone deliberately uncomments it.
+
+- **daily_credit_budget_usd** — owner's stated daily Anthropic credit overage tolerance (USD). ET calendar day window. **`CLAUDE_DAILY_CREDIT_BUDGET_USD` env overrides** when set. Read via `credit-budget.sh`. Governs Anthropic credit spend only; third-party reviewer-tool costs are tracked separately.
+- **Default 25** — $25/day authorized overage. Evaluated against authoritative harness signals only; local token/cost estimation is never used. Gates autonomous dispatch (day mode, refill) only — explicit user chat requests always proceed with a one-line note.
+
 ## Infrastructure
 {Auto-detected infrastructure from 2b}
 

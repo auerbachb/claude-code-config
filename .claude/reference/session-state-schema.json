@@ -13,6 +13,7 @@
       "cr_quota": "object",
       "cr_hourly": "object",
       "greptile_daily": "object",
+      "credit_budget": "object",
       "pmm_in_flight": "object",
       "pmm_merge_holds": "object",
       "pmm": "object"
@@ -231,6 +232,13 @@
     "reviews_used": 12,
     "date": "2026-03-16",
     "budget": 40
+  },
+  "_credit_budget_comment": "Daily Anthropic credit budget state (issue #1289). Written ONLY by credit-budget.sh; never estimate or compute locally. `date` is an ET calendar day string (YYYY-MM-DD). `status` is 'ok' (no overage signal today), 'reached' (authoritative overage signal found — park), or 'unknown' (probe failed — conservative posture). `budget_usd` is the resolved daily_credit_budget_usd value. `source` is a one-word reason string for debugging. Cross-day reset happens on the next --check call when date != today. Gates autonomous dispatch (day mode and refill) only; explicit chat requests always proceed. Probe order: .claude/reference/budget-source-probe.md. Local token/cost estimation is never used.",
+  "credit_budget": {
+    "date": "2026-03-16",
+    "status": "ok",
+    "budget_usd": 25,
+    "source": "no-overage-event-today"
   },
   "active_agents": [
     {
