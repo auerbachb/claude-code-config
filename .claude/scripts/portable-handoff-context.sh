@@ -161,9 +161,11 @@ if git -C "$WORKING_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     [[ "$linkage_status" == "no pull request resolved from current branch" ]] && linkage_status="issue resolved from exact branch token"
   fi
 
-  if [[ -x "$SCRIPT_DIR/background-task-registry.sh" && "$repo_identity" != "$unknown" ]]; then
+  if [[ -x "$SCRIPT_DIR/background-task-registry.sh" ]]; then
+    registry_repo="$repo_identity"
+    [[ "$registry_repo" == "$unknown" ]] && registry_repo="_unknown"
     raw_tasks=$(cd "$checkout_path" && "$SCRIPT_DIR/background-task-registry.sh" \
-      --repo "$repo_identity" --list --session "$SESSION_ID" 2>/dev/null) || raw_tasks=""
+      --repo "$registry_repo" --list --session "$SESSION_ID" 2>/dev/null) || raw_tasks=""
     if [[ -n "$raw_tasks" ]] && jq -e 'type == "array"' >/dev/null 2>&1 <<<"$raw_tasks"; then
       tasks_total=$(jq 'length' <<<"$raw_tasks") || exit 4
       tasks_json=$(jq --argjson max "$MAX_ITEMS" '

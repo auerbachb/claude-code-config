@@ -51,6 +51,20 @@ cat >"$STATE" <<'JSON'
           "updated_at": "2026-08-24T12:01:00Z"
         }
       ]
+    },
+    "_unknown": {
+      "background_tasks": [
+        {
+          "task_id": "originless-task",
+          "name": "local worker",
+          "type": "agent",
+          "session_id": "session-1",
+          "status": "stopped",
+          "recovery_path": "/tmp/originless-worktree",
+          "started_at": "2026-08-24T12:00:00Z",
+          "updated_at": "2026-08-24T12:01:00Z"
+        }
+      ]
     }
   }
 }
@@ -90,10 +104,11 @@ UNBORN="$TMP/unborn repository"
 git init -q -b main "$UNBORN"
 printf 'staged\n' >"$UNBORN/staged.txt"
 git -C "$UNBORN" add staged.txt
-UNBORN_DOC=$("$SUT" --cwd "$UNBORN" --session session-1 --no-remote)
+UNBORN_DOC=$(CLAUDE_SESSION_STATE_FILE="$STATE" "$SUT" --cwd "$UNBORN" --session session-1 --no-remote)
 check "unborn checkout keeps its initialized branch" test "$(jq -r '.working_copy.branch' <<<"$UNBORN_DOC")" = main
 check "unborn checkout reports no commit" test "$(jq -r '.working_copy.head' <<<"$UNBORN_DOC")" = unknown
 check "unborn checkout preserves staged tracked work" jq -e '.working_copy.tracked_changes == ["staged.txt"]' >/dev/null <<<"$UNBORN_DOC"
+check "originless checkout preserves unknown-scope tasks" jq -e '.background_tasks.items[0] | .task_id == "originless-task" and .recovery_path == "/tmp/originless-worktree"' >/dev/null <<<"$UNBORN_DOC"
 
 printf 'second\n' >"$MAIN/another-untracked.txt"
 CAPPED=$(CLAUDE_HANDOFF_MAX_ITEMS=1 CLAUDE_SESSION_STATE_FILE="$STATE" "$SUT" --cwd "$MAIN" --session session-1 --no-remote)

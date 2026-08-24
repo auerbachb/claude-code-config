@@ -84,11 +84,31 @@ OUT3=$("$SUT" --input "$DOC" --repo test/portable --session session-2 \
   --out-dir "$OUT_DIR" --lint "$LINT" --lint-root "$REPO_ROOT")
 check "a different session has a different canonical path" test "$OUT3" != "$OUT1"
 
+# The publisher must lint the immutable staged copy, not a mutable source path.
+# This wrapper changes the source immediately after the delegated lint returns;
+# the old lint-then-copy ordering would publish the replacement bytes.
+MUTATING_LINT="$TMP/mutating-lint.sh"
+cat >"$MUTATING_LINT" <<'EOF'
+#!/usr/bin/env bash
+"$REAL_LINT" "$@"
+rc=$?
+(( rc == 0 )) || exit "$rc"
+printf '# replaced after lint\n' >"$ORIGINAL_INPUT"
+EOF
+chmod +x "$MUTATING_LINT"
+MUTABLE_INPUT="$TMP/mutable-input.md"
+cp "$DOC" "$MUTABLE_INPUT"
+RACE_OUT=$(REAL_LINT="$LINT" ORIGINAL_INPUT="$MUTABLE_INPUT" \
+  "$SUT" --input "$MUTABLE_INPUT" --repo test/portable --session mutable-source \
+  --out-dir "$OUT_DIR" --lint "$MUTATING_LINT" --lint-root "$REPO_ROOT")
+check "publisher validates and publishes the same staged bytes" cmp -s "$DOC" "$RACE_OUT"
+check "source mutation happened during the lint window" grep -q 'replaced after lint' "$MUTABLE_INPUT"
+
 printf '# invalid\n' >"$TMP/invalid.md"
 "$SUT" --input "$TMP/invalid.md" --repo test/portable --session invalid \
   --out-dir "$OUT_DIR" --lint "$LINT" --lint-root "$REPO_ROOT" >/dev/null 2>&1
 check "lint violations fail closed" test "$?" = 1
-check "lint failure publishes no invalid note" test "$(find "$OUT_DIR" -maxdepth 1 -type f -name 'portable-handoff-*.md' | wc -l | tr -d ' ')" = 2
+check "lint failure publishes no invalid note" test "$(find "$OUT_DIR" -maxdepth 1 -type f -name 'portable-handoff-*.md' | wc -l | tr -d ' ')" = 3
 
 "$SUT" --input "$TMP/missing.md" --repo test/portable --session missing \
   --out-dir "$OUT_DIR" --lint "$LINT" --lint-root "$REPO_ROOT" >/dev/null 2>&1

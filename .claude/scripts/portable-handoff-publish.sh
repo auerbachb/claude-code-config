@@ -52,18 +52,6 @@ done
 [[ -n "$SESSION_ID" ]] || SESSION_ID=default
 [[ -x "$LINT_SH" ]] || { echo "portable-handoff-publish.sh: lint is unavailable: $LINT_SH" >&2; exit 4; }
 
-if [[ -n "$LINT_ROOT" ]]; then
-  "$LINT_SH" --repo-root "$LINT_ROOT" --quiet "$INPUT"
-else
-  "$LINT_SH" --quiet "$INPUT"
-fi
-lint_rc=$?
-(( lint_rc == 0 )) || {
-  (( lint_rc == 1 )) && exit 1
-  echo "portable-handoff-publish.sh: lint could not verify the input (exit $lint_rc)" >&2
-  exit 4
-}
-
 mkdir -p "$OUT_DIR" || { echo "portable-handoff-publish.sh: could not create $OUT_DIR" >&2; exit 5; }
 OUT_DIR=$(cd "$OUT_DIR" 2>/dev/null && pwd -P) || exit 5
 safe_repo=$(printf '%s' "$REPO" | tr '[:upper:]/' '[:lower:]-')
@@ -83,25 +71,39 @@ OUT="$OUT_DIR/portable-handoff-${safe_repo}-${digest}.md"
 # shellcheck source=state-lock.sh
 source "$SCRIPT_DIR/state-lock.sh"
 state_lock_acquire "$OUT" || exit $?
-trap 'state_lock_release' EXIT
+TMP_DOC=""
+trap '[[ -z "${TMP_DOC:-}" ]] || rm -f "$TMP_DOC"; state_lock_release' EXIT
 
 TMP_DOC=$(mktemp "$OUT_DIR/.portable-handoff.XXXXXX") || {
   echo "portable-handoff-publish.sh: could not stage in $OUT_DIR" >&2; exit 5;
 }
-if ! cp "$INPUT" "$TMP_DOC" || ! chmod 644 "$TMP_DOC"; then
-  rm -f "$TMP_DOC"
-  echo "portable-handoff-publish.sh: could not copy the verified input; original remains at $INPUT" >&2
+if ! cp "$INPUT" "$TMP_DOC"; then
+  echo "portable-handoff-publish.sh: could not stage the input; original remains at $INPUT" >&2
+  exit 5
+fi
+if [[ -n "$LINT_ROOT" ]]; then
+  "$LINT_SH" --repo-root "$LINT_ROOT" --quiet "$TMP_DOC"
+else
+  "$LINT_SH" --quiet "$TMP_DOC"
+fi
+lint_rc=$?
+(( lint_rc == 0 )) || {
+  (( lint_rc == 1 )) && exit 1
+  echo "portable-handoff-publish.sh: lint could not verify the staged input (exit $lint_rc)" >&2
+  exit 4
+}
+if ! chmod 644 "$TMP_DOC"; then
+  echo "portable-handoff-publish.sh: could not set canonical note permissions; original remains at $INPUT" >&2
   exit 5
 fi
 if ! state_lock_assert_held; then
-  rm -f "$TMP_DOC"
   echo "portable-handoff-publish.sh: canonical lock changed before publish; original remains at $INPUT" >&2
   exit 6
 fi
 if ! mv "$TMP_DOC" "$OUT"; then
-  rm -f "$TMP_DOC"
   echo "portable-handoff-publish.sh: atomic publish failed; original remains at $INPUT" >&2
   exit 5
 fi
+TMP_DOC=""
 
 printf '%s\n' "$OUT"
