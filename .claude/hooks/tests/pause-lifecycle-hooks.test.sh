@@ -23,8 +23,8 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   — $*"; }
 
 gate() {
-  local tool="$1" bg="${2:-false}"
-  jq -nc --arg sid "$SID" --arg cwd "$CWD" --arg tool "$tool" --argjson bg "$bg" \
+  local tool="$1" bg="${2:-false}" cwd="${3:-$CWD}"
+  jq -nc --arg sid "$SID" --arg cwd "$cwd" --arg tool "$tool" --argjson bg "$bg" \
     '{session_id:$sid,cwd:$cwd,tool_name:$tool,tool_input:{run_in_background:$bg}}' | "$GATE"
 }
 
@@ -47,6 +47,17 @@ ok "PreToolUse gate blocks background starts but preserves foreground teardown"
 "$PAUSE" --repo "$REPO" --clear --session "$SID"
 gate Agent >/dev/null || fail "cleared gate still blocked"
 ok "explicit clear reopens launches"
+
+ORIGINLESS="$TMP/originless-checkout"
+mkdir -p "$ORIGINLESS"
+"$PAUSE" --repo _unknown --activate --session "$SID" --command pause --window-minutes 5
+set +e
+CLAUDE_SESSION_REPO=other/checkout gate Agent false "$ORIGINLESS" >/dev/null 2>&1
+originless_gate_rc=$?
+set -e
+[[ "$originless_gate_rc" == 2 ]] || fail "origin-less payload fell back to inherited repo scope"
+"$PAUSE" --repo _unknown --clear --session "$SID"
+ok "origin-less payload preserves _unknown repository isolation"
 
 BAD_MARKER_PATH="$TMP/not-a-marker-directory"
 printf 'occupied\n' > "$BAD_MARKER_PATH"
@@ -116,10 +127,14 @@ post "$(jq -nc --arg sid "$SID" --arg cwd "$CWD" \
   '{session_id:$sid,cwd:$cwd,tool_name:"Monitor",tool_input:{description:"watch",command:"tail -f x"},tool_response:{taskId:"monitor-runtime"}}')"
 CLAUDE_SESSION_REPO=other/checkout post "$(jq -nc --arg sid "$SID" --arg cwd "$CWD" \
   '{session_id:$sid,cwd:$cwd,tool_name:"Agent",tool_input:{name:"scoped"},tool_response:{agentId:"scoped-agent-runtime"}}')"
+CLAUDE_SESSION_REPO=other/checkout post "$(jq -nc --arg sid "$SID" --arg cwd "$ORIGINLESS" \
+  '{session_id:$sid,cwd:$cwd,tool_name:"Agent",tool_input:{name:"unknown-scope"},tool_response:{agentId:"unknown-scope-runtime"}}')"
 IDS="$("$REGISTRY" --repo "$REPO" --list --session "$SID" --live | jq -r 'map(.task_id) | sort | join(",")')"
 [[ "$IDS" == agent-runtime,bash-runtime,monitor-runtime,scoped-agent-runtime ]] || fail "PostToolUse ID capture: $IDS"
 [[ "$("$REGISTRY" --repo other/checkout --count --session "$SID")" == 0 ]] || \
   fail "inherited repo scope captured a task from the payload checkout"
+[[ "$("$REGISTRY" --repo _unknown --count --session "$SID" --live)" == 1 ]] || \
+  fail "origin-less payload did not register in _unknown scope"
 ok "PostToolUse captures exact Agent/Bash/Monitor runtime IDs"
 
 printf '%s' "$(jq -nc --arg sid "$SID" --arg cwd "$CWD" \
@@ -150,6 +165,31 @@ jq -nc --arg sid "$SID" --arg cwd "$CWD" \
 [[ "$("$REGISTRY" --repo "$REPO" --list --session "$SID" | jq -r '.[] | select(.task_id=="no-ceiling-runtime") | .status')" == "running" ]] || \
   fail "missing ceiling helper bypassed runtime registration"
 ok "runtime registration survives a missing silence-ceiling helper"
+
+# The PostToolUse hook has a 5s host timeout. Registry lock contention must
+# fail sooner and leave durable audit evidence rather than being killed while
+# still waiting inside the 30s default lock contract.
+STATE_FILE="$HOME/.claude/session-state.json"
+LOCK_DIR="$STATE_FILE.lock"
+mkdir "$LOCK_DIR"
+{
+  printf 'pid=%s\n' "$$"
+  printf 'host=%s\n' "${HOSTNAME:-$(hostname)}"
+  printf 'epoch=%s\n' "$(date +%s)"
+  printf 'started=%s\n' "$(date -u +%FT%TZ)"
+  printf 'cmd=test\n'
+  printf 'token=contention-test\n'
+} > "$LOCK_DIR/owner"
+SECONDS=0
+post "$(jq -nc --arg sid "$SID" --arg cwd "$CWD" \
+  '{session_id:$sid,cwd:$cwd,tool_name:"Agent",tool_input:{name:"contended"},tool_response:{agentId:"contended-runtime"}}')"
+contention_elapsed=$SECONDS
+rm -rf "$LOCK_DIR"
+[[ "$contention_elapsed" -lt 5 ]] || fail "registry contention outlived the PostToolUse timeout budget"
+FAILURE_MARKER="$CLAUDE_BGWORK_MARKER_DIR/claude-background-registry-failed-$SID"
+grep -Fq $'\tregister\tcontended-runtime\t6' "$FAILURE_MARKER" || \
+  fail "registry contention did not leave durable audit evidence"
+ok "registry lock contention records failure within the hook timeout"
 
 # If state becomes unreadable after activation, the positive marker keeps the
 # gate closed. A random parse failure without such a marker stays fail-open.

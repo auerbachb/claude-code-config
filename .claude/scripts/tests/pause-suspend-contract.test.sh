@@ -8,6 +8,7 @@ PAUSE_RESUME="$ROOT/.claude/skills/pause-resume/SKILL.md"
 SUSPEND_RESUME="$ROOT/.claude/skills/suspend-resume/SKILL.md"
 PHASES="$ROOT/.claude/rules/phase-protocols.md"
 SETTINGS="$ROOT/global-settings.json"
+ARM_HOOK="$ROOT/.claude/hooks/bgwork-ceiling-arm.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 has() { grep -Eq -- "$2" "$1" || fail "$(basename "$1") missing: $2"; }
@@ -24,6 +25,7 @@ has "$PAUSE" 'background-task-shutdown.md'
 has "$SUSPEND" 'background-task-shutdown.md'
 has "$PAUSE" 'hard stop'
 has "$SUSPEND" 'hard-stop exact'
+has "$ARM_HOOK" 'CLAUDE_STATE_LOCK_TIMEOUT=3'
 
 has "$PAUSE_RESUME" 'execution-pause.sh --clear'
 has "$SUSPEND_RESUME" 'EXECUTION_PAUSE_SH.*clear --session'

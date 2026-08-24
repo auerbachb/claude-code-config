@@ -26,14 +26,19 @@ FAILURE_MARKER="$FAILURE_DIR/claude-background-registry-failed-${SAFE_SESSION:-d
 FAILURE_FALLBACK="${HOME:-/tmp}/.claude/claude-background-registry-failed-${SAFE_SESSION:-default}"
 
 resolve_payload_repo() {
-  local key=""
+  local key="" payload_examined=0
   if [[ -n "$CWD" && -d "$CWD" && -x "$SESSION_STATE_SH" ]]; then
-    key="$(cd "$CWD" && unset CLAUDE_SESSION_REPO && \
-      "$SESSION_STATE_SH" --repo-key 2>/dev/null)" || key=""
+    if key="$(cd "$CWD" && unset CLAUDE_SESSION_REPO && \
+      "$SESSION_STATE_SH" --repo-key 2>/dev/null)"; then
+      payload_examined=1
+    else
+      key=""
+    fi
   fi
-  if [[ -z "$key" || "$key" == _unknown ]]; then
-    key="${CLAUDE_SESSION_REPO:-${key:-_unknown}}"
+  if [[ -z "$key" && "$payload_examined" == 0 ]]; then
+    key="${CLAUDE_SESSION_REPO:-_unknown}"
   fi
+  [[ -n "$key" ]] || key=_unknown
   if [[ "$key" != _unknown && ! "$key" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
     key=_unknown
   fi

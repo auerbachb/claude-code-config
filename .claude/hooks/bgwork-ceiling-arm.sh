@@ -50,14 +50,19 @@ OUTPUT_FILE=$(json_field '.tool_response.outputFile // .tool_response.output_fil
 RECOVERY_PATH=$(json_field '.tool_response.worktreePath // .tool_response.worktree_path')
 
 resolve_payload_repo() {
-  local key=""
+  local key="" payload_examined=0
   if [[ -n "$CWD" && -d "$CWD" && -x "$SESSION_STATE_SH" ]]; then
-    key="$(cd "$CWD" && unset CLAUDE_SESSION_REPO && \
-      "$SESSION_STATE_SH" --repo-key 2>/dev/null)" || key=""
+    if key="$(cd "$CWD" && unset CLAUDE_SESSION_REPO && \
+      "$SESSION_STATE_SH" --repo-key 2>/dev/null)"; then
+      payload_examined=1
+    else
+      key=""
+    fi
   fi
-  if [[ -z "$key" || "$key" == _unknown ]]; then
-    key="${CLAUDE_SESSION_REPO:-${key:-_unknown}}"
+  if [[ -z "$key" && "$payload_examined" == 0 ]]; then
+    key="${CLAUDE_SESSION_REPO:-_unknown}"
   fi
+  [[ -n "$key" ]] || key=_unknown
   if [[ "$key" != _unknown && ! "$key" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
     key=_unknown
   fi
@@ -102,9 +107,9 @@ register_runtime_task() {
   [[ -n "$RECOVERY_PATH" ]] && args+=(--recovery-path "$RECOVERY_PATH")
   local rc=0
   if [[ -n "$CWD" && -d "$CWD" ]]; then
-    (cd "$CWD" && "$REGISTRY_SH" "${args[@]}") >/dev/null 2>&1 || rc=$?
+    (cd "$CWD" && CLAUDE_STATE_LOCK_TIMEOUT=3 "$REGISTRY_SH" "${args[@]}") >/dev/null 2>&1 || rc=$?
   else
-    "$REGISTRY_SH" "${args[@]}" >/dev/null 2>&1 || rc=$?
+    CLAUDE_STATE_LOCK_TIMEOUT=3 "$REGISTRY_SH" "${args[@]}" >/dev/null 2>&1 || rc=$?
   fi
   (( rc == 0 )) || record_registry_failure register "$task_id" "$rc"
 }
@@ -120,9 +125,9 @@ transition_runtime_task() {
   args=(--repo "$REPO_KEY" --transition --session "$SESSION_ID" --task-id "$task_id" --status "$status")
   local rc=0
   if [[ -n "$CWD" && -d "$CWD" ]]; then
-    (cd "$CWD" && "$REGISTRY_SH" "${args[@]}") >/dev/null 2>&1 || rc=$?
+    (cd "$CWD" && CLAUDE_STATE_LOCK_TIMEOUT=3 "$REGISTRY_SH" "${args[@]}") >/dev/null 2>&1 || rc=$?
   else
-    "$REGISTRY_SH" "${args[@]}" >/dev/null 2>&1 || rc=$?
+    CLAUDE_STATE_LOCK_TIMEOUT=3 "$REGISTRY_SH" "${args[@]}" >/dev/null 2>&1 || rc=$?
   fi
   (( rc == 0 )) || record_registry_failure transition "$task_id" "$rc"
 }
