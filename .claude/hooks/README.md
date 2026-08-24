@@ -96,8 +96,11 @@ malformed payload cannot brick all tool use.
 
 A registry write failure creates
 `claude-background-registry-failed-<session>` in the configured background-work
-marker directory (default `/tmp`). `/pause` and `/suspend` treat it as an
-incomplete audit until runtime inspection proves no untracked task remains.
+marker directory (default `/tmp`), falling back to `$HOME/.claude` if that
+directory is unwritable. If neither location accepts the marker, the hook exits
+non-zero with a critical diagnostic. `/pause` and `/suspend` treat either
+marker as an incomplete audit until runtime inspection proves no untracked task
+remains.
 
 **Tests:** `.claude/hooks/tests/pause-lifecycle-hooks.test.sh`
 

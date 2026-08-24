@@ -47,17 +47,17 @@ retry_or_fail() {
 
 resolve_repo_key() {
   local raw="$1" remote slug
+  [[ -n "$raw" ]] || raw="${CLAUDE_SESSION_REPO:-}"
   if [[ -n "$raw" ]]; then
+    if [[ "$raw" == "_unknown" ]]; then printf '_unknown'; return; fi
     [[ "$raw" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || \
       die_usage "--repo must look like owner/name (got: $raw)"
     printf '%s' "$raw" | tr '[:upper:]' '[:lower:]'
     return
   fi
-  remote="$(git remote get-url origin 2>/dev/null)" || \
-    die_usage "could not infer repo from git remote; pass --repo owner/name"
+  remote="$(git remote get-url origin 2>/dev/null)" || { printf '_unknown'; return; }
   slug="$(printf '%s' "$remote" | sed -e 's|\.git$||' -e 's|.*github\.com[:/]\([^/]*/[^/]*\)$|\1|')"
-  [[ "$slug" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || \
-    die_usage "could not extract owner/name from remote '$remote'"
+  [[ "$slug" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || { printf '_unknown'; return; }
   printf '%s' "$slug" | tr '[:upper:]' '[:lower:]'
 }
 

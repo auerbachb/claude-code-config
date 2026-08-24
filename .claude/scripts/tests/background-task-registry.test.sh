@@ -59,6 +59,16 @@ for pid in "${pids[@]}"; do wait "$pid"; done
 [[ "$(run --count --session race --live)" == 12 ]] || fail "concurrent registrations lost updates"
 ok "locked concurrent registrations preserve every runtime identity"
 
+CLAUDE_SESSION_REPO=MixedOrg/MixedRepo "$REGISTRY" --register --session env-scope \
+  --task-id env-agent --type agent
+[[ "$("$REGISTRY" --repo mixedorg/mixedrepo --count --session env-scope --live)" == 1 ]] || \
+  fail "CLAUDE_SESSION_REPO was not normalized and honored"
+(cd "$TMP" && env -u CLAUDE_SESSION_REPO "$REGISTRY" --register --session unknown-scope \
+  --task-id unknown-agent --type agent)
+[[ "$("$REGISTRY" --repo _unknown --count --session unknown-scope --live)" == 1 ]] || \
+  fail "origin-less checkout did not preserve task in _unknown scope"
+ok "environment override and origin-less repository scopes preserve task identities"
+
 # Corrupt state must fail non-zero and remain untouched so hooks can surface a
 # durable tracking-failure marker; an empty successful rewrite hides the loss.
 printf 'not-json\n' > "$STATE"

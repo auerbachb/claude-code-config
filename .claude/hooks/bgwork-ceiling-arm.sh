@@ -52,17 +52,32 @@ RECOVERY_PATH=$(json_field '.tool_response.worktreePath // .tool_response.worktr
 REGISTRY_FAILURE_DIR="${CLAUDE_BACKGROUND_TASK_FAILURE_DIR:-${CLAUDE_BGWORK_MARKER_DIR:-/tmp}}"
 SAFE_SESSION_ID="${SESSION_ID//[^[:alnum:]_.-]/_}"
 REGISTRY_FAILURE_MARKER="$REGISTRY_FAILURE_DIR/claude-background-registry-failed-${SAFE_SESSION_ID:-default}"
+REGISTRY_FAILURE_FALLBACK="${HOME:-/tmp}/.claude/claude-background-registry-failed-${SAFE_SESSION_ID:-default}"
+REGISTRY_FAILURE_UNRECORDED=0
 
 record_registry_failure() {
-  local operation="$1" task_id="$2" rc="$3"
-  mkdir -p "$REGISTRY_FAILURE_DIR" 2>/dev/null || return 0
-  printf '%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$operation" "$task_id" "$rc" \
-    >> "$REGISTRY_FAILURE_MARKER" 2>/dev/null || true
+  local operation="$1" task_id="$2" rc="$3" line
+  line="$(date -u +%FT%TZ)\t${operation}\t${task_id}\t${rc}"
+  if mkdir -p "$REGISTRY_FAILURE_DIR" 2>/dev/null && \
+     printf '%b\n' "$line" >> "$REGISTRY_FAILURE_MARKER" 2>/dev/null; then
+    return 0
+  fi
+  if mkdir -p "$(dirname "$REGISTRY_FAILURE_FALLBACK")" 2>/dev/null && \
+     printf '%b\n' "$line" >> "$REGISTRY_FAILURE_FALLBACK" 2>/dev/null; then
+    return 0
+  fi
+  REGISTRY_FAILURE_UNRECORDED=1
+  echo "bgwork-ceiling-arm.sh: CRITICAL: could not record registry failure for $task_id ($operation rc=$rc)" >&2
+  return 1
 }
 
 register_runtime_task() {
-  [[ -x "$REGISTRY_SH" && -n "$1" && -n "$2" ]] || return 0
+  [[ -n "$1" && -n "$2" ]] || return 0
   local task_id="$1" task_type="$2" name="${3:-$2:$1}"
+  if [[ ! -x "$REGISTRY_SH" ]]; then
+    record_registry_failure missing_helper "$task_id" 127 || true
+    return 0
+  fi
   local -a args
   args=(--register --session "$SESSION_ID" --task-id "$task_id"
         --type "$task_type" --name "$name")
@@ -79,8 +94,12 @@ register_runtime_task() {
 }
 
 transition_runtime_task() {
-  [[ -x "$REGISTRY_SH" && -n "$1" ]] || return 0
+  [[ -n "$1" ]] || return 0
   local task_id="$1" status="$2"
+  if [[ ! -x "$REGISTRY_SH" ]]; then
+    record_registry_failure missing_helper "$task_id" 127 || true
+    return 0
+  fi
   local -a args
   args=(--transition --session "$SESSION_ID" --task-id "$task_id" --status "$status")
   local rc=0
@@ -210,4 +229,4 @@ touch "$ADVISED_FILE" 2>/dev/null || true
 
 emit_context "BACKGROUND WORK CEILING NOT ARMED. ${UNGUARDED_NOTE}This thread has background work in flight, so it can end its turn and go silent with no tool call left to warn it. Arm the ceiling in THIS step, before ending the turn: call the Monitor tool with persistent: true, description \"background-work silence ceiling\", and command: ${ARM_COMMAND} — the watch stays silent unless the thread actually goes quiet, so a thread sending normal heartbeats will never see a message from it. Do not announce the arming to the user; it is bookkeeping, not status."
 
-exit 0
+exit "$REGISTRY_FAILURE_UNRECORDED"

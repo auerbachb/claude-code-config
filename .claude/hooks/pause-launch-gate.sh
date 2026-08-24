@@ -23,7 +23,18 @@ CWD="$(field '.cwd')"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PAUSE_SH="${SCRIPT_DIR%/hooks}/scripts/execution-pause.sh"
-[[ -x "$PAUSE_SH" ]] || exit 0
+if [[ ! -x "$PAUSE_SH" ]]; then
+  SAFE_SESSION="${SESSION_ID//[^[:alnum:]_.-]/_}"
+  MARKER_DIR="${CLAUDE_EXECUTION_PAUSE_MARKER_DIR:-/tmp}"
+  for marker in "$MARKER_DIR"/claude-execution-pause-*-"${SAFE_SESSION:-default}"; do
+    if [[ -f "$marker" ]]; then
+      echo "BLOCKED: execution-pause helper is unavailable while an active session marker exists; refusing to start $TOOL_NAME." >&2
+      exit 2
+    fi
+  done
+  echo "pause-launch-gate.sh: execution-pause.sh unavailable; no active marker found" >&2
+  exit 0
+fi
 
 STATUS=""
 RC=0

@@ -46,6 +46,21 @@ ok "PreToolUse gate blocks background starts but preserves foreground teardown"
 gate Agent >/dev/null || fail "cleared gate still blocked"
 ok "explicit clear reopens launches"
 
+# A partial installation must still honor positive pause evidence even when the
+# helper disappeared after activation.
+PARTIAL="$TMP/partial/.claude/hooks"
+mkdir -p "$PARTIAL"
+cp "$GATE" "$PARTIAL/pause-launch-gate.sh"
+touch "$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-any-$SID"
+set +e
+jq -nc --arg sid "$SID" --arg cwd "$CWD" \
+  '{session_id:$sid,cwd:$cwd,tool_name:"Agent",tool_input:{}}' \
+  | "$PARTIAL/pause-launch-gate.sh" >/dev/null 2>&1
+partial_rc=$?
+set -e
+[[ "$partial_rc" == 2 ]] || fail "missing helper bypassed positive pause marker"
+ok "partial installation blocks launches when an active marker survives"
+
 post() {
   local payload="$1"
   printf '%s' "$payload" | "$ARM" >/dev/null
@@ -89,6 +104,31 @@ FAILURE_MARKER="$CLAUDE_BGWORK_MARKER_DIR/claude-background-registry-failed-$SID
 [[ -s "$FAILURE_MARKER" ]] || fail "registry write failure left no durable marker"
 rg -q $'\tregister\tuntracked-runtime\t' "$FAILURE_MARKER" || \
   fail "registry failure marker omitted operation/runtime identity"
-ok "registry write failures remain visible to shutdown audit"
+
+printf '%s' "$(jq -nc --arg sid "$SID" --arg cwd "$CWD" \
+  '{session_id:$sid,cwd:$cwd,agent_id:"agent-runtime",hook_event_name:"SubagentStop",status:"completed"}')" \
+  | "$COMPLETE"
+rg -q $'\ttransition\tagent-runtime\t' "$FAILURE_MARKER" || \
+  fail "SubagentStop transition failure was swallowed"
+ok "registration and terminal-transition failures remain visible to shutdown audit"
+
+FALLBACK_MARKER="$HOME/.claude/claude-background-registry-failed-$SID"
+jq -nc --arg sid "$SID" --arg cwd "$CWD" \
+  '{session_id:$sid,cwd:$cwd,tool_name:"Agent",tool_input:{name:"fallback"},tool_response:{agentId:"fallback-runtime"}}' \
+  | CLAUDE_BACKGROUND_TASK_FAILURE_DIR=/dev/null/no-child "$ARM" >/dev/null
+rg -q $'\tregister\tfallback-runtime\t' "$FALLBACK_MARKER" || \
+  fail "unwritable primary marker directory did not use HOME fallback"
+ok "tracking failures fall back durably when the primary marker directory is unwritable"
+
+PARTIAL_ARM_ROOT="$TMP/partial-arm"
+mkdir -p "$PARTIAL_ARM_ROOT/.claude/hooks" "$PARTIAL_ARM_ROOT/.claude/scripts"
+cp "$ARM" "$PARTIAL_ARM_ROOT/.claude/hooks/bgwork-ceiling-arm.sh"
+cp "$ROOT/.claude/scripts/bgwork-ceiling.sh" "$PARTIAL_ARM_ROOT/.claude/scripts/bgwork-ceiling.sh"
+jq -nc --arg sid "$SID" --arg cwd "$CWD" \
+  '{session_id:$sid,cwd:$cwd,tool_name:"Agent",tool_input:{name:"missing-helper"},tool_response:{agentId:"missing-helper-runtime"}}' \
+  | "$PARTIAL_ARM_ROOT/.claude/hooks/bgwork-ceiling-arm.sh" >/dev/null
+rg -q $'\tmissing_helper\tmissing-helper-runtime\t127' "$FAILURE_MARKER" || \
+  fail "missing registry helper left no audit marker"
+ok "missing registry helper is visible to shutdown audit"
 
 echo "OK: pause lifecycle hook tests passed"
