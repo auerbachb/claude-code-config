@@ -177,6 +177,8 @@ case "$MODE" in
             checkpoint_path:($checkpoint | if length > 0 then . else null end),
             recovery_path:($recovery | if length > 0 then . else null end),
             status:"running", started_at:$now, updated_at:$now}
+           # Registration is a partial upsert: an omitted artifact argument
+           # preserves previously known recovery metadata for this runtime ID.
            | with_entries(select(.value != null))) as $entry
         | .repos[$repo].background_tasks =
             (if any($tasks[]?; .task_id == $id and .session_id == $sid)

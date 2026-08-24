@@ -41,6 +41,8 @@ run --register --session s1 --task-id agent-1 --type agent --name renamed-agent
 [[ "$(run --count --session s1 --live)" == 2 ]] || fail "duplicate register appended"
 [[ "$(run --list --session s1 --live | jq -r '.[] | select(.task_id=="agent-1") | .name')" == renamed-agent ]] || \
   fail "duplicate register did not update metadata"
+[[ "$(run --list --session s1 --live | jq -r '.[] | select(.task_id=="agent-1") | [.output_file,.checkpoint_path,.recovery_path] | @tsv')" == $'/tmp/agent-1.out\t/tmp/agent-1.checkpoint\t/tmp/worktree-1' ]] || \
+  fail "partial duplicate register discarded known recovery metadata"
 ok "duplicate runtime identities upsert safely"
 
 run --register --session monotonic --task-id completed-first --type agent

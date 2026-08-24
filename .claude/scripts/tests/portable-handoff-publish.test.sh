@@ -108,6 +108,12 @@ READY="$TMP/lock-ready"
 ) &
 holder=$!
 for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -f "$READY" ]] && break; sleep 0.1; done
+if [[ ! -f "$READY" ]]; then
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  echo "FAIL — lock holder did not become ready within the bounded wait"
+  exit 1
+fi
 CLAUDE_STATE_LOCK_TIMEOUT=1 "$SUT" --input "$DOC" --repo test/portable --session session-1 \
   --out-dir "$OUT_DIR" --lint "$LINT" --lint-root "$REPO_ROOT" >/dev/null 2>&1
 lock_rc=$?
