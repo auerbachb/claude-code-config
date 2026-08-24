@@ -12,6 +12,16 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   — $*"; }
 run() { "$REGISTRY" --repo auerbachb/claude-code-config "$@"; }
 
+set +e
+run --list --session never-created >/dev/null 2>&1
+missing_list_rc=$?
+run --count --session never-created >/dev/null 2>&1
+missing_count_rc=$?
+set -e
+[[ "$missing_list_rc" == 3 && "$missing_count_rc" == 3 ]] || \
+  fail "missing registry reported a clean empty inventory"
+ok "missing registry fails closed for list/count audits"
+
 run --register --session s1 --task-id agent-1 --type agent --name phase-a \
   --output-file /tmp/agent-1.out --recovery-path /tmp/worktree-1
 run --register --session s1 --task-id mon-1 --type monitor --name silence-ceiling
@@ -32,6 +42,9 @@ ok "duplicate runtime identities upsert safely"
 
 run --transition --session s1 --task-id agent-1 --status "done"
 run --transition --session s1 --task-id mon-1 --status stop_failed
+run --register --session s1 --task-id agent-1 --type agent --name delayed-replay
+[[ "$(run --list --session s1 | jq -r '.[] | select(.task_id=="agent-1") | .status')" == "done" ]] || \
+  fail "duplicate registration resurrected a terminal task"
 [[ "$(run --count --session s1 --live)" == 1 ]] || fail "terminal/live status accounting"
 [[ "$(run --list --session s1 --live | jq -r '.[0].status')" == stop_failed ]] || \
   fail "failed stop identity was not retained"

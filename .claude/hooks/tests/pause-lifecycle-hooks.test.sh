@@ -66,15 +66,42 @@ ok "activation publishes durable marker evidence before active state"
 PARTIAL="$TMP/partial/.claude/hooks"
 mkdir -p "$PARTIAL"
 cp "$GATE" "$PARTIAL/pause-launch-gate.sh"
-touch "$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-any-$SID"
+SAFE_REPO="${REPO//[^[:alnum:]_.-]/_}"
+EXACT_MARKER="$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-$SAFE_REPO-$SID"
+touch "$EXACT_MARKER"
 set +e
 jq -nc --arg sid "$SID" --arg cwd "$CWD" \
   '{session_id:$sid,cwd:$cwd,tool_name:"Agent",tool_input:{}}' \
-  | "$PARTIAL/pause-launch-gate.sh" >/dev/null 2>&1
+  | CLAUDE_SESSION_REPO="$REPO" "$PARTIAL/pause-launch-gate.sh" >/dev/null 2>&1
 partial_rc=$?
 set -e
 [[ "$partial_rc" == 2 ]] || fail "missing helper bypassed positive pause marker"
+rm -f "$EXACT_MARKER"
+touch "$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-other_checkout-$SID"
+jq -nc --arg sid "$SID" --arg cwd "$CWD" \
+  '{session_id:$sid,cwd:$cwd,tool_name:"Agent",tool_input:{}}' \
+  | CLAUDE_SESSION_REPO="$REPO" "$PARTIAL/pause-launch-gate.sh" >/dev/null 2>&1 || \
+  fail "foreign-repo marker blocked the payload repository"
 ok "partial installation blocks launches when an active marker survives"
+
+# Concurrent activate/clear calls share the canonical state lock. Whichever
+# operation wins last must leave marker and state in the same lifecycle.
+race_pids=()
+for n in 1 2 3 4; do
+  "$PAUSE" --repo "$REPO" --activate --session lifecycle-race \
+    --command pause --window-minutes "$n" >/dev/null & race_pids+=("$!")
+  "$PAUSE" --repo "$REPO" --clear --session lifecycle-race >/dev/null & race_pids+=("$!")
+done
+for pid in "${race_pids[@]}"; do wait "$pid"; done
+RACE_STATE="$("$PAUSE" --repo "$REPO" --status --session lifecycle-race)"
+RACE_MARKER="$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-$SAFE_REPO-lifecycle-race"
+if [[ "$RACE_STATE" == active ]]; then
+  [[ -f "$RACE_MARKER" ]] || fail "concurrent lifecycle left active state without marker"
+else
+  [[ ! -f "$RACE_MARKER" ]] || fail "concurrent lifecycle left cleared state with marker"
+fi
+"$PAUSE" --repo "$REPO" --clear --session lifecycle-race
+ok "pause lifecycle serializes concurrent activate and clear operations"
 
 post() {
   local payload="$1"

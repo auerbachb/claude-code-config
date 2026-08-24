@@ -15,6 +15,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SESSION_STATE_SH="$SCRIPT_DIR/session-state.sh"
+LOCK_LIB="$SCRIPT_DIR/state-lock.sh"
+STATE_FILE="${CLAUDE_SESSION_STATE_FILE:-$HOME/.claude/session-state.json}"
 MARKER_DIR="${CLAUDE_EXECUTION_PAUSE_MARKER_DIR:-/tmp}"
 
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
@@ -56,6 +58,15 @@ SAFE_SESSION="${SESSION_ID//[^[:alnum:]_.-]/_}"
 MARKER="$MARKER_DIR/claude-execution-pause-${SAFE_REPO}-${SAFE_SESSION}"
 PATH_EXPR=".repos[\"$REPO_KEY\"].execution_pauses[\"$SESSION_ID\"]"
 
+# Marker and session-state are one lifecycle invariant. Hold the canonical
+# state lock across status, activation, and clearing so neither a concurrent
+# resume nor a launch-gate read can observe a half-applied transition. The
+# nested session-state.sh process inherits this lock and re-enters safely.
+[[ -f "$LOCK_LIB" ]] || { echo "execution-pause.sh: state-lock.sh unavailable" >&2; exit 5; }
+# shellcheck source=state-lock.sh
+source "$LOCK_LIB"
+state_lock_acquire "$STATE_FILE" || exit $?
+
 case "$MODE" in
   activate)
     case "$COMMAND_NAME" in pause|suspend) ;; *) die "--activate requires --command pause|suspend" ;; esac
@@ -87,20 +98,25 @@ case "$MODE" in
     # state write fails, the surviving marker deliberately keeps launches
     # blocked until an explicit clear/recovery.
     session_state --raw-path --set "$PATH_EXPR=$VALUE" || exit $?
+    state_lock_release
     ;;
   clear)
     NOW="$(date -u +%FT%TZ)"
     session_state --raw-path \
       --set "$PATH_EXPR.active=false" --set "$PATH_EXPR.cleared_at=\"$NOW\"" || exit $?
-    rm -f "$MARKER" 2>/dev/null || true
+    rm -f "$MARKER" 2>/dev/null || {
+      echo "execution-pause.sh: could not remove marker $MARKER" >&2
+      exit 5
+    }
+    state_lock_release
     ;;
   status)
     RC=0
     VALUE="$(session_state --raw-path --get "$PATH_EXPR.active" 2>/dev/null)" || RC=$?
-    if [[ "$RC" -eq 0 && "$VALUE" == true ]]; then printf 'active\n'; exit 0; fi
-    if [[ "$RC" -eq 0 && ( "$VALUE" == false || "$VALUE" == null ) ]]; then printf 'inactive\n'; exit 0; fi
-    if [[ "$RC" -eq 3 && ! -f "$MARKER" ]]; then printf 'inactive\n'; exit 0; fi
-    if [[ -f "$MARKER" ]]; then printf 'active\n'; exit 0; fi
+    if [[ "$RC" -eq 0 && "$VALUE" == true ]]; then printf 'active\n'; state_lock_release; exit 0; fi
+    if [[ "$RC" -eq 0 && ( "$VALUE" == false || "$VALUE" == null ) ]]; then printf 'inactive\n'; state_lock_release; exit 0; fi
+    if [[ "$RC" -eq 3 && ! -f "$MARKER" ]]; then printf 'inactive\n'; state_lock_release; exit 0; fi
+    if [[ -f "$MARKER" ]]; then printf 'active\n'; state_lock_release; exit 0; fi
     echo "execution-pause.sh: pause state unreadable and no active marker exists" >&2
     exit 4
     ;;

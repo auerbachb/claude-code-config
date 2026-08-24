@@ -42,13 +42,13 @@ resolve_payload_repo() {
 REPO_KEY="$(resolve_payload_repo)"
 if [[ ! -x "$PAUSE_SH" ]]; then
   SAFE_SESSION="${SESSION_ID//[^[:alnum:]_.-]/_}"
+  SAFE_REPO="${REPO_KEY//[^[:alnum:]_.-]/_}"
   MARKER_DIR="${CLAUDE_EXECUTION_PAUSE_MARKER_DIR:-/tmp}"
-  for marker in "$MARKER_DIR"/claude-execution-pause-*-"${SAFE_SESSION:-default}"; do
-    if [[ -f "$marker" ]]; then
-      echo "BLOCKED: execution-pause helper is unavailable while an active session marker exists; refusing to start $TOOL_NAME." >&2
-      exit 2
-    fi
-  done
+  MARKER="$MARKER_DIR/claude-execution-pause-${SAFE_REPO:-_unknown}-${SAFE_SESSION:-default}"
+  if [[ -f "$MARKER" ]]; then
+    echo "BLOCKED: execution-pause helper is unavailable while an active repo/session marker exists; refusing to start $TOOL_NAME." >&2
+    exit 2
+  fi
   echo "pause-launch-gate.sh: execution-pause.sh unavailable; no active marker found" >&2
   exit 0
 fi

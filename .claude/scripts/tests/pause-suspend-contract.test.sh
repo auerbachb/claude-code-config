@@ -14,11 +14,11 @@ has() { grep -Eq -- "$2" "$1" || fail "$(basename "$1") missing: $2"; }
 
 has "$PAUSE" 'default: --window 5m'
 has "$PAUSE" 'WINDOW_MINUTES=5'
-has "$PAUSE" '10#\$_RAW'
+has "$PAUSE" "10#\\\$_RAW"
 has "$PAUSE" '1440'
 has "$SUSPEND" 'default: --window 15m'
 has "$SUSPEND" 'WINDOW_MINUTES=15'
-has "$SUSPEND" '10#\$_RAW'
+has "$SUSPEND" "10#\\\$_RAW"
 has "$SUSPEND" '1440'
 has "$PAUSE" 'background-task-shutdown.md'
 has "$SUSPEND" 'background-task-shutdown.md'

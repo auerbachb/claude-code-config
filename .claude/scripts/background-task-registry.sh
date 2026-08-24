@@ -63,6 +63,9 @@ resolve_repo_key() {
 
 read_document() {
   if [[ ! -f "$STATE_FILE" ]]; then
+    if [[ "$MODE" == list || "$MODE" == count ]]; then
+      die_missing "$STATE_FILE is missing; background-task inventory is unavailable"
+    fi
     printf '{}'
     return
   fi
@@ -167,7 +170,11 @@ case "$MODE" in
         | .repos[$repo].background_tasks =
             (if any($tasks[]?; .task_id == $id and .session_id == $sid)
              then $tasks | map(if .task_id == $id and .session_id == $sid
-                               then . + $entry + {started_at:(.started_at // $now)} else . end)
+                               then . as $current
+                                 | ($current + $entry)
+                                 | .status = ($current.status // "running")
+                                 | .started_at = ($current.started_at // $now)
+                               else . end)
              else $tasks + [$entry] end)
         | .last_updated = $now
         | .schema_version = (.schema_version // 2)
