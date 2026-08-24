@@ -75,6 +75,22 @@ untracked_total=0
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/portable-handoff-context.XXXXXX") || exit 4
 trap 'rm -rf "$TMP_DIR"' EXIT
 
+collect_nul_stream() {
+  local list_file="$1" count_file="$2" item
+  shift 2
+  : >"$list_file"
+  (
+    total=0
+    while IFS= read -r -d '' item; do
+      total=$((total + 1))
+      if (( total <= MAX_ITEMS )); then
+        printf '%s\0' "$item" >>"$list_file"
+      fi
+    done
+    printf '%s\n' "$total" >"$count_file"
+  ) < <("$@" 2>/dev/null)
+}
+
 if git -C "$WORKING_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   checkout_path=$(git -C "$WORKING_DIR" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$WORKING_DIR")
   checkout_path=$(cd "$checkout_path" 2>/dev/null && pwd -P || printf '%s' "$checkout_path")
@@ -102,15 +118,18 @@ if git -C "$WORKING_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   fi
 
   if [[ "$head_sha" != "$unknown" ]]; then
-    git -C "$checkout_path" diff --name-only -z HEAD -- >"$TMP_DIR/tracked" 2>/dev/null || :
+    collect_nul_stream "$TMP_DIR/tracked" "$TMP_DIR/tracked-count" \
+      git -C "$checkout_path" diff --name-only -z HEAD --
   else
-    git -C "$checkout_path" diff --cached --name-only -z -- >"$TMP_DIR/tracked" 2>/dev/null || :
+    collect_nul_stream "$TMP_DIR/tracked" "$TMP_DIR/tracked-count" \
+      git -C "$checkout_path" diff --cached --name-only -z --
   fi
-  git -C "$checkout_path" ls-files --others --exclude-standard -z -- >"$TMP_DIR/untracked" 2>/dev/null || :
-  tracked_json=$(jq -Rs --argjson max "$MAX_ITEMS" 'split("\u0000") | map(select(length > 0)) | .[:$max]' <"$TMP_DIR/tracked") || exit 4
-  untracked_json=$(jq -Rs --argjson max "$MAX_ITEMS" 'split("\u0000") | map(select(length > 0)) | .[:$max]' <"$TMP_DIR/untracked") || exit 4
-  tracked_total=$(jq -Rs 'split("\u0000") | map(select(length > 0)) | length' <"$TMP_DIR/tracked") || exit 4
-  untracked_total=$(jq -Rs 'split("\u0000") | map(select(length > 0)) | length' <"$TMP_DIR/untracked") || exit 4
+  collect_nul_stream "$TMP_DIR/untracked" "$TMP_DIR/untracked-count" \
+    git -C "$checkout_path" ls-files --others --exclude-standard -z --
+  tracked_json=$(jq -Rs 'split("\u0000") | map(select(length > 0))' <"$TMP_DIR/tracked") || exit 4
+  untracked_json=$(jq -Rs 'split("\u0000") | map(select(length > 0))' <"$TMP_DIR/untracked") || exit 4
+  tracked_total=$(<"$TMP_DIR/tracked-count")
+  untracked_total=$(<"$TMP_DIR/untracked-count")
 
   remote=$(git -C "$checkout_path" remote get-url origin 2>/dev/null || true)
   case "$remote" in

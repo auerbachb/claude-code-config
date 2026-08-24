@@ -28,6 +28,8 @@ git -C "$MAIN" commit -qm seed
 git -C "$MAIN" remote add origin 'https://ghp_DO_NOT_LEAK@example.invalid/decoy.git'
 git -C "$MAIN" remote set-url origin 'https://ghp_DO_NOT_LEAK@github.com/Test/Portable.git'
 git -C "$MAIN" checkout -qb issue-1311-context
+git -C "$MAIN" update-ref refs/remotes/origin/issue-1311-context HEAD
+git -C "$MAIN" branch --set-upstream-to origin/issue-1311-context >/dev/null
 printf 'changed\n' >>"$MAIN/tracked.txt"
 printf 'new\n' >"$MAIN/untracked file.txt"
 
@@ -76,6 +78,8 @@ check "credential-bearing remote is never emitted" sh -c '! printf "%s" "$1" | g
 check "main checkout is classified" test "$(jq -r '.working_copy.condition' <<<"$DOC")" = "main worktree"
 check "active checkout path is absolute and space-safe" test "$(jq -r '.working_copy.path' <<<"$DOC")" = "$MAIN"
 check "full HEAD is recorded" sh -c 'printf "%s\n" "$1" | grep -Eq "^[0-9a-f]{40}$"' _ "$(jq -r '.working_copy.head' <<<"$DOC")"
+check "tracking branch is recorded separately" test "$(jq -r '.working_copy.upstream' <<<"$DOC")" = origin/issue-1311-context
+check "same-branch upstream is not invented as the merge base" test "$(jq -r '.working_copy.base_branch' <<<"$DOC")" = unknown
 check "tracked dirt stays distinct" jq -e '.working_copy.tracked_changes == ["tracked.txt"]' >/dev/null <<<"$DOC"
 check "untracked dirt stays distinct" jq -e '.working_copy.untracked_changes == ["untracked file.txt"]' >/dev/null <<<"$DOC"
 check "exact issue branch token becomes a link" test "$(jq -r '.linkage.issue.url' <<<"$DOC")" = "https://github.com/test/portable/issues/1311"
@@ -113,6 +117,7 @@ check "originless checkout preserves unknown-scope tasks" jq -e '.background_tas
 printf 'second\n' >"$MAIN/another-untracked.txt"
 CAPPED=$(CLAUDE_HANDOFF_MAX_ITEMS=1 CLAUDE_SESSION_STATE_FILE="$STATE" "$SUT" --cwd "$MAIN" --session session-1 --no-remote)
 check "dirty lists are bounded" jq -e '.working_copy.untracked_changes | length == 1' >/dev/null <<<"$CAPPED"
+check "bounded lists retain the complete streaming count" jq -e '.working_copy.untracked_change_count == 2' >/dev/null <<<"$CAPPED"
 check "truncation is reported" jq -e '.working_copy.lists_truncated == true' >/dev/null <<<"$CAPPED"
 
 printf '\npassed: %d   failed: %d\n' "$passed" "$failed"
