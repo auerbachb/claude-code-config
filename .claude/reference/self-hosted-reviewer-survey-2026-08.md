@@ -12,9 +12,9 @@ Sample for comparison baseline: **PR #1292** — 2 modified `.md` files, 5 CodeR
 > **Measurement discipline.** This survey distinguishes between what was installed, what was
 > exercised, and what was inferred from documentation. Each finding names its evidence type.
 > No measurement was taken from any run that did not complete — partial-run absence findings
-> are suppressed throughout. API-key-dependent runs were not possible in this session (no
-> `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in the agent environment); this is stated per
-> candidate rather than asserted once and forgotten.
+> are suppressed throughout. API-key-dependent runs were not possible in the original session
+> (no `ANTHROPIC_API_KEY` in the agent environment); those three items are now completed in a
+> follow-up measurements (Issue #1301, 2026-08-23–24) and recorded in §7 below.
 
 ---
 
@@ -22,12 +22,12 @@ Sample for comparison baseline: **PR #1292** — 2 modified `.md` files, 5 CodeR
 
 | Candidate | Category | Verdict | Limiting constraint |
 |-----------|----------|---------|---------------------|
-| `ocr` (alibaba/open-code-review) | Self-hosted | **CUT — confirmed** | Excludes `.md` files; 0 of 2 PR #1292 files reviewable; no API key available for code-file test |
-| Qodo PR-Agent | Self-hosted | **CUT** | GitHub-PR-URL interface only; no local diff mode; no API key available |
+| `ocr` (alibaba/open-code-review) | Self-hosted | **CUT — confirmed** | Excludes `.md` files; 0 of 2 PR #1292 files reviewable; code-file run completed (§7): 2 findings on 2 `.sh` files, ~$0.79/review |
+| Qodo PR-Agent | Self-hosted | **CUT — capability claim corrected** | `--stdin` local mode confirmed in v0.43.0 (contradicts prior survey); endpoint run completed (§7): 2 findings, ~$0.09/review; CUT reason updated — see §7 and decision record |
 | CodeRabbit CLI | Hosted (incumbent) | **KEEP** | OSS pool: 3 reviews/~55-min window on this public repo |
 | CodeAnt CLI | Hosted (incumbent) | **KEEP** | Daily cap applies; auth restored 2026-08-23 |
 
-**Verdict in one sentence:** Neither self-hosted candidate is viable for the local pre-push slot in this doc-heavy repo — `ocr` excludes every `.md` file it would encounter, and PR-Agent has no local-diff mode — so the chain is unchanged, and the local pass continues under CodeRabbit + CodeAnt.
+**Verdict in one sentence:** Neither self-hosted candidate is adopted for the local pre-push slot — `ocr` excludes every `.md` file it would encounter (confirmed; 0 coverage in this doc repo), and PR-Agent v0.43.0 has a `--stdin` local mode (correcting a prior survey claim) but produces only summary-level findings without line anchors, which reduces its value versus the incumbent CLIs — so the chain is unchanged, and the local pass continues under CodeRabbit + CodeAnt. **See §7 for the Issue #1301 endpoint run measurements.**
 
 ---
 
@@ -41,16 +41,16 @@ Sample for comparison baseline: **PR #1292** — 2 modified `.md` files, 5 CodeR
 | **Upstream** | github.com/alibaba/open-code-review | github.com/qodo-ai/pr-agent |
 | **Install path** | `npm install -g @alibaba-group/open-code-review` (verified) | `pip3 install pr-agent` (verified) |
 | **Install verified** | Yes — v1.9.10 installs, binary resolves, `--version` succeeds | Yes — v0.43.0 installs, `python3 -m pr_agent.cli --help` succeeds |
-| **Runs non-interactively** | Yes, with configured LLM endpoint; install is non-interactive | Partial — install is non-interactive; review requires `--pr_url` and GitHub token |
-| **Fully local (no vendor account)** | Yes — only an LLM API key is required | No — requires GitHub API token to fetch PR data |
+| **Runs non-interactively** | Yes, with configured LLM endpoint; install is non-interactive | Yes in `--stdin` mode (Issue #1301 finding); `--pr_url` mode requires GitHub token |
+| **Fully local (no vendor account)** | Yes — only an LLM API key is required | **Yes in `--stdin` mode** — no GitHub token required (confirmed 2026-08-23, Issue #1301) |
 | **LLM providers accepted** | Anthropic, OpenAI, and any OpenAI-compatible endpoint via `OCR_LLM_URL`; configured via `ocr config set` | Anthropic, OpenAI, Azure OpenAI, Google Gemini, AWS Bedrock, and others via litellm |
 | **Line-level findings** | Yes — the core design goal; line-level comments with file/range anchors | Yes — inline PR comments with line numbers |
-| **Local diff mode** | Yes — `ocr review` reads git diff from working tree or a commit range | No — `--pr_url` only; fetches diff from GitHub API |
+| **Local diff mode** | Yes — `ocr review` reads git diff from working tree or a commit range | **Yes — `--stdin` mode** pipes a unified diff (confirmed v0.43.0); prior survey claim of "no local mode" was incorrect |
 | **Cost per review** | Only LLM endpoint cost (model-dependent); no vendor quota metered | Only LLM endpoint cost; no vendor quota |
 | **`.md` file support** | **No** — `.md` excluded as `unsupported_ext` (confirmed via `ocr delegate preview` on PR #1292 commit) | Yes — reads all file types accessible via GitHub PR diff |
 | **Maintenance burden** | Binary from npm; major releases every few weeks in 2026 | Python package; active maintenance; self-host or Docker |
-| **Notable limitation** | Extension exclusion of `.md` is built into the binary with no CLI override flag (`--exclude` only adds exclusions, does not un-exclude) | GitHub-centric; no equivalent to `ocr review` for pre-push local diff |
-| **Delegation mode** | **Yes** — `ocr delegate` outputs a review spec that the host agent (Claude Code) can execute; no API key required for delegation | No — LLM key and GitHub token both required |
+| **Notable limitation** | Extension exclusion of `.md` is built into the binary with no CLI override flag (`--exclude` only adds exclusions, does not un-exclude) | `--stdin` mode produces summary-level findings without line-number anchors; no per-file file/range in output |
+| **Delegation mode** | **Yes** — `ocr delegate` outputs a review spec that the host agent (Claude Code) can execute; no API key required for delegation | N/A — single-shot model call in `--stdin` mode; no tool-use loop |
 
 ### 1.2 Hosted incumbent CLIs
 
@@ -99,15 +99,17 @@ This is not a sampled result — `ocr delegate preview` on the exact commit was 
 
 **`ocr`:** 0 findings possible. Tool would not have touched either file. Finding 4 (credential file permissions, a real security observation) would have been missed. All 5 CodeRabbit findings would have been missed.
 
-**PR-Agent:** Not run. PR-Agent requires a GitHub token and an LLM key. Neither was available in the session environment. Evidence limitation: `python3 -m pr_agent.cli --pr_url=https://github.com/auerbachb/claude-code-config/pull/1292 review` confirmed the error shape (`BoxKeyError: user_token`) but no review output was produced. Absence claims are suppressed for PR-Agent; the PR-URL-based interface would likely produce findings on the `.md` content if credentials were configured.
+**PR-Agent:** Not run in this session. The `--pr_url` interface requires a GitHub token (`BoxKeyError: user_token` without one). The `--stdin` local mode discovered in Issue #1301 was not known at the time of the original survey. Absence claims suppressed. See §7 for the actual run.
 
-### 2.4 Token cost methodology
+### 2.4 Token cost methodology (original session — no runs completed)
 
-No self-hosted review was completed in this session due to absent API keys. Token cost cannot be measured. The methodology for a future measurement:
+No self-hosted review was completed in the original session due to absent API keys. Token cost cannot be measured here. The methodology for a future measurement:
 
 - For `ocr`: run `ocr review --from <base> --to <head> --format json --audience agent`; capture the token counts from the JSON output (input/output tokens per file). Multiply by the model's published per-token price.
 - For PR-Agent: similar — token counts logged to stdout; multiply by model price.
 - Comparison basis: **cost-per-review-session**, not "free vs paid" (both tools are metered by the LLM endpoint, not by a vendor quota).
+
+**This methodology was executed in Issue #1301. See §7 for actual measured results.**
 
 ---
 
@@ -131,7 +133,7 @@ The 2026-07 skill prune audit (Issue #793, PR #822) recorded a **CUT** verdict f
 
 **This survey addresses ground 2** (credential present in principle; no API key in session environment). It confirms ground 1 independently. The CUT verdict stands on ground 1 alone: in this repo, where every PR diff is predominantly `.md`, `ocr` would produce 0 findings on the large majority of PRs regardless of the LLM endpoint configured.
 
-Ground 2 remains unresolved: a session with `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` configured could run `ocr review` on a diff containing `.sh`, `.go`, `.json`, or other supported extensions to verify finding quality. This survey does not supply that evidence.
+Ground 2 is now resolved: Issue #1301 ran `ocr review --commit 0b6ad100 --format json --audience agent` on the exact PR #1295 head reviewed by CodeRabbit and CodeAnt, which touches `.sh` files. The run produced 2 findings, including 1 confirmed overlap. See §7 for the complete output and analysis.
 
 ---
 
@@ -162,6 +164,8 @@ $ python3 -m pr_agent.cli --pr_url=https://github.com/auerbachb/claude-code-conf
 ```
 Installation: clean, non-interactive. Runtime: blocked by absent GitHub token — error on first use, does not fall back to local diff.
 
+Follow-up correction (Issue #1301): v0.43.0 also exposes `--stdin`, which accepts a unified diff without a GitHub token. The original conclusion above describes only the `--pr_url` path and is superseded by the measured local run in §7.
+
 ---
 
 ## 6. Scope note — data flow
@@ -173,3 +177,110 @@ PR diffs sent to a self-configured LLM endpoint carry the same data-flow questio
 **For a diff that is already public** (e.g., re-reviewing PR #1292's merged commit): the diff content is already publicly readable on GitHub, which reduces but does not eliminate residual risks. Residual risks include: provider training and retention policies, metadata (file paths, commit messages, author identities) that may be logged beyond the diff content itself, and routing through the provider's infrastructure. The disclosure risk is lower than for a pre-push diff but is not zero.
 
 This is noted as a structured check rather than a settled blanket statement, as the issue requested.
+
+---
+
+## 7. Issue #1301 follow-up measurements — 2026-08-23–24
+
+### 7.1 Measurement setup
+
+- Endpoint credential: `ANTHROPIC_API_KEY`, referenced by name only. The value is absent from the captured output and tracked files.
+- Model: `claude-opus-4-5-20251101` (`ocr` reports the configured alias as `claude-opus-4-5`).
+- Real diff: PR #1295 head `a659a81..0b6ad100`, containing `.claude/scripts/active-work-cap.sh` and `.claude/scripts/tests/active-work-cap.test.sh` plus one Markdown reference file. `ocr` selected the two supported `.sh` files; PR-Agent received the complete unified PR diff through stdin.
+- Hosted comparison: the 2 CodeRabbit and 3 CodeAnt findings posted on that exact `0b6ad100` head. This is revision-matched and avoids absence claims from an incomplete or later fixed run: both self-hosted runs completed successfully.
+- Price basis: [Anthropic's Claude Platform pricing](https://platform.claude.com/docs/en/about-claude/pricing) for Opus 4.5 — $5/MTok input, $25/MTok output, $6.25/MTok five-minute cache write, and $0.50/MTok cache read.
+
+### 7.2 `ocr` result
+
+Command: `ocr review --commit 0b6ad100 --format json --audience agent`. Version: v1.9.10. Terminal state: `complete`. Wall clock: **85.92 seconds** (the run manifest reports 84.83 seconds of reviewer execution).
+
+| Metric | Measured value |
+|---|---:|
+| Files selected / completed | 2 / 2 |
+| Findings | 2 |
+| Input tokens | 380,400 total: 68 uncached, 71,557 cache-write, 308,775 cache-read |
+| Output tokens | 7,412 |
+| Endpoint cost | **$0.79/review**: $0.0003 uncached input + $0.4472 cache write + $0.1544 cache read + $0.1853 output |
+
+The two line-anchored findings were:
+
+1. `.claude/scripts/tests/active-work-cap.test.sh:85-90` — make the fake `gh` error message more explicit about the state patterns it expects.
+2. `.claude/scripts/active-work-cap.sh:1241-1243` — exclude pipeline-owned issues from `REG_NUMS` before building `offered_issue_nums`.
+
+Quality classification after checking the reviewed head:
+
+| Finding | Hosted overlap | Classification |
+|---|---|---|
+| Fake-client error text | None | Non-actionable maintainability suggestion; the existing message already identifies the expected `open`/`merged` values and includes the received arguments. |
+| Pipeline-owned `offered_issue_nums` | **Direct overlap with CodeAnt's minor logic-error finding on the same head** | Confirmed true positive. It identifies the same diagnostic leak and proposes the same set subtraction. CodeRabbit found the same defect on a later head after the first registry fix. |
+
+**Result:** 1 confirmed true positive/hosted overlap, 0 unique true positives, and 1 unique non-actionable finding. `ocr` produced correctly structured line anchors and a real quality signal on supported files. Its Markdown exclusion remains independently disqualifying for this repository, and its measured cost is positive marginal spend versus the retained incumbent seats.
+
+### 7.3 PR-Agent result
+
+Command: `python3 -m pr_agent.cli --stdin review` with the same unified PR #1295 head diff. Version: v0.43.0. Terminal state: successful. Wall clock: **14.35 seconds**; the run details report **9.2 seconds** of model time.
+
+| Metric | Measured value |
+|---|---:|
+| Diff tokens reported before the call | 12,933 |
+| Billed input tokens | 15,650 |
+| Billed output tokens | 362 |
+| AI calls | 1 |
+| Findings | 2 summary-level focus areas |
+| Endpoint cost | **$0.09/review**: $0.0783 input + $0.0091 output |
+
+This run corrects a material claim in the original survey: PR-Agent **does** have a local diff mode, and `--stdin` needs no GitHub token. The measured `review` command did not emit file/line anchors, however. Its two focus areas were:
+
+1. "Duplicated Logic" — suggested extracting the shared filtering in `count_live_chips()` and `count_live_chips_numbers()` to prevent future drift.
+2. "Extra API Call" — suggested refactoring the explicitly accepted extra `open_among` call out of JSON diagnostic mode.
+
+| Finding | Hosted overlap | Classification |
+|---|---|---|
+| Duplicated filtering | None | Non-actionable refactor suggestion; it identifies future drift risk but no current defect. |
+| Extra diagnostic API call | None | Non-actionable. The code explicitly documents and accepts this diagnostic-only tradeoff. |
+
+**Result:** 0 confirmed true positives, 0 confirmed overlaps, 2 unique non-actionable findings, and no line anchors. The capability contradiction is called out explicitly: the CUT verdict can no longer rest on "no local diff mode"; it rests on the measured output quality and lack of line-level local findings.
+
+### 7.4 Hosted-reviewer comparison
+
+On the exact `0b6ad100` head, CodeRabbit found 2 major defects and CodeAnt found 1 major plus 2 minor defects. `ocr` reproduced CodeAnt's minor `offered_issue_nums` diagnostic leak with the same file/range and remedy; it did not find the other 4 hosted defects. PR-Agent did not reproduce a hosted defect. Because both self-hosted runs completed against the same revision, the zeroes below are comparable absence results rather than cross-revision inferences.
+
+| Tool | Confirmed overlap | Unique true positives | False-positive / non-actionable findings | Line anchors in measured local output |
+|---|---:|---:|---:|---|
+| `ocr` v1.9.10 | 1 | 0 | 1 | Yes |
+| PR-Agent v0.43.0 | 0 | 0 | 2 | No |
+
+### 7.5 Raw output capture
+
+The model-produced payloads below are reproduced verbatim apart from ANSI log coloring and the surrounding JSON/HTML presentation envelope. No credential value appears in them.
+
+```text
+ocr: Review complete: 2 finding(s) across 2 selected item(s).
+
+[.claude/scripts/tests/active-work-cap.test.sh:85-90, low, maintainability]
+The pattern matching relies on the state value (`open` or `merged`) being surrounded by spaces in the ARGS string. While this works correctly with the current implementation because `gh pr list --state open --author` generates ` open ` in the ARGS string, the catch-all error case doesn't provide specific guidance about what patterns it expects. Consider adding the expected patterns in the error message for debugging purposes.
+
+[.claude/scripts/active-work-cap.sh:1241-1243, low, maintainability]
+The `offered_issue_nums` JSON field includes `REG_NUMS` (all registry issue numbers) but `REG_NUMS` is never reduced to exclude pipeline-overlapping issues, even though `REG_CHIP_COUNT` is reduced. This creates a potential inconsistency: the field documentation says it shows "issue numbers that make up the offered-work term" to explain FREE=0, but it may include issues that are counted via `inline_pipelines` rather than `live_chips`. Consider filtering out pipeline issues from `REG_NUMS` when computing `OFFERED_ISSUE_NUMS_JSON` for strict consistency.
+```
+
+```text
+PR-Agent: Recommended focus areas for review
+
+Duplicated Logic
+`count_live_chips_numbers()` duplicates the pipeline-exclusion and registry-exclusion logic from `count_live_chips()`. If the filtering logic changes in one function, the other must be updated in lockstep or they will diverge, causing inconsistent counts between the numeric output and the issue-number list. Consider extracting the shared filtering into a helper function.
+
+Extra API Call
+In `--json` mode, `count_live_chips_numbers()` is called after `count_live_chips()` has already run. The comment acknowledges this makes "one extra open_among GraphQL call" but dismisses it as acceptable. For repos with many issues, this doubles the GraphQL cost in diagnostic mode. Consider refactoring `count_live_chips()` to return both the count and the surviving issue numbers in a single pass.
+
+Model: anthropic/claude-opus-4-5-20251101
+Tokens: 15,650 in / 362 out / 16,012 total
+Time cost: 9.2s
+AI calls: 1
+```
+
+### 7.6 Completed follow-up checklist
+
+- [x] Point a self-hosted candidate at the Anthropic endpoint and confirm line-level findings on a real repository diff — `ocr` completed with two line-anchored findings on two shell files.
+- [x] Run the shortlist against a PR with existing CodeRabbit/CodeAnt findings and record overlap, unique findings, and false positives — both tools completed against the exact reviewed PR #1295 head; `ocr` reproduced 1 CodeAnt finding and PR-Agent reproduced none.
+- [x] Measure wall-clock and token cost per review — `ocr`: 85.92 seconds and $0.79; PR-Agent: 14.35 seconds and $0.09, both against Claude Opus 4.5.
