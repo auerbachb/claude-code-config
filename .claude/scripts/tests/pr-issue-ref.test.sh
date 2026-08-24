@@ -98,7 +98,12 @@ case "\$args" in
     ;;
   "repo view "*)
     # Tests 13/14 set GITHUB_REPOSITORY directly; this branch is unreachable for them.
-    # Fail here so tests without GITHUB_REPOSITORY use the unfiltered fallback (original behavior).
+    # Failing here is what lets a test reach the unfiltered fallback -- but ONLY when
+    # GITHUB_REPOSITORY is also empty. Every test that depends on a particular repo
+    # context must set GITHUB_REPOSITORY explicitly (to a value, or to "" for the
+    # fallback): GitHub Actions always sets it, so a test that merely omits it reads
+    # the ambient repo in CI and silently exercises a different branch than it does
+    # locally. That leak is what made Tests 8 and 9 pass locally and fail in CI.
     exit 1
     ;;
   *)
@@ -164,15 +169,20 @@ LINE_COUNT="$(printf '%s\n' "$OUT" | grep -c . || true)"
 # ---------------------------------------------------------------------------
 # Test 8: --all mode — cross-repo owner/repo#N form detected separately
 # PR 103 has only "Closes auerbachb/inventory#55" (no bare #N)
+# GITHUB_REPOSITORY="" pins the unfiltered-fallback branch (current repo unknown),
+# where a qualified ref to any repo is included. Leaving it unset would inherit the
+# ambient value in CI and exercise the filter instead. Test 14 covers the filtered
+# same-repo case; Test 13 covers the filtered different-repo case.
 # ---------------------------------------------------------------------------
-OUT="$(bash "$SCRIPT" --all 103 2>/dev/null)"
+OUT="$(GITHUB_REPOSITORY="" bash "$SCRIPT" --all 103 2>/dev/null)"
 check_eq "Test8: --all matches owner/repo#N form and extracts number" "55" "$OUT"
 
 # ---------------------------------------------------------------------------
 # Test 9: --all mode — both bare #N and owner/repo#N
 # PR 104 has "Closes #30" and "Fixes auerbachb/inventory#40"
+# GITHUB_REPOSITORY="" pins the unfiltered-fallback branch, same reason as Test 8.
 # ---------------------------------------------------------------------------
-OUT="$(bash "$SCRIPT" --all 104 2>/dev/null)"
+OUT="$(GITHUB_REPOSITORY="" bash "$SCRIPT" --all 104 2>/dev/null)"
 check_line_present "Test9a: --all includes bare #30" "30" "$OUT"
 check_line_present "Test9b: --all includes cross-repo #40" "40" "$OUT"
 LINE_COUNT="$(printf '%s\n' "$OUT" | grep -c . || true)"
