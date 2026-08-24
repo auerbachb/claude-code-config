@@ -226,6 +226,44 @@ Tracking issue: #77
 BODY
 echo "OPEN" > "$TMP/issue_state/77.txt"
 
+# PR 1014 — REGRESSION: earlier exemption section is self-referential, later one is CLEAN.
+# The later clean section reset HAS_UNCHECKED_EXEMPT to 0, so Stage 2 was skipped entirely
+# and the self-referential section 1 was never validated -- the gate passed (fail-open).
+# Section 1 tracks #99, which this PR also closes, so it must fail with exit 6.
+cat > "$TMP/pr_body/1014.txt" <<'BODY'
+Closes #99
+
+## Acceptance Criteria
+- [x] feature implemented
+
+## Post-merge verification
+- [ ] deferred item (section 1)
+Tracking issue: #99
+
+## Other section
+
+## Post-merge verification
+- [x] already done (section 2 — no unchecked boxes)
+Tracking issue: #60
+BODY
+
+# PR 1015 — REGRESSION: same shape, but section 1 names a CLOSED issue (#50).
+# Must fail with exit 7 rather than being laundered by the clean section 2.
+cat > "$TMP/pr_body/1015.txt" <<'BODY'
+## Acceptance Criteria
+- [x] feature implemented
+
+## Post-merge verification
+- [ ] deferred item (section 1)
+Tracking issue: #50
+
+## Other section
+
+## Post-merge verification
+- [x] already done (section 2 — no unchecked boxes)
+Tracking issue: #60
+BODY
+
 # ---------------------------------------------------------------------------
 # gh stub — serves PR bodies and issue states.
 # Handles all three call patterns:
@@ -358,6 +396,24 @@ else
   fail "Regression check: PR 1011 should fail but gate returned exit 0"
 fi
 
+# PR 1014 multi-section self-referential: the real gate must fail (was fail-open)
+RC=0
+bash "$SCRIPT" 1014 2>/dev/null || RC=$?
+if [[ "$RC" -ne 0 ]]; then
+  pass "Regression check: PR 1014 (section 1 self-referential, section 2 clean) correctly fails (exit $RC)"
+else
+  fail "Regression check: PR 1014 should fail but gate returned exit 0 (earlier section discarded)"
+fi
+
+# PR 1015 multi-section closed tracking issue: the real gate must fail (was fail-open)
+RC=0
+bash "$SCRIPT" 1015 2>/dev/null || RC=$?
+if [[ "$RC" -ne 0 ]]; then
+  pass "Regression check: PR 1015 (section 1 closed issue, section 2 clean) correctly fails (exit $RC)"
+else
+  fail "Regression check: PR 1015 should fail but gate returned exit 0 (earlier section discarded)"
+fi
+
 echo "--- End regression verification ---"
 echo ""
 
@@ -466,6 +522,24 @@ RC=0
 MSG="$(bash "$SCRIPT" 2001 2>&1 >/dev/null)" || RC=$?
 check_exit "Test11: owner/repo#N closing form detected as self-referential (exit 6)" 6 "$RC"
 check_msg  "Test11: message names the PR #588 pattern" "PR #588" "$MSG"
+
+# ---------------------------------------------------------------------------
+# Test 11b: REGRESSION — every exemption section is validated, not just the last.
+# PR 1014: section 1 self-referential (#99, also closed by this PR), section 2 clean.
+# ---------------------------------------------------------------------------
+RC=0
+MSG="$(bash "$SCRIPT" 1014 2>&1 >/dev/null)" || RC=$?
+check_exit "Test11b: earlier self-referential section still fails (exit 6)" 6 "$RC"
+check_msg  "Test11b: message names the offending tracking issue" "#99" "$MSG"
+
+# ---------------------------------------------------------------------------
+# Test 11c: REGRESSION — same, with a CLOSED tracking issue in the earlier section.
+# PR 1015: section 1 tracks closed #50, section 2 clean.
+# ---------------------------------------------------------------------------
+RC=0
+MSG="$(bash "$SCRIPT" 1015 2>&1 >/dev/null)" || RC=$?
+check_exit "Test11c: earlier section with CLOSED tracking issue still fails (exit 7)" 7 "$RC"
+check_msg  "Test11c: message names the closed tracking issue" "#50" "$MSG"
 
 # ---------------------------------------------------------------------------
 # Test 12: REGRESSION — PR #588 exact self-referential pattern → exit 6

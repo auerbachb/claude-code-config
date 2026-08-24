@@ -166,20 +166,29 @@ fi
 #   HAS_UNCHECKED_INSCOPE  1 if any unchecked box in ac, testplan, or malformed_postmerge
 #   HAS_UNCHECKED_EXEMPT   1 if any unchecked box in the current postmerge section
 #   TRACKING_ISSUE         issue number from "Tracking issue: #N" inside postmerge
+#   PENDING_SECTIONS       one line per exemption section that had unchecked boxes:
+#                          its tracking issue number, or "-" if it had none. EVERY
+#                          such section is validated in Stage 2 -- validating only
+#                          the last section's variables let an earlier bad section
+#                          be discarded when a later one began (fail-open).
 
 STATE="other"
 HAS_UNCHECKED_INSCOPE=0
 HAS_UNCHECKED_EXEMPT=0
 TRACKING_ISSUE=""
+PENDING_SECTIONS=""
 
-# Validates a completed postmerge section. Exits 5 immediately if the section
-# had unchecked boxes but no tracking issue. Called before any state transition
-# away from "postmerge" so each section is validated when it ends.
+# Records a completed postmerge section that carried unchecked boxes, so Stage 2
+# can validate it. Called before any state transition away from "postmerge", and
+# once more at EOF, so every section is captured -- not just the last one.
+#
+# Recording rather than validating in place is deliberate: Stage 1 (unchecked
+# boxes outside the exemption, exit 1) must keep taking precedence over the
+# exemption failures, and it cannot be decided until the whole body is parsed.
 _commit_postmerge() {
-  if [[ "$STATE" == "postmerge" && "$HAS_UNCHECKED_EXEMPT" -eq 1 && -z "$TRACKING_ISSUE" ]]; then
-    echo "AC gate: FAIL — PR #$PR_NUM has unchecked box(es) under '## Post-merge verification' but no 'Tracking issue: #N' line inside the section." >&2
-    echo "Fix: add a line 'Tracking issue: #N' (where N is an open issue) inside the section, or check off all items." >&2
-    exit 5
+  if [[ "$STATE" == "postmerge" && "$HAS_UNCHECKED_EXEMPT" -eq 1 ]]; then
+    PENDING_SECTIONS="${PENDING_SECTIONS}${TRACKING_ISSUE:--}
+"
   fi
 }
 
@@ -258,51 +267,64 @@ if [[ "$HAS_UNCHECKED_INSCOPE" -eq 1 ]]; then
 fi
 
 # --- Stage 2: unchecked boxes in exemption section ---
-if [[ "$HAS_UNCHECKED_EXEMPT" -eq 1 ]]; then
+# Validate EVERY exemption section that carried unchecked boxes, not only the
+# last one. A body may hold several "## Post-merge verification" sections; if an
+# earlier one is self-referential or names a closed issue, a later clean section
+# must not launder it.
+if [[ -n "$PENDING_SECTIONS" ]]; then
 
-  # Check 1: Tracking issue line must exist inside the section
-  if [[ -z "$TRACKING_ISSUE" ]]; then
-    echo "AC gate: FAIL — PR #$PR_NUM has unchecked box(es) under '## Post-merge verification' but no 'Tracking issue: #N' line inside the section." >&2
-    echo "Fix: add a line 'Tracking issue: #N' (where N is an open issue) inside the section, or check off all items." >&2
-    exit 5
-  fi
+  # Closing refs are the same for every section, so look them up at most once.
+  CLOSED_REFS=""
+  CLOSED_REFS_LOADED=0
 
-  # Check 2: Tracking issue must NOT be one this PR closes (PR #588 pattern)
-  CLOSED_BY_THIS_PR=0
-  PR_ISSUE_RC=0
-  CLOSED_REFS="$(bash "$PR_ISSUE_REF_SH" --all "$PR_NUM")" || PR_ISSUE_RC=$?
-  # pr-issue-ref.sh exits 1 when no closing refs found (normal); 2+ is a genuine error
-  if [[ "$PR_ISSUE_RC" -gt 1 ]]; then
-    echo "AC gate: FAIL — could not look up closing refs via pr-issue-ref.sh (exit $PR_ISSUE_RC)." >&2
-    exit 4
-  fi
-  if [[ -n "$CLOSED_REFS" ]] && printf '%s\n' "$CLOSED_REFS" | grep -qxF -- "$TRACKING_ISSUE"; then
-    CLOSED_BY_THIS_PR=1
-  fi
+  while IFS= read -r SECTION_TRACKING; do
+    [[ -z "$SECTION_TRACKING" ]] && continue
 
-  if [[ "$CLOSED_BY_THIS_PR" -eq 1 ]]; then
-    echo "AC gate: FAIL — PR #$PR_NUM tracking issue #$TRACKING_ISSUE is an issue this PR closes." >&2
-    echo "This is the PR #588 pattern: when this PR merges, issue #$TRACKING_ISSUE closes automatically" >&2
-    echo "and the deferred work is sealed inside a closed issue." >&2
-    echo "Fix: use a separate open tracking issue that this PR does not close." >&2
-    exit 6
-  fi
+    # Check 1: Tracking issue line must exist inside the section.
+    # "-" is the recorded sentinel for a section that had none.
+    if [[ "$SECTION_TRACKING" == "-" ]]; then
+      echo "AC gate: FAIL — PR #$PR_NUM has unchecked box(es) under '## Post-merge verification' but no 'Tracking issue: #N' line inside the section." >&2
+      echo "Fix: add a line 'Tracking issue: #N' (where N is an open issue) inside the section, or check off all items." >&2
+      exit 5
+    fi
 
-  # Check 3: Tracking issue must be OPEN
-  ISSUE_STATE=""
-  if ! ISSUE_STATE="$(gh issue view "$TRACKING_ISSUE" --json state --jq '.state' 2>"$GH_ISSUE_STDERR")"; then
-    sed 's/^/gh: /' "$GH_ISSUE_STDERR" >&2
-    echo "AC gate: FAIL — could not look up state of tracking issue #$TRACKING_ISSUE." >&2
-    echo "Fix: verify the tracking issue exists and is accessible, then re-run the gate." >&2
-    exit 4
-  fi
+    # Check 2: Tracking issue must NOT be one this PR closes (PR #588 pattern)
+    if [[ "$CLOSED_REFS_LOADED" -eq 0 ]]; then
+      PR_ISSUE_RC=0
+      CLOSED_REFS="$(bash "$PR_ISSUE_REF_SH" --all "$PR_NUM")" || PR_ISSUE_RC=$?
+      # pr-issue-ref.sh exits 1 when no closing refs found (normal); 2+ is a genuine error
+      if [[ "$PR_ISSUE_RC" -gt 1 ]]; then
+        echo "AC gate: FAIL — could not look up closing refs via pr-issue-ref.sh (exit $PR_ISSUE_RC)." >&2
+        exit 4
+      fi
+      CLOSED_REFS_LOADED=1
+    fi
 
-  if [[ "$ISSUE_STATE" == "CLOSED" ]]; then
-    echo "AC gate: FAIL — PR #$PR_NUM tracking issue #$TRACKING_ISSUE is CLOSED." >&2
-    echo "Fix: reopen issue #$TRACKING_ISSUE or use a different open tracking issue." >&2
-    exit 7
-  fi
+    if [[ -n "$CLOSED_REFS" ]] && printf '%s\n' "$CLOSED_REFS" | grep -qxF -- "$SECTION_TRACKING"; then
+      echo "AC gate: FAIL — PR #$PR_NUM tracking issue #$SECTION_TRACKING is an issue this PR closes." >&2
+      echo "This is the PR #588 pattern: when this PR merges, issue #$SECTION_TRACKING closes automatically" >&2
+      echo "and the deferred work is sealed inside a closed issue." >&2
+      echo "Fix: use a separate open tracking issue that this PR does not close." >&2
+      exit 6
+    fi
+
+    # Check 3: Tracking issue must be OPEN
+    ISSUE_STATE=""
+    if ! ISSUE_STATE="$(gh issue view "$SECTION_TRACKING" --json state --jq '.state' 2>"$GH_ISSUE_STDERR")"; then
+      sed 's/^/gh: /' "$GH_ISSUE_STDERR" >&2
+      echo "AC gate: FAIL — could not look up state of tracking issue #$SECTION_TRACKING." >&2
+      echo "Fix: verify the tracking issue exists and is accessible, then re-run the gate." >&2
+      exit 4
+    fi
+
+    if [[ "$ISSUE_STATE" == "CLOSED" ]]; then
+      echo "AC gate: FAIL — PR #$PR_NUM tracking issue #$SECTION_TRACKING is CLOSED." >&2
+      echo "Fix: reopen issue #$SECTION_TRACKING or use a different open tracking issue." >&2
+      exit 7
+    fi
+  done <<< "$PENDING_SECTIONS"
 fi
+
 
 echo "AC gate: PASS"
 exit 0
