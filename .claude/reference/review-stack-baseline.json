@@ -1,11 +1,11 @@
 {
   "schema": "review-stack-baseline/v1",
   "source": {
-    "issue": 1199,
-    "record": ".claude/reference/ai-review-chain-roles-decision.md",
-    "as_of": "2026-08-22",
+    "issue": 1287,
+    "record": ".claude/reference/self-hosted-reviewer-decision.md",
+    "as_of": "2026-08-23",
     "provenance": "decision-record",
-    "note": "#1199's decision record (`ai-review-chain-roles-decision.md`, merged as PR #1203) supplies the original roles, superseding the 2026-06 seeded values below; #1232 (2026-08-22, PR #1271) supplies the Graphite override (promoted from advisory to fallback). The current degraded-stack caps (CodeRabbit's burst limit, BugBot's spend exhaustion, Greptile's flex overage) are intentionally left out of `expected_caps` so the first post-swap audit run reports them as genuine drift rather than suppressing it."
+    "note": "#1287's decision record (`self-hosted-reviewer-decision.md`, Issue #1287) surveyed self-hosted CLI candidates and confirmed no change to the review chain: both `ocr` and PR-Agent are CUT for this repo. Two `tools[]` entries were added for the surveyed candidates (`ocr`, `pr-agent`), each with `role: off`. The five active entries (coderabbit, codeant, bugbot, greptile, graphite) and one pre-existing off entry (vercel) are unchanged from #1199/#1232. This `source` field is updated to point at the most recent decision record per the pattern established by #1232. The previous source was #1199 (`ai-review-chain-roles-decision.md`, 2026-08-22)."
   },
   "tools": [
     {
@@ -63,6 +63,24 @@
       "approves_via": "none",
       "expected_caps": [],
       "notes": "Zero activity under any login in the 2026-06 window. This repo is agent configuration, not a Vercel app. Kept disabled / Vercel-only. The #1199 decision record does not cover Vercel, so this entry is unchanged by the swap."
+    },
+    {
+      "key": "ocr",
+      "role": "off",
+      "billed": "self-hosted",
+      "gates_merge": false,
+      "approves_via": "none",
+      "expected_caps": [],
+      "notes": "alibaba/open-code-review v1.9.10, Apache-2.0. Evaluated 2026-08-23 (#1287): CUT. Excludes .md files (unsupported_ext) — `ocr delegate preview` on PR #1292's exact commit identified 0 of 2 files as reviewable; no LLM call was made and no findings were possible. This repo's diff profile is predominantly .md; the tool cannot produce findings in practice. No API key available to test code-file coverage on non-.md files. Prior CUT verdict from #793/PR#822 confirmed. Promotion bar (all three required): (1) ≥10% of PRs in the 30-day window contain non-.md files; (2) a session with ANTHROPIC_API_KEY can run ocr review on 3+ real diffs with non-.md content; (3) at least one ocr finding overlaps with a CodeRabbit or CodeAnt finding in the same PR. Does not post APPROVED review objects; cannot satisfy the merge gate. Self-hosted CLIs do not appear in bot snapshots — expected and correct."
+    },
+    {
+      "key": "pr-agent",
+      "role": "off",
+      "billed": "self-hosted",
+      "gates_merge": false,
+      "approves_via": "none",
+      "expected_caps": [],
+      "notes": "Qodo PR-Agent v0.43.0, Apache-2.0, pip install pr-agent. Evaluated 2026-08-23 (#1287): CUT. No local diff mode — requires a GitHub PR URL, GitHub API token, and LLM key. Does not fit the local pre-push slot (runs before a PR exists). Could post inline GitHub comments if deployed as a self-hosted GitHub App, but that is out of scope for this survey. Does not post APPROVED review objects; cannot satisfy the merge gate on its own."
     }
   ]
 }
