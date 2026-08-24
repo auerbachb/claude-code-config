@@ -31,7 +31,9 @@ fail() { FAIL=$((FAIL + 1)); echo "FAIL — $1"; }
 # Comment lines are stripped first: prose that merely NAMES a helper (including
 # the comment above) is not a call, and scanning it produced a false positive.
 _undefined_helpers="$(comm -23 \
-  <(grep -v '^[[:space:]]*#' "$0" | grep -ohE '\b(check|assert)_[a-z_]+' | sort -u) \
+  <(grep -v '^[[:space:]]*#' "$0" \
+      | grep -ohE '(^|[^a-zA-Z0-9_])(check|assert)_[a-z_]+' \
+      | grep -ohE '(check|assert)_[a-z_]+' | sort -u) \
   <(grep -oE '^[a-z_]+\(\)' "$0" | tr -d '()' | sort -u))"
 if [[ -n "$_undefined_helpers" ]]; then
   echo "FAIL — assertion helper(s) called but never defined in $0:" >&2
@@ -560,9 +562,13 @@ check_msg  "Test10a: message references unchecked box" "unchecked" "$MSG"
 # ---------------------------------------------------------------------------
 # Test 11: owner/repo#N closing form — self-referential check via --all
 # PR 2001 body: Closes auerbachb/claude-code-config#99, tracks #99 → exit 6
+# GITHUB_REPOSITORY is pinned so this exercises same-repository matching rather
+# than whatever the runner happens to export. Left ambient, a fork, a renamed
+# repo, or a different checkout context would classify the qualified ref as
+# cross-repo and quietly test the opposite path.
 # ---------------------------------------------------------------------------
 RC=0
-MSG="$(bash "$SCRIPT" 2001 2>&1 >/dev/null)" || RC=$?
+MSG="$(GITHUB_REPOSITORY=auerbachb/claude-code-config bash "$SCRIPT" 2001 2>&1 >/dev/null)" || RC=$?
 check_exit "Test11: owner/repo#N closing form detected as self-referential (exit 6)" 6 "$RC"
 check_msg  "Test11: message names the PR #588 pattern" "PR #588" "$MSG"
 

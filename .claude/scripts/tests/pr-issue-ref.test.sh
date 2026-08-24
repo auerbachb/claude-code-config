@@ -29,7 +29,9 @@ fail() { FAIL=$((FAIL + 1)); echo "FAIL — $1"; }
 # Comment lines are stripped first: prose that merely NAMES a helper (including
 # the comment above) is not a call, and scanning it produced a false positive.
 _undefined_helpers="$(comm -23 \
-  <(grep -v '^[[:space:]]*#' "$0" | grep -ohE '\b(check|assert)_[a-z_]+' | sort -u) \
+  <(grep -v '^[[:space:]]*#' "$0" \
+      | grep -ohE '(^|[^a-zA-Z0-9_])(check|assert)_[a-z_]+' \
+      | grep -ohE '(check|assert)_[a-z_]+' | sort -u) \
   <(grep -oE '^[a-z_]+\(\)' "$0" | tr -d '()' | sort -u))"
 if [[ -n "$_undefined_helpers" ]]; then
   echo "FAIL — assertion helper(s) called but never defined in $0:" >&2
