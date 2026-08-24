@@ -26,8 +26,7 @@ resolve_script() {
   local name="$1" candidate
   for candidate in \
     "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
-    ".claude/scripts/$name"; do
+    "$HOME/.claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
   return 1
@@ -41,20 +40,24 @@ TASK_REGISTRY_SH=$(resolve_script background-task-registry.sh) || TASK_REGISTRY_
 # test for readability rather than the executable bit.
 for candidate in \
   "$HOME/.claude/skills-worktree/.claude/reference/session-state-collector.md" \
-  "$HOME/.claude/reference/session-state-collector.md" \
-  ".claude/reference/session-state-collector.md"; do
+  "$HOME/.claude/reference/session-state-collector.md"; do
   [[ -r "$candidate" ]] && { COLLECTOR_DOC="$candidate"; break; }
 done
 COLLECTOR_DOC="${COLLECTOR_DOC:-}"
 
 for candidate in \
   "$HOME/.claude/skills-worktree/.claude/reference/background-task-shutdown.md" \
-  "$HOME/.claude/reference/background-task-shutdown.md" \
-  ".claude/reference/background-task-shutdown.md"; do
+  "$HOME/.claude/reference/background-task-shutdown.md"; do
   [[ -r "$candidate" ]] && { SHUTDOWN_DOC="$candidate"; break; }
 done
 SHUTDOWN_DOC="${SHUTDOWN_DOC:-}"
 ```
+
+Do not add a cwd-relative fallback to either resolver. `/stop` is designed to
+run while the current checkout may be unrelated or untrusted; executing its
+`.claude/scripts` files (or following its instruction documents) would cross a
+trust boundary. If neither installed location resolves, degrade explicitly as
+described below.
 
 Parse the first `--window` value exactly as `/pause` does. Accept a
 non-negative integer with an optional trailing `m`, default to `5`, reject a

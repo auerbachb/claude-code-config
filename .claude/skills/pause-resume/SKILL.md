@@ -23,8 +23,7 @@ resolve_script() {
   local name="$1" candidate
   for candidate in \
     "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
-    ".claude/scripts/$name"; do
+    "$HOME/.claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
   return 1
@@ -33,6 +32,10 @@ SESSION_STATE_SH=$(resolve_script session-state.sh) || SESSION_STATE_SH=""
 EXECUTION_PAUSE_SH=$(resolve_script execution-pause.sh) || EXECUTION_PAUSE_SH=""
 TASK_REGISTRY_SH=$(resolve_script background-task-registry.sh) || TASK_REGISTRY_SH=""
 ```
+
+The current checkout is intentionally not a fallback: this resume command may
+run from an unrelated or untrusted repository, and must execute only installed
+helpers.
 
 An unresolved `session-state.sh` in this skill is fatal for the state-read path but recoverable: fall back to the marker file in Step 1. Say which path is being used so the user knows.
 

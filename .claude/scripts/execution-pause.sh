@@ -48,6 +48,10 @@ done
 [[ -n "$MODE" ]] || die "no mode supplied"
 [[ -n "$SESSION_ID" ]] || die "--session is required"
 [[ -x "$SESSION_STATE_SH" ]] || { echo "execution-pause.sh: session-state.sh unavailable" >&2; exit 5; }
+if [[ "$MODE" == activate ]]; then
+  case "$COMMAND_NAME" in stop|pause) ;; *) die "--activate requires --command stop|pause" ;; esac
+  [[ "$WINDOW" =~ ^[0-9]+$ ]] || die "--activate requires non-negative --window-minutes"
+fi
 
 session_state() {
   if [[ -n "$REPO_OPT" ]]; then
@@ -82,11 +86,10 @@ PATH_EXPR=".repos[\"$REPO_KEY\"].execution_pauses[\"$SESSION_ID\"]"
 # shellcheck source=state-lock.sh
 source "$LOCK_LIB"
 state_lock_acquire "$STATE_FILE" || exit $?
+trap 'state_lock_release' EXIT
 
 case "$MODE" in
   activate)
-    case "$COMMAND_NAME" in stop|pause) ;; *) die "--activate requires --command stop|pause" ;; esac
-    [[ "$WINDOW" =~ ^[0-9]+$ ]] || die "--activate requires non-negative --window-minutes"
     NOW="$(date -u +%FT%TZ)"
     DEADLINE_EPOCH=$(( $(date -u +%s) + WINDOW * 60 ))
     VALUE="$(jq -nc --arg command "$COMMAND_NAME" --arg session "$SESSION_ID" --arg at "$NOW" \

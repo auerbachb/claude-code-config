@@ -31,8 +31,7 @@ resolve_script() {
   local name="$1" candidate
   for candidate in \
     "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-    "$HOME/.claude/scripts/$name" \
-    ".claude/scripts/$name"; do
+    "$HOME/.claude/scripts/$name"; do
     if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
   done
   return 1
@@ -62,8 +61,11 @@ if [[ -z "$REPO_KEY" ]]; then
 fi
 ```
 
-Resolve `.claude/reference/background-task-shutdown.md` by the same
-skills-worktree, home, then local precedence and read it in full before Step 1.
+Resolve `background-task-shutdown.md` from the skills-worktree, then the home
+install location, and read it in full before Step 1. Never fall back to the
+current checkout for scripts or instruction documents: `/pause` can be invoked
+from an unrelated or untrusted repository, whose executable bit is not a trust
+signal.
 
 An unresolved `session-state.sh` is degraded-but-continue — say so when reporting and carry on, because the marker still gets written. An unresolved `merge-gate.sh` means the landing phase cannot classify PRs reliably; skip landing for all PRs and park them, naming the missing helper in each parked entry's `waiting_on` field.
 

@@ -71,6 +71,12 @@ Copy these verbatim. `resolve_script()` is already in use in `/wrap`, `/fixpr`,
 skills-worktree (canonical, pinned to `main`), then `$HOME/.claude/scripts/`
 (documented install location), then repo-relative (developing the skill itself).
 
+**Shutdown exception:** `/stop`, `/stop-resume`, `/pause`, and `/pause-resume`
+are explicitly callable while cwd is an unrelated checkout. Their resolvers
+omit the repo-relative candidate for both scripts and instruction documents;
+an executable bit in an untrusted checkout is not authority to execute code.
+They fail/degrade explicitly when neither installed candidate exists.
+
 ```bash
 resolve_script() {
   local name="$1" candidate

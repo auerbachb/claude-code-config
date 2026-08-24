@@ -16,7 +16,9 @@ reopens the session-scoped launch gate; unrelated messages and timers do not.
 
 Resolve `execution-pause.sh`, `background-task-registry.sh`, and
 `session-state.sh` using the standard stop-command order: skills worktree,
-`$HOME/.claude`, then the current repository. Parse only `--resume-refill`.
+then `$HOME/.claude`. Do not execute a current-checkout fallback: this command
+may be invoked from an unrelated or untrusted repository. Parse only
+`--resume-refill`.
 
 Before clearing the gate, require all three helpers to be resolved and readable.
 Use the registry to list the current session and use `session-state.sh` to read
