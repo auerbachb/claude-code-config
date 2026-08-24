@@ -102,13 +102,13 @@ post "$(jq -nc --arg sid "$SID" --arg cwd "$CWD" \
   '{session_id:$sid,cwd:$cwd,tool_name:"Agent",tool_input:{name:"untracked"},tool_response:{agentId:"untracked-runtime"}}')"
 FAILURE_MARKER="$CLAUDE_BGWORK_MARKER_DIR/claude-background-registry-failed-$SID"
 [[ -s "$FAILURE_MARKER" ]] || fail "registry write failure left no durable marker"
-rg -q $'\tregister\tuntracked-runtime\t' "$FAILURE_MARKER" || \
+grep -Fq $'\tregister\tuntracked-runtime\t' "$FAILURE_MARKER" || \
   fail "registry failure marker omitted operation/runtime identity"
 
 printf '%s' "$(jq -nc --arg sid "$SID" --arg cwd "$CWD" \
   '{session_id:$sid,cwd:$cwd,agent_id:"agent-runtime",hook_event_name:"SubagentStop",status:"completed"}')" \
   | "$COMPLETE"
-rg -q $'\ttransition\tagent-runtime\t' "$FAILURE_MARKER" || \
+grep -Fq $'\ttransition\tagent-runtime\t' "$FAILURE_MARKER" || \
   fail "SubagentStop transition failure was swallowed"
 ok "registration and terminal-transition failures remain visible to shutdown audit"
 
@@ -116,7 +116,7 @@ FALLBACK_MARKER="$HOME/.claude/claude-background-registry-failed-$SID"
 jq -nc --arg sid "$SID" --arg cwd "$CWD" \
   '{session_id:$sid,cwd:$cwd,tool_name:"Agent",tool_input:{name:"fallback"},tool_response:{agentId:"fallback-runtime"}}' \
   | CLAUDE_BACKGROUND_TASK_FAILURE_DIR=/dev/null/no-child "$ARM" >/dev/null
-rg -q $'\tregister\tfallback-runtime\t' "$FALLBACK_MARKER" || \
+grep -Fq $'\tregister\tfallback-runtime\t' "$FALLBACK_MARKER" || \
   fail "unwritable primary marker directory did not use HOME fallback"
 ok "tracking failures fall back durably when the primary marker directory is unwritable"
 
@@ -127,7 +127,7 @@ cp "$ROOT/.claude/scripts/bgwork-ceiling.sh" "$PARTIAL_ARM_ROOT/.claude/scripts/
 jq -nc --arg sid "$SID" --arg cwd "$CWD" \
   '{session_id:$sid,cwd:$cwd,tool_name:"Agent",tool_input:{name:"missing-helper"},tool_response:{agentId:"missing-helper-runtime"}}' \
   | "$PARTIAL_ARM_ROOT/.claude/hooks/bgwork-ceiling-arm.sh" >/dev/null
-rg -q $'\tmissing_helper\tmissing-helper-runtime\t127' "$FAILURE_MARKER" || \
+grep -Fq $'\tmissing_helper\tmissing-helper-runtime\t127' "$FAILURE_MARKER" || \
   fail "missing registry helper left no audit marker"
 ok "missing registry helper is visible to shutdown audit"
 

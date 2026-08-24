@@ -10,7 +10,7 @@ PHASES="$ROOT/.claude/rules/phase-protocols.md"
 SETTINGS="$ROOT/global-settings.json"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
-has() { rg -q -- "$2" "$1" || fail "$(basename "$1") missing: $2"; }
+has() { grep -Eq -- "$2" "$1" || fail "$(basename "$1") missing: $2"; }
 
 has "$PAUSE" 'default: --window 5m'
 has "$PAUSE" 'WINDOW_MINUTES=5'
