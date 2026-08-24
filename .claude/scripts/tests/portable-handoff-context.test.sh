@@ -67,6 +67,20 @@ cat >"$STATE" <<'JSON'
           "updated_at": "2026-08-24T12:01:00Z"
         }
       ]
+    },
+    "explicit/local": {
+      "background_tasks": [
+        {
+          "task_id": "explicit-scope-task",
+          "name": "explicit local worker",
+          "type": "agent",
+          "session_id": "session-1",
+          "status": "stopped",
+          "recovery_path": "/tmp/explicit-local-worktree",
+          "started_at": "2026-08-24T12:00:00Z",
+          "updated_at": "2026-08-24T12:01:00Z"
+        }
+      ]
     }
   }
 }
@@ -113,6 +127,9 @@ check "unborn checkout keeps its initialized branch" test "$(jq -r '.working_cop
 check "unborn checkout reports no commit" test "$(jq -r '.working_copy.head' <<<"$UNBORN_DOC")" = unknown
 check "unborn checkout preserves staged tracked work" jq -e '.working_copy.tracked_changes == ["staged.txt"]' >/dev/null <<<"$UNBORN_DOC"
 check "originless checkout preserves unknown-scope tasks" jq -e '.background_tasks.items[0] | .task_id == "originless-task" and .recovery_path == "/tmp/originless-worktree"' >/dev/null <<<"$UNBORN_DOC"
+EXPLICIT_DOC=$(CLAUDE_SESSION_REPO=Explicit/Local CLAUDE_SESSION_STATE_FILE="$STATE" \
+  "$SUT" --cwd "$UNBORN" --session session-1 --no-remote)
+check "originless checkout honors the explicit session repository scope" jq -e '.background_tasks.items[0] | .task_id == "explicit-scope-task" and .recovery_path == "/tmp/explicit-local-worktree"' >/dev/null <<<"$EXPLICIT_DOC"
 
 printf 'second\n' >"$MAIN/another-untracked.txt"
 CAPPED=$(CLAUDE_HANDOFF_MAX_ITEMS=1 CLAUDE_SESSION_STATE_FILE="$STATE" "$SUT" --cwd "$MAIN" --session session-1 --no-remote)

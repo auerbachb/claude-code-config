@@ -179,6 +179,9 @@ if git -C "$WORKING_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 
   if [[ -x "$SCRIPT_DIR/background-task-registry.sh" ]]; then
     registry_repo="$repo_identity"
+    if [[ "$registry_repo" == "$unknown" && "${CLAUDE_SESSION_REPO:-}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+      registry_repo=$(printf '%s' "$CLAUDE_SESSION_REPO" | tr '[:upper:]' '[:lower:]')
+    fi
     [[ "$registry_repo" == "$unknown" ]] && registry_repo="_unknown"
     raw_tasks=$(cd "$checkout_path" && "$SCRIPT_DIR/background-task-registry.sh" \
       --repo "$registry_repo" --list --session "$SESSION_ID" 2>/dev/null) || raw_tasks=""

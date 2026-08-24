@@ -131,6 +131,23 @@ printf '%s\n' "$DOC_H" > "$TMP/t2.md"
 "$LINT" --repo-root "$FAKE" --quiet "$TMP/t2.md" >/dev/null 2>&1
 check_eq "T2 degraded tier passes the portability check" "0" "$?"
 
+BOUNDED="$TMP/bounded"
+new_repo "$BOUNDED"
+printf 'one\n' >"$BOUNDED/one.txt"
+printf 'two\n' >"$BOUNDED/two.txt"
+git -C "$BOUNDED" add one.txt two.txt
+git -C "$BOUNDED" commit -qm bounded-seed
+printf 'changed one\n' >"$BOUNDED/one.txt"
+printf 'changed two\n' >"$BOUNDED/two.txt"
+printf 'three\n' >"$BOUNDED/three.txt"
+printf 'four\n' >"$BOUNDED/four.txt"
+DOC_BOUNDED=$(cd "$BOUNDED" && CLAUDE_HANDOFF_MAX_ITEMS=1 "$CP" --stdout --no-remote --out-dir "$TMP/out-bounded" 2>/dev/null)
+check_contains "T2 bounded collector reports tracked truncation" "Tracked changes: more than 1 file(s)" "$DOC_BOUNDED"
+check_contains "T2 bounded collector reports untracked truncation" "Untracked changes: more than 1 file(s)" "$DOC_BOUNDED"
+printf '%s\n' "$DOC_BOUNDED" >"$TMP/t2-bounded.md"
+"$LINT" --repo-root "$FAKE" --quiet "$TMP/t2-bounded.md" >/dev/null 2>&1
+check_eq "T2 bounded rendering passes the portability check" "0" "$?"
+
 # Required sections and the absolute working directory, asserted directly rather
 # than trusting the lint's summary exit code.
 for section in "Start here" "What we're working on" "Open work" "Progress and verification" "Decisions made this session" "Local state on this machine" "Resume safely"; do

@@ -135,6 +135,10 @@ MIN_INTERVAL="${MIN_INTERVAL:-${CLAUDE_CHECKPOINT_MIN_INTERVAL:-600}}"
 [[ "$MIN_INTERVAL" =~ ^[0-9]+$ ]] || MIN_INTERVAL=600
 RETENTION_DAYS="${RETENTION_DAYS:-${CLAUDE_CHECKPOINT_RETENTION_DAYS:-7}}"
 [[ "$RETENTION_DAYS" =~ ^[0-9]+$ ]] && (( RETENTION_DAYS > 0 )) || RETENTION_DAYS=7
+MAX_PATHS="${CLAUDE_HANDOFF_MAX_ITEMS:-100}"
+[[ "$MAX_PATHS" =~ ^[1-9][0-9]*$ ]] || MAX_PATHS=100
+MAX_PATHS=$((10#$MAX_PATHS))
+(( MAX_PATHS <= 500 )) || MAX_PATHS=500
 
 CHECKPOINT_GLOB='portable-handoff-*-checkpoint.md'
 
@@ -170,6 +174,25 @@ digest() { # stdin -> short hex
   else
     cksum 2>/dev/null | tr -d ' ' | cut -c1-16
   fi
+}
+
+# Consume NUL-delimited Git paths without materializing an unbounded shell
+# variable. The retained prefix is shell-quoted for one-line rendering; count
+# stops at MAX_PATHS+1 because only the fact of truncation matters after that.
+collect_nul_paths() {
+  local item quoted
+  COLLECT_COUNT=0
+  COLLECT_LIST=""
+  COLLECT_TRUNCATED=0
+  while IFS= read -r -d '' item; do
+    COLLECT_COUNT=$((COLLECT_COUNT + 1))
+    if (( COLLECT_COUNT > MAX_PATHS )); then
+      COLLECT_TRUNCATED=1
+      break
+    fi
+    printf -v quoted '%q' "$item"
+    COLLECT_LIST+="${quoted}"$'\n'
+  done
 }
 
 file_mtime_epoch() {
@@ -208,11 +231,13 @@ BASE_BRANCH=""
 ROOT_REPO=""
 WORKTREE_CONDITION="not a git checkout"
 CHANGED_COUNT=0
-CHANGED_LIST=""
+CHANGED_TRUNCATED=0
 TRACKED_COUNT=0
 TRACKED_LIST=""
+TRACKED_TRUNCATED=0
 UNTRACKED_COUNT=0
 UNTRACKED_LIST=""
+UNTRACKED_TRUNCATED=0
 UNPUSHED=""
 REPO_SLUG=""
 TOPLEVEL=""
@@ -230,26 +255,24 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   else
     WORKTREE_CONDITION="git checkout; worktree condition unknown"
   fi
-  PORCELAIN=$(git status --porcelain 2>/dev/null)
-  if [[ -n "$PORCELAIN" ]]; then
-    CHANGED_COUNT=$(printf '%s\n' "$PORCELAIN" | grep -c . 2>/dev/null || true)
-    [[ "$CHANGED_COUNT" =~ ^[0-9]+$ ]] || CHANGED_COUNT=0
-    # Strip the two status columns; keep the path. Rename entries ("R  a -> b")
-    # keep both sides, which is what a reader wants to see anyway.
-    CHANGED_LIST=$(printf '%s\n' "$PORCELAIN" | sed 's/^...//' | sort)
-  fi
+  STATUS_DIGEST=$(git status --porcelain=v1 -z 2>/dev/null | digest)
+  collect_nul_paths < <(git status --porcelain=v1 -z 2>/dev/null)
+  CHANGED_COUNT=$COLLECT_COUNT
+  CHANGED_TRUNCATED=$COLLECT_TRUNCATED
   if git rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
-    TRACKED_LIST=$(git diff --name-only HEAD -- 2>/dev/null | sort)
+    collect_nul_paths < <(git diff --name-only -z HEAD -- 2>/dev/null)
   else
     # An unborn repository has no HEAD to diff against. Staged files are still
     # tracked takeover state and must not disappear from the checkpoint.
-    TRACKED_LIST=$(git diff --cached --name-only -- 2>/dev/null | sort)
+    collect_nul_paths < <(git diff --cached --name-only -z -- 2>/dev/null)
   fi
-  UNTRACKED_LIST=$(git ls-files --others --exclude-standard -- 2>/dev/null | sort)
-  [[ -n "$TRACKED_LIST" ]] && TRACKED_COUNT=$(printf '%s\n' "$TRACKED_LIST" | grep -c . 2>/dev/null || true)
-  [[ -n "$UNTRACKED_LIST" ]] && UNTRACKED_COUNT=$(printf '%s\n' "$UNTRACKED_LIST" | grep -c . 2>/dev/null || true)
-  [[ "$TRACKED_COUNT" =~ ^[0-9]+$ ]] || TRACKED_COUNT=0
-  [[ "$UNTRACKED_COUNT" =~ ^[0-9]+$ ]] || UNTRACKED_COUNT=0
+  TRACKED_COUNT=$COLLECT_COUNT
+  TRACKED_LIST=$COLLECT_LIST
+  TRACKED_TRUNCATED=$COLLECT_TRUNCATED
+  collect_nul_paths < <(git ls-files --others --exclude-standard -z -- 2>/dev/null)
+  UNTRACKED_COUNT=$COLLECT_COUNT
+  UNTRACKED_LIST=$COLLECT_LIST
+  UNTRACKED_TRUNCATED=$COLLECT_TRUNCATED
   UNPUSHED=$(git rev-list --count '@{u}..HEAD' 2>/dev/null)
   [[ "$UNPUSHED" =~ ^[0-9]+$ ]] || UNPUSHED=""
   ORIGIN=$(git remote get-url origin 2>/dev/null)
@@ -262,7 +285,7 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 [[ -n "$REPO_SLUG" ]] || REPO_SLUG=$(basename "${TOPLEVEL:-$WORKDIR}")
 
-# Fingerprint over the RAW porcelain, not the stripped path list: the two status
+# Fingerprint over a digest of the RAW porcelain, not the stripped path list: the two status
 # columns are what distinguish staged from unstaged and modified from added, so
 # stripping them first made `git add` invisible to the throttle (CodeAnt, PR
 # #944). Content edits within an already-modified file still do not move it —
@@ -270,7 +293,7 @@ fi
 # not need to, because time is the primary trigger: the next interval writes
 # regardless. The fingerprint's only job is to write MORE often than that.
 FINGERPRINT=$(printf '%s\n%s\n%s\n%s\n%s\n' \
-  "$BRANCH" "$HEAD_SHA" "$CHANGED_COUNT" "${UNPUSHED:-na}" "${PORCELAIN:-}" | digest)
+  "$BRANCH" "$HEAD_SHA" "$CHANGED_COUNT" "${UNPUSHED:-na}" "${STATUS_DIGEST:-}" | digest)
 FINGERPRINT_MARK="<!-- checkpoint-fingerprint: ${FINGERPRINT} -->"
 
 # --- Throttle -------------------------------------------------------------
@@ -520,7 +543,14 @@ render() {
   fi
 
   if (( IN_REPO )); then
-    if (( TRACKED_COUNT == 0 )); then
+    if (( TRACKED_TRUNCATED )); then
+      printf 'Tracked changes: more than %d file(s); run the command below for the complete list.\n' "$MAX_PATHS"
+      if [[ -n "$HEAD_SHA" ]]; then
+        printf 'Tracked change command: `git diff --name-only HEAD`\n'
+      else
+        printf 'Tracked change command: `git diff --cached --name-only`\n'
+      fi
+    elif (( TRACKED_COUNT == 0 )); then
       printf 'Tracked changes: none\n'
     elif (( list_files )) && (( ! minimal )); then
       printf 'Tracked changes: %d file(s) — %s\n' "$TRACKED_COUNT" "$(printf '%s' "$TRACKED_LIST" | tr '\n' ', ' | sed 's/, $//')"
@@ -531,7 +561,9 @@ render() {
         printf 'Tracked changes: %d file(s); run `git diff --cached --name-only`.\n' "$TRACKED_COUNT"
       fi
     fi
-    if (( UNTRACKED_COUNT == 0 )); then
+    if (( UNTRACKED_TRUNCATED )); then
+      printf 'Untracked changes: more than %d file(s); run `git ls-files --others --exclude-standard` for the complete list.\n' "$MAX_PATHS"
+    elif (( UNTRACKED_COUNT == 0 )); then
       printf 'Untracked changes: none\n'
     elif (( list_files )) && (( ! minimal )); then
       printf 'Untracked changes: %d file(s) — %s\n' "$UNTRACKED_COUNT" "$(printf '%s' "$UNTRACKED_LIST" | tr '\n' ', ' | sed 's/, $//')"
