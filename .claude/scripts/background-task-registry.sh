@@ -18,7 +18,9 @@
 #   background-task-registry.sh [--repo owner/name] --count [--session ID]
 #       [--status STATUS] [--live]
 #
-# `--live` includes running, stopping, stop_failed, and rearming entries. Stale entries
+# `--live` includes running, stopping, and stop_failed entries. A `rearming`
+# entry is a launch reservation, not a runtime identity; the resumed runtime
+# registers its own ID before shutdown audits treat it as stoppable. Stale entries
 # remain live (fail closed) and are annotated with `stale: true`; age never
 # silently converts a possibly-billable task into a terminal one.
 
@@ -254,7 +256,7 @@ case "$MODE" in
         [ .repos[$r].background_tasks[]?
           | select($sid == "" or .session_id == $sid)
           | select($status == "" or .status == $status)
-          | select(($live | not) or (.status == "running" or .status == "stopping" or .status == "stop_failed" or .status == "rearming"))
+          | select(($live | not) or (.status == "running" or .status == "stopping" or .status == "stop_failed"))
           | . + {stale: ((.updated_at // .started_at // "") as $t
               | if $t == "" then true
                 else ($t | fromdateiso8601? // null) as $e

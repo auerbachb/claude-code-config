@@ -61,8 +61,21 @@ re-read rather than launching. Only the successful claimant proceeds. A failed
 or incomplete recovery transitions `rearming -> stopped` with
 `--from-status rearming`; a confirmed recovery transitions `rearming ->
 rearmed`. Because the compare-and-set runs under the registry lock, concurrent
-`/stop-resume` invocations cannot both launch the same continuation. A
-`rearming` entry remains live in audits so a crashed claimant fails closed.
+`/stop-resume` invocations cannot both launch the same continuation.
+
+`rearming` is a reservation, not a stoppable runtime identity, and is excluded
+from registry `--live` results. Immediately before launching, re-check the
+execution gate; a concurrent `/stop` or `/pause` activation therefore blocks
+the new launch. A successful successor registers its own runtime ID through the
+normal launch hook before the old reservation becomes `rearmed`, so shutdown
+audits stop the successor ID rather than racing on the old stopped ID. If launch
+is blocked or fails, compare-and-set the reservation back to `stopped`.
+
+On a later resume, a `rearming` reservation older than five minutes is an
+interrupted claim. Inspect runtime tasks and the registry first: finalize it as
+`rearmed` when a successor is already registered, otherwise reset it to
+`stopped` with `--from-status rearming` and retry. Never reclaim a fresh
+reservation or infer successor liveness from the display name.
 
 ## Step 3: Resume recoverable entries
 

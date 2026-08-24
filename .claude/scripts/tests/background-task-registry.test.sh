@@ -60,8 +60,8 @@ run --transition --session claims --task-id claim-me --status rearming --from-st
 if run --transition --session claims --task-id claim-me --status rearming --from-status stopped 2>/dev/null; then
   fail "a second resume claimant acquired an already-claimed task"
 fi
-[[ "$(run --list --session claims --live | jq -r '.[0].status')" == rearming ]] || \
-  fail "rearming claim was not included in the fail-closed live audit"
+[[ "$(run --list --session claims --live | jq 'length')" == 0 ]] || \
+  fail "a rearming reservation was exposed as a stoppable runtime identity"
 run --transition --session claims --task-id claim-me --status rearmed --from-status rearming
 ok "terminal lifecycle transitions ignore stale delayed events"
 

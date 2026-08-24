@@ -61,7 +61,7 @@
           "cleared_at": null
         }
       },
-      "_background_tasks_comment": "Exact current and historical runtime identities captured by PostToolUse and updated by SubagentStop/TaskStop hooks (issue #1308). task_id is the Claude runtime ID; name is only a display label. running, stopping, stop_failed, and rearming are possibly billable and stay live even when stale. stop-resume claims work atomically with stopped -> rearming before launch, then finishes rearming -> rearmed or rolls back to stopped. Terminal history is preserved so resume is idempotent and can use output_file/recovery_path without duplicating work.",
+      "_background_tasks_comment": "Exact current and historical runtime identities captured by PostToolUse and updated by SubagentStop/TaskStop hooks (issue #1308). task_id is the Claude runtime ID; name is only a display label. running, stopping, and stop_failed are possibly billable and stay live even when stale. rearming is an atomic launch reservation, not a live runtime identity; a resumed successor registers its own runtime ID before audits treat it as stoppable. stop-resume claims work with stopped -> rearming before launch, then finishes rearming -> rearmed or rolls back to stopped. Terminal history is preserved so resume is idempotent and can use output_file/recovery_path without duplicating work.",
       "background_tasks": [
         {
           "task_id": "agent-runtime-id",
