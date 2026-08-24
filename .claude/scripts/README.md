@@ -50,6 +50,7 @@ Scripts that verify merge readiness and sequence a PR fleet to avoid conflict ro
 | `ci-status.sh` | Summarize CI check-run health for a commit or PR |
 | `check-runs-dedup.sh` | Collapse a check-run list to one verdict per check (newest check suite wins) |
 | `ac-checkboxes.sh` | Parse and update the PR body's Test plan checkboxes |
+| `ac-gate.sh` | CI gate: fail a PR with unchecked AC boxes; enforce the Post-merge verification exemption |
 | `dismiss-stale-bot-changes.sh` | Dismiss stale bot CHANGES_REQUESTED reviews on old SHAs after a push |
 
 ## Release Cadence
@@ -79,6 +80,8 @@ Scripts that read and write `~/.claude/session-state.json` and per-PR handoff fi
 | Script | Purpose |
 |--------|---------|
 | `session-state.sh` | Canonical read/write helper for `~/.claude/session-state.json` (atomic, scoped, field-typed) |
+| `background-task-registry.sh` | Locked exact-runtime-ID registry for current and historical Agent, Bash, Monitor, and Workflow tasks |
+| `execution-pause.sh` | Arm, inspect, or explicitly clear a repo/session-scoped background-launch gate |
 | `state-lock.sh` | *(library — source, do not execute)* Portable mkdir-based advisory lock for session-state writes |
 | `session-state-audit.sh` | Audit and guarded repair of `~/.claude/session-state.json` |
 | `handoff-state.sh` | Locked read/write helper for per-repo handoff files (`~/.claude/handoffs/`) |
@@ -188,6 +191,7 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | `backlog-health.test.sh` | Tests for `backlog-health.sh` |
 | `backlog-staleness.test.sh` | Tests for `backlog-staleness.sh` |
 | `bgwork-ceiling.test.sh` | Tests for `bgwork-ceiling.sh` |
+| `background-task-registry.test.sh` | Tests exact-ID registration, terminal transitions, stale fail-closed behavior, and concurrent writes |
 | `active-work-cap.test.sh` | Tests for `active-work-cap.sh` — cap resolution, the three count sources, and fail-loud read errors |
 | `check-runs-dedup.test.sh` | Tests for `check-runs-dedup.sh` |
 | `churn-hotspots.test.sh` | Tests for `churn-hotspots.sh` |
@@ -201,7 +205,9 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | `escalate-review-bugbot-classification.test.sh` | BugBot failure and response-classification tests for `escalate-review.sh` |
 | `escalate-review-gate-met.test.sh` | Approval freshness and gate short-circuit tests for `escalate-review.sh` |
 | `escalate-review-never-invited.test.sh` | Invitation, grace-window, and cache-state tests for `escalate-review.sh` |
+| `ac-gate.test.sh` | Tests for `ac-gate.sh` — all exit codes, message assertions, both real regression failures (PR #588 / PR #593) |
 | `forgotten-pr-triage.test.sh` | Tests for `forgotten-pr-triage.sh` |
+| `pr-issue-ref.test.sh` | Tests for `pr-issue-ref.sh` — default mode, `--all` mode, `owner/repo#N` form, word-boundary guards |
 | `handoff-scoping.test.sh` | Tests per-repo handoff path scoping in `handoff-state.sh` |
 | `handoff-state.test.sh` | Tests for `handoff-state.sh` |
 | `infer-pr.test.sh` | Tests for `infer-pr.sh` |

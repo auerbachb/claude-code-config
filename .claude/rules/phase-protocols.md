@@ -4,6 +4,18 @@
 > **Ask first:** Crashed/no-handoff respawns — tell the user first; exhaustion with valid handoff auto-respawns ("Always do").
 > **Never:** Skip the exit report. Launch the next phase without verifying the previous phase's outputs. Do NOT ask permission for autonomous phase transitions — including Phase C after `merge_ready`.
 
+## Launch gate before every successor
+
+Immediately before any A→A, A→B, B→B, B→C, or queued-pipeline launch,
+re-read both stop controls. If repo `refill.paused` is true, or
+`execution-pause.sh --status --session "$CLAUDE_SESSION_ID"` reports `active`,
+persist the pending transition and launch nothing. This gate overrides every
+"within 60 seconds" instruction below; only an explicit resume may reopen it.
+Launch only after both reads succeed and return explicit clear values
+(`refill.paused` false/null and execution status `inactive`). A missing helper,
+non-zero read, or any other output fails closed: persist the transition, report
+which control was unreadable, and do not launch.
+
 ## Structured Exit Report (MANDATORY — all phases)
 
 Every subagent MUST print an `EXIT_REPORT` block as its **final output** — one colon-separated field per line, no extra whitespace. Fields + valid `OUTCOME` values: `.claude/reference/exit-report-format.md`; evidence requirements: `.claude/reference/verification-evidence-patterns.md`. On exhaustion, print `OUTCOME: exhaustion` before the token limit.

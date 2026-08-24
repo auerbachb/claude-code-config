@@ -27,6 +27,7 @@ ok() { echo "ok   — $*"; }
 # either direction). Keep in step with the script's TUNING block.
 unset CLAUDE_ACTIVE_WORK_CAP
 unset CLAUDE_ACTIVE_WORK_AGENT_TTL_S
+unset CLAUDE_ACTIVE_WORK_MERGED_PR_LIMIT
 
 export CLAUDE_ACTIVE_WORK_HANDOFF_DIR="$TMP_DIR/handoffs"
 export HOME="$TMP_DIR/home"
@@ -67,7 +68,8 @@ case "$1 $2" in
     fi
     # Author scoping (#732/#733) and the closing-issue field (double-count fix)
     # are both load-bearing; losing either silently corrupts the count.
-    need "--state"; need "open"; need "--author"; need "@me"
+    # --state is required; its value (open|merged) governs which fixture to use.
+    need "--state"; need "--author"; need "@me"
     case "$ARGS" in
       *"closingIssuesReferences"*) ;;
       *) echo "fake gh: pr list must request closingIssuesReferences: $*" >&2; exit 96 ;;
@@ -78,7 +80,40 @@ case "$1 $2" in
     if [[ -n "${GH_FAKE_REQUIRE_REPO:-}" ]]; then
       need "--repo"; need "$GH_FAKE_REQUIRE_REPO"
     fi
-    printf '%s\n' "${GH_FAKE_PRS:-[]}" ;;
+    # Dispatch on the --state value so both `open` and `merged` fetches work
+    # (the merged-PR leak fix fetches recently-merged PRs via --state merged).
+    case "$ARGS" in
+      *" open "*)   printf '%s\n' "${GH_FAKE_PRS:-[]}" ;;
+      *" merged "*)
+        # GH_FAKE_FORBID_MERGED=1 marks tests that must NOT invoke gh pr list
+        # --state merged (e.g. limit=0 short-circuit). Fail hard so a broken
+        # code path that calls gh anyway still receives an empty fixture and
+        # the test result doesn't turn into a false positive.
+        if [[ "${GH_FAKE_FORBID_MERGED:-0}" == "1" ]]; then
+          echo "fake gh: gh pr list --state merged must NOT be called in this test: $*" >&2
+          exit 96
+        fi
+        # mergedAt is required for client-side sort ordering; fail hard if absent.
+        case "$ARGS" in
+          *"mergedAt"*) ;;
+          *) echo "fake gh: pr list --state merged must request mergedAt for ordering: $*" >&2; exit 96 ;;
+        esac
+        # Enforce --limit so tests can verify that fetch_merged_prs requests a
+        # wider candidate set (limit*3) and that the over-fetch is what enables
+        # detection of an older-created, recently-merged PR (test 26).
+        _FAKE_LIMIT=""
+        if [[ "$ARGS" =~ --limit[[:space:]]+([0-9]+) ]]; then
+          _FAKE_LIMIT="${BASH_REMATCH[1]}"
+        fi
+        if [[ -n "$_FAKE_LIMIT" ]]; then
+          printf '%s' "${GH_FAKE_MERGED_PRS:-[]}" | jq --argjson n "$_FAKE_LIMIT" '.[0:$n]'
+        else
+          printf '%s\n' "${GH_FAKE_MERGED_PRS:-[]}"
+        fi ;;
+      *)
+        echo "fake gh: pr list --state must be 'open' or 'merged' in: $*" >&2
+        exit 96 ;;
+    esac ;;
   "api graphql")
     if [[ "${GH_FAKE_ISSUE_FAIL:-0}" == "1" ]]; then
       echo "fake gh: simulated API failure" >&2; exit 1
@@ -146,6 +181,18 @@ set_open_prs() {
   export GH_FAKE_PRS
 }
 
+# n recently-merged PRs (for the merged-PR leak fix, AC#1 — #1285).
+# $2 (optional) is a JSON array of issue numbers the FIRST merged PR closes.
+# PR numbers start at 2000 to be distinct from open PR numbers (1000+).
+set_merged_prs() {
+  GH_FAKE_MERGED_PRS="$(jq -cn --argjson n "$1" --argjson closes "${2:-[]}" \
+    '[range($n) | {number: (.+2000),
+                   mergedAt: "2026-08-23T20:00:00Z",
+                   closingIssuesReferences:
+                     (if . == 0 then [$closes[] | {number: .}] else [] end)}]')"
+  export GH_FAKE_MERGED_PRS
+}
+
 # Newline-separated issue numbers, as `gh issue list --jq '.[].number'` returns.
 set_open_issues() { GH_FAKE_OPEN_ISSUES="$1"; export GH_FAKE_OPEN_ISSUES; }
 
@@ -170,6 +217,7 @@ run() { ( cd "$FIXTURE_REPO" && "$SCRIPT" "$@" ); }
 # Baseline: nothing anywhere.
 set_cap_config ""
 set_open_prs 0
+set_merged_prs 0
 set_open_issues ""
 set_pipelines '[]'
 
@@ -756,7 +804,8 @@ for SECTION in USAGE MODES FLAGS TUNING OUTPUT "EXIT STATUS"; do
 done
 for FLAG in -- --json --free --cap --repo --path \
             CLAUDE_ACTIVE_WORK_CAP CLAUDE_ACTIVE_WORK_AGENT_TTL_S \
-            CLAUDE_ACTIVE_WORK_HANDOFF_DIR CLAUDE_CHIP_OFFER_REGISTRY_SH; do
+            CLAUDE_ACTIVE_WORK_HANDOFF_DIR CLAUDE_CHIP_OFFER_REGISTRY_SH \
+            CLAUDE_ACTIVE_WORK_MERGED_PR_LIMIT; do
   [[ "$FLAG" == "--" ]] && continue
   [[ "$HELP" == *"$FLAG"* ]] || fail "--help does not document $FLAG"
 done
@@ -890,6 +939,182 @@ JSON=$(run --json) || fail "21: --json should succeed when registry is skipped"
 ok "an empty CLAUDE_CHIP_OFFER_REGISTRY_SH skips the registry; count succeeds"
 
 # Restore default env (no CLAUDE_CHIP_OFFER_REGISTRY_SH) for subsequent tests.
+unset CLAUDE_CHIP_OFFER_REGISTRY_SH
+
+# --- 22. Merged-PR leak fix (AC#1 — #1285) ------------------------------------
+# A chip's issue stops counting once it is referenced by a MERGED PR, not only
+# while that PR is open. Before #1285, chips_covered_by_prs() only checked open
+# PRs; after a PR merged, the exclusion disappeared and the chip re-entered the
+# active count even though the work was done.
+#
+# Scenario: issue 301 is open; a chip log entry exists for it; the PR that
+# closed it has already merged. Expected: chip count = 0.
+set_cap_config ""
+set_open_prs 0
+set_merged_prs 1 '[301]'   # one merged PR whose closingIssuesReferences includes 301
+set_open_issues "301"       # issue stays open (e.g. re-opened after merge)
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR"/issue-maker-*-log.json
+write_chip_log "merged-pr-test" "[$(chip_entry 301 "$SLUG" open t-mpl)]"
+set_pipelines '[]'
+CHIPS22=$(run --json | jq -r '.live_chips') || fail "22: --json failed"
+[[ "$CHIPS22" == "0" ]] \
+  || fail "22: chip covered by a merged PR must not count (got $CHIPS22, expected 0)"
+ok "merged-PR leak fix (AC#1): chip for issue closed by a merged PR is excluded"
+
+# Countercheck: the same setup with NO merged PRs would see the chip count.
+# The chip log is still present; only merged PR coverage changes.
+set_merged_prs 0
+CHIPS22b=$(run --json | jq -r '.live_chips') || fail "22b: --json failed (no merged PR)"
+[[ "$CHIPS22b" == "1" ]] \
+  || fail "22b: without a merged PR the chip should count; got $CHIPS22b"
+ok "merged-PR leak fix (AC#1): countercheck — same chip counts when no merged PR covers it"
+# Clean up the chip log only after both checks are done.
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR/issue-maker-merged-pr-test-log.json"
+
+# --- 23. Self-referential double-count fix (AC#2 — #1285) ---------------------
+# When a thread accepts an offer and a live pipeline entry already exists for
+# the same issue, the work must count ONCE (pipeline), not twice (pipeline +
+# chip). Before #1285, REG_CHIP_COUNT was not reduced for pipeline issues, so
+# both CHIPS and PIPELINES contributed +1 for the same work.
+#
+# Scenario: registry has a "running" chip for issue 401 (clicked, session
+# started, no PR yet); active_agents has an entry for issue 401 with no .pr.
+# Expected: live_chips=0, inline_pipelines=1, active=1.
+export CLAUDE_CHIP_OFFER_REGISTRY_SH="$FAKE_REG"
+NOW_REG23="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+export REG_FAKE_LIST="$(jq -cn --arg now "$NOW_REG23" \
+  '[{task_id:"tid-sr-401",emitter:"wave",issue:401,state:"running",offered_at:$now,
+     expires_at:$now,pr:null,last_updated:$now}]')"
+set_open_prs 0
+set_merged_prs 0
+set_open_issues "401"
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR"/issue-maker-*-log.json
+# active_agents entry for issue 401, no pr field → counts as pipeline
+set_pipelines "$(jq -cn --arg now "$NOW_REG23" \
+  '[{task_id:"tid-sr-401",issue:401,status:"running",launched:$now}]')"
+JSON23=$(run --json) || fail "23: --json failed for self-referential double-count test"
+CHIPS23=$(printf '%s' "$JSON23" | jq -r '.live_chips')
+PIPELINES23=$(printf '%s' "$JSON23" | jq -r '.inline_pipelines')
+ACTIVE23=$(printf '%s' "$JSON23" | jq -r '.active')
+[[ "$CHIPS23" == "0" ]] \
+  || fail "23: accepted chip must not count once pipeline takes it over (chips=$CHIPS23)"
+[[ "$PIPELINES23" == "1" ]] \
+  || fail "23: pipeline entry for issue 401 must count (pipelines=$PIPELINES23)"
+[[ "$ACTIVE23" == "1" ]] \
+  || fail "23: total ACTIVE should be 1 not 2 (active=$ACTIVE23)"
+ok "self-referential fix (AC#2): accepted chip + running pipeline count once, not twice"
+export REG_FAKE_LIST="[]"
+unset CLAUDE_CHIP_OFFER_REGISTRY_SH
+
+# --- 24. CLAUDE_ACTIVE_WORK_MERGED_PR_LIMIT=0 disables merged-PR check --------
+# When the limit is 0, fetch_merged_prs must return an empty result WITHOUT
+# invoking `gh pr list --state merged`. The fake gh's GH_FAKE_FORBID_MERGED=1
+# flag causes the merged branch to fail hard, so any code path that calls gh
+# with --state merged despite limit=0 turns into an immediate test failure
+# rather than a false positive from the fixture returning an empty array.
+#
+# Scenario: a chip log entry for issue 301 exists; GH_FAKE_FORBID_MERGED=1
+# makes any merged-PR gh call a hard failure. With limit=0 the chip must still
+# count (no merged PR covers it) — and gh must never be called for merged PRs.
+set_cap_config ""
+set_open_prs 0
+set_open_issues "301"
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR"/issue-maker-*-log.json
+write_chip_log "limit0-test" "[$(chip_entry 301 "$SLUG" open t-l0)]"
+set_pipelines '[]'
+CHIPS24=$(GH_FAKE_FORBID_MERGED=1 CLAUDE_ACTIVE_WORK_MERGED_PR_LIMIT=0 run --json \
+  | jq -r '.live_chips') \
+  || fail "24: --json failed with MERGED_PR_LIMIT=0 (merged-PR gh call may have fired)"
+[[ "$CHIPS24" == "1" ]] \
+  || fail "24: with limit=0, merged-PR check is disabled; chip should count (got $CHIPS24)"
+ok "CLAUDE_ACTIVE_WORK_MERGED_PR_LIMIT=0 disables the merged-PR check without calling gh"
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR/issue-maker-limit0-test-log.json"
+
+# --- 25. Per-entry registry overlap: batch entry + unrelated entry -------------
+# Regression for the cardinality subtraction bug: a batch registry entry
+# A=[401,402] in running state and pipelines for 401+402 must remove only entry A,
+# leaving unrelated entry B=[403] as 1 offered slot. The old code subtracted 2
+# overlapping issues from entry count 2, yielding 0 — incorrectly removing B.
+export CLAUDE_CHIP_OFFER_REGISTRY_SH="$FAKE_REG"
+NOW_REG25="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+export REG_FAKE_LIST="$(jq -cn --arg now "$NOW_REG25" \
+  '[{task_id:"batch-A25","emitter":"wave","issue":401,"issues":[401,402],
+     "state":"running","offered_at":$now,"expires_at":$now,"pr":null,"last_updated":$now},
+    {task_id:"single-B25","emitter":"wave","issue":403,
+     "state":"offered","offered_at":$now,"expires_at":$now,"pr":null,"last_updated":$now}]')"
+set_open_prs 0
+set_merged_prs 0
+set_open_issues "401 402 403"
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR"/issue-maker-*-log.json
+# Pipelines for 401 and 402 only — 403 has no pipeline.
+set_pipelines "$(jq -cn --arg now "$NOW_REG25" \
+  '[{task_id:"pipe-401",issue:401,status:"running",launched:$now},
+    {task_id:"pipe-402",issue:402,status:"running",launched:$now}]')"
+JSON25=$(run --json) || fail "25: --json failed for batch-entry pipeline overlap"
+CHIPS25=$(printf '%s' "$JSON25" | jq -r '.live_chips')
+REG25=$(printf '%s' "$JSON25" | jq -r '.registry_baseline')
+[[ "$CHIPS25" == "1" ]] \
+  || fail "25: entry B=[403] must survive pipeline filter; expected live_chips=1, got $CHIPS25"
+[[ "$REG25" == "1" ]] \
+  || fail "25: registry_baseline must reflect 1 surviving entry, got $REG25"
+ok "per-entry registry pipeline filter: batch A=[401,402] removed; unrelated B=[403] survives"
+export REG_FAKE_LIST="[]"
+unset CLAUDE_CHIP_OFFER_REGISTRY_SH
+
+# --- 26. merged-PR ordering: older-created, recently-merged PR is detected -----
+# gh pr list returns by createdAt descending. Without mergedAt-based client-side
+# sorting an older PR (low number, created long ago) that merged recently can be
+# missed when a newer-created PR fills the limit slot first.
+set_cap_config ""
+set_open_prs 0
+set_open_issues "301"
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR"/issue-maker-*-log.json
+write_chip_log "ordering-test" "[$(chip_entry 301 "$SLUG" open t-ord)]"
+# PR 2001 was created long ago but merged recently; PR 2002 was created after
+# but merged earlier. With limit=1 and createdAt order, the naive fetch would
+# return only PR 2002 (newer creation), missing PR 2001 and failing to exclude
+# the chip. The fix fetches more candidates, sorts by mergedAt, and applies limit.
+GH_FAKE_MERGED_PRS="$(jq -cn '[
+  {number:2002, mergedAt:"2026-08-22T10:00:00Z",
+   closingIssuesReferences:[]},
+  {number:2001, mergedAt:"2026-08-23T20:30:00Z",
+   closingIssuesReferences:[{number:301}]}
+]')"
+export GH_FAKE_MERGED_PRS
+set_pipelines '[]'
+CHIPS26=$(CLAUDE_ACTIVE_WORK_MERGED_PR_LIMIT=1 run --json | jq -r '.live_chips') \
+  || fail "26: --json failed for ordering test"
+[[ "$CHIPS26" == "0" ]] \
+  || fail "26: PR 2001 (most recently merged) closes issue 301; chip must be excluded (got $CHIPS26)"
+ok "merged-PR ordering: recently-merged older-created PR detected via mergedAt sort"
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR/issue-maker-ordering-test-log.json"
+unset GH_FAKE_MERGED_PRS
+
+# --- 27. partial-batch offered_issue_nums excludes pipeline-covered issues -----
+# A batch entry [401,402] partially covered by pipeline [401] survives the per-
+# entry filter (REG_CHIP_COUNT=1) because 402 is not pipeline-owned. However,
+# offered_issue_nums must list only 402, not 401, since 401 is already counted
+# through inline_pipelines, not the offered-work term.
+export CLAUDE_CHIP_OFFER_REGISTRY_SH="$FAKE_REG"
+NOW_REG27="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+export REG_FAKE_LIST="$(jq -cn --arg now "$NOW_REG27" \
+  '[{task_id:"partial-A27","emitter":"wave","issue":401,"issues":[401,402],
+     "state":"running","offered_at":$now,"expires_at":$now,"pr":null,"last_updated":$now}]')"
+set_open_prs 0
+set_merged_prs 0
+set_open_issues "401 402"
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR"/issue-maker-*-log.json
+set_pipelines "$(jq -cn --arg now "$NOW_REG27" \
+  '[{task_id:"pipe-401-27",issue:401,status:"running",launched:$now}]')"
+JSON27=$(run --json) || fail "27: --json failed for partial-batch offered_issue_nums test"
+REG27=$(printf '%s' "$JSON27" | jq -r '.registry_baseline')
+OFF27=$(printf '%s' "$JSON27" | jq -r '[.offered_issue_nums[] | tostring] | sort | join(",")')
+[[ "$REG27" == "1" ]] \
+  || fail "27: batch entry [401,402] partially covered by pipeline — registry_baseline must be 1 (got $REG27)"
+[[ "$OFF27" == "402" ]] \
+  || fail "27: offered_issue_nums must be [402] only (pipeline covers 401); got $OFF27"
+ok "partial-batch offered_issue_nums: pipeline-covered issue 401 excluded; 402 retained"
+export REG_FAKE_LIST="[]"
 unset CLAUDE_CHIP_OFFER_REGISTRY_SH
 
 echo "OK: active-work-cap.sh tests passed"

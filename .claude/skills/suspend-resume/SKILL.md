@@ -1,6 +1,6 @@
 ---
 name: suspend-resume
-description: Resume companion to /suspend. Reads the parked state from the last /suspend run, prints the board (what landed, what is parked with next move, what is waiting on a reviewer), re-arms Monitors that were stopped, and reports the refill pause with instructions for lifting it. Thin restorer — it delegates into /babysit-pr, /pr-monitor-and-manage-wake, and /pm day resume rather than reimplementing their logic. Triggers on "suspend-resume", "resume from suspend", "back from laptop", "restore parked work", "what did I park".
+description: Resume companion to /suspend. Explicitly clears the background-launch gate, reads parked and stopped-task recovery state, prints the current board, and re-arms selected work without duplicating live tasks. The refill gate is cleared only with --resume-refill. Triggers on "suspend-resume", "resume from suspend", "back from laptop", "restore parked work", "what did I park".
 triggers:
   - suspend-resume
   - resume from suspend
@@ -30,6 +30,8 @@ resolve_script() {
   return 1
 }
 SESSION_STATE_SH=$(resolve_script session-state.sh) || SESSION_STATE_SH=""
+EXECUTION_PAUSE_SH=$(resolve_script execution-pause.sh) || EXECUTION_PAUSE_SH=""
+TASK_REGISTRY_SH=$(resolve_script background-task-registry.sh) || TASK_REGISTRY_SH=""
 ```
 
 An unresolved `session-state.sh` in this skill is fatal for the state-read path but recoverable: fall back to the marker file in Step 1. Say which path is being used so the user knows.
@@ -43,6 +45,20 @@ for arg in $ARGUMENTS; do
     --resume-refill) RESUME_REFILL=true ;;
   esac
 done
+```
+
+Because this command is an explicit human resume, clear the session execution
+gate immediately, before any Monitor, Agent, Workflow, or background Bash is
+re-armed. If clearing fails, stop: attempting re-arm behind an unknown gate can
+produce partial, duplicate recovery.
+
+```bash
+SESSION_ID="${CLAUDE_SESSION_ID:-default}"
+if [[ -z "$EXECUTION_PAUSE_SH" ]] || \
+   ! "$EXECUTION_PAUSE_SH" --clear --session "$SESSION_ID"; then
+  echo "Could not clear the suspend execution gate; no work was re-armed." >&2
+  exit 1
+fi
 ```
 
 ## Step 1: Read suspend state
@@ -115,7 +131,14 @@ if [[ "$USE_MARKER" == false ]]; then
   ACTIVE=$(jq -r '.active // true' <<<"$SUSPEND_STATE" 2>/dev/null || echo "true")
   if [[ "$ACTIVE" == "false" ]]; then
     # Check whether any re-arms were incomplete (added in Step 7)
-    PENDING_REARMS=$(jq -r '.monitors_stopped // [] | map(select(.stopped == true and (.rearmed // false) == false)) | length' <<<"$SUSPEND_STATE" 2>/dev/null || echo "0")
+    PENDING_REARMS=$(jq -r '
+      ((.monitors_stopped // [])
+        | map(select(.stopped == true and (.rearmed // false) == false))
+        | length)
+      + ((.background_tasks_stopped // [])
+        | map(select(.status == "stopped" and (.rearmed // false) == false))
+        | length)
+    ' <<<"$SUSPEND_STATE" 2>/dev/null || echo "0")
     if [[ "$PENDING_REARMS" -gt 0 ]]; then
       echo "Suspend session was partially resumed ($PENDING_REARMS re-arm(s) still pending). Continuing restore..."
     else
@@ -166,6 +189,13 @@ The parked units show current GitHub state alongside the parking-point snapshot,
 
 ## Step 5: Re-arm what was stopped
 
+First inspect current-session stopped registry entries. Re-check runtime state
+before every re-arm so an already-running identity is never duplicated. Resume
+stopped agents by their exact runtime ID with `SendMessage`; for workflows,
+background commands, and Monitors use the recorded recovery path and owning
+skill, then mark the old entry `rearmed`. A missing recovery path is reported
+as pending, not guessed. Preserve the stopped entry for audit history.
+
 **Before delegating to any re-arm skill, disarm the usage-limit auto-wake Monitor if one is armed.** This prevents a double resume when the user runs `/suspend-resume` manually while a limit-wake Monitor is still ticking (i.e. the rolling-window park from 2D.6 has not yet fired automatically). When `/suspend-resume` is invoked **by the Monitor itself** (not manually), it carries `--generation <id>`; validate the generation before proceeding to reject stale or duplicate wakes:
 
 ```bash
@@ -215,6 +245,18 @@ Entries with `stopped: false` are listed as "not confirmed stopped at suspend ti
 
 If any re-arm delegation fails, report it and carry on — a partial re-arm is better than stopping entirely. **Record a per-entry `rearmed: true/false` field** in the state so Step 7 can set `active=false` only when all required entries are done, and Step 2 can detect a partially-resumed session and retry:
 
+Apply the same bookkeeping to `background_tasks_stopped`, keyed by exact
+`task_id`. Set `rearmed: true` only after runtime verification. Set or preserve
+`rearmed: false` when recovery failed or required metadata is missing, and add
+`resume_error` naming the missing path/action. Persist both updated arrays with
+`session-state.sh --set`; never mutate the state file directly.
+
+After those writes succeed, re-read the complete suspend block into
+`SUSPEND_STATE` with the same explicit `--get` used in Step 1. A failed refresh
+is a partial restore: keep `active=true`, report the read failure, and do not
+run Step 7's completion write. Step 7 must evaluate the freshly persisted
+arrays, never the pre-rearm snapshot captured at command start.
+
 ## Step 6: Clear the refill pause (--resume-refill only)
 
 When `--resume-refill` was supplied:
@@ -237,8 +279,16 @@ Only set `active=false` after **all** required re-arms in Step 5 have been confi
 ```bash
 if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
   ALL_REARMED=true
-  # Check if any required entry (stopped: true) is still rearmed: false/absent
-  PENDING=$(jq -r '.monitors_stopped // [] | map(select(.stopped == true and (.rearmed // false) == false)) | length' <<<"$SUSPEND_STATE" 2>/dev/null || echo "0")
+  # Check both specialized Monitors and the general stopped-task inventory.
+  # An entry with missing recovery metadata remains pending by design.
+  PENDING=$(jq -r '
+    ((.monitors_stopped // [])
+      | map(select(.stopped == true and (.rearmed // false) == false))
+      | length)
+    + ((.background_tasks_stopped // [])
+      | map(select(.status == "stopped" and (.rearmed // false) == false))
+      | length)
+  ' <<<"$SUSPEND_STATE" 2>/dev/null || echo "0")
   [[ "$PENDING" -gt 0 ]] && ALL_REARMED=false
 
   NOW=$(date -u +%FT%TZ)
@@ -255,7 +305,7 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
 fi
 ```
 
-The `active=false` write is the idempotent guard from Step 2. The record is kept for history — only `active` and `resumed_at` change, not the arrays of landed, parked, and stopped monitors.
+The `active=false` write is the idempotent guard from Step 2. The record is kept for history; landed and parked history remains, while both stopped arrays retain their per-entry recovery result.
 
 ## Safety
 

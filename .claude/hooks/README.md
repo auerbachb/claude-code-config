@@ -77,6 +77,33 @@ All state lives in `/tmp` markers (overridable as a set via `CLAUDE_BGWORK_MARKE
 - `jq` must be installed
 - `.claude/scripts/bgwork-ceiling.sh` must be present and executable — both hooks exit 0 silently without it, so a checkout missing it degrades rather than breaks
 
+## pause-launch-gate.sh + background-task-complete.sh
+
+These hooks make `/pause` and `/suspend` cost-quiescent (issue #1308).
+
+- **`pause-launch-gate.sh`** (PreToolUse): while the current repo/session has an
+  active execution pause, rejects Agent, Workflow, Monitor, and background Bash
+  starts. Foreground Bash remains available for checkpoint and teardown.
+- **`bgwork-ceiling-arm.sh`** (PostToolUse): in addition to its silence-ceiling
+  job, captures the exact runtime ID returned by every background-start tool
+  and records successful `TaskStop` calls.
+- **`background-task-complete.sh`** (SubagentStop): marks the exact agent runtime
+  ID done, failed, or stopped. Logical agent names are never used for TaskStop.
+
+An active marker makes the launch gate fail closed if session state becomes
+unreadable after activation. Other hook/dependency failures stay fail-open so a
+malformed payload cannot brick all tool use.
+
+A registry write failure creates
+`claude-background-registry-failed-<session>` in the configured background-work
+marker directory (default `/tmp`), falling back to `$HOME/.claude` if that
+directory is unwritable. If neither location accepts the marker, the hook exits
+non-zero with a critical diagnostic. `/pause` and `/suspend` treat either
+marker as an incomplete audit until runtime inspection proves no untracked task
+remains.
+
+**Tests:** `.claude/hooks/tests/pause-lifecycle-hooks.test.sh`
+
 ## skill-usage-tracker.sh + skill-command-tracker.sh
 
 Records every skill invocation to `~/.claude/skill-usage.log` (and the aggregate `~/.claude/skill-usage.csv`), which `.claude/scripts/skill-usage-report.sh` rolls up.

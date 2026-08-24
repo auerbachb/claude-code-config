@@ -347,6 +347,15 @@ For each qualifying issue, spawn a Phase A subagent using the Agent tool.
 
   Same fail-closed reading as `/pm` Step 3.4's table: `RC=0` + `true` → launch nothing, report `paused`; `RC=0` + `false`/`null`, or `RC=3` (no state file) → proceed; any other `RC` → treat as paused and say the state was unreadable. A non-null `$SCOPE` skips queued issues outside it. This is the only pause gate a standalone `/subagent` run has — without it, a queued pipeline launches straight through an explicit stop.
 
+Also resolve `execution-pause.sh` with Step 0's candidate order and call
+`--status --session "${CLAUDE_SESSION_ID:-default}"` immediately before every
+launch. Only exit 0 with exact output `inactive` permits the launch. An
+`active` result, missing helper, non-zero exit, empty output, or any other value
+fails closed even when refill is open: report the unreadable control and
+persist a pending transition. Apply both gates again to all A→A, A→B, B→B,
+B→C, queued-head, and refill launches. Only `/pause-resume` or
+`/suspend-resume` may clear the execution gate.
+
 **Subagent prompt template** (fill in variables per issue):
 
 ```
@@ -442,6 +451,8 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
 
 1. **Check for completed subagents.** Poll active agent statuses. If any returned results, process immediately (step 2).
 2. **Execute pending phase transitions.** For each completed subagent:
+   Re-check both launch gates before every successor; when either is closed,
+   persist the pending transition and continue without launching it.
    - Parse the Structured Exit Report from its output.
    - Execute the appropriate Completion Protocol (see below).
 3. **Check for pending transitions from prior cycles.** Read `session-state.json` for PRs where a phase completed but the next phase was not launched.

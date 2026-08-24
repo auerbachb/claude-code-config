@@ -14,6 +14,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 
 ### Runbooks and long command forms
 
+- `ac-gate.md` — exemption logic, exact heading, three ordered checks, exit codes, and both real regression failures (PR #588 / PR #593) for `ac-gate.sh` CI gate (#1281)
 - `admin-merge-auto-plain.md` — mechanism and contracts for the one `admin-merge.sh --auto-plain` shape Claude may execute itself; plain vs protection-modifying shape distinction (#754)
 - `cli-tool-defaults.md` — installed service CLIs (vercel, neonctl, railway, cloudinary) and common commands; CLI-first over web dashboards
 - `churn-hotspots.md` — mechanism, calibration, and threshold rationale for `churn-hotspots.sh`; exclusion list for by-design catalog files (#755)
@@ -34,6 +35,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `wrap-fixpr-delegation.md` — `/wrap` Step 2.1 → full `/fixpr` recovery handoff contract
 - `release-cadence.md` — agent-initiated TestFlight cadence: policy schema, `auto` interval derivation, the per-repo trigger table, why the `release:ios` label must be applied pre-merge, and the structural exclusion of the App Store path (#1169)
 - `suspend-state.md` — state shape, triage rule rationale, and deadline semantics for the `/suspend` laptop-close wind-down command (Issue #1249); companion to the `_suspend_comment` block in `session-state-schema.json`
+- `background-task-shutdown.md` — shared `/pause` and `/suspend` contract for launch gating, bounded cooperative checkpoint, exact-ID hard stop, recovery preservation, and zero-live-task verification (#1308)
 - `state-file-contracts.md` — expanded scoping, write-lock, migration, and field-type mechanics for `session-state.json` + handoffs (`handoff-files.md`; #625, #638, #639, #651, #655, #682, #687, #704, #757, #794, #967, #971)
 - `session-state-schema-hotspot-decision.md` — KEEP + targeted-dedup adjudication for the `session-state-schema.json` churn hotspot; canonical ownership, preserved compatibility, and field-change checklist (#964)
 - `session-state-collector.md` — the single definition of what a handoff *reads*, shared by `/pm-handoff` (Claude-native rendering) and `/pause` (portable rendering); one collector, two renderers (#901)
@@ -92,6 +94,8 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `ai-review-tool-audit-2026-04.md` — AI review tool chain audit (#368 / #377)
 - `ai-review-tool-audit-2026-06.md` — 30-day AI review tool value audit + keep/cut verdicts (#376)
 - `ai-review-tool-audit-2026-08.md` — 244-PR/30-day subscription + cap reconciliation audit; billed-vs-observed state, refusal rates, and sole-source yield for all five reviewers (#1199)
+- `self-hosted-reviewer-survey-2026-08.md` — point-in-time survey of CLI-reachable self-hosted AI code review tools (`ocr`, Qodo PR-Agent) vs incumbents; hands-on install/run results, `.md`-exclusion confirmation, PR #1292 comparison baseline, and cost methodology (#1287)
+- `self-hosted-reviewer-decision.md` — decision record: no self-hosted reviewer adopted; `ocr` and PR-Agent both CUT for this repo; local pre-push slot unchanged (CodeRabbit CLI + CodeAnt CLI); promotion bar defined (#1287)
 - `ai-review-billing-dashboard-2026-08.md` — primary-source dashboard readings for CodeRabbit, CodeAnt, Cursor/BugBot, and Greptile: plans, spend, caps, seat holders, and the volume-driving settings; nothing was changed while reading (#1204)
 - `pricing-matrix.md` — priced upgrade levers for all five review tools × CLI/App surfaces: public prices vs dashboard-billed state, marginal cost per review, which pool each price buys, and buy/don't-buy verdicts with break-even math (#1202)
 - `cr-oss-vs-paid-decision.md` — CodeRabbit's free OSS tier vs paid Pro, surface by surface against the 244-PR census: the star-scaled rate band, the metered-add-on exclusion, the file-verified manual-trigger compatibility finding, and the break-even that declines OSS and selects annual billing (#1212)
