@@ -226,6 +226,21 @@ Tracking issue: #77
 BODY
 echo "OPEN" > "$TMP/issue_state/77.txt"
 
+# PR 1016 — REGRESSION: indented headings. Markdown allows up to three leading
+# spaces before '##'. Requiring '^## ' made an indented section invisible, so its
+# unchecked boxes bypassed the gate (fail-open). ac-checkboxes.sh already accepted
+# these forms, so the two helpers also disagreed. Must fail with exit 1.
+printf '%s\n' \
+  '  ## Acceptance Criteria' \
+  '- [ ] indented heading, unchecked box' \
+  > "$TMP/pr_body/1016.txt"
+
+# PR 1017 — same, three spaces and extra space after the marker, on Test Plan.
+printf '%s\n' \
+  '   ##   Test Plan' \
+  '- [ ] deeply indented heading, unchecked box' \
+  > "$TMP/pr_body/1017.txt"
+
 # PR 1014 — REGRESSION: earlier exemption section is self-referential, later one is CLEAN.
 # The later clean section reset HAS_UNCHECKED_EXEMPT to 0, so Stage 2 was skipped entirely
 # and the self-referential section 1 was never validated -- the gate passed (fail-open).
@@ -414,6 +429,17 @@ else
   fail "Regression check: PR 1015 should fail but gate returned exit 0 (earlier section discarded)"
 fi
 
+# PR 1016/1017 indented headings: the real gate must fail (was fail-open)
+for _p in 1016 1017; do
+  RC=0
+  bash "$SCRIPT" "$_p" 2>/dev/null || RC=$?
+  if [[ "$RC" -ne 0 ]]; then
+    pass "Regression check: PR $_p (indented heading) correctly fails (exit $RC)"
+  else
+    fail "Regression check: PR $_p should fail but gate returned exit 0 (indented heading ignored)"
+  fi
+done
+
 echo "--- End regression verification ---"
 echo ""
 
@@ -540,6 +566,21 @@ RC=0
 MSG="$(bash "$SCRIPT" 1015 2>&1 >/dev/null)" || RC=$?
 check_exit "Test11c: earlier section with CLOSED tracking issue still fails (exit 7)" 7 "$RC"
 check_msg  "Test11c: message names the closed tracking issue" "#50" "$MSG"
+
+# ---------------------------------------------------------------------------
+# Test 11d: REGRESSION — indented '## Acceptance Criteria' is still in scope.
+# ---------------------------------------------------------------------------
+RC=0
+MSG="$(bash "$SCRIPT" 1016 2>&1 >/dev/null)" || RC=$?
+check_exit "Test11d: indented AC heading still gated (exit 1)" 1 "$RC"
+check_msg  "Test11d: message names the unchecked-box condition" "unchecked acceptance-criteria box" "$MSG"
+
+# ---------------------------------------------------------------------------
+# Test 11e: REGRESSION — three-space indent plus extra space after '##'.
+# ---------------------------------------------------------------------------
+RC=0
+bash "$SCRIPT" 1017 2>/dev/null || RC=$?
+check_exit "Test11e: deeply indented Test Plan heading still gated (exit 1)" 1 "$RC"
 
 # ---------------------------------------------------------------------------
 # Test 12: REGRESSION — PR #588 exact self-referential pattern → exit 6

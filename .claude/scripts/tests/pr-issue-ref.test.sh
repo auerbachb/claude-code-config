@@ -169,25 +169,45 @@ LINE_COUNT="$(printf '%s\n' "$OUT" | grep -c . || true)"
 # ---------------------------------------------------------------------------
 # Test 8: --all mode — cross-repo owner/repo#N form detected separately
 # PR 103 has only "Closes auerbachb/inventory#55" (no bare #N)
-# GITHUB_REPOSITORY="" pins the unfiltered-fallback branch (current repo unknown),
-# where a qualified ref to any repo is included. Leaving it unset would inherit the
-# ambient value in CI and exercise the filter instead. Test 14 covers the filtered
-# same-repo case; Test 13 covers the filtered different-repo case.
+# With no resolvable repo context, --all must REFUSE rather than guess: including
+# the ref risks a false collision with a local issue, excluding it risks missing a
+# genuine self-reference. Both are wrong answers, so it exits 4.
+# Qualified-ref PARSING is still covered with real context by Tests 13 and 14.
 # ---------------------------------------------------------------------------
-OUT="$(GITHUB_REPOSITORY="" bash "$SCRIPT" --all 103 2>/dev/null)"
-check_eq "Test8: --all matches owner/repo#N form and extracts number" "55" "$OUT"
+RC=0
+MSG="$(GITHUB_REPOSITORY="" bash "$SCRIPT" --all 103 2>&1 >/dev/null)" || RC=$?
+[[ "$RC" -eq 4 ]] && pass "Test8: --all refuses qualified refs with no repo context (exit 4)" \
+  || fail "Test8: expected exit 4 with no repo context, got $RC"
+check_msg "Test8: message names the missing repo context" "cannot resolve the current repository" "$MSG"
+check_msg "Test8: message names the fix" "GITHUB_REPOSITORY" "$MSG"
 
 # ---------------------------------------------------------------------------
 # Test 9: --all mode — both bare #N and owner/repo#N
 # PR 104 has "Closes #30" and "Fixes auerbachb/inventory#40"
-# GITHUB_REPOSITORY="" pins the unfiltered-fallback branch, same reason as Test 8.
+# Mixed bare + qualified with no repo context: still refuses (exit 4), because the
+# qualified ref cannot be classified. With real context the same body yields the
+# bare ref only -- asserted immediately below.
 # ---------------------------------------------------------------------------
-OUT="$(GITHUB_REPOSITORY="" bash "$SCRIPT" --all 104 2>/dev/null)"
-check_line_present "Test9a: --all includes bare #30" "30" "$OUT"
-check_line_present "Test9b: --all includes cross-repo #40" "40" "$OUT"
-LINE_COUNT="$(printf '%s\n' "$OUT" | grep -c . || true)"
-[[ "$LINE_COUNT" -eq 2 ]] && pass "Test9c: --all emits exactly 2 lines for mixed refs" \
-  || fail "Test9c: expected 2 lines, got $LINE_COUNT"
+RC=0
+GITHUB_REPOSITORY="" bash "$SCRIPT" --all 104 >/dev/null 2>&1 || RC=$?
+[[ "$RC" -eq 4 ]] && pass "Test9a: mixed refs with no repo context refuse (exit 4)" \
+  || fail "Test9a: expected exit 4 with no repo context, got $RC"
+
+OUT="$(GITHUB_REPOSITORY=auerbachb/claude-code-config bash "$SCRIPT" --all 104 2>/dev/null)"
+check_line_present "Test9b: with real context, bare #30 is included" "30" "$OUT"
+if printf '%s\n' "$OUT" | grep -Fxq -- "40"; then
+  fail "Test9c: cross-repo #40 (auerbachb/inventory) must be excluded under real context"
+else
+  pass "Test9c: cross-repo #40 correctly excluded under real context"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 9d: no repo context is fine when the body has NO qualified refs --
+# there is nothing to classify, so the refusal must not fire.
+# ---------------------------------------------------------------------------
+OUT="$(GITHUB_REPOSITORY="" bash "$SCRIPT" --all 102 2>/dev/null)"
+check_line_present "Test9d: bare-only body works with no repo context (#10)" "10" "$OUT"
+check_line_present "Test9d: bare-only body works with no repo context (#20)" "20" "$OUT"
 
 # ---------------------------------------------------------------------------
 # Test 10: --all mode — no reference exits 1

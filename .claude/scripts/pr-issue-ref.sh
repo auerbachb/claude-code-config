@@ -185,9 +185,18 @@ if [[ "$ALL_MODE" -eq 1 ]]; then
             printf '%s\n' "$_issue_part"
           fi
         done || true)"
+  elif printf '%s\n' "$BODY" | grep -qiE '(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+#[0-9]+'; then
+    # Current repo unknown AND the body carries qualified refs: refuse rather
+    # than guess. Including them lets `Closes other/repo#99` false-collide with
+    # a local tracking issue #99 (a wrong rejection); excluding them lets a
+    # genuinely self-referential `Closes this/repo#N` slip past (a wrong pass).
+    # Both are wrong answers, so emit neither — the caller must supply context.
+    echo "Error: cannot resolve the current repository, and PR #$PR_NUM has qualified owner/repo#N closing references." >&2
+    echo "Fix: set GITHUB_REPOSITORY=owner/repo, or run where 'gh repo view' can resolve the repository." >&2
+    exit 4
   else
-    # Current repo unknown; fall back to including all cross-repo refs (original behavior).
-    CROSS="$(printf '%s\n' "$BODY" | grep -oiE '(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+#[0-9]+' | grep -oE '[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+#[0-9]+' | grep -oE '[0-9]+$' || true)"
+    # Current repo unknown, but no qualified refs exist — nothing to filter.
+    CROSS=""
   fi
 
   # Combine, filter to pure-numeric lines, sort and deduplicate.

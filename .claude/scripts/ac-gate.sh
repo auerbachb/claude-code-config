@@ -197,10 +197,14 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
   line="${raw_line%$'\r'}"
 
   # --- level-2 heading detection ---
-  if printf '%s' "$line" | grep -qE '^## '; then
-    # Extract heading text: strip "## " prefix and trailing whitespace
-    heading_raw="${line#\#\# }"
-    heading="$(printf '%s' "$heading_raw" | sed 's/[[:space:]]*$//')"
+  # Markdown allows up to three leading spaces before the marker and arbitrary
+  # whitespace after it. Accepting only '^## ' let an indented '## Test Plan'
+  # go unrecognised, so its unchecked boxes bypassed the gate entirely — and it
+  # diverged from ac-checkboxes.sh, which accepts the indented forms.
+  if printf '%s' "$line" | grep -qE '^[[:space:]]{0,3}##[[:space:]]'; then
+    # Strip leading indent, the '##' marker, surrounding whitespace. Case is
+    # preserved: the exemption heading is matched case-sensitively below.
+    heading="$(printf '%s' "$line" | sed -E 's/^[[:space:]]{0,3}##[[:space:]]+//; s/[[:space:]]*$//')"
 
     # Case-insensitive match for in-scope sections
     heading_lower="$(printf '%s' "$heading" | tr 'A-Z' 'a-z')"
