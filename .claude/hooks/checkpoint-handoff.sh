@@ -230,8 +230,6 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   else
     WORKTREE_CONDITION="git checkout; worktree condition unknown"
   fi
-  ORIGIN_HEAD=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
-  [[ -n "$ORIGIN_HEAD" ]] && BASE_BRANCH="${ORIGIN_HEAD#origin/}"
   PORCELAIN=$(git status --porcelain 2>/dev/null)
   if [[ -n "$PORCELAIN" ]]; then
     CHANGED_COUNT=$(printf '%s\n' "$PORCELAIN" | grep -c . 2>/dev/null || true)
@@ -328,6 +326,10 @@ PR_LOOKUP="skipped"
 # there can use unrelated ambient/default repository context and report open
 # work that has nothing to do with this handoff (Cursor, PR #944).
 if (( ! NO_REMOTE )) && command -v gh >/dev/null 2>&1 && (( IN_REPO )); then
+  if [[ -n "$BRANCH" ]]; then
+    BASE_BRANCH=$(gh pr view "$BRANCH" --json baseRefName \
+                    --jq '.baseRefName // empty' 2>/dev/null) || BASE_BRANCH=""
+  fi
   PR_ROWS=$(gh pr list --author "@me" --state open --limit 10 \
               --json number,title,url,author,reviewDecision,mergeStateStatus \
               --jq '.[] | [(.number|tostring), .title, .url,
@@ -508,7 +510,7 @@ render() {
   else
     printf 'Branch: unknown — not a git checkout\n'
   fi
-  printf 'Base branch: %s\n' "${BASE_BRANCH:-unknown — no default branch was available}"
+  printf 'Base branch: %s\n' "${BASE_BRANCH:-unknown — current pull-request base was unavailable}"
   if [[ -n "$HEAD_SHA" ]]; then
     printf 'HEAD commit: %s\n' "$HEAD_SHA"
   elif (( IN_REPO )); then

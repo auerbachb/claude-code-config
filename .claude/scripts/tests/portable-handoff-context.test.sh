@@ -41,14 +41,14 @@ cat >"$STATE" <<'JSON'
       "background_tasks": [
         {
           "task_id": "task-42",
-          "name": "review watcher token=super-secret-name",
+          "name": "Authorization: Bearer super-secret-name",
           "type": "monitor",
           "session_id": "session-1",
           "status": "stopped",
           "work_item": "watch pull request 42 token=super-secret-value",
-          "output_file": "/tmp/token=super-secret-output/review-output.txt",
-          "checkpoint_path": "/tmp/api_key=super-secret-checkpoint/review-checkpoint.json",
-          "recovery_path": "/tmp/password=super-secret-recovery/recover-review",
+          "output_file": "https://worker:super-secret-output@example.invalid/review-output.txt",
+          "checkpoint_path": "/tmp/token/super-secret-checkpoint/review-checkpoint.json",
+          "recovery_path": "/tmp/password:super-secret-recovery/recover-review",
           "started_at": "2026-08-24T12:00:00Z",
           "updated_at": "2026-08-24T12:01:00Z"
         }
@@ -85,7 +85,7 @@ check "untracked dirt stays distinct" jq -e '.working_copy.untracked_changes == 
 check "exact issue branch token becomes a link" test "$(jq -r '.linkage.issue.url' <<<"$DOC")" = "https://github.com/test/portable/issues/1311"
 check "terminal task metadata is preserved" jq -e '.background_tasks.items[0] | .task_id == "task-42" and .type == "monitor" and .status == "stopped"' >/dev/null <<<"$DOC"
 check "task descriptions redact secret-shaped values" jq -e '.background_tasks.items[0].work_item == "watch pull request 42 [REDACTED]"' >/dev/null <<<"$DOC"
-check "all task metadata strings redact secret-shaped values" jq -e '.background_tasks.items[0] | .name == "review watcher [REDACTED]" and .output_file == "/tmp/[REDACTED]" and .checkpoint_path == "/tmp/[REDACTED]" and .recovery_path == "/tmp/[REDACTED]"' >/dev/null <<<"$DOC"
+check "all task metadata strings redact secret-shaped values" jq -e '.background_tasks.items[0] | .name == "[REDACTED]" and .output_file == "https://[REDACTED]@example.invalid/review-output.txt" and .checkpoint_path == "/tmp/[REDACTED]/review-checkpoint.json" and .recovery_path == "/tmp/[REDACTED]"' >/dev/null <<<"$DOC"
 check "raw task secrets are never emitted" sh -c '! printf "%s" "$1" | grep -q super-secret' _ "$DOC"
 
 LINKED="$TMP/linked worktree"

@@ -256,6 +256,10 @@ STUB_BIN="$TMP/stubbin"
 mkdir -p "$STUB_BIN"
 cat > "$STUB_BIN/gh" <<'STUB'
 #!/usr/bin/env bash
+if [[ "$1 $2" == "pr view" ]]; then
+  printf 'maintenance-2.x\n'
+  exit 0
+fi
 printf '42\037\037https://example.com/42\037auerbachb\037REVIEW_REQUIRED\037CLEAN\n'
 printf '43\037A real title\037https://example.com/43\037someone-else\037APPROVED\037BEHIND\n'
 STUB
@@ -281,6 +285,7 @@ check_contains "T9 an approved pull request says so" "Approval: approved" "$DOC_
 # reader to wait for something that already happened.
 check_contains "T9 a BEHIND branch outranks its approval in what it waits on" "Waiting on: the branch needs updating against the main branch first" "$DOC_PR"
 check_contains "T9 a verification command is offered" "Verify with: gh pr checks 42" "$DOC_PR"
+check_contains "T9 current pull-request base outranks repository default" "Base branch: maintenance-2.x" "$DOC_PR"
 printf '%s\n' "$DOC_PR" > "$TMP/t9.md"
 "$LINT" --repo-root "$FAKE" --quiet "$TMP/t9.md" >/dev/null 2>&1
 check_eq "T9 pull request rendering passes the portability check" "0" "$?"

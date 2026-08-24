@@ -144,9 +144,6 @@ if git -C "$WORKING_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     repo_identity=$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]')
   fi
 
-  origin_head=$(git -C "$checkout_path" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
-  [[ -n "$origin_head" ]] && base_branch="${origin_head#origin/}"
-
   if (( NO_REMOTE )); then
     linkage_status="remote lookup skipped"
   elif command -v gh >/dev/null 2>&1 && [[ "$branch" != "detached HEAD" ]]; then
@@ -191,7 +188,9 @@ if git -C "$WORKING_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         def redact:
           gsub("gh[pousr]_[A-Za-z0-9]{10,}"; "[REDACTED]")
           | gsub("sk-[A-Za-z0-9_-]{10,}"; "[REDACTED]")
-          | gsub("(?i)(api[_-]?key|token|password|secret)=[^[:space:]]+"; "[REDACTED]");
+          | gsub("(?i)(https?://)[^/@[:space:]]+:[^/@[:space:]]+@"; "https://[REDACTED]@")
+          | gsub("(?i)(authorization|api[_-]?key|access[_-]?token|token|password|secret)[[:space:]]*[:=][[:space:]]*(bearer[[:space:]]+)?[^[:space:]]+"; "[REDACTED]")
+          | gsub("(?i)(^|/)(api[_-]?key|access[_-]?token|token|password|secret)/[^/[:space:]]+"; "/[REDACTED]");
         [.[] | {task_id, name, type, status,
                  work_item:(.work_item // null), output_file,
                  checkpoint_path:(.checkpoint_path // null), recovery_path,
