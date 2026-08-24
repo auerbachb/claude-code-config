@@ -36,6 +36,16 @@ ACTIVE_WORK_CAP=6
 - **Default 6, upper bound 10.** Derived from CodeRabbit's measured **5 reviews/hour per developer** (not the retracted ~8): rebase re-review reaches parity with productive review at 5 concurrent PRs, and past 5 a PR no longer gets even one review round per hour. 6 is one step into that degraded band — a ceiling, not a target; the target is the 3–4 working set. Full derivation: [`active-work-cap.md`](reference/active-work-cap.md).
 - **Subordinate, never superior, to the per-thread ceiling** — the governing limit is `min(3–4 pipeline ceiling, ACTIVE_WORK_CAP)`. Raising this never widens a thread's own pipeline band.
 
+## Budget
+
+```ini
+daily_credit_budget_usd = 25
+```
+
+- **daily_credit_budget_usd** — owner's stated daily Anthropic credit overage tolerance (USD). User-editable; window is an ET calendar day. **`CLAUDE_DAILY_CREDIT_BUDGET_USD` env overrides** when set. Read via `.claude/scripts/credit-budget.sh`. This wallet covers Anthropic credit spend **only** — third-party reviewer-tool costs are tracked separately in `pricing-matrix.md`.
+- **Default 25** — $25/day is the owner's stated acceptable overage exposure for a continuous autonomous thread. Budget is evaluated against authoritative harness signals only (see `.claude/reference/budget-source-probe.md`); local token/cost estimation is never used.
+- **Gates autonomous dispatch only** — explicit user requests in chat always proceed with a one-line budget note. Day mode and refill respect this cap; interactive work does not.
+
 ## Infrastructure
 
 No hosting/deployment infrastructure detected (no Railway, Vercel, Fly.io, Render, Supabase, Neon, Netlify, or Node/Python package manifests at repo root). This repo is a Claude Code configuration/skills distribution — it ships shell scripts, Markdown skill/rule definitions, and GitHub Actions workflows, not a deployed service.
