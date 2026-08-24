@@ -372,10 +372,12 @@ PR_LOOKUP="skipped"
 # work that has nothing to do with this handoff (Cursor, PR #944).
 if (( ! NO_REMOTE )) && command -v gh >/dev/null 2>&1 && (( IN_REPO )); then
   if [[ -n "$BRANCH" ]]; then
-    BASE_BRANCH=$(gh pr view "$BRANCH" --json baseRefName \
+    BASE_BRANCH=$(GH_HTTP_TIMEOUT="${GH_HTTP_TIMEOUT:-10}" \
+                    gh pr view "$BRANCH" --json baseRefName \
                     --jq '.baseRefName // empty' 2>/dev/null) || BASE_BRANCH=""
   fi
-  PR_ROWS=$(gh pr list --author "@me" --state open --limit 10 \
+  PR_ROWS=$(GH_HTTP_TIMEOUT="${GH_HTTP_TIMEOUT:-10}" \
+              gh pr list --author "@me" --state open --limit 10 \
               --json number,title,url,author,reviewDecision,mergeStateStatus \
               --jq '.[] | [(.number|tostring), .title, .url,
                            (.author.login // ""), (.reviewDecision // ""),

@@ -280,6 +280,7 @@ STUB_BIN="$TMP/stubbin"
 mkdir -p "$STUB_BIN"
 cat > "$STUB_BIN/gh" <<'STUB'
 #!/usr/bin/env bash
+[[ "${GH_HTTP_TIMEOUT:-}" == 10 ]] || exit 65
 if [[ "$1 $2" == "pr view" ]]; then
   [[ "$#" == 7 && "$3" == main && "$4" == --json && "$5" == baseRefName \
      && "$6" == --jq && "$7" == '.baseRefName // empty' ]] || exit 64

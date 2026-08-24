@@ -37,6 +37,7 @@ done
 
 command -v jq >/dev/null 2>&1 || { echo "portable-handoff-context.sh: jq is required" >&2; exit 4; }
 [[ "$MAX_ITEMS" =~ ^[1-9][0-9]*$ ]] || MAX_ITEMS=100
+MAX_ITEMS=$((10#$MAX_ITEMS))
 (( MAX_ITEMS <= 500 )) || MAX_ITEMS=500
 [[ -n "$SESSION_ID" ]] || SESSION_ID=default
 

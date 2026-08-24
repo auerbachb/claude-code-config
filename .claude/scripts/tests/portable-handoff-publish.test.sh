@@ -84,6 +84,22 @@ OUT3=$("$SUT" --input "$DOC" --repo test/portable --session session-2 \
   --out-dir "$OUT_DIR" --lint "$LINT" --lint-root "$REPO_ROOT")
 check "a different session has a different canonical path" test "$OUT3" != "$OUT1"
 
+# External validation must run before the canonical lock is acquired. Otherwise
+# a slow/custom lint can outlive the stale-lock age and make valid concurrent
+# publications fail.
+UNLOCKED_LINT="$TMP/unlocked-lint.sh"
+cat >"$UNLOCKED_LINT" <<'EOF'
+#!/usr/bin/env bash
+[[ ! -e "$EXPECTED_OUTPUT.lock" ]] || exit 88
+exec "$REAL_LINT" "$@"
+EOF
+chmod +x "$UNLOCKED_LINT"
+OBSERVED_OUT=$(EXPECTED_OUTPUT="$OUT3" REAL_LINT="$LINT" \
+  "$SUT" --input "$DOC" --repo test/portable --session session-2 \
+  --out-dir "$OUT_DIR" --lint "$UNLOCKED_LINT" --lint-root "$REPO_ROOT")
+check "publisher does not hold the canonical lock while lint runs" test "$?" = 0
+check "post-lint lock still publishes to the canonical path" test "$OBSERVED_OUT" = "$OUT3"
+
 # The publisher must lint the immutable staged copy, not a mutable source path.
 # This wrapper changes the source immediately after the delegated lint returns;
 # the old lint-then-copy ordering would publish the replacement bytes.

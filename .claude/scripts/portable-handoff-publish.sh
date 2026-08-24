@@ -70,7 +70,6 @@ OUT="$OUT_DIR/portable-handoff-${safe_repo}-${digest}.md"
 [[ -r "$SCRIPT_DIR/state-lock.sh" ]] || { echo "portable-handoff-publish.sh: state-lock.sh is unavailable" >&2; exit 4; }
 # shellcheck source=state-lock.sh
 source "$SCRIPT_DIR/state-lock.sh"
-state_lock_acquire "$OUT" || exit $?
 TMP_DOC=""
 trap '[[ -z "${TMP_DOC:-}" ]] || rm -f "$TMP_DOC"; state_lock_release' EXIT
 
@@ -96,6 +95,7 @@ if ! chmod 644 "$TMP_DOC"; then
   echo "portable-handoff-publish.sh: could not set canonical note permissions; original remains at $INPUT" >&2
   exit 5
 fi
+state_lock_acquire "$OUT" || exit $?
 if ! state_lock_assert_held; then
   echo "portable-handoff-publish.sh: canonical lock changed before publish; original remains at $INPUT" >&2
   exit 6

@@ -136,6 +136,10 @@ CAPPED=$(CLAUDE_HANDOFF_MAX_ITEMS=1 CLAUDE_SESSION_STATE_FILE="$STATE" "$SUT" --
 check "dirty lists are bounded" jq -e '.working_copy.untracked_changes | length == 1' >/dev/null <<<"$CAPPED"
 check "bounded lists retain the complete streaming count" jq -e '.working_copy.untracked_change_count == 2' >/dev/null <<<"$CAPPED"
 check "truncation is reported" jq -e '.working_copy.lists_truncated == true' >/dev/null <<<"$CAPPED"
+LEADING_ZERO=$(CLAUDE_HANDOFF_MAX_ITEMS=01 CLAUDE_SESSION_STATE_FILE="$STATE" \
+  "$SUT" --cwd "$MAIN" --session session-1 --no-remote)
+check "leading-zero limits fall back without breaking jq" jq -e \
+  '.working_copy.untracked_changes | length == 2' >/dev/null <<<"$LEADING_ZERO"
 
 printf '\npassed: %d   failed: %d\n' "$passed" "$failed"
 (( failed == 0 ))
