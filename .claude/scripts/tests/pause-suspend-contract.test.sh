@@ -12,6 +12,7 @@ ARM_HOOK="$ROOT/.claude/hooks/bgwork-ceiling-arm.sh"
 COMPLETE_HOOK="$ROOT/.claude/hooks/background-task-complete.sh"
 GATE_HOOK="$ROOT/.claude/hooks/pause-launch-gate.sh"
 REGISTRY="$ROOT/.claude/scripts/background-task-registry.sh"
+PAUSE_SCRIPT="$ROOT/.claude/scripts/execution-pause.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 has() { grep -Eq -- "$2" "$1" || fail "$(basename "$1") missing: $2"; }
@@ -34,6 +35,8 @@ has "$COMPLETE_HOOK" 'CLAUDE_STATE_LOCK_TIMEOUT=3'
 has "$COMPLETE_HOOK" 'CLAUDE_STATE_RMW_MAX_RETRY=0'
 has "$GATE_HOOK" 'CLAUDE_STATE_LOCK_TIMEOUT=3'
 has "$GATE_HOOK" 'RC.*-eq 6'
+has "$PAUSE_SCRIPT" 'execution-pause-markers'
+has "$PAUSE_SCRIPT" 'chmod 700'
 has "$REGISTRY" 'failed\|stop_failed\|rearmed'
 has "$SUSPEND" 'SUSPEND_PERSISTED!=0'
 has "$SUSPEND" 'SUSPEND_PERSISTED != 0.*INCOMPLETE SHUTDOWN'

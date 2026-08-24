@@ -17,7 +17,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SESSION_STATE_SH="$SCRIPT_DIR/session-state.sh"
 LOCK_LIB="$SCRIPT_DIR/state-lock.sh"
 STATE_FILE="${CLAUDE_SESSION_STATE_FILE:-$HOME/.claude/session-state.json}"
-MARKER_DIR="${CLAUDE_EXECUTION_PAUSE_MARKER_DIR:-/tmp}"
+DEFAULT_MARKER_DIR="$HOME/.claude/execution-pause-markers"
+MARKER_DIR="${CLAUDE_EXECUTION_PAUSE_MARKER_DIR:-$DEFAULT_MARKER_DIR}"
+MARKER_DIR_IS_DEFAULT=0
+[[ -n "${CLAUDE_EXECUTION_PAUSE_MARKER_DIR:-}" ]] || MARKER_DIR_IS_DEFAULT=1
+umask 077
 
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "execution-pause.sh: $1" >&2; exit 2; }
@@ -92,6 +96,12 @@ case "$MODE" in
       echo "execution-pause.sh: could not create marker directory $MARKER_DIR" >&2
       exit 5
     }
+    if [[ "$MARKER_DIR_IS_DEFAULT" == 1 ]]; then
+      chmod 700 "$MARKER_DIR" 2>/dev/null || {
+        echo "execution-pause.sh: could not secure marker directory $MARKER_DIR" >&2
+        exit 5
+      }
+    fi
     MARKER_TMP="$(mktemp "$MARKER_DIR/.execution-pause.XXXXXX")" || {
       echo "execution-pause.sh: could not create marker temp file in $MARKER_DIR" >&2
       exit 5

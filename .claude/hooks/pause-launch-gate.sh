@@ -47,7 +47,7 @@ resolve_payload_repo() {
 }
 REPO_KEY="$(resolve_payload_repo)"
 if [[ ! -x "$PAUSE_SH" ]]; then
-  MARKER_DIR="${CLAUDE_EXECUTION_PAUSE_MARKER_DIR:-/tmp}"
+  MARKER_DIR="${CLAUDE_EXECUTION_PAUSE_MARKER_DIR:-$HOME/.claude/execution-pause-markers}"
   scope_hash() {
     local digest=""
     if command -v sha256sum >/dev/null 2>&1; then

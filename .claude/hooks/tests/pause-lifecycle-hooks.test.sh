@@ -29,6 +29,11 @@ scope_hash() {
     printf '%s\0%s' "$repo" "$sid" | shasum -a 256 | awk '{print $1}'
   fi
 }
+mode_of() {
+  local mode=""
+  mode="$(stat -c %a "$1" 2>/dev/null)" || mode="$(stat -f %Lp "$1" 2>/dev/null)"
+  printf '%s' "$mode"
+}
 
 gate() {
   local tool="$1" bg="${2:-false}" cwd="${3:-$CWD}"
@@ -155,6 +160,20 @@ COLLIDE_B_MARKER="$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-v2-$
   fail "clearing one colliding legacy scope unblocked another"
 "$PAUSE" --repo "$COLLIDE_B" --clear --session "$COLLIDE_SID"
 ok "marker hashing isolates repository/session scopes without sanitization collisions"
+
+PRIVATE_HOME="$TMP/private-home"
+mkdir -p "$PRIVATE_HOME/.claude"
+PRIVATE_SESSION=private-marker
+env -u CLAUDE_EXECUTION_PAUSE_MARKER_DIR HOME="$PRIVATE_HOME" \
+  "$PAUSE" --repo "$REPO" --activate --session "$PRIVATE_SESSION" \
+  --command pause --window-minutes 5
+PRIVATE_DIR="$PRIVATE_HOME/.claude/execution-pause-markers"
+PRIVATE_MARKER="$PRIVATE_DIR/claude-execution-pause-v2-$(scope_hash "$REPO" "$PRIVATE_SESSION")"
+[[ "$(mode_of "$PRIVATE_DIR")" == 700 ]] || fail "default marker directory is not private"
+[[ "$(mode_of "$PRIVATE_MARKER")" == 600 ]] || fail "default marker file is not owner-only"
+env -u CLAUDE_EXECUTION_PAUSE_MARKER_DIR HOME="$PRIVATE_HOME" \
+  "$PAUSE" --repo "$REPO" --clear --session "$PRIVATE_SESSION"
+ok "default pause markers live in an owner-private directory"
 
 # A partial installation must still honor positive pause evidence even when the
 # helper disappeared after activation.
