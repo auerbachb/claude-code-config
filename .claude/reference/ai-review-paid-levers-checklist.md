@@ -2,6 +2,33 @@
 
 Issue: [#1213](https://github.com/auerbachb/claude-code-config/issues/1213) — **closed 2026-08-22.** Its recorded decisions stand and are carried below; the still-live owner actions moved to [#1228](https://github.com/auerbachb/claude-code-config/issues/1228). This file was synced to those decisions by [#1227](https://github.com/auerbachb/claude-code-config/issues/1227).
 
+> ## TERMINAL — every lever on this list is closed (2026-08-23)
+>
+> [#1228](https://github.com/auerbachb/claude-code-config/issues/1228) **closed 2026-08-23**, and with
+> it this tracker reached its end state: **nothing here is pending, blocked, or awaiting an owner
+> click.** Each item below reads **done**, **declined**, or **waived**. The one gate that survived
+> into 2026-08-23 — the incomplete CodeRabbit billing profile — was **completed by the owner**, and
+> the two items it held resolved in opposite directions:
+>
+> | Lever | Terminal state | Result |
+> |---|---|---|
+> | CodeRabbit seats **3 → 2** (item 5) | **DONE** 2026-08-23 | bill moved **$90 → $60/mo** |
+> | CodeRabbit **monthly → annual** (item 3) | **DECLINED** by the owner 2026-08-23 | **stays monthly at $60/mo** |
+>
+> **The declined cadence is the one to read carefully.** It overrides
+> [#1212](https://github.com/auerbachb/claude-code-config/issues/1212)'s written recommendation
+> ("stay paid, switch to annual"), whose *stay paid* half still stands. Monthly at 2 seats is a
+> deliberate owner choice about committing 12 months of spend — **not an untaken lever, not a missed
+> renewal deadline, and not drift for the monthly audit to flag.** Do not re-propose it by
+> recomputing the 20% discount; the discount was never the disputed part.
+>
+> **Deliberately unrecorded:** Greptile's payment provenance — which card the `auerbachb` org
+> charges — is still being verified by the billing admin out-of-band. Its absence here is a decision,
+> not a gap; add a line when the answer lands.
+>
+> This file stays a standing tracker. If a new paid lever appears, add it — but nothing below is
+> awaiting anyone.
+
 Dashboard readings every figure rests on: [`ai-review-billing-dashboard-2026-08.md`](./ai-review-billing-dashboard-2026-08.md) (#1204)
 
 Roles the spend buys: [`ai-review-chain-roles-decision.md`](./ai-review-chain-roles-decision.md) (#1199)
@@ -66,26 +93,38 @@ billing page (#1228). **Nothing on this list is blocked.**
 | CodeRabbit OSS-tier verdict | [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) | **Cleared 2026-08-21 — OSS declined, stay paid** ([`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md)) | Item 3 (billing cadence) — **unblocked** |
 | ~~**New blocker, raised 2026-08-21** — Greptile free-vs-paid, from the billing page~~ | [#1228](https://github.com/auerbachb/claude-code-config/issues/1228) | **RESOLVED 2026-08-22 — the org is PAID.** Billing page read live: Active, 6 Aug – 6 Sep invoice $72 → **$36**, **"No cap on flex usage"**. The owner's free-tier account described `localmovers-com`. | Item 1 — **unblocked**; see item 1 for what the answer changed |
 
-| **New blocker, found 2026-08-22 evening** — CodeRabbit billing profile incomplete | [#1228](https://github.com/auerbachb/claude-code-config/issues/1228) | **OPEN.** `Billing → Edit → Continue` opens a **Chargebee billing-details form** (name, company, phone, billing email, tax ID, billing address). No *change* to the CodeRabbit plan can be committed until it is completed — it is owner-only data, so no agent can clear it. | Items **3 and 5**; plus any future change to item 4's cap |
+| ~~**New blocker, found 2026-08-22 evening** — CodeRabbit billing profile incomplete~~ | [#1228](https://github.com/auerbachb/claude-code-config/issues/1228) | **CLOSED 2026-08-23 — the owner completed the profile.** As found: `Billing → Edit → Continue` opened a **Chargebee billing-details form** (name, company, phone, billing email, tax ID, billing address), owner-only data no agent could clear, blocking every *change* to the CodeRabbit plan. With it done, both items it held were decided — item 5 **applied**, item 3 **declined**. | ~~Items **3 and 5**; plus any future change to item 4's cap~~ — **blocks nothing** |
 
-**One gate remains, and it is a single form.** The three original gates and the Greptile-billing gate
-are all closed. What replaced them gates every *change* to the CodeRabbit plan — seat count, cadence,
-and add-on settings alike. It does **not** gate item 4's current state, which is already enabled and
-capped; only a future cap adjustment would meet this gate. Items 1 and 2 are unaffected.
+**No gate remains.** The three original gates, the Greptile-billing gate, and the billing-profile form
+are all closed. That last one gated every *change* to the CodeRabbit plan — seat count, cadence, and
+add-on settings alike — and once the owner cleared it on 2026-08-23 the two items behind it were
+settled in opposite directions rather than left waiting. It never gated item 4's current state, which
+was already enabled and capped; a future cap adjustment is now simply an owner decision with nothing
+in front of it. Items 1 and 2 are unaffected.
 
 ## The levers
 
-Numbered as originally written; **the numbering is stable, the priority is not.** Work order as of
-2026-08-22 evening: **complete the CodeRabbit billing profile**, then **item 5 (cut the seat) before
-item 3 (annual switch)** — the cadence applies to the post-cut seat count, and both are time-boxed to
-27 Aug. **Item 2 runs in parallel**, re-scoped to a single-repo request with an unknown saving; it is
-no longer "the best ungated move" the 2026-08-21 ordering called it, because the $576/yr that ranked
-it there was an account-wide figure that is now declined.
-**Item 1 is closed, not first** — its self-serve enrolment was exercised on 2026-08-22 and **refused**
-(50-star minimum). It is off the work order entirely until the repo passes 50 stars. **Item 4 is also
-closed** — the add-on was already enabled. What is left is item 2 re-scoped to a single repo, and the
-**item 5 → item 3** pair, which now share one prerequisite: **completing the CodeRabbit billing
-profile.** The `Depends on:` field, not the number, is what decides when an item may be worked.
+Numbered as originally written; **the numbering is stable, the priority is not.** **There is no work
+order any more — as of 2026-08-23 every item is terminal**, so the list below reads as a record of
+what was decided rather than a queue:
+
+| # | Lever | Terminal state |
+|---|---|---|
+| 1 | Greptile OSS enrolment | **CLOSED — ineligible** (50-star minimum, repo has 3; exercised and refused 2026-08-22). Kept and capped at $100 instead. |
+| 2 | CodeAnt 100% OSS discount | **Account-wide DECLINED** on principle 2026-08-22; the per-repo email was optional and is **WAIVED** by the owner at #1228's close. Keep budgeting $48/mo. |
+| 3 | CodeRabbit billing cadence | **DECLINED 2026-08-23 — stays monthly**, $60/mo at 2 seats. |
+| 4 | CodeRabbit metered add-on | **RESOLVED — already on**, capped $10. No change was needed. |
+| 5 | CodeRabbit third seat | **DONE 2026-08-23** — billed count 3 → 2, bill $90 → **$60/mo**. |
+| 6 | CodeRabbit CLI seat | **CLOSED 2026-08-21** — already seated; the throttle is repo visibility, so there was never an action. |
+
+*(Historical work order, as of 2026-08-22 evening: "complete the CodeRabbit billing profile, then item
+5 (cut the seat) before item 3 (annual switch) — the cadence applies to the post-cut seat count, and
+both are time-boxed to 27 Aug. Item 2 runs in parallel… The `Depends on:` field, not the number, is
+what decides when an item may be worked." The profile was completed, the seat cut landed, and the
+cadence was declined — all on 2026-08-23, **four days ahead of the 27 Aug renewal** — so neither the
+sequencing constraint nor the time-box binds any longer. Retained
+because the ordering logic — never prepay an annual term on a seat you are about to remove — is worth
+keeping if a cadence question ever reopens.)*
 
 ### 1. Greptile — enrol the repo in the OSS program *(CLOSED 2026-08-22: INELIGIBLE — 50-star minimum)*
 
@@ -158,11 +197,11 @@ evidence alone, which is what the owner decided on.)*
 (applied 2026-08-22); a second consecutive day of **92/92** zero consumption means it is unlikely to
 bind soon, but the exposure is bounded either way.
 
-### 2. CodeAnt — the 100% open-source discount *(RE-SCOPED 2026-08-22: account-wide DECLINED; per-repo request only)*
+### 2. CodeAnt — the 100% open-source discount *(account-wide DECLINED 2026-08-22; per-repo request WAIVED 2026-08-23)*
 
 - **Depends on:** —
-- **Submitted:** — *not submitted. Re-scoped first; see below.*
-- **Approved:**
+- **Submitted:** **never.** The account-wide framing was declined on principle 2026-08-22 (below); the narrower per-repo email was carried as *optional* into [#1228](https://github.com/auerbachb/claude-code-config/issues/1228) and **was not sent.**
+- **Approved:** n/a — **WAIVED by the owner at #1228's close, 2026-08-23.** Nothing is in flight and nothing is awaited. **Keep budgeting the full $48/mo.** Re-open only if the owner wants to send the per-repo email; the route below is still accurate.
 
 > **The account-wide framing is declined on principle (owner, 2026-08-22).** A 100%-off
 > "open source" discount applied to the *account* is a claim about the account, and **five of the six
@@ -171,8 +210,11 @@ bind soon, but the exposure is bounded either way.
 > misrepresent us, so the $576/yr figure below **is not a saving that was ever available on those
 > terms** and must not be budgeted.
 >
-> **What remains live is a per-repo request** for that one repo. Two routes exist, neither documented
-> as equivalent:
+> **Historical route — WAIVED 2026-08-23, not sent.** What follows was, as of 2026-08-22, the one
+> narrower request still considered live: a **per-repo** application for that single repo. The owner
+> waived it at #1228's close, so **no request is outstanding and no reply is expected.** The routes
+> are kept because they are accurate and would be the starting point if this is ever reopened — not
+> because anything here is pending. Two exist, neither documented as equivalent:
 > - **Self-serve app** — `github.com/apps/codeant-ai-for-open-source` ("CodeAnt AI - For open
 >   source") presents a working **Install** button. **Not installed:** nothing published says
 >   installing it makes a repo free, the repo is already covered by the paid Premium installation, and
@@ -181,8 +223,9 @@ bind soon, but the exposure is bounded either way.
 >   contact and **publishes no eligibility criteria at all** (no star count, no licence requirement).
 >
 > Item 1 is the cautionary precedent: an OSS gate can be invisible until exercised, and CodeAnt
-> publishes *no* gate to inspect. The defensible next step is the **email, scoped to the one repo,
-> sent by the owner** — not a blind install.
+> publishes *no* gate to inspect. *(As written 2026-08-22: "The defensible next step is the **email,
+> scoped to the one repo, sent by the owner** — not a blind install." That remains the right shape
+> **if** this is ever reopened, but it is **not a pending action** — the owner waived it 2026-08-23.)*
 
 **Budget $48/mo unchanged.** Premium, 2/2 seats, ACTIVE — reconfirmed 2026-08-22 — with **no
 self-serve open-source control anywhere on the subscription page**, which is why this stays a
@@ -196,39 +239,54 @@ record any reduction under `Approved:` with the amount the vendor actually confi
 
 *(The struck original read: "$48/mo → $0 if granted. **$576/yr, and nothing gates it** … the largest
 annual saving on the list — though **item 1 is now unparked and is the faster $0**." Item 1 was
-refused, and the account-wide framing is declined, so neither half stands.)* Work this;
-expect item 1 to close first. Reconfirmed by the owner 2026-08-21 (#1213) and carried into
+refused, and the account-wide framing is declined, so neither half stands.)* *(This paragraph then
+read "Work this; expect item 1 to close first." — superseded: item 1 closed as ineligible, and the
+per-repo request was waived rather than worked.)* Reconfirmed by the owner 2026-08-21 (#1213) and carried into
 [#1228](https://github.com/auerbachb/claude-code-config/issues/1228). Public repo, qualifies on its
 face, but the route is **contact-required** rather than self-serve, so it is a request with a waiting
 period, not a toggle. Its position at the top of the working order is why the list below is a
 priority hint rather than a numbering.
 
-Keep budgeting **$48/mo until approval lands.** CodeAnt is the chain's *sole source of `APPROVED`* on
-the CR path, so this account lapsing is a full stop on merges — never let a discount application put
-the subscription itself at risk.
+Keep budgeting **$48/mo indefinitely — no approval is coming** (the request was WAIVED 2026-08-23;
+nothing is in flight). *(As written, this read "until approval lands", which now implies a reply that
+will never arrive.)* CodeAnt is the chain's *sole source of `APPROVED`* on the CR path, so this
+account lapsing is a full stop on merges — the standing caution holds whenever a request is live:
+never let a discount application put the subscription itself at risk.
 
-### 3. CodeRabbit — decide the billing cadence
+### 3. CodeRabbit — decide the billing cadence *(DECIDED 2026-08-23: DECLINED — we stay monthly)*
 
-- **Depends on:** two things now. [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) — the OSS-tier verdict — **cleared 2026-08-21**. And, found 2026-08-22 evening, the **incomplete CodeRabbit billing profile**: the cadence control sits inside `Billing → Edit`, whose **Continue** opens the Chargebee billing-details form. **Blocked until the owner completes it.** Then **cut the seat in item 5 first**, or you prepay a year for a seat that authors nothing.
-- **Submitted:**
-- **Approved:**
+- **Depends on:** — nothing any more. Both gates cleared: [#1212](https://github.com/auerbachb/claude-code-config/issues/1212)'s OSS-tier verdict **2026-08-21**, and the **CodeRabbit billing profile** (the cadence control sits inside `Billing → Edit`, whose **Continue** opened the Chargebee form) **completed by the owner 2026-08-23**.
+- **Submitted:** n/a — the decision was made before any plan change was submitted.
+- **Approved:** **never — DECLINED by the owner 2026-08-23** (#1228). CodeRabbit stays on **Monthly at 2 seats, $60/mo.**
 
-Annual is $24/seat vs $30/seat monthly, and **the seat count it applies to changed** (item 5). Do the
-cut first, then switch:
+> **This is a decision, not an unfinished item.** Everything below is the case *for* annual, and it
+> was a good case — it is retained so the next reader can see the recommendation was made, put to the
+> owner with the gate cleared and the renewal still ahead, and **overruled**. What the owner declined
+> is the **12-month commitment**, not the arithmetic: annual really is 20% cheaper, and recomputing
+> that discount is not new information. A future audit finding "monthly, when annual is cheaper"
+> is reading **expected state**.
+>
+> The one thing that would reopen it is a *changed premise* — a materially different seat count, a
+> vendor term change, or the owner saying so. Not a re-derivation of the same $144.
+
+Annual is $24/seat vs $30/seat monthly, and **the seat count it applies to changed** (item 5). The
+recommended sequence was cut first, then switch:
 
 | Order | Seats | Monthly | Annual |
 |---|---|---|---|
-| Today | 3 | $90/mo | $72/mo |
-| **After the item-5 cut** | **2** | **$60/mo** | **$48/mo** |
+| As found | 3 | $90/mo | $72/mo |
+| After the item-5 cut | **2** | **$60/mo — where we landed** | ~~$48/mo~~ — declined |
 
-**Confirmed still unapplied 2026-08-22** (#1228), read from the `auerbachb` billing page: Pro, Active,
-**"3 of 3 assigned"**, **$90**, **Billing cycle Monthly**, **Next renewal 27 Aug 2026** — corroborated
-by the app's own plan record, `CRB_PRO_MONTHLY_SUBSCRIPTION_PER_SEAT-USD-Monthly`. **Five days.** Past
-27 Aug the annual saving waits a full cycle, which makes items 5-then-3 the only time-boxed pair on
-this list.
+**Where it actually landed (2026-08-23):** the seat cut was taken and the cadence switch was not, so
+the billed state is **Pro, Active, 2 seats, $60/mo, Billing cycle Monthly.** *(As read 2026-08-22,
+before either change: "3 of 3 assigned", **$90**, **Monthly**, **Next renewal 27 Aug 2026** —
+corroborated by the app's own plan record, `CRB_PRO_MONTHLY_SUBSCRIPTION_PER_SEAT-USD-Monthly`. The
+27 Aug time-box that made 5-then-3 the only time-boxed pair on this list no longer binds — **the
+owner decided on 2026-08-23, four days ahead of it.** The deadline was met, not missed.)*
 
-So the sequence **$90/mo → $48/mo** is the two levers together, and annual alone is worth **$144/yr**
-at 2 seats (not the $216/yr it was worth at 3). No capability change either way. The catch was only
+So of the sequence **$90/mo → $48/mo**, only the first half was taken — **$90 → $60/mo**. Annual alone
+would have been worth **$144/yr** at 2 seats (not the $216/yr it was worth at 3), and that is the
+saving the owner chose not to buy with a 12-month commitment. No capability change either way. The catch was only
 that it is worth doing **if we stay paid at all** — and that question is now answered. [#1212](https://github.com/auerbachb/claude-code-config/issues/1212) declined the OSS
 tier on two documented constraints — under 10 stars (this repo has 3) reviews stop being automatic and
 must be triggered by comment, and the metered add-on in item 4 is Pro/Pro+ only, so it becomes
@@ -238,12 +296,14 @@ onto Greptile's flex rather than saved — a line that was uncapped when that ve
 **capped at $100 since 2026-08-22** (item 1), which bounds the displacement without eliminating it
 ([`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md)). Nothing now strands the commitment —
 the remaining move on this tool is Pro+, which sits second-line behind item 4's metered lever, and
-that is an *upgrade* rather than an escape. **Renewal is 2026-08-27**; past that the saving waits a
-cycle.
+that is an *upgrade* rather than an escape. *(As written, this paragraph closed "**Renewal is
+2026-08-27**; past that the saving waits a cycle." That renewal is no longer a deadline — the owner
+reached the decision ahead of it and declined, so the cadence is settled rather than deferred to the
+next cycle.)*
 
 ### 4. CodeRabbit — the usage-based add-on *(RESOLVED 2026-08-22: it is already ON, capped at $10)*
 
-- **Depends on:** — nothing, for the *decision*. Changing the cap is gated by the billing profile (see item 3).
+- **Depends on:** — **nothing.** Neither the decision nor a future cap change is gated any more: the billing profile that once blocked plan changes was **completed by the owner 2026-08-23** (see §Gate state). *(Historical: this read "Changing the cap is gated by the billing profile (see item 3)" while that form was outstanding.)* Raising or lowering the $10 cap is now simply an owner decision with nothing in front of it.
 - **Submitted:** n/a — no purchase was needed.
 - **Approved:** **already in effect.** Read from `Billing → Edit` on 2026-08-22: **Usage-based reviews ON**, spend cap **$10**; AI Deep Scan usage **Off**; Agent usage **Off**.
 
@@ -261,8 +321,11 @@ cycle.
 > overflow per cycle against a measured problem of 196 of 290 reviews rate-limited and **"3 developers
 > (100%) hit review rate limits in the last 30 days"** (CodeRabbit's own Explore page, 2026-08-22) —
 > corroborated by the audit's `rate_limit` D3 on 217 PRs. The investigated sizing was **~$50** against
-> **$147–247/mo** to cover the whole overflow. Revisit once the seat cut lands and the demand picture
-> settles; raising it is an add-on change and therefore sits behind the same billing form.
+> **$147–247/mo** to cover the whole overflow. **Both preconditions are now met**: the seat cut landed
+> 2026-08-23 and the billing form is complete, so raising the cap is an owner decision with nothing
+> gating it — worth revisiting once a cycle of post-cut demand data exists. *(As written 2026-08-22:
+> "Revisit once the seat cut lands and the demand picture settles; raising it is an add-on change and
+> therefore sits behind the same billing form." The form no longer blocks it.)*
 
 This is a **spend** that buys back throughput, not a saving. The problem measured large: 196 of
 290 reviews rate-limited (68%), 87.4h average wait, and **36% of blocked PRs merged unreviewed**.
@@ -281,11 +344,11 @@ enabled without it." Both halves are superseded by the 2026-08-22 reading — th
 capped at $10, despite the profile still being incomplete. The profile blocks *changes* to the plan,
 not this add-on's existing state. Sizing figures are retained in the block above.)*
 
-### 5. CodeRabbit — cut the third seat *(DECIDED 2026-08-21 — this is a saving, not a purchase)*
+### 5. CodeRabbit — cut the third seat *(DONE 2026-08-23 — both halves landed)*
 
-- **Depends on:** the **incomplete CodeRabbit billing profile** (see item 3) — for the *billed* half only.
-- **Submitted:** 2026-08-22 — **seat unassigned.** `zilbermang` moved to `Unassigned`; roster now reads **`2 of 3 assigned`**.
-- **Approved:** — *not yet. The bill has not moved: still **`Billing amount $90`**, **Monthly**.*
+- **Depends on:** — cleared. The **CodeRabbit billing profile** that gated the *billed* half was completed by the owner 2026-08-23.
+- **Submitted:** 2026-08-22 — **seat unassigned.** `zilbermang` moved to `Unassigned`; roster read **`2 of 3 assigned`**.
+- **Approved:** **2026-08-23 — billed seat count cut 3 → 2 and the bill moved: $90/mo → `$60/mo`, Monthly** (#1228). Both halves of this item are now done.
 
 > **This is two changes, not one — and the checklist previously treated it as one.** Unassigning a
 > seat frees it from a person; it does **not** reduce the purchased seat count or the invoice.
@@ -297,8 +360,11 @@ not this add-on's existing state. Sizing figures are retained in the block above
 > Secured by Chargebee* — then **cancelled** rather than entering the owner's personal and payment
 > details. State re-verified unchanged afterwards.
 >
-> So the **$30/mo** this item is worth is still outstanding, and it is **time-boxed to 27 Aug 2026**
-> alongside item 3.
+> **Both steps are now complete.** The owner finished the Chargebee form on 2026-08-23 and committed
+> the seat reduction, so the **$30/mo** this item is worth is **realised**, not outstanding. *(As
+> written 2026-08-22 this read: "the $30/mo this item is worth is still outstanding, and it is
+> time-boxed to 27 Aug 2026 alongside item 3." The time-box was met.)* The two-changes-not-one
+> distinction above is the part worth keeping: **unassigning a seat never moves the bill.**
 
 **This item used to read "assign seats to the three unassigned authors." That was wrong, and the
 owner's answer is the opposite: remove a seat.** The original framing pooled two GitHub orgs
@@ -312,9 +378,10 @@ owner's answer is the opposite: remove a seat.** The original framing pooled two
 | `davidpetersen`, `mirkosalvato1-ctrl` | 0 authored | no seat |
 | `farwabraza`, `paulkathat-lmc`, `memibar` | out of scope | no seat on this account — separate org, separate CodeRabbit account |
 
-**Result: 3 seats → 2.** $90/mo → **$60/mo** monthly, or **$48/mo** once item 3's annual switch is
-applied on top. Take this one **before** item 3, so the annual commitment is not prepaid on a dead
-seat. **Confirmed still unapplied 2026-08-22** — the billing page reads "3 of 3 assigned", $90.
+**Result: 3 seats → 2 — applied 2026-08-23.** $90/mo → **$60/mo** monthly. It would have been $48/mo
+had item 3's annual switch gone on top, but **that switch was declined**, so $60/mo monthly is where
+this lands. The ordering rule still earned its keep: taking the cut first meant no annual commitment
+was ever prepaid on a dead seat. *(Read 2026-08-22, before the change: "3 of 3 assigned", $90.)*
 
 **Correction to the justification, which does not change the decision (#1228, 2026-08-22).** The
 "0 across every repo swept, both orgs" claim is **false as written**. CodeRabbit's own team-management
@@ -368,19 +435,29 @@ answered whether the OSS tier changes any of this: **it does not.** The CLI pool
 repository visibility, not by plan, so a public repo draws free-OSS CLI limits on Pro **and** on OSS —
 the surface cancels out of that comparison entirely ([`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md)).
 
-## Free levers still outstanding
+## Free levers — both resolved 2026-08-22
 
 Not paid levers, tracked here because [#1209](https://github.com/auerbachb/claude-code-config/issues/1209)
-closed with these un-applied and nothing else now holds them. Both are BugBot settings, sized from the
-per-repo run split read 2026-08-22 (#1228, recorded in
-[`ai-review-billing-dashboard-2026-08.md`](./ai-review-billing-dashboard-2026-08.md) §Round 4).
+closed with these un-applied. **Neither is outstanding any more** — both were settled in the owner
+session recorded as §Round 5 of
+[`ai-review-billing-dashboard-2026-08.md`](./ai-review-billing-dashboard-2026-08.md), sized from the
+per-repo run split in §Round 4 (#1228). Both are BugBot settings.
 
-**Autofix → Off — the only BugBot lever with money behind it.** 299 autofix runs, **0 ever merged**,
-at the ~$1.58/run rate ≈ **$470 of runs nobody used**, roughly 27% of lifetime run volume. It touches
-none of the aggressive settings the owner deliberately kept (Every Push, Effort High, Drafts On,
-Incremental Off), so it is separable from that decision rather than a re-litigation of it.
+**Autofix → Off — APPLIED 2026-08-22. The only BugBot lever with money behind it, and it was taken.**
+Confirmed two ways on the dashboard: `Autofix Mode` reads `Off`, and the dependent `Autofix Severity
+Threshold` row disappeared with it. 299 autofix runs, **0 ever merged**, at the ~$1.58/run rate ≈
+**$470 of runs nobody used** — **a lifetime figure** (roughly 27% of lifetime run volume), so it
+measures spend already incurred, not a per-cycle saving now banked. The waste stops here; **what it
+is worth per month is unmeasured** until a full cycle runs with autofix off. It touched none of the
+aggressive settings the owner deliberately kept (Every Push, Effort High, Drafts On, Incremental Off),
+so it was separable from that decision rather than a re-litigation of it.
 
-**Dropping the 23 `LocalMovers-dot-com` repos — worth $0 today, and must not be budgeted as a saving.**
+**Dropping the 23 `LocalMovers-dot-com` repos — DECLINED 2026-08-22. Worth $0 today, and must not be budgeted as a saving.**
+The decline had a second reason beyond the $0 sizing: **there is no coverage control to click.**
+`Bugbot → Organizations → Manage` navigates to Cursor's GitHub App installation for the whole org,
+which also governs Cloud Agents and codebase context — a materially wider blast radius than the
+coverage toggle #1228 assumed existed. The blast-radius argument below is why it remains worth
+revisiting if that team ever starts opening PRs, but it is **recorded as a decline, not as pending.**
 Six repositories out of 87 enabled (64 + 0 + 23 across the three connected orgs) account for **100%**
 of BugBot's lifetime runs — 1,097 runs / 382 PRs — and **all six are in `auerbachb`**: skingod 502,
 inventory 247, claude-code-config 179, still-point 83, meeting_insights_and_actions 55, longlove 31.
@@ -413,14 +490,27 @@ settings changes is stale** — the canonical rejection record is
 | CodeRabbit **Incremental review → Off** | **DECLINED — leave ON** | It catches real errors on nearly every push of an AI-authored PR. The rate-limit saving does not outweigh losing that. (This is what voids item 4's sizing.) |
 | BugBot **Effort High → Medium**, **Trigger Mode Every Push → once per PR** | **DECLINED — the aggressive core stays** | The owner wants the spend down but the review aggressive. These two are deliberately not on the table. |
 
-**BugBot cost reduction is still wanted** — just not by softening the review. The accepted levers, in
-descending value, are carried to [#1228](https://github.com/auerbachb/claude-code-config/issues/1228):
+**BugBot cost reduction is still wanted** — just not by softening the review. The accepted levers were
+carried to [#1228](https://github.com/auerbachb/claude-code-config/issues/1228), and **all three
+reached a terminal state when it closed 2026-08-23**:
 
-1. **Autofix → Off** — 299 runs, **0 ever merged**. Pure waste, and it costs zero review coverage.
-2. **Drop the 23 out-of-scope org repos** from BugBot coverage — spend with no value to this account
-   under §Scope boundary. Pull the per-repo run split from the analytics page to size it first.
-3. **Incremental Review → On** and **Draft PRs → Off** — both cut re-review volume without lowering
-   effort on the review that matters.
+1. **Autofix → Off** — **APPLIED 2026-08-22.** 299 runs, **0 ever merged**. Pure waste, and it cost
+   zero review coverage — which makes it the **clearest** lever taken in the whole effort, though not
+   a quantified one. **The ~$470 is historical waste, not money now banked:** 299 runs is the
+   **lifetime** autofix volume (27% of lifetime run volume, Round 4), so that figure measures spend
+   already incurred. Switching autofix off **prevents further spend of the same kind**; how much it
+   avoids per cycle is **unmeasured**. Re-measure after a full cycle with autofix off before quoting
+   any saving figure, monthly or otherwise.
+2. **Drop the 23 out-of-scope org repos** from BugBot coverage — **DECLINED 2026-08-22.** The
+   per-repo run split sized it at **$0** (not one run has ever come from those repos), and the only
+   route is the org-wide GitHub App installation. Blast radius exceeded the benefit.
+3. **Incremental Review → On** and **Draft PRs → Off** — **WAIVED by the owner at #1228's close,
+   2026-08-23. Not applied.** The dashboard was re-read after the Autofix change on 2026-08-22 and
+   still showed **Incremental Review `Off`** and **Review Draft PRs `On`** — i.e. these two were never
+   taken, and the close waived the remaining optional items rather than completing them. Recorded as
+   waived, not done: a lever nobody clicked must not read as a landed saving. Re-open only if the
+   owner asks; the rationale (both cut re-review volume without lowering effort on the review that
+   matters) is unchanged and still correct.
 
 **Also settled, not declined:** the **commit-identity fix is DONE.** The global git identity was the
 placeholder `CI <ci@example.com>` — the actual cause of CodeAnt's "no PR Review subscription" warning
@@ -444,9 +534,21 @@ Recorded so nobody resurrects them.
   three (item 5). This supersedes `pricing-matrix.md` owner-action item 10 and its §CodeRabbit "seat
   coverage gap" paragraph, both of which read three orgs' authors as one pool.
 
-`pricing-matrix.md` is **not edited** to reflect any of these. It is a point-in-time record exempt
-from corpus-wide rewrites (`README.md` §"Audits and research"); rewriting it to match today would
-falsify the history it exists to preserve. Its now-settled items are superseded **here** instead.
+- **"Switch CodeRabbit from monthly to annual billing" — superseded by the owner's decline
+  (2026-08-23, #1228).** The recommendation was live in three places, and the owner overrode it after
+  the gate cleared: **monthly at 2 seats, $60/mo, is the standing state** (item 3). This supersedes
+  [`cr-oss-vs-paid-decision.md`](./cr-oss-vs-paid-decision.md)'s headline verdict — *"stay paid, and
+  switch to annual billing"*, whose **stay-paid half still stands** — and `pricing-matrix.md`
+  owner-action item 4 and its §CodeRabbit "$216/year saving" paragraph. Do not re-derive it from the
+  20% discount; the discount was never the disputed part. The 12-month commitment was.
+
+**Neither `pricing-matrix.md` nor `cr-oss-vs-paid-decision.md` is edited** to reflect any of these.
+Both are point-in-time records exempt from corpus-wide rewrites (`README.md` §"Audits and research");
+rewriting them to match today would falsify the history they exist to preserve. **Their surviving
+annual recommendations are therefore expected, not oversights** — they are superseded **here** and in
+[`ai-review-chain-roles-decision.md`](./ai-review-chain-roles-decision.md) §Operator actions item 6,
+which are the standing records. A reader who finds "switch to annual" in either exempt file should
+land back here before acting on it.
 
 ## References
 
