@@ -23,6 +23,23 @@ CWD="$(field '.cwd')"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PAUSE_SH="${SCRIPT_DIR%/hooks}/scripts/execution-pause.sh"
+SESSION_STATE_SH="${SCRIPT_DIR%/hooks}/scripts/session-state.sh"
+
+resolve_payload_repo() {
+  local key=""
+  if [[ -n "$CWD" && -d "$CWD" && -x "$SESSION_STATE_SH" ]]; then
+    key="$(cd "$CWD" && unset CLAUDE_SESSION_REPO && \
+      "$SESSION_STATE_SH" --repo-key 2>/dev/null)" || key=""
+  fi
+  if [[ -z "$key" || "$key" == _unknown ]]; then
+    key="${CLAUDE_SESSION_REPO:-${key:-_unknown}}"
+  fi
+  if [[ "$key" != _unknown && ! "$key" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+    key=_unknown
+  fi
+  printf '%s' "$key" | tr '[:upper:]' '[:lower:]'
+}
+REPO_KEY="$(resolve_payload_repo)"
 if [[ ! -x "$PAUSE_SH" ]]; then
   SAFE_SESSION="${SESSION_ID//[^[:alnum:]_.-]/_}"
   MARKER_DIR="${CLAUDE_EXECUTION_PAUSE_MARKER_DIR:-/tmp}"
@@ -39,9 +56,9 @@ fi
 STATUS=""
 RC=0
 if [[ -n "$CWD" && -d "$CWD" ]]; then
-  STATUS="$(cd "$CWD" && "$PAUSE_SH" --status --session "$SESSION_ID" 2>/dev/null)" || RC=$?
+  STATUS="$(cd "$CWD" && "$PAUSE_SH" --repo "$REPO_KEY" --status --session "$SESSION_ID" 2>/dev/null)" || RC=$?
 else
-  STATUS="$("$PAUSE_SH" --status --session "$SESSION_ID" 2>/dev/null)" || RC=$?
+  STATUS="$("$PAUSE_SH" --repo "$REPO_KEY" --status --session "$SESSION_ID" 2>/dev/null)" || RC=$?
 fi
 
 # A confirmed active state includes the marker-backed fail-closed path when

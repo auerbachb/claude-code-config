@@ -34,8 +34,8 @@ json_field() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CEILING_SH="${SCRIPT_DIR%/hooks}/scripts/bgwork-ceiling.sh"
-[[ -x "$CEILING_SH" ]] || exit 0
 REGISTRY_SH="${SCRIPT_DIR%/hooks}/scripts/background-task-registry.sh"
+SESSION_STATE_SH="${SCRIPT_DIR%/hooks}/scripts/session-state.sh"
 
 SESSION_ID=$(json_field '.session_id')
 SESSION_ID="${SESSION_ID:-${CLAUDE_SESSION_ID:-default}}"
@@ -48,6 +48,22 @@ PARENT_AGENT_ID=$(json_field '.agent_id')
 TASK_NAME=$(json_field '.tool_input.name // .tool_input.description')
 OUTPUT_FILE=$(json_field '.tool_response.outputFile // .tool_response.output_file')
 RECOVERY_PATH=$(json_field '.tool_response.worktreePath // .tool_response.worktree_path')
+
+resolve_payload_repo() {
+  local key=""
+  if [[ -n "$CWD" && -d "$CWD" && -x "$SESSION_STATE_SH" ]]; then
+    key="$(cd "$CWD" && unset CLAUDE_SESSION_REPO && \
+      "$SESSION_STATE_SH" --repo-key 2>/dev/null)" || key=""
+  fi
+  if [[ -z "$key" || "$key" == _unknown ]]; then
+    key="${CLAUDE_SESSION_REPO:-${key:-_unknown}}"
+  fi
+  if [[ "$key" != _unknown && ! "$key" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+    key=_unknown
+  fi
+  printf '%s' "$key" | tr '[:upper:]' '[:lower:]'
+}
+REPO_KEY="$(resolve_payload_repo)"
 
 REGISTRY_FAILURE_DIR="${CLAUDE_BACKGROUND_TASK_FAILURE_DIR:-${CLAUDE_BGWORK_MARKER_DIR:-/tmp}}"
 SAFE_SESSION_ID="${SESSION_ID//[^[:alnum:]_.-]/_}"
@@ -79,7 +95,7 @@ register_runtime_task() {
     return 0
   fi
   local -a args
-  args=(--register --session "$SESSION_ID" --task-id "$task_id"
+  args=(--repo "$REPO_KEY" --register --session "$SESSION_ID" --task-id "$task_id"
         --type "$task_type" --name "$name")
   [[ -n "$PARENT_AGENT_ID" ]] && args+=(--parent-agent "$PARENT_AGENT_ID")
   [[ -n "$OUTPUT_FILE" ]] && args+=(--output-file "$OUTPUT_FILE")
@@ -101,7 +117,7 @@ transition_runtime_task() {
     return 0
   fi
   local -a args
-  args=(--transition --session "$SESSION_ID" --task-id "$task_id" --status "$status")
+  args=(--repo "$REPO_KEY" --transition --session "$SESSION_ID" --task-id "$task_id" --status "$status")
   local rc=0
   if [[ -n "$CWD" && -d "$CWD" ]]; then
     (cd "$CWD" && "$REGISTRY_SH" "${args[@]}") >/dev/null 2>&1 || rc=$?
@@ -139,6 +155,11 @@ case "$TOOL_NAME" in
     [[ -n "$STOPPED_TASK_ID" ]] && transition_runtime_task "$STOPPED_TASK_ID" stopped
     ;;
 esac
+
+# Runtime identity tracking is safety-critical and independent of the optional
+# silence-ceiling helper. A partial installation may lose reminders, but it
+# must not lose the exact IDs needed by /pause and /suspend.
+[[ -x "$CEILING_SH" ]] || exit "$REGISTRY_FAILURE_UNRECORDED"
 
 # --- 1. Is this call arming the ceiling watch? -------------------------------
 # Matched on the command text rather than the tool name, so arming still

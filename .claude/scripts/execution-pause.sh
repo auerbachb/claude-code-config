@@ -65,9 +65,28 @@ case "$MODE" in
     VALUE="$(jq -nc --arg command "$COMMAND_NAME" --arg session "$SESSION_ID" --arg at "$NOW" \
       --argjson window "$WINDOW" --argjson deadline "$DEADLINE_EPOCH" \
       '{active:true,command:$command,session_id:$session,window_minutes:$window,deadline_epoch:$deadline,at:$at,cleared_at:null}')"
+    mkdir -p "$MARKER_DIR" 2>/dev/null || {
+      echo "execution-pause.sh: could not create marker directory $MARKER_DIR" >&2
+      exit 5
+    }
+    MARKER_TMP="$(mktemp "$MARKER_DIR/.execution-pause.XXXXXX")" || {
+      echo "execution-pause.sh: could not create marker temp file in $MARKER_DIR" >&2
+      exit 5
+    }
+    printf '%s\n' "$VALUE" > "$MARKER_TMP" || {
+      rm -f "$MARKER_TMP"
+      echo "execution-pause.sh: could not write marker temp file $MARKER_TMP" >&2
+      exit 5
+    }
+    mv "$MARKER_TMP" "$MARKER" || {
+      rm -f "$MARKER_TMP"
+      echo "execution-pause.sh: could not publish marker $MARKER" >&2
+      exit 5
+    }
+    # Publish state only after durable positive marker evidence exists. If the
+    # state write fails, the surviving marker deliberately keeps launches
+    # blocked until an explicit clear/recovery.
     session_state --raw-path --set "$PATH_EXPR=$VALUE" || exit $?
-    mkdir -p "$MARKER_DIR" 2>/dev/null || true
-    printf '%s\n' "$VALUE" > "$MARKER" || { echo "execution-pause.sh: could not write marker $MARKER" >&2; exit 5; }
     ;;
   clear)
     NOW="$(date -u +%FT%TZ)"

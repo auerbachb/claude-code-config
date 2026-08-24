@@ -19,10 +19,27 @@ esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REGISTRY_SH="${SCRIPT_DIR%/hooks}/scripts/background-task-registry.sh"
+SESSION_STATE_SH="${SCRIPT_DIR%/hooks}/scripts/session-state.sh"
 FAILURE_DIR="${CLAUDE_BACKGROUND_TASK_FAILURE_DIR:-${CLAUDE_BGWORK_MARKER_DIR:-/tmp}}"
 SAFE_SESSION="${SESSION_ID//[^[:alnum:]_.-]/_}"
 FAILURE_MARKER="$FAILURE_DIR/claude-background-registry-failed-${SAFE_SESSION:-default}"
 FAILURE_FALLBACK="${HOME:-/tmp}/.claude/claude-background-registry-failed-${SAFE_SESSION:-default}"
+
+resolve_payload_repo() {
+  local key=""
+  if [[ -n "$CWD" && -d "$CWD" && -x "$SESSION_STATE_SH" ]]; then
+    key="$(cd "$CWD" && unset CLAUDE_SESSION_REPO && \
+      "$SESSION_STATE_SH" --repo-key 2>/dev/null)" || key=""
+  fi
+  if [[ -z "$key" || "$key" == _unknown ]]; then
+    key="${CLAUDE_SESSION_REPO:-${key:-_unknown}}"
+  fi
+  if [[ "$key" != _unknown && ! "$key" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+    key=_unknown
+  fi
+  printf '%s' "$key" | tr '[:upper:]' '[:lower:]'
+}
+REPO_KEY="$(resolve_payload_repo)"
 
 record_failure() {
   local rc="$1" line
@@ -43,10 +60,10 @@ if [[ ! -x "$REGISTRY_SH" ]]; then
 fi
 RC=0
 if [[ -n "$CWD" && -d "$CWD" ]]; then
-  (cd "$CWD" && "$REGISTRY_SH" --transition --session "$SESSION_ID" \
+  (cd "$CWD" && "$REGISTRY_SH" --repo "$REPO_KEY" --transition --session "$SESSION_ID" \
     --task-id "$AGENT_ID" --status "$TARGET") >/dev/null 2>&1 || RC=$?
 else
-  "$REGISTRY_SH" --transition --session "$SESSION_ID" --task-id "$AGENT_ID" \
+  "$REGISTRY_SH" --repo "$REPO_KEY" --transition --session "$SESSION_ID" --task-id "$AGENT_ID" \
     --status "$TARGET" >/dev/null 2>&1 || RC=$?
 fi
 if (( RC != 0 )); then
