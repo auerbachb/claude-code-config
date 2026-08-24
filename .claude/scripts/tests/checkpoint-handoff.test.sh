@@ -50,6 +50,9 @@ check_not_contains() {
   if [[ "$haystack" != *"$needle"* ]]; then pass "$desc"
   else fail "$desc (unexpectedly present: '$needle')"; fi
 }
+mode_of() {
+  if [[ "$(uname -s)" == Darwin ]]; then stat -f %Lp "$1"; else stat -c %a "$1"; fi
+}
 
 # ---- a self-contained copy of the harness the script resolves against -------
 # Laid out exactly as production is — the script under hooks, the checker one
@@ -71,9 +74,15 @@ cp "$SUT" "$FAKE/.claude/hooks/"
 cp "$LINT" "$FAKE/.claude/scripts/"
 cat >"$FAKE/.claude/scripts/portable-handoff-context.sh" <<'STUB'
 #!/usr/bin/env bash
-[[ "${CHECKPOINT_TASK_FIXTURE:-0}" == 1 ]] || exit 4
+case "${CHECKPOINT_TASK_FIXTURE:-0}" in
+  1) ;;
+  failed)
+    printf '%s\n' '{"background_tasks":{"lookup_status":"registry read failed","items":[],"total":0,"truncated":false}}'
+    exit 0 ;;
+  *) exit 4 ;;
+esac
 cat <<'JSON'
-{"background_tasks":{"items":[{"task_id":"runtime-42","name":"review worker","type":"agent","status":"stopped","work_item":"review pull request 42","output_file":"/tmp/runtime-42-output.txt","checkpoint_path":"/tmp/runtime-42-checkpoint.json","recovery_path":"/tmp/runtime-42-worktree"}],"total":1,"truncated":false}}
+{"background_tasks":{"lookup_status":"resolved","items":[{"task_id":"runtime-42","name":"review worker","type":"agent","status":"stopped","work_item":"review pull request 42","output_file":"/tmp/runtime-42-output.txt","checkpoint_path":"/tmp/runtime-42-checkpoint.json","recovery_path":"/tmp/runtime-42-worktree"}],"total":1,"truncated":false}}
 JSON
 STUB
 chmod +x "$FAKE/.claude/hooks/"*.sh "$FAKE/.claude/scripts/"*.sh
@@ -151,6 +160,8 @@ printf 'four\n' >"$BOUNDED/four.txt"
 DOC_BOUNDED=$(cd "$BOUNDED" && CLAUDE_HANDOFF_MAX_ITEMS=1 "$CP" --stdout --no-remote --out-dir "$TMP/out-bounded" 2>/dev/null)
 check_contains "T2 bounded collector reports tracked truncation" "Tracked changes: more than 1 file(s)" "$DOC_BOUNDED"
 check_contains "T2 bounded collector reports untracked truncation" "Untracked changes: more than 1 file(s)" "$DOC_BOUNDED"
+check_contains "T2 bounded collector never reports its capped dirty count as exact" \
+  "there were more than 1 uncommitted change(s)" "$DOC_BOUNDED"
 printf '%s\n' "$DOC_BOUNDED" >"$TMP/t2-bounded.md"
 "$LINT" --repo-root "$FAKE" --quiet "$TMP/t2-bounded.md" >/dev/null 2>&1
 check_eq "T2 bounded rendering passes the portability check" "0" "$?"
@@ -173,6 +184,12 @@ printf '%s\n' "$DOC_TASKS" >"$TMP/t2-tasks.md"
 "$LINT" --repo-root "$FAKE" --quiet "$TMP/t2-tasks.md" >/dev/null 2>&1
 check_eq "T2 exact task takeover details remain portable" "0" "$?"
 
+DOC_TASK_FAILURE=$(cd "$PLAIN" && CHECKPOINT_TASK_FIXTURE=failed "$CP" --stdout --no-remote \
+  --out-dir "$TMP/out-task-failure" 2>/dev/null)
+check_contains "T2 unreadable task inventory is explicit" "registry read failed" "$DOC_TASK_FAILURE"
+check_contains "T2 unreadable task inventory forbids duplicate relaunch" \
+  "Do not relaunch or replace that work" "$DOC_TASK_FAILURE"
+
 # Required sections and the absolute working directory, asserted directly rather
 # than trusting the lint's summary exit code.
 for section in "Start here" "What we're working on" "Open work" "Progress and verification" "Decisions made this session" "Local state on this machine" "Resume safely"; do
@@ -189,6 +206,7 @@ WROTE=$(cd "$PLAIN" && "$CP" --no-remote --out-dir "$OUT" 2>/dev/null)
 check_eq "T3 publish exits 0" "0" "$?"
 check_eq "T3 wrote exactly one file" "1" "$(find "$OUT" -maxdepth 1 -type f -name 'portable-handoff-*.md' | wc -l | tr -d ' ')"
 check_contains "T3 filename carries the checkpoint suffix" "-checkpoint.md" "$WROTE"
+check_eq "T3 published checkpoint is owner-only" "600" "$(mode_of "$WROTE")"
 check_eq "T3 filename matches the recorder's glob" "1" \
   "$(find "$OUT" -maxdepth 1 -type f -name 'portable-handoff-*.md' | wc -l | tr -d ' ')"
 

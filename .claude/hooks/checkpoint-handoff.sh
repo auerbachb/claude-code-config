@@ -406,6 +406,7 @@ fi
 TASKS_JSON='[]'
 TASKS_TOTAL=""
 TASKS_TRUNCATED=0
+TASKS_LOOKUP_STATUS="context snapshot unavailable"
 if command -v jq >/dev/null 2>&1 && HANDOFF_CONTEXT_SH=$(resolve_script portable-handoff-context.sh); then
   TASK_CONTEXT=$("$HANDOFF_CONTEXT_SH" --cwd "$WORKDIR" \
     --session "${CLAUDE_SESSION_ID:-default}" --no-remote 2>/dev/null) || TASK_CONTEXT=""
@@ -416,8 +417,11 @@ if command -v jq >/dev/null 2>&1 && HANDOFF_CONTEXT_SH=$(resolve_script portable
       <<<"$TASK_CONTEXT" 2>/dev/null) || TASKS_TOTAL=""
     TASKS_TRUNCATED=$(jq -r 'if .background_tasks.truncated then 1 else 0 end' \
       <<<"$TASK_CONTEXT" 2>/dev/null) || TASKS_TRUNCATED=0
+    TASKS_LOOKUP_STATUS=$(jq -r '.background_tasks.lookup_status // "lookup status unavailable"' \
+      <<<"$TASK_CONTEXT" 2>/dev/null) || TASKS_LOOKUP_STATUS="lookup status unavailable"
     [[ "$TASKS_TOTAL" =~ ^[0-9]+$ ]] || TASKS_TOTAL=""
     [[ "$TASKS_TRUNCATED" =~ ^[01]$ ]] || TASKS_TRUNCATED=0
+    [[ -n "$TASKS_LOOKUP_STATUS" ]] || TASKS_LOOKUP_STATUS="lookup status unavailable"
   fi
 fi
 
@@ -452,7 +456,9 @@ render() {
   else
     printf 'Open a terminal in the working directory named at the bottom of this document\n'
     printf 'and run `git status`'
-    if (( CHANGED_COUNT > 0 )); then
+    if (( CHANGED_TRUNCATED )); then
+      printf ' — there were more than %d uncommitted change(s) when this was written,\nso start by understanding those before doing anything else' "$MAX_PATHS"
+    elif (( CHANGED_COUNT > 0 )); then
       printf ' — there were %d uncommitted change(s) when this was written,\nso start by understanding those before doing anything else' "$CHANGED_COUNT"
     else
       printf ' to confirm the tree is still clean'
@@ -625,6 +631,7 @@ render() {
   else
     printf 'Tracked changes: not applicable — this directory is not a git checkout\n'
     printf 'Untracked changes: not applicable — this directory is not a git checkout\n'
+    printf 'Unpushed commits: not applicable — this directory is not a git checkout\n'
     printf 'This directory is not a git checkout, so no branch or change list was available.\n'
   fi
 
@@ -655,8 +662,9 @@ render() {
       printf 'Only the first %d of %d task records fit this bounded checkpoint.\n' \
         "$MAX_PATHS" "$TASKS_TOTAL"
     fi
-  elif [[ -n "$AGENTS_COUNT" ]] && (( AGENTS_COUNT > 0 )); then
-    printf '\nExact task registry details could not be recovered for this session.\n'
+  elif [[ "$TASKS_LOOKUP_STATUS" != "resolved" ]]; then
+    printf '\nExact task registry details could not be recovered for this session: %s.\n' \
+      "$TASKS_LOOKUP_STATUS"
     printf 'Do not relaunch or replace that work until its runtime status and artifacts are identified.\n'
   fi
 
@@ -753,7 +761,7 @@ OUT="$OUT_DIR/portable-handoff-${STAMP}-${SESSION_ID}-${UNIQ}-checkpoint.md"
 # complete document or none, never a half-written one.
 if mv -f "$TMP_DOC" "$OUT" 2>/dev/null; then
   trap - EXIT
-  chmod 644 "$OUT" 2>/dev/null
+  chmod 600 "$OUT" 2>/dev/null
   printf '%s\n' "$OUT"
 else
   echo "checkpoint-handoff.sh: could not publish the checkpoint" >&2

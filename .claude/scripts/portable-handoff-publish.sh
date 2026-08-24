@@ -54,8 +54,9 @@ done
 
 mkdir -p "$OUT_DIR" || { echo "portable-handoff-publish.sh: could not create $OUT_DIR" >&2; exit 5; }
 OUT_DIR=$(cd "$OUT_DIR" 2>/dev/null && pwd -P) || exit 5
-safe_repo=$(printf '%s' "$REPO" | tr '[:upper:]/' '[:lower:]-')
-key_material=$(printf '%s\n%s' "$REPO" "$SESSION_ID")
+normalized_repo=$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')
+safe_repo=${normalized_repo//\//-}
+key_material=$(printf '%s\n%s' "$normalized_repo" "$SESSION_ID")
 if command -v shasum >/dev/null 2>&1; then
   digest=$(printf '%s' "$key_material" | shasum -a 256 | awk '{print substr($1,1,20)}')
 elif command -v sha256sum >/dev/null 2>&1; then
@@ -91,7 +92,7 @@ lint_rc=$?
   echo "portable-handoff-publish.sh: lint could not verify the staged input (exit $lint_rc)" >&2
   exit 4
 }
-if ! chmod 644 "$TMP_DOC"; then
+if ! chmod 600 "$TMP_DOC"; then
   echo "portable-handoff-publish.sh: could not set canonical note permissions; original remains at $INPUT" >&2
   exit 5
 fi

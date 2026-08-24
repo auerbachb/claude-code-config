@@ -102,6 +102,12 @@ check "task descriptions redact secret-shaped values" jq -e '.background_tasks.i
 check "all task metadata strings redact secret-shaped values" jq -e '.background_tasks.items[0] | .name == "[REDACTED]" and .output_file == "https://[REDACTED]@example.invalid/review-output.txt" and .checkpoint_path == "/tmp/[REDACTED]/review-checkpoint.json" and .recovery_path == "/tmp/[REDACTED]"' >/dev/null <<<"$DOC"
 check "raw task secrets are never emitted" sh -c '! printf "%s" "$1" | grep -q super-secret' _ "$DOC"
 
+printf 'secret path\n' >"$MAIN/token=super-secret-filename"
+SECRET_PATH_DOC=$(CLAUDE_SESSION_STATE_FILE="$STATE" "$SUT" --cwd "$MAIN" --session session-1 --no-remote)
+check "secret-shaped Git paths are redacted" sh -c \
+  '! printf "%s" "$1" | grep -q super-secret-filename' _ "$SECRET_PATH_DOC"
+rm -f "$MAIN/token=super-secret-filename"
+
 LINKED="$TMP/linked worktree"
 git -C "$MAIN" worktree add -q -b issue-1311-linked "$LINKED" HEAD
 LINKED=$(cd "$LINKED" && pwd -P)
@@ -140,6 +146,22 @@ LEADING_ZERO=$(CLAUDE_HANDOFF_MAX_ITEMS=01 CLAUDE_SESSION_STATE_FILE="$STATE" \
   "$SUT" --cwd "$MAIN" --session session-1 --no-remote)
 check "leading-zero limits fall back without breaking jq" jq -e \
   '.working_copy.untracked_changes | length == 2' >/dev/null <<<"$LEADING_ZERO"
+
+FAIL_GIT_BIN="$TMP/failing-git"
+mkdir -p "$FAIL_GIT_BIN"
+REAL_GIT=$(command -v git)
+cat >"$FAIL_GIT_BIN/git" <<'STUB'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  [[ "$arg" == diff ]] && exit 42
+done
+exec "$REAL_GIT" "$@"
+STUB
+chmod +x "$FAIL_GIT_BIN/git"
+PATH="$FAIL_GIT_BIN:$PATH" REAL_GIT="$REAL_GIT" CLAUDE_SESSION_STATE_FILE="$STATE" \
+  "$SUT" --cwd "$MAIN" --session session-1 --no-remote >/dev/null 2>&1
+FAILED_GIT_RC=$?
+check "failed Git collection is not reported as an empty list" test "$FAILED_GIT_RC" = 4
 
 printf '\npassed: %d   failed: %d\n' "$passed" "$failed"
 (( failed == 0 ))

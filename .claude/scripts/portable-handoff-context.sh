@@ -77,19 +77,29 @@ TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/portable-handoff-context.XXXXXX") || exit 4
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 collect_nul_stream() {
-  local list_file="$1" count_file="$2" item
+  local list_file="$1" count_file="$2" item fifo producer rc total
   shift 2
   : >"$list_file"
-  (
-    total=0
-    while IFS= read -r -d '' item; do
-      total=$((total + 1))
-      if (( total <= MAX_ITEMS )); then
-        printf '%s\0' "$item" >>"$list_file"
-      fi
-    done
-    printf '%s\n' "$total" >"$count_file"
-  ) < <("$@" 2>/dev/null)
+  fifo="$list_file.fifo"
+  rm -f "$fifo"
+  mkfifo "$fifo" || return 1
+  "$@" >"$fifo" 2>/dev/null &
+  producer=$!
+  total=0
+  while IFS= read -r -d '' item; do
+    total=$((total + 1))
+    if (( total <= MAX_ITEMS )); then
+      printf '%s\0' "$item" >>"$list_file"
+    fi
+  done <"$fifo"
+  wait "$producer"
+  rc=$?
+  rm -f "$fifo"
+  if (( rc != 0 )); then
+    rm -f "$list_file" "$count_file"
+    return "$rc"
+  fi
+  printf '%s\n' "$total" >"$count_file"
 }
 
 if git -C "$WORKING_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -120,15 +130,40 @@ if git -C "$WORKING_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 
   if [[ "$head_sha" != "$unknown" ]]; then
     collect_nul_stream "$TMP_DIR/tracked" "$TMP_DIR/tracked-count" \
-      git -C "$checkout_path" diff --name-only -z HEAD --
+      git -C "$checkout_path" diff --name-only -z HEAD -- || {
+        echo "portable-handoff-context.sh: tracked changes could not be read" >&2
+        exit 4
+      }
   else
     collect_nul_stream "$TMP_DIR/tracked" "$TMP_DIR/tracked-count" \
-      git -C "$checkout_path" diff --cached --name-only -z --
+      git -C "$checkout_path" diff --cached --name-only -z -- || {
+        echo "portable-handoff-context.sh: staged changes could not be read" >&2
+        exit 4
+      }
   fi
   collect_nul_stream "$TMP_DIR/untracked" "$TMP_DIR/untracked-count" \
-    git -C "$checkout_path" ls-files --others --exclude-standard -z --
-  tracked_json=$(jq -Rs 'split("\u0000") | map(select(length > 0))' <"$TMP_DIR/tracked") || exit 4
-  untracked_json=$(jq -Rs 'split("\u0000") | map(select(length > 0))' <"$TMP_DIR/untracked") || exit 4
+    git -C "$checkout_path" ls-files --others --exclude-standard -z -- || {
+      echo "portable-handoff-context.sh: untracked changes could not be read" >&2
+      exit 4
+    }
+  tracked_json=$(jq -Rs '
+    def redact:
+      gsub("gh[pousr]_[A-Za-z0-9]{10,}"; "[REDACTED]")
+      | gsub("sk-[A-Za-z0-9_-]{10,}"; "[REDACTED]")
+      | gsub("(?i)(https?://)[^/@[:space:]]+:[^/@[:space:]]+@"; "https://[REDACTED]@")
+      | gsub("(?i)(authorization|api[_-]?key|access[_-]?token|token|password|secret)[[:space:]]*[:=][[:space:]]*(bearer[[:space:]]+)?[^[:space:]]+"; "[REDACTED]")
+      | gsub("(?i)(^|/)(api[_-]?key|access[_-]?token|token|password|secret)/[^/[:space:]]+"; "/[REDACTED]");
+    split("\u0000") | map(select(length > 0) | redact)
+  ' <"$TMP_DIR/tracked") || exit 4
+  untracked_json=$(jq -Rs '
+    def redact:
+      gsub("gh[pousr]_[A-Za-z0-9]{10,}"; "[REDACTED]")
+      | gsub("sk-[A-Za-z0-9_-]{10,}"; "[REDACTED]")
+      | gsub("(?i)(https?://)[^/@[:space:]]+:[^/@[:space:]]+@"; "https://[REDACTED]@")
+      | gsub("(?i)(authorization|api[_-]?key|access[_-]?token|token|password|secret)[[:space:]]*[:=][[:space:]]*(bearer[[:space:]]+)?[^[:space:]]+"; "[REDACTED]")
+      | gsub("(?i)(^|/)(api[_-]?key|access[_-]?token|token|password|secret)/[^/[:space:]]+"; "/[REDACTED]");
+    split("\u0000") | map(select(length > 0) | redact)
+  ' <"$TMP_DIR/untracked") || exit 4
   tracked_total=$(<"$TMP_DIR/tracked-count")
   untracked_total=$(<"$TMP_DIR/untracked-count")
 

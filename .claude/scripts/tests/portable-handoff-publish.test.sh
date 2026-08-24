@@ -18,6 +18,10 @@ check() {
   else echo "FAIL — $name"; failed=$((failed + 1)); fi
 }
 
+file_mode() {
+  if [[ "$(uname -s)" == Darwin ]]; then stat -f %Lp "$1"; else stat -c %a "$1"; fi
+}
+
 DOC="$TMP/handoff.md"
 cat >"$DOC" <<'EOF'
 # Session handoff — test/portable — 2026-08-24 12:00 ET
@@ -71,6 +75,7 @@ OUT_DIR="$TMP/handoffs"
 OUT1=$("$SUT" --input "$DOC" --repo test/portable --session session-1 \
   --out-dir "$OUT_DIR" --lint "$LINT" --lint-root "$REPO_ROOT")
 check "first publish creates a readable canonical note" test -r "$OUT1"
+check "canonical note is readable only by its owner" test "$(file_mode "$OUT1")" = 600
 check "canonical filename matches recorder discovery" sh -c 'case "$1" in */portable-handoff-*.md) exit 0;; *) exit 1;; esac' _ "$OUT1"
 
 sed 's/publisher is implemented/publisher is implemented and verified/' "$DOC" >"$TMP/handoff-updated.md"
@@ -79,6 +84,9 @@ OUT2=$("$SUT" --input "$TMP/handoff-updated.md" --repo test/portable --session s
 check "same repository/session updates the same path" test "$OUT1" = "$OUT2"
 check "only one canonical file exists" test "$(find "$OUT_DIR" -maxdepth 1 -type f -name 'portable-handoff-*.md' | wc -l | tr -d ' ')" = 1
 check "updated bytes replaced the previous complete note" grep -q 'implemented and verified' "$OUT2"
+OUT_CASE=$("$SUT" --input "$TMP/handoff-updated.md" --repo Test/Portable --session session-1 \
+  --out-dir "$OUT_DIR" --lint "$LINT" --lint-root "$REPO_ROOT")
+check "repository identity casing cannot split the canonical note" test "$OUT_CASE" = "$OUT1"
 
 OUT3=$("$SUT" --input "$DOC" --repo test/portable --session session-2 \
   --out-dir "$OUT_DIR" --lint "$LINT" --lint-root "$REPO_ROOT")

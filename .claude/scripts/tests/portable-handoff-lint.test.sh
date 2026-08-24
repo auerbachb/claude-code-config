@@ -656,7 +656,7 @@ grep -q 'Working directory:' "$TEMPLATE" \
 # contract shared by the template, collector, and automatic producer.
 for anchor in 'Repository identity:' 'Repository root:' 'Worktree condition:' \
               'Branch:' 'Base branch:' 'HEAD commit:' 'Tracked changes:' \
-              'Untracked changes:'; do
+              'Untracked changes:' 'Unpushed commits:'; do
   f="$TMP_DIR/missing-field.md"
   grep -v "^${anchor}" "$GOLDEN" >"$f"
   out=$(run_lint "$f" 2>&1); rc=$?
@@ -672,6 +672,20 @@ out=$(run_lint "$EMPTY_THEN_VALID" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "an empty field followed by a populated duplicate must fail (got $rc)"
 printf '%s' "$out" | grep -q 'working-copy-fields' \
   || fail "empty-then-valid duplicate did not report working-copy-fields"
+
+EMPTY_UNPUSHED="$TMP_DIR/empty-unpushed.md"
+sed 's/^Unpushed commits:.*/Unpushed commits:/' "$GOLDEN" >"$EMPTY_UNPUSHED"
+out=$(run_lint "$EMPTY_UNPUSHED" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "an empty Unpushed commits field must fail (got $rc)"
+printf '%s' "$out" | grep -q 'working-copy-fields' \
+  || fail "empty Unpushed commits field did not report working-copy-fields"
+
+DUP_UNPUSHED="$TMP_DIR/duplicate-unpushed.md"
+awk '/^Unpushed commits:/ && !done { print; done=1 } { print }' "$GOLDEN" >"$DUP_UNPUSHED"
+out=$(run_lint "$DUP_UNPUSHED" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "duplicate Unpushed commits fields must fail (got $rc)"
+printf '%s' "$out" | grep -q 'working-copy-fields' \
+  || fail "duplicate Unpushed commits fields did not report working-copy-fields"
 
 # `/stop-resume` is permitted only in its dedicated field. A checkpoint that
 # stopped nothing may explicitly mark the field not applicable, but every note
@@ -716,6 +730,19 @@ out=$(run_lint "$NO_RELAUNCH" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "missing relaunch guidance must fail (got $rc)"
 printf '%s' "$out" | grep -q 'resume-guidance' \
   || fail "missing relaunch rule did not report resume-guidance"
+
+for mode in missing empty duplicate; do
+  f="$TMP_DIR/${mode}-agent-path.md"
+  case "$mode" in
+    missing) grep -v '^For another agent:' "$GOLDEN" >"$f" ;;
+    empty) sed 's/^For another agent:.*/For another agent:/' "$GOLDEN" >"$f" ;;
+    duplicate) awk '/^For another agent:/ && !done { print; done=1 } { print }' "$GOLDEN" >"$f" ;;
+  esac
+  out=$(run_lint "$f" 2>&1); rc=$?
+  [[ "$rc" -eq 1 ]] || fail "$mode For another agent field must fail (got $rc)"
+  printf '%s' "$out" | grep -q 'resume-guidance' \
+    || fail "$mode For another agent field did not report resume-guidance"
+done
 
 OUTSIDE_RESUME="$TMP_DIR/outside-resume.md"
 cp "$GOLDEN" "$OUTSIDE_RESUME"

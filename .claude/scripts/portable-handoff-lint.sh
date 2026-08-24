@@ -164,9 +164,11 @@ WORKING_COPY_ANCHORS=(
   "HEAD commit:"
   "Tracked changes:"
   "Untracked changes:"
+  "Unpushed commits:"
 )
 RESUME_SECTION="Resume safely"
 RESUME_ANCHOR="Resume command:"
+AGENT_ANCHOR="For another agent:"
 RELAUNCH_ANCHOR="Relaunch rule:"
 
 # Per-entry field anchors, same contract: reword one in the template and the
@@ -511,6 +513,8 @@ WORKDIR_SEEN=0
 declare -a WORKING_COPY_FIELDS_SEEN=()
 RESUME_SEEN=0
 RESUME_FIELDS=0
+AGENT_SEEN=0
+AGENT_FIELDS=0
 RELAUNCH_SEEN=0
 IN_FENCE=0
 
@@ -662,6 +666,12 @@ while IFS= read -r line || [[ -n "$line" ]]; do
         esac
       fi
     fi
+    if [[ "$line" == "$AGENT_ANCHOR"* ]]; then
+      AGENT_FIELDS=$((AGENT_FIELDS + 1))
+      if field_value_nonempty "${line#"$AGENT_ANCHOR"}"; then
+        AGENT_SEEN=$((AGENT_SEEN + 1))
+      fi
+    fi
     if [[ "$line" == "$RELAUNCH_ANCHOR"* ]] && field_value_nonempty "${line#"$RELAUNCH_ANCHOR"}"; then
       RELAUNCH_SEEN=1
     fi
@@ -782,6 +792,16 @@ if contains "$RESUME_SECTION" ${SEEN_SECTIONS+"${SEEN_SECTIONS[@]}"}; then
   elif (( RESUME_SEEN != 1 )); then
     report "resume-guidance" "0" "$RESUME_SECTION" \
       "invalid or empty \"$RESUME_ANCHOR\" field — use /stop-resume or explicitly mark a non-stop checkpoint not applicable"
+  fi
+  if (( AGENT_FIELDS == 0 )); then
+    report "resume-guidance" "0" "$RESUME_SECTION" \
+      "no \"$AGENT_ANCHOR\" field — a different agent has no ordinary command path into the work"
+  elif (( AGENT_FIELDS > 1 )); then
+    report "resume-guidance" "0" "$RESUME_SECTION" \
+      "\"$AGENT_ANCHOR\" appears $AGENT_FIELDS times — one authoritative command path is required"
+  elif (( AGENT_SEEN != 1 )); then
+    report "resume-guidance" "0" "$RESUME_SECTION" \
+      "empty \"$AGENT_ANCHOR\" field — provide an ordinary command path into the work"
   fi
   (( RELAUNCH_SEEN )) || report "resume-guidance" "0" "$RESUME_SECTION" \
     "no non-empty \"$RELAUNCH_ANCHOR\" field — a takeover could duplicate already-recorded work"
