@@ -62,7 +62,7 @@ check_msg() {
 # ---------------------------------------------------------------------------
 # Fixtures: PR bodies and issue states
 # ---------------------------------------------------------------------------
-mkdir -p "$TMP/pr_body" "$TMP/issue_state"
+mkdir -p "$TMP/pr_body" "$TMP/issue_state" "$TMP/gh_fail"
 
 # PR 1001 — unchecked box in Test Plan (outside exemption) → exit 1
 cat > "$TMP/pr_body/1001.txt" <<'BODY'
@@ -245,6 +245,33 @@ Tracking issue: #77
 BODY
 echo "OPEN" > "$TMP/issue_state/77.txt"
 
+# --- gh-failure fixtures (issue #1305) -------------------------------------
+# The stub previously always succeeded, so the gate's exit 3 (missing PR) and
+# exit 4 (API failure) paths were unreachable from the suite. A regression that
+# turned either lookup failure into a PASS would not have been caught -- the
+# exact fail-open class this gate exists to prevent.
+
+# PR 3001 — generic `gh pr view` failure (NOT a not-found shape) -> exit 4.
+# Wording deliberately avoids "not found" / "could not resolve", which
+# ac-gate.sh greps for to distinguish exit 3 from exit 4.
+printf 'HTTP 502: Bad Gateway (https://api.github.com/graphql)\n' \
+  > "$TMP/gh_fail/pr_3001.txt"
+
+# PR 3002 — body is fine, but the TRACKING ISSUE lookup fails -> exit 4.
+cat > "$TMP/pr_body/3002.txt" <<'BODY'
+## Acceptance Criteria
+- [x] feature implemented
+
+## Post-merge verification
+- [ ] deferred item
+Tracking issue: #3777
+BODY
+printf 'HTTP 503: Service Unavailable (https://api.github.com/graphql)\n' \
+  > "$TMP/gh_fail/issue_3777.txt"
+
+# PR 3003 — no fixture and no failure marker: the stub emits a not-found shape,
+# which ac-gate.sh must map to exit 3, distinct from the exit 4 cases above.
+
 # PR 1016 — REGRESSION: indented headings. Markdown allows up to three leading
 # spaces before '##'. Requiring '^## ' made an indented section invisible, so its
 # unchecked boxes bypassed the gate (fail-open). ac-checkboxes.sh already accepted
@@ -321,6 +348,10 @@ case "\$subcmd" in
     case "\$action" in
       view)
         n="\$1"
+        if [ -f "$TMP/gh_fail/pr_\${n}.txt" ]; then
+          cat "$TMP/gh_fail/pr_\${n}.txt" >&2
+          exit 1
+        fi
         if [ -f "$TMP/pr_body/\${n}.txt" ]; then
           cat "$TMP/pr_body/\${n}.txt"
         else
@@ -337,6 +368,10 @@ case "\$subcmd" in
     case "\$action" in
       view)
         n="\$1"
+        if [ -f "$TMP/gh_fail/issue_\${n}.txt" ]; then
+          cat "$TMP/gh_fail/issue_\${n}.txt" >&2
+          exit 1
+        fi
         if [ -f "$TMP/issue_state/\${n}.txt" ]; then
           cat "$TMP/issue_state/\${n}.txt"
         else
@@ -604,6 +639,31 @@ check_msg  "Test11d: message names the unchecked-box condition" "unchecked accep
 RC=0
 bash "$SCRIPT" 1017 2>/dev/null || RC=$?
 check_exit "Test11e: deeply indented Test Plan heading still gated (exit 1)" 1 "$RC"
+
+# ---------------------------------------------------------------------------
+# Test 11f: missing PR → exit 3, distinct from the generic-failure exit 4.
+# ---------------------------------------------------------------------------
+RC=0
+MSG="$(GITHUB_REPOSITORY=auerbachb/claude-code-config bash "$SCRIPT" 3003 2>&1 >/dev/null)" || RC=$?
+check_exit "Test11f: missing PR exits 3" 3 "$RC"
+check_msg  "Test11f: message names the missing PR" "not found" "$MSG"
+
+# ---------------------------------------------------------------------------
+# Test 11g: generic `gh pr view` failure → exit 4, NOT exit 3 and NOT a pass.
+# ---------------------------------------------------------------------------
+RC=0
+MSG="$(GITHUB_REPOSITORY=auerbachb/claude-code-config bash "$SCRIPT" 3001 2>&1 >/dev/null)" || RC=$?
+check_exit "Test11g: generic gh pr view failure exits 4" 4 "$RC"
+check_msg  "Test11g: message names the failed lookup" "gh pr view failed" "$MSG"
+
+# ---------------------------------------------------------------------------
+# Test 11h: tracking-issue lookup failure → exit 4. The gate must NOT treat an
+# unreadable issue state as OPEN; that would be the fail-open this PR is about.
+# ---------------------------------------------------------------------------
+RC=0
+MSG="$(GITHUB_REPOSITORY=auerbachb/claude-code-config bash "$SCRIPT" 3002 2>&1 >/dev/null)" || RC=$?
+check_exit "Test11h: tracking-issue lookup failure exits 4" 4 "$RC"
+check_msg  "Test11h: message names the tracking issue" "#3777" "$MSG"
 
 # ---------------------------------------------------------------------------
 # Test 12: REGRESSION — PR #588 exact self-referential pattern → exit 6

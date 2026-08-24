@@ -69,7 +69,7 @@ check_line_present() {
 # ---------------------------------------------------------------------------
 # Fixtures: pr_body per PR number
 # ---------------------------------------------------------------------------
-mkdir -p "$TMP/pr_body"
+mkdir -p "$TMP/pr_body" "$TMP/gh_fail"
 
 # PR 101 — single bare #N reference
 echo "Implements the feature. Closes #42" > "$TMP/pr_body/101.txt"
@@ -109,6 +109,14 @@ args="\$*"
 case "\$args" in
   "pr view "*)
     n=\$(echo "\$args" | sed -n 's/^pr view \([0-9]*\).*/\1/p')
+    # A failure marker's CONTENTS become stderr, so a test picks the not-found
+    # shape (exit 3) or a generic API error (exit 4) -- the distinction
+    # pr-issue-ref.sh branches on. Previously an unknown PR returned an empty
+    # body with exit 0, so neither failure path was reachable from this suite.
+    if [ -f "$TMP/gh_fail/pr_\${n}.txt" ]; then
+      cat "$TMP/gh_fail/pr_\${n}.txt" >&2
+      exit 1
+    fi
     if [ -f "$TMP/pr_body/\${n}.txt" ]; then
       cat "$TMP/pr_body/\${n}.txt"
     else
@@ -227,6 +235,28 @@ fi
 OUT="$(GITHUB_REPOSITORY="" bash "$SCRIPT" --all 102 2>/dev/null)"
 check_line_present "Test9d: bare-only body works with no repo context (#10)" "10" "$OUT"
 check_line_present "Test9d: bare-only body works with no repo context (#20)" "20" "$OUT"
+
+# ---------------------------------------------------------------------------
+# Test 9e/9f: gh-failure paths (issue #1305). An unknown PR previously returned
+# an empty body with exit 0, so exit 3 and exit 4 were both unreachable here and
+# a regression collapsing either into a successful empty result would have
+# passed the suite.
+# ---------------------------------------------------------------------------
+printf 'Could not resolve to a PullRequest with the number of 9001.\n' \
+  > "$TMP/gh_fail/pr_9001.txt"
+RC=0
+MSG="$(bash "$SCRIPT" --all 9001 2>&1 >/dev/null)" || RC=$?
+[[ "$RC" -eq 3 ]] && pass "Test9e: not-found gh failure exits 3" \
+  || fail "Test9e: expected exit 3, got $RC"
+check_contains "Test9e: message names the missing PR" "not found" "$MSG"
+
+printf 'HTTP 502: Bad Gateway (https://api.github.com/graphql)\n' \
+  > "$TMP/gh_fail/pr_9002.txt"
+RC=0
+MSG="$(bash "$SCRIPT" --all 9002 2>&1 >/dev/null)" || RC=$?
+[[ "$RC" -eq 4 ]] && pass "Test9f: generic gh failure exits 4, not 3" \
+  || fail "Test9f: expected exit 4, got $RC"
+check_contains "Test9f: message names the failed lookup" "gh pr view failed" "$MSG"
 
 # ---------------------------------------------------------------------------
 # Test 10: --all mode — no reference exits 1
