@@ -53,9 +53,21 @@ session_state() {
   fi
 }
 REPO_KEY="$(session_state --repo-key 2>/dev/null)" || exit 5
-SAFE_REPO="${REPO_KEY//[^[:alnum:]_.-]/_}"
-SAFE_SESSION="${SESSION_ID//[^[:alnum:]_.-]/_}"
-MARKER="$MARKER_DIR/claude-execution-pause-${SAFE_REPO}-${SAFE_SESSION}"
+scope_hash() {
+  local digest=""
+  if command -v sha256sum >/dev/null 2>&1; then
+    digest="$(printf '%s\0%s' "$REPO_KEY" "$SESSION_ID" | sha256sum | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    digest="$(printf '%s\0%s' "$REPO_KEY" "$SESSION_ID" | shasum -a 256 | awk '{print $1}')"
+  fi
+  [[ "$digest" =~ ^[[:xdigit:]]{64}$ ]] || return 1
+  printf '%s' "$digest" | tr '[:upper:]' '[:lower:]'
+}
+SCOPE_HASH="$(scope_hash)" || {
+  echo "execution-pause.sh: no working SHA-256 utility for marker identity" >&2
+  exit 5
+}
+MARKER="$MARKER_DIR/claude-execution-pause-v2-$SCOPE_HASH"
 PATH_EXPR=".repos[\"$REPO_KEY\"].execution_pauses[\"$SESSION_ID\"]"
 
 # Marker and session-state are one lifecycle invariant. Hold the canonical

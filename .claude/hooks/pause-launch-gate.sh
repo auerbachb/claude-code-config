@@ -47,10 +47,22 @@ resolve_payload_repo() {
 }
 REPO_KEY="$(resolve_payload_repo)"
 if [[ ! -x "$PAUSE_SH" ]]; then
-  SAFE_SESSION="${SESSION_ID//[^[:alnum:]_.-]/_}"
-  SAFE_REPO="${REPO_KEY//[^[:alnum:]_.-]/_}"
   MARKER_DIR="${CLAUDE_EXECUTION_PAUSE_MARKER_DIR:-/tmp}"
-  MARKER="$MARKER_DIR/claude-execution-pause-${SAFE_REPO:-_unknown}-${SAFE_SESSION:-default}"
+  scope_hash() {
+    local digest=""
+    if command -v sha256sum >/dev/null 2>&1; then
+      digest="$(printf '%s\0%s' "$REPO_KEY" "$SESSION_ID" | sha256sum | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+      digest="$(printf '%s\0%s' "$REPO_KEY" "$SESSION_ID" | shasum -a 256 | awk '{print $1}')"
+    fi
+    [[ "$digest" =~ ^[[:xdigit:]]{64}$ ]] || return 1
+    printf '%s' "$digest" | tr '[:upper:]' '[:lower:]'
+  }
+  SCOPE_HASH="$(scope_hash)" || {
+    echo "BLOCKED: execution-pause helper is unavailable and marker scope cannot be resolved; refusing to start $TOOL_NAME." >&2
+    exit 2
+  }
+  MARKER="$MARKER_DIR/claude-execution-pause-v2-$SCOPE_HASH"
   if [[ -f "$MARKER" ]]; then
     echo "BLOCKED: execution-pause helper is unavailable while an active repo/session marker exists; refusing to start $TOOL_NAME." >&2
     exit 2

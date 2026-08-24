@@ -198,6 +198,27 @@ case "$MODE" in
       '[.repos[$r].background_tasks[]? | select(.session_id==$s and .task_id==$i)] | length' 2>/dev/null)" || \
       die_parse "could not inspect registry"
     (( FOUND > 0 )) || die_missing "task '$TASK_ID' not found for session '$SESSION_ID'"
+    CURRENT_STATUS="$(printf '%s' "$DOC" | jq -r --arg r "$REPO_KEY" --arg s "$SESSION_ID" --arg i "$TASK_ID" \
+      '.repos[$r].background_tasks[]? | select(.session_id==$s and .task_id==$i) | .status' 2>/dev/null)" || \
+      die_parse "could not inspect current task status"
+    # Terminal outcomes are monotonic. Delayed SubagentStop/TaskStop events
+    # are common during wind-down and must not rewrite a newer recovery
+    # decision (for example stopped -> done or done -> stopped).
+    TRANSITION_ALLOWED=0
+    if [[ "$CURRENT_STATUS" == "$TARGET_STATUS" ]]; then
+      TRANSITION_ALLOWED=1
+    else
+      case "$CURRENT_STATUS:$TARGET_STATUS" in
+        running:stopping|running:stopped|running:done|running:failed|running:stop_failed|running:abandoned|\
+        stopping:stopped|stopping:done|stopping:failed|stopping:stop_failed|stopping:abandoned|\
+        stop_failed:stopping|stop_failed:stopped|stop_failed:done|stop_failed:failed|stop_failed:abandoned|\
+        stopped:rearmed)
+          TRANSITION_ALLOWED=1 ;;
+      esac
+    fi
+    # A stale terminal notification is an idempotent no-op, not a tracking
+    # failure: preserve the newer state and let the hook complete cleanly.
+    (( TRANSITION_ALLOWED == 1 )) || exit 0
     NOW="$(date -u +%FT%TZ)"
     NEW_DOC="$(printf '%s' "$DOC" | jq --arg r "$REPO_KEY" --arg s "$SESSION_ID" \
       --arg i "$TASK_ID" --arg status "$TARGET_STATUS" --arg now "$NOW" '

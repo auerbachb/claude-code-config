@@ -40,6 +40,21 @@ run --register --session s1 --task-id agent-1 --type agent --name renamed-agent
   fail "duplicate register did not update metadata"
 ok "duplicate runtime identities upsert safely"
 
+run --register --session monotonic --task-id completed-first --type agent
+run --transition --session monotonic --task-id completed-first --status "done"
+run --transition --session monotonic --task-id completed-first --status stopped
+[[ "$(run --list --session monotonic | jq -r '.[] | select(.task_id=="completed-first") | .status')" == "done" ]] || \
+  fail "delayed stop overwrote a completed terminal outcome"
+run --register --session monotonic --task-id stopped-first --type agent
+run --transition --session monotonic --task-id stopped-first --status stopped
+run --transition --session monotonic --task-id stopped-first --status "done"
+[[ "$(run --list --session monotonic | jq -r '.[] | select(.task_id=="stopped-first") | .status')" == "stopped" ]] || \
+  fail "delayed completion overwrote a stopped recovery outcome"
+run --transition --session monotonic --task-id stopped-first --status rearmed
+[[ "$(run --list --session monotonic | jq -r '.[] | select(.task_id=="stopped-first") | .status')" == "rearmed" ]] || \
+  fail "explicit stopped-to-rearmed transition was blocked"
+ok "terminal lifecycle transitions ignore stale delayed events"
+
 run --transition --session s1 --task-id agent-1 --status "done"
 run --transition --session s1 --task-id mon-1 --status stop_failed
 run --register --session s1 --task-id agent-1 --type agent --name delayed-replay

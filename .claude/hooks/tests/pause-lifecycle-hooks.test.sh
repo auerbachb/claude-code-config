@@ -21,6 +21,14 @@ CWD="$ROOT"
 REPO=auerbachb/claude-code-config
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   — $*"; }
+scope_hash() {
+  local repo="$1" sid="$2"
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s\0%s' "$repo" "$sid" | sha256sum | awk '{print $1}'
+  else
+    printf '%s\0%s' "$repo" "$sid" | shasum -a 256 | awk '{print $1}'
+  fi
+}
 
 gate() {
   local tool="$1" bg="${2:-false}" cwd="${3:-$CWD}"
@@ -116,7 +124,7 @@ mkdir -p "$RM_STUB_BIN"
 # shellcheck disable=SC2016 # Generate a stub that inspects its runtime argv.
 printf '%s\n' '#!/usr/bin/env bash' \
   'for arg in "$@"; do' \
-  '  case "$arg" in *claude-execution-pause-*-marker-remove-failure) exit 1 ;; esac' \
+  '  case "$arg" in *claude-execution-pause-v2-*) exit 1 ;; esac' \
   'done' \
   'exec /bin/rm "$@"' > "$RM_STUB_BIN/rm"
 chmod +x "$RM_STUB_BIN/rm"
@@ -133,13 +141,27 @@ set -e
 "$PAUSE" --repo "$REPO" --clear --session marker-remove-failure
 ok "surviving marker keeps an incomplete clear fail-closed"
 
+COLLIDE_A=a_b/c
+COLLIDE_B=a/b_c
+COLLIDE_SID=collision-scope
+COLLIDE_A_MARKER="$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-v2-$(scope_hash "$COLLIDE_A" "$COLLIDE_SID")"
+COLLIDE_B_MARKER="$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-v2-$(scope_hash "$COLLIDE_B" "$COLLIDE_SID")"
+[[ "$COLLIDE_A_MARKER" != "$COLLIDE_B_MARKER" ]] || fail "distinct scopes produced the same marker identity"
+"$PAUSE" --repo "$COLLIDE_A" --activate --session "$COLLIDE_SID" --command pause --window-minutes 5
+"$PAUSE" --repo "$COLLIDE_B" --activate --session "$COLLIDE_SID" --command pause --window-minutes 5
+[[ -f "$COLLIDE_A_MARKER" && -f "$COLLIDE_B_MARKER" ]] || fail "hashed scope marker missing"
+"$PAUSE" --repo "$COLLIDE_A" --clear --session "$COLLIDE_SID"
+[[ "$("$PAUSE" --repo "$COLLIDE_B" --status --session "$COLLIDE_SID")" == active ]] || \
+  fail "clearing one colliding legacy scope unblocked another"
+"$PAUSE" --repo "$COLLIDE_B" --clear --session "$COLLIDE_SID"
+ok "marker hashing isolates repository/session scopes without sanitization collisions"
+
 # A partial installation must still honor positive pause evidence even when the
 # helper disappeared after activation.
 PARTIAL="$TMP/partial/.claude/hooks"
 mkdir -p "$PARTIAL"
 cp "$GATE" "$PARTIAL/pause-launch-gate.sh"
-SAFE_REPO="${REPO//[^[:alnum:]_.-]/_}"
-EXACT_MARKER="$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-$SAFE_REPO-$SID"
+EXACT_MARKER="$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-v2-$(scope_hash "$REPO" "$SID")"
 touch "$EXACT_MARKER"
 set +e
 jq -nc --arg sid "$SID" --arg cwd "$CWD" \
@@ -149,7 +171,7 @@ partial_rc=$?
 set -e
 [[ "$partial_rc" == 2 ]] || fail "missing helper bypassed positive pause marker"
 rm -f "$EXACT_MARKER"
-touch "$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-other_checkout-$SID"
+touch "$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-v2-$(scope_hash other/checkout "$SID")"
 jq -nc --arg sid "$SID" --arg cwd "$CWD" \
   '{session_id:$sid,cwd:$cwd,tool_name:"Agent",tool_input:{}}' \
   | CLAUDE_SESSION_REPO="$REPO" "$PARTIAL/pause-launch-gate.sh" >/dev/null 2>&1 || \
@@ -166,7 +188,7 @@ for n in 1 2 3 4; do
 done
 for pid in "${race_pids[@]}"; do wait "$pid"; done
 RACE_STATE="$("$PAUSE" --repo "$REPO" --status --session lifecycle-race)"
-RACE_MARKER="$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-$SAFE_REPO-lifecycle-race"
+RACE_MARKER="$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-v2-$(scope_hash "$REPO" lifecycle-race)"
 if [[ "$RACE_STATE" == active ]]; then
   [[ -f "$RACE_MARKER" ]] || fail "concurrent lifecycle left active state without marker"
 else
