@@ -257,8 +257,21 @@ mkdir -p "$STUB_BIN"
 cat > "$STUB_BIN/gh" <<'STUB'
 #!/usr/bin/env bash
 if [[ "$1 $2" == "pr view" ]]; then
+  [[ "$#" == 7 && "$3" == main && "$4" == --json && "$5" == baseRefName \
+     && "$6" == --jq && "$7" == '.baseRefName // empty' ]] || exit 64
   printf 'maintenance-2.x\n'
   exit 0
+fi
+jq_filter="${12}"
+jq_filter="${jq_filter//$'\n'/ }"
+while [[ "$jq_filter" == *'  '* ]]; do jq_filter="${jq_filter//  / }"; done
+if [[ "$1 $2" != "pr list" || "$#" != 12 || "$3" != --author \
+   || "$4" != @me || "$5" != --state || "$6" != open || "$7" != --limit \
+   || "$8" != 10 || "$9" != --json \
+   || "${10}" != number,title,url,author,reviewDecision,mergeStateStatus \
+   || "${11}" != --jq \
+   || "$jq_filter" != '.[] | [(.number|tostring), .title, .url, (.author.login // ""), (.reviewDecision // ""), (.mergeStateStatus // "")] | join("\u001f")' ]]; then
+  exit 64
 fi
 printf '42\037\037https://example.com/42\037auerbachb\037REVIEW_REQUIRED\037CLEAN\n'
 printf '43\037A real title\037https://example.com/43\037someone-else\037APPROVED\037BEHIND\n'
