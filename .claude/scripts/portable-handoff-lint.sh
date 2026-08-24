@@ -638,8 +638,12 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   # explicit "unknown" / "not applicable" values are honest answers and pass.
   if (( ! IS_HEADING )) && (( ! IN_FENCE )) && [[ "$section" == "$WORKDIR_SECTION" ]]; then
     for anchor in "${WORKING_COPY_ANCHORS[@]}"; do
-      if [[ "$line" == "$anchor"* ]] && field_value_nonempty "${line#"$anchor"}"; then
+      if [[ "$line" == "$anchor"* ]]; then
         WORKING_COPY_FIELDS_SEEN+=("$anchor")
+        if ! field_value_nonempty "${line#"$anchor"}"; then
+          report "working-copy-fields" "$lineno" "$WORKDIR_SECTION" \
+            "empty \"$anchor\" field — record the value or an explicit unknown/not-applicable marker"
+        fi
       fi
     done
   fi
@@ -756,7 +760,7 @@ if contains "$WORKDIR_SECTION" ${SEEN_SECTIONS+"${SEEN_SECTIONS[@]}"}; then
     count=$(count_of "$anchor" ${WORKING_COPY_FIELDS_SEEN+"${WORKING_COPY_FIELDS_SEEN[@]}"})
     if (( count == 0 )); then
       report "working-copy-fields" "0" "$WORKDIR_SECTION" \
-        "no non-empty \"$anchor\" field — record the value or an explicit unknown/not-applicable marker"
+        "no \"$anchor\" field — record the value or an explicit unknown/not-applicable marker"
     elif (( count > 1 )); then
       report "working-copy-fields" "0" "$WORKDIR_SECTION" \
         "\"$anchor\" appears $count times — one authoritative value is required"

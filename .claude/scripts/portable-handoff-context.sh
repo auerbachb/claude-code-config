@@ -172,9 +172,11 @@ if git -C "$WORKING_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
           | gsub("sk-[A-Za-z0-9_-]{10,}"; "[REDACTED]")
           | gsub("(?i)(api[_-]?key|token|password|secret)=[^[:space:]]+"; "[REDACTED]");
         [.[] | {task_id, name, type, status,
-                 work_item:(.work_item // null | if type == "string" then redact else . end),
-                 output_file, checkpoint_path:(.checkpoint_path // null), recovery_path,
-                 started_at, updated_at, stale}] | .[:$max]
+                 work_item:(.work_item // null), output_file,
+                 checkpoint_path:(.checkpoint_path // null), recovery_path,
+                 started_at, updated_at, stale}
+               | with_entries(.value |= if type == "string" then redact else . end)]
+        | .[:$max]
       ' <<<"$raw_tasks") || exit 4
       tasks_status="resolved"
     else

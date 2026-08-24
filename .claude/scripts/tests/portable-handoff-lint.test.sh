@@ -665,6 +665,14 @@ for anchor in 'Repository identity:' 'Repository root:' 'Worktree condition:' \
     || fail "missing '$anchor' did not report working-copy-fields"
 done
 
+EMPTY_THEN_VALID="$TMP_DIR/empty-then-valid-field.md"
+awk '/^Repository identity:/ && !done { print "Repository identity:"; done=1 } { print }' \
+  "$GOLDEN" >"$EMPTY_THEN_VALID"
+out=$(run_lint "$EMPTY_THEN_VALID" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "an empty field followed by a populated duplicate must fail (got $rc)"
+printf '%s' "$out" | grep -q 'working-copy-fields' \
+  || fail "empty-then-valid duplicate did not report working-copy-fields"
+
 # `/stop-resume` is permitted only in its dedicated field. A checkpoint that
 # stopped nothing may explicitly mark the field not applicable, but every note
 # still needs a relaunch rule to prevent duplicate background work.
