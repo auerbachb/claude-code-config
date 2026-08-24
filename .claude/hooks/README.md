@@ -179,13 +179,13 @@ Registered on **`SubagentStop`** with a 15 s timeout.
 
 **Why it exists.** The recorder above names the most recent portable handoff in its breadcrumb, but the only thing that wrote one was invoked by hand. On 2026-08-01 an account limit killed three concurrent sessions and every record came out with `"portable_handoff": null`, because no handoff existed — a limit that arrives without warning is exactly the case where nobody ran the command. This closes the gap from the other side: it produces the artifact and nothing else.
 
-**It is document-only.** No wind-down, no stopping, no decision. The hand-invoked pause command keeps its contract — it runs when asked and for no other reason — because this is a different producer of the same artifact, not that command on a timer.
+**It is document-only.** No wind-down, no stopping, no decision. The hand-invoked `/stop` command keeps its contract — it runs when asked and for no other reason — because this is a different producer of the same artifact, not that command on a timer.
 
 **Safety.** No token, spend, or quota arithmetic anywhere, and no output gates a decision. `.claude/rules/safety.md` §"Anthropic Quota & Spend Authority" is satisfied as written and was not amended, the same standing the recorder has.
 
 ### The degrade ladder
 
-`portable-handoff-lint.sh` rejects relative `.claude/` paths, phase vocabulary, internal state-file names, and slash-command names. A mechanical renderer walks into all of these: run it in this repo and the changed-file list is full of `.claude/scripts/…`. A human rewrites the offending line; a script cannot.
+`portable-handoff-lint.sh` rejects relative `.claude/` paths, phase vocabulary, internal state-file names, slash-command names, missing repository/worktree/Git fields, and unsafe resume guidance. A mechanical renderer walks into several of these: run it in this repo and the changed-file list is full of `.claude/scripts/…`. A human rewrites the offending line; a script cannot.
 
 So it renders, lints, and drops to a less specific rendering on failure, shipping the first tier that passes:
 
@@ -194,7 +194,7 @@ So it renders, lints, and drops to a less specific rendering on failure, shippin
 | 1 | changed-file paths listed, pull request titles quoted |
 | 2 | paths replaced by a count and a `git status` instruction |
 | 3 | titles dropped — pull requests by number and URL only |
-| 4 | minimal: absolute working directory, counts, universal commands |
+| 4 | minimal: explicit repository/worktree/Git unknowns where necessary, absolute working directory, separate tracked/untracked counts, universal commands, and non-stop resume guidance |
 
 If even tier 4 fails it writes **nothing** — a document that fails its own portability gate is the outcome the ladder exists to prevent. In this repository tier 2 is the normal result.
 
@@ -206,7 +206,7 @@ Writes at most once per `CLAUDE_CHECKPOINT_MIN_INTERVAL` (default 600 s), and ad
 
 - `~/.claude/handoffs/portable-handoff-<stamp>-<session>-checkpoint.md` — matches the glob the recorder already scans
 
-Checkpoints older than 7 days are pruned. A handoff written by the pause command is **never** a deletion candidate at any age — the `-checkpoint.md` suffix is what separates them.
+Checkpoints older than 7 days are pruned. A canonical handoff written by `/stop` is **never** a deletion candidate at any age — the `-checkpoint.md` suffix is what separates them.
 
 ### Prerequisites
 
@@ -214,7 +214,7 @@ Checkpoints older than 7 days are pruned. A handoff written by the pause command
 - `CLAUDE_HANDOFF_DIR` overrides the output directory (used by the tests)
 - Run it by hand with `--stdout` to see what it would write without publishing
 
-**Tests:** `.claude/scripts/tests/checkpoint-handoff.test.sh`
+**Tests:** `.claude/scripts/tests/checkpoint-handoff.test.sh`, `portable-handoff-context.test.sh`, and `portable-handoff-publish.test.sh`
 
 ## spend-session-tracker.sh
 

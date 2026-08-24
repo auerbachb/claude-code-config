@@ -1,52 +1,105 @@
 # Portable Handoff Artifact
 
-The document `/stop` produces (issue #901). Recorded here so the two things that touch it — the skill that writes it and the usage-limit recorder that points at it — agree without either one owning the convention.
+The cross-agent document `/stop` produces (Issues #901, #912, and #1311). It is
+plain Markdown for a person or coding agent that has the note and repository but
+none of the stopped conversation.
 
 Not auto-loaded.
 
-## Naming and location
+## Two producers, two lifecycles
 
+- A manual `/stop` writes **one canonical note per repository/session** after
+  the shutdown audit has final task outcomes. A later stop in that same scope
+  atomically updates the canonical note.
+- `checkpoint-handoff.sh` writes timestamped `-checkpoint.md` observations
+  while work is still running. Checkpoints form a history and never claim the
+  session or its background tasks were stopped.
+
+Both match `~/.claude/handoffs/portable-handoff-*.md`, so the usage-limit
+recorder can continue selecting the newest by modification time.
+
+## Canonical naming and publication
+
+`portable-handoff-publish.sh` validates `owner/repo`, combines it with the
+session ID, and derives a stable keyed filename:
+
+```text
+~/.claude/handoffs/portable-handoff-{owner-repo}-{key}.md
 ```
-~/.claude/handoffs/portable-handoff-{TIMESTAMP}-{SESSION_ID}.md
+
+The key keeps sanitized repository/session filename collisions from choosing
+the same note. The source document records the readable repository and session
+identity; the filename is routing, not the only identity check.
+
+Publication is fail-closed:
+
+1. Render once into a destination-directory draft.
+2. Run `portable-handoff-lint.sh` against those exact bytes.
+3. Acquire the canonical file's advisory `state-lock.sh` lock.
+4. Copy to a same-directory `mktemp`, assert lock ownership, and atomically
+   rename it over the canonical path.
+
+A reader therefore sees the previous complete note or the new complete note,
+never a partial file. A lint, lock, staging, or rename failure leaves the input
+draft available and produces no success claim. Draft names begin with
+`.portable-handoff.` and cannot match the recorder glob.
+
+Historical timestamped manual notes remain readable. New `/stop` writes do not
+delete them; they simply converge on the canonical name for future updates.
+
+## Required takeover content
+
+`portable-handoff-context.sh` supplies a bounded JSON snapshot after shutdown:
+
+- sanitized repository `owner/repo` identity and absolute main root;
+- absolute active checkout path and main/linked/non-worktree condition;
+- branch, base branch, full HEAD, upstream/unpushed state;
+- separately capped tracked and untracked path lists;
+- an unambiguous current-branch pull request and linked issue when available;
+- current-session task IDs, logical names, types, final statuses, work items,
+  preserved outputs, checkpoint paths, and recovery paths.
+
+The helper reads only those named facts. It never dumps the environment,
+credential-bearing remote URLs, arbitrary file contents, or raw state. An
+unavailable read is an explicit `unknown`, `not applicable`, or `could not be
+read` result, never an empty category or guessed identifier.
+
+The human/agent-rendered note adds the context scripts cannot infer: objective,
+completed and remaining work, blockers and decisions, tests, review status,
+and exact next commands. Its Resume safely section includes `/stop-resume` for
+the original harness plus ordinary `cd`, `git`, `gh`, and test commands for a
+different agent. It tells the reader to inspect every task's final status and
+preserved output before relaunching anything, preventing duplicate work.
+
+## Portability lint
+
+`portable-handoff-lint.sh` rejects harness paths, internal phase/state jargon,
+unfilled placeholders, missing or duplicate required sections, incomplete
+open-work ownership/review fields, relative working directories, missing
+repository/worktree/Git facts, and unsafe resume guidance.
+
+The sole skill-invocation exception is `/stop-resume` in the dedicated
+`Resume command:` field. Automatic checkpoints instead say it is not
+applicable because they stop nothing. Both forms must carry a `Relaunch rule:`
+and a different-agent path using ordinary commands.
+
+An absolute path containing `/.claude/worktrees/` remains allowed because it is
+the exact address of the work. Relative paths under that directory remain
+unportable. Full rule list:
+
+```bash
+portable-handoff-lint.sh --list-rules
 ```
 
-- `{TIMESTAMP}` — UTC, `%Y%m%dT%H%M%SZ`, and it comes **first**. That ordering is load-bearing: it makes lexicographic order match chronological order, so "the most recent one" is cheap to find and a directory listing reads in the order the sessions happened. With the session id leading instead, names would sort by session — and any consumer that bounded its scan by name order would silently skip the newest document.
-- `{SESSION_ID}` — `$CLAUDE_SESSION_ID`, or `default` when unset, with every character outside `[[:alnum:]_.-]` replaced by `_`. Same sanitizing as `bgwork-ceiling.sh`, for the same reason: the value becomes part of a filename.
+## Readers and retention
 
-It sits directly in `~/.claude/handoffs/`, alongside `issue-maker-{SESSION_ID}-log.json` and the `{owner}/{repo}/` subtrees — a flat sibling of the PR-scoped handoffs, not a member of them.
+- A human or another coding agent uses the canonical note to locate and take
+  over the exact checkout.
+- `usage-limit-record.sh` points its resume breadcrumb at the newest matching
+  handoff by modification time without parsing content or estimating usage.
+- Automatic checkpoints point to the most recent richer manual note for intent
+  while keeping their newer repository-state observation distinct.
 
-## Why it is not a `handoff-state.sh` file
-
-`handoff-state.sh` owns `{owner}/{repo}/pr-{N}-handoff.json`: JSON, keyed by pull-request number, read-modify-written by three phases in sequence, and therefore locked. This artifact shares none of that. It is Markdown, keyed by session, written exactly once by one writer, and never updated — there is no second writer to race and no schema to preserve.
-
-Routing it through `handoff-state.sh` would mean giving that script a non-numeric key space and a non-JSON payload to serve a file that needs neither. The "never inline `jq`" mandate in `handoff-files.md` is about read-modify-write on shared JSON state; it does not reach a new single-writer Markdown document.
-
-## Write mechanism
-
-`mktemp` **inside `~/.claude/handoffs/` itself**, write, verify, then `mv -f` into place. `chmod 644` after the move: the content is a work summary meant to be handed to another tool, not a secret.
-
-The temp file's location is the whole point. `mv` is atomic only *within* one filesystem; across filesystems it degrades to copy-then-unlink, and a reader arriving mid-copy sees a truncated document that looks complete. `$TMPDIR` is frequently a different volume from `$HOME` — on macOS it is `/var/folders/…` — so staging there would quietly give up the guarantee this write mechanism exists to provide. Same directory, same filesystem, real rename.
-
-The temp file is named `.portable-handoff.XXXXXX` — dot-prefixed and **without** the `.md` suffix, so it cannot match the `portable-handoff-*.md` glob the recorder reads. A crash between `mktemp` and `mv` therefore leaves an unverified draft that nothing will ever advertise as a handoff.
-
-Verification happens on the temp file, before the `mv` — see below.
-
-## Portability is enforced, not asserted
-
-`.claude/scripts/portable-handoff-lint.sh` is the gate. It rejects harness paths, phase vocabulary, state-file names, skill invocations, unfilled template placeholders, and missing-or-empty required sections. Since the cold read in issue #912 it also rejects an in-flight item that does not say who owns it, a pull request that does not say whether it is approved, and a document with work in flight and no command for checking any of it.
-
-Those last three check that a field is present and has a value; they cannot check that the value is any good. That limit is the finding, not a shortcoming — the checker proves an absence of jargon, and only a real reader can find out whether the document says enough, which is why #912 was a manual test.
-
-This is a script rather than a paragraph in the skill because the failure is silent: a document saying "resume at Phase B" still looks like a handoff, still writes successfully, and only fails much later, for a reader who by then has no context to repair it with. Prose that a renderer may or may not follow cannot catch that; an exit code can.
-
-The one permitted `.claude/` form is an **absolute** path containing `/.claude/worktrees/` — the literal location of uncommitted work. The leading slash is the rule: an absolute path is an address any agent can resolve, while a repo-relative `.claude/worktrees/…` only means something inside this checkout. Full rule list: `portable-handoff-lint.sh --list-rules`.
-
-## Who reads it
-
-- **A human**, pasting it into another tool. Cursor's thread import is the case that prompted the format, but nothing here is coupled to it — it is plain Markdown on purpose, because a vendor import format can change and a paragraph of English cannot.
-- **`usage-limit-record.sh`**, which points `resume_hint` at the most recent one when a turn dies on a usage limit. That is a filesystem lookup by modification time — no parsing, no content inspection, and emphatically no size or token accounting (`safety.md` §"Anthropic Quota & Spend Authority").
-- **A future pre-emptive wind-down** (issue #835). When an approaching-limit signal finally reaches a hook, that wind-down emits this document instead of defining its own format. The trigger is the open question there; the artifact is settled here.
-
-## Retention
-
-Nothing prunes these. They are small, they are the record of a session that ended for a reason, and the most recent one is a live pointer for the recorder. Deleting old ones is a manual call.
+Manual canonical notes are retained until explicitly replaced by a later stop
+for the same repository/session or removed by a person. Existing checkpoint
+retention remains unchanged.

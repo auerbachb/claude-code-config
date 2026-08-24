@@ -64,6 +64,15 @@ session ending on a usage limit does not lose where the work stood.
   What is left: answer whatever it raises, then merge once checks are green.
   Verify with: bash .github/scripts/run-hook-tests.sh
 
+## Progress and verification
+
+Completed: the handoff checker and command integration are implemented.
+Remaining: answer review comments and merge the pull request.
+Blockers and decisions needed: the automated review is still running.
+Tests: the hook suite passes; re-run `bash .github/scripts/run-hook-tests.sh`.
+Review: nobody has approved commit 0123456789abcdef0123456789abcdef01234567 yet.
+Next commands: run `gh pr checks 903`, then the hook suite after any edit.
+
 ## Decisions made this session
 
 - Reused the existing stop flag instead of adding a second one — both mean "do
@@ -72,10 +81,22 @@ session ending on a usage limit does not lose where the work stood.
 
 ## Local state on this machine
 
-Branch: issue-901-clean-pause
+Repository identity: auerbachb/claude-code-config
+Repository root: /Users/b/Develop/claude-code-config
 Working directory: /Users/b/Develop/claude-code-config/.claude/worktrees/issue-901-clean-pause
-Uncommitted changes: none
+Worktree condition: linked worktree
+Branch: issue-901-clean-pause
+Base branch: main
+HEAD commit: 0123456789abcdef0123456789abcdef01234567
+Tracked changes: none
+Untracked changes: none
 Unpushed commits: none — run `git status` and `gh pr view 903` to confirm.
+
+## Resume safely
+
+Resume command: /stop-resume
+For another agent: enter the working directory above and run `git status`.
+Relaunch rule: inspect every recorded task outcome before replacing work; do not duplicate completed work.
 EOF
 
 run_lint() { "$LINT" --repo-root "$REPO_ROOT" "$@"; }
@@ -211,7 +232,11 @@ cat >"$EMPTY" <<'EOF'
 
 ## Decisions made this session
 
+## Progress and verification
+
 ## Local state on this machine
+
+## Resume safely
 EOF
 # Structural-only markup is not an answer to the reader: a section holding just
 # a fence pair or an HTML comment must still count as empty.
@@ -238,7 +263,7 @@ out=$(run_lint "$EMPTY" 2>&1); rc=$?
 printf '%s' "$out" | grep -q 'present but empty' \
   || fail "an empty section must be reported as empty, not merely as present"
 EMPTY_HITS=$(printf '%s' "$out" | grep -c 'present but empty')
-[[ "$EMPTY_HITS" -eq 5 ]] || fail "expected all 5 required sections flagged empty, got $EMPTY_HITS"
+[[ "$EMPTY_HITS" -eq 7 ]] || fail "expected all 7 required sections flagged empty, got $EMPTY_HITS"
 
 # A duplicated required heading defeats the emptiness check: content under the
 # second copy vouches for an empty first one, and the reader hits the empty one
@@ -249,8 +274,10 @@ DUPE="$TMP_DIR/dupe.md"
   printf '%s\n\n%s\n\n' "## Start here" "Actually do this."
   printf '%s\n\n%s\n\n' "## What we're working on" "x"
   printf '%s\n\n%s\n\n' "## Open work" "y"
+  printf '%s\n\n%s\n\n' "## Progress and verification" "p"
   printf '%s\n\n%s\n\n' "## Decisions made this session" "z"
   printf '%s\n\n%s\n' "## Local state on this machine" "Working directory: /tmp/x"
+  printf '\n%s\n\n%s\n' "## Resume safely" "Resume command: /stop-resume"
 } >"$DUPE"
 out=$(run_lint "$DUPE" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "a duplicated required heading must fail (got $rc)"
@@ -283,6 +310,15 @@ Adding a command that produces a handoff document any agent can act on.
 
 $body
 
+## Progress and verification
+
+Completed: the checker change is implemented.
+Remaining: finish review and merge.
+Blockers and decisions needed: none recorded.
+Tests: run bash .github/scripts/run-hook-tests.sh.
+Review: re-check the linked pull request.
+Next commands: run git status, then the hook suite.
+
 ## Decisions made this session
 
 - Reused the existing stop flag rather than adding a second one — two flags
@@ -290,10 +326,22 @@ $body
 
 ## Local state on this machine
 
-Branch: issue-901-clean-pause
+Repository identity: auerbachb/claude-code-config
+Repository root: /Users/b/Develop/claude-code-config
 Working directory: /Users/b/Develop/claude-code-config
-Uncommitted changes: none
+Worktree condition: main worktree
+Branch: issue-901-clean-pause
+Base branch: main
+HEAD commit: 0123456789abcdef0123456789abcdef01234567
+Tracked changes: none
+Untracked changes: none
 Unpushed commits: none
+
+## Resume safely
+
+Resume command: /stop-resume
+For another agent: enter the working directory above and run git status.
+Relaunch rule: inspect recorded task outcomes before replacing work.
 EOF
 }
 
@@ -473,12 +521,33 @@ Adding a command that produces a handoff document any agent can act on.
 
 - Reused the existing stop flag rather than adding a second one.
 
+## Progress and verification
+
+Completed: the checker change is implemented.
+Remaining: finish review.
+Blockers and decisions needed: none recorded.
+Tests: run `bash .github/scripts/run-hook-tests.sh`.
+Review: the linked pull request still needs review.
+Next commands: run `git status`.
+
 ## Local state on this machine
 
-Branch: issue-901-clean-pause
+Repository identity: auerbachb/claude-code-config
+Repository root: /Users/b/Develop/claude-code-config
 Working directory: /Users/b/Develop/claude-code-config
-Uncommitted changes: none
+Worktree condition: main worktree
+Branch: issue-901-clean-pause
+Base branch: main
+HEAD commit: 0123456789abcdef0123456789abcdef01234567
+Tracked changes: none
+Untracked changes: none
 Unpushed commits: none
+
+## Resume safely
+
+Resume command: /stop-resume
+For another agent: enter the working directory above and run `git status`.
+Relaunch rule: inspect recorded task outcomes before replacing work.
 
 ## Open work
 
@@ -544,8 +613,8 @@ while IFS= read -r want; do
   grep -qF "## $want" "$TEMPLATE" \
     || fail "template is missing required section heading: $want"
 done < <(sed -n '/^REQUIRED_SECTIONS=(/,/^)/p' "$LINT" | sed -n 's/^  "\(.*\)"$/\1/p')
-[[ "$SECTION_COUNT" -eq 5 ]] \
-  || fail "expected 5 required sections parsed from the checker, got $SECTION_COUNT"
+[[ "$SECTION_COUNT" -eq 7 ]] \
+  || fail "expected 7 required sections parsed from the checker, got $SECTION_COUNT"
 
 # --- 6b. The working directory must be an absolute path ------------------
 # It is the single address the reader needs in order to find the work at all.
@@ -582,6 +651,107 @@ printf '%s' "$out" | grep -q 'working-directory-absolute' \
 grep -q 'Working directory:' "$TEMPLATE" \
   || fail "template lacks the 'Working directory:' anchor the checker requires"
 
+# Every takeover identity field is independently required. Removing one from
+# an otherwise valid note must fail closed rather than silently narrowing the
+# contract shared by the template, collector, and automatic producer.
+for anchor in 'Repository identity:' 'Repository root:' 'Worktree condition:' \
+              'Branch:' 'Base branch:' 'HEAD commit:' 'Tracked changes:' \
+              'Untracked changes:' 'Unpushed commits:'; do
+  f="$TMP_DIR/missing-field.md"
+  grep -v "^${anchor}" "$GOLDEN" >"$f"
+  out=$(run_lint "$f" 2>&1); rc=$?
+  [[ "$rc" -eq 1 ]] || fail "missing '$anchor' must fail (got $rc)"
+  printf '%s' "$out" | grep -q 'working-copy-fields' \
+    || fail "missing '$anchor' did not report working-copy-fields"
+done
+
+EMPTY_THEN_VALID="$TMP_DIR/empty-then-valid-field.md"
+awk '/^Repository identity:/ && !done { print "Repository identity:"; done=1 } { print }' \
+  "$GOLDEN" >"$EMPTY_THEN_VALID"
+out=$(run_lint "$EMPTY_THEN_VALID" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "an empty field followed by a populated duplicate must fail (got $rc)"
+printf '%s' "$out" | grep -q 'working-copy-fields' \
+  || fail "empty-then-valid duplicate did not report working-copy-fields"
+
+EMPTY_UNPUSHED="$TMP_DIR/empty-unpushed.md"
+sed 's/^Unpushed commits:.*/Unpushed commits:/' "$GOLDEN" >"$EMPTY_UNPUSHED"
+out=$(run_lint "$EMPTY_UNPUSHED" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "an empty Unpushed commits field must fail (got $rc)"
+printf '%s' "$out" | grep -q 'working-copy-fields' \
+  || fail "empty Unpushed commits field did not report working-copy-fields"
+
+DUP_UNPUSHED="$TMP_DIR/duplicate-unpushed.md"
+awk '/^Unpushed commits:/ && !done { print; done=1 } { print }' "$GOLDEN" >"$DUP_UNPUSHED"
+out=$(run_lint "$DUP_UNPUSHED" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "duplicate Unpushed commits fields must fail (got $rc)"
+printf '%s' "$out" | grep -q 'working-copy-fields' \
+  || fail "duplicate Unpushed commits fields did not report working-copy-fields"
+
+# `/stop-resume` is permitted only in its dedicated field. A checkpoint that
+# stopped nothing may explicitly mark the field not applicable, but every note
+# still needs a relaunch rule to prevent duplicate background work.
+NOT_APPLICABLE="$TMP_DIR/not-applicable.md"
+sed 's|^Resume command: /stop-resume$|Resume command: not applicable — automatic checkpoint|' "$GOLDEN" >"$NOT_APPLICABLE"
+run_lint "$NOT_APPLICABLE" >/dev/null 2>&1 \
+  || fail "an automatic checkpoint may explicitly mark stop-resume not applicable"
+
+BAD_RESUME="$TMP_DIR/bad-resume.md"
+sed 's|^Resume command: /stop-resume$|Resume command: /pause-resume|' "$GOLDEN" >"$BAD_RESUME"
+out=$(run_lint "$BAD_RESUME" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "an unrelated resume command must fail (got $rc)"
+printf '%s' "$out" | grep -q 'resume-guidance' \
+  || fail "bad resume entrypoint did not report resume-guidance"
+
+PREFIX_RESUME="$TMP_DIR/prefix-resume.md"
+sed 's|^Resume command: /stop-resume$|Resume command: /stop-resumeevil|' "$GOLDEN" >"$PREFIX_RESUME"
+out=$(run_lint "$PREFIX_RESUME" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "a stop-resume prefix collision must fail (got $rc)"
+printf '%s' "$out" | grep -q 'resume-guidance' \
+  || fail "stop-resume prefix collision did not report resume-guidance"
+
+EMPTY_RESUME="$TMP_DIR/empty-resume.md"
+sed 's|^Resume command: /stop-resume$|Resume command:|' "$GOLDEN" >"$EMPTY_RESUME"
+out=$(run_lint "$EMPTY_RESUME" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "an empty resume command must report a lint violation, not abort (got $rc)"
+printf '%s' "$out" | grep -q 'resume-guidance' \
+  || fail "empty resume command did not report resume-guidance"
+
+CONFLICTING_RESUME="$TMP_DIR/conflicting-resume.md"
+awk '/^Resume command: \/stop-resume$/ && !done { print "Resume command: /pause-resume"; done=1 } { print }' \
+  "$GOLDEN" >"$CONFLICTING_RESUME"
+out=$(run_lint "$CONFLICTING_RESUME" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "conflicting resume commands must fail (got $rc)"
+printf '%s' "$out" | grep -q 'resume-guidance' \
+  || fail "conflicting resume commands did not report resume-guidance"
+
+NO_RELAUNCH="$TMP_DIR/no-relaunch.md"
+grep -v '^Relaunch rule:' "$GOLDEN" >"$NO_RELAUNCH"
+out=$(run_lint "$NO_RELAUNCH" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "missing relaunch guidance must fail (got $rc)"
+printf '%s' "$out" | grep -q 'resume-guidance' \
+  || fail "missing relaunch rule did not report resume-guidance"
+
+for mode in missing empty duplicate; do
+  f="$TMP_DIR/${mode}-agent-path.md"
+  case "$mode" in
+    missing) grep -v '^For another agent:' "$GOLDEN" >"$f" ;;
+    empty) sed 's/^For another agent:.*/For another agent:/' "$GOLDEN" >"$f" ;;
+    duplicate) awk '/^For another agent:/ && !done { print; done=1 } { print }' "$GOLDEN" >"$f" ;;
+  esac
+  out=$(run_lint "$f" 2>&1); rc=$?
+  [[ "$rc" -eq 1 ]] || fail "$mode For another agent field must fail (got $rc)"
+  printf '%s' "$out" | grep -q 'resume-guidance' \
+    || fail "$mode For another agent field did not report resume-guidance"
+done
+
+OUTSIDE_RESUME="$TMP_DIR/outside-resume.md"
+cp "$GOLDEN" "$OUTSIDE_RESUME"
+printf '%s\n' 'Run /stop-resume from this unrelated line.' >>"$OUTSIDE_RESUME"
+out=$(run_lint "$OUTSIDE_RESUME" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "stop-resume outside its dedicated field must fail (got $rc)"
+printf '%s' "$out" | grep -q 'skill-invocation' \
+  || fail "out-of-field stop-resume did not report skill-invocation"
+
 # The per-entry fields are the same kind of contract, and the same kind of
 # silent failure: reword one on either side and the rule stops firing on a
 # document nobody changed. Both directions are asserted, because a rename in
@@ -601,10 +771,11 @@ run_lint --list-rules >/dev/null 2>&1 || fail "--list-rules should exit 0"
 # found — intermittently, depending on whether the write completed first.
 RULES_OUT=$(run_lint --list-rules)
 RULE_COUNT=$(printf '%s\n' "$RULES_OUT" | grep -c .)
-[[ "$RULE_COUNT" -eq 10 ]] || fail "expected 10 rules, got $RULE_COUNT"
+[[ "$RULE_COUNT" -eq 12 ]] || fail "expected 12 rules, got $RULE_COUNT"
 for r in harness-path phase-vocabulary state-file skill-invocation \
          unrendered-placeholder required-sections working-directory-absolute \
-         open-work-ownership pull-request-review-state verification-command; do
+         open-work-ownership pull-request-review-state verification-command \
+         working-copy-fields resume-guidance; do
   printf '%s\n' "$RULES_OUT" | grep -qx "$r" || fail "--list-rules omits '$r'"
 done
 

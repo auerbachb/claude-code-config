@@ -32,7 +32,7 @@ command's ownership and must be reported as out of scope.
    for that ID, then mark it `stopped` only after success. A no-match response
    is success only when runtime inspection confirms the task already ended.
    Record other failures as `stop_failed`; never discard their IDs, worktrees,
-   output files, or recovery paths.
+   output files, checkpoint paths, or recovery paths.
 5. Re-audit both the registry and Claude Code's runtime task list. Clear a
    background-work-ceiling marker only after its owning Monitor is confirmed
    stopped. Also inspect the session's
@@ -43,6 +43,12 @@ command's ownership and must be reported as out of scope.
    and no unresolved tracking-failure marker remains. Otherwise report an
    incomplete shutdown, list every unresolved exact ID or tracking failure,
    and keep both launch gates closed.
+
+After the terminal audit, `/stop` snapshots every current-session registry entry
+for its canonical handoff. Render task ID, logical name, translated type, final
+status, work item, output file, checkpoint path, and recovery path as distinct
+fields. Missing metadata says `not recorded`; it is never inferred from a task
+name or replaced with a fabricated path.
 
 The commands do not delete worktrees, branches, logs, handoffs, or task output.
 Resume commands clear the execution gate explicitly and use those preserved

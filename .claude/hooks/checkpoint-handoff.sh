@@ -135,6 +135,10 @@ MIN_INTERVAL="${MIN_INTERVAL:-${CLAUDE_CHECKPOINT_MIN_INTERVAL:-600}}"
 [[ "$MIN_INTERVAL" =~ ^[0-9]+$ ]] || MIN_INTERVAL=600
 RETENTION_DAYS="${RETENTION_DAYS:-${CLAUDE_CHECKPOINT_RETENTION_DAYS:-7}}"
 [[ "$RETENTION_DAYS" =~ ^[0-9]+$ ]] && (( RETENTION_DAYS > 0 )) || RETENTION_DAYS=7
+MAX_PATHS="${CLAUDE_HANDOFF_MAX_ITEMS:-100}"
+[[ "$MAX_PATHS" =~ ^[1-9][0-9]*$ ]] || MAX_PATHS=100
+MAX_PATHS=$((10#$MAX_PATHS))
+(( MAX_PATHS <= 500 )) || MAX_PATHS=500
 
 CHECKPOINT_GLOB='portable-handoff-*-checkpoint.md'
 
@@ -172,6 +176,47 @@ digest() { # stdin -> short hex
   fi
 }
 
+# Consume NUL-delimited Git paths without materializing an unbounded shell
+# variable. The retained prefix is shell-quoted for one-line rendering; count
+# stops at MAX_PATHS+1 because only the fact of truncation matters after that.
+collect_nul_paths() {
+  local item quoted
+  COLLECT_COUNT=0
+  COLLECT_LIST=""
+  COLLECT_TRUNCATED=0
+  while IFS= read -r -d '' item; do
+    COLLECT_COUNT=$((COLLECT_COUNT + 1))
+    if (( COLLECT_COUNT > MAX_PATHS )); then
+      COLLECT_TRUNCATED=1
+      break
+    fi
+    printf -v quoted '%q' "$item"
+    COLLECT_LIST+="${quoted}"$'\n'
+  done
+}
+
+# Count logical entries in `git status --porcelain=v1 -z`. Rename and copy
+# entries carry a second NUL-delimited path, so treating every record as a
+# change inflates the count and makes the summary disagree with Git's status.
+count_nul_status_entries() {
+  local item status
+  STATUS_COUNT=0
+  STATUS_TRUNCATED=0
+  while IFS= read -r -d '' item; do
+    status=${item:0:2}
+    STATUS_COUNT=$((STATUS_COUNT + 1))
+    # In -z mode Git emits the destination first and the source as the next
+    # record for a rename/copy in either the index or worktree status column.
+    if [[ "$status" == *[RC]* ]]; then
+      IFS= read -r -d '' item || break
+    fi
+    if (( STATUS_COUNT > MAX_PATHS )); then
+      STATUS_TRUNCATED=1
+      break
+    fi
+  done
+}
+
 file_mtime_epoch() {
   if [[ "$(uname -s)" == "Darwin" ]]; then
     stat -f %m "$1" 2>/dev/null
@@ -204,8 +249,17 @@ WORKDIR=$(pwd -P 2>/dev/null || pwd)
 IN_REPO=0
 BRANCH=""
 HEAD_SHA=""
+BASE_BRANCH=""
+ROOT_REPO=""
+WORKTREE_CONDITION="not a git checkout"
 CHANGED_COUNT=0
-CHANGED_LIST=""
+CHANGED_TRUNCATED=0
+TRACKED_COUNT=0
+TRACKED_LIST=""
+TRACKED_TRUNCATED=0
+UNTRACKED_COUNT=0
+UNTRACKED_LIST=""
+UNTRACKED_TRUNCATED=0
 UNPUSHED=""
 REPO_SLUG=""
 TOPLEVEL=""
@@ -213,16 +267,34 @@ TOPLEVEL=""
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   IN_REPO=1
   TOPLEVEL=$(git rev-parse --show-toplevel 2>/dev/null)
-  BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-  HEAD_SHA=$(git rev-parse --short HEAD 2>/dev/null)
-  PORCELAIN=$(git status --porcelain 2>/dev/null)
-  if [[ -n "$PORCELAIN" ]]; then
-    CHANGED_COUNT=$(printf '%s\n' "$PORCELAIN" | grep -c . 2>/dev/null || true)
-    [[ "$CHANGED_COUNT" =~ ^[0-9]+$ ]] || CHANGED_COUNT=0
-    # Strip the two status columns; keep the path. Rename entries ("R  a -> b")
-    # keep both sides, which is what a reader wants to see anyway.
-    CHANGED_LIST=$(printf '%s\n' "$PORCELAIN" | sed 's/^...//' | sort)
+  BRANCH=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+  HEAD_SHA=$(git rev-parse --verify HEAD 2>/dev/null || true)
+  ROOT_REPO=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{sub(/^worktree /, ""); print; exit}')
+  if [[ -n "$ROOT_REPO" && "$TOPLEVEL" == "$ROOT_REPO" ]]; then
+    WORKTREE_CONDITION="main worktree"
+  elif [[ -n "$ROOT_REPO" ]]; then
+    WORKTREE_CONDITION="linked worktree"
+  else
+    WORKTREE_CONDITION="git checkout; worktree condition unknown"
   fi
+  STATUS_DIGEST=$(git status --porcelain=v1 -z 2>/dev/null | digest)
+  count_nul_status_entries < <(git status --porcelain=v1 -z 2>/dev/null)
+  CHANGED_COUNT=$STATUS_COUNT
+  CHANGED_TRUNCATED=$STATUS_TRUNCATED
+  if git rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+    collect_nul_paths < <(git diff --name-only -z HEAD -- 2>/dev/null)
+  else
+    # An unborn repository has no HEAD to diff against. Staged files are still
+    # tracked takeover state and must not disappear from the checkpoint.
+    collect_nul_paths < <(git diff --cached --name-only -z -- 2>/dev/null)
+  fi
+  TRACKED_COUNT=$COLLECT_COUNT
+  TRACKED_LIST=$COLLECT_LIST
+  TRACKED_TRUNCATED=$COLLECT_TRUNCATED
+  collect_nul_paths < <(git ls-files --others --exclude-standard -z -- 2>/dev/null)
+  UNTRACKED_COUNT=$COLLECT_COUNT
+  UNTRACKED_LIST=$COLLECT_LIST
+  UNTRACKED_TRUNCATED=$COLLECT_TRUNCATED
   UNPUSHED=$(git rev-list --count '@{u}..HEAD' 2>/dev/null)
   [[ "$UNPUSHED" =~ ^[0-9]+$ ]] || UNPUSHED=""
   ORIGIN=$(git remote get-url origin 2>/dev/null)
@@ -235,7 +307,7 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 [[ -n "$REPO_SLUG" ]] || REPO_SLUG=$(basename "${TOPLEVEL:-$WORKDIR}")
 
-# Fingerprint over the RAW porcelain, not the stripped path list: the two status
+# Fingerprint over a digest of the RAW porcelain, not the stripped path list: the two status
 # columns are what distinguish staged from unstaged and modified from added, so
 # stripping them first made `git add` invisible to the throttle (CodeAnt, PR
 # #944). Content edits within an already-modified file still do not move it —
@@ -243,7 +315,7 @@ fi
 # not need to, because time is the primary trigger: the next interval writes
 # regardless. The fingerprint's only job is to write MORE often than that.
 FINGERPRINT=$(printf '%s\n%s\n%s\n%s\n%s\n' \
-  "$BRANCH" "$HEAD_SHA" "$CHANGED_COUNT" "${UNPUSHED:-na}" "${PORCELAIN:-}" | digest)
+  "$BRANCH" "$HEAD_SHA" "$CHANGED_COUNT" "${UNPUSHED:-na}" "${STATUS_DIGEST:-}" | digest)
 FINGERPRINT_MARK="<!-- checkpoint-fingerprint: ${FINGERPRINT} -->"
 
 # --- Throttle -------------------------------------------------------------
@@ -299,7 +371,13 @@ PR_LOOKUP="skipped"
 # there can use unrelated ambient/default repository context and report open
 # work that has nothing to do with this handoff (Cursor, PR #944).
 if (( ! NO_REMOTE )) && command -v gh >/dev/null 2>&1 && (( IN_REPO )); then
-  PR_ROWS=$(gh pr list --author "@me" --state open --limit 10 \
+  if [[ -n "$BRANCH" ]]; then
+    BASE_BRANCH=$(GH_HTTP_TIMEOUT="${GH_HTTP_TIMEOUT:-10}" \
+                    gh pr view "$BRANCH" --json baseRefName \
+                    --jq '.baseRefName // empty' 2>/dev/null) || BASE_BRANCH=""
+  fi
+  PR_ROWS=$(GH_HTTP_TIMEOUT="${GH_HTTP_TIMEOUT:-10}" \
+              gh pr list --author "@me" --state open --limit 10 \
               --json number,title,url,author,reviewDecision,mergeStateStatus \
               --jq '.[] | [(.number|tostring), .title, .url,
                            (.author.login // ""), (.reviewDecision // ""),
@@ -320,6 +398,31 @@ if SESSION_STATE_SH=$(resolve_script session-state.sh); then
   AGENTS_COUNT=$("$SESSION_STATE_SH" --session-view 2>/dev/null \
                    | jq -r '(.active_agents // []) | length' 2>/dev/null)
   [[ "$AGENTS_COUNT" =~ ^[0-9]+$ ]] || AGENTS_COUNT=""
+fi
+
+# Reuse the bounded, redacted snapshot consumed by /stop rather than reading
+# raw registry state here. Exact runtime/artifact facts are what make the
+# relaunch warning actionable for a different agent.
+TASKS_JSON='[]'
+TASKS_TOTAL=""
+TASKS_TRUNCATED=0
+TASKS_LOOKUP_STATUS="context snapshot unavailable"
+if command -v jq >/dev/null 2>&1 && HANDOFF_CONTEXT_SH=$(resolve_script portable-handoff-context.sh); then
+  TASK_CONTEXT=$("$HANDOFF_CONTEXT_SH" --cwd "$WORKDIR" \
+    --session "${CLAUDE_SESSION_ID:-default}" --no-remote 2>/dev/null) || TASK_CONTEXT=""
+  if [[ -n "$TASK_CONTEXT" ]] && jq -e '.background_tasks.items | type == "array"' \
+       >/dev/null 2>&1 <<<"$TASK_CONTEXT"; then
+    TASKS_JSON=$(jq -c '.background_tasks.items' <<<"$TASK_CONTEXT" 2>/dev/null) || TASKS_JSON='[]'
+    TASKS_TOTAL=$(jq -r '.background_tasks.total // (.background_tasks.items | length)' \
+      <<<"$TASK_CONTEXT" 2>/dev/null) || TASKS_TOTAL=""
+    TASKS_TRUNCATED=$(jq -r 'if .background_tasks.truncated then 1 else 0 end' \
+      <<<"$TASK_CONTEXT" 2>/dev/null) || TASKS_TRUNCATED=0
+    TASKS_LOOKUP_STATUS=$(jq -r '.background_tasks.lookup_status // "lookup status unavailable"' \
+      <<<"$TASK_CONTEXT" 2>/dev/null) || TASKS_LOOKUP_STATUS="lookup status unavailable"
+    [[ "$TASKS_TOTAL" =~ ^[0-9]+$ ]] || TASKS_TOTAL=""
+    [[ "$TASKS_TRUNCATED" =~ ^[01]$ ]] || TASKS_TRUNCATED=0
+    [[ -n "$TASKS_LOOKUP_STATUS" ]] || TASKS_LOOKUP_STATUS="lookup status unavailable"
+  fi
 fi
 
 # The most recent hand-written handoff, so a fresh shallow checkpoint never
@@ -353,7 +456,9 @@ render() {
   else
     printf 'Open a terminal in the working directory named at the bottom of this document\n'
     printf 'and run `git status`'
-    if (( CHANGED_COUNT > 0 )); then
+    if (( CHANGED_TRUNCATED )); then
+      printf ' — there were more than %d uncommitted change(s) when this was written,\nso start by understanding those before doing anything else' "$MAX_PATHS"
+    elif (( CHANGED_COUNT > 0 )); then
       printf ' — there were %d uncommitted change(s) when this was written,\nso start by understanding those before doing anything else' "$CHANGED_COUNT"
     else
       printf ' to confirm the tree is still clean'
@@ -451,23 +556,70 @@ render() {
   fi
   printf '\n'
 
+  printf '## Progress and verification\n\n'
+  printf 'Completed: not recorded — this automatic checkpoint cannot infer completed work.\n'
+  printf 'Remaining: inspect the repository state and linked issue or pull request above.\n'
+  printf 'Blockers and decisions needed: not recorded — re-check current remote state.\n'
+  printf 'Tests: no test result was recorded; run the relevant repository test command.\n'
+  printf 'Review: use the pull-request links and `gh pr checks` commands above, if any.\n'
+  printf 'Next commands: enter the working directory below, run `git status`, then `git log --oneline -20`.\n\n'
+
   printf '## Local state on this machine\n\n'
-  printf 'Working directory: %s\n' "$WORKDIR"
-  if (( ! minimal )); then
-    [[ -n "$BRANCH" ]] && printf 'Branch: %s\n' "$BRANCH"
-    [[ -n "$HEAD_SHA" ]] && printf 'Most recent commit: %s\n' "$HEAD_SHA"
+  if [[ "$REPO_SLUG" == */* ]]; then
+    printf 'Repository identity: %s\n' "$REPO_SLUG"
+  else
+    printf 'Repository identity: unknown — no sanitized owner/repository remote was available\n'
+  fi
+  if [[ -n "$ROOT_REPO" ]]; then
+    printf 'Repository root: %s\n' "$ROOT_REPO"
+  else
+    printf 'Repository root: unknown — main root could not be resolved\n'
+  fi
+  printf 'Working directory: %s\n' "${TOPLEVEL:-$WORKDIR}"
+  printf 'Worktree condition: %s\n' "$WORKTREE_CONDITION"
+  if [[ -n "$BRANCH" ]]; then
+    printf 'Branch: %s\n' "$BRANCH"
+  elif (( IN_REPO )); then
+    printf 'Branch: unknown — could not be determined\n'
+  else
+    printf 'Branch: unknown — not a git checkout\n'
+  fi
+  printf 'Base branch: %s\n' "${BASE_BRANCH:-unknown — current pull-request base was unavailable}"
+  if [[ -n "$HEAD_SHA" ]]; then
+    printf 'HEAD commit: %s\n' "$HEAD_SHA"
+  elif (( IN_REPO )); then
+    printf 'HEAD commit: unknown — no commits yet\n'
+  else
+    printf 'HEAD commit: unknown — not a git checkout\n'
   fi
 
   if (( IN_REPO )); then
-    if (( CHANGED_COUNT == 0 )); then
-      printf 'Uncommitted changes: none\n'
+    if (( TRACKED_TRUNCATED )); then
+      printf 'Tracked changes: more than %d file(s); run the command below for the complete list.\n' "$MAX_PATHS"
+      if [[ -n "$HEAD_SHA" ]]; then
+        printf 'Tracked change command: `git diff --name-only HEAD`\n'
+      else
+        printf 'Tracked change command: `git diff --cached --name-only`\n'
+      fi
+    elif (( TRACKED_COUNT == 0 )); then
+      printf 'Tracked changes: none\n'
     elif (( list_files )) && (( ! minimal )); then
-      printf 'Uncommitted changes: %d file(s) —\n' "$CHANGED_COUNT"
-      printf '%s\n' "$CHANGED_LIST" | sed 's/^/  /'
+      printf 'Tracked changes: %d file(s) — %s\n' "$TRACKED_COUNT" "$(printf '%s' "$TRACKED_LIST" | tr '\n' ', ' | sed 's/, $//')"
     else
-      printf 'Uncommitted changes: %d file(s). Run `git status` in the directory above to\n' "$CHANGED_COUNT"
-      printf '  list them; the names are not reproduced here because they would not mean\n'
-      printf '  anything outside this checkout.\n'
+      if [[ -n "$HEAD_SHA" ]]; then
+        printf 'Tracked changes: %d file(s); run `git diff --name-only HEAD`.\n' "$TRACKED_COUNT"
+      else
+        printf 'Tracked changes: %d file(s); run `git diff --cached --name-only`.\n' "$TRACKED_COUNT"
+      fi
+    fi
+    if (( UNTRACKED_TRUNCATED )); then
+      printf 'Untracked changes: more than %d file(s); run `git ls-files --others --exclude-standard` for the complete list.\n' "$MAX_PATHS"
+    elif (( UNTRACKED_COUNT == 0 )); then
+      printf 'Untracked changes: none\n'
+    elif (( list_files )) && (( ! minimal )); then
+      printf 'Untracked changes: %d file(s) — %s\n' "$UNTRACKED_COUNT" "$(printf '%s' "$UNTRACKED_LIST" | tr '\n' ', ' | sed 's/, $//')"
+    else
+      printf 'Untracked changes: %d file(s); run `git ls-files --others --exclude-standard`.\n' "$UNTRACKED_COUNT"
     fi
     if [[ -z "$UNPUSHED" ]]; then
       printf 'Unpushed commits: could not be determined (the branch has no upstream set).\n'
@@ -477,6 +629,9 @@ render() {
       printf 'Unpushed commits: %s. Run `git log --oneline @{u}..HEAD` to see them.\n' "$UNPUSHED"
     fi
   else
+    printf 'Tracked changes: not applicable — this directory is not a git checkout\n'
+    printf 'Untracked changes: not applicable — this directory is not a git checkout\n'
+    printf 'Unpushed commits: not applicable — this directory is not a git checkout\n'
     printf 'This directory is not a git checkout, so no branch or change list was available.\n'
   fi
 
@@ -485,6 +640,38 @@ render() {
     printf 'They may have been interrupted, so treat any work they owned as unfinished\n'
     printf 'until you have checked it yourself.\n'
   fi
+
+  if [[ "$TASKS_JSON" != '[]' ]]; then
+    printf '\nBackground task takeover details for this session:\n'
+    jq -r '
+      def shown:
+        if . == null or . == "" then "not recorded"
+        else tostring | gsub("[\\r\\n]"; " ")
+        end;
+      .[] |
+      "- Runtime ID: \(.task_id | shown)\n" +
+      "  Status: \(.status | shown)\n" +
+      "  Type: \(.type | shown)\n" +
+      "  Logical name: \(.name | shown)\n" +
+      "  Work item: \(.work_item | shown)\n" +
+      "  Output file: \(.output_file | shown)\n" +
+      "  Checkpoint: \(.checkpoint_path | shown)\n" +
+      "  Recovery path: \(.recovery_path | shown)"
+    ' <<<"$TASKS_JSON"
+    if (( TASKS_TRUNCATED )); then
+      printf 'Only the first %d of %d task records fit this bounded checkpoint.\n' \
+        "$MAX_PATHS" "$TASKS_TOTAL"
+    fi
+  elif [[ "$TASKS_LOOKUP_STATUS" != "resolved" ]]; then
+    printf '\nExact task registry details could not be recovered for this session: %s.\n' \
+      "$TASKS_LOOKUP_STATUS"
+    printf 'Do not relaunch or replace that work until its runtime status and artifacts are identified.\n'
+  fi
+
+  printf '\n## Resume safely\n\n'
+  printf 'Resume command: not applicable — this automatic checkpoint did not stop the session.\n'
+  printf 'For another agent: enter the absolute working directory above and run `git status` before changing anything.\n'
+  printf 'Relaunch rule: inspect recorded task status and preserved output before replacing work; do not duplicate a running or completed task.\n'
 
   printf '\n%s\n' "$FINGERPRINT_MARK"
 }
@@ -574,7 +761,7 @@ OUT="$OUT_DIR/portable-handoff-${STAMP}-${SESSION_ID}-${UNIQ}-checkpoint.md"
 # complete document or none, never a half-written one.
 if mv -f "$TMP_DOC" "$OUT" 2>/dev/null; then
   trap - EXIT
-  chmod 644 "$OUT" 2>/dev/null
+  chmod 600 "$OUT" 2>/dev/null
   printf '%s\n' "$OUT"
 else
   echo "checkpoint-handoff.sh: could not publish the checkpoint" >&2

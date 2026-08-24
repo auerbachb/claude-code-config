@@ -24,7 +24,7 @@
 #                            catalog, not guessed from a regex
 #     unrendered-placeholder {LIKE_THIS} — a template that never got filled in
 #
-#   Plus five structural rules:
+#   Plus seven structural rules:
 #     required-sections      every required heading present AND non-empty
 #     working-directory-absolute
 #                            the "Working directory:" line exists and names an
@@ -37,6 +37,10 @@
 #                            AND whether it is approved
 #     verification-command   at least one "Verify with:" command, whenever there
 #                            is any in-flight work to verify
+#     working-copy-fields    repository/worktree/Git identity fields all exist
+#                            with explicit values
+#     resume-guidance        the dedicated resume section names `/stop-resume`
+#                            and states how duplicate relaunches are avoided
 #
 #   The section list is the contract with the template; keep the two in step.
 #     .claude/skills/stop/references/portable-handoff-template.md
@@ -116,7 +120,7 @@
 
 set -uo pipefail
 
-RULES="harness-path phase-vocabulary state-file skill-invocation unrendered-placeholder required-sections working-directory-absolute open-work-ownership pull-request-review-state verification-command"
+RULES="harness-path phase-vocabulary state-file skill-invocation unrendered-placeholder required-sections working-directory-absolute open-work-ownership pull-request-review-state verification-command working-copy-fields resume-guidance"
 
 usage() {
   sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
@@ -135,8 +139,10 @@ REQUIRED_SECTIONS=(
   "Start here"
   "What we're working on"
   "Open work"
+  "Progress and verification"
   "Decisions made this session"
   "Local state on this machine"
+  "Resume safely"
 )
 
 # The one .claude/ form that is an address rather than a harness pointer. The
@@ -148,6 +154,22 @@ WORKTREE_PATH_PREFIX="/.claude/worktrees/"
 # here, which is why a MISSING anchor is a violation rather than a silent skip.
 WORKDIR_SECTION="Local state on this machine"
 WORKDIR_ANCHOR="Working directory:"
+WORKING_COPY_ANCHORS=(
+  "Repository identity:"
+  "Repository root:"
+  "Working directory:"
+  "Worktree condition:"
+  "Branch:"
+  "Base branch:"
+  "HEAD commit:"
+  "Tracked changes:"
+  "Untracked changes:"
+  "Unpushed commits:"
+)
+RESUME_SECTION="Resume safely"
+RESUME_ANCHOR="Resume command:"
+AGENT_ANCHOR="For another agent:"
+RELAUNCH_ANCHOR="Relaunch rule:"
 
 # Per-entry field anchors, same contract: reword one in the template and the
 # matching rule must be reworded here, or it stops firing without saying so.
@@ -488,6 +510,12 @@ declare -a NONEMPTY_SECTIONS=()
 section=""
 lineno=0
 WORKDIR_SEEN=0
+declare -a WORKING_COPY_FIELDS_SEEN=()
+RESUME_SEEN=0
+RESUME_FIELDS=0
+AGENT_SEEN=0
+AGENT_FIELDS=0
+RELAUNCH_SEEN=0
 IN_FENCE=0
 
 while IFS= read -r line || [[ -n "$line" ]]; do
@@ -611,8 +639,53 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     fi
   fi
 
+  # Required takeover fields. Each anchor must occur once with a visible value;
+  # explicit "unknown" / "not applicable" values are honest answers and pass.
+  if (( ! IS_HEADING )) && (( ! IN_FENCE )) && [[ "$section" == "$WORKDIR_SECTION" ]]; then
+    for anchor in "${WORKING_COPY_ANCHORS[@]}"; do
+      if [[ "$line" == "$anchor"* ]]; then
+        WORKING_COPY_FIELDS_SEEN+=("$anchor")
+        if ! field_value_nonempty "${line#"$anchor"}"; then
+          report "working-copy-fields" "$lineno" "$WORKDIR_SECTION" \
+            "empty \"$anchor\" field — record the value or an explicit unknown/not-applicable marker"
+        fi
+      fi
+    done
+  fi
+
+  resume_value=""
+  if (( ! IS_HEADING )) && (( ! IN_FENCE )) && [[ "$section" == "$RESUME_SECTION" ]]; then
+    if [[ "$line" == "$RESUME_ANCHOR"* ]]; then
+      RESUME_FIELDS=$((RESUME_FIELDS + 1))
+      resume_value="${line#"$RESUME_ANCHOR"}"
+      resume_value="${resume_value#"${resume_value%%[![:space:]]*}"}"
+      if field_value_nonempty "$resume_value"; then
+        case "$resume_value" in
+          /stop-resume|/stop-resume\ *) RESUME_SEEN=$((RESUME_SEEN + 1)) ;;
+          "not applicable"|"not applicable "*) RESUME_SEEN=$((RESUME_SEEN + 1)) ;;
+        esac
+      fi
+    fi
+    if [[ "$line" == "$AGENT_ANCHOR"* ]]; then
+      AGENT_FIELDS=$((AGENT_FIELDS + 1))
+      if field_value_nonempty "${line#"$AGENT_ANCHOR"}"; then
+        AGENT_SEEN=$((AGENT_SEEN + 1))
+      fi
+    fi
+    if [[ "$line" == "$RELAUNCH_ANCHOR"* ]] && field_value_nonempty "${line#"$RELAUNCH_ANCHOR"}"; then
+      RELAUNCH_SEEN=1
+    fi
+  fi
+
   # Mask the one permitted .claude/ form before any rule sees the line.
   scan=$(mask_worktree_paths "$(mask_urls "$line")" "$IS_WORKDIR_LINE")
+  # `/stop-resume` is meaningful handoff metadata only in its dedicated field;
+  # mask that exact occurrence while every other harness command still fails.
+  if [[ "$section" == "$RESUME_SECTION" && "$line" == "$RESUME_ANCHOR"* ]]; then
+    case "$resume_value" in
+      /stop-resume|/stop-resume\ *) scan="${scan/\/stop-resume/<resume-entrypoint>}" ;;
+    esac
+  fi
   # Fail CLOSED on an internal fault. If masking ever breaks, `scan` goes empty
   # and every rule below silently matches nothing — the lint would report a
   # clean document while checking none of it. Refuse instead.
@@ -694,6 +767,44 @@ done
 if contains "$WORKDIR_SECTION" ${SEEN_SECTIONS+"${SEEN_SECTIONS[@]}"} && (( ! WORKDIR_SEEN )); then
   report "working-directory-absolute" "0" "$WORKDIR_SECTION" \
     "no \"$WORKDIR_ANCHOR\" line — the reader has no way to locate the work"
+fi
+
+if contains "$WORKDIR_SECTION" ${SEEN_SECTIONS+"${SEEN_SECTIONS[@]}"}; then
+  for anchor in "${WORKING_COPY_ANCHORS[@]}"; do
+    count=$(count_of "$anchor" ${WORKING_COPY_FIELDS_SEEN+"${WORKING_COPY_FIELDS_SEEN[@]}"})
+    if (( count == 0 )); then
+      report "working-copy-fields" "0" "$WORKDIR_SECTION" \
+        "no \"$anchor\" field — record the value or an explicit unknown/not-applicable marker"
+    elif (( count > 1 )); then
+      report "working-copy-fields" "0" "$WORKDIR_SECTION" \
+        "\"$anchor\" appears $count times — one authoritative value is required"
+    fi
+  done
+fi
+
+if contains "$RESUME_SECTION" ${SEEN_SECTIONS+"${SEEN_SECTIONS[@]}"}; then
+  if (( RESUME_FIELDS == 0 )); then
+    report "resume-guidance" "0" "$RESUME_SECTION" \
+      "no \"$RESUME_ANCHOR\" field — use /stop-resume or explicitly mark a non-stop checkpoint not applicable"
+  elif (( RESUME_FIELDS > 1 )); then
+    report "resume-guidance" "0" "$RESUME_SECTION" \
+      "\"$RESUME_ANCHOR\" appears $RESUME_FIELDS times — one authoritative command is required"
+  elif (( RESUME_SEEN != 1 )); then
+    report "resume-guidance" "0" "$RESUME_SECTION" \
+      "invalid or empty \"$RESUME_ANCHOR\" field — use /stop-resume or explicitly mark a non-stop checkpoint not applicable"
+  fi
+  if (( AGENT_FIELDS == 0 )); then
+    report "resume-guidance" "0" "$RESUME_SECTION" \
+      "no \"$AGENT_ANCHOR\" field — a different agent has no ordinary command path into the work"
+  elif (( AGENT_FIELDS > 1 )); then
+    report "resume-guidance" "0" "$RESUME_SECTION" \
+      "\"$AGENT_ANCHOR\" appears $AGENT_FIELDS times — one authoritative command path is required"
+  elif (( AGENT_SEEN != 1 )); then
+    report "resume-guidance" "0" "$RESUME_SECTION" \
+      "empty \"$AGENT_ANCHOR\" field — provide an ordinary command path into the work"
+  fi
+  (( RELAUNCH_SEEN )) || report "resume-guidance" "0" "$RESUME_SECTION" \
+    "no non-empty \"$RELAUNCH_ANCHOR\" field — a takeover could duplicate already-recorded work"
 fi
 
 if (( VIOLATIONS > 0 )); then

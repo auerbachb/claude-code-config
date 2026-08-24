@@ -48,14 +48,29 @@ serves the goal.}
   Status: {PLAIN_ENGLISH_STATUS}
 
 - **Stopped background work — {LOGICAL_NAME}**
+  Owner: {"this stopped session" | "another session — do not relaunch"}
   Runtime ID: {EXACT_RUNTIME_ID}
   Type: {agent | workflow | background command | monitor}
-  Preserved at: {NON_EMPTY_OUTPUT_FILE_AND_OR_ABSOLUTE_RECOVERY_PATH}
+  Final status: {stopped | done | failed | stop failed | abandoned | unknown}
+  Work item: {WHAT_THE_TASK_WAS_DOING or "not recorded"}
+  Output: {PRESERVED_OUTPUT_PATH or "not recorded"}
+  Checkpoint: {PRESERVED_CHECKPOINT_PATH or "not recorded"}
+  Recovery path: {ABSOLUTE_RECOVERY_PATH or "not recorded"}
   Resume by: {OWNING_SKILL_AND_CONCRETE_ACTION_USING_THE_PRESERVED_CHECKPOINT}
 
-{When neither an output file nor an absolute recovery path exists, replace the
-block's last two lines with: "Recovery: UNRESOLVED — no checkpoint path was
-recorded; manual recovery is required." Never fabricate a path.}
+{When neither an output file, checkpoint, nor recovery path exists, add:
+"Recovery: UNRESOLVED — no preserved location was recorded; inspect the exact
+runtime ID before deciding whether manual recovery or a fresh launch is safe."
+Never fabricate a path.}
+
+## Progress and verification
+
+Completed: {WHAT_FINISHED_AND_WHERE_IT_LIVES or "nothing completed yet"}
+Remaining: {CONCRETE_WORK_STILL_REQUIRED or "nothing known to remain"}
+Blockers and decisions needed: {CURRENT_BLOCKERS_AND_OPEN_CHOICES or "none"}
+Tests: {COMMANDS_RUN_AND_RESULTS, plus the next exact test command}
+Review: {PR_REVIEW_STATUS_AT_THIS_COMMIT or "not applicable — no pull request"}
+Next commands: {SHELL_SAFE_COMMANDS_OR_ENTRYPOINTS_IN_EXECUTION_ORDER}
 
 ## Decisions made this session
 
@@ -67,16 +82,32 @@ its "why" is the thing a later reader is most likely to undo by accident. Write
 
 ## Local state on this machine
 
+Repository identity: {OWNER/REPO or "unknown — no sanitized remote identity was available"}
+Repository root: {ABSOLUTE_MAIN_WORKTREE_PATH or "unknown — main root could not be resolved"}
+Working directory: {ABSOLUTE_ACTIVE_CHECKOUT_OR_CURRENT_DIRECTORY}
+Worktree condition: {"main worktree" | "linked worktree" | "not a git checkout" |
+"git checkout; worktree condition unknown"}
 Branch: {BRANCH_NAME}
-Working directory: {ABSOLUTE_PATH}
-Uncommitted changes: {FILE_LIST or "none" — and when the directory above is
-clean because the work sits in other checkouts, say so on this line}
+Base branch: {BASE_BRANCH or "unknown — no upstream/default/PR base was available"}
+HEAD commit: {FULL_COMMIT_SHA or "unknown — not a git checkout"}
+Tracked changes: {COUNT_AND_BOUNDED_FILE_LIST or "none"}
+Untracked changes: {COUNT_AND_BOUNDED_FILE_LIST or "none"}
 Unpushed commits: {COUNT_AND_SUMMARY or "none"}
 Other checkouts with uncommitted work: {one per line: the absolute path, what
 is in it, who owns it} or "none"
 
 {Anything else a reader would be surprised by — a stashed change, a half-applied
 rebase, a running process, a file deliberately left broken.}
+
+## Resume safely
+
+Resume command: /stop-resume {add `--resume-refill` only when the refill queue
+also needs reopening; this entrypoint is for the original harness}
+For another agent: {START_WITH `cd -- 'ABSOLUTE_WORKING_DIRECTORY'`, then list
+the exact ordinary `git`, `gh`, and test commands needed to re-check the note}
+Relaunch rule: Inspect every stopped task's final status and preserved output,
+checkpoint, and recovery path before launching replacement work. Do not relaunch
+a task that is already running, rearming, completed, or owned by another session.
 ```
 
 ## Rendering rules
@@ -97,7 +128,7 @@ rebase, a running process, a file deliberately left broken.}
 - **Name things by number and URL, always.** "Pull request 903" plus its full URL. A reader with no access to this session cannot resolve "the PR we were on".
 - **Absolute paths, not repo-relative ones.** The reader may be in a different checkout. An absolute working-directory path is required and is the one path form the lint permits.
 - **A path containing spaces goes in the `Working directory:` field**, whose whole value is one path by definition. Elsewhere the checker reads a path as a whitespace-delimited token, because free prose cannot distinguish a path continuing across a space from two separate words. If you need to mention a spaced path in a sentence, quote it or point back to the field.
-- **Commands are allowed when they are universal.** `git status`, `gh pr view 903`, a test runner — anything a fresh checkout can run. Commands that only exist inside this harness are not; describe the intent instead.
+- **Commands are allowed when they are universal.** `git status`, `gh pr view 903`, a test runner — anything a fresh checkout can run. Commands that only exist inside this harness are not; describe the intent instead. The sole exception is the dedicated `Resume command: /stop-resume` field, paired with ordinary commands for a different agent in the next line.
 - **The in-thread block and the file on disk are byte-identical.** Render once into a single buffer, verify that buffer, then write it and print that same buffer. Never re-render for display — a second render is a second document, and the reader has no way to know which one they got.
 - **Verify before emitting.** `portable-handoff-lint.sh` is the gate, not a suggestion. If it reports a violation, rewrite the offending line and re-run it; do not emit a document that fails it, and do not narrow the check to make a line pass.
 
@@ -112,6 +143,17 @@ Each of these answers a question a real reader asked of a document that had alre
   or worktree path is not meaningfully resumable. When neither exists, mark the
   item unresolved and require manual recovery; do not call it resumable. Omit
   this block only when no background work was running.
+- **Machine and Git facts come from one post-shutdown snapshot.** Repository
+  identity, roots, worktree condition, branch/base/HEAD, dirty paths, linkage,
+  and task outcomes must describe the same moment. Never combine an early Git
+  read with a later task audit and call the result authoritative.
+- **Tracked and untracked work stay distinct.** A reader can recover a tracked
+  edit from a diff and must locate an untracked file by name. A single "dirty"
+  count hides that difference and is not enough for a takeover.
+- **A different agent gets ordinary commands.** `/stop-resume` is useful to the
+  original harness but meaningless in many other tools. Always pair it with the
+  exact absolute `cd` command, state inspection, and test/review commands that a
+  fresh coding agent can execute.
 - **Translate registry task types before rendering.** `agent`, `workflow`, and
   `monitor` keep those names. Registry type `bash` renders as "background
   command"; never expose the internal type token as though it were a shell the

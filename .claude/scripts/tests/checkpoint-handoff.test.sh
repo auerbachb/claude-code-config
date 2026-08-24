@@ -50,6 +50,9 @@ check_not_contains() {
   if [[ "$haystack" != *"$needle"* ]]; then pass "$desc"
   else fail "$desc (unexpectedly present: '$needle')"; fi
 }
+mode_of() {
+  if [[ "$(uname -s)" == Darwin ]]; then stat -f %Lp "$1"; else stat -c %a "$1"; fi
+}
 
 # ---- a self-contained copy of the harness the script resolves against -------
 # Laid out exactly as production is — the script under hooks, the checker one
@@ -69,6 +72,19 @@ mkdir -p "$FAKE/.claude/hooks" "$FAKE/.claude/scripts" \
          "$FAKE/.claude/skills/pause-resume" "$FAKE/.claude/skills/fixpr"
 cp "$SUT" "$FAKE/.claude/hooks/"
 cp "$LINT" "$FAKE/.claude/scripts/"
+cat >"$FAKE/.claude/scripts/portable-handoff-context.sh" <<'STUB'
+#!/usr/bin/env bash
+case "${CHECKPOINT_TASK_FIXTURE:-0}" in
+  1) ;;
+  failed)
+    printf '%s\n' '{"background_tasks":{"lookup_status":"registry read failed","items":[],"total":0,"truncated":false}}'
+    exit 0 ;;
+  *) exit 4 ;;
+esac
+cat <<'JSON'
+{"background_tasks":{"lookup_status":"resolved","items":[{"task_id":"runtime-42","name":"review worker","type":"agent","status":"stopped","work_item":"review pull request 42","output_file":"/tmp/runtime-42-output.txt","checkpoint_path":"/tmp/runtime-42-checkpoint.json","recovery_path":"/tmp/runtime-42-worktree"}],"total":1,"truncated":false}}
+JSON
+STUB
 chmod +x "$FAKE/.claude/hooks/"*.sh "$FAKE/.claude/scripts/"*.sh
 CP="$FAKE/.claude/hooks/checkpoint-handoff.sh"
 
@@ -126,14 +142,57 @@ echo 'echo hi' > "$HARNESSY/.claude/scripts/thing.sh"
 OUT_H="$TMP/out-h"
 DOC_H=$(cd "$HARNESSY" && "$CP" --stdout --no-remote --out-dir "$OUT_H" 2>/dev/null)
 check_not_contains "T2 harness-shaped path is not reproduced in the document" ".claude/scripts/thing.sh" "$DOC_H"
-check_contains "T2 degraded tier reports a count instead" "Uncommitted changes: 1 file(s)" "$DOC_H"
+check_contains "T2 degraded tier reports a count instead" "Untracked changes: 1 file(s)" "$DOC_H"
 printf '%s\n' "$DOC_H" > "$TMP/t2.md"
 "$LINT" --repo-root "$FAKE" --quiet "$TMP/t2.md" >/dev/null 2>&1
 check_eq "T2 degraded tier passes the portability check" "0" "$?"
 
+BOUNDED="$TMP/bounded"
+new_repo "$BOUNDED"
+printf 'one\n' >"$BOUNDED/one.txt"
+printf 'two\n' >"$BOUNDED/two.txt"
+git -C "$BOUNDED" add one.txt two.txt
+git -C "$BOUNDED" commit -qm bounded-seed
+printf 'changed one\n' >"$BOUNDED/one.txt"
+printf 'changed two\n' >"$BOUNDED/two.txt"
+printf 'three\n' >"$BOUNDED/three.txt"
+printf 'four\n' >"$BOUNDED/four.txt"
+DOC_BOUNDED=$(cd "$BOUNDED" && CLAUDE_HANDOFF_MAX_ITEMS=1 "$CP" --stdout --no-remote --out-dir "$TMP/out-bounded" 2>/dev/null)
+check_contains "T2 bounded collector reports tracked truncation" "Tracked changes: more than 1 file(s)" "$DOC_BOUNDED"
+check_contains "T2 bounded collector reports untracked truncation" "Untracked changes: more than 1 file(s)" "$DOC_BOUNDED"
+check_contains "T2 bounded collector never reports its capped dirty count as exact" \
+  "there were more than 1 uncommitted change(s)" "$DOC_BOUNDED"
+printf '%s\n' "$DOC_BOUNDED" >"$TMP/t2-bounded.md"
+"$LINT" --repo-root "$FAKE" --quiet "$TMP/t2-bounded.md" >/dev/null 2>&1
+check_eq "T2 bounded rendering passes the portability check" "0" "$?"
+
+RENAMED="$TMP/renamed"
+new_repo "$RENAMED"
+git -C "$RENAMED" mv README.md renamed.md
+DOC_RENAMED=$(cd "$RENAMED" && "$CP" --stdout --no-remote --out-dir "$TMP/out-renamed" 2>/dev/null)
+check_contains "T2 rename counts as one logical dirty-state entry" \
+  "there were 1 uncommitted change(s)" "$DOC_RENAMED"
+
+DOC_TASKS=$(cd "$PLAIN" && CHECKPOINT_TASK_FIXTURE=1 "$CP" --stdout --no-remote \
+  --out-dir "$TMP/out-tasks" 2>/dev/null)
+check_contains "T2 task handoff records the exact runtime ID" "Runtime ID: runtime-42" "$DOC_TASKS"
+check_contains "T2 task handoff records terminal status" "Status: stopped" "$DOC_TASKS"
+check_contains "T2 task handoff records preserved output" "Output file: /tmp/runtime-42-output.txt" "$DOC_TASKS"
+check_contains "T2 task handoff records the checkpoint" "Checkpoint: /tmp/runtime-42-checkpoint.json" "$DOC_TASKS"
+check_contains "T2 task handoff records the recovery path" "Recovery path: /tmp/runtime-42-worktree" "$DOC_TASKS"
+printf '%s\n' "$DOC_TASKS" >"$TMP/t2-tasks.md"
+"$LINT" --repo-root "$FAKE" --quiet "$TMP/t2-tasks.md" >/dev/null 2>&1
+check_eq "T2 exact task takeover details remain portable" "0" "$?"
+
+DOC_TASK_FAILURE=$(cd "$PLAIN" && CHECKPOINT_TASK_FIXTURE=failed "$CP" --stdout --no-remote \
+  --out-dir "$TMP/out-task-failure" 2>/dev/null)
+check_contains "T2 unreadable task inventory is explicit" "registry read failed" "$DOC_TASK_FAILURE"
+check_contains "T2 unreadable task inventory forbids duplicate relaunch" \
+  "Do not relaunch or replace that work" "$DOC_TASK_FAILURE"
+
 # Required sections and the absolute working directory, asserted directly rather
 # than trusting the lint's summary exit code.
-for section in "Start here" "What we're working on" "Open work" "Decisions made this session" "Local state on this machine"; do
+for section in "Start here" "What we're working on" "Open work" "Progress and verification" "Decisions made this session" "Local state on this machine" "Resume safely"; do
   check_contains "T2 section present: $section" "## $section" "$DOC_H"
 done
 WD_LINE=$(printf '%s\n' "$DOC_H" | grep '^Working directory: ' | head -1)
@@ -147,6 +206,7 @@ WROTE=$(cd "$PLAIN" && "$CP" --no-remote --out-dir "$OUT" 2>/dev/null)
 check_eq "T3 publish exits 0" "0" "$?"
 check_eq "T3 wrote exactly one file" "1" "$(find "$OUT" -maxdepth 1 -type f -name 'portable-handoff-*.md' | wc -l | tr -d ' ')"
 check_contains "T3 filename carries the checkpoint suffix" "-checkpoint.md" "$WROTE"
+check_eq "T3 published checkpoint is owner-only" "600" "$(mode_of "$WROTE")"
 check_eq "T3 filename matches the recorder's glob" "1" \
   "$(find "$OUT" -maxdepth 1 -type f -name 'portable-handoff-*.md' | wc -l | tr -d ' ')"
 
@@ -256,6 +316,24 @@ STUB_BIN="$TMP/stubbin"
 mkdir -p "$STUB_BIN"
 cat > "$STUB_BIN/gh" <<'STUB'
 #!/usr/bin/env bash
+[[ "${GH_HTTP_TIMEOUT:-}" == 10 ]] || exit 65
+if [[ "$1 $2" == "pr view" ]]; then
+  [[ "$#" == 7 && "$3" == main && "$4" == --json && "$5" == baseRefName \
+     && "$6" == --jq && "$7" == '.baseRefName // empty' ]] || exit 64
+  printf 'maintenance-2.x\n'
+  exit 0
+fi
+jq_filter="${12}"
+jq_filter="${jq_filter//$'\n'/ }"
+while [[ "$jq_filter" == *'  '* ]]; do jq_filter="${jq_filter//  / }"; done
+if [[ "$1 $2" != "pr list" || "$#" != 12 || "$3" != --author \
+   || "$4" != @me || "$5" != --state || "$6" != open || "$7" != --limit \
+   || "$8" != 10 || "$9" != --json \
+   || "${10}" != number,title,url,author,reviewDecision,mergeStateStatus \
+   || "${11}" != --jq \
+   || "$jq_filter" != '.[] | [(.number|tostring), .title, .url, (.author.login // ""), (.reviewDecision // ""), (.mergeStateStatus // "")] | join("\u001f")' ]]; then
+  exit 64
+fi
 printf '42\037\037https://example.com/42\037auerbachb\037REVIEW_REQUIRED\037CLEAN\n'
 printf '43\037A real title\037https://example.com/43\037someone-else\037APPROVED\037BEHIND\n'
 STUB
@@ -281,6 +359,7 @@ check_contains "T9 an approved pull request says so" "Approval: approved" "$DOC_
 # reader to wait for something that already happened.
 check_contains "T9 a BEHIND branch outranks its approval in what it waits on" "Waiting on: the branch needs updating against the main branch first" "$DOC_PR"
 check_contains "T9 a verification command is offered" "Verify with: gh pr checks 42" "$DOC_PR"
+check_contains "T9 current pull-request base outranks repository default" "Base branch: maintenance-2.x" "$DOC_PR"
 printf '%s\n' "$DOC_PR" > "$TMP/t9.md"
 "$LINT" --repo-root "$FAKE" --quiet "$TMP/t9.md" >/dev/null 2>&1
 check_eq "T9 pull request rendering passes the portability check" "0" "$?"
@@ -353,6 +432,43 @@ git -C "$NO_ORIGIN" checkout -q -b issue-941-real
 DOC_NO_ORIGIN=$(cd "$NO_ORIGIN" && "$CP" --stdout --no-remote --out-dir "$TMP/out-no-origin" 2>/dev/null)
 check_contains "T10e a no-origin branch can still name its issue number" "issue 941" "$DOC_NO_ORIGIN"
 check_not_contains "T10e a basename never becomes a malformed GitHub issue URL" "https://github.com/issue-941-no-origin/issues/941" "$DOC_NO_ORIGIN"
+
+# (f) An unborn repository has no HEAD, but a staged file is still tracked
+#     takeover state and must not disappear into a failed `git diff HEAD` call.
+UNBORN="$TMP/unborn"
+mkdir -p "$UNBORN"
+git init -q -b main "$UNBORN"
+git -C "$UNBORN" config user.email "test@example.com"
+git -C "$UNBORN" config user.name "Test"
+echo staged >"$UNBORN/staged.txt"
+git -C "$UNBORN" add staged.txt
+DOC_UNBORN=$(cd "$UNBORN" && "$CP" --stdout --no-remote --out-dir "$TMP/out-unborn" 2>/dev/null)
+check_contains "T10f unborn HEAD preserves staged tracked work" "Tracked changes: 1 file(s) — staged.txt" "$DOC_UNBORN"
+check_contains "T10f unborn repository keeps its initialized branch" "Branch: main" "$DOC_UNBORN"
+check_contains "T10f unborn repository reports that no commit exists" "HEAD commit: unknown — no commits yet" "$DOC_UNBORN"
+check_not_contains "T10f unborn repository is not mislabeled outside Git" "HEAD commit: unknown — not a git checkout" "$DOC_UNBORN"
+printf '%s\n' "$DOC_UNBORN" >"$TMP/t10f.md"
+"$LINT" --repo-root "$FAKE" --quiet "$TMP/t10f.md" >/dev/null 2>&1
+check_eq "T10f unborn repository rendering passes portability lint" "0" "$?"
+
+# (g) The degraded tier must give an executable unborn-repository command too.
+#     A harness-shaped staged path forces the count-only rendering.
+UNBORN_DEGRADED="$TMP/unborn-degraded"
+mkdir -p "$UNBORN_DEGRADED/.claude/scripts"
+git init -q -b main "$UNBORN_DEGRADED"
+git -C "$UNBORN_DEGRADED" config user.email "test@example.com"
+git -C "$UNBORN_DEGRADED" config user.name "Test"
+echo 'echo staged' >"$UNBORN_DEGRADED/.claude/scripts/staged.sh"
+git -C "$UNBORN_DEGRADED" add .claude/scripts/staged.sh
+DOC_UNBORN_DEGRADED=$(cd "$UNBORN_DEGRADED" && "$CP" --stdout --no-remote --out-dir "$TMP/out-unborn-degraded" 2>/dev/null)
+check_contains "T10g degraded unborn guidance uses the index" 'Tracked changes: 1 file(s); run `git diff --cached --name-only`.' "$DOC_UNBORN_DEGRADED"
+check_not_contains "T10g degraded unborn guidance never requires HEAD" 'git diff --name-only HEAD' "$DOC_UNBORN_DEGRADED"
+check_contains "T10g degraded unborn repository keeps its initialized branch" "Branch: main" "$DOC_UNBORN_DEGRADED"
+check_contains "T10g degraded unborn repository reports that no commit exists" "HEAD commit: unknown — no commits yet" "$DOC_UNBORN_DEGRADED"
+check_not_contains "T10g degraded unborn repository is not mislabeled outside Git" "HEAD commit: unknown — not a git checkout" "$DOC_UNBORN_DEGRADED"
+printf '%s\n' "$DOC_UNBORN_DEGRADED" >"$TMP/t10g.md"
+"$LINT" --repo-root "$FAKE" --quiet "$TMP/t10g.md" >/dev/null 2>&1
+check_eq "T10g degraded unborn rendering passes portability lint" "0" "$?"
 
 # ---------------------------------------------------------------------------
 # T8 — degraded environments must never fail the turn
