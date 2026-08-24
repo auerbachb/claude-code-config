@@ -17,7 +17,7 @@ trap 'chmod -R u+rwX "$TMP_ROOT" 2>/dev/null; rm -rf "$TMP_ROOT"' EXIT
 failures=0
 case_num=0
 
-SKILLS=(pm subagent prompt wave issue-maker start-issue pr-monitor-and-manage suspend suspend-resume)
+SKILLS=(pm subagent prompt wave issue-maker start-issue pr-monitor-and-manage stop stop-resume pause pause-resume)
 
 make_fixture() {
   local dir="$1"

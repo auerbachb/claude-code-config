@@ -856,7 +856,16 @@ PARKED_UNTIL=$(date -u -d "@$RESET_EPOCH" +%FT%TZ 2>/dev/null || \
                date -u -r "$RESET_EPOCH" +%FT%TZ)
 ```
 
-**Park.** Run the `/suspend` mechanics — invoke `/suspend/SKILL.md` Steps 2–7 inline (the same "run the full SKILL.md, no shortcuts" idiom Steps 1C and 1D use), but **skip Step 1 (pause refill)**. Step 1 writes `.refill.paused`, which is a human-owned field; an automatic machine-initiated park must not touch it, because the auto-wake would otherwise clear a pause the user explicitly set. For a rolling-window limit, pass `--window 0` (skip landing — the limit prevents dispatching `/wrap`). For a weekly limit, use the default window to land anything already gate-met. After the suspend steps complete, read the current `consecutive_limit_hits` and increment it:
+**Park.** A rolling-window limit is temporary and auto-resuming, so run the
+`/pause` mechanics with `--window 0`. Run Step 1's execution-gate activation
+(`execution-pause.sh --activate --command pause --window-minutes 0`) before
+Steps 2–7, but skip only Step 1's `.refill.paused` write. That field is
+human-owned; an automatic machine-initiated park must not touch it because the
+auto-wake would otherwise clear a pause the user explicitly set. The execution
+gate stays closed throughout task shutdown and marker publication.
+A weekly limit is the long-horizon token/credit case and follows `/stop` in the
+weekly branch below. After the selected wind-down steps complete, read the
+current `consecutive_limit_hits` and increment it:
 
 ```bash
 HITS_RC=0
@@ -893,7 +902,7 @@ fi
 
 > Parked (usage limit) — {NEW_HITS} consecutive limit hits on resume; staying parked to avoid a hot loop. Resume manually when the window reopens.
 
-**Auto-wake (rolling window only, when `NEW_HITS < MAX_LIMIT_HITS`).** Arm one persistent `Monitor` that sleeps until the reset time plus a 2-minute buffer, fires once, then breaks. The fire command passes the generation so `/suspend-resume` can reject a stale or duplicate wake. Do **not** pass `--resume-refill` — the automatic park did not write `.refill.paused`, so the wake must not clear it:
+**Auto-wake (rolling window only, when `NEW_HITS < MAX_LIMIT_HITS`).** Arm one persistent `Monitor` that sleeps until the reset time plus a 2-minute buffer, fires once, then breaks. The fire command passes the generation so `/pause-resume` can reject a stale or duplicate wake. Do **not** pass `--resume-refill` — the automatic park did not write `.refill.paused`, so the wake must not clear it:
 
 ```bash
 WAKE_SLEEP=$(( RESET_EPOCH - $(date -u +%s) + 120 ))  # reset + 2 min buffer
@@ -903,7 +912,7 @@ WAKE_SLEEP=$(( WAKE_SLEEP * BACKOFF_MULT < WAKE_SLEEP ? WAKE_SLEEP : WAKE_SLEEP 
 LIMIT_GENERATION="limit-$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
 # One-shot Monitor: sleep then fire once
 while sleep "$WAKE_SLEEP"; do
-  printf '%s\n' "/suspend-resume --generation $LIMIT_GENERATION"
+  printf '%s\n' "/pause-resume --generation $LIMIT_GENERATION"
   break
 done
 ```
@@ -918,17 +927,24 @@ Record the task ID immediately — an unrecorded Monitor cannot be stopped:
 
 If the task ID publish fails: `TaskStop` the Monitor using the ID you hold in hand, then clear `parked_until` so the loop does not appear parked when no wake is armed. Name the unrecorded task ID in the message.
 
-**Weekly/long horizon — no auto-wake.** Run full `/suspend` (default window). Write `parked_until` and `limit_kind="weekly"`. Do not arm a Monitor; do not write `limit_resume_task_id`. One-line notify:
+**Weekly/long horizon — no auto-wake.** Do not invoke the user-only `/stop`
+command. Instead, execute `/stop/SKILL.md` Steps 0–6 inline as the internal
+weekly-stop procedure, using its default 5-minute window and the authoritative
+usage-limit signal already classified above. This shares the gate, checkpoint,
+exact-ID shutdown, audit, and handoff mechanics without pretending a user
+invoked the command or estimating quota. Write `parked_until` and
+`limit_kind="weekly"`. Do not arm a Monitor; do not write
+`limit_resume_task_id`. One-line notify:
 
-> Parked — weekly cap reached; continuing would incur overage charges. Window reopens at {PARKED_UNTIL}. Resume manually with `/suspend-resume` when ready.
+> Stopped — weekly cap reached; continuing would incur overage charges. Window reopens at {PARKED_UNTIL}. Resume manually with `/stop-resume --resume-refill` when ready.
 
 **Heartbeat lines (always the last output from this section):**
 - Rolling window: `parked until {PARKED_UNTIL} — usage window; resuming automatically`
-- Weekly: `parked — weekly cap reached; awaiting manual resume`
+- Weekly: `stopped — weekly cap reached; awaiting manual resume`
 
 **On a successful resume** (tick completes without hitting a limit): reset `consecutive_limit_hits = 0` and clear `parked_until`, `limit_kind`, `limit_resume_task_id`, `limit_resume_generation` in one write before D5's heartbeat fires.
 
-**Disarm on manual resume.** When `/suspend-resume` is invoked manually while a limit-wake Monitor is armed, the skill disarms the Monitor before delegating to `/pm day resume` — see `/suspend-resume` Step 5. This prevents a double resume when both paths race.
+**Disarm on manual resume.** When `/pause-resume` is invoked manually while a limit-wake Monitor is armed, the skill disarms the Monitor before delegating to `/pm day resume` — see `/pause-resume` Step 5. This prevents a double resume when both paths race.
 
 ---
 

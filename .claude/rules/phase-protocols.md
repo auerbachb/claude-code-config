@@ -10,7 +10,8 @@ Immediately before any A→A, A→B, B→B, B→C, or queued-pipeline launch,
 re-read both stop controls. If repo `refill.paused` is true, or
 `execution-pause.sh --status --session "$CLAUDE_SESSION_ID"` reports `active`,
 persist the pending transition and launch nothing. This gate overrides every
-"within 60 seconds" instruction below; only an explicit resume may reopen it.
+"within 60 seconds" instruction below; only an explicit `/stop-resume` or
+`/pause-resume` may reopen it.
 Launch only after both reads succeed and return explicit clear values
 (`refill.paused` false/null and execution status `inactive`). A missing helper,
 non-zero read, or any other output fails closed: persist the transition, report

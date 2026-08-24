@@ -163,10 +163,10 @@ All 36 commands are invoked as `/command` in a Claude Code session. They are def
 | `/merge` | Workflow | Squash merge with merge gate + AC verification |
 | `/admin-merge` | Workflow | Merge a solo-owner PR blocked by branch protection — auto-runs the no-protection-change plain shape, prints the `enforce_admins` toggle shape for the user (Claude never modifies branch protection) |
 | `/wrap` | Workflow | End-of-session: verify, squash merge, aggressively reset root `main`, detect follow-ups, extract lessons |
-| `/pause` | Workflow | Cost-quiescent stop with a 5-minute default checkpoint window: blocks launches, stops all owned background tasks, and writes a portable handoff |
-| `/pause-resume` | Workflow | Explicitly reopen work stopped by `/pause`; optionally clear the independent refill pause with `--resume-refill` |
-| `/suspend` | Workflow | Laptop-close stop with a 15-minute default runway: land safe work, park recovery state, and hard-stop every owned background task |
-| `/suspend-resume` | Workflow | Restore the parked board, explicitly reopen launches, and re-arm selected stopped work without duplicating live tasks |
+| `/stop` | Workflow | Long-horizon token/credit stop with a 5-minute default checkpoint window: blocks launches, stops all owned background tasks, and writes a portable handoff |
+| `/stop-resume` | Workflow | Explicitly reopen work stopped by `/stop`; optionally clear the independent refill pause with `--resume-refill` |
+| `/pause` | Workflow | Short-break or laptop-close pause with a 15-minute default runway: land safe work, park recovery state, and hard-stop every owned background task |
+| `/pause-resume` | Workflow | Restore the paused board, explicitly reopen launches, and re-arm selected stopped work without duplicating live tasks |
 
 Run `/pm` first to bootstrap the PM config, then use the other PM skills as needed. Workflow commands (`/merge`, `/wrap`, `/go-on`, etc.) work independently.
 

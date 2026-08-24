@@ -11,7 +11,7 @@
 #   inject context, or change any decision. It can only write to disk.
 #
 # THE HANDOFF POINTER (issue #901)
-#   When /pause has written a portable handoff, the breadcrumb names the most
+#   When /stop has written a portable handoff, the breadcrumb names the most
 #   recent one instead of pointing only at a transcript. That is the difference
 #   between "reconstruct what was happening" and "here is what was happening" —
 #   and it costs the session that died without warning nothing, because the
@@ -32,7 +32,7 @@
 #   the user still has exactly what they had before this feature existed.
 #
 #   WHY IT IS NOT SCOPED TO THIS SESSION OR REPO
-#   Session-matching cannot work by construction: running /pause is how a
+#   Session-matching cannot work by construction: running /stop is how a
 #   session ends, so the session that later dies on a limit is never the one
 #   that wrote the document. Repo-matching would mean reading the file to learn
 #   which repo it describes, and not reading it is the property that keeps this
@@ -157,7 +157,7 @@ newest_portable_handoff() {
   printf '%s' "$newest"
 }
 
-# Handoffs live at ~/.claude/handoffs — a fixed location /pause writes to, NOT a
+# Handoffs live at ~/.claude/handoffs — a fixed location /stop writes to, NOT a
 # subdirectory of this hook's own output dir. Deriving it from STATE_DIR would
 # tie the two together, so setting CLAUDE_USAGE_LIMIT_DIR (which exists to
 # isolate this hook's records) would silently point the lookup at a directory no

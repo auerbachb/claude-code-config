@@ -18,8 +18,8 @@ set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 LINT="$REPO_ROOT/.claude/scripts/portable-handoff-lint.sh"
-SKILL="$REPO_ROOT/.claude/skills/pause/SKILL.md"
-TEMPLATE="$REPO_ROOT/.claude/skills/pause/references/portable-handoff-template.md"
+SKILL="$REPO_ROOT/.claude/skills/stop/SKILL.md"
+TEMPLATE="$REPO_ROOT/.claude/skills/stop/references/portable-handoff-template.md"
 SAFETY_RULE="$REPO_ROOT/.claude/rules/safety.md"
 RECORDER="$REPO_ROOT/.claude/hooks/usage-limit-record.sh"
 
@@ -675,7 +675,7 @@ printf '%s' "$out" | LC_ALL=C grep -q '[[:cntrl:]]' \
 
 # --- 9. Quota authority: nothing here estimates spend --------------------
 # safety.md §"Anthropic Quota & Spend Authority" is deliberately unamended by
-# #901; the human reads the authoritative usage view and invokes /pause. A
+# #901; the human reads the authoritative usage view and invokes /stop. A
 # silent contradiction between that rule and shipped behavior is the failure
 # this block exists to prevent.
 grep -q 'MUST NOT gate agent decisions' "$SAFETY_RULE" \

@@ -64,7 +64,7 @@ check_not_contains() {
 # than production does.
 FAKE="$TMP/harness"
 mkdir -p "$FAKE/.claude/hooks" "$FAKE/.claude/scripts" \
-         "$FAKE/.claude/skills/wrap" "$FAKE/.claude/skills/pause" "$FAKE/.claude/skills/fixpr"
+         "$FAKE/.claude/skills/wrap" "$FAKE/.claude/skills/stop" "$FAKE/.claude/skills/fixpr"
 cp "$SUT" "$FAKE/.claude/hooks/"
 cp "$LINT" "$FAKE/.claude/scripts/"
 chmod +x "$FAKE/.claude/hooks/"*.sh "$FAKE/.claude/scripts/"*.sh

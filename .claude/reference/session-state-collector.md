@@ -5,7 +5,7 @@ The single definition of **what a handoff reads**. Two skills consume it and ren
 | Consumer | Renders into |
 |---|---|
 | `/pm-handoff` | a Claude-native prompt for a fresh PM thread — keeps our vocabulary, because the reader is another thread in this harness |
-| `/pause` | a portable Markdown document for a reader outside this harness — strips our vocabulary entirely (`pause/references/portable-handoff-template.md`) |
+| `/stop` | a portable Markdown document for a reader outside this harness — strips our vocabulary entirely (`stop/references/portable-handoff-template.md`) |
 
 Collection is identical; only rendering differs. Keeping one collector is the point — two copies drift, and the copy that drifts is always the one used less often.
 
@@ -13,7 +13,7 @@ Not auto-loaded. Read on demand from either skill.
 
 ## Resolving the helper scripts
 
-The snippets below invoke `session-state.sh` as `.claude/scripts/<name>`, which resolves only when the working directory is this repo. (Per-PR handoff payloads are read directly as files in §2, so `handoff-state.sh` is not invoked here — but a consumer that reaches for it should resolve it the same way.) **A consumer that resolved those paths already — `/pause` Step 0 does — must substitute its resolved paths here.** Otherwise a command invoked from another checkout silently fails and the handoff reports an empty category as though it were genuinely empty, which is the one failure mode a handoff must never have.
+The snippets below invoke `session-state.sh` as `.claude/scripts/<name>`, which resolves only when the working directory is this repo. (Per-PR handoff payloads are read directly as files in §2, so `handoff-state.sh` is not invoked here — but a consumer that reaches for it should resolve it the same way.) **A consumer that resolved those paths already — `/stop` Step 0 does — must substitute its resolved paths here.** Otherwise a command invoked from another checkout silently fails and the handoff reports an empty category as though it were genuinely empty, which is the one failure mode a handoff must never have.
 
 A consumer with no resolver of its own should use the same three-candidate lookup: `$HOME/.claude/skills-worktree/.claude/scripts/<name>`, then `$HOME/.claude/scripts/<name>`, then `.claude/scripts/<name>`.
 
@@ -108,7 +108,7 @@ When nothing is tracked, the category is empty — "No in-flight work detected."
 
 ## 2a. Exact background-task identities
 
-For `/pause` and `/suspend`, also resolve `background-task-registry.sh` and
+For `/stop` and `/pause`, also resolve `background-task-registry.sh` and
 read the invoking Claude session's entries with `--list --session
 "${CLAUDE_SESSION_ID:-default}"`. Extract task ID, logical name, type, status,
 work item, output file, and recovery path. Running/stopping/stop-failed entries
@@ -147,7 +147,7 @@ Each non-empty line of the index is one lesson. When the index is absent, the ca
 
 ## 5. Uncommitted and unpushed local state
 
-Only `/pause` needs this — a fresh PM thread runs on the same machine, but a reader picking the work up in another tool has no other way to learn that work exists outside git.
+Only `/stop` needs this — a fresh PM thread runs on the same machine, but a reader picking the work up in another tool has no other way to learn that work exists outside git.
 
 ```bash
 git rev-parse --abbrev-ref HEAD

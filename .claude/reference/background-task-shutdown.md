@@ -1,6 +1,6 @@
 # Background-task shutdown contract
 
-`/pause` and `/suspend` share this procedure. Their windows differ, but their
+`/stop` and `/pause` share this procedure. Their windows differ, but their
 success condition does not: no task started by the current Claude Code session
 may still be billable when the command reports completion.
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Lint cross-repo portability of the shared PM/orchestration skills (issue #1189).
 #
-# The seven PM/orchestration skills are symlinked into every repo through
+# The shared PM/orchestration and stop-state skills are symlinked into every repo through
 # ~/.claude/skills/, but their helper scripts and reference docs are not: most
 # repos carry no .claude/ directory at all. A bare `.claude/scripts/<name>`
 # invocation therefore fails silently outside this repo, and the skill degrades
@@ -24,7 +24,8 @@
 #
 # Guarded surfaces:
 #   .claude/skills/{pm,subagent,prompt,wave,issue-maker,start-issue,
-#                   pr-monitor-and-manage}/  (SKILL.md + references/*.md)
+#                   pr-monitor-and-manage,stop,stop-resume,pause,pause-resume}/
+#                   (SKILL.md + references/*.md)
 #   .claude/agents/*.md
 #   .claude/reference/chip-launching.md
 #
@@ -66,7 +67,7 @@ while (( $# > 0 )); do
   esac
 done
 
-SKILLS=(pm subagent prompt wave issue-maker start-issue pr-monitor-and-manage suspend suspend-resume)
+SKILLS=(pm subagent prompt wave issue-maker start-issue pr-monitor-and-manage stop stop-resume pause pause-resume)
 
 WORKTREE_PREFIX='$HOME/.claude/skills-worktree/.claude/scripts/'
 CHIP_LAUNCHING=".claude/reference/chip-launching.md"
