@@ -1,6 +1,6 @@
-# `/pause` Step 4 — Portable Handoff Template
+# `/stop` Step 4 — Portable Handoff Template
 
-Referenced from `pause/SKILL.md` Step 4. The SKILL.md keeps the wind-down, the collection call, and the emit sequence; this file holds the document layout and the rules that keep it readable by an agent that has never seen this repo's conventions.
+Referenced from `stop/SKILL.md` Step 4. The SKILL.md keeps the wind-down, the collection call, and the emit sequence; this file holds the document layout and the rules that keep it readable by an agent that has never seen this repo's conventions.
 
 Everything below is written for one reader: **someone who has the repository and this document, and nothing else.** No rules loaded, no state files, no idea what any of our commands do — possibly not even Claude. Write for a competent engineer joining mid-task who will not ask a follow-up question, because they cannot. When a sentence would only make sense to someone inside this harness, it has failed, and `portable-handoff-lint.sh` will say so.
 
@@ -11,7 +11,7 @@ The per-item fields and the last group of rendering rules exist because of a rea
 ```
 # Session handoff — {OWNER}/{REPO} — {LOCAL_DATETIME}
 
-Written when the session was paused. Everything below reflects that moment;
+Written when the session was stopped. Everything below reflects that moment;
 check the current state of anything you are about to change before changing it.
 
 ## Start here

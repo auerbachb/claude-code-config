@@ -53,6 +53,16 @@ run --transition --session monotonic --task-id stopped-first --status "done"
 run --transition --session monotonic --task-id stopped-first --status rearmed
 [[ "$(run --list --session monotonic | jq -r '.[] | select(.task_id=="stopped-first") | .status')" == "rearmed" ]] || \
   fail "explicit stopped-to-rearmed transition was blocked"
+
+run --register --session claims --task-id claim-me --type agent
+run --transition --session claims --task-id claim-me --status stopped
+run --transition --session claims --task-id claim-me --status rearming --from-status stopped
+if run --transition --session claims --task-id claim-me --status rearming --from-status stopped 2>/dev/null; then
+  fail "a second resume claimant acquired an already-claimed task"
+fi
+[[ "$(run --list --session claims --live | jq 'length')" == 0 ]] || \
+  fail "a rearming reservation was exposed as a stoppable runtime identity"
+run --transition --session claims --task-id claim-me --status rearmed --from-status rearming
 ok "terminal lifecycle transitions ignore stale delayed events"
 
 run --transition --session s1 --task-id agent-1 --status "done"

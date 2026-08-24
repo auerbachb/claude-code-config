@@ -49,11 +49,11 @@
         "scope": null,
         "at": "2026-07-30T18:40:00Z"
       },
-      "_execution_pauses_comment": "Session-scoped direct-launch gates written by execution-pause.sh for /pause and /suspend (issue #1308). Keys are Claude session IDs. active=true blocks Agent, Workflow, Monitor, and background Bash in pause-launch-gate.sh; foreground teardown stays allowed. This gate is independent from repo refill.paused and is cleared only by an explicit pause-resume or suspend-resume. deadline_epoch is the graceful-shutdown ceiling, not an automatic clear time.",
+      "_execution_pauses_comment": "Session-scoped direct-launch gates written by execution-pause.sh for /stop and /pause (issues #1308 and #1310). Keys are Claude session IDs. active=true blocks Agent, Workflow, Monitor, and background Bash in pause-launch-gate.sh; foreground teardown stays allowed. This gate is independent from repo refill.paused and is cleared only by an explicit stop-resume or pause-resume. deadline_epoch is the graceful-shutdown ceiling, not an automatic clear time.",
       "execution_pauses": {
         "session-example": {
           "active": true,
-          "command": "pause",
+          "command": "stop",
           "session_id": "session-example",
           "window_minutes": 5,
           "deadline_epoch": 1787522700,
@@ -61,7 +61,7 @@
           "cleared_at": null
         }
       },
-      "_background_tasks_comment": "Exact current and historical runtime identities captured by PostToolUse and updated by SubagentStop/TaskStop hooks (issue #1308). task_id is the Claude runtime ID; name is only a display label. running, stopping, and stop_failed are possibly billable and stay live even when stale. Terminal history is preserved so resume is idempotent and can use output_file/recovery_path without duplicating work.",
+      "_background_tasks_comment": "Exact current and historical runtime identities captured by PostToolUse and updated by SubagentStop/TaskStop hooks (issue #1308). task_id is the Claude runtime ID; name is only a display label. running, stopping, and stop_failed are possibly billable and stay live even when stale. rearming is an atomic launch reservation, not a live runtime identity; a resumed successor registers its own runtime ID before audits treat it as stoppable. stop-resume claims work with stopped -> rearming before launch, then finishes rearming -> rearmed or rolls back to stopped. Terminal history is preserved so resume is idempotent and can use output_file/recovery_path without duplicating work.",
       "background_tasks": [
         {
           "task_id": "agent-runtime-id",
@@ -103,10 +103,10 @@
         "consecutive_limit_hits": 0,
         "goal": null
       },
-      "_suspend_comment": "Laptop-close wind-down state for this repo (issue #1249), written by `/suspend` Step 7a and read by `/suspend-resume` Step 1. One block per repo. Like `refill` and `day`, this block is INVISIBLE to session-state.sh --session-view, which lifts only .prs and .root_repo out of the repo block before deleting .repos — read it with an explicit `--get .repos[\"<key>\"].suspend` or an armed suspend reports as absent. `active` is true from the moment /suspend writes the block until /suspend-resume Step 7 sets it false after a successful restore; a block whose session died before resume is still active. `landed` lists PRs driven to merged during the wind-down. `parked` lists every other in-flight unit (kind: pr | subagent | branch) with its stopping point, next move, and boundary status. `monitors_stopped` records each Monitor /suspend Step 2 stopped (or attempted), keyed by owner (babysit | pmm | day | day_limit_wake) and the task's identity pair; `stopped: false` means the TaskStop was not confirmed and the Monitor may still be live. `day_limit_wake` is the owner for the usage-limit auto-wake Monitor armed by 2D.6 — it is informational in suspend-resume (the disarm block in Step 5 handles it) and must appear in monitors_stopped so consumers can distinguish it from the day-mode tick Monitor. `refill_paused` mirrors whether the Step 1 refill write succeeded. `marker_path` is the human-readable fallback file for /suspend-resume when session-state.json is unreadable. `resumed_at` is set by /suspend-resume Step 7. Mechanism and state-shape detail: .claude/reference/suspend-state.md.",
-      "suspend": {
+      "_pause_comment": "Laptop-close wind-down state for this repo (issues #1249 and #1310), written by `/pause` Step 7a and read by `/pause-resume` Step 1. One block per repo. Like `refill` and `day`, this block is INVISIBLE to session-state.sh --session-view, which lifts only .prs and .root_repo out of the repo block before deleting .repos — read it with an explicit `--get .repos[\"<key>\"].pause` or an armed pause reports as absent. `active` is true from the moment /pause writes the block until /pause-resume Step 7 sets it false after a successful restore; a block whose session died before resume is still active. `landed` lists PRs driven to merged during the wind-down. `parked` lists every other in-flight unit (kind: pr | subagent | branch) with its stopping point, next move, and boundary status. `monitors_stopped` records each Monitor /pause Step 2 stopped (or attempted), keyed by owner (babysit | pmm | day | day_limit_wake) and the task's identity pair; `stopped: false` means the TaskStop was not confirmed and the Monitor may still be live. `day_limit_wake` is the owner for the usage-limit auto-wake Monitor armed by 2D.6; pause-resume Step 5 sets its `rearmed` result true only after confirming that Monitor is absent or successfully disarmed, so an unreadable or failed stop keeps recovery active. `refill_paused` mirrors whether the Step 1 refill write succeeded. `marker_path` is the human-readable fallback file for /pause-resume when session-state.json is unreadable. `resumed_at` is set by /pause-resume Step 7. Readers also fall back to legacy `.suspend` records and `suspend-*.md` markers created before issue #1310. Mechanism and state-shape detail: .claude/reference/pause-state.md.",
+      "pause": {
         "active": true,
-        "suspended_at": "2026-08-22T22:10:00Z",
+        "paused_at": "2026-08-22T22:10:00Z",
         "window_minutes": 15,
         "window_expired": false,
         "landed": [
@@ -131,7 +131,7 @@
           {"task_id": "agent-runtime-id", "type": "agent", "status": "stopped", "output_file": "/tmp/agent-runtime-id.output", "recovery_path": "/Users/user/repos/my-project/.claude/worktrees/issue-1308"}
         ],
         "refill_paused": true,
-        "marker_path": "~/.claude/handoffs/suspend-20260822T221000Z-default.md",
+        "marker_path": "~/.claude/handoffs/pause-20260822T221000Z-9-auerbachb-18-claude-code-config-default-X7pQ2a.md",
         "resumed_at": null
       },
       "_release_comment": "Agent-initiated TestFlight release cadence for this repo (issue #1169), written by release-decide.sh and release-sweep.sh through session-state.sh --raw-path --set. --raw-path is REQUIRED: auto-scoping only rewrites .prs/.root_repo, and reads must use --get --raw-path rather than --session-view, which projects only those two keys and would report this whole block as absent. `pending` is the durable marker a merge inside the build window leaves behind so a later sweep — in any session — can cut the build; `count` is how many merges have coalesced into it, and `notified_at` is set once a blocker has been reported so it is not repeated every tick. `in_flight` is a build this automation triggered and is following to a terminal state; `awaiting_run` means the run has not appeared yet. `last_seen_build` is bookkeeping only — the window is always measured from GitHub run history, never from this file, so builds cut outside the automation are respected and the state self-heals. Absent block = this repo has never been evaluated; that is not the same as opted out, which is the absence of .claude/release-policy.json in the repo itself. Mechanism: .claude/reference/release-cadence.md.",

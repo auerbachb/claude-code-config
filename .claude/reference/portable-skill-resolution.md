@@ -67,9 +67,15 @@ shape at identical cost, with the same single-source guarantee. Setup lives in
 ## Resolution shapes
 
 Copy these verbatim. `resolve_script()` is already in use in `/wrap`, `/fixpr`,
-`/subagent`, `/monitor`, `/pause`, and the phase agents; the ordering is fixed —
+`/subagent`, `/monitor`, `/stop`, `/pause`, and the phase agents; the ordering is fixed —
 skills-worktree (canonical, pinned to `main`), then `$HOME/.claude/scripts/`
 (documented install location), then repo-relative (developing the skill itself).
+
+**Shutdown exception:** `/stop`, `/stop-resume`, `/pause`, and `/pause-resume`
+are explicitly callable while cwd is an unrelated checkout. Their resolvers
+omit the repo-relative candidate for both scripts and instruction documents;
+an executable bit in an untrusted checkout is not authority to execute code.
+They fail/degrade explicitly when neither installed candidate exists.
 
 ```bash
 resolve_script() {

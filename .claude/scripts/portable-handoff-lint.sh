@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # portable-handoff-lint.sh — enforce the portability contract of a handoff
-# document produced by /pause (issue #901).
+# document produced by /stop (issue #901).
 #
 # PURPOSE
 #   The whole value of a portable handoff is that an agent which has never
@@ -11,7 +11,7 @@
 #   reconstruct anything.
 #
 #   So portability is checked here, mechanically, instead of being asserted in
-#   prose that a renderer may or may not follow. /pause runs this against the
+#   prose that a renderer may or may not follow. /stop runs this against the
 #   rendered document BEFORE writing or printing it, and a non-zero exit means
 #   the document does not ship as-is.
 #
@@ -39,7 +39,7 @@
 #                            is any in-flight work to verify
 #
 #   The section list is the contract with the template; keep the two in step.
-#     .claude/skills/pause/references/portable-handoff-template.md
+#     .claude/skills/stop/references/portable-handoff-template.md
 #
 # WHAT THE LAST THREE RULES CAN AND CANNOT PROVE (issue #912)
 #   They came out of a cold read: a document that passed every rule above was

@@ -3,7 +3,7 @@
 #
 # USAGE
 #   execution-pause.sh [--repo owner/name] --activate --session ID
-#       --command pause|suspend --window-minutes N
+#       --command stop|pause --window-minutes N
 #   execution-pause.sh [--repo owner/name] --clear --session ID
 #   execution-pause.sh [--repo owner/name] --status --session ID
 #
@@ -48,6 +48,10 @@ done
 [[ -n "$MODE" ]] || die "no mode supplied"
 [[ -n "$SESSION_ID" ]] || die "--session is required"
 [[ -x "$SESSION_STATE_SH" ]] || { echo "execution-pause.sh: session-state.sh unavailable" >&2; exit 5; }
+if [[ "$MODE" == activate ]]; then
+  case "$COMMAND_NAME" in stop|pause) ;; *) die "--activate requires --command stop|pause" ;; esac
+  [[ "$WINDOW" =~ ^[0-9]+$ ]] || die "--activate requires non-negative --window-minutes"
+fi
 
 session_state() {
   if [[ -n "$REPO_OPT" ]]; then
@@ -82,11 +86,10 @@ PATH_EXPR=".repos[\"$REPO_KEY\"].execution_pauses[\"$SESSION_ID\"]"
 # shellcheck source=state-lock.sh
 source "$LOCK_LIB"
 state_lock_acquire "$STATE_FILE" || exit $?
+trap 'state_lock_release' EXIT
 
 case "$MODE" in
   activate)
-    case "$COMMAND_NAME" in pause|suspend) ;; *) die "--activate requires --command pause|suspend" ;; esac
-    [[ "$WINDOW" =~ ^[0-9]+$ ]] || die "--activate requires non-negative --window-minutes"
     NOW="$(date -u +%FT%TZ)"
     DEADLINE_EPOCH=$(( $(date -u +%s) + WINDOW * 60 ))
     VALUE="$(jq -nc --arg command "$COMMAND_NAME" --arg session "$SESSION_ID" --arg at "$NOW" \
@@ -142,7 +145,7 @@ case "$MODE" in
     if [[ "$RC" -eq 0 && "$VALUE" == true ]]; then printf 'active\n'; state_lock_release; exit 0; fi
     if [[ "$RC" -eq 0 && ( "$VALUE" == false || "$VALUE" == null ) ]]; then printf 'inactive\n'; state_lock_release; exit 0; fi
     if [[ "$RC" -eq 3 ]]; then printf 'inactive\n'; state_lock_release; exit 0; fi
-    echo "execution-pause.sh: pause state unreadable and no active marker exists" >&2
+    echo "execution-pause.sh: execution-pause state unreadable and no active marker exists" >&2
     exit 4
     ;;
 esac

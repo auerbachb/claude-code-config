@@ -174,7 +174,7 @@ esac
 
 # Runtime identity tracking is safety-critical and independent of the optional
 # silence-ceiling helper. A partial installation may lose reminders, but it
-# must not lose the exact IDs needed by /pause and /suspend.
+# must not lose the exact IDs needed by /stop and /pause.
 [[ -x "$CEILING_SH" ]] || exit "$REGISTRY_FAILURE_UNRECORDED"
 
 # --- 1. Is this call arming the ceiling watch? -------------------------------

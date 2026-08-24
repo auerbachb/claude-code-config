@@ -61,6 +61,18 @@ ok "PreToolUse gate blocks background starts but preserves foreground teardown"
 gate Agent >/dev/null || fail "cleared gate still blocked"
 ok "explicit clear reopens launches"
 
+set +e
+"$PAUSE" --repo "$REPO" --activate --session invalid-command \
+  --command suspend --window-minutes 5 >/dev/null 2>&1
+invalid_command_rc=$?
+set -e
+[[ "$invalid_command_rc" == 2 ]] || fail "invalid legacy command was not rejected"
+[[ ! -e "$HOME/.claude/session-state.json.lock" ]] || fail "invalid activation leaked the state lock"
+"$PAUSE" --repo "$REPO" --activate --session post-invalid \
+  --command pause --window-minutes 0
+"$PAUSE" --repo "$REPO" --clear --session post-invalid
+ok "invalid activation releases state lock before the next lifecycle operation"
+
 ORIGINLESS="$TMP/originless-checkout"
 mkdir -p "$ORIGINLESS"
 "$PAUSE" --repo _unknown --activate --session "$SID" --command pause --window-minutes 5
@@ -329,7 +341,14 @@ ok "launch-gate lock contention fails closed within the hook budget"
 
 # If state becomes unreadable after activation, the positive marker keeps the
 # gate closed. A random parse failure without such a marker stays fail-open.
-"$PAUSE" --repo "$REPO" --activate --session "$SID" --command suspend --window-minutes 15
+set +e
+"$PAUSE" --repo "$REPO" --activate --session legacy-command \
+  --command suspend --window-minutes 15 >/dev/null 2>&1
+legacy_command_rc=$?
+set -e
+[[ "$legacy_command_rc" == 2 ]] || fail "retired suspend command value was accepted"
+
+"$PAUSE" --repo "$REPO" --activate --session "$SID" --command stop --window-minutes 5
 printf 'not-json\n' > "$HOME/.claude/session-state.json"
 set +e
 gate Agent >/dev/null 2>&1; corrupt_rc=$?

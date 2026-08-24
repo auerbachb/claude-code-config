@@ -79,7 +79,7 @@ All state lives in `/tmp` markers (overridable as a set via `CLAUDE_BGWORK_MARKE
 
 ## pause-launch-gate.sh + background-task-complete.sh
 
-These hooks make `/pause` and `/suspend` cost-quiescent (issue #1308).
+These hooks make `/stop` and `/pause` cost-quiescent (Issue #1308).
 
 - **`pause-launch-gate.sh`** (PreToolUse): while the current repo/session has an
   active execution pause, rejects Agent, Workflow, Monitor, and background Bash
@@ -98,7 +98,7 @@ A registry write failure creates
 `claude-background-registry-failed-<session>` in the configured background-work
 marker directory (default `/tmp`), falling back to `$HOME/.claude` if that
 directory is unwritable. If neither location accepts the marker, the hook exits
-non-zero with a critical diagnostic. `/pause` and `/suspend` treat either
+non-zero with a critical diagnostic. `/stop` and `/pause` treat either
 marker as an incomplete audit until runtime inspection proves no untracked task
 remains.
 

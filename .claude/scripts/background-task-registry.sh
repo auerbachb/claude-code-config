@@ -11,13 +11,16 @@
 #       [--parent-agent ID] [--output-file PATH] [--recovery-path PATH]
 #       [--work-item TEXT]
 #   background-task-registry.sh [--repo owner/name] --transition --session ID
-#       --task-id ID --status running|stopping|stopped|done|failed|stop_failed|rearmed|abandoned
+#       --task-id ID --status running|stopping|stopped|done|failed|stop_failed|rearming|rearmed|abandoned
+#       [--from-status STATUS]
 #   background-task-registry.sh [--repo owner/name] --list [--session ID]
 #       [--status STATUS] [--live]
 #   background-task-registry.sh [--repo owner/name] --count [--session ID]
 #       [--status STATUS] [--live]
 #
-# `--live` includes running, stopping, and stop_failed entries. Stale entries
+# `--live` includes running, stopping, and stop_failed entries. A `rearming`
+# entry is a launch reservation, not a runtime identity; the resumed runtime
+# registers its own ID before shutdown audits treat it as stoppable. Stale entries
 # remain live (fail closed) and are annotated with `stale: true`; age never
 # silently converts a possibly-billable task into a terminal one.
 
@@ -33,6 +36,7 @@ die_usage() { echo "background-task-registry.sh: $1" >&2; exit 2; }
 die_missing() { echo "background-task-registry.sh: $1" >&2; exit 3; }
 die_parse() { echo "background-task-registry.sh: $1" >&2; exit 4; }
 die_write() { echo "background-task-registry.sh: $1" >&2; exit 5; }
+die_conflict() { echo "background-task-registry.sh: $1" >&2; exit 7; }
 
 retry_or_fail() {
   local n="${CLAUDE_STATE_RMW_RETRY:-0}" max="${CLAUDE_STATE_RMW_MAX_RETRY:-8}"
@@ -100,6 +104,7 @@ TASK_ID=""
 TASK_TYPE=""
 TASK_NAME=""
 TARGET_STATUS=""
+EXPECTED_STATUS=""
 STATUS_FILTER=""
 PARENT_AGENT=""
 OUTPUT_FILE=""
@@ -113,7 +118,7 @@ while (( $# > 0 )); do
     --register|--transition|--list|--count)
       [[ -z "$MODE" ]] || die_usage "only one mode may be supplied"
       MODE="${1#--}" ;;
-    --repo|--session|--task-id|--type|--name|--status|--parent-agent|--output-file|--recovery-path|--work-item)
+    --repo|--session|--task-id|--type|--name|--status|--from-status|--parent-agent|--output-file|--recovery-path|--work-item)
       (( $# >= 2 )) || die_usage "$1 requires a value"
       key="$1"; value="$2"; shift
       case "$key" in
@@ -124,6 +129,7 @@ while (( $# > 0 )); do
         --name) TASK_NAME="$value" ;;
         --status)
           if [[ "$MODE" == list || "$MODE" == count ]]; then STATUS_FILTER="$value"; else TARGET_STATUS="$value"; fi ;;
+        --from-status) EXPECTED_STATUS="$value" ;;
         --parent-agent) PARENT_AGENT="$value" ;;
         --output-file) OUTPUT_FILE="$value" ;;
         --recovery-path) RECOVERY_PATH="$value" ;;
@@ -136,6 +142,7 @@ while (( $# > 0 )); do
 done
 
 [[ -n "$MODE" ]] || die_usage "no mode supplied"
+[[ -z "$EXPECTED_STATUS" || "$MODE" == transition ]] || die_usage "--from-status requires --transition"
 REPO_KEY="$(resolve_repo_key "$REPO_OPT")"
 
 case "$MODE" in
@@ -185,9 +192,14 @@ case "$MODE" in
   transition)
     [[ -n "$SESSION_ID" ]] || die_usage "--transition requires --session"
     [[ -n "$TASK_ID" ]] || die_usage "--transition requires --task-id"
-    case "$TARGET_STATUS" in running|stopping|stopped|done|failed|stop_failed|rearmed|abandoned) ;;
+    case "$TARGET_STATUS" in running|stopping|stopped|done|failed|stop_failed|rearming|rearmed|abandoned) ;;
       *) die_usage "invalid transition status '$TARGET_STATUS'" ;;
     esac
+    if [[ -n "$EXPECTED_STATUS" ]]; then
+      case "$EXPECTED_STATUS" in running|stopping|stopped|done|failed|stop_failed|rearming|rearmed|abandoned) ;;
+        *) die_usage "invalid --from-status '$EXPECTED_STATUS'" ;;
+      esac
+    fi
     [[ -f "$LOCK_LIB" ]] || die_write "state-lock.sh not found at $LOCK_LIB"
     # shellcheck source=state-lock.sh
     source "$LOCK_LIB"
@@ -201,6 +213,9 @@ case "$MODE" in
     CURRENT_STATUS="$(printf '%s' "$DOC" | jq -r --arg r "$REPO_KEY" --arg s "$SESSION_ID" --arg i "$TASK_ID" \
       '.repos[$r].background_tasks[]? | select(.session_id==$s and .task_id==$i) | .status' 2>/dev/null)" || \
       die_parse "could not inspect current task status"
+    if [[ -n "$EXPECTED_STATUS" && "$CURRENT_STATUS" != "$EXPECTED_STATUS" ]]; then
+      die_conflict "task '$TASK_ID' is '$CURRENT_STATUS', expected '$EXPECTED_STATUS'"
+    fi
     # Terminal outcomes are monotonic. Delayed SubagentStop/TaskStop events
     # are common during wind-down and must not rewrite a newer recovery
     # decision (for example stopped -> done or done -> stopped).
@@ -212,7 +227,7 @@ case "$MODE" in
         running:stopping|running:stopped|running:done|running:failed|running:stop_failed|running:abandoned|\
         stopping:stopped|stopping:done|stopping:failed|stopping:stop_failed|stopping:abandoned|\
         stop_failed:stopping|stop_failed:stopped|stop_failed:done|stop_failed:failed|stop_failed:abandoned|\
-        stopped:rearmed)
+        stopped:rearming|stopped:rearmed|rearming:rearmed|rearming:stopped|rearming:failed|rearming:abandoned)
           TRANSITION_ALLOWED=1 ;;
       esac
     fi

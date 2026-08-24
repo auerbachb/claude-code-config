@@ -1,6 +1,6 @@
 # Portable Handoff Artifact
 
-The document `/pause` produces (issue #901). Recorded here so the two things that touch it — the skill that writes it and the usage-limit recorder that points at it — agree without either one owning the convention.
+The document `/stop` produces (issue #901). Recorded here so the two things that touch it — the skill that writes it and the usage-limit recorder that points at it — agree without either one owning the convention.
 
 Not auto-loaded.
 
