@@ -1,6 +1,6 @@
 # Safety — Destructive Command & Secret Prohibitions
 
-> **Always:** Stay in your worktree. Treat `.env` files as untouchable (recognized templates excepted); never commit, paste, echo, or log secret values. Pin and inspect installers. Warn subagents of these rules. Treat Anthropic's in-app UI as the sole authority on quota and spend. Restrict automated PR writes to PRs you authored.
+> **Always:** Stay in your worktree. Treat `.env` files as untouchable (recognized templates excepted); never commit, paste, echo, or log secret values. Pin and inspect installers. Warn subagents of these rules. Treat only Anthropic's in-app UI and upstream harness overage/limit signals as authoritative on quota and spend. Restrict automated PR writes to PRs you authored.
 > **Ask first:** Never — these prohibitions are absolute apart from the exceptions written into the rules below.
 > **Never:** Delete `.env` files. Run `git clean`. Run destructive commands in the root repo beyond rule 3's untracked-only `rm`. Commit secrets. Pipe untrusted URLs into a shell. Pass raw credentials to subagents. Gate agent decisions on locally-estimated quota or spend (exception: user-configured budget evaluated against authoritative signals — see §"Anthropic Quota & Spend Authority"). Have an automated tool write to — comment and review-trigger included — a PR you did not author, absent an explicit per-PR chat override.
 

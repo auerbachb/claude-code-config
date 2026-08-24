@@ -168,6 +168,7 @@ resolve_budget_usd() {
           tolower($0) ~ /^[[:space:]]*daily_credit_budget_usd[[:space:]]*[=:]/ {
             line = $0
             sub(/^[^=:]*[=:][[:space:]]*/, "", line)
+            sub(/[[:space:]]+#.*$/, "", line)
             sub(/[[:space:]]*$/, "", line)
             print line
             exit
@@ -321,15 +322,14 @@ probe_overage_signal() {
 #   $3  new_reset_at — epoch integer (as string) or "" to clear.
 #       Set by --reset to record the manual-override timestamp; persisted so
 #       --check's probe can skip events recorded at or before this epoch.
-#   $4  force_on_corrupt — "1" to write from {} even if state is corrupt.
-#       Only --reset mode passes "1" (an explicit user action). Autonomous
-#       --check calls pass "0" (or omit) and SKIP the write on corruption to
-#       avoid destroying unrelated sibling session fields.
+#   $4  fail_on_corrupt — "1" to fail instead of silently skipping the write
+#       when state is corrupt. Only --reset mode passes "1", because reporting
+#       a successful manual reset without persisting it would be misleading.
 write_state() {
   local new_status="$1"
   local new_source="$2"
   local new_reset_at="${3:-}"  # epoch integer string or empty
-  local force_on_corrupt="${4:-0}"
+  local fail_on_corrupt="${4:-0}"
 
   # Build the jq-ready reset_at literal: a number when set, null otherwise.
   local reset_at_jq="null"
@@ -348,21 +348,19 @@ write_state() {
     trap "state_lock_release; rm -f '$input_file' '$tmp' 2>/dev/null" EXIT
   elif ! jq -e . "$STATE_FILE" >/dev/null 2>&1; then
     # State file exists but is corrupt (fails jq parse). Two paths:
-    # - Autonomous --check (force_on_corrupt=0): skip the write entirely to
+    # - Autonomous --check (fail_on_corrupt=0): skip the write entirely to
     #   avoid destroying sibling session fields. The probe result is still
     #   returned correctly to stdout; the next call will re-probe from scratch.
-    # - Explicit --reset (force_on_corrupt=1): user chose to override, so
-    #   write from {} with a warning; the user accepts the field loss.
-    if [[ "$force_on_corrupt" != "1" ]]; then
+    # - Explicit --reset (fail_on_corrupt=1): fail without writing. A budget
+    #   override never authorizes destroying unrelated orchestration state.
+    if [[ "$fail_on_corrupt" != "1" ]]; then
       echo "credit-budget.sh: WARNING: session-state.json is corrupt; skipping credit_budget write to avoid destroying sibling session state" >&2
       state_lock_release
       return 0
     fi
-    echo "credit-budget.sh: WARNING: session-state.json is corrupt; writing credit_budget from fresh object (explicit reset — other session fields cannot be recovered)" >&2
-    input_file="$(mktemp)"
-    printf '%s\n' '{}' > "$input_file"
-    # shellcheck disable=SC2064
-    trap "state_lock_release; rm -f '$input_file' '$tmp' 2>/dev/null" EXIT
+    echo "credit-budget.sh: session-state.json is corrupt; refusing reset to preserve unrelated session state" >&2
+    state_lock_release
+    return 5
   else
     # shellcheck disable=SC2064
     trap "state_lock_release; rm -f '$tmp' 2>/dev/null" EXIT
