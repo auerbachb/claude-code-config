@@ -76,6 +76,24 @@ untracked_total=0
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/portable-handoff-context.XXXXXX") || exit 4
 trap 'rm -rf "$TMP_DIR"' EXIT
 
+# One policy for every externally supplied string that can reach the persistent
+# handoff: Git paths and task metadata must never drift onto different secret
+# rules. Keep provider-specific formats ahead of the generic labeled forms.
+REDACT_JQ='
+  def redact:
+    gsub("-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"; "[REDACTED]")
+    | gsub("(?i)bearer[[:space:]]+[A-Za-z0-9._~+/=-]{8,}"; "[REDACTED]")
+    | gsub("(AKIA|ASIA)[A-Z0-9]{16}"; "[REDACTED]")
+    | gsub("AIza[0-9A-Za-z_-]{35}"; "[REDACTED]")
+    | gsub("xox[baprs]-[0-9A-Za-z-]{10,}"; "[REDACTED]")
+    | gsub("eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}"; "[REDACTED]")
+    | gsub("gh[pousr]_[A-Za-z0-9]{10,}"; "[REDACTED]")
+    | gsub("sk-[A-Za-z0-9_-]{10,}"; "[REDACTED]")
+    | gsub("(?i)(https?://)[^/@[:space:]]+:[^/@[:space:]]+@"; "https://[REDACTED]@")
+    | gsub("(?i)(authorization|api[_-]?key|access[_-]?token|token|password|secret)[[:space:]]*[:=][[:space:]]*(bearer[[:space:]]+)?[^[:space:]]+"; "[REDACTED]")
+    | gsub("(?i)(^|/)(api[_-]?key|access[_-]?token|token|password|secret)/[^/[:space:]]+"; "/[REDACTED]");
+'
+
 collect_nul_stream() {
   local list_file="$1" count_file="$2" item fifo producer rc total
   shift 2
@@ -146,24 +164,10 @@ if git -C "$WORKING_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       echo "portable-handoff-context.sh: untracked changes could not be read" >&2
       exit 4
     }
-  tracked_json=$(jq -Rs '
-    def redact:
-      gsub("gh[pousr]_[A-Za-z0-9]{10,}"; "[REDACTED]")
-      | gsub("sk-[A-Za-z0-9_-]{10,}"; "[REDACTED]")
-      | gsub("(?i)(https?://)[^/@[:space:]]+:[^/@[:space:]]+@"; "https://[REDACTED]@")
-      | gsub("(?i)(authorization|api[_-]?key|access[_-]?token|token|password|secret)[[:space:]]*[:=][[:space:]]*(bearer[[:space:]]+)?[^[:space:]]+"; "[REDACTED]")
-      | gsub("(?i)(^|/)(api[_-]?key|access[_-]?token|token|password|secret)/[^/[:space:]]+"; "/[REDACTED]");
-    split("\u0000") | map(select(length > 0) | redact)
-  ' <"$TMP_DIR/tracked") || exit 4
-  untracked_json=$(jq -Rs '
-    def redact:
-      gsub("gh[pousr]_[A-Za-z0-9]{10,}"; "[REDACTED]")
-      | gsub("sk-[A-Za-z0-9_-]{10,}"; "[REDACTED]")
-      | gsub("(?i)(https?://)[^/@[:space:]]+:[^/@[:space:]]+@"; "https://[REDACTED]@")
-      | gsub("(?i)(authorization|api[_-]?key|access[_-]?token|token|password|secret)[[:space:]]*[:=][[:space:]]*(bearer[[:space:]]+)?[^[:space:]]+"; "[REDACTED]")
-      | gsub("(?i)(^|/)(api[_-]?key|access[_-]?token|token|password|secret)/[^/[:space:]]+"; "/[REDACTED]");
-    split("\u0000") | map(select(length > 0) | redact)
-  ' <"$TMP_DIR/untracked") || exit 4
+  tracked_json=$(jq -Rs "$REDACT_JQ"$'\n''split("\u0000") | map(select(length > 0) | redact)' \
+    <"$TMP_DIR/tracked") || exit 4
+  untracked_json=$(jq -Rs "$REDACT_JQ"$'\n''split("\u0000") | map(select(length > 0) | redact)' \
+    <"$TMP_DIR/untracked") || exit 4
   tracked_total=$(<"$TMP_DIR/tracked-count")
   untracked_total=$(<"$TMP_DIR/untracked-count")
 
@@ -223,13 +227,7 @@ if git -C "$WORKING_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       --repo "$registry_repo" --list --session "$SESSION_ID" 2>/dev/null) || raw_tasks=""
     if [[ -n "$raw_tasks" ]] && jq -e 'type == "array"' >/dev/null 2>&1 <<<"$raw_tasks"; then
       tasks_total=$(jq 'length' <<<"$raw_tasks") || exit 4
-      tasks_json=$(jq --argjson max "$MAX_ITEMS" '
-        def redact:
-          gsub("gh[pousr]_[A-Za-z0-9]{10,}"; "[REDACTED]")
-          | gsub("sk-[A-Za-z0-9_-]{10,}"; "[REDACTED]")
-          | gsub("(?i)(https?://)[^/@[:space:]]+:[^/@[:space:]]+@"; "https://[REDACTED]@")
-          | gsub("(?i)(authorization|api[_-]?key|access[_-]?token|token|password|secret)[[:space:]]*[:=][[:space:]]*(bearer[[:space:]]+)?[^[:space:]]+"; "[REDACTED]")
-          | gsub("(?i)(^|/)(api[_-]?key|access[_-]?token|token|password|secret)/[^/[:space:]]+"; "/[REDACTED]");
+      tasks_json=$(jq --argjson max "$MAX_ITEMS" "$REDACT_JQ"$'\n''
         [.[] | {task_id, name, type, status,
                  work_item:(.work_item // null), output_file,
                  checkpoint_path:(.checkpoint_path // null), recovery_path,

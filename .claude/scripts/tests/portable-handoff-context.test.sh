@@ -51,6 +51,18 @@ cat >"$STATE" <<'JSON'
           "recovery_path": "/tmp/password:super-secret-recovery/recover-review",
           "started_at": "2026-08-24T12:00:00Z",
           "updated_at": "2026-08-24T12:01:00Z"
+        },
+        {
+          "task_id": "provider-secret-task",
+          "name": "Bearer abcdefghijklmnopqrstuvwxyz123456",
+          "type": "agent",
+          "session_id": "session-1",
+          "status": "stopped",
+          "work_item": "inspect AKIAIOSFODNN7EXAMPLE",
+          "output_file": "/tmp/provider-secret-output",
+          "recovery_path": "/tmp/provider-secret-recovery",
+          "started_at": "2026-08-24T12:00:00Z",
+          "updated_at": "2026-08-24T12:01:00Z"
         }
       ]
     },
@@ -100,6 +112,9 @@ check "exact issue branch token becomes a link" test "$(jq -r '.linkage.issue.ur
 check "terminal task metadata is preserved" jq -e '.background_tasks.items[0] | .task_id == "task-42" and .type == "monitor" and .status == "stopped"' >/dev/null <<<"$DOC"
 check "task descriptions redact secret-shaped values" jq -e '.background_tasks.items[0].work_item == "watch pull request 42 [REDACTED]"' >/dev/null <<<"$DOC"
 check "all task metadata strings redact secret-shaped values" jq -e '.background_tasks.items[0] | .name == "[REDACTED]" and .output_file == "https://[REDACTED]@example.invalid/review-output.txt" and .checkpoint_path == "/tmp/[REDACTED]/review-checkpoint.json" and .recovery_path == "/tmp/[REDACTED]"' >/dev/null <<<"$DOC"
+check "bare provider credentials are redacted from task metadata" jq -e \
+  '.background_tasks.items[1] | .name == "[REDACTED]" and .work_item == "inspect [REDACTED]"' \
+  >/dev/null <<<"$DOC"
 check "raw task secrets are never emitted" sh -c '! printf "%s" "$1" | grep -q super-secret' _ "$DOC"
 
 printf 'secret path\n' >"$MAIN/token=super-secret-filename"
