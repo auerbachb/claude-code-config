@@ -702,6 +702,14 @@ out=$(run_lint "$EMPTY_RESUME" 2>&1); rc=$?
 printf '%s' "$out" | grep -q 'resume-guidance' \
   || fail "empty resume command did not report resume-guidance"
 
+CONFLICTING_RESUME="$TMP_DIR/conflicting-resume.md"
+awk '/^Resume command: \/stop-resume$/ && !done { print "Resume command: /pause-resume"; done=1 } { print }' \
+  "$GOLDEN" >"$CONFLICTING_RESUME"
+out=$(run_lint "$CONFLICTING_RESUME" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "conflicting resume commands must fail (got $rc)"
+printf '%s' "$out" | grep -q 'resume-guidance' \
+  || fail "conflicting resume commands did not report resume-guidance"
+
 NO_RELAUNCH="$TMP_DIR/no-relaunch.md"
 grep -v '^Relaunch rule:' "$GOLDEN" >"$NO_RELAUNCH"
 out=$(run_lint "$NO_RELAUNCH" 2>&1); rc=$?

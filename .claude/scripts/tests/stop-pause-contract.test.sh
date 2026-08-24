@@ -99,7 +99,8 @@ jq -e '
   and .working_copy.tracked_changes == ["tracked.txt"]
   and .working_copy.untracked_changes == ["untracked.txt"]
 ' <<<"$CONTEXT_JSON" >/dev/null || fail "portable handoff context did not preserve tracked and untracked state"
-(cd "$TMP_HANDOFF/repo" && "$CHECKPOINT" --stdout --no-remote) >"$TMP_HANDOFF/staged.md"
+(cd "$TMP_HANDOFF/repo" && "$CHECKPOINT" --stdout --no-remote \
+  --out-dir "$TMP_HANDOFF/checkpoint-out") >"$TMP_HANDOFF/staged.md"
 PUBLISHED_ONE=$("$HANDOFF_PUBLISH" --input "$TMP_HANDOFF/staged.md" \
   --repo test/portable-stop --session contract --out-dir "$TMP_HANDOFF/out" \
   --lint "$HANDOFF_LINT" --lint-root "$ROOT")

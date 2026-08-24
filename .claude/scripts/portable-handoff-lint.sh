@@ -510,6 +510,7 @@ lineno=0
 WORKDIR_SEEN=0
 declare -a WORKING_COPY_FIELDS_SEEN=()
 RESUME_SEEN=0
+RESUME_FIELDS=0
 RELAUNCH_SEEN=0
 IN_FENCE=0
 
@@ -650,13 +651,16 @@ while IFS= read -r line || [[ -n "$line" ]]; do
 
   resume_value=""
   if (( ! IS_HEADING )) && (( ! IN_FENCE )) && [[ "$section" == "$RESUME_SECTION" ]]; then
-    if [[ "$line" == "$RESUME_ANCHOR"* ]] && field_value_nonempty "${line#"$RESUME_ANCHOR"}"; then
+    if [[ "$line" == "$RESUME_ANCHOR"* ]]; then
+      RESUME_FIELDS=$((RESUME_FIELDS + 1))
       resume_value="${line#"$RESUME_ANCHOR"}"
       resume_value="${resume_value#"${resume_value%%[![:space:]]*}"}"
-      case "$resume_value" in
-        /stop-resume|/stop-resume\ *) RESUME_SEEN=1 ;;
-        "not applicable"|"not applicable "*) RESUME_SEEN=1 ;;
-      esac
+      if field_value_nonempty "$resume_value"; then
+        case "$resume_value" in
+          /stop-resume|/stop-resume\ *) RESUME_SEEN=$((RESUME_SEEN + 1)) ;;
+          "not applicable"|"not applicable "*) RESUME_SEEN=$((RESUME_SEEN + 1)) ;;
+        esac
+      fi
     fi
     if [[ "$line" == "$RELAUNCH_ANCHOR"* ]] && field_value_nonempty "${line#"$RELAUNCH_ANCHOR"}"; then
       RELAUNCH_SEEN=1
@@ -769,8 +773,16 @@ if contains "$WORKDIR_SECTION" ${SEEN_SECTIONS+"${SEEN_SECTIONS[@]}"}; then
 fi
 
 if contains "$RESUME_SECTION" ${SEEN_SECTIONS+"${SEEN_SECTIONS[@]}"}; then
-  (( RESUME_SEEN )) || report "resume-guidance" "0" "$RESUME_SECTION" \
-    "no valid \"$RESUME_ANCHOR\" field — use /stop-resume or explicitly mark a non-stop checkpoint not applicable"
+  if (( RESUME_FIELDS == 0 )); then
+    report "resume-guidance" "0" "$RESUME_SECTION" \
+      "no \"$RESUME_ANCHOR\" field — use /stop-resume or explicitly mark a non-stop checkpoint not applicable"
+  elif (( RESUME_FIELDS > 1 )); then
+    report "resume-guidance" "0" "$RESUME_SECTION" \
+      "\"$RESUME_ANCHOR\" appears $RESUME_FIELDS times — one authoritative command is required"
+  elif (( RESUME_SEEN != 1 )); then
+    report "resume-guidance" "0" "$RESUME_SECTION" \
+      "invalid or empty \"$RESUME_ANCHOR\" field — use /stop-resume or explicitly mark a non-stop checkpoint not applicable"
+  fi
   (( RELAUNCH_SEEN )) || report "resume-guidance" "0" "$RESUME_SECTION" \
     "no non-empty \"$RELAUNCH_ANCHOR\" field — a takeover could duplicate already-recorded work"
 fi
