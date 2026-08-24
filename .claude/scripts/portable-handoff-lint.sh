@@ -644,6 +644,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     done
   fi
 
+  resume_value=""
   if (( ! IS_HEADING )) && (( ! IN_FENCE )) && [[ "$section" == "$RESUME_SECTION" ]]; then
     if [[ "$line" == "$RESUME_ANCHOR"* ]] && field_value_nonempty "${line#"$RESUME_ANCHOR"}"; then
       resume_value="${line#"$RESUME_ANCHOR"}"
