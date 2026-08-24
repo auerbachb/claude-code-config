@@ -559,6 +559,13 @@ if [[ -r "$BASELINE_REAL" ]]; then
   [[ "$missing" == "[]" ]] \
     && ok "baseline: covers every tool measure.sh reports on" \
     || fail "baseline: measure.sh tools missing from baseline: $missing (all keys: $keys)"
+  # drift.sh builds base_by_key as a dict — duplicate keys cause last-write-wins silently;
+  # validate uniqueness so a malformed baseline doesn't report false 'no drift'
+  unique_count="$(jget "$BASELINE_REAL" "len(set(t['key'] for t in d['tools']))")"
+  total_count="$(jget "$BASELINE_REAL" "len(d['tools'])")"
+  [[ "$unique_count" == "$total_count" ]] \
+    && ok "baseline: tool keys are unique (no duplicate entries)" \
+    || fail "baseline: duplicate tool keys — $((total_count - unique_count)) collision(s); drift.sh silently uses last-write-wins for duplicates"
 else
   fail "baseline: $BASELINE_REAL is missing"
 fi
