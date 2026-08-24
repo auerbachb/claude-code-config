@@ -338,7 +338,24 @@ fi
 
 For each entry in `monitors_stopped` where `stopped: true` and `rearmed` is not
 already `true`, delegate to the appropriate re-arm skill — never reimplement
-their logic. Skip entries already confirmed rearmed so retries are idempotent:
+their logic. Skip entries already confirmed rearmed so retries are idempotent.
+Before runtime inspection or delegation, atomically claim the exact task ID in
+the shared registry, using the same reservation as `/stop-resume`:
+
+```bash
+"$TASK_REGISTRY_SH" --transition --session "$SESSION_ID" \
+  --task-id "$TASK_ID" --status rearming --from-status stopped
+```
+
+Exit 7 means another `/pause-resume` invocation already claimed or completed
+the entry; re-read it and do not launch. A missing registry record or task ID
+keeps the pause entry pending rather than falling back to an unlocked launch.
+After the claim, re-check the execution gate immediately before delegation. A
+blocked or failed launch rolls `rearming -> stopped`; a confirmed successor
+rolls `rearming -> rearmed`, then (and only then) sets the pause array entry's
+`rearmed: true`. The successor registers its own runtime ID through the normal
+launch hook. This ordering makes concurrent invocations single-writer even
+before either one persists the pause-state array:
 
 - **Babysit watcher for a PR** — invoke `/babysit-pr <PR>` for each entry with `owner: "babysit"`.
 - **PR fleet monitor** — invoke `/pr-monitor-and-manage-wake` for any entry with `owner: "pmm"`. The wake companion reads its own saved config (cadence, author, max-parallel, etc.) and re-arms at base cadence.
@@ -355,7 +372,9 @@ If any re-arm delegation fails, report it and carry on — a partial re-arm is b
 
 Apply the same filter and bookkeeping to `background_tasks_stopped`, keyed by
 exact `task_id`: skip `rearmed: true` entries and process only entries still
-requiring restoration. Set `rearmed: true` only after runtime verification. Set or preserve
+requiring restoration. Use the same locked `stopped -> rearming` registry claim
+before inspection or launch and the same rollback/finalize transitions. Set
+`rearmed: true` only after runtime verification. Set or preserve
 `rearmed: false` when recovery failed or required metadata is missing, and add
 `resume_error` naming the missing path/action. Persist both updated arrays with
 `session-state.sh --set`; never mutate the state file directly.
