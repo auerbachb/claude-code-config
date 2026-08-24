@@ -296,6 +296,18 @@ grep -Fq $'\ttransition\tterminal-contention-runtime\t6' "$FAILURE_MARKER" || \
   fail "failed terminal transition incorrectly changed task lifecycle"
 ok "registry lock contention records launch and terminal failures within hook budgets"
 
+hold_state_lock
+SECONDS=0
+set +e
+gate Agent >/dev/null 2>&1
+gate_contention_rc=$?
+set -e
+gate_contention_elapsed=$SECONDS
+rm -rf "$LOCK_DIR"
+[[ "$gate_contention_rc" == 2 ]] || fail "lock-contended launch gate failed open"
+[[ "$gate_contention_elapsed" -lt 5 ]] || fail "launch-gate contention outlived its hook timeout budget"
+ok "launch-gate lock contention fails closed within the hook budget"
+
 # If state becomes unreadable after activation, the positive marker keeps the
 # gate closed. A random parse failure without such a marker stays fail-open.
 "$PAUSE" --repo "$REPO" --activate --session "$SID" --command suspend --window-minutes 15

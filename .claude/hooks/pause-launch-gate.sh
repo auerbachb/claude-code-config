@@ -74,9 +74,11 @@ fi
 STATUS=""
 RC=0
 if [[ -n "$CWD" && -d "$CWD" ]]; then
-  STATUS="$(cd "$CWD" && "$PAUSE_SH" --repo "$REPO_KEY" --status --session "$SESSION_ID" 2>/dev/null)" || RC=$?
+  STATUS="$(cd "$CWD" && CLAUDE_STATE_LOCK_TIMEOUT=3 \
+    "$PAUSE_SH" --repo "$REPO_KEY" --status --session "$SESSION_ID" 2>/dev/null)" || RC=$?
 else
-  STATUS="$("$PAUSE_SH" --repo "$REPO_KEY" --status --session "$SESSION_ID" 2>/dev/null)" || RC=$?
+  STATUS="$(CLAUDE_STATE_LOCK_TIMEOUT=3 \
+    "$PAUSE_SH" --repo "$REPO_KEY" --status --session "$SESSION_ID" 2>/dev/null)" || RC=$?
 fi
 
 # A confirmed active state includes the marker-backed fail-closed path when
@@ -84,6 +86,10 @@ fi
 # dependency failures stay fail-open so a malformed payload cannot brick work.
 if [[ "$RC" -eq 0 && "$STATUS" == active ]]; then
   echo "BLOCKED: background launches are paused for this session. Finish the wind-down or run /pause-resume (or /suspend-resume) before starting $TOOL_NAME." >&2
+  exit 2
+fi
+if [[ "$RC" -eq 6 ]]; then
+  echo "BLOCKED: pause state is lock-contended and cannot be verified within the launch-hook budget; refusing to start $TOOL_NAME." >&2
   exit 2
 fi
 exit 0
