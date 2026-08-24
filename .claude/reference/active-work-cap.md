@@ -126,10 +126,12 @@ Four author-scoped, durable sources, summed by `active-work-cap.sh`:
 
 **Sources 1 and 3 are not**, and the script performs two explicit narrowings to keep them from double-counting or over-reaching. Do not remove either on the assumption that the sources are independent:
 
-1. **Subtract entries an open PR already covers.** A chip's log entry survives the click, and its issue stays open until the PR merges, so a clicked chip would be counted once as a chip and again as a PR — halving the effective cap. Entries whose issue appears in an open PR's `closingIssuesReferences` are excluded.
+1. **Subtract entries an open OR recently-merged PR already covers.** A chip's log entry survives the click, and its issue stays open until the PR merges, so a clicked chip would be counted once as a chip and again as a PR — halving the effective cap. Entries whose issue appears in any `closingIssuesReferences` of either (a) an open PR or (b) a recently-merged PR authored by `@me` are excluded. The merged-PR path (#1285 fix) covers the case where the PR finishes and leaves the open list — previously the exclusion lapsed and the chip re-entered the count while the issue remained open. The `CLAUDE_ACTIVE_WORK_MERGED_PR_LIMIT` tunable (default 50) sets how many recently-merged PRs are fetched.
 2. **Keep only entries whose issue is still open.** `chip_task_id` is cleared on acceptance (after `/subagent` starts), on decline, and on explicit retract — so without this filter the count would still be a monotonic high-water mark for any log entries whose issue closed before the offer resolved.
 
 Both narrowings apply **only to entries attributed to this repo**. An entry carrying no usable URL is counted unconditionally and skips both: its number is meaningless outside a repo, so matching it against this repo's PR-closed or open issues would drop it on a coincidence and turn a deliberate over-count into an under-count.
+
+**Self-referential double-count fix (#1285).** Once a thread accepts an offer, it appears in `active_agents` (source 4). Until a PR is opened, the same work is visible in both the chip sources (2a/2b) and the pipeline source (4). The script resolves this by subtracting pipeline issue numbers from both registry and legacy log chip counts: a chip whose issue is already tracked by a live pipeline is not counted a second time. This prevents the observed state where `ACTIVE` was 6 with only 4 units genuinely live.
 
 ### Entries are not offers (#1247)
 
@@ -153,7 +155,23 @@ Repos whose primary reviewer is BugBot or Greptile have a different budget — B
 
 `CLAUDE_ACTIVE_WORK_CAP` (env) → `ACTIVE_WORK_CAP` in `pm-config.md` → built-in default 6.
 
+`CLAUDE_ACTIVE_WORK_MERGED_PR_LIMIT` (env, default 50) — how many recently-merged PRs authored by `@me` to fetch when checking whether a chip's issue is already done. A non-integer value warns and falls back to 50. Set to 0 to disable the merged-PR check entirely (not recommended — reverts to the pre-#1285 bug).
+
 An absent value is normal and silent. An **unparseable or out-of-range** value warns on stderr and falls back to the default rather than erroring — the `MAX_WAVE` and `CLAUDE_BGWORK_CEILING_S` precedent. A count source that *fails* is different from one that is *empty*: a `gh` failure or a malformed chip log is reported and exits non-zero rather than being counted as zero, because a fabricated zero reads as "nothing active" and would silently uncap the gate (`feedback_fabricated_sentinel_stable_signature.md`, `feedback_guard_must_fail_closed.md`).
+
+## `--json` output
+
+`active-work-cap.sh --json` emits a single-line JSON object. Relevant fields for diagnosing a `FREE=0` reading:
+
+| Field | Description |
+|-------|-------------|
+| `cap`, `active`, `free` | Top-level figures |
+| `open_prs` | Source 1 count |
+| `live_chips` | Source 2 count (registry + legacy, after dedup and narrowings) |
+| `inline_pipelines` | Source 4 count |
+| `offered_issue_nums` | Sorted array of issue numbers that make up the offered-work term (sources 2a + 2b after all narrowings, AC#3 — #1285). Use this to identify which specific issues are holding capacity. |
+| `registry_baseline` | Raw count from the registry before dedup against legacy log |
+| `cap_source` | Which config level resolved the cap |
 
 ## Known limits
 

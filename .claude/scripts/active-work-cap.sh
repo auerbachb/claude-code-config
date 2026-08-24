@@ -81,9 +81,17 @@
 #   NOT cleared when the chip is clicked. A clicked chip becomes a thread, then
 #   a PR, while its issue stays open until that PR merges — so the same unit of
 #   work would be counted twice and the effective cap halved. Entries whose
-#   issue appears in an open PR's `closingIssuesReferences` are therefore
-#   excluded. A multi-issue chip loses only the absorbed entries; it stops
+#   issue appears in an open OR RECENTLY MERGED PR's `closingIssuesReferences`
+#   are excluded. A merged PR no longer appears in the open list but its issue
+#   may still be open (#1285 merged-PR leak); fetching both open and merged PRs
+#   closes that gap. A multi-issue chip loses only the absorbed entries; it stops
 #   counting once it loses all of them (OFFER LIVENESS, PARTIAL ABSORPTION).
+#
+#   Sources 2b and 3 also need an explicit subtraction (#1285 self-referential
+#   count): when a pipeline (source 3) is running for an issue but has not yet
+#   opened a PR, the issue's chip is still live in the log. Counting both the
+#   pipeline and the chip bills the same work twice — so issue numbers from
+#   active_agents entries (source 3) are also excluded from the chip count.
 #
 #   Sources 2a and 2b need deduplication by issue number: an emitter that writes
 #   to the registry AND the legacy log for the same offer must not count twice.
@@ -173,6 +181,12 @@
 #                           contributes 0 and a DEGRADED warning is printed.
 #                           Set to empty string in tests that want no registry read.
 #
+#   CLAUDE_ACTIVE_WORK_MERGED_PR_LIMIT  How many recently-merged PRs to fetch when
+#                           checking whether a chip's issue is already done (default
+#                           50). Merged PRs' closingIssuesReferences are combined
+#                           with open PRs' to exclude finished chips (#1285). A
+#                           non-integer or out-of-range value warns and falls back.
+#
 # EMPTY IS NOT THE SAME AS FAILED
 #   A source that legitimately has nothing contributes 0. A source that could
 #   not be READ (gh failed, a chip log is malformed, session-state is corrupt)
@@ -184,6 +198,10 @@
 #
 # OUTPUT
 #   stdout: mode-dependent (plain line, JSON object, or a single integer).
+#           --json fields: cap, active, free, open_prs, live_chips,
+#           inline_pipelines, registry_baseline, cap_source, and
+#           offered_issue_nums (sorted int array of issue numbers that make up
+#           the offered-work term — explains a FREE=0 reading, AC#3 #1285).
 #   stderr: one-line diagnostics — fallback warnings and read failures.
 #
 # EXIT STATUS
@@ -345,6 +363,12 @@ fi
 # fetch_open_prs / chips_covered_by_prs below.
 OPEN_PR_JSON=""
 
+# Closing-issue references from recently-merged PRs (#1285 merged-PR leak fix).
+# Once a PR merges it leaves the open list, so the existing open-PR subtraction
+# no longer suppresses its chip. Fetching merged PRs separately and combining
+# them with the open set restores the exclusion after merge.
+MERGED_PR_JSON="[]"
+
 # `--limit 100` cannot affect the answer, despite looking like the same
 # truncation bug fixed in open_among. FREE is max(0, CAP - ACTIVE) and CAP_MAX
 # is 10, so any repo with enough open PRs to hit the limit is already an order
@@ -366,6 +390,62 @@ fetch_open_prs() {
   OPEN_PR_JSON="$out"
 }
 
+# Fetch recently-merged PRs authored by @me and record their
+# closingIssuesReferences in MERGED_PR_JSON. Combined with open PRs in
+# chips_covered_by_prs() to exclude issues whose work is already done.
+#
+# `--limit 50` is conservative: a chip log entry that outlives the most recent
+# 50 merged PRs on this repo by one author is extremely stale, and the
+# open-issue intersection (which keeps only currently-open issues) would already
+# drop it in the normal case — the merged-PR check adds only the narrow window
+# where the issue is still open but the PR is merged. Truncation here only
+# under-subtracts chips, which is the safe (over-counting) direction.
+fetch_merged_prs() {
+  local limit="${CLAUDE_ACTIVE_WORK_MERGED_PR_LIMIT:-50}"
+  [[ "$limit" =~ ^[0-9]+$ ]] || {
+    warn "CLAUDE_ACTIVE_WORK_MERGED_PR_LIMIT is not an integer: '$limit' — using 50"
+    limit=50
+  }
+  # The fetch cap (150 candidates) provides exact coverage only for limit ≤ 50
+  # (50 × 3 = 150). Values above 50 cause the cap to bite so the sorted result
+  # may contain fewer than the requested number of PRs. Clamp and warn rather
+  # than silently under-fetching.
+  if (( limit > 50 )); then
+    warn "CLAUDE_ACTIVE_WORK_MERGED_PR_LIMIT ($limit) exceeds the supported maximum of 50 — clamping to 50"
+    limit=50
+  fi
+  # limit=0: merged-PR check disabled — return an empty result immediately
+  # without invoking gh (preserves the documented disabled behavior).
+  if [[ "$limit" == "0" ]]; then
+    MERGED_PR_JSON="[]"
+    return 0
+  fi
+  # Fetch a wider candidate set so that an older PR merged more recently than
+  # newer-created PRs isn't dropped by gh's default createdAt-descending order.
+  # Sort client-side by mergedAt after fetching, then apply the configured limit.
+  # Cap the fetch at 150 to keep the API call bounded.
+  local fetch_limit=$(( limit * 3 ))
+  [[ fetch_limit -gt 150 ]] && fetch_limit=150
+  local out rc=0
+  out="$(gh pr list --state merged --author "@me" --limit "$fetch_limit" \
+         --json number,mergedAt,closingIssuesReferences ${REPO:+--repo "$REPO"} 2>&1)" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    die_read "gh pr list (merged, author=@me${REPO:+, repo=$REPO}) failed: $out"
+  fi
+  local probe rc2=0
+  probe="$(printf '%s' "$out" | jq -e 'type == "array"' 2>&1)" || rc2=$?
+  if [[ $rc2 -ne 0 ]]; then
+    die_read "could not parse gh pr list (merged) output as a JSON array: $probe"
+  fi
+  local sorted rc3=0
+  sorted="$(printf '%s' "$out" | jq --argjson lim "$limit" \
+    'sort_by(.mergedAt) | reverse | .[0:$lim]' 2>&1)" || rc3=$?
+  if [[ $rc3 -ne 0 ]]; then
+    die_read "could not sort merged PRs by mergedAt: $sorted"
+  fi
+  MERGED_PR_JSON="$sorted"
+}
+
 count_open_prs() {
   local n rc=0
   n="$(printf '%s' "$OPEN_PR_JSON" | jq 'length' 2>&1)" || rc=$?
@@ -375,18 +455,21 @@ count_open_prs() {
   printf '%s' "$n"
 }
 
-# Issue numbers already represented by one of the open PRs counted above. A
-# chip whose issue is here has been CLICKED and has become a PR, so counting
+# Issue numbers already represented by an open OR recently-merged PR authored
+# by @me. A chip whose issue is here has been CLICKED and has become a PR
+# (open case) or the PR has already merged (merged case — #1285), so counting
 # the chip as well would count one unit of work twice and halve the effective
 # cap. This is also `chip-launching.md`'s own stale-chip trigger 1 ("gained an
 # open PR — someone is already doing the work"), so the chip is stale by that
 # contract too; the count simply stops waiting for the hygiene sweep to run.
 chips_covered_by_prs() {
   local out rc=0
-  out="$(printf '%s' "$OPEN_PR_JSON" \
-        | jq -r '.[] | (.closingIssuesReferences // [])[] | .number' 2>&1)" || rc=$?
+  out="$(jq -rn \
+          --argjson open "$OPEN_PR_JSON" \
+          --argjson merged "$MERGED_PR_JSON" \
+          '($open + $merged)[] | (.closingIssuesReferences // [])[] | .number' 2>&1)" || rc=$?
   if [[ $rc -ne 0 ]]; then
-    die_read "could not read closing-issue references from open PRs: $out"
+    die_read "could not read closing-issue references from open/merged PRs: $out"
   fi
   printf '%s' "$out"
 }
@@ -600,9 +683,16 @@ open_among() {
 #     the registry (source 2a). Any legacy chip whose surviving issues are ALL
 #     in this excluded set is not counted here — the registry already holds a
 #     slot for that work.  An absent or empty $2 applies no exclusion.
+# $3  (optional) newline-separated list of issue numbers already counted by
+#     running pipelines (source 3, #1285 self-referential count fix). A chip
+#     whose EVERY surviving issue is already being executed by a pipeline is
+#     excluded — it is counted once through active_agents, not also as a chip.
+#     Only attributed chips are subject to this exclusion; guessed chips bypass
+#     it (same rationale as the PR subtraction and open-issue intersection).
 count_live_chips() {
   local slug="$1"
   local excluded_reg="${2:-}"
+  local excluded_pipelines="${3:-}"
 
   # Both helpers can die_read, and a die_read inside `$(...)` ends only that
   # subshell — so each status is captured and re-raised here rather than
@@ -665,8 +755,8 @@ count_live_chips() {
     open_issues="$(open_among "$slug" ${chip_nums[@]+"${chip_nums[@]}"})" || rc2=$?
     (( rc2 == 0 )) || return "$rc2"
 
-    # Drop chips whose issue is already represented by an open PR — that work is
-    # counted once, by the PR source. Attributed chips only.
+    # Drop chips whose issue is already represented by an open or merged PR —
+    # that work is counted once, by the PR source. Attributed chips only.
     local covered rc3=0
     covered="$(chips_covered_by_prs)" || rc3=$?
     (( rc3 == 0 )) || return "$rc3"
@@ -682,6 +772,19 @@ count_live_chips() {
                     <(printf '%s\n' "$covered" | sort -u))" || rc4=$?
       (( rc4 == 0 )) || die_read "comm -23 failed subtracting PR-covered chips (exit $rc4)"
       sure="$remaining"
+    fi
+
+    # Drop chips whose issue is already being executed by a running pipeline
+    # (source 3, #1285 self-referential count fix). An accepted offer is counted
+    # once through active_agents; counting the chip on top would bill it twice.
+    # Guessed chips bypass this (same rationale as the PR subtraction above).
+    if [[ -n "$excluded_pipelines" && -n "$sure" ]]; then
+      local remaining_pipe rc_pipe=0
+      remaining_pipe="$(comm -23 \
+                          <(printf '%s\n' "$sure" | sort -u) \
+                          <(printf '%s\n' "$excluded_pipelines" | awk 'NF' | sort -u))" || rc_pipe=$?
+      (( rc_pipe == 0 )) || die_read "comm -23 failed subtracting pipeline-claimed chips (exit $rc_pipe)"
+      sure="$remaining_pipe"
     fi
 
     # Intersect with the open issues. Both sides go through an identical
@@ -766,11 +869,20 @@ count_live_chips() {
 }
 
 # Inline pipelines not yet at PR: active_agents entries with no `.pr`.
-count_inline_pipelines() {
+# Also extracts the issue numbers of those entries for cross-source dedup
+# (#1285 self-referential count fix). Sets globals _PIPELINE_COUNT_OUT and
+# _PIPELINE_ISSUE_NUMS_OUT from a single session-state read so no TOCTOU
+# window exists between the count and the issue-number extraction.
+_PIPELINE_COUNT_OUT=0
+_PIPELINE_ISSUE_NUMS_OUT=""
+
+load_pipeline_source() {
+  _PIPELINE_COUNT_OUT=0
+  _PIPELINE_ISSUE_NUMS_OUT=""
+
   local getter="$SCRIPT_DIR/session-state.sh"
   if [[ ! -x "$getter" ]]; then
-    printf '0'
-    return
+    return 0
   fi
 
   local view rc=0 errfile
@@ -784,8 +896,7 @@ count_inline_pipelines() {
   # rc 3 = no state file yet; that is a legitimately empty source, not a
   # failure. Any other non-zero is a real read problem.
   if [[ $rc -eq 3 ]]; then
-    printf '0'
-    return
+    return 0
   fi
   if [[ $rc -ne 0 ]]; then
     die_read "session-state.sh --session-view failed (exit $rc) — cannot count inline pipelines${errtext:+: $errtext}"
@@ -803,8 +914,13 @@ count_inline_pipelines() {
     warn "CLAUDE_ACTIVE_WORK_AGENT_TTL_S is not an integer: '$stale_s' — using 7200"
     stale_s=7200
   }
-  local n rc2=0
-  n="$(printf '%s' "$view" | jq --argjson ttl "$stale_s" --argjson now "$(date -u +%s)" '
+
+  # Single jq pass: emit the count on the first line, then the issue number of
+  # each live entry that carries one (subsequent lines). Splitting one pass
+  # avoids a TOCTOU window and keeps the count and the issue list consistent.
+  local result rc2=0
+  result="$(printf '%s' "$view" | jq -r \
+        --argjson ttl "$stale_s" --argjson now "$(date -u +%s)" '
         [ .active_agents[]?
           | select((.pr // "") == "")
           # No writer sets a lifecycle field on these entries today — the
@@ -824,11 +940,21 @@ count_inline_pipelines() {
                        | if $e == null then true else ($now - $e) < $ttl end)
                  end)
             )
-        ] | length' 2>&1)" || rc2=$?
-  if [[ $rc2 -ne 0 || ! "$n" =~ ^[0-9]+$ ]]; then
-    die_read "could not parse active_agents from session-state: $n"
+        ] as $live
+        | ($live | length | tostring),
+          ($live[] | select(.issue != null) | .issue | tostring)' 2>&1)" || rc2=$?
+  if [[ $rc2 -ne 0 ]]; then
+    die_read "could not parse active_agents from session-state: $result"
   fi
-  printf '%s' "$n"
+
+  local n
+  n="$(printf '%s\n' "$result" | head -1)"
+  if [[ ! "$n" =~ ^[0-9]+$ ]]; then
+    die_read "could not extract pipeline count from session-state result: $n"
+  fi
+  _PIPELINE_COUNT_OUT="$n"
+  _PIPELINE_ISSUE_NUMS_OUT="$(printf '%s\n' "$result" | tail -n +2)"
+  return 0
 }
 
 # Issue numbers from the chip offer registry (source 2a) — entries in
@@ -838,12 +964,15 @@ count_inline_pipelines() {
 # can all be excluded from the legacy chip-log count; deferral 1 fix).
 # A missing or inaccessible registry contributes 0 with a DEGRADED warning
 # rather than failing hard, because the legacy log (source 2b) is still read.
-# load_registry_source — single --list call; sets globals _REG_NUMS_OUT and
-# _REG_COUNT_OUT from the same snapshot so issue-number extraction and entry
-# count see a consistent view (no TOCTOU window between --list and --count).
-# _REG_NUMS_OUT : newline-separated issue numbers from active entries (for dedup).
-# _REG_COUNT_OUT: count of active entries (capacity unit; one entry = one chip).
-_REG_NUMS_OUT=""; _REG_COUNT_OUT=0
+# load_registry_source — single --list call; sets globals _REG_NUMS_OUT,
+# _REG_COUNT_OUT, and _REG_ACTIVE_JSON_OUT from the same snapshot so
+# issue-number extraction, entry count, and per-entry filtering all see a
+# consistent view (no TOCTOU window between --list and --count).
+# _REG_NUMS_OUT       : newline-separated issue numbers from active entries (for dedup).
+# _REG_COUNT_OUT      : count of active entries (capacity unit; one entry = one chip).
+# _REG_ACTIVE_JSON_OUT: compact JSON array of active (non-expired) entries for
+#                       per-entry pipeline-overlap filtering in the caller.
+_REG_NUMS_OUT=""; _REG_COUNT_OUT=0; _REG_ACTIVE_JSON_OUT="[]"
 load_registry_source() {
   # Allow tests to skip the registry read entirely by setting the variable to
   # an empty string. Use the ${VAR+x} test to distinguish "explicitly set to
@@ -896,6 +1025,11 @@ load_registry_source() {
   nums="$(printf '%s' "$active" | jq -r '.[] | (.issues // [.issue]) | .[]' 2>&1)" || rc4=$?
   [[ $rc4 -ne 0 ]] && die_read "could not extract issue numbers from registry: $nums"
   [[ -n "$nums" ]] && _REG_NUMS_OUT="$nums"
+  # Export the full active-entries array so the caller can do per-entry
+  # pipeline-overlap filtering (avoiding the per-issue cardinality subtraction
+  # bug where subtracting N overlapping issues from an entry count of M
+  # incorrectly removes unrelated entries when N > M).
+  _REG_ACTIVE_JSON_OUT="$active"
   return 0
 }
 
@@ -940,14 +1074,24 @@ fi
 
 REPO="$SLUG"
 
-# Not via count_into: this one populates a global, and a command substitution
-# would set it in a subshell that then exits, leaving the parent's copy empty.
+# Not via count_into: these populate globals, and a command substitution would
+# set them in a subshell that then exits, leaving the parent's copies empty.
 FETCH_RC=0
 fetch_open_prs || FETCH_RC=$?
 (( FETCH_RC == 0 )) || exit "$FETCH_RC"
 
+FETCH_MERGED_RC=0
+fetch_merged_prs || FETCH_MERGED_RC=$?
+(( FETCH_MERGED_RC == 0 )) || exit "$FETCH_MERGED_RC"
+
 count_into OPEN_PRS   count_open_prs
-count_into PIPELINES  count_inline_pipelines
+
+# Pipeline source: sets _PIPELINE_COUNT_OUT and _PIPELINE_ISSUE_NUMS_OUT.
+PIPELINE_SRC_RC=0
+load_pipeline_source || PIPELINE_SRC_RC=$?
+(( PIPELINE_SRC_RC == 0 )) || exit "$PIPELINE_SRC_RC"
+PIPELINES="$_PIPELINE_COUNT_OUT"
+PIPELINE_ISSUE_NUMS="$_PIPELINE_ISSUE_NUMS_OUT"
 
 # Chip count: union of registry (2a) and legacy log (2b), deduped by issue number.
 #
@@ -962,8 +1106,17 @@ count_into PIPELINES  count_inline_pipelines
 #
 # For the legacy side, we get the live numbers from count_live_chips_numbers()
 # which mirrors count_live_chips but emits numbers instead of a count.
+# count_live_chips_numbers: same filtering pipeline as count_live_chips but
+# returns the surviving issue numbers rather than the distinct-chip count.
+# Used in --json mode to populate offered_issue_nums. Accepts the same
+# exclusion sets as count_live_chips for consistency.
+# $1  repo slug
+# $2  (optional) registry-excluded issue numbers (same as count_live_chips $2)
+# $3  (optional) pipeline-excluded issue numbers (same as count_live_chips $3)
 count_live_chips_numbers() {
   local slug="$1"
+  local excluded_reg="${2:-}"
+  local excluded_pipelines="${3:-}"
   local chips rc=0
   chips="$(chip_issue_numbers "$slug" | sort -u)" || rc=$?
   (( rc == 0 )) || return "$rc"
@@ -1003,6 +1156,19 @@ count_live_chips_numbers() {
       while read -r _num; do [[ -n "$_num" ]] && chip_nums+=("$_num"); done <<<"$sure"
   fi
 
+  # Also subtract pipeline-claimed issues (#1285 self-referential count fix).
+  if [[ -n "$excluded_pipelines" && -n "$sure" ]]; then
+    local remaining_pipe rc_pipe=0
+    remaining_pipe="$(comm -23 \
+                        <(printf '%s\n' "$sure" | sort -u) \
+                        <(printf '%s\n' "$excluded_pipelines" | awk 'NF' | sort -u))" || rc_pipe=$?
+    (( rc_pipe == 0 )) || die_read "comm -23 failed subtracting pipeline-claimed chips for numbers (exit $rc_pipe)"
+    sure="$remaining_pipe"
+    chip_nums=()
+    [[ -n "$sure" ]] && \
+      while read -r _num; do [[ -n "$_num" ]] && chip_nums+=("$_num"); done <<<"$sure"
+  fi
+
   local open_issues=""
   if (( ${#chip_nums[@]} )); then
     local rc5=0
@@ -1017,6 +1183,17 @@ count_live_chips_numbers() {
                 <(printf '%s\n' "$sure" | sort -u) \
                 <(printf '%s\n' "$open_issues" | sort -u))" || rc6=$?
     (( rc6 == 0 )) || die_read "comm -12 failed intersecting log chips with open issues"
+  fi
+
+  # Apply registry exclusion: drop issues the registry already holds (#1285).
+  if [[ -n "$excluded_reg" ]]; then
+    if [[ -n "$matched" ]]; then
+      local rc_excl=0
+      matched="$(comm -23 \
+                  <(printf '%s\n' "$matched" | sort -u) \
+                  <(printf '%s\n' "$excluded_reg" | awk 'NF' | sort -u))" || rc_excl=$?
+      (( rc_excl == 0 )) || die_read "comm -23 failed excluding registry issues from chip numbers (exit $rc_excl)"
+    fi
   fi
 
   # Emit matched (attributed, live) and guessed numbers.
@@ -1042,9 +1219,61 @@ load_registry_source || REG_RC=$?
 REG_NUMS="$_REG_NUMS_OUT"
 REG_CHIP_COUNT="$_REG_COUNT_OUT"
 
-# Source 2b: legacy log (distinct chips, excluding issues the registry holds).
+# AC#2 (self-referential fix): remove registry entries whose work is FULLY
+# covered by running pipelines — an entry counts as covered only when ALL of
+# its issues appear in PIPELINE_ISSUE_NUMS, not merely some. This entry-level
+# filter (rather than per-issue cardinality subtraction) prevents the bug where
+# subtracting N overlapping issues from an entry count of M incorrectly removes
+# unrelated entries when N > M (e.g. batch A=[401,402] + single B=[403] with
+# pipelines for 401 and 402: the old code subtracted 2 from entry-count 2,
+# removing B; the new code keeps B because 403 is not pipeline-covered).
+if [[ -n "$PIPELINE_ISSUE_NUMS" && $REG_CHIP_COUNT -gt 0 ]]; then
+  # Build a sorted JSON array of pipeline issue numbers for bsearch.
+  REG_PIPELINE_NUMS_JSON=""; REG_PJ_RC=0
+  REG_PIPELINE_NUMS_JSON="$(printf '%s\n' "$PIPELINE_ISSUE_NUMS" \
+    | awk 'NF && /^[0-9]+$/ {print $0+0}' | sort -nu \
+    | jq -Rs '[split("\n")[] | select(length > 0) | tonumber] | sort' 2>&1)" || REG_PJ_RC=$?
+  if [[ $REG_PJ_RC -ne 0 ]]; then
+    die_read "could not build pipeline issue set for registry filtering: $REG_PIPELINE_NUMS_JSON"
+  fi
+  # Keep only entries where at least one issue is NOT pipeline-covered.
+  REG_SURVIVING=""; REG_SR_RC=0
+  REG_SURVIVING="$(printf '%s' "$_REG_ACTIVE_JSON_OUT" | jq -c \
+    --argjson pipeline "$REG_PIPELINE_NUMS_JSON" '
+    [ .[] |
+      ((.issues // [.issue]) | sort) as $entry_nums |
+      if ($entry_nums | all(. as $n | $pipeline | bsearch($n) >= 0))
+      then empty else . end
+    ]' 2>&1)" || REG_SR_RC=$?
+  if [[ $REG_SR_RC -ne 0 ]]; then
+    die_read "could not filter registry entries by pipeline coverage: $REG_SURVIVING"
+  fi
+  # Derive REG_CHIP_COUNT and REG_NUMS from the surviving entries.
+  REG_NEW_COUNT=""; REG_NC_RC=0
+  REG_NEW_COUNT="$(printf '%s' "$REG_SURVIVING" | jq 'length' 2>&1)" || REG_NC_RC=$?
+  [[ $REG_NC_RC -ne 0 || ! "$REG_NEW_COUNT" =~ ^[0-9]+$ ]] && \
+    die_read "could not count surviving registry entries: $REG_NEW_COUNT"
+  REG_CHIP_COUNT="$REG_NEW_COUNT"
+  REG_NEW_NUMS=""; REG_NN_RC=0
+  REG_NEW_NUMS="$(printf '%s' "$REG_SURVIVING" | jq -r '.[] | (.issues // [.issue]) | .[]' 2>&1)" \
+    || REG_NN_RC=$?
+  [[ $REG_NN_RC -ne 0 ]] && die_read "could not extract issue nums from surviving entries: $REG_NEW_NUMS"
+  # Exclude pipeline-covered issues from REG_NUMS so that offered_issue_nums
+  # (JSON diagnostic) omits issues already counted through inline_pipelines.
+  # REG_CHIP_COUNT is unchanged; the pipeline dedup in count_live_chips still
+  # excludes legacy chips for those issues via excluded_pipelines.
+  REG_OFFERED_NUMS=""; REG_ON_RC=0
+  REG_OFFERED_NUMS="$(comm -23 \
+    <(printf '%s\n' "$REG_NEW_NUMS" | awk 'NF' | sort -u) \
+    <(printf '%s\n' "$PIPELINE_ISSUE_NUMS" | awk 'NF' | sort -u))" || REG_ON_RC=$?
+  [[ $REG_ON_RC -ne 0 ]] && die_read "could not exclude pipeline issues from registry issue list: $REG_OFFERED_NUMS"
+  REG_NUMS="$REG_OFFERED_NUMS"
+fi
+
+# Source 2b: legacy log (distinct chips, excluding issues the registry holds
+# AND issues already executed by running pipelines — #1285 self-referential fix).
 LOG_CHIP_COUNT=0; LOG_RC=0
-LOG_CHIP_COUNT="$(count_live_chips "$SLUG" "$REG_NUMS")" || LOG_RC=$?
+LOG_CHIP_COUNT="$(count_live_chips "$SLUG" "$REG_NUMS" "$PIPELINE_ISSUE_NUMS")" || LOG_RC=$?
 (( LOG_RC == 0 )) || exit "$LOG_RC"
 [[ "$LOG_CHIP_COUNT" =~ ^[0-9]+$ ]] || LOG_CHIP_COUNT=0
 
@@ -1059,6 +1288,25 @@ case "$MODE" in
     printf '%s\n' "$FREE"
     ;;
   json)
+    # Collect the surviving legacy chip issue numbers for the offered_issue_nums
+    # field (AC#3: the JSON output must identify which issues make up the
+    # offered-work term to explain a FREE=0 reading). This extra call to
+    # count_live_chips_numbers reuses the same globals (OPEN_PR_JSON,
+    # MERGED_PR_JSON) — no additional PR-fetch API calls. It does make one
+    # extra open_among GraphQL call; that is acceptable in the diagnostic mode.
+    LOG_CHIP_ISSUE_NUMS=""; LOG_NUMS_RC=0
+    LOG_CHIP_ISSUE_NUMS="$(count_live_chips_numbers \
+      "$SLUG" "$REG_NUMS" "$PIPELINE_ISSUE_NUMS")" || LOG_NUMS_RC=$?
+    (( LOG_NUMS_RC == 0 )) || exit "$LOG_NUMS_RC"
+    # Union of registry issue numbers and surviving legacy chip issue numbers,
+    # deduplicated and sorted, encoded as a JSON array of integers.
+    OFFERED_ISSUE_NUMS_JSON="[]"; OFFERED_NUMS_RC=0
+    OFFERED_ISSUE_NUMS_JSON="$(printf '%s\n' "$REG_NUMS" "$LOG_CHIP_ISSUE_NUMS" \
+      | awk 'NF && /^[0-9]+$/ {print}' | sort -nu \
+      | jq -Rs '[split("\n")[] | select(length > 0) | tonumber]' 2>&1)" || OFFERED_NUMS_RC=$?
+    if [[ $OFFERED_NUMS_RC -ne 0 ]]; then
+      die_read "could not encode offered_issue_nums as JSON: $OFFERED_ISSUE_NUMS_JSON"
+    fi
     jq -cn \
       --argjson cap "$CAP" \
       --argjson active "$ACTIVE" \
@@ -1068,10 +1316,12 @@ case "$MODE" in
       --argjson pipelines "$PIPELINES" \
       --argjson reg_chip_count "$REG_CHIP_COUNT" \
       --arg cap_source "$CAP_SOURCE" \
+      --argjson offered_issue_nums "$OFFERED_ISSUE_NUMS_JSON" \
       '{cap: $cap, active: $active, free: $free,
         open_prs: $open_prs, live_chips: $chips, inline_pipelines: $pipelines,
         registry_baseline: $reg_chip_count,
-        cap_source: $cap_source}'
+        cap_source: $cap_source,
+        offered_issue_nums: $offered_issue_nums}'
     ;;
   *)
     printf 'CAP=%s ACTIVE=%s FREE=%s\n' "$CAP" "$ACTIVE" "$FREE"
