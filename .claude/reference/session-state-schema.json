@@ -48,6 +48,35 @@
         "scope": null,
         "at": "2026-07-30T18:40:00Z"
       },
+      "_execution_pauses_comment": "Session-scoped direct-launch gates written by execution-pause.sh for /pause and /suspend (issue #1308). Keys are Claude session IDs. active=true blocks Agent, Workflow, Monitor, and background Bash in pause-launch-gate.sh; foreground teardown stays allowed. This gate is independent from repo refill.paused and is cleared only by an explicit pause-resume or suspend-resume. deadline_epoch is the graceful-shutdown ceiling, not an automatic clear time.",
+      "execution_pauses": {
+        "session-example": {
+          "active": true,
+          "command": "pause",
+          "session_id": "session-example",
+          "window_minutes": 5,
+          "deadline_epoch": 1787522700,
+          "at": "2026-08-23T22:00:00Z",
+          "cleared_at": null
+        }
+      },
+      "_background_tasks_comment": "Exact current and historical runtime identities captured by PostToolUse and updated by SubagentStop/TaskStop hooks (issue #1308). task_id is the Claude runtime ID; name is only a display label. running, stopping, and stop_failed are possibly billable and stay live even when stale. Terminal history is preserved so resume is idempotent and can use output_file/recovery_path without duplicating work.",
+      "background_tasks": [
+        {
+          "task_id": "agent-runtime-id",
+          "name": "phase-a-1308",
+          "type": "agent",
+          "session_id": "session-example",
+          "repo_key": "org/repo",
+          "parent_agent_id": null,
+          "work_item": "Issue #1308",
+          "output_file": "/tmp/agent-runtime-id.output",
+          "recovery_path": "/Users/user/repos/my-project/.claude/worktrees/issue-1308",
+          "status": "stopped",
+          "started_at": "2026-08-23T21:45:00Z",
+          "updated_at": "2026-08-23T22:05:00Z"
+        }
+      ],
       "_day_comment": "Continuous PM day-mode loop state for this repo (issue #1194), written ONLY by `/pm day` (its Step 2D). One loop per repo, which is why it sits beside `refill` here rather than at top level. Like `refill` it is INVISIBLE to session-state.sh --session-view, which lifts only .prs and .root_repo out of the repo block before deleting .repos — read it explicitly with --get or an armed loop reports as absent (`/pm` Step 1A.2). `active` is trusted only while `last_tick_at` falls inside max(3 x cadence_effective_minutes, 15m); an `active: true` outside that window is a loop whose session died and is reclaimed, never a reason to refuse a re-arm. `monitor_task_id` + `monitor_generation` are the runtime identity pair: a tick whose --day-generation does not match the recorded one is stale and must exit silently before doing any work. `digest`/`digest_streak` implement scheduling-reliability.md stable-state backoff over the tuple (pipelines_sorted | queue_len | backlog_head | idle_reason), resetting the streak to 0 on change (the /pr-monitor-and-manage convention, not /babysit-pr's 1 — day mode writes nothing polling-backoff-warn.sh reads). `refill_halted` is day mode's OWN automatic halt after `max_pipeline_failures` consecutive blocked pipeline outcomes; it is deliberately NOT `refill.paused`, which is contractually human-written-only, and `/pm` 3.4 requires BOTH clear before refilling. `goal` is the only field carrying user text — encode it with jq --arg, never interpolate. `paused_at` is the resumable stable-frozen marker. Usage-limit park fields (issue #1288): `parked_until` is an ISO timestamp (null when not parked for a limit); `limit_kind` is 'rolling_window' or 'weekly' (null when not parked); `limit_resume_task_id` + `limit_resume_generation` are the identity pair for the auto-wake Monitor (null when no wake is armed or for weekly limits); `consecutive_limit_hits` is the thrash-guard counter, reset to 0 on a successful resume and incremented each time a resume re-hits the limit — at max_limit_hits (3) the loop stays parked permanently. Mechanism: .claude/reference/pm-day-mode.md; ownership decision: .claude/reference/pm-monitoring-decision.md.",
       "day": {
         "active": true,
@@ -77,7 +106,7 @@
       "suspend": {
         "active": true,
         "suspended_at": "2026-08-22T22:10:00Z",
-        "window_minutes": 10,
+        "window_minutes": 15,
         "window_expired": false,
         "landed": [
           {"pr": 1250, "issue": 1249, "at": "2026-08-22T22:14:00Z"}
@@ -96,6 +125,9 @@
         ],
         "monitors_stopped": [
           {"owner": "babysit", "ref": 1251, "task_id": "abc123", "generation": "20260822T221000Z-12345-6789", "stopped": true}
+        ],
+        "background_tasks_stopped": [
+          {"task_id": "agent-runtime-id", "type": "agent", "status": "stopped", "output_file": "/tmp/agent-runtime-id.output", "recovery_path": "/Users/user/repos/my-project/.claude/worktrees/issue-1308"}
         ],
         "refill_paused": true,
         "marker_path": "~/.claude/handoffs/suspend-20260822T221000Z-default.md",

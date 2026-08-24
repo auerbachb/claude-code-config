@@ -106,6 +106,20 @@ From the session view, extract per tracked PR: which phase it is in, which revie
 
 When nothing is tracked, the category is empty — "No in-flight work detected."
 
+## 2a. Exact background-task identities
+
+For `/pause` and `/suspend`, also resolve `background-task-registry.sh` and
+read the invoking Claude session's entries with `--list --session
+"${CLAUDE_SESSION_ID:-default}"`. Extract task ID, logical name, type, status,
+work item, output file, and recovery path. Running/stopping/stop-failed entries
+are possibly billable even when stale; never infer completion from age.
+
+The registry is the recovery inventory, not the sole liveness oracle. Reconcile
+it with Claude Code's runtime task list before reporting a successful shutdown.
+When either source cannot be read, report the category as unreadable rather
+than empty. Separately launched `claude agents` sessions are listed as out of
+scope because the current session does not own their runtime identities.
+
 ## 3. Active polling jobs
 
 Snapshot live scheduled jobs owned by **other** skills via `CronList`, recording `id`, `cron`, `prompt`, and `recurring` for each.

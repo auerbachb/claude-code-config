@@ -1,13 +1,13 @@
 ---
 name: suspend
-description: Use when you are closing your laptop and want to land near-done work before you go, then park everything else at a clean stopping point you can resume from. Unlike /pause (which writes a harness-external document and merges nothing), /suspend actively drives merge-ready PRs to merged, brings in-flight work to a committed boundary, writes machine-readable resume state, and stops persistent Monitors so resume can re-arm them. Triggers on "suspend", "laptop close", "heading out", "park the work", "shutting down".
+description: Use when you are closing your laptop and need every current-session background task stopped at a resumable boundary. Blocks new launches, uses a bounded runway to land safe work, hard-stops leftovers, and writes machine-readable resume state. Triggers on "suspend", "laptop close", "heading out", "park the work", "shutting down".
 triggers:
   - suspend
   - laptop close
   - heading out
   - park the work
   - shutting down
-argument-hint: "[--window Nm] (default: --window 10m; --window 0 skips landing and parks everything)"
+argument-hint: "[--window Nm] (default: --window 15m; --window 0 stops immediately)"
 ---
 
 Land what can land. Park the rest at a deliberate boundary. Write a resume point you can pick up cold.
@@ -16,7 +16,11 @@ Two outputs, in this order: an active wind-down that drives near-done PRs to mer
 
 **This command never relaxes a gate.** `cr-merge-gate.md` Steps 1–1d, 1b and the Step 2 AC verification bind unchanged. The hard stops in `CLAUDE.md` "PR MERGE AUTHORIZATION" (human `CHANGES_REQUESTED` on HEAD, failing/incomplete CI, unresolved threads, unchecked AC, protection-modifying bypass) are hard stops here. The window never makes a borderline PR eligible; it only decides how long to wait on already-eligible ones.
 
-**One parameter: `--window Nm`.** Ten minutes is both the runway for landing and the triage threshold — same number, two roles. A PR awaiting a fresh bot review round is not ten-minute work and falls to `park`; a PR that can merge in ten minutes is exactly what this runway is for. If those two numbers should differ in your use case, that is a two-parameter redesign — say so in the PR, do not silently pick one meaning over the other.
+**One parameter: `--window Nm`.** Fifteen minutes is the default graceful
+shutdown runway and triage threshold; a caller may choose a shorter or longer
+non-negative window. The command stops earlier when all owned work is terminal.
+At the chosen deadline it stops leftovers; it never merely returns while
+billable work continues.
 
 ## Step 0: Resolve helpers and parse arguments
 
@@ -40,14 +44,25 @@ AC_CHECKBOXES_SH=$(resolve_script ac-checkboxes.sh)     || AC_CHECKBOXES_SH=""
 PR_STATE_SH=$(resolve_script pr-state.sh)               || PR_STATE_SH=""
 LOCAL_REVIEW_SH=$(resolve_script local-review.sh)       || LOCAL_REVIEW_SH=""
 CLEAN_BEHIND_SH=$(resolve_script clean-behind-check.sh) || CLEAN_BEHIND_SH=""
+EXECUTION_PAUSE_SH=$(resolve_script execution-pause.sh) || EXECUTION_PAUSE_SH=""
+TASK_REGISTRY_SH=$(resolve_script background-task-registry.sh) || TASK_REGISTRY_SH=""
 ```
+
+Resolve `.claude/reference/background-task-shutdown.md` by the same
+skills-worktree, home, then local precedence and read it in full before Step 1.
 
 An unresolved `session-state.sh` is degraded-but-continue — say so when reporting and carry on, because the marker still gets written. An unresolved `merge-gate.sh` means the landing phase cannot classify PRs reliably; skip landing for all PRs and park them, naming the missing helper in each parked entry's `waiting_on` field.
 
-**Parse `--window Nm`:** extract the integer N from the **first** `--window` argument; default to `10`. `--window 0` means skip landing entirely and park everything. Accept a non-negative integer with an optional trailing `m`; reject non-numeric or negative values. Stop processing `--window` arguments after the first valid value. Compute `T_end` once:
+An unresolved `TASK_REGISTRY_SH`, unreadable shutdown reference, or durable
+registry-failure marker makes the shutdown audit unavailable. Arm every gate
+that can still be armed, skip any claim that no tasks are live, and carry the
+missing control into Step 8 as `INCOMPLETE SHUTDOWN`; never interpret an
+unreadable inventory as an empty one.
+
+**Parse `--window Nm`:** extract the integer N from the **first** `--window` argument; default to `15`. `--window 0` means skip landing and checkpoint time, then stop everything immediately. Accept a non-negative integer with an optional trailing `m`; normalize leading zeroes as decimal, and reject non-numeric, negative, or greater-than-1440-minute values. Stop processing `--window` arguments after the first valid value. Compute `T_end` once:
 
 ```bash
-WINDOW_MINUTES=10
+WINDOW_MINUTES=15
 _WINDOW_SET=false
 _NEXT_IS_WINDOW=false
 for arg in $ARGUMENTS; do
@@ -57,7 +72,11 @@ for arg in $ARGUMENTS; do
       # Strip optional trailing 'm', then validate: must be a non-negative integer
       _RAW="${arg%m}"
       if [[ "$_RAW" =~ ^[0-9]+$ ]]; then
-        WINDOW_MINUTES="$_RAW"
+        WINDOW_MINUTES=$((10#$_RAW))
+        if (( WINDOW_MINUTES > 1440 )); then
+          echo "ERROR: --window must not exceed 1440 minutes." >&2
+          exit 2
+        fi
         _WINDOW_SET=true
       else
         echo "ERROR: --window requires a non-negative integer (got: $arg)" >&2
@@ -76,12 +95,22 @@ fi
 T_END=$(( $(date -u +%s) + WINDOW_MINUTES * 60 ))
 ```
 
-## Step 1: Pause refilling
+## Step 1: Close both launch gates
 
-Verbatim reuse of `/pause` Step 1. Stop launching new work first so nothing new enters the pipeline during the runway:
+Stop every launch path before reading the board so nothing new enters the
+pipeline during the runway:
 
 ```bash
 WINDDOWN_PERSISTED=1
+EXECUTION_GATE_PERSISTED=1
+SESSION_ID="${CLAUDE_SESSION_ID:-default}"
+if [[ -n "$EXECUTION_PAUSE_SH" ]]; then
+  "$EXECUTION_PAUSE_SH" --activate --session "$SESSION_ID" \
+    --command suspend --window-minutes "$WINDOW_MINUTES" \
+    || EXECUTION_GATE_PERSISTED=0
+else
+  EXECUTION_GATE_PERSISTED=0
+fi
 if [[ -n "$SESSION_STATE_SH" ]]; then
   REPO_KEY=$("$SESSION_STATE_SH" --repo-key)
   NOW=$(date -u +%FT%TZ)
@@ -93,9 +122,12 @@ else
 fi
 ```
 
-**The two-form report rule from `/pause` Step 2 binds here.** `WINDDOWN_PERSISTED=0` means the pause was not written — say that in plain words when you print the wind-down header in Step 8. Never print "Stopped: new work paused" after a failed write.
+**The truthful report rule from `/pause` Step 2 binds here.** Either
+`WINDDOWN_PERSISTED=0` or `EXECUTION_GATE_PERSISTED=0` makes the final result
+`INCOMPLETE SHUTDOWN`. Name the failed gate explicitly and never print
+`Stopped: new work paused` or `Suspend complete` after either failed write.
 
-## Step 2: Stop this session's Monitors
+## Step 2: Stop passive Monitors, checkpoint productive work
 
 Stop persistent Monitors owned by this session **before** the landing phase. This makes landing single-writer: a live `/babysit-pr` tick can dispatch `/fixpr` on the same PR `/suspend` is about to drive through `/wrap`, and the two would race. The stop comes first so landing is orderly.
 
@@ -114,7 +146,13 @@ Enumerate Monitors in this order and record the result of each stop:
 
 **A failed `TaskStop` is recorded as `stopped: false` and reported in Step 8.** Never claim a Monitor was stopped when the stop itself was not confirmed. Stopped Monitors are recorded in the `monitors_stopped` array of the suspend state block (Step 7).
 
-**Running subagents are not killed.** They reach their own stopping point and write their own handoffs — the same rule as `/pause` Step 1. Record what each was doing and where its handoff file is in the `parked` array.
+After the specialized Monitor teardown above, follow
+`background-task-shutdown.md` for every registry entry in this session. Give
+productive agents, workflows, and background commands the remaining bounded
+window to checkpoint; stop them as soon as they finish, and hard-stop exact
+remaining IDs at `T_END`. Record output, handoff, worktree, and recovery paths
+in `parked`. A failed stop keeps the gates closed and makes the result
+incomplete.
 
 ## Step 3: Collect the board
 
@@ -161,8 +199,8 @@ Example output:
 ```
 === Suspend triage ===
 [land]  PR #1248 — gate met on current HEAD (CodeRabbit APPROVED, CI green, all threads resolved)
-[park]  PR #1251 — awaiting CodeRabbit review round (not ten-minute work)
-[park]  Subagent phase-a-fixer PR #1249 — subagents cannot be driven from outside; handoff at ~/.claude/handoffs/.../pr-1249-handoff.json
+[park]  PR #1251 — awaiting CodeRabbit review round (not fifteen-minute work)
+[park]  Subagent phase-a-fixer PR #1249 — checkpoint then stop; handoff at ~/.claude/handoffs/.../pr-1249-handoff.json
 ```
 
 ## Step 5: Land phase (skipped entirely when `--window 0`)
@@ -171,10 +209,11 @@ Serial, not parallel — two concurrent `/wrap` runs against one repo race on ma
 
 **The window is a budget, not a promise.** Before dispatching each `land` unit, check `$(date -u +%s)` against `T_END`. A unit that has not reached `merged` by `T_END` is reclassified `park` and recorded at its actual state — never left running on the assumption the user is still watching.
 
-For each `land` unit, dispatch `/wrap`. Monitor its outcome. If the window expires while a `/wrap` is still in flight:
-- **Do not kill the in-flight `/wrap`.** Killing mid-merge produces exactly the unrecorded state this command exists to prevent.
-- Stop *waiting* on it, reclassify the unit `park`, and record `"wrap was in flight at window expiry; it may have completed after the window — re-read GitHub at resume to confirm"`.
-- Resume's Step 4 re-reads GitHub per-PR before printing, so a merge that landed after the window shows up as landed. Nothing is left running on the assumption the user is still watching.
+For each `land` unit, dispatch `/wrap`. Monitor its outcome. If the window
+expires while a `/wrap` is still in flight, request its checkpoint, record its
+actual boundary, then hard-stop its exact runtime ID via the shared shutdown
+contract. Reclassify the unit `park`; `/suspend-resume` re-reads GitHub before
+deciding whether it still needs work.
 
 A `land` unit that hits a hard stop during `/wrap` (human `CHANGES_REQUESTED`, protection-modifying bypass, etc.) is reclassified `park` immediately and the hard stop is named in its `stopped_at` field.
 
@@ -188,7 +227,9 @@ Bring each `park` unit to a deliberate boundary **before** recording it. Per uni
 
 No half-applied review round: either a round's fixes are all committed and its threads replied, or the entry records exactly which findings were applied and which were not.
 
-For running subagents: record what each was doing and where its handoff file lives. Do not interrupt them.
+For running subagents: record what each was doing, its exact runtime ID, and
+where its handoff/output/worktree lives. They must be confirmed terminal before
+Step 8 can report completion.
 
 ## Step 7: Persist the suspend state
 
@@ -226,7 +267,7 @@ else
 fi
 ```
 
-The marker is also the fallback index for `/suspend-resume`: if `session-state.sh` is unreadable at resume, the companion globs `suspend-*.md` and takes the newest matching the current repo key. Its content mirrors the `suspend` state block in human-readable form: what landed, what is parked, each parked unit's stopping point and next move, and the refill pause status with how to lift it.
+The marker is also the fallback index for `/suspend-resume`: if `session-state.sh` is unreadable at resume, the companion globs `suspend-*.md` and takes the newest matching the current repo key. Its content mirrors the `suspend` state block in human-readable form: what landed, what is parked, each parked unit's stopping point and next move, exact stopped-task recovery records, and the refill pause status with how to lift it.
 
 ### 7b: `session-state.sh --set` the `.repos[<key>].suspend` block
 
@@ -245,12 +286,14 @@ SUSPEND_JSON=$(jq -n \
   --argjson landed "$LANDED_JSON" \
   --argjson parked "$PARKED_JSON" \
   --argjson monitors_stopped "$MONITORS_STOPPED_JSON" \
+  --argjson background_tasks_stopped "$BACKGROUND_TASKS_STOPPED_JSON" \
   --argjson refill_paused "$REFILL_PAUSED_BOOL" \
   --arg marker_path "$MARKER_PATH" \
   '{active:$active, suspended_at:$suspended_at,
     window_minutes:$window_minutes, window_expired:$window_expired,
     landed:$landed, parked:$parked,
     monitors_stopped:$monitors_stopped,
+    background_tasks_stopped:$background_tasks_stopped,
     refill_paused:$refill_paused, marker_path:$marker_path,
     resumed_at:null}')
 "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].suspend=$SUSPEND_JSON"
@@ -264,7 +307,7 @@ If `session-state.sh` was not resolved in Step 0, skip this write and set `SUSPE
 Compact, per `CLAUDE.md` #3. No phase-by-phase narration, no progress tables.
 
 ```
-=== Suspend complete ===
+=== Suspend <complete | INCOMPLETE SHUTDOWN> ===
 Stopped: <WINDDOWN_PERSISTED=1: "refill paused (lift with: tell Claude 'resume refilling' in the next session)">
          <WINDDOWN_PERSISTED=0: "COULD NOT record the refill pause — another thread may still start new work">
 
@@ -278,6 +321,7 @@ Parked (<N> units):
   <nothing parked> if the list is empty
 
 Monitors stopped: <N stopped of M total; any not-stopped named here>
+Background tasks stopped: <N stopped of M total; exact unresolved IDs named here>
 
 Resume state: <SUSPEND_PERSISTED=0: "COULD NOT write suspend state to session-state.json — resume will fall back to the marker file">
               <marker at $MARKER_PATH>
@@ -285,12 +329,18 @@ Resume state: <SUSPEND_PERSISTED=0: "COULD NOT write suspend state to session-st
 
 The `Stopped:` line has exactly two forms, matching `/pause` Step 2's rule. After a failed refill-pause write, never print the first form — that would report something untrue about the one side effect the user is counting on.
 
-Monitors that were not stopped (`stopped: false`) are named explicitly so the user knows which ones to stop manually if needed.
+Monitors or background tasks that were not stopped are named explicitly. Never
+print `Suspend complete` while either the registry or runtime audit has a live
+owned task or could not be read, or while `EXECUTION_GATE_PERSISTED != 1`.
+An execution-gate activation failure must be reported even when every task that
+was already visible stopped successfully, because a concurrent new launch
+could have escaped the wind-down.
 
 ## What this command is not
 
 - **A gate relaxer.** Every merge gate requirement that applies outside this command applies inside it. The window changes the deadline, never the standard.
-- **A subagent killer.** Running subagents are left running. The command records what they were doing and where their handoff files live.
+- **A work deleter.** Hard stops preserve branches, worktrees, logs, handoffs,
+  outputs, and recovery metadata for `/suspend-resume`.
 - **A second `/pause`.** `/pause` produces a harness-external document for a reader outside this harness and merges nothing. This command produces internal, machine-readable resume state and actively lands eligible work. They share Step 0 resolution, the refill-pause write, and the two-form report rule — and nothing else.
 
 ## Relationship to the other wind-down commands
@@ -298,5 +348,5 @@ Monitors that were not stopped (`stopped: false`) are named explicitly so the us
 | Command | Ends | Produces |
 |---|---|---|
 | `/wrap` | one pull request | a merge, follow-up issues, lessons |
-| `/pause` | a working session (budget thin) | a document for a reader **outside** this harness |
-| `/suspend` | a working session (laptop close) | machine-readable resume state + landed PRs |
+| `/pause` | current-session execution (budget thin; 5m default) | portable handoff + stopped-task recovery data |
+| `/suspend` | current-session execution (laptop close; 15m default) | machine-readable resume state + landed PRs |

@@ -103,6 +103,16 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "Agent|Workflow|Monitor|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/pause-launch-gate.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {
@@ -236,6 +246,15 @@
       }
     ],
     "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/background-task-complete.sh",
+            "timeout": 5
+          }
+        ]
+      },
       {
         "hooks": [
           {

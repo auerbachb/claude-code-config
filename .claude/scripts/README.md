@@ -79,6 +79,8 @@ Scripts that read and write `~/.claude/session-state.json` and per-PR handoff fi
 | Script | Purpose |
 |--------|---------|
 | `session-state.sh` | Canonical read/write helper for `~/.claude/session-state.json` (atomic, scoped, field-typed) |
+| `background-task-registry.sh` | Locked exact-runtime-ID registry for current and historical Agent, Bash, Monitor, and Workflow tasks |
+| `execution-pause.sh` | Arm, inspect, or explicitly clear a repo/session-scoped background-launch gate |
 | `state-lock.sh` | *(library — source, do not execute)* Portable mkdir-based advisory lock for session-state writes |
 | `session-state-audit.sh` | Audit and guarded repair of `~/.claude/session-state.json` |
 | `handoff-state.sh` | Locked read/write helper for per-repo handoff files (`~/.claude/handoffs/`) |
@@ -188,6 +190,7 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | `backlog-health.test.sh` | Tests for `backlog-health.sh` |
 | `backlog-staleness.test.sh` | Tests for `backlog-staleness.sh` |
 | `bgwork-ceiling.test.sh` | Tests for `bgwork-ceiling.sh` |
+| `background-task-registry.test.sh` | Tests exact-ID registration, terminal transitions, stale fail-closed behavior, and concurrent writes |
 | `active-work-cap.test.sh` | Tests for `active-work-cap.sh` — cap resolution, the three count sources, and fail-loud read errors |
 | `check-runs-dedup.test.sh` | Tests for `check-runs-dedup.sh` |
 | `churn-hotspots.test.sh` | Tests for `churn-hotspots.sh` |

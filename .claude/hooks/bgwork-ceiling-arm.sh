@@ -35,6 +35,7 @@ json_field() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CEILING_SH="${SCRIPT_DIR%/hooks}/scripts/bgwork-ceiling.sh"
 [[ -x "$CEILING_SH" ]] || exit 0
+REGISTRY_SH="${SCRIPT_DIR%/hooks}/scripts/background-task-registry.sh"
 
 SESSION_ID=$(json_field '.session_id')
 SESSION_ID="${SESSION_ID:-${CLAUDE_SESSION_ID:-default}}"
@@ -42,6 +43,83 @@ SESSION_ID="${SESSION_ID:-${CLAUDE_SESSION_ID:-default}}"
 TOOL_NAME=$(json_field '.tool_name')
 COMMAND=$(json_field '.tool_input.command')
 BACKGROUNDED=$(json_field '.tool_input.run_in_background')
+CWD=$(json_field '.cwd')
+PARENT_AGENT_ID=$(json_field '.agent_id')
+TASK_NAME=$(json_field '.tool_input.name // .tool_input.description')
+OUTPUT_FILE=$(json_field '.tool_response.outputFile // .tool_response.output_file')
+RECOVERY_PATH=$(json_field '.tool_response.worktreePath // .tool_response.worktree_path')
+
+REGISTRY_FAILURE_DIR="${CLAUDE_BACKGROUND_TASK_FAILURE_DIR:-${CLAUDE_BGWORK_MARKER_DIR:-/tmp}}"
+SAFE_SESSION_ID="${SESSION_ID//[^[:alnum:]_.-]/_}"
+REGISTRY_FAILURE_MARKER="$REGISTRY_FAILURE_DIR/claude-background-registry-failed-${SAFE_SESSION_ID:-default}"
+
+record_registry_failure() {
+  local operation="$1" task_id="$2" rc="$3"
+  mkdir -p "$REGISTRY_FAILURE_DIR" 2>/dev/null || return 0
+  printf '%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$operation" "$task_id" "$rc" \
+    >> "$REGISTRY_FAILURE_MARKER" 2>/dev/null || true
+}
+
+register_runtime_task() {
+  [[ -x "$REGISTRY_SH" && -n "$1" && -n "$2" ]] || return 0
+  local task_id="$1" task_type="$2" name="${3:-$2:$1}"
+  local -a args
+  args=(--register --session "$SESSION_ID" --task-id "$task_id"
+        --type "$task_type" --name "$name")
+  [[ -n "$PARENT_AGENT_ID" ]] && args+=(--parent-agent "$PARENT_AGENT_ID")
+  [[ -n "$OUTPUT_FILE" ]] && args+=(--output-file "$OUTPUT_FILE")
+  [[ -n "$RECOVERY_PATH" ]] && args+=(--recovery-path "$RECOVERY_PATH")
+  local rc=0
+  if [[ -n "$CWD" && -d "$CWD" ]]; then
+    (cd "$CWD" && "$REGISTRY_SH" "${args[@]}") >/dev/null 2>&1 || rc=$?
+  else
+    "$REGISTRY_SH" "${args[@]}" >/dev/null 2>&1 || rc=$?
+  fi
+  (( rc == 0 )) || record_registry_failure register "$task_id" "$rc"
+}
+
+transition_runtime_task() {
+  [[ -x "$REGISTRY_SH" && -n "$1" ]] || return 0
+  local task_id="$1" status="$2"
+  local -a args
+  args=(--transition --session "$SESSION_ID" --task-id "$task_id" --status "$status")
+  local rc=0
+  if [[ -n "$CWD" && -d "$CWD" ]]; then
+    (cd "$CWD" && "$REGISTRY_SH" "${args[@]}") >/dev/null 2>&1 || rc=$?
+  else
+    "$REGISTRY_SH" "${args[@]}" >/dev/null 2>&1 || rc=$?
+  fi
+  (( rc == 0 )) || record_registry_failure transition "$task_id" "$rc"
+}
+
+# Capture the exact runtime identity while the structured tool result is still
+# available. The old marker recorded only "Agent"/"Bash"/etc., which was enough
+# for liveness but could not later drive TaskStop.
+case "$TOOL_NAME" in
+  Agent)
+    RUNTIME_TASK_ID=$(json_field '.tool_response.agentId')
+    [[ -n "$RUNTIME_TASK_ID" ]] && register_runtime_task "$RUNTIME_TASK_ID" agent "${TASK_NAME:-agent:$RUNTIME_TASK_ID}"
+    ;;
+  Workflow)
+    RUNTIME_TASK_ID=$(json_field '.tool_response.taskId // .tool_response.backgroundTaskId // .tool_response.workflowId')
+    [[ -n "$RUNTIME_TASK_ID" ]] && register_runtime_task "$RUNTIME_TASK_ID" workflow "${TASK_NAME:-workflow:$RUNTIME_TASK_ID}"
+    ;;
+  Monitor)
+    RUNTIME_TASK_ID=$(json_field '.tool_response.taskId')
+    [[ -n "$RUNTIME_TASK_ID" ]] && register_runtime_task "$RUNTIME_TASK_ID" monitor "${TASK_NAME:-monitor:$RUNTIME_TASK_ID}"
+    ;;
+  Bash)
+    if [[ "$BACKGROUNDED" == true ]]; then
+      RUNTIME_TASK_ID=$(json_field '.tool_response.backgroundTaskId')
+      [[ -n "$RUNTIME_TASK_ID" ]] && register_runtime_task "$RUNTIME_TASK_ID" bash "${TASK_NAME:-bash:$RUNTIME_TASK_ID}"
+    fi
+    ;;
+  TaskStop)
+    STOPPED_TASK_ID=$(json_field '.tool_response.task_id // .tool_response.taskId')
+    [[ -z "$STOPPED_TASK_ID" ]] && STOPPED_TASK_ID=$(json_field '.tool_input.task_id // .tool_input.taskId')
+    [[ -n "$STOPPED_TASK_ID" ]] && transition_runtime_task "$STOPPED_TASK_ID" stopped
+    ;;
+esac
 
 # --- 1. Is this call arming the ceiling watch? -------------------------------
 # Matched on the command text rather than the tool name, so arming still
