@@ -59,6 +59,45 @@ set -e
 "$PAUSE" --repo _unknown --clear --session "$SID"
 ok "origin-less payload preserves _unknown repository isolation"
 
+# A valid payload cwd that cannot be resolved is still authoritative: stale
+# inherited scope must not be consulted after the lookup itself fails.
+FAILED_RESOLVE_ROOT="$TMP/failed-resolve/.claude"
+mkdir -p "$FAILED_RESOLVE_ROOT/hooks" "$FAILED_RESOLVE_ROOT/scripts"
+cp "$ARM" "$FAILED_RESOLVE_ROOT/hooks/bgwork-ceiling-arm.sh"
+cp "$COMPLETE" "$FAILED_RESOLVE_ROOT/hooks/background-task-complete.sh"
+cp "$GATE" "$FAILED_RESOLVE_ROOT/hooks/pause-launch-gate.sh"
+cp "$REGISTRY" "$FAILED_RESOLVE_ROOT/scripts/background-task-registry.sh"
+cp "$ROOT/.claude/scripts/state-lock.sh" "$FAILED_RESOLVE_ROOT/scripts/state-lock.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 4' > "$FAILED_RESOLVE_ROOT/scripts/session-state.sh"
+chmod +x "$FAILED_RESOLVE_ROOT/scripts/session-state.sh"
+jq -nc --arg sid "$SID" --arg cwd "$CWD" \
+  '{session_id:$sid,cwd:$cwd,tool_name:"Agent",tool_input:{name:"failed-resolve"},tool_response:{agentId:"failed-resolve-runtime"}}' \
+  | CLAUDE_SESSION_REPO=other/checkout "$FAILED_RESOLVE_ROOT/hooks/bgwork-ceiling-arm.sh" >/dev/null
+[[ "$("$REGISTRY" --repo _unknown --list --session "$SID" | jq -r '.[] | select(.task_id=="failed-resolve-runtime") | .status')" == "running" ]] || \
+  fail "failed payload lookup fell back to inherited scope during registration"
+printf '%s' "$(jq -nc --arg sid "$SID" --arg cwd "$CWD" \
+  '{session_id:$sid,cwd:$cwd,agent_id:"failed-resolve-runtime",hook_event_name:"SubagentStop",status:"completed"}')" \
+  | CLAUDE_SESSION_REPO=other/checkout "$FAILED_RESOLVE_ROOT/hooks/background-task-complete.sh"
+[[ "$("$REGISTRY" --repo _unknown --list --session "$SID" | jq -r '.[] | select(.task_id=="failed-resolve-runtime") | .status')" == "done" ]] || \
+  fail "failed payload lookup fell back to inherited scope during completion"
+PAUSE_CAPTURE="$TMP/failed-resolve-pause-args"
+# shellcheck disable=SC2016 # Generate a stub that expands these at runtime.
+printf '%s\n' '#!/usr/bin/env bash' \
+  'printf "%s\n" "$*" > "$PAUSE_CAPTURE"' \
+  'printf "active\n"' > "$FAILED_RESOLVE_ROOT/scripts/execution-pause.sh"
+chmod +x "$FAILED_RESOLVE_ROOT/scripts/execution-pause.sh"
+set +e
+jq -nc --arg sid "$SID" --arg cwd "$CWD" \
+  '{session_id:$sid,cwd:$cwd,tool_name:"Agent",tool_input:{}}' \
+  | CLAUDE_SESSION_REPO=other/checkout PAUSE_CAPTURE="$PAUSE_CAPTURE" \
+    "$FAILED_RESOLVE_ROOT/hooks/pause-launch-gate.sh" >/dev/null 2>&1
+failed_resolve_gate_rc=$?
+set -e
+[[ "$failed_resolve_gate_rc" == 2 ]] || fail "failed payload lookup did not keep launch gate closed"
+grep -Fq -- '--repo _unknown' "$PAUSE_CAPTURE" || \
+  fail "failed payload lookup passed inherited repo to launch gate"
+ok "failed payload lookup remains isolated from inherited repository scope"
+
 BAD_MARKER_PATH="$TMP/not-a-marker-directory"
 printf 'occupied\n' > "$BAD_MARKER_PATH"
 set +e
@@ -71,6 +110,28 @@ set -e
 [[ "$("$PAUSE" --repo "$REPO" --status --session marker-write-failure)" == inactive ]] || \
   fail "failed marker publication left pause state active without durable evidence"
 ok "activation publishes durable marker evidence before active state"
+
+RM_STUB_BIN="$TMP/rm-stub"
+mkdir -p "$RM_STUB_BIN"
+# shellcheck disable=SC2016 # Generate a stub that inspects its runtime argv.
+printf '%s\n' '#!/usr/bin/env bash' \
+  'for arg in "$@"; do' \
+  '  case "$arg" in *claude-execution-pause-*-marker-remove-failure) exit 1 ;; esac' \
+  'done' \
+  'exec /bin/rm "$@"' > "$RM_STUB_BIN/rm"
+chmod +x "$RM_STUB_BIN/rm"
+"$PAUSE" --repo "$REPO" --activate --session marker-remove-failure \
+  --command pause --window-minutes 5
+set +e
+PATH="$RM_STUB_BIN:$PATH" "$PAUSE" --repo "$REPO" --clear \
+  --session marker-remove-failure >/dev/null 2>&1
+marker_remove_rc=$?
+set -e
+[[ "$marker_remove_rc" == 5 ]] || fail "marker-removal failure was not surfaced"
+[[ "$("$PAUSE" --repo "$REPO" --status --session marker-remove-failure)" == active ]] || \
+  fail "surviving marker did not remain authoritative after incomplete clear"
+"$PAUSE" --repo "$REPO" --clear --session marker-remove-failure
+ok "surviving marker keeps an incomplete clear fail-closed"
 
 # A partial installation must still honor positive pause evidence even when the
 # helper disappeared after activation.
@@ -152,6 +213,10 @@ post "$(jq -nc --arg sid "$SID" --arg cwd "$CWD" \
   '{session_id:$sid,cwd:$cwd,tool_name:"TaskStop",tool_input:{task_id:"monitor-runtime"},tool_response:{task_id:"monitor-runtime",task_type:"monitor"}}')"
 [[ "$("$REGISTRY" --repo "$REPO" --list --session "$SID" | jq -r '.[] | select(.task_id=="monitor-runtime") | .status')" == stopped ]] || \
   fail "TaskStop did not transition exact monitor"
+post "$(jq -nc --arg sid "$SID" --arg cwd "$CWD" \
+  '{session_id:$sid,cwd:$cwd,tool_name:"TaskStop",tool_input:{task_id:"bash-runtime"},tool_response:{error:"still running"}}')"
+[[ "$("$REGISTRY" --repo "$REPO" --list --session "$SID" | jq -r '.[] | select(.task_id=="bash-runtime") | .status')" == stop_failed ]] || \
+  fail "failed TaskStop hid a possibly running task"
 ok "SubagentStop and TaskStop make exact registry entries terminal"
 
 NO_CEILING_ROOT="$TMP/no-ceiling"
@@ -171,15 +236,18 @@ ok "runtime registration survives a missing silence-ceiling helper"
 # still waiting inside the 30s default lock contract.
 STATE_FILE="$HOME/.claude/session-state.json"
 LOCK_DIR="$STATE_FILE.lock"
-mkdir "$LOCK_DIR"
-{
-  printf 'pid=%s\n' "$$"
-  printf 'host=%s\n' "${HOSTNAME:-$(hostname)}"
-  printf 'epoch=%s\n' "$(date +%s)"
-  printf 'started=%s\n' "$(date -u +%FT%TZ)"
-  printf 'cmd=test\n'
-  printf 'token=contention-test\n'
-} > "$LOCK_DIR/owner"
+hold_state_lock() {
+  mkdir "$LOCK_DIR"
+  {
+    printf 'pid=%s\n' "$$"
+    printf 'host=%s\n' "${HOSTNAME:-$(hostname)}"
+    printf 'epoch=%s\n' "$(date +%s)"
+    printf 'started=%s\n' "$(date -u +%FT%TZ)"
+    printf 'cmd=test\n'
+    printf 'token=contention-test\n'
+  } > "$LOCK_DIR/owner"
+}
+hold_state_lock
 SECONDS=0
 post "$(jq -nc --arg sid "$SID" --arg cwd "$CWD" \
   '{session_id:$sid,cwd:$cwd,tool_name:"Agent",tool_input:{name:"contended"},tool_response:{agentId:"contended-runtime"}}')"
@@ -189,7 +257,22 @@ rm -rf "$LOCK_DIR"
 FAILURE_MARKER="$CLAUDE_BGWORK_MARKER_DIR/claude-background-registry-failed-$SID"
 grep -Fq $'\tregister\tcontended-runtime\t6' "$FAILURE_MARKER" || \
   fail "registry contention did not leave durable audit evidence"
-ok "registry lock contention records failure within the hook timeout"
+
+post "$(jq -nc --arg sid "$SID" --arg cwd "$CWD" \
+  '{session_id:$sid,cwd:$cwd,tool_name:"Agent",tool_input:{name:"terminal-contention"},tool_response:{agentId:"terminal-contention-runtime"}}')"
+hold_state_lock
+SECONDS=0
+printf '%s' "$(jq -nc --arg sid "$SID" --arg cwd "$CWD" \
+  '{session_id:$sid,cwd:$cwd,agent_id:"terminal-contention-runtime",hook_event_name:"SubagentStop",status:"completed"}')" \
+  | "$COMPLETE"
+terminal_contention_elapsed=$SECONDS
+rm -rf "$LOCK_DIR"
+[[ "$terminal_contention_elapsed" -lt 5 ]] || fail "SubagentStop contention outlived its hook timeout budget"
+grep -Fq $'\ttransition\tterminal-contention-runtime\t6' "$FAILURE_MARKER" || \
+  fail "SubagentStop contention did not leave durable audit evidence"
+[[ "$("$REGISTRY" --repo "$REPO" --list --session "$SID" | jq -r '.[] | select(.task_id=="terminal-contention-runtime") | .status')" == "running" ]] || \
+  fail "failed terminal transition incorrectly changed task lifecycle"
+ok "registry lock contention records launch and terminal failures within hook budgets"
 
 # If state becomes unreadable after activation, the positive marker keeps the
 # gate closed. A random parse failure without such a marker stays fail-open.

@@ -52,11 +52,12 @@ RECOVERY_PATH=$(json_field '.tool_response.worktreePath // .tool_response.worktr
 resolve_payload_repo() {
   local key="" payload_examined=0
   if [[ -n "$CWD" && -d "$CWD" && -x "$SESSION_STATE_SH" ]]; then
+    payload_examined=1
     if key="$(cd "$CWD" && unset CLAUDE_SESSION_REPO && \
       "$SESSION_STATE_SH" --repo-key 2>/dev/null)"; then
-      payload_examined=1
+      :
     else
-      key=""
+      key=_unknown
     fi
   fi
   if [[ -z "$key" && "$payload_examined" == 0 ]]; then
@@ -107,9 +108,11 @@ register_runtime_task() {
   [[ -n "$RECOVERY_PATH" ]] && args+=(--recovery-path "$RECOVERY_PATH")
   local rc=0
   if [[ -n "$CWD" && -d "$CWD" ]]; then
-    (cd "$CWD" && CLAUDE_STATE_LOCK_TIMEOUT=3 "$REGISTRY_SH" "${args[@]}") >/dev/null 2>&1 || rc=$?
+    (cd "$CWD" && CLAUDE_STATE_LOCK_TIMEOUT=3 CLAUDE_STATE_RMW_MAX_RETRY=0 \
+      "$REGISTRY_SH" "${args[@]}") >/dev/null 2>&1 || rc=$?
   else
-    CLAUDE_STATE_LOCK_TIMEOUT=3 "$REGISTRY_SH" "${args[@]}" >/dev/null 2>&1 || rc=$?
+    CLAUDE_STATE_LOCK_TIMEOUT=3 CLAUDE_STATE_RMW_MAX_RETRY=0 \
+      "$REGISTRY_SH" "${args[@]}" >/dev/null 2>&1 || rc=$?
   fi
   (( rc == 0 )) || record_registry_failure register "$task_id" "$rc"
 }
@@ -125,9 +128,11 @@ transition_runtime_task() {
   args=(--repo "$REPO_KEY" --transition --session "$SESSION_ID" --task-id "$task_id" --status "$status")
   local rc=0
   if [[ -n "$CWD" && -d "$CWD" ]]; then
-    (cd "$CWD" && CLAUDE_STATE_LOCK_TIMEOUT=3 "$REGISTRY_SH" "${args[@]}") >/dev/null 2>&1 || rc=$?
+    (cd "$CWD" && CLAUDE_STATE_LOCK_TIMEOUT=3 CLAUDE_STATE_RMW_MAX_RETRY=0 \
+      "$REGISTRY_SH" "${args[@]}") >/dev/null 2>&1 || rc=$?
   else
-    CLAUDE_STATE_LOCK_TIMEOUT=3 "$REGISTRY_SH" "${args[@]}" >/dev/null 2>&1 || rc=$?
+    CLAUDE_STATE_LOCK_TIMEOUT=3 CLAUDE_STATE_RMW_MAX_RETRY=0 \
+      "$REGISTRY_SH" "${args[@]}" >/dev/null 2>&1 || rc=$?
   fi
   (( rc == 0 )) || record_registry_failure transition "$task_id" "$rc"
 }
@@ -156,8 +161,14 @@ case "$TOOL_NAME" in
     ;;
   TaskStop)
     STOPPED_TASK_ID=$(json_field '.tool_response.task_id // .tool_response.taskId')
-    [[ -z "$STOPPED_TASK_ID" ]] && STOPPED_TASK_ID=$(json_field '.tool_input.task_id // .tool_input.taskId')
-    [[ -n "$STOPPED_TASK_ID" ]] && transition_runtime_task "$STOPPED_TASK_ID" stopped
+    REQUESTED_TASK_ID=$(json_field '.tool_input.task_id // .tool_input.taskId')
+    STOP_ERROR=$(json_field '.tool_response.error // .tool_response.errorMessage')
+    STOP_STATUS=$(json_field '.tool_response.status')
+    if [[ -n "$STOPPED_TASK_ID" && -z "$STOP_ERROR" && "$STOP_STATUS" != failed && "$STOP_STATUS" != error ]]; then
+      transition_runtime_task "$STOPPED_TASK_ID" stopped
+    elif [[ -n "$REQUESTED_TASK_ID" ]]; then
+      transition_runtime_task "$REQUESTED_TASK_ID" stop_failed
+    fi
     ;;
 esac
 

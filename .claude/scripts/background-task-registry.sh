@@ -11,7 +11,7 @@
 #       [--parent-agent ID] [--output-file PATH] [--recovery-path PATH]
 #       [--work-item TEXT]
 #   background-task-registry.sh [--repo owner/name] --transition --session ID
-#       --task-id ID --status running|stopping|stopped|done|failed|rearmed|abandoned
+#       --task-id ID --status running|stopping|stopped|done|failed|stop_failed|rearmed|abandoned
 #   background-task-registry.sh [--repo owner/name] --list [--session ID]
 #       [--status STATUS] [--live]
 #   background-task-registry.sh [--repo owner/name] --count [--session ID]

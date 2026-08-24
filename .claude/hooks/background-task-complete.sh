@@ -28,11 +28,12 @@ FAILURE_FALLBACK="${HOME:-/tmp}/.claude/claude-background-registry-failed-${SAFE
 resolve_payload_repo() {
   local key="" payload_examined=0
   if [[ -n "$CWD" && -d "$CWD" && -x "$SESSION_STATE_SH" ]]; then
+    payload_examined=1
     if key="$(cd "$CWD" && unset CLAUDE_SESSION_REPO && \
       "$SESSION_STATE_SH" --repo-key 2>/dev/null)"; then
-      payload_examined=1
+      :
     else
-      key=""
+      key=_unknown
     fi
   fi
   if [[ -z "$key" && "$payload_examined" == 0 ]]; then
@@ -65,10 +66,12 @@ if [[ ! -x "$REGISTRY_SH" ]]; then
 fi
 RC=0
 if [[ -n "$CWD" && -d "$CWD" ]]; then
-  (cd "$CWD" && "$REGISTRY_SH" --repo "$REPO_KEY" --transition --session "$SESSION_ID" \
+  (cd "$CWD" && CLAUDE_STATE_LOCK_TIMEOUT=3 CLAUDE_STATE_RMW_MAX_RETRY=0 \
+    "$REGISTRY_SH" --repo "$REPO_KEY" --transition --session "$SESSION_ID" \
     --task-id "$AGENT_ID" --status "$TARGET") >/dev/null 2>&1 || RC=$?
 else
-  "$REGISTRY_SH" --repo "$REPO_KEY" --transition --session "$SESSION_ID" --task-id "$AGENT_ID" \
+  CLAUDE_STATE_LOCK_TIMEOUT=3 CLAUDE_STATE_RMW_MAX_RETRY=0 \
+    "$REGISTRY_SH" --repo "$REPO_KEY" --transition --session "$SESSION_ID" --task-id "$AGENT_ID" \
     --status "$TARGET" >/dev/null 2>&1 || RC=$?
 fi
 if (( RC != 0 )); then

@@ -28,11 +28,12 @@ SESSION_STATE_SH="${SCRIPT_DIR%/hooks}/scripts/session-state.sh"
 resolve_payload_repo() {
   local key="" payload_examined=0
   if [[ -n "$CWD" && -d "$CWD" && -x "$SESSION_STATE_SH" ]]; then
+    payload_examined=1
     if key="$(cd "$CWD" && unset CLAUDE_SESSION_REPO && \
       "$SESSION_STATE_SH" --repo-key 2>/dev/null)"; then
-      payload_examined=1
+      :
     else
-      key=""
+      key=_unknown
     fi
   fi
   if [[ -z "$key" && "$payload_examined" == 0 ]]; then

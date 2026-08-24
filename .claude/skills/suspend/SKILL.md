@@ -323,7 +323,7 @@ Parked (<N> units):
 Monitors stopped: <N stopped of M total; any not-stopped named here>
 Background tasks stopped: <N stopped of M total; exact unresolved IDs named here>
 
-Resume state: <SUSPEND_PERSISTED=0: "COULD NOT write suspend state to session-state.json — resume will fall back to the marker file">
+Resume state: <SUSPEND_PERSISTED!=0: "COULD NOT write suspend state to session-state.json — resume will fall back to the marker file">
               <marker at $MARKER_PATH>
 ```
 
@@ -332,6 +332,9 @@ The `Stopped:` line has exactly two forms, matching `/pause` Step 2's rule. Afte
 Monitors or background tasks that were not stopped are named explicitly. Never
 print `Suspend complete` while either the registry or runtime audit has a live
 owned task or could not be read, or while `EXECUTION_GATE_PERSISTED != 1`.
+Suspend-state persistence with `SUSPEND_PERSISTED != 0` also selects `INCOMPLETE SHUTDOWN`;
+the marker remains the recovery source, but the report
+must not claim the machine-readable resume state was stored successfully.
 An execution-gate activation failure must be reported even when every task that
 was already visible stopped successfully, because a concurrent new launch
 could have escaped the wind-down.

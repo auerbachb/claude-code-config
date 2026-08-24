@@ -113,10 +113,13 @@ case "$MODE" in
   status)
     RC=0
     VALUE="$(session_state --raw-path --get "$PATH_EXPR.active" 2>/dev/null)" || RC=$?
+    # A surviving marker is authoritative. In particular, clear writes
+    # active=false before removing the marker; if removal fails, shutdown is
+    # incomplete and launches must stay blocked until a successful retry.
+    if [[ -f "$MARKER" ]]; then printf 'active\n'; state_lock_release; exit 0; fi
     if [[ "$RC" -eq 0 && "$VALUE" == true ]]; then printf 'active\n'; state_lock_release; exit 0; fi
     if [[ "$RC" -eq 0 && ( "$VALUE" == false || "$VALUE" == null ) ]]; then printf 'inactive\n'; state_lock_release; exit 0; fi
-    if [[ "$RC" -eq 3 && ! -f "$MARKER" ]]; then printf 'inactive\n'; state_lock_release; exit 0; fi
-    if [[ -f "$MARKER" ]]; then printf 'active\n'; state_lock_release; exit 0; fi
+    if [[ "$RC" -eq 3 ]]; then printf 'inactive\n'; state_lock_release; exit 0; fi
     echo "execution-pause.sh: pause state unreadable and no active marker exists" >&2
     exit 4
     ;;
