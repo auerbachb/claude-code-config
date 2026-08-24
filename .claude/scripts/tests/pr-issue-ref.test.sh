@@ -20,6 +20,23 @@ FAIL=0
 pass() { PASS=$((PASS + 1)); echo "ok   — $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "FAIL — $1"; }
 
+# Self-check: every check_*/assert_* helper this file calls must be defined in
+# this file. A typo'd or cross-suite helper (e.g. calling check_msg where only
+# check_contains exists) is command-not-found; with `set -uo pipefail` and no
+# `-e` that neither aborts nor increments FAIL, so the suite reports success
+# having never run the assertion. That is exactly how two Test 8 message checks
+# silently vanished. Portable to bash 3.2 (macOS) as well as CI's bash 5.
+# Comment lines are stripped first: prose that merely NAMES a helper (including
+# the comment above) is not a call, and scanning it produced a false positive.
+_undefined_helpers="$(comm -23 \
+  <(grep -v '^[[:space:]]*#' "$0" | grep -ohE '\b(check|assert)_[a-z_]+' | sort -u) \
+  <(grep -oE '^[a-z_]+\(\)' "$0" | tr -d '()' | sort -u))"
+if [[ -n "$_undefined_helpers" ]]; then
+  echo "FAIL — assertion helper(s) called but never defined in $0:" >&2
+  printf '  %s\n' $_undefined_helpers >&2
+  exit 1
+fi
+
 check_eq() {
   local desc="$1" expected="$2" actual="$3"
   if [[ "$actual" == "$expected" ]]; then
@@ -178,8 +195,8 @@ RC=0
 MSG="$(GITHUB_REPOSITORY="" bash "$SCRIPT" --all 103 2>&1 >/dev/null)" || RC=$?
 [[ "$RC" -eq 4 ]] && pass "Test8: --all refuses qualified refs with no repo context (exit 4)" \
   || fail "Test8: expected exit 4 with no repo context, got $RC"
-check_msg "Test8: message names the missing repo context" "cannot resolve the current repository" "$MSG"
-check_msg "Test8: message names the fix" "GITHUB_REPOSITORY" "$MSG"
+check_contains "Test8: message names the missing repo context" "cannot resolve the current repository" "$MSG"
+check_contains "Test8: message names the fix" "GITHUB_REPOSITORY" "$MSG"
 
 # ---------------------------------------------------------------------------
 # Test 9: --all mode — both bare #N and owner/repo#N

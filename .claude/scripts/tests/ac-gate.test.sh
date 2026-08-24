@@ -22,6 +22,23 @@ FAIL=0
 pass() { PASS=$((PASS + 1)); echo "ok   — $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "FAIL — $1"; }
 
+# Self-check: every check_*/assert_* helper this file calls must be defined in
+# this file. A typo'd or cross-suite helper (e.g. calling check_msg where only
+# check_contains exists) is command-not-found; with `set -uo pipefail` and no
+# `-e` that neither aborts nor increments FAIL, so the suite reports success
+# having never run the assertion. That is exactly how two Test 8 message checks
+# silently vanished. Portable to bash 3.2 (macOS) as well as CI's bash 5.
+# Comment lines are stripped first: prose that merely NAMES a helper (including
+# the comment above) is not a call, and scanning it produced a false positive.
+_undefined_helpers="$(comm -23 \
+  <(grep -v '^[[:space:]]*#' "$0" | grep -ohE '\b(check|assert)_[a-z_]+' | sort -u) \
+  <(grep -oE '^[a-z_]+\(\)' "$0" | tr -d '()' | sort -u))"
+if [[ -n "$_undefined_helpers" ]]; then
+  echo "FAIL — assertion helper(s) called but never defined in $0:" >&2
+  printf '  %s\n' $_undefined_helpers >&2
+  exit 1
+fi
+
 check_exit() {
   local desc="$1" expected_rc="$2" actual_rc="$3"
   if [[ "$actual_rc" -eq "$expected_rc" ]]; then
