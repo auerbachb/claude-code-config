@@ -31,7 +31,7 @@ After setup, Claude Code will automatically:
 - **Review locally, then on GitHub** — Runs CodeRabbit CLI reviews before pushing (instant feedback, no PR noise). After PR creation, the reviewer chain is CodeRabbit primary, BugBot (Cursor) second tier, Greptile last resort, then self-review only if every reviewer is unavailable; CodeAnt and Graphite AI Reviews provide supplemental AI review signals.
 - **Verify and merge** — Checks every acceptance criteria checkbox against the code, confirms CI is green, then squash-merges with branch cleanup.
 - **Orchestrate multi-agent work** — Decomposes large tasks into phases (fix, review, merge) with health monitoring, handoff files, and heartbeat enforcement.
-- **Manage your project** — 35 slash commands for backlog prioritization, OKR tracking, daily standups, PR-fleet monitoring, and cross-thread orchestration.
+- **Manage your project** — 36 slash commands for backlog prioritization, OKR tracking, daily standups, PR-fleet monitoring, and cross-thread orchestration.
 
 Review ownership is sticky once a fallback tier takes over:
 
@@ -127,7 +127,7 @@ ls -la ~/.claude/skills/       # each skill -> ~/.claude/skills-worktree/.claude
 
 ## Slash Commands
 
-All 35 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
+All 36 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
 
 | Command | Category | Description |
 |---------|----------|-------------|
@@ -163,9 +163,10 @@ All 35 commands are invoked as `/command` in a Claude Code session. They are def
 | `/merge` | Workflow | Squash merge with merge gate + AC verification |
 | `/admin-merge` | Workflow | Merge a solo-owner PR blocked by branch protection — auto-runs the no-protection-change plain shape, prints the `enforce_admins` toggle shape for the user (Claude never modifies branch protection) |
 | `/wrap` | Workflow | End-of-session: verify, squash merge, aggressively reset root `main`, detect follow-ups, extract lessons |
-| `/pause` | Workflow | Stop cleanly when your usage allowance runs thin — halts new launches without killing running work, then writes a self-contained handoff document another tool (Cursor, a fresh thread) can act on |
-| `/suspend` | Workflow | Land near-done work before closing your laptop, then park the rest at a deliberate boundary with a machine-readable resume point; companion to `/suspend-resume` |
-| `/suspend-resume` | Workflow | Restore the board after a `/suspend`: prints what landed, each parked unit with its next move, and re-arms Monitors that were stopped |
+| `/pause` | Workflow | Cost-quiescent stop with a 5-minute default checkpoint window: blocks launches, stops all owned background tasks, and writes a portable handoff |
+| `/pause-resume` | Workflow | Explicitly reopen work stopped by `/pause`; optionally clear the independent refill pause with `--resume-refill` |
+| `/suspend` | Workflow | Laptop-close stop with a 15-minute default runway: land safe work, park recovery state, and hard-stop every owned background task |
+| `/suspend-resume` | Workflow | Restore the parked board, explicitly reopen launches, and re-arm selected stopped work without duplicating live tasks |
 
 Run `/pm` first to bootstrap the PM config, then use the other PM skills as needed. Workflow commands (`/merge`, `/wrap`, `/go-on`, etc.) work independently.
 

@@ -34,7 +34,8 @@ json_field() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CEILING_SH="${SCRIPT_DIR%/hooks}/scripts/bgwork-ceiling.sh"
-[[ -x "$CEILING_SH" ]] || exit 0
+REGISTRY_SH="${SCRIPT_DIR%/hooks}/scripts/background-task-registry.sh"
+SESSION_STATE_SH="${SCRIPT_DIR%/hooks}/scripts/session-state.sh"
 
 SESSION_ID=$(json_field '.session_id')
 SESSION_ID="${SESSION_ID:-${CLAUDE_SESSION_ID:-default}}"
@@ -42,6 +43,139 @@ SESSION_ID="${SESSION_ID:-${CLAUDE_SESSION_ID:-default}}"
 TOOL_NAME=$(json_field '.tool_name')
 COMMAND=$(json_field '.tool_input.command')
 BACKGROUNDED=$(json_field '.tool_input.run_in_background')
+CWD=$(json_field '.cwd')
+PARENT_AGENT_ID=$(json_field '.agent_id')
+TASK_NAME=$(json_field '.tool_input.name // .tool_input.description')
+OUTPUT_FILE=$(json_field '.tool_response.outputFile // .tool_response.output_file')
+RECOVERY_PATH=$(json_field '.tool_response.worktreePath // .tool_response.worktree_path')
+
+resolve_payload_repo() {
+  local key="" payload_examined=0
+  if [[ -n "$CWD" && -d "$CWD" && -x "$SESSION_STATE_SH" ]]; then
+    payload_examined=1
+    if key="$(cd "$CWD" && unset CLAUDE_SESSION_REPO && \
+      "$SESSION_STATE_SH" --repo-key 2>/dev/null)"; then
+      :
+    else
+      key=_unknown
+    fi
+  fi
+  if [[ -z "$key" && "$payload_examined" == 0 ]]; then
+    key="${CLAUDE_SESSION_REPO:-_unknown}"
+  fi
+  [[ -n "$key" ]] || key=_unknown
+  if [[ "$key" != _unknown && ! "$key" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+    key=_unknown
+  fi
+  printf '%s' "$key" | tr '[:upper:]' '[:lower:]'
+}
+REPO_KEY="$(resolve_payload_repo)"
+
+REGISTRY_FAILURE_DIR="${CLAUDE_BACKGROUND_TASK_FAILURE_DIR:-${CLAUDE_BGWORK_MARKER_DIR:-/tmp}}"
+SAFE_SESSION_ID="${SESSION_ID//[^[:alnum:]_.-]/_}"
+REGISTRY_FAILURE_MARKER="$REGISTRY_FAILURE_DIR/claude-background-registry-failed-${SAFE_SESSION_ID:-default}"
+REGISTRY_FAILURE_FALLBACK="${HOME:-/tmp}/.claude/claude-background-registry-failed-${SAFE_SESSION_ID:-default}"
+REGISTRY_FAILURE_UNRECORDED=0
+
+record_registry_failure() {
+  local operation="$1" task_id="$2" rc="$3" line
+  line="$(date -u +%FT%TZ)\t${operation}\t${task_id}\t${rc}"
+  if mkdir -p "$REGISTRY_FAILURE_DIR" 2>/dev/null && \
+     printf '%b\n' "$line" >> "$REGISTRY_FAILURE_MARKER" 2>/dev/null; then
+    return 0
+  fi
+  if mkdir -p "$(dirname "$REGISTRY_FAILURE_FALLBACK")" 2>/dev/null && \
+     printf '%b\n' "$line" >> "$REGISTRY_FAILURE_FALLBACK" 2>/dev/null; then
+    return 0
+  fi
+  REGISTRY_FAILURE_UNRECORDED=1
+  echo "bgwork-ceiling-arm.sh: CRITICAL: could not record registry failure for $task_id ($operation rc=$rc)" >&2
+  return 1
+}
+
+register_runtime_task() {
+  [[ -n "$1" && -n "$2" ]] || return 0
+  local task_id="$1" task_type="$2" name="${3:-$2:$1}"
+  if [[ ! -x "$REGISTRY_SH" ]]; then
+    record_registry_failure missing_helper "$task_id" 127 || true
+    return 0
+  fi
+  local -a args
+  args=(--repo "$REPO_KEY" --register --session "$SESSION_ID" --task-id "$task_id"
+        --type "$task_type" --name "$name")
+  [[ -n "$PARENT_AGENT_ID" ]] && args+=(--parent-agent "$PARENT_AGENT_ID")
+  [[ -n "$OUTPUT_FILE" ]] && args+=(--output-file "$OUTPUT_FILE")
+  [[ -n "$RECOVERY_PATH" ]] && args+=(--recovery-path "$RECOVERY_PATH")
+  local rc=0
+  if [[ -n "$CWD" && -d "$CWD" ]]; then
+    (cd "$CWD" && CLAUDE_STATE_LOCK_TIMEOUT=3 CLAUDE_STATE_RMW_MAX_RETRY=0 \
+      "$REGISTRY_SH" "${args[@]}") >/dev/null 2>&1 || rc=$?
+  else
+    CLAUDE_STATE_LOCK_TIMEOUT=3 CLAUDE_STATE_RMW_MAX_RETRY=0 \
+      "$REGISTRY_SH" "${args[@]}" >/dev/null 2>&1 || rc=$?
+  fi
+  (( rc == 0 )) || record_registry_failure register "$task_id" "$rc"
+}
+
+transition_runtime_task() {
+  [[ -n "$1" ]] || return 0
+  local task_id="$1" status="$2"
+  if [[ ! -x "$REGISTRY_SH" ]]; then
+    record_registry_failure missing_helper "$task_id" 127 || true
+    return 0
+  fi
+  local -a args
+  args=(--repo "$REPO_KEY" --transition --session "$SESSION_ID" --task-id "$task_id" --status "$status")
+  local rc=0
+  if [[ -n "$CWD" && -d "$CWD" ]]; then
+    (cd "$CWD" && CLAUDE_STATE_LOCK_TIMEOUT=3 CLAUDE_STATE_RMW_MAX_RETRY=0 \
+      "$REGISTRY_SH" "${args[@]}") >/dev/null 2>&1 || rc=$?
+  else
+    CLAUDE_STATE_LOCK_TIMEOUT=3 CLAUDE_STATE_RMW_MAX_RETRY=0 \
+      "$REGISTRY_SH" "${args[@]}" >/dev/null 2>&1 || rc=$?
+  fi
+  (( rc == 0 )) || record_registry_failure transition "$task_id" "$rc"
+}
+
+# Capture the exact runtime identity while the structured tool result is still
+# available. The old marker recorded only "Agent"/"Bash"/etc., which was enough
+# for liveness but could not later drive TaskStop.
+case "$TOOL_NAME" in
+  Agent)
+    RUNTIME_TASK_ID=$(json_field '.tool_response.agentId')
+    [[ -n "$RUNTIME_TASK_ID" ]] && register_runtime_task "$RUNTIME_TASK_ID" agent "${TASK_NAME:-agent:$RUNTIME_TASK_ID}"
+    ;;
+  Workflow)
+    RUNTIME_TASK_ID=$(json_field '.tool_response.taskId // .tool_response.backgroundTaskId // .tool_response.workflowId')
+    [[ -n "$RUNTIME_TASK_ID" ]] && register_runtime_task "$RUNTIME_TASK_ID" workflow "${TASK_NAME:-workflow:$RUNTIME_TASK_ID}"
+    ;;
+  Monitor)
+    RUNTIME_TASK_ID=$(json_field '.tool_response.taskId')
+    [[ -n "$RUNTIME_TASK_ID" ]] && register_runtime_task "$RUNTIME_TASK_ID" monitor "${TASK_NAME:-monitor:$RUNTIME_TASK_ID}"
+    ;;
+  Bash)
+    if [[ "$BACKGROUNDED" == true ]]; then
+      RUNTIME_TASK_ID=$(json_field '.tool_response.backgroundTaskId')
+      [[ -n "$RUNTIME_TASK_ID" ]] && register_runtime_task "$RUNTIME_TASK_ID" bash "${TASK_NAME:-bash:$RUNTIME_TASK_ID}"
+    fi
+    ;;
+  TaskStop)
+    STOPPED_TASK_ID=$(json_field '.tool_response.task_id // .tool_response.taskId')
+    REQUESTED_TASK_ID=$(json_field '.tool_input.task_id // .tool_input.taskId')
+    STOP_ERROR=$(json_field '.tool_response.error // .tool_response.errorMessage')
+    STOP_STATUS=$(json_field '.tool_response.status')
+    if [[ -n "$STOPPED_TASK_ID" && -z "$STOP_ERROR" && "$STOP_STATUS" != failed && "$STOP_STATUS" != error ]]; then
+      transition_runtime_task "$STOPPED_TASK_ID" stopped
+    elif [[ -n "$REQUESTED_TASK_ID" ]]; then
+      transition_runtime_task "$REQUESTED_TASK_ID" stop_failed
+    fi
+    ;;
+esac
+
+# Runtime identity tracking is safety-critical and independent of the optional
+# silence-ceiling helper. A partial installation may lose reminders, but it
+# must not lose the exact IDs needed by /pause and /suspend.
+[[ -x "$CEILING_SH" ]] || exit "$REGISTRY_FAILURE_UNRECORDED"
 
 # --- 1. Is this call arming the ceiling watch? -------------------------------
 # Matched on the command text rather than the tool name, so arming still
@@ -132,4 +266,4 @@ touch "$ADVISED_FILE" 2>/dev/null || true
 
 emit_context "BACKGROUND WORK CEILING NOT ARMED. ${UNGUARDED_NOTE}This thread has background work in flight, so it can end its turn and go silent with no tool call left to warn it. Arm the ceiling in THIS step, before ending the turn: call the Monitor tool with persistent: true, description \"background-work silence ceiling\", and command: ${ARM_COMMAND} — the watch stays silent unless the thread actually goes quiet, so a thread sending normal heartbeats will never see a message from it. Do not announce the arming to the user; it is bookkeeping, not status."
 
-exit 0
+exit "$REGISTRY_FAILURE_UNRECORDED"

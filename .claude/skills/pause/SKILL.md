@@ -1,13 +1,13 @@
 ---
 name: pause
-description: Use when you can see your usage allowance running thin and want to stop cleanly rather than be cut off mid-flight, or when you want to carry this session's work into another tool (Cursor, a fresh thread, a colleague). Winds down without killing running work, then writes a self-contained handoff document that a reader outside this harness can act on. Triggers on "pause", "clean pause", "wind down", "portable handoff", "hand this to Cursor", "I'm running low".
+description: Use when usage allowance is running thin and this session must become cost-quiescent while preserving resumable work. Blocks new launches, gives running work a bounded checkpoint window, stops every remaining owned background task, then writes a portable handoff. Triggers on "pause", "clean pause", "wind down", "portable handoff", "hand this to Cursor", "I'm running low".
 triggers:
   - pause
   - clean pause
   - wind down
   - portable handoff
   - hand off to Cursor
-argument-hint: "(no arguments)"
+argument-hint: "[--window Nm] (default: --window 5m; --window 0 stops immediately)"
 ---
 
 Stop cleanly on demand, and leave behind a document someone else can pick up.
@@ -16,7 +16,7 @@ Stop cleanly on demand, and leave behind a document someone else can pick up.
 
 Two outputs, in this order: a wind-down that leaves nothing half-finished, and a portable handoff document written to disk and printed in the thread.
 
-## Step 0: Resolve the helper scripts
+## Step 0: Resolve helpers and parse the window
 
 `/pause` is invocable from any thread — including one whose working directory is not this repo, which is exactly the situation where a repo-relative path silently fails. Resolve each helper the same way the other stop-style commands do:
 
@@ -33,6 +33,8 @@ resolve_script() {
 }
 SESSION_STATE_SH=$(resolve_script session-state.sh) || SESSION_STATE_SH=""
 HANDOFF_LINT_SH=$(resolve_script portable-handoff-lint.sh) || HANDOFF_LINT_SH=""
+EXECUTION_PAUSE_SH=$(resolve_script execution-pause.sh) || EXECUTION_PAUSE_SH=""
+TASK_REGISTRY_SH=$(resolve_script background-task-registry.sh) || TASK_REGISTRY_SH=""
 
 # The collector is a document, not a script, so resolve it the same way but
 # test for readability rather than the executable bit.
@@ -43,18 +45,66 @@ for candidate in \
   [[ -r "$candidate" ]] && { COLLECTOR_DOC="$candidate"; break; }
 done
 COLLECTOR_DOC="${COLLECTOR_DOC:-}"
+
+for candidate in \
+  "$HOME/.claude/skills-worktree/.claude/reference/background-task-shutdown.md" \
+  "$HOME/.claude/reference/background-task-shutdown.md" \
+  ".claude/reference/background-task-shutdown.md"; do
+  [[ -r "$candidate" ]] && { SHUTDOWN_DOC="$candidate"; break; }
+done
+SHUTDOWN_DOC="${SHUTDOWN_DOC:-}"
 ```
 
-Neither is fatal. An unresolved `session-state.sh` means the wind-down cannot be persisted — say so in Step 2's report and carry on, because the document is the part that matters. An unresolved checker is handled by Step 5's "could not run" branch.
-
-## Step 1: Wind down — stop starting, do not stop finishing
-
-Stop launching new work. Do **not** kill what is already running: a subagent interrupted mid-push leaves a branch in a state nobody has recorded, which is the exact outcome this command exists to prevent. Let running units reach their own stopping point and write their own handoffs.
-
-Persist the stop so it survives context turnover and is visible to every other skill that launches work:
+Parse the first `--window` value exactly as `/suspend` does: accept a
+non-negative integer with an optional trailing `m`, default to `5`, reject a
+missing, negative, non-numeric, or greater-than-1440-minute value, and compute
+one deadline. Leading zeroes are decimal (`08m` is eight minutes). `--window 0`
+skips cooperative checkpoint time and proceeds directly to hard stop.
 
 ```bash
-WINDDOWN_PERSISTED=1     # assume success, then prove otherwise below
+WINDOW_MINUTES=5
+_NEXT_IS_WINDOW=false
+_WINDOW_SET=false
+for arg in $ARGUMENTS; do
+  if [[ "$_NEXT_IS_WINDOW" == true ]]; then
+    _NEXT_IS_WINDOW=false
+    if [[ "$_WINDOW_SET" == false ]]; then
+      _RAW="${arg%m}"
+      [[ "$_RAW" =~ ^[0-9]+$ ]] || { echo "ERROR: --window requires a non-negative integer (got: $arg)" >&2; exit 2; }
+      WINDOW_MINUTES=$((10#$_RAW))
+      (( WINDOW_MINUTES <= 1440 )) || { echo "ERROR: --window must not exceed 1440 minutes." >&2; exit 2; }
+      _WINDOW_SET=true
+    fi
+    continue
+  fi
+  [[ "$arg" == --window ]] && _NEXT_IS_WINDOW=true
+done
+[[ "$_NEXT_IS_WINDOW" == false ]] || { echo "ERROR: --window requires a value." >&2; exit 2; }
+T_END=$(( $(date -u +%s) + WINDOW_MINUTES * 60 ))
+```
+
+An unresolved state, execution-pause, registry, or shutdown helper makes the
+shutdown incomplete. Say which control is missing, keep every control that was
+successfully armed closed, and still emit the handoff. An unresolved checker
+is handled by Step 5's "could not run" branch.
+
+## Step 1: Close both launch gates immediately
+
+Arm the session-scoped execution gate before reading or waiting on background
+work, then pause refilling. The first prevents direct Agent, Workflow, Monitor,
+and background Bash launches; the second prevents pipeline successor launches.
+
+```bash
+SESSION_ID="${CLAUDE_SESSION_ID:-default}"
+WINDDOWN_PERSISTED=1
+EXECUTION_GATE_PERSISTED=1
+if [[ -n "$EXECUTION_PAUSE_SH" ]]; then
+  "$EXECUTION_PAUSE_SH" --activate --session "$SESSION_ID" \
+    --command pause --window-minutes "$WINDOW_MINUTES" \
+    || EXECUTION_GATE_PERSISTED=0
+else
+  EXECUTION_GATE_PERSISTED=0
+fi
 if [[ -n "$SESSION_STATE_SH" ]]; then
   REPO_KEY=$("$SESSION_STATE_SH" --repo-key)
   NOW=$(date -u +%FT%TZ)
@@ -66,39 +116,32 @@ else
 fi
 ```
 
-The initialiser is not decoration: without it the variable is simply unset on the success path, and Step 2 — which tests for `1` — would report every successful pause as unrecorded.
+Both gates stay closed until an explicit `/pause-resume` (or compatible
+`/suspend-resume`) invocation. A later message, timer, or scan never clears
+them implicitly.
 
-**When `WINDDOWN_PERSISTED` is 0, the stop was not written down.** Say that in Step 2's report in plain words — "I could not record the pause, so another thread may still start new work" — rather than printing a `Stopped:` line that claims something untrue. Then carry on to the document, which is the part that survives this session either way.
+## Step 2: Checkpoint, stop, and prove quiescence
 
-This is the **existing** launch gate that `/pm` Step 3.4 and `/subagent` Step 7 already read before every launch — no new field, no new mechanism. `reason` stays inside its bounded enum (`full_stop` | `scope_narrowed`); `/pause` is a human saying stop in chat, which is exactly what `full_stop` means, so it does not get a value of its own.
+Read and follow `$SHUTDOWN_DOC` in full with the parsed deadline. Preserve each
+task's output and recovery location in the registry and in the handoff's Open
+work or Local state section. This command owns the current session only; name
+separate `claude agents` sessions as out of scope.
 
-**It stays paused until a human resumes it.** Not on the next tick, not on an unrelated later message, not on a fresh scan. Say so in the report (Step 2) — a pause the user cannot see is one they cannot lift.
-
-Then read what is currently running, so the report can name it:
-
-```bash
-[[ -n "$SESSION_STATE_SH" ]] && "$SESSION_STATE_SH" --session-view
-```
-
-`active_agents` records what was launched, not what is still alive. Treat it as a list to verify, not a fact. With no helper resolved there is no list — report "could not read what was running" rather than "nothing was running", which are different claims.
-
-## Step 2: Report what stopped and what was left running
-
-Print this immediately — before collection, which takes a moment. The user asked to stop; they should see that stopping has begun.
+Print the initial winding-down line before the cooperative window. After the
+deadline and final audit, report exact counts:
 
 ```text
 === Winding down ===
-Stopped:   <WINDDOWN_PERSISTED=1: "new work will not be started (refilling paused until you say resume)">
-           <WINDDOWN_PERSISTED=0: "COULD NOT record the pause — another thread may still start new work. Say stop in chat to pause it.">
-Finishing: <one line per running subagent or pipeline — what it is and which PR/issue it belongs to, or "nothing was running">
-Untouched: <anything deliberately left alone — open PRs still awaiting review, armed watchers — or "nothing">
+Gates:     <execution gate and refill gate status>
+Stopped:   <N of N current-session background tasks confirmed terminal>
+Preserved: <task IDs and their output/worktree/recovery paths, or "nothing was running">
+Unresolved:<exact live IDs and stop errors, or "none">
+Resume:    /pause-resume [--resume-refill]
 ```
 
-The `Stopped:` line has two forms and the choice is not stylistic. Printing the first after a failed write tells the user something untrue about the one side effect this command has, and they would find out only when a pipeline started anyway. Pick the form that matches `WINDDOWN_PERSISTED`.
-
-Likewise, when `$SESSION_STATE_SH` was never resolved there is no running-work list to read — `Finishing:` says "could not read what was running", never "nothing was running".
-
-Nothing in this block is a question. If a running unit looks stuck, say so on its line; do not stop it and do not ask whether to.
+Do not print successful completion while any owned task is still live or either
+audit is unreadable. Report `INCOMPLETE SHUTDOWN` and keep the gates closed.
+Nothing in this block is a question.
 
 ## Step 3: Collect the state
 
@@ -195,6 +238,7 @@ They overlap in what they read — hence the shared collector — and not at all
 
 - **Estimating anything.** No token count, no spend figure, no "you have about N left". You read the usage view; this command does not model it.
 - **Deciding when to stop.** It runs when invoked. It does not fire on a schedule, a threshold, or an inference.
-- **Killing running work.** Step 1 stops launches only.
+- **Deleting interrupted work.** Stops preserve branches, worktrees, logs,
+  outputs, and recovery metadata for explicit resume.
 
 When a real approaching-limit signal eventually reaches a hook, the wind-down built on it emits **this** document rather than defining its own (issue #835) — the trigger changes, the artifact does not.

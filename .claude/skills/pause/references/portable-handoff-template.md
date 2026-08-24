@@ -47,6 +47,16 @@ serves the goal.}
   uncommitted files are and whether to continue them or leave them alone}
   Status: {PLAIN_ENGLISH_STATUS}
 
+- **Stopped background work — {LOGICAL_NAME}**
+  Runtime ID: {EXACT_RUNTIME_ID}
+  Type: {agent | workflow | background command | monitor}
+  Preserved at: {NON_EMPTY_OUTPUT_FILE_AND_OR_ABSOLUTE_RECOVERY_PATH}
+  Resume by: {OWNING_SKILL_AND_CONCRETE_ACTION_USING_THE_PRESERVED_CHECKPOINT}
+
+{When neither an output file nor an absolute recovery path exists, replace the
+block's last two lines with: "Recovery: UNRESOLVED — no checkpoint path was
+recorded; manual recovery is required." Never fabricate a path.}
+
 ## Decisions made this session
 
 {One bullet per decision, each with its reasoning. Omit-free: a decision without
@@ -97,6 +107,15 @@ Each of these answers a question a real reader asked of a document that had alre
 
 - **Every in-flight item says who owns it.** "Mine", "another session, still active — do not touch", or "unowned". This is the highest-cost thing to get wrong: a pull request belonging to someone else looks most inviting exactly when it is approved, green, and one rebase from merging, and two sessions editing one branch lose somebody's work. Silence reads as "unowned", so an unmarked item is an invitation you did not mean to send.
 - **Work already started but not committed carries its disposition.** Where the files are (absolute path), and whether the reader should finish them, leave them, or start over. "Being written right now" tells a reader who arrives after you stopped nothing at all.
+- **Stopped background work carries its exact runtime ID and recovery path.** A
+  display name cannot prove which process stopped, and a stop without an output
+  or worktree path is not meaningfully resumable. When neither exists, mark the
+  item unresolved and require manual recovery; do not call it resumable. Omit
+  this block only when no background work was running.
+- **Translate registry task types before rendering.** `agent`, `workflow`, and
+  `monitor` keep those names. Registry type `bash` renders as "background
+  command"; never expose the internal type token as though it were a shell the
+  reader should invoke.
 - **Every pull request says whether it is approved, and what this repository requires before it can merge.** "Waiting on" answers what is blocking; it does not answer whether the thing is allowed to merge once unblocked. Name who approved it and on which commit — an approval attached to an older commit is not an approval of what is there now.
 - **Give a command that shows whether the work is done.** Test suite, linter, build — anything the reader can run from a fresh checkout. "The tests named in the pull request body" is a pointer to a pointer. At least one such command must appear in the document.
 - **Name the files, and name them in a form the reader can resolve.** Repo-relative is fine. When the path starts with one of this repository's dot-directories, the portability rule forbids writing it, so give the file name plus a command that finds it — `git ls-files '*skill-bash.sh'` — rather than dropping the location entirely.
