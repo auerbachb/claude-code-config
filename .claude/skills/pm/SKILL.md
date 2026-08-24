@@ -596,6 +596,17 @@ Apply 3.4's exit-code table to each: `0` is the value, `3` means no state file h
 
 With three readable values: freshness window is `max(3 × cadence_effective_minutes, 15m)`. `active == true` **and** `last_tick_at` inside that window → a live loop is already running: refuse, one line, and name how to stop it (`say "stop"`). `active == true` with a stale — or unparseable, which is stale for this purpose — `last_tick_at` → the previous loop died with its session: **reclaim it**, say so in one line, and continue arming. Anything else → arm normally.
 
+**(b+) Session-restart during a usage-limit park.** After resolving the `active` / freshness question, also read `day.parked_until` and `day.limit_kind` with their exit codes:
+
+```bash
+PARK_RC=0
+PARKED_UNTIL=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.parked_until") || PARK_RC=$?
+LIMIT_KIND_RC=0
+PARK_LIMIT_KIND=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.limit_kind") || LIMIT_KIND_RC=$?
+```
+
+Apply 3.4's exit-code table to both: `0` is the stored value, `3` means no state file has ever been written, anything else is unreadable — retry once (exit `6` is a lock timeout and documented as retryable; `handoff-files.md`), then fail closed: report the read failure and stop before normal arming. Do not treat an unreadable `parked_until` as "no park pending" — a lock timeout or parse failure can hide an active park, allowing Steps 1 and 2 to dispatch while the account limit is still active. If `PARKED_UNTIL` is non-null, non-JSON-`"null"`, and in the future (`date -u -d "$PARKED_UNTIL" +%s 2>/dev/null || date -j -f '%Y-%m-%dT%H:%M:%SZ' "$PARKED_UNTIL" '+%s'` is greater than `$(date -u +%s)`): the session restarted while a park was active. Only re-arm the limit-wake Monitor if `PARK_LIMIT_KIND == "rolling_window"` — weekly parks cannot be auto-woken because no in-session Monitor can outlast days. If limit_kind is readable and not "rolling_window" (or is readable and non-"rolling_window"), do not re-arm; print one line (`Session restarted during weekly-cap park; manual resume required when window reopens`) and stop. If limit_kind is unreadable (LIMIT_KIND_RC non-zero and non-3), fail closed: do not re-arm and print one line naming the read failure. For a confirmed rolling_window park: re-arm the limit-wake Monitor (2D.6 Step 3) using the remaining time from now to `PARKED_UNTIL`, say so in one line (`Session restarted during usage-window park; resuming automatically at {PARKED_UNTIL}`), and **stop without running Steps 1 and 2** — the board is parked and will resume when the Monitor fires. If `parked_until` is in the past or null, the park resolved or never existed; continue arming normally.
+
 **(c) Settle the race before arming: publish, then re-read.** (a) and (b) are read-then-write across separate `session-state.sh` calls, so each call is locked but the pair is not: `/pm day` and `/pr-monitor-and-manage` starting within the same moment can each read the other as clear and both arm. Close it without inventing a lease — write your own claim **first**, then re-read theirs:
 
 1. Write **only** `.repos[<key>].day.active=true` — a bare ownership claim, nothing else:
@@ -623,6 +634,16 @@ PRIOR_GOAL=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.goal") || PRIO
 
 Read `PRIOR_GOAL_RC` with 3.4's table: `0` is the stored value (possibly JSON `null`), `3` means no state file has ever been written, and **anything else is unreadable** — retry once, since exit `6` is a lock timeout and documented as retryable (`handoff-files.md`), then report and stop if it still fails. Do not `|| echo null` over it: that would make a failed read identical to "no goal was ever set", and a day loop that ranks against the wrong objective for six hours is precisely the error nobody is watching to catch.
 
+Also read `PRIOR_HITS` before the init write so the thrash-guard counter can be carried forward across re-arms (2D.6). Use a lenient default on failure — an unreadable counter resets to 0 rather than blocking the arm:
+
+```bash
+PRIOR_HITS_RC=0
+PRIOR_HITS=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits") || PRIOR_HITS_RC=$?
+[ "$PRIOR_HITS_RC" -eq 3 ] && PRIOR_HITS=0
+# Unreadable or non-integer: start clean — each new limit hit will still increment from 0
+[[ "$PRIOR_HITS" =~ ^[0-9]+$ ]] || PRIOR_HITS=0
+```
+
 Then take `BUSINESS_GOAL` when the user supplied one this invocation, otherwise `PRIOR_GOAL`, and build the whole `day` object in **one** `jq` call. Building it with `jq --arg` rather than string-interpolating it does two jobs at once: `goal` is the one field carrying the user's own words and must never reach a `--set` string directly (the same rule `refill.scope` follows in 3.4), and a single atomic write removes the second, separately-failing write that a follow-up `--set` would add.
 
 ```bash
@@ -633,12 +654,16 @@ EFFECTIVE_GOAL="${BUSINESS_GOAL:-}"
 DAY_JSON=$(jq -cn \
   --arg now "$NOW" --arg goal "$EFFECTIVE_GOAL" \
   --argjson base "$DAY_CADENCE_MIN" --argjson maxfail "$MAX_PIPELINE_FAILURES" \
+  --argjson phits "$PRIOR_HITS" \
   '{active:true, started_at:$now, last_tick_at:$now,
     cadence_base_minutes:$base, cadence_effective_minutes:$base,
     tick_count:0, digest:null, digest_streak:0,
     failure_streak:0, max_pipeline_failures:$maxfail,
     refill_halted:false, halt_reason:null, stop_requested:false,
     monitor_task_id:null, monitor_generation:null, paused_at:null,
+    parked_until:null, limit_kind:null,
+    limit_resume_task_id:null, limit_resume_generation:null,
+    consecutive_limit_hits:$phits,
     goal:(if $goal == "" then null else $goal end)}')
 
 INIT_RC=0
@@ -798,6 +823,109 @@ On any exit or pause, in this order — the order matters, because the stop flag
 ### 2D.5: Recovery
 
 A day loop can outlive the context that armed it. After compaction, `monitor-mode.md` "Post-Compaction Recovery" runs first; then read `.repos[<key>].day` explicitly. It is **not** in `--session-view`'s projection — that lifts only `.prs` and `.root_repo` out of the repo block — so a `--session-view` read alone reports an armed day loop as absent, exactly as it would a refill pause (1A.2). Reconcile `active`, the identity pair, and `last_tick_at` against the freshness window from 2D.1(b): fresh → resume ticking and say so in one line; stale → the loop died, so reclaim and re-arm. `/pm` resume (1A.4) reports a paused or interrupted day loop alongside the refill posture for the same reason: a state the user cannot see is one they cannot lift.
+
+**Also check `day.parked_until` and `day.limit_kind` during recovery.** Read both explicitly (they are not in `--session-view`). Apply 3.4's exit-code table: `0` is the stored value, `3` means no state file has ever been written, anything else is unreadable — retry once, then fail closed: report the read failure and stop rather than treating an unreadable `parked_until` as null. A lock timeout or parse failure can hide an active park, allowing the tick Monitor to re-arm while the account limit is still active. If `parked_until` is non-null and in the future, the loop is parked due to a usage-limit hit (2D.6) and the original auto-wake Monitor died with the prior session. Only re-arm the limit-wake Monitor if `limit_kind == "rolling_window"` — weekly parks require manual resume, never an in-session auto-wake. For weekly parks or an unreadable `limit_kind`, report one line (`Day loop parked (weekly cap or unreadable kind) — manual resume required`), do not re-arm the tick Monitor, and **stop recovery** — do not continue to the generic stale-loop path. For a confirmed rolling_window park: re-arm the limit-wake Monitor (2D.6 Step 3) with the remaining time from now to `parked_until`, report one line (`Day loop parked until {parked_until} — re-arming auto-wake`), do not re-arm the tick Monitor, and **stop recovery** — do not continue to the generic stale-loop path. Only when `parked_until` is in the past or null may recovery continue normally.
+
+### 2D.6: Usage-limit park and wake
+
+**When the harness or API reports a usage-limit error during any day-mode turn** — an error explicitly indicating the account's rolling window or weekly cap is exhausted, paired with or without a reset time — run this section before the turn ends. This is an explicit upstream signal; `safety.md` §Anthropic Quota & Spend Authority still forbids acting on locally-computed token counts.
+
+**Signal detection.** A usage-limit signal is a structured API error whose runtime classification explicitly indicates an account cap — `error_type == "rate_limit_error"`, `error.type == "rate_limit_error"`, or an equivalent vendor-supplied error code field that names account-level exhaustion, not context-window exhaustion. Text matching alone (e.g. "out of tokens", "weekly limit") is not sufficient, because those phrases can appear in context-window exhaustion errors or other upstream messages. Require the structured classification first; then extract the reset time from the confirmed signal text only — never from local token accounting. If no structured error type is present, do not treat the event as an account-cap exhaustion.
+
+**Classify the horizon.** Parse the reset epoch from the signal. Validate `signal_reset_epoch` as a numeric integer strictly greater than `NOW_EPOCH` before using it — empty, zero, past, or non-numeric values all fall back to the 60-minute default (rolling-window classification):
+
+```bash
+NOW_EPOCH=$(date -u +%s)
+# Validate: must be a non-empty integer strictly greater than NOW_EPOCH
+if [[ "${signal_reset_epoch:-}" =~ ^[0-9]+$ ]] && \
+   (( signal_reset_epoch > NOW_EPOCH )); then
+  RESET_EPOCH="$signal_reset_epoch"
+else
+  RESET_EPOCH=$(( NOW_EPOCH + 3600 ))
+fi
+HORIZON_SECONDS=$(( RESET_EPOCH - NOW_EPOCH ))
+
+# Rolling window: horizon <= 8 hours (covers the 5-hour rolling window with margin)
+# Weekly/long: > 8 hours
+LIMIT_KIND="rolling_window"
+[ "$HORIZON_SECONDS" -gt $(( 8 * 3600 )) ] && LIMIT_KIND="weekly"
+PARKED_UNTIL=$(date -u -d "@$RESET_EPOCH" +%FT%TZ 2>/dev/null || \
+               date -u -r "$RESET_EPOCH" +%FT%TZ)
+```
+
+**Park.** Run the `/suspend` mechanics — invoke `/suspend/SKILL.md` Steps 2–7 inline (the same "run the full SKILL.md, no shortcuts" idiom Steps 1C and 1D use), but **skip Step 1 (pause refill)**. Step 1 writes `.refill.paused`, which is a human-owned field; an automatic machine-initiated park must not touch it, because the auto-wake would otherwise clear a pause the user explicitly set. For a rolling-window limit, pass `--window 0` (skip landing — the limit prevents dispatching `/wrap`). For a weekly limit, use the default window to land anything already gate-met. After the suspend steps complete, read the current `consecutive_limit_hits` and increment it:
+
+```bash
+HITS_RC=0
+PRIOR_HITS=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits") || HITS_RC=$?
+[ "$HITS_RC" -eq 3 ] && PRIOR_HITS=0   # no state file — first limit hit ever
+
+# Fail closed on any other unreadable state: a corrupt or lock-timed count cannot
+# be safely reset to 0 — doing so would let thrash guards be bypassed.
+# The block below must terminate this section; nothing after it — NEW_HITS computation,
+# state writes, or Monitor arming — may execute when this condition is true.
+if [[ "$HITS_RC" -ne 0 && "$HITS_RC" -ne 3 ]]; then
+  echo "Parked (usage limit) — consecutive_limit_hits unreadable (rc=$HITS_RC); staying parked to avoid thrash. Resume manually."
+  return  # EXIT this section — do not compute NEW_HITS, write state, or arm a Monitor
+fi
+[[ "$PRIOR_HITS" =~ ^[0-9]+$ ]] || PRIOR_HITS=0
+NEW_HITS=$(( PRIOR_HITS + 1 ))
+MAX_LIMIT_HITS=3  # mirrors max_pipeline_failures range; not currently user-configurable
+
+STATE_WRITE_RC=0
+"$SESSION_STATE_SH" \
+  --set ".repos[\"$REPO_KEY\"].day.parked_until=\"$PARKED_UNTIL\"" \
+  --set ".repos[\"$REPO_KEY\"].day.limit_kind=\"$LIMIT_KIND\"" \
+  --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=$NEW_HITS" \
+  --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=null" \
+  --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=null" || STATE_WRITE_RC=$?
+# If the write failed, the park metadata is not durable — do not arm a Monitor.
+if [[ "$STATE_WRITE_RC" -ne 0 ]]; then
+  echo "Parked (usage limit) — state write failed (rc=$STATE_WRITE_RC); not arming auto-wake. Resume manually."
+  # EXIT this section — do not arm a Monitor
+fi
+```
+
+**Thrash guard.** If `HITS_RC` is unreadable (non-zero and non-3), or the state write failed, exit this section immediately without arming — the fail-closed exits above handle those paths. If `NEW_HITS >= MAX_LIMIT_HITS`, stay parked permanently and notify, with no auto-wake:
+
+> Parked (usage limit) — {NEW_HITS} consecutive limit hits on resume; staying parked to avoid a hot loop. Resume manually when the window reopens.
+
+**Auto-wake (rolling window only, when `NEW_HITS < MAX_LIMIT_HITS`).** Arm one persistent `Monitor` that sleeps until the reset time plus a 2-minute buffer, fires once, then breaks. The fire command passes the generation so `/suspend-resume` can reject a stale or duplicate wake. Do **not** pass `--resume-refill` — the automatic park did not write `.refill.paused`, so the wake must not clear it:
+
+```bash
+WAKE_SLEEP=$(( RESET_EPOCH - $(date -u +%s) + 120 ))  # reset + 2 min buffer
+# Exponential backoff for consecutive hits: 2^(NEW_HITS-1) * WAKE_SLEEP minimum
+BACKOFF_MULT=$(( 1 << (NEW_HITS - 1) ))
+WAKE_SLEEP=$(( WAKE_SLEEP * BACKOFF_MULT < WAKE_SLEEP ? WAKE_SLEEP : WAKE_SLEEP * BACKOFF_MULT ))
+LIMIT_GENERATION="limit-$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
+# One-shot Monitor: sleep then fire once
+while sleep "$WAKE_SLEEP"; do
+  printf '%s\n' "/suspend-resume --generation $LIMIT_GENERATION"
+  break
+done
+```
+
+Record the task ID immediately — an unrecorded Monitor cannot be stopped:
+
+```bash
+"$SESSION_STATE_SH" \
+  --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=$LIMIT_MONITOR_TASK_ID" \
+  --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=\"$LIMIT_GENERATION\""
+```
+
+If the task ID publish fails: `TaskStop` the Monitor using the ID you hold in hand, then clear `parked_until` so the loop does not appear parked when no wake is armed. Name the unrecorded task ID in the message.
+
+**Weekly/long horizon — no auto-wake.** Run full `/suspend` (default window). Write `parked_until` and `limit_kind="weekly"`. Do not arm a Monitor; do not write `limit_resume_task_id`. One-line notify:
+
+> Parked — weekly cap reached; continuing would incur overage charges. Window reopens at {PARKED_UNTIL}. Resume manually with `/suspend-resume` when ready.
+
+**Heartbeat lines (always the last output from this section):**
+- Rolling window: `parked until {PARKED_UNTIL} — usage window; resuming automatically`
+- Weekly: `parked — weekly cap reached; awaiting manual resume`
+
+**On a successful resume** (tick completes without hitting a limit): reset `consecutive_limit_hits = 0` and clear `parked_until`, `limit_kind`, `limit_resume_task_id`, `limit_resume_generation` in one write before D5's heartbeat fires.
+
+**Disarm on manual resume.** When `/suspend-resume` is invoked manually while a limit-wake Monitor is armed, the skill disarms the Monitor before delegating to `/pm day resume` — see `/suspend-resume` Step 5. This prevents a double resume when both paths race.
 
 ---
 
