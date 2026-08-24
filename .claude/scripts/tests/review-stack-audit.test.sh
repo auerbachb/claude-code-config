@@ -553,9 +553,12 @@ if [[ -r "$BASELINE_REAL" ]]; then
     && ok "baseline: the shipped review-stack-baseline.json parses and analyses cleanly" \
     || fail "baseline: shipped baseline rejected by drift.sh (rc=$rc)"
   keys="$(jget "$BASELINE_REAL" "sorted(t['key'] for t in d['tools'])")"
-  [[ "$keys" == "['bugbot', 'codeant', 'coderabbit', 'graphite', 'greptile', 'vercel']" ]] \
+  # baseline may include additional off/self-hosted entries beyond the six bots measure.sh tracks;
+  # check that all six bot-trackable tools are present rather than doing an exact-match
+  missing="$(jget "$BASELINE_REAL" "[k for k in ['bugbot','codeant','coderabbit','graphite','greptile','vercel'] if k not in [t['key'] for t in d['tools']]]")"
+  [[ "$missing" == "[]" ]] \
     && ok "baseline: covers every tool measure.sh reports on" \
-    || fail "baseline: tool keys do not match measure.sh's stack: $keys"
+    || fail "baseline: measure.sh tools missing from baseline: $missing (all keys: $keys)"
 else
   fail "baseline: $BASELINE_REAL is missing"
 fi
