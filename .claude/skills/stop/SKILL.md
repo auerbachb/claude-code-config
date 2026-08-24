@@ -35,6 +35,8 @@ SESSION_STATE_SH=$(resolve_script session-state.sh) || SESSION_STATE_SH=""
 HANDOFF_LINT_SH=$(resolve_script portable-handoff-lint.sh) || HANDOFF_LINT_SH=""
 EXECUTION_PAUSE_SH=$(resolve_script execution-pause.sh) || EXECUTION_PAUSE_SH=""
 TASK_REGISTRY_SH=$(resolve_script background-task-registry.sh) || TASK_REGISTRY_SH=""
+HANDOFF_CONTEXT_SH=$(resolve_script portable-handoff-context.sh) || HANDOFF_CONTEXT_SH=""
+HANDOFF_PUBLISH_SH=$(resolve_script portable-handoff-publish.sh) || HANDOFF_PUBLISH_SH=""
 
 # The collector is a document, not a script, so resolve it the same way but
 # test for readability rather than the executable bit.
@@ -92,8 +94,9 @@ T_END=$(( $(date -u +%s) + WINDOW_MINUTES * 60 ))
 
 An unresolved state, execution-pause, registry, or shutdown helper makes the
 shutdown incomplete. Say which control is missing, keep every control that was
-successfully armed closed, and still emit the handoff. An unresolved checker
-is handled by Step 5's "could not run" branch.
+successfully armed closed, and still render the handoff in the thread. A
+missing context, checker, or publisher helper prevents a canonical file from
+being claimed as published; retain and name the draft instead.
 
 ## Step 1: Close both launch gates immediately
 
@@ -162,15 +165,57 @@ Follow the collector resolved as `$COLLECTOR_DOC` in Step 0 — the same one `/p
 
 Every category can be legitimately empty. An empty category is reported as empty; it never aborts collection and never produces an error. **A category that could not be *read* is not empty** — say so in those words.
 
+After the shutdown audit has produced final task outcomes, collect one bounded
+machine snapshot. This snapshot is the authority for repository/worktree/Git
+fields, linkage, and current-session task metadata in the document:
+
+```bash
+CONTEXT_ERROR=""
+if [[ -n "$HANDOFF_CONTEXT_SH" ]]; then
+  if CONTEXT_JSON=$("$HANDOFF_CONTEXT_SH" --session "$SESSION_ID" 2>/dev/null); then
+    if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$CONTEXT_JSON"; then
+      CONTEXT_ERROR="context snapshot failed (malformed or non-object JSON)"
+      CONTEXT_JSON=""
+    fi
+  else
+    CONTEXT_RC=$?
+    CONTEXT_ERROR="context snapshot failed (exit $CONTEXT_RC)"
+    CONTEXT_JSON=""
+  fi
+else
+  CONTEXT_ERROR="portable-handoff-context.sh was not resolved from a trusted install"
+  CONTEXT_JSON=""
+fi
+```
+
+Read only the named fields in `CONTEXT_JSON`; never dump arbitrary environment
+variables, credential-bearing remote URLs, file contents, or the raw session
+state into the handoff. Lists are already capped. If the snapshot is absent or
+invalid, render every affected value as `unknown — context snapshot failed`,
+state `$CONTEXT_ERROR`, and do not claim that no work or metadata existed.
+
 ## Step 4: Render the portable document
 
-Build the document from `references/portable-handoff-template.md`, following its rendering rules. Render **once**, into a single buffer — that one buffer is what gets verified, written, and printed.
+Build the document from `references/portable-handoff-template.md`, following its rendering rules. Render **once**, into a single buffer — that one buffer is what gets verified, written, and printed. The explicit Progress and verification section must cover objective, completed work, remaining work, blockers or decisions, tests, review state, and exact next commands. Use the context snapshot's separately labeled tracked and untracked arrays; do not collapse them to a generic dirty count.
+
+For every current-session task returned by the snapshot, render its exact
+runtime ID, logical name, translated type, final status, work item, output,
+checkpoint (when separately known), and recovery path. Missing values say `not
+recorded`; they never become invented paths. A `running`, `stopping`,
+`stop_failed`, or unreadable task inventory makes the handoff say shutdown is
+incomplete and keeps the gates closed.
+
+The Resume safely section names `/stop-resume` for this harness and also gives
+a different coding agent a shell-quoted `cd -- '<absolute worktree>'` followed
+by ordinary `git`, `gh`, and test commands. It explicitly requires inspecting
+each recorded status/output/recovery path before any relaunch.
 
 The reader is an agent or person with the repository and this document and nothing else: no rules loaded, no state files, no knowledge of our conventions, possibly not Claude at all. Translate every internal concept into what someone can act on (the template has the translation table).
 
-## Step 5: Verify portability — this is a gate, not a review
+## Step 5: Stage and verify portability — this is a gate, not a review
 
-Write the buffer to a temporary file **in the destination directory** and check it:
+Write the single rendered buffer to a temporary draft **in the destination
+directory**. The canonical publisher runs the checker against those exact bytes:
 
 ```bash
 OUT_DIR="$HOME/.claude/handoffs"
@@ -183,29 +228,17 @@ elif ! TMP_DOC=$(mktemp "$OUT_DIR/.portable-handoff.XXXXXX"); then
   TMP_DOC=""
 fi
 # ... write the rendered buffer to "$TMP_DOC" ...
-if [[ -z "$TMP_DOC" ]]; then
-  LINT_RC=2
-elif [[ -n "$HANDOFF_LINT_SH" ]]; then
-  # Bind the skill catalog to the checker's OWN repo, not the cwd. Without
-  # --repo-root, a /stop run inside some other project that also happens to
-  # have a .claude/skills directory would validate against THAT project's
-  # command list — and a document full of this harness's commands would pass.
-  LINT_ROOT=$(cd "$(dirname "$HANDOFF_LINT_SH")/../.." 2>/dev/null && pwd)
-  if [[ -n "$LINT_ROOT" ]]; then
-    "$HANDOFF_LINT_SH" --repo-root "$LINT_ROOT" "$TMP_DOC"; LINT_RC=$?
-  else
-    "$HANDOFF_LINT_SH" "$TMP_DOC"; LINT_RC=$?
-  fi
-else
-  LINT_RC=2   # checker not found in Step 0 — same branch as "could not run"
-fi
 ```
 
 Staging inside `$OUT_DIR` — not `$TMPDIR` — keeps Step 6's `mv` on one filesystem, where it is a real atomic rename rather than a copy a reader can catch half-finished.
 
-- **`LINT_RC` 0** — proceed to Step 6.
-- **`LINT_RC` 1** — the document names something the reader cannot use. Rewrite each reported line in plain English, then re-run. Do not emit a failing document, and do not edit the checker to make a line pass.
-- **Anything else** (2, 3, an unresolved checker, or a non-zero the checker does not define) — the check could not run. Emit the document anyway, and say plainly in the thread that it went out **unverified**, naming what stopped it. An unverified handoff is worth more than no handoff; an unverified handoff the user believes was checked is worth less than nothing.
+- **Publisher exit 0** — the exact buffer passed lint and atomically replaced
+  the canonical repository/session note.
+- **Publisher exit 1** — the document is not portable. Rewrite each reported
+  line in plain English and retry; never publish the failing bytes.
+- **Any other exit** — verification, locking, staging, or publication could not
+  complete. Keep and print the draft, name its path and the exact error, and do
+  not claim a canonical note was written.
 
 If `STAGING_ERROR` is non-empty, no destination draft exists to publish. Keep
 the rendered buffer in memory, print it in the thread, report the exact command
@@ -214,31 +247,66 @@ not run `mv`, claim a file was emitted, or discard the only remaining copy.
 
 The lint also enforces that every required section exists and has content, which is what keeps graceful degradation from quietly producing an empty shell.
 
-## Step 6: Emit — write, then print the same bytes
+Steps 4–6 are one bounded correction loop with at most three publication
+attempts. Publisher exit 1 returns to Step 4: display the lint findings,
+rewrite the same buffer to address every finding, stage it again, and retry.
+Do not print the document as final while lint is failing. After three lint
+failures, preserve the latest draft, report that the canonical handoff was not
+published, and keep every completion gate closed.
+
+Set `PUBLISH_ATTEMPT=0` once before the first Step 4 render. Preserve it across
+corrections; do not reset it when returning to Step 4.
+
+## Step 6: Publish canonically, then print the same bytes
 
 ```bash
-SESSION_ID="${CLAUDE_SESSION_ID:-default}"
-SESSION_ID="${SESSION_ID//[^[:alnum:]_.-]/_}"
-SESSION_ID="${SESSION_ID:-default}"
-STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-DOC_TAG="${TMP_DOC##*.portable-handoff.}"
-OUT="$OUT_DIR/portable-handoff-${STAMP}-${SESSION_ID}-${DOC_TAG}.md"
-if [[ -n "$TMP_DOC" ]] && mv "$TMP_DOC" "$OUT" 2>/dev/null; then
-  chmod 644 "$OUT"
-  echo "$OUT"
-else
-  if [[ -n "$TMP_DOC" && -f "$TMP_DOC" ]]; then
-    echo "could not publish the handoff; the draft is at $TMP_DOC" >&2
+PUBLISH_ATTEMPT=$((PUBLISH_ATTEMPT + 1))
+PUBLISH_RC=4
+OUT=""
+if [[ -n "$TMP_DOC" && -n "$HANDOFF_PUBLISH_SH" && -n "$HANDOFF_LINT_SH" ]]; then
+  REPO_ID=$(jq -r '.repository.identity // "unknown"' <<<"$CONTEXT_JSON" 2>/dev/null)
+  LINT_ROOT=$(cd "$(dirname "$HANDOFF_LINT_SH")/../.." 2>/dev/null && pwd)
+  if [[ "$REPO_ID" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+    if [[ -n "$LINT_ROOT" ]]; then
+      OUT=$("$HANDOFF_PUBLISH_SH" --input "$TMP_DOC" --repo "$REPO_ID" \
+        --session "$SESSION_ID" --out-dir "$OUT_DIR" --lint "$HANDOFF_LINT_SH" \
+        --lint-root "$LINT_ROOT")
+    else
+      OUT=$("$HANDOFF_PUBLISH_SH" --input "$TMP_DOC" --repo "$REPO_ID" \
+        --session "$SESSION_ID" --out-dir "$OUT_DIR" --lint "$HANDOFF_LINT_SH")
+    fi
+    PUBLISH_RC=$?
   else
-    echo "could not stage the handoff: $STAGING_ERROR; retry publication in $OUT_DIR" >&2
+    echo "could not publish the canonical handoff: repository identity is unknown" >&2
   fi
+fi
+if (( PUBLISH_RC == 0 )); then
+  rm -f "$TMP_DOC"
+  echo "$OUT"
+elif (( PUBLISH_RC == 1 )); then
+  if [[ -n "$LINT_ROOT" ]]; then
+    "$HANDOFF_LINT_SH" --repo-root "$LINT_ROOT" "$TMP_DOC" >&2 || true
+  else
+    "$HANDOFF_LINT_SH" "$TMP_DOC" >&2 || true
+  fi
+  if (( PUBLISH_ATTEMPT < 3 )); then
+    echo "portable handoff lint failed on attempt $PUBLISH_ATTEMPT of 3; return to Step 4, rewrite the same buffer, and retry" >&2
+  else
+    echo "portable handoff lint failed on attempt 3 of 3; canonical handoff was not published; recovery draft: $TMP_DOC" >&2
+    echo "INCOMPLETE SHUTDOWN — all completion gates remain closed" >&2
+  fi
+elif [[ -n "$TMP_DOC" && -f "$TMP_DOC" ]]; then
+  echo "canonical handoff was not published (exit $PUBLISH_RC); recovery draft (validation may be incomplete): $TMP_DOC" >&2
+else
+  echo "could not stage the handoff: $STAGING_ERROR; retry publication in $OUT_DIR" >&2
 fi
 ```
 
-Same-directory `mktemp` + `mv` is an atomic single-writer publish — a reader
-sees a complete document or none. The exclusive `mktemp` suffix is retained in
-the final name, so concurrent invocations in the same session and second never
-target or overwrite the same path. Naming and format:
+The publisher derives one deterministic filename from the validated repository
+identity and session ID, acquires an advisory lock, lints the staged bytes, and
+uses same-directory `mktemp` + `mv`. A reader sees the previous complete note or
+the new complete note, never a partial file; concurrent `/stop` calls serialize
+instead of creating competing handoffs. Naming and format:
 `.claude/reference/portable-handoff.md`.
 
 If the `mv` fails, say so and print the temp file's path — never report a write that did not happen.

@@ -204,8 +204,15 @@ WORKDIR=$(pwd -P 2>/dev/null || pwd)
 IN_REPO=0
 BRANCH=""
 HEAD_SHA=""
+BASE_BRANCH=""
+ROOT_REPO=""
+WORKTREE_CONDITION="not a git checkout"
 CHANGED_COUNT=0
 CHANGED_LIST=""
+TRACKED_COUNT=0
+TRACKED_LIST=""
+UNTRACKED_COUNT=0
+UNTRACKED_LIST=""
 UNPUSHED=""
 REPO_SLUG=""
 TOPLEVEL=""
@@ -213,8 +220,18 @@ TOPLEVEL=""
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   IN_REPO=1
   TOPLEVEL=$(git rev-parse --show-toplevel 2>/dev/null)
-  BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-  HEAD_SHA=$(git rev-parse --short HEAD 2>/dev/null)
+  BRANCH=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+  HEAD_SHA=$(git rev-parse --verify HEAD 2>/dev/null || true)
+  ROOT_REPO=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{sub(/^worktree /, ""); print; exit}')
+  if [[ -n "$ROOT_REPO" && "$TOPLEVEL" == "$ROOT_REPO" ]]; then
+    WORKTREE_CONDITION="main worktree"
+  elif [[ -n "$ROOT_REPO" ]]; then
+    WORKTREE_CONDITION="linked worktree"
+  else
+    WORKTREE_CONDITION="git checkout; worktree condition unknown"
+  fi
+  ORIGIN_HEAD=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  [[ -n "$ORIGIN_HEAD" ]] && BASE_BRANCH="${ORIGIN_HEAD#origin/}"
   PORCELAIN=$(git status --porcelain 2>/dev/null)
   if [[ -n "$PORCELAIN" ]]; then
     CHANGED_COUNT=$(printf '%s\n' "$PORCELAIN" | grep -c . 2>/dev/null || true)
@@ -223,6 +240,18 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     # keep both sides, which is what a reader wants to see anyway.
     CHANGED_LIST=$(printf '%s\n' "$PORCELAIN" | sed 's/^...//' | sort)
   fi
+  if git rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+    TRACKED_LIST=$(git diff --name-only HEAD -- 2>/dev/null | sort)
+  else
+    # An unborn repository has no HEAD to diff against. Staged files are still
+    # tracked takeover state and must not disappear from the checkpoint.
+    TRACKED_LIST=$(git diff --cached --name-only -- 2>/dev/null | sort)
+  fi
+  UNTRACKED_LIST=$(git ls-files --others --exclude-standard -- 2>/dev/null | sort)
+  [[ -n "$TRACKED_LIST" ]] && TRACKED_COUNT=$(printf '%s\n' "$TRACKED_LIST" | grep -c . 2>/dev/null || true)
+  [[ -n "$UNTRACKED_LIST" ]] && UNTRACKED_COUNT=$(printf '%s\n' "$UNTRACKED_LIST" | grep -c . 2>/dev/null || true)
+  [[ "$TRACKED_COUNT" =~ ^[0-9]+$ ]] || TRACKED_COUNT=0
+  [[ "$UNTRACKED_COUNT" =~ ^[0-9]+$ ]] || UNTRACKED_COUNT=0
   UNPUSHED=$(git rev-list --count '@{u}..HEAD' 2>/dev/null)
   [[ "$UNPUSHED" =~ ^[0-9]+$ ]] || UNPUSHED=""
   ORIGIN=$(git remote get-url origin 2>/dev/null)
@@ -451,23 +480,61 @@ render() {
   fi
   printf '\n'
 
+  printf '## Progress and verification\n\n'
+  printf 'Completed: not recorded — this automatic checkpoint cannot infer completed work.\n'
+  printf 'Remaining: inspect the repository state and linked issue or pull request above.\n'
+  printf 'Blockers and decisions needed: not recorded — re-check current remote state.\n'
+  printf 'Tests: no test result was recorded; run the relevant repository test command.\n'
+  printf 'Review: use the pull-request links and `gh pr checks` commands above, if any.\n'
+  printf 'Next commands: enter the working directory below, run `git status`, then `git log --oneline -20`.\n\n'
+
   printf '## Local state on this machine\n\n'
-  printf 'Working directory: %s\n' "$WORKDIR"
-  if (( ! minimal )); then
-    [[ -n "$BRANCH" ]] && printf 'Branch: %s\n' "$BRANCH"
-    [[ -n "$HEAD_SHA" ]] && printf 'Most recent commit: %s\n' "$HEAD_SHA"
+  if [[ "$REPO_SLUG" == */* ]]; then
+    printf 'Repository identity: %s\n' "$REPO_SLUG"
+  else
+    printf 'Repository identity: unknown — no sanitized owner/repository remote was available\n'
+  fi
+  if [[ -n "$ROOT_REPO" ]]; then
+    printf 'Repository root: %s\n' "$ROOT_REPO"
+  else
+    printf 'Repository root: unknown — main root could not be resolved\n'
+  fi
+  printf 'Working directory: %s\n' "${TOPLEVEL:-$WORKDIR}"
+  printf 'Worktree condition: %s\n' "$WORKTREE_CONDITION"
+  if [[ -n "$BRANCH" ]]; then
+    printf 'Branch: %s\n' "$BRANCH"
+  elif (( IN_REPO )); then
+    printf 'Branch: unknown — could not be determined\n'
+  else
+    printf 'Branch: unknown — not a git checkout\n'
+  fi
+  printf 'Base branch: %s\n' "${BASE_BRANCH:-unknown — no default branch was available}"
+  if [[ -n "$HEAD_SHA" ]]; then
+    printf 'HEAD commit: %s\n' "$HEAD_SHA"
+  elif (( IN_REPO )); then
+    printf 'HEAD commit: unknown — no commits yet\n'
+  else
+    printf 'HEAD commit: unknown — not a git checkout\n'
   fi
 
   if (( IN_REPO )); then
-    if (( CHANGED_COUNT == 0 )); then
-      printf 'Uncommitted changes: none\n'
+    if (( TRACKED_COUNT == 0 )); then
+      printf 'Tracked changes: none\n'
     elif (( list_files )) && (( ! minimal )); then
-      printf 'Uncommitted changes: %d file(s) —\n' "$CHANGED_COUNT"
-      printf '%s\n' "$CHANGED_LIST" | sed 's/^/  /'
+      printf 'Tracked changes: %d file(s) — %s\n' "$TRACKED_COUNT" "$(printf '%s' "$TRACKED_LIST" | tr '\n' ', ' | sed 's/, $//')"
     else
-      printf 'Uncommitted changes: %d file(s). Run `git status` in the directory above to\n' "$CHANGED_COUNT"
-      printf '  list them; the names are not reproduced here because they would not mean\n'
-      printf '  anything outside this checkout.\n'
+      if [[ -n "$HEAD_SHA" ]]; then
+        printf 'Tracked changes: %d file(s); run `git diff --name-only HEAD`.\n' "$TRACKED_COUNT"
+      else
+        printf 'Tracked changes: %d file(s); run `git diff --cached --name-only`.\n' "$TRACKED_COUNT"
+      fi
+    fi
+    if (( UNTRACKED_COUNT == 0 )); then
+      printf 'Untracked changes: none\n'
+    elif (( list_files )) && (( ! minimal )); then
+      printf 'Untracked changes: %d file(s) — %s\n' "$UNTRACKED_COUNT" "$(printf '%s' "$UNTRACKED_LIST" | tr '\n' ', ' | sed 's/, $//')"
+    else
+      printf 'Untracked changes: %d file(s); run `git ls-files --others --exclude-standard`.\n' "$UNTRACKED_COUNT"
     fi
     if [[ -z "$UNPUSHED" ]]; then
       printf 'Unpushed commits: could not be determined (the branch has no upstream set).\n'
@@ -477,6 +544,8 @@ render() {
       printf 'Unpushed commits: %s. Run `git log --oneline @{u}..HEAD` to see them.\n' "$UNPUSHED"
     fi
   else
+    printf 'Tracked changes: not applicable — this directory is not a git checkout\n'
+    printf 'Untracked changes: not applicable — this directory is not a git checkout\n'
     printf 'This directory is not a git checkout, so no branch or change list was available.\n'
   fi
 
@@ -485,6 +554,11 @@ render() {
     printf 'They may have been interrupted, so treat any work they owned as unfinished\n'
     printf 'until you have checked it yourself.\n'
   fi
+
+  printf '\n## Resume safely\n\n'
+  printf 'Resume command: not applicable — this automatic checkpoint did not stop the session.\n'
+  printf 'For another agent: enter the absolute working directory above and run `git status` before changing anything.\n'
+  printf 'Relaunch rule: inspect recorded task status and preserved output before replacing work; do not duplicate a running or completed task.\n'
 
   printf '\n%s\n' "$FINGERPRINT_MARK"
 }

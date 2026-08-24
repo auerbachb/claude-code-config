@@ -23,7 +23,8 @@ set -e
 ok "missing registry fails closed for list/count audits"
 
 run --register --session s1 --task-id agent-1 --type agent --name phase-a \
-  --output-file /tmp/agent-1.out --recovery-path /tmp/worktree-1
+  --output-file /tmp/agent-1.out --checkpoint-path /tmp/agent-1.checkpoint \
+  --recovery-path /tmp/worktree-1
 run --register --session s1 --task-id mon-1 --type monitor --name silence-ceiling
 run --register --session s2 --task-id bash-2 --type bash --name tests
 
@@ -31,6 +32,8 @@ run --register --session s2 --task-id bash-2 --type bash --name tests
 [[ "$(run --count --session s2 --live)" == 1 ]] || fail "s2 live count"
 [[ "$(run --list --session s1 --live | jq -r '.[0] | has("task_id") and has("name")')" == true ]] || \
   fail "runtime ID and logical name must be separate fields"
+[[ "$(run --list --session s1 --live | jq -r '.[] | select(.task_id=="agent-1") | .checkpoint_path')" == /tmp/agent-1.checkpoint ]] || \
+  fail "checkpoint path was not preserved separately"
 ok "register/list/count are repo- and session-scoped"
 
 # Duplicate registration is an upsert, not a second billable task.

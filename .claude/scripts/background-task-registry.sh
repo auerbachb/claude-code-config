@@ -8,7 +8,8 @@
 # USAGE
 #   background-task-registry.sh [--repo owner/name] --register --session ID
 #       --task-id ID --type agent|bash|monitor|workflow [--name NAME]
-#       [--parent-agent ID] [--output-file PATH] [--recovery-path PATH]
+#       [--parent-agent ID] [--output-file PATH] [--checkpoint-path PATH]
+#       [--recovery-path PATH]
 #       [--work-item TEXT]
 #   background-task-registry.sh [--repo owner/name] --transition --session ID
 #       --task-id ID --status running|stopping|stopped|done|failed|stop_failed|rearming|rearmed|abandoned
@@ -108,6 +109,7 @@ EXPECTED_STATUS=""
 STATUS_FILTER=""
 PARENT_AGENT=""
 OUTPUT_FILE=""
+CHECKPOINT_PATH=""
 RECOVERY_PATH=""
 WORK_ITEM=""
 LIVE_ONLY=false
@@ -118,7 +120,7 @@ while (( $# > 0 )); do
     --register|--transition|--list|--count)
       [[ -z "$MODE" ]] || die_usage "only one mode may be supplied"
       MODE="${1#--}" ;;
-    --repo|--session|--task-id|--type|--name|--status|--from-status|--parent-agent|--output-file|--recovery-path|--work-item)
+    --repo|--session|--task-id|--type|--name|--status|--from-status|--parent-agent|--output-file|--checkpoint-path|--recovery-path|--work-item)
       (( $# >= 2 )) || die_usage "$1 requires a value"
       key="$1"; value="$2"; shift
       case "$key" in
@@ -132,6 +134,7 @@ while (( $# > 0 )); do
         --from-status) EXPECTED_STATUS="$value" ;;
         --parent-agent) PARENT_AGENT="$value" ;;
         --output-file) OUTPUT_FILE="$value" ;;
+        --checkpoint-path) CHECKPOINT_PATH="$value" ;;
         --recovery-path) RECOVERY_PATH="$value" ;;
         --work-item) WORK_ITEM="$value" ;;
       esac ;;
@@ -161,7 +164,7 @@ case "$MODE" in
     NEW_DOC="$(printf '%s' "$DOC" | jq \
       --arg repo "$REPO_KEY" --arg sid "$SESSION_ID" --arg id "$TASK_ID" \
       --arg type "$TASK_TYPE" --arg name "$TASK_NAME" --arg parent "$PARENT_AGENT" \
-      --arg output "$OUTPUT_FILE" --arg recovery "$RECOVERY_PATH" \
+      --arg output "$OUTPUT_FILE" --arg checkpoint "$CHECKPOINT_PATH" --arg recovery "$RECOVERY_PATH" \
       --arg work "$WORK_ITEM" --arg now "$NOW" '
         .repos = (.repos // {})
         | .repos[$repo] = (.repos[$repo] // {})
@@ -171,6 +174,7 @@ case "$MODE" in
             parent_agent_id:($parent | if length > 0 then . else null end),
             work_item:($work | if length > 0 then . else null end),
             output_file:($output | if length > 0 then . else null end),
+            checkpoint_path:($checkpoint | if length > 0 then . else null end),
             recovery_path:($recovery | if length > 0 then . else null end),
             status:"running", started_at:$now, updated_at:$now}
            | with_entries(select(.value != null))) as $entry

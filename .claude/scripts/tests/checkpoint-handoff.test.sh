@@ -126,14 +126,14 @@ echo 'echo hi' > "$HARNESSY/.claude/scripts/thing.sh"
 OUT_H="$TMP/out-h"
 DOC_H=$(cd "$HARNESSY" && "$CP" --stdout --no-remote --out-dir "$OUT_H" 2>/dev/null)
 check_not_contains "T2 harness-shaped path is not reproduced in the document" ".claude/scripts/thing.sh" "$DOC_H"
-check_contains "T2 degraded tier reports a count instead" "Uncommitted changes: 1 file(s)" "$DOC_H"
+check_contains "T2 degraded tier reports a count instead" "Untracked changes: 1 file(s)" "$DOC_H"
 printf '%s\n' "$DOC_H" > "$TMP/t2.md"
 "$LINT" --repo-root "$FAKE" --quiet "$TMP/t2.md" >/dev/null 2>&1
 check_eq "T2 degraded tier passes the portability check" "0" "$?"
 
 # Required sections and the absolute working directory, asserted directly rather
 # than trusting the lint's summary exit code.
-for section in "Start here" "What we're working on" "Open work" "Decisions made this session" "Local state on this machine"; do
+for section in "Start here" "What we're working on" "Open work" "Progress and verification" "Decisions made this session" "Local state on this machine" "Resume safely"; do
   check_contains "T2 section present: $section" "## $section" "$DOC_H"
 done
 WD_LINE=$(printf '%s\n' "$DOC_H" | grep '^Working directory: ' | head -1)
@@ -353,6 +353,43 @@ git -C "$NO_ORIGIN" checkout -q -b issue-941-real
 DOC_NO_ORIGIN=$(cd "$NO_ORIGIN" && "$CP" --stdout --no-remote --out-dir "$TMP/out-no-origin" 2>/dev/null)
 check_contains "T10e a no-origin branch can still name its issue number" "issue 941" "$DOC_NO_ORIGIN"
 check_not_contains "T10e a basename never becomes a malformed GitHub issue URL" "https://github.com/issue-941-no-origin/issues/941" "$DOC_NO_ORIGIN"
+
+# (f) An unborn repository has no HEAD, but a staged file is still tracked
+#     takeover state and must not disappear into a failed `git diff HEAD` call.
+UNBORN="$TMP/unborn"
+mkdir -p "$UNBORN"
+git init -q -b main "$UNBORN"
+git -C "$UNBORN" config user.email "test@example.com"
+git -C "$UNBORN" config user.name "Test"
+echo staged >"$UNBORN/staged.txt"
+git -C "$UNBORN" add staged.txt
+DOC_UNBORN=$(cd "$UNBORN" && "$CP" --stdout --no-remote --out-dir "$TMP/out-unborn" 2>/dev/null)
+check_contains "T10f unborn HEAD preserves staged tracked work" "Tracked changes: 1 file(s) — staged.txt" "$DOC_UNBORN"
+check_contains "T10f unborn repository keeps its initialized branch" "Branch: main" "$DOC_UNBORN"
+check_contains "T10f unborn repository reports that no commit exists" "HEAD commit: unknown — no commits yet" "$DOC_UNBORN"
+check_not_contains "T10f unborn repository is not mislabeled outside Git" "HEAD commit: unknown — not a git checkout" "$DOC_UNBORN"
+printf '%s\n' "$DOC_UNBORN" >"$TMP/t10f.md"
+"$LINT" --repo-root "$FAKE" --quiet "$TMP/t10f.md" >/dev/null 2>&1
+check_eq "T10f unborn repository rendering passes portability lint" "0" "$?"
+
+# (g) The degraded tier must give an executable unborn-repository command too.
+#     A harness-shaped staged path forces the count-only rendering.
+UNBORN_DEGRADED="$TMP/unborn-degraded"
+mkdir -p "$UNBORN_DEGRADED/.claude/scripts"
+git init -q -b main "$UNBORN_DEGRADED"
+git -C "$UNBORN_DEGRADED" config user.email "test@example.com"
+git -C "$UNBORN_DEGRADED" config user.name "Test"
+echo 'echo staged' >"$UNBORN_DEGRADED/.claude/scripts/staged.sh"
+git -C "$UNBORN_DEGRADED" add .claude/scripts/staged.sh
+DOC_UNBORN_DEGRADED=$(cd "$UNBORN_DEGRADED" && "$CP" --stdout --no-remote --out-dir "$TMP/out-unborn-degraded" 2>/dev/null)
+check_contains "T10g degraded unborn guidance uses the index" 'Tracked changes: 1 file(s); run `git diff --cached --name-only`.' "$DOC_UNBORN_DEGRADED"
+check_not_contains "T10g degraded unborn guidance never requires HEAD" 'git diff --name-only HEAD' "$DOC_UNBORN_DEGRADED"
+check_contains "T10g degraded unborn repository keeps its initialized branch" "Branch: main" "$DOC_UNBORN_DEGRADED"
+check_contains "T10g degraded unborn repository reports that no commit exists" "HEAD commit: unknown — no commits yet" "$DOC_UNBORN_DEGRADED"
+check_not_contains "T10g degraded unborn repository is not mislabeled outside Git" "HEAD commit: unknown — not a git checkout" "$DOC_UNBORN_DEGRADED"
+printf '%s\n' "$DOC_UNBORN_DEGRADED" >"$TMP/t10g.md"
+"$LINT" --repo-root "$FAKE" --quiet "$TMP/t10g.md" >/dev/null 2>&1
+check_eq "T10g degraded unborn rendering passes portability lint" "0" "$?"
 
 # ---------------------------------------------------------------------------
 # T8 — degraded environments must never fail the turn

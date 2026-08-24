@@ -163,7 +163,7 @@ All 36 commands are invoked as `/command` in a Claude Code session. They are def
 | `/merge` | Workflow | Squash merge with merge gate + AC verification |
 | `/admin-merge` | Workflow | Merge a solo-owner PR blocked by branch protection — auto-runs the no-protection-change plain shape, prints the `enforce_admins` toggle shape for the user (Claude never modifies branch protection) |
 | `/wrap` | Workflow | End-of-session: verify, squash merge, aggressively reset root `main`, detect follow-ups, extract lessons |
-| `/stop` | Workflow | Long-horizon token/credit stop with a 5-minute default checkpoint window: blocks launches, stops all owned background tasks, and writes a portable handoff |
+| `/stop` | Workflow | Long-horizon token/credit stop with a 5-minute default checkpoint window: blocks launches, stops owned current-session background tasks, and attempts to atomically publish a canonical cross-agent handoff with exact worktree/recovery state; publication failures preserve a recovery draft |
 | `/stop-resume` | Workflow | Explicitly reopen work stopped by `/stop`; optionally clear the independent refill pause with `--resume-refill` |
 | `/pause` | Workflow | Short-break or laptop-close pause with a 15-minute default runway: land safe work, park recovery state, and hard-stop every owned background task |
 | `/pause-resume` | Workflow | Restore the paused board, explicitly reopen launches, and re-arm selected stopped work without duplicating live tasks |
