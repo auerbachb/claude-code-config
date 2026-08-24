@@ -148,6 +148,13 @@ printf '%s\n' "$DOC_BOUNDED" >"$TMP/t2-bounded.md"
 "$LINT" --repo-root "$FAKE" --quiet "$TMP/t2-bounded.md" >/dev/null 2>&1
 check_eq "T2 bounded rendering passes the portability check" "0" "$?"
 
+RENAMED="$TMP/renamed"
+new_repo "$RENAMED"
+git -C "$RENAMED" mv README.md renamed.md
+DOC_RENAMED=$(cd "$RENAMED" && "$CP" --stdout --no-remote --out-dir "$TMP/out-renamed" 2>/dev/null)
+check_contains "T2 rename counts as one logical dirty-state entry" \
+  "there were 1 uncommitted change(s)" "$DOC_RENAMED"
+
 # Required sections and the absolute working directory, asserted directly rather
 # than trusting the lint's summary exit code.
 for section in "Start here" "What we're working on" "Open work" "Progress and verification" "Decisions made this session" "Local state on this machine" "Resume safely"; do

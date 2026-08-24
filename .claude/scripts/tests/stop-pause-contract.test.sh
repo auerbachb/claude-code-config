@@ -83,6 +83,8 @@ has "$STOP" 'tracked and untracked'
 # exact dirty state, stage those bytes, and update one deterministic target.
 TMP_HANDOFF=$(mktemp -d)
 trap 'rm -rf "$TMP_HANDOFF"' EXIT
+mkdir -p "$TMP_HANDOFF/home/.claude"
+export HOME="$TMP_HANDOFF/home"
 git init -q "$TMP_HANDOFF/repo"
 git -C "$TMP_HANDOFF/repo" symbolic-ref HEAD refs/heads/main
 git -C "$TMP_HANDOFF/repo" config user.email "test@example.com"

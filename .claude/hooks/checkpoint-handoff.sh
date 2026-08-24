@@ -195,6 +195,28 @@ collect_nul_paths() {
   done
 }
 
+# Count logical entries in `git status --porcelain=v1 -z`. Rename and copy
+# entries carry a second NUL-delimited path, so treating every record as a
+# change inflates the count and makes the summary disagree with Git's status.
+count_nul_status_entries() {
+  local item status
+  STATUS_COUNT=0
+  STATUS_TRUNCATED=0
+  while IFS= read -r -d '' item; do
+    status=${item:0:2}
+    STATUS_COUNT=$((STATUS_COUNT + 1))
+    # In -z mode Git emits the destination first and the source as the next
+    # record for a rename/copy in either the index or worktree status column.
+    if [[ "$status" == *[RC]* ]]; then
+      IFS= read -r -d '' item || break
+    fi
+    if (( STATUS_COUNT > MAX_PATHS )); then
+      STATUS_TRUNCATED=1
+      break
+    fi
+  done
+}
+
 file_mtime_epoch() {
   if [[ "$(uname -s)" == "Darwin" ]]; then
     stat -f %m "$1" 2>/dev/null
@@ -256,9 +278,9 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     WORKTREE_CONDITION="git checkout; worktree condition unknown"
   fi
   STATUS_DIGEST=$(git status --porcelain=v1 -z 2>/dev/null | digest)
-  collect_nul_paths < <(git status --porcelain=v1 -z 2>/dev/null)
-  CHANGED_COUNT=$COLLECT_COUNT
-  CHANGED_TRUNCATED=$COLLECT_TRUNCATED
+  count_nul_status_entries < <(git status --porcelain=v1 -z 2>/dev/null)
+  CHANGED_COUNT=$STATUS_COUNT
+  CHANGED_TRUNCATED=$STATUS_TRUNCATED
   if git rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
     collect_nul_paths < <(git diff --name-only -z HEAD -- 2>/dev/null)
   else
