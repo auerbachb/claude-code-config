@@ -441,6 +441,8 @@ Body:
 
 > **Note on `subagent_type`:** Do NOT set `subagent_type: "phase-a-fixer"` here. The `/subagent` skill's "Phase A" does **initial implementation** of a new issue (no PR exists yet), but `.claude/agents/phase-a-fixer.md` is designed for **fixing existing review findings** on an already-open PR — its workflow references findings, review threads, and push replies that don't apply to green-field implementation. Let this Agent call fall back to the default general-purpose agent; the harness injects the project CLAUDE.md + `.claude/rules/*.md` into general-purpose spawns (verified — see `.claude/reference/token-efficiency-audit-2026-07.md` §FU-1). If rules are absent from your context at session start, read `CLAUDE.md` and `.claude/rules/*.md` before proceeding.
 
+**Launch announcement:** Before spawning, print one line naming the issues and their estimates — e.g., `Launching: #42 (Est: 45–90 min · plan on 90), #55 (unestimated)`. Resolve each via `estimate-resolve.sh <N>` (Step 0 candidate order); if the script is unavailable, omit the Est parenthetical silently.
+
 Record each spawned agent in `session-state.json` under `active_agents` and set `monitoring_active=true`. Also record the monitoring primitive state from `.claude/reference/pm-monitoring-decision.md`: use in-turn Dedicated Monitor Mode immediately. For between-turn PR fleet monitoring, point the user at `/pr-monitor-and-manage`; for explicit user "poll every N" on non-PR work, use `Monitor` per `scheduling-reliability.md`.
 
 ## Step 8: Enter Monitor Mode
@@ -685,11 +687,11 @@ When all subagent PRs are either merged or blocked:
 ```
 ## Subagent Execution Summary
 
-| Issue | PR | Status | Review Cycles |
-|-------|----|--------|---------------|
-| #42 | #88 | Merged | 1 |
-| #55 | #91 | Merged | 0 |
-| #61 | #93 | Blocked (CI failure) | 2 |
+| Issue | PR | Est | Status | Review Cycles |
+|-------|----|-----|--------|---------------|
+| #42 | #88 | 45–90 min · plan on 90 | Merged | 1 |
+| #55 | #91 | 15–30 min · plan on 30 | Merged | 0 |
+| #61 | #93 | unestimated | Blocked (CI failure) | 2 |
 ```
 
 3. For any blocked PRs, suggest next steps.

@@ -28,7 +28,8 @@ When `$GH_USER` is set, render all four in this order before the backlog ranking
 
 ## Suggested Next Issues (Step 1B.5)
 
-Top 3-5 backlog issues for pickup:
+Top 3-5 backlog issues for pickup. Each issue shows its per-issue estimate resolved via
+`estimate-resolve.sh` (body `## Estimate` section → tier-label fallback → `unestimated`).
 
 ```
 ## Suggested Next Issues
@@ -37,18 +38,23 @@ Based on {N} open issues, {M} recent merges, and {OKR status}:
 
 1. **#42 — {Title}** — {1-line rationale connecting to business value or OKR}
    - Labels: {labels} | Age: {days} days | Unblocks: #50, #53
+   - Est: 45–90 min · plan on 90
 
 2. **#38 — {Title}** — {rationale}
    - Labels: {labels} | Age: {days} days | Blocked by: #35
+   - Est: 15–30 min · plan on 30
 
 3. **#55 — {Title}** — {rationale}
    - Labels: {labels} | Age: {days} days
+   - Est: unestimated
 
 4. **#61 — {Title}** — {rationale}
    - Labels: {labels} | Age: {days} days
+   - Est: 90–180 min · plan on 180
 
 5. **#47 — {Title}** — {rationale}
    - Labels: {labels} | Age: {days} days
+   - Est: 45–90 min · plan on 90
 
 ### Already In-Flight
 {List open PRs with their linked issues — these don't need new threads}
@@ -56,6 +62,10 @@ Based on {N} open issues, {M} recent merges, and {OKR status}:
 ### Dependency Note
 {If any suggested issues have dependency chains, note the order}
 ```
+
+**Resolve order for Est:** call `estimate-resolve.sh <N>` (resolved per the portable-skill-resolution.md
+candidate order). If the script is unavailable, omit the `- Est:` line silently — the estimate is
+informational and never a dispatch blocker.
 
 ---
 
