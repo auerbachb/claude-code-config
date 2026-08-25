@@ -902,6 +902,10 @@ if [[ "$MODE" == "apply" ]]; then
       echo "repo-bootstrap.sh: failed to chmod $_mode temp file for $_rel" >&2
       exit 5
     fi
+    if [[ -d "$_abs" ]]; then
+      echo "repo-bootstrap.sh: target path is a directory, cannot install $_abs" >&2
+      exit 5
+    fi
     if ln "$TMP_FILE" "$_abs" 2>/dev/null; then
       rm -f "$TMP_FILE"
       TMP_FILE=""   # avoid double-cleanup in EXIT trap
