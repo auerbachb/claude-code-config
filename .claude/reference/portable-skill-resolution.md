@@ -256,12 +256,16 @@ reason: there is nowhere else for a generated chip to read it from.
 
 ## Enforcement
 
-`.github/scripts/skill-portability-lint.sh` fails when a load-bearing script is
-invoked by a bare `.claude/scripts/…` path in the seven skills, the chip
-Constraints blocks, or the agent definitions. `run-doc-lints.sh` auto-discovers
-`*-lint.sh`, so the lint needs no workflow edit. A hand-run grep was the
-alternative; it rots silently, which is the failure mode this whole file exists
-to close.
+`.github/scripts/skill-portability-lint.sh` derives its skill surface from every
+immediate directory published by `setup-skills-worktree.sh` under
+`.claude/skills/`, then fails when any of those skills (including their
+`references/*.md` files), a chip Constraints block, or an agent definition
+invokes a helper through a bare `.claude/scripts/…` path. The shared dynamic
+enumerator is also used by the regression fixture, so a newly published skill
+cannot bypass either production coverage or its tests through a stale list.
+`run-doc-lints.sh` auto-discovers `*-lint.sh`, so the lint needs no workflow
+edit. A hand-run grep was the alternative; it rots silently, which is the
+failure mode this whole file exists to close.
 
 ## References
 

@@ -10,6 +10,25 @@ argument-hint: "[days] (optional — default 3; PRs idle longer than this are su
 
 One-shot startup triage of open PRs that have gone idle. Does **not** enter a monitoring loop — continuous PR-fleet monitoring remains `/pr-monitor-and-manage`'s job.
 
+Resolve the required detector and merge-order helper before Step 1:
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+FORGOTTEN_PR_TRIAGE_SH=$(resolve_script forgotten-pr-triage.sh || true)
+MERGE_SEQUENCE_SH=$(resolve_script merge-sequence.sh || true)
+[[ -n "$FORGOTTEN_PR_TRIAGE_SH" ]] || { echo "ERROR: forgotten-pr-triage.sh not found (checked all three paths) — forgotten PR triage unavailable" >&2; exit 1; }
+[[ -n "$MERGE_SEQUENCE_SH" ]] || { echo "ERROR: merge-sequence.sh not found (checked all three paths) — merge ordering unavailable" >&2; exit 1; }
+```
+
 When invoked by `/pm` Step 1D inline, `$GH_USER` and `$FORGOTTEN_PR_DAYS` are already set from the calling context. When run standalone, parse `$ARGUMENTS` as the days threshold (e.g. `/pm-forgotten-pr 7` → 7-day threshold); non-numeric or absent values fall back to 3 safely.
 
 ## Step 1: Detection
@@ -26,7 +45,7 @@ fi
 # $GH_USER when Step 0 resolved it. The script re-validates --days and falls back
 # to 3 on a non-numeric/non-positive value, so a bad override degrades safely.
 DAYS="${FORGOTTEN_PR_DAYS:-3}"
-.claude/scripts/forgotten-pr-triage.sh --json --days "$DAYS" ${GH_USER:+--author "$GH_USER"}
+"$FORGOTTEN_PR_TRIAGE_SH" --json --days "$DAYS" ${GH_USER:+--author "$GH_USER"}
 ```
 
 `forgotten-pr-triage.sh` (read-only — it never closes, merges, or deletes) enumerates your open PRs, keeps those whose **last activity** (`updatedAt`, the documented age basis) is strictly more than the threshold ago, and classifies each `close` or `merge` using exactly two close signals (first match wins; otherwise `merge`):
@@ -64,7 +83,7 @@ On confirmation, **dispatch one subagent per approved PR that executes the `/wra
 **Sequence the approved set by file overlap before dispatching (issue #756).** Two approved PRs touching the same file merge in whichever order they finish, and the second inherits a conflict the first created. Run the planner once over the approved numbers and dispatch in its order:
 
 ```bash
-SEQ=$(.claude/scripts/merge-sequence.sh --prs "$APPROVED_CSV" --skip-missing)
+SEQ=$("$MERGE_SEQUENCE_SH" --prs "$APPROVED_CSV" --skip-missing)
 ```
 
 Dispatch `merge` and `batch` PRs; **hold back** anything the plan marks `hold` and say so in one line naming the shared file. A held PR is not dropped: it stays a merge candidate for the next `/pm` run or for `/pr-monitor-and-manage`, which owns the across-tick hold state. A non-zero exit other than `0`/`1` means the planner failed — log one line and dispatch in the original order rather than blocking the merges. Model: `.claude/reference/merge-sequencing.md`.

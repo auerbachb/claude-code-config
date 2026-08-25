@@ -13,6 +13,23 @@ deliberate because they have sat there so long.
 
 This skill is that missing question, run on a schedule.
 
+Resolve the repository locator before either pass:
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
+[[ -n "$REPO_ROOT_SH" ]] || { echo "ERROR: repo-root.sh not found (checked all three paths) — harness inventory root unavailable" >&2; exit 1; }
+```
+
 > **ADVISORY ONLY — NON-NEGOTIABLE.** This skill **never** edits, deletes,
 > moves, or rewrites a rule, skill, script, or hook. Not even an obviously-dead
 > one. Not even when the verdict is unambiguous. Its entire output surface is a
@@ -59,7 +76,7 @@ combine with a plain on-demand run (and with each other). A `--tick` ignores
 Resolve once, up front:
 
 ```bash
-REPO_ROOT="$(.claude/scripts/repo-root.sh)"
+REPO_ROOT="$("$REPO_ROOT_SH")"
 INVENTORY="$REPO_ROOT/.claude/skills/harness-audit/inventory.sh"
 FLEET="$REPO_ROOT/.claude/scripts/model-fleet.sh"
 SESSION_STATE_SH="$REPO_ROOT/.claude/scripts/session-state.sh"
@@ -565,7 +582,7 @@ and is valid **only** when both hold:
 ```bash
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
   && [[ "$(git branch --show-current)" != "main" ]] \
-  && [[ "$(git rev-parse --show-toplevel)" != "$(.claude/scripts/repo-root.sh)" ]]
+  && [[ "$(git rev-parse --show-toplevel)" != "$("$REPO_ROOT_SH")" ]]
 ```
 
 i.e. a worktree that is **not** the root repo, on a branch that is **not** `main`.

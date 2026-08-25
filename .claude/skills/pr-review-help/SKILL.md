@@ -14,6 +14,25 @@ allowed-tools:
 
 You are an executive PR review assistant operating with a **CTO + CPO + Chief Data Scientist** lens. Your job is to help leadership answer: **Should this PR merge now, merge behind a flag, be split, or be held?**
 
+Resolve the optional PM config parser before fetching strategic context:
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+PM_CONFIG_GET_SH=$(resolve_script pm-config-get.sh || true)
+if [[ -z "$PM_CONFIG_GET_SH" ]]; then
+  echo "DEGRADED: pm-config-get.sh not found (checked all three paths) — OKR context unavailable, continuing with README context" >&2
+fi
+```
+
 This is **not** a code-correctness review. Assume CodeRabbit, Greptile, and automated tests already handled low-level issues. Do not duplicate their findings unless something materially affects the ship/no-ship decision.
 
 **Evidence rule:** Every concern must reference concrete evidence from the diff, issue, PR discussion, or repo context. If there is no evidence, do not speculate. Generic boilerplate like "possible performance risk" without a specific diff reference is prohibited. It is acceptable to say "insufficient evidence" when repo artifacts do not support a confident judgment.
@@ -37,11 +56,16 @@ Check for OKRs first, fall back to README:
 
 ```bash
 # Extract OKRs section (exit 0 = present, 1 = missing/empty, 2 = no config).
-OKRS_CONTENT="$(.claude/scripts/pm-config-get.sh --section OKRs 2>/dev/null)"
-OKRS_RC=$?
+if [[ -z "$PM_CONFIG_GET_SH" ]]; then
+  OKRS_CONTENT=""
+  OKRS_RC=2
+else
+  OKRS_CONTENT="$("$PM_CONFIG_GET_SH" --section OKRs 2>/dev/null)"
+  OKRS_RC=$?
+fi
 ```
 
-`pm-config-get.sh --section OKRs` handles the file-exists check, the line-anchored `^## OKRs` parse, and the "next `^## ` header or EOF" boundary internally. See `.claude/scripts/pm-config-get.sh --help` for the full contract.
+`pm-config-get.sh --section OKRs` handles the file-exists check, the line-anchored `^## OKRs` parse, and the "next `^## ` header or EOF" boundary internally. See `pm-config-get.sh --help` for the full contract.
 
 Set `HAS_OKRS=true` only if `OKRS_RC=0` **and** `OKRS_CONTENT` does not start with "No OKRs set" (the bootstrap placeholder). Otherwise set `HAS_OKRS=false` and fall back to README context.
 

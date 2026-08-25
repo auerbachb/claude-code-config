@@ -19,7 +19,7 @@ This is reused by `/pr-monitor-and-manage` (issue #460): that skill invokes `/ba
 
 `/babysit-pr` is read-only plus the dispatches below. It MUST NOT:
 
-- **Never babysit a PR you did not author (issue #733, `safety.md`).** Enrolling a PR in a watch loop is a "touch". Before the first tick, gate the target: `.claude/scripts/pr-authorship.sh <PR>` (exit 0 = yours). Not yours / undetermined → refuse with one line naming the authorship guard, and do NOT enrol — unless the user named this specific PR in chat this session (per-PR override; say you are operating under it). `polling-state-gate.sh --ensure-session` also refuses non-author enrolment as a fail-safe (bypass only with `--allow-nonauthor` under that override).
+- **Never babysit a PR you did not author (issue #733, `safety.md`).** Enrolling a PR in a watch loop is a "touch". Before the first tick, gate the target with `"$PR_AUTHORSHIP_SH" <PR>` (exit 0 = yours). Not yours / undetermined → refuse with one line naming the authorship guard, and do NOT enrol — unless the user named this specific PR in chat this session (per-PR override; say you are operating under it). `polling-state-gate.sh --ensure-session` also refuses non-author enrolment as a fail-safe (bypass only with `--allow-nonauthor` under that override).
 - **Never modify branch protection** — no calls to `.../branches/.../protection`.
 - **Never dismiss human-authored reviews.** Only `/fixpr`'s `dismiss-stale-bot-changes.sh` (bot allowlist, wrong `commit_id`) may dismiss, and only bot reviews.
 - **Never resolve a review thread** itself — thread resolution happens only inside `/fixpr` Steps 1–4 after code-verification. `/babysit-pr` does not call `resolveReviewThread`.
@@ -120,6 +120,8 @@ SESSION_STATE_SH=$(resolve_script session-state.sh) || { echo "ERROR: session-st
 CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh)   || true   # optional; degrade gracefully
 GREPTILE_SH=$(resolve_script greptile-budget.sh)     || true   # optional; degrade gracefully
 PREFLIGHT_SH=$(resolve_script pr-preflight.sh)       || true   # optional; degrade gracefully (#493)
+PR_AUTHORSHIP_SH=$(resolve_script pr-authorship.sh) || { echo "ERROR: pr-authorship.sh not found (checked all three paths) — babysit authorship gate unavailable" >&2; exit 1; }
+ADMIN_MERGE_SH=$(resolve_script admin-merge.sh)     || { echo "ERROR: admin-merge.sh not found (checked all three paths) — clean-BEHIND recovery unavailable" >&2; exit 1; }
 
 to_epoch() {
   # Portable ISO-8601 UTC (e.g. 2026-07-21T17:13:05Z) -> epoch seconds.
@@ -543,7 +545,7 @@ PR_MERGED=$(jq -r '(.state == "MERGED")' <<<"$PR_NOW")
 | 2 | `hard-blocked` | `HUMAN_CR > 0` (human `CHANGES_REQUESTED` on HEAD), **or** PR `CLOSED` unmerged, **or** the only gap is a fresh review and both budgets are exhausted (`CR_BUDGET_OK == 0 && GREP_BUDGET_OK == 0`, from T2), **or** a Greptile P0 needing design input persists | **Record blocker, exit.** Never auto-dismiss. |
 | 3 | `merge-ready` | `GATE_MET == true` (gate exit 0) | **Dispatch `/wrap`** (T4). |
 | 4 | `conflicting` | `MERGEABLE == CONFLICTING` (checked before other recoverable signals; first-match priority) | See T4 `conflicting` dispatch — branches on `--auto-resolve-conflicts` flag and `conflict_streak` cap. |
-| 5 | `has-recoverable-blockers` | gate exit 1 **and** any of: `UNRESOLVED > 0`, `NEW_FINDINGS > 0`, `CI_FAILING > 0`, `STALE_BOT_CR > 0`, `MERGE_STATE` ∈ {`BEHIND`,`DIRTY`} | When `MERGE_STATE == BEHIND` is the **only** blocker, first complete `cr-merge-gate.md` Step 2 (per-criterion Test Plan verification at this SHA — ticked boxes alone are a proxy), then run `.claude/scripts/admin-merge.sh <PR> --auto-plain --ac-verified` (issue #754): exit 0 → merged, relay its evidence block and **exit** (terminal, as class 1); exit 8 → record the printed bypass as a blocker and exit; exit 1 → fall through. Otherwise **dispatch `/fixpr`** (T4). |
+| 5 | `has-recoverable-blockers` | gate exit 1 **and** any of: `UNRESOLVED > 0`, `NEW_FINDINGS > 0`, `CI_FAILING > 0`, `STALE_BOT_CR > 0`, `MERGE_STATE` ∈ {`BEHIND`,`DIRTY`} | When `MERGE_STATE == BEHIND` is the **only** blocker, first complete `cr-merge-gate.md` Step 2 (per-criterion Test Plan verification at this SHA — ticked boxes alone are a proxy), then run `"$ADMIN_MERGE_SH" <PR> --auto-plain --ac-verified` (issue #754): exit 0 → merged, relay its evidence block and **exit** (terminal, as class 1); exit 8 → record the printed bypass as a blocker and exit; exit 1 → fall through. Otherwise **dispatch `/fixpr`** (T4). |
 | 6 | `waiting-on-bots` | gate exit 1 and the only gaps are pending review/CI: `CI_INCOMPLETE > 0`, or a missing-but-pending bot approval / `REVIEW_REQUIRED` with no findings/threads/failing-CI (and at least one review budget remains per T2) | **Heartbeat only, no dispatch.** Bots are still working on the current SHA. |
 
 `waiting-on-bots` is the "do nothing, just wait" state — the gate isn't met but there is nothing actionable yet (no findings to fix, no threads to resolve, CI still running, a bot hasn't posted its verdict). Do **not** dispatch `/fixpr` here — that would burn CR/CI cycles on a PR that just needs time. `/fixpr` owns its own bounded post-push wait (#454); `/babysit-pr` simply tolerates the gap across ticks.

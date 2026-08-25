@@ -89,6 +89,27 @@ resolve_script() {
 
 INFER_PR=$(resolve_script infer-pr.sh || true)
 DISMISS=$(resolve_script dismiss-stale-bot-changes.sh || true)
+PR_STATE_SH=$(resolve_script pr-state.sh || true)
+MERGE_GATE_SH=$(resolve_script merge-gate.sh || true)
+AC_CHECKBOXES_SH=$(resolve_script ac-checkboxes.sh || true)
+CI_STATUS_SH=$(resolve_script ci-status.sh || true)
+RELEASE_DECIDE=$(resolve_script release-decide.sh || true)
+RELEASE_SWEEP=$(resolve_script release-sweep.sh || true)
+PR_ISSUE_REF_SH=$(resolve_script pr-issue-ref.sh || true)
+ISSUE_CLAIM_SH=$(resolve_script issue-claim.sh || true)
+REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
+DIRTY_MAIN_GUARD_SH=$(resolve_script dirty-main-guard.sh || true)
+MAIN_SYNC_SH=$(resolve_script main-sync.sh || true)
+HHG_STATE_SH=$(resolve_script hhg-state.sh || true)
+CYCLE_COUNT_SH=$(resolve_script cycle-count.sh || true)
+PR_AUTHORSHIP_SH=$(resolve_script pr-authorship.sh || true)
+CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh || true)
+
+[[ -n "$PR_STATE_SH" ]] || { echo "ERROR: pr-state.sh not found (checked all three paths) — wrap PR state unavailable" >&2; exit 1; }
+[[ -n "$MERGE_GATE_SH" ]] || { echo "ERROR: merge-gate.sh not found (checked all three paths) — wrap merge gate unavailable" >&2; exit 1; }
+[[ -n "$AC_CHECKBOXES_SH" ]] || { echo "ERROR: ac-checkboxes.sh not found (checked all three paths) — acceptance verification unavailable" >&2; exit 1; }
+[[ -n "$CI_STATUS_SH" ]] || { echo "ERROR: ci-status.sh not found (checked all three paths) — CI diagnosis unavailable" >&2; exit 1; }
+[[ -n "$PR_AUTHORSHIP_SH" ]] || { echo "ERROR: pr-authorship.sh not found (checked all three paths) — wrap authorship gate unavailable" >&2; exit 1; }
 ```
 
 These are resolved before any phase work. `INFER_PR` is used in Step 1.1; `DISMISS` is used in Step 2.1 Branch A. `SESSION_STATE_SH` and `ISSUE_DEDUP` are resolved later in the steps that first need them (Steps 3.5 and 3.0 respectively).
@@ -140,7 +161,7 @@ Use the shared `pr-state.sh` helper to fetch and pre-classify review activity fr
 
 ```bash
 PR_CREATED=$(gh pr view "$PR_NUM" --json createdAt --jq '.createdAt')
-BUNDLE=$(.claude/scripts/pr-state.sh --pr "$PR_NUM" --since "$PR_CREATED")
+BUNDLE=$("$PR_STATE_SH" --pr "$PR_NUM" --since "$PR_CREATED")
 ```
 
 Read the findings across all three endpoints with a single jq pass:
@@ -198,7 +219,7 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker su
 **Recovery loop** (`i` from `1` through `$WRAP_RECOVERY_MAX_ITERATIONS`):
 
 1. **Terminal checks** — read PR state via `gh pr view "$PR_NUM" --json state`. `MERGED` → exit for Phase 3. `CLOSED` → stop.
-2. **Refresh gate** — `GATE_JSON=$(.claude/scripts/merge-gate.sh "$PR_NUM")`. Exit `3` → Phase 3. Exit `2`/`4` → surface stderr, stop. Exit `0` with no pending `WRAP_PHASE1_FINDINGS` → proceed to Step 2.2. Exit `0` with `WRAP_PHASE1_FINDINGS` pending → treat as Branch B dispatch (findings still unresolved despite clean gate — delegate to `/fixpr`).
+2. **Refresh gate** — `GATE_JSON=$("$MERGE_GATE_SH" "$PR_NUM")`. Exit `3` → Phase 3. Exit `2`/`4` → surface stderr, stop. Exit `0` with no pending `WRAP_PHASE1_FINDINGS` → proceed to Step 2.2. Exit `0` with `WRAP_PHASE1_FINDINGS` pending → treat as Branch B dispatch (findings still unresolved despite clean gate — delegate to `/fixpr`).
 3. **Exit `1` — classify and dispatch** (first matching branch wins; full per-branch detail in `references/wrap-merge-gate-recovery.md`):
    - **`human_changes_requested` non-empty** → stop; name each login.
    - **A. Stale bot `CHANGES_REQUESTED`** → invoke `"$DISMISS" "$PR_NUM"`.
@@ -215,16 +236,16 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker su
 ### Step 2.2: Verify acceptance criteria
 
 ```bash
-ITEMS=$(.claude/scripts/ac-checkboxes.sh "$PR_NUM" --extract)
+ITEMS=$("$AC_CHECKBOXES_SH" "$PR_NUM" --extract)
 AC_EXIT=$?
 ```
 
 For each item with `checked == false`: read the criterion, read relevant source files, confirm the criterion is satisfied. Tick passing items:
 
 ```bash
-.claude/scripts/ac-checkboxes.sh "$PR_NUM" --tick "0,2,3"
+"$AC_CHECKBOXES_SH" "$PR_NUM" --tick "0,2,3"
 # Or:
-.claude/scripts/ac-checkboxes.sh "$PR_NUM" --all-pass
+"$AC_CHECKBOXES_SH" "$PR_NUM" --all-pass
 ```
 
 Exit codes: `0` OK; `1` no Test Plan section — stop; `3` PR not found — stop; `2`/`4` script/gh error — stop. If any item fails verification, do NOT tick it — stop and report. Do NOT merge with unchecked boxes.
@@ -234,8 +255,8 @@ Exit codes: `0` OK; `1` no Test Plan section — stop; `3` PR not found — stop
 After the recovery loop, Step 2.1 must have returned gate exit `0` immediately before Step 2.2. That implies SHA freshness, BEHIND/CI/unresolved threads cleared. For deeper CI forensics:
 
 ```bash
-.claude/scripts/ci-status.sh "$PR_NUM"
-.claude/scripts/ci-status.sh "$PR_NUM" --format summary
+"$CI_STATUS_SH" "$PR_NUM"
+"$CI_STATUS_SH" "$PR_NUM" --format summary
 ```
 
 **Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, or any suppression comment to work around CI.** Fix the actual code.
@@ -245,7 +266,6 @@ After the recovery loop, Step 2.1 must have returned gate exit `0` immediately b
 Repos that ship an iOS app cut TestFlight builds from a `release:ios` label on the merged PR. GitHub does **not** re-fire `pull_request: [closed]` for a label added to an already-closed PR, so this is the one release step that must run *before* the merge; everything else happens in Step 3.14. A repo with no `.claude/release-policy.json` — or with it disabled, which is the default — is inert here.
 
 ```bash
-RELEASE_DECIDE=".claude/scripts/release-decide.sh"
 RELEASE_PREMERGE_RC=2; RELEASE_PREMERGE_OUT=""
 if [ -x "$RELEASE_DECIDE" ]; then
   RELEASE_PREMERGE_RC=0
@@ -267,8 +287,8 @@ gh pr merge "$PR_NUM" --squash
 **Release the issue claim** once the merge succeeds — a merged PR is the terminal state that makes the issue startable again (issue #873). Step 3.1 resolves the linked issue for follow-ups, but that runs later, so resolve it here too:
 
 ```bash
-MERGED_ISSUE=$(.claude/scripts/pr-issue-ref.sh "$PR_NUM" 2>/dev/null || true)
-[ -n "$MERGED_ISSUE" ] && .claude/scripts/issue-claim.sh "$MERGED_ISSUE" --release || true
+MERGED_ISSUE=$([[ -n "$PR_ISSUE_REF_SH" ]] && "$PR_ISSUE_REF_SH" "$PR_NUM" 2>/dev/null || true)
+[ -n "$MERGED_ISSUE" ] && [ -n "$ISSUE_CLAIM_SH" ] && "$ISSUE_CLAIM_SH" "$MERGED_ISSUE" --release || true
 ```
 
 Best-effort by design: the merge has already landed, so a failed release is a warning, never a non-zero exit from `/wrap`. An unreleased claim ages out on its own within `CLAIM_STALE_HOURS`; failing an already-completed merge would be far worse. This is the only release call on the merge path — Phase C (`phase-c-merger.md`) runs `/wrap` and inherits it, so do not add a second one there.
@@ -278,19 +298,24 @@ Do NOT use `--delete-branch`. The current worktree is still checked out on the f
 ### Step 2.5: Sync root repo main (aggressive reset)
 
 ```bash
-ROOT_REPO=$(.claude/scripts/repo-root.sh 2>/dev/null || true)
+ROOT_REPO=$([[ -n "$REPO_ROOT_SH" ]] && "$REPO_ROOT_SH" 2>/dev/null || true)
 MAIN_SYNC_STATUS=""
 QUARANTINE_STATUS=""
 if [ -z "$ROOT_REPO" ] || [ ! -d "$ROOT_REPO" ]; then
   MAIN_SYNC_STATUS="failed: could not determine root repo path"
 else
-  if .claude/scripts/dirty-main-guard.sh --check >/dev/null 2>&1; then
+  if [[ -n "$DIRTY_MAIN_GUARD_SH" ]] && "$DIRTY_MAIN_GUARD_SH" --check >/dev/null 2>&1; then
     QUARANTINE_STATUS="clean"
   else
-    QUARANTINE_STATUS=$(.claude/scripts/dirty-main-guard.sh --quarantine 2>&1 || true)
+    QUARANTINE_STATUS=$([[ -n "$DIRTY_MAIN_GUARD_SH" ]] && "$DIRTY_MAIN_GUARD_SH" --quarantine 2>&1 || echo "DEGRADED: dirty-main-guard.sh not found (checked all three paths) — quarantine unavailable")
   fi
   MAIN_SYNC_RC=0
-  MAIN_SYNC_STATUS=$(bash .claude/scripts/main-sync.sh --reset --repo "$ROOT_REPO" 2>&1) || MAIN_SYNC_RC=$?
+  if [[ -z "$MAIN_SYNC_SH" ]]; then
+    MAIN_SYNC_RC=127
+    MAIN_SYNC_STATUS="ERROR: main-sync.sh not found (checked all three paths) — root main sync unavailable"
+  else
+    MAIN_SYNC_STATUS=$("$MAIN_SYNC_SH" --reset --repo "$ROOT_REPO" 2>&1) || MAIN_SYNC_RC=$?
+  fi
   if [ "$MAIN_SYNC_RC" -ne 0 ] && ! [[ "$MAIN_SYNC_STATUS" == aborted:* ]]; then
     MAIN_SYNC_STATUS="failed(rc=$MAIN_SYNC_RC): $MAIN_SYNC_STATUS"
   fi
@@ -301,7 +326,7 @@ if [ "$WRAP_VERBOSE" = "1" ]; then
 fi
 ```
 
-See `.claude/scripts/main-sync.sh --help` and `.claude/scripts/dirty-main-guard.sh --help` for full contracts.
+See `main-sync.sh --help` and `dirty-main-guard.sh --help` for full contracts.
 
 **If `MAIN_SYNC_STATUS` starts with `aborted:`**: surface the full status line in the final report so the user can run `git log origin/main..main` against the root repo and decide. The PR merge has already succeeded — main-sync failure does not un-merge anything.
 
@@ -367,7 +392,7 @@ dedup_search() {   # sets DEDUP_JSON/DUP_NUM/DUP_STATE
    PR_NUMBER="$PR_NUM"
    PR_TITLE=$(gh pr view "$PR_NUMBER" --json title --jq '.title')
    ISSUE_N=""
-   if RAW_REF=$(.claude/scripts/pr-issue-ref.sh "$PR_NUMBER" 2>&1); then
+   if [[ -n "$PR_ISSUE_REF_SH" ]] && RAW_REF=$("$PR_ISSUE_REF_SH" "$PR_NUMBER" 2>&1); then
      ISSUE_N="$RAW_REF"
    else
      REF_RC=$?
@@ -407,7 +432,7 @@ If the PR title, linked issue title, or linked issue body contains "HHG" (case-i
 HHG_MATCH=$(printf '%s\n%s\n%s\n' "$PR_TITLE" "$ISSUE_TITLE" "$ISSUE_BODY" | grep -iE 'HHG' || true)
 if [ -n "$HHG_MATCH" ]; then
   COMBINED=$(printf '%s %s %s' "$PR_TITLE" "$ISSUE_TITLE" "$ISSUE_BODY")
-  STATE=$(.claude/scripts/hhg-state.sh "$COMBINED" || true)
+  STATE=$([[ -n "$HHG_STATE_SH" ]] && "$HHG_STATE_SH" "$COMBINED" || true)
   if [ -z "$STATE" ]; then
     STATE=""
     echo "WARNING: HHG PR detected but no state code found in PR title, issue title, or issue body — skipping HHG auto-creation. Create the scraping and ETL issues manually once you know the state."
@@ -721,8 +746,7 @@ Proceed immediately to Step 3.14 — do not ask.
 The merge has landed, so the release decision can be reported and the deferred half executed. Three things happen, in order; all are non-fatal.
 
 ```bash
-RELEASE_DECIDE=".claude/scripts/release-decide.sh"
-RELEASE_SWEEP=".claude/scripts/release-sweep.sh"
+# RELEASE_DECIDE and RELEASE_SWEEP were resolved in the preamble.
 
 # 1. Mechanisms that must fire AFTER the merge (workflow_dispatch, none).
 #    Dispatching before the merge would have built the pre-merge default branch.
@@ -794,7 +818,7 @@ Proceed immediately to Phase 4 — do not ask.
 
 ### Step 4.1: Assess session complexity
 
-- **Cycle count** — `CYCLES=$(.claude/scripts/cycle-count.sh "$PR_NUM")`
+- **Cycle count** — `CYCLES=$([[ -n "$CYCLE_COUNT_SH" ]] && "$CYCLE_COUNT_SH" "$PR_NUM" || { echo "DEGRADED: cycle-count.sh not found (checked all three paths) — cycle count unavailable" >&2; echo 0; })`
 - **Thread length** — count user + assistant messages. "Short" = fewer than 15 total.
 - **PR size** — `gh pr view N --json files --jq '.files | length'`
 
@@ -862,4 +886,4 @@ Print a **single short line** naming the reason. Under `--verbose`, also append 
 
 The blocker line is **mandatory on the silent default** — silence must never swallow a stop.
 
-The worktree and feature branch are intentionally left in place, reaped out-of-band by `/pm-update`'s stale-cleanup pass. See `.claude/scripts/stale-cleanup.sh --help`.
+The worktree and feature branch are intentionally left in place, reaped out-of-band by `/pm-update`'s stale-cleanup pass. See `stale-cleanup.sh --help`.

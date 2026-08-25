@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Lint cross-repo portability of the shared PM/orchestration skills (issue #1189).
+# Lint cross-repo portability of every globally published skill (issues #1189,
+# #1321).
 #
 # The shared PM/orchestration and stop-state skills are symlinked into every repo through
 # ~/.claude/skills/, but their helper scripts and reference docs are not: most
@@ -23,9 +24,8 @@
 #      repo, so a bare path there is the highest-impact form of this bug).
 #
 # Guarded surfaces:
-#   .claude/skills/{pm,subagent,prompt,wave,issue-maker,start-issue,
-#                   pr-monitor-and-manage,end,end-resume,pause,pause-resume}/
-#                   (SKILL.md + references/*.md)
+#   Every directory published by setup-skills-worktree.sh from
+#   .claude/skills/*/ (SKILL.md + references/*.md)
 #   .claude/agents/*.md
 #   .claude/reference/chip-launching.md
 #
@@ -67,8 +67,6 @@ while (( $# > 0 )); do
   esac
 done
 
-SKILLS=(pm subagent prompt wave issue-maker start-issue pr-monitor-and-manage end end-resume pause pause-resume)
-
 WORKTREE_PREFIX='$HOME/.claude/skills-worktree/.claude/scripts/'
 CHIP_LAUNCHING=".claude/reference/chip-launching.md"
 GUARDRAILS=".claude/reference/subagent-phase-guardrails.md"
@@ -76,6 +74,19 @@ CANONICAL_RESOLVE=".claude/reference/portable-skill-resolution.md"
 
 errors=0
 missing=0
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=.github/scripts/lib/lint-common.sh
+source "${SCRIPT_DIR}/lib/lint-common.sh"
+
+SKILLS=()
+while IFS= read -r skill; do
+  SKILLS+=("$skill")
+done < <(published_skills . || true)
+
+if (( ${#SKILLS[@]} == 0 )); then
+  echo "::error::Guarded surface missing from disk: .claude/skills/ contains no published skill directories"
+  exit 3
+fi
 
 err() { echo "::error::$1"; errors=$((errors + 1)); }
 
@@ -171,7 +182,7 @@ for f in "${guarded_files[@]}"; do
   while IFS= read -r hit; do
     lineno="${hit%%:*}"
     line="${hit#*:}"
-    script="$(sed -E 's|.*\.claude/scripts/([A-Za-z0-9_.-]+).*|\1|' <<< "$line")"
+    script="$(sed -E 's#.*(^|[^/A-Za-z0-9_}])\.claude/scripts/([A-Za-z0-9_.-]+\.sh)([^/A-Za-z0-9_.-]|$).*#\2#' <<< "$line")"
 
     # Skip the worktree candidate itself and the $HOME/.claude/scripts entry.
     case "$line" in
@@ -181,7 +192,7 @@ for f in "${guarded_files[@]}"; do
 
     # (a) Candidate-list entry: a quoted path, optionally continued.
     #     `  ".claude/scripts/foo.sh"; do` / `  ".claude/scripts/foo.sh" \`
-    if [[ "$line" =~ ^[[:space:]]*\"\.claude/scripts/[A-Za-z0-9_.-]+\"[[:space:]]*(\\|\;[[:space:]]*do)?[[:space:]]*$ ]]; then
+    if [[ "$line" =~ ^[[:space:]]*\"\.claude/scripts/[A-Za-z0-9_.-]+\.sh\"[[:space:]]*(\\|\;[[:space:]]*do)?[[:space:]]*$ ]]; then
       # Look back within this list for the skills-worktree sibling.
       list_has_worktree=0
       start=$(( lineno - CANDIDATE_WINDOW )); (( start < 1 )) && start=1
@@ -209,10 +220,15 @@ for f in "${guarded_files[@]}"; do
     fi
 
     # (c) Prose mention: the path appears inside backticks with no argument
-    #     following it, and the line is not a shell command line.
-    if [[ "$line" =~ \`\.claude/scripts/[A-Za-z0-9_.-]+\`([^\`]|$) ]] \
+    #     following it, and the line is not itself a shell command line.
+    if [[ "$line" =~ \`\.claude/scripts/[A-Za-z0-9_.-]+\.sh\`([^\`]|$) ]] \
        && [[ ! "$line" =~ ^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=?\$?\( ]] \
        && [[ ! "$line" =~ ^[[:space:]]*\.claude/scripts/ ]]; then
+      continue
+    fi
+
+    # Comments can document a helper path without executing it.
+    if [[ "$line" =~ ^[[:space:]]*# ]]; then
       continue
     fi
 
@@ -220,7 +236,7 @@ for f in "${guarded_files[@]}"; do
   # Readability was proven above, so exit 1 here genuinely means "no matches".
   # `|| true` keeps that no-match case from aborting the loop; it is not masking
   # an I/O error, which the -r pre-check already ruled out.
-  done < <(grep -nE '\.claude/scripts/[A-Za-z0-9_.-]+' "$f" || true)
+  done < <(grep -nE '(^|[^/A-Za-z0-9_}])\.claude/scripts/[A-Za-z0-9_.-]+\.sh([^/A-Za-z0-9_.-]|$)' "$f" || true)
 done
 
 # --- Check 3: RESOLVE block is byte-identical to its canonical copy --------

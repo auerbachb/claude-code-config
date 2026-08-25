@@ -11,6 +11,25 @@ argument-hint: "[days] (optional — default 30; applies to issue inactivity and
 
 The two scans never gate each other: one finding nothing does **not** suppress the other, and the summary always reports both. Nothing is closed or deleted without explicit confirmation.
 
+Resolve both scan engines before Step 0:
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+BACKLOG_STALENESS_SH=$(resolve_script backlog-staleness.sh || true)
+STALE_CLEANUP_SH=$(resolve_script stale-cleanup.sh || true)
+[[ -n "$BACKLOG_STALENESS_SH" ]] || { echo "ERROR: backlog-staleness.sh not found (checked all three paths) — issue scan unavailable" >&2; exit 1; }
+[[ -n "$STALE_CLEANUP_SH" ]] || { echo "ERROR: stale-cleanup.sh not found (checked all three paths) — workspace scan unavailable" >&2; exit 1; }
+```
+
 > **Invoking-repo scope (issue #687).** Both scans stay in the invoking repo's lane:
 > the issue scan (`backlog-staleness.sh`) runs `gh issue list` cwd-repo-scoped, and
 > the workspace sweep (`stale-cleanup.sh`) enumerates worktrees/branches via
@@ -46,12 +65,12 @@ Record the count as `TOTAL_OPEN` for the summary. If it is 0, the issue backlog 
 ### Step 1.2: Run the shared staleness detection
 
 ```bash
-.claude/scripts/backlog-staleness.sh --days <DAYS> --json
+"$BACKLOG_STALENESS_SH" --days <DAYS> --json
 ```
 
 This one call reproduces what was previously four separate inline steps here — gathering open issues, merged PRs, and closed issues, then flagging **solved-by-merged-PR** (closing-keyword regex in merged PR bodies, plus a weaker branch-name signal requiring 2+ shared keywords), **inactive** (the `updatedAt` threshold plus a per-issue comment/open-PR-reference/commit-reference triple check, capped at the 50 oldest candidates), **superseded** (issue-body file/keyword references with 3+ commits each, or 5+ commits on a single file), and **potential-duplicate** (3+ shared significant title words against a *resolved* closed issue, suppressed by explicit cross-references).
 
-Since issue #656 `/pm` runs this entire `/pm-clean` flow inline by default (reversing the #598 count-only design; the only opt-out is `/pm`'s `--no-clean` / `fast` ranking-only flag), so it reaches `backlog-staleness.sh` through this same flow rather than a separate call — both skills share the one `backlog-staleness.sh` detector, so the detection logic cannot diverge between them. Full per-category rules, safeguards (the `pinned`/`do-not-close`/`long-term`/`epic` label-skip, the 50-candidate performance cap), and the JSON record shape are documented in `.claude/scripts/backlog-staleness.sh --help`.
+Since issue #656 `/pm` runs this entire `/pm-clean` flow inline by default (reversing the #598 count-only design; the only opt-out is `/pm`'s `--no-clean` / `fast` ranking-only flag), so it reaches `backlog-staleness.sh` through this same flow rather than a separate call — both skills share the one `backlog-staleness.sh` detector, so the detection logic cannot diverge between them. Full per-category rules, safeguards (the `pinned`/`do-not-close`/`long-term`/`epic` label-skip, the 50-candidate performance cap), and the JSON record shape are documented by `backlog-staleness.sh --help`.
 
 Each returned record has `number`, `title`, `category` (`solved-by-pr`|`inactive`|`superseded`|`potential-duplicate`), a human-readable `rationale`, plus category-specific evidence fields (`pr`/`merged_at`; `last_activity`/`age_days`; `path`/`commits`; `closed_issue`/`closed_title`/`closed_at`/`keywords`). Group records by `category` for Step 3.
 
@@ -65,7 +84,7 @@ Always run `--check` first — the script never deletes in this mode. Pass the r
 
 ```bash
 RC=0
-WORKSPACE_JSON="$(STALE_DAYS="$WORKTREE_DAYS" .claude/scripts/stale-cleanup.sh --check --json)" || RC=$?
+WORKSPACE_JSON="$(STALE_DAYS="$WORKTREE_DAYS" "$STALE_CLEANUP_SH" --check --json)" || RC=$?
 ```
 
 The `|| RC=$?` guard is required: `--check` exits **1** when stale items exist (the normal "found something" case), which would otherwise abort this step under `set -e`.
@@ -207,7 +226,7 @@ On explicit confirmation:
 
 ```bash
 APPLY_RC=0
-STALE_DAYS="$WORKTREE_DAYS" .claude/scripts/stale-cleanup.sh --apply || APPLY_RC=$?
+STALE_DAYS="$WORKTREE_DAYS" "$STALE_CLEANUP_SH" --apply || APPLY_RC=$?
 ```
 
 The script re-runs the same detection (state may have changed since the dry-run), re-applies every safety check, then attempts each deletion. Report the `removed:` / `failed:` lines verbatim:

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # .github/scripts/lib/lint-common.sh — Shared helpers for .github/scripts lint tools.
 #
-# Source this file (do NOT execute it directly) from chip-model-guard-lint.sh,
-# merge-authority-lint.sh, verbatim-block-lint.sh, and env-template-allowlist-lint.sh.
+# Source this file (do NOT execute it directly) from the sibling lint scripts.
 #
 # CONTRACT
-#   Provides two primitives used by all four sibling lint scripts:
+#   Provides the shared error primitives used by sibling lint scripts, plus the
+#   data-returning published_skills helper used by portability enforcement:
 #
 #   require_file FILE
 #     Emits a GitHub Actions ::error:: annotation and increments $errors if FILE
@@ -20,6 +20,12 @@
 #   require_pattern FILE PATTERN LABEL
 #     Emits a GitHub Actions ::error:: annotation and increments $errors if
 #     PATTERN (extended regex) is not found in FILE.
+#
+#   published_skills [REPO_ROOT]
+#     Prints the sorted names of every immediate directory under
+#     REPO_ROOT/.claude/skills/. This mirrors setup-skills-worktree.sh, whose
+#     directory glob is the authoritative publication source. Returns 1 when
+#     the skills directory is absent or contains no skill directories.
 #
 # CALLER RESPONSIBILITY
 #   Each sourcing script must declare `errors=0` before sourcing this file so
@@ -52,4 +58,22 @@ require_pattern() {
     echo "::error file=${file}::Missing required ${label} (expected /${pattern}/)"
     errors=$((errors + 1))
   fi
+}
+
+# published_skills [REPO_ROOT]
+# Returns data on stdout rather than recording lint errors; callers decide
+# whether an empty publication set is a missing-surface error or fixture setup
+# failure. REPO_ROOT defaults to the current directory.
+published_skills() {
+  local repo_root="${1:-.}" skills_dir dir
+  local -a names=()
+  skills_dir="${repo_root%/}/.claude/skills"
+
+  [[ -d "$skills_dir" ]] || return 1
+  for dir in "$skills_dir"/*/; do
+    [[ -d "$dir" ]] || continue
+    names+=("$(basename "${dir%/}")")
+  done
+  (( ${#names[@]} > 0 )) || return 1
+  printf '%s\n' "${names[@]}" | LC_ALL=C sort
 }

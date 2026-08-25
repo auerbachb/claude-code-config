@@ -5,6 +5,33 @@ description: Squash merge the current PR. Verifies merge gate and acceptance cri
 
 Squash merge the current PR. This is the "we're done here" command.
 
+## Portable helper resolution
+
+Resolve all required helpers before Step 1. A missing helper blocks the merge rather than silently weakening its gate.
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+PR_AUTHORSHIP_SH=$(resolve_script pr-authorship.sh || true)
+MERGE_GATE_SH=$(resolve_script merge-gate.sh || true)
+AC_CHECKBOXES_SH=$(resolve_script ac-checkboxes.sh || true)
+CI_STATUS_SH=$(resolve_script ci-status.sh || true)
+MAIN_SYNC_SH=$(resolve_script main-sync.sh || true)
+[[ -n "$PR_AUTHORSHIP_SH" ]] || { echo "ERROR: pr-authorship.sh not found (checked all three paths) — merge authorship gate unavailable" >&2; exit 1; }
+[[ -n "$MERGE_GATE_SH" ]] || { echo "ERROR: merge-gate.sh not found (checked all three paths) — merge gate unavailable" >&2; exit 1; }
+[[ -n "$AC_CHECKBOXES_SH" ]] || { echo "ERROR: ac-checkboxes.sh not found (checked all three paths) — acceptance verification unavailable" >&2; exit 1; }
+[[ -n "$CI_STATUS_SH" ]] || { echo "ERROR: ci-status.sh not found (checked all three paths) — CI diagnosis unavailable" >&2; exit 1; }
+[[ -n "$MAIN_SYNC_SH" ]] || { echo "ERROR: main-sync.sh not found (checked all three paths) — post-merge main sync unavailable" >&2; exit 1; }
+```
+
 ## When to use /merge vs /wrap
 
 - Use **/merge** for a quick mid-session merge when you'll continue working in the same session. It handles AC verification, CI check, and squash-merge — nothing else.
@@ -26,7 +53,7 @@ If the PR is already merged or closed, stop and tell the user.
 
 > **Authorship guard (issue #733, `safety.md`).** A merge is a write, so `/merge` acts only on PRs **you** authored. Confirm before merging:
 > ```bash
-> .claude/scripts/pr-authorship.sh "$PR_NUM"   # exit 0 = yours
+> "$PR_AUTHORSHIP_SH" "$PR_NUM"   # exit 0 = yours
 > ```
 > If it is not yours (exit 1) or undetermined (exit 4), **refuse** with one line — "PR #$PR_NUM is authored by someone else — the authorship guard blocks automated merges; name this PR explicitly to override" — unless the user named this specific PR in chat this session (per-PR override; say you are operating under it, and pass `--allow-nonauthor` to `merge-gate.sh`). `merge-gate.sh` also blocks a confirmed foreign author as a fail-safe.
 
@@ -49,7 +76,7 @@ Run the shared merge-gate verifier, which implements the authoritative gate from
 
 ```bash
 PR_NUM=$(gh pr view --json number --jq .number)
-GATE_JSON=$(.claude/scripts/merge-gate.sh "$PR_NUM")
+GATE_JSON=$("$MERGE_GATE_SH" "$PR_NUM")
 GATE_EXIT=$?
 ```
 
@@ -68,7 +95,7 @@ Use the shared `ac-checkboxes.sh` helper to parse and tick Test Plan items. All 
 
 ```bash
 # 1. Extract items (JSON array of {index, checked, text})
-ITEMS=$(.claude/scripts/ac-checkboxes.sh "$PR_NUM" --extract)
+ITEMS=$("$AC_CHECKBOXES_SH" "$PR_NUM" --extract)
 AC_EXIT=$?
 ```
 
@@ -81,7 +108,7 @@ Exit codes from `--extract`:
 After verification, tick passing items — and **capture the tick exit code**:
 
 ```bash
-.claude/scripts/ac-checkboxes.sh "$PR_NUM" --tick "0,2,3"  # or --all-pass
+"$AC_CHECKBOXES_SH" "$PR_NUM" --tick "0,2,3"  # or --all-pass
 TICK_EXIT=$?
 ```
 
@@ -94,15 +121,15 @@ If any item fails verification, do NOT tick it — stop and report the failure. 
 
 ### Step 4: CI verification (handled by Step 2)
 
-`.claude/scripts/merge-gate.sh` already verifies CI as part of the gate — a gate-passing PR has all check-runs complete with no blocking conclusions. If Step 2 exited `0`, CI is green and you can proceed to merge.
+`merge-gate.sh` already verifies CI as part of the gate — a gate-passing PR has all check-runs complete with no blocking conclusions. If Step 2 exited `0`, CI is green and you can proceed to merge.
 
 If Step 2 reported `missing` entries about CI ("CI has N failing check-run(s): ..." or "CI has N incomplete check-run(s): ..."), **do NOT merge**. Instead:
 
-1. Inspect the CI split: `.claude/scripts/ci-status.sh "$PR_NUM" --format summary` (exit `3` = blocking failures, exit `1` = incomplete). For the JSON with failing check-run IDs, drop `--format summary`.
+1. Inspect the CI split: `"$CI_STATUS_SH" "$PR_NUM" --format summary` (exit `3` = blocking failures, exit `1` = incomplete). For the JSON with failing check-run IDs, drop `--format summary`.
 2. Read a specific failure's output: `gh api "repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID}" --jq '.output.summary'`
 3. Fix the issue (lint errors, type errors, test failures, etc.)
 4. Commit, push, and wait for CI to re-run
-5. Re-run `.claude/scripts/merge-gate.sh` to confirm CI is green before proceeding
+5. Re-run `"$MERGE_GATE_SH" "$PR_NUM"` to confirm CI is green before proceeding
 
 **Never add `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, or any suppression comment to work around CI.** Fix the actual code.
 
@@ -150,11 +177,11 @@ After merging, update the local `main` so subsequent sessions branch from the la
 # 0 OK / 1 skipped (uncommitted) / 2 failed (checkout/pull). All three
 # outcomes are captured here for the completion report — a non-zero exit
 # is not a hard error for /merge, just a report-worthy condition.
-MAIN_SYNC_STATUS=$(bash .claude/scripts/main-sync.sh 2>&1 || true)
+MAIN_SYNC_STATUS=$("$MAIN_SYNC_SH" 2>&1 || true)
 echo "Main sync: $MAIN_SYNC_STATUS"
 ```
 
-Note: `/merge` only runs outside worktrees (Step 1 aborts in worktrees), so we should be on `main` after Step 5a's checkout. The helper's internal checkout-main guard handles edge cases. The `post-merge-pull.sh` hook also fires as a safety net, but this explicit step captures the result for reporting. See `.claude/scripts/main-sync.sh --help` for the full contract.
+Note: `/merge` only runs outside worktrees (Step 1 aborts in worktrees), so we should be on `main` after Step 5a's checkout. The helper's internal checkout-main guard handles edge cases. The `post-merge-pull.sh` hook also fires as a safety net, but this explicit step captures the result for reporting. See `main-sync.sh --help` for the full contract.
 
 ### Step 6: Report completion
 
