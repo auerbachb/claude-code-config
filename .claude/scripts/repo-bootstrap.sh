@@ -864,6 +864,20 @@ if [[ "$MODE" == "apply" ]]; then
     [[ "${FILE_STATE[$_i]}" != "missing" ]] && continue  # already present — skip
 
     _dir="$(dirname "$_abs")"
+    # Symlink safety: resolve the nearest existing ancestor of the target path
+    # and verify it sits within REPO_TOP.  A malicious repository may symlink
+    # .github or .claude to an external directory; cd -P gives the physical
+    # path without requiring platform-specific tools (realpath -m is GNU-only).
+    _chk_path="$_abs"
+    while [[ ! -e "$_chk_path" && "$_chk_path" != "/" ]]; do
+      _chk_path="$(dirname "$_chk_path")"
+    done
+    _chk_phys="$(cd -P "$_chk_path" 2>/dev/null && pwd)" || _chk_phys=""
+    _repo_phys="$(cd -P "$REPO_TOP" 2>/dev/null && pwd)" || _repo_phys="$REPO_TOP"
+    if [[ -n "$_chk_phys" && "$_chk_phys" != "$_repo_phys" && "$_chk_phys" != "$_repo_phys/"* ]]; then
+      echo "repo-bootstrap.sh: target $_abs escapes repo root via symlink (resolved: $_chk_phys)" >&2
+      exit 5
+    fi
     if ! mkdir -p "$_dir"; then
       echo "repo-bootstrap.sh: failed to create $_dir" >&2
       exit 5
