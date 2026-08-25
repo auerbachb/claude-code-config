@@ -783,14 +783,21 @@ fi
 #   "missing"   — file not in the repo
 #   "present"   — file exists (was already there)
 #   "installed" — this run's --apply wrote it (implies present)
+#   "symlink"   — a symlink exists at the target path; not provisioned,
+#                 reported as [SYMLINK], treated as a gap (exit 1)
 # State is set only after a confirmed successful operation, never on failure.
 # --------------------------------------------------------------------------
 FILE_STATE=()
 
 # Check which files are present (populate FILE_STATE).
+# -L is tested before -f because -f follows symlinks: a symlink to an external
+# regular file satisfies -f, causing --apply to report [OK] without installing
+# the canonical file and leaving an out-of-repo target in place.
 for _i in "${!BOOTSTRAP_FILES[@]}"; do
   _rel="${BOOTSTRAP_FILES[$_i]%%|*}"
-  if [[ -f "$REPO_TOP/$_rel" ]]; then
+  if [[ -L "$REPO_TOP/$_rel" ]]; then
+    FILE_STATE[$_i]="symlink"
+  elif [[ -f "$REPO_TOP/$_rel" ]]; then
     FILE_STATE[$_i]="present"
   else
     FILE_STATE[$_i]="missing"
@@ -861,7 +868,7 @@ if [[ "$MODE" == "apply" ]]; then
     _mode="${_entry##*|}"
     _abs="$REPO_TOP/$_rel"
 
-    [[ "${FILE_STATE[$_i]}" != "missing" ]] && continue  # already present — skip
+    [[ "${FILE_STATE[$_i]}" != "missing" ]] && continue  # already present or symlink — skip
 
     _dir="$(dirname "$_abs")"
     # Symlink safety: resolve the nearest existing ancestor of the target path
@@ -936,6 +943,7 @@ for _i in "${!BOOTSTRAP_FILES[@]}"; do
   case "${FILE_STATE[$_i]}" in
     installed) printf '  [INSTALLED] %s\n' "$_rel" ;;
     present)   printf '  [OK]        %s\n' "$_rel" ;;
+    symlink)   printf '  [SYMLINK]   %s — symlink at target; remove it to provision the canonical file\n' "$_rel" ;;
     *)         printf '  [MISSING]   %s\n' "$_rel" ;;
   esac
 done
@@ -978,7 +986,7 @@ fi
 
 GAPS=0
 for _i in "${!BOOTSTRAP_FILES[@]}"; do
-  if [[ "${FILE_STATE[$_i]}" == "missing" ]]; then
+  if [[ "${FILE_STATE[$_i]}" == "missing" || "${FILE_STATE[$_i]}" == "symlink" ]]; then
     GAPS=1
     break
   fi
@@ -992,10 +1000,12 @@ if [[ "$GAPS" -eq 1 ]]; then
 
   # Identify which categories have gaps to print specific messages.
   FILE_GAP=0
+  SYM_GAP=0
   for _i in "${!BOOTSTRAP_FILES[@]}"; do
     if [[ "${FILE_STATE[$_i]}" == "missing" ]]; then
       FILE_GAP=1
-      break
+    elif [[ "${FILE_STATE[$_i]}" == "symlink" ]]; then
+      SYM_GAP=1
     fi
   done
   BP_GAP=0
@@ -1005,15 +1015,23 @@ if [[ "$GAPS" -eq 1 ]]; then
     if [[ "$FILE_GAP" -eq 1 ]]; then
       echo "File gaps detected. Re-run with --apply to install missing files."
     fi
+    if [[ "$SYM_GAP" -eq 1 ]]; then
+      echo "Symlink at provisioned target path; remove it and re-run."
+    fi
     if [[ "$BP_GAP" -eq 1 ]]; then
       echo "Branch protection gap detected. Requires user confirmation — see"
       echo ".claude/rules/repo-bootstrap.md (--apply does not modify branch protection)."
     fi
   else
-    # apply mode — file gaps are resolved before this point (or exit 5),
-    # so a remaining GAPS=1 here can only be branch protection.
-    echo "Branch protection gap remains. Requires user confirmation — see"
-    echo ".claude/rules/repo-bootstrap.md (--apply does not modify branch protection)."
+    # apply mode — "missing" file gaps are resolved before this point (or exit 5).
+    # Remaining GAPS=1 is from symlinks at target paths or branch protection.
+    if [[ "$SYM_GAP" -eq 1 ]]; then
+      echo "Symlink at provisioned target path; remove it and re-run."
+    fi
+    if [[ "$BP_GAP" -eq 1 ]]; then
+      echo "Branch protection gap remains. Requires user confirmation — see"
+      echo ".claude/rules/repo-bootstrap.md (--apply does not modify branch protection)."
+    fi
   fi
   exit 1
 fi

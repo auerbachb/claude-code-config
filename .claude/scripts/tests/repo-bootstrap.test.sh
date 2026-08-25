@@ -245,6 +245,12 @@ fi
 
 # --------------------------------------------------------------------------
 # Case 4: write failure mid-set → exits 5, no partial install reported clean
+#
+# Two .github/workflows/* files install successfully first; the third
+# (.claude/scripts/ac-gate.sh) fails because .claude/scripts is unwritable.
+# This exercises the genuine mid-set failure path: at least one file is on
+# disk before the script aborts, proving the exit-5 guard fires after
+# successful partial installs, not only on the very first attempted write.
 # --------------------------------------------------------------------------
 REPO4="$TMP/repo-write-failure"
 if [[ "$EUID" -eq 0 ]]; then
@@ -252,25 +258,69 @@ if [[ "$EUID" -eq 0 ]]; then
 else
   make_repo "$REPO4"
 
-  # Place cr-plan-on-issue.yml as already present so the script attempts ac-gate.yml next.
-  mkdir -p "$REPO4/.github/workflows"
-  printf 'stub\n' > "$REPO4/.github/workflows/cr-plan-on-issue.yml"
-
-  # Make .github/workflows read-only so installing ac-gate.yml fails.
-  chmod 555 "$REPO4/.github/workflows"
+  # Pre-create .claude/scripts as an unwritable directory.  mkdir -p succeeds
+  # on an existing directory even at 555, so the script reaches the mktemp
+  # step for ac-gate.sh and fails there — after both .github/workflows files
+  # have already been installed.
+  mkdir -p "$REPO4/.claude/scripts"
+  chmod 555 "$REPO4/.claude/scripts"
 
   OUT=$(cd "$REPO4" && bash "$SUT" --apply 2>&1)
   RC=$?
 
   # Restore permissions so cleanup can remove the directory.
-  chmod 755 "$REPO4/.github/workflows"
+  chmod 755 "$REPO4/.claude/scripts"
 
   check_eq "case4: write failure exits 5" "5" "$RC"
   check_not_contains "case4: no [INSTALLED] lines on write failure" "[INSTALLED]" "$OUT"
   # The script exits 5 before printing the report, so no partial-install summary.
   check_not_contains "case4: no partial success message" "Branch protection gap remains" "$OUT"
+  # Verify this is a genuine mid-set failure: the two .github/workflows/* files
+  # must have been installed on disk before the failure on the third.
+  check_eq "case4: cr-plan-on-issue.yml installed before failure" "1" \
+    "$(test -f "$REPO4/.github/workflows/cr-plan-on-issue.yml" && echo 1 || echo 0)"
+  check_eq "case4: ac-gate.yml installed before failure" "1" \
+    "$(test -f "$REPO4/.github/workflows/ac-gate.yml" && echo 1 || echo 0)"
+  check_contains "case4: write failure error names .claude/scripts" ".claude/scripts" "$OUT"
 fi
 
+# --------------------------------------------------------------------------
+# Case 4c: symlink at target path → [SYMLINK] reported (not [OK]), gap exit,
+#          --apply does not overwrite the symlink
+# --------------------------------------------------------------------------
+REPO4C="$TMP/repo-symlink-at-target"
+make_repo "$REPO4C"
+# Install all files except cr-plan-on-issue.yml (replaced by a symlink).
+for f in "${ALL_FILES[@]}"; do
+  [[ "$f" == ".github/workflows/cr-plan-on-issue.yml" ]] && continue
+  mkdir -p "$REPO4C/$(dirname "$f")"
+  printf 'stub\n' > "$REPO4C/$f"
+done
+# Place a symlink to an external regular file at the provisioned target path.
+EXTERNAL_FILE="$TMP/external-file"
+printf 'external\n' > "$EXTERNAL_FILE"
+mkdir -p "$REPO4C/.github/workflows"
+ln -s "$EXTERNAL_FILE" "$REPO4C/.github/workflows/cr-plan-on-issue.yml"
+
+# --check: symlink is a gap → exit 1; report must show [SYMLINK], not [OK].
+OUT=$(cd "$REPO4C" && bash "$SUT" --check 2>&1)
+RC=$?
+check_eq "case4c: --check exits 1 with symlink at target" "1" "$RC"
+check_contains "case4c: [SYMLINK] reported for symlinked path" "[SYMLINK]" "$OUT"
+SYMLINK_LINE="$(printf '%s\n' "$OUT" | grep "cr-plan-on-issue.yml")"
+check_not_contains "case4c: symlink not classified as [OK]" "[OK]" "$SYMLINK_LINE"
+
+# --apply: symlink must be skipped (not overwritten); [SYMLINK] still in report.
+OUT=$(cd "$REPO4C" && bash "$SUT" --apply 2>&1)
+RC=$?
+check_eq "case4c: --apply exits 1 (symlink gap remains)" "1" "$RC"
+check_contains "case4c: --apply still reports [SYMLINK]" "[SYMLINK]" "$OUT"
+# The symlink must still exist and still point to the external file.
+check_eq "case4c: --apply did not replace symlink with regular file" "1" \
+  "$(test -L "$REPO4C/.github/workflows/cr-plan-on-issue.yml" && echo 1 || echo 0)"
+
+check_eq "case4c: --apply preserved symlink destination" "$EXTERNAL_FILE" \
+  "$(readlink "$REPO4C/.github/workflows/cr-plan-on-issue.yml")"
 # --------------------------------------------------------------------------
 # Case 5: --apply with all files present → exits 1 (only BP gap), no installs
 # --------------------------------------------------------------------------
