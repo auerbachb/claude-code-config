@@ -148,7 +148,7 @@ Scripts that repair trust flags, detect stale worktrees, and sync main.
 | `repair-trust-all.sh` | Fix trust flags for all projects in `~/.claude.json` |
 | `repair-worktrees.sh` | Detect stale git worktrees (merged/deleted branch) and optionally remove them |
 | `dirty-main-guard.sh` | Detect and quarantine dirty tracked state on the root repo's main branch |
-| `repo-bootstrap.sh` | Check and optionally install required repo configuration (CR workflow, branch protection) |
+| `repo-bootstrap.sh` | Check and optionally install required repo configuration (provisioned file set, branch protection) |
 | `repo-root.sh` | Resolve the absolute path of the root (main) worktree |
 | `stale-cleanup.sh` | Detect and optionally remove stale worktrees and branches (out-of-band, safe) |
 | `main-sync.sh` | Sync a repo's local main branch with `origin/main` |
