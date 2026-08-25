@@ -121,7 +121,7 @@ Sections (in order):
 
 | Block | Scope | `--session-view`? | Writer | Reader |
 |---|---|---|---|---|
-| `.repos[k].refill` | repo | No | `/stop` Step 1, `/pause` Step 1 | `/pm` Step 3.4, `/subagent` Step 7 |
+| `.repos[k].refill` | repo | No | `/end` Step 1, `/pause` Step 1 | `/pm` Step 3.4, `/subagent` Step 7 |
 | `.repos[k].day` | repo | No | `/pm day` Step 2D | `/pm day` tick, `/pause` Step 2 |
 | `.repos[k].pause` | repo | No | `/pause` Step 7a | `/pause-resume` Step 1 |
 | `.prs[N].babysit` | PR | Yes (via `.prs`) | `/babysit-pr` | `/babysit-pr-stop`, `/pause` Step 2 |

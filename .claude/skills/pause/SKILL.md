@@ -134,7 +134,7 @@ else
 fi
 ```
 
-**The truthful report rule from `/stop` Step 2 binds here.** Either
+**The truthful report rule from `/end` Step 2 binds here.** Either
 `WINDDOWN_PERSISTED=0` or `EXECUTION_GATE_PERSISTED=0` makes the final result
 `INCOMPLETE SHUTDOWN`. Name the failed gate explicitly and never print
 `Stopped: new work paused` or `Pause complete` after either failed write.
@@ -261,7 +261,7 @@ legacy records.
 
 ### 7a: Write the human-readable marker
 
-Use the same atomic `mktemp` + `mv` publish that `/stop` Step 6 uses. Staging inside `$OUT_DIR` keeps `mv` on one filesystem. The marker filename includes the repo key so a resume from a different repo cannot accidentally pick it up as a cross-repo fallback:
+Use the same atomic `mktemp` + `mv` publish that `/end` Step 6 uses. Staging inside `$OUT_DIR` keeps `mv` on one filesystem. The marker filename includes the repo key so a resume from a different repo cannot accidentally pick it up as a cross-repo fallback:
 
 ```bash
 OUT_DIR="$HOME/.claude/handoffs"
@@ -394,7 +394,7 @@ Resume state: <PAUSE_PERSISTED=0: "stored in session state; marker at $MARKER_PA
               <MARKER_PUBLISHED=false: "NO recovery artifact was published — manual recovery required; $MARKER_ERROR">
 ```
 
-The `Stopped:` line has exactly two forms, matching `/stop` Step 2's rule. After a failed refill-pause write, never print the first form — that would report something untrue about the one side effect the user is counting on.
+The `Stopped:` line has exactly two forms, matching `/end` Step 2's rule. After a failed refill-pause write, never print the first form — that would report something untrue about the one side effect the user is counting on.
 
 Monitors or background tasks that were not stopped are named explicitly. Never
 print `Pause complete` while either the registry or runtime audit has a live
@@ -412,12 +412,12 @@ could have escaped the wind-down.
 - **A gate relaxer.** Every merge gate requirement that applies outside this command applies inside it. The window changes the deadline, never the standard.
 - **A work deleter.** Hard stops preserve branches, worktrees, logs, handoffs,
   outputs, and recovery metadata for `/pause-resume`.
-- **A second `/stop`.** `/stop` produces a harness-external document for a reader outside this harness and merges nothing. This command produces internal, machine-readable resume state and actively lands eligible work. They share Step 0 resolution, the refill-pause write, and the two-form report rule — and nothing else.
+- **A second `/end`.** `/end` produces a harness-external document for a reader outside this harness and merges nothing. This command produces internal, machine-readable resume state and actively lands eligible work. They share Step 0 resolution, the refill-pause write, and the two-form report rule — and nothing else.
 
 ## Relationship to the other wind-down commands
 
 | Command | Ends | Produces |
 |---|---|---|
 | `/wrap` | one pull request | a merge, follow-up issues, lessons |
-| `/stop` | current-session execution (budget thin; 5m default) | portable handoff + stopped-task recovery data |
+| `/end` | current-session execution (budget thin; 5m default) | portable handoff + stopped-task recovery data |
 | `/pause` | current-session execution (laptop close; 15m default) | machine-readable resume state + landed PRs |

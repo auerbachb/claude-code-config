@@ -1,6 +1,6 @@
 # Portable Handoff Artifact
 
-The cross-agent document `/stop` produces (Issues #901, #912, and #1311). It is
+The cross-agent document `/end` produces (Issues #901, #912, and #1311). It is
 plain Markdown for a person or coding agent that has the note and repository but
 none of the stopped conversation.
 
@@ -8,7 +8,7 @@ Not auto-loaded.
 
 ## Two producers, two lifecycles
 
-- A manual `/stop` writes **one canonical note per repository/session** after
+- A manual `/end` writes **one canonical note per repository/session** after
   the shutdown audit has final task outcomes. A later stop in that same scope
   atomically updates the canonical note.
 - `checkpoint-handoff.sh` writes timestamped `-checkpoint.md` observations
@@ -44,7 +44,7 @@ never a partial file. A lint, lock, staging, or rename failure leaves the input
 draft available and produces no success claim. Draft names begin with
 `.portable-handoff.` and cannot match the recorder glob.
 
-Historical timestamped manual notes remain readable. New `/stop` writes do not
+Historical timestamped manual notes remain readable. New `/end` writes do not
 delete them; they simply converge on the canonical name for future updates.
 
 ## Required takeover content
@@ -66,7 +66,7 @@ read` result, never an empty category or guessed identifier.
 
 The human/agent-rendered note adds the context scripts cannot infer: objective,
 completed and remaining work, blockers and decisions, tests, review status,
-and exact next commands. Its Resume safely section includes `/stop-resume` for
+and exact next commands. Its Resume safely section includes `/end-resume` for
 the original harness plus ordinary `cd`, `git`, `gh`, and test commands for a
 different agent. It tells the reader to inspect every task's final status and
 preserved output before relaunching anything, preventing duplicate work.
@@ -78,7 +78,7 @@ unfilled placeholders, missing or duplicate required sections, incomplete
 open-work ownership/review fields, relative working directories, missing
 repository/worktree/Git facts, and unsafe resume guidance.
 
-The sole skill-invocation exception is `/stop-resume` in the dedicated
+The sole skill-invocation exception is `/end-resume` in the dedicated
 `Resume command:` field. Automatic checkpoints instead say it is not
 applicable because they stop nothing. Both forms must carry a `Relaunch rule:`
 and a different-agent path using ordinary commands.

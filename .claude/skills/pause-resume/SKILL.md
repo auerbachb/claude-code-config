@@ -340,7 +340,7 @@ For each entry in `monitors_stopped` where `stopped: true` and `rearmed` is not
 already `true`, delegate to the appropriate re-arm skill — never reimplement
 their logic. Skip entries already confirmed rearmed so retries are idempotent.
 Before runtime inspection or delegation, atomically claim the exact task ID in
-the shared registry, using the same reservation as `/stop-resume`:
+the shared registry, using the same reservation as `/end-resume`:
 
 ```bash
 "$TASK_REGISTRY_SH" --transition --session "$SESSION_ID" \

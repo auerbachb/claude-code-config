@@ -49,11 +49,11 @@
         "scope": null,
         "at": "2026-07-30T18:40:00Z"
       },
-      "_execution_pauses_comment": "Session-scoped direct-launch gates written by execution-pause.sh for /stop and /pause (issues #1308 and #1310). Keys are Claude session IDs. active=true blocks Agent, Workflow, Monitor, and background Bash in pause-launch-gate.sh; foreground teardown stays allowed. This gate is independent from repo refill.paused and is cleared only by an explicit stop-resume or pause-resume. deadline_epoch is the graceful-shutdown ceiling, not an automatic clear time.",
+      "_execution_pauses_comment": "Session-scoped direct-launch gates written by execution-pause.sh for /end and /pause (issues #1308 and #1310). Keys are Claude session IDs. active=true blocks Agent, Workflow, Monitor, and background Bash in pause-launch-gate.sh; foreground teardown stays allowed. This gate is independent from repo refill.paused and is cleared only by an explicit end-resume or pause-resume. deadline_epoch is the graceful-shutdown ceiling, not an automatic clear time.",
       "execution_pauses": {
         "session-example": {
           "active": true,
-          "command": "stop",
+          "command": "end",
           "session_id": "session-example",
           "window_minutes": 5,
           "deadline_epoch": 1787522700,
@@ -61,7 +61,7 @@
           "cleared_at": null
         }
       },
-      "_background_tasks_comment": "Exact current and historical runtime identities captured by PostToolUse and updated by SubagentStop/TaskStop hooks (issue #1308). task_id is the Claude runtime ID; name is only a display label. running, stopping, and stop_failed are possibly billable and stay live even when stale. rearming is an atomic launch reservation, not a live runtime identity; a resumed successor registers its own runtime ID before audits treat it as stoppable. stop-resume claims work with stopped -> rearming before launch, then finishes rearming -> rearmed or rolls back to stopped. Terminal history is preserved so resume is idempotent and can use output_file/recovery_path without duplicating work.",
+      "_background_tasks_comment": "Exact current and historical runtime identities captured by PostToolUse and updated by SubagentStop/TaskStop hooks (issue #1308). task_id is the Claude runtime ID; name is only a display label. running, stopping, and stop_failed are possibly billable and stay live even when stale. rearming is an atomic launch reservation, not a live runtime identity; a resumed successor registers its own runtime ID before audits treat it as stoppable. end-resume claims work with stopped -> rearming before launch, then finishes rearming -> rearmed or rolls back to stopped. Terminal history is preserved so resume is idempotent and can use output_file/recovery_path without duplicating work.",
       "background_tasks": [
         {
           "task_id": "agent-runtime-id",

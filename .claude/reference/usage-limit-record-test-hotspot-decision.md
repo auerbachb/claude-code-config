@@ -47,7 +47,7 @@ The file contains two independently evolving seams, each clearing the repo's
 ### Seam 1 — Handoff-pointer feature (case 15 / 15a-15k)
 
 Case 15 was added wholesale by a single PR (#910), under a separate issue
-(#901), as a distinct product feature (the `/stop` portable-handoff
+(#901), as a distinct product feature (the `/end` portable-handoff
 breadcrumb). It is independent of the core recorder behavior:
 
 - **Own helper functions:** `stamp_ago` and `touch_ago` are defined only for
@@ -58,7 +58,7 @@ breadcrumb). It is independent of the core recorder behavior:
 - **Orthogonal concern:** case 15 tests `CLAUDE_HANDOFF_DIR` lookup — a
   filesystem enrichment layer applied after the durable event is written. The
   core recorder tests (1-5, 11-14) do not exercise the handoff-pointer path.
-- **Independent callers:** the handoff-pointer feature is driven by `/stop`;
+- **Independent callers:** the handoff-pointer feature is driven by `/end`;
   the recorder is driven by `StopFailure`. Neither changes force the other.
 
 ### Seam 2 — Repo invariant checks (cases 6-10)

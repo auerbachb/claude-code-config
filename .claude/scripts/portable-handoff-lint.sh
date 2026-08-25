@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # portable-handoff-lint.sh — enforce the portability contract of a handoff
-# document produced by /stop (issue #901).
+# document produced by /end (issue #901).
 #
 # PURPOSE
 #   The whole value of a portable handoff is that an agent which has never
@@ -11,7 +11,7 @@
 #   reconstruct anything.
 #
 #   So portability is checked here, mechanically, instead of being asserted in
-#   prose that a renderer may or may not follow. /stop runs this against the
+#   prose that a renderer may or may not follow. /end runs this against the
 #   rendered document BEFORE writing or printing it, and a non-zero exit means
 #   the document does not ship as-is.
 #
@@ -39,11 +39,11 @@
 #                            is any in-flight work to verify
 #     working-copy-fields    repository/worktree/Git identity fields all exist
 #                            with explicit values
-#     resume-guidance        the dedicated resume section names `/stop-resume`
+#     resume-guidance        the dedicated resume section names `/end-resume`
 #                            and states how duplicate relaunches are avoided
 #
 #   The section list is the contract with the template; keep the two in step.
-#     .claude/skills/stop/references/portable-handoff-template.md
+#     .claude/skills/end/references/portable-handoff-template.md
 #
 # WHAT THE LAST THREE RULES CAN AND CANNOT PROVE (issue #912)
 #   They came out of a cold read: a document that passed every rule above was
@@ -230,7 +230,7 @@ fi
 
 # Harness commands that are not skill directories in this repo but are just as
 # meaningless to an outside agent.
-BUILTIN_COMMANDS="loop schedule compact clear config doctor hooks permissions resume agents review init security-review code-review"
+BUILTIN_COMMANDS="loop schedule compact clear config doctor hooks permissions resume agents review init security-review code-review stop"
 
 # CATALOG_RESOLVED tracks the SKILL directory listing specifically. The builtin
 # list above is a supplement, not a catalog — letting it stand in for one would
@@ -661,7 +661,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
       resume_value="${resume_value#"${resume_value%%[![:space:]]*}"}"
       if field_value_nonempty "$resume_value"; then
         case "$resume_value" in
-          /stop-resume|/stop-resume\ *) RESUME_SEEN=$((RESUME_SEEN + 1)) ;;
+          /end-resume|/end-resume\ *) RESUME_SEEN=$((RESUME_SEEN + 1)) ;;
           "not applicable"|"not applicable "*) RESUME_SEEN=$((RESUME_SEEN + 1)) ;;
         esac
       fi
@@ -679,11 +679,11 @@ while IFS= read -r line || [[ -n "$line" ]]; do
 
   # Mask the one permitted .claude/ form before any rule sees the line.
   scan=$(mask_worktree_paths "$(mask_urls "$line")" "$IS_WORKDIR_LINE")
-  # `/stop-resume` is meaningful handoff metadata only in its dedicated field;
+  # `/end-resume` is meaningful handoff metadata only in its dedicated field;
   # mask that exact occurrence while every other harness command still fails.
   if [[ "$section" == "$RESUME_SECTION" && "$line" == "$RESUME_ANCHOR"* ]]; then
     case "$resume_value" in
-      /stop-resume|/stop-resume\ *) scan="${scan/\/stop-resume/<resume-entrypoint>}" ;;
+      /end-resume|/end-resume\ *) scan="${scan/\/end-resume/<resume-entrypoint>}" ;;
     esac
   fi
   # Fail CLOSED on an internal fault. If masking ever breaks, `scan` goes empty
@@ -785,13 +785,13 @@ fi
 if contains "$RESUME_SECTION" ${SEEN_SECTIONS+"${SEEN_SECTIONS[@]}"}; then
   if (( RESUME_FIELDS == 0 )); then
     report "resume-guidance" "0" "$RESUME_SECTION" \
-      "no \"$RESUME_ANCHOR\" field — use /stop-resume or explicitly mark a non-stop checkpoint not applicable"
+      "no \"$RESUME_ANCHOR\" field — use /end-resume or explicitly mark a non-stop checkpoint not applicable"
   elif (( RESUME_FIELDS > 1 )); then
     report "resume-guidance" "0" "$RESUME_SECTION" \
       "\"$RESUME_ANCHOR\" appears $RESUME_FIELDS times — one authoritative command is required"
   elif (( RESUME_SEEN != 1 )); then
     report "resume-guidance" "0" "$RESUME_SECTION" \
-      "invalid or empty \"$RESUME_ANCHOR\" field — use /stop-resume or explicitly mark a non-stop checkpoint not applicable"
+      "invalid or empty \"$RESUME_ANCHOR\" field — use /end-resume or explicitly mark a non-stop checkpoint not applicable"
   fi
   if (( AGENT_FIELDS == 0 )); then
     report "resume-guidance" "0" "$RESUME_SECTION" \

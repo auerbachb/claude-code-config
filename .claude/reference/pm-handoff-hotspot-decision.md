@@ -24,9 +24,9 @@ Reference for Issue #1122 (`.claude/skills/pm-handoff/SKILL.md` churn hotspot). 
 **PRs #825 and #867** are part of the scheduling-substrate correction and redesign wave initiated by Issues #808 and #827. PR #825 corrected a false durability claim that existed in many consumer files; PR #867 replaced the CronCreate scheduling infrastructure entirely, simplifying the table schema and vocabulary in every consumer. Both were forced corrections applied uniformly across the repo — not driven by pm-handoff's own concerns.
 
 **PR #910** introduced the portable-handoff skill (then named `/pause`, now
-`/stop` after Issue #1310) and extracted the shared state-collection logic into
+`/end` after Issue #1310) and extracted the shared state-collection logic into
 `session-state-collector.md` (Issue #901). The primary goal was eliminating
-code drift between `/pm-handoff` and `/stop` — one collector, two renderers.
+code drift between `/pm-handoff` and `/end` — one collector, two renderers.
 Steps 4, 5b, 5b2, and 5c each lost their inline code blocks and gained
 delegation pointers to the collector sections. This was a net reduction in
 pm-handoff's footprint.
@@ -96,7 +96,7 @@ Per `.claude/reference/churn-hotspots.md`: re-file this hotspot only when `confl
 
 - Issue #808 — CronCreate durability correction wave (→ PR #825)
 - Issue #827 — CronCreate substrate redesign (→ PR #867)
-- Issue #901 — portable handoff (now `/stop`) + shared-collector extraction (→ PR #910)
+- Issue #901 — portable handoff (now `/end`) + shared-collector extraction (→ PR #910)
 - `.claude/reference/session-state-collector.md` — shared collector; §3 is the canonical CronCreate durability statement
 - `.claude/reference/pm-monitoring-decision.md` — downstream ledger naming `/pm-handoff`'s polling behavior
 - `.claude/reference/pm-handoff-chips-decision.md` — why `/pm-handoff` does not offer task chips

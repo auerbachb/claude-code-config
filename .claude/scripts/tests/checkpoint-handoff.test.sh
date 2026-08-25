@@ -67,8 +67,8 @@ mode_of() {
 # than production does.
 FAKE="$TMP/harness"
 mkdir -p "$FAKE/.claude/hooks" "$FAKE/.claude/scripts" \
-         "$FAKE/.claude/skills/wrap" "$FAKE/.claude/skills/stop" \
-         "$FAKE/.claude/skills/stop-resume" "$FAKE/.claude/skills/pause" \
+         "$FAKE/.claude/skills/wrap" "$FAKE/.claude/skills/end" \
+         "$FAKE/.claude/skills/end-resume" "$FAKE/.claude/skills/pause" \
          "$FAKE/.claude/skills/pause-resume" "$FAKE/.claude/skills/fixpr"
 cp "$SUT" "$FAKE/.claude/hooks/"
 cp "$LINT" "$FAKE/.claude/scripts/"

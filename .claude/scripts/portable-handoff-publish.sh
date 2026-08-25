@@ -16,7 +16,7 @@ usage() {
 Usage: portable-handoff-publish.sh --input FILE --repo owner/name
        [--session ID] [--out-dir DIR] [--lint FILE] [--lint-root DIR]
 
-Publishes one canonical manual /stop handoff per repository/session. The input
+Publishes one canonical manual /end handoff per repository/session. The input
 must pass portable-handoff-lint.sh before the locked, same-directory atomic
 rename. The canonical path is printed on success.
 

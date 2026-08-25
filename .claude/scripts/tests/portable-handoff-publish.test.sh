@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for canonical /stop handoff publication (issue #1311).
+# Tests for canonical /end handoff publication (issue #1311).
 
 set -uo pipefail
 
@@ -66,7 +66,7 @@ Unpushed commits: none
 
 ## Resume safely
 
-Resume command: /stop-resume
+Resume command: /end-resume
 For another agent: run `cd -- '/tmp/portable'`, then `git status`.
 Relaunch rule: inspect every recorded task outcome before replacing work.
 EOF

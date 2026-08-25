@@ -175,7 +175,7 @@ done
 
 ## Step 4: Fetch live GitHub state
 
-Run **§1 Live GitHub state** of `.claude/reference/session-state-collector.md` — the shared collector this skill and `/stop` both read from, so the two cannot drift apart on what a handoff sees. It carries the queries and the empty-result handling.
+Run **§1 Live GitHub state** of `.claude/reference/session-state-collector.md` — the shared collector this skill and `/end` both read from, so the two cannot drift apart on what a handoff sees. It carries the queries and the empty-result handling.
 
 **Surface both truncation warnings it can raise** — one when open issues come back at exactly 500, one when open pull requests do. A handoff that omits the 501st item while reading as complete is the failure those warnings exist to prevent, and it is the receiving thread that pays for it.
 

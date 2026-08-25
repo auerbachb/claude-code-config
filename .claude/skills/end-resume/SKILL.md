@@ -1,15 +1,15 @@
 ---
-name: stop-resume
-description: Resume work stopped by /stop. Explicitly clears the current session's background-launch gate, reports preserved stopped tasks, and resumes selected recoverable work without duplicating live tasks. The refill gate stays paused unless --resume-refill is supplied. Triggers on "stop-resume", "resume from stop", "continue stopped work", "resume stopped work".
+name: end-resume
+description: Resume work stopped by /end. Explicitly clears the current session's background-launch gate, reports preserved stopped tasks, and resumes selected recoverable work without duplicating live tasks. The refill gate stays paused unless --resume-refill is supplied. Triggers on "end-resume", "resume from end", "continue ended work", "resume ended work".
 triggers:
-  - stop-resume
-  - resume from stop
-  - continue stopped work
-  - resume stopped work
+  - end-resume
+  - resume from end
+  - continue ended work
+  - resume ended work
 argument-hint: "[--resume-refill] (--resume-refill also reopens pipeline refilling)"
 ---
 
-Resume a cost-quiescent `/stop` explicitly. This is the only normal path that
+Resume a cost-quiescent `/end` explicitly. This is the only normal path that
 reopens the session-scoped launch gate; unrelated messages and timers do not.
 
 ## Step 0: Resolve state helpers
@@ -63,11 +63,11 @@ re-read rather than launching. Only the successful claimant proceeds. A failed
 or incomplete recovery transitions `rearming -> stopped` with
 `--from-status rearming`; a confirmed recovery transitions `rearming ->
 rearmed`. Because the compare-and-set runs under the registry lock, concurrent
-`/stop-resume` invocations cannot both launch the same continuation.
+`/end-resume` invocations cannot both launch the same continuation.
 
 `rearming` is a reservation, not a stoppable runtime identity, and is excluded
 from registry `--live` results. Immediately before launching, re-check the
-execution gate; a concurrent `/stop` or `/pause` activation therefore blocks
+execution gate; a concurrent `/end` or `/pause` activation therefore blocks
 the new launch. A successful successor registers its own runtime ID through the
 normal launch hook before the old reservation becomes `rearmed`, so shutdown
 audits stop the successor ID rather than racing on the old stopped ID. If launch
@@ -96,7 +96,7 @@ reporting.
 ## Step 4: Report
 
 ```text
-=== Stop resumed ===
+=== End resumed ===
 Launch gate: cleared
 Refill gate: <cleared | still paused | clear failed>
 Rearmed: <exact old ID -> resumed/new ID, or none>

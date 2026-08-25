@@ -29,7 +29,7 @@ run_hook() {
   # CLAUDE_USAGE_LIMIT_DIR for the hook's own records, CLAUDE_HANDOFF_DIR for
   # the portable-handoff lookup. Leaving the latter unset would read the
   # developer's real ~/.claude/handoffs, making resume_hint depend on whether
-  # they happen to have run /stop — green here, different there.
+  # they happen to have run /end — green here, different there.
   printf '%s' "$1" \
     | CLAUDE_USAGE_LIMIT_DIR="$TMP_DIR" CLAUDE_HANDOFF_DIR="$TMP_DIR/handoffs" bash "$HOOK"
 }

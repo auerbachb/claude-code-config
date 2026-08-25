@@ -348,7 +348,7 @@ legacy_command_rc=$?
 set -e
 [[ "$legacy_command_rc" == 2 ]] || fail "retired suspend command value was accepted"
 
-"$PAUSE" --repo "$REPO" --activate --session "$SID" --command stop --window-minutes 5
+"$PAUSE" --repo "$REPO" --activate --session "$SID" --command end --window-minutes 5
 printf 'not-json\n' > "$HOME/.claude/session-state.json"
 set +e
 gate Agent >/dev/null 2>&1; corrupt_rc=$?

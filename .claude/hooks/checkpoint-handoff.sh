@@ -400,7 +400,7 @@ if SESSION_STATE_SH=$(resolve_script session-state.sh); then
   [[ "$AGENTS_COUNT" =~ ^[0-9]+$ ]] || AGENTS_COUNT=""
 fi
 
-# Reuse the bounded, redacted snapshot consumed by /stop rather than reading
+# Reuse the bounded, redacted snapshot consumed by /end rather than reading
 # raw registry state here. Exact runtime/artifact facts are what make the
 # relaunch warning actionable for a different agent.
 TASKS_JSON='[]'
