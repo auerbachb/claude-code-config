@@ -12,7 +12,7 @@ Run at session start — after worktree creation, before code work. Idempotent; 
 
 `.claude/scripts/repo-bootstrap.sh --check` reports workflow + branch-protection state without mutating. Exit `0` clean, `1` gaps. Full contract: `repo-bootstrap.sh --help`.
 
-If it reports `[MISSING] .github/workflows/cr-plan-on-issue.yml`, install it with `.claude/scripts/repo-bootstrap.sh --apply` as part of the first feature PR — do not open a bootstrap-only PR. `--apply` only installs the missing workflow: it never overwrites existing files and never modifies branch protection.
+If it reports any `[MISSING]` files, install them with `.claude/scripts/repo-bootstrap.sh --apply` as part of the first feature PR — do not open a bootstrap-only PR. `--apply` installs only missing files, never overwrites existing ones, and never modifies branch protection. File-set design: `.claude/reference/repo-bootstrap-workflows.md`.
 
 ### Branch protection — required status checks
 
