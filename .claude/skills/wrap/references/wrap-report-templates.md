@@ -29,7 +29,7 @@ Referenced from `wrap/SKILL.md` Step 4.3. The SKILL.md keeps the silent-default 
 ## Session sweep
 
 ### Auto-handled
-- {one bullet per SWEEP_AUTO_HANDLED entry — stopped Monitor tasks, deleted handoffs, auto-filed tickets; omit the section if empty}
+- {one bullet per SWEEP_AUTO_HANDLED entry — stopped Monitor tasks, deleted handoffs, auto-filed tickets, and the single churn-hotspot aggregate; omit the section if empty}
 
 ### Needs your decision
 - {one bullet per SWEEP_NEEDS_DECISION entry — proposed tickets, surfaced crons/subagents, PM-hygiene drift, time-sensitive reminders, future-self handoff; omit the section if empty}
@@ -45,6 +45,7 @@ Referenced from `wrap/SKILL.md` Step 4.3. The SKILL.md keeps the silent-default 
 ## Rendering rules (verbose)
 
 - Cap **Auto-handled** and **Needs your decision** at **3–5 bullets** each; if more, show the top items and summarize the remainder as one bullet: "+ N more — see `.prs["$PR_NUMBER"].wrap_sweep` in session-state". **Auto-filed tickets are exempt from this cap** — every created issue's title + body is surfaced in full.
+- Render the churn-hotspot suppression as its one aggregate `SWEEP_AUTO_HANDLED` entry; never expand `suppressed_set` into per-file bullets. The aggregate names total hotspots, conflict-cost hotspots, surfaced decisions, and suppressed closed/no-cost hotspots, so suppression stays auditable without recreating the decision flood fixed by Issue #1307.
 - The **Issues filed** section is never capped or truncated. One line per issue, each a clickable link with number, title, and one-line rationale.
 - The **Filings suppressed as duplicates** section is likewise never capped. Every finding the dedup check kept out of a new issue must name the issue it deferred to.
 - Omit an empty subsection rather than printing "none".
