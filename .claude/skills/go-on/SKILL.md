@@ -5,6 +5,39 @@ description: Resume an interrupted or stalled review workflow. Detects where the
 
 Detect and resume the interrupted review workflow for the current branch.
 
+## Portable helper resolution
+
+Resolve every lifecycle helper before resuming. A missing helper blocks the workflow rather than guessing which completed state is safe.
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+PR_AUTHORSHIP_SH=$(resolve_script pr-authorship.sh || true)
+DIFF_SURVIVAL_SH=$(resolve_script diff-survival-check.sh || true)
+REVIEWER_OF_SH=$(resolve_script reviewer-of.sh || true)
+PR_STATE_SH=$(resolve_script pr-state.sh || true)
+REPLY_THREAD_SH=$(resolve_script reply-thread.sh || true)
+RESOLVE_REVIEW_THREADS_SH=$(resolve_script resolve-review-threads.sh || true)
+MERGE_GATE_SH=$(resolve_script merge-gate.sh || true)
+AC_CHECKBOXES_SH=$(resolve_script ac-checkboxes.sh || true)
+[[ -n "$PR_AUTHORSHIP_SH" ]] || { echo "ERROR: pr-authorship.sh not found (checked all three paths) — resume authorship gate unavailable" >&2; exit 1; }
+[[ -n "$DIFF_SURVIVAL_SH" ]] || { echo "ERROR: diff-survival-check.sh not found (checked all three paths) — rebase survival gate unavailable" >&2; exit 1; }
+[[ -n "$REVIEWER_OF_SH" ]] || { echo "ERROR: reviewer-of.sh not found (checked all three paths) — reviewer routing unavailable" >&2; exit 1; }
+[[ -n "$PR_STATE_SH" ]] || { echo "ERROR: pr-state.sh not found (checked all three paths) — PR state unavailable" >&2; exit 1; }
+[[ -n "$REPLY_THREAD_SH" ]] || { echo "ERROR: reply-thread.sh not found (checked all three paths) — review replies unavailable" >&2; exit 1; }
+[[ -n "$RESOLVE_REVIEW_THREADS_SH" ]] || { echo "ERROR: resolve-review-threads.sh not found (checked all three paths) — thread resolution unavailable" >&2; exit 1; }
+[[ -n "$MERGE_GATE_SH" ]] || { echo "ERROR: merge-gate.sh not found (checked all three paths) — merge gate unavailable" >&2; exit 1; }
+[[ -n "$AC_CHECKBOXES_SH" ]] || { echo "ERROR: ac-checkboxes.sh not found (checked all three paths) — acceptance verification unavailable" >&2; exit 1; }
+```
+
 Walk through the full review lifecycle checklist in order. At each step, check if it's already been completed. Stop at the first incomplete step and execute it, then continue to the next step. Keep going until the workflow is complete or a blocking condition is hit.
 
 **Output a status line at each step** so the user can follow along:
@@ -37,7 +70,7 @@ gh repo view --json owner,name --jq '"\(.owner.login)/\(.name)"'
 > **Authorship guard (issue #733, `safety.md`).** `/go-on` resumes a write workflow (push, review triggers, thread resolution, merge). Confirm you authored the PR before resuming any write step:
 > ```bash
 > PR_NUM=$(gh pr view --json number --jq .number 2>/dev/null)
-> [ -n "$PR_NUM" ] && .claude/scripts/pr-authorship.sh "$PR_NUM"   # exit 0 = yours
+> [ -n "$PR_NUM" ] && "$PR_AUTHORSHIP_SH" "$PR_NUM"   # exit 0 = yours
 > ```
 > Not yours (exit 1) or undetermined (exit 4) → `[BLOCKED]`: "PR #$PR_NUM is not yours — the authorship guard blocks automated writes; name it explicitly to override." Proceed only under an explicit per-PR user override (say you are operating under it). Read-only status inspection is fine.
 
@@ -48,7 +81,7 @@ gh repo view --json owner,name --jq '"\(.owner.login)/\(.name)"'
 **Run this before Step 1b and before any commit or push.** The incident that motivated this guard was exactly a resumed session: an interrupted rebase left a resolution with no conflict markers that was nonetheless byte-identical to main — the whole fix the PR existed to deliver had been silently dropped, and every other gate (clean status, green CI, review) passed it.
 
 ```bash
-GUARD=".claude/scripts/diff-survival-check.sh"
+GUARD="$DIFF_SURVIVAL_SH"
 REBASE_IN_PROGRESS=0
 { [ -d "$(git rev-parse --git-path rebase-merge)" ] || [ -d "$(git rev-parse --git-path rebase-apply)" ]; } && REBASE_IN_PROGRESS=1
 SNAPSHOT_PRESENT=$("$GUARD" status --json | jq -r '.present')
@@ -168,7 +201,7 @@ Pipe with `printf '%s'`, never `echo` — zsh's builtin `echo` interprets the es
 Resolve reviewer ownership via the shared helper (reads `.prs["<N>"].reviewer` from `~/.claude/session-state.json` first, falls back to a paginated live-history scan on all three comment endpoints):
 
 ```bash
-REVIEWER=$(.claude/scripts/reviewer-of.sh "$PR_NUM")
+REVIEWER=$("$REVIEWER_OF_SH" "$PR_NUM")
 REVIEWER_EXIT=$?
 ```
 
@@ -210,13 +243,13 @@ gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
   ```
   - BugBot has posted on `$SHA` → PR is now on **BugBot** (sticky). Persist and go to the BugBot section:
     ```bash
-    .claude/scripts/reviewer-of.sh "$PR_NUM" --sticky bugbot
+    "$REVIEWER_OF_SH" "$PR_NUM" --sticky bugbot
     ```
   - BugBot has NOT posted AND <10 min since push → `[ACTION]` — Waiting up to 10 min for BugBot's auto-review. Poll every 60 s.
   - BugBot has NOT posted AND ≥10 min since push → BugBot timed out. Fall through to Greptile:
     ```bash
     gh pr comment "$PR_NUM" --body "@greptileai"
-    .claude/scripts/reviewer-of.sh "$PR_NUM" --sticky greptile
+    "$REVIEWER_OF_SH" "$PR_NUM" --sticky greptile
     ```
     Go to the Greptile section below.
 
@@ -306,7 +339,7 @@ Also check for issue-level review comments that may not have threads. Use the sh
 
 ```bash
 PR_CREATED=$(gh pr view "$PR_NUM" --json createdAt --jq '.createdAt')
-BUNDLE=$(.claude/scripts/pr-state.sh --pr "$PR_NUM" --since "$PR_CREATED")
+BUNDLE=$("$PR_STATE_SH" --pr "$PR_NUM" --since "$PR_CREATED")
 jq '.new_since_baseline.conversation | map(select(.classification.class == "finding"))' < "$BUNDLE"
 ```
 
@@ -319,16 +352,16 @@ jq '.new_since_baseline.conversation | map(select(.classification.class == "find
 
      ```bash
      # $REVIEWER: cr | bugbot | greptile (determined from the finding's author)
-     .claude/scripts/reply-thread.sh <comment_id> --reviewer "$REVIEWER" \
+     "$REPLY_THREAD_SH" <comment_id> --reviewer "$REVIEWER" \
        --body "Fixed in \`$SHA\`: <what changed>" --pr N
      ```
 
-     Exit code `0` means the reply posted (by either the inline endpoint or the PR-level fallback); the fallback path also emits a note to stderr. Non-zero means a genuine failure to post. See `.claude/scripts/reply-thread.sh --help` for the full contract, including 404-without-`--pr` or both-endpoints-404 (exit 3) and inline-404-then-fallback-non-404 (exit 4).
+     Exit code `0` means the reply posted (by either the inline endpoint or the PR-level fallback); the fallback path also emits a note to stderr. Non-zero means a genuine failure to post. See `reply-thread.sh --help` for the full contract, including 404-without-`--pr` or both-endpoints-404 (exit 3) and inline-404-then-fallback-non-404 (exit 4).
 
   6. Resolve all bot threads with the shared helper (paginated, filtered to `coderabbitai`/`cursor`/`greptile-apps`, falls back to `minimizeComment` on failure):
 
      ```bash
-     bash .claude/scripts/resolve-review-threads.sh $PR_NUM
+     "$RESOLVE_REVIEW_THREADS_SH" "$PR_NUM"
      ```
 
      Exit 1 means at least one thread failed both mutations — surface to the user and stop. Do not proceed with a non-zero exit.
@@ -343,7 +376,7 @@ jq '.new_since_baseline.conversation | map(select(.classification.class == "find
 Run the shared merge-gate verifier (implements CR 1 explicit APPROVED on current HEAD / BugBot 1-clean / Greptile severity + CI + BEHIND checks):
 
 ```bash
-GATE_JSON=$(.claude/scripts/merge-gate.sh "$PR_NUM")
+GATE_JSON=$("$MERGE_GATE_SH" "$PR_NUM")
 GATE_EXIT=$?
 ```
 
@@ -369,12 +402,12 @@ Branch on the exit code:
 Run the acceptance criteria check via the shared helper:
 
 ```bash
-ITEMS=$(.claude/scripts/ac-checkboxes.sh "$PR_NUM" --extract)
+ITEMS=$("$AC_CHECKBOXES_SH" "$PR_NUM" --extract)
 AC_EXIT=$?
 ```
 
 Branch on exit code:
-- `0` → `$ITEMS` is a JSON array of `{index, checked, text}`. For each item with `checked == false`, read the relevant source files and verify the criterion. Tick passing items by index: `.claude/scripts/ac-checkboxes.sh "$PR_NUM" --tick "0,2,3"` (or `--all-pass` if every unchecked item passed).
+- `0` → `$ITEMS` is a JSON array of `{index, checked, text}`. For each item with `checked == false`, read the relevant source files and verify the criterion. Tick passing items by index with `"$AC_CHECKBOXES_SH" "$PR_NUM" --tick "0,2,3"` (or `--all-pass` if every unchecked item passed).
 - `1` → `[BLOCKED]` — PR body is missing a Test Plan section. Every PR must include one (per CLAUDE.md). The PR is NOT merge-ready until the body is fixed — report this to the user and do not continue to the merge decision.
 - `3` → `[BLOCKED]` — PR not found.
 - `2`/`4` → `[BLOCKED]` — script or gh error; surface stderr to user.

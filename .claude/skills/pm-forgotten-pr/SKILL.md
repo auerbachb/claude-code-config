@@ -10,6 +10,24 @@ argument-hint: "[days] (optional — default 3; PRs idle longer than this are su
 
 One-shot startup triage of open PRs that have gone idle. Does **not** enter a monitoring loop — continuous PR-fleet monitoring remains `/pr-monitor-and-manage`'s job.
 
+Resolve the required detector and merge-order helper before Step 1:
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+FORGOTTEN_PR_TRIAGE_SH=$(resolve_script forgotten-pr-triage.sh || true)
+MERGE_SEQUENCE_SH=$(resolve_script merge-sequence.sh || true)
+[[ -n "$FORGOTTEN_PR_TRIAGE_SH" ]] || { echo "ERROR: forgotten-pr-triage.sh not found (checked all three paths) — forgotten PR triage unavailable" >&2; exit 1; }
+```
+
 When invoked by `/pm` Step 1D inline, `$GH_USER` and `$FORGOTTEN_PR_DAYS` are already set from the calling context. When run standalone, parse `$ARGUMENTS` as the days threshold (e.g. `/pm-forgotten-pr 7` → 7-day threshold); non-numeric or absent values fall back to 3 safely.
 
 ## Step 1: Detection
@@ -26,7 +44,7 @@ fi
 # $GH_USER when Step 0 resolved it. The script re-validates --days and falls back
 # to 3 on a non-numeric/non-positive value, so a bad override degrades safely.
 DAYS="${FORGOTTEN_PR_DAYS:-3}"
-.claude/scripts/forgotten-pr-triage.sh --json --days "$DAYS" ${GH_USER:+--author "$GH_USER"}
+"$FORGOTTEN_PR_TRIAGE_SH" --json --days "$DAYS" ${GH_USER:+--author "$GH_USER"}
 ```
 
 `forgotten-pr-triage.sh` (read-only — it never closes, merges, or deletes) enumerates your open PRs, keeps those whose **last activity** (`updatedAt`, the documented age basis) is strictly more than the threshold ago, and classifies each `close` or `merge` using exactly two close signals (first match wins; otherwise `merge`):
@@ -64,9 +82,17 @@ On confirmation, **dispatch one subagent per approved PR that executes the `/wra
 **Sequence the approved set by file overlap before dispatching (issue #756).** Two approved PRs touching the same file merge in whichever order they finish, and the second inherits a conflict the first created. Run the planner once over the approved numbers and dispatch in its order:
 
 ```bash
-SEQ=$(.claude/scripts/merge-sequence.sh --prs "$APPROVED_CSV" --skip-missing)
+MERGE_SEQUENCE_AVAILABLE=1
+MERGE_SEQUENCE_RC=0
+if [[ -z "$MERGE_SEQUENCE_SH" ]]; then
+  MERGE_SEQUENCE_AVAILABLE=0
+  SEQ=""
+  echo "DEGRADED: merge-sequence.sh not found (checked all three paths) — approved merge ordering unavailable; holding all merge candidates" >&2
+else
+  SEQ=$("$MERGE_SEQUENCE_SH" --prs "$APPROVED_CSV" --skip-missing) || MERGE_SEQUENCE_RC=$?
+fi
 ```
 
-Dispatch `merge` and `batch` PRs; **hold back** anything the plan marks `hold` and say so in one line naming the shared file. A held PR is not dropped: it stays a merge candidate for the next `/pm` run or for `/pr-monitor-and-manage`, which owns the across-tick hold state. A non-zero exit other than `0`/`1` means the planner failed — log one line and dispatch in the original order rather than blocking the merges. Model: `.claude/reference/merge-sequencing.md`.
+When `MERGE_SEQUENCE_AVAILABLE=0`, do not dispatch unsequenced merges; report each approved PR as held for the next `/pm` run or `/pr-monitor-and-manage`. Otherwise branch on `MERGE_SEQUENCE_RC`: `0`/`1` → dispatch `merge` and `batch` PRs and **hold back** anything the plan marks `hold`, saying so in one line naming the shared file; any other value → the resolved planner failed, so log one line and dispatch in the original order rather than treating empty output as a valid plan. A held PR is not dropped: it stays a merge candidate for the next `/pm` run or for `/pr-monitor-and-manage`, which owns the across-tick hold state. Model: `.claude/reference/merge-sequencing.md`.
 
 > **Never run two PRs from the same group concurrently.** The 3–4 parallel `phase-c-merger` dispatch above applies **across** groups, not within one. Members of a group share a file *by construction*, so merging two of them in parallel recreates exactly the conflict the plan just avoided — and `batch` members are always same-group. Dispatch at most one PR per `SEQ` group at a time (`plan[N].group`; `null` = no overlap, always parallel-safe), starting the next member of a group only after the previous one merges or blocks. PRs in different groups still fill the remaining slots in parallel.

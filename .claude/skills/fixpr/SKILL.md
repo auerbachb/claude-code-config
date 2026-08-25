@@ -10,11 +10,48 @@ Bounded-convergence cleanup of the current branch's PR (issue #454 added the pos
 3. **Every finding replied to** with what was done
 4. **A definitive bot verdict on the final SHA** — or an explicit cap-hit report naming what is still pending (never a silent "we pushed, bye" exit)
 
+## Portable helper resolution
+
+Resolve the helpers used by executable examples before Step 0. The handoff-path helper has a documented legacy fallback; every write/safety helper is required.
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+PR_AUTHORSHIP_SH=$(resolve_script pr-authorship.sh || true)
+HANDOFF_STATE_SH=$(resolve_script handoff-state.sh || true)
+REPLY_THREAD_SH=$(resolve_script reply-thread.sh || true)
+RESOLVE_REVIEW_THREADS_SH=$(resolve_script resolve-review-threads.sh || true)
+DIFF_SURVIVAL_SH=$(resolve_script diff-survival-check.sh || true)
+LOCAL_REVIEW_SH=$(resolve_script local-review.sh || true)
+CLEAN_BEHIND_SH=$(resolve_script clean-behind-check.sh || true)
+ADMIN_MERGE_SH=$(resolve_script admin-merge.sh || true)
+MERGE_GATE_SH=$(resolve_script merge-gate.sh || true)
+[[ -n "$PR_AUTHORSHIP_SH" ]] || { echo "ERROR: pr-authorship.sh not found (checked all three paths) — fix workflow authorship gate unavailable" >&2; exit 1; }
+[[ -n "$REPLY_THREAD_SH" ]] || { echo "ERROR: reply-thread.sh not found (checked all three paths) — review replies unavailable" >&2; exit 1; }
+[[ -n "$RESOLVE_REVIEW_THREADS_SH" ]] || { echo "ERROR: resolve-review-threads.sh not found (checked all three paths) — thread resolution unavailable" >&2; exit 1; }
+[[ -n "$DIFF_SURVIVAL_SH" ]] || { echo "ERROR: diff-survival-check.sh not found (checked all three paths) — rebase survival gate unavailable" >&2; exit 1; }
+[[ -n "$LOCAL_REVIEW_SH" ]] || { echo "ERROR: local-review.sh not found (checked all three paths) — local review unavailable" >&2; exit 1; }
+[[ -n "$CLEAN_BEHIND_SH" ]] || { echo "ERROR: clean-behind-check.sh not found (checked all three paths) — clean-BEHIND verification unavailable" >&2; exit 1; }
+[[ -n "$ADMIN_MERGE_SH" ]] || { echo "ERROR: admin-merge.sh not found (checked all three paths) — clean-BEHIND recovery unavailable" >&2; exit 1; }
+[[ -n "$MERGE_GATE_SH" ]] || { echo "ERROR: merge-gate.sh not found (checked all three paths) — residual merge verification unavailable" >&2; exit 1; }
+if [[ -z "$HANDOFF_STATE_SH" ]]; then
+  echo "DEGRADED: handoff-state.sh not found (checked all three paths) — namespaced handoff path unavailable, continuing with legacy flat path" >&2
+fi
+```
+
 ### Batching before burning CR quota (Issue #28)
 
 CodeRabbit caps **~8 GitHub PR reviews per hour** per account; **each push** consumes one. **Multi-round PRs** exhaust that budget fast if you fix-and-push repeatedly.
 
-**Coalesce locally first:** Before opening `/fixpr` on minor iterations, run the dual-CLI local review (**`.claude/scripts/local-review.sh --tool coderabbit --scope uncommitted`** + **`--tool codeant --scope uncommitted`**) per `cr-local-review.md` on uncommitted changes when feasible — catch issues **before** they cost a GitHub review. The wrapper returns one compact line per CLI; the raw capture stays at its `log_path`.
+**Coalesce locally first:** Before opening `/fixpr` on minor iterations, run the dual-CLI local review (**`"$LOCAL_REVIEW_SH" --tool coderabbit --scope uncommitted`** + **`--tool codeant --scope uncommitted`**) per `cr-local-review.md` on uncommitted changes when feasible — catch issues **before** they cost a GitHub review. The wrapper returns one compact line per CLI; the raw capture stays at its `log_path`.
 
 **Coalesce inside `/fixpr`:** Steps 1–3 intentionally gather **every** unresolved finding + every failing CI check, then fix **all** actionable items and **`git push` once**. Never push once per finding. One `/fixpr` cycle should produce **at most one** consume-side CR review per completed push (tracked below).
 
@@ -22,7 +59,7 @@ CodeRabbit caps **~8 GitHub PR reviews per hour** per account; **each push** con
 
 > **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read the cached JSON bundle. Inline `gh api` calls for these three endpoints are only permitted inside the `reviewer-activity.sh` script (Step 3b delegate), which requires a custom post-push timestamp filter that `pr-state.sh` does not expose. Every other polling or review-state lookup MUST go through `pr-state.sh`.
 
-All mechanical GitHub API work — pagination, GraphQL queries, comment classification — lives in the shared script `.claude/scripts/pr-state.sh`. This file tells the AI layer how to invoke the script and what to do with its output (the JSON bundle).
+All mechanical GitHub API work — pagination, GraphQL queries, comment classification — lives in the shared `pr-state.sh` script. This file tells the AI layer how to invoke the script and what to do with its output (the JSON bundle).
 
 | Step | Kind | Done by |
 |------|------|---------|
@@ -149,7 +186,7 @@ Also tracking: PR #458 (bugbot_review_poll), PR #445 (cr_confirmation_pass)
 
 > **Authorship guard (issue #733, `safety.md`) — gate before Step 0c.** `/fixpr` pushes commits, force-pushes rebases, posts review triggers, and resolves threads — all writes. Once `$PR_NUMBER_ARG` is resolved, confirm you authored it:
 > ```bash
-> .claude/scripts/pr-authorship.sh "$PR_NUMBER_ARG"   # exit 0 = yours
+> "$PR_AUTHORSHIP_SH" "$PR_NUMBER_ARG"   # exit 0 = yours
 > ```
 > Not yours (exit 1) or undetermined (exit 4) → **stop** with one line: "PR #$PR_NUMBER_ARG is authored by someone else — the authorship guard blocks automated writes; name this PR explicitly to override." Continue only under an explicit per-PR user override (say you are operating under it). Do this **before** Step 0c, since the pre-flight posts reviewer triggers.
 
@@ -362,7 +399,7 @@ Optional handoff path (per `handoff-files.md`, one JSON file per PR):
 # With --owner-repo: ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json
 # Without         : ~/.claude/handoffs/pr-{N}-handoff.json (legacy flat, backward compat)
 if [[ -n "${OWNER_REPO:-}" ]]; then
-  HANDOFF_JSON="${HANDOFF_JSON:-$(.claude/scripts/handoff-state.sh --owner-repo "$OWNER_REPO" --path "$PR_NUMBER" 2>/dev/null || echo "$HOME/.claude/handoffs/pr-${PR_NUMBER}-handoff.json")}"
+  HANDOFF_JSON="${HANDOFF_JSON:-$([[ -n "$HANDOFF_STATE_SH" ]] && "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --path "$PR_NUMBER" 2>/dev/null || echo "$HOME/.claude/handoffs/pr-${PR_NUMBER}-handoff.json")}"
 else
   HANDOFF_JSON="${HANDOFF_JSON:-$HOME/.claude/handoffs/pr-${PR_NUMBER}-handoff.json}"
 fi
@@ -498,7 +535,7 @@ fi
 
 Cost/rate-limit note: `@codeant-ai review` may consume CodeAnt’s review budget, so skip it when auto-trigger activity is already present on the new SHA. **`@cursor review` is posted once per push, gated on `bugbot-refused-head.sh`** (composes with CI and issue #370’s four-reviewer triggers). BugBot is per-seat but **spend-metered** — the stack's largest cost line, refusing 64% of PRs (#1199/#1204) — and no nudge clears a usage limit, so the trigger is skipped when `cursor[bot]` has already refused *this* HEAD. It auto-runs on push, so that refusal can land before Step 3b even executes; the check is shared with `maybe-trigger-ai-review.sh` and fails open. Greptile is intentionally NOT part of this proactive trigger set; it remains last-resort only per `greptile.md`.
 
-**Composition with issue #362:** `cr-github-review.md` runs `.claude/scripts/maybe-trigger-ai-review.sh` on each poll tick when there is **no** `/fixpr` trigger (no new findings, CI green, not `BEHIND`/`CONFLICTING`). That path fires three single-mention comments — `@codeant-ai review`, `@cursor review`, `@graphite-app re-review` — for **complexity + CR round count**, not because of a push. This differs from Step 3b, which additionally posts `@coderabbitai full review` (subject to the 2/hour cap) when CodeRabbit has not yet auto-triggered on the new SHA. State for the #362 path is tracked in `session-state.json` so it does not batch with Step 3b on the same cause.
+**Composition with issue #362:** `cr-github-review.md` runs `maybe-trigger-ai-review.sh` on each poll tick when there is **no** `/fixpr` trigger (no new findings, CI green, not `BEHIND`/`CONFLICTING`). That path fires three single-mention comments — `@codeant-ai review`, `@cursor review`, `@graphite-app re-review` — for **complexity + CR round count**, not because of a push. This differs from Step 3b, which additionally posts `@coderabbitai full review` (subject to the 2/hour cap) when CodeRabbit has not yet auto-triggered on the new SHA. State for the #362 path is tracked in `session-state.json` so it does not batch with Step 3b on the same cause.
 
 ---
 
@@ -527,11 +564,11 @@ Post the reply via the shared helper — it handles inline-first, PR-comment-fal
 
 ```bash
 # $REVIEWER: cr | bugbot | greptile (from the audit classification)
-.claude/scripts/reply-thread.sh "$DBID" --reviewer "$REVIEWER" \
+"$REPLY_THREAD_SH" "$DBID" --reviewer "$REVIEWER" \
   --body "$REPLY" --pr "$PR_NUMBER"
 ```
 
-The script strips any `@greptileai` tokens from the body in greptile mode and any `@cursor` tokens in bugbot mode — so even a stray mention in `$REPLY` cannot trigger a paid Greptile re-review ($0.50–$1.00). `@greptileai` is reserved exclusively for intentionally requesting a new review. See `.claude/scripts/reply-thread.sh --help` for the full exit-code contract.
+The script strips any `@greptileai` tokens from the body in greptile mode and any `@cursor` tokens in bugbot mode — so even a stray mention in `$REPLY` cannot trigger a paid Greptile re-review ($0.50–$1.00). `@greptileai` is reserved exclusively for intentionally requesting a new review. See `reply-thread.sh --help` for the full exit-code contract.
 
 ### 4b. Resolve via shared helper
 
@@ -542,7 +579,7 @@ TOUCHED_THREADS=$(mktemp -t fixpr-touched-threads.XXXXXX)
 # append one GraphQL thread node id per unresolved thread from the Step 0 audit
 jq -r '.threads.unresolved[].id' "$AUDIT" > "$TOUCHED_THREADS"
 
-THREAD_RESOLUTION_OUTPUT=$(bash .claude/scripts/resolve-review-threads.sh "$PR_NUMBER" \
+THREAD_RESOLUTION_OUTPUT=$("$RESOLVE_REVIEW_THREADS_SH" "$PR_NUMBER" \
   --thread-ids-file "$TOUCHED_THREADS" --max-attempts 2 2>&1)
 echo "$THREAD_RESOLUTION_OUTPUT"
 ```
@@ -568,10 +605,10 @@ POST_PUSH_VERIFY_FAILED=0
 POST_PUSH_THREAD_OUTPUT=""
 POST_PUSH_VERIFY_OUTPUT=""
 if [[ "${DID_PUSH:-0}" -eq 1 ]]; then
-  POST_PUSH_THREAD_OUTPUT=$(bash .claude/scripts/resolve-review-threads.sh "$PR_NUMBER" \
+  POST_PUSH_THREAD_OUTPUT=$("$RESOLVE_REVIEW_THREADS_SH" "$PR_NUMBER" \
     --thread-ids-file "$TOUCHED_THREADS" --max-attempts 2 2>&1) || POST_PUSH_RESOLVE_FAILED=1
   echo "$POST_PUSH_THREAD_OUTPUT"
-  POST_PUSH_VERIFY_OUTPUT=$(bash .claude/scripts/resolve-review-threads.sh "$PR_NUMBER" \
+  POST_PUSH_VERIFY_OUTPUT=$("$RESOLVE_REVIEW_THREADS_SH" "$PR_NUMBER" \
     --thread-ids-file "$TOUCHED_THREADS" --verify-only 2>&1) || POST_PUSH_VERIFY_FAILED=1
   echo "$POST_PUSH_VERIFY_OUTPUT"
 fi
@@ -698,7 +735,7 @@ UNRESOLVED=$(jq -r '.threads.unresolved_count' "$VERIFY")
 ```
 
 - If the resolver's dangling count is `0` and `UNRESOLVED == 0` → `[CLEAN] All threads resolved — zero uncollapsed in browser.`
-- If the resolver's dangling count is `0` but unrelated reviewer threads remain unresolved → run `bash .claude/scripts/resolve-review-threads.sh "$PR_NUMBER"` once to resolve them too. `/fixpr` never leaves reviewer threads open as a paper trail.
+- If the resolver's dangling count is `0` but unrelated reviewer threads remain unresolved → run `"$RESOLVE_REVIEW_THREADS_SH" "$PR_NUMBER"` once to resolve them too. `/fixpr` never leaves reviewer threads open as a paper trail.
 - If the resolver reports dangling threads → emit `THREADS_STUCK` and list each `[STUCK]` URL/reason. Do not declare success.
 
 ### 5b. New bot comments since `$RUN_STARTED_AT`
@@ -796,7 +833,7 @@ jq -r '.merge_state | "[MERGE] mergeable=\(.mergeable), status=\(.mergeStateStat
 A conflict resolution with no markers still satisfies git even when it silently kept the other side and dropped the entire change the PR exists to deliver. Nothing else in this workflow catches that: status is clean, CI is green, review sees a PR that no longer contains its own fix. Wrap **every** rebase below — interactive and safe-only alike — in this pair:
 
 ```bash
-GUARD=".claude/scripts/diff-survival-check.sh"
+GUARD="$DIFF_SURVIVAL_SH"
 
 # BEFORE `git fetch origin main && git rebase origin/main`:
 "$GUARD" snapshot                    # records which files carry substantive changes
@@ -820,12 +857,12 @@ The guard **never repairs anything**; recovery (`git rebase --abort`, or resetti
 |-------|---------------|--------|
 | `mergeable` | `CONFLICTING` | **Run `diff-survival-check.sh snapshot` before the rebase and `verify` before the force-push — Step 6a is mandatory on both branches of this row.** **Default (interactive):** Rebase onto main: `git fetch origin main && git rebase origin/main`. Fix conflicts (optionally run **`/merge-conflict`** — `.claude/skills/merge-conflict/SKILL.md` — to fetch main, auto-resolve *simple* hunks, stage clean files, and list *complex* hunks), continue, force-push. **Safe-only mode (`BABYSIT_SAFE_CONFLICT_MODE=1`):** invoked by `/babysit-pr --auto-resolve-conflicts` for unattended resolution. After `git fetch origin main && git rebase origin/main` stops on conflicts, locate and invoke `resolve_merge_conflicts.py --repo "$(git rev-parse --show-toplevel)" --json` directly (candidate-path lookup: skills-worktree first, then in-repo). Branch on exit code: exit `0` (all hunks simple, files staged, empty `complex_report`) → run `git rebase --continue`, then **run the Step 6a `verify` gate before anything else** and only on `GUARD_RC == 0` treat it as push-equivalent (force-push, run Step 3a + Step 3b + Step 4d on the new SHA); exit `1` (any complex hunk, partial resolution, or stage failure) → run `git rebase --abort`, do NOT attempt any manual/semantic resolution, and emit the following lines so the caller can capture the structured report — then return with `Status: CONFLICTS` and `FIXPR_WRAP_STATUS: CONFLICTS`: <br><br>```text`<br>CONFLICT_COMPLEX_REPORT_JSON: <the raw JSON value of complex_report from the resolver's --json output>`<br>```<br><br>Store the emitted `CONFLICT_COMPLEX_REPORT_JSON` line into `.babysit.last_dispatch.complex_report` (or parse it from the fixpr output) so T-END can render each `{file, location, reason}` entry verbatim in the termination report. In safe-only mode, **never** attempt to hand-resolve or semantically merge a complex hunk — abort and report only. |
 | `mergeable` | `UNKNOWN` | GitHub still computing — note and re-run `/fixpr` later. |
-| `mergeStateStatus` | `BEHIND` | **First run `.claude/scripts/clean-behind-check.sh "$PR_NUMBER"` (issues #631, #667).** Exit 0 (`safe_to_offer`: gate green except BEHIND, not CONFLICTING, AC verified, base delta line ranges don't intersect PR line ranges at hunk level — conservative file-level fallback when patches unavailable) → **stop looping rebases and run `.claude/scripts/admin-merge.sh "$PR_NUMBER" --auto-plain --ac-verified`** (issue #754) — but **only after completing `cr-merge-gate.md` Step 2** (verify every Test Plan checkbox against the source at this SHA; ticked boxes are the proxy `clean-behind-check.sh` already checked, not verification). Any criterion that fails → fix it, do not merge; the script refuses without `--ac-verified`. Exit 0 → merged; relay its `AUTO_PLAIN_MERGED` evidence block. **No `AskUserQuestion`** — the plain shape modifies no branch protection, so it needs no user turn. Exit 8 → the shape needs a protection change (or an auto attempt already ran): **offer `/admin-merge` as a user choice** (AskUserQuestion, or print the command when running non-interactively) and **never auto-run** it. Exit 1 → not safe after re-validation (e.g. main advanced); fall through to the rebase path below. The `churn.advisory` field is context, not a gate (sensitivity configurable via `--churn-threshold N` or `CHURN_THRESHOLD` env var, default 1). Exit 1 (not safe — especially a base-delta↔PR-file overlap, or any residual blocker) → **capture the Step 6a snapshot (`diff-survival-check.sh snapshot`), then** rebase onto main: `git fetch origin main && git rebase origin/main`. If conflicts arise mid-rebase (replaying commits individually can conflict even when a three-way merge wouldn't), resolve them the same way as `CONFLICTING` above (including optional **`/merge-conflict`**), then `git rebase --continue`. **Run the Step 6a `verify` gate; force-push only on `GUARD_RC == 0`** — a non-zero verdict blocks the push and returns `Status: CONFLICTS`. When `FIXPR_WAIT_ITER < FIXPR_MAX_ITERATIONS`, treat the force-push as push-equivalent: set `PUSHED_SHA=$(git rev-parse HEAD)`, `PUSHED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")`, `DID_PUSH=1`, run **Step 3a** (dismiss stale bot reviews), **Step 3b** (reviewer triggers + 120s wait), then **Step 4d** on the new SHA. Do **not** jump straight to Step 4d without 3a/3b — bots are never kicked on the rebased SHA otherwise. |
+| `mergeStateStatus` | `BEHIND` | **First run `"$CLEAN_BEHIND_SH" "$PR_NUMBER"` (issues #631, #667).** Exit 0 (`safe_to_offer`: gate green except BEHIND, not CONFLICTING, AC verified, base delta line ranges don't intersect PR line ranges at hunk level — conservative file-level fallback when patches unavailable) → **stop looping rebases and run `"$ADMIN_MERGE_SH" "$PR_NUMBER" --auto-plain --ac-verified`** (issue #754) — but **only after completing `cr-merge-gate.md` Step 2** (verify every Test Plan checkbox against the source at this SHA; ticked boxes are the proxy `clean-behind-check.sh` already checked, not verification). Any criterion that fails → fix it, do not merge; the script refuses without `--ac-verified`. Exit 0 → merged; relay its `AUTO_PLAIN_MERGED` evidence block. **No `AskUserQuestion`** — the plain shape modifies no branch protection, so it needs no user turn. Exit 8 → the shape needs a protection change (or an auto attempt already ran): **offer `/admin-merge` as a user choice** (AskUserQuestion, or print the command when running non-interactively) and **never auto-run** it. Exit 1 → not safe after re-validation (e.g. main advanced); fall through to the rebase path below. The `churn.advisory` field is context, not a gate (sensitivity configurable via `--churn-threshold N` or `CHURN_THRESHOLD` env var, default 1). Exit 1 (not safe — especially a base-delta↔PR-file overlap, or any residual blocker) → **capture the Step 6a snapshot (`diff-survival-check.sh snapshot`), then** rebase onto main: `git fetch origin main && git rebase origin/main`. If conflicts arise mid-rebase (replaying commits individually can conflict even when a three-way merge wouldn't), resolve them the same way as `CONFLICTING` above (including optional **`/merge-conflict`**), then `git rebase --continue`. **Run the Step 6a `verify` gate; force-push only on `GUARD_RC == 0`** — a non-zero verdict blocks the push and returns `Status: CONFLICTS`. When `FIXPR_WAIT_ITER < FIXPR_MAX_ITERATIONS`, treat the force-push as push-equivalent: set `PUSHED_SHA=$(git rev-parse HEAD)`, `PUSHED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")`, `DID_PUSH=1`, run **Step 3a** (dismiss stale bot reviews), **Step 3b** (reviewer triggers + 120s wait), then **Step 4d** on the new SHA. Do **not** jump straight to Step 4d without 3a/3b — bots are never kicked on the rebased SHA otherwise. |
 | `mergeStateStatus` | `BLOCKED` | Required checks/reviews missing — already covered by 5c/5d. If CodeRabbit, Greptile, or CodeAnt is in CODEOWNERS and the last approval is stale/dismissed after a push, recover by triggering that bot (`@coderabbitai full review`, `@greptileai`, or `@codeant-ai review`) instead of escalating to the author. |
 | `mergeStateStatus` | `UNSTABLE` | A non-required check pending/failing — typically CR/Greptile on the new SHA. If 5d emitted `REVIEW_PENDING`, stop with that status. |
 | `reviewDecision` | `CHANGES_REQUESTED` | Changes were requested. **Stale** bot `CHANGES_REQUESTED` (wrong `commit_id` vs HEAD) are cleared by Step 3a after each push — not escalation. If a **human** left `CHANGES_REQUESTED` on the current HEAD, report as non-automatable. |
 
-When residual branch protection says review is missing or `reviewDecision != "APPROVED"`, run `.claude/scripts/merge-gate.sh "$PR_NUMBER"` and read `.code_owner_bots`. If it lists `coderabbitai[bot]`, `greptile-apps[bot]`, or `codeant-ai[bot]`, a current-HEAD **`APPROVED`** review from that bot satisfies GitHub's code-owner requirement. CodeAnt **check-run success** only covers the supplemental CR-path cleanliness rule in `cr-merge-gate.md`; it does **not** replace an `APPROVED` when CodeAnt is a code owner. A stale/dismissed bot approval is recoverable review debt: trigger the matching bot and re-run the gate after it responds. Do not ask the PR author for an approval GitHub will not accept.
+When residual branch protection says review is missing or `reviewDecision != "APPROVED"`, run `"$MERGE_GATE_SH" "$PR_NUMBER"` and read `.code_owner_bots`. If it lists `coderabbitai[bot]`, `greptile-apps[bot]`, or `codeant-ai[bot]`, a current-HEAD **`APPROVED`** review from that bot satisfies GitHub's code-owner requirement. CodeAnt **check-run success** only covers the supplemental CR-path cleanliness rule in `cr-merge-gate.md`; it does **not** replace an `APPROVED` when CodeAnt is a code owner. A stale/dismissed bot approval is recoverable review debt: trigger the matching bot and re-run the gate after it responds. Do not ask the PR author for an approval GitHub will not accept.
 
 After any rebase + force-push: `[MERGE] rebase complete, force-pushed (SHA: <new-sha>) — CI re-triggered. Re-run /fixpr after CI completes.`
 

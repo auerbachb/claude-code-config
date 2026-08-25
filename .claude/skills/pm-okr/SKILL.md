@@ -6,6 +6,23 @@ argument-hint: "show | set <objectives> | suggest (default: show)"
 
 Manage the OKRs (Objectives and Key Results) section of `.claude/pm-config.md`. OKRs inform `/pm` — keeping them current ensures prioritization reflects actual goals.
 
+Resolve the config parser before reading OKRs:
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+PM_CONFIG_GET_SH=$(resolve_script pm-config-get.sh || true)
+[[ -n "$PM_CONFIG_GET_SH" ]] || { echo "ERROR: pm-config-get.sh not found (checked all three paths) — OKR parsing unavailable" >&2; exit 1; }
+```
+
 Parse `$ARGUMENTS` to determine mode:
 - **No argument or "show"**: Display current OKRs
 - **"set ..."**: Replace OKRs section with the provided text
@@ -25,11 +42,11 @@ Extract the `## OKRs` section body via the shared parser:
 
 ```bash
 # rc=0 → present with non-empty body; rc=1 → missing or body empty; rc=2 → no config file.
-OKRS_CONTENT="$(.claude/scripts/pm-config-get.sh --section OKRs 2>/dev/null)"
+OKRS_CONTENT="$("$PM_CONFIG_GET_SH" --section OKRs 2>/dev/null)"
 OKRS_RC=$?
 ```
 
-`pm-config-get.sh` handles the line-anchored `^## OKRs` match (no mid-line matches) and the "next `^## ` or EOF" boundary. See `.claude/scripts/pm-config-get.sh --help`.
+`pm-config-get.sh` handles the line-anchored `^## OKRs` match (no mid-line matches) and the next `^##` followed by a space (or EOF) boundary. See `pm-config-get.sh --help`.
 
 ## Mode: show (default)
 

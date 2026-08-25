@@ -5,6 +5,23 @@ description: Classify merge/rebase conflicts against main, auto-resolve safe (si
 
 Resolve **local** merge conflicts while reconciling with **latest `origin/main`**. Safe to run **mid-merge** (`git merge` in progress) or **mid-rebase** (`git rebase` stopped on a conflict): the script only reads unmerged paths and the working tree.
 
+Resolve the diff-survival guard before changing conflicts:
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+DIFF_SURVIVAL_SH=$(resolve_script diff-survival-check.sh || true)
+[[ -n "$DIFF_SURVIVAL_SH" ]] || { echo "ERROR: diff-survival-check.sh not found (checked all three paths) — conflict preservation guard unavailable" >&2; exit 1; }
+```
+
 ## When to use
 
 - After `git merge origin/main` or `git rebase origin/main` stops on conflicts.
@@ -13,7 +30,7 @@ Resolve **local** merge conflicts while reconciling with **latest `origin/main`*
 ## Hard rules
 
 1. **`git fetch origin main` first** — always refresh main before inspecting conflicts (the helper does this unless `--skip-fetch`).
-2. **Snapshot the diff before resolving** (issue #757) — immediately after the fetch, run `.claude/scripts/diff-survival-check.sh snapshot --if-absent`. Marker-free is not the same as change-preserving: a resolution that quietly keeps the other side satisfies git while dropping the entire change the PR exists to deliver. `--if-absent` keeps a snapshot `/fixpr` already took; when this skill is entered mid-rebase with nothing on disk, the guard reconstructs the baseline from the rebase's `orig-head` (never from the half-replayed HEAD).
+2. **Snapshot the diff before resolving** (issue #757) — immediately after the fetch, run `"$DIFF_SURVIVAL_SH" snapshot --if-absent`. Marker-free is not the same as change-preserving: a resolution that quietly keeps the other side satisfies git while dropping the entire change the PR exists to deliver. `--if-absent` keeps a snapshot `/fixpr` already took; when this skill is entered mid-rebase with nothing on disk, the guard reconstructs the baseline from the rebase's `orig-head` (never from the half-replayed HEAD).
 3. **Do not `git commit`** — only **`git add`** paths that are fully marker-free after simple resolution. The caller continues merge/rebase or commits separately.
 4. **When in doubt, complex** — the resolver is intentionally conservative; anything ambiguous stays in the file with conflict markers and appears in the report.
 
@@ -84,7 +101,7 @@ For **mixed** files (some simple, some complex): simple hunks are written into t
 4. **Run the diff-survival gate before handing back any commit/continue command** (issue #757). Once the resolver has staged the marker-free files:
 
    ```bash
-   .claude/scripts/diff-survival-check.sh verify; GUARD_RC=$?
+   "$DIFF_SURVIVAL_SH" verify; GUARD_RC=$?
    ```
 
    - `0` — intact (or `deferred`: a rebase still has commits queued, so re-run after `git rebase --continue`). Give the next commands below.

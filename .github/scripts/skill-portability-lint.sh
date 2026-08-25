@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Lint cross-repo portability of the shared PM/orchestration skills (issue #1189).
+# Lint cross-repo portability of every globally published skill (issues #1189,
+# #1321).
 #
 # The shared PM/orchestration and stop-state skills are symlinked into every repo through
 # ~/.claude/skills/, but their helper scripts and reference docs are not: most
@@ -12,7 +13,9 @@
 # Validates:
 #   1. No script is INVOKED by a bare `.claude/scripts/<name>` path in a
 #      guarded surface. Every script name is checked, not an allow-list.
-#      Candidate-list lines and prose mentions are not invocations.
+#      Candidate-list lines are not invocations. Prose names helpers by
+#      basename, never by a bare repo-relative path, so no Markdown parser can
+#      confuse executable syntax with documentation.
 #   2. Every ordered candidate list carries the skills-worktree entry, checked
 #      within that list rather than anywhere in the file.
 #   3. The RESOLVE block in subagent-phase-guardrails.md is byte-identical to
@@ -23,9 +26,8 @@
 #      repo, so a bare path there is the highest-impact form of this bug).
 #
 # Guarded surfaces:
-#   .claude/skills/{pm,subagent,prompt,wave,issue-maker,start-issue,
-#                   pr-monitor-and-manage,end,end-resume,pause,pause-resume}/
-#                   (SKILL.md + references/*.md)
+#   Every directory published by setup-skills-worktree.sh from
+#   .claude/skills/*/ (SKILL.md + references/*.md)
 #   .claude/agents/*.md
 #   .claude/reference/chip-launching.md
 #
@@ -67,8 +69,6 @@ while (( $# > 0 )); do
   esac
 done
 
-SKILLS=(pm subagent prompt wave issue-maker start-issue pr-monitor-and-manage end end-resume pause pause-resume)
-
 WORKTREE_PREFIX='$HOME/.claude/skills-worktree/.claude/scripts/'
 CHIP_LAUNCHING=".claude/reference/chip-launching.md"
 GUARDRAILS=".claude/reference/subagent-phase-guardrails.md"
@@ -76,6 +76,19 @@ CANONICAL_RESOLVE=".claude/reference/portable-skill-resolution.md"
 
 errors=0
 missing=0
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=.github/scripts/lib/lint-common.sh
+source "${SCRIPT_DIR}/lib/lint-common.sh"
+
+SKILLS=()
+while IFS= read -r skill; do
+  SKILLS+=("$skill")
+done < <(published_skills . || true)
+
+if (( ${#SKILLS[@]} == 0 )); then
+  echo "::error::Guarded surface missing from disk: .claude/skills/ contains no published skill directories"
+  exit 3
+fi
 
 err() { echo "::error::$1"; errors=$((errors + 1)); }
 
@@ -146,8 +159,8 @@ done
 # same class of quiet erosion this lint exists to catch (`pr-state.sh` was
 # missing from the first draft's list and its regression went undetected).
 #
-# A line is an INVOCATION when it reaches the path in a position that would
-# execute it. Three shapes are deliberately NOT invocations:
+# A line is an INVOCATION when it contains a bare repo-relative helper path.
+# Two shapes are deliberately NOT invocations:
 #
 #   a) a candidate-list entry — the repo-relative third entry of an ordered
 #      lookup. Legitimate only when the SAME list also carries the
@@ -156,8 +169,10 @@ done
 #      elsewhere is exactly the silent-degradation shape, wearing the
 #      resolver's clothes.
 #   b) the SAFETY-block untracked-file guard (see below).
-#   c) prose that names a script without running it — e.g.
-#      "Use the shared helper `.claude/scripts/x.sh`".
+# Prose should say `x.sh`, not spell a bare `.claude/scripts/x.sh` path. This
+# intentionally avoids a Markdown-fence parser: backticks are both Markdown
+# inline-code delimiters and shell command substitution, and nested CommonMark
+# containers make a permissive prose exemption capable of hiding execution.
 
 # How far back to look for the skills-worktree sibling of a candidate entry.
 # The canonical list puts it two lines above; 6 absorbs comments and wrapping.
@@ -171,7 +186,7 @@ for f in "${guarded_files[@]}"; do
   while IFS= read -r hit; do
     lineno="${hit%%:*}"
     line="${hit#*:}"
-    script="$(sed -E 's|.*\.claude/scripts/([A-Za-z0-9_.-]+).*|\1|' <<< "$line")"
+    script="$(sed -E 's#.*(^|[^/A-Za-z0-9_}])\.claude/scripts/([A-Za-z0-9_.-]+\.sh)([^/A-Za-z0-9_.-]|$).*#\2#' <<< "$line")"
 
     # Skip the worktree candidate itself and the $HOME/.claude/scripts entry.
     case "$line" in
@@ -181,7 +196,7 @@ for f in "${guarded_files[@]}"; do
 
     # (a) Candidate-list entry: a quoted path, optionally continued.
     #     `  ".claude/scripts/foo.sh"; do` / `  ".claude/scripts/foo.sh" \`
-    if [[ "$line" =~ ^[[:space:]]*\"\.claude/scripts/[A-Za-z0-9_.-]+\"[[:space:]]*(\\|\;[[:space:]]*do)?[[:space:]]*$ ]]; then
+    if [[ "$line" =~ ^[[:space:]]*\"\.claude/scripts/[A-Za-z0-9_.-]+\.sh\"[[:space:]]*(\\|\;[[:space:]]*do)?[[:space:]]*$ ]]; then
       # Look back within this list for the skills-worktree sibling.
       list_has_worktree=0
       start=$(( lineno - CANDIDATE_WINDOW )); (( start < 1 )) && start=1
@@ -208,11 +223,9 @@ for f in "${guarded_files[@]}"; do
       continue
     fi
 
-    # (c) Prose mention: the path appears inside backticks with no argument
-    #     following it, and the line is not a shell command line.
-    if [[ "$line" =~ \`\.claude/scripts/[A-Za-z0-9_.-]+\`([^\`]|$) ]] \
-       && [[ ! "$line" =~ ^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=?\$?\( ]] \
-       && [[ ! "$line" =~ ^[[:space:]]*\.claude/scripts/ ]]; then
+    # Comments can document a helper path without executing it. This exception
+    # is syntax-based and independent of Markdown container parsing.
+    if [[ "$line" =~ ^[[:space:]]*# ]]; then
       continue
     fi
 
@@ -220,7 +233,7 @@ for f in "${guarded_files[@]}"; do
   # Readability was proven above, so exit 1 here genuinely means "no matches".
   # `|| true` keeps that no-match case from aborting the loop; it is not masking
   # an I/O error, which the -r pre-check already ruled out.
-  done < <(grep -nE '\.claude/scripts/[A-Za-z0-9_.-]+' "$f" || true)
+  done < <(grep -nE '(^|[^/A-Za-z0-9_}])\.claude/scripts/[A-Za-z0-9_.-]+\.sh([^/A-Za-z0-9_.-]|$)' "$f" || true)
 done
 
 # --- Check 3: RESOLVE block is byte-identical to its canonical copy --------

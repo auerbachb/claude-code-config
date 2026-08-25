@@ -18,6 +18,27 @@ allowed-tools:
 
 Build a status dashboard of all open PRs in this repo.
 
+Resolve dashboard helpers before listing PRs:
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+PR_STATE_SH=$(resolve_script pr-state.sh || true)
+MERGE_GATE_SH=$(resolve_script merge-gate.sh || true)
+CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh || true)
+[[ -n "$PR_STATE_SH" ]] || { echo "ERROR: pr-state.sh not found (checked all three paths) — PR dashboard unavailable" >&2; exit 1; }
+[[ -n "$MERGE_GATE_SH" ]] || { echo "ERROR: merge-gate.sh not found (checked all three paths) — merge status unavailable" >&2; exit 1; }
+[[ -n "$CR_HOURLY_SH" ]] || { echo "ERROR: cr-review-hourly.sh not found (checked all three paths) — review quota status unavailable" >&2; exit 1; }
+```
+
 > **Invoking-repo scope (issue #687).** "in this repo" is load-bearing: the `gh pr list`
 > below is cwd-repo-scoped by `gh`, and `pr-state.sh --pr N` resolves the repo via
 > `gh repo view` — so the dashboard never surfaces another repo's PRs. `/status`
@@ -41,7 +62,7 @@ If no open PRs, say "No open PRs." and stop.
 For each open PR, run the shared PR-state helper once per PR. One invocation returns reviews, inline comments, issue comments, unresolved threads, check-runs, and bot status rollups — all derived from the same HEAD SHA:
 
 ```bash
-STATE=$(.claude/scripts/pr-state.sh --pr "$N")
+STATE=$("$PR_STATE_SH" --pr "$N")
 ```
 
 All subsequent queries read from `$STATE`:
@@ -79,7 +100,7 @@ jq '.check_runs.all[] | select(.name == "Cursor Bugbot") | {name, status, conclu
 For a structured merge-readiness call per PR, run the shared merge-gate verifier:
 
 ```bash
-.claude/scripts/merge-gate.sh "$PR_NUM"
+"$MERGE_GATE_SH" "$PR_NUM"
 ```
 
 Exit `0` → Clean (merge-ready). Exit `1` → parse `.missing[]` to classify: entries about findings/threads = **Has findings**, entries about CI incomplete or review not yet posted = **Review pending**, entries about rate limits = **Rate-limited**. Exit `3` → PR not found. Exit `2`/`4` → script/gh error.
@@ -95,7 +116,7 @@ Classifications to present in the table:
 
 ### Step 4: Session-state + CR hourly quota
 
-Always run `.claude/scripts/cr-review-hourly.sh --check` from the repo root (same `HOME` as the agent). Parse JSON on stdout and put **`CR quota: <reviews_used>/<budget>`** (or **`CR quota: exhausted`**) in the footer **every time**, even when `~/.claude/session-state.json` does not exist yet (`--check` then reports 0 used).
+Always run `"$CR_HOURLY_SH" --check` from the repo root (same `HOME` as the agent). Parse JSON on stdout and put **`CR quota: <reviews_used>/<budget>`** (or **`CR quota: exhausted`**) in the footer **every time**, even when `~/.claude/session-state.json` does not exist yet (`--check` then reports 0 used).
 
 If `session-state.json` exists, also cross-reference:
 

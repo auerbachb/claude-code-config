@@ -16,7 +16,7 @@ Use `state` — **not** a `merged` field. `gh` has no `merged` JSON field; `--js
 ## Gate refresh (every iteration)
 
 ```bash
-GATE_JSON=$(.claude/scripts/merge-gate.sh "$PR_NUM")
+GATE_JSON=$("$MERGE_GATE_SH" "$PR_NUM")
 GATE_EXIT=$?
 HEAD_NOW=$(printf '%s' "$GATE_JSON" | jq -r '.head_sha // empty')
 ```
@@ -86,7 +86,7 @@ When CR hourly budget blocks an internal `@coderabbitai full review` inside `/fi
 
 When `missing` indicates stale/dismissed bot approval or missing CR/BugBot/CodeAnt/Greptile signal per `cr-merge-gate.md`, trigger the **one** bot your repo needs:
 
-- **CodeRabbit:** run `.claude/scripts/cr-review-hourly.sh --check` first. Exit `1` → **stop** with JSON snapshot and `cr-github-review.md` rate-limit guidance — do not loop until cap resets.
+- **CodeRabbit:** run `"$CR_HOURLY_SH" --check` first. If the resolved helper is empty, emit `ERROR: cr-review-hourly.sh not found (checked all three paths) — CodeRabbit budget gate unavailable` and stop. Exit `1` → **stop** with JSON snapshot and `cr-github-review.md` rate-limit guidance — do not loop until cap resets.
 - **Greptile:** `@greptileai` only when Greptile is the owning path / code owner (per `greptile.md`).
 - **CodeAnt:** `@codeant-ai review` when CodeAnt owns the gap.
 - **BugBot:** post `@cursor review` when `reviewer == "bugbot"` per `reviewer-of.sh` or `session-state.json` — duplicates OK, except on a HEAD BugBot already refused for spend, where no nudge can help (`bugbot.md`).

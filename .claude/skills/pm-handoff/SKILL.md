@@ -6,6 +6,23 @@ argument-hint: "[copy] (optional — copies output to clipboard via pbcopy)"
 
 Generate a PM handoff prompt for starting or continuing a PM orchestration thread. This prompt is self-contained — paste it into a new Claude Code session (web or CLI) and the new thread becomes the project manager for this repo, with full awareness of what the previous PM thread was doing.
 
+Resolve the config parser before Step 1:
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+PM_CONFIG_GET_SH=$(resolve_script pm-config-get.sh || true)
+[[ -n "$PM_CONFIG_GET_SH" ]] || { echo "ERROR: pm-config-get.sh not found (checked all three paths) — PM handoff config capture unavailable" >&2; exit 1; }
+```
+
 Parse `$ARGUMENTS`:
 - If `$ARGUMENTS` contains "copy" or "clipboard", copy the final output to clipboard via `pbcopy` in addition to stdout.
 - If empty, output to stdout only.
@@ -21,7 +38,7 @@ on an *existing* config would be silently overwritten by Step 2's bootstrap.
 
 ```bash
 CONFIG_FILE=".claude/pm-config.md"
-.claude/scripts/pm-config-get.sh --list >/dev/null 2>&1
+"$PM_CONFIG_GET_SH" --list >/dev/null 2>&1
 CONFIG_RC=$?
 
 if [[ "$CONFIG_RC" -eq 0 || "$CONFIG_RC" -eq 1 ]]; then
@@ -164,9 +181,9 @@ Parse `.claude/pm-config.md` via the shared parser:
 
 ```bash
 # Enumerate headers, then fetch each body verbatim.
-mapfile -t SECTIONS < <(.claude/scripts/pm-config-get.sh --list 2>/dev/null)
+mapfile -t SECTIONS < <("$PM_CONFIG_GET_SH" --list 2>/dev/null)
 for name in "${SECTIONS[@]}"; do
-  body="$(.claude/scripts/pm-config-get.sh --section "$name" 2>/dev/null)"
+  body="$("$PM_CONFIG_GET_SH" --section "$name" 2>/dev/null)"
   # store (name, body) for use in later steps
 done
 ```

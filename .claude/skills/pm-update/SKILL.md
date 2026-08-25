@@ -5,6 +5,25 @@ description: Re-scan the current repo and update `.claude/pm-config.md` with fre
 
 Re-scan the current repo and update `.claude/pm-config.md`, then sweep stale worktrees and branches. Auto-generated config sections (Infrastructure, Architecture) are regenerated from the repo's current state; user-edited sections are preserved verbatim. After the config write, the stale-cleanup pass surfaces (and optionally removes) worktrees and branches that have aged past the threshold.
 
+Resolve the parser and cleanup helper before Step 1:
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+PM_CONFIG_GET_SH=$(resolve_script pm-config-get.sh || true)
+STALE_CLEANUP_SH=$(resolve_script stale-cleanup.sh || true)
+[[ -n "$PM_CONFIG_GET_SH" ]] || { echo "ERROR: pm-config-get.sh not found (checked all three paths) — PM config preservation unavailable" >&2; exit 1; }
+[[ -n "$STALE_CLEANUP_SH" ]] || { echo "ERROR: stale-cleanup.sh not found (checked all three paths) — workspace cleanup unavailable" >&2; exit 1; }
+```
+
 ## Section classification
 
 | Section | Type | Behavior on update |
@@ -33,11 +52,11 @@ Enumerate section names via the shared parser, then extract each body by name:
 
 ```bash
 # List every `^## ` header in the config, in original file order.
-mapfile -t SECTIONS < <(.claude/scripts/pm-config-get.sh --list 2>/dev/null)
+mapfile -t SECTIONS < <("$PM_CONFIG_GET_SH" --list 2>/dev/null)
 
 # For each section, fetch the verbatim body.
 for name in "${SECTIONS[@]}"; do
-  body="$(.claude/scripts/pm-config-get.sh --section "$name" 2>/dev/null)"
+  body="$("$PM_CONFIG_GET_SH" --section "$name" 2>/dev/null)"
   # store (name, body) — reuse body in Steps 3-7
 done
 ```
@@ -160,7 +179,7 @@ If nothing changed in the auto-generated sections, say so: "Infrastructure and A
 
 ## Step 8: Stale worktree + branch cleanup
 
-`/wrap` no longer self-removes the running worktree or deletes its branch (issue #338). Stale cleanup is `/pm-update`'s job — invoke `.claude/scripts/stale-cleanup.sh` to detect and (after user confirmation) prune long-abandoned refs.
+`/wrap` no longer self-removes the running worktree or deletes its branch (issue #338). Stale cleanup is `/pm-update`'s job — invoke `"$STALE_CLEANUP_SH"` to detect and (after user confirmation) prune long-abandoned refs.
 
 > **Shared implementation (issue #618).** `/pm-clean` now calls this same `stale-cleanup.sh` for its workspace sweep — `stale-cleanup.sh` is the single source of truth for stale worktree/branch detection and safety, so the two skills can never diverge (mirroring the `/pm` ↔ `/pm-clean` #598 shared-script precedent). This step's behavior is unchanged; keep both callers in sync by changing only the script. `/pm-update` runs it at the `STALE_DAYS=7` default below; `/pm-clean` runs it at its own threshold (default 30, see that skill).
 
@@ -169,11 +188,11 @@ If nothing changed in the auto-generated sections, say so: "Infrastructure and A
 Always run `--check` first. The script never deletes in this mode.
 
 ```bash
-.claude/scripts/stale-cleanup.sh --check
+"$STALE_CLEANUP_SH" --check
 RC=$?
 ```
 
-`stale-cleanup.sh` reports three categories — stale worktrees, stale local branches, stale remote branches — plus a "Skipped (safety)" list with the reason each item was protected (main worktree, caller's current worktree, uncommitted changes, open PR, protected branch name, branch checked out in a worktree). See `.claude/scripts/stale-cleanup.sh --help` for the full safety-check contract.
+`stale-cleanup.sh` reports three categories — stale worktrees, stale local branches, stale remote branches — plus a "Skipped (safety)" list with the reason each item was protected (main worktree, caller's current worktree, uncommitted changes, open PR, protected branch name, branch checked out in a worktree). See `stale-cleanup.sh --help` for the full safety-check contract.
 
 Threshold defaults to 7 days; override with `STALE_DAYS=N` if the user requests a different cutoff.
 
@@ -192,7 +211,7 @@ Show the user the stdout from Step 8.1 verbatim. Then:
 If the user approves, run `--apply`:
 
 ```bash
-.claude/scripts/stale-cleanup.sh --apply
+"$STALE_CLEANUP_SH" --apply
 APPLY_RC=$?
 ```
 

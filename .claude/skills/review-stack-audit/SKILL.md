@@ -26,6 +26,23 @@ harness already does natively what we automate by hand — an internal-redundanc
 axis. This one asks whether external spend still buys value. Same cadence, same
 advisory posture, same issue-filing discipline; different question.
 
+Resolve the repository locator before either engine runs:
+
+```bash
+resolve_script() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name" \
+    ".claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
+[[ -n "$REPO_ROOT_SH" ]] || { echo "ERROR: repo-root.sh not found (checked all three paths) — review-stack audit root unavailable" >&2; exit 1; }
+```
+
 ## The two engines
 
 Both are plain scripts, so the judgment in this file stays small and their
@@ -56,7 +73,7 @@ with any mode. `--arm` and `--stop` are lifecycle modes and mutually exclusive
 with the rest.
 
 ```bash
-REPO_ROOT="$(.claude/scripts/repo-root.sh)"
+REPO_ROOT="$("$REPO_ROOT_SH")"
 SKILL_DIR="$REPO_ROOT/.claude/skills/review-stack-audit"
 MEASURE="$SKILL_DIR/measure.sh"
 DRIFT="$SKILL_DIR/drift.sh"
@@ -288,7 +305,7 @@ branch that is not `main`:
 ```bash
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
   && [[ "$(git branch --show-current)" != "main" ]] \
-  && [[ "$(git rev-parse --show-toplevel)" != "$(.claude/scripts/repo-root.sh)" ]]
+  && [[ "$(git rev-parse --show-toplevel)" != "$("$REPO_ROOT_SH")" ]]
 ```
 
 Refuse otherwise, explain why, and fall back to the default path. When it does

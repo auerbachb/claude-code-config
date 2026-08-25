@@ -10,6 +10,8 @@ set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 LINT="${REPO_ROOT}/.github/scripts/skill-portability-lint.sh"
+errors=0
+source "${REPO_ROOT}/.github/scripts/lib/lint-common.sh"
 
 TMP_ROOT=$(mktemp -d -t skill-portability-lint.XXXXXX)
 trap 'chmod -R u+rwX "$TMP_ROOT" 2>/dev/null; rm -rf "$TMP_ROOT"' EXIT
@@ -17,7 +19,6 @@ trap 'chmod -R u+rwX "$TMP_ROOT" 2>/dev/null; rm -rf "$TMP_ROOT"' EXIT
 failures=0
 case_num=0
 
-SKILLS=(pm subagent prompt wave issue-maker start-issue pr-monitor-and-manage end end-resume pause pause-resume)
 REQUIRED_RENAMED_SKILLS=(end end-resume pause pause-resume)
 
 make_fixture() {
@@ -27,13 +28,13 @@ make_fixture() {
   cp "$REPO_ROOT/.claude/reference/portable-skill-resolution.md" "$dir/.claude/reference/"
   cp "$REPO_ROOT/.claude/reference/subagent-phase-guardrails.md" "$dir/.claude/reference/"
   cp "$REPO_ROOT"/.claude/agents/*.md "$dir/.claude/agents/"
-  for skill in "${SKILLS[@]}"; do
+  while IFS= read -r skill; do
     mkdir -p "$dir/.claude/skills/${skill}"
     cp "$REPO_ROOT/.claude/skills/${skill}/SKILL.md" "$dir/.claude/skills/${skill}/"
     if [[ -d "$REPO_ROOT/.claude/skills/${skill}/references" ]]; then
       cp -R "$REPO_ROOT/.claude/skills/${skill}/references" "$dir/.claude/skills/${skill}/"
     fi
-  done
+  done < <(published_skills "$REPO_ROOT")
 }
 
 expect() {
@@ -76,6 +77,65 @@ plant_bare_invocation_in_reference() {
 plant_bare_invocation_in_agent() {
   printf '\n```bash\nSTATE=$(.claude/scripts/pr-state.sh --pr 42)\n```\n' \
     >> ".claude/agents/phase-b-reviewer.md"
+}
+
+# This skill exists only in the fixture and is absent from every maintained
+# list. Dynamic publication coverage must discover it without a test-side edit.
+plant_new_unlisted_skill() {
+  mkdir -p ".claude/skills/future-unlisted-skill"
+  printf '%s\n' \
+    '---' \
+    'name: future-unlisted-skill' \
+    '---' \
+    '' \
+    '```bash' \
+    '.claude/scripts/future-helper.sh --run' \
+    '```' \
+    > ".claude/skills/future-unlisted-skill/SKILL.md"
+}
+
+# These are textual or already-rooted references, not bare executions. Keeping
+# them in one fixture guards the classifier boundary without weakening dynamic
+# coverage of genuine commands.
+plant_non_invocation_mentions() {
+  cat >> ".claude/skills/pm/SKILL.md" <<'EOF'
+
+The contract is implemented by `example.sh`.
+The regression lives at `.claude/scripts/tests/example.test.sh`.
+```bash
+ROOTED="$REPO_ROOT/.claude/scripts/example.sh"
+```
+EOF
+}
+
+plant_command_like_prose() {
+  printf '\nRun `.claude/scripts/example.sh --help` before continuing.\n' \
+    >> ".claude/skills/pm/SKILL.md"
+}
+
+plant_backtick_command_substitution() {
+  printf '\n```bash\necho `.claude/scripts/example.sh`\n```\n' \
+    >> ".claude/skills/pm/SKILL.md"
+}
+
+plant_long_backtick_fence_command() {
+  printf '\n````bash\necho `.claude/scripts/example.sh`\n````\n' \
+    >> ".claude/skills/pm/SKILL.md"
+}
+
+plant_tilde_fence_command() {
+  printf '\n~~~shell\necho `.claude/scripts/example.sh`\n~~~\n' \
+    >> ".claude/skills/pm/SKILL.md"
+}
+
+plant_uncommon_shell_fence_command() {
+  printf '\n```zsh\necho `.claude/scripts/example.sh`\n```\n' \
+    >> ".claude/skills/pm/SKILL.md"
+}
+
+plant_overindented_pseudo_close() {
+  printf '\n```bash\n    ```\necho `.claude/scripts/example.sh`\n```\n' \
+    >> ".claude/skills/pm/SKILL.md"
 }
 
 # A candidate list that skips the skills-worktree entry resolves to nothing in a
@@ -153,6 +213,38 @@ expect "bare invocation in an agent definition" 1 \
   'phase-b-reviewer\.md:[0-9]+: bare invocation of pr-state\.sh' \
   plant_bare_invocation_in_agent
 
+expect "newly published skill cannot bypass coverage" 1 \
+  'future-unlisted-skill/SKILL\.md:[0-9]+: bare invocation of future-helper\.sh' \
+  plant_new_unlisted_skill
+
+expect "basename prose, subdirectory, and rooted paths are not bare invocations" 0 \
+  'skill-portability-lint: OK' \
+  plant_non_invocation_mentions
+
+expect "command-like inline prose remains guarded" 1 \
+  'skills/pm/SKILL\.md:[0-9]+: bare invocation of example\.sh' \
+  plant_command_like_prose
+
+expect "backtick command substitution in a shell fence remains guarded" 1 \
+  'skills/pm/SKILL\.md:[0-9]+: bare invocation of example\.sh' \
+  plant_backtick_command_substitution
+
+expect "long backtick shell fence remains guarded" 1 \
+  'skills/pm/SKILL\.md:[0-9]+: bare invocation of example\.sh' \
+  plant_long_backtick_fence_command
+
+expect "tilde shell fence remains guarded" 1 \
+  'skills/pm/SKILL\.md:[0-9]+: bare invocation of example\.sh' \
+  plant_tilde_fence_command
+
+expect "uncommon shell fence remains guarded" 1 \
+  'skills/pm/SKILL\.md:[0-9]+: bare invocation of example\.sh' \
+  plant_uncommon_shell_fence_command
+
+expect "four-space pseudo-close cannot end a real fence" 1 \
+  'skills/pm/SKILL\.md:[0-9]+: bare invocation of example\.sh' \
+  plant_overindented_pseudo_close
+
 expect "candidate list missing the skills-worktree entry" 1 \
   'candidate list for session-state\.sh has no' \
   plant_truncated_candidate_list
@@ -173,9 +265,9 @@ expect "missing guarded surface is exit 3, never a pass" 3 \
   'Guarded surface missing from disk' \
   remove_guarded_surface
 
-# Keep the rename contract independent from the production linter's SKILLS
-# array. If any renamed command disappears from that array, removing its
-# fixture file will stop producing exit 3 and this test will fail.
+# Keep the rename contract independent from dynamic publication coverage. The
+# dedicated assertions document the public command pair and still fail closed
+# if a renamed command disappears from the fixture.
 for renamed_skill in "${REQUIRED_RENAMED_SKILLS[@]}"; do
   expect "renamed ${renamed_skill} surface remains guarded" 3 \
     "Guarded surface missing from disk: \\.claude/skills/${renamed_skill}/SKILL\\.md" \
