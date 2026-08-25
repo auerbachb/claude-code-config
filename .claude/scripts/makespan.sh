@@ -212,8 +212,12 @@ cat > "$JQ_FILTER_FILE" << 'JQEOF'
 
 # -----------------------------------------------------------------------
 # Bound 3: reviewer-throughput = ceil(n * 60 / cr_rate)
+# NOTE: jq division is always floating-point, so use ($n * 60 / $cr_rate) | ceil
+# directly. The integer-ceiling formula ($n * 60 + $cr_rate - 1) / $cr_rate | ceil
+# is WRONG for jq: when n*60 is divisible by cr_rate the pre-ceil value is
+# non-integer (e.g. 304/5 = 60.8 instead of 60), so ceil overcounts by 1 minute.
 # -----------------------------------------------------------------------
-(($n * 60 + $cr_rate - 1) / $cr_rate | ceil) as $reviewer_hi |
+(($n * 60 / $cr_rate) | ceil) as $reviewer_hi |
 $reviewer_hi as $reviewer_lo |
 
 # -----------------------------------------------------------------------

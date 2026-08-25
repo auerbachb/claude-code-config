@@ -145,10 +145,9 @@ while IFS= read -r line; do
 done <<< "$BODY"
 
 if [[ -n "$EST_LINE" ]]; then
-  # Structural check first: the line must look like "Est: {N}...{N} min...plan on {N}".
-  # This guards against accepting any line with 3 numbers that happen to satisfy the
-  # numeric constraints — only lines with the canonical skeleton are parsed.
-  # (The en-dash is non-digit; grep -qE treats it as separator bytes, which is fine.)
+  # Structural check: the line must contain the key words in order.
+  # An additional canonical-format gate below rejects lines that use non-canonical
+  # separators (e.g. a plain hyphen instead of en-dash, or no middle dot).
   if printf '%s' "$EST_LINE" | \
        grep -qE '^Est:[[:space:]]+[0-9]+[^0-9]+[0-9]+[[:space:]]+min[[:space:]].*plan[[:space:]]+on[[:space:]]+[0-9]+'; then
     # Extract all digit runs positionally to avoid UTF-8 en-dash byte fragility.
@@ -160,11 +159,20 @@ if [[ -n "$EST_LINE" ]]; then
     HI=$(printf '%s' "$_NUMS" | sed -n '2p')
     BOUND=$(printf '%s' "$_NUMS" | sed -n '3p')
 
+    # Canonical-format gate: require the documented separators.
+    # EN_DASH (U+2013, UTF-8: \xe2\x80\x93) must appear between the two numbers.
+    # MIDDLE_DOT (U+00B7, UTF-8: \xc2\xb7) must appear between "min" and "plan on".
+    # This rejects lines using a plain hyphen, "to", comma, or any other separator.
+    _EN_DASH=$(printf '\xe2\x80\x93')
+    _MIDDLE_DOT=$(printf '\xc2\xb7')
     if [[ -n "$LO" && -n "$HI" && -n "$BOUND" && \
-          "$LO" -lt "$HI" && "$BOUND" -eq "$HI" ]]; then
+          "$LO" -lt "$HI" && "$BOUND" -eq "$HI" ]] && \
+       printf '%s' "$EST_LINE" | grep -qF "$_EN_DASH" && \
+       printf '%s' "$EST_LINE" | grep -qF "$_MIDDLE_DOT"; then
       printf '%s\n' "$EST_LINE"
       exit 0
     fi
+    # Numbers valid but canonical separators missing — fall through to tier fallback
   fi
   # Malformed or structurally invalid Est: line — fall through to tier fallback
 fi
