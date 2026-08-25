@@ -67,9 +67,46 @@ adjusting; never adjust silently.
 | `/issue-maker` | Infer tier from the issue signals, look up the estimate line, add `## Estimate` section to the issue body before filing. |
 | `/prompt` | Surface the estimate in the Tier Recommendation output. If the issue body already has `## Estimate`, echo that line; otherwise derive from tier + this table. |
 | `/start-issue` | Surface the estimate in the ready-to-code summary. Same fallback logic as `/prompt`. |
+| `/pm` | Show `Est:` line under each suggested issue. Resolved via `estimate-resolve.sh`. |
+| `/subagent` | Show `Est:` line in the launch report and completion summary. Resolved via `estimate-resolve.sh`. |
+| `/wave` | Show batch makespan after the wave block. Computed via `makespan.sh`. |
 
 Read this file through the standard candidate order (`portable-skill-resolution.md`):
 `$HOME/.claude/skills-worktree/.claude/reference/time-estimates.md` first, then
 `$HOME/.claude/reference/`, then `.claude/reference/`. If unavailable, print
 `DEGRADED: time-estimates.md not found (checked all three paths) — using inline fallback`
 and use the inline values from the table above; never silently omit the estimate.
+
+---
+
+## Batch Makespan Model (increment 3)
+
+The batch makespan answers "when will this batch finish?" — a number per-issue estimates alone cannot give because pipelines overlap, chains serialize, and a shared reviewer cap throttles throughput.
+
+**Helper:** `makespan.sh` (same resolution order as other scripts). Input: JSON object `{"issues":[{"num":N,"est_lo":lo,"est_hi":hi,"deps":[...]},...]}` where `est_lo`/`est_hi` are minutes or `null` for unestimated issues. Output: one line — `lo–hi [h|min] · binding: <bound> · plan on ~HH:MM AM/PM ET`.
+
+### Three bounds; makespan = max of all three
+
+| Bound | Formula | When binding |
+|-------|---------|--------------|
+| **parallel-work** | `max(max(est_hi), sum(est_hi) / ceiling)` | Most batches — implementation time dominates |
+| **critical-chain** | Longest `Depends on` path (sum of `est_hi` along that path) | Any batch with a serialized increment chain |
+| **reviewer-throughput** | `n_issues × (60 / 5)` = `n × 12 min` | Large batches of fast issues (Light tier or faster) |
+
+The reviewer-throughput floor uses **5 reviews/hour** — the CodeRabbit Pro cap from `cr-github-review.md` "Rate Limits". When this bound is binding, the report says so: adding more parallel agents stops helping because CR is the bottleneck.
+
+**Concurrency ceiling:** 4 (from `subagent-orchestration.md`; configurable via `--ceiling`).
+
+### Unestimated issues
+
+An issue with no `## Estimate` section and no complexity tier label resolves to `unestimated`. `makespan.sh` uses the Standard-tier fallback (45/90 min) for unestimated issues so the batch always has a result; the count of fallbacks is noted in the output line. `estimate-resolve.sh` exits 2 and prints `unestimated` for fully unresolved issues — never a blocker for dispatch.
+
+### Output format
+
+```
+45 min–1.5 h · binding: parallel-work · plan on ~10:30 PM ET
+2.5 h–4.5 h · binding: critical-chain · plan on ~1:30 AM ET
+1.5 h (1 unestimated → Standard fallback) · binding: reviewer-throughput (6 issue(s) × 12 min/review at 5/hr) · plan on ~7:00 PM ET
+```
+
+The finish clock time is `now + makespan_hi` in Eastern Time.

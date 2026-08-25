@@ -278,12 +278,23 @@ An unrecorded chip cannot be dismissed later — recording is what makes withdra
 
 Running #42 #55 inline here: `/subagent #42 #55`. Click the chip to start #67 in its own thread.
 
+Batch makespan: 1.5 h–3 h · binding: parallel-work · plan on ~8:45 PM ET
+
 ### Excluded from this wave
 - **#61** — overlaps #42 on `.claude/skills/pm/SKILL.md`
 - **#38** — blocked by #42, which is in this wave
 - **#70** — footprint undeclared; can't rule out overlap with #55
 - **#71** — cap reached (2 slots; 2 already in flight)
 ```
+
+**Batch makespan:** Resolve `makespan.sh` and `estimate-resolve.sh` (Step 0 candidate order). For each inline wave issue, call `estimate-resolve.sh <N>` and capture both stdout and exit code:
+- `estimate-resolve.sh` exit 0 (body) or 1 (tier fallback): parse `est_lo`/`est_hi` from the Est line (two integers separated by `–`).
+- `estimate-resolve.sh` exit 2 (`unestimated`): use `null`/`null` — `makespan.sh` applies Standard fallback.
+- `estimate-resolve.sh` exit 3 or 4 (usage/error): report one line per failure; use `null`/`null` for that issue.
+
+Collect `Depends on` links for `deps`. Build `{"issues":[{"num":N,"est_lo":lo,"est_hi":hi,"deps":[...]},...]}` and pipe to `makespan.sh`. Append the single output line as `Batch makespan: <output>` after the `Running ...` line and before `### Excluded`. If `makespan.sh` is unavailable, print `DEGRADED: makespan.sh not found — batch makespan unavailable` (non-blocking; wave dispatch continues). If `makespan.sh` exits 1 (all issues were unestimated — every one used Standard fallback), omit the line silently.
+
+The same exit-code mapping applies to the per-issue estimate in `/subagent`'s launch announcement: exit 0/1 → show the Est line; exit 2 → show `unestimated`; exit 3/4 → report the failure, omit the parenthetical.
 
 Rules for this block:
 
