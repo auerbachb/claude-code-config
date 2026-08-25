@@ -643,12 +643,15 @@ mode_rollup() {
     return 1
   fi
 
-  # Collect only valid JSON rows for this repo, skipping malformed lines.
+  # Collect only schema-valid JSON rows for this repo, skipping malformed lines.
+  # Checks: (1) valid JSON, (2) required numeric actual_min, (3) boolean outlier.
   # Parse each line individually so a single corrupt row doesn't drop the rest.
   local repo_rows
   repo_rows=$(grep -F "\"repo\":\"$repo\"" "$LOG_FILE" 2>/dev/null \
     | while IFS= read -r line; do
-        if printf '%s' "$line" | jq -e '.' >/dev/null 2>&1; then
+        if printf '%s' "$line" \
+            | jq -e '((.actual_min | type) == "number") and
+                     ((.outlier   | type) == "boolean")' >/dev/null 2>&1; then
           printf '%s\n' "$line"
         fi
       done \
