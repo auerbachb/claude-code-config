@@ -80,6 +80,10 @@ The thread's capture state lives in a session log so it survives context compact
 mkdir -p "$HOME/.claude/handoffs"
 SESSION_ID="${CLAUDE_SESSION_ID:-default}"
 LOG="$HOME/.claude/handoffs/issue-maker-${SESSION_ID}-log.json"
+# BATCH_TIER tracks the most demanding tier seen so far in this session.
+# Initialized here so it is always defined — both new-log and compaction-recovery
+# paths start fresh at "Light" and accumulate upward during Step 3.
+BATCH_TIER="Light"
 ```
 
 **If `$LOG` exists (compaction recovery / re-invocation):** read it and lead with a recap before accepting new input — this is the first action after a compaction.
@@ -88,6 +92,14 @@ LOG="$HOME/.claude/handoffs/issue-maker-${SESSION_ID}-log.json"
 if [ -f "$LOG" ]; then
   OFFER_ACCEPTED=$(jq -r '.offer_accepted // false' "$LOG")
   DELIVERY_MODE=$(jq -r '.delivery_mode // "inline"' "$LOG")
+  # Re-derive BATCH_TIER from tiers stored in prior issues so the batch offer
+  # after compaction reflects the true running maximum, not a cold reset.
+  BATCH_TIER=$(jq -r '
+    .issues | map(.tier // "Light")
+    | if contains(["Heavy"]) then "Heavy"
+      elif contains(["Standard"]) then "Standard"
+      else "Light"
+      end' "$LOG")
   jq -r --argjson accepted "$OFFER_ACCEPTED" --arg dmode "$DELIVERY_MODE" \
     '"Resuming \(if $accepted then "execution" else "capture" end) mode for \(.target_repo) — \(.mode) mode. \(([.issues[]|select(.status=="open")]|length)) issue(s) opened so far:",
      (.issues[] | "  #\(.number) — \(.title) [\(.status)]" +
@@ -166,7 +178,7 @@ For each issue the user describes (see Step 6 for batches):
 
 1. **Reflect** — run the reflection pass from the top-level rule (narrow / expand / split / **sizing** / ambiguity / assumptions). You make these calls yourself; they resurface as decision points in the report (Step 9a). Ask up front only on a genuinely blocking call (top-level rule); otherwise proceed. **If the sizing check fails**, this one ask becomes an ordered increment chain: run each increment through sub-steps 2–7 below in order, head first, so each one can link to the increment before it (Step 8).
 2. **Dedup search** (Step 4) — surface likely duplicates; pause before filing only on a strong or exact match.
-3. **Draft the body** using the canonical 6-section template (Step 5), honoring the tone defaults. Detect any explicit-ask override and flip to technical-first for that issue only.
+3. **Draft the body** using the canonical 7-section template (Step 5), honoring the tone defaults. Detect any explicit-ask override and flip to technical-first for that issue only. While drafting, infer the tier from all the signals you know about the issue — the user's description, the file paths and AC items you are about to write, and whether the issue touches rules/skills/orchestration (same Heavy/Standard/Light classification as `tier-inference.md`). Store the result as `ISSUE_TIER`. Look up the estimate in `time-estimates.md` and include it in the body's mandatory `## Estimate` section. Accumulate `ISSUE_TIER` toward the session's running maximum `BATCH_TIER` (Heavy beats Standard beats Light) so Step 9b can use `BATCH_TIER` without re-inferring. `ISSUE_TIER` is also stored in the log entry (Step 9) so compaction recovery can restore `BATCH_TIER`.
 4. **Title** — concise, **≤70 characters**. If it would exceed 70, auto-trim and note the trim in the decision points.
 5. **Labels** (Step 7, auto-applied) and **cross-references** (Step 8).
 6. **Create automatically** — no full-body reprint, no "Create this issue? (Y/n/edit)" gate. Record in the log (Step 9).
@@ -210,9 +222,9 @@ fi
 
 ---
 
-## Step 5: Canonical issue body — the 6-section shape
+## Step 5: Canonical issue body — the 7-section shape
 
-Every issue the skill creates includes all six sections (presence is mandatory):
+Every issue the skill creates includes all seven sections (presence is mandatory):
 
 ```markdown
 ## Background
@@ -232,7 +244,22 @@ Every issue the skill creates includes all six sections (presence is mandatory):
 
 ## Notes / Open questions
 - <design rabbit holes, tradeoffs, decisions to make>
+
+## Estimate
+
+Est: {lo}–{hi} min · plan on {bound}
 ```
+
+**`## Estimate` — mandatory, computed before body drafting:** Infer the tier from the
+issue's signals (same vocabulary and rules as `tier-inference.md` / Step 9b — Heavy,
+Standard, or Light), then look up the estimate line in `time-estimates.md` (candidate
+order: `$HOME/.claude/skills-worktree/.claude/reference/time-estimates.md`, then
+`$HOME/.claude/reference/`, then `.claude/reference/`). Use the table row matching the
+tier; adjust only when scope clearly warrants it and state the reason in one sentence.
+If `time-estimates.md` does not resolve, print
+`DEGRADED: time-estimates.md not found (checked all three paths) — using inline fallback`
+and use: Light `Est: 15–30 min · plan on 30`, Standard `Est: 45–90 min · plan on 90`,
+Heavy `Est: 90–180 min · plan on 180`. Never omit this section.
 
 Optional sections, appended when relevant:
 
@@ -244,7 +271,7 @@ Optional sections, appended when relevant:
 
 ### Increment issues — the variant shape for a chain (sizing check failed)
 
-When the top-level rule's sizing check fails, each increment is a normal 6-section issue with two additions. An increment is not a sub-task: it is a **complete, independently mergeable issue** that happens to be one slice of a larger theme.
+When the top-level rule's sizing check fails, each increment is a normal 7-section issue with two additions to the AC section. An increment is not a sub-task: it is a **complete, independently mergeable issue** that happens to be one slice of a larger theme.
 
 **Title — carry the parent theme and the position.** `{Parent theme} {i}/{n}: {what this slice delivers}` — e.g. `Landing page 1/4: hero + layout shell`, `Landing page 2/4: services page`. The theme prefix is what keeps a backlog of increments scannable instead of looking like four unrelated tickets.
 
@@ -268,7 +295,7 @@ If the title still exceeds 70 after all three, the theme itself is too long — 
 
 The boundary line is what keeps a pipeline from scope-creeping across the whole theme — without it, an agent picking up increment 1 has nothing telling it to stop at the hero. Write the boundary in concrete terms ("ends at a static hero and layout shell — no services content, no form"), never as a vague "part 1 of the work." Never point the last increment at a successor that will not exist.
 
-Everything else is unchanged: the same functional-first tone, the same six sections, the same labels, the same capture-mode footer.
+Everything else is unchanged: the same functional-first tone, the same seven sections (including `## Estimate` — use the increment's own tier), the same labels, the same capture-mode footer.
 
 **Capture-mode footer:** append a trailing line to every created body so capture-mode issues are identifiable:
 
@@ -362,10 +389,11 @@ Build the labels as a JSON array from the accepted labels (the same set passed v
 LABELS_JSON=$(printf '%s\n' "$ACCEPTED_LABELS" | jq -R . | jq -s 'map(select(length>0))')
 
 set_log '.issues += [{number:($n|tonumber), title:$t, url:$u, labels:$labels,
-                      created_at:$ts, status:"open", chip_task_id:null, chain:$chain}]' \
+                      created_at:$ts, status:"open", chip_task_id:null, chain:$chain,
+                      tier:$tier}]' \
   --arg n "$ISSUE_NUMBER" --arg t "$TITLE" --arg u "$ISSUE_URL" \
   --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" --argjson labels "$LABELS_JSON" \
-  --argjson chain "$CHAIN_JSON"
+  --argjson chain "$CHAIN_JSON" --arg tier "$ISSUE_TIER"
 ```
 
 **`CHAIN_JSON` — `null` for an ordinary issue, an object for an increment.** A standalone ask sets `CHAIN_JSON=null` and nothing below applies. An increment records which chain it belongs to and where it sits:
@@ -394,7 +422,7 @@ Tone precedent: `/wrap`'s terse "here's what I decided — flag anything wrong" 
 
 ### Step 9b: Infer a coding tier (for the offer's tier statement and model step-up warning)
 
-`/issue-maker` does no tier classification during capture, but the inline-run offer (Step 9c) names the batch's inferred tier so the user knows what model/effort the work warrants. Infer the tier directly from the body just drafted in Step 5. Full signal definitions, tier table, and evaluation rules: `references/tier-inference.md`. Summary:
+The inline-run offer (Step 9c) names the batch's inferred tier so the user knows what model/effort the work warrants. **Reuse `BATCH_TIER` accumulated in Step 3 sub-step 3** — each issue's tier was already inferred there to compute the `## Estimate` section, and the running maximum was kept. Re-infer only if Step 3 was skipped or `BATCH_TIER` is unavailable. Full signal definitions, tier table, and evaluation rules: `references/tier-inference.md`. Summary:
 
 | Tier | Trigger (any is sufficient) | Model / effort |
 |------|-----------------------------|----------------|

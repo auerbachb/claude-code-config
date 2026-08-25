@@ -307,6 +307,7 @@ Print a compact summary to the user. Per `chip-launching.md`, the content **insi
 **Branch:** issue-{N}-{slug}
 **Worktree:** {WORKTREE_PATH}
 **CR plan:** {included | not available}
+**Estimate:** {estimate-line}
 
 ### Implementation Plan
 {top-level bullets from the merged plan — files, key steps, risks}
@@ -364,6 +365,31 @@ Every handoff — chip or fallback — needs a `{MODEL}`, a `{LEVEL}`, and a `{R
 The two step-ups are separate on purpose. Collapsing them would put skill-only work on Extra while `/prompt` classifies exactly that as Standard → High, so the same issue would get a different recommendation depending on which surface handed it over — and a user comparing the two has no way to tell which is right. These levels match `/prompt`'s tier mapping (`touches_skill` → Standard → High; `touches_rules` / `touches_claude_md` / orchestration → Heavy → Extra) without importing its multi-signal pipeline.
 
 Each `{REASON}` is a short phrase naming the dominant driver (e.g. `rules + skill wiring`, `single-file code change`). Do **NOT** replicate `/prompt`'s Heavy/Standard/Light multi-signal pipeline — `/start-issue` is single-issue and has no model or effort concept beyond this rule. When `/prompt` already produced recommendations for the issue, prefer them.
+
+### Estimate
+
+**`{estimate-line}`** in the ready-to-code block is sourced and formatted as follows:
+
+1. **From the issue body (preferred):** if the fetched issue body (Step 2) contains an
+   `## Estimate` section, extract the `Est: …` line and validate it matches the
+   machine-parse pattern `^Est:\s+(\d+)–(\d+)\s+min\s+·\s+plan\s+on\s+(\d+)$` with
+   Group 1 < Group 2 and Group 3 == Group 2. If valid, echo it verbatim. If the
+   section is present but the line is missing or fails validation, fall through to
+   the tier fallback (step 2).
+2. **Tier fallback:** if no `## Estimate` is present, infer the Heavy/Standard/Light
+   tier from the issue's signals using the same rules as `tier-inference.md` (Heavy:
+   `touches_rules`, `touches_claude_md`, `has_orchestration_keywords`, or
+   `file_count > 5`; Standard: not Heavy and `file_count` 2–5, `ac_count > 3`, or
+   `touches_skill`; Light: positive scope keyword or `file_count ≤ 1` with clear scope;
+   default to Standard when signals are sparse), then look up the estimate in
+   `time-estimates.md` (candidate order:
+   `$HOME/.claude/skills-worktree/.claude/reference/time-estimates.md`, then
+   `$HOME/.claude/reference/`, then `.claude/reference/`): Light →
+   `Est: 15–30 min · plan on 30`; Standard → `Est: 45–90 min · plan on 90`;
+   Heavy → `Est: 90–180 min · plan on 180`.
+3. **Inline fallback:** if `time-estimates.md` does not resolve, use the same values
+   directly. Print `DEGRADED: time-estimates.md not found (checked all three paths) —
+   using inline fallback` once, then continue. Never omit the estimate line.
 
 ### Execution boundary
 
