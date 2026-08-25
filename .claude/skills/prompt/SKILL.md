@@ -294,8 +294,8 @@ When `PM_AUTO_DETECT=true` and subagent-eligible issues exist, output this secti
 ## Subagent Candidates (run inline — default)
 
 These issues run inline as subagents directly in this PM thread — the default for anything not too big for a subagent:
-- #{N} — {Title} ({Tier} tier, {file_count} file(s))
-- #{M} — {Title} ({Tier} tier, {file_count} file(s))
+- #{N} — {Title} ({Tier} tier, {file_count} file(s)) — {estimate-line}
+- #{M} — {Title} ({Tier} tier, {file_count} file(s)) — {estimate-line}
 
 Run: `/subagent #{N} #{M}`
 ```
@@ -312,7 +312,28 @@ Output the Tier Recommendation as plain text first (skip if all issues are subag
 **{TIER_NAME}** — {MODEL} — effort: {LEVEL}
 
 Rationale: {1-line explanation of why this tier was selected, citing the dominant signal}
+
+**Estimate:** {estimate-line}
 ```
+
+**Surfacing the estimate:** For each issue, check whether the issue body contains an
+`## Estimate` section (filed by `/issue-maker`). If present, extract the `Est: …` line
+and validate it matches `^Est:\s+(\d+)–(\d+)\s+min\s+·\s+plan\s+on\s+(\d+)$` with
+Group 1 < Group 2 and Group 3 == Group 2; if valid, echo it as `{estimate-line}`. If
+the section is absent,
+or the line is missing or fails validation, derive from the issue's `issue_tier` using
+`time-estimates.md` (candidate order:
+`$HOME/.claude/skills-worktree/.claude/reference/time-estimates.md`, then
+`$HOME/.claude/reference/`, then `.claude/reference/`). If none of the three candidates
+resolves, print exactly:
+`DEGRADED: time-estimates.md not found (checked all three paths) — using inline fallback`
+then use: Light `Est: 15–30 min · plan on 30`, Standard `Est: 45–90 min · plan on 90`,
+Heavy `Est: 90–180 min · plan on 180`. Never omit the estimate. Each per-issue prompt block carries its own `{estimate-line}`
+derived from that issue's `issue_tier` (the per-issue tier from Step 4 classification —
+computed for every issue, including subagent candidates, before partitioning; always
+available here). The batch-level Tier Recommendation shows the
+most demanding thread-prompt issue's estimate (same issue set as the batch tier,
+excluding subagent candidates) as a quick planning summary.
 
 **OUTPUT MUST USE `~~~` FENCES, NOT BACKTICKS.** The opening and closing lines of every per-issue prompt block must be exactly `~~~`.
 
@@ -340,6 +361,8 @@ Then, for each issue, output a self-contained prompt block. Use tilde fences (`~
 {List any dependency relationships, or "None detected"}
 
 **Labels:** {comma-separated labels, or "None"}
+
+**Estimate:** {estimate-line for this issue, derived per "Surfacing the estimate" below}
 
 ---
 
