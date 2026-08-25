@@ -13,7 +13,9 @@
 # Validates:
 #   1. No script is INVOKED by a bare `.claude/scripts/<name>` path in a
 #      guarded surface. Every script name is checked, not an allow-list.
-#      Candidate-list lines and prose mentions are not invocations.
+#      Candidate-list lines are not invocations. Prose names helpers by
+#      basename, never by a bare repo-relative path, so no Markdown parser can
+#      confuse executable syntax with documentation.
 #   2. Every ordered candidate list carries the skills-worktree entry, checked
 #      within that list rather than anywhere in the file.
 #   3. The RESOLVE block in subagent-phase-guardrails.md is byte-identical to
@@ -157,8 +159,8 @@ done
 # same class of quiet erosion this lint exists to catch (`pr-state.sh` was
 # missing from the first draft's list and its regression went undetected).
 #
-# A line is an INVOCATION when it reaches the path in a position that would
-# execute it. Three shapes are deliberately NOT invocations:
+# A line is an INVOCATION when it contains a bare repo-relative helper path.
+# Two shapes are deliberately NOT invocations:
 #
 #   a) a candidate-list entry — the repo-relative third entry of an ordered
 #      lookup. Legitimate only when the SAME list also carries the
@@ -167,8 +169,10 @@ done
 #      elsewhere is exactly the silent-degradation shape, wearing the
 #      resolver's clothes.
 #   b) the SAFETY-block untracked-file guard (see below).
-#   c) prose that names a script without running it — e.g.
-#      "Use the shared helper `.claude/scripts/x.sh`".
+# Prose should say `x.sh`, not spell a bare `.claude/scripts/x.sh` path. This
+# intentionally avoids a Markdown-fence parser: backticks are both Markdown
+# inline-code delimiters and shell command substitution, and nested CommonMark
+# containers make a permissive prose exemption capable of hiding execution.
 
 # How far back to look for the skills-worktree sibling of a candidate entry.
 # The canonical list puts it two lines above; 6 absorbs comments and wrapping.
@@ -219,15 +223,8 @@ for f in "${guarded_files[@]}"; do
       continue
     fi
 
-    # (c) Prose mention: the path appears inside backticks with no argument
-    #     following it, and the line is not itself a shell command line.
-    if [[ "$line" =~ \`\.claude/scripts/[A-Za-z0-9_.-]+\.sh\`([^\`]|$) ]] \
-       && [[ ! "$line" =~ ^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=?\$?\( ]] \
-       && [[ ! "$line" =~ ^[[:space:]]*\.claude/scripts/ ]]; then
-      continue
-    fi
-
-    # Comments can document a helper path without executing it.
+    # Comments can document a helper path without executing it. This exception
+    # is syntax-based and independent of Markdown container parsing.
     if [[ "$line" =~ ^[[:space:]]*# ]]; then
       continue
     fi

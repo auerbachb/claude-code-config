@@ -7,7 +7,7 @@ argument-hint: "[days] (optional — default 30; applies to issue inactivity and
 `/pm-clean` is the repo's single janitor. It runs two **independent** staleness scans and presents one recommend-then-confirm report:
 
 1. **Open GitHub issues** — solved-by-merged-PR, inactive, superseded, potential duplicates.
-2. **On-disk workspace** — stale worktrees and stale local/remote branches, via `.claude/scripts/stale-cleanup.sh` (the exact script `/pm-update` Step 8 calls — one implementation, no divergence).
+2. **On-disk workspace** — stale worktrees and stale local/remote branches, via `stale-cleanup.sh` (the exact script `/pm-update` Step 8 calls — one implementation, no divergence).
 
 The two scans never gate each other: one finding nothing does **not** suppress the other, and the summary always reports both. Nothing is closed or deleted without explicit confirmation.
 
@@ -76,7 +76,7 @@ Each returned record has `number`, `title`, `category` (`solved-by-pr`|`inactive
 
 ## Step 2: Workspace staleness sweep (worktrees + branches)
 
-This scan delegates **entirely** to `.claude/scripts/stale-cleanup.sh` — the same script `/pm-update` Step 8 calls (issue #618). **Reuse it as-is: never re-derive worktree/branch detection, thresholds, or safety checks in this skill.** The script's safety contract is the single source of truth — it always skips the main worktree, your current worktree, worktrees with uncommitted tracked changes, open-PR branches, protected branch names, and branches checked out in a worktree. See `.claude/scripts/stale-cleanup.sh --help` for the full contract.
+This scan delegates **entirely** to `stale-cleanup.sh` — the same script `/pm-update` Step 8 calls (issue #618). **Reuse it as-is: never re-derive worktree/branch detection, thresholds, or safety checks in this skill.** The script's safety contract is the single source of truth — it always skips the main worktree, your current worktree, worktrees with uncommitted tracked changes, open-PR branches, protected branch names, and branches checked out in a worktree. See `stale-cleanup.sh --help` for the full contract.
 
 ### Step 2.1: Run the dry-run pass
 

@@ -59,7 +59,7 @@ CodeRabbit caps **~8 GitHub PR reviews per hour** per account; **each push** con
 
 > **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read the cached JSON bundle. Inline `gh api` calls for these three endpoints are only permitted inside the `reviewer-activity.sh` script (Step 3b delegate), which requires a custom post-push timestamp filter that `pr-state.sh` does not expose. Every other polling or review-state lookup MUST go through `pr-state.sh`.
 
-All mechanical GitHub API work — pagination, GraphQL queries, comment classification — lives in the shared script `.claude/scripts/pr-state.sh`. This file tells the AI layer how to invoke the script and what to do with its output (the JSON bundle).
+All mechanical GitHub API work — pagination, GraphQL queries, comment classification — lives in the shared `pr-state.sh` script. This file tells the AI layer how to invoke the script and what to do with its output (the JSON bundle).
 
 | Step | Kind | Done by |
 |------|------|---------|
@@ -535,7 +535,7 @@ fi
 
 Cost/rate-limit note: `@codeant-ai review` may consume CodeAnt’s review budget, so skip it when auto-trigger activity is already present on the new SHA. **`@cursor review` is posted once per push, gated on `bugbot-refused-head.sh`** (composes with CI and issue #370’s four-reviewer triggers). BugBot is per-seat but **spend-metered** — the stack's largest cost line, refusing 64% of PRs (#1199/#1204) — and no nudge clears a usage limit, so the trigger is skipped when `cursor[bot]` has already refused *this* HEAD. It auto-runs on push, so that refusal can land before Step 3b even executes; the check is shared with `maybe-trigger-ai-review.sh` and fails open. Greptile is intentionally NOT part of this proactive trigger set; it remains last-resort only per `greptile.md`.
 
-**Composition with issue #362:** `cr-github-review.md` runs `.claude/scripts/maybe-trigger-ai-review.sh` on each poll tick when there is **no** `/fixpr` trigger (no new findings, CI green, not `BEHIND`/`CONFLICTING`). That path fires three single-mention comments — `@codeant-ai review`, `@cursor review`, `@graphite-app re-review` — for **complexity + CR round count**, not because of a push. This differs from Step 3b, which additionally posts `@coderabbitai full review` (subject to the 2/hour cap) when CodeRabbit has not yet auto-triggered on the new SHA. State for the #362 path is tracked in `session-state.json` so it does not batch with Step 3b on the same cause.
+**Composition with issue #362:** `cr-github-review.md` runs `maybe-trigger-ai-review.sh` on each poll tick when there is **no** `/fixpr` trigger (no new findings, CI green, not `BEHIND`/`CONFLICTING`). That path fires three single-mention comments — `@codeant-ai review`, `@cursor review`, `@graphite-app re-review` — for **complexity + CR round count**, not because of a push. This differs from Step 3b, which additionally posts `@coderabbitai full review` (subject to the 2/hour cap) when CodeRabbit has not yet auto-triggered on the new SHA. State for the #362 path is tracked in `session-state.json` so it does not batch with Step 3b on the same cause.
 
 ---
 

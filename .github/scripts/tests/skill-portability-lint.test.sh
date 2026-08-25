@@ -100,7 +100,7 @@ plant_new_unlisted_skill() {
 plant_non_invocation_mentions() {
   cat >> ".claude/skills/pm/SKILL.md" <<'EOF'
 
-The contract is implemented by `.claude/scripts/example.sh`.
+The contract is implemented by `example.sh`.
 The regression lives at `.claude/scripts/tests/example.test.sh`.
 ```bash
 ROOTED="$REPO_ROOT/.claude/scripts/example.sh"
@@ -110,6 +110,31 @@ EOF
 
 plant_command_like_prose() {
   printf '\nRun `.claude/scripts/example.sh --help` before continuing.\n' \
+    >> ".claude/skills/pm/SKILL.md"
+}
+
+plant_backtick_command_substitution() {
+  printf '\n```bash\necho `.claude/scripts/example.sh`\n```\n' \
+    >> ".claude/skills/pm/SKILL.md"
+}
+
+plant_long_backtick_fence_command() {
+  printf '\n````bash\necho `.claude/scripts/example.sh`\n````\n' \
+    >> ".claude/skills/pm/SKILL.md"
+}
+
+plant_tilde_fence_command() {
+  printf '\n~~~shell\necho `.claude/scripts/example.sh`\n~~~\n' \
+    >> ".claude/skills/pm/SKILL.md"
+}
+
+plant_uncommon_shell_fence_command() {
+  printf '\n```zsh\necho `.claude/scripts/example.sh`\n```\n' \
+    >> ".claude/skills/pm/SKILL.md"
+}
+
+plant_overindented_pseudo_close() {
+  printf '\n```bash\n    ```\necho `.claude/scripts/example.sh`\n```\n' \
     >> ".claude/skills/pm/SKILL.md"
 }
 
@@ -192,13 +217,33 @@ expect "newly published skill cannot bypass coverage" 1 \
   'future-unlisted-skill/SKILL\.md:[0-9]+: bare invocation of future-helper\.sh' \
   plant_new_unlisted_skill
 
-expect "prose, subdirectory, and rooted paths are not bare invocations" 0 \
+expect "basename prose, subdirectory, and rooted paths are not bare invocations" 0 \
   'skill-portability-lint: OK' \
   plant_non_invocation_mentions
 
 expect "command-like inline prose remains guarded" 1 \
   'skills/pm/SKILL\.md:[0-9]+: bare invocation of example\.sh' \
   plant_command_like_prose
+
+expect "backtick command substitution in a shell fence remains guarded" 1 \
+  'skills/pm/SKILL\.md:[0-9]+: bare invocation of example\.sh' \
+  plant_backtick_command_substitution
+
+expect "long backtick shell fence remains guarded" 1 \
+  'skills/pm/SKILL\.md:[0-9]+: bare invocation of example\.sh' \
+  plant_long_backtick_fence_command
+
+expect "tilde shell fence remains guarded" 1 \
+  'skills/pm/SKILL\.md:[0-9]+: bare invocation of example\.sh' \
+  plant_tilde_fence_command
+
+expect "uncommon shell fence remains guarded" 1 \
+  'skills/pm/SKILL\.md:[0-9]+: bare invocation of example\.sh' \
+  plant_uncommon_shell_fence_command
+
+expect "four-space pseudo-close cannot end a real fence" 1 \
+  'skills/pm/SKILL\.md:[0-9]+: bare invocation of example\.sh' \
+  plant_overindented_pseudo_close
 
 expect "candidate list missing the skills-worktree entry" 1 \
   'candidate list for session-state\.sh has no' \

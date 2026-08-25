@@ -49,7 +49,7 @@ This gate chooses only which *recommendation* to surface — it **never launches
 
 The gate above bounds work **per thread**. Once work fans out across separate coding threads nothing counted the total — that is what produced roughly twenty simultaneously active threads on one repo on 2026-08-18. `active_work_cap` is the cross-thread bound, and it is the figure case 3 above now gates on. Issue [#1191](https://github.com/auerbachb/claude-code-config/issues/1191); derivation of the default: `active-work-cap.md`.
 
-**Resolver.** `.claude/scripts/active-work-cap.sh` owns the number and the counting rules; never restate the default here or in a SKILL.md.
+**Resolver.** `active-work-cap.sh` owns the number and the counting rules; never restate the default here or in a SKILL.md.
 
 **Pick the mode by what you need to say, not just what you need to decide.** `--free` prints `FREE` alone — enough to decide *how many* to offer, but not enough to explain the decision. The deferral message specified below quotes `{ACTIVE}/{CAP}`, so an emitter that will report deferrals must read the **default output** (`CAP=<n> ACTIVE=<n> FREE=<n>`, one line, all three) or `--json` (same figures plus the per-source breakdown). Use `--free` only where the count is never surfaced. `--cap` resolves the knob alone and makes no network call, for emitters that need the ceiling without the census.
 
@@ -177,7 +177,7 @@ This does not touch the placement rule above — the claim instruction is *conte
 
 Most emitters write the recommended model straight into the `**Model:**` line, because the recommendation is a judgment about *that issue* — a small mechanical fix and a subtle concurrency bug want different tiers, and neither answer comes from a lookup table.
 
-`/harness-audit` is the exception, and the reason generalizes. Its recommendation is always "whatever the strongest model is right now" — it is not reasoning about the work, it is naming the top of the fleet. A literal there is guaranteed to go stale the next time the fleet moves, which is exactly what happened across surfaces in #749. So it resolves the tier at run time through `.claude/scripts/model-fleet.sh` and carries **no model name in its body at all**.
+`/harness-audit` is the exception, and the reason generalizes. Its recommendation is always "whatever the strongest model is right now" — it is not reasoning about the work, it is naming the top of the fleet. A literal there is guaranteed to go stale the next time the fleet moves, which is exactly what happened across surfaces in #749. So it resolves the tier at run time through `model-fleet.sh` and carries **no model name in its body at all**.
 
 This makes two emitter classes, both enforced by `chip-model-guard-lint.sh`:
 

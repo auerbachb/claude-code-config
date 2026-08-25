@@ -190,7 +190,7 @@ For each issue the user describes (see Step 6 for batches):
 
 ## Step 4: Dedup search
 
-Before creating, search open and recently-closed issues for likely duplicates and surface any matches. Use the shared helper `.claude/scripts/issue-dedup.sh`, which scores **titles and bodies** — a title-only search misses the case that motivated it (issue #647 restated issue #638's second acceptance criterion while sharing almost no title words; issue #652):
+Before creating, search open and recently-closed issues for likely duplicates and surface any matches. Use the shared `issue-dedup.sh` helper, which scores **titles and bodies** — a title-only search misses the case that motivated it (issue #647 restated issue #638's second acceptance criterion while sharing almost no title words; issue #652):
 
 ```bash
 # 2–6 significant keywords from the proposed title AND the problem statement —

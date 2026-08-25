@@ -8,7 +8,7 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 
 `/wrap` accepts an **optional** PR reference as its argument — a full URL, `#N`, `owner/repo#N`, or a bare number `N`. When invoked with no argument it resolves the target PR through the inference cascade in Step 1.1 (current branch → thread context → session-state). An explicit argument bypasses all inference.
 
-`/wrap` does **not** delete the running worktree or its branch — leaving the thread alive so it can keep working. Stale worktrees and stale local/remote branches are reaped out-of-band by `/pm-update`, which calls `.claude/scripts/stale-cleanup.sh`.
+`/wrap` does **not** delete the running worktree or its branch — leaving the thread alive so it can keep working. Stale worktrees and stale local/remote branches are reaped out-of-band by `/pm-update`, which calls `stale-cleanup.sh`.
 
 ## When to use /wrap vs /merge
 
@@ -105,6 +105,12 @@ CYCLE_COUNT_SH=$(resolve_script cycle-count.sh || true)
 PR_AUTHORSHIP_SH=$(resolve_script pr-authorship.sh || true)
 CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh || true)
 
+# Step 2.5 changes cwd to the root main checkout before invoking the guard.
+# Preserve the repo-relative fallback as an absolute path first.
+if [[ -n "$DIRTY_MAIN_GUARD_SH" && "$DIRTY_MAIN_GUARD_SH" != /* ]]; then
+  DIRTY_MAIN_GUARD_SH="$(pwd)/$DIRTY_MAIN_GUARD_SH"
+fi
+
 [[ -n "$PR_STATE_SH" ]] || { echo "ERROR: pr-state.sh not found (checked all three paths) — wrap PR state unavailable" >&2; exit 1; }
 [[ -n "$MERGE_GATE_SH" ]] || { echo "ERROR: merge-gate.sh not found (checked all three paths) — wrap merge gate unavailable" >&2; exit 1; }
 [[ -n "$AC_CHECKBOXES_SH" ]] || { echo "ERROR: ac-checkboxes.sh not found (checked all three paths) — acceptance verification unavailable" >&2; exit 1; }
@@ -193,7 +199,7 @@ Proceed immediately to Phase 2 — do not ask.
 
 ### Step 2.1: Merge gate + autonomous recovery loop (issue #452)
 
-**Authority:** `.claude/scripts/merge-gate.sh` JSON on stdout is the single source of truth for merge readiness. After **every** recovery action, re-fetch PR HEAD SHA and re-run `merge-gate.sh` — **no stale cache**.
+**Authority:** `"$MERGE_GATE_SH"` JSON on stdout is the single source of truth for merge readiness. After **every** recovery action, re-fetch PR HEAD SHA and re-run `merge-gate.sh` — **no stale cache**.
 
 ```bash
 WRAP_RECOVERY_MAX_ITERATIONS="${WRAP_RECOVERY_MAX_ITERATIONS:-5}"
@@ -293,7 +299,7 @@ MERGED_ISSUE=$([[ -n "$PR_ISSUE_REF_SH" ]] && "$PR_ISSUE_REF_SH" "$PR_NUM" 2>/de
 
 Best-effort by design: the merge has already landed, so a failed release is a warning, never a non-zero exit from `/wrap`. An unreleased claim ages out on its own within `CLAIM_STALE_HOURS`; failing an already-completed merge would be far worse. This is the only release call on the merge path — Phase C (`phase-c-merger.md`) runs `/wrap` and inherits it, so do not add a second one there.
 
-Do NOT use `--delete-branch`. The current worktree is still checked out on the feature branch — git refuses to delete a branch held by a worktree. The branch is cleaned up out-of-band by `/pm-update` via `.claude/scripts/stale-cleanup.sh`.
+Do NOT use `--delete-branch`. The current worktree is still checked out on the feature branch — git refuses to delete a branch held by a worktree. The branch is cleaned up out-of-band by `/pm-update` via `stale-cleanup.sh`.
 
 ### Step 2.5: Sync root repo main (aggressive reset)
 
@@ -301,22 +307,35 @@ Do NOT use `--delete-branch`. The current worktree is still checked out on the f
 ROOT_REPO=$([[ -n "$REPO_ROOT_SH" ]] && "$REPO_ROOT_SH" 2>/dev/null || true)
 MAIN_SYNC_STATUS=""
 QUARANTINE_STATUS=""
+QUARANTINE_OK=0
 if [ -z "$ROOT_REPO" ] || [ ! -d "$ROOT_REPO" ]; then
   MAIN_SYNC_STATUS="failed: could not determine root repo path"
 else
-  if [[ -n "$DIRTY_MAIN_GUARD_SH" ]] && "$DIRTY_MAIN_GUARD_SH" --check >/dev/null 2>&1; then
+  if [[ -n "$DIRTY_MAIN_GUARD_SH" ]] && (cd "$ROOT_REPO" && "$DIRTY_MAIN_GUARD_SH" --check >/dev/null 2>&1); then
     QUARANTINE_STATUS="clean"
+    QUARANTINE_OK=1
+  elif [[ -z "$DIRTY_MAIN_GUARD_SH" ]]; then
+    QUARANTINE_STATUS="DEGRADED: dirty-main-guard.sh not found (checked all three paths) — quarantine unavailable"
   else
-    QUARANTINE_STATUS=$([[ -n "$DIRTY_MAIN_GUARD_SH" ]] && "$DIRTY_MAIN_GUARD_SH" --quarantine 2>&1 || echo "DEGRADED: dirty-main-guard.sh not found (checked all three paths) — quarantine unavailable")
+    QUARANTINE_RC=0
+    QUARANTINE_STATUS=$(cd "$ROOT_REPO" && "$DIRTY_MAIN_GUARD_SH" --quarantine 2>&1) || QUARANTINE_RC=$?
+    if [[ "$QUARANTINE_RC" -eq 0 ]]; then
+      QUARANTINE_OK=1
+    else
+      QUARANTINE_STATUS="failed(rc=$QUARANTINE_RC): $QUARANTINE_STATUS"
+    fi
   fi
   MAIN_SYNC_RC=0
-  if [[ -z "$MAIN_SYNC_SH" ]]; then
+  if [[ "$QUARANTINE_OK" -ne 1 ]]; then
+    MAIN_SYNC_RC=1
+    MAIN_SYNC_STATUS="skipped: root quarantine did not complete; aggressive reset was not run"
+  elif [[ -z "$MAIN_SYNC_SH" ]]; then
     MAIN_SYNC_RC=127
     MAIN_SYNC_STATUS="ERROR: main-sync.sh not found (checked all three paths) — root main sync unavailable"
   else
     MAIN_SYNC_STATUS=$("$MAIN_SYNC_SH" --reset --repo "$ROOT_REPO" 2>&1) || MAIN_SYNC_RC=$?
   fi
-  if [ "$MAIN_SYNC_RC" -ne 0 ] && ! [[ "$MAIN_SYNC_STATUS" == aborted:* ]]; then
+  if [ "$MAIN_SYNC_RC" -ne 0 ] && ! [[ "$MAIN_SYNC_STATUS" == aborted:* || "$MAIN_SYNC_STATUS" == skipped:* ]]; then
     MAIN_SYNC_STATUS="failed(rc=$MAIN_SYNC_RC): $MAIN_SYNC_STATUS"
   fi
 fi
@@ -818,11 +837,23 @@ Proceed immediately to Phase 4 — do not ask.
 
 ### Step 4.1: Assess session complexity
 
-- **Cycle count** — `CYCLES=$([[ -n "$CYCLE_COUNT_SH" ]] && "$CYCLE_COUNT_SH" "$PR_NUM" || { echo "DEGRADED: cycle-count.sh not found (checked all three paths) — cycle count unavailable" >&2; echo 0; })`
+- **Cycle count** — resolve it without conflating an unavailable/failed helper with a real zero:
+  ```bash
+  CYCLES=""
+  CYCLE_COUNT_VALID=0
+  if [[ -z "$CYCLE_COUNT_SH" ]]; then
+    echo "DEGRADED: cycle-count.sh not found (checked all three paths) — cycle count unavailable" >&2
+  elif CYCLES=$("$CYCLE_COUNT_SH" "$PR_NUM") && [[ "$CYCLES" =~ ^[0-9]+$ ]]; then
+    CYCLE_COUNT_VALID=1
+  else
+    CYCLES=""
+    echo "DEGRADED: cycle-count.sh failed or returned a non-numeric value — cycle count unavailable" >&2
+  fi
+  ```
 - **Thread length** — count user + assistant messages. "Short" = fewer than 15 total.
 - **PR size** — `gh pr view N --json files --jq '.files | length'`
 
-**Trivial threshold:** cycle count = 0 AND conversation short (<15 messages) AND <5 files changed.
+**Trivial threshold:** `CYCLE_COUNT_VALID=1` AND cycle count = 0 AND conversation short (<15 messages) AND <5 files changed. An unknown cycle count is non-trivial.
 
 ### Step 4.2: Run lessons (or skip)
 

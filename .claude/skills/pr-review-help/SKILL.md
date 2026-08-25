@@ -44,7 +44,7 @@ Usage: /pr-review-help #123 #456 #789
 Pass one or more PR numbers to get an executive strategic review.
 ```
 
-**Optional automated invoke (issue #362):** When `ENABLE_PR_REVIEW_HELP=1` in `.claude/pm-config.md` **Complexity triggers**, `.claude/scripts/maybe-trigger-ai-review.sh` may post a PR comment `/pr-review-help #N` (with the PR number) to trigger an executive review of that PR. This is separate from manually passing `#N` arguments here.
+**Optional automated invoke (issue #362):** When `ENABLE_PR_REVIEW_HELP=1` in `.claude/pm-config.md` **Complexity triggers**, `maybe-trigger-ai-review.sh` may post a PR comment `/pr-review-help #N` (with the PR number) to trigger an executive review of that PR. This is separate from manually passing `#N` arguments here.
 
 ## Step 1: Fetch Shared Repo Context (parent agent — once)
 
@@ -65,7 +65,7 @@ else
 fi
 ```
 
-`pm-config-get.sh --section OKRs` handles the file-exists check, the line-anchored `^## OKRs` parse, and the "next `^## ` header or EOF" boundary internally. See `pm-config-get.sh --help` for the full contract.
+`pm-config-get.sh --section OKRs` handles the file-exists check, the line-anchored `^## OKRs` parse, and the next `^##` followed by a space (or EOF) boundary internally. See `pm-config-get.sh --help` for the full contract.
 
 Set `HAS_OKRS=true` only if `OKRS_RC=0` **and** `OKRS_CONTENT` does not start with "No OKRs set" (the bootstrap placeholder). Otherwise set `HAS_OKRS=false` and fall back to README context.
 

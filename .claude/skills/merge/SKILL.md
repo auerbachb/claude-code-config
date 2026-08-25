@@ -28,8 +28,6 @@ MAIN_SYNC_SH=$(resolve_script main-sync.sh || true)
 [[ -n "$PR_AUTHORSHIP_SH" ]] || { echo "ERROR: pr-authorship.sh not found (checked all three paths) — merge authorship gate unavailable" >&2; exit 1; }
 [[ -n "$MERGE_GATE_SH" ]] || { echo "ERROR: merge-gate.sh not found (checked all three paths) — merge gate unavailable" >&2; exit 1; }
 [[ -n "$AC_CHECKBOXES_SH" ]] || { echo "ERROR: ac-checkboxes.sh not found (checked all three paths) — acceptance verification unavailable" >&2; exit 1; }
-[[ -n "$CI_STATUS_SH" ]] || { echo "ERROR: ci-status.sh not found (checked all three paths) — CI diagnosis unavailable" >&2; exit 1; }
-[[ -n "$MAIN_SYNC_SH" ]] || { echo "ERROR: main-sync.sh not found (checked all three paths) — post-merge main sync unavailable" >&2; exit 1; }
 ```
 
 ## When to use /merge vs /wrap
@@ -125,7 +123,7 @@ If any item fails verification, do NOT tick it — stop and report the failure. 
 
 If Step 2 reported `missing` entries about CI ("CI has N failing check-run(s): ..." or "CI has N incomplete check-run(s): ..."), **do NOT merge**. Instead:
 
-1. Inspect the CI split: `"$CI_STATUS_SH" "$PR_NUM" --format summary` (exit `3` = blocking failures, exit `1` = incomplete). For the JSON with failing check-run IDs, drop `--format summary`.
+1. If `CI_STATUS_SH` resolved, inspect the CI split with `"$CI_STATUS_SH" "$PR_NUM" --format summary` (exit `3` = blocking failures, exit `1` = incomplete). For the JSON with failing check-run IDs, drop `--format summary`. If it is empty, emit `DEGRADED: ci-status.sh not found (checked all three paths) — detailed CI diagnosis unavailable, continuing with merge-gate evidence` and use the gate's `missing` entry plus GitHub check logs; the failed gate still blocks merging.
 2. Read a specific failure's output: `gh api "repos/{owner}/{repo}/check-runs/{CHECK_RUN_ID}" --jq '.output.summary'`
 3. Fix the issue (lint errors, type errors, test failures, etc.)
 4. Commit, push, and wait for CI to re-run
@@ -177,7 +175,11 @@ After merging, update the local `main` so subsequent sessions branch from the la
 # 0 OK / 1 skipped (uncommitted) / 2 failed (checkout/pull). All three
 # outcomes are captured here for the completion report — a non-zero exit
 # is not a hard error for /merge, just a report-worthy condition.
-MAIN_SYNC_STATUS=$("$MAIN_SYNC_SH" 2>&1 || true)
+if [[ -z "$MAIN_SYNC_SH" ]]; then
+  MAIN_SYNC_STATUS="DEGRADED: main-sync.sh not found (checked all three paths) — post-merge main sync unavailable"
+else
+  MAIN_SYNC_STATUS=$("$MAIN_SYNC_SH" 2>&1 || true)
+fi
 echo "Main sync: $MAIN_SYNC_STATUS"
 ```
 

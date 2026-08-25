@@ -46,7 +46,7 @@ OKRS_CONTENT="$("$PM_CONFIG_GET_SH" --section OKRs 2>/dev/null)"
 OKRS_RC=$?
 ```
 
-`pm-config-get.sh` handles the line-anchored `^## OKRs` match (no mid-line matches) and the "next `^## ` or EOF" boundary. See `pm-config-get.sh --help`.
+`pm-config-get.sh` handles the line-anchored `^## OKRs` match (no mid-line matches) and the next `^##` followed by a space (or EOF) boundary. See `pm-config-get.sh --help`.
 
 ## Mode: show (default)
 
