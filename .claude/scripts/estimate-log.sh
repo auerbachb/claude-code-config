@@ -158,7 +158,9 @@ acquire_lock() {
       # false-reap is self-correcting.
       local stored_token
       stored_token=$(cat "$LOG_LOCK/token" 2>/dev/null || echo "")
-      if [[ -n "$stored_token" && "$stored_token" != "$LOCK_TOKEN" ]]; then
+      # An empty token means the holder never recorded ownership (crash or
+      # failed write); treat it as stale just like a differing token.
+      if [[ "$stored_token" != "$LOCK_TOKEN" ]]; then
         rm -rf "$LOG_LOCK" 2>/dev/null || true
         continue
       fi
@@ -171,10 +173,11 @@ acquire_lock() {
 }
 
 release_lock() {
-  # Only release if this process still owns the lock (token check).
+  # Release if this process owns the lock (token match) or if no token was
+  # ever recorded (crash between mkdir and token write): this process owns it.
   local stored_token
   stored_token=$(cat "$LOG_LOCK/token" 2>/dev/null || echo "")
-  if [[ "$stored_token" == "$LOCK_TOKEN" ]]; then
+  if [[ -z "$stored_token" || "$stored_token" == "$LOCK_TOKEN" ]]; then
     rm -rf "$LOG_LOCK" 2>/dev/null || true
   fi
 }
@@ -308,6 +311,7 @@ fetch_claim_ts() {
   local issue_number="$1"
   local repo="$2"
   local pr_created_at="$3"
+  local merge_ts="${4:-}"   # optional upper bound; empty = no bound
 
   if [[ -z "$issue_number" || "$issue_number" == "null" ]]; then
     printf '%s pr_created\n' "$pr_created_at"
@@ -324,12 +328,15 @@ fetch_claim_ts() {
   # jq -s (slurp) collects them into an outer array; .[] | .[] iterates all
   # comment objects across every page.  .[]? guards against an empty page.
   #
-  # Design note: we pick the LATEST claim comment, not the first. If an issue
-  # was released and re-claimed, the latest claim is when work on THIS PR
-  # actually started — which is what the wall-clock duration measures.
+  # Design note: we pick the LATEST claim comment at or before the merge
+  # timestamp.  Bounding by merge_ts prevents a post-merge re-claim (follow-up
+  # work) from producing a negative actual duration.  If no bound is supplied
+  # the filter is a no-op (empty string never satisfies <=).
   claim_ts=$(printf '%s' "$comments_json" \
-    | jq -rs '[ .[] | .[]? | select(.body != null and (.body | contains("<!-- claude-claim:"))) ]
-               | if length > 0 then (sort_by(.created_at) | last).created_at else "" end' \
+    | jq -rs --arg merge_ts "$merge_ts" \
+         '[ .[] | .[]? | select(.body != null and (.body | contains("<!-- claude-claim:")))
+                       | select($merge_ts == "" or .created_at <= $merge_ts) ]
+          | if length > 0 then (sort_by(.created_at) | last).created_at else "" end' \
     2>/dev/null || echo "")
 
   if [[ -n "$claim_ts" && "$claim_ts" != "null" && "$claim_ts" != "" ]]; then
@@ -350,13 +357,16 @@ pr_in_log() {
   if [[ -n "$repo" ]]; then
     # Match rows with both the pr number and repo fields.
     # jq is the authoritative check; grep is a fast pre-filter.
-    grep -q "\"pr\":$pr_num[^0-9]" "$LOG_FILE" 2>/dev/null \
-      && jq -e --argjson pr "$pr_num" --arg repo "$repo" \
-           'select(.pr == $pr and .repo == $repo)' \
+    # -R + fromjson? tolerates malformed lines the same way mode_rollup does,
+    # so a corrupt line never causes pr_in_log to false-report a miss and
+    # insert a duplicate row.
+    grep -q "\"pr\":${pr_num}[^0-9]" "$LOG_FILE" 2>/dev/null \
+      && jq -e -R --argjson pr "$pr_num" --arg repo "$repo" \
+           'fromjson? | select(.pr == $pr and .repo == $repo)' \
            "$LOG_FILE" >/dev/null 2>&1
   else
     # Legacy: pr number only (no repo filter)
-    grep -q "\"pr\":$pr_num[^0-9]" "$LOG_FILE" 2>/dev/null
+    grep -q "\"pr\":${pr_num}[^0-9]" "$LOG_FILE" 2>/dev/null
   fi
 }
 
@@ -485,7 +495,7 @@ build_row() {
 
   # Fetch claim timestamp
   local claim_result="" claim_ts="" start_source=""
-  claim_result=$(fetch_claim_ts "${issue_num:-}" "$repo" "$pr_created_at")
+  claim_result=$(fetch_claim_ts "${issue_num:-}" "$repo" "$pr_created_at" "$merged_at")
   claim_ts=$(printf '%s' "$claim_result" | awk '{print $1}')
   start_source=$(printf '%s' "$claim_result" | awk '{print $2}')
 
@@ -553,8 +563,8 @@ mode_append() {
   fi
 
   local row_json
-  row_json=$(build_row "$pr_num" "$repo" 2>&1) || {
-    # build_row returned non-zero; row_json may contain WARN lines from stderr
+  row_json=$(build_row "$pr_num" "$repo" 2>/dev/null) || {
+    # build_row returned non-zero; its WARN lines already went to stderr.
     echo "WARN: estimate-log.sh --append PR #$pr_num: could not build row (repo=$repo)" >&2
     return 0
   }
