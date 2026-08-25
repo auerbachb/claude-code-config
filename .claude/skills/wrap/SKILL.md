@@ -571,7 +571,8 @@ Run **after** Step 2.5's root-main sync:
 
 ```bash
 CHURN_SH=$(resolve_script churn-hotspots.sh || true)
-CHURN_JSON=""; CHURN_RC=0
+CHURN_PLAN_SH=$(resolve_script churn-hotspot-wrap-plan.sh || true)
+CHURN_JSON=""; CHURN_PLAN=""; CHURN_RC=0
 if [ -n "$CHURN_SH" ]; then
   CHURN_JSON=$("$CHURN_SH" --json \
       --exclude ".claude/reference/script-extraction-audit.md" \
@@ -579,13 +580,27 @@ if [ -n "$CHURN_SH" ]; then
 fi
 ```
 
-Exit `1` (nothing crossed threshold) or missing script → end category immediately, file nothing, add no report line. `existing_lookup_failed == true` → add one `SWEEP_NEEDS_DECISION` bullet: ``Churn hotspot check ran but the existing-issue lookup failed — re-run `churn-hotspots.sh --json` before filing.``
+Exit `1` (nothing crossed threshold) or missing detector → end category immediately, file nothing, add no report line. `existing_lookup_failed == true` → add one `SWEEP_NEEDS_DECISION` bullet: ``Churn hotspot check ran but the existing-issue lookup failed — re-run `churn-hotspots.sh --json` before filing.`` Then **end this category immediately**: do not invoke the classifier, comment, or file. The classifier independently rejects this envelope as a defense in depth.
+
+On detector exit `0`, classify the envelope with the read-only consumer before any mutation:
+
+```bash
+if [ -z "$CHURN_PLAN_SH" ]; then
+  SWEEP_NEEDS_DECISION="${SWEEP_NEEDS_DECISION}
+- Churn hotspot classifier is unavailable — no hotspot issue or comment was changed; restore \`churn-hotspot-wrap-plan.sh\` and re-run /wrap."
+elif ! CHURN_PLAN=$(printf '%s' "$CHURN_JSON" | "$CHURN_PLAN_SH" --pr "$PR_NUMBER" 2>/dev/null); then
+  SWEEP_NEEDS_DECISION="${SWEEP_NEEDS_DECISION}
+- Churn hotspot classifier failed — no hotspot issue or comment was changed; run \`churn-hotspot-wrap-plan.sh --help\` and re-run /wrap."
+fi
+```
+
+An empty `CHURN_PLAN` ends the category after recording that failure. A valid plan has disjoint `comment_set`, `file_set`, `material_growth_set`, `unknown_state_set`, and `suppressed_set` arrays. It also selects the top file candidate and computes the aggregate summary. **Do not reimplement those predicates inline** — that would let the tested consumer and the mutating workflow drift.
 
 Score formula, threshold calibration, and the capping rationale: **`.claude/reference/churn-hotspots.md`**.
 
-**Three independent branches operate on different sets** (do NOT select once and then branch):
+**Four independent branches operate on the classifier's different sets** (do NOT select once and then branch):
 
-- **Comment set** — **every** hotspot whose `existing_hotspot_issue` is non-null, whose `existing_hotspot_issue_state` is `"open"`, **and** whose `pr_numbers` include the PR this wrap just merged. Uncapped. A closed issue cannot take a new evidence comment, so a closed match never belongs here — the two branches below own it (issue #915). For each member:
+- **Comment set** — every row in `CHURN_PLAN.comment_set`, uncapped. The classifier includes an open match only when its `pr_numbers` contain the PR this wrap just merged, preserving comment idempotency. For each member:
 
   ```bash
   gh issue comment "$EXISTING" --body "Still churning: ${PR_COUNT} distinct merged PRs have touched \`${FILE}\` since ${SINCE}${CONFLICT_CLAUSE}: ${PR_LIST}.
@@ -595,11 +610,11 @@ Score formula, threshold calibration, and the capping rationale: **`.claude/refe
 
   Record `Appended evidence to #{EXISTING} — churn hotspot \`{file}\`` for Step 4.3.
 
-- **File set** — **at most one new issue per run**, still. Eligible hotspots are now of two kinds; take the highest-scoring one across both:
+- **File set** — **at most one new issue per run**, still. Use `CHURN_PLAN.selected_file`; the classifier sorts all eligible `file_set` rows by score, PR count, then path. Eligible hotspots remain exactly two kinds:
   1. `existing_hotspot_issue == null` — never ticketed. Files clean, exactly as before.
   2. `existing_hotspot_issue_state == "closed"` **and** `conflict_rounds > 0` — a **closed-match re-file** (issue #915). Adds the caveat line below and is reported under `SWEEP_NEEDS_DECISION`, not `SWEEP_AUTO_HANDLED`.
 
-  A closed match with `conflict_rounds == 0` is **not eligible** — it falls to the third branch. Title: `Refactor hotspot: {file}`. Body must include the `<!-- churn-hotspot: {file} -->` marker verbatim (re-find fallback):
+  A closed match with `conflict_rounds == 0` is **not eligible** — it falls to the growth-or-suppression branches below. Title: `Refactor hotspot: {file}`. Body must include the `<!-- churn-hotspot: {file} -->` marker verbatim (re-find fallback):
 
   ```bash
   # Set only for kind 2 — a closed exact match is a WEAK match in the
@@ -643,11 +658,13 @@ Score formula, threshold calibration, and the capping rationale: **`.claude/refe
 
   `CONFLICT_CLAUSE` is empty when `conflict_rounds` is 0; otherwise ` and re-resolved conflicts {conflict_rounds} time(s)`. `CONFLICT_ROUNDS` is that hotspot's `conflict_rounds`, and `CLOSED_DUP_NUM` its `existing_hotspot_issue` — both set only on a kind-2 re-file, left unset for kind 1.
 
-- **Closed match, no conflict cost** (`existing_hotspot_issue_state == "closed"` and `conflict_rounds == 0`) — **file nothing.** For each such hotspot add one `SWEEP_NEEDS_DECISION` bullet: ``Churn hotspot `{file}` still churning ({pr_count} PRs since {since}) but #{N} was closed after review and it records no conflict cost — re-open, re-file, or leave it: your call.`` Closing an observational churn report is a recorded decision, and the detector cannot re-evaluate the condition the owner closed it under; filing again on PR count alone would silently overturn it (issue #915).
+- **Material-growth set** — every row in `CHURN_PLAN.material_growth_set`. These are closed matches with zero conflict cost whose current score is at least **2×** the score recorded in `.claude/reference/churn-hotspot-baselines.json`. File nothing, but add one `SWEEP_NEEDS_DECISION` bullet naming the file, issue, current score, baseline score, and baseline date. Doubling is the material-growth threshold: it is a step-change in centrality rather than the routine linear growth expected from catalogs and junction files. The five standing no-action verdicts on Issues #816, #860, #900, #916, and #1223 remain suppressed until this gate trips.
 
-**Unknown state** (`existing_hotspot_issue` non-null with `existing_hotspot_issue_state == "unknown"`) — a match exists but its state could not be read. **Neither comment nor file**, and add one `SWEEP_NEEDS_DECISION` bullet naming `#{N}` and the file. It is already excluded by all three branches above; the bullet is what stops it from vanishing silently. Treat `existing_hotspot_issue_state == null` as "no match" **only** when `existing_hotspot_issue` is also null — the state field is the authority on which of the two a null means.
+- **Suppressed set** — every row in `CHURN_PLAN.suppressed_set`. Add **no per-file decision bullet**. These are closed matches with zero conflict cost that are below the 2× gate, plus closed matches with no valid file-and-issue baseline. A missing baseline means growth is unproven, not that growth occurred; the row remains visible through the aggregate count. When a zero-conflict hotspot issue is closed or the owner reaffirms a keep verdict, add or refresh its file-keyed baseline with the issue number, score, PR count, and decision date. A baseline records a real owner decision and must never be raised merely to silence a growth signal.
 
-When the file cap held candidates back, record in `SWEEP_AUTO_HANDLED`: ``Churn: filed the top hotspot; {N} further candidate(s) above threshold — run `churn-hotspots.sh` to see them.``
+- **Unknown-state set** — every row in `CHURN_PLAN.unknown_state_set`. **Neither comment nor file**, and add one `SWEEP_NEEDS_DECISION` bullet naming the issue and file. The classifier treats any non-null issue whose state is not open/closed as unknown; only a null issue is a never-ticketed file candidate.
+
+After all five branches, append exactly one `SWEEP_AUTO_HANDLED` entry from `CHURN_PLAN.summary`, followed by `` — run `churn-hotspots.sh` to see them.`` The verbose shape is: ``{total} churn hotspots, {conflict-cost count} with conflict cost, {decision count} surfaced for decision, {suppressed count} suppressed (closed, no conflict cost)``. This replaces N closed/no-cost decision bullets with one auditable count and does not print on the silent default. When `held_back_file_count > 0`, append the existing file-cap clause to that same entry: ``; filed the top hotspot, {N} further candidate(s) held back``. Do not create a second churn summary line.
 
 This category's authoritative re-find is the script's **exact** title/marker match — do not run `dedup_search` here.
 

@@ -10,9 +10,11 @@ The signal was never hidden. It sits in merge history: the same path across many
 
 ## Division of responsibility
 
-**`churn-hotspots.sh` detects. `/wrap` decides.**
+**`churn-hotspots.sh` detects. `churn-hotspot-wrap-plan.sh` classifies. `/wrap` mutates.**
 
 The script is strictly read-only — no `gh issue create`, no comments, no state writes. That matches the other detectors here (`backlog-staleness.sh`, `clean-behind-check.sh`) and means it is safe to run anywhere, by anyone, at any time. Every mutation lives in `/wrap` Step 3.10a, where the reporting contract (`WRAP_FILED_ISSUES` → Step 4.3) already exists.
+
+The wrap-specific classifier is also read-only. It consumes the detector's unchanged JSON envelope and `.claude/reference/churn-hotspot-baselines.json`, then emits disjoint comment, file, growth, unknown, and suppression sets. Keeping those predicates in an offline-tested consumer prevents the prose workflow from drifting away from the policy it claims to apply.
 
 ## The score
 
@@ -55,7 +57,17 @@ This is a deliberate exception to Phase 3's general "no cap on how many issues o
 
 **Eligible means one of two things** (issue #915). Either the hotspot has no existing issue at all — the original case, which files clean — or it has a **closed** match *and* `conflict_rounds > 0`, which re-files with the `Possibly duplicates #{N}` caveat and lands under "needs your decision" rather than "auto-handled". The one-issue-per-run cap spans both kinds, so widening eligibility does not widen volume.
 
-**Why the conflict gate, specifically.** The closing note on the issue that exposed this asked for exactly this condition. That hotspot was closed because the churn was by design — a repo convention requiring every flow-changing PR to touch one canonical file — and the note said `/wrap` would re-file automatically once the churn started costing something measurable. `conflict_rounds` is the only measurable cost this detector records. Rising PR count is not — that is precisely what the closed issue already accounted for. So a closed hotspot with `conflict_rounds == 0` files nothing and surfaces one decision bullet naming the closed issue; re-filing it on PR count alone would silently overturn a recorded owner decision, which is the failure mode #915 exists to stop.
+**Why the conflict gate, specifically.** The closing note on the issue that exposed this asked for exactly this condition. That hotspot was closed because the churn was by design — a repo convention requiring every flow-changing PR to touch one canonical file — and the note said `/wrap` would re-file automatically once the churn started costing something measurable. `conflict_rounds` is the only measurable cost this detector records. Rising PR count is not — that is precisely what the closed issue already accounted for. So a closed hotspot with `conflict_rounds == 0` never re-files automatically; re-filing it on PR count alone would silently overturn a recorded owner decision, which is the failure mode #915 exists to stop.
+
+**Closed zero-cost findings are aggregated, not re-asked** (Issue #1307). `/wrap` used to turn every closed match with `conflict_rounds == 0` into an individual pending decision. In a measured 66-PR window all 35 hotspots had zero conflict cost, so every session repeated the same owner question. The consumer now suppresses those per-file bullets and records one verbose aggregate: total hotspots, hotspots with conflict cost, items surfaced for decision, and closed/no-cost items suppressed. The detector still reports closed matches exactly as Issue #915 requires; this is strictly consumer-side filtering, and silent mode remains silent.
+
+## Decision baselines and the material-growth gate
+
+`.claude/reference/churn-hotspot-baselines.json` records the score present when an owner closed a zero-conflict hotspot or reaffirmed that its current structure should remain. Each file-keyed entry carries the exact issue number, `score_at_decision`, `pr_count_at_decision`, and `as_of` date. Both file and issue must match before the baseline is trusted; a reopened/replaced issue cannot accidentally inherit an older verdict.
+
+A closed zero-conflict hotspot returns as a pending decision only when its current score is at least **2×** `score_at_decision`. Doubling is intentionally conservative: linear growth is normal for catalogs, registries, and central workflow contracts, while a 100% increase is a step-change in how much work passes through the file. Scores below that gate remain in the aggregate. A missing or mismatched baseline also remains suppressed and is counted as `no_matching_baseline`, because absent history cannot prove material post-decision growth.
+
+When a zero-conflict hotspot issue is closed, or an owner explicitly reaffirms a keep/monolith verdict, capture or refresh the entry from an untruncated default-branch detector run. The baseline is evidence of a real decision, not a tuning knob: never raise it merely to silence a growth signal. Positive conflict cost bypasses this baseline and preserves the Issue #915 closed-match re-file behavior.
 
 **Comment idempotency.** When a hotspot already has an open issue, `/wrap` appends evidence **only when the PR it just merged is one of that hotspot's PRs**. Without that guard, every later wrap would append another comment restating the same history. A merging PR appears in the list exactly once, so the comment fires exactly once per contributing merge. The comment set is **open-only** — a closed issue cannot take a new evidence comment, so a closed match routes to the branches above instead.
 

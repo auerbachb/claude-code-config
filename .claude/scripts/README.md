@@ -112,6 +112,7 @@ Scripts that surface stale issues, duplicate candidates, forgotten PRs, and back
 | `backlog-staleness.sh` | Detect stale backlog issues (solved by merged PR, inactive, superseded, potential duplicate) |
 | `backlog-health.sh` | Aggregate backlog health metrics wrapping `backlog-staleness.sh` |
 | `churn-hotspots.sh` | Detect files touched by many distinct merged PRs as refactor candidates |
+| `churn-hotspot-wrap-plan.sh` | Classify churn detector JSON into `/wrap` action and suppression sets using recorded decision baselines |
 | `issue-dedup.sh` | Score open issues against keywords to find duplicate candidates before filing |
 | `forgotten-pr-triage.sh` | Detect and classify open PRs that have gone quiet past a staleness threshold |
 | `pm-config-get.sh` | Extract a named section from `.claude/pm-config.md` |
@@ -197,6 +198,7 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | `background-task-registry.test.sh` | Tests exact-ID registration, terminal transitions, stale fail-closed behavior, and concurrent writes |
 | `active-work-cap.test.sh` | Tests for `active-work-cap.sh` — cap resolution, the three count sources, and fail-loud read errors |
 | `check-runs-dedup.test.sh` | Tests for `check-runs-dedup.sh` |
+| `churn-hotspot-wrap-plan.test.sh` | Tests `/wrap` hotspot suppression, material-growth, evidence, re-file, unknown-state, and aggregate classification |
 | `churn-hotspots.test.sh` | Tests for `churn-hotspots.sh` |
 | `ci-status.test.sh` | Tests for `ci-status.sh` |
 | `clean-behind-check.test.sh` | Tests for `clean-behind-check.sh` |

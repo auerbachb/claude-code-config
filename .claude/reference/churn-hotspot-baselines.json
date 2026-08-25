@@ -1,0 +1,39 @@
+{
+  "schema": "churn-hotspot-baselines/v1",
+  "material_growth_multiplier": 2,
+  "source": {
+    "issue": 1307,
+    "as_of": "2026-08-25",
+    "provenance": "owner-decision-and-detector-snapshot",
+    "note": "The owner chose to keep the currently adjudicated hotspot files monolithic. Scores were captured from the untruncated default-branch detector run that followed that decision. Issues 816, 860, 900, 916, and 1223 also carry the standing zero-conflict verdict recorded on 2026-08-23."
+  },
+  "hotspots": {
+    ".claude/agents/README.md": {"issue": 973, "score_at_decision": 4, "pr_count_at_decision": 4, "as_of": "2026-08-25"},
+    ".claude/hooks/README.md": {"issue": 998, "score_at_decision": 4, "pr_count_at_decision": 4, "as_of": "2026-08-25"},
+    ".claude/reference/README.md": {"issue": 816, "score_at_decision": 24, "pr_count_at_decision": 24, "as_of": "2026-08-25"},
+    ".claude/reference/ai-review-billing-dashboard-2026-08.md": {"issue": 1273, "score_at_decision": 5, "pr_count_at_decision": 5, "as_of": "2026-08-25"},
+    ".claude/reference/ai-review-chain-roles-decision.md": {"issue": 1223, "score_at_decision": 8, "pr_count_at_decision": 8, "as_of": "2026-08-25"},
+    ".claude/reference/background-task-shutdown.md": {"issue": 1317, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-08-25"},
+    ".claude/reference/chip-launching.md": {"issue": 916, "score_at_decision": 7, "pr_count_at_decision": 7, "as_of": "2026-08-25"},
+    ".claude/reference/session-state-schema.json": {"issue": 964, "score_at_decision": 7, "pr_count_at_decision": 7, "as_of": "2026-08-25"},
+    ".claude/reference/subagent-phase-guardrails.md": {"issue": 1033, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-08-25"},
+    ".claude/rules/bugbot.md": {"issue": 1036, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-08-25"},
+    ".claude/rules/cr-github-review.md": {"issue": 953, "score_at_decision": 4, "pr_count_at_decision": 4, "as_of": "2026-08-25"},
+    ".claude/rules/cr-local-review.md": {"issue": 992, "score_at_decision": 4, "pr_count_at_decision": 4, "as_of": "2026-08-25"},
+    ".claude/rules/cr-merge-gate.md": {"issue": 940, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-08-25"},
+    ".claude/rules/greptile.md": {"issue": 1090, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-08-25"},
+    ".claude/rules/safety.md": {"issue": 957, "score_at_decision": 4, "pr_count_at_decision": 4, "as_of": "2026-08-25"},
+    ".claude/rules/scheduling-reliability.md": {"issue": 959, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-08-25"},
+    ".claude/scripts/README.md": {"issue": 898, "score_at_decision": 5, "pr_count_at_decision": 5, "as_of": "2026-08-25"},
+    ".claude/skills/issue-maker/SKILL.md": {"issue": 900, "score_at_decision": 7, "pr_count_at_decision": 7, "as_of": "2026-08-25"},
+    ".claude/skills/pm-handoff/SKILL.md": {"issue": 1122, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-08-25"},
+    ".claude/skills/pm/SKILL.md": {"issue": 860, "score_at_decision": 10, "pr_count_at_decision": 10, "as_of": "2026-08-25"},
+    ".claude/skills/pr-monitor-and-manage/SKILL.md": {"issue": 881, "score_at_decision": 5, "pr_count_at_decision": 5, "as_of": "2026-08-25"},
+    ".claude/skills/prompt/SKILL.md": {"issue": 949, "score_at_decision": 4, "pr_count_at_decision": 4, "as_of": "2026-08-25"},
+    ".claude/skills/start-issue/SKILL.md": {"issue": 981, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-08-25"},
+    ".claude/skills/subagent/SKILL.md": {"issue": 866, "score_at_decision": 8, "pr_count_at_decision": 8, "as_of": "2026-08-25"},
+    ".claude/skills/wave/SKILL.md": {"issue": 961, "score_at_decision": 5, "pr_count_at_decision": 5, "as_of": "2026-08-25"},
+    "README.md": {"issue": 988, "score_at_decision": 7, "pr_count_at_decision": 7, "as_of": "2026-08-25"},
+    "setup-skills-worktree.sh": {"issue": 1063, "score_at_decision": 3, "pr_count_at_decision": 3, "as_of": "2026-08-25"}
+  }
+}
