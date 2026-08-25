@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# portable-handoff-context.sh — bounded, secret-free facts for a /end handoff.
+# portable-handoff-context.sh — bounded, secret-free facts shared by /end and automatic checkpoint handoffs.
 
 set -uo pipefail
 
