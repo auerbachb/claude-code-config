@@ -1,4 +1,4 @@
-# `/stop` Step 4 — Portable Handoff Template
+# `/end` Step 4 — Portable Handoff Template
 
 Referenced from `stop/SKILL.md` Step 4. The SKILL.md keeps the wind-down, the collection call, and the emit sequence; this file holds the document layout and the rules that keep it readable by an agent that has never seen this repo's conventions.
 
@@ -101,7 +101,7 @@ rebase, a running process, a file deliberately left broken.}
 
 ## Resume safely
 
-Resume command: /stop-resume {add `--resume-refill` only when the refill queue
+Resume command: /end-resume {add `--resume-refill` only when the refill queue
 also needs reopening; this entrypoint is for the original harness}
 For another agent: {START_WITH `cd -- 'ABSOLUTE_WORKING_DIRECTORY'`, then list
 the exact ordinary `git`, `gh`, and test commands needed to re-check the note}
@@ -128,7 +128,7 @@ a task that is already running, rearming, completed, or owned by another session
 - **Name things by number and URL, always.** "Pull request 903" plus its full URL. A reader with no access to this session cannot resolve "the PR we were on".
 - **Absolute paths, not repo-relative ones.** The reader may be in a different checkout. An absolute working-directory path is required and is the one path form the lint permits.
 - **A path containing spaces goes in the `Working directory:` field**, whose whole value is one path by definition. Elsewhere the checker reads a path as a whitespace-delimited token, because free prose cannot distinguish a path continuing across a space from two separate words. If you need to mention a spaced path in a sentence, quote it or point back to the field.
-- **Commands are allowed when they are universal.** `git status`, `gh pr view 903`, a test runner — anything a fresh checkout can run. Commands that only exist inside this harness are not; describe the intent instead. The sole exception is the dedicated `Resume command: /stop-resume` field, paired with ordinary commands for a different agent in the next line.
+- **Commands are allowed when they are universal.** `git status`, `gh pr view 903`, a test runner — anything a fresh checkout can run. Commands that only exist inside this harness are not; describe the intent instead. The sole exception is the dedicated `Resume command: /end-resume` field, paired with ordinary commands for a different agent in the next line.
 - **The in-thread block and the file on disk are byte-identical.** Render once into a single buffer, verify that buffer, then write it and print that same buffer. Never re-render for display — a second render is a second document, and the reader has no way to know which one they got.
 - **Verify before emitting.** `portable-handoff-lint.sh` is the gate, not a suggestion. If it reports a violation, rewrite the offending line and re-run it; do not emit a document that fails it, and do not narrow the check to make a line pass.
 
@@ -150,7 +150,7 @@ Each of these answers a question a real reader asked of a document that had alre
 - **Tracked and untracked work stay distinct.** A reader can recover a tracked
   edit from a diff and must locate an untracked file by name. A single "dirty"
   count hides that difference and is not enough for a takeover.
-- **A different agent gets ordinary commands.** `/stop-resume` is useful to the
+- **A different agent gets ordinary commands.** `/end-resume` is useful to the
   original harness but meaningless in many other tools. Always pair it with the
   exact absolute `cd` command, state inspection, and test/review commands that a
   fresh coding agent can execute.

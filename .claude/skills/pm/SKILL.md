@@ -863,7 +863,7 @@ Steps 2–7, but skip only Step 1's `.refill.paused` write. That field is
 human-owned; an automatic machine-initiated park must not touch it because the
 auto-wake would otherwise clear a pause the user explicitly set. The execution
 gate stays closed throughout task shutdown and marker publication.
-A weekly limit is the long-horizon token/credit case and follows `/stop` in the
+A weekly limit is the long-horizon token/credit case and follows `/end` in the
 weekly branch below. After the selected wind-down steps complete, read the
 current `consecutive_limit_hits` and increment it:
 
@@ -927,8 +927,8 @@ Record the task ID immediately — an unrecorded Monitor cannot be stopped:
 
 If the task ID publish fails: `TaskStop` the Monitor using the ID you hold in hand, then clear `parked_until` so the loop does not appear parked when no wake is armed. Name the unrecorded task ID in the message.
 
-**Weekly/long horizon — no auto-wake.** Do not invoke the user-only `/stop`
-command. Instead, execute `/stop/SKILL.md` Steps 0–6 inline as the internal
+**Weekly/long horizon — no auto-wake.** Do not invoke the user-only `/end`
+command. Instead, execute `/end/SKILL.md` Steps 0–6 inline as the internal
 weekly-stop procedure, using its default 5-minute window and the authoritative
 usage-limit signal already classified above. This shares the gate, checkpoint,
 exact-ID shutdown, audit, and handoff mechanics without pretending a user
@@ -936,7 +936,7 @@ invoked the command or estimating quota. Write `parked_until` and
 `limit_kind="weekly"`. Do not arm a Monitor; do not write
 `limit_resume_task_id`. One-line notify:
 
-> Stopped — weekly cap reached; continuing would incur overage charges. Window reopens at {PARKED_UNTIL}. Resume manually with `/stop-resume --resume-refill` when ready.
+> Stopped — weekly cap reached; continuing would incur overage charges. Window reopens at {PARKED_UNTIL}. Resume manually with `/end-resume --resume-refill` when ready.
 
 **Heartbeat lines (always the last output from this section):**
 - Rolling window: `parked until {PARKED_UNTIL} — usage window; resuming automatically`

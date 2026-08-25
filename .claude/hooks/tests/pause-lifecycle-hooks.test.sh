@@ -44,7 +44,7 @@ gate() {
 gate Agent >/dev/null || fail "inactive gate blocked Agent"
 "$PAUSE" --repo "$REPO" --activate --session "$SID" --command pause --window-minutes 5
 set +e
-gate Agent >/dev/null 2>&1; agent_rc=$?
+agent_message=$(gate Agent 2>&1 >/dev/null); agent_rc=$?
 gate Workflow >/dev/null 2>&1; workflow_rc=$?
 gate Monitor >/dev/null 2>&1; monitor_rc=$?
 gate Bash true >/dev/null 2>&1; bash_bg_rc=$?
@@ -55,6 +55,10 @@ set -e
   fail "active pause did not block every background-start class"
 [[ "$bash_fg_rc" == 0 ]] || fail "active pause blocked foreground Bash needed for teardown"
 [[ "$scoped_gate_rc" == 2 ]] || fail "inherited repo scope bypassed the payload checkout's active gate"
+[[ "$agent_message" == *"/end-resume for /end; /pause-resume for /pause"* ]] || \
+  fail "active gate did not map each shutdown command to its matching resume command"
+[[ "$agent_message" != *"/end-resume (or /pause-resume)"* ]] || \
+  fail "active gate still presents mismatched resume commands as interchangeable"
 ok "PreToolUse gate blocks background starts but preserves foreground teardown"
 
 "$PAUSE" --repo "$REPO" --clear --session "$SID"
@@ -348,7 +352,7 @@ legacy_command_rc=$?
 set -e
 [[ "$legacy_command_rc" == 2 ]] || fail "retired suspend command value was accepted"
 
-"$PAUSE" --repo "$REPO" --activate --session "$SID" --command stop --window-minutes 5
+"$PAUSE" --repo "$REPO" --activate --session "$SID" --command end --window-minutes 5
 printf 'not-json\n' > "$HOME/.claude/session-state.json"
 set +e
 gate Agent >/dev/null 2>&1; corrupt_rc=$?

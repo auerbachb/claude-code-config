@@ -24,7 +24,7 @@
 #
 # Guarded surfaces:
 #   .claude/skills/{pm,subagent,prompt,wave,issue-maker,start-issue,
-#                   pr-monitor-and-manage,stop,stop-resume,pause,pause-resume}/
+#                   pr-monitor-and-manage,end,end-resume,pause,pause-resume}/
 #                   (SKILL.md + references/*.md)
 #   .claude/agents/*.md
 #   .claude/reference/chip-launching.md
@@ -67,7 +67,7 @@ while (( $# > 0 )); do
   esac
 done
 
-SKILLS=(pm subagent prompt wave issue-maker start-issue pr-monitor-and-manage stop stop-resume pause pause-resume)
+SKILLS=(pm subagent prompt wave issue-maker start-issue pr-monitor-and-manage end end-resume pause pause-resume)
 
 WORKTREE_PREFIX='$HOME/.claude/skills-worktree/.claude/scripts/'
 CHIP_LAUNCHING=".claude/reference/chip-launching.md"

@@ -3,7 +3,7 @@
 #
 # USAGE
 #   execution-pause.sh [--repo owner/name] --activate --session ID
-#       --command stop|pause --window-minutes N
+#       --command end|pause --window-minutes N
 #   execution-pause.sh [--repo owner/name] --clear --session ID
 #   execution-pause.sh [--repo owner/name] --status --session ID
 #
@@ -49,7 +49,7 @@ done
 [[ -n "$SESSION_ID" ]] || die "--session is required"
 [[ -x "$SESSION_STATE_SH" ]] || { echo "execution-pause.sh: session-state.sh unavailable" >&2; exit 5; }
 if [[ "$MODE" == activate ]]; then
-  case "$COMMAND_NAME" in stop|pause) ;; *) die "--activate requires --command stop|pause" ;; esac
+  case "$COMMAND_NAME" in end|pause) ;; *) die "--activate requires --command end|pause" ;; esac
   [[ "$WINDOW" =~ ^[0-9]+$ ]] || die "--activate requires non-negative --window-minutes"
 fi
 

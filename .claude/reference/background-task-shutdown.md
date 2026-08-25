@@ -1,6 +1,6 @@
 # Background-task shutdown contract
 
-`/stop` and `/pause` share this procedure. Their windows differ, but their
+`/end` and `/pause` share this procedure. Their windows differ, but their
 success condition does not: no task started by the current Claude Code session
 may still be billable when the command reports completion.
 
@@ -44,7 +44,7 @@ command's ownership and must be reported as out of scope.
    incomplete shutdown, list every unresolved exact ID or tracking failure,
    and keep both launch gates closed.
 
-After the terminal audit, `/stop` snapshots every current-session registry entry
+After the terminal audit, `/end` snapshots every current-session registry entry
 for its canonical handoff. Render task ID, logical name, translated type, final
 status, work item, output file, checkpoint path, and recovery path as distinct
 fields. Missing metadata says `not recorded`; it is never inferred from a task

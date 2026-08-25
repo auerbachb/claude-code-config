@@ -160,7 +160,7 @@ Miscellaneous helpers used by skills and hooks.
 | Script | Purpose |
 |--------|---------|
 | `model-fleet.sh` | Resolve the current Claude model fleet from `.claude/model-fleet.json` |
-| `portable-handoff-context.sh` | Emit a bounded, secret-free JSON snapshot of the exact repository/worktree, Git/linkage state, and current-session task recovery metadata for `/stop` |
+| `portable-handoff-context.sh` | Emit a bounded, secret-free JSON snapshot of the exact repository/worktree, Git/linkage state, and current-session task recovery metadata for `/end` |
 | `portable-handoff-lint.sh` | Enforce portable handoff structure, working-copy identity, cross-agent resume guidance, and freedom from harness-only references |
 | `portable-handoff-publish.sh` | Lint and atomically update one locked canonical manual handoff per repository/session |
 | `verify-exit-report-block.sh` | Verify stdin contains a parseable EXIT_REPORT with all required fields |

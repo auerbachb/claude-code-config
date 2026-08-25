@@ -1,9 +1,9 @@
 ---
-name: stop
-description: Use when usage allowance is exhausted or running thin and this session must stop for hours or days while preserving resumable work. Blocks new launches, gives running work a bounded checkpoint window, stops every remaining owned background task, then writes a portable handoff. Triggers on "stop", "clean stop", "wind down", "portable handoff", "hand this to another agent", "I'm running low".
+name: end
+description: Use when usage allowance is exhausted or running thin and this session must stop for hours or days while preserving resumable work. Blocks new launches, gives running work a bounded checkpoint window, stops every remaining owned background task, then writes a portable handoff. Triggers on "end", "clean end", "wind down", "portable handoff", "hand this to another agent", "I'm running low".
 triggers:
-  - stop
-  - clean stop
+  - end
+  - clean end
   - wind down
   - portable handoff
   - hand off to another agent
@@ -13,13 +13,13 @@ argument-hint: "[--window Nm] (default: --window 5m; --window 0 stops immediatel
 Stop cleanly for a potentially long interruption, and leave behind a document
 someone else can pick up.
 
-**You decide when.** The usage view in the app is the authoritative source for what is left of your allowance, and you are the one reading it. This command never estimates tokens, spend, or remaining quota, and never refuses or defers work based on one — `.claude/rules/safety.md` §"Anthropic Quota & Spend Authority" holds as written. `/stop` runs because you asked, and for no other reason.
+**You decide when.** The usage view in the app is the authoritative source for what is left of your allowance, and you are the one reading it. This command never estimates tokens, spend, or remaining quota, and never refuses or defers work based on one — `.claude/rules/safety.md` §"Anthropic Quota & Spend Authority" holds as written. `/end` runs because you asked, and for no other reason.
 
 Two outputs, in this order: a wind-down that leaves nothing half-finished, and a portable handoff document written to disk and printed in the thread.
 
 ## Step 0: Resolve helpers and parse the window
 
-`/stop` is invocable from any thread — including one whose working directory is not this repo, which is exactly the situation where a repo-relative path silently fails. Resolve each helper the same way the other stop-style commands do:
+`/end` is invocable from any thread — including one whose working directory is not this repo, which is exactly the situation where a repo-relative path silently fails. Resolve each helper the same way the other shutdown-style commands do:
 
 ```bash
 resolve_script() {
@@ -55,7 +55,7 @@ done
 SHUTDOWN_DOC="${SHUTDOWN_DOC:-}"
 ```
 
-Do not add a cwd-relative fallback to either resolver. `/stop` is designed to
+Do not add a cwd-relative fallback to either resolver. `/end` is designed to
 run while the current checkout may be unrelated or untrusted; executing its
 `.claude/scripts` files (or following its instruction documents) would cross a
 trust boundary. If neither installed location resolves, degrade explicitly as
@@ -110,7 +110,7 @@ WINDDOWN_PERSISTED=1
 EXECUTION_GATE_PERSISTED=1
 if [[ -n "$EXECUTION_PAUSE_SH" ]]; then
   "$EXECUTION_PAUSE_SH" --activate --session "$SESSION_ID" \
-    --command stop --window-minutes "$WINDOW_MINUTES" \
+    --command end --window-minutes "$WINDOW_MINUTES" \
     || EXECUTION_GATE_PERSISTED=0
 else
   EXECUTION_GATE_PERSISTED=0
@@ -127,10 +127,10 @@ else
 fi
 ```
 
-Both gates stay closed until an explicit `/stop-resume` invocation. A later
+Both gates stay closed until an explicit `/end-resume` invocation. A later
 message, timer, or scan never clears them implicitly. `/pause-resume` clears the
 same execution gate only while restoring the separate paused-board workflow;
-it is not a substitute for recovering this stop handoff.
+it is not a substitute for recovering this end handoff.
 
 ## Step 2: Checkpoint, stop, and prove quiescence
 
@@ -148,7 +148,7 @@ Gates:     <execution gate and refill gate status>
 Stopped:   <N of N current-session background tasks confirmed terminal>
 Preserved: <task IDs and their output/worktree/recovery paths, or "nothing was running">
 Unresolved:<exact live IDs and stop errors, or "none">
-Resume:    /stop-resume [--resume-refill]
+Resume:    /end-resume [--resume-refill]
 ```
 
 Do not print successful completion while any owned task is still live or either
@@ -161,7 +161,7 @@ Follow the collector resolved as `$COLLECTOR_DOC` in Step 0 — the same one `/p
 
 **Read it by its resolved path, not by a repo-relative one.** From another checkout `.claude/reference/session-state-collector.md` simply does not exist, and an unreadable collector produces the same silence as an empty session. If `$COLLECTOR_DOC` is empty, say in Step 2's report that collection ran without it and gather what you can directly — an unguided pass is worth more than a document that reports nothing in flight because it could not look.
 
-**Substitute the paths resolved in Step 0 for the collector's `.claude/scripts/…` literals.** Those literals resolve only from this repo, and a `/stop` run from anywhere else would get command-not-found on every read — which looks exactly like a session with nothing in flight. Reporting "no in-flight work" when the truth is "could not look" is the one mistake this document cannot afford, because the reader has no way to detect it.
+**Substitute the paths resolved in Step 0 for the collector's `.claude/scripts/…` literals.** Those literals resolve only from this repo, and a `/end` run from anywhere else would get command-not-found on every read — which looks exactly like a session with nothing in flight. Reporting "no in-flight work" when the truth is "could not look" is the one mistake this document cannot afford, because the reader has no way to detect it.
 
 Every category can be legitimately empty. An empty category is reported as empty; it never aborts collection and never produces an error. **A category that could not be *read* is not empty** — say so in those words.
 
@@ -205,7 +205,7 @@ recorded`; they never become invented paths. A `running`, `stopping`,
 `stop_failed`, or unreadable task inventory makes the handoff say shutdown is
 incomplete and keeps the gates closed.
 
-The Resume safely section names `/stop-resume` for this harness and also gives
+The Resume safely section names `/end-resume` for this harness and also gives
 a different coding agent a shell-quoted `cd -- '<absolute worktree>'` followed
 by ordinary `git`, `gh`, and test commands. It explicitly requires inspecting
 each recorded status/output/recovery path before any relaunch.
@@ -305,7 +305,7 @@ fi
 The publisher derives one deterministic filename from the validated repository
 identity and session ID, acquires an advisory lock, lints the staged bytes, and
 uses same-directory `mktemp` + `mv`. A reader sees the previous complete note or
-the new complete note, never a partial file; concurrent `/stop` calls serialize
+the new complete note, never a partial file; concurrent `/end` calls serialize
 instead of creating competing handoffs. Naming and format:
 `.claude/reference/portable-handoff.md`.
 
@@ -321,17 +321,17 @@ Close with the file path on its own line, so the next session (and the usage-lim
 |---|---|---|
 | `/wrap` | a pull request | a merge, follow-up issues, lessons |
 | `/pm-handoff` | a thread | a prompt for the next thread in this harness |
-| `/stop` | a working session | a document for a reader **outside** this harness |
+| `/end` | a working session | a document for a reader **outside** this harness |
 
 ### The automatic checkpoint is a different producer, not this command on a timer
 
-`.claude/hooks/checkpoint-handoff.sh` writes the same *kind* of document automatically while work is in progress (issue #941), because a usage limit that arrives without warning is exactly the case where nobody got to run `/stop` — and the recorder that looks for a handoff then finds none.
+`.claude/hooks/checkpoint-handoff.sh` writes the same *kind* of document automatically while work is in progress (issue #941), because a usage limit that arrives without warning is exactly the case where nobody got to run `/end` — and the recorder that looks for a handoff then finds none.
 
 It ends nothing. It stops no work, takes no wind-down step, and makes no decision; it only describes repository state. So the "does not fire on a schedule, a threshold, or an inference" clause below still holds for **this** command, which is the one that stops things.
 
-The two are distinguishable on disk: a checkpoint's filename ends `-checkpoint.md`. What you write here is richer — it carries the reasoning a script cannot know — so a checkpoint names the most recent `/stop` document in its own body rather than burying it, and retention never deletes one.
+The two are distinguishable on disk: a checkpoint's filename ends `-checkpoint.md`. What you write here is richer — it carries the reasoning a script cannot know — so a checkpoint names the most recent `/end` document in its own body rather than burying it, and retention never deletes one.
 
-They overlap in what they read — hence the shared collector — and not at all in what they produce. `/stop` does not merge anything, does not close anything, and does not decide that work is finished. It records where the work actually is and stops.
+They overlap in what they read — hence the shared collector — and not at all in what they produce. `/end` does not merge anything, does not close anything, and does not decide that work is finished. It records where the work actually is and stops.
 
 ## Not this command's job
 

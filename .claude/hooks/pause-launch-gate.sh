@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Session execution-pause gate — PreToolUse hook.
 # Blocks every Agent, Workflow, and Monitor launch plus background Bash while
-# `/stop` or `/pause` is winding down this exact repo/session. Foreground
+# `/end` or `/pause` is winding down this exact repo/session. Foreground
 # Bash remains available for checkpoint, TaskStop bookkeeping, and handoffs.
 
 set -uo pipefail
@@ -85,7 +85,7 @@ fi
 # session-state.json became unreadable after the pause was armed. Hook parse or
 # dependency failures stay fail-open so a malformed payload cannot brick work.
 if [[ "$RC" -eq 0 && "$STATUS" == active ]]; then
-  echo "BLOCKED: background launches are closed for this session. Finish the wind-down or run /stop-resume (or /pause-resume) before starting $TOOL_NAME." >&2
+  echo "BLOCKED: background launches are closed for this session. Finish the wind-down, then run its matching resume command: /end-resume for /end; /pause-resume for /pause. Refusing to start $TOOL_NAME." >&2
   exit 2
 fi
 if [[ "$RC" -eq 6 ]]; then

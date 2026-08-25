@@ -18,8 +18,8 @@ set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 LINT="$REPO_ROOT/.claude/scripts/portable-handoff-lint.sh"
-SKILL="$REPO_ROOT/.claude/skills/stop/SKILL.md"
-TEMPLATE="$REPO_ROOT/.claude/skills/stop/references/portable-handoff-template.md"
+SKILL="$REPO_ROOT/.claude/skills/end/SKILL.md"
+TEMPLATE="$REPO_ROOT/.claude/skills/end/references/portable-handoff-template.md"
 SAFETY_RULE="$REPO_ROOT/.claude/rules/safety.md"
 RECORDER="$REPO_ROOT/.claude/hooks/usage-limit-record.sh"
 
@@ -94,7 +94,7 @@ Unpushed commits: none — run `git status` and `gh pr view 903` to confirm.
 
 ## Resume safely
 
-Resume command: /stop-resume
+Resume command: /end-resume
 For another agent: enter the working directory above and run `git status`.
 Relaunch rule: inspect every recorded task outcome before replacing work; do not duplicate completed work.
 EOF
@@ -277,7 +277,7 @@ DUPE="$TMP_DIR/dupe.md"
   printf '%s\n\n%s\n\n' "## Progress and verification" "p"
   printf '%s\n\n%s\n\n' "## Decisions made this session" "z"
   printf '%s\n\n%s\n' "## Local state on this machine" "Working directory: /tmp/x"
-  printf '\n%s\n\n%s\n' "## Resume safely" "Resume command: /stop-resume"
+  printf '\n%s\n\n%s\n' "## Resume safely" "Resume command: /end-resume"
 } >"$DUPE"
 out=$(run_lint "$DUPE" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "a duplicated required heading must fail (got $rc)"
@@ -339,7 +339,7 @@ Unpushed commits: none
 
 ## Resume safely
 
-Resume command: /stop-resume
+Resume command: /end-resume
 For another agent: enter the working directory above and run git status.
 Relaunch rule: inspect recorded task outcomes before replacing work.
 EOF
@@ -545,7 +545,7 @@ Unpushed commits: none
 
 ## Resume safely
 
-Resume command: /stop-resume
+Resume command: /end-resume
 For another agent: enter the working directory above and run `git status`.
 Relaunch rule: inspect recorded task outcomes before replacing work.
 
@@ -687,37 +687,37 @@ out=$(run_lint "$DUP_UNPUSHED" 2>&1); rc=$?
 printf '%s' "$out" | grep -q 'working-copy-fields' \
   || fail "duplicate Unpushed commits fields did not report working-copy-fields"
 
-# `/stop-resume` is permitted only in its dedicated field. A checkpoint that
+# `/end-resume` is permitted only in its dedicated field. A checkpoint that
 # stopped nothing may explicitly mark the field not applicable, but every note
 # still needs a relaunch rule to prevent duplicate background work.
 NOT_APPLICABLE="$TMP_DIR/not-applicable.md"
-sed 's|^Resume command: /stop-resume$|Resume command: not applicable — automatic checkpoint|' "$GOLDEN" >"$NOT_APPLICABLE"
+sed 's|^Resume command: /end-resume$|Resume command: not applicable — automatic checkpoint|' "$GOLDEN" >"$NOT_APPLICABLE"
 run_lint "$NOT_APPLICABLE" >/dev/null 2>&1 \
-  || fail "an automatic checkpoint may explicitly mark stop-resume not applicable"
+  || fail "an automatic checkpoint may explicitly mark end-resume not applicable"
 
 BAD_RESUME="$TMP_DIR/bad-resume.md"
-sed 's|^Resume command: /stop-resume$|Resume command: /pause-resume|' "$GOLDEN" >"$BAD_RESUME"
+sed 's|^Resume command: /end-resume$|Resume command: /pause-resume|' "$GOLDEN" >"$BAD_RESUME"
 out=$(run_lint "$BAD_RESUME" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "an unrelated resume command must fail (got $rc)"
 printf '%s' "$out" | grep -q 'resume-guidance' \
   || fail "bad resume entrypoint did not report resume-guidance"
 
 PREFIX_RESUME="$TMP_DIR/prefix-resume.md"
-sed 's|^Resume command: /stop-resume$|Resume command: /stop-resumeevil|' "$GOLDEN" >"$PREFIX_RESUME"
+sed 's|^Resume command: /end-resume$|Resume command: /end-resumeevil|' "$GOLDEN" >"$PREFIX_RESUME"
 out=$(run_lint "$PREFIX_RESUME" 2>&1); rc=$?
-[[ "$rc" -eq 1 ]] || fail "a stop-resume prefix collision must fail (got $rc)"
+[[ "$rc" -eq 1 ]] || fail "a end-resume prefix collision must fail (got $rc)"
 printf '%s' "$out" | grep -q 'resume-guidance' \
-  || fail "stop-resume prefix collision did not report resume-guidance"
+  || fail "end-resume prefix collision did not report resume-guidance"
 
 EMPTY_RESUME="$TMP_DIR/empty-resume.md"
-sed 's|^Resume command: /stop-resume$|Resume command:|' "$GOLDEN" >"$EMPTY_RESUME"
+sed 's|^Resume command: /end-resume$|Resume command:|' "$GOLDEN" >"$EMPTY_RESUME"
 out=$(run_lint "$EMPTY_RESUME" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "an empty resume command must report a lint violation, not abort (got $rc)"
 printf '%s' "$out" | grep -q 'resume-guidance' \
   || fail "empty resume command did not report resume-guidance"
 
 CONFLICTING_RESUME="$TMP_DIR/conflicting-resume.md"
-awk '/^Resume command: \/stop-resume$/ && !done { print "Resume command: /pause-resume"; done=1 } { print }' \
+awk '/^Resume command: \/end-resume$/ && !done { print "Resume command: /pause-resume"; done=1 } { print }' \
   "$GOLDEN" >"$CONFLICTING_RESUME"
 out=$(run_lint "$CONFLICTING_RESUME" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "conflicting resume commands must fail (got $rc)"
@@ -746,11 +746,24 @@ done
 
 OUTSIDE_RESUME="$TMP_DIR/outside-resume.md"
 cp "$GOLDEN" "$OUTSIDE_RESUME"
-printf '%s\n' 'Run /stop-resume from this unrelated line.' >>"$OUTSIDE_RESUME"
+printf '%s\n' 'Run /end-resume from this unrelated line.' >>"$OUTSIDE_RESUME"
 out=$(run_lint "$OUTSIDE_RESUME" 2>&1); rc=$?
-[[ "$rc" -eq 1 ]] || fail "stop-resume outside its dedicated field must fail (got $rc)"
+[[ "$rc" -eq 1 ]] || fail "end-resume outside its dedicated field must fail (got $rc)"
 printf '%s' "$out" | grep -q 'skill-invocation' \
-  || fail "out-of-field stop-resume did not report skill-invocation"
+  || fail "out-of-field end-resume did not report skill-invocation"
+
+# Renaming the project skill must not make Claude Code's reserved built-in
+# command portable to another agent. Construct the old spelling in two pieces
+# so the repository-wide retired-command contract can distinguish this fixture
+# from an advertised invocation.
+BUILTIN_STOP="$TMP_DIR/builtin-stop.md"
+BUILTIN_STOP_COMMAND="/""stop"
+cp "$GOLDEN" "$BUILTIN_STOP"
+printf 'Run %s before continuing.\n' "$BUILTIN_STOP_COMMAND" >>"$BUILTIN_STOP"
+out=$(run_lint "$BUILTIN_STOP" 2>&1); rc=$?
+[[ "$rc" -eq 1 ]] || fail "built-in stop invocation must fail portability lint (got $rc)"
+printf '%s' "$out" | grep -q 'skill-invocation' \
+  || fail "built-in stop invocation did not report skill-invocation"
 
 # The per-entry fields are the same kind of contract, and the same kind of
 # silent failure: reword one on either side and the rule stops firing on a
@@ -846,7 +859,7 @@ printf '%s' "$out" | LC_ALL=C grep -q '[[:cntrl:]]' \
 
 # --- 9. Quota authority: nothing here estimates spend --------------------
 # safety.md §"Anthropic Quota & Spend Authority" is deliberately unamended by
-# #901; the human reads the authoritative usage view and invokes /stop. A
+# #901; the human reads the authoritative usage view and invokes /end. A
 # silent contradiction between that rule and shipped behavior is the failure
 # this block exists to prevent.
 grep -q 'MUST NOT gate agent decisions' "$SAFETY_RULE" \

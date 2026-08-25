@@ -353,7 +353,7 @@ launch. Only exit 0 with exact output `inactive` permits the launch. An
 `active` result, missing helper, non-zero exit, empty output, or any other value
 fails closed even when refill is open: report the unreadable control and
 persist a pending transition. Apply both gates again to all A→A, A→B, B→B,
-B→C, queued-head, and refill launches. Only `/stop-resume` or
+B→C, queued-head, and refill launches. Only `/end-resume` or
 `/pause-resume` may clear the execution gate.
 
 **Subagent prompt template** (fill in variables per issue):

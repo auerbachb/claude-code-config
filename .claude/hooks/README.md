@@ -79,7 +79,7 @@ All state lives in `/tmp` markers (overridable as a set via `CLAUDE_BGWORK_MARKE
 
 ## pause-launch-gate.sh + background-task-complete.sh
 
-These hooks make `/stop` and `/pause` cost-quiescent (Issue #1308).
+These hooks make `/end` and `/pause` cost-quiescent (Issue #1308).
 
 - **`pause-launch-gate.sh`** (PreToolUse): while the current repo/session has an
   active execution pause, rejects Agent, Workflow, Monitor, and background Bash
@@ -98,7 +98,7 @@ A registry write failure creates
 `claude-background-registry-failed-<session>` in the configured background-work
 marker directory (default `/tmp`), falling back to `$HOME/.claude` if that
 directory is unwritable. If neither location accepts the marker, the hook exits
-non-zero with a critical diagnostic. `/stop` and `/pause` treat either
+non-zero with a critical diagnostic. `/end` and `/pause` treat either
 marker as an incomplete audit until runtime inspection proves no untracked task
 remains.
 
@@ -179,7 +179,7 @@ Registered on **`SubagentStop`** with a 15 s timeout.
 
 **Why it exists.** The recorder above names the most recent portable handoff in its breadcrumb, but the only thing that wrote one was invoked by hand. On 2026-08-01 an account limit killed three concurrent sessions and every record came out with `"portable_handoff": null`, because no handoff existed — a limit that arrives without warning is exactly the case where nobody ran the command. This closes the gap from the other side: it produces the artifact and nothing else.
 
-**It is document-only.** No wind-down, no stopping, no decision. The hand-invoked `/stop` command keeps its contract — it runs when asked and for no other reason — because this is a different producer of the same artifact, not that command on a timer.
+**It is document-only.** No wind-down, no stopping, no decision. The hand-invoked `/end` command keeps its contract — it runs when asked and for no other reason — because this is a different producer of the same artifact, not that command on a timer.
 
 **Safety.** No token, spend, or quota arithmetic anywhere, and no output gates a decision. `.claude/rules/safety.md` §"Anthropic Quota & Spend Authority" is satisfied as written and was not amended, the same standing the recorder has.
 
@@ -206,7 +206,7 @@ Writes at most once per `CLAUDE_CHECKPOINT_MIN_INTERVAL` (default 600 s), and ad
 
 - `~/.claude/handoffs/portable-handoff-<stamp>-<session>-checkpoint.md` — matches the glob the recorder already scans
 
-Checkpoints older than 7 days are pruned. A canonical handoff written by `/stop` is **never** a deletion candidate at any age — the `-checkpoint.md` suffix is what separates them.
+Checkpoints older than 7 days are pruned. A canonical handoff written by `/end` is **never** a deletion candidate at any age — the `-checkpoint.md` suffix is what separates them.
 
 ### Prerequisites
 

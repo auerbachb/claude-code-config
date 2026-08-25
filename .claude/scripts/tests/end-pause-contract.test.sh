@@ -2,9 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-STOP="$ROOT/.claude/skills/stop/SKILL.md"
+END="$ROOT/.claude/skills/end/SKILL.md"
 PAUSE="$ROOT/.claude/skills/pause/SKILL.md"
-STOP_RESUME="$ROOT/.claude/skills/stop-resume/SKILL.md"
+END_RESUME="$ROOT/.claude/skills/end-resume/SKILL.md"
 PAUSE_RESUME="$ROOT/.claude/skills/pause-resume/SKILL.md"
 PM="$ROOT/.claude/skills/pm/SKILL.md"
 PHASES="$ROOT/.claude/rules/phase-protocols.md"
@@ -22,19 +22,19 @@ CHECKPOINT="$ROOT/.claude/hooks/checkpoint-handoff.sh"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 has() { grep -Eq -- "$2" "$1" || fail "$(basename "$1") missing: $2"; }
 
-has "$STOP" '^name: stop$'
-has "$STOP" 'default: --window 5m'
-has "$STOP" 'WINDOW_MINUTES=5'
-has "$STOP" "10#\\\$_NORMALIZED"
-has "$STOP" '1440'
+has "$END" '^name: end$'
+has "$END" 'default: --window 5m'
+has "$END" 'WINDOW_MINUTES=5'
+has "$END" "10#\\\$_NORMALIZED"
+has "$END" '1440'
 has "$PAUSE" '^name: pause$'
 has "$PAUSE" 'default: --window 15m'
 has "$PAUSE" 'WINDOW_MINUTES=15'
 has "$PAUSE" "10#\\\$_NORMALIZED"
 has "$PAUSE" '1440'
-has "$STOP" 'background-task-shutdown.md'
+has "$END" 'background-task-shutdown.md'
 has "$PAUSE" 'background-task-shutdown.md'
-has "$STOP" 'hard stop'
+has "$END" 'hard stop'
 has "$PAUSE" 'hard stop'
 has "$PAUSE" 'hard-stop exact'
 has "$ARM_HOOK" 'CLAUDE_STATE_LOCK_TIMEOUT=3'
@@ -55,16 +55,16 @@ has "$PAUSE_RESUME" 'MARKER_NAME.*suspend-'
 has "$PAUSE_RESUME" 'STATE_KEY="suspend"'
 has "$PAUSE_RESUME" 'paused_at // \.suspended_at'
 
-has "$STOP_RESUME" 'execution-pause.sh --clear'
+has "$END_RESUME" 'execution-pause.sh --clear'
 has "$PAUSE_RESUME" 'EXECUTION_PAUSE_SH.*clear --session'
-has "$STOP_RESUME" 'unless --resume-refill'
+has "$END_RESUME" 'unless --resume-refill'
 has "$PAUSE_RESUME" 'only with --resume-refill'
-has "$PAUSE_SCRIPT" 'stop|pause'
+has "$PAUSE_SCRIPT" 'end|pause'
 has "$PM" 'rolling-window limit is temporary and auto-resuming'
 has "$PM" 'execution-pause\.sh --activate --command pause --window-minutes 0'
-has "$PM" 'Do not invoke the user-only `/stop`'
-has "$PM" 'execute `/stop/SKILL\.md` Steps 0–6 inline'
-has "$PM" '/stop-resume --resume-refill'
+has "$PM" 'Do not invoke the user-only `/end`'
+has "$PM" 'execute `/end/SKILL\.md` Steps 0–6 inline'
+has "$PM" '/end-resume --resume-refill'
 has "$PAUSE_RESUME" 'stopped: true.*rearmed.*not'
 has "$PAUSE_RESUME" '--status rearming --from-status stopped'
 has "$PAUSE_RESUME" 'concurrent invocations single-writer'
@@ -72,14 +72,14 @@ has "$PAUSE" 'Immediate branch.*WINDOW_MINUTES == 0'
 has "$PAUSE" 'MARKER_AUTO_DISCOVERABLE=false'
 has "$PAUSE" 'Repository:.*exact owner/repo'
 has "$PAUSE_RESUME" 'Repository:.*owner/repo'
-has "$STOP_RESUME" '--from-status stopped'
+has "$END_RESUME" '--from-status stopped'
 has "$REGISTRY" 'rearming'
-has "$STOP" 'portable-handoff-context\.sh'
-has "$STOP" 'portable-handoff-publish\.sh'
-has "$STOP" 'one deterministic filename'
-has "$STOP" 'tracked and untracked'
+has "$END" 'portable-handoff-context\.sh'
+has "$END" 'portable-handoff-publish\.sh'
+has "$END" 'one deterministic filename'
+has "$END" 'tracked and untracked'
 
-# Behavioral smoke for the helper chain named by the /stop workflow: collect
+# Behavioral smoke for the helper chain named by the /end workflow: collect
 # exact dirty state, stage those bytes, and update one deterministic target.
 TMP_HANDOFF=$(mktemp -d)
 trap 'rm -rf "$TMP_HANDOFF"' EXIT
@@ -114,6 +114,21 @@ cmp -s "$TMP_HANDOFF/staged.md" "$PUBLISHED_TWO" || fail "portable handoff publi
 
 [[ ! -e "$ROOT/.claude/skills/suspend" ]] || fail "retired suspend skill still exists"
 [[ ! -e "$ROOT/.claude/skills/suspend-resume" ]] || fail "retired suspend-resume skill still exists"
+[[ -f "$ROOT/.claude/skills/end/SKILL.md" ]] || fail "end skill is missing"
+[[ -f "$ROOT/.claude/skills/end-resume/SKILL.md" ]] || fail "end-resume skill is missing"
+LEGACY_SKILL="$ROOT/.claude/skills/""stop"
+LEGACY_RESUME_SKILL="${LEGACY_SKILL}-resume"
+[[ ! -e "$LEGACY_SKILL" ]] || fail "retired long-cessation skill directory still exists"
+[[ ! -e "$LEGACY_RESUME_SKILL" ]] || fail "retired long-cessation resume directory still exists"
+
+LEGACY_COMMAND="/""stop"
+STALE_COMMANDS=$(rg --hidden -n -F "$LEGACY_COMMAND" "$ROOT" \
+  --glob '!**/.git/**' --glob '!**/.claude/worktrees/**' \
+  | grep -Ev "(pause|resume|re-arm|exit|widen)${LEGACY_COMMAND}" || true)
+if [[ -n "$STALE_COMMANDS" ]]; then
+  printf '%s\n' "$STALE_COMMANDS"
+  fail "retired project command remains referenced: $LEGACY_COMMAND"
+fi
 
 DUPLICATE_NAMES=$(find "$ROOT/.claude/skills" -name SKILL.md -type f -exec \
   awk '/^name: / { print substr($0, 7); exit }' {} \; | sort | uniq -d)
@@ -132,4 +147,4 @@ jq -e '
   | select(.command | endswith("/background-task-complete.sh"))
 ' "$SETTINGS" >/dev/null || fail "SubagentStop registry completion hook is not registered"
 
-echo "OK: stop/pause command contract tests passed"
+echo "OK: end/pause command contract tests passed"
