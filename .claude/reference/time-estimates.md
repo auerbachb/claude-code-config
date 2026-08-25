@@ -2,8 +2,9 @@
 
 > This document is the single source of truth for capture-time estimates. All three
 > skills — `/issue-maker`, `/prompt`, `/start-issue` — share this table and format.
-> Increment 2 will backfill measured actuals from this repo's history; for now the
-> table is seeded from observed patterns.
+> The seed table below is replaced by measured actuals as history accumulates —
+> see [`estimate-actuals.md`](estimate-actuals.md) for the current recalibrated table
+> (regenerated via `estimate-log.sh --rollup`).
 
 ## Format
 

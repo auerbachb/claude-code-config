@@ -299,6 +299,21 @@ MERGED_ISSUE=$([[ -n "$PR_ISSUE_REF_SH" ]] && "$PR_ISSUE_REF_SH" "$PR_NUM" 2>/de
 
 Best-effort by design: the merge has already landed, so a failed release is a warning, never a non-zero exit from `/wrap`. An unreleased claim ages out on its own within `CLAIM_STALE_HOURS`; failing an already-completed merge would be far worse. This is the only release call on the merge path — Phase C (`phase-c-merger.md`) runs `/wrap` and inherits it, so do not add a second one there.
 
+**Append actuals log entry** — after the merge and claim-release, append one row to `~/.claude/estimate-log.jsonl`. This is best-effort: a logging failure prints one `WARN:` line and never blocks or delays anything downstream.
+
+```bash
+ESTIMATE_LOG_SH=$(resolve_script estimate-log.sh || true)
+if [[ -n "$ESTIMATE_LOG_SH" ]]; then
+  LOG_RC=0
+  LOG_OUT=$("$ESTIMATE_LOG_SH" --append "$PR_NUM" 2>&1) || LOG_RC=$?
+  if [[ $LOG_RC -ne 0 || -n "$LOG_OUT" ]]; then
+    echo "WARN: estimate-log.sh --append PR #$PR_NUM exited $LOG_RC: $LOG_OUT" >&2
+  fi
+fi
+```
+
+The script always exits 0 when called with `--append` (issue AC). The outer `|| LOG_RC=$?` captures unexpected failures; the `WARN:` line surfaces them without blocking the merge path.
+
 Do NOT use `--delete-branch`. The current worktree is still checked out on the feature branch — git refuses to delete a branch held by a worktree. The branch is cleaned up out-of-band by `/pm-update` via `stale-cleanup.sh`.
 
 ### Step 2.5: Sync root repo main (aggressive reset)
