@@ -297,6 +297,55 @@ check_contains "case6: --help mentions file-set reference" "repo-bootstrap-workf
 check_eq "case6: --help exits 0" "0" "$HELP_RC"
 
 # --------------------------------------------------------------------------
+# Case 7: drift guard — installed content must match canonical sources
+#
+# For every entry in BOOTSTRAP_FILES, verify that the content repo-bootstrap.sh
+# would provision (via get_file_content) is byte-for-byte identical to the
+# canonical file at the same path in this repository.
+#
+# Strategy: install all files into a fresh repo via --apply, then diff each
+# installed file against the canonical source in REPO_ROOT.  If any differ,
+# the embedded heredoc has drifted from the canonical file.
+# --------------------------------------------------------------------------
+REPO7="$TMP/repo-drift-guard"
+make_repo "$REPO7"
+
+# --apply exits 1 when only the branch-protection gap remains; that is
+# the expected outcome here — all files are installed and only the BP gap
+# remains.  Capture the exit code so we can reject unexpected failures
+# (e.g. exit 5 = write failure) without masking them with '|| true'.
+cd "$REPO7" && bash "$SUT" --apply >/dev/null 2>&1; APPLY7_RC=$?
+cd - >/dev/null
+if [[ "$APPLY7_RC" -ne 0 && "$APPLY7_RC" -ne 1 ]]; then
+  fail "case7: --apply exited $APPLY7_RC (expected 0 or 1 for BP-gap-only)"
+fi
+
+DRIFT_FOUND=0
+for f in "${ALL_FILES[@]}"; do
+  INSTALLED="$REPO7/$f"
+  CANONICAL="$REPO_ROOT/$f"
+  if [[ ! -f "$CANONICAL" ]]; then
+    fail "case7: canonical source not found in this repo — $f"
+    DRIFT_FOUND=1
+    continue
+  fi
+  if [[ ! -f "$INSTALLED" ]]; then
+    fail "case7: --apply did not install — $f"
+    DRIFT_FOUND=1
+    continue
+  fi
+  if diff -q "$CANONICAL" "$INSTALLED" >/dev/null 2>&1; then
+    pass "case7: embedded copy matches canonical — $f"
+  else
+    fail "case7: drift detected — embedded copy in repo-bootstrap.sh differs from $f"
+    DRIFT_FOUND=1
+  fi
+done
+if [[ "$DRIFT_FOUND" -eq 0 ]]; then
+  pass "case7: all provisioned files match their canonical sources in this repo"
+fi
+
+# --------------------------------------------------------------------------
 # Summary
 # --------------------------------------------------------------------------
 echo ""
