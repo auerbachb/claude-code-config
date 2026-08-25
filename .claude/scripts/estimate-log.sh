@@ -476,7 +476,9 @@ build_row() {
   pr_issue_ref_sh=$(resolve_script pr-issue-ref.sh || true)
   local issue_num=""
   if [[ -n "$pr_issue_ref_sh" ]]; then
-    issue_num=$("$pr_issue_ref_sh" "$pr_num" 2>/dev/null || true)
+    # Pass GH_REPO so pr-issue-ref.sh resolves against the correct repository
+    # even when estimate-log.sh is run from a different git checkout.
+    issue_num=$(GH_REPO="$repo" "$pr_issue_ref_sh" "$pr_num" 2>/dev/null || true)
   fi
 
   # Fetch issue body if we have an issue number
@@ -576,7 +578,7 @@ mode_append() {
   fi
 
   if ! append_row "$row_json"; then
-    echo "WARN: estimate-log.sh --append PR #$pr_num: failed to write to $LOG_FILE" >&2
+    : # append_row already emitted a WARN: line; no duplicate needed.
   fi
   return 0
 }
