@@ -95,6 +95,19 @@ git -C "$SPACED" commit -q -m base
 BARE="$TMP/bare.git"
 git init -q --bare "$BARE"
 
+# `--separate-git-dir` straddles the fast-path test, which keys on the common
+# dir's NAME: a separate dir named `.git` passes it, `repo.git` does not. Both
+# must still print the historic answer, so the split is invisible to callers.
+SEPDOT="$TMP/sepdot/work"
+mkdir -p "$TMP/sepdot"
+git init -q --separate-git-dir="$TMP/sepdot/elsewhere/.git" "$SEPDOT"
+git -C "$SEPDOT" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+
+SEPNAMED="$TMP/sepnamed/work"
+mkdir -p "$TMP/sepnamed"
+git init -q --separate-git-dir="$TMP/sepnamed/elsewhere/repo.git" "$SEPNAMED"
+git -C "$SEPNAMED" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+
 PLAIN="$TMP/plain"
 mkdir -p "$PLAIN"
 
@@ -126,6 +139,19 @@ check_eq "T5 path containing a space survives intact" "$(historic_root "$SPACED"
 # ---- T6: bare repo still answers the historic way (fallback path) ----------
 OUT="$(cd "$BARE" && "$SUT" 2>/dev/null)"
 check_eq "T6 bare repo keeps the historic answer" "$(historic_root "$BARE")" "$OUT"
+
+# ---- T6b/T6c: --separate-git-dir keeps the historic answer on BOTH sides ---
+# of the fast-path name test. T6b takes the fast path (common dir is named
+# `.git`); T6c falls through to the enumeration (`repo.git`). Asserting both
+# against historic_root is what makes the name-based split safe: the two paths
+# have to agree, not merely be reachable.
+OUT="$(cd "$SEPDOT" && "$SUT" 2>/dev/null)"
+check_eq "T6b separate-git-dir named .git keeps the historic answer" \
+  "$(historic_root "$SEPDOT")" "$OUT"
+
+OUT="$(cd "$SEPNAMED" && "$SUT" 2>/dev/null)"
+check_eq "T6c separate-git-dir named repo.git keeps the historic answer" \
+  "$(historic_root "$SEPNAMED")" "$OUT"
 
 # ---- T7: not a git repo -> exit 1, named cause -----------------------------
 RC=0

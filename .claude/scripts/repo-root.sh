@@ -302,9 +302,18 @@ resolve_via_common_dir() {
   [[ -n "$common" ]] || return 1
 
   # Only a common dir literally named `.git` has the main worktree as its
-  # parent. A bare repo (`repo.git`), `--separate-git-dir`, and a submodule's
-  # `.git/modules/<name>` all fail this test and belong to step 2, which still
-  # answers them exactly as this script always has.
+  # parent. A bare repo (`repo.git`) and a submodule's `.git/modules/<name>`
+  # fail this test and belong to step 2, which still answers them exactly as
+  # this script always has.
+  #
+  # `--separate-git-dir` is split by the dir's NAME, not by the layout, so it
+  # lands on both sides: `--separate-git-dir=/elsewhere/.git` passes this test
+  # and is answered here, while `/elsewhere/repo.git` falls through to step 2.
+  # Both answers are the historic one. For a separate-git-dir repo
+  # `git worktree list` also reports dirname(common-dir) as the main worktree —
+  # it does NOT report the linked `core.worktree` path — so the fast path and
+  # the enumeration agree here rather than diverging, and this test does not
+  # need to detect the layout to keep the contract. Pinned by T6b/T6c.
   base="$(basename "$common")"
   [[ "$base" == ".git" ]] || return 1
 
