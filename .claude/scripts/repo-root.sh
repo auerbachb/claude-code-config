@@ -115,14 +115,24 @@ done
 # A bad override must not silently disable the bound — that is the exact
 # failure this script exists to prevent. Anything non-numeric or zero falls
 # back to the default instead.
+#
+# The `10#` is load-bearing, not defensive noise: `08` and `09` are all-digits
+# and pass `-gt 0`, but `(( ))` reads a leading zero as octal, where they are
+# not valid literals. The arithmetic then ERRORS, the comparison returns false
+# on every pass, and the bound disappears without a word — the precise failure
+# this script exists to remove, reached through a value both gates accepted.
+# `10#` also stops `010` from silently meaning 8 while the diagnostic says 010.
 TIMEOUT_SECS="${REPO_ROOT_TIMEOUT_SECS:-10}"
 case "$TIMEOUT_SECS" in ''|*[!0-9]*) TIMEOUT_SECS=10 ;; esac
+TIMEOUT_SECS="$(( 10#$TIMEOUT_SECS ))"
 [ "$TIMEOUT_SECS" -gt 0 ] 2>/dev/null || TIMEOUT_SECS=10
 
 # Created after arg parsing so --help and usage errors leave nothing behind.
 CAPTURE="$(mktemp "${TMPDIR:-/tmp}/repo-root.XXXXXX")"
+CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/repo-root-err.XXXXXX")"
 cleanup() {
   if [[ -n "${CAPTURE:-}" ]]; then rm -f "$CAPTURE"; fi
+  if [[ -n "${CAPTURE_ERR:-}" ]]; then rm -f "$CAPTURE_ERR"; fi
 }
 trap cleanup EXIT
 
@@ -148,13 +158,29 @@ now_epoch() {
   printf '%s' "$t"
 }
 
+# Signal the child, preferring its whole process group. The negative form is
+# used ONLY after confirming the child really leads its own group: a process
+# group outlives its leader, so a recycled pid can name a live, unrelated group.
+# Signalling that group would also "succeed", skipping the single-pid fallback
+# and leaving our actual child running.
+kill_child() { # signal, pid
+  local sig="$1" pid="$2" pgid=""
+  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  if [[ -n "$pgid" && "$pgid" == "$pid" ]]; then
+    kill -"$sig" -"$pid" 2>/dev/null || true
+  fi
+  kill -"$sig" "$pid" 2>/dev/null || true
+}
+
 run_bounded() {
-  # Run "$@" with a wall-clock bound. stdout lands in $CAPTURE; stderr is
-  # dropped because this script emits its own one-line diagnostics. Returns the
-  # child's real exit status and sets BOUNDED_TIMED_OUT=1 when the bound tripped.
+  # Run "$@" with a wall-clock bound. stdout lands in $CAPTURE, stderr in
+  # $CAPTURE_ERR (kept so a failure can name its real cause instead of being
+  # flattened into "not a git repo"). Returns the child's real exit status, or
+  # 124 with BOUNDED_TIMED_OUT=1 when the bound cut the call short.
   BOUNDED_TIMED_OUT=0
   BOUNDED_CLOCK_UNREADABLE=0
   : > "$CAPTURE"
+  : > "$CAPTURE_ERR"
 
   # Job control puts the child in its OWN process group, so the kill below
   # reaches anything git spawned (pager, credential helper, alias) instead of
@@ -163,11 +189,11 @@ run_bounded() {
   # background job that reads the terminal takes SIGTTIN and stops, which looks
   # exactly like the hang we are trying to detect.
   set -m 2>/dev/null || true
-  "$@" >"$CAPTURE" 2>/dev/null </dev/null &
+  "$@" >"$CAPTURE" 2>"$CAPTURE_ERR" </dev/null &
   local pid=$!
   set +m 2>/dev/null || true
 
-  local start now rc=0
+  local start now rc=0 killed=0 waited=0 reaped=0
   start="$(now_epoch)" || start=""
   # The bound reads the clock every pass, never a tick count: a tick is a sleep
   # plus a fork, so counting iterations drifts past the requested bound under
@@ -180,15 +206,15 @@ run_bounded() {
       BOUNDED_CLOCK_UNREADABLE=1
     fi
     if [[ "$BOUNDED_CLOCK_UNREADABLE" -eq 1 ]] || (( now - start >= TIMEOUT_SECS )); then
-      BOUNDED_TIMED_OUT=1
-      kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+      killed=1
+      kill_child TERM "$pid"
       # Polled grace so a child that dies at once does not hold the wrapper
       # past the bound it was just held to.
       for _ in 1 2; do
         kill -0 "$pid" 2>/dev/null || break
         sleep 1
       done
-      kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+      kill_child KILL "$pid"
       break
     fi
     # Sub-second polling keeps the healthy path (a few milliseconds) fast; this
@@ -197,8 +223,36 @@ run_bounded() {
     sleep 0.05 2>/dev/null || sleep 1
   done
 
-  # Always reap: `wait` is what turns the child into a real exit status instead
-  # of a zombie plus a guess.
+  if [[ "$killed" -eq 1 ]]; then
+    # Bounded reap. SIGKILL is QUEUED, not effective, against a child wedged in
+    # uninterruptible I/O — exactly the stalled-mount case this bound exists
+    # for. A plain `wait` here would block until that I/O returns, inheriting
+    # the very hang the bound just prevented. So give up on the status instead:
+    # the script exits moments later and init reaps the orphan.
+    while (( waited < 3 )); do
+      if ! kill -0 "$pid" 2>/dev/null; then
+        reaped=1
+        rc=0
+        wait "$pid" 2>/dev/null || rc=$?
+        break
+      fi
+      sleep 1
+      waited=$(( waited + 1 ))
+    done
+    # A child that had already finished when the sampling loop tripped left a
+    # complete answer behind: `kill -0` succeeds on a zombie and the clock is
+    # whole-second, so the trip can land after the work was done. Trust the
+    # result over the sampling — reporting a timeout here would throw away a
+    # correct answer that is already sitting in $CAPTURE.
+    if [[ "$reaped" -eq 1 && "$rc" -eq 0 && -s "$CAPTURE" ]]; then
+      return 0
+    fi
+    BOUNDED_TIMED_OUT=1
+    return 124
+  fi
+
+  # The child finished on its own, so `wait` returns its real exit status
+  # rather than a zombie plus a guess.
   wait "$pid" 2>/dev/null || rc=$?
   return "$rc"
 }
@@ -274,9 +328,9 @@ fi
 
 if [[ -z "$ROOT" ]]; then
   # Porcelain parsing: first `worktree <path>` line is the main worktree root.
-  # A non-zero status here says nothing the empty-output branch below does not
-  # already report ("not a git repo"); the one status that IS distinct — the
-  # bound tripping — is carried by BOUNDED_TIMED_OUT and handled first.
+  # The one status that is distinct — the bound tripping — is carried by
+  # BOUNDED_TIMED_OUT and handled first; git's own stderr survives in
+  # $CAPTURE_ERR and is reported below.
   run_bounded "${GIT_CMD[@]}" worktree list --porcelain || true
   if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
     timeout_die "git worktree list --porcelain"
@@ -285,10 +339,15 @@ if [[ -z "$ROOT" ]]; then
 fi
 
 if [[ -z "$ROOT" ]]; then
+  # Carry git's own last words. Without them a broken git install, a bad PATH,
+  # an unreadable object store, and a genuinely non-repo directory all collapse
+  # into one confident sentence — and the callers now relay that sentence with
+  # authority. Naming what git actually said is the whole point of this change.
+  GIT_SAID="$(head -n 1 "$CAPTURE_ERR" 2>/dev/null || true)"
   if [[ -n "$TARGET" ]]; then
-    echo "repo-root.sh: could not resolve main worktree root (not a git repo: $TARGET)" >&2
+    echo "repo-root.sh: could not resolve main worktree root (not a git repo: $TARGET)${GIT_SAID:+ — git said: $GIT_SAID}" >&2
   else
-    echo "repo-root.sh: could not resolve main worktree root (not inside a git repo)" >&2
+    echo "repo-root.sh: could not resolve main worktree root (not inside a git repo)${GIT_SAID:+ — git said: $GIT_SAID}" >&2
   fi
   exit 1
 fi

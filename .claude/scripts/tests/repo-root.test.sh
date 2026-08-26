@@ -172,8 +172,14 @@ check_not_contains "T9c happy path never enumerates worktrees" "worktree list" "
 
 : > "$GIT_ARGV_LOG"
 (cd "$TMP/linked" && PATH="$STUB:$PATH" "$SUT" >/dev/null 2>&1) || true
-check_not_contains "T9d linked worktree never enumerates worktrees" \
-  "worktree list" "$(cat "$GIT_ARGV_LOG")"
+ARGV="$(cat "$GIT_ARGV_LOG")"
+# The `|| true` above swallows a total SUT failure, and check_not_contains
+# passes on an empty log — so assert the stub was reached at all before
+# asserting what it did not see.
+check_contains "T9d the stub was actually reached from the linked worktree" \
+  "--git-common-dir" "$ARGV"
+check_not_contains "T9e linked worktree never enumerates worktrees" \
+  "worktree list" "$ARGV"
 
 # ---- T10: a wedged git fails fast, loudly, with exit 3 ---------------------
 # The stub also spawns a descendant that keeps ticking, so the assertions below
@@ -218,15 +224,17 @@ else
 fi
 
 # ---- T11: the kill reaches the whole process group -------------------------
-# The sleeper self-limits after ~10s and T10 returned in ~2s, so the sampling
-# window below sits well inside its natural life: an unkilled descendant WOULD
-# still be ticking. The first assertion keeps the second from passing simply
-# because the sleeper never started.
+# The sleeper self-limits at 50 ticks (~10s) and T10 returned in ~4s, so the
+# sampling window below must sit strictly INSIDE its natural life — an unkilled
+# descendant would still be ticking there. Both bounds matter: 0 ticks means it
+# never started, and 50 means it had already finished on its own, which is what
+# happens against the unbounded pre-change script (it waits out the full 30s
+# stub) and would make T11b pass without any kill having occurred.
 BEFORE="$(wc -l < "$TICK_FILE" | tr -d ' ')"
-if (( BEFORE > 0 )); then
-  pass "T11 the descendant really ran (${BEFORE} ticks), so T11b is a live check"
+if (( BEFORE > 0 && BEFORE < 50 )); then
+  pass "T11 descendant sampled mid-life (${BEFORE}/50 ticks), so T11b is a live check"
 else
-  fail "T11 descendant never ticked — T11b would pass vacuously"
+  fail "T11 descendant at ${BEFORE}/50 ticks — outside its life, T11b would pass vacuously"
 fi
 sleep 2
 AFTER="$(wc -l < "$TICK_FILE" | tr -d ' ')"
@@ -260,13 +268,43 @@ fi
 OUT="$(cd "$MAIN" && REPO_ROOT_TIMEOUT_SECS=abc "$SUT" 2>/dev/null)"
 check_eq "T13 non-numeric REPO_ROOT_TIMEOUT_SECS still resolves" "$(historic_root "$MAIN")" "$OUT"
 
-# Zero must not read as "no bound". Run it against the still-installed T12 stub
-# from the bare repo, so resolution reaches the stalled enumeration and the
-# default bound is the only thing that can end the call.
+# Zero must not read as "no bound". Re-install the stalling-enumeration stub
+# here rather than relying on T12 having left it in place — an ordering
+# dependency would let a block inserted above change what this test means
+# without failing it. The bare repo forces resolution to reach the fallback.
+cat > "$STUB/git" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do
+  if [[ "$a" == "list" ]]; then sleep 30; fi
+done
+exec "$REAL_GIT" "$@"
+EOF
+chmod +x "$STUB/git"
+
 RC=0
 ERR="$(cd "$BARE" && PATH="$STUB:$PATH" REPO_ROOT_TIMEOUT_SECS=0 "$SUT" 2>&1 >/dev/null)" || RC=$?
 check_eq "T13b zero bound is rejected, not treated as unbounded" "3" "$RC"
 check_contains "T13c zero bound falls back to the 10s default" "timed out after 10s" "$ERR"
+
+# The failure class that plain digit-validation misses: `08` and `09` are
+# all-digits and pass `-gt 0`, but `(( ))` reads a leading zero as octal, where
+# they are not valid literals — the arithmetic errors, the comparison is false
+# on every pass, and the bound silently disappears. `010` is worse in a quieter
+# way: accepted, silently meaning 8, while the diagnostic prints "010s".
+START="$(date +%s)"
+RC=0
+ERR="$(cd "$BARE" && PATH="$STUB:$PATH" REPO_ROOT_TIMEOUT_SECS=08 "$SUT" 2>&1 >/dev/null)" || RC=$?
+ELAPSED=$(( $(date +%s) - START ))
+check_eq "T13d leading-zero bound (08) still bounds the call" "3" "$RC"
+check_contains "T13e leading-zero bound is normalized to decimal in the message" \
+  "timed out after 8s" "$ERR"
+check_not_contains "T13f arithmetic never errors on the octal-looking value" \
+  "value too great for base" "$ERR"
+if (( ELAPSED < 20 )); then
+  pass "T13g leading-zero bound returned in ${ELAPSED}s"
+else
+  fail "T13g leading-zero bound took ${ELAPSED}s — the bound did not hold"
+fi
 
 # ---- T14: an unreadable clock must not silently remove the bound -----------
 # Inside `(( ))` an empty variable is 0, so a blank `date` result would make the
