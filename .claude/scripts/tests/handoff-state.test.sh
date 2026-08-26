@@ -474,6 +474,62 @@ RC="$(run --set "$PR" '.notes=.notes + " clobbered"' >/dev/null 2>&1; echo $?)"
 check_eq "incident shape still exits 4 with the # bail-out in place" "4" "$RC"
 
 echo
+echo "== the four-line probe assembly is independently load-bearing (PR #1378) =="
+# The assertions above go through the real script, where the `#` bail-out
+# short-circuits BEFORE jq is ever invoked — so they prove the guard end to end
+# but do NOT isolate the line discipline, and a revert of the multiline assembly
+# alone would still pass them (CodeAnt, round 4). These exercise the two
+# assemblies directly on one value, no bail-out in the way. There is no
+# comment-free value that executes — a bare `;` cannot absorb the terminator —
+# so a `#` value is the only probe of this defence.
+bounded_jq() {                     # bounded_jq <program> [secs] -> rc (124 = hung)
+  local prog="$1" limit="${2:-10}" pid rc waited=0 drain=0
+  set -m
+  jq -n "$prog" </dev/null >/dev/null 2>&1 &
+  pid=$!
+  set +m
+  while kill -0 "$pid" 2>/dev/null; do
+    if [[ $waited -ge $limit ]]; then
+      kill -9 -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      while [[ $drain -lt 10 ]] && kill -0 -"$pid" 2>/dev/null; do
+        sleep 1; drain=$((drain + 1))
+      done
+      echo 124; return
+    fi
+    sleep 1; waited=$((waited + 1))
+  done
+  wait "$pid"; rc=$?
+  echo "$rc"
+}
+
+ERR_V='.a + 1; def g: 1; error("BOOM") #'
+check_eq "one-line assembly EXECUTES the value (jq runtime error)" "5" \
+  "$(bounded_jq "def _p: ${ERR_V}; empty")"
+check_eq "four-line assembly refuses to compile it (jq syntax error)" "3" \
+  "$(bounded_jq "def _p:
+${ERR_V}
+;
+empty")"
+
+LOOP_V='.a + 1; def g: 1; last(repeat(1)) #'
+check_eq "one-line assembly HANGS on the loop shape" "124" \
+  "$(bounded_jq "def _p: ${LOOP_V}; empty" 4)"
+check_eq "four-line assembly refuses the loop shape outright" "3" \
+  "$(bounded_jq "def _p:
+${LOOP_V}
+;
+empty" 4)"
+
+# Structural: the shipped probe must actually keep the value on its own line.
+# If someone re-inlines it, the two assertions above still describe jq
+# correctly but would no longer describe THIS script — this catches that.
+# Bracket expressions, not a bare `${`, so shellcheck does not read the literal
+# pattern as an unexpanded expression (SC2016) — the match must stay literal.
+check_eq "handoff-state.sh keeps \$JQ_VAL on its own probe line" "1" \
+  "$(grep -cE '^[$][{]JQ_VAL[}]$' "$SCRIPT")"
+
+echo
 echo "== --append: jq-expression guard is --set-only (scope boundary) =="
 # --append does not share --set's value branch and cannot clobber a prior value,
 # so issue #1357 deliberately left it alone. This pins that decision: a future
