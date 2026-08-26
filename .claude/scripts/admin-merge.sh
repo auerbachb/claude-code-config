@@ -82,10 +82,12 @@
 # Authorship guard (issue #733): before any pre-flight, this refuses when the
 # authenticated user did not author the PR (delegated to pr-authorship.sh;
 # fail-closed). A bypass merge is a write, so it is restricted to your own PRs.
-# --allow-nonauthor is forwarded to merge-gate.sh's own independent authorship
-# check too (issue #1251) — without that, merge-gate.sh re-added the same
-# blocker this script's own guard had just cleared, making the override
-# unreachable through every mode.
+# --allow-nonauthor is forwarded to every downstream consumer that runs its own
+# independent authorship check, so none of them re-adds the blocker this
+# script's own guard just cleared: merge-gate.sh directly (issue #1251), and
+# clean-behind-check.sh — whose NESTED merge-gate.sh call kept the override
+# unreachable for BEHIND non-author PRs, refusing them with a misleading "not
+# safe to skip a rebase" (issue #1257).
 #
 # Exit codes:
 #   0 — bypass command printed (print/launch) OR dance completed (execute)
@@ -202,15 +204,20 @@ done
 
 # --auto-plain + --allow-nonauthor hard refusal (issue #1251 review round).
 # --auto-plain is the one mode Claude may run UNATTENDED — no human confirms
-# the actual merge. Today, no code path lets that combination reach a real
-# merge: clean-behind-check.sh's own internal merge-gate.sh call never
-# receives --allow-nonauthor (tracked separately as issue #1257, deliberately
-# not fixed here), so CLEAN_BEHIND_OK can never become true for a non-author
-# PR and BYPASS_MODE can never reach "plain". But that protection is
-# accidental — it lives entirely in a DIFFERENT script that issue #1257 will
-# eventually fix, at which point this combination would start actually
-# merging foreign-authored PRs unattended. Refuse it here explicitly so the
-# guarantee is structural, not a side effect of an unrelated gap staying open.
+# the actual merge — so skipping the issue #733 authorship guard here is never
+# allowed.
+#
+# THIS CHECK IS LOAD-BEARING, NOT BELT-AND-BRACES. When issue #1251 added it,
+# a second, accidental protection also happened to block the combination:
+# clean-behind-check.sh's internal merge-gate.sh call could not receive
+# --allow-nonauthor, so CLEAN_BEHIND_OK could never become true for a
+# non-author PR and BYPASS_MODE could never reach "plain". Issue #1257 closed
+# that gap on purpose (the override now propagates through CBC_ARGS below), so
+# the accidental protection is GONE. This explicit refusal is now the only
+# thing standing between `--auto-plain --allow-nonauthor` and an unattended
+# merge of a foreign-authored PR. Do not remove or weaken it, and do not
+# reintroduce the combination through a new mode without re-deciding this.
+#
 # --print, --launch-terminal, and --execute are unaffected: a human is always
 # in the loop for those (--execute is documented USER-INVOKED ONLY; Claude
 # never runs it), so --allow-nonauthor keeps working for them as intended.
@@ -398,6 +405,14 @@ if [[ "${BEHIND_PRESENT:-0}" -gt 0 ]]; then
   if [[ -n "$CBC" ]]; then
     CBC_ARGS=("$PR_NUMBER")
     [[ -n "$REVIEWER_OVERRIDE" ]] && CBC_ARGS+=(--reviewer "$REVIEWER_OVERRIDE")
+    # Forward the authorship override into clean-behind-check.sh's own NESTED
+    # merge-gate.sh call (issue #1257). Without it that nested gate re-adds the
+    # non-author blocker to its `missing[]`, which lands in the helper's
+    # `residual_blockers`, fails clean_behind_evidence_allows_admin()'s
+    # reviewDecision-only match, and refuses a BEHIND non-author PR with a
+    # misleading "not safe to skip a rebase". CBC_ARGS is built once and reused
+    # by both pre-merge re-validation call sites, so this covers all three.
+    [[ "$ALLOW_NONAUTHOR" == true ]] && CBC_ARGS+=(--allow-nonauthor)
     CBC_JSON="$("$CBC" "${CBC_ARGS[@]}" 2>/dev/null)"
     CBC_RC=$?
     if clean_behind_evidence_allows_admin "$CBC_JSON" "$CBC_RC"; then

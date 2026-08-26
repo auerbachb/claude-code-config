@@ -53,12 +53,25 @@
 #
 # Usage:
 #   clean-behind-check.sh <pr_number> [--reviewer cr|bugbot|greptile]
-#                         [--churn-threshold N]
+#                         [--churn-threshold N] [--allow-nonauthor]
 #   clean-behind-check.sh --help
 #
 # --reviewer is passed through to merge-gate.sh (which path's gate applies).
 # --churn-threshold N: advisory fires when base_ahead_by >= N (default: 1;
 #   env var CHURN_THRESHOLD overrides default; flag overrides env var).
+# --allow-nonauthor: forwarded to merge-gate.sh so its independent issue #733
+#   authorship check does not add the non-author blocker to `missing` (issue
+#   #1257). Pass ONLY under an explicit per-PR user override. Without it, a
+#   non-author PR keeps that blocker in `residual_blockers`, which correctly
+#   holds gate_green_except_behind false. This script NEVER merges, so the flag
+#   only changes what it reports; the caller (admin-merge.sh) owns the actual
+#   override decision and its disclosure.
+#
+# The override is never silent: `authorship` mirrors merge-gate.sh's own verdict
+# ("mine" | "not_mine" | "unknown") on every run, and `authorship_overridden`
+# records whether --allow-nonauthor was passed. A bypassed non-author PR is
+# therefore still legible as `authorship: "not_mine"` in the evidence JSON that
+# authorized the merge, even though it no longer appears as a blocker.
 #
 # Output (single-line JSON on stdout, even when not safe):
 #   {
@@ -83,7 +96,9 @@
 #            "newest_base_commit_at":"...",
 #            "pr_head_commit_at":"...","advisory":true},
 #     "head_sha": "abc123...",
-#     "base_ref": "main"
+#     "base_ref": "main",
+#     "authorship": "mine",          // mirrored from merge-gate.sh
+#     "authorship_overridden": false // true when --allow-nonauthor was passed
 #   }
 #
 # Exit codes:
@@ -159,6 +174,11 @@ DEFAULT_CHURN_THRESHOLD=1
 PR_NUMBER=""
 REVIEWER_OVERRIDE=""
 CHURN_THRESHOLD_FLAG=""
+# Authorship override (issue #1257): opt-in only. Forwarded to merge-gate.sh so
+# its independent issue #733 check does not re-add the non-author blocker the
+# caller already asked to bypass. Default false = the guard's fail-closed
+# behavior is unchanged.
+ALLOW_NONAUTHOR=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -184,6 +204,10 @@ while [[ $# -gt 0 ]]; do
       fi
       CHURN_THRESHOLD_FLAG="$2"
       shift 2
+      ;;
+    --allow-nonauthor)
+      ALLOW_NONAUTHOR=true
+      shift
       ;;
     -*)
       echo "ERROR: unknown flag: $1" >&2
@@ -304,6 +328,15 @@ AC_CHECKBOXES=$(resolve_helper ac-checkboxes.sh || true)
 # ALWAYS the case for a BEHIND PR) does not abort — capture the code, read JSON.
 GATE_ARGS=("$PR_NUMBER")
 [[ -n "$REVIEWER_OVERRIDE" ]] && GATE_ARGS+=(--reviewer "$REVIEWER_OVERRIDE")
+# Forward the authorship override (issue #1257). Without this, merge-gate.sh's
+# own issue #733 check re-adds the non-author blocker into `missing[]`; it lands
+# in RESIDUAL_JSON below (it is not the BEHIND message), holds
+# gate_green_except_behind false, and makes the documented override unreachable
+# for a BEHIND non-author PR — admin-merge.sh then refuses with a misleading
+# "not safe to skip a rebase". Suppressing it at the source keeps
+# residual_blockers reserved for genuine blockers; `authorship` below preserves
+# the visibility.
+[[ "$ALLOW_NONAUTHOR" == true ]] && GATE_ARGS+=(--allow-nonauthor)
 GATE_JSON="$("$MERGE_GATE" "${GATE_ARGS[@]}" 2>/dev/null)"
 GATE_EXIT=$?
 if [[ -z "$GATE_JSON" ]] || ! jq -e . >/dev/null 2>&1 <<<"$GATE_JSON"; then
@@ -316,6 +349,13 @@ case "$GATE_EXIT" in
 esac
 
 GATE_MET=$(jq -r '.met' <<<"$GATE_JSON")
+# Authorship visibility (issue #1257): merge-gate.sh emits `authorship` on EVERY
+# run regardless of the override, so mirroring it keeps a bypassed non-author PR
+# legible here too — the override suppresses the BLOCKER, never the fact. An
+# older merge-gate.sh that omits the field degrades to "unknown" rather than
+# reporting a false "mine".
+AUTHORSHIP=$(jq -r '.authorship // "unknown"' <<<"$GATE_JSON")
+[[ -n "$AUTHORSHIP" && "$AUTHORSHIP" != "null" ]] || AUTHORSHIP="unknown"
 # residual = every `missing` reason EXCEPT the BEHIND one. Only the BEHIND
 # message contains "BEHIND base" (merge-gate.sh). CONFLICTING / CI / thread /
 # review blockers all remain here, so any of them keeps gate_green_except_behind
@@ -600,6 +640,8 @@ jq -n \
   --argjson churn_advisory "$CHURN_ADVISORY" \
   --arg head_sha "$HEAD_SHA" \
   --arg base_ref "$BASE_REF" \
+  --arg authorship "$AUTHORSHIP" \
+  --argjson authorship_overridden "$ALLOW_NONAUTHOR" \
   '{
     pr: $pr,
     safe_to_offer: $safe,
@@ -637,7 +679,9 @@ jq -n \
       advisory: $churn_advisory
     },
     head_sha: $head_sha,
-    base_ref: $base_ref
+    base_ref: $base_ref,
+    authorship: $authorship,
+    authorship_overridden: $authorship_overridden
   }'
 
 if [[ "$SAFE" == true ]]; then
