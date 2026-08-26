@@ -27,9 +27,12 @@ check() {
   if [[ "$actual" == "$expected" ]]; then ok "$desc"
   else fail "$desc (expected: '$expected', got: '$actual')"; fi
 }
+# `--` before the pattern: a pattern that starts with a dash (e.g. "--owner-repo")
+# is otherwise parsed by grep as options. `printf` rather than `echo` for the
+# same reason on the input side.
 check_contains() {
   local desc="$1"; local pattern="$2"; local actual="$3"
-  if echo "$actual" | grep -qE "$pattern"; then ok "$desc"
+  if printf '%s\n' "$actual" | grep -qE -- "$pattern"; then ok "$desc"
   else fail "$desc (expected pattern '$pattern' not found in: '$actual')"; fi
 }
 
@@ -334,6 +337,222 @@ else fail "migration created a mixed-case directory AuerbachB/"; fi
 if [[ ! -f "${MIG3_DIR}/pr-301-handoff.json" ]]; then
   ok "flat file removed after migration"
 else fail "flat file still present after migration"; fi
+
+# ---------------------------------------------------------------------------
+# 12. Scoped write creates ONLY the scoped file (issue #1302, Test Plan item 1)
+#
+#     Section 4 asserts this for --create. The regression that shipped was in
+#     --set/--append, so pin those two explicitly: a scoped write must never
+#     leave a flat file behind for the next phase to diverge on.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== 12. Scoped --set / --append leave no flat file (issue #1302) ==="
+
+BODY_1302='{"schema_version":"1.0","pr_number":1302,"head_sha":"phaseA","owner_repo":"acme/widgets","reviewer":"cr","phase_completed":"A"}'
+"$HANDOFF_STATE" --owner-repo "acme/widgets" --create 1302 "$BODY_1302"
+
+# The Phase B write sequence, scoped.
+"$HANDOFF_STATE" --owner-repo "acme/widgets" --set    1302 '.phase_completed="B"'
+"$HANDOFF_STATE" --owner-repo "acme/widgets" --set    1302 '.reviewer=greptile'
+"$HANDOFF_STATE" --owner-repo "acme/widgets" --set    1302 '.head_sha=phaseB'
+"$HANDOFF_STATE" --owner-repo "acme/widgets" --append 1302 "threads_resolved" "PRRT_kwB"
+"$HANDOFF_STATE" --owner-repo "acme/widgets" --append 1302 "files_changed"    "src/app.ts"
+
+if [[ ! -f "${HANDOFF_DIR}/pr-1302-handoff.json" ]]; then
+  ok "scoped --set/--append created no flat file"
+else fail "scoped write leaked a flat file at ${HANDOFF_DIR}/pr-1302-handoff.json"; fi
+
+# What a Phase C read of the scoped path sees (Test Plan items 2 and 3):
+# Phase B's reviewer, Phase B's SHA, and the appended arrays — not Phase A's.
+scoped_after="$("$HANDOFF_STATE" --owner-repo "acme/widgets" --get 1302)"
+check "Phase C sees Phase B reviewer (greptile, not cr)" \
+  "greptile" "$(echo "$scoped_after" | jq -r '.reviewer')"
+check "Phase C sees Phase B head_sha" \
+  "phaseB" "$(echo "$scoped_after" | jq -r '.head_sha')"
+check "Phase C sees phase_completed=B" \
+  "B" "$(echo "$scoped_after" | jq -r '.phase_completed')"
+check "Phase C sees appended threads_resolved" \
+  "PRRT_kwB" "$(echo "$scoped_after" | jq -r '.threads_resolved[0]')"
+check "Phase C sees appended files_changed" \
+  "src/app.ts" "$(echo "$scoped_after" | jq -r '.files_changed[0]')"
+
+# ---------------------------------------------------------------------------
+# 12b. The pre-fix failure mode, reproduced (issue #1302)
+#
+#      An unscoped write on the SAME PR number seeds a separate flat record and
+#      leaves the scoped one untouched — the split-brain Phase C read.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== 12b. Unscoped write diverges from the scoped record ==="
+
+CLAUDE_HANDOFF_FLAT_OK=1 "$HANDOFF_STATE" --set 1302 '.reviewer=bugbot'
+
+check "unscoped --set wrote the flat path" \
+  "bugbot" "$("$HANDOFF_STATE" --get 1302 | jq -r '.reviewer')"
+check "scoped record was NOT updated by the unscoped write" \
+  "greptile" "$("$HANDOFF_STATE" --owner-repo "acme/widgets" --get 1302 | jq -r '.reviewer')"
+
+# ---------------------------------------------------------------------------
+# 13. Soft warning when --owner-repo is omitted but a repo is resolvable
+#     (issue #1302 AC#4). Warn, never refuse — exit must stay 0.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== 13. Flat-path warning in a resolvable-repo context ==="
+
+# A real checkout with an `origin` remote, so repo_identity() yields owner/repo.
+FAKE_REPO="${TMP_DIR}/fake-checkout"
+mkdir -p "$FAKE_REPO"
+git -C "$FAKE_REPO" init -q 2>/dev/null
+git -C "$FAKE_REPO" remote add origin "https://github.com/acme/widgets.git" 2>/dev/null
+
+# `|| rc=$?` keeps `set -e` from aborting on a non-zero exit AND captures the
+# real code — a bare `$?` after the assignment can only ever read 0 here.
+warn_flat_rc=0
+warn_flat="$(cd "$FAKE_REPO" && "$HANDOFF_STATE" --create 1400 '{"pr_number":1400}' 2>&1 >/dev/null)" || warn_flat_rc=$?
+check "warned write still exits 0" "0" "$warn_flat_rc"
+check_contains "warning names the flat path" \
+  "pr-1400-handoff.json" "$warn_flat"
+check_contains "warning names the resolved repo" \
+  "acme/widgets" "$warn_flat"
+check_contains "warning names the flag to pass" \
+  "--owner-repo" "$warn_flat"
+if [[ -f "${HANDOFF_DIR}/pr-1400-handoff.json" ]]; then
+  ok "warned write still landed on the flat path (warn, not refuse)"
+else fail "warned write did not create the flat file — it refused instead of warning"; fi
+
+# A scoped write in the same checkout must stay silent.
+quiet_scoped="$(cd "$FAKE_REPO" && "$HANDOFF_STATE" --owner-repo "acme/widgets" --create 1401 '{"pr_number":1401}' 2>&1 >/dev/null)"
+check "scoped write emits no flat-path warning" "" "$quiet_scoped"
+
+# Read modes never warn — --path is used by callers deliberately probing flat.
+quiet_path="$(cd "$FAKE_REPO" && "$HANDOFF_STATE" --path 1400 2>&1 >/dev/null)"
+check "--path emits no flat-path warning" "" "$quiet_path"
+quiet_get="$(cd "$FAKE_REPO" && "$HANDOFF_STATE" --get 1400 2>&1 >/dev/null)"
+check "--get emits no flat-path warning" "" "$quiet_get"
+
+# Documented escape hatch for callers that mean the flat path.
+quiet_optout="$(cd "$FAKE_REPO" && CLAUDE_HANDOFF_FLAT_OK=1 "$HANDOFF_STATE" --set 1400 '.head_sha=x' 2>&1 >/dev/null)"
+check "CLAUDE_HANDOFF_FLAT_OK=1 silences the warning" "" "$quiet_optout"
+
+# ---------------------------------------------------------------------------
+# 14. No-repo context still writes the flat path silently, unchanged
+#     (issue #1302 Test Plan item 5 — legacy callers must not regress).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== 14. No-repo context: flat path, no warning, no failure ==="
+
+NOREPO_DIR="${TMP_DIR}/not-a-repo"
+mkdir -p "$NOREPO_DIR"
+
+norepo_rc=0
+norepo_err="$(cd "$NOREPO_DIR" && "$HANDOFF_STATE" --create 1500 '{"pr_number":1500,"head_sha":"nr"}' 2>&1 >/dev/null)" || norepo_rc=$?
+check "no-repo write exits 0" "0" "$norepo_rc"
+check "no-repo write emits no warning" "" "$norepo_err"
+if [[ -f "${HANDOFF_DIR}/pr-1500-handoff.json" ]]; then
+  ok "no-repo write created the flat file"
+else fail "no-repo write did not create the flat file"; fi
+check "no-repo flat file readable" "nr" \
+  "$(cd "$NOREPO_DIR" && "$HANDOFF_STATE" --get 1500 | jq -r '.head_sha')"
+
+# A git checkout with no `origin` also has no owner/repo to name.
+NOORIGIN_DIR="${TMP_DIR}/no-origin"
+mkdir -p "$NOORIGIN_DIR"
+git -C "$NOORIGIN_DIR" init -q 2>/dev/null
+noorigin_err="$(cd "$NOORIGIN_DIR" && "$HANDOFF_STATE" --set 1500 '.head_sha=nr2' 2>&1 >/dev/null)"
+check "origin-less checkout emits no warning" "" "$noorigin_err"
+
+# ---------------------------------------------------------------------------
+# 15. dismiss-stale-bot-changes.sh --owner-repo scopes the handoff append
+#     (issue #1302). Exercises the flag parsing and the flat-vs-scoped gating
+#     without any network calls.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== 15. dismiss-stale-bot-changes.sh --owner-repo ==="
+
+DISMISS="${SCRIPT_DIR}/../dismiss-stale-bot-changes.sh"
+
+if [[ ! -x "$DISMISS" ]]; then
+  fail "dismiss-stale-bot-changes.sh not found at $DISMISS"
+else
+  # Flag validation is pure arg parsing — reached before any gh call.
+  if ! out="$("$DISMISS" 5 --owner-repo "" 2>&1)"; then
+    ok "--owner-repo '' is rejected"
+  else fail "--owner-repo '' should be rejected (got: $out)"; fi
+
+  if ! out="$("$DISMISS" 5 --owner-repo "nodash" 2>&1)"; then
+    ok "--owner-repo 'nodash' (no slash) is rejected"
+  else fail "--owner-repo 'nodash' should be rejected"; fi
+
+  if ! out="$("$DISMISS" 5 --owner-repo "a/b/c" 2>&1)"; then
+    ok "--owner-repo 'a/b/c' (extra slash) is rejected"
+  else fail "--owner-repo 'a/b/c' should be rejected"; fi
+
+  check_contains "--help documents --owner-repo" \
+    "--owner-repo" "$("$DISMISS" --help 2>&1)"
+
+  # ---- Functional: where does the append actually land? ----
+  #
+  # Stub `gh` so the whole dismissal path runs offline. The stub never invokes
+  # `gh` itself (no `command -v` forwarding), so it cannot recurse into itself.
+  STUB_DIR="${TMP_DIR}/stubbin"
+  mkdir -p "$STUB_DIR"
+  cat > "${STUB_DIR}/gh" <<'GHSTUB'
+#!/usr/bin/env bash
+# Minimal gh stub for dismiss-stale-bot-changes.sh — issue #1302 append scoping.
+if [[ "${1:-}" == "repo" && "${2:-}" == "view" ]]; then
+  echo "acme/widgets"; exit 0
+fi
+if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
+  echo "headsha1302"; exit 0
+fi
+if [[ "${1:-}" == "api" ]]; then
+  for _arg in "$@"; do
+    case "$_arg" in
+      */reviews\?per_page=100)
+        # One stale bot CHANGES_REQUESTED review, on a SHA that is not HEAD.
+        echo '[{"id":777,"state":"CHANGES_REQUESTED","commit_id":"oldsha","user":{"login":"coderabbitai[bot]","type":"Bot"}}]'
+        exit 0 ;;
+      */dismissals)
+        exit 0 ;;
+    esac
+  done
+  echo '[]'; exit 0
+fi
+exit 0
+GHSTUB
+  chmod +x "${STUB_DIR}/gh"
+
+  # (a) Scoped --handoff-file + --owner-repo -> append lands on the SCOPED file.
+  scoped_h="$("$HANDOFF_STATE" --owner-repo "acme/widgets" --path 1600)"
+  "$HANDOFF_STATE" --owner-repo "acme/widgets" --create 1600 \
+    '{"schema_version":"1.0","pr_number":1600,"head_sha":"headsha1302","owner_repo":"acme/widgets","phase_completed":"A"}'
+
+  dismiss_rc=0
+  PATH="${STUB_DIR}:$PATH" "$DISMISS" 1600 \
+    --handoff-file "$scoped_h" --owner-repo "acme/widgets" >/dev/null 2>&1 || dismiss_rc=$?
+  check "scoped dismissal run exits 0" "0" "$dismiss_rc"
+  check "dismissed ID appended to the scoped handoff" "777" \
+    "$("$HANDOFF_STATE" --owner-repo "acme/widgets" --get 1600 | jq -r '.stale_bot_reviews_dismissed[0] // ""')"
+  if [[ ! -f "${HANDOFF_DIR}/pr-1600-handoff.json" ]]; then
+    ok "scoped dismissal created no flat handoff"
+  else fail "scoped dismissal leaked a flat handoff (pre-#1302 behavior)"; fi
+
+  # (b) Flat --handoff-file, no --owner-repo -> append stays on the FLAT file.
+  #     CLAUDE_HANDOFF_FLAT_OK marks this as a deliberate legacy-path caller.
+  flat_h="${HANDOFF_DIR}/pr-1601-handoff.json"
+  CLAUDE_HANDOFF_FLAT_OK=1 "$HANDOFF_STATE" --create 1601 \
+    '{"schema_version":"1.0","pr_number":1601,"head_sha":"headsha1302","phase_completed":"A"}'
+
+  dismiss_flat_rc=0
+  PATH="${STUB_DIR}:$PATH" CLAUDE_HANDOFF_FLAT_OK=1 "$DISMISS" 1601 \
+    --handoff-file "$flat_h" >/dev/null 2>&1 || dismiss_flat_rc=$?
+  check "flat dismissal run exits 0" "0" "$dismiss_flat_rc"
+  check "dismissed ID appended to the flat handoff" "777" \
+    "$(CLAUDE_HANDOFF_FLAT_OK=1 "$HANDOFF_STATE" --get 1601 | jq -r '.stale_bot_reviews_dismissed[0] // ""')"
+  if [[ ! -f "${HANDOFF_DIR}/acme/widgets/pr-1601-handoff.json" ]]; then
+    ok "flat dismissal did not seed a scoped handoff"
+  else fail "flat dismissal wrote a scoped handoff the caller never asked for"; fi
+fi
 
 # ---------------------------------------------------------------------------
 # Summary

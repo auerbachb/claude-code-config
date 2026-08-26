@@ -82,6 +82,36 @@ HANDOFF_FILE="$(run_script handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --pa
 cat "$HANDOFF_FILE" 2>/dev/null
 ```
 
+### Phase-order staleness check (MANDATORY)
+
+Rank the phases `A=1, B=2, C=3`. Phase C must read what **Phase B** wrote —
+`phase_completed: "B"` (rank 2). A record still marked `"A"` (rank 1), or missing
+the field entirely, ranks below the phase that should have written it. That is
+the signature of a Phase B update that landed on the legacy flat path while you
+resolved the scoped one (issue #1302): the file parses, but `reviewer`,
+`head_sha`, and the findings/threads arrays are all one phase behind.
+
+```bash
+PHASE_FOUND="$(jq -r '.phase_completed // ""' "$HANDOFF_FILE" 2>/dev/null)"
+if [[ "$PHASE_FOUND" != "B" ]]; then
+  echo "WARNING: handoff phase-order check — $HANDOFF_FILE has phase_completed='${PHASE_FOUND:-<missing>}', expected 'B'. This handoff may be stale (Phase B's update may have been written elsewhere); do NOT trust its reviewer/head_sha — resolve both from GitHub." >&2
+  # A stray flat file at the same PR number is the usual cause — worth naming.
+  # A full `if` rather than a `[[ … ]] && echo` chain: a false chain returns 1,
+  # which aborts the block under `set -e`.
+  FLAT_H="$HOME/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json"
+  if [[ -f "$FLAT_H" && "$HANDOFF_FILE" != "$FLAT_H" ]]; then
+    echo "WARNING: a flat-path handoff also exists at $FLAT_H — likely where the newer record went." >&2
+  fi
+fi
+```
+
+**Warn, do not block.** The merge gate is verified live against GitHub in Step 1
+either way; a stale handoff never grants or denies a merge on its own. What it
+must not do is quietly supply the wrong `reviewer` — that would send you looking
+for a CodeRabbit approval on a PR whose gate is severity-based. On this warning,
+take `reviewer` from `reviewer-of.sh` and the SHA from `gh pr view`, ignore the
+handoff's copies, and state the discrepancy in your exit report.
+
 Use `reviewer` and `phase_completed` to confirm merge gate expectations. If the handoff is missing or lacks a `reviewer` field, resolve reviewer ownership via the shared helper (checks `~/.claude/session-state.json` first, falls back to a paginated live-history scan):
 
 ```bash

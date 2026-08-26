@@ -5,8 +5,14 @@
 # Never dismisses humans: requires GitHub user.type == "Bot" AND login in the repo allowlist.
 #
 # Usage:
-#   dismiss-stale-bot-changes.sh <pr_number> [--handoff-file <path>]
+#   dismiss-stale-bot-changes.sh <pr_number> [--handoff-file <path>] [--owner-repo <owner/repo>]
 #   dismiss-stale-bot-changes.sh --help
+#
+# --owner-repo scopes the handoff APPEND only (issue #1302). Without it the
+# append fell through to handoff-state.sh's flat path even when --handoff-file
+# named a scoped file, so the IDs landed somewhere the next phase never reads.
+# Dismissal targeting still comes from `gh repo view`; this flag never changes
+# which repo's reviews are dismissed. Defaults to the `gh repo view` value.
 #
 # Exit codes:
 #   0 — finished (dismissals applied or no work; handoff optional skip)
@@ -23,6 +29,7 @@ print_usage() {
 
 PR_NUMBER=""
 HANDOFF_FILE=""
+OWNER_REPO_ARG=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -34,6 +41,21 @@ while [[ $# -gt 0 ]]; do
       HANDOFF_FILE="${2:-}"
       if [[ -z "$HANDOFF_FILE" ]]; then
         echo "ERROR: --handoff-file requires a path" >&2
+        exit 2
+      fi
+      shift 2
+      ;;
+    --owner-repo)
+      OWNER_REPO_ARG="${2:-}"
+      if [[ -z "$OWNER_REPO_ARG" ]]; then
+        echo "ERROR: --owner-repo requires a value (e.g., --owner-repo owner/repo)" >&2
+        exit 2
+      fi
+      # Reject anything that is not exactly one owner/repo pair, so a malformed
+      # value can never be handed to handoff-state.sh as a path component.
+      if [[ "$OWNER_REPO_ARG" != */* || "$OWNER_REPO_ARG" == */*/* \
+            || "${OWNER_REPO_ARG%%/*}" == "" || "${OWNER_REPO_ARG#*/}" == "" ]]; then
+        echo "ERROR: --owner-repo must be <owner>/<repo> (got: $OWNER_REPO_ARG)" >&2
         exit 2
       fi
       shift 2
@@ -157,14 +179,37 @@ if [[ -n "$HANDOFF_FILE" && ${#DISMISSED_IDS[@]} -gt 0 ]]; then
     # silently lose each other's dismissed-review-ID appends.
     _ds_script_dir="$(cd "$(dirname "$0")" && pwd)"
     _ds_handoff_helper="${_ds_script_dir}/handoff-state.sh"
+
+    # Scope the append to the same file --handoff-file names (issue #1302).
+    # Same flat-vs-scoped gating polling-state-gate.sh uses: pass --owner-repo
+    # only when the resolved handoff is NOT the legacy flat path, so a caller
+    # deliberately refreshing a flat file still appends to that file rather than
+    # silently seeding a second, scoped one.
+    _ds_owner_repo="${OWNER_REPO_ARG:-$OWNER_REPO}"
+    _ds_flat_path="${HOME}/.claude/handoffs/pr-${PR_NUMBER}-handoff.json"
+    _ds_or_flag=()
+    _ds_target="$_ds_flat_path"
+    if [[ -n "$_ds_owner_repo" && "$HANDOFF_FILE" != "$_ds_flat_path" ]]; then
+      _ds_or_flag=(--owner-repo "$_ds_owner_repo")
+      _ds_target="$("$_ds_handoff_helper" --owner-repo "$_ds_owner_repo" --path "$PR_NUMBER" 2>/dev/null || echo "$HANDOFF_FILE")"
+    fi
+
+    # Report the file actually written, not the one that was requested. A
+    # divergence here means the append and the reader disagree — the exact
+    # split-brain issue #1302 is about — so name both instead of claiming
+    # success against a path nothing was written to.
+    if [[ "$_ds_target" != "$HANDOFF_FILE" ]]; then
+      echo "[DISMISS-STALE] WARN: appending to $_ds_target (resolved from owner/repo '$_ds_owner_repo'), not the requested --handoff-file $HANDOFF_FILE" >&2
+    fi
+
     for id in "${DISMISSED_IDS[@]}"; do
       id_json="$(jq -n --arg x "$id" '$x')"
-      if ! "$_ds_handoff_helper" --append "$PR_NUMBER" "stale_bot_reviews_dismissed" "$id_json"; then
+      if ! "$_ds_handoff_helper" ${_ds_or_flag[@]+"${_ds_or_flag[@]}"} --append "$PR_NUMBER" "stale_bot_reviews_dismissed" "$id_json"; then
         echo "[DISMISS-STALE] ERROR: failed to update handoff file for review_id=$id" >&2
         exit 4
       fi
     done
-    echo "[DISMISS-STALE] appended review IDs to handoff file: $HANDOFF_FILE"
+    echo "[DISMISS-STALE] appended review IDs to handoff file: $_ds_target"
   else
     echo "[DISMISS-STALE] WARN: handoff file missing; skipping append (create full handoff first): $HANDOFF_FILE" >&2
   fi

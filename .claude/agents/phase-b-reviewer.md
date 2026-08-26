@@ -69,8 +69,24 @@ The parent agent provides:
 
 On startup, check for the handoff file:
 
-1. **If `{{HANDOFF_FILE}}` exists:** Parse and validate (`schema_version`, `pr_number`, `phase_completed`). Extract `head_sha`, `reviewer`, `threads_replied`, `threads_resolved`, `findings_fixed` to avoid duplicate work. Log: "Loaded handoff file from Phase A."
+1. **If `{{HANDOFF_FILE}}` exists:** Parse and validate (`schema_version`, `pr_number`, `phase_completed`). Extract `head_sha`, `reviewer`, `threads_replied`, `threads_resolved`, `findings_fixed` to avoid duplicate work. Log: "Loaded handoff file from Phase A." Then run the phase-order check below.
 2. **If missing or invalid:** Fall back to GitHub API reconstruction — fetch all 3 comment endpoints with `per_page=100`. Log: "No handoff file found, reconstructing state from GitHub API."
+
+### Phase-order staleness check (MANDATORY)
+
+Rank the phases `A=1, B=2, C=3`. Phase B expects the record its predecessor wrote — `phase_completed: "A"` (rank 1). A **re-entrant `"B"` is fine**: a replacement Phase B legitimately reads its own predecessor's record. Anything ranking **below 1** — absent, empty, or a value outside `A`/`B`/`C` — means you are reading something older than the phase that should have written it, and every field you are about to trust may be stale:
+
+```bash
+PHASE_FOUND="$(jq -r '.phase_completed // ""' "$HANDOFF_FILE" 2>/dev/null)"
+case "$PHASE_FOUND" in
+  A|B) : ;;   # A = predecessor's record; B = re-entrant replacement. Both expected.
+  *)
+    echo "WARNING: handoff phase-order check — $HANDOFF_FILE has phase_completed='${PHASE_FOUND:-<missing>}', expected 'A' (or 'B' for a replacement Phase B). The record may be stale or written to the wrong path; verify reviewer/head_sha against GitHub before trusting them." >&2
+    ;;
+esac
+```
+
+Warn and continue — never exit on this. Reconcile against GitHub (`reviewer-of.sh`, live HEAD SHA) rather than proceeding on the loaded values, and note the discrepancy in the handoff `notes` so it survives into Phase C.
 
 ### Defensive Branch Checkout (MANDATORY)
 
@@ -312,19 +328,28 @@ if [[ -z "$HANDOFF_STATE_SH" ]]; then
 fi
 PR="{{PR_NUMBER}}"
 
+# --owner-repo on EVERY call, matching the --path call in Runtime Context and
+# the --create call in Phase A. Omitting it writes the legacy flat path
+# ~/.claude/handoffs/pr-$PR-handoff.json, which Phase C never reads: it resolves
+# the scoped path and would go on using Phase A's record — wrong reviewer, wrong
+# head_sha, missing arrays (issue #1302).
+OR=(--owner-repo {{OWNER}}/{{REPO}})
+
 # Scalar updates (--set):
-"$HANDOFF_STATE_SH" --set "$PR" '.phase_completed="B"'
-"$HANDOFF_STATE_SH" --set "$PR" ".head_sha=$NEW_HEAD_SHA"   # only if a push occurred
+"$HANDOFF_STATE_SH" "${OR[@]}" --set "$PR" '.phase_completed="B"'
+"$HANDOFF_STATE_SH" "${OR[@]}" --set "$PR" ".head_sha=$NEW_HEAD_SHA"   # only if a push occurred
 
 # Array appends (--append, one call per new entry; dedup is inside handoff-state.sh):
-"$HANDOFF_STATE_SH" --append "$PR" "findings_fixed"   "$finding_id"
-"$HANDOFF_STATE_SH" --append "$PR" "threads_replied"  "$thread_id"
-"$HANDOFF_STATE_SH" --append "$PR" "threads_resolved" "$thread_id"
-"$HANDOFF_STATE_SH" --append "$PR" "files_changed"    "$filename"
+"$HANDOFF_STATE_SH" "${OR[@]}" --append "$PR" "findings_fixed"   "$finding_id"
+"$HANDOFF_STATE_SH" "${OR[@]}" --append "$PR" "threads_replied"  "$thread_id"
+"$HANDOFF_STATE_SH" "${OR[@]}" --append "$PR" "threads_resolved" "$thread_id"
+"$HANDOFF_STATE_SH" "${OR[@]}" --append "$PR" "files_changed"    "$filename"
 # findings_dismissed uses object identity (.id field):
 dismissed_json='{"id":"<comment-id>","reason":"<why>"}'
-"$HANDOFF_STATE_SH" --append "$PR" "findings_dismissed" "$dismissed_json"
+"$HANDOFF_STATE_SH" "${OR[@]}" --append "$PR" "findings_dismissed" "$dismissed_json"
 ```
+
+**Verify before you exit:** `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --get "$PR" | jq -r '.phase_completed, .head_sha'` must show `B` and the SHA you just pushed, and `~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json` must NOT exist. A flat file appearing there means a call lost its `--owner-repo`.
 
 Deduplication rules enforced by `handoff-state.sh`: `string[]` fields by exact value;
 `findings_dismissed` by `.id`. Unknown fields are always preserved (forward compatibility).
