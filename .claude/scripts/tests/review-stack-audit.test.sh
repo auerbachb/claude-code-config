@@ -103,6 +103,56 @@ kinds="$(jget "$OUT" "[t['cap_kinds'] for t in d['tools'] if t['key']=='coderabb
 [[ "$kinds" == "[]" ]] && ok "measure: cap phrases do not cross tool boundaries" \
   || fail "measure: CodeRabbit wrongly took CodeAnt's cap phrase: $kinds"
 
+# CodeRabbit meters two different mechanisms (issue #1303): a per-developer
+# per-hour burst allowance, and the Fair Usage trailing-volume degradation.
+# Collapsing both into `rate_limit` let the baseline record one expected cap and
+# silently cover the other. Each phrase must now produce only its own kind.
+F="$TMP_DIR/cr-cap-kinds.json"
+fixture_write "$F" '[
+ {"number":1,"merged_at":"2026-08-01T00:00:00Z","reviews":[],"pr_comments":[],
+  "issue_comments":[{"user":"coderabbitai[bot]","body":"You have reached a temporary PR review limit under our Fair Usage Limits Policy."}]},
+ {"number":2,"merged_at":"2026-08-02T00:00:00Z","reviews":[],"pr_comments":[],
+  "issue_comments":[{"user":"greptile-apps[bot]","body":"<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->"}]}]'
+OUT="$TMP_DIR/cr-cap-kinds.out.json"
+"$MEASURE" --fixture "$F" --json > "$OUT" || fail "measure.sh failed on cap-kind fixture"
+kinds="$(jget "$OUT" "[t['cap_kinds'] for t in d['tools'] if t['key']=='coderabbit'][0]")"
+[[ "$kinds" == "['fair_usage']" ]] \
+  && ok "measure: the Fair Usage phrase classifies as fair_usage and nothing else" \
+  || fail "measure: Fair Usage phrase expected cap_kinds ['fair_usage'], got $kinds"
+# Negative control on the same run: the marker under another tool's login must
+# not leak a CodeRabbit kind, so the assertion above cannot pass by accident.
+gk="$(jget "$OUT" "[t['cap_kinds'] for t in d['tools'] if t['key']=='greptile'][0]")"
+[[ "$gk" == "[]" ]] && ok "measure: CodeRabbit's marker under another login classifies nothing" \
+  || fail "measure: greptile wrongly took CodeRabbit's marker: $gk"
+
+# The burst marker alone must still be rate_limit — the split must not have
+# moved the pre-existing signal along with the new one.
+F="$TMP_DIR/cr-burst-only.json"
+fixture_write "$F" '[
+ {"number":3,"merged_at":"2026-08-03T00:00:00Z","reviews":[],"pr_comments":[],
+  "issue_comments":[{"user":"coderabbitai[bot]","body":"Review limit reached. Next review available in: 12 minutes."}]}]'
+OUT="$TMP_DIR/cr-burst-only.out.json"
+"$MEASURE" --fixture "$F" --json > "$OUT" || fail "measure.sh failed on burst-only fixture"
+kinds="$(jget "$OUT" "[t['cap_kinds'] for t in d['tools'] if t['key']=='coderabbit'][0]")"
+[[ "$kinds" == "['rate_limit']" ]] \
+  && ok "measure: the burst banner classifies as rate_limit and nothing else" \
+  || fail "measure: burst banner expected cap_kinds ['rate_limit'], got $kinds"
+
+# The real banner carries BOTH the machine marker and the Fair Usage sentence in
+# one body. The two kinds are not disjoint populations, and a reader who assumes
+# they are will mis-add the counts — so pin the co-occurrence rather than leave
+# it to be discovered on live data.
+F="$TMP_DIR/cr-cap-both.json"
+fixture_write "$F" '[
+ {"number":4,"merged_at":"2026-08-04T00:00:00Z","reviews":[],"pr_comments":[],
+  "issue_comments":[{"user":"coderabbitai[bot]","body":"<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\n## Review limit reached\nYou have reached a temporary PR review limit under our Fair Usage Limits Policy."}]}]'
+OUT="$TMP_DIR/cr-cap-both.out.json"
+"$MEASURE" --fixture "$F" --json > "$OUT" || fail "measure.sh failed on combined-banner fixture"
+kinds="$(jget "$OUT" "[t['cap_kinds'] for t in d['tools'] if t['key']=='coderabbit'][0]")"
+[[ "$kinds" == "['fair_usage', 'rate_limit']" ]] \
+  && ok "measure: one banner carrying both signals records both kinds on that PR" \
+  || fail "measure: combined banner expected both kinds, got $kinds"
+
 # ---------------------------------------------------------------------------
 # measure.sh — sole-provider, the unique-value signal
 # ---------------------------------------------------------------------------

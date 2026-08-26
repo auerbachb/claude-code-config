@@ -211,15 +211,31 @@ LOGIN_TO_KEY = {t["login"]: t["key"] for t in TOOLS}
 # case-insensitively against the RAW comment body, so machine markers written as
 # HTML comments still match.
 CAP_SIGNALS = [
+    # CodeRabbit meters two DIFFERENT mechanisms and says so in two different
+    # places, so they carry two kinds (issue #1303). `rate_limit` means "a review
+    # was refused for rate reasons"; `fair_usage` means "the refusal named the
+    # Fair Usage trailing-volume policy". The two are not disjoint populations —
+    # one banner routinely carries the machine marker AND the Fair Usage
+    # sentence, so that PR is counted under both kinds. Reading either count as
+    # the whole story is the mistake this split exists to prevent.
     {"tool": "coderabbit", "kind": "rate_limit",
      "pattern": "auto-generated comment: rate limited by coderabbit.ai",
-     "note": "machine marker; 23 occurrences in the grounding sample"},
+     "note": "machine marker; 23 occurrences in the grounding sample. Usually "
+             "rides alongside the Fair Usage sentence (213 of 233 capped PRs in "
+             "the #1303 window), so it does not by itself distinguish the two "
+             "mechanisms"},
     {"tool": "coderabbit", "kind": "rate_limit",
      "pattern": "review limit reached",
      "note": "human-visible heading accompanying the marker above"},
-    {"tool": "coderabbit", "kind": "rate_limit",
+    {"tool": "coderabbit", "kind": "fair_usage",
      "pattern": "fair usage limits policy",
-     "note": "CodeRabbit plan-level throttle wording"},
+     "note": "the trailing-7-day-volume band, distinct from the per-developer "
+             "per-hour burst allowance it modulates (Pro base: 5/hr). Matches "
+             "both banner shapes seen in the #1303 window: the qualitative one "
+             "('adaptive limits are currently applied', 2026-07) and the "
+             "quantitative one ('Your 68 included PR review attempts over the "
+             "past 7 days set your current allowance at 1 review per hour', "
+             "2026-08). Split out from rate_limit under #1303"},
     {"tool": "codeant", "kind": "not_subscribed",
      "pattern": "add this email to the pr review subscription",
      "note": "CodeAnt seat/subscription gap; 24 occurrences in the sample"},

@@ -402,3 +402,31 @@ This is **not** a promotion to a gating tier. `gates_merge` stays `false`; the #
 - The billing question (seat-based cost per committer) is outside this PR's scope.
 
 **Baseline updated:** `review-stack-baseline.json` Graphite entry: `role: "advisory"` → `role: "fallback"`, notes updated to reference this re-decision and the measured window.
+
+## CodeRabbit cap + chain-position reconciliation (#1303, 2026-08-26)
+
+**Trigger:** D3 drift finding `coderabbit/D3` from a `/review-stack-audit` run over 2026-07-25 → 2026-08-24. `review-stack-baseline.json` recorded `expected_caps: []` for CodeRabbit — deliberately, so the first post-swap run would report its limit as genuine drift (§Decision, CodeRabbit row). It did. That run was **truncated** (60 PRs against a `--limit` of 60), so its counts were floors; this reconciliation rests on a **non-truncated re-measure** over 2026-07-25 → 2026-08-26, **268 merged PRs**, `window.truncated: false`. Full report: [`review-stack-audit-2026-08.md`](./review-stack-audit-2026-08.md).
+
+**Evidence — two mechanisms, not one:**
+
+- **`rate_limit` — the per-developer hourly burst allowance.** Pro base is **5 reviews/hour per developer** (dashboard reading, #1204, 2026-08-21). Observed on **224 of 268 PRs**. Signals: `<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->` and the `Review limit reached` heading.
+- **`fair_usage` — the Fair Usage adaptive band.** Trailing-**7-day** included-attempt volume, which *lowers* the hourly allowance below the plan base. Observed on **222 of 268 PRs**. Signal: `Fair Usage Limits Policy`.
+- **They overlap, and the counts must not be added.** Both kinds landed on the same PR **213** times — one banner carries both signals. Union: **233 of 268 PRs (87%)** hit at least one cap, against the truncated run's floor of 41 of 60.
+- **The band, quoted from CodeRabbit's own banners:** 57 trailing attempts → **2 reviews/hr** (PR [#1240](https://github.com/auerbachb/claude-code-config/pull/1240), 2026-08-22); 60 → **1/hr** (PR [#1250](https://github.com/auerbachb/claude-code-config/pull/1250)); 68 → **1/hr** (PR [#1295](https://github.com/auerbachb/claude-code-config/pull/1295)); 77 → **1/hr** (PR [#1320](https://github.com/auerbachb/claude-code-config/pull/1320)); 76 → **1/hr** (PR [#1330](https://github.com/auerbachb/claude-code-config/pull/1330)). The 57/60 pair brackets the 60-per-week cliff §Dashboard reconciliation read off the dashboard — measured here from the vendor's own per-PR arithmetic for the first time. Earlier in the window the banner was qualitative only (*"adaptive limits are currently applied"*, PR [#774](https://github.com/auerbachb/claude-code-config/pull/774), 2026-07-28): same mechanism, later instrumentation.
+- **Approvals: 0 across all 268 PRs** (254 review objects, 514 inline findings, sole source on 32). PR **#1265**: 4 CodeRabbit review objects, all `COMMENTED`, against 5 CodeAnt approvals. PR **#1295**: 6 CodeRabbit review objects, all `COMMENTED`, against 6 CodeAnt approvals, and the chain escalated past it to Greptile. CodeAnt carried **530** approvals in the window.
+- **App and CLI are limited independently.** Within the same 24 hours on the same public repo, the App banner names `**Plan**: Pro` plus an **org** usage spending cap (PR #1295, 2026-08-23), while the CLI rate-limit payload reports `isProUser: false`, `orgAttributed: false`, and *"no organization will be billed. Free OSS limits apply."* (#1286, 2026-08-23). The App draws on the paid org plan; the CLI, same repo, does not touch it. `isProUser: false` names **the pool the review was billed against**, not the account's tier — so the OSS tiering found in #1286 explains the **CLI** surface only and **does not** explain the App-side rate limiting. They bill separately, they are capped separately, and a remedy on one does not fix the other.
+
+**Decision: keep CodeRabbit's current role. Record the caps and the zero-approval fact; defer any demotion or cut to its own reviewed PR.**
+
+Nothing in the measurement is new *behaviour* — it is the same primary finder the #1199 decision record placed, now with its limits written down instead of inferred. The tool still produced 514 inline findings and was the only finder on 32 PRs, which is real coverage a demotion would erode. What the measurement changes is that a future argument about its position can be made against numbers rather than impressions.
+
+**The zero-approval figure is not a regression, and must not be read as one.** `gates_merge: false` and `approves_via: "none"` stay exactly as they are. CodeRabbit is a finder; it has issued zero approvals in every audit window this repo has measured, including 2026-06. Recording it as an approver would fire a permanent, false `D4` on every run — the precise failure the `gates_merge` / `approves_via` split exists to prevent. The cost of the rate limiting is **finding coverage**, not gate coverage, and that is the axis any future chain-position change should be argued on.
+
+**What this does not change:**
+
+- No routing rule changed. `.claude/rules/cr-merge-gate.md` and [`merge-gate-reviewer-paths.md`](./merge-gate-reviewer-paths.md) are untouched; this audit is advisory.
+- The chain order in §Decision is unchanged — CodeRabbit stays parallel primary with CodeAnt, and CodeAnt stays the approver that actually clears the gate.
+- The CodeRabbit seat and billing figures in §Decision are #1199/#1228 provenance and are **not** re-measured here; seat count is not observable from GitHub, and the baseline records measured values only.
+- Related: **#1199** (the chain realignment this reconciles against), **#1286** (the CLI-side diagnosis), **#1287** (the self-hosted survey, which found no replacement).
+
+**Baseline updated:** `review-stack-baseline.json` CodeRabbit entry: `expected_caps: []` → `["rate_limit", "fair_usage"]`; `notes` rewritten with the measured window, both mechanisms with their PR citations, the 0/268 approval fact, and the App-versus-CLI conclusion. `role`, `gates_merge`, and `approves_via` unchanged. `measure.sh` now classifies `fair usage limits policy` as a distinct `fair_usage` kind so the two mechanisms stay machine-readable.
