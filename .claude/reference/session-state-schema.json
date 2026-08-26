@@ -28,6 +28,8 @@
       "cr_explicit_triggers": "array",
       "digest_streak": "number",
       "conflict_streak": "number",
+      "allow_nonauthor": "boolean",
+      "_allow_nonauthor_comment": "Persisted per-PR authorship override (issue #1266), written by polling-state-gate.sh --ensure-session and read back by its default poll-cycle mode, which forwards --allow-nonauthor to merge-gate.sh when this reads true. Enrolment writes it on every run — true with the flag, false without — so re-enrolling without the override clears a stale true. Typed because it gates a safety guard (.claude/rules/safety.md §Authorship): a corrupted value must be rejected at write time, not read as permission. Only the literal boolean true grants the bypass; absent/false/null all mean not overridden.",
       "poll_watermarks": "object"
     }
   },
@@ -169,6 +171,7 @@
           "reviewer": "cr",
           "needs": "cr_confirmation_pass",
           "bugbot_installed": true,
+          "allow_nonauthor": false,
           "digest": "sha256:51d9f7f2b7f0bb7e4fd98c9b5d5d5d52aafcc8d6f8a76f36635b2f2e91dbb7ef",
           "digest_streak": 1,
           "blocker": null,

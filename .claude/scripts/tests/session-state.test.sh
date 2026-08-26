@@ -164,6 +164,24 @@ run --repo test/repo --set '.prs["998"].digest_streak=3'
 check_eq "well-formed number digest_streak accepted" "0" "$?"
 check_eq "digest_streak holds the written number" "3" "$(jq -c '.repos["test/repo"].prs["998"].digest_streak' "$STATE_FILE")"
 
+# allow_nonauthor (issue #1266) gates a safety guard: polling-state-gate.sh
+# forwards --allow-nonauthor to merge-gate.sh when it reads the literal boolean
+# true, so a string "true" must be refused at write time rather than stored and
+# later compared as if it were the boolean.
+run --repo test/repo --set '.prs["998"].allow_nonauthor=true'
+check_eq "boolean allow_nonauthor accepted" "0" "$?"
+check_eq "allow_nonauthor stored as a JSON boolean" "boolean" \
+  "$(jq -r '.repos["test/repo"].prs["998"].allow_nonauthor | type' "$STATE_FILE")"
+OUT=$(run --repo test/repo --set '.prs["998"].allow_nonauthor="true"' 2>&1); RC=$?
+check_eq "string-for-boolean allow_nonauthor rejected (exit 4)" "4" "$RC"
+check_eq "error names allow_nonauthor and both types" "1" "$(grep -c "field '.repos\[\"test/repo\"\].prs\[\"998\"\].allow_nonauthor' would become type 'string' but must be 'boolean'" <<<"$OUT")"
+check_eq "prior valid allow_nonauthor boolean is untouched" "true" \
+  "$(jq -c '.repos["test/repo"].prs["998"].allow_nonauthor' "$STATE_FILE")"
+run --repo test/repo --set '.prs["998"].allow_nonauthor=false'
+check_eq "clearing allow_nonauthor to false accepted" "0" "$?"
+check_eq "allow_nonauthor holds the cleared boolean" "false" \
+  "$(jq -c '.repos["test/repo"].prs["998"].allow_nonauthor' "$STATE_FILE")"
+
 echo
 echo "== Write-time guard: whole-PR-entry writes (issue #640, CodeAnt finding on PR #654) =="
 reset_state

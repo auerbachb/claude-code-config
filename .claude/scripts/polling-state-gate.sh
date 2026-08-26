@@ -68,15 +68,31 @@
 #                      pr-authorship.sh; fail-closed). Enrolling a PR in polling is
 #                      a write. Bypass with --allow-nonauthor ONLY under an explicit
 #                      per-PR user override.
+#                      The override decision is PERSISTED per PR (issue #1266) as
+#                      the boolean `.prs["N"].allow_nonauthor`, inside the same
+#                      atomic state write as root_repo/head_sha/owner_repo. It is
+#                      written on every enrolment — `true` with the flag, `false`
+#                      without — so re-enrolling without the override clears a
+#                      stale `true` rather than leaving it latched on.
 #   --verify-state     Offline recovery check: confirm handoff + session-state and
 #                      root_repo consistency (no gh, no merge-gate). Exit 0 if OK.
 #   (default)         Validate handoff + session-state, cd to resolved root_repo, run
 #                      merge-gate.sh. Exit 0 iff merge gate is met (same as merge-gate).
-#                      --allow-nonauthor, if passed on THIS invocation, is forwarded
-#                      to merge-gate.sh so a PR enrolled under the override isn't
-#                      re-blocked by merge-gate.sh's own authorship check every tick
-#                      (issue #1251). It is not read back from enrollment-time state —
-#                      a caller that wants this on every cycle must pass it every cycle.
+#                      --allow-nonauthor is forwarded to merge-gate.sh so a PR
+#                      enrolled under the override isn't re-blocked by
+#                      merge-gate.sh's own authorship check every tick (issue
+#                      #1251). Two independent sources turn it on, either alone
+#                      sufficient (issue #1266):
+#                        - the persisted enrolment decision, read back from
+#                          `.prs["N"].allow_nonauthor == true`. This is what makes
+#                          the documented per-cycle contract work: the polling loop
+#                          calls `polling-state-gate.sh <PR_NUMBER>` with no extra
+#                          flags, so without read-back the override applied only to
+#                          the one enrolment call and merge-gate.sh re-added the
+#                          authorship blocker on every later tick.
+#                        - the flag passed on THIS invocation, retained so an
+#                          explicit per-cycle override still works with no persisted
+#                          state (e.g. state written before #1266).
 #
 # Flags:
 #   --root-repo <path>       Which CHECKOUT to operate in (where gh/merge-gate run).
@@ -100,9 +116,11 @@
 #                            Value must match session-state.sh's key charset
 #                            ([A-Za-z0-9._/-]); anything else is a usage error,
 #                            never a silent fall-through to "_unknown".
-#   --allow-nonauthor        See --ensure-session above. Also forwarded to
-#                            merge-gate.sh in default (poll-cycle) mode when
-#                            passed on that invocation — see (default) above.
+#   --allow-nonauthor        See --ensure-session above, which persists the
+#                            decision per PR. Also forwarded to merge-gate.sh in
+#                            default (poll-cycle) mode — from the persisted
+#                            decision or from this invocation's own flag; see
+#                            (default) above.
 #
 # Exit codes (default mode): same as merge-gate.sh (0 met, 1 not met, 2 usage, 3 PR, 4 error)
 # --ensure-session: 0 success, 2 usage, 4 state/gh failure
@@ -444,6 +462,19 @@ ensure_session() {
     [[ -n "$r" ]] && reviewer="$r"
   fi
 
+  # Persist the authorship-override decision for this PR (issue #1266). The
+  # documented per-cycle contract calls `polling-state-gate.sh <PR_NUMBER>` with
+  # no extra flags, so an override supplied only here would be forgotten on the
+  # very next tick and merge-gate.sh's own authorship check would re-add the
+  # blocker forever. Written unconditionally — `false` when the flag is absent —
+  # so a re-enrolment without the override clears a stale `true` instead of
+  # leaving the bypass latched on. Typed `boolean` in
+  # .claude/reference/session-state-schema.json's `_field_types.pr_nested`, so a
+  # corrupted value is rejected by session-state.sh rather than silently read as
+  # permission.
+  local allow_nonauthor_json="false"
+  [[ "$ALLOW_NONAUTHOR" -eq 1 ]] && allow_nonauthor_json="true"
+
   # Single atomic write — session-state.sh merges multiple --set in one
   # transaction. Running it from $canon scopes every path to THIS repo
   # (issue #638), so PR #84 here cannot overwrite PR #84 elsewhere.
@@ -454,12 +485,14 @@ ensure_session() {
         --set ".root_repo=\"$canon\"" \
         --set ".prs[\"$PR_NUMBER\"].root_repo=\"$canon\"" \
         --set ".prs[\"$PR_NUMBER\"].head_sha=\"$head_sha\"" \
+        --set ".prs[\"$PR_NUMBER\"].allow_nonauthor=$allow_nonauthor_json" \
         --set ".prs[\"$PR_NUMBER\"].owner_repo=\"$owner_repo\"" )
   else
     ( cd "$canon" && "$STATE_HELPER" \
         --set ".root_repo=\"$canon\"" \
         --set ".prs[\"$PR_NUMBER\"].root_repo=\"$canon\"" \
-        --set ".prs[\"$PR_NUMBER\"].head_sha=\"$head_sha\"" )
+        --set ".prs[\"$PR_NUMBER\"].head_sha=\"$head_sha\"" \
+        --set ".prs[\"$PR_NUMBER\"].allow_nonauthor=$allow_nonauthor_json" )
   fi
 
   # Resolve the canonical handoff path (scoped when owner_repo is known).
@@ -642,5 +675,36 @@ GATE_ARGS=("$PR_NUMBER")
 # Forward the authorship override (issue #733) so a PR enrolled under
 # --allow-nonauthor isn't re-blocked by merge-gate.sh's own independent
 # authorship check on every poll cycle (issue #1251).
-[[ "$ALLOW_NONAUTHOR" -eq 1 ]] && GATE_ARGS+=(--allow-nonauthor)
+#
+# Read the enrolment-time decision back out of session-state (issue #1266). The
+# per-cycle contract in cr-github-review.md passes no flags on these ticks, so
+# without this read-back the override survived exactly one invocation and the
+# gate could never report "met" for an overridden PR. `state_pr_field` is safe
+# here: require_handoff_and_state() above already pinned STATE_READ_DIR to the
+# resolved checkout and refused if the PR is not registered for this repo.
+#
+# Only the literal boolean `true` enables the bypass. Absent, `false`, `null`,
+# and any other value all mean "not overridden" — an authorship bypass must be
+# granted affirmatively, never inferred from a value we cannot read.
+#
+# What the persisted value does NOT do, deliberately: it never satisfies an
+# authorship check other than merge-gate.sh's, and merge-gate.sh only REPORTS.
+# --ensure-session re-reads the flag from its own invocation, never from state,
+# so re-enrolling a foreign PR still refuses; admin-merge.sh keeps its own
+# independent check, so no merge is authorized by this field. It suppresses one
+# blocker line for a PR the user already named in chat to enrol.
+#
+# safety.md requires a tool operating under the override to SAY SO. On stderr,
+# because merge-gate.sh's stdout is the JSON its callers parse — a notice there
+# would corrupt the payload. One line per tick, only for overridden PRs, is the
+# audit trail a persisted bypass has to carry.
+PERSISTED_ALLOW_NONAUTHOR="$(state_pr_field allow_nonauthor)"
+if [[ "$ALLOW_NONAUTHOR" -eq 1 || "$PERSISTED_ALLOW_NONAUTHOR" == "true" ]]; then
+  GATE_ARGS+=(--allow-nonauthor)
+  if [[ "$ALLOW_NONAUTHOR" -eq 1 ]]; then
+    echo "polling-state-gate.sh: notice: PR #$PR_NUMBER — operating under an explicit per-PR authorship override passed on this invocation (.claude/rules/safety.md §Authorship); merge-gate.sh's authorship block is suppressed." >&2
+  else
+    echo "polling-state-gate.sh: notice: PR #$PR_NUMBER — operating under the per-PR authorship override recorded at enrolment (.prs[\"$PR_NUMBER\"].allow_nonauthor, .claude/rules/safety.md §Authorship); merge-gate.sh's authorship block is suppressed. Clear it by re-running --ensure-session without --allow-nonauthor." >&2
+  fi
+fi
 (cd "$canon" && exec "$MERGE_GATE" "${GATE_ARGS[@]}")
