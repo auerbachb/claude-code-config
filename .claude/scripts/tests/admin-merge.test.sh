@@ -202,6 +202,30 @@ log_absent() {   # log_absent <ere> <desc>
   if grep -qE -- "$1" "$FAKE_GH_LOG" 2>/dev/null; then bad "$2 (calls: $(log_calls))"; else ok "$2"; fi
 }
 
+# --- clean-behind-check.sh argv helper (issue #1257, CodeAnt review) ---------
+# A forwarded override must reach EVERY clean-behind-check.sh invocation, not
+# only the pre-flight one: admin-merge.sh re-runs the helper immediately before
+# it acts (issue #631 TOCTOU re-validation), and an override that stopped
+# propagating at that second call would re-acquire the nested authorship blocker
+# and resurrect issue #1257's misleading "not safe to skip a rebase" at the worst
+# possible moment. An aggregate `grep -q` over the log cannot see that — any one
+# matching call satisfies it — so assert each invocation's argv separately, and
+# pin the call COUNT so a silently-skipped re-validation cannot pass by vacuum.
+cbc_argv_all() {  # cbc_argv_all <logfile> <want_calls> <flag> <desc>
+  local log="$1" want="$2" flag="$3" desc="$4" n miss
+  n=$(grep -c . "$log" 2>/dev/null); [[ -n "$n" ]] || n=0
+  if [[ "$n" -ne "$want" ]]; then
+    bad "$desc (expected $want clean-behind-check.sh call(s), got $n: $(tr '\n' '|' < "$log" 2>/dev/null))"
+    return 0
+  fi
+  miss=$(grep -cv -- "$flag" "$log" 2>/dev/null); [[ -n "$miss" ]] || miss=0
+  if [[ "$miss" -ne 0 ]]; then
+    bad "$desc ($miss of $n invocation(s) missing $flag: $(tr '\n' '|' < "$log" 2>/dev/null))"
+  else
+    ok "$desc"
+  fi
+}
+
 # 1. Happy path: solo + enforce_admins + clean gate → print exact command.
 FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' run 1 --print --repo-path "$CLONE" --branch main
 expect_rc 0 "print exits 0 on merge-ready solo repo"
@@ -615,11 +639,8 @@ if grep -q -- "not safe to skip a rebase" <<<"$OUT"; then
 else
   ok "the misleading 'not safe to skip a rebase' refusal no longer fires"
 fi
-if grep -q -- "--allow-nonauthor" "$CBC_LOG"; then
-  ok "--allow-nonauthor literally appears in the clean-behind-check.sh invocation"
-else
-  bad "--allow-nonauthor was NOT forwarded to clean-behind-check.sh (logged: $(cat "$CBC_LOG"))"
-fi
+cbc_argv_all "$CBC_LOG" 1 "--allow-nonauthor" \
+  "--allow-nonauthor literally appears in the clean-behind-check.sh invocation (--print makes exactly 1)"
 
 # 28b. Negative control — the fail-closed default is unchanged: the same PR
 #      WITHOUT the flag still gets refused, and the flag is never fabricated.
@@ -654,6 +675,45 @@ if [[ -s "$CBC_LOG3" ]]; then
   bad "clean-behind-check.sh was invoked despite the pre-flight usage refusal (logged: $(cat "$CBC_LOG3"))"
 else
   ok "clean-behind-check.sh never invoked — refusal precedes all pre-flight work"
+fi
+
+# 28d. Per-invocation argv coverage on the re-validation path (CodeAnt review).
+#      --execute over a clean BEHIND calls clean-behind-check.sh TWICE: once at
+#      pre-flight, then again as the issue #631 safety re-validation immediately
+#      before the bypass acts. Today CBC_ARGS is built once and reused, so both
+#      calls carry the flag by construction — but that is precisely the invariant
+#      worth pinning: a refactor that rebuilt the argv per call site could forward
+#      the override at pre-flight only, and 28's log would still contain a
+#      matching line while the re-validation silently re-acquired the nested
+#      authorship blocker and refused. --execute is the reachable double-call
+#      path for this flag; --auto-plain is not (28c: the combination is refused
+#      outright, before any clean-behind-check.sh call exists to assert on).
+new_log
+CBC_LOG4="$TMP/cbccalls4.log"; : > "$CBC_LOG4"
+FAKE_GATE_EXIT=1 FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_GATE_AUTHORSHIP_BLOCK=1 \
+  FAKE_CBC_AUTHORSHIP_BLOCK=1 FAKE_CBC_LOG="$CBC_LOG4" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 21 --execute --allow-nonauthor --repo-path "$CLONE" --branch main
+expect_rc 0 "--execute + --allow-nonauthor merges a clean-BEHIND non-author PR (exit 0)"
+log_present "^pr merge 21 --squash --admin" "the plain-shape admin merge actually ran"
+cbc_argv_all "$CBC_LOG4" 2 "--allow-nonauthor" \
+  "--allow-nonauthor reaches EVERY clean-behind-check.sh call, re-validation included"
+
+# 28e. Negative control for 28d — same --execute path WITHOUT the flag refuses at
+#      the re-validation rather than merging, and no invocation fabricates it.
+#      Without this, 28d's count assertion could not distinguish "both calls
+#      carry the override" from "the override is unconditional".
+new_log
+CBC_LOG5="$TMP/cbccalls5.log"; : > "$CBC_LOG5"
+FAKE_GATE_EXIT=1 FAKE_GATE_MISSING="$BEHIND_ONLY" \
+  FAKE_CBC_AUTHORSHIP_BLOCK=1 FAKE_CBC_LOG="$CBC_LOG5" FAKE_PROTECTION="$PLAIN_PROT" \
+  FAKE_AUTHORSHIP_EXIT=0 \
+  run 22 --execute --repo-path "$CLONE" --branch main
+expect_rc 1 "--execute without --allow-nonauthor still refuses the non-author clean BEHIND (exit 1)"
+log_absent "^pr merge" "no merge call when the nested authorship blocker stands"
+if grep -q -- "--allow-nonauthor" "$CBC_LOG5"; then
+  bad "--allow-nonauthor fabricated on the --execute path (logged: $(cat "$CBC_LOG5"))"
+else
+  ok "no --allow-nonauthor forwarded on --execute when not passed"
 fi
 
 echo "----------------------------------------"
