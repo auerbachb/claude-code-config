@@ -111,8 +111,8 @@ Taxonomy per Issue #1333: `caught-real-defect` / `blocked-then-fixed` /
 
 ### 4a. Events where merge-time AC verification found something wrong
 
-All nine re-verified against the merged artifact. All nine landed as **edits to
-the PR body's prose**.
+All ten events — across nine PRs, since #882 contributes two — re-verified
+against the merged artifact. All ten landed as **edits to the PR body's prose**.
 
 | PR | What AC verification found | Resolution | Class | Code changed? |
 |---|---|---|---|---|
@@ -229,7 +229,7 @@ No token figures are invented. What is measurable:
 | **Merge verification** | ~**8.5 boxes** read and verified against source **per merge**, every merge, forever (mean of 849/100) |
 | **Rule corpus** | `cr-merge-gate.md` Step 2 = **177 words** of the auto-loaded corpus; **18 AC mentions** across `CLAUDE.md` + 6 rule files |
 | **Scripts / CI** | **1,530 LOC** — `ac-checkboxes.sh` 434, `ac-gate.sh` 334, `ac-gate.test.sh` 728, `ac-gate.yml` 34 |
-| **Blast radius** | **36 files** reference `ac-checkboxes.sh`, `ac-gate.{sh,yml}`, or `--ac-verified` — 9 skills, 1 agent, 5 scripts, 4 test files, 11 reference docs, 2 rule/README files, 1 workflow |
+| **Blast radius** | **36 files** reference `ac-checkboxes.sh`, `ac-gate.{sh,yml}`, or `--ac-verified`, this report excluded — 10 skill files (across 9 skills), 1 agent, 7 scripts, 4 test files, 11 reference docs, 2 rule/README files, 1 workflow |
 | **Issue creation** | `/issue-maker` generates an `## Acceptance Criteria` section for **every** issue |
 | **PR creation** | A `## Test plan` section is mandatory on **every** PR — present in 100/100 sampled |
 | **Provisioning** | `repo-bootstrap.sh` installs the 4-file AC gate set into other repos (#1282); 4 downstream repos carry an AC-style gate |
@@ -310,6 +310,12 @@ grep -rniE 'AC (verification|check|gate) (caught|found|blocked)|checklist caught
   .claude/reference/ .claude/rules/
 gh search prs --repo auerbachb/claude-code-config --merged --match body 'AC verification' --limit 30
 gh search prs --repo auerbachb/claude-code-config --merged --match body 'Post-merge verification' --limit 50
+
+# 5. Blast radius (§6) — this report itself excluded, so the figure is the
+#    pre-existing surface rather than a self-reference
+grep -rlE 'ac-checkboxes\.sh|ac-gate\.(sh|yml)|--ac-verified' \
+  --exclude-dir=.git --exclude-dir=worktrees . \
+  | grep -v 'ac-checklist-measurement-2026-08\.md' | wc -l
 ```
 
 ## References
