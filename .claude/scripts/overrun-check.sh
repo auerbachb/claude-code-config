@@ -139,15 +139,17 @@ if [[ "$READOUT_MODE" == "true" ]]; then
   # Parse STARTED_AT
   READOUT_START=$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%SZ' "$STARTED_AT" '+%s' 2>/dev/null \
     || date -d "$STARTED_AT" '+%s' 2>/dev/null) || { exit 0; }
-  READOUT_ELAPSED=$(( (READOUT_NOW - READOUT_START) / 60 ))
+  READOUT_ELAPSED_SECS=$(( READOUT_NOW - READOUT_START ))
+  READOUT_ELAPSED=$(( READOUT_ELAPSED_SECS / 60 ))
   # Clamp to 0 — future start timestamps produce negative elapsed; skip silently.
-  (( READOUT_ELAPSED < 0 )) && exit 0
+  (( READOUT_ELAPSED_SECS < 0 )) && exit 0
 
   BOUND_STR=$(format_duration_min "$BOUND_MIN")
   ELAPSED_STR=$(format_duration_min "$READOUT_ELAPSED")
 
-  if (( READOUT_ELAPSED <= BOUND_MIN )); then
-    REMAINING=$(( BOUND_MIN - READOUT_ELAPSED ))
+  # Compare in seconds so a task up to 59 s over its bound is not misreported.
+  if (( READOUT_ELAPSED_SECS <= BOUND_MIN * 60 )); then
+    REMAINING=$(( (BOUND_MIN * 60 - READOUT_ELAPSED_SECS) / 60 ))
     REMAINING_STR=$(format_duration_min "$REMAINING")
     printf 'Est %s · %s elapsed · on track — likely done in ~%s\n' \
       "$BOUND_STR" "$ELAPSED_STR" "$REMAINING_STR"
