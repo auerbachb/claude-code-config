@@ -254,6 +254,8 @@ served() { printf '%s\n' "$1" >> "$STUB_CALLS"; }
 # production while this stub happily answered. Refuse to answer without them.
 [[ "${GH_REPO:-}" == "$EXPECT_REPO" ]] || bad "GH_REPO '${GH_REPO:-}' != expected '$EXPECT_REPO'"
 [[ -n "${GH_TOKEN:-}" ]] || bad "GH_TOKEN is empty — the real gh would be unauthenticated"
+PAGINATE=0
+for arg in "$@"; do [[ "$arg" == "--paginate" ]] && PAGINATE=1; done
 for arg in "$@"; do
   case "$arg" in
     repos/*/commits/*/check-runs*)
@@ -269,8 +271,18 @@ for arg in "$@"; do
     repos/*/issues/*/comments*)
       got="${arg#*/issues/}"; got="${got%%/comments*}"
       [[ "$got" == "$EXPECT_PR" ]] || bad "comments pr '$got' != expected '$EXPECT_PR'"
-      served "comments:$got"
-      cat "$FIXTURE_COMMENTS_JSON"; exit 0 ;;
+      # Explicit test, not ${PAGINATE:+…}: PAGINATE is "0" when the flag is
+      # absent, and "0" is non-empty, so :+ would tag every call as paginated.
+      if [[ "$PAGINATE" == "1" ]]; then served "comments:$got:paginate"; else served "comments:$got"; fi
+      # Faithful --paginate emulation (CodeAnt, PR #1377). Real gh emits ONE
+      # JSON array PER PAGE, concatenated; the helper merges them with
+      # `jq -s 'add // []'`. Page 1 carries only a decoy and the refusal lives
+      # on page 2, so dropping --paginate (or slurping to anything but `add`)
+      # loses the refusal and the suppression scenarios go red rather than
+      # being handed the whole fixture regardless of the flags.
+      cat "$FIXTURE_COMMENTS_PAGE1"
+      [[ "$PAGINATE" == "1" ]] && cat "$FIXTURE_COMMENTS_JSON"
+      exit 0 ;;
   esac
 done
 echo "[]"
@@ -301,6 +313,10 @@ setup() {
   export FIXTURE_HEAD_TS
   printf '%s\n' "$comments_json" > "$TMP/comments.json"
   export FIXTURE_COMMENTS_JSON="$TMP/comments.json"
+  # Page 1 of the paginated comments response: a non-refusal decoy, so merging
+  # must CONCATENATE the pages rather than keep either one alone.
+  printf '%s\n' '[{"user": {"login": "auerbachb"}, "created_at": "2020-01-01T00:00:00Z", "body": "page-one decoy, not a refusal"}]' > "$TMP/comments-page1.json"
+  export FIXTURE_COMMENTS_PAGE1="$TMP/comments-page1.json"
   export FIXTURE_API_FAIL=0
   # Default: BugBot has a check-run on HEAD, so a post-HEAD refusal is
   # attributable. Scenarios needing the un-attributable case override this.
@@ -343,8 +359,8 @@ check_eq "wrote suppressed=true" "suppressed=true" "$(emitted)"
 # that order — to all three endpoints the helper reads. Asserting the served
 # URLs rather than an empty mismatch log keeps "never called" from reading as
 # "called correctly".
-check_eq "guard forwarded the PR number and HEAD SHA to every endpoint" \
-  "check-runs:$HEAD_SHA comments:$PR_NUM commit:$HEAD_SHA " "$(served_urls)"
+check_eq "guard forwarded the PR number and HEAD SHA to every endpoint, comments paginated" \
+  "check-runs:$HEAD_SHA comments:$PR_NUM:paginate commit:$HEAD_SHA " "$(served_urls)"
 check_eq "no argument mismatches" "" "$(mismatches)"
 
 ############################################################################
