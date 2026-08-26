@@ -533,6 +533,74 @@ expect_rc 3 "a failed trigger still blocks (exit 3)"
 seed_other
 expect_state '.repos["solo/app"].release.in_flight.claim_token' 'someone-else' "a competing claim survives our failure path"
 
+# 27. The cleanup write in release_claim() must carry session-state.sh's OWN
+# diagnostic, not just "exited N" (issue #1284). A lock timeout and a corrupt
+# state file are different operator actions; collapsing both into a bare exit
+# code discards the only text that says which one happened. Every caller emits
+# immediately after release_claim(), so the message does reach state_write_error.
+# Passthrough target and restore both come from the pristine $TMP/session-state.real
+# rather than whatever impl happens to be installed now — re-copying the live file
+# would promote a stub left behind by an earlier case to "the backup", the exact
+# pass-for-the-wrong-reason trap called out at break_state above.
+reset_state
+cat > "$SCRIPTS/session-state.impl.sh" <<'CSTUB'
+#!/usr/bin/env bash
+# Fails ONLY the cleanup CAS (--expect <claim record>) and lets the claim-stake
+# CAS (--expect null) through. The stake MUST succeed: release_claim() returns
+# early unless CLAIM_WRITTEN=1, so a blanket --cas failure would leave the path
+# under test unexecuted and the assertions passing for the wrong reason.
+EXPECT=""; PREV=""
+for a in "$@"; do if [ "$PREV" = "--expect" ]; then EXPECT="$a"; fi; PREV="$a"; done
+case " $* " in
+  *" --cas "*)
+    if [ "$EXPECT" != "null" ]; then
+      echo "session-state.sh: lock timeout after 30s waiting for state-lock" >&2
+      exit 6
+    fi ;;
+esac
+exec "$0.orig" "$@"
+CSTUB
+cp "$TMP/session-state.real" "$SCRIPTS/session-state.impl.sh.orig"
+chmod +x "$SCRIPTS/session-state.impl.sh" "$SCRIPTS/session-state.impl.sh.orig"
+FAKE_RUNS_JSON="$OLD_BUILD" FAKE_INTERVAL=60 FAKE_LABEL_RC=1 \
+  run --repo solo/app --pr 5 --apply --phase pre-merge
+expect_rc 3 "a failed trigger whose claim cleanup also fails still blocks (exit 3)"
+# Proves the stake landed — so CLAIM_WRITTEN=1 and release_claim() really did
+# reach its CAS rather than returning early — and that the failed cleanup left
+# the record for the sweep's grace window, as the rc!=0/rc!=7 branch documents.
+expect_state "$INFLIGHT_PATH.pr" '5' "the claim was staked and survives a failed cleanup"
+if jq -e '.state_write_error | test("lock timeout after 30s")' >/dev/null <<<"$OUT"; then
+  ok "the cleanup failure carries session-state.sh's own diagnostic text"
+else bad "the cleanup failure carries session-state.sh's own diagnostic text (got: $(jq -r .state_write_error <<<"$OUT"))"; fi
+if jq -e '.state_write_error | test("cleaning up in-flight record")' >/dev/null <<<"$OUT"; then
+  ok "the cleanup failure still names the step that failed"
+else bad "the cleanup failure still names the step that failed (got: $(jq -r .state_write_error <<<"$OUT"))"; fi
+
+# 27b. Negative control for the capture: exit 7 means a competing evaluator
+# replaced our claim, which is an ordinary outcome and not a write failure. If
+# the new stderr capture leaked into this branch it would manufacture a write
+# error out of a benign CAS mismatch.
+reset_state
+cat > "$SCRIPTS/session-state.impl.sh" <<'CSTUB7'
+#!/usr/bin/env bash
+EXPECT=""; PREV=""
+for a in "$@"; do if [ "$PREV" = "--expect" ]; then EXPECT="$a"; fi; PREV="$a"; done
+case " $* " in
+  *" --cas "*)
+    if [ "$EXPECT" != "null" ]; then
+      echo "session-state.sh: CAS mismatch, value has changed" >&2
+      exit 7
+    fi ;;
+esac
+exec "$0.orig" "$@"
+CSTUB7
+chmod +x "$SCRIPTS/session-state.impl.sh"
+FAKE_RUNS_JSON="$OLD_BUILD" FAKE_INTERVAL=60 FAKE_LABEL_RC=1 \
+  run --repo solo/app --pr 5 --apply --phase pre-merge
+expect_rc 3 "a failed trigger over a taken-over claim still blocks (exit 3)"
+expect_field '.state_write_error' '' "a rc=7 CAS mismatch is not reported as a write error"
+fix_state; rm -f "$SCRIPTS/session-state.impl.sh.orig"
+
 echo "----------------------------------------"
 echo "release-decide.test.sh: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

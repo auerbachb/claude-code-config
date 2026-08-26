@@ -458,15 +458,18 @@ CLAIM_WRITTEN=0
 # another evaluator already replaced our claim; their record is left intact.
 release_claim() {
   [ "$CLAIM_WRITTEN" = "1" ] || return 0
-  local rc=0
-  "$STATE_SH" --raw-path \
+  local rc=0 err=""
+  # Stderr is captured rather than discarded so a lock timeout or a corrupt
+  # state file names itself; every caller emits straight afterwards, so the text
+  # reaches the operator through `state_write_error`.
+  err=$("$STATE_SH" --raw-path \
     --cas ".repos[\"$REPO\"].release.in_flight=null" \
-    --expect "$CLAIM_RECORD" 2>/dev/null || rc=$?
+    --expect "$CLAIM_RECORD" 2>&1 >/dev/null) || rc=$?
   # rc=0: cleared successfully (we owned it)
   # rc=7: someone else replaced our claim — leave their record intact
   # other: I/O or lock error — leave the record; the sweep's grace window heals it
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 7 ]; then
-    STATE_WRITE_ERR="release_claim: session-state.sh exited $rc cleaning up in-flight record"
+    STATE_WRITE_ERR="release_claim: ${err:-session-state.sh exited $rc} cleaning up in-flight record"
   fi
 }
 
