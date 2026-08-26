@@ -1,9 +1,9 @@
-# Review stack audit — 2026-08 (CodeRabbit cap reconciliation)
+# Review stack audit — 2026-08 (cap reconciliations: CodeRabbit + BugBot)
 
-**Issue:** [#1303](https://github.com/auerbachb/claude-code-config/issues/1303) — drift finding `coderabbit/D3`, filed by `/review-stack-audit` (built under [#1201](https://github.com/auerbachb/claude-code-config/issues/1201))
+**Issues:** [#1303](https://github.com/auerbachb/claude-code-config/issues/1303) — drift finding `coderabbit/D3`; [#1304](https://github.com/auerbachb/claude-code-config/issues/1304) — drift finding `bugbot/D3`. Both filed by `/review-stack-audit` (built under [#1201](https://github.com/auerbachb/claude-code-config/issues/1201)) against the same audit run, and both reconciled here against one shared re-measurement.
 **Date:** 2026-08-26 ET
 **Window:** 2026-07-25 → 2026-08-26 (32 days, **268 merged PRs, not truncated** — `window.truncated: false` at `--limit 300`)
-**Baseline:** `.claude/reference/review-stack-baseline.json` (decision-record provenance, as of 2026-08-23)
+**Baseline:** `.claude/reference/review-stack-baseline.json` (decision-record provenance, as of 2026-08-23 when this report opened; the BugBot reconciliation below advanced it to 2026-08-26)
 
 > **Filename note.** `/review-stack-audit` SKILL.md Step 7 maps `--report-to-repo` onto
 > `ai-review-tool-audit-YYYY-MM.md`, but that slot is already occupied by
@@ -144,24 +144,31 @@ marker.
 
 ## Drift findings
 
-Run against this snapshot with the updated baseline:
+> **Two reconciliations, landed in sequence.** This section records the state **after #1303 and
+> before #1304** — the intermediate step, where `bugbot/D3` was still firing on purpose. The final
+> state is in [§Drift cleared](#drift-cleared) under the BugBot reconciliation below: **zero findings**.
+
+Run against this snapshot with the baseline as #1303 left it:
 
 | Code | Tool | Severity | Divergence | Observed | Expected |
 |---|---|---|---|---|---|
 | D3 | BugBot (Cursor) | high | Hit a limit the baseline does not record: `spend_limit` | `spend_limit` on 176 PRs | `expected_caps: []` |
 
-`coderabbit/D3` **no longer fires.** The remaining `bugbot/D3` is pre-existing and deliberate: the
-baseline's BugBot entry states that `expected_caps` is left empty so the current spend exhaustion
-surfaces as genuine drift. It is out of scope for this finding and is not touched here.
+`coderabbit/D3` **no longer fires.** The remaining `bugbot/D3` was pre-existing and deliberate: the
+baseline's BugBot entry left `expected_caps` empty so the spend exhaustion would surface as genuine
+drift. It was out of scope for #1303 and untouched there — **#1304 subsequently recorded it as
+`["spend_limit"]`**, and the current baseline no longer reads `expected_caps: []` for BugBot.
 
-**Before/after control**, both runs against the identical snapshot:
+**Before/after control** for #1303, both runs against the identical snapshot:
 
 | Baseline | Findings |
 |---|---|
-| `origin/main` (before) | `coderabbit/D3`, `bugbot/D3` |
-| this branch (after) | `bugbot/D3` |
+| `origin/main` (before #1303) | `coderabbit/D3`, `bugbot/D3` |
+| after #1303 | `bugbot/D3` |
+| after #1304 (current) | *(none)* |
 
-Exactly one finding was removed, and it is the target one. No other tool's verdict changed.
+Issue #1303 removed exactly one finding, and it was the target one; no other tool's verdict changed.
+Issue #1304 removed the last one.
 
 ## Throughput
 
@@ -290,8 +297,117 @@ Two further notes so this is not over-read:
   caps will always generate limit-shaped prose for the generic probe to catch. That is the probe
   working — it surfaces candidates for a human, and it explicitly does not count them as caps.
 
+## BugBot cap reconciliation (Issue #1304)
+
+`bugbot/D3` came out of the same audit run and the same truncated 60-PR window, rated **high**
+because BugBot is the tier the chain falls *through* to. It is reconciled here against the same
+non-truncated 268-PR measurement, so the two findings share one evidence base.
+
+### The cap, measured
+
+| | |
+|---|---|
+| **Kind** | `spend_limit` — one mechanism, unlike CodeRabbit's two |
+| **Plan** | Cursor **Ultra $200/mo** — the top individual plan; no higher tier exists |
+| **Binding limit** | On-demand **Monthly Limit $1,000.00, type Fixed**, read at **$999.87 / $1,000.00** consumed. The included ~$400 Other-Models bucket is also 100% consumed, `github_bugbot` = 96.1% of it |
+| **Reset cadence** | **Monthly, on the account renewal date.** Measured cycle **Jul 28 → Aug 28**, renewing **2026-08-28**. At the limit, *"AI features stop working for that specific user"* until the next cycle |
+| **Cost** | **$1.58/review** (516 reviews, $815.58) — the largest single cost line in the stack |
+| **Source** | Dashboard readings 2026-08-21/22 ([#1204](https://github.com/auerbachb/claude-code-config/issues/1204), [`ai-review-billing-dashboard-2026-08.md`](./ai-review-billing-dashboard-2026-08.md)) |
+
+**The attribution dispute is settled.** #1204 recorded two readings of the $815.58 — genuine BugBot
+spend, or IDE usage mislabelled as `github_bugbot`. The #1228 dashboard event log (763 runs, 324
+PRs, per-PR rows) confirms it really is BugBot. `pricing-matrix.md` §Cursor BugBot still carries the
+older *"Unresolved attribution"* wording; see Follow-ups.
+
+### Incidence and participation
+
+- **176 of 268 PRs (66%)** carried the refusal phrase `hit a usage or spend limit`, spanning PR
+  [#982](https://github.com/auerbachb/claude-code-config/pull/982) → PR
+  [#1332](https://github.com/auerbachb/claude-code-config/pull/1332) — continuous across the window,
+  not a burst. PR [#1265](https://github.com/auerbachb/claude-code-config/pull/1265) alone carries
+  **8** refusal comments; the finding named two, from the truncated run.
+- **248 PRs touched, 153 review objects, 150 inline findings, 553 issue comments, 0
+  `CHANGES_REQUESTED`, sole source of findings on 29 PRs.** Coverage is real in the same window it
+  spent capped.
+
+### Is BugBot satisfying any merge gate?
+
+**No — and the zero is structural, not a regression.** BugBot posted **0 `APPROVED` review objects
+across all 268 PRs**, which is expected: it signals a clean pass through the `Cursor Bugbot`
+check-run, never a review object (`approves_via: "check_run"`). On PR #1265 — examined in full — the
+gate was carried by a **CodeAnt `APPROVED` on HEAD**, which short-circuits `merge-gate.sh` before the
+BugBot path is evaluated at all. As with CodeRabbit, the cost of the cap is **finding coverage**, not
+gate coverage.
+
+### The failure shape is not what the rules describe
+
+`bugbot.md` §BugBot failure detection and `pricing-matrix.md` both record the dangerous shape as a
+`conclusion: "success"` check-run paired with a failure-phrase comment — an exhausted budget that
+reads as a clean pass. **In this window it does not occur.**
+
+| Sample | `Cursor Bugbot` conclusion |
+|---|---|
+| 20 sampled capped PRs, #982..#1332 — 19 retrievable (PR #1130 404s) | **`neutral`** (17), no check-run at all (2) — **zero `success`** |
+| Non-capped PRs #963, #965, #970 | **`success`** — BugBot's genuine silent clean pass |
+
+The two shapes are cleanly distinguishable, and the refusal now takes the one that was never a pass
+shape to begin with. This makes the recorded danger *smaller* than believed — but it is a **sample,
+not a census**, and a vendor can revert a shape silently, so nothing is relaxed on the strength of it.
+
+### The guard holds either way — verified against real data
+
+PR #1265 is merged, so a live `merge-gate.sh 1265` short-circuits on `PR #1265 is MERGED — not open`
+and never reaches the BugBot block. The verification therefore replays #1265's **real captured
+payload** — reviews, both comment endpoints, HEAD check-runs, real HEAD committer date
+`2026-08-23T01:45:21Z` — through the real `merge-gate.sh --reviewer bugbot`, with the CR-path
+approvers' review objects removed so the BugBot path is the only thing that could satisfy the gate:
+
+| Variant | Payload | Result |
+|---|---|---|
+| **A** | real: `neutral` check-run + real refusal comment postdating HEAD | `met: false` — *no BugBot review on HEAD 4cc2020* |
+| **B** | identical, conclusion mutated `neutral` → **`success`** (the exact shape the AC names) | `met: false` |
+| **C** | *negative control:* `success`, refusal comments **stripped** | `met: true` |
+
+**C is what makes B meaningful.** Without it, `met: false` could have come from anything else in a
+real payload; the only difference between B and C is the real refusal comment, and it flips the
+verdict. Two independent blocks are in play: `BB_HAS_FAILURE_COMMENT` short-circuits the silent-pass
+path entirely, and `neutral` is not `success` anyway. Offline regression coverage passes unchanged —
+`merge-gate-bugbot.test.sh` **21/21**, whose scenario 8 pins exactly the `success`+refusal case.
+
+**One-nudge-per-HEAD suppression holds.** `bugbot-refused-head.sh 1265 4cc2020…` exits **0**
+(suppress) on the real refused HEAD, against exit **1** (post) on PR #970's un-refused HEAD — the
+discriminating control. `maybe-trigger-bugbot-suppression.test.sh` passes **16/16**.
+
+### Drift cleared
+
+`drift.sh` against this snapshot: **exit 3** with `D3 bugbot high` before the baseline edit, **exit 0
+with zero findings** after. `bugbot/D3` no longer fires, and `coderabbit/D3` stays clear.
+
+### Chain position: retained
+
+**BugBot keeps the first-fallback slot.** The finding invited either "raise the cap" or "move it down
+the chain"; the numbers decline both. **Demotion** would promote **Greptile** — capped at $100
+(#1228) against BugBot's $1,000 — into the first-fallback slot, reaching the *cheaper* cap sooner,
+while discarding the 29 PRs where BugBot was the sole finder. **Raising the cap** needs roughly
+$400–500/month more (a ceiling near $1,400–1,500) while the free levers sit untouched: Trigger Mode
+`Every Push` → per PR, Incremental Review → On, Draft PRs → Off, Effort `High` → Medium, Autofix off
+(**299 runs, 0 merged**). Narrowing scope is strictly cheaper than buying headroom for re-reviews of
+every push at high effort. Recorded in
+[`ai-review-chain-roles-decision.md`](./ai-review-chain-roles-decision.md) §BugBot cap +
+chain-position reconciliation. **Advisory — no routing rule changed.**
+
+### BugBot follow-ups
+
+1. **`bugbot.md` and `pricing-matrix.md` describe the wrong failure shape.** Both say the spend-limit
+   refusal concludes `success`; measured, it concludes `neutral`. A rule-corpus edit is out of scope
+   here (advisory audit, and the corpus is owned by a sibling PR). Needs its own issue.
+2. **`pricing-matrix.md` §Cursor BugBot still calls the attribution "unresolved".** #1228 settled it.
+   Same PR as BugBot follow-up 1.
+
 ## Cadence
 
 Monthly, via `/review-stack-audit`. The recurrence is a session-start watermark check, not a
-scheduled job — see SKILL.md Step 1. Next run should confirm `coderabbit/D3` stays clear and should
-re-read the Fair Usage band, which moves with review volume rather than with any setting.
+scheduled job — see SKILL.md Step 1. Next run should confirm `coderabbit/D3` and `bugbot/D3` stay
+clear, re-read the Fair Usage band (which moves with review volume rather than with any setting), and
+re-read BugBot's on-demand meter after the **2026-08-28** cycle reset — the first post-reset window is
+the one that shows whether the refusals stop or the cap is simply reached again.
