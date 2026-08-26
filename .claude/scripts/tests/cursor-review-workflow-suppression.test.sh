@@ -475,6 +475,30 @@ done
 cp "$TMP/helper.real" "$CONTRACT"
 
 ############################################################################
+echo "== (l): PREMISE — the helper under test is the one production will run =="
+# Scenarios (a)-(j) copy the WORKING TREE's helper, while production checks out
+# base.sha. Where the base revision is reachable, prove the two match, so a PR
+# that edits the helper gets a LOUD failure here saying those scenarios no
+# longer describe what CI runs and only (k)'s contract coverage carries — the
+# same loud-on-drift standard this file already applies to the workflow body.
+# Where the base is unreachable (CI checks out shallow) this reports UNVERIFIED
+# instead of passing quietly; the suite never claimed to test the base copy, so
+# every other assertion stands either way (CodeAnt, PR #1377).
+BASE_REF=""
+for cand in origin/main main; do
+  if git rev-parse --verify --quiet "$cand^{commit}" >/dev/null 2>&1; then BASE_REF="$cand"; break; fi
+done
+if [[ -z "$BASE_REF" ]]; then
+  echo "UNVERIFIED — no base revision reachable here; (k) carries the helper contract"
+else
+  for f in .claude/scripts/bugbot-refused-head.sh .claude/scripts/lib/ts-normalizer.sh; do
+    base_hash="$(git rev-parse --verify --quiet "$BASE_REF:$f" 2>/dev/null || echo "absent-on-base")"
+    check_eq "$(basename "$f") is identical to $BASE_REF (else update this suite: CI runs the base copy)" \
+      "$base_hash" "$(git hash-object "$REPO_ROOT/$f")"
+  done
+fi
+
+############################################################################
 echo "== (i): YAML wiring — the guard is actually consulted =="
 # Behaviour of these lines lands on CI evidence; the wiring is checkable here.
 POSTING_IF="$(wf_query posting-if)" || { echo "FAIL — $POSTING_IF"; exit 1; }
