@@ -25,7 +25,15 @@
 #                              run) and left no evidence outside the approval
 #                              object that it read the commit anyway.
 #   3. self_report_mismatch  — the reviewer's own latest SHA-naming comment names
-#                              a commit other than the one it approved.
+#                              a commit other than the one it approved, AND that
+#                              reviewer left no HEAD-anchored inline comments.
+#                              Inline comments (commit_id AND original_commit_id
+#                              == HEAD) are first-party evidence of which SHA
+#                              was read, so they supersede a stale status table
+#                              (inventory #416 / this repo #1380). A long
+#                              approval body or SHA-less descriptive comment
+#                              does NOT clear the mismatch — that would re-open
+#                              the rubber-stamp hole and the #927 launder.
 #   4. substantive           — review body OR inline comments on HEAD OR a
 #                              same-SHA status comment naming HEAD OR a long
 #                              descriptive comment in the current review round.
@@ -102,7 +110,9 @@
 #                             or bypass an existing wrong-commit hard block.
 #   self_report_mismatch      among that bot's conversation comments containing any
 #                             SHA-like token, the MOST RECENT one names no SHA
-#                             matching HEAD. SHA-like = \b[0-9a-f]{7,40}\b with at
+#                             matching HEAD, unless that bot also left inline
+#                             comments anchored to HEAD (inventory #416 / #1380).
+#                             SHA-like = \b[0-9a-f]{7,40}\b with at
 #                             least one a-f letter, PLUS two all-decimal admissions
 #                             (issue #894): a run that prefix-matches HEAD, and a
 #                             run that is a complete inline code span. The code-span
@@ -139,8 +149,10 @@
 #                             descriptive current-round comment, or a substantive
 #                             non-APPROVED review); what suppresses a
 #                             temporal_inversion verdict
-#   counts_as_coverage        approved AND substantive AND none of the three
-#                             disqualifiers above
+#   counts_as_coverage        approved AND substantive AND none of the
+#                             disqualifiers above. self_report_mismatch is
+#                             omitted from that set when inline_comments_on_head
+#                             > 0 (inventory #416 / this repo #1380).
 #
 # `corroborating` lists reviewers with a substantive footprint on HEAD that did
 # not themselves approve (typically cursor[bot]). It is REPORTED, never gating:
@@ -708,7 +720,8 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         # HEAD"s SHA. This admission channel is intentionally one-directional: it
         # feeds only external substance and never $selfrep or $mismatch. An
         # existing wrong-SHA self-report therefore remains a hard disqualifier
-        # even when this value is true.
+        # even when this value is true. The only suppressor is HEAD-anchored
+        # inline comments, applied at $mismatch (inventory #416 / #1380).
         | ( $marker != null and
             ([ $mine[]
                | select(.authored_len >= $min_chars
@@ -740,9 +753,16 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         # an older comment naming HEAD, edited later for unrelated reasons, could
         # sort last and mask the bot"s genuinely newest SHA-naming post (BugBot
         # review, PR #883). Post time is the stable, monotonic dimension.
+        # HEAD-anchored inline comments suppress the mismatch (inventory #416 /
+        # #1380): they are first-party evidence of which SHA was read
+        # (commit_id AND original_commit_id == HEAD), so a stale CodeAnt
+        # status table — which records only push-triggered auto-reviews — must
+        # not veto a genuine manual review. A long approval body or SHA-less
+        # descriptive comment does NOT suppress it (rubber-stamp / #927).
         | ( [ $mine[] | select((.tokens | length) > 0) ]
             | sort_by(.created) | last )                                   as $selfrep
-        | ( $selfrep != null and ($selfrep.names_head | not) )             as $mismatch
+        | ( $selfrep != null and ($selfrep.names_head | not)
+            and (($inl | length) == 0) )                                   as $mismatch
 
         # Capability failure: a post-push notice that this reviewer could not
         # review, and no evidence outside the approval object that it read the
