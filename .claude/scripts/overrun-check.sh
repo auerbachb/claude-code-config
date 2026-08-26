@@ -233,19 +233,27 @@ if [[ -n "$WINDOW_DEADLINE" && "$WINDOW_DEADLINE" =~ ^[0-9]+$ ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Write the first-breach marker to session-state (must succeed before alerting)
+# Atomically claim the first-breach marker via CAS (null → value).
+# This prevents two concurrent checks from both observing no marker and
+# both emitting an alert (TOCTOU). Only the winner of the CAS emits.
 # ---------------------------------------------------------------------------
 # Guard: REPO_KEY must be present (STATE_READABLE guarantees this, but make it
 # explicit at the write site so the marker block is self-contained).
 if [[ -z "$REPO_KEY" ]]; then exit 0; fi
 NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 MARKER_JSON="{\"alerted_at\":\"${NOW_ISO}\",\"bound_min\":${BOUND_MIN}}"
-WRITE_RC=0
+CAS_RC=0
 "$SESSION_STATE_SH" "${REPO_ARGS[@]}" \
-  --set ".repos[\"$REPO_KEY\"].prs[\"$PR_NUMBER\"].overrun=${MARKER_JSON}" \
-  2>/dev/null || WRITE_RC=$?
-if [[ "$WRITE_RC" -ne 0 ]]; then
-  # Cannot write marker — first-breach-only semantics cannot be guaranteed;
+  --cas ".repos[\"$REPO_KEY\"].prs[\"$PR_NUMBER\"].overrun=${MARKER_JSON}" \
+  --expect null \
+  2>/dev/null || CAS_RC=$?
+if [[ "$CAS_RC" -eq 7 ]]; then
+  # CAS loss — another concurrent check already claimed the marker; treat as
+  # already alerted so we do not double-emit.
+  exit 2
+fi
+if [[ "$CAS_RC" -ne 0 ]]; then
+  # I/O or lock failure — first-breach-only semantics cannot be guaranteed;
   # skip silently rather than risk a repeated alert on the next tick.
   exit 0
 fi

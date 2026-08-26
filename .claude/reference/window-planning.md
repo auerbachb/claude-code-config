@@ -50,13 +50,13 @@ Or via `--stall-margin N` argument to `window-plan.sh`.
 
 `window-plan.sh` emits a single line:
 ```
-window_minutes=480 stall_margin_min=60 effective_window_min=420 deadline_epoch=1787549400
+window_minutes=480 stall_margin_min=60 effective_window_min=420 deadline_epoch=1787709600
 ```
 
 `/pm` persists this to `session-state.json`:
 ```json
 ".repos[\"owner/repo\"].window": {
-  "deadline_epoch": 1787549400,
+  "deadline_epoch": 1787709600,
   "window_minutes": 480,
   "effective_window_min": 420,
   "set_at": "2026-08-25T18:00:00Z"
