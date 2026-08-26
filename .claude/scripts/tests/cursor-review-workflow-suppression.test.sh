@@ -36,6 +36,13 @@
 #   bare-call variant of the body, which must FAIL; (j) feeds the body a SHA the
 #   harness never vouched for, which the stub must catch.
 #
+# WHICH HELPER IS UNDER TEST
+#   The scenarios run against the WORKING TREE's bugbot-refused-head.sh, while
+#   production runs the BASE branch's (the workflow pins `base.sha`). Those are
+#   the same file on any PR that does not edit the helper, and scenario (k)
+#   covers the case where they diverge by proving the body against the exit-code
+#   contract rather than one implementation.
+#
 # WHAT THIS CANNOT PROVE (lands on CI evidence)
 #   That Actions wires `steps.suppress-check.outputs.suppressed` into the
 #   comment step's `if:`, that the base-SHA checkout lands the helper on the
@@ -93,6 +100,7 @@ check_contains() {
 
 PR_NUM="99553"
 HEAD_SHA="deadbeef0000000000000000000000000000abcd"
+GH_REPO_FIXTURE="auerbachb/claude-code-config"
 STEP_ID="suppress-check"
 
 # ---- read the workflow, by structure ----------------------------------------
@@ -133,6 +141,17 @@ if mode == "step-field":
     if field not in step:
         sys.exit("step %r has no %r" % (sys.argv[3], field))
     print(step[field], end="")
+elif mode == "step-env":
+    # The harness injects GH_REPO/GH_TOKEN/PR_NUMBER/HEAD_SHA from outside the
+    # extracted body, so a workflow that dropped or misnamed one of them would
+    # still pass every scenario (CodeAnt, PR #1377). Only the YAML can answer
+    # whether the real step declares them, so assert them here.
+    step, key = by_id(sys.argv[3]), sys.argv[4]
+    env = step.get("env") or {}
+    if key not in env:
+        sys.exit("step %r declares no env %r (has: %s)"
+                 % (sys.argv[3], key, ", ".join(sorted(env)) or "<none>"))
+    print(env[key], end="")
 elif mode == "posting-if":
     print(posting_step().get("if", ""), end="")
 elif mode == "checkout-ref":
@@ -230,6 +249,11 @@ if [[ "${FIXTURE_API_FAIL:-0}" == "1" ]]; then exit 1; fi
 # scenario's own assertion moves too rather than the log being the only witness.
 bad() { printf '%s\n' "$1" >> "$STUB_ERR"; exit 1; }
 served() { printf '%s\n' "$1" >> "$STUB_CALLS"; }
+# The real gh resolves {owner}/{repo} from GH_REPO and authenticates with
+# GH_TOKEN, so a body that unset or overrode either would fail open in
+# production while this stub happily answered. Refuse to answer without them.
+[[ "${GH_REPO:-}" == "$EXPECT_REPO" ]] || bad "GH_REPO '${GH_REPO:-}' != expected '$EXPECT_REPO'"
+[[ -n "${GH_TOKEN:-}" ]] || bad "GH_TOKEN is empty — the real gh would be unauthenticated"
 for arg in "$@"; do
   case "$arg" in
     repos/*/commits/*/check-runs*)
@@ -283,7 +307,7 @@ setup() {
   printf '%s\n' '{"check_runs":[{"name":"Cursor Bugbot","app":{"slug":"cursor"},"status":"completed","conclusion":"neutral"}]}' > "$TMP/check-runs.json"
   export FIXTURE_CHECK_RUNS_JSON="$TMP/check-runs.json"
   # What the guard body is expected to forward — never what it actually sent.
-  export EXPECT_SHA="$HEAD_SHA" EXPECT_PR="$PR_NUM"
+  export EXPECT_SHA="$HEAD_SHA" EXPECT_PR="$PR_NUM" EXPECT_REPO="$GH_REPO_FIXTURE"
   : > "$OUT"; : > "$STUB_ERR"; : > "$STUB_CALLS"
 }
 
@@ -294,7 +318,7 @@ run_guard() {
   local pr="${1-$PR_NUM}" script="${2-$RUNFILE}"
   (
     cd "$WORK" || exit 99
-    HOME="$TMP_HOME" GITHUB_OUTPUT="$OUT" GH_REPO="auerbachb/claude-code-config" \
+    HOME="$TMP_HOME" GITHUB_OUTPUT="$OUT" GH_REPO="$GH_REPO_FIXTURE" \
       GH_TOKEN="stub" PR_NUMBER="$pr" HEAD_SHA="${GUARD_HEAD_SHA:-$HEAD_SHA}" \
       PATH="$STUB_BIN:$PATH" \
       bash --noprofile --norc -eo pipefail "$script" >/dev/null 2>&1
@@ -409,6 +433,32 @@ check_eq "a SHA the harness never vouched for cannot suppress" \
   "suppressed=false" "$(emitted)"
 
 ############################################################################
+echo "== (k): the body honours the EXIT-CODE CONTRACT, whichever helper ships =="
+# Production runs the BASE-branch helper (the checkout pins base.sha) while this
+# harness copies the working tree's, so a PR that edited the helper would be
+# proving something about code CI does not run (CodeAnt, PR #1377). Loading the
+# base revision instead would not fix it — CI checks out shallow, so the lookup
+# would fail there and a fallback would pass vacuously, which is the failure
+# mode this file exists to avoid.
+#
+# So the gap is closed from the other side: the body is proven to map every
+# documented exit code correctly, which holds for ANY conforming helper version.
+# Conformance itself is enforced by the helper's own suite
+# (maybe-trigger-bugbot-suppression.test.sh), so base and PR copies are
+# interchangeable here as far as this body is concerned.
+CONTRACT="$WORK/.claude/scripts/bugbot-refused-head.sh"
+cp "$CONTRACT" "$TMP/helper.real"
+for spec in "0:suppressed=true" "1:suppressed=false" "2:suppressed=false"; do
+  code="${spec%%:*}"; want="${spec#*:}"
+  setup 600 "[]"
+  printf '#!/usr/bin/env bash\nexit %s\n' "$code" > "$CONTRACT"
+  run_guard; RC=$?
+  check_eq "helper exit $code keeps the step green" "0" "$RC"
+  check_eq "helper exit $code -> $want" "$want" "$(emitted)"
+done
+cp "$TMP/helper.real" "$CONTRACT"
+
+############################################################################
 echo "== (i): YAML wiring — the guard is actually consulted =="
 # Behaviour of these lines lands on CI evidence; the wiring is checkable here.
 POSTING_IF="$(wf_query posting-if)" || { echo "FAIL — $POSTING_IF"; exit 1; }
@@ -434,6 +484,18 @@ WARN_TABLE="$(wf_query if-truth-table warn)" || { echo "FAIL — $WARN_TABLE"; e
 check_eq "the annotation fires ONLY on a suppressed run that had the PAT" \
   "token=1,suppressed=1:1 token=1,suppressed=0:0 token=0,suppressed=1:0 token=0,suppressed=0:0" \
   "$WARN_TABLE"
+
+# The four values the body reads. run_guard supplies them from outside the
+# extracted script, so only these assertions can catch a step that stopped
+# declaring one — the scenarios never would.
+check_eq "step passes the repository to the helper" "\${{ github.repository }}" \
+  "$(wf_query step-env "$STEP_ID" GH_REPO)"
+check_eq "step passes a token to the helper" "\${{ github.token }}" \
+  "$(wf_query step-env "$STEP_ID" GH_TOKEN)"
+check_eq "step passes THIS PR's number" "\${{ github.event.pull_request.number }}" \
+  "$(wf_query step-env "$STEP_ID" PR_NUMBER)"
+check_eq "step passes the PR's HEAD sha, not the base sha" \
+  "\${{ github.event.pull_request.head.sha }}" "$(wf_query step-env "$STEP_ID" HEAD_SHA)"
 
 check_eq "guard step never fails the job" "True" "$(wf_query step-field "$STEP_ID" continue-on-error)"
 check_eq "guard step is gated on the PAT" "env.HAS_TRIGGER_TOKEN == 'true'" \
