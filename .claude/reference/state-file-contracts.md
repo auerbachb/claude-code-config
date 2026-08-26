@@ -106,12 +106,19 @@ Adding scoping did not rewrite entries already on disk. Legacy entries lacking `
 
 Repair with `session-state-audit.sh --apply --reattribute`, which moves entries into their correct scope by matching HEAD SHA. `--prune` additionally drops entries whose PRs are merged. The audit backs the file up first, holds the write lock for the duration, and re-checks integrity afterward.
 
-## Field-type contract (issue #625)
+## Field-type contract (issues #625, #1283)
 
 `session-state.sh` enforces JSON types on known fields:
 
-- a `--set` carrying the wrong type exits **4** and leaves the file unmodified
+- a `--set` **or `--cas`** carrying the wrong type exits **4** and leaves the file unmodified
 - a `--get` against a corrupted field warns and returns a type-appropriate safe default
+
+Both write paths run the identical check, through one shared
+`enforce_field_type_contract()`, against the candidate document and before the
+atomic `mv` — so no value is acceptable through one path and rejected through
+the other (issue #1283 closed that gap; `--cas` previously skipped the check
+entirely). For `--cas` the check runs only after the compare succeeds, so a
+type violation (**4**) stays distinct from a lost race (**7**).
 
 The most common way to corrupt a field is passing a raw jq filter as a `--set` value — the string is stored literally instead of being evaluated. Evaluate first, then pass the resulting scalar.
 
