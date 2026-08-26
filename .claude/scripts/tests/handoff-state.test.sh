@@ -393,6 +393,61 @@ check_eq "#853: null still stored as null type" "null" \
   "$(jq -r '.blocked_on | type' "$HANDOFF_FILE")"
 
 echo
+echo "== --set: the compile probe never EXECUTES the value (PR #1378) =="
+# jq comments run to end of line, and the probe used to be one line
+# (`def p: VALUE; empty`). A value ending in `#` swallowed the terminator and
+# promoted its OWN tail to top-level expression, which jq then ran during what
+# is meant to be a compile-only check: `.a + 1; def g: 1; last(repeat(1)) #`
+# looped forever while this script held the state lock, blocking every sibling
+# pipeline. Two defences are pinned here — the value now occupies its own line,
+# and a value containing `#` skips the probe entirely, because past a comment
+# jq would be judging only the PREFIX and calling prose an expression.
+reset_handoff
+run --create "$PR" "$SEED_JSON"
+run --set "$PR" ".notes=phase_a_findings"
+
+# Bounded, so a regression FAILS the suite instead of hanging it forever.
+set_bounded() {                    # set_bounded <value> -> echoes rc (124 = hung)
+  local value="$1" pid rc waited=0
+  bash "$SCRIPT" --set "$PR" ".notes=${value}" >/dev/null 2>&1 &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if [[ $waited -ge 10 ]]; then
+      kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+      rm -rf "$LOCK_DIR"   # the killed probe still held it; keep failures local
+      echo 124; return
+    fi
+    sleep 1; waited=$((waited + 1))
+  done
+  wait "$pid"; rc=$?
+  echo "$rc"
+}
+
+HANG_SHAPE='.a + 1; def g: 1; last(repeat(1)) #'
+check_eq "infinite-loop shape does not hang the probe" "0" "$(set_bounded "$HANG_SHAPE")"
+check_eq "infinite-loop shape round-trips verbatim as a string" "$HANG_SHAPE" \
+  "$(jq -r '.notes' "$HANDOFF_FILE")"
+
+ERROR_SHAPE='.a + 1; def g: 1; error("BOOM") #'
+check_eq "error() shape does not run during the probe" "0" "$(set_bounded "$ERROR_SHAPE")"
+check_eq "error() shape round-trips verbatim as a string" "$ERROR_SHAPE" \
+  "$(jq -r '.notes' "$HANDOFF_FILE")"
+check_eq "file still valid JSON after both probe shapes" "0" \
+  "$(jq -e . "$HANDOFF_FILE" >/dev/null 2>&1; echo $?)"
+
+# Parity: line discipline ALONE would start refusing prose whose pre-`#` prefix
+# happens to parse. The `#` bail-out keeps these on the string path, exactly
+# where the single-line probe left them — zero verdict changes, hole closed.
+check_string_set "prose carrying an issue number" ".notes + issue #1357 details"
+check_string_set "two dotted paths and a PR reference" ".claude/rules + .claude/reference # see PR #1378"
+check_string_set "expression-shaped text ending in a comment" '.notes + " x" #'
+
+# Negative control: the `#` bail-out must not blunt the guard for values without
+# one, or this whole section would pass by disabling the feature under test.
+RC="$(run --set "$PR" '.notes=.notes + " clobbered"' >/dev/null 2>&1; echo $?)"
+check_eq "incident shape still exits 4 with the # bail-out in place" "4" "$RC"
+
+echo
 echo "== --append: jq-expression guard is --set-only (scope boundary) =="
 # --append does not share --set's value branch and cannot clobber a prior value,
 # so issue #1357 deliberately left it alone. This pins that decision: a future

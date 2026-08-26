@@ -485,15 +485,45 @@ if [[ "$MODE" == "set" ]]; then
     #   3. It COMPILES as a jq program. Signals 1+2 alone would reject prose
     #      like `.env + .env.local are ignored`; that text is not valid jq, so
     #      this check keeps it on the string path. The probe wraps the value in
-    #      a `def` that is never invoked and runs `empty` under -n, so nothing
-    #      in the value is evaluated and no input is read.
+    #      a `def` that is never invoked and leaves `empty` as the only
+    #      top-level expression, so nothing in the value is evaluated and no
+    #      input is read.
     # Anything short of all three keeps the pre-existing store-as-string
     # behavior, so an unrecognized expression degrades to today's semantics
     # rather than to a new failure.
+    #
+    # A jq comment runs to end of line, and both defences below exist because
+    # of that (CodeAnt, PR #1378 / issue #1357):
+    #
+    #   * The probe is assembled across FOUR LINES — the value gets a line of
+    #     its own; the `;` terminator and `empty` get theirs. On one line, a
+    #     value ending in `#` swallows the terminator and promotes its OWN
+    #     tail to top-level expression, which jq then EXECUTES during what is
+    #     supposed to be a compile: `.a + 1; def g: 1; last(repeat(1)) #` hung
+    #     a single-line probe indefinitely while this script held the state
+    #     lock, blocking every sibling pipeline. Confined to its own line, a
+    #     comment can no longer reach the terminator, so the top-level
+    #     expression is always the standalone `empty` and nothing evaluates.
+    #
+    #   * A value containing `#` at all skips the probe. Line discipline stops
+    #     the comment at the value, but INSIDE the value it still hides
+    #     everything after it, so jq would be judging a PREFIX and reporting
+    #     "compiles" for text that is not an expression: `.claude/rules +
+    #     .claude/reference # see PR #1378` compiles down to `.claude/rules +
+    #     .claude/reference` and would be refused as an expression. Declining
+    #     to judge is the conservative branch — a `#` value stores as a string
+    #     exactly as it does today. It also costs a false NEGATIVE on real jq
+    #     carrying a `#` in a string literal (`.notes + "issue #1357"`), which
+    #     is the direction this guard is allowed to be wrong in.
     _JQ_EXPR_START='^[[:space:]]*\(?[[:space:]]*\.[A-Za-z_]'
     _JQ_EXPR_OPS='(\||//|\+|map\(|select\()'
-    if [[ "$JQ_VAL" =~ $_JQ_EXPR_START ]] && [[ "$JQ_VAL" =~ $_JQ_EXPR_OPS ]] \
-       && jq -n "def _handoff_set_probe: ${JQ_VAL}; empty" </dev/null >/dev/null 2>&1; then
+    _JQ_PROBE="def _handoff_set_probe:
+${JQ_VAL}
+;
+empty"
+    if [[ "$JQ_VAL" != *'#'* ]] \
+       && [[ "$JQ_VAL" =~ $_JQ_EXPR_START ]] && [[ "$JQ_VAL" =~ $_JQ_EXPR_OPS ]] \
+       && jq -n "$_JQ_PROBE" </dev/null >/dev/null 2>&1; then
       echo "handoff-state.sh: refusing to write — the value for '$JQ_PATH' is an unevaluated jq expression, not data: '$JQ_VAL' (see issue #1357); evaluate it first and pass the resulting scalar; $HANDOFF_FILE left unmodified" >&2
       state_lock_release; exit 4
     fi
