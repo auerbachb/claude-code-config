@@ -29,6 +29,8 @@ ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
 CR_PLAN=$(resolve_script cr-plan.sh || true)
 SESSION_STATE_SH=$(resolve_script session-state.sh || true)
 ISSUE_DEDUP=$(resolve_script issue-dedup.sh || true)
+ESTIMATE_RESOLVE_SH=$(resolve_script estimate-resolve.sh || true)
+OVERRUN_CHECK_SH=$(resolve_script overrun-check.sh || true)
 ```
 
 `handoff-state.sh` (Step 8), `ac-checkboxes.sh`, `escalate-review.sh`, and `local-review.sh` are resolved by the phase agents themselves, inside the spawn prompts — the RESOLVE block inserted with SAFETY/MINDSET/SKILLS carries the same candidate order to them. Read reference docs (`chip-launching.md`, `subagent-phase-guardrails.md`, `issue-claim.md`, `merge-sequencing.md`) through the matching `.claude/reference/` order.
@@ -40,6 +42,8 @@ ISSUE_DEDUP=$(resolve_script issue-dedup.sh || true)
 - `SESSION_STATE_SH` empty → **required**. Print `ERROR: session-state.sh not found (checked all three paths) — agent tracking and refill state unavailable` and do not spawn; an untracked agent is one nothing will ever reap.
 - `ISSUE_CLAIM` empty → **optional**. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — Step 6 claim gate skipped` and continue.
 - `CR_PLAN` empty → **optional**. Print `DEGRADED: cr-plan.sh not found (checked all three paths) — CR plan detection skipped` and continue with Claude's own plan.
+- `ESTIMATE_RESOLVE_SH` empty → **optional**. Print `DEGRADED: estimate-resolve.sh not found (checked all three paths) — planning-bound lookup unavailable; overrun check skipped` and skip the overrun check in Step 8 (BOUND_MIN cannot be derived without it).
+- `OVERRUN_CHECK_SH` empty → **optional**. Print `DEGRADED: overrun-check.sh not found (checked all three paths) — in-flight overrun alerts unavailable` and skip the overrun check in Step 8.
 
 The Step 4 too-big criteria need no fallback — they are written inline in this file, so that contract already travels. Only their per-criterion rationale doc (`too-big-recalibration-2026-07.md`) is a fallback read.
 
@@ -459,8 +463,44 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    - Execute the appropriate Completion Protocol (see below).
 3. **Check for pending transitions from prior cycles.** Read `session-state.json` for PRs where a phase completed but the next phase was not launched.
 4. **Refill free capacity.** Below the ceiling — slot freed *or* never filled — launch per Step 7's refill rule on this tick: read the refill pause first (Step 7), then chains and re-validation. Report the picks; if a slot stays empty, name why (`/pm` Step 3.4's reasons).
-5. **Send heartbeat.** If >5 minutes since last user message, send a status update. Include: active agents, PR phases, pending transitions, blockers. Always start with a timestamp: `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`.
-6. **Check for stale agents.** >15 min for Phase A, >10 min for Phase B, >5 min for Phase C without reporting — investigate.
+5. **Check per-pipeline overrun (when `OVERRUN_CHECK_SH` and `ESTIMATE_RESOLVE_SH` are resolved and a window is active).** For each active PR, derive BOUND_MIN from the issue's estimate, then call the overrun check. Skip silently if either helper is unavailable.
+   ```bash
+   # Derive planning bound from the issue's estimate (requires ESTIMATE_RESOLVE_SH)
+   BOUND_MIN=""
+   if [[ -n "$ESTIMATE_RESOLVE_SH" && -n "$ISSUE_NUM" ]]; then
+     EST_STR=$("$ESTIMATE_RESOLVE_SH" "$ISSUE_NUM" 2>/dev/null) && \
+       BOUND_MIN=$(printf '%s' "$EST_STR" | sed 's/.*plan on \([0-9]*\).*/\1/' | grep -E '^[0-9]+$' || true)
+   fi
+   # Read window deadline and batch issues from session-state (/pm Step 0b/1B.5)
+   REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+   DEADLINE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window.deadline_epoch" 2>/dev/null) || DEADLINE=""
+   [[ "$DEADLINE" == "null" ]] && DEADLINE=""
+   BATCH_ISSUES=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window.batch_issues" 2>/dev/null) || BATCH_ISSUES=""
+   [[ "$BATCH_ISSUES" == "null" ]] && BATCH_ISSUES=""
+   # Scope deadline: only pass it when PR is part of the window batch AND deadline is not yet expired
+   SCOPED_DEADLINE=""
+   NOW_NOW=$(date +%s 2>/dev/null) || NOW_NOW=0
+   if [[ -n "$DEADLINE" && "$DEADLINE" =~ ^[0-9]+$ && "$DEADLINE" -gt "$NOW_NOW" ]]; then
+     # Deadline is only valid for PRs explicitly in the window batch (BATCH_ISSUES is a JSON array ["N","M",...])
+     # Require explicit membership — do NOT fall back to "allow all" when BATCH_ISSUES is empty.
+     if [[ -n "$BATCH_ISSUES" ]] && printf '%s' "$BATCH_ISSUES" | grep -qE '"'"$ISSUE_NUM"'"'; then
+       SCOPED_DEADLINE="$DEADLINE"
+     fi
+   fi
+   if [[ -n "$OVERRUN_CHECK_SH" && -n "$BOUND_MIN" ]]; then
+     # Build OTHER_ISSUES: batch members excluding the current PR (comma-separated issue numbers)
+     OTHER_ISSUES=$(printf '%s' "$BATCH_ISSUES" | sed 's/[][" ]//g' | tr ',' '\n' \
+       | grep -v "^${ISSUE_NUM}$" | paste -sd ',' - 2>/dev/null || true)
+     OVERRUN_RC=0
+     ALERT=$("$OVERRUN_CHECK_SH" --pr "$PR_NUM" --bound-min "$BOUND_MIN" \
+       --started-at "$STARTED_AT" ${SCOPED_DEADLINE:+--window-deadline "$SCOPED_DEADLINE"} \
+       ${SCOPED_DEADLINE:+${OTHER_ISSUES:+--window-issues "$OTHER_ISSUES"}}) || OVERRUN_RC=$?
+     # RC=0: no breach — silent. RC=1: first breach — emit ALERT (bounded exception). RC=2: already alerted — silent.
+     [[ "$OVERRUN_RC" -eq 1 ]] && echo "$ALERT"
+   fi
+   ```
+6. **Send heartbeat.** If >5 minutes since last user message, send a status update. Include: active agents, PR phases, pending transitions, blockers. Always start with a timestamp: `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`.
+7. **Check for stale agents.** >15 min for Phase A, >10 min for Phase B, >5 min for Phase C without reporting — investigate.
 
 ### Permitted activities in monitor mode:
 - Poll subagent status

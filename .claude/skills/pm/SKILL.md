@@ -11,7 +11,7 @@ triggers:
   - priority list
   - full ranking
   - work the backlog all day
-argument-hint: "[day | --run] (optional — continuous mode: this thread becomes the repo's standing worker, looping rank → dispatch → merge → refill with between-turn liveness; see Step 2D) | [resume] (optional — 'resume' reads in-flight state from session files to continue a previous PM session) | [--no-clean | fast] (optional — skip the always-on inline /pm-clean cleanup for a ranking-only run) | [business goal] (optional — ranks the backlog by impact on that goal, e.g. 'increase scraping throughput')"
+argument-hint: "[day | --run] (optional — continuous mode: this thread becomes the repo's standing worker, looping rank → dispatch → merge → refill with between-turn liveness; see Step 2D) | [resume] (optional — 'resume' reads in-flight state from session files to continue a previous PM session) | [--no-clean | fast] (optional — skip the always-on inline /pm-clean cleanup for a ranking-only run) | [--window \"until HH:MM\"|\"N hours\"|\"overnight\"] (optional — fit the batch inside a planning window; see Step 0b) | [business goal] (optional — ranks the backlog by impact on that goal, e.g. 'increase scraping throughput')"
 ---
 
 Active PM orchestrator. Manages which issues are being worked on across coding threads, tracks progress, and suggests next work.
@@ -32,6 +32,7 @@ Parse `$ARGUMENTS` in this order — day tokens first (so they never fall throug
 
   **Validate both as unsigned integers with `[[ "$v" =~ ^[0-9]+$ ]]` before range-checking**, and reject anything failing either test — naming the rejected input and falling back to the documented default. The pattern test is not belt-and-braces: both values are interpolated into 2D.2's `--set` JSON payload and into 2D.3's shell arithmetic, so `2.5` or `abc` does not merely produce a bad cadence, it writes a malformed `day` object into session state that every later read then fails on.
 - **Cleanup escape hatch:** if the remaining `$ARGUMENTS` contains the `--no-clean` flag or a bare `fast` token (its own whitespace-delimited word, e.g. `/pm fast`), set `NO_CLEAN=true` and strip that flag/token from the arguments before the checks below (so it is never read as a business goal); otherwise `NO_CLEAN=false`. `NO_CLEAN=true` suppresses the always-on Step 1C inline cleanup in **both** modes — see Step 1C.
+- **Window flag:** if the remaining `$ARGUMENTS` contains `--window` followed by a value, extract the complete value as `WINDOW_STR` and strip `--window <value>` from the arguments so it never falls through to the business goal. Empty `WINDOW_STR` means no window. Step 0b processes it. **Multi-word values must be quoted** (e.g. `--window "3 hours"`, `--window "until 5:00 PM"`) — an unquoted multi-word value will be split by the shell, leaving the first token as the value and the remaining words misread as part of the business goal.
 - **Mode:** if the remaining `$ARGUMENTS` contains "resume" or "handoff", enter Resume mode (Step 1A). Otherwise enter Cold Start mode (Step 1B). Any remaining text is the **business goal** — the outcome to rank the backlog against (see 1B.4). Hold it in `BUSINESS_GOAL` (empty when none), which is what 2D.2 persists so a day loop keeps ranking against it across ticks and context turnover. No goal is fine; ranking falls back to repo signals.
 
 Day mode composes with everything above rather than replacing it: `/pm day` is a cold start that then keeps running, `/pm day resume` resumes and then keeps running, and `/pm day increase scraping throughput` carries that goal into every re-rank for the whole run.
@@ -64,6 +65,9 @@ PM_CONFIG_GET=$(resolve_script pm-config-get.sh || true)
 ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
 BACKLOG_HEALTH=$(resolve_script backlog-health.sh || true)
 ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh || true)
+MAKESPAN_SH=$(resolve_script makespan.sh || true)
+ESTIMATE_RESOLVE_SH=$(resolve_script estimate-resolve.sh || true)
+WINDOW_PLAN_SH=$(resolve_script window-plan.sh || true)
 ```
 
 Read reference docs through the same order — `$HOME/.claude/skills-worktree/.claude/reference/<name>` first, then `$HOME/.claude/reference/`, then `.claude/reference/`. That covers `chip-launching.md`, `pm-output-templates.md`, and `session-state-schema.json`.
@@ -76,6 +80,8 @@ Read reference docs through the same order — `$HOME/.claude/skills-worktree/.c
 - `BACKLOG_HEALTH` empty → **optional**. Print `DEGRADED: backlog-health.sh not found (checked all three paths) — staleness block omitted` and skip that block.
 - `ACTIVE_WORK_CAP_SH` empty → **optional, but say so**. Print `DEGRADED: active-work-cap.sh not found (checked all three paths) — repo-wide cap unenforced, bounding chips on the per-thread ceiling only` and cap the 3.1 chip batch at the 3–4 ceiling instead. A **non-zero exit** from a script that *did* resolve is not the same thing: it means a count source could not be read, so treat it as `FREE = 0` and defer rather than offering as if the repo were idle (`active-work-cap.md` "Resolution order and failure behavior").
 - `PM_CONFIG_GET` empty → **optional**. Print `DEGRADED: pm-config-get.sh not found (checked all three paths) — repo PM config unavailable, using defaults`. An *absent* `.claude/pm-config.md` where the script resolved is a normal state that `/pm` bootstraps — say nothing there.
+- `WINDOW_PLAN_SH` empty → **optional** (only needed when `WINDOW_STR` is set). Print `DEGRADED: window-plan.sh not found (checked all three paths) — window fitting unavailable` and skip Step 0b; treat the run as windowless.
+- `MAKESPAN_SH` / `ESTIMATE_RESOLVE_SH` empty → **optional** (needed only for window batch fitting and estimate display). **If a window is active (`WINDOW_STR` set) and either helper is unavailable, do NOT dispatch the full untrimmed batch — fail closed: print `DEGRADED: <helper> not found — dispatch paused; cannot verify batch fits the requested window` and skip dispatch for this run.** Without an active window, show estimates inline where available and continue normally.
 
 The pipeline ceiling, the autonomy grants, and the monitor-mode rules need no fallback: `.claude/rules/*.md` auto-loads at user scope in every project (`portable-skill-resolution.md`), so they are already in context wherever `/pm` runs.
 
@@ -108,6 +114,65 @@ When the user asks "what should I work on?", prioritize in this order:
 4. **Unassigned issues you could claim** — backlog pickup
 
 If `gh api user` fails (no auth, network error), degrade gracefully: skip the user-scoped filters and fall back to the repo-wide views below. Note the fallback in the output so the user knows filtering is unavailable.
+
+---
+
+## Step 0b: Window planning (when --window is set)
+
+Runs immediately after Step 0a, only when `WINDOW_STR` is non-empty. Skipped on `--tick` turns (window persists from the arming turn).
+
+```bash
+# Parse the window string into machine values
+WINDOW_MINUTES=0; EFFECTIVE_WINDOW_MIN=0; DEADLINE_EPOCH=0; STALL_MARGIN_MIN=0
+if [[ -n "$WINDOW_STR" && -n "$WINDOW_PLAN_SH" ]]; then
+  WINDOW_PARSE_RC=0
+  WINDOW_LINE=$("$WINDOW_PLAN_SH" --window "$WINDOW_STR" 2>/dev/null) || WINDOW_PARSE_RC=$?
+  if [[ "$WINDOW_PARSE_RC" -ne 0 ]]; then
+    echo "DEGRADED: window-plan.sh failed (rc=$WINDOW_PARSE_RC) — ranking only, no dispatch (a window was requested but could not be parsed)"
+    WINDOW_STR=""
+    # Do NOT fall through to windowless dispatch: rank and report only (same as refill-paused path).
+    # Set PAUSED=true in the refill-check below so the dispatch gate holds.
+    WINDOW_PARSE_FAILED=true
+  fi
+  if [[ -n "$WINDOW_LINE" ]]; then
+    # Parse: window_minutes=N stall_margin_min=M effective_window_min=K deadline_epoch=E
+    WINDOW_MINUTES=$(printf '%s' "$WINDOW_LINE" | sed 's/.*window_minutes=\([0-9]*\).*/\1/')
+    STALL_MARGIN_MIN=$(printf '%s' "$WINDOW_LINE" | sed 's/.*stall_margin_min=\([0-9]*\).*/\1/')
+    EFFECTIVE_WINDOW_MIN=$(printf '%s' "$WINDOW_LINE" | sed 's/.*effective_window_min=\([0-9]*\).*/\1/')
+    DEADLINE_EPOCH=$(printf '%s' "$WINDOW_LINE" | sed 's/.*deadline_epoch=\([0-9]*\).*/\1/')
+    # Persist to session-state so the monitor loop and resume can read it
+    NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+    if [[ -n "$REPO_KEY" && -n "$SESSION_STATE_SH" ]]; then
+      SS_RC=0
+      "$SESSION_STATE_SH" --set \
+        ".repos[\"$REPO_KEY\"].window={\"deadline_epoch\":${DEADLINE_EPOCH},\"window_minutes\":${WINDOW_MINUTES},\"effective_window_min\":${EFFECTIVE_WINDOW_MIN},\"set_at\":\"${NOW_ISO}\"}" \
+        2>/dev/null || SS_RC=$?
+      if [[ "$SS_RC" -ne 0 ]]; then
+        echo "DEGRADED: window state persistence failed (session-state.sh rc=$SS_RC) — ranking only, no dispatch (a window was requested but state could not be persisted)"
+        WINDOW_STR=""
+        WINDOW_PARSE_FAILED=true
+      fi
+    else
+      echo "DEGRADED: window state persistence failed (repo key unavailable) — ranking only, no dispatch (a window was requested but state could not be persisted)"
+      WINDOW_STR=""
+      WINDOW_PARSE_FAILED=true
+    fi
+  fi
+fi
+```
+
+**Report the window** in the ranking header:
+```
+Window: until ~HH:MM ET (N h · effective M h after Z min stall margin)
+```
+Where `HH:MM ET` is `$(TZ='America/New_York' date -j -f '%s' "$DEADLINE_EPOCH" +'%-I:%M %p ET' 2>/dev/null || TZ='America/New_York' date -d "@$DEADLINE_EPOCH" +'%-I:%M %p ET' 2>/dev/null)`.
+
+**STALL_MARGIN_MIN in pm-config.md.** `window-plan.sh` reads `pm-config.md`'s `## Budget` section for a `STALL_MARGIN_MIN:` knob. Bootstrap the knob with a comment when bootstrapping pm-config.md (Step 1B.1):
+```markdown
+## Budget
+# STALL_MARGIN_MIN: 60   # minutes reserved for reviewer idle time in unattended runs (default 60 for windows > 6 h, 0 otherwise)
+```
 
 ---
 
@@ -423,6 +488,40 @@ Then output the top 3-5 backlog issues (unassigned / up for pickup) as a ranked 
 
 Summarize rather than enumerate once a tier stops informing a decision — most often the Low tier: "68 additional issues are Low-priority relative to this goal". The tier still appears with its heading; it just carries a count instead of 68 bullets.
 
+**Window-fit gate (when `WINDOW_STR` is set and Step 0b parsed it successfully).** After ranking and before dispatch, trim the ranked batch to fit inside the remaining window using `makespan.sh`. This is a pure trim gate — it never reorders the batch.
+
+Recompute the remaining window immediately before dispatch (time may have passed since the arming turn):
+```bash
+if [[ -n "$DEADLINE_EPOCH" && "$DEADLINE_EPOCH" -gt 0 ]]; then
+  NOW_EPOCH=$(date +%s 2>/dev/null) || NOW_EPOCH=0
+  RAW_REMAINING_MIN=$(( (DEADLINE_EPOCH - NOW_EPOCH) / 60 ))
+  # Subtract stall margin to preserve unattended idle headroom
+  REMAINING_MIN=$(( RAW_REMAINING_MIN - STALL_MARGIN_MIN ))
+  [[ "$REMAINING_MIN" -lt 0 ]] && REMAINING_MIN=0
+  # Cap EFFECTIVE_WINDOW_MIN to margin-adjusted remaining time (may be shorter than arming-turn value)
+  [[ "$REMAINING_MIN" -lt "$EFFECTIVE_WINDOW_MIN" ]] && EFFECTIVE_WINDOW_MIN="$REMAINING_MIN"
+fi
+```
+
+1. For each ranked candidate, call `estimate-resolve.sh <N>` to get `est_lo`/`est_hi`; unestimated issues use the Standard fallback (45/90 min).
+2. Build the batch JSON and pipe to `makespan.sh`. If `makespan_hi <= EFFECTIVE_WINDOW_MIN` (freshly recomputed above), the full batch fits — proceed to dispatch.
+3. If `makespan_hi > effective_window_min`, drop the **lowest-ranked** candidate and recompute. Repeat until the remaining batch fits or only one issue remains. If that single remaining issue **still** exceeds the window, do **not** dispatch anything — emit a no-fit message instead: `No batch fits in the remaining window ({EFFECTIVE_WINDOW_MIN} min). Suggest a longer window or a narrower selection.` and list all exclusions.
+4. Each dropped issue is an **exclusion** — name it with the math:
+   `#N (90 min plan) — excluded: batch would overshoot window by {delta} min`
+5. Present the **Window Plan** block before `## Suggested Next Issues`:
+   ```
+   ## Window Plan (until ~HH:MM ET · effective N h after M min stall margin)
+   Batch: #42, #38 — plan-bound makespan 3 h · finish ~4:30 PM ET ✓
+   Excluded (window):
+   - #61 (180 min plan) — excluded: adding it overshoots by 90 min
+   ```
+   Also persist the final batch issue numbers to session-state so the Step 8 monitor loop can scope overrun alerts to the window batch:
+   ```bash
+   BATCH_NUMS="[$(printf '"%s",' "${BATCH_ISSUES[@]}" | sed 's/,$//')]"
+   "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].window.batch_issues=${BATCH_NUMS}" 2>/dev/null || true
+   ```
+   When `MAKESPAN_SH` or `ESTIMATE_RESOLVE_SH` is unavailable: print `DEGRADED: makespan unavailable — window fit skipped; dispatching full ranked batch`.
+
 **Dispatch the top batch — the default, with no confirmation turn.** The ranking **is** the selection. Take the top-ranked batch and hand its **inline-eligible** issues to **Step 3.1**, which claims each one and runs it through the `/subagent` A→B→C flow up to the **3–4 concurrent-pipeline** ceiling, queueing the remainder. Do not ask "should I start these?" — free capacity is a trigger, not a question (`CLAUDE.md` "KEEP THE PIPELINE FULL"), and the launches are **reported, never proposed**, exactly as 3.4 reports a refill. Step 3.1 owns the mechanics — issue claims (`/subagent` 6.0), overlap chains (6.0b), the ceiling and the inline queue (Step 7) — and this step restates none of them. **Prompts and chips are the exception, not the act:** an issue produces one only when it carries a named `/subagent` Step 4 disqualifier (quoted in the offer) or the user explicitly asks for prompts — see 3.1.
 
 **Read the refill pause before dispatching anything — and before composing the ranking output above**, the way Step 1C runs ahead of everything else in this step. Cold start is the default mode for a bare `/pm`, so this path runs in repos where a human already said "stop" and that stop was persisted. The resume path reads it in 1A.2 and this path reads it here — dispatching without the same read is how an inverted default silently relaunches against an explicit stop:
@@ -433,6 +532,8 @@ RC=0
 SCOPE_RC=0
 PAUSED=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].refill.paused") || RC=$?
 SCOPE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].refill.scope" 2>/dev/null) || SCOPE_RC=$?
+# A requested window that could not be parsed or persisted blocks dispatch (Step 0b).
+[[ "${WINDOW_PARSE_FAILED:-}" == "true" ]] && PAUSED=true
 ```
 
 Interpret **both** reads with **3.4's table, unchanged**: `RC=0` + `true` → paused; `RC=0` + `false`/`null`, or `RC=3` (no state file ever written) → dispatch; any other `RC` → unreadable state is **not** permission, so treat it as paused and say the state was unreadable. `SCOPE_RC` gets the same treatment — a failed scope read yields an empty `$SCOPE`, which is indistinguishable from "no narrowing exists" and would dispatch the full backlog, so anything but `0` or `3` is paused-and-unreadable too. When paused, rank and report only — launch nothing, and say the pause out loud with how to lift it ("Refill is paused (you stopped it earlier) — say resume to restart it"). A non-null `$SCOPE` is a narrowing, not a stop: drop every candidate outside it **before** ranking decides anything, so the recommendations the user reads never contain work they excluded — filtering after the list renders surfaces exactly that work. Name the scope in the report. **This gate binds the default dispatch only.** A live in-chat request to start a specific issue is the human acting, not refill — it proceeds, and it does not on its own lift the pause for future refills. Step 0's degraded rules still win over this default: no `SESSION_STATE_SH` means rank and report without starting pipelines, and an unreadable `chip-launching.md` stops chip offers before they happen.
