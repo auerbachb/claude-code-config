@@ -348,19 +348,136 @@ check_eq "override records per-PR owner_repo" "org/a" \
 # authorship-guard string's presence/absence in merge-gate.sh's own `missing[]`
 # — not on the overall exit code, since unrelated CI/review gate items also
 # stay unmet in this fixture and are irrelevant to what's under test here.
+#
+# Since issue #1266 the enrolment in test 12 ALSO persists the override, so the
+# no-flag negative control must clear that persisted field first. Without this
+# reset the flagless run would be suppressed by the persisted decision and the
+# control would pass for a reason unrelated to what #1251 pinned — the classic
+# guard that passes by not running.
+gate_authorship_blocked() {
+  # yes/no: does merge-gate.sh's missing[] carry the authorship blocker?
+  jq -e '[.missing[]? | select(contains("authorship guard"))] | length > 0' \
+    >/dev/null 2>&1 <<<"$1" && echo yes || echo no
+}
+PSG_STATE_HELPER="$(cd "$(dirname "$SCRIPT")" && pwd)/session-state.sh"
+( cd "$REPO_A" && "$PSG_STATE_HELPER" --set ".prs[\"$PR_NUM\"].allow_nonauthor=false" )
+check_eq "persisted override can be cleared to false" "false" \
+  "$(jq -r --arg pr "$PR_NUM" '.repos["org/a"].prs[$pr].allow_nonauthor' "$STATE")"
+
 out="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" \
   STUB_PR_JSON="$_STUB3_PR_JSON" STUB_OWNER_REPO="org/a" STUB_PR_AUTHOR="collab" \
   "$SCRIPT" "$PR_NUM" 2>/dev/null)"
-check_eq "poll-cycle mode without --allow-nonauthor: merge-gate.sh's own authorship block fires" "yes" \
-  "$(echo "$out" | jq -e '[.missing[]? | select(contains("authorship guard"))] | length > 0' >/dev/null 2>&1 && echo yes || echo no)"
+check_eq "poll-cycle mode, no flag and no persisted override: authorship block fires" "yes" \
+  "$(gate_authorship_blocked "$out")"
+err="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" \
+  STUB_PR_JSON="$_STUB3_PR_JSON" STUB_OWNER_REPO="org/a" STUB_PR_AUTHOR="collab" \
+  "$SCRIPT" "$PR_NUM" 2>&1 >/dev/null)"
+check_eq "no override notice when the bypass is not applied" "0" \
+  "$(printf '%s' "$err" | grep -c 'authorship override')"
 
 out="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" \
   STUB_PR_JSON="$_STUB3_PR_JSON" STUB_OWNER_REPO="org/a" STUB_PR_AUTHOR="collab" \
   "$SCRIPT" "$PR_NUM" --allow-nonauthor 2>/dev/null)"
 check_eq "poll-cycle mode forwards --allow-nonauthor: authorship block is suppressed" "no" \
-  "$(echo "$out" | jq -e '[.missing[]? | select(contains("authorship guard"))] | length > 0' >/dev/null 2>&1 && echo yes || echo no)"
+  "$(gate_authorship_blocked "$out")"
 check_eq "authorship field still reflects reality (not_mine) even with the override" "not_mine" \
   "$(echo "$out" | jq -r '.authorship')"
+
+# ---- 14. Regression (issue #1266): the enrolment-time override is PERSISTED
+# per PR and read back by a FLAGLESS poll-cycle call. #1251 only forwarded a
+# flag passed on that same invocation, but cr-github-review.md's per-cycle
+# contract calls `polling-state-gate.sh <PR_NUMBER>` with no extra flags — so
+# merge-gate.sh's own authorship check re-added the blocker on every tick and
+# the gate could never report met for an overridden PR.
+out="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" \
+  STUB_PR_JSON="$_STUB3_PR_JSON" STUB_OWNER_REPO="org/a" STUB_PR_AUTHOR="collab" \
+  "$SCRIPT" "$PR_NUM" --ensure-session --allow-nonauthor 2>&1)"; rc=$?
+check_eq "re-enrolment under the override succeeds" "0" "$rc"
+check_eq "--ensure-session --allow-nonauthor persists allow_nonauthor=true" "true" \
+  "$(jq -r --arg pr "$PR_NUM" '.repos["org/a"].prs[$pr].allow_nonauthor' "$STATE")"
+check_eq "persisted override is a real JSON boolean, not the string \"true\"" "boolean" \
+  "$(jq -r --arg pr "$PR_NUM" '.repos["org/a"].prs[$pr].allow_nonauthor | type' "$STATE")"
+
+# The acceptance criterion: no flags on this call at all.
+out="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" \
+  STUB_PR_JSON="$_STUB3_PR_JSON" STUB_OWNER_REPO="org/a" STUB_PR_AUTHOR="collab" \
+  "$SCRIPT" "$PR_NUM" 2>/dev/null)"
+check_eq "flagless poll-cycle reads the persisted override: authorship block absent" "no" \
+  "$(gate_authorship_blocked "$out")"
+check_eq "persisted override does not falsify the authorship field" "not_mine" \
+  "$(echo "$out" | jq -r '.authorship')"
+
+# safety.md requires a tool operating under the override to say so. The notice
+# must not reach stdout: callers pipe that into jq as merge-gate.sh's JSON.
+# Both streams come from ONE run here — asserting stdout purity against some
+# earlier invocation's output would prove nothing about the run that actually
+# emitted the notice.
+notice_out="$TMP/notice-stdout.json"
+err="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" \
+  STUB_PR_JSON="$_STUB3_PR_JSON" STUB_OWNER_REPO="org/a" STUB_PR_AUTHOR="collab" \
+  "$SCRIPT" "$PR_NUM" 2>&1 >"$notice_out")"
+check_contains "persisted override announces itself on stderr" \
+  "authorship override recorded at enrolment" "$err"
+check_contains "override notice names the PR" "PR #$PR_NUM" "$err"
+check_eq "stdout of that same run is still parseable JSON" "not_mine" \
+  "$(jq -r '.authorship' "$notice_out")"
+check_eq "the notice never reaches stdout" "0" \
+  "$(grep -c 'authorship override' "$notice_out")"
+
+err="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" \
+  STUB_PR_JSON="$_STUB3_PR_JSON" STUB_OWNER_REPO="org/a" STUB_PR_AUTHOR="collab" \
+  "$SCRIPT" "$PR_NUM" --allow-nonauthor 2>&1 >/dev/null)"
+check_contains "per-invocation override announces its own source" \
+  "override passed on this invocation" "$err"
+
+# Only the literal boolean true grants the bypass — a bypass must be granted
+# affirmatively, never inferred from a value we could not read. These two write
+# $STATE with raw jq on purpose: session-state.sh cannot produce either state
+# (see the field-type assertion below), so the helper is the wrong tool for
+# staging them. Absent is the real backward-compat case — state enrolled before
+# this field existed must keep behaving exactly as it did.
+tmpstate="$(mktemp)"
+jq --arg pr "$PR_NUM" 'del(.repos["org/a"].prs[$pr].allow_nonauthor)' "$STATE" > "$tmpstate" && mv "$tmpstate" "$STATE"
+out="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" \
+  STUB_PR_JSON="$_STUB3_PR_JSON" STUB_OWNER_REPO="org/a" STUB_PR_AUTHOR="collab" \
+  "$SCRIPT" "$PR_NUM" 2>/dev/null)"
+check_eq "pre-#1266 state with no allow_nonauthor field does not grant the bypass" "yes" \
+  "$(gate_authorship_blocked "$out")"
+
+tmpstate="$(mktemp)"
+jq --arg pr "$PR_NUM" '.repos["org/a"].prs[$pr].allow_nonauthor = null' "$STATE" > "$tmpstate" && mv "$tmpstate" "$STATE"
+out="$(cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" \
+  STUB_PR_JSON="$_STUB3_PR_JSON" STUB_OWNER_REPO="org/a" STUB_PR_AUTHOR="collab" \
+  "$SCRIPT" "$PR_NUM" 2>/dev/null)"
+check_eq "null persisted override does not grant the bypass" "yes" \
+  "$(gate_authorship_blocked "$out")"
+
+# A value that is not a boolean is refused at write time by the field-type
+# contract (session-state.sh exit 4), so it can never be stored through the
+# supported write path and later misread as permission. The string "true" is
+# the one that matters: the read-back compares against the literal `true`, so a
+# stringly-typed value would otherwise sail straight through.
+for bad_value in yes true 1; do
+  set_rc=0
+  ( cd "$REPO_A" && "$PSG_STATE_HELPER" --set ".prs[\"$PR_NUM\"].allow_nonauthor=\"$bad_value\"" ) >/dev/null 2>&1 || set_rc=$?
+  check_eq "string allow_nonauthor=\"$bad_value\" is rejected by the field-type contract" "4" "$set_rc"
+done
+
+# Re-enrolment WITHOUT the override clears a stale true rather than leaving the
+# bypass latched on. Uses a self-authored PR because a non-author PR cannot be
+# re-enrolled without the flag at all (test 11).
+PR_NUM_OWN="99266"
+_STUB_OWN_PR_JSON='{"headRefOid":"0wned123","state":"OPEN","number":99266,"headRefName":"feature","url":"https://github.com/org/a/pull/99266","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":"","author":{"login":"testuser","type":"User"}}'
+( cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" \
+  STUB_PR_JSON="$_STUB_OWN_PR_JSON" STUB_OWNER_REPO="org/a" STUB_PR_AUTHOR="testuser" \
+  "$SCRIPT" "$PR_NUM_OWN" --ensure-session --allow-nonauthor ) >/dev/null 2>&1
+check_eq "self-authored PR enrolled under the override persists true" "true" \
+  "$(jq -r --arg pr "$PR_NUM_OWN" '.repos["org/a"].prs[$pr].allow_nonauthor' "$STATE")"
+( cd "$REPO_A" && PATH="$STUB_BIN3:$PATH" \
+  STUB_PR_JSON="$_STUB_OWN_PR_JSON" STUB_OWNER_REPO="org/a" STUB_PR_AUTHOR="testuser" \
+  "$SCRIPT" "$PR_NUM_OWN" --ensure-session ) >/dev/null 2>&1
+check_eq "re-enrolment without the override clears the stale true" "false" \
+  "$(jq -r --arg pr "$PR_NUM_OWN" '.repos["org/a"].prs[$pr].allow_nonauthor' "$STATE")"
 
 echo ""
 echo "polling-state-gate.test.sh: $PASS passed, $FAIL failed"
