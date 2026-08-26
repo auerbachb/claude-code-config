@@ -20,13 +20,42 @@ SCRIPTS="$TMP/scripts"; mkdir -p "$SCRIPTS"
 cp "$SRC" "$SCRIPTS/clean-behind-check.sh"; chmod +x "$SCRIPTS/clean-behind-check.sh"
 SUT="$SCRIPTS/clean-behind-check.sh"
 
-# --- Fake merge-gate.sh: emits {met, missing}; behaviour driven by env vars. --
+# --- Fake merge-gate.sh: emits {met, missing, authorship}; env-var driven. ----
+# FAKE_GATE_LOG (issue #1257) — when set, every invocation's raw argv ("$*") is
+#   appended as a line, so a test can assert --allow-nonauthor actually reached
+#   this nested call rather than merely being accepted by the arg parser.
+# FAKE_GATE_AUTHORSHIP_BLOCK (issue #1257) — when 1, models merge-gate.sh's own
+#   INDEPENDENT issue #733 check: authorship is "not_mine" and the non-author
+#   blocker is appended to missing[] unless --allow-nonauthor is present in argv.
+# FAKE_GATE_OMIT_AUTHORSHIP — when 1, omit the `authorship` key entirely, to
+#   model an older merge-gate.sh that predates the field.
 cat > "$SCRIPTS/merge-gate.sh" <<'EOF'
 #!/usr/bin/env bash
-jq -cn \
-  --argjson met "${FAKE_GATE_MET:-false}" \
-  --argjson missing "${FAKE_GATE_MISSING:-[\"branch is BEHIND base — rebase + force-push before merging\"]}" \
-  '{met:$met, missing:$missing}'
+if [ -n "${FAKE_GATE_LOG:-}" ]; then printf '%s\n' "$*" >> "$FAKE_GATE_LOG"; fi
+MISSING="${FAKE_GATE_MISSING:-[\"branch is BEHIND base — rebase + force-push before merging\"]}"
+AUTHORSHIP="${FAKE_GATE_AUTHORSHIP:-mine}"
+if [ "${FAKE_GATE_AUTHORSHIP_BLOCK:-0}" = "1" ]; then
+  AUTHORSHIP="not_mine"
+  SAW_ALLOW_NONAUTHOR=0
+  for a in "$@"; do
+    if [ "$a" = "--allow-nonauthor" ]; then SAW_ALLOW_NONAUTHOR=1; fi
+  done
+  if [ "$SAW_ALLOW_NONAUTHOR" -eq 0 ]; then
+    MISSING="$(printf '%s' "$MISSING" | jq -c '. + ["PR #1 is authored by other (not you, solouser) — automated merge is blocked by the authorship guard (.claude/rules/safety.md); pass --allow-nonauthor only under an explicit per-PR user override"]')"
+  fi
+fi
+if [ "${FAKE_GATE_OMIT_AUTHORSHIP:-0}" = "1" ]; then
+  jq -cn \
+    --argjson met "${FAKE_GATE_MET:-false}" \
+    --argjson missing "$MISSING" \
+    '{met:$met, missing:$missing}'
+else
+  jq -cn \
+    --argjson met "${FAKE_GATE_MET:-false}" \
+    --argjson missing "$MISSING" \
+    --arg authorship "$AUTHORSHIP" \
+    '{met:$met, missing:$missing, authorship:$authorship}'
+fi
 exit "${FAKE_GATE_EXIT:-1}"
 EOF
 chmod +x "$SCRIPTS/merge-gate.sh"
@@ -393,6 +422,79 @@ expect_field '.safe_to_offer' 'false' "safe_to_offer false for oversized base pa
 expect_field '.file_overlap.granularity' 'hunk' "granularity is hunk even with oversized patch"
 expect_field '.file_overlap.fallback_files | length' '1' "oversized patch triggers fallback_files"
 expect_field '.file_overlap.hunk_overlapping_files | length' '1' "hunk_overlapping_files includes fallback file"
+
+# ============================================================================
+# Regression (issue #1257): this script had NO --allow-nonauthor concept — the
+# arg parser rejected it (exit 2) and its NESTED merge-gate.sh call could never
+# receive an authorship override. For a BEHIND + non-author PR the nested gate
+# therefore re-added the issue #733 blocker into missing[]; it is not the BEHIND
+# message, so it landed in residual_blockers, held gate_green_except_behind
+# false, and made admin-merge.sh refuse with a misleading "not safe to skip a
+# rebase". Each test below fails against the pre-fix script.
+# ============================================================================
+
+# 33. The flag is accepted at all (pre-fix: "unknown flag" usage error, exit 2).
+run 0 --allow-nonauthor
+expect_rc 0 "--allow-nonauthor is accepted, not rejected as an unknown flag"
+
+# 34. The flag literally reaches the nested merge-gate.sh invocation. Parser
+#     acceptance alone would leave the real bug in place, so assert on argv.
+GATE_LOG="$TMP/gatecalls.log"; : > "$GATE_LOG"
+FAKE_GATE_LOG="$GATE_LOG" run 0 --allow-nonauthor
+if grep -q -- "--allow-nonauthor" "$GATE_LOG"; then
+  ok "--allow-nonauthor literally appears in the nested merge-gate.sh invocation"
+else
+  bad "--allow-nonauthor was NOT forwarded to merge-gate.sh (logged calls: $(cat "$GATE_LOG"))"
+fi
+
+# 35. Negative control: the flag is never fabricated when it was not passed.
+GATE_LOG2="$TMP/gatecalls2.log"; : > "$GATE_LOG2"
+FAKE_GATE_LOG="$GATE_LOG2" run 0
+if grep -q -- "--allow-nonauthor" "$GATE_LOG2"; then
+  bad "--allow-nonauthor unexpectedly forwarded when not passed (logged: $(cat "$GATE_LOG2"))"
+else
+  ok "no --allow-nonauthor forwarded when the flag was not passed"
+fi
+
+# 36. End-to-end: BEHIND + non-author + --allow-nonauthor → the authorship
+#     blocker never enters residual_blockers, so the clean-BEHIND verdict is
+#     reachable (exit 0). This is the state admin-merge.sh needs to reach the
+#     plain-shape bypass instead of the misleading rebase refusal.
+FAKE_GATE_AUTHORSHIP_BLOCK=1 run 0 --allow-nonauthor
+expect_rc 0 "BEHIND + non-author + --allow-nonauthor → safe_to_offer (exit 0)"
+expect_field '.safe_to_offer' 'true' "override lets safe_to_offer become true for a non-author PR"
+expect_field '.residual_blockers | length' '0' "authorship blocker absent from residual_blockers under override"
+expect_field '.gate_green_except_behind' 'true' "gate_green_except_behind true under the override"
+
+# 37. Negative control — the fail-closed default is PROVABLY unchanged: the same
+#     non-author PR WITHOUT the flag still keeps the authorship blocker, still
+#     reports not-safe, and still exits 1. (Also proves test 36 is not a
+#     tautology: the fixture really does model the blocking behavior.)
+FAKE_GATE_AUTHORSHIP_BLOCK=1 run 1
+expect_rc 1 "BEHIND + non-author WITHOUT the flag still refuses (exit 1)"
+expect_field '.safe_to_offer' 'false' "no override → safe_to_offer stays false"
+expect_field '.gate_green_except_behind' 'false' "no override → gate_green_except_behind stays false"
+expect_field '[.residual_blockers[] | select(test("authorship guard"))] | length' '1' \
+  "no override → authorship blocker retained in residual_blockers"
+expect_field '[.reasons_not_safe[] | select(test("authorship guard"))] | length' '1' \
+  "no override → authorship blocker surfaced in reasons_not_safe"
+
+# 38. The override is never silent: `authorship` mirrors merge-gate.sh's verdict
+#     even when the blocker is suppressed, and `authorship_overridden` records
+#     that a bypass was in effect. A bypass that left no trace in the evidence
+#     JSON is exactly what these fields exist to prevent.
+FAKE_GATE_AUTHORSHIP_BLOCK=1 run 0 --allow-nonauthor
+expect_field '.authorship' 'not_mine' "bypassed non-author PR is still legible as authorship=not_mine"
+expect_field '.authorship_overridden' 'true' "authorship_overridden true when --allow-nonauthor is passed"
+
+run 0
+expect_field '.authorship' 'mine' "authorship mirrored from merge-gate.sh on a normal run"
+expect_field '.authorship_overridden' 'false' "authorship_overridden false by default (opt-in only)"
+
+# 39. Forward compatibility: an older merge-gate.sh with no `authorship` key
+#     degrades to "unknown" rather than reporting a false "mine".
+FAKE_GATE_OMIT_AUTHORSHIP=1 run 0
+expect_field '.authorship' 'unknown' "missing merge-gate authorship field degrades to unknown"
 
 echo "----------------------------------------"
 echo "clean-behind-check.test.sh: $PASS passed, $FAIL failed"

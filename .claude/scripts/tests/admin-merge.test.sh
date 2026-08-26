@@ -56,8 +56,17 @@ chmod +x "$SCRIPTS/merge-gate.sh"
 # FAKE_CBC_OVERLAP_COUNT / FAKE_CBC_AC_ALL_CHECKED / FAKE_CBC_RESIDUAL /
 # FAKE_CBC_REASONS / FAKE_CBC_MERGE_STATE / FAKE_CBC_MERGEABLE control the
 # mechanical evidence emitted for each call.
+# FAKE_CBC_LOG (issue #1257) — when set, every invocation's raw argv ("$*") is
+#   appended as a line, so a test can assert --allow-nonauthor actually reached
+#   this helper via CBC_ARGS.
+# FAKE_CBC_AUTHORSHIP_BLOCK (issue #1257) — when 1, models the real helper's
+#   NESTED merge-gate.sh authorship check: without --allow-nonauthor in argv the
+#   non-author blocker lands in residual_blockers and the verdict is exit 1
+#   (which fails clean_behind_evidence_allows_admin's reviewDecision-only match,
+#   so CLEAN_BEHIND_OK stays false); with the flag it is suppressed → exit 0.
 cat > "$SCRIPTS/clean-behind-check.sh" <<'EOF'
 #!/usr/bin/env bash
+if [ -n "${FAKE_CBC_LOG:-}" ]; then printf '%s\n' "$*" >> "$FAKE_CBC_LOG"; fi
 N=1
 if [ -n "${FAKE_CBC_COUNT_FILE:-}" ]; then
   N=$(cat "$FAKE_CBC_COUNT_FILE" 2>/dev/null || echo 0)
@@ -71,6 +80,20 @@ if [ -n "${FAKE_CBC_EXIT_SEQ:-}" ]; then
     I=$((I + 1))
     if [ "$I" -eq "$N" ]; then RC="$code"; fi
   done
+fi
+RESIDUAL="${FAKE_CBC_RESIDUAL:-[]}"
+if [ "${FAKE_CBC_AUTHORSHIP_BLOCK:-0}" = "1" ]; then
+  SAW_ALLOW_NONAUTHOR=0
+  for a in "$@"; do
+    if [ "$a" = "--allow-nonauthor" ]; then SAW_ALLOW_NONAUTHOR=1; fi
+  done
+  if [ "$SAW_ALLOW_NONAUTHOR" -eq 0 ]; then
+    RC=1
+    RESIDUAL='["PR #1 is authored by other (not you, solouser) — automated merge is blocked by the authorship guard (.claude/rules/safety.md); pass --allow-nonauthor only under an explicit per-PR user override"]'
+    FAKE_CBC_REASONS='["merge gate blocker: PR #1 is authored by other (not you, solouser) — automated merge is blocked by the authorship guard (.claude/rules/safety.md)"]'
+  else
+    RC=0
+  fi
 fi
 OVERLAP="${FAKE_CBC_OVERLAP_COUNT:-}"
 if [ -z "$OVERLAP" ]; then
@@ -86,7 +109,7 @@ jq -cn \
   --arg mergeable "${FAKE_CBC_MERGEABLE:-MERGEABLE}" \
   --argjson overlap "$OVERLAP" \
   --argjson ac_all_checked "${FAKE_CBC_AC_ALL_CHECKED:-true}" \
-  --argjson residual "${FAKE_CBC_RESIDUAL:-[]}" \
+  --argjson residual "$RESIDUAL" \
   --argjson reasons "$REASONS" '{
   safe_to_offer: ($rc == 0), head_sha: "abc1234def",
   reasons_not_safe: $reasons,
@@ -564,6 +587,73 @@ if grep -q -- "--allow-nonauthor" "$GATE_LOG5"; then
   ok "--print still forwards --allow-nonauthor to merge-gate.sh"
 else
   bad "--print no longer forwards --allow-nonauthor to merge-gate.sh (logged calls: $(cat "$GATE_LOG5"))"
+fi
+
+# ============================================================================
+# Regression (issue #1257): --allow-nonauthor cleared this script's own guard
+# and (after #1251) merge-gate.sh's, but was never forwarded to
+# clean-behind-check.sh — whose NESTED merge-gate.sh call re-added the
+# authorship blocker into its residual_blockers. That failed
+# clean_behind_evidence_allows_admin()'s reviewDecision-only match, so
+# CLEAN_BEHIND_OK stayed false and a BEHIND non-author PR was refused with a
+# MISLEADING "not safe to skip a rebase" — a rebase would not have helped.
+# FAKE_CBC_AUTHORSHIP_BLOCK models that nested check; FAKE_CBC_LOG proves the
+# flag's presence (or absence) in the actual clean-behind-check.sh invocation.
+# ============================================================================
+
+# 28. BEHIND + non-author + --allow-nonauthor reaches the plain-shape bypass
+#     instead of the misleading rebase refusal.
+new_log
+CBC_LOG="$TMP/cbccalls.log"; : > "$CBC_LOG"
+FAKE_GATE_EXIT=1 FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_GATE_AUTHORSHIP_BLOCK=1 \
+  FAKE_CBC_AUTHORSHIP_BLOCK=1 FAKE_CBC_LOG="$CBC_LOG" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 18 --print --allow-nonauthor --repo-path "$CLONE" --branch main
+expect_rc 0 "BEHIND + non-author + --allow-nonauthor reaches the bypass (exit 0)"
+grep_ok "gh pr merge 18 --squash --admin" "plain-shape bypass command is printed"
+if grep -q -- "not safe to skip a rebase" <<<"$OUT"; then
+  bad "the misleading rebase refusal still fires under --allow-nonauthor"
+else
+  ok "the misleading 'not safe to skip a rebase' refusal no longer fires"
+fi
+if grep -q -- "--allow-nonauthor" "$CBC_LOG"; then
+  ok "--allow-nonauthor literally appears in the clean-behind-check.sh invocation"
+else
+  bad "--allow-nonauthor was NOT forwarded to clean-behind-check.sh (logged: $(cat "$CBC_LOG"))"
+fi
+
+# 28b. Negative control — the fail-closed default is unchanged: the same PR
+#      WITHOUT the flag still gets refused, and the flag is never fabricated.
+#      Also proves 28's fixture models the real bug rather than passing freely.
+new_log
+CBC_LOG2="$TMP/cbccalls2.log"; : > "$CBC_LOG2"
+FAKE_GATE_EXIT=1 FAKE_GATE_MISSING="$BEHIND_ONLY" \
+  FAKE_CBC_AUTHORSHIP_BLOCK=1 FAKE_CBC_LOG="$CBC_LOG2" FAKE_PROTECTION="$PLAIN_PROT" \
+  FAKE_AUTHORSHIP_EXIT=0 \
+  run 19 --print --repo-path "$CLONE" --branch main
+expect_rc 1 "without --allow-nonauthor, the nested authorship blocker still refuses (exit 1)"
+grep_ok "not safe to skip a rebase" "refusal text preserved for a genuinely unsafe BEHIND"
+grep_ok "authorship guard" "refusal surfaces the nested authorship blocker as the reason"
+if grep -q -- "--allow-nonauthor" "$CBC_LOG2"; then
+  bad "--allow-nonauthor unexpectedly forwarded when not passed (logged: $(cat "$CBC_LOG2"))"
+else
+  ok "no --allow-nonauthor forwarded to clean-behind-check.sh when not passed"
+fi
+
+# 28c. The #1251 unattended guard is now LOAD-BEARING (its accidental backstop
+#      in clean-behind-check.sh is gone), so re-assert it holds after this fix:
+#      --auto-plain + --allow-nonauthor still refuses before any pre-flight, with
+#      no clean-behind-check.sh call and no merge call at all.
+new_log
+CBC_LOG3="$TMP/cbccalls3.log"; : > "$CBC_LOG3"
+FAKE_GATE_EXIT=1 FAKE_GATE_MISSING="$BEHIND_ONLY" FAKE_CBC_AUTHORSHIP_BLOCK=1 \
+  FAKE_CBC_LOG="$CBC_LOG3" FAKE_PROTECTION="$PLAIN_PROT" \
+  run 20 --auto-plain --ac-verified --allow-nonauthor --repo-path "$CLONE" --branch main
+expect_rc 2 "--auto-plain + --allow-nonauthor still refused after the #1257 fix (exit 2)"
+log_absent "^pr merge" "no merge call for --auto-plain + --allow-nonauthor"
+if [[ -s "$CBC_LOG3" ]]; then
+  bad "clean-behind-check.sh was invoked despite the pre-flight usage refusal (logged: $(cat "$CBC_LOG3"))"
+else
+  ok "clean-behind-check.sh never invoked — refusal precedes all pre-flight work"
 fi
 
 echo "----------------------------------------"
