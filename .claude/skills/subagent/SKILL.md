@@ -464,13 +464,22 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    - Execute the appropriate Completion Protocol (see below).
 3. **Check for pending transitions from prior cycles.** Read `session-state.json` for PRs where a phase completed but the next phase was not launched.
 4. **Refill free capacity.** Below the ceiling — slot freed *or* never filled — launch per Step 7's refill rule on this tick: read the refill pause first (Step 7), then chains and re-validation. Report the picks; if a slot stays empty, name why (`/pm` Step 3.4's reasons).
-5. **Check per-pipeline overrun (when `OVERRUN_CHECK_SH` and `ESTIMATE_RESOLVE_SH` are resolved and a window is active).** For each active PR, derive BOUND_MIN from the issue's estimate, then call the overrun check. Skip silently if either helper is unavailable.
+5. **Compute progress readout and check per-pipeline overrun (when `OVERRUN_CHECK_SH` and `ESTIMATE_RESOLVE_SH` are resolved).** For each active PR, derive BOUND_MIN from the issue's estimate. Always compute the readout (no window needed). Then check for a breach only when a window is active. Skip silently if either helper is unavailable.
    ```bash
    # Derive planning bound from the issue's estimate (requires ESTIMATE_RESOLVE_SH)
    BOUND_MIN=""
    if [[ -n "$ESTIMATE_RESOLVE_SH" && -n "$ISSUE_NUM" ]]; then
      EST_STR=$("$ESTIMATE_RESOLVE_SH" "$ISSUE_NUM" 2>/dev/null) && \
        BOUND_MIN=$(printf '%s' "$EST_STR" | sed 's/.*plan on \([0-9]*\).*/\1/' | grep -E '^[0-9]+$' || true)
+   fi
+   # Compute the progress readout for THIS pipeline (no window required).
+   # STARTED_AT = ISO8601 timestamp when this PR's pipeline was launched (claim-comment
+   # timestamp → PR createdAt fallback; sourced from session-state or the PR itself).
+   # This value is per-PR — accumulate into the heartbeat string separately for each PR.
+   PROGRESS_READOUT_THIS_PR=""
+   if [[ -n "$OVERRUN_CHECK_SH" && -n "$BOUND_MIN" && -n "$STARTED_AT" ]]; then
+     PROGRESS_READOUT_THIS_PR=$("$OVERRUN_CHECK_SH" --readout --pr "$PR_NUM" \
+       --bound-min "$BOUND_MIN" --started-at "$STARTED_AT" 2>/dev/null) || PROGRESS_READOUT_THIS_PR=""
    fi
    # Read window deadline and batch issues from session-state (/pm Step 0b/1B.5)
    REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
@@ -500,7 +509,9 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
      [[ "$OVERRUN_RC" -eq 1 ]] && echo "$ALERT"
    fi
    ```
-6. **Send heartbeat.** If >5 minutes since last user message, send a status update. Include: active agents, PR phases, pending transitions, blockers. Always start with a timestamp: `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`.
+6. **Send heartbeat.** If >5 minutes since last user message, send a status update. Include: active agents, PR phases, pending transitions, blockers, and per-pipeline progress readout (the `PROGRESS_READOUT_THIS_PR` computed in step 5 for each active PR, accumulated per iteration — format: `#N {phase} [{readout}]`). Always start with a timestamp: `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`.
+
+   **When the user asks "how far along?" or an equivalent progress question:** answer with the readout shape from `time-estimates.md` §"Progress Readout Format" for each active pipeline. Recompute via `overrun-check.sh --readout` for freshness (same args as step 5).
 7. **Check for stale agents.** >15 min for Phase A, >10 min for Phase B, >5 min for Phase C without reporting — investigate.
 
 ### Permitted activities in monitor mode:

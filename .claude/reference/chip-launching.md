@@ -380,6 +380,26 @@ Withdraw a tracked chip via `mcp__ccd_session__dismiss_task` (pass the recorded 
 
 In chip mode, "print the full prompt for #N" (or any equivalent ask) re-emits that issue's **complete block verbatim**, in the same fenced form fallback mode would have printed — including the model-guard preamble. The chip's prompt is the source of truth — the printed block and the chip must match. The chip stays offered; printing is not dismissing.
 
+## Lead-with-estimate instruction
+
+A chip-launched thread sees its estimate in the `prompt` payload but has no mechanism to track elapsed time between turns on its own. This named section gives every emitter a single verbatim block to copy into its `## Constraints` section so chip-launched threads lead their first status message with the progress readout and answer "how far along?" questions consistently.
+
+**Copy this block verbatim into every issue-bearing `## Constraints` section** — same discipline as the merge-authority line and the model-guard preamble:
+
+```text
+- At your first status message and whenever the user asks "how far along?" (or
+  equivalent), lead with the progress readout from `time-estimates.md`
+  §"Progress Readout Format": "Est {bound} · {elapsed} elapsed · {verdict} —
+  {outcome}". Derive {bound} from this issue's `## Estimate` section (or your
+  tier's fallback from the table). Derive {elapsed} from the wall-clock time
+  since you claimed the issue. Use `overrun-check.sh --readout --pr {N}
+  --bound-min {M} --started-at {ISO8601}` (resolve per RESOLVE) when available;
+  otherwise compute inline. Do not repeat the readout on every message — only
+  at the first status and on explicit progress questions.
+```
+
+**Placement:** after the merge-authority bullet in the `## Constraints` section, before `## Exit Criteria`. Both delivery modes (chip and fallback) must carry it — it is content inside the `~~~` fence, not chip-infrastructure outside it.
+
 ## Fallback mode
 
 When chip mode is unavailable, output is **byte-identical to the chip `prompt`**: full fenced blocks, every existing fence and label contract preserved (`/prompt`'s mandatory `~~~` outer fence and first-line `**Model:**` label especially), model-guard preamble included. This redefines the pre-#601 baseline of "byte-for-byte identical to pre-chip behavior" — the guard is a universal addition, not a chip-only one, so fallback output gained it rather than the chip `prompt` and fallback block diverging. See `chip-model-guard-decision.md` for the full trade-off. Fallback remains the *baseline* representation, not a degraded variant — a CLI thread simply receives the same content a chip-mode session would.
