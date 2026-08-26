@@ -136,6 +136,11 @@ jobs:
           fi
 
       - name: Warn — nudge suppressed, BugBot already refused this HEAD
+        # Carries an id purely so the offline suite can select this step by
+        # identity rather than by matching text in its condition — a rename or
+        # a removal then errors there instead of silently selecting some other
+        # github-script step (CodeAnt, PR #1377).
+        id: suppressed-warn
         if: env.HAS_TRIGGER_TOKEN == 'true' && steps.suppress-check.outputs.suppressed == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:

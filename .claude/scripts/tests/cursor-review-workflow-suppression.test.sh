@@ -22,12 +22,19 @@
 #   these tests error rather than pass against a body that no longer ships.
 #   Each scenario asserts the literal $GITHUB_OUTPUT contents, so "did not
 #   suppress" is read off the transcript rather than inferred from an absence.
+#   The `gh` stub is keyed to the PR number and SHA the body must forward, and
+#   logs what it served, so the arguments deciding WHICH commit is judged are
+#   asserted positively rather than assumed.
+#
+#   Step conditions are EVALUATED, not string-matched: `A && B` and `A || B`
+#   contain the same substrings but only one of them suppresses, so scenario (i)
+#   reads a truth table off the shipped condition.
 #
 #   `set -e` is the live trap here — the runner's shell carries it, so a bare
 #   `bash guard.sh` would turn the helper's exit 1 ("post") into a failed step.
-#   Scenario (h) is the negative control for that: the same harness run against
-#   a bare-call variant of the body must FAIL, proving these rc-0 assertions
-#   detect the regression instead of reporting success unconditionally.
+#   Two negative controls keep the green from being unconditional: (h) runs a
+#   bare-call variant of the body, which must FAIL; (j) feeds the body a SHA the
+#   harness never vouched for, which the stub must catch.
 #
 # WHAT THIS CANNOT PROVE (lands on CI evidence)
 #   That Actions wires `steps.suppress-check.outputs.suppressed` into the
@@ -49,10 +56,19 @@ trap cleanup EXIT
 # (it does on macOS system python3), which a clobbered HOME hides.
 mkdir -p "$TMP_HOME/.claude"
 
-# Hard dependency, never a skip: without it the workflow could not be read and
-# every assertion below would pass vacuously.
+# Hard dependencies, never a skip. Without PyYAML the workflow could not be read
+# and every assertion below would pass vacuously. Without `jq` the real helper
+# exits 2 at its own dependency preflight, so every scenario would take the
+# fail-open path and the suppression cases would fail for the environment rather
+# than for the guard — an unactionable error unless it is named here (CodeAnt,
+# PR #1377). `gh` is deliberately absent from this list: the stub below supplies
+# it, and a real one on PATH must never be reached.
 if ! python3 -c "import yaml" 2>/dev/null; then
   echo "FAIL — PyYAML is required to read the workflow (pip3 install --user pyyaml)" >&2
+  exit 1
+fi
+if ! command -v jq >/dev/null 2>&1; then
+  echo "FAIL — jq is required: bugbot-refused-head.sh preflights it and exits 2 without it" >&2
   exit 1
 fi
 
@@ -84,7 +100,9 @@ STEP_ID="suppress-check"
 # gone, so a restructure on main surfaces as a hard error here.
 wf_query() {
   python3 - "$WORKFLOW" "$@" <<'PY'
-import sys, yaml
+import re
+import sys
+import yaml
 
 path, mode = sys.argv[1], sys.argv[2]
 with open(path) as fh:
@@ -124,18 +142,50 @@ elif mode == "checkout-ref":
     print(hits[0].get("with", {}).get("ref", ""), end="")
 elif mode == "permission":
     print(wf["permissions"].get(sys.argv[3], "<absent>"), end="")
-elif mode == "suppressed-warn-if":
-    # The annotation step for a suppressed run: github-script, no createComment.
-    hits = [
-        s.get("if", "")
-        for s in steps
-        if "github-script" in str(s.get("uses", ""))
-        and "outputs.suppressed" in str(s.get("if", ""))
-        and "createComment" not in str(s.get("with", {}).get("script", ""))
+elif mode == "if-truth-table":
+    # Substring assertions cannot tell `A && B` from `A || B`, so a regression to
+    # OR would leave a suppressed run free to post while every check still passed
+    # (CodeAnt, PR #1377). This evaluates the condition instead of reading it.
+    #
+    # Each atom is replaced by exact text and every LEFTOVER token is then
+    # rejected, so an added, renamed, or retyped clause errors here rather than
+    # being quietly evaluated away. That token allow-list is also what makes the
+    # eval below safe: nothing but these names and boolean operators survives it.
+    targets = {"posting": posting_step, "warn": lambda: by_id("suppressed-warn")}
+    if sys.argv[3] not in targets:
+        sys.exit("unknown truth-table target %r" % sys.argv[3])
+    cond = targets[sys.argv[3]]().get("if", "")
+
+    atoms = [
+        ("env.HAS_TRIGGER_TOKEN == 'true'", "TOKEN"),
+        ("steps.suppress-check.outputs.suppressed != 'true'", "NOT_SUPPRESSED"),
+        ("steps.suppress-check.outputs.suppressed == 'true'", "SUPPRESSED"),
     ]
-    if len(hits) != 1:
-        sys.exit("expected exactly 1 suppression-warning step, found %d" % len(hits))
-    print(hits[0], end="")
+    expr = " ".join(cond.split())
+    for literal, name in atoms:
+        expr = expr.replace(literal, name)
+    expr = expr.replace("&&", " and ").replace("||", " or ").replace("!", " not ")
+
+    allowed = {"TOKEN", "NOT_SUPPRESSED", "SUPPRESSED", "and", "or", "not", "(", ")"}
+    unknown = [
+        t for t in re.findall(r"[A-Za-z_][A-Za-z_0-9]*|\S", expr) if t not in allowed
+    ]
+    if unknown:
+        sys.exit("unrecognized token(s) in the %r condition: %r (from %r)"
+                 % (sys.argv[3], unknown, cond))
+
+    # SUPPRESSED and NOT_SUPPRESSED read the same step output, so they are one
+    # input with two spellings — never two independent variables.
+    rows = []
+    for token in (True, False):
+        for suppressed in (True, False):
+            fired = eval(expr, {"__builtins__": {}}, {
+                "TOKEN": token,
+                "SUPPRESSED": suppressed,
+                "NOT_SUPPRESSED": not suppressed,
+            })
+            rows.append("token=%d,suppressed=%d:%d" % (token, suppressed, bool(fired)))
+    print(" ".join(rows), end="")
 else:
     sys.exit("unknown mode %r" % mode)
 PY
@@ -159,6 +209,15 @@ cp "$REPO_ROOT/.claude/scripts/lib/ts-normalizer.sh" "$WORK/.claude/scripts/lib/
 # FIXTURE_HEAD_TS         — the HEAD commit's committer date
 # FIXTURE_CHECK_RUNS_JSON — commits/{sha}/check-runs payload
 # FIXTURE_API_FAIL=1      — every `gh api` call fails (fail-open probe)
+# EXPECT_SHA / EXPECT_PR  — the values the guard body is supposed to forward
+# STUB_ERR / STUB_CALLS   — mismatch log / served-URL log
+#
+# The stub is KEYED to the PR number and SHA rather than serving any commit or
+# issue URL it is handed. A body that forwarded the base SHA, a stale HEAD, or
+# the wrong PR — the arguments that decide which refusal and which commit get
+# evaluated — would otherwise still be served the suppressing fixture and pass
+# (CodeAnt, PR #1377). Every served URL is logged too, so a scenario can prove
+# the call HAPPENED instead of reading an empty mismatch log as success.
 STUB_BIN="$TMP/bin"
 mkdir -p "$STUB_BIN"
 cat > "$STUB_BIN/gh" <<'STUB'
@@ -167,11 +226,27 @@ set -uo pipefail
 [[ "${1-}" == "api" ]] || exit 0
 shift
 if [[ "${FIXTURE_API_FAIL:-0}" == "1" ]]; then exit 1; fi
+# A mismatch is recorded AND fails the call: the helper then fails open, so the
+# scenario's own assertion moves too rather than the log being the only witness.
+bad() { printf '%s\n' "$1" >> "$STUB_ERR"; exit 1; }
+served() { printf '%s\n' "$1" >> "$STUB_CALLS"; }
 for arg in "$@"; do
   case "$arg" in
-    repos/*/commits/*/check-runs*) cat "$FIXTURE_CHECK_RUNS_JSON"; exit 0 ;;
-    repos/*/commits/*)             printf '%s\n' "$FIXTURE_HEAD_TS"; exit 0 ;;
-    repos/*/issues/*/comments*)    cat "$FIXTURE_COMMENTS_JSON";  exit 0 ;;
+    repos/*/commits/*/check-runs*)
+      got="${arg#*/commits/}"; got="${got%%/check-runs*}"
+      [[ "$got" == "$EXPECT_SHA" ]] || bad "check-runs sha '$got' != expected '$EXPECT_SHA'"
+      served "check-runs:$got"
+      cat "$FIXTURE_CHECK_RUNS_JSON"; exit 0 ;;
+    repos/*/commits/*)
+      got="${arg#*/commits/}"; got="${got%%\?*}"
+      [[ "$got" == "$EXPECT_SHA" ]] || bad "commit sha '$got' != expected '$EXPECT_SHA'"
+      served "commit:$got"
+      printf '%s\n' "$FIXTURE_HEAD_TS"; exit 0 ;;
+    repos/*/issues/*/comments*)
+      got="${arg#*/issues/}"; got="${got%%/comments*}"
+      [[ "$got" == "$EXPECT_PR" ]] || bad "comments pr '$got' != expected '$EXPECT_PR'"
+      served "comments:$got"
+      cat "$FIXTURE_COMMENTS_JSON"; exit 0 ;;
   esac
 done
 echo "[]"
@@ -193,6 +268,9 @@ ordinary_cursor_comment() {
 }
 
 OUT="$TMP/github_output"
+STUB_ERR="$TMP/stub-mismatches"
+STUB_CALLS="$TMP/stub-calls"
+export STUB_ERR STUB_CALLS
 setup() {
   local head_age="$1" comments_json="$2"
   FIXTURE_HEAD_TS="$(ts_seconds_ago "$head_age")"
@@ -204,20 +282,27 @@ setup() {
   # attributable. Scenarios needing the un-attributable case override this.
   printf '%s\n' '{"check_runs":[{"name":"Cursor Bugbot","app":{"slug":"cursor"},"status":"completed","conclusion":"neutral"}]}' > "$TMP/check-runs.json"
   export FIXTURE_CHECK_RUNS_JSON="$TMP/check-runs.json"
-  : > "$OUT"
+  # What the guard body is expected to forward — never what it actually sent.
+  export EXPECT_SHA="$HEAD_SHA" EXPECT_PR="$PR_NUM"
+  : > "$OUT"; : > "$STUB_ERR"; : > "$STUB_CALLS"
 }
 
 # The runner's default shell, verbatim: `set -e` is present and `set -u` is not.
+# GUARD_HEAD_SHA overrides only what reaches the body's env, leaving EXPECT_SHA
+# on the true HEAD — that gap is what scenario (j) drives the stub's check with.
 run_guard() {
   local pr="${1-$PR_NUM}" script="${2-$RUNFILE}"
   (
     cd "$WORK" || exit 99
     HOME="$TMP_HOME" GITHUB_OUTPUT="$OUT" GH_REPO="auerbachb/claude-code-config" \
-      GH_TOKEN="stub" PR_NUMBER="$pr" HEAD_SHA="$HEAD_SHA" PATH="$STUB_BIN:$PATH" \
+      GH_TOKEN="stub" PR_NUMBER="$pr" HEAD_SHA="${GUARD_HEAD_SHA:-$HEAD_SHA}" \
+      PATH="$STUB_BIN:$PATH" \
       bash --noprofile --norc -eo pipefail "$script" >/dev/null 2>&1
   )
 }
 emitted() { tr -d '\n' < "$OUT"; }
+served_urls() { LC_ALL=C sort "$STUB_CALLS" | tr '\n' ' '; }
+mismatches() { tr '\n' ';' < "$STUB_ERR"; }
 
 ############################################################################
 echo "== (pre): the extracted body is the shipped one =="
@@ -230,6 +315,13 @@ setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
 run_guard; RC=$?
 check_eq "step succeeded" "0" "$RC"
 check_eq "wrote suppressed=true" "suppressed=true" "$(emitted)"
+# Argument wiring, positively: the body forwarded PR_NUMBER and HEAD_SHA — in
+# that order — to all three endpoints the helper reads. Asserting the served
+# URLs rather than an empty mismatch log keeps "never called" from reading as
+# "called correctly".
+check_eq "guard forwarded the PR number and HEAD SHA to every endpoint" \
+  "check-runs:$HEAD_SHA comments:$PR_NUM commit:$HEAD_SHA " "$(served_urls)"
+check_eq "no argument mismatches" "" "$(mismatches)"
 
 ############################################################################
 echo "== (b): refusal PREDATES the HEAD commit -> posts (new push, clean slate) =="
@@ -303,6 +395,20 @@ check_eq "bare call fails the step (harness can detect the regression)" "1" "$RC
 check_eq "and never reaches its output write" "" "$(emitted)"
 
 ############################################################################
+echo "== (j): NEGATIVE CONTROL — a wrong SHA is caught, and cannot suppress =="
+# Pairs with (a)'s wiring assertion: without this, an argument check that never
+# fires would look identical to one that passes. The (a) fixture verbatim, with
+# only the SHA the body receives changed — as a base-SHA or stale-HEAD mix-up
+# would change it — so the fixture would still suppress if it were served.
+setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
+GUARD_HEAD_SHA="0000000000000000000000000000000000000000" run_guard; RC=$?
+check_eq "step still succeeded (fail-open)" "0" "$RC"
+check_contains "stub recorded the SHA mismatch" \
+  "!= expected '$HEAD_SHA'" "$(mismatches)"
+check_eq "a SHA the harness never vouched for cannot suppress" \
+  "suppressed=false" "$(emitted)"
+
+############################################################################
 echo "== (i): YAML wiring — the guard is actually consulted =="
 # Behaviour of these lines lands on CI evidence; the wiring is checkable here.
 POSTING_IF="$(wf_query posting-if)" || { echo "FAIL — $POSTING_IF"; exit 1; }
@@ -311,9 +417,23 @@ check_contains "comment step consults the guard output" \
 check_contains "comment step keeps the existing PAT gate" \
   "env.HAS_TRIGGER_TOKEN == 'true'" "$POSTING_IF"
 
-WARN_IF="$(wf_query suppressed-warn-if)" || { echo "FAIL — $WARN_IF"; exit 1; }
+# Both clauses being PRESENT does not make them CONJOINED — `||` reads identical
+# to the two checks above while letting a suppressed run post. The tables below
+# are evaluated from the shipped condition, so only a real AND satisfies them.
+POSTING_TABLE="$(wf_query if-truth-table posting)" || { echo "FAIL — $POSTING_TABLE"; exit 1; }
+check_eq "comment posts ONLY with the PAT and no suppression (a real AND, not OR)" \
+  "token=1,suppressed=1:0 token=1,suppressed=0:1 token=0,suppressed=1:0 token=0,suppressed=0:0" \
+  "$POSTING_TABLE"
+
+# Selected by step id, so removing or renaming the annotation step errors here
+# instead of matching some other github-script step that mentions the output.
+WARN_IF="$(wf_query step-field suppressed-warn if)" || { echo "FAIL — $WARN_IF"; exit 1; }
 check_contains "a suppressed run still emits an annotation" \
   "steps.$STEP_ID.outputs.suppressed == 'true'" "$WARN_IF"
+WARN_TABLE="$(wf_query if-truth-table warn)" || { echo "FAIL — $WARN_TABLE"; exit 1; }
+check_eq "the annotation fires ONLY on a suppressed run that had the PAT" \
+  "token=1,suppressed=1:1 token=1,suppressed=0:0 token=0,suppressed=1:0 token=0,suppressed=0:0" \
+  "$WARN_TABLE"
 
 check_eq "guard step never fails the job" "True" "$(wf_query step-field "$STEP_ID" continue-on-error)"
 check_eq "guard step is gated on the PAT" "env.HAS_TRIGGER_TOKEN == 'true'" \
