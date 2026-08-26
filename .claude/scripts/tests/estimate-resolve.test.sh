@@ -8,14 +8,32 @@
 #
 # Stubs `gh` so nothing touches the network or the real ~/.claude, and records
 # the stub's argv so the --repo pass-through is asserted verbatim. Case 1a is a
-# NEGATIVE CONTROL: it rebuilds the pre-fix expansion and asserts it still
-# aborts, so a future refactor cannot make this suite pass vacuously.
+# NEGATIVE CONTROL guarding against a vacuous pass, in two halves:
+#
+#   * A structural check that the production script still carries the guarded
+#     idiom. This holds on EVERY bash, and on modern bash it is the only thing
+#     standing between a revert and macOS breakage.
+#   * A behavioral check that the rebuilt pre-fix form still aborts — run ONLY
+#     where the abort is reproducible. bash >= 4.4 tolerates expanding an empty
+#     array under `set -u`, so on CI's modern bash the pre-fix form runs clean
+#     and the complementary assertion is made instead.
 #
 # Run from repo root: bash .claude/scripts/tests/estimate-resolve.test.sh
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT="$REPO_ROOT/.claude/scripts/estimate-resolve.sh"
+
+# Does the `bash` that runs the child scripts abort when an EMPTY array is
+# expanded under `set -u`? bash < 4.4 (macOS ships 3.2) aborts; bash >= 4.4
+# tolerates it. Probe the BEHAVIOR rather than parsing a version string: the
+# child `bash` resolved from PATH need not be the one running this suite, and a
+# behavioral probe cannot drift from the thing it gates.
+if bash -c 'set -u; a=(); : "${a[@]}"' >/dev/null 2>&1; then
+  EMPTY_EXPANSION_ABORTS=0
+else
+  EMPTY_EXPANSION_ABORTS=1
+fi
 
 TMP="$(mktemp -d)"
 TMP_HOME="$(mktemp -d)"
@@ -106,9 +124,18 @@ check_eq "no-flags passes no --repo to gh" \
   "issue view 1367 --json body,labels" "$(cat "$TMP/gh-argv")"
 
 # ---- 1a. NEGATIVE CONTROL ---------------------------------------------------
-# Rebuild the pre-fix expansion in a copy and assert it STILL aborts. Without
-# this, case 1 would pass on any bash that tolerates empty-array expansion and
-# the suite would silently stop testing anything.
+# Half one, portable: the production script must still carry the guarded idiom.
+# On bash >= 4.4 a revert changes no observable behavior, so this is the only
+# assertion that can catch one there — and the macOS breakage it prevents is
+# exactly what issue #1371 was.
+if grep -qF '${GH_ARGS[@]+"${GH_ARGS[@]}"}' "$SCRIPT"; then
+  PASS=$((PASS + 1)); echo "ok   — production script still carries the guarded GH_ARGS idiom"
+else
+  FAIL=$((FAIL + 1)); echo "FAIL — production script no longer carries the guarded GH_ARGS idiom"
+fi
+
+# Half two: rebuild the pre-fix expansion in a copy and assert it STILL aborts,
+# where that abort is reproducible at all.
 PREFIX_SCRIPT="$TMP/estimate-resolve-prefix.sh"
 sed 's/\${GH_ARGS\[@\]+"\${GH_ARGS\[@\]}"}/"${GH_ARGS[@]}"/g' "$SCRIPT" > "$PREFIX_SCRIPT"
 if grep -q '"\${GH_ARGS\[@\]}"' "$PREFIX_SCRIPT" && \
@@ -118,9 +145,19 @@ else
   FAIL=$((FAIL + 1)); echo "FAIL — negative control could not rebuild the pre-fix expansion"
 fi
 run_script env GH_ISSUE_JSON="$TMP/issue-estimated.json" bash "$PREFIX_SCRIPT" 1367 || true
-check_contains "negative control: pre-fix form aborts on the empty array" \
-  "unbound variable" "$ERR"
-check_eq "negative control: pre-fix form exits 4" "4" "$RC"
+if [[ "$EMPTY_EXPANSION_ABORTS" -eq 1 ]]; then
+  check_contains "negative control: pre-fix form aborts on the empty array" \
+    "unbound variable" "$ERR"
+  check_eq "negative control: pre-fix form exits 4" "4" "$RC"
+else
+  # bash >= 4.4 tolerates the pre-fix expansion, so the #1371 abort cannot be
+  # reproduced here. Assert the complementary fact rather than nothing: if this
+  # ever fails, the probe and the child run have disagreed and the gating above
+  # is no longer trustworthy.
+  check_not_contains "negative control: modern bash tolerates the pre-fix form" \
+    "unbound variable" "$ERR"
+  check_eq "negative control: modern bash runs the pre-fix form to completion" "0" "$RC"
+fi
 
 # =============================================================================
 # 2. Flagged invocations pass their arguments through unchanged.

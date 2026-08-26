@@ -13,8 +13,15 @@
 #                               lines[] is empty; the validator crashed instead
 #                               of reporting the missing required fields.
 #
-# Each case carries a NEGATIVE CONTROL that rebuilds the pre-fix expansion and
-# asserts it still aborts, so neither case can pass vacuously.
+# Each case carries a NEGATIVE CONTROL against a vacuous pass, in two halves:
+#
+#   * A structural check that the production script still carries the guarded
+#     idiom. This holds on EVERY bash, and on modern bash it is the only thing
+#     standing between a revert and macOS breakage.
+#   * A behavioral check that the rebuilt pre-fix form still aborts — run ONLY
+#     where the abort is reproducible. bash >= 4.4 tolerates expanding an empty
+#     array under `set -u`, so on CI's modern bash the pre-fix form runs clean
+#     and the complementary assertion is made instead.
 #
 # Run from repo root: bash .claude/scripts/tests/empty-array-expansion.test.sh
 set -uo pipefail
@@ -22,6 +29,17 @@ set -uo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 OVERRUN="$REPO_ROOT/.claude/scripts/overrun-check.sh"
 VERIFY="$REPO_ROOT/.claude/scripts/verify-exit-report-block.sh"
+
+# Does the `bash` that runs the child scripts abort when an EMPTY array is
+# expanded under `set -u`? bash < 4.4 (macOS ships 3.2) aborts; bash >= 4.4
+# tolerates it. Probe the BEHAVIOR rather than parsing a version string: the
+# child `bash` resolved from PATH need not be the one running this suite, and a
+# behavioral probe cannot drift from the thing it gates.
+if bash -c 'set -u; a=(); : "${a[@]}"' >/dev/null 2>&1; then
+  EMPTY_EXPANSION_ABORTS=0
+else
+  EMPTY_EXPANSION_ABORTS=1
+fi
 # overrun-check.sh resolves session-state.sh from a relative candidate path, so
 # run from the repo root regardless of the caller's cwd. Without it the helper
 # would go unresolved and overrun-check.sh would exit 0 before ever reaching the
@@ -91,6 +109,15 @@ check_eq "overrun-check: repeat breach is suppressed (exit 2)" "2" "$RC"
 check_eq "overrun-check: suppressed call prints nothing" "" "$OUT"
 
 # ---- NEGATIVE CONTROL -------------------------------------------------------
+# Half one, portable: the production script must still carry the guarded idiom.
+if grep -qF '${REPO_ARGS[@]+"${REPO_ARGS[@]}"}' "$OVERRUN"; then
+  PASS=$((PASS + 1)); echo "ok   — overrun-check: production script still carries the guarded idiom"
+else
+  FAIL=$((FAIL + 1)); echo "FAIL — overrun-check: production script no longer carries the guarded idiom"
+fi
+
+# Half two: rebuild the pre-fix expansion and assert it STILL aborts, where that
+# abort is reproducible at all.
 OVERRUN_PREFIX="$TMP/overrun-check-prefix.sh"
 sed 's/\${REPO_ARGS\[@\]+"\${REPO_ARGS\[@\]}"}/"${REPO_ARGS[@]}"/g' "$OVERRUN" > "$OVERRUN_PREFIX"
 if grep -q '"\${REPO_ARGS\[@\]}"' "$OVERRUN_PREFIX" && \
@@ -101,9 +128,18 @@ else
 fi
 run_capture bash "$OVERRUN_PREFIX" --pr 88888 --bound-min 30 \
   --started-at 2026-08-26T00:00:00Z --now 2026-08-26T12:00:00Z || true
-check_contains "overrun-check: pre-fix form aborts on the empty array" \
-  "unbound variable" "$ERR"
-check_eq "overrun-check: pre-fix form silently reports no breach" "" "$OUT"
+if [[ "$EMPTY_EXPANSION_ABORTS" -eq 1 ]]; then
+  check_contains "overrun-check: pre-fix form aborts on the empty array" \
+    "unbound variable" "$ERR"
+  check_eq "overrun-check: pre-fix form silently reports no breach" "" "$OUT"
+else
+  # bash >= 4.4 tolerates the pre-fix expansion, so the silent-exit-0 failure
+  # cannot be reproduced here; the alert path runs normally instead.
+  check_not_contains "overrun-check: modern bash tolerates the pre-fix form" \
+    "unbound variable" "$ERR"
+  check_contains "overrun-check: modern bash still emits the breach alert" \
+    "PR #88888 overrun" "$OUT"
+fi
 
 # =============================================================================
 # 2. verify-exit-report-block.sh — header-only block, so lines[] is empty.
@@ -141,6 +177,15 @@ check_contains "verify-exit-report: names the offending line" \
   "disallowed multiple spaces after colon" "$ERR"
 
 # ---- NEGATIVE CONTROL -------------------------------------------------------
+# Half one, portable: the production script must still carry the guarded idiom.
+if grep -qF '${lines[@]+"${lines[@]}"}' "$VERIFY"; then
+  PASS=$((PASS + 1)); echo "ok   — verify-exit-report: production script still carries the guarded idiom"
+else
+  FAIL=$((FAIL + 1)); echo "FAIL — verify-exit-report: production script no longer carries the guarded idiom"
+fi
+
+# Half two: rebuild the pre-fix expansion and assert it STILL aborts, where that
+# abort is reproducible at all.
 VERIFY_PREFIX="$TMP/verify-exit-report-block-prefix.sh"
 sed 's/\${lines\[@\]+"\${lines\[@\]}"}/"${lines[@]}"/g' "$VERIFY" > "$VERIFY_PREFIX"
 if grep -q '"\${lines\[@\]}"' "$VERIFY_PREFIX" && \
@@ -151,10 +196,19 @@ else
 fi
 OUT="$(printf 'EXIT_REPORT\n' | bash "$VERIFY_PREFIX" 2>"$TMP/stderr")"; RC=$?
 ERR="$(cat "$TMP/stderr")"
-check_contains "verify-exit-report: pre-fix form aborts on the empty array" \
-  "unbound variable" "$ERR"
-check_not_contains "verify-exit-report: pre-fix form never reports the missing fields" \
-  "missing required field(s)" "$ERR"
+if [[ "$EMPTY_EXPANSION_ABORTS" -eq 1 ]]; then
+  check_contains "verify-exit-report: pre-fix form aborts on the empty array" \
+    "unbound variable" "$ERR"
+  check_not_contains "verify-exit-report: pre-fix form never reports the missing fields" \
+    "missing required field(s)" "$ERR"
+else
+  # bash >= 4.4 tolerates the pre-fix expansion, so the crash cannot be
+  # reproduced here; the validator reaches its normal missing-field report.
+  check_not_contains "verify-exit-report: modern bash tolerates the pre-fix form" \
+    "unbound variable" "$ERR"
+  check_contains "verify-exit-report: modern bash still reports the missing fields" \
+    "missing required field(s)" "$ERR"
+fi
 
 echo
 echo "empty-array-expansion.test.sh: $PASS passed, $FAIL failed"
