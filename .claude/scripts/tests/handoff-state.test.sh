@@ -320,6 +320,92 @@ check_eq "unrelated fields preserved across coercion writes" "99" \
   "$(jq -r '.pr_number' "$HANDOFF_FILE")"
 
 echo
+echo "== --set: raw jq expression is refused, not stored (issue #1357) =="
+# A --set value that is an unevaluated jq PROGRAM used to fall through to the
+# --arg string branch, exit 0, and store the expression SOURCE — clobbering the
+# previous value with no error (observed on PR #1350's A->B handoff, where it
+# destroyed Phase A's notes). The guard runs AFTER the --argjson probe, so
+# issue #853's false/null JSON-literal handling is untouched (re-asserted below).
+reset_handoff
+run --create "$PR" "$SEED_JSON"
+run --set "$PR" ".notes=phase_a_findings"
+BEFORE_JQ_GUARD="$(cat "$HANDOFF_FILE")"
+
+OUT="$(run --set "$PR" '.notes=.notes + " clobbered"' 2>&1)"; RC=$?
+check_eq "incident shape exits 4" "4" "$RC"
+check_eq "incident shape leaves file byte-identical" "$BEFORE_JQ_GUARD" "$(cat "$HANDOFF_FILE")"
+check_eq "prior notes value survives the refusal" "phase_a_findings" \
+  "$(jq -r '.notes' "$HANDOFF_FILE")"
+check_eq "refusal names the refusing-to-write contract" "1" \
+  "$(grep -c 'refusing to write' <<<"$OUT")"
+check_eq "refusal names the unevaluated jq expression" "1" \
+  "$(grep -c 'unevaluated jq expression' <<<"$OUT")"
+
+# The issue's literal text spaced the assignment (`.notes = .notes + "..."`),
+# which leaves whitespace on BOTH sides of the split — the guard must tolerate a
+# leading space in the value.
+OUT="$(run --set "$PR" '.notes = .notes + " clobbered"' 2>&1)"; RC=$?
+check_eq "spaced assignment shape exits 4" "4" "$RC"
+check_eq "spaced assignment leaves file byte-identical" "$BEFORE_JQ_GUARD" "$(cat "$HANDOFF_FILE")"
+
+for EXPR in '(.a // [])' '.foo | length' '(.threads_replied // []) + ["t1"]' \
+            '.files_changed | map(select(. != "a"))'; do
+  RC="$(run --set "$PR" ".notes=${EXPR}" >/dev/null 2>&1; echo $?)"
+  check_eq "jq expression refused: ${EXPR}" "4" "$RC"
+  check_eq "file byte-identical after refusing ${EXPR}" "$BEFORE_JQ_GUARD" "$(cat "$HANDOFF_FILE")"
+done
+
+echo
+echo "== --set: genuine string values still write (no false rejects) =="
+# The string branch is the normal home of prose, SHAs, paths and URLs. Each of
+# these trips at least one of the guard's three signals but not all three, so a
+# regression that loosens the heuristic fails here rather than in production.
+check_string_set() {
+  local desc="$1" value="$2"
+  local rc
+  rc="$(run --set "$PR" ".notes=${value}" >/dev/null 2>&1; echo $?)"
+  check_eq "stored: $desc (exit 0)" "0" "$rc"
+  check_eq "stored: $desc (round-trips as string)" "$value" "$(jq -r '.notes' "$HANDOFF_FILE")"
+  check_eq "stored: $desc (string type)" "string" "$(jq -r '.notes | type' "$HANDOFF_FILE")"
+}
+check_string_set "plain word" "abc"
+check_string_set "head sha" "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+check_string_set "timestamp" "2026-01-02T03:04:05Z"
+check_string_set "dotfile path (leading dot, no operator)" ".claude/scripts/handoff-state.sh"
+check_string_set "workflow path (leading dot, no operator)" ".github/workflows/ci.yml"
+check_string_set "relative path" "./scripts/foo.sh"
+check_string_set "url (operator chars, no leading path)" "https://github.com/auerbachb/claude-code-config/pull/1350"
+check_string_set "prose naming a field and a plus" "Fixed .notes + head_sha handling"
+check_string_set "prose with pipe and slashes" "CR clean | CodeAnt approved // threads resolved"
+# Leading dot AND an operator, but not valid jq — the compile probe is the only
+# signal keeping this prose out of the refusal path.
+check_string_set "prose that starts with a dotted token" ".env + .env.local are ignored"
+
+# Issue #853 re-assertion: JSON literals are decided by the --argjson probe
+# BEFORE the guard, so the guard cannot push false/null onto the string path.
+run --set "$PR" ".merge_gate_met=false"
+check_eq "#853: false still exits 0 with the guard in place" "0" "$?"
+check_eq "#853: false still stored as boolean" "boolean" \
+  "$(jq -r '.merge_gate_met | type' "$HANDOFF_FILE")"
+run --set "$PR" ".blocked_on=null"
+check_eq "#853: null still exits 0 with the guard in place" "0" "$?"
+check_eq "#853: null still stored as null type" "null" \
+  "$(jq -r '.blocked_on | type' "$HANDOFF_FILE")"
+
+echo
+echo "== --append: jq-expression guard is --set-only (scope boundary) =="
+# --append does not share --set's value branch and cannot clobber a prior value,
+# so issue #1357 deliberately left it alone. This pins that decision: a future
+# widening should change this assertion consciously, not discover it by surprise.
+reset_handoff
+run --create "$PR" "$SEED_JSON"
+run --append "$PR" "findings_fixed" '.notes + " x"'
+check_eq "--append with a jq-expression value still exits 0" "0" "$?"
+check_eq "--append stored the expression verbatim as a string" '.notes + " x"' \
+  "$(jq -r '.findings_fixed[0]' "$HANDOFF_FILE")"
+check_eq "--append left the seeded notes untouched" "" "$(jq -r '.notes' "$HANDOFF_FILE")"
+
+echo
 echo "== Usage errors: exit 2 on bad args =="
 run --create 2>/dev/null; check_eq "--create missing args exits 2" "2" "$?"
 run --init 2>/dev/null;   check_eq "--init missing args exits 2" "2" "$?"

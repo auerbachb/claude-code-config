@@ -122,6 +122,8 @@ type violation (**4**) stays distinct from a lost race (**7**).
 
 The most common way to corrupt a field is passing a raw jq filter as a `--set` value — the string is stored literally instead of being evaluated. Evaluate first, then pass the resulting scalar.
 
+`handoff-state.sh` has no field-type schema, so it cannot run the check above. It does refuse the clearest form of that same mistake (issue #1357): a `--set` value that starts like a jq path expression, carries a jq operator, **and** compiles as a jq program exits **4** with the file unmodified, rather than silently clobbering the field with the expression's source text. A value that misses any one of those three signals is still stored verbatim as a string — prose, SHAs, paths and URLs keep working. `--append` is deliberately outside that guard: its values are array elements and cannot overwrite a prior value. The script header stays the canonical contract.
+
 The `_field_types.top_level` and `_field_types.pr_nested` maps in
 `session-state-schema.json` are the single source of truth for which fields are typed and what
 each type is. `session-state.sh` and `session-state-audit.sh` load those maps at runtime; their

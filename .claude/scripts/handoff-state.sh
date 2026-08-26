@@ -72,7 +72,9 @@
 #   0  Success.
 #   2  Usage error (missing args, unknown flag, malformed path=value).
 #   3  Handoff file not found (--get only; other modes create/seed from {}).
-#   4  jq parse or evaluation failure.
+#   4  jq parse or evaluation failure. ALSO: --set refuses a value that is an
+#      unevaluated jq expression rather than data (issue #1357) — the file is
+#      left unmodified. Evaluate the expression first and pass the result.
 #   5  Write failure (mktemp / mv).
 #   6  Lock timeout (STATE_LOCK_EXIT_TIMEOUT from state-lock.sh).
 #
@@ -463,6 +465,38 @@ if [[ "$MODE" == "set" ]]; then
       state_lock_release; exit 4
     }
   else
+    # The value is not a JSON literal, so it is headed for the --arg string
+    # branch. Before storing it verbatim, refuse the one shape that is never
+    # data: an unevaluated jq PROGRAM the caller meant to have evaluated
+    # (issue #1357). `--set N .notes=.notes + " x"` used to exit 0 and store the
+    # expression SOURCE, clobbering the previous notes with no error — the loss
+    # only surfaced on read-back. A hard refusal leaves the old value intact.
+    #
+    # Three independent signals must ALL fire, because the string branch is the
+    # normal home of prose notes, SHAs, paths and URLs, and a false reject is a
+    # broken write for a legitimate value:
+    #   1. It STARTS like a jq path expression — optional whitespace, an
+    #      optional `(`, then `.` followed by an identifier character. The
+    #      identifier requirement is what keeps relative paths out: `./x`,
+    #      `../x` and `.github/workflows/ci.yml` are common values, and only the
+    #      last of those even reaches signal 2.
+    #   2. It CONTAINS a jq operator, so a bare path-shaped token
+    #      (`.claude/scripts/handoff-state.sh`) is still stored as a string.
+    #   3. It COMPILES as a jq program. Signals 1+2 alone would reject prose
+    #      like `.env + .env.local are ignored`; that text is not valid jq, so
+    #      this check keeps it on the string path. The probe wraps the value in
+    #      a `def` that is never invoked and runs `empty` under -n, so nothing
+    #      in the value is evaluated and no input is read.
+    # Anything short of all three keeps the pre-existing store-as-string
+    # behavior, so an unrecognized expression degrades to today's semantics
+    # rather than to a new failure.
+    _JQ_EXPR_START='^[[:space:]]*\(?[[:space:]]*\.[A-Za-z_]'
+    _JQ_EXPR_OPS='(\||//|\+|map\(|select\()'
+    if [[ "$JQ_VAL" =~ $_JQ_EXPR_START ]] && [[ "$JQ_VAL" =~ $_JQ_EXPR_OPS ]] \
+       && jq -n "def _handoff_set_probe: ${JQ_VAL}; empty" </dev/null >/dev/null 2>&1; then
+      echo "handoff-state.sh: refusing to write — the value for '$JQ_PATH' is an unevaluated jq expression, not data: '$JQ_VAL' (see issue #1357); evaluate it first and pass the resulting scalar; $HANDOFF_FILE left unmodified" >&2
+      state_lock_release; exit 4
+    fi
     UPDATED="$(printf '%s\n' "$CURRENT" | jq --arg v "$JQ_VAL" "${JQ_PATH} = \$v")" || {
       echo "handoff-state.sh: jq --set (string) failed on path $JQ_PATH" >&2
       state_lock_release; exit 4
@@ -473,6 +507,12 @@ if [[ "$MODE" == "set" ]]; then
 fi
 
 if [[ "$MODE" == "append" ]]; then
+  # NOTE: the jq-expression refusal above is deliberately --set-only (issue
+  # #1357). --append does not share that value branch, its values are array
+  # ELEMENTS rather than whole-field replacements, and it cannot clobber a
+  # prior value — appending a bad element leaves everything already in the
+  # array intact. Widening the guard here is a separate decision, not an
+  # oversight.
   # findings_dismissed deduplicates by .id; all other arrays dedup by exact value.
   if [[ "$ARRAY_FIELD" == "findings_dismissed" ]]; then
     if ! printf '%s' "$ARRAY_VALUE" | jq -e 'type == "object" and has("id")' >/dev/null 2>&1; then
