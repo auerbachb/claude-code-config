@@ -476,13 +476,22 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    # STARTED_AT = ISO8601 timestamp when this PR's pipeline was launched (claim-comment
    # timestamp → PR createdAt fallback; sourced from session-state or the PR itself).
    # This value is per-PR — accumulate into the heartbeat string separately for each PR.
+   # Read window deadline and batch issues from session-state (/pm Step 0b/1B.5)
+   REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+   # Derive STARTED_AT: claim-comment timestamp from session-state, fallback to PR createdAt.
+   STARTED_AT=""
+   if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" && -n "$PR_NUM" ]]; then
+     STARTED_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].prs[\"$PR_NUM\"].pipeline_started_at" 2>/dev/null) || STARTED_AT=""
+     [[ "$STARTED_AT" == "null" ]] && STARTED_AT=""
+   fi
+   if [[ -z "$STARTED_AT" && -n "$PR_NUM" ]]; then
+     STARTED_AT=$(gh pr view "$PR_NUM" --json createdAt --jq '.createdAt' 2>/dev/null) || STARTED_AT=""
+   fi
    PROGRESS_READOUT_THIS_PR=""
    if [[ -n "$OVERRUN_CHECK_SH" && -n "$BOUND_MIN" && -n "$STARTED_AT" ]]; then
      PROGRESS_READOUT_THIS_PR=$("$OVERRUN_CHECK_SH" --readout --pr "$PR_NUM" \
        --bound-min "$BOUND_MIN" --started-at "$STARTED_AT" 2>/dev/null) || PROGRESS_READOUT_THIS_PR=""
    fi
-   # Read window deadline and batch issues from session-state (/pm Step 0b/1B.5)
-   REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
    DEADLINE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window.deadline_epoch" 2>/dev/null) || DEADLINE=""
    [[ "$DEADLINE" == "null" ]] && DEADLINE=""
    BATCH_ISSUES=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window.batch_issues" 2>/dev/null) || BATCH_ISSUES=""

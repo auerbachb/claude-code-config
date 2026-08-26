@@ -154,8 +154,11 @@ if [[ "$READOUT_MODE" == "true" ]]; then
     printf 'Est %s · %s elapsed · on track — likely done in ~%s\n' \
       "$BOUND_STR" "$ELAPSED_STR" "$REMAINING_STR"
   else
-    # Pace-scaled revised total: elapsed × (elapsed / bound), integer arithmetic
-    REVISED=$(( READOUT_ELAPSED * READOUT_ELAPSED / BOUND_MIN ))
+    # Pace-scaled revised total: compute in seconds for precision, then convert to minutes.
+    # Using truncated-minute READOUT_ELAPSED would produce a contradictory readout when
+    # elapsed exceeds the bound by less than one minute (e.g. "running slow — ~90 min total"
+    # when the bound IS 90 min and elapsed is 90m30s).
+    REVISED=$(( READOUT_ELAPSED_SECS * READOUT_ELAPSED_SECS / (BOUND_MIN * 60) / 60 ))
     REVISED_STR=$(format_duration_min "$REVISED")
     printf 'Est %s · %s elapsed · running slow — revised finish ~%s total\n' \
       "$BOUND_STR" "$ELAPSED_STR" "$REVISED_STR"
