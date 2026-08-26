@@ -17,7 +17,7 @@ Enforces the main-hygiene rule from `CLAUDE.md`, catching pre-existing drift at 
 
 `--quarantine` creates a `recovery/dirty-main-YYYYMMDD-HHMMSS` branch preserving every tracked change and unpushed commit, then resets main to origin/main. Untracked files stay put — the guard never invokes `git clean`. Detection detail: `.claude/reference/dirty-main-guard.md`; exit codes and output format: `dirty-main-guard.sh --help`.
 
-`CLAUDE.md` §Worktree owns the session-start sequence (check → quarantine → pull) and requires surfacing `quarantined: recovery/dirty-main-*` branch names. The `dirty-main-warn.sh` Stop hook re-runs `--check` after every response and warns loudly; it never quarantines on its own.
+`CLAUDE.md` §Worktree owns the session-start sequence and the requirement to surface `quarantined: recovery/dirty-main-*` branch names. The `dirty-main-warn.sh` Stop hook re-runs `--check` after every response and warns loudly; it never quarantines on its own.
 
 ## Recovery workflow
 

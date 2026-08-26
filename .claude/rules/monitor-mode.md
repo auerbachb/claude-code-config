@@ -29,9 +29,9 @@ Poll every cycle; never fire-and-forget. Report failures and blockers immediatel
 
 Respawn permissions: crash asks, exhaustion auto (`phase-protocols.md`).
 
-## Liveness (Issue #1253)
+## Liveness
 
-Routine per-tick heartbeats are removed. See `scheduling-reliability.md` §Mandatory Pre-Exit Checklist for the canonical liveness and output rules.
+Routine per-tick heartbeats are removed; canonical liveness and output rules live in `scheduling-reliability.md` §Mandatory Pre-Exit Checklist.
 
 ## File-Write Status Updates (MANDATORY)
 

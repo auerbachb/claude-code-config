@@ -6,16 +6,15 @@
 
 ## Launch gate before every successor
 
-Immediately before any A→A, A→B, B→B, B→C, or queued-pipeline launch,
-re-read both stop controls. If repo `refill.paused` is true, or
-`execution-pause.sh --status --session "$CLAUDE_SESSION_ID"` reports `active`,
-persist the pending transition and launch nothing. This gate overrides every
-"within 60 seconds" instruction below; only an explicit `/end-resume` or
-`/pause-resume` may reopen it.
-Launch only after both reads succeed and return explicit clear values
-(`refill.paused` false/null and execution status `inactive`). A missing helper,
-non-zero read, or any other output fails closed: persist the transition, report
-which control was unreadable, and do not launch.
+Immediately before any A→A, A→B, B→B, B→C, or queued-pipeline launch, re-read
+both stop controls. Launch only when both reads succeed and return explicit
+clear values: repo `refill.paused` false/null, and
+`execution-pause.sh --status --session "$CLAUDE_SESSION_ID"` reporting
+`inactive`. Anything else — paused, `active`, a missing helper, a non-zero read,
+any other output — **fails closed**: persist the pending transition, report
+which control was unreadable, launch nothing. This gate overrides every "within
+60 seconds" instruction below; only an explicit `/end-resume` or
+`/pause-resume` reopens it.
 
 ## Structured Exit Report (MANDATORY — all phases)
 

@@ -27,7 +27,7 @@ Skill-owned polling updates `session-state.json` per skill's contract; stale sta
 
 ### Recurring scheduler contract (authoritative)
 
-**CronCreate is unreliable** — reproducibly produces zero ticks under common usage patterns (#914, #924). **Session-only and in-memory**: `durable` has **no effect**; nothing survives a session boundary. **Durable work belongs in on-disk state, not a job.** A durable scheduler exists (`mcp__scheduled-tasks__*`); why we decline it: `.claude/reference/cross-session-durability.md`. Use `Monitor`. Failure-mode detail: `.claude/reference/scheduling-failure-modes.md` Pattern 7.
+**CronCreate is unreliable** — reproducibly zero ticks under common usage (#914, #924) — and **session-only and in-memory**: `durable` has **no effect**, nothing survives a session boundary. Use `Monitor`; **durable work belongs in on-disk state, not a job.** A durable scheduler exists (`mcp__scheduled-tasks__*`); why we decline it: `.claude/reference/cross-session-durability.md`. Failure-mode detail: `.claude/reference/scheduling-failure-modes.md` Pattern 7.
 
 ## Mandatory Pre-Exit Checklist for Polling Turns
 
@@ -42,7 +42,7 @@ Before any polling turn ends (`Monitor`, legacy one-shot, or a turn ending with 
 
 ## Stable-State Backoff
 
-Each tick hash `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)` into `prs.{N}.digest_streak` (free-text `blocker` excluded). Widen at streak ≥3 to `max(15m, 3×base)`; stop the poll at ≥9 (`/pm day` pauses resumably instead) or `blocker_kind == "user_input"`. Resume at base cadence after user message or changed digest. `polling-backoff-warn.sh` enforces this (reads `babysit.cadence_base_minutes`, defaults to 5). Backoff cannot reach the ceiling watch: it widens or stops the poll; the watch is a `Monitor`.
+Hash each tick's `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)` into `prs.{N}.digest_streak` (free-text `blocker` excluded). Widen at streak ≥3 to `max(15m, 3×base)`; stop the poll at ≥9 (`/pm day` pauses resumably instead) or on `blocker_kind == "user_input"`. Resume at base cadence after a user message or a changed digest. Enforced by `polling-backoff-warn.sh`. Backoff never reaches the ceiling watch — it widens or stops the poll; the watch is a `Monitor`.
 
 ## Failure Recovery
 

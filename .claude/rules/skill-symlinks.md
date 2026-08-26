@@ -17,7 +17,7 @@ This repo is the single source of truth for skills, global rules, and CLAUDE.md.
 
 **Agents are per-file symlinks in a real directory**, like skills — not a directory symlink like `rules`. A brand-new `~/.claude/agents/` needs a session restart before the types register. Why that shape, and what a skill does when a dependency will not resolve: `.claude/reference/portable-skill-resolution.md`.
 
-> **Double-loading note:** sessions opened *in this repo* would load the corpus twice; suppressed via project-local `claudeMdExcludes` in `.claude/settings.json` — rationale: `.claude/reference/double-loading-fix.md`.
+> **Double-loading note:** sessions opened *in this repo* would load the corpus twice; suppressed via `claudeMdExcludes` in `.claude/settings.json` — `.claude/reference/double-loading-fix.md`.
 
 ## Session Start: Verify Skills Worktree
 
