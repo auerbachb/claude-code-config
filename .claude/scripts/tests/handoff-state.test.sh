@@ -407,14 +407,28 @@ run --create "$PR" "$SEED_JSON"
 run --set "$PR" ".notes=phase_a_findings"
 
 # Bounded, so a regression FAILS the suite instead of hanging it forever.
+#
+# `set -m` puts the child in its OWN process group so the timeout can kill the
+# whole tree. Killing only the top-level bash leaves a regressed probe's `jq`
+# running as an orphan — verified directly: with the parent killed, the spinning
+# jq survives — and freeing LOCK_DIR below would then hand the lock to the next
+# test while that orphan was still writing, turning one clean failure into
+# cascading noise (CodeAnt, PR #1378). So: kill the group, wait for it to
+# actually drain, and only then release the lock.
 set_bounded() {                    # set_bounded <value> -> echoes rc (124 = hung)
-  local value="$1" pid rc waited=0
+  local value="$1" pid rc waited=0 drain=0
+  set -m
   bash "$SCRIPT" --set "$PR" ".notes=${value}" >/dev/null 2>&1 &
   pid=$!
+  set +m
   while kill -0 "$pid" 2>/dev/null; do
     if [[ $waited -ge 10 ]]; then
-      kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-      rm -rf "$LOCK_DIR"   # the killed probe still held it; keep failures local
+      kill -9 -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      while [[ $drain -lt 10 ]] && kill -0 -"$pid" 2>/dev/null; do
+        sleep 1; drain=$((drain + 1))
+      done
+      rm -rf "$LOCK_DIR"   # safe now: the whole group is gone
       echo 124; return
     fi
     sleep 1; waited=$((waited + 1))
