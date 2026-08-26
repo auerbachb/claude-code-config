@@ -1,6 +1,6 @@
 # Chip Launching — One-Click Coding Threads
 
-Canonical mechanics for offering a coding-thread prompt as a **task chip** the user can click to spin off a new session. Shared by the six canonical emitters: `/pm` (Step 3.1), `/prompt` (Step 6), `/start-issue` (Step 7), `/issue-maker` (Step 9c), `/wave` (Step 7.1), and `/harness-audit` (Step 5). Skill-specific wiring stays in each SKILL.md; everything below is defined once, here. Any other `spawn_task` / chip offer — including ad-hoc agent suggestions — inherits the same contract via `chip-spawn.md`.
+Canonical mechanics for offering a coding-thread prompt as a **task chip** the user can click to spin off a new session. Shared by the six canonical emitters: `/pm` (Step 3.1), `/prompt` (Step 6), `/start-issue` (Step 7), `/issue-maker` (Step 9c), `/wave` (Step 7.1), and `/harness-audit` (Step 5). Skill-specific wiring stays in each SKILL.md; everything below is defined once, here. Any other `spawn_task` / chip offer — including ad-hoc agent suggestions — inherits the same contract via `chip-spawn.md`. **That rule also decides whether such an offer may exist at all:** its §"Emission gate" bars an ad-hoc chip from any thread that could run the work itself, so the mechanics below apply only to a chip that gate already permits. Recovery when one slips out anyway: §Wrong-chip recovery below.
 
 **Out of scope (explicit):** `/pm-handoff` does not offer chips and will not — its handoff prompt is a context-turnover artifact whose visible, portable text is the deliverable, and it has no issue number, model line, or lifecycle for these mechanics to key on. Decided in #562; rationale in `pm-handoff-chips-decision.md`.
 
@@ -375,6 +375,41 @@ Withdraw a tracked chip via `mcp__ccd_session__dismiss_task` (pass the recorded 
 - **Genuine failure** — the chip is still live. Keep the `task_id` tracked; the chip is still withdrawable, and dropping the handle would strand it. A `task_id` recorded by a *different* session hits this same "no pending task" response, but retrying from here can never succeed: `dismiss_task` only reaches chips spawned in the calling session. Treat that case separately — record the chip for the user to dismiss manually from the task list UI rather than retrying or treating it as resolved.
 
 **Known cross-session chips — skip the call:** when a sweep enumerates chips it knows were spawned in earlier sessions (for example, `task_id`s read from `~/.claude/handoffs/issue-maker-*-log.json` from prior sessions), do not attempt `dismiss_task` at all. Record each chip directly for manual dismissal from the task list UI. This reaches the same outcome as the "Genuine failure" branch without burning a tool call on a call that cannot succeed — see §Upstream requirement — cross-session `dismiss_task` reach for the full gap description.
+
+## Wrong-chip recovery
+
+The section above withdraws a chip that was *correctly* offered and has since gone
+stale. This one covers the other case: a chip that **should never have been
+emitted** — an ad-hoc `spawn_task` offer from a thread that could have run the work
+itself, which `.claude/rules/chip-spawn.md` §"Emission gate" bars. Recovery is
+three steps and needs **no user prompt**; noticing is the whole trigger, and
+waiting to be told is itself part of the failure (issue [#1367](https://github.com/auerbachb/claude-code-config/issues/1367)).
+
+1. **`dismiss_task` the chip**, with a short `reason` naming the gate (e.g.
+   `"barred by chip-spawn.md emission gate — running inline instead"`). Apply the
+   fail-closed outcome handling from the section above unchanged: dismissed and
+   already-clicked/already-dismissed both clear the tracked state, a genuine
+   failure keeps the `task_id`, and a chip from an earlier session is recorded for
+   manual dismissal rather than retried.
+2. **Keep the issue — or file one if none exists.** The chip was the wrong
+   *delivery*; the work is still real. Never close a filed issue as part of
+   retracting its chip. If the ad-hoc offer carried no issue behind it, file one
+   now (`issue-planning.md`) so the work has a durable home before it is queued.
+3. **Queue or launch it inline**, in this thread, through the ordinary pipeline —
+   under `min(pipeline_ceiling, active_work_cap)` like any other pick. Below the
+   ceiling it starts now; at or above it, it queues inline behind the running
+   pipelines ("Slot state schedules; it never routes" above). Cross-repo work is
+   no exception: a subagent gets its own worktree and the cap is per-repo.
+
+**A chip already clicked is not recoverable this way** — a thread is running, and
+the correct handling is the ordinary duplicate-work check (does an open PR or a
+claim already cover the issue?), not a retraction. Recovery applies to offers
+still sitting unclicked in the task list.
+
+**Report it as one line, not an apology.** The retraction and the inline queueing
+are ordinary corrections, and the refill posture already exempts "work launched
+without prompting" from silence-by-default (`CLAUDE.md` "KEEP THE PIPELINE FULL").
+Name what was dismissed and what is now queued; do not open a decision round.
 
 ## Print-on-demand replay
 
