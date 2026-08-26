@@ -418,6 +418,7 @@ These are mandatory verification points. The executing agent MUST follow these:
 - Do NOT work on main — use a worktree or feature branch
 - Do NOT modify .env files
 - Merging is automatic and yours to do: once the merge gate passes and every Test Plan / AC checkbox verifies, run the full `/wrap` yourself to squash-merge — no approval pause, no pre-merge message (`CLAUDE.md` "PR MERGE AUTHORIZATION")
+- At your first status message and whenever the user asks "how far along?" (or equivalent), lead with the progress readout from `time-estimates.md` §"Progress Readout Format": "Est {bound} · {elapsed} elapsed · {verdict} — {outcome}". Derive {bound} from this issue's `## Estimate` section (or your tier's fallback from the table). Derive {elapsed} from the wall-clock time since you claimed the issue. Use `overrun-check.sh --readout --pr {N} --bound-min {M} --started-at {ISO8601}` (resolve per RESOLVE) when available; otherwise compute inline. Do not repeat the readout on every message — only at the first status and on explicit progress questions.
 
 ---
 

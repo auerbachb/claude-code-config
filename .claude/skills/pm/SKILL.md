@@ -910,6 +910,8 @@ The fresh generation is what makes step 3 safe: a tick already queued by the old
 [Sat Aug 22 05:04 PM ET] day tick 7: 3 pipelines (#40 B, #55 A, #61 C), 2 queued · next: 5m — monitoring 3 PR(s) (#87, #88, #90) · slots 3/4: nothing eligible
 ```
 
+For each active pipeline whose issue has a known estimate and start time, append the progress readout (from `time-estimates.md` §"Progress Readout Format") inline after the pipeline's phase label — e.g. `#40 B [Est 90 min · 45 min elapsed · on track — likely done in ~45 min]`. Compute via `overrun-check.sh --readout` (same Step 0 candidate order as `OVERRUN_CHECK_SH`) when available; skip silently if the helper or bound is unavailable. This readout fires on every tick with no window required.
+
 No tables, no plan restating, no per-phase narration. The launches D2 reports and the blockers D1 surfaces are the only other routine output; everything else is suppressed (`CLAUDE.md` #3).
 
 **Before the tick ends, run `scheduling-reliability.md`'s pre-exit checklist:** (1) the recorded Monitor task is active and this tick fired, (2) the heartbeat above was sent, (3) `last_tick_at`, digests, streaks and cadence are written.

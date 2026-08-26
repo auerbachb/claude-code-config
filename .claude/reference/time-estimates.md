@@ -110,3 +110,47 @@ An issue with no `## Estimate` section and no complexity tier label resolves to 
 ```
 
 The finish clock time is `now + makespan_hi` in Eastern Time.
+
+---
+
+## Progress Readout Format (increment 5)
+
+The readout answers "how far along is this pipeline?" using elapsed wall-clock time and the planning bound. One format, used everywhere progress comes up: in-flight heartbeats, on-demand answers, and chip-launched thread status messages.
+
+```
+Est {bound} · {elapsed} elapsed · on track — likely done in ~{remaining}
+Est {bound} · {elapsed} elapsed · running slow — revised finish ~{revised_total} total
+```
+
+### Field definitions
+
+| Field | Value |
+|-------|-------|
+| `{bound}` | Planning bound from the issue's `## Estimate` section (e.g. `90 min`, `1.5 h`) |
+| `{elapsed}` | Wall-clock time since the issue was claimed (claim-comment timestamp → PR `createdAt` fallback) |
+| `{verdict}` | `on track` when elapsed ≤ bound; `running slow` when elapsed > bound |
+| `{remaining}` | `bound − elapsed` (on-track path only) |
+| `{revised_total}` | `elapsed × (elapsed / bound)` — pace-scaled: a pipeline 2× over budget projects 4× total (running-slow path only) |
+
+**Duration formatting:** values < 60 min use `N min`; values ≥ 60 min use `N h` or `N.N h` (tenths, dropping trailing zeros).
+
+**Examples:**
+- Bound 90 min, elapsed 45 min → `Est 90 min · 45 min elapsed · on track — likely done in ~45 min`
+- Bound 90 min, elapsed 2 h (120 min) → `Est 90 min · 2 h elapsed · running slow — revised finish ~2.7 h total`
+
+### Pace model
+
+Simple elapsed/bound ratio — no phase weighting. When elapsed ≤ bound the pipeline is on track regardless of which phase it is in; the first calibration rows are too sparse to weight A/B/C differently. Revisit once actuals accumulate in `estimate-actuals.md`.
+
+### Helper: `overrun-check.sh --readout`
+
+`overrun-check.sh --readout --pr N --bound-min M --started-at ISO8601` computes and prints the readout line to stdout (exit 0 always). No window, no state marker — safe to call on every heartbeat tick. When the helper is unavailable, compute inline using the formulas above.
+
+### Usage by surface
+
+| Surface | When to emit |
+|---------|-------------|
+| `/subagent` heartbeat (Step 8.5) | Per active pipeline, every heartbeat tick |
+| `/subagent` on-demand | When the user asks "how far along?" — answer with the readout shape for each active pipeline |
+| `/pm day` D5 heartbeat | Per active pipeline alongside the tick summary |
+| Chip-launched thread | Lead the **first status message** with the readout; repeat whenever the user asks for a progress update |

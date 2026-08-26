@@ -16,14 +16,23 @@
 #   overrun-check.sh --pr N --bound-min M --started-at ISO8601 \
 #                    [--window-deadline EPOCH] [--window-issues "N1,N2,..."] \
 #                    [--repo owner/repo] [--now ISO8601]
+#   overrun-check.sh --readout --pr N --bound-min M --started-at ISO8601 \
+#                    [--now ISO8601]
 #   overrun-check.sh --help
 #
 # OUTPUT
-#   exit 0: no breach — print nothing
+#   exit 0: no breach — print nothing (breach mode) OR print readout line (readout mode)
 #   exit 1: first breach — print the alert line to stdout
 #   exit 2: already alerted — print nothing (suppress)
 #   exit 3: usage error
 #   exit 4: session-state read/write error (treated as exit 0 — skip silently)
+#
+# READOUT MODE (--readout)
+#   Computes and prints the progress readout line to stdout; always exits 0.
+#   No window required, no state marker read/written. Safe to call every tick.
+#   Format (from time-estimates.md §"Progress Readout Format"):
+#     Est {bound} · {elapsed} elapsed · on track — likely done in ~{remaining}
+#     Est {bound} · {elapsed} elapsed · running slow — revised finish ~{revised_total} total
 #
 # ALERT LINE FORMAT (stdout, only on exit 1)
 #   ⚠ PR #N overrun: {elapsed} h elapsed vs {bound} min plan · revised finish ~HH:MM ET
@@ -53,6 +62,7 @@ WINDOW_DEADLINE=""      # Unix epoch
 WINDOW_ISSUES=""        # comma-separated list of other PR numbers in window
 REPO=""
 NOW_OVERRIDE=""
+READOUT_MODE=false      # --readout: print progress readout, skip breach/state logic
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -70,6 +80,7 @@ while [[ $# -gt 0 ]]; do
     --repo=*)           REPO="${1#--repo=}"; shift ;;
     --now)              shift; NOW_OVERRIDE="${1:-}"; [[ $# -gt 0 ]] && shift ;;
     --now=*)            NOW_OVERRIDE="${1#--now=}"; shift ;;
+    --readout)          READOUT_MODE=true; shift ;;
     --help|-h)
       sed -n '2,/^set -/{ /^#/{ s/^# \{0,1\}//; p }; /^set -/q }' "$0"
       exit 0 ;;
@@ -87,9 +98,72 @@ if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
   exit 3
 fi
 
-if [[ ! "$BOUND_MIN" =~ ^[0-9]+$ ]]; then
+if [[ ! "$BOUND_MIN" =~ ^[0-9]+$ || "$BOUND_MIN" -eq 0 ]]; then
   printf 'overrun-check.sh: --bound-min must be a positive integer\n' >&2
   exit 3
+fi
+
+# ---------------------------------------------------------------------------
+# Duration formatting helper (minutes → human-readable string)
+# ---------------------------------------------------------------------------
+format_duration_min() {
+  local min="$1"
+  if (( min < 60 )); then
+    printf '%d min' "$min"
+  else
+    # Round to nearest tenth: total_tenths = (min * 10 + 30) / 60
+    local total_tenths=$(( (min * 10 + 30) / 60 ))
+    local h=$(( total_tenths / 10 ))
+    local tenth=$(( total_tenths % 10 ))
+    if (( tenth == 0 )); then
+      printf '%d h' "$h"
+    else
+      printf '%d.%d h' "$h" "$tenth"
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Readout mode — compute and print the progress readout; skip breach/state.
+# Defined early so it can re-use the epoch/elapsed helpers below and exit
+# before any session-state I/O.
+# ---------------------------------------------------------------------------
+if [[ "$READOUT_MODE" == "true" ]]; then
+  # Compute NOW_EPOCH
+  if [[ -n "$NOW_OVERRIDE" ]]; then
+    READOUT_NOW=$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%SZ' "$NOW_OVERRIDE" '+%s' 2>/dev/null \
+      || date -d "$NOW_OVERRIDE" '+%s' 2>/dev/null) || { exit 0; }
+  else
+    READOUT_NOW=$(date +%s)
+  fi
+  # Parse STARTED_AT
+  READOUT_START=$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%SZ' "$STARTED_AT" '+%s' 2>/dev/null \
+    || date -d "$STARTED_AT" '+%s' 2>/dev/null) || { exit 0; }
+  READOUT_ELAPSED_SECS=$(( READOUT_NOW - READOUT_START ))
+  READOUT_ELAPSED=$(( READOUT_ELAPSED_SECS / 60 ))
+  # Clamp to 0 — future start timestamps produce negative elapsed; skip silently.
+  (( READOUT_ELAPSED_SECS < 0 )) && exit 0
+
+  BOUND_STR=$(format_duration_min "$BOUND_MIN")
+  ELAPSED_STR=$(format_duration_min "$READOUT_ELAPSED")
+
+  # Compare in seconds so a task up to 59 s over its bound is not misreported.
+  if (( READOUT_ELAPSED_SECS <= BOUND_MIN * 60 )); then
+    REMAINING=$(( (BOUND_MIN * 60 - READOUT_ELAPSED_SECS) / 60 ))
+    REMAINING_STR=$(format_duration_min "$REMAINING")
+    printf 'Est %s · %s elapsed · on track — likely done in ~%s\n' \
+      "$BOUND_STR" "$ELAPSED_STR" "$REMAINING_STR"
+  else
+    # Pace-scaled revised total: compute in seconds for precision, then convert to minutes.
+    # Using truncated-minute READOUT_ELAPSED would produce a contradictory readout when
+    # elapsed exceeds the bound by less than one minute (e.g. "running slow — ~90 min total"
+    # when the bound IS 90 min and elapsed is 90m30s).
+    REVISED=$(( READOUT_ELAPSED_SECS * READOUT_ELAPSED_SECS / (BOUND_MIN * 60) / 60 ))
+    REVISED_STR=$(format_duration_min "$REVISED")
+    printf 'Est %s · %s elapsed · running slow — revised finish ~%s total\n' \
+      "$BOUND_STR" "$ELAPSED_STR" "$REVISED_STR"
+  fi
+  exit 0
 fi
 
 # ---------------------------------------------------------------------------
