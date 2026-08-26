@@ -174,17 +174,27 @@ fi
 # explicit --root override. Passing "$SCRIPT_DIR" here was the issue-#697 bug:
 # invoked via ~/.claude/skills-worktree from another project, it swept
 # claude-code-config's workspace instead of the invoking repo's.
+#
+# repo-root.sh's own diagnostic rides along on failure: since issue #1363 it can
+# also exit 3 because a git call was killed at its wall-clock bound, and the
+# "run from inside the repo" advice below would be wrong for that case.
 ROOT=""
+ROOT_RC=0
+ROOT_ERR_FILE="$(mktemp)"
 if [[ -n "$ROOT_OVERRIDE" ]]; then
-  if ! ROOT="$("$REPO_ROOT_SH" "$ROOT_OVERRIDE" 2>/dev/null)"; then
-    echo "error: could not resolve a git repo from --root: $ROOT_OVERRIDE" >&2
-    exit 4
-  fi
+  ROOT="$("$REPO_ROOT_SH" "$ROOT_OVERRIDE" 2>"$ROOT_ERR_FILE")" || ROOT_RC=$?
 else
-  if ! ROOT="$("$REPO_ROOT_SH" 2>/dev/null)"; then
-    echo "error: could not resolve a git repo from the current directory — run from inside the repo to sweep, or pass --root <path>" >&2
-    exit 4
+  ROOT="$("$REPO_ROOT_SH" 2>"$ROOT_ERR_FILE")" || ROOT_RC=$?
+fi
+ROOT_ERR="$(head -n 1 "$ROOT_ERR_FILE" 2>/dev/null || true)"
+rm -f "$ROOT_ERR_FILE"
+if [[ "$ROOT_RC" -ne 0 ]]; then
+  if [[ -n "$ROOT_OVERRIDE" ]]; then
+    echo "error: could not resolve a git repo from --root: $ROOT_OVERRIDE (repo-root.sh exit $ROOT_RC)${ROOT_ERR:+ — $ROOT_ERR}" >&2
+  else
+    echo "error: could not resolve a git repo from the current directory — run from inside the repo to sweep, or pass --root <path> (repo-root.sh exit $ROOT_RC)${ROOT_ERR:+ — $ROOT_ERR}" >&2
   fi
+  exit 4
 fi
 if [[ -z "$ROOT" || ! -d "$ROOT" ]]; then
   echo "error: resolved root repo is empty or missing" >&2

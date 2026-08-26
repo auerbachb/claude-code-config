@@ -127,9 +127,18 @@ if [[ ! -x "$REPO_ROOT_SH" ]]; then
   exit 2
 fi
 
+# Carry repo-root.sh's own diagnostic instead of dropping it. Since issue #1363
+# it can also exit 3 because a git call was killed at its wall-clock bound, and
+# "from the current directory" is the wrong thing to tell an operator whose git
+# is wedged — that misdiagnosis is what made the original stall so hard to read.
 ROOT=""
-if ! ROOT="$("$REPO_ROOT_SH" 2>/dev/null)"; then
-  echo "error: could not resolve root repo from the current directory"
+ROOT_RC=0
+ROOT_ERR_FILE="$(mktemp)"
+ROOT="$("$REPO_ROOT_SH" 2>"$ROOT_ERR_FILE")" || ROOT_RC=$?
+ROOT_ERR="$(head -n 1 "$ROOT_ERR_FILE" 2>/dev/null || true)"
+rm -f "$ROOT_ERR_FILE"
+if [[ "$ROOT_RC" -ne 0 ]]; then
+  echo "error: could not resolve root repo from the current directory (repo-root.sh exit $ROOT_RC)${ROOT_ERR:+ — $ROOT_ERR}"
   exit 2
 fi
 if [[ -z "$ROOT" || ! -d "$ROOT" ]]; then

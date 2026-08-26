@@ -304,9 +304,25 @@ resolve_repo_path() {
   if [[ -n "$REPO_PATH_OVERRIDE" ]]; then
     echo "$REPO_PATH_OVERRIDE"; return
   fi
-  local p=""
+  local p="" rc=0 errfile="" err=""
   if [[ -x "$SCRIPT_DIR/repo-root.sh" ]]; then
-    p="$("$SCRIPT_DIR/repo-root.sh" 2>/dev/null || true)"
+    # This script runs without `set -e`, so a bare `mktemp` failure would leave
+    # errfile empty and turn the redirect below into `2>""`. Name a fallback
+    # path instead — still safe to `rm -f`, unlike /dev/null.
+    errfile="$(mktemp 2>/dev/null)" || errfile="${TMPDIR:-/tmp}/admin-merge-reporoot.$$"
+    p="$("$SCRIPT_DIR/repo-root.sh" 2>"$errfile")" || rc=$?
+    err="$(head -n 1 "$errfile" 2>/dev/null || true)"
+    rm -f "$errfile"
+    if [[ "$rc" -ne 0 ]]; then
+      # Say so. Issue #1363 was 20+ minutes of no output from exactly this
+      # call: root resolution never returned, admin-merge printed nothing, and
+      # from the operator's side a wedged helper was indistinguishable from a
+      # slow API. repo-root.sh is bounded now, so the failure arrives — the
+      # fallbacks below still run, they just no longer run in silence.
+      p=""
+      echo "WARNING: repo-root.sh could not resolve the root repo (exit $rc)${err:+ — $err}" >&2
+      echo "WARNING: falling back to the current checkout; pass --repo-path <abs-path> to pin it." >&2
+    fi
   fi
   if [[ -z "$p" ]]; then
     p="$(git rev-parse --show-toplevel 2>/dev/null || true)"
