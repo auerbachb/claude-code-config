@@ -372,6 +372,105 @@ else
 fi
 
 # =============================================================================
+# TEST F — the two ways the #1369 guarantee could still leak (CodeAnt, PR #1384)
+#          F1/F2: one conversation must not split across two logs when two of
+#          its invocations mint the marker at once.
+#          F3-F5: an unverifiable log must not silence the collision backstop.
+# =============================================================================
+H_F="$(make_home f)"
+CONV_F="claude=7007|start=Wed Aug 26 17:00:00 2026"
+
+# The block is written ONCE and both racers read it. run_block names its temp
+# file with $RANDOM, and forked subshells inherit the RNG state — two
+# background copies would draw the same name and clobber each other.
+printf '%s\n' "$BLOCK_RESOLVE"$'\necho "$LOG"' > "$TMP_DIR/f-block.sh"
+
+# The environment goes on the command rather than through `export`, so this
+# helper leaves the suite's own HOME untouched.
+race_once() { # race_once <cwd> <outfile>
+  ( unset CLAUDE_SESSION_ID
+    cd "$1" || exit 1
+    HOME="$H_F" ISSUE_MAKER_CONV_ID="$CONV_F" \
+      bash "$TMP_DIR/f-block.sh" 2>/dev/null | tail -n 1 ) > "$2"
+}
+
+# F1 — a genuine concurrent mint: no marker yet, and the two callers run from
+# DIFFERENT cwds, which is what makes their minted keys differ (cwd is folded
+# into the digest). A parent and a subagent it spawned hit exactly this shape,
+# since they share the `claude` ancestor that IS the conversation identity.
+F_DIVERGED=""
+for _i in 1 2 3 4 5 6 7 8; do
+  rm -rf "${H_F:?}/.claude/handoffs/.issue-maker-keys"
+  race_once / "$TMP_DIR/f-a" &
+  race_once "$TMP_DIR" "$TMP_DIR/f-b" &
+  wait
+  F_A="$(cat "$TMP_DIR/f-a")"; F_B="$(cat "$TMP_DIR/f-b")"
+  if [[ -z "$F_A" || -z "$F_B" ]]; then
+    F_DIVERGED="empty result (a='$F_A' b='$F_B')"; break
+  fi
+  if [[ "$F_A" != "$F_B" ]]; then
+    F_DIVERGED="'$F_A' != '$F_B'"; break
+  fi
+done
+if [[ -z "$F_DIVERGED" ]]; then
+  ok "F1: concurrent mints in ONE conversation converge on a single log (8 attempts)"
+else
+  fail "F1: one conversation split across two logs under a concurrent mint — $F_DIVERGED"
+fi
+
+# NEGATIVE CONTROL — isolate the publish primitive itself, so F1 cannot pass
+# just because the race never actually interleaved on this machine.
+NC_MARK="$TMP_DIR/nc-marker"
+printf 'fallback-aaaaaaaaaaaaaaaaaaaa\n' > "$NC_MARK"
+NC_TMP="$(mktemp "$TMP_DIR/nc.XXXXXX")"
+printf 'fallback-bbbbbbbbbbbbbbbbbbbb\n' > "$NC_TMP"
+mv "$NC_TMP" "$NC_MARK"                     # the pre-fix publish
+NC_OLD="$(head -n 1 "$NC_MARK")"
+
+printf 'fallback-aaaaaaaaaaaaaaaaaaaa\n' > "$NC_MARK"
+( set -o noclobber; printf 'fallback-bbbbbbbbbbbbbbbbbbbb\n' > "$NC_MARK" ) 2>/dev/null || true
+NC_NEW="$(head -n 1 "$NC_MARK")"
+
+if [[ "$NC_OLD" == "fallback-bbbbbbbbbbbbbbbbbbbb" && "$NC_NEW" == "fallback-aaaaaaaaaaaaaaaaaaaa" ]]; then
+  ok "F2 (negative control): the pre-fix mv publish DOES clobber a concurrent winner; the exclusive create does not"
+else
+  fail "F2 (negative control): publish primitives misbehaved (mv->'$NC_OLD' excl->'$NC_NEW')"
+fi
+
+# F3 — a log that cannot be parsed is NOT "no owner recorded". Pre-fix both
+# collapsed to an empty session_id and the backstop said nothing, which is
+# silence in precisely the case where ownership is least verifiable.
+BAD_LOG="$H_F/.claude/handoffs/issue-maker-fallback-corrupt-log.json"
+printf '{ this is not json' > "$BAD_LOG"
+STDERR_BAD="$(HOME="$H_F" CLAUDE_SESSION_ID="fallback-corrupt" \
+  "$H_F/.claude/skills/issue-maker/scripts/resolve-log.sh" 2>&1 >/dev/null)"
+if printf '%s' "$STDERR_BAD" | grep -q 'could not read session_id'; then
+  ok "F3: a corrupt log warns that ownership could NOT be verified"
+else
+  fail "F3: corrupt log silently skipped the collision backstop (stderr: $STDERR_BAD)"
+fi
+
+# NEGATIVE CONTROL — the pre-fix read really did swallow the failure.
+NC_SID="$(jq -r '.session_id // ""' "$BAD_LOG" 2>/dev/null || true)"
+if [[ -z "$NC_SID" ]]; then
+  ok "F4 (negative control): the pre-fix read collapses a corrupt log to an empty session_id, so the backstop stayed silent"
+else
+  fail "F4 (negative control): corrupt log did not reproduce the empty read (got '$NC_SID')"
+fi
+
+# F5 — the mirror image: a VALID log that simply records no session_id must
+# stay quiet, or the new warning would fire on every fresh capture.
+OK_LOG="$H_F/.claude/handoffs/issue-maker-fallback-nosid-log.json"
+printf '{"schema_version":"1","issues":[]}' > "$OK_LOG"
+STDERR_OK="$(HOME="$H_F" CLAUDE_SESSION_ID="fallback-nosid" \
+  "$H_F/.claude/skills/issue-maker/scripts/resolve-log.sh" 2>&1 >/dev/null)"
+if printf '%s' "$STDERR_OK" | grep -q 'could not read session_id'; then
+  fail "F5: a valid log with no session_id wrongly warned (stderr: $STDERR_OK)"
+else
+  ok "F5: a valid log with no session_id stays quiet — the new warning is read-failure only"
+fi
+
+# =============================================================================
 echo
 echo "issue-maker-log-scoping: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]] || exit 1

@@ -207,9 +207,35 @@ if [ -z "$SESSION_KEY" ]; then
     SESSION_KEY="fallback-${KEY_DIGEST}"
 
     mkdir -p "$MARKER_DIR"
-    MARKER_TMP="$(mktemp "$MARKER_DIR/.imk.XXXXXX")"
-    printf '%s\n' "$SESSION_KEY" > "$MARKER_TMP"
-    mv "$MARKER_TMP" "$MARKER"
+
+    # Publish the marker with an EXCLUSIVE create (noclobber gives the redirect
+    # O_EXCL), never a plain overwrite. Two invocations of one conversation can
+    # both reach this block — the parent and a subagent it spawned share the
+    # `claude` ancestor that IS the identity — and cwd is folded into the minted
+    # digest, so their keys genuinely differ. An overwriting publish would leave
+    # each racer on the key it minted and future calls on whichever landed last:
+    # one conversation split across two logs, which is #1369 in miniature.
+    # So the first writer wins and every loser adopts the winning key below.
+    if ( set -o noclobber; printf '%s\n' "$SESSION_KEY" > "$MARKER" ) 2>/dev/null; then
+      : # We minted it — our key is now this conversation's key.
+    else
+      WON=""
+      if [ -r "$MARKER" ]; then
+        WON="$(head -n 1 "$MARKER" | tr -d '\r\n')"
+      fi
+      case "$WON" in
+        fallback-[0-9a-f]*)
+          # Lost the race. Adopt the winner so both callers converge on ONE log.
+          SESSION_KEY="$WON"
+          ;;
+        *)
+          # The existing marker is unreadable or malformed, so it owns no batch
+          # worth protecting. Overwrite it with our well-formed key — the same
+          # re-mint the corrupt-marker check above performs.
+          printf '%s\n' "$SESSION_KEY" > "$MARKER" 2>/dev/null || true
+          ;;
+      esac
+    fi
   fi
 fi
 
@@ -230,10 +256,19 @@ fi
 # Collision backstop — the log exists but records a different session key.
 # Reaching this means two conversations resolved the same path, which is the
 # #1369 failure itself; say so rather than writing into it silently.
+#
+# The read status is kept SEPARATE from the value. Folding a failed read into
+# an empty session_id would make the three states that matter — "no owner
+# recorded", "the file is corrupt", "jq is missing" — indistinguishable, and
+# the backstop would go quiet in exactly the cases where ownership is least
+# verifiable. An unverifiable log gets a warning of its own instead.
 if [ -f "$LOG" ]; then
-  EXISTING_SID="$(jq -r '.session_id // ""' "$LOG" 2>/dev/null || true)"
-  if [ -n "$EXISTING_SID" ] && [ "$EXISTING_SID" != "$SESSION_KEY" ]; then
-    warn "WARN: $LOG records session_id '$EXISTING_SID' but this conversation resolved '$SESSION_KEY' — another session may be writing to this log. Do NOT run batch-wide writes against it; start a fresh capture thread."
+  if EXISTING_SID="$(jq -r '.session_id // ""' "$LOG" 2>/dev/null)"; then
+    if [ -n "$EXISTING_SID" ] && [ "$EXISTING_SID" != "$SESSION_KEY" ]; then
+      warn "WARN: $LOG records session_id '$EXISTING_SID' but this conversation resolved '$SESSION_KEY' — another session may be writing to this log. Do NOT run batch-wide writes against it; start a fresh capture thread."
+    fi
+  else
+    warn "WARN: could not read session_id from $LOG — it is unreadable or not valid JSON, or jq is unavailable. Ownership could NOT be verified, so the collision backstop did not run. Inspect the log by hand before any batch-wide write."
   fi
 fi
 
