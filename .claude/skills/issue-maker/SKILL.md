@@ -76,15 +76,29 @@ Defaults you MUST honor for those three sections:
 
 The thread's capture state lives in a session log so it survives context compaction.
 
+**The log must be private to this conversation.** `scripts/resolve-log.sh` owns that decision — never derive the path inline. It uses `$CLAUDE_SESSION_ID` when the harness exports one and otherwise mints a stable per-conversation fallback key, because `CLAUDE_SESSION_ID` resolves *empty* inside Bash tool subshells: the old `${CLAUDE_SESSION_ID:-default}` expression silently pointed every concurrent session at one shared file, and on 2026-08-26 two sessions interleaved writes on it (issue #1369).
+
+<!-- test-anchor: issue-maker-step1-resolve-log -->
 ```bash
 mkdir -p "$HOME/.claude/handoffs"
-SESSION_ID="${CLAUDE_SESSION_ID:-default}"
-LOG="$HOME/.claude/handoffs/issue-maker-${SESSION_ID}-log.json"
+RESOLVE_LOG=""
+for candidate in \
+  "$HOME/.claude/skills-worktree/.claude/skills/issue-maker/scripts/resolve-log.sh" \
+  "$HOME/.claude/skills/issue-maker/scripts/resolve-log.sh"; do
+  [ -x "$candidate" ] && { RESOLVE_LOG="$candidate"; break; }
+done
+# No inline fallback on purpose: a guessed path is how the shared-`default`
+# collision happened. Stop instead.
+[ -n "$RESOLVE_LOG" ] || { echo "FATAL: scripts/resolve-log.sh not found — is the issue-maker skill installed?" >&2; exit 1; }
+LOG="$("$RESOLVE_LOG")" || { echo "FATAL: resolve-log.sh could not resolve a session log path" >&2; exit 1; }
+SESSION_ID="$("$RESOLVE_LOG" --key --quiet)"
 # BATCH_TIER tracks the most demanding tier seen so far in this session.
 # Initialized here so it is always defined — both new-log and compaction-recovery
 # paths start fresh at "Light" and accumulate upward during Step 3.
 BATCH_TIER="Light"
 ```
+
+`resolve-log.sh` writes any note or warning to **stderr** — surface those to the user rather than swallowing them. A `WARN:` naming a `session_id` mismatch means another conversation is already writing to this path: stop and start a fresh capture thread instead of filing into it.
 
 **If `$LOG` exists (compaction recovery / re-invocation):** read it and lead with a recap before accepting new input — this is the first action after a compaction.
 
@@ -132,17 +146,35 @@ Banner: *"Thread is now in issue-capture mode. I will only create, edit, or clos
 
 **Repo detection (AC):** the `gh repo view` above auto-detects the target repo from cwd. If it returns empty (not a git repo / `gh` failed / ambiguous), **ask the user** which `owner/repo` to target before creating anything, then **persist it to the log** so compaction recovery and later `--repo` calls see it:
 
+<!-- test-anchor: issue-maker-step1-retarget-guard -->
 ```bash
 REPO="<owner/repo the user supplied>"
-set_log '.target_repo = $v' --arg v "$REPO"   # see the write-log helper below
+# Never flip target_repo out from under entries that belong to another repo —
+# that is one of the three #1369 corruptions. Warn and hold instead.
+# A row whose url cannot be attributed is not counted: it cannot be shown to be
+# foreign. An UNREADABLE log is a refusal, not a zero — a guard that writes
+# because its own check failed is no guard.
+FOREIGN=$(jq -r --arg repo "$REPO" '
+  [.issues[]
+   | select(.status == "open")
+   | ((.url // "") | (try capture("^https?://[^/]+/(?<r>[^/]+/[^/]+)/issues/") catch {r:""}) // {r:""} | .r | ascii_downcase) as $r
+   | select(($r | length) > 0 and $r != ($repo | ascii_downcase))] | length' "$LOG") || FOREIGN=""
+case "$FOREIGN" in
+  0) set_log '.target_repo = $v' --arg v "$REPO" ;;  # see the write-log helper below
+  ''|*[!0-9]*)
+    echo "WARN: could not read $LOG to check for foreign entries — refusing to retarget to $REPO (issue #1369). Fix or replace the log first." >&2 ;;
+  *)
+    echo "WARN: $LOG already holds $FOREIGN open issue(s) from another repo — refusing to retarget to $REPO (issue #1369). Start a fresh capture thread, or close/retract the foreign entries first." >&2 ;;
+esac
 ```
 
 Every `gh issue …` call below passes `--repo "$REPO"`.
 
 ### Writing to the session log (one canonical helper)
 
-Every mutation of `$LOG` goes through `scripts/set-log.sh` (skill-local) — an atomic read-modify-write helper. Resolve and bind it once per invocation:
+Every mutation of `$LOG` goes through `scripts/set-log.sh` (skill-local) — an atomic read-modify-write helper. Resolve and bind it once per invocation, together with the repo-scoped row selector every batch-wide write must use:
 
+<!-- test-anchor: issue-maker-log-write-helper -->
 ```bash
 SET_LOG=""
 for candidate in \
@@ -152,9 +184,23 @@ for candidate in \
 done
 [[ -n "$SET_LOG" ]] || { echo "FATAL: scripts/set-log.sh not found — is the issue-maker skill installed?" >&2; exit 1; }
 set_log() { "$SET_LOG" "$LOG" "$@"; }
+
+# Repo-scoped row selector for batch-wide writes. Defines a jq function `mine`
+# that matches only this session's own open rows. Concatenate it in front of a
+# filter — `set_log "$MINE_DEF"'(.issues[] | mine | …)' --arg repo "$REPO"` —
+# and always pass `--arg repo "$REPO"` alongside.
+#
+# Repo attribution matches `active-work-cap.sh` exactly, so the writer and the
+# readers of this log agree on which rows belong to which repo. A row with no
+# attributable url matches NOTHING here: the readers over-count an
+# unattributable row (safe for a cap), while a writer must under-reach (safe
+# for someone else's data).
+MINE_DEF='def mine: select(.status == "open" and ($repo | length) > 0 and (((.url // "") | (try capture("^https?://[^/]+/(?<r>[^/]+/[^/]+)/issues/") catch {r:""}) // {r:""} | .r | ascii_downcase) == ($repo | ascii_downcase))); '
 ```
 
 Examples used below: `set_log '.target_repo = $v' --arg v "$REPO"`, `set_log '.mode = $v' --arg v rapid-fire`, and the create/close updates in Steps 9 and 12.
+
+**Never write a batch-wide filter that selects on `status` alone.** `(.issues[] | select(.status == "open") | …)` reaches every open row in the file. That was correct only while the log was assumed session-private; when two conversations shared one log on 2026-08-26 it overwrote a foreign session's `chip_task_id` (issue #1369). Per-issue writes scoped by `.number` (Steps 10 and 12) and top-level scalars (`.mode`, `.offer_accepted`, `.delivery_mode`, `.reg_tid`) are already narrow and need no change; every *batch* write goes through `mine`.
 
 ---
 
@@ -448,11 +494,13 @@ A capture session ends by **offering to run every open issue it filed, right her
 
 **Repo-wide cap (before the offer).** Step 6 owns the arithmetic and reads the census once per session: offer inline while `FREE > 0`; at `FREE == 0` **defer**, naming `{ACTIVE}/{CAP}` and the scope. If the script does not resolve, print `DEGRADED: active-work-cap.sh not found (checked all three paths) — offering inline without a repo-wide bound` and offer it anyway (a single inline run applies its own ceiling; withholding it strands every issue). A **non-zero exit** from a script that did resolve means the count could not be read — treat it as `FREE = 0` and defer, naming the read failure.
 
-**Offer stamp.** When the offer is emitted, generate a local offer token (e.g. `offer-$(date +%s%N)`) and write it into `chip_task_id` on every open issue the offer covers — this is what stops `/wave` or `/pm` from launching a second offer for work already covered. The stamp is **not** a `spawn_task` return; it is a locally-generated string.
+**Offer stamp.** When the offer is emitted, generate a local offer token (e.g. `offer-$(date +%s%N)`) and write it into `chip_task_id` on every open issue the offer covers — this is what stops `/wave` or `/pm` from launching a second offer for work already covered. The stamp is **not** a `spawn_task` return; it is a locally-generated string. It is written through `mine` (the write-helper section), so it reaches only `$REPO`'s open rows and can never overwrite a token that belongs to another session's batch.
 
+<!-- test-anchor: issue-maker-step9c-offer-stamp -->
 ```bash
 OFFER_TOKEN="offer-$(date +%s%N)"
-set_log '(.issues[] | select(.status == "open") | .chip_task_id) = $tok' --arg tok "$OFFER_TOKEN"
+set_log "$MINE_DEF"'(.issues[] | mine | .chip_task_id) = $tok' \
+  --arg tok "$OFFER_TOKEN" --arg repo "$REPO"
 set_log '.delivery_mode = "inline"'
 ```
 
@@ -478,13 +526,13 @@ In **rapid-fire mode**, use terser framing: *"Run {N} issue(s) inline ({TIER})? 
 ```bash
 # /subagent #{a} #{b} ...  ← invoke first
 set_log '.offer_accepted = true'
-set_log '(.issues[] | select(.status == "open") | .chip_task_id) = null'
+set_log "$MINE_DEF"'(.issues[] | mine | .chip_task_id) = null' --arg repo "$REPO"
 ```
 
 **On no — decline.** Leave all issues filed and launch nothing. Clear `chip_task_id` from all covered issues so they are no longer counted as pending offered work in the cap census. The inline offer is withdrawn; the on-request hand-off block below remains available on explicit request (`"give me the chip"`, `"print the hand-off"`, etc.).
 
 ```bash
-set_log '(.issues[] | select(.status == "open") | .chip_task_id) = null'
+set_log "$MINE_DEF"'(.issues[] | mine | .chip_task_id) = null' --arg repo "$REPO"
 ```
 
 **Refresh before acceptance.** When more issues arrive in later turns before acceptance, refresh the offer: re-emit the offer text covering all open issues (including the new ones), update `chip_task_id` on the new issues to the same offer token, and append the new issues to the offer.
