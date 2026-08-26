@@ -52,6 +52,10 @@ case "\$ARGS" in
     exit 0 ;;
   *check-runs*)
     printf '%s' "\$FAKE_CHECK_RUNS"; exit 0 ;;
+  *commits/*/statuses*)
+    # Legacy commit statuses (issue #1361) — a required context can be satisfied
+    # by one of these instead of a check-run. Empty unless a test supplies them.
+    printf '%s' "\${FAKE_COMMIT_STATUSES:-[]}"; exit 0 ;;
   *pulls/*/reviews*)
     printf '%s' "\${FAKE_REVIEWS:-[]}"; exit 0 ;;
   *pulls/*/comments*)
@@ -66,6 +70,24 @@ case "\$ARGS" in
     # lets the stale-approval guard (issue #836) treat every check-run as fresh
     # — the important variable for CI-dedup tests is suite ordering, not freshness.
     jq -cn '{committer:{date:"2026-07-21T09:59:00Z"}}'; exit 0 ;;
+  *"/branches/"*"/protection/required_status_checks"*)
+    # Branch-protection required contexts (issue #1361). Default is a 404, which
+    # combined with the unprotected branch object below resolves to "no required
+    # status checks" — so every pre-#1361 expectation in this file is unchanged.
+    # FAKE_REQUIRED_STATUS_CHECKS supplies the endpoint payload;
+    # FAKE_BRANCH_PROTECTED=true marks the base branch protected.
+    if [[ -n "\${FAKE_REQUIRED_STATUS_CHECKS:-}" ]]; then
+      printf '%s' "\${FAKE_REQUIRED_STATUS_CHECKS}"; exit 0
+    fi
+    echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+  *"/branches/"*)
+    if [[ -n "\${FAKE_BRANCH_JSON:-}" ]]; then
+      printf '%s' "\${FAKE_BRANCH_JSON}"; exit 0
+    fi
+    jq -cn --arg p "\${FAKE_BRANCH_PROTECTED:-false}" \
+      '{name:"main", protected:(\$p == "true"),
+        protection:{required_status_checks:{contexts:[]}}}'
+    exit 0 ;;
   *contents/*)
     # No CODEOWNERS file — merge-gate.sh tolerates the 404.
     echo "Not Found" >&2; exit 1 ;;
