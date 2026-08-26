@@ -187,6 +187,107 @@ check_eq "scoped CAS loss did not overwrite value" "A" \
 
 # ---------------------------------------------------------------------------
 echo
+echo "== Field-type contract: --cas rejects a wrong-typed value (issue #1283) =="
+# ---------------------------------------------------------------------------
+# FAILS-WITHOUT-FIX: before #1283 the --cas path ran no field-type check at
+# all, so a matching compare wrote the bad-typed value unconditionally — the
+# CAS exited 0 and `cr_explicit_triggers` ended up the number 2 where every
+# consumer expects an array. --set has rejected exactly this since #640.
+reset_state
+GOOD_TRIGGERS='["2026-04-29T22:30:00Z"]'
+run --repo test/repo --set ".prs[\"999\"].cr_explicit_triggers=$GOOD_TRIGGERS"
+check_eq "seed: well-formed array accepted by --set" "0" "$?"
+
+BEFORE_DOC="$(cat "$STATE_FILE")"
+TYPE_OUT=$(run --repo test/repo --cas '.prs["999"].cr_explicit_triggers=2' \
+  --expect "$GOOD_TRIGGERS" 2>&1); TYPE_RC=$?
+check_eq "number-for-array via --cas rejected (exit 4)" "4" "$TYPE_RC"
+check_eq "error names cr_explicit_triggers and both types" "1" \
+  "$(grep -c "field '.repos\[\"test/repo\"\].prs\[\"999\"\].cr_explicit_triggers' would become type 'number' but must be 'array'" <<<"$TYPE_OUT")"
+check_eq "state file byte-unchanged after a rejected --cas write" "$BEFORE_DOC" \
+  "$(cat "$STATE_FILE")"
+check_eq "prior valid array untouched" "$GOOD_TRIGGERS" \
+  "$(jq -c '.repos["test/repo"].prs["999"].cr_explicit_triggers' "$STATE_FILE")"
+# A type violation must stay distinguishable from a lost CAS race (7) and
+# from jq/write mechanics (5) — exit 4 is the --set contract's own code.
+check_eq "type rejection is not a CAS mismatch (7)" "1" \
+  "$([[ "$TYPE_RC" -ne 7 ]] && echo 1 || echo 0)"
+check_eq "type rejection is not a write failure (5)" "1" \
+  "$([[ "$TYPE_RC" -ne 5 ]] && echo 1 || echo 0)"
+
+# Parity control: the same violation through --set produces the same code and
+# the same message, which is the whole point of #1283.
+SET_OUT=$(run --repo test/repo --set '.prs["999"].cr_explicit_triggers=2' 2>&1); SET_RC=$?
+check_eq "--set rejects the identical value with the identical code" "$TYPE_RC" "$SET_RC"
+check_eq "--set and --cas emit the identical rejection message" "$SET_OUT" "$TYPE_OUT"
+
+# A well-typed CAS write on the same known-typed field must still succeed —
+# the guard rejects wrong types, it does not block the field.
+NEW_TRIGGERS='["2026-04-29T22:30:00Z","2026-04-29T23:30:00Z"]'
+run --repo test/repo --cas ".prs[\"999\"].cr_explicit_triggers=$NEW_TRIGGERS" \
+  --expect "$GOOD_TRIGGERS"
+check_eq "well-typed array via --cas exits 0" "0" "$?"
+check_eq "well-typed array was written" "$NEW_TRIGGERS" \
+  "$(jq -c '.repos["test/repo"].prs["999"].cr_explicit_triggers' "$STATE_FILE")"
+
+# ---------------------------------------------------------------------------
+echo
+echo "== Field-type contract: --cas whole-PR-entry and top-level writes =="
+# ---------------------------------------------------------------------------
+# FAILS-WITHOUT-FIX: without #1283 both writes below are committed verbatim.
+reset_state
+run --repo test/repo --set '.prs["999"].phase=A'
+BEFORE_DOC="$(cat "$STATE_FILE")"
+ENTRY_OUT=$(run --repo test/repo \
+  --cas '.prs["999"]={"phase":"B","last_cron_action":"bare string"}' \
+  --expect '{"phase":"A"}' 2>&1); ENTRY_RC=$?
+check_eq "whole-entry --cas embedding a malformed known field rejected (exit 4)" "4" "$ENTRY_RC"
+check_eq "error names the embedded nested field" "1" \
+  "$(grep -c "field '.repos\[\"test/repo\"\].prs\[\"999\"\].last_cron_action' would become type 'string' but must be 'object'" <<<"$ENTRY_OUT")"
+check_eq "state file byte-unchanged after a rejected whole-entry --cas" "$BEFORE_DOC" \
+  "$(cat "$STATE_FILE")"
+
+reset_state
+run --raw-path --set '.active_agents=[]'
+BEFORE_DOC="$(cat "$STATE_FILE")"
+TOP_OUT=$(run --raw-path --cas '.active_agents=not-an-array' --expect '[]' 2>&1); TOP_RC=$?
+check_eq "string-for-array top-level field via --cas rejected (exit 4)" "4" "$TOP_RC"
+check_eq "error names active_agents and both types" "1" \
+  "$(grep -c "field '.active_agents' would become type 'string' but must be 'array'" <<<"$TOP_OUT")"
+check_eq "state file byte-unchanged after a rejected top-level --cas" "$BEFORE_DOC" \
+  "$(cat "$STATE_FILE")"
+
+# ---------------------------------------------------------------------------
+echo
+echo "== Field-type contract: untyped fields stay unvalidated under --cas =="
+# ---------------------------------------------------------------------------
+# `.release.in_flight` — the claim slot --cas was built for (issue #1195) — is
+# not in the schema's typed-field maps, so #1283 is a no-op for it: any JSON
+# value still writes. This pins that the new guard did not narrow --cas.
+reset_state
+run --raw-path --cas '.release.in_flight={"claim":"mine"}' --expect null
+check_eq "untyped object claim still accepted" "0" "$?"
+run --raw-path --cas '.release.in_flight=42' --expect '{"claim":"mine"}'
+check_eq "untyped field accepts a differently-typed value" "0" "$?"
+check_eq "untyped value written as given" "42" \
+  "$(jq -c '.release.in_flight' "$STATE_FILE")"
+
+# The exact shape release-decide.sh writes: a scoped claim addressed with
+# --raw-path. `repos` IS a known object-typed top-level key, so this path now
+# runs the top-level and repo-scope checks — it must still round-trip.
+reset_state
+CLAIM='{"pr":42,"mechanism":"tag","awaiting_run":true,"claim_token":"tok-1"}'
+run --raw-path --cas ".repos[\"org/repo\"].release.in_flight=$CLAIM" --expect null
+check_eq "release-decide claim shape still wins" "0" "$?"
+check_eq "claim record written under the repo scope" "$CLAIM" \
+  "$(jq -c '.repos["org/repo"].release.in_flight' "$STATE_FILE")"
+run --raw-path --cas '.repos["org/repo"].release.in_flight=null' --expect "$CLAIM"
+check_eq "release-decide claim release still wins" "0" "$?"
+check_eq "claim slot cleared" "null" \
+  "$(jq -c '.repos["org/repo"].release.in_flight' "$STATE_FILE")"
+
+# ---------------------------------------------------------------------------
+echo
 echo "== Concurrent race: exactly one writer wins =="
 # ---------------------------------------------------------------------------
 # Two writers both CAS '.race_slot=mine' with --expect null. One acquires the

@@ -163,9 +163,9 @@
 #      is not a plausible repo key (`[A-Za-z0-9._/-]+`).
 #   3  State file missing on --get. (--set creates the file from `{}`.)
 #   4  jq failed to parse the file or evaluate the path/expression, OR a
-#      --set would leave a known-typed field (see FIELD-TYPE CONTRACT) holding
-#      the wrong JSON type — the write is rejected and the state file is left
-#      unmodified.
+#      --set or --cas would leave a known-typed field (see FIELD-TYPE
+#      CONTRACT) holding the wrong JSON type — the write is rejected and the
+#      state file is left unmodified.
 #   5  Write failed — could not create temp file, could not mv into place,
 #      or jq filter pipeline failed during the atomic write. Also returned
 #      when the state-lock library (see LOCKING) cannot be loaded.
@@ -179,11 +179,11 @@
 #      differentiate a lost race from a broken environment.
 #
 # LOCKING (issue #639)
-#   --set takes an exclusive advisory lock around the ENTIRE read-modify-write
-#   cycle — read, jq pipeline, type-contract check, and the final mv — not
-#   just the mv. Without it, two writers could each read the same document,
-#   each apply their own change, and each write back, silently losing one of
-#   the two changes (last writer wins, no error).
+#   --set and --cas take an exclusive advisory lock around the ENTIRE
+#   read-modify-write cycle — read, compare (--cas), jq pipeline, type-contract
+#   check, and the final mv — not just the mv. Without it, two writers could
+#   each read the same document, each apply their own change, and each write
+#   back, silently losing one of the two changes (last writer wins, no error).
 #
 #   The lock is a `mkdir`-based lock directory at `<state-file>.lock`, because
 #   this fleet runs on macOS where `flock(1)` is not installed by default.
@@ -222,12 +222,12 @@
 #   still reads `.prs["<N>"].<field>`) while the jq check path is scoped,
 #   so #640's guarantee is not quietly lost to the restructure.
 #
-#   --set checks the FINAL value of any touched known field after the whole
-#   batch is applied (not just the raw value passed in), so both whole-field
-#   writes (`--set '.active_agents=...'`) and element/sub-path writes
-#   (`--set '.active_agents[0]=...'` or, for a per-PR nested field,
-#   `--set '.prs["287"].babysit.active=...'`) are covered. If a touched
-#   known field would end up the wrong type, the entire batch is rejected
+#   --set and --cas both check the FINAL value of any touched known field
+#   after the whole write is applied (not just the raw value passed in), so
+#   both whole-field writes (`--set '.active_agents=...'`) and element/
+#   sub-path writes (`--set '.active_agents[0]=...'` or, for a per-PR nested
+#   field, `--set '.prs["287"].babysit.active=...'`) are covered. If a touched
+#   known field would end up the wrong type, the entire write is rejected
 #   (exit 4) and the state file is left unmodified — this is what should
 #   have caught the original corruption: a caller passed an unevaluated jq
 #   filter expression (e.g.
@@ -237,6 +237,11 @@
 #   evaluate any filter locally first (read → jq-filter → pass the
 #   resulting JSON array/object as the --set value) — see the
 #   read-filter-write pattern in .claude/skills/pr-monitor-and-manage/SKILL.md.
+#
+#   --cas runs the identical check on its own candidate document once the
+#   compare has succeeded and before the commit (issue #1283), so the two
+#   write paths accept and reject exactly the same values. Both call
+#   enforce_field_type_contract(); there is no second implementation to drift.
 #
 #   --get on a known top-level field whose *stored* value doesn't match the
 #   contract (state corrupted before this guard existed, or written by
@@ -794,6 +799,135 @@ pr_whole_entry_write_number_of() {
   printf '%s' "$num"
 }
 
+# Field-type contract enforcement, shared by --set and --cas (issue #1283).
+# Both modes build a candidate document in a temp file and then commit it with
+# `mv`; this runs every contract check against that candidate BEFORE the
+# commit, so a rejected write leaves $STATE_FILE untouched. Extracted rather
+# than duplicated so the two write paths can never drift apart — the whole
+# point of #1283 was that --cas silently accepted values --set rejects.
+#
+# $1 is the candidate file. The touched-field records are read from three
+# variables the caller populates while classifying its write path(s):
+#   TOUCHED_KNOWN_FIELDS  — space-separated known-typed top-level keys
+#   TOUCHED_NESTED_CHECKS — space-separated "<PR-number>:<nested-key>" pairs
+#   WHOLE_ENTRY_PRS       — space-separated PRs written as a whole entry
+#
+# On any violation this exits 4 directly instead of returning — both callers
+# want exactly that, and it keeps the message and exit behavior identical
+# between them. MUST therefore be invoked as a plain statement: calling it in
+# an `if`/`&&`/`||` context would disable `set -e` for the entire body.
+enforce_field_type_contract() {
+  local candidate="$1"
+  local set_touched_key set_expected_type set_actual_type
+  local nested_pair nested_pr_number nested_field_key nested_expected_type
+  local nested_check_path nested_actual_type
+  local whole_entry_pr whole_entry_key whole_entry_expected_type
+  local whole_entry_check_path whole_entry_actual_type
+  local known_nested_keys bad_scope bad_path bad_actual
+
+  # The input document was already required to be exactly one JSON object; a
+  # candidate that is not is a jq-pipeline surprise, and committing it would
+  # corrupt the file in exactly the way that input guard exists to prevent.
+  if ! is_single_object_state_file "$candidate"; then
+    echo "session-state.sh: refusing to write — the resulting document is not a single top-level JSON object; $STATE_FILE left unmodified" >&2
+    exit 4
+  fi
+
+  # Field-type contract (issue #625): reject the write if any known
+  # array/object-typed field touched by this batch would end up the wrong
+  # type in the FINAL document — not just the raw written value, so subpath/
+  # element writes (e.g. `.active_agents[0]=...`) are covered too, not just
+  # whole-field writes. This is what should have caught the original
+  # corruption: an unevaluated jq filter expression passed as a value falls
+  # into the --arg (string) branch at the call site and would otherwise be
+  # written verbatim, turning an array field into a literal string.
+  for set_touched_key in $TOUCHED_KNOWN_FIELDS; do
+    set_expected_type="$(known_field_type "$set_touched_key")"
+    set_actual_type="$(jq -r ".${set_touched_key} | type" "$candidate" 2>/dev/null)"
+    if [[ "$set_actual_type" != "$set_expected_type" ]]; then
+      echo "session-state.sh: refusing to write — field '.$set_touched_key' would become type '$set_actual_type' but must be '$set_expected_type' (see issue #625); $STATE_FILE left unmodified" >&2
+      exit 4
+    fi
+  done
+
+  # Field-type contract, per-PR nested fields (issue #640): same principle as
+  # the top-level loop above, extended to reach fields nested under a specific
+  # `.prs["<N>"]` entry — e.g. PR #542's `last_cron_action` holding a bare
+  # string where every consumer (infer-pr.sh, wrap, babysit-pr) expects an
+  # object. Checked against the FINAL value at the concrete `.prs["<N>"].<key>`
+  # path, so sub-path writes (e.g. `.prs["287"].babysit.active=...`) are
+  # covered by checking the whole `babysit` object's final type, not just the
+  # raw written value.
+  for nested_pair in $TOUCHED_NESTED_CHECKS; do
+    nested_pr_number="${nested_pair%%:*}"
+    nested_field_key="${nested_pair#*:}"
+    nested_expected_type="$(known_nested_field_type "$nested_field_key")"
+    nested_check_path="$(scope_path ".prs[\"${nested_pr_number}\"].${nested_field_key}")"
+    nested_actual_type="$(jq -r "${nested_check_path} | type" "$candidate" 2>/dev/null)"
+    if [[ "$nested_actual_type" != "$nested_expected_type" ]]; then
+      echo "session-state.sh: refusing to write — field '$nested_check_path' would become type '$nested_actual_type' but must be '$nested_expected_type' (see issue #640); $STATE_FILE left unmodified" >&2
+      exit 4
+    fi
+  done
+
+  # Field-type contract, whole-PR-entry writes (issue #640, CodeAnt finding on
+  # PR #654): a write like `.prs["999"]={...}` replaces the whole entry, so the
+  # per-path tracking never sees a specific nested-field path to check — but
+  # the embedded object can still carry a malformed known field (e.g.
+  # `last_cron_action` as a bare string) that the top-level `.prs` object-type
+  # check alone can't catch. For every PR written as a whole entry, check
+  # EVERY known nested key present in the FINAL entry (absent keys are type
+  # "null" and are skipped — a whole-entry write simply omitting a known field
+  # is not corruption, same as any other unset nested field).
+  if [[ -n "$WHOLE_ENTRY_PRS" ]]; then
+    load_field_types
+    known_nested_keys="$(printf '%s\n' "$FIELD_TYPES_NESTED" | cut -d= -f1)"
+    for whole_entry_pr in $WHOLE_ENTRY_PRS; do
+      while IFS= read -r whole_entry_key; do
+        [[ -z "$whole_entry_key" ]] && continue
+        whole_entry_expected_type="$(known_nested_field_type "$whole_entry_key")"
+        whole_entry_check_path="$(scope_path ".prs[\"${whole_entry_pr}\"].${whole_entry_key}")"
+        whole_entry_actual_type="$(jq -r "${whole_entry_check_path} | type" "$candidate" 2>/dev/null)"
+        if [[ "$whole_entry_actual_type" != "null" && "$whole_entry_actual_type" != "$whole_entry_expected_type" ]]; then
+          echo "session-state.sh: refusing to write — field '$whole_entry_check_path' would become type '$whole_entry_actual_type' but must be '$whole_entry_expected_type' (see issue #640); $STATE_FILE left unmodified" >&2
+          exit 4
+        fi
+      done <<<"$known_nested_keys"
+    done
+  fi
+
+  # Per-repo scope contract (issue #638): `.prs` kept its object-typed
+  # guarantee when it moved down a level, so check the shape of every repo
+  # scope — `.repos` an object, each `.repos[*]` an object, each
+  # `.repos[*].prs` present an object. Without this, the write-time guard that
+  # #625 added for a top-level `.prs` would have been quietly lost to the
+  # restructure. Reported as the offending scope's own path so the message
+  # still names the exact field, as before.
+  #
+  # The offending scope is emitted as `<path><US><actual-type>` (U+001F unit
+  # separator) rather than whitespace-joined: repo keys are caller data and a
+  # whitespace split would mangle any key containing one.
+  bad_scope="$(jq -r '
+    def bad:
+      if (.repos // null) == null then empty
+      elif (.repos | type) != "object" then ".repos\u001f" + (.repos | type)
+      else
+        ( .repos | to_entries[]
+          | if (.value | type) != "object"
+            then ".repos[\"" + .key + "\"]\u001f" + (.value | type)
+            elif (.value.prs != null) and ((.value.prs | type) != "object")
+            then ".repos[\"" + .key + "\"].prs\u001f" + (.value.prs | type)
+            else empty end )
+      end;
+    [bad] | (first // "")' "$candidate" 2>/dev/null || echo "")"
+  if [[ -n "$bad_scope" ]]; then
+    bad_path="${bad_scope%%$'\x1f'*}"
+    bad_actual="${bad_scope##*$'\x1f'}"
+    echo "session-state.sh: refusing to write — field '$bad_path' would become type '$bad_actual' but must be 'object' (see issue #638); $STATE_FILE left unmodified" >&2
+    exit 4
+  fi
+}
+
 # --- arg parsing ---
 MODE=""
 GET_PATH=""
@@ -1202,9 +1336,12 @@ fi
 # ============================================================================
 # Compare the current value at CAS_PATH with CAS_EXPECT under one lock hold;
 # write CAS_VALUE only when they match. Exits 0 on win, 7 on mismatch, other
-# codes per the exit-status contract (2/4/5/6 unchanged). Does NOT run the
-# field-type contract check — the primary use case (.release.in_flight) is not
-# a known-typed field; a follow-up can add that if needed.
+# codes per the exit-status contract (2/4/5/6 unchanged). Runs the SAME
+# field-type contract check --set runs, against the candidate document and
+# before the commit (issue #1283): a wrong-typed value is rejected with exit 4
+# and the state file is left unmodified, so neither write path can accept a
+# value the other rejects. Exit 4 stays distinct from 5 (jq/write mechanics)
+# and 7 (CAS mismatch).
 if [[ "$MODE" == "cas" ]]; then
   if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
     echo "session-state.sh: could not create state dir: $STATE_DIR" >&2
@@ -1238,6 +1375,37 @@ if [[ "$MODE" == "cas" ]]; then
   warn_if_unmigratable "$input_file"
   CAS_PATHMAP="$(migrate_jq_args "$input_file")"
   SCOPED_CAS_PATH="$(scope_path "$CAS_PATH")"
+
+  # Classify the CAS target the way --set classifies each of its touched
+  # paths, so enforce_field_type_contract() below checks the same things
+  # (issue #1283). Two views of the same write, exactly as in --set:
+  #   CAS_PATH        — what the caller asked for, e.g. `.prs["287"].babysit`
+  #   SCOPED_CAS_PATH — where it lands, e.g. `.repos["org/x"].prs["287"]...`
+  # The TOP-LEVEL check uses the scoped path, because that is the shape of the
+  # final document; the per-PR helpers use the original path, because they
+  # match on a leading `.prs` and would return empty for every scoped path,
+  # silently disabling #640's nested guard here.
+  TOUCHED_KNOWN_FIELDS=""
+  TOUCHED_NESTED_CHECKS=""
+  WHOLE_ENTRY_PRS=""
+  cas_top_level_key="$(top_level_key_of "$SCOPED_CAS_PATH")"
+  if [[ -n "$(known_field_type "$cas_top_level_key")" ]]; then
+    TOUCHED_KNOWN_FIELDS="$cas_top_level_key"
+  fi
+  cas_nested_key="$(pr_nested_key_of "$CAS_PATH")"
+  if [[ -n "$cas_nested_key" ]] && [[ -n "$(known_nested_field_type "$cas_nested_key")" ]]; then
+    cas_pr_number="$(pr_number_of "$CAS_PATH")"
+    # Digits-only, same as --set: $cas_pr_number is interpolated into the jq
+    # filter string built for the nested check path, and requiring that shape
+    # keeps the interpolation injection-safe without full jq-string escaping.
+    if [[ "$cas_pr_number" =~ ^[0-9]+$ ]]; then
+      TOUCHED_NESTED_CHECKS="${cas_pr_number}:${cas_nested_key}"
+    fi
+  fi
+  cas_whole_entry_pr="$(pr_whole_entry_write_number_of "$CAS_PATH")"
+  if [[ "$cas_whole_entry_pr" =~ ^[0-9]+$ ]]; then
+    WHOLE_ENTRY_PRS="$cas_whole_entry_pr"
+  fi
 
   # Build jq --argjson or --arg for the expected value (same JSON-or-string
   # probe as --set: `--argjson` probe, not `jq -e .`, to reject null/false
@@ -1285,6 +1453,12 @@ if [[ "$MODE" == "cas" ]]; then
     echo "session-state.sh: jq failed writing $STATE_FILE: $(cat "$CAS_ERR")" >&2
     exit 5
   fi
+
+  # Enforce the field-type contract against the candidate document, before the
+  # stolen-lock guard and the mv below, so a rejected write leaves $STATE_FILE
+  # untouched — same position in the pipeline as --set (issue #1283). Called
+  # as a plain statement so it exits 4 directly.
+  enforce_field_type_contract "$CAS_OUT_TMP"
 
   # Lock integrity — same stolen-lock guard as --set (issue #930).
   if ! state_lock_assert_held; then
@@ -1464,100 +1638,11 @@ if ! jq "${JQ_ARGS[@]}" "$JQ_FILTER" "$input_file" > "$OUT_TMP" 2>"$JQ_ERR"; the
   exit 5
 fi
 
-# Field-type contract (issue #625): reject the write if any known
-# array/object-typed field touched by this batch would end up the wrong
-# type in the FINAL document — not just the raw --set value, so subpath/
-# element writes (e.g. `.active_agents[0]=...`) are covered too, not just
-# whole-field writes. This is what should have caught the original
-# corruption: an unevaluated jq filter expression passed as a --set value
-# falls into the --arg (string) branch above and would otherwise be written
-# verbatim, turning an array field into a literal string. Checked before
-# the atomic mv below, so a rejected batch leaves $STATE_FILE untouched.
-for set_touched_key in $TOUCHED_KNOWN_FIELDS; do
-  set_expected_type="$(known_field_type "$set_touched_key")"
-  set_actual_type="$(jq -r ".${set_touched_key} | type" "$OUT_TMP" 2>/dev/null)"
-  if [[ "$set_actual_type" != "$set_expected_type" ]]; then
-    echo "session-state.sh: refusing to write — field '.$set_touched_key' would become type '$set_actual_type' but must be '$set_expected_type' (see issue #625); $STATE_FILE left unmodified" >&2
-    exit 4
-  fi
-done
-
-# Field-type contract, per-PR nested fields (issue #640): same principle as
-# the top-level loop above, extended to reach fields nested under a specific
-# `.prs["<N>"]` entry — e.g. PR #542's `last_cron_action` holding a bare
-# string where every consumer (infer-pr.sh, wrap, babysit-pr) expects an
-# object. Checked against the FINAL value at the concrete `.prs["<N>"].<key>`
-# path, so sub-path writes (e.g. `.prs["287"].babysit.active=...`) are
-# covered by checking the whole `babysit` object's final type, not just the
-# raw --set value.
-for nested_pair in $TOUCHED_NESTED_CHECKS; do
-  nested_pr_number="${nested_pair%%:*}"
-  nested_field_key="${nested_pair#*:}"
-  nested_expected_type="$(known_nested_field_type "$nested_field_key")"
-  nested_check_path="$(scope_path ".prs[\"${nested_pr_number}\"].${nested_field_key}")"
-  nested_actual_type="$(jq -r "${nested_check_path} | type" "$OUT_TMP" 2>/dev/null)"
-  if [[ "$nested_actual_type" != "$nested_expected_type" ]]; then
-    echo "session-state.sh: refusing to write — field '$nested_check_path' would become type '$nested_actual_type' but must be '$nested_expected_type' (see issue #640); $STATE_FILE left unmodified" >&2
-    exit 4
-  fi
-done
-
-# Field-type contract, whole-PR-entry writes (issue #640, CodeAnt finding on
-# PR #654): a write like `.prs["999"]={...}` replaces the whole entry, so the
-# per-path tracking above never sees a specific nested-field path to check —
-# but the embedded object can still carry a malformed known field (e.g.
-# `last_cron_action` as a bare string) that the top-level `.prs` object-type
-# check alone can't catch. For every PR written as a whole entry this batch,
-# check EVERY known nested key present in the FINAL entry (absent keys are
-# type "null" and are skipped — a whole-entry write simply omitting a known
-# field is not corruption, same as any other unset nested field).
-if [[ -n "$WHOLE_ENTRY_PRS" ]]; then
-  load_field_types
-  KNOWN_NESTED_KEYS="$(printf '%s\n' "$FIELD_TYPES_NESTED" | cut -d= -f1)"
-  for whole_entry_pr in $WHOLE_ENTRY_PRS; do
-    while IFS= read -r whole_entry_key; do
-      [[ -z "$whole_entry_key" ]] && continue
-      whole_entry_expected_type="$(known_nested_field_type "$whole_entry_key")"
-      whole_entry_check_path="$(scope_path ".prs[\"${whole_entry_pr}\"].${whole_entry_key}")"
-      whole_entry_actual_type="$(jq -r "${whole_entry_check_path} | type" "$OUT_TMP" 2>/dev/null)"
-      if [[ "$whole_entry_actual_type" != "null" && "$whole_entry_actual_type" != "$whole_entry_expected_type" ]]; then
-        echo "session-state.sh: refusing to write — field '$whole_entry_check_path' would become type '$whole_entry_actual_type' but must be '$whole_entry_expected_type' (see issue #640); $STATE_FILE left unmodified" >&2
-        exit 4
-      fi
-    done <<<"$KNOWN_NESTED_KEYS"
-  done
-fi
-
-# Per-repo scope contract (issue #638): `.prs` kept its object-typed
-# guarantee when it moved down a level, so check the shape of every repo
-# scope — `.repos` an object, each `.repos[*]` an object, each
-# `.repos[*].prs` present an object. Without this, the write-time guard that
-# #625 added for a top-level `.prs` would have been quietly lost to the
-# restructure. Reported as the offending scope's own path so the message
-# still names the exact field, as before.
-#
-# The offending scope is emitted as `<path><US><actual-type>` (U+001F unit
-# separator) rather than whitespace-joined: repo keys are caller data and a
-# whitespace split would mangle any key containing one.
-BAD_SCOPE="$(jq -r '
-  def bad:
-    if (.repos // null) == null then empty
-    elif (.repos | type) != "object" then ".repos\u001f" + (.repos | type)
-    else
-      ( .repos | to_entries[]
-        | if (.value | type) != "object"
-          then ".repos[\"" + .key + "\"]\u001f" + (.value | type)
-          elif (.value.prs != null) and ((.value.prs | type) != "object")
-          then ".repos[\"" + .key + "\"].prs\u001f" + (.value.prs | type)
-          else empty end )
-    end;
-  [bad] | (first // "")' "$OUT_TMP" 2>/dev/null || echo "")"
-if [[ -n "$BAD_SCOPE" ]]; then
-  bad_path="${BAD_SCOPE%%$'\x1f'*}"
-  bad_actual="${BAD_SCOPE##*$'\x1f'}"
-  echo "session-state.sh: refusing to write — field '$bad_path' would become type '$bad_actual' but must be 'object' (see issue #638); $STATE_FILE left unmodified" >&2
-  exit 4
-fi
+# Enforce the field-type contract against the candidate document before the
+# atomic mv below, so a rejected batch leaves $STATE_FILE untouched. Shared
+# with --cas (issue #1283) — see enforce_field_type_contract() above for the
+# individual checks. Called as a plain statement so it exits 4 directly.
+enforce_field_type_contract "$OUT_TMP"
 
 # Fail closed if the lock was broken and re-taken while we were reading and
 # transforming: $OUT_TMP was computed from a snapshot another writer has since
