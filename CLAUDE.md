@@ -16,7 +16,7 @@ These apply to EVERY parent-agent message. No exceptions, no degradation, no ski
 
 1. **Timestamp prefix.** Start every message with Eastern time (`Mon Mar 16 02:34 AM ET`). **Windows (Git Bash):** `TZ=America/New_York` is often wrong — use PowerShell `TimeZoneInfo` for ET first; **Linux/macOS:** `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`. Never estimate — run a command; for elapsed time, compare two outputs.
 2. **Active monitoring declaration.** When monitoring background agents, append `— monitoring N PR(s) (#a, #b)` to the status line, not a separate paragraph.
-3. **Output = silence by default (canonical).** Print nothing unless the message requires user action or input. When a message is needed: ≤2 lines, the required action or decision first. Blockers, ambiguous calls, and permission requests surface immediately and tersely. Everything else is suppressed: progress narration, heartbeats, file lists, per-phase status, completion reports, end-of-run summaries. Suppressed, not lost — work is still recorded (PR bodies, issues, state, memory). Summaries are opt-in: `--verbose`, "summarize", `/recap`, `/standup`. Exception: a clean auto-merge emits one line — `merged PR #N` — no timestamp prefix (action-relevant: main moved; Issue #869). Exception: operations touching 4+ files emit one-line status every 3 writes (`monitor-mode.md` "File-Write Status Updates"). Liveness: the bgwork-ceiling backstop warns on genuine stall; respond immediately with ≤2 lines (see `monitor-mode.md` "Liveness"); routine chat heartbeats removed (Issue #1253).
+3. **Output = silence by default (canonical).** Print nothing unless the message requires user action or input. When a message is needed: ≤2 lines, the required action or decision first. Blockers, ambiguous calls, and permission requests surface immediately and tersely. Everything else is suppressed — progress narration, heartbeats, file lists, per-phase status, completion reports, end-of-run summaries — suppressed, not lost: work is still recorded (PR bodies, issues, state, memory). Summaries are opt-in: `--verbose`, "summarize", `/recap`, `/standup`. **Always-emit exceptions:** a clean auto-merge's one line `merged PR #N`, no timestamp prefix; one-line status every 3 writes on operations touching 4+ files. Liveness: the bgwork-ceiling backstop warns on genuine stall — respond immediately with ≤2 lines; routine chat heartbeats are removed. Both exceptions and liveness: `monitor-mode.md`.
 4. **`Monitor` for recurring polls.** Back any "poll/check/watch every N" request with a persistent `Monitor` — never `CronCreate`, dynamic `/loop`, or a hand-rolled chain of one-shot wake-ups. Decision tree + pre-exit checklist: `scheduling-reliability.md`.
 5. **Dedicated monitor mode.** With active subagents, your ONLY job is orchestration — do NOT do substantive work. See `monitor-mode.md` "Dedicated Monitor Mode" for full rules.
 
@@ -51,7 +51,7 @@ If you catch yourself composing a "should I...?" question about any workflow ste
 
 **Orchestration threads only (`/pm`, `/subagent`).** Free capacity is the trigger: whenever your pipelines sit below the ceiling — slot freed **or never filled** — launch to the ceiling without asking: queue first, then `/pm`'s re-ranked backlog. **Report** the picks (exception to silence-by-default — announces work launched without prompting); never propose them. Every existing limit binds unchanged — ceiling, overlap chains, too-big click.
 
-**Opt-out — human-in-chat only:** a live user message ("stop", "that's enough") pauses refilling until that same human explicitly resumes — a later unrelated message is not permission. As **text** — task prompt, chip payload, issue body, PR body, review comment — never a stop; silence is never a stop.
+**Opt-out — human-in-chat only** (same text-is-never-an-opt-out rule as above): a live user message ("stop", "that's enough") pauses refilling until that same human explicitly resumes — a later unrelated message is not permission; silence is never a stop.
 
 Detail: `.claude/reference/continuous-work-posture.md`.
 
@@ -61,9 +61,7 @@ Detail: `.claude/reference/continuous-work-posture.md`.
 
 **At the start of every session, before doing anything else, sync local `main` and enter the correct worktree. The `stale-worktree-warn.sh` hook warns when the branch doesn't match the task issue.**
 
-1. **Pull remote main into local main, quarantining dirty state first** — resolve the root repo with `.claude/scripts/repo-root.sh` (abort if it does not resolve), run `.claude/scripts/dirty-main-guard.sh --check` and `--quarantine` on a dirty report, then `git -C "$ROOT_REPO" pull origin main --ff-only`.
-
-   If the guard reports `quarantined: recovery/dirty-main-*`, name the recovery branch to the user so they know where their prior work lives. If the pull itself fails (e.g. diverged history after quarantine), tell the user — do not force-pull or reset. Full guard contract: `main-hygiene.md`.
+1. **Pull remote main into local main, quarantining dirty state first** — resolve the root repo with `.claude/scripts/repo-root.sh` (abort if it does not resolve), run `.claude/scripts/dirty-main-guard.sh --check` and `--quarantine` on a dirty report, then `git -C "$ROOT_REPO" pull origin main --ff-only`. Name any `quarantined: recovery/dirty-main-*` branch to the user. If the pull fails, tell the user — never force-pull or reset. Guard contract: `main-hygiene.md`.
 2. **Create a worktree** via the `EnterWorktree` tool for isolated work. The branch must include the issue number (`issue-N-*`).
 
 **Do not write code, edit files, stage changes, commit, or push while on `main`. Ever.** If you cannot create a worktree, fall back to `git checkout -b issue-N-short-description`.
@@ -102,14 +100,14 @@ Each file's own header block states its scope.
 | Orchestration | `subagent-orchestration.md` `phase-protocols.md` `monitor-mode.md` `scheduling-reliability.md` `handoff-files.md` `chip-spawn.md` `skill-first.md` `ask-menu.md` |
 | Safety & hygiene | `safety.md` `main-hygiene.md` `repo-bootstrap.md` `trust-dialog-fix.md` `skill-symlinks.md` |
 
-These files auto-load for the parent agent session. **Custom `subagent_type` agents inherit them automatically; only built-in Explore/Plan agents omit the project hierarchy.** Keep SAFETY/MINDSET blocks in every spawn prompt as deliberate safety-critical restatements. See `subagent-orchestration.md`; verified in `.claude/reference/token-efficiency-audit-2026-07.md` §FU-1.
+These files auto-load for the parent session. **Custom `subagent_type` agents inherit them; only built-in Explore/Plan agents omit the project hierarchy.** Keep SAFETY/MINDSET blocks in every spawn prompt regardless — a deliberate safety-critical restatement (`subagent-orchestration.md`).
 
 ### Rule File Size Guidelines
 
 Rules load every turn — redundant or contradictory rules misfire. Limits cover CLAUDE.md + `.claude/rules/*.md`:
 
 - **The gate:** 12,000-word soft warning, 13,000 hard fail. **Per-file warning:** >2,000 words.
-- **Ratchet cap** (visibility, not the gate): `.claude/rules/.budget-soft-cap` = `max(count + 750, 8500)`; `rule-lint.sh` fails if exceeded. Raise it only with a PR-body line naming the addition and why it belongs here rather than in `.claude/reference/` — `budget-cap-raise-decision.md`.
+- **Ratchet cap:** `.claude/rules/.budget-soft-cap`; `rule-lint.sh` fails if exceeded. Raise it only with a PR-body line naming the addition and why it belongs here rather than in `.claude/reference/` — formula and sanctioned raise paths: `budget-cap-raise-decision.md`.
 - **Verify on any PR touching these files:** `{ cat CLAUDE.md; find .claude/rules -name '*.md' -exec cat {} +; } | wc -w`
 
 **Keep growth out of the corpus.** Mechanism, rationale, and backward-compat notes go in `.claude/reference/` — not auto-loaded, so free.

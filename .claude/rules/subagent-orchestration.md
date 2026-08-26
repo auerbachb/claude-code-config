@@ -19,9 +19,7 @@ See `.claude/agents/README.md` for the full placeholder reference and spawning e
 
 ### Fallback: Explore/Plan and Non-Custom Spawns
 
-Built-in Explore/Plan agents omit the project hierarchy. For any spawn that does NOT use a `.claude/agents/` definition (e.g. a bare general-purpose Agent call), paste the verbatim SAFETY/MINDSET/SKILLS blocks manually. Do NOT paste the full CLAUDE.md + rules corpus — that double-pays the corpus for custom-agent spawns that already inherit it. Verification: `.claude/reference/token-efficiency-audit-2026-07.md` §FU-1.
-
-**Failed custom spawn fallback:** if a spawn returns `Agent type '<name>' not found`, the session has not yet registered the agent (pre-restart or `name:` missing). Spawn `general-purpose` instead and paste the verbatim SAFETY/MINDSET/SKILLS blocks plus the role-specific procedure from `.claude/reference/phase-decomposition.md`. Do NOT paste the full CLAUDE.md + rules corpus.
+Any spawn that does NOT use a `.claude/agents/` definition — built-in Explore/Plan, a bare `general-purpose` call, or a custom type the session has not registered (`Agent type '<name>' not found`) — gets the verbatim SAFETY/MINDSET/SKILLS blocks pasted manually, plus the role-specific procedure from `.claude/reference/phase-decomposition.md`. **Never paste the full CLAUDE.md + rules corpus.** Causes and rationale: `.claude/reference/phase-decomposition.md` §Non-custom spawns.
 
 ## Model Selection
 
@@ -35,9 +33,9 @@ Built-in Explore/Plan agents omit the project hierarchy. For any spawn that does
 | `pm-worker` | `sonnet` |
 | Read-only review agents (e.g., `/pr-review-help`) | `sonnet` |
 
-Fleet: **Fable, Opus, Sonnet, Haiku** (Agent `model` takes the lowercase family name). Fable is **never a spawn default** — reserve for interactive step-ups. Alias resolution + rationale: `.claude/agents/README.md`. An explicit `model` overrides frontmatter; escalate to `opus` if a Sonnet-tier agent underperforms.
+Fleet: **Fable, Opus, Sonnet, Haiku** (Agent `model` takes the lowercase family name). Fable is **never a spawn default** — reserve for interactive step-ups. An explicit `model` overrides frontmatter; escalate to `opus` if a Sonnet-tier agent underperforms. Alias resolution: `.claude/agents/README.md`.
 
-**Effort is not settable on a spawn** — subagents inherit the parent session's effort level; never write an effort instruction into a subagent prompt. **Set model at spawn; never change it mid-session** — session-scoped caches make tier switches costly (FU-4: `token-efficiency-audit-2026-07.md`).
+**Effort is not settable on a spawn** — subagents inherit the parent's effort level; never write an effort instruction into a spawn prompt. **Set model at spawn, never mid-session** — session-scoped caches make tier switches costly (`token-efficiency-audit-2026-07.md` §FU-4).
 
 ## Phase Transition Autonomy (Quick Reference)
 

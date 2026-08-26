@@ -23,13 +23,6 @@ At a decision point — pick an option, confirm a destructive action, resolve an
 
 ## Named pause points
 
-These sites use AskUserQuestion when available; prose fallback in headless runs:
+Each pause point's own rule or skill step is canonical for its options and wording — `/issue-maker` Steps 4, 8, 12; `/pm-clean` Steps 4.1, 4.2; `/memory-clean` Step 3; `repo-bootstrap.md`'s branch-protection ask. All use AskUserQuestion when available, prose fallback in headless runs.
 
-- `/issue-maker` Step 4 — dedup strong-match: options `"Skip — looks like a duplicate (Recommended)"`, `"File anyway"`
-- `/issue-maker` Step 8 — chain cap: options `"Re-cut to ≤5 increments (Recommended)"`, `"File all N increments"`
-- `/issue-maker` Step 12 — retract chain: options `"Retract whole chain (Recommended)"`, `"Re-cut remainder"`
-- `repo-bootstrap.md` — branch-protection ask: options `"Add required checks (Recommended)"`, `"Skip for now"`
-- `/pm-clean` Step 4.1 — issue closures: `multiSelect` across closure categories + `"Skip all"` (skip-wins)
-- `/pm-clean` Step 4.2 — workspace cleanup: options `"Apply cleanup (Recommended)"`, `"Skip"`
-- `/memory-clean` Step 3 — prune confirmation: `multiSelect` across finding types + `"Skip"` (skip-wins)
-- Blocker surface ending in a question — options derived from the blocker's resolution paths
+One site has no other home: a **blocker surface ending in a question** derives its options from the blocker's own resolution paths.
