@@ -428,6 +428,18 @@ check_eq "infinite-loop shape does not hang the probe" "0" "$(set_bounded "$HANG
 check_eq "infinite-loop shape round-trips verbatim as a string" "$HANG_SHAPE" \
   "$(jq -r '.notes' "$HANDOFF_FILE")"
 
+# Same escape attempt WITHOUT a comment: a `;` closes the generated def and a
+# second def follows, but the terminator still sits on its own line, so the
+# trailing `; empty` cannot be absorbed and jq refuses the program outright.
+# This is the shape CodeAnt raised against the four-line probe (PR #1378 round
+# 2); it neither compiles nor executes, so the value stores as a string.
+SEMI_SHAPE='.a + 1; def g: 1; last(repeat(1))'
+check_eq "semicolon+def escape does not execute" "0" "$(set_bounded "$SEMI_SHAPE")"
+check_eq "semicolon+def escape round-trips verbatim as a string" "$SEMI_SHAPE" \
+  "$(jq -r '.notes' "$HANDOFF_FILE")"
+check_eq "semicolon+def escape leaves no lock behind" "0" \
+  "$([[ -e "$LOCK_DIR" ]] && echo 1 || echo 0)"
+
 ERROR_SHAPE='.a + 1; def g: 1; error("BOOM") #'
 check_eq "error() shape does not run during the probe" "0" "$(set_bounded "$ERROR_SHAPE")"
 check_eq "error() shape round-trips verbatim as a string" "$ERROR_SHAPE" \
