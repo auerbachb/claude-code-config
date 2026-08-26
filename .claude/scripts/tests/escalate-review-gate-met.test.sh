@@ -273,4 +273,52 @@ else
   check_eq "escalate-review.sh reads check_runs.all from the bundle" "present" "absent"
 fi
 
+############################################################################
+echo
+echo "== Scenario (m): PR #1351 hollow shape — empty APPROVED 52s after push + stale-SHA status comment + repointed inline comment -> trigger_greptile (issue #1362) =="
+reset_state
+write_commits "$(ts_seconds_ago 300)"
+FAILURE_COMMENT_M="$(failure_comment "$(ts_seconds_ago 60)")"
+OLD_SHA_M="990a2b2a56c49e2d188ebc807eeb8c4be41154f5"
+# Round-1 COMMENTED review on the PREVIOUS SHA, empty body — off-HEAD, so it may
+# not lend substance to the approval below.
+CODEANT_COMMENTED_M='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$OLD_SHA_M"'", "state": "COMMENTED", "body": "", "submitted_at": "'"$(ts_seconds_ago 660)"'"}'
+# The rubber stamp: empty body, 52 s after the push — the live gap on PR #1351.
+CODEANT_APPROVED_M='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "", "submitted_at": "'"$(ts_seconds_ago 248)"'"}'
+# Round-1 inline finding whose commit_id GitHub repointed onto HEAD; only
+# original_commit_id still names the commit that was actually reviewed. It must
+# NOT count as a HEAD-anchored footprint — dropping the original_commit_id
+# filter in review-substance.sh would flip this scenario to gate_met.
+CODEANT_INLINE_M='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "original_commit_id": "'"$OLD_SHA_M"'", "created_at": "'"$(ts_seconds_ago 660)"'", "path": "a.sh", "body": "Major: the persisted override flag is not session-scoped and outlives the invocation that granted it."}'
+# CodeAnt status comment naming ONLY the previous SHA (short token in the table,
+# full SHA in the machine-readable HTML comment) — the bot's newest SHA-naming
+# self-report does not name HEAD, so self_report_mismatch must fire alongside
+# no_substantive_footprint, exactly as merge-gate.sh reported live.
+# Unquoted heredoc so the SHA variables expand; the code-span backticks are
+# escaped so they stay literal instead of running command substitution.
+STATUS_BODY_M="$(cat <<STATUS_M_EOF
+CodeAnt AI - Review Status
+
+| Status | Commit | Started (UTC) | Finished (UTC) |
+| --- | --- | --- | --- |
+| Reviewed your PR | \`${OLD_SHA_M:0:7}\` | Aug 26, 2026 17:40 | 17:43 |
+
+<!-- codeant-review-status:[{"label":"Reviewed your PR","commit":"$OLD_SHA_M","done":true}] -->
+STATUS_M_EOF
+)"
+CODEANT_STATUS_M="$(jq -cn --arg ts "$(ts_seconds_ago 350)" --arg body "$STATUS_BODY_M" '{user: {login: "codeant-ai[bot]"}, created_at: $ts, body: $body}')"
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_COMMENTED_M, $CODEANT_APPROVED_M]" "[$CODEANT_INLINE_M]" "[$FAILURE_COMMENT_M, $CODEANT_STATUS_M]"
+OUT=$(run_script 2>"$TMP/m-stderr.txt"); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile (not gate_met)" "STATUS=trigger_greptile" "$OUT"
+# The verdict must come from the substance guard REJECTING a valid, fresh
+# approval — not from the approval failing validity or freshness upstream, which
+# would let this scenario keep passing with the guard deleted. Assert the guard
+# announced itself.
+if grep -q "no reviewer holds BOTH a valid APPROVED on HEAD and substantive review evidence" "$TMP/m-stderr.txt"; then
+  check_eq "substance guard fired (stderr notice present)" "present" "present"
+else
+  check_eq "substance guard fired (stderr notice present)" "present" "absent"
+fi
+
 finish_escalate_review_tests "gate and approval freshness"
