@@ -153,6 +153,51 @@ kinds="$(jget "$OUT" "[t['cap_kinds'] for t in d['tools'] if t['key']=='coderabb
   && ok "measure: one banner carrying both signals records both kinds on that PR" \
   || fail "measure: combined banner expected both kinds, got $kinds"
 
+# CodeRabbit also EXPLAINS the Fair Usage policy in ordinary prose, and quotes
+# this repo's own cap documentation back at us. Matching the bare policy name
+# counted that as a cap (#1338, found live on PR #1292): a tool that was
+# answering a pricing question read as a tool that had been throttled. The two
+# assertions below are a matched pair and must stay together — the first alone
+# would also pass if the classifier stopped recognising Fair Usage entirely.
+F="$TMP_DIR/cr-fair-usage-prose.json"
+fixture_write "$F" '[
+ {"number":5,"merged_at":"2026-08-05T00:00:00Z","reviews":[],"pr_comments":[
+   {"user":"coderabbitai[bot]","body":"Key details regarding this quota: these limits function as a rolling allowance rather than a fixed hourly reset, so additional reviews become available as earlier ones age out. CodeRabbit also maintains a Fair Usage Limits Policy, which may adjust review availability for accounts demonstrating sustained, high-volume activity that significantly exceeds typical usage."}],
+  "issue_comments":[]}]'
+OUT="$TMP_DIR/cr-fair-usage-prose.out.json"
+"$MEASURE" --fixture "$F" --json > "$OUT" || fail "measure.sh failed on Fair Usage prose fixture"
+kinds="$(jget "$OUT" "[t['cap_kinds'] for t in d['tools'] if t['key']=='coderabbit'][0]")"
+[[ "$kinds" == "[]" ]] \
+  && ok "measure: prose merely naming the Fair Usage policy is not a cap signal" \
+  || fail "measure: Fair Usage prose wrongly classified as a cap: $kinds"
+# It must not be silently dropped either — an unrecognised limit-shaped comment
+# is surfaced for a human, which is the whole design of unclassified[].
+uc="$(jget "$OUT" "[u['tool'] for u in d['unclassified']]")"
+[[ "$uc" == "['coderabbit']" ]] \
+  && ok "measure: the unmatched Fair Usage prose still surfaces in unclassified[]" \
+  || fail "measure: Fair Usage prose expected in unclassified[], got $uc"
+
+# Positive control for the pair above: the REAL refusal wording, with the
+# markdown link CodeRabbit actually emits, must still classify as fair_usage.
+# Without this, tightening the pattern to nothing would pass the prose case.
+F="$TMP_DIR/cr-fair-usage-linked.json"
+fixture_write "$F" '[
+ {"number":6,"merged_at":"2026-08-06T00:00:00Z","reviews":[],"pr_comments":[],
+  "issue_comments":[{"user":"coderabbitai[bot]","body":"Full review finished.\n\n---\n\nYour included review limit is currently reached under our [Fair Usage Limits Policy](https://docs.coderabbit.ai/management/plans#fair-usage-limits-policy). Your current included review allowance is based on your included PR review attempts over the past 7 days."}]}]'
+OUT="$TMP_DIR/cr-fair-usage-linked.out.json"
+"$MEASURE" --fixture "$F" --json > "$OUT" || fail "measure.sh failed on linked-refusal fixture"
+kinds="$(jget "$OUT" "[t['cap_kinds'] for t in d['tools'] if t['key']=='coderabbit'][0]")"
+[[ "$kinds" == "['fair_usage']" ]] \
+  && ok "measure: the linked Fair Usage refusal clause still classifies as fair_usage" \
+  || fail "measure: linked Fair Usage refusal expected ['fair_usage'], got $kinds"
+# One body matching both the linked and unlinked patterns is still one PR-level
+# observation — the per-(PR, kind) dedupe, pinned so a third pattern cannot
+# quietly start double-counting capped PRs.
+n="$(jget "$OUT" "len([c for c in [t for t in d['tools'] if t['key']=='coderabbit'][0]['cap_signals'] if c['kind']=='fair_usage'])")"
+[[ "$n" == "1" ]] \
+  && ok "measure: overlapping fair_usage patterns record one signal per PR" \
+  || fail "measure: expected 1 deduped fair_usage signal, got $n"
+
 # ---------------------------------------------------------------------------
 # measure.sh — sole-provider, the unique-value signal
 # ---------------------------------------------------------------------------

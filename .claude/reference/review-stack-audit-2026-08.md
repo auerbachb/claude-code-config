@@ -33,7 +33,7 @@ chain-position decision, and leaves any demotion or cut to its own reviewed PR.
 | Mechanism | Cap kind | What sets it | Signal phrase |
 |---|---|---|---|
 | Per-developer hourly burst allowance | `rate_limit` | The plan tier. Pro = **5 reviews/hour per developer** (dashboard, [#1204](https://github.com/auerbachb/claude-code-config/issues/1204), 2026-08-21) | `Review limit reached`; `<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->` |
-| Fair Usage adaptive band | `fair_usage` | Trailing **7-day** included-attempt volume, which *lowers* the hourly allowance below the plan base | `Fair Usage Limits Policy` |
+| Fair Usage adaptive band | `fair_usage` | Trailing **7-day** included-attempt volume, which *lowers* the hourly allowance below the plan base | `under our [Fair Usage Limits Policy]` |
 
 They are not independent, and they are not disjoint populations. The Fair Usage band is the thing
 that decides what number the hourly burst allowance holds right now; one banner comment routinely
@@ -67,8 +67,28 @@ in the window the text was qualitative — PR [#774](https://github.com/auerbach
 (2026-07-28): *"Your recent review volume is higher than typical usage, so adaptive limits are
 currently applied."* From roughly 2026-08-22 it became quantitative, naming the attempt count and the
 resulting hourly figure. Same mechanism, better instrumentation. A phrase table keyed on the numeric
-sentence would have matched nothing for the first four weeks of the window; `fair usage limits
-policy` matches both shapes, which is why that is the pattern the classifier uses.
+sentence would have matched nothing for the first four weeks of the window, so the classifier keys on
+the clause both generations share.
+
+**That clause is the refusal, not the policy name.** The first cut of this classifier matched the bare
+noun phrase `fair usage limits policy`, and CodeAnt caught the flaw on this PR: CodeRabbit also
+*explains* the policy in ordinary prose, and quotes this repo's own cap documentation back at us, so
+the bare phrase counted a tool that was answering a pricing question as a tool that had been
+throttled. PR [#1292](https://github.com/auerbachb/claude-code-config/pull/1292) carries a live
+instance — a 7.3 kB CodeRabbit answer reading *"CodeRabbit also maintains a Fair Usage Limits Policy,
+which may adjust review availability…"*. The classifier now matches `under our [Fair Usage Limits
+Policy]` (and its unlinked form), the clause CodeRabbit writes only when actually declining a review;
+explanatory prose says *"maintains a"*, never *"under our"*. It covers all three refusal verbs seen in
+the window — *"You've reached a temporary PR review limit under our…"* (banner), *"Your included
+review limit is currently reached under our…"* (ack), *"You're currently rate limited under our…"*.
+
+**The correction is count-preserving**, which is why every figure below still stands. The window was
+re-measured end to end against the tightened classifier: `fair_usage` holds at 222 PRs on an
+*identical* PR set — none lost, none gained — and `rate_limit` (224), the overlap (213) and the union
+(233) are unchanged. The only movement is `unclassified_hits` 27 → 28: the #1292 prose comment now
+surfaces for a human instead of being silently counted as a cap, which is the behaviour the
+`unclassified[]` probe exists to provide. A future reworded refusal lands there too rather than being
+dropped.
 
 ### A third signal, newly present and not yet a cap kind
 
@@ -247,7 +267,7 @@ Two further notes so this is not over-read:
 - **`plan_observed` is a proxy.** It reads a tier the vendor volunteers in its own comment body. No
   vendor here exposes a billing API this measurement can read; the authoritative billed state is the
   human-maintained `billed` field in the baseline.
-- **Unclassified cap candidates: 8 distinct `(tool, token)` pairs across 27 limit-shaped comments —
+- **Unclassified cap candidates: 8 distinct `(tool, token)` pairs across 28 limit-shaped comments —
   and every one is a false positive.** The finding reported 6. Entries are deduped per
   `(tool, token)`, and this window is a superset in time, so the finding's six pairs are among these
   eight — though the PR cited for a given pair can differ between runs, since the dedupe keeps

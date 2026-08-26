@@ -227,15 +227,40 @@ CAP_SIGNALS = [
     {"tool": "coderabbit", "kind": "rate_limit",
      "pattern": "review limit reached",
      "note": "human-visible heading accompanying the marker above"},
+    # fair_usage is the trailing-7-day-volume band, distinct from the
+    # per-developer per-hour burst allowance it modulates (Pro base: 5/hr).
+    # Split out from rate_limit under #1303.
+    #
+    # ANCHORED ON THE REFUSAL CLAUSE, NOT THE POLICY NAME (#1338). The bare
+    # noun phrase "Fair Usage Limits Policy" is NOT a cap signal: CodeRabbit
+    # also *explains* the policy in ordinary prose, and this repo's own cap
+    # documentation gets quoted back at us. PR #1292 carries a live example —
+    # a 7.3 kB CodeRabbit answer reading "CodeRabbit also maintains a Fair
+    # Usage Limits Policy, which may adjust review availability for accounts
+    # demonstrating sustained, high-volume activity" — which the bare phrase
+    # counted as a cap. Both patterns below instead quote the clause CodeRabbit
+    # writes only when it is actually declining a review ("...under our [Fair
+    # Usage Limits Policy]"); the explanatory prose says "maintains a", never
+    # "under our". Grounding: all 9 PRs in the #1303 window that carried
+    # fair_usage WITHOUT a rate_limit marker were re-read comment by comment;
+    # every one still matches, and the #1292 prose comment no longer does.
+    #
+    # A reworded refusal falls through to `unclassified[]` rather than being
+    # silently dropped — the designed-visible failure, not a silent undercount.
     {"tool": "coderabbit", "kind": "fair_usage",
-     "pattern": "fair usage limits policy",
-     "note": "the trailing-7-day-volume band, distinct from the per-developer "
-             "per-hour burst allowance it modulates (Pro base: 5/hr). Matches "
-             "both banner shapes seen in the #1303 window: the qualitative one "
-             "('adaptive limits are currently applied', 2026-07) and the "
-             "quantitative one ('Your 68 included PR review attempts over the "
-             "past 7 days set your current allowance at 1 review per hour', "
-             "2026-08). Split out from rate_limit under #1303"},
+     "pattern": "under our [fair usage limits policy]",
+     "note": "the refusal clause, with CodeRabbit's usual markdown link. Both "
+             "refusal verbs end in it — 'Your included review limit is "
+             "currently reached under our [...]' and 'You're currently rate "
+             "limited under our [...]' — and so do both banner generations in "
+             "the #1303 window, the qualitative one ('...adaptive limits "
+             "apply', 2026-07) and the quantitative one ('...based on your "
+             "included PR review attempts over the past 7 days', 2026-08)"},
+    {"tool": "coderabbit", "kind": "fair_usage",
+     "pattern": "under our fair usage limits policy",
+     "note": "same clause when CodeRabbit writes the policy name unlinked. "
+             "Deduped per (PR, kind) with the pattern above, so a body "
+             "carrying the linked form counts once, not twice"},
     {"tool": "codeant", "kind": "not_subscribed",
      "pattern": "add this email to the pr review subscription",
      "note": "CodeAnt seat/subscription gap; 24 occurrences in the sample"},
