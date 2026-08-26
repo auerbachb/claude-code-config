@@ -393,8 +393,9 @@ Body:
    - `Closes #{NUMBER}` in the body
    - A **Test plan** section with acceptance criteria checkboxes from the issue
    - A `**Local review coverage:** <level>` labeled line (e.g. `**Local review coverage:** none — both CLIs unavailable, self-review only`). This is mandatory for `none` and `cr-only`/`codeant-only`; omit only when coverage is `both`.
-8. Write the handoff file via `handoff-state.sh --create` so the write is serialized under
-   the shared state-lock.sh advisory lock (issue #682). Never write inline with
+8. Write the handoff file via `handoff-state.sh --owner-repo {owner}/{repo} --create` so the
+   write is serialized under the shared state-lock.sh advisory lock (issue #682) **and** lands
+   on the scoped path Phase B and Phase C read (issue #1302). Never write inline with
    `jq … > tmp && mv tmp` — that bypasses the lock.
    ```bash
    # Resolve handoff-state.sh:
@@ -547,7 +548,7 @@ If missing, reconstruct state from GitHub API.
 
 ## Phase B Instructions
 
-1. Read the handoff file (resolve path: `handoff-state.sh [--owner-repo owner/repo] --path {PR_NUMBER}`).
+1. Read the handoff file (resolve path: `handoff-state.sh --owner-repo {owner}/{repo} --path {PR_NUMBER}`). **Phase-order check:** rank `A=1, B=2, C=3`; you expect `phase_completed: "A"` (or `"B"` when you are a replacement Phase B). Anything else — missing, empty, unrecognized — print a warning naming both the value found and the value expected, then continue on GitHub-derived state rather than the handoff's `reviewer`/`head_sha`.
 2. Check for unresolved findings BEFORE requesting any review:
    - Fetch all 3 endpoints (reviews, inline comments, issue comments) with per_page=100.
    - If unresolved findings from coderabbitai[bot] or greptile-apps[bot] exist, fix them first.
@@ -566,7 +567,19 @@ If missing, reconstruct state from GitHub API.
 9. Merge gate:
    - CR-only: 1 explicit CR APPROVED review on the current HEAD SHA (commit_id must match HEAD; acks / check-run completion alone do NOT count).
    - Greptile: severity-gated (no P0 after fix = merge-ready).
-10. Update the handoff file: set phase_completed to "B", refresh head_sha, merge new entries.
+10. Update the handoff file. Pass `--owner-repo {owner}/{repo}` on **every** call — without it the write lands on the legacy flat path `~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json`, which Phase C never reads, leaving it on Phase A's stale `reviewer`/`head_sha` (issue #1302):
+    ```bash
+    # HANDOFF_STATE_SH: resolve handoff-state.sh per RESOLVE (same candidate order as Phase A).
+    OR=(--owner-repo {owner}/{repo})
+    "$HANDOFF_STATE_SH" "${OR[@]}" --set    "{PR_NUMBER}" '.phase_completed="B"'
+    "$HANDOFF_STATE_SH" "${OR[@]}" --set    "{PR_NUMBER}" ".head_sha=$NEW_HEAD_SHA"   # only if you pushed
+    "$HANDOFF_STATE_SH" "${OR[@]}" --set    "{PR_NUMBER}" ".reviewer=$REVIEWER"       # if escalation changed it
+    "$HANDOFF_STATE_SH" "${OR[@]}" --append "{PR_NUMBER}" "findings_fixed"   "$finding_id"
+    "$HANDOFF_STATE_SH" "${OR[@]}" --append "{PR_NUMBER}" "threads_replied"  "$thread_id"
+    "$HANDOFF_STATE_SH" "${OR[@]}" --append "{PR_NUMBER}" "threads_resolved" "$thread_id"
+    "$HANDOFF_STATE_SH" "${OR[@]}" --append "{PR_NUMBER}" "files_changed"    "$filename"
+    ```
+    Then verify: `--get` shows `phase_completed: "B"` with your SHA, and no flat file exists at `~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json`.
 11. Print Structured Exit Report:
     ```
     EXIT_REPORT
@@ -611,14 +624,14 @@ You are a Phase C verify-and-wrap agent for PR #{PR_NUMBER} (Issue #{ISSUE_NUMBE
 Execute the canonical `/wrap` flow after verification — no pre-merge prompt.
 
 ## Handoff File
-Resolve the path with `handoff-state.sh [--owner-repo owner/repo] --path {PR_NUMBER}` and read that file first.
+Resolve the path with `handoff-state.sh --owner-repo {owner}/{repo} --path {PR_NUMBER}` and read that file first.
 
 ## Guardrails (MANDATORY)
 **Read `subagent-phase-guardrails.md` (Step 0 candidate order) and insert the RESOLVE and SAFETY blocks verbatim at this point** (Phase C / `phase-c-merger` carries only those two — no MINDSET or SKILLS).
 
 ## Phase C Instructions
 
-1. Read the handoff file.
+1. Read the handoff file. **Phase-order check:** rank `A=1, B=2, C=3`; you expect `phase_completed: "B"`. If it reads `"A"` or is missing, print a warning naming both the value found and the expected `"B"`, say the handoff may be stale, and take `reviewer` from `reviewer-of.sh` and the SHA from `gh pr view` instead of the handoff's copies. Warn, never block — the gate is verified live in step 2 regardless.
 2. Verify merge gate is satisfied:
    - CR-only: 1 explicit CR APPROVED review on the current HEAD SHA.
    - BugBot: 1 clean BugBot pass on the current HEAD SHA.

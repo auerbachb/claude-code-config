@@ -240,6 +240,10 @@ Pull the values that the later steps need out of the JSON once:
 PR_NUMBER=$(jq -r '.pr.number' "$AUDIT")
 OWNER=$(jq -r '.pr.owner' "$AUDIT")
 REPO=$(jq -r '.pr.repo' "$AUDIT")
+# Combined form for handoff scoping. Step 3a's path resolution reads
+# ${OWNER_REPO:-}; leaving it unset silently falls through to the legacy flat
+# handoff path, which the phase agents never read back (issue #1302).
+OWNER_REPO="$OWNER/$REPO"
 BRANCH=$(jq -r '.pr.branch' "$AUDIT")
 HEAD_SHA=$(jq -r '.pr.head_sha' "$AUDIT")
 RUN_STARTED_AT=$(jq -r '.run_started_at' "$AUDIT")
@@ -395,7 +399,8 @@ Optional handoff path (per `handoff-files.md`, one JSON file per PR):
 
 ```bash
 # Resolve the canonical handoff path (issue #655: scoped per repo when owner_repo is known).
-# The caller should set OWNER_REPO to <owner>/<repo> (e.g., from `gh repo view --json nameWithOwner`).
+# OWNER_REPO is set in Step 0b from the pr-state.sh bundle; the `gh repo view
+# --json nameWithOwner` form works too for a standalone invocation.
 # With --owner-repo: ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json
 # Without         : ~/.claude/handoffs/pr-{N}-handoff.json (legacy flat, backward compat)
 if [[ -n "${OWNER_REPO:-}" ]]; then
@@ -411,7 +416,13 @@ Run dismissal (idempotent where PUT succeeds or review already **DISMISSED**; ge
 if [[ "${DID_PUSH:-0}" -eq 1 ]]; then
   if [[ -n "$DISMISS_STALE_SCRIPT" ]]; then
     if [[ -n "${HANDOFF_JSON:-}" ]]; then
-      "$DISMISS_STALE_SCRIPT" "$PR_NUMBER" --handoff-file "$HANDOFF_JSON"
+      # --owner-repo scopes the handoff append to the same file --handoff-file
+      # names; without it the append resolves the flat path (issue #1302).
+      if [[ -n "${OWNER_REPO:-}" ]]; then
+        "$DISMISS_STALE_SCRIPT" "$PR_NUMBER" --handoff-file "$HANDOFF_JSON" --owner-repo "$OWNER_REPO"
+      else
+        "$DISMISS_STALE_SCRIPT" "$PR_NUMBER" --handoff-file "$HANDOFF_JSON"
+      fi
     else
       "$DISMISS_STALE_SCRIPT" "$PR_NUMBER"
     fi

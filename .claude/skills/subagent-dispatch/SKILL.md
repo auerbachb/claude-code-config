@@ -109,7 +109,7 @@ You are a Phase A fixer. Repo: auerbachb/claude-code-config.
   - Do NOT change /absolute/path/to/repo/src/foo/baz.ts
 
 **Return:** Structured exit report per .claude/rules/phase-protocols.md.
-**Handoff:** Write via `<ABSOLUTE_REPO_ROOT>/.claude/scripts/handoff-state.sh` to ~/.claude/handoffs/auerbachb/claude-code-config/pr-<N>-handoff.json (atomic; exit 6 = lock timeout, retry; exit 4 = wrong field type, fix the call).
+**Handoff:** Write via `<ABSOLUTE_REPO_ROOT>/.claude/scripts/handoff-state.sh --owner-repo auerbachb/claude-code-config` to ~/.claude/handoffs/auerbachb/claude-code-config/pr-<N>-handoff.json. `--owner-repo` on every call — omit it and the write silently lands on the flat path no later phase reads (atomic; exit 6 = lock timeout, retry; exit 4 = wrong field type, fix the call).
 ```
 
 ---

@@ -26,6 +26,16 @@
 #   code should always pass --owner-repo.  The handoff-migrate.sh script moves
 #   existing flat files into the scoped layout.
 #
+# FLAT-PATH WARNING (issue #1302)
+#   A WRITE mode that omits --owner-repo while standing in a checkout that
+#   resolves to owner/repo warns on stderr and proceeds on the flat path.  It
+#   warns rather than refuses so genuinely repo-less and pre-migration callers
+#   keep working; the silent fallback is what let a Phase B agent write the flat
+#   path while Phase C read the scoped one.  Read modes (--path, --get) never
+#   warn.  Set CLAUDE_HANDOFF_FLAT_OK=1 for a caller that means the flat path on
+#   purpose (flat-layout cleanup sweeps, migration tooling).
+#   Decision record: .claude/reference/handoff-missing-owner-repo-decision.md
+#
 # USAGE
 #   handoff-state.sh [--owner-repo <owner/repo>] --path   <pr_number>        # print canonical path (no lock)
 #   handoff-state.sh [--owner-repo <owner/repo>] --get    <pr_number>        # lock-free read
@@ -134,8 +144,11 @@ ARRAY_VALUE=""
 JSON_BODY=""
 OWNER_REPO=""
 
+# Print the whole leading comment block. Driven by the comment prefix rather
+# than a hardcoded line range so adding a header section can never silently
+# truncate the usage text (issue #1302 added one).
 print_usage() {
-  sed -n '2,67p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"
 }
 
 if [[ $# -eq 0 ]]; then
@@ -288,6 +301,42 @@ if [[ "$MODE" == "get" ]]; then
   cat "$HANDOFF_FILE"
   exit 0
 fi
+
+# ---------------------------------------------------------------------------
+# Soft flat-path warning for write modes (issue #1302).
+#
+# Only reached by create/init/set/append/delete — --path and --get returned
+# above, so resolving a path stays silent and cheap.
+#
+# A write that omits --owner-repo lands on the legacy flat path even when the
+# caller is standing in a checkout whose scoped path the next phase will read.
+# That divergence is invisible today: the wrong-path write succeeds, and the
+# reader simply sees an older record. Warn and proceed — refusing would break
+# the pre-migration and genuinely repo-less callers the flat path exists for.
+# Rationale and rejected designs:
+#   .claude/reference/handoff-missing-owner-repo-decision.md
+# ---------------------------------------------------------------------------
+_warn_flat_path_when_repo_resolvable() {
+  [[ -n "$OWNER_REPO" ]] && return 0
+  [[ "${CLAUDE_HANDOFF_FLAT_OK:-0}" == "1" ]] && return 0
+
+  # repo_identity()/is_owner_repo_identity() live in the polling gate's scope
+  # resolver. Treat it as optional: a checkout without the library keeps the
+  # pre-#1302 silent behavior rather than failing a write over a missing warning.
+  local resolver="${SCRIPT_DIR}/lib/pr-scope-resolver.sh"
+  [[ -f "$resolver" ]] || return 0
+  # shellcheck source=./lib/pr-scope-resolver.sh
+  source "$resolver" 2>/dev/null || return 0
+
+  local identity scoped
+  identity="$(repo_identity "$PWD" 2>/dev/null || true)"
+  # gitdir:/path:/_unknown/empty all mean "no owner/repo here" — stay silent.
+  is_owner_repo_identity "$identity" || return 0
+  scoped="$(_resolve_handoff_path "$PR_NUMBER" "$identity" 2>/dev/null)" || return 0
+
+  echo "handoff-state.sh: WARNING: --${MODE} without --owner-repo targets the legacy flat path $HANDOFF_FILE, but this checkout resolves to '$identity', whose scoped path is $scoped — later phases read the scoped path, so pass --owner-repo $identity (set CLAUDE_HANDOFF_FLAT_OK=1 if the flat path is intended)" >&2
+}
+_warn_flat_path_when_repo_resolvable
 
 # ---------------------------------------------------------------------------
 # All write modes: ensure the directory exists, then acquire the lock.
