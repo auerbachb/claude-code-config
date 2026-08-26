@@ -209,8 +209,11 @@ else
   if [[ -n "$PM_CONFIG_GET" ]]; then
     RAW=$("$PM_CONFIG_GET" --section Budget 2>/dev/null || true)
     if [[ -n "$RAW" ]]; then
+      # Strip comment-only lines so bootstrapped placeholder "# STALL_MARGIN_MIN: 60"
+      # is not mistakenly parsed as an active setting.
+      RAW_ACTIVE=$(printf '%s\n' "$RAW" | grep -v '^[[:space:]]*#' || true)
       # Look for "STALL_MARGIN_MIN: N" or "STALL_MARGIN_MIN = N"
-      if [[ "$RAW" =~ STALL_MARGIN_MIN[[:space:]]*[:=][[:space:]]*([0-9]+) ]]; then
+      if [[ "$RAW_ACTIVE" =~ STALL_MARGIN_MIN[[:space:]]*[:=][[:space:]]*([0-9]+) ]]; then
         CONFIG_MARGIN="${BASH_REMATCH[1]}"
       fi
     fi
