@@ -39,6 +39,9 @@
 #        external evidence; timing/failure/start-marker/completion-marker
 #        negatives stay hollow, and an existing wrong-SHA self-report remains
 #        disqualifying
+#   (hh-416) HEAD-anchored inline comments supersede a stale CodeAnt status
+#        table (inventory #416 / this repo #1380). Rubber-stamp + stale table
+#        still blocks; a no-SHA status comment still does not disqualify.
 #
 # Only `gh` is stubbed; merge-gate.sh, review-substance.sh, ci-status.sh,
 # check-runs-dedup.sh and session-state.sh are the real scripts.
@@ -1084,6 +1087,100 @@ check_eq "true"  "$(echo "$GG_REVIEWER" | jq -r '.self_report_mismatch')" "(gg-9
 check_eq "false" "$(echo "$GG_REVIEWER" | jq -r '.counts_as_coverage')" "(gg-927) mismatch still disqualifies the approval"
 check_contains "self_report_mismatch" "$(echo "$GG_REVIEWER" | jq -r '.disqualified_by | join(" | ")')" "(gg-927) mismatch reason remains explicit"
 check_not_contains "no_substantive_footprint" "$(echo "$GG_REVIEWER" | jq -r '.disqualified_by | join(" | ")')" "(gg-927) only the hollow reason is cleared"
+
+############################################################################
+# (hh-416): a manually-triggered CodeAnt review can never count as coverage
+# while the status table is treated as a veto (inventory #416 / this repo
+# #1380). CodeAnt's one "Review Status" table records only push-triggered
+# auto-reviews. A later @codeant-ai review leaves real HEAD-anchored inline
+# findings and a SHA-less summary, but never appends a table row — so the
+# latest SHA-naming comment stays frozen on older commits.
+#
+# Live shape (inventory PR #415, HEAD 7c9a7fa): status table named a9c00b0
+# and c038325; the 1,049-char review named no SHA; inline_comments_on_head=2;
+# substantive=true; disqualified_by=["self_report_mismatch"]. Reproduced on
+# PR #448 (HEAD b541695) with the same sole disqualifier.
+############################################################################
+
+# Stale auto-review table: names older hex SHAs, never HEAD. No accidental
+# hex-letter run that could prefix-match $HEAD_SHA (396ced5…).
+STALE_TABLE='## 🤖 CodeAnt AI — Review Status
+| Status | Commit | Started | Finished |
+| --- | --- | --- | --- |
+| Reviewed your PR | `a9c00b0` | 10:00 | 10:03 |
+| Reviewed your PR | `c038325` | 10:04 | 10:07 |'
+
+# SHA-less review body (inventory PR #415: the four most recent comments,
+# including the 1,049-char review, contained no [0-9a-f]{7,40} token).
+SHA_LESS_REVIEW='## Sequence Diagram
+The change keeps the merge gate from treating a stale auto-review table as a veto
+when the same reviewer already left findings on this commit. The table records
+only push-triggered runs; a later manual review still posts inline notes and a
+summary, but never appends a row. Inline comments anchored to this commit are
+first-party evidence of which revision was read. A rubber-stamp approval with
+no such notes must still fail. No commit identifier is repeated in this summary.'
+
+echo "=== (hh-416) stale table + HEAD inlines + SHA-less body -> coverage ==="
+FAKE_REVIEWS="$(approval "codeant-ai[bot]" "")"
+FAKE_ISSUE_COMMENTS="$(convo \
+  "codeant-ai[bot]" "$STALE_TABLE" "2026-07-31T10:03:00Z" \
+  "codeant-ai[bot]" "$SHA_LESS_REVIEW" "2026-07-31T10:06:30Z")"
+FAKE_PR_COMMENTS="$(jq -cn --arg sha "$HEAD_SHA" \
+  '[{user:{login:"codeant-ai[bot]",type:"Bot"},commit_id:$sha,original_commit_id:$sha,created_at:"2026-07-31T10:06:00Z",body:"Major: unused import in the new helper."},
+    {user:{login:"codeant-ai[bot]",type:"Bot"},commit_id:$sha,original_commit_id:$sha,created_at:"2026-07-31T10:06:10Z",body:"Major: missing null check on the coordinator path."}]')"
+OUT="$(run_gate)"
+HH_REVIEWER="$(echo "$OUT" | jq -c '.review_evidence.reviewers["codeant-ai[bot]"]')"
+check_eq "true"  "$(echo "$OUT" | jq -r '.met')" "(hh-416) PR #415 shape satisfies the gate"
+check_eq "2"     "$(echo "$HH_REVIEWER" | jq -r '.inline_comments_on_head')" "(hh-416) two HEAD-anchored inlines"
+check_eq "true"  "$(echo "$HH_REVIEWER" | jq -r '.substantive')" "(hh-416) substantive via inlines"
+check_eq "false" "$(echo "$HH_REVIEWER" | jq -r '.status_comment_names_head')" "(hh-416) stale table does not name HEAD"
+check_eq "false" "$(echo "$HH_REVIEWER" | jq -r '.self_report_mismatch')" "(hh-416) inlines suppress the mismatch"
+check_eq "true"  "$(echo "$HH_REVIEWER" | jq -r '.counts_as_coverage')" "(hh-416) stale table no longer vetoes coverage"
+check_not_contains "self_report_mismatch" "$(echo "$HH_REVIEWER" | jq -r '.disqualified_by | join(" | ")')" "(hh-416) mismatch is not a disqualifier"
+
+echo "=== (hh-416) stale table without inlines still blocks (rubber stamp) ==="
+FAKE_PR_COMMENTS='[]'
+FAKE_ISSUE_COMMENTS="$(convo "codeant-ai[bot]" "$STALE_TABLE" "2026-07-31T10:03:00Z")"
+OUT="$(run_gate)"
+HH_STAMP="$(echo "$OUT" | jq -c '.review_evidence.reviewers["codeant-ai[bot]"]')"
+check_eq "false" "$(echo "$OUT" | jq -r '.met')" "(hh-416) rubber stamp + stale table still blocks"
+check_eq "true"  "$(echo "$HH_STAMP" | jq -r '.self_report_mismatch')" "(hh-416) mismatch still recorded without inlines"
+check_eq "false" "$(echo "$HH_STAMP" | jq -r '.counts_as_coverage')" "(hh-416) rubber stamp is not coverage"
+check_contains "self_report_mismatch" "$(echo "$HH_STAMP" | jq -r '.disqualified_by | join(" | ")')" "(hh-416) rubber-stamp mismatch remains a disqualifier"
+
+echo "=== (hh-416) long SHA-less body alone does not clear a stale table ==="
+FAKE_ISSUE_COMMENTS="$(convo \
+  "codeant-ai[bot]" "$STALE_TABLE" "2026-07-31T10:03:00Z" \
+  "codeant-ai[bot]" "$SHA_LESS_REVIEW" "2026-07-31T10:06:30Z")"
+OUT="$(run_gate)"
+HH_BODY="$(echo "$OUT" | jq -c '.review_evidence.reviewers["codeant-ai[bot]"]')"
+check_eq "true"  "$(echo "$HH_BODY" | jq -r '.self_report_mismatch')" "(hh-416) descriptive body does not suppress mismatch"
+check_eq "false" "$(echo "$HH_BODY" | jq -r '.counts_as_coverage')" "(hh-416) SHA-less body is not enough to count as coverage"
+check_contains "self_report_mismatch" "$(echo "$HH_BODY" | jq -r '.disqualified_by | join(" | ")')" "(hh-416) #927 launder stays closed"
+
+echo "=== (hh-416) moved-forward inline (original_commit_id != HEAD) does not suppress ==="
+FAKE_PR_COMMENTS="$(jq -cn --arg sha "$HEAD_SHA" \
+  '[{user:{login:"codeant-ai[bot]",type:"Bot"},commit_id:$sha,original_commit_id:"a9c00b0aabbccddeeff001122334455667788990",created_at:"2026-07-31T10:06:00Z",body:"Major: unused import in the new helper."}]')"
+FAKE_ISSUE_COMMENTS="$(convo "codeant-ai[bot]" "$STALE_TABLE" "2026-07-31T10:03:00Z")"
+OUT="$(run_gate)"
+HH_MOVED="$(echo "$OUT" | jq -c '.review_evidence.reviewers["codeant-ai[bot]"]')"
+check_eq "0"     "$(echo "$HH_MOVED" | jq -r '.inline_comments_on_head')" "(hh-416) force-pushed-forward inline is not HEAD-anchored"
+check_eq "true"  "$(echo "$HH_MOVED" | jq -r '.self_report_mismatch')" "(hh-416) moved inline does not suppress mismatch"
+check_eq "false" "$(echo "$HH_MOVED" | jq -r '.counts_as_coverage')" "(hh-416) moved inline is not coverage"
+
+echo "=== (hh-416) a status comment naming no SHA does not disqualify ==="
+FAKE_PR_COMMENTS='[]'
+FAKE_ISSUE_COMMENTS="$(convo "codeant-ai[bot]" "$SHA_LESS_REVIEW" "2026-07-31T10:06:30Z")"
+OUT="$(run_gate)"
+HH_NOSHA="$(echo "$OUT" | jq -c '.review_evidence.reviewers["codeant-ai[bot]"]')"
+check_eq "false" "$(echo "$HH_NOSHA" | jq -r '.self_report_mismatch')" "(hh-416) no-SHA comment is not a self-report"
+check_not_contains "self_report_mismatch" "$(echo "$HH_NOSHA" | jq -r '.disqualified_by | join(" | ")')" "(hh-416) no-SHA comment does not disqualify"
+# Coverage here comes from the long SHA-less body only if a run-start marker
+# also exists (descriptive_evidence_on_head). Without one it is hollow for
+# a different reason — the point of this case is only that mismatch stays off.
+check_not_contains "self_report_mismatch" "$(echo "$HH_NOSHA" | jq -r '.disqualified_by | join(" | ")')" "(hh-416) AC3: absence of a SHA is not a veto"
+
+FAKE_PR_COMMENTS='[]'
 
 echo "=== (m) evaluator rejects malformed stdin ==="
 echo "not json" | "$EVAL_SUT" >/dev/null 2>&1

@@ -120,6 +120,8 @@ Implemented in `.claude/scripts/review-substance.sh` (pure evaluator; no network
 
 `counts_as_coverage = approved ∧ substantive ∧ ¬inversion ∧ ¬capability_failure ∧ ¬mismatch`.
 
+`self_report_mismatch` is the latest SHA-naming conversation comment naming a commit other than HEAD, **unless** that reviewer also left inline comments anchored to HEAD (`commit_id` AND `original_commit_id` == HEAD). Those inlines are first-party evidence of which SHA was read, so they supersede a stale status table (inventory #416 / this repo #1380 — CodeAnt records only push-triggered auto-reviews). A long approval body or a SHA-less descriptive comment does **not** clear the mismatch: that would re-open the rubber-stamp hole and the #927 launder. A status comment that names no SHA at all is not a self-report candidate (`$selfrep` is null), so it never raises the mismatch.
+
 ### Descriptive evidence without a SHA (issue #927)
 
 The ccc#923 trace showed a genuine review footprint that the original evidence
