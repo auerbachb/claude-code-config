@@ -242,6 +242,42 @@ check_eq "yes" "$(has_required_entry)" "(k) a pending commit status does not sat
 check_eq "pending" "$(unsat_state ci/legacy)" "(k) pending commit status: state reported"
 
 # --------------------------------------------------------------------------
+# (m) App-scoped identity. Protection pins a context to an `app_id`, and GitHub
+#     accepts only that app's check for it. Matching on NAME alone would let any
+#     publisher's same-named check satisfy the requirement, so the gate would
+#     report a pass GitHub itself refuses — the required app never verified HEAD.
+#     Same vacuous pass as (a), one axis over. (Greptile P1 on PR #1383.)
+# --------------------------------------------------------------------------
+# A green `rule-lint` from a DIFFERENT app (id 99) than protection requires.
+FAKE_REQUIRED_STATUS_CHECKS="$(protection rule-lint)" \
+FAKE_BRANCH_PROTECTED=true \
+run_gate "$(bundle "$(cr 1 'rule-lint' success 100 impostor completed 99)")"
+check_eq "yes" "$(has_required_entry)" "(m) same-named check from the wrong app does NOT satisfy the context"
+check_eq "wrong_app" "$(unsat_state rule-lint)" "(m) reported as wrong_app, distinct from absent"
+check_eq "0" "$(echo "$OUT" | jq -r '.ci_status.failing')" "(m) CI reports zero failures — the pre-#1361 signal is blind to a wrong publisher"
+
+# The same check from the REQUIRED app satisfies it.
+FAKE_REQUIRED_STATUS_CHECKS="$(protection rule-lint)" \
+FAKE_BRANCH_PROTECTED=true \
+run_gate "$(bundle "$(cr 1 'rule-lint' success 100 gha completed 15368)")"
+check_eq "no" "$(has_required_entry)" "(m) the required app's own check satisfies it"
+
+# Both present: the impostor does not veto its legitimate sibling.
+FAKE_REQUIRED_STATUS_CHECKS="$(protection rule-lint)" \
+FAKE_BRANCH_PROTECTED=true \
+run_gate "$(bundle \
+  "$(cr 1 'rule-lint' failure 100 impostor completed 99)" \
+  "$(cr 2 'rule-lint' success 100 gha completed 15368)")"
+check_eq "no" "$(has_required_entry)" "(m) a failing impostor does not veto the required app's passing check"
+
+# A context with NO app_id pin (legacy `contexts`-only protection) stays
+# name-only — there is no publisher to require, so any app's check counts.
+FAKE_REQUIRED_STATUS_CHECKS='{"strict":true,"contexts":["rule-lint"],"checks":[{"context":"rule-lint","app_id":null}]}' \
+FAKE_BRANCH_PROTECTED=true \
+run_gate "$(bundle "$(cr 1 'rule-lint' success 100 impostor completed 99)")"
+check_eq "no" "$(has_required_entry)" "(m) app_id null means any app — unpinned context stays name-only"
+
+# --------------------------------------------------------------------------
 # (l) End-to-end control pair. Everything else about this PR is mergeable — a
 #     fresh substantive CodeRabbit APPROVED on HEAD, clean CI, no threads — so
 #     `met` flips on the required-context signal ALONE. This is the assertion

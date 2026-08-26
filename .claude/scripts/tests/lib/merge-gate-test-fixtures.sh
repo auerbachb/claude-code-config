@@ -101,12 +101,21 @@ chmod +x "$BIN/gh"
 # supplemental gate reads it to find CodeAnt's latest clean signal, and a run
 # without one reads as "no successful check". Ids ascend with suite recency in
 # these fixtures, so deriving the timestamp from the id keeps them ordered.
-cr() { # id name conclusion suite_id [app_slug] [status]
+# `app.id` defaults to 15368 — GitHub Actions' real app id, and the same value
+# the required-contexts fixtures pin `checks[].app_id` to. They must agree by
+# default: protection that scopes a context to an app is only satisfied by a run
+# from THAT app (issue #1383 review), so a fixture whose run carried a different
+# id than its own protection payload would read as `wrong_app` and describe a
+# configuration GitHub never produces. Pass arg 7 to model a genuine mismatch.
+# Dedup groups by [.app.slug, .app.id, .name], so a uniform id leaves every
+# existing grouping exactly as it was — the slug is what varies across fixtures.
+cr() { # id name conclusion suite_id [app_slug] [status] [app_id]
   jq -cn --argjson id "$1" --arg name "$2" --arg concl "$3" --argjson suite "$4" \
          --arg slug "${5:-gha}" --arg status "${6:-completed}" \
+         --argjson appid "${7:-15368}" \
     '{id:$id, name:$name, status:$status,
       conclusion:(if $concl == "null" then null else $concl end),
       completed_at:(if $status == "completed" then "2026-07-21T10:00:0\($id)Z" else null end),
-      check_suite:{id:$suite}, app:{slug:$slug, id:1}}'
+      check_suite:{id:$suite}, app:{slug:$slug, id:$appid}}'
 }
 bundle() { printf '{"check_runs":[%s]}' "$(IFS=,; echo "$*")"; }

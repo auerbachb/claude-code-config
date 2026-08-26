@@ -141,8 +141,10 @@
 #   unknown           — emitted by the early-exit error paths, which never got
 #                       far enough to look
 # `unsatisfied[].state` is `absent` (no check-run and no commit status of that
-# name on HEAD), the run's non-`completed` status, its blocking conclusion, or a
-# commit status's `pending`/`failure`/`error`.
+# name on HEAD), `wrong_app` (runs of that name exist, but protection pins the
+# context to an `app_id` and none of them came from that app — GitHub would not
+# accept them either), the run's non-`completed` status, its blocking conclusion,
+# or a commit status's `pending`/`failure`/`error`.
 #
 # Reading this output: pipe it with `printf '%s'`, a herestring, or a file —
 # NEVER `echo "$GATE_JSON" | jq`. zsh's `echo` expands backslash escapes by
@@ -569,6 +571,7 @@ CI_STATUS=$(echo "$CI_STATUS_JSON" | jq -c '{
 # "unreadable" — a distinction no HTTP status makes reliably. Only when BOTH
 # reads fail do we report `unavailable`, which blocks.
 REQUIRED_CONTEXTS_JSON='[]'
+REQUIRED_APPS_JSON='{}'
 REQUIRED_SOURCE="none"
 REQUIRED_ERROR=""
 
@@ -583,9 +586,31 @@ REQ_CTX_FILTER='
         | map(select(type == "string" and length > 0)) | unique)
   else [] end'
 
+# The publisher half of the same answer (issue #1383 review). `checks[]` entries
+# carry an `app_id` alongside the context, and GitHub itself will only accept a
+# check from THAT app for that context — this repo pins `rule-lint` to app_id
+# 15368. Matching on name alone would let a same-named check from any other
+# publisher satisfy a required context, so the gate could report a pass that
+# GitHub would refuse: the required app never verified HEAD. That is the same
+# vacuous pass #1361 exists to close, one axis over.
+#
+# Kept as a SEPARATE {context: app_id} map rather than folded into the context
+# list so the emitted `required_contexts.contexts` stays a plain string array.
+# A null `app_id` means "any app" in GitHub's own semantics, and a context that
+# arrives only via the legacy `contexts` array has no publisher to pin, so both
+# are simply absent from this map and stay name-only.
+REQ_APPS_FILTER='
+  if type == "object"
+  then ([ ( .checks // [] )[]?
+          | select((.context | type) == "string" and (.context | length) > 0)
+          | select(.app_id != null)
+          | {key: .context, value: .app_id} ] | from_entries)
+  else {} end'
+
 BRANCH_READABLE=false
 BRANCH_PROTECTED=""
 BRANCH_CONTEXTS='[]'
+BRANCH_APPS='{}'
 if [[ -n "$BASE_REF" ]]; then
   BRANCH_JSON=$(gh api "repos/$OWNER/$REPO/branches/$BASE_REF" 2>/dev/null || true)
   # `has("name")` is the readability sentinel: a 404/403 body is a `{message:…}`
@@ -595,6 +620,8 @@ if [[ -n "$BASE_REF" ]]; then
     BRANCH_PROTECTED=$(echo "$BRANCH_JSON" | jq -r '(.protected // false) | tostring' 2>/dev/null || echo "")
     BRANCH_CONTEXTS=$(echo "$BRANCH_JSON" | jq -c ".protection.required_status_checks | $REQ_CTX_FILTER" 2>/dev/null || echo '[]')
     if [[ -z "$BRANCH_CONTEXTS" ]]; then BRANCH_CONTEXTS='[]'; fi
+    BRANCH_APPS=$(echo "$BRANCH_JSON" | jq -c ".protection.required_status_checks | $REQ_APPS_FILTER" 2>/dev/null || echo '{}')
+    if [[ -z "$BRANCH_APPS" ]]; then BRANCH_APPS='{}'; fi
   fi
 fi
 
@@ -613,11 +640,14 @@ else
   # classifies both without a temp file.
   if RSC_RAW=$(gh api "repos/$OWNER/$REPO/branches/$BASE_REF/protection/required_status_checks" 2>&1); then
     RSC_CONTEXTS=$(printf '%s' "$RSC_RAW" | jq -c "$REQ_CTX_FILTER" 2>/dev/null || true)
+    RSC_APPS=$(printf '%s' "$RSC_RAW" | jq -c "$REQ_APPS_FILTER" 2>/dev/null || true)
   else
     RSC_CONTEXTS=""
+    RSC_APPS=""
   fi
   if [[ -n "$RSC_CONTEXTS" ]]; then
     REQUIRED_CONTEXTS_JSON="$RSC_CONTEXTS"
+    if [[ -n "$RSC_APPS" ]]; then REQUIRED_APPS_JSON="$RSC_APPS"; else REQUIRED_APPS_JSON='{}'; fi
     REQUIRED_SOURCE="branch_protection"
   elif [[ "$BRANCH_READABLE" == true ]]; then
     # The protection endpoint refused (403, or a 404 meaning "required status
@@ -626,6 +656,7 @@ else
     # not require any status check, which is a common configuration (review-only
     # protection) and must not wedge every merge in such a repo.
     REQUIRED_CONTEXTS_JSON="$BRANCH_CONTEXTS"
+    REQUIRED_APPS_JSON="$BRANCH_APPS"
     if [[ "$(echo "$REQUIRED_CONTEXTS_JSON" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ]]; then
       REQUIRED_SOURCE="branch_object"
     else
@@ -823,17 +854,30 @@ elif [[ "$REQUIRED_COUNT" -gt 0 ]]; then
   # suite. They are matched together here, and the context is satisfied because
   # neither is blocking — `skipped` is non-blocking by the same rule ci-status.sh
   # uses, so the skipped leg does not veto its successful sibling.
+  # Publisher scoping (issue #1383 review): when protection pins a context to an
+  # `app_id`, only that app's check-runs count. $named is every run carrying the
+  # name; $r narrows to the ones GitHub would actually accept. Runs present under
+  # the name but all from other apps is its own state — `wrong_app`, not `absent`
+  # — because the two have different fixes and "degraded means say so".
+  # Commit statuses stay name-only on purpose: they carry no app_id, and the
+  # app-scoped `checks[]` shape governs check-runs.
   REQUIRED_STATE_JSON=$(jq -cn \
     --argjson req "$REQUIRED_CONTEXTS_JSON" \
+    --argjson apps "$REQUIRED_APPS_JSON" \
     --argjson runs "$CHECK_RUNS_JSON" \
     --argjson statuses "$COMMIT_STATUSES_JSON" '
       def is_blocking: . == "failure" or . == "timed_out" or . == "action_required"
                        or . == "startup_failure" or . == "stale";
       $req | map(
         . as $c
-        | [ $runs.check_runs[]? | select((.name // "") == $c) ]        as $r
+        | ($apps[$c] // null)                                          as $app
+        | [ $runs.check_runs[]? | select((.name // "") == $c) ]        as $named
+        | (if $app == null then $named
+           else [ $named[] | select((.app.id // null) == $app) ] end)  as $r
         | ( [ $statuses[]? | select((.context // "") == $c) ] | first ) as $s
-        | (if (($r | length) == 0 and $s == null) then
+        | (if (($r | length) == 0 and $s == null and ($named | length) > 0) then
+             {context: $c, state: "wrong_app", satisfied: false}
+           elif (($r | length) == 0 and $s == null) then
              {context: $c, state: "absent", satisfied: false}
            elif any($r[]; (.status // "") != "completed") then
              {context: $c,
