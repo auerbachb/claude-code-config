@@ -112,8 +112,11 @@ tier_to_estimate() {
 GH_ARGS=()
 [[ -n "$REPO" ]] && GH_ARGS+=(--repo "$REPO")
 
+# Expand with ${ARR[@]+"${ARR[@]}"}: under `set -u`, a bare "${GH_ARGS[@]}" on an
+# EMPTY array aborts on macOS bash 3.2 (and bash 4.0-4.3), which is every
+# no-flags invocation — the whole lookup died before reaching gh (issue #1371).
 ISSUE_JSON=""
-if ! ISSUE_JSON=$(gh issue view "$ISSUE_NUMBER" "${GH_ARGS[@]}" \
+if ! ISSUE_JSON=$(gh issue view "$ISSUE_NUMBER" ${GH_ARGS[@]+"${GH_ARGS[@]}"} \
     --json body,labels 2>&1); then
   printf 'estimate-resolve.sh: gh error fetching issue #%s: %s\n' \
     "$ISSUE_NUMBER" "$ISSUE_JSON" >&2

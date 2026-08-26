@@ -182,7 +182,9 @@ if [[ -z "$SESSION_STATE_SH" ]]; then
   exit 0
 fi
 
-# Build repo-scoped args
+# Build repo-scoped args. Every expansion below uses ${ARR[@]+"${ARR[@]}"}: under
+# `set -u`, a bare "${REPO_ARGS[@]}" on an EMPTY array aborts on macOS bash 3.2
+# (and bash 4.0-4.3), i.e. on every invocation that omits --repo (issue #1371).
 REPO_ARGS=()
 if [[ -n "$REPO" ]]; then
   REPO_ARGS=(--repo "$REPO")
@@ -230,7 +232,7 @@ ALREADY_ALERTED=false
 STATE_READABLE=true
 if [[ -n "$REPO_KEY" ]]; then
   READ_RC=0
-  MARKER=$("$SESSION_STATE_SH" "${REPO_ARGS[@]}" \
+  MARKER=$("$SESSION_STATE_SH" ${REPO_ARGS[@]+"${REPO_ARGS[@]}"} \
     --get ".repos[\"$REPO_KEY\"].prs[\"$PR_NUMBER\"].overrun.alerted_at" 2>/dev/null) \
     || READ_RC=$?
   if [[ "$READ_RC" -eq 0 && -n "$MARKER" && "$MARKER" != "null" ]]; then
@@ -317,7 +319,7 @@ if [[ -z "$REPO_KEY" ]]; then exit 0; fi
 NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 MARKER_JSON="{\"alerted_at\":\"${NOW_ISO}\",\"bound_min\":${BOUND_MIN}}"
 CAS_RC=0
-"$SESSION_STATE_SH" "${REPO_ARGS[@]}" \
+"$SESSION_STATE_SH" ${REPO_ARGS[@]+"${REPO_ARGS[@]}"} \
   --cas ".repos[\"$REPO_KEY\"].prs[\"$PR_NUMBER\"].overrun=${MARKER_JSON}" \
   --expect null \
   2>/dev/null || CAS_RC=$?
