@@ -261,6 +261,41 @@ cr_limit_banner() {
   [[ -n "$window" ]] && tail=" **Next review available in:** **${window}**"
   printf '{"user": {"login": "coderabbitai[bot]"}, "created_at": "%s", "body": "> [!WARNING]\\n> ## Review limit reached\\n> You have reached a temporary PR review limit under our Fair Usage Limits Policy.%s"}' "$ts" "$tail"
 }
+# The SAME banner in CodeRabbit's CURRENT wording (issue #1364), captured
+# verbatim from auerbachb/still-point PR #676 on 2026-08-26: the word `included`
+# is inserted between "Next" and "review", the colon after "in" is gone, the
+# window ends in a period, and the whole comment is preceded by the auto-
+# generated `rate limited by coderabbit.ai` marker. Two drifts from
+# `cr_limit_banner` in one rewording — which is why the parser is keyed on the
+# stable anchors rather than the sentence. $1 = created_at, $2 = window text
+# ("27 minutes"), or "" for a banner carrying no readable window.
+cr_limit_banner_included() {
+  local ts="$1" window="${2-}" tail=""
+  [[ -n "$window" ]] && tail="\\n>\\n> **Next included review available in ${window}.**"
+  printf '{"user": {"login": "coderabbitai[bot]"}, "created_at": "%s", "body": "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\\n\\n> [!WARNING]\\n> ## Review limit reached\\n> You have reached a temporary PR review limit under our Fair Usage Limits Policy.%s"}' "$ts" "$tail"
+}
+# MARKER ONLY: the auto-generated marker present, the `Review limit reached`
+# heading prose absent. Pins the wording-independent half of banner detection —
+# if CodeRabbit drops or rewrites the heading entirely, this shape is all that is
+# left to key on. $1 = created_at, $2 = window text.
+cr_limit_banner_marker_only() {
+  printf '{"user": {"login": "coderabbitai[bot]"}, "created_at": "%s", "body": "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\\n\\n> [!WARNING]\\n> You have hit a temporary cap under our Fair Usage Limits Policy.\\n>\\n> **Next included review available in %s.**"}' "$1" "$2"
+}
+# CodeRabbit PROSE that names the marker phrase without being the marker: the
+# words appear in body text rather than inside the `<!-- ... -->` machine comment,
+# and a future-tense window sentence sits alongside them. The author gate cannot
+# separate this from a real banner — both are coderabbitai[bot] — so only the
+# HTML-comment anchor can. Grants no grace.
+cr_marker_phrase_in_prose() {
+  printf '{"user": {"login": "coderabbitai[bot]"}, "created_at": "%s", "body": "Actionable comments posted: 1\\n\\nThis PR was rate limited by coderabbit.ai on its previous run. Next included review available in 27 minutes was the banner it emitted; the retry helper should assert that string."}' "$1"
+}
+# A CodeRabbit comment carrying NEITHER signal — no heading prose, no marker —
+# but which does name a number and a unit. Guards the direction the banner select
+# exists to hold: an ordinary CodeRabbit comment must buy no grace no matter what
+# numbers it happens to contain.
+cr_non_banner_comment() {
+  printf '{"user": {"login": "coderabbitai[bot]"}, "created_at": "%s", "body": "Actionable comments posted: 2\\n\\nThe retry helper waits 12 minutes between attempts; see the docs at coderabbit.ai for details."}' "$1"
+}
 # Same banner text from a NON-CodeRabbit author — a quote or a human paraphrase
 # must not buy the PR a grace period.
 cr_limit_banner_foreign_author() {

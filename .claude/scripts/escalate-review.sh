@@ -341,6 +341,14 @@ PY
 
 AGE_SECONDS="$(iso_age_seconds "$PUSH_TIMESTAMP")"
 
+# DELIBERATELY NOT WIDENED with the banner parsers below (issue #1364). This is
+# the windowless commit-status/check-run shape (b) from cr-rate-limits.md, and it
+# is a fast path PAST the CR wait, not into it: a match here skips the 720s CR
+# timeout and escalates sooner. Its harm asymmetry therefore runs OPPOSITE to the
+# retry-window parser's — over-matching there parks a PR on a wait it never
+# earned, over-matching here spends a lower tier early. Loose prose matching is
+# the conservative choice for this direction, which is why a wording drift that
+# broke the window parser leaves this one correct. Logic unchanged.
 CR_RATE_LIMITED="$(jq -r '
   def text: [(.title // ""), (.description // ""), (.state // ""), (.conclusion // "")] | join(" ");
   (
@@ -559,7 +567,8 @@ fi
 
 # CodeRabbit retry-window grace (issue #1199). CodeRabbit's `Review limit reached`
 # banner is a BOUNDED, self-healing wait, not a tier failure: it names its own
-# retry window ("**Next review available in:** **12 minutes**"). Escalating past
+# retry window — "**Next review available in:** **12 minutes**" historically,
+# "**Next included review available in 27 minutes.**" as of 2026-08. Escalating past
 # it spends a LOWER tier while the allowance we already paid for is still coming
 # back — measured on 183 of 244 PRs in the 2026-08 audit, where that banner was
 # CodeRabbit's ONLY output for the PR because nothing ever waited it out.
@@ -580,6 +589,14 @@ fi
 # timestamp, no readable window, a banner predating the HEAD commit, or a CR
 # review already on HEAD. A wording change by CodeRabbit degrades this to
 # today's behaviour rather than stalling a PR.
+#
+# That degradation is SILENT, and it fired within three weeks (issue #1364):
+# CodeRabbit inserted one word, the window read 0, and PRs escalated to a sticky
+# Greptile assignment mid-allowance with nothing in the output to say why. Fail-
+# safe direction, no failure signal. Hence the anchor-keyed pattern and the
+# wording-independent marker below — and the standing lesson that a parser keyed
+# on vendor prose needs the prose recorded where the next drift is visible
+# (.claude/reference/cr-rate-limits.md).
 #
 # The honoured wait is CAPPED so a malformed or absurd window ("in 900 hours")
 # cannot park a PR: past the cap the PR escalates on the normal schedule.
@@ -602,8 +619,21 @@ read -r CR_BANNER_WINDOW_S CR_BANNER_TS < <(jq -r --argjson cap "$CR_RETRY_WINDO
     # directly with `as` yields zero outputs and silently deletes the whole
     # enclosing object, making any null-branch below unreachable. Collecting into
     # an array first turns "no match" into a real null this code can act on.
+    # KEYED ON THE STABLE ANCHORS, NOT THE SENTENCE (issue #1364). CodeRabbit has
+    # already reworded this line twice: `Next review available in: 12 minutes`
+    # became `Next included review available in 27 minutes.` — an inserted word
+    # AND a dropped colon. The colon was already optional; the inserted word is
+    # what silently zeroed the window and escalated PRs mid-allowance. What does
+    # not drift is `next` … `review available in` … number + unit, so that is all
+    # this matches, with a BOUNDED 0-2 word allowance for the next insertion.
+    # Bounded, not `.*`: the banner is selected before this runs, but an
+    # unbounded bridge could still reach across a paragraph and time the PR off
+    # an unrelated number. `\\b` keeps `next` a word, not a suffix. The internal
+    # separators are `\\s+` rather than literal spaces because THIS FUNCTION
+    # creates the variation it has to survive: stripping the markdown emphasis
+    # off `**review**  **available in**` leaves a double space behind.
     ([ ascii_downcase | gsub("\\*"; "")
-       | capture("next review available in:?\\s*(?<n>[0-9]+)\\s*(?<unit>second|minute|hour)") ]
+       | capture("\\bnext(?:\\s+\\w+){0,2}\\s+review\\s+available\\s+in:?\\s*(?<n>[0-9]+)\\s*(?<unit>second|minute|hour)") ]
      | first) as $m
     | if $m == null then 0
       else ($m.n | tonumber)
@@ -618,7 +648,22 @@ read -r CR_BANNER_WINDOW_S CR_BANNER_TS < <(jq -r --argjson cap "$CR_RETRY_WINDO
   # fail-toward-escalation direction this block is built on.
   [ .comments.conversation[]?
     | select((.user.login // "") == "coderabbitai[bot]")
-    | select((.body // "") | test("review limit reached"; "i"))
+    # Two independent signals, either sufficient (issue #1364). The heading prose
+    # is what drifts; the auto-generated marker CodeRabbit stamps on every one of
+    # these comments does not, and it is machine-readable by construction. The
+    # author `select` above is untouched — a foreign author quoting either signal
+    # still buys no grace. Detection alone grants nothing: a matched banner must
+    # still yield a readable, unelapsed, uncapped window below.
+    #
+    # The marker alternative is scoped to an HTML COMMENT, not to the phrase
+    # anywhere in the body (CodeRabbit CLI review of this PR). CodeRabbit writes
+    # prose too, and the author gate cannot separate its banners from its
+    # walkthroughs — so a bare phrase match would let a summary that merely says
+    # "rate limited by coderabbit.ai" next to any future-tense window sentence
+    # buy a grace period. `<!--[^>]*` is the machine-marker anchor; the words
+    # inside stay tolerant so this does not re-acquire the sentence-brittleness
+    # the rest of this fix removes.
+    | select((.body // "") | test("review limit reached|<!--[^>]*rate[- ]?limited by coderabbit\\.ai"; "i"))
     | { ts: (.created_at // ""), w: ((.body // "") | window_seconds) }
     | select(.ts != "") ]
   | sort_by(.ts) | last // {ts: "", w: 0}

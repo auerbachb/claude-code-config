@@ -11,7 +11,7 @@
 #   1. Explicit-resolution / clean-pass overrides (addressed marker, withdrawn marker, "actionable comments posted: 0",
 #      "no actionable comments were generated"; CR rate-limit notices — "rate limit exceeded" /
 #      "rate[- ]limited by coderabbit" / "currently rate limited" / "review limit reached" /
-#      "next review (will be) available in"; BugBot usage-limit notices — "couldn't run - usage limit
+#      "next <=2 words> review (will be) available in"; BugBot usage-limit notices — "couldn't run - usage limit
 #      reached" / "this run hit a usage or spend limit"; "full review triggered", BugBot clean-pass
 #      "found no new issues", BugBot BUGBOT_REVIEW zero-issue summary, CR error stub
 #      "Oops, something went wrong"; CR auto-reply ack marker
@@ -25,6 +25,11 @@
 #      was tried and rejected (#557): it is generic enough that a real finding *quoting* the policy
 #      would classify as an ack. Each observed CR variant is caught by >=2 of the phrases above,
 #      so no single generic phrase has to carry it.
+#      The "next … available in" phrase carries a BOUNDED 0-2 inserted-word allowance (issue #1364):
+#      CodeRabbit reworded it to "Next included review available in N minutes." and the fixed phrase
+#      stopped matching. Redundancy is what saved this branch — the marker alternative still matched
+#      the same bodies — but the same drift zeroed escalate-review.sh's window parser, which had no
+#      second phrase to fall back on. Both are now keyed on the same stable anchors; keep them so.
 #      The withdrawn marker (#611) is safe in this tier-1 group even though the walkthrough marker
 #      (override #6 below) is deliberately not: a withdrawal retracts the single finding in its own
 #      thread — there is no *other* active finding for an early override to mask — so hoisting it
@@ -74,7 +79,7 @@ def classify:
   elif test("<!--\\s*<review_comment_withdrawn>\\s*-->"; "") then {class: "acknowledgment", reason: "withdrawn marker"}
   elif test("actionable comments posted:\\s*0\\b"; "i") then {class: "acknowledgment", reason: "CR reports zero actionable"}
   elif test("no actionable comments were generated"; "i") then {class: "acknowledgment", reason: "CR no actionable comments generated"}
-  elif test("rate limit exceeded|rate.limited by coderabbit|currently rate limited|review limit reached|next review (will be )?available in"; "i") then {class: "acknowledgment", reason: "rate limit notice"}
+  elif test("rate limit exceeded|rate.limited by coderabbit|currently rate limited|review limit reached|\\bnext(?:\\s+\\w+){0,2}\\s+review (will be )?available in"; "i") then {class: "acknowledgment", reason: "rate limit notice"}
   elif test("couldn['’]t run\\s*[-–—]\\s*usage limit reached|this run hit a usage or spend limit"; "i") then {class: "acknowledgment", reason: "BugBot usage limit notice"}
   elif test("full review triggered"; "i") then {class: "acknowledgment", reason: "review-started ack"}
   elif test("found no new issues"; "i") then {class: "acknowledgment", reason: "BugBot clean pass"}

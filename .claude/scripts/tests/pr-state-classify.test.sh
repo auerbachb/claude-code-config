@@ -298,6 +298,66 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Bug4d: CodeRabbit's CURRENT retry-window wording (issue #1364), captured verbatim
+# from auerbachb/still-point PR #676 on 2026-08-26 — `included` inserted between
+# "Next" and "review", colon dropped, trailing period.
+#
+# This branch survived the drift where escalate-review.sh's window parser did not,
+# and the reason is worth keeping: redundancy. Bug4b names three independent signals
+# for exactly this case, so losing the fixed "next review available in" phrase left
+# two others still matching. The escalation gate had only the one phrase, read a zero
+# window, and escalated PRs to a sticky Greptile assignment mid-allowance. Both are
+# now keyed on the same stable anchors (`next` … `review available in`, bounded 0-2
+# inserted words); this pins that half of the pair.
+# ---------------------------------------------------------------------------
+BODY='<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->
+
+> [!WARNING]
+> ## Review limit reached
+>
+> **Next included review available in 27 minutes.**'
+result=$(classify_body "$BODY")
+class="${result%%|*}"; reason="${result##*|}"
+if [[ "$class" == "acknowledgment" && "$reason" == "rate limit notice" ]]; then
+  pass "Bug4d: CR 'Next included review available in' wording → acknowledgment"
+else
+  fail "Bug4d: CR 'Next included review available in' wording — expected acknowledgment/rate limit notice, got $class/$reason"
+fi
+
+# The anchor phrase ALONE, with every other rate-limit signal stripped — no marker,
+# no "Review limit reached" heading. Bug4d above would still pass on the pre-#1364
+# pattern (the marker carries it), so without this case the widened phrase is
+# untested. This is the shape that isolates it.
+result=$(classify_body 'Next included review available in 27 minutes.')
+class="${result%%|*}"; reason="${result##*|}"
+if [[ "$class" == "acknowledgment" && "$reason" == "rate limit notice" ]]; then
+  pass "Bug4d: bare 'Next included review available in' phrase → acknowledgment (widened phrase isolated)"
+else
+  fail "Bug4d: bare 'Next included review available in' phrase — expected acknowledgment/rate limit notice, got $class/$reason"
+fi
+
+# Marker present, heading prose absent — the wording-independent half on its own.
+result=$(classify_body '<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->
+
+> [!WARNING]
+> You have hit a temporary cap under our Fair Usage Limits Policy.')
+class="${result%%|*}"; reason="${result##*|}"
+if [[ "$class" == "acknowledgment" && "$reason" == "rate limit notice" ]]; then
+  pass "Bug4d: marker-only banner (no heading prose) → acknowledgment"
+else
+  fail "Bug4d: marker-only banner — expected acknowledgment/rate limit notice, got $class/$reason"
+fi
+
+# The bound holds: the inserted-word allowance is 0-2 words between the anchors, not
+# an open bridge. A finding that happens to contain both anchor words separated by a
+# sentence must NOT be absorbed into the rate-limit branch — that is the Bug4c hazard
+# arriving through the widened phrase instead of a generic one.
+result=$(classify_body 'The next retry helper we ship should make the review available in the summary, but it 404s.')
+class="${result%%|*}"
+[[ "$class" == "finding" ]] && pass "Bug4d: anchors separated by >2 words → finding (allowance stays bounded)" \
+  || fail "Bug4d: anchors separated by >2 words — expected finding, got $class"
+
+# ---------------------------------------------------------------------------
 # Bug4c: a real finding that merely QUOTES the Fair Usage policy stays a finding
 # (issue #557, raised by codeant-ai on PR #565).
 #
