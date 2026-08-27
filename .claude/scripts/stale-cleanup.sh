@@ -93,14 +93,29 @@
 #   cleared only with the explicit --include-locked opt-in.
 #
 # BOUNDED READS (NON-NEGOTIABLE)
-#   Every filesystem and git call that can touch a worktree registration runs
-#   under a wall-clock bound and is killed on expiry — the sweep must never
-#   hang on evicted files, which is the failure it exists to clean up. macOS
-#   ships no `timeout(1)`, hence the background-and-poll wrapper (the same
-#   shape `repo-root.sh` uses). `git worktree list --porcelain` is bounded
-#   too: on expiry the worktree and local-branch passes degrade to "not
-#   classified" rather than the whole script blocking, and the registration
-#   sweep — the pass that fixes the cause — still runs.
+#   Every git call, and every *content* read, that can touch a worktree
+#   registration runs under a wall-clock bound and is killed on expiry — the
+#   sweep must never hang on evicted files, which is the failure it exists to
+#   clean up. macOS ships no `timeout(1)`, hence the background-and-poll
+#   wrapper (the same shape `repo-root.sh` uses). `git worktree list
+#   --porcelain` is bounded too: on expiry the worktree and local-branch
+#   passes degrade to "not classified" rather than the whole script blocking,
+#   and the registration sweep — the pass that fixes the cause — still runs.
+#
+#   Where the bound stops, stated exactly because "every filesystem call"
+#   would overclaim: the enumeration glob over <common>/worktrees and the
+#   `-d`/`-f` probes on entries inside it are readdir/stat against the local
+#   repo's own .git — which this script has already read, under a bound, to
+#   resolve that path at all. Metadata is never `dataless`; only file
+#   *content* is evicted, so those probes cannot block on the incident these
+#   bounds exist for, and forking twice per probe per entry to wrap them
+#   would still leave the parent's own glob unbounded. What does get bounded
+#   is everything that comes *out* of a registration and is therefore
+#   arbitrary: the `gitdir` and `locked` contents (read_bounded_line) and the
+#   worktree path they name, which may sit on the evicted volume
+#   (path_exists_bounded). Resolving the common dir is bounded for the same
+#   reason — it is a git call — and degrades to registration_scan
+#   "unavailable" rather than proceeding on an unverified path.
 #
 # CONFIGURATION
 #   STALE_DAYS — env var, default 7. Tip commits older than this are stale.
