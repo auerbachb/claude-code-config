@@ -173,8 +173,14 @@ RC=0
 HELP="$(cd "$MAIN" && "$SUT" --help 2>&1)" || RC=$?
 check_eq "T8d --help exits 0" "0" "$RC"
 check_contains "T8e --help documents the timeout exit code" "3  Timed out" "$HELP"
-check_contains "T8f --help documents the git-could-not-run exit code" \
-  "4  git could not run" "$HELP"
+check_contains "T8f --help documents the exit-4 contract" \
+  "4  Nothing could be determined" "$HELP"
+# Exit 4 covers two causes and the help has to name BOTH, or a caller reading it
+# learns only the half that happened to be written first.
+check_contains "T8g --help still names git as an exit-4 cause" \
+  "git could not run" "$HELP"
+check_contains "T8h --help names the helpers the script itself needs" \
+  "REQUIREMENTS" "$HELP"
 
 # ---- T9: the happy path must not enumerate worktrees -----------------------
 # This is the regression itself: the incident was one `git worktree list` over
@@ -425,6 +431,12 @@ check_contains "T15f rc-127 diagnostic names the cause" "git could not run" "$ER
 # prefix differs again on Linux. The name is what an operator acts on.
 check_contains "T15g the shell's own message is relayed" \
   "definitely-not-a-real-git-binary-xyz" "$ERR"
+# The helper guard exercised by T16 must not preempt this diagnosis: when git is
+# the broken thing, the message has to name git rather than blaming helpers that
+# are all present. Without this control the guard could pass T16 by firing on
+# every run.
+check_not_contains "T15l a broken git is diagnosed as git, not as a missing helper" \
+  "required helper" "$ERR"
 
 # With an explicit [path] argument the message must name that path, not the cwd
 # — the operator's next move depends on which one git failed to read.
@@ -442,6 +454,53 @@ ERR="$(cd "$PLAIN" && "$SUT" 2>&1 >/dev/null)" || RC=$?
 check_eq "T15j a real non-repo still exits 1, so the split is a split" "1" "$RC"
 check_not_contains "T15k non-repo is never reported as a broken git" \
   "git could not run" "$ERR"
+
+# ---- T16: a missing HELPER is also "nothing determined" (4), not the shell's
+# ---- own 127 ---------------------------------------------------------------
+# Besides git, repo-root.sh calls mktemp, awk, head, date, sleep, dirname and
+# basename. Before the guard, the first absent one killed the run through
+# `set -e` at the `mktemp`, and what reached the caller was the SHELL's 127 — a
+# status the contract never named. admin-merge.sh refuses only on 3 and 4 and
+# reads everything else as determinate, so 127 took its `git rev-parse` / $PWD
+# fallback: the exact substitution the exit-4 split exists to prevent, reached
+# through the one door the split had left open.
+#
+# The fixture is a REAL environment, not a stub that hardcodes a status: a
+# directory of genuine symlinks used as the entire PATH, with the helper under
+# test simply absent. `bash` is included deliberately — the shebang is
+# `#!/usr/bin/env bash`, so without it the failure lands at interpreter
+# resolution and the script never starts, which is a different case and not one
+# this script can answer from the inside.
+NOHELP="$TMP/nohelp"
+mkdir -p "$NOHELP"
+for h in bash git mktemp awk head date sleep dirname basename; do
+  hp="$(command -v "$h" 2>/dev/null)" && ln -sf "$hp" "$NOHELP/$h"
+done
+
+# Drop exactly ONE helper — CodeAnt's reported case — so this proves the guard
+# fires on a single absence rather than only on a wholesale wipe. git is still
+# present and working here, which is what makes the exit-4 meaningful: the run
+# failed on the environment, not on the repo.
+rm -f "$NOHELP/mktemp"
+RC=0
+ERR="$(cd "$MAIN" && env -i HOME="$HOME" PATH="$NOHELP" TMPDIR=/tmp "$SUT" 2>&1 >/dev/null)" || RC=$?
+check_eq "T16 a missing mktemp exits 4, not the shell's 127" "4" "$RC"
+check_contains "T16b the diagnostic names the helper that is missing" "mktemp" "$ERR"
+# The negative control that gives T16 its meaning: 127 used to escape here, and
+# exit 1 would be worse still — both let a caller act on a non-answer.
+check_not_contains "T16c never claims the directory is not a repo" \
+  "not inside a git repo" "$ERR"
+
+# A wholesale wipe (only the interpreter left) must report the same way, and
+# must name the helpers rather than dying at whichever one the code reaches
+# first — the guard runs before any of them is called.
+BAREBIN="$TMP/barebin"
+mkdir -p "$BAREBIN"
+ln -sf "$(command -v bash)" "$BAREBIN/bash"
+RC=0
+ERR="$(cd "$MAIN" && env -i HOME="$HOME" PATH="$BAREBIN" TMPDIR=/tmp "$SUT" 2>&1 >/dev/null)" || RC=$?
+check_eq "T16d a wholesale PATH wipe also exits 4" "4" "$RC"
+check_contains "T16e the diagnostic lists the missing helpers" "awk" "$ERR"
 
 echo
 echo "passed: $PASS  failed: $FAIL"

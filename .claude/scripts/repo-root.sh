@@ -64,11 +64,18 @@
 #      DETERMINATE: git ran and reported it, so a caller may act on the answer.
 #   2  Usage error (unknown flag or extra argument).
 #   3  Timed out — a git call exceeded REPO_ROOT_TIMEOUT_SECS and was killed.
-#   4  git could not run — the binary is missing, not executable, has an
-#      unusable interpreter, or PATH is broken (the shell returned 126/127
-#      before git's own code ever started). NOT determinate: nothing was
-#      learned about the directory, so a caller must not fall back to another
-#      git call or to $PWD on this code (issue #1403).
+#   4  Nothing could be determined. Either git could not run — the binary is
+#      missing, not executable, has an unusable interpreter, or PATH is broken,
+#      so the shell returned 126/127 before git's own code ever started — or a
+#      helper this script itself needs is absent from PATH (see REQUIREMENTS).
+#      NOT determinate: nothing was learned about the directory, so a caller
+#      must not fall back to another git call or to $PWD on this code
+#      (issue #1403).
+#
+# REQUIREMENTS
+#   Besides git, this script calls mktemp, awk, head, date, sleep, dirname and
+#   basename. All are checked up front; a missing one exits 4 rather than
+#   letting the shell's own 127 escape as an undocumented status.
 #
 # EXAMPLES
 #   ROOT_REPO=$(.claude/scripts/repo-root.sh)            # from anywhere in repo
@@ -117,6 +124,32 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+# The helpers this script cannot work without, checked before it creates any
+# state. Historically the first missing one killed the run through `set -e` at
+# the `mktemp` below, and what reached the caller was the SHELL's own 127. That
+# is the same KIND of answer as a git that will not launch — nothing was learned
+# about the directory — but it arrived as a code the contract never named, and
+# admin-merge.sh reads anything outside {3,4} as determinate and answers it with
+# the `git rev-parse` / $PWD substitution this script exists to prevent. So a
+# missing helper exits 4 as well (issue #1403).
+#
+# `git` is deliberately NOT in this list. A git that cannot run is diagnosed by
+# the 126/127 machinery below, which relays what the shell actually said about
+# it; checking it here would preempt that with a blunter, less useful message.
+#
+# Placed after argument parsing so `--help` and usage errors keep answering
+# first, and written with `command -v` — a bash builtin, so the check needs
+# nothing from the PATH it is testing.
+MISSING_HELPERS=""
+for helper in mktemp awk head date sleep dirname basename; do
+  command -v "$helper" >/dev/null 2>&1 \
+    || MISSING_HELPERS="${MISSING_HELPERS:+$MISSING_HELPERS }$helper"
+done
+if [[ -n "$MISSING_HELPERS" ]]; then
+  echo "repo-root.sh: required helper(s) not found on PATH ($MISSING_HELPERS), so nothing was determined${TARGET:+ about $TARGET} — repair PATH and retry" >&2
+  exit 4
+fi
 
 # A bad override must not silently disable the bound — that is the exact
 # failure this script exists to prevent. Anything non-numeric or zero falls
