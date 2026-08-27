@@ -131,7 +131,13 @@ case "${1:-}" in
       printf '{"headRefOid":"%s","state":"OPEN","number":%s,"headRefName":"feature","url":"https://github.com/%s/pull/%s","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}\n' \
         "$_head_sha" "$_pr_num" "$_owner_repo" "$_pr_num" | _emit
     fi ;;
-  repo) printf '%s\n' "$_owner_repo" ;;
+  # STUB_REPO_VIEW_FAIL=1 models `gh repo view` yielding nothing — gh absent,
+  # unauthenticated, or standing in a checkout it cannot map to a GitHub repo.
+  # Needed as its own switch because STUB_OWNER_REPO="" cannot express it:
+  # ${STUB_OWNER_REPO:-org/c} treats empty and unset alike (PR #1423).
+  repo)
+    if [[ -n "${STUB_REPO_VIEW_FAIL:-}" ]]; then exit 1; fi
+    printf '%s\n' "$_owner_repo" ;;
   api)
     shift
     [[ "${1:-}" == "--paginate" ]] && shift

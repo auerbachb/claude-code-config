@@ -205,6 +205,59 @@ for BAD in 'org/repo name' 'org/repo:x' 'org//repo' 'org/a/b' '/org/repo' 'org/r
 done
 
 echo
+echo "== a declared scope routes the checkpoint handoff, not the flat path (CodeAnt, PR #1423) =="
+# The checkpoint written by --ensure-session used to pick its handoff path from
+# `gh repo view` -> repo_identity() alone. When BOTH failed it fell to
+# --legacy-flat, on the stated grounds that the checkout was "genuinely
+# repo-less". That reasoning ignored a scope the session had already declared:
+# with --repo (or a supply-only inherited $CLAUDE_SESSION_REPO) the session IS
+# named, and session-state.sh scopes its half of the write under that key. The
+# handoff then landed on the shared flat path while session-state sat under
+# .repos["org/a"] — two halves of one poll disagreeing, and no scoped reader
+# ever finding the handoff. The flat file is shared by every repo, so it is also
+# the more collision-prone of the two destinations.
+#
+# An origin-less checkout plus a `gh repo view` that yields nothing
+# (STUB_REPO_VIEW_FAIL) is exactly that state.
+NOREMOTE_PR=91
+FLAT_CHECKPOINT="$HOME/.claude/handoffs/pr-${NOREMOTE_PR}-handoff.json"
+SCOPED_CHECKPOINT="$HOME/.claude/handoffs/org/a/pr-${NOREMOTE_PR}-handoff.json"
+rm -f "$FLAT_CHECKPOINT" "$SCOPED_CHECKPOINT"
+RC=0; OUT="$( cd "$NOREMOTE" && STUB_REPO_VIEW_FAIL=1 STUB_HEAD_SHA=eee9111 STUB_PR_NUMBER="$NOREMOTE_PR" \
+  PATH="$STUB_BIN:$PATH" bash "$GATE" "$NOREMOTE_PR" --ensure-session --repo org/a 2>&1 )" || RC=$?
+# The run ends 4, but downstream of everything under test: poll-watermarks.sh
+# shells out to pr-state.sh, which needs the same `gh repo view` this scenario
+# deliberately breaks. That is a limit of the stub, not the gate — so pin the
+# failure to that step and assert no scope-resolution refusal happened. A
+# regression in scope resolution would abort BEFORE the checkpoint write, so the
+# path assertions below are the ones that actually carry this test.
+check_eq "the only failure is downstream watermark init, not scope resolution" "1" \
+  "$(grep -c 'poll-watermarks.sh --init failed' <<<"$OUT")"
+check_eq "no scope refusal on the way there" "0" \
+  "$(grep -cE 'contradicts the checkout being operated on|refuse to poll from wrong checkout|could not resolve' <<<"$OUT")"
+check_eq "checkpoint is NOT written to the shared flat path" "0" \
+  "$(test -f "$FLAT_CHECKPOINT" && echo 1 || echo 0)"
+check_eq "checkpoint lands under the declared scope" "1" \
+  "$(test -f "$SCOPED_CHECKPOINT" && echo 1 || echo 0)"
+check_eq "…and the handoff records that scope" "org/a" \
+  "$(jq -r '.owner_repo // ""' "$SCOPED_CHECKPOINT" 2>/dev/null)"
+check_eq "…and session-state agrees with it" "org/a" \
+  "$(jq -r '.repos["org/a"].prs["'"$NOREMOTE_PR"'"].owner_repo // ""' "$HOME/.claude/session-state.json")"
+check_eq "the fallback says which scope it used and why" "1" \
+  "$(grep -c "scoping PR #${NOREMOTE_PR}'s handoff to the session repo 'org/a'" <<<"$OUT")"
+
+# The flat path stays reachable for a checkout that genuinely names no repo:
+# no --repo, no inherited scope, nothing derivable. That is the case
+# --legacy-flat exists for, and it must not have been swallowed by the above.
+UNSCOPED_PR=92
+UNSCOPED_FLAT="$HOME/.claude/handoffs/pr-${UNSCOPED_PR}-handoff.json"
+rm -f "$UNSCOPED_FLAT"
+RC=0; OUT="$( cd "$NOREMOTE" && env -u CLAUDE_SESSION_REPO STUB_REPO_VIEW_FAIL=1 STUB_HEAD_SHA=fff9222 \
+  STUB_PR_NUMBER="$UNSCOPED_PR" PATH="$STUB_BIN:$PATH" bash "$GATE" "$UNSCOPED_PR" --ensure-session 2>&1 )" || RC=$?
+check_eq "a truly repo-less checkout still reaches the flat path" "1" \
+  "$(test -f "$UNSCOPED_FLAT" && echo 1 || echo 0)"
+
+echo
 echo "== a declared repo key may supply an identity, never override one (issue #854) =="
 # --repo / \$CLAUDE_SESSION_REPO answer "which scope key"; --root-repo answers
 # "which checkout". When both resolve to a real owner/repo and disagree, the old

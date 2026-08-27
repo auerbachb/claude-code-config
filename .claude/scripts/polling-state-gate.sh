@@ -381,9 +381,10 @@ write_checkpoint_handoff() {
   # Scope is always declared explicitly (issue #1366): handoff-state.sh no
   # longer falls back to the flat path on omission, and this script's cwd is not
   # necessarily $canon, so letting it derive could name a different repo than
-  # the one this checkpoint belongs to. An empty owner_repo here means both
-  # `gh repo view` and repo_identity() failed — genuinely repo-less, which is
-  # what the legacy flat path is for.
+  # the one this checkpoint belongs to. An empty owner_repo here means all three
+  # sources failed — `gh repo view`, repo_identity(), and the session's declared
+  # $CLAUDE_SESSION_REPO — i.e. genuinely repo-less, which is what the legacy
+  # flat path is for.
   local or_flag=(--legacy-flat)
   [[ -n "$owner_repo" ]] && or_flag=(--owner-repo "$owner_repo")
   if ! "$HANDOFF_HELPER" ${or_flag[@]+"${or_flag[@]}"} --init "$PR_NUMBER" "$json_body"; then
@@ -461,6 +462,23 @@ ensure_session() {
       owner_repo="$derived"
     fi
   fi
+  if [[ -z "$owner_repo" ]] && is_owner_repo_identity "${CLAUDE_SESSION_REPO:-}"; then
+    # Last resort before the flat path: the session's own declared scope, set
+    # from --repo or inherited supply-only (issue #967) and already exported
+    # above. Reaching here means $canon names no owner/repo of its own — an
+    # origin-less checkout, or one whose `origin` is a local filesystem path.
+    #
+    # Without this the checkpoint lands flat while session-state is written
+    # under .repos["$CLAUDE_SESSION_REPO"] (session-state.sh derives its own key
+    # from the same variable), so the two halves of one poll's state disagree
+    # and no scoped reader ever finds the handoff. The flat file is also shared
+    # by every repo, so falling back to it is strictly more collision-prone than
+    # honouring a scope the session has already declared — the same precedence
+    # handoff-state.sh itself applies (--owner-repo -> $CLAUDE_SESSION_REPO ->
+    # cwd origin) when the flag is omitted (issue #1366).
+    owner_repo="$(normalize_repo_key "$CLAUDE_SESSION_REPO")"
+    echo "polling-state-gate.sh: notice: '$canon' names no owner/repo; scoping PR #$PR_NUMBER's handoff to the session repo '$owner_repo' (\$CLAUDE_SESSION_REPO) rather than the shared flat path" >&2
+  fi
   local reviewer="cr"
   if [[ -f "$STATE_FILE" ]]; then
     local r
@@ -504,9 +522,11 @@ ensure_session() {
   # Resolve the canonical handoff path (scoped when owner_repo is known).
   # Use handoff-state.sh --path so path computation is in one place (issue #655).
   # --legacy-flat is the explicit default here (issue #1366): with no owner_repo
-  # this checkpoint IS the repo-less case the flat path exists for, and omitting
-  # the scope would now make handoff-state.sh derive one from THIS script's cwd,
-  # which is not necessarily $canon — a different repo's path, or exit 2.
+  # — none of `gh repo view`, repo_identity(), or $CLAUDE_SESSION_REPO could name
+  # one — this checkpoint IS the repo-less case the flat path exists for, and
+  # omitting the scope would now make handoff-state.sh derive one from THIS
+  # script's cwd, which is not necessarily $canon — a different repo's path,
+  # or exit 2.
   local or_flag=(--legacy-flat)
   [[ -n "$owner_repo" ]] && or_flag=(--owner-repo "$owner_repo")
   local handoff_path
