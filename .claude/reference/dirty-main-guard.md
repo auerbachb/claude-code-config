@@ -6,6 +6,8 @@ Mechanism behind `.claude/rules/main-hygiene.md`. That rule owns enforcement —
 
 Scope: the **root repo on `main`**. Feature branches and worktrees are out of scope and the guard no-ops there, which is why `--quarantine` must never be called from one.
 
+Which repo that is comes from the caller's cwd by default, or from `--repo <path>` when given. Either way resolution runs through `repo-root.sh`, which answers with the **main worktree root** — so `--repo <a-worktree>` guards that worktree's root repo, exactly as cd-ing into the worktree would have, never the worktree's own checkout. The flag exists because a worktree-isolated agent may run neither `(cd <root> && …)` nor `git -C <root>`, which left `/wrap`'s root-main sync step unreachable from Phase C (issue #1411); a plain script call is permitted, and `main-sync.sh` — the other half of that step — has always taken `--repo`.
+
 Either condition alone makes the tree dirty:
 
 1. **Uncommitted tracked changes** — `git diff --quiet` plus `git diff --cached --quiet`. Deliberately tracked-only: untracked files never block. Using `git status --porcelain` here was the original bug — it reports untracked files too, so a stray scratch file read as "dirty main" (memory `feedback_porcelain_untracked.md`).

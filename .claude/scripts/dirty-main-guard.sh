@@ -20,13 +20,28 @@
 #   to have dirty state.
 #
 #   The guarded repo is resolved from the CALLER's current directory (the
-#   invoking repo's root), never from this script's own location — the script
-#   is invoked from any project repo, including via the ~/.claude/
-#   skills-worktree checkout (issues #687/#697).
+#   invoking repo's root) unless --repo names one, never from this script's
+#   own location — the script is invoked from any project repo, including via
+#   the ~/.claude/skills-worktree checkout (issues #687/#697).
+#
+#   --repo exists because the cwd default is unreachable for a worktree-
+#   isolated agent: it may run neither `(cd <root> && guard)` nor `git -C
+#   <root>`, so before the flag the /wrap root-main sync step could not run
+#   at all from a Phase C subagent (issue #1411). A script call is an allowed
+#   shape, so the flag restores the step; the guard's own internals still use
+#   `git -C` freely, since isolation gates the AGENT's command shapes, not a
+#   child process's. This mirrors main-sync.sh, the other half of that sync
+#   step, which has taken --repo all along.
+#
+#   --repo is orthogonal to both modes, exactly as main-sync.sh keeps --repo
+#   orthogonal to --reset. It changes only WHICH repo is resolved, never what
+#   is done to it: --quarantine still writes (recovery branch + reset) to the
+#   resolved ROOT repo, so a caller whose sandbox forbids that write sees the
+#   attempt refused and takes its own degraded path.
 #
 # USAGE
-#   dirty-main-guard.sh --check
-#   dirty-main-guard.sh --quarantine
+#   dirty-main-guard.sh --check [--repo <path>] [--no-fetch]
+#   dirty-main-guard.sh --quarantine [--repo <path>] [--no-fetch]
 #   dirty-main-guard.sh --help | -h
 #
 #   --check        Report whether main is dirty. Exit 0 clean, 1 dirty,
@@ -34,6 +49,14 @@
 #   --quarantine   Move dirty state to a recovery branch and reset main
 #                  to origin/main. Exit 0 on success (or no-op when clean),
 #                  2 on failure.
+#   --repo <path>  Resolve the guarded repo from <path> instead of the
+#                  caller's current directory. Also accepts --repo=<path>.
+#                  <path> may be anywhere inside the target repo, including
+#                  a linked worktree: resolution goes through repo-root.sh,
+#                  which always answers with the MAIN worktree root. So
+#                  --repo <a-worktree> guards that worktree's ROOT repo, not
+#                  the worktree's own checkout — identical to what cd-ing
+#                  into the worktree would have guarded.
 #   --no-fetch     Skip the `git fetch origin main` that normally precedes
 #                  the unpushed-commit comparison. The comparison then runs
 #                  against whatever remote-tracking ref is already present.
@@ -59,7 +82,8 @@
 #   0  Clean, or quarantine succeeded, or no-op (not on main).
 #   1  Dirty (--check only — --quarantine uses 0 for "no-op when clean").
 #   2  Failure (git error, could not create recovery branch, etc.).
-#   3  Usage error (unknown flag, conflicting modes).
+#   3  Usage error (unknown flag, conflicting modes, missing/empty --repo
+#      value, --repo path does not exist).
 #
 # EXAMPLES
 #   # Session-start gate: check then quarantine if dirty.
@@ -68,6 +92,10 @@
 #     .claude/scripts/dirty-main-guard.sh --quarantine
 #   fi
 #   git -C "$ROOT" pull origin main --ff-only
+#
+#   # From an isolated worktree, where no `cd` to the root is permitted.
+#   ROOT=$(.claude/scripts/repo-root.sh)
+#   .claude/scripts/dirty-main-guard.sh --check --repo "$ROOT"
 
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
@@ -84,6 +112,7 @@ usage_error() {
 
 MODE=""
 NO_FETCH=0
+REPO=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
@@ -93,6 +122,17 @@ while [[ $# -gt 0 ]]; do
     --check|--quarantine)
       [[ -z "$MODE" ]] || usage_error "--check and --quarantine are mutually exclusive"
       MODE="${1#--}"
+      shift
+      ;;
+    --repo)
+      [[ $# -ge 2 ]] || usage_error "--repo requires a value"
+      [[ -n "$2" ]] || usage_error "--repo value cannot be empty"
+      REPO="$2"
+      shift 2
+      ;;
+    --repo=*)
+      REPO="${1#--repo=}"
+      [[ -n "$REPO" ]] || usage_error "--repo value cannot be empty"
       shift
       ;;
     --no-fetch)
@@ -114,12 +154,21 @@ done
 
 [[ -n "$MODE" ]] || usage_error "one of --check or --quarantine is required"
 
-# Resolve the root repo from the caller's cwd via the canonical helper.
-# SCRIPT_DIR is used only to locate repo-root.sh next to this script — the
-# guard must target the INVOKING repo, not the repo this script happens to
-# live in: passing "$SCRIPT_DIR" to repo-root.sh made cross-repo sessions
-# (invoking via ~/.claude/skills-worktree) check — and on dirty state
-# quarantine — claude-code-config's main instead (issue #697).
+# Reject a bad --repo path here, as a usage error, rather than letting it reach
+# repo-root.sh — a typo'd path is the caller's mistake (exit 3), not a resolution
+# failure of an existing tree (exit 2). Same split, same message shape, as
+# main-sync.sh. "Not a git repo" stays repo-root.sh's call and keeps exit 2.
+if [[ -n "$REPO" && ! -d "$REPO" ]]; then
+  usage_error "--repo path does not exist: $REPO"
+fi
+
+# Resolve the root repo from --repo when given, otherwise from the caller's cwd,
+# via the canonical helper. SCRIPT_DIR is used only to locate repo-root.sh next
+# to this script — the guard must target the INVOKING repo (or the named one),
+# not the repo this script happens to live in: passing "$SCRIPT_DIR" to
+# repo-root.sh made cross-repo sessions (invoking via ~/.claude/skills-worktree)
+# check — and on dirty state quarantine — claude-code-config's main instead
+# (issue #697).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT_SH="$SCRIPT_DIR/repo-root.sh"
 if [[ ! -x "$REPO_ROOT_SH" ]]; then
@@ -131,14 +180,27 @@ fi
 # it can also exit 3 because a git call was killed at its wall-clock bound, and
 # "from the current directory" is the wrong thing to tell an operator whose git
 # is wedged — that misdiagnosis is what made the original stall so hard to read.
+#
+# The command is built as an array whose first element is the script itself, so
+# it is never empty — Bash 3.2 (macOS default) errors on expanding an empty
+# array under `set -u`. Naming the resolution SOURCE in the failure keeps the
+# diagnostic honest under --repo: "from the current directory" would send an
+# operator to inspect a cwd that had nothing to do with the failure.
+RESOLVE_CMD=("$REPO_ROOT_SH")
+ROOT_SOURCE="the current directory"
+if [[ -n "$REPO" ]]; then
+  RESOLVE_CMD+=("$REPO")
+  ROOT_SOURCE="--repo $REPO"
+fi
+
 ROOT=""
 ROOT_RC=0
 ROOT_ERR_FILE="$(mktemp)"
-ROOT="$("$REPO_ROOT_SH" 2>"$ROOT_ERR_FILE")" || ROOT_RC=$?
+ROOT="$("${RESOLVE_CMD[@]}" 2>"$ROOT_ERR_FILE")" || ROOT_RC=$?
 ROOT_ERR="$(head -n 1 "$ROOT_ERR_FILE" 2>/dev/null || true)"
 rm -f "$ROOT_ERR_FILE"
 if [[ "$ROOT_RC" -ne 0 ]]; then
-  echo "error: could not resolve root repo from the current directory (repo-root.sh exit $ROOT_RC)${ROOT_ERR:+ — $ROOT_ERR}"
+  echo "error: could not resolve root repo from $ROOT_SOURCE (repo-root.sh exit $ROOT_RC)${ROOT_ERR:+ — $ROOT_ERR}"
   exit 2
 fi
 if [[ -z "$ROOT" || ! -d "$ROOT" ]]; then

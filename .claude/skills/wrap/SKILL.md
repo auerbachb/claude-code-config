@@ -105,12 +105,6 @@ CYCLE_COUNT_SH=$(resolve_script cycle-count.sh || true)
 PR_AUTHORSHIP_SH=$(resolve_script pr-authorship.sh || true)
 CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh || true)
 
-# Step 2.5 changes cwd to the root main checkout before invoking the guard.
-# Preserve the repo-relative fallback as an absolute path first.
-if [[ -n "$DIRTY_MAIN_GUARD_SH" && "$DIRTY_MAIN_GUARD_SH" != /* ]]; then
-  DIRTY_MAIN_GUARD_SH="$(pwd)/$DIRTY_MAIN_GUARD_SH"
-fi
-
 [[ -n "$PR_STATE_SH" ]] || { echo "ERROR: pr-state.sh not found (checked all three paths) — wrap PR state unavailable" >&2; exit 1; }
 [[ -n "$MERGE_GATE_SH" ]] || { echo "ERROR: merge-gate.sh not found (checked all three paths) — wrap merge gate unavailable" >&2; exit 1; }
 [[ -n "$AC_CHECKBOXES_SH" ]] || { echo "ERROR: ac-checkboxes.sh not found (checked all three paths) — acceptance verification unavailable" >&2; exit 1; }
@@ -318,6 +312,8 @@ Do NOT use `--delete-branch`. The current worktree is still checked out on the f
 
 ### Step 2.5: Sync root repo main (aggressive reset)
 
+**Both helpers take `--repo "$ROOT_REPO"`; neither may be wrapped in a `cd`.** A worktree-isolated Phase C agent — the caller on the normal A/B/C merge path — is refused both `(cd "$ROOT_REPO" && …)` ("too complex to verify that it stays inside the worktree") and `git -C "$ROOT_REPO" …`. A plain script call is an allowed shape, so passing the path as a flag is what makes this step reachable at all; the earlier `cd` form made every Phase C merge take the degraded branch below and leave root `main` unsynced (issue #1411). Keep the two calls symmetric — do not reintroduce a `cd`.
+
 ```bash
 ROOT_REPO=$([[ -n "$REPO_ROOT_SH" ]] && "$REPO_ROOT_SH" 2>/dev/null || true)
 MAIN_SYNC_STATUS=""
@@ -326,14 +322,14 @@ QUARANTINE_OK=0
 if [ -z "$ROOT_REPO" ] || [ ! -d "$ROOT_REPO" ]; then
   MAIN_SYNC_STATUS="failed: could not determine root repo path"
 else
-  if [[ -n "$DIRTY_MAIN_GUARD_SH" ]] && (cd "$ROOT_REPO" && "$DIRTY_MAIN_GUARD_SH" --check >/dev/null 2>&1); then
+  if [[ -n "$DIRTY_MAIN_GUARD_SH" ]] && "$DIRTY_MAIN_GUARD_SH" --check --repo "$ROOT_REPO" >/dev/null 2>&1; then
     QUARANTINE_STATUS="clean"
     QUARANTINE_OK=1
   elif [[ -z "$DIRTY_MAIN_GUARD_SH" ]]; then
     QUARANTINE_STATUS="DEGRADED: dirty-main-guard.sh not found (checked all three paths) — quarantine unavailable"
   else
     QUARANTINE_RC=0
-    QUARANTINE_STATUS=$(cd "$ROOT_REPO" && "$DIRTY_MAIN_GUARD_SH" --quarantine 2>&1) || QUARANTINE_RC=$?
+    QUARANTINE_STATUS=$("$DIRTY_MAIN_GUARD_SH" --quarantine --repo "$ROOT_REPO" 2>&1) || QUARANTINE_RC=$?
     if [[ "$QUARANTINE_RC" -eq 0 ]]; then
       QUARANTINE_OK=1
     else
