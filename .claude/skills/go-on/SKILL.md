@@ -1,13 +1,20 @@
 ---
 name: go-on
-description: Resume an interrupted or stalled review workflow. Detects where the agent left off — local CR review, push, PR creation, review polling, CR/Greptile feedback processing, thread resolution, merge gate verification, or acceptance criteria — and continues from the next incomplete step automatically. Invoke as `/go-on`.
+description: Use when stopped work should be picked back up, whatever stopped it — `/pause`, `/end`, a token-exhaustion handoff, a session that died (crash, compaction, sign-out), or a stalled review/merge workflow. Universal resume — classifies the stoppage from the evidence. Invoke as `/go-on [--resume-refill] [--again]`.
+triggers:
+  - go-on
+  - resume
+  - pick up where we left off
+  - continue the interrupted work
+  - what was I doing
+argument-hint: "[--resume-refill] [--again] (refill stays paused without --resume-refill)"
 ---
 
-Detect and resume the interrupted review workflow for the current branch.
+Resume the work, whatever stopped it. Step 0 classifies the stoppage from recorded evidence and routes; Steps 0b–10 are the interrupted-review-workflow lane it routes to.
 
-## Portable helper resolution
+## Portable helper resolution (workflow lane)
 
-Resolve every lifecycle helper before resuming. A missing helper blocks the workflow rather than guessing which completed state is safe.
+Resolve every lifecycle helper **before entering Steps 0b–10**, not before Step 0: classification needs only the stop-state helpers resolved in 0.2, and a resume that just routes to `/pause-resume` must not be blocked by a missing merge-gate helper it will never call. Inside the workflow lane a missing helper blocks rather than guessing which completed state is safe.
 
 ```bash
 resolve_script() {
@@ -48,14 +55,172 @@ Walk through the full review lifecycle checklist in order. At each step, check i
 
 ---
 
-## Step 0: Identify context
+## Step 0: Classify the stoppage (universal resume)
+
+Every stoppage leaves evidence. Read it, decide which class this is, and continue from the right place — the user never names the stoppage class. `/pause-resume` and `/end-resume` keep working and still own their restores; this step **routes into them** rather than reimplementing them (the "delegation, not reimplementation" rule in `/pause-resume` §Safety).
+
+Evidence sources, the precedence table, the newest-wins tie-break, and the degradation contract: `.claude/reference/universal-resume.md`.
+
+### 0.1 Parse arguments
+
+- `--resume-refill` — forwarded **verbatim** to the delegated resume command. `/go-on` never writes `refill.paused` itself. Without the flag the refill pause stands on every lane and is reported, and on a lane with no planned-stop record the flag is reported as having had no effect (naming the command that clears it) — never acted on directly.
+- `--again` — ignore the resume receipt in 0.5 and re-evaluate from scratch.
+
+### 0.2 Resolve the stop-state helpers
+
+These read cross-session stop records, so they resolve from installed locations **only** — no current-checkout fallback, matching `/pause-resume` and `/end-resume` Step 0. `/go-on` may be invoked from an unrelated or untrusted checkout, whose executable bit is not a trust signal.
+
+```bash
+resolve_installed() {
+  local name="$1" candidate
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
+    "$HOME/.claude/scripts/$name"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+SESSION_STATE_SH=$(resolve_installed session-state.sh) || SESSION_STATE_SH=""
+EXECUTION_PAUSE_SH=$(resolve_installed execution-pause.sh) || EXECUTION_PAUSE_SH=""
+TASK_REGISTRY_SH=$(resolve_installed background-task-registry.sh) || TASK_REGISTRY_SH=""
+HANDOFF_STATE_SH=$(resolve_installed handoff-state.sh) || HANDOFF_STATE_SH=""
+
+SESSION_ID="${CLAUDE_SESSION_ID:-default}"
+REPO_KEY=""
+if [[ -n "$SESSION_STATE_SH" ]]; then
+  REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+  # `_unknown` is the reserved no-repo-context bucket, not this repo's key —
+  # probing it would read another checkout's leftovers as our own evidence.
+  [[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
+fi
+```
+
+**An unresolved helper never reads as "no evidence".** Print `DEGRADED: <name> not found (checked both installed paths) — <class> detection unavailable, continuing without it` — both, not three, because the checkout candidate is deliberately excluded above — and carry that gap into the verdict: a class that could not be probed is *unknown*, not *absent*. With `session-state.sh` unresolved, only the on-disk marker and handoff-note globs remain; if those are also empty the verdict is **unclassifiable** (0.4), never "nothing to resume".
+
+### 0.3 Probe the evidence
+
+Run every probe — classification needs the full picture, not the first hit.
+
+**A — planned-stop gate** (repo-scoped, outlives the session that armed it; the authority for newest-wins):
+
+```bash
+GATE_JSON='{}'
+GATE_STATE=unreadable            # unreadable | absent | present — never default to absent
+if [[ -z "$SESSION_STATE_SH" || -z "$REPO_KEY" ]]; then
+  GATE_STATE=unreadable          # helper or repo identity missing: cannot rule the class out
+else
+  PAUSES=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].execution_pauses" 2>/dev/null)
+  READ_RC=$?
+  if (( READ_RC == 3 )); then
+    GATE_STATE=absent            # exit 3 is "no state file" — genuinely nothing recorded
+  elif (( READ_RC != 0 )); then
+    GATE_STATE=unreadable        # 4/5/anything else: a read that failed, not an empty map
+  elif GATE_JSON=$(jq -ce '
+      if type != "object" and type != "null" then error("not a map") else . end
+      | (. // {}) | to_entries
+      | map(select(.value.active == true and (.value.cleared_at // null) == null))
+      # An active record must be self-describing: a known command and a UTC Z
+      # stamp. Anything else is unorderable evidence, not an absent gate.
+      | if any(.value.command != "end" and .value.command != "pause")
+             or any((.value.at // "") | test("^[0-9]{4}(-[0-9]{2}){2}T([0-9]{2}:){2}[0-9]{2}Z$") | not)
+        then error("invalid active gate record") else . end
+      | sort_by(.value.at) | last
+      | if . == null then {}
+        else {class: .value.command, at: .value.at, session: .key} end
+    ' <<<"${PAUSES:-null}"); then
+    # `jq -e` exits 1 only on a `null`/`false` result; every success path here
+    # emits an object, so exit 0 means "read and validated", not "non-empty".
+    if [[ "$GATE_JSON" == '{}' ]]; then GATE_STATE=absent; else GATE_STATE=present; fi
+  else
+    GATE_JSON='{}'; GATE_STATE=unreadable   # malformed map or invalid active record
+  fi
+fi
+GATE_CLASS=$(jq -r '.class // ""' <<<"$GATE_JSON")   # end | pause | "" (absent/unreadable)
+GATE_AT=$(jq -r '.at // ""' <<<"$GATE_JSON")
+```
+
+`GATE_STATE=unreadable` is **unclassifiable evidence, not an absent gate** — it blocks ranks 3 and 4 outright (0.4). Resuming an `unplanned` or `token_exhaustion` lane while a planned stop may be armed is the exact mistake the ladder exists to prevent: the gate would block every successor launch, and the parked board would go unread. Only `GATE_STATE=absent` — an unambiguous "no record" — lets the ladder fall through.
+
+Also read this session's own gate — it decides whether new launches are blocked right now. The helper prints `active` | `inactive` and exits 0; an unresolved helper or a failed call is `unreadable`, which feeds the unclassifiable rule in 0.4, never `inactive`:
+
+```bash
+GATE_LIVE=unreadable
+if [[ -n "$EXECUTION_PAUSE_SH" ]]; then
+  GATE_LIVE=$("$EXECUTION_PAUSE_SH" --status --session "$SESSION_ID" 2>/dev/null) || GATE_LIVE=unreadable
+  [[ "$GATE_LIVE" == active || "$GATE_LIVE" == inactive ]] || GATE_LIVE=unreadable
+fi
+```
+
+**B — parked `/pause` record:** `.repos["$REPO_KEY"].pause` (legacy pre-#1310 `.suspend`), classified as pause evidence when `active == true`; its timestamp is `paused_at` (legacy `suspended_at`). If the state read fails, the existence of any `~/.claude/handoffs/pause-*.md` or `suspend-*.md` is a pause **candidate** — `/pause-resume` Step 1 owns marker selection and fails closed with `No parked session found` when the marker belongs to another repo, so a false candidate costs a no-op, never a wrong restore.
+
+**C — `/end` record:** the canonical note for this repo, `~/.claude/handoffs/portable-handoff-<owner>-<repo>-*.md` with the repo key lowercased and `/` replaced by `-`, **excluding** `*-checkpoint.md` (those are automatic checkpoints, which stop nothing — probe E). Corroborating: `refill == {paused: true, reason: "full_stop"}`, which both `/end` and `/pause` write and which therefore never discriminates between them on its own.
+
+**D — token-exhaustion handoff:** any `.repos["$REPO_KEY"].prs[*]` entry with `handoff_reason == "token_exhaustion"` (schema: `session-state-schema.json` `_token_exhaustion_example`), carrying `phase`, `needs`, `head_sha`, and `remaining_work`. Corroborate against the scoped handoff file (`"$HANDOFF_STATE_SH" --owner-repo <owner>/<repo> --get <N>`).
+
+**E — unplanned interruption** (crash, compaction, sign-out — no planned-stop record at all): any of a registry entry still `running`/`stopping`/`stop_failed` (`"$TASK_REGISTRY_SH" --list --live`), a `.repos["$REPO_KEY"].prs` entry, a scoped handoff file for this branch's PR, a `*-checkpoint.md` note for this repo, an in-progress rebase, or a feature branch with uncommitted/unpushed work or an open PR.
+
+### 0.4 Precedence — first match wins
+
+| Rank | Class | Fires on | Resume action |
+|---|---|---|---|
+| 1 | `pause` / `end` | A `present`; or A `absent` with exactly one of B / C | Delegate: `/pause-resume [--resume-refill]` or `/end-resume [--resume-refill]` |
+| 2 | `token_exhaustion` | D | Continue the recorded phase (0.6) |
+| 3 | `unplanned` | E only, **and** every planned-stop probe readable | Steps 0b–10 below |
+| 4 | `none` | nothing, and every probe readable | Report `nothing to resume`; change no state |
+
+**Explicit parked state outranks generic stall detection.** A readable planned-stop record wins over in-flight-looking branch state every time: rank 3 is reached only when ranks 1–2 found nothing. A planned stop also outranks rank 2 because its gates are armed, and only `/pause-resume` / `/end-resume` may clear them (`phase-protocols.md` §"Launch gate before every successor").
+
+**`pause` vs `end` — newest wins, decided by probe A.** Each activation writes `command` + `at` in the same UTC `Z` format, so the newest active entry names the class. Corroborating records (B, C) settle it only when A is missing or unreadable, and cannot order two classes against each other — their timestamps are not comparable (one ISO string, one file mtime).
+
+**Unclassifiable → report, never guess** (`[BLOCKED]`, no state change, no launch). Print what was found, then offer the resolution paths as a menu (`ask-menu.md`; prose fallback when headless). The cases:
+- `GATE_STATE=unreadable` — the planned-stop record could not be read or carries an active entry with an unknown `command` or a non-UTC-`Z` `at`. A `pause` or `end` may be armed, so ranks 3 and 4 are both barred.
+- B and C both present, A `absent` or unreadable — two planned stops that cannot be ordered. Options: `/pause-resume`, `/end-resume`.
+- This session's gate is `active` — or `GATE_LIVE=unreadable` — and no class is readable from A, B, or C.
+- A probe could not be *read* (0.2) and its class cannot be ruled out.
+- A `pause` record says `active: true` but `/pause-resume` reports no state and no marker.
+- More than one token-exhaustion entry (D) and none matches the current branch's PR — name every PR found.
+
+### 0.5 Resume receipt — never resume the same stoppage twice
+
+Read `.repos["$REPO_KEY"].resume` before dispatching. Build the evidence digest `class|record_at|pr|head_sha|branch`. If it equals the receipt's `evidence_digest` and `--again` was not passed:
+
+```
+[DONE] nothing to resume — the <class> stoppage recorded at <record_at> was already
+       resumed at <receipt .at> via <receipt .dispatched_to>. Re-run with --again
+       to force a pass.
+```
+
+`<receipt .at>` is the receipt's `at` field — when the previous resume ran, not when the stoppage was recorded. Arm nothing, launch nothing, write nothing. After a **successful** dispatch (ranks 1–3 only), write the receipt in one call:
+
+```bash
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].resume=$RESUME_JSON"
+```
+
+`RESUME_JSON` is `{class, evidence_digest, at, session_id, dispatched_to}`, where `at` is now. Rank 4 writes nothing at all — "nothing to resume" is a read-only verdict.
+
+### 0.6 Dispatch
+
+**Never duplicate a live task or Monitor.** Before any lane, list live registry entries (`"$TASK_REGISTRY_SH" --list --live`) and read `.prs["<N>"].babysit.active`. Work already covered by a live identity is reported, not relaunched; the delegated commands take the locked `stopped -> rearming` claim that makes concurrent resumes single-writer.
+
+An unresolved `background-task-registry.sh` or a failed listing is an **unreadable inventory, never an empty one** (the same rule `/pause` Step 0 applies): say the live-task check could not run, and do not launch anything in the `unplanned` or `token_exhaustion` lanes on the assumption nothing is running. Delegation to `/pause-resume` / `/end-resume` still proceeds — their own claims are locked, so they cannot double-launch on a blind check.
+
+- **`pause` / `end`** — invoke `/pause-resume` or `/end-resume`, forwarding `--resume-refill` when given. They clear the execution gate, re-arm stopped work, and own the refill decision. Report their outcome; do not re-run their steps here.
+- **`token_exhaustion`** — read the entry's `phase`, `head_sha`, and `remaining_work`, then continue that phase: enter Steps 0b–10 at the step its `needs` names (`continue_polling` → Step 6, unpushed fixes → Step 1b). The parent's replacement-subagent path (`phase-protocols.md`) is unchanged and still preferred when a parent orchestrator is live — say so rather than racing it.
+- **`unplanned`** — continue to Step 0b. This is the original `/go-on` behavior, unchanged.
+- **Monitors and artifact watches that died with the session are not re-armed here.** They belong to their owning skills' recovery paths (`/babysit-pr`, `/pr-monitor-and-manage-wake`, `/pm day resume`, `monitor-mode.md` §PM Monitoring Recovery) — the same ones `/pause-resume` Step 5 delegates to. Name what was found and which command owns it.
+
+---
+
+## Step 0b: Identify context
+
+Reached only from Step 0's `unplanned` or `token_exhaustion` dispatch — the interrupted-review-workflow lane.
 
 ```bash
 BRANCH=$(git branch --show-current)
 echo "Branch: $BRANCH"
 ```
 
-If on `main`, stop: "Not on a feature branch. Nothing to continue."
+If on `main`, stop: `nothing to resume — on main, no interrupted workflow for this checkout` (rank 4; change no state).
 
 Check if a PR exists:
 ```bash
@@ -424,12 +589,16 @@ Output a summary:
 ```
 === /go-on complete ===
 
+Stoppage: <pause | end | token_exhaustion | unplanned> (recorded <record_at>)
 Branch: $BRANCH
 PR: #$PR_NUM
 Reviewer: CR / Greptile
 Merge gate: MET / NOT MET
 Acceptance criteria: ALL PASSED / N FAILED
+Refill: <still paused — clear with /go-on --resume-refill | cleared via <command> --resume-refill | not paused>
 Status: Ready for wrap
 ```
+
+A delegated lane (`pause` / `end`) reports the companion command's own board instead of this block, plus the `Stoppage:` and `Refill:` lines. Ranks 4 and unclassifiable report only what was found — no board, no status line, no state change.
 
 If the merge gate is met and all AC pass, run `/wrap` immediately — no pre-merge prompt (`CLAUDE.md` "PR MERGE AUTHORIZATION"). Honor an explicit user opt-out ("don't merge" / "wait for my approval") if given in chat.

@@ -392,7 +392,16 @@ Resume state: <PAUSE_PERSISTED=0: "stored in session state; marker at $MARKER_PA
               <PAUSE_PERSISTED!=0 and MARKER_PUBLISHED=true: "session state failed; marker fallback at $MARKER_PATH">
               <MARKER_AUTO_DISCOVERABLE=false and MARKER_PUBLISHED=true: "repository identity unavailable; resume explicitly with /pause-resume --marker $MARKER_PATH">
               <MARKER_PUBLISHED=false: "NO recovery artifact was published — manual recovery required; $MARKER_ERROR">
+
+Resume with: <MARKER_AUTO_DISCOVERABLE=true: "/go-on [--resume-refill]   (routes to /pause-resume; call it directly if you prefer)">
+             <MARKER_AUTO_DISCOVERABLE=false: "/pause-resume --marker $MARKER_PATH [--resume-refill]   (an undiscoverable marker cannot be classified, so /go-on cannot route it)">
 ```
+
+The `Resume with:` line names `/go-on` because a resume days later should not
+depend on remembering that this stop was a pause (Issue #1397). Its second form
+is the one case that still needs the specialized command by name: `/go-on` takes
+no `--marker`, so a marker published without a usable repository identity has to
+be handed to `/pause-resume` directly.
 
 The `Stopped:` line has exactly two forms, matching `/end` Step 2's rule. After a failed refill-pause write, never print the first form — that would report something untrue about the one side effect the user is counting on.
 
@@ -421,3 +430,7 @@ could have escaped the wind-down.
 | `/wrap` | one pull request | a merge, follow-up issues, lessons |
 | `/end` | current-session execution (budget thin; 5m default) | portable handoff + stopped-task recovery data |
 | `/pause` | current-session execution (laptop close; 15m default) | machine-readable resume state + landed PRs |
+
+Both stops are resumed through the same front door: `/go-on` reads the records
+each one writes, works out which stop happened, and routes to `/pause-resume` or
+`/end-resume` accordingly. `/pause` writes exactly what it wrote before.

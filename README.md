@@ -158,7 +158,7 @@ All 36 commands are invoked as `/command` in a Claude Code session. They are def
 | `/harness-audit` | Workflow | Monthly check of whether the harness now does natively what our rules, skills, scripts, and hooks do by hand — verdicts each artifact against live harness behavior and files issues; advisory only, never edits |
 | `/review-stack-audit` | Workflow | Monthly re-measure of the AI review stack — each tool's billed state, observed caps, throughput, and unique value, compared against the recorded baseline; files one issue per drift finding, advisory only, never edits |
 | `/memory-clean` | Workflow | Audit the durable memory store — report orphaned files, dangling index pointers, index size, advisory stale entries; prune only on confirmation |
-| `/go-on` | Workflow | Resume an interrupted review workflow |
+| `/go-on` | Workflow | Universal resume — classify the stoppage from recorded evidence (`/pause`, `/end`, token-exhaustion handoff, crash, stalled review loop) and continue from the right place; refill stays paused without `--resume-refill` |
 | `/merge-conflict` | Workflow | Classify merge/rebase conflicts against `main`, auto-resolve safe hunks, report complex ones (also dispatched from `/fixpr`) |
 | `/merge` | Workflow | Squash merge with merge gate + AC verification |
 | `/admin-merge` | Workflow | Merge a solo-owner PR blocked by branch protection — auto-runs the no-protection-change plain shape, prints the `enforce_admins` toggle shape for the user (Claude never modifies branch protection) |

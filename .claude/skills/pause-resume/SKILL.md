@@ -1,6 +1,6 @@
 ---
 name: pause-resume
-description: Resume companion to /pause. Explicitly clears the background-launch gate, reads parked and stopped-task recovery state, prints the current board, and re-arms selected work without duplicating live tasks. The refill gate is cleared only with --resume-refill. Triggers on "pause-resume", "resume from pause", "back from laptop", "restore parked work", "what did I park".
+description: Resume companion to /pause; `/go-on` is the primary resume entry point and routes here. Explicitly clears the background-launch gate, reads parked and stopped-task recovery state, prints the current board, and re-arms selected work without duplicating live tasks. The refill gate is cleared only with --resume-refill. Triggers on "pause-resume", "resume from pause", "back from laptop", "restore parked work", "what did I park".
 triggers:
   - pause-resume
   - resume from pause
@@ -11,6 +11,8 @@ argument-hint: "[--resume-refill] (--resume-refill clears the refill pause; with
 ---
 
 Thin restorer for `/pause`. Reads the pause state, prints the board as it is **now** (not as it was parked — it re-reads GitHub before printing), re-arms what was stopped, and reports what is waiting on you.
+
+> **`/go-on` is the primary entry point for resuming.** It classifies the stoppage from recorded evidence and routes here when the newest record is a `/pause`, forwarding `--resume-refill` verbatim — so nobody has to remember which stop happened (Issue #1397; ladder: `.claude/reference/universal-resume.md`). This command keeps working unchanged and stays the direct path when you already know the work was paused; it remains the executor, and `/go-on` never reimplements the restore below.
 
 Running this when no pause state exists is a clean no-op: `No parked session found — nothing to resume.`
 

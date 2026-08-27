@@ -1,6 +1,6 @@
 ---
 name: end-resume
-description: Resume work stopped by /end. Explicitly clears the current session's background-launch gate, reports preserved stopped tasks, and resumes selected recoverable work without duplicating live tasks. The refill gate stays paused unless --resume-refill is supplied. Triggers on "end-resume", "resume from end", "continue ended work", "resume ended work".
+description: Resume work stopped by /end; `/go-on` is the primary resume entry point and routes here. Explicitly clears the current session's background-launch gate, reports preserved stopped tasks, and resumes selected recoverable work without duplicating live tasks. The refill gate stays paused unless --resume-refill is supplied. Triggers on "end-resume", "resume from end", "continue ended work", "resume ended work".
 triggers:
   - end-resume
   - resume from end
@@ -11,6 +11,17 @@ argument-hint: "[--resume-refill] (--resume-refill also reopens pipeline refilli
 
 Resume a cost-quiescent `/end` explicitly. This is the only normal path that
 reopens the session-scoped launch gate; unrelated messages and timers do not.
+
+> **`/go-on` is the primary entry point for resuming.** It classifies the
+> stoppage from recorded evidence and routes here when the newest record is an
+> `/end`, forwarding `--resume-refill` verbatim — so nobody has to remember which
+> stop happened (Issue #1397; ladder:
+> `.claude/reference/universal-resume.md`). This command keeps working unchanged
+> and stays the direct path when you already know the session was ended; it
+> remains the executor, and a routed invocation is still an explicit human
+> invocation of it. Portable handoff documents keep naming `/end-resume` alone in
+> their `Resume command:` field — that field is lint-restricted to this command
+> because its reader may be outside this harness entirely.
 
 ## Step 0: Resolve state helpers
 
