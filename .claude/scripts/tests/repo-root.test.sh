@@ -389,7 +389,14 @@ RC=0
 ERR="$(cd "$MAIN" && PATH="$NOGIT:$PATH" "$SUT" 2>&1 >/dev/null)" || RC=$?
 check_eq "T15 an unexecutable git exits 4, not 1" "4" "$RC"
 check_contains "T15b diagnostic names the cause" "git could not run" "$ERR"
-check_contains "T15c the exec failure itself is relayed" "bad interpreter" "$ERR"
+# Assert the interpreter path this fixture names, not bash's prose around it.
+# "bad interpreter" is a gettext-translated string in bash: under a non-English
+# locale the same correct rc-126 prints "mauvais interpréteur" (fr) instead, so
+# asserting the English wording fails on a machine that is behaving correctly.
+# The path is a value this test owns, no locale rewrites it, and it is the
+# detail an operator acts on. Same reasoning as T15g below.
+check_contains "T15c the exec failure itself is relayed" \
+  "/nonexistent/interpreter" "$ERR"
 # The negative control that makes T15 mean something: before this change every
 # one of these landed on the determinate non-repo sentence, which is what let
 # callers substitute a guess.
