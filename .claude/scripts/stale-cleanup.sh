@@ -294,14 +294,22 @@ GIT_BOUND_SECS="$(normalize_bound "${STALE_CLEANUP_TIMEOUT_SECS:-10}" 10)"
 READ_BOUND_SECS="$(normalize_bound "${STALE_CLEANUP_READ_TIMEOUT_SECS:-2}" 2)"
 
 # Created after arg parsing so --help and usage errors leave nothing behind.
-# All four are unconditional, which keeps the EXIT trap a single fixed command
-# list — no empty-variable arguments to guard against, and no early exit path
-# that could leave one behind.
+# All four are unconditional — no empty-variable arguments to guard against,
+# and no early exit path that could leave one behind. CAPTURE/CAPTURE_ERR can
+# be replaced mid-run (see run_bounded's orphan handover), so cleanup is a
+# function over the current values plus any handed-over ones rather than a
+# fixed command list.
 CAPTURE="$(mktemp "${TMPDIR:-/tmp}/stale-cleanup.XXXXXX")"
 CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/stale-cleanup-err.XXXXXX")"
 WT_LIST_FILE="$(mktemp "${TMPDIR:-/tmp}/stale-cleanup-wt.XXXXXX")"
 GH_TMPERR="$(mktemp "${TMPDIR:-/tmp}/stale-cleanup-gh-stderr.XXXXXX")"
-trap 'rm -f "$CAPTURE" "$CAPTURE_ERR" "$WT_LIST_FILE" "$GH_TMPERR"' EXIT
+ORPHANED_CAPTURES=()
+# The trap stays a single command rather than a function so it reads as the
+# fixed cleanup list it is. It expands at EXIT, so it removes whatever
+# CAPTURE/CAPTURE_ERR point at by then plus any handed-over pair. The
+# `[@]+` guard is the portable empty-array expansion — a bare "${arr[@]}" is
+# an unbound-variable error under `set -u` on macOS's bash 3.2.
+trap 'rm -f "$CAPTURE" "$CAPTURE_ERR" "$WT_LIST_FILE" "$GH_TMPERR" ${ORPHANED_CAPTURES[@]+"${ORPHANED_CAPTURES[@]}"}' EXIT
 
 BOUNDED_TIMED_OUT=0
 BOUNDED_CLOCK_UNREADABLE=0
@@ -391,6 +399,20 @@ run_bounded() { # bound_secs, command...
     if [[ "$reaped" -eq 1 && "$rc" -eq 0 ]]; then
       return 0
     fi
+    # Still alive after SIGKILL means wedged in uninterruptible I/O, which no
+    # signal can end — that is the kernel's call, not ours. What we can stop is
+    # the contamination: the orphan still holds this call's stdout/stderr open,
+    # so if its read ever completes it writes into files a LATER call will have
+    # truncated and be reading. Hand the descriptors over to the orphan and
+    # continue on fresh ones; the handed-over paths are unlinked by the EXIT
+    # trap like any other temp. (Deleting a registration out from under such a
+    # child is separately safe — POSIX unlink on an open file is well defined,
+    # and the inode survives until the last descriptor closes.)
+    if kill -0 "$pid" 2>/dev/null; then
+      ORPHANED_CAPTURES+=("$CAPTURE" "$CAPTURE_ERR")
+      CAPTURE="$(mktemp "${TMPDIR:-/tmp}/stale-cleanup.XXXXXX")"
+      CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/stale-cleanup-err.XXXXXX")"
+    fi
     BOUNDED_TIMED_OUT=1
     return 124
   fi
@@ -409,14 +431,48 @@ read_bounded_line() { # path
   head -n 1 "$CAPTURE"
 }
 
-# Bounded existence probe. 0 = exists, 1 = missing, 2 = could not be determined
-# inside the bound (a stalled stat is itself the symptom we are cleaning up).
+# Is the path's absence actually established, or merely not observed? `test -e`
+# reports no errno: it is false for a path that does not exist AND for one
+# whose parent cannot be searched (EACCES on an unreadable directory, a stale
+# or half-mounted mountpoint). Absence only counts as proven when the nearest
+# ancestor that does exist is a directory we can search — walk up to it, since
+# the whole parent tree being gone is an ordinary orphan, not an anomaly. The
+# walk runs inside one bounded child so it stays under the same bound.
+path_absence_provable() { # path
+  local parent rc=0
+  parent="$(dirname -- "$1")"
+  run_bounded "$READ_BOUND_SECS" test -x "$parent" || rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then return 1; fi
+  # A searchable parent means the lookup really happened and really missed.
+  if (( rc == 0 )); then return 0; fi
+  # Otherwise the parent is either absent — in which case the child cannot
+  # exist either, so absence still holds — or present but refusing search,
+  # which is the case we must not mistake for "missing".
+  rc=0
+  run_bounded "$READ_BOUND_SECS" test -e "$parent" || rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then return 1; fi
+  if (( rc != 0 )); then return 0; fi
+  return 1
+}
+
+# Bounded existence probe.
+#   0 = exists
+#   1 = absent, and provably so
+#   2 = could not be determined inside the bound (a stalled stat is itself the
+#       symptom we are cleaning up, so this stays a removal candidate)
+#   3 = indeterminate — not observed, but absence could not be established.
+#       Distinct from 1 on purpose: collapsing it into "missing" would classify
+#       a live worktree behind an unsearchable parent as an orphan and delete
+#       its registration. This probe gates deletion, so it fails closed.
 path_exists_bounded() { # path
   local rc=0
   run_bounded "$READ_BOUND_SECS" test -e "$1" || rc=$?
   if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then return 2; fi
-  if (( rc != 0 )); then return 1; fi
-  return 0
+  if (( rc == 0 )); then return 0; fi
+  rc=0
+  path_absence_provable "$1" || rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]] || (( rc != 0 )); then return 3; fi
+  return 1
 }
 
 # SCRIPT_DIR is used ONLY to locate the repo-root.sh helper next to this
@@ -888,6 +944,13 @@ scan_registrations() {
       elif (( probe_rc == 2 )); then
         reason="unreadable — prunable with warning (existence probe on $wt did not finish within ${READ_BOUND_SECS}s)"
         method="targeted"
+      elif (( probe_rc == 3 )); then
+        # Not observed, but absence was not established — the parent could not
+        # be searched. A live worktree behind an unreadable directory looks
+        # exactly like a missing one here, so this is the one probe outcome
+        # that must not become a removal candidate.
+        SKIPPED_REGISTRATIONS+=("${id}${US}worktree path $wt could not be inspected (its nearest existing parent is not searchable) — absence not established, leaving the registration alone")
+        continue
       else
         reason="worktree directory missing ($wt)"
         method="prune"
@@ -1087,12 +1150,19 @@ echo
 # gitdir and a still-missing worktree both answer "not live", because those are
 # exactly the states that made the entry an orphan in the first place.
 registration_is_live() { # registration path
-  local gitdir_line="" wt=""
+  local gitdir_line="" wt="" probe_rc=0
   gitdir_line="$(read_bounded_line "$1/gitdir")" || return 1
   [[ -n "$gitdir_line" ]] || return 1
   wt="${gitdir_line%/.git}"
-  path_exists_bounded "$wt" || return 1
-  return 0
+  path_exists_bounded "$wt" || probe_rc=$?
+  # Fail closed, unlike the classification pass: this gate stands immediately
+  # before an rm, so "exists" (0) and "cannot establish absence" (3) both stop
+  # it. Only proven absence (1) and the stalled probe (2) — the very symptom
+  # being cleaned — let the removal through.
+  case "$probe_rc" in
+    0|3) return 0 ;;
+    *)   return 1 ;;
+  esac
 }
 
 # Returns 0 removed, 1 failed, 2 skipped by the re-check (not a failure).

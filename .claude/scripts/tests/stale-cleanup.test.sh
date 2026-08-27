@@ -311,6 +311,10 @@ check_json "T9: caller's own registration is skipped by id" "$OUT" \
 
 # --apply prunes the unlocked orphan and leaves the live and locked ones alone.
 OUT="$(cd "$REPO_C" && "$SUT" --apply 2>&1)"
+RC=$?
+# The status is asserted, not just the output: without this the suite would
+# still pass if a deletion failed and the script wrongly reported success.
+check_eq "T9: a clean --apply exits 0" 0 "$RC"
 check_contains "T9: --apply reports the prune-path removal" \
   "removed: worktree registration wtC-orphan" "$OUT"
 check_eq "T9: unlocked orphan registration is gone after --apply" "gone" \
@@ -321,8 +325,17 @@ check_eq "T9: locked registration untouched without --include-locked" "present" 
   "$([[ -e "$REG_C/wtC-locked" ]] && echo present || echo gone)"
 
 OUT="$(cd "$REPO_C" && "$SUT" --apply --include-locked 2>&1)"
+RC=$?
+check_eq "T9: a clean --apply --include-locked exits 0" 0 "$RC"
 check_contains "T9: --include-locked clears the locked orphan via targeted removal" \
   "removed: worktree registration wtC-locked (targeted" "$OUT"
+# No entry may be reported as failed on a run where every removal succeeded —
+# the exit code alone would not catch a failure line the script forgot to count.
+if [[ "$OUT" == *"failed:"* ]]; then
+  fail "T9: no failure lines on the clean --include-locked run"
+else
+  pass "T9: no failure lines on the clean --include-locked run"
+fi
 check_eq "T9: locked registration gone after --include-locked" "gone" \
   "$([[ -e "$REG_C/wtC-locked" ]] && echo present || echo gone)"
 check_eq "T9: LIVE registration still untouched (negative control)" "present" \
@@ -351,11 +364,16 @@ check_json "T10: reported as unreadable, prunable with warning, targeted path" "
   '.orphaned_registrations | any(.id == "wtD-stuck" and .method == "targeted"
                                  and (.reason | contains("unreadable — prunable with warning")))'
 # The contract is "degrades instead of hanging", which both "timed_out" and
-# "failed" satisfy. Asserting the exact value would pin a git implementation
-# detail (whether it blocks on the FIFO or errors out) rather than our
-# behaviour; the assertion above already proves OUR bound fired on the read.
+# "failed" satisfy. Asserting `timed_out` specifically would pin a git
+# implementation detail — whether it blocks on the FIFO or errors out — and
+# that varies by platform and git version, so a fixture forced to time out
+# deterministically would be testing git, not us. The closed set below is the
+# tightest portable form: it still fails if enumeration succeeds, and now also
+# if some unexpected third state appears. The bound itself is proven
+# deterministically by the read-path assertion above, whose reason string is
+# emitted only when read_bounded_line hit READ_BOUND_SECS.
 check_json "T10: bounded enumeration degrades instead of hanging" "$OUT" \
-  '.worktree_enumeration != "ok"'
+  '.worktree_enumeration == "timed_out" or .worktree_enumeration == "failed"'
 check_json "T10: local branches are not classified when enumeration did not complete" "$OUT" \
   '(.stale_local_branches | length) == 0'
 
@@ -411,6 +429,49 @@ check_eq "T11: registration is gone despite the nonzero status" "gone" \
 check_json "T11: the same repo enumerates cleanly once cleared" \
   "$(cd "$REPO_E" && "$SUT" --check --json 2>/dev/null)" \
   '.worktree_enumeration == "ok"'
+
+# ---- T12: an unsearchable parent is indeterminate, never "missing" ----------
+# `test -e` reports no errno, so a live worktree whose parent directory denies
+# search looks exactly like a deleted one. Classifying that as an orphan would
+# delete a live worktree's registration, so the probe has to fail closed.
+# Skipped when running as root, which bypasses directory permissions entirely
+# and would make the fixture assert the opposite of what it is built to show.
+if [[ "$(id -u)" -eq 0 ]]; then
+  echo "skip — T12: unsearchable-parent probe (running as root; permissions do not apply)"
+else
+  REPO_F="$TMP/repoF"
+  mkdir -p "$REPO_F"
+  git -C "$REPO_F" init -q
+  echo "f" > "$REPO_F/README.md"
+  git -C "$REPO_F" add README.md
+  commit_old "$REPO_F" "repoF base"
+  # The worktree is LIVE and stays live; only its parent becomes unsearchable.
+  mkdir -p "$TMP/vaultF"
+  git -C "$REPO_F" worktree add "$TMP/vaultF/wtF-live" -b issue-500-f-live >/dev/null 2>&1
+  REG_F="$REPO_F/.git/worktrees"
+  chmod 000 "$TMP/vaultF"
+
+  OUT="$(cd "$REPO_F" && "$SUT" --check --json 2>/dev/null)"
+  check_json "T12: unsearchable parent does NOT make the entry an orphan" "$OUT" \
+    '(.orphaned_registrations | any(.id == "wtF-live")) | not'
+  check_json "T12: it is reported as skipped, with absence-not-established named" "$OUT" \
+    '.skipped_registrations | any(.id == "wtF-live"
+                                  and (.reason | contains("absence not established")))'
+
+  OUT="$(cd "$REPO_F" && "$SUT" --apply --include-locked 2>&1)"
+  check_eq "T12: the live registration survives --apply --include-locked" "present" \
+    "$([[ -e "$REG_F/wtF-live" ]] && echo present || echo gone)"
+
+  # Positive control: the SAME entry must classify as an orphan once the parent
+  # is searchable again and the worktree really is gone. Without this the two
+  # assertions above would also pass if the registration pass had simply
+  # stopped classifying anything at all.
+  chmod 755 "$TMP/vaultF"
+  rm -rf "$TMP/vaultF/wtF-live"
+  OUT="$(cd "$REPO_F" && "$SUT" --check --json 2>/dev/null)"
+  check_json "T12: genuinely missing worktree is still classified (control)" "$OUT" \
+    '.orphaned_registrations | any(.id == "wtF-live" and .method == "prune")'
+fi
 
 unset STALE_CLEANUP_TIMEOUT_SECS STALE_CLEANUP_READ_TIMEOUT_SECS
 
