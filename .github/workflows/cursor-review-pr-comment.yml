@@ -17,6 +17,17 @@
 # withholds secrets from fork PRs, so a fork's run simply takes the no-token path
 # below. This repo has no external contributors, so no coverage is lost.
 #
+# One nudge per HEAD (issue #1356):
+# BugBot is metered against a Cursor usage/spend limit. Once cursor[bot] has
+# refused on a given HEAD, no nudge can clear that limit, so every later nudge on
+# the same HEAD is pure PR noise — measured live on PR #1349, where a refusal at
+# 17:34:47 was followed by this workflow's nudge at 17:35:06 and a second refusal
+# at 17:35:18. The guard step below delegates that judgement to the shared
+# `bugbot-refused-head.sh`, the same helper `maybe-trigger-ai-review.sh` and
+# `/fixpr` Step 3b already call, so all three trigger paths answer identically.
+# The guard only ever NARROWS posting; it is fail-open in every direction —
+# missing helper, unreadable API, or a broken guard step all still post.
+#
 # This is a convenience trigger, never a merge gate. A missing PAT or a failed
 # comment degrades to a warning annotation; the workflow always exits success.
 name: Cursor BugBot review trigger
@@ -26,9 +37,16 @@ on:
     types: [opened, synchronize, reopened]
 
 permissions:
-  # Comment is posted via CURSOR_REVIEW_PAT, not GITHUB_TOKEN.
-  # contents:read is the minimum for pull_request triggers.
+  # Comment is posted via CURSOR_REVIEW_PAT, not GITHUB_TOKEN. Everything below
+  # is read-only and serves the suppression guard's GITHUB_TOKEN calls only:
+  #   contents      — commits/{sha} (the HEAD commit's committer date)
+  #   issues        — issues/{n}/comments (cursor[bot]'s refusal comments)
+  #   pull-requests — same endpoint, reached on a pull request
+  #   checks        — commits/{sha}/check-runs (BugBot's footprint on this commit)
   contents: read
+  issues: read
+  pull-requests: read
+  checks: read
 
 jobs:
   post-cursor-review:
@@ -64,8 +82,81 @@ jobs:
               'repository with Pull requests: Read and write as CURSOR_REVIEW_PAT.'
             );
 
-      - name: Comment @cursor review
+      # Both guard steps are gated on the PAT: suppression only matters on the
+      # path that would otherwise post, and an unconfigured PAT already warns above.
+      - name: Checkout the suppression helper
         if: env.HAS_TRIGGER_TOKEN == 'true'
+        # A checkout failure must not turn this convenience trigger into a red
+        # check — a `failure` conclusion blocks the merge gate (cr-merge-gate.md
+        # Step 1b). With continue-on-error the job stays green and the guard step
+        # below finds no helper, which posts. Same outcome as before this guard.
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Base-branch commit, per the ac-gate.yml convention: the helper that
+          # judges the PR is trusted code the PR cannot edit. Not sparse — a
+          # sparse pattern that silently missed the helper would fail open
+          # forever with nothing to notice, and this repo is small.
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Check whether BugBot already refused this HEAD
+        id: suppress-check
+        if: env.HAS_TRIGGER_TOKEN == 'true'
+        # Same reasoning as the checkout step. If this step dies before writing
+        # its output, the comment step reads '' and posts.
+        continue-on-error: true
+        env:
+          GH_REPO: ${{ github.repository }}
+          # Read-only calls, so the default token rather than the PAT's rate budget.
+          GH_TOKEN: ${{ github.token }}
+          # Passed as env, not interpolated into the script body, so the values
+          # reach bash as data and never as script text.
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          GUARD=.claude/scripts/bugbot-refused-head.sh
+          # Bootstrap: the helper is not on the base branch — the PR introducing
+          # it, or a repo given this workflow without .claude/scripts. Post.
+          if [[ ! -f "$GUARD" ]]; then
+            echo "suppressed=false" >> "$GITHUB_OUTPUT"
+            echo "Suppression guard unavailable on the base branch — posting the nudge."
+            exit 0
+          fi
+          # `if` rather than a bare call: a non-zero exit is this helper's verdict,
+          # not a step failure, and the runner's default shell carries `set -e`.
+          # 0 = refused this HEAD (suppress); 1 = post; 2 = usage/dependency error,
+          # which the helper also defines as post.
+          if bash "$GUARD" "$PR_NUMBER" "$HEAD_SHA"; then
+            echo "suppressed=true" >> "$GITHUB_OUTPUT"
+            echo "BugBot already refused $HEAD_SHA for a usage limit — skipping the nudge."
+          else
+            echo "suppressed=false" >> "$GITHUB_OUTPUT"
+            echo "No attributable BugBot refusal on $HEAD_SHA — posting the nudge."
+          fi
+
+      - name: Warn — nudge suppressed, BugBot already refused this HEAD
+        # Carries an id purely so the offline suite can select this step by
+        # identity rather than by matching text in its condition — a rename or
+        # a removal then errors there instead of silently selecting some other
+        # github-script step (CodeAnt, PR #1377).
+        id: suppressed-warn
+        if: env.HAS_TRIGGER_TOKEN == 'true' && steps.suppress-check.outputs.suppressed == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            core.warning(
+              'Skipped the BugBot trigger: cursor[bot] has already refused this ' +
+              'commit for a Cursor usage or spend limit. A nudge cannot clear a ' +
+              'usage limit, so a second one would only add a second refusal ' +
+              'comment (one nudge per HEAD — .claude/rules/bugbot.md). ' +
+              'BugBot was NOT asked to review this commit. ' +
+              'The next push is a new HEAD and starts clean; to retry on this ' +
+              'commit anyway, comment `@cursor review` manually.'
+            );
+
+      - name: Comment @cursor review
+        if: env.HAS_TRIGGER_TOKEN == 'true' && steps.suppress-check.outputs.suppressed != 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           # Authenticate as the PAT owner (repository owner) rather than
