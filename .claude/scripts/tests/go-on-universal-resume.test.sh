@@ -64,12 +64,36 @@ has "$GO_ON" 'Explicit parked state outranks generic stall detection'
 has "$GO_ON" 'newest wins'
 has "$LADDER" 'Explicit parked state outranks generic stall detection'
 
+# Structural, not textual: the rank table itself must carry all four classes in
+# rank order. Dropping or reordering a dispatch row fails here even though every
+# one of those words still appears in the surrounding prose.
+RANK_ROWS=$(awk -F'|' '
+  /^\| Rank \| Class \|/     { flag = 1; next }
+  flag && $0 !~ /^\|/        { exit }
+  flag && $2 ~ /^ *[0-9]+ *$/ { gsub(/[ `]/, "", $2); gsub(/[ `]/, "", $3)
+                                print $2 ":" $3 }
+' "$GO_ON")
+[[ -n "$RANK_ROWS" ]] || fail "could not extract the precedence table from go-on"
+EXPECTED_RANKS='1:pause/end
+2:token_exhaustion
+3:unplanned
+4:none'
+[[ "$RANK_ROWS" == "$EXPECTED_RANKS" ]] \
+  || fail "precedence table drifted (got: $(tr '\n' ' ' <<<"$RANK_ROWS"))"
+
 # --- The refill gate is never re-enabled silently ---------------------------
 has "$GO_ON" '\-\-resume-refill'
 has "$GO_ON" 'never writes `refill.paused`'
 # A direct refill write from /go-on would bypass the delegated command's contract.
 hasnt "$GO_ON" 'refill=\{'
 hasnt "$GO_ON" 'refill\.paused='
+# Mechanism, not spelling: reject any state-WRITE invocation that mentions
+# refill at all, so a jq-built object or a differently-spelled assignment path
+# reaches this guard too. Reads (--get) stay allowed; probe C reads the refill
+# record as corroborating evidence.
+if grep -nE -- '--set[[:alnum:]-]*.*refill' "$GO_ON"; then
+  fail "go-on must not write refill state — the delegated resume command owns it"
+fi
 has "$PAUSE_RESUME" 'only with --resume-refill'
 has "$END_RESUME" 'unless --resume-refill'
 
@@ -96,6 +120,28 @@ has "$GO_ON" 'never default to absent'
 has "$LADDER" 'tri-state'
 has "$LADDER" 'could not look'
 
+# Structural: check WHERE `absent` can be reached, not just that the token
+# exists. A regression that treats an unreadable planned-stop record as absent
+# unbars ranks 3 and 4 while a stop may still be armed — the exact safety
+# inversion the ladder exists to prevent — so pin both absent-producing paths.
+PROBE_A=$(awk '
+  index($0, "GATE_STATE=unreadable") && !flag { flag = 1 }
+  flag                                        { print }
+  flag && /^GATE_CLASS=/                      { exit }
+' "$GO_ON")
+[[ -n "$PROBE_A" ]] || fail "could not extract the planned-stop probe from go-on"
+ABSENT_LINES=$(grep -c 'GATE_STATE=absent' <<<"$PROBE_A" || true)
+[[ "$ABSENT_LINES" == "2" ]] || fail \
+  "probe A reaches GATE_STATE=absent on $ABSENT_LINES lines (expected 2: exit 3, validated empty map)"
+grep -Eq 'READ_RC == 3 \)\)' <<<"$PROBE_A" \
+  || fail "probe A no longer isolates exit 3 as the only no-state-file case"
+# The failed-read branch must land on unreadable on its very next line.
+grep -A1 -E 'READ_RC != 0 \)\)' <<<"$PROBE_A" | grep -q 'GATE_STATE=unreadable' \
+  || fail "a failed read (READ_RC != 0) must set GATE_STATE=unreadable, not absent"
+# So must the malformed-map fallback (the else arm of the jq validation).
+grep -A1 -E '^[[:space:]]*else[[:space:]]*$' <<<"$PROBE_A" | grep -q 'GATE_STATE=unreadable' \
+  || fail "a malformed gate map must set GATE_STATE=unreadable, not absent"
+
 # --- Stop-state helpers resolve from installed locations only ---------------
 RESOLVER=$(awk '/^resolve_installed\(\) \{/{flag=1} flag{print} /^\}$/{if(flag)exit}' "$GO_ON")
 [[ -n "$RESOLVER" ]] || fail "go-on has no resolve_installed() candidate list"
@@ -103,9 +149,15 @@ grep -q 'skills-worktree/.claude/scripts' <<<"$RESOLVER" \
   || fail "stop-state candidate list omits the skills-worktree entry"
 grep -q '"\$HOME/.claude/scripts' <<<"$RESOLVER" \
   || fail "stop-state candidate list omits the \$HOME install entry"
-if grep -Eq '^[[:space:]]*"\.claude/scripts' <<<"$RESOLVER"; then
-  fail "stop-state candidate list must not fall back to the current checkout"
-fi
+# Inspect every candidate rather than matching one source spelling: a
+# checkout-relative fallback written as "./.claude/scripts/…", "$PWD/…", or via
+# any other expansion is caught by requiring each candidate to be $HOME-rooted.
+CANDIDATES=$(grep -F '.claude/scripts' <<<"$RESOLVER")
+[[ -n "$CANDIDATES" ]] || fail "resolve_installed() lists no .claude/scripts candidates"
+while IFS= read -r cand_line; do
+  grep -q '\$HOME/' <<<"$cand_line" \
+    || fail "stop-state candidate is not \$HOME-rooted (untrusted checkout):$cand_line"
+done <<<"$CANDIDATES"
 
 # --- The dedicated commands keep working and point at /go-on ---------------
 has "$PAUSE_RESUME" '/go-on. is the primary entry point'
