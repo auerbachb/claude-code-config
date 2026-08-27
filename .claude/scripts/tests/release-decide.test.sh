@@ -525,13 +525,70 @@ else bad "an unverifiable release discloses that a claim may remain parked (reas
 # 26. A claim taken over by a competing evaluation is NOT deleted when our own
 # trigger fails — clearing it would drop in-flight tracking for a build that is
 # genuinely running, which a later sweep could duplicate.
+#
+# The competitor's record is written DURING the run — after our claim is staked,
+# before release_claim() cleans up — so the REAL --cas comparison inside
+# session-state.sh is what refuses the clear, and the assertion can genuinely
+# fail. Seeding it after the run (the shape this replaced, issue #1352) asserted
+# a value the test itself had just written one line earlier: the SUT had already
+# exited and could not influence the result either way.
+#
+# Passthrough target and restore are both COPIED FROM the pristine
+# $TMP/session-state.real, never from the live impl, per the single-snapshot rule
+# at break_state above. The copy has to sit next to the stub in $SCRIPTS rather
+# than being invoked at $TMP/session-state.real directly: the real helper
+# resolves state-lock.sh and lib/repo-normalizer.sh as its own siblings and exits
+# 5 from anywhere else, which would fail the claim stake instead of exercising it.
 reset_state
-seed_other() { "$SCRIPTS/session-state.impl.sh" --raw-path --set '.repos["solo/app"].release.in_flight={"pr":9,"mechanism":"label:release:ios","claim_token":"someone-else","awaiting_run":true}' >/dev/null 2>&1; }
+cp "$TMP/session-state.real" "$SCRIPTS/session-state.impl.sh.orig"
+cat > "$SCRIPTS/session-state.impl.sh" <<'OTHERSTUB'
+#!/usr/bin/env bash
+# Pure passthrough with ONE injection. The cleanup write is identified by its
+# TARGET VALUE (`…release.in_flight=null`) rather than by the --cas flag, so a
+# regression that cleared the slot with an unconditional --set still meets a
+# competitor's record here. Keying on --cas instead would make the negative
+# control fail for the wrong reason — nothing seeded, rather than a record wiped.
+IS_CLEANUP=0
+for a in "$@"; do case "$a" in *".release.in_flight=null") IS_CLEANUP=1 ;; esac; done
+if [ "$IS_CLEANUP" = "1" ]; then
+  # A competing evaluation replaces our claim in the instant before we clear it.
+  # Written through the pristine helper, so this is real durable state and not a
+  # value the stub merely reports.
+  "$0.orig" --raw-path \
+    --set '.repos["solo/app"].release.in_flight={"pr":9,"mechanism":"label:release:ios","claim_token":"someone-else","awaiting_run":true}' \
+    >/dev/null 2>&1
+  SEED_RC=$?
+  echo "SEED_RC=$SEED_RC" >> "$AUDIT_LOG"
+  # The cleanup itself is delegated verbatim: session-state.sh compares the
+  # competitor's record against the SUT's --expect, so the mismatch and the
+  # refusal to write are its verdict, not the stub's. Called rather than exec'd
+  # only so the real exit code can be recorded; it is re-raised unchanged and
+  # stdout/stderr are inherited untouched.
+  "$0.orig" "$@"
+  CLEANUP_RC=$?
+  echo "CLEANUP_RC=$CLEANUP_RC" >> "$AUDIT_LOG"
+  exit "$CLEANUP_RC"
+fi
+exec "$0.orig" "$@"
+OTHERSTUB
+chmod +x "$SCRIPTS/session-state.impl.sh" "$SCRIPTS/session-state.impl.sh.orig"
 FAKE_RUNS_JSON="$OLD_BUILD" FAKE_INTERVAL=60 FAKE_LABEL_RC=1 \
   run --repo solo/app --pr 5 --apply --phase pre-merge
 expect_rc 3 "a failed trigger still blocks (exit 3)"
-seed_other
+# Asserted because it is the precondition for everything below: an injection that
+# silently failed would leave the case asserting the preservation of a record
+# that never existed, which is the guard-passes-by-not-running failure.
+if grep -q '^SEED_RC=0$' "$AUDIT_LOG"; then
+  ok "a competing claim really is injected mid-run, before our cleanup"
+else bad "a competing claim really is injected mid-run (audit: $(tr '\n' '|' < "$AUDIT_LOG"))"; fi
+# 7 from the real helper — its own comparison of the competitor's record against
+# our --expect. A stub returning 7 by construction would prove nothing.
+if grep -q '^CLEANUP_RC=7$' "$AUDIT_LOG"; then
+  ok "the real --cas refuses the clear as a genuine mismatch (rc=7)"
+else bad "the real --cas refuses the clear as a genuine mismatch (rc=7) (audit: $(tr '\n' '|' < "$AUDIT_LOG"))"; fi
 expect_state '.repos["solo/app"].release.in_flight.claim_token' 'someone-else' "a competing claim survives our failure path"
+expect_field '.state_write_error' '' "losing the cleanup race is not reported as a write error"
+fix_state; rm -f "$SCRIPTS/session-state.impl.sh.orig"
 
 # 27. The cleanup write in release_claim() must carry session-state.sh's OWN
 # diagnostic, not just "exited N" (issue #1284). A lock timeout and a corrupt
