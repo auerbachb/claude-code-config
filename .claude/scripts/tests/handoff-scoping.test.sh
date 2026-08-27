@@ -698,7 +698,7 @@ done
 #     the non-zero exit AND that the field is unchanged.
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== 17. --set rejects raw jq expressions (issue #1357) ==="
+echo "=== 17. --set rejects raw jq expressions (issue #1357, guard from PR #1378) ==="
 
 SET_OR=(--owner-repo "acme/widgets")
 "$HANDOFF_STATE" "${SET_OR[@]}" --create 1357 \
@@ -708,7 +708,7 @@ for expr in '.notes + " appended"' '(.threads // [])' '.a|tostring' '.findings |
   rc=0
   err="$("$HANDOFF_STATE" "${SET_OR[@]}" --set 1357 ".notes=${expr}" 2>&1 >/dev/null)" || rc=$?
   check "rejected: ${expr}" "4" "$rc"
-  check_contains "  names it a raw jq expression" "raw jq expression" "$err"
+  check_contains "  names it an unevaluated jq expression" "unevaluated jq expression" "$err"
 done
 check "notes survived every rejection" "phase A notes" \
   "$("$HANDOFF_STATE" "${SET_OR[@]}" --get 1357 | jq -r '.notes')"

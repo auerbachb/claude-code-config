@@ -424,7 +424,12 @@ run --set "$PR" ".notes=phase_a_findings"
 set_bounded() {                    # set_bounded <value> -> echoes rc (124 = hung)
   local value="$1" pid rc waited=0 drain=0
   set -m
-  bash "$SCRIPT" --set "$PR" ".notes=${value}" >/dev/null 2>&1 &
+  # --legacy-flat for the same reason run() carries it (issue #1366): this suite
+  # asserts against the flat $HANDOFF_FILE, and an omitted scope now derives from
+  # the cwd — which, with an un-migrated flat record already present and no scoped
+  # one, is refused (exit 2) rather than written. Without the flag every shape
+  # below would report the refusal instead of exercising the probe.
+  bash "$SCRIPT" --legacy-flat --set "$PR" ".notes=${value}" >/dev/null 2>&1 &
   pid=$!
   set +m
   while kill -0 "$pid" 2>/dev/null; do
