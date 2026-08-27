@@ -81,6 +81,31 @@ EXPECTED_RANKS='1:pause/end
 [[ "$RANK_ROWS" == "$EXPECTED_RANKS" ]] \
   || fail "precedence table drifted (got: $(tr '\n' ' ' <<<"$RANK_ROWS"))"
 
+# An unreadable planned-stop gate must bar every resuming rank, not only the
+# two that mention it in prose. Rank 2 continues a recorded phase, which is a
+# resume like any other: a token-exhaustion handoff says a phase ran out of
+# budget, never that no pause/end gate is armed (issue #1397 Greptile P1).
+# Assert the readability condition on the rank rows themselves, so dropping it
+# from a "Fires on" cell fails here.
+fires_on() {
+  awk -F'|' -v want="$1" '
+    /^\| Rank \| Class \|/     { flag = 1; next }
+    flag && $0 !~ /^\|/        { exit }
+    flag && $2 ~ /^ *[0-9]+ *$/ { r = $2; gsub(/ /, "", r)
+                                  if (r == want) { print $4; exit } }
+  ' "$GO_ON"
+}
+for guarded_rank in 2 3 4; do
+  cell=$(fires_on "$guarded_rank")
+  [[ -n "$cell" ]] || fail "precedence table has no rank $guarded_rank row"
+  grep -Eq 'readable' <<<"$cell" \
+    || fail "rank $guarded_rank must require a readable planned-stop probe (got:$cell)"
+done
+# And the prose that names which ranks an unreadable gate bars must agree.
+has "$GO_ON" 'blocks ranks 2, 3, and 4 outright'
+has "$GO_ON" 'ranks 2, 3, and 4 are all barred'
+has "$LADDER" 'bars ranks 2, 3, and 4 outright'
+
 # --- The refill gate is never re-enabled silently ---------------------------
 has "$GO_ON" '\-\-resume-refill'
 has "$GO_ON" 'never writes `refill.paused`'

@@ -71,11 +71,14 @@ unorderable evidence — reported, never ordered.
 That is why probe A is tri-state — `present` | `absent` | `unreadable` — rather
 than a map that defaults to empty. Collapsing a failed read, a malformed map, or
 an invalid active record into `{}` reads as "no planned stop", drops the ladder
-to rank 3, and starts an `unplanned` resume while a gate may be armed: every
-successor launch then fails closed and the parked board goes unread. Only
-`session-state.sh` exit 3 — no state file at all — is an unambiguous `absent`;
-exits 4 and 5, an unresolved helper, and an unknown repo key are all
-`unreadable`, and `unreadable` bars ranks 3 and 4 outright.
+to rank 2 or 3, and starts a `token_exhaustion` or `unplanned` resume while a
+gate may be armed: every successor launch then fails closed and the parked board
+goes unread. Only `session-state.sh` exit 3 — no state file at all — is an
+unambiguous `absent`; exits 4 and 5, an unresolved helper, and an unknown repo
+key are all `unreadable`, and `unreadable` bars ranks 2, 3, and 4 outright.
+Rank 2 is barred on the same evidence as the other two: a token-exhaustion
+handoff says a phase ran out of budget, never that no planned stop is armed, and
+continuing that phase is a resume like any other.
 
 Probes B and C cannot break the tie. B's timestamp is an ISO string in state and
 C's is a file mtime; they are not comparable, and no portable single command
@@ -152,7 +155,7 @@ Unclassifiable cases, all report-only:
 
 | Case | Why it cannot be resolved automatically |
 |---|---|
-| Probe A `unreadable` | A planned stop may be armed; ranks 3 and 4 are both barred |
+| Probe A `unreadable` | A planned stop may be armed; ranks 2, 3, and 4 are all barred |
 | An active gate record with an unknown `command` or non-`Z` `at` | Unorderable and unclassifiable; sorting it would invent an answer |
 | B and C both present, A absent/unreadable | Two planned stops, no comparable timestamps |
 | This session's gate `active`, no class readable | Launches are blocked and nothing says which command closes them |

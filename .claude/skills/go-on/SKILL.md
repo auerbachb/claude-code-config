@@ -139,7 +139,7 @@ GATE_CLASS=$(jq -r '.class // ""' <<<"$GATE_JSON")   # end | pause | "" (absent/
 GATE_AT=$(jq -r '.at // ""' <<<"$GATE_JSON")
 ```
 
-`GATE_STATE=unreadable` is **unclassifiable evidence, not an absent gate** — it blocks ranks 3 and 4 outright (0.4). Resuming an `unplanned` or `token_exhaustion` lane while a planned stop may be armed is the exact mistake the ladder exists to prevent: the gate would block every successor launch, and the parked board would go unread. Only `GATE_STATE=absent` — an unambiguous "no record" — lets the ladder fall through.
+`GATE_STATE=unreadable` is **unclassifiable evidence, not an absent gate** — it blocks ranks 2, 3, and 4 outright (0.4). Resuming an `unplanned` or `token_exhaustion` lane while a planned stop may be armed is the exact mistake the ladder exists to prevent: the gate would block every successor launch, and the parked board would go unread. Rank 2 is barred for the same reason as ranks 3 and 4 and on the same evidence — continuing a recorded phase is a resume like any other, and a token-exhaustion handoff is not evidence that no `pause` or `end` gate is armed. Only `GATE_STATE=absent` — an unambiguous "no record" — lets the ladder fall through.
 
 Also read this session's own gate — it decides whether new launches are blocked right now. The helper prints `active` | `inactive` and exits 0; an unresolved helper or a failed call is `unreadable`, which feeds the unclassifiable rule in 0.4, never `inactive`:
 
@@ -164,7 +164,7 @@ fi
 | Rank | Class | Fires on | Resume action |
 |---|---|---|---|
 | 1 | `pause` / `end` | A `present`; or A `absent` with exactly one of B / C | Delegate: `/pause-resume [--resume-refill]` or `/end-resume [--resume-refill]` |
-| 2 | `token_exhaustion` | D | Continue the recorded phase (0.6) |
+| 2 | `token_exhaustion` | D, **and** every planned-stop probe readable | Continue the recorded phase (0.6) |
 | 3 | `unplanned` | E only, **and** every planned-stop probe readable | Steps 0b–10 below |
 | 4 | `none` | nothing, and every probe readable | Report `nothing to resume`; change no state |
 
@@ -173,7 +173,7 @@ fi
 **`pause` vs `end` — newest wins, decided by probe A.** Each activation writes `command` + `at` in the same UTC `Z` format, so the newest active entry names the class. Corroborating records (B, C) settle it only when A is missing or unreadable, and cannot order two classes against each other — their timestamps are not comparable (one ISO string, one file mtime).
 
 **Unclassifiable → report, never guess** (`[BLOCKED]`, no state change, no launch). Print what was found, then offer the resolution paths as a menu (`ask-menu.md`; prose fallback when headless). The cases:
-- `GATE_STATE=unreadable` — the planned-stop record could not be read or carries an active entry with an unknown `command` or a non-UTC-`Z` `at`. A `pause` or `end` may be armed, so ranks 3 and 4 are both barred.
+- `GATE_STATE=unreadable` — the planned-stop record could not be read or carries an active entry with an unknown `command` or a non-UTC-`Z` `at`. A `pause` or `end` may be armed, so ranks 2, 3, and 4 are all barred — including rank 2 even when a token-exhaustion handoff (D) is present and readable.
 - B and C both present, A `absent` or unreadable — two planned stops that cannot be ordered. Options: `/pause-resume`, `/end-resume`.
 - This session's gate is `active` — or `GATE_LIVE=unreadable` — and no class is readable from A, B, or C.
 - A probe could not be *read* (0.2) and its class cannot be ruled out.
