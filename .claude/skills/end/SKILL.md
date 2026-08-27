@@ -148,8 +148,14 @@ Gates:     <execution gate and refill gate status>
 Stopped:   <N of N current-session background tasks confirmed terminal>
 Preserved: <task IDs and their output/worktree/recovery paths, or "nothing was running">
 Unresolved:<exact live IDs and stop errors, or "none">
-Resume:    /end-resume [--resume-refill]
+Resume:    /go-on [--resume-refill]   (routes to /end-resume; call it directly if you prefer)
 ```
+
+This is the **thread** report, where `/go-on` is the right thing to name: a
+resume hours or days later should not depend on remembering that this stop was an
+`/end` (Issue #1397). The portable document rendered in Steps 4–6 is a different
+audience and keeps `/end-resume` alone in its `Resume command:` field, which
+`portable-handoff-lint.sh` restricts to that one command.
 
 Do not print successful completion while any owned task is still live or either
 audit is unreadable. Report `INCOMPLETE SHUTDOWN` and keep the gates closed.
@@ -322,6 +328,11 @@ Close with the file path on its own line, so the next session (and the usage-lim
 | `/wrap` | a pull request | a merge, follow-up issues, lessons |
 | `/pm-handoff` | a thread | a prompt for the next thread in this harness |
 | `/end` | a working session | a document for a reader **outside** this harness |
+
+Inside this harness, the resume is `/go-on`: it reads the records this command
+writes, recognizes the stop as an `/end`, and routes to `/end-resume` with any
+`--resume-refill` intact (`.claude/reference/universal-resume.md`). Nothing this
+command writes changed.
 
 ### The automatic checkpoint is a different producer, not this command on a timer
 

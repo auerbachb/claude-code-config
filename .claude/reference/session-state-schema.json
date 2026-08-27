@@ -136,6 +136,14 @@
         "marker_path": "~/.claude/handoffs/pause-20260822T221000Z-9-auerbachb-18-claude-code-config-default-X7pQ2a.md",
         "resumed_at": null
       },
+      "_resume_comment": "Resume receipt for this repo (issue #1397), written by `/go-on` Step 0.5 after a successful dispatch and read by its next invocation. Like `refill`, `day`, and `pause`, this block is INVISIBLE to session-state.sh --session-view — read it with an explicit `--get .repos[\"<key>\"].resume`. `class` is the stoppage `/go-on` classified (pause | end | token_exhaustion | unplanned); `evidence_digest` is `class|record_at|pr|head_sha|branch` for the evidence that was resumed; `dispatched_to` names the command or lane that ran. A later `/go-on` whose digest matches reports `nothing to resume` and writes nothing, so a back-to-back run cannot re-arm the same work or duplicate a Monitor; `--again` forces a fresh pass. A `none` verdict writes NO receipt — nothing-to-resume is a read-only verdict. Ladder and degradation contract: .claude/reference/universal-resume.md.",
+      "resume": {
+        "class": "pause",
+        "evidence_digest": "pause|2026-08-22T22:10:00Z|1251|abc1234|issue-1251-some-feature",
+        "at": "2026-08-23T09:02:00Z",
+        "session_id": "session-example",
+        "dispatched_to": "/pause-resume"
+      },
       "_release_comment": "Agent-initiated TestFlight release cadence for this repo (issue #1169), written by release-decide.sh and release-sweep.sh through session-state.sh --raw-path --set. --raw-path is REQUIRED: auto-scoping only rewrites .prs/.root_repo, and reads must use --get --raw-path rather than --session-view, which projects only those two keys and would report this whole block as absent. `pending` is the durable marker a merge inside the build window leaves behind so a later sweep — in any session — can cut the build; `count` is how many merges have coalesced into it, and `notified_at` is set once a blocker has been reported so it is not repeated every tick. `in_flight` is a build this automation triggered and is following to a terminal state; `awaiting_run` means the run has not appeared yet. `last_seen_build` is bookkeeping only — the window is always measured from GitHub run history, never from this file, so builds cut outside the automation are respected and the state self-heals. Absent block = this repo has never been evaluated; that is not the same as opted out, which is the absence of .claude/release-policy.json in the repo itself. Mechanism: .claude/reference/release-cadence.md.",
       "release": {
         "pending": {
